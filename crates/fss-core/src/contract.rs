@@ -2773,6 +2773,12 @@ pub enum ContractError {
     ProhibitedPhysicalTruthInference,
     /// A capability grant identifier is not registered in the capability registry.
     UnregisteredCapabilityGrant(String),
+    /// A root Process region cannot have a parent region.
+    RootRegionWithParent(String),
+    /// A quiescence proof does not match the closed region.
+    ProofRegionMismatch(String),
+    /// A quiescence proof was attached to a region that is not closed.
+    PrematureQuiescenceProof,
 }
 
 impl ContractError {
@@ -2842,6 +2848,9 @@ impl ContractError {
             Self::ProhibitedMissionMeaningInference => "prohibited_mission_meaning_inference",
             Self::ProhibitedPhysicalTruthInference => "prohibited_physical_truth_inference",
             Self::UnregisteredCapabilityGrant(_) => "unregistered_capability_grant",
+            Self::RootRegionWithParent(_) => "root_region_with_parent",
+            Self::ProofRegionMismatch(_) => "proof_region_mismatch",
+            Self::PrematureQuiescenceProof => "premature_quiescence_proof",
         }
     }
 }

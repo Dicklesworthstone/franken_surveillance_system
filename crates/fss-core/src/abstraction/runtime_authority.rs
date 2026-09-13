@@ -410,27 +410,23 @@ impl RuntimeAuthorityAndCustodyRecord {
         }
 
         // 3. Cx context authority validation
-        validate_id(&self.context.trace_id)?;
-        validate_id(&self.context.principal)?;
-        validate_id(&self.context.privacy_scope)?;
-        validate_id(&self.context.retention_scope)?;
+        self.context.validate()?;
         if self.generation.0 != self.context.generation {
             return Err(ContractError::GenerationConflict);
         }
-        if self.context.anchor_universe.bytes() == [0u8; 32] {
-            return Err(ContractError::InvalidDigest);
-        }
 
         // 4. Grants validation:
-        // a) Reject duplicate grants
-        let mut seen_grants = BTreeSet::new();
-        for grant in &self.grants {
-            if !seen_grants.insert(*grant) {
-                return Err(ContractError::DuplicateGrant(grant.as_str().to_string()));
+        // Strictly ascending order with no duplicates
+        for window in self.grants.windows(2) {
+            if window[0] == window[1] {
+                return Err(ContractError::DuplicateGrant(window[0].as_str().to_string()));
+            }
+            if window[0] > window[1] {
+                return Err(ContractError::NonCanonicalOrdering);
             }
         }
 
-        // b) Monotone Cx binding: all grants must be held by context authority
+        // Monotone Cx binding: all grants must be held by context authority
         for grant in &self.grants {
             if !self.context.has_capability(grant.as_str()) {
                 return Err(ContractError::UnboundCapabilityGrant(
@@ -439,12 +435,12 @@ impl RuntimeAuthorityAndCustodyRecord {
             }
         }
 
-        // c) Constitutional Hard Gate: Cannot infer mission meaning (INV-006)
+        // Constitutional Hard Gate: Cannot infer mission meaning (INV-006)
         if !self.prohibits_mission_meaning_inference() {
             return Err(ContractError::ProhibitedMissionMeaningInference);
         }
 
-        // d) Constitutional Hard Gate: Cannot infer physical truth (INV-006)
+        // Constitutional Hard Gate: Cannot infer physical truth (INV-006)
         if !self.prohibits_physical_truth_inference() {
             return Err(ContractError::ProhibitedPhysicalTruthInference);
         }
@@ -460,7 +456,9 @@ impl RuntimeAuthorityAndCustodyRecord {
         // ProcessRegion is root: must have no parent
         if self.region_kind == RegionKind::Process {
             if self.parent_region_id.is_some() {
-                return Err(ContractError::InvalidIdentifier);
+                return Err(ContractError::RootRegionWithParent(
+                    self.region_id.to_string(),
+                ));
             }
         } else if self.parent_region_id.is_none() {
             // Non-root region missing parent: orphan work forbidden
@@ -485,10 +483,43 @@ impl RuntimeAuthorityAndCustodyRecord {
                 .ok_or(ContractError::MissingDrainRecord)?;
 
             if proof.region_id != self.region_id {
-                return Err(ContractError::InvalidIdentifier);
+                return Err(ContractError::ProofRegionMismatch(
+                    proof.region_id.to_string(),
+                ));
             }
-            if proof.proof_digest.bytes() == [0u8; 32] {
-                return Err(ContractError::InvalidDigest);
+            if proof.region_kind != self.region_kind {
+                return Err(ContractError::ProofRegionMismatch(
+                    proof.region_kind.as_str().to_string(),
+                ));
+            }
+            if proof.parent_id != self.parent_region_id {
+                return Err(ContractError::ProofRegionMismatch(
+                    proof
+                        .parent_id
+                        .as_ref()
+                        .map(|p| p.to_string())
+                        .unwrap_or_else(|| "none".to_string()),
+                ));
+            }
+            if proof.indeterminate_obligations != 0 {
+                return Err(ContractError::IndeterminateObligationOnClosure(
+                    format!(
+                        "quiescence_proof.indeterminate_obligations={}",
+                        proof.indeterminate_obligations
+                    ),
+                ));
+            }
+            let expected_digest = QuiescenceProof::compute_digest(
+                &proof.region_id,
+                proof.region_kind,
+                proof.parent_id.as_ref(),
+                proof.closed_at,
+                proof.total_tasks,
+                proof.total_obligations,
+                proof.indeterminate_obligations,
+            );
+            if proof.proof_digest != expected_digest {
+                return Err(ContractError::DigestMismatch);
             }
 
             // Closed region cannot retain pending or indeterminate obligations
@@ -506,7 +537,7 @@ impl RuntimeAuthorityAndCustodyRecord {
             }
         } else if self.quiescence_proof.is_some() {
             // Premature quiescence proof before region closure is forbidden
-            return Err(ContractError::InvalidEffectTransition);
+            return Err(ContractError::PrematureQuiescenceProof);
         }
 
         // 6. Custody invariants
@@ -525,8 +556,8 @@ impl RuntimeAuthorityAndCustodyRecord {
                 if source_digest.bytes() == [0u8; 32] {
                     return Err(ContractError::InvalidDigest);
                 }
-                // Object roots must contain the retained source digest
-                if !self.object_roots.contains(source_digest) {
+                // Object roots must contain exactly the retained source digest without extra unrelated roots
+                if self.object_roots.len() != 1 || self.object_roots[0] != *source_digest {
                     return Err(ContractError::CustodyRootMismatch);
                 }
             }
@@ -578,12 +609,19 @@ impl RuntimeAuthorityAndCustodyRecord {
                 return Err(ContractError::InvalidDigest);
             }
         }
+        for window in self.receipt_roots.windows(2) {
+            if window[0] >= window[1] {
+                return Err(ContractError::NonCanonicalOrdering);
+            }
+        }
 
         // 9. Contract basis cross-check, when wired
-        if let Some(basis) = &self.contract_basis {
-            if basis.capability_registry_digest.bytes() == [0u8; 32] {
-                return Err(ContractError::InvalidDigest);
-            }
+        if self
+            .contract_basis
+            .as_ref()
+            .is_some_and(|basis| basis.capability_registry_digest.bytes() == [0u8; 32])
+        {
+            return Err(ContractError::InvalidDigest);
         }
 
         Ok(())
@@ -740,10 +778,25 @@ impl CanonicalDecode for RuntimeAuthorityAndCustodyRecord {
         let record_id = decoder.text()?.to_string();
         let generation = Generation::decode_canonical(decoder)?;
         let context = ContextAuthority::decode_canonical(decoder)?;
-        let grant_count = decoder.u64()? as usize;
+        let grant_count = decoder.u64()?;
+        if grant_count > decoder.remaining() as u64 {
+            return Err(ContractError::NonCanonicalOrdering);
+        }
+        let grant_count = grant_count as usize;
         let mut grants = Vec::with_capacity(grant_count);
+        let mut prev_grant: Option<RuntimeGrant> = None;
         for _ in 0..grant_count {
-            grants.push(RuntimeGrant::decode_canonical(decoder)?);
+            let grant = RuntimeGrant::decode_canonical(decoder)?;
+            if let Some(prev) = prev_grant {
+                if grant == prev {
+                    return Err(ContractError::DuplicateGrant(grant.as_str().to_string()));
+                }
+                if grant < prev {
+                    return Err(ContractError::NonCanonicalOrdering);
+                }
+            }
+            prev_grant = Some(grant);
+            grants.push(grant);
         }
         let region_id = RegionId::decode_canonical(decoder)?;
         let region_kind = RegionKind::decode_canonical(decoder)?;
@@ -759,20 +812,48 @@ impl CanonicalDecode for RuntimeAuthorityAndCustodyRecord {
             None
         };
         let custody = SourceCustody::decode_canonical(decoder)?;
-        let ob_count = decoder.u64()? as usize;
+        let ob_count = decoder.u64()?;
+        if ob_count > decoder.remaining() as u64 {
+            return Err(ContractError::NonCanonicalOrdering);
+        }
+        let ob_count = ob_count as usize;
         let mut obligations = Vec::with_capacity(ob_count);
         for _ in 0..ob_count {
             obligations.push(Obligation::decode_canonical(decoder)?);
         }
-        let root_count = decoder.u64()? as usize;
-        let mut object_roots = Vec::with_capacity(root_count);
-        for _ in 0..root_count {
-            object_roots.push(decoder.digest()?);
+        let root_count = decoder.u64()?;
+        if root_count > decoder.remaining() as u64 {
+            return Err(ContractError::NonCanonicalOrdering);
         }
-        let receipt_count = decoder.u64()? as usize;
+        let root_count = root_count as usize;
+        let mut object_roots = Vec::with_capacity(root_count);
+        let mut prev_root: Option<ContentDigest> = None;
+        for _ in 0..root_count {
+            let root = decoder.digest()?;
+            if let Some(prev) = prev_root
+                && root <= prev
+            {
+                return Err(ContractError::NonCanonicalOrdering);
+            }
+            prev_root = Some(root);
+            object_roots.push(root);
+        }
+        let receipt_count = decoder.u64()?;
+        if receipt_count > decoder.remaining() as u64 {
+            return Err(ContractError::NonCanonicalOrdering);
+        }
+        let receipt_count = receipt_count as usize;
         let mut receipt_roots = Vec::with_capacity(receipt_count);
+        let mut prev_receipt: Option<ContentDigest> = None;
         for _ in 0..receipt_count {
-            receipt_roots.push(decoder.digest()?);
+            let receipt = decoder.digest()?;
+            if let Some(prev) = prev_receipt
+                && receipt <= prev
+            {
+                return Err(ContractError::NonCanonicalOrdering);
+            }
+            prev_receipt = Some(receipt);
+            receipt_roots.push(receipt);
         }
         let contract_basis = if decoder.bool()? {
             Some(ContractBasis::decode_canonical(decoder)?)

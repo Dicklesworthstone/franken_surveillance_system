@@ -371,52 +371,6 @@ impl AgentAbstractionLayer {
         matches!(self, Self::RuntimeAuthorityAndCustody)
     }
 
-    /// Returns whether this layer prohibits inferring mission meaning.
-    ///
-    /// AGT-LAYER-001 prohibition: "Cannot infer mission meaning or physical truth."
-    #[must_use]
-    pub const fn prohibits_mission_meaning_inference(self) -> bool {
-        matches!(self, Self::RuntimeAuthorityAndCustody)
-    }
-
-    /// Returns whether this layer prohibits inferring physical truth.
-    ///
-    /// AGT-LAYER-001 prohibition: "Cannot infer mission meaning or physical truth."
-    #[must_use]
-    pub const fn prohibits_physical_truth_inference(self) -> bool {
-        matches!(self, Self::RuntimeAuthorityAndCustody)
-    }
-
-    /// Validates all constitutional and semantic invariants for this abstraction layer.
-    pub fn validate_invariants(&self) -> Result<(), ContractError> {
-        match self {
-            Self::RuntimeAuthorityAndCustody => {
-                if self.plane() != Plane::Authority {
-                    return Err(ContractError::InvalidEffectTransition);
-                }
-                if !self.prohibits_mission_meaning_inference() {
-                    return Err(ContractError::InvalidIdentifier);
-                }
-                if !self.prohibits_physical_truth_inference() {
-                    return Err(ContractError::InvalidIdentifier);
-                }
-                if self.invariant() != "INV-006" {
-                    return Err(ContractError::InvalidIdentifier);
-                }
-            }
-            Self::DerivedBeliefs => {
-                if self.plane() != Plane::Cognition {
-                    return Err(ContractError::DerivedLayerAuthorityForbidden);
-                }
-                if self.invariant() != "INV-069" {
-                    return Err(ContractError::InvalidIdentifier);
-                }
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
     /// Validates a concrete [`RuntimeAuthorityAndCustodyRecord`] against this layer's invariants.
     pub fn validate_runtime_authority(
         &self,

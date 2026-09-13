@@ -499,7 +499,7 @@ impl CanonicalDecode for SourceCustody {
                     storage_handle,
                 })
             }
-            _ => Err(ContractError::NonCanonicalOrdering),
+            tag => Err(ContractError::UnknownEntryTag(tag)),
         }
     }
 }

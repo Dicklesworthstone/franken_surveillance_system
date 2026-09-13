@@ -617,6 +617,33 @@ impl ContextAuthority {
             .is_ok()
     }
 
+    /// Validates constitutional invariants for this context authority.
+    pub fn validate(&self) -> Result<(), ContractError> {
+        validate_id(&self.trace_id)?;
+        validate_id(&self.principal)?;
+        if !self.privacy_scope.is_empty() {
+            validate_id(&self.privacy_scope)?;
+        }
+        if !self.retention_scope.is_empty() {
+            validate_id(&self.retention_scope)?;
+        }
+        if self.capabilities.len() > MAX_CAPABILITIES_PER_CONTEXT {
+            return Err(ContractError::NonCanonicalOrdering);
+        }
+        for window in self.capabilities.windows(2) {
+            if window[0] >= window[1] {
+                return Err(ContractError::NonCanonicalOrdering);
+            }
+        }
+        if self.anchor_universe.bytes() == [0u8; 32] {
+            return Err(ContractError::InvalidDigest);
+        }
+        if self.generation == 0 {
+            return Err(ContractError::GenerationConflict);
+        }
+        Ok(())
+    }
+
     /// Verifies that `self` is a monotone (possibly non-strict) narrowing of `parent`.
     ///
     /// Trace, principal, anchor universe, and generation must be preserved; capabilities must be
@@ -813,10 +840,24 @@ impl CanonicalDecode for ContextAuthority {
         let trace_id = decoder.text()?.to_string();
         let operation_id = OperationId::decode_canonical(decoder)?;
         let principal = decoder.text()?.to_string();
-        let cap_count = decoder.u64()? as usize;
+        let cap_count = decoder.u64()?;
+        if cap_count > MAX_CAPABILITIES_PER_CONTEXT as u64
+            || cap_count > decoder.remaining() as u64
+        {
+            return Err(ContractError::NonCanonicalOrdering);
+        }
+        let cap_count = cap_count as usize;
         let mut capabilities = Vec::with_capacity(cap_count);
+        let mut prev_cap: Option<String> = None;
         for _ in 0..cap_count {
-            capabilities.push(decoder.text()?.to_string());
+            let cap = decoder.text()?.to_string();
+            if let Some(prev) = &prev_cap
+                && &cap <= prev
+            {
+                return Err(ContractError::NonCanonicalOrdering);
+            }
+            prev_cap = Some(cap.clone());
+            capabilities.push(cap);
         }
         let deadline = if decoder.bool()? {
             Some(TimestampNs::decode_canonical(decoder)?)
@@ -850,7 +891,7 @@ impl CanonicalDecode for ContextAuthority {
             None
         };
 
-        Ok(Self {
+        let result = Self {
             trace_id,
             operation_id,
             principal,
@@ -866,7 +907,9 @@ impl CanonicalDecode for ContextAuthority {
             lease_fence,
             idempotency_key,
             lab_controls,
-        })
+        };
+        result.validate()?;
+        Ok(result)
     }
 }
 

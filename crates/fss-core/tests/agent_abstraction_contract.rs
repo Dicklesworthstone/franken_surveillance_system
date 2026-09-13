@@ -1476,7 +1476,7 @@ fn test_source_evidence_canonical_roundtrip() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn test_valid_runtime_authority_params() -> Result<RuntimeAuthorityParams, Box<dyn Error>> {
+fn valid_runtime_authority_params() -> Result<RuntimeAuthorityParams, Box<dyn Error>> {
     let operation_id = OperationId::parse("op:runtime:test:001")?;
     let cx = ContextAuthority::new_root(RootAuthoritySpec {
         trace_id: "trace:runtime:test:001".to_string(),
@@ -1520,8 +1520,8 @@ fn test_valid_runtime_authority_params() -> Result<RuntimeAuthorityParams, Box<d
         context: cx,
         grants: vec![
             RuntimeGrant::LedgerAppend,
-            RuntimeGrant::ObjectStage,
             RuntimeGrant::ObjectPublish,
+            RuntimeGrant::ObjectStage,
         ],
         region_id: RegionId::new("region:property:001")?,
         region_kind: RegionKind::Property,
@@ -1550,8 +1550,6 @@ fn test_runtime_authority_and_custody_row_properties() -> Result<(), Box<dyn Err
     assert!(!layer.is_rebuildable());
     assert!(!layer.is_anchor_pinned_rebuildable());
     assert!(layer.is_runtime_authority_and_custody());
-    assert!(layer.prohibits_mission_meaning_inference());
-    assert!(layer.prohibits_physical_truth_inference());
     assert_eq!(layer.status(), "normative");
     assert_eq!(layer.invariant(), "INV-006");
     assert_eq!(layer.owner(), "asupersync/authority/object owners");
@@ -1568,7 +1566,6 @@ fn test_runtime_authority_and_custody_row_properties() -> Result<(), Box<dyn Err
         "Cannot infer mission meaning or physical truth."
     );
 
-    layer.validate_invariants()?;
     assert_eq!(RUNTIME_AUTHORITY_DOMAIN, "fss.runtime_authority_and_custody.v1");
     Ok(())
 }
@@ -1618,7 +1615,7 @@ fn test_runtime_authority_and_custody_parse_and_resolution() -> Result<(), Box<d
 
 #[test]
 fn test_runtime_authority_record_valid_construction() -> Result<(), Box<dyn Error>> {
-    let params = test_valid_runtime_authority_params()?;
+    let params = valid_runtime_authority_params()?;
     let record = RuntimeAuthorityAndCustodyRecord::new(params)?;
 
     assert_eq!(record.layer(), AgentAbstractionLayer::RuntimeAuthorityAndCustody);
@@ -1631,8 +1628,8 @@ fn test_runtime_authority_record_valid_construction() -> Result<(), Box<dyn Erro
     assert!(record.prohibits_mission_meaning_inference());
     assert!(record.prohibits_physical_truth_inference());
     assert!(record.has_grant(RuntimeGrant::LedgerAppend));
-    assert!(record.has_grant(RuntimeGrant::ObjectStage));
     assert!(record.has_grant(RuntimeGrant::ObjectPublish));
+    assert!(record.has_grant(RuntimeGrant::ObjectStage));
     assert!(!record.has_grant(RuntimeGrant::ModelInfer));
     assert!(record.is_retained_custody());
     assert!(!record.is_quiescent());
@@ -1660,7 +1657,7 @@ fn test_runtime_authority_record_valid_construction() -> Result<(), Box<dyn Erro
 
 #[test]
 fn test_runtime_authority_and_custody_canonical_roundtrip() -> Result<(), Box<dyn Error>> {
-    let params = test_valid_runtime_authority_params()?;
+    let params = valid_runtime_authority_params()?;
     let record = RuntimeAuthorityAndCustodyRecord::new(params)?;
 
     let mut encoder = CanonicalEncoder::new();
@@ -1692,7 +1689,7 @@ fn test_runtime_authority_and_custody_canonical_roundtrip() -> Result<(), Box<dy
 #[test]
 fn test_planted_negative_runtime_authority_and_custody_bypasses() -> Result<(), Box<dyn Error>> {
     // Planted bypass 1: Prohibited mission meaning inference
-    let mut bad_params = test_valid_runtime_authority_params()?;
+    let mut bad_params = valid_runtime_authority_params()?;
     bad_params.grants.push(RuntimeGrant::InferMissionMeaning);
     let bad_record = RuntimeAuthorityAndCustodyRecord {
         record_id: bad_params.record_id.clone(),
@@ -1725,7 +1722,7 @@ fn test_planted_negative_runtime_authority_and_custody_bypasses() -> Result<(), 
     );
 
     // Planted bypass 2: Prohibited physical truth inference
-    let mut bad_params = test_valid_runtime_authority_params()?;
+    let mut bad_params = valid_runtime_authority_params()?;
     bad_params.grants.push(RuntimeGrant::InferPhysicalTruth);
     let bad_record = RuntimeAuthorityAndCustodyRecord {
         record_id: bad_params.record_id.clone(),
@@ -1754,8 +1751,9 @@ fn test_planted_negative_runtime_authority_and_custody_bypasses() -> Result<(), 
     );
 
     // Planted bypass 3: Unbound grant (not present in Cx context capabilities)
-    let mut bad_params = test_valid_runtime_authority_params()?;
+    let mut bad_params = valid_runtime_authority_params()?;
     bad_params.grants.push(RuntimeGrant::ModelInfer);
+    bad_params.grants.sort();
     assert_eq!(
         RuntimeAuthorityAndCustodyRecord::new(bad_params),
         Err(ContractError::UnboundCapabilityGrant(
@@ -1764,8 +1762,9 @@ fn test_planted_negative_runtime_authority_and_custody_bypasses() -> Result<(), 
     );
 
     // Planted bypass 4: Duplicate capability grant in record
-    let mut bad_params = test_valid_runtime_authority_params()?;
+    let mut bad_params = valid_runtime_authority_params()?;
     bad_params.grants.push(RuntimeGrant::LedgerAppend);
+    bad_params.grants.sort();
     assert_eq!(
         RuntimeAuthorityAndCustodyRecord::new(bad_params),
         Err(ContractError::DuplicateGrant(
@@ -1774,7 +1773,7 @@ fn test_planted_negative_runtime_authority_and_custody_bypasses() -> Result<(), 
     );
 
     // Planted bypass 5: Duplicate obligation ID in record
-    let mut bad_params = test_valid_runtime_authority_params()?;
+    let mut bad_params = valid_runtime_authority_params()?;
     bad_params.obligations.push(bad_params.obligations[0].clone());
     assert_eq!(
         RuntimeAuthorityAndCustodyRecord::new(bad_params),
@@ -1784,7 +1783,7 @@ fn test_planted_negative_runtime_authority_and_custody_bypasses() -> Result<(), 
     );
 
     // Planted bypass 6: Region can be its own parent (cyclic hierarchy)
-    let mut bad_params = test_valid_runtime_authority_params()?;
+    let mut bad_params = valid_runtime_authority_params()?;
     bad_params.parent_region_id = Some(bad_params.region_id.clone());
     assert_eq!(
         RuntimeAuthorityAndCustodyRecord::new(bad_params),
@@ -1794,7 +1793,7 @@ fn test_planted_negative_runtime_authority_and_custody_bypasses() -> Result<(), 
     );
 
     // Planted bypass 7: Orphan non-root region (missing parent)
-    let mut bad_params = test_valid_runtime_authority_params()?;
+    let mut bad_params = valid_runtime_authority_params()?;
     bad_params.parent_region_id = None;
     assert_eq!(
         RuntimeAuthorityAndCustodyRecord::new(bad_params),
@@ -1804,16 +1803,18 @@ fn test_planted_negative_runtime_authority_and_custody_bypasses() -> Result<(), 
     );
 
     // Planted bypass 8: Root ProcessRegion with parent
-    let mut bad_params = test_valid_runtime_authority_params()?;
+    let mut bad_params = valid_runtime_authority_params()?;
     bad_params.region_kind = RegionKind::Process;
     bad_params.parent_region_id = Some(RegionId::new("region:external")?);
     assert_eq!(
         RuntimeAuthorityAndCustodyRecord::new(bad_params),
-        Err(ContractError::InvalidIdentifier)
+        Err(ContractError::RootRegionWithParent(
+            "region:property:001".to_string()
+        ))
     );
 
     // Planted bypass 9: DrainRequested without cancellation reason
-    let mut bad_params = test_valid_runtime_authority_params()?;
+    let mut bad_params = valid_runtime_authority_params()?;
     bad_params.region_state = RegionState::DrainRequested;
     assert_eq!(
         RuntimeAuthorityAndCustodyRecord::new(bad_params),
@@ -1821,7 +1822,7 @@ fn test_planted_negative_runtime_authority_and_custody_bypasses() -> Result<(), 
     );
 
     // Planted bypass 10: Finalizing without cancellation reason
-    let mut bad_params = test_valid_runtime_authority_params()?;
+    let mut bad_params = valid_runtime_authority_params()?;
     bad_params.region_state = RegionState::Finalizing;
     assert_eq!(
         RuntimeAuthorityAndCustodyRecord::new(bad_params),
@@ -1829,7 +1830,7 @@ fn test_planted_negative_runtime_authority_and_custody_bypasses() -> Result<(), 
     );
 
     // Planted bypass 11: Closed region with no drain record (missing quiescence proof)
-    let mut bad_params = test_valid_runtime_authority_params()?;
+    let mut bad_params = valid_runtime_authority_params()?;
     bad_params.region_state = RegionState::Closed;
     bad_params.quiescence_proof = None;
     assert_eq!(
@@ -1838,7 +1839,7 @@ fn test_planted_negative_runtime_authority_and_custody_bypasses() -> Result<(), 
     );
 
     // Planted bypass 12: Closed region retains Pending obligation
-    let mut bad_params = test_valid_runtime_authority_params()?;
+    let mut bad_params = valid_runtime_authority_params()?;
     let proof = QuiescenceProof {
         region_id: bad_params.region_id.clone(),
         region_kind: bad_params.region_kind,
@@ -1847,7 +1848,15 @@ fn test_planted_negative_runtime_authority_and_custody_bypasses() -> Result<(), 
         total_tasks: 5,
         total_obligations: 1,
         indeterminate_obligations: 0,
-        proof_digest: ContentDigest::sha256(b"quiescence-proof-digest"),
+        proof_digest: QuiescenceProof::compute_digest(
+            &bad_params.region_id,
+            bad_params.region_kind,
+            bad_params.parent_region_id.as_ref(),
+            TimestampNs(1_700_000_000_100_000_000),
+            5,
+            1,
+            0,
+        ),
     };
     bad_params.region_state = RegionState::Closed;
     bad_params.quiescence_proof = Some(proof.clone());
@@ -1861,7 +1870,7 @@ fn test_planted_negative_runtime_authority_and_custody_bypasses() -> Result<(), 
     );
 
     // Planted bypass 13: Closed region retains Indeterminate obligation
-    let mut bad_params = test_valid_runtime_authority_params()?;
+    let mut bad_params = valid_runtime_authority_params()?;
     bad_params.region_state = RegionState::Closed;
     bad_params.quiescence_proof = Some(proof.clone());
     bad_params.obligations[0].state = ObligationState::Indeterminate;
@@ -1873,7 +1882,7 @@ fn test_planted_negative_runtime_authority_and_custody_bypasses() -> Result<(), 
     );
 
     // Planted bypass 14: Object root unrelated to custody digest
-    let mut bad_params = test_valid_runtime_authority_params()?;
+    let mut bad_params = valid_runtime_authority_params()?;
     bad_params.object_roots = vec![ContentDigest::sha256(b"unrelated-object-digest")];
     assert_eq!(
         RuntimeAuthorityAndCustodyRecord::new(bad_params),
@@ -1881,7 +1890,7 @@ fn test_planted_negative_runtime_authority_and_custody_bypasses() -> Result<(), 
     );
 
     // Planted bypass 15: NotRetained custody with non-empty object roots
-    let mut bad_params = test_valid_runtime_authority_params()?;
+    let mut bad_params = valid_runtime_authority_params()?;
     bad_params.custody = SourceCustody::NotRetained;
     bad_params.object_roots = vec![ContentDigest::sha256(b"unexpected-root")];
     assert_eq!(
@@ -1890,7 +1899,7 @@ fn test_planted_negative_runtime_authority_and_custody_bypasses() -> Result<(), 
     );
 
     // Planted bypass 16: Generation 0 rejected
-    let mut bad_params = test_valid_runtime_authority_params()?;
+    let mut bad_params = valid_runtime_authority_params()?;
     bad_params.generation = Generation(0);
     assert_eq!(
         RuntimeAuthorityAndCustodyRecord::new(bad_params),
@@ -1898,7 +1907,7 @@ fn test_planted_negative_runtime_authority_and_custody_bypasses() -> Result<(), 
     );
 
     // Planted bypass 17: Generation mismatch with context
-    let mut bad_params = test_valid_runtime_authority_params()?;
+    let mut bad_params = valid_runtime_authority_params()?;
     bad_params.generation = Generation(2);
     assert_eq!(
         RuntimeAuthorityAndCustodyRecord::new(bad_params),
@@ -1906,7 +1915,7 @@ fn test_planted_negative_runtime_authority_and_custody_bypasses() -> Result<(), 
     );
 
     // Planted bypass 18: Retained custody zero source bytes
-    let mut bad_params = test_valid_runtime_authority_params()?;
+    let mut bad_params = valid_runtime_authority_params()?;
     let source_digest = ContentDigest::sha256(b"zero-bytes-custody");
     bad_params.custody = SourceCustody::Retained {
         source_digest,
@@ -1920,12 +1929,12 @@ fn test_planted_negative_runtime_authority_and_custody_bypasses() -> Result<(), 
     );
 
     // Planted bypass 19: Premature quiescence proof on Active region
-    let mut bad_params = test_valid_runtime_authority_params()?;
+    let mut bad_params = valid_runtime_authority_params()?;
     bad_params.region_state = RegionState::Active;
-    bad_params.quiescence_proof = Some(proof);
+    bad_params.quiescence_proof = Some(proof.clone());
     assert_eq!(
         RuntimeAuthorityAndCustodyRecord::new(bad_params),
-        Err(ContractError::InvalidEffectTransition)
+        Err(ContractError::PrematureQuiescenceProof)
     );
 
     // Planted bypass 20: Unregistered capability grant string
@@ -1934,6 +1943,209 @@ fn test_planted_negative_runtime_authority_and_custody_bypasses() -> Result<(), 
         Err(ContractError::UnregisteredCapabilityGrant(
             "cap:rogue-unregistered".to_string()
         ))
+    );
+
+    // Planted bypass 21: Unknown, malformed, or out-of-range tower level must fail closed.
+    let Err(err_level) = AgentAbstractionLayer::from_tower_level(99) else {
+        return Err("expected out-of-bounds tower level to fail".into());
+    };
+    assert_eq!(err_level, ContractError::UnknownEntryTag(99));
+
+    // Planted bypass 22: Malformed or mutated ID must fail closed.
+    let Err(err_id) = AgentAbstractionLayer::from_id("AGT-LAYER-000") else {
+        return Err("expected unknown ID to fail".into());
+    };
+    assert_eq!(
+        err_id,
+        ContractError::UnknownAbstractionLayer("AGT-LAYER-000".into())
+    );
+
+    // Planted bypass 23: Case-sensitive name mismatch must fail closed.
+    let Err(err_name) = AgentAbstractionLayer::from_name("Runtime_Authority_And_Custody") else {
+        return Err("expected uppercase name to fail".into());
+    };
+    assert_eq!(
+        err_name,
+        ContractError::UnknownAbstractionLayer("Runtime_Authority_And_Custody".into())
+    );
+
+    // Planted bypass 24 (Q8): ContextAuthority decode with cap_count=u64::MAX fails gracefully without panic
+    let mut enc = CanonicalEncoder::new();
+    enc.text("trace:dos:001");
+    OperationId::parse("op:dos:001")?.encode_canonical(&mut enc);
+    enc.text("principal:operator:001");
+    enc.u64(u64::MAX); // hostile cap_count
+    let bytes = enc.finish();
+    let mut dec = CanonicalDecoder::new(&bytes);
+    assert_eq!(
+        ContextAuthority::decode_canonical(&mut dec),
+        Err(ContractError::NonCanonicalOrdering)
+    );
+
+    // Planted bypass 25 (Q9): RuntimeAuthorityAndCustodyRecord decode with grant_count=u64::MAX fails gracefully without panic
+    let mut enc = CanonicalEncoder::new();
+    enc.text(RUNTIME_AUTHORITY_DOMAIN);
+    enc.text("auth:record:dos:001");
+    Generation(1).encode_canonical(&mut enc);
+    valid_runtime_authority_params()?.context.encode_canonical(&mut enc);
+    enc.u64(u64::MAX); // hostile grant_count
+    let bytes = enc.finish();
+    let mut dec = CanonicalDecoder::new(&bytes);
+    assert_eq!(
+        RuntimeAuthorityAndCustodyRecord::decode_canonical(&mut dec),
+        Err(ContractError::NonCanonicalOrdering)
+    );
+
+    // Planted bypass 26 (Q1): Record with grants reversed or non-canonical ordering rejected
+    let mut bad_params = valid_runtime_authority_params()?;
+    bad_params.grants = vec![
+        RuntimeGrant::ObjectStage,
+        RuntimeGrant::ObjectPublish,
+    ];
+    assert_eq!(
+        RuntimeAuthorityAndCustodyRecord::new(bad_params),
+        Err(ContractError::NonCanonicalOrdering)
+    );
+
+    // Planted bypass 27 (Q10): ContextAuthority with unsorted capabilities rejected on decode
+    let mut enc = CanonicalEncoder::new();
+    enc.text("trace:unsorted:001");
+    OperationId::parse("op:unsorted:001")?.encode_canonical(&mut enc);
+    enc.text("principal:operator:001");
+    enc.u64(2);
+    enc.text("CAP-OBJECT-STAGE-001");
+    enc.text("CAP-OBJECT-PUBLISH-001");
+    enc.bool(false); // deadline None
+    enc.u8(10); // priority
+    enc.bool(false); // cancellation None
+    BudgetVector::default().encode_canonical(&mut enc);
+    enc.text("privacy:scope:internal");
+    enc.text("retention:scope:standard");
+    enc.digest(ContentDigest::sha256(b"test-anchor-universe"));
+    enc.u64(1); // generation
+    enc.bool(false); // lease fence None
+    enc.bool(false); // idempotency None
+    enc.bool(false); // lab controls None
+    let bytes = enc.finish();
+    let mut dec = CanonicalDecoder::new(&bytes);
+    assert_eq!(
+        ContextAuthority::decode_canonical(&mut dec),
+        Err(ContractError::NonCanonicalOrdering)
+    );
+
+    // Planted bypass 28 (Q4a): QuiescenceProof wrong region kind
+    let mut bad_params = valid_runtime_authority_params()?;
+    bad_params.region_state = RegionState::Closed;
+    let mut bad_proof = proof.clone();
+    bad_proof.region_kind = RegionKind::Process;
+    bad_params.quiescence_proof = Some(bad_proof);
+    assert_eq!(
+        RuntimeAuthorityAndCustodyRecord::new(bad_params),
+        Err(ContractError::ProofRegionMismatch(
+            RegionKind::Process.as_str().to_string()
+        ))
+    );
+
+    // Planted bypass 29 (Q4b): QuiescenceProof wrong parent
+    let mut bad_params = valid_runtime_authority_params()?;
+    bad_params.region_state = RegionState::Closed;
+    let mut bad_proof = proof.clone();
+    bad_proof.parent_id = Some(RegionId::new("region:wrong:parent")?);
+    bad_params.quiescence_proof = Some(bad_proof);
+    assert_eq!(
+        RuntimeAuthorityAndCustodyRecord::new(bad_params),
+        Err(ContractError::ProofRegionMismatch(
+            "region:wrong:parent".to_string()
+        ))
+    );
+
+    // Planted bypass 30 (Q4c): QuiescenceProof indeterminate_obligations > 0
+    let mut bad_params = valid_runtime_authority_params()?;
+    bad_params.region_state = RegionState::Closed;
+    let mut bad_proof = proof.clone();
+    bad_proof.indeterminate_obligations = 7;
+    bad_params.quiescence_proof = Some(bad_proof);
+    assert_eq!(
+        RuntimeAuthorityAndCustodyRecord::new(bad_params),
+        Err(ContractError::IndeterminateObligationOnClosure(
+            "quiescence_proof.indeterminate_obligations=7".to_string()
+        ))
+    );
+
+    // Planted bypass 31 (Q4d): QuiescenceProof tampered / uncomputed digest
+    let mut bad_params = valid_runtime_authority_params()?;
+    bad_params.region_state = RegionState::Closed;
+    let mut bad_proof = proof.clone();
+    bad_proof.proof_digest = ContentDigest::sha256(b"tampered-digest");
+    bad_params.quiescence_proof = Some(bad_proof);
+    assert_eq!(
+        RuntimeAuthorityAndCustodyRecord::new(bad_params),
+        Err(ContractError::DigestMismatch)
+    );
+
+    // Planted bypass 32 (Q2): Retained custody with extra unrelated object root
+    let mut bad_params = valid_runtime_authority_params()?;
+    let source_digest = ContentDigest::sha256(b"test-source-bytes");
+    bad_params.object_roots = vec![source_digest, ContentDigest::sha256(b"extra-unrelated-root")];
+    assert_eq!(
+        RuntimeAuthorityAndCustodyRecord::new(bad_params),
+        Err(ContractError::CustodyRootMismatch)
+    );
+
+    // Planted bypass 33 (Q3a): Retained custody with duplicate object roots
+    let mut bad_params = valid_runtime_authority_params()?;
+    bad_params.object_roots = vec![source_digest, source_digest];
+    assert_eq!(
+        RuntimeAuthorityAndCustodyRecord::new(bad_params),
+        Err(ContractError::CustodyRootMismatch)
+    );
+
+    // Planted bypass 34 (Q3b): Duplicate receipt roots rejected
+    let mut bad_params = valid_runtime_authority_params()?;
+    let receipt = ContentDigest::sha256(b"receipt-root-001");
+    bad_params.receipt_roots = vec![receipt, receipt];
+    assert_eq!(
+        RuntimeAuthorityAndCustodyRecord::new(bad_params),
+        Err(ContractError::NonCanonicalOrdering)
+    );
+
+    // Planted bypass 35 (K10): Decode skips validate test
+    let mut enc = CanonicalEncoder::new();
+    enc.text(RUNTIME_AUTHORITY_DOMAIN);
+    enc.text("auth:record:invalid:k10");
+    Generation(1).encode_canonical(&mut enc);
+    valid_runtime_authority_params()?.context.encode_canonical(&mut enc);
+    enc.u64(2);
+    RuntimeGrant::LedgerAppend.encode_canonical(&mut enc);
+    RuntimeGrant::LedgerAppend.encode_canonical(&mut enc); // duplicate grant!
+    RegionId::new("region:property:001")?.encode_canonical(&mut enc);
+    RegionKind::Property.encode_canonical(&mut enc);
+    enc.bool(true);
+    RegionId::new("region:process:root")?.encode_canonical(&mut enc);
+    RegionState::Active.encode_canonical(&mut enc);
+    enc.bool(false); // quiescence proof None
+    SourceCustody::NotRetained.encode_canonical(&mut enc);
+    enc.u64(0); // obligations count
+    enc.u64(0); // object roots count
+    enc.u64(0); // receipt roots count
+    enc.bool(false); // contract basis None
+    let bytes = enc.finish();
+    let mut dec = CanonicalDecoder::new(&bytes);
+    assert_eq!(
+        RuntimeAuthorityAndCustodyRecord::decode_canonical(&mut dec),
+        Err(ContractError::DuplicateGrant(
+            "CAP-LEDGER-APPEND-001".to_string()
+        ))
+    );
+
+    // Planted bypass 36 (Q7): Unrecognized SourceCustody tag returns UnknownEntryTag
+    let mut enc = CanonicalEncoder::new();
+    enc.u8(99);
+    let bytes = enc.finish();
+    let mut dec = CanonicalDecoder::new(&bytes);
+    assert_eq!(
+        SourceCustody::decode_canonical(&mut dec),
+        Err(ContractError::UnknownEntryTag(99))
     );
 
     Ok(())
