@@ -10,13 +10,49 @@ use crate::node::GraphNode;
 use crate::port::TensorPort;
 use crate::validator::GraphValidator;
 
+/// An unsupported Model IR version tag (guaranteed != 1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct UnsupportedVersion {
+    version: u32,
+}
+
+impl UnsupportedVersion {
+    /// Constructs an unsupported version tag.
+    ///
+    /// # Errors
+    /// Returns [`ModelIrError::InvalidAttribute`] if `version == 1` (which is supported V1).
+    pub fn new(version: u32) -> Result<Self, ModelIrError> {
+        if version == 1 {
+            return Err(ModelIrError::InvalidAttribute {
+                node_id: "version".to_string(),
+                attr_name: "version".to_string(),
+                reason: "version 1 is supported (V1) and cannot be constructed as unsupported"
+                    .to_string(),
+            });
+        }
+        Ok(Self { version })
+    }
+
+    /// Returns the numerical version tag.
+    #[must_use]
+    pub const fn as_u32(self) -> u32 {
+        self.version
+    }
+}
+
+impl fmt::Display for UnsupportedVersion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.version)
+    }
+}
+
 /// Pinned, frozen specification version for Model IR.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ModelIrVersion {
     /// Version 1 of the Model Operator IR.
     V1,
     /// Unsupported or future Model Operator IR version.
-    Unsupported(u32),
+    Unsupported(UnsupportedVersion),
 }
 
 impl ModelIrVersion {
@@ -25,7 +61,7 @@ impl ModelIrVersion {
     pub const fn as_u32(self) -> u32 {
         match self {
             Self::V1 => 1,
-            Self::Unsupported(v) => v,
+            Self::Unsupported(v) => v.as_u32(),
         }
     }
 
@@ -44,9 +80,11 @@ impl ModelIrVersion {
     }
 
     /// Constructs an explicit unsupported version tag for compatibility validation.
-    #[must_use]
-    pub const fn unsupported(version: u32) -> Self {
-        Self::Unsupported(version)
+    ///
+    /// # Errors
+    /// Returns [`ModelIrError::InvalidAttribute`] if `version == 1`.
+    pub fn unsupported(version: u32) -> Result<Self, ModelIrError> {
+        Ok(Self::Unsupported(UnsupportedVersion::new(version)?))
     }
 
     /// Returns `true` if this version is supported by the v1 runtime.
@@ -58,7 +96,10 @@ impl ModelIrVersion {
 
 impl fmt::Display for ModelIrVersion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "v{}", self.as_u32())
+        match self {
+            Self::V1 => write!(f, "v1"),
+            Self::Unsupported(v) => write!(f, "unsupported_v{v}"),
+        }
     }
 }
 

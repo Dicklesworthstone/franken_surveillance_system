@@ -270,7 +270,7 @@ fn test_valid_transformer_block_graph() -> Result<(), Box<dyn Error>> {
     let digest = graph.content_digest()?;
     assert_eq!(
         digest.to_string(),
-        "sha256:5c56d2e3623573d35150a942653796de50004d342c9bd1fd66c73e8a6fa107cf"
+        "sha256:9aed78d4d163b0df7a267242127605084ddaecf9e45a4d3ff4d6ba4ad7bde4b0"
     );
     Ok(())
 }
@@ -301,7 +301,7 @@ fn test_valid_embedding_graph() -> Result<(), Box<dyn Error>> {
     let digest = graph.content_digest()?;
     assert_eq!(
         digest.to_string(),
-        "sha256:ea7f99246f42dc95e1b9931e3ebe2b0b223e115753fc383cb73aca43aa43e56e"
+        "sha256:fd77578cbc292dd69b4ef833b1af548af53fe9d8a33ff3f985a468af3d774fa8"
     );
     Ok(())
 }
@@ -1345,7 +1345,7 @@ fn test_graph_validator_rejects_unsupported_version() -> Result<(), Box<dyn Erro
 
     let graph = ModelIrGraph::new(
         "unsupported_version_graph",
-        ModelIrVersion::unsupported(2),
+        ModelIrVersion::unsupported(2)?,
         g,
         vec![in_port],
         vec![out_port],
@@ -1974,9 +1974,9 @@ fn test_finding_9_graph_validator_duplicate_outputs_rejected() -> Result<(), Box
 
 #[test]
 fn test_finding_10_model_ir_version_unsupported_mapping() -> Result<(), Box<dyn Error>> {
-    let v_unsupported = ModelIrVersion::unsupported(1);
-    assert_eq!(v_unsupported.as_u32(), 1);
-    assert_eq!(ModelIrVersion::unsupported(99).as_u32(), 99);
+    assert!(ModelIrVersion::unsupported(1).is_err());
+    let v_unsupported = ModelIrVersion::unsupported(99)?;
+    assert_eq!(v_unsupported.as_u32(), 99);
     assert!(!v_unsupported.is_supported());
 
     let g = gen1();
@@ -1992,20 +1992,55 @@ fn test_finding_10_model_ir_version_unsupported_mapping() -> Result<(), Box<dyn 
     )?;
 
     let graph = ModelIrGraph::new(
-        "unsupported_1_graph",
+        "unsupported_99_graph",
         v_unsupported,
         g,
-        vec![in_port],
-        vec![out_port],
-        vec![n],
+        vec![in_port.clone()],
+        vec![out_port.clone()],
+        vec![n.clone()],
     )?;
 
     match graph.validate() {
         Err(ModelIrError::VersionMismatch { expected, actual }) => {
             assert_eq!(expected, 1);
-            assert_eq!(actual, 1);
+            assert_eq!(actual, 99);
         }
-        other => return Err(format!("expected VersionMismatch (1 != 1), got {other:?}").into()),
+        other => return Err(format!("expected VersionMismatch, got {other:?}").into()),
+    }
+
+    // ModelIrVersion::Unsupported is non-constructible with valid tag 1
+    match ModelIrVersion::unsupported(1) {
+        Err(ModelIrError::InvalidAttribute {
+            node_id,
+            attr_name,
+            reason,
+        }) => {
+            assert_eq!(node_id, "version");
+            assert_eq!(attr_name, "version");
+            assert!(reason.contains("version 1 is supported"));
+        }
+        other => {
+            return Err(
+                format!("expected InvalidAttribute for unsupported(1), got {other:?}").into(),
+            );
+        }
+    }
+    match fss_model_ir::UnsupportedVersion::new(1) {
+        Err(ModelIrError::InvalidAttribute {
+            node_id,
+            attr_name,
+            reason,
+        }) => {
+            assert_eq!(node_id, "version");
+            assert_eq!(attr_name, "version");
+            assert!(reason.contains("version 1 is supported"));
+        }
+        other => {
+            return Err(format!(
+                "expected InvalidAttribute for UnsupportedVersion::new(1), got {other:?}"
+            )
+            .into());
+        }
     }
     Ok(())
 }
@@ -2815,8 +2850,11 @@ fn test_slice_steps_contract() -> Result<(), Box<dyn Error>> {
         g,
     ) {
         Err(ModelIrError::InvalidAttribute {
-            attr_name, reason, ..
+            node_id,
+            attr_name,
+            reason,
         }) => {
+            assert_eq!(node_id, "slice_zero");
             assert_eq!(attr_name, "steps");
             assert!(reason.contains("zero"));
         }
@@ -2842,8 +2880,11 @@ fn test_slice_steps_contract() -> Result<(), Box<dyn Error>> {
         g,
     ) {
         Err(ModelIrError::InvalidAttribute {
-            attr_name, reason, ..
+            node_id,
+            attr_name,
+            reason,
         }) => {
+            assert_eq!(node_id, "slice_str");
             assert_eq!(attr_name, "steps");
             assert!(reason.contains("expected IntList"));
         }
@@ -2867,7 +2908,13 @@ fn test_slice_steps_contract() -> Result<(), Box<dyn Error>> {
         &attrs_len,
         g,
     ) {
-        Err(ModelIrError::InvalidAttribute { reason, .. }) => {
+        Err(ModelIrError::InvalidAttribute {
+            node_id,
+            attr_name,
+            reason,
+        }) => {
+            assert_eq!(node_id, "slice_len");
+            assert_eq!(attr_name, "starts/ends/axes/steps");
             assert!(reason.contains("identical length"));
         }
         other => {
@@ -2934,8 +2981,11 @@ fn test_maxpool2d_ceil_mode_contract() -> Result<(), Box<dyn Error>> {
         g,
     ) {
         Err(ModelIrError::InvalidAttribute {
-            attr_name, reason, ..
+            node_id,
+            attr_name,
+            reason,
         }) => {
+            assert_eq!(node_id, "pool_bad");
             assert_eq!(attr_name, "ceil_mode");
             assert!(reason.contains("expected Bool"));
         }
@@ -2999,8 +3049,11 @@ fn test_gelu_approximate_contract() -> Result<(), Box<dyn Error>> {
         g,
     ) {
         Err(ModelIrError::InvalidAttribute {
-            attr_name, reason, ..
+            node_id,
+            attr_name,
+            reason,
         }) => {
+            assert_eq!(node_id, "gelu3");
             assert_eq!(attr_name, "approximate");
             assert!(reason.contains("expected String"));
         }
@@ -3026,8 +3079,11 @@ fn test_gelu_approximate_contract() -> Result<(), Box<dyn Error>> {
         g,
     ) {
         Err(ModelIrError::InvalidAttribute {
-            attr_name, reason, ..
+            node_id,
+            attr_name,
+            reason,
         }) => {
+            assert_eq!(node_id, "gelu4");
             assert_eq!(attr_name, "approximate");
             assert!(reason.contains("approximate must be 'none' or 'tanh'"));
         }
@@ -3077,8 +3133,11 @@ fn test_reshape_allowzero_and_dim_bounds_contract() -> Result<(), Box<dyn Error>
         g,
     ) {
         Err(ModelIrError::InvalidAttribute {
-            attr_name, reason, ..
+            node_id,
+            attr_name,
+            reason,
         }) => {
+            assert_eq!(node_id, "reshape2");
             assert_eq!(attr_name, "allowzero");
             assert!(reason.contains("expected Bool"));
         }
@@ -3549,5 +3608,788 @@ fn test_order_independent_element_count_zero_handling() -> Result<(), Box<dyn Er
         }
     }
 
+    Ok(())
+}
+
+#[test]
+fn test_maxpool2d_ceil_mode_overflow_exact_input() -> Result<(), Box<dyn Error>> {
+    let g = gen1();
+    // Exact review input:
+    // Input shape [1, 1, 8301034833169297409, 1]
+    // kernel [5072854620270127104, 1]
+    // padding [5072854620270127103, 0, 5072854620270127103, 0]
+    // strides [6456360425798342656, 1]
+    // ceil_mode = true
+    let in_port = TensorPort::new(
+        "x",
+        DType::F32,
+        Shape::new(vec![1, 1, 8301034833169297409, 1])?,
+        g,
+    )?;
+    let mut attrs = AttributeMap::new();
+    attrs.insert(
+        "kernel_size".to_string(),
+        AttrValue::IntList(vec![5072854620270127104, 1]),
+    );
+    attrs.insert(
+        "padding".to_string(),
+        AttrValue::IntList(vec![5072854620270127103, 0, 5072854620270127103, 0]),
+    );
+    attrs.insert(
+        "strides".to_string(),
+        AttrValue::IntList(vec![6456360425798342656, 1]),
+    );
+    attrs.insert("ceil_mode".to_string(), AttrValue::Bool(true));
+
+    let out = fss_model_ir::infer_operator_outputs(
+        "pool_overflow",
+        OpCode::MaxPool2d,
+        &[&in_port],
+        &["y".to_string()],
+        &attrs,
+        g,
+    )?;
+    assert_eq!(out.len(), 1);
+    // Correct output H is 3 (not 4, without overflow panic or wrap)
+    assert_eq!(out[0].shape().dims(), &[1, 1, 3, 1]);
+    Ok(())
+}
+
+#[test]
+fn test_maxpool2d_ceil_mode_width_overflow_exact_input() -> Result<(), Box<dyn Error>> {
+    let g = gen1();
+    // Exact review input adapted for spatial width:
+    // Input shape [1, 1, 1, 8301034833169297409]
+    // kernel [1, 5072854620270127104]
+    // padding [0, 5072854620270127103, 0, 5072854620270127103]
+    // strides [1, 6456360425798342656]
+    // ceil_mode = true
+    let in_port = TensorPort::new(
+        "x",
+        DType::F32,
+        Shape::new(vec![1, 1, 1, 8301034833169297409])?,
+        g,
+    )?;
+    let mut attrs = AttributeMap::new();
+    attrs.insert(
+        "kernel_size".to_string(),
+        AttrValue::IntList(vec![1, 5072854620270127104]),
+    );
+    attrs.insert(
+        "padding".to_string(),
+        AttrValue::IntList(vec![0, 5072854620270127103, 0, 5072854620270127103]),
+    );
+    attrs.insert(
+        "strides".to_string(),
+        AttrValue::IntList(vec![1, 6456360425798342656]),
+    );
+    attrs.insert("ceil_mode".to_string(), AttrValue::Bool(true));
+
+    let out = fss_model_ir::infer_operator_outputs(
+        "pool_w_overflow",
+        OpCode::MaxPool2d,
+        &[&in_port],
+        &["y".to_string()],
+        &attrs,
+        g,
+    )?;
+    assert_eq!(out.len(), 1);
+    // Correct output W is 3 (not 4, without overflow panic or wrap)
+    assert_eq!(out[0].shape().dims(), &[1, 1, 1, 3]);
+    Ok(())
+}
+
+#[test]
+fn test_order_independent_element_count_direct() -> Result<(), Box<dyn Error>> {
+    let s1 = Shape::new(vec![i64::MAX as usize, i64::MAX as usize, 0])?;
+    let s2 = Shape::new(vec![0, i64::MAX as usize, i64::MAX as usize])?;
+    let s3 = Shape::new(vec![i64::MAX as usize, 0, i64::MAX as usize])?;
+    assert_eq!(fss_model_ir::order_independent_num_elements(&s1)?, 0);
+    assert_eq!(fss_model_ir::order_independent_num_elements(&s2)?, 0);
+    assert_eq!(fss_model_ir::order_independent_num_elements(&s3)?, 0);
+
+    let s_nonzero = Shape::new(vec![2, 3, 4])?;
+    assert_eq!(
+        fss_model_ir::order_independent_num_elements(&s_nonzero)?,
+        24
+    );
+
+    let s_overflow = Shape::new(vec![usize::MAX, 2])?;
+    assert!(fss_model_ir::order_independent_num_elements(&s_overflow).is_err());
+    Ok(())
+}
+
+#[test]
+fn test_softmax_concat_defaults_and_negative_axis() -> Result<(), Box<dyn Error>> {
+    let g = gen1();
+    let in_port = TensorPort::new("x", DType::F32, Shape::new(vec![2, 4])?, g)?;
+
+    // Softmax default axis (omitted attribute)
+    let attrs_empty = AttributeMap::new();
+    let sm_default = fss_model_ir::infer_operator_outputs(
+        "sm_def",
+        OpCode::Softmax,
+        &[&in_port],
+        &["y".to_string()],
+        &attrs_empty,
+        g,
+    )?;
+    assert_eq!(sm_default[0].shape().dims(), &[2, 4]);
+
+    // Softmax axis = -1
+    let mut attrs_neg = AttributeMap::new();
+    attrs_neg.insert("axis".to_string(), AttrValue::Int(-1));
+    let sm_neg = fss_model_ir::infer_operator_outputs(
+        "sm_neg",
+        OpCode::Softmax,
+        &[&in_port],
+        &["y".to_string()],
+        &attrs_neg,
+        g,
+    )?;
+    assert_eq!(sm_neg[0].shape().dims(), &[2, 4]);
+
+    // Concat default axis (omitted attribute)
+    let in_c1 = TensorPort::new("c1", DType::F32, Shape::new(vec![2, 4])?, g)?;
+    let in_c2 = TensorPort::new("c2", DType::F32, Shape::new(vec![3, 4])?, g)?;
+    let cat_default = fss_model_ir::infer_operator_outputs(
+        "cat_def",
+        OpCode::Concat,
+        &[&in_c1, &in_c2],
+        &["y".to_string()],
+        &attrs_empty,
+        g,
+    )?;
+    assert_eq!(cat_default[0].shape().dims(), &[5, 4]);
+
+    // Concat axis = -2 (which is axis 0 for rank 2)
+    let mut attrs_cat_neg = AttributeMap::new();
+    attrs_cat_neg.insert("axis".to_string(), AttrValue::Int(-2));
+    let cat_neg = fss_model_ir::infer_operator_outputs(
+        "cat_neg",
+        OpCode::Concat,
+        &[&in_c1, &in_c2],
+        &["y".to_string()],
+        &attrs_cat_neg,
+        g,
+    )?;
+    assert_eq!(cat_neg[0].shape().dims(), &[5, 4]);
+    Ok(())
+}
+
+#[test]
+fn test_finding_12_pairwise_digests_residual_cases() -> Result<(), Box<dyn Error>> {
+    let g = gen1();
+
+    // 1. LayerNorm: normalized_shape absent vs IntList vs Shape
+    let x_ln = TensorPort::new("x_ln", DType::F32, Shape::new(vec![2, 4])?, g)?;
+    let y_ln = TensorPort::new("y_ln", DType::F32, Shape::new(vec![2, 4])?, g)?;
+
+    let mut ln_absent = AttributeMap::new();
+    ln_absent.insert("epsilon".to_string(), AttrValue::Float(1e-5));
+    ln_absent.insert("elementwise_affine".to_string(), AttrValue::Bool(true));
+    ln_absent.insert("scale".to_string(), AttrValue::Bool(true));
+    ln_absent.insert("bias".to_string(), AttrValue::Bool(true));
+    let n_ln_absent = GraphNode::new(
+        "ln",
+        OpCode::LayerNorm,
+        "ln",
+        vec!["x_ln".to_string()],
+        vec!["y_ln".to_string()],
+        ln_absent,
+    )?;
+    let g_ln_absent = ModelIrGraph::builder("ln_graph", g)
+        .add_input(x_ln.clone())
+        .add_output(y_ln.clone())
+        .add_node(n_ln_absent)
+        .build_and_validate()?;
+
+    let mut ln_intlist = AttributeMap::new();
+    ln_intlist.insert("epsilon".to_string(), AttrValue::Float(1e-5));
+    ln_intlist.insert("elementwise_affine".to_string(), AttrValue::Bool(true));
+    ln_intlist.insert("scale".to_string(), AttrValue::Bool(true));
+    ln_intlist.insert("bias".to_string(), AttrValue::Bool(true));
+    ln_intlist.insert("normalized_shape".to_string(), AttrValue::IntList(vec![4]));
+    let n_ln_intlist = GraphNode::new(
+        "ln",
+        OpCode::LayerNorm,
+        "ln",
+        vec!["x_ln".to_string()],
+        vec!["y_ln".to_string()],
+        ln_intlist,
+    )?;
+    let g_ln_intlist = ModelIrGraph::builder("ln_graph", g)
+        .add_input(x_ln.clone())
+        .add_output(y_ln.clone())
+        .add_node(n_ln_intlist)
+        .build_and_validate()?;
+
+    let mut ln_shape = AttributeMap::new();
+    ln_shape.insert("epsilon".to_string(), AttrValue::Float(1e-5));
+    ln_shape.insert("elementwise_affine".to_string(), AttrValue::Bool(true));
+    ln_shape.insert("scale".to_string(), AttrValue::Bool(true));
+    ln_shape.insert("bias".to_string(), AttrValue::Bool(true));
+    ln_shape.insert(
+        "normalized_shape".to_string(),
+        AttrValue::Shape(Shape::new(vec![4])?),
+    );
+    let n_ln_shape = GraphNode::new(
+        "ln",
+        OpCode::LayerNorm,
+        "ln",
+        vec!["x_ln".to_string()],
+        vec!["y_ln".to_string()],
+        ln_shape,
+    )?;
+    let g_ln_shape = ModelIrGraph::builder("ln_graph", g)
+        .add_input(x_ln.clone())
+        .add_output(y_ln.clone())
+        .add_node(n_ln_shape)
+        .build_and_validate()?;
+
+    assert_eq!(
+        g_ln_absent.content_digest()?,
+        g_ln_intlist.content_digest()?,
+        "LayerNorm normalized_shape absent vs IntList must have identical digest"
+    );
+    assert_eq!(
+        g_ln_intlist.content_digest()?,
+        g_ln_shape.content_digest()?,
+        "LayerNorm normalized_shape IntList vs Shape must have identical digest"
+    );
+
+    // 2. RMSNorm: normalized_shape absent vs IntList vs Shape
+    let x_rms = TensorPort::new("x_rms", DType::F32, Shape::new(vec![2, 4])?, g)?;
+    let y_rms = TensorPort::new("y_rms", DType::F32, Shape::new(vec![2, 4])?, g)?;
+
+    let mut rms_absent = AttributeMap::new();
+    rms_absent.insert("epsilon".to_string(), AttrValue::Float(1e-5));
+    rms_absent.insert("elementwise_affine".to_string(), AttrValue::Bool(true));
+    rms_absent.insert("scale".to_string(), AttrValue::Bool(true));
+    let n_rms_absent = GraphNode::new(
+        "rms",
+        OpCode::RMSNorm,
+        "rms",
+        vec!["x_rms".to_string()],
+        vec!["y_rms".to_string()],
+        rms_absent,
+    )?;
+    let g_rms_absent = ModelIrGraph::builder("rms_graph", g)
+        .add_input(x_rms.clone())
+        .add_output(y_rms.clone())
+        .add_node(n_rms_absent)
+        .build_and_validate()?;
+
+    let mut rms_intlist = AttributeMap::new();
+    rms_intlist.insert("epsilon".to_string(), AttrValue::Float(1e-5));
+    rms_intlist.insert("elementwise_affine".to_string(), AttrValue::Bool(true));
+    rms_intlist.insert("scale".to_string(), AttrValue::Bool(true));
+    rms_intlist.insert("normalized_shape".to_string(), AttrValue::IntList(vec![4]));
+    let n_rms_intlist = GraphNode::new(
+        "rms",
+        OpCode::RMSNorm,
+        "rms",
+        vec!["x_rms".to_string()],
+        vec!["y_rms".to_string()],
+        rms_intlist,
+    )?;
+    let g_rms_intlist = ModelIrGraph::builder("rms_graph", g)
+        .add_input(x_rms.clone())
+        .add_output(y_rms.clone())
+        .add_node(n_rms_intlist)
+        .build_and_validate()?;
+
+    let mut rms_shape = AttributeMap::new();
+    rms_shape.insert("epsilon".to_string(), AttrValue::Float(1e-5));
+    rms_shape.insert("elementwise_affine".to_string(), AttrValue::Bool(true));
+    rms_shape.insert("scale".to_string(), AttrValue::Bool(true));
+    rms_shape.insert(
+        "normalized_shape".to_string(),
+        AttrValue::Shape(Shape::new(vec![4])?),
+    );
+    let n_rms_shape = GraphNode::new(
+        "rms",
+        OpCode::RMSNorm,
+        "rms",
+        vec!["x_rms".to_string()],
+        vec!["y_rms".to_string()],
+        rms_shape,
+    )?;
+    let g_rms_shape = ModelIrGraph::builder("rms_graph", g)
+        .add_input(x_rms.clone())
+        .add_output(y_rms.clone())
+        .add_node(n_rms_shape)
+        .build_and_validate()?;
+
+    assert_eq!(
+        g_rms_absent.content_digest()?,
+        g_rms_intlist.content_digest()?,
+        "RMSNorm normalized_shape absent vs IntList must have identical digest"
+    );
+    assert_eq!(
+        g_rms_intlist.content_digest()?,
+        g_rms_shape.content_digest()?,
+        "RMSNorm normalized_shape IntList vs Shape must have identical digest"
+    );
+
+    // 3. Squeeze: axes absent vs explicit all-ones; and axis order [0, 2] vs [2, 0]
+    let x_sq = TensorPort::new("x_sq", DType::F32, Shape::new(vec![1, 5, 1, 10])?, g)?;
+    let y_sq = TensorPort::new("y_sq", DType::F32, Shape::new(vec![5, 10])?, g)?;
+
+    let n_sq_absent = GraphNode::new(
+        "sq",
+        OpCode::Squeeze,
+        "sq",
+        vec!["x_sq".to_string()],
+        vec!["y_sq".to_string()],
+        AttributeMap::new(),
+    )?;
+    let g_sq_absent = ModelIrGraph::builder("sq_graph", g)
+        .add_input(x_sq.clone())
+        .add_output(y_sq.clone())
+        .add_node(n_sq_absent)
+        .build_and_validate()?;
+
+    let mut sq_ordered = AttributeMap::new();
+    sq_ordered.insert("axes".to_string(), AttrValue::IntList(vec![0, 2]));
+    let n_sq_ordered = GraphNode::new(
+        "sq",
+        OpCode::Squeeze,
+        "sq",
+        vec!["x_sq".to_string()],
+        vec!["y_sq".to_string()],
+        sq_ordered,
+    )?;
+    let g_sq_ordered = ModelIrGraph::builder("sq_graph", g)
+        .add_input(x_sq.clone())
+        .add_output(y_sq.clone())
+        .add_node(n_sq_ordered)
+        .build_and_validate()?;
+
+    let mut sq_reversed = AttributeMap::new();
+    sq_reversed.insert("axes".to_string(), AttrValue::IntList(vec![2, 0]));
+    let n_sq_reversed = GraphNode::new(
+        "sq",
+        OpCode::Squeeze,
+        "sq",
+        vec!["x_sq".to_string()],
+        vec!["y_sq".to_string()],
+        sq_reversed,
+    )?;
+    let g_sq_reversed = ModelIrGraph::builder("sq_graph", g)
+        .add_input(x_sq.clone())
+        .add_output(y_sq.clone())
+        .add_node(n_sq_reversed)
+        .build_and_validate()?;
+
+    assert_eq!(
+        g_sq_absent.content_digest()?,
+        g_sq_ordered.content_digest()?,
+        "Squeeze axes absent vs explicit all-ones must have identical digest"
+    );
+    assert_eq!(
+        g_sq_ordered.content_digest()?,
+        g_sq_reversed.content_digest()?,
+        "Squeeze axis order [0, 2] vs [2, 0] must have identical digest"
+    );
+
+    // 4. Unsqueeze: axis order [0, 3] vs [3, 0]
+    let x_unsq = TensorPort::new("x_unsq", DType::F32, Shape::new(vec![5, 10])?, g)?;
+    let y_unsq = TensorPort::new("y_unsq", DType::F32, Shape::new(vec![1, 5, 10, 1])?, g)?;
+
+    let mut unsq_ordered = AttributeMap::new();
+    unsq_ordered.insert("axes".to_string(), AttrValue::IntList(vec![0, 3]));
+    let n_unsq_ordered = GraphNode::new(
+        "unsq",
+        OpCode::Unsqueeze,
+        "unsq",
+        vec!["x_unsq".to_string()],
+        vec!["y_unsq".to_string()],
+        unsq_ordered,
+    )?;
+    let g_unsq_ordered = ModelIrGraph::builder("unsq_graph", g)
+        .add_input(x_unsq.clone())
+        .add_output(y_unsq.clone())
+        .add_node(n_unsq_ordered)
+        .build_and_validate()?;
+
+    let mut unsq_reversed = AttributeMap::new();
+    unsq_reversed.insert("axes".to_string(), AttrValue::IntList(vec![3, 0]));
+    let n_unsq_reversed = GraphNode::new(
+        "unsq",
+        OpCode::Unsqueeze,
+        "unsq",
+        vec!["x_unsq".to_string()],
+        vec!["y_unsq".to_string()],
+        unsq_reversed,
+    )?;
+    let g_unsq_reversed = ModelIrGraph::builder("unsq_graph", g)
+        .add_input(x_unsq.clone())
+        .add_output(y_unsq.clone())
+        .add_node(n_unsq_reversed)
+        .build_and_validate()?;
+
+    assert_eq!(
+        g_unsq_ordered.content_digest()?,
+        g_unsq_reversed.content_digest()?,
+        "Unsqueeze axis order [0, 3] vs [3, 0] must have identical digest"
+    );
+
+    // 5. Embedding: redundant num_embeddings/embedding_dim/dtype omitted vs explicit
+    let idx_emb = TensorPort::new("idx", DType::I64, Shape::new(vec![4])?, g)?;
+    let w_emb = TensorPort::new("w_emb", DType::F32, Shape::new(vec![100, 32])?, g)?;
+    let y_emb = TensorPort::new("y_emb", DType::F32, Shape::new(vec![4, 32])?, g)?;
+
+    let n_emb_minimal = GraphNode::new(
+        "emb",
+        OpCode::Embedding,
+        "emb",
+        vec!["idx".to_string(), "w_emb".to_string()],
+        vec!["y_emb".to_string()],
+        AttributeMap::new(),
+    )?;
+    let g_emb_minimal = ModelIrGraph::builder("emb_graph", g)
+        .add_input(idx_emb.clone())
+        .add_input(w_emb.clone())
+        .add_output(y_emb.clone())
+        .add_node(n_emb_minimal)
+        .build_and_validate()?;
+
+    let mut emb_explicit = AttributeMap::new();
+    emb_explicit.insert("num_embeddings".to_string(), AttrValue::Int(100));
+    emb_explicit.insert("embedding_dim".to_string(), AttrValue::Int(32));
+    emb_explicit.insert("dtype".to_string(), AttrValue::DType(DType::F32));
+    let n_emb_explicit = GraphNode::new(
+        "emb",
+        OpCode::Embedding,
+        "emb",
+        vec!["idx".to_string(), "w_emb".to_string()],
+        vec!["y_emb".to_string()],
+        emb_explicit,
+    )?;
+    let g_emb_explicit = ModelIrGraph::builder("emb_graph", g)
+        .add_input(idx_emb.clone())
+        .add_input(w_emb.clone())
+        .add_output(y_emb.clone())
+        .add_node(n_emb_explicit)
+        .build_and_validate()?;
+
+    assert_eq!(
+        g_emb_minimal.content_digest()?,
+        g_emb_explicit.content_digest()?,
+        "Embedding redundant attributes omitted vs explicit must have identical digest"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_reshape_allowzero_onnx_and_freetext_defaults() -> Result<(), Box<dyn Error>> {
+    let g = gen1();
+    let in_port = TensorPort::new("x", DType::F32, Shape::new(vec![2, 3])?, g)?;
+
+    // allowzero = false (or omitted): 0 copies the input dim at that position
+    // shape = [0, 3] copies dim 0 (2) -> [2, 3]
+    let mut attrs_copy = AttributeMap::new();
+    attrs_copy.insert("shape".to_string(), AttrValue::IntList(vec![0, 3]));
+    attrs_copy.insert("allowzero".to_string(), AttrValue::Bool(false));
+    let out_copy = fss_model_ir::infer_operator_outputs(
+        "res_copy",
+        OpCode::Reshape,
+        &[&in_port],
+        &["y".to_string()],
+        &attrs_copy,
+        g,
+    )?;
+    assert_eq!(out_copy[0].shape().dims(), &[2, 3]);
+
+    // allowzero = true: 0 is literal 0, so output shape would be [0, 3], total elements 0 != 6 -> ShapeMismatch
+    let mut attrs_az = AttributeMap::new();
+    attrs_az.insert("shape".to_string(), AttrValue::IntList(vec![0, 3]));
+    attrs_az.insert("allowzero".to_string(), AttrValue::Bool(true));
+    match fss_model_ir::infer_operator_outputs(
+        "res_az",
+        OpCode::Reshape,
+        &[&in_port],
+        &["y".to_string()],
+        &attrs_az,
+        g,
+    ) {
+        Err(ModelIrError::ShapeMismatch { reason, .. }) => {
+            assert!(reason.contains("element count mismatch"));
+        }
+        other => {
+            return Err(format!("expected ShapeMismatch for allowzero=true, got {other:?}").into());
+        }
+    }
+
+    // Shape-for-IntList exception: shape attribute passed as AttrValue::Shape
+    let mut attrs_sh = AttributeMap::new();
+    attrs_sh.insert(
+        "shape".to_string(),
+        AttrValue::Shape(Shape::new(vec![3, 2])?),
+    );
+    let out_sh = fss_model_ir::infer_operator_outputs(
+        "res_sh",
+        OpCode::Reshape,
+        &[&in_port],
+        &["y".to_string()],
+        &attrs_sh,
+        g,
+    )?;
+    assert_eq!(out_sh[0].shape().dims(), &[3, 2]);
+
+    // Free-text and pinned defaults in operator specs
+    use fss_model_ir::op::OPERATOR_SPECS;
+    let find_spec = |id: &str| -> Result<&'static fss_model_ir::op::OperatorSpec, Box<dyn Error>> {
+        OPERATOR_SPECS
+            .iter()
+            .find(|s| s.stable_id == id)
+            .ok_or_else(|| format!("operator spec not found: {id}").into())
+    };
+
+    // Shape-for-IntList exception verification:
+    // 1) Reshape accepts Shape for shape
+    let reshape_spec = find_spec("OP-RESHAPE-001")?;
+    let shape_attr = reshape_spec
+        .allowed_attributes
+        .iter()
+        .find(|a| a.name == "shape")
+        .ok_or("shape attribute not found")?;
+    assert!(
+        shape_attr
+            .validate_type("node", &AttrValue::Shape(Shape::new(vec![3, 2])?))
+            .is_ok()
+    );
+
+    // 2) LayerNorm accepts Shape for normalized_shape
+    let ln_spec = find_spec("OP-LAYERNORM-001")?;
+    let ln_ns = ln_spec
+        .allowed_attributes
+        .iter()
+        .find(|a| a.name == "normalized_shape")
+        .ok_or("normalized_shape attribute not found")?;
+    assert!(
+        ln_ns
+            .validate_type("node", &AttrValue::Shape(Shape::new(vec![3])?))
+            .is_ok()
+    );
+
+    // 3) RMSNorm accepts Shape for normalized_shape
+    let rms_spec = find_spec("OP-RMSNORM-001")?;
+    let rms_ns = rms_spec
+        .allowed_attributes
+        .iter()
+        .find(|a| a.name == "normalized_shape")
+        .ok_or("normalized_shape attribute not found")?;
+    assert!(
+        rms_ns
+            .validate_type("node", &AttrValue::Shape(Shape::new(vec![3])?))
+            .is_ok()
+    );
+
+    // 4) Non-exception IntList attributes REJECT AttrValue::Shape via validate_type
+    let maxpool_spec = find_spec("OP-MAXPOOL2D-001")?;
+    let kernel_attr = maxpool_spec
+        .allowed_attributes
+        .iter()
+        .find(|a| a.name == "kernel_size")
+        .ok_or("kernel_size attribute not found")?;
+    match kernel_attr.validate_type("bad_mp", &AttrValue::Shape(Shape::new(vec![3, 3])?)) {
+        Err(ModelIrError::InvalidAttribute {
+            node_id,
+            attr_name,
+            reason,
+        }) => {
+            assert_eq!(node_id, "bad_mp");
+            assert_eq!(attr_name, "kernel_size");
+            assert!(reason.contains("expected IntList, got Shape"));
+        }
+        other => {
+            return Err(format!(
+                "expected InvalidAttribute for MaxPool2d kernel_size as Shape, got {other:?}"
+            )
+            .into());
+        }
+    }
+
+    let squeeze_spec = find_spec("OP-SQUEEZE-001")?;
+    let sq_axes_attr = squeeze_spec
+        .allowed_attributes
+        .iter()
+        .find(|a| a.name == "axes")
+        .ok_or("axes attribute not found")?;
+    match sq_axes_attr.validate_type("bad_sq", &AttrValue::Shape(Shape::new(vec![0])?)) {
+        Err(ModelIrError::InvalidAttribute {
+            node_id,
+            attr_name,
+            reason,
+        }) => {
+            assert_eq!(node_id, "bad_sq");
+            assert_eq!(attr_name, "axes");
+            assert!(reason.contains("expected IntList, got Shape"));
+        }
+        other => {
+            return Err(format!(
+                "expected InvalidAttribute for Squeeze axes as Shape, got {other:?}"
+            )
+            .into());
+        }
+    }
+
+    // 5) Verify rejection via infer_operator_outputs as well
+    let in_mp = TensorPort::new("x_mp", DType::F32, Shape::new(vec![1, 1, 8, 8])?, g)?;
+    let mut bad_mp_attrs = AttributeMap::new();
+    bad_mp_attrs.insert(
+        "kernel_size".to_string(),
+        AttrValue::Shape(Shape::new(vec![3, 3])?),
+    );
+    match fss_model_ir::infer_operator_outputs(
+        "bad_mp_node",
+        OpCode::MaxPool2d,
+        &[&in_mp],
+        &["y_mp".to_string()],
+        &bad_mp_attrs,
+        g,
+    ) {
+        Err(ModelIrError::InvalidAttribute {
+            node_id,
+            attr_name,
+            reason,
+        }) => {
+            assert_eq!(node_id, "bad_mp_node");
+            assert_eq!(attr_name, "kernel_size");
+            assert!(reason.contains("expected IntList, got Shape"));
+        }
+        other => return Err(format!(
+            "expected InvalidAttribute for MaxPool2d infer with Shape kernel_size, got {other:?}"
+        )
+        .into()),
+    }
+
+    let gelu_spec = find_spec("OP-GELU-001")?;
+    let gelu_approx = gelu_spec
+        .allowed_attributes
+        .iter()
+        .find(|a| a.name == "approximate")
+        .ok_or("approximate attribute not found")?;
+    assert_eq!(gelu_approx.default_value, Some("none"));
+
+    let reshape_spec_def = find_spec("OP-RESHAPE-001")?;
+    let reshape_az = reshape_spec_def
+        .allowed_attributes
+        .iter()
+        .find(|a| a.name == "allowzero")
+        .ok_or("allowzero attribute not found")?;
+    assert_eq!(reshape_az.default_value, Some("false"));
+
+    let transpose_spec = find_spec("OP-TRANSPOSE-001")?;
+    let perm_attr = transpose_spec
+        .allowed_attributes
+        .iter()
+        .find(|a| a.name == "permutation")
+        .ok_or("permutation attribute not found")?;
+    assert_eq!(perm_attr.default_value, Some("reverse"));
+
+    let squeeze_spec = find_spec("OP-SQUEEZE-001")?;
+    let squeeze_axes = squeeze_spec
+        .allowed_attributes
+        .iter()
+        .find(|a| a.name == "axes")
+        .ok_or("axes attribute not found")?;
+    assert_eq!(squeeze_axes.default_value, Some("all_ones"));
+
+    let slice_spec = find_spec("OP-SLICE-001")?;
+    let slice_axes = slice_spec
+        .allowed_attributes
+        .iter()
+        .find(|a| a.name == "axes")
+        .ok_or("axes attribute not found")?;
+    assert_eq!(slice_axes.default_value, Some("0..N"));
+    let slice_steps = slice_spec
+        .allowed_attributes
+        .iter()
+        .find(|a| a.name == "steps")
+        .ok_or("steps attribute not found")?;
+    assert_eq!(slice_steps.default_value, Some("1..1"));
+
+    let softmax_spec = find_spec("OP-SOFTMAX-001")?;
+    let softmax_axis = softmax_spec
+        .allowed_attributes
+        .iter()
+        .find(|a| a.name == "axis")
+        .ok_or("axis attribute not found")?;
+    assert_eq!(softmax_axis.default_value, Some("-1"));
+
+    let concat_spec = find_spec("OP-CONCAT-001")?;
+    let concat_axis = concat_spec
+        .allowed_attributes
+        .iter()
+        .find(|a| a.name == "axis")
+        .ok_or("axis attribute not found")?;
+    assert_eq!(concat_axis.default_value, Some("0"));
+
+    Ok(())
+}
+
+#[test]
+fn test_mutant_m5b_table_tampering_refused() -> Result<(), Box<dyn Error>> {
+    use fss_core::ContentDigest;
+
+    // Normal verification of the operator table succeeds
+    fss_model_ir::verify_operator_table_frozen()?;
+
+    let computed = fss_model_ir::compute_operator_table_digest()?;
+    let expected = ContentDigest::parse(fss_model_ir::op::OPERATOR_TABLE_FREEZE_DIGEST)?;
+
+    // Pure verification function succeeds with exact match
+    fss_model_ir::verify_operator_table_digest(&expected, &computed)?;
+
+    // Wrong/tampered digest causes verify_operator_table_digest to reject with InvalidAttribute
+    let tampered_digest = ContentDigest::parse(
+        "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    )?;
+    match fss_model_ir::verify_operator_table_digest(&tampered_digest, &computed) {
+        Err(ModelIrError::InvalidAttribute {
+            node_id,
+            attr_name,
+            reason,
+        }) => {
+            assert_eq!(node_id, "operator_table");
+            assert_eq!(attr_name, "freeze_digest");
+            assert!(reason.contains("operator table freeze digest diverged"));
+            assert!(reason.contains(
+                "expected sha256:0000000000000000000000000000000000000000000000000000000000000000"
+            ));
+        }
+        other => {
+            return Err(format!(
+                "expected InvalidAttribute when table digest tampered, got {other:?}"
+            )
+            .into());
+        }
+    }
+
+    // Graph validation succeeds cleanly without mutable singleton side-effects
+    let g = gen1();
+    let in_port = TensorPort::new("x", DType::F32, Shape::new(vec![2, 2])?, g)?;
+    let out_port = TensorPort::new("y", DType::F32, Shape::new(vec![2, 2])?, g)?;
+    let n = GraphNode::new(
+        "r",
+        OpCode::Relu,
+        "relu",
+        vec!["x".to_string()],
+        vec!["y".to_string()],
+        AttributeMap::new(),
+    )?;
+    let graph = ModelIrGraph::new(
+        "test_tamper_graph",
+        ModelIrVersion::V1,
+        g,
+        vec![in_port],
+        vec![out_port],
+        vec![n],
+    )?;
+    graph.validate()?;
     Ok(())
 }

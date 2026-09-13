@@ -25,14 +25,14 @@ pub use canonical::{
     encode_canonical_model_ir,
 };
 pub use error::ModelIrError;
-pub use graph::{ModelIrGraph, ModelIrGraphBuilder, ModelIrVersion};
+pub use graph::{ModelIrGraph, ModelIrGraphBuilder, ModelIrVersion, UnsupportedVersion};
 pub use node::GraphNode;
 pub use op::{
     AttributeSpec, AttributeType, OPERATOR_BASELINE_IDS, OPERATOR_SPECS,
     OPERATOR_TABLE_DIGEST_DOMAIN, OPERATOR_TABLE_FREEZE_DIGEST, OPERATOR_TOMBSTONES, OpCode,
     OperatorSpec, compute_operator_table_digest, verify_operator_baseline,
-    verify_operator_table_frozen,
+    verify_operator_table_digest, verify_operator_table_frozen,
 };
 pub use port::TensorPort;
 pub use shape_inference::{broadcast_shapes, infer_operator_outputs};
-pub use validator::{GraphValidator, ProducerId};
+pub use validator::{GraphValidator, ProducerId, order_independent_num_elements};
