@@ -16,8 +16,8 @@ use core::fmt;
 use std::collections::BTreeSet;
 
 use super::{
-    Completeness, HydrationError, HydrationLevel, SemanticHandle, decode_text_set, encode_text_set,
-    valid_text,
+    Completeness, HydrationArtifact, HydrationError, HydrationLevel, SemanticHandle,
+    decode_text_set, encode_text_set, valid_text,
 };
 use crate::agent::KnowledgeCell;
 use crate::belief::{BeliefInterval, Contradiction};
@@ -37,10 +37,23 @@ pub const H1_CONTENT: &str =
     "typed facts, knowledge states, provenance, contradictions, quality, and omissions";
 
 /// Normative owning crate/module for hydration ladder level H1.
-pub const H1_OWNER: &str = "fss-situation/fss-context-pack";
+pub const H1_OWNER: &str = "fss-agent-core";
 
 /// Canonical schema discriminator tag for H1 semantic synopsis binary envelopes.
 pub const H1_SCHEMA: &str = "fss.h1_semantic_synopsis.v1";
+
+/// Maximum number of facts permitted in an H1 semantic synopsis.
+pub const MAX_H1_FACTS: usize = 1_024;
+/// Maximum number of knowledge states permitted in an H1 semantic synopsis.
+pub const MAX_H1_KNOWLEDGE_STATES: usize = 16;
+/// Maximum number of provenance classes permitted in an H1 semantic synopsis.
+pub const MAX_H1_PROVENANCE_CLASSES: usize = 16;
+/// Maximum number of contradictions permitted in an H1 semantic synopsis.
+pub const MAX_H1_CONTRADICTIONS: usize = 1_024;
+/// Maximum number of omission reasons permitted in an H1 semantic synopsis.
+pub const MAX_H1_OMISSIONS: usize = 64;
+/// Maximum required capabilities permitted in an H1 semantic synopsis.
+pub const MAX_H1_CAPABILITIES: usize = 64;
 
 /// Strongly typed classification of semantic synopsis content.
 ///
@@ -107,18 +120,10 @@ impl SynopsisClassification {
             "epistemic_belief_synopsis" => Ok(Self::EpistemicBeliefSynopsis),
             "coverage_quality_synopsis" => Ok(Self::CoverageQualitySynopsis),
             "corroboration_synopsis" => Ok(Self::CorroborationSynopsis),
-            "prohibited_raw_payload" | "raw_payload" | "raw_bytes" | "raw_packets" => {
-                Ok(Self::ProhibitedRawPayload)
-            }
-            "prohibited_decoded_media" | "decoded_frame" | "decoded_media" => {
-                Ok(Self::ProhibitedDecodedMedia)
-            }
-            "prohibited_decision_artifact" | "decision_artifact" | "crop" | "keyframe" => {
-                Ok(Self::ProhibitedDecisionArtifact)
-            }
-            "prohibited_laboratory_replay" | "laboratory_replay" | "replay_bundle" => {
-                Ok(Self::ProhibitedLaboratoryReplay)
-            }
+            "prohibited_raw_payload" => Ok(Self::ProhibitedRawPayload),
+            "prohibited_decoded_media" => Ok(Self::ProhibitedDecodedMedia),
+            "prohibited_decision_artifact" => Ok(Self::ProhibitedDecisionArtifact),
+            "prohibited_laboratory_replay" => Ok(Self::ProhibitedLaboratoryReplay),
             _ => Err(ContractError::InvalidIdentifier),
         }
     }
@@ -154,14 +159,10 @@ impl core::str::FromStr for SynopsisClassification {
 /// Strongly typed quality and completeness evaluation for an H1 semantic synopsis.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SynopsisQuality {
-    /// Conservative completeness classification across the synopsis domain.
-    pub completeness: Completeness,
-    /// Assessed belief/confidence interval, if derived.
-    pub belief_interval: Option<BeliefInterval>,
-    /// Temporal precision in nanoseconds.
-    pub temporal_precision_ns: u64,
-    /// Digest of calibration parameters or generation witness, if calibrated.
-    pub calibration_digest: Option<ContentDigest>,
+    completeness: Completeness,
+    belief_interval: Option<BeliefInterval>,
+    temporal_precision_ns: u64,
+    calibration_digest: Option<ContentDigest>,
 }
 
 impl SynopsisQuality {
@@ -196,6 +197,30 @@ impl SynopsisQuality {
     #[must_use]
     pub const fn is_complete(&self) -> bool {
         matches!(self.completeness, Completeness::Complete)
+    }
+
+    /// Conservative completeness classification across the synopsis domain.
+    #[must_use]
+    pub const fn completeness(&self) -> Completeness {
+        self.completeness
+    }
+
+    /// Assessed belief/confidence interval, if derived.
+    #[must_use]
+    pub fn belief_interval(&self) -> Option<&BeliefInterval> {
+        self.belief_interval.as_ref()
+    }
+
+    /// Temporal precision in nanoseconds.
+    #[must_use]
+    pub const fn temporal_precision_ns(&self) -> u64 {
+        self.temporal_precision_ns
+    }
+
+    /// Digest of calibration parameters or generation witness, if calibrated.
+    #[must_use]
+    pub const fn calibration_digest(&self) -> Option<ContentDigest> {
+        self.calibration_digest
     }
 }
 
@@ -316,42 +341,24 @@ pub struct H1SynopsisParams {
 /// typed facts, knowledge states, provenance, contradictions, quality, and omissions.
 #[derive(Clone, Debug, PartialEq)]
 pub struct H1SemanticSynopsis {
-    /// Content-derived handle identifier.
-    pub handle_id: String,
-    /// Stable canonical subject identity.
-    pub subject_id: String,
-    /// Exact subject content digest.
-    pub subject_digest: ContentDigest,
-    /// Registered semantic type.
-    pub semantic_type: String,
-    /// Strongly typed synopsis classification.
-    pub classification: SynopsisClassification,
-    /// Authority anchor of this synopsis revision.
-    pub anchor: LedgerAnchor,
-    /// Exact semantic contract universe.
-    pub contract_basis: ContractBasis,
-    /// Conservative estimated resource cost to hydrate at H1.
-    pub estimated_cost: BudgetVector,
-    /// Required capability identifiers at H1.
-    pub required_capabilities: BTreeSet<String>,
-    /// Privacy class independently authorized at hydration time.
-    pub privacy_class: String,
-    /// Publication timestamp.
-    pub published_at: TimestampNs,
-    /// Time after which this synopsis must return an expired state.
-    pub retention_until: TimestampNs,
-    /// Typed facts observed or established for this subject.
-    pub facts: Vec<WorldFact>,
-    /// Set of knowledge states represented across this synopsis.
-    pub knowledge_states: BTreeSet<KnowledgeState>,
-    /// Set of provenance classes represented in this synopsis.
-    pub provenance_classes: BTreeSet<ProvenanceClass>,
-    /// Known contradictions active within this synopsis scope.
-    pub contradictions: Vec<Contradiction>,
-    /// Quality and completeness evaluation of this synopsis.
-    pub quality: SynopsisQuality,
-    /// Explicit typed omission reasons if any facts/evidence were withheld.
-    pub omissions: BTreeSet<OmissionReason>,
+    handle_id: String,
+    subject_id: String,
+    subject_digest: ContentDigest,
+    semantic_type: String,
+    classification: SynopsisClassification,
+    anchor: LedgerAnchor,
+    contract_basis: ContractBasis,
+    estimated_cost: BudgetVector,
+    required_capabilities: BTreeSet<String>,
+    privacy_class: String,
+    published_at: TimestampNs,
+    retention_until: TimestampNs,
+    facts: Vec<WorldFact>,
+    knowledge_states: BTreeSet<KnowledgeState>,
+    provenance_classes: BTreeSet<ProvenanceClass>,
+    contradictions: Vec<Contradiction>,
+    quality: SynopsisQuality,
+    omissions: BTreeSet<OmissionReason>,
 }
 
 impl H1SemanticSynopsis {
@@ -390,15 +397,19 @@ impl H1SemanticSynopsis {
             return Err(HydrationError::LevelUnavailable);
         }
 
-        let estimated_cost = match handle.estimated_costs.get(&HydrationLevel::H1) {
-            Some(cost) => *cost,
-            None => BudgetVector::ZERO,
-        };
+        let estimated_cost = handle
+            .estimated_costs
+            .get(&HydrationLevel::H1)
+            .copied()
+            .ok_or(HydrationError::LevelUnavailable)?;
 
-        let required_capabilities = match handle.required_capabilities.get(&HydrationLevel::H1) {
-            Some(caps) => caps.clone(),
-            None => BTreeSet::new(),
-        };
+        let required_capabilities = handle
+            .required_capabilities
+            .get(&HydrationLevel::H1)
+            .cloned()
+            .ok_or(HydrationError::LevelUnavailable)?;
+
+        handle.verify()?;
 
         let classification = match content.classification {
             Some(c) => c,
@@ -442,6 +453,9 @@ impl H1SemanticSynopsis {
             return Err(ContractError::InvalidIdentifier.into());
         }
 
+        if self.required_capabilities.len() > MAX_H1_CAPABILITIES {
+            return Err(ContractError::InvalidIdentifier.into());
+        }
         for cap in &self.required_capabilities {
             if !valid_text(cap) {
                 return Err(ContractError::InvalidIdentifier.into());
@@ -466,8 +480,17 @@ impl H1SemanticSynopsis {
         // Validate synopsis quality
         self.quality.validate()?;
 
-        // Knowledge states and provenance classes must not be empty
-        if self.knowledge_states.is_empty() || self.provenance_classes.is_empty() {
+        // Knowledge states, provenance classes, and omissions limits
+        if self.knowledge_states.is_empty()
+            || self.knowledge_states.len() > MAX_H1_KNOWLEDGE_STATES
+            || self.provenance_classes.is_empty()
+            || self.provenance_classes.len() > MAX_H1_PROVENANCE_CLASSES
+            || self.omissions.len() > MAX_H1_OMISSIONS
+        {
+            return Err(ContractError::InvalidIdentifier.into());
+        }
+
+        if self.facts.len() > MAX_H1_FACTS || self.contradictions.len() > MAX_H1_CONTRADICTIONS {
             return Err(ContractError::InvalidIdentifier.into());
         }
 
@@ -488,10 +511,47 @@ impl H1SemanticSynopsis {
         // Contradictions validation: each contradiction verified, canonically ordered, no duplicates
         for contra in &self.contradictions {
             contra.verify().map_err(ContractError::from)?;
+            if !self.knowledge_states.contains(&contra.knowledge_state()) {
+                return Err(ContractError::KnowledgeStateBasisMismatch.into());
+            }
         }
         for pair in self.contradictions.windows(2) {
             if pair[0].contradiction_id() >= pair[1].contradiction_id() {
                 return Err(ContractError::NonCanonicalOrdering.into());
+            }
+        }
+
+        // Bind declared knowledge states to facts and contradictions:
+        // Every declared state must be grounded in at least one fact or contradiction,
+        // and Known requires an uncontradicted fact that qualifies for irreversible effect premises.
+        for ks in &self.knowledge_states {
+            let grounded = match ks {
+                KnowledgeState::Known => self.facts.iter().any(|f| {
+                    f.provenance.may_authorize_irreversible_effect()
+                        && f.provenance != ProvenanceClass::Derived
+                        && !self.contradictions.iter().any(|c| {
+                            c.claim_id() == Some(f.fact_id.as_str())
+                                || c.conflicting_evidence().contains(&f.evidence_digest)
+                        })
+                }),
+                KnowledgeState::Estimated => self.facts.iter().any(|f| {
+                    f.provenance == ProvenanceClass::Derived
+                        || f.provenance == ProvenanceClass::Predicted
+                        || f.provenance == ProvenanceClass::Remembered
+                }),
+                KnowledgeState::Conflicted => {
+                    !self.contradictions.is_empty()
+                        || self.facts.iter().any(|f| {
+                            self.contradictions.iter().any(|c| {
+                                c.claim_id() == Some(f.fact_id.as_str())
+                                    || c.conflicting_evidence().contains(&f.evidence_digest)
+                            })
+                        })
+                }
+                _ => true,
+            };
+            if !grounded {
+                return Err(ContractError::KnowledgeStateBasisMismatch.into());
             }
         }
 
@@ -629,40 +689,166 @@ impl H1SemanticSynopsis {
         self.estimated_cost.fits_within(*budget)
     }
 
+    /// Returns the content-derived handle identifier.
+    #[must_use]
+    pub fn handle_id(&self) -> &str {
+        &self.handle_id
+    }
+
+    /// Returns the stable canonical subject identity.
+    #[must_use]
+    pub fn subject_id(&self) -> &str {
+        &self.subject_id
+    }
+
+    /// Returns the exact subject content digest.
+    #[must_use]
+    pub const fn subject_digest(&self) -> ContentDigest {
+        self.subject_digest
+    }
+
+    /// Returns the registered semantic type.
+    #[must_use]
+    pub fn semantic_type(&self) -> &str {
+        &self.semantic_type
+    }
+
+    /// Returns the authority anchor of this synopsis revision.
+    #[must_use]
+    pub const fn anchor(&self) -> &LedgerAnchor {
+        &self.anchor
+    }
+
+    /// Returns the exact semantic contract universe.
+    #[must_use]
+    pub const fn contract_basis(&self) -> &ContractBasis {
+        &self.contract_basis
+    }
+
+    /// Returns the conservative estimated resource cost to hydrate at H1.
+    #[must_use]
+    pub const fn estimated_cost(&self) -> &BudgetVector {
+        &self.estimated_cost
+    }
+
+    /// Returns the required capability identifiers at H1.
+    #[must_use]
+    pub const fn required_capabilities(&self) -> &BTreeSet<String> {
+        &self.required_capabilities
+    }
+
+    /// Returns the privacy class independently authorized at hydration time.
+    #[must_use]
+    pub fn privacy_class(&self) -> &str {
+        &self.privacy_class
+    }
+
+    /// Returns the publication timestamp.
+    #[must_use]
+    pub const fn published_at(&self) -> TimestampNs {
+        self.published_at
+    }
+
+    /// Returns the retention horizon timestamp.
+    #[must_use]
+    pub const fn retention_until(&self) -> TimestampNs {
+        self.retention_until
+    }
+
+    /// Converts this synopsis to a [`HydrationArtifact`] envelope, re-validating invariants.
+    pub fn to_hydration_artifact(&self) -> Result<HydrationArtifact, HydrationError> {
+        self.validate()?;
+        let canonical_bytes = self.to_canonical_bytes().map_err(HydrationError::Contract)?;
+        let mut proof_roots = BTreeSet::new();
+        proof_roots.insert(self.subject_digest);
+        for fact in &self.facts {
+            proof_roots.insert(fact.evidence_digest);
+        }
+        HydrationArtifact::publish(
+            HydrationLevel::H1,
+            "application/fss.h1_semantic_synopsis.v1",
+            canonical_bytes,
+            proof_roots,
+            self.quality.completeness(),
+            None,
+        )
+    }
+
     /// Converts this synopsis facts into canonical [`KnowledgeCell`] representations
-    /// carrying exact source evidence digests.
+    /// carrying exact source evidence digests and their true epistemic knowledge state.
     #[must_use]
     pub fn to_knowledge_cells(&self) -> Vec<KnowledgeCell> {
         self.facts
             .iter()
-            .map(|fact| KnowledgeCell {
-                claim_id: fact.fact_id.clone(),
-                statement: fact.statement.clone(),
-                knowledge_state: KnowledgeState::Known,
-                provenance: fact.provenance,
-                hypothesis: None,
-                evidence: vec![fact.evidence_digest],
-                contradictions: Vec::new(),
-                valid_until: None,
-                state_basis: None,
+            .map(|fact| {
+                let mut cell_contradictions = Vec::new();
+                for contra in &self.contradictions {
+                    if contra.claim_id() == Some(fact.fact_id.as_str())
+                        || contra.conflicting_evidence().contains(&fact.evidence_digest)
+                    {
+                        cell_contradictions.push(contra.contradiction_digest());
+                    }
+                }
+
+                let knowledge_state = if !cell_contradictions.is_empty() {
+                    KnowledgeState::Conflicted
+                } else if fact.provenance == ProvenanceClass::Derived
+                    || fact.provenance == ProvenanceClass::Predicted
+                    || fact.provenance == ProvenanceClass::Remembered
+                {
+                    if self.knowledge_states.contains(&KnowledgeState::Estimated) {
+                        KnowledgeState::Estimated
+                    } else if self.knowledge_states.contains(&KnowledgeState::Unknown) {
+                        KnowledgeState::Unknown
+                    } else {
+                        match self
+                            .knowledge_states
+                            .iter()
+                            .copied()
+                            .find(|&s| s != KnowledgeState::Known)
+                        {
+                            Some(s) => s,
+                            None => KnowledgeState::Estimated,
+                        }
+                    }
+                } else if self.knowledge_states.contains(&KnowledgeState::Known) {
+                    KnowledgeState::Known
+                } else if self.knowledge_states.contains(&KnowledgeState::Estimated) {
+                    KnowledgeState::Estimated
+                } else {
+                    match self.knowledge_states.iter().copied().next() {
+                        Some(s) => s,
+                        None => KnowledgeState::Estimated,
+                    }
+                };
+
+                KnowledgeCell {
+                    claim_id: fact.fact_id.clone(),
+                    statement: fact.statement.clone(),
+                    knowledge_state,
+                    provenance: fact.provenance,
+                    hypothesis: None,
+                    evidence: vec![fact.evidence_digest],
+                    contradictions: cell_contradictions,
+                    valid_until: None,
+                    state_basis: None,
+                }
             })
             .collect()
     }
 
     /// Computes the deterministic canonical digest of this H1 semantic synopsis.
-    #[must_use]
-    pub fn canonical_digest(&self) -> ContentDigest {
+    pub fn canonical_digest(&self) -> Result<ContentDigest, ContractError> {
         let mut encoder = CanonicalEncoder::new();
         self.encode_canonical(&mut encoder);
-        ContentDigest::sha256(&encoder.finish())
+        Ok(ContentDigest::sha256(&encoder.finish_checked()?))
     }
 
     /// Returns the deterministic canonical binary encoding of this synopsis.
-    #[must_use]
-    pub fn to_canonical_bytes(&self) -> Vec<u8> {
+    pub fn to_canonical_bytes(&self) -> Result<Vec<u8>, ContractError> {
         let mut encoder = CanonicalEncoder::new();
         self.encode_canonical(&mut encoder);
-        encoder.finish()
+        encoder.finish_checked()
     }
 
     /// Decodes an [`H1SemanticSynopsis`] from canonical binary bytes and verifies no trailing bytes exist.
@@ -671,6 +857,14 @@ impl H1SemanticSynopsis {
         let synopsis = Self::decode_canonical(&mut decoder)?;
         decoder.ensure_finished()?;
         Ok(synopsis)
+    }
+}
+
+impl TryFrom<H1SemanticSynopsis> for HydrationArtifact {
+    type Error = HydrationError;
+
+    fn try_from(synopsis: H1SemanticSynopsis) -> Result<Self, Self::Error> {
+        synopsis.to_hydration_artifact()
     }
 }
 
@@ -743,9 +937,14 @@ impl CanonicalDecode for H1SemanticSynopsis {
         let retention_until = TimestampNs::decode_canonical(decoder)?;
         let quality = SynopsisQuality::decode_canonical(decoder)?;
 
-        // Decode facts
-        let facts_count = decoder.u64()? as usize;
-        let mut facts = Vec::with_capacity(facts_count);
+        // Decode facts (DoS safe: bounded by MAX_H1_FACTS and remaining bytes)
+        let raw_facts_count = decoder.u64()?;
+        let remaining_for_facts = decoder.remaining();
+        if raw_facts_count > MAX_H1_FACTS as u64 || raw_facts_count as usize > remaining_for_facts {
+            return Err(ContractError::InvalidDigest);
+        }
+        let facts_count = raw_facts_count as usize;
+        let mut facts = Vec::with_capacity(facts_count.min(remaining_for_facts));
         let mut prev_fact_id: Option<String> = None;
         for _ in 0..facts_count {
             let fact = WorldFact::decode_canonical(decoder)?;
@@ -758,8 +957,13 @@ impl CanonicalDecode for H1SemanticSynopsis {
             facts.push(fact);
         }
 
-        // Decode knowledge states
-        let ks_count = decoder.u64()? as usize;
+        // Decode knowledge states (DoS safe: bounded by MAX_H1_KNOWLEDGE_STATES and remaining bytes)
+        let raw_ks_count = decoder.u64()?;
+        let remaining_for_ks = decoder.remaining();
+        if raw_ks_count > MAX_H1_KNOWLEDGE_STATES as u64 || raw_ks_count as usize > remaining_for_ks {
+            return Err(ContractError::InvalidDigest);
+        }
+        let ks_count = raw_ks_count as usize;
         let mut knowledge_states = BTreeSet::new();
         let mut prev_ks: Option<KnowledgeState> = None;
         for _ in 0..ks_count {
@@ -773,8 +977,13 @@ impl CanonicalDecode for H1SemanticSynopsis {
             knowledge_states.insert(ks);
         }
 
-        // Decode provenance classes
-        let prov_count = decoder.u64()? as usize;
+        // Decode provenance classes (DoS safe: bounded by MAX_H1_PROVENANCE_CLASSES and remaining bytes)
+        let raw_prov_count = decoder.u64()?;
+        let remaining_for_prov = decoder.remaining();
+        if raw_prov_count > MAX_H1_PROVENANCE_CLASSES as u64 || raw_prov_count as usize > remaining_for_prov {
+            return Err(ContractError::InvalidDigest);
+        }
+        let prov_count = raw_prov_count as usize;
         let mut provenance_classes = BTreeSet::new();
         let mut prev_prov: Option<ProvenanceClass> = None;
         for _ in 0..prov_count {
@@ -788,9 +997,14 @@ impl CanonicalDecode for H1SemanticSynopsis {
             provenance_classes.insert(prov);
         }
 
-        // Decode contradictions
-        let contra_count = decoder.u64()? as usize;
-        let mut contradictions = Vec::with_capacity(contra_count);
+        // Decode contradictions (DoS safe: bounded by MAX_H1_CONTRADICTIONS and remaining bytes)
+        let raw_contra_count = decoder.u64()?;
+        let remaining_for_contra = decoder.remaining();
+        if raw_contra_count > MAX_H1_CONTRADICTIONS as u64 || raw_contra_count as usize > remaining_for_contra {
+            return Err(ContractError::InvalidDigest);
+        }
+        let contra_count = raw_contra_count as usize;
+        let mut contradictions = Vec::with_capacity(contra_count.min(remaining_for_contra));
         let mut prev_contra_id: Option<String> = None;
         for _ in 0..contra_count {
             let contra = Contradiction::decode_canonical(decoder)?;
@@ -803,8 +1017,13 @@ impl CanonicalDecode for H1SemanticSynopsis {
             contradictions.push(contra);
         }
 
-        // Decode omissions
-        let omission_count = decoder.u64()? as usize;
+        // Decode omissions (DoS safe: bounded by MAX_H1_OMISSIONS and remaining bytes)
+        let raw_omission_count = decoder.u64()?;
+        let remaining_for_omissions = decoder.remaining();
+        if raw_omission_count > MAX_H1_OMISSIONS as u64 || raw_omission_count as usize > remaining_for_omissions {
+            return Err(ContractError::InvalidDigest);
+        }
+        let omission_count = raw_omission_count as usize;
         let mut omissions = BTreeSet::new();
         let mut prev_omission: Option<OmissionReason> = None;
         for _ in 0..omission_count {
