@@ -1917,6 +1917,10 @@ def _exact_text(value: Any) -> str | None:
     return value
 
 
+# A generation is a plain token: letters, digits, and : . _ + / - (no markdown, no whitespace).
+_GENERATION_TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9:._+/\-]*")
+
+
 def _bind_claim_row_generation(
     bundle_generation: str | None,
     claim_generation: Any,
@@ -1927,7 +1931,7 @@ def _bind_claim_row_generation(
     """The bundle generation must be the citing claim row's current generation, never merely
     consistent with the bundle's own artifacts."""
     label = f"'{params['claim_class']}' claim '{params['claim_id']}'"
-    row_generation = _exact_token(claim_generation)
+    row_generation = claim_generation if isinstance(claim_generation, str) and _GENERATION_TOKEN_RE.fullmatch(claim_generation) else None
     if row_generation is None:
         findings.append(_finding(
             ERR_CLAIM_GENERATION_UNBOUND, path_str, "claim_generation",
@@ -2813,13 +2817,34 @@ def _evaluate_formula(formula: str, inputs: dict[str, float]) -> float:
     return result
 
 
+_FORMULA_MAX_DEPTH = 64
+
+
 def _parse_formula(formula: str) -> ast.Expression:
+    """Parses a formula and refuses one nested deeper than _FORMULA_MAX_DEPTH syntax-tree levels,
+    measured iteratively, so no later recursive walk (evaluation, dimensions, ast.unparse) can
+    exhaust the interpreter stack."""
     if len(formula) > _FORMULA_MAX_LENGTH:
         raise _FormulaError(f"formula exceeds {_FORMULA_MAX_LENGTH} characters")
     try:
-        return ast.parse(formula, mode="eval")
+        tree = ast.parse(formula, mode="eval")
     except (SyntaxError, ValueError, RecursionError) as exc:
         raise _FormulaError(f"formula is not arithmetic: {exc}") from exc
+    stack: list[tuple[ast.AST, int]] = [(tree, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if depth > _FORMULA_MAX_DEPTH:
+            raise _FormulaError(f"formula nests more than {_FORMULA_MAX_DEPTH} levels")
+        stack.extend((child, depth + 1) for child in ast.iter_child_nodes(node))
+    return tree
+
+
+def _formula_input_names(formula: str) -> set[str] | None:
+    try:
+        tree = _parse_formula(formula)
+    except _FormulaError:
+        return None
+    return {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
 
 
 class _DimensionError(_FormulaError):
@@ -2834,20 +2859,27 @@ BOUND_COUNT_UNITS: frozenset[str] = frozenset({
 })
 
 
-def _unit_dimension(unit: str) -> dict[str, int]:
-    return {} if unit in BOUND_COUNT_UNITS else {unit: 1}
+def _unit_dimension(unit: str) -> tuple[dict[str, int], str | None]:
+    """(dimension exponents, count kind): a count unit is dimensionless but keeps its own kind,
+    so distinct count units never add; any other registered unit is its own dimension."""
+    return ({}, unit) if unit in BOUND_COUNT_UNITS else ({unit: 1}, None)
 
 
-def _format_dimension(dimension: dict[str, int] | None) -> str:
+def _format_dimension(dimension: tuple[dict[str, int], str | None] | None) -> str:
     if dimension is None:
         return "a bare number"
-    return "*".join(f"{u}^{p}" if p != 1 else u for u, p in sorted(dimension.items())) or "dimensionless"
+    exponents, kind = dimension
+    if kind is not None:
+        return f"a count of {kind}"
+    return "*".join(f"{u}^{p}" if p != 1 else u for u, p in sorted(exponents.items())) or "dimensionless"
 
 
 def _check_formula_dimensions(formula: str, input_units: dict[str, str], result_unit: str) -> None:
-    """Propagates units through + - * /: + and - need equal dimensions, * and / add and subtract
-    exponents, a bare number adopts the other operand's dimension under + and - and is
-    dimensionless under * and /. The result must have the dimension of result_unit."""
+    """Propagates units through + - * /. + and - need equal dimensions and equal count kinds (frames
+    and tasks never add); * and / add and subtract exponents, and a count scales the other operand
+    (frames * ms is ms); a bare number adopts the other operand's dimension under + and - and is
+    dimensionless under * and /. The result must have the dimension of result_unit. The formula's
+    depth is capped by _parse_formula, so this recursion is bounded."""
     tree = _parse_formula(formula)
 
     def combine(a: dict[str, int], b: dict[str, int], sign: int) -> dict[str, int]:
@@ -2858,7 +2890,7 @@ def _check_formula_dimensions(formula: str, input_units: dict[str, str], result_
                 del out[unit]
         return out
 
-    def dimension(node: ast.AST) -> dict[str, int] | None:  # None: a bare number
+    def dimension(node: ast.AST) -> tuple[dict[str, int], str | None] | None:  # None: a bare number
         if isinstance(node, ast.Expression):
             return dimension(node.body)
         if isinstance(node, ast.BinOp):
@@ -2873,7 +2905,12 @@ def _check_formula_dimensions(formula: str, input_units: dict[str, str], result_
                 return left
             if left is None and right is None:
                 return None
-            return combine(left or {}, right or {}, 1 if isinstance(node.op, ast.Mult) else -1)
+            exponents = combine((left or ({}, None))[0], (right or ({}, None))[0], 1 if isinstance(node.op, ast.Mult) else -1)
+            if exponents:
+                return exponents, None
+            if left is None or right is None:
+                return {}, (right if left is None else left)[1]
+            return {}, None
         if isinstance(node, ast.UnaryOp):
             return dimension(node.operand)
         if isinstance(node, ast.Name):
@@ -2888,7 +2925,6 @@ def _check_formula_dimensions(formula: str, input_units: dict[str, str], result_
         raise _DimensionError(
             f"formula yields {_format_dimension(result)}, not the derivation's units '{result_unit}' ({_format_dimension(expected)})"
         )
-
 
 
 def _verify_bounded_model_claim_evidence(
@@ -3120,13 +3156,21 @@ def _verify_bounded_model_claim_evidence(
                         {**params, "recomputed_value": recomputed, "derived_value": d_value},
                     ))
                     d_value = None
+            used = _formula_input_names(formula)
+            unused = sorted(set(inputs) - used) if used is not None else []
+            if unused:
+                findings.append(_finding(
+                    ERR_BOUND_DERIVATION_NOT_RECOMPUTABLE, path_str, f"{d_loc}.inputs",
+                    f"{label} derivation records input(s) {unused} that its formula never uses",
+                    {**params, "unused_inputs": unused},
+                ))
             # Units are independent of the numbers: check them even when recomputation failed.
             if d_units is not None:
                 try:
                     _check_formula_dimensions(formula, input_units_map, d_units)
                 except _DimensionError as exc:
                     findings.append(_finding(ERR_BOUND_DIMENSION_MISMATCH, path_str, f"{d_loc}.formula", f"{label} derivation {exc}", params))
-                except _FormulaError:
+                except (_FormulaError, RecursionError):
                     pass  # not arithmetic over recorded inputs: already reported by the recomputation
 
     # 6. Sensitivity analysis and invalidators say something.
@@ -3497,13 +3541,24 @@ _DELIMITER_CELL_RE = re.compile(r"^:?-+:?$")
 _UNESCAPED_PIPE_RE = re.compile(r"(?<!\\)\|")
 
 
+class _Cell(str):
+    """A table cell's trimmed value that remembers its raw text, for fields compared exactly."""
+
+    raw: str
+
+    def __new__(cls, value: str, raw: str) -> "_Cell":
+        cell = super().__new__(cls, value)
+        cell.raw = raw
+        return cell
+
+
 def _split_table_row(line: str) -> list[str]:
     stripped = line.strip()
     if stripped.startswith("|"):
         stripped = stripped[1:]
     if stripped.endswith("|") and not stripped.endswith("\\|"):
         stripped = stripped[:-1]
-    return [cell.strip() for cell in _UNESCAPED_PIPE_RE.split(stripped)]
+    return [_Cell(cell.strip(), cell) for cell in _UNESCAPED_PIPE_RE.split(stripped)]
 
 
 def _is_delimiter_row(line: str) -> bool:
@@ -3544,7 +3599,7 @@ def parse_markdown_tables(text: str) -> list[tuple[list[str], list[list[str]]]]:
                 if not row_line or "|" not in row_line or row_line[:3] in ("```", "~~~"):
                     break
                 if not _is_delimiter_row(row_line):
-                    data_rows.append([c.strip("`") for c in _split_table_row(row_line)])
+                    data_rows.append([_Cell(c.strip("`"), c.raw) for c in _split_table_row(row_line)])
                 idx += 1
             tables.append((headers, data_rows))
             continue
@@ -3677,8 +3732,11 @@ def scan_markdown_claim_tables(
             proof_val = normalize_cell(row[proof_col]) if proof_col is not None and proof_col < len(row) else ""
             class_val = normalize_cell(row[class_col]).lower() if class_col is not None and class_col < len(row) else ""
             row_class = class_val if class_val not in NON_PROOF_ROOTS else None
-            generation_val = normalize_cell(row[generation_col]) if generation_col is not None and generation_col < len(row) else ""
-            row_generation = generation_val if generation_val.lower() not in NON_PROOF_ROOTS else None
+            # The generation cell is compared byte for byte: backticks, bold, NBSP, or zero-width
+            # characters are never normalized away (only ASCII spaces and tabs around it are).
+            raw_generation = getattr(row[generation_col], "raw", row[generation_col]) if generation_col is not None and generation_col < len(row) else ""
+            generation_text = raw_generation.strip(" \t")
+            row_generation = generation_text if generation_text and generation_text.lower() not in NON_PROOF_ROOTS else None
 
             claimed_rank: int | None = None
             if status_val is not None and status_val not in NON_CLAIMING_STATES:
