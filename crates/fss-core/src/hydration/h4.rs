@@ -5,7 +5,7 @@
 //! - Level: `H4`
 //! - Name: `laboratory_expansion`
 //! - Content: `replay bundle, intermediates, alternate decoders/models, and oracle comparisons`
-//! - Owner: `fss-laboratory/oracle`
+//! - Owner: `fss-agent-core`
 //!
 //! Constitutional hard gates and invariants:
 //! 1. Quarantined from production: Laboratory expansion material is strictly quarantined
@@ -182,7 +182,7 @@ impl IntermediateArtifact {
         if self.digest.bytes().iter().all(|&b| b == 0) {
             return Err(ContractError::InvalidDigest);
         }
-        if self.shape.len() > 16 {
+        if self.shape.is_empty() || self.shape.len() > 16 {
             return Err(ContractError::LaboratoryExpansionShapeMalformed);
         }
         if self.shape.contains(&0) {
@@ -195,10 +195,7 @@ impl IntermediateArtifact {
             };
             total_elements = next;
         }
-        if self.byte_count == 0
-            || self.byte_count == u64::MAX
-            || self.byte_count > super::MAX_ARTIFACT_BYTES as u64
-        {
+        if self.byte_count < total_elements || self.byte_count > super::MAX_ARTIFACT_BYTES as u64 {
             return Err(ContractError::LaboratoryExpansionShapeMalformed);
         }
         Ok(())
@@ -497,6 +494,8 @@ pub struct H4LaboratoryExpansionParams {
     pub proof_roots: BTreeSet<ContentDigest>,
     /// Completeness of this expansion at H4.
     pub completeness: Completeness,
+    /// Applied transform, when any.
+    pub applied_transform: Option<String>,
 }
 
 /// Strongly typed representation of hydration ladder level H4: laboratory_expansion.
@@ -525,6 +524,7 @@ pub struct H4LaboratoryExpansion {
     retention_until: TimestampNs,
     proof_roots: BTreeSet<ContentDigest>,
     completeness: Completeness,
+    applied_transform: Option<String>,
     expansion_digest: ContentDigest,
 }
 
@@ -549,7 +549,9 @@ impl H4LaboratoryExpansion {
             retention_until: params.retention_until,
             proof_roots: params.proof_roots,
             completeness: params.completeness,
-            expansion_digest: ContentDigest::sha256(b"unpublished-h4-expansion"),
+            applied_transform: params.applied_transform,
+            expansion_digest: ContentDigest::sha256(b"unpublished-h4-expansion")
+                .with_laboratory(true),
         };
         expansion.validate()?;
         expansion.expansion_digest = expansion.computed_digest();
@@ -574,6 +576,13 @@ impl H4LaboratoryExpansion {
         }
         if !self.estimated_cost.is_valid() {
             return Err(ContractError::ArithmeticOverflow.into());
+        }
+        if self
+            .applied_transform
+            .as_deref()
+            .is_some_and(|val| !valid_text(val, MAX_H4_IDENTIFIER_LEN))
+        {
+            return Err(ContractError::InvalidIdentifier.into());
         }
 
         // Validate quarantine: strictly non-production
@@ -808,12 +817,18 @@ impl H4LaboratoryExpansion {
         self.expansion_digest
     }
 
+    /// Returns the applied transform, when any.
+    #[must_use]
+    pub fn applied_transform(&self) -> Option<&str> {
+        self.applied_transform.as_deref()
+    }
+
     /// Computes the deterministic canonical digest of this H4 expansion.
     #[must_use]
     pub fn computed_digest(&self) -> ContentDigest {
         let mut encoder = CanonicalEncoder::new();
         self.encode_canonical_body(&mut encoder);
-        ContentDigest::sha256(&encoder.finish())
+        ContentDigest::sha256(&encoder.finish()).with_laboratory(true)
     }
 
     /// Encodes the body of this expansion (all fields except expansion_digest itself).
@@ -887,6 +902,16 @@ impl H4LaboratoryExpansion {
         }
 
         encoder.u8(completeness_code(self.completeness));
+
+        match &self.applied_transform {
+            Some(val) => {
+                encoder.bool(true);
+                encoder.text(val);
+            }
+            None => {
+                encoder.bool(false);
+            }
+        }
     }
 
     /// Packages this H4 laboratory expansion into a published [`HydrationArtifact`].
@@ -898,11 +923,8 @@ impl H4LaboratoryExpansion {
         if self.computed_digest() != self.expansion_digest {
             return Err(ContractError::DigestMismatch.into());
         }
-        if applied_transform
-            .as_deref()
-            .is_some_and(|val| !valid_text(val, MAX_H4_IDENTIFIER_LEN))
-        {
-            return Err(ContractError::InvalidIdentifier.into());
+        if applied_transform != self.applied_transform {
+            return Err(ContractError::DigestMismatch.into());
         }
         let mut encoder = CanonicalEncoder::new();
         self.encode_canonical(&mut encoder);
@@ -913,7 +935,7 @@ impl H4LaboratoryExpansion {
             payload,
             self.proof_roots.clone(),
             self.completeness,
-            applied_transform,
+            self.applied_transform.clone(),
         )
     }
 
@@ -964,10 +986,8 @@ impl H4LaboratoryExpansion {
 /// A strongly typed laboratory artifact carrying explicit quarantine provenance and process isolation proof.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LaboratoryArtifact {
-    /// The published hydration artifact envelope.
-    pub artifact: HydrationArtifact,
-    /// The laboratory quarantine and process isolation proof.
-    pub quarantine: LaboratoryQuarantine,
+    artifact: HydrationArtifact,
+    quarantine: LaboratoryQuarantine,
 }
 
 impl LaboratoryArtifact {
@@ -983,10 +1003,22 @@ impl LaboratoryArtifact {
         })
     }
 
-    /// Returns whether this artifact is quarantined from production (strictly `true`).
+    /// Returns a reference to the published hydration artifact envelope.
     #[must_use]
-    pub const fn is_quarantined(&self) -> bool {
-        true
+    pub fn artifact(&self) -> &HydrationArtifact {
+        &self.artifact
+    }
+
+    /// Returns a reference to the laboratory quarantine verification record.
+    #[must_use]
+    pub fn quarantine(&self) -> &LaboratoryQuarantine {
+        &self.quarantine
+    }
+
+    /// Returns whether this artifact is quarantined from production (derived from quarantine).
+    #[must_use]
+    pub fn is_quarantined(&self) -> bool {
+        self.quarantine.quarantined_from_production
     }
 
     /// Constitutional rule: Laboratory material is excluded from production (strictly `false`).
@@ -1086,7 +1118,13 @@ impl CanonicalDecode for H4LaboratoryExpansion {
         let completeness_raw = decoder.u8()?;
         let completeness = completeness_from_code(completeness_raw)?;
 
-        let expansion_digest = decoder.digest()?;
+        let applied_transform = if decoder.bool()? {
+            Some(decoder.text()?.to_owned())
+        } else {
+            None
+        };
+
+        let expansion_digest = decoder.digest()?.with_laboratory(true);
 
         let expansion = Self {
             handle_id,
@@ -1106,6 +1144,7 @@ impl CanonicalDecode for H4LaboratoryExpansion {
             retention_until,
             proof_roots,
             completeness,
+            applied_transform,
             expansion_digest,
         };
 

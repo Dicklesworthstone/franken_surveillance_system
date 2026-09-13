@@ -5,11 +5,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use fss_core::{
-    BudgetVector, Completeness, ContentDigest, ContinuationCursor, ContinuationCursorPublishParams,
-    ContinuationScope, ContractBasis, ContractBasisRegistryBytes, ContractError, HYDRATION_VIEW_ID,
+    AlternateSystem, BudgetVector, Completeness, ContentDigest, ContinuationCursor,
+    ContinuationCursorPublishParams, ContinuationScope, ContractBasis, ContractBasisRegistryBytes,
+    ContractError, H4LaboratoryExpansion, H4LaboratoryExpansionParams, HYDRATION_VIEW_ID,
     HandleAvailability, HydrationArtifact, HydrationError, HydrationLevel, HydrationPurpose,
     HydrationReceipt, HydrationReceiptSpec, HydrationRequest, HydrationRequestSpec,
-    LaboratoryAccess, LedgerAnchor, SemanticHandle, SemanticHandleSpec, SessionId, TimestampNs,
+    IntermediateArtifact, LaboratoryAccess, LaboratoryQuarantine, LedgerAnchor, OracleComparison,
+    ReplayBundleRef, SemanticHandle, SemanticHandleSpec, SessionId, TimestampNs,
 };
 
 fn handle() -> Result<SemanticHandle, HydrationError> {
@@ -56,7 +58,11 @@ fn handle() -> Result<SemanticHandle, HydrationError> {
                 costs.insert(
                     level,
                     BudgetVector::builder()
-                        .bytes(1_024)
+                        .bytes(if level == HydrationLevel::H4 {
+                            4_096
+                        } else {
+                            1_024
+                        })
                         .tokens(256)
                         .build()
                         .map_err(ContractError::from)?,
@@ -93,7 +99,11 @@ fn request(
             .collect(),
         authorized_privacy_classes: BTreeSet::from([handle.privacy_class.clone()]),
         budget: BudgetVector::builder()
-            .bytes(2_048)
+            .bytes(if level == HydrationLevel::H4 {
+                4_096
+            } else {
+                2_048
+            })
             .tokens(512)
             .build()
             .map_err(ContractError::from)?,
@@ -107,14 +117,74 @@ fn artifact(
     handle: &SemanticHandle,
     level: HydrationLevel,
 ) -> Result<HydrationArtifact, HydrationError> {
-    HydrationArtifact::publish(
-        level,
-        "application/fss+json",
-        b"redacted synopsis".to_vec(),
-        [handle.subject_digest],
-        Completeness::Complete,
-        handle.applied_transform.clone(),
-    )
+    if level == HydrationLevel::H4 {
+        let mut proof_roots = BTreeSet::new();
+        proof_roots.insert(handle.subject_digest);
+        proof_roots.insert(ContentDigest::sha256(b"secondary-anchor-proof-root"));
+        let expansion = H4LaboratoryExpansion::new(H4LaboratoryExpansionParams {
+            handle_id: handle.handle_id.clone(),
+            subject_id: handle.subject_id.clone(),
+            subject_digest: handle.subject_digest,
+            replay_bundle: ReplayBundleRef {
+                bundle_id: "replay:bundle:run-101".to_owned(),
+                bundle_digest: ContentDigest::sha256(b"bundle-payload-bytes"),
+                manifest_root: ContentDigest::sha256(b"bundle-manifest-root"),
+                seed: 0x1234_5678_9abc_def0,
+                delta_batch_count: 5,
+                environment_digest: ContentDigest::sha256(b"environment-closure-v1"),
+            },
+            intermediates: vec![IntermediateArtifact {
+                stage_name: "backbone.layer3".to_owned(),
+                content_type: "application/x-fss-tensor-f32".to_owned(),
+                digest: ContentDigest::sha256(b"feature-map-data"),
+                shape: vec![1, 10],
+                byte_count: 40,
+            }],
+            alternate_systems: vec![AlternateSystem {
+                system_id: "oracle:ffmpeg-v6.1".to_owned(),
+                version: "6.1.1".to_owned(),
+                framework: "ffmpeg".to_owned(),
+                quarantine_digest: ContentDigest::sha256(b"quarantine-container"),
+            }],
+            oracle_comparisons: vec![OracleComparison {
+                comparison_id: "cmp:psnr".to_owned(),
+                oracle_id: "oracle:ffmpeg-v6.1".to_owned(),
+                metric_name: "psnr_y".to_owned(),
+                discrepancy_score: 0.01,
+                tolerance_threshold: 0.05,
+                within_tolerance: true,
+                oracle_version: "6.1.1".to_owned(),
+            }],
+            quarantine: LaboratoryQuarantine {
+                quarantined_from_production: true,
+                quarantine_receipt_digest: ContentDigest::sha256(b"quarantine-receipt"),
+                isolation_boundary: "sealed_linux_namespace".to_owned(),
+                process_drain_witness: ContentDigest::sha256(b"process-drain-witness"),
+            },
+            laboratory_access: handle.laboratory_access,
+            purpose: HydrationPurpose::Qualification,
+            anchor: handle.anchor.clone(),
+            contract_basis: handle.contract_basis.clone(),
+            estimated_cost: handle
+                .estimated_cost(HydrationLevel::H4)
+                .ok_or(HydrationError::LevelUnavailable)?,
+            published_at: handle.published_at,
+            retention_until: handle.retention_until,
+            proof_roots,
+            completeness: Completeness::Complete,
+            applied_transform: handle.applied_transform.clone(),
+        })?;
+        expansion.to_hydration_artifact(handle.applied_transform.clone())
+    } else {
+        HydrationArtifact::publish(
+            level,
+            "application/fss+json",
+            b"redacted synopsis".to_vec(),
+            [handle.subject_digest],
+            Completeness::Complete,
+            handle.applied_transform.clone(),
+        )
+    }
 }
 
 fn receipt(

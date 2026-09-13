@@ -6,8 +6,10 @@ use fss_core::hydration::{
     HydrationRequest, HydrationRequestSpec, LaboratoryAccess, SemanticHandle, SemanticHandleSpec,
 };
 use fss_core::{
-    BudgetVector, Completeness, ContentDigest, ContractBasis, ContractBasisRegistryBytes,
-    ContractError, LedgerAnchor, SessionId, TimestampNs,
+    AlternateSystem, BudgetVector, Completeness, ContentDigest, ContractBasis,
+    ContractBasisRegistryBytes, ContractError, H4LaboratoryExpansion, H4LaboratoryExpansionParams,
+    IntermediateArtifact, LaboratoryQuarantine, LedgerAnchor, OracleComparison, ReplayBundleRef,
+    SessionId, TimestampNs,
 };
 
 use crate::ReferenceHydrationCatalog;
@@ -109,6 +111,69 @@ fn descriptor(
     })
 }
 
+fn h4_artifact(
+    descriptor: &SemanticHandle,
+    purpose: HydrationPurpose,
+) -> Result<HydrationArtifact, HydrationError> {
+    let mut proof_roots = BTreeSet::new();
+    proof_roots.insert(descriptor.subject_digest);
+    proof_roots.insert(ContentDigest::sha256(b"reference-h4-independent-anchor"));
+    let expansion = H4LaboratoryExpansion::new(H4LaboratoryExpansionParams {
+        handle_id: descriptor.handle_id.clone(),
+        subject_id: descriptor.subject_id.clone(),
+        subject_digest: descriptor.subject_digest,
+        replay_bundle: ReplayBundleRef {
+            bundle_id: "replay:reference:h4".to_owned(),
+            bundle_digest: ContentDigest::sha256(b"replay-bundle-digest"),
+            manifest_root: ContentDigest::sha256(b"manifest-root-digest"),
+            seed: 101,
+            delta_batch_count: 1,
+            environment_digest: ContentDigest::sha256(b"environment-digest"),
+        },
+        intermediates: vec![IntermediateArtifact {
+            stage_name: "intermediate:stage".to_owned(),
+            content_type: "application/octet-stream".to_owned(),
+            digest: ContentDigest::sha256(b"intermediate-digest"),
+            shape: vec![1],
+            byte_count: 1,
+        }],
+        alternate_systems: vec![AlternateSystem {
+            system_id: "oracle:reference".to_owned(),
+            version: "1.0.0".to_owned(),
+            framework: "reference".to_owned(),
+            quarantine_digest: ContentDigest::sha256(b"quarantine-digest"),
+        }],
+        oracle_comparisons: vec![OracleComparison {
+            comparison_id: "cmp:psnr".to_owned(),
+            oracle_id: "oracle:reference".to_owned(),
+            metric_name: "psnr".to_owned(),
+            discrepancy_score: 0.0,
+            tolerance_threshold: 0.05,
+            within_tolerance: true,
+            oracle_version: "1.0.0".to_owned(),
+        }],
+        quarantine: LaboratoryQuarantine {
+            quarantined_from_production: true,
+            quarantine_receipt_digest: ContentDigest::sha256(b"receipt-digest"),
+            isolation_boundary: "sealed_container".to_owned(),
+            process_drain_witness: ContentDigest::sha256(b"drain-witness"),
+        },
+        laboratory_access: descriptor.laboratory_access,
+        purpose,
+        anchor: descriptor.anchor.clone(),
+        contract_basis: descriptor.contract_basis.clone(),
+        estimated_cost: descriptor
+            .estimated_cost(HydrationLevel::H4)
+            .ok_or(HydrationError::LevelUnavailable)?,
+        published_at: descriptor.published_at,
+        retention_until: descriptor.retention_until,
+        proof_roots,
+        completeness: Completeness::Complete,
+        applied_transform: descriptor.applied_transform.clone(),
+    })?;
+    expansion.to_hydration_artifact(descriptor.applied_transform.clone())
+}
+
 fn catalog(
     availability: HandleAvailability,
     retention_until: TimestampNs,
@@ -117,18 +182,22 @@ fn catalog(
     let mut catalog = ReferenceHydrationCatalog::new();
     catalog.register_descriptor(descriptor.clone())?;
     for level in level_set() {
-        let artifact = HydrationArtifact::publish(
-            level,
-            if level >= HydrationLevel::H2 {
-                "application/octet-stream"
-            } else {
-                "application/fss+json"
-            },
-            format!("artifact:{}", level.as_str()).into_bytes(),
-            [descriptor.subject_digest],
-            Completeness::Complete,
-            None,
-        )?;
+        let artifact = if level == HydrationLevel::H4 {
+            h4_artifact(&descriptor, HydrationPurpose::Qualification)?
+        } else {
+            HydrationArtifact::publish(
+                level,
+                if level >= HydrationLevel::H2 {
+                    "application/octet-stream"
+                } else {
+                    "application/fss+json"
+                },
+                format!("artifact:{}", level.as_str()).into_bytes(),
+                [descriptor.subject_digest],
+                Completeness::Complete,
+                None,
+            )?
+        };
         catalog.register_artifact(
             &descriptor.handle_id,
             descriptor.descriptor_digest,

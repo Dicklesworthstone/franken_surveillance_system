@@ -182,28 +182,31 @@ impl SemanticHandle {
 
         // Bind expansion to this handle's identity, subject, anchor, contract basis, and retention
         if expansion.handle_id() != self.handle_id {
-            return Err(HydrationError::HandleRebound);
+            return Err(ContractError::LaboratoryExpansionHandleMismatch.into());
         }
         if expansion.subject_id() != self.subject_id {
-            return Err(ContractError::InvalidIdentifier.into());
+            return Err(ContractError::LaboratoryExpansionSubjectMismatch.into());
         }
         if expansion.subject_digest() != self.subject_digest {
             return Err(ContractError::DigestMismatch.into());
         }
         if expansion.anchor() != &self.anchor {
-            return Err(ContractError::InvalidAnchorSuccessor.into());
+            return Err(ContractError::LaboratoryExpansionAnchorMismatch.into());
         }
         if expansion.contract_basis() != &self.contract_basis {
-            return Err(ContractError::DigestMismatch.into());
+            return Err(ContractError::LaboratoryExpansionBasisMismatch.into());
         }
         if expansion.retention_until() != self.retention_until {
-            return Err(ContractError::InvertedTimeInterval.into());
+            return Err(ContractError::LaboratoryExpansionRetentionMismatch.into());
         }
         if self.availability_at(now) != HandleAvailability::Available
             || now >= self.retention_until
             || now >= expansion.retention_until()
         {
-            return Err(HydrationError::LevelUnavailable);
+            return Err(ContractError::LaboratoryExpansionExpired.into());
+        }
+        if expansion.applied_transform() != self.applied_transform.as_deref() {
+            return Err(ContractError::DigestMismatch.into());
         }
 
         // Bind laboratory access and purpose: cannot be self-declared
