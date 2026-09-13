@@ -212,22 +212,16 @@ pub fn evaluate_unknown_presence(
     Ok(ReferencePolicyDecision { event, action })
 }
 
-/// Retains the event/evidence closure and publishes one canonical event revision to authority.
-pub fn publish_reference_event(
+struct StagedEventRevision {
+    event_root: ContentDigest,
+    event_object_digest: ContentDigest,
+    event_revision_digest: ContentDigest,
+}
+
+fn stage_event_revision(
     decision: &ReferencePolicyDecision,
     objects: &mut InMemoryObjectStore,
-    ledger: &mut DurableReferenceLedger,
-) -> Result<ReferenceEventReceipt, ReferenceError> {
-    // Only a verified revision becomes authority.
-    decision.event.validate()?;
-    let event_name = decision.event.event_id.as_str();
-    let object_id = ObjectId::parse(format!("object:event:{event_name}"))?;
-    let (prior_generation, predecessor) = authority_predecessor(ledger, &object_id)?;
-    // A revision must supersede exactly the revision the authority currently holds, and a
-    // genesis revision requires the event object to be absent: anything else is a fork.
-    if decision.event.supersedes != predecessor {
-        return Err(fss_core::ContractError::SupersessionMismatch.into());
-    }
+) -> Result<StagedEventRevision, ReferenceError> {
     for model_receipt in &decision.event.model_receipts {
         objects.require_verified(*model_receipt)?;
     }
@@ -244,6 +238,67 @@ pub fn publish_reference_event(
         Some(event_object_digest),
     )?;
     let event_root = objects.publish_manifest(event_manifest)?.root;
+    Ok(StagedEventRevision {
+        event_root,
+        event_object_digest,
+        event_revision_digest,
+    })
+}
+
+/// Retains the event/evidence closure and publishes one canonical event revision to authority.
+pub fn publish_reference_event(
+    decision: &ReferencePolicyDecision,
+    objects: &mut InMemoryObjectStore,
+    ledger: &mut DurableReferenceLedger,
+) -> Result<ReferenceEventReceipt, ReferenceError> {
+    // Only a verified revision becomes authority.
+    decision.event.validate()?;
+    let event_name = decision.event.event_id.as_str();
+    let object_id = ObjectId::parse(format!("object:event:{event_name}"))?;
+    let (prior_generation, predecessor) = authority_predecessor(ledger, &object_id)?;
+    let candidate_revision_digest = decision.event.revision_digest();
+
+    // Re-publishing the identical revision that is already current is idempotent.
+    // A caller that published and then lost the receipt (e.g. crash after durable commit)
+    // can recover it without mutating authority or being confused with a fork.
+    if predecessor == Some(candidate_revision_digest) {
+        let staged = stage_event_revision(decision, objects)?;
+        let _ = objects.verify_closure(staged.event_root)?;
+
+        let committed_anchor = ledger
+            .batches()
+            .iter()
+            .rev()
+            .find_map(|batch| {
+                batch
+                    .deltas
+                    .iter()
+                    .find(|delta| {
+                        delta.object_id == object_id
+                            && delta.family == "event_revision"
+                            && delta.new_generation == decision.event.revision
+                            && delta.payload_digest == staged.event_root
+                            && delta.witness_digest == Some(candidate_revision_digest)
+                    })
+                    .map(|_| batch.new_anchor.clone())
+            })
+            .ok_or(fss_core::ContractError::SupersessionMismatch)?;
+
+        return Ok(ReferenceEventReceipt {
+            event_root: staged.event_root,
+            event_object_digest: staged.event_object_digest,
+            event_revision_digest: staged.event_revision_digest,
+            authority_anchor: committed_anchor,
+        });
+    }
+
+    // A revision must supersede exactly the revision the authority currently holds, and a
+    // genesis revision requires the event object to be absent: anything else is a fork.
+    if decision.event.supersedes != predecessor {
+        return Err(fss_core::ContractError::SupersessionMismatch.into());
+    }
+
+    let staged = stage_event_revision(decision, objects)?;
 
     let delta = EvidenceDelta {
         delta_id: format!("delta:event:{event_name}:{}", decision.event.revision),
@@ -253,8 +308,8 @@ pub fn publish_reference_event(
         new_generation: decision.event.revision,
         validity: decision.event.interval,
         plane: Plane::Authority,
-        payload_digest: event_root,
-        witness_digest: Some(event_revision_digest),
+        payload_digest: staged.event_root,
+        witness_digest: Some(staged.event_revision_digest),
         operation_id: None,
     };
 
@@ -266,14 +321,14 @@ pub fn publish_reference_event(
                 decision.event.revision
             ))?,
             vec![delta],
-            [event_root],
+            [staged.event_root],
         )?;
         publisher.append(batch)?
     };
     Ok(ReferenceEventReceipt {
-        event_root,
-        event_object_digest,
-        event_revision_digest,
+        event_root: staged.event_root,
+        event_object_digest: staged.event_object_digest,
+        event_revision_digest: staged.event_revision_digest,
         authority_anchor,
     })
 }

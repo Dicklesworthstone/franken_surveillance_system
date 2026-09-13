@@ -498,3 +498,123 @@ fn forked_revision_is_refused_at_publish_and_never_prepared() -> Result<(), Box<
     let _ = fs::remove_file(path);
     Ok(())
 }
+
+#[test]
+fn retry_of_already_current_revision_is_idempotent_and_exact_equal() -> Result<(), Box<dyn Error>> {
+    let path = temp_journal("retry-idempotent");
+    let _ = fs::remove_file(&path);
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(512, 8 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let event_id = EventId::parse("event:alert:retry")?;
+
+    // Observation 1 for Genesis (Revision 1)
+    let a = observation(
+        "capture:alert:retry-a",
+        "sensor:alert:retry-a",
+        51,
+        "power:alert:alpha",
+        &mut objects,
+        &mut authority,
+    )?;
+    let published_1 = evaluate_unknown_presence(event_id.clone(), vec![a])?;
+    let published_receipt_1 = publish_reference_event(&published_1, &mut objects, &mut authority)?;
+    let anchor_after_first = authority.current().anchor.clone();
+    let batch_count_after_first = authority.batches().len();
+
+    // Re-publishing the exact identical revision 1 that is already current is idempotent.
+    let retry_receipt_1 = publish_reference_event(&published_1, &mut objects, &mut authority)?;
+    // Exact equality check between original receipt and retry receipt:
+    assert_eq!(retry_receipt_1, published_receipt_1);
+    // Authority ledger is completely unchanged:
+    assert_eq!(authority.current().anchor, anchor_after_first);
+    assert_eq!(authority.batches().len(), batch_count_after_first);
+
+    // Fork attempt: another revision 1 (B) with different evidence is refused with SupersessionMismatch.
+    let b = observation(
+        "capture:alert:retry-b",
+        "sensor:alert:retry-b",
+        52,
+        "power:alert:beta",
+        &mut objects,
+        &mut authority,
+    )?;
+    let unpublished = evaluate_unknown_presence(event_id.clone(), vec![b])?;
+    let anchor_before_fork = authority.current().anchor.clone();
+    let batch_count_before_fork = authority.batches().len();
+    let fork_regenesis = publish_reference_event(&unpublished, &mut objects, &mut authority);
+    assert!(
+        matches!(
+            fork_regenesis,
+            Err(ReferenceError::Contract(
+                fss_core::ContractError::SupersessionMismatch
+            ))
+        ),
+        "{fork_regenesis:?}"
+    );
+    assert_eq!(authority.current().anchor, anchor_before_fork);
+    assert_eq!(authority.batches().len(), batch_count_before_fork);
+
+    // Publish legitimate successor (Revision 2)
+    let c = observation(
+        "capture:alert:retry-c",
+        "sensor:alert:retry-c",
+        53,
+        "power:alert:gamma",
+        &mut objects,
+        &mut authority,
+    )?;
+    let d = observation(
+        "capture:alert:retry-d",
+        "sensor:alert:retry-d",
+        54,
+        "power:alert:delta",
+        &mut objects,
+        &mut authority,
+    )?;
+    let corroborated = evaluate_unknown_presence(event_id.clone(), vec![c, d])?;
+    let legitimate_2 = successor(&published_1.event, &corroborated)?;
+    let published_receipt_2 = publish_reference_event(&legitimate_2, &mut objects, &mut authority)?;
+    let anchor_after_second = authority.current().anchor.clone();
+    let batch_count_after_second = authority.batches().len();
+    assert_ne!(anchor_after_first, anchor_after_second);
+
+    // Re-publishing the exact identical revision 2 that is already current is idempotent.
+    let retry_receipt_2 = publish_reference_event(&legitimate_2, &mut objects, &mut authority)?;
+    // Exact equality check between original receipt and retry receipt:
+    assert_eq!(retry_receipt_2, published_receipt_2);
+    // Authority ledger is completely unchanged:
+    assert_eq!(authority.current().anchor, anchor_after_second);
+    assert_eq!(authority.batches().len(), batch_count_after_second);
+
+    // Fork attempt: revision 2 superseding B (the unpublished revision) rather than A.
+    let fork_rev_2 = successor(&unpublished.event, &corroborated)?;
+    let fork_rev_2_result = publish_reference_event(&fork_rev_2, &mut objects, &mut authority);
+    assert!(
+        matches!(
+            fork_rev_2_result,
+            Err(ReferenceError::Contract(
+                fss_core::ContractError::SupersessionMismatch
+            ))
+        ),
+        "{fork_rev_2_result:?}"
+    );
+    assert_eq!(authority.current().anchor, anchor_after_second);
+
+    // Fork attempt: re-publishing stale revision 1 now that revision 2 is current
+    // must be refused with SupersessionMismatch (since revision 1 is no longer current witness).
+    let stale_retry = publish_reference_event(&published_1, &mut objects, &mut authority);
+    assert!(
+        matches!(
+            stale_retry,
+            Err(ReferenceError::Contract(
+                fss_core::ContractError::SupersessionMismatch
+            ))
+        ),
+        "{stale_retry:?}"
+    );
+    assert_eq!(authority.current().anchor, anchor_after_second);
+
+    let _ = fs::remove_file(path);
+    Ok(())
+}
