@@ -100,8 +100,8 @@ class TestLiveRepoConsistency(unittest.TestCase):
         self.assertEqual(summary["agent_views_count"], 8)
         self.assertEqual(summary["qualification_lanes_count"], 15)
         self.assertEqual(summary["costs_count"], 41)
-        # 72 = 71 + SCHEMA-NEGATIVE-EVIDENCE-REPORT-001 (fss-x4a.6.12 negative-evidence report).
-        self.assertEqual(summary["schemas_count"], 72)
+        # 73 = 72 + SCHEMA-ROBOT-DOCS-001 (schemas/robot_docs.v1.json).
+        self.assertEqual(summary["schemas_count"], 73)
         self.assertGreater(summary["known_active_ids"], 800)
         self.assertGreaterEqual(summary["tombstone_ids"], 14)
 

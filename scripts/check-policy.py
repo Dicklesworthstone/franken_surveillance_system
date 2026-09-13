@@ -23,6 +23,7 @@ import device_adapter_checker
 import frozen_registry_checker
 import knowledge_state_checker
 import provenance_registry_checker
+import robot_docs_checker
 import slo_validate
 
 
@@ -920,6 +921,11 @@ def main() -> int:
     dependency_constitution_result = dependency_constitution_checker.validate_dependency_constitution(ROOT)
     if not dependency_constitution_result.passed:
         for err in dependency_constitution_result.errors:
+            fail(f"[{err.code}] {err.file_path} ({err.target}): {err.message}")
+
+    robot_docs_result = robot_docs_checker.validate_robot_docs(ROOT)
+    if not robot_docs_result.passed:
+        for err in robot_docs_result.errors:
             fail(f"[{err.code}] {err.file_path} ({err.target}): {err.message}")
 
 
