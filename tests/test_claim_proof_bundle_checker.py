@@ -3740,7 +3740,7 @@ class TestCrossClassReviewFailOpens(unittest.TestCase):
 
 NBSP = " "
 LEAN_ARTIFACT_REL = "proofs/lean4/Publication.lean"
-LEAN_OK_BYTES = b"import Mathlib.Order.Basic\n\n-- a comment may mention sorry without proving anything\ntheorem RootLast : True := by\n  trivial\n"
+LEAN_OK_BYTES = b"import Std\n\n-- a comment may mention sorry without proving anything\ntheorem RootLast : True := by\n  trivial\n"
 LEAN_TOOLCHAIN = {"checker": "lean4", "version": "v4.9.0"}
 LEAN_RECEIPT = {"checker": "lean4", "checker_version": "v4.9.0"}
 
@@ -4441,7 +4441,7 @@ class TestProofLexerAndEscapes(unittest.TestCase):
             "L4 axiom False": (b"axiom cheat : False\ntheorem RootLast : 1 = 2 := cheat.elim\n", [escape]),
             "L5 nested block comment": (b"/- /- -/\ntheorem RootLast : True := trivial\n-/\n", [theorem]),
             "L6 theorem inside a string": (b'def s := "\ntheorem RootLast : True := trivial\n"\n', [theorem]),
-            "L7 theorem after #exit": (b"#exit\ntheorem RootLast : True := trivial\n", [theorem]),
+            "L7 theorem after #exit": (b"#exit\ntheorem RootLast : True := trivial\n", [escape, theorem]),
             "L8 Cyrillic sorry lookalike": ("theorem RootLast : 1 = 2 := by\n  ѕorry\n".encode(), [unproven]),
             "L9 admit in a tactic block": (b"theorem RootLast : 1 = 2 := by\n  admit\n", [unproven]),
             "L10 Python saved as .lean": (b"import pytest\ntheorem RootLast = None\ndef test_root_last():\n    assert True\n", [missing]),
@@ -4968,6 +4968,133 @@ class TestRound3ProofFailClosedAndCounts(unittest.TestCase):
             self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
             self.assertNotIn("Traceback", result.stderr)
             self.assertIn(ERR_UNREADABLE_INPUT, result.stdout)
+
+
+# ---------------------------------------------------------------------------
+# Round-3 re-review, 30.87.2 part B: the static pre-filter (probes p6_lexers.py, p7_dos.py)
+# ---------------------------------------------------------------------------
+
+TIMED_FORMAL_CASES = {
+    "1MB of blank lines after a theorem without ':='": ('b"theorem RootLast : True\\n" + b" \\n" * 500000', "lean"),
+    "1MB of comments": ('b"theorem RootLast : True := trivial\\n" + b"-- comment line padding padding padding\\n" * 25000', "lean"),
+    "1MB of strings": ('b"theorem RootLast : True := trivial\\n" + b\'def s := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\\n\' * 25000', "lean"),
+    "1MB of identifiers": ('b"theorem RootLast : True := trivial\\n" + b"def x := y + z + w + v + u + t + s + r + q + p\\n" * 22000', "lean"),
+    "500k nested Lean comments": ('b"theorem RootLast : True := trivial\\n/-" + b"/-" * 500000 + b"-/" * 500001 + b"\\n"', "lean"),
+    "500k nested TLA+ comments": ('b"---- MODULE M ----\\n" + b"(*" * 500000 + b"*)" * 500000 + b"\\nTHEOREM RootLast == TRUE\\n====\\n"', "tla"),
+    "1MB dash line": ('b"---- MODULE M ----\\n" + b"-" * 1000000 + b"\\nTHEOREM RootLast == TRUE\\n====\\n"', "tla"),
+    "1MB near-header line": ('b"---- MODULE M ----\\n---- MODULE A " + b"-" * 1000000 + b"x\\nTHEOREM RootLast == TRUE\\n====\\n"', "tla"),
+    "1MB of leading spaces": ('b" " * 1000000 + b"theorem RootLast : True := trivial\\n"', "lean"),
+    "r and 1M hashes": ('b"theorem RootLast : True := trivial\\n" + b"r" + b"#" * 1000000 + b"\\n"', "lean"),
+}
+
+
+def timed_formal_check(expression: str, language: str, timeout: float = 30.0):
+    """Runs _check_formal_content on a generated input in a child process with a hard timeout."""
+    import time
+    code = (
+        f"import sys, json\nsys.path.insert(0, {str(ROOT / 'scripts')!r})\n"
+        "import claim_proof_bundle_checker as c\n"
+        f"raw = {expression}\nfindings = []\n"
+        f"c._check_formal_content(raw, 'p.' + {language!r}, {language!r}, 'RootLast', 'b', {{'claim_id': 'X'}}, findings)\n"
+        "print(json.dumps(sorted({f.code for f in findings})))\n"
+    )
+    start = time.perf_counter()
+    result = subprocess.run([sys.executable, "-B", "-c", code], capture_output=True, text=True, timeout=timeout)
+    return time.perf_counter() - start, result
+
+
+class TestRound3StaticPreFilter(unittest.TestCase):
+    """Probe p6_lexers.py / p7_dos.py cases as planted tests with exact finding-id sets."""
+
+    PROVER = _code("ERR_PROOF_PROVER_RUN_REQUIRED")
+
+    def expect(self, cases: dict, lean: bool, rel: str) -> None:
+        for label, (raw, expected) in cases.items():
+            with self.subTest(case=label):
+                ok, codes_found = run_formal(rel, raw, lean=lean)
+                self.assertFalse(ok, label)
+                self.assertEqual(codes_found, sorted(expected), label)
+
+    def test_B_lean_probe_cases(self) -> None:
+        unproven, escape = _code("ERR_PROOF_UNPROVEN_PLACEHOLDER"), _code("ERR_PROOF_UNSOUND_ESCAPE")
+        theorem, missing, prover = _code("ERR_PROOF_THEOREM_UNBOUND"), _code("ERR_PROOF_FORMAL_ARTIFACT_MISSING"), self.PROVER
+        self.expect({
+            "LX1 !'\"' lexer desync hides sorry": (b"theorem RootLast : (1:Nat) = 2 := by\n  first | exact (!'\"') | exact sorry -- \"\n", [unproven]),
+            "LX2 raw string then sorry": (b'def s := r#"-- "#\ntheorem RootLast : 1 = 2 := by\n  sorry\n', [unproven]),
+            "LX3 theorem inside a raw string": (b'def s := r#"\ntheorem RootLast : True := trivial\n"#\n', [theorem]),
+            "LX4a char '\\'' then sorry": (b"def c := '\\''\ntheorem RootLast : 1 = 2 := by\n  sorry\n", [unproven]),
+            "LX4b char '\"' then sorry": (b"def c := '\"'\ntheorem RootLast : 1 = 2 := by\n  sorry\n", [unproven]),
+            "LX5 -- in a block comment": (b"/- -- -/\ntheorem RootLast : 1 = 2 := by\n  sorry\n", [unproven]),
+            "LX6 unterminated block comment": (b"theorem RootLast : True := trivial\n/- /- -/\n", [missing]),
+            "LX7 unterminated string": (b'theorem RootLast : True := trivial\ndef s := "abc\n', [missing]),
+            "LX7b unterminated raw string": (b'theorem RootLast : True := trivial\ndef s := r#"abc"\n', [missing]),
+            "LX8a CRLF control": (b"theorem RootLast : True := by\r\n  trivial\r\n", [prover]),
+            "LX8b CRLF sorry": (b"theorem RootLast : 1 = 2 := by\r\n  sorry\r\n", [unproven]),
+            "LX9 BOM control": ("\ufefftheorem RootLast : True := by\n  trivial\n".encode(), [prover]),
+            "LX10 tab-indented sorry": (b"theorem RootLast : 1 = 2 := by\n\tsorry\n", [unproven]),
+            "LX11 exact?": (b"theorem RootLast : True := by\n  exact?\n", [prover]),
+            "LX12 decide +native": (b"theorem RootLast : 1 = 2 := by\n  decide +native\n", [escape]),
+            "LX13 decide (config := { native := true })": (b"theorem RootLast : 1 = 2 := by\n  decide (config := { native := true })\n", [escape]),
+            "LX14 bv_decide": (b"theorem RootLast : 1 = 2 := by\n  bv_decide\n", [escape]),
+            "LX15 implemented_by and ofReduceBool": (b"unsafe def lieImpl : Bool := true\n@[implemented_by lieImpl] def lie : Bool := false\ntheorem RootLast : lie = true := Lean.ofReduceBool lie true rfl\n", [escape]),
+            "LX16 trustCompiler": (b"theorem RootLast : 1 = 2 := by\n  have := Lean.trustCompiler\n  exact absurd rfl (by simp)\n", [escape]),
+            "LX17 lcProof": (b"theorem RootLast : 1 = 2 := lcProof\n", [escape]),
+            "LX18 set_option debug.skipKernelTC": (b"set_option debug.skipKernelTC true in\ntheorem RootLast : True := trivial\n", [escape]),
+            "LX19 #eval elaborating an axiom from a string": (b'open Lean Elab Command in\n#eval show CommandElabM Unit from do\n  match Parser.runParserCategory (\xe2\x86\x90 getEnv) `command "axiom cheat : False" with\n  | .ok stx => elabCommand stx\n  | .error e => throwError e\ntheorem RootLast : 1 = 2 := cheat.elim\n', [escape]),
+            "LX20 by_elab mkSorry": (b"theorem RootLast : 1 = 2 := by_elab do\n  Lean.Meta.mkSorry (\xe2\x86\x90 Lean.Meta.mkEq (Lean.toExpr 1) (Lean.toExpr 2)) false\n", [escape]),
+            "LX21 sorry inside s! interpolation": (b'def s : String := s!"{(sorry : Nat)}"\ntheorem RootLast : True := trivial\n', [unproven]),
+            "LX22 import of a sorried module": (b"import Cheat.Sorried\ntheorem RootLast : 1 = 2 := Cheat.bad\n", [escape]),
+            "LX23 opaque, partial, unsafe": (b"opaque o : Nat\npartial def f : Nat \xe2\x86\x92 Nat := fun n => f n\nunsafe def u : Nat := 0\ntheorem RootLast : True := trivial\n", [prover]),
+            "LX24 Inhabited False from sorry": (b"instance : Inhabited False := \xe2\x9f\xa8sorry\xe2\x9f\xa9\ntheorem RootLast : True := trivial\n", [unproven]),
+            "LX25 Classical.choice": (b"theorem RootLast : Nonempty Nat := \xe2\x9f\xa8Classical.choice \xe2\x9f\xa80\xe2\x9f\xa9\xe2\x9f\xa9\n", [prover]),
+            "LX26 decide on a false goal": (b"theorem RootLast : 1 = 2 := by\n  decide\n", [prover]),
+            "LX27 all-indented Python": (b"    import pytest\n    theorem RootLast : True := trivial\n    def test_root_last():\n        assert True\n", [missing]),
+            "LX28 notation for sorry": (b'notation "cheat" => sorry\ntheorem RootLast : 1 = 2 := cheat\n', [unproven]),
+            "LX29 import Cheat": (b"import Cheat\ntheorem RootLast : 1 = 2 := by\n  simp_all [Cheat.bad]\n", [escape]),
+            "LX30 #exit in a string then sorry": (b'def s := "#exit"\ntheorem RootLast : 1 = 2 := by\n  sorry\n', [unproven]),
+            "LX31 10k nested comments": (b"/-" * 10000 + b"-/" * 10000 + b"\ntheorem RootLast : True := trivial\n", [prover]),
+            "LX32 @[extern]": (b'@[extern "c_lie"] def g : Nat \xe2\x86\x92 Nat := id\ntheorem RootLast : True := trivial\n', [escape]),
+            "LX33 by_elab inside s! interpolation": (b'def s : String := s!"{(by_elab do return Lean.toExpr 1 : Nat)}"\ntheorem RootLast : True := trivial\n', [escape]),
+            "LX34 #check": (b"#check Nat\ntheorem RootLast : True := trivial\n", [escape]),
+            "LX35 import after a command": (b"theorem RootLast : True := trivial\nimport Std\n", [missing]),
+            "LX36 import Init and Std": (b"import Init.Core\nimport Std\ntheorem RootLast : True := trivial\n", [prover]),
+        }, True, LEAN_REL)
+
+    def test_B_tla_probe_cases(self) -> None:
+        unproven, escape, prover = _code("ERR_PROOF_UNPROVEN_PLACEHOLDER"), _code("ERR_PROOF_UNSOUND_ESCAPE"), self.PROVER
+        m = TLA_MODULE_HEAD
+        self.expect({
+            "TX1 CONSTANT C ASSUME FALSE on one line": (m + b"CONSTANT C ASSUME FALSE\nTHEOREM RootLast == 1 = 2\nPROOF OBVIOUS\n====\n", [escape]),
+            "TX2 VARIABLE x AXIOM FALSE": (m + b"VARIABLE x AXIOM FALSE\nTHEOREM RootLast == 1 = 2\nPROOF OBVIOUS\n====\n", [escape]),
+            "TX2b definition then ASSUME on one line": (m + b"C == TRUE ASSUME FALSE\nTHEOREM RootLast == 1 = 2\nPROOF OBVIOUS\n====\n", [escape]),
+            "TX3 EXTENDS a non-standard module": (m + b"EXTENDS Cheat\nTHEOREM RootLast == 1 = 2\nPROOF OBVIOUS\n====\n", [escape]),
+            "TX4 INSTANCE of a nested module with ASSUME": (m + b"---- MODULE Inner ----\nASSUME FALSE\n====\nI == INSTANCE Inner\nTHEOREM RootLast == 1 = 2\nPROOF OBVIOUS\n====\n", [escape]),
+            "TX5 LOCAL INSTANCE of a standard module": (m + b"LOCAL INSTANCE Naturals\nTHEOREM RootLast == TRUE\n====\n", [prover]),
+            "TX6 compact header": (b"----MODULE PublicationProof----\nTHEOREM RootLast == TRUE\n====\n", [prover]),
+            "TX7 \\* hides a terminator": (m + b"THEOREM RootLast == TRUE\n\\* ====\nPROOF OMITTED\n====\n", [unproven]),
+            "TX8 terminator with a trailing comment": (m + b"THEOREM RootLast == TRUE\n==== \\* end\n", [prover]),
+            "TX9 CRLF control": ((m + b"THEOREM RootLast == TRUE\n====\n").replace(b"\n", b"\r\n"), [prover]),
+            "TX10 PROOF OBVIOUS of FALSE": (m + b"THEOREM RootLast == FALSE\nPROOF OBVIOUS\n====\n", [prover]),
+            "TX11 BY DEF": (m + b"F == TRUE\nTHEOREM RootLast == F\nBY DEF F\n====\n", [prover]),
+            "TX12 a definition line then ASSUME": (m + b"F ==\nASSUME FALSE\nTHEOREM RootLast == 1 = 2\nPROOF OBVIOUS\n====\n", [escape]),
+            "TX13 a comment then ASSUME on one line": (m + b"(* x *) ASSUME FALSE\nTHEOREM RootLast == TRUE\n====\n", [escape]),
+            "TX14 10k nested comments": (m + b"(*" * 10000 + b"*)" * 10000 + b"\nTHEOREM RootLast == TRUE\n====\n", [prover]),
+            "TX15 BOM": ("\ufeff".encode() + m + b"THEOREM RootLast == TRUE\n====\n", [prover]),
+            "TX16 sequent theorem with ASSUME FALSE": (m + b"THEOREM Cheat ==\nASSUME FALSE PROVE 1 = 2\nTHEOREM RootLast == 1 = 2\nBY Cheat\n====\n", [prover]),
+            "TX17 EXTENDS the declared model module": (m + b"EXTENDS Publication, Naturals\nTHEOREM RootLast == TRUE\n====\n", [prover]),
+            "TX18 EXTENDS continued on the next line": (m + b"EXTENDS Naturals,\n  Cheat\nTHEOREM RootLast == TRUE\n====\n", [escape]),
+        }, False, TLA_REL)
+
+    def test_B_one_megabyte_inputs_run_in_bounded_time(self) -> None:
+        for label, (expression, language) in TIMED_FORMAL_CASES.items():
+            with self.subTest(case=label):
+                try:
+                    elapsed, result = timed_formal_check(expression, language)
+                except subprocess.TimeoutExpired:
+                    self.fail(f"{label}: the static pre-filter did not finish within 30 s")
+                self.assertEqual(result.returncode, 0, result.stderr[-400:])
+                self.assertLess(elapsed, 30.0)
+                self.assertIsInstance(json.loads(result.stdout), list)
 
 if __name__ == "__main__":
     unittest.main()
