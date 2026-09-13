@@ -161,7 +161,6 @@ fn request<'a>(
         contract_basis: basis(),
         previous_anchor: None,
         predecessor_publication: None,
-        lineage: None,
         decision,
         event_receipt,
         alert_plan: None,
@@ -1358,8 +1357,7 @@ fn another_events_rejection_never_terminalizes_this_event() -> Result<(), Box<dy
         )?,
         &spec,
     )?;
-    let mut store = crate::meaningful_delta_tests::FixtureLineage::new()?;
-    store.lineage.record(&basis)?;
+    crate::record_reference_publication(&mut harness.authority, &basis)?;
     // The lineage refuses another event's publication as a predecessor at compile time.
     let mut rejected_request = request(
         &rejected,
@@ -1367,7 +1365,6 @@ fn another_events_rejection_never_terminalizes_this_event() -> Result<(), Box<dy
         capabilities(&["capability:evidence.query", "capability:session.wait"]),
     )?;
     rejected_request.predecessor_publication = Some(basis.publication_digest);
-    rejected_request.lineage = Some(&store.lineage);
     let chained = compile_reference_situation(rejected_request, &harness.authority);
     assert!(
         matches!(
@@ -1390,7 +1387,7 @@ fn another_events_rejection_never_terminalizes_this_event() -> Result<(), Box<dy
         )?,
         &spec,
     )?;
-    store.lineage.record(&result)?;
+    crate::record_reference_publication(&mut harness.authority, &result)?;
     assert!(
         result
             .situation
@@ -1406,7 +1403,7 @@ fn another_events_rejection_never_terminalizes_this_event() -> Result<(), Box<dy
     let delta = crate::classify_reference_meaningful_delta_in_lineage(
         &basis,
         &result,
-        &store.lineage,
+        &harness.authority,
         None,
     )?;
     assert!(
@@ -1424,7 +1421,6 @@ fn another_events_rejection_never_terminalizes_this_event() -> Result<(), Box<dy
         delta.classes
     );
     delta.validate()?;
-    store.cleanup();
     harness.cleanup();
     Ok(())
 }

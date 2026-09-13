@@ -1197,7 +1197,6 @@ fn test_inv092_pipeline_compilation_and_budget_enforcement() -> Result<(), Box<d
         contract_basis: test_basis(),
         previous_anchor: None,
         predecessor_publication: None,
-        lineage: None,
         decision: &decision,
         event_receipt: &receipt,
         alert_plan: None,

@@ -152,10 +152,10 @@ pub use situation_guard::{
     compile_reference_situation_with_operation_receipt, seal_reference_handoff,
 };
 pub use situation_sections::{
-    RedundancyRecord, ReferenceProjectionSpec, ReferencePublicationLineage,
-    ReferenceSituationPublication, compile_reference_situation_publication,
-    compile_reference_situation_publication_with_operation_receipt, project_reference_situation,
-    seal_reference_publication_handoff,
+    RedundancyRecord, ReferenceProjectionSpec, ReferenceSituationPublication,
+    compile_reference_situation_publication,
+    compile_reference_situation_publication_with_operation_receipt, latest_reference_publication,
+    project_reference_situation, record_reference_publication, seal_reference_publication_handoff,
 };
 pub use source::{
     MAX_VIRTUAL_PACKET_BYTES, MAX_VIRTUAL_PACKETS, SourcePacket, VirtualCameraSpec, VirtualSource,

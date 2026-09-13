@@ -12,10 +12,10 @@ use fss_core::{
 use fss_core::ObligationId;
 
 use crate::situation::{EFFECT_CLAIM_PREFIX, EffectOutcome, OBLIGATION_CLAIM_PREFIX};
-use crate::{
-    DurableEffectJournal, ReferenceError, ReferencePublicationLineage,
-    ReferenceSituationPublication,
-};
+use fss_ledger::DurableReferenceLedger;
+
+use crate::situation_sections::{compiled_against, records_successor};
+use crate::{DurableEffectJournal, ReferenceError, ReferenceSituationPublication};
 
 /// Returns whether a premise that a plan relied on at `prior` is invalidated by its `current`
 /// knowledge state (registries/AGENT_CONTRACTS.md, "Knowledge states").
@@ -156,28 +156,32 @@ pub fn classify_reference_meaningful_delta(
     classify(basis, result, None)
 }
 
-/// Classifies like [`classify_reference_meaningful_delta`], bound to the durable publication
-/// lineage and, for obligation discharges, the durable effect journal.
+/// Classifies `basis` to `result` like [`classify_reference_meaningful_delta`], and may also
+/// report a terminal transition, checked against the durable `authority` ledger whose publication
+/// lineage both compiles read and, for an obligation discharge, the durable effect `journal`.
 ///
-/// A terminal transition needs both publications sealed with the same subject and `result`
-/// recorded in `lineage` as the successor of `basis`. A terminal obligation discharge further needs
-/// `journal`: the durable effect journal `result` sealed its root from, which is refused on a root
-/// mismatch and while it still holds a dropped obligation open. Without `journal` a discharge is
-/// reported, but not as terminal. The lineage and journal commitments enter the delta's selection
-/// witness (fss-mnlz1).
+/// A terminal transition needs both publications sealed for the same subject, compiled against
+/// this authority (it committed the authority anchor each sealed, so a second store that does not
+/// carry the authority's history cannot vouch for them), the result's sealed predecessor to be the
+/// basis, and the authority's lineage to record the result as the basis's one successor. A
+/// discharge also needs both sealed journal roots in `journal`'s committed history (the result's
+/// no earlier than the basis's) and every dropped obligation terminal (`verified`, `failed` or
+/// `cancelled`) there as of the result's root; an obligation the journal never recorded, or one
+/// still open, is refused. Otherwise every change is reported, but not as terminal. The authority
+/// and journal commitments enter the delta's selection witness (fss-mnlz1).
 pub fn classify_reference_meaningful_delta_in_lineage(
     basis: &ReferenceSituationPublication,
     result: &ReferenceSituationPublication,
-    lineage: &ReferencePublicationLineage,
+    authority: &DurableReferenceLedger,
     journal: Option<&DurableEffectJournal>,
 ) -> Result<MeaningfulDelta, ReferenceError> {
-    classify(basis, result, Some(LineageBinding { lineage, journal }))
+    classify(basis, result, Some(LineageBinding { authority, journal }))
 }
 
 /// The durable stores a lineage-bound classification is checked against.
 #[derive(Clone, Copy)]
 struct LineageBinding<'a> {
-    lineage: &'a ReferencePublicationLineage,
+    authority: &'a DurableReferenceLedger,
     journal: Option<&'a DurableEffectJournal>,
 }
 
@@ -195,16 +199,20 @@ fn classify(
     // the set included, but never as a terminal transition (fss-6sph6). The seal covers every cell
     // of a sealed capsule; an effect must also be proved through its typed binding.
     // fss-mnlz1: a terminal transition also needs the result to continue the basis, as the
-    // durable lineage records it: both carry the same sealed subject (event and objective), the
-    // result's sealed predecessor is the basis publication, and the lineage records the result as
-    // the basis's one successor. Without the lineage (the plain classifier), a stale basis,
-    // another event of the mission, or a second child every change is reported but none is
-    // terminal.
-    let terminal_allowed = binding.is_some_and(|binding| {
-        binding
-            .lineage
-            .records_successor(basis.publication_digest, result.publication_digest)
-    }) && basis.situation.is_sealed()
+    // authority's lineage records it: both carry the same sealed subject (event and objective),
+    // both were compiled against the given authority (it committed their sealed authority
+    // anchors), the result's sealed predecessor is the basis publication, and the authority's
+    // lineage records the result as the basis's one successor. Without the authority (the plain
+    // classifier), with another store, a stale basis, another event of the mission, or a second
+    // child every change is reported but none is terminal.
+    let terminal_allowed = match binding {
+        Some(binding) => {
+            compiled_against(binding.authority, &basis.situation)
+                && compiled_against(binding.authority, &result.situation)
+                && records_successor(binding.authority, basis, result)?
+        }
+        None => false,
+    } && basis.situation.is_sealed()
         && result.situation.is_sealed()
         && basis.situation.same_subject(&result.situation)
         && result.situation.predecessor_publication() == Some(basis.publication_digest);
@@ -544,10 +552,11 @@ fn classify(
             .difference(&result_obligations)
             .next()
             .is_some();
-    // fss-mnlz1: a terminal discharge must agree with the durable effect journal the result
-    // sealed its root from; without that journal the discharge is reported but not terminal.
+    // fss-mnlz1: a terminal discharge must agree with the durable effect journal both sides sealed
+    // their roots from; without that journal the discharge is reported but not terminal.
     let obligation_terminalized = obligation_terminalized
         && verify_discharge(
+            basis,
             result,
             &basis_obligations,
             &result_obligations,
@@ -745,7 +754,7 @@ fn classify(
         coverage_changes: &coverage_changes,
         obligation_changes: &obligation_changes,
         effect_uncertainty_changes: &effect_uncertainty_changes,
-        lineage_commitment: binding.map(|binding| binding.lineage.commitment()),
+        lineage_commitment: binding.map(|binding| binding.authority.journal_root()),
         journal_commitment: binding
             .and_then(|binding| binding.journal)
             .map(DurableEffectJournal::last_root),
@@ -849,11 +858,15 @@ fn contradiction_changed(
 }
 
 /// Returns whether a continuing sealed discharge of `basis_obligations` minus
-/// `result_obligations` is terminal: it needs the durable effect `journal` whose root `result`
-/// sealed, and none of the dropped obligations may still be open there. Without a journal the
-/// discharge is not terminal; a substitute journal or a still-open obligation is refused
-/// (fss-mnlz1).
+/// `result_obligations` is terminal, checked against the durable effect `journal` (fss-mnlz1).
+///
+/// Both publications must have sealed a root of `journal`'s committed history, the result's no
+/// earlier than the basis's; the journal may have advanced since (a prefix is accepted). Otherwise,
+/// or without a journal, the discharge is reported but not terminal. As the history stood at the
+/// result's root, every dropped obligation must exist and be terminal (`verified`, `failed` or
+/// `cancelled`): an obligation the journal never recorded is refused, and so is one still open.
 fn verify_discharge(
+    basis: &ReferenceSituationPublication,
     result: &ReferenceSituationPublication,
     basis_obligations: &BTreeSet<&ObligationId>,
     result_obligations: &BTreeSet<&ObligationId>,
@@ -862,25 +875,46 @@ fn verify_discharge(
     let Some(journal) = journal else {
         return Ok(false);
     };
-    if result.situation.journal_root() != Some(journal.last_root()) {
-        return Err(ReferenceError::InvalidSpec(
-            "meaningful_delta_journal_root_mismatch",
-        ));
+    let (Some(basis_root), Some(result_root)) = (
+        basis.situation.journal_root(),
+        result.situation.journal_root(),
+    ) else {
+        return Ok(false);
+    };
+    let unreadable = |_| ReferenceError::InvalidSpec("meaningful_delta_journal_unreadable");
+    let history = journal.committed_roots().map_err(unreadable)?;
+    let position = |root: ContentDigest| history.iter().position(|committed| *committed == root);
+    let (Some(basis_at), Some(result_at)) = (position(basis_root), position(result_root)) else {
+        return Ok(false);
+    };
+    if result_at < basis_at {
+        return Ok(false);
     }
-    let still_open = basis_obligations
-        .difference(result_obligations)
-        .any(|dropped| {
-            journal.obligation(dropped).is_some_and(|obligation| {
-                matches!(
-                    obligation.state,
-                    fss_core::ObligationState::Pending | fss_core::ObligationState::Indeterminate
-                )
-            })
-        });
-    if still_open {
-        return Err(ReferenceError::InvalidSpec(
-            "meaningful_delta_obligation_still_open",
-        ));
+    let Some(at_result) = journal.replay_through(result_root).map_err(unreadable)? else {
+        return Ok(false);
+    };
+    for dropped in basis_obligations.difference(result_obligations) {
+        let state = at_result
+            .obligations()
+            .find(|obligation| &&obligation.obligation_id == dropped)
+            .map(|obligation| obligation.state);
+        match state {
+            Some(
+                fss_core::ObligationState::Verified
+                | fss_core::ObligationState::Failed
+                | fss_core::ObligationState::Cancelled,
+            ) => {}
+            Some(fss_core::ObligationState::Pending | fss_core::ObligationState::Indeterminate) => {
+                return Err(ReferenceError::InvalidSpec(
+                    "meaningful_delta_obligation_still_open",
+                ));
+            }
+            None => {
+                return Err(ReferenceError::InvalidSpec(
+                    "meaningful_delta_obligation_unknown_to_journal",
+                ));
+            }
+        }
     }
     Ok(true)
 }

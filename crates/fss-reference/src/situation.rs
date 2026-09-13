@@ -15,7 +15,6 @@ use fss_core::{EventId, OperationId};
 use fss_ledger::DurableReferenceLedger;
 use fss_object::ObjectManifest;
 
-use crate::situation_sections::ReferencePublicationLineage;
 use crate::{
     ReferenceAlertOutcomeReceipt, ReferenceAlertPlan, ReferenceError, ReferenceEventReceipt,
     ReferencePolicyAction, ReferencePolicyDecision, alert::validate_reference_alert_plan,
@@ -52,11 +51,9 @@ pub struct ReferenceSituationRequest<'a> {
     /// Publication digest of the predecessor this situation continues, when it continues one.
     ///
     /// It is sealed with the situation, so a meaningful delta can require its result to descend
-    /// from its basis (fss-mnlz1).
+    /// from its basis. Compile refuses a predecessor that is not the latest publication of this
+    /// subject recorded in the authority ledger it compiles against (fss-mnlz1).
     pub predecessor_publication: Option<ContentDigest>,
-    /// Durable publication lineage a predecessor is checked against: compile refuses a predecessor
-    /// that is not the latest recorded publication of this subject (fss-mnlz1).
-    pub lineage: Option<&'a ReferencePublicationLineage>,
     /// Canonical policy decision being projected.
     pub decision: &'a ReferencePolicyDecision,
     /// Authority receipt for the event revision.
@@ -180,6 +177,10 @@ pub struct ReferenceSituation {
     predecessor: Option<ContentDigest>,
     /// Root of the durable effect journal a compile path compiled against, when it did.
     journal_root: Option<ContentDigest>,
+    /// Authority anchor a compile path compiled against. A lineage-bound classification requires
+    /// the authority it is given to have committed it, so a store that does not carry this
+    /// authority's history cannot vouch for the situation's lineage (fss-mnlz1).
+    authority_anchor: Option<LedgerAnchor>,
 }
 
 impl ReferenceSituation {
@@ -198,6 +199,7 @@ impl ReferenceSituation {
             subject: None,
             predecessor: None,
             journal_root: None,
+            authority_anchor: None,
         }
     }
 
@@ -302,6 +304,19 @@ impl ReferenceSituation {
         self.journal_root
     }
 
+    /// Records the authority anchor a compile path compiled against; sealing covers it
+    /// (fss-mnlz1).
+    pub(crate) fn set_authority_anchor(&mut self, anchor: LedgerAnchor) {
+        self.authority_anchor = Some(anchor);
+    }
+
+    /// Returns the sealed authority anchor a compile path compiled against, or `None` for a
+    /// hand-built situation.
+    #[must_use]
+    pub fn authority_anchor(&self) -> Option<&LedgerAnchor> {
+        self.authority_anchor.as_ref()
+    }
+
     /// Returns whether both situations carry a sealed subject and it is the same one.
     pub(crate) fn same_subject(&self, other: &Self) -> bool {
         self.subject.is_some() && self.subject == other.subject
@@ -338,7 +353,7 @@ impl ReferenceSituation {
             .capsule
             .validated_digest("fss.reference_effect_binding_capsule.v1")?;
         let mut encoder = CanonicalEncoder::new();
-        encoder.text("fss.reference_effect_binding_seal.v4");
+        encoder.text("fss.reference_effect_binding_seal.v5");
         encoder.digest(capsule);
         // The lineage: what the situation is about and which publication it continues.
         match &self.subject {
@@ -360,6 +375,13 @@ impl ReferenceSituation {
             Some(journal_root) => {
                 encoder.bool(true);
                 encoder.digest(journal_root);
+            }
+            None => encoder.bool(false),
+        }
+        match &self.authority_anchor {
+            Some(anchor) => {
+                encoder.bool(true);
+                anchor.encode_canonical(&mut encoder);
             }
             None => encoder.bool(false),
         }
@@ -1147,6 +1169,7 @@ pub fn compile_reference_situation(
         request.objective_id.clone(),
         request.predecessor_publication,
     );
+    situation.set_authority_anchor(authority.current().anchor.clone());
     situation.seal_effect_bindings()?;
     Ok(situation)
 }
@@ -1259,8 +1282,12 @@ fn validate_request(
             ))?;
             match outcome {
                 Some(outcome) => {
-                    if outcome.authority_anchor != *current
-                        || outcome.effect_object_id.as_str() != effect_object_id.as_str()
+                    // Lineage records appended after the outcome change no authority object, so
+                    // the outcome stays current across them (fss-mnlz1).
+                    if !crate::situation_sections::anchor_is_current_modulo_lineage(
+                        authority,
+                        &outcome.authority_anchor,
+                    ) || outcome.effect_object_id.as_str() != effect_object_id.as_str()
                         || outcome.outcome.operation_receipt.intent != plan.intent
                         || outcome.outcome.obligation_id.as_str() != plan.obligation_id.as_str()
                         || outcome.outcome.event_root != plan.event_root
@@ -1291,19 +1318,19 @@ fn validate_request(
         }
         (None, None) => {}
     }
-    // fss-mnlz1: a predecessor must be the latest recorded publication of this subject in the
-    // durable lineage, never an unknown digest, another subject's publication, or a stale one.
-    if let Some(predecessor) = request.predecessor_publication {
-        let lineage = request.lineage.ok_or(ReferenceError::InvalidSpec(
-            "situation_predecessor_unverified",
-        ))?;
-        if lineage.latest(&request.decision.event.event_id, &request.objective_id)?
-            != Some(predecessor)
-        {
-            return Err(ReferenceError::InvalidSpec(
-                "situation_predecessor_not_latest",
-            ));
-        }
+    // fss-mnlz1: a predecessor must be the latest publication of this subject recorded in this
+    // authority's lineage, never an unknown digest, another subject's publication, a stale one, or
+    // one recorded only in some other store.
+    if let Some(predecessor) = request.predecessor_publication
+        && crate::situation_sections::latest_reference_publication(
+            authority,
+            &request.decision.event.event_id,
+            &request.objective_id,
+        )? != Some(predecessor)
+    {
+        return Err(ReferenceError::InvalidSpec(
+            "situation_predecessor_not_latest",
+        ));
     }
     Ok(())
 }

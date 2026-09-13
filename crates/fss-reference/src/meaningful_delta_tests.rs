@@ -34,6 +34,7 @@ struct Variant {
     effect_terminal_state: fss_core::EffectState,
     effect_statement: Option<String>,
     predecessor: Option<ContentDigest>,
+    journal_root: Option<ContentDigest>,
     created_at: Option<TimestampNs>,
     pressure: ResourcePressure,
     degraded_dimensions: BTreeSet<String>,
@@ -62,6 +63,7 @@ impl Variant {
             effect_terminal_state: fss_core::EffectState::Verified,
             effect_statement: None,
             predecessor: None,
+            journal_root: None,
             created_at: None,
             pressure: ResourcePressure::Nominal,
             degraded_dimensions: BTreeSet::new(),
@@ -296,6 +298,10 @@ fn publication(variant: &Variant) -> Result<crate::ReferenceSituationPublication
         "objective:meaningful-delta".to_owned(),
         variant.predecessor,
     );
+    if let Some(journal_root) = variant.journal_root {
+        situation.set_journal_root(journal_root);
+    }
+    situation.set_authority_anchor(fixture_authority_anchor()?);
     situation.seal_effect_bindings()?;
     project_reference_situation(
         situation,
@@ -2207,6 +2213,7 @@ fn publication_with_cell(
             "objective:meaningful-delta".to_owned(),
             predecessor,
         );
+        situation.set_authority_anchor(fixture_authority_anchor()?);
         situation.seal_effect_bindings()?;
     }
     Ok(project_reference_situation(situation, &nominal_spec()?)?)
@@ -2633,6 +2640,7 @@ fn resealed_copy(
         "objective:meaningful-delta".to_owned(),
         predecessor,
     );
+    situation.set_authority_anchor(fixture_authority_anchor()?);
     situation.seal_effect_bindings()?;
     Ok(project_reference_situation(situation, &nominal_spec()?)?)
 }
@@ -2734,15 +2742,50 @@ fn effect_terminalization_needs_the_result_to_continue_the_basis() -> Result<(),
     Ok(())
 }
 
-/// A durable publication lineage under a fresh temporary path, removed by [`Self::cleanup`].
-pub(crate) struct FixtureLineage {
-    pub(crate) lineage: crate::ReferencePublicationLineage,
+/// Site lineage of the fixture authority.
+const FIXTURE_AUTHORITY_SITE: &str = "site:meaningful-delta:authority";
+
+/// The one authority batch every fixture publication stands compiled against: an authority ledger
+/// holding it commits the authority anchor the fixtures seal (fss-mnlz1).
+fn fixture_authority_batch() -> Result<fss_core::EvidenceDeltaBatch, Box<dyn Error>> {
+    let root = ContentDigest::sha256(b"meaningful-delta-authority");
+    let delta = fss_core::EvidenceDelta {
+        delta_id: "delta:meaningful-delta:authority".to_owned(),
+        family: "fixture_authority".to_owned(),
+        object_id: fss_core::ObjectId::parse("object:meaningful-delta:authority")?,
+        prior_generation: None,
+        new_generation: 1,
+        validity: fss_core::CaptureInterval::new(TimestampNs(0), TimestampNs(0))?,
+        plane: fss_core::Plane::Authority,
+        payload_digest: root,
+        witness_digest: None,
+        operation_id: None,
+    };
+    Ok(
+        fss_core::ReferenceLedger::new(FIXTURE_AUTHORITY_SITE).prepare_batch(
+            fss_core::BatchId::parse("batch:meaningful-delta:authority")?,
+            vec![delta],
+            [root],
+        )?,
+    )
+}
+
+/// The authority anchor fixture publications seal, as a compile path seals the anchor it compiled
+/// against.
+fn fixture_authority_anchor() -> Result<LedgerAnchor, Box<dyn Error>> {
+    Ok(fixture_authority_batch()?.new_anchor)
+}
+
+/// A durable fixture authority under a fresh temporary path: the fixture authority batch, then the
+/// publication lineage a test records. Removed by [`Self::cleanup`].
+struct FixtureLineage {
+    authority: fss_ledger::DurableReferenceLedger,
     path: std::path::PathBuf,
 }
 
 impl FixtureLineage {
-    /// Opens an empty lineage whose path is unique to this process, thread and instant.
-    pub(crate) fn new() -> Result<Self, Box<dyn Error>> {
+    /// Opens an authority whose path is unique to this process, thread and instant.
+    fn new() -> Result<Self, Box<dyn Error>> {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_nanos();
@@ -2751,33 +2794,34 @@ impl FixtureLineage {
             .filter(char::is_ascii_alphanumeric)
             .collect::<String>();
         let path = std::env::temp_dir().join(format!(
-            "fss-reference-lineage-{}-{thread}-{nanos}.journal",
+            "fss-reference-authority-{}-{thread}-{nanos}.journal",
             std::process::id()
         ));
         let _ = std::fs::remove_file(&path);
-        let lineage = crate::ReferencePublicationLineage::open(
+        let mut authority = fss_ledger::DurableReferenceLedger::open(
             &path,
-            "site:reference:lineage",
+            FIXTURE_AUTHORITY_SITE,
             fss_ledger::IncompleteTailPolicy::Reject,
         )?;
-        Ok(Self { lineage, path })
+        let _ = authority.append(fixture_authority_batch()?)?;
+        Ok(Self { authority, path })
     }
 
-    /// Removes the lineage file.
-    pub(crate) fn cleanup(self) {
+    /// Removes the authority file.
+    fn cleanup(self) {
         let path = self.path.clone();
         drop(self);
         let _ = std::fs::remove_file(path);
     }
 }
 
-/// A fresh lineage with `chain` recorded in order.
+/// A fresh fixture authority with `chain` recorded in order.
 fn recorded(
     chain: &[&crate::ReferenceSituationPublication],
 ) -> Result<FixtureLineage, Box<dyn Error>> {
     let mut store = FixtureLineage::new()?;
     for publication in chain {
-        store.lineage.record(publication)?;
+        crate::record_reference_publication(&mut store.authority, publication)?;
     }
     Ok(store)
 }
@@ -2788,7 +2832,7 @@ fn bound(
     basis: &crate::ReferenceSituationPublication,
     result: &crate::ReferenceSituationPublication,
 ) -> Result<fss_core::MeaningfulDelta, crate::ReferenceError> {
-    classify_reference_meaningful_delta_in_lineage(basis, result, &store.lineage, None)
+    classify_reference_meaningful_delta_in_lineage(basis, result, &store.authority, None)
 }
 
 /// Records `basis` and `result` in a fresh lineage and classifies the pair bound to it.
@@ -2828,5 +2872,242 @@ fn plain_classify_reports_terminal_changes_as_non_terminal() -> Result<(), Box<d
     assert!(plain.silence_certificate.is_none());
     assert!(plain.classes.contains(&MeaningfulDeltaClass::Obligation));
     plain.validate()?;
+    Ok(())
+}
+
+/// The obligation the fixture journal discharges.
+const DISCHARGED: &str = "obligation:meaningful-delta";
+
+/// An effect intent of the fixture journal.
+fn fixture_intent(name: &str) -> Result<fss_core::EffectIntent, Box<dyn Error>> {
+    Ok(fss_core::EffectIntent {
+        operation_id: fss_core::OperationId::parse(format!("operation:meaningful-delta:{name}"))?,
+        idempotency_key: fss_core::IdempotencyKey::parse(format!(
+            "idempotency:meaningful-delta:{name}"
+        ))?,
+        effect_class: "alert.dispatch".to_owned(),
+        request_digest: ContentDigest::sha256(b"meaningful-delta-request"),
+        precondition_digest: ContentDigest::sha256(b"meaningful-delta-preconditions"),
+    })
+}
+
+/// A durable effect journal under a fresh temporary path holding [`DISCHARGED`]'s history, then an
+/// unrelated obligation, with the root after each committed record (fss-mnlz1 N1 and N3).
+struct FixtureJournal {
+    journal: crate::DurableEffectJournal,
+    path: std::path::PathBuf,
+    /// Roots after [`DISCHARGED`] is prepared (0, pending), committed (1, pending), marked
+    /// indeterminate (2), and reconciled as failed (3, terminal), then after the unrelated
+    /// obligation is prepared (4).
+    roots: Vec<ContentDigest>,
+}
+
+impl FixtureJournal {
+    fn new(name: &str) -> Result<Self, Box<dyn Error>> {
+        let path = std::env::temp_dir().join(format!(
+            "fss-reference-delta-journal-{}-{name}.journal",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let mut journal =
+            crate::DurableEffectJournal::open(&path, fss_ledger::IncompleteTailPolicy::Reject)?;
+        let intent = fixture_intent("discharged")?;
+        let operation = intent.operation_id.clone();
+        let mut roots = Vec::new();
+        let _ = journal.prepare(
+            intent,
+            ObligationId::parse(DISCHARGED)?,
+            "the alert reaches a terminal outcome",
+            TimestampNs(10),
+        )?;
+        roots.push(journal.last_root());
+        let _ = journal.transition(
+            &operation,
+            fss_core::EffectState::Committed,
+            TimestampNs(11),
+            None,
+            None,
+        )?;
+        roots.push(journal.last_root());
+        let _ = journal.mark_indeterminate(&operation, TimestampNs(12), "acknowledgement lost")?;
+        roots.push(journal.last_root());
+        let _ = journal.reconcile_failed(
+            &operation,
+            ContentDigest::sha256(b"meaningful-delta-failure"),
+            TimestampNs(13),
+            "provider refused",
+        )?;
+        roots.push(journal.last_root());
+        let _ = journal.prepare(
+            fixture_intent("unrelated")?,
+            ObligationId::parse("obligation:meaningful-delta:unrelated")?,
+            "the unrelated alert reaches a terminal outcome",
+            TimestampNs(14),
+        )?;
+        roots.push(journal.last_root());
+        Ok(Self {
+            journal,
+            path,
+            roots,
+        })
+    }
+
+    /// The root after committed record `index`.
+    fn root(&self, index: usize) -> Result<ContentDigest, Box<dyn Error>> {
+        Ok(*self
+            .roots
+            .get(index)
+            .ok_or(crate::ReferenceError::InvalidSpec("fixture_journal_root"))?)
+    }
+
+    /// Removes the journal file.
+    fn cleanup(self) {
+        let path = self.path.clone();
+        drop(self);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// The basis holds `basis_obligation` and seals `basis_root`; its recorded successor drops it and
+/// seals `result_root`. Classifies the pair bound to the fixture authority and `journal`.
+fn discharge_delta(
+    journal: &crate::DurableEffectJournal,
+    basis_obligation: &str,
+    basis_root: Option<ContentDigest>,
+    result_root: Option<ContentDigest>,
+) -> Result<Result<fss_core::MeaningfulDelta, crate::ReferenceError>, Box<dyn Error>> {
+    let mut basis_variant = Variant::baseline()?;
+    basis_variant.obligations = vec![ObligationId::parse(basis_obligation)?];
+    basis_variant.journal_root = basis_root;
+    let basis = publication(&basis_variant)?;
+    let mut result_variant = Variant::baseline()?;
+    result_variant.sequence = 2;
+    result_variant.journal_root = result_root;
+    let result = successor_of(&basis, &result_variant)?;
+    let store = recorded(&[&basis, &result])?;
+    let delta = classify_reference_meaningful_delta_in_lineage(
+        &basis,
+        &result,
+        &store.authority,
+        Some(journal),
+    );
+    store.cleanup();
+    Ok(delta)
+}
+
+fn discharged_terminally(delta: &fss_core::MeaningfulDelta) -> bool {
+    delta
+        .classes
+        .contains(&MeaningfulDeltaClass::TerminalTransition)
+}
+
+/// fss-mnlz1 N3: a discharge sealed at roots the journal has since moved past stays terminal, since
+/// its committed history still holds them. A result root outside the history, or none, is reported
+/// but never refused and never terminal.
+#[test]
+fn a_discharge_is_checked_against_a_prefix_of_the_journal_history() -> Result<(), Box<dyn Error>> {
+    let fixture = FixtureJournal::new("n3-prefix")?;
+    assert_ne!(fixture.root(3)?, fixture.journal.last_root());
+    let delta = discharge_delta(
+        &fixture.journal,
+        DISCHARGED,
+        Some(fixture.root(0)?),
+        Some(fixture.root(3)?),
+    )??;
+    assert!(discharged_terminally(&delta), "{:?}", delta.classes);
+    assert!(delta.classes.contains(&MeaningfulDeltaClass::Obligation));
+    delta.validate()?;
+    for result_root in [Some(ContentDigest::sha256(b"another-journal-root")), None] {
+        let delta = discharge_delta(
+            &fixture.journal,
+            DISCHARGED,
+            Some(fixture.root(0)?),
+            result_root,
+        )??;
+        assert!(
+            !discharged_terminally(&delta),
+            "{result_root:?}: {:?}",
+            delta.classes
+        );
+        assert!(
+            delta.classes.contains(&MeaningfulDeltaClass::Obligation),
+            "{result_root:?}: {:?}",
+            delta.classes
+        );
+        delta.validate()?;
+    }
+    fixture.cleanup();
+    Ok(())
+}
+
+/// fss-mnlz1 N1: the result's sealed root must not precede the basis's in the journal history. A
+/// result sealed at the failed root, after a basis sealed later, is reported but never terminal,
+/// although the obligation is terminal at the result's root.
+#[test]
+fn a_result_sealed_before_its_basis_never_discharges() -> Result<(), Box<dyn Error>> {
+    let fixture = FixtureJournal::new("n1-order")?;
+    let delta = discharge_delta(
+        &fixture.journal,
+        DISCHARGED,
+        Some(fixture.root(4)?),
+        Some(fixture.root(3)?),
+    )??;
+    assert!(!discharged_terminally(&delta), "{:?}", delta.classes);
+    assert!(delta.classes.contains(&MeaningfulDeltaClass::Obligation));
+    delta.validate()?;
+    fixture.cleanup();
+    Ok(())
+}
+
+/// fss-mnlz1 N1: a dropped obligation the journal never recorded is refused, never taken as
+/// discharged.
+#[test]
+fn discharging_an_obligation_the_journal_never_recorded_is_refused() -> Result<(), Box<dyn Error>> {
+    let fixture = FixtureJournal::new("n1-unknown")?;
+    let delta = discharge_delta(
+        &fixture.journal,
+        "obligation:meaningful-delta:never-recorded",
+        Some(fixture.root(0)?),
+        Some(fixture.root(3)?),
+    )?;
+    assert!(
+        matches!(
+            delta,
+            Err(crate::ReferenceError::InvalidSpec(
+                "meaningful_delta_obligation_unknown_to_journal"
+            ))
+        ),
+        "{:?}",
+        delta.map(|delta| delta.classes)
+    );
+    fixture.cleanup();
+    Ok(())
+}
+
+/// fss-mnlz1 N1: a discharge is judged as the journal stood at the result's sealed root, so later
+/// history never launders it. The obligation is pending at root 1 and indeterminate at root 2, both
+/// refused as still open, although the journal has since reconciled it as failed.
+#[test]
+fn a_discharge_is_judged_as_the_journal_stood_at_the_results_root() -> Result<(), Box<dyn Error>> {
+    let fixture = FixtureJournal::new("n1-as-of")?;
+    for index in [1, 2] {
+        let delta = discharge_delta(
+            &fixture.journal,
+            DISCHARGED,
+            Some(fixture.root(0)?),
+            Some(fixture.root(index)?),
+        )?;
+        assert!(
+            matches!(
+                delta,
+                Err(crate::ReferenceError::InvalidSpec(
+                    "meaningful_delta_obligation_still_open"
+                ))
+            ),
+            "root {index}: {:?}",
+            delta.map(|delta| delta.classes)
+        );
+    }
+    fixture.cleanup();
     Ok(())
 }

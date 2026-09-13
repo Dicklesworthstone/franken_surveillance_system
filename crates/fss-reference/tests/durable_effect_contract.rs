@@ -269,7 +269,6 @@ fn situation_request<'a>(
         ),
         previous_anchor: None,
         predecessor_publication: None,
-        lineage: None,
         decision,
         event_receipt: receipt,
         alert_plan: plan,

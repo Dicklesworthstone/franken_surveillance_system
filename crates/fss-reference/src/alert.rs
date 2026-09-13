@@ -435,7 +435,8 @@ pub struct PrepareAlertParams<'a> {
 /// Prepares an alert effect only from a currently authoritative independently corroborated event.
 ///
 /// The supplied event receipt must match the current durable authority anchor and the latest
-/// publication batch must contain the exact event root/revision witness. This prevents a forged or
+/// publication batch must contain the exact event root/revision witness; publication lineage
+/// records, which change no authority object, are skipped for both. This prevents a forged or
 /// stale typed receipt from becoming effect authority.
 pub fn prepare_reference_alert(
     params: PrepareAlertParams<'_>,
@@ -461,16 +462,28 @@ pub fn prepare_reference_alert(
     if params.event_receipt.event_revision_digest != params.decision.event.revision_digest() {
         return Err(ReferenceError::InvalidSpec("event_receipt_mismatch"));
     }
-    if params.authority.current().anchor != params.event_receipt.authority_anchor {
+    // Publication lineage records change no authority object other than a lineage object, so a
+    // receipt stays current across them and the latest authority batch is the latest non-lineage
+    // one (fss-mnlz1).
+    if !crate::situation_sections::anchor_is_current_modulo_lineage(
+        params.authority,
+        &params.event_receipt.authority_anchor,
+    ) {
         return Err(ReferenceError::InvalidSpec("event_authority_stale"));
     }
-    let latest_contains_event = params.authority.batches().last().is_some_and(|batch| {
-        batch.deltas.iter().any(|delta| {
-            delta.family == "event_revision"
-                && delta.payload_digest == params.event_receipt.event_root
-                && delta.witness_digest == Some(params.event_receipt.event_revision_digest)
-        })
-    });
+    let latest_contains_event = params
+        .authority
+        .batches()
+        .iter()
+        .rev()
+        .find(|batch| !crate::situation_sections::is_lineage_batch(batch))
+        .is_some_and(|batch| {
+            batch.deltas.iter().any(|delta| {
+                delta.family == "event_revision"
+                    && delta.payload_digest == params.event_receipt.event_root
+                    && delta.witness_digest == Some(params.event_receipt.event_revision_digest)
+            })
+        });
     if !latest_contains_event {
         return Err(ReferenceError::InvalidSpec("event_receipt_mismatch"));
     }

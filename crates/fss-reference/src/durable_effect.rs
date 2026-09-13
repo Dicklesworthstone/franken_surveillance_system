@@ -15,7 +15,7 @@ use fss_core::{
 };
 use fss_ledger::{
     DurableReferenceLedger, ExternalMutationKind, IncompleteTailPolicy, Journal, JournalError,
-    RecoveryReport, inspect,
+    JournalRecord, RecoveryReport, inspect,
 };
 use fss_object::InMemoryObjectStore;
 
@@ -244,6 +244,36 @@ impl DurableEffectJournal {
     #[must_use]
     pub fn last_root(&self) -> ContentDigest {
         self.journal.last_root()
+    }
+
+    /// Roots of every committed record, in commit order, read back from the durable file: the
+    /// history a sealed journal root must belong to (fss-mnlz1).
+    pub(crate) fn committed_roots(&self) -> Result<Vec<ContentDigest>, DurableEffectError> {
+        Ok(inspect(self.path())?
+            .records()
+            .iter()
+            .map(JournalRecord::root)
+            .collect())
+    }
+
+    /// The effect journal as its committed history stood right after the record whose root is
+    /// `root`, or `None` when no committed record has that root (fss-mnlz1).
+    pub(crate) fn replay_through(
+        &self,
+        root: ContentDigest,
+    ) -> Result<Option<EffectJournal>, DurableEffectError> {
+        let report = inspect(self.path())?;
+        let records = report.records();
+        let Some(last) = records.iter().position(|record| record.root() == root) else {
+            return Ok(None);
+        };
+        let (before, from) = records.split_at(last);
+        let Some(through) = from.first() else {
+            return Ok(None);
+        };
+        let mut prefix = before.to_vec();
+        prefix.push(through.clone());
+        replay_records(&prefix).map(Some)
     }
 
     /// Reconciled byte length of the committed journal prefix.
@@ -817,8 +847,13 @@ impl DurableEffectJournal {
 }
 
 fn replay_report(report: &RecoveryReport) -> Result<EffectJournal, DurableEffectError> {
-    let mut transitions = Vec::with_capacity(report.records().len());
-    for record in report.records() {
+    replay_records(report.records())
+}
+
+/// Replays `records`, in commit order, into a fresh effect journal.
+fn replay_records(records: &[JournalRecord]) -> Result<EffectJournal, DurableEffectError> {
+    let mut transitions = Vec::with_capacity(records.len());
+    for record in records {
         if record.kind() != EFFECT_TRANSITION_RECORD_KIND {
             return Err(DurableEffectError::UnexpectedRecordKind {
                 sequence: record.sequence(),
