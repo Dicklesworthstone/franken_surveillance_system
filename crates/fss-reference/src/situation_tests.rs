@@ -1088,7 +1088,7 @@ fn compiled_corroborated_cell_with_contradicting_edge_is_conflicted() -> Result<
 #[test]
 fn contradiction_only_witnessed_revision_is_refused_at_compile() -> Result<(), Box<dyn Error>> {
     let mut harness = SituationHarness::new("contradiction-only-witnessed")?;
-    let (mut decision, _) = harness.publish_decision(
+    let (mut decision, clean_receipt) = harness.publish_decision(
         "contradiction-only-witnessed-policy",
         &[(MockSemanticLabel::PersonLike, "power:alpha")],
     )?;
@@ -1103,9 +1103,20 @@ fn contradiction_only_witnessed_revision_is_refused_at_compile() -> Result<(), B
         decision.event.validate(),
         Err(ContractError::SupportingEvidenceRequired)
     );
-    // Publication does not validate, so compile must refuse it rather than project an estimate.
-    let event_receipt =
-        publish_reference_event(&decision, &mut harness.objects, &mut harness.authority)?;
+    // Publication verifies, so the revision never becomes authority...
+    let published =
+        publish_reference_event(&decision, &mut harness.objects, &mut harness.authority);
+    assert!(
+        matches!(
+            published,
+            Err(ReferenceError::Contract(
+                ContractError::SupportingEvidenceRequired
+            ))
+        ),
+        "{published:?}"
+    );
+    // ...and compile refuses it before any receipt check, even against a real authority receipt.
+    let event_receipt = clean_receipt;
     let compiled = compile_reference_situation(
         request(
             &decision,
@@ -1131,7 +1142,7 @@ fn contradiction_only_witnessed_revision_is_refused_at_compile() -> Result<(), B
 #[test]
 fn neutral_only_witnessed_revision_is_refused_at_compile() -> Result<(), Box<dyn Error>> {
     let mut harness = SituationHarness::new("neutral-only-witnessed")?;
-    let (mut decision, _) = harness.publish_decision(
+    let (mut decision, clean_receipt) = harness.publish_decision(
         "neutral-only-witnessed-policy",
         &[(MockSemanticLabel::PersonLike, "power:alpha")],
     )?;
@@ -1142,8 +1153,20 @@ fn neutral_only_witnessed_revision_is_refused_at_compile() -> Result<(), Box<dyn
         edge.relation = EvidenceEdgeRelation::DerivedFrom;
     }
     decision.event.event_id = EventId::parse("event:situation:neutral-only-witnessed")?;
-    let event_receipt =
-        publish_reference_event(&decision, &mut harness.objects, &mut harness.authority)?;
+    // Publication verifies, so the revision never becomes authority...
+    let published =
+        publish_reference_event(&decision, &mut harness.objects, &mut harness.authority);
+    assert!(
+        matches!(
+            published,
+            Err(ReferenceError::Contract(
+                ContractError::SupportingEvidenceRequired
+            ))
+        ),
+        "{published:?}"
+    );
+    // ...and compile refuses it before any receipt check, even against a real authority receipt.
+    let event_receipt = clean_receipt;
     let compiled = compile_reference_situation(
         request(
             &decision,

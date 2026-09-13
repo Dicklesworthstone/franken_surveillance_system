@@ -380,3 +380,33 @@ fn event_publication_requires_retained_model_objects() -> Result<(), Box<dyn Err
     let _ = fs::remove_file(path);
     Ok(())
 }
+
+#[test]
+fn policy_generation_is_pinned_to_v2() -> Result<(), Box<dyn Error>> {
+    let path = temp_journal("generation");
+    let _ = fs::remove_file(&path);
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(256, 4 * 1024 * 1024));
+    let mut ledger =
+        DurableReferenceLedger::open(&path, "site:policy", IncompleteTailPolicy::Reject)?;
+    let person = capture_and_model(
+        "capture:policy:generation",
+        "sensor:policy:generation",
+        80,
+        MockSemanticLabel::PersonLike,
+        "power:generation",
+        &mut objects,
+        &mut ledger,
+    )?;
+    let decision = evaluate_unknown_presence(
+        EventId::parse("event:unknown-person:generation")?,
+        vec![person],
+    )?;
+    // fss-fpry6 changed the policy's behaviour (neutral abstentions, typed tamper), so its
+    // generation names v2; a v1 generation would misattribute these decisions.
+    assert_eq!(
+        decision.event.decision_path.policy_generation,
+        fss_core::ContentDigest::sha256(b"fss.reference_unknown_presence_policy.v2")
+    );
+    let _ = fs::remove_file(path);
+    Ok(())
+}

@@ -2676,6 +2676,8 @@ pub enum ContractError {
     EventRevisionMalformed,
     /// A revision that establishes or acts on presence carries a sensor-tamper report.
     SensorIntegrityRisk,
+    /// A revision does not supersede the revision its object's authority currently holds.
+    SupersessionMismatch,
     /// A transition requires independent corroboration.
     CorroborationRequired,
     /// Canonical ordering is violated.
@@ -2759,6 +2761,7 @@ impl ContractError {
             Self::EvidenceRelationMismatch => "evidence_relation_mismatch",
             Self::EventRevisionMalformed => "event_revision_malformed",
             Self::SensorIntegrityRisk => "sensor_integrity_risk",
+            Self::SupersessionMismatch => "supersession_mismatch",
             Self::CorroborationRequired => "corroboration_required",
             Self::NonCanonicalOrdering => "noncanonical_ordering",
             Self::StaleAnchor => "stale_anchor",
