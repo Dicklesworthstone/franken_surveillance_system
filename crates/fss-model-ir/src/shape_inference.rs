@@ -72,18 +72,22 @@ pub fn infer_operator_outputs(
     attrs: &AttributeMap,
     generation: Generation,
 ) -> Result<Vec<TensorPort>, ModelIrError> {
-    // 1. Enforce strict attribute schema for the operator
-    let allowed_schema = op.allowed_attributes();
-    for attr_name in attrs.keys() {
-        if !allowed_schema.contains(&attr_name.as_str()) {
-            return Err(ModelIrError::InvalidAttribute {
-                node_id: node_id.to_string(),
-                attr_name: attr_name.clone(),
-                reason: format!(
-                    "unknown attribute '{attr_name}' for operator {} (allowed: {allowed_schema:?})",
-                    op.stable_id()
-                ),
-            });
+    // 1. Enforce strict attribute schema and type validation for the operator
+    for (attr_name, attr_val) in attrs {
+        match op.get_attribute_spec(attr_name) {
+            Some(spec) => {
+                spec.validate_type(node_id, attr_val)?;
+            }
+            None => {
+                return Err(ModelIrError::InvalidAttribute {
+                    node_id: node_id.to_string(),
+                    attr_name: attr_name.clone(),
+                    reason: format!(
+                        "unknown attribute '{attr_name}' for operator {}",
+                        op.stable_id()
+                    ),
+                });
+            }
         }
     }
 
@@ -145,6 +149,16 @@ pub fn infer_operator_outputs(
                 });
             }
 
+            if op == OpCode::Div && in0.dtype() == DType::Bool {
+                return Err(ModelIrError::DTypeMismatch {
+                    node_id: node_id.to_string(),
+                    op_id: op.stable_id(),
+                    expected: DType::F32,
+                    actual: in0.dtype(),
+                    tensor_name: in0.name().to_string(),
+                });
+            }
+
             let out_shape = broadcast_shapes(node_id, op.stable_id(), in0.shape(), in1.shape())?;
             let port = TensorPort::new(&output_names[0], in0.dtype(), out_shape, generation)?;
             Ok(vec![port])
@@ -176,6 +190,19 @@ pub fn infer_operator_outputs(
                     actual: in0.dtype(),
                     tensor_name: in0.name().to_string(),
                 });
+            }
+
+            if op == OpCode::Gelu
+                && let Some(approx_attr) = attrs.get("approximate")
+            {
+                let s = approx_attr.as_str(node_id, "approximate")?;
+                if s != "none" && s != "tanh" {
+                    return Err(ModelIrError::InvalidAttribute {
+                        node_id: node_id.to_string(),
+                        attr_name: "approximate".to_string(),
+                        reason: format!("approximate must be 'none' or 'tanh', got '{s}'"),
+                    });
+                }
             }
 
             let port = TensorPort::new(
@@ -214,6 +241,16 @@ pub fn infer_operator_outputs(
                     expected: in0.dtype(),
                     actual: in1.dtype(),
                     tensor_name: in1.name().to_string(),
+                });
+            }
+
+            if in0.dtype() == DType::Bool {
+                return Err(ModelIrError::DTypeMismatch {
+                    node_id: node_id.to_string(),
+                    op_id: op.stable_id(),
+                    expected: DType::F32,
+                    actual: in0.dtype(),
+                    tensor_name: in0.name().to_string(),
                 });
             }
 
@@ -295,10 +332,24 @@ pub fn infer_operator_outputs(
                         attr_name: "shape".to_string(),
                     })?;
 
+            let _allowzero = if let Some(az) = attrs.get("allowzero") {
+                az.as_bool(node_id, "allowzero")?
+            } else {
+                false
+            };
+
             let requested_dims: Vec<i64> = match target_shape_attr {
                 crate::attribute::AttrValue::IntList(list) => list.clone(),
                 crate::attribute::AttrValue::Shape(sh) => {
-                    sh.dims().iter().map(|&d| d as i64).collect()
+                    let mut dims = Vec::with_capacity(sh.rank());
+                    for &d in sh.dims() {
+                        let dim_i64 =
+                            i64::try_from(d).map_err(|_| ModelIrError::ArithmeticOverflow {
+                                operation: "reshape shape dimension exceeds i64::MAX",
+                            })?;
+                        dims.push(dim_i64);
+                    }
+                    dims
                 }
                 _ => {
                     return Err(ModelIrError::InvalidAttribute {
@@ -758,11 +809,20 @@ pub fn infer_operator_outputs(
                 (0..starts.len()).collect()
             };
 
-            if starts.len() != ends.len() || starts.len() != axes.len() {
+            let steps = if let Some(s_attr) = attrs.get("steps") {
+                s_attr.as_usize_list(node_id, "steps")?
+            } else {
+                vec![1; starts.len()]
+            };
+
+            if starts.len() != ends.len()
+                || starts.len() != axes.len()
+                || starts.len() != steps.len()
+            {
                 return Err(ModelIrError::InvalidAttribute {
                     node_id: node_id.to_string(),
-                    attr_name: "starts/ends/axes".to_string(),
-                    reason: "starts, ends, and axes must have identical length".to_string(),
+                    attr_name: "starts/ends/axes/steps".to_string(),
+                    reason: "starts, ends, axes, and steps must have identical length".to_string(),
                 });
             }
 
@@ -788,6 +848,14 @@ pub fn infer_operator_outputs(
                 seen_axes[axis] = true;
                 let start = starts[i];
                 let end = ends[i];
+                let step = steps[i];
+                if step == 0 {
+                    return Err(ModelIrError::InvalidAttribute {
+                        node_id: node_id.to_string(),
+                        attr_name: "steps".to_string(),
+                        reason: "slice step cannot be zero".to_string(),
+                    });
+                }
                 let dim_len = in_dims[axis];
 
                 if start > dim_len || end > dim_len || start > end {
@@ -800,7 +868,8 @@ pub fn infer_operator_outputs(
                     });
                 }
 
-                out_dims[axis] = end - start;
+                let slice_len = end - start;
+                out_dims[axis] = slice_len.div_ceil(step);
             }
 
             let out_shape = Shape::new(out_dims)?;
@@ -831,6 +900,15 @@ pub fn infer_operator_outputs(
                 });
             }
             let in0 = inputs[0];
+            if in0.rank() == 0 {
+                return Err(ModelIrError::RankMismatch {
+                    node_id: node_id.to_string(),
+                    op_id: op.stable_id(),
+                    expected_rank: 1,
+                    actual_rank: 0,
+                    tensor_name: in0.name().to_string(),
+                });
+            }
             if !in0.dtype().is_floating_point() {
                 return Err(ModelIrError::DTypeMismatch {
                     node_id: node_id.to_string(),
@@ -841,16 +919,52 @@ pub fn infer_operator_outputs(
                 });
             }
 
-            // Epsilon check: must be Float, not NaN, non-negative
+            // Epsilon check: must be Float, finite, strictly positive (> 0.0)
             if let Some(eps_attr) = attrs.get("epsilon") {
                 let eps = eps_attr.as_float(node_id, "epsilon")?;
-                if eps.is_nan() || eps < 0.0 {
+                if !eps.is_finite() || eps <= 0.0 {
                     return Err(ModelIrError::InvalidAttribute {
                         node_id: node_id.to_string(),
                         attr_name: "epsilon".to_string(),
-                        reason: "epsilon must be a non-negative finite float".to_string(),
+                        reason: "epsilon must be a strictly positive finite float".to_string(),
                     });
                 }
+            }
+
+            let elementwise_affine = if let Some(ea) = attrs.get("elementwise_affine") {
+                ea.as_bool(node_id, "elementwise_affine")?
+            } else {
+                true
+            };
+            let scale = if let Some(sc) = attrs.get("scale") {
+                sc.as_bool(node_id, "scale")?
+            } else {
+                true
+            };
+            let bias = if let Some(bi) = attrs.get("bias") {
+                bi.as_bool(node_id, "bias")?
+            } else {
+                true
+            };
+
+            let can_have_weight = elementwise_affine && scale;
+            let can_have_bias = elementwise_affine && bias;
+
+            if !can_have_weight && inputs.len() >= 2 {
+                return Err(ModelIrError::InvalidPortCount {
+                    node_id: node_id.to_string(),
+                    op_id: op.stable_id(),
+                    expected: "1 input when elementwise_affine/scale is disabled",
+                    actual: inputs.len(),
+                });
+            }
+            if !can_have_bias && inputs.len() == 3 {
+                return Err(ModelIrError::InvalidPortCount {
+                    node_id: node_id.to_string(),
+                    op_id: op.stable_id(),
+                    expected: "at most 2 inputs when elementwise_affine/bias is disabled",
+                    actual: inputs.len(),
+                });
             }
 
             let in_dims = in0.shape().dims();
@@ -866,6 +980,14 @@ pub fn infer_operator_outputs(
             } else {
                 vec![in_dims[in_dims.len() - 1]]
             };
+
+            if norm_dims.is_empty() {
+                return Err(ModelIrError::InvalidAttribute {
+                    node_id: node_id.to_string(),
+                    attr_name: "normalized_shape".to_string(),
+                    reason: "normalized_shape cannot be empty".to_string(),
+                });
+            }
 
             if norm_dims.len() > in_dims.len()
                 || &in_dims[in_dims.len() - norm_dims.len()..] != norm_dims.as_slice()
@@ -1238,6 +1360,15 @@ pub fn infer_operator_outputs(
                 });
             }
             let in0 = inputs[0];
+            if in0.dtype() == DType::Bool {
+                return Err(ModelIrError::DTypeMismatch {
+                    node_id: node_id.to_string(),
+                    op_id: op.stable_id(),
+                    expected: DType::F32,
+                    actual: in0.dtype(),
+                    tensor_name: in0.name().to_string(),
+                });
+            }
             if in0.rank() != 4 {
                 return Err(ModelIrError::RankMismatch {
                     node_id: node_id.to_string(),
@@ -1252,6 +1383,12 @@ pub fn infer_operator_outputs(
             let c = in_dims[1];
             let h = in_dims[2];
             let w = in_dims[3];
+
+            let ceil_mode = if let Some(cm) = attrs.get("ceil_mode") {
+                cm.as_bool(node_id, "ceil_mode")?
+            } else {
+                false
+            };
 
             let kernel_size = attrs
                 .get("kernel_size")
@@ -1332,8 +1469,22 @@ pub fn infer_operator_outputs(
                 });
             }
 
-            let out_h = (total_h - kernel_size[0]) / strides[0] + 1;
-            let out_w = (total_w - kernel_size[1]) / strides[1] + 1;
+            let mut out_h = if ceil_mode {
+                (total_h - kernel_size[0]).div_ceil(strides[0]) + 1
+            } else {
+                (total_h - kernel_size[0]) / strides[0] + 1
+            };
+            let mut out_w = if ceil_mode {
+                (total_w - kernel_size[1]).div_ceil(strides[1]) + 1
+            } else {
+                (total_w - kernel_size[1]) / strides[1] + 1
+            };
+            if ceil_mode && (out_h - 1) * strides[0] >= h + pads[0] {
+                out_h = out_h.saturating_sub(1);
+            }
+            if ceil_mode && (out_w - 1) * strides[1] >= w + pads[1] {
+                out_w = out_w.saturating_sub(1);
+            }
 
             let out_shape = Shape::new(vec![n, c, out_h, out_w])?;
             let port = TensorPort::new(&output_names[0], in0.dtype(), out_shape, generation)?;
@@ -1369,6 +1520,15 @@ pub fn infer_operator_outputs(
                     tensor_name: indices.name().to_string(),
                 });
             }
+            if weights.dtype() == DType::Bool {
+                return Err(ModelIrError::DTypeMismatch {
+                    node_id: node_id.to_string(),
+                    op_id: op.stable_id(),
+                    expected: DType::F32,
+                    actual: weights.dtype(),
+                    tensor_name: weights.name().to_string(),
+                });
+            }
             if weights.rank() != 2 {
                 return Err(ModelIrError::RankMismatch {
                     node_id: node_id.to_string(),
@@ -1379,9 +1539,70 @@ pub fn infer_operator_outputs(
                 });
             }
 
-            let embedding_dim = weights.shape().dims()[1];
+            let table_num_embeddings = weights.shape().dims()[0];
+            let table_embedding_dim = weights.shape().dims()[1];
+
+            if let Some(dt_attr) = attrs.get("dtype") {
+                let dt = dt_attr.as_dtype(node_id, "dtype")?;
+                if dt == DType::Bool {
+                    return Err(ModelIrError::InvalidAttribute {
+                        node_id: node_id.to_string(),
+                        attr_name: "dtype".to_string(),
+                        reason: "embedding dtype cannot be Bool".to_string(),
+                    });
+                }
+                if dt != weights.dtype() {
+                    return Err(ModelIrError::DTypeMismatch {
+                        node_id: node_id.to_string(),
+                        op_id: op.stable_id(),
+                        expected: dt,
+                        actual: weights.dtype(),
+                        tensor_name: weights.name().to_string(),
+                    });
+                }
+            }
+
+            if let Some(ne_attr) = attrs.get("num_embeddings") {
+                let ne = ne_attr.as_usize(node_id, "num_embeddings")?;
+                if ne != table_num_embeddings {
+                    return Err(ModelIrError::ShapeMismatch {
+                        node_id: node_id.to_string(),
+                        op_id: op.stable_id(),
+                        reason: format!(
+                            "num_embeddings attribute {ne} does not match weight table row count {table_num_embeddings}"
+                        ),
+                    });
+                }
+            }
+
+            if let Some(ed_attr) = attrs.get("embedding_dim") {
+                let ed = ed_attr.as_usize(node_id, "embedding_dim")?;
+                if ed != table_embedding_dim {
+                    return Err(ModelIrError::ShapeMismatch {
+                        node_id: node_id.to_string(),
+                        op_id: op.stable_id(),
+                        reason: format!(
+                            "embedding_dim attribute {ed} does not match weight table width {table_embedding_dim}"
+                        ),
+                    });
+                }
+            }
+
+            if let Some(pi_attr) = attrs.get("padding_idx") {
+                let pi = pi_attr.as_int(node_id, "padding_idx")?;
+                if pi < 0 || pi as usize >= table_num_embeddings {
+                    return Err(ModelIrError::InvalidAttribute {
+                        node_id: node_id.to_string(),
+                        attr_name: "padding_idx".to_string(),
+                        reason: format!(
+                            "padding_idx {pi} out of bounds for table size {table_num_embeddings}"
+                        ),
+                    });
+                }
+            }
+
             let mut out_dims = indices.shape().dims().to_vec();
-            out_dims.push(embedding_dim);
+            out_dims.push(table_embedding_dim);
 
             let out_shape = Shape::new(out_dims)?;
             let port = TensorPort::new(&output_names[0], weights.dtype(), out_shape, generation)?;

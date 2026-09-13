@@ -14,7 +14,7 @@ pub const OPERATOR_TABLE_DIGEST_DOMAIN: &[u8] = b"fss.model_ir.operator_table.v1
 /// Any modification to operator IDs, names, or attribute schemas alters this digest
 /// and requires an explicit IR generation bump.
 pub const OPERATOR_TABLE_FREEZE_DIGEST: &str =
-    "sha256:1ec9e87669ff631aacb26ba6b23a38db7280e6e05595e75cf06b56f03fd59bf0";
+    "sha256:ea84259adbccf747c847b53629fe9176dea0f6cc1874bd5379066d32d30211be";
 
 /// Stable baseline operator identifiers for Model IR v1.
 ///
@@ -47,6 +47,98 @@ pub const OPERATOR_BASELINE_IDS: &[&str] = &[
 /// Tombstoned operator identifiers that must never be resurrected or reused.
 pub const OPERATOR_TOMBSTONES: &[&str] = &[];
 
+/// Strongly typed attribute classification for closed schema validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttributeType {
+    /// Boolean attribute.
+    Bool,
+    /// 64-bit signed integer attribute.
+    Int,
+    /// 64-bit floating point attribute.
+    Float,
+    /// String attribute.
+    String,
+    /// List of 64-bit signed integers.
+    IntList,
+    /// List of 64-bit floating point values.
+    FloatList,
+    /// Tensor element data type attribute.
+    DType,
+    /// Tensor shape attribute.
+    Shape,
+}
+
+impl AttributeType {
+    /// Numerical type tag for canonical serialization.
+    #[must_use]
+    pub const fn type_tag(&self) -> u8 {
+        match self {
+            Self::Bool => 1,
+            Self::Int => 2,
+            Self::Float => 3,
+            Self::String => 4,
+            Self::IntList => 5,
+            Self::FloatList => 6,
+            Self::DType => 7,
+            Self::Shape => 8,
+        }
+    }
+}
+
+/// Normative specification for a single admitted operator attribute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AttributeSpec {
+    /// Canonical attribute name.
+    pub name: &'static str,
+    /// Expected attribute type.
+    pub attr_type: AttributeType,
+    /// Whether this attribute is required (true) or optional with default (false).
+    pub required: bool,
+    /// Canonical default representation if optional.
+    pub default_value: Option<&'static str>,
+}
+
+impl AttributeSpec {
+    /// Validates that an attribute value matches this schema specification.
+    ///
+    /// # Errors
+    /// Returns [`ModelIrError::InvalidAttribute`] on type mismatch.
+    pub fn validate_type(
+        &self,
+        node_id: &str,
+        val: &crate::attribute::AttrValue,
+    ) -> Result<(), ModelIrError> {
+        let matches = match (self.attr_type, val) {
+            (AttributeType::Bool, crate::attribute::AttrValue::Bool(_)) => true,
+            (AttributeType::Int, crate::attribute::AttrValue::Int(_)) => true,
+            (AttributeType::Float, crate::attribute::AttrValue::Float(_)) => true,
+            (AttributeType::String, crate::attribute::AttrValue::String(_)) => true,
+            (AttributeType::IntList, crate::attribute::AttrValue::IntList(_)) => true,
+            (AttributeType::FloatList, crate::attribute::AttrValue::FloatList(_)) => true,
+            (AttributeType::DType, crate::attribute::AttrValue::DType(_)) => true,
+            (AttributeType::Shape, crate::attribute::AttrValue::Shape(_)) => true,
+            // Allow Reshape / LayerNorm normalized_shape to accept either IntList or Shape
+            (AttributeType::IntList, crate::attribute::AttrValue::Shape(_))
+                if self.name == "shape" || self.name == "normalized_shape" =>
+            {
+                true
+            }
+            _ => false,
+        };
+        if !matches {
+            return Err(ModelIrError::InvalidAttribute {
+                node_id: node_id.to_string(),
+                attr_name: self.name.to_string(),
+                reason: format!(
+                    "attribute '{}' expected {:?}, got {:?}",
+                    self.name, self.attr_type, val
+                ),
+            });
+        }
+        Ok(())
+    }
+}
+
 /// Normative metadata specification for a closed first-party model operator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OperatorSpec {
@@ -56,8 +148,30 @@ pub struct OperatorSpec {
     pub stable_id: &'static str,
     /// Canonical human-readable name.
     pub name: &'static str,
-    /// Strictly admitted attribute names (empty slice means operator rejects all attributes).
-    pub allowed_attributes: &'static [&'static str],
+    /// Minimum input port count.
+    pub min_inputs: usize,
+    /// Maximum input port count.
+    pub max_inputs: usize,
+    /// Inferred output port count.
+    pub output_count: usize,
+    /// Strictly admitted attribute specifications (empty slice means operator rejects all attributes).
+    pub allowed_attributes: &'static [AttributeSpec],
+}
+
+impl OperatorSpec {
+    /// Returns the attribute specification for `attr_name`, or `None` if not admitted.
+    #[must_use]
+    pub fn get_attribute_spec(&self, attr_name: &str) -> Option<&'static AttributeSpec> {
+        self.allowed_attributes
+            .iter()
+            .find(|attr| attr.name == attr_name)
+    }
+
+    /// Returns `true` if `attr_name` is admitted in this operator's schema.
+    #[must_use]
+    pub fn is_attribute_allowed(&self, attr_name: &str) -> bool {
+        self.get_attribute_spec(attr_name).is_some()
+    }
 }
 
 /// Normative table of all 22 operators in Model IR v1 with their admitted attribute schemas.
@@ -66,139 +180,398 @@ pub const OPERATOR_SPECS: &[OperatorSpec] = &[
         opcode: OpCode::Add,
         stable_id: "OP-ADD-001",
         name: "add",
+        min_inputs: 2,
+        max_inputs: 2,
+        output_count: 1,
         allowed_attributes: &[],
     },
     OperatorSpec {
         opcode: OpCode::Sub,
         stable_id: "OP-SUB-001",
         name: "sub",
+        min_inputs: 2,
+        max_inputs: 2,
+        output_count: 1,
         allowed_attributes: &[],
     },
     OperatorSpec {
         opcode: OpCode::Mul,
         stable_id: "OP-MUL-001",
         name: "mul",
+        min_inputs: 2,
+        max_inputs: 2,
+        output_count: 1,
         allowed_attributes: &[],
     },
     OperatorSpec {
         opcode: OpCode::Div,
         stable_id: "OP-DIV-001",
         name: "div",
+        min_inputs: 2,
+        max_inputs: 2,
+        output_count: 1,
         allowed_attributes: &[],
     },
     OperatorSpec {
         opcode: OpCode::Relu,
         stable_id: "OP-RELU-001",
         name: "relu",
+        min_inputs: 1,
+        max_inputs: 1,
+        output_count: 1,
         allowed_attributes: &[],
     },
     OperatorSpec {
         opcode: OpCode::Gelu,
         stable_id: "OP-GELU-001",
         name: "gelu",
-        allowed_attributes: &["approximate"],
+        min_inputs: 1,
+        max_inputs: 1,
+        output_count: 1,
+        allowed_attributes: &[AttributeSpec {
+            name: "approximate",
+            attr_type: AttributeType::String,
+            required: false,
+            default_value: Some("none"),
+        }],
     },
     OperatorSpec {
         opcode: OpCode::Silu,
         stable_id: "OP-SILU-001",
         name: "silu",
+        min_inputs: 1,
+        max_inputs: 1,
+        output_count: 1,
         allowed_attributes: &[],
     },
     OperatorSpec {
         opcode: OpCode::Sigmoid,
         stable_id: "OP-SIGMOID-001",
         name: "sigmoid",
+        min_inputs: 1,
+        max_inputs: 1,
+        output_count: 1,
         allowed_attributes: &[],
     },
     OperatorSpec {
         opcode: OpCode::Tanh,
         stable_id: "OP-TANH-001",
         name: "tanh",
+        min_inputs: 1,
+        max_inputs: 1,
+        output_count: 1,
         allowed_attributes: &[],
     },
     OperatorSpec {
         opcode: OpCode::MatMul,
         stable_id: "OP-MATMUL-001",
         name: "matmul",
+        min_inputs: 2,
+        max_inputs: 2,
+        output_count: 1,
         allowed_attributes: &[],
     },
     OperatorSpec {
         opcode: OpCode::Reshape,
         stable_id: "OP-RESHAPE-001",
         name: "reshape",
-        allowed_attributes: &["allowzero", "shape"],
+        min_inputs: 1,
+        max_inputs: 1,
+        output_count: 1,
+        allowed_attributes: &[
+            AttributeSpec {
+                name: "allowzero",
+                attr_type: AttributeType::Bool,
+                required: false,
+                default_value: Some("false"),
+            },
+            AttributeSpec {
+                name: "shape",
+                attr_type: AttributeType::IntList,
+                required: true,
+                default_value: None,
+            },
+        ],
     },
     OperatorSpec {
         opcode: OpCode::Transpose,
         stable_id: "OP-TRANSPOSE-001",
         name: "transpose",
-        allowed_attributes: &["permutation"],
+        min_inputs: 1,
+        max_inputs: 1,
+        output_count: 1,
+        allowed_attributes: &[AttributeSpec {
+            name: "permutation",
+            attr_type: AttributeType::IntList,
+            required: false,
+            default_value: Some("reverse"),
+        }],
     },
     OperatorSpec {
         opcode: OpCode::Squeeze,
         stable_id: "OP-SQUEEZE-001",
         name: "squeeze",
-        allowed_attributes: &["axes"],
+        min_inputs: 1,
+        max_inputs: 1,
+        output_count: 1,
+        allowed_attributes: &[AttributeSpec {
+            name: "axes",
+            attr_type: AttributeType::IntList,
+            required: false,
+            default_value: Some("all_ones"),
+        }],
     },
     OperatorSpec {
         opcode: OpCode::Unsqueeze,
         stable_id: "OP-UNSQUEEZE-001",
         name: "unsqueeze",
-        allowed_attributes: &["axes"],
+        min_inputs: 1,
+        max_inputs: 1,
+        output_count: 1,
+        allowed_attributes: &[AttributeSpec {
+            name: "axes",
+            attr_type: AttributeType::IntList,
+            required: true,
+            default_value: None,
+        }],
     },
     OperatorSpec {
         opcode: OpCode::Concat,
         stable_id: "OP-CONCAT-001",
         name: "concat",
-        allowed_attributes: &["axis"],
+        min_inputs: 1,
+        max_inputs: usize::MAX,
+        output_count: 1,
+        allowed_attributes: &[AttributeSpec {
+            name: "axis",
+            attr_type: AttributeType::Int,
+            required: false,
+            default_value: Some("0"),
+        }],
     },
     OperatorSpec {
         opcode: OpCode::Slice,
         stable_id: "OP-SLICE-001",
         name: "slice",
-        allowed_attributes: &["axes", "ends", "starts", "steps"],
+        min_inputs: 1,
+        max_inputs: 1,
+        output_count: 1,
+        allowed_attributes: &[
+            AttributeSpec {
+                name: "axes",
+                attr_type: AttributeType::IntList,
+                required: false,
+                default_value: Some("0..N"),
+            },
+            AttributeSpec {
+                name: "ends",
+                attr_type: AttributeType::IntList,
+                required: true,
+                default_value: None,
+            },
+            AttributeSpec {
+                name: "starts",
+                attr_type: AttributeType::IntList,
+                required: true,
+                default_value: None,
+            },
+            AttributeSpec {
+                name: "steps",
+                attr_type: AttributeType::IntList,
+                required: false,
+                default_value: Some("1..1"),
+            },
+        ],
     },
     OperatorSpec {
         opcode: OpCode::LayerNorm,
         stable_id: "OP-LAYERNORM-001",
         name: "layer_norm",
+        min_inputs: 1,
+        max_inputs: 3,
+        output_count: 1,
         allowed_attributes: &[
-            "bias",
-            "elementwise_affine",
-            "epsilon",
-            "normalized_shape",
-            "scale",
+            AttributeSpec {
+                name: "bias",
+                attr_type: AttributeType::Bool,
+                required: false,
+                default_value: Some("true"),
+            },
+            AttributeSpec {
+                name: "elementwise_affine",
+                attr_type: AttributeType::Bool,
+                required: false,
+                default_value: Some("true"),
+            },
+            AttributeSpec {
+                name: "epsilon",
+                attr_type: AttributeType::Float,
+                required: false,
+                default_value: Some("1e-5"),
+            },
+            AttributeSpec {
+                name: "normalized_shape",
+                attr_type: AttributeType::IntList,
+                required: false,
+                default_value: None,
+            },
+            AttributeSpec {
+                name: "scale",
+                attr_type: AttributeType::Bool,
+                required: false,
+                default_value: Some("true"),
+            },
         ],
     },
     OperatorSpec {
         opcode: OpCode::RMSNorm,
         stable_id: "OP-RMSNORM-001",
         name: "rms_norm",
-        allowed_attributes: &["elementwise_affine", "epsilon", "normalized_shape", "scale"],
+        min_inputs: 1,
+        max_inputs: 2,
+        output_count: 1,
+        allowed_attributes: &[
+            AttributeSpec {
+                name: "elementwise_affine",
+                attr_type: AttributeType::Bool,
+                required: false,
+                default_value: Some("true"),
+            },
+            AttributeSpec {
+                name: "epsilon",
+                attr_type: AttributeType::Float,
+                required: false,
+                default_value: Some("1e-5"),
+            },
+            AttributeSpec {
+                name: "normalized_shape",
+                attr_type: AttributeType::IntList,
+                required: false,
+                default_value: None,
+            },
+            AttributeSpec {
+                name: "scale",
+                attr_type: AttributeType::Bool,
+                required: false,
+                default_value: Some("true"),
+            },
+        ],
     },
     OperatorSpec {
         opcode: OpCode::Softmax,
         stable_id: "OP-SOFTMAX-001",
         name: "softmax",
-        allowed_attributes: &["axis"],
+        min_inputs: 1,
+        max_inputs: 1,
+        output_count: 1,
+        allowed_attributes: &[AttributeSpec {
+            name: "axis",
+            attr_type: AttributeType::Int,
+            required: false,
+            default_value: Some("-1"),
+        }],
     },
     OperatorSpec {
         opcode: OpCode::Conv2d,
         stable_id: "OP-CONV2D-001",
         name: "conv2d",
-        allowed_attributes: &["dilations", "groups", "padding", "strides"],
+        min_inputs: 2,
+        max_inputs: 3,
+        output_count: 1,
+        allowed_attributes: &[
+            AttributeSpec {
+                name: "dilations",
+                attr_type: AttributeType::IntList,
+                required: false,
+                default_value: Some("[1, 1]"),
+            },
+            AttributeSpec {
+                name: "groups",
+                attr_type: AttributeType::Int,
+                required: false,
+                default_value: Some("1"),
+            },
+            AttributeSpec {
+                name: "padding",
+                attr_type: AttributeType::IntList,
+                required: false,
+                default_value: Some("[0, 0, 0, 0]"),
+            },
+            AttributeSpec {
+                name: "strides",
+                attr_type: AttributeType::IntList,
+                required: false,
+                default_value: Some("[1, 1]"),
+            },
+        ],
     },
     OperatorSpec {
         opcode: OpCode::MaxPool2d,
         stable_id: "OP-MAXPOOL2D-001",
         name: "max_pool2d",
-        allowed_attributes: &["ceil_mode", "kernel_size", "padding", "strides"],
+        min_inputs: 1,
+        max_inputs: 1,
+        output_count: 1,
+        allowed_attributes: &[
+            AttributeSpec {
+                name: "ceil_mode",
+                attr_type: AttributeType::Bool,
+                required: false,
+                default_value: Some("false"),
+            },
+            AttributeSpec {
+                name: "kernel_size",
+                attr_type: AttributeType::IntList,
+                required: true,
+                default_value: None,
+            },
+            AttributeSpec {
+                name: "padding",
+                attr_type: AttributeType::IntList,
+                required: false,
+                default_value: Some("[0, 0, 0, 0]"),
+            },
+            AttributeSpec {
+                name: "strides",
+                attr_type: AttributeType::IntList,
+                required: false,
+                default_value: Some("[1, 1]"),
+            },
+        ],
     },
     OperatorSpec {
         opcode: OpCode::Embedding,
         stable_id: "OP-EMBEDDING-001",
         name: "embedding",
-        allowed_attributes: &["dtype", "embedding_dim", "num_embeddings", "padding_idx"],
+        min_inputs: 2,
+        max_inputs: 2,
+        output_count: 1,
+        allowed_attributes: &[
+            AttributeSpec {
+                name: "dtype",
+                attr_type: AttributeType::DType,
+                required: false,
+                default_value: None,
+            },
+            AttributeSpec {
+                name: "embedding_dim",
+                attr_type: AttributeType::Int,
+                required: false,
+                default_value: None,
+            },
+            AttributeSpec {
+                name: "num_embeddings",
+                attr_type: AttributeType::Int,
+                required: false,
+                default_value: None,
+            },
+            AttributeSpec {
+                name: "padding_idx",
+                attr_type: AttributeType::Int,
+                required: false,
+                default_value: None,
+            },
+        ],
     },
 ];
 
@@ -274,10 +647,22 @@ impl OpCode {
         self.spec().name
     }
 
-    /// Returns the strictly admitted attribute names for this operator.
+    /// Returns the strictly admitted attribute specifications for this operator.
     #[must_use]
-    pub const fn allowed_attributes(&self) -> &'static [&'static str] {
+    pub const fn allowed_attributes(&self) -> &'static [AttributeSpec] {
         self.spec().allowed_attributes
+    }
+
+    /// Returns the attribute specification for `attr_name`, or `None` if not admitted.
+    #[must_use]
+    pub fn get_attribute_spec(&self, attr_name: &str) -> Option<&'static AttributeSpec> {
+        self.spec().get_attribute_spec(attr_name)
+    }
+
+    /// Returns `true` if `attr_name` is admitted in this operator's schema.
+    #[must_use]
+    pub fn is_attribute_allowed(&self, attr_name: &str) -> bool {
+        self.spec().is_attribute_allowed(attr_name)
     }
 
     /// Resolves an `OpCode` from its stable `OP-...-001` identifier.
@@ -361,14 +746,30 @@ pub fn compute_operator_table_digest() -> Result<ContentDigest, ModelIrError> {
     buf.extend_from_slice(OPERATOR_TABLE_DIGEST_DOMAIN);
     buf.extend_from_slice(&(OPERATOR_SPECS.len() as u32).to_be_bytes());
     for spec in OPERATOR_SPECS {
+        buf.extend_from_slice(&(spec.opcode as u32).to_be_bytes());
         buf.extend_from_slice(&(spec.stable_id.len() as u32).to_be_bytes());
         buf.extend_from_slice(spec.stable_id.as_bytes());
         buf.extend_from_slice(&(spec.name.len() as u32).to_be_bytes());
         buf.extend_from_slice(spec.name.as_bytes());
+        buf.extend_from_slice(&(spec.min_inputs as u32).to_be_bytes());
+        buf.extend_from_slice(&(spec.max_inputs as u32).to_be_bytes());
+        buf.extend_from_slice(&(spec.output_count as u32).to_be_bytes());
         buf.extend_from_slice(&(spec.allowed_attributes.len() as u32).to_be_bytes());
-        for &attr in spec.allowed_attributes {
-            buf.extend_from_slice(&(attr.len() as u32).to_be_bytes());
-            buf.extend_from_slice(attr.as_bytes());
+        for attr in spec.allowed_attributes {
+            buf.extend_from_slice(&(attr.name.len() as u32).to_be_bytes());
+            buf.extend_from_slice(attr.name.as_bytes());
+            buf.push(attr.attr_type.type_tag());
+            buf.push(if attr.required { 1 } else { 0 });
+            match attr.default_value {
+                Some(def) => {
+                    buf.push(1);
+                    buf.extend_from_slice(&(def.len() as u32).to_be_bytes());
+                    buf.extend_from_slice(def.as_bytes());
+                }
+                None => {
+                    buf.push(0);
+                }
+            }
         }
     }
     let mut hasher = Sha256Hasher::new();

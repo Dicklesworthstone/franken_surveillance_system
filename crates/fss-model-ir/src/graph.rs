@@ -25,7 +25,6 @@ impl ModelIrVersion {
     pub const fn as_u32(self) -> u32 {
         match self {
             Self::V1 => 1,
-            Self::Unsupported(1) => 0,
             Self::Unsupported(v) => v,
         }
     }

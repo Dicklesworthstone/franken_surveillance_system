@@ -139,7 +139,7 @@ fn test_valid_feedforward_graph() -> Result<(), Box<dyn Error>> {
     let digest = graph.content_digest()?;
     assert_eq!(
         digest.to_string(),
-        "sha256:c227ec96549593de1744dca380151b816fff44a08a56fe9a429b44ec5b82f9be"
+        "sha256:fd4d54b93c42de573d38395e6ff9a652809c4c61446e7496e5850c3ff27ed54a"
     );
     Ok(())
 }
@@ -203,7 +203,7 @@ fn test_valid_cnn_graph() -> Result<(), Box<dyn Error>> {
     let digest = graph.content_digest()?;
     assert_eq!(
         digest.to_string(),
-        "sha256:7dd31b21b1df9216cbe1fe9f3530ea04f8052b11ff2d1fb100dda452de6db3c3"
+        "sha256:e67f69d0b9a3ed95c1a3038364759fe8eb3378333264725a6f69ff8b07950d39"
     );
     Ok(())
 }
@@ -270,7 +270,7 @@ fn test_valid_transformer_block_graph() -> Result<(), Box<dyn Error>> {
     let digest = graph.content_digest()?;
     assert_eq!(
         digest.to_string(),
-        "sha256:e20aeab0076636d85f7312f198121368c300e453032c01185d04dd4548ed5cb3"
+        "sha256:5c56d2e3623573d35150a942653796de50004d342c9bd1fd66c73e8a6fa107cf"
     );
     Ok(())
 }
@@ -301,7 +301,7 @@ fn test_valid_embedding_graph() -> Result<(), Box<dyn Error>> {
     let digest = graph.content_digest()?;
     assert_eq!(
         digest.to_string(),
-        "sha256:259f0c834b3b5e4abc7f9b29b61517fa3eeb4e06f33ade1e30a6510dd0e3577a"
+        "sha256:ea7f99246f42dc95e1b9931e3ebe2b0b223e115753fc383cb73aca43aa43e56e"
     );
     Ok(())
 }
@@ -335,7 +335,7 @@ fn test_canonical_digest_determinism_and_sensitivity() -> Result<(), Box<dyn Err
 
     assert_eq!(
         g1.content_digest()?.to_string(),
-        "sha256:f0e7b3d03dd1312d48d08153b883353e857482cb53fd268fa1e05194c41dd520"
+        "sha256:1e671e17d51aa24138463ea5400a3debc5f2273523efb6a377e3dfd79385a170"
     );
     assert_eq!(g1.content_digest()?, g2.content_digest()?);
 
@@ -1973,7 +1973,8 @@ fn test_finding_9_graph_validator_duplicate_outputs_rejected() -> Result<(), Box
 #[test]
 fn test_finding_10_model_ir_version_unsupported_mapping() -> Result<(), Box<dyn Error>> {
     let v_unsupported = ModelIrVersion::unsupported(1);
-    assert_eq!(v_unsupported.as_u32(), 0);
+    assert_eq!(v_unsupported.as_u32(), 1);
+    assert_eq!(ModelIrVersion::unsupported(99).as_u32(), 99);
     assert!(!v_unsupported.is_supported());
 
     let g = gen1();
@@ -2000,9 +2001,9 @@ fn test_finding_10_model_ir_version_unsupported_mapping() -> Result<(), Box<dyn 
     match graph.validate() {
         Err(ModelIrError::VersionMismatch { expected, actual }) => {
             assert_eq!(expected, 1);
-            assert_eq!(actual, 0);
+            assert_eq!(actual, 1);
         }
-        other => return Err(format!("expected VersionMismatch (1 != 0), got {other:?}").into()),
+        other => return Err(format!("expected VersionMismatch (1 != 1), got {other:?}").into()),
     }
     Ok(())
 }
@@ -2133,45 +2134,377 @@ fn test_finding_12_canonical_digest_determinism_and_defaults() -> Result<(), Box
     );
 
     // Float canonicalization: -0.0 vs +0.0 in float attribute
-    let mut attrs_pos = AttributeMap::new();
-    attrs_pos.insert("epsilon".to_string(), AttrValue::Float(0.0));
-    let n_pos = GraphNode::new(
-        "ln1",
-        OpCode::LayerNorm,
-        "ln",
-        vec!["x1".to_string()],
-        vec!["y1".to_string()],
-        attrs_pos,
-    )?;
-
-    let mut attrs_neg = AttributeMap::new();
-    attrs_neg.insert("epsilon".to_string(), AttrValue::Float(-0.0));
-    let n_neg = GraphNode::new(
-        "ln1",
-        OpCode::LayerNorm,
-        "ln",
-        vec!["x1".to_string()],
-        vec!["y1".to_string()],
-        attrs_neg,
-    )?;
-
-    let g_pos = ModelIrGraph::builder("ln_pos", g)
-        .add_input(x1.clone())
-        .add_output(y1.clone())
-        .add_node(n_pos)
-        .build_and_validate()?;
-
-    let g_neg = ModelIrGraph::builder("ln_pos", g)
-        .add_input(x1)
-        .add_output(y1)
-        .add_node(n_neg)
-        .build_and_validate()?;
-
+    let pos_bytes = fss_model_ir::canonical::encode_canonical_attr_value(&AttrValue::Float(0.0));
+    let neg_bytes = fss_model_ir::canonical::encode_canonical_attr_value(&AttrValue::Float(-0.0));
     assert_eq!(
-        g_pos.content_digest()?,
-        g_neg.content_digest()?,
+        pos_bytes, neg_bytes,
         "-0.0 and +0.0 float attributes must encode identically"
     );
+
+    let pos_list_bytes =
+        fss_model_ir::canonical::encode_canonical_attr_value(&AttrValue::FloatList(vec![0.0]));
+    let neg_list_bytes =
+        fss_model_ir::canonical::encode_canonical_attr_value(&AttrValue::FloatList(vec![-0.0]));
+    assert_eq!(
+        pos_list_bytes, neg_list_bytes,
+        "-0.0 and +0.0 in float list attributes must encode identically"
+    );
+
+    // Pairwise tests killing Mutant M7: implicit vs explicit defaults normalize identically
+
+    // 1. Softmax: no axis vs explicit axis = rank - 1
+    let sm_implicit = AttributeMap::new();
+    let n_sm_imp = GraphNode::new(
+        "sm",
+        OpCode::Softmax,
+        "sm",
+        vec!["x1".to_string()],
+        vec!["y1".to_string()],
+        sm_implicit,
+    )?;
+    let mut sm_explicit = AttributeMap::new();
+    sm_explicit.insert("axis".to_string(), AttrValue::Int(1));
+    let n_sm_exp = GraphNode::new(
+        "sm",
+        OpCode::Softmax,
+        "sm",
+        vec!["x1".to_string()],
+        vec!["y1".to_string()],
+        sm_explicit,
+    )?;
+    let g_sm_imp = ModelIrGraph::builder("sm_graph", g)
+        .add_input(x1.clone())
+        .add_output(y1.clone())
+        .add_node(n_sm_imp)
+        .build_and_validate()?;
+    let g_sm_exp = ModelIrGraph::builder("sm_graph", g)
+        .add_input(x1.clone())
+        .add_output(y1.clone())
+        .add_node(n_sm_exp)
+        .build_and_validate()?;
+    assert_eq!(
+        g_sm_imp.content_digest()?,
+        g_sm_exp.content_digest()?,
+        "Softmax implicit vs explicit axis must match"
+    );
+
+    // 2. Transpose: no perm vs explicit permutation = reverse
+    let tr_implicit = AttributeMap::new();
+    let n_tr_imp = GraphNode::new(
+        "tr",
+        OpCode::Transpose,
+        "tr",
+        vec!["x1".to_string()],
+        vec!["y1".to_string()],
+        tr_implicit,
+    )?;
+    let mut tr_explicit = AttributeMap::new();
+    tr_explicit.insert("permutation".to_string(), AttrValue::IntList(vec![1, 0]));
+    let n_tr_exp = GraphNode::new(
+        "tr",
+        OpCode::Transpose,
+        "tr",
+        vec!["x1".to_string()],
+        vec!["y1".to_string()],
+        tr_explicit,
+    )?;
+    let g_tr_imp = ModelIrGraph::builder("tr_graph", g)
+        .add_input(x1.clone())
+        .add_output(y1.clone())
+        .add_node(n_tr_imp)
+        .build_and_validate()?;
+    let g_tr_exp = ModelIrGraph::builder("tr_graph", g)
+        .add_input(x1.clone())
+        .add_output(y1.clone())
+        .add_node(n_tr_exp)
+        .build_and_validate()?;
+    assert_eq!(
+        g_tr_imp.content_digest()?,
+        g_tr_exp.content_digest()?,
+        "Transpose implicit vs explicit perm must match"
+    );
+
+    // 3. Slice: no axes/steps vs explicit axes 0..N, steps 1..1
+    let mut sl_implicit = AttributeMap::new();
+    sl_implicit.insert("starts".to_string(), AttrValue::IntList(vec![0, 0]));
+    sl_implicit.insert("ends".to_string(), AttrValue::IntList(vec![2, 2]));
+    let n_sl_imp = GraphNode::new(
+        "sl",
+        OpCode::Slice,
+        "sl",
+        vec!["x1".to_string()],
+        vec!["y1".to_string()],
+        sl_implicit,
+    )?;
+    let mut sl_explicit = AttributeMap::new();
+    sl_explicit.insert("starts".to_string(), AttrValue::IntList(vec![0, 0]));
+    sl_explicit.insert("ends".to_string(), AttrValue::IntList(vec![2, 2]));
+    sl_explicit.insert("axes".to_string(), AttrValue::IntList(vec![0, 1]));
+    sl_explicit.insert("steps".to_string(), AttrValue::IntList(vec![1, 1]));
+    let n_sl_exp = GraphNode::new(
+        "sl",
+        OpCode::Slice,
+        "sl",
+        vec!["x1".to_string()],
+        vec!["y1".to_string()],
+        sl_explicit,
+    )?;
+    let g_sl_imp = ModelIrGraph::builder("sl_graph", g)
+        .add_input(x1.clone())
+        .add_output(y1.clone())
+        .add_node(n_sl_imp)
+        .build_and_validate()?;
+    let g_sl_exp = ModelIrGraph::builder("sl_graph", g)
+        .add_input(x1.clone())
+        .add_output(y1.clone())
+        .add_node(n_sl_exp)
+        .build_and_validate()?;
+    assert_eq!(
+        g_sl_imp.content_digest()?,
+        g_sl_exp.content_digest()?,
+        "Slice implicit vs explicit axes/steps must match"
+    );
+
+    // 4. MaxPool2d: no ceil_mode/padding/strides vs explicit
+    let img_port = TensorPort::new("img", DType::F32, Shape::new(vec![1, 1, 4, 4])?, g)?;
+    let pool_out = TensorPort::new("p_out", DType::F32, Shape::new(vec![1, 1, 3, 3])?, g)?;
+    let mut mp_implicit = AttributeMap::new();
+    mp_implicit.insert("kernel_size".to_string(), AttrValue::IntList(vec![2, 2]));
+    let n_mp_imp = GraphNode::new(
+        "mp",
+        OpCode::MaxPool2d,
+        "mp",
+        vec!["img".to_string()],
+        vec!["p_out".to_string()],
+        mp_implicit,
+    )?;
+    let mut mp_explicit = AttributeMap::new();
+    mp_explicit.insert("kernel_size".to_string(), AttrValue::IntList(vec![2, 2]));
+    mp_explicit.insert("ceil_mode".to_string(), AttrValue::Bool(false));
+    mp_explicit.insert("padding".to_string(), AttrValue::IntList(vec![0, 0, 0, 0]));
+    mp_explicit.insert("strides".to_string(), AttrValue::IntList(vec![1, 1]));
+    let n_mp_exp = GraphNode::new(
+        "mp",
+        OpCode::MaxPool2d,
+        "mp",
+        vec!["img".to_string()],
+        vec!["p_out".to_string()],
+        mp_explicit,
+    )?;
+    let g_mp_imp = ModelIrGraph::builder("mp_graph", g)
+        .add_input(img_port.clone())
+        .add_output(pool_out.clone())
+        .add_node(n_mp_imp)
+        .build_and_validate()?;
+    let g_mp_exp = ModelIrGraph::builder("mp_graph", g)
+        .add_input(img_port.clone())
+        .add_output(pool_out)
+        .add_node(n_mp_exp)
+        .build_and_validate()?;
+    assert_eq!(
+        g_mp_imp.content_digest()?,
+        g_mp_exp.content_digest()?,
+        "MaxPool2d implicit vs explicit defaults must match"
+    );
+
+    // 5. Gelu: no approximate vs explicit approximate = "none"
+    let gelu_implicit = AttributeMap::new();
+    let n_g_imp = GraphNode::new(
+        "ge",
+        OpCode::Gelu,
+        "ge",
+        vec!["x1".to_string()],
+        vec!["y1".to_string()],
+        gelu_implicit,
+    )?;
+    let mut gelu_explicit = AttributeMap::new();
+    gelu_explicit.insert(
+        "approximate".to_string(),
+        AttrValue::String("none".to_string()),
+    );
+    let n_g_exp = GraphNode::new(
+        "ge",
+        OpCode::Gelu,
+        "ge",
+        vec!["x1".to_string()],
+        vec!["y1".to_string()],
+        gelu_explicit,
+    )?;
+    let g_ge_imp = ModelIrGraph::builder("ge_graph", g)
+        .add_input(x1.clone())
+        .add_output(y1.clone())
+        .add_node(n_g_imp)
+        .build_and_validate()?;
+    let g_ge_exp = ModelIrGraph::builder("ge_graph", g)
+        .add_input(x1.clone())
+        .add_output(y1.clone())
+        .add_node(n_g_exp)
+        .build_and_validate()?;
+    assert_eq!(
+        g_ge_imp.content_digest()?,
+        g_ge_exp.content_digest()?,
+        "Gelu implicit vs explicit approximate must match"
+    );
+
+    // 6. Reshape: Shape(sh) vs IntList and allowzero = false
+    let flat_port = TensorPort::new("flat", DType::F32, Shape::new(vec![4])?, g)?;
+    let mut res_shape = AttributeMap::new();
+    res_shape.insert("shape".to_string(), AttrValue::Shape(Shape::new(vec![4])?));
+    let n_res_sh = GraphNode::new(
+        "rs",
+        OpCode::Reshape,
+        "rs",
+        vec!["x1".to_string()],
+        vec!["flat".to_string()],
+        res_shape,
+    )?;
+    let mut res_intlist = AttributeMap::new();
+    res_intlist.insert("shape".to_string(), AttrValue::IntList(vec![4]));
+    res_intlist.insert("allowzero".to_string(), AttrValue::Bool(false));
+    let n_res_il = GraphNode::new(
+        "rs",
+        OpCode::Reshape,
+        "rs",
+        vec!["x1".to_string()],
+        vec!["flat".to_string()],
+        res_intlist,
+    )?;
+    let g_res_sh = ModelIrGraph::builder("res_graph", g)
+        .add_input(x1.clone())
+        .add_output(flat_port.clone())
+        .add_node(n_res_sh)
+        .build_and_validate()?;
+    let g_res_il = ModelIrGraph::builder("res_graph", g)
+        .add_input(x1.clone())
+        .add_output(flat_port)
+        .add_node(n_res_il)
+        .build_and_validate()?;
+    assert_eq!(
+        g_res_sh.content_digest()?,
+        g_res_il.content_digest()?,
+        "Reshape Shape vs IntList and allowzero must match"
+    );
+
+    // 7. LayerNorm: no epsilon/affine/scale/bias vs explicit defaults
+    let ln_implicit = AttributeMap::new();
+    let n_ln_imp = GraphNode::new(
+        "ln",
+        OpCode::LayerNorm,
+        "ln",
+        vec!["x1".to_string()],
+        vec!["y1".to_string()],
+        ln_implicit,
+    )?;
+    let mut ln_explicit = AttributeMap::new();
+    ln_explicit.insert("epsilon".to_string(), AttrValue::Float(1e-5));
+    ln_explicit.insert("elementwise_affine".to_string(), AttrValue::Bool(true));
+    ln_explicit.insert("scale".to_string(), AttrValue::Bool(true));
+    ln_explicit.insert("bias".to_string(), AttrValue::Bool(true));
+    let n_ln_exp = GraphNode::new(
+        "ln",
+        OpCode::LayerNorm,
+        "ln",
+        vec!["x1".to_string()],
+        vec!["y1".to_string()],
+        ln_explicit,
+    )?;
+    let g_ln_imp = ModelIrGraph::builder("ln_graph", g)
+        .add_input(x1.clone())
+        .add_output(y1.clone())
+        .add_node(n_ln_imp)
+        .build_and_validate()?;
+    let g_ln_exp = ModelIrGraph::builder("ln_graph", g)
+        .add_input(x1.clone())
+        .add_output(y1.clone())
+        .add_node(n_ln_exp)
+        .build_and_validate()?;
+    assert_eq!(
+        g_ln_imp.content_digest()?,
+        g_ln_exp.content_digest()?,
+        "LayerNorm implicit vs explicit defaults must match"
+    );
+
+    // 8. RMSNorm: no epsilon/affine/scale vs explicit defaults
+    let rms_implicit = AttributeMap::new();
+    let n_rms_imp = GraphNode::new(
+        "rms",
+        OpCode::RMSNorm,
+        "rms",
+        vec!["x1".to_string()],
+        vec!["y1".to_string()],
+        rms_implicit,
+    )?;
+    let mut rms_explicit = AttributeMap::new();
+    rms_explicit.insert("epsilon".to_string(), AttrValue::Float(1e-5));
+    rms_explicit.insert("elementwise_affine".to_string(), AttrValue::Bool(true));
+    rms_explicit.insert("scale".to_string(), AttrValue::Bool(true));
+    let n_rms_exp = GraphNode::new(
+        "rms",
+        OpCode::RMSNorm,
+        "rms",
+        vec!["x1".to_string()],
+        vec!["y1".to_string()],
+        rms_explicit,
+    )?;
+    let g_rms_imp = ModelIrGraph::builder("rms_graph", g)
+        .add_input(x1.clone())
+        .add_output(y1.clone())
+        .add_node(n_rms_imp)
+        .build_and_validate()?;
+    let g_rms_exp = ModelIrGraph::builder("rms_graph", g)
+        .add_input(x1.clone())
+        .add_output(y1.clone())
+        .add_node(n_rms_exp)
+        .build_and_validate()?;
+    assert_eq!(
+        g_rms_imp.content_digest()?,
+        g_rms_exp.content_digest()?,
+        "RMSNorm implicit vs explicit defaults must match"
+    );
+
+    // 9. Conv2d: no padding/strides/dilations/groups vs explicit defaults
+    let w_conv = TensorPort::new("w_c", DType::F32, Shape::new(vec![1, 1, 2, 2])?, g)?;
+    let conv_out = TensorPort::new("c_out", DType::F32, Shape::new(vec![1, 1, 3, 3])?, g)?;
+    let conv_implicit = AttributeMap::new();
+    let n_cv_imp = GraphNode::new(
+        "cv",
+        OpCode::Conv2d,
+        "cv",
+        vec!["img".to_string(), "w_c".to_string()],
+        vec!["c_out".to_string()],
+        conv_implicit,
+    )?;
+    let mut conv_explicit = AttributeMap::new();
+    conv_explicit.insert("padding".to_string(), AttrValue::IntList(vec![0, 0, 0, 0]));
+    conv_explicit.insert("strides".to_string(), AttrValue::IntList(vec![1, 1]));
+    conv_explicit.insert("dilations".to_string(), AttrValue::IntList(vec![1, 1]));
+    conv_explicit.insert("groups".to_string(), AttrValue::Int(1));
+    let n_cv_exp = GraphNode::new(
+        "cv",
+        OpCode::Conv2d,
+        "cv",
+        vec!["img".to_string(), "w_c".to_string()],
+        vec!["c_out".to_string()],
+        conv_explicit,
+    )?;
+    let g_cv_imp = ModelIrGraph::builder("cv_graph", g)
+        .add_input(img_port.clone())
+        .add_input(w_conv.clone())
+        .add_output(conv_out.clone())
+        .add_node(n_cv_imp)
+        .build_and_validate()?;
+    let g_cv_exp = ModelIrGraph::builder("cv_graph", g)
+        .add_input(img_port)
+        .add_input(w_conv)
+        .add_output(conv_out)
+        .add_node(n_cv_exp)
+        .build_and_validate()?;
+    assert_eq!(
+        g_cv_imp.content_digest()?,
+        g_cv_exp.content_digest()?,
+        "Conv2d implicit vs explicit defaults must match"
+    );
+
     Ok(())
 }
 
@@ -2343,22 +2676,876 @@ fn test_finding_17_encoder_all_attribute_kinds() -> Result<(), Box<dyn Error>> {
         .add_node(n)
         .build_and_validate()?;
 
-    let bytes = fss_model_ir::canonical::encode_canonical_model_ir(&graph);
+    let bytes = fss_model_ir::canonical::encode_canonical_model_ir(&graph)?;
     assert!(!bytes.is_empty());
     let digest = graph.content_digest()?;
     assert_ne!(digest.to_string(), "");
 
-    // Also test AttrValue serialization directly for String, FloatList, DType, Int, IntList
-    let vals = [
-        AttrValue::Bool(true),
-        AttrValue::Int(42),
-        AttrValue::Float(1.25),
-        AttrValue::String("hello_ir".to_string()),
-        AttrValue::IntList(vec![1, 2, 3]),
-        AttrValue::FloatList(vec![1.0, 2.0, 3.0]),
-        AttrValue::DType(DType::F32),
-        AttrValue::Shape(Shape::new(vec![2, 4, 8])?),
-    ];
-    assert_eq!(vals.len(), 8);
+    // Direct canonical encoding tag and byte assertions for all 8 attribute types (kills Mutant M6)
+    let b_bytes = fss_model_ir::canonical::encode_canonical_attr_value(&AttrValue::Bool(true));
+    assert_eq!(b_bytes[0], 1, "Bool tag must be 1");
+    assert_eq!(b_bytes, vec![1, 1]);
+
+    let i_bytes = fss_model_ir::canonical::encode_canonical_attr_value(&AttrValue::Int(42));
+    assert_eq!(i_bytes[0], 2, "Int tag must be 2");
+    assert_eq!(i_bytes, [vec![2], 42i64.to_be_bytes().to_vec()].concat());
+
+    let f_bytes = fss_model_ir::canonical::encode_canonical_attr_value(&AttrValue::Float(1.25));
+    assert_eq!(f_bytes[0], 3, "Float tag must be 3");
+    assert_eq!(
+        f_bytes,
+        [vec![3], 1.25f64.to_bits().to_be_bytes().to_vec()].concat()
+    );
+
+    let s_bytes = fss_model_ir::canonical::encode_canonical_attr_value(&AttrValue::String(
+        "hello_ir".to_string(),
+    ));
+    assert_eq!(s_bytes[0], 4, "String tag must be 4");
+    assert_eq!(
+        s_bytes,
+        [vec![4], 8u32.to_be_bytes().to_vec(), b"hello_ir".to_vec()].concat()
+    );
+
+    let il_bytes =
+        fss_model_ir::canonical::encode_canonical_attr_value(&AttrValue::IntList(vec![1, 2, 3]));
+    assert_eq!(il_bytes[0], 5, "IntList tag must be 5");
+    assert_eq!(
+        il_bytes,
+        [
+            vec![5],
+            3u32.to_be_bytes().to_vec(),
+            1i64.to_be_bytes().to_vec(),
+            2i64.to_be_bytes().to_vec(),
+            3i64.to_be_bytes().to_vec()
+        ]
+        .concat()
+    );
+
+    let fl_bytes =
+        fss_model_ir::canonical::encode_canonical_attr_value(&AttrValue::FloatList(vec![
+            1.0, 2.0, 3.0,
+        ]));
+    assert_eq!(fl_bytes[0], 6, "FloatList tag must be 6");
+    assert_eq!(
+        fl_bytes,
+        [
+            vec![6],
+            3u32.to_be_bytes().to_vec(),
+            1.0f64.to_bits().to_be_bytes().to_vec(),
+            2.0f64.to_bits().to_be_bytes().to_vec(),
+            3.0f64.to_bits().to_be_bytes().to_vec()
+        ]
+        .concat()
+    );
+
+    let dt_bytes =
+        fss_model_ir::canonical::encode_canonical_attr_value(&AttrValue::DType(DType::F32));
+    assert_eq!(dt_bytes[0], 7, "DType tag must be 7");
+    assert_eq!(dt_bytes, vec![7, DType::F32.type_tag()]);
+
+    let sh_bytes =
+        fss_model_ir::canonical::encode_canonical_attr_value(&AttrValue::Shape(Shape::new(vec![
+            2, 4, 8,
+        ])?));
+    assert_eq!(sh_bytes[0], 8, "Shape tag must be 8");
+    assert_eq!(
+        sh_bytes,
+        [
+            vec![8],
+            3u32.to_be_bytes().to_vec(),
+            2u64.to_be_bytes().to_vec(),
+            4u64.to_be_bytes().to_vec(),
+            8u64.to_be_bytes().to_vec()
+        ]
+        .concat()
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_slice_steps_contract() -> Result<(), Box<dyn Error>> {
+    let g = gen1();
+    let in_port = TensorPort::new("x", DType::F32, Shape::new(vec![10])?, g)?;
+
+    // 1. Valid steps: input [10], starts [0], ends [10], steps [2] -> [5]
+    let mut attrs = AttributeMap::new();
+    attrs.insert("starts".to_string(), AttrValue::IntList(vec![0]));
+    attrs.insert("ends".to_string(), AttrValue::IntList(vec![10]));
+    attrs.insert("steps".to_string(), AttrValue::IntList(vec![2]));
+    let out = fss_model_ir::infer_operator_outputs(
+        "slice_node",
+        OpCode::Slice,
+        &[&in_port],
+        &["y".to_string()],
+        &attrs,
+        g,
+    )?;
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].shape().dims(), &[5]);
+
+    // 2. Valid steps with non-even division: input [10], starts [0], ends [10], steps [3] -> [4] (0, 3, 6, 9)
+    let mut attrs3 = AttributeMap::new();
+    attrs3.insert("starts".to_string(), AttrValue::IntList(vec![0]));
+    attrs3.insert("ends".to_string(), AttrValue::IntList(vec![10]));
+    attrs3.insert("steps".to_string(), AttrValue::IntList(vec![3]));
+    let out3 = fss_model_ir::infer_operator_outputs(
+        "slice_node",
+        OpCode::Slice,
+        &[&in_port],
+        &["y".to_string()],
+        &attrs3,
+        g,
+    )?;
+    assert_eq!(out3[0].shape().dims(), &[4]);
+
+    // 3. steps = 0 is rejected
+    let mut attrs_zero = AttributeMap::new();
+    attrs_zero.insert("starts".to_string(), AttrValue::IntList(vec![0]));
+    attrs_zero.insert("ends".to_string(), AttrValue::IntList(vec![10]));
+    attrs_zero.insert("steps".to_string(), AttrValue::IntList(vec![0]));
+    match fss_model_ir::infer_operator_outputs(
+        "slice_zero",
+        OpCode::Slice,
+        &[&in_port],
+        &["y".to_string()],
+        &attrs_zero,
+        g,
+    ) {
+        Err(ModelIrError::InvalidAttribute {
+            attr_name, reason, ..
+        }) => {
+            assert_eq!(attr_name, "steps");
+            assert!(reason.contains("zero"));
+        }
+        other => {
+            return Err(format!("expected InvalidAttribute for zero step, got {other:?}").into());
+        }
+    }
+
+    // 4. steps of wrong type (e.g. String) is rejected by schema validator
+    let mut attrs_str = AttributeMap::new();
+    attrs_str.insert("starts".to_string(), AttrValue::IntList(vec![0]));
+    attrs_str.insert("ends".to_string(), AttrValue::IntList(vec![10]));
+    attrs_str.insert(
+        "steps".to_string(),
+        AttrValue::String("garbage".to_string()),
+    );
+    match fss_model_ir::infer_operator_outputs(
+        "slice_str",
+        OpCode::Slice,
+        &[&in_port],
+        &["y".to_string()],
+        &attrs_str,
+        g,
+    ) {
+        Err(ModelIrError::InvalidAttribute {
+            attr_name, reason, ..
+        }) => {
+            assert_eq!(attr_name, "steps");
+            assert!(reason.contains("expected IntList"));
+        }
+        other => {
+            return Err(
+                format!("expected InvalidAttribute for String steps, got {other:?}").into(),
+            );
+        }
+    }
+
+    // 5. steps length mismatch is rejected
+    let mut attrs_len = AttributeMap::new();
+    attrs_len.insert("starts".to_string(), AttrValue::IntList(vec![0]));
+    attrs_len.insert("ends".to_string(), AttrValue::IntList(vec![10]));
+    attrs_len.insert("steps".to_string(), AttrValue::IntList(vec![1, 2]));
+    match fss_model_ir::infer_operator_outputs(
+        "slice_len",
+        OpCode::Slice,
+        &[&in_port],
+        &["y".to_string()],
+        &attrs_len,
+        g,
+    ) {
+        Err(ModelIrError::InvalidAttribute { reason, .. }) => {
+            assert!(reason.contains("identical length"));
+        }
+        other => {
+            return Err(format!(
+                "expected InvalidAttribute for steps length mismatch, got {other:?}"
+            )
+            .into());
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_maxpool2d_ceil_mode_contract() -> Result<(), Box<dyn Error>> {
+    let g = gen1();
+    let in_port = TensorPort::new("x", DType::F32, Shape::new(vec![1, 1, 5, 5])?, g)?;
+
+    // 1. ceil_mode = true: [1, 1, 5, 5] k=2, s=2 -> [1, 1, 3, 3]
+    let mut attrs_ceil = AttributeMap::new();
+    attrs_ceil.insert("kernel_size".to_string(), AttrValue::IntList(vec![2, 2]));
+    attrs_ceil.insert("strides".to_string(), AttrValue::IntList(vec![2, 2]));
+    attrs_ceil.insert("padding".to_string(), AttrValue::IntList(vec![0, 0, 0, 0]));
+    attrs_ceil.insert("ceil_mode".to_string(), AttrValue::Bool(true));
+    let out_ceil = fss_model_ir::infer_operator_outputs(
+        "pool_ceil",
+        OpCode::MaxPool2d,
+        &[&in_port],
+        &["y".to_string()],
+        &attrs_ceil,
+        g,
+    )?;
+    assert_eq!(out_ceil[0].shape().dims(), &[1, 1, 3, 3]);
+
+    // 2. ceil_mode = false: [1, 1, 5, 5] k=2, s=2 -> [1, 1, 2, 2]
+    let mut attrs_no_ceil = AttributeMap::new();
+    attrs_no_ceil.insert("kernel_size".to_string(), AttrValue::IntList(vec![2, 2]));
+    attrs_no_ceil.insert("strides".to_string(), AttrValue::IntList(vec![2, 2]));
+    attrs_no_ceil.insert("padding".to_string(), AttrValue::IntList(vec![0, 0, 0, 0]));
+    attrs_no_ceil.insert("ceil_mode".to_string(), AttrValue::Bool(false));
+    let out_no_ceil = fss_model_ir::infer_operator_outputs(
+        "pool_no_ceil",
+        OpCode::MaxPool2d,
+        &[&in_port],
+        &["y".to_string()],
+        &attrs_no_ceil,
+        g,
+    )?;
+    assert_eq!(out_no_ceil[0].shape().dims(), &[1, 1, 2, 2]);
+
+    // 3. ceil_mode = String("yes") rejected by schema
+    let mut attrs_bad = AttributeMap::new();
+    attrs_bad.insert("kernel_size".to_string(), AttrValue::IntList(vec![2, 2]));
+    attrs_bad.insert(
+        "ceil_mode".to_string(),
+        AttrValue::String("yes".to_string()),
+    );
+    match fss_model_ir::infer_operator_outputs(
+        "pool_bad",
+        OpCode::MaxPool2d,
+        &[&in_port],
+        &["y".to_string()],
+        &attrs_bad,
+        g,
+    ) {
+        Err(ModelIrError::InvalidAttribute {
+            attr_name, reason, ..
+        }) => {
+            assert_eq!(attr_name, "ceil_mode");
+            assert!(reason.contains("expected Bool"));
+        }
+        other => {
+            return Err(format!(
+                "expected InvalidAttribute for ceil_mode type mismatch, got {other:?}"
+            )
+            .into());
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_gelu_approximate_contract() -> Result<(), Box<dyn Error>> {
+    let g = gen1();
+    let in_port = TensorPort::new("x", DType::F32, Shape::new(vec![2, 4])?, g)?;
+
+    // 1. approximate = "none" accepted
+    let mut attrs1 = AttributeMap::new();
+    attrs1.insert(
+        "approximate".to_string(),
+        AttrValue::String("none".to_string()),
+    );
+    let out1 = fss_model_ir::infer_operator_outputs(
+        "gelu1",
+        OpCode::Gelu,
+        &[&in_port],
+        &["y".to_string()],
+        &attrs1,
+        g,
+    )?;
+    assert_eq!(out1[0].shape().dims(), &[2, 4]);
+
+    // 2. approximate = "tanh" accepted
+    let mut attrs2 = AttributeMap::new();
+    attrs2.insert(
+        "approximate".to_string(),
+        AttrValue::String("tanh".to_string()),
+    );
+    let out2 = fss_model_ir::infer_operator_outputs(
+        "gelu2",
+        OpCode::Gelu,
+        &[&in_port],
+        &["y".to_string()],
+        &attrs2,
+        g,
+    )?;
+    assert_eq!(out2[0].shape().dims(), &[2, 4]);
+
+    // 3. approximate = Int(99) rejected by schema validation
+    let mut attrs3 = AttributeMap::new();
+    attrs3.insert("approximate".to_string(), AttrValue::Int(99));
+    match fss_model_ir::infer_operator_outputs(
+        "gelu3",
+        OpCode::Gelu,
+        &[&in_port],
+        &["y".to_string()],
+        &attrs3,
+        g,
+    ) {
+        Err(ModelIrError::InvalidAttribute {
+            attr_name, reason, ..
+        }) => {
+            assert_eq!(attr_name, "approximate");
+            assert!(reason.contains("expected String"));
+        }
+        other => {
+            return Err(
+                format!("expected InvalidAttribute for Int approximate, got {other:?}").into(),
+            );
+        }
+    }
+
+    // 4. approximate = "garbage" rejected
+    let mut attrs4 = AttributeMap::new();
+    attrs4.insert(
+        "approximate".to_string(),
+        AttrValue::String("garbage".to_string()),
+    );
+    match fss_model_ir::infer_operator_outputs(
+        "gelu4",
+        OpCode::Gelu,
+        &[&in_port],
+        &["y".to_string()],
+        &attrs4,
+        g,
+    ) {
+        Err(ModelIrError::InvalidAttribute {
+            attr_name, reason, ..
+        }) => {
+            assert_eq!(attr_name, "approximate");
+            assert!(reason.contains("approximate must be 'none' or 'tanh'"));
+        }
+        other => {
+            return Err(format!(
+                "expected InvalidAttribute for garbage approximate, got {other:?}"
+            )
+            .into());
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_reshape_allowzero_and_dim_bounds_contract() -> Result<(), Box<dyn Error>> {
+    let g = gen1();
+    let in_port = TensorPort::new("x", DType::F32, Shape::new(vec![2, 4])?, g)?;
+
+    // 1. allowzero = false accepted
+    let mut attrs1 = AttributeMap::new();
+    attrs1.insert("shape".to_string(), AttrValue::IntList(vec![4, 2]));
+    attrs1.insert("allowzero".to_string(), AttrValue::Bool(false));
+    let out1 = fss_model_ir::infer_operator_outputs(
+        "reshape1",
+        OpCode::Reshape,
+        &[&in_port],
+        &["y".to_string()],
+        &attrs1,
+        g,
+    )?;
+    assert_eq!(out1[0].shape().dims(), &[4, 2]);
+
+    // 2. allowzero = String("true") rejected by schema
+    let mut attrs2 = AttributeMap::new();
+    attrs2.insert("shape".to_string(), AttrValue::IntList(vec![4, 2]));
+    attrs2.insert(
+        "allowzero".to_string(),
+        AttrValue::String("true".to_string()),
+    );
+    match fss_model_ir::infer_operator_outputs(
+        "reshape2",
+        OpCode::Reshape,
+        &[&in_port],
+        &["y".to_string()],
+        &attrs2,
+        g,
+    ) {
+        Err(ModelIrError::InvalidAttribute {
+            attr_name, reason, ..
+        }) => {
+            assert_eq!(attr_name, "allowzero");
+            assert!(reason.contains("expected Bool"));
+        }
+        other => {
+            return Err(
+                format!("expected InvalidAttribute for String allowzero, got {other:?}").into(),
+            );
+        }
+    }
+
+    // 3. Shape attribute with dim > i64::MAX rejected with overflow
+    let mut attrs3 = AttributeMap::new();
+    attrs3.insert(
+        "shape".to_string(),
+        AttrValue::Shape(Shape::new(vec![u64::MAX as usize])?),
+    );
+    match fss_model_ir::infer_operator_outputs(
+        "reshape3",
+        OpCode::Reshape,
+        &[&in_port],
+        &["y".to_string()],
+        &attrs3,
+        g,
+    ) {
+        Err(ModelIrError::ArithmeticOverflow { operation }) => {
+            assert_eq!(operation, "reshape shape dimension exceeds i64::MAX");
+        }
+        other => {
+            return Err(
+                format!("expected ArithmeticOverflow for dim > i64::MAX, got {other:?}").into(),
+            );
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_layernorm_and_rmsnorm_extended_contract() -> Result<(), Box<dyn Error>> {
+    let g = gen1();
+    let x_port = TensorPort::new("x", DType::F32, Shape::new(vec![2, 4, 8])?, g)?;
+    let wt_port = TensorPort::new("wt", DType::F32, Shape::new(vec![8])?, g)?;
+    let bias_port = TensorPort::new("b", DType::F32, Shape::new(vec![8])?, g)?;
+
+    // 1. elementwise_affine = false rejects weight input
+    let mut attrs_no_affine = AttributeMap::new();
+    attrs_no_affine.insert("elementwise_affine".to_string(), AttrValue::Bool(false));
+    match fss_model_ir::infer_operator_outputs(
+        "ln_no_aff",
+        OpCode::LayerNorm,
+        &[&x_port, &wt_port],
+        &["y".to_string()],
+        &attrs_no_affine,
+        g,
+    ) {
+        Err(ModelIrError::InvalidPortCount {
+            actual, expected, ..
+        }) => {
+            assert_eq!(actual, 2);
+            assert!(expected.contains("elementwise_affine/scale is disabled"));
+        }
+        other => {
+            return Err(format!(
+                "expected InvalidPortCount for affine=false with weight, got {other:?}"
+            )
+            .into());
+        }
+    }
+
+    // 2. bias = false rejects bias input (3 inputs)
+    let mut attrs_no_bias = AttributeMap::new();
+    attrs_no_bias.insert("bias".to_string(), AttrValue::Bool(false));
+    match fss_model_ir::infer_operator_outputs(
+        "ln_no_bias",
+        OpCode::LayerNorm,
+        &[&x_port, &wt_port, &bias_port],
+        &["y".to_string()],
+        &attrs_no_bias,
+        g,
+    ) {
+        Err(ModelIrError::InvalidPortCount {
+            actual, expected, ..
+        }) => {
+            assert_eq!(actual, 3);
+            assert!(expected.contains("elementwise_affine/bias is disabled"));
+        }
+        other => {
+            return Err(format!(
+                "expected InvalidPortCount for bias=false with bias input, got {other:?}"
+            )
+            .into());
+        }
+    }
+
+    // 3. RMSNorm scale = false rejects weight input
+    let mut attrs_rms_no_scale = AttributeMap::new();
+    attrs_rms_no_scale.insert("scale".to_string(), AttrValue::Bool(false));
+    match fss_model_ir::infer_operator_outputs(
+        "rms_no_scale",
+        OpCode::RMSNorm,
+        &[&x_port, &wt_port],
+        &["y".to_string()],
+        &attrs_rms_no_scale,
+        g,
+    ) {
+        Err(ModelIrError::InvalidPortCount { actual, .. }) => {
+            assert_eq!(actual, 2);
+        }
+        other => {
+            return Err(format!(
+                "expected InvalidPortCount for RMSNorm scale=false, got {other:?}"
+            )
+            .into());
+        }
+    }
+
+    // 4. epsilon <= 0.0 rejected
+    let mut attrs_zero_eps = AttributeMap::new();
+    attrs_zero_eps.insert("epsilon".to_string(), AttrValue::Float(0.0));
+    match fss_model_ir::infer_operator_outputs(
+        "ln_zero_eps",
+        OpCode::LayerNorm,
+        &[&x_port],
+        &["y".to_string()],
+        &attrs_zero_eps,
+        g,
+    ) {
+        Err(ModelIrError::InvalidAttribute {
+            attr_name, reason, ..
+        }) => {
+            assert_eq!(attr_name, "epsilon");
+            assert!(reason.contains("strictly positive finite float"));
+        }
+        other => {
+            return Err(
+                format!("expected InvalidAttribute for zero epsilon, got {other:?}").into(),
+            );
+        }
+    }
+
+    // 5. epsilon = infinity rejected
+    let mut attrs_inf_eps = AttributeMap::new();
+    attrs_inf_eps.insert("epsilon".to_string(), AttrValue::Float(f64::INFINITY));
+    match fss_model_ir::infer_operator_outputs(
+        "ln_inf_eps",
+        OpCode::LayerNorm,
+        &[&x_port],
+        &["y".to_string()],
+        &attrs_inf_eps,
+        g,
+    ) {
+        Err(ModelIrError::InvalidAttribute {
+            attr_name, reason, ..
+        }) => {
+            assert_eq!(attr_name, "epsilon");
+            assert!(reason.contains("strictly positive finite float"));
+        }
+        other => {
+            return Err(format!("expected InvalidAttribute for inf epsilon, got {other:?}").into());
+        }
+    }
+
+    // 6. empty normalized_shape rejected
+    let mut attrs_empty_ns = AttributeMap::new();
+    attrs_empty_ns.insert("normalized_shape".to_string(), AttrValue::IntList(vec![]));
+    match fss_model_ir::infer_operator_outputs(
+        "ln_empty_ns",
+        OpCode::LayerNorm,
+        &[&x_port],
+        &["y".to_string()],
+        &attrs_empty_ns,
+        g,
+    ) {
+        Err(ModelIrError::InvalidAttribute {
+            attr_name, reason, ..
+        }) => {
+            assert_eq!(attr_name, "normalized_shape");
+            assert!(reason.contains("cannot be empty"));
+        }
+        other => {
+            return Err(format!(
+                "expected InvalidAttribute for empty normalized_shape, got {other:?}"
+            )
+            .into());
+        }
+    }
+
+    // 7. rank-0 input rejected
+    let rank0_port = TensorPort::new("rank0", DType::F32, Shape::scalar(), g)?;
+    match fss_model_ir::infer_operator_outputs(
+        "ln_rank0",
+        OpCode::LayerNorm,
+        &[&rank0_port],
+        &["y".to_string()],
+        &AttributeMap::new(),
+        g,
+    ) {
+        Err(ModelIrError::RankMismatch {
+            expected_rank,
+            actual_rank,
+            ..
+        }) => {
+            assert_eq!(expected_rank, 1);
+            assert_eq!(actual_rank, 0);
+        }
+        other => {
+            return Err(
+                format!("expected RankMismatch for rank-0 LayerNorm, got {other:?}").into(),
+            );
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_bool_dtype_rejected_in_arithmetic_ops() -> Result<(), Box<dyn Error>> {
+    let g = gen1();
+    let bool_port1 = TensorPort::new("b1", DType::Bool, Shape::new(vec![4, 4])?, g)?;
+    let bool_port2 = TensorPort::new("b2", DType::Bool, Shape::new(vec![4, 4])?, g)?;
+
+    // 1. Div with DType::Bool rejected
+    match fss_model_ir::infer_operator_outputs(
+        "div_bool",
+        OpCode::Div,
+        &[&bool_port1, &bool_port2],
+        &["y".to_string()],
+        &AttributeMap::new(),
+        g,
+    ) {
+        Err(ModelIrError::DTypeMismatch { actual, .. }) => {
+            assert_eq!(actual, DType::Bool);
+        }
+        other => {
+            return Err(format!("expected DTypeMismatch for Div with Bool, got {other:?}").into());
+        }
+    }
+
+    // 2. MatMul with DType::Bool rejected
+    match fss_model_ir::infer_operator_outputs(
+        "matmul_bool",
+        OpCode::MatMul,
+        &[&bool_port1, &bool_port2],
+        &["y".to_string()],
+        &AttributeMap::new(),
+        g,
+    ) {
+        Err(ModelIrError::DTypeMismatch { actual, .. }) => {
+            assert_eq!(actual, DType::Bool);
+        }
+        other => {
+            return Err(
+                format!("expected DTypeMismatch for MatMul with Bool, got {other:?}").into(),
+            );
+        }
+    }
+
+    // 3. MaxPool2d with DType::Bool rejected
+    let bool_pool = TensorPort::new("bp", DType::Bool, Shape::new(vec![1, 1, 4, 4])?, g)?;
+    let mut pool_attrs = AttributeMap::new();
+    pool_attrs.insert("kernel_size".to_string(), AttrValue::IntList(vec![2, 2]));
+    match fss_model_ir::infer_operator_outputs(
+        "pool_bool",
+        OpCode::MaxPool2d,
+        &[&bool_pool],
+        &["y".to_string()],
+        &pool_attrs,
+        g,
+    ) {
+        Err(ModelIrError::DTypeMismatch { actual, .. }) => {
+            assert_eq!(actual, DType::Bool);
+        }
+        other => {
+            return Err(
+                format!("expected DTypeMismatch for MaxPool2d with Bool, got {other:?}").into(),
+            );
+        }
+    }
+
+    // 4. Embedding with DType::Bool table rejected
+    let idx_port = TensorPort::new("idx", DType::I64, Shape::new(vec![2, 3])?, g)?;
+    let bool_table = TensorPort::new("tbl_b", DType::Bool, Shape::new(vec![10, 4])?, g)?;
+    match fss_model_ir::infer_operator_outputs(
+        "emb_bool",
+        OpCode::Embedding,
+        &[&idx_port, &bool_table],
+        &["y".to_string()],
+        &AttributeMap::new(),
+        g,
+    ) {
+        Err(ModelIrError::DTypeMismatch { actual, .. }) => {
+            assert_eq!(actual, DType::Bool);
+        }
+        other => {
+            return Err(format!(
+                "expected DTypeMismatch for Embedding with Bool table, got {other:?}"
+            )
+            .into());
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_embedding_invariants_contract() -> Result<(), Box<dyn Error>> {
+    let g = gen1();
+    let idx_port = TensorPort::new("idx", DType::I64, Shape::new(vec![2, 3])?, g)?;
+    let table = TensorPort::new("tbl", DType::F32, Shape::new(vec![10, 16])?, g)?;
+
+    // 1. Valid embedding succeeds
+    let mut valid_attrs = AttributeMap::new();
+    valid_attrs.insert("num_embeddings".to_string(), AttrValue::Int(10));
+    valid_attrs.insert("embedding_dim".to_string(), AttrValue::Int(16));
+    valid_attrs.insert("padding_idx".to_string(), AttrValue::Int(0));
+    valid_attrs.insert("dtype".to_string(), AttrValue::DType(DType::F32));
+    let out = fss_model_ir::infer_operator_outputs(
+        "emb_ok",
+        OpCode::Embedding,
+        &[&idx_port, &table],
+        &["y".to_string()],
+        &valid_attrs,
+        g,
+    )?;
+    assert_eq!(out[0].shape().dims(), &[2, 3, 16]);
+
+    // 2. num_embeddings mismatch rejected
+    let mut bad_ne = AttributeMap::new();
+    bad_ne.insert("num_embeddings".to_string(), AttrValue::Int(20));
+    match fss_model_ir::infer_operator_outputs(
+        "emb_bad_ne",
+        OpCode::Embedding,
+        &[&idx_port, &table],
+        &["y".to_string()],
+        &bad_ne,
+        g,
+    ) {
+        Err(ModelIrError::ShapeMismatch { reason, .. }) => {
+            assert!(reason.contains("num_embeddings attribute 20 does not match"));
+        }
+        other => {
+            return Err(format!(
+                "expected ShapeMismatch for num_embeddings mismatch, got {other:?}"
+            )
+            .into());
+        }
+    }
+
+    // 3. embedding_dim mismatch rejected
+    let mut bad_ed = AttributeMap::new();
+    bad_ed.insert("embedding_dim".to_string(), AttrValue::Int(32));
+    match fss_model_ir::infer_operator_outputs(
+        "emb_bad_ed",
+        OpCode::Embedding,
+        &[&idx_port, &table],
+        &["y".to_string()],
+        &bad_ed,
+        g,
+    ) {
+        Err(ModelIrError::ShapeMismatch { reason, .. }) => {
+            assert!(reason.contains("embedding_dim attribute 32 does not match"));
+        }
+        other => {
+            return Err(format!(
+                "expected ShapeMismatch for embedding_dim mismatch, got {other:?}"
+            )
+            .into());
+        }
+    }
+
+    // 4. padding_idx >= num_embeddings rejected
+    let mut bad_pi = AttributeMap::new();
+    bad_pi.insert("padding_idx".to_string(), AttrValue::Int(10));
+    match fss_model_ir::infer_operator_outputs(
+        "emb_bad_pi",
+        OpCode::Embedding,
+        &[&idx_port, &table],
+        &["y".to_string()],
+        &bad_pi,
+        g,
+    ) {
+        Err(ModelIrError::InvalidAttribute {
+            attr_name, reason, ..
+        }) => {
+            assert_eq!(attr_name, "padding_idx");
+            assert!(reason.contains("out of bounds"));
+        }
+        other => {
+            return Err(format!(
+                "expected InvalidAttribute for padding_idx out of bounds, got {other:?}"
+            )
+            .into());
+        }
+    }
+
+    // 5. padding_idx < 0 rejected
+    let mut bad_neg_pi = AttributeMap::new();
+    bad_neg_pi.insert("padding_idx".to_string(), AttrValue::Int(-1));
+    match fss_model_ir::infer_operator_outputs(
+        "emb_neg_pi",
+        OpCode::Embedding,
+        &[&idx_port, &table],
+        &["y".to_string()],
+        &bad_neg_pi,
+        g,
+    ) {
+        Err(ModelIrError::InvalidAttribute {
+            attr_name, reason, ..
+        }) => {
+            assert_eq!(attr_name, "padding_idx");
+            assert!(reason.contains("out of bounds"));
+        }
+        other => {
+            return Err(format!(
+                "expected InvalidAttribute for negative padding_idx, got {other:?}"
+            )
+            .into());
+        }
+    }
+
+    // 6. dtype = Bool rejected
+    let mut bad_dt = AttributeMap::new();
+    bad_dt.insert("dtype".to_string(), AttrValue::DType(DType::Bool));
+    match fss_model_ir::infer_operator_outputs(
+        "emb_bool_dt",
+        OpCode::Embedding,
+        &[&idx_port, &table],
+        &["y".to_string()],
+        &bad_dt,
+        g,
+    ) {
+        Err(ModelIrError::InvalidAttribute {
+            attr_name, reason, ..
+        }) => {
+            assert_eq!(attr_name, "dtype");
+            assert!(reason.contains("embedding dtype cannot be Bool"));
+        }
+        other => {
+            return Err(format!("expected InvalidAttribute for Bool dtype, got {other:?}").into());
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_order_independent_element_count_zero_handling() -> Result<(), Box<dyn Error>> {
+    let g = gen1();
+    let max_dim = i64::MAX as usize;
+
+    // Both [0, max_dim, max_dim] and [max_dim, max_dim, 0] must succeed without overflow
+    let port1 = TensorPort::new("p1", DType::F32, Shape::new(vec![0, max_dim, max_dim])?, g)?;
+    assert_eq!(port1.shape().dims(), &[0, max_dim, max_dim]);
+
+    let port2 = TensorPort::new("p2", DType::F32, Shape::new(vec![max_dim, max_dim, 0])?, g)?;
+    assert_eq!(port2.shape().dims(), &[max_dim, max_dim, 0]);
+
+    // Dimension > i64::MAX is rejected with ArithmeticOverflow
+    let overflow_dim = u64::MAX as usize;
+    match TensorPort::new("p_of", DType::F32, Shape::new(vec![overflow_dim])?, g) {
+        Err(ModelIrError::ArithmeticOverflow { operation }) => {
+            assert_eq!(operation, "tensor dimension exceeds i64::MAX");
+        }
+        other => {
+            return Err(
+                format!("expected ArithmeticOverflow for dim > i64::MAX, got {other:?}").into(),
+            );
+        }
+    }
+
     Ok(())
 }

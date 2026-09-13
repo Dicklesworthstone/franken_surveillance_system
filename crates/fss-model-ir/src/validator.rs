@@ -8,6 +8,37 @@ use crate::node::GraphNode;
 use crate::port::TensorPort;
 use crate::shape_inference::infer_operator_outputs;
 
+/// Strongly typed producer identifier for tensors in a Model IR graph.
+///
+/// Prevents reliance on magic string sentinels (e.g. `"graph_input"`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ProducerId<'a> {
+    /// Tensor originates from a declared graph input port.
+    GraphInput,
+    /// Tensor is produced by a graph computation node with ID `&'a str`.
+    Node(&'a str),
+}
+
+impl<'a> ProducerId<'a> {
+    /// Returns the node identifier if this producer is a computation node.
+    #[must_use]
+    pub const fn as_node_id(&self) -> Option<&'a str> {
+        match self {
+            Self::GraphInput => None,
+            Self::Node(id) => Some(id),
+        }
+    }
+
+    /// Returns a human-readable display string suitable for error reporting.
+    #[must_use]
+    pub fn to_display_string(&self) -> String {
+        match self {
+            Self::GraphInput => "graph_input".to_string(),
+            Self::Node(id) => (*id).to_string(),
+        }
+    }
+}
+
 /// Static validator enforcing topological, type, shape, generation, and IR constraints.
 pub struct GraphValidator;
 
@@ -15,21 +46,25 @@ impl GraphValidator {
     /// Validates a `ModelIrGraph` against all Model IR v1 rules.
     ///
     /// # Checks Performed
-    /// 1. IR version compatibility (`ModelIrVersion::V1`).
-    /// 2. Non-empty graph structure (at least one node and one output).
-    /// 3. Valid graph identifier.
-    /// 4. Model generation uniformity on declared inputs and outputs.
-    /// 5. Node ID uniqueness.
-    /// 6. Tensor output name uniqueness (no multiple producers or collisions with inputs).
-    /// 7. Dangling tensor inputs (all node inputs must be declared or produced).
-    /// 8. Dangling graph outputs (all outputs must be declared or produced).
-    /// 9. Cycle detection and topological ordering (graph must be a strict DAG).
-    /// 10. Node operator validation, port counts, and dtype/shape inference.
-    /// 11. Conformance of declared outputs against inferred output types and shapes.
+    /// 1. Operator table freeze digest verification.
+    /// 2. IR version compatibility (`ModelIrVersion::V1`).
+    /// 3. Non-empty graph structure (at least one node and one output).
+    /// 4. Valid graph identifier.
+    /// 5. Model generation uniformity on declared inputs and outputs.
+    /// 6. Node ID uniqueness.
+    /// 7. Tensor output name uniqueness (no multiple producers or collisions with inputs).
+    /// 8. Dangling tensor inputs (all node inputs must be declared or produced).
+    /// 9. Dangling graph outputs (all outputs must be declared or produced).
+    /// 10. Cycle detection and topological ordering (graph must be a strict DAG).
+    /// 11. Node operator validation, port counts, and dtype/shape inference.
+    /// 12. Conformance of declared outputs against inferred output types and shapes.
     ///
     /// # Errors
     /// Returns a typed [`ModelIrError`] detailing the exact violation.
     pub fn validate(graph: &ModelIrGraph) -> Result<(), ModelIrError> {
+        // 0. Operator table freeze digest verification
+        crate::op::verify_operator_table_frozen()?;
+
         // 1. IR version compatibility
         if graph.version() != ModelIrVersion::V1 {
             return Err(ModelIrError::VersionMismatch {
@@ -85,10 +120,10 @@ impl GraphValidator {
         }
 
         // 6. Output tensor uniqueness and collision detection
-        let mut tensor_producers: BTreeMap<&str, &str> = BTreeMap::new();
+        let mut tensor_producers: BTreeMap<&str, ProducerId<'_>> = BTreeMap::new();
         for input in graph.inputs() {
             if tensor_producers
-                .insert(input.name(), "graph_input")
+                .insert(input.name(), ProducerId::GraphInput)
                 .is_some()
             {
                 return Err(ModelIrError::DuplicateTensorOutput {
@@ -112,11 +147,11 @@ impl GraphValidator {
                 if let Some(&first_producer) = tensor_producers.get(out_name.as_str()) {
                     return Err(ModelIrError::DuplicateTensorOutput {
                         tensor_name: out_name.clone(),
-                        first_node: first_producer.to_string(),
+                        first_node: first_producer.to_display_string(),
                         second_node: node.id().to_string(),
                     });
                 }
-                tensor_producers.insert(out_name.as_str(), node.id());
+                tensor_producers.insert(out_name.as_str(), ProducerId::Node(node.id()));
             }
         }
 
@@ -237,7 +272,7 @@ impl GraphValidator {
     /// Returns [`ModelIrError::CycleDetected`] if a cycle is encountered.
     pub fn topological_sort<'a>(
         graph: &'a ModelIrGraph,
-        producer_map: &BTreeMap<&str, &'a str>,
+        producer_map: &BTreeMap<&str, ProducerId<'a>>,
     ) -> Result<Vec<&'a GraphNode>, ModelIrError> {
         // Detect cycles via DFS with cycle path reconstruction
         let mut state: BTreeMap<&'a str, u8> = BTreeMap::new(); // 0: unvisited, 1: visiting, 2: visited
@@ -252,8 +287,8 @@ impl GraphValidator {
         for node in graph.nodes() {
             let mut node_deps = Vec::new();
             for in_name in node.inputs() {
-                if let Some(&producer_id) = producer_map.get(in_name.as_str())
-                    && producer_id != "graph_input"
+                if let Some(producer) = producer_map.get(in_name.as_str())
+                    && let Some(producer_id) = producer.as_node_id()
                     && !node_deps.contains(&producer_id)
                 {
                     node_deps.push(producer_id);

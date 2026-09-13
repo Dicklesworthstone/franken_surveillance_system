@@ -21,26 +21,37 @@ pub const MODEL_IR_DIGEST_DOMAIN: &[u8] = b"fss.model_ir.v1\0";
 /// Nodes are ordered in deterministic topological order with stable tie-breaking on `node.id()`.
 /// Default operator attributes are normalized so that explicit and implicit defaults encode identically.
 /// Floating point values are canonicalized (-0.0 -> +0.0).
-#[must_use]
-pub fn encode_canonical_model_ir(graph: &ModelIrGraph) -> Vec<u8> {
+/// Encodes a `ModelIrGraph` into a deterministic, canonical byte representation.
+///
+/// Nodes are ordered in deterministic topological order with stable tie-breaking on `node.id()`.
+/// Default operator attributes are normalized so that explicit and implicit defaults encode identically.
+/// Floating point values are canonicalized (-0.0 -> +0.0).
+///
+/// # Errors
+/// Returns [`ModelIrError`] if graph validation fails or arithmetic overflow occurs.
+pub fn encode_canonical_model_ir(graph: &ModelIrGraph) -> Result<Vec<u8>, ModelIrError> {
+    graph.validate()?;
+
     let mut buf = Vec::new();
 
     // Domain tag
     buf.extend_from_slice(MODEL_IR_DIGEST_DOMAIN);
 
-    // Version
-    let version_code = match graph.version() {
-        ModelIrVersion::V1 => 1u32,
-        ModelIrVersion::Unsupported(1) => 0u32,
-        ModelIrVersion::Unsupported(v) => {
-            if v == 0 {
-                u32::MAX
-            } else {
-                0x8000_0000 | v
-            }
+    // Version with distinct tags: Tag 1 for V1, Tag 2 for Unsupported(v)
+    match graph.version() {
+        ModelIrVersion::V1 => {
+            buf.push(1);
+            buf.extend_from_slice(&1u32.to_be_bytes());
         }
-    };
-    buf.extend_from_slice(&version_code.to_be_bytes());
+        ModelIrVersion::Unsupported(v) => {
+            buf.push(2);
+            buf.extend_from_slice(&v.to_be_bytes());
+        }
+    }
+
+    // Operator table freeze digest binding
+    let op_table_digest = crate::op::compute_operator_table_digest()?;
+    buf.extend_from_slice(&op_table_digest.bytes());
 
     // Graph ID
     encode_str(&mut buf, graph.id());
@@ -63,38 +74,57 @@ pub fn encode_canonical_model_ir(graph: &ModelIrGraph) -> Vec<u8> {
     // Canonical topological ordering with stable tie-break
     let mut producer_map = BTreeMap::new();
     for input in graph.inputs() {
-        producer_map.insert(input.name(), "graph_input");
+        producer_map.insert(input.name(), crate::validator::ProducerId::GraphInput);
     }
     for node in graph.nodes() {
         for out_name in node.outputs() {
-            producer_map.insert(out_name.as_str(), node.id());
+            producer_map.insert(
+                out_name.as_str(),
+                crate::validator::ProducerId::Node(node.id()),
+            );
         }
     }
 
-    let sorted_nodes: Vec<&GraphNode> =
-        if let Ok(topo) = GraphValidator::topological_sort(graph, &producer_map) {
-            topo
-        } else {
-            let mut nodes: Vec<&GraphNode> = graph.nodes().iter().collect();
-            nodes.sort_by_key(|n| n.id());
-            nodes
-        };
+    let sorted_nodes = GraphValidator::topological_sort(graph, &producer_map)?;
+
+    let mut env: BTreeMap<String, TensorPort> = BTreeMap::new();
+    for input in graph.inputs() {
+        env.insert(input.name().to_string(), input.clone());
+    }
 
     // Nodes count and elements
     buf.extend_from_slice(&(sorted_nodes.len() as u32).to_be_bytes());
     for node in sorted_nodes {
-        encode_node(&mut buf, node);
+        let mut input_ports = Vec::with_capacity(node.inputs().len());
+        for in_name in node.inputs() {
+            if let Some(p) = env.get(in_name) {
+                input_ports.push(p.clone());
+            }
+        }
+        let input_refs: Vec<&TensorPort> = input_ports.iter().collect();
+        let output_ports = crate::shape_inference::infer_operator_outputs(
+            node.id(),
+            node.op(),
+            &input_refs,
+            node.outputs(),
+            node.attributes(),
+            graph.generation(),
+        )?;
+        encode_node(&mut buf, node, &input_ports);
+        for out_port in output_ports {
+            env.insert(out_port.name().to_string(), out_port);
+        }
     }
 
-    buf
+    Ok(buf)
 }
 
 /// Computes the deterministic SHA-256 content digest for a `ModelIrGraph`.
 ///
 /// # Errors
-/// Returns [`ModelIrError`] if the SHA-256 hasher encounters message length overflow.
+/// Returns [`ModelIrError`] if the graph fails validation or the SHA-256 hasher encounters message length overflow.
 pub fn compute_model_ir_digest(graph: &ModelIrGraph) -> Result<ContentDigest, ModelIrError> {
-    let canonical_bytes = encode_canonical_model_ir(graph);
+    let canonical_bytes = encode_canonical_model_ir(graph)?;
     let mut hasher = Sha256Hasher::new();
     hasher.update(&canonical_bytes);
     let digest_bytes = hasher
@@ -123,9 +153,78 @@ fn encode_port(buf: &mut Vec<u8>, port: &TensorPort) {
 fn normalize_attributes(
     op: OpCode,
     attrs: &crate::attribute::AttributeMap,
+    inputs: &[TensorPort],
 ) -> crate::attribute::AttributeMap {
     let mut norm = attrs.clone();
     match op {
+        OpCode::Softmax => {
+            if !inputs.is_empty() {
+                let rank = inputs[0].rank();
+                norm.entry("axis".to_string())
+                    .or_insert_with(|| AttrValue::Int(rank.saturating_sub(1) as i64));
+            }
+        }
+        OpCode::Transpose => {
+            if !inputs.is_empty() {
+                let rank = inputs[0].rank();
+                norm.entry("permutation".to_string()).or_insert_with(|| {
+                    let rev: Vec<i64> = (0..rank).rev().map(|x| x as i64).collect();
+                    AttrValue::IntList(rev)
+                });
+            }
+        }
+        OpCode::Slice => {
+            let starts_len = match norm.get("starts") {
+                Some(AttrValue::IntList(list)) => list.len(),
+                _ => 0,
+            };
+            if starts_len > 0 {
+                norm.entry("axes".to_string()).or_insert_with(|| {
+                    let axes: Vec<i64> = (0..starts_len).map(|x| x as i64).collect();
+                    AttrValue::IntList(axes)
+                });
+                norm.entry("steps".to_string())
+                    .or_insert_with(|| AttrValue::IntList(vec![1; starts_len]));
+            }
+        }
+        OpCode::MaxPool2d => {
+            norm.entry("ceil_mode".to_string())
+                .or_insert_with(|| AttrValue::Bool(false));
+            norm.entry("padding".to_string())
+                .or_insert_with(|| AttrValue::IntList(vec![0, 0, 0, 0]));
+            norm.entry("strides".to_string())
+                .or_insert_with(|| AttrValue::IntList(vec![1, 1]));
+        }
+        OpCode::Gelu => {
+            norm.entry("approximate".to_string())
+                .or_insert_with(|| AttrValue::String("none".to_string()));
+        }
+        OpCode::Reshape => {
+            if let Some(AttrValue::Shape(shape)) = norm.get("shape") {
+                let int_list: Vec<i64> = shape.dims().iter().map(|&d| d as i64).collect();
+                norm.insert("shape".to_string(), AttrValue::IntList(int_list));
+            }
+            norm.entry("allowzero".to_string())
+                .or_insert_with(|| AttrValue::Bool(false));
+        }
+        OpCode::LayerNorm => {
+            norm.entry("epsilon".to_string())
+                .or_insert_with(|| AttrValue::Float(1e-5));
+            norm.entry("elementwise_affine".to_string())
+                .or_insert_with(|| AttrValue::Bool(true));
+            norm.entry("scale".to_string())
+                .or_insert_with(|| AttrValue::Bool(true));
+            norm.entry("bias".to_string())
+                .or_insert_with(|| AttrValue::Bool(true));
+        }
+        OpCode::RMSNorm => {
+            norm.entry("epsilon".to_string())
+                .or_insert_with(|| AttrValue::Float(1e-5));
+            norm.entry("elementwise_affine".to_string())
+                .or_insert_with(|| AttrValue::Bool(true));
+            norm.entry("scale".to_string())
+                .or_insert_with(|| AttrValue::Bool(true));
+        }
         OpCode::Conv2d => {
             norm.entry("dilations".to_string())
                 .or_insert_with(|| AttrValue::IntList(vec![1, 1]));
@@ -136,22 +235,12 @@ fn normalize_attributes(
             norm.entry("strides".to_string())
                 .or_insert_with(|| AttrValue::IntList(vec![1, 1]));
         }
-        OpCode::MaxPool2d => {
-            norm.entry("padding".to_string())
-                .or_insert_with(|| AttrValue::IntList(vec![0, 0, 0, 0]));
-            norm.entry("strides".to_string())
-                .or_insert_with(|| AttrValue::IntList(vec![1, 1]));
-        }
-        OpCode::LayerNorm | OpCode::RMSNorm => {
-            norm.entry("epsilon".to_string())
-                .or_insert_with(|| AttrValue::Float(1e-5));
-        }
         _ => {}
     }
     norm
 }
 
-fn encode_node(buf: &mut Vec<u8>, node: &GraphNode) {
+fn encode_node(buf: &mut Vec<u8>, node: &GraphNode, inputs: &[TensorPort]) {
     encode_str(buf, node.id());
     encode_str(buf, node.op().stable_id());
     encode_str(buf, node.name());
@@ -169,12 +258,20 @@ fn encode_node(buf: &mut Vec<u8>, node: &GraphNode) {
     }
 
     // Attributes (normalized for defaults, ordered by key in BTreeMap)
-    let normalized = normalize_attributes(node.op(), node.attributes());
+    let normalized = normalize_attributes(node.op(), node.attributes(), inputs);
     buf.extend_from_slice(&(normalized.len() as u32).to_be_bytes());
     for (k, v) in &normalized {
         encode_str(buf, k);
         encode_attr_value(buf, v);
     }
+}
+
+/// Encodes an attribute value into its canonical byte representation.
+#[must_use]
+pub fn encode_canonical_attr_value(val: &AttrValue) -> Vec<u8> {
+    let mut buf = Vec::new();
+    encode_attr_value(&mut buf, val);
+    buf
 }
 
 fn encode_attr_value(buf: &mut Vec<u8>, val: &AttrValue) {

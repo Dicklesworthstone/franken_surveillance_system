@@ -35,17 +35,27 @@ impl TensorPort {
                 reason: "tensor port name cannot be empty".to_string(),
             });
         }
-        let elem_count = shape.num_elements().map_err(ModelIrError::from)?;
-        if elem_count > i64::MAX as usize {
-            return Err(ModelIrError::ArithmeticOverflow {
-                operation: "tensor element count exceeds i64::MAX",
-            });
-        }
         for &d in shape.dims() {
             if d > i64::MAX as usize {
                 return Err(ModelIrError::ArithmeticOverflow {
                     operation: "tensor dimension exceeds i64::MAX",
                 });
+            }
+        }
+        let has_zero = shape.dims().contains(&0);
+        if !has_zero && !shape.dims().is_empty() {
+            let mut product: usize = 1;
+            for &d in shape.dims() {
+                product = product
+                    .checked_mul(d)
+                    .ok_or(ModelIrError::ArithmeticOverflow {
+                        operation: "tensor element count calculation",
+                    })?;
+                if product > i64::MAX as usize {
+                    return Err(ModelIrError::ArithmeticOverflow {
+                        operation: "tensor element count exceeds i64::MAX",
+                    });
+                }
             }
         }
         Ok(Self {
