@@ -92,6 +92,7 @@ ERR_PROOF_TESTS_ONLY = "ERR-CLAIM-PROOF-TESTS-ONLY-001"
 ERR_PROOF_TOOLCHAIN_UNBOUND = "ERR-CLAIM-PROOF-TOOLCHAIN-UNBOUND-001"
 ERR_PROOF_CHECK_RECEIPT_INVALID = "ERR-CLAIM-PROOF-CHECK-RECEIPT-INVALID-001"
 ERR_PROOF_UNPROVEN_PLACEHOLDER = "ERR-CLAIM-PROOF-UNPROVEN-PLACEHOLDER-001"
+ERR_PROOF_UNSOUND_ESCAPE = "ERR-CLAIM-PROOF-UNSOUND-ESCAPE-001"
 ERR_CLAIM_GENERATION_UNBOUND = "ERR-CLAIM-GENERATION-UNBOUND-001"
 ERR_BOUND_DERIVATION_UNBOUND = "ERR-CLAIM-BOUND-DERIVATION-UNBOUND-001"
 ERR_BOUND_EXPRESSION_UNBOUND = "ERR-CLAIM-BOUND-EXPRESSION-UNBOUND-001"
@@ -209,8 +210,12 @@ DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
         "remediation": "Re-run the formal checker and retain a passing fss.proof_check_receipt.v1 bound to the claim, model, and artifact",
     },
     ERR_PROOF_UNPROVEN_PLACEHOLDER: {
-        "trigger": "A 'proof' claim's formal artifact contains an unproven placeholder outside comments (Lean sorry/sorryAx/admit, TLAPS OMITTED)",
+        "trigger": "A 'proof' claim's formal artifact contains, outside comments and string literals, an unproven placeholder: a Lean identifier component sorry, sorryAx, admit, or stop (or a confusable lookalike), or TLAPS OMITTED in any case",
         "remediation": "Complete the proof; a placeholder is never a checked proof",
+    },
+    ERR_PROOF_UNSOUND_ESCAPE: {
+        "trigger": "A 'proof' claim's formal artifact contains, outside comments and string literals, an escape that can make a false theorem check: a Lean axiom declaration, native_decide, or user metaprogramming (elab, macro, syntax, run_cmd, initialize, ...), or a standalone TLA+ ASSUME/ASSUMPTION/AXIOM unit",
+        "remediation": "Remove the escape; declare assumptions in the proof bundle and model, never as unchecked axioms in the proof",
     },
     ERR_CLAIM_GENERATION_UNBOUND: {
         "trigger": "A promoted 'proof' or 'bounded_model' claim is cited by no claim row declaring its current generation (Generation column), or its citing rows declare conflicting generations",
@@ -1668,12 +1673,11 @@ def _check_assumptions(
 # Row minimum_evidence: formal artifact, assumptions, toolchain identity, check receipt.
 FORMAL_MODEL_SCHEMA = "fss.formal_model.v1"
 PROOF_CHECK_RECEIPT_SCHEMA = "fss.proof_check_receipt.v1"
-# Closed formal-checker vocabulary (the proofs/lean4 and proofs/tla targets) and the
-# formal-language source suffixes each checker verifies. Anything else is refused.
+# Closed vocabulary of theorem provers (the proofs/lean4 and proofs/tla targets) and the
+# formal-language source suffixes each one checks. TLC and Apalache are model checkers: they
+# check invariants of bounded models and do not check THEOREMs, so they cannot back a 'proof'.
 FORMAL_PROOF_CHECKERS: dict[str, tuple[str, ...]] = {
     "lean4": (".lean",),
-    "tlc": (".tla",),
-    "apalache": (".tla",),
     "tlaps": (".tla",),
 }
 PASSING_PROOF_CHECK_STATUSES: frozenset[str] = frozenset({"passed"})
@@ -1696,17 +1700,51 @@ _CONCRETE_VERSION_RE = re.compile(r"v?\d+(?:\.\d+){1,3}(?:-(?:rc|alpha|beta)\.?\
 _THEOREM_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_'.]*")
 FORMAL_SUFFIX_LANGUAGES: dict[str, str] = {".lean": "lean", ".tla": "tla"}
 _TLA_HEADER_RE = re.compile(r"\A\s*-{4,}[ \t]*MODULE[ \t]+[A-Za-z0-9_]+[ \t]*-{4,}[ \t]*$", re.M)
-_TLA_FOOTER_RE = re.compile(r"^={4,}[ \t]*\s*\Z", re.M)
-_COMMENT_RES: dict[str, tuple[re.Pattern[str], ...]] = {
-    "tla": (re.compile(r"\(\*.*?\*\)", re.S), re.compile(r"\\\*[^\n]*")),
-    "lean": (re.compile(r"/-.*?-/", re.S), re.compile(r"--[^\n]*")),
-}
-_PLACEHOLDER_RES: dict[str, re.Pattern[str]] = {
-    "lean": re.compile(r"(?<![A-Za-z0-9_'.])(?:sorryAx|sorry|admit)(?![A-Za-z0-9_'])"),
-    "tla": re.compile(r"\bOMITTED\b"),
-}
-_TEST_DIR_NAMES: frozenset[str] = frozenset({"test", "tests", "testing"})
-_TEST_STEM_RE = re.compile(r"^[Tt]ests?(?:[_\-.]|$)|[_\-][Tt]ests?$|[a-z0-9]Tests?$")
+_TLA_HEADER_LINE_RE = re.compile(r"[ \t]*-{4,}[ \t]*MODULE[ \t]+[A-Za-z0-9_]+[ \t]*-{4,}[ \t]*")
+_TLA_TERMINATOR_LINE_RE = re.compile(r"[ \t]*={4,}[ \t]*")
+_TLA_PLACEHOLDER_RE = re.compile(r"\bOMITTED\b", re.IGNORECASE)
+_TLA_ASSUMPTION_UNIT_RE = re.compile(r"[ \t]*(ASSUME|ASSUMPTION|AXIOM)\b")
+# Lean 4: identifier components (plain or «quoted») of lexed code are compared exactly; a
+# component with non-ASCII letters is also compared through a confusable skeleton.
+LEAN_PLACEHOLDER_NAMES: frozenset[str] = frozenset({"sorry", "sorryAx", "admit", "stop"})
+LEAN_ESCAPE_NAMES: frozenset[str] = frozenset({
+    "axiom", "native_decide", "elab", "elab_rules", "macro", "macro_rules", "syntax",
+    "declare_syntax_cat", "run_cmd", "run_tac", "run_elab", "initialize", "builtin_initialize",
+})
+# First token of every column-0 line of recognisable Lean 4 source (commands, modifiers,
+# attributes, equation alternatives).
+LEAN_COMMAND_STARTS: frozenset[str] = frozenset({
+    "import", "open", "namespace", "section", "end", "variable", "universe", "theorem", "lemma",
+    "def", "example", "abbrev", "instance", "structure", "class", "inductive", "set_option",
+    "noncomputable", "private", "protected", "partial", "unsafe", "attribute", "local", "scoped",
+    "mutual", "notation", "infix", "infixl", "infixr", "prefix", "postfix", "deriving",
+    "termination_by", "decreasing_by", "where", "export", "opaque", "axiom", "macro",
+    "macro_rules", "elab", "elab_rules", "syntax", "declare_syntax_cat", "run_cmd", "run_tac",
+    "run_elab", "initialize", "builtin_initialize", "omit", "include", "|", "#check", "#print",
+    "#reduce", "#eval", "#guard_msgs", "#help",
+})
+_LEAN_IDENT_RE = re.compile(r"«[^»\n]*»|[^\W\d][\w'!?]*")
+_LEAN_IDENT_CHAR_RE = re.compile(r"[\w'!?.]")
+_LEAN_RAW_STRING_RE = re.compile(r'r(#*)"')
+_LEAN_CHAR_LITERAL_RE = re.compile(r"'(?:\\(?:x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|.)|[^\\'\n])'")
+# Letters that render like ASCII in common fonts (Cyrillic, Greek, IPA, small caps); NFKC folds
+# fullwidth forms first and combining marks are dropped.
+_CONFUSABLES = str.maketrans({
+    "а": "a", "с": "c", "ԁ": "d", "е": "e", "һ": "h", "і": "i", "ј": "j", "ӏ": "l", "м": "m", "о": "o",
+    "р": "p", "ԛ": "q", "г": "r", "ѕ": "s", "т": "t", "у": "y", "х": "x", "ԝ": "w", "к": "k", "п": "n",
+    "А": "A", "В": "B", "С": "C", "Е": "E", "Н": "H", "І": "I", "К": "K", "М": "M", "О": "O", "Р": "P",
+    "Ѕ": "S", "Т": "T", "Х": "X", "Ү": "Y",
+    "α": "a", "ο": "o", "ρ": "p", "τ": "t", "ι": "i", "υ": "u", "ν": "v", "κ": "k", "χ": "x", "ϲ": "c",
+    "Α": "A", "Ο": "O", "Ρ": "P", "Τ": "T", "Χ": "X", "Ι": "I", "Υ": "Y", "Κ": "K", "Μ": "M",
+    "ı": "i", "ɑ": "a", "ɡ": "g", "ʀ": "r", "ꜱ": "s", "ᴀ": "a", "ᴅ": "d", "ᴍ": "m", "ᴏ": "o",
+    "ᴘ": "p", "ᴛ": "t", "ʏ": "y", "ᴜ": "u",
+})
+# Tokens that mark test code in any directory segment or file stem (split at non-alphanumerics
+# and camelCase boundaries); whole directory segments that name test suites.
+_TEST_PATH_TOKENS: frozenset[str] = frozenset({"test", "tests", "testing", "pytest", "unittest", "fuzz", "fuzzing"})
+_TEST_SUITE_DIRS: frozenset[str] = frozenset({"spec", "specs"})
+_NAME_TOKEN_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+")
+
 
 
 def _exact_token(value: Any) -> str | None:
@@ -1789,14 +1827,26 @@ def _classify_version(value: Any, where: str, path_str: str, params: dict[str, A
     return version
 
 
+def _name_tokens(segment: str) -> list[str]:
+    tokens: list[str] = []
+    for part in re.split(r"[^A-Za-z0-9]+", segment):
+        tokens.extend(token.lower() for token in _NAME_TOKEN_RE.findall(part))
+    return tokens
+
+
 def _test_path_marker(locator: str) -> str | None:
-    """Why a formal-artifact path is test code in disguise, checked before any suffix gate."""
+    """Why a formal-artifact path is test code in disguise, checked before any suffix gate: a
+    directory segment or file stem with a test token (test_*, *_test(s), __tests__, unit-tests,
+    fuzz, TestSpec, ...), a test-suite directory (spec/), or a source suffix hidden before the
+    formal one (.py.tla)."""
     parts = Path(locator).parts
-    if any(part.lower() in _TEST_DIR_NAMES for part in parts[:-1]):
-        return "lives under a test directory"
+    for segment in parts[:-1]:
+        if segment.lower() in _TEST_SUITE_DIRS:
+            return f"lives under the test-suite directory '{segment}'"
+        if any(token in _TEST_PATH_TOKENS for token in _name_tokens(segment)):
+            return f"lives under the test directory '{segment}'"
     name = parts[-1] if parts else locator
-    stem = name.split(".", 1)[0]
-    if _is_test_evidence(stem) or _TEST_STEM_RE.search(stem):
+    if any(token in _TEST_PATH_TOKENS for token in _name_tokens(name.split(".", 1)[0])):
         return "is a test-named file"
     inner = [s.lower() for s in Path(name).suffixes[:-1]]
     if any(s in TEST_SOURCE_SUFFIXES for s in inner):
@@ -1804,13 +1854,189 @@ def _test_path_marker(locator: str) -> str | None:
     return None
 
 
-def _declares_theorem(language: str, code: str, name: str) -> bool:
+class _LexError(ValueError):
+    """Formal source the checker cannot lex; it is never assumed well-formed."""
+
+
+def _blank(fragment: str) -> str:
+    return "".join("\n" if ch == "\n" else " " for ch in fragment)
+
+
+def _nested_comment_end(text: str, start: int, opener: str, closer: str) -> int:
+    depth, j, n = 0, start, len(text)
+    while j < n:
+        if text.startswith(opener, j):
+            depth, j = depth + 1, j + len(opener)
+        elif text.startswith(closer, j):
+            depth, j = depth - 1, j + len(closer)
+            if depth == 0:
+                return j
+        else:
+            j += 1
+    raise _LexError(f"unterminated '{opener}' comment")
+
+
+def _lex_lean(text: str) -> str:
+    """Lean 4 code with comments (nested /- -/ and --), string, raw-string, and char literal
+    contents blanked (line structure kept), and everything from a #exit command on dropped."""
+    out: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        prev = text[i - 1] if i else "\n"
+        if text.startswith("/-", i):
+            j = _nested_comment_end(text, i, "/-", "-/")
+            out.append(_blank(text[i:j]))
+            i = j
+        elif text.startswith("--", i):
+            j = text.find("\n", i)
+            j = n if j < 0 else j
+            out.append(" " * (j - i))
+            i = j
+        elif ch == "r" and not _LEAN_IDENT_CHAR_RE.match(prev) and _LEAN_RAW_STRING_RE.match(text, i):
+            opener = _LEAN_RAW_STRING_RE.match(text, i)
+            closer = '"' + opener.group(1)
+            j = text.find(closer, opener.end())
+            if j < 0:
+                raise _LexError("unterminated raw string literal")
+            out.append(_blank(text[i:j + len(closer)]))
+            i = j + len(closer)
+        elif ch == '"':
+            j = i + 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            if j >= n:
+                raise _LexError("unterminated string literal")
+            out.append(_blank(text[i:j + 1]))
+            i = j + 1
+        elif ch == "'" and not _LEAN_IDENT_CHAR_RE.match(prev) and _LEAN_CHAR_LITERAL_RE.match(text, i):
+            literal = _LEAN_CHAR_LITERAL_RE.match(text, i)
+            out.append(_blank(literal.group(0)))
+            i = literal.end()
+        elif text.startswith("#exit", i) and not _LEAN_IDENT_CHAR_RE.match(prev) and not _LEAN_IDENT_CHAR_RE.match(text[i + 5:i + 6] or " "):
+            break  # Lean ignores everything after #exit
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
+def _blank_tla(text: str) -> str:
+    """TLA+ text with nested (* *) comments, \\* line comments, and string contents blanked."""
+    out: list[str] = []
+    i, n = 0, len(text)
+    while i < n:
+        if text.startswith("(*", i):
+            j = _nested_comment_end(text, i, "(*", "*)")
+            out.append(_blank(text[i:j]))
+            i = j
+        elif text.startswith("\\*", i):
+            j = text.find("\n", i)
+            j = n if j < 0 else j
+            out.append(" " * (j - i))
+            i = j
+        elif text[i] == '"':
+            j = i + 1
+            while j < n and text[j] not in '"\n':
+                j += 2 if text[j] == "\\" else 1
+            if j >= n or text[j] != '"':
+                raise _LexError("unterminated string literal")
+            out.append(_blank(text[i:j + 1]))
+            i = j + 1
+        else:
+            out.append(text[i])
+            i += 1
+    return "".join(out)
+
+
+def _lex_tla(text: str) -> str:
+    """The top-level units of the first TLA+ module (depth 1), lexed: the header must open the
+    file, text after the module's '====' and the bodies of nested modules are dropped."""
+    lines = _blank_tla(text).split("\n")
+    start = next((k for k, line in enumerate(lines) if line.strip()), None)
+    if start is None or not _TLA_HEADER_LINE_RE.fullmatch(lines[start]):
+        raise _LexError("does not open with a '---- MODULE Name ----' header")
+    depth, kept = 1, []
+    for line in lines[start + 1:]:
+        if _TLA_HEADER_LINE_RE.fullmatch(line):
+            depth += 1
+            kept.append("")
+        elif _TLA_TERMINATOR_LINE_RE.fullmatch(line):
+            depth -= 1
+            if depth == 0:
+                return "\n".join(kept)
+            kept.append("")
+        else:
+            kept.append(line if depth == 1 else "")
+    raise _LexError("the module is not closed by a '====' line")
+
+
+def _skeleton(name: str) -> str:
+    folded = unicodedata.normalize("NFKC", name)
+    folded = "".join(c for c in unicodedata.normalize("NFD", folded) if unicodedata.category(c) != "Mn")
+    return folded.translate(_CONFUSABLES).casefold()
+
+
+def _lean_names(code: str) -> list[str]:
+    return [m.group(0).strip("«»") for m in _LEAN_IDENT_RE.finditer(code)]
+
+
+def _lean_forbidden(code: str, names: frozenset[str]) -> list[str]:
+    folded = {n.casefold() for n in names}
+    hits = set()
+    for name in _lean_names(code):
+        if name in names or (not name.isascii() and _skeleton(name) in folded):
+            hits.add(name)
+    return sorted(hits)
+
+
+def _lean_shape_problem(code: str) -> str | None:
+    for number, line in enumerate(code.split("\n"), start=1):
+        if not line.strip() or line[0].isspace():
+            continue
+        head = line.split()[0]
+        if not (head.startswith("@[") or head in LEAN_COMMAND_STARTS):
+            return f"line {number} does not begin a Lean 4 command ({head[:24]!r})"
+    return None
+
+
+def _theorem_declaration(language: str, code: str, name: str) -> re.Match[str] | None:
     escaped = re.escape(name)
     if language == "tla":
         pattern = rf"(?m)^[ \t]*(?:THEOREM|LEMMA|PROPOSITION|COROLLARY)[ \t]+{escaped}[ \t]*=="
     else:
         pattern = rf"(?m)^[ \t]*(?:@\[[^\]\n]*\][ \t]*)?(?:(?:private|protected|noncomputable)[ \t]+)*(?:theorem|lemma)[ \t]+{escaped}(?=[\s:({{\[]|$)"
-    return re.search(pattern, code) is not None
+    return re.search(pattern, code)
+
+
+def _declares_theorem(language: str, code: str, name: str) -> bool:
+    return _theorem_declaration(language, code, name) is not None
+
+
+def _lean_theorem_shaped(code: str, name: str) -> bool:
+    """A Lean theorem declares a type (':') and a proof (':=', equation alternatives, or where)."""
+    match = _theorem_declaration("lean", code, name)
+    if match is None:
+        return False
+    rest = code[match.end():]
+    stop = re.search(r"\n(?=\S)", rest)
+    declaration = rest[:stop.start()] if stop else rest
+    head, assign, _ = declaration.partition(":=")
+    if assign:
+        return ":" in head
+    return ":" in declaration and (re.search(r"(?m)^\s*\|", declaration) is not None or re.search(r"\bwhere\b", declaration) is not None)
+
+
+def _tla_assumption_units(code: str) -> list[str]:
+    units: list[str] = []
+    previous = ""
+    for line in code.split("\n"):
+        match = _TLA_ASSUMPTION_UNIT_RE.match(line)
+        if match and not previous.rstrip().endswith("=="):
+            units.append(match.group(1))  # a standalone assumption unit, not a sequent's ASSUME
+        if line.strip():
+            previous = line
+    return units
 
 
 def _check_formal_content(
@@ -1822,42 +2048,62 @@ def _check_formal_content(
     params: dict[str, Any],
     findings: list[ClaimFinding],
 ) -> None:
-    """The artifact must be source in its suffix's formal language, declare the claimed theorem
-    outside comments, and contain no unproven placeholder."""
+    """Lexes the artifact in its suffix's language (nested comments, strings, #exit, module
+    structure) and requires, in what remains: recognisable source, the named theorem, no
+    unproven placeholder, and no unsound escape. A static scan cannot prove the proof checks;
+    see the check receipt."""
     label = f"'proof' claim '{params['claim_id']}'"
     loc = "artifacts[role=formal_artifact]"
+    language_name = "TLA+" if language == "tla" else "Lean 4"
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
         findings.append(_finding(ERR_PROOF_FORMAL_ARTIFACT_MISSING, path_str, loc, f"{label} formal artifact '{locator}' is not UTF-8 formal source text", params))
         return
-    has_tla_header = _TLA_HEADER_RE.search(text) is not None
-    if language == "tla" and not (has_tla_header and _TLA_FOOTER_RE.search(text) is not None):
-        findings.append(_finding(
-            ERR_PROOF_FORMAL_ARTIFACT_MISSING, path_str, loc,
-            f"{label} formal artifact '{locator}' is not a TLA+ module ('---- MODULE Name ----' header and '====' terminator)",
-            params,
-        ))
-        return
-    if language == "lean" and has_tla_header:
+    if language == "lean" and _TLA_HEADER_RE.search(text) is not None:
         findings.append(_finding(ERR_PROOF_FORMAL_ARTIFACT_MISSING, path_str, loc, f"{label} formal artifact '{locator}' is a TLA+ module, not Lean source", params))
         return
-    code = text
-    for pattern in _COMMENT_RES[language]:
-        code = pattern.sub(" ", code)
-    placeholder = _PLACEHOLDER_RES[language].search(code)
-    if placeholder is not None:
+    try:
+        code = _lex_tla(text) if language == "tla" else _lex_lean(text)
+    except _LexError as exc:
+        findings.append(_finding(ERR_PROOF_FORMAL_ARTIFACT_MISSING, path_str, loc, f"{label} formal artifact '{locator}' is not well-formed {language_name} source: {exc}", params))
+        return
+    if language == "lean":
+        problem = _lean_shape_problem(code)
+        if problem is not None:
+            findings.append(_finding(ERR_PROOF_FORMAL_ARTIFACT_MISSING, path_str, loc, f"{label} formal artifact '{locator}' is not recognisably Lean 4 source: {problem}", params))
+            return
+        placeholders = _lean_forbidden(code, LEAN_PLACEHOLDER_NAMES)
+        escapes = _lean_forbidden(code, LEAN_ESCAPE_NAMES)
+    else:
+        placeholders = sorted({m.group(0) for m in _TLA_PLACEHOLDER_RE.finditer(code)})
+        escapes = sorted(set(_tla_assumption_units(code)))
+    if placeholders:
         findings.append(_finding(
             ERR_PROOF_UNPROVEN_PLACEHOLDER, path_str, loc,
-            f"{label} formal artifact '{locator}' contains the unproven placeholder '{placeholder.group(0)}'; it proves nothing",
+            f"{label} formal artifact '{locator}' contains unproven placeholder(s) {placeholders}; it proves nothing",
             params,
         ))
-    if theorem_name is not None and not _declares_theorem(language, code, theorem_name):
+    if escapes:
         findings.append(_finding(
-            ERR_PROOF_THEOREM_UNBOUND, path_str, loc,
-            f"{label} formal artifact '{locator}' does not declare the claimed theorem '{theorem_name}' outside comments",
+            ERR_PROOF_UNSOUND_ESCAPE, path_str, loc,
+            f"{label} formal artifact '{locator}' contains unsound escape(s) {escapes} that can make a false theorem check",
             params,
         ))
+    if theorem_name is not None:
+        if not _declares_theorem(language, code, theorem_name):
+            findings.append(_finding(
+                ERR_PROOF_THEOREM_UNBOUND, path_str, loc,
+                f"{label} formal artifact '{locator}' does not declare the claimed theorem '{theorem_name}' at top level, outside comments and strings",
+                params,
+            ))
+        elif language == "lean" and not _lean_theorem_shaped(code, theorem_name):
+            findings.append(_finding(
+                ERR_PROOF_FORMAL_ARTIFACT_MISSING, path_str, loc,
+                f"{label} formal artifact '{locator}' declares '{theorem_name}' without a Lean type and proof; it is not recognisably Lean 4",
+                params,
+            ))
+
 
 
 def _verify_proof_claim_evidence(
