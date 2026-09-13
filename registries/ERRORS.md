@@ -192,6 +192,7 @@ operation states rather than generic errors.
 | `ERR-NEG-LEDGER-NOT-FOUND-001` | negative evidence ledger file does not exist | create the ledger with `fss negative-evidence init` before appending |
 | `ERR-NEG-LEDGER-LOCKED-001` | negative evidence ledger lock file is held by another writer or was left stale by a crashed writer | retry after the other writer finishes; remove a stale lock only after confirming no writer is running |
 | `ERR-NEG-CONCURRENT-MODIFICATION-001` | negative evidence ledger changed between read and publish on every bounded attempt | identify the concurrent writer, then retry the append explicitly |
+| `ERR-NEG-LEDGER-HARD-LINKED-001` | negative evidence ledger file has a link count other than one, so an atomic publish would update only one of its names | keep the ledger under a single name (use a symlink for aliases) before appending |
 | `ERR-DEP-REGISTRY-DRIFT-001` | dependency registry row drift between machine registry and markdown mirror | synchronize architecture/dependencies.json and registries/DEPENDENCIES.md |
 | `ERR-DEP-STABLE-ID-REUSED-001` | dependency class stable identifier was reused, duplicated, renumbered, or tombstoned | allocate a new unique stable identifier; never reuse stable IDs |
 | `ERR-DEP-MISSING-FIELD-001` | dependency class row or root metadata lacks a mandatory field or is empty/corrupt | declare all mandatory fields in dependency class row |

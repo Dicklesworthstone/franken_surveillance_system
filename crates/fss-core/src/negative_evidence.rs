@@ -1599,6 +1599,14 @@ pub enum NegativeEvidenceError {
         /// Failure detail.
         detail: String,
     },
+    /// The ledger file has a link count other than one, so an atomic publish would update a
+    /// single name and leave every other hard-linked name with the old ledger (a fork).
+    LedgerHardLinked {
+        /// Ledger path as given.
+        path: String,
+        /// Observed link count.
+        links: u64,
+    },
     /// Underlying contract or canonical serialization error.
     Contract(ContractError),
     /// I/O error during file read or write.
@@ -1634,6 +1642,7 @@ impl NegativeEvidenceError {
             Self::LedgerNotFound { .. } => "ERR-NEG-LEDGER-NOT-FOUND-001",
             Self::LedgerLocked { .. } => "ERR-NEG-LEDGER-LOCKED-001",
             Self::ConcurrentModification { .. } => "ERR-NEG-CONCURRENT-MODIFICATION-001",
+            Self::LedgerHardLinked { .. } => "ERR-NEG-LEDGER-HARD-LINKED-001",
             Self::Contract(_) | Self::Io(_) => "ERR-OP-EXECUTION-FAILED-001",
         }
     }
@@ -1736,6 +1745,10 @@ impl fmt::Display for NegativeEvidenceError {
             Self::ConcurrentModification { detail } => {
                 write!(f, "concurrent ledger modification: {detail}")
             }
+            Self::LedgerHardLinked { path, links } => write!(
+                f,
+                "ledger file '{path}' has {links} hard links; an append would update one name and leave the others with the old ledger, so it is refused (keep a single name and use a symlink for aliases)"
+            ),
             Self::Contract(err) => write!(f, "contract error: {err}"),
             Self::Io(err) => write!(f, "io error: {err}"),
         }

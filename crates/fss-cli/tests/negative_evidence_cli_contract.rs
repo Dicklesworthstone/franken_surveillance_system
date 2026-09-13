@@ -922,3 +922,115 @@ fn test_cli_concurrent_appends_via_symlink_and_real_path_share_one_ledger()
     }
     Ok(())
 }
+
+/// A seeded ledger `a.bin` hard-linked as `b.bin` in the same directory.
+#[cfg(unix)]
+fn hard_linked_ledger(prefix: &str) -> Result<(TempDirGuard, PathBuf, PathBuf), Box<dyn Error>> {
+    let base = temp_file_path(prefix).with_extension("d");
+    fs::create_dir_all(&base)?;
+    let guard = TempDirGuard(base.clone());
+    let a = base.join("a.bin");
+    fs::write(&a, initial_negative_evidence_ledger()?.encode_canonical()?)?;
+    let b = base.join("b.bin");
+    fs::hard_link(&a, &b)?;
+    Ok((guard, a, b))
+}
+
+#[cfg(unix)]
+#[test]
+fn test_cli_append_refuses_a_hard_linked_ledger() -> Result<(), Box<dyn Error>> {
+    use std::os::unix::fs::MetadataExt;
+
+    let (_guard, a, b) = hard_linked_ledger("hardlink_single")?;
+    let before = fs::read(&a)?;
+    let inode = fs::metadata(&a)?.ino();
+    let a_str = a.to_str().ok_or("non-unicode path")?;
+    let (output, code) = run(full_append_argv(a_str, "NEG-004"))?;
+    assert_eq!(code, 1, "{output}");
+    assert!(
+        output.contains("ERR-NEG-LEDGER-HARD-LINKED-001"),
+        "{output}"
+    );
+    assert_eq!(fs::read(&a)?, before, "the ledger must be unchanged");
+    assert_eq!(fs::read(&b)?, before, "the other name must be unchanged");
+    assert_eq!(fs::metadata(&a)?.ino(), inode);
+    assert_eq!(
+        fs::metadata(&b)?.ino(),
+        inode,
+        "both names still share one inode"
+    );
+    assert_no_sidecars(&a)?;
+    assert_no_sidecars(&b)?;
+
+    // Once the ledger has a single name again, the append proceeds.
+    fs::remove_file(&b)?;
+    let (output, code) = run(full_append_argv(a_str, "NEG-004"))?;
+    assert_eq!(code, 0, "{output}");
+    assert_eq!(
+        NegativeEvidenceLedger::decode_canonical(&fs::read(&a)?)?.len(),
+        4
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn test_cli_concurrent_appends_via_hard_links_never_fork() -> Result<(), Box<dyn Error>> {
+    use std::os::unix::fs::MetadataExt;
+
+    let bin = env!("CARGO_BIN_EXE_fss");
+    for iteration in 0..20 {
+        let (_guard, a, b) = hard_linked_ledger(&format!("hardlink_concurrent_{iteration}"))?;
+        let before = fs::read(&a)?;
+        let a_str = a.to_str().ok_or("non-unicode path")?.to_owned();
+        let b_str = b.to_str().ok_or("non-unicode path")?.to_owned();
+        let spawn = |path: &str, id: &str| {
+            Command::new(bin)
+                .args(full_append_argv(path, id))
+                .arg("--json")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+        };
+        let via_a = spawn(&a_str, "NEG-004")?;
+        let via_b = spawn(&b_str, "NEG-100")?;
+        let outputs = [
+            ("NEG-004", via_a.wait_with_output()?),
+            ("NEG-100", via_b.wait_with_output()?),
+        ];
+        for (id, output) in &outputs {
+            let text = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                output.status.code(),
+                Some(1),
+                "iteration {iteration}: {id} must be refused: {text}"
+            );
+            assert!(
+                text.contains("ERR-NEG-LEDGER-HARD-LINKED-001"),
+                "iteration {iteration}: unexpected refusal for {id}: {text}"
+            );
+        }
+        assert_eq!(
+            fs::read(&a)?,
+            before,
+            "iteration {iteration}: a.bin changed"
+        );
+        assert_eq!(
+            fs::read(&b)?,
+            before,
+            "iteration {iteration}: b.bin changed"
+        );
+        assert_eq!(
+            fs::metadata(&a)?.ino(),
+            fs::metadata(&b)?.ino(),
+            "iteration {iteration}: the hard-linked names forked"
+        );
+        assert_no_sidecars(&a)?;
+        assert_no_sidecars(&b)?;
+    }
+    Ok(())
+}
