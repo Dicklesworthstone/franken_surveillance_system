@@ -177,7 +177,7 @@ DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
         "remediation": "Provide all required normative fields for each claim class row in both JSON and Markdown",
     },
     ERR_SLO_FRESHNESS_UNSET: {
-        "trigger": "The operation-cost row of an 'slo' measurement declares no measurement_max_age_days, so the measurement freshness bound is unset and staleness cannot be decided",
+        "trigger": "An operation-cost row listing an 'slo' claim's SLO declares no measurement_max_age_days (the strictest bound over all such rows applies), so the measurement freshness bound is unset and staleness cannot be decided",
         "remediation": "A user decision: set measurement_max_age_days on the operation's row in architecture/operation_cost_registry.toml; the checker never assumes a default",
     },
     ERR_CLAIM_CLASS_REGISTRY_INVALID: {
@@ -439,10 +439,27 @@ SLO_ENVIRONMENT_SCHEMA = "fss.environment_manifest.v1"
 # (measurement_max_age_days); none is hard-coded here, and an unset bound fails closed.
 SLO_MAX_AGE_FIELD = "measurement_max_age_days"
 SLO_MAX_AGE_RANGE_DAYS = (1, 36500)
-# Words that negate a following comparator ('not > 1.5 s' is not '> 1.5 s').
-_SLO_NEGATION_WORDS: frozenset[str] = frozenset({"not", "no", "never", "non", "nor"})
-_SLO_COMPARATOR_TOKEN_RE = re.compile(r"\u2264|<=|\u2265|>=|<|>|=")
-_SLO_NUMBER_RE = re.compile(r"\s*(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)")
+# A positive SLO target grammar (review S1), the tightest that accepts every live
+# registries/SLOS.md target; tests pin that every live target parses. Tokens are whitespace-
+# separated and compared exactly:
+#   TARGET  := [STATISTIC] SUBJECT* CLAUSE ("and" CLAUSE)* CONTEXT*
+#   CLAUSE  := COMPARATOR NUMBER UNIT        (UNIT: slo_validate.REGISTERED_UNITS; '%' may be glued)
+# A target with no comparator character declares no threshold. Anything else is unbound.
+SLO_TARGET_STATISTICS: frozenset[str] = frozenset({"p50", "p90", "p95", "p99", "p99.9"})
+SLO_TARGET_COMPARATORS: dict[str, str] = {"≤": "<=", "<": "<", "≥": ">=", ">": ">"}
+SLO_TARGET_SUBJECT_WORDS: frozenset[str] = frozenset({
+    "glass-to-glass", "live-proxy", "latency", "first", "event", "hypothesis", "alert", "dispatch",
+    "bounded", "event-status", "query", "initial", "agent", "answer", "cold", "mission",
+    "orientation", "reaches", "a", "useful", "`SituationCapsule`", "SituationCapsule", "in",
+    "material", "committed", "delta", "available", "to", "subscribed", "local",
+})
+SLO_TARGET_CONTEXT_WORDS: frozenset[str] = frozenset({
+    "on", "LAN", "after", "first", "observable", "threat", "evidence", "policy", "corroboration",
+    "without", "model", "refinement", ",", "resumable", "qualified", "observation-window",
+    "continuity", "for", "wired/reference", "sensors",
+})
+SLO_TARGET_COMPARATOR_CHARS = frozenset("≤≥<>=")
+_SLO_TARGET_NUMBER_RE = re.compile(r"(\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?")
 # slo_validate findings that make the SLO target definitions themselves untrustworthy.
 SLO_STRUCTURAL_CODES: frozenset[str] = frozenset({
     slo_validate.CODE_INVALID_SLO_ID,
@@ -1092,24 +1109,51 @@ def load_operation_cost_registry(root: Path) -> tuple[CostRegistry | None, list[
     return CostRegistry(generation=generation, operations=operations), []
 
 
+_MD_FENCE_OPEN_RE = re.compile(r" {0,3}(`{3,}|~{3,})(.*)$")
+_MD_FENCE_CLOSE_RE = re.compile(r" {0,3}(`{3,}|~{3,})[ \t]*$")
+
+
 def _visible_markdown(text: str) -> str:
-    """Markdown as the claim-table scan (parse_markdown_tables) sees it: HTML comments removed
-    and fenced blocks blanked, so the SLO target parser and the claim scan agree on which rows
-    exist. A row inside <!-- --> or a code fence is never authoritative."""
-    visible = stable_id_audit._strip_html_comments(text)
-    lines: list[str] = []
-    fence: str | None = None
-    for line in visible.splitlines():
-        marker = line.strip()[:3]
-        if marker in ("```", "~~~"):
-            if fence is None:
-                fence = marker
-            elif fence == marker:
+    """Markdown as rendered, for SLOS.md and every claim table alike: fenced code blocks are
+    blanked with CommonMark fence rules (a fence closes only with the same character at least as
+    long; a backtick fence's info string has no backtick), HTML comments outside fences are
+    removed, and a comment opener inside a fence is fence content. Line structure is kept."""
+    out: list[str] = []
+    fence: tuple[str, int] | None = None
+    in_comment = False
+    for line in text.splitlines():
+        if fence is not None:
+            closing = _MD_FENCE_CLOSE_RE.fullmatch(line)
+            if closing and closing.group(1)[0] == fence[0] and len(closing.group(1)) >= fence[1]:
                 fence = None
-            lines.append("")
+            out.append("")
             continue
-        lines.append("" if fence is not None else line)
-    return "\n".join(lines) + "\n"
+        if in_comment:
+            end = line.find("-->")
+            if end < 0:
+                out.append("")
+                continue
+            line = line[end + 3:]
+            in_comment = False
+        elif (opening := _MD_FENCE_OPEN_RE.match(line)) and not (opening.group(1)[0] == "`" and "`" in opening.group(2)):
+            fence = (opening.group(1)[0], len(opening.group(1)))
+            out.append("")
+            continue
+        visible, rest = "", line
+        while True:
+            start = rest.find("<!--")
+            if start < 0:
+                visible += rest
+                break
+            visible += rest[:start]
+            end = rest.find("-->", start + 4)
+            if end < 0:
+                in_comment = True
+                break
+            rest = rest[end + 3:]
+        out.append(visible)
+    return "\n".join(out) + "\n"
+
 
 
 def load_slo_registry(root: Path) -> tuple[dict[str, slo_validate.SloRow], list[ClaimFinding]]:
@@ -1134,40 +1178,64 @@ def load_slo_registry(root: Path) -> tuple[dict[str, slo_validate.SloRow], list[
     return rows, []
 
 
-def _slo_thresholds(target: str) -> list[SloThreshold]:
-    """Every '<comparator> <number> <registered unit>' threshold in an SLO target cell. Units
-    are slo_validate.REGISTERED_UNITS matched exactly as written (no case folding), longest
-    first, so 'ms' never reads as 's' and 'S' or 'MS' is no registered unit."""
-    units = sorted(slo_validate.REGISTERED_UNITS, key=len, reverse=True)
-    found: list[SloThreshold] = []
-    for match in _SLO_THRESHOLD_RE.finditer(target):
-        rest = target[match.end():].lstrip()
-        unit = next(
-            (u for u in units if rest.startswith(u) and (len(rest) == len(u) or not rest[len(u)].isalnum())),
-            None,
-        )
-        if unit is not None:
-            found.append(SloThreshold(_COMPARATOR_ALIASES[match.group(1)], float(match.group(2).replace(",", "")), unit))
-    return found
+def _slo_target_tokens(target: str) -> list[str]:
+    tokens: list[str] = []
+    for token in target.split():
+        if len(token) > 1 and token.endswith(","):
+            tokens.extend([token[:-1], ","])
+        else:
+            tokens.append(token)
+    return tokens
 
 
-def _slo_target_defect(target: str) -> str | None:
-    """Why an SLO target's comparators cannot be read as thresholds: every comparator must be a
-    standalone token (start of cell or after whitespace), not negated by the preceding word, and
-    followed by a finite number. Anything else leaves the target unbound (review items 3, 4)."""
-    for match in _SLO_COMPARATOR_TOKEN_RE.finditer(target):
-        token, before = match.group(0), target[:match.start()]
-        if before and not before[-1].isspace():
-            return f"comparator '{token}' at offset {match.start()} is not a standalone token"
-        words = before.split()
-        if words and words[-1].casefold().strip(",;:") in _SLO_NEGATION_WORDS:
-            return f"comparator '{token}' is negated by '{words[-1]}'"
-        number = _SLO_NUMBER_RE.match(target, match.end())
-        if number is None:
-            return f"comparator '{token}' is not followed by a number"
-        if not math.isfinite(float(number.group(1).replace(",", ""))):
-            return f"threshold '{token} {number.group(1)[:24]}...' is not a finite number"
-    return None
+def _parse_slo_target(target: str) -> tuple[list[SloThreshold], str | None]:
+    """Reads an SLO target cell with the positive grammar above. Returns (thresholds, None), or
+    ([], reason) when the target contains a comparator but is not a sentence of the grammar."""
+    if not any(ch in SLO_TARGET_COMPARATOR_CHARS for ch in target):
+        return [], None
+    tokens = _slo_target_tokens(target)
+    units = sorted(slo_validate.REGISTERED_UNITS, key=lambda u: -len(u.split()))
+    n, pos = len(tokens), 0
+    if pos < n and tokens[pos] in SLO_TARGET_STATISTICS:
+        pos += 1
+    while pos < n and tokens[pos] not in SLO_TARGET_COMPARATORS:
+        if tokens[pos] not in SLO_TARGET_SUBJECT_WORDS:
+            return [], f"'{tokens[pos][:24]}' is not a subject word of the SLO target grammar"
+        pos += 1
+    if pos == n:
+        return [], "no comparator stands alone as a token"
+    thresholds: list[SloThreshold] = []
+    while True:
+        comparator = SLO_TARGET_COMPARATORS[tokens[pos]]
+        pos += 1
+        if pos == n:
+            return [], "a comparator is not followed by a number"
+        number_token, unit = tokens[pos], None
+        if number_token.endswith("%") and _SLO_TARGET_NUMBER_RE.fullmatch(number_token[:-1]):
+            number_token, unit = number_token[:-1], "%"
+        if not _SLO_TARGET_NUMBER_RE.fullmatch(number_token):
+            return [], f"'{number_token[:24]}' is not a threshold number"
+        value = float(number_token.replace(",", ""))
+        if not math.isfinite(value):
+            return [], f"threshold '{number_token[:24]}...' is not a finite number"
+        pos += 1
+        if unit is None:
+            for candidate in units:
+                width = len(candidate.split())
+                if " ".join(tokens[pos:pos + width]) == candidate:
+                    unit, pos = candidate, pos + width
+                    break
+        if unit is None:
+            return [], f"'{' '.join(tokens[pos:pos + 2])[:24]}' is not a registered unit"
+        thresholds.append(SloThreshold(comparator, value, unit))
+        if pos + 1 < n and tokens[pos] == "and" and tokens[pos + 1] in SLO_TARGET_COMPARATORS:
+            pos += 1
+            continue
+        break
+    for token in tokens[pos:]:
+        if token not in SLO_TARGET_CONTEXT_WORDS:
+            return [], f"'{token[:24]}' is not a context word of the SLO target grammar"
+    return thresholds, None
 
 
 def _repository_slo_ids(root: Path) -> set[str] | None:
@@ -1328,11 +1396,12 @@ def _resolve_slo_threshold(
     if row.is_tombstone:
         unbound(f"SLO '{claim_id}' is tombstoned; it has no active target")
         return None
-    defect = _slo_target_defect(row.target)
+    thresholds, defect = _parse_slo_target(row.target)
     if defect is not None:
-        unbound(f"SLO '{claim_id}' target '{row.target[:120]}' cannot be read: {defect}")
+        unbound(f"SLO '{claim_id}' target '{row.target[:120]}' is outside the SLO target grammar: {defect}")
         return None
-    thresholds = _slo_thresholds(row.target) if slo_validate.validate_target_units(row.target, False) else []
+    if thresholds and not slo_validate.validate_target_units(row.target, False):
+        thresholds = []
     if not thresholds:
         unbound(f"SLO '{claim_id}' target '{row.target}' declares no numeric threshold a measurement can establish")
         return None
@@ -1348,6 +1417,40 @@ def _resolve_slo_threshold(
         )
         return None
     return matching[0]
+
+
+def _slo_freshness_bound(
+    cost_registry: CostRegistry,
+    claim_id: str,
+    path_str: str,
+    loc: str,
+    params: dict[str, Any],
+    findings: list[ClaimFinding],
+) -> timedelta | None:
+    """The strictest measurement_max_age_days over every operation row listing the SLO, so a
+    measurement cannot pick a laxer row (review S2). Every such row must set a valid bound; an
+    unset one fails closed, a malformed one is a registry finding."""
+    rows = sorted((op_id, row) for op_id, row in cost_registry.operations.items() if claim_id in row["slo_ids"])
+    low, high = SLO_MAX_AGE_RANGE_DAYS
+    invalid = [op_id for op_id, row in rows if row.get(SLO_MAX_AGE_FIELD) is not None and (
+        isinstance(row[SLO_MAX_AGE_FIELD], bool) or not isinstance(row[SLO_MAX_AGE_FIELD], int)
+        or not low <= row[SLO_MAX_AGE_FIELD] <= high)]
+    if invalid:
+        findings.extend(_registry_invalid(
+            OPERATION_COST_REGISTRY_FILE,
+            f"Operation(s) {invalid} {SLO_MAX_AGE_FIELD} is not a whole number of days in [{low}, {high}]",
+        ))
+        return None
+    unset = [op_id for op_id, row in rows if row.get(SLO_MAX_AGE_FIELD) is None]
+    if not rows or unset:
+        findings.append(_finding(
+            ERR_SLO_FRESHNESS_UNSET, path_str, f"{loc}.operation_id",
+            f"Operation row(s) {unset or '(none)'} listing SLO '{claim_id}' declare no {SLO_MAX_AGE_FIELD} in "
+            f"{OPERATION_COST_REGISTRY_FILE}; the measurement freshness bound is unset, so staleness cannot be decided",
+            {**params, "unset_operations": unset},
+        ))
+        return None
+    return timedelta(days=min(row[SLO_MAX_AGE_FIELD] for _, row in rows))
 
 
 def _verify_slo_claim_evidence(
@@ -1473,23 +1576,8 @@ def _verify_slo_claim_evidence(
                                  params))
 
     max_age: timedelta | None = None
-    if op_row is not None and claim_id in op_row["slo_ids"]:  # only the claim's own cost row sets its bound
-        raw_age = op_row.get(SLO_MAX_AGE_FIELD)
-        low, high = SLO_MAX_AGE_RANGE_DAYS
-        if raw_age is None:
-            findings.append(_finding(
-                ERR_SLO_FRESHNESS_UNSET, path_str, f"{loc}.operation_id",
-                f"Operation '{meas_op}' declares no {SLO_MAX_AGE_FIELD} in {OPERATION_COST_REGISTRY_FILE}; "
-                "the measurement freshness bound is unset, so staleness cannot be decided",
-                {**params, "operation_id": meas_op},
-            ))
-        elif isinstance(raw_age, bool) or not isinstance(raw_age, int) or not low <= raw_age <= high:
-            findings.extend(_registry_invalid(
-                OPERATION_COST_REGISTRY_FILE,
-                f"Operation '{meas_op}' {SLO_MAX_AGE_FIELD} {raw_age!r} is not a whole number of days in [{low}, {high}]",
-            ))
-        else:
-            max_age = timedelta(days=raw_age)
+    if cost_registry is not None:
+        max_age = _slo_freshness_bound(cost_registry, claim_id, path_str, loc, params, findings)
     _check_slo_window(meas, now, max_age, path_str, loc, params, findings)
 
     # Target and comparator come only from the authoritative SLO row.
@@ -3240,7 +3328,7 @@ def _is_delimiter_row(line: str) -> bool:
 
 def parse_markdown_tables(text: str) -> list[tuple[list[str], list[list[str]]]]:
     """Extracts GFM tables (with or without border pipes) as (headers, data_rows)."""
-    clean_text = stable_id_audit._strip_html_comments(text)
+    clean_text = _visible_markdown(text)  # one visibility rule for claim tables and SLOS.md (review S3)
     lines = clean_text.splitlines()
     tables: list[tuple[list[str], list[list[str]]]] = []
 

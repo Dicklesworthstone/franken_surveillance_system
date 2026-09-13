@@ -4252,12 +4252,16 @@ def put_slos(transform):
 
 
 def put_cost_registry(extra_line: str | None):
-    """An after hook writing the repository cost registry with only extra_line after the
-    COST-DETECT-001 id (None: exactly the repository's own registry, which sets no bound)."""
+    """An after hook writing the repository cost registry with extra_line after every operation
+    id (None: exactly the repository's own registry, which sets no bound). Every row listing the
+    SLO must set the bound, and the strictest applies (review S2)."""
     def after(root: Path) -> None:
         text = (ROOT / COST_REL).read_text(encoding="utf-8")
         if extra_line is not None:
-            text = text.replace(SLO_COST_ANCHOR, SLO_COST_ANCHOR + extra_line + "\n", 1)
+            text = "".join(
+                line + (extra_line + "\n" if line.startswith('id = "COST-') else "")
+                for line in text.splitlines(keepends=True)
+            )
         (root / COST_REL).write_text(text, encoding="utf-8")
     return after
 
@@ -4747,6 +4751,132 @@ class TestBoundedReviewB1toB4(unittest.TestCase):
         ):
             with self.subTest(case=label):
                 self.assert_case([], **case)
+
+
+# ---------------------------------------------------------------------------
+# Review of c3a17fd..f0222b0, slo items S1-S3 (fss-x4a.30.87.5); probe p4_slo.py
+# ---------------------------------------------------------------------------
+
+# Every live registries/SLOS.md target with a threshold, as (comparator, value, unit) triples.
+LIVE_SLO_THRESHOLDS = {
+    "SLO-LIVE-001": [("<=", 750.0, "ms")],
+    "SLO-DETECT-001": [("<=", 1.5, "s")],
+    "SLO-ALERT-001": [("<=", 3.0, "s")],
+    "SLO-QUERY-001": [("<=", 100.0, "ms")],
+    "SLO-AGENT-001": [("<=", 800.0, "tokens"), ("<=", 250.0, "ms")],
+    "SLO-CONTINUITY-001": [(">=", 99.9, "%")],
+    "SLO-AGENT-ORIENT-001": [("<=", 2.0, "semantic calls"), ("<=", 1600.0, "output tokens")],
+    "SLO-AGENT-FOLLOW-001": [("<=", 250.0, "ms")],
+}
+
+
+def cost_registry_with_bounds(default: int, overrides: dict[str, int]) -> str:
+    """The repository cost registry with measurement_max_age_days on every operation row."""
+    lines: list[str] = []
+    for line in (ROOT / COST_REL).read_text(encoding="utf-8").splitlines(keepends=True):
+        lines.append(line)
+        if line.startswith('id = "COST-'):
+            op_id = line.split('"')[1]
+            lines.append(f"measurement_max_age_days = {overrides.get(op_id, default)}\n")
+    return "".join(lines)
+
+
+class TestSloReviewS1toS3(unittest.TestCase):
+    """Probe p4_slo.py cases as planted tests with exact finding-id sets."""
+
+    def run_case(self, *, measurement: dict | None = None, setup=None, after=None):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            if setup is not None:
+                setup(root)
+            data = build_slo_fixture(root, measurement=measurement)
+            if after is not None:
+                after(root)
+            ok, findings, _ = verify_slo_bundle(root, data, now=SLO_NOW)
+            return ok, error_code_set(findings)
+
+    # S1. A positive target grammar ---------------------------------------------------
+
+    def test_S1_every_live_slos_md_target_parses(self) -> None:
+        parse = getattr(cpb, "_parse_slo_target", None)
+        self.assertIsNotNone(parse, "the checker has no positive SLO target grammar")
+        rows, registry_findings = cpb.load_slo_registry(ROOT)
+        self.assertEqual(registry_findings, [])
+        parsed = {}
+        for slo_id, row in sorted(rows.items()):
+            if row.is_tombstone:
+                continue
+            thresholds, defect = parse(row.target)
+            self.assertIsNone(defect, f"{slo_id} target {row.target!r}: {defect}")
+            if thresholds:
+                parsed[slo_id] = [(t.comparator, t.value, t.unit) for t in thresholds]
+        self.assertEqual(parsed, LIVE_SLO_THRESHOLDS)
+
+    def test_S1_targets_outside_the_grammar_are_unbound(self) -> None:
+        unbound = _code("ERR_SLO_TARGET_UNBOUND")
+        for target in ("(not ≤ 1.5 s)", "*not* ≤ 1.5 s", "not: ≤ 1.5 s", "isn't ≤ 1.5 s", "¬ ≤ 1.5 s", "!≤ 1.5 s",
+                       "never ≤ 1.5 s", "NOT ≤ 1.5 s", "not​ ≤ 1.5 s", "not ≤ 1.5 s", "p95≤ 1.5 s", "≤1.5 s",
+                       "≤ 1.5 S", "≤ 1" + "0" * 400 + " s", "≤ 1.5 s (not guaranteed)", "without ≤ 1.5 s",
+                       "exceeds ≤ 1.5 s", "“not” ≤ 1.5 s", "not<br>≤ 1.5 s", "_not_ ≤ 1.5 s", "not. ≤ 1.5 s",
+                       "~~≤ 1.5 s~~", "≤ 1.5 s or ≤ 900 ms", "<= 1.5 s"):
+            with self.subTest(target=target):
+                setup = put_slos(lambda text, row, t=target: text.replace(row, row.replace(DETECT_TARGET, t)))
+                self.assertEqual(self.run_case(setup=setup), (False, [unbound]))
+
+    def test_S1_targets_slo_validate_refuses_are_registry_findings(self) -> None:
+        """slo_validate refuses these rows structurally (a glued unit is ambiguous; registered units
+        are never negative), so the whole registry is refused before the grammar is reached."""
+        for target in ("≤ 1.5s", "≤ -1.5 s"):
+            with self.subTest(target=target):
+                setup = put_slos(lambda text, row, t=target: text.replace(row, row.replace(DETECT_TARGET, t)))
+                self.assertEqual(self.run_case(setup=setup), (False, [_code("ERR_SLO_REGISTRY_INVALID")]))
+
+    # S2. The strictest bound over every operation row listing the SLO ---------------
+
+    def test_S2_a_measurement_cannot_pick_a_laxer_operation_row(self) -> None:
+        old = {"measurement_window": {"started_at": "2016-09-01T00:00:00Z", "finished_at": "2016-09-01T01:00:00Z"}}
+        registry = cost_registry_with_bounds(36500, {"COST-DETECT-001": 1})
+
+        def after(root: Path) -> None:
+            (root / COST_REL).write_text(registry, encoding="utf-8")
+
+        for operation in ("COST-DETECT-001", "COST-DECODE-001", "COST-EVENT-001"):
+            with self.subTest(operation=operation):
+                self.assertEqual(self.run_case(measurement={**old, "operation_id": operation}, after=after), (False, [ERR_STALE_GENERATION]))
+
+    def test_S2_every_row_listing_the_slo_must_set_a_bound(self) -> None:
+        text = (ROOT / COST_REL).read_text(encoding="utf-8").replace(
+            'id = "COST-DETECT-001"\n', 'id = "COST-DETECT-001"\nmeasurement_max_age_days = 30\n', 1)
+
+        def after(root: Path) -> None:
+            (root / COST_REL).write_text(text, encoding="utf-8")
+
+        self.assertEqual(self.run_case(after=after), (False, [_code("ERR_SLO_FRESHNESS_UNSET")]))
+
+    # S3. CommonMark fences ------------------------------------------------------------
+
+    def test_S3_visible_markdown_follows_commonmark_fences(self) -> None:
+        self.assertEqual(cpb._visible_markdown("a\n````\n```\n| inside a 4-backtick fence |\n````\nb\n"), "a\n\n\n\n\nb\n")
+        self.assertEqual(
+            cpb._visible_markdown("```\n<!--\n```\n| visible row |\n| x |\n-->\n"),
+            "\n\n\n| visible row |\n| x |\n-->\n",
+        )
+        self.assertEqual(cpb._visible_markdown("x <!-- hidden --> y\n<!--\nhidden\n--> z\n"), "x  y\n\n\n z\n")
+
+    def test_S3_claim_tables_and_slos_md_agree_on_fences(self) -> None:
+        text = "````\n```\n| ID | Status | Proof root |\n|---|---|---|\n| `SLO-DETECT-001` | achieved | `x.bundle.json` |\n````\n"
+        self.assertEqual(parse_markdown_tables(text), [])
+
+    def test_S3_row_after_a_fence_holding_a_comment_opener_is_live(self) -> None:
+        def fence_first(text: str, row: str) -> str:
+            header = next(line for line in text.splitlines() if line.startswith("| ID |"))
+            return text.replace(header, "```\n<!--\n```\n\n" + header, 1)
+        self.assertEqual(self.run_case(setup=put_slos(fence_first)), (True, []))
+
+    def test_S3_row_inside_a_longer_fence_is_hidden(self) -> None:
+        def hide(text: str, row: str) -> str:
+            return text.replace(row + "\n", "") + "\n````\n```\n" + row.replace(DETECT_TARGET, "≤ 100 s") + "\n````\n"
+        self.assertEqual(self.run_case(measurement={"actual": 50.0}, setup=put_slos(hide)), (False, [_code("ERR_CLAIM_CLASS_UNRESOLVED")]))
 
 if __name__ == "__main__":
     unittest.main()
