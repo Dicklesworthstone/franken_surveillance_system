@@ -443,7 +443,7 @@ def extract_markdown_metadata_and_abstractions(
                 hydration_rows[hid] = (name, content)
         elif not in_hydration_ladder and re.match(r"^\|\s*`H", stripped):
             parts = [p.strip() for p in stripped.strip("|").split("|")]
-            if len(parts) >= 3 and HYDRATION_ID_PATTERN.match(parts[0].replace("`", "").strip()):
+            if parts:
                 misplaced_hydration_ids.append(parts[0].replace("`", "").strip())
     return md_gen, md_digest, rows, hydration_rows, duplicate_layer_ids, duplicate_hydration_ids, misplaced_hydration_ids
 
@@ -939,7 +939,14 @@ def validate_agent_abstraction_registry(repo_root: Path = ROOT) -> ValidationRes
             )
 
     for md_hid in md_hydration_rows:
-        if md_hid not in observed_hydration:
+        if md_hid not in BASELINE_HYDRATION_LEVELS:
+            result.add_error(
+                ERR_AGT_STABLE_ID_REUSED,
+                AGENT_ABSTRACTIONS_MD_PATH,
+                f"#{md_hid}",
+                f"Unregistered hydration level ID '{md_hid}' in Markdown mirror",
+            )
+        elif md_hid not in observed_hydration:
             result.add_error(
                 ERR_AGT_REGISTRY_DRIFT,
                 AGENT_ABSTRACTION_STACK_JSON_PATH,
