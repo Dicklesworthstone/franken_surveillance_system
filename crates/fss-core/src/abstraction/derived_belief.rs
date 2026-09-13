@@ -22,6 +22,15 @@ pub const MAX_DERIVED_BELIEF_CONTRADICTIONS: usize = 1024;
 /// Encoded width of one canonical digest: one algorithm tag byte plus 32 digest bytes.
 const ENCODED_DIGEST_BYTES: usize = 33;
 
+/// Registered digest domain tag (`registries/DIGEST_DOMAINS.md`) hashed first into every
+/// derivation receipt.
+pub const DERIVED_BELIEF_RECEIPT_DOMAIN: &str = "fss.derived_belief.receipt.v1";
+
+/// Registered digest domain tag (`registries/DIGEST_DOMAINS.md`) that prefixes the canonical
+/// encoding in [`DerivedBelief::canonical_digest`], so a belief digest never collides with the
+/// digest of another type over the same bytes.
+pub const DERIVED_BELIEF_DOMAIN: &str = "fss.derived_belief.v1";
+
 /// An anchor-pinned, generation-pinned derived belief (AGT-LAYER-004, INV-069).
 ///
 /// Derived beliefs represent supported entities, tracks, events, relations, and uncertainties
@@ -73,7 +82,8 @@ pub struct DerivedBelief {
     generation: Generation,
     /// Compact human-readable statement.
     statement: String,
-    /// Epistemic state (never `Known`; derived beliefs are `Estimated`, `Conflicted`, etc.).
+    /// Epistemic state: never `Known`, and never a state whose registry meaning requires a typed
+    /// basis this belief cannot carry (`Stale`, `Redacted`, `Indeterminate`).
     knowledge_state: KnowledgeState,
     /// Epistemic provenance: strictly `ProvenanceClass::Derived`.
     provenance: ProvenanceClass,
@@ -238,6 +248,23 @@ impl DerivedBelief {
         }
         if self.knowledge_state == KnowledgeState::Known {
             return Err(ContractError::DerivedBeliefKnownForbidden);
+        }
+        // States whose registry meaning requires a typed basis (KSTATE-005/007/008) cannot be
+        // carried by a derived belief: staleness is expressed by anchor freshness, and redaction
+        // and unresolved external outcomes are not derivation results. Each is refused with the
+        // exact error `KnowledgeCell::validate` would raise, so no invalid cell can be emitted.
+        match self.knowledge_state {
+            KnowledgeState::Stale => return Err(ContractError::StaleBasisRequired),
+            KnowledgeState::Redacted => return Err(ContractError::RedactionMarkerRequired),
+            KnowledgeState::Indeterminate => {
+                return Err(ContractError::ReconciliationBasisRequired);
+            }
+            KnowledgeState::Known
+            | KnowledgeState::Estimated
+            | KnowledgeState::Unknown
+            | KnowledgeState::Conflicted
+            | KnowledgeState::NotObservable
+            | KnowledgeState::NotApplicable => {}
         }
         if self.supporting_evidence.is_empty() {
             return Err(ContractError::EvidenceRequired);
@@ -437,11 +464,13 @@ impl DerivedBelief {
         })
     }
 
-    /// Computes the deterministic canonical digest of this derived belief.
+    /// Computes the deterministic canonical digest of this derived belief: SHA-256 over the
+    /// [`DERIVED_BELIEF_DOMAIN`] tag followed by the canonical encoding.
     ///
     /// Fails instead of hashing an empty or partial encoding when the encoder records an error.
     pub fn canonical_digest(&self) -> Result<ContentDigest, ContractError> {
         let mut encoder = CanonicalEncoder::new();
+        encoder.text(DERIVED_BELIEF_DOMAIN);
         self.encode_canonical(&mut encoder);
         Ok(ContentDigest::sha256(&encoder.finish_checked()?))
     }
@@ -459,7 +488,7 @@ impl DerivedBelief {
         let contra_len = u32::try_from(inputs.contradictions.len())
             .map_err(|_| ContractError::ArithmeticOverflow)?;
         let mut encoder = CanonicalEncoder::new();
-        encoder.text("fss.derived_belief.receipt.v1");
+        encoder.text(DERIVED_BELIEF_RECEIPT_DOMAIN);
         encoder.text(inputs.belief_id);
         inputs.anchor.encode_canonical(&mut encoder);
         encoder.u64(inputs.generation.0);
@@ -489,14 +518,15 @@ impl DerivedBelief {
     /// This is the boundary where a derived belief reaches agent-facing knowledge. It
     /// re-validates every invariant (so a derived belief can never yield an irreversible-effect
     /// premise: `known` is refused) and enforces [`DerivedBelief::validate_anchor_freshness`]
-    /// against `current`.
+    /// against `current`. The emitted cell must itself pass [`KnowledgeCell::validate`]; its
+    /// error is propagated, so no invalid cell ever leaves this boundary.
     pub fn to_knowledge_cell(
         &self,
         current: &LedgerAnchor,
     ) -> Result<KnowledgeCell, ContractError> {
         self.validate()?;
         self.validate_anchor_freshness(current)?;
-        Ok(KnowledgeCell {
+        KnowledgeCell {
             claim_id: self.belief_id.clone(),
             statement: self.statement.clone(),
             knowledge_state: self.knowledge_state,
@@ -506,7 +536,8 @@ impl DerivedBelief {
             contradictions: self.contradictions.clone(),
             valid_until: None,
             state_basis: None,
-        })
+        }
+        .validated()
     }
 
     /// Decodes a derived belief and enforces freshness against the caller's current anchor.
