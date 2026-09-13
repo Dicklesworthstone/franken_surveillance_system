@@ -235,6 +235,7 @@ class TestDependencyRegistryChecker(AuthorityCase):
         expected = {
             "id": base | {I},
             "constitutionClass": base | {I},
+            "constitutionClasses": base | {I},  # DEP-OWNED-001 is the only row mapping DEP-CLASS-F1
             "class": base,
             "rule": base,
             "scope": base,
@@ -470,7 +471,7 @@ class TestDependencyRegistryChecker(AuthorityCase):
         self.assertEqual(sum(e.code == S for e in result.errors), 1)
 
     def test_mutant_m13c_duplicate_id_in_markdown(self) -> None:
-        """A duplicate ID inside the markdown table (valid 11-column row) is STABLE-ID-REUSED."""
+        """A duplicate ID inside the markdown table (valid 12-column row) is STABLE-ID-REUSED."""
         lines = self.text(MD).split("\n")
         index = next(i for i, line in enumerate(lines) if line.startswith("| `DEP-OWNED-001`"))
         lines.insert(index + 1, lines[index])
@@ -1552,6 +1553,59 @@ class TestSecondIndependentMutantTests(unittest.TestCase):
             dependency_audit.audit_dependency_classes(findings, root, policy, {"fss-a"}, [], direct=direct)
             self.assertEqual({(f.code, f.params["package"], f.params["production"]) for f in findings},
                              {("DEP-AUD-042", "alpha", True), ("DEP-AUD-042", "beta", True), ("DEP-AUD-043", "ffmpeg", True)})
+
+
+class TestConstitutionClassCoverage(AuthorityCase):
+    """Finding m: every non-constitutional constitution class has an active registry row."""
+
+    def owned(self, data: dict[str, Any]) -> dict[str, Any]:
+        return next(row for row in data["dependencies"] if row["id"] == "DEP-OWNED-001")
+
+    def test_live_registry_covers_every_class(self) -> None:
+        """Live data: each class other than F0 is mapped by an active row; F1 through DEP-OWNED-001."""
+        auth = dependency_authority.load_authority(ROOT)
+        self.assertEqual(auth.issues, [])
+        covered = {cls for row in auth.rows() if row["status"] == "active" for cls in row["constitutionClasses"]}
+        needed = {cid for cid, klass in auth.classes().items() if klass["admission"] != "constitutional"}
+        self.assertEqual(needed, {"DEP-CLASS-F1", "DEP-CLASS-F2", "DEP-CLASS-F3", "DEP-CLASS-F4"})
+        self.assertEqual(covered, needed)
+        self.assertEqual(self.owned(auth.registry)["constitutionClasses"], ["DEP-CLASS-F2", "DEP-CLASS-F1"])
+        for row in auth.rows():
+            self.assertEqual(row["constitutionClasses"][0], row["constitutionClass"])
+
+    def test_uncovered_or_malformed_class_lists_are_refused(self) -> None:
+        """Dropping F1, reordering, duplicating, naming F0 or an unknown class, or emptying is CONST-INVARIANT."""
+        original = self.load()
+        for label, (classes, shape) in {
+            "F1 dropped (no row maps asupersync)": (["DEP-CLASS-F2"], set()),
+            "primary not first": (["DEP-CLASS-F1", "DEP-CLASS-F2"], set()),
+            "duplicate": (["DEP-CLASS-F2", "DEP-CLASS-F2", "DEP-CLASS-F1"], {C}),  # the exact-shape loader also refuses duplicate entries
+            "constitutional F0 listed": (["DEP-CLASS-F2", "DEP-CLASS-F1", "DEP-CLASS-F0"], set()),
+            "unknown class": (["DEP-CLASS-F2", "DEP-CLASS-F1", "DEP-CLASS-F9"], set()),
+            "empty": ([], {M}),  # and empty lists
+        }.items():
+            with self.subTest(label):
+                data = copy.deepcopy(original)
+                self.owned(data)["constitutionClasses"] = classes
+                self.save(data, redigest=True)
+                result = self.assertCodes({I, F, R} | shape)
+                self.assertTrue(any(e.code == I and ("constitutionClasses" in e.target or e.target == "#/dependencies") for e in result.errors), [(e.code, e.target) for e in result.errors])
+
+    def test_class_mapped_only_by_a_non_active_row_is_uncovered(self) -> None:
+        """A class mapped only by a superseded row is uncovered."""
+        data = self.load()
+        clone = dict(copy.deepcopy(self.owned(data)), id="DEP-OWNED-002", status="superseded")
+        self.owned(data)["constitutionClasses"] = ["DEP-CLASS-F2"]
+        data["dependencies"].append(clone)
+        self.save(data, redigest=True)
+        result = self.check()
+        self.assertTrue(any(e.code == I and e.target == "#/dependencies" and "DEP-CLASS-F1" in e.message for e in result.errors), [(e.code, e.target, e.message) for e in result.errors])
+
+    def test_gate_admission_must_exist_in_the_import_registry(self) -> None:
+        """F1's admission gate INT-AS-001 must be carried by an import record."""
+        self.write(IMPORTS, self.text(IMPORTS).replace('"INT-AS-001"', '"INT-AS-999"'))
+        result = self.assertCodes({I})
+        self.assertEqual([(e.file_path, e.target) for e in result.errors if e.code == I], [(IMPORTS, "#/imports")])
 
 
 if __name__ == "__main__":

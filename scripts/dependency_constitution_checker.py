@@ -10,16 +10,25 @@ lives in this checker). On top of that this checker verifies:
 1. the constitution Markdown mirror (``docs/DEPENDENCY_CONSTITUTION.md``): a strictly parsed machine
    mirror table compared value-by-value (typed) with the JSON, and exactly one machine-row binding per
    ``### 2.N Class Fk`` section compared field-by-field with the JSON row; duplicate, missing, renamed,
-   hollow or rogue sections are drift (``ERR-DEP-CONST-DRIFT-001``);
-2. DEP-CLASS-F0 toolchain identity: ``rust-toolchain.toml`` (exact keys; pinned nightly channel; minimal
-   profile; components equal ``architecture/local_qualification.toml``; no unregistered targets; no legacy
-   ``rust-toolchain`` override) and a parsed ``rustc -Vv`` (nightly release channel, pinned commit
-   identity and date, host platform registered in ``architecture/release_qualification.json``);
+   hollow or rogue sections are drift (``ERR-DEP-CONST-DRIFT-001``), and so is any byte difference
+   between that docs copy and the canonical root ``DEPENDENCY_CONSTITUTION.md``;
+2. DEP-CLASS-F0 toolchain identity, single-sourced in ``architecture/local_qualification.toml``
+   ``[toolchain]`` (accepted channel, rustc release, commit hash and date, components, and the accepted
+   host triples with their platform scopes): ``rust-toolchain.toml`` (exact keys; that channel; minimal
+   profile; those components; no unregistered targets; no legacy ``rust-toolchain`` override) and a
+   parsed ``rustc -Vv`` (that release, commit identity and date; a host triple of that table whose scope
+   is a native_release scope of ``architecture/release_qualification.json``). No identity lives in code;
 3. the DEP-CLASS-F0 closure census over real ``cargo metadata --locked --offline --all-features``: members by
-   package id, production reachability over the resolve graph (normal and build edges), member edition
+   package id (each declared in ``architecture/crate_topology.json`` and an explicit root
+   ``[workspace].members`` entry, so implicit path members are refused), production reachability over the
+   resolve graph (normal and build edges), member edition
    derived from the constitution language, native links, custom-build, proc-macro and dynamic/C-ABI crate
    types, and the shared classifier for every non-member package (pending owner decisions stay neutral);
-4. ``#![feature]`` use in FSS sources: no unstable-feature registry exists, so any use is a finding.
+4. unstable features anywhere in the repository: no unstable-feature registry exists, so ``#![feature]``
+   (also inside ``cfg_attr``), ``-Z`` rustflags in ``.cargo/config*`` or RUSTFLAGS-style variables of
+   checked-in env/shell files, cargo ``[unstable]`` tables, ``cargo-features`` and ``-Z`` literals in build
+   scripts are findings. ``Cargo.lock`` is read through the bounded, symlink-refusing reader before cargo
+   runs.
 
 Tool execution failures (cannot run, timeout, non-zero exit, unparseable output) are
 ``ERR-DEP-EXEC-FAILED-001``, never CORRUPT-FILE. Nothing raises for malformed input.
@@ -28,7 +37,9 @@ from __future__ import annotations
 
 import argparse
 import datetime as _dt
+import fnmatch
 import json
+import os
 import re
 import subprocess
 import sys
@@ -89,18 +100,30 @@ RELEASE_QUALIFICATION_PATH = "architecture/release_qualification.json"
 TOOLCHAIN_COMMAND_TIMEOUT_SECONDS: int = 30
 CARGO_METADATA_TIMEOUT_SECONDS: int = TOOLCHAIN_COMMAND_TIMEOUT_SECONDS
 
-# Pinned toolchain identity (change detection): the reviewed ``rustc -Vv`` identity of each accepted
-# nightly channel. A toolchain bump is a requalification trigger (DEPENDENCY_CONSTITUTION section 8)
-# and updates this pin in the same commit as rust-toolchain.toml.
-PINNED_TOOLCHAIN_IDENTITIES: dict[str, dict[str, str]] = {
-    "nightly-2026-08-31": {
-        "release": "1.100.0-nightly",
-        "commit-hash": "90850177249efe0321573c569aec5d12b257f8d6",
-        "commit-date": "2026-08-30",
-    },
+# The accepted toolchain identity (channel, rustc release, commit hash, commit date, accepted host
+# triples and their platform scopes) is single-sourced in architecture/local_qualification.toml
+# [toolchain]; this checker holds none of it. A toolchain bump edits that table and rust-toolchain.toml.
+TOOLCHAIN_CONTRACT_KEYS: dict[str, Any] = {
+    "channel": authority.Str(),
+    "rustc_release": authority.Str(),
+    "rustc_commit_hash": authority.Str(),
+    "rustc_commit_date": authority.Str(),
+    "components": authority.List(authority.Str()),
+    "host_triples": authority.Map(authority.Str()),
 }
-REQUIRED_RUST_CHANNEL: str = "nightly-2026-08-31"
 NIGHTLY_CHANNEL_RE = re.compile(r"nightly-(\d{4}-\d{2}-\d{2})")
+CRATE_TOPOLOGY_PATH = "architecture/crate_topology.json"
+CONSTITUTION_ROOT_COPY_PATH = "DEPENDENCY_CONSTITUTION.md"
+
+
+def accepted_channel(root: Path) -> str | None:
+    """The accepted nightly channel registered in local_qualification.toml (None when unreadable)."""
+    data, _raw, _problems = authority.load_toml_document(root / LOCAL_QUALIFICATION_PATH, LOCAL_QUALIFICATION_PATH, root)
+    channel = authority.as_dict(authority.as_dict(data).get("toolchain")).get("channel")
+    return channel if isinstance(channel, str) and channel else None
+
+
+REQUIRED_RUST_CHANNEL: str | None = accepted_channel(ROOT)
 # rustup's minimal profile installs no components beyond those listed explicitly, so the registered
 # component list in local_qualification.toml is the complete component set only under this profile.
 TOOLCHAIN_PROFILE_WITHOUT_IMPLICIT_COMPONENTS = "minimal"
@@ -198,6 +221,11 @@ def check_constitution_markdown(result: ValidationResult, auth: authority.Author
     if data is None:
         result.extend(problems)
         return
+    root_data, root_problems = authority.read_input_bytes(auth.root / CONSTITUTION_ROOT_COPY_PATH, CONSTITUTION_ROOT_COPY_PATH, auth.root)
+    if root_data is None:
+        result.extend(root_problems)
+    elif root_data != data:
+        result.add_error(ERR_DEP_CONST_DRIFT, CONSTITUTION_ROOT_COPY_PATH, "#", f"{CONSTITUTION_ROOT_COPY_PATH} and {rel} differ; the docs copy must be byte-identical to the canonical constitution")
     text, problems = authority.decode_utf8(data, rel)
     if text is None:
         result.extend(problems)
@@ -345,16 +373,6 @@ def registered_host_scopes(root: Path, result: ValidationResult) -> set[str] | N
     return scopes
 
 
-def host_platform_scope(host: str) -> str | None:
-    """``<arch>-<vendor>-<os>[-<env>]`` -> the ``<os>-<arch>`` scope vocabulary of release_qualification.json."""
-    parts = host.split("-")
-    if len(parts) < 3 or not all(re.fullmatch(r"[a-z0-9_.]+", part) for part in parts):
-        return None
-    arch = {"aarch64": "arm64"}.get(parts[0], parts[0])
-    os_name = next((name for name in ("linux", "darwin", "windows") if name in parts[1:]), None)
-    return f"{os_name}-{arch}" if os_name else None
-
-
 def parse_rustc_verbose(stdout: str) -> tuple[dict[str, str] | None, str | None]:
     lines = [line for line in stdout.split("\n") if line]
     if not lines:
@@ -378,12 +396,46 @@ def parse_rustc_verbose(stdout: str) -> tuple[dict[str, str] | None, str | None]
     return fields, None
 
 
+def load_toolchain_contract(root: Path, result: ValidationResult) -> dict[str, Any] | None:
+    """The accepted toolchain identity from architecture/local_qualification.toml [toolchain]."""
+    rel = LOCAL_QUALIFICATION_PATH
+    data, _raw, problems = authority.load_toml_document(root / rel, rel, root)
+    if data is None:
+        result.extend(problems)
+        return None
+    toolchain = data.get("toolchain")
+    if not isinstance(toolchain, dict):
+        result.add_error(ERR_DEP_CORRUPT_FILE, rel, "#/toolchain", f"{rel} lacks a [toolchain] table")
+        return None
+    problems = []
+    for key, spec in TOOLCHAIN_CONTRACT_KEYS.items():
+        if key not in toolchain:
+            problems.append(issue(ERR_DEP_MISSING_FIELD, rel, f"#/toolchain/{key}", f"{rel} [toolchain] lacks {key!r}"))
+        else:
+            authority.validate_shape(toolchain[key], spec, rel, f"#/toolchain/{key}", problems)
+    if problems:
+        result.extend(problems)
+        return None
+    channel_match = NIGHTLY_CHANNEL_RE.fullmatch(toolchain["channel"])
+    if channel_match is None or _date(channel_match.group(1)) is None:
+        result.add_error(ERR_DEP_CONST_INVARIANT, rel, "#/toolchain/channel", f"accepted channel {toolchain['channel']!r} is not a dated nightly (production.toolchain latest-accepted-pinned-nightly)")
+        return None
+    if not toolchain["rustc_release"].endswith("-nightly"):
+        result.add_error(ERR_DEP_CONST_INVARIANT, rel, "#/toolchain/rustc_release", f"accepted rustc release {toolchain['rustc_release']!r} is not a nightly release")
+        return None
+    if not re.fullmatch(r"[0-9a-f]{40}", toolchain["rustc_commit_hash"]) or _date(toolchain["rustc_commit_date"]) is None:
+        result.add_error(ERR_DEP_CORRUPT_FILE, rel, "#/toolchain", "accepted rustc commit hash must be 40 hex digits and the commit date an ISO date")
+        return None
+    return toolchain
+
+
 def validate_toolchain_identity(root: Path, result: ValidationResult) -> str | None:
-    """Toolchain file + ``rustc -Vv`` identity. Returns the verified channel, or None when unusable."""
+    """Toolchain file + ``rustc -Vv`` identity against local_qualification.toml. Returns the verified channel."""
     rel = RUST_TOOLCHAIN_PATH
     if (root / LEGACY_RUST_TOOLCHAIN_PATH).exists():
         result.add_error(ERR_DEP_CONST_INVARIANT, LEGACY_RUST_TOOLCHAIN_PATH, "#", "a legacy rust-toolchain override file exists beside rust-toolchain.toml; rustup would prefer it over the pinned channel")
-    data, _raw, problems = authority.load_toml_document(root / rel, rel)
+    contract = load_toolchain_contract(root, result)
+    data, _raw, problems = authority.load_toml_document(root / rel, rel, root)
     if data is None:
         result.extend(problems)
         return None
@@ -403,20 +455,19 @@ def validate_toolchain_identity(root: Path, result: ValidationResult) -> str | N
     if channel_date is None:
         result.add_error(ERR_DEP_CONST_INVARIANT, rel, "#/toolchain/channel", f"Toolchain channel must be a dated nightly (production.toolchain latest-accepted-pinned-nightly), found {channel!r}")
         return None
-    if channel not in PINNED_TOOLCHAIN_IDENTITIES:
-        result.add_error(ERR_DEP_CONST_INVARIANT, rel, "#/toolchain/channel", f"Toolchain channel {channel!r} has no pinned rustc identity; accepted channels: {sorted(PINNED_TOOLCHAIN_IDENTITIES)}")
+    if contract is None:
+        return None
+    if channel != contract["channel"]:
+        result.add_error(ERR_DEP_CONST_INVARIANT, rel, "#/toolchain/channel", f"Toolchain channel {channel!r} differs from the accepted channel {contract['channel']!r} in {LOCAL_QUALIFICATION_PATH}")
         return None
     profile = toolchain.get("profile")
     if profile != TOOLCHAIN_PROFILE_WITHOUT_IMPLICIT_COMPONENTS:
         result.add_error(ERR_DEP_CONST_INVARIANT, rel, "#/toolchain/profile", f"Toolchain profile must be {TOOLCHAIN_PROFILE_WITHOUT_IMPLICIT_COMPONENTS!r} so no unregistered component is installed, found {profile!r}")
     components = toolchain.get("components")
-    localq = authority.Authority(root=root)
-    authority._load_local_qualification(localq, root / LOCAL_QUALIFICATION_PATH)
-    result.extend(localq.issues)
-    registered = authority.str_list(authority.as_dict(authority.as_dict(localq.local_qualification).get("toolchain")).get("components"))
+    registered = contract["components"]
     if not isinstance(components, list) or not all(isinstance(c, str) for c in components) or len(set(components)) != len(components):
         result.add_error(ERR_DEP_CORRUPT_FILE, rel, "#/toolchain/components", f"[toolchain].components must be a list of unique strings, found {components!r}")
-    elif localq.local_qualification is not None and set(components) != set(registered):
+    elif set(components) != set(registered):
         result.add_error(ERR_DEP_CONST_INVARIANT, rel, "#/toolchain/components", f"toolchain components {sorted(components)} differ from the registered components {sorted(registered)} in {LOCAL_QUALIFICATION_PATH}")
     if "targets" in toolchain:
         result.add_error(ERR_DEP_CONST_INVARIANT, rel, "#/toolchain/targets", f"toolchain targets {toolchain.get('targets')!r} are not registered anywhere; no extra target may be installed")
@@ -434,17 +485,18 @@ def validate_toolchain_identity(root: Path, result: ValidationResult) -> str | N
         return None
     if not fields["release"].endswith("-nightly"):
         result.add_error(ERR_DEP_CONST_INVARIANT, rel, "#/rustc/release", f"rustc -Vv reports release {fields['release']!r}, not the nightly release channel")
-    pinned = PINNED_TOOLCHAIN_IDENTITIES[channel]
-    for key in ("release", "commit-hash", "commit-date"):
-        if fields[key] != pinned[key]:
-            result.add_error(ERR_DEP_CONST_INVARIANT, rel, f"#/rustc/{key}", f"rustc -Vv {key} {fields[key]!r} differs from the pinned identity {pinned[key]!r} of {channel}")
+    for key, contract_key in (("release", "rustc_release"), ("commit-hash", "rustc_commit_hash"), ("commit-date", "rustc_commit_date")):
+        if fields[key] != contract[contract_key]:
+            result.add_error(ERR_DEP_CONST_INVARIANT, rel, f"#/rustc/{key}", f"rustc -Vv {key} {fields[key]!r} differs from the accepted {contract_key} {contract[contract_key]!r} in {LOCAL_QUALIFICATION_PATH}")
     commit_date = _date(fields["commit-date"])
     if commit_date is None or commit_date > channel_date:
         result.add_error(ERR_DEP_CONST_INVARIANT, rel, "#/rustc/commit-date", f"rustc commit-date {fields['commit-date']!r} is later than the pinned channel date {channel_date}")
     scopes = registered_host_scopes(root, result)
-    scope = host_platform_scope(fields["host"])
-    if scopes is not None and scope not in scopes:
-        result.add_error(ERR_DEP_CONST_INVARIANT, rel, "#/rustc/host", f"rustc host {fields['host']!r} (platform {scope!r}) is not a registered native_release platform {sorted(scopes)} in {RELEASE_QUALIFICATION_PATH}")
+    scope = contract["host_triples"].get(fields["host"])
+    if scope is None:
+        result.add_error(ERR_DEP_CONST_INVARIANT, rel, "#/rustc/host", f"rustc host {fields['host']!r} is not an accepted host triple in {LOCAL_QUALIFICATION_PATH} [toolchain.host_triples]")
+    elif scopes is not None and scope not in scopes:
+        result.add_error(ERR_DEP_CONST_INVARIANT, rel, "#/rustc/host", f"rustc host {fields['host']!r} maps to platform {scope!r}, which is not a registered native_release scope {sorted(scopes)} in {RELEASE_QUALIFICATION_PATH}")
     return channel
 
 
@@ -460,8 +512,10 @@ def _date(value: str) -> _dt.date | None:
 # ---------------------------------------------------------------------------------------------
 
 
-def load_real_cargo_metadata(root: Path, channel: str = REQUIRED_RUST_CHANNEL) -> tuple[dict[str, Any] | None, str | None]:
+def load_real_cargo_metadata(root: Path, channel: str | None = REQUIRED_RUST_CHANNEL) -> tuple[dict[str, Any] | None, str | None]:
     """``cargo metadata --locked --offline --all-features`` (every feature, every target platform)."""
+    if not channel:
+        return None, f"no accepted toolchain channel is registered in {LOCAL_QUALIFICATION_PATH}"
     cmd = ["rustup", "run", channel, "cargo", "metadata", "--locked", "--offline", "--all-features", "--format-version", "1"]
     try:
         proc = subprocess.run(cmd, cwd=root, capture_output=True, text=True, timeout=CARGO_METADATA_TIMEOUT_SECONDS)
@@ -483,6 +537,41 @@ def load_real_cargo_metadata(root: Path, channel: str = REQUIRED_RUST_CHANNEL) -
 
 
 DYNAMIC_CRATE_TYPES = frozenset({"cdylib", "dylib", "staticlib"})
+
+
+def workspace_contract(root: Path, result: ValidationResult) -> tuple[set[str] | None, list[str] | None]:
+    """Crate names declared in crate_topology.json and the explicit [workspace].members patterns."""
+    declared: set[str] | None = None
+    topology, _raw, problems = authority.load_json_document(root / CRATE_TOPOLOGY_PATH, CRATE_TOPOLOGY_PATH, root)
+    result.extend(problems)
+    if topology is not None:
+        declared = set()
+        for layer in topology.get("layers", []) if isinstance(topology.get("layers"), list) else []:
+            for crate in authority.as_dict(layer).get("crates", []) if isinstance(authority.as_dict(layer).get("crates"), list) else []:
+                if authority.is_str(authority.as_dict(crate).get("name")):
+                    declared.add(crate["name"])
+        if not declared:
+            result.add_error(ERR_DEP_CORRUPT_FILE, CRATE_TOPOLOGY_PATH, "#/layers", "crate topology declares no crates")
+            declared = None
+    explicit: list[str] | None = None
+    manifest, _raw, problems = authority.load_toml_document(root / "Cargo.toml", "Cargo.toml", root)
+    result.extend(problems)
+    if manifest is not None:
+        members = authority.as_dict(manifest.get("workspace")).get("members")
+        if isinstance(members, list) and members and all(authority.is_str(m) for m in members):
+            explicit = [m.rstrip("/") for m in members]
+        else:
+            _metadata_violation(result, "#/workspace/members", f"root Cargo.toml [workspace].members must be a non-empty list of paths, found {members!r}", "Cargo.toml")
+    return declared, explicit
+
+
+def _relative_dir(manifest_path: Any, root: Path) -> str | None:
+    if not authority.is_str(manifest_path):
+        return None
+    try:
+        return Path(manifest_path).resolve().parent.relative_to(root.resolve()).as_posix()
+    except (ValueError, OSError):
+        return None
 
 
 def _metadata_violation(result: ValidationResult, target: str, message: str, file_path: str = "Cargo.lock") -> None:
@@ -550,6 +639,7 @@ def validate_cargo_metadata_for_f0(
         packages[pkg_id] = pkg
     for member in sorted(members - set(packages)):
         _metadata_violation(result, "#/workspace_members", f"workspace member {member!r} has no package entry")
+    declared_crates, explicit_members = workspace_contract(root, result)
 
     # Production reachability over the resolve graph: normal and build edges are production.
     production: set[str] | None = None
@@ -629,6 +719,11 @@ def validate_cargo_metadata_for_f0(
             _metadata_violation(result, f"#{name}/targets/crate_types", f"Package '{name}' declares dynamic/C-ABI crate types {dynamic} violating DEP-CLASS-F0 (no dynamic loading or C FFI)", manifest)
         links = pkg.get("links")
         if is_member:
+            if declared_crates is not None and name not in declared_crates:
+                _metadata_violation(result, f"#{name}/topology", f"workspace member '{name}' is not declared in {CRATE_TOPOLOGY_PATH}", manifest)
+            member_dir = _relative_dir(pkg.get("manifest_path"), root)
+            if explicit_members is not None and (member_dir is None or not any(fnmatch.fnmatchcase(member_dir, pattern) for pattern in explicit_members)):
+                _metadata_violation(result, f"#{name}/workspace-member", f"workspace member '{name}' ({member_dir or pkg.get('manifest_path')!r}) is not an explicit [workspace].members entry; implicit members such as in-repository path dependencies are refused", manifest)
             edition = pkg.get("edition")
             if expected_edition is not None and edition != expected_edition:
                 _metadata_violation(result, f"#{name}/edition", f"workspace package '{name}' must declare edition '{expected_edition}' (DEP-CLASS-F0), found: {edition!r}", manifest)
@@ -657,32 +752,174 @@ def validate_cargo_metadata_for_f0(
 # Unstable features
 # ---------------------------------------------------------------------------------------------
 
-UNSTABLE_FEATURE_RE = re.compile(r"#\s*!\s*\[\s*feature\s*\(")
+# Only the workspace's own build output and tool state are skipped; a directory named "target" anywhere
+# else (for example a crate root under src/target/) is scanned.
+UNSCANNED_TOP_LEVEL_DIRS = frozenset({".git", ".claude", ".beads", ".ntm", ".ee", "target"})
+RUSTFLAG_KEYS = frozenset({"rustflags", "rustdocflags", "RUSTFLAGS", "RUSTDOCFLAGS", "CARGO_ENCODED_RUSTFLAGS",
+                           "CARGO_ENCODED_RUSTDOCFLAGS", "CARGO_BUILD_RUSTFLAGS", "CARGO_BUILD_RUSTDOCFLAGS"})
+ENV_RUSTFLAGS_RE = re.compile(r"\b(?:CARGO_ENCODED_RUSTFLAGS|CARGO_ENCODED_RUSTDOCFLAGS|CARGO_BUILD_RUSTFLAGS|CARGO_BUILD_RUSTDOCFLAGS|RUSTFLAGS|RUSTDOCFLAGS)\b.*?(?<![\w-])-Z")
+TOOL_Z_FLAG_RE = re.compile(r"\b(?:cargo|rustc|rustdoc)\b[^#\n]*?(?<![\w-])-Z")
+MANIFEST_CARGO_FEATURES_RE = re.compile(r"^\s*cargo-features\s*=", re.MULTILINE)
+MANIFEST_RUSTFLAGS_Z_RE = re.compile(r"^\s*rustflags\s*=.*?(?<![\w-])-Z", re.MULTILINE)
+INNER_ATTRIBUTE_RE = re.compile(r"#\s*!\s*\[")
+ATTRIBUTE_PATH_RE = re.compile(r"\s*(?:r#)?([A-Za-z_][A-Za-z0-9_]*)(?:\s*::\s*(?:r#)?[A-Za-z_][A-Za-z0-9_]*)*\s*")
+
+
+def repository_files(root: Path, predicate: Any) -> list[Path]:
+    found: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        current = Path(dirpath)
+        if current == root:
+            dirnames[:] = [d for d in dirnames if d not in UNSCANNED_TOP_LEVEL_DIRS]
+        for filename in filenames:
+            path = current / filename
+            if predicate(path):
+                found.append(path)
+    return sorted(found)
+
+
+def _split_top_level(text: str) -> list[str]:
+    parts, depth, start = [], 0, 0
+    for index, char in enumerate(text):
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == "," and depth == 0:
+            parts.append(text[start:index])
+            start = index + 1
+    parts.append(text[start:])
+    return [part for part in parts if part.strip()]
+
+
+def attribute_enables_feature(content: str) -> bool:
+    """True when an inner attribute's content is ``feature(...)`` or a ``cfg_attr`` that applies one."""
+    match = ATTRIBUTE_PATH_RE.match(content)
+    if match is None:
+        return False
+    rest = content[match.end():]
+    if not rest.startswith("("):
+        return False
+    if match.group(1) == "feature" and "::" not in match.group(0):
+        return True
+    if match.group(1) == "cfg_attr" and "::" not in match.group(0):
+        depth, end = 0, None
+        for index, char in enumerate(rest):
+            depth += char == "("
+            depth -= char == ")"
+            if depth == 0:
+                end = index
+                break
+        arguments = _split_top_level(rest[1:end if end is not None else len(rest)])
+        return any(attribute_enables_feature(argument) for argument in arguments[1:])
+    return False
+
+
+def inner_attributes(masked: str) -> list[tuple[int, str]]:
+    attributes = []
+    for match in INNER_ATTRIBUTE_RE.finditer(masked):
+        depth, index = 1, match.end()
+        while index < len(masked) and depth:
+            depth += masked[index] == "["
+            depth -= masked[index] == "]"
+            index += 1
+        attributes.append((match.start(), masked[match.end():index - 1]))
+    return attributes
+
+
+def _z_tokens(value: Any) -> list[str]:
+    if isinstance(value, dict):
+        value = value.get("value")
+    if isinstance(value, str):
+        tokens = re.split(r"[\s\x1f]+", value)
+    elif isinstance(value, list):
+        tokens = [v for v in value if isinstance(v, str)]
+    else:
+        return []
+    return [token for token in tokens if token.startswith("-Z")]
+
+
+def _config_rustflags(node: Any, path: str = "") -> list[tuple[str, str]]:
+    hits: list[tuple[str, str]] = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            here = f"{path}.{key}" if path else key
+            if key in RUSTFLAG_KEYS:
+                hits.extend((here, token) for token in _z_tokens(value))
+            else:
+                hits.extend(_config_rustflags(value, here))
+    return hits
 
 
 def scan_unstable_features(root: Path, result: ValidationResult) -> int:
-    """Refuses ``#![feature(...)]`` in FSS Rust sources: no unstable-feature registry exists yet."""
+    """Refuses every way of enabling nightly unstable features: no unstable-feature registry exists.
+
+    Scanned: ``#![feature(...)]`` and ``#![cfg_attr(<pred>, feature(...))]`` inner attributes in every
+    Rust file of the repository (build scripts included; only the workspace's own target/ and tool
+    directories are skipped); ``-Z`` flags in ``.cargo/config[.toml]`` rustflags/env tables and any
+    ``[unstable]`` table; ``cargo-features`` and ``-Z`` profile rustflags in Cargo.toml files; ``-Z`` in
+    RUSTFLAGS-style assignments of checked-in ``.env`` and shell files and in shell invocations of
+    cargo/rustc/rustdoc; and ``-Z`` string literals in build scripts.
+    """
     import dependency_audit  # local import: dependency_audit imports this checker's authority module
 
-    crates = root / "crates"
-    if not crates.is_dir():
-        return 0
-    count = 0
-    for path in sorted(crates.rglob("*.rs")):
-        if "target" in path.relative_to(crates).parts or not path.is_file():
-            continue
-        count += 1
+    def emit(rel: str, target: str, message: str) -> None:
+        result.add_error(ERR_DEP_UNSTABLE_FEATURE, rel, target, f"{message}; no registered unstable-feature allowlist exists (DEPENDENCY_CONSTITUTION 2.1 requires enabled unstable features to be recorded)")
+
+    def read_text(path: Path) -> str | None:
         rel = path.relative_to(root).as_posix()
-        data, problems = authority.read_input_bytes(path, rel)
+        data, problems = authority.read_input_bytes(path, rel, root)
         text, decode_problems = (authority.decode_utf8(data, rel) if data is not None else (None, []))
         if text is None:
             result.extend(problems or decode_problems)
+        return text
+
+    rust_files = repository_files(root, lambda p: p.suffix == ".rs")
+    for path in rust_files:
+        text = read_text(path)
+        if text is None:
             continue
-        masked, _ = dependency_audit.mask_rust_source(text)
-        for match in UNSTABLE_FEATURE_RE.finditer(masked):
-            line = masked.count("\n", 0, match.start()) + 1
-            result.add_error(ERR_DEP_UNSTABLE_FEATURE, rel, f"line/{line}", f"{rel}:{line}: #![feature] enables an unstable feature, but no registered unstable-feature allowlist exists (DEPENDENCY_CONSTITUTION 2.1 requires enabled unstable features to be recorded)")
-    return count
+        rel = path.relative_to(root).as_posix()
+        masked, literals = dependency_audit.mask_rust_source(text)
+        for offset, content in inner_attributes(masked):
+            if attribute_enables_feature(content):
+                line = masked.count("\n", 0, offset) + 1
+                emit(rel, f"line/{line}", f"{rel}:{line}: an inner attribute enables an unstable feature")
+        if path.name == "build.rs":
+            for literal in literals:
+                if re.search(r"(?<![\w-])-Z", literal.content):
+                    emit(rel, f"line/{literal.line}", f"{rel}:{literal.line}: build script passes an unstable -Z flag")
+    for path in repository_files(root, lambda p: p.parent.name == ".cargo" and p.name in ("config", "config.toml")):
+        rel = path.relative_to(root).as_posix()
+        data, _raw, problems = authority.load_toml_document(path, rel, root)
+        if data is None:
+            result.extend(problems)
+            continue
+        if "unstable" in data:
+            emit(rel, "#/unstable", f"{rel} enables cargo [unstable] options")
+        for key_path, token in _config_rustflags(data):
+            emit(rel, f"#/{key_path}", f"{rel} {key_path} passes the unstable flag {token}")
+    for path in repository_files(root, lambda p: p.name == "Cargo.toml"):
+        text = read_text(path)
+        if text is None:
+            continue
+        rel = path.relative_to(root).as_posix()
+        if MANIFEST_CARGO_FEATURES_RE.search(text):
+            emit(rel, "#/cargo-features", f"{rel} declares unstable cargo-features")
+        if MANIFEST_RUSTFLAGS_Z_RE.search(text):
+            emit(rel, "#/profile/rustflags", f"{rel} passes an unstable -Z flag in profile rustflags")
+    env_like = lambda p: p.suffix == ".sh" or p.name.startswith(".env") or p.name.endswith(".env")  # noqa: E731
+    for path in repository_files(root, env_like):
+        text = read_text(path)
+        if text is None:
+            continue
+        rel = path.relative_to(root).as_posix()
+        for number, line in enumerate(text.split("\n"), 1):
+            if line.lstrip().startswith("#"):
+                continue
+            if ENV_RUSTFLAGS_RE.search(line) or (path.suffix == ".sh" and TOOL_Z_FLAG_RE.search(line)):
+                emit(rel, f"line/{number}", f"{rel}:{number}: sets RUSTFLAGS-style flags or passes cargo/rustc an unstable -Z option")
+    return len(rust_files)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -721,8 +958,11 @@ def validate_dependency_constitution(
     if not skip_cargo_metadata:
         check_error_registration(result, root)
         channel = validate_toolchain_identity(root, result)
-        if cargo_metadata is None:
-            cargo_metadata, meta_err = load_real_cargo_metadata(root, channel or REQUIRED_RUST_CHANNEL)
+        lock_data, lock_problems = authority.read_input_bytes(root / "Cargo.lock", "Cargo.lock", root)
+        if lock_data is None:
+            result.extend(lock_problems)  # cargo metadata is not run over a missing, symlinked or oversized lock
+        elif cargo_metadata is None:
+            cargo_metadata, meta_err = load_real_cargo_metadata(root, channel or accepted_channel(root))
             if meta_err is not None:
                 result.add_error(ERR_DEP_EXEC_FAILED, "Cargo.lock", "#", f"Unable to load real Cargo metadata for DEP-CLASS-F0 verification: {meta_err}")
         if cargo_metadata is not None:

@@ -277,6 +277,11 @@ def dependency_policy_consistency(
         fail("architecture/local_qualification.toml must register [toolchain].components")
     elif sorted(map(str, components)) != sorted(map(str, registered)):
         fail(f"rust-toolchain.toml components {sorted(map(str, components))} differ from the registered components {sorted(map(str, registered))}")
+    accepted_channel = lq_toolchain.get("channel")
+    if not isinstance(accepted_channel, str) or not accepted_channel:
+        fail("architecture/local_qualification.toml must register the accepted [toolchain].channel")
+    elif toolchain.get("channel") != accepted_channel:
+        fail(f"rust-toolchain.toml channel {toolchain.get('channel')!r} differs from the accepted channel {accepted_channel!r} in architecture/local_qualification.toml")
 
     policy = dependency_policy.get("policy") if isinstance(dependency_policy.get("policy"), dict) else {}
     expected_flags = dependency_authority.expected_policy_flags(authority_state)

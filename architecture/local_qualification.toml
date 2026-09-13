@@ -16,6 +16,19 @@ signing_separate_from_build = true
 pin_file = "rust-toolchain.toml"
 policy = "candidate nightlies are promoted only by local full qualification; release uses the exact accepted pin"
 components = ["rustfmt", "clippy", "rust-src"]
+# The accepted pin, single-sourced: rust-toolchain.toml must name this channel and `rustc -Vv` under it
+# must report exactly this release, commit hash and commit date (DEPENDENCY_CONSTITUTION 2.1, DEP-CLASS-F0).
+channel = "nightly-2026-08-31"
+rustc_release = "1.100.0-nightly"
+rustc_commit_hash = "90850177249efe0321573c569aec5d12b257f8d6"
+rustc_commit_date = "2026-08-30"
+
+# Host triples accepted for qualification, each mapped to its native_release platform scope in
+# architecture/release_qualification.json.
+[toolchain.host_triples]
+"x86_64-unknown-linux-gnu" = "linux-x86_64"
+"aarch64-apple-darwin" = "darwin-arm64"
+"x86_64-pc-windows-msvc" = "windows-x86_64"
 
 [[lane]]
 id = "QL-POLICY-001"
