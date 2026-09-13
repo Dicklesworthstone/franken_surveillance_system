@@ -14,6 +14,7 @@ mod capture;
 mod clock;
 mod clock_sync;
 mod context_binding;
+pub mod decode;
 mod delivery;
 mod durable_effect;
 mod encoded_fixture;
@@ -98,6 +99,10 @@ pub use clock_sync::{
 pub use context_binding::{
     BoundReferenceSituationPublication, ReferenceContextBindingError,
     ReferenceExpansionBindingSpec, seal_bound_reference_publication_handoff,
+};
+pub use decode::{
+    DecodedImage, JPEG_DECODER_GENERATION, JPEG_DECODER_GENERATION_NUMERIC, JpegDecodeError,
+    JpegDecodeLimits, JpegSubsampling, decode_baseline_jpeg,
 };
 pub use delivery::{
     DeliveryContinuity, DeliveryDirective, DeliveryMutation, DeliveryPacket, DeliveryPlan,
