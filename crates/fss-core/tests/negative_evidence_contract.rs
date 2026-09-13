@@ -4,18 +4,19 @@
 //! Enforces:
 //! 1. Missing coverage witness / uncertified absence refusal.
 //! 2. Coverage gap refusal (`CoverageContinuity::Gapped` or `Unknown`).
-//! 3. Unknown format version refusal (refuse, never guess).
+//! 3. Unknown format version refusal (refuse, never guess), including the legacy v1 layout.
 //! 4. Corrupt checksum and magic refusal.
 //! 5. Duplicate entry identifier refusal.
-//! 6. Non-canonical ordering refusal.
+//! 6. Non-canonical ordering refusal (numeric identifier order).
 //! 7. Oversized input refusal.
 //! 8. Tombstone consistency and revival condition enforcement.
 //! 9. Seed entries (NEG-001, NEG-002, NEG-003) and golden fixture verification.
 //! 10. Orthogonality of knowledge state, provenance class, and hypothesis disposition.
 //! 11. Seed doctrine is verbatim `docs/NEGATIVE_EVIDENCE.md` and seeds are not locally certified.
-//! 12. Witness binding to the entry identifier and claimed domain.
-//! 13. Decode-path canonicality (set order, entry order, duplicates, trailing bytes).
+//! 12. Witness binding to the exact predicate grammar and claimed domain.
+//! 13. Decode-path canonicality and specific decode error identities.
 //! 14. Linked append-only supersession and evidence-backed revival.
+//! 15. Proof requirement for locally certified entries and the core knowledge-cell rule.
 
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -26,7 +27,7 @@ use fss_core::negative_evidence::{
     MAX_NEG_TEXT_LEN, NEGATIVE_EVIDENCE_FORMAT_VERSION, NEGATIVE_EVIDENCE_LEDGER_MAGIC,
     NOT_LOCALLY_REPRODUCIBLE, NegativeDecision, NegativeEvidenceEntry, NegativeEvidenceError,
     NegativeEvidenceLedger, NegativeEvidenceSetup, SCHEMA_NEGATIVE_EVIDENCE_LEDGER,
-    initial_negative_evidence_ledger, provenance_class_as_str,
+    initial_negative_evidence_ledger, negative_predicate_for, provenance_class_as_str,
 };
 use fss_core::{
     Completeness, ContentDigest, CoverageContinuity, CoverageStopReason, CoverageWitness,
@@ -49,7 +50,7 @@ fn make_valid_witness(neg_id: &str) -> CoverageWitness {
         excluded_domain: BTreeSet::new(),
         continuity: CoverageContinuity::Continuous,
         completeness: Completeness::Complete,
-        negative_predicate: format!("architectural-violation-absence:{neg_id}"),
+        negative_predicate: negative_predicate_for(TEST_DOMAIN, neg_id),
         stop_reason: CoverageStopReason::Complete,
         authorized_generation: 1,
         observed_generation: 1,
@@ -78,16 +79,35 @@ fn make_valid_entry(neg_id: &str, decision: NegativeDecision) -> NegativeEvidenc
         revival_condition: format!("Revival condition for {neg_id}"),
         knowledge_state: KnowledgeState::Known,
         provenance_class: ProvenanceClass::Policy,
+        decision_provenance: ProvenanceClass::Policy,
         disposition: HypothesisDisposition::Refuted,
         coverage_witness: make_valid_witness(neg_id),
-        claimed_domain: BTreeSet::from([TEST_DOMAIN.to_string()]),
+        claimed_domain: TEST_DOMAIN.to_string(),
         certification: EvidenceCertification::LocallyCertified,
         supersedes: None,
         is_tombstone: false,
         tombstone_reason: None,
         proof_hash: Some(ContentDigest::sha256(b"proof-test")),
+        evidence_reference: Some(format!("proof-bundle:{neg_id}")),
         reproduction_command: format!("cargo test -p fss-core --test {neg_id}"),
     }
+}
+
+/// A locally observed, proven row re-testing `target`'s hypothesis and recording it supported.
+fn revival_evidence(neg_id: &str, target: &NegativeEvidenceEntry) -> NegativeEvidenceEntry {
+    let mut entry = make_valid_entry(neg_id, NegativeDecision::Revisit);
+    entry.supersedes = Some(target.neg_id.clone());
+    entry.hypothesis = target.hypothesis.clone();
+    entry.provenance_class = ProvenanceClass::Observed;
+    entry.disposition = HypothesisDisposition::Supported;
+    entry
+}
+
+fn entry_of(ledger: &NegativeEvidenceLedger, id: &str) -> Result<NegativeEvidenceEntry, String> {
+    ledger
+        .get(id)
+        .cloned()
+        .ok_or_else(|| format!("{id} missing from ledger"))
 }
 
 /// Appends the domain-separated trailing checksum to a canonical ledger payload.
@@ -184,11 +204,24 @@ fn doctrine_field(neg_id: &str, label: &str) -> Result<String, Box<dyn Error>> {
     Ok(out)
 }
 
-fn revival_evidence(neg_id: &str, supersedes: &str) -> NegativeEvidenceEntry {
-    let mut entry = make_valid_entry(neg_id, NegativeDecision::Revisit);
-    entry.supersedes = Some(supersedes.to_string());
-    entry.disposition = HypothesisDisposition::Supported;
-    entry
+/// Builds a ledger from the seeds with `modify` applied to one entry; returns the verification
+/// error or the root digest.
+fn seeds_with(
+    index: usize,
+    modify: impl Fn(&mut NegativeEvidenceEntry),
+) -> Result<Result<String, NegativeEvidenceError>, Box<dyn Error>> {
+    let seeds = initial_negative_evidence_ledger()?;
+    let mut rebuilt = NegativeEvidenceLedger::new();
+    for (i, seed) in seeds.entries().iter().enumerate() {
+        let mut entry = seed.clone();
+        if i == index {
+            modify(&mut entry);
+        }
+        if let Err(err) = rebuilt.append(entry) {
+            return Ok(Err(err));
+        }
+    }
+    Ok(rebuilt.root_digest().map(|digest| digest.to_text()))
 }
 
 #[test]
@@ -270,8 +303,8 @@ fn test_unknown_version_is_refused() -> Result<(), Box<dyn Error>> {
     let mut bytes = ledger.encode_canonical()?;
 
     // Byte 8..12 is the 4-byte big-endian format version.
-    // Replace it with version 2 (unknown).
-    bytes[8..12].copy_from_slice(&2u32.to_be_bytes());
+    // Replace it with version 3 (unknown; version 2 is current since the format bump).
+    bytes[8..12].copy_from_slice(&3u32.to_be_bytes());
 
     // Recompute the trailing checksum for the modified payload to isolate the version check
     let payload_len = bytes.len() - 32;
@@ -288,12 +321,25 @@ fn test_unknown_version_is_refused() -> Result<(), Box<dyn Error>> {
 
     match err {
         NegativeEvidenceError::UnknownVersion { version } => {
-            assert_eq!(version, 2);
+            assert_eq!(version, 3);
             assert_eq!(err.error_id(), "ERR-NEG-UNKNOWN-VERSION-001");
         }
         other => return Err(format!("unexpected error variant: {other:?}").into()),
     }
 
+    Ok(())
+}
+
+#[test]
+fn test_legacy_v1_ledger_is_refused_as_unknown_version() -> Result<(), Box<dyn Error>> {
+    // The pre-review layout that was on main (26f027a / 1949551) is format version 1.
+    assert_eq!(NEGATIVE_EVIDENCE_FORMAT_VERSION, 2);
+    let legacy = include_bytes!("../../../tests/fixtures/negative_evidence_ledger_v1.bin");
+    let err = NegativeEvidenceLedger::decode_canonical(legacy)
+        .err()
+        .ok_or("a v1 ledger must be refused")?;
+    assert_eq!(err, NegativeEvidenceError::UnknownVersion { version: 1 });
+    assert_eq!(err.error_id(), "ERR-NEG-UNKNOWN-VERSION-001");
     Ok(())
 }
 
@@ -503,7 +549,8 @@ fn test_tombstone_preservation_and_rules() -> Result<(), Box<dyn Error>> {
         other => return Err(format!("unexpected error variant: {other:?}").into()),
     }
 
-    ledger.append(revival_evidence("NEG-004", "NEG-001"))?;
+    let neg001 = entry_of(&ledger, "NEG-001")?;
+    ledger.append(revival_evidence("NEG-004", &neg001))?;
     assert!(
         ledger
             .verify_revival_condition("NEG-001", "NEG-004")
@@ -514,18 +561,49 @@ fn test_tombstone_preservation_and_rules() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn test_tombstoned_entries_are_validated_like_active_ones() -> Result<(), Box<dyn Error>> {
+    // Tombstoning keeps the original record immutable; it never exempts it from certification.
+    let mut gapped = make_valid_entry("NEG-065", NegativeDecision::Reject);
+    gapped.is_tombstone = true;
+    gapped.tombstone_reason = Some(TombstoneReason::Superseded);
+    gapped.coverage_witness.continuity = CoverageContinuity::Gapped;
+    assert_eq!(
+        gapped.validate(),
+        Err(NegativeEvidenceError::CoverageGap {
+            continuity: CoverageContinuity::Gapped
+        })
+    );
+
+    let mut foreign = make_valid_entry("NEG-066", NegativeDecision::Reject);
+    foreign.is_tombstone = true;
+    foreign.tombstone_reason = Some(TombstoneReason::Revoked);
+    foreign.coverage_witness = make_valid_witness("NEG-001");
+    assert_eq!(
+        foreign.validate().err().map(|e| e.error_id()),
+        Some("ERR-NEG-UNCERTIFIED-COVERAGE-001")
+    );
+
+    let mut ledger = initial_negative_evidence_ledger()?;
+    assert!(ledger.append(gapped).is_err());
+    assert!(ledger.append(foreign).is_err());
+    Ok(())
+}
+
+#[test]
 fn test_seed_entries_and_golden_fixture() -> Result<(), Box<dyn Error>> {
     let ledger = initial_negative_evidence_ledger()?;
 
     // Exact initial entry count
     assert_eq!(ledger.len(), 3);
 
-    // Exact NEG-001 doctrine (not locally certified: the doctrine records no experiment)
+    // Exact NEG-001 doctrine. The doctrine records "does not establish" and no experiment, so the
+    // finding is unknown and vendor-claimed, the decision is policy, the hypothesis disfavored.
     let neg001 = ledger.get("NEG-001").ok_or("NEG-001 missing from ledger")?;
     assert_eq!(neg001.decision, NegativeDecision::Narrow);
-    assert_eq!(neg001.knowledge_state, KnowledgeState::Estimated);
-    assert_eq!(neg001.provenance_class, ProvenanceClass::Policy);
-    assert_eq!(neg001.disposition, HypothesisDisposition::Refuted);
+    assert_eq!(neg001.knowledge_state, KnowledgeState::Unknown);
+    assert_eq!(neg001.provenance_class, ProvenanceClass::VendorClaimed);
+    assert_eq!(neg001.decision_provenance, ProvenanceClass::Policy);
+    assert_eq!(neg001.disposition, HypothesisDisposition::Disfavored);
     assert_eq!(
         neg001.revival_condition,
         "an official compatible SDK/product listing or a repeatable, owner-authorized, supportable capture surface."
@@ -535,9 +613,10 @@ fn test_seed_entries_and_golden_fixture() -> Result<(), Box<dyn Error>> {
     // Exact NEG-002 doctrine
     let neg002 = ledger.get("NEG-002").ok_or("NEG-002 missing from ledger")?;
     assert_eq!(neg002.decision, NegativeDecision::Reject);
-    assert_eq!(neg002.knowledge_state, KnowledgeState::Estimated);
-    assert_eq!(neg002.provenance_class, ProvenanceClass::Policy);
-    assert_eq!(neg002.disposition, HypothesisDisposition::Refuted);
+    assert_eq!(neg002.knowledge_state, KnowledgeState::Unknown);
+    assert_eq!(neg002.provenance_class, ProvenanceClass::VendorClaimed);
+    assert_eq!(neg002.decision_provenance, ProvenanceClass::Policy);
+    assert_eq!(neg002.disposition, HypothesisDisposition::Disfavored);
     assert_eq!(
         neg002.revival_condition,
         "official local API/profile support or a qualified owner-authorized adapter matrix."
@@ -547,9 +626,10 @@ fn test_seed_entries_and_golden_fixture() -> Result<(), Box<dyn Error>> {
     // Exact NEG-003 doctrine
     let neg003 = ledger.get("NEG-003").ok_or("NEG-003 missing from ledger")?;
     assert_eq!(neg003.decision, NegativeDecision::Reject);
-    assert_eq!(neg003.knowledge_state, KnowledgeState::Estimated);
-    assert_eq!(neg003.provenance_class, ProvenanceClass::Policy);
-    assert_eq!(neg003.disposition, HypothesisDisposition::Refuted);
+    assert_eq!(neg003.knowledge_state, KnowledgeState::Unknown);
+    assert_eq!(neg003.provenance_class, ProvenanceClass::VendorClaimed);
+    assert_eq!(neg003.decision_provenance, ProvenanceClass::Policy);
+    assert_eq!(neg003.disposition, HypothesisDisposition::Disfavored);
     assert_eq!(
         neg003.revival_condition,
         "a candidate passes every task, license, cost, privacy, and deterministic boundary against the decomposed incumbent under the same workload."
@@ -564,7 +644,7 @@ fn test_seed_entries_and_golden_fixture() -> Result<(), Box<dyn Error>> {
     assert_eq!(decoded, ledger);
 
     // Golden fixture file: bit-level stability assert
-    let fixture_bytes = include_bytes!("../../../tests/fixtures/negative_evidence_ledger_v1.bin");
+    let fixture_bytes = include_bytes!("../../../tests/fixtures/negative_evidence_ledger_v2.bin");
     assert_eq!(
         &binary_bytes[..],
         &fixture_bytes[..],
@@ -631,6 +711,41 @@ fn test_seed_entries_and_golden_fixture() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn test_planted_bypass_of_new_fields_moves_the_pin() -> Result<(), Box<dyn Error>> {
+    // Each field alone either moves the pinned digest or fails verification.
+    let decision_text = seeds_with(0, |e| e.decision_text.push_str(" (altered)"))?;
+    assert!(matches!(&decision_text, Ok(d) if d != INITIAL_NEGATIVE_EVIDENCE_LEDGER_DIGEST));
+
+    let supersedes = seeds_with(1, |e| e.supersedes = Some("NEG-001".to_string()))?;
+    assert!(matches!(&supersedes, Ok(d) if d != INITIAL_NEGATIVE_EVIDENCE_LEDGER_DIGEST));
+
+    let claimed = seeds_with(0, |e| e.claimed_domain = "domain:altered".to_string())?;
+    assert_eq!(
+        claimed.err().map(|e| e.error_id()),
+        Some("ERR-NEG-UNCERTIFIED-COVERAGE-001")
+    );
+
+    let source = seeds_with(2, |e| {
+        e.certification = EvidenceCertification::NotLocallyCertified {
+            source: "docs/NEGATIVE_EVIDENCE.md altered".to_string(),
+        };
+    })?;
+    assert!(matches!(&source, Ok(d) if d != INITIAL_NEGATIVE_EVIDENCE_LEDGER_DIGEST));
+
+    let relabelled = seeds_with(2, |e| {
+        e.certification = EvidenceCertification::LocallyCertified
+    })?;
+    assert_eq!(
+        relabelled.err().map(|e| e.error_id()),
+        Some("ERR-NEG-COVERAGE-GAP-001")
+    );
+
+    let decision_provenance = seeds_with(0, |e| e.decision_provenance = ProvenanceClass::Derived)?;
+    assert!(matches!(&decision_provenance, Ok(d) if d != INITIAL_NEGATIVE_EVIDENCE_LEDGER_DIGEST));
+    Ok(())
+}
+
+#[test]
 fn test_seed_entries_match_doctrine_document_verbatim() -> Result<(), Box<dyn Error>> {
     let ledger = initial_negative_evidence_ledger()?;
     for entry in ledger.entries() {
@@ -671,6 +786,7 @@ fn test_seed_entries_are_truthfully_not_locally_certified() -> Result<(), Box<dy
         }
         assert_eq!(entry.setup.artifact_digest, None, "{id}");
         assert_eq!(entry.proof_hash, None, "{id}");
+        assert_eq!(entry.evidence_reference, None, "{id}");
         assert_eq!(entry.reproduction_command, NOT_LOCALLY_REPRODUCIBLE, "{id}");
         assert_eq!(entry.setup.command, NOT_LOCALLY_REPRODUCIBLE, "{id}");
         assert_eq!(
@@ -681,23 +797,36 @@ fn test_seed_entries_are_truthfully_not_locally_certified() -> Result<(), Box<dy
         assert_eq!(entry.coverage_witness.observed_generation, 0);
         assert!(!entry.coverage_witness.certifies_absence());
 
-        // Validation accepts exactly that: every non-Known knowledge state is admissible...
+        // Validation accepts exactly the states that need neither a certifying witness nor a
+        // declared basis...
         for state in [
-            KnowledgeState::Estimated,
             KnowledgeState::Unknown,
+            KnowledgeState::Estimated,
             KnowledgeState::Conflicted,
-            KnowledgeState::Stale,
             KnowledgeState::NotObservable,
-            KnowledgeState::Redacted,
-            KnowledgeState::Indeterminate,
             KnowledgeState::NotApplicable,
         ] {
             let mut variant = entry.clone();
             variant.knowledge_state = state;
             assert!(variant.validate().is_ok(), "{id} {state:?}");
         }
+        // ...states that need a basis (stale, redacted, indeterminate) are refused by the core
+        // knowledge-cell rule, since a ledger entry carries no basis...
+        for state in [
+            KnowledgeState::Stale,
+            KnowledgeState::Redacted,
+            KnowledgeState::Indeterminate,
+        ] {
+            let mut variant = entry.clone();
+            variant.knowledge_state = state;
+            assert_eq!(
+                variant.validate().err().map(|e| e.error_id()),
+                Some("ERR-NEG-VALIDATION-FAILED-001"),
+                "{id} {state:?}"
+            );
+        }
 
-        // ...but claiming Known or Observed without a certifying witness is refused.
+        // ...and claiming Known or Observed without a certifying witness is refused.
         let mut known = entry.clone();
         known.knowledge_state = KnowledgeState::Known;
         assert_eq!(
@@ -709,6 +838,16 @@ fn test_seed_entries_are_truthfully_not_locally_certified() -> Result<(), Box<dy
         assert_eq!(
             observed.validate().err().map(|e| e.error_id()),
             Some("ERR-NEG-MISSING-COVERAGE-001")
+        );
+
+        // The core knowledge-cell rule: derived provenance claiming estimated support needs
+        // evidence.
+        let mut derived = entry.clone();
+        derived.provenance_class = ProvenanceClass::Derived;
+        derived.knowledge_state = KnowledgeState::Estimated;
+        assert_eq!(
+            derived.validate().err().map(|e| e.error_id()),
+            Some("ERR-NEG-MISSING-PROOF-001")
         );
 
         // An uncertified entry cannot smuggle in a witness that claims observation.
@@ -739,29 +878,65 @@ fn test_seed_entries_are_truthfully_not_locally_certified() -> Result<(), Box<dy
 }
 
 #[test]
+fn test_locally_certified_entry_requires_proof_and_evidence_reference() -> Result<(), Box<dyn Error>>
+{
+    let mut no_proof = make_valid_entry("NEG-070", NegativeDecision::Reject);
+    no_proof.proof_hash = None;
+    assert_eq!(
+        no_proof.validate().err().map(|e| e.error_id()),
+        Some("ERR-NEG-MISSING-PROOF-001")
+    );
+
+    let mut no_reference = make_valid_entry("NEG-071", NegativeDecision::Reject);
+    no_reference.evidence_reference = None;
+    assert_eq!(
+        no_reference.validate().err().map(|e| e.error_id()),
+        Some("ERR-NEG-MISSING-PROOF-001")
+    );
+
+    let mut blank_reference = make_valid_entry("NEG-072", NegativeDecision::Reject);
+    blank_reference.evidence_reference = Some("  ".to_string());
+    assert_eq!(
+        blank_reference.validate().err().map(|e| e.error_id()),
+        Some("ERR-NEG-VALIDATION-FAILED-001")
+    );
+
+    let mut ledger = initial_negative_evidence_ledger()?;
+    assert!(ledger.append(no_proof).is_err());
+    assert!(ledger.append(no_reference).is_err());
+    assert!(
+        ledger
+            .append(make_valid_entry("NEG-073", NegativeDecision::Reject))
+            .is_ok()
+    );
+    Ok(())
+}
+
+#[test]
 fn test_witness_must_be_bound_to_its_entry() -> Result<(), Box<dyn Error>> {
     // NEG-005 carrying a certifying witness for NEG-001 over an unrelated domain.
-    let unrelated = BTreeSet::from(["domain:unrelated:thermal-camera".to_string()]);
+    let unrelated = "domain:unrelated:thermal-camera";
     let mut foreign = make_valid_witness("NEG-001");
-    foreign.authorized_domain = unrelated.clone();
-    foreign.observed_domain = unrelated.clone();
+    foreign.authorized_domain = BTreeSet::from([unrelated.to_string()]);
+    foreign.observed_domain = BTreeSet::from([unrelated.to_string()]);
+    foreign.negative_predicate = negative_predicate_for(unrelated, "NEG-001");
     assert!(foreign.certifies_absence());
 
     let mut entry = make_valid_entry("NEG-005", NegativeDecision::Reject);
     entry.coverage_witness = foreign;
     let expected = NegativeEvidenceError::WitnessNotBound {
         neg_id: "NEG-005".to_string(),
-        detail: "negative predicate 'architectural-violation-absence:NEG-001' names 'NEG-001', not this entry".to_string(),
+        detail: "negative predicate 'absence-certified:domain:unrelated:thermal-camera:NEG-001' must be exactly 'absence-certified:domain:negative-evidence:architectural-constraints:NEG-005'".to_string(),
     };
     assert_eq!(entry.validate(), Err(expected.clone()));
     assert_eq!(expected.error_id(), "ERR-NEG-UNCERTIFIED-COVERAGE-001");
     let mut ledger = initial_negative_evidence_ledger()?;
     assert_eq!(ledger.append(entry), Err(expected));
 
-    // Predicate names the entry, but the witness covers an unrelated domain.
+    // Predicate names the entry and claimed domain, but the witness covers an unrelated domain.
     let mut wrong_domain = make_valid_entry("NEG-005", NegativeDecision::Reject);
-    wrong_domain.coverage_witness.authorized_domain = unrelated.clone();
-    wrong_domain.coverage_witness.observed_domain = unrelated;
+    wrong_domain.coverage_witness.authorized_domain = BTreeSet::from([unrelated.to_string()]);
+    wrong_domain.coverage_witness.observed_domain = BTreeSet::from([unrelated.to_string()]);
     assert_eq!(
         wrong_domain.validate(),
         Err(NegativeEvidenceError::WitnessNotBound {
@@ -770,13 +945,42 @@ fn test_witness_must_be_bound_to_its_entry() -> Result<(), Box<dyn Error>> {
         })
     );
 
-    // A predicate naming an identifier that merely starts with this one is not bound.
-    let mut prefix = make_valid_entry("NEG-005", NegativeDecision::Reject);
-    prefix.coverage_witness.negative_predicate = "architectural-violation-absence:NEG-0050".into();
+    // A witness covering the claimed domain plus more is not exactly the claimed domain.
+    let mut wider = make_valid_entry("NEG-005", NegativeDecision::Reject);
+    let both = BTreeSet::from([TEST_DOMAIN.to_string(), unrelated.to_string()]);
+    wider.coverage_witness.authorized_domain = both.clone();
+    wider.coverage_witness.observed_domain = both;
     assert_eq!(
-        prefix.validate().err().map(|e| e.error_id()),
+        wider.validate().err().map(|e| e.error_id()),
         Some("ERR-NEG-UNCERTIFIED-COVERAGE-001")
     );
+    Ok(())
+}
+
+#[test]
+fn test_negative_predicate_grammar_is_exact() -> Result<(), Box<dyn Error>> {
+    let entry = make_valid_entry("NEG-005", NegativeDecision::Reject);
+    assert_eq!(
+        entry.expected_negative_predicate(),
+        "absence-certified:domain:negative-evidence:architectural-constraints:NEG-005"
+    );
+    for predicate in [
+        // Only the last ':' segment matches: the old, looser binding would have accepted these.
+        "architectural-violation-absence:NEG-005",
+        "absence-certified:domain:other:NEG-005",
+        "anything:NEG-005",
+        // A near miss in the identifier or the prefix.
+        "absence-certified:domain:negative-evidence:architectural-constraints:NEG-0050",
+        "absence-certified :domain:negative-evidence:architectural-constraints:NEG-005",
+    ] {
+        let mut variant = entry.clone();
+        variant.coverage_witness.negative_predicate = predicate.to_string();
+        assert_eq!(
+            variant.validate().err().map(|e| e.error_id()),
+            Some("ERR-NEG-UNCERTIFIED-COVERAGE-001"),
+            "{predicate}"
+        );
+    }
     Ok(())
 }
 
@@ -816,6 +1020,51 @@ fn test_decode_refuses_non_canonical_failure_domain_sets() -> Result<(), Box<dyn
             "{case}"
         );
         assert_eq!(err.error_id(), "ERR-NEG-NON-CANONICAL-ORDER-001");
+    }
+    Ok(())
+}
+
+#[test]
+fn test_decode_errors_map_to_specific_identities() -> Result<(), Box<dyn Error>> {
+    let mut ledger = NegativeEvidenceLedger::new();
+    ledger.append(make_valid_entry("NEG-010", NegativeDecision::Reject))?;
+    let bytes = ledger.encode_canonical()?;
+    let block = entry_blocks(&bytes)?
+        .first()
+        .cloned()
+        .ok_or("missing entry block")?;
+
+    // Failure-domain count of u32::MAX.
+    let mut count_pattern = 2u32.to_be_bytes().to_vec();
+    count_pattern.extend_from_slice(&text_encoding("domain-a"));
+    let pos = find(&block, &count_pattern).ok_or("domain count not found")?;
+    let mut huge_count = block.clone();
+    huge_count[pos..pos + 4].copy_from_slice(&u32::MAX.to_be_bytes());
+
+    // Unknown decision tag (Reject = 1 follows the measured result).
+    let mut decision_pattern = text_encoding("Measured result for NEG-010");
+    decision_pattern.push(1u8);
+    let pos = find(&block, &decision_pattern).ok_or("decision tag not found")?;
+    let mut bad_tag = block.clone();
+    bad_tag[pos + decision_pattern.len() - 1] = 9;
+
+    // Entry block cut short inside its own declared length.
+    let mut cut_short = block.clone();
+    cut_short.truncate(block.len() - 1);
+
+    for (case, mutated) in [
+        ("u32::MAX failure-domain count", huge_count),
+        ("unknown decision tag", bad_tag),
+        ("entry truncated inside its block", cut_short),
+    ] {
+        let err = NegativeEvidenceLedger::decode_canonical(&assemble(&[mutated], &[])?)
+            .err()
+            .ok_or_else(|| format!("{case} must be refused"))?;
+        assert!(
+            matches!(err, NegativeEvidenceError::MalformedEntry { .. }),
+            "{case}: {err:?}"
+        );
+        assert_eq!(err.error_id(), "ERR-NEG-MALFORMED-ENTRY-001", "{case}");
     }
     Ok(())
 }
@@ -923,6 +1172,67 @@ fn test_error_identities_are_specific() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn test_identifier_aliases_are_refused() -> Result<(), Box<dyn Error>> {
+    // Aliases of canonical identifiers (too short, or zero-padded beyond three digits).
+    for alias in ["NEG-01", "NEG-1", "NEG-0001", "NEG-01000", "NEG-00"] {
+        let mut entry = make_valid_entry("NEG-004", NegativeDecision::Reject);
+        entry.neg_id = alias.to_string();
+        entry.coverage_witness.negative_predicate = entry.expected_negative_predicate();
+        entry.evidence_reference = Some(format!("proof-bundle:{alias}"));
+        assert_eq!(
+            entry.validate().err().map(|e| e.error_id()),
+            Some("ERR-NEG-VALIDATION-FAILED-001"),
+            "{alias}"
+        );
+        // Neither NEG-01 nor NEG-1 may slip in after NEG-003.
+        let mut ledger = initial_negative_evidence_ledger()?;
+        assert!(ledger.append(entry).is_err(), "{alias}");
+    }
+    for canonical in ["NEG-000", "NEG-999", "NEG-1000", "NEG-12345"] {
+        let entry = make_valid_entry(canonical, NegativeDecision::Reject);
+        assert!(entry.validate().is_ok(), "{canonical}");
+    }
+    Ok(())
+}
+
+#[test]
+fn test_identifiers_order_numerically() -> Result<(), Box<dyn Error>> {
+    let mut ledger = initial_negative_evidence_ledger()?;
+    ledger.append(make_valid_entry("NEG-999", NegativeDecision::Reject))?;
+    ledger.append(make_valid_entry("NEG-1000", NegativeDecision::Reject))?;
+    let decoded = NegativeEvidenceLedger::decode_canonical(&ledger.encode_canonical()?)?;
+    assert_eq!(decoded, ledger);
+
+    let mut reversed = initial_negative_evidence_ledger()?;
+    reversed.append(make_valid_entry("NEG-1000", NegativeDecision::Reject))?;
+    assert_eq!(
+        reversed.append(make_valid_entry("NEG-999", NegativeDecision::Reject)),
+        Err(NegativeEvidenceError::NonCanonicalOrder {
+            prior: "NEG-1000".to_string(),
+            current: "NEG-999".to_string(),
+        })
+    );
+
+    // The decode path orders numerically too.
+    let blocks = entry_blocks(&ledger.encode_canonical()?)?;
+    let swapped = vec![
+        blocks[0].clone(),
+        blocks[1].clone(),
+        blocks[2].clone(),
+        blocks[4].clone(),
+        blocks[3].clone(),
+    ];
+    assert_eq!(
+        NegativeEvidenceLedger::decode_canonical(&assemble(&swapped, &[])?),
+        Err(NegativeEvidenceError::NonCanonicalOrder {
+            prior: "NEG-1000".to_string(),
+            current: "NEG-999".to_string(),
+        })
+    );
+    Ok(())
+}
+
+#[test]
 fn test_supersession_is_linked_and_append_only() -> Result<(), Box<dyn Error>> {
     let initial = initial_negative_evidence_ledger()?;
     let mut ledger = initial.clone();
@@ -948,7 +1258,7 @@ fn test_supersession_is_linked_and_append_only() -> Result<(), Box<dyn Error>> {
     );
 
     // A link to itself or to a later entry is refused.
-    for target in ["NEG-006", "NEG-007"] {
+    for target in ["NEG-006", "NEG-007", "NEG-1000"] {
         let mut forward = make_valid_entry("NEG-006", NegativeDecision::Reject);
         forward.supersedes = Some(target.to_string());
         assert_eq!(
@@ -963,6 +1273,7 @@ fn test_supersession_is_linked_and_append_only() -> Result<(), Box<dyn Error>> {
 #[test]
 fn test_revival_requires_immutable_certified_evidence_row() -> Result<(), Box<dyn Error>> {
     let mut ledger = initial_negative_evidence_ledger()?;
+    let neg001 = entry_of(&ledger, "NEG-001")?;
     let unmet = |ledger: &NegativeEvidenceLedger, target: &str, evidence: &str| match ledger
         .verify_revival_condition(target, evidence)
     {
@@ -975,21 +1286,22 @@ fn test_revival_requires_immutable_certified_evidence_row() -> Result<(), Box<dy
         "no immutable evidence row 'NEG-004' exists in this ledger"
     );
 
-    ledger.append(revival_evidence("NEG-004", "NEG-002"))?;
+    let neg002 = entry_of(&ledger, "NEG-002")?;
+    ledger.append(revival_evidence("NEG-004", &neg002))?;
     assert_eq!(
         unmet(&ledger, "NEG-001", "NEG-004")?,
         "evidence row 'NEG-004' does not supersede 'NEG-001'"
     );
 
-    let mut no_proof = revival_evidence("NEG-005", "NEG-001");
+    // A locally certified row without a proof hash cannot even be appended.
+    let mut no_proof = revival_evidence("NEG-005", &neg001);
     no_proof.proof_hash = None;
-    ledger.append(no_proof)?;
     assert_eq!(
-        unmet(&ledger, "NEG-001", "NEG-005")?,
-        "evidence row 'NEG-005' carries no proof hash"
+        ledger.append(no_proof).err().map(|e| e.error_id()),
+        Some("ERR-NEG-MISSING-PROOF-001")
     );
 
-    let mut still_refuted = revival_evidence("NEG-006", "NEG-001");
+    let mut still_refuted = revival_evidence("NEG-006", &neg001);
     still_refuted.disposition = HypothesisDisposition::Refuted;
     ledger.append(still_refuted)?;
     assert_eq!(
@@ -997,7 +1309,7 @@ fn test_revival_requires_immutable_certified_evidence_row() -> Result<(), Box<dy
         "evidence row 'NEG-006' records disposition 'refuted'; revival requires 'supported'"
     );
 
-    ledger.append(revival_evidence("NEG-007", "NEG-001"))?;
+    ledger.append(revival_evidence("NEG-007", &neg001))?;
     assert!(
         ledger
             .verify_revival_condition("NEG-001", "NEG-007")
@@ -1005,11 +1317,12 @@ fn test_revival_requires_immutable_certified_evidence_row() -> Result<(), Box<dy
     );
 
     // Evidence that was never locally certified cannot revive a constraint.
-    let mut external = ledger.get("NEG-003").ok_or("NEG-003 missing")?.clone();
+    let mut external = entry_of(&ledger, "NEG-003")?;
     external.neg_id = "NEG-008".to_string();
+    external.hypothesis = neg001.hypothesis.clone();
     external.supersedes = Some("NEG-001".to_string());
     external.disposition = HypothesisDisposition::Supported;
-    external.coverage_witness.negative_predicate = "architectural-violation-absence:NEG-008".into();
+    external.coverage_witness.negative_predicate = external.expected_negative_predicate();
     external.proof_hash = Some(ContentDigest::sha256(b"external-report"));
     ledger.append(external)?;
     assert_eq!(
@@ -1017,26 +1330,44 @@ fn test_revival_requires_immutable_certified_evidence_row() -> Result<(), Box<dy
         "evidence row 'NEG-008' is not locally certified"
     );
 
+    // Operator-asserted evidence is not locally observed or derived.
+    let mut asserted = revival_evidence("NEG-009", &neg001);
+    asserted.provenance_class = ProvenanceClass::OperatorAsserted;
+    ledger.append(asserted)?;
+    assert_eq!(
+        unmet(&ledger, "NEG-001", "NEG-009")?,
+        "evidence row 'NEG-009' has 'operator_asserted' provenance; revival requires locally observed or derived evidence"
+    );
+
+    // Evidence re-testing a different hypothesis is not bound to the revival condition.
+    let mut unrelated = revival_evidence("NEG-010", &neg001);
+    unrelated.hypothesis = "a different proposition".to_string();
+    ledger.append(unrelated)?;
+    assert_eq!(
+        unmet(&ledger, "NEG-001", "NEG-010")?,
+        "evidence row 'NEG-010' tests a different hypothesis than 'NEG-001'"
+    );
+
     // Tombstone state and disposition of the target are respected.
-    let mut tombstoned = make_valid_entry("NEG-009", NegativeDecision::Reject);
+    let mut tombstoned = make_valid_entry("NEG-011", NegativeDecision::Reject);
     tombstoned.is_tombstone = true;
     tombstoned.tombstone_reason = Some(TombstoneReason::Superseded);
-    ledger.append(tombstoned)?;
-    ledger.append(revival_evidence("NEG-010", "NEG-009"))?;
+    ledger.append(tombstoned.clone())?;
+    ledger.append(revival_evidence("NEG-012", &tombstoned))?;
     assert_eq!(
-        ledger.verify_revival_condition("NEG-009", "NEG-010"),
+        ledger.verify_revival_condition("NEG-011", "NEG-012"),
         Err(NegativeEvidenceError::EntryTombstoned {
-            neg_id: "NEG-009".to_string()
+            neg_id: "NEG-011".to_string()
         })
     );
 
-    let mut superseded = make_valid_entry("NEG-011", NegativeDecision::Reject);
+    let mut superseded = make_valid_entry("NEG-013", NegativeDecision::Reject);
     superseded.disposition = HypothesisDisposition::Superseded;
-    ledger.append(superseded)?;
-    ledger.append(revival_evidence("NEG-012", "NEG-011"))?;
+    ledger.append(superseded.clone())?;
+    ledger.append(revival_evidence("NEG-014", &superseded))?;
     assert_eq!(
         ledger
-            .verify_revival_condition("NEG-011", "NEG-012")
+            .verify_revival_condition("NEG-013", "NEG-014")
             .err()
             .map(|e| e.error_id()),
         Some("ERR-NEG-VALIDATION-FAILED-001")
@@ -1048,6 +1379,59 @@ fn test_revival_requires_immutable_certified_evidence_row() -> Result<(), Box<dy
             .err()
             .map(|e| e.error_id()),
         Some("ERR-NEG-VALIDATION-FAILED-001")
+    );
+    Ok(())
+}
+
+#[test]
+fn test_revival_requires_the_head_of_the_supersession_chain() -> Result<(), Box<dyn Error>> {
+    let mut ledger = initial_negative_evidence_ledger()?;
+    let neg001 = entry_of(&ledger, "NEG-001")?;
+
+    // NEG-004 supersedes NEG-001 as supported ...
+    let supporting = revival_evidence("NEG-004", &neg001);
+    ledger.append(supporting.clone())?;
+    assert!(
+        ledger
+            .verify_revival_condition("NEG-001", "NEG-004")
+            .is_ok()
+    );
+
+    // ... then NEG-005 supersedes NEG-004 as refuted: NEG-004 no longer revives NEG-001.
+    let mut refuting = revival_evidence("NEG-005", &supporting);
+    refuting.disposition = HypothesisDisposition::Refuted;
+    ledger.append(refuting)?;
+    match ledger.verify_revival_condition("NEG-001", "NEG-004") {
+        Err(NegativeEvidenceError::RevivalConditionUnmet { reason, .. }) => assert_eq!(
+            reason,
+            "evidence row 'NEG-004' is superseded by 'NEG-005' and is not the head of its supersession chain"
+        ),
+        other => return Err(format!("expected unmet revival, got {other:?}").into()),
+    }
+
+    // An unrelated operator-asserted row cannot revive NEG-002.
+    let neg002 = entry_of(&ledger, "NEG-002")?;
+    let mut asserted = make_valid_entry("NEG-006", NegativeDecision::Revisit);
+    asserted.supersedes = Some("NEG-002".to_string());
+    asserted.provenance_class = ProvenanceClass::OperatorAsserted;
+    asserted.disposition = HypothesisDisposition::Supported;
+    ledger.append(asserted)?;
+    assert_eq!(
+        ledger
+            .verify_revival_condition("NEG-002", "NEG-006")
+            .err()
+            .map(|e| e.error_id()),
+        Some("ERR-NEG-REVIVAL-UNMET-001")
+    );
+    let mut matching = revival_evidence("NEG-007", &neg002);
+    matching.provenance_class = ProvenanceClass::OperatorAsserted;
+    ledger.append(matching)?;
+    assert_eq!(
+        ledger
+            .verify_revival_condition("NEG-002", "NEG-007")
+            .err()
+            .map(|e| e.error_id()),
+        Some("ERR-NEG-REVIVAL-UNMET-001")
     );
     Ok(())
 }
@@ -1150,6 +1534,12 @@ fn test_neg001_scenario_log_bridge() -> Result<(), Box<dyn Error>> {
     assert!(entry.validate().is_ok());
     assert_eq!(entry.date_commit, "2026-09-12 run-neg001-test");
     assert_eq!(entry.hypothesis, doctrine_field("NEG-001", "Hypothesis")?);
+    assert_eq!(entry.provenance_class, ProvenanceClass::Observed);
+    assert_eq!(entry.decision_provenance, ProvenanceClass::Policy);
+    assert_eq!(
+        entry.evidence_reference.as_deref(),
+        Some("fss.negative_evidence.scenario_log.v1:run-neg001-test")
+    );
     assert!(
         entry
             .measured_result

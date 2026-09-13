@@ -13,18 +13,27 @@
 //! 4. Initial seed entries for NEG-001, NEG-002, and NEG-003 preserved verbatim from
 //!    `docs/NEGATIVE_EVIDENCE.md` with normative decisions (`Narrow`, `Reject`, `Reject`) and
 //!    explicit revival conditions. The seeds were recorded by architecture research, not by a
-//!    local experiment, so they are [`EvidenceCertification::NotLocallyCertified`]: they carry an
-//!    explicitly uncovered witness, a non-`Known` knowledge state, and no artifact or proof digest.
-//! 5. A certifying witness is bound to its claim: the negative predicate names the entry and the
-//!    witness domain equals the entry's claimed domain.
-//! 6. Supersession is linked (`supersedes`) and append-only; revival requires an immutable,
-//!    locally certified evidence row in the ledger that supersedes the target.
-//! 7. Unknown format versions refuse; never guess.
+//!    local experiment ("does not establish"), so they are
+//!    [`EvidenceCertification::NotLocallyCertified`], `unknown`, and `disfavored`, with a
+//!    `vendor_claimed` finding, a `policy` decision, an explicitly uncovered witness, and no
+//!    artifact or proof digest.
+//! 5. A certifying witness is bound to its claim: its negative predicate is exactly
+//!    `absence-certified:<claimed_domain>:<NEG-id>` and its domain is exactly the claimed domain.
+//!    A locally certified entry also carries a proof hash and a retained evidence reference, and
+//!    every entry satisfies the core [`KnowledgeCell`] rule.
+//! 6. Stable IDs are canonical (`NEG-` plus at least three digits, no leading zeros beyond that
+//!    width) and ordered by numeric value.
+//! 7. Supersession is linked (`supersedes`) and append-only; revival requires the head of the
+//!    evidence chain to be an immutable, locally observed or derived, proven row that re-tests the
+//!    target's hypothesis and records it as supported.
+//! 8. Tombstoning never exempts a record from validation.
+//! 9. Unknown format versions refuse; never guess.
 
 use core::fmt;
 use std::collections::BTreeSet;
 
 use crate::acquisition::Neg001ScenarioLog;
+use crate::agent::KnowledgeCell;
 use crate::contract::{
     Completeness, HypothesisDisposition, KnowledgeState, Plane, ProvenanceClass,
 };
@@ -46,11 +55,15 @@ pub const SCHEMA_NEGATIVE_EVIDENCE_LEDGER: &str = "fss.negative_evidence.ledger.
 pub const NEGATIVE_EVIDENCE_LEDGER_MAGIC: [u8; 8] = *b"FSSNEG01";
 
 /// Current format version for negative-evidence binary ledgers.
-pub const NEGATIVE_EVIDENCE_FORMAT_VERSION: u32 = 1;
+///
+/// Version 1 was the pre-review layout (26f027a). Version 2 adds decision text, decision
+/// provenance, claimed domain, certification, supersession link, and evidence reference; a
+/// version 1 ledger is refused as an unknown version.
+pub const NEGATIVE_EVIDENCE_FORMAT_VERSION: u32 = 2;
 
 /// Pinned freeze digest of the initial canonical binary negative-evidence ledger containing NEG-001, NEG-002, and NEG-003.
 pub const INITIAL_NEGATIVE_EVIDENCE_LEDGER_DIGEST: &str =
-    "sha256:557329d6f2f5088a589fa2a1e2dab5b474b8964c68c6dcda9eb5ea75d32fc870";
+    "sha256:4f181f09bf03b0e6619b406d2c6dc87e5a620a7e359ab6545413d7083974a1a1";
 
 /// Maximum number of negative evidence entries in a single ledger.
 pub const MAX_NEGATIVE_ENTRIES: usize = 1024;
@@ -73,8 +86,11 @@ pub const MAX_LEDGER_BYTES: usize = 4 * 1024 * 1024;
 /// Minimum byte size of a canonical binary ledger header + trailer (8 magic + 4 ver + 4 count + 32 checksum = 48 bytes).
 pub const MIN_LEDGER_BINARY_BYTES: usize = 48;
 
-/// Maximum number of coverage domain labels an entry may claim.
-pub const MAX_CLAIMED_DOMAINS: usize = 64;
+/// Maximum number of digits in a stable identifier (keeps its numeric value within `u64`).
+pub const MAX_NEG_ID_DIGITS: usize = 18;
+
+/// Leading token of every negative predicate: `absence-certified:<claimed_domain>:<NEG-id>`.
+pub const NEGATIVE_PREDICATE_PREFIX: &str = "absence-certified";
 
 /// Reproduction command recorded when a result cannot be reproduced by a local command.
 pub const NOT_LOCALLY_REPRODUCIBLE: &str = "not-locally-reproducible";
@@ -355,15 +371,17 @@ pub struct NegativeEvidenceEntry {
     pub revival_condition: String,
     /// Epistemic state (preserved as orthogonal field, never flattened into confidence).
     pub knowledge_state: KnowledgeState,
-    /// Provenance classification (preserved as orthogonal field).
+    /// Provenance of the finding / measured result (preserved as orthogonal field).
     pub provenance_class: ProvenanceClass,
+    /// Provenance of the decision, recorded separately from that of the finding.
+    pub decision_provenance: ProvenanceClass,
     /// Hypothesis disposition within investigation.
     pub disposition: HypothesisDisposition,
     /// Coverage witness; certifying and bound to this entry when locally certified, explicitly
     /// uncovered otherwise. Absence during a gap is NEVER evidence.
     pub coverage_witness: CoverageWitness,
-    /// Domain over which this entry claims absence; the witness domain must equal it.
-    pub claimed_domain: BTreeSet<String>,
+    /// Domain over which this entry claims absence; the witness domain must be exactly it.
+    pub claimed_domain: String,
     /// How the absence claim is established.
     pub certification: EvidenceCertification,
     /// Earlier entry that this entry supersedes (linked, append-only supersession).
@@ -372,8 +390,11 @@ pub struct NegativeEvidenceEntry {
     pub is_tombstone: bool,
     /// Semantic tombstone reason if tombstoned.
     pub tombstone_reason: Option<TombstoneReason>,
-    /// Digest of a retained proof artifact binding the result, when one exists.
+    /// Digest of a retained proof artifact binding the result; required when locally certified.
     pub proof_hash: Option<ContentDigest>,
+    /// Secret-free handle of the retained evidence the proof hash binds; required when locally
+    /// certified.
+    pub evidence_reference: Option<String>,
     /// Secret-free reproduction command, or [`NOT_LOCALLY_REPRODUCIBLE`].
     pub reproduction_command: String,
 }
@@ -427,15 +448,17 @@ impl NegativeEvidenceEntry {
             shared_failure_domains: label_set(doctrine.failure_domains),
             revival_condition: doctrine.revival_condition.to_string(),
             knowledge_state: KnowledgeState::Known,
-            provenance_class: ProvenanceClass::Policy,
+            provenance_class: ProvenanceClass::Observed,
+            decision_provenance: ProvenanceClass::Policy,
             disposition: HypothesisDisposition::Refuted,
             coverage_witness,
-            claimed_domain: label_set(&[ARCHITECTURAL_CONSTRAINTS_DOMAIN]),
+            claimed_domain: ARCHITECTURAL_CONSTRAINTS_DOMAIN.to_string(),
             certification: EvidenceCertification::LocallyCertified,
             supersedes: None,
             is_tombstone: false,
             tombstone_reason: None,
             proof_hash: Some(log.proof_hash),
+            evidence_reference: Some(format!("{}:{}", log.schema_version, log.run_id)),
             reproduction_command: log.reproduction_command.clone(),
         };
         entry.validate()?;
@@ -466,27 +489,21 @@ impl NegativeEvidenceEntry {
             &self.shared_failure_domains,
             MAX_FAILURE_DOMAINS,
         )?;
-        validate_label_set("claimed_domain", &self.claimed_domain, MAX_CLAIMED_DOMAINS)?;
-        if self.claimed_domain.is_empty() {
-            return Err(NegativeEvidenceError::Validation {
-                detail: format!(
-                    "entry '{}' must claim at least one coverage domain",
-                    self.neg_id
-                ),
-            });
+        validate_label("claimed_domain", &self.claimed_domain)?;
+        if let Some(reference) = &self.evidence_reference {
+            require_text("evidence_reference", reference)?;
         }
 
         // Supersession is linked and append-only: the link must name an earlier entry.
-        if let Some(target) = &self.supersedes {
-            validate_neg_id("supersedes", target)?;
-            if target.as_str() >= self.neg_id.as_str() {
-                return Err(NegativeEvidenceError::Validation {
-                    detail: format!(
-                        "entry '{}' supersedes '{target}', which is not an earlier entry",
-                        self.neg_id
-                    ),
-                });
-            }
+        if let Some(target) = &self.supersedes
+            && neg_id_value("supersedes", target)? >= neg_id_value("neg_id", &self.neg_id)?
+        {
+            return Err(NegativeEvidenceError::Validation {
+                detail: format!(
+                    "entry '{}' supersedes '{target}', which is not an earlier entry",
+                    self.neg_id
+                ),
+            });
         }
 
         // Tombstone consistency; every accepted tombstone reason must round-trip canonically.
@@ -519,12 +536,10 @@ impl NegativeEvidenceEntry {
             _ => {}
         }
 
-        // Absence during a gap or uncertified domain is NEVER evidence.
-        if !self.is_tombstone {
-            self.validate_certification()?;
-        }
-
-        Ok(())
+        // Absence during a gap or uncertified domain is NEVER evidence. Tombstoning keeps the
+        // original record immutable, so it is certified exactly as when it was active.
+        self.validate_certification()?;
+        self.validate_knowledge_cell()
     }
 
     fn validate_certification(&self) -> Result<(), NegativeEvidenceError> {
@@ -547,6 +562,14 @@ impl NegativeEvidenceEntry {
                             witness.continuity,
                             witness.completeness,
                             witness.stop_reason,
+                        ),
+                    });
+                }
+                if self.proof_hash.is_none() || self.evidence_reference.is_none() {
+                    return Err(NegativeEvidenceError::MissingProof {
+                        detail: format!(
+                            "locally certified entry '{}' must carry a proof hash and a retained evidence reference",
+                            self.neg_id
                         ),
                     });
                 }
@@ -588,31 +611,74 @@ impl NegativeEvidenceEntry {
         self.check_witness_binding()
     }
 
-    /// Binds the witness to this entry's claim: the negative predicate must name this entry and
-    /// the witness domain must equal the entry's claimed domain.
+    /// Returns the exact negative predicate a witness for this entry must carry.
+    #[must_use]
+    pub fn expected_negative_predicate(&self) -> String {
+        negative_predicate_for(&self.claimed_domain, &self.neg_id)
+    }
+
+    /// Binds the witness to this entry's claim: the negative predicate must be exactly
+    /// `absence-certified:<claimed_domain>:<NEG-id>` and the witness domain exactly the claimed
+    /// domain.
     fn check_witness_binding(&self) -> Result<(), NegativeEvidenceError> {
         let witness = &self.coverage_witness;
-        let named = witness.negative_predicate.rsplit(':').next().unwrap_or("");
-        if named != self.neg_id {
+        let expected = self.expected_negative_predicate();
+        if witness.negative_predicate != expected {
             return Err(NegativeEvidenceError::WitnessNotBound {
                 neg_id: self.neg_id.clone(),
                 detail: format!(
-                    "negative predicate '{}' names '{named}', not this entry",
+                    "negative predicate '{}' must be exactly '{expected}'",
                     witness.negative_predicate
                 ),
             });
         }
-        if witness.authorized_domain != self.claimed_domain {
+        if witness.authorized_domain.len() != 1
+            || !witness.authorized_domain.contains(&self.claimed_domain)
+        {
             return Err(NegativeEvidenceError::WitnessNotBound {
                 neg_id: self.neg_id.clone(),
                 detail: format!(
                     "witness domain {{{}}} does not match claimed domain {{{}}}",
                     join_labels(&witness.authorized_domain),
-                    join_labels(&self.claimed_domain)
+                    self.claimed_domain
                 ),
             });
         }
         Ok(())
+    }
+
+    /// Applies the core [`KnowledgeCell`] rule to the entry's finding: observed or derived
+    /// provenance claiming present support needs evidence, and states that need a basis
+    /// (stale, redacted, indeterminate) are refused because a ledger entry carries none.
+    fn validate_knowledge_cell(&self) -> Result<(), NegativeEvidenceError> {
+        let cell = KnowledgeCell {
+            claim_id: self.neg_id.clone(),
+            statement: self.measured_result.clone(),
+            knowledge_state: self.knowledge_state,
+            provenance: self.provenance_class,
+            hypothesis: Some(self.disposition),
+            evidence: self.proof_hash.into_iter().collect(),
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: None,
+        };
+        cell.validate().map_err(|err| match err {
+            ContractError::EvidenceRequired => NegativeEvidenceError::MissingProof {
+                detail: format!(
+                    "entry '{}' claims '{}' with '{}' provenance but carries no evidence",
+                    self.neg_id,
+                    self.knowledge_state.as_str(),
+                    provenance_class_as_str(self.provenance_class)
+                ),
+            },
+            other => NegativeEvidenceError::Validation {
+                detail: format!(
+                    "entry '{}' violates the knowledge-cell rule for state '{}': {other}",
+                    self.neg_id,
+                    self.knowledge_state.as_str()
+                ),
+            },
+        })
     }
 
     /// Converts this entry into an [`EvidenceDelta`] for canonical ledger publication.
@@ -670,9 +736,13 @@ impl NegativeEvidenceEntry {
                 format!("\"{}\"", escape_json(source))
             }
         };
+        let evidence_reference_str = match &self.evidence_reference {
+            Some(reference) => format!("\"{}\"", escape_json(reference)),
+            None => "null".to_string(),
+        };
 
         format!(
-            "{{\"negId\":\"{}\",\"dateCommit\":\"{}\",\"hypothesis\":\"{}\",\"reasoning\":\"{}\",\"setup\":{{\"corpus\":\"{}\",\"deviceModel\":\"{}\",\"firmwareVersion\":\"{}\",\"platform\":\"{}\",\"policy\":\"{}\",\"command\":\"{}\",\"artifactDigest\":{}}},\"measuredResult\":\"{}\",\"decision\":\"{}\",\"decisionText\":\"{}\",\"sharedFailureDomains\":{},\"revivalCondition\":\"{}\",\"knowledgeState\":\"{}\",\"provenanceClass\":\"{}\",\"disposition\":\"{}\",\"claimedDomain\":{},\"certification\":\"{}\",\"certificationSource\":{},\"witnessCertifiesAbsence\":{},\"supersedes\":{},\"isTombstone\":{},\"tombstoneReason\":{},\"proofHash\":{},\"reproductionCommand\":\"{}\"}}",
+            "{{\"negId\":\"{}\",\"dateCommit\":\"{}\",\"hypothesis\":\"{}\",\"reasoning\":\"{}\",\"setup\":{{\"corpus\":\"{}\",\"deviceModel\":\"{}\",\"firmwareVersion\":\"{}\",\"platform\":\"{}\",\"policy\":\"{}\",\"command\":\"{}\",\"artifactDigest\":{}}},\"measuredResult\":\"{}\",\"decision\":\"{}\",\"decisionText\":\"{}\",\"sharedFailureDomains\":{},\"revivalCondition\":\"{}\",\"knowledgeState\":\"{}\",\"provenanceClass\":\"{}\",\"decisionProvenance\":\"{}\",\"disposition\":\"{}\",\"claimedDomain\":\"{}\",\"certification\":\"{}\",\"certificationSource\":{},\"witnessCertifiesAbsence\":{},\"supersedes\":{},\"isTombstone\":{},\"tombstoneReason\":{},\"proofHash\":{},\"evidenceReference\":{},\"reproductionCommand\":\"{}\"}}",
             escape_json(&self.neg_id),
             escape_json(&self.date_commit),
             escape_json(&self.hypothesis),
@@ -691,8 +761,9 @@ impl NegativeEvidenceEntry {
             escape_json(&self.revival_condition),
             self.knowledge_state.as_str(),
             provenance_class_as_str(self.provenance_class),
+            provenance_class_as_str(self.decision_provenance),
             hypothesis_disposition_as_str(self.disposition),
-            json_string_array(&self.claimed_domain),
+            escape_json(&self.claimed_domain),
             self.certification.as_str(),
             certification_source,
             self.coverage_witness.certifies_absence(),
@@ -700,6 +771,7 @@ impl NegativeEvidenceEntry {
             self.is_tombstone,
             tombstone_reason_str,
             proof_str,
+            evidence_reference_str,
             escape_json(&self.reproduction_command),
         )
     }
@@ -721,8 +793,9 @@ impl CanonicalEncode for NegativeEvidenceEntry {
         encoder.text(provenance_class_as_str(self.provenance_class));
         encoder.text(hypothesis_disposition_as_str(self.disposition));
         self.coverage_witness.encode_canonical(encoder);
-        encode_label_set(&self.claimed_domain, encoder);
+        encoder.text(&self.claimed_domain);
         self.certification.encode_canonical(encoder);
+        encoder.text(provenance_class_as_str(self.decision_provenance));
         match &self.supersedes {
             Some(target) => {
                 encoder.bool(true);
@@ -742,6 +815,13 @@ impl CanonicalEncode for NegativeEvidenceEntry {
             Some(hash) => {
                 encoder.bool(true);
                 encoder.digest(hash);
+            }
+            None => encoder.bool(false),
+        }
+        match &self.evidence_reference {
+            Some(reference) => {
+                encoder.bool(true);
+                encoder.text(reference);
             }
             None => encoder.bool(false),
         }
@@ -785,8 +865,9 @@ impl CanonicalDecode for NegativeEvidenceEntry {
             _ => return Err(ContractError::InvalidIdentifier),
         };
         let coverage_witness = CoverageWitness::decode_canonical(decoder)?;
-        let claimed_domain = decode_label_set(decoder, MAX_CLAIMED_DOMAINS)?;
+        let claimed_domain = decoder.text()?.to_string();
         let certification = EvidenceCertification::decode_canonical(decoder)?;
+        let decision_provenance = ProvenanceClass::from_name(decoder.text()?)?;
         let supersedes = if decoder.bool()? {
             Some(decoder.text()?.to_string())
         } else {
@@ -804,6 +885,11 @@ impl CanonicalDecode for NegativeEvidenceEntry {
         } else {
             None
         };
+        let evidence_reference = if decoder.bool()? {
+            Some(decoder.text()?.to_string())
+        } else {
+            None
+        };
         let reproduction_command = decoder.text()?.to_string();
         Ok(Self {
             neg_id,
@@ -818,6 +904,7 @@ impl CanonicalDecode for NegativeEvidenceEntry {
             revival_condition,
             knowledge_state,
             provenance_class,
+            decision_provenance,
             disposition,
             coverage_witness,
             claimed_domain,
@@ -826,6 +913,7 @@ impl CanonicalDecode for NegativeEvidenceEntry {
             is_tombstone,
             tombstone_reason,
             proof_hash,
+            evidence_reference,
             reproduction_command,
         })
     }
@@ -892,8 +980,9 @@ impl NegativeEvidenceLedger {
                 });
             }
         }
+        let value = neg_id_value("neg_id", &entry.neg_id)?;
         if let Some(last) = self.entries.last()
-            && entry.neg_id <= last.neg_id
+            && value <= neg_id_value("neg_id", &last.neg_id)?
         {
             return Err(NegativeEvidenceError::NonCanonicalOrder {
                 prior: last.neg_id.clone(),
@@ -909,10 +998,11 @@ impl NegativeEvidenceLedger {
     ///
     /// The caller cannot assert the revival condition; it must be evidenced by `evidence_id`, a
     /// row already appended to this ledger (immutable, validated, append-only) that links
-    /// `supersedes == neg_id`, is locally certified with a certifying witness bound to its own
-    /// identifier, carries a proof hash, and records the formerly failed hypothesis as
-    /// `supported`. A tombstoned target or evidence row, and a target whose disposition is already
-    /// `superseded` or `resolved`, are refused.
+    /// `supersedes == neg_id`, is the current head of its supersession chain (nothing later
+    /// supersedes it), re-tests the target's exact hypothesis, is locally certified with a proof
+    /// hash and a retained evidence reference, has `observed` or `derived` provenance, and records
+    /// the hypothesis as `supported`. A tombstoned target or evidence row, and a target whose
+    /// disposition is already `superseded` or `resolved`, are refused.
     pub fn verify_revival_condition(
         &self,
         neg_id: &str,
@@ -952,6 +1042,21 @@ impl NegativeEvidenceLedger {
                 "evidence row '{evidence_id}' does not supersede '{neg_id}'"
             )));
         }
+        if let Some(successor) = self
+            .entries
+            .iter()
+            .find(|entry| entry.supersedes.as_deref() == Some(evidence_id))
+        {
+            return Err(unmet(format!(
+                "evidence row '{evidence_id}' is superseded by '{}' and is not the head of its supersession chain",
+                successor.neg_id
+            )));
+        }
+        if evidence.hypothesis != target.hypothesis {
+            return Err(unmet(format!(
+                "evidence row '{evidence_id}' tests a different hypothesis than '{neg_id}'"
+            )));
+        }
         if evidence.is_tombstone {
             return Err(NegativeEvidenceError::EntryTombstoned {
                 neg_id: evidence_id.to_string(),
@@ -962,9 +1067,18 @@ impl NegativeEvidenceLedger {
                 "evidence row '{evidence_id}' is not locally certified"
             )));
         }
-        if evidence.proof_hash.is_none() {
+        if evidence.proof_hash.is_none() || evidence.evidence_reference.is_none() {
             return Err(unmet(format!(
-                "evidence row '{evidence_id}' carries no proof hash"
+                "evidence row '{evidence_id}' carries no proof hash and retained evidence reference"
+            )));
+        }
+        if !matches!(
+            evidence.provenance_class,
+            ProvenanceClass::Observed | ProvenanceClass::Derived
+        ) {
+            return Err(unmet(format!(
+                "evidence row '{evidence_id}' has '{}' provenance; revival requires locally observed or derived evidence",
+                provenance_class_as_str(evidence.provenance_class)
             )));
         }
         if evidence.disposition != HypothesisDisposition::Supported {
@@ -987,7 +1101,7 @@ impl NegativeEvidenceLedger {
             entry.validate()?;
             if i > 0 {
                 let prev = &self.entries[i - 1];
-                if entry.neg_id <= prev.neg_id {
+                if neg_id_value("neg_id", &entry.neg_id)? <= neg_id_value("neg_id", &prev.neg_id)? {
                     if entry.neg_id == prev.neg_id {
                         return Err(NegativeEvidenceError::DuplicateEntryId {
                             neg_id: entry.neg_id.clone(),
@@ -1130,7 +1244,9 @@ impl NegativeEvidenceLedger {
                             "entry #{index}: set elements must be strictly increasing without duplicates"
                         ),
                     },
-                    other => NegativeEvidenceError::Contract(other),
+                    other => NegativeEvidenceError::MalformedEntry {
+                        detail: format!("entry #{index}: {other}"),
+                    },
                 }
             })?;
             if !decoder.is_empty() {
@@ -1146,7 +1262,7 @@ impl NegativeEvidenceLedger {
             if let Some(prior) = entries
                 .last()
                 .map(|e: &NegativeEvidenceEntry| e.neg_id.clone())
-                && entry.neg_id <= prior
+                && neg_id_value("neg_id", &entry.neg_id)? <= neg_id_value("neg_id", &prior)?
             {
                 if entry.neg_id == prior {
                     return Err(NegativeEvidenceError::DuplicateEntryId {
@@ -1269,7 +1385,7 @@ const SEED_DOCTRINE: [&SeedDoctrine; 3] = [&NEG001_DOCTRINE, &NEG002_DOCTRINE, &
 /// Builds a seed entry exactly as the doctrine records it: not locally certified, with an
 /// explicitly uncovered witness, no artifact or proof digest, and no local reproduction.
 fn seed_entry(doctrine: &SeedDoctrine) -> NegativeEvidenceEntry {
-    let claimed_domain = label_set(&[ARCHITECTURAL_CONSTRAINTS_DOMAIN]);
+    let claimed_domain = ARCHITECTURAL_CONSTRAINTS_DOMAIN.to_string();
     NegativeEvidenceEntry {
         neg_id: doctrine.neg_id.to_string(),
         date_commit: SEED_DATE_COMMIT.to_string(),
@@ -1289,17 +1405,21 @@ fn seed_entry(doctrine: &SeedDoctrine) -> NegativeEvidenceEntry {
         decision_text: doctrine.decision_text.to_string(),
         shared_failure_domains: label_set(doctrine.failure_domains),
         revival_condition: doctrine.revival_condition.to_string(),
-        knowledge_state: KnowledgeState::Estimated,
-        provenance_class: ProvenanceClass::Policy,
-        disposition: HypothesisDisposition::Refuted,
+        // The doctrine records that public documentation "does not establish" support and that no
+        // experiment ran: unknown (KSTATE-003) and disfavored, not estimated or refuted. The
+        // finding comes from vendor documentation; the decision is policy.
+        knowledge_state: KnowledgeState::Unknown,
+        provenance_class: ProvenanceClass::VendorClaimed,
+        decision_provenance: ProvenanceClass::Policy,
+        disposition: HypothesisDisposition::Disfavored,
         coverage_witness: CoverageWitness {
             anchor: LedgerAnchor::genesis("site:fss:negative-evidence"),
-            authorized_domain: claimed_domain.clone(),
+            authorized_domain: BTreeSet::from([claimed_domain.clone()]),
             observed_domain: BTreeSet::new(),
             excluded_domain: BTreeSet::new(),
             continuity: CoverageContinuity::Unknown,
             completeness: Completeness::Unknown,
-            negative_predicate: format!("architectural-violation-absence:{}", doctrine.neg_id),
+            negative_predicate: negative_predicate_for(&claimed_domain, doctrine.neg_id),
             stop_reason: CoverageStopReason::Unsupported,
             authorized_generation: 0,
             observed_generation: 0,
@@ -1315,6 +1435,7 @@ fn seed_entry(doctrine: &SeedDoctrine) -> NegativeEvidenceEntry {
         is_tombstone: false,
         tombstone_reason: None,
         proof_hash: None,
+        evidence_reference: None,
         reproduction_command: NOT_LOCALLY_REPRODUCIBLE.to_string(),
     }
 }
@@ -1425,6 +1546,38 @@ pub enum NegativeEvidenceError {
         /// Failure detail.
         detail: String,
     },
+    /// Locally certified evidence lacks its proof hash, its retained evidence reference, or the
+    /// evidence its knowledge state requires.
+    MissingProof {
+        /// Failure detail.
+        detail: String,
+    },
+    /// Encoded entry bytes carry an unknown tag, an invalid value, or an out-of-bound count.
+    MalformedEntry {
+        /// Failure detail.
+        detail: String,
+    },
+    /// The ledger file an init would create already exists.
+    LedgerExists {
+        /// Ledger path.
+        path: String,
+    },
+    /// The ledger file does not exist.
+    LedgerNotFound {
+        /// Ledger path.
+        path: String,
+    },
+    /// The ledger lock file is held by another writer or left stale; it is never broken
+    /// automatically.
+    LedgerLocked {
+        /// Failure detail.
+        detail: String,
+    },
+    /// The ledger changed between read and publish on every bounded attempt.
+    ConcurrentModification {
+        /// Failure detail.
+        detail: String,
+    },
     /// Underlying contract or canonical serialization error.
     Contract(ContractError),
     /// I/O error during file read or write.
@@ -1454,6 +1607,12 @@ impl NegativeEvidenceError {
             Self::EntryTombstoned { .. } => "ERR-NEG-ENTRY-TOMBSTONED-001",
             Self::RevivalConditionUnmet { .. } => "ERR-NEG-REVIVAL-UNMET-001",
             Self::InvalidIdentifier(_) | Self::Validation { .. } => "ERR-NEG-VALIDATION-FAILED-001",
+            Self::MissingProof { .. } => "ERR-NEG-MISSING-PROOF-001",
+            Self::MalformedEntry { .. } => "ERR-NEG-MALFORMED-ENTRY-001",
+            Self::LedgerExists { .. } => "ERR-NEG-LEDGER-EXISTS-001",
+            Self::LedgerNotFound { .. } => "ERR-NEG-LEDGER-NOT-FOUND-001",
+            Self::LedgerLocked { .. } => "ERR-NEG-LEDGER-LOCKED-001",
+            Self::ConcurrentModification { .. } => "ERR-NEG-CONCURRENT-MODIFICATION-001",
             Self::Contract(_) | Self::Io(_) => "ERR-OP-EXECUTION-FAILED-001",
         }
     }
@@ -1533,6 +1692,28 @@ impl fmt::Display for NegativeEvidenceError {
             Self::InvalidIdentifier(detail) => write!(f, "invalid identifier: {detail}"),
             Self::Validation { detail } => {
                 write!(f, "negative evidence validation failed: {detail}")
+            }
+            Self::MissingProof { detail } => {
+                write!(f, "negative evidence proof missing: {detail}")
+            }
+            Self::MalformedEntry { detail } => {
+                write!(f, "malformed ledger entry: {detail}")
+            }
+            Self::LedgerExists { path } => {
+                write!(
+                    f,
+                    "ledger file '{path}' already exists; init never overwrites a ledger"
+                )
+            }
+            Self::LedgerNotFound { path } => {
+                write!(
+                    f,
+                    "ledger file '{path}' does not exist; create it with `fss negative-evidence init --path {path}`"
+                )
+            }
+            Self::LedgerLocked { detail } => write!(f, "ledger locked: {detail}"),
+            Self::ConcurrentModification { detail } => {
+                write!(f, "concurrent ledger modification: {detail}")
             }
             Self::Contract(err) => write!(f, "contract error: {err}"),
             Self::Io(err) => write!(f, "io error: {err}"),
@@ -1630,15 +1811,58 @@ fn validate_neg_id(field: &str, id: &str) -> Result<(), NegativeEvidenceError> {
             detail: format!("{field} exceeds {MAX_NEG_ID_LEN} bytes"),
         });
     }
-    let Some(suffix) = id.strip_prefix("NEG-") else {
+    let Some(digits) = id.strip_prefix("NEG-") else {
         return Err(NegativeEvidenceError::InvalidIdentifier(format!(
             "{field} '{id}' must start with 'NEG-'"
         )));
     };
-    if suffix.is_empty() || !suffix.bytes().all(|b| b.is_ascii_digit()) {
+    if digits.len() < 3 || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return Err(NegativeEvidenceError::InvalidIdentifier(format!(
-            "{field} '{id}' must have numeric digits after 'NEG-'"
+            "{field} '{id}' must be 'NEG-' followed by at least three digits"
         )));
+    }
+    if digits.len() > 3 && digits.starts_with('0') {
+        return Err(NegativeEvidenceError::InvalidIdentifier(format!(
+            "{field} '{id}' is not canonical: leading zeros only pad to three digits"
+        )));
+    }
+    if digits.len() > MAX_NEG_ID_DIGITS {
+        return Err(NegativeEvidenceError::InputOversized {
+            detail: format!("{field} '{id}' has more than {MAX_NEG_ID_DIGITS} digits"),
+        });
+    }
+    Ok(())
+}
+
+/// Returns the numeric value of a canonical stable identifier; entries are ordered by it, so
+/// `NEG-999` precedes `NEG-1000`.
+pub fn neg_id_value(field: &str, id: &str) -> Result<u64, NegativeEvidenceError> {
+    validate_neg_id(field, id)?;
+    id.get("NEG-".len()..)
+        .and_then(|digits| digits.parse::<u64>().ok())
+        .ok_or_else(|| NegativeEvidenceError::InputOversized {
+            detail: format!("{field} '{id}' exceeds the numeric identifier range"),
+        })
+}
+
+/// Returns the exact negative predicate `absence-certified:<claimed_domain>:<NEG-id>`.
+#[must_use]
+pub fn negative_predicate_for(claimed_domain: &str, neg_id: &str) -> String {
+    format!("{NEGATIVE_PREDICATE_PREFIX}:{claimed_domain}:{neg_id}")
+}
+
+fn validate_label(field: &str, label: &str) -> Result<(), NegativeEvidenceError> {
+    if label.len() > MAX_FAILURE_DOMAIN_LEN {
+        return Err(NegativeEvidenceError::InputOversized {
+            detail: format!(
+                "{field} label '{label}' length exceeds {MAX_FAILURE_DOMAIN_LEN} bytes"
+            ),
+        });
+    }
+    if label.trim().is_empty() {
+        return Err(NegativeEvidenceError::Validation {
+            detail: format!("{field} labels must not be empty"),
+        });
     }
     Ok(())
 }
@@ -1673,18 +1897,7 @@ fn validate_label_set(
         });
     }
     for label in labels {
-        if label.len() > MAX_FAILURE_DOMAIN_LEN {
-            return Err(NegativeEvidenceError::InputOversized {
-                detail: format!(
-                    "{field} label '{label}' length exceeds {MAX_FAILURE_DOMAIN_LEN} bytes"
-                ),
-            });
-        }
-        if label.trim().is_empty() {
-            return Err(NegativeEvidenceError::Validation {
-                detail: format!("{field} labels must not be empty"),
-            });
-        }
+        validate_label(field, label)?;
     }
     Ok(())
 }
@@ -1743,6 +1956,35 @@ mod tests {
             ledger.verify(),
             Err(NegativeEvidenceError::DuplicateEntryId {
                 neg_id: "NEG-001".to_string(),
+            })
+        );
+        Ok(())
+    }
+
+    fn seed_with_id(
+        index: usize,
+        id: &str,
+    ) -> Result<NegativeEvidenceEntry, Box<dyn std::error::Error>> {
+        let mut entry = seed(index)?;
+        entry.neg_id = id.to_string();
+        entry.coverage_witness.negative_predicate = entry.expected_negative_predicate();
+        Ok(entry)
+    }
+
+    #[test]
+    fn verify_orders_by_numeric_value() -> Result<(), Box<dyn std::error::Error>> {
+        let ordered = NegativeEvidenceLedger {
+            entries: vec![seed_with_id(0, "NEG-999")?, seed_with_id(1, "NEG-1000")?],
+        };
+        assert_eq!(ordered.verify(), Ok(()));
+        let reversed = NegativeEvidenceLedger {
+            entries: vec![seed_with_id(1, "NEG-1000")?, seed_with_id(0, "NEG-999")?],
+        };
+        assert_eq!(
+            reversed.verify(),
+            Err(NegativeEvidenceError::NonCanonicalOrder {
+                prior: "NEG-1000".to_string(),
+                current: "NEG-999".to_string(),
             })
         );
         Ok(())
