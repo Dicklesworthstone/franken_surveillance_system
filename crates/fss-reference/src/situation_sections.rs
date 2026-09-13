@@ -396,15 +396,17 @@ const LINEAGE_OBJECT_PREFIX: &str = "object:situation-lineage:";
 /// (fss-mnlz1).
 ///
 /// The publication lineage lives in the one authority ledger that compilation reads: one object per
-/// subject (event and objective) whose payload is the subject's latest recorded publication and
-/// whose record witnesses that publication's sealed predecessor. A lineage record changes no other
-/// authority object, so an event receipt or effect outcome stays current across it.
+/// subject (event and objective) whose lineage records name a publication and witness its sealed
+/// predecessor. A lineage record changes no other authority object, so an event receipt or effect
+/// outcome stays current across it.
 ///
 /// Refuses an unsealed publication or one without a sealed subject, a publication compiled against
 /// another authority (its sealed authority anchor is not committed here), a publication whose
-/// sealed predecessor is not the subject's latest recorded publication (a second successor, a stale
-/// or unknown predecessor), and a publication naming no predecessor once the subject has a lineage.
-/// Recording the subject's latest publication again is a no-op.
+/// sealed predecessor is not the subject's latest publication in the replayed lineage (a second
+/// successor, a stale or unknown predecessor), and a publication naming no predecessor once the
+/// subject has a lineage. Recording the subject's latest publication again is a no-op. The record
+/// takes a batch identity no committed batch uses, so a batch squatting the identity it would have
+/// used cannot block it.
 pub fn record_reference_publication(
     authority: &mut DurableReferenceLedger,
     publication: &ReferenceSituationPublication,
@@ -421,28 +423,34 @@ pub fn record_reference_publication(
     let object_id = lineage_object_id(event_id, objective_id)?;
     let digest = publication.publication_digest;
     let predecessor = situation.predecessor_publication();
-    let (prior_generation, new_generation) =
-        match (authority.current().objects.get(&object_id), predecessor) {
-            (Some(latest), _) if latest.payload_digest == digest => {
-                return Ok(authority.current().anchor.clone());
-            }
-            (Some(latest), Some(predecessor)) if predecessor == latest.payload_digest => (
-                Some(latest.generation),
-                latest
-                    .generation
-                    .checked_add(1)
-                    .ok_or(ContractError::ArithmeticOverflow)?,
-            ),
-            (Some(_), _) => {
-                return Err(ReferenceError::InvalidSpec(
-                    "lineage_predecessor_not_latest",
-                ));
-            }
-            (None, None) => (None, 1),
-            (None, Some(_)) => {
-                return Err(ReferenceError::InvalidSpec("lineage_predecessor_unknown"));
-            }
-        };
+    match (replay_lineage(authority, &object_id).latest, predecessor) {
+        (Some(latest), _) if latest == digest => {
+            return Ok(authority.current().anchor.clone());
+        }
+        (Some(latest), Some(predecessor)) if predecessor == latest => {}
+        (Some(_), _) => {
+            return Err(ReferenceError::InvalidSpec(
+                "lineage_predecessor_not_latest",
+            ));
+        }
+        (None, None) => {}
+        (None, Some(_)) => {
+            return Err(ReferenceError::InvalidSpec("lineage_predecessor_unknown"));
+        }
+    }
+    // A skipped raw write still advanced the lineage object's generation, so the record continues
+    // the object's current revision rather than the replayed lineage's.
+    let prior_generation = authority
+        .current()
+        .objects
+        .get(&object_id)
+        .map(|revision| revision.generation);
+    let new_generation = match prior_generation {
+        Some(generation) => generation
+            .checked_add(1)
+            .ok_or(ContractError::ArithmeticOverflow)?,
+        None => 1,
+    };
     let delta = lineage_delta(
         object_id,
         (prior_generation, new_generation),
@@ -450,12 +458,23 @@ pub fn record_reference_publication(
         predecessor,
         situation.capsule.created_at,
     )?;
+    let used: BTreeSet<&BatchId> = authority
+        .batches()
+        .iter()
+        .map(|batch| &batch.batch_id)
+        .collect();
+    let mut attempt: u64 = 0;
+    let batch_id = loop {
+        let candidate = BatchId::parse(format!("batch:situation-lineage:{digest}:{attempt}"))?;
+        if !used.contains(&candidate) {
+            break candidate;
+        }
+        attempt = attempt
+            .checked_add(1)
+            .ok_or(ContractError::ArithmeticOverflow)?;
+    };
     let batch = authority
-        .prepare_batch(
-            BatchId::parse(format!("batch:situation-lineage:{digest}"))?,
-            vec![delta],
-            [digest],
-        )
+        .prepare_batch(batch_id, vec![delta], [digest])
         .map_err(|error| ReferenceError::Publication(error.into()))?;
     let snapshot = authority
         .append(batch)
@@ -463,19 +482,58 @@ pub fn record_reference_publication(
     Ok(snapshot.anchor.clone())
 }
 
-/// Returns the latest publication of the subject `event_id` and `objective_id` recorded in the
-/// authority ledger's publication lineage (fss-mnlz1).
+/// Returns the latest publication of the subject `event_id` and `objective_id` in the authority
+/// ledger's replayed publication lineage (fss-mnlz1). A raw write that does not extend the lineage
+/// never becomes the latest publication (see [`ReplayedLineage`]).
 pub fn latest_reference_publication(
     authority: &DurableReferenceLedger,
     event_id: &EventId,
     objective_id: &str,
 ) -> Result<Option<ContentDigest>, ReferenceError> {
     let object_id = lineage_object_id(event_id, objective_id)?;
-    Ok(authority
-        .current()
-        .objects
-        .get(&object_id)
-        .map(|revision| revision.payload_digest))
+    Ok(replay_lineage(authority, &object_id).latest)
+}
+
+/// The publication lineage of one subject as the authority ledger records it (fss-mnlz1).
+///
+/// The authority ledger accepts any well-formed batch, so the lineage is replayed rather than read
+/// off the lineage object's latest revision. A write of the lineage object extends the lineage only
+/// if it is a lineage record whose witness is the lineage's latest publication and whose
+/// publication the lineage has not recorded yet; every other write (a raw second child, a looped or
+/// restarted chain, another family writing the object) is skipped. Recording, the latest
+/// publication, and the lineage-bound classifier all read this one replay, so a skipped write never
+/// becomes the latest publication, never blocks the genuine successor, and never vouches for one.
+struct ReplayedLineage {
+    /// The latest publication the lineage records.
+    latest: Option<ContentDigest>,
+    /// Every recorded (predecessor, successor) pair.
+    links: BTreeSet<(ContentDigest, ContentDigest)>,
+}
+
+/// Replays the lineage object `object_id` of `authority` (see [`ReplayedLineage`]).
+fn replay_lineage(authority: &DurableReferenceLedger, object_id: &ObjectId) -> ReplayedLineage {
+    let mut latest = None;
+    let mut recorded = BTreeSet::new();
+    let mut links = BTreeSet::new();
+    for delta in authority
+        .batches()
+        .iter()
+        .flat_map(|batch| batch.deltas.iter())
+        .filter(|delta| delta.object_id == *object_id)
+    {
+        let extends = delta.family == LINEAGE_FAMILY
+            && delta.witness_digest == latest
+            && !recorded.contains(&delta.payload_digest);
+        if !extends {
+            continue;
+        }
+        recorded.insert(delta.payload_digest);
+        if let Some(predecessor) = latest {
+            links.insert((predecessor, delta.payload_digest));
+        }
+        latest = Some(delta.payload_digest);
+    }
+    ReplayedLineage { latest, links }
 }
 
 /// The lineage record of `publication`, continuing `predecessor`, as generation
@@ -515,13 +573,8 @@ pub(crate) fn compiled_against(
     })
 }
 
-/// Returns whether the authority lineage records `result` as the successor of `basis`.
-///
-/// The authority ledger accepts any well-formed batch, so the subject's whole lineage is replayed
-/// rather than trusting one record: every change of the lineage object must be a lineage record
-/// whose witness is the previously recorded publication, and no publication may be recorded twice.
-/// A lineage that breaks either rule (a raw second child, a restarted or looped chain, another
-/// family writing the object) records no successor at all, so no pair of it is terminal
+/// Returns whether the authority's replayed lineage records `result` as the successor of `basis`
+/// (see [`ReplayedLineage`]): a raw write that does not extend the lineage vouches for nothing
 /// (fss-mnlz1).
 pub(crate) fn records_successor(
     authority: &DurableReferenceLedger,
@@ -532,26 +585,9 @@ pub(crate) fn records_successor(
         return Ok(false);
     };
     let object_id = lineage_object_id(event_id, objective_id)?;
-    let mut latest = None;
-    let mut recorded = BTreeSet::new();
-    let mut found = false;
-    for delta in authority
-        .batches()
-        .iter()
-        .flat_map(|batch| batch.deltas.iter())
-        .filter(|delta| delta.object_id == object_id)
-    {
-        if delta.family != LINEAGE_FAMILY
-            || delta.witness_digest != latest
-            || !recorded.insert(delta.payload_digest)
-        {
-            return Ok(false);
-        }
-        found |= delta.payload_digest == result.publication_digest
-            && delta.witness_digest == Some(basis.publication_digest);
-        latest = Some(delta.payload_digest);
-    }
-    Ok(found)
+    Ok(replay_lineage(authority, &object_id)
+        .links
+        .contains(&(basis.publication_digest, result.publication_digest)))
 }
 
 /// Returns whether `batch` holds only publication lineage records, which change no authority

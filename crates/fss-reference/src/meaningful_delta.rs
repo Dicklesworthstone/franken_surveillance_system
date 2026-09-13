@@ -12,7 +12,7 @@ use fss_core::{
 use fss_core::ObligationId;
 
 use crate::situation::{EFFECT_CLAIM_PREFIX, EffectOutcome, OBLIGATION_CLAIM_PREFIX};
-use fss_ledger::DurableReferenceLedger;
+use fss_ledger::{DurableLedgerError, DurableReferenceLedger};
 
 use crate::situation_sections::{compiled_against, records_successor};
 use crate::{DurableEffectJournal, ReferenceError, ReferenceSituationPublication};
@@ -865,6 +865,7 @@ fn contradiction_changed(
 /// or without a journal, the discharge is reported but not terminal. As the history stood at the
 /// result's root, every dropped obligation must exist and be terminal (`verified`, `failed` or
 /// `cancelled`): an obligation the journal never recorded is refused, and so is one still open.
+/// The history is the one `journal`'s handle verified: bytes swapped under it are refused.
 fn verify_discharge(
     basis: &ReferenceSituationPublication,
     result: &ReferenceSituationPublication,
@@ -881,8 +882,22 @@ fn verify_discharge(
     ) else {
         return Ok(false);
     };
-    let unreadable = |_| ReferenceError::InvalidSpec("meaningful_delta_journal_unreadable");
-    let history = journal.committed_roots().map_err(unreadable)?;
+    // A journal whose bytes no longer match the handle is refused with the journal's own typed
+    // error; any other failure to read its history back is refused as unreadable (fss-mnlz1).
+    let refusal = |error: crate::DurableEffectError| match error {
+        crate::DurableEffectError::Journal(error) => {
+            ReferenceError::Publication(DurableLedgerError::Journal(error).into())
+        }
+        crate::DurableEffectError::Contract(_)
+        | crate::DurableEffectError::Reference(_)
+        | crate::DurableEffectError::UnexpectedRecordKind { .. }
+        | crate::DurableEffectError::Decode { .. }
+        | crate::DurableEffectError::TransientObligation { .. }
+        | crate::DurableEffectError::LedgerReconciliationRequired { .. } => {
+            ReferenceError::InvalidSpec("meaningful_delta_journal_unreadable")
+        }
+    };
+    let history = journal.committed_roots().map_err(refusal)?;
     let position = |root: ContentDigest| history.iter().position(|committed| *committed == root);
     let (Some(basis_at), Some(result_at)) = (position(basis_root), position(result_root)) else {
         return Ok(false);
@@ -890,7 +905,7 @@ fn verify_discharge(
     if result_at < basis_at {
         return Ok(false);
     }
-    let Some(at_result) = journal.replay_through(result_root).map_err(unreadable)? else {
+    let Some(at_result) = journal.replay_through(result_root).map_err(refusal)? else {
         return Ok(false);
     };
     for dropped in basis_obligations.difference(result_obligations) {

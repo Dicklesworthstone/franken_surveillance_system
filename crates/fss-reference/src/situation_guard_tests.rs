@@ -2557,8 +2557,8 @@ fn append_raw_lineage(
 /// vouches for a successor. A second store is refused as a recorder, so compile sees no lineage it
 /// holds. Raw lineage records of a rival child in a second store never make the rival terminal,
 /// because that store never committed the authority anchors both publications sealed. A raw second
-/// child appended to the authority itself breaks the replayed lineage, which then vouches for no
-/// successor at all.
+/// child appended to the authority itself does not extend the replayed lineage, so it vouches for
+/// nothing while the recorded child stays the terminal successor and the latest publication.
 #[test]
 fn only_the_compiling_authority_lineage_vouches_for_a_successor() -> Result<(), Box<dyn Error>> {
     let name = "n2-two-stores";
@@ -2652,19 +2652,32 @@ fn only_the_compiling_authority_lineage_vouches_for_a_successor() -> Result<(), 
                 .ok_or(ReferenceError::ArithmeticOverflow)?,
         ),
     )?;
-    for (label, result) in [
-        ("raw second child", &rival),
-        ("recorded child after tampering", &child),
-    ] {
-        let delta = crate::classify_reference_meaningful_delta_in_lineage(
-            &parent,
-            result,
-            &lifecycle.harness.authority,
-            None,
-        )?;
-        assert!(!terminal(&delta), "{label}: {:?}", delta.classes);
-        delta.validate()?;
-    }
+    // The raw second child's witness is not the latest publication, so the replay skips it: it
+    // vouches for nothing, and the recorded child stays the terminal successor and the latest
+    // publication (fss-mnlz1 N2-D).
+    let forged = crate::classify_reference_meaningful_delta_in_lineage(
+        &parent,
+        &rival,
+        &lifecycle.harness.authority,
+        None,
+    )?;
+    assert!(!terminal(&forged), "raw second child: {:?}", forged.classes);
+    forged.validate()?;
+    let recorded = crate::classify_reference_meaningful_delta_in_lineage(
+        &parent,
+        &child,
+        &lifecycle.harness.authority,
+        None,
+    )?;
+    assert!(
+        terminal(&recorded),
+        "recorded child: {:?}",
+        recorded.classes
+    );
+    assert_eq!(
+        crate::latest_reference_publication(&lifecycle.harness.authority, event_id, objective_id)?,
+        Some(child.publication_digest)
+    );
     drop(second);
     let _ = fs::remove_file(second_path);
     lifecycle.harness.cleanup();
@@ -2749,6 +2762,392 @@ fn a_result_sealed_from_another_journal_never_discharges() -> Result<(), Box<dyn
     let _ = fs::remove_file(foreign_path);
     drop(journal);
     let _ = fs::remove_file(journal_path);
+    harness.cleanup();
+    Ok(())
+}
+
+/// Appends one raw write of the lineage object `object_id` to `ledger` through the public ledger
+/// API, bypassing [`crate::record_reference_publication`]: `payload` under `family`, witnessing
+/// `witness`, at the object's next generation.
+fn append_raw_record(
+    ledger: &mut DurableReferenceLedger,
+    object_id: &fss_core::ObjectId,
+    family: &str,
+    payload: fss_core::ContentDigest,
+    witness: Option<fss_core::ContentDigest>,
+) -> Result<(), Box<dyn Error>> {
+    let prior = ledger
+        .current()
+        .objects
+        .get(object_id)
+        .map(|revision| revision.generation);
+    let next = match prior {
+        Some(generation) => generation
+            .checked_add(1)
+            .ok_or(ReferenceError::ArithmeticOverflow)?,
+        None => 1,
+    };
+    let mut delta = crate::situation_sections::lineage_delta(
+        object_id.clone(),
+        (prior, next),
+        payload,
+        witness,
+        TimestampNs(1_000),
+    )?;
+    family.clone_into(&mut delta.family);
+    delta.delta_id = format!("delta:raw-lineage:{payload}:{next}");
+    let batch = ledger.prepare_batch(
+        fss_core::BatchId::parse(format!("batch:raw-lineage:{payload}:{next}"))?,
+        vec![delta],
+        [payload],
+    )?;
+    let _ = ledger.append(batch)?;
+    Ok(())
+}
+
+/// The lineage object of `publication`'s subject.
+fn lineage_object_of(
+    publication: &crate::ReferenceSituationPublication,
+) -> Result<fss_core::ObjectId, Box<dyn Error>> {
+    let (event_id, objective_id) = publication
+        .situation
+        .subject()
+        .ok_or(ReferenceError::InvalidSpec("missing_subject"))?;
+    Ok(crate::situation_sections::lineage_object_id(
+        event_id,
+        objective_id,
+    )?)
+}
+
+/// The latest publication of `publication`'s subject in `authority`'s replayed lineage.
+fn latest_of(
+    authority: &DurableReferenceLedger,
+    publication: &crate::ReferenceSituationPublication,
+) -> Result<Option<fss_core::ContentDigest>, Box<dyn Error>> {
+    let (event_id, objective_id) = publication
+        .situation
+        .subject()
+        .ok_or(ReferenceError::InvalidSpec("missing_subject"))?;
+    Ok(crate::latest_reference_publication(
+        authority,
+        event_id,
+        objective_id,
+    )?)
+}
+
+fn is_terminal(delta: &fss_core::MeaningfulDelta) -> bool {
+    delta
+        .classes
+        .contains(&fss_core::MeaningfulDeltaClass::TerminalTransition)
+}
+
+/// fss-mnlz1 N2-D (the reviewer's freeze probe): one raw lineage batch naming a digest that is no
+/// publication, witnessed by the parent at the next generation, never freezes the subject. The
+/// replay skips it (its witness is not the latest publication), so the parent's recorded child
+/// stays terminal and latest, and a successor of the child still compiles and records. A raw
+/// record that does extend the latest publication cannot be told from a recorded step and becomes
+/// the latest, but the lineage continues from it too.
+#[test]
+fn a_raw_lineage_batch_never_freezes_a_subject() -> Result<(), Box<dyn Error>> {
+    let mut lifecycle = Lifecycle::new("n2d-freeze")?;
+    let parent = lifecycle.dispatched.clone();
+    crate::record_reference_publication(&mut lifecycle.harness.authority, &parent)?;
+    let child = lifecycle.verified_after(false, &parent)?;
+    crate::record_reference_publication(&mut lifecycle.harness.authority, &child)?;
+    let object_id = lineage_object_of(&parent)?;
+
+    append_raw_record(
+        &mut lifecycle.harness.authority,
+        &object_id,
+        crate::situation_sections::LINEAGE_FAMILY,
+        fss_core::ContentDigest::sha256(b"zz9-raw-rival-child"),
+        Some(parent.publication_digest),
+    )?;
+    let delta = crate::classify_reference_meaningful_delta_in_lineage(
+        &parent,
+        &child,
+        &lifecycle.harness.authority,
+        None,
+    )?;
+    assert!(is_terminal(&delta), "{:?}", delta.classes);
+    assert_eq!(
+        latest_of(&lifecycle.harness.authority, &parent)?,
+        Some(child.publication_digest)
+    );
+    let grandchild = lifecycle.verified_after(true, &child)?;
+    crate::record_reference_publication(&mut lifecycle.harness.authority, &grandchild)?;
+    assert_eq!(
+        latest_of(&lifecycle.harness.authority, &parent)?,
+        Some(grandchild.publication_digest)
+    );
+
+    let extension = fss_core::ContentDigest::sha256(b"zz9-raw-extension");
+    append_raw_record(
+        &mut lifecycle.harness.authority,
+        &object_id,
+        crate::situation_sections::LINEAGE_FAMILY,
+        extension,
+        Some(grandchild.publication_digest),
+    )?;
+    assert_eq!(
+        latest_of(&lifecycle.harness.authority, &parent)?,
+        Some(extension)
+    );
+    let mut compile_request = request(
+        &lifecycle.decision,
+        &lifecycle.receipt,
+        &["capability:alert.commit", CAPABILITY_EFFECT_RECONCILE],
+    )?;
+    compile_request.alert_plan = Some(&lifecycle.plan);
+    compile_request.alert_outcome = Some(&lifecycle.outcome);
+    compile_request.predecessor_publication = Some(extension);
+    let continued = crate::project_reference_situation(
+        compile_reference_situation(compile_request, &lifecycle.harness.authority)?,
+        &guard_projection_spec()?,
+    )?;
+    crate::record_reference_publication(&mut lifecycle.harness.authority, &continued)?;
+    assert_eq!(
+        latest_of(&lifecycle.harness.authority, &parent)?,
+        Some(continued.publication_digest)
+    );
+    lifecycle.harness.cleanup();
+    Ok(())
+}
+
+/// fss-mnlz1 Mu2: a raw record naming a publication the lineage already recorded is skipped even
+/// when it witnesses the latest publication. Otherwise the loop would make the parent latest
+/// again and let a raw second child of it through.
+#[test]
+fn a_raw_record_repeating_a_recorded_publication_is_skipped() -> Result<(), Box<dyn Error>> {
+    let mut lifecycle = Lifecycle::new("mu2-loop")?;
+    let parent = lifecycle.dispatched.clone();
+    crate::record_reference_publication(&mut lifecycle.harness.authority, &parent)?;
+    let child = lifecycle.verified_after(true, &parent)?;
+    let rival = lifecycle.verified_after(false, &parent)?;
+    crate::record_reference_publication(&mut lifecycle.harness.authority, &child)?;
+    let object_id = lineage_object_of(&parent)?;
+    append_raw_record(
+        &mut lifecycle.harness.authority,
+        &object_id,
+        crate::situation_sections::LINEAGE_FAMILY,
+        parent.publication_digest,
+        Some(child.publication_digest),
+    )?;
+    append_raw_record(
+        &mut lifecycle.harness.authority,
+        &object_id,
+        crate::situation_sections::LINEAGE_FAMILY,
+        rival.publication_digest,
+        Some(parent.publication_digest),
+    )?;
+    assert_eq!(
+        latest_of(&lifecycle.harness.authority, &parent)?,
+        Some(child.publication_digest)
+    );
+    let forged = crate::classify_reference_meaningful_delta_in_lineage(
+        &parent,
+        &rival,
+        &lifecycle.harness.authority,
+        None,
+    )?;
+    assert!(!is_terminal(&forged), "{:?}", forged.classes);
+    let recorded = crate::classify_reference_meaningful_delta_in_lineage(
+        &parent,
+        &child,
+        &lifecycle.harness.authority,
+        None,
+    )?;
+    assert!(is_terminal(&recorded), "{:?}", recorded.classes);
+    lifecycle.harness.cleanup();
+    Ok(())
+}
+
+/// fss-mnlz1 Mu2: a write of the lineage object under another family is skipped even when it
+/// witnesses the latest publication: it never becomes the latest publication, never vouches for
+/// a successor, and never blocks the genuine one.
+#[test]
+fn a_raw_write_of_another_family_is_skipped() -> Result<(), Box<dyn Error>> {
+    let mut lifecycle = Lifecycle::new("mu2-family")?;
+    let parent = lifecycle.dispatched.clone();
+    crate::record_reference_publication(&mut lifecycle.harness.authority, &parent)?;
+    let child = lifecycle.verified_after(true, &parent)?;
+    let rival = lifecycle.verified_after(false, &parent)?;
+    append_raw_record(
+        &mut lifecycle.harness.authority,
+        &lineage_object_of(&parent)?,
+        "situation_publication_lineage_forged",
+        rival.publication_digest,
+        Some(parent.publication_digest),
+    )?;
+    assert_eq!(
+        latest_of(&lifecycle.harness.authority, &parent)?,
+        Some(parent.publication_digest)
+    );
+    let forged = crate::classify_reference_meaningful_delta_in_lineage(
+        &parent,
+        &rival,
+        &lifecycle.harness.authority,
+        None,
+    )?;
+    assert!(!is_terminal(&forged), "{:?}", forged.classes);
+    crate::record_reference_publication(&mut lifecycle.harness.authority, &child)?;
+    let recorded = crate::classify_reference_meaningful_delta_in_lineage(
+        &parent,
+        &child,
+        &lifecycle.harness.authority,
+        None,
+    )?;
+    assert!(is_terminal(&recorded), "{:?}", recorded.classes);
+    lifecycle.harness.cleanup();
+    Ok(())
+}
+
+/// fss-mnlz1: a batch squatting the identity a lineage record would first try cannot block the
+/// record, which takes the next unused identity.
+#[test]
+fn a_squatted_lineage_batch_identity_never_blocks_a_record() -> Result<(), Box<dyn Error>> {
+    let mut lifecycle = Lifecycle::new("n2d-squat")?;
+    let parent = lifecycle.dispatched.clone();
+    crate::record_reference_publication(&mut lifecycle.harness.authority, &parent)?;
+    let child = lifecycle.verified_after(true, &parent)?;
+    let squat_root = fss_core::ContentDigest::sha256(b"zz9-squat");
+    let squat = fss_core::EvidenceDelta {
+        delta_id: "delta:raw-lineage:squat".to_owned(),
+        family: "squat".to_owned(),
+        object_id: fss_core::ObjectId::parse("object:raw-lineage:squat")?,
+        prior_generation: None,
+        new_generation: 1,
+        validity: CaptureInterval::new(TimestampNs(1_000), TimestampNs(1_000))?,
+        plane: fss_core::Plane::Cognition,
+        payload_digest: squat_root,
+        witness_digest: None,
+        operation_id: None,
+    };
+    let batch = lifecycle.harness.authority.prepare_batch(
+        fss_core::BatchId::parse(format!(
+            "batch:situation-lineage:{}:0",
+            child.publication_digest
+        ))?,
+        vec![squat],
+        [squat_root],
+    )?;
+    let _ = lifecycle.harness.authority.append(batch)?;
+    crate::record_reference_publication(&mut lifecycle.harness.authority, &child)?;
+    assert_eq!(
+        latest_of(&lifecycle.harness.authority, &parent)?,
+        Some(child.publication_digest)
+    );
+    let delta = crate::classify_reference_meaningful_delta_in_lineage(
+        &parent,
+        &child,
+        &lifecycle.harness.authority,
+        None,
+    )?;
+    assert!(is_terminal(&delta), "{:?}", delta.classes);
+    lifecycle.harness.cleanup();
+    Ok(())
+}
+
+/// fss-mnlz1 N1-T (the reviewer's byte-swap probe): the classifier checks the journal handle it is
+/// given, not whatever file now sits at its path. The real journal holds the plan's obligation
+/// pending; a fork of it is advanced (the alert dispatched, observed and verified) and the planless
+/// result is compiled against the fork; then the fork's bytes are copied over the real file while
+/// the real handle is still open. Classifying with the real handle is refused as an external
+/// mutation of that journal, with exactly the handle's and the file's committed lengths.
+#[test]
+fn journal_bytes_swapped_under_the_handle_are_refused() -> Result<(), Box<dyn Error>> {
+    let name = "n1t-swap";
+    let mut harness = GuardHarness::new(name)?;
+    let (decision, receipt) = harness.corroborated(name)?;
+    let (mut journal, journal_path) = durable_journal(name)?;
+    let plan = durable_prepare(&mut journal, &harness, &decision, &receipt, name)?;
+    let with_plan = durable_publication(
+        &harness,
+        &journal,
+        &decision,
+        &receipt,
+        Some(&plan),
+        None,
+        None,
+    )?;
+    crate::record_reference_publication(&mut harness.authority, &with_plan)?;
+
+    let fork_path = std::env::temp_dir().join(format!(
+        "fss-reference-guard-journal-fork-{}-{name}.journal",
+        std::process::id()
+    ));
+    let _ = fs::remove_file(&fork_path);
+    fs::copy(&journal_path, &fork_path)?;
+    let mut fork = crate::DurableEffectJournal::open(&fork_path, IncompleteTailPolicy::Reject)?;
+    let mut provider = crate::ReferenceAlertProvider::with_provider_id(format!(
+        "provider:test:situation-guard:{name}"
+    ));
+    let _ = fork.dispatch_alert(
+        &plan,
+        crate::ReferenceProviderBehavior::Deliver,
+        TimestampNs(101),
+        TimestampNs(102),
+        &mut provider,
+    )?;
+    let provider_receipt = provider
+        .lookup(&plan.intent)?
+        .ok_or(ReferenceError::InvalidSpec("missing_provider_receipt"))?;
+    let _ = fork.observe_alert(
+        &plan,
+        provider_receipt.receipt_digest(),
+        TimestampNs(103),
+        &provider,
+    )?;
+    let _ = fork.verify_alert(&plan, TimestampNs(104), &provider)?;
+    let without_plan = durable_publication(
+        &harness,
+        &fork,
+        &decision,
+        &receipt,
+        None,
+        None,
+        Some(&with_plan),
+    )?;
+    crate::record_reference_publication(&mut harness.authority, &without_plan)?;
+    drop(fork);
+    assert_eq!(
+        journal
+            .obligation(&plan.obligation_id)
+            .map(|obligation| obligation.state),
+        Some(fss_core::ObligationState::Pending)
+    );
+
+    let expected = journal.committed_len();
+    fs::copy(&fork_path, &journal_path)?;
+    let observed = fs::metadata(&journal_path)?.len();
+    assert_ne!(expected, observed);
+    let swapped = crate::classify_reference_meaningful_delta_in_lineage(
+        &with_plan,
+        &without_plan,
+        &harness.authority,
+        Some(&journal),
+    );
+    assert!(
+        matches!(
+            &swapped,
+            Err(ReferenceError::Publication(
+                fss_publication::PublicationError::Ledger(
+                    fss_ledger::DurableLedgerError::Journal(
+                        fss_ledger::JournalError::ExternalMutation {
+                            expected_len,
+                            observed_len,
+                            kind: fss_ledger::ExternalMutationKind::LengthDivergence,
+                        }
+                    )
+                )
+            )) if *expected_len == expected && *observed_len == observed
+        ),
+        "{:?}",
+        swapped.map(|delta| delta.classes)
+    );
+    drop(journal);
+    let _ = fs::remove_file(journal_path);
+    let _ = fs::remove_file(fork_path);
     harness.cleanup();
     Ok(())
 }

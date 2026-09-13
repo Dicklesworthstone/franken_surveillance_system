@@ -246,23 +246,47 @@ impl DurableEffectJournal {
         self.journal.last_root()
     }
 
-    /// Roots of every committed record, in commit order, read back from the durable file: the
+    /// The committed records on disk, refused unless they are exactly this handle's verified
+    /// history: the same committed length and the same last root, which chains every record. Bytes
+    /// swapped under the open handle (another journal's history copied over its file) are refused
+    /// as [`JournalError::ExternalMutation`], as reopening the file would refuse them (fss-mnlz1).
+    fn verified_history(&self) -> Result<RecoveryReport, DurableEffectError> {
+        let report = inspect(self.path())?;
+        let observed_len = report.committed_len();
+        if observed_len != self.committed_len() || report.last_root() != self.last_root() {
+            let kind = if observed_len == self.committed_len() {
+                ExternalMutationKind::ContentDivergence
+            } else {
+                ExternalMutationKind::LengthDivergence
+            };
+            return Err(JournalError::ExternalMutation {
+                expected_len: self.committed_len(),
+                observed_len,
+                kind,
+            }
+            .into());
+        }
+        Ok(report)
+    }
+
+    /// Roots of every committed record of this handle's verified history, in commit order: the
     /// history a sealed journal root must belong to (fss-mnlz1).
     pub(crate) fn committed_roots(&self) -> Result<Vec<ContentDigest>, DurableEffectError> {
-        Ok(inspect(self.path())?
+        Ok(self
+            .verified_history()?
             .records()
             .iter()
             .map(JournalRecord::root)
             .collect())
     }
 
-    /// The effect journal as its committed history stood right after the record whose root is
-    /// `root`, or `None` when no committed record has that root (fss-mnlz1).
+    /// The effect journal as this handle's verified history stood right after the record whose
+    /// root is `root`, or `None` when no committed record has that root (fss-mnlz1).
     pub(crate) fn replay_through(
         &self,
         root: ContentDigest,
     ) -> Result<Option<EffectJournal>, DurableEffectError> {
-        let report = inspect(self.path())?;
+        let report = self.verified_history()?;
         let records = report.records();
         let Some(last) = records.iter().position(|record| record.root() == root) else {
             return Ok(None);
