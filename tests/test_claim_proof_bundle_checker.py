@@ -5966,6 +5966,323 @@ class TestRound5ExactTextSurrogates(unittest.TestCase):
         self.assertEqual(self.run_bound(bound={"expression": BOUND_EXPRESSION + " \ud800"}), (False, [self.EXPRESSION]))
 
 
+# ---------------------------------------------------------------------------
+# Round-6 review, 30.87.2: duplicate JSON keys (N1), byte-exact digests (N3), regular files (N4),
+# EPIPE (N5), qualification receipt lookalikes, ERRORS.md rows (N2) (probes p18-p21)
+# ---------------------------------------------------------------------------
+
+DUPLICATE_KEY = "ERR-CLAIM-EVIDENCE-DUPLICATE-KEY-001"
+_DUPLICATE_MARK = "__round6_duplicate_key__"
+
+
+def json_with_duplicate(doc: object, doc_path: tuple, key: str, first_value: object) -> bytes:
+    """JSON text of doc in which the object at doc_path declares key twice: first_value, then its
+    real value (so a plain parser, keeping the last value, reads the document unchanged)."""
+    doc = json.loads(json.dumps(doc))
+    target = doc
+    for step in doc_path:
+        target = target[step]
+    rebuilt = {_DUPLICATE_MARK: first_value, **target}
+    target.clear()
+    target.update(rebuilt)
+    text = json.dumps(doc)
+    assert text.count(json.dumps(_DUPLICATE_MARK)) == 1
+    return text.replace(json.dumps(_DUPLICATE_MARK), json.dumps(key)).encode("utf-8")
+
+
+def verify_with_duplicate_bundle(runner, doc_path: tuple, key: str, first_value: object):
+    """Runs runner() with every bundle it writes carrying key twice in the object at doc_path."""
+    module = sys.modules[__name__]
+
+    def write_duplicated(path: Path, data: object) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(json_with_duplicate(data, doc_path, key, first_value))
+        return path
+
+    with mock.patch.object(module, "write_json", write_duplicated):
+        return runner()
+
+
+def plant_duplicate_in_document(root: Path, data: dict, rel: str, role: str, doc_path: tuple, key: str, first_value: object) -> None:
+    """Rewrites a retained evidence document with key declared twice and rebinds its digest."""
+    doc = json.loads((root / rel).read_text(encoding="utf-8"))
+    raw = json_with_duplicate(doc, doc_path, key, first_value)
+    (root / rel).write_bytes(raw)
+    for entry in data["artifacts"]:
+        if entry["role"] == role:
+            entry["digest"] = compute_sha256(raw)
+
+
+SLO_VERIFY = lambda root, data: verify_slo_bundle(root, data)  # noqa: E731
+BOUND_VERIFY = lambda root, data: verify_class_bundle(root, data, BOUND_CLAIM_ID)  # noqa: E731
+PROOF_VERIFY = lambda root, data: verify_class_bundle(root, data, PROOF_CLAIM_ID)  # noqa: E731
+
+
+class TestRound6DuplicateKeys(unittest.TestCase):
+    """N1: a key declared twice in any object of any JSON document the checker reads is refused."""
+
+    ENV = "ERR-CLAIM-SLO-ENVIRONMENT-UNRETAINED-001"
+    DERIVATION = "ERR-CLAIM-BOUND-DERIVATION-UNBOUND-001"
+    RECEIPT = "ERR-CLAIM-PROOF-CHECK-RECEIPT-INVALID-001"
+    MODEL = "ERR-CLAIM-PROOF-FORMAL-MODEL-UNBOUND-001"
+
+    def bundle_case(self, builder, verifier, doc_path: tuple, key: str, first_value: object):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            data = builder(root)
+            ok, findings, _ = verify_with_duplicate_bundle(lambda: verifier(root, data), doc_path, key, first_value)
+            return ok, error_code_set(findings)
+
+    def document_case(self, builder, verifier, rel: str, role: str, doc_path: tuple, key: str, first_value: object):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            data = builder(root)
+            plant_duplicate_in_document(root, data, rel, role, doc_path, key, first_value)
+            ok, findings, _ = verifier(root, data)
+            return ok, error_code_set(findings)
+
+    def test_duplicate_keys_in_the_bundle_at_any_level(self) -> None:
+        for label, builder, verifier, doc_path, key, first in (
+            ("slo bundle root generation", build_slo_fixture, SLO_VERIFY, (), "generation", "gen-2020-01-01"),
+            ("slo artifact entry role", build_slo_fixture, SLO_VERIFY, ("artifacts", 0), "role", "environment_manifest"),
+            ("bound bundle root claim_id", build_bound_fixture, BOUND_VERIFY, (), "claim_id", "BOUND-OTHER-001"),
+            ("bound value", build_bound_fixture, BOUND_VERIFY, ("bound",), "value", 1e9),
+            ("bound assumption id", build_bound_fixture, BOUND_VERIFY, ("assumptions", 0), "id", "ASSUME-OTHER"),
+            ("proof theorem statement", build_proof_fixture, PROOF_VERIFY, ("theorem",), "statement", "False"),
+            ("proof toolchain version", build_proof_fixture, PROOF_VERIFY, ("toolchain_identity",), "version", "0.0.1"),
+            ("proof formal_model generation", build_proof_fixture, PROOF_VERIFY, ("formal_model",), "generation", "gen:old"),
+        ):
+            with self.subTest(case=label):
+                self.assertEqual(self.bundle_case(builder, verifier, doc_path, key, first), (False, [DUPLICATE_KEY]))
+
+    def test_duplicate_keys_in_every_retained_evidence_document(self) -> None:
+        for label, builder, verifier, rel, role, doc_path, key, first, refusal in (
+            ("slo measurement actual", build_slo_fixture, SLO_VERIFY, SLO_MEASUREMENT_REL, "measurement_artifact", (), "actual", 99.0, ERR_CLAIM_LEVEL_EXCEEDED),
+            ("slo measurement status", build_slo_fixture, SLO_VERIFY, SLO_MEASUREMENT_REL, "measurement_artifact", (), "status", "failed", ERR_CLAIM_LEVEL_EXCEEDED),
+            ("slo measurement_window start", build_slo_fixture, SLO_VERIFY, SLO_MEASUREMENT_REL, "measurement_artifact", ("measurement_window",), "started_at", "2000-01-01T00:00:00Z", ERR_CLAIM_LEVEL_EXCEEDED),
+            ("slo environment manifest", build_slo_fixture, SLO_VERIFY, SLO_ENVIRONMENT_REL, "environment_manifest", (), "host_profile", "other-host", self.ENV),
+            ("bound derivation derived_value", build_bound_fixture, BOUND_VERIFY, BOUND_DERIVATION_REL, "derivation", (), "derived_value", 1.0, self.DERIVATION),
+            ("bound derivation input", build_bound_fixture, BOUND_VERIFY, BOUND_DERIVATION_REL, "derivation", ("inputs", "D_decode"), "value", 4000.0, self.DERIVATION),
+            ("bound sensitivity entry", build_bound_fixture, BOUND_VERIFY, BOUND_DERIVATION_REL, "derivation", ("sensitivity", 0), "partial", "?", self.DERIVATION),
+            ("proof check receipt status", build_proof_fixture, PROOF_VERIFY, PROOF_RECEIPT_REL, "proof_check_receipt", (), "status", "failed", self.RECEIPT),
+            ("proof model manifest claim_ids", build_proof_fixture, PROOF_VERIFY, PROOF_MODEL_REL, "formal_model", (), "claim_ids", ["OTHER-001"], self.MODEL),
+            ("proof model source digest", build_proof_fixture, PROOF_VERIFY, PROOF_MODEL_REL, "formal_model", ("source",), "digest", "sha256:" + "0" * 64, self.MODEL),
+        ):
+            with self.subTest(case=label):
+                self.assertEqual(self.document_case(builder, verifier, rel, role, doc_path, key, first), (False, sorted([DUPLICATE_KEY, refusal])))
+
+    def test_duplicate_keys_in_registries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            claims = root / "architecture/claims.json"
+            doc = json.loads(claims.read_text(encoding="utf-8"))
+            first = next(iter(doc))
+            claims.write_bytes(json_with_duplicate(doc, (), first, doc[first]))
+            _, _, findings = load_authoritative_claims(claims)
+            self.assertEqual(codes(findings), [DUPLICATE_KEY])
+            self.assertEqual(codes(audit_claim_kind_registry(root=root, claims_json_path=claims, claims_md_path=root / "registries/CLAIMS.md")), [DUPLICATE_KEY])
+        for rel, load, expected in (
+            ("architecture/invariants.json", lambda root: cpb.load_claim_class_bindings(root)[1], [DUPLICATE_KEY]),
+            ("architecture/stable_id_resolution.json", lambda root: cpb.load_tombstone_index(root)[1], sorted([DUPLICATE_KEY, "ERR-CLAIM-PROOF-TOMBSTONE-INDEX-UNAVAILABLE-001"])),
+            ("architecture/readiness_dimensions.json", lambda root: cpb.load_readiness_states(root / "architecture/readiness_dimensions.json", "r")[1], [DUPLICATE_KEY]),
+        ):
+            with self.subTest(registry=rel), tempfile.TemporaryDirectory() as tmpdir:
+                root = build_fixture_root(Path(tmpdir))
+                doc = json.loads((ROOT / rel).read_text(encoding="utf-8"))
+                first = next(iter(doc))
+                (root / rel).parent.mkdir(parents=True, exist_ok=True)
+                (root / rel).write_bytes(json_with_duplicate(doc, (), first, doc[first]))
+                self.assertEqual(sorted(codes(load(root))), expected)
+
+    def test_duplicate_keys_in_qualification_receipts(self) -> None:
+        for label, doc_path, key, first in (
+            ("status first=failed", (), "status", "failed"),
+            ("status first=passed", (), "status", "passed"),
+            ("command status first=failed", ("commands", 0), "status", "failed"),
+        ):
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                path = root / RETENTION_REL_FOR_TESTS
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(json_with_duplicate(make_receipt(), doc_path, key, first))
+                findings, status = inspect_qualification_receipt_for_tests(path, root)
+                self.assertEqual((error_code_set(findings), status), ([DUPLICATE_KEY], None))
+
+    def test_cli_duplicate_actual_no_longer_verifies(self) -> None:
+        """Probe p21: measurement bytes {"actual": 99.0, "actual": 1.2, ...} verified end to end."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            data = build_slo_fixture(root, measurement={"actual": 1.2})
+            path = root / SLO_MEASUREMENT_REL
+            raw = path.read_bytes().replace(b'{"actual"', b'{"actual": 99.0, "actual"', 1)
+            self.assertEqual(raw.count(b'"actual"'), 2)
+            path.write_bytes(raw)
+            for entry in data["artifacts"]:
+                if entry["role"] == "measurement_artifact":
+                    entry["digest"] = compute_sha256(raw)
+            write_slo_bundle(root, data)
+            promote_slos_row(root, SLO_CLAIM_ID, SLO_BUNDLE_REL)
+            result = run_bytes_cli([b"--root", str(root).encode(), b"--as-of", b"2026-09-02T00:00:00Z"])
+            self.assertEqual(result.returncode, 1, result.stdout[-400:])
+            self.assertIn(DUPLICATE_KEY.encode(), result.stdout)
+            self.assertIn(b"0/1 claims verified", result.stdout)
+
+
+RETENTION_REL_FOR_TESTS = "qualification-artifacts/lane/qualification-receipt.json"
+
+
+def inspect_qualification_receipt_for_tests(path: Path, root: Path):
+    return cpb.inspect_qualification_receipt(path, root)
+
+
+class TestRound6ReceiptLookalikes(unittest.TestCase):
+    """A lookalike of a field the checker relies on can no longer shadow it in a qualification
+    receipt (probe p20 R2): refused as an unknown field."""
+
+    def inspect(self, doc: dict):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            path = root / RETENTION_REL_FOR_TESTS
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(doc), encoding="utf-8")
+            findings, status = inspect_qualification_receipt_for_tests(path, root)
+            return error_code_set(findings), status
+
+    def test_controls(self) -> None:
+        self.assertEqual(self.inspect(make_receipt()), ([], "passed"))
+        self.assertEqual(self.inspect(make_receipt(status="failed")), ([], "failed"))
+
+    def test_lookalikes_of_relied_on_fields_are_refused(self) -> None:
+        for key in ("Status", "STATUS", " status", "status ", "status​", "ｓｔａｔｕｓ", "Commands", "Schema", "receiptid"):
+            with self.subTest(key=key):
+                self.assertEqual(self.inspect({**make_receipt(), key: "failed"})[0], [FIELD_UNKNOWN])
+
+    def test_lookalike_command_status_is_refused(self) -> None:
+        receipt = make_receipt()
+        receipt["commands"][0]["Status"] = "failed"
+        self.assertEqual(self.inspect(receipt)[0], [FIELD_UNKNOWN])
+
+
+class TestRound6Digests(unittest.TestCase):
+    """N3: artifact digests are compared byte for byte against the schema pattern; a null
+    retentionState is refused (the schema enum has no null)."""
+
+    DIGEST = "ERR-CLAIM-PROOF-DIGEST-MISMATCH-001"
+
+    def run_slo(self, mutate):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            data = build_slo_fixture(root)
+            mutate(data["artifacts"][0])
+            ok, findings, _ = verify_slo_bundle(root, data)
+            return ok, error_code_set(findings)
+
+    def test_non_exact_digests_are_refused(self) -> None:
+        for label, transform in (
+            ("uppercase", lambda d: d.upper()),
+            ("SHA256 prefix only", lambda d: "SHA256" + d[6:]),
+            ("padded", lambda d: " " + d + "\n"),
+            ("trailing newline", lambda d: d + "\n"),
+            ("uppercase hex", lambda d: d[:7] + d[7:].upper()),
+        ):
+            with self.subTest(case=label):
+                def mutate(entry: dict, transform=transform) -> None:
+                    entry["digest"] = transform(entry["digest"])
+                self.assertEqual(self.run_slo(mutate), (False, sorted([self.DIGEST, ERR_CLAIM_LEVEL_EXCEEDED])))
+
+    def test_open_retained_file_takes_only_an_exact_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            digest = compute_sha256(b"x")
+            (root / "a.bin").write_bytes(b"x")
+            self.assertEqual(cpb._open_retained_file(root, "a.bin", digest), (b"x", ""))
+            for declared in (digest.upper(), " " + digest, digest + "\n"):
+                with self.subTest(declared=declared):
+                    self.assertIsNone(cpb._open_retained_file(root, "a.bin", declared)[0])
+
+    def test_null_retention_state_is_refused(self) -> None:
+        def mutate(entry: dict) -> None:
+            entry["retentionState"] = None
+        self.assertEqual(self.run_slo(mutate), (False, [_code("ERR_UNRECOGNIZED_STATE")]))
+
+
+class TestRound6Streams(unittest.TestCase):
+    """N4: only regular files are read (a FIFO never hangs the checker); N5: a closed stdout ends
+    without a traceback and the verdict is still the exit code."""
+
+    def run_cli_with_timeout(self, root: Path, *extra: str) -> subprocess.CompletedProcess:
+        cmd = [sys.executable, "-B", str(ROOT / "scripts/claim_proof_bundle_checker.py"), "--root", str(root), "--as-of", "2026-09-02T00:00:00Z", *extra]
+        try:
+            return subprocess.run(cmd, capture_output=True, timeout=90)
+        except subprocess.TimeoutExpired:
+            self.fail(f"the checker hung (killed after 90 s): {extra}")
+
+    def test_fifo_in_place_of_a_file_is_refused_not_read(self) -> None:
+        for rel in ("registries/CLAIMS.md", "architecture/claims.json", "registries/SLOS.md", "architecture/invariants.json",
+                    "qualification-artifacts/lane/qualification-receipt.json", "README.md"):
+            with self.subTest(file=rel), tempfile.TemporaryDirectory() as tmpdir:
+                root = build_fixture_root(Path(tmpdir))
+                path = root / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                if path.exists():
+                    path.unlink()
+                os.mkfifo(path)
+                result = self.run_cli_with_timeout(root)
+                self.assertEqual(result.returncode, 1, (result.stdout[-300:], result.stderr[-300:]))
+                self.assertNotIn(b"Traceback", result.stderr)
+                self.assertIn(b"ERR-", result.stdout)
+
+    def test_read_regular_file_refuses_a_fifo_without_blocking(self) -> None:
+        code = ("import sys; sys.path.insert(0, sys.argv[1]); import claim_proof_bundle_checker as c, os\n"
+                "os.mkfifo(sys.argv[2])\n"
+                "try:\n    c._read_regular_file(__import__('pathlib').Path(sys.argv[2]))\n"
+                "except OSError as exc:\n    print('refused', type(exc).__name__)\n")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = subprocess.run([sys.executable, "-B", "-c", code, str(ROOT / "scripts"), str(Path(tmpdir) / "f")], capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.stdout.strip(), "refused _NotRegularFile", result.stderr[-300:])
+
+    def test_closed_stdout_pipe_ends_without_a_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = promoted_slo_root(Path(tmpdir), measurement={"actual": 99.0})
+            cmd = [sys.executable, "-B", str(ROOT / "scripts/claim_proof_bundle_checker.py"), "--root", str(root), "--as-of", "2026-09-02T00:00:00Z"]
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            proc.stdout.close()
+            err = proc.stderr.read()
+            proc.stderr.close()
+            proc.wait(timeout=120)
+            self.assertNotIn(b"Traceback", err)
+            self.assertEqual(proc.returncode, 1, err[-300:])  # the audit's verdict, not an error code
+
+    def test_closed_stdout_descriptor_ends_without_a_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = promoted_slo_root(Path(tmpdir), measurement={"actual": 99.0})
+            cmd = [sys.executable, "-B", str(ROOT / "scripts/claim_proof_bundle_checker.py"), "--root", str(root), "--as-of", "2026-09-02T00:00:00Z"]
+            result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=120, close_fds=True,
+                                    preexec_fn=lambda: os.close(1))
+            self.assertNotIn(b"Traceback", result.stderr)
+            self.assertEqual(result.returncode, 1, result.stderr[-300:])
+
+
+class TestRound6ErrorsRows(unittest.TestCase):
+    """N2 (authorized rewording) and the new DUPLICATE-KEY row."""
+
+    def row(self, code: str) -> str:
+        rows = [line for line in (ROOT / "registries/ERRORS.md").read_text(encoding="utf-8").splitlines() if line.startswith(f"| `{code}` |")]
+        self.assertEqual(len(rows), 1, code)
+        return rows[0]
+
+    def test_field_unknown_row_names_every_document(self) -> None:
+        row = self.row(FIELD_UNKNOWN)
+        for document in ("measurement_window", "derivation input", "sensitivity entry", "model source", "qualification receipt"):
+            with self.subTest(document=document):
+                self.assertIn(document, row)
+
+    def test_duplicate_key_id_is_registered(self) -> None:
+        self.assertEqual(_code("ERR_EVIDENCE_DUPLICATE_KEY"), DUPLICATE_KEY)
+        self.assertIn(DUPLICATE_KEY, cpb.DIAGNOSTIC_REGISTRY)
+        self.assertIn("same key twice", self.row(DUPLICATE_KEY))
+
+
 if __name__ == "__main__":
     unittest.main()
 
