@@ -183,3 +183,6 @@ impl PropertyTwin {
 
 /// Native reference-image atlas, descriptor matching, and camera localization.
 pub mod localization;
+
+/// Portable localization atlas archives with exact source and mask bindings.
+pub mod atlas_archive;
