@@ -1062,3 +1062,355 @@ fn test_predicted_distinction_from_all_other_provenance_classes() -> Result<(), 
     Ok(())
 }
 
+#[test]
+fn test_remembered_contract_row_properties() -> Result<(), Box<dyn Error>> {
+    let prov = ProvenanceClass::Remembered;
+
+    // 1. Exact normative stable ID
+    assert_eq!(prov.id(), "PROV-004");
+
+    // 2. Exact normative schema spelling
+    assert_eq!(prov.as_str(), "remembered");
+    assert_eq!(format!("{prov}"), "remembered");
+
+    // 3. Exact normative meaning
+    assert_eq!(
+        prov.meaning(),
+        "Advisory operational memory or prior episode material that must be revalidated against live evidence."
+    );
+
+    // 4. Predicate helper methods
+    assert!(prov.is_remembered());
+    assert!(!prov.is_observed());
+    assert!(!prov.is_derived());
+    assert!(!prov.is_predicted());
+
+    // 5. Constitutional effect authorization rule (INV-069):
+    // Advisory memory CANNOT authorize irreversible physical effects.
+    assert!(!prov.may_authorize_irreversible_effect());
+
+    Ok(())
+}
+
+#[test]
+fn test_remembered_parse_and_resolution() -> Result<(), Box<dyn Error>> {
+    // Parse from stable ID
+    let from_id = ProvenanceClass::from_id("PROV-004")?;
+    assert_eq!(from_id, ProvenanceClass::Remembered);
+
+    // Parse from schema name
+    let from_name = ProvenanceClass::from_name("remembered")?;
+    assert_eq!(from_name, ProvenanceClass::Remembered);
+
+    // Parse via FromStr
+    let from_str_name = ProvenanceClass::from_str("remembered")?;
+    assert_eq!(from_str_name, ProvenanceClass::Remembered);
+
+    let from_str_id = ProvenanceClass::from_str("PROV-004")?;
+    assert_eq!(from_str_id, ProvenanceClass::Remembered);
+
+    // Rejection of invalid / malformed variants (fail closed)
+    assert_eq!(
+        ProvenanceClass::from_id("PROV-0040"),
+        Err(ContractError::InvalidIdentifier)
+    );
+    assert_eq!(
+        ProvenanceClass::from_id("PROV-4"),
+        Err(ContractError::InvalidIdentifier)
+    );
+    assert_eq!(
+        ProvenanceClass::from_name("remember"),
+        Err(ContractError::InvalidIdentifier)
+    );
+    assert_eq!(
+        ProvenanceClass::from_name("REMEMBERED"),
+        Err(ContractError::InvalidIdentifier)
+    );
+    assert_eq!(
+        ProvenanceClass::from_name("memory"),
+        Err(ContractError::InvalidIdentifier)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_remembered_canonical_roundtrip() -> Result<(), Box<dyn Error>> {
+    let prov = ProvenanceClass::Remembered;
+
+    let mut encoder = CanonicalEncoder::new();
+    prov.encode_canonical(&mut encoder);
+    let encoded_bytes = encoder.finish();
+
+    let mut decoder = CanonicalDecoder::new(&encoded_bytes);
+    let decoded = ProvenanceClass::decode_canonical(&mut decoder)?;
+
+    assert_eq!(decoded, prov);
+    assert_eq!(decoded.id(), "PROV-004");
+    assert_eq!(decoded.as_str(), "remembered");
+
+    Ok(())
+}
+
+#[test]
+fn test_remembered_orthogonality_across_epistemic_states() -> Result<(), Box<dyn Error>> {
+    let memory_evidence_digest = ContentDigest::sha256(b"prior_episode_context_pack_digest");
+
+    let basis_for = |state: KnowledgeState| -> Result<Option<KnowledgeStateBasis>, ContractError> {
+        Ok(match state {
+            KnowledgeState::Redacted => Some(KnowledgeStateBasis::Redaction(RedactionMarker {
+                reason: RedactionReason::PrivacyProjection,
+                privacy_generation: PrivacyGeneration::parse("privacy:projection:v1")?,
+            })),
+            KnowledgeState::Stale => {
+                let mut older = LedgerAnchor::genesis("site:provenance-test");
+                older.commit_sequence = 2;
+                let mut current = LedgerAnchor::genesis("site:provenance-test");
+                current.commit_sequence = 6;
+                Some(KnowledgeStateBasis::Stale(StaleBasis::OlderAnchor {
+                    valid_at: Box::new(older),
+                    current: Box::new(current),
+                }))
+            }
+            KnowledgeState::Indeterminate => {
+                Some(KnowledgeStateBasis::Reconciliation(ReconciliationBasis {
+                    unresolved_outcome_root: ContentDigest::sha256(b"unresolved_memory_reconciliation"),
+                    branches: std::collections::BTreeSet::from([
+                        fss_core::ReconciliationBranch::Occurred,
+                        fss_core::ReconciliationBranch::NotOccurred,
+                    ]),
+                }))
+            }
+            _ => None,
+        })
+    };
+
+    let all_states = [
+        KnowledgeState::Known,
+        KnowledgeState::Estimated,
+        KnowledgeState::Unknown,
+        KnowledgeState::Conflicted,
+        KnowledgeState::Stale,
+        KnowledgeState::NotObservable,
+        KnowledgeState::Redacted,
+        KnowledgeState::Indeterminate,
+        KnowledgeState::NotApplicable,
+    ];
+
+    for state in all_states {
+        let cell = KnowledgeCell {
+            claim_id: format!("claim:remembered:{}", state.as_str()),
+            statement: format!("Testing remembered orthogonality for {}", state.as_str()),
+            knowledge_state: state,
+            provenance: ProvenanceClass::Remembered,
+            hypothesis: None,
+            evidence: vec![memory_evidence_digest],
+            contradictions: vec![],
+            valid_until: None,
+            state_basis: basis_for(state)?,
+        };
+
+        assert!(
+            cell.validate().is_ok(),
+            "Validation failed for remembered cell in state {}",
+            state.as_str()
+        );
+
+        // Provenance remains Remembered regardless of epistemic state
+        assert_eq!(cell.provenance, ProvenanceClass::Remembered);
+        assert!(cell.is_remembered());
+        assert_eq!(cell.provenance.id(), "PROV-004");
+        assert_eq!(cell.provenance.as_str(), "remembered");
+
+        // Epistemic state and provenance are strictly distinct
+        assert_ne!(cell.provenance.as_str(), state.as_str());
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_remembered_cannot_authorize_irreversible_effects_even_when_known(
+) -> Result<(), Box<dyn Error>> {
+    let now = TimestampNs(1_000_000_000);
+    let episode_digest = ContentDigest::sha256(b"prior_shift_incident_report_packet");
+
+    // Constitutional Hard Gate (AGENTS.md & INV-069):
+    // Even if memory records a fact as Known in the prior episode,
+    // has historical evidence, has no contradictions, and is unexpired,
+    // it MUST NEVER authorize an irreversible physical effect without live revalidation!
+    let remembered_known_cell = KnowledgeCell {
+        claim_id: "claim:remembered:isolation_valve_closed".to_string(),
+        statement: "Prior shift episode records cooling loop valve 4 as closed".to_string(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Remembered,
+        hypothesis: None,
+        evidence: vec![episode_digest],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+        state_basis: None,
+    };
+
+    assert!(remembered_known_cell.validate().is_ok());
+    assert!(remembered_known_cell.is_remembered());
+    assert_eq!(remembered_known_cell.knowledge_state, KnowledgeState::Known);
+
+    // Irreversible effect premise MUST evaluate to false (fail closed)
+    assert!(
+        !remembered_known_cell.is_irreversible_effect_premise(now),
+        "Remembered operational memory must NEVER authorize irreversible effects even when Known!"
+    );
+
+    // Contrast with Observed and Derived
+    let observed_cell = KnowledgeCell {
+        provenance: ProvenanceClass::Observed,
+        ..remembered_known_cell.clone()
+    };
+    assert!(observed_cell.is_irreversible_effect_premise(now));
+
+    let derived_cell = KnowledgeCell {
+        provenance: ProvenanceClass::Derived,
+        ..remembered_known_cell
+    };
+    assert!(derived_cell.is_irreversible_effect_premise(now));
+
+    Ok(())
+}
+
+#[test]
+fn test_remembered_advisory_revalidation_lifecycle() -> Result<(), Box<dyn Error>> {
+    let now = TimestampNs(1_000_000_000);
+    let prior_episode_ref = ContentDigest::sha256(b"episode_archive_anchor_sequence_42");
+    let live_sensor_packet = ContentDigest::sha256(b"live_telemetry_capture_sequence_99");
+
+    // 1. Advisory operational memory: Valve state remembered from prior episode
+    let advisory_memory = KnowledgeCell {
+        claim_id: "claim:cooling:valve:004".to_string(),
+        statement: "Valve 4 was verified closed in prior episode 42".to_string(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Remembered,
+        hypothesis: None,
+        evidence: vec![prior_episode_ref],
+        contradictions: vec![],
+        valid_until: None,
+        state_basis: None,
+    };
+
+    assert!(advisory_memory.validate().is_ok());
+    assert!(advisory_memory.is_remembered());
+    // Prohibited shortcut from AGENTS.md:
+    // "Treating an agent memory, prior handoff, vendor claim, or prediction as current canonical truth."
+    // Memory alone cannot authorize an irreversible effect
+    assert!(!advisory_memory.is_irreversible_effect_premise(now));
+
+    // 2. Revalidation against live physical evidence (PROV-001 observed at current anchor)
+    let live_revalidated = KnowledgeCell {
+        claim_id: "claim:cooling:valve:004".to_string(),
+        statement: "Live physical contact sensor confirms valve 4 is closed".to_string(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Observed,
+        hypothesis: None,
+        evidence: vec![live_sensor_packet],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(1_100_000_000)),
+        state_basis: None,
+    };
+
+    assert!(live_revalidated.validate().is_ok());
+    assert!(live_revalidated.is_observed());
+    // Once revalidated against live observation, effect authorization succeeds
+    assert!(live_revalidated.is_irreversible_effect_premise(now));
+
+    Ok(())
+}
+
+#[test]
+fn test_remembered_stale_basis_interaction() -> Result<(), Box<dyn Error>> {
+    let now = TimestampNs(1_000_000_000);
+    let historical_evidence = ContentDigest::sha256(b"historical_log_anchor_seq_10");
+
+    let mut older = LedgerAnchor::genesis("site:facility-substation");
+    older.commit_sequence = 10;
+    let mut current = LedgerAnchor::genesis("site:facility-substation");
+    current.commit_sequence = 25;
+
+    // Advisory memory that is recognized as Stale due to newer ledger anchor
+    let stale_memory = KnowledgeCell {
+        claim_id: "claim:breaker:status:substation".to_string(),
+        statement: "Main circuit breaker was closed at sequence 10".to_string(),
+        knowledge_state: KnowledgeState::Stale,
+        provenance: ProvenanceClass::Remembered,
+        hypothesis: None,
+        evidence: vec![historical_evidence],
+        contradictions: vec![],
+        valid_until: None,
+        state_basis: Some(KnowledgeStateBasis::Stale(StaleBasis::OlderAnchor {
+            valid_at: Box::new(older),
+            current: Box::new(current),
+        })),
+    };
+
+    assert!(stale_memory.validate().is_ok());
+    let validated = stale_memory.validated()?;
+    assert!(validated.is_remembered());
+    assert!(validated.is_stale());
+
+    // Both the Stale state AND the Remembered provenance independently reject effect premise
+    assert!(!validated.is_irreversible_effect_premise(now));
+
+    Ok(())
+}
+
+#[test]
+fn test_remembered_distinction_from_all_other_provenance_classes() -> Result<(), Box<dyn Error>> {
+    let all_provenances = [
+        ProvenanceClass::Observed,
+        ProvenanceClass::Derived,
+        ProvenanceClass::Predicted,
+        ProvenanceClass::Remembered,
+        ProvenanceClass::OperatorAsserted,
+        ProvenanceClass::VendorClaimed,
+        ProvenanceClass::Policy,
+    ];
+
+    let remembered = ProvenanceClass::Remembered;
+
+    for prov in all_provenances {
+        if prov != remembered {
+            // IDs are strictly distinct
+            assert_ne!(remembered.id(), prov.id());
+            // Schema names are strictly distinct
+            assert_ne!(remembered.as_str(), prov.as_str());
+            // Meanings are strictly distinct
+            assert_ne!(remembered.meaning(), prov.meaning());
+        }
+    }
+
+    // Effect authorization partition check
+    let authorizing_classes: Vec<ProvenanceClass> = all_provenances
+        .iter()
+        .copied()
+        .filter(|p| p.may_authorize_irreversible_effect())
+        .collect();
+
+    let non_authorizing_classes: Vec<ProvenanceClass> = all_provenances
+        .iter()
+        .copied()
+        .filter(|p| !p.may_authorize_irreversible_effect())
+        .collect();
+
+    // Remembered is in the non-authorizing partition
+    assert!(non_authorizing_classes.contains(&ProvenanceClass::Remembered));
+    assert!(non_authorizing_classes.contains(&ProvenanceClass::Predicted));
+    assert!(non_authorizing_classes.contains(&ProvenanceClass::VendorClaimed));
+    assert_eq!(non_authorizing_classes.len(), 3);
+
+    // Authorizing partition
+    assert!(authorizing_classes.contains(&ProvenanceClass::Observed));
+    assert!(authorizing_classes.contains(&ProvenanceClass::Derived));
+    assert!(authorizing_classes.contains(&ProvenanceClass::OperatorAsserted));
+    assert!(authorizing_classes.contains(&ProvenanceClass::Policy));
+    assert_eq!(authorizing_classes.len(), 4);
+
+    Ok(())
+}

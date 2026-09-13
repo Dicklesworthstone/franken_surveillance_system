@@ -392,6 +392,12 @@ impl ProvenanceClass {
     pub const fn is_predicted(self) -> bool {
         matches!(self, Self::Predicted)
     }
+
+    /// Returns whether this provenance class represents advisory operational memory or prior episode material (PROV-004).
+    #[must_use]
+    pub const fn is_remembered(self) -> bool {
+        matches!(self, Self::Remembered)
+    }
 }
 
 impl CanonicalEncode for ProvenanceClass {
