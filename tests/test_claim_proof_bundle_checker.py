@@ -5171,6 +5171,106 @@ class TestRound3BoundedModel(unittest.TestCase):
         inputs = {**FIXTURE_INPUTS, "Junk": {"value": 1.0, "units": "ms"}}
         self.assertEqual(self.run_bound(derivation={"inputs": inputs}), (False, [self.RECOMPUTE]))
 
+
+# ---------------------------------------------------------------------------
+# Round-3 re-review, 30.87.5 (probe p9_slo.py; TOML nesting from the cross-cutting item)
+# ---------------------------------------------------------------------------
+
+AGENT_SLO_ID = "SLO-AGENT-001"  # registries/SLOS.md: "initial agent answer ≤ 800 tokens and ≤ 250 ms, ..."
+AGENT_OPERATION_ID = "COST-QUERY-001"  # operation_cost_registry.toml: slo_ids ["SLO-AGENT-001"]
+
+
+def build_conjunct_fixture(root: Path, measurements: list[dict]) -> dict:
+    """An slo claim for SLO-AGENT-001 retaining one measurement per entry of measurements."""
+    first = {"slo_id": AGENT_SLO_ID, "operation_id": AGENT_OPERATION_ID, **measurements[0]}
+    data = build_slo_fixture(root, measurement=first, bundle={"claim_id": AGENT_SLO_ID, "bundle_id": "BUNDLE-SLO-AGENT-001"})
+    base = json.loads((root / SLO_MEASUREMENT_REL).read_text(encoding="utf-8"))
+    for index, extra in enumerate(measurements[1:], start=2):
+        rel = f"qualification-artifacts/slo/measurement-{index}.json"
+        digest = _write_doc(root, rel, {**base, **extra})
+        data["artifacts"].append({"role": "measurement_artifact", "path": rel, "digest": digest})
+    return data
+
+
+class TestRound3Slo(unittest.TestCase):
+    """Round-3 slo findings as planted tests with exact finding-id sets."""
+
+    UNBOUND = _code("ERR_SLO_TARGET_UNBOUND")
+
+    def run_conjuncts(self, measurements: list[dict]):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ok, findings, _ = verify_slo_bundle(root, build_conjunct_fixture(root, measurements), claim_id=AGENT_SLO_ID)
+            return ok, error_code_set(findings)
+
+    # Conjunctive targets need evidence for every conjunct ---------------------------
+
+    def test_conjunctive_target_with_one_measurement_per_conjunct_passes(self) -> None:
+        self.assertEqual(self.run_conjuncts([{"unit": "tokens", "actual": 700.0}, {"unit": "ms", "actual": 200.0}]), (True, []))
+
+    def test_conjunctive_target_missing_a_conjunct_fails(self) -> None:
+        for label, measurements in (
+            ("only the tokens conjunct", [{"unit": "tokens", "actual": 700.0}]),
+            ("only the ms conjunct", [{"unit": "ms", "actual": 200.0}]),
+        ):
+            with self.subTest(case=label):
+                self.assertEqual(self.run_conjuncts(measurements), (False, [self.UNBOUND]))
+
+    def test_every_conjunct_must_meet_its_threshold(self) -> None:
+        self.assertEqual(
+            self.run_conjuncts([{"unit": "tokens", "actual": 700.0}, {"unit": "ms", "actual": 300.0}]),
+            (False, [ERR_CLAIM_LEVEL_EXCEEDED]),
+        )
+
+    def test_a_conjunct_measured_twice_is_unbound(self) -> None:
+        self.assertEqual(
+            self.run_conjuncts([{"unit": "tokens", "actual": 700.0}, {"unit": "tokens", "actual": 650.0}, {"unit": "ms", "actual": 200.0}]),
+            (False, [self.UNBOUND]),
+        )
+
+    # Context and subject words sit at the grammar's fixed positions --------------------
+
+    def test_scrambled_or_repeated_context_words_are_outside_the_grammar(self) -> None:
+        for target in ("p95 latency ≤ 750 ms on on on LAN LAN", "latency ≤ 750 ms without", "a a a a ≤ 0 ms",
+                       "≤ 750 ms , , ,", "p95 ≤ 750 ms after without first for", "to in a ≤ 5 s without evidence",
+                       "p95 latency < 750 ms", "p95 ≤ 01,000.5 ms", "≤ 750 ms\u200b", "≤ 750\u00a0ms",
+                       "p95 first event hypothesis ≤ 1.5 s evidence threat observable first after"):
+            with self.subTest(target=target):
+                thresholds, defect = cpb._parse_slo_target(target)
+                self.assertEqual(thresholds, [])
+                self.assertIsNotNone(defect)
+        for target, expected in (
+            ("≤ 750 ms", [("<=", 750.0, "ms")]),
+            ("≤ 750 ms and ≤ 1 s", [("<=", 750.0, "ms"), ("<=", 1.0, "s")]),
+            ("p95 first event hypothesis ≤ 1.5 s after first observable threat evidence", [("<=", 1.5, "s")]),
+        ):
+            with self.subTest(target=target):
+                thresholds, defect = cpb._parse_slo_target(target)
+                self.assertIsNone(defect)
+                self.assertEqual([(t.comparator, t.value, t.unit) for t in thresholds], expected)
+
+    def test_scrambled_context_in_slos_md_leaves_the_claim_unbound(self) -> None:
+        def scramble(text: str, row: str) -> str:
+            return text.replace(row, row.replace("after first observable threat evidence", "evidence threat observable first after"))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            put_slos(scramble)(root)
+            ok, findings, _ = verify_slo_bundle(root, build_slo_fixture(root))
+            self.assertEqual((ok, error_code_set(findings)), (False, [self.UNBOUND]))
+
+    # Deep TOML is a registry finding --------------------------------------------------
+
+    def test_deeply_nested_cost_registry_is_a_registry_finding(self) -> None:
+        def setup(root: Path) -> None:
+            text = (ROOT / COST_REL).read_text(encoding="utf-8") + "\ndeep = " + "[" * 100000 + "]" * 100000 + "\n"
+            (root / COST_REL).parent.mkdir(parents=True, exist_ok=True)
+            (root / COST_REL).write_text(text, encoding="utf-8")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            setup(root)
+            ok, findings, _ = verify_slo_bundle(root, build_slo_fixture(root))
+            self.assertEqual((ok, error_code_set(findings)), (False, [_code("ERR_SLO_REGISTRY_INVALID")]))
+
 if __name__ == "__main__":
     unittest.main()
 
