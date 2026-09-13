@@ -208,8 +208,9 @@ class TestClaimProofBundlePositiveControls(unittest.TestCase):
             root = Path(tmpdir)
             write_json(root / PROOF_BUNDLE_REL, seal(build_proof_fixture(root)))
             findings, stats = scan_with_stats(root, class_table(f"| `{PROOF_CLAIM_ID}` | proof | verified | `{PROOF_BUNDLE_REL}` | {PROOF_GENERATION} |"))
-            self.assertEqual(findings, [], [f"{f.code}: {f.message}" for f in findings])
-            self.assertEqual((stats["promoted"], stats["bundles_checked"], stats["bundles_passed"]), (1, 1, 1))
+            # Round 3, decision A: a statically clean proof still needs a prover-run receipt.
+            self.assertEqual(error_code_set(findings), [_code("ERR_PROOF_PROVER_RUN_REQUIRED")], [f"{f.code}: {f.message}" for f in findings])
+            self.assertEqual((stats["promoted"], stats["bundles_checked"], stats["bundles_passed"]), (1, 1, 0))
 
     def test_positive_markdown_row_cites_complete_bounded_model_bundle(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -227,8 +228,10 @@ class TestClaimProofBundlePositiveControls(unittest.TestCase):
             write_json(root / PROOF_BUNDLE_REL, seal(build_proof_fixture(root)))
             append_readme_table(root, class_table(f"| `{PROOF_CLAIM_ID}` | proof | verified | `{PROOF_BUNDLE_REL}` | {PROOF_GENERATION} |"))
             ok, findings, summary = audit_with(root, CLAIM_ROW_CLASSES)
-            self.assertTrue(ok, [f"{f.code}: {f.message}" for f in findings])
-            self.assertEqual((summary["bundles_checked"], summary["verified_bundles_count"]), (1, 1))
+            # Round 3, decision A: a statically clean proof still needs a prover-run receipt.
+            self.assertFalse(ok)
+            self.assertEqual(error_code_set(findings), [_code("ERR_PROOF_PROVER_RUN_REQUIRED")], [f"{f.code}: {f.message}" for f in findings])
+            self.assertEqual((summary["bundles_checked"], summary["verified_bundles_count"]), (1, 0))
             self.assertEqual(summary.get("unpromoted_bundles_count", 0), 0)
             # No repository registry binds FORMAL-002 (review item A): the registry-only CLI refuses it.
             result = run_cli("--root", str(root), "--as-of", "2026-09-02T00:00:00Z")
@@ -3148,10 +3151,10 @@ class TestProofClaimClassRealization(unittest.TestCase):
             self.assertIn(code, cpb.DIAGNOSTIC_REGISTRY)
             self.assertEqual(errors_md.count(f"| `{code}` |"), 1, code)
 
-    def test_proof_complete_evidence_passes(self) -> None:
+    def test_proof_complete_static_evidence_still_requires_a_prover_run(self) -> None:
         is_valid, findings, _ = self._run()
-        self.assertTrue(is_valid, [f.message for f in findings])
-        self.assertEqual(findings, [])
+        self.assertFalse(is_valid)
+        self.assertEqual(error_code_set(findings), [_code("ERR_PROOF_PROVER_RUN_REQUIRED")], [f.message for f in findings])
 
     def test_planted_proof_without_formal_artifact_fails(self) -> None:
         self.assertRefused(self._run(omit_roles=("formal_artifact",)), [_code("ERR_PROOF_FORMAL_ARTIFACT_MISSING")])
@@ -3784,11 +3787,11 @@ class TestProofReviewFindings(unittest.TestCase):
 
     # Positive controls ------------------------------------------------------
 
-    def test_lean_proof_with_complete_evidence_passes(self) -> None:
-        self.assertAccepted(self._run(**lean_fixture()))
+    def test_lean_proof_with_complete_static_evidence_still_requires_a_prover_run(self) -> None:
+        self.assertRefused(self._run(**lean_fixture()), [_code("ERR_PROOF_PROVER_RUN_REQUIRED")])
 
-    def test_tla_proof_with_complete_evidence_passes(self) -> None:
-        self.assertAccepted(self._run())
+    def test_tla_proof_with_complete_static_evidence_still_requires_a_prover_run(self) -> None:
+        self.assertRefused(self._run(), [_code("ERR_PROOF_PROVER_RUN_REQUIRED")])
 
     # (1) Formal artifact content --------------------------------------------
 
@@ -4054,8 +4057,8 @@ class TestClassReviewItemsAtoD(unittest.TestCase):
     def test_B_specified_row_citing_an_achieved_bundle_is_not_verified(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            write_json(root / PROOF_BUNDLE_REL, seal(build_proof_fixture(root, bundle={"supported_level": "achieved"})))
-            findings, stats = scan_with_stats(root, class_table(f"| `{PROOF_CLAIM_ID}` | proof | specified | `{PROOF_BUNDLE_REL}` | {PROOF_GENERATION} |"))
+            write_json(root / BOUND_BUNDLE_REL, seal(build_bound_fixture(root, bundle={"supported_level": "achieved"})))
+            findings, stats = scan_with_stats(root, class_table(f"| `{BOUND_CLAIM_ID}` | bounded_model | specified | `{BOUND_BUNDLE_REL}` | {BOUND_GENERATION} |"))
             self.assertEqual(findings, [], [f"{f.code}: {f.message}" for f in findings])
             self.assertEqual(
                 (stats["promoted"], stats["bundles_checked"], stats["bundles_passed"], stats["bundles_unpromoted"]),
@@ -4412,6 +4415,8 @@ TLA_REL = "proofs/tla/PublicationProof.tla"
 class TestProofLexerAndEscapes(unittest.TestCase):
     """Probe p2_formal.py cases as planted tests with exact finding-id sets."""
 
+    PROVER = _code("ERR_PROOF_PROVER_RUN_REQUIRED")  # round 3, decision A: a statically clean proof still needs a prover run
+
     def expect(self, cases: dict, language_lean: bool, rel: str) -> None:
         for label, (raw, expected) in cases.items():
             with self.subTest(case=label):
@@ -4429,7 +4434,7 @@ class TestProofLexerAndEscapes(unittest.TestCase):
         unproven, escape = _code("ERR_PROOF_UNPROVEN_PLACEHOLDER"), _code("ERR_PROOF_UNSOUND_ESCAPE")
         theorem, missing = _code("ERR_PROOF_THEOREM_UNBOUND"), _code("ERR_PROOF_FORMAL_ARTIFACT_MISSING")
         self.expect({
-            "L0 control": (b"theorem RootLast : True := by\n  trivial\n", []),
+            "L0 control": (b"theorem RootLast : True := by\n  trivial\n", [self.PROVER]),
             "L1 '--' in a string hides sorry": (b'theorem RootLast : 1 = 2 := by\n  have h : "--" = "--" := rfl; sorry\n', [unproven]),
             "L2 _root_.sorryAx": (b"theorem RootLast : 1 = 2 := _root_.sorryAx _ false\n", [unproven]),
             "L3 MVarId.admit via elab": (b'open Lean Elab Tactic in\nelab "cheat" : tactic => liftMetaTactic fun g => do g.admit; pure []\ntheorem RootLast : 1 = 2 := by cheat\n', [unproven, escape]),
@@ -4452,9 +4457,9 @@ class TestProofLexerAndEscapes(unittest.TestCase):
         self.expect({
             "sorry only in strings, char literals and nested comments": (
                 b'def msg := "sorry -- /- admit"\ndef c := \'-\'\n/- outer /- inner sorry -/ still comment admit -/\n'
-                b"-- stop\ntheorem RootLast : True := by\n  trivial\n", []),
+                b"-- stop\ntheorem RootLast : True := by\n  trivial\n", [self.PROVER]),
             "attributes, namespaces and a Greek binder": (
-                "namespace Pub\n@[simp] theorem RootLast (α : Type) : True := by\n  trivial\nend Pub\n".encode(), []),
+                "namespace Pub\n@[simp] theorem RootLast (α : Type) : True := by\n  trivial\nend Pub\n".encode(), [self.PROVER]),
         }, True, LEAN_REL)
 
     def test_P1_P2_tla_probe_cases(self) -> None:
@@ -4462,20 +4467,20 @@ class TestProofLexerAndEscapes(unittest.TestCase):
         theorem, missing = _code("ERR_PROOF_THEOREM_UNBOUND"), _code("ERR_PROOF_FORMAL_ARTIFACT_MISSING")
         m = TLA_MODULE_HEAD
         self.expect({
-            "T0 control": (m + b"THEOREM RootLast == TRUE\n====\n", []),
+            "T0 control": (m + b"THEOREM RootLast == TRUE\n====\n", [self.PROVER]),
             "T1 theorem in a nested (* comment": (m + b"(* (* *)\nTHEOREM RootLast == TRUE\n*)\n====\n", [theorem]),
             "T2 '(*' in a string hides OMITTED": (m + b'THEOREM RootLast == "(*" = "(*"\nPROOF OMITTED\nLEMMA Z == "*)" = "*)"\n====\n', [unproven]),
             "T3 theorem in a second module after ====": (m + b"====\n---- MODULE Other ----\nTHEOREM RootLast == TRUE\n====\n", [theorem]),
             "T4 theorem in a nested module": (m + b"---- MODULE Inner ----\nTHEOREM RootLast == TRUE\n====\n====\n", [theorem]),
             "T5a THEOREM and name on separate lines": (m + b"THEOREM\n  RootLast == TRUE\n====\n", [theorem]),
             "T5b unicode definition sign": (m + "THEOREM RootLast ≜ TRUE\n====\n".encode(), [theorem]),
-            "T5c indented THEOREM": (m + b"   THEOREM RootLast == TRUE\n====\n", []),
+            "T5c indented THEOREM": (m + b"   THEOREM RootLast == TRUE\n====\n", [self.PROVER]),
             "T6 ASSUME FALSE with PROOF OBVIOUS": (m + b"ASSUME FALSE\nTHEOREM RootLast == 1 = 2\nPROOF OBVIOUS\n====\n", [escape]),
             "T6b AXIOM": (m + b"AXIOM FALSE\nTHEOREM RootLast == 1 = 2\nBY DEF RootLast\n====\n", [escape]),
             "T7 lowercase omitted": (m + b"THEOREM RootLast == 1 = 2\nPROOF omitted\n====\n", [unproven]),
             "T8 OMITTED": (m + b"THEOREM RootLast == 1 = 2\nPROOF OMITTED\n====\n", [unproven]),
             "T9 text before the header": (b"junk\n" + m + b"THEOREM RootLast == TRUE\n====\n", [missing]),
-            "T10 sequent ASSUME inside a theorem": (m + b"THEOREM RootLast ==\n  ASSUME NEW x\n  PROVE x = x\nOBVIOUS\n====\n", []),
+            "T10 sequent ASSUME inside a theorem": (m + b"THEOREM RootLast ==\n  ASSUME NEW x\n  PROVE x = x\nOBVIOUS\n====\n", [self.PROVER]),
             "T11 unterminated module": (m + b"THEOREM RootLast == TRUE\n", [missing]),
         }, False, TLA_REL)
 
@@ -4497,7 +4502,7 @@ class TestProofLexerAndEscapes(unittest.TestCase):
                 self.assertEqual(codes, [_code("ERR_PROOF_TESTS_ONLY")])
         for rel in ("proofs/check/PublicationProof.tla", "proofs/tla/PublicationSpec.tla", "proofs/tla/Attestation.tla"):
             with self.subTest(control=rel):
-                self.assertEqual(run_formal(rel, body), (True, []))
+                self.assertEqual(run_formal(rel, body), (False, [self.PROVER]))
         ok, codes = run_formal("proofs/Proof.TLA", body)
         self.assertEqual((ok, codes), (False, [_code("ERR_PROOF_FORMAL_ARTIFACT_MISSING")]))
 
@@ -4616,15 +4621,15 @@ class TestReviewP5toP7(unittest.TestCase):
         self.assertEqual(readme_audit(rows, files), (False, [_code("ERR_CLAIM_CLASS_EVIDENCE_UNINSPECTED")], (1, 0, 0)))
 
     def test_P7_two_copies_of_one_bundle_count_once(self) -> None:
-        copy_rel = "qualification-artifacts/proof/formal-002-copy.bundle.json"
+        copy_rel = "qualification-artifacts/bounds/ingest-latency-copy.bundle.json"
         with tempfile.TemporaryDirectory() as tmpdir:
             root = build_fixture_root(Path(tmpdir))
-            bundle = seal(build_proof_fixture(root))
-            write_json(root / PROOF_BUNDLE_REL, bundle)
+            bundle = seal(build_bound_fixture(root))
+            write_json(root / BOUND_BUNDLE_REL, bundle)
             write_json(root / copy_rel, bundle)
             table = class_table(
-                f"| `{PROOF_CLAIM_ID}` | proof | verified | `{PROOF_BUNDLE_REL}` | {PROOF_GENERATION} |",
-                f"| `{PROOF_CLAIM_ID}` | proof | verified | `{copy_rel}` | {PROOF_GENERATION} |",
+                f"| `{BOUND_CLAIM_ID}` | bounded_model | verified | `{BOUND_BUNDLE_REL}` | {BOUND_GENERATION} |",
+                f"| `{BOUND_CLAIM_ID}` | bounded_model | verified | `{copy_rel}` | {BOUND_GENERATION} |",
             )
             findings, stats = scan_with_stats(root, table)
             self.assertEqual(findings, [], [f"{f.code}: {f.message}" for f in findings])
@@ -4637,10 +4642,10 @@ class TestReviewP5toP7(unittest.TestCase):
     def test_P7_scan_counts_one_resolved_path_once(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            write_json(root / PROOF_BUNDLE_REL, seal(build_proof_fixture(root)))
+            write_json(root / BOUND_BUNDLE_REL, seal(build_bound_fixture(root)))
             findings, stats = scan_with_stats(root, class_table(
-                f"| `{PROOF_CLAIM_ID}` | proof | verified | `{PROOF_BUNDLE_REL}` | {PROOF_GENERATION} |",
-                f"| `{PROOF_CLAIM_ID}` | proof | verified | `./{PROOF_BUNDLE_REL}` | {PROOF_GENERATION} |",
+                f"| `{BOUND_CLAIM_ID}` | bounded_model | verified | `{BOUND_BUNDLE_REL}` | {BOUND_GENERATION} |",
+                f"| `{BOUND_CLAIM_ID}` | bounded_model | verified | `./{BOUND_BUNDLE_REL}` | {BOUND_GENERATION} |",
             ))
             self.assertEqual(findings, [])
             self.assertEqual((stats["promoted"], stats["bundles_checked"], stats["bundles_passed"]), (2, 1, 1))
@@ -4877,6 +4882,92 @@ class TestSloReviewS1toS3(unittest.TestCase):
         def hide(text: str, row: str) -> str:
             return text.replace(row + "\n", "") + "\n````\n```\n" + row.replace(DETECT_TARGET, "≤ 100 s") + "\n````\n"
         self.assertEqual(self.run_case(measurement={"actual": 50.0}, setup=put_slos(hide)), (False, [_code("ERR_CLAIM_CLASS_UNRESOLVED")]))
+
+
+# ---------------------------------------------------------------------------
+# Round-3 re-review, 30.87.2 part A: proofs fail closed, count per claim, deep JSON
+# (probes p6_lexers.py, p8_e2e.py cases B and C, p7_dos.py JSON nesting)
+# ---------------------------------------------------------------------------
+
+DEEP_JSON = b"[" * 100000 + b"]" * 100000
+
+
+class TestRound3ProofFailClosedAndCounts(unittest.TestCase):
+    """A proof never verifies from static evidence; verified counts are per claim; deep JSON is a finding."""
+
+    PROVER = _code("ERR_PROOF_PROVER_RUN_REQUIRED")
+
+    def test_prover_run_id_is_registered(self) -> None:
+        code = "ERR-CLAIM-PROOF-PROVER-RUN-REQUIRED-001"
+        self.assertEqual(self.PROVER, code)
+        self.assertIn(code, cpb.DIAGNOSTIC_REGISTRY)
+        self.assertEqual((ROOT / "registries/ERRORS.md").read_text(encoding="utf-8").count(f"| `{code}` |"), 1)
+
+    def test_A_static_evidence_never_verifies_a_proof(self) -> None:
+        for label, kwargs in (("TLA+ checked by tlaps", {}), ("Lean 4", lean_fixture())):
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                ok, findings, _ = verify_class_bundle(root, build_proof_fixture(root, **kwargs), PROOF_CLAIM_ID)
+                self.assertFalse(ok, "a proof was verified from static evidence alone")
+                self.assertEqual(error_code_set(findings), [self.PROVER])
+
+    def test_A_a_proof_claim_row_is_never_counted_verified(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            write_json(root / PROOF_BUNDLE_REL, seal(build_proof_fixture(root)))
+            findings, stats = scan_with_stats(root, class_table(f"| `{PROOF_CLAIM_ID}` | proof | verified | `{PROOF_BUNDLE_REL}` | {PROOF_GENERATION} |"))
+            self.assertEqual(error_code_set(findings), [self.PROVER])
+            self.assertEqual((stats["promoted"], stats["bundles_checked"], stats["bundles_passed"], stats["bundles_unpromoted"]), (1, 1, 0, 0))
+
+    def test_A_a_statically_defective_proof_reports_its_defect(self) -> None:
+        """The prover-run finding marks an otherwise clean bundle; a defective one reports its defect."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ok, findings, _ = verify_class_bundle(root, build_proof_fixture(root, bundle={"theorem": _DROP}), PROOF_CLAIM_ID)
+            self.assertFalse(ok)
+            self.assertEqual(error_code_set(findings), [_code("ERR_PROOF_THEOREM_UNBOUND")])
+
+    def test_count_is_per_claim_not_per_bundle(self) -> None:
+        second_rel = "qualification-artifacts/bounds/ingest-latency-2.bundle.json"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            first = seal(build_bound_fixture(root))
+            second = seal({**{k: v for k, v in first.items() if k != "content_digest"}, "note": "a second, distinct bundle"})
+            self.assertNotEqual(first["content_digest"], second["content_digest"])
+            write_json(root / BOUND_BUNDLE_REL, first)
+            write_json(root / second_rel, second)
+            table = class_table(
+                f"| `{BOUND_CLAIM_ID}` | bounded_model | verified | `{BOUND_BUNDLE_REL}` | {BOUND_GENERATION} |",
+                f"| `{BOUND_CLAIM_ID}` | bounded_model | verified | `{second_rel}` | {BOUND_GENERATION} |",
+            )
+            findings, stats = scan_with_stats(root, table)
+            self.assertEqual(findings, [], [f"{f.code}: {f.message}" for f in findings])
+            self.assertEqual((stats["bundles_checked"], stats["bundles_passed"], stats["bundles_unpromoted"]), (1, 1, 0))
+            append_readme_table(root, table)
+            ok, findings, summary = audit_with(root, CLAIM_ROW_CLASSES)
+            self.assertTrue(ok, [f"{f.code}: {f.message}" for f in findings])
+            self.assertEqual((summary["bundles_checked"], summary["verified_bundles_count"], summary["unpromoted_bundles_count"]), (1, 1, 0))
+
+    def test_deep_json_is_unreadable_input(self) -> None:
+        self.assertIsNone(cpb._json_object(b'{"a":' + DEEP_JSON + b"}"))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "b.json"
+            path.write_bytes(b'{"a":' + DEEP_JSON + b"}")
+            data, findings = cpb._read_json_document(path, "b.json", "proof bundle")
+            self.assertIsNone(data)
+            self.assertEqual(codes(findings), [ERR_UNREADABLE_INPUT])
+
+    def test_deep_json_bundle_fails_the_cli_without_a_traceback(self) -> None:
+        rel = "proof_bundles/deep.bundle.json"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_bytes(b'{"claim_id":"INV-001","x":' + DEEP_JSON + b"}")
+            append_readme_table(root, class_table(f"| `INV-001` | invariant | verified | `{rel}` |"))
+            result = run_cli("--root", str(root), "--as-of", "2026-09-02T00:00:00Z")
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertNotIn("Traceback", result.stderr)
+            self.assertIn(ERR_UNREADABLE_INPUT, result.stdout)
 
 if __name__ == "__main__":
     unittest.main()
