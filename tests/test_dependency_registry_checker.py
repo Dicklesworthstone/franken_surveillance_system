@@ -40,6 +40,9 @@ import dependency_registry_checker
 from dependency_registry_checker import (
     BASELINE_DEPENDENCIES_FREEZE_DIGEST,
     BASELINE_DEPENDENCIES_GENERATION,
+    BASELINE_CONSTITUTION_FREEZE_DIGEST,
+    BASELINE_ALLOWLIST_FREEZE_DIGEST,
+    MAX_REGISTRY_FILE_SIZE_BYTES,
     CANONICAL_DEPENDENCY_REGISTRY_ROWS,
     EXPECTED_FREEZE_DIGESTS,
     MANDATORY_ROW_FIELDS,
@@ -53,6 +56,9 @@ from dependency_registry_checker import (
     ERR_DEP_STABLE_ID_REUSED,
     ERR_DEP_CONST_INVARIANT,
     compute_canonical_dependencies_digest,
+    compute_allowlist_freeze_digest,
+    compute_constitution_freeze_digest,
+    resolve_dependency_row_metadata,
     validate_dependency_registry,
 )
 
@@ -170,7 +176,7 @@ class TestDependencyRegistryChecker(unittest.TestCase):
 
             result = validate_dependency_registry(self.tmp_root)
             self.assertFalse(result.passed, f"Expected failure when missing row field '{row_field}'")
-            self.assertEqual({e.code for e in result.errors}, {ERR_DEP_MISSING_FIELD, ERR_DEP_FREEZE_DIVERGENCE, ERR_DEP_REGISTRY_DRIFT})
+            self.assertEqual({e.code for e in result.errors}, {ERR_DEP_MISSING_FIELD})
 
     def test_duplicate_id_rejected(self) -> None:
         """Duplicate dependency class ID is rejected with ERR-DEP-STABLE-ID-REUSED-001."""
@@ -365,7 +371,7 @@ class TestDependencyRegistryChecker(unittest.TestCase):
 
                 result = validate_dependency_registry(self.tmp_root)
                 self.assertFalse(result.passed)
-                self.assertTrue(len(result.errors) > 0)
+                self.assertEqual({e.code for e in result.errors}, {ERR_DEP_CORRUPT_FILE})
 
     def test_invalid_utf8_json_handled_safely(self) -> None:
         """Invalid UTF-8 bytes in dependencies.json fail closed with exact ERR-DEP-CORRUPT-FILE-001."""
@@ -376,9 +382,410 @@ class TestDependencyRegistryChecker(unittest.TestCase):
         self.assertFalse(result.passed)
         self.assertEqual({e.code for e in result.errors}, {ERR_DEP_CORRUPT_FILE})
 
+    # Restored test 1: markdown mirror drift
+    def test_markdown_mirror_drift_rejected(self) -> None:
+        """Markdown mirror disagreement in class, rule, scope, or row count is rejected."""
+        md_path = self.tmp_root / "registries/DEPENDENCIES.md"
+        original_md = md_path.read_text(encoding="utf-8")
+
+        # 1. Mutate class
+        tampered_md = original_md.replace("Owned runtime and Franken-suite families", "Drifted Class Name")
+        md_path.write_text(tampered_md, encoding="utf-8")
+        result = validate_dependency_registry(self.tmp_root)
+        self.assertFalse(result.passed)
+        self.assertEqual({e.code for e in result.errors}, {ERR_DEP_REGISTRY_DRIFT})
+
+        # 2. Mutate scope
+        tampered_md = original_md.replace("`Production`", "`Experimental`")
+        md_path.write_text(tampered_md, encoding="utf-8")
+        result = validate_dependency_registry(self.tmp_root)
+        self.assertFalse(result.passed)
+        self.assertEqual({e.code for e in result.errors}, {ERR_DEP_REGISTRY_DRIFT})
+
+        # 3. Drop a row in markdown
+        lines = original_md.splitlines()
+        filtered_lines = [l for l in lines if "DEP-EXCEPTION-001" not in l]
+        md_path.write_text("\n".join(filtered_lines) + "\n", encoding="utf-8")
+        result = validate_dependency_registry(self.tmp_root)
+        self.assertFalse(result.passed)
+        self.assertEqual({e.code for e in result.errors}, {ERR_DEP_REGISTRY_DRIFT})
+
+    # Restored test 2: corrupt or empty files
+    def test_corrupt_or_empty_files_rejected(self) -> None:
+        """Corrupt or 0-byte JSON and Markdown files fail closed with ERR-DEP-CORRUPT-FILE-001."""
+        json_path = self.tmp_root / "architecture/dependencies.json"
+        md_path = self.tmp_root / "registries/DEPENDENCIES.md"
+
+        # 0-byte JSON
+        json_path.write_text("", encoding="utf-8")
+        result = validate_dependency_registry(self.tmp_root)
+        self.assertFalse(result.passed)
+        self.assertEqual({e.code for e in result.errors}, {ERR_DEP_CORRUPT_FILE})
+
+        # Invalid JSON syntax
+        json_path.write_text("{ unquoted_key: ]", encoding="utf-8")
+        result = validate_dependency_registry(self.tmp_root)
+        self.assertFalse(result.passed)
+        self.assertEqual({e.code for e in result.errors}, {ERR_DEP_CORRUPT_FILE})
+
+        # Restore JSON, empty markdown
+        shutil.copy2(ROOT / "architecture/dependencies.json", json_path)
+        md_path.write_text("# Empty dependencies\n", encoding="utf-8")
+        result = validate_dependency_registry(self.tmp_root)
+        self.assertFalse(result.passed)
+        self.assertEqual({e.code for e in result.errors}, {ERR_DEP_CORRUPT_FILE})
+
+    # Restored test 3: prefix-only digest bypass prevented (M-prefix)
+    def test_prefix_only_digest_bypass_prevented(self) -> None:
+        """Verify that digest checking fails if only prefix matches."""
+        json_path = self.tmp_root / "architecture/dependencies.json"
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+        prefix = BASELINE_DEPENDENCIES_FREEZE_DIGEST[:-8]
+        data["freezeDigest"] = prefix + "deadbeef"
+        json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+        result = validate_dependency_registry(self.tmp_root)
+        self.assertFalse(result.passed)
+        self.assertEqual({e.code for e in result.errors}, {ERR_DEP_DIGEST_MISMATCH})
+
+    # Mutant M4b: constitutionClass mismatch
+    def test_mutant_m4b_constitution_class_mismatch(self) -> None:
+        """Mutating constitutionClass in JSON row fails with exact ERR-DEP-CONST-INVARIANT-001."""
+        json_path = self.tmp_root / "architecture/dependencies.json"
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+        data["dependencies"][0]["constitutionClass"] = "DEP-CLASS-F99"
+        data["freezeDigest"] = compute_canonical_dependencies_digest(data)
+        json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+        result = validate_dependency_registry(self.tmp_root)
+        self.assertFalse(result.passed)
+        self.assertEqual({e.code for e in result.errors}, {ERR_DEP_CONST_INVARIANT, ERR_DEP_FREEZE_DIVERGENCE, ERR_DEP_REGISTRY_DRIFT})
+
+    # Mutant M4c: rule mismatch
+    def test_mutant_m4c_rule_mismatch(self) -> None:
+        """Mutating rule in JSON emits ERR-DEP-REGISTRY-DRIFT-001."""
+        json_path = self.tmp_root / "architecture/dependencies.json"
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+        data["dependencies"][0]["rule"] = "tampered rule divergence"
+        data["freezeDigest"] = compute_canonical_dependencies_digest(data)
+        json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+        result = validate_dependency_registry(self.tmp_root)
+        self.assertFalse(result.passed)
+        self.assertEqual({e.code for e in result.errors}, {ERR_DEP_FREEZE_DIVERGENCE, ERR_DEP_REGISTRY_DRIFT})
+
+    # Mutant M4d: scope mismatch
+    def test_mutant_m4d_scope_mismatch(self) -> None:
+        """Mutating scope in JSON emits ERR-DEP-REGISTRY-DRIFT-001."""
+        json_path = self.tmp_root / "architecture/dependencies.json"
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+        data["dependencies"][0]["scope"] = "Development only"
+        data["freezeDigest"] = compute_canonical_dependencies_digest(data)
+        json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+        result = validate_dependency_registry(self.tmp_root)
+        self.assertFalse(result.passed)
+        self.assertEqual({e.code for e in result.errors}, {ERR_DEP_FREEZE_DIVERGENCE, ERR_DEP_REGISTRY_DRIFT})
+
+    # Mutant M-F4adm: F4 admission mutated in constitution
+    def test_mutant_m_f4adm_admission_mutated(self) -> None:
+        """DEP-CLASS-F4 admission mutated in constitution fails with exact ERR-DEP-CONST-INVARIANT-001."""
+        const_path = self.tmp_root / "architecture/dependency_constitution.json"
+        data = json.loads(const_path.read_text(encoding="utf-8"))
+        for c in data.get("classes", []):
+            if c.get("id") == "DEP-CLASS-F4":
+                c["admission"] = "production-allowed"
+        const_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+        result = validate_dependency_registry(self.tmp_root)
+        self.assertFalse(result.passed)
+        self.assertEqual({e.code for e in result.errors}, {ERR_DEP_CONST_INVARIANT})
+
+    # Mutant M-closed: allowlist closed_universe != True
+    def test_mutant_m_closed_allowlist_closed_universe(self) -> None:
+        """dependency_allowlist.toml closed_universe=false fails with exact ERR-DEP-CONST-INVARIANT-001."""
+        allow_path = self.tmp_root / "architecture/dependency_allowlist.toml"
+        text = allow_path.read_text(encoding="utf-8").replace("closed_universe = true", "closed_universe = false")
+        allow_path.write_text(text, encoding="utf-8")
+
+        result = validate_dependency_registry(self.tmp_root)
+        self.assertFalse(result.passed)
+        self.assertEqual({e.code for e in result.errors}, {ERR_DEP_CONST_INVARIANT})
+
+    # Mutant M10b: missing mandatory row field without digest update
+    def test_mutant_m10b_missing_mandatory_row_field(self) -> None:
+        """Row missing mandatory field without digest recompute fails with exact ERR-DEP-MISSING-FIELD-001."""
+        json_path = self.tmp_root / "architecture/dependencies.json"
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+        del data["dependencies"][0]["rule"]
+        json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+        result = validate_dependency_registry(self.tmp_root)
+        self.assertFalse(result.passed)
+        self.assertEqual({e.code for e in result.errors}, {ERR_DEP_MISSING_FIELD})
+
+    # Mutant M12c: case-colliding ID
+    def test_mutant_m12c_case_colliding_id(self) -> None:
+        """Case-colliding dependency ID fails with ERR-DEP-STABLE-ID-REUSED-001."""
+        json_path = self.tmp_root / "architecture/dependencies.json"
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+        dupe = copy.deepcopy(data["dependencies"][0])
+        dupe["id"] = dupe["id"].lower()
+        data["dependencies"].append(dupe)
+        data["freezeDigest"] = compute_canonical_dependencies_digest(data)
+        json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+        result = validate_dependency_registry(self.tmp_root)
+        self.assertFalse(result.passed)
+        self.assertEqual({e.code for e in result.errors}, {ERR_DEP_STABLE_ID_REUSED, ERR_DEP_FREEZE_DIVERGENCE, ERR_DEP_REGISTRY_DRIFT})
+
+    # Mutant M13b: duplicate ID in JSON
+    def test_mutant_m13b_duplicate_id_in_json(self) -> None:
+        """Duplicate ID in JSON dependencies array fails with ERR-DEP-STABLE-ID-REUSED-001."""
+        json_path = self.tmp_root / "architecture/dependencies.json"
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+        data["dependencies"].append(copy.deepcopy(data["dependencies"][0]))
+        data["freezeDigest"] = compute_canonical_dependencies_digest(data)
+        json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+        result = validate_dependency_registry(self.tmp_root)
+        self.assertFalse(result.passed)
+        self.assertEqual({e.code for e in result.errors}, {ERR_DEP_STABLE_ID_REUSED, ERR_DEP_FREEZE_DIVERGENCE})
+
+    # Mutant M13c: duplicate ID in markdown
+    def test_mutant_m13c_duplicate_id_in_markdown(self) -> None:
+        """Duplicate ID in markdown mirror fails with exact ERR-DEP-STABLE-ID-REUSED-001."""
+        md_path = self.tmp_root / "registries/DEPENDENCIES.md"
+        content = md_path.read_text(encoding="utf-8")
+        dup_row = "| `DEP-OWNED-001` | `DEP-CLASS-F2` | Owned runtime and Franken-suite families | admitted after per-mechanism integration gate | `Production` |\n"
+        md_path.write_text(content + dup_row, encoding="utf-8")
+
+        result = validate_dependency_registry(self.tmp_root)
+        self.assertFalse(result.passed)
+        self.assertEqual({e.code for e in result.errors}, {ERR_DEP_STABLE_ID_REUSED})
+
+    # Scenarios S3, S4, S5 crosswalk and allowlist moves
+    def test_scenarios_s3_s4_s5_crosswalk(self) -> None:
+        """Crosswalk scenarios S3, S4, S5 and allowlist invariants fail closed."""
+        const_path = self.tmp_root / "architecture/dependency_constitution.json"
+        allow_path = self.tmp_root / "architecture/dependency_allowlist.toml"
+
+        # S3: mutate DEP-CLASS-F2 admission
+        data = json.loads(const_path.read_text(encoding="utf-8"))
+        for c in data.get("classes", []):
+            if c.get("id") == "DEP-CLASS-F2":
+                c["admission"] = "unadmitted"
+        const_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        result = validate_dependency_registry(self.tmp_root)
+        self.assertFalse(result.passed)
+        self.assertEqual({e.code for e in result.errors}, {ERR_DEP_CONST_INVARIANT})
+        shutil.copy2(ROOT / "architecture/dependency_constitution.json", const_path)
+
+        # S4: mutate DEP-CLASS-F3 admission
+        data = json.loads(const_path.read_text(encoding="utf-8"))
+        for c in data.get("classes", []):
+            if c.get("id") == "DEP-CLASS-F3":
+                c["admission"] = "unadmitted"
+        const_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        result = validate_dependency_registry(self.tmp_root)
+        self.assertFalse(result.passed)
+        self.assertEqual({e.code for e in result.errors}, {ERR_DEP_CONST_INVARIANT})
+        shutil.copy2(ROOT / "architecture/dependency_constitution.json", const_path)
+
+        # S5: mutate DEP-CLASS-F4 name
+        data = json.loads(const_path.read_text(encoding="utf-8"))
+        for c in data.get("classes", []):
+            if c.get("id") == "DEP-CLASS-F4":
+                c["name"] = "wrong-name"
+        const_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        result = validate_dependency_registry(self.tmp_root)
+        self.assertFalse(result.passed)
+        self.assertEqual({e.code for e in result.errors}, {ERR_DEP_CONST_INVARIANT})
+        shutil.copy2(ROOT / "architecture/dependency_constitution.json", const_path)
+
+        # Allowlist: serde in forbidden.crates
+        orig_allow = allow_path.read_text(encoding="utf-8")
+        allow_with_serde = orig_allow.replace('crates = [', 'crates = ["serde", ')
+        allow_path.write_text(allow_with_serde, encoding="utf-8")
+        result = validate_dependency_registry(self.tmp_root)
+        self.assertFalse(result.passed)
+        self.assertEqual({e.code for e in result.errors}, {ERR_DEP_CONST_INVARIANT})
+        allow_path.write_text(orig_allow, encoding="utf-8")
+
+        # Allowlist: missing [laboratory_oracles]
+        allow_no_lab = orig_allow.replace("[laboratory_oracles]", "[disabled_laboratory_oracles]")
+        allow_path.write_text(allow_no_lab, encoding="utf-8")
+        result = validate_dependency_registry(self.tmp_root)
+        self.assertFalse(result.passed)
+        self.assertEqual({e.code for e in result.errors}, {ERR_DEP_CONST_INVARIANT})
+        allow_path.write_text(orig_allow, encoding="utf-8")
+
+        # Duplicate keys in constitution
+        tampered = '{\n  "schema": "fss.dependency_constitution.v1",\n' + const_path.read_text(encoding="utf-8")[1:]
+        const_path.write_text(tampered, encoding="utf-8")
+        result = validate_dependency_registry(self.tmp_root)
+        self.assertFalse(result.passed)
+        self.assertEqual({e.code for e in result.errors}, {ERR_DEP_CORRUPT_FILE})
+        shutil.copy2(ROOT / "architecture/dependency_constitution.json", const_path)
+
+        # Missing constitution file
+        const_path.unlink()
+        result = validate_dependency_registry(self.tmp_root)
+        self.assertFalse(result.passed)
+        self.assertEqual({e.code for e in result.errors}, {ERR_DEP_CORRUPT_FILE})
+        shutil.copy2(ROOT / "architecture/dependency_constitution.json", const_path)
+
+        # Missing allowlist file
+        allow_path.unlink()
+        result = validate_dependency_registry(self.tmp_root)
+        self.assertFalse(result.passed)
+        self.assertEqual({e.code for e in result.errors}, {ERR_DEP_CORRUPT_FILE})
+        shutil.copy2(ROOT / "architecture/dependency_allowlist.toml", allow_path)
+
+    # File size bound test
+    def test_file_size_bound(self) -> None:
+        """Files exceeding MAX_REGISTRY_FILE_SIZE_BYTES fail with exact ERR-DEP-CORRUPT-FILE-001."""
+        orig_stat = Path.stat
+        def fake_stat(self: Path, *args: Any, **kwargs: Any) -> Any:
+            st = orig_stat(self, *args, **kwargs)
+            if str(self).endswith("dependencies.json"):
+                class FakeStat:
+                    st_size = 11 * 1024 * 1024
+                return FakeStat()
+            return st
+
+        Path.stat = fake_stat  # type: ignore[method-assign]
+        try:
+            result = validate_dependency_registry(self.tmp_root)
+            self.assertFalse(result.passed)
+            self.assertEqual({e.code for e in result.errors}, {ERR_DEP_CORRUPT_FILE})
+        finally:
+            Path.stat = orig_stat
+
+    # Markdown rogue rows detection
+    def test_markdown_rogue_rows_detected(self) -> None:
+        """Rogue markdown rows (bad casing, bold, missing pipes, bad columns) emit ERR-DEP-REGISTRY-DRIFT-001."""
+        md_path = self.tmp_root / "registries/DEPENDENCIES.md"
+        base_md = md_path.read_text(encoding="utf-8")
+
+        cases = [
+            base_md + "| `dep-rogue-001` | `DEP-CLASS-F2` | Rogue | none | `Production` |\n",
+            base_md + "| **`DEP-ROGUE-001`** | `DEP-CLASS-F2` | Rogue | none | `Production` |\n",
+            base_md + "DEP-ROGUE-001 | `DEP-CLASS-F2` | Rogue | none | `Production`\n",
+            base_md + "| `DEP-CLASS-F2` | `DEP-ROGUE-001` | Rogue | none | `Production` |\n",
+            base_md + "| DEP-ROGUE-001 | `DEP-CLASS-F2` | Rogue | none | `Production` |\n",
+            base_md + "| `DEP-ROGUE-001` | `DEP-CLASS-F2` | `Rogue` | none | `Production` |\n",
+            base_md + "| `DEP-ROGUE-001` | `DEP-CLASS-F2` | Rogue | `Production` |\n",
+        ]
+        for idx, rogue_content in enumerate(cases):
+            with self.subTest(case_idx=idx):
+                md_path.write_text(rogue_content, encoding="utf-8")
+                result = validate_dependency_registry(self.tmp_root)
+                self.assertFalse(result.passed)
+                self.assertIn(ERR_DEP_REGISTRY_DRIFT, [e.code for e in result.errors])
+
+    # Scope metadata resolution
+    def test_scope_metadata_resolution(self) -> None:
+        """resolve_dependency_row_metadata returns owner, producers, consumers, contractBasis, and tombstone status."""
+        meta = resolve_dependency_row_metadata("DEP-OWNED-001", repo_root=ROOT)
+        self.assertEqual(meta["id"], "DEP-OWNED-001")
+        self.assertEqual(meta["owner"], "fss-runtime")
+        self.assertFalse(meta["isTombstoned"])
+        self.assertFalse(meta["tombstone"])
+        self.assertEqual(meta["contractBasis"], "fss.agent_contract_basis.v1")
+        self.assertIn("fss-core", meta["producers"])
+        self.assertIn("fss-cli", meta["consumers"])
+
+        meta_fund = resolve_dependency_row_metadata("DEP-FUND-001", repo_root=ROOT)
+        self.assertEqual(meta_fund["id"], "DEP-FUND-001")
+        self.assertEqual(meta_fund["owner"], "fss-data-shape")
+        self.assertFalse(meta_fund["isTombstoned"])
+
 
 class TestDependencyClassification(unittest.TestCase):
     """Verifies that dependency_audit classifies packages into DEP classes and reports consumers."""
+
+    # Restored test 4: owned classification
+    def test_classify_owned_crates(self) -> None:
+        """Owned workspace members and allowed in-house families map to DEP-OWNED-001."""
+        import dependency_audit
+        policy = {
+            "in_house": {"allowed_families": ["asupersync", "frankensqlite", "fsqlite-*", "fss-*"]},
+            "fundamental": {"allowed_subject_to_audit": ["serde"]},
+            "laboratory_oracles": {"excluded_from_production_release_closure": ["opencv"]},
+            "exception_candidates": {"not_admitted_without_dep_record_adr_and_release_evidence": ["blake3"]},
+            "forbidden": {"crates": ["tokio"]},
+        }
+        members = {"fss-core", "fss-cli", "fss-ledger"}
+        admitted = {"asupersync", "frankensqlite"}
+
+        for crate_name in ("fss-core", "fss-cli", "fss-ledger", "asupersync", "frankensqlite", "fsqlite-wal"):
+            dep_id, code, reason = dependency_audit.classify_dependency_package(crate_name, policy, members, is_production=True, admitted_in_house=admitted)
+            self.assertEqual(dep_id, "DEP-OWNED-001", f"Expected {crate_name} to be DEP-OWNED-001")
+            self.assertIsNone(code)
+            self.assertIsNone(reason)
+
+    # Restored test 5: unclassified crate rejected (M-042)
+    def test_unclassified_crate_rejected(self) -> None:
+        """Unrecognized external crate fails with DEP-AUD-042."""
+        import dependency_audit
+        policy = {
+            "in_house": {"allowed_families": ["fss-*"]},
+            "fundamental": {"allowed_subject_to_audit": []},
+            "laboratory_oracles": {"excluded_from_production_release_closure": []},
+            "exception_candidates": {"not_admitted_without_dep_record_adr_and_release_evidence": []},
+            "forbidden": {"crates": []},
+        }
+        members = {"fss-core"}
+
+        findings: list[dependency_audit.Finding] = []
+        resolved = [{"name": "totally-unrecognized-crate", "version": "1.0.0"}]
+        res = dependency_audit.audit_dependency_classes(findings, ROOT, policy, members, resolved)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].code, "DEP-AUD-042")
+        self.assertIn("totally-unrecognized-crate", findings[0].message)
+
+    # Restored test 6: census counts owned consumers (M-census)
+    def test_census_counts_owned_consumers(self) -> None:
+        """Live repository audit classifies all workspace crates into DEP-OWNED-001 and reports consumer count."""
+        import dependency_audit
+        findings: list[dependency_audit.Finding] = []
+        members = {"fss-cli", "fss-core", "fss-ledger", "fss-model-ir", "fss-object", "fss-packet", "fss-publication", "fss-reference", "fss-tensor"}
+        resolved = [{"name": m, "version": "0.0.1"} for m in members]
+        res = dependency_audit.audit_dependency_classes(findings, ROOT, {"in_house": {"allowed_families": ["fss-*"]}}, members, resolved)
+        self.assertEqual(len(findings), 0)
+        census = res["census"]
+        self.assertEqual(census["DEP-OWNED-001"]["consumerCount"], 9)
+        self.assertTrue(census["DEP-OWNED-001"]["hasRealConsumer"])
+        self.assertIsNone(census["DEP-OWNED-001"]["drift"])
+
+    # Restored test 7: unconsumed rows drift reported
+    def test_unconsumed_rows_drift_reported(self) -> None:
+        """Unconsumed rows return explicit non-empty drift explanations."""
+        import dependency_audit
+        findings: list[dependency_audit.Finding] = []
+        members = {"fss-core"}
+        resolved = [{"name": "fss-core", "version": "0.0.1"}]
+        res = dependency_audit.audit_dependency_classes(findings, ROOT, {"in_house": {"allowed_families": ["fss-*"]}}, members, resolved)
+        census = res["census"]
+        for dep_id in ("DEP-FUND-001", "DEP-LAB-001", "DEP-ORACLE-001", "DEP-EXCEPTION-001"):
+            self.assertEqual(census[dep_id]["consumerCount"], 0)
+            self.assertFalse(census[dep_id]["hasRealConsumer"])
+            self.assertIsNotNone(census[dep_id]["drift"])
+            self.assertIn("no real consumer", census[dep_id]["drift"])
+
+    # Restored test 8: warn unconsumed emits warning (M-044)
+    def test_warn_unconsumed_emits_warning(self) -> None:
+        """When warn_unconsumed=True, DEP-AUD-044 warnings are emitted for unconsumed classes."""
+        import dependency_audit
+        findings: list[dependency_audit.Finding] = []
+        members = {"fss-core"}
+        resolved = [{"name": "fss-core", "version": "0.0.1"}]
+        res = dependency_audit.audit_dependency_classes(findings, ROOT, {"in_house": {"allowed_families": ["fss-*"]}}, members, resolved, warn_unconsumed=True)
+        dep_044_findings = [f for f in findings if f.code == "DEP-AUD-044"]
+        self.assertEqual(len(dep_044_findings), 4)
+        for f in dep_044_findings:
+            self.assertEqual(f.severity, "warning")
 
     # Killing mutant M12: serde is neutral pending fss-ndxis
     def test_mutant_m12_serde_pending_fss_ndxis(self) -> None:
@@ -386,7 +793,7 @@ class TestDependencyClassification(unittest.TestCase):
         import dependency_audit
         policy = {
             "in_house": {"allowed_families": ["fss-*"]},
-            "fundamental": {"allowed_subject_to_audit": []},
+            "fundamental": {"allowed_subject_to_audit": ["serde", "serde_json"]},
             "forbidden": {"crates": []},
         }
         members = {"fss-core"}
@@ -442,17 +849,23 @@ class TestDependencyClassification(unittest.TestCase):
                 '[[package]]\nname = "ffmpeg"\nversion = "4.4.0"\n',
                 encoding="utf-8",
             )
+            (tmp_root / "architecture").mkdir()
+            shutil.copy2(ROOT / "architecture/franken_imports.json", tmp_root / "architecture/franken_imports.json")
             res = dependency_audit.audit_dependency_classes(findings, tmp_root, policy, members, resolved, direct=direct)
         # Should NOT emit DEP-AUD-043 because ffmpeg is dev-only!
         self.assertEqual([f.code for f in findings], [])
 
-    # Killing mutant M11: class audit unwired from audit_workspace
+    # Killing mutant M11: class audit wired into audit_workspace
     def test_mutant_m11_class_audit_wired_into_audit_workspace(self) -> None:
         """audit_workspace must include census and unconsumed dependency class reports."""
         import dependency_audit
         report, rc = dependency_audit.audit_workspace(ROOT, policy_path=ROOT / "architecture/dependency_allowlist.toml")
         self.assertIn("schema", report)
         self.assertEqual(report["schema"], "fss.dependency_audit.v4")
+        self.assertIn("dependencyClassCensus", report)
+        self.assertIn("unconsumedDependencyClasses", report)
+        self.assertIn("DEP-OWNED-001", report["dependencyClassCensus"])
+        self.assertIn("DEP-FUND-001", report["dependencyClassCensus"])
 
     def test_forbidden_crates_never_exception_candidates(self) -> None:
         """tokio is forbidden and cannot be classified as DEP-EXCEPTION-001."""
@@ -466,6 +879,89 @@ class TestDependencyClassification(unittest.TestCase):
         dep_id, code, reason = dependency_audit.classify_dependency_package("tokio", policy, {"fss-core"}, is_production=True)
         self.assertNotEqual(dep_id, "DEP-EXCEPTION-001")
         self.assertEqual(code, "DEP-AUD-030")
+
+    # Killing mutant M-gate: in-house import gate enforcement
+    def test_mutant_m_gate_in_house_import_gate(self) -> None:
+        """In-house gate fails closed when unmapped, unadmitted, or admitted_in_house=None."""
+        import dependency_audit
+        policy = {
+            "in_house": {"allowed_families": ["ft-*", "fsqlite-*", "asupersync*"]},
+            "fundamental": {"allowed_subject_to_audit": []},
+            "forbidden": {"crates": []},
+        }
+        members = {"fss-core"}
+
+        # admitted_in_house is None -> fail closed
+        dep_id, code, reason = dependency_audit.classify_dependency_package("ft-kernel", policy, members, is_production=True, admitted_in_house=None)
+        self.assertEqual(code, "DEP-AUD-043")
+
+        # frankentorch not in admitted_in_house -> fail closed
+        dep_id, code, reason = dependency_audit.classify_dependency_package("ft-kernel", policy, members, is_production=True, admitted_in_house={"frankensqlite"})
+        self.assertEqual(code, "DEP-AUD-043")
+
+        # frankentorch admitted -> succeeds
+        dep_id, code, reason = dependency_audit.classify_dependency_package("ft-kernel", policy, members, is_production=True, admitted_in_house={"frankentorch"})
+        self.assertEqual(dep_id, "DEP-OWNED-001")
+        self.assertIsNone(code)
+
+    # Killing mutant M-census: member inflation prevention
+    def test_mutant_m_census_consumer_count_without_member_inflation(self) -> None:
+        """Sibling workspace member dependencies do NOT inflate consumer count of DEP-OWNED-001."""
+        import dependency_audit
+        policy = {
+            "in_house": {"allowed_families": ["fss-*"]},
+            "fundamental": {"allowed_subject_to_audit": []},
+            "forbidden": {"crates": []},
+        }
+        members = {"fss-cli", "fss-core"}
+        findings: list[dependency_audit.Finding] = []
+        resolved = [{"name": "fss-cli", "version": "0.0.1"}, {"name": "fss-core", "version": "0.0.1"}]
+        # Sibling edge: fss-cli depends on fss-core
+        direct = [{"manifest": "crates/fss-cli/Cargo.toml", "section": "dependencies", "name": "fss-core"}]
+        res = dependency_audit.audit_dependency_classes(findings, ROOT, policy, members, resolved, direct=direct)
+        census = res["census"]
+        # Consumer count must be 0 because sibling member dependencies do not count as external consumers
+        self.assertEqual(census["DEP-OWNED-001"]["consumerCount"], 0)
+
+    # Killing mutant M-lock: Cargo.lock and franken_imports.json validation
+    def test_mutant_m_lock_validation(self) -> None:
+        """Cargo.lock and franken_imports.json validation fails closed with DEP-AUD-010."""
+        import dependency_audit
+        policy = {"in_house": {"allowed_families": ["fss-*"]}}
+        members = {"fss-core"}
+
+        with tempfile.TemporaryDirectory() as tmp_d:
+            tmp_root = Path(tmp_d)
+            # 1. Missing Cargo.lock
+            findings: list[dependency_audit.Finding] = []
+            res = dependency_audit.audit_dependency_classes(findings, tmp_root, policy, members, [])
+            self.assertEqual([f.code for f in findings], ["DEP-AUD-010"])
+
+            # 2. 0-byte Cargo.lock
+            (tmp_root / "Cargo.lock").write_text("", encoding="utf-8")
+            findings = []
+            res = dependency_audit.audit_dependency_classes(findings, tmp_root, policy, members, [])
+            self.assertEqual([f.code for f in findings], ["DEP-AUD-010"])
+
+            # 3. Malformed Cargo.lock (package not a list)
+            (tmp_root / "Cargo.lock").write_text('package = "invalid"\n', encoding="utf-8")
+            findings = []
+            res = dependency_audit.audit_dependency_classes(findings, tmp_root, policy, members, [])
+            self.assertEqual([f.code for f in findings], ["DEP-AUD-010"])
+
+            # 4. Malformed Cargo.lock (package = [1, 2] elements not tables)
+            (tmp_root / "Cargo.lock").write_text('package = [1, 2]\n', encoding="utf-8")
+            findings = []
+            res = dependency_audit.audit_dependency_classes(findings, tmp_root, policy, members, [])
+            self.assertEqual([f.code for f in findings], ["DEP-AUD-010"])
+
+            # 5. Corrupt franken_imports.json
+            (tmp_root / "Cargo.lock").write_text('version = 3\n', encoding="utf-8")
+            (tmp_root / "architecture").mkdir(exist_ok=True)
+            (tmp_root / "architecture/franken_imports.json").write_text('{"invalid": json}', encoding="utf-8")
+            findings = []
+            res = dependency_audit.audit_dependency_classes(findings, tmp_root, policy, members, [])
+            self.assertEqual([f.code for f in findings], ["DEP-AUD-010"])
 
 
 if __name__ == "__main__":

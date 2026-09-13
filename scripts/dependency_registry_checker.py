@@ -41,6 +41,9 @@ ALLOWLIST_TOML_PATH = "architecture/dependency_allowlist.toml"
 
 BASELINE_DEPENDENCIES_GENERATION = "gen:fss1:dependencies-v1"
 BASELINE_DEPENDENCIES_FREEZE_DIGEST = "sha256:857dd73b26f36babae2e5670674b35344efcdecbd42c0b74d9f7a827a0ad27cb"
+BASELINE_CONSTITUTION_FREEZE_DIGEST = "sha256:858af1b5482b25cfca1477c2c4c1967a995d802990aaf0bc7ccf139f73571310"
+BASELINE_ALLOWLIST_FREEZE_DIGEST = "sha256:4279e5106dfef17192623f8871da01b3a2c7da04c022c3f0393f8cc50be452ec"
+MAX_REGISTRY_FILE_SIZE_BYTES = 10 * 1024 * 1024
 
 EXPECTED_FREEZE_DIGESTS: dict[str, str] = {
     BASELINE_DEPENDENCIES_GENERATION: BASELINE_DEPENDENCIES_FREEZE_DIGEST,
@@ -195,12 +198,42 @@ def compute_canonical_dependencies_digest(
     return f"sha256:{hashlib.sha256(canonical_bytes).hexdigest()}"
 
 
+def compute_allowlist_freeze_digest(allowlist_path: Path) -> str:
+    """Computes SHA-256 digest of dependency allowlist TOML file."""
+    raw = allowlist_path.read_bytes()
+    return f"sha256:{hashlib.sha256(raw).hexdigest()}"
+
+
+def compute_constitution_freeze_digest(constitution_path: Path) -> str:
+    """Computes SHA-256 digest of dependency constitution JSON file."""
+    raw = constitution_path.read_bytes()
+    return f"sha256:{hashlib.sha256(raw).hexdigest()}"
+
+
 def extract_markdown_dependencies(md_path: Path) -> tuple[dict[str, dict[str, str]], list[DiagnosticError]]:
     """Extracts dependency rows from markdown table: {id: {constitutionClass, class, rule, scope}}."""
     rows: dict[str, dict[str, str]] = {}
     errors: list[DiagnosticError] = []
     try:
+        if md_path.stat().st_size > MAX_REGISTRY_FILE_SIZE_BYTES:
+            return {}, [
+                DiagnosticError(
+                    code=ERR_DEP_CORRUPT_FILE,
+                    file_path=str(md_path),
+                    target="#",
+                    message=f"Markdown mirror exceeds maximum size of {MAX_REGISTRY_FILE_SIZE_BYTES} bytes",
+                )
+            ]
         raw_bytes = md_path.read_bytes()
+        if len(raw_bytes.strip()) == 0:
+            return {}, [
+                DiagnosticError(
+                    code=ERR_DEP_CORRUPT_FILE,
+                    file_path=str(md_path),
+                    target="#",
+                    message="Markdown mirror is empty (0 bytes)",
+                )
+            ]
         text = raw_bytes.decode("utf-8")
     except UnicodeDecodeError as exc:
         return {}, [
@@ -226,17 +259,134 @@ def extract_markdown_dependencies(md_path: Path) -> tuple[dict[str, dict[str, st
 
     for line_idx, line in enumerate(lines, 1):
         stripped = line.strip()
+        loose_match = re.search(r"(?i)\bdep-[a-z0-9]+-[0-9]{3}\b", stripped)
         if not stripped.startswith("|"):
-            continue
-        parts = [p.strip() for p in stripped.strip("|").split("|")]
-        if not parts:
-            continue
-        first = parts[0].replace("`", "").strip()
-        if not first.startswith("DEP-"):
+            if loose_match:
+                errors.append(
+                    DiagnosticError(
+                        code=ERR_DEP_REGISTRY_DRIFT,
+                        file_path=str(md_path),
+                        target=f"line/{line_idx}",
+                        message=f"Dependency row missing leading pipe: {stripped!r}",
+                    )
+                )
             continue
 
-        dep_id = first
-        if dep_id in seen_ids:
+        parts = [p.strip() for p in stripped.strip("|").split("|")]
+        if not parts or all(len(p) == 0 for p in parts):
+            continue
+
+        first_part = parts[0]
+        if first_part in ("ID", "---", ":---", ":---:", "---:") or first_part.startswith("---") or first_part.startswith(":-"):
+            continue
+
+        # Enforce exactly 5 columns (drop 4-column legacy branch)
+        if len(parts) != 5:
+            errors.append(
+                DiagnosticError(
+                    code=ERR_DEP_REGISTRY_DRIFT,
+                    file_path=str(md_path),
+                    target=f"line/{line_idx}",
+                    message=f"Dependency table row in markdown mirror must have exactly 5 columns: observed {len(parts)} in {stripped!r}",
+                )
+            )
+            continue
+
+        # Column 0: ID - must be enclosed in exact single backticks and uppercase DEP-[A-Z0-9]+-[0-9]{3}
+        raw_id = parts[0]
+        if not (raw_id.startswith("`") and raw_id.endswith("`") and len(raw_id) >= 3):
+            errors.append(
+                DiagnosticError(
+                    code=ERR_DEP_REGISTRY_DRIFT,
+                    file_path=str(md_path),
+                    target=f"line/{line_idx}/id",
+                    message=f"Dependency ID in markdown mirror must be enclosed in exact backticks: observed {raw_id!r}",
+                )
+            )
+            dep_id = raw_id.replace("`", "").strip()
+        else:
+            dep_id = raw_id[1:-1].strip()
+
+        if not DEP_ID_PATTERN.match(dep_id):
+            errors.append(
+                DiagnosticError(
+                    code=ERR_DEP_REGISTRY_DRIFT,
+                    file_path=str(md_path),
+                    target=f"line/{line_idx}/id",
+                    message=f"Dependency ID '{dep_id}' does not match standard pattern DEP-[A-Z0-9]+-[0-9]{{3}}",
+                )
+            )
+
+        # Check for rogue / misplaced ID in columns 1..4
+        for col_idx, part in enumerate(parts[1:], 1):
+            if re.search(r"(?i)\bdep-[a-z0-9]+-[0-9]{3}\b", part):
+                errors.append(
+                    DiagnosticError(
+                        code=ERR_DEP_REGISTRY_DRIFT,
+                        file_path=str(md_path),
+                        target=f"line/{line_idx}/col{col_idx}",
+                        message=f"Dependency ID found in column {col_idx} instead of column 0: {part!r}",
+                    )
+                )
+
+        # Column 1: constitutionClass - must be enclosed in exact backticks
+        raw_cclass = parts[1]
+        if not (raw_cclass.startswith("`") and raw_cclass.endswith("`") and len(raw_cclass) >= 3):
+            errors.append(
+                DiagnosticError(
+                    code=ERR_DEP_REGISTRY_DRIFT,
+                    file_path=str(md_path),
+                    target=f"line/{line_idx}/constitutionClass",
+                    message=f"Constitution class in markdown mirror must be enclosed in exact backticks: observed {raw_cclass!r}",
+                )
+            )
+            c_class = raw_cclass.replace("`", "").strip()
+        else:
+            c_class = raw_cclass[1:-1].strip()
+
+        # Column 2: class name - must NOT be enclosed in backticks
+        name = parts[2]
+        if name.startswith("`") or name.endswith("`"):
+            errors.append(
+                DiagnosticError(
+                    code=ERR_DEP_REGISTRY_DRIFT,
+                    file_path=str(md_path),
+                    target=f"line/{line_idx}/class",
+                    message=f"Class name in markdown mirror must not be enclosed in backticks: observed {name!r}",
+                )
+            )
+            name = name.replace("`", "").strip()
+
+        # Column 3: rule - must NOT be enclosed in backticks
+        rule = parts[3]
+        if rule.startswith("`") or rule.endswith("`"):
+            errors.append(
+                DiagnosticError(
+                    code=ERR_DEP_REGISTRY_DRIFT,
+                    file_path=str(md_path),
+                    target=f"line/{line_idx}/rule",
+                    message=f"Rule in markdown mirror must not be enclosed in backticks: observed {rule!r}",
+                )
+            )
+            rule = rule.replace("`", "").strip()
+
+        # Column 4: scope - must be enclosed in exact backticks
+        raw_scope = parts[4]
+        if not (raw_scope.startswith("`") and raw_scope.endswith("`") and len(raw_scope) >= 3):
+            errors.append(
+                DiagnosticError(
+                    code=ERR_DEP_REGISTRY_DRIFT,
+                    file_path=str(md_path),
+                    target=f"line/{line_idx}/scope",
+                    message=f"Scope in markdown mirror must be enclosed in exact backticks: observed {raw_scope!r}",
+                )
+            )
+            scope = raw_scope.replace("`", "").strip()
+        else:
+            scope = raw_scope[1:-1].strip()
+
+        dep_id_lower = dep_id.lower()
+        if dep_id_lower in seen_ids:
             errors.append(
                 DiagnosticError(
                     code=ERR_DEP_STABLE_ID_REUSED,
@@ -245,43 +395,88 @@ def extract_markdown_dependencies(md_path: Path) -> tuple[dict[str, dict[str, st
                     message=f"Duplicate dependency ID in markdown table: '{dep_id}'",
                 )
             )
-        seen_ids.add(dep_id)
+        seen_ids.add(dep_id_lower)
 
-        if len(parts) == 5:
-            c_class = parts[1].replace("`", "").strip()
-            name = parts[2].replace("`", "").strip()
-            rule = parts[3].strip()
-            scope = parts[4].replace("`", "").strip()
-            rows[dep_id] = {
-                "id": dep_id,
-                "constitutionClass": c_class,
-                "class": name,
-                "rule": rule,
-                "scope": scope,
-            }
-        elif len(parts) == 4:
-            # 4-column backward compatibility
-            name = parts[1].replace("`", "").strip()
-            rule = parts[2].strip()
-            scope = parts[3].replace("`", "").strip()
-            rows[dep_id] = {
-                "id": dep_id,
-                "constitutionClass": "",
-                "class": name,
-                "rule": rule,
-                "scope": scope,
-            }
-        else:
-            errors.append(
-                DiagnosticError(
-                    code=ERR_DEP_REGISTRY_DRIFT,
-                    file_path=str(md_path),
-                    target=f"line/{line_idx}",
-                    message=f"Malformed dependency table row in markdown mirror: {stripped!r}",
-                )
-            )
+        rows[dep_id] = {
+            "id": dep_id,
+            "constitutionClass": c_class,
+            "class": name,
+            "rule": rule,
+            "scope": scope,
+        }
 
     return rows, errors
+
+
+def resolve_dependency_row_metadata(dep_id: str, repo_root: Path = ROOT) -> dict[str, Any]:
+    """Resolves scope metadata for a dependency row ID.
+
+    Returns owner, producers, consumers, ContractBasis link, and tombstone status.
+    """
+    is_tombstoned = False
+    canonical_id = dep_id
+    res_path = repo_root / "architecture/stable_id_resolution.json"
+    if res_path.is_file():
+        try:
+            res_data = json.loads(res_path.read_text(encoding="utf-8"))
+            for res in res_data.get("resolutions", []):
+                if isinstance(res, dict):
+                    if res.get("legacyId") == dep_id:
+                        if res.get("status") in ("tombstone", "tombstoned", "superseded"):
+                            is_tombstoned = True
+                        if res.get("canonicalId"):
+                            canonical_id = str(res["canonicalId"])
+        except Exception:
+            pass
+
+    deps_path = repo_root / DEPENDENCIES_JSON_PATH
+    row: dict[str, Any] = {}
+    if deps_path.is_file():
+        try:
+            deps_data = json.loads(deps_path.read_text(encoding="utf-8"))
+            for r in deps_data.get("dependencies", []):
+                if isinstance(r, dict) and r.get("id") == dep_id:
+                    row = r
+                    break
+        except Exception:
+            pass
+
+    c_class = row.get("constitutionClass", "")
+    scope = row.get("scope", "")
+    contract_basis = "fss.agent_contract_basis.v1"
+
+    owner_map = {
+        "DEP-OWNED-001": "fss-runtime",
+        "DEP-FUND-001": "fss-data-shape",
+        "DEP-LAB-001": "fss-lab",
+        "DEP-ORACLE-001": "fss-oracle",
+        "DEP-EXCEPTION-001": "fss-exception-review",
+    }
+    owner = owner_map.get(dep_id, "fss-core")
+
+    producers: list[str] = []
+    consumers: list[str] = []
+
+    if dep_id == "DEP-OWNED-001":
+        crates_dir = repo_root / "crates"
+        if crates_dir.is_dir():
+            for c in sorted(crates_dir.iterdir()):
+                if c.is_dir() and (c / "Cargo.toml").is_file():
+                    producers.append(c.name)
+                    consumers.append(c.name)
+
+    return {
+        "id": dep_id,
+        "canonicalId": canonical_id,
+        "constitutionClass": c_class,
+        "scope": scope,
+        "owner": owner,
+        "producers": producers,
+        "consumers": consumers,
+        "contractBasis": contract_basis,
+        "isTombstoned": is_tombstoned,
+        "tombstone": is_tombstoned,
+    }
 
 
 def load_tombstone_set(root: Path = ROOT) -> tuple[set[str], list[DiagnosticError]]:
@@ -344,6 +539,14 @@ def validate_dependency_registry(
 
     # 2. Check for empty file and valid bytes
     try:
+        if j_path.stat().st_size > MAX_REGISTRY_FILE_SIZE_BYTES:
+            result.add_error(
+                ERR_DEP_CORRUPT_FILE,
+                j_str,
+                "#",
+                f"Dependency registry JSON file exceeds maximum allowed size of {MAX_REGISTRY_FILE_SIZE_BYTES} bytes",
+            )
+            return result
         j_bytes = j_path.read_bytes()
     except OSError as exc:
         result.add_error(
@@ -434,7 +637,16 @@ def validate_dependency_registry(
 
     # 6. Validate dependencies array structure
     deps = data.get("dependencies")
-    if not isinstance(deps, list) or len(deps) == 0:
+    if deps is not None and not isinstance(deps, list):
+        result.add_error(
+            ERR_DEP_CORRUPT_FILE,
+            j_str,
+            "#/dependencies",
+            f"Dependency registry 'dependencies' field must be a list, found {type(deps).__name__}",
+        )
+        return result
+
+    if deps is None or len(deps) == 0:
         result.add_error(
             ERR_DEP_MISSING_FIELD,
             j_str,
@@ -449,8 +661,18 @@ def validate_dependency_registry(
                 ERR_DEP_CORRUPT_FILE,
                 j_str,
                 f"#/dependencies[{idx}]",
-                f"Dependency row at index {idx} must be a JSON object",
+                f"Dependency row at index {idx} must be a JSON object, found {type(row).__name__}",
             )
+        else:
+            for rf in MANDATORY_ROW_FIELDS:
+                rval = row.get(rf)
+                if rval is None or not isinstance(rval, str) or not rval:
+                    result.add_error(
+                        ERR_DEP_MISSING_FIELD,
+                        j_str,
+                        f"#/dependencies[{idx}]/{rf}",
+                        f"Dependency row at index {idx} missing mandatory field '{rf}'",
+                    )
 
     # If top-level structural errors exist, halt before digest computation
     if not result.passed and any(e.code in (ERR_DEP_CORRUPT_FILE, ERR_DEP_MISSING_FIELD) for e in result.errors):
@@ -635,68 +857,139 @@ def validate_dependency_registry(
 
     # 12. Cross-check against architecture/dependency_constitution.json and allowlist
     const_path = repo_root / CONSTITUTION_JSON_PATH
-    if const_path.is_file():
-        try:
-            const_bytes = const_path.read_bytes()
-            const_data = json.loads(const_bytes.decode("utf-8"))
-            const_classes = {
-                c.get("id"): c for c in const_data.get("classes", []) if isinstance(c, dict)
-            }
-            f4_class = const_classes.get("DEP-CLASS-F4", {})
-            f4_admission = f4_class.get("admission")
+    if not const_path.is_file():
+        result.add_error(
+            ERR_DEP_CORRUPT_FILE,
+            CONSTITUTION_JSON_PATH,
+            "#",
+            f"Dependency constitution file does not exist: {const_path}",
+        )
+        return result
 
-            for dep_id, rfields in json_rows.items():
-                c_class_id = rfields.get("constitutionClass")
-                if c_class_id and c_class_id not in const_classes:
-                    result.add_error(
-                        ERR_DEP_CONST_INVARIANT,
-                        j_str,
-                        f"row/{dep_id}/constitutionClass",
-                        f"Dependency '{dep_id}' references unknown constitution class '{c_class_id}'",
-                    )
-                # Scope vs admission check: DEP-CLASS-F4 is quarantine-only, scope cannot be Production
-                if c_class_id == "DEP-CLASS-F4":
-                    if rfields.get("scope") in ("Production", "Production subject to audit"):
-                        result.add_error(
-                            ERR_DEP_CONST_INVARIANT,
-                            j_str,
-                            f"row/{dep_id}/scope",
-                            f"Dependency '{dep_id}' mapped to quarantine class DEP-CLASS-F4 cannot have Production scope: {rfields.get('scope')!r}",
-                        )
-                    if f4_admission and f4_admission != "non-production-quarantine-only":
-                        result.add_error(
-                            ERR_DEP_CONST_INVARIANT,
-                            CONSTITUTION_JSON_PATH,
-                            "#/classes/DEP-CLASS-F4/admission",
-                            f"DEP-CLASS-F4 admission in constitution must be 'non-production-quarantine-only', found: {f4_admission!r}",
-                        )
-        except Exception as exc:
+    try:
+        const_bytes = const_path.read_bytes()
+        const_text = const_bytes.decode("utf-8")
+        const_data = json.loads(const_text, object_pairs_hook=pairs_hook_reject_duplicates)
+    except Exception as exc:
+        result.add_error(
+            ERR_DEP_CORRUPT_FILE,
+            CONSTITUTION_JSON_PATH,
+            "#",
+            f"Failed to parse dependency constitution JSON: {exc}",
+        )
+        return result
+
+    const_classes = {
+        c.get("id"): c for c in const_data.get("classes", []) if isinstance(c, dict)
+    }
+
+    # S3: DEP-CLASS-F2 admission must be "per-mechanism-import-gate"
+    f2_class = const_classes.get("DEP-CLASS-F2", {})
+    if f2_class.get("admission") != "per-mechanism-import-gate":
+        result.add_error(
+            ERR_DEP_CONST_INVARIANT,
+            CONSTITUTION_JSON_PATH,
+            "#/classes/DEP-CLASS-F2/admission",
+            f"DEP-CLASS-F2 admission must be 'per-mechanism-import-gate', found: {f2_class.get('admission')!r}",
+        )
+
+    # S4: DEP-CLASS-F3 admission must be "DEP-record-and-transitive-audit"
+    f3_class = const_classes.get("DEP-CLASS-F3", {})
+    if f3_class.get("admission") != "DEP-record-and-transitive-audit":
+        result.add_error(
+            ERR_DEP_CONST_INVARIANT,
+            CONSTITUTION_JSON_PATH,
+            "#/classes/DEP-CLASS-F3/admission",
+            f"DEP-CLASS-F3 admission must be 'DEP-record-and-transitive-audit', found: {f3_class.get('admission')!r}",
+        )
+
+    # S5: DEP-CLASS-F4 name must be "laboratory-oracle", admission must be "non-production-quarantine-only"
+    f4_class = const_classes.get("DEP-CLASS-F4", {})
+    if f4_class.get("name") != "laboratory-oracle":
+        result.add_error(
+            ERR_DEP_CONST_INVARIANT,
+            CONSTITUTION_JSON_PATH,
+            "#/classes/DEP-CLASS-F4/name",
+            f"DEP-CLASS-F4 name must be 'laboratory-oracle', found: {f4_class.get('name')!r}",
+        )
+    f4_admission = f4_class.get("admission")
+    if f4_admission != "non-production-quarantine-only":
+        result.add_error(
+            ERR_DEP_CONST_INVARIANT,
+            CONSTITUTION_JSON_PATH,
+            "#/classes/DEP-CLASS-F4/admission",
+            f"DEP-CLASS-F4 admission in constitution must be 'non-production-quarantine-only', found: {f4_admission!r}",
+        )
+
+    for dep_id, rfields in json_rows.items():
+        c_class_id = rfields.get("constitutionClass")
+        if c_class_id and c_class_id not in const_classes:
             result.add_error(
-                ERR_DEP_CORRUPT_FILE,
-                CONSTITUTION_JSON_PATH,
-                "#",
-                f"Could not cross-check dependency constitution: {exc}",
+                ERR_DEP_CONST_INVARIANT,
+                j_str,
+                f"row/{dep_id}/constitutionClass",
+                f"Dependency '{dep_id}' references unknown constitution class '{c_class_id}'",
             )
-
-    allowlist_path = repo_root / ALLOWLIST_TOML_PATH
-    if allowlist_path.is_file():
-        try:
-            import tomllib
-            allow_data = tomllib.loads(allowlist_path.read_text(encoding="utf-8"))
-            if allow_data.get("policy", {}).get("closed_universe") is not True:
+        # Scope vs admission check: DEP-CLASS-F4 is quarantine-only, scope cannot be Production
+        if c_class_id == "DEP-CLASS-F4":
+            if rfields.get("scope") in ("Production", "Production subject to audit"):
                 result.add_error(
                     ERR_DEP_CONST_INVARIANT,
-                    ALLOWLIST_TOML_PATH,
-                    "#/policy/closed_universe",
-                    "dependency_allowlist.toml policy.closed_universe must be true",
+                    j_str,
+                    f"row/{dep_id}/scope",
+                    f"Dependency '{dep_id}' mapped to quarantine class DEP-CLASS-F4 cannot have Production scope: {rfields.get('scope')!r}",
                 )
-        except Exception as exc:
-            result.add_error(
-                ERR_DEP_CORRUPT_FILE,
-                ALLOWLIST_TOML_PATH,
-                "#",
-                f"Could not cross-check dependency allowlist: {exc}",
-            )
+
+    allowlist_path = repo_root / ALLOWLIST_TOML_PATH
+    if not allowlist_path.is_file():
+        result.add_error(
+            ERR_DEP_CORRUPT_FILE,
+            ALLOWLIST_TOML_PATH,
+            "#",
+            f"Dependency allowlist file does not exist: {allowlist_path}",
+        )
+        return result
+
+    try:
+        import tomllib
+        allow_text = allowlist_path.read_text(encoding="utf-8")
+        allow_data = tomllib.loads(allow_text)
+    except Exception as exc:
+        result.add_error(
+            ERR_DEP_CORRUPT_FILE,
+            ALLOWLIST_TOML_PATH,
+            "#",
+            f"Could not cross-check dependency allowlist: {exc}",
+        )
+        return result
+
+    if allow_data.get("policy", {}).get("closed_universe") is not True:
+        result.add_error(
+            ERR_DEP_CONST_INVARIANT,
+            ALLOWLIST_TOML_PATH,
+            "#/policy/closed_universe",
+            "dependency_allowlist.toml policy.closed_universe must be true",
+        )
+
+    # Allowlist moves:
+    # Reject if serde is in forbidden.crates
+    forbidden_crates = allow_data.get("forbidden", {}).get("crates", [])
+    if "serde" in forbidden_crates or "serde_json" in forbidden_crates:
+        result.add_error(
+            ERR_DEP_CONST_INVARIANT,
+            ALLOWLIST_TOML_PATH,
+            "#/forbidden/crates",
+            "serde/serde_json must not be in forbidden.crates (pending owner decision fss-ndxis, not permanently forbidden)",
+        )
+
+    # Reject if [laboratory_oracles] table missing
+    if "laboratory_oracles" not in allow_data or not isinstance(allow_data.get("laboratory_oracles"), dict):
+        result.add_error(
+            ERR_DEP_CONST_INVARIANT,
+            ALLOWLIST_TOML_PATH,
+            "#/laboratory_oracles",
+            "dependency_allowlist.toml missing mandatory [laboratory_oracles] table",
+        )
 
     # 13. Validate markdown mirror
     md_rows, md_errs = extract_markdown_dependencies(m_path)

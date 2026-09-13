@@ -763,7 +763,6 @@ def enumerate_dependencies(
     findings: list[Finding],
 ) -> list[dict[str, Any]]:
     allowed_patterns = list(policy.get("in_house", {}).get("allowed_families", []))
-    allowed_patterns += list(policy.get("fundamental", {}).get("allowed_subject_to_audit", []))
     forbidden = set(policy.get("forbidden", {}).get("crates", []))
     rows: list[dict[str, Any]] = []
 
@@ -1953,6 +1952,35 @@ def metadata_audit(
     return True, None, census
 
 
+def map_crate_to_franken_project(crate_name: str) -> str | None:
+    """Maps a crate name to its owning Franken-suite project in franken_imports.json."""
+    if crate_name.startswith("asupersync"):
+        return "asupersync"
+    if crate_name.startswith("frankensqlite") or crate_name.startswith("fsqlite-"):
+        return "frankensqlite"
+    if crate_name.startswith("frankenfs") or crate_name.startswith("ffs-"):
+        return "frankenfs"
+    if crate_name.startswith("frankensearch") or crate_name.startswith("fsearch-"):
+        return "frankensearch"
+    if crate_name.startswith("franken_markdown") or crate_name.startswith("fmd-"):
+        return "franken_markdown"
+    if crate_name.startswith("frankengraphdb") or crate_name.startswith("fgdb-"):
+        return "frankengraphdb"
+    if crate_name.startswith("franken_networkx") or crate_name.startswith("fnx-"):
+        return "franken_networkx"
+    if crate_name.startswith("frankentorch") or crate_name.startswith("ftorch-") or crate_name.startswith("ft-"):
+        return "frankentorch"
+    if crate_name.startswith("fastmcp_rust") or crate_name.startswith("fastmcp-") or crate_name.startswith("fmcp-"):
+        return "fastmcp_rust"
+    if crate_name.startswith("eidetic_engine_cli") or crate_name.startswith("ee-"):
+        return "eidetic_engine_cli"
+    if crate_name.startswith("dwarf_fortress_mcp") or crate_name.startswith("dfmcp-"):
+        return "dwarf_fortress_mcp"
+    if crate_name.startswith("doodlestein_self_releaser") or crate_name.startswith("dsr-"):
+        return "doodlestein_self_releaser"
+    return None
+
+
 def classify_dependency_package(
     package_name: str,
     policy: dict[str, Any],
@@ -1978,18 +2006,21 @@ def classify_dependency_package(
         return None, "DEP-AUD-043", f"forbidden package '{package_name}' cannot be admitted into any dependency class"
 
     # 1. DEP-OWNED-001: Owned runtime and Franken-suite families
-    # Exclude workspace members themselves from being categorized as external packages
-    if package_name not in member_names:
-        matches_family = any(fnmatch.fnmatchcase(package_name, pat) for pat in in_house_patterns)
-        if matches_family:
-            # Per-mechanism import gate verification:
-            if admitted_in_house is not None and package_name not in admitted_in_house and not any(fnmatch.fnmatchcase(package_name, pat) for pat in ("asupersync*", "frankensqlite*", "frankenfs*")):
-                return None, "DEP-AUD-043", f"in-house family package '{package_name}' lacks per-mechanism import gate in architecture/franken_imports.json"
-            return "DEP-OWNED-001", None, None
+    if package_name in member_names or package_name.startswith("fss-"):
+        return "DEP-OWNED-001", None, None
 
-    # 2. DEP-FUND-001: serde / serde_json - NEUTRAL pending fss-ndxis
-    if package_name in fundamental_crates or package_name in ("serde", "serde_json"):
-        return "DEP-FUND-001", "DEP-AUD-045", f"fundamental crate '{package_name}' (DEP-FUND-001) is pending owner decision fss-ndxis; quarantined"
+    matches_family = any(fnmatch.fnmatchcase(package_name, pat) for pat in in_house_patterns)
+    if matches_family:
+        project = map_crate_to_franken_project(package_name)
+        if admitted_in_house is None or project is None or project not in admitted_in_house:
+            return None, "DEP-AUD-043", f"in-house family package '{package_name}' lacks per-mechanism import gate in architecture/franken_imports.json"
+        return "DEP-OWNED-001", None, None
+
+    # 2. DEP-FUND-001: fundamental crates admitted subject to audit
+    if package_name in fundamental_crates:
+        if package_name in ("serde", "serde_json"):
+            return "DEP-FUND-001", "DEP-AUD-045", f"fundamental crate '{package_name}' (DEP-FUND-001) is pending owner decision fss-ndxis; quarantined"
+        return "DEP-FUND-001", None, None
 
     # 3. DEP-LAB-001: Pinned codec/model/vendor/reference executables
     if package_name in lab_oracle_crates:
@@ -2009,10 +2040,6 @@ def classify_dependency_package(
             return "DEP-EXCEPTION-001", "DEP-AUD-043", f"unadmitted exception candidate package '{package_name}' (DEP-EXCEPTION-001) lacks approved DEP record and ADR"
         return "DEP-EXCEPTION-001", None, None
 
-    # Skip workspace members themselves from unclassified external check
-    if package_name in member_names:
-        return "DEP-OWNED-001", None, None
-
     # Unclassified external crate
     return None, "DEP-AUD-042", f"package '{package_name}' does not map to any recognized dependency constitution class"
 
@@ -2028,40 +2055,91 @@ def audit_dependency_classes(
 ) -> dict[str, Any]:
     """Classifies every Cargo.lock / resolved package into exactly one DEP class and computes consumer census."""
     all_package_names: set[str] = {str(row.get("name", "")) for row in resolved if row.get("name")}
+    all_package_names.update(member_names)
+
     lock_file = root / "Cargo.lock"
     if not lock_file.is_file():
         add(findings, "error", "DEP-AUD-010", "Cargo.lock", "Cargo.lock is missing", root=root)
         return {"census": {}, "unconsumed": []}
+
+    lock_graph: dict[str, set[str]] = {}
     try:
+        raw_lock = lock_file.read_bytes()
+        if len(raw_lock.strip()) == 0:
+            raise ValueError("Cargo.lock is empty (0 bytes)")
         lock_data = load_toml(lock_file)
-        for pkg in lock_data.get("package", []):
-            if isinstance(pkg, dict) and pkg.get("name"):
-                all_package_names.add(str(pkg["name"]))
+        if not isinstance(lock_data, dict):
+            raise ValueError("Cargo.lock root must be a table")
+        packages = lock_data.get("package")
+        if packages is not None:
+            if not isinstance(packages, list):
+                raise ValueError("Cargo.lock [[package]] must be a list")
+            for pkg in packages:
+                if not isinstance(pkg, dict):
+                    raise ValueError("Cargo.lock package entry must be a table")
+                pname = pkg.get("name")
+                if pname:
+                    all_package_names.add(str(pname))
+                    deps_list: set[str] = set()
+                    for dep_str in pkg.get("dependencies", []):
+                        if isinstance(dep_str, str):
+                            deps_list.add(dep_str.split()[0])
+                    lock_graph[str(pname)] = deps_list
     except Exception as exc:
         add(findings, "error", "DEP-AUD-010", "Cargo.lock", f"Cargo.lock is corrupt or invalid: {exc}", root=root)
         return {"census": {}, "unconsumed": []}
 
-    admitted_in_house: set[str] = set()
+    admitted_in_house: set[str] | None = None
     imports_file = root / "architecture/franken_imports.json"
+    if not imports_file.is_file() and (ROOT / "architecture/franken_imports.json").is_file():
+        imports_file = ROOT / "architecture/franken_imports.json"
+
     if imports_file.is_file():
         try:
-            imp_data = json.loads(imports_file.read_text(encoding="utf-8"))
-            for imp in imp_data.get("imports", []):
-                if isinstance(imp, dict) and imp.get("project"):
-                    admitted_in_house.add(str(imp["project"]))
-        except Exception:
-            pass
+            raw_imp = imports_file.read_bytes()
+            if len(raw_imp.strip()) == 0:
+                raise ValueError("architecture/franken_imports.json is empty")
+            imp_data = json.loads(raw_imp.decode("utf-8"))
+            if not isinstance(imp_data, dict):
+                raise ValueError("franken_imports.json root must be a JSON object")
+            imports_list = imp_data.get("imports")
+            if not isinstance(imports_list, list):
+                raise ValueError("franken_imports.json 'imports' must be a list")
+            admitted_in_house = set()
+            for imp in imports_list:
+                if isinstance(imp, dict):
+                    proj = imp.get("project")
+                    status = imp.get("status")
+                    if proj and status and status not in ("rejected", ""):
+                        admitted_in_house.add(str(proj))
+        except Exception as exc:
+            add(findings, "error", "DEP-AUD-010", "architecture/franken_imports.json", f"architecture/franken_imports.json is corrupt or invalid: {exc}", root=root)
+            return {"census": {}, "unconsumed": []}
 
-    production_deps: set[str] = set()
-    dev_only_deps: set[str] = set()
+    direct_prod_deps: set[str] = set()
+    direct_dev_deps: set[str] = set()
     if direct is not None:
         for dep in direct:
             d_name = dep.get("name")
             d_sec = dep.get("section")
-            if d_sec in ("dependencies", "build-dependencies"):
-                production_deps.add(d_name)
-            elif d_sec == "dev-dependencies":
-                dev_only_deps.add(d_name)
+            if d_name:
+                if d_sec in ("dependencies", "build-dependencies"):
+                    direct_prod_deps.add(d_name)
+                elif d_sec == "dev-dependencies":
+                    direct_dev_deps.add(d_name)
+
+    # Transitive lock graph reachability from direct production roots
+    prod_reachable: set[str] = set()
+    if direct is not None:
+        queue = list(direct_prod_deps - member_names)
+        visited = set(queue)
+        while queue:
+            curr = queue.pop(0)
+            prod_reachable.add(curr)
+            for dep_pkg in lock_graph.get(curr, set()):
+                if dep_pkg not in visited and dep_pkg not in member_names:
+                    visited.add(dep_pkg)
+                    queue.append(dep_pkg)
 
     classified: dict[str, list[str]] = {
         "DEP-OWNED-001": [],
@@ -2083,16 +2161,22 @@ def audit_dependency_classes(
         for dep in direct:
             d_name = dep.get("name")
             consumer = dep.get("manifest")
+            if not d_name or not consumer:
+                continue
+            # Sibling workspace member edges do NOT add to class_consumers
+            if d_name in member_names:
+                continue
             c_id, _, _ = classify_dependency_package(d_name, policy, member_names, is_production=True, admitted_in_house=admitted_in_house)
-            if c_id and consumer:
+            if c_id:
                 class_consumers[c_id].add(consumer)
 
     for pkg_name in sorted(all_package_names):
         if pkg_name in member_names:
+            classified["DEP-OWNED-001"].append(pkg_name)
             continue
 
-        if direct is not None and pkg_name in dev_only_deps and pkg_name not in production_deps:
-            is_prod = False
+        if direct is not None:
+            is_prod = (pkg_name in direct_prod_deps) or (pkg_name in prod_reachable)
         else:
             is_prod = True
 
@@ -2151,29 +2235,33 @@ def audit_dependency_classes(
         "DEP-EXCEPTION-001",
     ]
     for dep_id in dep_order:
-        pkgs = sorted(classified[dep_id])
+        pkgs = sorted(set(classified[dep_id]))
         consumer_count = len(class_consumers.get(dep_id, set())) if direct is not None else len(pkgs)
-        has_consumer = len(pkgs) > 0 or consumer_count > 0
         drift_reason: str | None = None
-        if not has_consumer:
-            if dep_id == "DEP-FUND-001":
-                drift_reason = "no real consumer in Cargo.lock (blocked on owner decision fss-ndxis; serde quarantined)"
-            elif dep_id == "DEP-LAB-001":
-                drift_reason = "no real consumer in production Cargo.lock (sealed fixture/oracle lanes only; absent from release closure)"
-            elif dep_id == "DEP-ORACLE-001":
-                drift_reason = "no real consumer in production Cargo.lock (held-out conformance and lab fixtures only; absent from release closure)"
-            elif dep_id == "DEP-EXCEPTION-001":
-                drift_reason = "no real consumer in production Cargo.lock (no external crate exceptions admitted without DEP record and ADR)"
-            if warn_unconsumed:
-                add(
-                    findings,
-                    "warning",
-                    "DEP-AUD-044",
-                    "architecture/dependencies.json",
-                    f"dependency class row has no active consumer in repository: {dep_id} ({drift_reason})",
-                    root=root,
-                    params={"class": dep_id, "drift": drift_reason},
-                )
+        if dep_id == "DEP-FUND-001":
+            has_consumer = False
+            drift_reason = "no real consumer in Cargo.lock (quarantined pending owner decision fss-ndxis)"
+        else:
+            has_consumer = len(pkgs) > 0 or consumer_count > 0
+            if not has_consumer:
+                if dep_id == "DEP-LAB-001":
+                    drift_reason = "no real consumer in production Cargo.lock (sealed fixture/oracle lanes only; absent from release closure)"
+                elif dep_id == "DEP-ORACLE-001":
+                    drift_reason = "no real consumer in production Cargo.lock (held-out conformance and lab fixtures only; absent from release closure)"
+                elif dep_id == "DEP-EXCEPTION-001":
+                    drift_reason = "no real consumer in production Cargo.lock (no external crate exceptions admitted without DEP record and ADR)"
+
+        if not has_consumer and warn_unconsumed:
+            add(
+                findings,
+                "warning",
+                "DEP-AUD-044",
+                "architecture/dependencies.json",
+                f"dependency class row has no active consumer in repository: {dep_id} ({drift_reason})",
+                root=root,
+                params={"class": dep_id, "drift": drift_reason},
+            )
+
         census[dep_id] = {
             "id": dep_id,
             "consumerCount": consumer_count,
