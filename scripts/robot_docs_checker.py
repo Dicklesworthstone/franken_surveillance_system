@@ -156,12 +156,20 @@ def validate_robot_docs(root: Path, docs_dir: Path | None = None) -> ValidationR
             f"Missing required registry file: {exc}",
         )
         return result
-    except (ValueError, KeyError) as exc:
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
         result.add_error(
             ERR_ROBOT_DOCS_CORRUPT,
             "architecture/",
             "registry_parser",
             f"Failed to parse machine registries: {exc}",
+        )
+        return result
+    except Exception as exc:
+        result.add_error(
+            ERR_ROBOT_DOCS_CORRUPT,
+            "architecture/",
+            "registry_parser",
+            f"Unexpected error processing registries: {exc}",
         )
         return result
 
@@ -210,9 +218,39 @@ def validate_robot_docs(root: Path, docs_dir: Path | None = None) -> ValidationR
         )
 
     # 6. Check structural completeness and canonical ordering
+    if not isinstance(on_disk_json, dict):
+        result.add_error(
+            ERR_ROBOT_DOCS_CORRUPT,
+            format_rel(json_path),
+            "top_level",
+            f"On-disk robot docs JSON must be an object, got {type(on_disk_json).__name__}",
+        )
+        return result
+
     # Verify operations match and ordering
-    auth_op_ids = [op["id"] for op in auth_model["operations"]]
-    disk_op_ids = [op["id"] for op in on_disk_json.get("operations", [])]
+    auth_op_ids = [op["id"] for op in auth_model["operations"] if isinstance(op, dict) and "id" in op]
+    disk_ops = on_disk_json.get("operations")
+    if not isinstance(disk_ops, list):
+        result.add_error(
+            ERR_ROBOT_DOCS_CORRUPT,
+            format_rel(json_path),
+            "operations",
+            f"On-disk operations must be a list, got {type(disk_ops).__name__}",
+        )
+        return result
+    disk_op_ids = []
+    for item in disk_ops:
+        if isinstance(item, dict) and isinstance(item.get("id"), str):
+            disk_op_ids.append(item["id"])
+        else:
+            result.add_error(
+                ERR_ROBOT_DOCS_CORRUPT,
+                format_rel(json_path),
+                "operations",
+                "Malformed operation entry in on-disk JSON (must be an object with string id)",
+            )
+            return result
+
     if set(auth_op_ids) != set(disk_op_ids):
         missing = sorted(set(auth_op_ids) - set(disk_op_ids))
         extra = sorted(set(disk_op_ids) - set(auth_op_ids))
@@ -231,8 +269,29 @@ def validate_robot_docs(root: Path, docs_dir: Path | None = None) -> ValidationR
         )
 
     # Verify views match and ordering
-    auth_view_ids = [v["id"] for v in auth_model["views"]]
-    disk_view_ids = [v["id"] for v in on_disk_json.get("views", [])]
+    auth_view_ids = [v["id"] for v in auth_model["views"] if isinstance(v, dict) and "id" in v]
+    disk_views = on_disk_json.get("views")
+    if not isinstance(disk_views, list):
+        result.add_error(
+            ERR_ROBOT_DOCS_CORRUPT,
+            format_rel(json_path),
+            "views",
+            f"On-disk views must be a list, got {type(disk_views).__name__}",
+        )
+        return result
+    disk_view_ids = []
+    for item in disk_views:
+        if isinstance(item, dict) and isinstance(item.get("id"), str):
+            disk_view_ids.append(item["id"])
+        else:
+            result.add_error(
+                ERR_ROBOT_DOCS_CORRUPT,
+                format_rel(json_path),
+                "views",
+                "Malformed view entry in on-disk JSON (must be an object with string id)",
+            )
+            return result
+
     if set(auth_view_ids) != set(disk_view_ids):
         missing = sorted(set(auth_view_ids) - set(disk_view_ids))
         extra = sorted(set(disk_view_ids) - set(auth_view_ids))
@@ -251,8 +310,28 @@ def validate_robot_docs(root: Path, docs_dir: Path | None = None) -> ValidationR
         )
 
     # Verify resources match and ordering
-    auth_res_ids = [r["id"] for r in auth_model["resources"]]
-    disk_res_ids = [r["id"] for r in on_disk_json.get("resources", [])]
+    auth_res_ids = [r["id"] for r in auth_model["resources"] if isinstance(r, dict) and "id" in r]
+    disk_resources = on_disk_json.get("resources")
+    if not isinstance(disk_resources, list):
+        result.add_error(
+            ERR_ROBOT_DOCS_CORRUPT,
+            format_rel(json_path),
+            "resources",
+            f"On-disk resources must be a list, got {type(disk_resources).__name__}",
+        )
+        return result
+    disk_res_ids = []
+    for item in disk_resources:
+        if isinstance(item, dict) and isinstance(item.get("id"), str):
+            disk_res_ids.append(item["id"])
+        else:
+            result.add_error(
+                ERR_ROBOT_DOCS_CORRUPT,
+                format_rel(json_path),
+                "resources",
+                "Malformed resource entry in on-disk JSON (must be an object with string id)",
+            )
+            return result
     if set(auth_res_ids) != set(disk_res_ids):
         missing = sorted(set(auth_res_ids) - set(disk_res_ids))
         extra = sorted(set(disk_res_ids) - set(auth_res_ids))
