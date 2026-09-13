@@ -262,10 +262,7 @@ pub fn publish_reference_event(
     // A caller that published and then lost the receipt (e.g. crash after durable commit)
     // can recover it without mutating authority or being confused with a fork.
     if predecessor == Some(candidate_revision_digest) {
-        let staged = stage_event_revision(decision, objects)?;
-        let _ = objects.verify_closure(staged.event_root)?;
-
-        let committed_anchor = ledger
+        let (committed_anchor, payload_digest) = ledger
             .batches()
             .iter()
             .rev()
@@ -277,12 +274,17 @@ pub fn publish_reference_event(
                         delta.object_id == object_id
                             && delta.family == "event_revision"
                             && delta.new_generation == decision.event.revision
-                            && delta.payload_digest == staged.event_root
                             && delta.witness_digest == Some(candidate_revision_digest)
                     })
-                    .map(|_| batch.new_anchor.clone())
+                    .map(|delta| (batch.new_anchor.clone(), delta.payload_digest))
             })
             .ok_or(fss_core::ContractError::SupersessionMismatch)?;
+
+        let staged = stage_event_revision(decision, objects)?;
+        if staged.event_root != payload_digest {
+            return Err(fss_core::ContractError::SupersessionMismatch.into());
+        }
+        let _ = objects.verify_closure(staged.event_root)?;
 
         return Ok(ReferenceEventReceipt {
             event_root: staged.event_root,
