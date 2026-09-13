@@ -1,0 +1,826 @@
+#![forbid(unsafe_code)]
+//! Deterministic contract tests for the bounded MJPEG/JPEG frame splitter.
+//!
+//! Asserts exact-equality behavior on well-formed, multi-frame, corrupted, truncated,
+//! oversize, byte-stuffed, restart-marked, and cancellation-governed streams.
+
+use std::error::Error;
+
+use fss_reference::ReplayCx;
+use fss_reference::ingest::{
+    JpegFinding, JpegProcess, JpegSplitError, MjpegLimits, OmissionReason, OmissionSpan,
+    split_jpeg_stream,
+};
+
+/// Helper to build a synthetic, structurally valid baseline JPEG frame.
+fn build_test_jpeg(width: u16, height: u16, payload_byte: u8) -> Vec<u8> {
+    let mut data = Vec::with_capacity(128);
+    // SOI
+    data.extend_from_slice(&[0xFF, 0xD8]);
+
+    // DQT (length = 67, 1 table of 64 bytes)
+    data.extend_from_slice(&[0xFF, 0xDB, 0x00, 0x43, 0x00]);
+    data.extend_from_slice(&[16u8; 64]);
+
+    // SOF0 (Baseline, 8-bit precision, 3 components)
+    // Segment length = 17 (2 length + 1 precision + 2 height + 2 width + 1 num_components + 3*3 comp specs)
+    data.extend_from_slice(&[0xFF, 0xC0, 0x00, 0x11, 0x08]);
+    data.extend_from_slice(&height.to_be_bytes());
+    data.extend_from_slice(&width.to_be_bytes());
+    data.push(3); // 3 components (Y, Cb, Cr)
+    data.extend_from_slice(&[1, 0x11, 0]); // Y: ID 1, 1:1 sampling, QT 0
+    data.extend_from_slice(&[2, 0x11, 0]); // Cb: ID 2, 1:1 sampling, QT 0
+    data.extend_from_slice(&[3, 0x11, 0]); // Cr: ID 3, 1:1 sampling, QT 0
+
+    // SOS (Start of Scan)
+    // Segment length = 12 (2 length + 1 num_components + 3*2 comp selectors + 3 spectral/approx)
+    data.extend_from_slice(&[0xFF, 0xDA, 0x00, 0x0C, 0x03]);
+    data.extend_from_slice(&[1, 0x00, 2, 0x11, 3, 0x11, 0x00, 0x3F, 0x00]);
+
+    // Entropy-coded segment (ECS)
+    data.extend_from_slice(&[payload_byte, 0x42, 0x99]);
+
+    // EOI
+    data.extend_from_slice(&[0xFF, 0xD9]);
+    data
+}
+
+#[test]
+fn single_clean_jpeg_splits_with_exact_spans_and_no_omissions() -> Result<(), Box<dyn Error>> {
+    let frame_bytes = build_test_jpeg(640, 480, 0xAA);
+    let limits = MjpegLimits::default();
+
+    let scan = split_jpeg_stream(&frame_bytes, &limits, None)?;
+
+    assert_eq!(scan.total_bytes_scanned, frame_bytes.len());
+    assert_eq!(scan.frame_count(), 1);
+    assert_eq!(scan.valid_frame_count(), 1);
+    assert!(!scan.has_truncation());
+    assert!(!scan.has_omissions());
+    assert!(scan.omissions.is_empty());
+    assert!(scan.findings.is_empty());
+
+    let frame = &scan.frames[0];
+    assert_eq!(frame.frame_index, 0);
+    assert_eq!(frame.start_offset, 0);
+    assert_eq!(frame.end_offset, frame_bytes.len());
+    assert_eq!(frame.len(), frame_bytes.len());
+    assert!(frame.has_eoi);
+    assert!(!frame.is_truncated);
+    assert_eq!(frame.restart_interval, 0);
+
+    let Some(sof) = &frame.sof else {
+        return Err("SOF0 must be present".into());
+    };
+    assert_eq!(sof.process, JpegProcess::Baseline);
+    assert_eq!(sof.marker, 0xC0);
+    assert_eq!(sof.precision, 8);
+    assert_eq!(sof.width, 640);
+    assert_eq!(sof.height, 480);
+    assert_eq!(sof.components, 3);
+
+    // Exact slice custody assertion
+    assert_eq!(frame.slice(&frame_bytes), Some(frame_bytes.as_slice()));
+    Ok(())
+}
+
+#[test]
+fn multi_frame_mjpeg_concatenation_produces_exact_contiguous_spans() -> Result<(), Box<dyn Error>> {
+    let frame1 = build_test_jpeg(320, 240, 0x01);
+    let frame2 = build_test_jpeg(640, 480, 0x02);
+    let frame3 = build_test_jpeg(1280, 720, 0x03);
+
+    let mut stream = Vec::new();
+    stream.extend_from_slice(&frame1);
+    stream.extend_from_slice(&frame2);
+    stream.extend_from_slice(&frame3);
+
+    let limits = MjpegLimits::default();
+    let scan = split_jpeg_stream(&stream, &limits, None)?;
+
+    assert_eq!(scan.total_bytes_scanned, stream.len());
+    assert_eq!(scan.frame_count(), 3);
+    assert_eq!(scan.valid_frame_count(), 3);
+    assert!(scan.omissions.is_empty());
+    assert!(scan.findings.is_empty());
+
+    // Frame 0
+    assert_eq!(scan.frames[0].frame_index, 0);
+    assert_eq!(scan.frames[0].start_offset, 0);
+    assert_eq!(scan.frames[0].end_offset, frame1.len());
+    assert_eq!(scan.frames[0].slice(&stream), Some(frame1.as_slice()));
+    assert_eq!(scan.frames[0].sof.as_ref().map(|s| s.width), Some(320));
+    assert_eq!(scan.frames[0].sof.as_ref().map(|s| s.height), Some(240));
+
+    // Frame 1
+    assert_eq!(scan.frames[1].frame_index, 1);
+    assert_eq!(scan.frames[1].start_offset, frame1.len());
+    assert_eq!(scan.frames[1].end_offset, frame1.len() + frame2.len());
+    assert_eq!(scan.frames[1].slice(&stream), Some(frame2.as_slice()));
+    assert_eq!(scan.frames[1].sof.as_ref().map(|s| s.width), Some(640));
+    assert_eq!(scan.frames[1].sof.as_ref().map(|s| s.height), Some(480));
+
+    // Frame 2
+    assert_eq!(scan.frames[2].frame_index, 2);
+    assert_eq!(scan.frames[2].start_offset, frame1.len() + frame2.len());
+    assert_eq!(scan.frames[2].end_offset, stream.len());
+    assert_eq!(scan.frames[2].slice(&stream), Some(frame3.as_slice()));
+    assert_eq!(scan.frames[2].sof.as_ref().map(|s| s.width), Some(1280));
+    assert_eq!(scan.frames[2].sof.as_ref().map(|s| s.height), Some(720));
+    Ok(())
+}
+
+#[test]
+fn garbage_before_first_soi_recorded_as_omission_span_and_finding() -> Result<(), Box<dyn Error>> {
+    let prefix_garbage = b"HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace\r\n\r\n";
+    let frame = build_test_jpeg(640, 480, 0x55);
+
+    let mut stream = Vec::new();
+    stream.extend_from_slice(prefix_garbage);
+    stream.extend_from_slice(&frame);
+
+    let limits = MjpegLimits::default();
+    let scan = split_jpeg_stream(&stream, &limits, None)?;
+
+    assert_eq!(scan.frame_count(), 1);
+    assert_eq!(scan.omissions.len(), 1);
+    assert_eq!(
+        scan.omissions[0],
+        OmissionSpan {
+            start_offset: 0,
+            end_offset: prefix_garbage.len(),
+            reason: OmissionReason::GarbageBeforeFirstSoi,
+        }
+    );
+    assert_eq!(
+        scan.omissions[0].slice(&stream),
+        Some(prefix_garbage.as_slice())
+    );
+
+    assert_eq!(
+        scan.findings,
+        vec![JpegFinding::GarbageBeforeFirstSoi {
+            start_offset: 0,
+            end_offset: prefix_garbage.len(),
+        }]
+    );
+
+    assert_eq!(scan.frames[0].start_offset, prefix_garbage.len());
+    assert_eq!(scan.frames[0].end_offset, stream.len());
+    Ok(())
+}
+
+#[test]
+fn garbage_between_frames_recorded_as_omission_span_and_finding() -> Result<(), Box<dyn Error>> {
+    let frame1 = build_test_jpeg(640, 480, 0x11);
+    let separator = b"--boundary\r\nContent-Type: image/jpeg\r\n\r\n";
+    let frame2 = build_test_jpeg(640, 480, 0x22);
+
+    let mut stream = Vec::new();
+    stream.extend_from_slice(&frame1);
+    stream.extend_from_slice(separator);
+    stream.extend_from_slice(&frame2);
+
+    let limits = MjpegLimits::default();
+    let scan = split_jpeg_stream(&stream, &limits, None)?;
+
+    assert_eq!(scan.frame_count(), 2);
+    assert_eq!(scan.omissions.len(), 1);
+
+    let sep_start = frame1.len();
+    let sep_end = frame1.len() + separator.len();
+
+    assert_eq!(
+        scan.omissions[0],
+        OmissionSpan {
+            start_offset: sep_start,
+            end_offset: sep_end,
+            reason: OmissionReason::GarbageBetweenFrames,
+        }
+    );
+    assert_eq!(scan.omissions[0].slice(&stream), Some(separator.as_slice()));
+
+    assert_eq!(
+        scan.findings,
+        vec![JpegFinding::GarbageBetweenFrames {
+            preceding_frame_index: 0,
+            start_offset: sep_start,
+            end_offset: sep_end,
+        }]
+    );
+
+    assert_eq!(scan.frames[1].start_offset, sep_end);
+    Ok(())
+}
+
+#[test]
+fn trailing_garbage_after_last_eoi_recorded_as_omission_span_and_finding()
+-> Result<(), Box<dyn Error>> {
+    let frame = build_test_jpeg(640, 480, 0x99);
+    let trailing = b"\r\n--boundary--\r\n";
+
+    let mut stream = Vec::new();
+    stream.extend_from_slice(&frame);
+    stream.extend_from_slice(trailing);
+
+    let limits = MjpegLimits::default();
+    let scan = split_jpeg_stream(&stream, &limits, None)?;
+
+    assert_eq!(scan.frame_count(), 1);
+    assert_eq!(scan.omissions.len(), 1);
+
+    assert_eq!(
+        scan.omissions[0],
+        OmissionSpan {
+            start_offset: frame.len(),
+            end_offset: stream.len(),
+            reason: OmissionReason::TrailingGarbage,
+        }
+    );
+    assert_eq!(scan.omissions[0].slice(&stream), Some(trailing.as_slice()));
+
+    assert_eq!(
+        scan.findings,
+        vec![JpegFinding::TrailingGarbage {
+            start_offset: frame.len(),
+            end_offset: stream.len(),
+        }]
+    );
+    Ok(())
+}
+
+#[test]
+fn truncated_final_frame_without_eoi_flags_is_truncated_and_emits_finding()
+-> Result<(), Box<dyn Error>> {
+    let mut frame = build_test_jpeg(640, 480, 0x77);
+    // Remove trailing 0xFF, 0xD9 (EOI)
+    let truncated_len = frame.len() - 2;
+    frame.truncate(truncated_len);
+
+    let limits = MjpegLimits::default();
+    let scan = split_jpeg_stream(&frame, &limits, None)?;
+
+    assert_eq!(scan.frame_count(), 1);
+    assert_eq!(scan.valid_frame_count(), 0);
+    assert!(scan.has_truncation());
+
+    let frame_span = &scan.frames[0];
+    assert!(!frame_span.has_eoi);
+    assert!(frame_span.is_truncated);
+    assert_eq!(frame_span.start_offset, 0);
+    assert_eq!(frame_span.end_offset, truncated_len);
+
+    // Source custody retained completely
+    assert_eq!(frame_span.slice(&frame), Some(frame.as_slice()));
+
+    assert_eq!(
+        scan.findings,
+        vec![JpegFinding::TruncatedFrame {
+            frame_index: 0,
+            start_offset: 0,
+            end_offset: truncated_len,
+        }]
+    );
+    Ok(())
+}
+
+#[test]
+fn mid_stream_truncation_when_new_soi_appears_without_eoi() -> Result<(), Box<dyn Error>> {
+    let mut frame1 = build_test_jpeg(320, 240, 0x11);
+    frame1.truncate(frame1.len() - 2); // Frame 1 truncated (no EOI)
+    let frame2 = build_test_jpeg(640, 480, 0x22); // Frame 2 starts immediately
+
+    let mut stream = Vec::new();
+    stream.extend_from_slice(&frame1);
+    stream.extend_from_slice(&frame2);
+
+    let limits = MjpegLimits::default();
+    let scan = split_jpeg_stream(&stream, &limits, None)?;
+
+    assert_eq!(scan.frame_count(), 2);
+    assert_eq!(scan.valid_frame_count(), 1);
+
+    assert!(scan.frames[0].is_truncated);
+    assert!(!scan.frames[0].has_eoi);
+    assert_eq!(scan.frames[0].end_offset, frame1.len());
+
+    assert!(!scan.frames[1].is_truncated);
+    assert!(scan.frames[1].has_eoi);
+    assert_eq!(scan.frames[1].start_offset, frame1.len());
+
+    assert_eq!(
+        scan.findings,
+        vec![JpegFinding::TruncatedFrame {
+            frame_index: 0,
+            start_offset: 0,
+            end_offset: frame1.len(),
+        }]
+    );
+    Ok(())
+}
+
+#[test]
+fn byte_stuffing_ff00_in_ecs_does_not_prematurely_terminate_frame() -> Result<(), Box<dyn Error>> {
+    let mut frame = Vec::new();
+    frame.extend_from_slice(&[0xFF, 0xD8]); // SOI
+
+    // SOF0
+    frame.extend_from_slice(&[0xFF, 0xC0, 0x00, 0x11, 0x08]);
+    frame.extend_from_slice(&100u16.to_be_bytes());
+    frame.extend_from_slice(&100u16.to_be_bytes());
+    frame.push(3);
+    frame.extend_from_slice(&[1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0]);
+
+    // SOS
+    frame.extend_from_slice(&[0xFF, 0xDA, 0x00, 0x0C, 0x03]);
+    frame.extend_from_slice(&[1, 0x00, 2, 0x11, 3, 0x11, 0x00, 0x3F, 0x00]);
+
+    // ECS with multiple stuffed FF00 sequences
+    frame.extend_from_slice(&[0x12, 0xFF, 0x00, 0x34, 0xFF, 0x00, 0xFF, 0x00, 0x56]);
+
+    // EOI
+    frame.extend_from_slice(&[0xFF, 0xD9]);
+
+    let limits = MjpegLimits::default();
+    let scan = split_jpeg_stream(&frame, &limits, None)?;
+
+    assert_eq!(scan.frame_count(), 1);
+    assert!(scan.frames[0].has_eoi);
+    assert!(!scan.frames[0].is_truncated);
+    assert_eq!(scan.frames[0].end_offset, frame.len());
+    assert!(scan.findings.is_empty());
+    Ok(())
+}
+
+#[test]
+fn restart_markers_in_ecs_and_dri_are_handled_correctly() -> Result<(), Box<dyn Error>> {
+    let mut frame = Vec::new();
+    frame.extend_from_slice(&[0xFF, 0xD8]); // SOI
+
+    // DRI: length = 4, Ri = 64
+    frame.extend_from_slice(&[0xFF, 0xDD, 0x00, 0x04]);
+    frame.extend_from_slice(&64u16.to_be_bytes());
+
+    // SOF0
+    frame.extend_from_slice(&[0xFF, 0xC0, 0x00, 0x11, 0x08]);
+    frame.extend_from_slice(&100u16.to_be_bytes());
+    frame.extend_from_slice(&100u16.to_be_bytes());
+    frame.push(3);
+    frame.extend_from_slice(&[1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0]);
+
+    // SOS
+    frame.extend_from_slice(&[0xFF, 0xDA, 0x00, 0x0C, 0x03]);
+    frame.extend_from_slice(&[1, 0x00, 2, 0x11, 3, 0x11, 0x00, 0x3F, 0x00]);
+
+    // ECS with restart markers: RST0 (0xFFD0), RST1 (0xFFD1)
+    frame.extend_from_slice(&[0x10, 0xFF, 0xD0, 0x20, 0xFF, 0xD1, 0x30]);
+
+    // EOI
+    frame.extend_from_slice(&[0xFF, 0xD9]);
+
+    let limits = MjpegLimits::default();
+    let scan = split_jpeg_stream(&frame, &limits, None)?;
+
+    assert_eq!(scan.frame_count(), 1);
+    assert!(scan.frames[0].has_eoi);
+    assert_eq!(scan.frames[0].restart_interval, 64);
+    assert_eq!(scan.frames[0].end_offset, frame.len());
+    Ok(())
+}
+
+#[test]
+fn appn_containing_ffd9_bytes_is_shielded_by_declared_length() -> Result<(), Box<dyn Error>> {
+    let mut frame = Vec::new();
+    frame.extend_from_slice(&[0xFF, 0xD8]); // SOI
+
+    // APP1 segment containing 0xFF, 0xD9 inside its payload!
+    // Length = 8 (2 length + 6 payload)
+    frame.extend_from_slice(&[0xFF, 0xE1, 0x00, 0x08]);
+    frame.extend_from_slice(&[0xAA, 0xFF, 0xD9, 0xBB, 0xCC, 0xDD]);
+
+    // SOF0
+    frame.extend_from_slice(&[0xFF, 0xC0, 0x00, 0x11, 0x08]);
+    frame.extend_from_slice(&100u16.to_be_bytes());
+    frame.extend_from_slice(&100u16.to_be_bytes());
+    frame.push(3);
+    frame.extend_from_slice(&[1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0]);
+
+    // SOS
+    frame.extend_from_slice(&[0xFF, 0xDA, 0x00, 0x0C, 0x03]);
+    frame.extend_from_slice(&[1, 0x00, 2, 0x11, 3, 0x11, 0x00, 0x3F, 0x00]);
+
+    // ECS
+    frame.extend_from_slice(&[0x42, 0x43]);
+
+    // Real terminating EOI
+    frame.extend_from_slice(&[0xFF, 0xD9]);
+
+    let limits = MjpegLimits::default();
+    let scan = split_jpeg_stream(&frame, &limits, None)?;
+
+    assert_eq!(scan.frame_count(), 1);
+    assert!(scan.frames[0].has_eoi);
+    assert!(!scan.frames[0].is_truncated);
+    assert_eq!(scan.frames[0].end_offset, frame.len());
+    Ok(())
+}
+
+#[test]
+fn stream_with_no_soi_returns_typed_no_soi_error() -> Result<(), Box<dyn Error>> {
+    let garbage = b"THIS_IS_NOT_A_JPEG_STREAM_AT_ALL";
+    let limits = MjpegLimits::default();
+
+    match split_jpeg_stream(garbage, &limits, None) {
+        Err(JpegSplitError::NoSoi) => Ok(()),
+        other => Err(format!("expected NoSoi, got {other:?}").into()),
+    }
+}
+
+#[test]
+fn empty_stream_returns_typed_no_soi_error() -> Result<(), Box<dyn Error>> {
+    let empty = b"";
+    let limits = MjpegLimits::default();
+
+    match split_jpeg_stream(empty, &limits, None) {
+        Err(JpegSplitError::NoSoi) => Ok(()),
+        other => Err(format!("expected NoSoi, got {other:?}").into()),
+    }
+}
+
+#[test]
+fn marker_length_overflow_fails_closed_before_allocation() -> Result<(), Box<dyn Error>> {
+    let mut stream = Vec::new();
+    stream.extend_from_slice(&[0xFF, 0xD8]); // SOI
+    // APP0 with declared length 1000, but stream ends immediately
+    stream.extend_from_slice(&[0xFF, 0xE0, 0x03, 0xE8]); // length 1000
+
+    let limits = MjpegLimits::default();
+    match split_jpeg_stream(&stream, &limits, None) {
+        Err(JpegSplitError::MarkerLengthOverflow {
+            offset,
+            marker,
+            length,
+            available,
+        }) => {
+            assert_eq!(offset, 2);
+            assert_eq!(marker, 0xE0);
+            assert_eq!(length, 1000);
+            assert_eq!(available, 2);
+            Ok(())
+        }
+        other => Err(format!("expected MarkerLengthOverflow, got {other:?}").into()),
+    }
+}
+
+#[test]
+fn dimension_limit_exceeded_rejects_at_sof_before_allocation() -> Result<(), Box<dyn Error>> {
+    let mut frame = Vec::new();
+    frame.extend_from_slice(&[0xFF, 0xD8]); // SOI
+
+    // SOF0 with width = 16385 (> max_dimension 16384)
+    frame.extend_from_slice(&[0xFF, 0xC0, 0x00, 0x11, 0x08]);
+    frame.extend_from_slice(&480u16.to_be_bytes()); // height
+    frame.extend_from_slice(&16385u16.to_be_bytes()); // width 16385!
+    frame.push(3);
+    frame.extend_from_slice(&[1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0]);
+
+    // SOS + ECS + EOI
+    frame.extend_from_slice(&[0xFF, 0xDA, 0x00, 0x0C, 0x03]);
+    frame.extend_from_slice(&[1, 0x00, 2, 0x11, 3, 0x11, 0x00, 0x3F, 0x00]);
+    frame.extend_from_slice(&[0x11, 0x22, 0xFF, 0xD9]);
+
+    let limits = MjpegLimits::default();
+    match split_jpeg_stream(&frame, &limits, None) {
+        Err(JpegSplitError::DimensionLimit {
+            width,
+            height,
+            max_dimension,
+        }) => {
+            assert_eq!(width, 16385);
+            assert_eq!(height, 480);
+            assert_eq!(max_dimension, 16384);
+            Ok(())
+        }
+        other => Err(format!("expected DimensionLimit, got {other:?}").into()),
+    }
+}
+
+#[test]
+fn height_dimension_limit_exceeded_rejects_at_sof() -> Result<(), Box<dyn Error>> {
+    let mut frame = Vec::new();
+    frame.extend_from_slice(&[0xFF, 0xD8]); // SOI
+
+    // SOF0 with height = 20000 (> max_dimension 16384)
+    frame.extend_from_slice(&[0xFF, 0xC0, 0x00, 0x11, 0x08]);
+    frame.extend_from_slice(&20000u16.to_be_bytes()); // height 20000!
+    frame.extend_from_slice(&640u16.to_be_bytes()); // width
+    frame.push(3);
+    frame.extend_from_slice(&[1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0]);
+
+    // SOS + ECS + EOI
+    frame.extend_from_slice(&[0xFF, 0xDA, 0x00, 0x0C, 0x03]);
+    frame.extend_from_slice(&[1, 0x00, 2, 0x11, 3, 0x11, 0x00, 0x3F, 0x00]);
+    frame.extend_from_slice(&[0x11, 0x22, 0xFF, 0xD9]);
+
+    let limits = MjpegLimits::default();
+    match split_jpeg_stream(&frame, &limits, None) {
+        Err(JpegSplitError::DimensionLimit {
+            width,
+            height,
+            max_dimension,
+        }) => {
+            assert_eq!(width, 640);
+            assert_eq!(height, 20000);
+            assert_eq!(max_dimension, 16384);
+            Ok(())
+        }
+        other => Err(format!("expected DimensionLimit, got {other:?}").into()),
+    }
+}
+
+#[test]
+fn input_oversized_limit_enforced_before_scanning() -> Result<(), Box<dyn Error>> {
+    let frame = build_test_jpeg(320, 240, 0x01);
+    let limit = frame.len() - 1;
+    let limits = MjpegLimits {
+        max_input_bytes: limit,
+        ..Default::default()
+    };
+
+    match split_jpeg_stream(&frame, &limits, None) {
+        Err(JpegSplitError::InputOversized {
+            size,
+            limit: err_limit,
+        }) => {
+            assert_eq!(size, frame.len());
+            assert_eq!(err_limit, limit);
+            Ok(())
+        }
+        other => Err(format!("expected InputOversized, got {other:?}").into()),
+    }
+}
+
+#[test]
+fn frame_too_large_limit_enforced() -> Result<(), Box<dyn Error>> {
+    let frame = build_test_jpeg(320, 240, 0x01);
+    let limit = frame.len() - 1;
+    let limits = MjpegLimits {
+        max_frame_bytes: limit,
+        ..Default::default()
+    };
+
+    match split_jpeg_stream(&frame, &limits, None) {
+        Err(JpegSplitError::FrameTooLarge {
+            frame_index,
+            size,
+            limit: err_limit,
+        }) => {
+            assert_eq!(frame_index, 0);
+            assert_eq!(size, frame.len());
+            assert_eq!(err_limit, limit);
+            Ok(())
+        }
+        other => Err(format!("expected FrameTooLarge, got {other:?}").into()),
+    }
+}
+
+#[test]
+fn max_frames_limit_enforced() -> Result<(), Box<dyn Error>> {
+    let frame1 = build_test_jpeg(320, 240, 0x01);
+    let frame2 = build_test_jpeg(320, 240, 0x02);
+
+    let mut stream = Vec::new();
+    stream.extend_from_slice(&frame1);
+    stream.extend_from_slice(&frame2);
+
+    let limits = MjpegLimits {
+        max_frames: 1,
+        ..Default::default()
+    };
+
+    match split_jpeg_stream(&stream, &limits, None) {
+        Err(JpegSplitError::TooManyFrames { count, limit }) => {
+            assert_eq!(count, 2);
+            assert_eq!(limit, 1);
+            Ok(())
+        }
+        other => Err(format!("expected TooManyFrames, got {other:?}").into()),
+    }
+}
+
+#[test]
+fn max_marker_segments_limit_enforced() -> Result<(), Box<dyn Error>> {
+    let mut frame = Vec::new();
+    frame.extend_from_slice(&[0xFF, 0xD8]); // SOI
+
+    // Inject 5 COM (comment) segments
+    for _ in 0..5 {
+        frame.extend_from_slice(&[0xFF, 0xFE, 0x00, 0x04, 0xAA, 0xBB]);
+    }
+    frame.extend_from_slice(&[0xFF, 0xD9]); // EOI
+
+    let limits = MjpegLimits {
+        max_marker_segments_per_frame: 3,
+        ..Default::default()
+    };
+
+    match split_jpeg_stream(&frame, &limits, None) {
+        Err(JpegSplitError::TooManyMarkerSegments {
+            frame_index,
+            count,
+            limit,
+        }) => {
+            assert_eq!(frame_index, 0);
+            assert_eq!(count, 4);
+            assert_eq!(limit, 3);
+            Ok(())
+        }
+        other => Err(format!("expected TooManyMarkerSegments, got {other:?}").into()),
+    }
+}
+
+#[test]
+fn cooperative_cancellation_aborts_scanning_cleanly() -> Result<(), Box<dyn Error>> {
+    let frame = build_test_jpeg(640, 480, 0x01);
+    let limits = MjpegLimits::default();
+
+    let cx = ReplayCx::for_test();
+    cx.request_cancellation();
+
+    match split_jpeg_stream(&frame, &limits, Some(&cx)) {
+        Err(JpegSplitError::CancellationRequested) => Ok(()),
+        other => Err(format!("expected CancellationRequested, got {other:?}").into()),
+    }
+}
+
+#[test]
+fn zero_length_marker_segment_records_finding() -> Result<(), Box<dyn Error>> {
+    let mut frame = Vec::new();
+    frame.extend_from_slice(&[0xFF, 0xD8]); // SOI
+
+    // Segment with declared length 0 (< 2)
+    frame.extend_from_slice(&[0xFF, 0xFE, 0x00, 0x00]);
+
+    // SOF0
+    frame.extend_from_slice(&[0xFF, 0xC0, 0x00, 0x11, 0x08]);
+    frame.extend_from_slice(&100u16.to_be_bytes());
+    frame.extend_from_slice(&100u16.to_be_bytes());
+    frame.push(3);
+    frame.extend_from_slice(&[1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0]);
+
+    // SOS + ECS + EOI
+    frame.extend_from_slice(&[0xFF, 0xDA, 0x00, 0x0C, 0x03]);
+    frame.extend_from_slice(&[1, 0x00, 2, 0x11, 3, 0x11, 0x00, 0x3F, 0x00]);
+    frame.extend_from_slice(&[0x11, 0x22, 0xFF, 0xD9]);
+
+    let limits = MjpegLimits::default();
+    let scan = split_jpeg_stream(&frame, &limits, None)?;
+
+    assert_eq!(scan.frame_count(), 1);
+    assert_eq!(
+        scan.findings,
+        vec![JpegFinding::ZeroLengthMarkerSegment {
+            frame_index: 0,
+            marker: 0xFE,
+            offset: 2,
+        }]
+    );
+    Ok(())
+}
+
+#[test]
+fn zero_components_in_sof_records_finding() -> Result<(), Box<dyn Error>> {
+    let mut frame = Vec::new();
+    frame.extend_from_slice(&[0xFF, 0xD8]); // SOI
+
+    // SOF0 with 0 components
+    frame.extend_from_slice(&[0xFF, 0xC0, 0x00, 0x08, 0x08]);
+    frame.extend_from_slice(&100u16.to_be_bytes());
+    frame.extend_from_slice(&100u16.to_be_bytes());
+    frame.push(0); // 0 components!
+
+    // SOS + ECS + EOI
+    frame.extend_from_slice(&[0xFF, 0xDA, 0x00, 0x06, 0x00, 0x00, 0x3F, 0x00]);
+    frame.extend_from_slice(&[0x11, 0x22, 0xFF, 0xD9]);
+
+    let limits = MjpegLimits::default();
+    let scan = split_jpeg_stream(&frame, &limits, None)?;
+
+    assert_eq!(scan.frame_count(), 1);
+    assert_eq!(scan.frames[0].sof.as_ref().map(|s| s.components), Some(0));
+    assert_eq!(
+        scan.findings,
+        vec![JpegFinding::ZeroComponents {
+            frame_index: 0,
+            offset: 2,
+        }]
+    );
+    Ok(())
+}
+
+#[test]
+fn progressive_and_12bit_processes_are_recorded_without_split_error() -> Result<(), Box<dyn Error>>
+{
+    let mut frame = Vec::new();
+    frame.extend_from_slice(&[0xFF, 0xD8]); // SOI
+
+    // SOF2 (Progressive), 12-bit precision
+    frame.extend_from_slice(&[0xFF, 0xC2, 0x00, 0x11, 0x0C]);
+    frame.extend_from_slice(&720u16.to_be_bytes());
+    frame.extend_from_slice(&1280u16.to_be_bytes());
+    frame.push(3);
+    frame.extend_from_slice(&[1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0]);
+
+    // SOS + ECS + EOI
+    frame.extend_from_slice(&[0xFF, 0xDA, 0x00, 0x0C, 0x03]);
+    frame.extend_from_slice(&[1, 0x00, 2, 0x11, 3, 0x11, 0x00, 0x3F, 0x00]);
+    frame.extend_from_slice(&[0x11, 0x22, 0xFF, 0xD9]);
+
+    let limits = MjpegLimits::default();
+    let scan = split_jpeg_stream(&frame, &limits, None)?;
+
+    assert_eq!(scan.frame_count(), 1);
+    let Some(sof) = &scan.frames[0].sof else {
+        return Err("SOF must be recorded".into());
+    };
+    assert_eq!(sof.process, JpegProcess::Progressive);
+    assert_eq!(sof.precision, 12);
+    assert_eq!(sof.width, 1280);
+    assert_eq!(sof.height, 720);
+    Ok(())
+}
+
+#[test]
+fn com_containing_ffd9_bytes_is_shielded_by_declared_length() -> Result<(), Box<dyn Error>> {
+    let mut frame = Vec::new();
+    frame.extend_from_slice(&[0xFF, 0xD8]); // SOI
+
+    // COM segment containing 0xFF, 0xD9 inside its payload
+    // Length = 8 (2 length + 6 payload bytes)
+    frame.extend_from_slice(&[0xFF, 0xFE, 0x00, 0x08]);
+    frame.extend_from_slice(&[0x11, 0xFF, 0xD9, 0x22, 0x33, 0x44]);
+
+    // SOF0
+    frame.extend_from_slice(&[0xFF, 0xC0, 0x00, 0x11, 0x08]);
+    frame.extend_from_slice(&100u16.to_be_bytes());
+    frame.extend_from_slice(&100u16.to_be_bytes());
+    frame.push(3);
+    frame.extend_from_slice(&[1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0]);
+
+    // SOS
+    frame.extend_from_slice(&[0xFF, 0xDA, 0x00, 0x0C, 0x03]);
+    frame.extend_from_slice(&[1, 0x00, 2, 0x11, 3, 0x11, 0x00, 0x3F, 0x00]);
+
+    // ECS
+    frame.extend_from_slice(&[0x55, 0x66]);
+
+    // Real terminating EOI
+    frame.extend_from_slice(&[0xFF, 0xD9]);
+
+    let limits = MjpegLimits::default();
+    let scan = split_jpeg_stream(&frame, &limits, None)?;
+
+    assert_eq!(scan.frame_count(), 1);
+    assert!(scan.frames[0].has_eoi);
+    assert!(!scan.frames[0].is_truncated);
+    assert_eq!(scan.frames[0].end_offset, frame.len());
+    Ok(())
+}
+
+#[test]
+fn mid_stream_dimension_change_splits_both_frames_with_independent_sof_info()
+-> Result<(), Box<dyn Error>> {
+    let frame1 = build_test_jpeg(640, 480, 0x10);
+    let frame2 = build_test_jpeg(1920, 1080, 0x20);
+
+    let mut stream = Vec::new();
+    stream.extend_from_slice(&frame1);
+    stream.extend_from_slice(&frame2);
+
+    let limits = MjpegLimits::default();
+    let scan = split_jpeg_stream(&stream, &limits, None)?;
+
+    assert_eq!(scan.frame_count(), 2);
+    assert_eq!(scan.valid_frame_count(), 2);
+    assert!(!scan.has_truncation());
+
+    // Frame 0: 640x480
+    assert_eq!(scan.frames[0].start_offset, 0);
+    assert_eq!(scan.frames[0].end_offset, frame1.len());
+    let Some(sof0) = &scan.frames[0].sof else {
+        return Err("SOF0 must be present".into());
+    };
+    assert_eq!(sof0.width, 640);
+    assert_eq!(sof0.height, 480);
+
+    // Frame 1: 1920x1080
+    assert_eq!(scan.frames[1].start_offset, frame1.len());
+    assert_eq!(scan.frames[1].end_offset, stream.len());
+    let Some(sof1) = &scan.frames[1].sof else {
+        return Err("SOF1 must be present".into());
+    };
+    assert_eq!(sof1.width, 1920);
+    assert_eq!(sof1.height, 1080);
+
+    Ok(())
+}
