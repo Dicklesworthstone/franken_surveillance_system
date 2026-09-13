@@ -201,3 +201,6 @@ pub mod association;
 
 /// Complete factorized association alternatives and checked explicit selections.
 pub mod association_hypotheses;
+
+/// Frozen-background image-region candidates; not ground contact or threat labels.
+pub mod foreground;
