@@ -2871,7 +2871,7 @@ class TestSloIndependentReviewBypasses(unittest.TestCase):
             (
                 "SLO id not in the registry",
                 {"claim_id": "SLO-NOPE-001", "bundle": {"claim_id": "SLO-NOPE-001"}, "measurement": {"slo_id": "SLO-NOPE-001"}},
-                [target, ERR_CLAIM_BINDING_MISMATCH],
+                [_code("ERR_CLAIM_CLASS_UNRESOLVED")],  # review P6: only a registries/SLOS.md row binds an SLO id
             ),
         ):
             with self.subTest(case=label):
@@ -4037,7 +4037,7 @@ class TestClassReviewItemsAtoD(unittest.TestCase):
             append_readme_table(root, class_table(f"| `{INV_CLAIM_ID}` | statistical | verified | `{INV_BUNDLE_REL}` |"))
             ok, findings, summary = audit_with(root)
             self.assertFalse(ok, "a row relabelled an invariant claim as statistical")
-            self.assert_codes(findings, [ERR_CLAIM_BINDING_MISMATCH, ERR_CLAIM_LEVEL_EXCEEDED])
+            self.assert_codes(findings, [ERR_CLAIM_BINDING_MISMATCH, ERR_CLAIM_LEVEL_EXCEEDED, _code("ERR_CLAIM_CLASS_EVIDENCE_UNINSPECTED")])
             self.assertEqual(summary["verified_bundles_count"], 0)
 
     def test_A_explicit_binding_cannot_override_the_invariant_registry(self) -> None:
@@ -4047,7 +4047,7 @@ class TestClassReviewItemsAtoD(unittest.TestCase):
             append_readme_table(root, class_table(f"| `{INV_CLAIM_ID}` | statistical | verified | `{INV_BUNDLE_REL}` |"))
             ok, findings, _ = audit_with(root, {INV_CLAIM_ID: "statistical"})
             self.assertFalse(ok)
-            self.assert_codes(findings, [ERR_CLAIM_BINDING_MISMATCH, ERR_CLAIM_LEVEL_EXCEEDED])
+            self.assert_codes(findings, [ERR_CLAIM_BINDING_MISMATCH, ERR_CLAIM_LEVEL_EXCEEDED, _code("ERR_CLAIM_CLASS_EVIDENCE_UNINSPECTED")])
 
     # B. Verified only when the citing row's status is promoted ------------------
 
@@ -4063,11 +4063,13 @@ class TestClassReviewItemsAtoD(unittest.TestCase):
             )
 
     def test_B_specified_row_is_not_verified_end_to_end(self) -> None:
+        """A registries/SLOS.md row left at 'target' cites an achieved, fully evidenced slo bundle
+        (an invariant bundle can no longer pass at all: review item P7)."""
         with tempfile.TemporaryDirectory() as tmpdir:
             root = build_fixture_root(Path(tmpdir))
-            write_json(root / INV_BUNDLE_REL, bare_class_bundle(INV_CLAIM_ID, "invariant", level="achieved"))
-            append_readme_table(root, class_table(f"| `{INV_CLAIM_ID}` | invariant | specified | `{INV_BUNDLE_REL}` |"))
-            ok, findings, summary = audit_with(root)
+            write_slo_bundle(root, build_slo_fixture(root))
+            cite_slos_row(root, SLO_CLAIM_ID, SLO_BUNDLE_REL, "target")
+            ok, findings, summary = audit_with(root, now=SLO_NOW)
             self.assertTrue(ok, [f"{f.code}: {f.message}" for f in findings])
             self.assertEqual(
                 (summary["bundles_checked"], summary["verified_bundles_count"], summary["unpromoted_bundles_count"]),
@@ -4076,24 +4078,26 @@ class TestClassReviewItemsAtoD(unittest.TestCase):
 
     # C + D. One bundle, one count; invariant and statistical positive paths ---
 
-    def test_C_D_invariant_claim_bound_by_its_registry_passes_once_end_to_end(self) -> None:
+    def test_C_D_P7_registry_bound_invariant_claim_is_never_verified_from_evidence_names(self) -> None:
+        """Review item P7 overturns the D positive path: the invariant class has no evidence
+        inspection, so a promoted invariant claim is refused (and still counted once, item C)."""
         with tempfile.TemporaryDirectory() as tmpdir:
             root = build_fixture_root(Path(tmpdir))
             write_json(root / INV_BUNDLE_REL, bare_class_bundle(INV_CLAIM_ID, "invariant"))
             append_readme_table(root, class_table(f"| `{INV_CLAIM_ID}` | invariant | verified | `{INV_BUNDLE_REL}` |"))
             ok, findings, summary = audit_with(root)
-            self.assertTrue(ok, [f"{f.code}: {f.message}" for f in findings])
-            self.assertEqual(findings, [])
+            self.assertFalse(ok)
+            self.assert_codes(findings, [_code("ERR_CLAIM_CLASS_EVIDENCE_UNINSPECTED")])
             self.assertEqual(
                 (summary["bundles_checked"], summary["verified_bundles_count"], summary["unpromoted_bundles_count"]),
-                (1, 1, 0),
+                (1, 0, 0),
                 "a bundle cited by a row and retained under qualification-artifacts is one bundle",
             )
             result = run_cli("--root", str(root), "--as-of", "2026-09-02T00:00:00Z")
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("1/1 proof bundles verified", result.stdout)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn("0/1 proof bundles verified", result.stdout)
 
-    def test_D_statistical_claim_with_an_explicit_registry_binding_passes(self) -> None:
+    def test_D_P7_statistical_claim_is_never_verified_from_evidence_names(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             path = write_json(root / "proof_bundles/stat1.bundle.json", bare_class_bundle(STAT_CLAIM_ID, "statistical", level="achieved"))
@@ -4103,8 +4107,8 @@ class TestClassReviewItemsAtoD(unittest.TestCase):
                 prohibited_promotions=set(CANONICAL_PROHIBITED_PROMOTIONS), now=FIXED_NOW,
                 **_bindings_kw(verify_proof_bundle, {STAT_CLAIM_ID: "statistical"}),
             )
-            self.assertTrue(ok, [f"{f.code}: {f.message}" for f in findings])
-            self.assertEqual(findings, [])
+            self.assertFalse(ok)
+            self.assertEqual(error_code_set(findings), [_code("ERR_CLAIM_CLASS_EVIDENCE_UNINSPECTED")])
 
 
 # ---------------------------------------------------------------------------
@@ -4304,12 +4308,14 @@ class TestSloReviewItems1to7(unittest.TestCase):
     def test_2_row_hidden_in_an_html_comment_fails(self) -> None:
         def hide(text: str, row: str) -> str:
             return text.replace(row + "\n", "") + "\n<!--\n" + row.replace(DETECT_TARGET, "≤ 100 s") + "\n-->\n"
-        self.assert_refused([self.UNBOUND], measurement={"actual": 50.0}, setup=put_slos(hide))
+        # Review P6: a hidden row binds nothing, so the SLO id itself is unresolved.
+        self.assert_refused([_code("ERR_CLAIM_CLASS_UNRESOLVED")], measurement={"actual": 50.0}, setup=put_slos(hide))
 
     def test_2_row_hidden_in_a_code_fence_fails(self) -> None:
         def fence(text: str, row: str) -> str:
             return text.replace(row + "\n", "") + "\n```\n" + row.replace(DETECT_TARGET, "≤ 100 s") + "\n```\n"
-        self.assert_refused([self.UNBOUND], measurement={"actual": 50.0}, setup=put_slos(fence))
+        # Review P6: a fenced row binds nothing, so the SLO id itself is unresolved.
+        self.assert_refused([_code("ERR_CLAIM_CLASS_UNRESOLVED")], measurement={"actual": 50.0}, setup=put_slos(fence))
 
     # 3. The comparator is a standalone, unnegated token ----------------------------
 
@@ -4489,6 +4495,150 @@ class TestProofLexerAndEscapes(unittest.TestCase):
                 self.assertEqual(run_formal(rel, body), (True, []))
         ok, codes = run_formal("proofs/Proof.TLA", body)
         self.assertEqual((ok, codes), (False, [_code("ERR_PROOF_FORMAL_ARTIFACT_MISSING")]))
+
+
+# ---------------------------------------------------------------------------
+# Review of c3a17fd..f0222b0, items P5-P7 (fss-x4a.30.87.2); probe p3_class.py
+# ---------------------------------------------------------------------------
+
+INV_REGISTRY_REL = "architecture/invariants.json"
+
+
+def cite_slos_row(root: Path, slo_id: str, proof_rel: str, status: str) -> None:
+    """Sets one registries/SLOS.md row's status and cites proof_rel as its proof root."""
+    slos = root / "registries/SLOS.md"
+    lines = slos.read_text(encoding="utf-8").splitlines(keepends=True)
+    hits = [i for i, line in enumerate(lines) if line.startswith(f"| `{slo_id}` |")]
+    assert len(hits) == 1, hits
+    row = lines[hits[0]].rstrip("\n")
+    assert row.endswith("| target | - |"), row
+    lines[hits[0]] = row[: -len("| target | - |")] + f"| {status} | `{proof_rel}` |\n"
+    slos.write_text("".join(lines), encoding="utf-8")
+
+
+def readme_audit(rows: list[str], files: dict, bindings: dict | None = None, inv_extra: list | None = None):
+    """Probe p3's readme_audit: README claim rows citing bundles, optional extra invariant rows."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = build_fixture_root(Path(tmpdir))
+        if inv_extra is not None:
+            doc = json.loads((ROOT / INV_REGISTRY_REL).read_text(encoding="utf-8"))
+            doc["invariants"].extend(inv_extra)
+            write_json(root / INV_REGISTRY_REL, doc)
+        for rel, data in files.items():
+            write_json(root / rel, data)
+        append_readme_table(root, class_table(*rows))
+        ok, findings, summary = audit_with(root, bindings)
+        return ok, error_code_set(findings), (summary["bundles_checked"], summary["verified_bundles_count"], summary["unpromoted_bundles_count"])
+
+
+class TestReviewP5toP7(unittest.TestCase):
+    """Probe p3_class.py cases as planted tests with exact finding-id sets."""
+
+    def test_new_ids_are_registered(self) -> None:
+        errors_md = (ROOT / "registries/ERRORS.md").read_text(encoding="utf-8")
+        for name, code in {
+            "ERR_CLAIM_CLASS_REGISTRY_INVALID": "ERR-CLAIM-CLASS-REGISTRY-INVALID-001",
+            "ERR_CLAIM_CLASS_EVIDENCE_UNINSPECTED": "ERR-CLAIM-CLASS-EVIDENCE-UNINSPECTED-001",
+        }.items():
+            self.assertEqual(_code(name), code)
+            self.assertIn(code, cpb.DIAGNOSTIC_REGISTRY)
+            self.assertEqual(errors_md.count(f"| `{code}` |"), 1, code)
+
+    # P5. Top-level identity is byte-exact ----------------------------------------
+
+    def test_P5_top_level_identity_is_byte_exact(self) -> None:
+        mismatch, unrecognized = ERR_CLAIM_BINDING_MISMATCH, _code("ERR_UNRECOGNIZED_STATE")
+        for label, override, expected in (
+            ("claim_id with NBSP", {"claim_id": PROOF_CLAIM_ID + NBSP}, [mismatch]),
+            ("claimId with NBSP beside claim_id", {"claimId": PROOF_CLAIM_ID + NBSP}, [mismatch]),
+            ("claim_id with a leading space", {"claim_id": " " + PROOF_CLAIM_ID}, [mismatch]),
+            ("claim_class with NBSP", {"claim_class": "proof" + NBSP}, [mismatch]),
+            ("status PASSED with NBSP", {"status": "PASSED" + NBSP}, [unrecognized]),
+            ("status PASSED", {"status": "PASSED"}, [unrecognized]),
+            ("status with a trailing space", {"status": "passed "}, [unrecognized]),
+        ):
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                ok, findings, _ = verify_class_bundle(root, build_proof_fixture(root, bundle=override), PROOF_CLAIM_ID)
+                self.assertFalse(ok, label)
+                self.assertEqual(error_code_set(findings), expected, [f"{f.code}: {f.message}" for f in findings])
+
+    # P6. Class binding --------------------------------------------------------------
+
+    def test_P6_tombstoned_invariant_cannot_be_rebound_by_an_explicit_binding(self) -> None:
+        rows = ["| `INV-900` | invariant | verified | `qualification-artifacts/inv/t.bundle.json` |"]
+        files = {"qualification-artifacts/inv/t.bundle.json": bare_class_bundle("INV-900", "invariant")}
+        extra = [{"id": "INV-900", "status": "tombstoned"}]
+        unresolved = _code("ERR_CLAIM_CLASS_UNRESOLVED")
+        self.assertEqual(readme_audit(rows, files, None, extra), (False, [unresolved], (1, 0, 0)))
+        self.assertEqual(readme_audit(rows, files, {"INV-900": "invariant"}, extra), (False, [unresolved], (1, 0, 0)))
+
+    def test_P6_duplicate_invariant_ids_are_registry_invalid(self) -> None:
+        rows = ["| `INV-901` | invariant | verified | `qualification-artifacts/inv/u.bundle.json` |"]
+        files = {"qualification-artifacts/inv/u.bundle.json": bare_class_bundle("INV-901", "invariant")}
+        base = [_code("ERR_CLAIM_CLASS_REGISTRY_INVALID"), _code("ERR_CLAIM_CLASS_UNRESOLVED")]
+        for label, extra, also in (
+            ("tombstoned then normative", [{"id": "INV-901", "status": "tombstoned"}, {"id": "INV-901", "status": "normative"}], []),
+            # the repository stable-ID audit refuses case-distinct duplicate ids as well
+            ("case-distinct", [{"id": "INV-901", "status": "normative"}, {"id": "inv-901", "status": "normative"}],
+             [_code("ERR_TOMBSTONE_INDEX_UNAVAILABLE")]),
+        ):
+            with self.subTest(case=label):
+                self.assertEqual(readme_audit(rows, files, None, extra), (False, sorted(base + also), (1, 0, 0)))
+
+    def test_P6_slo_ids_bind_only_through_slos_md_rows(self) -> None:
+        self.assertEqual(cpb._registry_claim_class("SLO-DETECT-001", {}), "slo")
+        self.assertIsNone(cpb._registry_claim_class("SLO-NOTREAL-999", {}))
+        self.assertIsNone(cpb._registry_claim_class("SLO-NOTREAL-999", {"SLO-NOTREAL-999": "slo"}))
+        for bindings in ({}, {"SLO-NOTREAL-999": "slo"}):
+            with self.subTest(bindings=bindings), tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                bundle = seal({**make_bundle(claim_id="SLO-NOTREAL-999"), "artifacts": []})
+                path = write_json(root / "proof_bundles/notreal.bundle.json", bundle)
+                ok, findings, _ = verify_proof_bundle(
+                    bundle_path=path, root=root, expected_claim_id="SLO-NOTREAL-999", claim_level="achieved",
+                    known_classes=_known_classes(), tombstoned_ids=set(), now=FIXED_NOW,
+                    **_bindings_kw(verify_proof_bundle, bindings),
+                )
+                self.assertFalse(ok)
+                self.assertEqual(error_code_set(findings), [_code("ERR_CLAIM_CLASS_UNRESOLVED")])
+
+    # P7. The verified count cannot be inflated --------------------------------------
+
+    def test_P7_unrealized_class_is_never_verified(self) -> None:
+        rows = ["| `INV-001` | invariant | verified | `qualification-artifacts/inv/a.bundle.json` |"]
+        files = {"qualification-artifacts/inv/a.bundle.json": bare_class_bundle("INV-001", "invariant")}
+        self.assertEqual(readme_audit(rows, files), (False, [_code("ERR_CLAIM_CLASS_EVIDENCE_UNINSPECTED")], (1, 0, 0)))
+
+    def test_P7_two_copies_of_one_bundle_count_once(self) -> None:
+        copy_rel = "qualification-artifacts/proof/formal-002-copy.bundle.json"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            bundle = seal(build_proof_fixture(root))
+            write_json(root / PROOF_BUNDLE_REL, bundle)
+            write_json(root / copy_rel, bundle)
+            table = class_table(
+                f"| `{PROOF_CLAIM_ID}` | proof | verified | `{PROOF_BUNDLE_REL}` | {PROOF_GENERATION} |",
+                f"| `{PROOF_CLAIM_ID}` | proof | verified | `{copy_rel}` | {PROOF_GENERATION} |",
+            )
+            findings, stats = scan_with_stats(root, table)
+            self.assertEqual(findings, [], [f"{f.code}: {f.message}" for f in findings])
+            self.assertEqual((stats["bundles_checked"], stats["bundles_passed"], stats["bundles_unpromoted"]), (1, 1, 0))
+            append_readme_table(root, table)
+            ok, findings, summary = audit_with(root, CLAIM_ROW_CLASSES)
+            self.assertTrue(ok, [f"{f.code}: {f.message}" for f in findings])
+            self.assertEqual((summary["bundles_checked"], summary["verified_bundles_count"], summary["unpromoted_bundles_count"]), (1, 1, 0))
+
+    def test_P7_scan_counts_one_resolved_path_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            write_json(root / PROOF_BUNDLE_REL, seal(build_proof_fixture(root)))
+            findings, stats = scan_with_stats(root, class_table(
+                f"| `{PROOF_CLAIM_ID}` | proof | verified | `{PROOF_BUNDLE_REL}` | {PROOF_GENERATION} |",
+                f"| `{PROOF_CLAIM_ID}` | proof | verified | `./{PROOF_BUNDLE_REL}` | {PROOF_GENERATION} |",
+            ))
+            self.assertEqual(findings, [])
+            self.assertEqual((stats["promoted"], stats["bundles_checked"], stats["bundles_passed"]), (2, 1, 1))
 
 if __name__ == "__main__":
     unittest.main()

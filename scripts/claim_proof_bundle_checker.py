@@ -94,6 +94,8 @@ ERR_PROOF_CHECK_RECEIPT_INVALID = "ERR-CLAIM-PROOF-CHECK-RECEIPT-INVALID-001"
 ERR_PROOF_UNPROVEN_PLACEHOLDER = "ERR-CLAIM-PROOF-UNPROVEN-PLACEHOLDER-001"
 ERR_PROOF_UNSOUND_ESCAPE = "ERR-CLAIM-PROOF-UNSOUND-ESCAPE-001"
 ERR_CLAIM_GENERATION_UNBOUND = "ERR-CLAIM-GENERATION-UNBOUND-001"
+ERR_CLAIM_CLASS_REGISTRY_INVALID = "ERR-CLAIM-CLASS-REGISTRY-INVALID-001"
+ERR_CLAIM_CLASS_EVIDENCE_UNINSPECTED = "ERR-CLAIM-CLASS-EVIDENCE-UNINSPECTED-001"
 ERR_BOUND_DERIVATION_UNBOUND = "ERR-CLAIM-BOUND-DERIVATION-UNBOUND-001"
 ERR_BOUND_EXPRESSION_UNBOUND = "ERR-CLAIM-BOUND-EXPRESSION-UNBOUND-001"
 ERR_BOUND_UNITS_MISSING = "ERR-CLAIM-BOUND-UNITS-MISSING-001"
@@ -176,6 +178,14 @@ DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
     ERR_SLO_FRESHNESS_UNSET: {
         "trigger": "The operation-cost row of an 'slo' measurement declares no measurement_max_age_days, so the measurement freshness bound is unset and staleness cannot be decided",
         "remediation": "A user decision: set measurement_max_age_days on the operation's row in architecture/operation_cost_registry.toml; the checker never assumes a default",
+    },
+    ERR_CLAIM_CLASS_REGISTRY_INVALID: {
+        "trigger": "A registry that binds claim ids to classes (architecture/invariants.json) declares an id that is not an exact token, or declares one id more than once (compared ignoring case), e.g. once tombstoned and once normative",
+        "remediation": "Give every stable id exactly one row; a tombstoned id keeps its single tombstone row",
+    },
+    ERR_CLAIM_CLASS_EVIDENCE_UNINSPECTED: {
+        "trigger": "A promoted claim's class has no evidence inspection in this checker (only slo, proof, and bounded_model are realized), so its bundle's evidence names alone can never verify it",
+        "remediation": "Realize the class's registry row with evidence inspection, or keep the claim below a promoted readiness level",
     },
     ERR_CLAIM_ASSUMPTIONS_MISSING: {
         "trigger": "A promoted 'proof' or 'bounded_model' claim declares no assumptions, or an assumption lacks a non-empty 'id' and 'statement', or an assumption id is duplicated",
@@ -1155,26 +1165,41 @@ def _slo_target_defect(target: str) -> str | None:
     return None
 
 
-def _registry_claim_class(claim_id: Any, class_bindings: dict[str, str] | None = None) -> str | None:
-    """The claim class a registry binds to a claim id: every SLO-grammar id is an 'slo' claim
-    (registries/SLOS.md); any other id only through class_bindings, which the audit loads from
-    the owning registries (load_claim_class_bindings). A claim row's Class column never binds."""
-    if isinstance(claim_id, str) and slo_validate.SLO_ID_REGEX.match(claim_id.strip().strip("`").strip()):
-        return "slo"
-    if isinstance(claim_id, str) and class_bindings:
-        return class_bindings.get(claim_id)
-    return None
+def _repository_slo_ids(root: Path) -> set[str] | None:
+    """Ids of the rows of registries/SLOS.md under root, or None when that registry cannot be
+    read (the slo verifier then refuses the claim as ERR-CLAIM-SLO-REGISTRY-INVALID-001)."""
+    rows, registry_findings = load_slo_registry(root)
+    return None if registry_findings else set(rows)
+
+
+def _registry_claim_class(
+    claim_id: Any,
+    class_bindings: dict[str, str | None] | None = None,
+    slo_root: Path | None = None,
+) -> str | None:
+    """The claim class a registry binds to a claim id. An SLO-grammar id is an 'slo' claim only
+    when registries/SLOS.md (under slo_root, else the repository's) has its row; explicit
+    bindings never bind SLO-grammar ids. Any other id only through class_bindings, which the
+    audit loads from the owning registries; a tombstoned id is bound to None and stays unbound.
+    A claim row's Class column never binds."""
+    if not isinstance(claim_id, str):
+        return None
+    slo_id = claim_id.strip().strip("`").strip()
+    if slo_validate.SLO_ID_REGEX.match(slo_id):
+        members = _repository_slo_ids(slo_root if slo_root is not None else ROOT)
+        return "slo" if members is None or slo_id in members else None
+    return class_bindings.get(claim_id) if class_bindings else None
 
 
 INVARIANT_REGISTRY_FILE = "architecture/invariants.json"
 
 
-def load_claim_class_bindings(root: Path) -> tuple[dict[str, str], list[ClaimFinding]]:
+def load_claim_class_bindings(root: Path) -> tuple[dict[str, str | None], list[ClaimFinding]]:
     """Claim-id -> class bindings from the owning machine registries under root (the repository's
-    own copy when root has none). Invariant ids are bound by architecture/invariants.json; SLO
-    ids are bound by grammar in _registry_claim_class. No repository registry binds proof,
-    bounded_model, statistical, benchmark, compatibility, or agent claim ids yet, so such claims
-    are unresolved until one does."""
+    own copy when root has none). Invariant ids are bound by architecture/invariants.json; a
+    tombstoned invariant id is bound to None so that no explicit binding can revive it. SLO ids
+    are bound by their registries/SLOS.md rows in _registry_claim_class. No repository registry
+    binds proof, bounded_model, statistical, benchmark, compatibility, or agent claim ids yet."""
     path, _ = _authority_file(root, INVARIANT_REGISTRY_FILE)
     data, findings = _read_json_document(path, INVARIANT_REGISTRY_FILE, "invariant registry")
     if data is None:
@@ -1182,15 +1207,22 @@ def load_claim_class_bindings(root: Path) -> tuple[dict[str, str], list[ClaimFin
     rows = data.get("invariants")
     if not isinstance(rows, list) or not rows:
         return {}, [_finding(ERR_EMPTY_INPUT, INVARIANT_REGISTRY_FILE, "invariants", f"Registry '{INVARIANT_REGISTRY_FILE}' declares no invariants")]
-    bindings: dict[str, str] = {}
+    bindings: dict[str, str | None] = {}
+    folded: set[str] = set()
     for idx, row in enumerate(rows):
         inv_id = _exact_token(row.get("id")) if isinstance(row, dict) else None
         if inv_id is None:
-            return {}, [_finding(ERR_UNREADABLE_INPUT, INVARIANT_REGISTRY_FILE, f"invariants[{idx}]", f"Invariant row {idx} declares no exact id: {row!r}")]
+            return {}, [_finding(ERR_CLAIM_CLASS_REGISTRY_INVALID, INVARIANT_REGISTRY_FILE, f"invariants[{idx}]", f"Invariant row {idx} declares no exact id: {row!r}")]
+        if inv_id.casefold() in folded:
+            return {}, [_finding(
+                ERR_CLAIM_CLASS_REGISTRY_INVALID, INVARIANT_REGISTRY_FILE, f"invariants[{idx}]",
+                f"Invariant id '{inv_id}' is declared more than once (ids are compared ignoring case); no claim can be bound through it",
+                {"id": inv_id},
+            )]
+        folded.add(inv_id.casefold())
         status = row.get("status")
-        if isinstance(status, str) and status.strip().lower() in STALE_STATUSES:
-            continue  # a tombstoned invariant binds no live claim
-        bindings[inv_id] = "invariant"
+        tombstoned = isinstance(status, str) and status.strip().lower() in STALE_STATUSES
+        bindings[inv_id] = None if tombstoned else "invariant"
     return bindings, []
 
 
@@ -2761,6 +2793,11 @@ def _verify_bounded_model_claim_evidence(
             ))
 
 
+# Classes whose registry rows the checker realizes with evidence inspection; every other class
+# fails closed when promoted (review item P7).
+REALIZED_CLAIM_CLASSES: frozenset[str] = frozenset({"slo", "proof", "bounded_model"})
+
+
 def _naive_instant_finding(now: datetime | None, where: str) -> ClaimFinding | None:
     if now is not None and (now.tzinfo is None or now.utcoffset() is None):
         return _finding(
@@ -2836,19 +2873,27 @@ def verify_proof_bundle(
 
     # 3. Claim binding (Section 23.7: a proof bundle carries its claim ID).
     id_fields, bundle_claim_id = _single_field(data, CLAIM_ID_FIELDS)
-    if not id_fields or not isinstance(bundle_claim_id, str) or not bundle_claim_id.strip():
+    inexact_ids = [f for f in id_fields if _exact_token(data[f]) is None]
+    if id_fields and inexact_ids and any(isinstance(data[f], str) and data[f].strip() for f in inexact_ids):
+        findings.append(_finding(
+            ERR_CLAIM_BINDING_MISMATCH, path_str, "claim_id",
+            f"Proof bundle '{path_str}' declares claim id(s) {[data[f] for f in inexact_ids]!r} that are not exact tokens; "
+            "identity is compared byte for byte, never stripped",
+            {"expected_claim_id": expected_claim_id},
+        ))
+    elif not id_fields or not isinstance(bundle_claim_id, str) or not bundle_claim_id.strip():
         findings.append(_finding(
             ERR_CLAIM_BINDING_MISMATCH, path_str, "claim_id",
             f"Proof bundle '{path_str}' binds no claim ID"
             + (f"; it cannot prove claim '{expected_claim_id}'" if expected_claim_id is not None else ""),
             {"expected_claim_id": expected_claim_id},
         ))
-    elif len(id_fields) > 1 and len({str(data[f]).strip() for f in id_fields}) > 1:
+    elif len(id_fields) > 1 and len({str(data[f]) for f in id_fields}) > 1:
         findings.append(_finding(
             ERR_CLAIM_BINDING_MISMATCH, path_str, "claim_id",
             f"Proof bundle '{path_str}' declares conflicting claim IDs {[data[f] for f in id_fields]}",
         ))
-    elif expected_claim_id is not None and bundle_claim_id.strip() != expected_claim_id.strip():
+    elif expected_claim_id is not None and bundle_claim_id != expected_claim_id.strip():
         findings.append(_finding(
             ERR_CLAIM_BINDING_MISMATCH, path_str, "claim_id",
             f"Proof bundle is bound to claim '{bundle_claim_id.strip()}', not to the citing claim '{expected_claim_id}'",
@@ -2863,7 +2908,8 @@ def verify_proof_bundle(
 
     # 5. Status: closed vocabulary.
     raw_status = data.get("status")
-    bundle_status = raw_status.strip().lower() if isinstance(raw_status, str) else None
+    # Byte-exact: a status is never stripped or case-folded into the vocabulary.
+    bundle_status = raw_status if isinstance(raw_status, str) and _exact_token(raw_status) is not None else None
     if bundle_status in STALE_STATUSES:
         findings.append(_finding(ERR_STALE_GENERATION, path_str, "status", f"Proof bundle status is marked '{bundle_status}'", {"status": bundle_status}))
     elif bundle_status in FAILED_STATUSES:
@@ -2947,9 +2993,18 @@ def verify_proof_bundle(
     # column. A bundle never picks its own class: one that declares none or disagrees fails, and
     # a promoted bundle whose class nothing but the bundle itself asserts fails closed.
     _, raw_bundle_class = _single_field(data, CLAIM_CLASS_FIELDS)
-    bundle_class = _nonempty_str(raw_bundle_class)
+    bundle_class = _exact_token(raw_bundle_class)
+    inexact_class = bundle_class is None and isinstance(raw_bundle_class, str) and bool(raw_bundle_class.strip())
+    if inexact_class:
+        findings.append(_finding(
+            ERR_CLAIM_BINDING_MISMATCH, path_str, "claim_class",
+            f"Proof bundle claim class {raw_bundle_class!r} is not an exact class name; it is never stripped into a match",
+            {"bundle_claim_class": raw_bundle_class},
+        ))
     row_class = _nonempty_str(claim_class)
-    registry_class = _registry_claim_class(expected_claim_id if expected_claim_id is not None else bundle_claim_id, class_bindings)
+    registry_class = _registry_claim_class(
+        expected_claim_id if expected_claim_id is not None else bundle_claim_id, class_bindings, slo_root=root,
+    )
     if row_class is not None and registry_class is not None and row_class != registry_class:
         findings.append(_finding(
             ERR_CLAIM_BINDING_MISMATCH, path_str, "claim_class",
@@ -2972,7 +3027,7 @@ def verify_proof_bundle(
             f"Proof bundle claim class '{bundle_class}' differs from the citing claim class '{citing_class}'",
             {"bundle_claim_class": bundle_class, "claim_class": citing_class},
         ))
-    if bundle_class is None and effective_class is not None:
+    if bundle_class is None and not inexact_class and effective_class is not None:
         findings.append(_finding(
             ERR_INVALID_CLAIM_CLASS, path_str, "claim_class",
             f"Proof bundle '{path_str}' declares no claim class; it must restate the citing claim class '{effective_class}'",
@@ -3024,6 +3079,13 @@ def verify_proof_bundle(
             _verify_proof_claim_evidence(data, root, path_str, expected_claim_id, findings, claim_generation)
         elif effective_class == "bounded_model" and _is_promoted_bundle(data, claim_level):
             _verify_bounded_model_claim_evidence(data, root, path_str, expected_claim_id, findings, claim_generation)
+        elif effective_class not in REALIZED_CLAIM_CLASSES and _is_promoted_bundle(data, claim_level):
+            findings.append(_finding(
+                ERR_CLAIM_CLASS_EVIDENCE_UNINSPECTED, path_str, "claim_class",
+                f"Claim class '{effective_class}' has no evidence inspection in this checker; a promoted "
+                f"'{effective_class}' claim is never verified from its bundle's evidence names alone",
+                {"claim_class": effective_class},
+            ))
 
     is_valid = not any(f.severity == "error" for f in findings)
     return is_valid, findings, data
@@ -3116,15 +3178,24 @@ def _row_promoted(claim_level: str | None) -> bool:
     return (rank is not None and rank >= PROMOTION_RANK) or level in ("achieved", "promoted")
 
 
-def _count_bundle(stats: dict[str, int], ok: bool, claim_level: str | None) -> None:
-    """A bundle counts as verified only when it passes and its citing row's status is promoted;
-    a passing bundle cited below that (or by no row) supports no readiness and is counted apart."""
-    if not ok:
-        return
-    if _row_promoted(claim_level):
-        stats["bundles_passed"] += 1
-    else:
-        stats["bundles_unpromoted"] += 1
+def _outcome_key(root: Path, path: Path, data: dict[str, Any] | None) -> str:
+    """One outcome per bundle: its exact declared content digest when it has one (two copies at
+    different paths are one bundle), else its resolved path."""
+    if isinstance(data, dict):
+        _, declared = _single_field(data, CONTENT_DIGEST_FIELDS)
+        digest = _exact_token(declared)
+        if digest is not None and SHA256_DIGEST_RE.fullmatch(digest):
+            return f"digest:{digest}"
+    return f"path:{_citation_key(root, path)}"
+
+
+def _record_outcome(table: dict[str, dict[str, Any]], key: str, ok: bool, promoted: bool, resolved: str) -> None:
+    """A bundle is verified only when every check of it passed and some citing row's own status
+    promotes it; a passing bundle cited below that (or by no row) is counted as unpromoted."""
+    outcome = table.setdefault(key, {"ok": True, "promoted": False, "paths": set()})
+    outcome["ok"] = outcome["ok"] and ok
+    outcome["promoted"] = outcome["promoted"] or promoted
+    outcome["paths"].add(resolved)
 
 
 def _citation_key(root: Path, path: Path) -> str:
@@ -3148,7 +3219,7 @@ def scan_markdown_claim_tables(
     cited_classes: dict[str, set[str | None]] | None = None,
     cited_generations: dict[str, set[str | None]] | None = None,
     class_bindings: dict[str, str] | None = None,
-    outcomes: dict[str, dict[str, bool]] | None = None,
+    outcomes: dict[str, dict[str, Any]] | None = None,
 ) -> list[ClaimFinding]:
     """Scans markdown tables for status and proof root/bundle citations. A ``Class`` column
     declares each claim row's class and a ``Generation`` column its current generation;
@@ -3171,6 +3242,7 @@ def scan_markdown_claim_tables(
         return [_finding(ERR_EMPTY_INPUT, path_str, "file", f"Markdown file '{path_str}' is empty (0 bytes)")]
 
     claim_tables_here = 0
+    local_outcomes: dict[str, dict[str, Any]] = {}
     for headers, data_rows in parse_markdown_tables(raw_text):
         normalized_headers = [normalize_cell(h).lower() for h in headers]
         columns: dict[str, list[int]] = {"status": [], "proof": [], "id": [], "class": [], "generation": []}
@@ -3255,7 +3327,6 @@ def scan_markdown_claim_tables(
                         {"path": proof_val},
                     ))
                     continue
-                counters["bundles_checked"] += 1
                 bundle_ok, bundle_findings, bundle_data = verify_proof_bundle(
                     bundle_path=proof_path,
                     root=root,
@@ -3269,11 +3340,11 @@ def scan_markdown_claim_tables(
                     prohibited_promotions=prohibited_promotions,
                     now=now,
                 )
-                _count_bundle(counters, bundle_ok, status_val)
+                key = _outcome_key(root, proof_path, bundle_data)
+                resolved = _citation_key(root, proof_path)
+                _record_outcome(local_outcomes, key, bundle_ok, _row_promoted(status_val), resolved)
                 if outcomes is not None:
-                    outcome = outcomes.setdefault(_citation_key(root, proof_path), {"ok": True, "promoted": False})
-                    outcome["ok"] = outcome["ok"] and bundle_ok
-                    outcome["promoted"] = outcome["promoted"] or _row_promoted(status_val)
+                    _record_outcome(outcomes, key, bundle_ok, _row_promoted(status_val), resolved)
                 if cited_classes is not None:
                     cited_classes.setdefault(_citation_key(root, proof_path), set()).add(row_class)
                 if cited_generations is not None:
@@ -3289,6 +3360,9 @@ def scan_markdown_claim_tables(
                         params=bf.params,
                     ))
 
+    counters["bundles_checked"] += len(local_outcomes)
+    counters["bundles_passed"] += sum(1 for o in local_outcomes.values() if o["ok"] and o["promoted"])
+    counters["bundles_unpromoted"] += sum(1 for o in local_outcomes.values() if o["ok"] and not o["promoted"])
     counters["claim_tables"] += claim_tables_here
     if require_claim_table and claim_tables_here == 0:
         findings.append(_finding(
@@ -3913,13 +3987,13 @@ def audit_claim_proof_bundles(
         findings.append(naive)
     registry_bindings, binding_findings = load_claim_class_bindings(root)
     findings.extend(binding_findings)
-    bindings: dict[str, str] = {**(class_bindings or {}), **registry_bindings}
-    # One outcome per resolved bundle path: a bundle cited by rows and retained under
-    # qualification-artifacts is checked and counted once (review item C).
-    outcomes: dict[str, dict[str, bool]] = {}
+    bindings: dict[str, str | None] = {**(class_bindings or {}), **registry_bindings}
+    # One outcome per bundle (content digest, else resolved path): a bundle cited by several rows,
+    # stored twice, or also retained under qualification-artifacts is counted once.
+    outcomes: dict[str, dict[str, Any]] = {}
 
     if target_bundle is not None:
-        bundle_ok, b_findings, _ = verify_proof_bundle(
+        bundle_ok, b_findings, b_data = verify_proof_bundle(
             bundle_path=target_bundle,
             root=root,
             known_classes=known_classes,
@@ -3929,7 +4003,7 @@ def audit_claim_proof_bundles(
             class_bindings=bindings,
         )
         findings.extend(b_findings)
-        outcomes[_citation_key(root, target_bundle)] = {"ok": bundle_ok, "promoted": False}
+        _record_outcome(outcomes, _outcome_key(root, target_bundle, b_data), bundle_ok, False, _citation_key(root, target_bundle))
     else:
         for rel_file in MANDATORY_AUTHORITY_FILES:
             full_path = root / rel_file
@@ -3962,6 +4036,7 @@ def audit_claim_proof_bundles(
             ))
             surfaces_scanned.append(rel_file)
 
+        cited_paths: set[str] = set().union(*(o["paths"] for o in outcomes.values()))
         qual_dir = root / RETENTION_DIR
         if qual_dir.exists() and not qual_dir.is_dir():
             findings.append(_finding(ERR_UNREADABLE_INPUT, RETENTION_DIR, "path", f"'{RETENTION_DIR}' exists but is not a directory"))
@@ -3986,10 +4061,10 @@ def audit_claim_proof_bundles(
                         elif r_status is not None and r_status != "passed":
                             receipts["nonpassing"] += 1
                     elif name.endswith(BUNDLE_SUFFIXES):
-                        key = _citation_key(root, f_path)
-                        if key in outcomes:
+                        resolved = _citation_key(root, f_path)
+                        if resolved in cited_paths:
                             continue  # verified as cited by its claim row(s); never checked or counted twice
-                        bundle_ok, b_findings, _ = verify_proof_bundle(
+                        bundle_ok, b_findings, b_data = verify_proof_bundle(
                             bundle_path=f_path,
                             root=root,
                             known_classes=known_classes,
@@ -3999,7 +4074,7 @@ def audit_claim_proof_bundles(
                             class_bindings=bindings,
                         )
                         findings.extend(b_findings)
-                        outcomes[key] = {"ok": bundle_ok, "promoted": False}  # no citing row: never verified
+                        _record_outcome(outcomes, _outcome_key(root, f_path, b_data), bundle_ok, False, resolved)  # no citing row adds no promotion
 
     error_count = sum(1 for f in findings if f.severity == "error")
     warning_count = sum(1 for f in findings if f.severity == "warning")
