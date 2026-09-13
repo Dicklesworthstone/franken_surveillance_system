@@ -243,6 +243,8 @@ policy_lane() {
   run standards-first-adapter-checker python3 scripts/standards_first_adapter_checker.py
   run standards-first-adapter-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_standards_first_adapter_checker.py
   run release-artifact-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_release_artifacts.py
+  run robot-docs python3 scripts/robot_docs_checker.py
+  run robot-docs-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_robot_docs.py
   run diff-check git diff --check
   run shell-syntax bash -n scripts/qualify.sh scripts/release_qualify.sh scripts/publish_to_github.sh
   run python-syntax env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 -m py_compile \

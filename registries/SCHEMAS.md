@@ -74,6 +74,6 @@
 | `SCHEMA-PROVIDER-OBSERVATION-RECEIPT-001` | `fss.provider_observation_receipt.v1` | `schemas/provider_observation_receipt.v1.json` | provider authority | provider-issued observation receipt; verified by lookup, never recomputable |
 | `SCHEMA-PROVIDER-FAILURE-RECEIPT-001` | `fss.provider_failure_receipt.v1` | `schemas/provider_failure_receipt.v1.json` | provider authority | provider-issued failure receipt; nonce and error reason preserved |
 | `SCHEMA-EFFECT-RECONCILIATION-001` | `fss.effect_reconciliation.v1` | `schemas/effect_reconciliation.v1.json` | effect truth | four-valued outcome; verified requires independent evidence witness |
-| `SCHEMA-ROBOT-DOCS-001` | `fss.robot_docs.v1` | `docs/ROBOT_DOCS.json` | documentation/metadata | immutable; additions compatible |
+| `SCHEMA-ROBOT-DOCS-001` | `fss.robot_docs.v1` | `schemas/robot_docs.v1.json` | documentation/metadata | immutable; additions compatible |
 
 Binary media, ledger, search-segment, graph-run, and release formats additionally require magic, version, bounded lengths, canonical encoding, migration fixtures, corruption tests, and a named format owner before implementation.

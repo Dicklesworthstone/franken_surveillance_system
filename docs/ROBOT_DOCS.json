@@ -125,19 +125,19 @@
   "discovery": {
     "capabilities": {
       "cli": "fss capabilities --json",
-      "description": "Report all supported device, model, and agent capabilities in typed JSON"
+      "description": "Report capabilities in JSON format."
     },
     "doctor": {
       "cli": "fss doctor --json",
-      "description": "Report system diagnostic doctor results and environment health in typed JSON"
+      "description": "Report system diagnostic doctor results in JSON format."
     },
     "negative_evidence": {
       "cli": "fss negative-evidence list --json",
-      "description": "Inspect and verify negative evidence ledger and coverage witnesses"
+      "description": "Negative evidence ledger management."
     },
     "status": {
       "cli": "fss status --json",
-      "description": "Report overall system runtime and subsystem status in typed JSON"
+      "description": "Report system status in JSON format."
     }
   },
   "errors": [
@@ -2578,7 +2578,7 @@
     {
       "authority": "documentation/metadata",
       "compatibilityRule": "immutable; additions compatible",
-      "file": "docs/ROBOT_DOCS.json",
+      "file": "schemas/robot_docs.v1.json",
       "id": "SCHEMA-ROBOT-DOCS-001",
       "schema": "fss.robot_docs.v1"
     },

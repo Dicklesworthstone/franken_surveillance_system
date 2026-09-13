@@ -10,21 +10,24 @@ authoritative machine registries:
 - architecture/operation_crosswalk.json
 - registries/ERRORS.md
 - registries/SCHEMAS.md
+- architecture/release_qualification.json
+- crates/fss-cli/src/fss_cmd.rs
 
 Guarantees:
-- Zero hand-written drift: all operations, views, resources, schemas, and capabilities
-  are derived from machine registries.
+- Zero hand-written drift: all operations, views, resources, schemas, capabilities,
+  and discovery endpoints are derived from machine registries and source definitions.
 - Strict determinism: canonical sorting, normalized whitespace, byte-level stability.
-- Fail-closed validation: unresolved references, duplicate keys, and unauthorized entries
-  raise typed diagnostic error codes.
+- Fail-closed validation: unresolved references, duplicate keys, unauthorized entries,
+  type mismatches, cross-registry conflicts, and tombstones raise typed diagnostic error codes.
 - Secret and private path scanning: detects and rejects credentials and absolute local paths.
-- Markdown table escaping: prevents header injection and broken table delimiters.
+- Markdown table and HTML escaping: prevents header injection, script injection, and broken table delimiters.
 """
 from __future__ import annotations
 
 import argparse
-import hashlib
+import html
 import json
+import math
 import re
 import sys
 from pathlib import Path
@@ -39,6 +42,17 @@ ERR_ROBOT_DOCS_CORRUPT = "ERR-ROBOT-DOCS-CORRUPT-001"
 ERR_ROBOT_DOCS_UNREGISTERED = "ERR-ROBOT-DOCS-UNREGISTERED-001"
 ERR_ROBOT_DOCS_SECRET_DETECTED = "ERR-ROBOT-DOCS-SECRET-DETECTED-001"
 
+VALID_RECOVERY_CLASSES = frozenset({
+    "never_unchanged",
+    "safe_read_retry",
+    "refresh_and_retry",
+    "rebase_required",
+    "backoff",
+    "reconciliation_required",
+    "operator_action_required",
+    "resume_from_continuation",
+})
+
 
 class RobotDocsError(Exception):
     """Fail-closed error raised during robot docs model collection or generation."""
@@ -51,13 +65,26 @@ class RobotDocsError(Exception):
 
 
 SECRET_PATTERNS = [
-    re.compile(r"(?i)\b(?:token|api[_-]?key|password|secret|bearer)\s*[:=]\s*[A-Za-z0-9_\-\.]{8,}"),
+    re.compile(r"(?i)\bAuthorization:\s*Bearer\s+[A-Za-z0-9._~+/-]+"),
+    re.compile(r"\bsk-proj-[A-Za-z0-9_-]{10,}\b"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(r"\bxoxb-[0-9A-Za-z-]{10,}\b"),
+    re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
+    re.compile(r"(?i)\bpassword\s+is\s+[^\s]+"),
+    re.compile(r"""(?i)\b(?:password|api[_-]?key|secret)\s*[:=]\s*["']?[^"'\s]{4,}"""),
+    re.compile(r"""(?i)\btoken\s*[:=]\s*["']?[^"'\s]{8,}"""),
     re.compile(r"\bghp_[A-Za-z0-9]{20,}\b"),
-    re.compile(r"\bgithub_pat_[A-Za-z0-9]{20,}\b"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
     re.compile(r"\b(?:gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b"),
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
     re.compile(r"\.ssh/(?:id_rsa|id_ed25519|id_ecdsa|id_dsa)"),
-    re.compile(r"/home/[a-zA-Z0-9._-]+(?:/[a-zA-Z0-9._-]+)*"),
+    re.compile(r"/data/projects/[a-zA-Z0-9._-]+"),
+    re.compile(r"/home/[a-zA-Z0-9._-]+"),
+    re.compile(r"/Users/[a-zA-Z0-9._-]+"),
+    re.compile(r"/root/[a-zA-Z0-9._-]+"),
+    re.compile(r"/root/\.netrc"),
+    re.compile(r"""(?i)[a-z]:\\Users\\[a-zA-Z0-9._-]+"""),
+    re.compile(r"""(?i)[a-z]:/Users/[a-zA-Z0-9._-]+"""),
     re.compile(r"~/[a-zA-Z0-9._-]+"),
 ]
 
@@ -69,7 +96,7 @@ def scan_for_secrets(value: Any, context: str) -> None:
             if pat.search(value):
                 raise RobotDocsError(
                     ERR_ROBOT_DOCS_SECRET_DETECTED,
-                    f"Suspected secret or local home path detected in {context} matching {pat.pattern}",
+                    f"Suspected secret or local path detected in {context} matching {pat.pattern}",
                     target=context,
                 )
     elif isinstance(value, dict):
@@ -79,6 +106,23 @@ def scan_for_secrets(value: Any, context: str) -> None:
     elif isinstance(value, list):
         for idx, item in enumerate(value):
             scan_for_secrets(item, f"{context}[{idx}]")
+
+
+def check_no_nan_inf(value: Any, context: str) -> None:
+    """Refuses float NaN, Inf, -Inf in loaded structures."""
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                f"Disallowed NaN or Infinity in {context}",
+                target=context,
+            )
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            check_no_nan_inf(v, f"{context}.{k}")
+    elif isinstance(value, list):
+        for idx, item in enumerate(value):
+            check_no_nan_inf(item, f"{context}[{idx}]")
 
 
 def _duplicate_key_detector(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -91,41 +135,78 @@ def _duplicate_key_detector(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return res
 
 
+def _fail_on_nan_constant(val: str) -> None:
+    raise ValueError(f"Disallowed JSON constant: {val}")
+
+
 def load_json(path: Path) -> dict[str, Any]:
-    """Loads a JSON file with utf-8 encoding and strict duplicate-key rejection."""
+    """Loads a JSON file with utf-8 encoding, duplicate-key rejection, and NaN refusal."""
     if not path.is_file():
         raise FileNotFoundError(f"Missing required JSON file: {path}")
     text = path.read_text(encoding="utf-8")
     try:
-        return json.loads(text, object_pairs_hook=_duplicate_key_detector)
+        doc = json.loads(
+            text,
+            object_pairs_hook=_duplicate_key_detector,
+            parse_constant=_fail_on_nan_constant,
+        )
     except Exception as exc:
         raise ValueError(f"Failed to parse JSON in {path}: {exc}") from exc
+    if not isinstance(doc, dict):
+        raise RobotDocsError(
+            ERR_ROBOT_DOCS_CORRUPT,
+            f"Top-level JSON in {path.name} must be a dictionary, got {type(doc).__name__}",
+            target=path.name,
+        )
+    check_no_nan_inf(doc, path.name)
+    return doc
 
 
 def escape_markdown_cell(val: Any) -> str:
-    """Sanitizes text for safe inclusion in Markdown table cells."""
+    """Sanitizes text for safe inclusion in Markdown table cells without HTML/script injection."""
     if val is None:
         return ""
     s = str(val).replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
-    return s.replace("|", "\\|").strip()
+    # Escape HTML tags and special entities
+    s = html.escape(s, quote=False)
+    # Neutralize javascript: links
+    s = re.sub(r"(?i)javascript\s*:", "javascript&#58;", s)
+    # Escape pipes
+    s = s.replace("|", "\\|")
+    return s.strip()
 
 
 def escape_markdown_inline(val: Any) -> str:
-    """Sanitizes text for safe inclusion inline within backticks or headings."""
+    """Sanitizes text for safe inclusion inline within code backticks."""
     if val is None:
         return ""
     s = str(val).replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+    s = html.escape(s, quote=False)
+    s = re.sub(r"(?i)javascript\s*:", "javascript&#58;", s)
+    # Prevent backtick breakout of code spans: replace ` with '
     return s.replace("`", "'").strip()
 
 
 def escape_markdown_text(val: Any) -> str:
-    """Sanitizes text for safe inclusion in Markdown body blocks without heading injection."""
+    """Sanitizes text for safe inclusion in Markdown body blocks without heading/HTML injection."""
     if val is None:
         return ""
     s = str(val).replace("\r\n", "\n").replace("\r", "\n")
     # Disallow injecting top-level or secondary headings
     s = re.sub(r"(?m)^#{1,6}\s+", "\\# ", s)
+    # Escape raw HTML
+    s = html.escape(s, quote=False)
     return s.strip()
+
+
+def split_markdown_row(line: str) -> list[str]:
+    """Splits a markdown table row by unescaped pipes |."""
+    line = line.strip()
+    if not line.startswith("|") or not line.endswith("|"):
+        return []
+    content = line[1:-1]
+    parts = re.split(r"(?<!\\)\|", content)
+    return [p.replace(r"\|", "|").strip() for p in parts]
 
 
 def parse_errors_registry(errors_md_path: Path) -> dict[str, dict[str, str]]:
@@ -133,22 +214,22 @@ def parse_errors_registry(errors_md_path: Path) -> dict[str, dict[str, str]]:
     if not errors_md_path.is_file():
         raise FileNotFoundError(f"Missing errors registry: {errors_md_path}")
     errors: dict[str, dict[str, str]] = {}
-    for line in errors_md_path.read_text(encoding="utf-8").splitlines():
+    content = errors_md_path.read_text(encoding="utf-8")
+    scan_for_secrets(content, "registries/ERRORS.md")
+    for line in content.splitlines():
         line = line.strip()
         if line.startswith("| `ERR-"):
-            parts = [p.strip() for p in line.split("|")[1:-1]]
+            parts = split_markdown_row(line)
             if len(parts) >= 2:
-                err_id = parts[0].replace("`", "")
+                err_id = parts[0].replace("`", "").strip()
                 if err_id in errors:
                     raise RobotDocsError(
                         ERR_ROBOT_DOCS_CORRUPT,
                         f"Duplicate error ID detected in ERRORS.md: {err_id}",
                         target="ERRORS.md",
                     )
-                description = parts[1]
-                guidance = parts[2] if len(parts) > 2 else ""
-                scan_for_secrets(description, f"ERRORS.md:{err_id}:description")
-                scan_for_secrets(guidance, f"ERRORS.md:{err_id}:guidance")
+                description = parts[1].strip()
+                guidance = parts[2].strip() if len(parts) > 2 else ""
                 errors[err_id] = {
                     "id": err_id,
                     "description": description,
@@ -157,22 +238,45 @@ def parse_errors_registry(errors_md_path: Path) -> dict[str, dict[str, str]]:
     return errors
 
 
+def parse_exit_codes_registry(errors_md_path: Path) -> set[str]:
+    """Parses exit code identities (EXIT-*) declared in registries/ERRORS.md."""
+    if not errors_md_path.is_file():
+        raise FileNotFoundError(f"Missing errors registry: {errors_md_path}")
+    exit_codes: set[str] = set()
+    for line in errors_md_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line.startswith("| `EXIT-"):
+            parts = split_markdown_row(line)
+            if parts:
+                code = parts[0].replace("`", "").strip()
+                exit_codes.add(code)
+    return exit_codes
+
+
 def parse_schemas_registry(schemas_md_path: Path) -> dict[str, dict[str, str]]:
     """Parses registries/SCHEMAS.md into schema_name -> {id, schema, file, authority, compatibilityRule}."""
     if not schemas_md_path.is_file():
         raise FileNotFoundError(f"Missing schemas registry: {schemas_md_path}")
     schemas: dict[str, dict[str, str]] = {}
     seen_ids: set[str] = set()
-    for line in schemas_md_path.read_text(encoding="utf-8").splitlines():
+    content = schemas_md_path.read_text(encoding="utf-8")
+    scan_for_secrets(content, "registries/SCHEMAS.md")
+    for line in content.splitlines():
         line = line.strip()
         if line.startswith("| `SCHEMA-"):
-            parts = [p.strip() for p in line.split("|")[1:-1]]
+            parts = split_markdown_row(line)
             if len(parts) >= 5:
-                s_id = parts[0].replace("`", "")
-                s_name = parts[1].replace("`", "")
-                s_file = parts[2].replace("`", "")
-                s_auth = parts[3]
-                s_comp = parts[4]
+                s_id = parts[0].replace("`", "").strip()
+                s_name = parts[1].replace("`", "").strip()
+                s_file = parts[2].replace("`", "").strip()
+                s_auth = parts[3].strip()
+                s_comp = parts[4].strip()
+                if not s_comp:
+                    raise RobotDocsError(
+                        ERR_ROBOT_DOCS_CORRUPT,
+                        f"Missing compatibilityRule for schema {s_id}",
+                        target="SCHEMAS.md",
+                    )
                 if s_id in seen_ids:
                     raise RobotDocsError(
                         ERR_ROBOT_DOCS_CORRUPT,
@@ -180,15 +284,6 @@ def parse_schemas_registry(schemas_md_path: Path) -> dict[str, dict[str, str]]:
                         target="SCHEMAS.md",
                     )
                 seen_ids.add(s_id)
-                if s_name in schemas:
-                    raise RobotDocsError(
-                        ERR_ROBOT_DOCS_CORRUPT,
-                        f"Duplicate schema name detected in SCHEMAS.md: {s_name}",
-                        target="SCHEMAS.md",
-                    )
-                scan_for_secrets(s_file, f"SCHEMAS.md:{s_name}:file")
-                scan_for_secrets(s_auth, f"SCHEMAS.md:{s_name}:authority")
-                scan_for_secrets(s_comp, f"SCHEMAS.md:{s_name}:compatibilityRule")
                 schemas[s_name] = {
                     "id": s_id,
                     "schema": s_name,
@@ -199,6 +294,72 @@ def parse_schemas_registry(schemas_md_path: Path) -> dict[str, dict[str, str]]:
     return schemas
 
 
+def collect_cli_discovery_endpoints(root: Path) -> dict[str, dict[str, str]]:
+    """Extracts canonical CLI discovery commands and doc comments from crates/fss-cli/src/fss_cmd.rs."""
+    fss_cmd_path = root / "crates/fss-cli/src/fss_cmd.rs"
+    if not fss_cmd_path.is_file():
+        raise FileNotFoundError(f"Missing CLI command specification: {fss_cmd_path}")
+    content = fss_cmd_path.read_text(encoding="utf-8")
+    enum_match = re.search(r"pub enum FssCommand\s*\{([^}]+)\}", content)
+    if not enum_match:
+        raise RobotDocsError(
+            ERR_ROBOT_DOCS_CORRUPT,
+            "Failed to find FssCommand enum in fss_cmd.rs",
+            target="fss_cmd.rs",
+        )
+    variants = re.findall(r"///\s*(.*?)\n\s*([A-Za-z0-9_]+)", enum_match.group(1))
+    var_docs = {name: doc.strip() for doc, name in variants}
+
+    endpoints: dict[str, dict[str, str]] = {}
+    if "Capabilities" in var_docs:
+        endpoints["capabilities"] = {
+            "cli": "fss capabilities --json",
+            "description": var_docs["Capabilities"],
+        }
+    if "Doctor" in var_docs:
+        endpoints["doctor"] = {
+            "cli": "fss doctor --json",
+            "description": var_docs["Doctor"],
+        }
+    if "Status" in var_docs:
+        endpoints["status"] = {
+            "cli": "fss status --json",
+            "description": var_docs["Status"],
+        }
+    if "NegativeEvidence" in var_docs:
+        endpoints["negative_evidence"] = {
+            "cli": "fss negative-evidence list --json",
+            "description": var_docs["NegativeEvidence"],
+        }
+
+    required = {"capabilities", "doctor", "status", "negative_evidence"}
+    if set(endpoints.keys()) != required:
+        raise RobotDocsError(
+            ERR_ROBOT_DOCS_CORRUPT,
+            f"Missing CLI discovery endpoints from fss_cmd.rs: {required - set(endpoints.keys())}",
+            target="fss_cmd.rs",
+        )
+    return endpoints
+
+
+def parse_qualification_lanes(root: Path) -> set[str]:
+    """Loads registered qualification gate IDs from architecture/release_qualification.json."""
+    rel_qual_path = root / "architecture/release_qualification.json"
+    data = load_json(rel_qual_path)
+    lanes = data.get("lanes")
+    if not isinstance(lanes, list):
+        raise RobotDocsError(
+            ERR_ROBOT_DOCS_CORRUPT,
+            "Top-level 'lanes' in release_qualification.json must be a list",
+            target="release_qualification.json:lanes",
+        )
+    gates: set[str] = set()
+    for item in lanes:
+        if isinstance(item, dict) and "id" in item:
+            gates.add(item["id"])
+    return gates
+
+
 def collect_robot_docs_model(root: Path) -> dict[str, Any]:
     """Assembles the canonical, consolidated robot docs model from authoritative registries."""
     fss1_reg = load_json(root / "architecture/fss1_public_registry.json")
@@ -207,7 +368,10 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
     caps_reg = load_json(root / "architecture/capabilities.json")
     crosswalk_reg = load_json(root / "architecture/operation_crosswalk.json")
     errors_map = parse_errors_registry(root / "registries/ERRORS.md")
+    exit_codes_set = parse_exit_codes_registry(root / "registries/ERRORS.md")
     schemas_map = parse_schemas_registry(root / "registries/SCHEMAS.md")
+    valid_gates = parse_qualification_lanes(root)
+    discovery = collect_cli_discovery_endpoints(root)
 
     # Scan raw registry structures for secrets
     scan_for_secrets(fss1_reg, "architecture/fss1_public_registry.json")
@@ -216,10 +380,212 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
     scan_for_secrets(caps_reg, "architecture/capabilities.json")
     scan_for_secrets(crosswalk_reg, "architecture/operation_crosswalk.json")
 
-    # Verify duplicate IDs within lists
+    # Validate asOf metadata on all machine registries
+    iso_date_pattern = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+    for reg_name, reg_dict in [
+        ("agent_operations.json", agent_ops_reg),
+        ("fss1_public_registry.json", fss1_reg),
+        ("agent_views.json", agent_views_reg),
+        ("capabilities.json", caps_reg),
+        ("operation_crosswalk.json", crosswalk_reg),
+    ]:
+        as_of_val = reg_dict.get("asOf")
+        if not isinstance(as_of_val, str) or not iso_date_pattern.match(as_of_val):
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                f"{reg_name} missing or malformed 'asOf' date (expected YYYY-MM-DD): {as_of_val!r}",
+                target=f"{reg_name}:asOf",
+            )
+
+    # Type validation of top-level containers
+    raw_ops_list = agent_ops_reg.get("operations")
+    if not isinstance(raw_ops_list, list):
+        raise RobotDocsError(
+            ERR_ROBOT_DOCS_CORRUPT,
+            f"'operations' in agent_operations.json must be a list, got {type(raw_ops_list).__name__}",
+            target="agent_operations.json:operations",
+        )
+
+    fss1_ops_list = fss1_reg.get("operations")
+    if not isinstance(fss1_ops_list, list):
+        raise RobotDocsError(
+            ERR_ROBOT_DOCS_CORRUPT,
+            f"'operations' in fss1_public_registry.json must be a list, got {type(fss1_ops_list).__name__}",
+            target="fss1_public_registry.json:operations",
+        )
+
+    cw_list = crosswalk_reg.get("crosswalk")
+    if not isinstance(cw_list, list):
+        raise RobotDocsError(
+            ERR_ROBOT_DOCS_CORRUPT,
+            f"'crosswalk' in operation_crosswalk.json must be a list, got {type(cw_list).__name__}",
+            target="operation_crosswalk.json:crosswalk",
+        )
+
+    views_list = agent_views_reg.get("views")
+    if not isinstance(views_list, list):
+        raise RobotDocsError(
+            ERR_ROBOT_DOCS_CORRUPT,
+            f"'views' in agent_views.json must be a list, got {type(views_list).__name__}",
+            target="agent_views.json:views",
+        )
+
+    caps_list = caps_reg.get("capabilities")
+    if not isinstance(caps_list, list):
+        raise RobotDocsError(
+            ERR_ROBOT_DOCS_CORRUPT,
+            f"'capabilities' in capabilities.json must be a list, got {type(caps_list).__name__}",
+            target="capabilities.json:capabilities",
+        )
+
+    resources_list = fss1_reg.get("resources")
+    if not isinstance(resources_list, list):
+        raise RobotDocsError(
+            ERR_ROBOT_DOCS_CORRUPT,
+            f"'resources' in fss1_public_registry.json must be a list, got {type(resources_list).__name__}",
+            target="fss1_public_registry.json:resources",
+        )
+
+    # Parse tombstones
+    fss1_tombstones: set[str] = set()
+    raw_fss1_tombstones = fss1_reg.get("tombstones", [])
+    if isinstance(raw_fss1_tombstones, list):
+        for item in raw_fss1_tombstones:
+            if isinstance(item, dict):
+                tid = item.get("id") or item.get("operation_id")
+                if tid:
+                    fss1_tombstones.add(str(tid))
+            elif isinstance(item, str):
+                fss1_tombstones.add(item)
+
+    caps_tombstones: set[str] = set()
+    raw_caps_tombstones = caps_reg.get("tombstones", [])
+    if isinstance(raw_caps_tombstones, list):
+        for item in raw_caps_tombstones:
+            if isinstance(item, dict):
+                tid = item.get("id")
+                if tid:
+                    caps_tombstones.add(str(tid))
+            elif isinstance(item, str):
+                caps_tombstones.add(item)
+
+    # Check views for duplicate IDs and type correctness
+    seen_views: set[str] = set()
+    for v in views_list:
+        if not isinstance(v, dict):
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                "View entry must be a dictionary",
+                target="agent_views.json:views",
+            )
+        v_id = v.get("id")
+        if not isinstance(v_id, str):
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                "View id must be a string",
+                target="agent_views.json:views.id",
+            )
+        if v_id in seen_views:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                f"Duplicate view ID in agent_views.json: {v_id}",
+                target="agent_views.json",
+            )
+        seen_views.add(v_id)
+
+        # Validate required view fields (no fail-open defaults)
+        for req_k in ["name", "owner", "purpose", "targetTokens", "maximumTokens", "requiredSections", "gate", "status"]:
+            if req_k not in v or v[req_k] is None:
+                raise RobotDocsError(
+                    ERR_ROBOT_DOCS_CORRUPT,
+                    f"View {v_id} missing required key '{req_k}'",
+                    target=f"views.{v_id}.{req_k}",
+                )
+
+        if not isinstance(v["targetTokens"], int) or isinstance(v["targetTokens"], bool):
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                f"View {v_id} targetTokens must be an integer",
+                target=f"views.{v_id}.targetTokens",
+            )
+        if not isinstance(v["maximumTokens"], int) or isinstance(v["maximumTokens"], bool):
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                f"View {v_id} maximumTokens must be an integer",
+                target=f"views.{v_id}.maximumTokens",
+            )
+
+        sections = v["requiredSections"]
+        if not isinstance(sections, list) or len(sections) == 0:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                f"View {v_id} requiredSections must be a non-empty list",
+                target=f"views.{v_id}.requiredSections",
+            )
+        for sec in sections:
+            if not isinstance(sec, str) or not re.match(r"^[A-Za-z0-9_]+$", sec):
+                raise RobotDocsError(
+                    ERR_ROBOT_DOCS_CORRUPT,
+                    f"View {v_id} invalid requiredSection name: {sec!r}",
+                    target=f"views.{v_id}.requiredSections",
+                )
+
+        v_gate = v["gate"]
+        if v_gate not in valid_gates:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_UNREGISTERED,
+                f"View {v_id} references unregistered gate: {v_gate}",
+                target=f"views.{v_id}.gate",
+            )
+
+    # Check capabilities for duplicate IDs and index them
+    caps_by_id: dict[str, dict[str, Any]] = {}
+    for cap in caps_list:
+        if not isinstance(cap, dict):
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                "Capability entry must be a dictionary",
+                target="capabilities.json:capabilities",
+            )
+        c_id = cap.get("id")
+        if not isinstance(c_id, str):
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                "Capability id must be a string",
+                target="capabilities.json:capabilities.id",
+            )
+        if c_id in caps_by_id:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                f"Duplicate capability ID in capabilities.json: {c_id}",
+                target="capabilities.json",
+            )
+        for req_k in ["capability", "scope", "plane", "defaultRole"]:
+            if req_k not in cap or cap[req_k] is None:
+                raise RobotDocsError(
+                    ERR_ROBOT_DOCS_CORRUPT,
+                    f"Capability {c_id} missing required key '{req_k}'",
+                    target=f"capabilities.{c_id}.{req_k}",
+                )
+        caps_by_id[c_id] = cap
+
+    # Index operations and verify duplicate IDs
     seen_agent_ops: set[str] = set()
-    for op in agent_ops_reg.get("operations", []):
-        op_id = op["id"]
+    agent_ops_by_id: dict[str, dict[str, Any]] = {}
+    for op in raw_ops_list:
+        if not isinstance(op, dict):
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                "Operation entry in agent_operations.json must be a dictionary",
+                target="agent_operations.json:operations",
+            )
+        op_id = op.get("id")
+        if not isinstance(op_id, str):
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                "Operation id in agent_operations.json must be a string",
+                target="agent_operations.json:operations.id",
+            )
         if op_id in seen_agent_ops:
             raise RobotDocsError(
                 ERR_ROBOT_DOCS_CORRUPT,
@@ -227,10 +593,24 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
                 target="agent_operations.json",
             )
         seen_agent_ops.add(op_id)
+        agent_ops_by_id[op_id] = op
 
     seen_fss1_ops: set[str] = set()
-    for op in fss1_reg.get("operations", []):
-        op_id = op["id"]
+    fss1_ops_by_id: dict[str, dict[str, Any]] = {}
+    for op in fss1_ops_list:
+        if not isinstance(op, dict):
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                "Operation entry in fss1_public_registry.json must be a dictionary",
+                target="fss1_public_registry.json:operations",
+            )
+        op_id = op.get("id")
+        if not isinstance(op_id, str):
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                "Operation id in fss1_public_registry.json must be a string",
+                target="fss1_public_registry.json:operations.id",
+            )
         if op_id in seen_fss1_ops:
             raise RobotDocsError(
                 ERR_ROBOT_DOCS_CORRUPT,
@@ -238,10 +618,24 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
                 target="fss1_public_registry.json",
             )
         seen_fss1_ops.add(op_id)
+        fss1_ops_by_id[op_id] = op
 
     seen_cw_ops: set[str] = set()
-    for entry in crosswalk_reg.get("crosswalk", []):
-        op_id = entry["operation_id"]
+    cw_by_id: dict[str, dict[str, Any]] = {}
+    for entry in cw_list:
+        if not isinstance(entry, dict):
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                "Entry in operation_crosswalk.json must be a dictionary",
+                target="operation_crosswalk.json:crosswalk",
+            )
+        op_id = entry.get("operation_id")
+        if not isinstance(op_id, str):
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                "operation_id in operation_crosswalk.json must be a string",
+                target="operation_crosswalk.json:crosswalk.operation_id",
+            )
         if op_id in seen_cw_ops:
             raise RobotDocsError(
                 ERR_ROBOT_DOCS_CORRUPT,
@@ -249,6 +643,7 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
                 target="operation_crosswalk.json",
             )
         seen_cw_ops.add(op_id)
+        cw_by_id[op_id] = entry
 
     # Cross-registry operation consistency check
     if seen_agent_ops != seen_fss1_ops or seen_agent_ops != seen_cw_ops:
@@ -260,55 +655,87 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
             target="operations_crosswalk",
         )
 
-    seen_views: set[str] = set()
-    for v in agent_views_reg.get("views", []):
-        v_id = v["id"]
-        if v_id in seen_views:
-            raise RobotDocsError(
-                ERR_ROBOT_DOCS_CORRUPT,
-                f"Duplicate view ID in agent_views.json: {v_id}",
-                target="agent_views.json",
-            )
-        seen_views.add(v_id)
-
-    seen_resources: set[str] = set()
-    for r in fss1_reg.get("resources", []):
-        r_id = r["id"]
-        if r_id in seen_resources:
-            raise RobotDocsError(
-                ERR_ROBOT_DOCS_CORRUPT,
-                f"Duplicate resource ID in fss1_public_registry.json: {r_id}",
-                target="fss1_public_registry.json",
-            )
-        seen_resources.add(r_id)
-
-    seen_caps: set[str] = set()
-    caps_by_id: dict[str, dict[str, Any]] = {}
-    for c in caps_reg.get("capabilities", []):
-        c_id = c["id"]
-        if c_id in seen_caps:
-            raise RobotDocsError(
-                ERR_ROBOT_DOCS_CORRUPT,
-                f"Duplicate capability ID in capabilities.json: {c_id}",
-                target="capabilities.json",
-            )
-        seen_caps.add(c_id)
-        caps_by_id[c_id] = c
-
-    # Index crosswalk by operation_id
-    cw_by_id = {entry["operation_id"]: entry for entry in crosswalk_reg.get("crosswalk", [])}
-    # Index fss1 operations by id
-    fss1_ops_by_id = {op["id"]: op for op in fss1_reg.get("operations", [])}
+    # Filter out tombstoned operations so they never render as live
+    live_op_ids = [
+        op_id for op_id in seen_agent_ops
+        if op_id not in fss1_tombstones and agent_ops_by_id[op_id].get("status") not in ("tombstone", "tombstoned")
+    ]
 
     # Consolidated operations (sorted deterministically by ID)
     consolidated_ops: list[dict[str, Any]] = []
-    for raw_op in sorted(agent_ops_reg.get("operations", []), key=lambda o: o["id"]):
-        op_id = raw_op["id"]
-        cw = cw_by_id.get(op_id, {})
-        fss1_op = fss1_ops_by_id.get(op_id, {})
+    for op_id in sorted(live_op_ids):
+        raw_op = agent_ops_by_id[op_id]
+        fss1_op = fss1_ops_by_id[op_id]
+        cw = cw_by_id[op_id]
 
-        cli_cmd = cw.get("cli_command") or fss1_op.get("cliCommand", "")
-        mcp_tool = cw.get("mcp_tool_name") or fss1_op.get("mcpToolName", "")
+        # Check required fields (no fail-open defaults)
+        for req_k in [
+            "name", "purpose", "mode", "owner", "defaultView", "effectful", "durable",
+            "inputSchema", "outputSchema", "requestPayloadSchema", "responsePayloadSchemas",
+            "requiredCapabilities", "retryClasses", "gate", "status"
+        ]:
+            if req_k not in raw_op or raw_op[req_k] is None:
+                raise RobotDocsError(
+                    ERR_ROBOT_DOCS_CORRUPT,
+                    f"Operation {op_id} missing required key '{req_k}'",
+                    target=f"operations.{op_id}.{req_k}",
+                )
+
+        # Cross-registry field conflict detection (DRIFT)
+        # 1. name
+        if raw_op["name"] != fss1_op.get("name"):
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_DRIFT,
+                f"Operation {op_id} name conflict: agent_operations has {raw_op['name']!r}, fss1 has {fss1_op.get('name')!r}",
+                target=f"operations.{op_id}.name",
+            )
+        if cw.get("name") and raw_op["name"] != cw["name"]:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_DRIFT,
+                f"Operation {op_id} name conflict: agent_operations has {raw_op['name']!r}, crosswalk has {cw['name']!r}",
+                target=f"operations.{op_id}.name",
+            )
+
+        # 2. cliCommand
+        cli_fss1 = fss1_op.get("cliCommand")
+        cli_cw = cw.get("cli_command")
+        if cli_fss1 is not None and cli_cw is not None and cli_fss1 != cli_cw:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_DRIFT,
+                f"Operation {op_id} cliCommand conflict: fss1 has {cli_fss1!r}, crosswalk has {cli_cw!r}",
+                target=f"operations.{op_id}.cliCommand",
+            )
+        cli_cmd = cli_cw if cli_cw is not None else (cli_fss1 or "")
+
+        # 3. mcpToolName
+        mcp_fss1 = fss1_op.get("mcpToolName")
+        mcp_cw = cw.get("mcp_tool_name")
+        if mcp_fss1 is not None and mcp_cw is not None and mcp_fss1 != mcp_cw:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_DRIFT,
+                f"Operation {op_id} mcpToolName conflict: fss1 has {mcp_fss1!r}, crosswalk has {mcp_cw!r}",
+                target=f"operations.{op_id}.mcpToolName",
+            )
+        mcp_tool = mcp_cw if mcp_cw is not None else (mcp_fss1 or "")
+
+        # 4. defaultView
+        view_fss1 = fss1_op.get("defaultView")
+        if view_fss1 is not None and raw_op["defaultView"] != view_fss1:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_DRIFT,
+                f"Operation {op_id} defaultView conflict: agent_operations has {raw_op['defaultView']!r}, fss1 has {view_fss1!r}",
+                target=f"operations.{op_id}.defaultView",
+            )
+
+        # 5. requestPayloadSchema
+        payload_fss1 = fss1_op.get("requestPayloadSchema")
+        if payload_fss1 is not None and raw_op["requestPayloadSchema"] != payload_fss1:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_DRIFT,
+                f"Operation {op_id} requestPayloadSchema conflict: agent_operations has {raw_op['requestPayloadSchema']!r}, fss1 has {payload_fss1!r}",
+                target=f"operations.{op_id}.requestPayloadSchema",
+            )
+
         lib_entry = cw.get("library_entry_point", "")
         primary_err = cw.get("primary_error_id", "")
         error_ids = cw.get("error_identities", [])
@@ -323,11 +750,58 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
                 target=f"operations.{op_id}.defaultView",
             )
 
-        # Validate envelope and payload schema references
-        req_env = raw_op.get("inputSchema", "fss.agent_request_envelope.v1")
-        resp_env = raw_op.get("outputSchema", "fss.agent_response_envelope.v1")
-        req_payload = raw_op.get("requestPayloadSchema", "")
-        resp_payloads = raw_op.get("responsePayloadSchemas", [])
+        # Validate gate reference
+        op_gate = raw_op["gate"]
+        if op_gate not in valid_gates:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_UNREGISTERED,
+                f"Operation {op_id} references unregistered gate: {op_gate}",
+                target=f"operations.{op_id}.gate",
+            )
+
+        # Validate exit identities against ERRORS.md
+        if not isinstance(exit_ids, list):
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                f"Operation {op_id} exit_identities must be a list",
+                target=f"operations.{op_id}.exitIdentities",
+            )
+        for exit_id in exit_ids:
+            if exit_id not in exit_codes_set:
+                raise RobotDocsError(
+                    ERR_ROBOT_DOCS_UNREGISTERED,
+                    f"Operation {op_id} references unregistered exit identity: {exit_id}",
+                    target=f"operations.{op_id}.exitIdentities",
+                )
+
+        # Validate retry classes against recovery classes enum
+        retry_classes = raw_op["retryClasses"]
+        if not isinstance(retry_classes, list):
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                f"Operation {op_id} retryClasses must be a list",
+                target=f"operations.{op_id}.retryClasses",
+            )
+        for r_cls in retry_classes:
+            if r_cls not in VALID_RECOVERY_CLASSES:
+                raise RobotDocsError(
+                    ERR_ROBOT_DOCS_UNREGISTERED,
+                    f"Operation {op_id} references unregistered retry class: {r_cls}",
+                    target=f"operations.{op_id}.retryClasses",
+                )
+
+        # Validate schema references (envelopes and payloads)
+        req_env = raw_op["inputSchema"]
+        resp_env = raw_op["outputSchema"]
+        req_payload = raw_op["requestPayloadSchema"]
+        resp_payloads = raw_op["responsePayloadSchemas"]
+
+        if not isinstance(resp_payloads, list):
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                f"Operation {op_id} responsePayloadSchemas must be a list, got {type(resp_payloads).__name__}",
+                target=f"operations.{op_id}.responsePayloadSchemas",
+            )
 
         for s in [req_env, resp_env, req_payload]:
             if s and s not in schemas_map:
@@ -337,6 +811,12 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
                     target=f"operations.{op_id}.schemas",
                 )
         for s in resp_payloads:
+            if not isinstance(s, str):
+                raise RobotDocsError(
+                    ERR_ROBOT_DOCS_CORRUPT,
+                    f"Schema in responsePayloadSchemas for {op_id} must be a string",
+                    target=f"operations.{op_id}.responsePayloadSchemas",
+                )
             if s not in schemas_map:
                 raise RobotDocsError(
                     ERR_ROBOT_DOCS_UNREGISTERED,
@@ -345,16 +825,27 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
                 )
 
         # Validate capability references
-        req_caps = raw_op.get("requiredCapabilities", [])
+        req_caps = raw_op["requiredCapabilities"]
+        if not isinstance(req_caps, list):
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                f"Operation {op_id} requiredCapabilities must be a list, got {type(req_caps).__name__}",
+                target=f"operations.{op_id}.requiredCapabilities",
+            )
         for cap_id in req_caps:
+            if not isinstance(cap_id, str):
+                raise RobotDocsError(
+                    ERR_ROBOT_DOCS_CORRUPT,
+                    f"Capability identifier in {op_id} must be a string",
+                    target=f"operations.{op_id}.requiredCapabilities",
+                )
             if cap_id not in caps_by_id:
                 raise RobotDocsError(
                     ERR_ROBOT_DOCS_UNREGISTERED,
                     f"Operation {op_id} references unregistered capability: {cap_id}",
                     target=f"operations.{op_id}.requiredCapabilities",
                 )
-            cap_status = caps_by_id[cap_id].get("status")
-            if cap_status in ("tombstone", "tombstoned", "superseded"):
+            if cap_id in caps_tombstones or caps_by_id[cap_id].get("status") in ("tombstone", "tombstoned", "superseded"):
                 raise RobotDocsError(
                     ERR_ROBOT_DOCS_UNREGISTERED,
                     f"Operation {op_id} references tombstoned capability: {cap_id}",
@@ -367,6 +858,12 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
                 ERR_ROBOT_DOCS_UNREGISTERED,
                 f"Operation {op_id} references unregistered primary error: {primary_err}",
                 target=f"operations.{op_id}.primaryErrorId",
+            )
+        if not isinstance(error_ids, list):
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                f"Operation {op_id} error_identities must be a list",
+                target=f"operations.{op_id}.errorIdentities",
             )
         for err_id in error_ids:
             if err_id not in errors_map:
@@ -393,17 +890,17 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
             "requestPayloadSchema": req_payload,
             "responsePayloadSchemas": resp_payloads,
             "requiredCapabilities": sorted(req_caps),
-            "retryClasses": raw_op.get("retryClasses", []),
+            "retryClasses": retry_classes,
             "primaryErrorId": primary_err,
             "errorIdentities": error_ids,
             "exitIdentities": exit_ids,
-            "gate": raw_op.get("gate", "QL-AGENT-001"),
-            "status": raw_op.get("status", "specified"),
+            "gate": op_gate,
+            "status": raw_op["status"],
         })
 
     # Consolidated views (sorted deterministically by ID)
     consolidated_views: list[dict[str, Any]] = []
-    for raw_view in sorted(agent_views_reg.get("views", []), key=lambda v: v["id"]):
+    for raw_view in sorted(views_list, key=lambda v: str(v.get("id", ""))):
         consolidated_views.append({
             "id": raw_view["id"],
             "name": raw_view["name"],
@@ -412,25 +909,51 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
             "targetTokens": raw_view["targetTokens"],
             "maximumTokens": raw_view["maximumTokens"],
             "requiredSections": raw_view["requiredSections"],
-            "gate": raw_view.get("gate", "QL-AGENT-001"),
-            "status": raw_view.get("status", "specified"),
+            "gate": raw_view["gate"],
+            "status": raw_view["status"],
         })
 
     # Consolidated resources (sorted deterministically by ID)
     consolidated_resources: list[dict[str, Any]] = []
-    for raw_res in sorted(fss1_reg.get("resources", []), key=lambda r: r["id"]):
-        res_id = raw_res["id"]
-        res_req_env = raw_res.get("requestEnvelope", "fss.agent_request_envelope.v1")
-        res_resp_env = raw_res.get("responseEnvelope", "fss.agent_response_envelope.v1")
-        res_payload = raw_res.get("payloadSchema", "")
+    for raw_res in sorted(resources_list, key=lambda r: str(r.get("id", ""))):
+        if not isinstance(raw_res, dict):
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                "Resource entry must be a dictionary",
+                target="fss1_public_registry.json:resources",
+            )
+        res_id = raw_res.get("id")
+        if not isinstance(res_id, str):
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                "Resource id must be a string",
+                target="fss1_public_registry.json:resources.id",
+            )
+        for req_k in ["name", "owner", "uriTemplate", "payloadSchema", "requestEnvelope", "responseEnvelope", "compatibilityClass", "status"]:
+            if req_k not in raw_res or raw_res[req_k] is None:
+                raise RobotDocsError(
+                    ERR_ROBOT_DOCS_CORRUPT,
+                    f"Resource {res_id} missing required key '{req_k}'",
+                    target=f"resources.{res_id}.{req_k}",
+                )
 
-        for s in [res_req_env, res_resp_env, res_payload]:
+        res_req_env = raw_res["requestEnvelope"]
+        res_resp_env = raw_res["responseEnvelope"]
+        res_payload = raw_res["payloadSchema"]
+
+        for s in [res_req_env, res_resp_env]:
             if s and s not in schemas_map:
                 raise RobotDocsError(
                     ERR_ROBOT_DOCS_UNREGISTERED,
-                    f"Resource {res_id} references unregistered schema: {s}",
-                    target=f"resources.{res_id}.schemas",
+                    f"Resource {res_id} references unregistered envelope schema: {s}",
+                    target=f"resources.{res_id}.envelopes",
                 )
+        if res_payload and res_payload not in schemas_map:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_UNREGISTERED,
+                f"Resource {res_id} references unregistered payload schema: {res_payload}",
+                target=f"resources.{res_id}.payloadSchema",
+            )
 
         consolidated_resources.append({
             "id": res_id,
@@ -440,8 +963,8 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
             "requestEnvelope": res_req_env,
             "responseEnvelope": res_resp_env,
             "payloadSchema": res_payload,
-            "compatibilityClass": raw_res.get("compatibilityClass", "backward_compatible"),
-            "status": raw_res.get("status", "specified"),
+            "compatibilityClass": raw_res["compatibilityClass"],
+            "status": raw_res["status"],
         })
 
     # Complete Schemas Catalog: all authoritative schemas registered in registries/SCHEMAS.md
@@ -481,152 +1004,153 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
     for err_id in sorted(errors_map.keys()):
         err = errors_map[err_id]
         consolidated_errors.append({
-            "id": err_id,
+            "id": err["id"],
             "description": err["description"],
             "guidance": err["guidance"],
         })
 
-    # Real Discovery Endpoints implemented in the fss CLI
-    discovery = {
-        "capabilities": {
-            "cli": "fss capabilities --json",
-            "description": "Report all supported device, model, and agent capabilities in typed JSON",
-        },
-        "doctor": {
-            "cli": "fss doctor --json",
-            "description": "Report system diagnostic doctor results and environment health in typed JSON",
-        },
-        "status": {
-            "cli": "fss status --json",
-            "description": "Report overall system runtime and subsystem status in typed JSON",
-        },
-        "negative_evidence": {
-            "cli": "fss negative-evidence list --json",
-            "description": "Inspect and verify negative evidence ledger and coverage witnesses",
-        },
-    }
+    # Required metadata keys in fss1_reg (no fail-open defaults)
+    for req_k in ["asOf", "semanticProtocol", "registryGeneration", "freezeDigest"]:
+        if req_k not in fss1_reg or fss1_reg[req_k] is None:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                f"fss1_public_registry.json missing required metadata key '{req_k}'",
+                target=f"fss1_public_registry.json:{req_k}",
+            )
 
-    as_of = fss1_reg.get("asOf")
-    if not as_of:
-        raise RobotDocsError(
-            ERR_ROBOT_DOCS_CORRUPT,
-            "Missing mandatory asOf field in architecture/fss1_public_registry.json",
-            target="fss1_public_registry.json:asOf",
-        )
-
-    return {
+    model = {
         "schema": "fss.robot_docs.v1",
-        "asOf": as_of,
-        "semanticProtocol": fss1_reg.get("semanticProtocol", "fss/1"),
-        "registryGeneration": fss1_reg.get("registryGeneration", "gen:fss1:public-v1"),
-        "freezeDigest": fss1_reg.get("freezeDigest", ""),
+        "semanticProtocol": fss1_reg["semanticProtocol"],
+        "registryGeneration": fss1_reg["registryGeneration"],
+        "freezeDigest": fss1_reg["freezeDigest"],
+        "asOf": fss1_reg["asOf"],
+        "discovery": discovery,
         "operations": consolidated_ops,
         "views": consolidated_views,
         "resources": consolidated_resources,
         "schemas": consolidated_schemas,
         "capabilities": consolidated_caps,
         "errors": consolidated_errors,
-        "discovery": discovery,
     }
+    return model
 
 
 def generate_robot_docs_markdown(model: dict[str, Any]) -> str:
-    """Renders the consolidated model into deterministic GitHub-flavored Markdown."""
+    """Renders the consolidated model into deterministic, human-legible Markdown."""
     lines: list[str] = [
-        "# Self-Describing Robot Documentation (`fss/1`)",
+        f"# Self-Describing Robot Documentation (`{escape_markdown_inline(model['semanticProtocol'])}`)",
         "",
-        "<!--",
-        "GENERATED FILE - DO NOT EDIT DIRECTLY.",
-        "Generated deterministically by scripts/generate_robot_docs.py from authoritative machine registries:",
-        "- architecture/fss1_public_registry.json",
-        "- architecture/agent_operations.json",
-        "- architecture/agent_views.json",
-        "- architecture/capabilities.json",
-        "- architecture/operation_crosswalk.json",
-        "- registries/ERRORS.md",
-        "- registries/SCHEMAS.md",
-        "-->",
+        "> Deterministic, evidence-native semantic control plane for owner-authorized physical sensors.",
+        "> This document is mechanically derived from authoritative machine registries.",
         "",
-        "This document provides the authoritative, self-describing reference for autonomous agent",
-        "drivers operating within the Franken Surveillance System under semantic protocol `fss/1`.",
-        "Agents orient, query, plan, and coordinate using registered operations and views without",
-        "human prose dependence or undocumented endpoints.",
-        "",
-        "## 1. Protocol Identity & Contract Basis",
-        "",
+        f"- **Schema**: `{escape_markdown_inline(model['schema'])}`",
         f"- **Semantic Protocol**: `{escape_markdown_inline(model['semanticProtocol'])}`",
         f"- **Registry Generation**: `{escape_markdown_inline(model['registryGeneration'])}`",
         f"- **Freeze Digest**: `{escape_markdown_inline(model['freezeDigest'])}`",
         f"- **As Of**: `{escape_markdown_inline(model['asOf'])}`",
-        f"- **Total Operations**: {len(model['operations'])}",
-        f"- **Total Views**: {len(model['views'])}",
-        f"- **Total Resource URI Templates**: {len(model['resources'])}",
-        f"- **Total Schemas Cataloged**: {len(model['schemas'])}",
-        f"- **Total Capabilities Mapped**: {len(model['capabilities'])}",
-        f"- **Total Error Identities Cataloged**: {len(model['errors'])}",
         "",
-        "## 2. Machine Discovery Endpoints",
+        "## Table of Contents",
         "",
-        "Agents can discover and inspect system capabilities at runtime using deterministic CLI endpoints:",
+        "1. [Discovery Endpoints](#1-discovery-endpoints)",
+        "2. [Core Protocol Error Taxonomy](#2-core-protocol-error-taxonomy)",
+        "3. [Canonical Operations Catalog](#3-canonical-operations-catalog)",
+        "4. [Registered Views Catalog](#4-registered-views-catalog)",
+        "5. [Resource URI Templates](#5-resource-uri-templates)",
+        "6. [Schemas Catalog](#6-schemas-catalog)",
+        "7. [Required Capabilities](#7-required-capabilities)",
+        "8. [Stable Error Taxonomy & Recovery Guidance](#8-stable-error-taxonomy--recovery-guidance)",
         "",
-        "| Endpoint | CLI Invocation | Description |",
+        "---",
+        "",
+        "## 1. Discovery Endpoints",
+        "",
+        "Standard machine introspection entrypoints available on every conforming node:",
+        "",
+        "| Endpoint | CLI Command | Description |",
         "|---|---|---|",
     ]
 
-    for key, disc in sorted(model["discovery"].items()):
+    for ep_name in sorted(model["discovery"].keys()):
+        ep = model["discovery"][ep_name]
         lines.append(
-            f"| `{escape_markdown_cell(key)}` | `{escape_markdown_cell(disc['cli'])}` | "
-            f"{escape_markdown_cell(disc['description'])} |"
+            f"| `{escape_markdown_cell(ep_name)}` | `{escape_markdown_cell(ep['cli'])}` | "
+            f"{escape_markdown_cell(ep['description'])} |"
         )
 
     lines.extend([
         "",
-        "## 3. Registered Operations Catalog",
+        "## 2. Core Protocol Error Taxonomy",
         "",
-        "Every operation is bound to a single owning crate, default view, typed request/response",
-        "envelope, and strict idempotency/effect semantics:",
+        "Core protocol errors governing session negotiation, contract basis, and presentation:",
         "",
-        "| ID | Operation | Owner | CLI Command | MCP Tool | Default View | Effectful | Durable | Status |",
-        "|---|---|---|---|---|---|---|---|---|",
+        "| Error Identity | Meaning | Recovery Guidance |",
+        "|---|---|---|",
+    ])
+
+    core_error_ids = [
+        "ERR-AGENT-PROTOCOL-001",
+        "ERR-AGENT-SESSION-STALE-001",
+        "ERR-AGENT-CONTEXT-INCOMPLETE-001",
+        "ERR-AGENT-RESNAPSHOT-001",
+        "ERR-AGENT-AMBIGUOUS-001",
+    ]
+    errors_by_id = {err["id"]: err for err in model["errors"]}
+    for err_id in core_error_ids:
+        err = errors_by_id.get(err_id)
+        if not err:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_UNREGISTERED,
+                f"Core protocol error {err_id} is not registered in ERRORS.md",
+                target="core_errors",
+            )
+        lines.append(
+            f"| `{escape_markdown_cell(err['id'])}` | {escape_markdown_cell(err['description'])} | "
+            f"{escape_markdown_cell(err['guidance'])} |"
+        )
+
+    lines.extend([
+        "",
+        "## 3. Canonical Operations Catalog",
+        "",
+        "The complete suite of 14 canonical agent control plane operations under `fss/1`:",
+        "",
+        "| ID | Name | CLI Command | MCP Tool | Library Entry Point | Primary Error |",
+        "|---|---|---|---|---|---|",
     ])
 
     for op in model["operations"]:
         lines.append(
             f"| `{escape_markdown_cell(op['id'])}` | `{escape_markdown_cell(op['name'])}` | "
-            f"`{escape_markdown_cell(op['owner'])}` | `{escape_markdown_cell(op['cliCommand'])}` | "
-            f"`{escape_markdown_cell(op['mcpToolName'])}` | `{escape_markdown_cell(op['defaultView'])}` | "
-            f"{str(op['effectful']).lower()} | {str(op['durable']).lower()} | `{escape_markdown_cell(op['status'])}` |"
+            f"`{escape_markdown_cell(op['cliCommand'])}` | `{escape_markdown_cell(op['mcpToolName'])}` | "
+            f"`{escape_markdown_cell(op['libraryEntryPoint'])}` | `{escape_markdown_cell(op['primaryErrorId'])}` |"
         )
 
     lines.extend([
         "",
-        "### 3.1 Operation Details & Schemas",
+        "### Operation Details",
         "",
     ])
 
     for op in model["operations"]:
-        resp_schemas = ", ".join(f"`{escape_markdown_inline(s)}`" for s in op["responsePayloadSchemas"])
-        req_caps = ", ".join(f"`{escape_markdown_inline(c)}`" for c in op["requiredCapabilities"]) if op["requiredCapabilities"] else "none"
         retry_cls = ", ".join(f"`{escape_markdown_inline(r)}`" for r in op["retryClasses"]) if op["retryClasses"] else "none"
+        req_caps = ", ".join(f"`{escape_markdown_inline(c)}`" for c in op["requiredCapabilities"]) if op["requiredCapabilities"] else "none"
         err_ids = ", ".join(f"`{escape_markdown_inline(e)}`" for e in op["errorIdentities"]) if op["errorIdentities"] else "none"
+        exit_ids = ", ".join(f"`{escape_markdown_inline(x)}`" for x in op["exitIdentities"]) if op["exitIdentities"] else "none"
+
         lines.extend([
-            f"#### `{escape_markdown_inline(op['id'])}` — `{escape_markdown_inline(op['name'])}`",
+            f"#### `{escape_markdown_inline(op['id'])}`: {escape_markdown_inline(op['name'])}",
             "",
             f"- **Purpose**: {escape_markdown_text(op['purpose'])}",
-            f"- **Mode**: `{escape_markdown_inline(op['mode'])}`",
-            f"- **Owner**: `{escape_markdown_inline(op['owner'])}`",
-            f"- **CLI Command**: `{escape_markdown_inline(op['cliCommand'])}`",
-            f"- **MCP Tool**: `{escape_markdown_inline(op['mcpToolName'])}`",
-            f"- **Library Entry Point**: `{escape_markdown_inline(op['libraryEntryPoint'])}`",
-            f"- **Request Envelope**: `{escape_markdown_inline(op['requestEnvelope'])}`",
-            f"- **Request Payload Schema**: `{escape_markdown_inline(op['requestPayloadSchema'])}`",
-            f"- **Response Envelope**: `{escape_markdown_inline(op['responseEnvelope'])}`",
-            f"- **Response Payload Schemas**: {resp_schemas}",
+            f"- **Execution Mode**: `{escape_markdown_inline(op['mode'])}` | **Owner**: `{escape_markdown_inline(op['owner'])}` | **Gate**: `{escape_markdown_inline(op['gate'])}`",
+            f"- **Effectful**: `{op['effectful']}` | **Durable**: `{op['durable']}`",
             f"- **Default View**: `{escape_markdown_inline(op['defaultView'])}`",
+            f"- **Envelopes**: Request `{escape_markdown_inline(op['requestEnvelope'])}` → Response `{escape_markdown_inline(op['responseEnvelope'])}`",
+            f"- **Payload Schema**: `{escape_markdown_inline(op['requestPayloadSchema'])}`",
             f"- **Required Capabilities**: {req_caps}",
             f"- **Retry Classes**: {retry_cls}",
-            f"- **Primary Error ID**: `{escape_markdown_inline(op['primaryErrorId'])}`",
+            f"- **Primary Error**: `{escape_markdown_inline(op['primaryErrorId'])}`",
             f"- **Error Identities**: {err_ids}",
+            f"- **Exit Identities**: {exit_ids}",
             "",
         ])
 
@@ -641,11 +1165,11 @@ def generate_robot_docs_markdown(model: dict[str, Any]) -> str:
     ])
 
     for view in model["views"]:
-        sections = ", ".join(f"`{escape_markdown_cell(s)}`" for s in view["requiredSections"])
+        sections = ", ".join(f"`{escape_markdown_inline(s)}`" for s in view["requiredSections"])
         lines.append(
             f"| `{escape_markdown_cell(view['id'])}` | `{escape_markdown_cell(view['name'])}` | "
-            f"`{escape_markdown_cell(view['owner'])}` | {view['targetTokens']} | "
-            f"{view['maximumTokens']} | {sections} | {escape_markdown_cell(view['purpose'])} |"
+            f"`{escape_markdown_cell(view['owner'])}` | {view['targetTokens']} | {view['maximumTokens']} | "
+            f"{sections} | {escape_markdown_cell(view['purpose'])} |"
         )
 
     lines.extend([
@@ -679,14 +1203,14 @@ def generate_robot_docs_markdown(model: dict[str, Any]) -> str:
         lines.append(
             f"| `{escape_markdown_cell(schema['id'])}` | `{escape_markdown_cell(schema['schema'])}` | "
             f"`{escape_markdown_cell(schema['file'])}` | `{escape_markdown_cell(schema['authority'])}` | "
-            f"{escape_markdown_cell(schema['compatibilityRule'])} |"
+            f"`{escape_markdown_cell(schema['compatibilityRule'])}` |"
         )
 
     lines.extend([
         "",
-        "## 7. Required Capabilities Matrix",
+        "## 7. Required Capabilities",
         "",
-        "Real capability specifications required by registered operations from `architecture/capabilities.json`:",
+        "Capabilities required by canonical operations cataloged from `architecture/capabilities.json`:",
         "",
         "| ID | Capability | Scope | Semantic Plane | Default Role |",
         "|---|---|---|---|---|",
@@ -705,7 +1229,7 @@ def generate_robot_docs_markdown(model: dict[str, Any]) -> str:
         "",
         "All stable error identities and normative recovery guidance cataloged from `registries/ERRORS.md`:",
         "",
-        "| Error Identity | Description | Recovery Guidance |",
+        "| ID | Meaning | Retry policy |",
         "|---|---|---|",
     ])
 
@@ -727,101 +1251,75 @@ def generate_robot_docs_markdown(model: dict[str, Any]) -> str:
 
 def generate_robot_docs_json(model: dict[str, Any]) -> str:
     """Renders the consolidated model into deterministic, formatted JSON."""
-    return json.dumps(model, indent=2, sort_keys=True) + "\n"
+    return json.dumps(model, indent=2, sort_keys=True, allow_nan=False) + "\n"
 
 
 def generate_docs(root: Path) -> tuple[str, str]:
-    """Computes the deterministic Markdown and JSON contents for robot documentation."""
+    """Collects authoritative model and returns (markdown_content, json_content)."""
     model = collect_robot_docs_model(root)
-    md_content = generate_robot_docs_markdown(model)
-    json_content = generate_robot_docs_json(model)
-    return md_content, json_content
+    md = generate_robot_docs_markdown(model)
+    json_str = generate_robot_docs_json(model)
+    return md, json_str
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Generate or verify self-describing robot docs.")
-    parser.add_argument("--check", action="store_true", help="Fail if on-disk robot docs are stale vs registries.")
-    parser.add_argument("--output-dir", type=Path, default=None, help="Output directory for generated docs (default: docs/).")
-    parser.add_argument("--json", action="store_true", help="Emit structured status JSON.")
+    parser = argparse.ArgumentParser(
+        description="Deterministic generator and freshness verifier for robot docs"
+    )
+    parser.add_argument(
+        "--repo-root",
+        type=Path,
+        default=ROOT,
+        help="Path to repository root (default: repo containing this script)",
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Check that on-disk robot documentation matches authoritative machine registries",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="Directory to write ROBOT_DOCS.md and ROBOT_DOCS.json (default: <repo-root>/docs)",
+    )
     args = parser.parse_args()
 
-    target_dir = args.output_dir or (ROOT / "docs")
-    target_md = target_dir / "ROBOT_DOCS.md"
-    target_json = target_dir / "ROBOT_DOCS.json"
-
-    def format_path(p: Path) -> str:
-        return str(p.relative_to(ROOT)) if p.is_relative_to(ROOT) else str(p)
+    repo_root = args.repo_root
+    output_dir = args.output_dir if args.output_dir is not None else (repo_root / "docs")
 
     try:
-        expected_md, expected_json = generate_docs(ROOT)
+        expected_md, expected_json = generate_docs(repo_root)
     except RobotDocsError as exc:
-        err_msg = f"[{exc.code}] {exc.target}: {exc.message}"
-        if args.json:
-            print(json.dumps({"status": "failed", "errors": [err_msg], "code": exc.code}, indent=2))
-        else:
-            print(err_msg, file=sys.stderr)
+        print(f"[{exc.code}] {exc.target}: {exc.message}", file=sys.stderr)
         return 1
     except FileNotFoundError as exc:
-        err_msg = f"[{ERR_ROBOT_DOCS_MISSING}] {exc}"
-        if args.json:
-            print(json.dumps({"status": "failed", "errors": [err_msg], "code": ERR_ROBOT_DOCS_MISSING}, indent=2))
-        else:
-            print(err_msg, file=sys.stderr)
+        print(f"[{ERR_ROBOT_DOCS_MISSING}] {exc.filename}: Missing registry file: {exc}", file=sys.stderr)
         return 1
-    except (ValueError, KeyError) as exc:
-        err_msg = f"[{ERR_ROBOT_DOCS_CORRUPT}] {exc}"
-        if args.json:
-            print(json.dumps({"status": "failed", "errors": [err_msg], "code": ERR_ROBOT_DOCS_CORRUPT}, indent=2))
-        else:
-            print(err_msg, file=sys.stderr)
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        print(f"[{ERR_ROBOT_DOCS_CORRUPT}] architecture/: Failed to parse machine registries: {exc}", file=sys.stderr)
         return 1
+
+    md_path = output_dir / "ROBOT_DOCS.md"
+    json_path = output_dir / "ROBOT_DOCS.json"
 
     if args.check:
-        errors: list[str] = []
-        if not target_md.is_file():
-            errors.append(f"[{ERR_ROBOT_DOCS_MISSING}] Missing generated file: {format_path(target_md)}")
-        elif target_md.read_text(encoding="utf-8") != expected_md:
-            errors.append(f"[{ERR_ROBOT_DOCS_STALE}] Stale robot docs markdown: {format_path(target_md)} does not match machine registries")
-
-        if not target_json.is_file():
-            errors.append(f"[{ERR_ROBOT_DOCS_MISSING}] Missing generated file: {format_path(target_json)}")
-        elif target_json.read_text(encoding="utf-8") != expected_json:
-            errors.append(f"[{ERR_ROBOT_DOCS_STALE}] Stale robot docs JSON: {format_path(target_json)} does not match machine registries")
-
-        if errors:
-            if args.json:
-                print(json.dumps({"status": "failed", "errors": errors}, indent=2))
-            else:
-                print("\n".join(errors), file=sys.stderr)
+        if not md_path.is_file() or not json_path.is_file():
+            print(f"[{ERR_ROBOT_DOCS_MISSING}] Required robot docs files are missing on disk.", file=sys.stderr)
             return 1
+        on_disk_md = md_path.read_text(encoding="utf-8")
+        on_disk_json = json_path.read_text(encoding="utf-8")
 
-        if args.json:
-            print(json.dumps({"status": "passed", "message": "Robot docs are fresh and up to date"}, indent=2))
-        else:
-            print("OK: robot docs are fresh and match machine registries.")
+        if on_disk_md != expected_md or on_disk_json != expected_json:
+            print(f"[{ERR_ROBOT_DOCS_STALE}] On-disk robot documentation is stale compared to machine registries.", file=sys.stderr)
+            return 1
+        print("OK: robot docs are fresh and match machine registries.")
         return 0
 
-    try:
-        target_dir.mkdir(parents=True, exist_ok=True)
-        target_md.write_text(expected_md, encoding="utf-8")
-        target_json.write_text(expected_json, encoding="utf-8")
-    except Exception as exc:
-        err_msg = f"[{ERR_ROBOT_DOCS_CORRUPT}] Failed writing output files to {target_dir}: {exc}"
-        if args.json:
-            print(json.dumps({"status": "failed", "errors": [err_msg]}, indent=2))
-        else:
-            print(err_msg, file=sys.stderr)
-        return 1
-
-    if args.json:
-        print(json.dumps({
-            "status": "generated",
-            "markdown": format_path(target_md),
-            "json": format_path(target_json),
-        }, indent=2))
-    else:
-        print(f"Generated {format_path(target_md)} ({len(expected_md)} bytes)")
-        print(f"Generated {format_path(target_json)} ({len(expected_json)} bytes)")
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+    md_path.write_text(expected_md, encoding="utf-8")
+    json_path.write_text(expected_json, encoding="utf-8")
+    print(f"Successfully generated robot docs at {md_path} and {json_path}")
     return 0
 
 

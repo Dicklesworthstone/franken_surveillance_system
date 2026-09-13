@@ -1,321 +1,268 @@
 # Self-Describing Robot Documentation (`fss/1`)
 
-<!--
-GENERATED FILE - DO NOT EDIT DIRECTLY.
-Generated deterministically by scripts/generate_robot_docs.py from authoritative machine registries:
-- architecture/fss1_public_registry.json
-- architecture/agent_operations.json
-- architecture/agent_views.json
-- architecture/capabilities.json
-- architecture/operation_crosswalk.json
-- registries/ERRORS.md
-- registries/SCHEMAS.md
--->
+> Deterministic, evidence-native semantic control plane for owner-authorized physical sensors.
+> This document is mechanically derived from authoritative machine registries.
 
-This document provides the authoritative, self-describing reference for autonomous agent
-drivers operating within the Franken Surveillance System under semantic protocol `fss/1`.
-Agents orient, query, plan, and coordinate using registered operations and views without
-human prose dependence or undocumented endpoints.
-
-## 1. Protocol Identity & Contract Basis
-
+- **Schema**: `fss.robot_docs.v1`
 - **Semantic Protocol**: `fss/1`
 - **Registry Generation**: `gen:fss1:public-v1`
 - **Freeze Digest**: `sha256:9bbec4e6845ea702f676cd22472e5fb0d35ca3b3d97f66cbfccb452182413da8`
 - **As Of**: `2026-09-12`
-- **Total Operations**: 14
-- **Total Views**: 8
-- **Total Resource URI Templates**: 15
-- **Total Schemas Cataloged**: 73
-- **Total Capabilities Mapped**: 12
-- **Total Error Identities Cataloged**: 250
 
-## 2. Machine Discovery Endpoints
+## Table of Contents
 
-Agents can discover and inspect system capabilities at runtime using deterministic CLI endpoints:
+1. [Discovery Endpoints](#1-discovery-endpoints)
+2. [Core Protocol Error Taxonomy](#2-core-protocol-error-taxonomy)
+3. [Canonical Operations Catalog](#3-canonical-operations-catalog)
+4. [Registered Views Catalog](#4-registered-views-catalog)
+5. [Resource URI Templates](#5-resource-uri-templates)
+6. [Schemas Catalog](#6-schemas-catalog)
+7. [Required Capabilities](#7-required-capabilities)
+8. [Stable Error Taxonomy & Recovery Guidance](#8-stable-error-taxonomy--recovery-guidance)
 
-| Endpoint | CLI Invocation | Description |
+---
+
+## 1. Discovery Endpoints
+
+Standard machine introspection entrypoints available on every conforming node:
+
+| Endpoint | CLI Command | Description |
 |---|---|---|
-| `capabilities` | `fss capabilities --json` | Report all supported device, model, and agent capabilities in typed JSON |
-| `doctor` | `fss doctor --json` | Report system diagnostic doctor results and environment health in typed JSON |
-| `negative_evidence` | `fss negative-evidence list --json` | Inspect and verify negative evidence ledger and coverage witnesses |
-| `status` | `fss status --json` | Report overall system runtime and subsystem status in typed JSON |
+| `capabilities` | `fss capabilities --json` | Report capabilities in JSON format. |
+| `doctor` | `fss doctor --json` | Report system diagnostic doctor results in JSON format. |
+| `negative_evidence` | `fss negative-evidence list --json` | Negative evidence ledger management. |
+| `status` | `fss status --json` | Report system status in JSON format. |
 
-## 3. Registered Operations Catalog
+## 2. Core Protocol Error Taxonomy
 
-Every operation is bound to a single owning crate, default view, typed request/response
-envelope, and strict idempotency/effect semantics:
+Core protocol errors governing session negotiation, contract basis, and presentation:
 
-| ID | Operation | Owner | CLI Command | MCP Tool | Default View | Effectful | Durable | Status |
-|---|---|---|---|---|---|---|---|---|
-| `AOP-001` | `session.open` | `fss-agent-session` | `fss session open` | `session_open` | `AVIEW-002` | false | true | `specified` |
-| `AOP-002` | `session.resume` | `fss-agent-session` | `fss session resume` | `session_resume` | `AVIEW-006` | false | true | `specified` |
-| `AOP-003` | `session.orient` | `fss-situation` | `fss session orient` | `session_orient` | `AVIEW-002` | false | false | `specified` |
-| `AOP-004` | `session.follow` | `fss-context-pack` | `fss session follow` | `session_follow` | `AVIEW-001` | false | true | `specified` |
-| `AOP-005` | `query` | `fss-query-plan` | `fss query` | `query` | `AVIEW-003` | false | false | `specified` |
-| `AOP-006` | `investigate` | `fss-investigation` | `fss investigate` | `investigate` | `AVIEW-003` | false | true | `specified` |
-| `AOP-007` | `plan` | `fss-agent-plan` | `fss plan` | `plan` | `AVIEW-007` | false | true | `specified` |
-| `AOP-008` | `commit` | `fss-effect` | `fss commit` | `commit` | `AVIEW-005` | true | true | `specified` |
-| `AOP-009` | `wait` | `fss-obligation` | `fss wait` | `wait` | `AVIEW-005` | false | true | `specified` |
-| `AOP-010` | `cancel` | `fss-obligation` | `fss cancel` | `cancel` | `AVIEW-005` | true | true | `specified` |
-| `AOP-011` | `explain` | `fss-explain` | `fss explain` | `explain` | `AVIEW-007` | false | false | `specified` |
-| `AOP-012` | `handoff` | `fss-handoff` | `fss handoff` | `handoff` | `AVIEW-006` | false | true | `specified` |
-| `AOP-013` | `feedback` | `fss-learning` | `fss feedback` | `feedback` | `AVIEW-007` | false | true | `specified` |
-| `AOP-014` | `doctor` | `fss-doctor` | `fss doctor` | `doctor` | `AVIEW-004` | false | true | `specified` |
+| Error Identity | Meaning | Recovery Guidance |
+|---|---|---|
+| `ERR-AGENT-PROTOCOL-001` | presentation attempted an unregistered verb/view or changed semantic meaning | reject and repair registry/transport drift |
+| `ERR-AGENT-SESSION-STALE-001` | session, workspace, or resumed handoff basis no longer satisfies required anchor/generation/freshness semantics | rebase and enumerate every invalidated assumption, alias, grant, lease, plan, continuation, and affordance before proceeding |
+| `ERR-AGENT-CONTEXT-INCOMPLETE-001` | requested decision-complete context cannot fit or lacks required evidence | return bounded partial with omissions/expansion handles; never imply completeness |
+| `ERR-AGENT-RESNAPSHOT-001` | continuation cannot advance coherently from its exact basis | request a fresh situation capsule; do not splice generations |
+| `ERR-AGENT-AMBIGUOUS-001` | natural-language request has multiple materially different interpretations | return interpretations; choose only a registered safe-read default or request clarification |
 
-### 3.1 Operation Details & Schemas
+## 3. Canonical Operations Catalog
 
-#### `AOP-001` — `session.open`
+The complete suite of 14 canonical agent control plane operations under `fss/1`:
+
+| ID | Name | CLI Command | MCP Tool | Library Entry Point | Primary Error |
+|---|---|---|---|---|---|
+| `AOP-001` | `session.open` | `fss session open` | `session_open` | `fss_agent_session::session_open` | `ERR-AUTH-DENIED-001` |
+| `AOP-002` | `session.resume` | `fss session resume` | `session_resume` | `fss_agent_session::session_resume` | `ERR-AGENT-HANDOFF-INVALID-001` |
+| `AOP-003` | `session.orient` | `fss session orient` | `session_orient` | `fss_situation::session_orient` | `ERR-AGENT-CONTEXT-INCOMPLETE-001` |
+| `AOP-004` | `session.follow` | `fss session follow` | `session_follow` | `fss_context_pack::session_follow` | `ERR-AGENT-RESNAPSHOT-001` |
+| `AOP-005` | `query` | `fss query` | `query` | `fss_query_plan::query` | `ERR-AGENT-AMBIGUOUS-001` |
+| `AOP-006` | `investigate` | `fss investigate` | `investigate` | `fss_investigation::investigate` | `ERR-AGENT-CASE-BUDGET-001` |
+| `AOP-007` | `plan` | `fss plan` | `plan` | `fss_agent_plan::plan` | `ERR-PRECONDITION-STALE-001` |
+| `AOP-008` | `commit` | `fss commit` | `commit` | `fss_effect::commit` | `ERR-EFFECT-INDETERMINATE-001` |
+| `AOP-009` | `wait` | `fss wait` | `wait` | `fss_obligation::wait` | `ERR-OP-TIMEOUT-001` |
+| `AOP-010` | `cancel` | `fss cancel` | `cancel` | `fss_obligation::cancel` | `ERR-QUIESCENCE-001` |
+| `AOP-011` | `explain` | `fss explain` | `explain` | `fss_explain::explain` | `ERR-REPLAY-DIVERGED-001` |
+| `AOP-012` | `handoff` | `fss handoff` | `handoff` | `fss_handoff::handoff` | `ERR-AGENT-HANDOFF-INVALID-001` |
+| `AOP-013` | `feedback` | `fss feedback` | `feedback` | `fss_learning::feedback` | `ERR-AGENT-LEARNING-UNSUPPORTED-001` |
+| `AOP-014` | `doctor` | `fss doctor` | `doctor` | `fss_doctor::doctor` | `ERR-CLI-RUNTIME-FAILURE-001` |
+
+### Operation Details
+
+#### `AOP-001`: session.open
 
 - **Purpose**: negotiate principal, mission, authority, privacy projection, budgets, views, and the initial SituationCapsule
-- **Mode**: `session_control`
-- **Owner**: `fss-agent-session`
-- **CLI Command**: `fss session open`
-- **MCP Tool**: `session_open`
-- **Library Entry Point**: `fss_agent_session::session_open`
-- **Request Envelope**: `fss.agent_request_envelope.v1`
-- **Request Payload Schema**: `fss.agent_mission.v1`
-- **Response Envelope**: `fss.agent_response_envelope.v1`
-- **Response Payload Schemas**: `fss.situation_capsule.v1`
+- **Execution Mode**: `session_control` | **Owner**: `fss-agent-session` | **Gate**: `QL-AGENT-001`
+- **Effectful**: `False` | **Durable**: `True`
 - **Default View**: `AVIEW-002`
+- **Envelopes**: Request `fss.agent_request_envelope.v1` → Response `fss.agent_response_envelope.v1`
+- **Payload Schema**: `fss.agent_mission.v1`
 - **Required Capabilities**: `CAP-AGENT-SESSION-OPEN-001`
 - **Retry Classes**: `never_unchanged`, `backoff`, `operator_action_required`, `resume_from_continuation`
-- **Primary Error ID**: `ERR-AUTH-DENIED-001`
+- **Primary Error**: `ERR-AUTH-DENIED-001`
 - **Error Identities**: `ERR-AUTH-DENIED-001`, `ERR-AGENT-SESSION-STALE-001`, `ERR-BUDGET-EXHAUSTED-001`, `ERR-OP-EXECUTION-FAILED-001`
+- **Exit Identities**: `EXIT-OK-000`, `EXIT-CLI-RUNTIME-FAILURE-001`
 
-#### `AOP-002` — `session.resume`
+#### `AOP-002`: session.resume
 
 - **Purpose**: restore an explicit workspace/handoff root, compare it with current state, and enumerate stale or invalidated assumptions
-- **Mode**: `session_control`
-- **Owner**: `fss-agent-session`
-- **CLI Command**: `fss session resume`
-- **MCP Tool**: `session_resume`
-- **Library Entry Point**: `fss_agent_session::session_resume`
-- **Request Envelope**: `fss.agent_request_envelope.v1`
-- **Request Payload Schema**: `fss.agent_handoff_capsule.v1`
-- **Response Envelope**: `fss.agent_response_envelope.v1`
-- **Response Payload Schemas**: `fss.situation_capsule.v1`
+- **Execution Mode**: `session_control` | **Owner**: `fss-agent-session` | **Gate**: `QL-AGENT-001`
+- **Effectful**: `False` | **Durable**: `True`
 - **Default View**: `AVIEW-006`
+- **Envelopes**: Request `fss.agent_request_envelope.v1` → Response `fss.agent_response_envelope.v1`
+- **Payload Schema**: `fss.agent_handoff_capsule.v1`
 - **Required Capabilities**: `CAP-AGENT-SESSION-READ-001`
 - **Retry Classes**: `safe_read_retry`, `refresh_and_retry`, `rebase_required`, `operator_action_required`, `resume_from_continuation`
-- **Primary Error ID**: `ERR-AGENT-HANDOFF-INVALID-001`
+- **Primary Error**: `ERR-AGENT-HANDOFF-INVALID-001`
 - **Error Identities**: `ERR-AGENT-HANDOFF-INVALID-001`, `ERR-AGENT-SESSION-STALE-001`, `ERR-AGENT-RESUME-INDETERMINATE-001`, `ERR-AUTH-DENIED-001`, `ERR-OP-EXECUTION-FAILED-001`
+- **Exit Identities**: `EXIT-OK-000`, `EXIT-CLI-RUNTIME-FAILURE-001`
 
-#### `AOP-003` — `session.orient`
+#### `AOP-003`: session.orient
 
 - **Purpose**: return the smallest sufficient current SituationCapsule for the mission, authority, and budget
-- **Mode**: `read`
-- **Owner**: `fss-situation`
-- **CLI Command**: `fss session orient`
-- **MCP Tool**: `session_orient`
-- **Library Entry Point**: `fss_situation::session_orient`
-- **Request Envelope**: `fss.agent_request_envelope.v1`
-- **Request Payload Schema**: `fss.agent_query_plan.v1`
-- **Response Envelope**: `fss.agent_response_envelope.v1`
-- **Response Payload Schemas**: `fss.situation_capsule.v1`
+- **Execution Mode**: `read` | **Owner**: `fss-situation` | **Gate**: `QL-AGENT-001`
+- **Effectful**: `False` | **Durable**: `False`
 - **Default View**: `AVIEW-002`
+- **Envelopes**: Request `fss.agent_request_envelope.v1` → Response `fss.agent_response_envelope.v1`
+- **Payload Schema**: `fss.agent_query_plan.v1`
 - **Required Capabilities**: `CAP-AGENT-SITUATION-READ-001`
 - **Retry Classes**: `safe_read_retry`, `refresh_and_retry`, `rebase_required`, `backoff`, `resume_from_continuation`
-- **Primary Error ID**: `ERR-AGENT-CONTEXT-INCOMPLETE-001`
+- **Primary Error**: `ERR-AGENT-CONTEXT-INCOMPLETE-001`
 - **Error Identities**: `ERR-AGENT-CONTEXT-INCOMPLETE-001`, `ERR-AGENT-SESSION-STALE-001`, `ERR-AUTH-DENIED-001`, `ERR-BUDGET-EXHAUSTED-001`, `ERR-OP-EXECUTION-FAILED-001`
+- **Exit Identities**: `EXIT-OK-000`, `EXIT-CLI-RUNTIME-FAILURE-001`
 
-#### `AOP-004` — `session.follow`
+#### `AOP-004`: session.follow
 
 - **Purpose**: stream meaningful deltas and obligation progress from an exact continuation cursor
-- **Mode**: `read_wait`
-- **Owner**: `fss-context-pack`
-- **CLI Command**: `fss session follow`
-- **MCP Tool**: `session_follow`
-- **Library Entry Point**: `fss_context_pack::session_follow`
-- **Request Envelope**: `fss.agent_request_envelope.v1`
-- **Request Payload Schema**: `fss.agent_query_plan.v1`
-- **Response Envelope**: `fss.agent_response_envelope.v1`
-- **Response Payload Schemas**: `fss.agent_meaningful_delta.v1`, `fss.situation_capsule.v1`
+- **Execution Mode**: `read_wait` | **Owner**: `fss-context-pack` | **Gate**: `QL-AGENT-001`
+- **Effectful**: `False` | **Durable**: `True`
 - **Default View**: `AVIEW-001`
+- **Envelopes**: Request `fss.agent_request_envelope.v1` → Response `fss.agent_response_envelope.v1`
+- **Payload Schema**: `fss.agent_query_plan.v1`
 - **Required Capabilities**: `CAP-AGENT-SITUATION-READ-001`
 - **Retry Classes**: `safe_read_retry`, `refresh_and_retry`, `rebase_required`, `backoff`, `resume_from_continuation`
-- **Primary Error ID**: `ERR-AGENT-RESNAPSHOT-001`
+- **Primary Error**: `ERR-AGENT-RESNAPSHOT-001`
 - **Error Identities**: `ERR-AGENT-RESNAPSHOT-001`, `ERR-AGENT-SESSION-STALE-001`, `ERR-AUTH-DENIED-001`, `ERR-STREAM-CONTINUITY-001`, `ERR-OP-EXECUTION-FAILED-001`
+- **Exit Identities**: `EXIT-OK-000`, `EXIT-CLI-RUNTIME-FAILURE-001`
 
-#### `AOP-005` — `query`
+#### `AOP-005`: query
 
 - **Purpose**: execute a bounded typed or natural-language-compiled read over one anchor with completeness and cost receipts
-- **Mode**: `read_compile`
-- **Owner**: `fss-query-plan`
-- **CLI Command**: `fss query`
-- **MCP Tool**: `query`
-- **Library Entry Point**: `fss_query_plan::query`
-- **Request Envelope**: `fss.agent_request_envelope.v1`
-- **Request Payload Schema**: `fss.agent_query_plan.v1`
-- **Response Envelope**: `fss.agent_response_envelope.v1`
-- **Response Payload Schemas**: `fss.agent_cognitive_envelope.v1`
+- **Execution Mode**: `read_compile` | **Owner**: `fss-query-plan` | **Gate**: `QL-AGENT-001`
+- **Effectful**: `False` | **Durable**: `False`
 - **Default View**: `AVIEW-003`
+- **Envelopes**: Request `fss.agent_request_envelope.v1` → Response `fss.agent_response_envelope.v1`
+- **Payload Schema**: `fss.agent_query_plan.v1`
 - **Required Capabilities**: `CAP-AGENT-QUERY-001`
 - **Retry Classes**: `safe_read_retry`, `refresh_and_retry`, `rebase_required`, `backoff`, `resume_from_continuation`
-- **Primary Error ID**: `ERR-AGENT-AMBIGUOUS-001`
+- **Primary Error**: `ERR-AGENT-AMBIGUOUS-001`
 - **Error Identities**: `ERR-AGENT-AMBIGUOUS-001`, `ERR-AGENT-CONTEXT-INCOMPLETE-001`, `ERR-AUTH-DENIED-001`, `ERR-BUDGET-EXHAUSTED-001`, `ERR-OP-EXECUTION-FAILED-001`
+- **Exit Identities**: `EXIT-OK-000`, `EXIT-CLI-RUNTIME-FAILURE-001`
 
-#### `AOP-006` — `investigate`
+#### `AOP-006`: investigate
 
 - **Purpose**: create or advance a durable case with competing hypotheses, evidence tasks, work claims, discriminators, and stop rules
-- **Mode**: `cognition_write`
-- **Owner**: `fss-investigation`
-- **CLI Command**: `fss investigate`
-- **MCP Tool**: `investigate`
-- **Library Entry Point**: `fss_investigation::investigate`
-- **Request Envelope**: `fss.agent_request_envelope.v1`
-- **Request Payload Schema**: `fss.investigation_state.v1`
-- **Response Envelope**: `fss.agent_response_envelope.v1`
-- **Response Payload Schemas**: `fss.investigation_state.v1`, `fss.agent_cognitive_envelope.v1`
+- **Execution Mode**: `cognition_write` | **Owner**: `fss-investigation` | **Gate**: `QL-AGENT-001`
+- **Effectful**: `False` | **Durable**: `True`
 - **Default View**: `AVIEW-003`
+- **Envelopes**: Request `fss.agent_request_envelope.v1` → Response `fss.agent_response_envelope.v1`
+- **Payload Schema**: `fss.investigation_state.v1`
 - **Required Capabilities**: `CAP-AGENT-CASE-WRITE-001`
 - **Retry Classes**: `refresh_and_retry`, `rebase_required`, `backoff`, `reconciliation_required`, `operator_action_required`, `resume_from_continuation`
-- **Primary Error ID**: `ERR-AGENT-CASE-BUDGET-001`
+- **Primary Error**: `ERR-AGENT-CASE-BUDGET-001`
 - **Error Identities**: `ERR-AGENT-CASE-BUDGET-001`, `ERR-AGENT-AMBIGUOUS-001`, `ERR-AUTH-DENIED-001`, `ERR-BUDGET-EXHAUSTED-001`, `ERR-OP-EXECUTION-FAILED-001`
+- **Exit Identities**: `EXIT-OK-000`, `EXIT-CLI-RUNTIME-FAILURE-001`
 
-#### `AOP-007` — `plan`
+#### `AOP-007`: plan
 
 - **Purpose**: compile a desired outcome or information objective into an immutable witnessed contingent plan without crossing the effect boundary
-- **Mode**: `plan_prepare`
-- **Owner**: `fss-agent-plan`
-- **CLI Command**: `fss plan`
-- **MCP Tool**: `plan`
-- **Library Entry Point**: `fss_agent_plan::plan`
-- **Request Envelope**: `fss.agent_request_envelope.v1`
-- **Request Payload Schema**: `fss.agent_objective_contract.v1`
-- **Response Envelope**: `fss.agent_response_envelope.v1`
-- **Response Payload Schemas**: `fss.agent_control_plan.v1`
+- **Execution Mode**: `plan_prepare` | **Owner**: `fss-agent-plan` | **Gate**: `QL-AGENT-001`
+- **Effectful**: `False` | **Durable**: `True`
 - **Default View**: `AVIEW-007`
+- **Envelopes**: Request `fss.agent_request_envelope.v1` → Response `fss.agent_response_envelope.v1`
+- **Payload Schema**: `fss.agent_objective_contract.v1`
 - **Required Capabilities**: `CAP-AGENT-PLAN-PREPARE-001`
 - **Retry Classes**: `refresh_and_retry`, `rebase_required`, `backoff`, `operator_action_required`, `resume_from_continuation`
-- **Primary Error ID**: `ERR-PRECONDITION-STALE-001`
+- **Primary Error**: `ERR-PRECONDITION-STALE-001`
 - **Error Identities**: `ERR-PRECONDITION-STALE-001`, `ERR-AGENT-NO-AFFORDANCE-001`, `ERR-AGENT-AFFORDANCE-INVALIDATED-001`, `ERR-AUTH-DENIED-001`, `ERR-OP-EXECUTION-FAILED-001`
+- **Exit Identities**: `EXIT-OK-000`, `EXIT-CLI-RUNTIME-FAILURE-001`
 
-#### `AOP-008` — `commit`
+#### `AOP-008`: commit
 
 - **Purpose**: revalidate and start the exact prepared plan under idempotency, leases, fencing, approval, and terminal-proof obligations
-- **Mode**: `effect_commit`
-- **Owner**: `fss-effect`
-- **CLI Command**: `fss commit`
-- **MCP Tool**: `commit`
-- **Library Entry Point**: `fss_effect::commit`
-- **Request Envelope**: `fss.agent_request_envelope.v1`
-- **Request Payload Schema**: `fss.agent_control_plan.v1`
-- **Response Envelope**: `fss.agent_response_envelope.v1`
-- **Response Payload Schemas**: `fss.operation_receipt.v1`, `fss.agent_cognitive_envelope.v1`
+- **Execution Mode**: `effect_commit` | **Owner**: `fss-effect` | **Gate**: `QL-AGENT-001`
+- **Effectful**: `True` | **Durable**: `True`
 - **Default View**: `AVIEW-005`
+- **Envelopes**: Request `fss.agent_request_envelope.v1` → Response `fss.agent_response_envelope.v1`
+- **Payload Schema**: `fss.agent_control_plan.v1`
 - **Required Capabilities**: `CAP-AGENT-PLAN-COMMIT-001`
 - **Retry Classes**: `never_unchanged`, `backoff`, `reconciliation_required`, `operator_action_required`, `resume_from_continuation`
-- **Primary Error ID**: `ERR-EFFECT-INDETERMINATE-001`
+- **Primary Error**: `ERR-EFFECT-INDETERMINATE-001`
 - **Error Identities**: `ERR-EFFECT-INDETERMINATE-001`, `ERR-IDEMPOTENCY-CONFLICT-001`, `ERR-LEASE-STALE-001`, `ERR-PRECONDITION-STALE-001`, `ERR-AUTH-DENIED-001`, `ERR-OP-EXECUTION-FAILED-001`
+- **Exit Identities**: `EXIT-OK-000`, `EXIT-CLI-RUNTIME-FAILURE-001`
 
-#### `AOP-009` — `wait`
+#### `AOP-009`: wait
 
 - **Purpose**: observe cases, plans, effects, transfers, and obligations until a predicate, deadline, or meaningful delta fires
-- **Mode**: `read_wait`
-- **Owner**: `fss-obligation`
-- **CLI Command**: `fss wait`
-- **MCP Tool**: `wait`
-- **Library Entry Point**: `fss_obligation::wait`
-- **Request Envelope**: `fss.agent_request_envelope.v1`
-- **Request Payload Schema**: `fss.agent_query_plan.v1`
-- **Response Envelope**: `fss.agent_response_envelope.v1`
-- **Response Payload Schemas**: `fss.agent_cognitive_envelope.v1`, `fss.operation_receipt.v1`
+- **Execution Mode**: `read_wait` | **Owner**: `fss-obligation` | **Gate**: `QL-AGENT-001`
+- **Effectful**: `False` | **Durable**: `True`
 - **Default View**: `AVIEW-005`
+- **Envelopes**: Request `fss.agent_request_envelope.v1` → Response `fss.agent_response_envelope.v1`
+- **Payload Schema**: `fss.agent_query_plan.v1`
 - **Required Capabilities**: `CAP-AGENT-SITUATION-READ-001`
 - **Retry Classes**: `safe_read_retry`, `refresh_and_retry`, `backoff`, `reconciliation_required`, `resume_from_continuation`
-- **Primary Error ID**: `ERR-OP-TIMEOUT-001`
+- **Primary Error**: `ERR-OP-TIMEOUT-001`
 - **Error Identities**: `ERR-OP-TIMEOUT-001`, `ERR-LEASE-STALE-001`, `ERR-AUTH-DENIED-001`, `ERR-OP-EXECUTION-FAILED-001`
+- **Exit Identities**: `EXIT-OK-000`, `EXIT-CLI-RUNTIME-FAILURE-001`
 
-#### `AOP-010` — `cancel`
+#### `AOP-010`: cancel
 
 - **Purpose**: request, drain, reconcile or compensate, and finalize owned work without erasing its durable record
-- **Mode**: `lifecycle_effect`
-- **Owner**: `fss-obligation`
-- **CLI Command**: `fss cancel`
-- **MCP Tool**: `cancel`
-- **Library Entry Point**: `fss_obligation::cancel`
-- **Request Envelope**: `fss.agent_request_envelope.v1`
-- **Request Payload Schema**: `fss.agent_query_plan.v1`
-- **Response Envelope**: `fss.agent_response_envelope.v1`
-- **Response Payload Schemas**: `fss.operation_receipt.v1`, `fss.agent_cognitive_envelope.v1`
+- **Execution Mode**: `lifecycle_effect` | **Owner**: `fss-obligation` | **Gate**: `QL-AGENT-001`
+- **Effectful**: `True` | **Durable**: `True`
 - **Default View**: `AVIEW-005`
+- **Envelopes**: Request `fss.agent_request_envelope.v1` → Response `fss.agent_response_envelope.v1`
+- **Payload Schema**: `fss.agent_query_plan.v1`
 - **Required Capabilities**: `CAP-AGENT-CANCEL-001`
 - **Retry Classes**: `never_unchanged`, `backoff`, `reconciliation_required`, `operator_action_required`, `resume_from_continuation`
-- **Primary Error ID**: `ERR-QUIESCENCE-001`
+- **Primary Error**: `ERR-QUIESCENCE-001`
 - **Error Identities**: `ERR-QUIESCENCE-001`, `ERR-LEASE-STALE-001`, `ERR-EFFECT-INDETERMINATE-001`, `ERR-AUTH-DENIED-001`, `ERR-OP-EXECUTION-FAILED-001`
+- **Exit Identities**: `EXIT-OK-000`, `EXIT-CLI-RUNTIME-FAILURE-001`
 
-#### `AOP-011` — `explain`
+#### `AOP-011`: explain
 
 - **Purpose**: answer why, why-not, what-changed, or what-if with a minimal evidence/decision subgraph and expansion handles
-- **Mode**: `read_compute`
-- **Owner**: `fss-explain`
-- **CLI Command**: `fss explain`
-- **MCP Tool**: `explain`
-- **Library Entry Point**: `fss_explain::explain`
-- **Request Envelope**: `fss.agent_request_envelope.v1`
-- **Request Payload Schema**: `fss.agent_query_plan.v1`
-- **Response Envelope**: `fss.agent_response_envelope.v1`
-- **Response Payload Schemas**: `fss.agent_cognitive_envelope.v1`
+- **Execution Mode**: `read_compute` | **Owner**: `fss-explain` | **Gate**: `QL-AGENT-001`
+- **Effectful**: `False` | **Durable**: `False`
 - **Default View**: `AVIEW-007`
+- **Envelopes**: Request `fss.agent_request_envelope.v1` → Response `fss.agent_response_envelope.v1`
+- **Payload Schema**: `fss.agent_query_plan.v1`
 - **Required Capabilities**: `CAP-AGENT-EXPLAIN-001`
 - **Retry Classes**: `safe_read_retry`, `refresh_and_retry`, `rebase_required`, `resume_from_continuation`
-- **Primary Error ID**: `ERR-REPLAY-DIVERGED-001`
+- **Primary Error**: `ERR-REPLAY-DIVERGED-001`
 - **Error Identities**: `ERR-REPLAY-DIVERGED-001`, `ERR-EVIDENCE-MISSING-001`, `ERR-AUTH-DENIED-001`, `ERR-BUDGET-EXHAUSTED-001`, `ERR-OP-EXECUTION-FAILED-001`
+- **Exit Identities**: `EXIT-OK-000`, `EXIT-CLI-RUNTIME-FAILURE-001`
 
-#### `AOP-012` — `handoff`
+#### `AOP-012`: handoff
 
 - **Purpose**: publish a root-last portable capsule containing mission, workspace, cases, plans, obligations, budgets, authority, uncertainty, and continuations
-- **Mode**: `continuity_publish`
-- **Owner**: `fss-handoff`
-- **CLI Command**: `fss handoff`
-- **MCP Tool**: `handoff`
-- **Library Entry Point**: `fss_handoff::handoff`
-- **Request Envelope**: `fss.agent_request_envelope.v1`
-- **Request Payload Schema**: `fss.agent_session_capsule.v1`
-- **Response Envelope**: `fss.agent_response_envelope.v1`
-- **Response Payload Schemas**: `fss.agent_handoff_capsule.v1`
+- **Execution Mode**: `continuity_publish` | **Owner**: `fss-handoff` | **Gate**: `QL-AGENT-001`
+- **Effectful**: `False` | **Durable**: `True`
 - **Default View**: `AVIEW-006`
+- **Envelopes**: Request `fss.agent_request_envelope.v1` → Response `fss.agent_response_envelope.v1`
+- **Payload Schema**: `fss.agent_session_capsule.v1`
 - **Required Capabilities**: `CAP-AGENT-HANDOFF-WRITE-001`
 - **Retry Classes**: `refresh_and_retry`, `rebase_required`, `backoff`, `reconciliation_required`, `operator_action_required`, `resume_from_continuation`
-- **Primary Error ID**: `ERR-AGENT-HANDOFF-INVALID-001`
+- **Primary Error**: `ERR-AGENT-HANDOFF-INVALID-001`
 - **Error Identities**: `ERR-AGENT-HANDOFF-INVALID-001`, `ERR-AGENT-SESSION-STALE-001`, `ERR-AUTH-DENIED-001`, `ERR-OP-EXECUTION-FAILED-001`
+- **Exit Identities**: `EXIT-OK-000`, `EXIT-CLI-RUNTIME-FAILURE-001`
 
-#### `AOP-013` — `feedback`
+#### `AOP-013`: feedback
 
 - **Purpose**: record a correction, outcome signal, adjudication, or evidence-linked learning proposal without silently changing active truth or policy
-- **Mode**: `advisory_write`
-- **Owner**: `fss-learning`
-- **CLI Command**: `fss feedback`
-- **MCP Tool**: `feedback`
-- **Library Entry Point**: `fss_learning::feedback`
-- **Request Envelope**: `fss.agent_request_envelope.v1`
-- **Request Payload Schema**: `fss.agent_feedback_proposal.v1`
-- **Response Envelope**: `fss.agent_response_envelope.v1`
-- **Response Payload Schemas**: `fss.agent_feedback_proposal.v1`, `fss.experience_capsule.v1`
+- **Execution Mode**: `advisory_write` | **Owner**: `fss-learning` | **Gate**: `QL-AGENT-001`
+- **Effectful**: `False` | **Durable**: `True`
 - **Default View**: `AVIEW-007`
+- **Envelopes**: Request `fss.agent_request_envelope.v1` → Response `fss.agent_response_envelope.v1`
+- **Payload Schema**: `fss.agent_feedback_proposal.v1`
 - **Required Capabilities**: `CAP-AGENT-FEEDBACK-001`
 - **Retry Classes**: `refresh_and_retry`, `rebase_required`, `backoff`, `reconciliation_required`, `operator_action_required`
-- **Primary Error ID**: `ERR-AGENT-LEARNING-UNSUPPORTED-001`
+- **Primary Error**: `ERR-AGENT-LEARNING-UNSUPPORTED-001`
 - **Error Identities**: `ERR-AGENT-LEARNING-UNSUPPORTED-001`, `ERR-AUTH-DENIED-001`, `ERR-OP-EXECUTION-FAILED-001`
+- **Exit Identities**: `EXIT-OK-000`, `EXIT-CLI-RUNTIME-FAILURE-001`
 
-#### `AOP-014` — `doctor`
+#### `AOP-014`: doctor
 
 - **Purpose**: diagnose deployment, evidence, cognition, workspace, cases, obligations, and protocol consistency and produce sealed repair affordances
-- **Mode**: `diagnostic_prepare`
-- **Owner**: `fss-doctor`
-- **CLI Command**: `fss doctor`
-- **MCP Tool**: `doctor`
-- **Library Entry Point**: `fss_doctor::doctor`
-- **Request Envelope**: `fss.agent_request_envelope.v1`
-- **Request Payload Schema**: `fss.agent_query_plan.v1`
-- **Response Envelope**: `fss.agent_response_envelope.v1`
-- **Response Payload Schemas**: `fss.agent_cognitive_envelope.v1`, `fss.evidence_bundle.v1`
+- **Execution Mode**: `diagnostic_prepare` | **Owner**: `fss-doctor` | **Gate**: `QL-AGENT-001`
+- **Effectful**: `False` | **Durable**: `True`
 - **Default View**: `AVIEW-004`
+- **Envelopes**: Request `fss.agent_request_envelope.v1` → Response `fss.agent_response_envelope.v1`
+- **Payload Schema**: `fss.agent_query_plan.v1`
 - **Required Capabilities**: `CAP-REPAIR-PREPARE-001`
 - **Retry Classes**: `safe_read_retry`, `refresh_and_retry`, `backoff`, `resume_from_continuation`
-- **Primary Error ID**: `ERR-CLI-RUNTIME-FAILURE-001`
+- **Primary Error**: `ERR-CLI-RUNTIME-FAILURE-001`
 - **Error Identities**: `ERR-CLI-RUNTIME-FAILURE-001`, `ERR-CLOCK-UNCERTAIN-001`, `ERR-STREAM-CONTINUITY-001`, `ERR-AUTH-DENIED-001`, `ERR-OP-EXECUTION-FAILED-001`
+- **Exit Identities**: `EXIT-OK-000`, `EXIT-CLI-RUNTIME-FAILURE-001`
 
 ## 4. Registered Views Catalog
 
@@ -361,83 +308,83 @@ All authoritative schemas cataloged from `registries/SCHEMAS.md`:
 
 | ID | Schema Identifier | File Path | Authority | Compatibility Rule |
 |---|---|---|---|---|
-| `SCHEMA-ADAPTER-CERT-001` | `fss.adapter_compatibility_certificate.v1` | `schemas/adapter_compatibility_certificate.v1.json` | `compatibility` | exact tuple only; invalidator transitions revoke/degrade |
-| `SCHEMA-ADAPTER-IDENTITY-001` | `fss.adapter_identity.v1` | `schemas/adapter_identity.v1.json` | `adapter authority` | adapter identity binds protocol profile, isolation mode, credentials, and capabilities |
-| `SCHEMA-AGENT-AFFORDANCE-001` | `fss.agent_affordance.v1` | `schemas/agent_affordance.v1.json` | `decision support` | value, cost, risk, authority, reversibility, invalidators, alternatives, and expected proof remain decomposed |
-| `SCHEMA-AGENT-COGNITIVE-ENVELOPE-001` | `fss.agent_cognitive_envelope.v1` | `schemas/agent_cognitive_envelope.v1.json` | `semantic response` | anchor, knowledge/provenance status, coverage, omissions, budget, evidence, affordances, and continuity remain explicit |
-| `SCHEMA-AGENT-CONTINUATION-CURSOR-001` | `fss.agent_continuation_cursor.v1` | `schemas/agent_continuation_cursor.v1.json` | `context/hydration projection` | cursor is exact and root-verified; fenced lifetime and progress cannot be reinterpreted or replayed |
-| `SCHEMA-AGENT-CONTRACT-BASIS-001` | `fss.agent_contract_basis.v1` | `schemas/agent_contract_basis.v1.json` | `semantic compatibility` | protocol, schema/ontology/operation/view/capability/error/cost registry digests, producer release, and accepted nightly remain exact |
-| `SCHEMA-AGENT-PLAN-001` | `fss.agent_control_plan.v1` | `schemas/agent_control_plan.v1.json` | `control plan` | step types, witnesses, effect boundaries, contingencies, budgets, and decision digest remain immutable |
-| `SCHEMA-AGENT-EPISODE-001` | `fss.agent_execution_episode.v1` | `schemas/agent_execution_episode.v1.json` | `execution evidence` | original predictions, receipts, outcome, resource use, residual uncertainty, and attribution remain auditable |
-| `SCHEMA-AGENT-FEEDBACK-001` | `fss.agent_feedback_proposal.v1` | `schemas/agent_feedback_proposal.v1.json` | `advisory feedback` | correction or outcome signal is evidence-linked and cannot directly mutate active policy |
-| `SCHEMA-AGENT-FINDING-001` | `fss.agent_finding.v1` | `schemas/agent_finding.v1.json` | `multi-agent cognition` | claim, epistemic state, evidence, assumptions, coverage, method receipts, and withdrawal state remain auditable |
-| `SCHEMA-AGENT-HANDOFF-001` | `fss.agent_handoff_capsule.v1` | `schemas/agent_handoff_capsule.v1.json` | `handoff custody` | mission, situation, cases, plans, obligations, unknowns, authority, budgets, continuation, and expiry remain complete |
-| `SCHEMA-AGENT-HYPOTHESIS-001` | `fss.agent_hypothesis_workspace.v1` | `schemas/agent_hypothesis_workspace.v1.json` | `investigation cognition` | competing hypotheses and support, contradiction, missing evidence, predictions, and falsifiers remain addressable |
-| `SCHEMA-AGENT-KNOWLEDGE-001` | `fss.agent_knowledge_cell.v1` | `schemas/agent_knowledge_cell.v1.json` | `epistemic projection` | knowledge state, provenance, evidence, validity, uncertainty, and decision relevance remain separate |
-| `SCHEMA-AGENT-LEARNING-001` | `fss.agent_learning_proposal.v1` | `schemas/agent_learning_proposal.v1.json` | `advisory learning` | applicability, evidence, counterexamples, harmful outcomes, validation, expiry, and promotion remain explicit |
-| `SCHEMA-AGENT-DELTA-001` | `fss.agent_meaningful_delta.v1` | `schemas/agent_meaningful_delta.v1.json` | `follow/continuity` | terminal, contradiction, coverage, plan-invalidation, and effect-uncertainty deltas cannot be coalesced away |
-| `SCHEMA-AGENT-MISSION-001` | `fss.agent_mission.v1` | `schemas/agent_mission.v1.json` | `mission/workspace` | mission revisions preserve scope, constraints, budgets, capability projection, and terminal criteria |
-| `SCHEMA-AGENT-OBJECTIVE-001` | `fss.agent_objective_contract.v1` | `schemas/agent_objective_contract.v1.json` | `control intent` | hard constraints, budgets, authority, success, failure, stop predicates, and terminal proof are immutable |
-| `SCHEMA-AGENT-QUERY-001` | `fss.agent_query_plan.v1` | `schemas/agent_query_plan.v1.json` | `query cognition` | compiled interpretation, targets, authority, privacy, cost, and output view are reviewable and bounded |
-| `SCHEMA-AGENT-REQUEST-001` | `fss.agent_request_envelope.v1` | `schemas/agent_request_envelope.v1.json` | `transport request` | contract basis, operation, lifecycle, anchor/workspace preconditions, view, targets, typed payload, budget, authority/privacy request, continuation, idempotency, and taint remain explicit |
-| `SCHEMA-AGENT-RESPONSE-001` | `fss.agent_response_envelope.v1` | `schemas/agent_response_envelope.v1.json` | `transport response` | operation, session, anchors, outcome, payload, errors, budgets, proof, continuation, and safe retry remain explicit |
-| `SCHEMA-AGENT-SESSION-001` | `fss.agent_session.v1` | `schemas/agent_session.v1.json` | `session/runtime` | session identity, authority, privacy projection, view, continuations, and expiry remain explicit |
-| `SCHEMA-AGENT-WORKSPACE-001` | `fss.agent_session_capsule.v1` | `schemas/agent_session_capsule.v1.json` | `workspace continuity` | workspace revisions are immutable and resume records stale and invalidated state |
-| `SCHEMA-AGENT-SITUATION-001` | `fss.agent_situation_frame.v1` | `schemas/agent_situation_frame.v1.json` | `situation projection` | task-relative selection changes only through a new frame and selection witness |
-| `SCHEMA-AGENT-WORK-CLAIM-001` | `fss.agent_work_claim.v1` | `schemas/agent_work_claim.v1.json` | `multi-agent coordination` | scope, basis, owner, lease, progress, result, expiry, and no-effect-authority property remain explicit |
-| `SCHEMA-AGENT-WORLD-ENVELOPE-001` | `fss.agent_world_envelope.v1` | `schemas/agent_world_envelope.v1.json` | `agent world model` | nominal estimate, certified core and absences, material alternatives, adversarial residuals, unresolved dimensions, discriminators, and selection witness remain separate and anchor-pinned |
-| `SCHEMA-CALIBRATION-CERT-001` | `fss.calibration_certificate.v1` | `schemas/calibration_certificate.v1.json` | `authority` | generation immutable; invalidation creates new state |
-| `SCHEMA-CANCEL-DRAIN-001` | `fss.cancellation_drain_certificate.v1` | `schemas/cancellation_drain_certificate.v1.json` | `runtime evidence` | terminal/indeterminate outcome and outstanding effects preserved |
-| `SCHEMA-CAPABILITIES-001` | `fss.capabilities.v1` | `CLI output` | `product boundary` | additions compatible; changed meaning requires new schema |
-| `SCHEMA-CLI-DIAGNOSTIC-001` | `fss.cli_diagnostic.v1` | `schemas/cli_diagnostic.v1.json` | `authority/diagnostic` | diagnostic schema immutable; errors follow structured envelope |
-| `SCHEMA-AGENT-CONTEXT-BINDING-001` | `fss.context_expansion_binding.v1` | `schemas/context_expansion_binding.v1.json` | `context/hydration projection` | one emitted expansion slot maps to one exact descriptor revision, purpose, level, and descriptor-owned full cost |
-| `SCHEMA-AGENT-CONTEXT-BINDING-SET-001` | `fss.context_expansion_binding_set.v1` | `schemas/context_expansion_binding_set.v1.json` | `context/hydration projection` | every emitted expansion slot is bound exactly once; missing, duplicate, unexpected, stale, or ambient descriptors fail closed |
-| `SCHEMA-COVERAGE-WITNESS-001` | `fss.coverage_witness.v1` | `schemas/coverage_witness.v1.json` | `authority/query` | absence claims require declared domain and stop reason |
-| `SCHEMA-DECISION-CARD-001` | `fss.decision_card.v1` | `schemas/decision_card.v1.json` | `policy/evidence` | hard constraints and alternatives retained; no silent rewrite |
-| `SCHEMA-DEVICE-IDENTITY-001` | `fss.device_identity.v1` | `schemas/device_identity.v1.json` | `device authority` | immutable hardware, firmware, and model generation; generation change produces a new identity |
-| `SCHEMA-DOCTOR-001` | `fss.doctor.v1` | `CLI output` | `diagnostics` | bounded and secret-free |
-| `SCHEMA-EFFECT-INTENT-001` | `fss.effect_intent.v1` | `schemas/effect_intent.v1.json` | `effect truth` | immutable intent; operation and idempotency identities preserved |
-| `SCHEMA-EFFECT-RECONCILIATION-001` | `fss.effect_reconciliation.v1` | `schemas/effect_reconciliation.v1.json` | `effect truth` | four-valued outcome; verified requires independent evidence witness |
-| `SCHEMA-EVENT-HYPOTHESIS-001` | `fss.event_hypothesis.v1` | `schemas/event_hypothesis.v1.json` | `authority` | immutable revisions; evidence required after hypothesis |
-| `SCHEMA-EVIDENCE-ANCHOR-001` | `fss.evidence_anchor.v1` | `schemas/evidence_anchor.v1.json` | `authority` | no mixed generations; additions require new epoch semantics |
-| `SCHEMA-EVIDENCE-BUNDLE-001` | `fss.evidence_bundle.v1` | `schemas/evidence_bundle.v1.json` | `authority/export` | old proof bundles remain replayable or explicitly unsupported |
-| `SCHEMA-EVIDENCE-DELTA-001` | `fss.evidence_delta_batch.v1` | `schemas/evidence_delta_batch.v1.json` | `authority/version universe` | basis/new anchors and ordered delta identities preserved |
-| `SCHEMA-EVIDENCE-GRAPH-001` | `fss.evidence_graph.v1` | `schemas/evidence_graph.v1.json` | `derived/evidence` | causal evidence graph over capsules, identities, model receipts, and revisions |
-| `SCHEMA-AGENT-EXPERIENCE-001` | `fss.experience_capsule.v1` | `schemas/experience_capsule.v1.json` | `operational memory` | episode signature, signals, failures, costs, applicability, decay, and privacy remain auditable |
-| `SCHEMA-GRAPH-WITNESS-001` | `fss.graph_algorithm_witness.v1` | `schemas/graph_algorithm_witness.v1.json` | `derived/evidence` | algorithm/projection/policy identity and output digest preserved |
-| `SCHEMA-AGENT-INVESTIGATION-001` | `fss.investigation_state.v1` | `schemas/investigation_state.v1.json` | `investigation cognition` | case revisions preserve question, decision, hypotheses, probes, stop rules, and residual uncertainty |
-| `SCHEMA-LICENSE-INVENTORY-001` | `fss.license_inventory.v1` | `schemas/license_inventory.v1.json` | `supply-chain evidence` | package identity/source/license fields remain auditable |
-| `SCHEMA-MODEL-RECEIPT-001` | `fss.model_execution_receipt.v1` | `schemas/model_execution_receipt.v1.json` | `derived/model evidence` | input/model/plan/backend/numeric/budget/outcome and output identities preserved |
-| `SCHEMA-MODEL-MANIFEST-001` | `fss.model_manifest.v1` | `schemas/model_manifest.v1.json` | `model authority/package` | immutable model manifest root; model identity, generation, weights, schemas, calibration, and license/provenance preserved |
-| `SCHEMA-MODEL-PACKAGE-001` | `fss.model_package_manifest.v1` | `schemas/model_package_manifest.v1.json` | `model authority/package` | immutable package root; operator/tensor/preprocess/numeric/license identities preserved |
-| `SCHEMA-NEGATIVE-EVIDENCE-REPORT-001` | `fss.negative_evidence_report.v1` | `schemas/negative_evidence_report.v1.json` | `cli report` | ledger entries, verification result, epistemic state derived from entry knowledge states, and degradation stay explicit; not an agent response envelope |
-| `SCHEMA-OPERATION-RECEIPT-001` | `fss.operation_receipt.v1` | `schemas/operation_receipt.v1.json` | `effect truth` | state monotonicity; idempotency identity preserved |
-| `SCHEMA-PREPARED-EFFECT-001` | `fss.prepared_effect.v1` | `schemas/prepared_effect.v1.json` | `effect truth` | immutable prepared operation; intent, obligation, and predicate preserved |
-| `SCHEMA-PROVIDER-FAILURE-RECEIPT-001` | `fss.provider_failure_receipt.v1` | `schemas/provider_failure_receipt.v1.json` | `provider authority` | provider-issued failure receipt; nonce and error reason preserved |
-| `SCHEMA-PROVIDER-OBSERVATION-RECEIPT-001` | `fss.provider_observation_receipt.v1` | `schemas/provider_observation_receipt.v1.json` | `provider authority` | provider-issued observation receipt; verified by lookup, never recomputable |
-| `SCHEMA-QUALIFICATION-ROOT-002` | `fss.qualification_root.v2` | `schemas/release_qualification_root.v2.json` | `aggregate release custody` | primary/support artifact digests, claim boundary, and signing state immutable |
-| `SCHEMA-RELEASE-BUILD-001` | `fss.release_build_receipt.v1` | `schemas/release_build_receipt.v1.json` | `release custody` | native target/toolchain/source/lock/manifest/smoke identities immutable |
-| `SCHEMA-RELEASE-RECEIPT-001` | `fss.release_qualification_receipt.v1` | `schemas/release_qualification_receipt.v1.json` | `release custody` | same source/sibling/toolchain identity required for aggregation |
-| `SCHEMA-RELEASE-STAGE-001` | `fss.release_stage_verification.v1` | `schemas/release_stage_verification.v1.json` | `release custody` | stage inventory and content digests preserved exactly |
-| `SCHEMA-ROBOT-DOCS-001` | `fss.robot_docs.v1` | `docs/ROBOT_DOCS.json` | `documentation/metadata` | immutable; additions compatible |
-| `SCHEMA-AGENT-COMPRESSION-001` | `fss.semantic_compression_receipt.v1` | `schemas/semantic_compression_receipt.v1.json` | `context projection` | selected and omitted classes, critical preservation, stop reason, and expansion slots remain explicit |
-| `SCHEMA-AGENT-CONTEXT-001` | `fss.semantic_context_pack.v1` | `schemas/semantic_context_pack.v1.json` | `context projection` | pack basis, view, items, compression receipt, token count, continuation, digest, and expansion slots are immutable |
-| `SCHEMA-AGENT-HANDLE-001` | `fss.semantic_handle.v1` | `schemas/semantic_handle.v1.json` | `context/hydration projection` | handle identity is immutable across descriptor revisions; H-level ladder stays contiguous and priced |
-| `SCHEMA-AGENT-HANDLE-REFERENCE-001` | `fss.semantic_handle_reference.v1` | `schemas/semantic_handle_reference.v1.json` | `context/hydration projection` | immutable subject, exact descriptor revision, contract basis, authority anchor, level, and ladder policy remain inseparable |
-| `SCHEMA-AGENT-HYDRATION-ARTIFACT-001` | `fss.semantic_hydration_artifact.v1` | `schemas/semantic_hydration_artifact.v1.json` | `context/hydration projection` | payload digest, descriptor digest, and subject digest remain verifiable; tampered payloads are rejected |
-| `SCHEMA-AGENT-HYDRATION-RECEIPT-001` | `fss.semantic_hydration_receipt.v1` | `schemas/semantic_hydration_receipt.v1.json` | `context/hydration projection` | receipt binds request digest, artifact digest, consumed cost, and exact continuation; no receipt without a delivered artifact |
-| `SCHEMA-AGENT-HYDRATION-REQUEST-001` | `fss.semantic_hydration_request.v1` | `schemas/semantic_hydration_request.v1.json` | `context/hydration projection` | request binds exact handle reference, level, budget, and contract basis; unknown levels fail closed |
-| `SCHEMA-SENSOR-CAPSULE-001` | `fss.sensor_capsule.v1` | `schemas/sensor_capsule.v1.json` | `authority` | append/supersede; no silent timestamp/source reinterpretation |
-| `SCHEMA-AGENT-SITUATION-CAPSULE-001` | `fss.situation_capsule.v1` | `schemas/situation_capsule.v1.json` | `agent driver projection` | frame, meaningful delta, obligations, resources, affordances, context, and compression proof remain one anchor-pinned publication |
-| `SCHEMA-SOURCE-IDENTITY-001` | `fss.source_identity.v1` | `schemas/source_identity.v1.json` | `source custody` | source identity binds device, adapter, channel, clock basis, and stream generation; unknown versions fail closed |
-| `SCHEMA-SOURCE-MANIFEST-001` | `fss.source_manifest.v1` | `schemas/source_manifest.v1.json` | `source custody` | clean tracked source identity and executable bits preserved |
-| `SCHEMA-STATUS-001` | `fss.status.v1` | `CLI output` | `product boundary` | status fields cannot imply unsupported readiness |
-| `SCHEMA-TRANSFER-MANIFEST-001` | `fss.transfer_manifest.v1` | `schemas/transfer_manifest.v1.json` | `authority/transfer` | root-last; object and closure identities immutable |
-| `SCHEMA-TRANSFER-RECEIPT-001` | `fss.transfer_receipt.v1` | `schemas/transfer_receipt.v1.json` | `transfer evidence` | path, repair, closure, publication, and retrievability states remain distinct |
+| `SCHEMA-ADAPTER-CERT-001` | `fss.adapter_compatibility_certificate.v1` | `schemas/adapter_compatibility_certificate.v1.json` | `compatibility` | `exact tuple only; invalidator transitions revoke/degrade` |
+| `SCHEMA-ADAPTER-IDENTITY-001` | `fss.adapter_identity.v1` | `schemas/adapter_identity.v1.json` | `adapter authority` | `adapter identity binds protocol profile, isolation mode, credentials, and capabilities` |
+| `SCHEMA-AGENT-AFFORDANCE-001` | `fss.agent_affordance.v1` | `schemas/agent_affordance.v1.json` | `decision support` | `value, cost, risk, authority, reversibility, invalidators, alternatives, and expected proof remain decomposed` |
+| `SCHEMA-AGENT-COGNITIVE-ENVELOPE-001` | `fss.agent_cognitive_envelope.v1` | `schemas/agent_cognitive_envelope.v1.json` | `semantic response` | `anchor, knowledge/provenance status, coverage, omissions, budget, evidence, affordances, and continuity remain explicit` |
+| `SCHEMA-AGENT-CONTINUATION-CURSOR-001` | `fss.agent_continuation_cursor.v1` | `schemas/agent_continuation_cursor.v1.json` | `context/hydration projection` | `cursor is exact and root-verified; fenced lifetime and progress cannot be reinterpreted or replayed` |
+| `SCHEMA-AGENT-CONTRACT-BASIS-001` | `fss.agent_contract_basis.v1` | `schemas/agent_contract_basis.v1.json` | `semantic compatibility` | `protocol, schema/ontology/operation/view/capability/error/cost registry digests, producer release, and accepted nightly remain exact` |
+| `SCHEMA-AGENT-PLAN-001` | `fss.agent_control_plan.v1` | `schemas/agent_control_plan.v1.json` | `control plan` | `step types, witnesses, effect boundaries, contingencies, budgets, and decision digest remain immutable` |
+| `SCHEMA-AGENT-EPISODE-001` | `fss.agent_execution_episode.v1` | `schemas/agent_execution_episode.v1.json` | `execution evidence` | `original predictions, receipts, outcome, resource use, residual uncertainty, and attribution remain auditable` |
+| `SCHEMA-AGENT-FEEDBACK-001` | `fss.agent_feedback_proposal.v1` | `schemas/agent_feedback_proposal.v1.json` | `advisory feedback` | `correction or outcome signal is evidence-linked and cannot directly mutate active policy` |
+| `SCHEMA-AGENT-FINDING-001` | `fss.agent_finding.v1` | `schemas/agent_finding.v1.json` | `multi-agent cognition` | `claim, epistemic state, evidence, assumptions, coverage, method receipts, and withdrawal state remain auditable` |
+| `SCHEMA-AGENT-HANDOFF-001` | `fss.agent_handoff_capsule.v1` | `schemas/agent_handoff_capsule.v1.json` | `handoff custody` | `mission, situation, cases, plans, obligations, unknowns, authority, budgets, continuation, and expiry remain complete` |
+| `SCHEMA-AGENT-HYPOTHESIS-001` | `fss.agent_hypothesis_workspace.v1` | `schemas/agent_hypothesis_workspace.v1.json` | `investigation cognition` | `competing hypotheses and support, contradiction, missing evidence, predictions, and falsifiers remain addressable` |
+| `SCHEMA-AGENT-KNOWLEDGE-001` | `fss.agent_knowledge_cell.v1` | `schemas/agent_knowledge_cell.v1.json` | `epistemic projection` | `knowledge state, provenance, evidence, validity, uncertainty, and decision relevance remain separate` |
+| `SCHEMA-AGENT-LEARNING-001` | `fss.agent_learning_proposal.v1` | `schemas/agent_learning_proposal.v1.json` | `advisory learning` | `applicability, evidence, counterexamples, harmful outcomes, validation, expiry, and promotion remain explicit` |
+| `SCHEMA-AGENT-DELTA-001` | `fss.agent_meaningful_delta.v1` | `schemas/agent_meaningful_delta.v1.json` | `follow/continuity` | `terminal, contradiction, coverage, plan-invalidation, and effect-uncertainty deltas cannot be coalesced away` |
+| `SCHEMA-AGENT-MISSION-001` | `fss.agent_mission.v1` | `schemas/agent_mission.v1.json` | `mission/workspace` | `mission revisions preserve scope, constraints, budgets, capability projection, and terminal criteria` |
+| `SCHEMA-AGENT-OBJECTIVE-001` | `fss.agent_objective_contract.v1` | `schemas/agent_objective_contract.v1.json` | `control intent` | `hard constraints, budgets, authority, success, failure, stop predicates, and terminal proof are immutable` |
+| `SCHEMA-AGENT-QUERY-001` | `fss.agent_query_plan.v1` | `schemas/agent_query_plan.v1.json` | `query cognition` | `compiled interpretation, targets, authority, privacy, cost, and output view are reviewable and bounded` |
+| `SCHEMA-AGENT-REQUEST-001` | `fss.agent_request_envelope.v1` | `schemas/agent_request_envelope.v1.json` | `transport request` | `contract basis, operation, lifecycle, anchor/workspace preconditions, view, targets, typed payload, budget, authority/privacy request, continuation, idempotency, and taint remain explicit` |
+| `SCHEMA-AGENT-RESPONSE-001` | `fss.agent_response_envelope.v1` | `schemas/agent_response_envelope.v1.json` | `transport response` | `operation, session, anchors, outcome, payload, errors, budgets, proof, continuation, and safe retry remain explicit` |
+| `SCHEMA-AGENT-SESSION-001` | `fss.agent_session.v1` | `schemas/agent_session.v1.json` | `session/runtime` | `session identity, authority, privacy projection, view, continuations, and expiry remain explicit` |
+| `SCHEMA-AGENT-WORKSPACE-001` | `fss.agent_session_capsule.v1` | `schemas/agent_session_capsule.v1.json` | `workspace continuity` | `workspace revisions are immutable and resume records stale and invalidated state` |
+| `SCHEMA-AGENT-SITUATION-001` | `fss.agent_situation_frame.v1` | `schemas/agent_situation_frame.v1.json` | `situation projection` | `task-relative selection changes only through a new frame and selection witness` |
+| `SCHEMA-AGENT-WORK-CLAIM-001` | `fss.agent_work_claim.v1` | `schemas/agent_work_claim.v1.json` | `multi-agent coordination` | `scope, basis, owner, lease, progress, result, expiry, and no-effect-authority property remain explicit` |
+| `SCHEMA-AGENT-WORLD-ENVELOPE-001` | `fss.agent_world_envelope.v1` | `schemas/agent_world_envelope.v1.json` | `agent world model` | `nominal estimate, certified core and absences, material alternatives, adversarial residuals, unresolved dimensions, discriminators, and selection witness remain separate and anchor-pinned` |
+| `SCHEMA-CALIBRATION-CERT-001` | `fss.calibration_certificate.v1` | `schemas/calibration_certificate.v1.json` | `authority` | `generation immutable; invalidation creates new state` |
+| `SCHEMA-CANCEL-DRAIN-001` | `fss.cancellation_drain_certificate.v1` | `schemas/cancellation_drain_certificate.v1.json` | `runtime evidence` | `terminal/indeterminate outcome and outstanding effects preserved` |
+| `SCHEMA-CAPABILITIES-001` | `fss.capabilities.v1` | `CLI output` | `product boundary` | `additions compatible; changed meaning requires new schema` |
+| `SCHEMA-CLI-DIAGNOSTIC-001` | `fss.cli_diagnostic.v1` | `schemas/cli_diagnostic.v1.json` | `authority/diagnostic` | `diagnostic schema immutable; errors follow structured envelope` |
+| `SCHEMA-AGENT-CONTEXT-BINDING-001` | `fss.context_expansion_binding.v1` | `schemas/context_expansion_binding.v1.json` | `context/hydration projection` | `one emitted expansion slot maps to one exact descriptor revision, purpose, level, and descriptor-owned full cost` |
+| `SCHEMA-AGENT-CONTEXT-BINDING-SET-001` | `fss.context_expansion_binding_set.v1` | `schemas/context_expansion_binding_set.v1.json` | `context/hydration projection` | `every emitted expansion slot is bound exactly once; missing, duplicate, unexpected, stale, or ambient descriptors fail closed` |
+| `SCHEMA-COVERAGE-WITNESS-001` | `fss.coverage_witness.v1` | `schemas/coverage_witness.v1.json` | `authority/query` | `absence claims require declared domain and stop reason` |
+| `SCHEMA-DECISION-CARD-001` | `fss.decision_card.v1` | `schemas/decision_card.v1.json` | `policy/evidence` | `hard constraints and alternatives retained; no silent rewrite` |
+| `SCHEMA-DEVICE-IDENTITY-001` | `fss.device_identity.v1` | `schemas/device_identity.v1.json` | `device authority` | `immutable hardware, firmware, and model generation; generation change produces a new identity` |
+| `SCHEMA-DOCTOR-001` | `fss.doctor.v1` | `CLI output` | `diagnostics` | `bounded and secret-free` |
+| `SCHEMA-EFFECT-INTENT-001` | `fss.effect_intent.v1` | `schemas/effect_intent.v1.json` | `effect truth` | `immutable intent; operation and idempotency identities preserved` |
+| `SCHEMA-EFFECT-RECONCILIATION-001` | `fss.effect_reconciliation.v1` | `schemas/effect_reconciliation.v1.json` | `effect truth` | `four-valued outcome; verified requires independent evidence witness` |
+| `SCHEMA-EVENT-HYPOTHESIS-001` | `fss.event_hypothesis.v1` | `schemas/event_hypothesis.v1.json` | `authority` | `immutable revisions; evidence required after hypothesis` |
+| `SCHEMA-EVIDENCE-ANCHOR-001` | `fss.evidence_anchor.v1` | `schemas/evidence_anchor.v1.json` | `authority` | `no mixed generations; additions require new epoch semantics` |
+| `SCHEMA-EVIDENCE-BUNDLE-001` | `fss.evidence_bundle.v1` | `schemas/evidence_bundle.v1.json` | `authority/export` | `old proof bundles remain replayable or explicitly unsupported` |
+| `SCHEMA-EVIDENCE-DELTA-001` | `fss.evidence_delta_batch.v1` | `schemas/evidence_delta_batch.v1.json` | `authority/version universe` | `basis/new anchors and ordered delta identities preserved` |
+| `SCHEMA-EVIDENCE-GRAPH-001` | `fss.evidence_graph.v1` | `schemas/evidence_graph.v1.json` | `derived/evidence` | `causal evidence graph over capsules, identities, model receipts, and revisions` |
+| `SCHEMA-AGENT-EXPERIENCE-001` | `fss.experience_capsule.v1` | `schemas/experience_capsule.v1.json` | `operational memory` | `episode signature, signals, failures, costs, applicability, decay, and privacy remain auditable` |
+| `SCHEMA-GRAPH-WITNESS-001` | `fss.graph_algorithm_witness.v1` | `schemas/graph_algorithm_witness.v1.json` | `derived/evidence` | `algorithm/projection/policy identity and output digest preserved` |
+| `SCHEMA-AGENT-INVESTIGATION-001` | `fss.investigation_state.v1` | `schemas/investigation_state.v1.json` | `investigation cognition` | `case revisions preserve question, decision, hypotheses, probes, stop rules, and residual uncertainty` |
+| `SCHEMA-LICENSE-INVENTORY-001` | `fss.license_inventory.v1` | `schemas/license_inventory.v1.json` | `supply-chain evidence` | `package identity/source/license fields remain auditable` |
+| `SCHEMA-MODEL-RECEIPT-001` | `fss.model_execution_receipt.v1` | `schemas/model_execution_receipt.v1.json` | `derived/model evidence` | `input/model/plan/backend/numeric/budget/outcome and output identities preserved` |
+| `SCHEMA-MODEL-MANIFEST-001` | `fss.model_manifest.v1` | `schemas/model_manifest.v1.json` | `model authority/package` | `immutable model manifest root; model identity, generation, weights, schemas, calibration, and license/provenance preserved` |
+| `SCHEMA-MODEL-PACKAGE-001` | `fss.model_package_manifest.v1` | `schemas/model_package_manifest.v1.json` | `model authority/package` | `immutable package root; operator/tensor/preprocess/numeric/license identities preserved` |
+| `SCHEMA-NEGATIVE-EVIDENCE-REPORT-001` | `fss.negative_evidence_report.v1` | `schemas/negative_evidence_report.v1.json` | `cli report` | `ledger entries, verification result, epistemic state derived from entry knowledge states, and degradation stay explicit; not an agent response envelope` |
+| `SCHEMA-OPERATION-RECEIPT-001` | `fss.operation_receipt.v1` | `schemas/operation_receipt.v1.json` | `effect truth` | `state monotonicity; idempotency identity preserved` |
+| `SCHEMA-PREPARED-EFFECT-001` | `fss.prepared_effect.v1` | `schemas/prepared_effect.v1.json` | `effect truth` | `immutable prepared operation; intent, obligation, and predicate preserved` |
+| `SCHEMA-PROVIDER-FAILURE-RECEIPT-001` | `fss.provider_failure_receipt.v1` | `schemas/provider_failure_receipt.v1.json` | `provider authority` | `provider-issued failure receipt; nonce and error reason preserved` |
+| `SCHEMA-PROVIDER-OBSERVATION-RECEIPT-001` | `fss.provider_observation_receipt.v1` | `schemas/provider_observation_receipt.v1.json` | `provider authority` | `provider-issued observation receipt; verified by lookup, never recomputable` |
+| `SCHEMA-QUALIFICATION-ROOT-002` | `fss.qualification_root.v2` | `schemas/release_qualification_root.v2.json` | `aggregate release custody` | `primary/support artifact digests, claim boundary, and signing state immutable` |
+| `SCHEMA-RELEASE-BUILD-001` | `fss.release_build_receipt.v1` | `schemas/release_build_receipt.v1.json` | `release custody` | `native target/toolchain/source/lock/manifest/smoke identities immutable` |
+| `SCHEMA-RELEASE-RECEIPT-001` | `fss.release_qualification_receipt.v1` | `schemas/release_qualification_receipt.v1.json` | `release custody` | `same source/sibling/toolchain identity required for aggregation` |
+| `SCHEMA-RELEASE-STAGE-001` | `fss.release_stage_verification.v1` | `schemas/release_stage_verification.v1.json` | `release custody` | `stage inventory and content digests preserved exactly` |
+| `SCHEMA-ROBOT-DOCS-001` | `fss.robot_docs.v1` | `schemas/robot_docs.v1.json` | `documentation/metadata` | `immutable; additions compatible` |
+| `SCHEMA-AGENT-COMPRESSION-001` | `fss.semantic_compression_receipt.v1` | `schemas/semantic_compression_receipt.v1.json` | `context projection` | `selected and omitted classes, critical preservation, stop reason, and expansion slots remain explicit` |
+| `SCHEMA-AGENT-CONTEXT-001` | `fss.semantic_context_pack.v1` | `schemas/semantic_context_pack.v1.json` | `context projection` | `pack basis, view, items, compression receipt, token count, continuation, digest, and expansion slots are immutable` |
+| `SCHEMA-AGENT-HANDLE-001` | `fss.semantic_handle.v1` | `schemas/semantic_handle.v1.json` | `context/hydration projection` | `handle identity is immutable across descriptor revisions; H-level ladder stays contiguous and priced` |
+| `SCHEMA-AGENT-HANDLE-REFERENCE-001` | `fss.semantic_handle_reference.v1` | `schemas/semantic_handle_reference.v1.json` | `context/hydration projection` | `immutable subject, exact descriptor revision, contract basis, authority anchor, level, and ladder policy remain inseparable` |
+| `SCHEMA-AGENT-HYDRATION-ARTIFACT-001` | `fss.semantic_hydration_artifact.v1` | `schemas/semantic_hydration_artifact.v1.json` | `context/hydration projection` | `payload digest, descriptor digest, and subject digest remain verifiable; tampered payloads are rejected` |
+| `SCHEMA-AGENT-HYDRATION-RECEIPT-001` | `fss.semantic_hydration_receipt.v1` | `schemas/semantic_hydration_receipt.v1.json` | `context/hydration projection` | `receipt binds request digest, artifact digest, consumed cost, and exact continuation; no receipt without a delivered artifact` |
+| `SCHEMA-AGENT-HYDRATION-REQUEST-001` | `fss.semantic_hydration_request.v1` | `schemas/semantic_hydration_request.v1.json` | `context/hydration projection` | `request binds exact handle reference, level, budget, and contract basis; unknown levels fail closed` |
+| `SCHEMA-SENSOR-CAPSULE-001` | `fss.sensor_capsule.v1` | `schemas/sensor_capsule.v1.json` | `authority` | `append/supersede; no silent timestamp/source reinterpretation` |
+| `SCHEMA-AGENT-SITUATION-CAPSULE-001` | `fss.situation_capsule.v1` | `schemas/situation_capsule.v1.json` | `agent driver projection` | `frame, meaningful delta, obligations, resources, affordances, context, and compression proof remain one anchor-pinned publication` |
+| `SCHEMA-SOURCE-IDENTITY-001` | `fss.source_identity.v1` | `schemas/source_identity.v1.json` | `source custody` | `source identity binds device, adapter, channel, clock basis, and stream generation; unknown versions fail closed` |
+| `SCHEMA-SOURCE-MANIFEST-001` | `fss.source_manifest.v1` | `schemas/source_manifest.v1.json` | `source custody` | `clean tracked source identity and executable bits preserved` |
+| `SCHEMA-STATUS-001` | `fss.status.v1` | `CLI output` | `product boundary` | `status fields cannot imply unsupported readiness` |
+| `SCHEMA-TRANSFER-MANIFEST-001` | `fss.transfer_manifest.v1` | `schemas/transfer_manifest.v1.json` | `authority/transfer` | `root-last; object and closure identities immutable` |
+| `SCHEMA-TRANSFER-RECEIPT-001` | `fss.transfer_receipt.v1` | `schemas/transfer_receipt.v1.json` | `transfer evidence` | `path, repair, closure, publication, and retrievability states remain distinct` |
 
-## 7. Required Capabilities Matrix
+## 7. Required Capabilities
 
-Real capability specifications required by registered operations from `architecture/capabilities.json`:
+Capabilities required by canonical operations cataloged from `architecture/capabilities.json`:
 
 | ID | Capability | Scope | Semantic Plane | Default Role |
 |---|---|---|---|---|
@@ -458,7 +405,7 @@ Real capability specifications required by registered operations from `architect
 
 All stable error identities and normative recovery guidance cataloged from `registries/ERRORS.md`:
 
-| Error Identity | Description | Recovery Guidance |
+| ID | Meaning | Retry policy |
 |---|---|---|
 | `ERR-ADAPTER-CORRUPT-FILE-001` | device adapter registry file is corrupt or missing mandatory fields | repair or restore device adapter registry file |
 | `ERR-ADAPTER-DIGEST-MISMATCH-001` | device adapter canonical freeze digest does not match pinned generation digest | recompute canonical device adapter registry digest or bump generation |
