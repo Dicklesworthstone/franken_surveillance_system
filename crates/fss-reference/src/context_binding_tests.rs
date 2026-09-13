@@ -314,3 +314,74 @@ fn unused_ambient_descriptor_is_rejected() -> Result<(), Box<dyn Error>> {
     ));
     Ok(())
 }
+
+/// A bound publication whose situation capsule still validates, but whose binding fields were
+/// altered, yields no proof-root set: `proof_roots` verifies the complete bound publication
+/// before rooting anything.
+#[test]
+fn tampered_bound_publication_yields_no_proof_roots() -> Result<(), Box<dyn Error>> {
+    let publication = project_reference_situation(situation()?, &projection_spec())?;
+    let specs = binding_specs(&publication)?;
+    let bound = BoundReferenceSituationPublication::publish(publication, specs)?;
+    assert!(
+        bound
+            .proof_roots()?
+            .contains(&bound.expansion_bindings.binding_set_digest)
+    );
+
+    // Altered bound identity.
+    let mut forged_root = bound.clone();
+    forged_root.bound_publication_digest = ContentDigest::sha256(b"forged-bound-publication");
+    forged_root
+        .publication
+        .situation
+        .capsule
+        .decision_fingerprint()?;
+    assert!(matches!(
+        forged_root.proof_roots(),
+        Err(ReferenceContextBindingError::Binding(
+            ContextBindingError::Contract(ContractError::DigestMismatch)
+        ))
+    ));
+
+    // Altered binding-set identity, with the outer bound digest resealed over the forgery.
+    let mut forged_binding_set = bound.clone();
+    forged_binding_set.expansion_bindings.binding_set_digest =
+        ContentDigest::sha256(b"forged-binding-set");
+    forged_binding_set.bound_publication_digest = forged_binding_set.computed_digest();
+    forged_binding_set
+        .publication
+        .situation
+        .capsule
+        .decision_fingerprint()?;
+    assert!(matches!(
+        forged_binding_set.proof_roots(),
+        Err(ReferenceContextBindingError::Binding(
+            ContextBindingError::Contract(ContractError::DigestMismatch)
+        ))
+    ));
+
+    // An ambient descriptor smuggled into the catalog, resealed.
+    let mut ambient = bound;
+    ambient.descriptors.push(descriptor_for_slot(
+        "slot:unused",
+        &ambient.publication.context_pack.contract_basis,
+        &ambient.publication.context_pack.anchor,
+    )?);
+    ambient.descriptors.sort_by(|left, right| {
+        (&left.handle_id, left.descriptor_digest).cmp(&(&right.handle_id, right.descriptor_digest))
+    });
+    ambient.bound_publication_digest = ambient.computed_digest();
+    ambient
+        .publication
+        .situation
+        .capsule
+        .decision_fingerprint()?;
+    assert!(matches!(
+        ambient.proof_roots(),
+        Err(ReferenceContextBindingError::Binding(
+            ContextBindingError::Contract(ContractError::IncompletePublicationGraph)
+        ))
+    ));
+    Ok(())
+}

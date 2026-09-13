@@ -147,7 +147,7 @@ impl ReferenceSituationPublication {
             || self.context_pack.session_id != self.situation.capsule.session_id
             || self.context_pack.anchor != self.situation.capsule.anchor
             || self.context_pack.situation_fingerprint
-                != self.situation.capsule.frame.frame_digest()
+                != self.situation.capsule.frame.frame_digest()?
         {
             return Err(ContractError::DigestMismatch.into());
         }
@@ -255,7 +255,7 @@ pub fn project_reference_situation(
         session_id: situation.capsule.session_id.clone(),
         view_id: spec.view_id.clone(),
         anchor: situation.capsule.anchor.clone(),
-        situation_fingerprint: situation.capsule.frame.frame_digest(),
+        situation_fingerprint: situation.capsule.frame.frame_digest()?,
         items: selection.selected.clone(),
         compression_receipt_id: receipt_id.clone(),
         continuation,

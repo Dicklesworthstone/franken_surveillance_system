@@ -169,9 +169,12 @@ impl BoundReferenceSituationPublication {
 
     /// Returns every semantic proof root required to resume without ambient descriptor state.
     ///
-    /// Fails when the base situation capsule does not validate, since it then has no decision
-    /// fingerprint to root.
-    pub fn proof_roots(&self) -> Result<BTreeSet<ContentDigest>, ContractError> {
+    /// The complete bound publication is verified first with [`Self::verify`], so a tampered
+    /// publication (an altered descriptor catalog, binding set, or bound digest) yields no root
+    /// set even when its situation capsule still validates. A capsule refused by validation
+    /// likewise has no decision fingerprint to root.
+    pub fn proof_roots(&self) -> Result<BTreeSet<ContentDigest>, ReferenceContextBindingError> {
+        self.verify()?;
         let mut roots = self.publication.situation.proof_roots.clone();
         roots.insert(self.publication.publication_digest);
         roots.insert(self.publication.situation.capsule.decision_fingerprint()?);

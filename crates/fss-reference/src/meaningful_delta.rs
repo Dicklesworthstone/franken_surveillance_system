@@ -638,8 +638,8 @@ pub fn classify_reference_meaningful_delta(
     let identity = delta_identity(basis, result, selection_witness);
     let silence_certificate = if is_silence {
         Some(SilenceCertificate {
-            basis_frame_digest: basis_frame.frame_digest(),
-            result_frame_digest: result_frame.frame_digest(),
+            basis_frame_digest: basis_frame.frame_digest()?,
+            result_frame_digest: result_frame.frame_digest()?,
             selection_witness,
             authorized_domain: result_coverage.clone(),
             authorized_generation: result_capsule.contract_basis.ontology_generation_id.clone(),
