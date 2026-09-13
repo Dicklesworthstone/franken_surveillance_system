@@ -2260,11 +2260,12 @@ def _exact_token(value: Any) -> str | None:
 
 def _exact_text(value: Any) -> str | None:
     """Human text compared exactly: non-empty, no leading or trailing space, and no whitespace,
-    control, or format character other than U+0020. Nothing is stripped."""
+    control, or format character other than U+0020, and no lone surrogate (a surrogate code point
+    is not text: it has no UTF-8 encoding). Nothing is stripped."""
     if not isinstance(value, str) or not value.strip(" ") or value != value.strip(" "):
         return None
     for ch in value:
-        if ch != " " and (ch.isspace() or unicodedata.category(ch) in ("Cc", "Cf", "Zs", "Zl", "Zp")):
+        if ch != " " and (ch.isspace() or unicodedata.category(ch) in ("Cc", "Cf", "Cs", "Zs", "Zl", "Zp")):
             return None
     return value
 
