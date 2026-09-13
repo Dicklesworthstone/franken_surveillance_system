@@ -6,7 +6,10 @@
 //!
 //! Conforms to ITU-T T.81 (ISO/IEC 10918-1) marker segmentation rules without external dependencies.
 
-use crate::adapter_replay::{ReplayAdapterError, ReplayCx};
+use crate::adapter_replay::{ReplayAdapterError, ReplayCx, ReplayDivergence};
+use crate::{ReferenceError, ReplayBundleError};
+use fss_core::ContractError;
+use fss_ledger::{DurableLedgerError, JournalError};
 
 /// Bounded limits enforced during MJPEG and JPEG stream scanning.
 ///
@@ -367,7 +370,7 @@ impl JpegScan {
 }
 
 /// Typed errors returned when a JPEG/MJPEG stream violates invariant limits or cannot be split.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum JpegSplitError {
     /// Input buffer contained no SOI marker (`0xFFD8`).
     NoSoi,
@@ -439,11 +442,247 @@ pub enum JpegSplitError {
         /// Actual generation passed in request.
         actual: String,
     },
-    /// Replay state diverged.
-    ReplayDiverged,
+    /// Replay state diverged from independently retained reference proof.
+    ReplayDiverged(Box<ReplayDivergence>),
+    /// Discrepancy between code constants and machine registry.
+    RegistryDrift {
+        /// Field name that drifted.
+        field: &'static str,
+        /// Expected value in code.
+        expected: String,
+        /// Actual value found in registry.
+        actual: String,
+    },
+    /// Underlying filesystem or I/O error during replay.
+    Io(std::sync::Arc<std::io::Error>),
+    /// Core contract error during replay.
+    Contract(std::sync::Arc<ContractError>),
+    /// Replay bundle decoding or validation error.
+    Bundle(std::sync::Arc<ReplayBundleError>),
+    /// Underlying reference engine error.
+    Reference(std::sync::Arc<ReferenceError>),
+    /// Ledger journal append or failure during replay.
+    Ledger(std::sync::Arc<JournalError>),
+    /// Durable reference ledger failure during replay.
+    DurableLedger(std::sync::Arc<DurableLedgerError>),
     /// Cooperative cancellation was requested during splitting.
     CancellationRequested,
 }
+
+impl Clone for JpegSplitError {
+    fn clone(&self) -> Self {
+        match self {
+            Self::NoSoi => Self::NoSoi,
+            Self::MarkerLengthOverflow {
+                offset,
+                marker,
+                length,
+                available,
+            } => Self::MarkerLengthOverflow {
+                offset: *offset,
+                marker: *marker,
+                length: *length,
+                available: *available,
+            },
+            Self::TooManyFrames { count, limit } => Self::TooManyFrames {
+                count: *count,
+                limit: *limit,
+            },
+            Self::FrameTooLarge {
+                frame_index,
+                size,
+                limit,
+            } => Self::FrameTooLarge {
+                frame_index: *frame_index,
+                size: *size,
+                limit: *limit,
+            },
+            Self::TooManyMarkerSegments {
+                frame_index,
+                count,
+                limit,
+            } => Self::TooManyMarkerSegments {
+                frame_index: *frame_index,
+                count: *count,
+                limit: *limit,
+            },
+            Self::DimensionLimit {
+                width,
+                height,
+                max_dimension,
+            } => Self::DimensionLimit {
+                width: *width,
+                height: *height,
+                max_dimension: *max_dimension,
+            },
+            Self::InputOversized { size, limit } => Self::InputOversized {
+                size: *size,
+                limit: *limit,
+            },
+            Self::BoundExceeded(msg) => Self::BoundExceeded(msg),
+            Self::BudgetExhausted { requested, limit } => Self::BudgetExhausted {
+                requested: *requested,
+                limit: *limit,
+            },
+            Self::IncompatibleGeneration { expected, actual } => Self::IncompatibleGeneration {
+                expected: expected.clone(),
+                actual: actual.clone(),
+            },
+            Self::ReplayDiverged(d) => Self::ReplayDiverged(d.clone()),
+            Self::RegistryDrift {
+                field,
+                expected,
+                actual,
+            } => Self::RegistryDrift {
+                field,
+                expected: expected.clone(),
+                actual: actual.clone(),
+            },
+            Self::Io(e) => Self::Io(std::sync::Arc::clone(e)),
+            Self::Contract(c) => Self::Contract(std::sync::Arc::clone(c)),
+            Self::Bundle(b) => Self::Bundle(std::sync::Arc::clone(b)),
+            Self::Reference(r) => Self::Reference(std::sync::Arc::clone(r)),
+            Self::Ledger(l) => Self::Ledger(std::sync::Arc::clone(l)),
+            Self::DurableLedger(d) => Self::DurableLedger(std::sync::Arc::clone(d)),
+            Self::CancellationRequested => Self::CancellationRequested,
+        }
+    }
+}
+
+impl PartialEq for JpegSplitError {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::NoSoi, Self::NoSoi) => true,
+            (
+                Self::MarkerLengthOverflow {
+                    offset: o1,
+                    marker: m1,
+                    length: l1,
+                    available: a1,
+                },
+                Self::MarkerLengthOverflow {
+                    offset: o2,
+                    marker: m2,
+                    length: l2,
+                    available: a2,
+                },
+            ) => o1 == o2 && m1 == m2 && l1 == l2 && a1 == a2,
+            (
+                Self::TooManyFrames {
+                    count: c1,
+                    limit: l1,
+                },
+                Self::TooManyFrames {
+                    count: c2,
+                    limit: l2,
+                },
+            ) => c1 == c2 && l1 == l2,
+            (
+                Self::FrameTooLarge {
+                    frame_index: i1,
+                    size: s1,
+                    limit: l1,
+                },
+                Self::FrameTooLarge {
+                    frame_index: i2,
+                    size: s2,
+                    limit: l2,
+                },
+            ) => i1 == i2 && s1 == s2 && l1 == l2,
+            (
+                Self::TooManyMarkerSegments {
+                    frame_index: i1,
+                    count: c1,
+                    limit: l1,
+                },
+                Self::TooManyMarkerSegments {
+                    frame_index: i2,
+                    count: c2,
+                    limit: l2,
+                },
+            ) => i1 == i2 && c1 == c2 && l1 == l2,
+            (
+                Self::DimensionLimit {
+                    width: w1,
+                    height: h1,
+                    max_dimension: m1,
+                },
+                Self::DimensionLimit {
+                    width: w2,
+                    height: h2,
+                    max_dimension: m2,
+                },
+            ) => w1 == w2 && h1 == h2 && m1 == m2,
+            (
+                Self::InputOversized {
+                    size: s1,
+                    limit: l1,
+                },
+                Self::InputOversized {
+                    size: s2,
+                    limit: l2,
+                },
+            ) => s1 == s2 && l1 == l2,
+            (Self::BoundExceeded(m1), Self::BoundExceeded(m2)) => m1 == m2,
+            (
+                Self::BudgetExhausted {
+                    requested: r1,
+                    limit: l1,
+                },
+                Self::BudgetExhausted {
+                    requested: r2,
+                    limit: l2,
+                },
+            ) => r1 == r2 && l1 == l2,
+            (
+                Self::IncompatibleGeneration {
+                    expected: e1,
+                    actual: a1,
+                },
+                Self::IncompatibleGeneration {
+                    expected: e2,
+                    actual: a2,
+                },
+            ) => e1 == e2 && a1 == a2,
+            (Self::ReplayDiverged(d1), Self::ReplayDiverged(d2)) => d1 == d2,
+            (
+                Self::RegistryDrift {
+                    field: f1,
+                    expected: e1,
+                    actual: a1,
+                },
+                Self::RegistryDrift {
+                    field: f2,
+                    expected: e2,
+                    actual: a2,
+                },
+            ) => f1 == f2 && e1 == e2 && a1 == a2,
+            (Self::Io(e1), Self::Io(e2)) => {
+                std::sync::Arc::ptr_eq(e1, e2)
+                    || (e1.kind() == e2.kind() && e1.to_string() == e2.to_string())
+            }
+            (Self::Contract(c1), Self::Contract(c2)) => {
+                std::sync::Arc::ptr_eq(c1, c2) || c1.to_string() == c2.to_string()
+            }
+            (Self::Bundle(b1), Self::Bundle(b2)) => {
+                std::sync::Arc::ptr_eq(b1, b2) || b1.to_string() == b2.to_string()
+            }
+            (Self::Reference(r1), Self::Reference(r2)) => {
+                std::sync::Arc::ptr_eq(r1, r2) || r1.to_string() == r2.to_string()
+            }
+            (Self::Ledger(l1), Self::Ledger(l2)) => {
+                std::sync::Arc::ptr_eq(l1, l2) || l1.to_string() == l2.to_string()
+            }
+            (Self::DurableLedger(d1), Self::DurableLedger(d2)) => {
+                std::sync::Arc::ptr_eq(d1, d2) || d1.to_string() == d2.to_string()
+            }
+            (Self::CancellationRequested, Self::CancellationRequested) => true,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for JpegSplitError {}
 
 impl std::fmt::Display for JpegSplitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -523,9 +762,25 @@ impl std::fmt::Display for JpegSplitError {
                     "replay generation incompatible: expected {expected}, actual {actual}"
                 )
             }
-            Self::ReplayDiverged => {
-                write!(f, "replay state diverged")
+            Self::ReplayDiverged(d) => {
+                write!(f, "replay state diverged: {d}")
             }
+            Self::RegistryDrift {
+                field,
+                expected,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "registry drift on {field}: expected {expected}, actual {actual}"
+                )
+            }
+            Self::Io(e) => write!(f, "replay i/o error: {e}"),
+            Self::Contract(e) => write!(f, "contract violation: {e}"),
+            Self::Bundle(e) => write!(f, "replay bundle error: {e}"),
+            Self::Reference(e) => write!(f, "reference error: {e}"),
+            Self::Ledger(e) => write!(f, "ledger error: {e}"),
+            Self::DurableLedger(e) => write!(f, "durable ledger error: {e}"),
             Self::CancellationRequested => {
                 write!(f, "cancellation requested during JPEG stream split")
             }
@@ -533,7 +788,19 @@ impl std::fmt::Display for JpegSplitError {
     }
 }
 
-impl std::error::Error for JpegSplitError {}
+impl std::error::Error for JpegSplitError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(e) => Some(e.as_ref()),
+            Self::Contract(e) => Some(e.as_ref()),
+            Self::Bundle(e) => Some(e.as_ref()),
+            Self::Reference(e) => Some(e.as_ref()),
+            Self::Ledger(e) => Some(e.as_ref()),
+            Self::DurableLedger(e) => Some(e.as_ref()),
+            _ => None,
+        }
+    }
+}
 
 impl From<ReplayAdapterError> for JpegSplitError {
     fn from(err: ReplayAdapterError) -> Self {
@@ -546,14 +813,22 @@ impl From<ReplayAdapterError> for JpegSplitError {
             ReplayAdapterError::IncompatibleGeneration { expected, actual } => {
                 Self::IncompatibleGeneration { expected, actual }
             }
-            ReplayAdapterError::ReplayDiverged(_) => Self::ReplayDiverged,
-            ReplayAdapterError::RegistryDrift { .. } => Self::BoundExceeded("registry drift"),
-            ReplayAdapterError::Io(_) => Self::BoundExceeded("i/o error"),
-            ReplayAdapterError::Contract(_) => Self::BoundExceeded("contract violation"),
-            ReplayAdapterError::Bundle(_) => Self::BoundExceeded("replay bundle error"),
-            ReplayAdapterError::Reference(_) => Self::BoundExceeded("reference engine error"),
-            ReplayAdapterError::Ledger(_) => Self::BoundExceeded("ledger journal error"),
-            ReplayAdapterError::DurableLedger(_) => Self::BoundExceeded("durable ledger error"),
+            ReplayAdapterError::ReplayDiverged(d) => Self::ReplayDiverged(d),
+            ReplayAdapterError::RegistryDrift {
+                field,
+                expected,
+                actual,
+            } => Self::RegistryDrift {
+                field,
+                expected,
+                actual,
+            },
+            ReplayAdapterError::Io(e) => Self::Io(std::sync::Arc::new(e)),
+            ReplayAdapterError::Contract(e) => Self::Contract(std::sync::Arc::new(e)),
+            ReplayAdapterError::Bundle(e) => Self::Bundle(std::sync::Arc::new(e)),
+            ReplayAdapterError::Reference(e) => Self::Reference(std::sync::Arc::new(e)),
+            ReplayAdapterError::Ledger(e) => Self::Ledger(std::sync::Arc::new(e)),
+            ReplayAdapterError::DurableLedger(e) => Self::DurableLedger(std::sync::Arc::new(e)),
         }
     }
 }
@@ -688,6 +963,14 @@ pub fn split_jpeg_stream(
                     start_offset: garbage_start,
                     end_offset: current_pos,
                 });
+                marker_count += 1;
+                if marker_count > limits.max_marker_segments_per_frame {
+                    return Err(JpegSplitError::TooManyMarkerSegments {
+                        frame_index,
+                        count: marker_count,
+                        limit: limits.max_marker_segments_per_frame,
+                    });
+                }
             }
 
             if current_pos >= bytes.len() {
@@ -714,6 +997,14 @@ pub fn split_jpeg_stream(
                     frame_index,
                     offset: marker_prefix,
                 });
+                marker_count += 1;
+                if marker_count > limits.max_marker_segments_per_frame {
+                    return Err(JpegSplitError::TooManyMarkerSegments {
+                        frame_index,
+                        count: marker_count,
+                        limit: limits.max_marker_segments_per_frame,
+                    });
+                }
                 continue;
             }
 
@@ -747,24 +1038,18 @@ pub fn split_jpeg_stream(
             // Marker with length: check if length field itself (2 bytes) is available
             if current_pos + 2 > bytes.len() {
                 let available = bytes.len().saturating_sub(current_pos);
-                if !frames.is_empty() {
-                    findings.push(JpegFinding::MarkerLengthOverflow {
-                        frame_index,
-                        offset: marker_prefix,
-                        marker: marker_code,
-                        length: 0,
-                        available,
-                    });
-                    current_pos = bytes.len();
-                    break;
-                } else {
-                    return Err(JpegSplitError::MarkerLengthOverflow {
-                        offset: marker_prefix,
-                        marker: marker_code,
-                        length: 0,
-                        available,
-                    });
-                }
+                findings.push(JpegFinding::MarkerLengthOverflow {
+                    frame_index,
+                    offset: marker_prefix,
+                    marker: marker_code,
+                    length: 0,
+                    available,
+                });
+                current_pos = match find_soi(bytes, current_pos) {
+                    Some(next_soi) => next_soi,
+                    None => bytes.len(),
+                };
+                break;
             }
 
             let declared_length =
@@ -782,24 +1067,18 @@ pub fn split_jpeg_stream(
 
             if current_pos + declared_length > bytes.len() {
                 let available = bytes.len().saturating_sub(current_pos);
-                if !frames.is_empty() {
-                    findings.push(JpegFinding::MarkerLengthOverflow {
-                        frame_index,
-                        offset: marker_prefix,
-                        marker: marker_code,
-                        length: declared_length,
-                        available,
-                    });
-                    current_pos = bytes.len();
-                    break;
-                } else {
-                    return Err(JpegSplitError::MarkerLengthOverflow {
-                        offset: marker_prefix,
-                        marker: marker_code,
-                        length: declared_length,
-                        available,
-                    });
-                }
+                findings.push(JpegFinding::MarkerLengthOverflow {
+                    frame_index,
+                    offset: marker_prefix,
+                    marker: marker_code,
+                    length: declared_length,
+                    available,
+                });
+                current_pos = match find_soi(bytes, current_pos + 2) {
+                    Some(next_soi) => next_soi,
+                    None => bytes.len(),
+                };
+                break;
             }
 
             let is_sof = matches!(
