@@ -6283,6 +6283,25 @@ class TestRound6ErrorsRows(unittest.TestCase):
         self.assertIn("same key twice", self.row(DUPLICATE_KEY))
 
 
+class TestRound6SloErrorsRows(unittest.TestCase):
+    """N2 (rewording authorized by the round-6 review): the slo rows of registries/ERRORS.md no
+    longer describe the removed denylists; a lookalike key is an unknown field."""
+
+    def test_slo_rows_describe_current_behaviour(self) -> None:
+        text = (ROOT / "registries/ERRORS.md").read_text(encoding="utf-8")
+        for code, gone in (
+            ("ERR-CLAIM-SLO-TARGET-UNBOUND-001", "non-canonical to"),
+            ("ERR-CLAIM-SLO-ACTUAL-INVALID-001", "shadowed by"),
+            ("ERR-CLAIM-SLO-STATISTIC-MISMATCH-001", "shadowed by"),
+        ):
+            with self.subTest(code=code):
+                rows = [line for line in text.splitlines() if line.startswith(f"| `{code}` |")]
+                self.assertEqual(len(rows), 1)
+                self.assertNotIn(gone, rows[0])
+                self.assertIn(FIELD_UNKNOWN, rows[0])
+                self.assertNotIn("shadowed", cpb.DIAGNOSTIC_REGISTRY[code]["trigger"])
+
+
 if __name__ == "__main__":
     unittest.main()
 
