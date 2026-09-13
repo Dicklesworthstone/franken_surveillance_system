@@ -3,9 +3,9 @@
 use std::collections::BTreeSet;
 
 use fss_core::{
-    ActionAffordance, AffordanceClass, BudgetVector, CanonicalEncode, ContentDigest, ContractError,
-    EffectState, KnowledgeCell, KnowledgeState, KnowledgeStateBasis, OperationReceipt,
-    ProvenanceClass, ReconciliationBasis,
+    ActionAffordance, AffordanceClass, BudgetVector, ContentDigest, ContractError, EffectState,
+    KnowledgeCell, KnowledgeState, KnowledgeStateBasis, OperationReceipt, ProvenanceClass,
+    ReconciliationBasis,
 };
 use fss_ledger::DurableReferenceLedger;
 
@@ -378,18 +378,19 @@ fn finalize_projection(situation: &mut ReferenceSituation) -> Result<(), Referen
         })
         .map(|affordance| affordance.affordance_id.clone())
         .collect();
-    refresh_identity(situation);
+    refresh_identity(situation)?;
     situation.capsule.validate()?;
     Ok(())
 }
 
-fn refresh_identity(situation: &mut ReferenceSituation) {
+fn refresh_identity(situation: &mut ReferenceSituation) -> Result<(), ReferenceError> {
     let mut normalized = situation.capsule.clone();
     normalized.capsule_id.clear();
     normalized.frame.frame_id.clear();
-    let digest = normalized.canonical_digest("fss.reference_guarded_situation_identity.v1");
+    let digest = normalized.validated_digest("fss.reference_guarded_situation_identity.v1")?;
     situation.capsule.frame.frame_id = format!("frame:{digest}");
     situation.capsule.capsule_id = format!("situation:{digest}");
+    Ok(())
 }
 
 fn operation_state_rationale(state: EffectState) -> &'static str {

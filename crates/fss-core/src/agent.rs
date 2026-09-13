@@ -1041,18 +1041,23 @@ impl SituationCapsule {
     ///
     /// The capsule is validated first: a capsule refused by [`Self::validate`] has no
     /// fingerprint. `SituationCapsule` deliberately does not implement [`CanonicalEncode`], so
-    /// `canonical_bytes`, `try_canonical_bytes`, and `canonical_digest` are unavailable for it
-    /// and this method is the only public way to hash a capsule. An invalid capsule (for
-    /// example one whose frame carries a basisless stale cell) therefore can never be hashed
-    /// into a replay, projection, or handoff root.
+    /// `canonical_bytes`, `try_canonical_bytes`, and `canonical_digest` are unavailable for it;
+    /// this method and [`Self::validated_digest`] are the only public ways to hash a capsule,
+    /// and both validate. An invalid capsule (for example one whose frame carries a basisless
+    /// stale cell) therefore can never be hashed into a replay, projection, or handoff root.
     pub fn decision_fingerprint(&self) -> Result<ContentDigest, ContractError> {
+        self.validated_digest("fss.situation_capsule.v1")
+    }
+
+    /// Returns a domain-separated digest of the capsule's canonical encoding, validating first.
+    ///
+    /// This is the only way to derive an identity other than the decision fingerprint from a
+    /// capsule: a capsule refused by [`Self::validate`] has no digest under any domain.
+    pub fn validated_digest(&self, domain: &str) -> Result<ContentDigest, ContractError> {
         self.validate()?;
-        Ok(domain_separated_digest(
-            "fss.situation_capsule.v1",
-            |encoder| {
-                self.encode_fields(encoder);
-            },
-        ))
+        Ok(domain_separated_digest(domain, |encoder| {
+            self.encode_fields(encoder);
+        }))
     }
 
     /// Appends the capsule's canonical representation. Callers validate first.
@@ -1410,6 +1415,11 @@ mod tests {
         assert_eq!(invalid.validate(), Err(ContractError::StaleBasisRequired));
         assert_eq!(
             invalid.decision_fingerprint(),
+            Err(ContractError::StaleBasisRequired)
+        );
+        // No other domain is a way around the refusal.
+        assert_eq!(
+            invalid.validated_digest("fss.test_other_identity.v1"),
             Err(ContractError::StaleBasisRequired)
         );
 
