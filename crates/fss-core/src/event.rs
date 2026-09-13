@@ -869,6 +869,27 @@ impl EvidenceEdgeRelation {
         }
     }
 
+    /// Returns the `supports` flag an edge with this relation must carry.
+    ///
+    /// Only `Supports` counts as support for the event and only `Contradicts` counts against it.
+    /// Every other relation records lineage, revision, ordering, dependency, invalidation, or
+    /// explanation structure and carries no evidential direction for the event, so it must be
+    /// `supports=false` and counts as neither support nor contradiction. The match is exhaustive
+    /// with no wildcard: a new relation must choose its evidential direction here.
+    #[must_use]
+    pub const fn required_supports_flag(self) -> bool {
+        match self {
+            Self::Supports => true,
+            Self::Contradicts
+            | Self::DerivedFrom
+            | Self::Invalidates
+            | Self::Supersedes
+            | Self::ObservedAfter
+            | Self::RequiredBy
+            | Self::Explains => false,
+        }
+    }
+
     /// Converts to canonical u8 tag.
     #[must_use]
     pub const fn to_u8(self) -> u8 {
@@ -1342,21 +1363,32 @@ impl EventEvidence {
                 actual: self.failure_domain.len(),
             });
         }
-        // Consistency: Contradicts requires supports == false
-        if self.relation == EvidenceEdgeRelation::Contradicts && self.supports {
+        // Consistency: the flag must agree with the relation for every variant.
+        let required = self.relation.required_supports_flag();
+        if self.supports != required {
             return Err(EventDecodeError::Contradiction {
                 field: "evidence.supports",
-                detail: "contradicting edge cannot have supports=true".to_string(),
-            });
-        }
-        // Consistency: Supports requires supports == true
-        if self.relation == EvidenceEdgeRelation::Supports && !self.supports {
-            return Err(EventDecodeError::Contradiction {
-                field: "evidence.supports",
-                detail: "supporting edge cannot have supports=false".to_string(),
+                detail: format!(
+                    "{} edge requires supports={required}",
+                    self.relation.as_str()
+                ),
             });
         }
         Ok(())
+    }
+
+    /// Returns true only for an edge that counts as support for the event: a `Supports`
+    /// relation carrying `supports=true`.
+    #[must_use]
+    pub fn counts_as_support(&self) -> bool {
+        self.supports && self.relation == EvidenceEdgeRelation::Supports
+    }
+
+    /// Returns true only for an edge that counts against the event: a `Contradicts` relation
+    /// carrying `supports=false`. Neutral relations (lineage, abstentions) count as neither.
+    #[must_use]
+    pub fn counts_as_contradiction(&self) -> bool {
+        !self.supports && self.relation == EvidenceEdgeRelation::Contradicts
     }
 }
 
@@ -1625,8 +1657,12 @@ impl EventHypothesis {
 
         // A witnessed candidate is defined by a retained supporting observation witness; edges
         // that only contradict it cannot witness it.
-        if self.state == EventState::Witnessed && !self.evidence.iter().any(|edge| edge.supports) {
-            return Err(EventDecodeError::Contract(ContractError::EvidenceRequired));
+        if self.state == EventState::Witnessed
+            && !self.evidence.iter().any(EventEvidence::counts_as_support)
+        {
+            return Err(EventDecodeError::Contract(
+                ContractError::SupportingEvidenceRequired,
+            ));
         }
 
         // Corroboration strictly requires >= 2 distinct failure domains among supporting edges.
@@ -1635,7 +1671,7 @@ impl EventHypothesis {
             let failure_domains: BTreeSet<_> = self
                 .evidence
                 .iter()
-                .filter(|edge| edge.supports)
+                .filter(|edge| edge.counts_as_support())
                 .map(|edge| edge.failure_domain.as_str())
                 .collect();
             if failure_domains.len() < 2 {
@@ -1654,7 +1690,7 @@ impl EventHypothesis {
             let failure_domains: BTreeSet<_> = self
                 .evidence
                 .iter()
-                .filter(|edge| edge.supports)
+                .filter(|edge| edge.counts_as_support())
                 .map(|edge| edge.failure_domain.as_str())
                 .collect();
             if failure_domains.len() < 2 && !self.is_single_domain_unconfirmed() {
@@ -1691,12 +1727,12 @@ impl EventHypothesis {
         let mut supporting_count = 0;
         let mut contradicting_count = 0;
         for edge in &self.evidence {
-            if edge.supports {
+            if edge.counts_as_support() {
                 supporting_count += 1;
                 *domain_counts
                     .entry(edge.failure_domain.clone())
                     .or_insert(0) += 1;
-            } else {
+            } else if edge.counts_as_contradiction() {
                 contradicting_count += 1;
             }
         }
@@ -3070,7 +3106,7 @@ impl EventLineage {
             let failure_domains: BTreeSet<_> = params
                 .evidence
                 .iter()
-                .filter(|edge| edge.supports)
+                .filter(|edge| edge.counts_as_support())
                 .map(|edge| edge.failure_domain.as_str())
                 .collect();
             let is_corroborated = previously_corroborated || failure_domains.len() >= 2;
@@ -3128,7 +3164,7 @@ impl EventLineage {
             let failure_domains: BTreeSet<_> = params
                 .evidence
                 .iter()
-                .filter(|edge| edge.supports)
+                .filter(|edge| edge.counts_as_support())
                 .map(|edge| edge.failure_domain.as_str())
                 .collect();
             if failure_domains.len() < 2 {
@@ -3231,7 +3267,7 @@ impl EventLineage {
             let failure_domains: BTreeSet<_> = rev
                 .evidence
                 .iter()
-                .filter(|edge| edge.supports)
+                .filter(|edge| edge.counts_as_support())
                 .map(|edge| edge.failure_domain.as_str())
                 .collect();
             if failure_domains.len() < 2 {
@@ -3248,7 +3284,7 @@ impl EventLineage {
             let failure_domains: BTreeSet<_> = rev
                 .evidence
                 .iter()
-                .filter(|edge| edge.supports)
+                .filter(|edge| edge.counts_as_support())
                 .map(|edge| edge.failure_domain.as_str())
                 .collect();
             let is_corroborated = previously_corroborated || failure_domains.len() >= 2;
@@ -3419,7 +3455,7 @@ impl EventLineage {
                 let failure_domains: BTreeSet<_> = curr
                     .evidence
                     .iter()
-                    .filter(|edge| edge.supports)
+                    .filter(|edge| edge.counts_as_support())
                     .map(|edge| edge.failure_domain.as_str())
                     .collect();
                 if failure_domains.len() < 2 {
@@ -3435,7 +3471,7 @@ impl EventLineage {
                 let failure_domains: BTreeSet<_> = curr
                     .evidence
                     .iter()
-                    .filter(|edge| edge.supports)
+                    .filter(|edge| edge.counts_as_support())
                     .map(|edge| edge.failure_domain.as_str())
                     .collect();
                 let is_corroborated = previously_corroborated || failure_domains.len() >= 2;
@@ -3705,12 +3741,12 @@ impl EvidenceGraph {
 
     /// Returns iterator over supporting evidence edges.
     pub fn supporting_edges(&self) -> impl Iterator<Item = &EventEvidence> {
-        self.edges.iter().filter(|e| e.supports)
+        self.edges.iter().filter(|e| e.counts_as_support())
     }
 
     /// Returns iterator over contradicting evidence edges.
     pub fn contradicting_edges(&self) -> impl Iterator<Item = &EventEvidence> {
-        self.edges.iter().filter(|e| !e.supports)
+        self.edges.iter().filter(|e| e.counts_as_contradiction())
     }
 
     /// Returns all distinct failure domains present in nodes and edges.

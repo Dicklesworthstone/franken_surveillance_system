@@ -808,6 +808,21 @@ fn test_f7_corroborated_envelope_retains_protected_adversarial_residual_and_high
     let (indet_decision, indet_receipt) = harness.publish_indeterminate_decision("f7-indet")?;
     let indet_req = test_request(&indet_decision, &indet_receipt, None, BTreeSet::new())?;
     let indet_situation = compile_reference_situation(indet_req, &harness.authority)?;
+    // PersonLike + Unknown: the unknown finding is an abstention, not a contradiction, so the
+    // physical cell stays indeterminate and keeps its reconciliation basis.
+    let indet_physical = indet_situation
+        .capsule
+        .frame
+        .knowledge_cells
+        .iter()
+        .find(|cell| cell.claim_id.ends_with(":unknown-presence"))
+        .ok_or(ReferenceError::InvalidSpec("missing_physical_cell"))?;
+    assert_eq!(
+        indet_physical.knowledge_state,
+        KnowledgeState::Indeterminate
+    );
+    assert!(indet_physical.state_basis.is_some());
+    assert!(indet_physical.contradictions.is_empty());
     let indet_envelope = &indet_situation.capsule.frame.world_envelope;
 
     let unmitigated_world = indet_envelope
