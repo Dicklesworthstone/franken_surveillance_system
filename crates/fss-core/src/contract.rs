@@ -364,14 +364,19 @@ impl ProvenanceClass {
     /// Returns whether this provenance class may support an irreversible effect premise.
     ///
     /// CONSTITUTIONAL HARD GATE:
-    /// `Predicted`, `Remembered`, and `VendorClaimed` may NEVER authorize an irreversible effect
-    /// on their own. Even with a `Known` epistemic state, advisory memory, model predictions,
+    /// Per AGT-LAYER-004, INV-069, and the agent contracts registry, derived beliefs belong
+    /// to the Cognition plane, never the Authority plane, and cannot authorize irreversible
+    /// physical effects. `Derived` (PROV-002), `Predicted` (PROV-003), `Remembered` (PROV-004),
+    /// and `VendorClaimed` (PROV-006) may NEVER authorize an irreversible effect premise.
+    /// Even with a `Known` epistemic state, derived beliefs, advisory memory, model predictions,
     /// and unverified vendor device assertions cannot authorize irreversible effects.
+    /// Only directly observed source evidence (`Observed`), explicit human commands
+    /// (`OperatorAsserted`), and explicit root authority (`Policy`) may authorize effects.
     #[must_use]
     pub const fn may_authorize_irreversible_effect(self) -> bool {
         match self {
-            Self::Predicted | Self::Remembered | Self::VendorClaimed => false,
-            Self::Observed | Self::Derived | Self::OperatorAsserted | Self::Policy => true,
+            Self::Derived | Self::Predicted | Self::Remembered | Self::VendorClaimed => false,
+            Self::Observed | Self::OperatorAsserted | Self::Policy => true,
         }
     }
 
