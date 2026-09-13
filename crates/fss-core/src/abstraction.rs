@@ -12,10 +12,12 @@ use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, Canon
 use crate::contract::{ContractError, Plane};
 
 pub mod derived_belief;
+pub mod runtime_authority;
 pub mod source_evidence;
 pub mod world_facts;
 
 pub use derived_belief::*;
+pub use runtime_authority::*;
 pub use source_evidence::*;
 pub use world_facts::*;
 
@@ -413,6 +415,17 @@ impl AgentAbstractionLayer {
             _ => {}
         }
         Ok(())
+    }
+
+    /// Validates a concrete [`RuntimeAuthorityAndCustodyRecord`] against this layer's invariants.
+    pub fn validate_runtime_authority(
+        &self,
+        record: &RuntimeAuthorityAndCustodyRecord,
+    ) -> Result<(), ContractError> {
+        if *self != Self::RuntimeAuthorityAndCustody {
+            return Err(ContractError::UnknownAbstractionLayer(self.name().into()));
+        }
+        record.validate_invariants()
     }
 
     /// Resolves an abstraction layer from its stable identifier (e.g. `AGT-LAYER-004`).

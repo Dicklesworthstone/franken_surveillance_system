@@ -64,7 +64,9 @@
 use core::fmt;
 use std::collections::{BTreeMap, VecDeque};
 
-use crate::canonical::{CanonicalEncode, CanonicalEncoder};
+use crate::canonical::{
+    CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder,
+};
 use crate::contract::{BudgetVector, ContractError, RecoveryClass};
 use crate::digest::ContentDigest;
 use crate::effect::{Obligation, ObligationState};
@@ -135,6 +137,19 @@ impl fmt::Display for RegionId {
 impl fmt::Debug for RegionId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "RegionId({})", self.0)
+    }
+}
+
+impl CanonicalEncode for RegionId {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.text(self.as_str());
+    }
+}
+
+impl CanonicalDecode for RegionId {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        let text = decoder.text()?;
+        RegionId::new(text).map_err(|_| ContractError::InvalidIdentifier)
     }
 }
 
@@ -344,6 +359,40 @@ impl RegionKind {
     }
 }
 
+impl CanonicalEncode for RegionKind {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.text(self.as_str());
+    }
+}
+
+impl CanonicalDecode for RegionKind {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        let s = decoder.text()?;
+        match s {
+            "ProcessRegion" => Ok(Self::Process),
+            "PropertyRegion" => Ok(Self::Property),
+            "LedgerRegion" => Ok(Self::Ledger),
+            "ObjectStoreRegion" => Ok(Self::ObjectStore),
+            "ProjectionRegion" => Ok(Self::Projection),
+            "SensorRegion" => Ok(Self::Sensor),
+            "AdapterSessionRegion" => Ok(Self::AdapterSession),
+            "ReceiveRegion" => Ok(Self::Receive),
+            "ContinuityRegion" => Ok(Self::Continuity),
+            "MediaRegion" => Ok(Self::Media),
+            "AnalysisRegion" => Ok(Self::Analysis),
+            "ArchiveRegion" => Ok(Self::Archive),
+            "EventRegion" => Ok(Self::Event),
+            "EvidenceWindowRegion" => Ok(Self::EvidenceWindow),
+            "ModelCallRegion" => Ok(Self::ModelCall),
+            "AssociationRegion" => Ok(Self::Association),
+            "PolicyRegion" => Ok(Self::Policy),
+            "AlertObligationRegion" => Ok(Self::AlertObligation),
+            "OperationsRegion" => Ok(Self::Operations),
+            _ => Err(ContractError::InvalidIdentifier),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Region Lifecycle State
 // ---------------------------------------------------------------------------
@@ -402,6 +451,25 @@ impl RegionState {
                 | (Self::Draining, Self::Finalizing)
                 | (Self::Finalizing, Self::Closed)
         )
+    }
+}
+
+impl CanonicalEncode for RegionState {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.text(self.as_str());
+    }
+}
+
+impl CanonicalDecode for RegionState {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        match decoder.text()? {
+            "active" => Ok(Self::Active),
+            "drain_requested" => Ok(Self::DrainRequested),
+            "draining" => Ok(Self::Draining),
+            "finalizing" => Ok(Self::Finalizing),
+            "closed" => Ok(Self::Closed),
+            _ => Err(ContractError::InvalidIdentifier),
+        }
     }
 }
 
@@ -687,6 +755,121 @@ impl ContextAuthority {
     }
 }
 
+impl CanonicalEncode for ContextAuthority {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.text(&self.trace_id);
+        self.operation_id.encode_canonical(encoder);
+        encoder.text(&self.principal);
+        encoder.u64(self.capabilities.len() as u64);
+        for cap in &self.capabilities {
+            encoder.text(cap);
+        }
+        match &self.deadline {
+            Some(dl) => {
+                encoder.bool(true);
+                dl.encode_canonical(encoder);
+            }
+            None => encoder.bool(false),
+        }
+        encoder.u8(self.priority);
+        match &self.cancellation_reason {
+            Some(reason) => {
+                encoder.bool(true);
+                encoder.text(reason);
+            }
+            None => encoder.bool(false),
+        }
+        self.budgets.encode_canonical(encoder);
+        encoder.text(&self.privacy_scope);
+        encoder.text(&self.retention_scope);
+        encoder.digest(self.anchor_universe);
+        encoder.u64(self.generation);
+        match self.lease_fence {
+            Some(fence) => {
+                encoder.bool(true);
+                encoder.u64(fence);
+            }
+            None => encoder.bool(false),
+        }
+        match &self.idempotency_key {
+            Some(key) => {
+                encoder.bool(true);
+                key.encode_canonical(encoder);
+            }
+            None => encoder.bool(false),
+        }
+        match &self.lab_controls {
+            Some(ctrl) => {
+                encoder.bool(true);
+                encoder.text(ctrl);
+            }
+            None => encoder.bool(false),
+        }
+    }
+}
+
+impl CanonicalDecode for ContextAuthority {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        let trace_id = decoder.text()?.to_string();
+        let operation_id = OperationId::decode_canonical(decoder)?;
+        let principal = decoder.text()?.to_string();
+        let cap_count = decoder.u64()? as usize;
+        let mut capabilities = Vec::with_capacity(cap_count);
+        for _ in 0..cap_count {
+            capabilities.push(decoder.text()?.to_string());
+        }
+        let deadline = if decoder.bool()? {
+            Some(TimestampNs::decode_canonical(decoder)?)
+        } else {
+            None
+        };
+        let priority = decoder.u8()?;
+        let cancellation_reason = if decoder.bool()? {
+            Some(decoder.text()?.to_string())
+        } else {
+            None
+        };
+        let budgets = <BudgetVector as CanonicalDecode>::decode_canonical(decoder)?;
+        let privacy_scope = decoder.text()?.to_string();
+        let retention_scope = decoder.text()?.to_string();
+        let anchor_universe = decoder.digest()?;
+        let generation = decoder.u64()?;
+        let lease_fence = if decoder.bool()? {
+            Some(decoder.u64()?)
+        } else {
+            None
+        };
+        let idempotency_key = if decoder.bool()? {
+            Some(IdempotencyKey::decode_canonical(decoder)?)
+        } else {
+            None
+        };
+        let lab_controls = if decoder.bool()? {
+            Some(decoder.text()?.to_string())
+        } else {
+            None
+        };
+
+        Ok(Self {
+            trace_id,
+            operation_id,
+            principal,
+            capabilities,
+            deadline,
+            priority,
+            cancellation_reason,
+            budgets,
+            privacy_scope,
+            retention_scope,
+            anchor_universe,
+            generation,
+            lease_fence,
+            idempotency_key,
+            lab_controls,
+        })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Quiescence Proof and Task Receipt
 // ---------------------------------------------------------------------------
@@ -740,6 +923,52 @@ impl QuiescenceProof {
         encoder.u64(total_obligations);
         encoder.u64(indeterminate_obligations);
         ContentDigest::sha256(&encoder.finish())
+    }
+}
+
+impl CanonicalEncode for QuiescenceProof {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        self.region_id.encode_canonical(encoder);
+        self.region_kind.encode_canonical(encoder);
+        match &self.parent_id {
+            Some(p) => {
+                encoder.bool(true);
+                p.encode_canonical(encoder);
+            }
+            None => encoder.bool(false),
+        }
+        self.closed_at.encode_canonical(encoder);
+        encoder.u64(self.total_tasks);
+        encoder.u64(self.total_obligations);
+        encoder.u64(self.indeterminate_obligations);
+        encoder.digest(self.proof_digest);
+    }
+}
+
+impl CanonicalDecode for QuiescenceProof {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        let region_id = RegionId::decode_canonical(decoder)?;
+        let region_kind = RegionKind::decode_canonical(decoder)?;
+        let parent_id = if decoder.bool()? {
+            Some(RegionId::decode_canonical(decoder)?)
+        } else {
+            None
+        };
+        let closed_at = TimestampNs::decode_canonical(decoder)?;
+        let total_tasks = decoder.u64()?;
+        let total_obligations = decoder.u64()?;
+        let indeterminate_obligations = decoder.u64()?;
+        let proof_digest = decoder.digest()?;
+        Ok(Self {
+            region_id,
+            region_kind,
+            parent_id,
+            closed_at,
+            total_tasks,
+            total_obligations,
+            indeterminate_obligations,
+            proof_digest,
+        })
     }
 }
 

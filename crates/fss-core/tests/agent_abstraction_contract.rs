@@ -8,14 +8,20 @@ use std::error::Error;
 use std::str::FromStr;
 
 use fss_core::belief::BeliefInterval;
+use fss_core::effect::{Obligation, ObligationState};
+use fss_core::region::{
+    ContextAuthority, QuiescenceProof, RegionId, RegionKind, RegionState, RootAuthoritySpec,
+};
 use fss_core::{
-    evaluate_negative_read, AgentAbstractionLayer, CanonicalDecode, CanonicalDecoder,
+    evaluate_negative_read, AgentAbstractionLayer, BudgetVector, CanonicalDecode, CanonicalDecoder,
     CanonicalEncode, CanonicalEncoder, Completeness, ContentDigest, ContractError,
     CoverageContinuity, CoverageStopReason, CoverageWitness, DerivedBelief,
     DerivedBeliefParams, Generation, KnowledgeState, LedgerAnchor, NegativeReadClaim,
-    NegativeReadOutcome, Plane, ProvenanceClass, SourceEvidenceParams, SourceEvidenceRecord,
-    TimestampNs, WorldFact, WorldFactKind,
-    AGENT_ABSTRACTION_FREEZE_DIGEST, AGENT_ABSTRACTION_GENERATION,
+    NegativeReadOutcome, ObligationId, OperationId, Plane, ProvenanceClass,
+    RuntimeAuthorityAndCustody, RuntimeAuthorityAndCustodyRecord, RuntimeAuthorityParams,
+    RuntimeAuthorityRecord, RuntimeGrant, SourceCustody, SourceEvidenceParams,
+    SourceEvidenceRecord, TimestampNs, WorldFact, WorldFactKind,
+    AGENT_ABSTRACTION_FREEZE_DIGEST, AGENT_ABSTRACTION_GENERATION, RUNTIME_AUTHORITY_DOMAIN,
 };
 
 
@@ -64,138 +70,6 @@ fn test_normative_agent_abstraction_layers_census() -> Result<(), Box<dyn Error>
         assert!(!layer.prohibition().is_empty());
         assert!(!layer.invariant().is_empty());
     }
-
-    Ok(())
-}
-
-#[test]
-fn test_runtime_authority_and_custody_row_properties() -> Result<(), Box<dyn Error>> {
-    let layer = AgentAbstractionLayer::RuntimeAuthorityAndCustody;
-
-    // 1. Exact normative stable ID
-    assert_eq!(layer.id(), "AGT-LAYER-001");
-
-    // 2. Exact normative schema name
-    assert_eq!(layer.name(), "runtime_authority_and_custody");
-    assert_eq!(format!("{layer}"), "runtime_authority_and_custody");
-
-    // 3. Exact normative owner
-    assert_eq!(layer.owner(), "asupersync/authority/object owners");
-
-    // 4. Exact normative question
-    assert_eq!(
-        layer.agent_question(),
-        "What work, authority, budget, identity, time, and object custody exist?"
-    );
-
-    // 5. Exact normative output
-    assert_eq!(
-        layer.output(),
-        "Context, grants, regions, obligations, object roots, and receipts."
-    );
-
-    // 6. Exact normative prohibition
-    assert_eq!(
-        layer.prohibition(),
-        "Cannot infer mission meaning or physical truth."
-    );
-
-    // 7. Exact normative invariant
-    assert_eq!(layer.invariant(), "INV-006");
-
-    // 8. Exact normative status
-    assert_eq!(layer.status(), "normative");
-
-    // 9. Semantic plane: Authority
-    assert_eq!(layer.plane(), Plane::Authority);
-
-    // 10. Tower level: L0 (0-indexed: 0)
-    assert_eq!(layer.tower_level(), 0);
-
-    // 11. Authority plane permissions:
-    assert!(layer.may_claim_authority());
-    assert!(!layer.may_authorize_effects());
-
-    // 12. Helper predicates:
-    assert!(layer.is_runtime_authority_and_custody());
-    assert!(layer.prohibits_mission_meaning_inference());
-    assert!(layer.prohibits_physical_truth_inference());
-
-    // 13. Invariant validation passes:
-    layer.validate_invariants()?;
-
-    Ok(())
-}
-
-#[test]
-fn test_runtime_authority_and_custody_parse_and_resolution() -> Result<(), Box<dyn Error>> {
-    // Parse from stable ID
-    let from_id = AgentAbstractionLayer::from_id("AGT-LAYER-001")?;
-    assert_eq!(from_id, AgentAbstractionLayer::RuntimeAuthorityAndCustody);
-
-    // Parse from schema name
-    let from_name = AgentAbstractionLayer::from_name("runtime_authority_and_custody")?;
-    assert_eq!(from_name, AgentAbstractionLayer::RuntimeAuthorityAndCustody);
-
-    // Parse via FromStr with stable ID
-    let from_str_id = AgentAbstractionLayer::from_str("AGT-LAYER-001")?;
-    assert_eq!(from_str_id, AgentAbstractionLayer::RuntimeAuthorityAndCustody);
-
-    // Parse via FromStr with schema name
-    let from_str_name = AgentAbstractionLayer::from_str("runtime_authority_and_custody")?;
-    assert_eq!(from_str_name, AgentAbstractionLayer::RuntimeAuthorityAndCustody);
-
-    // Parse from tower level
-    let from_level = AgentAbstractionLayer::from_tower_level(0)?;
-    assert_eq!(from_level, AgentAbstractionLayer::RuntimeAuthorityAndCustody);
-
-    Ok(())
-}
-
-#[test]
-fn test_planted_negative_runtime_authority_and_custody_bypasses() -> Result<(), Box<dyn Error>> {
-    let layer = AgentAbstractionLayer::RuntimeAuthorityAndCustody;
-
-    // Planted bypass 1: Runtime authority must NEVER be permitted to authorize effects directly.
-    assert!(!layer.may_authorize_effects());
-
-    // Planted bypass 2: Runtime authority plane must strictly be Authority, never Cognition or Effect.
-    assert_ne!(layer.plane(), Plane::Cognition);
-    assert_ne!(layer.plane(), Plane::Effect);
-    assert_eq!(layer.plane(), Plane::Authority);
-
-    // Planted bypass 3: Invariant must strictly be INV-006, not any other invariant.
-    assert_eq!(layer.invariant(), "INV-006");
-
-    // Planted bypass 4: Must strictly prohibit mission meaning inference.
-    assert!(layer.prohibits_mission_meaning_inference());
-
-    // Planted bypass 5: Must strictly prohibit physical truth inference.
-    assert!(layer.prohibits_physical_truth_inference());
-
-    // Planted bypass 6: Unknown, malformed, or out-of-range tower level must fail closed.
-    let Err(err_level) = AgentAbstractionLayer::from_tower_level(99) else {
-        return Err("expected out-of-bounds tower level to fail".into());
-    };
-    assert_eq!(err_level, ContractError::UnknownEntryTag(99));
-
-    // Planted bypass 7: Malformed or mutated ID must fail closed.
-    let Err(err_id) = AgentAbstractionLayer::from_id("AGT-LAYER-000") else {
-        return Err("expected unknown ID to fail".into());
-    };
-    assert_eq!(
-        err_id,
-        ContractError::UnknownAbstractionLayer("AGT-LAYER-000".into())
-    );
-
-    // Planted bypass 8: Case-sensitive name mismatch must fail closed.
-    let Err(err_name) = AgentAbstractionLayer::from_name("Runtime_Authority_And_Custody") else {
-        return Err("expected uppercase name to fail".into());
-    };
-    assert_eq!(
-        err_name,
-        ContractError::UnknownAbstractionLayer("Runtime_Authority_And_Custody".into())
-    );
 
     Ok(())
 }
@@ -1598,6 +1472,469 @@ fn test_source_evidence_canonical_roundtrip() -> Result<(), Box<dyn Error>> {
     assert_eq!(decoded.source_bytes_digest, record.source_bytes_digest);
     assert_eq!(decoded.continuity_witness, record.continuity_witness);
     assert_eq!(decoded.retention_forbidden_reason, record.retention_forbidden_reason);
+
+    Ok(())
+}
+
+fn test_valid_runtime_authority_params() -> Result<RuntimeAuthorityParams, Box<dyn Error>> {
+    let operation_id = OperationId::parse("op:runtime:test:001")?;
+    let cx = ContextAuthority::new_root(RootAuthoritySpec {
+        trace_id: "trace:runtime:test:001".to_string(),
+        operation_id: operation_id.clone(),
+        principal: "principal:operator:001".to_string(),
+        capabilities: vec![
+            "CAP-AGENT-CANCEL-001".to_string(),
+            "CAP-LEDGER-APPEND-001".to_string(),
+            "CAP-OBJECT-PUBLISH-001".to_string(),
+            "CAP-OBJECT-STAGE-001".to_string(),
+            "PROHIBITED-INFER-MISSION-MEANING".to_string(),
+            "PROHIBITED-INFER-PHYSICAL-TRUTH".to_string(),
+        ],
+        deadline: Some(TimestampNs(1_700_000_000_000_000_000)),
+        priority: 10,
+        budgets: BudgetVector::default(),
+        privacy_scope: "privacy:scope:internal".to_string(),
+        retention_scope: "retention:scope:standard".to_string(),
+        anchor_universe: ContentDigest::sha256(b"test-anchor-universe"),
+        generation: 1,
+    })?;
+
+    let source_digest = ContentDigest::sha256(b"test-source-bytes");
+    let custody = SourceCustody::Retained {
+        source_digest,
+        source_bytes: 1024,
+        storage_handle: "storage:handle:raw:001".to_string(),
+    };
+
+    let obligation = Obligation {
+        obligation_id: ObligationId::parse("ob:test:001")?,
+        operation_id: operation_id.clone(),
+        terminal_predicate: "predicate:effect:committed".to_string(),
+        state: ObligationState::Verified,
+        proof_digest: Some(ContentDigest::sha256(b"proof-digest-001")),
+    };
+
+    Ok(RuntimeAuthorityParams {
+        record_id: "auth:record:test:001".to_string(),
+        generation: Generation(1),
+        context: cx,
+        grants: vec![
+            RuntimeGrant::LedgerAppend,
+            RuntimeGrant::ObjectStage,
+            RuntimeGrant::ObjectPublish,
+        ],
+        region_id: RegionId::new("region:property:001")?,
+        region_kind: RegionKind::Property,
+        parent_region_id: Some(RegionId::new("region:process:root")?),
+        region_state: RegionState::Active,
+        quiescence_proof: None,
+        custody,
+        obligations: vec![obligation],
+        object_roots: vec![source_digest],
+        receipt_roots: vec![ContentDigest::sha256(b"receipt-root-001")],
+        contract_basis: None,
+    })
+}
+
+#[test]
+fn test_runtime_authority_and_custody_row_properties() -> Result<(), Box<dyn Error>> {
+    let layer = AgentAbstractionLayer::RuntimeAuthorityAndCustody;
+
+    assert_eq!(layer.id(), "AGT-LAYER-001");
+    assert_eq!(layer.name(), "runtime_authority_and_custody");
+    assert_eq!(layer.tower_level(), 0);
+    assert_eq!(layer.plane(), Plane::Authority);
+    assert!(layer.may_claim_authority());
+    assert!(!layer.may_authorize_effects());
+    assert!(!layer.is_anchor_pinned());
+    assert!(!layer.is_rebuildable());
+    assert!(!layer.is_anchor_pinned_rebuildable());
+    assert!(layer.is_runtime_authority_and_custody());
+    assert!(layer.prohibits_mission_meaning_inference());
+    assert!(layer.prohibits_physical_truth_inference());
+    assert_eq!(layer.status(), "normative");
+    assert_eq!(layer.invariant(), "INV-006");
+    assert_eq!(layer.owner(), "asupersync/authority/object owners");
+    assert_eq!(
+        layer.agent_question(),
+        "What work, authority, budget, identity, time, and object custody exist?"
+    );
+    assert_eq!(
+        layer.output(),
+        "Context, grants, regions, obligations, object roots, and receipts."
+    );
+    assert_eq!(
+        layer.prohibition(),
+        "Cannot infer mission meaning or physical truth."
+    );
+
+    layer.validate_invariants()?;
+    assert_eq!(RUNTIME_AUTHORITY_DOMAIN, "fss.runtime_authority_and_custody.v1");
+    Ok(())
+}
+
+#[test]
+fn test_runtime_authority_and_custody_parse_and_resolution() -> Result<(), Box<dyn Error>> {
+    assert_eq!(
+        AgentAbstractionLayer::from_id("AGT-LAYER-001")?,
+        AgentAbstractionLayer::RuntimeAuthorityAndCustody
+    );
+    assert_eq!(
+        AgentAbstractionLayer::from_name("runtime_authority_and_custody")?,
+        AgentAbstractionLayer::RuntimeAuthorityAndCustody
+    );
+    assert_eq!(
+        AgentAbstractionLayer::from_tower_level(0)?,
+        AgentAbstractionLayer::RuntimeAuthorityAndCustody
+    );
+    assert_eq!(
+        AgentAbstractionLayer::from_str("AGT-LAYER-001")?,
+        AgentAbstractionLayer::RuntimeAuthorityAndCustody
+    );
+    assert_eq!(
+        AgentAbstractionLayer::from_str("runtime_authority_and_custody")?,
+        AgentAbstractionLayer::RuntimeAuthorityAndCustody
+    );
+
+    assert_eq!(
+        RuntimeGrant::from_id("CAP-LEDGER-APPEND-001")?,
+        RuntimeGrant::LedgerAppend
+    );
+    assert_eq!(
+        RuntimeGrant::from_str("CAP-OBJECT-PUBLISH-001")?,
+        RuntimeGrant::ObjectPublish
+    );
+    assert_eq!(
+        RuntimeGrant::from_id("PROHIBITED-INFER-MISSION-MEANING")?,
+        RuntimeGrant::InferMissionMeaning
+    );
+    assert_eq!(
+        RuntimeGrant::from_id("PROHIBITED-INFER-PHYSICAL-TRUTH")?,
+        RuntimeGrant::InferPhysicalTruth
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_runtime_authority_record_valid_construction() -> Result<(), Box<dyn Error>> {
+    let params = test_valid_runtime_authority_params()?;
+    let record = RuntimeAuthorityAndCustodyRecord::new(params)?;
+
+    assert_eq!(record.layer(), AgentAbstractionLayer::RuntimeAuthorityAndCustody);
+    assert_eq!(record.plane(), Plane::Authority);
+    assert_eq!(record.invariant(), "INV-006");
+    assert!(record.may_claim_authority());
+    assert!(!record.may_authorize_effects());
+    assert!(!record.is_anchor_pinned());
+    assert!(!record.is_rebuildable());
+    assert!(record.prohibits_mission_meaning_inference());
+    assert!(record.prohibits_physical_truth_inference());
+    assert!(record.has_grant(RuntimeGrant::LedgerAppend));
+    assert!(record.has_grant(RuntimeGrant::ObjectStage));
+    assert!(record.has_grant(RuntimeGrant::ObjectPublish));
+    assert!(!record.has_grant(RuntimeGrant::ModelInfer));
+    assert!(record.is_retained_custody());
+    assert!(!record.is_quiescent());
+
+    record.validate()?;
+    record.validate_invariants()?;
+    let _: RuntimeAuthorityAndCustody = record.clone();
+    let _: RuntimeAuthorityRecord = record.clone();
+
+    let layer = AgentAbstractionLayer::RuntimeAuthorityAndCustody;
+    layer.validate_runtime_authority(&record)?;
+
+    assert_eq!(
+        AgentAbstractionLayer::SourceEvidence.validate_runtime_authority(&record),
+        Err(ContractError::UnknownAbstractionLayer(
+            "source_evidence".to_string()
+        ))
+    );
+
+    let digest = record.canonical_digest();
+    assert_ne!(digest.bytes(), [0u8; 32]);
+
+    Ok(())
+}
+
+#[test]
+fn test_runtime_authority_and_custody_canonical_roundtrip() -> Result<(), Box<dyn Error>> {
+    let params = test_valid_runtime_authority_params()?;
+    let record = RuntimeAuthorityAndCustodyRecord::new(params)?;
+
+    let mut encoder = CanonicalEncoder::new();
+    record.encode_canonical(&mut encoder);
+    let bytes = encoder.finish();
+
+    let mut decoder = CanonicalDecoder::new(&bytes);
+    let decoded = RuntimeAuthorityAndCustodyRecord::decode_canonical(&mut decoder)?;
+
+    assert_eq!(decoded, record);
+    assert_eq!(decoded.record_id, record.record_id);
+    assert_eq!(decoded.generation, record.generation);
+    assert_eq!(decoded.context, record.context);
+    assert_eq!(decoded.grants, record.grants);
+    assert_eq!(decoded.region_id, record.region_id);
+    assert_eq!(decoded.region_kind, record.region_kind);
+    assert_eq!(decoded.parent_region_id, record.parent_region_id);
+    assert_eq!(decoded.region_state, record.region_state);
+    assert_eq!(decoded.quiescence_proof, record.quiescence_proof);
+    assert_eq!(decoded.custody, record.custody);
+    assert_eq!(decoded.obligations, record.obligations);
+    assert_eq!(decoded.object_roots, record.object_roots);
+    assert_eq!(decoded.receipt_roots, record.receipt_roots);
+    assert_eq!(decoded.canonical_digest(), record.canonical_digest());
+
+    Ok(())
+}
+
+#[test]
+fn test_planted_negative_runtime_authority_and_custody_bypasses() -> Result<(), Box<dyn Error>> {
+    // Planted bypass 1: Prohibited mission meaning inference
+    let mut bad_params = test_valid_runtime_authority_params()?;
+    bad_params.grants.push(RuntimeGrant::InferMissionMeaning);
+    let bad_record = RuntimeAuthorityAndCustodyRecord {
+        record_id: bad_params.record_id.clone(),
+        generation: bad_params.generation,
+        context: bad_params.context.clone(),
+        grants: bad_params.grants.clone(),
+        region_id: bad_params.region_id.clone(),
+        region_kind: bad_params.region_kind,
+        parent_region_id: bad_params.parent_region_id.clone(),
+        region_state: bad_params.region_state,
+        quiescence_proof: bad_params.quiescence_proof.clone(),
+        custody: bad_params.custody.clone(),
+        obligations: bad_params.obligations.clone(),
+        object_roots: bad_params.object_roots.clone(),
+        receipt_roots: bad_params.receipt_roots.clone(),
+        contract_basis: bad_params.contract_basis.clone(),
+    };
+    assert!(!bad_record.prohibits_mission_meaning_inference());
+    assert_eq!(
+        bad_record.validate(),
+        Err(ContractError::ProhibitedMissionMeaningInference)
+    );
+    assert_eq!(
+        bad_record.validate_invariants(),
+        Err(ContractError::ProhibitedMissionMeaningInference)
+    );
+    assert_eq!(
+        RuntimeAuthorityAndCustodyRecord::new(bad_params),
+        Err(ContractError::ProhibitedMissionMeaningInference)
+    );
+
+    // Planted bypass 2: Prohibited physical truth inference
+    let mut bad_params = test_valid_runtime_authority_params()?;
+    bad_params.grants.push(RuntimeGrant::InferPhysicalTruth);
+    let bad_record = RuntimeAuthorityAndCustodyRecord {
+        record_id: bad_params.record_id.clone(),
+        generation: bad_params.generation,
+        context: bad_params.context.clone(),
+        grants: bad_params.grants.clone(),
+        region_id: bad_params.region_id.clone(),
+        region_kind: bad_params.region_kind,
+        parent_region_id: bad_params.parent_region_id.clone(),
+        region_state: bad_params.region_state,
+        quiescence_proof: bad_params.quiescence_proof.clone(),
+        custody: bad_params.custody.clone(),
+        obligations: bad_params.obligations.clone(),
+        object_roots: bad_params.object_roots.clone(),
+        receipt_roots: bad_params.receipt_roots.clone(),
+        contract_basis: bad_params.contract_basis.clone(),
+    };
+    assert!(!bad_record.prohibits_physical_truth_inference());
+    assert_eq!(
+        bad_record.validate(),
+        Err(ContractError::ProhibitedPhysicalTruthInference)
+    );
+    assert_eq!(
+        RuntimeAuthorityAndCustodyRecord::new(bad_params),
+        Err(ContractError::ProhibitedPhysicalTruthInference)
+    );
+
+    // Planted bypass 3: Unbound grant (not present in Cx context capabilities)
+    let mut bad_params = test_valid_runtime_authority_params()?;
+    bad_params.grants.push(RuntimeGrant::ModelInfer);
+    assert_eq!(
+        RuntimeAuthorityAndCustodyRecord::new(bad_params),
+        Err(ContractError::UnboundCapabilityGrant(
+            "CAP-MODEL-INFER-001".to_string()
+        ))
+    );
+
+    // Planted bypass 4: Duplicate capability grant in record
+    let mut bad_params = test_valid_runtime_authority_params()?;
+    bad_params.grants.push(RuntimeGrant::LedgerAppend);
+    assert_eq!(
+        RuntimeAuthorityAndCustodyRecord::new(bad_params),
+        Err(ContractError::DuplicateGrant(
+            "CAP-LEDGER-APPEND-001".to_string()
+        ))
+    );
+
+    // Planted bypass 5: Duplicate obligation ID in record
+    let mut bad_params = test_valid_runtime_authority_params()?;
+    bad_params.obligations.push(bad_params.obligations[0].clone());
+    assert_eq!(
+        RuntimeAuthorityAndCustodyRecord::new(bad_params),
+        Err(ContractError::DuplicateObligation(
+            "ob:test:001".to_string()
+        ))
+    );
+
+    // Planted bypass 6: Region can be its own parent (cyclic hierarchy)
+    let mut bad_params = test_valid_runtime_authority_params()?;
+    bad_params.parent_region_id = Some(bad_params.region_id.clone());
+    assert_eq!(
+        RuntimeAuthorityAndCustodyRecord::new(bad_params),
+        Err(ContractError::SelfParentedRegion(
+            "region:property:001".to_string()
+        ))
+    );
+
+    // Planted bypass 7: Orphan non-root region (missing parent)
+    let mut bad_params = test_valid_runtime_authority_params()?;
+    bad_params.parent_region_id = None;
+    assert_eq!(
+        RuntimeAuthorityAndCustodyRecord::new(bad_params),
+        Err(ContractError::OrphanRegion(
+            "region:property:001".to_string()
+        ))
+    );
+
+    // Planted bypass 8: Root ProcessRegion with parent
+    let mut bad_params = test_valid_runtime_authority_params()?;
+    bad_params.region_kind = RegionKind::Process;
+    bad_params.parent_region_id = Some(RegionId::new("region:external")?);
+    assert_eq!(
+        RuntimeAuthorityAndCustodyRecord::new(bad_params),
+        Err(ContractError::InvalidIdentifier)
+    );
+
+    // Planted bypass 9: DrainRequested without cancellation reason
+    let mut bad_params = test_valid_runtime_authority_params()?;
+    bad_params.region_state = RegionState::DrainRequested;
+    assert_eq!(
+        RuntimeAuthorityAndCustodyRecord::new(bad_params),
+        Err(ContractError::MissingCancellationReason)
+    );
+
+    // Planted bypass 10: Finalizing without cancellation reason
+    let mut bad_params = test_valid_runtime_authority_params()?;
+    bad_params.region_state = RegionState::Finalizing;
+    assert_eq!(
+        RuntimeAuthorityAndCustodyRecord::new(bad_params),
+        Err(ContractError::MissingCancellationReason)
+    );
+
+    // Planted bypass 11: Closed region with no drain record (missing quiescence proof)
+    let mut bad_params = test_valid_runtime_authority_params()?;
+    bad_params.region_state = RegionState::Closed;
+    bad_params.quiescence_proof = None;
+    assert_eq!(
+        RuntimeAuthorityAndCustodyRecord::new(bad_params),
+        Err(ContractError::MissingDrainRecord)
+    );
+
+    // Planted bypass 12: Closed region retains Pending obligation
+    let mut bad_params = test_valid_runtime_authority_params()?;
+    let proof = QuiescenceProof {
+        region_id: bad_params.region_id.clone(),
+        region_kind: bad_params.region_kind,
+        parent_id: bad_params.parent_region_id.clone(),
+        closed_at: TimestampNs(1_700_000_000_100_000_000),
+        total_tasks: 5,
+        total_obligations: 1,
+        indeterminate_obligations: 0,
+        proof_digest: ContentDigest::sha256(b"quiescence-proof-digest"),
+    };
+    bad_params.region_state = RegionState::Closed;
+    bad_params.quiescence_proof = Some(proof.clone());
+    bad_params.obligations[0].state = ObligationState::Pending;
+    bad_params.obligations[0].proof_digest = None;
+    assert_eq!(
+        RuntimeAuthorityAndCustodyRecord::new(bad_params),
+        Err(ContractError::UnresolvedObligationOnClosure(
+            "ob:test:001".to_string()
+        ))
+    );
+
+    // Planted bypass 13: Closed region retains Indeterminate obligation
+    let mut bad_params = test_valid_runtime_authority_params()?;
+    bad_params.region_state = RegionState::Closed;
+    bad_params.quiescence_proof = Some(proof.clone());
+    bad_params.obligations[0].state = ObligationState::Indeterminate;
+    assert_eq!(
+        RuntimeAuthorityAndCustodyRecord::new(bad_params),
+        Err(ContractError::IndeterminateObligationOnClosure(
+            "ob:test:001".to_string()
+        ))
+    );
+
+    // Planted bypass 14: Object root unrelated to custody digest
+    let mut bad_params = test_valid_runtime_authority_params()?;
+    bad_params.object_roots = vec![ContentDigest::sha256(b"unrelated-object-digest")];
+    assert_eq!(
+        RuntimeAuthorityAndCustodyRecord::new(bad_params),
+        Err(ContractError::CustodyRootMismatch)
+    );
+
+    // Planted bypass 15: NotRetained custody with non-empty object roots
+    let mut bad_params = test_valid_runtime_authority_params()?;
+    bad_params.custody = SourceCustody::NotRetained;
+    bad_params.object_roots = vec![ContentDigest::sha256(b"unexpected-root")];
+    assert_eq!(
+        RuntimeAuthorityAndCustodyRecord::new(bad_params),
+        Err(ContractError::EvidenceRequired)
+    );
+
+    // Planted bypass 16: Generation 0 rejected
+    let mut bad_params = test_valid_runtime_authority_params()?;
+    bad_params.generation = Generation(0);
+    assert_eq!(
+        RuntimeAuthorityAndCustodyRecord::new(bad_params),
+        Err(ContractError::GenerationConflict)
+    );
+
+    // Planted bypass 17: Generation mismatch with context
+    let mut bad_params = test_valid_runtime_authority_params()?;
+    bad_params.generation = Generation(2);
+    assert_eq!(
+        RuntimeAuthorityAndCustodyRecord::new(bad_params),
+        Err(ContractError::GenerationConflict)
+    );
+
+    // Planted bypass 18: Retained custody zero source bytes
+    let mut bad_params = test_valid_runtime_authority_params()?;
+    let source_digest = ContentDigest::sha256(b"zero-bytes-custody");
+    bad_params.custody = SourceCustody::Retained {
+        source_digest,
+        source_bytes: 0,
+        storage_handle: "storage:handle:raw:001".to_string(),
+    };
+    bad_params.object_roots = vec![source_digest];
+    assert_eq!(
+        RuntimeAuthorityAndCustodyRecord::new(bad_params),
+        Err(ContractError::EvidenceRequired)
+    );
+
+    // Planted bypass 19: Premature quiescence proof on Active region
+    let mut bad_params = test_valid_runtime_authority_params()?;
+    bad_params.region_state = RegionState::Active;
+    bad_params.quiescence_proof = Some(proof);
+    assert_eq!(
+        RuntimeAuthorityAndCustodyRecord::new(bad_params),
+        Err(ContractError::InvalidEffectTransition)
+    );
+
+    // Planted bypass 20: Unregistered capability grant string
+    assert_eq!(
+        RuntimeGrant::from_id("cap:rogue-unregistered"),
+        Err(ContractError::UnregisteredCapabilityGrant(
+            "cap:rogue-unregistered".to_string()
+        ))
+    );
 
     Ok(())
 }

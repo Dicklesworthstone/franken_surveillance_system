@@ -1918,6 +1918,69 @@ pub struct Obligation {
     pub proof_digest: Option<ContentDigest>,
 }
 
+impl CanonicalEncode for ObligationState {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        let tag = match self {
+            Self::Pending => 0u8,
+            Self::Verified => 1,
+            Self::Failed => 2,
+            Self::Indeterminate => 3,
+            Self::Cancelled => 4,
+        };
+        encoder.u8(tag);
+    }
+}
+
+impl CanonicalDecode for ObligationState {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        match decoder.u8()? {
+            0 => Ok(Self::Pending),
+            1 => Ok(Self::Verified),
+            2 => Ok(Self::Failed),
+            3 => Ok(Self::Indeterminate),
+            4 => Ok(Self::Cancelled),
+            other => Err(ContractError::UnknownEntryTag(other)),
+        }
+    }
+}
+
+impl CanonicalEncode for Obligation {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        self.obligation_id.encode_canonical(encoder);
+        self.operation_id.encode_canonical(encoder);
+        encoder.text(&self.terminal_predicate);
+        self.state.encode_canonical(encoder);
+        match &self.proof_digest {
+            Some(digest) => {
+                encoder.bool(true);
+                encoder.digest(*digest);
+            }
+            None => encoder.bool(false),
+        }
+    }
+}
+
+impl CanonicalDecode for Obligation {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        let obligation_id = ObligationId::decode_canonical(decoder)?;
+        let operation_id = OperationId::decode_canonical(decoder)?;
+        let terminal_predicate = decoder.text()?.to_string();
+        let state = ObligationState::decode_canonical(decoder)?;
+        let proof_digest = if decoder.bool()? {
+            Some(decoder.digest()?)
+        } else {
+            None
+        };
+        Ok(Self {
+            obligation_id,
+            operation_id,
+            terminal_predicate,
+            state,
+            proof_digest,
+        })
+    }
+}
+
 /// Canonical transition record for durable journal replay.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EffectJournalTransition {

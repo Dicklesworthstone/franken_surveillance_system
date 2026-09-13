@@ -2747,6 +2747,32 @@ pub enum ContractError {
     HypothesisMissingFalsifier,
     /// An investigation hypothesis cannot claim the `known` knowledge state (AGT-LAYER-006, INV-104).
     HypothesisKnownForbidden,
+    /// An active grant is not held by the context authority (Cx).
+    UnboundCapabilityGrant(String),
+    /// A non-root region lacks an owning parent region (orphan work forbidden).
+    OrphanRegion(String),
+    /// A region names itself as its parent region (cyclic region hierarchy).
+    SelfParentedRegion(String),
+    /// A region entering drain or finalizing lacks an active cancellation reason in context.
+    MissingCancellationReason,
+    /// A closed region lacks a verified drain record or quiescence proof.
+    MissingDrainRecord,
+    /// A runtime authority record lists the same capability grant more than once.
+    DuplicateGrant(String),
+    /// A runtime authority record lists the same obligation ID more than once.
+    DuplicateObligation(String),
+    /// A closed region retains an obligation in the Indeterminate state.
+    IndeterminateObligationOnClosure(String),
+    /// A closed region retains an obligation in the Pending state.
+    UnresolvedObligationOnClosure(String),
+    /// An object root is unrelated to the retained source custody digest.
+    CustodyRootMismatch,
+    /// Attempted to infer mission meaning in the runtime authority plane (AGT-LAYER-001, INV-006).
+    ProhibitedMissionMeaningInference,
+    /// Attempted to infer physical truth in the runtime authority plane (AGT-LAYER-001, INV-006).
+    ProhibitedPhysicalTruthInference,
+    /// A capability grant identifier is not registered in the capability registry.
+    UnregisteredCapabilityGrant(String),
 }
 
 impl ContractError {
@@ -2803,6 +2829,19 @@ impl ContractError {
             Self::CompetingHypothesesRequired => "competing_hypotheses_required",
             Self::HypothesisMissingFalsifier => "hypothesis_missing_falsifier",
             Self::HypothesisKnownForbidden => "hypothesis_known_forbidden",
+            Self::UnboundCapabilityGrant(_) => "unbound_capability_grant",
+            Self::OrphanRegion(_) => "orphan_region",
+            Self::SelfParentedRegion(_) => "self_parented_region",
+            Self::MissingCancellationReason => "missing_cancellation_reason",
+            Self::MissingDrainRecord => "missing_drain_record",
+            Self::DuplicateGrant(_) => "duplicate_grant",
+            Self::DuplicateObligation(_) => "duplicate_obligation",
+            Self::IndeterminateObligationOnClosure(_) => "indeterminate_obligation_on_closure",
+            Self::UnresolvedObligationOnClosure(_) => "unresolved_obligation_on_closure",
+            Self::CustodyRootMismatch => "custody_root_mismatch",
+            Self::ProhibitedMissionMeaningInference => "prohibited_mission_meaning_inference",
+            Self::ProhibitedPhysicalTruthInference => "prohibited_physical_truth_inference",
+            Self::UnregisteredCapabilityGrant(_) => "unregistered_capability_grant",
         }
     }
 }

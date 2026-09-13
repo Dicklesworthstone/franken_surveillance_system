@@ -465,6 +465,45 @@ impl SourceCustody {
     }
 }
 
+impl CanonicalEncode for SourceCustody {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        match self {
+            Self::NotRetained => {
+                encoder.u8(0);
+            }
+            Self::Retained {
+                source_digest,
+                source_bytes,
+                storage_handle,
+            } => {
+                encoder.u8(1);
+                encoder.digest(*source_digest);
+                encoder.u64(*source_bytes);
+                encoder.text(storage_handle);
+            }
+        }
+    }
+}
+
+impl CanonicalDecode for SourceCustody {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        match decoder.u8()? {
+            0 => Ok(Self::NotRetained),
+            1 => {
+                let source_digest = decoder.digest()?;
+                let source_bytes = decoder.u64()?;
+                let storage_handle = decoder.text()?.to_string();
+                Ok(Self::Retained {
+                    source_digest,
+                    source_bytes,
+                    storage_handle,
+                })
+            }
+            _ => Err(ContractError::NonCanonicalOrdering),
+        }
+    }
+}
+
 /// Explicit omission field declaring intentional or policy omissions.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExplicitOmission {
