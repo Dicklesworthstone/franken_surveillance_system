@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import agent_abstraction_checker
 import capability_registry_checker
 import dependency_audit
+import dependency_authority
 import dependency_constitution_checker
 import dependency_registry_checker
 import device_adapter_checker
@@ -95,6 +96,21 @@ def load_toml(relative: str) -> dict[str, Any]:
         fail(f"top-level TOML value must be a table: {relative}")
         return {}
     return value
+
+
+def authority_json(relative: str) -> dict[str, Any]:
+    """Dependency-authority inputs are read bounded, strict and symlink-refusing (dependency_authority)."""
+    value, _raw, problems = dependency_authority.load_json_document(ROOT / relative, relative, ROOT)
+    for problem in problems:
+        fail(f"{problem.code}: {problem.message}")
+    return value if isinstance(value, dict) else {}
+
+
+def authority_toml(relative: str) -> dict[str, Any]:
+    value, _raw, problems = dependency_authority.load_toml_document(ROOT / relative, relative, ROOT)
+    for problem in problems:
+        fail(f"{problem.code}: {problem.message}")
+    return value if isinstance(value, dict) else {}
 
 
 def unique_rows(rows: Any, field: str, relative: str) -> dict[str, dict[str, Any]]:
@@ -230,6 +246,48 @@ def canonical_mirror_policy() -> None:
             fail(f"canonical/mirror drift: {canonical} <-> {mirror}")
 
 
+def dependency_policy_consistency(
+    dependency_constitution: dict[str, Any],
+    local_qualification: dict[str, Any],
+    toolchain: dict[str, Any],
+    dependency_policy: dict[str, Any],
+    authority_state: Any,
+) -> None:
+    """Checks the constitution production values, toolchain components and allowlist flags.
+
+    None of the expected values is written here: the production values are the authority's pinned
+    baseline for the constitution generation, the components are the ones registered in
+    architecture/local_qualification.toml, and the 16 flags are derived by
+    dependency_authority.expected_policy_flags from the constitution and local qualification contract.
+    """
+    production = dependency_constitution.get("production") if isinstance(dependency_constitution.get("production"), dict) else {}
+    pinned = dependency_authority.PINNED_CONSTITUTION_PRODUCTION.get(dependency_constitution.get("generation"))
+    if pinned is None:
+        fail(f"dependency constitution generation is not pinned: {dependency_constitution.get('generation')!r}")
+    else:
+        for key, expected in pinned.items():
+            value = production.get(key)
+            if type(value) is not type(expected) or value != expected:
+                fail(f"dependency constitution JSON mismatch for production.{key}")
+
+    components = toolchain.get("components") if isinstance(toolchain.get("components"), list) else []
+    lq_toolchain = local_qualification.get("toolchain") if isinstance(local_qualification.get("toolchain"), dict) else {}
+    registered = lq_toolchain.get("components") if isinstance(lq_toolchain.get("components"), list) else None
+    if registered is None:
+        fail("architecture/local_qualification.toml must register [toolchain].components")
+    elif sorted(map(str, components)) != sorted(map(str, registered)):
+        fail(f"rust-toolchain.toml components {sorted(map(str, components))} differ from the registered components {sorted(map(str, registered))}")
+
+    policy = dependency_policy.get("policy") if isinstance(dependency_policy.get("policy"), dict) else {}
+    expected_flags = dependency_authority.expected_policy_flags(authority_state)
+    if expected_flags is None:
+        fail("dependency policy flags cannot be derived from the constitution and the local qualification contract")
+        return
+    for key, expected in expected_flags.items():
+        if policy.get(key) is not expected:
+            fail(f"dependency constitution machine policy mismatch for {key}")
+
+
 def cargo_policy(dependency_policy: dict[str, Any]) -> None:
     root_cargo = load_toml("Cargo.toml")
     rust_lints = root_cargo.get("workspace", {}).get("lints", {}).get("rust", {})
@@ -245,17 +303,27 @@ def cargo_policy(dependency_policy: dict[str, Any]) -> None:
 
     forbidden = set(dependency_policy.get("forbidden", {}).get("crates", []))
     lock_path = ROOT / "Cargo.lock"
-    if not lock_path.is_file():
+    if not lock_path.exists() and not lock_path.is_symlink():
         fail("Cargo.lock is required for locked/offline qualification")
     else:
-        try:
-            lock = tomllib.loads(lock_path.read_text(encoding="utf-8"))
-            for package in lock.get("package", []):
-                name = package.get("name")
-                if isinstance(name, str) and name in forbidden:
-                    fail(f"DEP-AUD-030: forbidden crate is reachable in Cargo.lock: {name}")
-        except Exception as exc:
-            fail(f"invalid Cargo.lock: {exc}")
+        data, problems = dependency_authority.read_input_bytes(lock_path, "Cargo.lock", ROOT)
+        text = None
+        if data is not None:
+            text, problems = dependency_authority.decode_utf8(data, "Cargo.lock")
+        for problem in problems:
+            fail(f"invalid Cargo.lock: {problem.message}")
+        if text is not None:
+            try:
+                lock = tomllib.loads(text)
+                for package in lock.get("package", []):
+                    name = package.get("name") if isinstance(package, dict) else None
+                    if isinstance(name, str) and name in forbidden:
+                        fail(f"DEP-AUD-030: forbidden crate is reachable in Cargo.lock: {name}")
+            except Exception as exc:
+                fail(f"invalid Cargo.lock: {exc}")
+        # The dependency-class census (bounded lock graph, import gates, pending decisions) runs in the
+        # policy lane too, so an oversized or odd Cargo.lock fails here and not only in the audit.
+        dependency_audit.audit_dependency_classes(findings, ROOT, dependency_policy, member_names, [], direct=rows)
 
     for finding in findings:
         if finding.code not in dependency_audit.DIAGNOSTIC_REGISTRY:
@@ -673,7 +741,7 @@ def main() -> int:
             if (row.get("name"), row.get("owner"), row.get("status")) != (name, owner, status):
                 fail(f"machine and Markdown publication row disagree: {identifier}")
 
-    imports = unique_rows(load_json("architecture/franken_imports.json").get("imports"), "id", "architecture/franken_imports.json")
+    imports = unique_rows(authority_json("architecture/franken_imports.json").get("imports"), "id", "architecture/franken_imports.json")
     import_md = markdown_table_rows(
         "registries/IMPORTS.md",
         r"^\| `((?:IMP)-[A-Z0-9-]+)` \| `([^`]+)` \| (.*?) \| `([^`]+)` \| `([^`]+)` \| `([^`]+)` \|$",
@@ -932,7 +1000,7 @@ def main() -> int:
         if row.get("authority") != "local":
             fail(f"qualification lane is not locally authoritative: {identifier}")
 
-    local_qualification = load_toml("architecture/local_qualification.toml")
+    local_qualification = authority_toml("architecture/local_qualification.toml")
     required_local_values = {
         "authority": "local_dsr_receipt",
         "repository_entrypoint": "scripts/qualify.sh",
@@ -953,24 +1021,7 @@ def main() -> int:
     if local_lane_ids != set(lanes):
         fail("local qualification TOML and release qualification JSON lane IDs disagree")
 
-    dependency_constitution = load_json("architecture/dependency_constitution.json")
-    production_dependency = dependency_constitution.get("production", {})
-    required_dependency_constitution = {
-        "language": "rust-2024",
-        "toolchain": "latest-accepted-pinned-nightly",
-        "unsafe": "forbidden-in-all-fss-crates",
-        "asyncRuntime": "asupersync-only",
-        "closedUniverse": True,
-        "lockedOfflineReleaseResolution": True,
-        "runtimeAcquisition": False,
-        "cCppFfi": False,
-        "dynamicLoading": False,
-        "foreignExecutables": False,
-        "serdeDurableFormatAuthority": False,
-    }
-    for key, expected in required_dependency_constitution.items():
-        if production_dependency.get(key) != expected:
-            fail(f"dependency constitution JSON mismatch for production.{key}")
+    dependency_constitution = authority_json("architecture/dependency_constitution.json")
 
     toolchain = load_toml("rust-toolchain.toml").get("toolchain", {})
     channel = toolchain.get("channel")
@@ -978,32 +1029,11 @@ def main() -> int:
         fail("rust-toolchain.toml must pin one exact dated nightly")
     if toolchain.get("profile") != "minimal":
         fail("rust-toolchain.toml must use the minimal profile")
-    components = set(toolchain.get("components", [])) if isinstance(toolchain.get("components"), list) else set()
-    if not {"rustfmt", "clippy", "rust-src"}.issubset(components):
-        fail("pinned nightly must include rustfmt, clippy, and rust-src")
-
-    dependency_policy = load_toml("architecture/dependency_allowlist.toml")
-    policy = dependency_policy.get("policy", {})
-    required_dependency_values = {
-        "closed_universe": True,
-        "direct_crates_must_be_allowlisted": True,
-        "transitive_closure_must_be_censused": True,
-        "new_external_dependency_requires_dep_record_and_adr": True,
-        "fss_crates_must_forbid_unsafe": True,
-        "fss_unsafe_exceptions_allowed": False,
-        "c_or_cpp_ffi_allowed": False,
-        "dynamic_loading_allowed": False,
-        "foreign_runtime_production_boundary_allowed": False,
-        "release_resolution_must_be_locked_and_offline": True,
-        "build_scripts_may_not_use_network": True,
-        "runtime_acquisition_allowed": False,
-        "serde_may_not_define_durable_bytes": True,
-        "asupersync_is_only_async_runtime": True,
-        "hosted_ci_is_not_release_authority": True,
-    }
-    for key, expected in required_dependency_values.items():
-        if policy.get(key) != expected:
-            fail(f"dependency constitution machine policy mismatch for {key}")
+    dependency_policy, policy_problems = dependency_authority.load_policy_document(ROOT / "architecture/dependency_allowlist.toml", ROOT)
+    for problem in policy_problems:
+        fail(f"{problem.code}: {problem.message}")
+    dependency_policy = dependency_policy or {}
+    dependency_policy_consistency(dependency_constitution, local_qualification, toolchain, dependency_policy, dependency_authority.load_authority(ROOT))
     cargo_policy(dependency_policy)
 
     model_runtime = load_json("architecture/model_runtime_registry.json")

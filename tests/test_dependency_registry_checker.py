@@ -978,12 +978,15 @@ class TestDependencyClassification(unittest.TestCase):
 
     # Mutant M12: serde neutral pending fss-ndxis, driven by the allowlist
     def test_mutant_m12_serde_pending_fss_ndxis(self) -> None:
-        """serde/serde_json are DEP-AUD-045 pending fss-ndxis: never admitted, never silently rejected."""
+        """serde/serde_json are refused as pending fss-ndxis (DEP-AUD-047): never admitted, never silently rejected.
+
+        DEP-AUD-045 keeps its original warning meaning (round-2 review d); the refusal is the new DEP-AUD-047.
+        """
         policy = {"in_house": {"allowed_families": ["fss-*"]}, "fundamental": {"allowed_subject_to_audit": ["serde", "serde_json"]}, "forbidden": {"crates": []}}
         for serde_pkg in ("serde", "serde_json"):
             for production in (True, False):
                 dep_id, code, reason = dependency_audit.classify_dependency_package(serde_pkg, policy, {"fss-core"}, is_production=production)
-                self.assertEqual((dep_id, code), ("DEP-FUND-001", "DEP-AUD-045"))
+                self.assertEqual((dep_id, code), ("DEP-FUND-001", "DEP-AUD-047"))
                 self.assertIn("pending owner decision fss-ndxis", reason)
                 self.assertIn("neither admitted nor rejected", reason)
         # The allowlist, not code, decides: an explicit empty pending table admits the fundamental crate,
@@ -1015,7 +1018,11 @@ class TestDependencyClassification(unittest.TestCase):
             ("DEP-AUD-023", "crates/fss-a/Cargo.toml"),
             ("DEP-AUD-045", "Cargo.lock"),
             ("DEP-AUD-045", "crates/fss-a/Cargo.toml"),
+            ("DEP-AUD-047", "Cargo.lock"),
+            ("DEP-AUD-047", "crates/fss-a/Cargo.toml"),
         ])
+        severities = {(f["code"], f["severity"]) for f in report["findings"] if f.get("params", {}).get("package") == "serde"}
+        self.assertEqual(severities, {("DEP-AUD-023", "error"), ("DEP-AUD-045", "warning"), ("DEP-AUD-047", "error")})
         for f in report["findings"]:
             if f.get("params", {}).get("package") == "serde":
                 self.assertIn("pending owner decision fss-ndxis", f["message"])
@@ -1191,6 +1198,360 @@ class TestDependencyClassification(unittest.TestCase):
         self.assertEqual(run(), [])  # fixture roots without their own gate registry use the repository's
         with mock.patch.object(dependency_audit, "ROOT", self.root):
             self.assertEqual(run(), ["DEP-AUD-046"])  # missing everywhere fails closed
+
+
+def load_check_policy() -> Any:
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("check_policy_under_test", ROOT / "scripts/check-policy.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def make_workspace(root: Path, manifest_deps: str = "", lock_packages: list[dict[str, Any]] | None = None) -> None:
+    (root / "architecture").mkdir(parents=True, exist_ok=True)
+    (root / "rust-toolchain.toml").write_text('[toolchain]\nchannel = "nightly-2026-08-31"\n', encoding="utf-8")
+    (root / "Cargo.toml").write_text('[workspace]\nresolver = "3"\nmembers = ["crates/fss-a"]\n\n[workspace.lints.rust]\nunsafe_code = "forbid"\n', encoding="utf-8")
+    crate = root / "crates" / "fss-a"
+    (crate / "src").mkdir(parents=True, exist_ok=True)
+    (crate / "Cargo.toml").write_text('[package]\nname = "fss-a"\nversion = "0.0.1"\nedition = "2024"\n' + manifest_deps, encoding="utf-8")
+    (crate / "src" / "lib.rs").write_text("#![forbid(unsafe_code)]\npub fn ok() {}\n", encoding="utf-8")
+    lines = ["version = 4", ""]
+    for pkg in lock_packages or [{"name": "fss-a", "version": "0.0.1"}]:
+        lines.append("[[package]]")
+        for key in ("name", "version", "source"):
+            if key in pkg:
+                lines.append(f'{key} = "{pkg[key]}"')
+        if pkg.get("dependencies"):
+            lines.append("dependencies = [" + ", ".join(f'"{d}"' for d in pkg["dependencies"]) + "]")
+        lines.append("")
+    (root / "Cargo.lock").write_text("\n".join(lines), encoding="utf-8")
+
+
+class TestRoundTwoAuthorityHardening(AuthorityCase):
+    """Round-2 review of bcc24b5 (fss-x4a.30.88.1): findings a-g."""
+
+    # a) symlinked inputs are refused
+    def test_symlinked_authority_inputs_are_refused(self) -> None:
+        outside = Path(self.tmp_dir.name).parent / (Path(self.tmp_dir.name).name + "-outside")
+        outside.mkdir()
+        self.addCleanup(shutil.rmtree, outside, True)
+        for rel, expected in ((AL, {C, T}), (IMPORTS, {C, T}), (DJ, {C}), (CJ, {C}), (TS, {C}), ("architecture/local_qualification.toml", {C})):
+            with self.subTest(rel=rel):
+                target = outside / Path(rel).name
+                shutil.copy2(ROOT / rel, target)
+                self.path(rel).unlink()
+                self.path(rel).symlink_to(target)
+                result = self.assertCodes(expected)
+                self.assertTrue(any("symbolic link" in e.message for e in result.errors))
+                self.path(rel).unlink()
+                shutil.copy2(ROOT / rel, self.path(rel))
+        self.assertCodes(set())
+        # a symlinked directory between the root and the input is refused too
+        moved = outside / "architecture"
+        shutil.move(str(self.path("architecture")), moved)
+        self.path("architecture").symlink_to(moved)
+        result = self.assertCodes({C})
+        self.assertTrue(all("symbolic link" in e.message for e in result.errors))
+
+    def test_non_regular_inputs_are_refused(self) -> None:
+        import os
+        import signal
+        fifo = self.path("architecture/fifo.json")
+        os.mkfifo(fifo)
+
+        def blocked(signum: int, frame: Any) -> None:
+            raise AssertionError("read_input_bytes opened a FIFO and blocked; non-regular inputs must be refused before open")
+
+        previous = signal.signal(signal.SIGALRM, blocked)
+        signal.alarm(10)  # operational guard: turns a blocking open into a test failure instead of a hang
+        try:
+            data, problems = dependency_authority.read_input_bytes(fifo, "architecture/fifo.json", self.tmp_root)
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
+        self.assertIsNone(data)
+        self.assertEqual([(e.code, "not a regular file" in e.message) for e in problems], [(C, True)])
+        lock = self.tmp_root / "Cargo.lock"
+        lock.symlink_to(ROOT / "Cargo.lock")
+        graph, problems = dependency_audit.load_lock_graph(self.tmp_root)
+        self.assertIsNone(graph)
+        self.assertTrue(any("symbolic link" in p for p in problems))
+
+    # b) no plain allowlist/imports reads remain in the audit or check-policy
+    def test_audit_and_check_policy_read_the_allowlist_strictly(self) -> None:
+        with mock.patch.dict(dependency_authority.EXPECTED_ALLOWLIST_DIGESTS, {"fss.dependency_allowlist.v3": "sha256:" + "0" * 64}):
+            report, rc = dependency_audit.audit_workspace(ROOT, ROOT / AL)
+        self.assertEqual(rc, 2)
+        self.assertIn("ERR-DEP-ALLOWLIST-DIGEST-DIVERGED-001", report["fatal"])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_workspace(root)
+            (root / AL).write_text("[policy]\nclosed_universe = true\n[policy]\nclosed_universe = false\n", encoding="utf-8")
+            report, rc = dependency_audit.audit_workspace(root, root / AL)
+            self.assertEqual(rc, 2)
+            self.assertIn("ERR-DEP-CORRUPT-FILE-001", report["fatal"])
+            outside = Path(tmp + "-policy.toml")
+            self.addCleanup(outside.unlink, True)
+            shutil.copy2(ROOT / AL, outside)
+            (root / AL).unlink()
+            (root / AL).symlink_to(outside)
+            report, rc = dependency_audit.audit_workspace(root, root / AL)
+            self.assertEqual(rc, 2)
+            self.assertIn("symbolic link", report["fatal"])
+        check_policy = load_check_policy()
+        check_policy.ROOT = self.tmp_root
+        check_policy.errors = []
+        self.write(IMPORTS, '{"schema": "a", "schema": "b"}')
+        self.assertEqual(check_policy.authority_json(IMPORTS), {})
+        self.assertEqual(len(check_policy.errors), 1)
+        self.assertTrue(check_policy.errors[0].startswith("ERR-DEP-CORRUPT-FILE-001"))
+
+    # c) all 16 flags, production values and components are derived, never tabled
+    def test_policy_tables_are_derived_from_the_authority(self) -> None:
+        live = dependency_authority.live_authority()
+        expected = dependency_authority.expected_policy_flags(live)
+        self.assertEqual(set(expected), set(dependency_authority.ALLOWLIST_POLICY_FLAGS))
+        self.assertEqual(expected, live.allowlist["policy"])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_workspace(root)
+            text = (ROOT / AL).read_text(encoding="utf-8").replace("foreign_executables_allowed_in_production = false\n", "")
+            (root / AL).write_text(text, encoding="utf-8")
+            report, rc = dependency_audit.audit_workspace(root, root / AL)
+            flag_findings = sorted((f["code"], f["params"]["key"]) for f in report["findings"] if f["code"] in ("DEP-AUD-001", "DEP-AUD-002"))
+            self.assertEqual(flag_findings, [("DEP-AUD-002", "foreign_executables_allowed_in_production")])
+            # Changing the constitution changes the requirement: the audit follows the authority.
+            flipped = copy.deepcopy(live)
+            flipped.constitution = copy.deepcopy(live.constitution)
+            flipped.constitution["production"]["cCppFfi"] = True
+            shutil.copy2(ROOT / AL, root / AL)
+            with mock.patch.object(dependency_authority, "live_authority", return_value=flipped):
+                report, rc = dependency_audit.audit_workspace(root, root / AL)
+            flag_findings = sorted((f["code"], f["params"]["key"]) for f in report["findings"] if f["code"] in ("DEP-AUD-001", "DEP-AUD-002"))
+            self.assertEqual(flag_findings, [("DEP-AUD-001", "c_or_cpp_ffi_allowed")])
+        check_policy = load_check_policy()
+        constitution = json.loads((ROOT / CJ).read_text(encoding="utf-8"))
+        localq = dependency_authority.load_toml_document(ROOT / "architecture/local_qualification.toml", "lq")[0]
+        toolchain = dependency_authority.load_toml_document(ROOT / "rust-toolchain.toml", "tc")[0]["toolchain"]
+        policy = dependency_audit.load_toml(ROOT / AL)
+        check_policy.errors = []
+        check_policy.dependency_policy_consistency(constitution, localq, toolchain, policy, live)
+        self.assertEqual(check_policy.errors, [])
+        cases = {
+            "flag": (constitution, localq, toolchain, dict(policy, policy=dict(policy["policy"], dynamic_loading_allowed=True))),
+            "int flag": (constitution, localq, toolchain, dict(policy, policy=dict(policy["policy"], closed_universe=1))),
+            "component": (constitution, localq, dict(toolchain, components=["rustfmt", "clippy"]), policy),
+            "production": (dict(constitution, production=dict(constitution["production"], closedUniverse=1)), localq, toolchain, policy),
+            "production language": (dict(constitution, production=dict(constitution["production"], language="rust-2021")), localq, toolchain, policy),
+        }
+        for label, args in cases.items():
+            with self.subTest(label):
+                check_policy.errors = []
+                check_policy.dependency_policy_consistency(*args, live)
+                self.assertEqual(len(check_policy.errors), 1, check_policy.errors)
+        # The registered components, not a list in check-policy, decide: a different registration passes.
+        check_policy.errors = []
+        narrowed = dict(localq, toolchain=dict(localq["toolchain"], components=["rustfmt"]))
+        check_policy.dependency_policy_consistency(constitution, narrowed, dict(toolchain, components=["rustfmt"]), policy, live)
+        self.assertEqual(check_policy.errors, [])
+        check_policy.errors = []
+        with mock.patch.object(dependency_authority, "expected_policy_flags", return_value=dict(expected, dynamic_loading_allowed=True)):
+            check_policy.dependency_policy_consistency(constitution, localq, toolchain, policy, live)
+        self.assertEqual(check_policy.errors, ["dependency constitution machine policy mismatch for dynamic_loading_allowed"])
+
+    def test_check_policy_has_no_plain_authority_reads(self) -> None:
+        """Every dependency-authority input in check-policy goes through dependency_authority (finding b)."""
+        import ast
+        source = (ROOT / "scripts/check-policy.py").read_text(encoding="utf-8")
+        authority_inputs = {AL, IMPORTS, CJ, DJ, "architecture/local_qualification.toml", TS}
+        plain = []
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ("load_json", "load_toml"):
+                if node.args and isinstance(node.args[0], ast.Constant) and node.args[0].value in authority_inputs:
+                    plain.append((node.func.id, node.args[0].value, node.lineno))
+        self.assertEqual(plain, [])
+        self.assertIn('authority_json("architecture/franken_imports.json")', source)
+        self.assertIn('authority_toml("architecture/local_qualification.toml")', source)
+        self.assertIn('authority_json("architecture/dependency_constitution.json")', source)
+        self.assertIn('dependency_authority.load_policy_document(ROOT / "architecture/dependency_allowlist.toml", ROOT)', source)
+        self.assertNotIn("tomllib.loads(lock_path.read_text", source)
+
+    # d) DEP-AUD-045 keeps its original meaning; DEP-AUD-047 is the refusal
+    def test_dep_aud_045_is_unchanged_and_047_is_the_refusal(self) -> None:
+        original = "| `DEP-AUD-045` | warning | fundamental crate is pending owner decision fss-ndxis | keep crate quarantined until user decision fss-ndxis is resolved; never admit as production authority | `GATE-000`, `QL-POLICY-001` | await decision fss-ndxis before re-running qualification |"
+        errors_md = (ROOT / "registries/ERRORS.md").read_text(encoding="utf-8").splitlines()
+        self.assertIn(original, errors_md)
+        self.assertEqual([line for line in errors_md if line.startswith("| `DEP-AUD-045` |")], [original])
+        registry = dependency_audit.DIAGNOSTIC_REGISTRY
+        self.assertEqual((registry["DEP-AUD-045"].severity, registry["DEP-AUD-045"].trigger), ("warning", "fundamental crate is pending owner decision fss-ndxis"))
+        self.assertEqual(registry["DEP-AUD-047"].severity, "error")
+        self.assertTrue(any(line.startswith("| `DEP-AUD-047` | error |") for line in errors_md))
+        self.assertEqual(dependency_audit.classify_dependency_package("serde", {}, set())[1], "DEP-AUD-047")
+
+    # e) DEP-AUD-023 yields to the allowlist's admission; the owner decision alone decides
+    def test_serde_023_follows_the_allowlist_decision(self) -> None:
+        deps = '\n[dependencies]\nserde = { version = "1", default-features = false }\nserde_derive = { version = "1", default-features = false }\n'
+        lock = [
+            {"name": "fss-a", "version": "0.0.1", "dependencies": ["serde", "serde_derive"]},
+            {"name": "serde", "version": "1.0.0", "source": "registry+https://example.invalid/index"},
+            {"name": "serde_derive", "version": "1.0.0", "source": "registry+https://example.invalid/index"},
+        ]
+        live_text = (ROOT / AL).read_text(encoding="utf-8")
+        decided = live_text.split("\n[pending_owner_decisions.fss-ndxis]")[0] + "\n[pending_owner_decisions]\n"
+        for label, text, serde_codes in (
+            ("pending (current)", live_text, {"DEP-AUD-023", "DEP-AUD-045", "DEP-AUD-047"}),
+            ("owner admits serde", decided, set()),
+        ):
+            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                make_workspace(root, deps, lock)
+                (root / "policy.toml").write_text(text, encoding="utf-8")
+                report, rc = dependency_audit.audit_workspace(root, root / "policy.toml")
+                self.assertEqual({f["code"] for f in report["findings"] if f.get("params", {}).get("package") == "serde"}, serde_codes)
+                derive_codes = {f["code"] for f in report["findings"] if f.get("params", {}).get("package") == "serde_derive"}
+                self.assertIn("DEP-AUD-023", derive_codes)
+                if serde_codes:
+                    self.assertTrue(all("pending owner decision fss-ndxis" in f["message"] for f in report["findings"] if f.get("params", {}).get("package") == "serde" and f["code"] == "DEP-AUD-023"))
+
+    # f) the policy lane itself catches an oversized or odd Cargo.lock
+    def test_check_policy_runs_the_bounded_census(self) -> None:
+        check_policy = load_check_policy()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_workspace(root)
+            check_policy.ROOT = root
+            policy = dependency_audit.load_toml(ROOT / AL)
+            check_policy.errors = []
+            check_policy.cargo_policy(policy)
+            self.assertEqual(check_policy.errors, [])
+            with mock.patch.object(dependency_authority, "MAX_INPUT_FILE_BYTES", 16):
+                check_policy.errors = []
+                check_policy.cargo_policy(policy)
+            self.assertTrue(any(e.startswith("invalid Cargo.lock:") and "operational input bound" in e for e in check_policy.errors), check_policy.errors)
+            self.assertTrue(any(e.startswith("DEP-AUD-046:") for e in check_policy.errors), check_policy.errors)
+            make_workspace(root, "", [{"name": "fss-a", "version": "0.0.1"}, {"name": "stray-crate", "version": "1.0.0", "source": "registry+https://example.invalid/index"}])
+            check_policy.errors = []
+            check_policy.cargo_policy(policy)
+            self.assertTrue(any(e.startswith("DEP-AUD-042:") and "stray-crate" in e for e in check_policy.errors), check_policy.errors)
+
+    # g) end-to-end conformance through the real entry points, with a JSONL transcript
+    def test_end_to_end_transcript(self) -> None:
+        import subprocess
+        with tempfile.TemporaryDirectory() as tmp:
+            outs = [Path(tmp) / "a", Path(tmp) / "b"]
+            for out in outs:
+                proc = subprocess.run([sys.executable, "-B", str(ROOT / "scripts/dependency_registry_e2e.py"), "--out", str(out)], capture_output=True, text=True, timeout=600)
+                self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            transcript = (outs[0] / "transcript.jsonl").read_bytes()
+            self.assertEqual(transcript, (outs[1] / "transcript.jsonl").read_bytes())
+            records = [json.loads(line) for line in transcript.decode("utf-8").splitlines()]
+            self.assertEqual([r["step"] for r in records], ["S0", "S1", "S2", "S3", "S4", "S5", "END"])
+            required = {"requirement", "scenario", "step", "seed", "schedule", "authority", "privacy", "registryGeneration", "sourceDigests", "contractBasis", "budget"}
+            for record in records:
+                self.assertTrue(required <= set(record), record)
+                self.assertEqual(record["requirement"], "DEP-OWNED-001")
+                self.assertEqual(record["sourceDigests"]["registry"], BASELINE_DEPENDENCIES_FREEZE_DIGEST)
+            for record in records[:-1]:
+                self.assertTrue(record["matched"], record)
+                self.assertEqual(record["actual"], record["expected"])
+                artifact = outs[0] / "artifacts" / ("sha256-" + record["artifact"].split(":", 1)[1] + ".json")
+                self.assertEqual("sha256:" + __import__("hashlib").sha256(artifact.read_bytes()).hexdigest(), record["artifact"])
+                self.assertEqual(set(record["repair"]), set(record["actual"]["codes"]))
+                self.assertNotIn("unregistered code", record["repair"].values())
+            self.assertEqual((records[-1]["outcome"], records[-1]["mismatches"]), ("pass", 0))
+            self.assertEqual(records[4]["actual"]["codes"], ["DEP-AUD-023", "DEP-AUD-047"])
+            # A broken authority makes the nominal steps miss their expectation: the script exits 1.
+            broken = Path(tmp) / "broken"
+            import dependency_registry_e2e
+            dependency_registry_e2e.copy_authority(ROOT, broken)
+            text = (broken / AL).read_text(encoding="utf-8").replace("dynamic_loading_allowed = false", "dynamic_loading_allowed = true", 1)
+            (broken / AL).write_text(text, encoding="utf-8")
+            proc = subprocess.run([sys.executable, "-B", str(ROOT / "scripts/dependency_registry_e2e.py"), "--out", str(Path(tmp) / "c"), "--repo-root", str(broken)], capture_output=True, text=True, timeout=600)
+            self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+            records = [json.loads(line) for line in (Path(tmp) / "c" / "transcript.jsonl").read_text(encoding="utf-8").splitlines()]
+            # S0 and S5 (recovery restores the broken source allowlist) fail instead of passing; S2 gains the
+            # flag's findings. S1, S3 and S4 still match: their expected codes already cover the damage.
+            self.assertEqual([r["step"] for r in records if r["step"] != "END" and not r["matched"]], ["S0", "S2", "S5"])
+            self.assertEqual((records[-1]["outcome"], records[-1]["mismatches"]), ("fail", 3))
+
+
+class TestSecondIndependentMutantTests(unittest.TestCase):
+    """Second, independent tests for mutants previously held by a single test (hard-coded map, lock walk, dev-as-production)."""
+
+    def test_project_mapping_comes_from_the_allowlist(self) -> None:
+        policy = {"in_house": {"allowed_families": ["zz-*"], "projects": {"frankentorch": ["zz-*"]}}, "fundamental": {"allowed_subject_to_audit": []}, "forbidden": {"crates": []}}
+        self.assertEqual(dependency_audit.classify_dependency_package("zz-core", policy, set(), admitted_in_house={"frankentorch"}), ("DEP-OWNED-001", None, None))
+        moved = dict(policy, in_house={"allowed_families": ["zz-*"], "projects": {"frankensqlite": ["zz-*"]}})
+        dep_id, code, reason = dependency_audit.classify_dependency_package("zz-core", moved, set(), admitted_in_house={"frankentorch"})
+        self.assertEqual(code, "DEP-AUD-043")
+        self.assertIn("project 'frankensqlite'", reason)
+
+    def test_lock_walk_is_transitive_and_edge_aware(self) -> None:
+        policy = {"in_house": {"allowed_families": ["fss-*"]}, "fundamental": {"allowed_subject_to_audit": []}, "laboratory_oracles": {"excluded_from_production_release_closure": ["ffmpeg"]}, "forbidden": {"crates": []}}
+        src = "registry+https://example.invalid/index"
+        chain = [
+            {"name": "fss-a", "version": "0.0.1", "dependencies": ["alpha"]},
+            {"name": "alpha", "version": "1.0.0", "source": src, "dependencies": ["beta"]},
+            {"name": "beta", "version": "1.0.0", "source": src, "dependencies": ["ffmpeg"]},
+            {"name": "ffmpeg", "version": "4.4.0", "source": src},
+        ]
+        for section, expected in (("dependencies", {("DEP-AUD-042", "alpha"), ("DEP-AUD-042", "beta"), ("DEP-AUD-043", "ffmpeg")}), ("dev-dependencies", {("DEP-AUD-042", "alpha"), ("DEP-AUD-042", "beta")})):
+            with self.subTest(section), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                make_workspace(root, "", chain)
+                findings: list[Any] = []
+                dependency_audit.audit_dependency_classes(findings, root, policy, {"fss-a"}, [], direct=[{"manifest": "crates/fss-a/Cargo.toml", "section": section, "name": "alpha"}])
+                self.assertEqual({(f.code, f.params["package"]) for f in findings}, expected)
+
+    def test_stray_locked_package_counts_as_production(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_workspace(root, "", [{"name": "fss-a", "version": "0.0.1"}, {"name": "tokio", "version": "1.0.0", "source": "registry+https://example.invalid/index"}])
+            findings: list[Any] = []
+            dependency_audit.audit_dependency_classes(findings, root, dependency_audit.load_toml(ROOT / AL), {"fss-a"}, [], direct=[])
+            self.assertEqual([(f.code, f.params["package"], f.params["production"]) for f in findings], [("DEP-AUD-030", "tokio", True)])
+
+    def test_stray_locked_package_is_production_through_the_full_audit(self) -> None:
+        """Second, independent killer of the dev-as-production mutant: the full audit_workspace pipeline
+        (manifest enumeration and lock walk) codes a stray locked forbidden crate as production (030),
+        and the same crate reached only by a [dev-dependencies] edge as development (043)."""
+        registry = "registry+https://example.invalid/index"
+        cases = {
+            "stray (no manifest edge)": ("", [{"name": "fss-a", "version": "0.0.1"}, {"name": "tokio", "version": "1.0.0", "source": registry}], "DEP-AUD-030"),
+            "dev-only edge": ('\n[dev-dependencies]\ntokio = "1"\n', [{"name": "fss-a", "version": "0.0.1", "dependencies": ["tokio"]}, {"name": "tokio", "version": "1.0.0", "source": registry}], "DEP-AUD-043"),
+        }
+        for label, (deps, lock, expected) in cases.items():
+            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                make_workspace(root, deps, lock)
+                report, _rc = dependency_audit.audit_workspace(root, ROOT / AL)
+                self.assertIn("findings", report, report)
+                # the class-census finding (params carry the class) is the one the production walk decides
+                tokio = sorted(f["code"] for f in report["findings"] if f["code"] in ("DEP-AUD-030", "DEP-AUD-043") and f["params"].get("package") == "tokio" and "class" in f["params"])
+                self.assertEqual(tokio, [expected], report["findings"])
+
+    def test_lock_walk_transitive_production_edge_beats_a_dev_edge(self) -> None:
+        """Second, independent killer of the non-transitive lock walk: ffmpeg is reached in production only
+        through alpha -> beta, and directly through a dev edge. Only a transitive production walk keeps it
+        production (043); a one-hop walk would leave it dev-reachable and silently allowed."""
+        policy = {"in_house": {"allowed_families": ["fss-*"]}, "fundamental": {"allowed_subject_to_audit": []}, "laboratory_oracles": {"excluded_from_production_release_closure": ["ffmpeg"]}, "forbidden": {"crates": []}}
+        src = "registry+https://example.invalid/index"
+        chain = [
+            {"name": "fss-a", "version": "0.0.1", "dependencies": ["alpha", "ffmpeg"]},
+            {"name": "alpha", "version": "1.0.0", "source": src, "dependencies": ["beta"]},
+            {"name": "beta", "version": "1.0.0", "source": src, "dependencies": ["ffmpeg"]},
+            {"name": "ffmpeg", "version": "4.4.0", "source": src},
+        ]
+        direct = [{"manifest": "crates/fss-a/Cargo.toml", "section": "dependencies", "name": "alpha"},
+                  {"manifest": "crates/fss-a/Cargo.toml", "section": "dev-dependencies", "name": "ffmpeg"}]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_workspace(root, "", chain)
+            findings: list[Any] = []
+            dependency_audit.audit_dependency_classes(findings, root, policy, {"fss-a"}, [], direct=direct)
+            self.assertEqual({(f.code, f.params["package"], f.params["production"]) for f in findings},
+                             {("DEP-AUD-042", "alpha", True), ("DEP-AUD-042", "beta", True), ("DEP-AUD-043", "ffmpeg", True)})
 
 
 if __name__ == "__main__":

@@ -27,7 +27,9 @@ import fnmatch
 import functools
 import hashlib
 import json
+import os
 import re
+import stat
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -169,15 +171,46 @@ def issue(code: str, file_path: str, target: str, message: str) -> DiagnosticErr
 # ---------------------------------------------------------------------------------------------
 
 
-def read_input_bytes(path: Path, rel: str) -> tuple[bytes | None, list[DiagnosticError]]:
-    """Reads at most MAX_INPUT_FILE_BYTES + 1 bytes; missing, oversized, unreadable or blank is corrupt."""
+def _symlinked_ancestor(path: Path, root: Path) -> str | None:
+    """Names the first directory between ``root`` and ``path`` that is a symbolic link, if any."""
+    try:
+        parts = path.parent.relative_to(root).parts
+    except ValueError:
+        return None  # an explicit override outside the root is checked only for its own final component
+    current = root
+    for part in parts:
+        current = current / part
+        if os.path.islink(current):
+            return f"directory {current.relative_to(root).as_posix()} on the path to it is a symbolic link"
+    return None
+
+
+def read_input_bytes(path: Path, rel: str, root: Path | None = None) -> tuple[bytes | None, list[DiagnosticError]]:
+    """Reads at most MAX_INPUT_FILE_BYTES + 1 bytes of a regular, non-symlinked file.
+
+    Missing, symlinked (the file itself, or a directory between ``root`` and it), non-regular, oversized,
+    unreadable or blank inputs are CORRUPT-FILE. The final component is opened with O_NOFOLLOW and the
+    open descriptor is re-checked, so a symlink swapped in after lstat is refused too.
+    """
     limit = MAX_INPUT_FILE_BYTES
     try:
-        if not path.is_file():
+        try:
+            st = os.lstat(path)
+        except FileNotFoundError:
             return None, [issue(ERR_DEP_CORRUPT_FILE, rel, "#", f"required input {rel} is missing")]
+        if stat.S_ISLNK(st.st_mode):
+            return None, [issue(ERR_DEP_CORRUPT_FILE, rel, "#", f"{rel} is a symbolic link; authority inputs must be regular files inside the repository")]
+        if not stat.S_ISREG(st.st_mode):
+            return None, [issue(ERR_DEP_CORRUPT_FILE, rel, "#", f"{rel} is not a regular file")]
+        ancestor = _symlinked_ancestor(path, root) if root is not None else None
+        if ancestor is not None:
+            return None, [issue(ERR_DEP_CORRUPT_FILE, rel, "#", f"{rel} is not read: {ancestor}")]
         if path.stat().st_size > limit:
             return None, [issue(ERR_DEP_CORRUPT_FILE, rel, "#", f"{rel} exceeds the operational input bound of {limit} bytes")]
-        with path.open("rb") as handle:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
+        with os.fdopen(fd, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                return None, [issue(ERR_DEP_CORRUPT_FILE, rel, "#", f"{rel} is not a regular file")]
             data = handle.read(limit + 1)
     except (OSError, ValueError) as exc:
         return None, [issue(ERR_DEP_CORRUPT_FILE, rel, "#", f"could not read {rel}: {exc}")]
@@ -220,8 +253,8 @@ def parse_json_text(text: str, rel: str) -> tuple[Any, list[DiagnosticError]]:
         return None, [issue(ERR_DEP_CORRUPT_FILE, rel, "#", f"{rel} is not valid JSON: {exc}")]
 
 
-def load_json_document(path: Path, rel: str) -> tuple[Any, bytes | None, list[DiagnosticError]]:
-    data, problems = read_input_bytes(path, rel)
+def load_json_document(path: Path, rel: str, root: Path | None = None) -> tuple[Any, bytes | None, list[DiagnosticError]]:
+    data, problems = read_input_bytes(path, rel, root)
     if data is None:
         return None, None, problems
     text, problems = decode_utf8(data, rel)
@@ -235,8 +268,8 @@ def load_json_document(path: Path, rel: str) -> tuple[Any, bytes | None, list[Di
     return value, data, []
 
 
-def load_toml_document(path: Path, rel: str) -> tuple[dict[str, Any] | None, bytes | None, list[DiagnosticError]]:
-    data, problems = read_input_bytes(path, rel)
+def load_toml_document(path: Path, rel: str, root: Path | None = None) -> tuple[dict[str, Any] | None, bytes | None, list[DiagnosticError]]:
+    data, problems = read_input_bytes(path, rel, root)
     if data is None:
         return None, None, problems
     text, problems = decode_utf8(data, rel)
@@ -664,7 +697,7 @@ def _check_pin(out: list[DiagnosticError], rel: str, generation: Any, computed: 
 
 def _load_allowlist(auth: Authority, path: Path) -> None:
     rel = ALLOWLIST_TOML_PATH
-    value, raw, problems = load_toml_document(path, rel)
+    value, raw, problems = load_toml_document(path, rel, auth.root)
     auth.issues.extend(problems)
     if raw is not None:
         auth.allowlist_digest = sha256_prefixed(raw)
@@ -775,7 +808,7 @@ def _norm_set(names: set[str]) -> set[str]:
 
 def _load_constitution(auth: Authority, path: Path) -> None:
     rel = CONSTITUTION_JSON_PATH
-    value, _raw, problems = load_json_document(path, rel)
+    value, _raw, problems = load_json_document(path, rel, auth.root)
     auth.issues.extend(problems)
     if value is None:
         return
@@ -855,7 +888,7 @@ def _typed_equal(left: Any, right: Any) -> bool:
 
 def _load_registry(auth: Authority, path: Path) -> None:
     rel = DEPENDENCIES_JSON_PATH
-    value, _raw, problems = load_json_document(path, rel)
+    value, _raw, problems = load_json_document(path, rel, auth.root)
     auth.issues.extend(problems)
     if value is None:
         return
@@ -915,7 +948,7 @@ def _load_registry(auth: Authority, path: Path) -> None:
 
 def _load_imports(auth: Authority, path: Path) -> None:
     rel = FRANKEN_IMPORTS_PATH
-    value, _raw, problems = load_json_document(path, rel)
+    value, _raw, problems = load_json_document(path, rel, auth.root)
     auth.issues.extend(problems)
     if value is None:
         return
@@ -943,7 +976,7 @@ LOCAL_QUALIFICATION_KEYS: dict[str, Any] = {
 
 def _load_local_qualification(auth: Authority, path: Path) -> None:
     rel = LOCAL_QUALIFICATION_PATH
-    value, _raw, problems = load_toml_document(path, rel)
+    value, _raw, problems = load_toml_document(path, rel, auth.root)
     auth.issues.extend(problems)
     if value is None:
         return
@@ -963,7 +996,7 @@ def _load_local_qualification(auth: Authority, path: Path) -> None:
 
 def _load_resolutions(auth: Authority, path: Path) -> None:
     rel = STABLE_ID_RESOLUTION_PATH
-    value, _raw, problems = load_json_document(path, rel)
+    value, _raw, problems = load_json_document(path, rel, auth.root)
     auth.issues.extend(problems)
     if value is None:
         return
@@ -1025,6 +1058,48 @@ def _and(left: Any, right: Any) -> bool | None:
     if type(left) is not bool or type(right) is not bool:
         return None
     return left and right
+
+
+def expected_policy_flags(auth: Authority) -> dict[str, bool] | None:
+    """The 16 allowlist flag values the constitution and the local qualification contract require.
+
+    This is the single derivation used by the crosswalk, dependency_audit (DEP-AUD-001/002) and
+    check-policy; None when a source value is missing or untyped (callers fail closed).
+    """
+    if auth.constitution is None or auth.local_qualification is None:
+        return None
+    production = auth.production()
+    localq = as_dict(auth.local_qualification)
+    expected: dict[str, bool] = {}
+    for flag, (_source, relation) in FLAG_RELATIONS.items():
+        value = relation(production, localq)
+        if type(value) is not bool:
+            return None
+        expected[flag] = value
+    return expected
+
+
+def load_policy_document(path: Path, root: Path) -> tuple[dict[str, Any] | None, list[DiagnosticError]]:
+    """Strict allowlist read for dependency_audit and check-policy (no plain TOML reads remain).
+
+    Every allowlist is read bounded, UTF-8-strict, duplicate-key-free and symlink-refusing. The
+    repository's own allowlist is additionally held to the authority's pinned digest, exact shape and
+    semantics; any finding makes it unusable (None). Fixture allowlists elsewhere are only parsed strictly.
+    """
+    try:
+        is_repository_allowlist = path.resolve() == (ROOT / ALLOWLIST_TOML_PATH).resolve()
+    except OSError:
+        is_repository_allowlist = False
+    if is_repository_allowlist:
+        auth = Authority(root=ROOT)
+        _load_allowlist(auth, ROOT / ALLOWLIST_TOML_PATH)
+        return (auth.allowlist if not auth.issues else None), list(auth.issues)
+    try:
+        rel = path.relative_to(root).as_posix()
+    except ValueError:
+        rel = str(path)
+    value, _raw, problems = load_toml_document(path, rel, root)
+    return value, problems
 
 
 def _check_crosswalk(auth: Authority) -> None:

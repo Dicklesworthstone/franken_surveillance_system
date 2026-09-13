@@ -48,6 +48,10 @@ def make_clean_policy() -> dict:
             "dynamic_loading_allowed": False,
             "foreign_runtime_production_boundary_allowed": False,
             "runtime_acquisition_allowed": False,
+            # fss-x4a.30.88.1: DEP-AUD-001/002 now require all 16 flags derived from the constitution
+            # and local qualification contract (dependency_authority.expected_policy_flags); the old
+            # hard-coded 15-flag table omitted this one.
+            "foreign_executables_allowed_in_production": False,
         },
         "in_house": {"allowed_families": ["fss-*"]},
         "fundamental": {"allowed_subject_to_audit": ["serde"]},
