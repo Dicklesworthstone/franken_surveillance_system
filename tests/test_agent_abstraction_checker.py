@@ -1186,6 +1186,9 @@ class AgentAbstractionRegistryCheckerTests(unittest.TestCase):
         res = validate_agent_abstraction_registry(self.fake_root)
         self.assertFalse(res.passed)
         self.assertEqual({e.code for e in res.errors}, {ERR_AGT_INVARIANT_VIOLATION})
+        self.assertEqual(len(res.errors), 1)
+        self.assertEqual(res.errors[0].target, "#/unknownTopLevelKey")
+        self.assertIn("Unknown top-level key 'unknownTopLevelKey'", res.errors[0].message)
 
     def test_planted_negative_unknown_layer_key(self) -> None:
         """Unknown layer JSON key must emit ERR-AGT-INVARIANT-VIOLATION-001."""
@@ -1196,6 +1199,9 @@ class AgentAbstractionRegistryCheckerTests(unittest.TestCase):
         res = validate_agent_abstraction_registry(self.fake_root)
         self.assertFalse(res.passed)
         self.assertEqual({e.code for e in res.errors}, {ERR_AGT_INVARIANT_VIOLATION})
+        self.assertEqual(len(res.errors), 1)
+        self.assertEqual(res.errors[0].target, "#/layers/AGT-LAYER-001/unknownLayerKey")
+        self.assertIn("Unknown layer key 'unknownLayerKey'", res.errors[0].message)
 
     def test_planted_negative_unknown_hydration_key(self) -> None:
         """Unknown hydration JSON key must emit ERR-AGT-INVARIANT-VIOLATION-001."""
@@ -1206,6 +1212,18 @@ class AgentAbstractionRegistryCheckerTests(unittest.TestCase):
         res = validate_agent_abstraction_registry(self.fake_root)
         self.assertFalse(res.passed)
         self.assertEqual({e.code for e in res.errors}, {ERR_AGT_INVARIANT_VIOLATION})
+        self.assertEqual(len(res.errors), 1)
+        self.assertEqual(res.errors[0].target, "#/hydrationLevels/H0/unknownHydrationKey")
+        self.assertIn("Unknown hydration level key 'unknownHydrationKey'", res.errors[0].message)
+
+    def test_canonical_agent_abstraction_digest_computes_without_raising_on_unknown_keys(self) -> None:
+        """compute_canonical_agent_abstraction_digest does not duplicate validation, delegating to validator loop."""
+        data = self._read_json()
+        data["unknownTopKey"] = "extra"
+        data["layers"][0]["unknownLayerKey"] = "extra"
+        data["hydrationLevels"][0]["unknownHydKey"] = "extra"
+        d = compute_canonical_agent_abstraction_digest(data)
+        self.assertTrue(d.startswith("sha256:"))
 
     def test_planted_negative_duplicate_markdown_layer_row(self) -> None:
         """Duplicate layer row in markdown mirror must emit ERR-AGT-STABLE-ID-REUSED-001."""
@@ -1356,6 +1374,61 @@ class AgentAbstractionRegistryCheckerTests(unittest.TestCase):
         res = validate_agent_abstraction_registry(self.fake_root)
         self.assertFalse(res.passed)
         self.assertEqual({e.code for e in res.errors}, {ERR_AGT_REGISTRY_DRIFT})
+
+    def test_planted_negative_markdown_question_mismatch(self) -> None:
+        """Agent question mismatch between markdown mirror and JSON must emit ERR-AGT-REGISTRY-DRIFT-001."""
+        md_file = self.fake_root / "registries/AGENT_ABSTRACTIONS.md"
+        md = md_file.read_text(encoding="utf-8")
+        tampered = md.replace(
+            "What did the system authoritatively observe or do at one anchor?",
+            "What did the system unauthoritatively guess at one anchor?",
+        )
+        md_file.write_text(tampered, encoding="utf-8")
+
+        res = validate_agent_abstraction_registry(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertIn(ERR_AGT_REGISTRY_DRIFT, {e.code for e in res.errors})
+        self.assertTrue(any("question mismatch" in e.message for e in res.errors))
+
+    def test_planted_negative_misplaced_hydration_row(self) -> None:
+        """Hydration row outside '## Hydration ladder' section must emit ERR-AGT-REGISTRY-DRIFT-001."""
+        md_file = self.fake_root / "registries/AGENT_ABSTRACTIONS.md"
+        md = md_file.read_text(encoding="utf-8")
+        lines = md.splitlines()
+        lines.insert(12, "| `H0` | `identity` | digest, type, time/spatial bounds, source, availability, cost, and authority |")
+        md_file.write_text("\n".join(lines), encoding="utf-8")
+
+        res = validate_agent_abstraction_registry(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertIn(ERR_AGT_REGISTRY_DRIFT, {e.code for e in res.errors})
+        self.assertTrue(any("outside '## Hydration ladder'" in e.message for e in res.errors))
+
+    def test_markdown_row_strips_padded_whitespace(self) -> None:
+        """Whitespace padding around cells or leading spaces must be stripped and not cause false drift."""
+        md_file = self.fake_root / "registries/AGENT_ABSTRACTIONS.md"
+        md = md_file.read_text(encoding="utf-8")
+        target = "| `AGT-LAYER-001` | `runtime_authority_and_custody` | `asupersync/authority/object owners` | What work, authority, budget, identity, time, and object custody exist? | `INV-006` | `normative` |"
+        padded = "   |   `AGT-LAYER-001`   |   `runtime_authority_and_custody`   |   `asupersync/authority/object owners`   |   What work, authority, budget, identity, time, and object custody exist?   |   `INV-006`   |   `normative`   |  "
+        md_padded = md.replace(target, padded)
+        md_file.write_text(md_padded, encoding="utf-8")
+
+        res = validate_agent_abstraction_registry(self.fake_root)
+        self.assertTrue(res.passed, f"Padded markdown table row must be stripped cleanly: {res.errors}")
+
+    def test_planted_negative_layer_006_prohibition_exact_match(self) -> None:
+        """AGT-LAYER-006 prohibition must match exactly; appended or prepended text fails."""
+        data = self._read_json()
+        for layer in data["layers"]:
+            if layer["id"] == "AGT-LAYER-006":
+                layer["prohibition"] = "Cannot collapse uncertainty into truth without adjudication. But maybe sometimes allowed."
+                break
+        self._write_json(data)
+
+        res = validate_agent_abstraction_registry(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertIn(ERR_AGT_INVARIANT_VIOLATION, {e.code for e in res.errors})
+        self.assertTrue(any("AGT-LAYER-006 prohibition must be" in e.message for e in res.errors))
+
 
 if __name__ == "__main__":
     unittest.main()

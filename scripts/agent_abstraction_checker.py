@@ -346,27 +346,11 @@ def compute_canonical_agent_abstraction_digest(data: dict[str, Any]) -> str:
 
     Binds top-level metadata and deterministically sorted layers and hydration levels.
     """
-    unknown_keys = set(data.keys()) - KNOWN_TOP_LEVEL_KEYS - {"registryDigest"}
-    if unknown_keys:
-        raise ValueError(f"Unknown top-level keys in agent abstraction data: {sorted(unknown_keys)}")
-
     raw_layers = data.get("layers", [])
     raw_hydration = data.get("hydrationLevels", [])
 
     if not isinstance(raw_layers, list) or not isinstance(raw_hydration, list):
         raise ValueError("layers and hydrationLevels must be lists")
-
-    for layer in raw_layers:
-        if isinstance(layer, dict):
-            uk = set(layer.keys()) - KNOWN_LAYER_KEYS
-            if uk:
-                raise ValueError(f"Unknown layer keys: {sorted(uk)}")
-
-    for hyd in raw_hydration:
-        if isinstance(hyd, dict):
-            uk = set(hyd.keys()) - KNOWN_HYDRATION_KEYS
-            if uk:
-                raise ValueError(f"Unknown hydrationLevel keys: {sorted(uk)}")
 
     sorted_layers = sorted(raw_layers, key=lambda r: str(r.get("id", "") if isinstance(r, dict) else ""))
     sorted_hydration = sorted(raw_hydration, key=lambda r: str(r.get("id", "") if isinstance(r, dict) else ""))
@@ -377,9 +361,19 @@ def compute_canonical_agent_abstraction_digest(data: dict[str, Any]) -> str:
         "gate": str(data.get("gate", "")),
         "generation": str(data.get("generation", "")),
         "humanRegistry": str(data.get("humanRegistry", "")),
-        "hydrationLevels": [canonicalize_value(r) for r in sorted_hydration],
+        "hydrationLevels": [
+            {k: canonicalize_value(v) for k, v in sorted(r.items()) if k in KNOWN_HYDRATION_KEYS}
+            if isinstance(r, dict)
+            else canonicalize_value(r)
+            for r in sorted_hydration
+        ],
         "knowledgeStateRefs": canonicalize_value(data.get("knowledgeStateRefs", [])),
-        "layers": [canonicalize_value(r) for r in sorted_layers],
+        "layers": [
+            {k: canonicalize_value(v) for k, v in sorted(r.items()) if k in KNOWN_LAYER_KEYS}
+            if isinstance(r, dict)
+            else canonicalize_value(r)
+            for r in sorted_layers
+        ],
         "operationRefs": canonicalize_value(data.get("operationRefs", [])),
         "primaryReadSurface": str(data.get("primaryReadSurface", "")),
         "provenanceClassRefs": canonicalize_value(data.get("provenanceClassRefs", [])),
@@ -399,12 +393,13 @@ def compute_canonical_agent_abstraction_digest(data: dict[str, Any]) -> str:
 
 def extract_markdown_metadata_and_abstractions(
     md_path: Path,
-) -> tuple[str, str, dict[str, tuple[str, str, str, str]], dict[str, tuple[str, str]], list[str], list[str]]:
-    """Extracts (generation, digest, layer_rows, hydration_rows, duplicate_layer_ids, duplicate_hydration_ids)."""
-    rows: dict[str, tuple[str, str, str, str]] = {}
+) -> tuple[str, str, dict[str, tuple[str, str, str, str, str]], dict[str, tuple[str, str]], list[str], list[str], list[str]]:
+    """Extracts (generation, digest, layer_rows, hydration_rows, duplicate_layer_ids, duplicate_hydration_ids, misplaced_hydration_ids)."""
+    rows: dict[str, tuple[str, str, str, str, str]] = {}
     hydration_rows: dict[str, tuple[str, str]] = {}
     duplicate_layer_ids: list[str] = []
     duplicate_hydration_ids: list[str] = []
+    misplaced_hydration_ids: list[str] = []
     lines = md_path.read_text(encoding="utf-8").splitlines()
     md_gen = ""
     md_digest = ""
@@ -425,18 +420,19 @@ def extract_markdown_metadata_and_abstractions(
             m = re.search(r"`([^`]+)`", stripped)
             if m:
                 md_digest = m.group(1).strip()
-        elif stripped.startswith("| `AGT-LAYER-"):
+        elif re.match(r"^\|\s*`AGT-LAYER-", stripped):
             parts = [p.strip() for p in stripped.strip("|").split("|")]
             if len(parts) >= 6:
                 lid = parts[0].replace("`", "").strip()
                 name = parts[1].replace("`", "").strip()
                 owner = parts[2].replace("`", "").strip()
+                question = parts[3].strip()
                 invariant = parts[4].replace("`", "").strip()
                 status = parts[5].replace("`", "").strip()
                 if lid in rows:
                     duplicate_layer_ids.append(lid)
-                rows[lid] = (name, owner, invariant, status)
-        elif in_hydration_ladder and stripped.startswith("| `H"):
+                rows[lid] = (name, owner, question, invariant, status)
+        elif in_hydration_ladder and re.match(r"^\|\s*`H", stripped):
             parts = [p.strip() for p in stripped.strip("|").split("|")]
             if len(parts) >= 3:
                 hid = parts[0].replace("`", "").strip()
@@ -445,12 +441,16 @@ def extract_markdown_metadata_and_abstractions(
                 if hid in hydration_rows:
                     duplicate_hydration_ids.append(hid)
                 hydration_rows[hid] = (name, content)
-    return md_gen, md_digest, rows, hydration_rows, duplicate_layer_ids, duplicate_hydration_ids
+        elif not in_hydration_ladder and re.match(r"^\|\s*`H", stripped):
+            parts = [p.strip() for p in stripped.strip("|").split("|")]
+            if len(parts) >= 3 and HYDRATION_ID_PATTERN.match(parts[0].replace("`", "").strip()):
+                misplaced_hydration_ids.append(parts[0].replace("`", "").strip())
+    return md_gen, md_digest, rows, hydration_rows, duplicate_layer_ids, duplicate_hydration_ids, misplaced_hydration_ids
 
 
-def extract_markdown_agent_abstractions(md_path: Path) -> dict[str, tuple[str, str, str, str]]:
-    """Extracts abstraction layers from markdown table: {id: (name, owner, invariant, status)}."""
-    _, _, rows, _, _, _ = extract_markdown_metadata_and_abstractions(md_path)
+def extract_markdown_agent_abstractions(md_path: Path) -> dict[str, tuple[str, str, str, str, str]]:
+    """Extracts abstraction layers from markdown table: {id: (name, owner, question, invariant, status)}."""
+    _, _, rows, _, _, _, _ = extract_markdown_metadata_and_abstractions(md_path)
     return rows
 
 
@@ -843,7 +843,7 @@ def validate_agent_abstraction_registry(repo_root: Path = ROOT) -> ValidationRes
 
     # Validate against Markdown mirror
     try:
-        md_gen, md_digest, md_rows, md_hydration_rows, md_dup_layers, md_dup_hydration = (
+        md_gen, md_digest, md_rows, md_hydration_rows, md_dup_layers, md_dup_hydration, md_misplaced_hydration = (
             extract_markdown_metadata_and_abstractions(md_path)
         )
     except Exception as exc:
@@ -854,6 +854,14 @@ def validate_agent_abstraction_registry(repo_root: Path = ROOT) -> ValidationRes
             f"Failed to parse Markdown agent abstractions: {exc}",
         )
         return result
+
+    for mis_hid in md_misplaced_hydration:
+        result.add_error(
+            ERR_AGT_REGISTRY_DRIFT,
+            AGENT_ABSTRACTIONS_MD_PATH,
+            f"#{mis_hid}",
+            f"Hydration level '{mis_hid}' found outside '## Hydration ladder' section in markdown mirror",
+        )
 
     for dup_lid in md_dup_layers:
         result.add_error(
@@ -948,9 +956,10 @@ def validate_agent_abstraction_registry(repo_root: Path = ROOT) -> ValidationRes
                 f"Layer '{lid}' in architecture JSON missing from Markdown mirror",
             )
             continue
-        md_name, md_owner, md_inv, md_status = md_rows[lid]
+        md_name, md_owner, md_question, md_inv, md_status = md_rows[lid]
         obs_name = str(obs_row.get("name", "")).strip()
         obs_owner = str(obs_row.get("owner", "")).strip()
+        obs_question = str(obs_row.get("question", "")).strip()
         obs_inv = str(obs_row.get("invariant", "")).strip()
         obs_status = str(obs_row.get("status", "")).strip()
 
@@ -967,6 +976,13 @@ def validate_agent_abstraction_registry(repo_root: Path = ROOT) -> ValidationRes
                 AGENT_ABSTRACTION_STACK_JSON_PATH,
                 f"#/layers/{lid}/owner",
                 f"Layer '{lid}' owner mismatch: JSON has '{obs_owner}', Markdown has '{md_owner}'",
+            )
+        if obs_question != md_question:
+            result.add_error(
+                ERR_AGT_REGISTRY_DRIFT,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                f"#/layers/{lid}/question",
+                f"Layer '{lid}' question mismatch: JSON has '{obs_question}', Markdown has '{md_question}'",
             )
         if obs_inv != md_inv:
             result.add_error(
@@ -1363,7 +1379,7 @@ def validate_agent_abstraction_registry(repo_root: Path = ROOT) -> ValidationRes
                 f"AGT-LAYER-006 invariant must be INV-104, got '{inv}'",
             )
         prohibition = str(layer_006.get("prohibition", "")).strip()
-        if "Cannot collapse uncertainty into truth without adjudication." not in prohibition:
+        if prohibition != "Cannot collapse uncertainty into truth without adjudication.":
             result.add_error(
                 ERR_AGT_INVARIANT_VIOLATION,
                 AGENT_ABSTRACTION_STACK_JSON_PATH,
