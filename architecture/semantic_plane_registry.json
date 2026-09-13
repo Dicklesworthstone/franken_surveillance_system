@@ -99,6 +99,8 @@
     "crates/fss-reference/src/extrinsics.rs": "authority",
     "crates/fss-reference/src/hydration.rs": "support",
     "crates/fss-reference/src/hydration_tests.rs": "support",
+    "crates/fss-reference/src/ingest/mjpeg.rs": "support",
+    "crates/fss-reference/src/ingest/mod.rs": "support",
     "crates/fss-reference/src/lib.rs": "support",
     "crates/fss-reference/src/meaningful_delta.rs": "cognition",
     "crates/fss-reference/src/meaningful_delta_tests.rs": "support",
