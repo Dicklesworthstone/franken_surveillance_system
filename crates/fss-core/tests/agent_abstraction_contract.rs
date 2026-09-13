@@ -7,6 +7,9 @@ use std::collections::BTreeSet;
 use std::error::Error;
 use std::str::FromStr;
 
+use fss_core::abstraction::{
+    AuthorityAnchor, AuthorityContext, CurrentAnchorSource,
+};
 use fss_core::belief::BeliefInterval;
 use fss_core::effect::{Obligation, ObligationState};
 use fss_core::region::{
@@ -879,7 +882,7 @@ fn test_planted_negative_world_fact_validation_failures() -> Result<(), Box<dyn 
     let Err(err) = res else {
         return Err("expected error for empty anchor lineage".into());
     };
-    assert_eq!(err, ContractError::InvalidIdentifier);
+    assert_eq!(err, ContractError::DerivedBeliefMissingAnchor);
 
     // 4. Zero generation fails closed
     let res = WorldFact::new(
@@ -993,6 +996,7 @@ fn test_planted_negative_world_fact_validation_failures() -> Result<(), Box<dyn 
 #[test]
 fn test_negative_read_claim_requires_coverage_witness() -> Result<(), Box<dyn Error>> {
     let anchor = sample_anchor();
+    let authority = AuthorityAnchor::from_authority(anchor.clone())?;
     let mut target_domain = BTreeSet::new();
     target_domain.insert("zone:north_perimeter".to_string());
 
@@ -1006,7 +1010,7 @@ fn test_negative_read_claim_requires_coverage_witness() -> Result<(), Box<dyn Er
         coverage_witness: None,
     };
 
-    let Err(err) = evaluate_negative_read(&claim, &anchor) else {
+    let Err(err) = evaluate_negative_read(&claim, &authority) else {
         return Err("expected error for uncertified coverage".into());
     };
     assert_eq!(err, ContractError::CoverageUncertified);
@@ -1017,6 +1021,7 @@ fn test_negative_read_claim_requires_coverage_witness() -> Result<(), Box<dyn Er
 #[test]
 fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<dyn Error>> {
     let anchor = sample_anchor();
+    let authority = AuthorityAnchor::from_authority(anchor.clone())?;
     let mut target_domain = BTreeSet::new();
     target_domain.insert("zone:north_perimeter".to_string());
 
@@ -1035,7 +1040,7 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
         target_generation: 1,
         coverage_witness: Some(witness),
     };
-    let Err(err) = evaluate_negative_read(&claim, &anchor) else {
+    let Err(err) = evaluate_negative_read(&claim, &authority) else {
         return Err("expected error for gapped coverage".into());
     };
     assert_eq!(err, ContractError::CoverageUncertified);
@@ -1055,7 +1060,7 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
         target_generation: 1,
         coverage_witness: Some(witness),
     };
-    let Err(err) = evaluate_negative_read(&claim, &anchor) else {
+    let Err(err) = evaluate_negative_read(&claim, &authority) else {
         return Err("expected error for partial coverage".into());
     };
     assert_eq!(err, ContractError::CoverageUncertified);
@@ -1075,7 +1080,7 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
         target_generation: 1,
         coverage_witness: Some(witness),
     };
-    let Err(err) = evaluate_negative_read(&claim, &anchor) else {
+    let Err(err) = evaluate_negative_read(&claim, &authority) else {
         return Err("expected error for budget exhausted stop reason".into());
     };
     assert_eq!(err, ContractError::CoverageUncertified);
@@ -1097,7 +1102,7 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
         target_generation: 1,
         coverage_witness: Some(witness),
     };
-    let Err(err) = evaluate_negative_read(&claim, &anchor) else {
+    let Err(err) = evaluate_negative_read(&claim, &authority) else {
         return Err("expected error for non-empty excluded domain".into());
     };
     assert_eq!(err, ContractError::CoverageUncertified);
@@ -1116,7 +1121,7 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
         target_generation: 1,
         coverage_witness: Some(witness),
     };
-    let Err(err) = evaluate_negative_read(&claim, &anchor) else {
+    let Err(err) = evaluate_negative_read(&claim, &authority) else {
         return Err("expected error for domain mismatch".into());
     };
     assert_eq!(err, ContractError::CoverageUncertified);
@@ -1135,7 +1140,7 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
         target_generation: 1,
         coverage_witness: Some(witness),
     };
-    let Err(err) = evaluate_negative_read(&claim, &anchor) else {
+    let Err(err) = evaluate_negative_read(&claim, &authority) else {
         return Err("expected error for predicate mismatch".into());
     };
     assert_eq!(err, ContractError::CoverageUncertified);
@@ -1150,81 +1155,103 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
         claim_id: "neg_claim:gen_mismatch".to_string(),
         query_predicate: "no_unauthorized_intrusion".to_string(),
         anchor: anchor.clone(),
-        target_domain,
+        target_domain: target_domain.clone(),
         target_generation: 2, // Witness has gen 1
         coverage_witness: Some(witness),
     };
-    let Err(err) = evaluate_negative_read(&claim, &anchor) else {
+    let Err(err) = evaluate_negative_read(&claim, &authority) else {
         return Err("expected error for generation mismatch".into());
     };
     assert_eq!(err, ContractError::GenerationConflict);
 
-    // 8. Anchor lineage mismatch
+    // 8. (Check 1, RM7) Witness anchor mismatch from claim anchor:
+    // Witness is at authority anchor, but claim has different anchor.
     let witness = sample_witness(
         "no_unauthorized_intrusion",
         &["zone:north_perimeter"],
         &["zone:north_perimeter"],
     );
-    let mut rogue_anchor = anchor.clone();
-    rogue_anchor.site_lineage = "site:rogue_lineage".to_string();
-    let mut target_domain = BTreeSet::new();
-    target_domain.insert("zone:north_perimeter".to_string());
+    let mut different_claim_anchor = anchor.clone();
+    different_claim_anchor.commit_sequence += 1;
     let claim = NegativeReadClaim {
-        claim_id: "neg_claim:stale_anchor".to_string(),
+        claim_id: "neg_claim:witness_claim_anchor_mismatch".to_string(),
         query_predicate: "no_unauthorized_intrusion".to_string(),
-        anchor: rogue_anchor,
-        target_domain,
+        anchor: different_claim_anchor,
+        target_domain: target_domain.clone(),
         target_generation: 1,
         coverage_witness: Some(witness),
     };
-    let Err(err) = evaluate_negative_read(&claim, &anchor) else {
-        return Err("expected error for stale anchor".into());
+    let Err(err) = evaluate_negative_read(&claim, &authority) else {
+        return Err("expected error for witness != claim anchor (RM7)".into());
     };
     assert_eq!(err, ContractError::StaleAnchor);
 
-    // 9. Anchor epoch/seq_no mismatch (stale anchor)
+    // 9. (Check 2, RM3) Site lineage mismatch:
+    // Witness and claim match each other, but have different site lineage from authority.
+    let mut other_site_anchor = anchor.clone();
+    other_site_anchor.site_lineage = "site:other_lineage".to_string();
+    let mut other_witness = sample_witness(
+        "no_unauthorized_intrusion",
+        &["zone:north_perimeter"],
+        &["zone:north_perimeter"],
+    );
+    other_witness.anchor = other_site_anchor.clone();
+    let claim = NegativeReadClaim {
+        claim_id: "neg_claim:site_lineage_mismatch".to_string(),
+        query_predicate: "no_unauthorized_intrusion".to_string(),
+        anchor: other_site_anchor,
+        target_domain: target_domain.clone(),
+        target_generation: 1,
+        coverage_witness: Some(other_witness),
+    };
+    let Err(err) = evaluate_negative_read(&claim, &authority) else {
+        return Err("expected error for site lineage mismatch (RM3)".into());
+    };
+    assert_eq!(err, ContractError::StaleAnchor);
+
+    // 10. (Check 3, RM4) Strictly older commit sequence/epoch (stale anchor):
+    // Witness and claim match, same lineage, but sequence is older than authority anchor.
     let witness = sample_witness(
         "no_unauthorized_intrusion",
         &["zone:north_perimeter"],
         &["zone:north_perimeter"],
     );
-    let mut stale_anchor = anchor.clone();
-    stale_anchor.ledger_epoch += 1;
-    let mut target_domain = BTreeSet::new();
-    target_domain.insert("zone:north_perimeter".to_string());
+    let mut newer_authority_anchor = anchor.clone();
+    newer_authority_anchor.commit_sequence += 5;
+    let newer_authority = AuthorityAnchor::from_authority(newer_authority_anchor)?;
     let claim = NegativeReadClaim {
-        claim_id: "neg_claim:stale_epoch".to_string(),
+        claim_id: "neg_claim:stale_sequence".to_string(),
         query_predicate: "no_unauthorized_intrusion".to_string(),
-        anchor: stale_anchor,
-        target_domain,
+        anchor: anchor.clone(),
+        target_domain: target_domain.clone(),
         target_generation: 1,
         coverage_witness: Some(witness),
     };
-    let Err(err) = evaluate_negative_read(&claim, &anchor) else {
-        return Err("expected error for stale anchor epoch".into());
+    let Err(err) = evaluate_negative_read(&claim, &newer_authority) else {
+        return Err("expected error for strictly older sequence (RM4)".into());
     };
     assert_eq!(err, ContractError::StaleAnchor);
 
-    // 10. Stale witness relative to newer caller current_anchor (KSTATE-005)
+    // 11. (Check 4, RM8) Divergent state root at same sequence:
+    // Witness and claim match, same lineage and sequence, but different state root from authority.
+    let mut forked_authority_anchor = anchor.clone();
+    forked_authority_anchor.state_root = ContentDigest::sha256(b"forked_authority_state_root");
+    let forked_authority = AuthorityAnchor::from_authority(forked_authority_anchor)?;
     let witness = sample_witness(
         "no_unauthorized_intrusion",
         &["zone:north_perimeter"],
         &["zone:north_perimeter"],
     );
-    let mut newer_anchor = anchor.clone();
-    newer_anchor.commit_sequence += 5;
-    let mut target_domain = BTreeSet::new();
-    target_domain.insert("zone:north_perimeter".to_string());
     let claim = NegativeReadClaim {
-        claim_id: "neg_claim:stale_witness".to_string(),
+        claim_id: "neg_claim:divergent_state_root".to_string(),
         query_predicate: "no_unauthorized_intrusion".to_string(),
         anchor: anchor.clone(),
         target_domain,
         target_generation: 1,
         coverage_witness: Some(witness),
     };
-    let Err(err) = evaluate_negative_read(&claim, &newer_anchor) else {
-        return Err("expected error for stale witness relative to current_anchor".into());
+    let Err(err) = evaluate_negative_read(&claim, &forked_authority) else {
+        return Err("expected error for divergent state root (RM8)".into());
     };
     assert_eq!(err, ContractError::StaleAnchor);
 
@@ -1232,8 +1259,179 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
 }
 
 #[test]
+fn test_negative_read_outcome_from_witness_direct_contracts() -> Result<(), Box<dyn Error>> {
+    let anchor = sample_anchor();
+    let authority = AuthorityAnchor::from_authority(anchor.clone())?;
+    let mut target_domain = BTreeSet::new();
+    target_domain.insert("zone:north_perimeter".to_string());
+
+    // 1. Direct construction succeeds with valid parameters (generation taken from claim)
+    let witness = sample_witness(
+        "no_unauthorized_intrusion",
+        &["zone:north_perimeter"],
+        &["zone:north_perimeter"],
+    );
+    let outcome = NegativeReadOutcome::from_witness(
+        "neg_claim:direct_ok",
+        "no_unauthorized_intrusion",
+        anchor.clone(),
+        target_domain.clone(),
+        &witness,
+        &authority,
+        1,
+    )?;
+    assert_eq!(outcome.claim_id(), "neg_claim:direct_ok");
+    assert_eq!(outcome.query_predicate(), "no_unauthorized_intrusion");
+    assert_eq!(outcome.anchor(), &anchor);
+    assert_eq!(outcome.certified_domain(), &target_domain);
+    assert_eq!(outcome.witness_digest(), witness.witness_digest());
+    assert_eq!(outcome.generation(), 1);
+
+    // 2. RM9 killer: Dropping require_certified_absence in from_witness must fail
+    let mut uncertified_witness = sample_witness(
+        "no_unauthorized_intrusion",
+        &["zone:north_perimeter"],
+        &["zone:north_perimeter"],
+    );
+    uncertified_witness.stop_reason = CoverageStopReason::BudgetExhausted;
+    let res = NegativeReadOutcome::from_witness(
+        "neg_claim:rm9_direct",
+        "no_unauthorized_intrusion",
+        anchor.clone(),
+        target_domain.clone(),
+        &uncertified_witness,
+        &authority,
+        1,
+    );
+    assert!(matches!(res, Err(ContractError::CoverageUncertified)));
+
+    // 3. RM7 killer: Dropping witness.anchor != anchor in from_witness must fail
+    let mut different_anchor = anchor.clone();
+    different_anchor.commit_sequence += 1;
+    let res = NegativeReadOutcome::from_witness(
+        "neg_claim:rm7_direct",
+        "no_unauthorized_intrusion",
+        different_anchor,
+        target_domain.clone(),
+        &witness,
+        &authority,
+        1,
+    );
+    assert!(matches!(res, Err(ContractError::StaleAnchor)));
+
+    // 4. RM3 in from_witness: site lineage mismatch
+    let mut other_site_anchor = anchor.clone();
+    other_site_anchor.site_lineage = "site:other".to_string();
+    let other_site_authority = AuthorityAnchor::from_authority(other_site_anchor)?;
+    let res = NegativeReadOutcome::from_witness(
+        "neg_claim:rm3_direct",
+        "no_unauthorized_intrusion",
+        anchor.clone(),
+        target_domain.clone(),
+        &witness,
+        &other_site_authority,
+        1,
+    );
+    assert!(matches!(res, Err(ContractError::StaleAnchor)));
+
+    // 5. RM4 in from_witness: strictly older sequence
+    let mut newer_anchor = anchor.clone();
+    newer_anchor.commit_sequence += 1;
+    let newer_authority = AuthorityAnchor::from_authority(newer_anchor)?;
+    let res = NegativeReadOutcome::from_witness(
+        "neg_claim:rm4_direct",
+        "no_unauthorized_intrusion",
+        anchor.clone(),
+        target_domain.clone(),
+        &witness,
+        &newer_authority,
+        1,
+    );
+    assert!(matches!(res, Err(ContractError::StaleAnchor)));
+
+    // 6. RM8 in from_witness: divergent state root at same sequence
+    let mut forked_anchor = anchor.clone();
+    forked_anchor.state_root = ContentDigest::sha256(b"forked_anchor_state_root");
+    let forked_authority = AuthorityAnchor::from_authority(forked_anchor)?;
+    let res = NegativeReadOutcome::from_witness(
+        "neg_claim:rm8_direct",
+        "no_unauthorized_intrusion",
+        anchor.clone(),
+        target_domain.clone(),
+        &witness,
+        &forked_authority,
+        1,
+    );
+    assert!(matches!(res, Err(ContractError::StaleAnchor)));
+
+    // 7. Generation mismatch or zero generation fails closed (N6)
+    let res = NegativeReadOutcome::from_witness(
+        "neg_claim:gen_zero",
+        "no_unauthorized_intrusion",
+        anchor.clone(),
+        target_domain.clone(),
+        &witness,
+        &authority,
+        0,
+    );
+    assert!(matches!(res, Err(ContractError::GenerationConflict)));
+
+    let res = NegativeReadOutcome::from_witness(
+        "neg_claim:gen_mismatch",
+        "no_unauthorized_intrusion",
+        anchor,
+        target_domain,
+        &witness,
+        &authority,
+        99,
+    );
+    assert!(matches!(res, Err(ContractError::GenerationConflict)));
+
+    Ok(())
+}
+
+#[test]
+fn test_authority_context_and_contract_basis_as_current_anchor_source() -> Result<(), Box<dyn Error>> {
+    let anchor = sample_anchor();
+    let basis = fss_core::contract_basis::reference_contract_basis();
+
+    // 1. AuthorityContext implements CurrentAnchorSource
+    let auth_ctx = AuthorityContext::new(&basis, anchor.clone())?;
+    assert_eq!(auth_ctx.current_anchor(), &anchor);
+    assert_eq!(auth_ctx.contract_basis(), &basis);
+
+    let witness = sample_witness(
+        "no_unauthorized_intrusion",
+        &["zone:north_perimeter"],
+        &["zone:north_perimeter"],
+    );
+    let mut target_domain = BTreeSet::new();
+    target_domain.insert("zone:north_perimeter".to_string());
+    let claim = NegativeReadClaim {
+        claim_id: "neg_claim:auth_ctx_ok".to_string(),
+        query_predicate: "no_unauthorized_intrusion".to_string(),
+        anchor: anchor.clone(),
+        target_domain: target_domain.clone(),
+        target_generation: 1,
+        coverage_witness: Some(witness.clone()),
+    };
+
+    let outcome = evaluate_negative_read(&claim, &auth_ctx)?;
+    assert_eq!(outcome.claim_id(), "neg_claim:auth_ctx_ok");
+
+    // 2. (&ContractBasis, &LedgerAnchor) tuple implements CurrentAnchorSource
+    let tuple_source = (&basis, &anchor);
+    assert_eq!(tuple_source.current_anchor(), &anchor);
+    let outcome_tuple = evaluate_negative_read(&claim, &tuple_source)?;
+    assert_eq!(outcome_tuple.claim_id(), "neg_claim:auth_ctx_ok");
+
+    Ok(())
+}
+
+#[test]
 fn test_negative_read_claim_with_certified_absence_succeeds() -> Result<(), Box<dyn Error>> {
     let anchor = sample_anchor();
+    let authority = AuthorityAnchor::from_authority(anchor.clone())?;
     let mut target_domain = BTreeSet::new();
     target_domain.insert("zone:north_perimeter".to_string());
     target_domain.insert("zone:east_perimeter".to_string());
@@ -1253,7 +1451,7 @@ fn test_negative_read_claim_with_certified_absence_succeeds() -> Result<(), Box<
         coverage_witness: Some(witness.clone()),
     };
 
-    let outcome = evaluate_negative_read(&claim, &anchor)?;
+    let outcome = evaluate_negative_read(&claim, &authority)?;
     assert_eq!(outcome.claim_id(), "neg_claim:certified_ok");
     assert_eq!(outcome.query_predicate(), "no_unauthorized_intrusion");
     assert_eq!(outcome.anchor(), &anchor);
@@ -1268,7 +1466,8 @@ fn test_negative_read_claim_with_certified_absence_succeeds() -> Result<(), Box<
         anchor.clone(),
         target_domain.clone(),
         &witness,
-        &anchor,
+        &authority,
+        1,
     )?;
     assert_eq!(direct.claim_id(), "neg_claim:direct_ok");
     assert_eq!(direct.query_predicate(), "no_unauthorized_intrusion");
@@ -1277,26 +1476,13 @@ fn test_negative_read_claim_with_certified_absence_succeeds() -> Result<(), Box<
     assert_eq!(direct.witness_digest(), witness.witness_digest());
     assert_eq!(direct.generation(), 1);
 
-    // from_witness with stale current_anchor fails closed
-    let mut newer_current = anchor.clone();
-    newer_current.commit_sequence += 1;
-    let stale_res = NegativeReadOutcome::from_witness(
-        "neg_claim:direct_stale",
-        "no_unauthorized_intrusion",
-        anchor.clone(),
-        target_domain.clone(),
-        &witness,
-        &newer_current,
-    );
-    assert!(matches!(stale_res, Err(ContractError::StaleAnchor)));
-
-    // Canonical roundtrip
+    // Canonical roundtrip with verified decode
     let mut encoder = CanonicalEncoder::new();
     outcome.encode_canonical(&mut encoder);
     let encoded = encoder.finish();
 
     let mut decoder = CanonicalDecoder::new(&encoded);
-    let decoded = NegativeReadOutcome::decode_canonical(&mut decoder)?;
+    let decoded = NegativeReadOutcome::decode_verified(&mut decoder, &witness, &authority)?;
     assert_eq!(decoded, outcome);
 
     Ok(())
@@ -1305,7 +1491,13 @@ fn test_negative_read_claim_with_certified_absence_succeeds() -> Result<(), Box<
 #[test]
 fn test_negative_read_outcome_decode_invariants() -> Result<(), Box<dyn Error>> {
     let anchor = sample_anchor();
-    let witness_digest = ContentDigest::sha256(b"sample_witness_digest");
+    let authority = AuthorityAnchor::from_authority(anchor.clone())?;
+    let witness = sample_witness(
+        "no_unauthorized_intrusion",
+        &["zone:a", "zone:b"],
+        &["zone:a", "zone:b"],
+    );
+    let witness_digest = witness.witness_digest();
 
     // 1. Non-canonical ordering (duplicate or unsorted items in certified_domain)
     let mut encoder = CanonicalEncoder::new();
@@ -1320,7 +1512,7 @@ fn test_negative_read_outcome_decode_invariants() -> Result<(), Box<dyn Error>> 
     let bytes = encoder.finish();
 
     let mut decoder = CanonicalDecoder::new(&bytes);
-    let Err(err) = NegativeReadOutcome::decode_canonical(&mut decoder) else {
+    let Err(err) = NegativeReadOutcome::decode_verified(&mut decoder, &witness, &authority) else {
         return Err("expected error for non-canonical ordering".into());
     };
     assert_eq!(err, ContractError::NonCanonicalOrdering);
@@ -1338,7 +1530,7 @@ fn test_negative_read_outcome_decode_invariants() -> Result<(), Box<dyn Error>> 
     let bytes = encoder.finish();
 
     let mut decoder = CanonicalDecoder::new(&bytes);
-    let Err(err) = NegativeReadOutcome::decode_canonical(&mut decoder) else {
+    let Err(err) = NegativeReadOutcome::decode_verified(&mut decoder, &witness, &authority) else {
         return Err("expected error for duplicate domain items".into());
     };
     assert_eq!(err, ContractError::NonCanonicalOrdering);
@@ -1355,7 +1547,7 @@ fn test_negative_read_outcome_decode_invariants() -> Result<(), Box<dyn Error>> 
     let bytes = encoder.finish();
 
     let mut decoder = CanonicalDecoder::new(&bytes);
-    let Err(err) = NegativeReadOutcome::decode_canonical(&mut decoder) else {
+    let Err(err) = NegativeReadOutcome::decode_verified(&mut decoder, &witness, &authority) else {
         return Err("expected error for zero generation".into());
     };
     assert_eq!(err, ContractError::GenerationConflict);
@@ -1375,7 +1567,7 @@ fn test_negative_read_outcome_decode_invariants() -> Result<(), Box<dyn Error>> 
     let bytes = encoder.finish();
 
     let mut decoder = CanonicalDecoder::new(&bytes);
-    let Err(err) = NegativeReadOutcome::decode_canonical(&mut decoder) else {
+    let Err(err) = NegativeReadOutcome::decode_verified(&mut decoder, &witness, &authority) else {
         return Err("expected error for zero witness digest".into());
     };
     assert_eq!(err, ContractError::InvalidDigest);
@@ -1392,7 +1584,7 @@ fn test_negative_read_outcome_decode_invariants() -> Result<(), Box<dyn Error>> 
     let bytes = encoder.finish();
 
     let mut decoder = CanonicalDecoder::new(&bytes);
-    let Err(err) = NegativeReadOutcome::decode_canonical(&mut decoder) else {
+    let Err(err) = NegativeReadOutcome::decode_verified(&mut decoder, &witness, &authority) else {
         return Err("expected error for empty claim_id".into());
     };
     assert_eq!(err, ContractError::InvalidIdentifier);
@@ -1409,10 +1601,32 @@ fn test_negative_read_outcome_decode_invariants() -> Result<(), Box<dyn Error>> 
     let bytes = encoder.finish();
 
     let mut decoder = CanonicalDecoder::new(&bytes);
-    let Err(err) = NegativeReadOutcome::decode_canonical(&mut decoder) else {
+    let Err(err) = NegativeReadOutcome::decode_verified(&mut decoder, &witness, &authority) else {
         return Err("expected error for malformed claim_id".into());
     };
     assert_eq!(err, ContractError::InvalidIdentifier);
+
+    // 7. Witness digest mismatch rejected
+    let other_witness = sample_witness(
+        "no_unauthorized_intrusion",
+        &["zone:other"],
+        &["zone:other"],
+    );
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text("neg_claim:001");
+    encoder.text("no_unauthorized_intrusion");
+    anchor.encode_canonical(&mut encoder);
+    encoder.u64(1);
+    encoder.text("zone:a");
+    encoder.digest(other_witness.witness_digest()); // mismatched digest!
+    encoder.u64(1);
+    let bytes = encoder.finish();
+
+    let mut decoder = CanonicalDecoder::new(&bytes);
+    let Err(err) = NegativeReadOutcome::decode_verified(&mut decoder, &witness, &authority) else {
+        return Err("expected error for mismatched witness digest".into());
+    };
+    assert_eq!(err, ContractError::CoverageUncertified);
 
     Ok(())
 }
