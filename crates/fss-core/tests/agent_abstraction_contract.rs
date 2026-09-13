@@ -152,6 +152,54 @@ fn test_runtime_authority_and_custody_parse_and_resolution() -> Result<(), Box<d
 }
 
 #[test]
+fn test_planted_negative_runtime_authority_and_custody_bypasses() -> Result<(), Box<dyn Error>> {
+    let layer = AgentAbstractionLayer::RuntimeAuthorityAndCustody;
+
+    // Planted bypass 1: Runtime authority must NEVER be permitted to authorize effects directly.
+    assert!(!layer.may_authorize_effects());
+
+    // Planted bypass 2: Runtime authority plane must strictly be Authority, never Cognition or Effect.
+    assert_ne!(layer.plane(), Plane::Cognition);
+    assert_ne!(layer.plane(), Plane::Effect);
+    assert_eq!(layer.plane(), Plane::Authority);
+
+    // Planted bypass 3: Invariant must strictly be INV-006, not any other invariant.
+    assert_eq!(layer.invariant(), "INV-006");
+
+    // Planted bypass 4: Must strictly prohibit mission meaning inference.
+    assert!(layer.prohibits_mission_meaning_inference());
+
+    // Planted bypass 5: Must strictly prohibit physical truth inference.
+    assert!(layer.prohibits_physical_truth_inference());
+
+    // Planted bypass 6: Unknown, malformed, or out-of-range tower level must fail closed.
+    let Err(err_level) = AgentAbstractionLayer::from_tower_level(99) else {
+        return Err("expected out-of-bounds tower level to fail".into());
+    };
+    assert_eq!(err_level, ContractError::UnknownEntryTag(99));
+
+    // Planted bypass 7: Malformed or mutated ID must fail closed.
+    let Err(err_id) = AgentAbstractionLayer::from_id("AGT-LAYER-000") else {
+        return Err("expected unknown ID to fail".into());
+    };
+    assert_eq!(
+        err_id,
+        ContractError::UnknownAbstractionLayer("AGT-LAYER-000".into())
+    );
+
+    // Planted bypass 8: Case-sensitive name mismatch must fail closed.
+    let Err(err_name) = AgentAbstractionLayer::from_name("Runtime_Authority_And_Custody") else {
+        return Err("expected uppercase name to fail".into());
+    };
+    assert_eq!(
+        err_name,
+        ContractError::UnknownAbstractionLayer("Runtime_Authority_And_Custody".into())
+    );
+
+    Ok(())
+}
+
+#[test]
 fn test_pinned_generation_and_freeze_digest_constants() -> Result<(), Box<dyn Error>> {
     use fss_core::{
         AGENT_ABSTRACTIONS_FREEZE_DIGEST, AGENT_ABSTRACTIONS_GENERATION, CANONICAL_LAYERS,
