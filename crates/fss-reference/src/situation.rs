@@ -367,6 +367,13 @@ pub fn compile_reference_situation(
         }
         .validated()?,
     );
+    // A tamper report is neutral for the physical claim but is evidence against sensor integrity:
+    // it is surfaced as its own contradicted claim, never dropped.
+    if let Some(integrity_cell) =
+        sensor_integrity_cell(event_name, &request.decision.event.evidence)?
+    {
+        knowledge_cells.push(integrity_cell);
+    }
 
     let mut coverage_proof_root = None;
     let (absence_certified, absence_non_pass_reason, absence_cell) = if request.decision.event.state
@@ -1187,6 +1194,27 @@ fn compile_worlds(params: WorldCompilationParams<'_>) -> (WorldEnvelope, Vec<Str
         }
     }
 
+    // Sensor tamper is neutral as evidence but never invisible as risk: a protected adversarial
+    // world names it and the tampered roots, and at_risk states it.
+    let tamper_roots = sensor_tamper_roots(&params.decision.event.evidence);
+    if !tamper_roots.is_empty() {
+        at_risk.push(format!(
+            "Sensor tamper is reported by {} retained evidence root(s); sensor integrity is unestablished, so tampered coverage can neither support presence nor certify absence.",
+            tamper_roots.len()
+        ));
+        residuals.push(PossibleWorld {
+            world_id: format!("world:event:{event_name}:sensor-tamper"),
+            description: "A contributing sensor is tampered with (covered, moved, dazzled, replayed, or disconnected), so retained evidence may conceal or fabricate presence.".to_owned(),
+            claim_ids: BTreeSet::from([
+                params.policy_claim_id.to_owned(),
+                sensor_integrity_claim_id(event_name),
+            ]),
+            evidence: tamper_roots,
+            consequence_severity: 5,
+            protected: true,
+        });
+    }
+
     let identity = world_identity(
         params.anchor,
         params.objective_id,
@@ -1434,6 +1462,51 @@ pub(crate) fn physical_knowledge_state(
         // Rejection refutes the candidate but does not certify physical absence.
         EventState::Rejected => KnowledgeState::Unknown,
     }
+}
+
+/// Claim identity of the sensor-integrity cell for `event_name`.
+pub(crate) fn sensor_integrity_claim_id(event_name: &str) -> String {
+    format!("claim:event:{event_name}:sensor-integrity")
+}
+
+/// Digests of the retained edges that report a sensor-integrity risk.
+pub(crate) fn sensor_tamper_roots(evidence: &[fss_core::EventEvidence]) -> Vec<ContentDigest> {
+    evidence
+        .iter()
+        .filter(|edge| edge.reports_sensor_tamper())
+        .map(|edge| edge.digest)
+        .collect()
+}
+
+/// Compiles the sensor-integrity cell when retained evidence reports sensor tamper.
+///
+/// A `SensorTamper` edge neither supports nor contradicts physical presence, but it is evidence
+/// against the integrity of the sensing the event rests on. The integrity claim therefore carries
+/// the tamper roots as contradictions with no supporting root: `unknown` and disfavored, never
+/// established. A new or changed tamper root is therefore a contradiction delta, which is never
+/// coalesced; a cleared one retires the tamper world and is reported as a material change.
+pub(crate) fn sensor_integrity_cell(
+    event_name: &str,
+    evidence: &[fss_core::EventEvidence],
+) -> Result<Option<KnowledgeCell>, ReferenceError> {
+    let tamper = sensor_tamper_roots(evidence);
+    if tamper.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(
+        KnowledgeCell {
+            claim_id: sensor_integrity_claim_id(event_name),
+            statement: "Every sensor contributing to this event retains integrity: no tamper, replay, cover, dazzle, or disconnect is indicated.".to_owned(),
+            knowledge_state: KnowledgeState::Unknown,
+            provenance: ProvenanceClass::Derived,
+            hypothesis: Some(HypothesisDisposition::Disfavored),
+            evidence: Vec::new(),
+            contradictions: tamper,
+            valid_until: None,
+            state_basis: None,
+        }
+        .validated()?,
+    ))
 }
 
 pub(crate) fn physical_statement(state: EventState) -> &'static str {

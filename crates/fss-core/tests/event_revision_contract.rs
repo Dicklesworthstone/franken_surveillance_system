@@ -16,6 +16,8 @@
 
 use std::error::Error;
 
+use fss_core::event::EventTransitionError;
+
 use fss_core::{
     CaptureInterval, ContentDigest, ContractError, DecisionPath, EVENT_HYPOTHESIS_MAGIC,
     EVENT_HYPOTHESIS_SCHEMA, EVENT_HYPOTHESIS_VERSION_1, EVIDENCE_GRAPH_MAGIC,
@@ -905,8 +907,8 @@ fn test_failing_non_canonical_duplicate_keys_accepted() {
 }
 
 #[test]
-fn test_failing_evidence_graph_accepts_supersession_cycle() -> Result<(), Box<dyn std::error::Error>>
-{
+fn test_evidence_graph_rejects_supersession_fork_and_cycle()
+-> Result<(), Box<dyn std::error::Error>> {
     // BUG 8: EvidenceGraph accepts cycles in supersession edges
     let mut graph = sample_evidence_graph()?;
     let d1 = ContentDigest::sha256(b"node:1");
@@ -941,9 +943,46 @@ fn test_failing_evidence_graph_accepts_supersession_cycle() -> Result<(), Box<dy
         capsule_digest: None,
         identity_digest: None,
     });
+    // Edges carry only their target digest, so these two supersession edges say the root
+    // supersedes both nodes: a fork, refused as a fork.
+    let fork = graph.verify();
     assert!(
-        graph.verify().is_err(),
-        "Supersession cycles in evidence graph must be rejected"
+        matches!(
+            fork,
+            Err(EventDecodeError::Contradiction { field: "edges.relation", ref detail })
+                if detail.contains("fork rejected")
+        ),
+        "{fork:?}"
+    );
+
+    // The representable supersession cycle is an edge back to the graph's own root.
+    graph
+        .edges
+        .retain(|edge| edge.relation != EvidenceEdgeRelation::Supersedes);
+    let root = graph.root_digest;
+    graph.nodes.push(EvidenceNode {
+        digest: root,
+        kind: EvidenceNodeKind::EventHypothesis,
+        label: "Own Root".to_string(),
+        failure_domain: "domain:test".to_string(),
+    });
+    graph.edges.push(EventEvidence {
+        digest: root,
+        class: EvidenceClass::Derived,
+        failure_domain: "domain:test".to_string(),
+        supports: false,
+        relation: EvidenceEdgeRelation::Supersedes,
+        capsule_digest: None,
+        identity_digest: None,
+    });
+    let cycle = graph.verify();
+    assert!(
+        matches!(
+            cycle,
+            Err(EventDecodeError::Contradiction { field: "edges.relation", ref detail })
+                if detail.contains("cycle detected")
+        ),
+        "{cycle:?}"
     );
     Ok(())
 }
@@ -1254,8 +1293,8 @@ fn test_supports_flag_must_agree_with_relation_for_every_variant() -> Result<(),
     let relations: Vec<EvidenceEdgeRelation> = (0..=u8::MAX)
         .filter_map(|tag| EvidenceEdgeRelation::from_u8(tag).ok())
         .collect();
-    if relations.len() != 8 {
-        return Err(format!("expected 8 edge relations, found {}", relations.len()).into());
+    if relations.len() != 9 {
+        return Err(format!("expected 9 edge relations, found {}", relations.len()).into());
     }
     for relation in relations {
         // Only `Supports` may be flagged supporting; every other relation must be supports=false.
@@ -1294,6 +1333,186 @@ fn test_supports_flag_must_agree_with_relation_for_every_variant() -> Result<(),
 }
 
 #[test]
+fn test_count_helpers_read_the_relation_on_unverified_edges() {
+    let relations: Vec<EvidenceEdgeRelation> = (0..=u8::MAX)
+        .filter_map(|tag| EvidenceEdgeRelation::from_u8(tag).ok())
+        .collect();
+    for relation in relations {
+        for supports in [true, false] {
+            // Built directly and never verified, so the flag may disagree with the relation.
+            let mut edge = sample_evidence("cam-east-1", supports);
+            edge.relation = relation;
+            assert_eq!(
+                edge.counts_as_support(),
+                supports && relation == EvidenceEdgeRelation::Supports,
+                "{relation:?} supports={supports}"
+            );
+            assert_eq!(
+                edge.counts_as_contradiction(),
+                !supports && relation == EvidenceEdgeRelation::Contradicts,
+                "{relation:?} supports={supports}"
+            );
+            assert_eq!(
+                edge.reports_sensor_tamper(),
+                !supports && relation == EvidenceEdgeRelation::SensorTamper,
+                "{relation:?} supports={supports}"
+            );
+        }
+    }
+}
+
+fn graph_edge(digest: &[u8], supports: bool, relation: EvidenceEdgeRelation) -> EventEvidence {
+    EventEvidence {
+        digest: ContentDigest::sha256(digest),
+        class: EvidenceClass::Derived,
+        failure_domain: "domain:test".to_string(),
+        supports,
+        relation,
+        capsule_digest: None,
+        identity_digest: None,
+    }
+}
+
+#[test]
+fn test_graph_edge_queries_count_only_true_supports_and_contradicts() -> Result<(), Box<dyn Error>>
+{
+    let mut graph = sample_evidence_graph()?;
+    graph.edges = vec![
+        graph_edge(b"evidence:cam-east-1", true, EvidenceEdgeRelation::Supports),
+        graph_edge(
+            b"evidence:radar-east-1",
+            false,
+            EvidenceEdgeRelation::Contradicts,
+        ),
+        graph_edge(
+            b"receipt:model:yolo-pose-v1",
+            false,
+            EvidenceEdgeRelation::DerivedFrom,
+        ),
+        graph_edge(
+            b"capsule:cam-east-1",
+            false,
+            EvidenceEdgeRelation::SensorTamper,
+        ),
+    ];
+    graph.verify()?;
+    let supporting: Vec<_> = graph.supporting_edges().map(|edge| edge.digest).collect();
+    let contradicting: Vec<_> = graph
+        .contradicting_edges()
+        .map(|edge| edge.digest)
+        .collect();
+    assert_eq!(
+        supporting,
+        vec![ContentDigest::sha256(b"evidence:cam-east-1")]
+    );
+    assert_eq!(
+        contradicting,
+        vec![ContentDigest::sha256(b"evidence:radar-east-1")]
+    );
+    Ok(())
+}
+
+#[test]
+fn test_validate_reports_the_specific_cause() -> Result<(), Box<dyn Error>> {
+    let mut event = sample_genesis_event()?;
+    event.state = EventState::Witnessed;
+    // The reviewer's probe: a single derivation edge flagged supporting.
+    let mut edge = sample_evidence("cam-east-1", true);
+    edge.relation = EvidenceEdgeRelation::DerivedFrom;
+    event.evidence = vec![edge];
+    assert!(matches!(
+        event.verify(),
+        Err(EventDecodeError::Contradiction {
+            field: "evidence.supports",
+            ..
+        })
+    ));
+    assert_eq!(
+        event.validate(),
+        Err(ContractError::EvidenceRelationMismatch)
+    );
+
+    // A structural bound is neither missing evidence nor a relation mismatch.
+    let mut oversized = sample_evidence("cam-east-1", true);
+    oversized.failure_domain = "d".repeat(MAX_FAILURE_DOMAIN_LEN + 1);
+    event.evidence = vec![oversized];
+    assert!(matches!(
+        event.verify(),
+        Err(EventDecodeError::OverLimitLength { .. })
+    ));
+    assert_eq!(event.validate(), Err(ContractError::EventRevisionMalformed));
+
+    // Missing and non-supporting evidence keep their own variants.
+    event.evidence = Vec::new();
+    assert_eq!(event.validate(), Err(ContractError::EvidenceRequired));
+    event.evidence = vec![sample_evidence("cam-east-1", false)];
+    assert_eq!(
+        event.validate(),
+        Err(ContractError::SupportingEvidenceRequired)
+    );
+    Ok(())
+}
+
+#[test]
+fn test_supporting_evidence_required_is_a_typed_transition_error() {
+    assert_eq!(
+        EventTransitionError::from(EventDecodeError::Contract(
+            ContractError::SupportingEvidenceRequired
+        )),
+        EventTransitionError::SupportingEvidenceRequired
+    );
+    assert_eq!(
+        EventTransitionError::from(EventDecodeError::Contract(ContractError::EvidenceRequired)),
+        EventTransitionError::EvidenceRequired
+    );
+}
+
+#[test]
+fn test_edge_schemas_encode_the_relation_supports_rule() -> Result<(), Box<dyn Error>> {
+    let relations: Vec<EvidenceEdgeRelation> = (0..=u8::MAX)
+        .filter_map(|tag| EvidenceEdgeRelation::from_u8(tag).ok())
+        .collect();
+    // The schemas express the rule as one if/then/else, so exactly one relation may support.
+    let flagged: Vec<_> = relations
+        .iter()
+        .filter(|relation| relation.required_supports_flag())
+        .collect();
+    let [supporting] = flagged.as_slice() else {
+        return Err(format!("expected one supporting relation, found {flagged:?}").into());
+    };
+    let rule = format!(
+        r#""if":{{"properties":{{"relation":{{"const":"{}"}}}}}},"then":{{"properties":{{"supports":{{"const":true}}}}}},"else":{{"properties":{{"supports":{{"const":false}}}}}}"#,
+        supporting.as_str()
+    );
+    let names: Vec<String> = relations
+        .iter()
+        .map(|relation| format!("\"{}\"", relation.as_str()))
+        .collect();
+    let relation_enum = format!(r#""relation":{{"enum":[{}]}}"#, names.join(","));
+    for (name, schema) in [
+        (
+            "event_hypothesis",
+            include_str!("../../../schemas/event_hypothesis.v1.json"),
+        ),
+        (
+            "evidence_graph",
+            include_str!("../../../schemas/evidence_graph.v1.json"),
+        ),
+    ] {
+        let compact: String = schema.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(
+            compact.contains(&rule),
+            "{name} schema must pin supports to the relation"
+        );
+        assert!(
+            compact.contains(&relation_enum),
+            "{name} schema relation enum must match the Rust relations"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn test_neutral_relations_neither_witness_nor_contradict() -> Result<(), Box<dyn Error>> {
     let mut event = sample_genesis_event()?;
     event.state = EventState::Witnessed;
@@ -1301,6 +1520,7 @@ fn test_neutral_relations_neither_witness_nor_contradict() -> Result<(), Box<dyn
         EvidenceEdgeRelation::Invalidates,
         EvidenceEdgeRelation::Explains,
         EvidenceEdgeRelation::DerivedFrom,
+        EvidenceEdgeRelation::SensorTamper,
     ] {
         // The reviewer's probe: a neutral relation flagged supporting is refused outright.
         let mut edge = sample_evidence("cam-east-1", true);

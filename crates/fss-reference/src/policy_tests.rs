@@ -299,13 +299,22 @@ fn unresolved_observations_are_neutral_edges_never_contradictions() -> Result<()
     let analysis = decision.event.analyze_corroboration();
     assert_eq!(analysis.supporting_count, 1);
     assert_eq!(analysis.contradicting_count, 0);
-    let neutral = decision
+    let relations: Vec<_> = decision
         .event
         .evidence
         .iter()
-        .filter(|edge| edge.relation == EvidenceEdgeRelation::DerivedFrom && !edge.supports)
+        .map(|edge| (edge.relation, edge.supports))
+        .collect();
+    // Unknown and Abstained are neutral derivations; TamperLike is typed as its own risk relation.
+    let neutral = relations
+        .iter()
+        .filter(|relation| **relation == (EvidenceEdgeRelation::DerivedFrom, false))
         .count();
-    assert_eq!(neutral, 3);
+    let tamper = relations
+        .iter()
+        .filter(|relation| **relation == (EvidenceEdgeRelation::SensorTamper, false))
+        .count();
+    assert_eq!((neutral, tamper), (2, 1));
 
     let _ = fs::remove_file(path);
     Ok(())

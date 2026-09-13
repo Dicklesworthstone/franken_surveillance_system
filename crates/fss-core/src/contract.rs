@@ -2670,6 +2670,10 @@ pub enum ContractError {
     EvidenceRequired,
     /// A witnessed revision retains evidence but no edge that counts as support for it.
     SupportingEvidenceRequired,
+    /// An evidence edge's `supports` flag disagrees with its relation.
+    EvidenceRelationMismatch,
+    /// An event revision violates a structural bound or field invariant.
+    EventRevisionMalformed,
     /// A transition requires independent corroboration.
     CorroborationRequired,
     /// Canonical ordering is violated.
@@ -2750,6 +2754,8 @@ impl ContractError {
             Self::UnknownEntryTag(_) => "unknown_entry_tag",
             Self::EvidenceRequired => "evidence_required",
             Self::SupportingEvidenceRequired => "supporting_evidence_required",
+            Self::EvidenceRelationMismatch => "evidence_relation_mismatch",
+            Self::EventRevisionMalformed => "event_revision_malformed",
             Self::CorroborationRequired => "corroboration_required",
             Self::NonCanonicalOrdering => "noncanonical_ordering",
             Self::StaleAnchor => "stale_anchor",
