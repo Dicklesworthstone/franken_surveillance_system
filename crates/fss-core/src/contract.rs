@@ -380,6 +380,12 @@ impl ProvenanceClass {
     pub const fn is_observed(self) -> bool {
         matches!(self, Self::Observed)
     }
+
+    /// Returns whether this provenance class represents deterministically computed derived beliefs (PROV-002).
+    #[must_use]
+    pub const fn is_derived(self) -> bool {
+        matches!(self, Self::Derived)
+    }
 }
 
 impl CanonicalEncode for ProvenanceClass {

@@ -431,9 +431,11 @@ impl KnowledgeCell {
     ///
     /// A state whose registry meaning names a basis is refused without it, and a basis is
     /// refused on any state it does not belong to.
-    /// An `observed` cell must bind source evidence anchors.
+    /// An `observed` or `derived` cell must bind source evidence or named input anchors.
     pub fn validate(&self) -> Result<(), ContractError> {
-        if self.provenance == ProvenanceClass::Observed && self.evidence.is_empty() {
+        if matches!(self.provenance, ProvenanceClass::Observed | ProvenanceClass::Derived)
+            && self.evidence.is_empty()
+        {
             return Err(ContractError::EvidenceRequired);
         }
         match (
@@ -475,6 +477,12 @@ impl KnowledgeCell {
     #[must_use]
     pub fn is_observed(&self) -> bool {
         self.provenance == ProvenanceClass::Observed
+    }
+
+    /// Returns whether this knowledge cell has derived provenance (PROV-002).
+    #[must_use]
+    pub fn is_derived(&self) -> bool {
+        self.provenance == ProvenanceClass::Derived
     }
 
     /// Returns whether this knowledge cell is an estimated proposition.
