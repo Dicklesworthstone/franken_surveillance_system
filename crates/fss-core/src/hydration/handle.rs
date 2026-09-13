@@ -168,6 +168,21 @@ impl SemanticHandle {
         self.levels.last().copied()
     }
 
+    /// Extracts and delivers a validated H4 laboratory expansion for this semantic handle.
+    pub fn to_h4_laboratory_expansion(
+        &self,
+        request: &HydrationRequest,
+        now: TimestampNs,
+        expansion: &H4LaboratoryExpansion,
+    ) -> Result<HydrationArtifact, HydrationError> {
+        if !self.levels.contains(&HydrationLevel::H4) {
+            return Err(HydrationError::LevelUnavailable);
+        }
+        let artifact = expansion.to_hydration_artifact()?;
+        request.validate_delivery(self, &artifact, now)?;
+        Ok(artifact)
+    }
+
     /// Returns the conservative cost of one exact level.
     #[must_use]
     pub fn estimated_cost(&self, level: HydrationLevel) -> Option<BudgetVector> {

@@ -123,10 +123,14 @@ pub use evidence::{
     SensorCapsule, SensorSourceBytesSpec,
 };
 pub use hydration::{
-    H0_CONTENT, H0_LEVEL_ID, H0_LEVEL_NAME, H0_SCHEMA, H0_SEMANTIC_OWNER, H0Identity,
-    H0IdentityParams, HYDRATION_VIEW_ID, HandleAvailability, HydrationArtifact, HydrationError,
-    HydrationLevel, HydrationPurpose, HydrationReceipt, HydrationReceiptSpec, HydrationRequest,
-    HydrationRequestSpec, HydrationResponse, LaboratoryAccess, SEMANTIC_HYDRATION_OWNER,
+    AlternateSystem, H0_CONTENT, H0_LEVEL_ID, H0_LEVEL_NAME, H0_SCHEMA, H0_SEMANTIC_OWNER,
+    H0Identity, H0IdentityParams, H4_CONTENT, H4_LEVEL_ID, H4_LEVEL_NAME, H4_OWNER, H4_SCHEMA,
+    H4LaboratoryExpansion, H4LaboratoryExpansionParams, HYDRATION_VIEW_ID, HandleAvailability,
+    HydrationArtifact, HydrationError, HydrationLevel, HydrationPurpose, HydrationReceipt,
+    HydrationReceiptSpec, HydrationRequest, HydrationRequestSpec, HydrationResponse,
+    IntermediateArtifact, LaboratoryAccess, LaboratoryQuarantine, MAX_H4_ALTERNATE_SYSTEMS,
+    MAX_H4_IDENTIFIER_LEN, MAX_H4_INTERMEDIATES, MAX_H4_METADATA_LEN, MAX_H4_ORACLE_COMPARISONS,
+    MAX_H4_PROOF_ROOTS, OracleComparison, ReplayBundleRef, SEMANTIC_HYDRATION_OWNER,
     SemanticHandle, SemanticHandleSpec, is_valid_h0_screened_field,
 };
 pub use identity::{

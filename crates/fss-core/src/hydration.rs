@@ -21,6 +21,7 @@ mod admission;
 mod artifact;
 mod error;
 mod h0;
+pub mod h4;
 mod handle;
 mod receipt;
 mod request;
@@ -30,6 +31,12 @@ pub use error::HydrationError;
 pub use h0::{
     H0_CONTENT, H0_LEVEL_ID, H0_LEVEL_NAME, H0_SCHEMA, H0_SEMANTIC_OWNER, H0Identity,
     H0IdentityParams, is_valid_h0_screened_field,
+};
+pub use h4::{
+    AlternateSystem, H4_CONTENT, H4_LEVEL_ID, H4_LEVEL_NAME, H4_OWNER, H4_SCHEMA,
+    H4LaboratoryExpansion, H4LaboratoryExpansionParams, IntermediateArtifact, LaboratoryQuarantine,
+    MAX_H4_ALTERNATE_SYSTEMS, MAX_H4_IDENTIFIER_LEN, MAX_H4_INTERMEDIATES, MAX_H4_METADATA_LEN,
+    MAX_H4_ORACLE_COMPARISONS, MAX_H4_PROOF_ROOTS, OracleComparison, ReplayBundleRef,
 };
 pub use handle::{SemanticHandle, SemanticHandleSpec};
 pub use receipt::{HydrationReceipt, HydrationReceiptSpec, HydrationResponse};
@@ -323,6 +330,18 @@ impl CanonicalEncode for HydrationPurpose {
     }
 }
 
+impl CanonicalDecode for HydrationPurpose {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        match decoder.text()? {
+            "routine" => Ok(Self::Routine),
+            "incident_adjudication" => Ok(Self::IncidentAdjudication),
+            "qualification" => Ok(Self::Qualification),
+            "debugging" => Ok(Self::Debugging),
+            _ => Err(ContractError::InvalidIdentifier),
+        }
+    }
+}
+
 /// Policy governing H4 laboratory expansion.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum LaboratoryAccess {
@@ -349,6 +368,17 @@ impl LaboratoryAccess {
 impl CanonicalEncode for LaboratoryAccess {
     fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
         encoder.text(self.as_str());
+    }
+}
+
+impl CanonicalDecode for LaboratoryAccess {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        match decoder.text()? {
+            "unavailable" => Ok(Self::Unavailable),
+            "qualification_only" => Ok(Self::QualificationOnly),
+            "qualification_or_debug_grant" => Ok(Self::QualificationOrDebugGrant),
+            _ => Err(ContractError::InvalidIdentifier),
+        }
     }
 }
 
