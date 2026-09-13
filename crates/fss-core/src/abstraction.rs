@@ -208,19 +208,19 @@ impl AgentAbstractionLayer {
                 "Case revision, hypotheses, support, contradictions, predicted observations, falsifiers, and stop rule."
             }
             Self::AffordanceFrontier => {
-                "Nondominated affordance frontier with value of information, resource cost, risk, reversibility, invalidators, and expected proof."
+                "Pareto frontier of read/control affordances with VOI, cost, risk, reversibility, invalidators, and proof."
             }
             Self::PlanAndEffect => {
-                "Prepared plan, commit ticket, effect receipts, obligation states, and reconciliation."
+                "Prepared plan, commit ticket, effect receipts, obligation states, and reconciliation path."
             }
             Self::OutcomeAndEpisode => {
-                "Immutable execution episode with observed outcome, attribution hypotheses, and resource ledger."
+                "Immutable execution episode with attribution hypotheses and resource ledger."
             }
             Self::LearningAndMemory => {
-                "Evidence-linked scoped proposal with counterexamples, harmful outcomes, and validation runbook."
+                "Evidence-linked scoped proposal with counterexamples, harmful outcomes, validation, and expiry."
             }
             Self::WorkspaceAndHandoff => {
-                "Versioned workspace revision, invalidation set, continuation leases, and root-last HandoffCapsule."
+                "Versioned workspace revision and root-last HandoffCapsule."
             }
         }
     }
@@ -230,25 +230,21 @@ impl AgentAbstractionLayer {
     pub const fn prohibition(self) -> &'static str {
         match self {
             Self::RuntimeAuthorityAndCustody => "Cannot infer mission meaning or physical truth.",
-            Self::SourceEvidence => {
-                "Cannot promote decode or model output into source evidence."
-            }
+            Self::SourceEvidence => "Cannot promote decode or model output into source evidence.",
             Self::WorldFactsAndCoverage => "Cannot include unqualified cognition as fact.",
-            Self::DerivedBeliefs => {
-                "Cannot authorize effects or certify absence beyond coverage."
-            }
+            Self::DerivedBeliefs => "Cannot authorize effects or certify absence beyond coverage.",
             Self::SituationCapsule => {
                 "Cannot hide decision-changing omissions or rebase evidence identities."
             }
             Self::InvestigationAndHypotheses => {
                 "Cannot collapse uncertainty into truth without adjudication."
             }
-            Self::AffordanceFrontier => "Cannot grant execution authority directly.",
-            Self::PlanAndEffect => "Cannot commit without current witnesses and idempotency key.",
-            Self::OutcomeAndEpisode => "Cannot mutate completed history or prune failed paths.",
-            Self::LearningAndMemory => "Cannot activate unshadowed policy without qualification.",
+            Self::AffordanceFrontier => "Cannot grant authority or use one opaque score.",
+            Self::PlanAndEffect => "Cannot execute prose or count dispatch as success.",
+            Self::OutcomeAndEpisode => "Cannot rewrite original predictions after outcome.",
+            Self::LearningAndMemory => "Cannot self-promote into active policy or truth.",
             Self::WorkspaceAndHandoff => {
-                "Cannot leave active obligations indeterminate or omit invalidations."
+                "Cannot preserve hidden conversational state or confer effect authority through custody."
             }
         }
     }
@@ -301,14 +297,14 @@ impl AgentAbstractionLayer {
         match self {
             Self::RuntimeAuthorityAndCustody
             | Self::SourceEvidence
-            | Self::WorldFactsAndCoverage
-            | Self::OutcomeAndEpisode
-            | Self::WorkspaceAndHandoff => Plane::Authority,
+            | Self::WorldFactsAndCoverage => Plane::Authority,
             Self::DerivedBeliefs
             | Self::SituationCapsule
             | Self::InvestigationAndHypotheses
             | Self::AffordanceFrontier
-            | Self::LearningAndMemory => Plane::Cognition,
+            | Self::OutcomeAndEpisode
+            | Self::LearningAndMemory
+            | Self::WorkspaceAndHandoff => Plane::Cognition,
             Self::PlanAndEffect => Plane::Effect,
         }
     }
@@ -318,11 +314,7 @@ impl AgentAbstractionLayer {
     pub const fn may_claim_authority(self) -> bool {
         matches!(
             self,
-            Self::RuntimeAuthorityAndCustody
-                | Self::SourceEvidence
-                | Self::WorldFactsAndCoverage
-                | Self::OutcomeAndEpisode
-                | Self::WorkspaceAndHandoff
+            Self::RuntimeAuthorityAndCustody | Self::SourceEvidence | Self::WorldFactsAndCoverage
         )
     }
 

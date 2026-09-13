@@ -76,6 +76,147 @@ fn test_normative_agent_abstraction_layers_census() -> Result<(), Box<dyn Error>
 }
 
 #[test]
+fn test_runtime_authority_and_custody_row_properties() -> Result<(), Box<dyn Error>> {
+    let layer = AgentAbstractionLayer::RuntimeAuthorityAndCustody;
+
+    // 1. Exact normative stable ID
+    assert_eq!(layer.id(), "AGT-LAYER-001");
+
+    // 2. Exact normative schema name
+    assert_eq!(layer.name(), "runtime_authority_and_custody");
+    assert_eq!(format!("{layer}"), "runtime_authority_and_custody");
+
+    // 3. Exact normative owner
+    assert_eq!(layer.owner(), "asupersync/authority/object owners");
+
+    // 4. Exact normative question
+    assert_eq!(
+        layer.agent_question(),
+        "What work, authority, budget, identity, time, and object custody exist?"
+    );
+
+    // 5. Exact normative output
+    assert_eq!(
+        layer.output(),
+        "Context, grants, regions, obligations, object roots, and receipts."
+    );
+
+    // 6. Exact normative prohibition
+    assert_eq!(
+        layer.prohibition(),
+        "Cannot infer mission meaning or physical truth."
+    );
+
+    // 7. Exact normative invariant
+    assert_eq!(layer.invariant(), "INV-006");
+
+    // 8. Exact normative status
+    assert_eq!(layer.status(), "normative");
+
+    // 9. Semantic plane: Authority
+    assert_eq!(layer.plane(), Plane::Authority);
+
+    // 10. Tower level: L0 (0-indexed: 0)
+    assert_eq!(layer.tower_level(), 0);
+
+    // 11. Authority plane permissions:
+    assert!(layer.may_claim_authority());
+    assert!(!layer.may_authorize_effects());
+
+    // 12. Helper predicates:
+    assert!(layer.is_runtime_authority_and_custody());
+    assert!(layer.prohibits_mission_meaning_inference());
+    assert!(layer.prohibits_physical_truth_inference());
+
+    // 13. Invariant validation passes:
+    layer.validate_invariants()?;
+
+    Ok(())
+}
+
+#[test]
+fn test_runtime_authority_and_custody_parse_and_resolution() -> Result<(), Box<dyn Error>> {
+    // Parse from stable ID
+    let from_id = AgentAbstractionLayer::from_id("AGT-LAYER-001")?;
+    assert_eq!(from_id, AgentAbstractionLayer::RuntimeAuthorityAndCustody);
+
+    // Parse from schema name
+    let from_name = AgentAbstractionLayer::from_name("runtime_authority_and_custody")?;
+    assert_eq!(from_name, AgentAbstractionLayer::RuntimeAuthorityAndCustody);
+
+    // Parse via FromStr with stable ID
+    let from_str_id = AgentAbstractionLayer::from_str("AGT-LAYER-001")?;
+    assert_eq!(
+        from_str_id,
+        AgentAbstractionLayer::RuntimeAuthorityAndCustody
+    );
+
+    // Parse via FromStr with schema name
+    let from_str_name = AgentAbstractionLayer::from_str("runtime_authority_and_custody")?;
+    assert_eq!(
+        from_str_name,
+        AgentAbstractionLayer::RuntimeAuthorityAndCustody
+    );
+
+    // Parse from tower level
+    let from_level = AgentAbstractionLayer::from_tower_level(0)?;
+    assert_eq!(
+        from_level,
+        AgentAbstractionLayer::RuntimeAuthorityAndCustody
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_planted_negative_runtime_authority_and_custody_bypasses() -> Result<(), Box<dyn Error>> {
+    let layer = AgentAbstractionLayer::RuntimeAuthorityAndCustody;
+
+    // Planted bypass 1: Runtime authority must NEVER be permitted to authorize effects directly.
+    assert!(!layer.may_authorize_effects());
+
+    // Planted bypass 2: Runtime authority plane must strictly be Authority, never Cognition or Effect.
+    assert_ne!(layer.plane(), Plane::Cognition);
+    assert_ne!(layer.plane(), Plane::Effect);
+    assert_eq!(layer.plane(), Plane::Authority);
+
+    // Planted bypass 3: Invariant must strictly be INV-006, not any other invariant.
+    assert_eq!(layer.invariant(), "INV-006");
+
+    // Planted bypass 4: Must strictly prohibit mission meaning inference.
+    assert!(layer.prohibits_mission_meaning_inference());
+
+    // Planted bypass 5: Must strictly prohibit physical truth inference.
+    assert!(layer.prohibits_physical_truth_inference());
+
+    // Planted bypass 6: Unknown, malformed, or out-of-range tower level must fail closed.
+    let Err(err_level) = AgentAbstractionLayer::from_tower_level(99) else {
+        return Err("expected out-of-bounds tower level to fail".into());
+    };
+    assert_eq!(err_level, ContractError::UnknownEntryTag(99));
+
+    // Planted bypass 7: Malformed or mutated ID must fail closed.
+    let Err(err_id) = AgentAbstractionLayer::from_id("AGT-LAYER-000") else {
+        return Err("expected unknown ID to fail".into());
+    };
+    assert_eq!(
+        err_id,
+        ContractError::UnknownAbstractionLayer("AGT-LAYER-000".into())
+    );
+
+    // Planted bypass 8: Case-sensitive name mismatch must fail closed.
+    let Err(err_name) = AgentAbstractionLayer::from_name("Runtime_Authority_And_Custody") else {
+        return Err("expected uppercase name to fail".into());
+    };
+    assert_eq!(
+        err_name,
+        ContractError::UnknownAbstractionLayer("Runtime_Authority_And_Custody".into())
+    );
+
+    Ok(())
+}
+
+#[test]
 fn test_pinned_generation_and_freeze_digest_constants() -> Result<(), Box<dyn Error>> {
     use fss_core::{
         AGENT_ABSTRACTIONS_FREEZE_DIGEST, AGENT_ABSTRACTIONS_GENERATION, CANONICAL_LAYERS,
@@ -754,22 +895,68 @@ fn test_planted_negative_world_fact_validation_failures() -> Result<(), Box<dyn 
     };
     assert_eq!(err, ContractError::GenerationConflict);
 
-    // 5. Prohibition: "Cannot include unqualified cognition as fact" (INV-063)
+    // 5. Zero evidence digest fails closed
+    let zero_digest = ContentDigest::new(DigestAlgorithm::Sha256, [0u8; 32]);
     let res = WorldFact::new(
         "fact:device:001",
         WorldFactKind::Device,
         anchor.clone(),
-        "Statement with unqualified cognition treated as fact".to_string(),
+        "Valid statement".to_string(),
+        ProvenanceClass::Observed,
+        zero_digest,
+        Generation(1),
+    );
+    let Err(err) = res else {
+        return Err("expected error for zero evidence digest".into());
+    };
+    assert_eq!(err, ContractError::InvalidDigest);
+
+    // 6. Malformed fact_id fails closed (validate_id rejects whitespace)
+    let res = WorldFact::new(
+        "fact device 001",
+        WorldFactKind::Device,
+        anchor.clone(),
+        "Valid statement".to_string(),
         ProvenanceClass::Observed,
         evidence,
         Generation(1),
     );
     let Err(err) = res else {
-        return Err("expected error for unqualified cognition".into());
+        return Err("expected error for malformed fact_id".into());
+    };
+    assert_eq!(err, ContractError::InvalidIdentifier);
+
+    // 7. Non-Observed provenance: ProvenanceClass::Derived fails closed
+    let res = WorldFact::new(
+        "fact:device:001",
+        WorldFactKind::Device,
+        anchor.clone(),
+        "Valid statement".to_string(),
+        ProvenanceClass::Derived,
+        evidence,
+        Generation(1),
+    );
+    let Err(err) = res else {
+        return Err("expected error for derived provenance in WorldFact".into());
     };
     assert_eq!(err, ContractError::EvidenceRequired);
 
-    // 6. Planted bypass: ProvenanceClass::Predicted fails closed
+    // 8. Non-Observed provenance: ProvenanceClass::VendorClaimed fails closed
+    let res = WorldFact::new(
+        "fact:device:001",
+        WorldFactKind::Device,
+        anchor.clone(),
+        "Valid statement".to_string(),
+        ProvenanceClass::VendorClaimed,
+        evidence,
+        Generation(1),
+    );
+    let Err(err) = res else {
+        return Err("expected error for vendor claimed provenance in WorldFact".into());
+    };
+    assert_eq!(err, ContractError::EvidenceRequired);
+
+    // 9. Non-Observed provenance: ProvenanceClass::Predicted fails closed
     let res = WorldFact::new(
         "fact:device:001",
         WorldFactKind::Device,
@@ -784,7 +971,7 @@ fn test_planted_negative_world_fact_validation_failures() -> Result<(), Box<dyn 
     };
     assert_eq!(err, ContractError::EvidenceRequired);
 
-    // 7. Planted bypass: ProvenanceClass::Remembered fails closed
+    // 10. Non-Observed provenance: ProvenanceClass::Remembered fails closed
     let res = WorldFact::new(
         "fact:device:001",
         WorldFactKind::Device,
@@ -812,13 +999,13 @@ fn test_negative_read_claim_requires_coverage_witness() -> Result<(), Box<dyn Er
     let claim = NegativeReadClaim {
         claim_id: "neg_claim:001".to_string(),
         query_predicate: "no_unauthorized_intrusion".to_string(),
-        anchor,
+        anchor: anchor.clone(),
         target_domain,
         target_generation: 1,
         coverage_witness: None,
     };
 
-    let Err(err) = evaluate_negative_read(&claim) else {
+    let Err(err) = evaluate_negative_read(&claim, &anchor) else {
         return Err("expected error for uncertified coverage".into());
     };
     assert_eq!(err, ContractError::CoverageUncertified);
@@ -847,7 +1034,7 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
         target_generation: 1,
         coverage_witness: Some(witness),
     };
-    let Err(err) = evaluate_negative_read(&claim) else {
+    let Err(err) = evaluate_negative_read(&claim, &anchor) else {
         return Err("expected error for gapped coverage".into());
     };
     assert_eq!(err, ContractError::CoverageUncertified);
@@ -867,7 +1054,7 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
         target_generation: 1,
         coverage_witness: Some(witness),
     };
-    let Err(err) = evaluate_negative_read(&claim) else {
+    let Err(err) = evaluate_negative_read(&claim, &anchor) else {
         return Err("expected error for partial coverage".into());
     };
     assert_eq!(err, ContractError::CoverageUncertified);
@@ -887,7 +1074,7 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
         target_generation: 1,
         coverage_witness: Some(witness),
     };
-    let Err(err) = evaluate_negative_read(&claim) else {
+    let Err(err) = evaluate_negative_read(&claim, &anchor) else {
         return Err("expected error for budget exhausted stop reason".into());
     };
     assert_eq!(err, ContractError::CoverageUncertified);
@@ -909,7 +1096,7 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
         target_generation: 1,
         coverage_witness: Some(witness),
     };
-    let Err(err) = evaluate_negative_read(&claim) else {
+    let Err(err) = evaluate_negative_read(&claim, &anchor) else {
         return Err("expected error for non-empty excluded domain".into());
     };
     assert_eq!(err, ContractError::CoverageUncertified);
@@ -928,7 +1115,7 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
         target_generation: 1,
         coverage_witness: Some(witness),
     };
-    let Err(err) = evaluate_negative_read(&claim) else {
+    let Err(err) = evaluate_negative_read(&claim, &anchor) else {
         return Err("expected error for domain mismatch".into());
     };
     assert_eq!(err, ContractError::CoverageUncertified);
@@ -947,7 +1134,7 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
         target_generation: 1,
         coverage_witness: Some(witness),
     };
-    let Err(err) = evaluate_negative_read(&claim) else {
+    let Err(err) = evaluate_negative_read(&claim, &anchor) else {
         return Err("expected error for predicate mismatch".into());
     };
     assert_eq!(err, ContractError::CoverageUncertified);
@@ -966,7 +1153,7 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
         target_generation: 2, // Witness has gen 1
         coverage_witness: Some(witness),
     };
-    let Err(err) = evaluate_negative_read(&claim) else {
+    let Err(err) = evaluate_negative_read(&claim, &anchor) else {
         return Err("expected error for generation mismatch".into());
     };
     assert_eq!(err, ContractError::GenerationConflict);
@@ -989,7 +1176,7 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
         target_generation: 1,
         coverage_witness: Some(witness),
     };
-    let Err(err) = evaluate_negative_read(&claim) else {
+    let Err(err) = evaluate_negative_read(&claim, &anchor) else {
         return Err("expected error for stale anchor".into());
     };
     assert_eq!(err, ContractError::StaleAnchor);
@@ -1000,7 +1187,7 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
         &["zone:north_perimeter"],
         &["zone:north_perimeter"],
     );
-    let mut stale_anchor = anchor;
+    let mut stale_anchor = anchor.clone();
     stale_anchor.ledger_epoch += 1;
     let mut target_domain = BTreeSet::new();
     target_domain.insert("zone:north_perimeter".to_string());
@@ -1012,8 +1199,31 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
         target_generation: 1,
         coverage_witness: Some(witness),
     };
-    let Err(err) = evaluate_negative_read(&claim) else {
+    let Err(err) = evaluate_negative_read(&claim, &anchor) else {
         return Err("expected error for stale anchor epoch".into());
+    };
+    assert_eq!(err, ContractError::StaleAnchor);
+
+    // 10. Stale witness relative to newer caller current_anchor (KSTATE-005)
+    let witness = sample_witness(
+        "no_unauthorized_intrusion",
+        &["zone:north_perimeter"],
+        &["zone:north_perimeter"],
+    );
+    let mut newer_anchor = anchor.clone();
+    newer_anchor.commit_sequence += 5;
+    let mut target_domain = BTreeSet::new();
+    target_domain.insert("zone:north_perimeter".to_string());
+    let claim = NegativeReadClaim {
+        claim_id: "neg_claim:stale_witness".to_string(),
+        query_predicate: "no_unauthorized_intrusion".to_string(),
+        anchor: anchor.clone(),
+        target_domain,
+        target_generation: 1,
+        coverage_witness: Some(witness),
+    };
+    let Err(err) = evaluate_negative_read(&claim, &newer_anchor) else {
+        return Err("expected error for stale witness relative to current_anchor".into());
     };
     assert_eq!(err, ContractError::StaleAnchor);
 
@@ -1042,13 +1252,42 @@ fn test_negative_read_claim_with_certified_absence_succeeds() -> Result<(), Box<
         coverage_witness: Some(witness.clone()),
     };
 
-    let outcome = evaluate_negative_read(&claim)?;
-    assert_eq!(outcome.claim_id, "neg_claim:certified_ok");
-    assert_eq!(outcome.query_predicate, "no_unauthorized_intrusion");
-    assert_eq!(outcome.anchor, anchor);
-    assert_eq!(outcome.certified_domain, target_domain);
-    assert_eq!(outcome.witness_digest, witness.witness_digest());
-    assert_eq!(outcome.generation, 1);
+    let outcome = evaluate_negative_read(&claim, &anchor)?;
+    assert_eq!(outcome.claim_id(), "neg_claim:certified_ok");
+    assert_eq!(outcome.query_predicate(), "no_unauthorized_intrusion");
+    assert_eq!(outcome.anchor(), &anchor);
+    assert_eq!(outcome.certified_domain(), &target_domain);
+    assert_eq!(outcome.witness_digest(), witness.witness_digest());
+    assert_eq!(outcome.generation(), 1);
+
+    // Direct construction via NegativeReadOutcome::from_witness
+    let direct = NegativeReadOutcome::from_witness(
+        "neg_claim:direct_ok",
+        "no_unauthorized_intrusion",
+        anchor.clone(),
+        target_domain.clone(),
+        &witness,
+        &anchor,
+    )?;
+    assert_eq!(direct.claim_id(), "neg_claim:direct_ok");
+    assert_eq!(direct.query_predicate(), "no_unauthorized_intrusion");
+    assert_eq!(direct.anchor(), &anchor);
+    assert_eq!(direct.certified_domain(), &target_domain);
+    assert_eq!(direct.witness_digest(), witness.witness_digest());
+    assert_eq!(direct.generation(), 1);
+
+    // from_witness with stale current_anchor fails closed
+    let mut newer_current = anchor.clone();
+    newer_current.commit_sequence += 1;
+    let stale_res = NegativeReadOutcome::from_witness(
+        "neg_claim:direct_stale",
+        "no_unauthorized_intrusion",
+        anchor.clone(),
+        target_domain.clone(),
+        &witness,
+        &newer_current,
+    );
+    assert!(matches!(stale_res, Err(ContractError::StaleAnchor)));
 
     // Canonical roundtrip
     let mut encoder = CanonicalEncoder::new();
@@ -1154,6 +1393,23 @@ fn test_negative_read_outcome_decode_invariants() -> Result<(), Box<dyn Error>> 
     let mut decoder = CanonicalDecoder::new(&bytes);
     let Err(err) = NegativeReadOutcome::decode_canonical(&mut decoder) else {
         return Err("expected error for empty claim_id".into());
+    };
+    assert_eq!(err, ContractError::InvalidIdentifier);
+
+    // 6. Malformed claim_id (spaces) rejected by validate_id
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text("claim with spaces");
+    encoder.text("no_unauthorized_intrusion");
+    anchor.encode_canonical(&mut encoder);
+    encoder.u64(1);
+    encoder.text("zone:a");
+    encoder.digest(witness_digest);
+    encoder.u64(1);
+    let bytes = encoder.finish();
+
+    let mut decoder = CanonicalDecoder::new(&bytes);
+    let Err(err) = NegativeReadOutcome::decode_canonical(&mut decoder) else {
+        return Err("expected error for malformed claim_id".into());
     };
     assert_eq!(err, ContractError::InvalidIdentifier);
 
@@ -2754,6 +3010,363 @@ fn test_runtime_authority_and_custody_parse_and_resolution() -> Result<(), Box<d
         RuntimeGrant::from_id("PROHIBITED-INFER-PHYSICAL-TRUTH")?,
         RuntimeGrant::InferPhysicalTruth
     );
+}
+
+#[test]
+fn test_outcome_and_workspace_layers_belong_to_cognition_plane() -> Result<(), Box<dyn Error>> {
+    let outcome = AgentAbstractionLayer::OutcomeAndEpisode;
+    assert_eq!(outcome.plane(), Plane::Cognition);
+    assert!(!outcome.may_claim_authority());
+    assert!(!outcome.may_authorize_effects());
+
+    let workspace = AgentAbstractionLayer::WorkspaceAndHandoff;
+    assert_eq!(workspace.plane(), Plane::Cognition);
+    assert!(!workspace.may_claim_authority());
+    assert!(!workspace.may_authorize_effects());
+
+    // Verify all 11 layer planes conform to the architecture specification
+    assert_eq!(
+        AgentAbstractionLayer::RuntimeAuthorityAndCustody.plane(),
+        Plane::Authority
+    );
+    assert_eq!(
+        AgentAbstractionLayer::SourceEvidence.plane(),
+        Plane::Authority
+    );
+    assert_eq!(
+        AgentAbstractionLayer::WorldFactsAndCoverage.plane(),
+        Plane::Authority
+    );
+    assert_eq!(
+        AgentAbstractionLayer::DerivedBeliefs.plane(),
+        Plane::Cognition
+    );
+    assert_eq!(
+        AgentAbstractionLayer::SituationCapsule.plane(),
+        Plane::Cognition
+    );
+    assert_eq!(
+        AgentAbstractionLayer::InvestigationAndHypotheses.plane(),
+        Plane::Cognition
+    );
+    assert_eq!(
+        AgentAbstractionLayer::AffordanceFrontier.plane(),
+        Plane::Cognition
+    );
+    assert_eq!(AgentAbstractionLayer::PlanAndEffect.plane(), Plane::Effect);
+    assert_eq!(
+        AgentAbstractionLayer::OutcomeAndEpisode.plane(),
+        Plane::Cognition
+    );
+    assert_eq!(
+        AgentAbstractionLayer::LearningAndMemory.plane(),
+        Plane::Cognition
+    );
+    assert_eq!(
+        AgentAbstractionLayer::WorkspaceAndHandoff.plane(),
+        Plane::Cognition
+    );
+
+    // Authority permissions
+    assert!(AgentAbstractionLayer::RuntimeAuthorityAndCustody.may_claim_authority());
+    assert!(AgentAbstractionLayer::SourceEvidence.may_claim_authority());
+    assert!(AgentAbstractionLayer::WorldFactsAndCoverage.may_claim_authority());
+    assert!(!AgentAbstractionLayer::DerivedBeliefs.may_claim_authority());
+    assert!(!AgentAbstractionLayer::SituationCapsule.may_claim_authority());
+    assert!(!AgentAbstractionLayer::InvestigationAndHypotheses.may_claim_authority());
+    assert!(!AgentAbstractionLayer::AffordanceFrontier.may_claim_authority());
+    assert!(!AgentAbstractionLayer::PlanAndEffect.may_claim_authority());
+    assert!(!AgentAbstractionLayer::OutcomeAndEpisode.may_claim_authority());
+    assert!(!AgentAbstractionLayer::LearningAndMemory.may_claim_authority());
+    assert!(!AgentAbstractionLayer::WorkspaceAndHandoff.may_claim_authority());
+
+    Ok(())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum MiniJson {
+    Null,
+    Bool(bool),
+    Num(String),
+    Str(String),
+    Arr(Vec<MiniJson>),
+    Obj(Vec<(String, MiniJson)>),
+}
+
+struct MiniJsonParser<'a> {
+    src: &'a [u8],
+    pos: usize,
+}
+
+impl MiniJsonParser<'_> {
+    fn ws(&mut self) {
+        while matches!(self.src.get(self.pos), Some(b' ' | b'\n' | b'\r' | b'\t')) {
+            self.pos += 1;
+        }
+    }
+
+    fn eat(&mut self, byte: u8) -> Option<()> {
+        self.ws();
+        if self.src.get(self.pos) == Some(&byte) {
+            self.pos += 1;
+            Some(())
+        } else {
+            None
+        }
+    }
+
+    fn lit(&mut self, word: &[u8]) -> Option<()> {
+        if self.src.get(self.pos..)?.starts_with(word) {
+            self.pos += word.len();
+            Some(())
+        } else {
+            None
+        }
+    }
+
+    fn value(&mut self) -> Option<MiniJson> {
+        self.ws();
+        match *self.src.get(self.pos)? {
+            b'{' => {
+                self.pos += 1;
+                let mut fields = Vec::new();
+                if self.eat(b'}').is_some() {
+                    return Some(MiniJson::Obj(fields));
+                }
+                loop {
+                    self.ws();
+                    let key = self.string()?;
+                    self.eat(b':')?;
+                    fields.push((key, self.value()?));
+                    if self.eat(b',').is_none() {
+                        self.eat(b'}')?;
+                        return Some(MiniJson::Obj(fields));
+                    }
+                }
+            }
+            b'[' => {
+                self.pos += 1;
+                let mut items = Vec::new();
+                if self.eat(b']').is_some() {
+                    return Some(MiniJson::Arr(items));
+                }
+                loop {
+                    items.push(self.value()?);
+                    if self.eat(b',').is_none() {
+                        self.eat(b']')?;
+                        return Some(MiniJson::Arr(items));
+                    }
+                }
+            }
+            b'"' => self.string().map(MiniJson::Str),
+            b't' => self.lit(b"true").map(|()| MiniJson::Bool(true)),
+            b'f' => self.lit(b"false").map(|()| MiniJson::Bool(false)),
+            b'n' => self.lit(b"null").map(|()| MiniJson::Null),
+            _ => {
+                let start = self.pos;
+                while matches!(
+                    self.src.get(self.pos),
+                    Some(b'-' | b'+' | b'.' | b'e' | b'E' | b'0'..=b'9')
+                ) {
+                    self.pos += 1;
+                }
+                if start == self.pos {
+                    return None;
+                }
+                String::from_utf8(self.src.get(start..self.pos)?.to_vec())
+                    .ok()
+                    .map(MiniJson::Num)
+            }
+        }
+    }
+
+    fn string(&mut self) -> Option<String> {
+        if self.src.get(self.pos) != Some(&b'"') {
+            return None;
+        }
+        self.pos += 1;
+        let mut out = Vec::new();
+        loop {
+            let byte = *self.src.get(self.pos)?;
+            self.pos += 1;
+            match byte {
+                b'"' => return String::from_utf8(out).ok(),
+                b'\\' => {
+                    let esc = *self.src.get(self.pos)?;
+                    self.pos += 1;
+                    match esc {
+                        b'"' | b'\\' | b'/' => out.push(esc),
+                        b'n' => out.push(b'\n'),
+                        b't' => out.push(b'\t'),
+                        b'r' => out.push(b'\r'),
+                        b'b' => out.push(0x08),
+                        b'f' => out.push(0x0c),
+                        b'u' => {
+                            let hex =
+                                std::str::from_utf8(self.src.get(self.pos..self.pos + 4)?).ok()?;
+                            self.pos += 4;
+                            let ch = char::from_u32(u32::from_str_radix(hex, 16).ok()?)?;
+                            let mut buf = [0u8; 4];
+                            out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+                        }
+                        _ => return None,
+                    }
+                }
+                other => out.push(other),
+            }
+        }
+    }
+}
+
+impl MiniJson {
+    fn parse(text: &str) -> Option<Self> {
+        let mut parser = MiniJsonParser {
+            src: text.as_bytes(),
+            pos: 0,
+        };
+        let value = parser.value()?;
+        parser.ws();
+        (parser.pos == parser.src.len()).then_some(value)
+    }
+
+    fn get(&self, key: &str) -> Option<&Self> {
+        match self {
+            Self::Obj(fields) => fields.iter().find(|(k, _)| k == key).map(|(_, v)| v),
+            _ => None,
+        }
+    }
+
+    fn as_str(&self) -> Option<&str> {
+        match self {
+            Self::Str(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    fn write_canonical(&self, out: &mut String) {
+        match self {
+            Self::Null => out.push_str("null"),
+            Self::Bool(true) => out.push_str("true"),
+            Self::Bool(false) => out.push_str("false"),
+            Self::Num(n) => out.push_str(n),
+            Self::Str(s) => {
+                out.push('"');
+                for c in s.chars() {
+                    match c {
+                        '"' => out.push_str("\\\""),
+                        '\\' => out.push_str("\\\\"),
+                        '\n' => out.push_str("\\n"),
+                        '\r' => out.push_str("\\r"),
+                        '\t' => out.push_str("\\t"),
+                        _ => out.push(c),
+                    }
+                }
+                out.push('"');
+            }
+            Self::Arr(items) => {
+                out.push('[');
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    item.write_canonical(out);
+                }
+                out.push(']');
+            }
+            Self::Obj(fields) => {
+                out.push('{');
+                let mut sorted = fields.clone();
+                sorted.sort_by(|a, b| a.0.cmp(&b.0));
+                for (i, (k, v)) in sorted.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    out.push('"');
+                    for c in k.chars() {
+                        match c {
+                            '"' => out.push_str("\\\""),
+                            '\\' => out.push_str("\\\\"),
+                            _ => out.push(c),
+                        }
+                    }
+                    out.push('"');
+                    out.push(':');
+                    v.write_canonical(out);
+                }
+                out.push('}');
+            }
+        }
+    }
+}
+
+#[test]
+fn test_all_rust_layer_strings_match_machine_registry_json() -> Result<(), Box<dyn Error>> {
+    let stack_json = include_str!("../../../architecture/agent_abstraction_stack.json");
+    let root = MiniJson::parse(stack_json).ok_or("failed to parse agent_abstraction_stack.json")?;
+    let layers_arr = root.get("layers").ok_or("missing layers array")?;
+    let MiniJson::Arr(layers) = layers_arr else {
+        return Err("layers is not an array".into());
+    };
+    assert_eq!(layers.len(), 11, "expected 11 layers in machine registry");
+
+    for (layer, json_layer) in AgentAbstractionLayer::ALL.iter().zip(layers.iter()) {
+        let id = json_layer
+            .get("id")
+            .and_then(MiniJson::as_str)
+            .ok_or("missing id")?;
+        let name = json_layer
+            .get("name")
+            .and_then(MiniJson::as_str)
+            .ok_or("missing name")?;
+        let owner = json_layer
+            .get("owner")
+            .and_then(MiniJson::as_str)
+            .ok_or("missing owner")?;
+        let question = json_layer
+            .get("question")
+            .and_then(MiniJson::as_str)
+            .ok_or("missing question")?;
+        let output = json_layer
+            .get("output")
+            .and_then(MiniJson::as_str)
+            .ok_or("missing output")?;
+        let prohibition = json_layer
+            .get("prohibition")
+            .and_then(MiniJson::as_str)
+            .ok_or("missing prohibition")?;
+        let invariant = json_layer
+            .get("invariant")
+            .and_then(MiniJson::as_str)
+            .ok_or("missing invariant")?;
+        let status = json_layer
+            .get("status")
+            .and_then(MiniJson::as_str)
+            .ok_or("missing status")?;
+
+        assert_eq!(layer.id(), id, "ID mismatch for {}", layer.id());
+        assert_eq!(layer.name(), name, "name mismatch for {}", layer.id());
+        assert_eq!(layer.owner(), owner, "owner mismatch for {}", layer.id());
+        assert_eq!(
+            layer.agent_question(),
+            question,
+            "question mismatch for {}",
+            layer.id()
+        );
+        assert_eq!(layer.output(), output, "output mismatch for {}", layer.id());
+        assert_eq!(
+            layer.prohibition(),
+            prohibition,
+            "prohibition mismatch for {}",
+            layer.id()
+        );
+        assert_eq!(
+            layer.invariant(),
+            invariant,
+            "invariant mismatch for {}",
+            layer.id()
+        );
+        assert_eq!(layer.status(), status, "status mismatch for {}", layer.id());
+    }
 
     Ok(())
 }
@@ -3650,6 +4263,73 @@ fn test_source_evidence_golden_vector() -> Result<(), Box<dyn Error>> {
     // Decode back and verify roundtrip identity
     let decoded = SourceEvidenceRecord::from_canonical_bytes(&canonical_bytes)?;
     assert_eq!(decoded, record);
+
+    Ok(())
+}
+
+#[test]
+fn test_agent_abstraction_freeze_digest_recomputed_in_rust() -> Result<(), Box<dyn Error>> {
+    let stack_json = include_str!("../../../architecture/agent_abstraction_stack.json");
+    let root = MiniJson::parse(stack_json).ok_or("failed to parse agent_abstraction_stack.json")?;
+    let MiniJson::Obj(mut fields) = root else {
+        return Err("expected root to be an object".into());
+    };
+
+    // Remove registryDigest before computing canonical freeze digest
+    fields.retain(|(k, _)| k != "registryDigest");
+
+    // Canonicalize layers: sort by id, retain only known keys
+    const KNOWN_LAYER_KEYS: &[&str] = &[
+        "id",
+        "invariant",
+        "name",
+        "output",
+        "owner",
+        "prohibition",
+        "question",
+        "status",
+    ];
+    for (k, v) in &mut fields {
+        match (k.as_str(), v) {
+            ("layers", MiniJson::Arr(layers)) => {
+                layers.sort_by(|a, b| {
+                    let id_a = a.get("id").and_then(MiniJson::as_str).unwrap_or("");
+                    let id_b = b.get("id").and_then(MiniJson::as_str).unwrap_or("");
+                    id_a.cmp(id_b)
+                });
+                for layer in layers.iter_mut() {
+                    if let MiniJson::Obj(layer_fields) = layer {
+                        layer_fields.retain(|(lk, _)| KNOWN_LAYER_KEYS.contains(&lk.as_str()));
+                    }
+                }
+            }
+            ("hydrationLevels", MiniJson::Arr(hydration)) => {
+                hydration.sort_by(|a, b| {
+                    let id_a = a.get("id").and_then(MiniJson::as_str).unwrap_or("");
+                    let id_b = b.get("id").and_then(MiniJson::as_str).unwrap_or("");
+                    id_a.cmp(id_b)
+                });
+                const KNOWN_HYDRATION_KEYS: &[&str] = &["content", "id", "name"];
+                for hyd in hydration.iter_mut() {
+                    if let MiniJson::Obj(hyd_fields) = hyd {
+                        hyd_fields.retain(|(hk, _)| KNOWN_HYDRATION_KEYS.contains(&hk.as_str()));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let canonical_root = MiniJson::Obj(fields);
+    let mut canonical_json = String::new();
+    canonical_root.write_canonical(&mut canonical_json);
+
+    let digest = ContentDigest::sha256(canonical_json.as_bytes());
+    assert_eq!(
+        digest.to_string(),
+        AGENT_ABSTRACTION_FREEZE_DIGEST,
+        "Rust recomputed freeze digest must match AGENT_ABSTRACTION_FREEZE_DIGEST"
+    );
 
     Ok(())
 }
