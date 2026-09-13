@@ -112,7 +112,10 @@ impl std::error::Error for HydrationError {
 
 impl From<ContractError> for HydrationError {
     fn from(value: ContractError) -> Self {
-        Self::Contract(value)
+        match value {
+            ContractError::LaboratoryGrantRequired => Self::LaboratoryGrantRequired,
+            other => Self::Contract(other),
+        }
     }
 }
 

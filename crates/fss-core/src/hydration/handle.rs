@@ -178,7 +178,76 @@ impl SemanticHandle {
         if !self.levels.contains(&HydrationLevel::H4) {
             return Err(HydrationError::LevelUnavailable);
         }
-        let artifact = expansion.to_hydration_artifact()?;
+
+        // Validate expansion and its digest integrity
+        expansion.validate()?;
+        if expansion.computed_digest() != expansion.expansion_digest() {
+            return Err(ContractError::DigestMismatch.into());
+        }
+
+        // Bind expansion to this handle's identity, subject, anchor, contract basis, and retention
+        if expansion.handle_id() != self.handle_id {
+            return Err(HydrationError::HandleRebound);
+        }
+        if expansion.subject_id() != self.subject_id {
+            return Err(ContractError::InvalidIdentifier.into());
+        }
+        if expansion.subject_digest() != self.subject_digest {
+            return Err(ContractError::DigestMismatch.into());
+        }
+        if expansion.anchor() != &self.anchor {
+            return Err(ContractError::InvalidAnchorSuccessor.into());
+        }
+        if expansion.contract_basis() != &self.contract_basis {
+            return Err(ContractError::DigestMismatch.into());
+        }
+        if expansion.retention_until() != self.retention_until {
+            return Err(ContractError::InvertedTimeInterval.into());
+        }
+        if self.availability_at(now) != HandleAvailability::Available
+            || now >= self.retention_until
+            || now >= expansion.retention_until()
+        {
+            return Err(HydrationError::LevelUnavailable);
+        }
+
+        // Bind laboratory access and purpose: cannot be self-declared
+        if expansion.laboratory_access() != self.laboratory_access {
+            return Err(HydrationError::LaboratoryGrantRequired);
+        }
+        if expansion.purpose() != request.purpose {
+            return Err(HydrationError::LaboratoryGrantRequired);
+        }
+
+        // Require grant or capability to come from the handle or authority side
+        match self.laboratory_access {
+            LaboratoryAccess::Unavailable => {
+                return Err(HydrationError::LaboratoryGrantRequired);
+            }
+            LaboratoryAccess::QualificationOnly => {
+                if request.purpose != HydrationPurpose::Qualification {
+                    return Err(HydrationError::LaboratoryGrantRequired);
+                }
+            }
+            LaboratoryAccess::QualificationOrDebugGrant => match request.purpose {
+                HydrationPurpose::Qualification => {}
+                HydrationPurpose::Debugging => {
+                    let has_capability = self
+                        .debug_capability
+                        .as_ref()
+                        .is_some_and(|cap| request.available_capabilities.contains(cap));
+                    if !has_capability {
+                        return Err(HydrationError::LaboratoryGrantRequired);
+                    }
+                }
+                HydrationPurpose::Routine | HydrationPurpose::IncidentAdjudication => {
+                    return Err(HydrationError::LaboratoryGrantRequired);
+                }
+            },
+        }
+
+        // Package artifact preserving the handle's applied transform
+        let artifact = expansion.to_hydration_artifact(self.applied_transform.clone())?;
         request.validate_delivery(self, &artifact, now)?;
         Ok(artifact)
     }

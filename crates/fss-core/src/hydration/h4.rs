@@ -28,16 +28,12 @@
 use std::collections::BTreeSet;
 
 use super::{
-    completeness_code, Completeness, HydrationArtifact, HydrationError,
-    HydrationLevel, HydrationPurpose, LaboratoryAccess,
+    Completeness, HydrationArtifact, HydrationError, HydrationLevel, HydrationPurpose,
+    LaboratoryAccess, completeness_code,
 };
-use crate::canonical::{
-    CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder,
-};
+use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder};
 use crate::contract::ContractError;
-use crate::{
-    BudgetVector, ContentDigest, ContractBasis, LedgerAnchor, TimestampNs,
-};
+use crate::{BudgetVector, ContentDigest, ContractBasis, LedgerAnchor, TimestampNs};
 
 /// Stable identifier for hydration ladder level H4.
 pub const H4_LEVEL_ID: &str = "H4";
@@ -50,7 +46,7 @@ pub const H4_CONTENT: &str =
     "replay bundle, intermediates, alternate decoders/models, and oracle comparisons";
 
 /// Owning subsystem for hydration ladder level H4.
-pub const H4_OWNER: &str = "fss-laboratory/oracle";
+pub const H4_OWNER: &str = "fss-agent-core";
 
 /// Canonical schema discriminator tag for H4 laboratory expansion binary envelopes.
 pub const H4_SCHEMA: &str = "fss.h4_laboratory_expansion.v1";
@@ -186,11 +182,24 @@ impl IntermediateArtifact {
         if self.digest.bytes().iter().all(|&b| b == 0) {
             return Err(ContractError::InvalidDigest);
         }
-        if self.byte_count == 0 {
-            return Err(ContractError::EvidenceRequired);
-        }
         if self.shape.len() > 16 {
-            return Err(ContractError::ArithmeticOverflow);
+            return Err(ContractError::LaboratoryExpansionShapeMalformed);
+        }
+        if self.shape.contains(&0) {
+            return Err(ContractError::LaboratoryExpansionShapeMalformed);
+        }
+        let mut total_elements: u64 = 1;
+        for &dim in &self.shape {
+            let Some(next) = total_elements.checked_mul(dim) else {
+                return Err(ContractError::LaboratoryExpansionShapeMalformed);
+            };
+            total_elements = next;
+        }
+        if self.byte_count == 0
+            || self.byte_count == u64::MAX
+            || self.byte_count > super::MAX_ARTIFACT_BYTES as u64
+        {
+            return Err(ContractError::LaboratoryExpansionShapeMalformed);
         }
         Ok(())
     }
@@ -223,9 +232,9 @@ impl CanonicalDecode for IntermediateArtifact {
         let digest = decoder.digest()?;
         let raw_shape_len = decoder.u32()?;
         let shape_len = usize::try_from(raw_shape_len)
-            .map_err(|_| ContractError::ArithmeticOverflow)?;
+            .map_err(|_| ContractError::LaboratoryExpansionShapeMalformed)?;
         if shape_len > 16 || shape_len > decoder.remaining() / 8 {
-            return Err(ContractError::ArithmeticOverflow);
+            return Err(ContractError::LaboratoryExpansionShapeMalformed);
         }
         let mut shape = Vec::with_capacity(shape_len);
         for _ in 0..shape_len {
@@ -328,16 +337,23 @@ impl OracleComparison {
         {
             return Err(ContractError::InvalidIdentifier);
         }
+        if self.discrepancy_score.to_bits() == 0x8000_0000_0000_0000
+            || (self.discrepancy_score == 0.0 && self.discrepancy_score.is_sign_negative())
+            || self.tolerance_threshold.to_bits() == 0x8000_0000_0000_0000
+            || (self.tolerance_threshold == 0.0 && self.tolerance_threshold.is_sign_negative())
+        {
+            return Err(ContractError::LaboratoryExpansionToleranceMismatch);
+        }
         if !self.discrepancy_score.is_finite()
             || self.discrepancy_score < 0.0
             || !self.tolerance_threshold.is_finite()
             || self.tolerance_threshold < 0.0
         {
-            return Err(ContractError::ArithmeticOverflow);
+            return Err(ContractError::LaboratoryExpansionToleranceMismatch);
         }
         let expected_within = self.discrepancy_score <= self.tolerance_threshold;
         if self.within_tolerance != expected_within {
-            return Err(ContractError::EventRevisionMalformed);
+            return Err(ContractError::LaboratoryExpansionToleranceMismatch);
         }
         Ok(())
     }
@@ -360,8 +376,13 @@ impl CanonicalDecode for OracleComparison {
         let comparison_id = decoder.text()?.to_owned();
         let oracle_id = decoder.text()?.to_owned();
         let metric_name = decoder.text()?.to_owned();
-        let discrepancy_score = f64::from_bits(decoder.u64()?);
-        let tolerance_threshold = f64::from_bits(decoder.u64()?);
+        let discrepancy_bits = decoder.u64()?;
+        let tolerance_bits = decoder.u64()?;
+        if discrepancy_bits == 0x8000_0000_0000_0000 || tolerance_bits == 0x8000_0000_0000_0000 {
+            return Err(ContractError::LaboratoryExpansionToleranceMismatch);
+        }
+        let discrepancy_score = f64::from_bits(discrepancy_bits);
+        let tolerance_threshold = f64::from_bits(tolerance_bits);
         let within_tolerance = decoder.bool()?;
         let oracle_version = decoder.text()?.to_owned();
         let r = Self {
@@ -397,7 +418,11 @@ impl LaboratoryQuarantine {
         if !self.quarantined_from_production {
             return Err(ContractError::DerivedLayerAuthorityForbidden);
         }
-        if self.quarantine_receipt_digest.bytes().iter().all(|&b| b == 0)
+        if self
+            .quarantine_receipt_digest
+            .bytes()
+            .iter()
+            .all(|&b| b == 0)
             || self.process_drain_witness.bytes().iter().all(|&b| b == 0)
         {
             return Err(ContractError::InvalidDigest);
@@ -483,42 +508,24 @@ pub struct H4LaboratoryExpansionParams {
 /// quarantined from production runtime and release closures.
 #[derive(Clone, Debug, PartialEq)]
 pub struct H4LaboratoryExpansion {
-    /// Content-derived handle identifier.
-    pub handle_id: String,
-    /// Stable canonical subject identity.
-    pub subject_id: String,
-    /// Exact subject content digest.
-    pub subject_digest: ContentDigest,
-    /// Replay bundle reference for deterministic reproduction.
-    pub replay_bundle: ReplayBundleRef,
-    /// Intermediate execution states, tensor activations, or layer representations.
-    pub intermediates: Vec<IntermediateArtifact>,
-    /// Alternate non-production foreign decoders or models used as reference benchmarks.
-    pub alternate_systems: Vec<AlternateSystem>,
-    /// Differential comparison records against oracle outputs.
-    pub oracle_comparisons: Vec<OracleComparison>,
-    /// Laboratory quarantine and process drain verification record.
-    pub quarantine: LaboratoryQuarantine,
-    /// Laboratory access policy from the handle descriptor.
-    pub laboratory_access: LaboratoryAccess,
-    /// Purpose under which H4 material is accessed.
-    pub purpose: HydrationPurpose,
-    /// Authority anchor of this descriptor revision.
-    pub anchor: LedgerAnchor,
-    /// Exact semantic contract universe.
-    pub contract_basis: ContractBasis,
-    /// Conservative estimated resource cost to hydrate at H4.
-    pub estimated_cost: BudgetVector,
-    /// Publication timestamp.
-    pub published_at: TimestampNs,
-    /// Time after which this descriptor returns an expired state.
-    pub retention_until: TimestampNs,
-    /// Retained provenance roots plus subject digest.
-    pub proof_roots: BTreeSet<ContentDigest>,
-    /// Completeness of this expansion at H4.
-    pub completeness: Completeness,
-    /// Content digest of this complete expansion descriptor.
-    pub expansion_digest: ContentDigest,
+    handle_id: String,
+    subject_id: String,
+    subject_digest: ContentDigest,
+    replay_bundle: ReplayBundleRef,
+    intermediates: Vec<IntermediateArtifact>,
+    alternate_systems: Vec<AlternateSystem>,
+    oracle_comparisons: Vec<OracleComparison>,
+    quarantine: LaboratoryQuarantine,
+    laboratory_access: LaboratoryAccess,
+    purpose: HydrationPurpose,
+    anchor: LedgerAnchor,
+    contract_basis: ContractBasis,
+    estimated_cost: BudgetVector,
+    published_at: TimestampNs,
+    retention_until: TimestampNs,
+    proof_roots: BTreeSet<ContentDigest>,
+    completeness: Completeness,
+    expansion_digest: ContentDigest,
 }
 
 impl H4LaboratoryExpansion {
@@ -560,7 +567,7 @@ impl H4LaboratoryExpansion {
             return Err(ContractError::InvalidDigest.into());
         }
         if self.anchor.site_lineage.is_empty() {
-            return Err(ContractError::DerivedBeliefMissingAnchor.into());
+            return Err(ContractError::LaboratoryExpansionMissingAnchor.into());
         }
         if self.published_at >= self.retention_until {
             return Err(ContractError::InvertedTimeInterval.into());
@@ -607,26 +614,37 @@ impl H4LaboratoryExpansion {
             item.validate()?;
         }
 
-        // Alternate systems must be non-empty and bounded
+        // Alternate systems must be non-empty, bounded, and unique
         if self.alternate_systems.is_empty() {
             return Err(ContractError::EvidenceRequired.into());
         }
         if self.alternate_systems.len() > MAX_H4_ALTERNATE_SYSTEMS {
             return Err(ContractError::ArithmeticOverflow.into());
         }
+        let mut system_ids = BTreeSet::new();
         for item in &self.alternate_systems {
             item.validate()?;
+            if !system_ids.insert(&item.system_id) {
+                return Err(ContractError::InvalidIdentifier.into());
+            }
         }
 
-        // Oracle comparisons must be non-empty and bounded
+        // Oracle comparisons must be non-empty, bounded, unique, and reference declared systems
         if self.oracle_comparisons.is_empty() {
             return Err(ContractError::EvidenceRequired.into());
         }
         if self.oracle_comparisons.len() > MAX_H4_ORACLE_COMPARISONS {
             return Err(ContractError::ArithmeticOverflow.into());
         }
+        let mut comp_ids = BTreeSet::new();
         for item in &self.oracle_comparisons {
             item.validate()?;
+            if !comp_ids.insert(&item.comparison_id) {
+                return Err(ContractError::InvalidIdentifier.into());
+            }
+            if !system_ids.contains(&item.oracle_id) {
+                return Err(ContractError::InvalidIdentifier.into());
+            }
         }
 
         // Proof roots must contain subject_digest and at least one independent proof root
@@ -680,6 +698,114 @@ impl H4LaboratoryExpansion {
     #[must_use]
     pub const fn is_quarantined(&self) -> bool {
         self.quarantine.quarantined_from_production
+    }
+
+    /// Returns the content-derived handle identifier.
+    #[must_use]
+    pub fn handle_id(&self) -> &str {
+        &self.handle_id
+    }
+
+    /// Returns the stable canonical subject identity.
+    #[must_use]
+    pub fn subject_id(&self) -> &str {
+        &self.subject_id
+    }
+
+    /// Returns the exact subject content digest.
+    #[must_use]
+    pub fn subject_digest(&self) -> ContentDigest {
+        self.subject_digest
+    }
+
+    /// Returns the replay bundle reference.
+    #[must_use]
+    pub fn replay_bundle(&self) -> &ReplayBundleRef {
+        &self.replay_bundle
+    }
+
+    /// Returns the intermediate execution states or tensor representations.
+    #[must_use]
+    pub fn intermediates(&self) -> &[IntermediateArtifact] {
+        &self.intermediates
+    }
+
+    /// Returns the alternate non-production systems or models.
+    #[must_use]
+    pub fn alternate_systems(&self) -> &[AlternateSystem] {
+        &self.alternate_systems
+    }
+
+    /// Returns the differential oracle comparison records.
+    #[must_use]
+    pub fn oracle_comparisons(&self) -> &[OracleComparison] {
+        &self.oracle_comparisons
+    }
+
+    /// Returns the laboratory quarantine and process drain verification record.
+    #[must_use]
+    pub fn quarantine(&self) -> &LaboratoryQuarantine {
+        &self.quarantine
+    }
+
+    /// Returns the laboratory access policy.
+    #[must_use]
+    pub fn laboratory_access(&self) -> LaboratoryAccess {
+        self.laboratory_access
+    }
+
+    /// Returns the hydration purpose under which this expansion is accessed.
+    #[must_use]
+    pub fn purpose(&self) -> HydrationPurpose {
+        self.purpose
+    }
+
+    /// Returns the authority ledger anchor.
+    #[must_use]
+    pub fn anchor(&self) -> &LedgerAnchor {
+        &self.anchor
+    }
+
+    /// Returns the exact semantic contract universe.
+    #[must_use]
+    pub fn contract_basis(&self) -> &ContractBasis {
+        &self.contract_basis
+    }
+
+    /// Returns the estimated resource cost vector.
+    #[must_use]
+    pub fn estimated_cost(&self) -> BudgetVector {
+        self.estimated_cost
+    }
+
+    /// Returns the publication timestamp.
+    #[must_use]
+    pub fn published_at(&self) -> TimestampNs {
+        self.published_at
+    }
+
+    /// Returns the time after which this expansion is expired.
+    #[must_use]
+    pub fn retention_until(&self) -> TimestampNs {
+        self.retention_until
+    }
+
+    /// Returns the proof roots.
+    #[must_use]
+    pub fn proof_roots(&self) -> &BTreeSet<ContentDigest> {
+        &self.proof_roots
+    }
+
+    /// Returns the completeness of this expansion at H4.
+    #[must_use]
+    pub fn completeness(&self) -> Completeness {
+        self.completeness
+    }
+
+    /// Returns the deterministic expansion digest.
+    #[must_use]
+    pub fn expansion_digest(&self) -> ContentDigest {
+        self.expansion_digest
     }
 
     /// Computes the deterministic canonical digest of this H4 expansion.
@@ -764,7 +890,20 @@ impl H4LaboratoryExpansion {
     }
 
     /// Packages this H4 laboratory expansion into a published [`HydrationArtifact`].
-    pub fn to_hydration_artifact(&self) -> Result<HydrationArtifact, HydrationError> {
+    pub fn to_hydration_artifact(
+        &self,
+        applied_transform: Option<String>,
+    ) -> Result<HydrationArtifact, HydrationError> {
+        self.validate()?;
+        if self.computed_digest() != self.expansion_digest {
+            return Err(ContractError::DigestMismatch.into());
+        }
+        if applied_transform
+            .as_deref()
+            .is_some_and(|val| !valid_text(val, MAX_H4_IDENTIFIER_LEN))
+        {
+            return Err(ContractError::InvalidIdentifier.into());
+        }
         let mut encoder = CanonicalEncoder::new();
         self.encode_canonical(&mut encoder);
         let payload = encoder.finish();
@@ -774,8 +913,92 @@ impl H4LaboratoryExpansion {
             payload,
             self.proof_roots.clone(),
             self.completeness,
-            Some("quarantined_laboratory_expansion".to_owned()),
+            applied_transform,
         )
+    }
+
+    /// Converts this H4 expansion into a canonical [`KnowledgeCell`](crate::KnowledgeCell) with quarantined taint.
+    ///
+    /// The resulting cell carries [`LABORATORY_PROVENANCE_MARKER`](crate::agent::LABORATORY_PROVENANCE_MARKER),
+    /// epistemic state `Estimated`, and provenance `Derived`. It can NEVER claim `Known`
+    /// or serve as an irreversible-effect premise.
+    pub fn to_knowledge_cell(
+        &self,
+        current: &LedgerAnchor,
+    ) -> Result<crate::KnowledgeCell, ContractError> {
+        self.validate().map_err(|err| match err {
+            HydrationError::Contract(contract_err) => contract_err,
+            HydrationError::LaboratoryGrantRequired => ContractError::LaboratoryGrantRequired,
+            _ => ContractError::InvalidIdentifier,
+        })?;
+        if self.anchor.site_lineage != current.site_lineage {
+            return Err(ContractError::InvalidAnchorSuccessor);
+        }
+        crate::KnowledgeCell {
+            claim_id: format!("laboratory:{}", self.expansion_digest),
+            statement: format!(
+                "{} laboratory expansion for subject {}",
+                crate::agent::LABORATORY_PROVENANCE_MARKER,
+                self.subject_id
+            ),
+            knowledge_state: crate::KnowledgeState::Estimated,
+            provenance: crate::ProvenanceClass::Derived,
+            hypothesis: None,
+            evidence: vec![self.expansion_digest, self.subject_digest],
+            contradictions: vec![],
+            valid_until: Some(self.retention_until),
+            state_basis: None,
+        }
+        .validated()
+    }
+
+    /// Decodes an H4 expansion from canonical versioned bytes and ensures no trailing unread bytes exist.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, ContractError> {
+        let mut decoder = CanonicalDecoder::new(bytes);
+        let expansion = Self::decode_canonical(&mut decoder)?;
+        decoder.ensure_finished()?;
+        Ok(expansion)
+    }
+}
+
+/// A strongly typed laboratory artifact carrying explicit quarantine provenance and process isolation proof.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LaboratoryArtifact {
+    /// The published hydration artifact envelope.
+    pub artifact: HydrationArtifact,
+    /// The laboratory quarantine and process isolation proof.
+    pub quarantine: LaboratoryQuarantine,
+}
+
+impl LaboratoryArtifact {
+    /// Packages an H4 expansion into a strongly typed [`LaboratoryArtifact`].
+    pub fn from_expansion(
+        expansion: &H4LaboratoryExpansion,
+        applied_transform: Option<String>,
+    ) -> Result<Self, HydrationError> {
+        let artifact = expansion.to_hydration_artifact(applied_transform)?;
+        Ok(Self {
+            artifact,
+            quarantine: expansion.quarantine().clone(),
+        })
+    }
+
+    /// Returns whether this artifact is quarantined from production (strictly `true`).
+    #[must_use]
+    pub const fn is_quarantined(&self) -> bool {
+        true
+    }
+
+    /// Constitutional rule: Laboratory material is excluded from production (strictly `false`).
+    #[must_use]
+    pub const fn is_production_safe(&self) -> bool {
+        false
+    }
+
+    /// Constitutional hard gate: Laboratory material may NEVER authorize effects (strictly `false`).
+    #[must_use]
+    pub const fn may_authorize_effects(&self) -> bool {
+        false
     }
 }
 
@@ -798,8 +1021,8 @@ impl CanonicalDecode for H4LaboratoryExpansion {
         let replay_bundle = ReplayBundleRef::decode_canonical(decoder)?;
 
         let raw_int_len = decoder.u32()?;
-        let int_len = usize::try_from(raw_int_len)
-            .map_err(|_| ContractError::ArithmeticOverflow)?;
+        let int_len =
+            usize::try_from(raw_int_len).map_err(|_| ContractError::ArithmeticOverflow)?;
         if int_len > MAX_H4_INTERMEDIATES || int_len > decoder.remaining() / 16 {
             return Err(ContractError::ArithmeticOverflow);
         }
@@ -809,8 +1032,8 @@ impl CanonicalDecode for H4LaboratoryExpansion {
         }
 
         let raw_alt_len = decoder.u32()?;
-        let alt_len = usize::try_from(raw_alt_len)
-            .map_err(|_| ContractError::ArithmeticOverflow)?;
+        let alt_len =
+            usize::try_from(raw_alt_len).map_err(|_| ContractError::ArithmeticOverflow)?;
         if alt_len > MAX_H4_ALTERNATE_SYSTEMS || alt_len > decoder.remaining() / 20 {
             return Err(ContractError::ArithmeticOverflow);
         }
@@ -820,8 +1043,8 @@ impl CanonicalDecode for H4LaboratoryExpansion {
         }
 
         let raw_comp_len = decoder.u32()?;
-        let comp_len = usize::try_from(raw_comp_len)
-            .map_err(|_| ContractError::ArithmeticOverflow)?;
+        let comp_len =
+            usize::try_from(raw_comp_len).map_err(|_| ContractError::ArithmeticOverflow)?;
         if comp_len > MAX_H4_ORACLE_COMPARISONS || comp_len > decoder.remaining() / 20 {
             return Err(ContractError::ArithmeticOverflow);
         }
@@ -844,14 +1067,20 @@ impl CanonicalDecode for H4LaboratoryExpansion {
         let retention_until = TimestampNs::decode_canonical(decoder)?;
 
         let raw_roots_len = decoder.u32()?;
-        let roots_len = usize::try_from(raw_roots_len)
-            .map_err(|_| ContractError::ArithmeticOverflow)?;
+        let roots_len =
+            usize::try_from(raw_roots_len).map_err(|_| ContractError::ArithmeticOverflow)?;
         if roots_len > MAX_H4_PROOF_ROOTS || roots_len > decoder.remaining() / 33 {
             return Err(ContractError::ArithmeticOverflow);
         }
         let mut proof_roots = BTreeSet::new();
+        let mut prev_root: Option<ContentDigest> = None;
         for _ in 0..roots_len {
-            proof_roots.insert(decoder.digest()?);
+            let root = decoder.digest()?;
+            if prev_root.is_some_and(|prev| root <= prev) {
+                return Err(ContractError::NonCanonicalOrdering);
+            }
+            prev_root = Some(root);
+            proof_roots.insert(root);
         }
 
         let completeness_raw = decoder.u8()?;
@@ -883,8 +1112,8 @@ impl CanonicalDecode for H4LaboratoryExpansion {
         // Re-run validation to kill mutant R22 and enforce all invariants
         expansion.validate().map_err(|err| match err {
             HydrationError::Contract(contract_err) => contract_err,
-            HydrationError::LaboratoryGrantRequired => ContractError::DerivedLayerAuthorityForbidden,
-            _ => ContractError::EventRevisionMalformed,
+            HydrationError::LaboratoryGrantRequired => ContractError::LaboratoryGrantRequired,
+            _ => ContractError::InvalidIdentifier,
         })?;
 
         // Verify content digest matches computed digest

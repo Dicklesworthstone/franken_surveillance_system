@@ -50,9 +50,10 @@ pub use abstraction::{
 
 pub use agent::{
     ActionAffordance, AffordanceClass, ContractBasis, ContractBasisRegistryBytes, HandoffCapsule,
-    HandoffPublishParams, KnowledgeCell, KnowledgeStateBasis, MissionLifecycleState, PossibleWorld,
-    REDACTED_STATEMENT_MARKER, ReconciliationBasis, ReconciliationBranch, RedactionMarker,
-    RedactionReason, SituationCapsule, SituationFrame, StaleBasis, WorldEnvelope,
+    HandoffPublishParams, KnowledgeCell, KnowledgeStateBasis, LABORATORY_PROVENANCE_MARKER,
+    MissionLifecycleState, PossibleWorld, REDACTED_STATEMENT_MARKER, ReconciliationBasis,
+    ReconciliationBranch, RedactionMarker, RedactionReason, SituationCapsule, SituationFrame,
+    StaleBasis, WorldEnvelope,
 };
 pub use belief::{
     BELIEF_INTERVAL_DOMAIN, BeliefError, BeliefInterval, CONTRADICTION_DOMAIN, Contradiction,
@@ -128,10 +129,10 @@ pub use hydration::{
     H4LaboratoryExpansion, H4LaboratoryExpansionParams, HYDRATION_VIEW_ID, HandleAvailability,
     HydrationArtifact, HydrationError, HydrationLevel, HydrationPurpose, HydrationReceipt,
     HydrationReceiptSpec, HydrationRequest, HydrationRequestSpec, HydrationResponse,
-    IntermediateArtifact, LaboratoryAccess, LaboratoryQuarantine, MAX_H4_ALTERNATE_SYSTEMS,
-    MAX_H4_IDENTIFIER_LEN, MAX_H4_INTERMEDIATES, MAX_H4_METADATA_LEN, MAX_H4_ORACLE_COMPARISONS,
-    MAX_H4_PROOF_ROOTS, OracleComparison, ReplayBundleRef, SEMANTIC_HYDRATION_OWNER,
-    SemanticHandle, SemanticHandleSpec, is_valid_h0_screened_field,
+    IntermediateArtifact, LaboratoryAccess, LaboratoryArtifact, LaboratoryQuarantine,
+    MAX_H4_ALTERNATE_SYSTEMS, MAX_H4_IDENTIFIER_LEN, MAX_H4_INTERMEDIATES, MAX_H4_METADATA_LEN,
+    MAX_H4_ORACLE_COMPARISONS, MAX_H4_PROOF_ROOTS, OracleComparison, ReplayBundleRef,
+    SEMANTIC_HYDRATION_OWNER, SemanticHandle, SemanticHandleSpec, is_valid_h0_screened_field,
 };
 pub use identity::{
     AdapterCapabilities, AdapterIdentity, AdapterKind, CredentialMethod, DeviceCapabilities,
