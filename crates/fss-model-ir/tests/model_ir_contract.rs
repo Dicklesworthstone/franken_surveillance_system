@@ -3700,6 +3700,70 @@ fn test_maxpool2d_ceil_mode_width_overflow_exact_input() -> Result<(), Box<dyn E
 }
 
 #[test]
+fn test_maxpool2d_ceil_mode_width_equality_boundary_at_input_edge() -> Result<(), Box<dyn Error>> {
+    let g = gen1();
+    // Equality boundary: W=2, k=2, s=2, padding=[0, 0, 0, 1] (top, left, bottom, right).
+    // Total padded W = 2 + 0 + 1 = 3.
+    // Initial div_ceil: (3 - 2).div_ceil(2) + 1 = 1 + 1 = 2.
+    // Last window start: (2 - 1) * 2 = 2.
+    // Input boundary (w + pad_left): 2 + 0 = 2.
+    // Since last_start_w >= boundary_w (2 >= 2), the window starts strictly at the input edge
+    // with no valid input elements. The >= check decrements out_w to 1.
+    // A mutant changing >= to > would evaluate 2 > 2 as false, incorrectly keeping out_w = 2.
+    let in_port = TensorPort::new("x", DType::F32, Shape::new(vec![1, 1, 1, 2])?, g)?;
+    let mut attrs = AttributeMap::new();
+    attrs.insert("kernel_size".to_string(), AttrValue::IntList(vec![1, 2]));
+    attrs.insert("padding".to_string(), AttrValue::IntList(vec![0, 0, 0, 1]));
+    attrs.insert("strides".to_string(), AttrValue::IntList(vec![1, 2]));
+    attrs.insert("ceil_mode".to_string(), AttrValue::Bool(true));
+
+    let out = fss_model_ir::infer_operator_outputs(
+        "pool_w_equality_boundary",
+        OpCode::MaxPool2d,
+        &[&in_port],
+        &["y".to_string()],
+        &attrs,
+        g,
+    )?;
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].shape().dims(), &[1, 1, 1, 1]);
+    assert_eq!(out[0].shape().dims()[3], 1);
+    Ok(())
+}
+
+#[test]
+fn test_maxpool2d_ceil_mode_height_equality_boundary_at_input_edge() -> Result<(), Box<dyn Error>> {
+    let g = gen1();
+    // Mirrored equality boundary for height: H=2, k=2, s=2, padding=[0, 0, 1, 0] (top, left, bottom, right).
+    // Total padded H = 2 + 0 + 1 = 3.
+    // Initial div_ceil: (3 - 2).div_ceil(2) + 1 = 1 + 1 = 2.
+    // Last window start: (2 - 1) * 2 = 2.
+    // Input boundary (h + pad_top): 2 + 0 = 2.
+    // Since last_start_h >= boundary_h (2 >= 2), the window starts strictly at the input edge.
+    // The >= check decrements out_h to 1.
+    // A mutant changing >= to > would evaluate 2 > 2 as false, incorrectly keeping out_h = 2.
+    let in_port = TensorPort::new("x", DType::F32, Shape::new(vec![1, 1, 2, 1])?, g)?;
+    let mut attrs = AttributeMap::new();
+    attrs.insert("kernel_size".to_string(), AttrValue::IntList(vec![2, 1]));
+    attrs.insert("padding".to_string(), AttrValue::IntList(vec![0, 0, 1, 0]));
+    attrs.insert("strides".to_string(), AttrValue::IntList(vec![2, 1]));
+    attrs.insert("ceil_mode".to_string(), AttrValue::Bool(true));
+
+    let out = fss_model_ir::infer_operator_outputs(
+        "pool_h_equality_boundary",
+        OpCode::MaxPool2d,
+        &[&in_port],
+        &["y".to_string()],
+        &attrs,
+        g,
+    )?;
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].shape().dims(), &[1, 1, 1, 1]);
+    assert_eq!(out[0].shape().dims()[2], 1);
+    Ok(())
+}
+
+#[test]
 fn test_order_independent_element_count_direct() -> Result<(), Box<dyn Error>> {
     let s1 = Shape::new(vec![i64::MAX as usize, i64::MAX as usize, 0])?;
     let s2 = Shape::new(vec![0, i64::MAX as usize, i64::MAX as usize])?;
