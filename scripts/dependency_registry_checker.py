@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
-"""Fail-closed dependency-class registry checker (fss-x4a.30.88.1).
+"""Fail-closed dependency-class registry checker (fss-x4a.30.88.1, REG-DEPENDENCIES-001).
 
-Enforces the dependency-class registry contract (REG-DEPENDENCIES-001):
-1. Dependency registry row drift between architecture JSON and markdown mirror (ERR-DEP-REGISTRY-DRIFT-001)
-2. Stable ID reused, duplicated, renumbered, or diverging from canonical baseline (ERR-DEP-STABLE-ID-REUSED-001)
-3. Missing or empty mandatory field in a dependency row or top-level metadata (ERR-DEP-MISSING-FIELD-001)
-4. Corrupt or missing mandatory registry files (ERR-DEP-CORRUPT-FILE-001)
-5. Registry digest mismatch between declared and canonical computed digest (ERR-DEP-DIGEST-MISMATCH-001)
-6. Registry digest diverged from pinned baseline freeze digest (ERR-DEP-FREEZE-DIVERGENCE-001)
-7. Registry generation diverged from baseline generation (ERR-DEP-GENERATION-MISMATCH-001)
-8. Constitutional invariant and scope violations (ERR-DEP-CONST-INVARIANT-001)
+``architecture/dependencies.json`` rows (DEP-OWNED/FUND/LAB/ORACLE/EXCEPTION-001) are dependency
+classes that each reference a DEP-CLASS id in ``architecture/dependency_constitution.json``. The policy
+authority is DEPENDENCY_CONSTITUTION.md with ``architecture/dependency_allowlist.toml``; this checker
+holds no policy table of its own. It verifies, through ``scripts/dependency_authority.py``:
+
+1. every authority input (allowlist, constitution, registry, Franken import gates, local qualification,
+   stable-ID resolutions) loads strictly, keeps its exact shape and types, and matches its pinned digest;
+2. the allowlist flags, the constitution production object and the registry rows agree (crosswalk);
+3. every row's owner, producers, consumers and ContractBasis link resolve (``ERR-DEP-TRACE-UNRESOLVED-001``);
+4. tombstones and supersessions are explicit and consistent with ``stable_id_resolution.json``;
+5. ``registries/DEPENDENCIES.md`` mirrors the JSON field by field in strictly parsed tables, with no
+   duplicate or rogue rows in any formatting.
+
+Every malformed input yields a registered finding; nothing raises into ``scripts/check-policy.py``.
 """
 from __future__ import annotations
 
@@ -18,492 +23,468 @@ import hashlib
 import json
 import re
 import sys
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import dependency_authority as authority  # noqa: E402
+from dependency_authority import (  # noqa: E402,F401  (re-exported for callers and tests)
+    ALLOWLIST_TOML_PATH,
+    AGENT_CONTRACTS_PATH,
+    BASELINE_ALLOWLIST_FREEZE_DIGEST,
+    BASELINE_CONSTITUTION_FREEZE_DIGEST,
+    BASELINE_DEPENDENCIES_FREEZE_DIGEST,
+    BASELINE_DEPENDENCIES_GENERATION,
+    CONSTITUTION_JSON_PATH,
+    DEPENDENCIES_JSON_PATH,
+    DEPENDENCIES_MD_PATH,
+    ERR_DEP_ALLOWLIST_DIGEST_DIVERGED,
+    ERR_DEP_CONST_INVARIANT,
+    ERR_DEP_CORRUPT_FILE,
+    ERR_DEP_DIGEST_MISMATCH,
+    ERR_DEP_FREEZE_DIVERGENCE,
+    ERR_DEP_GENERATION_MISMATCH,
+    ERR_DEP_MISSING_FIELD,
+    ERR_DEP_PENDING_DECISION,
+    ERR_DEP_REGISTRY_DRIFT,
+    ERR_DEP_STABLE_ID_REUSED,
+    ERR_DEP_TOMBSTONE_INVALID,
+    ERR_DEP_TRACE_UNRESOLVED,
+    ERRORS_MD_PATH,
+    FRANKEN_IMPORTS_PATH,
+    STABLE_ID_RESOLUTION_PATH,
+    DiagnosticError,
+    ValidationResult,
+    compute_canonical_dependencies_digest,
+    issue,
+    pairs_hook_reject_duplicates,
+)
+
 ROOT = Path(__file__).resolve().parents[1]
 
-# Registered stable diagnostic finding IDs (registries/ERRORS.md)
-ERR_DEP_REGISTRY_DRIFT = "ERR-DEP-REGISTRY-DRIFT-001"
-ERR_DEP_STABLE_ID_REUSED = "ERR-DEP-STABLE-ID-REUSED-001"
-ERR_DEP_MISSING_FIELD = "ERR-DEP-MISSING-FIELD-001"
-ERR_DEP_CORRUPT_FILE = "ERR-DEP-CORRUPT-FILE-001"
-ERR_DEP_DIGEST_MISMATCH = "ERR-DEP-DIGEST-MISMATCH-001"
-ERR_DEP_FREEZE_DIVERGENCE = "ERR-DEP-FREEZE-DIVERGENCE-001"
-ERR_DEP_GENERATION_MISMATCH = "ERR-DEP-GENERATION-MISMATCH-001"
-ERR_DEP_CONST_INVARIANT = "ERR-DEP-CONST-INVARIANT-001"
-
-DEPENDENCIES_JSON_PATH = "architecture/dependencies.json"
-DEPENDENCIES_MD_PATH = "registries/DEPENDENCIES.md"
-CONSTITUTION_JSON_PATH = "architecture/dependency_constitution.json"
-ALLOWLIST_TOML_PATH = "architecture/dependency_allowlist.toml"
-
-BASELINE_DEPENDENCIES_GENERATION = "gen:fss1:dependencies-v1"
-BASELINE_DEPENDENCIES_FREEZE_DIGEST = "sha256:857dd73b26f36babae2e5670674b35344efcdecbd42c0b74d9f7a827a0ad27cb"
-BASELINE_CONSTITUTION_FREEZE_DIGEST = "sha256:858af1b5482b25cfca1477c2c4c1967a995d802990aaf0bc7ccf139f73571310"
-BASELINE_ALLOWLIST_FREEZE_DIGEST = "sha256:4279e5106dfef17192623f8871da01b3a2c7da04c022c3f0393f8cc50be452ec"
-MAX_REGISTRY_FILE_SIZE_BYTES = 10 * 1024 * 1024
-
-EXPECTED_FREEZE_DIGESTS: dict[str, str] = {
-    BASELINE_DEPENDENCIES_GENERATION: BASELINE_DEPENDENCIES_FREEZE_DIGEST,
-}
-
-# Full baseline dependency-class rows for generation gen:fss1:dependencies-v1
-CANONICAL_DEPENDENCY_REGISTRY_ROWS: dict[str, dict[str, str]] = {
-    "DEP-OWNED-001": {
-        "id": "DEP-OWNED-001",
-        "constitutionClass": "DEP-CLASS-F2",
-        "class": "Owned runtime and Franken-suite families",
-        "rule": "admitted after per-mechanism integration gate",
-        "scope": "Production",
-    },
-    "DEP-FUND-001": {
-        "id": "DEP-FUND-001",
-        "constitutionClass": "DEP-CLASS-F3",
-        "class": "serde / serde_json",
-        "rule": "control-plane schemas only; never durable bytes or authority",
-        "scope": "Production subject to audit",
-    },
-    "DEP-LAB-001": {
-        "id": "DEP-LAB-001",
-        "constitutionClass": "DEP-CLASS-F4",
-        "class": "Pinned codec/model/vendor/reference executables",
-        "rule": "sealed fixture/oracle lanes only; no production invocation path and absent from release closure",
-        "scope": "Development/migration only",
-    },
-    "DEP-ORACLE-001": {
-        "id": "DEP-ORACLE-001",
-        "constitutionClass": "DEP-CLASS-F4",
-        "class": "Python/reference ecosystems",
-        "rule": "held-out conformance and lab fixtures only; absent from release closure",
-        "scope": "Development only",
-    },
-    "DEP-EXCEPTION-001": {
-        "id": "DEP-EXCEPTION-001",
-        "constitutionClass": "DEP-CLASS-F3",
-        "class": "Any other external crate",
-        "rule": "requires DEP record, ADR, source/feature census, semantic owner, substitute prohibition, and removal plan",
-        "scope": "Not admitted",
-    },
-}
-
-# Retain alias for callers expecting CANONICAL_DEPENDENCY_CLASSES
-CANONICAL_DEPENDENCY_CLASSES = CANONICAL_DEPENDENCY_REGISTRY_ROWS
-
-MANDATORY_TOP_LEVEL_FIELDS: tuple[str, ...] = (
-    "schema",
-    "generation",
-    "freezeDigest",
-    "sourceDocument",
-    "dependencies",
-)
+MAX_REGISTRY_FILE_SIZE_BYTES = authority.MAX_INPUT_FILE_BYTES
+EXPECTED_FREEZE_DIGESTS = authority.EXPECTED_DEPENDENCIES_DIGESTS
+MANDATORY_TOP_LEVEL_FIELDS: tuple[str, ...] = tuple(authority.REGISTRY_SPEC.fields)
+MANDATORY_ROW_FIELDS: tuple[str, ...] = tuple(authority.REGISTRY_ROW_SPEC.fields)
 ALLOWED_TOP_LEVEL_FIELDS: set[str] = set(MANDATORY_TOP_LEVEL_FIELDS)
-
-MANDATORY_ROW_FIELDS: tuple[str, ...] = (
-    "id",
-    "constitutionClass",
-    "class",
-    "rule",
-    "scope",
-)
 ALLOWED_ROW_FIELDS: set[str] = set(MANDATORY_ROW_FIELDS)
 
-DEP_ID_PATTERN = re.compile(r"^DEP-[A-Z0-9]+-[0-9]{3}$")
+# Every code this checker can emit; each must be registered in registries/ERRORS.md.
+REGISTRY_CHECKER_ERROR_CODES: tuple[str, ...] = authority.AUTHORITY_ERROR_CODES
+
+# ---------------------------------------------------------------------------------------------
+# Markdown mirror (registries/DEPENDENCIES.md)
+# ---------------------------------------------------------------------------------------------
+
+MD_NULL = "—"  # em dash marks a JSON null
+META_HEADER = "| Field | Value |"
+META_SEPARATOR = "|---|---|"
+META_FIELDS: tuple[str, ...] = ("schema", "generation", "freezeDigest", "sourceDocument", "constitution", "policy", "contractBasis")
+ROW_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("id", "ID", "code"),
+    ("constitutionClass", "Constitution Class", "code"),
+    ("class", "Class", "text"),
+    ("rule", "Rule", "text"),
+    ("scope", "Scope", "code"),
+    ("status", "Status", "code"),
+    ("supersededBy", "Superseded By", "nullable-code"),
+    ("tombstoneDecision", "Tombstone Decision", "nullable-text"),
+    ("owner", "Owner", "code"),
+    ("producers", "Producers", "code-list"),
+    ("consumers", "Consumers", "code-list"),
+)
+ROW_HEADER = "| " + " | ".join(title for _, title, _ in ROW_COLUMNS) + " |"
+ROW_SEPARATOR = "|" + "---|" * len(ROW_COLUMNS)
+ANY_DEP_ID_RE = re.compile(r"(?i)(?<![a-z0-9])dep-[a-z0-9]+-[0-9]{3}(?![0-9])")
+_CODE_RE = re.compile(r"`([^`]+)`")
+_CELL_SPLIT_RE = re.compile(r"(?<!\\) \| ")
 
 
-@dataclass(frozen=True)
-class DiagnosticError:
-    code: str
-    file_path: str
-    target: str
-    message: str
+def _escape_cell(text: str) -> str:
+    return text.replace("|", "\\|")
 
 
-@dataclass
-class ValidationResult:
-    passed: bool = True
-    dependency_count: int = 0
-    freeze_digest: str = ""
-    errors: list[DiagnosticError] = field(default_factory=list)
-
-    def add_error(self, code: str, file_path: str, target: str, message: str) -> None:
-        self.passed = False
-        self.errors.append(DiagnosticError(code=code, file_path=file_path, target=target, message=message))
+def _render_cell(value: Any, kind: str) -> str:
+    if kind in ("nullable-code", "nullable-text") and value is None:
+        return MD_NULL
+    if kind in ("code", "nullable-code"):
+        return f"`{_escape_cell(str(value))}`"
+    if kind == "code-list":
+        return ", ".join(f"`{_escape_cell(str(item))}`" for item in value)
+    return _escape_cell(str(value))
 
 
-def pairs_hook_reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    """Rejects duplicate JSON keys during object construction."""
-    d: dict[str, Any] = {}
-    for k, v in pairs:
-        if k in d:
-            raise ValueError(f"Duplicate JSON key: {k!r}")
-        d[k] = v
-    return d
+def render_dependencies_markdown(registry: dict[str, Any]) -> str:
+    """Deterministic mirror of architecture/dependencies.json; the checker parses it back strictly."""
+    lines = [
+        "# Dependency registry",
+        "",
+        "The normative doctrine is [`docs/DEPENDENCY_CONSTITUTION.md`](../docs/DEPENDENCY_CONSTITUTION.md); the machine allowlist is `architecture/dependency_allowlist.toml`.",
+        "This file mirrors `architecture/dependencies.json` field by field. `scripts/dependency_registry_checker.py` parses both tables strictly and refuses drift, duplicate rows, and dependency identifiers anywhere outside the row table.",
+        "",
+        META_HEADER,
+        META_SEPARATOR,
+    ]
+    for key in META_FIELDS:
+        lines.append(f"| `{key}` | `{_escape_cell(str(registry.get(key)))}` |")
+    lines += ["", ROW_HEADER, ROW_SEPARATOR]
+    for row in registry.get("dependencies", []):
+        cells = [_render_cell(row.get(key), kind) for key, _, kind in ROW_COLUMNS]
+        lines.append("| " + " | ".join(cells) + " |")
+    lines += [
+        "",
+        "No exception is implied by appearance in `Cargo.lock`. Release qualification computes and records the complete source/feature closure and fails closed on unknown provenance.",
+        "",
+    ]
+    return "\n".join(lines)
 
 
-def canonicalize_value(val: Any, depth: int = 0) -> Any:
-    if depth > 20:
-        raise ValueError("Value nesting depth exceeded maximum supported depth")
-    if isinstance(val, dict):
-        return {k: canonicalize_value(v, depth + 1) for k, v in sorted(val.items())}
-    if isinstance(val, list):
-        return [canonicalize_value(item, depth + 1) for item in val]
-    return val
+def _split_cells(line: str) -> list[str] | None:
+    if not (line.startswith("| ") and line.endswith(" |")) or len(line) < 4:
+        return None
+    return [cell.replace("\\|", "|") for cell in _CELL_SPLIT_RE.split(line[2:-2])]
 
 
-def compute_canonical_dependencies_digest(
-    data_or_deps: dict[str, Any] | list[dict[str, Any]],
-    schema: str = "fss.dependencies.v1",
-    generation: str = BASELINE_DEPENDENCIES_GENERATION,
-    source_document: str = "registries/DEPENDENCIES.md",
-) -> str:
-    """Computes SHA-256 digest of canonically serialized dependency registry data.
+def _decode_cell(cell: str, kind: str) -> tuple[Any, str | None]:
+    if kind in ("nullable-code", "nullable-text") and cell == MD_NULL:
+        return None, None
+    if kind in ("code", "nullable-code"):
+        match = re.fullmatch(r"`([^`]+)`", cell)
+        return (match.group(1), None) if match else (None, f"must be exactly one code span, found {cell!r}")
+    if kind == "code-list":
+        parts = cell.split(", ")
+        values = []
+        for part in parts:
+            match = re.fullmatch(r"`([^`]+)`", part)
+            if not match:
+                return None, f"must be a comma-separated list of code spans, found {cell!r}"
+            values.append(match.group(1))
+        return values, None
+    if "`" in cell or not cell or cell != cell.strip() or cell == MD_NULL:
+        return None, f"must be plain text without code spans, found {cell!r}"
+    return cell, None
 
-    Binds top-level metadata (schema, generation, sourceDocument) and deterministically
-    sorted dependencies rows without whitespace trimming.
-    """
-    if isinstance(data_or_deps, dict):
-        data = data_or_deps
-        schema_val = str(data.get("schema", ""))
-        generation_val = str(data.get("generation", ""))
-        source_doc_val = str(data.get("sourceDocument", ""))
-        raw_deps = data.get("dependencies", [])
-        if not isinstance(raw_deps, list):
-            raw_deps = []
+
+def parse_dependencies_markdown(text: str, rel: str = DEPENDENCIES_MD_PATH) -> tuple[dict[str, Any] | None, list[dict[str, Any]] | None, list[DiagnosticError]]:
+    """Strict parse of both mirror tables. Returns (meta, rows, issues); rows is None if no row table."""
+    out: list[DiagnosticError] = []
+    if "\r" in text:
+        out.append(issue(ERR_DEP_REGISTRY_DRIFT, rel, "#", "markdown mirror contains carriage returns; the mirror is LF-only"))
+    lines = text.split("\n")
+    row_headers = [i for i, line in enumerate(lines) if line == ROW_HEADER]
+    if not row_headers:
+        out.append(issue(ERR_DEP_CORRUPT_FILE, rel, "#", f"no dependency row table (header {ROW_HEADER!r}) in {rel}"))
+        return None, None, out
+    if len(row_headers) > 1:
+        out.append(issue(ERR_DEP_REGISTRY_DRIFT, rel, f"line/{row_headers[1] + 1}", "markdown mirror declares the dependency row table more than once"))
+    consumed: set[int] = set()
+    rows: list[dict[str, Any]] = []
+    seen_ids: dict[str, int] = {}
+
+    def note_id(dep_id: str, line_no: int) -> None:
+        key = dep_id.lower()
+        if key in seen_ids:
+            out.append(issue(ERR_DEP_STABLE_ID_REUSED, rel, f"line/{line_no}", f"Duplicate dependency ID in markdown table: {dep_id!r} (first at line {seen_ids[key]})"))
+        else:
+            seen_ids[key] = line_no
+
+    header = row_headers[0]
+    consumed.add(header)
+    if header + 1 >= len(lines) or lines[header + 1] != ROW_SEPARATOR:
+        out.append(issue(ERR_DEP_REGISTRY_DRIFT, rel, f"line/{header + 2}", f"dependency row table separator must be exactly {ROW_SEPARATOR!r}"))
     else:
-        schema_val = schema
-        generation_val = generation
-        source_doc_val = source_document
-        raw_deps = data_or_deps if isinstance(data_or_deps, list) else []
+        consumed.add(header + 1)
+        index = header + 2
+        while index < len(lines) and lines[index].startswith("|"):
+            consumed.add(index)
+            line_no = index + 1
+            cells = _split_cells(lines[index])
+            index += 1
+            if cells is None or len(cells) != len(ROW_COLUMNS):
+                out.append(issue(ERR_DEP_REGISTRY_DRIFT, rel, f"line/{line_no}", f"dependency table row must have exactly {len(ROW_COLUMNS)} '| '-delimited columns: {lines[line_no - 1]!r}"))
+                first = lines[line_no - 1].strip().strip("|").split("|")[0]
+                found = ANY_DEP_ID_RE.search(first)
+                if found:
+                    note_id(found.group(0), line_no)
+                continue
+            row: dict[str, Any] = {}
+            bad = False
+            for (key, title, kind), cell in zip(ROW_COLUMNS, cells):
+                value, problem = _decode_cell(cell, kind)
+                if problem:
+                    out.append(issue(ERR_DEP_REGISTRY_DRIFT, rel, f"line/{line_no}/{key}", f"column {title!r} {problem}"))
+                    bad = True
+                    continue
+                row[key] = value
+                if key not in ("id", "supersededBy") and ANY_DEP_ID_RE.search(cell):
+                    out.append(issue(ERR_DEP_REGISTRY_DRIFT, rel, f"line/{line_no}/{key}", f"dependency identifier found in column {title!r} instead of the ID column: {cell!r}"))
+                    bad = True
+            dep_id = row.get("id")
+            if isinstance(dep_id, str):
+                if not authority.DEP_ID_RE.fullmatch(dep_id):
+                    out.append(issue(ERR_DEP_REGISTRY_DRIFT, rel, f"line/{line_no}/id", f"markdown ID {dep_id!r} is not an uppercase DEP-[A-Z0-9]+-[0-9]{{3}} identifier"))
+                    bad = True
+                note_id(dep_id, line_no)
+            else:
+                found = ANY_DEP_ID_RE.search(cells[0])
+                if found:
+                    note_id(found.group(0), line_no)
+            if not bad:
+                rows.append(row)
 
-    valid_deps = [r for r in raw_deps if isinstance(r, dict)]
-    sorted_deps = sorted(valid_deps, key=lambda r: str(r.get("id", "")))
-    canonical_payload = {
-        "dependencies": [
-            {
-                "class": str(r.get("class", "")),
-                "constitutionClass": str(r.get("constitutionClass", "")),
-                "id": str(r.get("id", "")),
-                "rule": str(r.get("rule", "")),
-                "scope": str(r.get("scope", "")),
-            }
-            for r in sorted_deps
-        ],
-        "generation": generation_val,
-        "schema": schema_val,
-        "sourceDocument": source_doc_val,
-    }
-    canonical_bytes = json.dumps(canonical_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return f"sha256:{hashlib.sha256(canonical_bytes).hexdigest()}"
+    meta: dict[str, Any] | None = None
+    meta_headers = [i for i, line in enumerate(lines) if line == META_HEADER]
+    if len(meta_headers) != 1:
+        out.append(issue(ERR_DEP_REGISTRY_DRIFT, rel, "#", f"markdown mirror must contain exactly one metadata table (header {META_HEADER!r}); found {len(meta_headers)}"))
+    else:
+        start = meta_headers[0]
+        consumed.add(start)
+        meta = {}
+        if start + 1 >= len(lines) or lines[start + 1] != META_SEPARATOR:
+            out.append(issue(ERR_DEP_REGISTRY_DRIFT, rel, f"line/{start + 2}", f"metadata table separator must be exactly {META_SEPARATOR!r}"))
+        else:
+            consumed.add(start + 1)
+            index = start + 2
+            while index < len(lines) and lines[index].startswith("|"):
+                consumed.add(index)
+                line_no = index + 1
+                cells = _split_cells(lines[index])
+                index += 1
+                if cells is None or len(cells) != 2:
+                    out.append(issue(ERR_DEP_REGISTRY_DRIFT, rel, f"line/{line_no}", f"metadata row must have exactly 2 columns: {lines[line_no - 1]!r}"))
+                    continue
+                key, key_problem = _decode_cell(cells[0], "code")
+                value, value_problem = _decode_cell(cells[1], "code")
+                if key_problem or value_problem:
+                    out.append(issue(ERR_DEP_REGISTRY_DRIFT, rel, f"line/{line_no}", f"metadata row must be `field` | `value`: {lines[line_no - 1]!r}"))
+                    continue
+                if key in meta:
+                    out.append(issue(ERR_DEP_REGISTRY_DRIFT, rel, f"line/{line_no}", f"duplicate metadata field {key!r}"))
+                    continue
+                meta[key] = value
+
+    for index, line in enumerate(lines):
+        if index in consumed:
+            continue
+        found = ANY_DEP_ID_RE.search(line)
+        if not found:
+            continue
+        line_no = index + 1
+        out.append(issue(ERR_DEP_REGISTRY_DRIFT, rel, f"line/{line_no}", f"rogue dependency identifier {found.group(0)!r} outside the registry row table: {line!r}"))
+        if line.lstrip().startswith("|"):
+            first = line.strip().strip("|").split("|")[0]
+            first_id = ANY_DEP_ID_RE.search(first)
+            if first_id:
+                note_id(first_id.group(0), line_no)
+    return meta, rows, out
+
+
+def extract_markdown_dependencies(md_path: Path) -> tuple[dict[str, dict[str, Any]], list[DiagnosticError]]:
+    """Compatibility wrapper: parsed rows keyed by id, plus every parse finding."""
+    rel = DEPENDENCIES_MD_PATH
+    data, problems = authority.read_input_bytes(md_path, rel)
+    if data is None:
+        return {}, problems
+    text, problems = authority.decode_utf8(data, rel)
+    if text is None:
+        return {}, problems
+    _meta, rows, found = parse_dependencies_markdown(text, rel)
+    by_id: dict[str, dict[str, Any]] = {}
+    for row in rows or []:
+        by_id.setdefault(row["id"], row)
+    return by_id, found
+
+
+def _compare_markdown(result: ValidationResult, auth: authority.Authority, md_path: Path) -> None:
+    rel = DEPENDENCIES_MD_PATH
+    data, problems = authority.read_input_bytes(md_path, rel)
+    if data is None:
+        result.extend(problems)
+        return
+    text, problems = authority.decode_utf8(data, rel)
+    if text is None:
+        result.extend(problems)
+        return
+    meta, md_rows, found = parse_dependencies_markdown(text, rel)
+    result.extend(found)
+    if md_rows is None or auth.registry is None:
+        return
+    registry = auth.registry
+    if meta is not None:
+        for key in META_FIELDS:
+            json_value = registry.get(key)
+            if key not in meta:
+                result.add_error(ERR_DEP_REGISTRY_DRIFT, rel, f"meta/{key}", f"markdown metadata table lacks {key!r}")
+            elif isinstance(json_value, str) and meta[key] != json_value:
+                result.add_error(ERR_DEP_REGISTRY_DRIFT, rel, f"meta/{key}", f"markdown metadata {key!r} mismatch: markdown={meta[key]!r}, json={json_value!r}")
+        for key in sorted(set(meta) - set(META_FIELDS)):
+            result.add_error(ERR_DEP_REGISTRY_DRIFT, rel, f"meta/{key}", f"markdown metadata table has unknown field {key!r}")
+    json_rows = [row for row in registry.get("dependencies", []) if isinstance(row, dict) and authority.is_str(row.get("id"))] if isinstance(registry.get("dependencies"), list) else []
+    json_by_id: dict[str, dict[str, Any]] = {}
+    for row in json_rows:
+        json_by_id.setdefault(row["id"], row)
+    md_by_id: dict[str, dict[str, Any]] = {}
+    for row in md_rows:
+        md_by_id.setdefault(row["id"], row)
+    for dep_id in md_by_id:
+        if dep_id not in json_by_id:
+            result.add_error(ERR_DEP_REGISTRY_DRIFT, rel, f"row/{dep_id}", f"Markdown mirror contains dependency ID {dep_id!r} absent from the JSON registry")
+    for dep_id, json_row in json_by_id.items():
+        md_row = md_by_id.get(dep_id)
+        if md_row is None:
+            result.add_error(ERR_DEP_REGISTRY_DRIFT, rel, f"row/{dep_id}", f"JSON registry contains dependency ID {dep_id!r} absent from the markdown mirror")
+            continue
+        for key, title, _kind in ROW_COLUMNS:
+            if key not in json_row:
+                continue  # already a MISSING-FIELD finding
+            if md_row.get(key) != json_row[key]:
+                result.add_error(ERR_DEP_REGISTRY_DRIFT, rel, f"row/{dep_id}/{key}", f"Markdown mirror {title} mismatch for {dep_id!r}: markdown={md_row.get(key)!r}, json={json_row[key]!r}")
+    shared_md = [row["id"] for row in md_rows if row["id"] in json_by_id]
+    shared_json = [row["id"] for row in json_rows if row["id"] in md_by_id]
+    if len(set(shared_md)) == len(shared_md) and len(set(shared_json)) == len(shared_json) and shared_md != shared_json:
+        result.add_error(ERR_DEP_REGISTRY_DRIFT, rel, "#", f"markdown row order {shared_md} differs from JSON order {shared_json}")
+    if len(md_rows) != len(json_rows):
+        result.add_error(ERR_DEP_REGISTRY_DRIFT, rel, "#", f"Markdown mirror row count ({len(md_rows)}) differs from JSON row count ({len(json_rows)})")
+
+
+# ---------------------------------------------------------------------------------------------
+# Traceability (owner / producers / consumers / ContractBasis / registered error codes)
+# ---------------------------------------------------------------------------------------------
+
+
+def _read_text(root: Path, rel: str) -> str | None:
+    data, problems = authority.read_input_bytes(root / rel, rel)
+    if data is None:
+        return None
+    text, problems = authority.decode_utf8(data, rel)
+    return text
+
+
+def _registered_error_codes(root: Path, result: ValidationResult) -> set[str] | None:
+    rel = ERRORS_MD_PATH
+    data, problems = authority.read_input_bytes(root / rel, rel)
+    if data is None:
+        result.extend(problems)
+        return None
+    text, problems = authority.decode_utf8(data, rel)
+    if text is None:
+        result.extend(problems)
+        return None
+    return set(re.findall(r"^\| `(ERR-[A-Z0-9-]+)` \|", text, flags=re.MULTILINE))
+
+
+def check_traces(result: ValidationResult, auth: authority.Authority, emitted_codes: tuple[str, ...] = REGISTRY_CHECKER_ERROR_CODES) -> None:
+    root = auth.root
+    rel = DEPENDENCIES_JSON_PATH
+    registered = _registered_error_codes(root, result)
+    if registered is not None:
+        for code in emitted_codes:
+            if code not in registered:
+                result.add_error(ERR_DEP_TRACE_UNRESOLVED, ERRORS_MD_PATH, f"#/{code}", f"diagnostic {code} emitted by the dependency checkers is not registered in {ERRORS_MD_PATH} (ContractBasis error registry)")
+    registry = auth.registry
+    if registry is None:
+        return
+    basis = registry.get("contractBasis")
+    if authority.is_str(basis):
+        contracts, _raw, problems = authority.load_json_document(root / AGENT_CONTRACTS_PATH, AGENT_CONTRACTS_PATH)
+        result.extend(problems)
+        if contracts is not None:
+            declared = authority.as_dict(contracts.get("semanticObjects")).get("ContractBasis")
+            if declared != basis:
+                result.add_error(ERR_DEP_TRACE_UNRESOLVED, rel, "#/contractBasis", f"contractBasis {basis!r} does not resolve: {AGENT_CONTRACTS_PATH} semanticObjects.ContractBasis is {declared!r}")
+    allow_tables = set(authority.as_dict(auth.allowlist))
+    cache: dict[str, str | None] = {}
+
+    def text_of(path: str) -> str | None:
+        if path not in cache:
+            cache[path] = _read_text(root, path) if _safe_relative(path) else None
+        return cache[path]
+
+    for row in auth.rows():
+        dep_id = row["id"]
+        owner = row.get("owner")
+        if authority.is_str(owner):
+            text = text_of(owner)
+            if text is None:
+                result.add_error(ERR_DEP_TRACE_UNRESOLVED, rel, f"row/{dep_id}/owner", f"owner {owner!r} of {dep_id} is not a readable repository file")
+            elif dep_id not in text and DEPENDENCIES_JSON_PATH not in text:
+                result.add_error(ERR_DEP_TRACE_UNRESOLVED, rel, f"row/{dep_id}/owner", f"owner {owner!r} references neither {dep_id} nor {DEPENDENCIES_JSON_PATH}; the owning module must read the row it enforces")
+        for producer in authority.str_list(row.get("producers")):
+            path, sep, table = producer.partition("#")
+            if text_of(path) is None:
+                result.add_error(ERR_DEP_TRACE_UNRESOLVED, rel, f"row/{dep_id}/producers", f"producer {producer!r} of {dep_id} is not a readable repository file")
+            elif sep and (path != ALLOWLIST_TOML_PATH or table not in allow_tables):
+                result.add_error(ERR_DEP_TRACE_UNRESOLVED, rel, f"row/{dep_id}/producers", f"producer {producer!r} of {dep_id} does not name a table of {ALLOWLIST_TOML_PATH}")
+        for consumer in authority.str_list(row.get("consumers")):
+            text = text_of(consumer)
+            if text is None:
+                result.add_error(ERR_DEP_TRACE_UNRESOLVED, rel, f"row/{dep_id}/consumers", f"consumer {consumer!r} of {dep_id} is not a readable repository file")
+            elif dep_id not in text and DEPENDENCIES_JSON_PATH not in text:
+                result.add_error(ERR_DEP_TRACE_UNRESOLVED, rel, f"row/{dep_id}/consumers", f"consumer {consumer!r} references neither {dep_id} nor {DEPENDENCIES_JSON_PATH}")
+
+
+def _safe_relative(path: str) -> bool:
+    candidate = Path(path)
+    return bool(path) and not candidate.is_absolute() and ".." not in candidate.parts and "\\" not in path
+
+
+# ---------------------------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------------------------
 
 
 def compute_allowlist_freeze_digest(allowlist_path: Path) -> str:
-    """Computes SHA-256 digest of dependency allowlist TOML file."""
-    raw = allowlist_path.read_bytes()
-    return f"sha256:{hashlib.sha256(raw).hexdigest()}"
+    """sha256 of the allowlist bytes (the pinned value is BASELINE_ALLOWLIST_FREEZE_DIGEST)."""
+    return authority.sha256_prefixed(allowlist_path.read_bytes())
 
 
 def compute_constitution_freeze_digest(constitution_path: Path) -> str:
-    """Computes SHA-256 digest of dependency constitution JSON file."""
-    raw = constitution_path.read_bytes()
-    return f"sha256:{hashlib.sha256(raw).hexdigest()}"
-
-
-def extract_markdown_dependencies(md_path: Path) -> tuple[dict[str, dict[str, str]], list[DiagnosticError]]:
-    """Extracts dependency rows from markdown table: {id: {constitutionClass, class, rule, scope}}."""
-    rows: dict[str, dict[str, str]] = {}
-    errors: list[DiagnosticError] = []
-    try:
-        if md_path.stat().st_size > MAX_REGISTRY_FILE_SIZE_BYTES:
-            return {}, [
-                DiagnosticError(
-                    code=ERR_DEP_CORRUPT_FILE,
-                    file_path=str(md_path),
-                    target="#",
-                    message=f"Markdown mirror exceeds maximum size of {MAX_REGISTRY_FILE_SIZE_BYTES} bytes",
-                )
-            ]
-        raw_bytes = md_path.read_bytes()
-        if len(raw_bytes.strip()) == 0:
-            return {}, [
-                DiagnosticError(
-                    code=ERR_DEP_CORRUPT_FILE,
-                    file_path=str(md_path),
-                    target="#",
-                    message="Markdown mirror is empty (0 bytes)",
-                )
-            ]
-        text = raw_bytes.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        return {}, [
-            DiagnosticError(
-                code=ERR_DEP_CORRUPT_FILE,
-                file_path=str(md_path),
-                target="#",
-                message=f"Markdown mirror contains invalid UTF-8: {exc}",
-            )
-        ]
-    except OSError as exc:
-        return {}, [
-            DiagnosticError(
-                code=ERR_DEP_CORRUPT_FILE,
-                file_path=str(md_path),
-                target="#",
-                message=f"Could not read markdown mirror: {exc}",
-            )
-        ]
-
-    lines = text.splitlines()
-    seen_ids: set[str] = set()
-
-    for line_idx, line in enumerate(lines, 1):
-        stripped = line.strip()
-        loose_match = re.search(r"(?i)\bdep-[a-z0-9]+-[0-9]{3}\b", stripped)
-        if not stripped.startswith("|"):
-            if loose_match:
-                errors.append(
-                    DiagnosticError(
-                        code=ERR_DEP_REGISTRY_DRIFT,
-                        file_path=str(md_path),
-                        target=f"line/{line_idx}",
-                        message=f"Dependency row missing leading pipe: {stripped!r}",
-                    )
-                )
-            continue
-
-        parts = [p.strip() for p in stripped.strip("|").split("|")]
-        if not parts or all(len(p) == 0 for p in parts):
-            continue
-
-        first_part = parts[0]
-        if first_part in ("ID", "---", ":---", ":---:", "---:") or first_part.startswith("---") or first_part.startswith(":-"):
-            continue
-
-        # Enforce exactly 5 columns (drop 4-column legacy branch)
-        if len(parts) != 5:
-            errors.append(
-                DiagnosticError(
-                    code=ERR_DEP_REGISTRY_DRIFT,
-                    file_path=str(md_path),
-                    target=f"line/{line_idx}",
-                    message=f"Dependency table row in markdown mirror must have exactly 5 columns: observed {len(parts)} in {stripped!r}",
-                )
-            )
-            continue
-
-        # Column 0: ID - must be enclosed in exact single backticks and uppercase DEP-[A-Z0-9]+-[0-9]{3}
-        raw_id = parts[0]
-        if not (raw_id.startswith("`") and raw_id.endswith("`") and len(raw_id) >= 3):
-            errors.append(
-                DiagnosticError(
-                    code=ERR_DEP_REGISTRY_DRIFT,
-                    file_path=str(md_path),
-                    target=f"line/{line_idx}/id",
-                    message=f"Dependency ID in markdown mirror must be enclosed in exact backticks: observed {raw_id!r}",
-                )
-            )
-            dep_id = raw_id.replace("`", "").strip()
-        else:
-            dep_id = raw_id[1:-1].strip()
-
-        if not DEP_ID_PATTERN.match(dep_id):
-            errors.append(
-                DiagnosticError(
-                    code=ERR_DEP_REGISTRY_DRIFT,
-                    file_path=str(md_path),
-                    target=f"line/{line_idx}/id",
-                    message=f"Dependency ID '{dep_id}' does not match standard pattern DEP-[A-Z0-9]+-[0-9]{{3}}",
-                )
-            )
-
-        # Check for rogue / misplaced ID in columns 1..4
-        for col_idx, part in enumerate(parts[1:], 1):
-            if re.search(r"(?i)\bdep-[a-z0-9]+-[0-9]{3}\b", part):
-                errors.append(
-                    DiagnosticError(
-                        code=ERR_DEP_REGISTRY_DRIFT,
-                        file_path=str(md_path),
-                        target=f"line/{line_idx}/col{col_idx}",
-                        message=f"Dependency ID found in column {col_idx} instead of column 0: {part!r}",
-                    )
-                )
-
-        # Column 1: constitutionClass - must be enclosed in exact backticks
-        raw_cclass = parts[1]
-        if not (raw_cclass.startswith("`") and raw_cclass.endswith("`") and len(raw_cclass) >= 3):
-            errors.append(
-                DiagnosticError(
-                    code=ERR_DEP_REGISTRY_DRIFT,
-                    file_path=str(md_path),
-                    target=f"line/{line_idx}/constitutionClass",
-                    message=f"Constitution class in markdown mirror must be enclosed in exact backticks: observed {raw_cclass!r}",
-                )
-            )
-            c_class = raw_cclass.replace("`", "").strip()
-        else:
-            c_class = raw_cclass[1:-1].strip()
-
-        # Column 2: class name - must NOT be enclosed in backticks
-        name = parts[2]
-        if name.startswith("`") or name.endswith("`"):
-            errors.append(
-                DiagnosticError(
-                    code=ERR_DEP_REGISTRY_DRIFT,
-                    file_path=str(md_path),
-                    target=f"line/{line_idx}/class",
-                    message=f"Class name in markdown mirror must not be enclosed in backticks: observed {name!r}",
-                )
-            )
-            name = name.replace("`", "").strip()
-
-        # Column 3: rule - must NOT be enclosed in backticks
-        rule = parts[3]
-        if rule.startswith("`") or rule.endswith("`"):
-            errors.append(
-                DiagnosticError(
-                    code=ERR_DEP_REGISTRY_DRIFT,
-                    file_path=str(md_path),
-                    target=f"line/{line_idx}/rule",
-                    message=f"Rule in markdown mirror must not be enclosed in backticks: observed {rule!r}",
-                )
-            )
-            rule = rule.replace("`", "").strip()
-
-        # Column 4: scope - must be enclosed in exact backticks
-        raw_scope = parts[4]
-        if not (raw_scope.startswith("`") and raw_scope.endswith("`") and len(raw_scope) >= 3):
-            errors.append(
-                DiagnosticError(
-                    code=ERR_DEP_REGISTRY_DRIFT,
-                    file_path=str(md_path),
-                    target=f"line/{line_idx}/scope",
-                    message=f"Scope in markdown mirror must be enclosed in exact backticks: observed {raw_scope!r}",
-                )
-            )
-            scope = raw_scope.replace("`", "").strip()
-        else:
-            scope = raw_scope[1:-1].strip()
-
-        dep_id_lower = dep_id.lower()
-        if dep_id_lower in seen_ids:
-            errors.append(
-                DiagnosticError(
-                    code=ERR_DEP_STABLE_ID_REUSED,
-                    file_path=str(md_path),
-                    target=f"line/{line_idx}",
-                    message=f"Duplicate dependency ID in markdown table: '{dep_id}'",
-                )
-            )
-        seen_ids.add(dep_id_lower)
-
-        rows[dep_id] = {
-            "id": dep_id,
-            "constitutionClass": c_class,
-            "class": name,
-            "rule": rule,
-            "scope": scope,
-        }
-
-    return rows, errors
-
-
-def resolve_dependency_row_metadata(dep_id: str, repo_root: Path = ROOT) -> dict[str, Any]:
-    """Resolves scope metadata for a dependency row ID.
-
-    Returns owner, producers, consumers, ContractBasis link, and tombstone status.
-    """
-    is_tombstoned = False
-    canonical_id = dep_id
-    res_path = repo_root / "architecture/stable_id_resolution.json"
-    if res_path.is_file():
-        try:
-            res_data = json.loads(res_path.read_text(encoding="utf-8"))
-            for res in res_data.get("resolutions", []):
-                if isinstance(res, dict):
-                    if res.get("legacyId") == dep_id:
-                        if res.get("status") in ("tombstone", "tombstoned", "superseded"):
-                            is_tombstoned = True
-                        if res.get("canonicalId"):
-                            canonical_id = str(res["canonicalId"])
-        except Exception:
-            pass
-
-    deps_path = repo_root / DEPENDENCIES_JSON_PATH
-    row: dict[str, Any] = {}
-    if deps_path.is_file():
-        try:
-            deps_data = json.loads(deps_path.read_text(encoding="utf-8"))
-            for r in deps_data.get("dependencies", []):
-                if isinstance(r, dict) and r.get("id") == dep_id:
-                    row = r
-                    break
-        except Exception:
-            pass
-
-    c_class = row.get("constitutionClass", "")
-    scope = row.get("scope", "")
-    contract_basis = "fss.agent_contract_basis.v1"
-
-    owner_map = {
-        "DEP-OWNED-001": "fss-runtime",
-        "DEP-FUND-001": "fss-data-shape",
-        "DEP-LAB-001": "fss-lab",
-        "DEP-ORACLE-001": "fss-oracle",
-        "DEP-EXCEPTION-001": "fss-exception-review",
-    }
-    owner = owner_map.get(dep_id, "fss-core")
-
-    producers: list[str] = []
-    consumers: list[str] = []
-
-    if dep_id == "DEP-OWNED-001":
-        crates_dir = repo_root / "crates"
-        if crates_dir.is_dir():
-            for c in sorted(crates_dir.iterdir()):
-                if c.is_dir() and (c / "Cargo.toml").is_file():
-                    producers.append(c.name)
-                    consumers.append(c.name)
-
-    return {
-        "id": dep_id,
-        "canonicalId": canonical_id,
-        "constitutionClass": c_class,
-        "scope": scope,
-        "owner": owner,
-        "producers": producers,
-        "consumers": consumers,
-        "contractBasis": contract_basis,
-        "isTombstoned": is_tombstoned,
-        "tombstone": is_tombstoned,
-    }
+    """Canonical constitution digest of the file (the pinned value is BASELINE_CONSTITUTION_FREEZE_DIGEST)."""
+    data = json.loads(constitution_path.read_text(encoding="utf-8"), object_pairs_hook=pairs_hook_reject_duplicates)
+    return authority.compute_canonical_constitution_digest(data)
 
 
 def load_tombstone_set(root: Path = ROOT) -> tuple[set[str], list[DiagnosticError]]:
-    """Loads tombstoned stable IDs from stable_id_resolution.json if present."""
-    tombstones_path = root / "architecture/stable_id_resolution.json"
-    if not tombstones_path.is_file():
-        return set(), []
-    try:
-        raw_bytes = tombstones_path.read_bytes()
-        text = raw_bytes.decode("utf-8")
-        data = json.loads(text, object_pairs_hook=pairs_hook_reject_duplicates)
-        tombstoned = set()
-        for res in data.get("resolutions", []):
-            if isinstance(res, dict) and res.get("status") in ("tombstone", "tombstoned", "superseded"):
-                legacy = res.get("legacyId")
-                if legacy:
-                    tombstoned.add(str(legacy).strip())
-        return tombstoned, []
-    except Exception as exc:
-        return set(), [
-            DiagnosticError(
-                code=ERR_DEP_CORRUPT_FILE,
-                file_path="architecture/stable_id_resolution.json",
-                target="#",
-                message=f"Could not read stable-ID resolution file: {exc}",
-            )
-        ]
+    """Retired dependency identifiers from stable_id_resolution.json; missing or corrupt fails closed."""
+    auth = authority.Authority(root=root)
+    authority._load_resolutions(auth, root / STABLE_ID_RESOLUTION_PATH)
+    retired: set[str] = set()
+    for row in auth.resolutions or []:
+        legacy = row.get("legacyId")
+        markers = {row.get("status"), row.get("disposition")}
+        if isinstance(legacy, str) and markers & authority.RETIRING_VALUES:
+            retired.add(legacy)
+    return retired, list(auth.issues)
+
+
+def resolve_dependency_row_metadata(dep_id: str, repo_root: Path = ROOT) -> dict[str, Any]:
+    """Owner, producers, consumers, ContractBasis link and tombstone state of one row, from the registry."""
+    auth = authority.load_authority(repo_root)
+    rows = {row["id"]: row for row in auth.rows()}
+    row = rows.get(dep_id)
+    if row is None or auth.registry is None:
+        return {"id": dep_id, "resolved": False, "reason": f"{dep_id} is not a row of {DEPENDENCIES_JSON_PATH}", "findings": [asdict(e) for e in auth.issues]}
+    status = row.get("status")
+    retired = status in ("tombstoned", "superseded")
+    return {
+        "id": dep_id,
+        "resolved": True,
+        "canonicalId": row.get("supersededBy") if status == "superseded" else dep_id,
+        "constitutionClass": row.get("constitutionClass"),
+        "scope": row.get("scope"),
+        "status": status,
+        "owner": row.get("owner"),
+        "producers": list(row.get("producers") or []),
+        "consumers": list(row.get("consumers") or []),
+        "contractBasis": auth.registry.get("contractBasis"),
+        "registryGeneration": auth.registry.get("generation"),
+        "registryDigest": auth.registry_digest,
+        "tombstoneDecision": row.get("tombstoneDecision"),
+        "isTombstoned": retired,
+        "tombstone": retired,
+    }
 
 
 def validate_dependency_registry(
@@ -512,540 +493,27 @@ def validate_dependency_registry(
     md_path: Path | None = None,
 ) -> ValidationResult:
     result = ValidationResult()
-    j_path = json_path or (repo_root / DEPENDENCIES_JSON_PATH)
-    m_path = md_path or (repo_root / DEPENDENCIES_MD_PATH)
-
-    j_str = str(j_path.relative_to(repo_root)) if j_path.is_relative_to(repo_root) else str(j_path)
-    m_str = str(m_path.relative_to(repo_root)) if m_path.is_relative_to(repo_root) else str(m_path)
-
-    # 1. Check existence
-    if not j_path.is_file():
-        result.add_error(
-            ERR_DEP_CORRUPT_FILE,
-            j_str,
-            "#",
-            f"Dependency registry JSON file does not exist: {j_path}",
-        )
-        return result
-
-    if not m_path.is_file():
-        result.add_error(
-            ERR_DEP_CORRUPT_FILE,
-            m_str,
-            "#",
-            f"Dependency markdown source file does not exist: {m_path}",
-        )
-        return result
-
-    # 2. Check for empty file and valid bytes
-    try:
-        if j_path.stat().st_size > MAX_REGISTRY_FILE_SIZE_BYTES:
-            result.add_error(
-                ERR_DEP_CORRUPT_FILE,
-                j_str,
-                "#",
-                f"Dependency registry JSON file exceeds maximum allowed size of {MAX_REGISTRY_FILE_SIZE_BYTES} bytes",
-            )
-            return result
-        j_bytes = j_path.read_bytes()
-    except OSError as exc:
-        result.add_error(
-            ERR_DEP_CORRUPT_FILE,
-            j_str,
-            "#",
-            f"Could not read dependency registry JSON: {exc}",
-        )
-        return result
-
-    if len(j_bytes.strip()) == 0:
-        result.add_error(
-            ERR_DEP_CORRUPT_FILE,
-            j_str,
-            "#",
-            "Dependency registry JSON file is empty (0 bytes)",
-        )
-        return result
-
-    # UTF-8 decode check
-    try:
-        j_text = j_bytes.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        result.add_error(
-            ERR_DEP_CORRUPT_FILE,
-            j_str,
-            "#",
-            f"Dependency registry JSON file contains invalid UTF-8 bytes: {exc}",
-        )
-        return result
-
-    # 3. Parse JSON with duplicate key detection
-    try:
-        data = json.loads(j_text, object_pairs_hook=pairs_hook_reject_duplicates)
-    except (json.JSONDecodeError, ValueError, RecursionError) as exc:
-        result.add_error(
-            ERR_DEP_CORRUPT_FILE,
-            j_str,
-            "#",
-            f"Failed to parse dependency registry JSON: {exc}",
-        )
-        return result
-
-    if not isinstance(data, dict):
-        result.add_error(
-            ERR_DEP_CORRUPT_FILE,
-            j_str,
-            "#",
-            "Top-level dependency registry must be a JSON object",
-        )
-        return result
-
-    # 4. Check for unexpected top-level keys
-    for key in data:
-        if key not in ALLOWED_TOP_LEVEL_FIELDS:
-            result.add_error(
-                ERR_DEP_CORRUPT_FILE,
-                j_str,
-                f"#/{key}",
-                f"Unexpected top-level key '{key}' in dependency registry",
-            )
-
-    # 5. Validate top-level mandatory fields
-    for field_name in MANDATORY_TOP_LEVEL_FIELDS:
-        val = data.get(field_name)
-        if val is None:
-            result.add_error(
-                ERR_DEP_MISSING_FIELD,
-                j_str,
-                f"#/{field_name}",
-                f"Dependency registry missing mandatory top-level field '{field_name}'",
-            )
-        elif field_name != "dependencies":
-            if not isinstance(val, str) or not val:
-                result.add_error(
-                    ERR_DEP_MISSING_FIELD,
-                    j_str,
-                    f"#/{field_name}",
-                    f"Dependency registry top-level field '{field_name}' must be a non-empty string",
-                )
-            elif val != val.strip():
-                result.add_error(
-                    ERR_DEP_REGISTRY_DRIFT,
-                    j_str,
-                    f"#/{field_name}",
-                    f"Dependency registry field '{field_name}' contains illegal leading or trailing whitespace",
-                )
-
-    # 6. Validate dependencies array structure
-    deps = data.get("dependencies")
-    if deps is not None and not isinstance(deps, list):
-        result.add_error(
-            ERR_DEP_CORRUPT_FILE,
-            j_str,
-            "#/dependencies",
-            f"Dependency registry 'dependencies' field must be a list, found {type(deps).__name__}",
-        )
-        return result
-
-    if deps is None or len(deps) == 0:
-        result.add_error(
-            ERR_DEP_MISSING_FIELD,
-            j_str,
-            "#/dependencies",
-            "Dependency registry 'dependencies' field must be a non-empty list",
-        )
-        return result
-
-    for idx, row in enumerate(deps):
-        if not isinstance(row, dict):
-            result.add_error(
-                ERR_DEP_CORRUPT_FILE,
-                j_str,
-                f"#/dependencies[{idx}]",
-                f"Dependency row at index {idx} must be a JSON object, found {type(row).__name__}",
-            )
-        else:
-            for rf in MANDATORY_ROW_FIELDS:
-                rval = row.get(rf)
-                if rval is None or not isinstance(rval, str) or not rval:
-                    result.add_error(
-                        ERR_DEP_MISSING_FIELD,
-                        j_str,
-                        f"#/dependencies[{idx}]/{rf}",
-                        f"Dependency row at index {idx} missing mandatory field '{rf}'",
-                    )
-
-    # If top-level structural errors exist, halt before digest computation
-    if not result.passed and any(e.code in (ERR_DEP_CORRUPT_FILE, ERR_DEP_MISSING_FIELD) for e in result.errors):
-        return result
-
-    # 7. Validate schema and sourceDocument values
-    schema_val = data.get("schema")
-    if schema_val and schema_val != "fss.dependencies.v1":
-        result.add_error(
-            ERR_DEP_REGISTRY_DRIFT,
-            j_str,
-            "#/schema",
-            f"Dependency registry schema must be 'fss.dependencies.v1', observed '{schema_val}'",
-        )
-
-    source_doc = data.get("sourceDocument")
-    if source_doc and source_doc != DEPENDENCIES_MD_PATH:
-        result.add_error(
-            ERR_DEP_REGISTRY_DRIFT,
-            j_str,
-            "#/sourceDocument",
-            f"Dependency registry sourceDocument must be '{DEPENDENCIES_MD_PATH}', observed '{source_doc}'",
-        )
-
-    # 8. Validate generation
-    generation = data.get("generation")
-    if not isinstance(generation, str) or generation not in EXPECTED_FREEZE_DIGESTS:
-        result.add_error(
-            ERR_DEP_GENERATION_MISMATCH,
-            j_str,
-            "#/generation",
-            f"Dependency registry generation '{generation}' does not match expected generation '{BASELINE_DEPENDENCIES_GENERATION}'",
-        )
-
-    # 9. Validate canonical freeze digest
-    declared_digest = data.get("freezeDigest")
-    computed_digest = compute_canonical_dependencies_digest(data)
-    if declared_digest:
-        if declared_digest != computed_digest:
-            result.add_error(
-                ERR_DEP_DIGEST_MISMATCH,
-                j_str,
-                "#/freezeDigest",
-                f"Dependency registry freezeDigest mismatch: declared '{declared_digest}', computed '{computed_digest}'",
-            )
-        elif isinstance(generation, str) and generation in EXPECTED_FREEZE_DIGESTS:
-            expected_digest = EXPECTED_FREEZE_DIGESTS[generation]
-            if declared_digest != expected_digest:
-                result.add_error(
-                    ERR_DEP_FREEZE_DIVERGENCE,
-                    j_str,
-                    "#/freezeDigest",
-                    f"Dependency registry freezeDigest '{declared_digest}' diverged from pinned baseline freeze digest '{expected_digest}'",
-                )
-
-    result.freeze_digest = declared_digest or computed_digest
-
-    # 10. Load tombstones
-    tombstones, tombstone_errs = load_tombstone_set(repo_root)
-    for err in tombstone_errs:
-        result.add_error(err.code, err.file_path, err.target, err.message)
-    tombstones_lower = {t.lower() for t in tombstones}
-
-    # 11. Validate dependency rows
-    result.dependency_count = len(deps)
-    seen_ids: set[str] = set()
-    json_rows: dict[str, dict[str, str]] = {}
-
-    for idx, row in enumerate(deps):
-        loc = f"#/dependencies[{idx}]"
-        if not isinstance(row, dict):
-            continue
-
-        # Check for unexpected row keys
-        for rk in row:
-            if rk not in ALLOWED_ROW_FIELDS:
-                result.add_error(
-                    ERR_DEP_CORRUPT_FILE,
-                    j_str,
-                    f"{loc}/{rk}",
-                    f"Unexpected key '{rk}' in dependency row at index {idx}",
-                )
-
-        dep_id = row.get("id")
-        if not isinstance(dep_id, str) or not dep_id:
-            result.add_error(
-                ERR_DEP_MISSING_FIELD,
-                j_str,
-                f"{loc}/id",
-                f"Dependency row at index {idx} missing mandatory 'id' field",
-            )
-            continue
-
-        if dep_id != dep_id.strip():
-            result.add_error(
-                ERR_DEP_REGISTRY_DRIFT,
-                j_str,
-                f"{loc}/id",
-                f"Dependency ID '{dep_id}' contains illegal whitespace padding",
-            )
-
-        # Format check
-        if not DEP_ID_PATTERN.match(dep_id):
-            result.add_error(
-                ERR_DEP_STABLE_ID_REUSED,
-                j_str,
-                f"{loc}/id",
-                f"Dependency ID '{dep_id}' does not match pattern DEP-[A-Z0-9]+-[0-9]{{3}}",
-            )
-
-        # Duplicate check (case-insensitive)
-        dep_id_lower = dep_id.lower()
-        if dep_id_lower in seen_ids:
-            result.add_error(
-                ERR_DEP_STABLE_ID_REUSED,
-                j_str,
-                f"{loc}/id",
-                f"Duplicate or case-colliding dependency ID: '{dep_id}'",
-            )
-        seen_ids.add(dep_id_lower)
-
-        # Tombstone check
-        if dep_id in tombstones or dep_id_lower in tombstones_lower:
-            result.add_error(
-                ERR_DEP_STABLE_ID_REUSED,
-                j_str,
-                f"{loc}/id",
-                f"Dependency ID '{dep_id}' is a tombstoned identifier and cannot be used in active registry",
-            )
-
-        # Check all mandatory row fields
-        row_fields: dict[str, str] = {}
-        for rf in MANDATORY_ROW_FIELDS:
-            rval = row.get(rf)
-            if rval is None or not isinstance(rval, str) or not rval:
-                result.add_error(
-                    ERR_DEP_MISSING_FIELD,
-                    j_str,
-                    f"{loc}/{rf}",
-                    f"Dependency row '{dep_id}' missing or empty mandatory field '{rf}'",
-                )
-            else:
-                if rval != rval.strip():
-                    result.add_error(
-                        ERR_DEP_REGISTRY_DRIFT,
-                        j_str,
-                        f"{loc}/{rf}",
-                        f"Dependency row '{dep_id}' field '{rf}' contains illegal whitespace padding: {rval!r}",
-                    )
-                row_fields[rf] = rval
-
-        json_rows[dep_id] = row_fields
-
-        # Baseline check against CANONICAL_DEPENDENCY_REGISTRY_ROWS
-        if dep_id not in CANONICAL_DEPENDENCY_REGISTRY_ROWS:
-            result.add_error(
-                ERR_DEP_REGISTRY_DRIFT,
-                j_str,
-                f"{loc}/id",
-                f"Unrecognized dependency class ID '{dep_id}' not present in canonical baseline",
-            )
-        else:
-            baseline = CANONICAL_DEPENDENCY_REGISTRY_ROWS[dep_id]
-            for rf in MANDATORY_ROW_FIELDS:
-                if rf in row_fields and row_fields[rf] != baseline[rf]:
-                    result.add_error(
-                        ERR_DEP_REGISTRY_DRIFT,
-                        j_str,
-                        f"{loc}/{rf}",
-                        f"Dependency row '{dep_id}' {rf} diverged from baseline: observed {row_fields[rf]!r}, expected {baseline[rf]!r}",
-                    )
-
-    # Check all canonical rows are present
-    for canon_id in CANONICAL_DEPENDENCY_REGISTRY_ROWS:
-        if canon_id.lower() not in seen_ids:
-            result.add_error(
-                ERR_DEP_REGISTRY_DRIFT,
-                j_str,
-                "#/dependencies",
-                f"Canonical dependency class '{canon_id}' is missing from dependency registry",
-            )
-
-    # 12. Cross-check against architecture/dependency_constitution.json and allowlist
-    const_path = repo_root / CONSTITUTION_JSON_PATH
-    if not const_path.is_file():
-        result.add_error(
-            ERR_DEP_CORRUPT_FILE,
-            CONSTITUTION_JSON_PATH,
-            "#",
-            f"Dependency constitution file does not exist: {const_path}",
-        )
-        return result
-
-    try:
-        const_bytes = const_path.read_bytes()
-        const_text = const_bytes.decode("utf-8")
-        const_data = json.loads(const_text, object_pairs_hook=pairs_hook_reject_duplicates)
-    except Exception as exc:
-        result.add_error(
-            ERR_DEP_CORRUPT_FILE,
-            CONSTITUTION_JSON_PATH,
-            "#",
-            f"Failed to parse dependency constitution JSON: {exc}",
-        )
-        return result
-
-    const_classes = {
-        c.get("id"): c for c in const_data.get("classes", []) if isinstance(c, dict)
+    overrides = {DEPENDENCIES_JSON_PATH: json_path} if json_path is not None else None
+    auth = authority.load_authority(repo_root, overrides)
+    result.extend(auth.issues)
+    registry = auth.registry or {}
+    deps = registry.get("dependencies")
+    result.dependency_count = len(deps) if isinstance(deps, list) else 0
+    declared = registry.get("freezeDigest")
+    result.freeze_digest = declared if isinstance(declared, str) else (auth.registry_digest or "")
+    check_traces(result, auth)
+    _compare_markdown(result, auth, md_path or (repo_root / DEPENDENCIES_MD_PATH))
+    view = authority.build_class_view(auth)
+    result.report = {
+        "registryDigest": auth.registry_digest,
+        "allowlistDigest": auth.allowlist_digest,
+        "constitutionDigest": auth.constitution_digest,
+        "pendingOwnerDecisions": {
+            decision: dict(authority.as_dict(record))
+            for decision, record in authority.as_dict(authority.as_dict(auth.allowlist).get("pending_owner_decisions")).items()
+        },
+        "classificationTables": {k: list(v) for k, v in (view.table_rows.items() if view else [])},
     }
-
-    # S3: DEP-CLASS-F2 admission must be "per-mechanism-import-gate"
-    f2_class = const_classes.get("DEP-CLASS-F2", {})
-    if f2_class.get("admission") != "per-mechanism-import-gate":
-        result.add_error(
-            ERR_DEP_CONST_INVARIANT,
-            CONSTITUTION_JSON_PATH,
-            "#/classes/DEP-CLASS-F2/admission",
-            f"DEP-CLASS-F2 admission must be 'per-mechanism-import-gate', found: {f2_class.get('admission')!r}",
-        )
-
-    # S4: DEP-CLASS-F3 admission must be "DEP-record-and-transitive-audit"
-    f3_class = const_classes.get("DEP-CLASS-F3", {})
-    if f3_class.get("admission") != "DEP-record-and-transitive-audit":
-        result.add_error(
-            ERR_DEP_CONST_INVARIANT,
-            CONSTITUTION_JSON_PATH,
-            "#/classes/DEP-CLASS-F3/admission",
-            f"DEP-CLASS-F3 admission must be 'DEP-record-and-transitive-audit', found: {f3_class.get('admission')!r}",
-        )
-
-    # S5: DEP-CLASS-F4 name must be "laboratory-oracle", admission must be "non-production-quarantine-only"
-    f4_class = const_classes.get("DEP-CLASS-F4", {})
-    if f4_class.get("name") != "laboratory-oracle":
-        result.add_error(
-            ERR_DEP_CONST_INVARIANT,
-            CONSTITUTION_JSON_PATH,
-            "#/classes/DEP-CLASS-F4/name",
-            f"DEP-CLASS-F4 name must be 'laboratory-oracle', found: {f4_class.get('name')!r}",
-        )
-    f4_admission = f4_class.get("admission")
-    if f4_admission != "non-production-quarantine-only":
-        result.add_error(
-            ERR_DEP_CONST_INVARIANT,
-            CONSTITUTION_JSON_PATH,
-            "#/classes/DEP-CLASS-F4/admission",
-            f"DEP-CLASS-F4 admission in constitution must be 'non-production-quarantine-only', found: {f4_admission!r}",
-        )
-
-    for dep_id, rfields in json_rows.items():
-        c_class_id = rfields.get("constitutionClass")
-        if c_class_id and c_class_id not in const_classes:
-            result.add_error(
-                ERR_DEP_CONST_INVARIANT,
-                j_str,
-                f"row/{dep_id}/constitutionClass",
-                f"Dependency '{dep_id}' references unknown constitution class '{c_class_id}'",
-            )
-        # Scope vs admission check: DEP-CLASS-F4 is quarantine-only, scope cannot be Production
-        if c_class_id == "DEP-CLASS-F4":
-            if rfields.get("scope") in ("Production", "Production subject to audit"):
-                result.add_error(
-                    ERR_DEP_CONST_INVARIANT,
-                    j_str,
-                    f"row/{dep_id}/scope",
-                    f"Dependency '{dep_id}' mapped to quarantine class DEP-CLASS-F4 cannot have Production scope: {rfields.get('scope')!r}",
-                )
-
-    allowlist_path = repo_root / ALLOWLIST_TOML_PATH
-    if not allowlist_path.is_file():
-        result.add_error(
-            ERR_DEP_CORRUPT_FILE,
-            ALLOWLIST_TOML_PATH,
-            "#",
-            f"Dependency allowlist file does not exist: {allowlist_path}",
-        )
-        return result
-
-    try:
-        import tomllib
-        allow_text = allowlist_path.read_text(encoding="utf-8")
-        allow_data = tomllib.loads(allow_text)
-    except Exception as exc:
-        result.add_error(
-            ERR_DEP_CORRUPT_FILE,
-            ALLOWLIST_TOML_PATH,
-            "#",
-            f"Could not cross-check dependency allowlist: {exc}",
-        )
-        return result
-
-    if allow_data.get("policy", {}).get("closed_universe") is not True:
-        result.add_error(
-            ERR_DEP_CONST_INVARIANT,
-            ALLOWLIST_TOML_PATH,
-            "#/policy/closed_universe",
-            "dependency_allowlist.toml policy.closed_universe must be true",
-        )
-
-    # Allowlist moves:
-    # Reject if serde is in forbidden.crates
-    forbidden_crates = allow_data.get("forbidden", {}).get("crates", [])
-    if "serde" in forbidden_crates or "serde_json" in forbidden_crates:
-        result.add_error(
-            ERR_DEP_CONST_INVARIANT,
-            ALLOWLIST_TOML_PATH,
-            "#/forbidden/crates",
-            "serde/serde_json must not be in forbidden.crates (pending owner decision fss-ndxis, not permanently forbidden)",
-        )
-
-    # Reject if [laboratory_oracles] table missing
-    if "laboratory_oracles" not in allow_data or not isinstance(allow_data.get("laboratory_oracles"), dict):
-        result.add_error(
-            ERR_DEP_CONST_INVARIANT,
-            ALLOWLIST_TOML_PATH,
-            "#/laboratory_oracles",
-            "dependency_allowlist.toml missing mandatory [laboratory_oracles] table",
-        )
-
-    # 13. Validate markdown mirror
-    md_rows, md_errs = extract_markdown_dependencies(m_path)
-    for err in md_errs:
-        result.add_error(err.code, err.file_path, err.target, err.message)
-
-    if not md_rows:
-        result.add_error(
-            ERR_DEP_CORRUPT_FILE,
-            m_str,
-            "#",
-            "No dependency rows found in markdown mirror registries/DEPENDENCIES.md",
-        )
-        return result
-
-    if len(md_rows) != len(json_rows):
-        result.add_error(
-            ERR_DEP_REGISTRY_DRIFT,
-            m_str,
-            "#",
-            f"Markdown mirror row count ({len(md_rows)}) differs from JSON row count ({len(json_rows)})",
-        )
-
-    for dep_id, m_row in md_rows.items():
-        if dep_id not in json_rows:
-            result.add_error(
-                ERR_DEP_REGISTRY_DRIFT,
-                m_str,
-                f"row/{dep_id}",
-                f"Markdown mirror contains dependency ID '{dep_id}' absent from JSON registry",
-            )
-        else:
-            j_row = json_rows[dep_id]
-            for field_name in ("constitutionClass", "class", "rule", "scope"):
-                m_val = m_row.get(field_name, "")
-                j_val = j_row.get(field_name, "")
-                # Only check constitutionClass if present in markdown row (for backward compat)
-                if field_name == "constitutionClass" and not m_val:
-                    continue
-                if j_val != m_val:
-                    result.add_error(
-                        ERR_DEP_REGISTRY_DRIFT,
-                        m_str,
-                        f"row/{dep_id}/{field_name}",
-                        f"Markdown mirror {field_name} mismatch for '{dep_id}': markdown={m_val!r}, json={j_val!r}",
-                    )
-
-    for dep_id in json_rows:
-        if dep_id not in md_rows:
-            result.add_error(
-                ERR_DEP_REGISTRY_DRIFT,
-                m_str,
-                f"row/{dep_id}",
-                f"JSON registry contains dependency ID '{dep_id}' absent from markdown mirror",
-            )
-
     return result
 
 
@@ -1056,24 +524,23 @@ def main() -> int:
     args = parser.parse_args()
 
     result = validate_dependency_registry(args.repo_root)
-
     if args.json:
         payload = {
             "passed": result.passed,
             "dependencyCount": result.dependency_count,
             "freezeDigest": result.freeze_digest,
+            "report": result.report,
             "errorCount": len(result.errors),
             "errors": [asdict(e) for e in result.errors],
         }
-        print(json.dumps(payload, indent=2))
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    elif result.passed:
+        pending = ", ".join(sorted(result.report.get("pendingOwnerDecisions", {}))) or "none"
+        print(f"Dependency registry OK: {result.dependency_count} classes verified ({result.freeze_digest}); pending owner decisions: {pending}")
     else:
-        if result.passed:
-            print(f"Dependency registry OK: {result.dependency_count} classes verified ({result.freeze_digest})")
-        else:
-            print(f"Dependency registry verification FAILED with {len(result.errors)} error(s):", file=sys.stderr)
-            for err in result.errors:
-                print(f"  [{err.code}] {err.file_path} ({err.target}): {err.message}", file=sys.stderr)
-
+        print(f"Dependency registry verification FAILED with {len(result.errors)} error(s):", file=sys.stderr)
+        for err in result.errors:
+            print(f"  [{err.code}] {err.file_path} ({err.target}): {err.message}", file=sys.stderr)
     return 0 if result.passed else 1
 
 

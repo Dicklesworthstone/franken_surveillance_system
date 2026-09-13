@@ -35,6 +35,22 @@ allowed_families = [
 ]
 rule = "Each concrete crate and enabled feature still requires a mechanism owner and import-admission gate; family membership alone is not qualification."
 
+# Machine mapping from each allowed_families entry to its architecture/franken_imports.json project.
+# The union of the lists must equal allowed_families exactly; a crate matching a family is gated by
+# that project's import records (docs/FRANKEN_IMPORT_ADMISSION_GATES.md), never by family membership.
+[in_house.projects]
+asupersync = ["asupersync"]
+frankensqlite = ["frankensqlite", "fsqlite-*"]
+frankenfs = ["frankenfs", "ffs-*"]
+frankensearch = ["frankensearch", "frankensearch-*"]
+franken_markdown = ["franken_markdown", "fmd-*"]
+frankengraphdb = ["frankengraphdb", "fgdb-*"]
+franken_networkx = ["franken_networkx", "fnx-*"]
+frankentorch = ["frankentorch", "ft-*"]
+fastmcp_rust = ["fastmcp_rust", "fastmcp-*"]
+eidetic_engine_cli = ["eidetic_engine_cli", "ee-*"]
+frankentui = ["frankentui", "frankentui-*"]
+
 [fundamental]
 allowed_subject_to_audit = ["serde", "serde_json"]
 rule = "Fundamental means bounded data-shape plumbing only. It grants no runtime, networking, storage, cryptography, parser, model, device, durable-format, or background-work authority."
@@ -64,6 +80,12 @@ requirements = [
   "release_absence_proof"
 ]
 
+# Machine split of excluded_from_production_release_closure across the two DEP-CLASS-F4 registry rows
+# (architecture/dependencies.json). Every excluded oracle appears in exactly one row list.
+[laboratory_oracles.rows]
+"DEP-LAB-001" = ["ffmpeg", "ffprobe", "onnxruntime", "opencv", "cuda-frameworks", "vendor-sdk", "vendor-application", "browser-capture"]
+"DEP-ORACLE-001" = ["networkx", "pytorch"]
+
 [forbidden]
 crates = [
   "tokio", "async-std", "smol", "glommio", "monoio", "rayon",
@@ -85,3 +107,10 @@ patterns = [
   "serde-derived durable enum",
   "hosted-runner-only qualification"
 ]
+
+# Owner decisions that are still open. A crate listed here is neither admitted nor rejected: every
+# dependency mechanism reports it as pending until the owner records the decision.
+[pending_owner_decisions.fss-ndxis]
+registry_row = "DEP-FUND-001"
+crates = ["serde", "serde_json"]
+question = "serde and serde_json: the FSS-110 blanket ban versus DEP-FUND-001 control-plane admission is undecided"

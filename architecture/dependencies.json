@@ -1,43 +1,113 @@
 {
-  "schema": "fss.dependencies.v1",
-  "generation": "gen:fss1:dependencies-v1",
-  "freezeDigest": "sha256:857dd73b26f36babae2e5670674b35344efcdecbd42c0b74d9f7a827a0ad27cb",
+  "schema": "fss.dependencies.v2",
+  "generation": "gen:fss1:dependencies-v2",
+  "freezeDigest": "sha256:ebbd4c884de0b3e54fe147eced73327ef69cf26018405de44827c8e4935481fb",
   "sourceDocument": "registries/DEPENDENCIES.md",
+  "constitution": "architecture/dependency_constitution.json",
+  "policy": "architecture/dependency_allowlist.toml",
+  "contractBasis": "fss.agent_contract_basis.v1",
   "dependencies": [
     {
       "id": "DEP-OWNED-001",
       "constitutionClass": "DEP-CLASS-F2",
       "class": "Owned runtime and Franken-suite families",
       "rule": "admitted after per-mechanism integration gate",
-      "scope": "Production"
+      "scope": "Production",
+      "status": "active",
+      "supersededBy": null,
+      "tombstoneDecision": null,
+      "owner": "scripts/dependency_audit.py",
+      "producers": [
+        "architecture/dependency_allowlist.toml#in_house",
+        "architecture/franken_imports.json"
+      ],
+      "consumers": [
+        "scripts/dependency_audit.py",
+        "scripts/dependency_registry_checker.py",
+        "scripts/dependency_constitution_checker.py",
+        "scripts/check-policy.py"
+      ]
     },
     {
       "id": "DEP-FUND-001",
       "constitutionClass": "DEP-CLASS-F3",
       "class": "serde / serde_json",
       "rule": "control-plane schemas only; never durable bytes or authority",
-      "scope": "Production subject to audit"
+      "scope": "Production subject to audit",
+      "status": "active",
+      "supersededBy": null,
+      "tombstoneDecision": null,
+      "owner": "scripts/dependency_audit.py",
+      "producers": [
+        "architecture/dependency_allowlist.toml#fundamental",
+        "architecture/dependency_allowlist.toml#pending_owner_decisions"
+      ],
+      "consumers": [
+        "scripts/dependency_audit.py",
+        "scripts/dependency_registry_checker.py",
+        "scripts/dependency_constitution_checker.py",
+        "scripts/check-policy.py"
+      ]
     },
     {
       "id": "DEP-LAB-001",
       "constitutionClass": "DEP-CLASS-F4",
       "class": "Pinned codec/model/vendor/reference executables",
       "rule": "sealed fixture/oracle lanes only; no production invocation path and absent from release closure",
-      "scope": "Development/migration only"
+      "scope": "Development/migration only",
+      "status": "active",
+      "supersededBy": null,
+      "tombstoneDecision": null,
+      "owner": "scripts/dependency_audit.py",
+      "producers": [
+        "architecture/dependency_allowlist.toml#laboratory_oracles"
+      ],
+      "consumers": [
+        "scripts/dependency_audit.py",
+        "scripts/dependency_registry_checker.py",
+        "scripts/dependency_constitution_checker.py",
+        "scripts/check-policy.py"
+      ]
     },
     {
       "id": "DEP-ORACLE-001",
       "constitutionClass": "DEP-CLASS-F4",
       "class": "Python/reference ecosystems",
       "rule": "held-out conformance and lab fixtures only; absent from release closure",
-      "scope": "Development only"
+      "scope": "Development only",
+      "status": "active",
+      "supersededBy": null,
+      "tombstoneDecision": null,
+      "owner": "scripts/dependency_audit.py",
+      "producers": [
+        "architecture/dependency_allowlist.toml#laboratory_oracles"
+      ],
+      "consumers": [
+        "scripts/dependency_audit.py",
+        "scripts/dependency_registry_checker.py",
+        "scripts/dependency_constitution_checker.py",
+        "scripts/check-policy.py"
+      ]
     },
     {
       "id": "DEP-EXCEPTION-001",
       "constitutionClass": "DEP-CLASS-F3",
       "class": "Any other external crate",
       "rule": "requires DEP record, ADR, source/feature census, semantic owner, substitute prohibition, and removal plan",
-      "scope": "Not admitted"
+      "scope": "Not admitted",
+      "status": "active",
+      "supersededBy": null,
+      "tombstoneDecision": null,
+      "owner": "scripts/dependency_audit.py",
+      "producers": [
+        "architecture/dependency_allowlist.toml#exception_candidates"
+      ],
+      "consumers": [
+        "scripts/dependency_audit.py",
+        "scripts/dependency_registry_checker.py",
+        "scripts/dependency_constitution_checker.py",
+        "scripts/check-policy.py"
+      ]
     }
   ]
 }
