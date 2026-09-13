@@ -250,6 +250,12 @@ operation states rather than generic errors.
 | `ERR-CLAIM-PROOF-UNSOUND-ESCAPE-001` | proof claim formal artifact contains a known unsound escape (Lean axiom, compiler trust, lcProof, kernel bypass, metaprogramming, a #-command, an import outside Init/Std/Lean; TLA+ AXIOM, ASSUMPTION or non-sequent ASSUME, or EXTENDS/INSTANCE of a non-standard module) | remove the escape; declare assumptions in the bundle and model |
 | `ERR-CLAIM-PROOF-PROVER-RUN-REQUIRED-001` | promoted proof bundle passed the static pre-filter, but a proof is verified only by a qualification receipt from running the prover, and no such receipt mechanism is defined yet | a user decision: define the prover-run receipt; until then no proof claim is verified |
 | `ERR-CLAIM-GENERATION-UNBOUND-001` | promoted proof or bounded_model claim is cited by no claim row declaring its current generation (Generation column), or its citing rows conflict | declare the claim row's current generation and bind the bundle to exactly it |
+| `ERR-ROBOT-DOCS-STALE-001` | robot documentation diverges from authoritative machine registries | regenerate robot docs with scripts/generate_robot_docs.py |
+| `ERR-ROBOT-DOCS-MISSING-001` | generated robot documentation markdown or json artifact missing | generate robot docs with scripts/generate_robot_docs.py |
+| `ERR-ROBOT-DOCS-DRIFT-001` | cataloged operations, views, or resources drift across registries | reconcile registry definitions before generating docs |
+| `ERR-ROBOT-DOCS-CORRUPT-001` | malformed JSON syntax, duplicate keys, or encoding corruption in robot docs or registry | repair malformed input; ensure canonical encoding |
+| `ERR-ROBOT-DOCS-UNREGISTERED-001` | documented operation references unregistered capability, schema, or error identity | register referenced entity in authoritative registry before generating docs |
+| `ERR-ROBOT-DOCS-SECRET-DETECTED-001` | suspected secret, credential, token, or local filesystem path detected in registry text | remove sensitive data and sanitize registry text |
 
 
 
