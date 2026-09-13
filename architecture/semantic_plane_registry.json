@@ -74,6 +74,7 @@
     "crates/fss-core/src/temporal_verifier.rs": "authority",
     "crates/fss-core/src/test_event.rs": "support",
     "crates/fss-core/src/time.rs": "support",
+    "crates/fss-reference/src/adapter_replay.rs": "authority",
     "crates/fss-reference/src/alert.rs": "effect",
     "crates/fss-reference/src/alert_tests.rs": "support",
     "crates/fss-reference/src/bundle.rs": "authority",
