@@ -4184,14 +4184,15 @@ class TestBoundedModelReviewFindings(unittest.TestCase):
             ("steps ['.']", {"steps": ["."]}, "ERR_BOUND_DERIVATION_UNBOUND"),
             ("steps ['none']", {"steps": ["none"]}, "ERR_BOUND_DERIVATION_UNBOUND"),
             ("sensitivity ['none']", {"sensitivity": ["none"]}, "ERR_BOUND_SENSITIVITY_MISSING"),
-            ("sensitivity [{'x': None}]", {"sensitivity": [{"x": None}]}, "ERR_BOUND_SENSITIVITY_MISSING"),
+            ("sensitivity [{'x': None}]", {"sensitivity": [{"x": None}]}, ("ERR_BOUND_SENSITIVITY_MISSING", "ERR_EVIDENCE_FIELD_UNKNOWN")),  # round 5: 'x' is also not a sensitivity field
             ("sensitivity on a non-input", {"sensitivity": [{"parameter": "Z_unknown", "partial": "+1 ms per unit"}]}, "ERR_BOUND_SENSITIVITY_MISSING"),
             ("sensitivity without effect", {"sensitivity": [{"parameter": "Q_max", "partial": "?"}]}, "ERR_BOUND_SENSITIVITY_MISSING"),
             ("invalidators ['none']", {"invalidators": ["none"]}, "ERR_BOUND_SENSITIVITY_MISSING"),
             ("invalidators ['TBD', '-']", {"invalidators": ["TBD", "-"]}, "ERR_BOUND_SENSITIVITY_MISSING"),
         ):
             with self.subTest(case=label):
-                self.assertRefused(self._run(derivation=derivation), [_code(code_name)])
+                names = (code_name,) if isinstance(code_name, str) else code_name
+                self.assertRefused(self._run(derivation=derivation), [_code(n) for n in names])
 
     # (4) Values inside their unit's domain -------------------------------------
 
@@ -5744,6 +5745,77 @@ class TestRound5ObjectSize(unittest.TestCase):
         for size in (-1, 1.5, 2.0, True, "3", None, []):
             with self.subTest(size=size):
                 self.assertEqual(self.run_size(size), (False, [ERR_UNREADABLE_INPUT]))
+
+
+# ---------------------------------------------------------------------------
+# Round-5 review, 30.87.3: F2 comparator types, bounded_model field allowlists (probes p15, p17)
+# ---------------------------------------------------------------------------
+
+
+class TestRound5BoundedModel(unittest.TestCase):
+    """Round-5 bounded_model findings as planted tests with exact finding-id sets."""
+
+    EXPRESSION = "ERR-CLAIM-BOUND-EXPRESSION-UNBOUND-001"
+    DERIVATION = "ERR-CLAIM-BOUND-DERIVATION-UNBOUND-001"
+
+    def run_bound(self, **kwargs: object):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ok, findings, _ = verify_class_bundle(root, build_bound_fixture(root, **kwargs), BOUND_CLAIM_ID)
+            return ok, error_code_set(findings)
+
+    # F2: a comparator of any JSON type is a finding, never a TypeError ---------------------------
+
+    def test_f2_bound_comparator_of_any_type(self) -> None:
+        for comparator in ([], ["<="], {}, {"op": "<="}, None, 1, "=<", "≤", "<= "):
+            with self.subTest(comparator=comparator):
+                self.assertEqual(self.run_bound(bound={"comparator": comparator}), (False, [self.EXPRESSION]))
+
+    def test_f2_derivation_comparator_of_any_type(self) -> None:
+        for comparator in ([], ["<="], {}, {"op": "<="}, None, 1, "≤"):
+            with self.subTest(comparator=comparator):
+                self.assertEqual(self.run_bound(derivation={"comparator": comparator}), (False, [self.DERIVATION]))
+
+    def test_f2_audit_with_class_bindings_reports_instead_of_raising(self) -> None:
+        for where in ("bound", "derivation"):
+            with self.subTest(where=where), tempfile.TemporaryDirectory() as tmpdir:
+                root = build_fixture_root(Path(tmpdir))
+                data = build_bound_fixture(root, **{where: {"comparator": []}})
+                write_json(root / BOUND_BUNDLE_REL, seal(data))
+                append_readme_table(root, class_table(f"| `{BOUND_CLAIM_ID}` | bounded_model | verified | `{BOUND_BUNDLE_REL}` | {BOUND_GENERATION} |"))
+                ok, findings, _ = audit_with(root, CLAIM_ROW_CLASSES)
+                self.assertFalse(ok)
+                self.assertEqual(error_code_set(findings), [self.EXPRESSION if where == "bound" else self.DERIVATION])
+
+    # Exact field sets ------------------------------------------------------------------------------
+
+    def test_unknown_bound_fields_are_findings(self) -> None:
+        for key in ("Comparator", "comparator ", "value_ms", "tolerance", "units​", "\ud800"):
+            with self.subTest(key=key):
+                self.assertEqual(self.run_bound(bound={key: "x"}), (False, [FIELD_UNKNOWN]))
+
+    def test_unknown_derivation_fields_are_findings(self) -> None:
+        for key in ("notes", "derivedValue", "Formula", "derived_value ", "margin", "\ud800"):
+            with self.subTest(key=key):
+                self.assertEqual(self.run_bound(derivation={key: "x"}), (False, [FIELD_UNKNOWN]))
+
+    def test_unknown_derivation_input_fields_are_findings(self) -> None:
+        inputs = {
+            "D_decode": {"value": 40.0, "units": "ms"},
+            "Q_max": {"value": 8, "units": "frames"},
+            "D_frame": {"value": 10.0, "units": "ms"},
+        }
+        for key in ("Units", "note", "value "):
+            with self.subTest(key=key):
+                planted = {name: dict(entry) for name, entry in inputs.items()}
+                planted["Q_max"][key] = "x"
+                self.assertEqual(self.run_bound(derivation={"inputs": planted}), (False, [FIELD_UNKNOWN]))
+
+    def test_unknown_sensitivity_fields_are_findings(self) -> None:
+        for key in ("partial_ms", "Parameter", "note"):
+            with self.subTest(key=key):
+                entry = {"parameter": "Q_max", "partial": "+10 ms per additional queued frame", key: "x"}
+                self.assertEqual(self.run_bound(derivation={"sensitivity": [entry]}), (False, [FIELD_UNKNOWN]))
 
 
 if __name__ == "__main__":

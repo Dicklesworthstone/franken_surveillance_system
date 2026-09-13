@@ -3067,6 +3067,20 @@ def _verify_proof_claim_evidence(
 # Row minimum_evidence: derivation, units, assumptions, sensitivity and invalidators.
 BOUND_DERIVATION_SCHEMA = "fss.bound_derivation.v1"
 BOUND_COMPARATORS: frozenset[str] = frozenset({"<=", ">="})
+# Exact field sets of the bounded_model evidence (review round 5): keys compared byte for byte.
+BOUND_FIELDS: frozenset[str] = frozenset({"claim_id", "expression", "comparator", "value", "units"})
+BOUND_DERIVATION_FIELDS: frozenset[str] = frozenset({
+    "schema", "claim_id", "generation", "expression", "comparator", "derived_value", "units",
+    "assumption_ids", "steps", "sensitivity", "invalidators", "inputs", "formula",
+})
+DERIVATION_INPUT_FIELDS: frozenset[str] = frozenset({"value", "units"})
+SENSITIVITY_FIELDS: frozenset[str] = frozenset({"parameter", "partial"})
+
+
+def _bound_comparator(value: Any) -> str | None:
+    """A registered bound comparator, or None for anything else of any JSON type (a list or an
+    object is unhashable, so it is type-checked before the membership test, review F2)."""
+    return value if isinstance(value, str) and value in BOUND_COMPARATORS else None
 # Units are slo_validate.REGISTERED_UNITS, compared exactly. Every registered unit is a
 # physical, rate, count, size, or score quantity, so none may be negative (slo_validate F4);
 # percent units stop at 100 and auprc at 1.
@@ -3358,6 +3372,7 @@ def _verify_bounded_model_claim_evidence(
             params,
         ))
     else:
+        _check_allowed_fields(bound, BOUND_FIELDS, f"{label} bound", "bound", path_str, findings, params)
         bound_claim = _exact_token(bound.get("claim_id"))
         if bound_claim != claim_id:
             findings.append(_finding(ERR_BOUND_EXPRESSION_UNBOUND, path_str, "bound.claim_id", f"{label} bound is bound to claim {bound.get('claim_id')!r}", params))
@@ -3365,9 +3380,8 @@ def _verify_bounded_model_claim_evidence(
         if expression is None:
             findings.append(_finding(ERR_BOUND_EXPRESSION_UNBOUND, path_str, "bound.expression", f"{label} bound declares no exact expression", params))
         raw_comparator = bound.get("comparator")
-        if raw_comparator in BOUND_COMPARATORS:
-            comparator = raw_comparator
-        else:
+        comparator = _bound_comparator(raw_comparator)
+        if comparator is None:
             findings.append(_finding(
                 ERR_BOUND_EXPRESSION_UNBOUND, path_str, "bound.comparator",
                 f"{label} bound comparator {raw_comparator!r} is not one of {sorted(BOUND_COMPARATORS)}",
@@ -3385,6 +3399,7 @@ def _verify_bounded_model_claim_evidence(
         findings.append(_finding(ERR_BOUND_DERIVATION_UNBOUND, path_str, "artifacts[role=derivation]", f"{label} derivation: {reason}", params))
         return
     d_loc = "derivation"
+    _check_allowed_fields(derivation, BOUND_DERIVATION_FIELDS, f"{label} derivation", d_loc, path_str, findings, params)
     if _exact_token(derivation.get("claim_id")) != claim_id:
         findings.append(_finding(
             ERR_BOUND_DERIVATION_UNBOUND, path_str, f"{d_loc}.claim_id",
@@ -3412,10 +3427,10 @@ def _verify_bounded_model_claim_evidence(
             f"{label} claimed expression {expression!r} differs from the derived expression {d_expression!r}",
             params,
         ))
-    d_comparator = derivation.get("comparator")
-    if d_comparator not in BOUND_COMPARATORS:
-        findings.append(_finding(ERR_BOUND_DERIVATION_UNBOUND, path_str, f"{d_loc}.comparator", f"{label} derivation comparator {d_comparator!r} is not registered", params))
-        d_comparator = None
+    raw_d_comparator = derivation.get("comparator")
+    d_comparator = _bound_comparator(raw_d_comparator)
+    if d_comparator is None:
+        findings.append(_finding(ERR_BOUND_DERIVATION_UNBOUND, path_str, f"{d_loc}.comparator", f"{label} derivation comparator {raw_d_comparator!r} is not registered", params))
     elif comparator is not None and d_comparator != comparator:
         findings.append(_finding(
             ERR_BOUND_EXPRESSION_UNBOUND, path_str, "bound.comparator",
@@ -3464,6 +3479,10 @@ def _verify_bounded_model_claim_evidence(
         input_units_map: dict[str, str] = {}
         for name, entry in raw_inputs.items():
             where = f"{d_loc}.inputs.{name}"
+            if isinstance(entry, dict) and not _check_allowed_fields(
+                entry, DERIVATION_INPUT_FIELDS, f"{label} derivation input {name!r}", where, path_str, findings, params,
+            ):
+                inputs = None
             number = _finite_number(entry.get("value")) if isinstance(entry, dict) else None
             if not isinstance(name, str) or _FORMULA_NAME_RE.fullmatch(name) is None or number is None:
                 findings.append(_finding(
@@ -3534,7 +3553,9 @@ def _verify_bounded_model_claim_evidence(
     sensitivity = derivation.get("sensitivity")
     sensitivity_ok = isinstance(sensitivity, list) and len(sensitivity) > 0
     if sensitivity_ok:
-        for entry in sensitivity:
+        for idx, entry in enumerate(sensitivity):
+            if isinstance(entry, dict):
+                _check_allowed_fields(entry, SENSITIVITY_FIELDS, f"{label} sensitivity entry {idx}", f"{d_loc}.sensitivity[{idx}]", path_str, findings, params)
             parameter = _exact_token(entry.get("parameter")) if isinstance(entry, dict) else None
             if parameter is None or not _substantive(entry.get("partial")) or (isinstance(raw_inputs, dict) and raw_inputs and parameter not in raw_inputs):
                 sensitivity_ok = False
