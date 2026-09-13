@@ -3234,25 +3234,46 @@ fn check_transition(
     if rules == TransitionRules::Legacy {
         return Ok(());
     }
+    // Exhaustive over `EffectState`, so a new state must choose its payload rule here instead of
+    // passing through a default (fss-deir9).
     match next {
-        // An indeterminate outcome must name why it is unproved, as `mark_indeterminate` requires.
-        EffectState::Indeterminate if !names_a_reason => Err(ContractError::EvidenceRequired),
+        // Nothing transitions into `prepared`; `valid_transition` already refused it above.
+        EffectState::Prepared => Err(ContractError::InvalidEffectTransition),
         // Commit and adapter acceptance carry neither a result nor an error.
-        EffectState::Committed | EffectState::AdapterAccepted
-            if result_digest.is_some() || error_code.is_some() =>
-        {
-            Err(ContractError::InvalidEffectTransition)
+        EffectState::Committed | EffectState::AdapterAccepted => {
+            if result_digest.is_some() || error_code.is_some() {
+                Err(ContractError::InvalidEffectTransition)
+            } else {
+                Ok(())
+            }
         }
         // An observed or verified receipt may only inherit the reason of an earlier indeterminate
         // episode; it never gains a new error code.
-        EffectState::Observed | EffectState::Verified if error_code.is_some() => {
-            Err(ContractError::InvalidEffectTransition)
+        EffectState::Observed | EffectState::Verified => {
+            if error_code.is_some() {
+                Err(ContractError::InvalidEffectTransition)
+            } else {
+                Ok(())
+            }
         }
         // A cancellation reason is optional, but never empty.
-        EffectState::Cancelled if error_code.is_some_and(str::is_empty) => {
-            Err(ContractError::EvidenceRequired)
+        EffectState::Cancelled => {
+            if error_code.is_some_and(str::is_empty) {
+                Err(ContractError::EvidenceRequired)
+            } else {
+                Ok(())
+            }
         }
-        _ => Ok(()),
+        // A failure's proof and non-empty reason are checked above, under every rule set.
+        EffectState::Failed => Ok(()),
+        // An indeterminate outcome must name why it is unproved, as `mark_indeterminate` requires.
+        EffectState::Indeterminate => {
+            if names_a_reason {
+                Ok(())
+            } else {
+                Err(ContractError::EvidenceRequired)
+            }
+        }
     }
 }
 
