@@ -9,7 +9,9 @@
 use crate::belief::BeliefInterval;
 use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder};
 use crate::contract::{ContractError, KnowledgeState, Plane, ProvenanceClass};
-use crate::{ContentDigest, Generation, KnowledgeCell, KnowledgeStateBasis, LedgerAnchor, StaleBasis};
+use crate::{
+    ContentDigest, Generation, KnowledgeCell, KnowledgeStateBasis, LedgerAnchor, StaleBasis,
+};
 
 use super::AgentAbstractionLayer;
 
@@ -547,7 +549,10 @@ impl DerivedBelief {
         let (knowledge_state, state_basis) = if self.anchor == *current {
             (self.knowledge_state, None)
         } else if older.validate().is_ok() {
-            (KnowledgeState::Stale, Some(KnowledgeStateBasis::Stale(older)))
+            (
+                KnowledgeState::Stale,
+                Some(KnowledgeStateBasis::Stale(older)),
+            )
         } else {
             return Err(ContractError::DerivedBeliefAnchorMismatch);
         };
@@ -812,7 +817,10 @@ mod tests {
 
     #[test]
     fn to_knowledge_cell_emits_stale_cell_on_anchor_drift_and_refuses_mismatches() -> TestResult {
-        let belief = DerivedBelief::new(sealed_params()?)?;
+        let mut params = sealed_params()?;
+        params.anchor.commit_sequence = 10;
+        let params = params.with_computed_receipt()?;
+        let belief = DerivedBelief::new(params)?;
         let pinned = belief.anchor.clone();
         let now = TimestampNs(1_000_000_000);
 
@@ -875,12 +883,10 @@ mod tests {
         // 6. Future anchor: current is in the past relative to belief anchor -> refused
         let mut older_current = pinned.clone();
         older_current.commit_sequence = pinned.commit_sequence.saturating_sub(1);
-        if older_current.commit_sequence < pinned.commit_sequence {
-            assert_eq!(
-                belief.to_knowledge_cell(&older_current),
-                Err(ContractError::DerivedBeliefAnchorMismatch)
-            );
-        }
+        assert_eq!(
+            belief.to_knowledge_cell(&older_current),
+            Err(ContractError::DerivedBeliefAnchorMismatch)
+        );
 
         // 7. Missing anchor: all-zero state root -> refused
         let mut zero_root = pinned;

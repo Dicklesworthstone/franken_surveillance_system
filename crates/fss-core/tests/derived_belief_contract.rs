@@ -1299,7 +1299,8 @@ fn test_new5_golden_receipt_and_canonical_digest() -> Result<(), Box<dyn Error>>
 }
 
 #[test]
-fn test_derived_belief_to_knowledge_cell_anchor_drift_and_refusal_matrix() -> Result<(), Box<dyn Error>> {
+fn test_derived_belief_to_knowledge_cell_anchor_drift_and_refusal_matrix()
+-> Result<(), Box<dyn Error>> {
     let belief = DerivedBelief::new(sealed_params("belief:anchor:drift:matrix")?)?;
     let pinned = belief.anchor().clone();
     let now = TimestampNs(1_500_000_000);
@@ -1368,7 +1369,10 @@ fn test_derived_belief_to_knowledge_cell_anchor_drift_and_refusal_matrix() -> Re
     let mut forked = pinned.clone();
     forked.state_root = ContentDigest::sha256(b"divergent-state-root-fork");
     assert_eq!(
-        expect_err(belief.to_knowledge_cell(&forked), "to_knowledge_cell(forked)")?,
+        expect_err(
+            belief.to_knowledge_cell(&forked),
+            "to_knowledge_cell(forked)"
+        )?,
         ContractError::DerivedBeliefAnchorMismatch
     );
 
@@ -1376,7 +1380,10 @@ fn test_derived_belief_to_knowledge_cell_anchor_drift_and_refusal_matrix() -> Re
     let mut other_site = pinned.clone();
     other_site.site_lineage = "site:eu-central:secondary".into();
     assert_eq!(
-        expect_err(belief.to_knowledge_cell(&other_site), "to_knowledge_cell(other_site)")?,
+        expect_err(
+            belief.to_knowledge_cell(&other_site),
+            "to_knowledge_cell(other_site)"
+        )?,
         ContractError::DerivedBeliefAnchorMismatch
     );
 
@@ -1386,7 +1393,10 @@ fn test_derived_belief_to_knowledge_cell_anchor_drift_and_refusal_matrix() -> Re
     future_belief_params.anchor.commit_sequence = 100;
     let future_belief = DerivedBelief::new(future_belief_params.with_computed_receipt()?)?;
     assert_eq!(
-        expect_err(future_belief.to_knowledge_cell(&pinned), "to_knowledge_cell(future)")?,
+        expect_err(
+            future_belief.to_knowledge_cell(&pinned),
+            "to_knowledge_cell(future)"
+        )?,
         ContractError::DerivedBeliefAnchorMismatch
     );
 
@@ -1394,7 +1404,10 @@ fn test_derived_belief_to_knowledge_cell_anchor_drift_and_refusal_matrix() -> Re
     let mut zero_root = pinned;
     zero_root.state_root = zero_digest();
     assert_eq!(
-        expect_err(belief.to_knowledge_cell(&zero_root), "to_knowledge_cell(zero_root)")?,
+        expect_err(
+            belief.to_knowledge_cell(&zero_root),
+            "to_knowledge_cell(zero_root)"
+        )?,
         ContractError::DerivedBeliefMissingAnchor
     );
 
