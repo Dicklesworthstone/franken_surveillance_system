@@ -16,6 +16,7 @@ mod context_binding;
 mod context_binding_metadata;
 mod continuation;
 mod contract;
+pub mod contract_basis;
 mod delta;
 mod digest;
 pub mod durable;
@@ -72,6 +73,19 @@ pub use contract::{
     BudgetVector, BudgetVectorBuilder, BudgetVectorSpec, Completeness, ContractError,
     EvidenceClass, HypothesisDisposition, KnowledgeState, Plane, ProvenanceClass, RecoveryClass,
     RuntimeOutcome,
+};
+pub use contract_basis::{
+    check_basis_freshness, check_compatibility, decode_canonical_binary, encode_canonical_binary,
+    negotiate_basis, reference_contract_basis, refuse_stale_anchor, validate_contract_basis,
+    BasisCompatibility, CompatibilityResult, ContractBasisError, ContractBasisRefusal,
+    RegistryDigestSet, StaleBasisReason, CANONICAL_ONTOLOGY_GENERATION_ID,
+    CANONICAL_PRODUCER_RELEASE_ID, CANONICAL_SEMANTIC_PROTOCOL, CONTRACT_BASIS_FORMAT_VERSION,
+    CONTRACT_BASIS_MAGIC, MAX_CONTRACT_BASIS_BINARY_BYTES, MIN_CONTRACT_BASIS_BINARY_BYTES,
+    REFERENCE_CAPABILITY_REGISTRY_DIGEST, REFERENCE_CONTRACT_BASIS_CANONICAL_DIGEST,
+    REFERENCE_CONTRACT_BASIS_FREEZE_DIGEST, REFERENCE_CONTRACT_BASIS_GENERATION,
+    REFERENCE_COST_REGISTRY_DIGEST, REFERENCE_ERROR_REGISTRY_DIGEST,
+    REFERENCE_OPERATION_REGISTRY_DIGEST, REFERENCE_SCHEMA_CATALOG_DIGEST,
+    REFERENCE_VIEW_REGISTRY_DIGEST, SCHEMA_CONTRACT_BASIS,
 };
 pub use delta::{DeltaPriority, MeaningfulDelta, MeaningfulDeltaClass, SilenceCertificate};
 pub use digest::{ContentDigest, DigestAlgorithm, Sha256Hasher, sha256};

@@ -48,6 +48,7 @@
     "crates/fss-core/src/context_binding_metadata.rs": "support",
     "crates/fss-core/src/continuation.rs": "support",
     "crates/fss-core/src/contract.rs": "authority",
+    "crates/fss-core/src/contract_basis.rs": "authority",
     "crates/fss-core/src/delta.rs": "authority",
     "crates/fss-core/src/digest.rs": "support",
     "crates/fss-core/src/durable.rs": "support",
