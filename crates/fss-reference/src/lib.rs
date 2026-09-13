@@ -63,7 +63,7 @@ pub use adapter_replay::{
     ADP_REPLAY_ROW_ID, ADP_REPLAY_SURFACE, ADP_REPLAY_TIER, ERR_ADAPTER_REPLAY_DIVERGED,
     ERR_REPLAY_DIVERGED, ReplayAdapter, ReplayAdapterConfig, ReplayAdapterError, ReplayAuditRecord,
     ReplayCx, ReplayDivergence, ReplayExecutionOutput, ReplayExecutionRequest, ReplayIoAuthority,
-    ReplayLifecycleState, ScopedLedgerDir, compute_audit_hash,
+    ReplayLifecycleState, ReplayTerminalStatus, ScopedLedgerDir, compute_audit_hash,
 };
 pub use alert::{
     PrepareAlertParams, ProviderDispatch, ProviderFailureReceipt, ProviderObservationReceipt,
