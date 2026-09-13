@@ -728,3 +728,337 @@ fn test_derived_belief_cognition_layer_integration() -> Result<(), Box<dyn Error
 
     Ok(())
 }
+
+#[test]
+fn test_predicted_contract_row_properties() -> Result<(), Box<dyn Error>> {
+    let prov = ProvenanceClass::Predicted;
+
+    // 1. Exact normative stable ID
+    assert_eq!(prov.id(), "PROV-003");
+
+    // 2. Exact normative schema spelling
+    assert_eq!(prov.as_str(), "predicted");
+    assert_eq!(format!("{prov}"), "predicted");
+
+    // 3. Exact normative meaning
+    assert_eq!(
+        prov.meaning(),
+        "Counterfactual or forward prediction under an explicit branch/model and assumptions."
+    );
+
+    // 4. Predicate helper methods
+    assert!(prov.is_predicted());
+    assert!(!prov.is_observed());
+    assert!(!prov.is_derived());
+
+    // 5. Constitutional effect authorization rule (INV-069):
+    // Predictions CANNOT authorize irreversible physical effects.
+    assert!(!prov.may_authorize_irreversible_effect());
+
+    Ok(())
+}
+
+#[test]
+fn test_predicted_parse_and_resolution() -> Result<(), Box<dyn Error>> {
+    // Parse from stable ID
+    let from_id = ProvenanceClass::from_id("PROV-003")?;
+    assert_eq!(from_id, ProvenanceClass::Predicted);
+
+    // Parse from schema name
+    let from_name = ProvenanceClass::from_name("predicted")?;
+    assert_eq!(from_name, ProvenanceClass::Predicted);
+
+    // Parse via FromStr
+    let from_str_name = ProvenanceClass::from_str("predicted")?;
+    assert_eq!(from_str_name, ProvenanceClass::Predicted);
+
+    let from_str_id = ProvenanceClass::from_str("PROV-003")?;
+    assert_eq!(from_str_id, ProvenanceClass::Predicted);
+
+    // Rejection of invalid / malformed variants (fail closed)
+    assert_eq!(
+        ProvenanceClass::from_id("PROV-0030"),
+        Err(ContractError::InvalidIdentifier)
+    );
+    assert_eq!(
+        ProvenanceClass::from_id("PROV-3"),
+        Err(ContractError::InvalidIdentifier)
+    );
+    assert_eq!(
+        ProvenanceClass::from_name("predict"),
+        Err(ContractError::InvalidIdentifier)
+    );
+    assert_eq!(
+        ProvenanceClass::from_name("PREDICTED"),
+        Err(ContractError::InvalidIdentifier)
+    );
+    assert_eq!(
+        ProvenanceClass::from_name("prediction"),
+        Err(ContractError::InvalidIdentifier)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_predicted_canonical_roundtrip() -> Result<(), Box<dyn Error>> {
+    let prov = ProvenanceClass::Predicted;
+
+    let mut encoder = CanonicalEncoder::new();
+    prov.encode_canonical(&mut encoder);
+    let encoded_bytes = encoder.finish();
+
+    let mut decoder = CanonicalDecoder::new(&encoded_bytes);
+    let decoded = ProvenanceClass::decode_canonical(&mut decoder)?;
+
+    assert_eq!(decoded, prov);
+    assert_eq!(decoded.id(), "PROV-003");
+    assert_eq!(decoded.as_str(), "predicted");
+
+    Ok(())
+}
+
+#[test]
+fn test_predicted_orthogonality_across_epistemic_states() -> Result<(), Box<dyn Error>> {
+    let assumption_digest = ContentDigest::sha256(b"counterfactual_branch_assumptions_v1");
+
+    let basis_for = |state: KnowledgeState| -> Result<Option<KnowledgeStateBasis>, ContractError> {
+        Ok(match state {
+            KnowledgeState::Redacted => Some(KnowledgeStateBasis::Redaction(RedactionMarker {
+                reason: RedactionReason::PrivacyProjection,
+                privacy_generation: PrivacyGeneration::parse("privacy:projection:v1")?,
+            })),
+            KnowledgeState::Stale => {
+                let mut older = LedgerAnchor::genesis("site:provenance-test");
+                older.commit_sequence = 3;
+                let mut current = LedgerAnchor::genesis("site:provenance-test");
+                current.commit_sequence = 5;
+                Some(KnowledgeStateBasis::Stale(StaleBasis::OlderAnchor {
+                    valid_at: Box::new(older),
+                    current: Box::new(current),
+                }))
+            }
+            KnowledgeState::Indeterminate => {
+                Some(KnowledgeStateBasis::Reconciliation(ReconciliationBasis {
+                    unresolved_outcome_root: ContentDigest::sha256(b"unresolved_predicted_outcome"),
+                    branches: std::collections::BTreeSet::from([
+                        fss_core::ReconciliationBranch::Occurred,
+                        fss_core::ReconciliationBranch::NotOccurred,
+                    ]),
+                }))
+            }
+            _ => None,
+        })
+    };
+
+    let all_states = [
+        KnowledgeState::Known,
+        KnowledgeState::Estimated,
+        KnowledgeState::Unknown,
+        KnowledgeState::Conflicted,
+        KnowledgeState::Stale,
+        KnowledgeState::NotObservable,
+        KnowledgeState::Redacted,
+        KnowledgeState::Indeterminate,
+        KnowledgeState::NotApplicable,
+    ];
+
+    for state in all_states {
+        let cell = KnowledgeCell {
+            claim_id: format!("claim:predicted:{}", state.as_str()),
+            statement: format!("Testing predicted orthogonality for {}", state.as_str()),
+            knowledge_state: state,
+            provenance: ProvenanceClass::Predicted,
+            hypothesis: None,
+            evidence: vec![assumption_digest],
+            contradictions: vec![],
+            valid_until: None,
+            state_basis: basis_for(state)?,
+        };
+
+        assert!(
+            cell.validate().is_ok(),
+            "Validation failed for predicted cell in state {}",
+            state.as_str()
+        );
+
+        // Provenance remains Predicted regardless of epistemic state
+        assert_eq!(cell.provenance, ProvenanceClass::Predicted);
+        assert!(cell.is_predicted());
+        assert_eq!(cell.provenance.id(), "PROV-003");
+        assert_eq!(cell.provenance.as_str(), "predicted");
+
+        // Epistemic state and provenance are orthogonal
+        assert_ne!(cell.provenance.as_str(), state.as_str());
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_predicted_cannot_authorize_irreversible_effects_even_when_known(
+) -> Result<(), Box<dyn Error>> {
+    let now = TimestampNs(1_000_000_000);
+    let model_input_digest = ContentDigest::sha256(b"forward_prediction_model_evidence");
+
+    // Constitutional Hard Gate (AGENTS.md & INV-069):
+    // Even if a prediction is asserted with KnowledgeState::Known,
+    // has valid supporting evidence, has no contradictions, and is unexpired,
+    // it MUST NEVER authorize an irreversible physical effect!
+    let predicted_known_cell = KnowledgeCell {
+        claim_id: "claim:predicted:high_confidence_fire".to_string(),
+        statement: "Forward model predicts 99.9% probability of structural fire propagation".to_string(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Predicted,
+        hypothesis: None,
+        evidence: vec![model_input_digest],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+        state_basis: None,
+    };
+
+    assert!(predicted_known_cell.validate().is_ok());
+    assert!(predicted_known_cell.is_predicted());
+    assert_eq!(predicted_known_cell.knowledge_state, KnowledgeState::Known);
+
+    // Irreversible effect premise MUST evaluate to false
+    assert!(
+        !predicted_known_cell.is_irreversible_effect_premise(now),
+        "Predicted cell must NEVER authorize irreversible effects even when Known!"
+    );
+
+    // Contrast with Observed and Derived, which DO authorize under identical conditions
+    let observed_cell = KnowledgeCell {
+        provenance: ProvenanceClass::Observed,
+        ..predicted_known_cell.clone()
+    };
+    assert!(observed_cell.is_irreversible_effect_premise(now));
+
+    let derived_cell = KnowledgeCell {
+        provenance: ProvenanceClass::Derived,
+        ..predicted_known_cell
+    };
+    assert!(derived_cell.is_irreversible_effect_premise(now));
+
+    Ok(())
+}
+
+#[test]
+fn test_predicted_counterfactual_branch_and_assumptions_semantics() -> Result<(), Box<dyn Error>> {
+    let branch_assumption = ContentDigest::sha256(b"counterfactual_branch:suppression_delayed_60s");
+    let model_digest = ContentDigest::sha256(b"model:thermal_dispersion:generation_v2");
+
+    // Predicted cell under explicit branch assumptions and model generation
+    let counterfactual_cell = KnowledgeCell {
+        claim_id: "claim:counterfactual:temperature_spike".to_string(),
+        statement: "Under delayed suppression branch, server room temp reaches 85C at T+60s".to_string(),
+        knowledge_state: KnowledgeState::Estimated,
+        provenance: ProvenanceClass::Predicted,
+        hypothesis: None,
+        evidence: vec![branch_assumption, model_digest],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(1_500_000_000)),
+        state_basis: None,
+    };
+
+    assert!(counterfactual_cell.validate().is_ok());
+    let validated = counterfactual_cell.validated()?;
+    assert!(validated.is_predicted());
+    assert!(!validated.is_observed());
+    assert!(!validated.is_derived());
+    assert_eq!(validated.evidence.len(), 2);
+    assert_eq!(validated.evidence[0], branch_assumption);
+    assert_eq!(validated.evidence[1], model_digest);
+
+    // Counterfactual prediction requires explicit assumptions for planning
+    assert!(!validated.is_irreversible_effect_premise(TimestampNs(1_000_000_000)));
+
+    Ok(())
+}
+
+#[test]
+fn test_predicted_vlm_shortcut_prohibition() -> Result<(), Box<dyn Error>> {
+    let now = TimestampNs(1_000_000_000);
+    let vlm_embedding = ContentDigest::sha256(b"vlm:frame_inference_tensor_digest");
+
+    // Prohibited shortcut from AGENTS.md:
+    // "Letting a VLM trigger an effect directly."
+    // A VLM proposition tagged as Predicted cannot satisfy effect premise
+    let vlm_cell = KnowledgeCell {
+        claim_id: "claim:vlm:weapon_detection".to_string(),
+        statement: "VLM inference flags weapon present in main hallway".to_string(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Predicted,
+        hypothesis: None,
+        evidence: vec![vlm_embedding],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+        state_basis: None,
+    };
+
+    assert!(vlm_cell.validate().is_ok());
+    assert!(vlm_cell.is_predicted());
+
+    // Fails closed: VLM prediction cannot authorize lockdown or other irreversible effect
+    assert!(
+        !vlm_cell.is_irreversible_effect_premise(now),
+        "VLM prediction directly triggering an effect is strictly prohibited"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_predicted_distinction_from_all_other_provenance_classes() -> Result<(), Box<dyn Error>> {
+    let all_provenances = [
+        ProvenanceClass::Observed,
+        ProvenanceClass::Derived,
+        ProvenanceClass::Predicted,
+        ProvenanceClass::Remembered,
+        ProvenanceClass::OperatorAsserted,
+        ProvenanceClass::VendorClaimed,
+        ProvenanceClass::Policy,
+    ];
+
+    let predicted = ProvenanceClass::Predicted;
+
+    for prov in all_provenances {
+        if prov != predicted {
+            // IDs are strictly distinct
+            assert_ne!(predicted.id(), prov.id());
+            // Schema names are strictly distinct
+            assert_ne!(predicted.as_str(), prov.as_str());
+            // Meanings are strictly distinct
+            assert_ne!(predicted.meaning(), prov.meaning());
+        }
+    }
+
+    // Effect authorization partition check
+    let authorizing_classes: Vec<ProvenanceClass> = all_provenances
+        .iter()
+        .copied()
+        .filter(|p| p.may_authorize_irreversible_effect())
+        .collect();
+
+    let non_authorizing_classes: Vec<ProvenanceClass> = all_provenances
+        .iter()
+        .copied()
+        .filter(|p| !p.may_authorize_irreversible_effect())
+        .collect();
+
+    // Predicted is in the non-authorizing partition
+    assert!(non_authorizing_classes.contains(&ProvenanceClass::Predicted));
+    assert!(non_authorizing_classes.contains(&ProvenanceClass::Remembered));
+    assert!(non_authorizing_classes.contains(&ProvenanceClass::VendorClaimed));
+    assert_eq!(non_authorizing_classes.len(), 3);
+
+    // Observed and Derived are in the authorizing partition
+    assert!(authorizing_classes.contains(&ProvenanceClass::Observed));
+    assert!(authorizing_classes.contains(&ProvenanceClass::Derived));
+    assert!(authorizing_classes.contains(&ProvenanceClass::OperatorAsserted));
+    assert!(authorizing_classes.contains(&ProvenanceClass::Policy));
+    assert_eq!(authorizing_classes.len(), 4);
+
+    Ok(())
+}
+

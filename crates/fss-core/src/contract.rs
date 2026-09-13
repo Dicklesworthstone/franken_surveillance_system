@@ -386,6 +386,12 @@ impl ProvenanceClass {
     pub const fn is_derived(self) -> bool {
         matches!(self, Self::Derived)
     }
+
+    /// Returns whether this provenance class represents counterfactual or forward predictions (PROV-003).
+    #[must_use]
+    pub const fn is_predicted(self) -> bool {
+        matches!(self, Self::Predicted)
+    }
 }
 
 impl CanonicalEncode for ProvenanceClass {

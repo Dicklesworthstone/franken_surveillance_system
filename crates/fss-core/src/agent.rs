@@ -485,6 +485,12 @@ impl KnowledgeCell {
         self.provenance == ProvenanceClass::Derived
     }
 
+    /// Returns whether this knowledge cell has predicted provenance (PROV-003).
+    #[must_use]
+    pub fn is_predicted(&self) -> bool {
+        self.provenance == ProvenanceClass::Predicted
+    }
+
     /// Returns whether this knowledge cell is an estimated proposition.
     #[must_use]
     pub fn is_estimated(&self) -> bool {
