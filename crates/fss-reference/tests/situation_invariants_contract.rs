@@ -11,6 +11,7 @@ use std::collections::BTreeSet;
 use std::error::Error;
 use std::fs;
 
+use fss_core::event::EventSupersedeParams;
 use fss_core::{
     ActionAffordance, AffordanceClass, BudgetVector, CapsuleId, CaptureInterval, Completeness,
     ContentDigest, ContractBasis, ContractBasisRegistryBytes, ContractError, EffectJournal,
@@ -1110,24 +1111,94 @@ fn labelled_publication(
     Ok(project_reference_situation(situation, &test_spec(10_000))?)
 }
 
+/// Publishes revision 1 of one event (PersonLike on `power:alpha`) and projects its situation,
+/// then publishes revision 2 of the SAME event, adding `second` on `power:beta`, and projects that.
+fn revised_publications(
+    harness: &mut TestHarness,
+    name: &str,
+    second: MockSemanticLabel,
+) -> Result<(ReferenceSituationPublication, ReferenceSituationPublication), Box<dyn Error>> {
+    let event_id = EventId::parse(format!("event:situation-inv:{name}"))?;
+    let person = harness.observation(
+        name,
+        "lane0",
+        90,
+        "power:alpha",
+        MockSemanticLabel::PersonLike,
+    )?;
+    let first = evaluate_unknown_presence(event_id.clone(), vec![person])?;
+    let first_receipt =
+        publish_reference_event(&first, &mut harness.objects, &mut harness.authority)?;
+    let basis = project_reference_situation(
+        compile_reference_situation(
+            test_request(&first, &first_receipt, None, BTreeSet::new())?,
+            &harness.authority,
+        )?,
+        &test_spec(10_000),
+    )?;
+
+    let person = harness.observation(
+        name,
+        "lane1",
+        91,
+        "power:alpha",
+        MockSemanticLabel::PersonLike,
+    )?;
+    let other = harness.observation(name, "lane2", 92, "power:beta", second)?;
+    let ReferencePolicyDecision {
+        event: candidate,
+        action,
+    } = evaluate_unknown_presence(event_id, vec![person, other])?;
+    let revised = first.event.supersede(EventSupersedeParams {
+        state: candidate.state,
+        kind: candidate.kind,
+        interval: candidate.interval,
+        uncertainty_reason: candidate.uncertainty_reason,
+        zone_ids: candidate.zone_ids,
+        track_ids: candidate.track_ids,
+        probability: candidate.probability,
+        evidence: candidate.evidence,
+        model_receipts: candidate.model_receipts,
+        decision_path: candidate.decision_path,
+    })?;
+    let revision = ReferencePolicyDecision {
+        event: revised,
+        action,
+    };
+    let revision_receipt =
+        publish_reference_event(&revision, &mut harness.objects, &mut harness.authority)?;
+    let result = project_reference_situation(
+        compile_reference_situation(
+            test_request(&revision, &revision_receipt, None, BTreeSet::new())?,
+            &harness.authority,
+        )?,
+        &test_spec(10_000),
+    )?;
+    Ok((basis, result))
+}
+
+fn physical_claim_ids(publication: &ReferenceSituationPublication) -> Vec<String> {
+    publication
+        .situation
+        .capsule
+        .frame
+        .knowledge_cells
+        .iter()
+        .filter(|cell| cell.claim_id.ends_with(":unknown-presence"))
+        .map(|cell| cell.claim_id.clone())
+        .collect()
+}
+
 #[test]
 fn tamper_result_after_person_basis_is_a_critical_contradiction_delta() -> Result<(), Box<dyn Error>>
 {
     let mut harness = TestHarness::new("tamper-delta")?;
-    let basis = labelled_publication(
-        &mut harness,
-        "tamper-basis",
-        &[(MockSemanticLabel::PersonLike, "power:alpha")],
-    )?;
-    let tampered = labelled_publication(
-        &mut harness,
-        "tamper-result",
-        &[
-            (MockSemanticLabel::PersonLike, "power:alpha"),
-            (MockSemanticLabel::TamperLike, "power:beta"),
-        ],
-    )?;
-    // The tamper risk is typed in the result situation.
+    let (basis, tampered) =
+        revised_publications(&mut harness, "tamper-rev", MockSemanticLabel::TamperLike)?;
+    // One event: revision 2 supersedes revision 1 under the same physical claim identity.
+    assert_eq!(physical_claim_ids(&basis).len(), 1);
+    assert_eq!(physical_claim_ids(&basis), physical_claim_ids(&tampered));
+    // The tamper risk is typed in the revised situation.
     let frame = &tampered.situation.capsule.frame;
     assert!(frame.knowledge_cells.iter().any(|cell| {
         cell.claim_id.ends_with(":sensor-integrity") && !cell.contradictions.is_empty()
@@ -1147,23 +1218,13 @@ fn tamper_result_after_person_basis_is_a_critical_contradiction_delta() -> Resul
         delta.classes
     );
     assert!(delta.is_non_coalescible());
-    assert!(
-        delta.priority <= DeltaPriority::Critical,
-        "{:?}",
-        delta.priority
-    );
+    assert_eq!(delta.priority, DeltaPriority::Critical);
     delta.validate()?;
 
-    // Control: an unknown finding in the same position is not a contradiction delta.
-    let unknown = labelled_publication(
-        &mut harness,
-        "unknown-result",
-        &[
-            (MockSemanticLabel::PersonLike, "power:alpha"),
-            (MockSemanticLabel::Unknown, "power:beta"),
-        ],
-    )?;
-    let control = classify_reference_meaningful_delta(&basis, &unknown)?;
+    // Control: a revision adding an unknown finding instead is not a contradiction delta.
+    let (control_basis, unknown) =
+        revised_publications(&mut harness, "unknown-rev", MockSemanticLabel::Unknown)?;
+    let control = classify_reference_meaningful_delta(&control_basis, &unknown)?;
     assert!(
         !control
             .classes

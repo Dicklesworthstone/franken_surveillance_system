@@ -1553,3 +1553,49 @@ fn test_neutral_relations_neither_witness_nor_contradict() -> Result<(), Box<dyn
     }
     Ok(())
 }
+
+fn sensor_tamper_edge(cam_id: &str) -> EventEvidence {
+    let mut edge = sample_evidence(cam_id, false);
+    edge.relation = EvidenceEdgeRelation::SensorTamper;
+    edge
+}
+
+#[test]
+fn test_sensor_tamper_vetoes_states_that_establish_or_act_on_presence() -> Result<(), Box<dyn Error>>
+{
+    let mut event = sample_genesis_event()?;
+    // The reviewer's planted bypass: two independent supports plus a tamper report.
+    event.evidence = vec![
+        sample_evidence("cam-alpha", true),
+        sample_evidence("cam-beta", true),
+        sensor_tamper_edge("cam-gamma"),
+    ];
+    for state in [
+        EventState::Corroborated,
+        EventState::Adjudicated,
+        EventState::AlertDelivered,
+    ] {
+        event.state = state;
+        assert_eq!(
+            event.verify(),
+            Err(EventDecodeError::Contract(
+                ContractError::SensorIntegrityRisk
+            )),
+            "{state:?}"
+        );
+        assert_eq!(
+            event.validate(),
+            Err(ContractError::SensorIntegrityRisk),
+            "{state:?}"
+        );
+    }
+    // Without the tamper report the same corroborated revision is admissible.
+    event.state = EventState::Corroborated;
+    event.evidence.pop();
+    event.verify()?;
+    // An unresolved state retains the tamper report rather than refusing it.
+    event.evidence.push(sensor_tamper_edge("cam-gamma"));
+    event.state = EventState::Indeterminate;
+    event.verify()?;
+    Ok(())
+}

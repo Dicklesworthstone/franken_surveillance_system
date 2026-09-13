@@ -2674,6 +2674,8 @@ pub enum ContractError {
     EvidenceRelationMismatch,
     /// An event revision violates a structural bound or field invariant.
     EventRevisionMalformed,
+    /// A revision that establishes or acts on presence carries a sensor-tamper report.
+    SensorIntegrityRisk,
     /// A transition requires independent corroboration.
     CorroborationRequired,
     /// Canonical ordering is violated.
@@ -2763,6 +2765,7 @@ impl ContractError {
             Self::SupportingEvidenceRequired => "supporting_evidence_required",
             Self::EvidenceRelationMismatch => "evidence_relation_mismatch",
             Self::EventRevisionMalformed => "event_revision_malformed",
+            Self::SensorIntegrityRisk => "sensor_integrity_risk",
             Self::CorroborationRequired => "corroboration_required",
             Self::NonCanonicalOrdering => "noncanonical_ordering",
             Self::StaleAnchor => "stale_anchor",

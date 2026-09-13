@@ -304,3 +304,56 @@ fn exact_prepare_retry_does_not_duplicate_obligation() -> Result<(), Box<dyn Err
     let _ = fs::remove_file(path);
     Ok(())
 }
+
+#[test]
+fn tamper_report_vetoes_alert_preparation() -> Result<(), Box<dyn Error>> {
+    let path = temp_journal("tamper-veto");
+    let _ = fs::remove_file(&path);
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(512, 8 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let mut observations = Vec::new();
+    for (lane, seed, domain) in [
+        ("a", 31, "power:alert:alpha"),
+        ("b", 32, "power:alert:beta"),
+        ("c", 33, "power:alert:gamma"),
+    ] {
+        observations.push(observation(
+            &format!("capture:alert:tamper-{lane}"),
+            &format!("sensor:alert:tamper-{lane}"),
+            seed,
+            domain,
+            &mut objects,
+            &mut authority,
+        )?);
+    }
+    let mut decision =
+        evaluate_unknown_presence(EventId::parse("event:alert:tamper-bypass")?, observations)?;
+    // The reviewer's planted bypass: the third finding is re-typed as a tamper report after
+    // policy, so the revision stays corroborated by two supports and is never verified.
+    let tamper = decision
+        .event
+        .evidence
+        .iter_mut()
+        .find(|edge| edge.failure_domain == "power:alert:gamma")
+        .ok_or(ReferenceError::InvalidSpec("missing_gamma_edge"))?;
+    tamper.supports = false;
+    tamper.relation = fss_core::EvidenceEdgeRelation::SensorTamper;
+    assert_eq!(decision.event.state, fss_core::EventState::Corroborated);
+    let receipt = publish_reference_event(&decision, &mut objects, &mut authority)?;
+
+    let mut journal = EffectJournal::new();
+    let refused = prepare(&decision, &receipt, &authority, &mut journal);
+    assert!(
+        matches!(
+            refused,
+            Err(ReferenceError::Contract(
+                fss_core::ContractError::SensorIntegrityRisk
+            ))
+        ),
+        "a tamper report must veto alert preparation"
+    );
+    assert_eq!(journal.obligations().count(), 0);
+    let _ = fs::remove_file(path);
+    Ok(())
+}

@@ -580,6 +580,8 @@ pub enum EventTransitionError {
     EvidenceRequired,
     /// A witnessed revision carries evidence but no edge that counts as support for it.
     SupportingEvidenceRequired,
+    /// A transition to a state that establishes or acts on presence carries a sensor-tamper report.
+    SensorIntegrityRisk,
     /// Revision numbering is not strictly monotonic (expected prior + 1).
     RevisionNotMonotonic {
         /// Expected revision number.
@@ -675,6 +677,12 @@ impl fmt::Display for EventTransitionError {
                 write!(
                     f,
                     "a witnessed revision requires at least one supporting evidence edge"
+                )
+            }
+            Self::SensorIntegrityRisk => {
+                write!(
+                    f,
+                    "a sensor-tamper report vetoes corroborated, adjudicated, and alert-delivered states"
                 )
             }
             Self::RevisionNotMonotonic { expected, actual } => {
@@ -822,6 +830,20 @@ impl EventKind {
                 detail: format!("unknown event kind tag {v}"),
             }),
         }
+    }
+}
+
+/// Returns whether a sensor-tamper report vetoes a revision in `state`: the states that establish
+/// physical presence or act on it. Tampered sensing can do neither. The match is exhaustive with
+/// no wildcard, so a new state must choose.
+const fn sensor_tamper_vetoes(state: EventState) -> bool {
+    match state {
+        EventState::Corroborated | EventState::Adjudicated | EventState::AlertDelivered => true,
+        EventState::Hypothesized
+        | EventState::Witnessed
+        | EventState::Resolved
+        | EventState::Indeterminate
+        | EventState::Rejected => false,
     }
 }
 
@@ -1725,6 +1747,20 @@ impl EventHypothesis {
                     ContractError::CorroborationRequired,
                 ));
             }
+        }
+
+        // Corroboration counts only true supports, so a tamper report beside two supports would
+        // otherwise pass: a sensor-integrity risk vetoes every state that establishes or acts on
+        // presence.
+        if sensor_tamper_vetoes(self.state)
+            && self
+                .evidence
+                .iter()
+                .any(EventEvidence::reports_sensor_tamper)
+        {
+            return Err(EventDecodeError::Contract(
+                ContractError::SensorIntegrityRisk,
+            ));
         }
 
         Ok(())
@@ -3217,6 +3253,17 @@ impl EventLineage {
             }
         }
 
+        // Tampered sensing never establishes or acts on presence: refused before the revision is
+        // built, with a typed transition error.
+        if sensor_tamper_vetoes(params.target_state)
+            && params
+                .evidence
+                .iter()
+                .any(EventEvidence::reports_sensor_tamper)
+        {
+            return Err(EventTransitionError::SensorIntegrityRisk);
+        }
+
         let next_revision =
             current
                 .revision
@@ -3334,6 +3381,15 @@ impl EventLineage {
             if !is_corroborated && !rev.is_single_domain_unconfirmed() {
                 return Err(EventTransitionError::UrgentExceptionRequired);
             }
+        }
+        // Replay refuses a tamper-vetoed revision with the same typed error as a transition.
+        if sensor_tamper_vetoes(rev.state)
+            && rev
+                .evidence
+                .iter()
+                .any(EventEvidence::reports_sensor_tamper)
+        {
+            return Err(EventTransitionError::SensorIntegrityRisk);
         }
         rev.verify()?;
         let current = self.current();

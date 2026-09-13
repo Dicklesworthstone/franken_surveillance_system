@@ -240,7 +240,12 @@ pub fn publish_reference_event(
         delta_id: format!("delta:event:{event_name}:{}", decision.event.revision),
         family: "event_revision".to_owned(),
         object_id: ObjectId::parse(format!("object:event:{event_name}"))?,
-        prior_generation: None,
+        // Revision n of the event object succeeds generation n - 1; the genesis revision has none.
+        prior_generation: decision
+            .event
+            .revision
+            .checked_sub(1)
+            .filter(|prior| *prior > 0),
         new_generation: decision.event.revision,
         validity: decision.event.interval,
         plane: Plane::Authority,
@@ -276,7 +281,7 @@ fn policy_decision_path(
     action: ReferencePolicyAction,
 ) -> DecisionPath {
     let mut encoder = CanonicalEncoder::new();
-    encoder.text("fss.reference_unknown_presence_policy.v1");
+    encoder.text("fss.reference_unknown_presence_policy.v2");
     event_id.encode_canonical(&mut encoder);
     encoder.text(state.as_str());
     encoder.u8(match action {
@@ -289,7 +294,7 @@ fn policy_decision_path(
     }
     let fingerprint = ContentDigest::sha256(&encoder.finish());
     DecisionPath {
-        policy_generation: ContentDigest::sha256(b"fss.reference_unknown_presence_policy.v1"),
+        policy_generation: ContentDigest::sha256(b"fss.reference_unknown_presence_policy.v2"),
         fingerprint,
         abstained: false,
         abstention_reason: None,
