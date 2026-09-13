@@ -1175,7 +1175,7 @@ pub(crate) fn policy_statement(state: EventState, action: ReferencePolicyAction)
 }
 
 /// Reconciliation basis for an `indeterminate` cell whose unresolved outcome is rooted at `root`.
-fn reconciliation_basis_for(
+pub(crate) fn reconciliation_basis_for(
     state: KnowledgeState,
     root: ContentDigest,
 ) -> Option<KnowledgeStateBasis> {
@@ -1193,7 +1193,8 @@ fn reconciliation_basis_for(
 /// `unknown` (KSTATE-003) rather than estimated. Retained evidence that points both ways is an
 /// unresolved contradiction in every lifecycle state: the model has no typed basis that could
 /// retire it, so the cell is `conflicted` instead of being flattened to known, estimated, unknown,
-/// or indeterminate while it still carries the contradicting roots.
+/// or indeterminate while it still carries the contradicting roots. With no supporting root no
+/// state is `estimated` or `known`: there is nothing to estimate from.
 pub(crate) fn physical_knowledge_state(
     state: EventState,
     supporting: &[ContentDigest],
@@ -1211,10 +1212,18 @@ pub(crate) fn physical_knowledge_state(
         // Detector/rule candidate with no retained observation witness: nothing yet supports the
         // proposition, so it is unknown; support edges without a witness transition do not count.
         EventState::Hypothesized => KnowledgeState::Unknown,
-        // One retained observation witness without independent corroboration.
-        EventState::Witnessed => KnowledgeState::Estimated,
-        // Independent failure domains (or an explicit exception proof) establish presence.
-        EventState::Corroborated => KnowledgeState::Known,
+        // One retained supporting witness without independent corroboration; a revision whose
+        // edges only contradict the candidate estimates nothing.
+        EventState::Witnessed => supported_estimate,
+        // Independent failure domains (or an explicit exception proof) establish presence; with no
+        // supporting root nothing is established, so the proposition is unknown, never known.
+        EventState::Corroborated => {
+            if supporting.is_empty() {
+                KnowledgeState::Unknown
+            } else {
+                KnowledgeState::Known
+            }
+        }
         // Policy selected a disposition. Adjudication is also reachable through an urgent
         // single-sensor exception or policy reconciliation from indeterminate, so it cannot imply
         // corroboration: at most estimated from retained support.
