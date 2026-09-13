@@ -759,6 +759,9 @@ impl From<EventDecodeError> for EventTransitionError {
             EventDecodeError::Contract(ContractError::SupportingEvidenceRequired) => {
                 Self::SupportingEvidenceRequired
             }
+            EventDecodeError::Contract(ContractError::SensorIntegrityRisk) => {
+                Self::SensorIntegrityRisk
+            }
             other => Self::Decode(other),
         }
     }

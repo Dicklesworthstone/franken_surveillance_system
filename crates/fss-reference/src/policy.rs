@@ -218,6 +218,16 @@ pub fn publish_reference_event(
     objects: &mut InMemoryObjectStore,
     ledger: &mut DurableReferenceLedger,
 ) -> Result<ReferenceEventReceipt, ReferenceError> {
+    // Only a verified revision becomes authority.
+    decision.event.validate()?;
+    let event_name = decision.event.event_id.as_str();
+    let object_id = ObjectId::parse(format!("object:event:{event_name}"))?;
+    let (prior_generation, predecessor) = authority_predecessor(ledger, &object_id)?;
+    // A revision must supersede exactly the revision the authority currently holds, and a
+    // genesis revision requires the event object to be absent: anything else is a fork.
+    if decision.event.supersedes != predecessor {
+        return Err(fss_core::ContractError::SupersessionMismatch.into());
+    }
     for model_receipt in &decision.event.model_receipts {
         objects.require_verified(*model_receipt)?;
     }
@@ -235,17 +245,11 @@ pub fn publish_reference_event(
     )?;
     let event_root = objects.publish_manifest(event_manifest)?.root;
 
-    let event_name = decision.event.event_id.as_str();
     let delta = EvidenceDelta {
         delta_id: format!("delta:event:{event_name}:{}", decision.event.revision),
         family: "event_revision".to_owned(),
-        object_id: ObjectId::parse(format!("object:event:{event_name}"))?,
-        // Revision n of the event object succeeds generation n - 1; the genesis revision has none.
-        prior_generation: decision
-            .event
-            .revision
-            .checked_sub(1)
-            .filter(|prior| *prior > 0),
+        object_id,
+        prior_generation,
         new_generation: decision.event.revision,
         validity: decision.event.interval,
         plane: Plane::Authority,
@@ -272,6 +276,36 @@ pub fn publish_reference_event(
         event_revision_digest,
         authority_anchor,
     })
+}
+
+/// Returns the authority's current generation of `object_id` and the revision digest it holds.
+///
+/// The ledger's current `ObjectRevision` is authoritative for which revision is current: its
+/// generation and `payload_digest` (the event root). The root does not name the revision digest,
+/// so the digest is taken from the `witness_digest` of the committed batch delta that published
+/// exactly that generation and payload; a delta that disagrees with the current object is not the
+/// current revision. A current object with no such witnessed delta fails closed.
+fn authority_predecessor(
+    ledger: &DurableReferenceLedger,
+    object_id: &ObjectId,
+) -> Result<(Option<u64>, Option<fss_core::ContentDigest>), ReferenceError> {
+    let Some(current) = ledger.current().objects.get(object_id) else {
+        return Ok((None, None));
+    };
+    let witness = ledger
+        .batches()
+        .iter()
+        .rev()
+        .flat_map(|batch| batch.deltas.iter())
+        .find(|delta| {
+            delta.object_id == *object_id
+                && delta.family == "event_revision"
+                && delta.new_generation == current.generation
+                && delta.payload_digest == current.payload_digest
+        })
+        .and_then(|delta| delta.witness_digest)
+        .ok_or(fss_core::ContractError::SupersessionMismatch)?;
+    Ok((Some(current.generation), Some(witness)))
 }
 
 fn policy_decision_path(

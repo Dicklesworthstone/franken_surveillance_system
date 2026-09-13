@@ -1864,3 +1864,67 @@ fn test_sensor_tamper_vetoes_corroboration_transition_and_replay() -> Result<(),
     assert_eq!(lineage.current_state(), EventState::Corroborated);
     Ok(())
 }
+
+/// A tamper report that also fails edge verification (an over-long failure domain). A revision
+/// carrying it fails both the tamper veto and `verify()`, so only a veto that runs before
+/// verification yields the typed transition error rather than the decode-wrapped bound failure.
+fn tamper_edge_failing_verification() -> EventEvidence {
+    let mut edge = sensor_tamper_evidence("power:gamma", "o3");
+    edge.failure_domain = "g".repeat(fss_core::MAX_FAILURE_DOMAIN_LEN + 1);
+    edge
+}
+
+#[test]
+fn test_transition_tamper_veto_runs_before_verification() -> Result<(), Box<dyn Error>> {
+    let mut lineage = EventLineage::new(sample_genesis_hypothesis("tamper-order-001")?)?;
+    let alpha = sample_evidence("power:alpha", true, "o1");
+    lineage.transition(transition_params(
+        EventState::Witnessed,
+        vec![alpha.clone()],
+        None,
+        false,
+    ))?;
+    let refused = lineage
+        .transition(transition_params(
+            EventState::Corroborated,
+            vec![
+                alpha,
+                sample_evidence("power:beta", true, "o2"),
+                tamper_edge_failing_verification(),
+            ],
+            None,
+            false,
+        ))
+        .err();
+    assert_eq!(refused, Some(EventTransitionError::SensorIntegrityRisk));
+    Ok(())
+}
+
+#[test]
+fn test_replay_tamper_veto_runs_before_verification() -> Result<(), Box<dyn Error>> {
+    let genesis = sample_genesis_hypothesis("tamper-order-002")?;
+    let mut lineage = EventLineage::new(genesis.clone())?;
+    let alpha = sample_evidence("power:alpha", true, "o1");
+    let witnessed = lineage
+        .transition(transition_params(
+            EventState::Witnessed,
+            vec![alpha.clone()],
+            None,
+            false,
+        ))?
+        .clone();
+    let planted = EventHypothesis {
+        revision: witnessed.revision + 1,
+        supersedes: Some(witnessed.revision_digest()),
+        state: EventState::Corroborated,
+        evidence: vec![
+            alpha,
+            sample_evidence("power:beta", true, "o2"),
+            tamper_edge_failing_verification(),
+        ],
+        ..witnessed.clone()
+    };
+    let replayed = EventLineage::from_revisions(vec![genesis, witnessed, planted]).err();
+    assert_eq!(replayed, Some(EventTransitionError::SensorIntegrityRisk));
+    Ok(())
+}
