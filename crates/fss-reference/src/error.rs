@@ -2,10 +2,14 @@
 
 use std::error::Error;
 use std::fmt;
+use std::path::PathBuf;
 
-use fss_core::{ContractError, TimestampNs};
+use fss_core::{ContentDigest, ContractError, TimestampNs};
+use fss_ledger::{DurableLedgerError, JournalError, RepairError};
 use fss_object::ObjectError;
-use fss_publication::PublicationError;
+use fss_publication::{LocalPublicationError, PublicationError, RootLedgerError};
+
+use crate::durable_effect::DurableEffectError;
 
 /// Failures from virtual source generation, transport replay, custody, or publication.
 #[derive(Debug)]
@@ -109,6 +113,72 @@ pub enum ReferenceError {
         /// The documented bound the value violates.
         requirement: &'static str,
     },
+    /// The reference deployment root is already locked by another active instance.
+    DeploymentLocked {
+        /// Filesystem path of the root or lock file that is locked.
+        path: PathBuf,
+    },
+    /// A deployment journal ends in an incomplete tail; repair is required.
+    IncompleteJournalTail {
+        /// Byte offset where the incomplete record begins.
+        offset: u64,
+        /// Journal path.
+        path: PathBuf,
+        /// Next affordance guidance for repair.
+        next_affordance: String,
+    },
+    /// Cooperative cancellation was requested at the named checkpoint stage.
+    CancellationRequested {
+        /// The checkpoint stage where cancellation was requested.
+        stage: &'static str,
+    },
+    /// A directory exists and is non-empty but is not a valid deployment root (missing LAYOUT).
+    NotADeployment {
+        /// Root path that failed deployment validation.
+        path: PathBuf,
+    },
+    /// A deployment capacity limit was exceeded.
+    CapacityExceeded {
+        /// Named limit.
+        limit: &'static str,
+        /// Declared maximum bound.
+        maximum: u64,
+        /// Actual requested value.
+        actual: u64,
+    },
+    /// Recovery was refused because foreign bytes contain a structurally valid committed record.
+    RecoverCorruptHistory {
+        /// Journal path containing the corrupt history.
+        path: PathBuf,
+        /// Byte offset where a structurally valid record was discovered.
+        offset: u64,
+    },
+    /// Recovery was refused because the supplied repair plan digest does not match the journal plan.
+    PlanDigestMismatch {
+        /// Expected plan digest.
+        expected: ContentDigest,
+        /// Computed actual plan digest.
+        actual: ContentDigest,
+    },
+    /// Recovery was requested to truncate an incomplete tail but no incomplete tail was found.
+    NoIncompleteTail {
+        /// Journal path inspected.
+        path: PathBuf,
+    },
+    /// Ledger repair operation failure.
+    Repair(Box<RepairError>),
+    /// Low-level journal framing or I/O failure.
+    Journal(JournalError),
+    /// Local root publication failure.
+    LocalPublication(Box<LocalPublicationError>),
+    /// Root-ledger coordinator failure.
+    RootLedger(Box<RootLedgerError>),
+    /// Durable ledger failure.
+    DurableLedger(Box<DurableLedgerError>),
+    /// Durable effect journal failure.
+    DurableEffect(Box<DurableEffectError>),
+    /// Host filesystem I/O failure.
+    Io(std::io::Error),
 }
 
 impl fmt::Display for ReferenceError {
@@ -215,7 +285,101 @@ impl fmt::Display for ReferenceError {
                     "invalid clock estimator configuration: {parameter} = {value} ({requirement})"
                 )
             }
+            Self::DeploymentLocked { path } => {
+                write!(formatter, "deployment locked: {}", path.display())
+            }
+            Self::IncompleteJournalTail {
+                offset,
+                path,
+                next_affordance,
+            } => {
+                write!(
+                    formatter,
+                    "incomplete journal tail at offset {offset} in {}: repair via {next_affordance}",
+                    path.display()
+                )
+            }
+            Self::CancellationRequested { stage } => {
+                write!(
+                    formatter,
+                    "cooperative cancellation requested at stage: {stage}"
+                )
+            }
+            Self::NotADeployment { path } => {
+                write!(formatter, "not a deployment root: {}", path.display())
+            }
+            Self::CapacityExceeded {
+                limit,
+                maximum,
+                actual,
+            } => {
+                write!(
+                    formatter,
+                    "deployment capacity limit exceeded: {limit} maximum is {maximum}, got {actual}"
+                )
+            }
+            Self::RecoverCorruptHistory { path, offset } => {
+                write!(
+                    formatter,
+                    "refusing recovery of corrupt history containing structurally valid record in {} at offset {offset}",
+                    path.display()
+                )
+            }
+            Self::PlanDigestMismatch { expected, actual } => {
+                write!(
+                    formatter,
+                    "recovery plan digest mismatch: expected {expected}, got {actual}"
+                )
+            }
+            Self::NoIncompleteTail { path } => {
+                write!(
+                    formatter,
+                    "no incomplete journal tail found in {}",
+                    path.display()
+                )
+            }
+            Self::Repair(error) => write!(formatter, "reference ledger repair error: {error}"),
+            Self::Journal(error) => write!(formatter, "reference journal error: {error}"),
+            Self::LocalPublication(error) => {
+                write!(formatter, "reference local publication error: {error}")
+            }
+            Self::RootLedger(error) => {
+                write!(formatter, "reference root ledger error: {error}")
+            }
+            Self::DurableLedger(error) => {
+                write!(formatter, "reference durable ledger error: {error}")
+            }
+            Self::DurableEffect(error) => {
+                write!(formatter, "reference durable effect error: {error}")
+            }
+            Self::Io(error) => write!(formatter, "reference io error: {error}"),
         }
+    }
+}
+
+impl ReferenceError {
+    /// Returns true if this error indicates the deployment root is locked.
+    #[must_use]
+    pub const fn is_deployment_locked(&self) -> bool {
+        matches!(self, Self::DeploymentLocked { .. })
+    }
+
+    /// Returns true if this error indicates the path is not a deployment root.
+    #[must_use]
+    pub const fn is_not_a_deployment(&self) -> bool {
+        matches!(self, Self::NotADeployment { .. })
+    }
+
+    /// Returns true if this error indicates a capacity limit was exceeded.
+    #[must_use]
+    pub const fn is_capacity_exceeded(&self) -> bool {
+        matches!(self, Self::CapacityExceeded { .. })
+    }
+
+    /// Returns true if this error indicates recovery was refused due to corrupt history.
+    #[must_use]
+    pub const fn is_recover_corrupt_history(&self) -> bool {
+        matches!(self, Self::RecoverCorruptHistory { .. })
     }
 }
 
@@ -225,6 +389,13 @@ impl Error for ReferenceError {
             Self::Contract(error) => Some(error),
             Self::Object(error) => Some(error),
             Self::Publication(error) => Some(error),
+            Self::Repair(error) => Some(error.as_ref()),
+            Self::Journal(error) => Some(error),
+            Self::LocalPublication(error) => Some(error.as_ref()),
+            Self::RootLedger(error) => Some(error.as_ref()),
+            Self::DurableLedger(error) => Some(error.as_ref()),
+            Self::DurableEffect(error) => Some(error.as_ref()),
+            Self::Io(error) => Some(error),
             Self::InvalidSpec(_)
             | Self::UnknownSourceSequence(_)
             | Self::ArithmeticOverflow
@@ -240,7 +411,15 @@ impl Error for ReferenceError {
             | Self::OutlierDominatedFit { .. }
             | Self::StaleEstimatePastValidity { .. }
             | Self::ContradictedEstimate { .. }
-            | Self::InvalidEstimatorConfig { .. } => None,
+            | Self::InvalidEstimatorConfig { .. }
+            | Self::DeploymentLocked { .. }
+            | Self::IncompleteJournalTail { .. }
+            | Self::CancellationRequested { .. }
+            | Self::NotADeployment { .. }
+            | Self::CapacityExceeded { .. }
+            | Self::RecoverCorruptHistory { .. }
+            | Self::PlanDigestMismatch { .. }
+            | Self::NoIncompleteTail { .. } => None,
         }
     }
 }
@@ -260,5 +439,47 @@ impl From<ObjectError> for ReferenceError {
 impl From<PublicationError> for ReferenceError {
     fn from(value: PublicationError) -> Self {
         Self::Publication(value)
+    }
+}
+
+impl From<RepairError> for ReferenceError {
+    fn from(value: RepairError) -> Self {
+        Self::Repair(Box::new(value))
+    }
+}
+
+impl From<JournalError> for ReferenceError {
+    fn from(value: JournalError) -> Self {
+        Self::Journal(value)
+    }
+}
+
+impl From<LocalPublicationError> for ReferenceError {
+    fn from(value: LocalPublicationError) -> Self {
+        Self::LocalPublication(Box::new(value))
+    }
+}
+
+impl From<RootLedgerError> for ReferenceError {
+    fn from(value: RootLedgerError) -> Self {
+        Self::RootLedger(Box::new(value))
+    }
+}
+
+impl From<DurableLedgerError> for ReferenceError {
+    fn from(value: DurableLedgerError) -> Self {
+        Self::DurableLedger(Box::new(value))
+    }
+}
+
+impl From<DurableEffectError> for ReferenceError {
+    fn from(value: DurableEffectError) -> Self {
+        Self::DurableEffect(Box::new(value))
+    }
+}
+
+impl From<std::io::Error> for ReferenceError {
+    fn from(value: std::io::Error) -> Self {
+        Self::Io(value)
     }
 }
