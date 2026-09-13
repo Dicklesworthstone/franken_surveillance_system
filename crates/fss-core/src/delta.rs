@@ -459,7 +459,7 @@ impl CanonicalEncode for MeaningfulDelta {
 
 fn validate_changed_cells(cells: &[KnowledgeCell]) -> Result<(), ContractError> {
     let mut claims = BTreeSet::new();
-    for cell in cells {
+    for (i, cell) in cells.iter().enumerate() {
         if cell.claim_id.is_empty()
             || cell.statement.is_empty()
             || !claims.insert(cell.claim_id.as_str())
@@ -467,6 +467,9 @@ fn validate_changed_cells(cells: &[KnowledgeCell]) -> Result<(), ContractError> 
             return Err(ContractError::NonCanonicalOrdering);
         }
         cell.validate()?;
+        for prior in &cells[..i] {
+            cell.verify_no_evidence_laundering(prior)?;
+        }
     }
     Ok(())
 }
@@ -741,5 +744,128 @@ mod tests {
             validate_changed_cells(&cells),
             Err(ContractError::ReconciliationBasisRequired)
         );
+    }
+
+    #[test]
+    fn changed_cells_refuse_evidence_laundering() -> Result<(), ContractError> {
+        let evidence_digest = ContentDigest::sha256(b"delta_shared_evidence_001");
+        let pred_cell = KnowledgeCell {
+            claim_id: "claim:future:growth".to_string(),
+            statement: "Predicted fire growth".to_string(),
+            knowledge_state: KnowledgeState::Estimated,
+            provenance: ProvenanceClass::Predicted,
+            hypothesis: None,
+            evidence: vec![evidence_digest],
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: None,
+        };
+        let obs_cell = KnowledgeCell {
+            claim_id: "claim:live:growth".to_string(),
+            statement: "Observed fire growth".to_string(),
+            knowledge_state: KnowledgeState::Known,
+            provenance: ProvenanceClass::Observed,
+            hypothesis: None,
+            evidence: vec![evidence_digest],
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: None,
+        };
+        let delta = MeaningfulDelta {
+            changed_cells: vec![pred_cell, obs_cell],
+            ..delta(MeaningfulDeltaClass::MaterialState, 1)?
+        };
+        assert_eq!(
+            delta.validate(),
+            Err(ContractError::EvidenceLaunderingDetected)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn changed_cells_allow_normal_derivation_observed_into_derived_and_predicted()
+    -> Result<(), ContractError> {
+        let evidence_digest = ContentDigest::sha256(b"delta_shared_evidence_002");
+        let obs_cell = KnowledgeCell {
+            claim_id: "claim:live:growth".to_string(),
+            statement: "Observed fire growth".to_string(),
+            knowledge_state: KnowledgeState::Known,
+            provenance: ProvenanceClass::Observed,
+            hypothesis: None,
+            evidence: vec![evidence_digest],
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: None,
+        };
+        let derived_cell = KnowledgeCell {
+            claim_id: "claim:derived:rate".to_string(),
+            statement: "Derived fire spread rate".to_string(),
+            knowledge_state: KnowledgeState::Known,
+            provenance: ProvenanceClass::Derived,
+            hypothesis: None,
+            evidence: vec![evidence_digest],
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: None,
+        };
+        let pred_cell = KnowledgeCell {
+            claim_id: "claim:future:growth".to_string(),
+            statement: "Predicted fire growth".to_string(),
+            knowledge_state: KnowledgeState::Estimated,
+            provenance: ProvenanceClass::Predicted,
+            hypothesis: None,
+            evidence: vec![evidence_digest],
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: None,
+        };
+        let delta_derived = MeaningfulDelta {
+            changed_cells: vec![obs_cell.clone(), derived_cell],
+            ..delta(MeaningfulDeltaClass::MaterialState, 1)?
+        };
+        assert!(delta_derived.validate().is_ok());
+
+        let delta_predicted = MeaningfulDelta {
+            changed_cells: vec![obs_cell, pred_cell],
+            ..delta(MeaningfulDeltaClass::MaterialState, 2)?
+        };
+        assert!(delta_predicted.validate().is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn changed_cells_refuse_derived_into_observed_laundering() -> Result<(), ContractError> {
+        let evidence_digest = ContentDigest::sha256(b"delta_shared_evidence_003");
+        let derived_cell = KnowledgeCell {
+            claim_id: "claim:derived:rate".to_string(),
+            statement: "Derived fire spread rate".to_string(),
+            knowledge_state: KnowledgeState::Known,
+            provenance: ProvenanceClass::Derived,
+            hypothesis: None,
+            evidence: vec![evidence_digest],
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: None,
+        };
+        let obs_cell = KnowledgeCell {
+            claim_id: "claim:live:growth".to_string(),
+            statement: "Observed fire growth".to_string(),
+            knowledge_state: KnowledgeState::Known,
+            provenance: ProvenanceClass::Observed,
+            hypothesis: None,
+            evidence: vec![evidence_digest],
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: None,
+        };
+        let delta = MeaningfulDelta {
+            changed_cells: vec![derived_cell, obs_cell],
+            ..delta(MeaningfulDeltaClass::MaterialState, 1)?
+        };
+        assert_eq!(
+            delta.validate(),
+            Err(ContractError::EvidenceLaunderingDetected)
+        );
+        Ok(())
     }
 }

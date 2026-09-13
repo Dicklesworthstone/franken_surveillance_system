@@ -236,6 +236,21 @@ fn classify(
     let result_bar = ProofBar::of(result);
     let basis_proved = proved_operations(basis, basis_bar);
     let result_proved = proved_operations(result, result_bar);
+    for result_cell in &result_frame.knowledge_cells {
+        for basis_cell in &basis_frame.knowledge_cells {
+            if basis_cell
+                .provenance
+                .may_launder_evidence_into(result_cell.provenance)
+                && result_cell
+                    .evidence
+                    .iter()
+                    .any(|e| basis_cell.evidence.contains(e))
+            {
+                return Err(ContractError::EvidenceLaunderingDetected.into());
+            }
+        }
+    }
+
     let mut classes = BTreeSet::new();
     let changed_cells = changed_cells(&basis_frame.knowledge_cells, &result_frame.knowledge_cells);
     let mut invalidated_assumptions = Vec::new();
