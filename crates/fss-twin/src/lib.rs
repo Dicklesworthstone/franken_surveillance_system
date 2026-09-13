@@ -198,3 +198,6 @@ pub mod rectification;
 
 /// Source-driven multi-target association with explicit unresolved alternatives.
 pub mod association;
+
+/// Complete factorized association alternatives and checked explicit selections.
+pub mod association_hypotheses;
