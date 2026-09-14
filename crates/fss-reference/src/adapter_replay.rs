@@ -9,8 +9,10 @@
 use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 
 use fss_core::{
     AdapterCapabilities, AdapterGeneration, AdapterId, AdapterIdentity, AdapterKind, ContentDigest,
@@ -277,6 +279,7 @@ pub struct ReplayCx {
     state: Arc<AtomicU8>,
     checkpoints: AtomicUsize,
     io: ReplayIoAuthority,
+    #[cfg(test)]
     cancel_at_stage: Mutex<Option<&'static str>>,
 }
 
@@ -292,6 +295,7 @@ impl ReplayCx {
             state,
             checkpoints: AtomicUsize::new(0),
             io,
+            #[cfg(test)]
             cancel_at_stage: Mutex::new(None),
         }
     }
@@ -395,11 +399,12 @@ impl ReplayCx {
     ///
     /// # Errors
     /// Returns [`ReplayAdapterError::CancellationRequested`] if cancellation was signaled.
-    pub fn checkpoint(&self, stage: &'static str) -> Result<(), ReplayAdapterError> {
+    pub fn checkpoint(&self, _stage: &'static str) -> Result<(), ReplayAdapterError> {
         self.checkpoints.fetch_add(1, Ordering::SeqCst);
+        #[cfg(test)]
         if let Ok(guard) = self.cancel_at_stage.lock()
             && let Some(target) = *guard
-            && target == stage
+            && target == _stage
         {
             self.request_cancellation();
         }
@@ -431,11 +436,12 @@ impl ReplayCx {
 
     /// Post-commit checkpoint: increments checkpoint counter and handles cancellation,
     /// but never returns an error so already-committed work is not reported as cancelled.
-    pub fn checkpoint_post_commit(&self, stage: &'static str) {
+    pub fn checkpoint_post_commit(&self, _stage: &'static str) {
         self.checkpoints.fetch_add(1, Ordering::SeqCst);
+        #[cfg(test)]
         if let Ok(guard) = self.cancel_at_stage.lock()
             && let Some(target) = *guard
-            && target == stage
+            && target == _stage
         {
             self.request_cancellation();
         }
