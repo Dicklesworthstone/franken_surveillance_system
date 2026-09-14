@@ -6,8 +6,8 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use fss_core::{
-    BatchId, ContentDigest, ContractError, DigestAlgorithm, EvidenceDelta, EvidenceDeltaBatch,
-    LedgerSnapshot, ReferenceLedger,
+    AuthoritativeLedger, BatchId, ContentDigest, ContractError, DigestAlgorithm, EvidenceDelta,
+    EvidenceDeltaBatch, LedgerSnapshot, ReferenceLedger,
 };
 
 use crate::{
@@ -342,6 +342,50 @@ impl DurableReferenceLedger {
     #[must_use]
     pub fn current(&self) -> &LedgerSnapshot {
         self.ledger.current()
+    }
+
+    /// Returns the authoritative ledger handle witnessing the on-disk committed head.
+    ///
+    /// Borrows this opened `DurableReferenceLedger` handle for lifetime `'_`, guaranteeing at compile
+    /// time that this handle cannot be held across subsequent ledger mutations (`append`).
+    ///
+    /// # Threat Model
+    /// This is type-level discipline against *accidental or stale* authority. Code in the same process
+    /// that can write the deployment can always forge durable state, so the goal is that no public API
+    /// turns a rewound or in-memory ledger into world-fact authority by mistake.
+    ///
+    /// # Compile-fail: cannot append while an `AuthoritativeLedger` handle is held (fss-sz0cc)
+    /// ```compile_fail,E0502
+    /// use std::path::Path;
+    /// use fss_core::{BatchId, CaptureInterval, ContentDigest, EvidenceDelta, ObjectId, Plane, TimestampNs};
+    /// use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
+    ///
+    /// fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("doctest_held_append.journal");
+    ///     let mut durable = DurableReferenceLedger::open(&path, "site:us-east:primary", IncompleteTailPolicy::Reject)?;
+    ///     let held = durable.authoritative_ledger()?;
+    ///     let delta = EvidenceDelta {
+    ///         delta_id: "delta:1".to_string(),
+    ///         family: "sensor_capsule".to_string(),
+    ///         object_id: ObjectId::parse("object:1")?,
+    ///         prior_generation: None,
+    ///         new_generation: 1,
+    ///         validity: CaptureInterval::new(TimestampNs(10), TimestampNs(20))?,
+    ///         plane: Plane::Authority,
+    ///         payload_digest: ContentDigest::sha256(b"payload"),
+    ///         witness_digest: None,
+    ///         operation_id: None,
+    ///     };
+    ///     let batch = durable.prepare_batch(BatchId::parse("batch:1")?, vec![delta], [])?;
+    ///     durable.append(batch)?;
+    ///     let _ = held.anchor();
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn authoritative_ledger(&self) -> Result<AuthoritativeLedger<'_>, ContractError> {
+        AuthoritativeLedger::__durable_ledger_only_from_committed_anchor(
+            self.current().anchor.clone(),
+        )
     }
 
     /// Immutable batches reconstructed from the durable committed prefix.
