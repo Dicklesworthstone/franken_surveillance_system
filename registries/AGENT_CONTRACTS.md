@@ -42,6 +42,8 @@ Knowledge-state permission is deliberately split. An estimate may support specul
 | `PROV-006` | `vendor_claimed` | Metadata or state asserted by a device/vendor boundary and not treated as independent physical truth. |
 | `PROV-007` | `policy` | A rule, threshold, capability, or privacy decision from an exact policy generation. |
 
+*Note on PROV-001 effect evidence*: Local effect journal receipts recorded by execution guards are classified as `observed` under PROV-001 because they constitute direct canonical effect evidence of local runtime state, distinguishing them from cognitive derivations and allowing effect reconciliation.
+
 ## Hypothesis dispositions
 
 `live` · `supported` · `disfavored` · `refuted` · `resolved` · `superseded`

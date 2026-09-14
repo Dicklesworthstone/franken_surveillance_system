@@ -55,7 +55,7 @@ const fn premise_state_invalidated(prior: KnowledgeState, current: KnowledgeStat
 /// What the result frame says about an effect cell that the basis carried as `KSTATE-008`
 /// `indeterminate` (registries/AGENT_CONTRACTS.md, "Knowledge states").
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum IndeterminateEffectSuccessor {
+pub(crate) enum IndeterminateEffectSuccessor {
     /// A retained terminal outcome resolved the effect uncertainty.
     Resolved,
     /// The consequential outcome is still unproved, so the cell is also lost coverage: no successor
@@ -73,19 +73,19 @@ enum IndeterminateEffectSuccessor {
 /// (fss-deir9), and bindings sealed to another capsule. So a `known` effect cell reaching this bar
 /// is bound, sealed, and retains its evidence (fss-6sph6).
 #[derive(Clone, Copy)]
-struct ProofBar {
-    now: TimestampNs,
+pub(crate) struct ProofBar {
+    pub(crate) now: TimestampNs,
 }
 
 impl ProofBar {
-    fn of(publication: &ReferenceSituationPublication) -> Self {
+    pub(crate) fn of(publication: &ReferenceSituationPublication) -> Self {
         Self {
             now: publication.situation.capsule.created_at,
         }
     }
 
     /// Returns whether `cell` carries a proved outcome under this bar.
-    fn proves(self, cell: &KnowledgeCell) -> bool {
+    pub(crate) fn proves(self, cell: &KnowledgeCell) -> bool {
         cell.is_irreversible_effect_premise(self.now)
     }
 }
@@ -100,12 +100,12 @@ impl ProofBar {
 /// other state leaves the outcome unproved, so it is never flattened into a resolution
 /// or a terminal transition. The match is exhaustive so a new state must be classified here rather
 /// than silently resolving.
-fn indeterminate_effect_successor(
+pub(crate) fn indeterminate_effect_successor(
     current: &KnowledgeCell,
     bar: ProofBar,
 ) -> IndeterminateEffectSuccessor {
     let unresolved = IndeterminateEffectSuccessor::Unresolved;
-    match current.knowledge_state {
+    match current.knowledge_state() {
         // KSTATE-001: resolved only by a proved terminal outcome; a `known` claim without evidence
         // roots, with contradicting roots, with an invalid state basis, or whose validity window has
         // already closed does not establish what happened.
@@ -267,9 +267,10 @@ fn classify(
         let prior = basis_frame
             .knowledge_cells
             .iter()
-            .find(|candidate| candidate.claim_id == cell.claim_id);
+            .find(|candidate| candidate.claim_id() == cell.claim_id());
         prior.is_none_or(|prior| {
-            prior.hypothesis != cell.hypothesis || prior.knowledge_state != cell.knowledge_state
+            prior.hypothesis() != cell.hypothesis()
+                || prior.knowledge_state() != cell.knowledge_state()
         })
     }) {
         classes.insert(MeaningfulDeltaClass::Hypothesis);
@@ -349,32 +350,34 @@ fn classify(
     }
     for prior in &basis_frame.knowledge_cells {
         if !matches!(
-            prior.knowledge_state,
+            prior.knowledge_state(),
             KnowledgeState::Known | KnowledgeState::Estimated
         ) {
             continue;
         }
-        let state_label = prior.knowledge_state.as_str();
+        let state_label = prior.knowledge_state().as_str();
         match result_frame
             .knowledge_cells
             .iter()
-            .find(|candidate| candidate.claim_id == prior.claim_id)
+            .find(|candidate| candidate.claim_id() == prior.claim_id())
         {
             Some(current)
-                if premise_state_invalidated(prior.knowledge_state, current.knowledge_state)
-                    || (prior.contradictions != current.contradictions
-                        && !current.contradictions.is_empty()) =>
+                if premise_state_invalidated(
+                    prior.knowledge_state(),
+                    current.knowledge_state(),
+                ) || (prior.contradictions() != current.contradictions()
+                    && !current.contradictions().is_empty()) =>
             {
-                if prior.knowledge_state != current.knowledge_state {
+                if prior.knowledge_state() != current.knowledge_state() {
                     invalidated_assumptions.push(format!(
                         "{state_label} premise {} became {}",
-                        prior.claim_id,
-                        current.knowledge_state.as_str()
+                        prior.claim_id(),
+                        current.knowledge_state().as_str()
                     ));
                 } else {
                     invalidated_assumptions.push(format!(
                         "{state_label} premise {} gained contradictory evidence",
-                        prior.claim_id
+                        prior.claim_id()
                     ));
                 }
             }
@@ -383,13 +386,13 @@ fn classify(
             None if is_effect_claim(prior)
                 && operation_proof_retained(
                     basis,
-                    &prior.claim_id,
+                    prior.claim_id(),
                     &basis_proved,
                     &result_proved,
                 ) => {}
             None => invalidated_assumptions.push(format!(
                 "{state_label} premise {} disappeared from the result frame",
-                prior.claim_id
+                prior.claim_id()
             )),
             Some(_) => {}
         }
@@ -419,7 +422,7 @@ fn classify(
         match result_frame
             .knowledge_cells
             .iter()
-            .find(|candidate| candidate.claim_id == *claim_id)
+            .find(|candidate| candidate.claim_id() == *claim_id)
         {
             Some(current) => match indeterminate_effect_successor(current, result_bar) {
                 IndeterminateEffectSuccessor::Resolved => {
@@ -433,7 +436,7 @@ fn classify(
                     ));
                 }
                 IndeterminateEffectSuccessor::Unresolved => {
-                    let state = current.knowledge_state.as_str();
+                    let state = current.knowledge_state().as_str();
                     effect_uncertainty_changes.push(format!(
                         "effect uncertainty remains: indeterminate effect {claim_id} became {state} without a proved outcome"
                     ));
@@ -471,11 +474,10 @@ fn classify(
     // coverage rather than a quiet terminal state (fss-deir9). A basis-indeterminate cell was
     // classified above.
     for cell in &changed_cells {
-        if unproved_known_effect(cell, result_bar)
-            && !basis_indeterminate.contains(cell.claim_id.as_str())
+        if unproved_known_effect(cell, result_bar) && !basis_indeterminate.contains(cell.claim_id())
         {
-            reported_effects.insert(cell.claim_id.as_str());
-            let claim_id = &cell.claim_id;
+            reported_effects.insert(cell.claim_id());
+            let claim_id = cell.claim_id();
             effect_uncertainty_changes.push(format!(
                 "effect uncertainty remains: effect {claim_id} is known without a proved terminal outcome"
             ));
@@ -492,11 +494,11 @@ fn classify(
     // an effect change and lost coverage, not only as an invalidated premise (fss-deir9).
     for prior in &basis_frame.knowledge_cells {
         if !is_effect_claim(prior)
-            || basis_indeterminate.contains(prior.claim_id.as_str())
+            || basis_indeterminate.contains(prior.claim_id())
             || result_frame
                 .knowledge_cells
                 .iter()
-                .any(|cell| cell.claim_id == prior.claim_id)
+                .any(|cell| cell.claim_id() == prior.claim_id())
         {
             continue;
         }
@@ -505,14 +507,14 @@ fn classify(
         // and a dropped unproved cell whose operation the result proves was superseded by that
         // proof, which the terminal-transition rule reports.
         let superseded = if basis_bar.proves(prior) {
-            operation_proof_retained(basis, &prior.claim_id, &basis_proved, &result_proved)
+            operation_proof_retained(basis, prior.claim_id(), &basis_proved, &result_proved)
         } else {
-            operation_proved(basis, &prior.claim_id, &result_proved)
+            operation_proved(basis, prior.claim_id(), &result_proved)
         };
         if superseded {
             continue;
         }
-        let claim_id = &prior.claim_id;
+        let claim_id = prior.claim_id();
         if basis_bar.proves(prior) {
             effect_uncertainty_changes.push(format!(
                 "effect uncertainty added: proved effect {claim_id} disappeared from the result frame"
@@ -522,7 +524,7 @@ fn classify(
                 "proved effect {claim_id} disappeared from the result frame"
             ));
         } else {
-            let state = prior.knowledge_state.as_str();
+            let state = prior.knowledge_state().as_str();
             effect_uncertainty_changes.push(format!(
                 "effect uncertainty remains: effect {claim_id} disappeared from the result frame without a proved outcome"
             ));
@@ -536,9 +538,9 @@ fn classify(
     // proved outcome terminalizes it, so parking it in any unproved state (not_applicable,
     // estimated, unknown, ...) never lets a later delta certify silence (fss-hmfs5).
     for cell in &result_frame.knowledge_cells {
-        if unproved_effect(cell, result_bar) && !reported_effects.contains(cell.claim_id.as_str()) {
-            let claim_id = &cell.claim_id;
-            let state = cell.knowledge_state.as_str();
+        if unproved_effect(cell, result_bar) && !reported_effects.contains(cell.claim_id()) {
+            let claim_id = cell.claim_id();
+            let state = cell.knowledge_state().as_str();
             effect_uncertainty_changes.push(format!(
                 "effect uncertainty remains: effect {claim_id} is {state} without a proved outcome"
             ));
@@ -625,7 +627,7 @@ fn classify(
                 return false;
             }
             let is_terminal_hypothesis = matches!(
-                cell.hypothesis,
+                cell.hypothesis(),
                 Some(
                     HypothesisDisposition::Refuted
                         | HypothesisDisposition::Resolved
@@ -636,10 +638,10 @@ fn classify(
                 && basis_frame
                     .knowledge_cells
                     .iter()
-                    .find(|b| b.claim_id == cell.claim_id)
+                    .find(|b| b.claim_id() == cell.claim_id())
                     .is_none_or(|b| {
                         !matches!(
-                            b.hypothesis,
+                            b.hypothesis(),
                             Some(
                                 HypothesisDisposition::Refuted
                                     | HypothesisDisposition::Resolved
@@ -659,28 +661,28 @@ fn classify(
             (None, Some(result_state)) => result_state.is_terminal(),
             _ => false,
         } || result_frame.knowledge_cells.iter().any(|cell| {
-            cell.claim_id.starts_with("claim:mission:")
+            cell.claim_id().starts_with("claim:mission:")
                 && (matches!(
-                    cell.hypothesis,
+                    cell.hypothesis(),
                     Some(
                         HypothesisDisposition::Refuted
                             | HypothesisDisposition::Resolved
                             | HypothesisDisposition::Superseded
                     )
-                ) || cell.knowledge_state == KnowledgeState::Known)
+                ) || cell.knowledge_state() == KnowledgeState::Known)
                 && basis_frame
                     .knowledge_cells
                     .iter()
-                    .find(|b| b.claim_id == cell.claim_id)
+                    .find(|b| b.claim_id() == cell.claim_id())
                     .is_none_or(|b| {
                         !matches!(
-                            b.hypothesis,
+                            b.hypothesis(),
                             Some(
                                 HypothesisDisposition::Refuted
                                     | HypothesisDisposition::Resolved
                                     | HypothesisDisposition::Superseded
                             )
-                        ) && b.knowledge_state != KnowledgeState::Known
+                        ) && b.knowledge_state() != KnowledgeState::Known
                     })
         }));
 
@@ -723,7 +725,7 @@ fn classify(
             // included, so it is degraded too (fss-hmfs5, fss-deir9).
             unproved_effect(cell, result_bar)
                 || matches!(
-                    cell.knowledge_state,
+                    cell.knowledge_state(),
                     KnowledgeState::NotObservable
                         | KnowledgeState::Conflicted
                         | KnowledgeState::Stale
@@ -732,7 +734,7 @@ fn classify(
                         | KnowledgeState::Redacted
                 )
         })
-        .map(|cell| cell.claim_id.clone())
+        .map(|cell| cell.claim_id().to_string())
         .collect();
     let generation_mismatch = basis_capsule.contract_basis.ontology_generation_id
         != result_capsule.contract_basis.ontology_generation_id;
@@ -874,14 +876,14 @@ fn validate_comparison_basis(
 fn changed_cells(basis: &[KnowledgeCell], result: &[KnowledgeCell]) -> Vec<KnowledgeCell> {
     let prior: BTreeMap<_, _> = basis
         .iter()
-        .map(|cell| (cell.claim_id.as_str(), cell.cell_digest()))
+        .map(|cell| (cell.claim_id(), cell.cell_digest()))
         .collect();
     let mut changed: Vec<_> = result
         .iter()
-        .filter(|cell| prior.get(cell.claim_id.as_str()) != Some(&cell.cell_digest()))
+        .filter(|cell| prior.get(cell.claim_id()) != Some(&cell.cell_digest()))
         .cloned()
         .collect();
-    changed.sort_by(|left, right| left.claim_id.cmp(&right.claim_id));
+    changed.sort_by(|left, right| left.claim_id().cmp(right.claim_id()));
     changed
 }
 
@@ -891,11 +893,11 @@ fn changed_cells(basis: &[KnowledgeCell], result: &[KnowledgeCell]) -> Vec<Knowl
 /// value, and a vanished contradicted cell is still a contradiction change (see
 /// [`contradiction_changed`]), so it can never be coalesced away (fss-2uftm).
 fn removed_claim_ids(basis: &[KnowledgeCell], result: &[KnowledgeCell]) -> Vec<String> {
-    let current: BTreeSet<&str> = result.iter().map(|cell| cell.claim_id.as_str()).collect();
+    let current: BTreeSet<&str> = result.iter().map(|cell| cell.claim_id()).collect();
     let removed: BTreeSet<String> = basis
         .iter()
-        .filter(|cell| !current.contains(cell.claim_id.as_str()))
-        .map(|cell| cell.claim_id.clone())
+        .filter(|cell| !current.contains(cell.claim_id()))
+        .map(|cell| cell.claim_id().to_owned())
         .collect();
     removed.into_iter().collect()
 }
@@ -906,18 +908,18 @@ fn contradiction_changed(
     changed: &[KnowledgeCell],
 ) -> bool {
     if changed.iter().any(|cell| {
-        cell.knowledge_state == KnowledgeState::Conflicted || !cell.contradictions.is_empty()
+        cell.knowledge_state() == KnowledgeState::Conflicted || !cell.contradictions().is_empty()
     }) {
         return true;
     }
     basis.iter().any(|prior| {
-        let had_contradiction =
-            prior.knowledge_state == KnowledgeState::Conflicted || !prior.contradictions.is_empty();
+        let had_contradiction = prior.knowledge_state() == KnowledgeState::Conflicted
+            || !prior.contradictions().is_empty();
         match result
             .iter()
-            .find(|current| current.claim_id == prior.claim_id)
+            .find(|current| current.claim_id() == prior.claim_id())
         {
-            Some(current) => prior.contradictions != current.contradictions,
+            Some(current) => prior.contradictions() != current.contradictions(),
             None => had_contradiction,
         }
     })
@@ -1011,7 +1013,7 @@ fn verify_discharge(
 /// namespace test stays the conservative classifier here rather than dropping such a cell out of
 /// every effect rule (fss-6sph6).
 fn is_effect_claim(cell: &KnowledgeCell) -> bool {
-    cell.claim_id.starts_with(EFFECT_CLAIM_PREFIX)
+    cell.claim_id().starts_with(EFFECT_CLAIM_PREFIX)
 }
 
 /// Returns whether a terminal hypothesis on `cell` may terminalize an event.
@@ -1021,7 +1023,7 @@ fn is_effect_claim(cell: &KnowledgeCell) -> bool {
 /// obligation-namespace cell; excluding it here too is a second guard, so an obligation cell drives
 /// no terminal transition even if that refusal were bypassed (fss-6sph6).
 pub(crate) fn event_rule_applies(cell: &KnowledgeCell) -> bool {
-    !is_effect_claim(cell) && !cell.claim_id.starts_with(OBLIGATION_CLAIM_PREFIX)
+    !is_effect_claim(cell) && !cell.claim_id().starts_with(OBLIGATION_CLAIM_PREFIX)
 }
 
 /// Every operation an effect cell proves in `publication` at its own anchor: the operations
@@ -1050,7 +1052,7 @@ fn proved_operations(
         if !is_effect_claim(cell) || !bar.proves(cell) {
             continue;
         }
-        if let Some((operation_id, Some(outcome))) = situation.effect_operation(&cell.claim_id) {
+        if let Some((operation_id, Some(outcome))) = situation.effect_operation(cell.claim_id()) {
             proved
                 .entry(operation_id.as_str())
                 .or_default()
@@ -1104,7 +1106,7 @@ fn outcome_labels(outcomes: &BTreeSet<EffectOutcome>) -> String {
 /// irreversible-effect premise bar under `bar` (valid state basis, retained evidence roots, no
 /// contradictions, open validity window): it asserts an outcome it has not proved.
 fn unproved_known_effect(cell: &KnowledgeCell, bar: ProofBar) -> bool {
-    cell.knowledge_state == KnowledgeState::Known && unproved_effect(cell, bar)
+    cell.knowledge_state() == KnowledgeState::Known && unproved_effect(cell, bar)
 }
 
 /// Returns whether `cell` is an effect claim that does not clear `bar`: whatever its state, its
@@ -1117,9 +1119,9 @@ fn indeterminate_effect_claims(cells: &[KnowledgeCell]) -> BTreeSet<&str> {
     cells
         .iter()
         .filter(|cell| {
-            is_effect_claim(cell) && cell.knowledge_state == KnowledgeState::Indeterminate
+            is_effect_claim(cell) && cell.knowledge_state() == KnowledgeState::Indeterminate
         })
-        .map(|cell| cell.claim_id.as_str())
+        .map(|cell| cell.claim_id())
         .collect()
 }
 

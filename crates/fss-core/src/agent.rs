@@ -468,11 +468,9 @@ const fn asserts_present_support(state: KnowledgeState) -> bool {
     }
 }
 
-/// One proposition with orthogonal epistemic, provenance, and hypothesis states.
-///
-/// `Debug` is implemented by hand so that a `redacted` cell never prints its statement.
-#[derive(Clone, Eq, PartialEq)]
-pub struct KnowledgeCell {
+/// Parameters for constructing a validated [`KnowledgeCell`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KnowledgeCellParams {
     /// Stable proposition identity.
     pub claim_id: String,
     /// Compact human-readable statement.
@@ -493,8 +491,171 @@ pub struct KnowledgeCell {
     pub state_basis: Option<KnowledgeStateBasis>,
 }
 
+/// One proposition with orthogonal epistemic, provenance, and hypothesis states.
+///
+/// `Debug` is implemented by hand so that a `redacted` cell never prints its statement.
+///
+/// All fields are private; callers construct cells via [`KnowledgeCell::new`] and inspect them
+/// via accessor methods. Direct field reassignment after construction is prevented:
+///
+/// ```compile_fail,E0616
+/// use fss_core::{KnowledgeCell, KnowledgeCellParams, KnowledgeState, ProvenanceClass};
+///
+/// let mut cell = KnowledgeCell::new(KnowledgeCellParams {
+///     claim_id: "claim:test:private".to_string(),
+///     statement: "Testing private fields".to_string(),
+///     knowledge_state: KnowledgeState::Estimated,
+///     provenance: ProvenanceClass::Derived,
+///     hypothesis: None,
+///     evidence: vec![],
+///     contradictions: vec![],
+///     valid_until: None,
+///     state_basis: None,
+/// }).unwrap();
+/// cell.provenance = ProvenanceClass::Observed;
+/// ```
+#[derive(Clone, Eq, PartialEq)]
+pub struct KnowledgeCell {
+    /// Stable proposition identity.
+    claim_id: String,
+    /// Compact human-readable statement.
+    statement: String,
+    /// Epistemic state.
+    knowledge_state: KnowledgeState,
+    /// Provenance class.
+    provenance: ProvenanceClass,
+    /// Hypothesis disposition, when applicable.
+    hypothesis: Option<HypothesisDisposition>,
+    /// Evidence roots supporting the proposition.
+    evidence: Vec<ContentDigest>,
+    /// Contradicting evidence roots.
+    contradictions: Vec<ContentDigest>,
+    /// Validity end, when bounded.
+    valid_until: Option<TimestampNs>,
+    /// Typed basis required by states whose registry meaning names one; `None` otherwise.
+    state_basis: Option<KnowledgeStateBasis>,
+}
+
 impl KnowledgeCell {
+    /// Constructs a new [`KnowledgeCell`] after validating all invariants.
+    pub fn new(params: KnowledgeCellParams) -> Result<Self, ContractError> {
+        let cell = Self {
+            claim_id: params.claim_id,
+            statement: params.statement,
+            knowledge_state: params.knowledge_state,
+            provenance: params.provenance,
+            hypothesis: params.hypothesis,
+            evidence: params.evidence,
+            contradictions: params.contradictions,
+            valid_until: params.valid_until,
+            state_basis: params.state_basis,
+        };
+        cell.validate()?;
+        Ok(cell)
+    }
+
+    /// Constructs an unvalidated [`KnowledgeCell`] for crate-internal unit tests only.
+    ///
+    /// No production path may build a cell without [`Self::validate`]: a cell that fails
+    /// validation is refused with its typed error at every construction boundary.
+    #[cfg(test)]
+    pub(crate) fn new_unvalidated(params: KnowledgeCellParams) -> Self {
+        Self {
+            claim_id: params.claim_id,
+            statement: params.statement,
+            knowledge_state: params.knowledge_state,
+            provenance: params.provenance,
+            hypothesis: params.hypothesis,
+            evidence: params.evidence,
+            contradictions: params.contradictions,
+            valid_until: params.valid_until,
+            state_basis: params.state_basis,
+        }
+    }
+
+    /// Converts this cell back into its constituent parameters.
+    #[must_use]
+    pub fn to_params(&self) -> KnowledgeCellParams {
+        KnowledgeCellParams {
+            claim_id: self.claim_id.clone(),
+            statement: self.statement.clone(),
+            knowledge_state: self.knowledge_state,
+            provenance: self.provenance,
+            hypothesis: self.hypothesis,
+            evidence: self.evidence.clone(),
+            contradictions: self.contradictions.clone(),
+            valid_until: self.valid_until,
+            state_basis: self.state_basis.clone(),
+        }
+    }
+
+    /// Returns the stable claim identifier.
+    #[must_use]
+    pub fn claim_id(&self) -> &str {
+        &self.claim_id
+    }
+
+    /// Returns the statement text.
+    #[must_use]
+    pub fn statement(&self) -> &str {
+        &self.statement
+    }
+
+    /// Returns the epistemic knowledge state.
+    #[must_use]
+    pub const fn knowledge_state(&self) -> KnowledgeState {
+        self.knowledge_state
+    }
+
+    /// Returns the provenance class.
+    #[must_use]
+    pub const fn provenance(&self) -> ProvenanceClass {
+        self.provenance
+    }
+
+    /// Returns the hypothesis disposition, when present.
+    #[must_use]
+    pub const fn hypothesis(&self) -> Option<HypothesisDisposition> {
+        self.hypothesis
+    }
+
+    /// Returns the supporting evidence roots.
+    #[must_use]
+    pub fn evidence(&self) -> &[ContentDigest] {
+        &self.evidence
+    }
+
+    /// Returns the contradicting evidence roots.
+    #[must_use]
+    pub fn contradictions(&self) -> &[ContentDigest] {
+        &self.contradictions
+    }
+
+    /// Returns the validity boundary timestamp, when set.
+    #[must_use]
+    pub const fn valid_until(&self) -> Option<TimestampNs> {
+        self.valid_until
+    }
+
+    /// Returns the typed state basis, when present.
+    #[must_use]
+    pub fn state_basis(&self) -> Option<&KnowledgeStateBasis> {
+        self.state_basis.as_ref()
+    }
+
     /// Returns whether this cell may be used as an irreversible-effect premise.
+    ///
+    /// CONSTITUTIONAL HARD GATES:
+    /// 1. Only `Known` (KSTATE-001) may authorize irreversible effects.
+    /// 2. Only `Observed`, `OperatorAsserted`, and `Policy` provenance may authorize effects.
+    ///    Per AGT-LAYER-004 and INV-069, derived beliefs belong to the Cognition plane,
+    ///    never the Authority plane, and can NEVER authorize irreversible physical effects.
+    ///    Predictions (`Predicted`), operational memory (`Remembered`), and vendor assertions
+    ///    (`VendorClaimed`) are also strictly non-authorizing.
+    /// 3. The cell must pass full [`Self::validate`] checks.
+    /// 4. Admissible supporting evidence must be present (`!self.evidence.is_empty()`).
+    /// 5. No contradicting evidence may exist (`self.contradictions.is_empty()`).
+    /// 6. The cell's validity interval must not be expired relative to `now`.
     #[must_use]
     pub fn is_irreversible_effect_premise(&self, now: TimestampNs) -> bool {
         self.knowledge_state.may_authorize_irreversible_effect()
@@ -1498,8 +1659,8 @@ mod tests {
         capsule.verify()
     }
 
-    fn known_cell() -> KnowledgeCell {
-        KnowledgeCell {
+    fn known_cell() -> Result<KnowledgeCell, ContractError> {
+        KnowledgeCell::new(KnowledgeCellParams {
             claim_id: "claim:door".to_owned(),
             statement: "The door is closed.".to_owned(),
             knowledge_state: KnowledgeState::Known,
@@ -1509,12 +1670,12 @@ mod tests {
             contradictions: Vec::new(),
             valid_until: None,
             state_basis: None,
-        }
+        })
     }
 
     /// A stale cell with no typed stale basis: refused with `StaleBasisRequired`.
     fn basisless_stale_cell() -> KnowledgeCell {
-        KnowledgeCell {
+        KnowledgeCell::new_unvalidated(KnowledgeCellParams {
             claim_id: "claim:gate".to_owned(),
             statement: "The gate was closed at the last observation.".to_owned(),
             knowledge_state: KnowledgeState::Stale,
@@ -1524,7 +1685,7 @@ mod tests {
             contradictions: Vec::new(),
             valid_until: None,
             state_basis: None,
-        }
+        })
     }
 
     fn capsule() -> Result<SituationCapsule, ContractError> {
@@ -1545,7 +1706,7 @@ mod tests {
             objective_id: "objective:one".to_owned(),
             anchor: anchor.clone(),
             world_envelope,
-            knowledge_cells: vec![known_cell()],
+            knowledge_cells: vec![known_cell()?],
             now: vec!["The door is closed.".to_owned()],
             changed: Vec::new(),
             why: Vec::new(),
@@ -1740,5 +1901,373 @@ mod tests {
         impl<T: ?Sized> AmbiguousIfCanonical<()> for T {}
         impl<T: ?Sized + CanonicalEncode> AmbiguousIfCanonical<u8> for T {}
         <WorldEnvelope as AmbiguousIfCanonical<_>>::probe();
+        <SituationFrame as AmbiguousIfCanonical<_>>::probe();
+    }
+
+    #[test]
+    fn knowledge_cell_constructor_and_getters_enforce_validation() -> Result<(), ContractError> {
+        let digest = ContentDigest::sha256(b"door-evidence");
+        let params = KnowledgeCellParams {
+            claim_id: "claim:door".to_owned(),
+            statement: "The door is closed.".to_owned(),
+            knowledge_state: KnowledgeState::Known,
+            provenance: ProvenanceClass::Observed,
+            hypothesis: None,
+            evidence: vec![digest],
+            contradictions: Vec::new(),
+            valid_until: Some(TimestampNs(100)),
+            state_basis: None,
+        };
+
+        let cell = KnowledgeCell::new(params)?;
+        assert_eq!(cell.claim_id(), "claim:door");
+        assert_eq!(cell.statement(), "The door is closed.");
+        assert_eq!(cell.knowledge_state(), KnowledgeState::Known);
+        assert_eq!(cell.provenance(), ProvenanceClass::Observed);
+        assert_eq!(cell.hypothesis(), None);
+        assert_eq!(cell.evidence(), &[digest]);
+        assert_eq!(cell.contradictions(), &[]);
+        assert_eq!(cell.valid_until(), Some(TimestampNs(100)));
+        assert_eq!(cell.state_basis(), None);
+
+        // Constructor enforces validation: Predicted + Known is refused
+        let invalid_params = KnowledgeCellParams {
+            claim_id: "claim:prediction".to_owned(),
+            statement: "Prediction.".to_owned(),
+            knowledge_state: KnowledgeState::Known,
+            provenance: ProvenanceClass::Predicted,
+            hypothesis: None,
+            evidence: vec![digest],
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: None,
+        };
+        assert_eq!(
+            KnowledgeCell::new(invalid_params),
+            Err(ContractError::PredictedKnownForbidden)
+        );
+
+        // Derived + Known constructor succeeds, but can NEVER be an irreversible effect premise
+        let derived_known_params = KnowledgeCellParams {
+            claim_id: "claim:derived:breach".to_owned(),
+            statement: "Perimeter breach derived.".to_owned(),
+            knowledge_state: KnowledgeState::Known,
+            provenance: ProvenanceClass::Derived,
+            hypothesis: None,
+            evidence: vec![digest],
+            contradictions: Vec::new(),
+            valid_until: Some(TimestampNs(100)),
+            state_basis: None,
+        };
+        let derived_cell = KnowledgeCell::new(derived_known_params)?;
+        assert_eq!(derived_cell.knowledge_state(), KnowledgeState::Known);
+        assert_eq!(derived_cell.provenance(), ProvenanceClass::Derived);
+        assert!(
+            !derived_cell
+                .provenance()
+                .may_authorize_irreversible_effect()
+        );
+        assert!(!derived_cell.is_irreversible_effect_premise(TimestampNs(50)));
+
+        Ok(())
+    }
+
+    fn test_capsule_with_cell(cell: KnowledgeCell) -> Result<SituationCapsule, ContractError> {
+        let anchor = LedgerAnchor::genesis("site:agent_test");
+        let envelope = WorldEnvelope {
+            envelope_id: "env:test".to_string(),
+            objective_id: "obj:test".to_string(),
+            anchor: anchor.clone(),
+            nominal_claim_ids: BTreeSet::new(),
+            certified_core_claim_ids: BTreeSet::new(),
+            alternatives: vec![],
+            adversarial_residuals: vec![],
+            common_invariants: BTreeSet::new(),
+            coverage_boundary_handles: BTreeSet::new(),
+        };
+        let frame = SituationFrame {
+            frame_id: "frame:test".to_string(),
+            objective_id: "obj:test".to_string(),
+            anchor: anchor.clone(),
+            world_envelope: envelope,
+            knowledge_cells: vec![cell],
+            now: vec![],
+            changed: vec![],
+            why: vec![],
+            unknown: vec![],
+            at_risk: vec![],
+            next: vec![],
+            evidence_handles: BTreeSet::new(),
+        };
+        Ok(SituationCapsule {
+            capsule_id: "cap:test".to_string(),
+            revision: 1,
+            contract_basis: basis(),
+            mission_id: MissionId::parse("site:agent_test:mission:test")?,
+            session_id: SessionId::parse("site:agent_test:session:test")?,
+            principal_id: PrincipalId::parse("principal:test")?,
+            anchor,
+            previous_anchor: None,
+            frame,
+            obligations: vec![],
+            affordances: vec![],
+            completeness: Completeness::Partial,
+            created_at: TimestampNs(100),
+            mission_state: None,
+        })
+    }
+
+    #[test]
+    fn invalid_unvalidated_cells_refused_at_cell_and_capsule_level()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let now = TimestampNs(100);
+        let digest = ContentDigest::sha256(b"invalid_test_evidence");
+
+        // 1. Predicted + Known
+        let pred_known = KnowledgeCell::new_unvalidated(KnowledgeCellParams {
+            claim_id: "claim:pred:known".to_string(),
+            statement: "Predicted proposition claiming known".to_string(),
+            knowledge_state: KnowledgeState::Known,
+            provenance: ProvenanceClass::Predicted,
+            hypothesis: None,
+            evidence: vec![digest],
+            contradictions: vec![],
+            valid_until: None,
+            state_basis: None,
+        });
+        assert_eq!(
+            pred_known.validate(),
+            Err(ContractError::PredictedKnownForbidden)
+        );
+        assert!(!pred_known.is_irreversible_effect_premise(now));
+        let cap_pred_known = test_capsule_with_cell(pred_known)?;
+        assert_eq!(
+            cap_pred_known.validate(),
+            Err(ContractError::PredictedKnownForbidden)
+        );
+        assert_eq!(
+            cap_pred_known.decision_fingerprint(),
+            Err(ContractError::PredictedKnownForbidden)
+        );
+
+        // 2. Basisless indeterminate
+        let basisless_indeterminate = KnowledgeCell::new_unvalidated(KnowledgeCellParams {
+            claim_id: "claim:basisless:indeterminate".to_string(),
+            statement: "Indeterminate proposition without basis".to_string(),
+            knowledge_state: KnowledgeState::Indeterminate,
+            provenance: ProvenanceClass::Observed,
+            hypothesis: None,
+            evidence: vec![digest],
+            contradictions: vec![],
+            valid_until: None,
+            state_basis: None,
+        });
+        assert_eq!(
+            basisless_indeterminate.validate(),
+            Err(ContractError::ReconciliationBasisRequired)
+        );
+        assert!(!basisless_indeterminate.is_irreversible_effect_premise(now));
+        let cap_indet = test_capsule_with_cell(basisless_indeterminate)?;
+        assert_eq!(
+            cap_indet.validate(),
+            Err(ContractError::ReconciliationBasisRequired)
+        );
+        assert_eq!(
+            cap_indet.decision_fingerprint(),
+            Err(ContractError::ReconciliationBasisRequired)
+        );
+
+        // 3. Basisless stale
+        let basisless_stale = KnowledgeCell::new_unvalidated(KnowledgeCellParams {
+            claim_id: "claim:basisless:stale".to_string(),
+            statement: "Stale proposition without basis".to_string(),
+            knowledge_state: KnowledgeState::Stale,
+            provenance: ProvenanceClass::Observed,
+            hypothesis: None,
+            evidence: vec![digest],
+            contradictions: vec![],
+            valid_until: None,
+            state_basis: None,
+        });
+        assert_eq!(
+            basisless_stale.validate(),
+            Err(ContractError::StaleBasisRequired)
+        );
+        assert!(!basisless_stale.is_irreversible_effect_premise(now));
+        let cap_stale = test_capsule_with_cell(basisless_stale)?;
+        assert_eq!(cap_stale.validate(), Err(ContractError::StaleBasisRequired));
+        assert_eq!(
+            cap_stale.decision_fingerprint(),
+            Err(ContractError::StaleBasisRequired)
+        );
+
+        // 4. Basisless redacted
+        let secret = "SECRET-do-not-leak";
+        let basisless_redacted = KnowledgeCell::new_unvalidated(KnowledgeCellParams {
+            claim_id: "claim:basisless:redacted".to_string(),
+            statement: secret.to_string(),
+            knowledge_state: KnowledgeState::Redacted,
+            provenance: ProvenanceClass::Observed,
+            hypothesis: None,
+            evidence: vec![digest],
+            contradictions: vec![],
+            valid_until: None,
+            state_basis: None,
+        });
+        assert_eq!(
+            basisless_redacted.validate(),
+            Err(ContractError::RedactionMarkerRequired)
+        );
+        assert!(!basisless_redacted.is_irreversible_effect_premise(now));
+        assert!(basisless_redacted.withholds_statement());
+        assert!(!format!("{basisless_redacted:?}").contains(secret));
+        let cap_redacted = test_capsule_with_cell(basisless_redacted)?;
+        assert_eq!(
+            cap_redacted.validate(),
+            Err(ContractError::RedactionMarkerRequired)
+        );
+        assert_eq!(
+            cap_redacted.decision_fingerprint(),
+            Err(ContractError::RedactionMarkerRequired)
+        );
+
+        // 5. Misattached redaction on Known
+        let secret_misattached = "SECRET-misattached-redaction";
+        let marker = RedactionMarker {
+            reason: RedactionReason::PrivacyProjection,
+            privacy_generation: PrivacyGeneration::canonical_v1(),
+        };
+        let misattached_known = KnowledgeCell::new_unvalidated(KnowledgeCellParams {
+            claim_id: "claim:misattached:known".to_string(),
+            statement: secret_misattached.to_string(),
+            knowledge_state: KnowledgeState::Known,
+            provenance: ProvenanceClass::Observed,
+            hypothesis: None,
+            evidence: vec![digest],
+            contradictions: vec![],
+            valid_until: None,
+            state_basis: Some(KnowledgeStateBasis::Redaction(marker.clone())),
+        });
+        assert_eq!(
+            misattached_known.validate(),
+            Err(ContractError::KnowledgeStateBasisMismatch)
+        );
+        assert!(misattached_known.withholds_statement());
+        // Relocated premise check: a known cell carrying a redaction basis is never a premise,
+        // although its state, provenance, evidence, and validity would otherwise admit it.
+        assert!(!misattached_known.is_irreversible_effect_premise(now));
+        assert_eq!(
+            misattached_known.disclosable_statement(),
+            REDACTED_STATEMENT_MARKER
+        );
+        assert!(!format!("{misattached_known:?}").contains(secret_misattached));
+        assert!(!format!("{misattached_known:#?}").contains(secret_misattached));
+        let cap_misattached_known = test_capsule_with_cell(misattached_known.clone())?;
+        assert_eq!(
+            cap_misattached_known.validate(),
+            Err(ContractError::KnowledgeStateBasisMismatch)
+        );
+        assert_eq!(
+            cap_misattached_known.decision_fingerprint(),
+            Err(ContractError::KnowledgeStateBasisMismatch)
+        );
+
+        // 6. Misattached redaction on Stale
+        let misattached_stale = KnowledgeCell::new_unvalidated(KnowledgeCellParams {
+            claim_id: "claim:misattached:stale".to_string(),
+            statement: secret_misattached.to_string(),
+            knowledge_state: KnowledgeState::Stale,
+            provenance: ProvenanceClass::Observed,
+            hypothesis: None,
+            evidence: vec![digest],
+            contradictions: vec![],
+            valid_until: None,
+            state_basis: Some(KnowledgeStateBasis::Redaction(marker.clone())),
+        });
+        assert_eq!(
+            misattached_stale.validate(),
+            Err(ContractError::StaleBasisRequired)
+        );
+        assert!(misattached_stale.withholds_statement());
+        assert!(!misattached_stale.is_irreversible_effect_premise(now));
+        assert_eq!(
+            misattached_stale.disclosable_statement(),
+            REDACTED_STATEMENT_MARKER
+        );
+        assert!(!format!("{misattached_stale:?}").contains(secret_misattached));
+        assert!(!format!("{misattached_stale:#?}").contains(secret_misattached));
+        let cap_misattached_stale = test_capsule_with_cell(misattached_stale)?;
+        assert_eq!(
+            cap_misattached_stale.validate(),
+            Err(ContractError::StaleBasisRequired)
+        );
+        assert_eq!(
+            cap_misattached_stale.decision_fingerprint(),
+            Err(ContractError::StaleBasisRequired)
+        );
+
+        // 7. Statement variation on misattached redaction does not change digest
+        let other_misattached = KnowledgeCell::new_unvalidated(KnowledgeCellParams {
+            claim_id: "claim:misattached:known".to_string(),
+            statement: "SECRET-a-different-withheld-statement".to_string(),
+            knowledge_state: KnowledgeState::Known,
+            provenance: ProvenanceClass::Observed,
+            hypothesis: None,
+            evidence: vec![digest],
+            contradictions: vec![],
+            valid_until: None,
+            state_basis: Some(KnowledgeStateBasis::Redaction(marker)),
+        });
+        assert_eq!(
+            misattached_known.cell_digest(),
+            other_misattached.cell_digest()
+        );
+
+        Ok(())
+    }
+
+    /// Relocated from `knowledge_state_contract.rs` (`test_stale_cell_cannot_pass_as_current`):
+    /// a valid stale cell relabelled `known` while keeping its stale basis is refused and is never
+    /// an irreversible-effect premise. The relabel is unrepresentable outside this crate, where
+    /// every cell comes from the validating constructor.
+    #[test]
+    fn stale_basis_relabelled_to_known_is_never_a_premise() -> Result<(), ContractError> {
+        let now = TimestampNs(2_000_000_000);
+        let mut valid_at = LedgerAnchor::genesis("site:agent_test");
+        valid_at.commit_sequence = 7;
+        let mut current = valid_at.clone();
+        current.commit_sequence = 9;
+        let params = KnowledgeCellParams {
+            claim_id: "claim:perimeter:clear:002".to_string(),
+            statement: "Perimeter clear at an older anchor".to_string(),
+            knowledge_state: KnowledgeState::Stale,
+            provenance: ProvenanceClass::Observed,
+            hypothesis: None,
+            evidence: vec![ContentDigest::sha256(b"historical_perimeter_clear")],
+            contradictions: vec![],
+            valid_until: Some(TimestampNs(3_000_000_000)),
+            state_basis: Some(KnowledgeStateBasis::Stale(StaleBasis::OlderAnchor {
+                valid_at: Box::new(valid_at),
+                current: Box::new(current),
+            })),
+        };
+        let stale = KnowledgeCell::new(params.clone())?;
+        assert!(!stale.is_irreversible_effect_premise(now));
+
+        let relabelled = KnowledgeCell::new_unvalidated(KnowledgeCellParams {
+            knowledge_state: KnowledgeState::Known,
+            ..params
+        });
+        assert_eq!(
+            relabelled.validate(),
+            Err(ContractError::KnowledgeStateBasisMismatch)
+        );
+        // Known, observed, evidenced, unexpired: only the refused basis blocks the premise.
+        assert!(!relabelled.is_irreversible_effect_premise(now));
+        assert_eq!(
+            KnowledgeCell::new(relabelled.to_params()),
+            Err(ContractError::KnowledgeStateBasisMismatch)
+        );
+        Ok(())
     }
 }

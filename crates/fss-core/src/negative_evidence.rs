@@ -33,7 +33,7 @@ use core::fmt;
 use std::collections::BTreeSet;
 
 use crate::acquisition::Neg001ScenarioLog;
-use crate::agent::KnowledgeCell;
+use crate::agent::{KnowledgeCell, KnowledgeCellParams};
 use crate::contract::{
     Completeness, HypothesisDisposition, KnowledgeState, Plane, ProvenanceClass,
 };
@@ -643,7 +643,7 @@ impl NegativeEvidenceEntry {
     /// provenance claiming present support needs evidence, and states that need a basis
     /// (stale, redacted, indeterminate) are refused because a ledger entry carries none.
     fn validate_knowledge_cell(&self) -> Result<(), NegativeEvidenceError> {
-        let cell = KnowledgeCell {
+        let cell = KnowledgeCell::new(KnowledgeCellParams {
             claim_id: self.neg_id.clone(),
             statement: self.measured_result.clone(),
             knowledge_state: self.knowledge_state,
@@ -653,8 +653,8 @@ impl NegativeEvidenceEntry {
             contradictions: Vec::new(),
             valid_until: None,
             state_basis: None,
-        };
-        cell.validate().map_err(|err| match err {
+        });
+        cell.map(|_| ()).map_err(|err| match err {
             ContractError::EvidenceRequired => NegativeEvidenceError::MissingProof {
                 detail: format!(
                     "entry '{}' claims '{}' with '{}' provenance but carries no evidence",

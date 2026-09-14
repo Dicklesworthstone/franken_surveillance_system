@@ -15,7 +15,7 @@ use crate::contract::{ContractError, KnowledgeState, Plane, ProvenanceClass};
 use crate::evidence::SensorCapsule;
 use crate::ids::{PrivacyGeneration, validate_id};
 use crate::sensor_capsule::{OmissionReason, SourceCustody};
-use crate::{ContentDigest, Generation, KnowledgeCell, LedgerAnchor};
+use crate::{ContentDigest, Generation, KnowledgeCell, KnowledgeCellParams, LedgerAnchor};
 
 use super::AgentAbstractionLayer;
 
@@ -454,8 +454,13 @@ impl SourceEvidenceRecord {
     ///   - `OmissionReason::CapabilityFiltered` -> `KnowledgeState::Redacted` with [`RedactionMarker`].
     ///   - `OmissionReason::UpstreamMissing` -> `KnowledgeState::NotObservable`.
     ///   - Other reasons -> `KnowledgeState::Unknown`.
-    #[must_use]
-    pub fn to_knowledge_cell(&self) -> KnowledgeCell {
+    ///
+    /// # Errors
+    ///
+    /// The cell is built through [`KnowledgeCell::new`]; a record whose cell fails
+    /// [`KnowledgeCell::validate`] (for example a laboratory-tainted record claiming `known`) is
+    /// refused with that typed error, and no unvalidated cell is ever returned.
+    pub fn to_knowledge_cell(&self) -> Result<KnowledgeCell, ContractError> {
         let (knowledge_state, state_basis, evidence, statement) = match &self.custody {
             SourceCustody::Retained { source_digest, .. } => {
                 let mut ev = vec![*source_digest];
@@ -520,8 +525,7 @@ impl SourceEvidenceRecord {
                 ),
             },
         };
-
-        KnowledgeCell {
+        let params = KnowledgeCellParams {
             claim_id: self.evidence_id.clone(),
             statement,
             knowledge_state,
@@ -531,7 +535,8 @@ impl SourceEvidenceRecord {
             contradictions: vec![],
             valid_until: None,
             state_basis,
-        }
+        };
+        KnowledgeCell::new(params)
     }
 
     /// Serializes this record to canonical bytes.

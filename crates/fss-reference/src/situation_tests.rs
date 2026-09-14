@@ -6,8 +6,8 @@ use fss_core::{
     AffordanceClass, CapsuleId, CaptureInterval, Completeness, ContentDigest, ContractBasis,
     ContractBasisRegistryBytes, ContractError, EffectJournal, EventId, EventState,
     EvidenceEdgeRelation, HandoffId, HypothesisDisposition, IdempotencyKey, KnowledgeCell,
-    KnowledgeState, MissionId, ObligationId, OperationId, PrincipalId, ProbabilityInterval,
-    ProvenanceClass, SensorId, SessionId, TimestampNs,
+    KnowledgeCellParams, KnowledgeState, MissionId, ObligationId, OperationId, PrincipalId,
+    ProbabilityInterval, ProvenanceClass, SensorId, SessionId, TimestampNs,
 };
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
 use fss_object::{InMemoryObjectStore, ObjectLimits};
@@ -257,9 +257,9 @@ fn rejected_candidate_preserves_uncertified_absence_world() -> Result<(), Box<dy
         .frame
         .knowledge_cells
         .iter()
-        .find(|cell| cell.claim_id.ends_with(":absence-certification"))
+        .find(|cell| cell.claim_id().ends_with(":absence-certification"))
         .ok_or(ReferenceError::InvalidSpec("missing_absence_cell"))?;
-    assert_eq!(absence.knowledge_state, KnowledgeState::Unknown);
+    assert_eq!(absence.knowledge_state(), KnowledgeState::Unknown);
     assert!(
         situation
             .capsule
@@ -653,7 +653,7 @@ fn physical_cell_mapping_is_pinned_for_every_evidence_mix() -> Result<(), Box<dy
             }
             // Build the cell exactly as `compile_reference_situation` does: the mapping must
             // yield a contract-valid cell.
-            KnowledgeCell {
+            KnowledgeCell::new(KnowledgeCellParams {
                 claim_id: format!("claim:event:{}:unknown-presence", state.as_str()),
                 statement: physical_statement(state).to_owned(),
                 knowledge_state: actual,
@@ -663,8 +663,7 @@ fn physical_cell_mapping_is_pinned_for_every_evidence_mix() -> Result<(), Box<dy
                 contradictions: contradicting.to_vec(),
                 valid_until: None,
                 state_basis: reconciliation_basis_for(actual, revision_root),
-            }
-            .validated()
+            })
             .map_err(|error| format!("{row}: {actual:?} cell is invalid: {error}"))?;
         }
     }
@@ -696,11 +695,11 @@ fn compiled_physical_cell_is_conflicted_when_evidence_points_both_ways()
         .frame
         .knowledge_cells
         .iter()
-        .find(|cell| cell.claim_id.ends_with(":unknown-presence"))
+        .find(|cell| cell.claim_id().ends_with(":unknown-presence"))
         .ok_or(ReferenceError::InvalidSpec("missing_physical_cell"))?;
-    assert_eq!(physical.knowledge_state, KnowledgeState::Conflicted);
-    assert_eq!(physical.evidence.len(), 1);
-    assert_eq!(physical.contradictions.len(), 1);
+    assert_eq!(physical.knowledge_state(), KnowledgeState::Conflicted);
+    assert_eq!(physical.evidence().len(), 1);
+    assert_eq!(physical.contradictions().len(), 1);
 
     harness.cleanup();
     Ok(())
@@ -965,17 +964,17 @@ fn forged_result_digest_is_refused() -> Result<(), Box<dyn Error>> {
         .frame
         .knowledge_cells
         .iter()
-        .find(|cell| cell.claim_id.starts_with("claim:effect:"))
+        .find(|cell| cell.claim_id().starts_with("claim:effect:"))
         .ok_or(ReferenceError::InvalidSpec("missing_effect_cell"))?;
-    assert_eq!(effect.knowledge_state, KnowledgeState::Known);
-    assert!(!effect.evidence.is_empty());
+    assert_eq!(effect.knowledge_state(), KnowledgeState::Known);
+    assert!(!effect.evidence().is_empty());
     assert!(
         effect
-            .evidence
+            .evidence()
             .iter()
             .all(|root| situation.proof_roots.contains(root)),
         "{:?}",
-        effect.evidence
+        effect.evidence()
     );
     harness.cleanup();
     Ok(())
@@ -1005,9 +1004,11 @@ fn verified_outcome_cell_is_bound_and_cannot_be_relabeled() -> Result<(), Box<dy
 
     let mut relabeled = situation.clone();
     for cell in &mut relabeled.capsule.frame.knowledge_cells {
-        if cell.claim_id == claim_id {
-            cell.statement =
+        if cell.claim_id() == claim_id {
+            let mut params = cell.to_params();
+            params.statement =
                 "Alert delivery is terminally failed by retained non-delivery proof.".to_owned();
+            *cell = KnowledgeCell::new(params)?;
         }
     }
     let refused = relabeled.verify();
@@ -1079,11 +1080,11 @@ fn compiled_corroborated_cell_with_contradicting_edge_is_conflicted() -> Result<
         .frame
         .knowledge_cells
         .iter()
-        .find(|cell| cell.claim_id.ends_with(":unknown-presence"))
+        .find(|cell| cell.claim_id().ends_with(":unknown-presence"))
         .ok_or(ReferenceError::InvalidSpec("missing_physical_cell"))?;
-    assert_eq!(physical.knowledge_state, KnowledgeState::Conflicted);
-    assert_eq!(physical.evidence.len(), 2);
-    assert_eq!(physical.contradictions.len(), 1);
+    assert_eq!(physical.knowledge_state(), KnowledgeState::Conflicted);
+    assert_eq!(physical.evidence().len(), 2);
+    assert_eq!(physical.contradictions().len(), 1);
 
     harness.cleanup();
     Ok(())
@@ -1227,7 +1228,7 @@ fn cell_ending<'a>(
         .frame
         .knowledge_cells
         .iter()
-        .find(|cell| cell.claim_id.ends_with(suffix))
+        .find(|cell| cell.claim_id().ends_with(suffix))
 }
 
 #[test]
@@ -1245,17 +1246,18 @@ fn unknown_finding_keeps_the_physical_cell_indeterminate_with_its_basis()
     );
     let physical = cell_ending(&situation, ":unknown-presence")
         .ok_or(ReferenceError::InvalidSpec("missing_physical_cell"))?;
-    assert_eq!(physical.knowledge_state, KnowledgeState::Indeterminate);
-    assert!(physical.state_basis.is_some());
+    assert_eq!(physical.knowledge_state(), KnowledgeState::Indeterminate);
+    assert!(physical.state_basis().is_some());
     assert_eq!(
-        physical.state_basis,
+        physical.state_basis(),
         reconciliation_basis_for(
             KnowledgeState::Indeterminate,
             decision.event.revision_digest()
         )
+        .as_ref()
     );
-    assert_eq!(physical.evidence.len(), 1);
-    assert!(physical.contradictions.is_empty());
+    assert_eq!(physical.evidence().len(), 1);
+    assert!(physical.contradictions().is_empty());
     // Nor is it a tamper report: no integrity claim and no tamper world.
     assert!(cell_ending(&situation, ":sensor-integrity").is_none());
     assert!(
@@ -1293,19 +1295,19 @@ fn tamper_finding_is_a_typed_integrity_risk_not_a_presence_contradiction()
     );
     let physical = cell_ending(&situation, ":unknown-presence")
         .ok_or(ReferenceError::InvalidSpec("missing_physical_cell"))?;
-    assert_eq!(physical.knowledge_state, KnowledgeState::Indeterminate);
-    assert!(physical.state_basis.is_some());
-    assert!(physical.contradictions.is_empty());
+    assert_eq!(physical.knowledge_state(), KnowledgeState::Indeterminate);
+    assert!(physical.state_basis().is_some());
+    assert!(physical.contradictions().is_empty());
     // Typed risk: a sensor-integrity claim contradicted by exactly the tamper roots.
     let integrity = cell_ending(&situation, ":sensor-integrity")
         .ok_or(ReferenceError::InvalidSpec("missing_integrity_cell"))?;
-    assert_eq!(integrity.knowledge_state, KnowledgeState::Unknown);
+    assert_eq!(integrity.knowledge_state(), KnowledgeState::Unknown);
     assert_eq!(
-        integrity.hypothesis,
+        integrity.hypothesis(),
         Some(HypothesisDisposition::Disfavored)
     );
-    assert!(integrity.evidence.is_empty());
-    assert_eq!(integrity.contradictions, tamper_roots);
+    assert!(integrity.evidence().is_empty());
+    assert_eq!(integrity.contradictions(), tamper_roots);
     // A protected adversarial world names the tampered roots, and at_risk states the risk.
     let world = situation
         .capsule
@@ -1318,7 +1320,7 @@ fn tamper_finding_is_a_typed_integrity_risk_not_a_presence_contradiction()
     assert!(world.protected);
     assert!(world.consequence_severity >= 4);
     assert_eq!(world.evidence, tamper_roots);
-    assert!(world.claim_ids.contains(&integrity.claim_id));
+    assert!(world.claim_ids.contains(integrity.claim_id()));
     assert!(
         situation
             .capsule
@@ -1398,7 +1400,7 @@ fn another_events_rejection_never_terminalizes_this_event() -> Result<(), Box<dy
             .frame
             .knowledge_cells
             .iter()
-            .any(|cell| cell.hypothesis == Some(HypothesisDisposition::Refuted)),
+            .any(|cell| cell.hypothesis() == Some(HypothesisDisposition::Refuted)),
         "{:?}",
         result.situation.capsule.frame.knowledge_cells
     );

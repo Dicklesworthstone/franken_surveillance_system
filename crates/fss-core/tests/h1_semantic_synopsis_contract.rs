@@ -261,23 +261,23 @@ fn test_h1_to_knowledge_cells_binds_evidence_digests_without_state_root()
     let params = sample_h1_params()?;
     let synopsis = H1SemanticSynopsis::new(params)?;
 
-    let cells = synopsis.to_knowledge_cells(&H1CellContext::new(synopsis.anchor().clone()));
+    let cells = synopsis.to_knowledge_cells(&H1CellContext::new(synopsis.anchor().clone()))?;
     assert_eq!(cells.len(), 2);
 
     let cam_fact = synopsis.fact("fact:device:cam01");
     assert!(cam_fact.is_some());
     if let Some(fact) = cam_fact {
         let cell = &cells[0];
-        assert_eq!(cell.claim_id, fact.fact_id);
-        assert_eq!(cell.statement, fact.statement);
-        assert_eq!(cell.knowledge_state, KnowledgeState::Known);
-        assert_eq!(cell.provenance, fact.provenance);
-        assert_eq!(cell.hypothesis, None);
+        assert_eq!(cell.claim_id(), fact.fact_id);
+        assert_eq!(cell.statement(), fact.statement);
+        assert_eq!(cell.knowledge_state(), KnowledgeState::Known);
+        assert_eq!(cell.provenance(), fact.provenance);
+        assert_eq!(cell.hypothesis(), None);
         // Must contain exact fact evidence digest and NOT state_root
-        assert_eq!(cell.evidence, vec![fact.evidence_digest]);
-        assert_eq!(cell.contradictions, Vec::<ContentDigest>::new());
-        assert_eq!(cell.valid_until, None);
-        assert_eq!(cell.state_basis, None);
+        assert_eq!(cell.evidence(), &[fact.evidence_digest]);
+        assert_eq!(cell.contradictions(), &[]);
+        assert_eq!(cell.valid_until(), None);
+        assert_eq!(cell.state_basis(), None);
         assert!(cell.validate().is_ok());
     }
 
@@ -285,15 +285,15 @@ fn test_h1_to_knowledge_cells_binds_evidence_digests_without_state_root()
     assert!(geom_fact.is_some());
     if let Some(fact) = geom_fact {
         let cell = &cells[1];
-        assert_eq!(cell.claim_id, fact.fact_id);
-        assert_eq!(cell.statement, fact.statement);
-        assert_eq!(cell.knowledge_state, KnowledgeState::Estimated);
-        assert_eq!(cell.provenance, fact.provenance);
-        assert_eq!(cell.hypothesis, None);
-        assert_eq!(cell.evidence, vec![fact.evidence_digest]);
-        assert_eq!(cell.contradictions, Vec::<ContentDigest>::new());
-        assert_eq!(cell.valid_until, None);
-        assert_eq!(cell.state_basis, None);
+        assert_eq!(cell.claim_id(), fact.fact_id);
+        assert_eq!(cell.statement(), fact.statement);
+        assert_eq!(cell.knowledge_state(), KnowledgeState::Estimated);
+        assert_eq!(cell.provenance(), fact.provenance);
+        assert_eq!(cell.hypothesis(), None);
+        assert_eq!(cell.evidence(), &[fact.evidence_digest]);
+        assert_eq!(cell.contradictions(), &[]);
+        assert_eq!(cell.valid_until(), None);
+        assert_eq!(cell.state_basis(), None);
         assert!(cell.validate().is_ok());
     }
 
@@ -686,17 +686,17 @@ fn test_h1_to_knowledge_cells_contradiction_mapping() -> Result<(), Box<dyn Erro
     params.knowledge_states.remove(&KnowledgeState::Known);
     params.knowledge_states.insert(KnowledgeState::Conflicted);
     let synopsis = H1SemanticSynopsis::new(params)?;
-    let cells = synopsis.to_knowledge_cells(&H1CellContext::new(synopsis.anchor().clone()));
+    let cells = synopsis.to_knowledge_cells(&H1CellContext::new(synopsis.anchor().clone()))?;
     assert_eq!(cells.len(), 2);
     // fact:device:cam01 is now contradicted -> knowledge_state must be Conflicted
-    assert_eq!(cells[0].claim_id, "fact:device:cam01");
-    assert_eq!(cells[0].knowledge_state, KnowledgeState::Conflicted);
-    assert!(!cells[0].contradictions.is_empty());
+    assert_eq!(cells[0].claim_id(), "fact:device:cam01");
+    assert_eq!(cells[0].knowledge_state(), KnowledgeState::Conflicted);
+    assert!(!cells[0].contradictions().is_empty());
 
     // fact:geometry:zone_a is Derived and uncontradicted -> Estimated
-    assert_eq!(cells[1].claim_id, "fact:geometry:zone_a");
-    assert_eq!(cells[1].knowledge_state, KnowledgeState::Estimated);
-    assert!(cells[1].contradictions.is_empty());
+    assert_eq!(cells[1].claim_id(), "fact:geometry:zone_a");
+    assert_eq!(cells[1].knowledge_state(), KnowledgeState::Estimated);
+    assert!(cells[1].contradictions().is_empty());
     Ok(())
 }
 
@@ -1249,24 +1249,24 @@ fn test_h1_fact_epistemic_grounding_and_irreversible_effect_premise() -> Result<
         .insert(ProvenanceClass::OperatorAsserted);
 
     let synopsis = H1SemanticSynopsis::new(params)?;
-    let cells = synopsis.to_knowledge_cells(&H1CellContext::new(synopsis.anchor().clone()));
+    let cells = synopsis.to_knowledge_cells(&H1CellContext::new(synopsis.anchor().clone()))?;
 
     let now = TimestampNs(1_000_000);
 
     let observed_cell = cells
         .iter()
-        .find(|c| c.claim_id == "fact:device:cam01")
+        .find(|c| c.claim_id() == "fact:device:cam01")
         .ok_or("missing observed cell")?;
-    assert_eq!(observed_cell.knowledge_state, KnowledgeState::Known);
-    assert_eq!(observed_cell.provenance, ProvenanceClass::Observed);
+    assert_eq!(observed_cell.knowledge_state(), KnowledgeState::Known);
+    assert_eq!(observed_cell.provenance(), ProvenanceClass::Observed);
     assert!(observed_cell.is_irreversible_effect_premise(now));
 
     let op_cell = cells
         .iter()
-        .find(|c| c.claim_id == "fact:device:operator_asserted")
+        .find(|c| c.claim_id() == "fact:device:operator_asserted")
         .ok_or("missing operator cell")?;
-    assert_eq!(op_cell.knowledge_state, KnowledgeState::Estimated);
-    assert_eq!(op_cell.provenance, ProvenanceClass::OperatorAsserted);
+    assert_eq!(op_cell.knowledge_state(), KnowledgeState::Estimated);
+    assert_eq!(op_cell.provenance(), ProvenanceClass::OperatorAsserted);
     assert!(!op_cell.is_irreversible_effect_premise(now));
 
     // Policy fact also must not become Known
@@ -1289,20 +1289,20 @@ fn test_h1_fact_epistemic_grounding_and_irreversible_effect_premise() -> Result<
         .insert(ProvenanceClass::Policy);
 
     let synopsis_policy = H1SemanticSynopsis::new(params_policy)?;
-    let policy_cells =
-        synopsis_policy.to_knowledge_cells(&H1CellContext::new(synopsis_policy.anchor().clone()));
+    let policy_cells = synopsis_policy
+        .to_knowledge_cells(&H1CellContext::new(synopsis_policy.anchor().clone()))?;
     let policy_cell = policy_cells
         .iter()
-        .find(|c| c.claim_id == "fact:policy:retention")
+        .find(|c| c.claim_id() == "fact:policy:retention")
         .ok_or("missing policy cell")?;
-    assert_eq!(policy_cell.knowledge_state, KnowledgeState::Estimated);
-    assert_eq!(policy_cell.provenance, ProvenanceClass::Policy);
+    assert_eq!(policy_cell.knowledge_state(), KnowledgeState::Estimated);
+    assert_eq!(policy_cell.provenance(), ProvenanceClass::Policy);
     assert!(!policy_cell.is_irreversible_effect_premise(now));
 
     // Conflicted is NEVER emitted without an attached contradiction
     for cell in &policy_cells {
-        if cell.knowledge_state == KnowledgeState::Conflicted {
-            assert!(!cell.contradictions.is_empty());
+        if cell.knowledge_state() == KnowledgeState::Conflicted {
+            assert!(!cell.contradictions().is_empty());
         }
     }
 
@@ -1356,12 +1356,12 @@ fn test_h1_derived_knowledge_states_and_operator_asserted() -> Result<(), Box<dy
     let synopsis = H1SemanticSynopsis::new(params)?;
 
     // derived_knowledge_states is the exact union of cell states
-    let cells = synopsis.to_knowledge_cells(&H1CellContext::new(synopsis.anchor().clone()));
+    let cells = synopsis.to_knowledge_cells(&H1CellContext::new(synopsis.anchor().clone()))?;
     let expected_derived: BTreeSet<KnowledgeState> =
-        cells.iter().map(|c| c.knowledge_state).collect();
-    assert_eq!(synopsis.derived_knowledge_states(), expected_derived);
+        cells.iter().map(|c| c.knowledge_state()).collect();
+    assert_eq!(synopsis.derived_knowledge_states()?, expected_derived);
     assert_eq!(
-        synopsis.derived_knowledge_states(),
+        synopsis.derived_knowledge_states()?,
         BTreeSet::from([KnowledgeState::Known, KnowledgeState::Estimated])
     );
 
@@ -1385,16 +1385,16 @@ fn test_h1_derived_knowledge_states_and_operator_asserted() -> Result<(), Box<dy
     let op_synopsis = H1SemanticSynopsis::new(op_params)?;
 
     let op_cells =
-        op_synopsis.to_knowledge_cells(&H1CellContext::new(op_synopsis.anchor().clone()));
+        op_synopsis.to_knowledge_cells(&H1CellContext::new(op_synopsis.anchor().clone()))?;
     assert_eq!(op_cells.len(), 1);
-    assert_eq!(op_cells[0].knowledge_state, KnowledgeState::Estimated);
+    assert_eq!(op_cells[0].knowledge_state(), KnowledgeState::Estimated);
     assert_eq!(
-        op_synopsis.derived_knowledge_states(),
+        op_synopsis.derived_knowledge_states()?,
         BTreeSet::from([KnowledgeState::Estimated])
     );
     assert!(
         !op_synopsis
-            .derived_knowledge_states()
+            .derived_knowledge_states()?
             .contains(&KnowledgeState::Known)
     );
 
@@ -1433,46 +1433,46 @@ fn test_h1_redacted_only_for_fact_with_own_redaction() -> Result<(), Box<dyn Err
     let synopsis = H1SemanticSynopsis::new(params)?;
     let marker = sample_redaction_marker();
     let ctx = H1CellContext::new(synopsis.anchor().clone()).with_redaction(marker.clone());
-    let cells = synopsis.to_knowledge_cells(&ctx);
+    let cells = synopsis.to_knowledge_cells(&ctx)?;
 
     // With the caller's projection the withheld cell is Redacted with exactly that marker.
     let red_cell = cells
         .iter()
-        .find(|c| c.claim_id == "fact:device:cam02:redacted")
+        .find(|c| c.claim_id() == "fact:device:cam02:redacted")
         .ok_or("missing redacted cell")?;
-    assert_eq!(red_cell.knowledge_state, KnowledgeState::Redacted);
+    assert_eq!(red_cell.knowledge_state(), KnowledgeState::Redacted);
     assert!(matches!(
-        &red_cell.state_basis,
+        red_cell.state_basis(),
         Some(KnowledgeStateBasis::Redaction(RedactionMarker {
             reason: RedactionReason::PrivacyProjection,
             ..
         }))
     ));
     assert_eq!(
-        red_cell.state_basis,
-        Some(KnowledgeStateBasis::Redaction(marker))
+        red_cell.state_basis(),
+        Some(&KnowledgeStateBasis::Redaction(marker))
     );
     assert!(red_cell.validate().is_ok());
 
     // Other un-redacted fact cells remain Known/Estimated
     let cam01_cell = cells
         .iter()
-        .find(|c| c.claim_id == "fact:device:cam01")
+        .find(|c| c.claim_id() == "fact:device:cam01")
         .ok_or("missing cam01 cell")?;
-    assert_eq!(cam01_cell.knowledge_state, KnowledgeState::Known);
-    assert_eq!(cam01_cell.state_basis, None);
+    assert_eq!(cam01_cell.knowledge_state(), KnowledgeState::Known);
+    assert_eq!(cam01_cell.state_basis(), None);
 
     // Without a caller projection the withheld cell is Unknown with a typed reason, never
     // Redacted with invented values.
-    let bare = synopsis.to_knowledge_cells(&H1CellContext::new(synopsis.anchor().clone()));
+    let bare = synopsis.to_knowledge_cells(&H1CellContext::new(synopsis.anchor().clone()))?;
     let bare_cell = bare
         .iter()
-        .find(|c| c.claim_id == "fact:device:cam02:redacted")
+        .find(|c| c.claim_id() == "fact:device:cam02:redacted")
         .ok_or("missing redacted cell")?;
-    assert_eq!(bare_cell.knowledge_state, KnowledgeState::Unknown);
+    assert_eq!(bare_cell.knowledge_state(), KnowledgeState::Unknown);
     assert_eq!(
-        bare_cell.state_basis,
-        Some(KnowledgeStateBasis::Unknown(
+        bare_cell.state_basis(),
+        Some(&KnowledgeStateBasis::Unknown(
             UnknownReason::RedactionContextNotSupplied
         ))
     );
@@ -1511,20 +1511,20 @@ fn test_h1_stale_only_for_fact_with_own_stale_basis() -> Result<(), Box<dyn Erro
     params.provenance_classes = BTreeSet::from([ProvenanceClass::Observed]);
 
     let synopsis = H1SemanticSynopsis::new(params)?;
-    let cells = synopsis.to_knowledge_cells(&H1CellContext::new(synopsis.anchor().clone()));
+    let cells = synopsis.to_knowledge_cells(&H1CellContext::new(synopsis.anchor().clone()))?;
 
     let stale_cell = cells
         .iter()
-        .find(|c| c.claim_id == "fact:device:cam_stale")
+        .find(|c| c.claim_id() == "fact:device:cam_stale")
         .ok_or("missing stale cell")?;
-    assert_eq!(stale_cell.knowledge_state, KnowledgeState::Stale);
+    assert_eq!(stale_cell.knowledge_state(), KnowledgeState::Stale);
     assert!(matches!(
-        &stale_cell.state_basis,
+        stale_cell.state_basis(),
         Some(KnowledgeStateBasis::Stale(StaleBasis::OlderAnchor { .. }))
     ));
     assert_eq!(
-        stale_cell.state_basis,
-        Some(KnowledgeStateBasis::Stale(StaleBasis::OlderAnchor {
+        stale_cell.state_basis(),
+        Some(&KnowledgeStateBasis::Stale(StaleBasis::OlderAnchor {
             valid_at: Box::new(sample_anchor(1)),
             current: Box::new(sample_anchor(10)),
         }))
@@ -1533,10 +1533,10 @@ fn test_h1_stale_only_for_fact_with_own_stale_basis() -> Result<(), Box<dyn Erro
 
     let fresh_cell = cells
         .iter()
-        .find(|c| c.claim_id == "fact:device:cam_fresh")
+        .find(|c| c.claim_id() == "fact:device:cam_fresh")
         .ok_or("missing fresh cell")?;
-    assert_eq!(fresh_cell.knowledge_state, KnowledgeState::Known);
-    assert_eq!(fresh_cell.state_basis, None);
+    assert_eq!(fresh_cell.knowledge_state(), KnowledgeState::Known);
+    assert_eq!(fresh_cell.state_basis(), None);
 
     Ok(())
 }
@@ -1558,11 +1558,11 @@ fn test_h1_completeness_stale_caps_cells_at_stale() -> Result<(), Box<dyn Error>
 
     let synopsis = H1SemanticSynopsis::new(params.clone())?;
     let now = TimestampNs(1_000_000);
-    for cell in &synopsis.to_knowledge_cells(&H1CellContext::new(synopsis.anchor().clone())) {
-        assert_eq!(cell.knowledge_state, KnowledgeState::Unknown);
+    for cell in &synopsis.to_knowledge_cells(&H1CellContext::new(synopsis.anchor().clone()))? {
+        assert_eq!(cell.knowledge_state(), KnowledgeState::Unknown);
         assert_eq!(
-            cell.state_basis,
-            Some(KnowledgeStateBasis::Unknown(
+            cell.state_basis(),
+            Some(&KnowledgeStateBasis::Unknown(
                 UnknownReason::StaleWithoutObservedBasis
             ))
         );
@@ -1570,20 +1570,20 @@ fn test_h1_completeness_stale_caps_cells_at_stale() -> Result<(), Box<dyn Error>
         assert!(!cell.is_irreversible_effect_premise(now));
     }
     assert_eq!(
-        synopsis.derived_knowledge_states(),
+        synopsis.derived_knowledge_states()?,
         BTreeSet::from([KnowledgeState::Unknown])
     );
 
     // A caller-supplied head strictly newer than the facts caps every cell at Stale, and the
     // basis names exactly that supplied head as `current`.
     let head = sample_anchor(2);
-    let cells = synopsis.to_knowledge_cells(&H1CellContext::new(head.clone()));
+    let cells = synopsis.to_knowledge_cells(&H1CellContext::new(head.clone()))?;
     assert_eq!(cells.len(), 2);
     for cell in &cells {
-        assert_eq!(cell.knowledge_state, KnowledgeState::Stale);
+        assert_eq!(cell.knowledge_state(), KnowledgeState::Stale);
         assert_eq!(
-            cell.state_basis,
-            Some(KnowledgeStateBasis::Stale(StaleBasis::OlderAnchor {
+            cell.state_basis(),
+            Some(&KnowledgeStateBasis::Stale(StaleBasis::OlderAnchor {
                 valid_at: Box::new(sample_anchor(1)),
                 current: Box::new(head.clone()),
             }))
@@ -1597,11 +1597,11 @@ fn test_h1_completeness_stale_caps_cells_at_stale() -> Result<(), Box<dyn Error>
     let mut other_lineage = LedgerAnchor::genesis("site:other:h1");
     other_lineage.commit_sequence = 5;
     for not_newer in [sample_anchor(1), sample_anchor(0), other_lineage] {
-        for cell in &synopsis.to_knowledge_cells(&H1CellContext::new(not_newer.clone())) {
-            assert_eq!(cell.knowledge_state, KnowledgeState::Unknown);
+        for cell in &synopsis.to_knowledge_cells(&H1CellContext::new(not_newer.clone()))? {
+            assert_eq!(cell.knowledge_state(), KnowledgeState::Unknown);
             assert_eq!(
-                cell.state_basis,
-                Some(KnowledgeStateBasis::Unknown(
+                cell.state_basis(),
+                Some(&KnowledgeStateBasis::Unknown(
                     UnknownReason::StaleWithoutObservedBasis
                 ))
             );
@@ -1622,9 +1622,10 @@ fn test_h1_completeness_stale_caps_cells_at_stale() -> Result<(), Box<dyn Error>
     )?];
     max_params.provenance_classes = BTreeSet::from([ProvenanceClass::Observed]);
     let max_synopsis = H1SemanticSynopsis::new(max_params)?;
-    for cell in &max_synopsis.to_knowledge_cells(&H1CellContext::new(max_synopsis.anchor().clone()))
+    for cell in
+        &max_synopsis.to_knowledge_cells(&H1CellContext::new(max_synopsis.anchor().clone()))?
     {
-        assert_eq!(cell.knowledge_state, KnowledgeState::Unknown);
+        assert_eq!(cell.knowledge_state(), KnowledgeState::Unknown);
         assert!(cell.validate().is_ok());
     }
 
@@ -1680,14 +1681,14 @@ fn test_h1_indeterminate_only_from_own_effect_outcome() -> Result<(), Box<dyn Er
     );
 
     let synopsis = H1SemanticSynopsis::new(params)?;
-    let cells = synopsis.to_knowledge_cells(&H1CellContext::new(synopsis.anchor().clone()));
+    let cells = synopsis.to_knowledge_cells(&H1CellContext::new(synopsis.anchor().clone()))?;
     let effect_cell = cells
         .iter()
-        .find(|c| c.claim_id == "fact:effect:valve_actuation")
+        .find(|c| c.claim_id() == "fact:effect:valve_actuation")
         .ok_or("missing effect cell")?;
-    assert_eq!(effect_cell.knowledge_state, KnowledgeState::Known);
-    assert_ne!(effect_cell.knowledge_state, KnowledgeState::Indeterminate);
-    assert_eq!(effect_cell.state_basis, None);
+    assert_eq!(effect_cell.knowledge_state(), KnowledgeState::Known);
+    assert_ne!(effect_cell.knowledge_state(), KnowledgeState::Indeterminate);
+    assert_eq!(effect_cell.state_basis(), None);
     assert!(effect_cell.validate().is_ok());
 
     // Negated wording ("no longer indeterminate") never produces Indeterminate either.
@@ -1706,7 +1707,7 @@ fn test_h1_indeterminate_only_from_own_effect_outcome() -> Result<(), Box<dyn Er
     negated_params.provenance_classes = BTreeSet::from([ProvenanceClass::Observed]);
     let negated_synopsis = H1SemanticSynopsis::new(negated_params.clone())?;
     assert_eq!(
-        negated_synopsis.derived_knowledge_states(),
+        negated_synopsis.derived_knowledge_states()?,
         BTreeSet::from([KnowledgeState::Known])
     );
     negated_params.knowledge_states = BTreeSet::from([KnowledgeState::Indeterminate]);
@@ -1930,13 +1931,13 @@ fn test_h1_operator_asserted_is_estimated_and_bare_effect_cannot_declare_indeter
     params_x14c.provenance_classes = BTreeSet::from([ProvenanceClass::OperatorAsserted]);
     let syn_x14c = H1SemanticSynopsis::new(params_x14c)?;
 
-    let cells = syn_x14c.to_knowledge_cells(&H1CellContext::new(syn_x14c.anchor().clone()));
+    let cells = syn_x14c.to_knowledge_cells(&H1CellContext::new(syn_x14c.anchor().clone()))?;
     assert_eq!(cells.len(), 1);
     // MUST be Estimated, NEVER Known
-    assert_eq!(cells[0].knowledge_state, KnowledgeState::Estimated);
-    assert_ne!(cells[0].knowledge_state, KnowledgeState::Known);
+    assert_eq!(cells[0].knowledge_state(), KnowledgeState::Estimated);
+    assert_ne!(cells[0].knowledge_state(), KnowledgeState::Known);
     assert_eq!(
-        syn_x14c.derived_knowledge_states(),
+        syn_x14c.derived_knowledge_states()?,
         BTreeSet::from([KnowledgeState::Estimated])
     );
 
@@ -2056,7 +2057,7 @@ fn test_h1_declared_conflicted_requires_a_conflicted_cell_x14c() -> Result<(), B
     let synopsis = H1SemanticSynopsis::new(sample_h1_params()?)?;
     assert_eq!(
         synopsis.knowledge_states(),
-        &synopsis.derived_knowledge_states()
+        &synopsis.derived_knowledge_states()?
     );
 
     // With a contradiction that names cam01, Conflicted is derived and may be declared.
@@ -2069,9 +2070,9 @@ fn test_h1_declared_conflicted_requires_a_conflicted_cell_x14c() -> Result<(), B
     attached.knowledge_states =
         BTreeSet::from([KnowledgeState::Conflicted, KnowledgeState::Estimated]);
     let attached = H1SemanticSynopsis::new(attached)?;
-    let cells = attached.to_knowledge_cells(&H1CellContext::new(attached.anchor().clone()));
-    assert_eq!(cells[0].knowledge_state, KnowledgeState::Conflicted);
-    assert_eq!(cells[0].contradictions.len(), 1);
+    let cells = attached.to_knowledge_cells(&H1CellContext::new(attached.anchor().clone()))?;
+    assert_eq!(cells[0].knowledge_state(), KnowledgeState::Conflicted);
+    assert_eq!(cells[0].contradictions().len(), 1);
     Ok(())
 }
 
@@ -2133,10 +2134,10 @@ fn test_h1_stale_contradiction_yields_conflicted() -> Result<(), Box<dyn Error>>
         H1CellContext::new(synopsis.anchor().clone()),
         H1CellContext::new(sample_anchor(7)),
     ] {
-        let cells = synopsis.to_knowledge_cells(&ctx);
-        assert_eq!(cells[0].knowledge_state, KnowledgeState::Conflicted);
-        assert_eq!(cells[0].state_basis, None);
-        assert_eq!(cells[0].contradictions.len(), 1);
+        let cells = synopsis.to_knowledge_cells(&ctx)?;
+        assert_eq!(cells[0].knowledge_state(), KnowledgeState::Conflicted);
+        assert_eq!(cells[0].state_basis(), None);
+        assert_eq!(cells[0].contradictions().len(), 1);
     }
 
     for bad in [
@@ -2189,14 +2190,14 @@ fn test_h1_no_indeterminate_from_another_effect_fact_p1() -> Result<(), Box<dyn 
     let mut params = observed_only_params(facts)?;
     params.knowledge_states = BTreeSet::from([KnowledgeState::Known]);
     let synopsis = H1SemanticSynopsis::new(params.clone())?;
-    for cell in synopsis.to_knowledge_cells(&H1CellContext::new(synopsis.anchor().clone())) {
+    for cell in synopsis.to_knowledge_cells(&H1CellContext::new(synopsis.anchor().clone()))? {
         assert_eq!(
-            cell.knowledge_state,
+            cell.knowledge_state(),
             KnowledgeState::Known,
             "{}",
-            cell.claim_id
+            cell.claim_id()
         );
-        assert_eq!(cell.state_basis, None);
+        assert_eq!(cell.state_basis(), None);
     }
     params.knowledge_states =
         BTreeSet::from([KnowledgeState::Known, KnowledgeState::Indeterminate]);
@@ -2240,8 +2241,8 @@ fn test_h1_cell_never_reads_declared_set_p3() -> Result<(), Box<dyn Error>> {
     let mut params = observed_only_params(vec![cam])?;
     params.knowledge_states = BTreeSet::from([KnowledgeState::Known]);
     let synopsis = H1SemanticSynopsis::new(params)?;
-    let cells = synopsis.to_knowledge_cells(&H1CellContext::new(synopsis.anchor().clone()));
-    assert_eq!(cells[0].knowledge_state, KnowledgeState::Known);
+    let cells = synopsis.to_knowledge_cells(&H1CellContext::new(synopsis.anchor().clone()))?;
+    assert_eq!(cells[0].knowledge_state(), KnowledgeState::Known);
     Ok(())
 }
 
@@ -2270,10 +2271,10 @@ fn test_h1_contradiction_never_synthesizes_redaction() -> Result<(), Box<dyn Err
         )?];
         params.knowledge_states = BTreeSet::from([KnowledgeState::Conflicted]);
         let synopsis = H1SemanticSynopsis::new(params.clone())?;
-        let cells = synopsis.to_knowledge_cells(&H1CellContext::new(synopsis.anchor().clone()));
-        assert_eq!(cells[0].knowledge_state, KnowledgeState::Conflicted);
-        assert_eq!(cells[0].state_basis, None);
-        assert_eq!(cells[0].contradictions.len(), 1);
+        let cells = synopsis.to_knowledge_cells(&H1CellContext::new(synopsis.anchor().clone()))?;
+        assert_eq!(cells[0].knowledge_state(), KnowledgeState::Conflicted);
+        assert_eq!(cells[0].state_basis(), None);
+        assert_eq!(cells[0].contradictions().len(), 1);
         assert!(cells[0].validate().is_ok());
 
         params.knowledge_states = BTreeSet::from([state]);
@@ -2318,24 +2319,24 @@ fn test_h1_conflicted_takes_precedence_over_redacted_stale_and_unknown()
             H1CellContext::new(synopsis.anchor().clone()),
             H1CellContext::new(head.clone()).with_redaction(sample_redaction_marker()),
         ] {
-            let cells = synopsis.to_knowledge_cells(&ctx);
+            let cells = synopsis.to_knowledge_cells(&ctx)?;
             let cell = cells
                 .iter()
-                .find(|c| c.claim_id == id)
+                .find(|c| c.claim_id() == id)
                 .ok_or("missing cell")?;
-            assert_eq!(cell.knowledge_state, KnowledgeState::Conflicted, "{id}");
-            assert_eq!(cell.state_basis, None, "{id}");
-            assert_eq!(cell.contradictions.len(), 1, "{id}");
+            assert_eq!(cell.knowledge_state(), KnowledgeState::Conflicted, "{id}");
+            assert_eq!(cell.state_basis(), None, "{id}");
+            assert_eq!(cell.contradictions().len(), 1, "{id}");
             assert!(cell.validate().is_ok());
         }
         assert!(
             synopsis
-                .derived_knowledge_states()
+                .derived_knowledge_states()?
                 .contains(&KnowledgeState::Conflicted)
         );
         assert_eq!(
             synopsis.knowledge_states(),
-            &synopsis.derived_knowledge_states()
+            &synopsis.derived_knowledge_states()?
         );
         Ok(())
     };
@@ -2490,10 +2491,10 @@ fn test_h1_quoted_marker_is_not_redacted_j2a() -> Result<(), Box<dyn Error>> {
     let synopsis = H1SemanticSynopsis::new(params.clone())?;
     let ctx =
         H1CellContext::new(synopsis.anchor().clone()).with_redaction(sample_redaction_marker());
-    let cells = synopsis.to_knowledge_cells(&ctx);
-    assert_eq!(cells[0].knowledge_state, KnowledgeState::Known);
-    assert_ne!(cells[0].knowledge_state, KnowledgeState::Redacted);
-    assert_eq!(cells[0].state_basis, None);
+    let cells = synopsis.to_knowledge_cells(&ctx)?;
+    assert_eq!(cells[0].knowledge_state(), KnowledgeState::Known);
+    assert_ne!(cells[0].knowledge_state(), KnowledgeState::Redacted);
+    assert_eq!(cells[0].state_basis(), None);
     assert_eq!(cells[0].disclosable_statement(), quoted_text);
 
     params.knowledge_states = BTreeSet::from([KnowledgeState::Redacted]);

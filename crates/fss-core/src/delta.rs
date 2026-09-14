@@ -373,18 +373,18 @@ impl MeaningfulDelta {
             .changed_cells
             .iter()
             .cloned()
-            .map(|cell| (cell.claim_id.clone(), cell))
+            .map(|cell| (cell.claim_id().to_owned(), cell))
             .collect();
         for claim in &next.removed_claim_ids {
             cells.remove(claim);
         }
         for cell in &next.changed_cells {
-            cells.insert(cell.claim_id.clone(), cell.clone());
+            cells.insert(cell.claim_id().to_owned(), cell.clone());
         }
         let mut removed: BTreeSet<String> = self.removed_claim_ids.iter().cloned().collect();
         removed.extend(next.removed_claim_ids.iter().cloned());
         for cell in &next.changed_cells {
-            removed.remove(&cell.claim_id);
+            removed.remove(cell.claim_id());
         }
         let coalesced_count = self
             .coalesced_count
@@ -439,10 +439,10 @@ impl MeaningfulDelta {
         result: &[KnowledgeCell],
     ) -> Result<(), ContractError> {
         for claim in &self.removed_claim_ids {
-            if !basis.iter().any(|cell| &cell.claim_id == claim) {
+            if !basis.iter().any(|cell| cell.claim_id() == claim.as_str()) {
                 return Err(ContractError::NotFound);
             }
-            if result.iter().any(|cell| &cell.claim_id == claim) {
+            if result.iter().any(|cell| cell.claim_id() == claim.as_str()) {
                 return Err(ContractError::EvidenceRelationMismatch);
             }
         }
@@ -470,7 +470,7 @@ impl CanonicalEncode for MeaningfulDelta {
             class.encode_canonical(encoder);
         }
         let mut cells = self.changed_cells.clone();
-        cells.sort_by(|left, right| left.claim_id.cmp(&right.claim_id));
+        cells.sort_by(|left, right| left.claim_id().cmp(right.claim_id()));
         encoder.u64(cells.len() as u64);
         for cell in &cells {
             cell.encode_canonical(encoder);
@@ -503,9 +503,9 @@ fn validate_removed_claims(
     validate_text_vector(removed)?;
     let strictly_sorted = removed.windows(2).all(|pair| pair[0] < pair[1]);
     if !strictly_sorted
-        || removed
-            .iter()
-            .any(|claim| claim.is_empty() || changed.iter().any(|cell| &cell.claim_id == claim))
+        || removed.iter().any(|claim| {
+            claim.is_empty() || changed.iter().any(|cell| cell.claim_id() == claim.as_str())
+        })
     {
         return Err(ContractError::NonCanonicalOrdering);
     }
@@ -515,9 +515,9 @@ fn validate_removed_claims(
 fn validate_changed_cells(cells: &[KnowledgeCell]) -> Result<(), ContractError> {
     let mut claims = BTreeSet::new();
     for cell in cells {
-        if cell.claim_id.is_empty()
-            || cell.statement.is_empty()
-            || !claims.insert(cell.claim_id.as_str())
+        if cell.claim_id().is_empty()
+            || cell.statement().is_empty()
+            || !claims.insert(cell.claim_id())
         {
             return Err(ContractError::NonCanonicalOrdering);
         }
@@ -555,7 +555,7 @@ fn merge_text(left: &[String], right: &[String]) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::agent::ContractBasisRegistryBytes;
-    use crate::{KnowledgeState, ProvenanceClass, TimestampNs};
+    use crate::{KnowledgeCellParams, KnowledgeState, ProvenanceClass, TimestampNs};
 
     fn basis() -> ContractBasis {
         ContractBasis::from_registry_bytes(ContractBasisRegistryBytes::new(
@@ -576,7 +576,7 @@ mod tests {
     }
 
     fn cell(state: KnowledgeState) -> KnowledgeCell {
-        KnowledgeCell {
+        KnowledgeCell::new_unvalidated(KnowledgeCellParams {
             claim_id: "claim:test".to_owned(),
             statement: "test claim".to_owned(),
             knowledge_state: state,
@@ -590,7 +590,7 @@ mod tests {
             },
             valid_until: Some(TimestampNs(10)),
             state_basis: None,
-        }
+        })
     }
 
     fn delta(class: MeaningfulDeltaClass, sequence: u64) -> Result<MeaningfulDelta, ContractError> {
@@ -745,7 +745,7 @@ mod tests {
             !merged
                 .changed_cells
                 .iter()
-                .any(|cell| cell.claim_id == "claim:test")
+                .any(|cell| cell.claim_id() == "claim:test")
         );
         assert_eq!(merged.removed_claim_ids, vec!["claim:test".to_owned()]);
         merged.validate()?;
@@ -762,7 +762,7 @@ mod tests {
             reinstated
                 .changed_cells
                 .iter()
-                .any(|cell| cell.claim_id == "claim:test")
+                .any(|cell| cell.claim_id() == "claim:test")
         );
         reinstated.validate()
     }
@@ -989,7 +989,7 @@ mod tests {
     fn changed_cells_order_independent_predicted_and_observed_both_validate()
     -> Result<(), ContractError> {
         let evidence_digest = ContentDigest::sha256(b"delta_shared_evidence_001");
-        let pred_cell = KnowledgeCell {
+        let pred_cell = KnowledgeCell::new(KnowledgeCellParams {
             claim_id: "claim:future:growth".to_string(),
             statement: "Predicted fire growth".to_string(),
             knowledge_state: KnowledgeState::Estimated,
@@ -999,8 +999,8 @@ mod tests {
             contradictions: Vec::new(),
             valid_until: None,
             state_basis: None,
-        };
-        let obs_cell = KnowledgeCell {
+        })?;
+        let obs_cell = KnowledgeCell::new(KnowledgeCellParams {
             claim_id: "claim:live:growth".to_string(),
             statement: "Observed fire growth".to_string(),
             knowledge_state: KnowledgeState::Known,
@@ -1010,7 +1010,7 @@ mod tests {
             contradictions: Vec::new(),
             valid_until: None,
             state_basis: None,
-        };
+        })?;
 
         // Order 1: [pred, obs]
         let delta1 = MeaningfulDelta {
@@ -1038,7 +1038,7 @@ mod tests {
     fn changed_cells_allow_normal_derivation_observed_into_derived_and_predicted()
     -> Result<(), ContractError> {
         let evidence_digest = ContentDigest::sha256(b"delta_shared_evidence_002");
-        let obs_cell = KnowledgeCell {
+        let obs_cell = KnowledgeCell::new(KnowledgeCellParams {
             claim_id: "claim:live:growth".to_string(),
             statement: "Observed fire growth".to_string(),
             knowledge_state: KnowledgeState::Known,
@@ -1048,8 +1048,8 @@ mod tests {
             contradictions: Vec::new(),
             valid_until: None,
             state_basis: None,
-        };
-        let derived_cell = KnowledgeCell {
+        })?;
+        let derived_cell = KnowledgeCell::new(KnowledgeCellParams {
             claim_id: "claim:derived:rate".to_string(),
             statement: "Derived fire spread rate".to_string(),
             knowledge_state: KnowledgeState::Known,
@@ -1059,8 +1059,8 @@ mod tests {
             contradictions: Vec::new(),
             valid_until: None,
             state_basis: None,
-        };
-        let pred_cell = KnowledgeCell {
+        })?;
+        let pred_cell = KnowledgeCell::new(KnowledgeCellParams {
             claim_id: "claim:future:growth".to_string(),
             statement: "Predicted fire growth".to_string(),
             knowledge_state: KnowledgeState::Estimated,
@@ -1070,7 +1070,7 @@ mod tests {
             contradictions: Vec::new(),
             valid_until: None,
             state_basis: None,
-        };
+        })?;
         let delta_derived = MeaningfulDelta {
             changed_cells: vec![obs_cell.clone(), derived_cell],
             ..delta(MeaningfulDeltaClass::MaterialState, 1)?
@@ -1089,7 +1089,7 @@ mod tests {
     fn changed_cells_order_independent_derived_and_observed_both_validate()
     -> Result<(), ContractError> {
         let evidence_digest = ContentDigest::sha256(b"delta_shared_evidence_003");
-        let derived_cell = KnowledgeCell {
+        let derived_cell = KnowledgeCell::new(KnowledgeCellParams {
             claim_id: "claim:derived:rate".to_string(),
             statement: "Derived fire spread rate".to_string(),
             knowledge_state: KnowledgeState::Known,
@@ -1099,8 +1099,8 @@ mod tests {
             contradictions: Vec::new(),
             valid_until: None,
             state_basis: None,
-        };
-        let obs_cell = KnowledgeCell {
+        })?;
+        let obs_cell = KnowledgeCell::new(KnowledgeCellParams {
             claim_id: "claim:live:growth".to_string(),
             statement: "Observed fire growth".to_string(),
             knowledge_state: KnowledgeState::Known,
@@ -1110,7 +1110,7 @@ mod tests {
             contradictions: Vec::new(),
             valid_until: None,
             state_basis: None,
-        };
+        })?;
 
         // Order 1: [derived, obs]
         let delta1 = MeaningfulDelta {

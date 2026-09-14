@@ -11,10 +11,10 @@ use std::error::Error;
 use fss_core::{
     ActionAffordance, AffordanceClass, BudgetVector, CapsuleId, CaptureInterval, Completeness,
     CompressionTransformKind, ContentDigest, ContractBasis, ContractBasisRegistryBytes,
-    ContractError, EventId, KnowledgeCell, KnowledgeState, LedgerAnchor, MissionId, ObligationId,
-    PossibleWorld, PrincipalId, ProbabilityInterval, ProvenanceClass, ResourcePressure,
-    SemanticContextPack, SemanticContextPackPublishParams, SensorId, SessionId, SituationCapsule,
-    SituationFrame, TimestampNs, WorldEnvelope,
+    ContractError, EventId, KnowledgeCell, KnowledgeCellParams, KnowledgeState, LedgerAnchor,
+    MissionId, ObligationId, PossibleWorld, PrincipalId, ProbabilityInterval, ProvenanceClass,
+    ResourcePressure, SemanticContextPack, SemanticContextPackPublishParams, SensorId, SessionId,
+    SituationCapsule, SituationFrame, TimestampNs, WorldEnvelope,
 };
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
 use fss_object::{InMemoryObjectStore, ObjectLimits};
@@ -251,7 +251,7 @@ fn test_inv092_duplicate_contradiction_deduplicated_with_recorded_reason()
 
     // Cell Alpha and Cell Beta report the EXACT SAME contradiction statement and contradicting root.
     // Cell Beta is a duplicate contradiction of Cell Alpha.
-    let cell_alpha = KnowledgeCell {
+    let cell_alpha = KnowledgeCell::new(KnowledgeCellParams {
         claim_id: "claim:target:cam1".to_owned(),
         statement: "Subject identified as authorized operator".to_owned(),
         knowledge_state: KnowledgeState::Conflicted,
@@ -261,8 +261,8 @@ fn test_inv092_duplicate_contradiction_deduplicated_with_recorded_reason()
         contradictions: vec![contra_digest_1],
         valid_until: None,
         state_basis: None,
-    };
-    let cell_beta = KnowledgeCell {
+    })?;
+    let cell_beta = KnowledgeCell::new(KnowledgeCellParams {
         claim_id: "claim:target:cam2".to_owned(),
         statement: "Subject identified as authorized operator".to_owned(),
         knowledge_state: KnowledgeState::Conflicted,
@@ -272,10 +272,10 @@ fn test_inv092_duplicate_contradiction_deduplicated_with_recorded_reason()
         contradictions: vec![contra_digest_1],
         valid_until: None,
         state_basis: None,
-    };
+    })?;
 
     // Cell Gamma reports a DISTINCT contradiction with a different statement and different root.
-    let cell_gamma = KnowledgeCell {
+    let cell_gamma = KnowledgeCell::new(KnowledgeCellParams {
         claim_id: "claim:perimeter:sensor3".to_owned(),
         statement: "Perimeter gate 3 lock status disputed".to_owned(),
         knowledge_state: KnowledgeState::Conflicted,
@@ -285,7 +285,7 @@ fn test_inv092_duplicate_contradiction_deduplicated_with_recorded_reason()
         contradictions: vec![contra_digest_2],
         valid_until: None,
         state_basis: None,
-    };
+    })?;
 
     let frame = SituationFrame {
         frame_id: "frame:inv092:contradiction".to_owned(),
@@ -693,7 +693,7 @@ fn test_contradiction_dedup_must_not_drop_independent_sensor_evidence() -> Resul
 
     // Two independent cameras observe the same subject, contradicted by the badge reader.
     // Cam 1 has evidence_cam1; Cam 2 has evidence_cam2.
-    let cell_cam1 = KnowledgeCell {
+    let cell_cam1 = KnowledgeCell::new(KnowledgeCellParams {
         claim_id: "claim:cam1".to_owned(),
         statement: "Subject identified as authorized personnel".to_owned(),
         knowledge_state: KnowledgeState::Conflicted,
@@ -703,8 +703,8 @@ fn test_contradiction_dedup_must_not_drop_independent_sensor_evidence() -> Resul
         contradictions: vec![contra_root],
         valid_until: None,
         state_basis: None,
-    };
-    let cell_cam2 = KnowledgeCell {
+    })?;
+    let cell_cam2 = KnowledgeCell::new(KnowledgeCellParams {
         claim_id: "claim:cam2".to_owned(),
         statement: "Subject identified as authorized personnel".to_owned(),
         knowledge_state: KnowledgeState::Conflicted,
@@ -714,7 +714,7 @@ fn test_contradiction_dedup_must_not_drop_independent_sensor_evidence() -> Resul
         contradictions: vec![contra_root],
         valid_until: None,
         state_basis: None,
-    };
+    })?;
 
     let frame = SituationFrame {
         frame_id: "frame:adv:1".to_owned(),
@@ -774,7 +774,7 @@ fn test_contradiction_basis_must_include_positive_evidence() -> Result<(), Box<d
     let evidence_digest = ContentDigest::sha256(b"positive-claim-evidence");
     let contra_digest = ContentDigest::sha256(b"counter-evidence");
 
-    let cell = KnowledgeCell {
+    let cell = KnowledgeCell::new(KnowledgeCellParams {
         claim_id: "claim:contra:basis".to_owned(),
         statement: "Perimeter fence intact".to_owned(),
         knowledge_state: KnowledgeState::Conflicted,
@@ -784,7 +784,7 @@ fn test_contradiction_basis_must_include_positive_evidence() -> Result<(), Box<d
         contradictions: vec![contra_digest],
         valid_until: None,
         state_basis: None,
-    };
+    })?;
 
     let world = PossibleWorld {
         world_id: "world:adv:2".to_owned(),
@@ -930,7 +930,7 @@ fn test_single_contradiction_does_not_double_count_tokens() -> Result<(), Box<dy
     let evidence_digest = ContentDigest::sha256(b"single-contra-evidence");
     let contra_digest = ContentDigest::sha256(b"single-contra-root");
 
-    let cell = KnowledgeCell {
+    let cell = KnowledgeCell::new(KnowledgeCellParams {
         claim_id: "claim:target:single".to_owned(),
         statement: "Single contradiction statement".to_owned(),
         knowledge_state: KnowledgeState::Conflicted,
@@ -940,7 +940,7 @@ fn test_single_contradiction_does_not_double_count_tokens() -> Result<(), Box<dy
         contradictions: vec![contra_digest],
         valid_until: None,
         state_basis: None,
-    };
+    })?;
     let world = PossibleWorld {
         world_id: "world:adv:4".to_owned(),
         description: "World 4".to_owned(),
