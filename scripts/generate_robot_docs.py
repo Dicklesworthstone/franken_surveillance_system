@@ -142,7 +142,11 @@ def _fail_on_nan_constant(val: str) -> None:
 def load_json(path: Path) -> dict[str, Any]:
     """Loads a JSON file with utf-8 encoding, duplicate-key rejection, and NaN refusal."""
     if not path.is_file():
-        raise FileNotFoundError(f"Missing required JSON file: {path}")
+        raise RobotDocsError(
+            ERR_ROBOT_DOCS_MISSING,
+            f"Missing required JSON file: {path.name}",
+            target=path.name,
+        )
     text = path.read_text(encoding="utf-8")
     try:
         doc = json.loads(
@@ -166,6 +170,20 @@ def load_json(path: Path) -> dict[str, Any]:
         )
     check_no_nan_inf(doc, path.name)
     return doc
+
+
+KNOWN_OPERATION_TABLE_HEADERS: tuple[str, ...] = (
+    "ID",
+    "Name",
+    "Owner",
+    "Mode",
+    "Default view",
+    "Typed request payload",
+    "Effectful",
+    "Durable",
+    "Gate",
+    "Status",
+)
 
 
 def load_valid_recovery_classes(root: Path) -> frozenset[str]:
@@ -200,16 +218,37 @@ def parse_agent_operation_modes(root: Path) -> set[str]:
     content = md_path.read_text(encoding="utf-8")
     scan_for_secrets(content, "registries/AGENT_OPERATIONS.md")
     modes: set[str] = set()
+    mode_col_idx: int | None = None
     for line in content.splitlines():
         line = line.strip()
-        if not line.startswith("|") or line.startswith("|---") or "Mode" in line:
+        if not line.startswith("|"):
             continue
-        parts = [c.strip().strip("`") for c in line.split("|")[1:-1]]
-        if len(parts) >= 4:
-            mode_val = parts[3].strip()
-            if mode_val:
+        cells = [c.strip().strip("`") for c in line.split("|")[1:-1]]
+        if not cells:
+            continue
+        if all(re.match(r"^:?-+:?$", c) for c in cells):
+            continue
+        if mode_col_idx is None:
+            if "Mode" not in cells:
+                raise RobotDocsError(
+                    ERR_ROBOT_DOCS_CORRUPT,
+                    "Table header in registries/AGENT_OPERATIONS.md is missing 'Mode' column",
+                    target="registries/AGENT_OPERATIONS.md",
+                )
+            for cell in cells:
+                if cell not in KNOWN_OPERATION_TABLE_HEADERS:
+                    raise RobotDocsError(
+                        ERR_ROBOT_DOCS_CORRUPT,
+                        f"Unknown header column '{cell}' in registries/AGENT_OPERATIONS.md table",
+                        target="registries/AGENT_OPERATIONS.md",
+                    )
+            mode_col_idx = cells.index("Mode")
+            continue
+        if len(cells) > mode_col_idx:
+            mode_val = cells[mode_col_idx].strip()
+            if mode_val and mode_val != "-":
                 modes.add(mode_val)
-    if not modes:
+    if not modes or mode_col_idx is None:
         raise RobotDocsError(
             ERR_ROBOT_DOCS_CORRUPT,
             "Failed to parse operation modes from registries/AGENT_OPERATIONS.md",
@@ -231,30 +270,19 @@ def parse_registered_statuses(root: Path) -> set[str]:
     scan_for_secrets(content, "registries/AGENT_OPERATIONS.md")
     statuses: set[str] = set()
     in_status_section = False
+    found_section = False
     for line in content.splitlines():
         sline = line.strip()
         if sline.startswith("## Operation lifecycle statuses"):
             in_status_section = True
+            found_section = True
             continue
         if in_status_section:
             if sline.startswith("## "):
                 break
             for token in re.findall(r"`([A-Za-z0-9_]+)`", sline):
                 statuses.add(token)
-    for rel_path in ["registries/AGENT_OPERATIONS.md", "registries/AGENT_VIEWS.md", "registries/OPERATION_CROSSWALK.md"]:
-        p = root / rel_path
-        if p.is_file():
-            c_text = p.read_text(encoding="utf-8")
-            for line in c_text.splitlines():
-                line = line.strip()
-                if not line.startswith("|") or line.startswith("|---") or "Status" in line:
-                    continue
-                parts = [c.strip().strip("`") for c in line.split("|")[1:-1]]
-                if parts:
-                    val = parts[-1].strip()
-                    if val and val != "-":
-                        statuses.add(val)
-    if not statuses:
+    if not found_section or not statuses:
         raise RobotDocsError(
             ERR_ROBOT_DOCS_CORRUPT,
             "Failed to parse registered operation statuses from registries/AGENT_OPERATIONS.md",
@@ -276,24 +304,19 @@ def load_valid_compatibility_classes(root: Path) -> frozenset[str]:
     scan_for_secrets(content, "registries/AGENT_OPERATIONS.md")
     classes: set[str] = set()
     in_compat_section = False
+    found_section = False
     for line in content.splitlines():
         sline = line.strip()
         if sline.startswith("## Compatibility classes"):
             in_compat_section = True
+            found_section = True
             continue
         if in_compat_section:
             if sline.startswith("## "):
                 break
             for token in re.findall(r"`([A-Za-z0-9_]+)`", sline):
                 classes.add(token)
-    if not classes:
-        fss1_path = root / "architecture/fss1_public_registry.json"
-        if fss1_path.is_file():
-            d = load_json(fss1_path)
-            for item in d.get("resources", []) + d.get("operations", []):
-                if isinstance(item, dict) and "compatibilityClass" in item:
-                    classes.add(item["compatibilityClass"])
-    if not classes:
+    if not found_section or not classes:
         raise RobotDocsError(
             ERR_ROBOT_DOCS_CORRUPT,
             "Failed to parse compatibility classes from registries/AGENT_OPERATIONS.md",
@@ -397,7 +420,11 @@ def split_markdown_row(line: str) -> list[str]:
 def parse_errors_registry(errors_md_path: Path) -> dict[str, dict[str, str]]:
     """Parses registries/ERRORS.md into an error_id -> {id, description, guidance} dict."""
     if not errors_md_path.is_file():
-        raise FileNotFoundError(f"Missing errors registry: {errors_md_path}")
+        raise RobotDocsError(
+            ERR_ROBOT_DOCS_MISSING,
+            f"Missing errors registry: {errors_md_path}",
+            target="registries/ERRORS.md",
+        )
     errors: dict[str, dict[str, str]] = {}
     content = errors_md_path.read_text(encoding="utf-8")
     scan_for_secrets(content, "registries/ERRORS.md")
@@ -426,7 +453,11 @@ def parse_errors_registry(errors_md_path: Path) -> dict[str, dict[str, str]]:
 def parse_exit_codes_registry(errors_md_path: Path) -> set[str]:
     """Parses exit code identities (EXIT-*) declared in registries/ERRORS.md."""
     if not errors_md_path.is_file():
-        raise FileNotFoundError(f"Missing errors registry: {errors_md_path}")
+        raise RobotDocsError(
+            ERR_ROBOT_DOCS_MISSING,
+            f"Missing errors registry: {errors_md_path}",
+            target="registries/ERRORS.md",
+        )
     exit_codes: set[str] = set()
     for line in errors_md_path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
@@ -441,7 +472,11 @@ def parse_exit_codes_registry(errors_md_path: Path) -> set[str]:
 def parse_schemas_registry(schemas_md_path: Path) -> dict[str, dict[str, str]]:
     """Parses registries/SCHEMAS.md into schema_name -> {id, schema, file, authority, compatibilityRule}."""
     if not schemas_md_path.is_file():
-        raise FileNotFoundError(f"Missing schemas registry: {schemas_md_path}")
+        raise RobotDocsError(
+            ERR_ROBOT_DOCS_MISSING,
+            f"Missing schemas registry: {schemas_md_path}",
+            target="registries/SCHEMAS.md",
+        )
     schemas: dict[str, dict[str, str]] = {}
     seen_ids: set[str] = set()
     content = schemas_md_path.read_text(encoding="utf-8")
@@ -483,32 +518,46 @@ def collect_cli_discovery_endpoints(root: Path) -> dict[str, dict[str, str]]:
     """Extracts canonical CLI discovery commands and doc comments from crates/fss-cli/src/fss_cmd.rs."""
     fss_cmd_path = root / "crates/fss-cli/src/fss_cmd.rs"
     if not fss_cmd_path.is_file():
-        raise FileNotFoundError(f"Missing CLI command specification: {fss_cmd_path}")
+        raise RobotDocsError(
+            ERR_ROBOT_DOCS_MISSING,
+            f"Missing CLI command specification: {fss_cmd_path}",
+            target="crates/fss-cli/src/fss_cmd.rs",
+        )
     content = fss_cmd_path.read_text(encoding="utf-8")
     scan_for_secrets(content, "crates/fss-cli/src/fss_cmd.rs")
 
     # Extract usage lines from help_text() by decoding escaped newlines and splitlines
     help_match = re.search(r'fn help_text\(\)[^{]*\{[^"0-9a-zA-Z]*"((?:[^"\\]|\\.)*)"', content, re.DOTALL)
+    if not help_match:
+        raise RobotDocsError(
+            ERR_ROBOT_DOCS_CORRUPT,
+            "Failed to find help_text in fss_cmd.rs",
+            target="fss_cmd.rs",
+        )
     usage_cmds: dict[str, str] = {}
-    if help_match:
-        raw_help = help_match.group(1)
-        for line in re.split(r"\\n|\n", raw_help):
-            line = line.strip()
-            m_usage = re.search(r"fss\s+([a-z0-9_-]+)(.*)", line)
-            if m_usage:
-                cmd_word = m_usage.group(1)
-                full_cmd = f"fss {cmd_word}{m_usage.group(2)}".strip()
-                usage_cmds[cmd_word] = full_cmd
+    raw_help = help_match.group(1)
+    for line in re.split(r"\\n|\n", raw_help):
+        line = line.strip()
+        m_usage = re.search(r"fss\s+([a-z0-9_-]+)(.*)", line)
+        if m_usage:
+            cmd_word = m_usage.group(1)
+            full_cmd = f"fss {cmd_word}{m_usage.group(2)}".strip()
+            usage_cmds[cmd_word] = full_cmd
 
     # Extract primary parser literal from parse_fss_tokens match arms
-    parser_match_arms: dict[str, str] = {}
     m_fn = re.search(r"fn parse_fss_tokens\b[^{]*\{([\s\S]*?)\n\}\n", content)
-    if m_fn:
-        for arm in re.finditer(r'"([a-z0-9_-]+)"(?:\s*\|\s*"[a-z0-9_-]+")*\s*=>.*?FssCommand::([A-Za-z0-9_]+)', m_fn.group(1), re.DOTALL):
-            var = arm.group(2)
-            lit = arm.group(1)
-            if var not in parser_match_arms:
-                parser_match_arms[var] = lit
+    if not m_fn:
+        raise RobotDocsError(
+            ERR_ROBOT_DOCS_CORRUPT,
+            "Failed to find parse_fss_tokens in fss_cmd.rs",
+            target="fss_cmd.rs",
+        )
+    parser_match_arms: dict[str, str] = {}
+    for arm in re.finditer(r'"([a-z0-9_-]+)"(?:\s*\|\s*"[a-z0-9_-]+")*\s*=>.*?FssCommand::([A-Za-z0-9_]+)', m_fn.group(1), re.DOTALL):
+        var = arm.group(2)
+        lit = arm.group(1)
+        if var not in parser_match_arms:
+            parser_match_arms[var] = lit
 
     enum_match = re.search(r"pub enum FssCommand\s*\{([^}]+)\}", content)
     if not enum_match:
@@ -533,8 +582,21 @@ def collect_cli_discovery_endpoints(root: Path) -> dict[str, dict[str, str]]:
 
     endpoints: dict[str, dict[str, str]] = {}
     if "Capabilities" in var_docs:
-        cmd_word = parser_match_arms.get("Capabilities", "capabilities")
-        cli_str = usage_cmds.get(cmd_word, f"fss {cmd_word} --json")
+        if "Capabilities" not in parser_match_arms:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                "Missing parser match arm for Capabilities in parse_fss_tokens",
+                target="fss_cmd.rs",
+            )
+        cmd_word = parser_match_arms["Capabilities"]
+        usage_line = usage_cmds.get(cmd_word)
+        if not usage_line:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                f"Missing help usage line for {cmd_word} in help_text()",
+                target="fss_cmd.rs",
+            )
+        cli_str = usage_line
         if "--json" not in cli_str and "--format json" not in cli_str:
             cli_str += " --json"
         endpoints["capabilities"] = {
@@ -542,8 +604,21 @@ def collect_cli_discovery_endpoints(root: Path) -> dict[str, dict[str, str]]:
             "description": var_docs["Capabilities"],
         }
     if "Doctor" in var_docs:
-        cmd_word = parser_match_arms.get("Doctor", "doctor")
-        cli_str = usage_cmds.get(cmd_word, f"fss {cmd_word} --json")
+        if "Doctor" not in parser_match_arms:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                "Missing parser match arm for Doctor in parse_fss_tokens",
+                target="fss_cmd.rs",
+            )
+        cmd_word = parser_match_arms["Doctor"]
+        usage_line = usage_cmds.get(cmd_word)
+        if not usage_line:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                f"Missing help usage line for {cmd_word} in help_text()",
+                target="fss_cmd.rs",
+            )
+        cli_str = usage_line
         if "--json" not in cli_str and "--format json" not in cli_str:
             cli_str += " --json"
         endpoints["doctor"] = {
@@ -551,8 +626,21 @@ def collect_cli_discovery_endpoints(root: Path) -> dict[str, dict[str, str]]:
             "description": var_docs["Doctor"],
         }
     if "Status" in var_docs:
-        cmd_word = parser_match_arms.get("Status", "status")
-        cli_str = usage_cmds.get(cmd_word, f"fss {cmd_word} --json")
+        if "Status" not in parser_match_arms:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                "Missing parser match arm for Status in parse_fss_tokens",
+                target="fss_cmd.rs",
+            )
+        cmd_word = parser_match_arms["Status"]
+        usage_line = usage_cmds.get(cmd_word)
+        if not usage_line:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                f"Missing help usage line for {cmd_word} in help_text()",
+                target="fss_cmd.rs",
+            )
+        cli_str = usage_line
         if "--json" not in cli_str and "--format json" not in cli_str:
             cli_str += " --json"
         endpoints["status"] = {
@@ -560,18 +648,44 @@ def collect_cli_discovery_endpoints(root: Path) -> dict[str, dict[str, str]]:
             "description": var_docs["Status"],
         }
     if "NegativeEvidence" in var_docs:
-        cmd_word = parser_match_arms.get("NegativeEvidence", "negative-evidence")
-        usage_line = usage_cmds.get(cmd_word, "")
-        subcmd = "list"
-        m_sub = re.search(r"<[^>]*\b([a-z]+)\b[^>]*>", usage_line)
-        if m_sub:
-            alternatives = re.findall(r"\b([a-z0-9_-]+)\b", m_sub.group(0))
-            if "list" in alternatives:
-                subcmd = "list"
-            elif "ls" in alternatives:
-                subcmd = "ls"
-            elif len(alternatives) > 1:
-                subcmd = alternatives[1]
+        if "NegativeEvidence" not in parser_match_arms:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                "Missing parser match arm for NegativeEvidence in parse_fss_tokens",
+                target="fss_cmd.rs",
+            )
+        cmd_word = parser_match_arms["NegativeEvidence"]
+        usage_line = usage_cmds.get(cmd_word)
+        if not usage_line:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                f"Missing help usage line for {cmd_word} in help_text()",
+                target="fss_cmd.rs",
+            )
+        m_sub = re.search(r"^fss\s+[a-z0-9_-]+\s+<([^>]+)>", usage_line)
+        if not m_sub:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                f"Missing subcommand specification in negative-evidence usage: {usage_line}",
+                target="fss_cmd.rs",
+            )
+        alternatives = [s.strip() for s in m_sub.group(1).split("|") if s.strip()]
+        if not alternatives:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                f"No subcommands found in negative-evidence usage: {usage_line}",
+                target="fss_cmd.rs",
+            )
+        if "list" in alternatives:
+            subcmd = "list"
+        elif "ls" in alternatives:
+            subcmd = "ls"
+        else:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                f"Negative-evidence usage must include 'list' or 'ls' subcommand: {usage_line}",
+                target="fss_cmd.rs",
+            )
         cli_str = f"fss {cmd_word} {subcmd} --json"
         endpoints["negative_evidence"] = {
             "cli": cli_str,
@@ -609,6 +723,13 @@ def parse_qualification_lanes(root: Path) -> set[str]:
 
 def collect_robot_docs_model(root: Path) -> dict[str, Any]:
     """Assembles the canonical, consolidated robot docs model from authoritative registries."""
+    crosswalk_md_path = root / "registries/OPERATION_CROSSWALK.md"
+    if not crosswalk_md_path.is_file():
+        raise RobotDocsError(
+            ERR_ROBOT_DOCS_MISSING,
+            f"Missing required crosswalk registry: {crosswalk_md_path}",
+            target="registries/OPERATION_CROSSWALK.md",
+        )
     fss1_reg = load_json(root / "architecture/fss1_public_registry.json")
     agent_ops_reg = load_json(root / "architecture/agent_operations.json")
     agent_views_reg = load_json(root / "architecture/agent_views.json")
