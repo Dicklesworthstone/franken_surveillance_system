@@ -115,7 +115,7 @@ impl RedactionTransform {
             "transform:trajectory_coarsen" => Ok(Self::TrajectoryCoarsen),
             "transform:graph_neighborhood_redact" => Ok(Self::GraphNeighborhoodRedact),
             "transform:audio_feature_extraction" => Ok(Self::AudioFeatureExtraction),
-            _ => Err(ContractError::InvalidIdentifier),
+            _ => Err(ContractError::InvalidRedactionTransform),
         }
     }
 
@@ -152,6 +152,8 @@ impl RedactionTransform {
 }
 
 /// Verifies whether a string is one of the recognized H2 redaction transforms.
+///
+/// Note: These transform identifiers are internal recognized tokens, not externally registered schemas.
 #[must_use]
 pub fn is_registered_redaction_transform(s: &str) -> bool {
     RedactionTransform::parse(s).is_ok()
@@ -160,42 +162,28 @@ pub fn is_registered_redaction_transform(s: &str) -> bool {
 /// Typed representation of privacy classification evaluated for H2 decision artifacts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum H2PrivacyClass {
-    /// Redacted operational privacy classification.
-    RedactedOperational,
-    /// Redacted spatial/temporal zone privacy classification.
-    RedactedZone,
-    /// General operational privacy classification.
-    Operational,
-    /// Nonessential / public privacy classification.
-    Nonessential,
-    /// Unredacted raw media (prohibited for H2 decision artifacts).
-    UnredactedRawMedia,
-    /// Raw undecoded stream (prohibited for H2 decision artifacts).
-    RawUndecodedStream,
-    /// Raw camera packets (prohibited for H2 decision artifacts).
-    RawCameraPackets,
-    /// Unmasked personally identifiable information (prohibited for H2 decision artifacts).
-    UnmaskedPii,
-    /// Generic unredacted media (prohibited for H2 decision artifacts).
-    Unredacted,
-    /// No privacy redaction applied (prohibited for H2 decision artifacts).
-    None,
+    /// Private property classification.
+    PrivateProperty,
+    /// Explicitly redacted private content classification.
+    PrivateRedacted,
+    /// Raw unredacted media (prohibited for H2 decision artifacts).
+    RawUnredactedMedia,
 }
 
 impl H2PrivacyClass {
     /// Parses a privacy class identifier into its typed representation.
     pub fn parse(s: &str) -> Option<Self> {
         match s {
-            "privacy:redacted_operational" => Some(Self::RedactedOperational),
-            "privacy:redacted_zone" => Some(Self::RedactedZone),
-            "privacy:operational" => Some(Self::Operational),
-            "privacy:nonessential" => Some(Self::Nonessential),
-            "privacy:unredacted_raw_media" => Some(Self::UnredactedRawMedia),
-            "privacy:raw_undecoded_stream" => Some(Self::RawUndecodedStream),
-            "privacy:raw_camera_packets" => Some(Self::RawCameraPackets),
-            "privacy:unmasked_pii" => Some(Self::UnmaskedPii),
-            "privacy:unredacted" => Some(Self::Unredacted),
-            "privacy:none" => Some(Self::None),
+            "private:property" => Some(Self::PrivateProperty),
+            "private:redacted" => Some(Self::PrivateRedacted),
+            "raw:unredacted_media"
+            | "raw:media"
+            | "raw:unredacted"
+            | "unredacted"
+            | "unredacted_raw_media"
+            | "raw_undecoded_stream"
+            | "raw_camera_packets"
+            | "unmasked_pii" => Some(Self::RawUnredactedMedia),
             _ => None,
         }
     }
@@ -203,10 +191,7 @@ impl H2PrivacyClass {
     /// Returns true if this privacy class is authorized for H2 decision artifacts.
     #[must_use]
     pub const fn is_authorized_for_h2(self) -> bool {
-        matches!(
-            self,
-            Self::RedactedOperational | Self::RedactedZone | Self::Operational | Self::Nonessential
-        )
+        matches!(self, Self::PrivateProperty | Self::PrivateRedacted)
     }
 }
 
@@ -987,7 +972,12 @@ impl CanonicalDecode for GraphNeighborhoodArtifact {
         let node_count = decoder.u32()?;
         let edge_count = decoder.u32()?;
         let subgraph_digest = decoder.digest()?;
-        let masked_attributes = decode_text_set(decoder)?;
+        let masked_attributes = decode_text_set(decoder).map_err(|err| match err {
+            HydrationError::CapacityExceeded => ContractError::CountBoundExceeded,
+            HydrationError::Truncated => ContractError::InvalidDigest,
+            HydrationError::Contract(c) => c,
+            _ => ContractError::InvalidIdentifier,
+        })?;
         let artifact = Self {
             center_entity_id,
             radius_hops,
@@ -1216,6 +1206,8 @@ pub struct H2DecisionArtifactParams {
     pub payload: Vec<u8>,
     /// Retained provenance roots (must include payload digest plus subject digest).
     pub proof_roots: BTreeSet<ContentDigest>,
+    /// Strongly typed retained provenance collection.
+    pub retained_provenance: RetainedProvenance,
     /// Completeness of this artifact.
     pub completeness: Completeness,
     /// Authorized privacy class.
@@ -1234,6 +1226,84 @@ pub struct H2DecisionArtifactParams {
     pub published_at: TimestampNs,
     /// Retention horizon.
     pub retention_until: TimestampNs,
+}
+
+/// Strongly typed collection of retained provenance roots (AGT-H2, INV-003).
+///
+/// Wraps a [`BTreeSet<ContentDigest>`] to guarantee canonical ordering and non-empty validation.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RetainedProvenance(BTreeSet<ContentDigest>);
+
+impl RetainedProvenance {
+    /// Creates a new [`RetainedProvenance`] from an iterator of content digests.
+    ///
+    /// Refuses empty roots with [`ContractError::EvidenceRequired`].
+    pub fn new(roots: impl IntoIterator<Item = ContentDigest>) -> Result<Self, ContractError> {
+        let set: BTreeSet<ContentDigest> = roots.into_iter().collect();
+        if set.is_empty() {
+            return Err(ContractError::EvidenceRequired);
+        }
+        Ok(Self(set))
+    }
+
+    /// Creates a [`RetainedProvenance`] directly from a set without validation.
+    #[must_use]
+    pub const fn from_set(set: BTreeSet<ContentDigest>) -> Self {
+        Self(set)
+    }
+
+    /// Returns true if the collection contains no digests.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Returns the number of digests in the collection.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Returns true if the collection contains the given digest.
+    #[must_use]
+    pub fn contains(&self, digest: &ContentDigest) -> bool {
+        self.0.contains(digest)
+    }
+
+    /// Returns an iterator over the retained provenance digests.
+    pub fn iter(&self) -> std::collections::btree_set::Iter<'_, ContentDigest> {
+        self.0.iter()
+    }
+
+    /// Returns a reference to the underlying [`BTreeSet<ContentDigest>`].
+    #[must_use]
+    pub const fn as_set(&self) -> &BTreeSet<ContentDigest> {
+        &self.0
+    }
+}
+
+impl From<BTreeSet<ContentDigest>> for RetainedProvenance {
+    fn from(set: BTreeSet<ContentDigest>) -> Self {
+        Self(set)
+    }
+}
+
+impl<'a> IntoIterator for &'a RetainedProvenance {
+    type Item = &'a ContentDigest;
+    type IntoIter = std::collections::btree_set::Iter<'a, ContentDigest>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+impl IntoIterator for RetainedProvenance {
+    type Item = ContentDigest;
+    type IntoIter = std::collections::btree_set::IntoIter<ContentDigest>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
 }
 
 /// Strongly typed representation of the H2 Decision Artifact level of the progressive hydration ladder.
@@ -1264,9 +1334,40 @@ pub struct H2DecisionArtifact {
 impl H2DecisionArtifact {
     /// Constructs and validates a new [`H2DecisionArtifact`].
     pub fn new(params: H2DecisionArtifactParams) -> Result<Self, HydrationError> {
+        // Subject digest must not be zeroed
+        if params.subject_digest.bytes().iter().all(|&b| b == 0) {
+            return Err(ContractError::InvalidDigest.into());
+        }
+
         let payload_digest = ContentDigest::sha256(&params.payload);
-        let mut roots = params.proof_roots;
-        roots.insert(payload_digest);
+
+        // Empty retained_provenance: refuse with EvidenceRequired
+        if params.retained_provenance.is_empty() {
+            return Err(ContractError::EvidenceRequired.into());
+        }
+
+        // proof_roots MUST contain payload_digest and subject_digest
+        if !params.proof_roots.contains(&payload_digest)
+            || !params.proof_roots.contains(&params.subject_digest)
+        {
+            return Err(ContractError::EvidenceRequired.into());
+        }
+
+        // proof_roots MUST equal {payload_digest, subject_digest} UNION non_empty_subset(retained_provenance)
+        // 1. Every root in proof_roots must belong to {payload_digest, subject_digest} U retained_provenance
+        let mut has_retained_subset = false;
+        for root in &params.proof_roots {
+            if *root != payload_digest && *root != params.subject_digest {
+                if !params.retained_provenance.contains(root) {
+                    return Err(ContractError::EvidenceRequired.into());
+                }
+                has_retained_subset = true;
+            }
+        }
+        // 2. Must contain at least one retained root (non-empty subset)
+        if !has_retained_subset {
+            return Err(ContractError::EvidenceRequired.into());
+        }
 
         let mut artifact = Self {
             handle_id: params.handle_id,
@@ -1275,7 +1376,7 @@ impl H2DecisionArtifact {
             artifact_kind: params.artifact_kind,
             payload: params.payload,
             payload_digest,
-            proof_roots: roots,
+            proof_roots: params.proof_roots,
             completeness: params.completeness,
             privacy_class: params.privacy_class,
             applied_redaction_transform: params.applied_redaction_transform,
@@ -1297,7 +1398,7 @@ impl H2DecisionArtifact {
         handle: &SemanticHandle,
         artifact_kind: DecisionArtifactKind,
         payload: Vec<u8>,
-        proof_roots: impl IntoIterator<Item = ContentDigest>,
+        retained_provenance: RetainedProvenance,
         applied_redaction_transform: impl Into<String>,
         authorization_grant_id: impl Into<String>,
         completeness: Completeness,
@@ -1319,8 +1420,13 @@ impl H2DecisionArtifact {
 
         handle.verify()?;
 
-        let mut roots: BTreeSet<ContentDigest> = proof_roots.into_iter().collect();
+        let payload_digest = ContentDigest::sha256(&payload);
+        let mut roots = BTreeSet::new();
+        roots.insert(payload_digest);
         roots.insert(handle.subject_digest);
+        for r in retained_provenance.iter() {
+            roots.insert(*r);
+        }
 
         let params = H2DecisionArtifactParams {
             handle_id: handle.handle_id.clone(),
@@ -1329,6 +1435,7 @@ impl H2DecisionArtifact {
             artifact_kind,
             payload,
             proof_roots: roots,
+            retained_provenance,
             completeness,
             privacy_class: handle.privacy_class.clone(),
             applied_redaction_transform: applied_redaction_transform.into(),
@@ -1370,16 +1477,19 @@ impl H2DecisionArtifact {
             return Err(ContractError::DigestMismatch.into());
         }
 
-        // Proof roots must contain payload digest AND subject digest, with no unexpected roots
+        // Proof roots must contain payload digest AND subject digest
         if !self.proof_roots.contains(&self.payload_digest)
             || !self.proof_roots.contains(&self.subject_digest)
         {
             return Err(ContractError::EvidenceRequired.into());
         }
-        for root in &self.proof_roots {
-            if *root != self.payload_digest && *root != self.subject_digest {
-                return Err(ContractError::EvidenceRequired.into());
-            }
+        // At least one non-circular retained root must exist
+        if !self
+            .proof_roots
+            .iter()
+            .any(|r| *r != self.payload_digest && *r != self.subject_digest)
+        {
+            return Err(ContractError::EvidenceRequired.into());
         }
 
         // Completeness checks: H2 cannot be delivered under unknown/unauthorized states
@@ -1403,9 +1513,16 @@ impl H2DecisionArtifact {
             .validate()
             .map_err(HydrationError::Contract)?;
 
-        // Enforce authorized redaction from registered allowlist
-        if !self.is_authorized_and_redacted() {
-            return Err(ContractError::ProhibitedEvidencePromotion.into());
+        // Enforce authorized redaction from recognized allowlist
+        let transform = RedactionTransform::parse(&self.applied_redaction_transform)
+            .map_err(HydrationError::Contract)?;
+        if !transform.is_compatible_with_kind(&self.artifact_kind) {
+            return Err(ContractError::InvalidRedactionTransform.into());
+        }
+        let class = H2PrivacyClass::parse(&self.privacy_class)
+            .ok_or(HydrationError::Contract(ContractError::InvalidPrivacyClass))?;
+        if !class.is_authorized_for_h2() {
+            return Err(ContractError::InvalidPrivacyClass.into());
         }
 
         Ok(())
