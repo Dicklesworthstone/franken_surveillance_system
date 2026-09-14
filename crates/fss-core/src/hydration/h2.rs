@@ -46,7 +46,11 @@ pub const H2_OWNER: &str = "fss-agent-core";
 /// Canonical schema discriminator tag for H2 decision artifact binary envelopes.
 pub const H2_SCHEMA: &str = "fss.h2_decision_artifact.v1";
 
-/// Registered privacy redaction transforms recognized for H2 decision artifacts.
+/// Recognized privacy redaction transforms for H2 decision artifacts.
+///
+/// Drift record: The `transform:*` identifiers are unbacked by a standalone machine registry
+/// in `registries/` or `architecture/`. They are defined here as an internal typed enum and
+/// must not be claimed as externally registered until a canonical registry is ratified.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum RedactionTransform {
     /// Face blurring filter.
@@ -70,7 +74,7 @@ pub enum RedactionTransform {
 }
 
 impl RedactionTransform {
-    /// All 9 registered redaction transforms.
+    /// All 9 recognized redaction transforms.
     pub const ALL: [Self; 9] = [
         Self::FaceBlur,
         Self::PlateMask,
@@ -99,7 +103,7 @@ impl RedactionTransform {
         }
     }
 
-    /// Parses a registered transform URI with exact matching.
+    /// Parses a recognized transform URI with exact matching.
     pub fn parse(s: &str) -> Result<Self, ContractError> {
         match s {
             "transform:face_blur" => Ok(Self::FaceBlur),
@@ -114,16 +118,104 @@ impl RedactionTransform {
             _ => Err(ContractError::InvalidIdentifier),
         }
     }
+
+    /// Returns true if this transform is permitted for the given artifact kind.
+    #[must_use]
+    pub fn is_compatible_with_kind(&self, kind: &DecisionArtifactKind) -> bool {
+        match kind {
+            DecisionArtifactKind::Keyframe(_) => matches!(
+                self,
+                Self::FaceBlur
+                    | Self::PlateMask
+                    | Self::FaceBlurAndPlateMask
+                    | Self::BoundingBoxRedact
+                    | Self::Pixelate
+            ),
+            DecisionArtifactKind::Crop(_) => matches!(
+                self,
+                Self::CropRedact
+                    | Self::FaceBlur
+                    | Self::PlateMask
+                    | Self::FaceBlurAndPlateMask
+                    | Self::BoundingBoxRedact
+                    | Self::Pixelate
+            ),
+            DecisionArtifactKind::Trajectory(_) => matches!(self, Self::TrajectoryCoarsen),
+            DecisionArtifactKind::GraphNeighborhood(_) => {
+                matches!(self, Self::GraphNeighborhoodRedact)
+            }
+            DecisionArtifactKind::AudioFeatures(_) => {
+                matches!(self, Self::AudioFeatureExtraction)
+            }
+        }
+    }
 }
 
-/// Verifies whether a string is one of the registered H2 redaction transforms.
+/// Verifies whether a string is one of the recognized H2 redaction transforms.
 #[must_use]
 pub fn is_registered_redaction_transform(s: &str) -> bool {
     RedactionTransform::parse(s).is_ok()
 }
 
+/// Typed representation of privacy classification evaluated for H2 decision artifacts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum H2PrivacyClass {
+    /// Redacted operational privacy classification.
+    RedactedOperational,
+    /// Redacted spatial/temporal zone privacy classification.
+    RedactedZone,
+    /// General operational privacy classification.
+    Operational,
+    /// Nonessential / public privacy classification.
+    Nonessential,
+    /// Unredacted raw media (prohibited for H2 decision artifacts).
+    UnredactedRawMedia,
+    /// Raw undecoded stream (prohibited for H2 decision artifacts).
+    RawUndecodedStream,
+    /// Raw camera packets (prohibited for H2 decision artifacts).
+    RawCameraPackets,
+    /// Unmasked personally identifiable information (prohibited for H2 decision artifacts).
+    UnmaskedPii,
+    /// Generic unredacted media (prohibited for H2 decision artifacts).
+    Unredacted,
+    /// No privacy redaction applied (prohibited for H2 decision artifacts).
+    None,
+}
+
+impl H2PrivacyClass {
+    /// Parses a privacy class identifier into its typed representation.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "privacy:redacted_operational" => Some(Self::RedactedOperational),
+            "privacy:redacted_zone" => Some(Self::RedactedZone),
+            "privacy:operational" => Some(Self::Operational),
+            "privacy:nonessential" => Some(Self::Nonessential),
+            "privacy:unredacted_raw_media" => Some(Self::UnredactedRawMedia),
+            "privacy:raw_undecoded_stream" => Some(Self::RawUndecodedStream),
+            "privacy:raw_camera_packets" => Some(Self::RawCameraPackets),
+            "privacy:unmasked_pii" => Some(Self::UnmaskedPii),
+            "privacy:unredacted" => Some(Self::Unredacted),
+            "privacy:none" => Some(Self::None),
+            _ => None,
+        }
+    }
+
+    /// Returns true if this privacy class is authorized for H2 decision artifacts.
+    #[must_use]
+    pub const fn is_authorized_for_h2(self) -> bool {
+        matches!(
+            self,
+            Self::RedactedOperational | Self::RedactedZone | Self::Operational | Self::Nonessential
+        )
+    }
+}
+
 fn is_negative_zero(val: f32) -> bool {
     val.to_bits() == (-0.0_f32).to_bits()
+}
+
+fn is_negative_zero_f64(val: f64) -> bool {
+    val.to_bits() == (-0.0_f64).to_bits()
 }
 
 /// A bounding box with normalized coordinates in range `[0.0, 1.0]`.
@@ -320,7 +412,13 @@ pub struct TrajectoryWaypoint {
 impl TrajectoryWaypoint {
     /// Creates a validated waypoint.
     pub fn new(timestamp_ns: TimestampNs, x: f64, y: f64, z: f64) -> Result<Self, ContractError> {
-        if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+        if !x.is_finite()
+            || !y.is_finite()
+            || !z.is_finite()
+            || is_negative_zero_f64(x)
+            || is_negative_zero_f64(y)
+            || is_negative_zero_f64(z)
+        {
             return Err(ContractError::InvalidSpatialExtent);
         }
         Ok(Self {
@@ -333,10 +431,7 @@ impl TrajectoryWaypoint {
 
     /// Validates waypoint finite coordinates.
     pub fn validate(&self) -> Result<(), ContractError> {
-        if !self.x.is_finite() || !self.y.is_finite() || !self.z.is_finite() {
-            return Err(ContractError::InvalidSpatialExtent);
-        }
-        Ok(())
+        Self::new(self.timestamp_ns, self.x, self.y, self.z).map(|_| ())
     }
 
     /// Observation timestamp.
@@ -427,8 +522,14 @@ impl KeyframeArtifact {
         }
         for r in &self.redacted_regions {
             r.validate()?;
-            let x_end = r.x().checked_add(r.width()).ok_or(ContractError::InvalidSpatialExtent)?;
-            let y_end = r.y().checked_add(r.height()).ok_or(ContractError::InvalidSpatialExtent)?;
+            let x_end = r
+                .x()
+                .checked_add(r.width())
+                .ok_or(ContractError::InvalidSpatialExtent)?;
+            let y_end = r
+                .y()
+                .checked_add(r.height())
+                .ok_or(ContractError::InvalidSpatialExtent)?;
             if x_end > self.width || y_end > self.height {
                 return Err(ContractError::InvalidSpatialExtent);
             }
@@ -688,7 +789,9 @@ impl TrajectoryArtifact {
         let mut prev_ts: Option<TimestampNs> = None;
         for wp in &self.waypoints {
             wp.validate()?;
-            if wp.timestamp_ns() < self.time_window.earliest || wp.timestamp_ns() > self.time_window.latest {
+            if wp.timestamp_ns() < self.time_window.earliest
+                || wp.timestamp_ns() > self.time_window.latest
+            {
                 return Err(ContractError::InvertedTimeInterval);
             }
             if let Some(prev) = prev_ts
@@ -1164,7 +1267,6 @@ impl H2DecisionArtifact {
         let payload_digest = ContentDigest::sha256(&params.payload);
         let mut roots = params.proof_roots;
         roots.insert(payload_digest);
-        roots.insert(params.subject_digest);
 
         let mut artifact = Self {
             handle_id: params.handle_id,
@@ -1217,13 +1319,16 @@ impl H2DecisionArtifact {
 
         handle.verify()?;
 
+        let mut roots: BTreeSet<ContentDigest> = proof_roots.into_iter().collect();
+        roots.insert(handle.subject_digest);
+
         let params = H2DecisionArtifactParams {
             handle_id: handle.handle_id.clone(),
             subject_id: handle.subject_id.clone(),
             subject_digest: handle.subject_digest,
             artifact_kind,
             payload,
-            proof_roots: proof_roots.into_iter().collect(),
+            proof_roots: roots,
             completeness,
             privacy_class: handle.privacy_class.clone(),
             applied_redaction_transform: applied_redaction_transform.into(),
@@ -1265,11 +1370,16 @@ impl H2DecisionArtifact {
             return Err(ContractError::DigestMismatch.into());
         }
 
-        // Proof roots must contain payload digest AND subject digest
+        // Proof roots must contain payload digest AND subject digest, with no unexpected roots
         if !self.proof_roots.contains(&self.payload_digest)
             || !self.proof_roots.contains(&self.subject_digest)
         {
             return Err(ContractError::EvidenceRequired.into());
+        }
+        for root in &self.proof_roots {
+            if *root != self.payload_digest && *root != self.subject_digest {
+                return Err(ContractError::EvidenceRequired.into());
+            }
         }
 
         // Completeness checks: H2 cannot be delivered under unknown/unauthorized states
@@ -1317,16 +1427,22 @@ impl H2DecisionArtifact {
         Ok(ContentDigest::sha256(&encoder.finish_checked()?))
     }
 
-    /// Checks whether the artifact is authorized, explicitly redacted using a registered transform, and contains no raw unredacted media.
+    /// Checks whether the artifact is authorized, explicitly redacted using a recognized transform, and contains no raw unredacted media.
     #[must_use]
     pub fn is_authorized_and_redacted(&self) -> bool {
-        if !is_registered_redaction_transform(&self.applied_redaction_transform) {
+        let Ok(transform) = RedactionTransform::parse(&self.applied_redaction_transform) else {
+            return false;
+        };
+        if !transform.is_compatible_with_kind(&self.artifact_kind) {
             return false;
         }
         if !valid_text(&self.privacy_class) || !valid_text(&self.authorization_grant_id) {
             return false;
         }
-        true
+        let Some(class) = H2PrivacyClass::parse(&self.privacy_class) else {
+            return false;
+        };
+        class.is_authorized_for_h2()
     }
 
     /// Returns the exact hydration level ([`HydrationLevel::H2`]).

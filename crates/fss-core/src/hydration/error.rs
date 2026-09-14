@@ -114,6 +114,7 @@ impl From<ContractError> for HydrationError {
     fn from(value: ContractError) -> Self {
         match value {
             ContractError::LaboratoryGrantRequired => Self::LaboratoryGrantRequired,
+            ContractError::CountBoundExceeded => Self::CapacityExceeded,
             other => Self::Contract(other),
         }
     }

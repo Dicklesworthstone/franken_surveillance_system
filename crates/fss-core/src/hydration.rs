@@ -3,7 +3,6 @@
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::canonical::{CanonicalDecode, CanonicalDecoder};
 use crate::{
     BudgetVector, CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder,
     CaptureInterval, Completeness, ContentDigest, ContinuationCursor, ContinuationError,
@@ -505,8 +504,11 @@ pub(crate) fn decode_text_set(
     decoder: &mut CanonicalDecoder<'_>,
 ) -> Result<BTreeSet<String>, ContractError> {
     let count_u64 = decoder.u64()?;
-    let count = usize::try_from(count_u64).map_err(|_| ContractError::InvalidDigest)?;
-    if count > MAX_REQUEST_SET_ITEMS || decoder.remaining() < count {
+    let count = usize::try_from(count_u64).map_err(|_| ContractError::CountBoundExceeded)?;
+    if count > MAX_REQUEST_SET_ITEMS {
+        return Err(ContractError::CountBoundExceeded);
+    }
+    if decoder.remaining() < count {
         return Err(ContractError::InvalidDigest);
     }
     let mut set = BTreeSet::new();

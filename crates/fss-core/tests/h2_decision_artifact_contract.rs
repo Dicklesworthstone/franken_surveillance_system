@@ -24,8 +24,9 @@ use fss_core::{
     GraphNeighborhoodArtifact, H2_CONTENT, H2_LEVEL_ID, H2_LEVEL_NAME, H2_OWNER, H2_SCHEMA,
     H2DecisionArtifact, H2DecisionArtifactParams, HandleAvailability, HydrationArtifact,
     HydrationError, HydrationLevel, KeyframeArtifact, LaboratoryAccess, LedgerAnchor,
-    MAX_CANONICAL_BYTES_LEN, RedactedRegion, RedactionTransform, SemanticHandle, SemanticHandleSpec,
-    TimestampNs, TrajectoryArtifact, TrajectoryWaypoint, is_registered_redaction_transform,
+    MAX_CANONICAL_BYTES_LEN, RedactedRegion, RedactionTransform, SemanticHandle,
+    SemanticHandleSpec, TimestampNs, TrajectoryArtifact, TrajectoryWaypoint,
+    is_registered_redaction_transform,
 };
 
 fn sample_basis() -> ContractBasis {
@@ -113,14 +114,8 @@ fn sample_graph_neighborhood() -> Result<DecisionArtifactKind, Box<dyn Error>> {
     let mut masked = BTreeSet::new();
     masked.insert("pii:ssn".to_string());
     masked.insert("pii:true_name".to_string());
-    let graph = GraphNeighborhoodArtifact::new(
-        "entity:node-42",
-        2,
-        5,
-        8,
-        sample_digest(0x55),
-        masked,
-    )?;
+    let graph =
+        GraphNeighborhoodArtifact::new("entity:node-42", 2, 5, 8, sample_digest(0x55), masked)?;
     Ok(DecisionArtifactKind::GraphNeighborhood(graph))
 }
 
@@ -141,7 +136,17 @@ fn sample_h2_params(
     artifact_kind: DecisionArtifactKind,
 ) -> Result<H2DecisionArtifactParams, Box<dyn Error>> {
     let payload = b"authorized-redacted-artifact-payload-bytes".to_vec();
-    let proof_roots = BTreeSet::new();
+    let mut proof_roots = BTreeSet::new();
+    proof_roots.insert(sample_digest(0xbb));
+
+    let transform = match &artifact_kind {
+        DecisionArtifactKind::Keyframe(_) | DecisionArtifactKind::Crop(_) => {
+            "transform:face_blur_and_plate_mask"
+        }
+        DecisionArtifactKind::Trajectory(_) => "transform:trajectory_coarsen",
+        DecisionArtifactKind::GraphNeighborhood(_) => "transform:graph_neighborhood_redact",
+        DecisionArtifactKind::AudioFeatures(_) => "transform:audio_feature_extraction",
+    };
 
     Ok(H2DecisionArtifactParams {
         handle_id: "semantic-handle:sha256:h2-test-handle".to_string(),
@@ -152,7 +157,7 @@ fn sample_h2_params(
         proof_roots,
         completeness: Completeness::Complete,
         privacy_class: "privacy:redacted_operational".to_string(),
-        applied_redaction_transform: "transform:face_blur_and_plate_mask".to_string(),
+        applied_redaction_transform: transform.to_string(),
         authorization_grant_id: "grant:auth-oper-8891".to_string(),
         anchor: sample_anchor(42),
         contract_basis: sample_basis(),
@@ -184,9 +189,14 @@ fn test_h2_normative_row_constants() {
 fn test_h2_owner_pinned_to_registry() -> Result<(), Box<dyn Error>> {
     let registry = include_str!("../../../architecture/semantic_hydration.json");
     let key = "\"semantic_owner\": \"";
-    let pos = registry.find(key).ok_or("missing semantic_owner in registry")?;
+    let pos = registry
+        .find(key)
+        .ok_or("missing semantic_owner in registry")?;
     let start = pos + key.len();
-    let end = registry[start..].find('"').ok_or("malformed semantic_owner string")? + start;
+    let end = registry[start..]
+        .find('"')
+        .ok_or("malformed semantic_owner string")?
+        + start;
     let expected_owner = &registry[start..end];
     assert_eq!(expected_owner, "fss-agent-core");
     assert_eq!(H2_OWNER, expected_owner);
@@ -361,6 +371,20 @@ fn test_h2_trajectory_waypoint_valid_and_planted_bypasses() -> Result<(), Box<dy
         Some(ContractError::InvalidSpatialExtent)
     );
 
+    // Planted negative zero coordinates (Item 12)
+    assert_eq!(
+        TrajectoryWaypoint::new(TimestampNs(100), -0.0, 2.0, 3.0).err(),
+        Some(ContractError::InvalidSpatialExtent)
+    );
+    assert_eq!(
+        TrajectoryWaypoint::new(TimestampNs(100), 1.0, -0.0, 3.0).err(),
+        Some(ContractError::InvalidSpatialExtent)
+    );
+    assert_eq!(
+        TrajectoryWaypoint::new(TimestampNs(100), 1.0, 2.0, -0.0).err(),
+        Some(ContractError::InvalidSpatialExtent)
+    );
+
     // Canonical roundtrip
     let mut encoder = CanonicalEncoder::new();
     valid_wp.encode_canonical(&mut encoder);
@@ -513,8 +537,34 @@ fn test_h2_planted_bypasses_refusal() -> Result<(), Box<dyn Error>> {
     // 4. Proof roots must bind subject digest
     let p3 = sample_h2_params(sample_keyframe()?)?;
     let artifact3 = H2DecisionArtifact::new(p3)?;
-    assert!(artifact3.proof_roots().contains(&artifact3.subject_digest()));
-    assert!(artifact3.proof_roots().contains(&artifact3.payload_digest()));
+    assert!(
+        artifact3
+            .proof_roots()
+            .contains(&artifact3.subject_digest())
+    );
+    assert!(
+        artifact3
+            .proof_roots()
+            .contains(&artifact3.payload_digest())
+    );
+
+    // Proof roots: missing subject digest is refused
+    let mut p_no_subj = sample_h2_params(sample_keyframe()?)?;
+    p_no_subj.proof_roots = BTreeSet::new(); // does not contain subject_digest
+    let err_no_subj = H2DecisionArtifact::new(p_no_subj);
+    assert!(matches!(
+        err_no_subj,
+        Err(HydrationError::Contract(ContractError::EvidenceRequired))
+    ));
+
+    // Proof roots: arbitrary extra root is refused
+    let mut p_extra = sample_h2_params(sample_keyframe()?)?;
+    p_extra.proof_roots.insert(sample_digest(0x99));
+    let err_extra = H2DecisionArtifact::new(p_extra);
+    assert!(matches!(
+        err_extra,
+        Err(HydrationError::Contract(ContractError::EvidenceRequired))
+    ));
 
     // 5. Forbidden completeness states
     let forbidden_completeness = [
@@ -575,20 +625,76 @@ fn test_h2_planted_bypasses_refusal() -> Result<(), Box<dyn Error>> {
         );
     }
 
-    // Registered transforms pass
+    // Recognized transforms pass when paired with compatible artifact kinds
     for t in RedactionTransform::ALL {
         assert!(is_registered_redaction_transform(t.as_str()));
-        let mut p_ok = sample_h2_params(sample_keyframe()?)?;
+        let kind = match t {
+            RedactionTransform::FaceBlur
+            | RedactionTransform::PlateMask
+            | RedactionTransform::FaceBlurAndPlateMask
+            | RedactionTransform::BoundingBoxRedact
+            | RedactionTransform::Pixelate => sample_keyframe()?,
+            RedactionTransform::CropRedact => sample_crop()?,
+            RedactionTransform::TrajectoryCoarsen => sample_trajectory()?,
+            RedactionTransform::GraphNeighborhoodRedact => sample_graph_neighborhood()?,
+            RedactionTransform::AudioFeatureExtraction => sample_audio_features()?,
+        };
+        let mut p_ok = sample_h2_params(kind)?;
         p_ok.applied_redaction_transform = t.as_str().to_string();
         let art_ok = H2DecisionArtifact::new(p_ok)?;
         assert_eq!(art_ok.applied_redaction_transform(), t.as_str());
     }
 
-    // Privacy class "privacy:nonessential" is accepted (not falsely refused by naive substring matching)
-    let mut p_nonessential = sample_h2_params(sample_keyframe()?)?;
-    p_nonessential.privacy_class = "privacy:nonessential".to_string();
-    let art_nonessential = H2DecisionArtifact::new(p_nonessential)?;
-    assert_eq!(art_nonessential.privacy_class(), "privacy:nonessential");
+    // Incompatible transform / kind pair is refused (e.g. keyframe with audio_feature_extraction)
+    let mut p_incompat = sample_h2_params(sample_keyframe()?)?;
+    p_incompat.applied_redaction_transform = "transform:audio_feature_extraction".to_string();
+    let err_incompat = H2DecisionArtifact::new(p_incompat);
+    assert!(matches!(
+        err_incompat,
+        Err(HydrationError::Contract(
+            ContractError::ProhibitedEvidencePromotion
+        ))
+    ));
+
+    // Prohibited unredacted privacy classes are refused by typed privacy check
+    let prohibited_privacy_classes = [
+        "privacy:unredacted_raw_media",
+        "privacy:raw_undecoded_stream",
+        "privacy:raw_camera_packets",
+        "privacy:unmasked_pii",
+        "privacy:unredacted",
+        "privacy:none",
+        "privacy:arbitrary_unknown",
+    ];
+    for priv_class in prohibited_privacy_classes {
+        let mut p_prohib = sample_h2_params(sample_keyframe()?)?;
+        p_prohib.privacy_class = priv_class.to_string();
+        let err_prohib = H2DecisionArtifact::new(p_prohib);
+        assert!(
+            matches!(
+                err_prohib,
+                Err(HydrationError::Contract(
+                    ContractError::ProhibitedEvidencePromotion
+                ))
+            ),
+            "Expected ProhibitedEvidencePromotion for privacy class {:?}",
+            priv_class
+        );
+    }
+
+    // Authorized privacy classes pass
+    let authorized_privacy_classes = [
+        "privacy:redacted_operational",
+        "privacy:redacted_zone",
+        "privacy:operational",
+        "privacy:nonessential",
+    ];
+    for priv_class in authorized_privacy_classes {
+        let mut p_auth = sample_h2_params(sample_keyframe()?)?;
+        p_auth.privacy_class = priv_class.to_string();
+        let art_auth = H2DecisionArtifact::new(p_auth)?;
+        assert_eq!(art_auth.privacy_class(), priv_class);
+    }
 
     // 8. Empty authorization grant ID
     let mut p7 = sample_h2_params(sample_keyframe()?)?;
@@ -678,7 +784,7 @@ fn test_h2_semantic_handle_materialization() -> Result<(), Box<dyn Error>> {
     let artifact = handle.to_h2_decision_artifact(
         sample_keyframe()?,
         b"decision-keyframe-data".to_vec(),
-        [sample_digest(0x77)],
+        [handle.subject_digest],
         "transform:face_blur".to_string(),
         "grant:auth-oper-99".to_string(),
         Completeness::Complete,
@@ -711,7 +817,9 @@ fn test_h2_semantic_handle_materialization() -> Result<(), Box<dyn Error>> {
 
     // Missing H2 capabilities in handle returns typed LevelUnavailable error
     let mut handle_missing_caps = handle.clone();
-    handle_missing_caps.required_capabilities.remove(&HydrationLevel::H2);
+    handle_missing_caps
+        .required_capabilities
+        .remove(&HydrationLevel::H2);
     let err_caps = handle_missing_caps.to_h2_decision_artifact(
         sample_keyframe()?,
         b"data".to_vec(),
@@ -815,15 +923,36 @@ fn test_h2_budget_and_expiration() -> Result<(), Box<dyn Error>> {
 #[test]
 fn test_h2_exact_match_decoders() {
     // HydrationLevel exact match
-    assert_eq!("H2".parse::<HydrationLevel>().ok(), Some(HydrationLevel::H2));
-    assert_eq!(" H2 ".parse::<HydrationLevel>().err(), Some(ContractError::InvalidIdentifier));
-    assert_eq!("h2".parse::<HydrationLevel>().err(), Some(ContractError::InvalidIdentifier));
-    assert_eq!("decision_artifact".parse::<HydrationLevel>().err(), Some(ContractError::InvalidIdentifier));
+    assert_eq!(
+        "H2".parse::<HydrationLevel>().ok(),
+        Some(HydrationLevel::H2)
+    );
+    assert_eq!(
+        " H2 ".parse::<HydrationLevel>().err(),
+        Some(ContractError::InvalidIdentifier)
+    );
+    assert_eq!(
+        "h2".parse::<HydrationLevel>().err(),
+        Some(ContractError::InvalidIdentifier)
+    );
+    assert_eq!(
+        "decision_artifact".parse::<HydrationLevel>().err(),
+        Some(ContractError::InvalidIdentifier)
+    );
 
     // HandleAvailability exact match
-    assert_eq!("available".parse::<HandleAvailability>().ok(), Some(HandleAvailability::Available));
-    assert_eq!(" available ".parse::<HandleAvailability>().err(), Some(ContractError::InvalidIdentifier));
-    assert_eq!("AVAILABLE".parse::<HandleAvailability>().err(), Some(ContractError::InvalidIdentifier));
+    assert_eq!(
+        "available".parse::<HandleAvailability>().ok(),
+        Some(HandleAvailability::Available)
+    );
+    assert_eq!(
+        " available ".parse::<HandleAvailability>().err(),
+        Some(ContractError::InvalidIdentifier)
+    );
+    assert_eq!(
+        "AVAILABLE".parse::<HandleAvailability>().err(),
+        Some(ContractError::InvalidIdentifier)
+    );
 }
 
 #[test]
@@ -839,45 +968,81 @@ fn test_h2_decode_level_negatives_kill_mutants() -> Result<(), Box<dyn Error>> {
     let err_m2d = H2DecisionArtifact::from_canonical_bytes(&tampered_digest_bytes);
     assert_eq!(err_m2d.err(), Some(ContractError::DigestMismatch));
 
-    // 2. M2e: Encoded bytes with invalid spatial bounds (negative zero in bounding box)
-    let bad_box_bytes = {
+    // 2. M2e: Encoded H2DecisionArtifact whose fields decode successfully but fail validate() (exact error)
+    let bad_validate_bytes = {
         let mut enc = CanonicalEncoder::new();
         enc.text(H2_SCHEMA);
-        enc.text("handle:bad");
-        enc.text("subject:bad");
-        enc.digest(sample_digest(0x01));
-        enc.u8(2); // Crop tag
-        enc.text("fss.h2_crop_artifact.v1"); // inner crop schema
-        TimestampNs(100).encode_canonical(&mut enc);
-        enc.text("stream:01");
-        // Bad bounding box with -0.0
-        enc.u32((-0.0_f32).to_bits());
-        enc.u32(0.0_f32.to_bits());
-        enc.u32(1.0_f32.to_bits());
-        enc.u32(1.0_f32.to_bits());
-        enc.bool(false); // target_entity_anchor None
-        enc.text("image/png");
-        enc.u64(0); // 0 redacted regions
-        enc.finish_checked()?
+        enc.text("handle:m2e");
+        enc.text("subject:m2e");
+        let subj = sample_digest(0x11);
+        enc.digest(subj);
+        sample_keyframe()?.encode_canonical(&mut enc);
+        let payload = b"sample-payload-m2e";
+        enc.bytes(payload);
+        let p_digest = ContentDigest::sha256(payload);
+        enc.digest(p_digest);
+        let mut roots = [subj, p_digest];
+        roots.sort();
+        enc.u64(2);
+        enc.digest(roots[0]);
+        enc.digest(roots[1]);
+        // Completeness::Unknown (code 0) decodes fine in CanonicalDecode, but validate() refuses it with EvidenceRequired
+        enc.u8(Completeness::Unknown.code());
+        enc.text("privacy:operational");
+        enc.text("transform:face_blur");
+        enc.text("grant:m2e");
+        sample_anchor(1).encode_canonical(&mut enc);
+        sample_basis().encode_canonical(&mut enc);
+        sample_budget()?.encode_canonical(&mut enc);
+        TimestampNs(1_000).encode_canonical(&mut enc);
+        TimestampNs(2_000).encode_canonical(&mut enc);
+        let mut body = enc.finish_checked()?;
+        let body_digest = ContentDigest::sha256(&body);
+        let mut digest_enc = CanonicalEncoder::new();
+        digest_enc.digest(body_digest);
+        body.extend(digest_enc.finish_checked()?);
+        body
     };
-    let mut dec_bad_crop = CanonicalDecoder::new(&bad_box_bytes);
-    assert!(DecisionArtifactKind::decode_canonical(&mut dec_bad_crop).is_err());
+    let err_m2e = H2DecisionArtifact::from_canonical_bytes(&bad_validate_bytes);
+    assert_eq!(err_m2e.err(), Some(ContractError::EvidenceRequired));
 
-    // 3. M2f: Encoded bytes with payload_digest mismatch
-    let mut tampered_payload_digest_bytes = canonical_bytes.clone();
-    // Locate the payload_digest in canonical bytes: after payload bytes
-    let payload_bytes = artifact.payload();
-    if let Some(pos) = tampered_payload_digest_bytes
-        .windows(payload_bytes.len())
-        .position(|w| w == payload_bytes)
-    {
-        let digest_pos = pos + payload_bytes.len();
-        if digest_pos + 36 < tampered_digest_bytes.len() {
-            tampered_payload_digest_bytes[digest_pos + 10] ^= 0x02;
-            let err_m2f = H2DecisionArtifact::from_canonical_bytes(&tampered_payload_digest_bytes);
-            assert!(err_m2f.is_err());
-        }
-    }
+    // 3. M2f: Payload-digest mismatch whose artifact digest is correctly recomputed, asserting exactly DigestMismatch
+    let tampered_payload_digest_bytes = {
+        let mut enc = CanonicalEncoder::new();
+        enc.text(H2_SCHEMA);
+        enc.text("handle:m2f");
+        enc.text("subject:m2f");
+        let subj = sample_digest(0x11);
+        enc.digest(subj);
+        sample_keyframe()?.encode_canonical(&mut enc);
+        let payload = b"sample-payload-m2f";
+        enc.bytes(payload);
+        // Deliberately mismatched payload_digest
+        let bad_p_digest = sample_digest(0xee);
+        enc.digest(bad_p_digest);
+        let mut roots = [subj, bad_p_digest];
+        roots.sort();
+        enc.u64(2);
+        enc.digest(roots[0]);
+        enc.digest(roots[1]);
+        enc.u8(Completeness::Complete.code());
+        enc.text("privacy:operational");
+        enc.text("transform:face_blur");
+        enc.text("grant:m2f");
+        sample_anchor(1).encode_canonical(&mut enc);
+        sample_basis().encode_canonical(&mut enc);
+        sample_budget()?.encode_canonical(&mut enc);
+        TimestampNs(1_000).encode_canonical(&mut enc);
+        TimestampNs(2_000).encode_canonical(&mut enc);
+        let mut body = enc.finish_checked()?;
+        let body_digest = ContentDigest::sha256(&body);
+        let mut digest_enc = CanonicalEncoder::new();
+        digest_enc.digest(body_digest);
+        body.extend(digest_enc.finish_checked()?);
+        body
+    };
+    let err_m2f = H2DecisionArtifact::from_canonical_bytes(&tampered_payload_digest_bytes);
+    assert_eq!(err_m2f.err(), Some(ContractError::DigestMismatch));
 
     // 4. M2h: TrajectoryArtifact decode with non-increasing waypoints
     let wp_non_increasing_bytes = {
@@ -924,6 +1089,41 @@ fn test_h2_decode_level_negatives_kill_mutants() -> Result<(), Box<dyn Error>> {
     let mut dec_roots = CanonicalDecoder::new(&bad_proof_roots_bytes);
     let res_roots = H2DecisionArtifact::decode_canonical(&mut dec_roots);
     assert_eq!(res_roots.err(), Some(ContractError::NonCanonicalOrdering));
+
+    // 6. Item 10: Decode-level subject-root test (proof roots missing subject_digest)
+    let missing_subj_root_bytes = {
+        let mut enc = CanonicalEncoder::new();
+        enc.text(H2_SCHEMA);
+        enc.text("handle:subj-root");
+        enc.text("subject:subj-root");
+        let subj = sample_digest(0x11);
+        enc.digest(subj);
+        sample_keyframe()?.encode_canonical(&mut enc);
+        let payload = b"sample-payload-roots";
+        enc.bytes(payload);
+        let p_digest = ContentDigest::sha256(payload);
+        enc.digest(p_digest);
+        // Proof roots only contains payload_digest (1 root), omitting subject_digest
+        enc.u64(1);
+        enc.digest(p_digest);
+        enc.u8(Completeness::Complete.code());
+        enc.text("privacy:operational");
+        enc.text("transform:face_blur");
+        enc.text("grant:subj-root");
+        sample_anchor(1).encode_canonical(&mut enc);
+        sample_basis().encode_canonical(&mut enc);
+        sample_budget()?.encode_canonical(&mut enc);
+        TimestampNs(1_000).encode_canonical(&mut enc);
+        TimestampNs(2_000).encode_canonical(&mut enc);
+        let mut body = enc.finish_checked()?;
+        let body_digest = ContentDigest::sha256(&body);
+        let mut digest_enc = CanonicalEncoder::new();
+        digest_enc.digest(body_digest);
+        body.extend(digest_enc.finish_checked()?);
+        body
+    };
+    let err_subj_root = H2DecisionArtifact::from_canonical_bytes(&missing_subj_root_bytes);
+    assert_eq!(err_subj_root.err(), Some(ContractError::EvidenceRequired));
 
     Ok(())
 }
