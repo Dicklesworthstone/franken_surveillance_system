@@ -1218,18 +1218,21 @@ fn test_chain_tamper_detection() -> Result<(), Box<dyn Error>> {
     let ev1 = sample_evidence("camera:cam-north", true, "motion");
     let p_bad_id = transition_params(EventState::Witnessed, vec![ev1], None, false);
     // Alter event_id via from_revisions
-    let rev2 = genesis.supersede(fss_core::event::EventSupersedeParams {
-        state: EventState::Witnessed,
-        kind: EventKind::PerimeterBreach,
-        interval: p_bad_id.interval,
-        uncertainty_reason: None,
-        zone_ids: p_bad_id.zone_ids.clone(),
-        track_ids: p_bad_id.track_ids.clone(),
-        probability: p_bad_id.probability,
-        evidence: p_bad_id.evidence.clone(),
-        model_receipts: p_bad_id.model_receipts.clone(),
-        decision_path: p_bad_id.decision_path.clone(),
-    })?;
+    let rev2 = genesis.supersede(
+        fss_core::event::EventSupersedeParams {
+            state: EventState::Witnessed,
+            kind: EventKind::PerimeterBreach,
+            interval: p_bad_id.interval,
+            uncertainty_reason: None,
+            zone_ids: p_bad_id.zone_ids.clone(),
+            track_ids: p_bad_id.track_ids.clone(),
+            probability: p_bad_id.probability,
+            evidence: p_bad_id.evidence.clone(),
+            model_receipts: p_bad_id.model_receipts.clone(),
+            decision_path: p_bad_id.decision_path.clone(),
+        },
+        std::slice::from_ref(&genesis),
+    )?;
     let mut rev2_tampered_id = rev2.clone();
     rev2_tampered_id.event_id = EventId::parse("event:forged-id")?;
     let Err(err) = EventLineage::from_revisions(vec![genesis.clone(), rev2_tampered_id]) else {
@@ -1568,18 +1571,21 @@ fn test_finding_2_from_revisions_enforces_corroboration_and_evidence_invariants(
     let genesis = sample_genesis_hypothesis("from-rev-001")?;
     let ev_single = sample_evidence("camera:cam1", true, "motion");
 
-    let rev2 = genesis.supersede(EventSupersedeParams {
-        state: EventState::Witnessed,
-        kind: EventKind::PerimeterBreach,
-        interval: sample_interval(),
-        uncertainty_reason: None,
-        zone_ids: vec!["zone:perimeter-north".into()],
-        track_ids: vec!["track:tr-001".into()],
-        probability: certain_probability(),
-        evidence: vec![ev_single.clone()],
-        model_receipts: vec![],
-        decision_path: sample_decision_path("rev2"),
-    })?;
+    let rev2 = genesis.supersede(
+        EventSupersedeParams {
+            state: EventState::Witnessed,
+            kind: EventKind::PerimeterBreach,
+            interval: sample_interval(),
+            uncertainty_reason: None,
+            zone_ids: vec!["zone:perimeter-north".into()],
+            track_ids: vec!["track:tr-001".into()],
+            probability: certain_probability(),
+            evidence: vec![ev_single.clone()],
+            model_receipts: vec![],
+            decision_path: sample_decision_path("rev2"),
+        },
+        std::slice::from_ref(&genesis),
+    )?;
 
     // Revision claiming Corroborated with only 1 failure domain must be rejected by from_revisions
     let rev3_single_domain = EventHypothesis {
@@ -1688,32 +1694,38 @@ fn test_finding_3_event_hypothesis_supersede_and_chain_reject_terminal_and_illeg
     let genesis = sample_genesis_hypothesis("term-001")?;
     let ev1 = sample_evidence("camera:cam1", true, "motion");
 
-    let rejected = genesis.supersede(EventSupersedeParams {
-        state: EventState::Rejected,
-        kind: EventKind::PerimeterBreach,
-        interval: sample_interval(),
-        uncertainty_reason: Some("false alarm confirmed".into()),
-        zone_ids: vec!["zone:perimeter-north".into()],
-        track_ids: vec!["track:tr-001".into()],
-        probability: certain_probability(),
-        evidence: vec![ev1.clone()],
-        model_receipts: vec![],
-        decision_path: sample_decision_path("reject"),
-    })?;
+    let rejected = genesis.supersede(
+        EventSupersedeParams {
+            state: EventState::Rejected,
+            kind: EventKind::PerimeterBreach,
+            interval: sample_interval(),
+            uncertainty_reason: Some("false alarm confirmed".into()),
+            zone_ids: vec!["zone:perimeter-north".into()],
+            track_ids: vec!["track:tr-001".into()],
+            probability: certain_probability(),
+            evidence: vec![ev1.clone()],
+            model_receipts: vec![],
+            decision_path: sample_decision_path("reject"),
+        },
+        std::slice::from_ref(&genesis),
+    )?;
 
     // Attempting to supersede a terminal event (Rejected) back to Witnessed must fail closed
-    let Err(err_resurrect) = rejected.supersede(EventSupersedeParams {
-        state: EventState::Witnessed,
-        kind: EventKind::PerimeterBreach,
-        interval: sample_interval(),
-        uncertainty_reason: None,
-        zone_ids: vec!["zone:perimeter-north".into()],
-        track_ids: vec!["track:tr-001".into()],
-        probability: certain_probability(),
-        evidence: vec![ev1.clone()],
-        model_receipts: vec![],
-        decision_path: sample_decision_path("resurrect"),
-    }) else {
+    let Err(err_resurrect) = rejected.supersede(
+        EventSupersedeParams {
+            state: EventState::Witnessed,
+            kind: EventKind::PerimeterBreach,
+            interval: sample_interval(),
+            uncertainty_reason: None,
+            zone_ids: vec!["zone:perimeter-north".into()],
+            track_ids: vec!["track:tr-001".into()],
+            probability: certain_probability(),
+            evidence: vec![ev1.clone()],
+            model_receipts: vec![],
+            decision_path: sample_decision_path("resurrect"),
+        },
+        &[genesis.clone(), rejected.clone()],
+    ) else {
         return Err("superseding a terminal event must fail closed".into());
     };
     assert!(matches!(
@@ -1722,18 +1734,21 @@ fn test_finding_3_event_hypothesis_supersede_and_chain_reject_terminal_and_illeg
     ));
 
     // Attempting an illegal transition directly from Hypothesized to Resolved via supersede must fail
-    let Err(err_illegal) = genesis.supersede(EventSupersedeParams {
-        state: EventState::Resolved,
-        kind: EventKind::PerimeterBreach,
-        interval: sample_interval(),
-        uncertainty_reason: None,
-        zone_ids: vec!["zone:perimeter-north".into()],
-        track_ids: vec!["track:tr-001".into()],
-        probability: certain_probability(),
-        evidence: vec![ev1.clone()],
-        model_receipts: vec![],
-        decision_path: sample_decision_path("illegal-jump"),
-    }) else {
+    let Err(err_illegal) = genesis.supersede(
+        EventSupersedeParams {
+            state: EventState::Resolved,
+            kind: EventKind::PerimeterBreach,
+            interval: sample_interval(),
+            uncertainty_reason: None,
+            zone_ids: vec!["zone:perimeter-north".into()],
+            track_ids: vec!["track:tr-001".into()],
+            probability: certain_probability(),
+            evidence: vec![ev1.clone()],
+            model_receipts: vec![],
+            decision_path: sample_decision_path("illegal-jump"),
+        },
+        std::slice::from_ref(&genesis),
+    ) else {
         return Err("illegal transition via supersede must fail".into());
     };
     assert!(matches!(

@@ -3111,3 +3111,34 @@ fn a_discharge_is_judged_as_the_journal_stood_at_the_results_root() -> Result<()
     fixture.cleanup();
     Ok(())
 }
+
+/// The selection witness covers the typed removals: two comparisons that differ only in the
+/// removed claims have different witnesses.
+#[test]
+fn selection_witness_covers_removed_claims() -> Result<(), Box<dyn Error>> {
+    let basis = publication(&Variant::baseline()?)?;
+    let result = publication(&Variant {
+        sequence: 2,
+        ..Variant::baseline()?
+    })?;
+    let classes = BTreeSet::from([MeaningfulDeltaClass::MaterialState]);
+    let witness = |removed_claim_ids: &[String]| {
+        crate::meaningful_delta::comparison_witness(
+            crate::meaningful_delta::ComparisonWitnessInputs {
+                basis: &basis,
+                result: &result,
+                classes: &classes,
+                changed_cells: &[],
+                removed_claim_ids,
+                invalidated_assumptions: &[],
+                coverage_changes: &[],
+                obligation_changes: &[],
+                effect_uncertainty_changes: &[],
+                lineage_commitment: None,
+                journal_commitment: None,
+            },
+        )
+    };
+    assert_ne!(witness(&["claim:premise".to_owned()]), witness(&[]));
+    Ok(())
+}

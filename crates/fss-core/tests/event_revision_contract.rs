@@ -1134,18 +1134,21 @@ fn test_immutable_supersession_transition_and_chain() -> Result<(), Box<dyn Erro
     assert_eq!(genesis.revision, 1);
     assert!(genesis.supersedes.is_none());
 
-    let rev2 = genesis.supersede(fss_core::event::EventSupersedeParams {
-        state: EventState::Adjudicated,
-        kind: EventKind::PerimeterBreach,
-        interval: genesis.interval,
-        uncertainty_reason: genesis.uncertainty_reason.clone(),
-        zone_ids: genesis.zone_ids.clone(),
-        track_ids: genesis.track_ids.clone(),
-        probability: genesis.probability,
-        evidence: genesis.evidence.clone(),
-        model_receipts: genesis.model_receipts.clone(),
-        decision_path: genesis.decision_path.clone(),
-    })?;
+    let rev2 = genesis.supersede(
+        fss_core::event::EventSupersedeParams {
+            state: EventState::Adjudicated,
+            kind: EventKind::PerimeterBreach,
+            interval: genesis.interval,
+            uncertainty_reason: genesis.uncertainty_reason.clone(),
+            zone_ids: genesis.zone_ids.clone(),
+            track_ids: genesis.track_ids.clone(),
+            probability: genesis.probability,
+            evidence: genesis.evidence.clone(),
+            model_receipts: genesis.model_receipts.clone(),
+            decision_path: genesis.decision_path.clone(),
+        },
+        std::slice::from_ref(&genesis),
+    )?;
     assert_eq!(rev2.revision, 2);
     assert_eq!(rev2.supersedes, Some(genesis.revision_digest()));
     assert_eq!(rev2.state, EventState::Adjudicated);
@@ -1153,18 +1156,21 @@ fn test_immutable_supersession_transition_and_chain() -> Result<(), Box<dyn Erro
     // Verify valid 2-node chain
     EventHypothesis::verify_chain(&[genesis.clone(), rev2.clone()])?;
 
-    let rev3 = rev2.supersede(fss_core::event::EventSupersedeParams {
-        state: EventState::Resolved,
-        kind: EventKind::PerimeterBreach,
-        interval: rev2.interval,
-        uncertainty_reason: rev2.uncertainty_reason.clone(),
-        zone_ids: rev2.zone_ids.clone(),
-        track_ids: rev2.track_ids.clone(),
-        probability: rev2.probability,
-        evidence: rev2.evidence.clone(),
-        model_receipts: rev2.model_receipts.clone(),
-        decision_path: rev2.decision_path.clone(),
-    })?;
+    let rev3 = rev2.supersede(
+        fss_core::event::EventSupersedeParams {
+            state: EventState::Resolved,
+            kind: EventKind::PerimeterBreach,
+            interval: rev2.interval,
+            uncertainty_reason: rev2.uncertainty_reason.clone(),
+            zone_ids: rev2.zone_ids.clone(),
+            track_ids: rev2.track_ids.clone(),
+            probability: rev2.probability,
+            evidence: rev2.evidence.clone(),
+            model_receipts: rev2.model_receipts.clone(),
+            decision_path: rev2.decision_path.clone(),
+        },
+        &[genesis.clone(), rev2.clone()],
+    )?;
     assert_eq!(rev3.revision, 3);
     assert_eq!(rev3.supersedes, Some(rev2.revision_digest()));
 
@@ -1293,8 +1299,8 @@ fn test_supports_flag_must_agree_with_relation_for_every_variant() -> Result<(),
     let relations: Vec<EvidenceEdgeRelation> = (0..=u8::MAX)
         .filter_map(|tag| EvidenceEdgeRelation::from_u8(tag).ok())
         .collect();
-    if relations.len() != 9 {
-        return Err(format!("expected 9 edge relations, found {}", relations.len()).into());
+    if relations.len() != 10 {
+        return Err(format!("expected 10 edge relations, found {}", relations.len()).into());
     }
     for relation in relations {
         // Only `Supports` may be flagged supporting; every other relation must be supports=false.

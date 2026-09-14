@@ -1150,18 +1150,21 @@ fn revised_publications(
         event: candidate,
         action,
     } = evaluate_unknown_presence(event_id, vec![person, other])?;
-    let revised = first.event.supersede(EventSupersedeParams {
-        state: candidate.state,
-        kind: candidate.kind,
-        interval: candidate.interval,
-        uncertainty_reason: candidate.uncertainty_reason,
-        zone_ids: candidate.zone_ids,
-        track_ids: candidate.track_ids,
-        probability: candidate.probability,
-        evidence: candidate.evidence,
-        model_receipts: candidate.model_receipts,
-        decision_path: candidate.decision_path,
-    })?;
+    let revised = first.event.supersede(
+        EventSupersedeParams {
+            state: candidate.state,
+            kind: candidate.kind,
+            interval: candidate.interval,
+            uncertainty_reason: candidate.uncertainty_reason,
+            zone_ids: candidate.zone_ids,
+            track_ids: candidate.track_ids,
+            probability: candidate.probability,
+            evidence: candidate.evidence,
+            model_receipts: candidate.model_receipts,
+            decision_path: candidate.decision_path,
+        },
+        std::slice::from_ref(&first.event),
+    )?;
     let revision = ReferencePolicyDecision {
         event: revised,
         action,
