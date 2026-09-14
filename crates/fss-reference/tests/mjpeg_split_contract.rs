@@ -25,10 +25,17 @@ use fss_reference::ingest::mjpeg::{
 use fss_reference::{DeterministicFaultPrng, ReplayCx};
 
 /// Emits a single-line structured CAPLOG record for digestion by the E2E logging harness.
-fn emit_caplog(step: &str, verdict: &str, expected: &str, observed: &str, duration_ms: u128) {
+fn emit_caplog(
+    step: &str,
+    verdict: &str,
+    exit_code: i32,
+    expected: &str,
+    observed: &str,
+    duration_ms: u128,
+) {
     println!(
-        r#"CAPLOG {{"step":"{}","verdict":"{}","exit":0,"duration_ms":{},"expected":{},"observed":{}}}"#,
-        step, verdict, duration_ms, expected, observed
+        r#"CAPLOG {{"step":"{}","verdict":"{}","exit":{},"duration_ms":{},"expected":{},"observed":{}}}"#,
+        step, verdict, exit_code, duration_ms, expected, observed
     );
 }
 
@@ -329,14 +336,21 @@ fn test_cancellation_checkpoints() -> Result<(), Box<dyn Error>> {
     assert_eq!(res, Err(JpegSplitError::CancellationRequested));
 
     let duration_ms = start.elapsed().as_millis().max(1);
+    let cancellation_refused = res == Err(JpegSplitError::CancellationRequested);
+    let (verdict, exit_code) = if cancellation_refused {
+        ("pass", 0)
+    } else {
+        ("fail", 1)
+    };
     let expected = r#"{"cancellation_refused":true,"error":"CancellationRequested"}"#;
     let observed = format!(
-        r#"{{"cancellation_refused":true,"observed_error":"{:?}","duration_ms":{}}}"#,
-        res, duration_ms
+        r#"{{"cancellation_refused":{},"observed_error":"{:?}","duration_ms":{}}}"#,
+        cancellation_refused, res, duration_ms
     );
     emit_caplog(
         "cancellation_checkpoints",
-        "pass",
+        verdict,
+        exit_code,
         expected,
         &observed,
         duration_ms,
@@ -385,6 +399,17 @@ fn test_edge_case_appn_com_ffd9_shielding() -> Result<(), Box<dyn Error>> {
     assert_eq!(scan.findings, Vec::<JpegFinding>::new());
 
     let duration_ms = start.elapsed().as_millis().max(1);
+    let passed = scan.frames.len() == 1
+        && scan.frames[0].end_offset == expected_len
+        && scan.frames[0].has_eoi
+        && !scan.frames[0].is_truncated
+        && scan.frames[0].marker_count == 4
+        && scan.findings.is_empty();
+    let (verdict, exit_code) = if passed {
+        ("pass", 0)
+    } else {
+        ("fail", 1)
+    };
     let expected = format!(
         r#"{{"frame_count":1,"end_offset":{},"has_eoi":true,"is_truncated":false,"findings_count":0}}"#,
         expected_len
@@ -399,7 +424,8 @@ fn test_edge_case_appn_com_ffd9_shielding() -> Result<(), Box<dyn Error>> {
     );
     emit_caplog(
         "edge_case_appn_com_ffd9_shielding",
-        "pass",
+        verdict,
+        exit_code,
         &expected,
         &observed,
         duration_ms,
@@ -431,6 +457,17 @@ fn test_edge_case_byte_stuffing() -> Result<(), Box<dyn Error>> {
     assert_eq!(scan.findings, Vec::<JpegFinding>::new());
 
     let duration_ms = start.elapsed().as_millis().max(1);
+    let passed = scan.frames.len() == 1
+        && scan.frames[0].end_offset == 38
+        && scan.frames[0].has_eoi
+        && !scan.frames[0].is_truncated
+        && scan.frames[0].marker_count == 2
+        && scan.findings.is_empty();
+    let (verdict, exit_code) = if passed {
+        ("pass", 0)
+    } else {
+        ("fail", 1)
+    };
     let expected = r#"{"frame_count":1,"end_offset":38,"has_eoi":true,"is_truncated":false,"findings_count":0}"#;
     let observed = format!(
         r#"{{"frame_count":{},"end_offset":{},"has_eoi":{},"is_truncated":{},"findings_count":{}}}"#,
@@ -442,7 +479,8 @@ fn test_edge_case_byte_stuffing() -> Result<(), Box<dyn Error>> {
     );
     emit_caplog(
         "edge_case_byte_stuffing",
-        "pass",
+        verdict,
+        exit_code,
         expected,
         &observed,
         duration_ms,
@@ -485,6 +523,17 @@ fn test_edge_case_restart_markers() -> Result<(), Box<dyn Error>> {
     assert_eq!(scan.findings, Vec::<JpegFinding>::new());
 
     let duration_ms = start.elapsed().as_millis().max(1);
+    let passed = scan.frames.len() == 1
+        && scan.frames[0].end_offset == 62
+        && scan.frames[0].restart_interval == 4
+        && scan.frames[0].has_eoi
+        && !scan.frames[0].is_truncated
+        && scan.findings.is_empty();
+    let (verdict, exit_code) = if passed {
+        ("pass", 0)
+    } else {
+        ("fail", 1)
+    };
     let expected = r#"{"frame_count":1,"end_offset":62,"restart_interval":4,"has_eoi":true,"is_truncated":false,"findings_count":0}"#;
     let observed = format!(
         r#"{{"frame_count":{},"end_offset":{},"restart_interval":{},"has_eoi":{},"is_truncated":{},"findings_count":{}}}"#,
@@ -497,7 +546,8 @@ fn test_edge_case_restart_markers() -> Result<(), Box<dyn Error>> {
     );
     emit_caplog(
         "edge_case_restart_markers",
-        "pass",
+        verdict,
+        exit_code,
         expected,
         &observed,
         duration_ms,
@@ -533,16 +583,31 @@ fn test_edge_case_zero_length_segment() -> Result<(), Box<dyn Error>> {
     );
 
     let duration_ms = start.elapsed().as_millis().max(1);
+    let zero_length_offset = match scan.findings.first() {
+        Some(JpegFinding::ZeroLengthMarkerSegment { offset, .. }) => *offset,
+        _ => 0,
+    };
+    let passed = scan.frames.len() == 1
+        && scan.frames[0].end_offset == 8
+        && scan.frames[0].marker_count == 1
+        && zero_length_offset == 2;
+    let (verdict, exit_code) = if passed {
+        ("pass", 0)
+    } else {
+        ("fail", 1)
+    };
     let expected = r#"{"frame_count":1,"end_offset":8,"marker_count":1,"zero_length_offset":2}"#;
     let observed = format!(
-        r#"{{"frame_count":{},"end_offset":{},"marker_count":{},"zero_length_offset":2}}"#,
+        r#"{{"frame_count":{},"end_offset":{},"marker_count":{},"zero_length_offset":{}}}"#,
         scan.frames.len(),
-        scan.frames[0].end_offset,
-        scan.frames[0].marker_count
+        scan.frames.first().map(|f| f.end_offset).unwrap_or(0),
+        scan.frames.first().map(|f| f.marker_count).unwrap_or(0),
+        zero_length_offset
     );
     emit_caplog(
         "edge_case_zero_length_segment",
-        "pass",
+        verdict,
+        exit_code,
         expected,
         &observed,
         duration_ms,
@@ -578,20 +643,37 @@ fn test_edge_case_fill_bytes_runs() -> Result<(), Box<dyn Error>> {
     assert_eq!(scan.frames[0].marker_count, 2);
     assert_eq!(scan.findings, Vec::<JpegFinding>::new());
 
+    let (width, height) = scan.frames[0]
+        .sof
+        .as_ref()
+        .map(|s| (s.width, s.height))
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "missing SOF"))?;
+
     let duration_ms = start.elapsed().as_millis().max(1);
+    let passed = scan.frames.len() == 1
+        && scan.frames[0].end_offset == 36
+        && (width, height) == (16, 8)
+        && scan.frames[0].marker_count == 2
+        && scan.findings.is_empty();
+    let (verdict, exit_code) = if passed {
+        ("pass", 0)
+    } else {
+        ("fail", 1)
+    };
     let expected = r#"{"frame_count":1,"end_offset":36,"dimensions":[16,8],"marker_count":2,"findings_count":0}"#;
     let observed = format!(
         r#"{{"frame_count":{},"end_offset":{},"dimensions":[{},{}],"marker_count":{},"findings_count":{}}}"#,
         scan.frames.len(),
         scan.frames[0].end_offset,
-        scan.frames[0].sof.as_ref().unwrap().width,
-        scan.frames[0].sof.as_ref().unwrap().height,
+        width,
+        height,
         scan.frames[0].marker_count,
         scan.findings.len()
     );
     emit_caplog(
         "edge_case_fill_bytes_runs",
-        "pass",
+        verdict,
+        exit_code,
         expected,
         &observed,
         duration_ms,
@@ -631,15 +713,29 @@ fn test_edge_case_zero_components() -> Result<(), Box<dyn Error>> {
     );
 
     let duration_ms = start.elapsed().as_millis().max(1);
+    let zero_components_offset = match scan.findings.first() {
+        Some(JpegFinding::ZeroComponents { offset, .. }) => *offset,
+        _ => 0,
+    };
+    let zero_components_finding =
+        matches!(scan.findings.first(), Some(JpegFinding::ZeroComponents { .. }));
+    let passed = scan.frames.len() == 1 && zero_components_finding && zero_components_offset == 2;
+    let (verdict, exit_code) = if passed {
+        ("pass", 0)
+    } else {
+        ("fail", 1)
+    };
     let expected = r#"{"frame_count":1,"zero_components_finding":true,"offset":2}"#;
     let observed = format!(
-        r#"{{"frame_count":{},"zero_components_finding":{},"offset":2}}"#,
+        r#"{{"frame_count":{},"zero_components_finding":{},"offset":{}}}"#,
         scan.frames.len(),
-        scan.findings.len() == 1
+        zero_components_finding,
+        zero_components_offset
     );
     emit_caplog(
         "edge_case_zero_components",
-        "pass",
+        verdict,
+        exit_code,
         expected,
         &observed,
         duration_ms,
@@ -709,14 +805,40 @@ fn test_synthetic_stream_variants() -> Result<(), Box<dyn Error>> {
     junk_stream.extend_from_slice(&f3);
     let scan_junk = split_jpeg_stream(&junk_stream, &limits, None)?;
     assert_eq!(scan_junk.frame_count(), 3);
-    assert_eq!(scan_junk.omissions.len(), 2);
+    let o1_start = f1.len();
+    let o1_end = f1.len() + 5;
+    let o2_start = o1_end + f2.len();
+    let o2_end = o2_start + 5;
+
     assert_eq!(
-        scan_junk.omissions[0].reason,
-        OmissionReason::GarbageBetweenFrames
+        scan_junk.omissions,
+        vec![
+            OmissionSpan {
+                start_offset: o1_start,
+                end_offset: o1_end,
+                reason: OmissionReason::GarbageBetweenFrames,
+            },
+            OmissionSpan {
+                start_offset: o2_start,
+                end_offset: o2_end,
+                reason: OmissionReason::GarbageBetweenFrames,
+            },
+        ]
     );
     assert_eq!(
-        scan_junk.omissions[1].reason,
-        OmissionReason::GarbageBetweenFrames
+        scan_junk.findings,
+        vec![
+            JpegFinding::GarbageBetweenFrames {
+                preceding_frame_index: 0,
+                start_offset: o1_start,
+                end_offset: o1_end,
+            },
+            JpegFinding::GarbageBetweenFrames {
+                preceding_frame_index: 1,
+                start_offset: o2_start,
+                end_offset: o2_end,
+            },
+        ]
     );
 
     // Variant 4: Zero length stream
@@ -739,6 +861,18 @@ fn test_synthetic_stream_variants() -> Result<(), Box<dyn Error>> {
     );
 
     let duration_ms = start.elapsed().as_millis().max(1);
+    let passed = scan_clean.frame_count() == 3
+        && scan_trunc.frame_count() == 3
+        && scan_junk.frame_count() == 3
+        && scan_junk.omissions.len() == 2
+        && scan_junk.findings.len() == 2
+        && res_zero == Err(JpegSplitError::NoSoi)
+        && scan_dim.frame_count() == 2;
+    let (verdict, exit_code) = if passed {
+        ("pass", 0)
+    } else {
+        ("fail", 1)
+    };
     let expected = r#"{"variants_tested":5,"clean_frames":3,"truncated_valid":2,"omissions":2,"zero_len_error":"NoSoi"}"#;
     let observed = format!(
         r#"{{"variants_tested":5,"clean_frames":{},"truncated_valid":{},"omissions":{},"zero_len_error":"{:?}"}}"#,
@@ -749,7 +883,8 @@ fn test_synthetic_stream_variants() -> Result<(), Box<dyn Error>> {
     );
     emit_caplog(
         "synthetic_stream_variants",
-        "pass",
+        verdict,
+        exit_code,
         expected,
         &observed,
         duration_ms,
@@ -779,6 +914,7 @@ fn test_fixture_manifest_equality() -> Result<(), Box<dyn Error>> {
         emit_caplog(
             "fixture_manifest_equality",
             "skip",
+            0,
             expected,
             observed,
             duration_ms,
@@ -847,7 +983,11 @@ fn test_fixture_manifest_equality() -> Result<(), Box<dyn Error>> {
             "frame_count mismatch for {name}"
         );
 
-        if let Some(expected_frames) = f.get("frames").and_then(|fr| fr.as_array()) {
+        if expected_frame_count > 0 {
+            let expected_frames = f
+                .get("frames")
+                .and_then(|fr| fr.as_array())
+                .ok_or("missing required frames array in fixture schema")?;
             assert_eq!(scan.frames.len(), expected_frames.len());
             for (idx, ef) in expected_frames.iter().enumerate() {
                 let exp_w = ef
@@ -866,47 +1006,90 @@ fn test_fixture_manifest_equality() -> Result<(), Box<dyn Error>> {
         verified_count += 1;
     }
 
-    // Check delegated JPEG fixtures if present
-    let jpeg_dir = repo_root.join("tests/fixtures/media/jpeg");
-    let mut delegated_count = 0;
-    if jpeg_dir.exists() {
-        let app_com = jpeg_dir.join("rgb_64x48_app_com_ffd9.jpg");
-        if app_com.exists() {
-            let bytes = fs::read(&app_com)?;
-            let scan = split_jpeg_stream(&bytes, &limits, None)?;
-            assert_eq!(scan.frame_count(), 1);
-            let sof = scan.frames[0].sof.as_ref().ok_or("missing SOF")?;
-            assert_eq!(sof.width, 64);
-            assert_eq!(sof.height, 48);
-            delegated_count += 1;
-        }
-        let restart = jpeg_dir.join("rgb_64x48_restart_ri3.jpg");
-        if restart.exists() {
-            let bytes = fs::read(&restart)?;
-            let scan = split_jpeg_stream(&bytes, &limits, None)?;
-            assert_eq!(scan.frame_count(), 1);
-            assert_eq!(scan.frames[0].restart_interval, 3);
-            let sof = scan.frames[0].sof.as_ref().ok_or("missing SOF")?;
-            assert_eq!(sof.width, 64);
-            assert_eq!(sof.height, 48);
-            delegated_count += 1;
-        }
-    }
-
     let duration_ms = start.elapsed().as_millis().max(1);
     let expected = format!(
         r#"{{"fixture_manifest_available":true,"fixtures_count":{}}}"#,
         fixtures.len()
     );
     let observed = format!(
-        r#"{{"fixture_manifest_available":true,"verified_fixtures":{},"delegated_jpeg_verified":{}}}"#,
-        verified_count, delegated_count
+        r#"{{"fixture_manifest_available":true,"verified_fixtures":{}}}"#,
+        verified_count
     );
+    let passed = verified_count == fixtures.len();
+    let (verdict, exit_code) = if passed {
+        ("pass", 0)
+    } else {
+        ("fail", 1)
+    };
     emit_caplog(
         "fixture_manifest_equality",
-        "pass",
+        verdict,
+        exit_code,
         &expected,
         &observed,
+        duration_ms,
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Step 9b: Delegated .21 JPEG fixtures verification
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_delegated_jpeg_fixtures() -> Result<(), Box<dyn Error>> {
+    let start = Instant::now();
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    let jpeg_dir = repo_root.join("tests/fixtures/media/jpeg");
+    let app_com = jpeg_dir.join("rgb_64x48_app_com_ffd9.jpg");
+    let restart = jpeg_dir.join("rgb_64x48_restart_ri3.jpg");
+
+    if !jpeg_dir.exists() || !app_com.exists() || !restart.exists() {
+        let duration_ms = start.elapsed().as_millis().max(1);
+        let expected = r#"{"delegated_fixtures_available":true}"#;
+        let observed =
+            r#"{"delegated_fixtures_available":false,"reason":"missing .21 jpeg fixture files on disk"}"#;
+        emit_caplog(
+            "delegated_jpeg_fixtures",
+            "skip",
+            0,
+            expected,
+            observed,
+            duration_ms,
+        );
+        return Ok(());
+    }
+
+    let limits = MjpegLimits::default();
+    let bytes_app = fs::read(&app_com)?;
+    let scan_app = split_jpeg_stream(&bytes_app, &limits, None)?;
+    assert_eq!(scan_app.frame_count(), 1);
+    let sof_app = scan_app.frames[0].sof.as_ref().ok_or("missing SOF")?;
+    assert_eq!(sof_app.width, 64);
+    assert_eq!(sof_app.height, 48);
+
+    let bytes_restart = fs::read(&restart)?;
+    let scan_restart = split_jpeg_stream(&bytes_restart, &limits, None)?;
+    assert_eq!(scan_restart.frame_count(), 1);
+    assert_eq!(scan_restart.frames[0].restart_interval, 3);
+    let sof_restart = scan_restart.frames[0].sof.as_ref().ok_or("missing SOF")?;
+    assert_eq!(sof_restart.width, 64);
+    assert_eq!(sof_restart.height, 48);
+
+    let duration_ms = start.elapsed().as_millis().max(1);
+    let expected = r#"{"delegated_fixtures_available":true,"fixtures_verified":2}"#;
+    let observed = r#"{"delegated_fixtures_available":true,"fixtures_verified":2}"#;
+    emit_caplog(
+        "delegated_jpeg_fixtures",
+        "pass",
+        0,
+        expected,
+        observed,
         duration_ms,
     );
     Ok(())
@@ -981,6 +1164,12 @@ fn test_gauntlet_omissions_and_garbage() -> Result<(), Box<dyn Error>> {
     );
 
     let duration_ms = start.elapsed().as_millis().max(1);
+    let passed = scan.frames.len() == 2 && scan.omissions.len() == 3 && scan.findings.len() == 3;
+    let (verdict, exit_code) = if passed {
+        ("pass", 0)
+    } else {
+        ("fail", 1)
+    };
     let expected = r#"{"frames":2,"omissions":3,"findings":3}"#;
     let observed = format!(
         r#"{{"frames":{},"omissions":{},"findings":{}}}"#,
@@ -990,7 +1179,8 @@ fn test_gauntlet_omissions_and_garbage() -> Result<(), Box<dyn Error>> {
     );
     emit_caplog(
         "gauntlet_omissions_and_garbage",
-        "pass",
+        verdict,
+        exit_code,
         expected,
         &observed,
         duration_ms,
@@ -1068,6 +1258,15 @@ fn test_gauntlet_in_frame_anomalies() -> Result<(), Box<dyn Error>> {
     );
 
     let duration_ms = start.elapsed().as_millis().max(1);
+    let passed = scan.frames.len() == 1
+        && scan.frames[0].end_offset == 35
+        && scan.frames[0].marker_count == 5
+        && scan.findings.len() == 5;
+    let (verdict, exit_code) = if passed {
+        ("pass", 0)
+    } else {
+        ("fail", 1)
+    };
     let expected = r#"{"frame_count":1,"end_offset":35,"findings_count":5}"#;
     let observed = format!(
         r#"{{"frame_count":{},"end_offset":{},"findings_count":{}}}"#,
@@ -1077,7 +1276,8 @@ fn test_gauntlet_in_frame_anomalies() -> Result<(), Box<dyn Error>> {
     );
     emit_caplog(
         "gauntlet_in_frame_anomalies",
-        "pass",
+        verdict,
+        exit_code,
         expected,
         &observed,
         duration_ms,
@@ -1216,14 +1416,37 @@ fn test_limits_enforcement_boundaries() -> Result<(), Box<dyn Error>> {
     );
 
     let duration_ms = start.elapsed().as_millis().max(1);
+    let all_boundaries_verified = matches!(res_in, Err(JpegSplitError::InputOversized { .. }))
+        && matches!(res_fr, Err(JpegSplitError::FrameTooLarge { .. }))
+        && matches!(res_dim, Err(JpegSplitError::DimensionLimit { .. }))
+        && matches!(res_height, Err(JpegSplitError::DimensionLimit { .. }))
+        && matches!(res_wide, Err(JpegSplitError::DimensionLimit { .. }))
+        && matches!(res_tall, Err(JpegSplitError::DimensionLimit { .. }))
+        && matches!(res_frames, Err(JpegSplitError::TooManyFrames { .. }));
+
+    let err_names: Vec<&str> = vec![
+        match &res_in { Err(JpegSplitError::InputOversized { .. }) => "InputOversized", _ => "Other" },
+        match &res_fr { Err(JpegSplitError::FrameTooLarge { .. }) => "FrameTooLarge", _ => "Other" },
+        match &res_dim { Err(JpegSplitError::DimensionLimit { .. }) => "DimensionLimit", _ => "Other" },
+        match &res_frames { Err(JpegSplitError::TooManyFrames { .. }) => "TooManyFrames", _ => "Other" },
+    ];
+    let err_names_json = format!(r#"["{}","{}","{}","{}"]"#, err_names[0], err_names[1], err_names[2], err_names[3]);
+    let (verdict, exit_code) = if all_boundaries_verified {
+        ("pass", 0)
+    } else {
+        ("fail", 1)
+    };
     let expected = r#"{"boundaries_tested":["max_input_bytes","max_frame_bytes","max_dimension","max_frames"]}"#;
     let observed = format!(
-        r#"{{"all_boundaries_verified":true,"tested_errors":["InputOversized","FrameTooLarge","DimensionLimit","TooManyFrames"],"duration_ms":{}}}"#,
+        r#"{{"all_boundaries_verified":{},"tested_errors":{},"duration_ms":{}}}"#,
+        all_boundaries_verified,
+        err_names_json,
         duration_ms
     );
     emit_caplog(
         "limits_enforcement_boundaries",
-        "pass",
+        verdict,
+        exit_code,
         expected,
         &observed,
         duration_ms,
@@ -1291,15 +1514,25 @@ fn test_gauntlet_middle_frame_resync() -> Result<(), Box<dyn Error>> {
     );
 
     let duration_ms = start.elapsed().as_millis().max(1);
+    let resync_success = scan.frames.len() == 3
+        && scan.frames.get(1).map(|f| f.is_truncated).unwrap_or(false)
+        && scan.frames.get(2).map(|f| !f.is_truncated).unwrap_or(false);
+    let (verdict, exit_code) = if resync_success {
+        ("pass", 0)
+    } else {
+        ("fail", 1)
+    };
     let expected = r#"{"resync_success":true,"recovered_frames":3,"frame_1_truncated":true}"#;
     let observed = format!(
-        r#"{{"resync_success":true,"recovered_frames":{},"frame_1_truncated":{}}}"#,
+        r#"{{"resync_success":{},"recovered_frames":{},"frame_1_truncated":{}}}"#,
+        resync_success,
         scan.frames.len(),
-        scan.frames[1].is_truncated
+        scan.frames.get(1).map(|f| f.is_truncated).unwrap_or(false)
     );
     emit_caplog(
         "gauntlet_middle_frame_resync",
-        "pass",
+        verdict,
+        exit_code,
         expected,
         &observed,
         duration_ms,
@@ -1368,15 +1601,39 @@ fn test_gauntlet_flood_limits() -> Result<(), Box<dyn Error>> {
     );
 
     let duration_ms = start.elapsed().as_millis().max(1);
+    let cap_boundary_exact_3_passes = scan_3.is_ok();
+    let exceed_4_fails = matches!(
+        res_exceed,
+        Err(JpegSplitError::TooManyMarkerSegments {
+            count: 4,
+            limit: 3,
+            ..
+        })
+    );
+    let garbage_run_counted = matches!(
+        res_garb,
+        Err(JpegSplitError::TooManyMarkerSegments {
+            count: 4,
+            limit: 3,
+            ..
+        })
+    );
+    let passed = cap_boundary_exact_3_passes && exceed_4_fails && garbage_run_counted;
+    let (verdict, exit_code) = if passed {
+        ("pass", 0)
+    } else {
+        ("fail", 1)
+    };
     let expected =
         r#"{"cap_boundary_exact_3_passes":true,"exceed_4_fails":true,"garbage_run_counted":true}"#;
     let observed = format!(
-        r#"{{"cap_boundary_exact_3_passes":true,"exceed_4_fails":"{:?}","garbage_run_counted":"{:?}"}}"#,
-        res_exceed, res_garb
+        r#"{{"cap_boundary_exact_3_passes":{},"exceed_4_fails":{},"garbage_run_counted":{}}}"#,
+        cap_boundary_exact_3_passes, exceed_4_fails, garbage_run_counted
     );
     emit_caplog(
         "gauntlet_flood_limits",
-        "pass",
+        verdict,
+        exit_code,
         expected,
         &observed,
         duration_ms,
@@ -1467,7 +1724,7 @@ fn test_mutation_gauntlet_10k() -> Result<(), Box<dyn Error>> {
             successful_scans += 1;
 
             // Invariant assertions on every Ok
-            assert!(scan.total_bytes_scanned <= mutated.len());
+            assert_eq!(scan.total_bytes_scanned, mutated.len());
 
             // 1. Validate frames: ordered, non-overlapping, within bounds
             let mut prev_frame_end = 0;
@@ -1530,14 +1787,22 @@ fn test_mutation_gauntlet_10k() -> Result<(), Box<dyn Error>> {
     }
 
     let duration_ms = start.elapsed().as_millis().max(1);
+    let observed_panics: usize = 0;
+    let passed = iterations == 10_000 && observed_panics == 0;
+    let (verdict, exit_code) = if passed {
+        ("pass", 0)
+    } else {
+        ("fail", 1)
+    };
     let expected = format!(r#"{{"iterations":{iterations},"panics":0}}"#);
     let observed = format!(
-        r#"{{"iterations":{},"panics":0,"successful_scans":{},"duration_ms":{}}}"#,
-        iterations, successful_scans, duration_ms
+        r#"{{"iterations":{},"panics":{},"successful_scans":{},"duration_ms":{}}}"#,
+        iterations, observed_panics, successful_scans, duration_ms
     );
     emit_caplog(
         "mutation_gauntlet_10k",
-        "pass",
+        verdict,
+        exit_code,
         &expected,
         &observed,
         duration_ms,
@@ -1600,6 +1865,12 @@ fn test_gauntlet_cut_headers() -> Result<(), Box<dyn Error>> {
     );
 
     let duration_ms = start.elapsed().as_millis().max(1);
+    let passed = spans1.len() == 3 && spans2.len() == 3;
+    let (verdict, exit_code) = if passed {
+        ("pass", 0)
+    } else {
+        ("fail", 1)
+    };
     let expected =
         r#"{"cut_after_marker_code_spans_3":true,"cut_after_high_length_byte_spans_3":true}"#;
     let observed = format!(
@@ -1609,7 +1880,8 @@ fn test_gauntlet_cut_headers() -> Result<(), Box<dyn Error>> {
     );
     emit_caplog(
         "gauntlet_cut_headers",
-        "pass",
+        verdict,
+        exit_code,
         expected,
         &observed,
         duration_ms,
@@ -1657,6 +1929,15 @@ fn test_gauntlet_nested_soi() -> Result<(), Box<dyn Error>> {
     );
 
     let duration_ms = start.elapsed().as_millis().max(1);
+    let passed = scan.frames.len() == 2
+        && scan.frames[0].is_truncated
+        && scan.frames[1].has_eoi
+        && scan.findings.len() == 1;
+    let (verdict, exit_code) = if passed {
+        ("pass", 0)
+    } else {
+        ("fail", 1)
+    };
     let expected =
         r#"{"frames":2,"frame_0_truncated":true,"frame_1_has_eoi":true,"findings_count":1}"#;
     let observed = format!(
@@ -1668,7 +1949,8 @@ fn test_gauntlet_nested_soi() -> Result<(), Box<dyn Error>> {
     );
     emit_caplog(
         "gauntlet_nested_soi",
-        "pass",
+        verdict,
+        exit_code,
         expected,
         &observed,
         duration_ms,

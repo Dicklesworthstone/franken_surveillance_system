@@ -31,6 +31,7 @@ class TestE2eCapIngestMjpeg(unittest.TestCase):
         cap_skip = chr(39) + chr(123) + chr(34) + "step" + chr(34) + ":" + chr(34) + "b" + chr(34) + "," + chr(34) + "verdict" + chr(34) + ":" + chr(34) + "skip" + chr(34) + "," + chr(34) + "exit" + chr(34) + ":0," + chr(34) + "duration_ms" + chr(34) + ":1," + chr(34) + "expected" + chr(34) + ":{" + chr(34) + "m" + chr(34) + ":1}," + chr(34) + "observed" + chr(34) + ":{" + chr(34) + "r" + chr(34) + ":" + chr(34) + "skip" + chr(34) + "}" + chr(125) + chr(39)
         cap_fail = chr(39) + chr(123) + chr(34) + "step" + chr(34) + ":" + chr(34) + "a" + chr(34) + "," + chr(34) + "verdict" + chr(34) + ":" + chr(34) + "fail" + chr(34) + chr(125) + chr(39)
         cap_bad = chr(39) + chr(123) + chr(34) + "step" + chr(34) + ":" + chr(34) + "a" + chr(34) + ", broken json" + chr(39)
+        cap_noverdict = chr(39) + chr(123) + chr(34) + "step" + chr(34) + ":" + chr(34) + "a" + chr(34) + chr(125) + chr(39)
         stub_content = f"""#!/usr/bin/env bash
 echo \"$@\" >> \"{self.calls_file}\"
 case \"${{STUB_MODE:-pass}}\" in
@@ -54,6 +55,15 @@ case \"${{STUB_MODE:-pass}}\" in
     ;;
   failverdict)
     echo CAPLOG {cap_fail}
+    exit 0
+    ;;
+  noverdict)
+    echo CAPLOG {cap_noverdict}
+    exit 0
+    ;;
+  duplicate_step)
+    echo CAPLOG {cap_a}
+    echo CAPLOG {cap_a}
     exit 0
     ;;
   badjson)
@@ -130,6 +140,7 @@ esac
     def test_pass_with_skip(self) -> None:
         proc = self.run_harness(extra_env={"STUB_MODE": "pass_with_skip"})
         self.assertEqual(proc.returncode, 0, f"Expected exit 0: {proc.stderr}")
+        self.assertIn("pass summary: 1 steps passed, 1 skipped, 0 failures", proc.stdout)
 
         records = self.read_latest_log_records()
         summary = records[-1]
@@ -178,6 +189,26 @@ esac
         summary = records[-1]
         self.assertEqual(summary["verdict"], "fail")
         self.assertIn("a", summary["failures"])
+
+    def test_missing_verdict_fails(self) -> None:
+        proc = self.run_harness(extra_env={"STUB_MODE": "noverdict"})
+        self.assertEqual(proc.returncode, 1, "Expected exit 1 on missing verdict key")
+        self.assertIn("fail summary", proc.stdout)
+
+        records = self.read_latest_log_records()
+        summary = records[-1]
+        self.assertEqual(summary["verdict"], "fail")
+        self.assertIn("a:missing_verdict", summary["failures"])
+
+    def test_duplicate_step_fails(self) -> None:
+        proc = self.run_harness(extra_env={"STUB_MODE": "duplicate_step"})
+        self.assertEqual(proc.returncode, 1, "Expected exit 1 on duplicate step names")
+        self.assertIn("fail summary", proc.stdout)
+
+        records = self.read_latest_log_records()
+        summary = records[-1]
+        self.assertEqual(summary["verdict"], "fail")
+        self.assertIn("a:duplicate_step", summary["failures"])
 
     def test_nocaplog_fails(self) -> None:
         proc = self.run_harness(extra_env={"STUB_MODE": "nocaplog"})

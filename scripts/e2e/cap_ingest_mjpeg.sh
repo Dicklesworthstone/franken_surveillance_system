@@ -136,6 +136,7 @@ step_count = 0
 fail_count = 0
 failures = []
 skipped = []
+seen_steps = set()
 
 with open(stdout_file, "r", encoding="utf-8", errors="replace") as sf, \
      open(log_file, "a", encoding="utf-8") as lf:
@@ -174,7 +175,57 @@ with open(stdout_file, "r", encoding="utf-8", errors="replace") as sf, \
                 continue
 
             step = data.get("step", "unknown")
-            verdict = data.get("verdict", "pass")
+            if step in seen_steps:
+                fail_count += 1
+                step_count += 1
+                failures.append(f"{step}:duplicate_step")
+                rec = {
+                    "ts": now_iso(),
+                    "script": script,
+                    "bead": bead,
+                    "step": step,
+                    "cmd": f"cargo test -p fss-reference --test mjpeg_split_contract -- {step}",
+                    "exit": 1,
+                    "duration_ms": 1,
+                    "expected": "unique step name",
+                    "observed": f"duplicate step name: {step}",
+                    "digest": None,
+                    "stdout_sha256": "",
+                    "stdout_excerpt": line[:200],
+                    "stderr_excerpt": "",
+                    "verdict": "fail",
+                    "repro": f"scripts/e2e/cap_ingest_mjpeg.sh --only {step}"
+                }
+                lf.write(json.dumps(rec) + "\n")
+                continue
+
+            seen_steps.add(step)
+
+            if "verdict" not in data or data["verdict"] is None:
+                fail_count += 1
+                step_count += 1
+                failures.append(f"{step}:missing_verdict")
+                rec = {
+                    "ts": now_iso(),
+                    "script": script,
+                    "bead": bead,
+                    "step": step,
+                    "cmd": f"cargo test -p fss-reference --test mjpeg_split_contract -- {step}",
+                    "exit": 1,
+                    "duration_ms": data.get("duration_ms", 1),
+                    "expected": "verdict key present",
+                    "observed": "missing verdict key",
+                    "digest": None,
+                    "stdout_sha256": "",
+                    "stdout_excerpt": line[:200],
+                    "stderr_excerpt": "",
+                    "verdict": "fail",
+                    "repro": f"scripts/e2e/cap_ingest_mjpeg.sh --only {step}"
+                }
+                lf.write(json.dumps(rec) + "\n")
+                continue
+
+            verdict = data["verdict"]
             step_count += 1
             if verdict == "fail":
                 fail_count += 1
@@ -261,9 +312,15 @@ print(verdict)
 
     STEP_COUNT=$(python3 -c 'import json, sys; print(json.loads(sys.argv[1])["step_count"])' "$SUMMARY_JSON")
     FAIL_COUNT=$(python3 -c 'import json, sys; print(json.loads(sys.argv[1])["fail_count"])' "$SUMMARY_JSON")
+    SKIP_COUNT=$(python3 -c 'import json, sys; print(len(json.loads(sys.argv[1])["skipped"]))' "$SUMMARY_JSON")
+    PASS_COUNT=$(( STEP_COUNT - FAIL_COUNT - SKIP_COUNT ))
 
     if [[ "$VERDICT" == "pass" ]]; then
-        echo "pass summary: ${STEP_COUNT} steps passed, 0 failures"
+        if [[ "$SKIP_COUNT" -gt 0 ]]; then
+            echo "pass summary: ${PASS_COUNT} steps passed, ${SKIP_COUNT} skipped, 0 failures"
+        else
+            echo "pass summary: ${PASS_COUNT} steps passed, 0 failures"
+        fi
         exit 0
     else
         echo "fail summary: ${FAIL_COUNT} steps failed (cargo exit ${TEST_EXIT})"
