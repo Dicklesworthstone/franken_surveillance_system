@@ -24,6 +24,7 @@ pub mod ingest;
 mod meaningful_delta;
 pub mod media_fixture;
 mod model;
+pub mod model_receipt;
 mod outcome;
 mod packet_fault;
 mod policy;
@@ -48,6 +49,8 @@ mod context_binding_tests;
 mod hydration_tests;
 #[cfg(test)]
 mod meaningful_delta_tests;
+#[cfg(test)]
+mod model_receipt_tests;
 #[cfg(test)]
 mod model_tests;
 #[cfg(test)]
@@ -148,6 +151,13 @@ pub use model::{
     compare_model_embeddings, compare_model_scores, compute_output_digest,
     encode_coord_to_basis_point, evaluate_corroboration, execute_mock_model, fuse_model_embeddings,
     fuse_model_scores, is_latest_generation,
+};
+pub use model_receipt::{
+    BackendDescriptor, MODEL_EXECUTION_RECEIPT_DOMAIN, ModelInvocationReceipt, ReceiptBudget,
+    ReceiptDigest, ReceiptOutcome, ReceiptUsage, ReceiptVerificationError,
+    compute_decision_path_digest, compute_execution_plan_digest, compute_numeric_policy_digest,
+    compute_operator_trace_chain, compute_output_root, compute_postprocess_program_digest,
+    compute_preprocess_program_digest, execute_and_record_receipt,
 };
 pub use outcome::{
     ALERT_OUTCOME_FAMILY, ReferenceAlertOutcome, ReferenceAlertOutcomeReceipt,
