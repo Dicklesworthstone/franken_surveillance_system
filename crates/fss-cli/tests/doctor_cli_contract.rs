@@ -1,20 +1,23 @@
 #![forbid(unsafe_code)]
-//! Contract tests for `fss doctor` command-line execution (fss-2h5zq.57 / CAP- DOCTOR).
+//! Contract tests for `fss doctor` command-line execution (fss-2h5zq.57, CAP- DOCTOR).
 //!
 //! Verifies:
-//! 1. `fss doctor --json` without `--root` retains existing `design_only` skeleton byte-for-byte and exits 0.
-//! 2. `fss doctor --json --root <clean>` executes doctor on deployment and exits 0.
-//! 3. `fss doctor --json --root <incomplete>` reports attention required and exits 3.
-//! 4. `fss doctor --json --root <not_a_deployment>` reports not a deployment and exits 4.
-//! 5. CLI argument parsing failures (missing `--json`, duplicate options) exit 2.
+//! 1. `fss doctor --json` without `--root` keeps the `design_only` output byte for byte and exits 0.
+//! 2. With `--root`, stdout is exactly the library report of the same root, and the exit code is
+//!    0 (healthy), 3 (attention_required), or 4 (not_a_deployment), in process and through the
+//!    real `fss` binary.
+//! 3. Argument errors (missing `--json`, missing or duplicate `--root`) exit 2 with empty stdout.
 
 use std::error::Error;
+use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use fss_cli::{DoctorArgs, ExitIdentity, FssCommand, execute_fss_with_exit, parse_fss_args};
 use fss_core::{ContentDigest, OperationId, RootAuthoritySpec};
+use fss_reference::doctor::inspect_deployment;
 use fss_reference::{
     ADP_REPLAY_ROW_ID, ReferenceDeployment, ReplayCx, ReplayIoAuthority,
     reference_deployment::RELATIVE_PATH_LEDGER,
@@ -52,13 +55,9 @@ fn test_cx(label: &str) -> Result<ReplayCx, Box<dyn Error>> {
         generation: 1,
     };
     let root_auth = fss_core::ContextAuthority::new_root(spec)?;
-    let scratch_root = std::env::var_os("CARGO_TARGET_TMPDIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join(format!(
-            "test-replay-cx-cli-doc-{label}-{}",
-            std::process::id()
-        ));
+    let scratch_root = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join("doctor_cli_contract_cx")
+        .join(label);
     let io = ReplayIoAuthority::from_context_authority(&root_auth, scratch_root)?;
     Ok(ReplayCx::new(io))
 }
@@ -71,154 +70,173 @@ fn init_clean_deployment(name: &str) -> Result<PathBuf, Box<dyn Error>> {
     Ok(base)
 }
 
+fn append_incomplete_tail(dep: &Path) -> TestResult {
+    OpenOptions::new()
+        .append(true)
+        .open(dep.join(RELATIVE_PATH_LEDGER))?
+        .write_all(b"FSSJRN01")?;
+    Ok(())
+}
+
+fn doctor(root: &Path) -> (String, ExitIdentity) {
+    execute_fss_with_exit(FssCommand::Doctor(DoctorArgs {
+        root: Some(root.to_path_buf()),
+    }))
+}
+
+fn run_fss(args: &[OsString]) -> Result<(Option<i32>, String, String), Box<dyn Error>> {
+    let output = Command::new(env!("CARGO_BIN_EXE_fss"))
+        .args(args)
+        .output()?;
+    Ok((
+        output.status.code(),
+        String::from_utf8(output.stdout)?,
+        String::from_utf8(output.stderr)?,
+    ))
+}
+
+fn root_args(root: &Path) -> Vec<OsString> {
+    vec![
+        OsString::from("doctor"),
+        OsString::from("--json"),
+        OsString::from("--root"),
+        root.as_os_str().to_owned(),
+    ]
+}
+
 #[test]
 fn test_doctor_without_root_retains_design_only_byte_for_byte() -> TestResult {
     let (stdout, exit_id) = execute_fss_with_exit(FssCommand::Doctor(DoctorArgs { root: None }));
     assert_eq!(exit_id, ExitIdentity::SUCCESS);
-    assert_eq!(exit_id.code, 0);
-
     let expected = format!(
         "{{\"schema\":\"fss.doctor.v1\",\"version\":\"{}\",\"verdict\":\"design_only\",\"checks\":[{{\"id\":\"core.contracts\",\"status\":\"present\"}},{{\"id\":\"runtime.acquisition\",\"status\":\"not_implemented\"}},{{\"id\":\"release.qualification\",\"status\":\"not_qualified\"}}]}}",
         env!("CARGO_PKG_VERSION")
     );
-    assert_eq!(
-        stdout, expected,
-        "doctor without root must retain byte-for-byte exact design_only output"
-    );
+    assert_eq!(stdout, expected);
+
+    let (code, out, err) = run_fss(&[OsString::from("doctor"), OsString::from("--json")])?;
+    assert_eq!(code, Some(0));
+    assert_eq!(out, format!("{expected}\n"));
+    assert_eq!(err, "");
     Ok(())
 }
 
 #[test]
-fn test_doctor_with_clean_root_exits_0() -> TestResult {
-    let dep = init_clean_deployment("clean")?;
-    let (stdout, exit_id) = execute_fss_with_exit(FssCommand::Doctor(DoctorArgs {
-        root: Some(dep.clone()),
-    }));
+fn test_doctor_in_process_exit_codes_match_the_library_report() -> TestResult {
+    let clean = init_clean_deployment("clean")?;
+    let (stdout, exit_id) = doctor(&clean);
+    assert_eq!(stdout, inspect_deployment(&clean).to_json());
     assert_eq!(exit_id, ExitIdentity::SUCCESS);
-    assert_eq!(exit_id.code, 0);
-    assert!(stdout.contains("\"verdict\":\"healthy\""));
-    assert!(stdout.contains(&dep.display().to_string()));
-    Ok(())
-}
 
-#[test]
-fn test_doctor_with_incomplete_tail_exits_3() -> TestResult {
-    let dep = init_clean_deployment("incomplete")?;
-    let ledger_path = dep.join(RELATIVE_PATH_LEDGER);
-
-    // Append incomplete record tail (valid RECORD_MAGIC prefix without complete record body)
-    let mut file = OpenOptions::new().append(true).open(&ledger_path)?;
-    file.write_all(b"FSSJRN01")?;
-
-    let (stdout, exit_id) = execute_fss_with_exit(FssCommand::Doctor(DoctorArgs {
-        root: Some(dep.clone()),
-    }));
+    let attention = init_clean_deployment("incomplete")?;
+    append_incomplete_tail(&attention)?;
+    let (stdout, exit_id) = doctor(&attention);
+    assert_eq!(stdout, inspect_deployment(&attention).to_json());
     assert_eq!(exit_id, ExitIdentity::DOCTOR_ATTENTION_REQUIRED);
     assert_eq!(exit_id.code, 3);
-    assert!(stdout.contains("\"verdict\":\"attention_required\""));
-    assert!(stdout.contains("--truncate-incomplete-tail ledger"));
+
+    let empty = fresh("empty")?;
+    let (stdout, exit_id) = doctor(&empty);
+    assert_eq!(stdout, inspect_deployment(&empty).to_json());
+    assert_eq!(exit_id, ExitIdentity::DOCTOR_NOT_A_DEPLOYMENT);
+    assert_eq!(exit_id.code, 4);
+
+    let missing = empty.join("missing");
+    let (stdout, exit_id) = doctor(&missing);
+    assert_eq!(stdout, inspect_deployment(&missing).to_json());
+    assert_eq!(exit_id, ExitIdentity::DOCTOR_NOT_A_DEPLOYMENT);
     Ok(())
 }
 
 #[test]
-fn test_doctor_with_not_a_deployment_exits_4() -> TestResult {
-    let empty_dir = fresh("empty")?;
-    let (stdout, exit_id) = execute_fss_with_exit(FssCommand::Doctor(DoctorArgs {
-        root: Some(empty_dir),
-    }));
-    assert_eq!(exit_id, ExitIdentity::DOCTOR_NOT_A_DEPLOYMENT);
-    assert_eq!(exit_id.code, 4);
-    assert!(stdout.contains("\"verdict\":\"not_a_deployment\""));
+fn test_real_fss_binary_with_root_prints_the_report_and_exit_code() -> TestResult {
+    let clean = init_clean_deployment("binary_clean")?;
+    let (code, out, err) = run_fss(&root_args(&clean))?;
+    assert_eq!(code, Some(0));
+    assert_eq!(out, format!("{}\n", inspect_deployment(&clean).to_json()));
+    assert_eq!(err, "");
 
-    let non_existent = PathBuf::from("/path/that/does/not/exist/fss_doctor_test");
-    let (stdout_non_existent, exit_id_non_existent) =
-        execute_fss_with_exit(FssCommand::Doctor(DoctorArgs {
-            root: Some(non_existent),
-        }));
-    assert_eq!(exit_id_non_existent, ExitIdentity::DOCTOR_NOT_A_DEPLOYMENT);
-    assert_eq!(exit_id_non_existent.code, 4);
-    assert!(stdout_non_existent.contains("\"verdict\":\"not_a_deployment\""));
+    let mut equals_form = vec![OsString::from("doctor")];
+    let mut root_flag = OsString::from("--root=");
+    root_flag.push(clean.as_os_str());
+    equals_form.push(root_flag);
+    equals_form.push(OsString::from("--json"));
+    let (code, out_equals, _) = run_fss(&equals_form)?;
+    assert_eq!(code, Some(0));
+    assert_eq!(out_equals, out);
+
+    let attention = init_clean_deployment("binary_incomplete")?;
+    append_incomplete_tail(&attention)?;
+    let (code, out, err) = run_fss(&root_args(&attention))?;
+    assert_eq!(code, Some(3));
+    assert_eq!(
+        out,
+        format!("{}\n", inspect_deployment(&attention).to_json())
+    );
+    assert_eq!(err, "");
+
+    let empty = fresh("binary_empty")?;
+    let (code, out, err) = run_fss(&root_args(&empty))?;
+    assert_eq!(code, Some(4));
+    assert_eq!(out, format!("{}\n", inspect_deployment(&empty).to_json()));
+    assert_eq!(err, "");
+
+    for args in [
+        vec![
+            OsString::from("doctor"),
+            OsString::from("--root"),
+            empty.as_os_str().to_owned(),
+        ],
+        vec![
+            OsString::from("doctor"),
+            OsString::from("--json"),
+            OsString::from("--root"),
+        ],
+        {
+            let mut twice = root_args(&empty);
+            twice.push(OsString::from("--root"));
+            twice.push(empty.as_os_str().to_owned());
+            twice
+        },
+    ] {
+        let (code, out, err) = run_fss(&args)?;
+        assert_eq!(code, Some(2), "args {args:?}");
+        assert_eq!(
+            out, "",
+            "stdout must be empty on an argument error: {args:?}"
+        );
+        assert!(err.starts_with("fss: error[ERR-CLI-"), "stderr: {err}");
+    }
     Ok(())
 }
 
 #[test]
 fn test_doctor_cli_parsing_coverage() -> TestResult {
-    // Valid command forms
+    let parse = |args: &[&str]| parse_fss_args(args.iter().map(OsString::from));
     assert_eq!(
-        parse_fss_args([
-            std::ffi::OsString::from("doctor"),
-            std::ffi::OsString::from("--json"),
-        ])
-        .ok(),
+        parse(&["doctor", "--json"]).ok(),
         Some(FssCommand::Doctor(DoctorArgs { root: None }))
     );
-
     assert_eq!(
-        parse_fss_args([
-            std::ffi::OsString::from("doctor"),
-            std::ffi::OsString::from("--json"),
-            std::ffi::OsString::from("--root"),
-            std::ffi::OsString::from("/test/path"),
-        ])
-        .ok(),
+        parse(&["doctor", "--json", "--root", "/deploy/root"]).ok(),
         Some(FssCommand::Doctor(DoctorArgs {
-            root: Some(PathBuf::from("/test/path")),
+            root: Some(PathBuf::from("/deploy/root")),
         }))
     );
-
     assert_eq!(
-        parse_fss_args([
-            std::ffi::OsString::from("doctor"),
-            std::ffi::OsString::from("--root=/test/path"),
-            std::ffi::OsString::from("--json"),
-        ])
-        .ok(),
+        parse(&["doctor", "--root=/deploy/root", "--json"]).ok(),
         Some(FssCommand::Doctor(DoctorArgs {
-            root: Some(PathBuf::from("/test/path")),
+            root: Some(PathBuf::from("/deploy/root")),
         }))
     );
-
-    // Missing --json
     assert!(
-        parse_fss_args([std::ffi::OsString::from("doctor")]).is_err(),
+        parse(&["doctor"]).is_err(),
         "doctor without --json must fail"
     );
-
-    // Missing value for --root
-    assert!(
-        parse_fss_args([
-            std::ffi::OsString::from("doctor"),
-            std::ffi::OsString::from("--json"),
-            std::ffi::OsString::from("--root"),
-        ])
-        .is_err(),
-        "doctor --root without value must fail"
-    );
-
-    // Duplicate --root
-    assert!(
-        parse_fss_args([
-            std::ffi::OsString::from("doctor"),
-            std::ffi::OsString::from("--json"),
-            std::ffi::OsString::from("--root"),
-            std::ffi::OsString::from("/a"),
-            std::ffi::OsString::from("--root"),
-            std::ffi::OsString::from("/b"),
-        ])
-        .is_err(),
-        "duplicate --root must fail"
-    );
-
-    // Duplicate --json
-    assert!(
-        parse_fss_args([
-            std::ffi::OsString::from("doctor"),
-            std::ffi::OsString::from("--json"),
-            std::ffi::OsString::from("--json"),
-        ])
-        .is_err(),
-        "duplicate --json must fail"
-    );
-
+    assert!(parse(&["doctor", "--json", "--root"]).is_err());
+    assert!(parse(&["doctor", "--json", "--root="]).is_err());
+    assert!(parse(&["doctor", "--json", "--root", "/a", "--root", "/b"]).is_err());
+    assert!(parse(&["doctor", "--json", "--json"]).is_err());
+    assert!(parse(&["doctor", "--json", "extra"]).is_err());
     Ok(())
 }
