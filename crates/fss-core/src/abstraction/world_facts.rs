@@ -15,7 +15,7 @@ use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, Canon
 use crate::contract::{ContractError, Plane, ProvenanceClass};
 use crate::evidence::CoverageWitness;
 use crate::ids::validate_id;
-use crate::{ContentDigest, ContractBasis, Generation, LedgerAnchor};
+use crate::{ContentDigest, ContractBasis, Generation, LedgerAnchor, LedgerSnapshot};
 
 /// Categories of authoritative facts established or observed at one anchor (AGT-LAYER-003).
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -222,26 +222,80 @@ impl CanonicalDecode for WorldFact {
     }
 }
 
+mod sealed {
+    pub trait Sealed {}
+}
+
 /// Authority-side source providing the authoritative current ledger anchor (INV-063).
 ///
 /// Per AGENTS.md Prime Directive:
 /// - Authority, cognition, and effect planes are type-distinct.
 /// - Negative reads require a coverage witness verified against the authority plane.
 /// - The current anchor must originate from the authority plane rather than an arbitrary caller argument.
-pub trait CurrentAnchorSource {
+///
+/// This trait is sealed and cannot be implemented outside `fss-core`.
+///
+/// # Compile-fail probe N2b: external callers cannot implement sealed `CurrentAnchorSource`
+/// ```compile_fail
+/// use fss_core::abstraction::CurrentAnchorSource;
+/// use fss_core::LedgerAnchor;
+///
+/// struct Liar {
+///     anchor: LedgerAnchor,
+/// }
+///
+/// impl CurrentAnchorSource for Liar {
+///     fn current_anchor(&self) -> &LedgerAnchor {
+///         &self.anchor
+///     }
+/// }
+/// ```
+///
+/// # Compile-fail probe N2c: `(&ContractBasis, &LedgerAnchor)` does not implement `CurrentAnchorSource`
+/// ```compile_fail
+/// use fss_core::abstraction::CurrentAnchorSource;
+/// use fss_core::contract_basis::reference_contract_basis;
+/// use fss_core::LedgerAnchor;
+///
+/// let basis = reference_contract_basis();
+/// let anchor = LedgerAnchor::genesis("site:main");
+/// let tuple_source = (&basis, &anchor);
+/// fn require_source<A: CurrentAnchorSource>(_: &A) {}
+/// require_source(&tuple_source);
+/// ```
+pub trait CurrentAnchorSource: sealed::Sealed {
     /// Returns the authoritative current ledger anchor.
     fn current_anchor(&self) -> &LedgerAnchor;
 }
 
 /// An explicit authority-plane anchor token proving current ledger state (INV-063).
+///
+/// Cannot be constructed from an arbitrary or bare [`LedgerAnchor`] through the public API.
+/// Must be witnessed from a committed ledger snapshot or the authoritative ledger-head path.
+///
+/// # Compile-fail probe N2: caller cannot construct from a bare anchor via private `from_authority`
+/// ```compile_fail
+/// use fss_core::abstraction::AuthorityAnchor;
+/// use fss_core::LedgerAnchor;
+///
+/// let anchor = LedgerAnchor::genesis("site:main");
+/// let _ = AuthorityAnchor::from_authority(anchor);
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthorityAnchor {
     anchor: LedgerAnchor,
 }
 
 impl AuthorityAnchor {
+    /// Constructs an authoritative anchor token witnessing the committed ledger snapshot head.
+    pub fn from_committed_head(head: &LedgerSnapshot) -> Result<Self, ContractError> {
+        Self::from_authority(head.anchor.clone())
+    }
+
     /// Constructs an authoritative anchor token witnessing the given ledger anchor.
-    pub fn from_authority(anchor: LedgerAnchor) -> Result<Self, ContractError> {
+    ///
+    /// Restricted to `pub(crate)` so external callers cannot forge arbitrary anchors.
+    pub(crate) fn from_authority(anchor: LedgerAnchor) -> Result<Self, ContractError> {
         if anchor.site_lineage.is_empty() {
             return Err(ContractError::InvalidIdentifier);
         }
@@ -255,6 +309,8 @@ impl AuthorityAnchor {
     }
 }
 
+impl sealed::Sealed for AuthorityAnchor {}
+
 impl CurrentAnchorSource for AuthorityAnchor {
     fn current_anchor(&self) -> &LedgerAnchor {
         &self.anchor
@@ -262,27 +318,44 @@ impl CurrentAnchorSource for AuthorityAnchor {
 }
 
 /// Authority context binding an authoritative [`ContractBasis`] and current anchor (INV-063).
+///
+/// Fields are private and cannot be constructed via struct literal:
+/// ```compile_fail
+/// use fss_core::abstraction::AuthorityContext;
+/// use fss_core::contract_basis::reference_contract_basis;
+/// use fss_core::LedgerAnchor;
+///
+/// let basis = reference_contract_basis();
+/// let anchor = LedgerAnchor::genesis("site:main");
+/// let _ = AuthorityContext {
+///     contract_basis: &basis,
+///     anchor,
+/// };
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthorityContext<'a> {
     /// Active contract basis from the authority plane.
-    pub contract_basis: &'a ContractBasis,
+    contract_basis: &'a ContractBasis,
     /// Authoritative current anchor.
-    pub anchor: LedgerAnchor,
+    anchor: LedgerAnchor,
 }
 
 impl<'a> AuthorityContext<'a> {
-    /// Creates a new authority context.
-    pub fn new(
-        contract_basis: &'a ContractBasis,
-        anchor: LedgerAnchor,
-    ) -> Result<Self, ContractError> {
-        if anchor.site_lineage.is_empty() {
-            return Err(ContractError::InvalidIdentifier);
-        }
-        Ok(Self {
+    /// Creates a new authority context binding a contract basis and authoritative anchor.
+    pub fn new(contract_basis: &'a ContractBasis, authority: &AuthorityAnchor) -> Self {
+        Self {
             contract_basis,
-            anchor,
-        })
+            anchor: authority.anchor().clone(),
+        }
+    }
+
+    /// Creates a new authority context binding a contract basis and committed ledger snapshot head.
+    pub fn from_committed_head(
+        contract_basis: &'a ContractBasis,
+        head: &LedgerSnapshot,
+    ) -> Result<Self, ContractError> {
+        let authority = AuthorityAnchor::from_committed_head(head)?;
+        Ok(Self::new(contract_basis, &authority))
     }
 
     /// Returns a reference to the contract basis.
@@ -298,15 +371,11 @@ impl<'a> AuthorityContext<'a> {
     }
 }
 
+impl sealed::Sealed for AuthorityContext<'_> {}
+
 impl<'a> CurrentAnchorSource for AuthorityContext<'a> {
     fn current_anchor(&self) -> &LedgerAnchor {
         &self.anchor
-    }
-}
-
-impl CurrentAnchorSource for (&ContractBasis, &LedgerAnchor) {
-    fn current_anchor(&self) -> &LedgerAnchor {
-        self.1
     }
 }
 
@@ -467,6 +536,8 @@ impl NegativeReadOutcome {
             return Err(ContractError::CoverageUncertified);
         }
 
+        decoder.ensure_finished()?;
+
         Self::from_witness(
             claim_id,
             query_predicate,
@@ -555,70 +626,20 @@ impl CanonicalEncode for NegativeReadOutcome {
 
 /// Evaluates a negative read claim against its coverage witness and authority anchor source (INV-063).
 ///
-/// Reuses [`CoverageWitness::require_certified_absence`] from `evidence.rs:575`.
 /// Fails closed if the witness cannot certify absence, if the anchor does not match,
 /// if the witness is stale relative to the authority anchor source (KSTATE-005),
 /// or if the target generation or domain bounds mismatch.
+///
+/// Delegates directly to [`NegativeReadOutcome::from_witness`] to ensure unified validation
+/// order and avoid duplicated check logic.
 pub fn evaluate_negative_read<A: CurrentAnchorSource>(
     claim: &NegativeReadClaim,
     authority: &A,
 ) -> Result<NegativeReadOutcome, ContractError> {
-    validate_id(&claim.claim_id)?;
-    if claim.query_predicate.is_empty() || claim.query_predicate.len() > 128 {
-        return Err(ContractError::InvalidIdentifier);
-    }
-    let current_anchor = authority.current_anchor();
-    if current_anchor.site_lineage.is_empty() {
-        return Err(ContractError::InvalidIdentifier);
-    }
     let witness = claim
         .coverage_witness
         .as_ref()
         .ok_or(ContractError::CoverageUncertified)?;
-
-    // REUSE evidence.rs:575 require_certified_absence instead of duplicating it
-    witness.require_certified_absence()?;
-
-    // 1. Witness anchor must match claim anchor (RM7)
-    if witness.anchor != claim.anchor {
-        return Err(ContractError::StaleAnchor);
-    }
-
-    // 2. Site lineage must match current anchor (RM3)
-    if witness.anchor.site_lineage != current_anchor.site_lineage {
-        return Err(ContractError::StaleAnchor);
-    }
-
-    // 3. Strictly older commit sequence/epoch is stale (RM4)
-    if (witness.anchor.ledger_epoch, witness.anchor.commit_sequence)
-        < (current_anchor.ledger_epoch, current_anchor.commit_sequence)
-    {
-        return Err(ContractError::StaleAnchor);
-    }
-
-    // 4. Divergent state root / epochs at current sequence, or future anchor (RM8)
-    if witness.anchor.state_root != current_anchor.state_root
-        || witness.anchor.policy_epoch != current_anchor.policy_epoch
-        || witness.anchor.adapter_registry_epoch != current_anchor.adapter_registry_epoch
-        || witness.anchor.schema_epoch != current_anchor.schema_epoch
-        || witness.anchor.privacy_epoch != current_anchor.privacy_epoch
-        || (witness.anchor.ledger_epoch, witness.anchor.commit_sequence)
-            > (current_anchor.ledger_epoch, current_anchor.commit_sequence)
-    {
-        return Err(ContractError::StaleAnchor);
-    }
-
-    if claim.target_generation == 0 || witness.authorized_generation != claim.target_generation {
-        return Err(ContractError::GenerationConflict);
-    }
-
-    if claim.target_domain.is_empty() || !claim.target_domain.is_subset(&witness.observed_domain) {
-        return Err(ContractError::CoverageUncertified);
-    }
-
-    if witness.negative_predicate != claim.query_predicate {
-        return Err(ContractError::CoverageUncertified);
-    }
 
     NegativeReadOutcome::from_witness(
         claim.claim_id.clone(),
