@@ -112,7 +112,7 @@ pub enum ReferenceError {
     /// Event authority in the ledger is stale or has moved since the alert plan was prepared.
     StaleEventAuthority,
     /// Durable journal transition write failure.
-    DurableTransitionFailed(String),
+    DurableTransitionFailed(Box<crate::durable_effect::DurableEffectError>),
 }
 
 impl fmt::Display for ReferenceError {
@@ -222,8 +222,8 @@ impl fmt::Display for ReferenceError {
             Self::StaleEventAuthority => {
                 formatter.write_str("event authority in the ledger is stale or has moved")
             }
-            Self::DurableTransitionFailed(reason) => {
-                write!(formatter, "durable journal transition failed: {reason}")
+            Self::DurableTransitionFailed(error) => {
+                write!(formatter, "durable journal transition failed: {error}")
             }
         }
     }
@@ -251,8 +251,8 @@ impl Error for ReferenceError {
             | Self::StaleEstimatePastValidity { .. }
             | Self::ContradictedEstimate { .. }
             | Self::InvalidEstimatorConfig { .. }
-            | Self::StaleEventAuthority
-            | Self::DurableTransitionFailed(_) => None,
+            | Self::StaleEventAuthority => None,
+            Self::DurableTransitionFailed(error) => Some(error.as_ref()),
         }
     }
 }

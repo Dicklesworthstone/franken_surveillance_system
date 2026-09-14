@@ -299,6 +299,12 @@ impl DurableReferenceLedger {
         self.journal.last_root()
     }
 
+    /// Filesystem path to the underlying durable journal.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        self.journal.path()
+    }
+
     /// Sequence of an indeterminate append that must be reconciled, if present.
     #[must_use]
     pub fn pending_append_sequence(&self) -> Option<u64> {

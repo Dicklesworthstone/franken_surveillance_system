@@ -302,6 +302,48 @@ pub fn alert_cancel_proof(
     ContentDigest::sha256(&encoder.finish())
 }
 
+/// Verifies event alert eligibility against policy, corroboration, and sensor integrity.
+pub(crate) fn verify_event_alert_eligibility(
+    state: fss_core::EventState,
+    action: ReferencePolicyAction,
+    evidence: &[fss_core::EventEvidence],
+) -> Result<(), ReferenceError> {
+    if action != ReferencePolicyAction::PrepareAlert || state != fss_core::EventState::Corroborated
+    {
+        return Err(ReferenceError::InvalidSpec("alert_not_eligible"));
+    }
+    if evidence
+        .iter()
+        .any(fss_core::EventEvidence::reports_sensor_tamper)
+    {
+        return Err(fss_core::ContractError::SensorIntegrityRisk.into());
+    }
+    Ok(())
+}
+
+pub(crate) fn format_reference_alert_terminal_predicate(
+    event_revision_digest: ContentDigest,
+    head_seq: usize,
+    head_digest: ContentDigest,
+) -> String {
+    format!(
+        "{REFERENCE_ALERT_TERMINAL_PREDICATE}:eligible:{event_revision_digest}:head:{head_seq}:{head_digest}"
+    )
+}
+
+fn parse_reference_alert_terminal_predicate(
+    predicate: &str,
+) -> Option<(ContentDigest, usize, ContentDigest)> {
+    let prefix = format!("{REFERENCE_ALERT_TERMINAL_PREDICATE}:eligible:");
+    let remainder = predicate.strip_prefix(&prefix)?;
+    let (revision_str, head_part) = remainder.split_once(":head:")?;
+    let eligible_revision = ContentDigest::parse(revision_str).ok()?;
+    let (seq_str, head_digest_str) = head_part.split_once(':')?;
+    let head_seq = seq_str.parse::<usize>().ok()?;
+    let head_digest = ContentDigest::parse(head_digest_str).ok()?;
+    Some((eligible_revision, head_seq, head_digest))
+}
+
 /// Verifies that the event revision in `plan` remains the current, un-tampered authority in `authority`.
 ///
 /// Permits unrelated observation or event batches that do not modify this event (P6).
@@ -310,6 +352,16 @@ fn check_event_authority(
     plan: &ReferenceAlertPlan,
     authority: &DurableReferenceLedger,
 ) -> Result<(), ReferenceError> {
+    if authority.path().exists() {
+        if let Ok(report) = fss_ledger::inspect(authority.path()) {
+            if report.records().len() > authority.batches().len()
+                || report.last_root() != authority.journal_root()
+            {
+                return Err(ReferenceError::StaleEventAuthority);
+            }
+        }
+    }
+
     // 1. Find the batch and delta where this exact event revision was published.
     let (batch_idx, prepared_delta) = authority
         .batches()
@@ -384,8 +436,6 @@ pub(crate) fn revalidate_alert_event_authority<J: AlertEffectTransitioner>(
     requested_at: TimestampNs,
     journal: &mut J,
 ) -> Result<(), ReferenceError> {
-    validate_reference_alert_plan(plan)?;
-
     let operation_id = &plan.intent.operation_id;
     let operation = journal
         .operation(operation_id)
@@ -397,14 +447,87 @@ pub(crate) fn revalidate_alert_event_authority<J: AlertEffectTransitioner>(
         return Err(fss_core::ContractError::InvalidEffectTransition.into());
     }
 
-    let obligation = journal
-        .obligation(&plan.obligation_id)
-        .ok_or(fss_core::ContractError::NotFound)?;
+    if let Err(err) = validate_reference_alert_plan(plan) {
+        let cancel_at = if requested_at > operation.updated_at {
+            requested_at
+        } else {
+            TimestampNs(operation.updated_at.0.saturating_add(1))
+        };
+        let cancel_proof = alert_cancel_proof(
+            operation_id,
+            &plan.authority_anchor,
+            &authority.current().anchor,
+        );
+        journal.transition_cancelled(
+            operation_id,
+            cancel_at,
+            cancel_proof,
+            "stale_event_authority".to_owned(),
+        )?;
+        return Err(err);
+    }
+
+    let obligation = match journal.obligation(&plan.obligation_id) {
+        Some(obl) => obl,
+        None => {
+            let cancel_at = if requested_at > operation.updated_at {
+                requested_at
+            } else {
+                TimestampNs(operation.updated_at.0.saturating_add(1))
+            };
+            let cancel_proof = alert_cancel_proof(
+                operation_id,
+                &plan.authority_anchor,
+                &authority.current().anchor,
+            );
+            journal.transition_cancelled(
+                operation_id,
+                cancel_at,
+                cancel_proof,
+                "stale_event_authority".to_owned(),
+            )?;
+            return Err(fss_core::ContractError::NotFound.into());
+        }
+    };
 
     let plan_matches_prepare =
         operation.intent == plan.intent && obligation.operation_id == *operation_id;
 
     if !plan_matches_prepare {
+        let cancel_at = if requested_at > operation.updated_at {
+            requested_at
+        } else {
+            TimestampNs(operation.updated_at.0.saturating_add(1))
+        };
+        let cancel_proof = alert_cancel_proof(
+            operation_id,
+            &plan.authority_anchor,
+            &authority.current().anchor,
+        );
+        journal.transition_cancelled(
+            operation_id,
+            cancel_at,
+            cancel_proof,
+            "stale_event_authority".to_owned(),
+        )?;
+        return Err(ReferenceError::StaleEventAuthority);
+    }
+
+    let terminal_valid =
+        match parse_reference_alert_terminal_predicate(&obligation.terminal_predicate) {
+            Some((eligible_revision, head_seq, head_digest)) => {
+                eligible_revision == plan.event_revision_digest
+                    && head_seq <= authority.batches().len()
+                    && if head_seq == 0 {
+                        head_digest == authority.current().anchor.state_root
+                    } else {
+                        authority.batches()[head_seq - 1].batch_digest == head_digest
+                    }
+            }
+            None => false,
+        };
+
+    if !terminal_valid {
         let cancel_at = if requested_at > operation.updated_at {
             requested_at
         } else {
@@ -744,23 +867,11 @@ pub fn prepare_reference_alert(
     params: PrepareAlertParams<'_>,
     journal: &mut EffectJournal,
 ) -> Result<ReferenceAlertPlan, ReferenceError> {
-    if params.decision.action != ReferencePolicyAction::PrepareAlert
-        || params.decision.event.state != fss_core::EventState::Corroborated
-    {
-        return Err(ReferenceError::InvalidSpec("alert_not_eligible"));
-    }
-    // Defence in depth: a sensor-integrity risk never becomes effect authority, even when a
-    // revision carrying a tamper report reached a corroborated state without being verified. The
-    // situation's integrity risk is compiled from exactly these edges.
-    if params
-        .decision
-        .event
-        .evidence
-        .iter()
-        .any(fss_core::EventEvidence::reports_sensor_tamper)
-    {
-        return Err(fss_core::ContractError::SensorIntegrityRisk.into());
-    }
+    verify_event_alert_eligibility(
+        params.decision.event.state,
+        params.decision.action,
+        &params.decision.event.evidence,
+    )?;
     if params.event_receipt.event_revision_digest != params.decision.event.revision_digest() {
         return Err(ReferenceError::InvalidSpec("event_receipt_mismatch"));
     }
@@ -804,10 +915,22 @@ pub fn prepare_reference_alert(
         request_digest,
         precondition_digest,
     };
+    let ledger_head_seq = params.authority.batches().len();
+    let ledger_head_digest = params
+        .authority
+        .batches()
+        .last()
+        .map(|b| b.batch_digest)
+        .unwrap_or_else(|| params.authority.current().anchor.state_root);
+    let terminal_predicate = format_reference_alert_terminal_predicate(
+        params.event_receipt.event_revision_digest,
+        ledger_head_seq,
+        ledger_head_digest,
+    );
     let receipt = journal.prepare(
         intent.clone(),
         params.obligation_id,
-        REFERENCE_ALERT_TERMINAL_PREDICATE,
+        terminal_predicate,
         params.now,
     )?;
     let prepared_intent = receipt.intent.clone();
@@ -883,8 +1006,8 @@ pub(crate) fn execute_alert_dispatch<J: AlertEffectTransitioner>(
 /// ```compile_fail,E0308
 /// use fss_core::belief::BeliefInterval;
 /// use fss_core::{EffectJournal, TimestampNs};
-/// use fss_reference::ReferenceAlertPlan;
-/// use fss_reference::{DurableReferenceLedger, ReferenceAlertProvider, ReferenceProviderBehavior, dispatch_reference_alert};
+/// use fss_ledger::DurableReferenceLedger;
+/// use fss_reference::{ReferenceAlertPlan, ReferenceAlertProvider, ReferenceProviderBehavior, dispatch_reference_alert};
 ///
 /// fn legal_dispatch(
 ///     plan: &ReferenceAlertPlan,

@@ -376,16 +376,22 @@ fn test_planted_negative_lose_ack_reopen_refuses_second_commit_before_provider_t
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, _init_journal, authority) = setup_alert_plan(&ledger_path)?;
+    let (plan, init_journal, authority) = setup_alert_plan(&ledger_path)?;
     let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:durable:lose_ack");
 
     // Session 1: Prepare and dispatch with LoseAckAfterDelivery
     {
         let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+        let terminal_predicate = init_journal
+            .obligations()
+            .find(|o| o.obligation_id == plan.obligation_id)
+            .ok_or("missing obligation")?
+            .terminal_predicate
+            .as_str();
         let _ = journal.prepare(
             plan.intent.clone(),
             plan.obligation_id.clone(),
-            "delivery_acknowledged_by_provider",
+            terminal_predicate,
             TimestampNs(100),
         )?;
 
@@ -446,16 +452,22 @@ fn test_planted_negative_reconciliation_after_reopen_closes_obligation_with_prov
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, _, authority) = setup_alert_plan(&ledger_path)?;
+    let (plan, init_journal, authority) = setup_alert_plan(&ledger_path)?;
     let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:durable:reopen");
 
     // Session 1: Prepare and dispatch with LoseAckAfterDelivery
     {
         let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+        let terminal_predicate = init_journal
+            .obligations()
+            .find(|o| o.obligation_id == plan.obligation_id)
+            .ok_or("missing obligation")?
+            .terminal_predicate
+            .as_str();
         let _ = journal.prepare(
             plan.intent.clone(),
             plan.obligation_id.clone(),
-            "delivery_acknowledged_by_provider",
+            terminal_predicate,
             TimestampNs(100),
         )?;
         let outcome = journal.dispatch_alert(
@@ -661,17 +673,23 @@ fn test_reconcile_alert_accepts_adapter_accepted_after_restart() -> Result<(), B
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, _, authority) = setup_alert_plan(&ledger_path)?;
+    let (plan, init_journal, authority) = setup_alert_plan(&ledger_path)?;
     let mut provider =
         ReferenceAlertProvider::with_provider_id("provider:test:durable:reconcile_accepted");
 
     // Session 1: Prepare and dispatch alert; provider accepts delivery
     {
         let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+        let terminal_predicate = init_journal
+            .obligations()
+            .find(|o| o.obligation_id == plan.obligation_id)
+            .ok_or("missing obligation")?
+            .terminal_predicate
+            .as_str();
         let _ = journal.prepare(
             plan.intent.clone(),
             plan.obligation_id.clone(),
-            "delivery_acknowledged_by_provider",
+            terminal_predicate,
             TimestampNs(100),
         )?;
         let outcome = journal.dispatch_alert(
