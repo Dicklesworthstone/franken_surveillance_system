@@ -425,7 +425,7 @@ fn is_structurally_valid_record(slice: &[u8]) -> bool {
     committed_root == expected_root
 }
 
-fn find_structurally_valid_record(
+pub(crate) fn find_structurally_valid_record(
     bytes: &[u8],
     foreign_offset: u64,
     foreign_length: u64,

@@ -128,7 +128,7 @@
       "description": "Report capabilities in JSON format."
     },
     "doctor": {
-      "cli": "fss doctor --json",
+      "cli": "fss doctor --json [--root <dir>]",
       "description": "Report system diagnostic doctor results in JSON format."
     },
     "negative_evidence": {
@@ -136,7 +136,7 @@
       "description": "Negative evidence ledger management."
     },
     "status": {
-      "cli": "fss status --json",
+      "cli": "fss doctor --json [--root <dir>]",
       "description": "Report system status in JSON format."
     }
   },
@@ -730,6 +730,16 @@
       "description": "exact product/firmware/app tuple not certified",
       "guidance": "fail closed or explicit import-only mode",
       "id": "ERR-DEVICE-UNSUPPORTED-001"
+    },
+    {
+      "description": "doctor inspection detected deployment conditions requiring attention",
+      "guidance": "inspect doctor report and follow next affordance",
+      "id": "ERR-DOCTOR-ATTENTION-REQUIRED-001"
+    },
+    {
+      "description": "target directory is not a recognized reference deployment root",
+      "guidance": "provide a valid reference deployment root",
+      "id": "ERR-DOCTOR-NOT-A-DEPLOYMENT-001"
     },
     {
       "description": "dispatch outcome cannot be determined",
@@ -2127,6 +2137,8 @@
       "effectful": false,
       "errorIdentities": [
         "ERR-CLI-RUNTIME-FAILURE-001",
+        "ERR-DOCTOR-ATTENTION-REQUIRED-001",
+        "ERR-DOCTOR-NOT-A-DEPLOYMENT-001",
         "ERR-CLOCK-UNCERTAIN-001",
         "ERR-STREAM-CONTINUITY-001",
         "ERR-AUTH-DENIED-001",
@@ -2134,7 +2146,9 @@
       ],
       "exitIdentities": [
         "EXIT-OK-000",
-        "EXIT-CLI-RUNTIME-FAILURE-001"
+        "EXIT-CLI-RUNTIME-FAILURE-001",
+        "EXIT-DOCTOR-ATTENTION-REQUIRED-003",
+        "EXIT-DOCTOR-NOT-A-DEPLOYMENT-004"
       ],
       "gate": "QL-AGENT-001",
       "id": "AOP-014",
