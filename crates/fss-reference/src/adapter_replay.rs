@@ -74,6 +74,35 @@ pub const ADP_REPLAY_GOLDEN_AUDIT_HASH: &str =
 /// and explicit capability grant matching row `ADP-REPLAY-001` from a validated [`ContextAuthority`].
 ///
 /// Not cloneable: prevents unauthorized duplication or survival across context finalization.
+///
+/// # Unforgeable Authority Invariants
+///
+/// External crates cannot forge a [`ReplayIoAuthority`]:
+///
+/// ```rust,compile_fail
+/// // ReplayIoAuthority::authorize is not public and cannot be called from outside.
+/// use fss_reference::ReplayIoAuthority;
+/// let _ = ReplayIoAuthority::authorize("attacker", "ADP-REPLAY-001");
+/// ```
+///
+/// ```rust,compile_fail
+/// // ReplayIoAuthority cannot be constructed with a struct literal from outside its module.
+/// use fss_reference::ReplayIoAuthority;
+/// let _ = ReplayIoAuthority {
+///     principal: String::new(),
+///     capability: String::new(),
+///     root_dir: std::path::PathBuf::new(),
+///     state: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
+///     dir_counter: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+/// };
+/// ```
+///
+/// ```rust,compile_fail
+/// // ReplayIoAuthority does not implement Clone.
+/// use fss_reference::ReplayIoAuthority;
+/// fn assert_clone<T: Clone>() {}
+/// assert_clone::<ReplayIoAuthority>();
+/// ```
 #[derive(Debug)]
 pub struct ReplayIoAuthority {
     principal: String,
@@ -128,29 +157,11 @@ impl ReplayIoAuthority {
         })
     }
 
-    /// Acquires authority directly from a validated root [`ContextAuthority`].
-    ///
-    /// # Errors
-    /// Returns [`ReplayAdapterError::Unauthorized`] if the context authority lacks the required capability.
-    pub fn from_context_authority(auth: &ContextAuthority) -> Result<Self, ReplayAdapterError> {
-        let base = std::env::var_os("CARGO_TARGET_TMPDIR")
-            .map(PathBuf::from)
-            .or_else(|| std::option_env!("CARGO_TARGET_TMPDIR").map(PathBuf::from))
-            .unwrap_or_else(std::env::temp_dir);
-        let default_root = base.join(format!(
-            "fss-adp-replay-{}-{}-{}",
-            std::process::id(),
-            auth.principal.replace(':', "_"),
-            auth.operation_id.to_string().replace(':', "_")
-        ));
-        Self::from_context_authority_with_root_dir(auth, default_root)
-    }
-
     /// Acquires authority directly from a validated root [`ContextAuthority`] with an explicit root directory.
     ///
     /// # Errors
     /// Returns [`ReplayAdapterError::Unauthorized`] if the context authority lacks the required capability.
-    pub fn from_context_authority_with_root_dir(
+    pub fn from_context_authority(
         auth: &ContextAuthority,
         root_dir: impl Into<PathBuf>,
     ) -> Result<Self, ReplayAdapterError> {
@@ -166,7 +177,21 @@ impl ReplayIoAuthority {
         let root_dir = root_dir.into();
         let state = Arc::new(AtomicU8::new(STATE_ACTIVE));
         let dir_counter = Arc::new(AtomicUsize::new(0));
-        Self::authorize_internal(&auth.principal, ADP_REPLAY_ROW_ID, root_dir, state, dir_counter)
+        Self::authorize_internal(
+            &auth.principal,
+            ADP_REPLAY_ROW_ID,
+            root_dir,
+            state,
+            dir_counter,
+        )
+    }
+
+    /// Alias for [`Self::from_context_authority`] with an explicit root directory.
+    pub fn from_context_authority_with_root_dir(
+        auth: &ContextAuthority,
+        root_dir: impl Into<PathBuf>,
+    ) -> Result<Self, ReplayAdapterError> {
+        Self::from_context_authority(auth, root_dir)
     }
 
     /// Authorized principal identity.
@@ -255,18 +280,27 @@ impl ReplayCx {
         }
     }
 
-    /// Constructs a new replay execution context directly from a validated [`ContextAuthority`].
+    /// Constructs a new replay execution context directly from a validated [`ContextAuthority`]
+    /// with an explicit filesystem root directory.
     ///
     /// # Errors
     /// Returns [`ReplayAdapterError::Unauthorized`] if the context authority lacks the required capability.
-    pub fn from_context_authority(auth: &ContextAuthority) -> Result<Self, ReplayAdapterError> {
-        let io = ReplayIoAuthority::from_context_authority(auth)?;
+    pub fn from_context_authority(
+        auth: &ContextAuthority,
+        root_dir: impl Into<PathBuf>,
+    ) -> Result<Self, ReplayAdapterError> {
+        let io = ReplayIoAuthority::from_context_authority(auth, root_dir)?;
         Ok(Self::new(io))
     }
 
     /// Injects cooperative cancellation when the specified checkpoint stage is reached.
-    /// Used for deterministic, race-free cancellation testing.
+    /// Internal test hook: not part of the stable public production API.
+    #[doc(hidden)]
     pub fn set_cancel_at_checkpoint(&self, stage: &'static str) {
+        self.set_cancel_at_checkpoint_internal(stage);
+    }
+
+    pub(crate) fn set_cancel_at_checkpoint_internal(&self, stage: &'static str) {
         if let Ok(mut guard) = self.cancel_at_stage.lock() {
             *guard = Some(stage);
         }
@@ -405,11 +439,59 @@ impl ReplayCx {
     }
 }
 
+/// Maximum retry attempts to create a collision-free scoped directory.
+pub const MAX_SCOPED_DIR_ATTEMPTS: usize = 10_000;
+
+/// Default maximum existing target store objects for rollback snapshot protection.
+pub const DEFAULT_MAX_ROLLBACK_SNAPSHOT_OBJECTS: usize = 65_536;
+
+/// Default maximum existing target store bytes for rollback snapshot protection.
+pub const DEFAULT_MAX_ROLLBACK_SNAPSHOT_BYTES: u64 = 512 * 1024 * 1024;
+
+fn validate_scoped_dir_prefix(prefix: &str) -> Result<(), std::io::Error> {
+    if prefix.is_empty()
+        || !prefix
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid scoped directory prefix: must match [A-Za-z0-9_-]+ with no path separators or traversal",
+        ));
+    }
+    Ok(())
+}
+
+fn create_exclusive_scoped_dir(
+    root_dir: &Path,
+    prefix: &str,
+    dir_counter: &AtomicUsize,
+) -> Result<PathBuf, std::io::Error> {
+    validate_scoped_dir_prefix(prefix)?;
+    std::fs::create_dir_all(root_dir)?;
+    for _ in 0..MAX_SCOPED_DIR_ATTEMPTS {
+        let seq = dir_counter.fetch_add(1, Ordering::SeqCst);
+        let candidate = root_dir.join(format!("{prefix}-{seq}"));
+        match std::fs::create_dir(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                continue;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "exhausted bounded retry attempts for collision-free scoped directory",
+    ))
+}
+
 /// Scoped ledger directory managed with explicit I/O authority.
 #[derive(Debug)]
 pub struct ScopedLedgerDir {
     path: PathBuf,
     principal: String,
+    created_by_instance: bool,
 }
 
 impl ScopedLedgerDir {
@@ -417,7 +499,7 @@ impl ScopedLedgerDir {
     ///
     /// # Errors
     /// Returns [`std::io::Error`] with [`std::io::ErrorKind::PermissionDenied`] if context is finalized or cancelled.
-    /// Returns [`std::io::Error`] if directory creation fails.
+    /// Returns [`std::io::Error`] if directory prefix validation fails or creation fails.
     pub fn new(prefix: &str, cx: &ReplayCx) -> Result<Self, std::io::Error> {
         if !cx.io_authority().is_valid() || cx.is_cancelled() {
             return Err(std::io::Error::new(
@@ -425,12 +507,11 @@ impl ScopedLedgerDir {
                 "ReplayIoAuthority revoked: context is not active",
             ));
         }
-        let seq = cx.next_dir_sequence();
-        let path = cx.root_dir().join(format!("{prefix}-{seq}"));
-        std::fs::create_dir_all(&path)?;
+        let path = create_exclusive_scoped_dir(cx.root_dir(), prefix, &cx.io.dir_counter)?;
         Ok(Self {
             path,
             principal: cx.io_authority().principal().to_string(),
+            created_by_instance: true,
         })
     }
 
@@ -438,7 +519,7 @@ impl ScopedLedgerDir {
     ///
     /// # Errors
     /// Returns [`std::io::Error`] with [`std::io::ErrorKind::PermissionDenied`] if authority is revoked.
-    /// Returns [`std::io::Error`] if directory creation fails.
+    /// Returns [`std::io::Error`] if directory prefix validation fails or creation fails.
     pub fn from_authority(prefix: &str, auth: &ReplayIoAuthority) -> Result<Self, std::io::Error> {
         if !auth.is_valid() {
             return Err(std::io::Error::new(
@@ -446,12 +527,11 @@ impl ScopedLedgerDir {
                 "ReplayIoAuthority revoked: authority is not active",
             ));
         }
-        let seq = auth.dir_counter.fetch_add(1, Ordering::SeqCst);
-        let path = auth.root_dir().join(format!("{prefix}-{seq}"));
-        std::fs::create_dir_all(&path)?;
+        let path = create_exclusive_scoped_dir(auth.root_dir(), prefix, &auth.dir_counter)?;
         Ok(Self {
             path,
             principal: auth.principal().to_string(),
+            created_by_instance: true,
         })
     }
 
@@ -476,7 +556,9 @@ impl ScopedLedgerDir {
 
 impl Drop for ScopedLedgerDir {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
+        if self.created_by_instance {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
     }
 }
 
@@ -491,6 +573,10 @@ pub struct ReplayAdapterConfig {
     pub max_total_bytes: usize,
     /// Expected adapter generation string.
     pub generation: String,
+    /// Maximum allowed existing target store objects for rollback snapshot protection.
+    pub max_snapshot_objects: usize,
+    /// Maximum allowed existing target store bytes for rollback snapshot protection.
+    pub max_snapshot_bytes: u64,
 }
 
 impl Default for ReplayAdapterConfig {
@@ -500,6 +586,8 @@ impl Default for ReplayAdapterConfig {
             max_bytes: ADP_REPLAY_MAX_PACKET_BYTES,
             max_total_bytes: ADP_REPLAY_MAX_TOTAL_BYTES,
             generation: ADP_REPLAY_GENERATION.to_string(),
+            max_snapshot_objects: DEFAULT_MAX_ROLLBACK_SNAPSHOT_OBJECTS,
+            max_snapshot_bytes: DEFAULT_MAX_ROLLBACK_SNAPSHOT_BYTES,
         }
     }
 }
@@ -797,6 +885,16 @@ impl ReplayAdapter {
                 "max_total_bytes cannot be zero",
             ));
         }
+        if config.max_snapshot_objects == 0 {
+            return Err(ReplayAdapterError::BoundExceeded(
+                "max_snapshot_objects cannot be zero",
+            ));
+        }
+        if config.max_snapshot_bytes == 0 {
+            return Err(ReplayAdapterError::BoundExceeded(
+                "max_snapshot_bytes cannot be zero",
+            ));
+        }
         if config.generation != ADP_REPLAY_GENERATION {
             return Err(ReplayAdapterError::IncompatibleGeneration {
                 expected: ADP_REPLAY_GENERATION.to_string(),
@@ -1042,8 +1140,8 @@ impl ReplayAdapter {
         cx.checkpoint("run_replay")?;
 
         // Bound check on target store to protect rollback snapshot
-        if objects.object_count() > self.config.max_packets
-            || objects.total_bytes() > self.config.max_total_bytes as u64
+        if objects.object_count() > self.config.max_snapshot_objects
+            || objects.total_bytes() > self.config.max_snapshot_bytes
         {
             return Err(ReplayAdapterError::BoundExceeded(
                 "target_store_exceeds_rollback_bound",
@@ -1146,8 +1244,8 @@ impl ReplayAdapter {
         cx.checkpoint("publish_on_match")?;
 
         // 4. Bound check on target store to protect rollback snapshot
-        if objects.object_count() > self.config.max_packets
-            || objects.total_bytes() > self.config.max_total_bytes as u64
+        if objects.object_count() > self.config.max_snapshot_objects
+            || objects.total_bytes() > self.config.max_snapshot_bytes
         {
             return Err(ReplayAdapterError::BoundExceeded(
                 "target_store_exceeds_rollback_bound",

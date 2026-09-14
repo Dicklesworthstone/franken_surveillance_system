@@ -61,10 +61,12 @@ pub use adapter_replay::{
     ADP_REPLAY_CURRENT_STATE, ADP_REPLAY_GENERATION, ADP_REPLAY_GOLDEN_AUDIT_HASH,
     ADP_REPLAY_GOLDEN_STATE_ROOT, ADP_REPLAY_MAX_PACKET_BYTES, ADP_REPLAY_MAX_PACKETS,
     ADP_REPLAY_MAX_TOTAL_BYTES, ADP_REPLAY_PROMOTION_GATE, ADP_REPLAY_PROTOCOL_PROFILE,
-    ADP_REPLAY_ROW_ID, ADP_REPLAY_SURFACE, ADP_REPLAY_TIER, ERR_ADAPTER_REPLAY_DIVERGED,
-    ERR_REPLAY_DIVERGED, ReplayAdapter, ReplayAdapterConfig, ReplayAdapterError, ReplayAuditRecord,
-    ReplayCx, ReplayDivergence, ReplayExecutionOutput, ReplayExecutionRequest, ReplayIoAuthority,
-    ReplayLifecycleState, ReplayTerminalStatus, ScopedLedgerDir, compute_audit_hash,
+    ADP_REPLAY_ROW_ID, ADP_REPLAY_SURFACE, ADP_REPLAY_TIER, DEFAULT_MAX_ROLLBACK_SNAPSHOT_BYTES,
+    DEFAULT_MAX_ROLLBACK_SNAPSHOT_OBJECTS, ERR_ADAPTER_REPLAY_DIVERGED, ERR_REPLAY_DIVERGED,
+    MAX_SCOPED_DIR_ATTEMPTS, ReplayAdapter, ReplayAdapterConfig, ReplayAdapterError,
+    ReplayAuditRecord, ReplayCx, ReplayDivergence, ReplayExecutionOutput, ReplayExecutionRequest,
+    ReplayIoAuthority, ReplayLifecycleState, ReplayTerminalStatus, ScopedLedgerDir,
+    compute_audit_hash,
 };
 pub use alert::{
     PrepareAlertParams, ProviderDispatch, ProviderFailureReceipt, ProviderObservationReceipt,
