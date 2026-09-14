@@ -132,10 +132,15 @@ pub use extrinsics::{
 };
 pub use hydration::{ReferenceHydrationCatalog, ReferenceHydrationLimits};
 pub use ingest::{
-    AnnexBAccessUnit, AnnexBError, AnnexBLimits, AnnexBNal, AnnexBScan, CEILING_MAX_NAL_BYTES,
-    DEFAULT_MAX_AUS, DEFAULT_MAX_INPUT_BYTES, DEFAULT_MAX_NAL_BYTES, DEFAULT_MAX_NALS, JpegFinding,
-    JpegFrameSpan, JpegProcess, JpegScan, JpegSofInfo, JpegSplitError, MjpegLimits, OmissionReason,
-    OmissionSpan, SourceSpan, split_annexb, split_jpeg_stream,
+    ADP_FILE_GENERATION, ADP_FILE_ROW_ID, AnnexBAccessUnit, AnnexBError, AnnexBLimits, AnnexBNal,
+    AnnexBScan, CEILING_MAX_NAL_BYTES, CaptureHint, DEFAULT_CHUNK_BYTES, DEFAULT_MAX_AUS,
+    DEFAULT_MAX_INPUT_BYTES, DEFAULT_MAX_NAL_BYTES, DEFAULT_MAX_NALS, DetectedFileFormat,
+    FILE_IMPORT_MANIFEST_SCHEMA, FileFormatHint, FileImportManifest, FileIngestAdapter,
+    FileIngestError, FileIngestLimits, FileIngestOutcome, FileIngestReceipt, FileIngestRequest,
+    FileOmissionSpan, JpegFinding, JpegFrameSpan, JpegProcess, JpegScan, JpegSofInfo,
+    JpegSplitError, MjpegLimits, OmissionReason, OmissionSpan, SegmentSpan, SourceSpan,
+    compute_import_identity, default_adapter_identity, fetch_segment_bytes, sniff_format,
+    split_annexb, split_jpeg_stream,
 };
 pub use meaningful_delta::{
     classify_reference_meaningful_delta, classify_reference_meaningful_delta_in_lineage,
