@@ -20,8 +20,8 @@ use super::{
     decode_text_set, encode_text_set, valid_text,
 };
 use crate::agent::{
-    KnowledgeCell, KnowledgeStateBasis, REDACTED_STATEMENT_MARKER, RedactionMarker, StaleBasis,
-    UnknownReason,
+    KnowledgeCell, KnowledgeCellParams, KnowledgeStateBasis, REDACTED_STATEMENT_MARKER,
+    RedactionMarker, StaleBasis, UnknownReason,
 };
 use crate::belief::{BeliefInterval, Contradiction};
 use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder};
@@ -576,7 +576,7 @@ impl H1SemanticSynopsis {
 
         // The declared state set must equal the set derived from the cells (item 10): no declared
         // state without a cell in that state, and no cell state left undeclared.
-        if self.knowledge_states != self.derived_knowledge_states() {
+        if self.knowledge_states != self.derived_knowledge_states()? {
             return Err(ContractError::KnowledgeStateBasisMismatch.into());
         }
 
@@ -808,12 +808,16 @@ impl H1SemanticSynopsis {
     /// [`Self::validate`] refuses a declared state set that differs from this set. A caller with
     /// a newer head or a privacy projection may see stale or redacted cells through
     /// [`Self::to_knowledge_cells`] where this set reports unknown ones.
-    #[must_use]
-    pub fn derived_knowledge_states(&self) -> BTreeSet<KnowledgeState> {
-        self.to_knowledge_cells(&H1CellContext::new(self.anchor.clone()))
+    ///
+    /// # Errors
+    ///
+    /// Propagates the typed refusal of [`Self::to_knowledge_cells`].
+    pub fn derived_knowledge_states(&self) -> Result<BTreeSet<KnowledgeState>, ContractError> {
+        Ok(self
+            .to_knowledge_cells(&H1CellContext::new(self.anchor.clone()))?
             .into_iter()
-            .map(|cell| cell.knowledge_state)
-            .collect()
+            .map(|cell| cell.knowledge_state())
+            .collect())
     }
 
     /// Converts this synopsis's facts into [`KnowledgeCell`]s.
@@ -840,8 +844,16 @@ impl H1SemanticSynopsis {
     ///
     /// No cell is ever `indeterminate`: [`WorldFact`] carries no typed effect outcome, and
     /// statement text is never read as one.
-    #[must_use]
-    pub fn to_knowledge_cells(&self, ctx: &H1CellContext) -> Vec<KnowledgeCell> {
+    ///
+    /// # Errors
+    ///
+    /// Every cell is built through [`KnowledgeCell::new`]; a fact whose cell fails
+    /// [`KnowledgeCell::validate`] (for example a `laboratory:` fact claiming `known`) is refused
+    /// with that typed error, and no unvalidated cell is ever returned.
+    pub fn to_knowledge_cells(
+        &self,
+        ctx: &H1CellContext,
+    ) -> Result<Vec<KnowledgeCell>, ContractError> {
         self.facts
             .iter()
             .map(|fact| self.cell_for_fact(fact, ctx))
@@ -849,7 +861,11 @@ impl H1SemanticSynopsis {
     }
 
     /// Computes one fact's cell; see [`Self::to_knowledge_cells`].
-    fn cell_for_fact(&self, fact: &WorldFact, ctx: &H1CellContext) -> KnowledgeCell {
+    fn cell_for_fact(
+        &self,
+        fact: &WorldFact,
+        ctx: &H1CellContext,
+    ) -> Result<KnowledgeCell, ContractError> {
         let cell_contradictions: Vec<ContentDigest> = self
             .contradictions
             .iter()
@@ -906,7 +922,7 @@ impl H1SemanticSynopsis {
             (KnowledgeState::Estimated, None)
         };
 
-        KnowledgeCell {
+        let params = KnowledgeCellParams {
             claim_id: fact.fact_id.clone(),
             statement: fact.statement.clone(),
             knowledge_state,
@@ -916,7 +932,8 @@ impl H1SemanticSynopsis {
             contradictions: cell_contradictions,
             valid_until: None,
             state_basis,
-        }
+        };
+        KnowledgeCell::new(params)
     }
 
     /// Computes the deterministic canonical digest of this H1 semantic synopsis.

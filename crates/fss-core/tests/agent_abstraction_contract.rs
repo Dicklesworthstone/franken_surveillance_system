@@ -18,7 +18,7 @@ use fss_core::{
     BudgetVector, CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, CapsuleId,
     CaptureInterval, ClockBasis, Completeness, ContentDigest, ContractError, CoverageContinuity,
     CoverageStopReason, CoverageWitness, DerivedBelief, DerivedBeliefParams, DigestAlgorithm,
-    EvidenceDelta, Generation, KnowledgeState, KnowledgeStateBasis, LedgerAnchor,
+    EvidenceDelta, Generation, KnowledgeCell, KnowledgeState, KnowledgeStateBasis, LedgerAnchor,
     NegativeReadClaim, NegativeReadOutcome, ObjectId, ObligationId, OmissionReason, OperationId,
     Plane, PrivacyGeneration, ProvenanceClass, RUNTIME_AUTHORITY_DOMAIN, RedactionMarker,
     RedactionReason, ReferenceLedger, RuntimeAuthorityAndCustody, RuntimeAuthorityAndCustodyRecord,
@@ -346,10 +346,10 @@ fn test_derived_belief_to_knowledge_cell_hard_gate() -> Result<(), Box<dyn Error
     let cell = belief.to_knowledge_cell(&sample_anchor())?;
 
     // The cell inherits the derived belief's attributes
-    assert_eq!(cell.claim_id, "belief:track:vehicle:002");
-    assert_eq!(cell.knowledge_state, KnowledgeState::Estimated);
-    assert_eq!(cell.provenance, ProvenanceClass::Derived);
-    assert_eq!(cell.evidence.len(), 1);
+    assert_eq!(cell.claim_id(), "belief:track:vehicle:002");
+    assert_eq!(cell.knowledge_state(), KnowledgeState::Estimated);
+    assert_eq!(cell.provenance(), ProvenanceClass::Derived);
+    assert_eq!(cell.evidence().len(), 1);
 
     // Constitutional Hard Gate: A derived proposition can NEVER be an irreversible-effect premise!
     assert!(
@@ -2140,13 +2140,13 @@ fn test_source_evidence_record_valid_construction() -> Result<(), Box<dyn Error>
     assert!(record.may_claim_authority());
     assert!(!record.may_authorize_effects());
 
-    let kcell = record.to_knowledge_cell();
-    assert_eq!(kcell.claim_id, "source:packet:front_gate:0042");
-    assert_eq!(kcell.knowledge_state, KnowledgeState::Known);
-    assert_eq!(kcell.provenance, ProvenanceClass::Observed);
+    let kcell = record.to_knowledge_cell()?;
+    assert_eq!(kcell.claim_id(), "source:packet:front_gate:0042");
+    assert_eq!(kcell.knowledge_state(), KnowledgeState::Known);
+    assert_eq!(kcell.provenance(), ProvenanceClass::Observed);
     assert_eq!(
-        kcell.evidence,
-        vec![source_digest, capsule.metadata_digest(), continuity_digest]
+        kcell.evidence(),
+        &[source_digest, capsule.metadata_digest(), continuity_digest]
     );
     assert!(kcell.validate().is_ok());
 
@@ -2174,11 +2174,11 @@ fn test_source_evidence_record_retention_forbidden_exemption() -> Result<(), Box
     assert_eq!(record.custody(), &SourceCustody::NotRetained);
     assert_eq!(record.omission(), Some(OmissionReason::PrivacyRedaction));
 
-    let kcell = record.to_knowledge_cell();
-    assert!(kcell.evidence.is_empty());
-    assert_eq!(kcell.knowledge_state, KnowledgeState::Redacted);
+    let kcell = record.to_knowledge_cell()?;
+    assert!(kcell.evidence().is_empty());
+    assert_eq!(kcell.knowledge_state(), KnowledgeState::Redacted);
     assert_eq!(
-        kcell.state_basis,
+        kcell.state_basis().cloned(),
         Some(KnowledgeStateBasis::Redaction(RedactionMarker {
             reason: RedactionReason::PrivacyProjection,
             privacy_generation: PrivacyGeneration::canonical_v1(),
@@ -2199,10 +2199,10 @@ fn test_source_evidence_record_retention_forbidden_exemption() -> Result<(), Box
         capsule: None,
         continuity_witness: None,
     })?;
-    let kcell_cap = record_cap.to_knowledge_cell();
-    assert_eq!(kcell_cap.knowledge_state, KnowledgeState::Redacted);
+    let kcell_cap = record_cap.to_knowledge_cell()?;
+    assert_eq!(kcell_cap.knowledge_state(), KnowledgeState::Redacted);
     assert_eq!(
-        kcell_cap.state_basis,
+        kcell_cap.state_basis().cloned(),
         Some(KnowledgeStateBasis::Redaction(RedactionMarker {
             reason: RedactionReason::CapabilityProjection,
             privacy_generation: PrivacyGeneration::canonical_v1(),
@@ -2225,9 +2225,9 @@ fn test_source_evidence_record_retention_forbidden_exemption() -> Result<(), Box
         capsule: None,
         continuity_witness: None,
     })?;
-    let kcell_v7 = record_v7.to_knowledge_cell();
+    let kcell_v7 = record_v7.to_knowledge_cell()?;
     assert_eq!(
-        kcell_v7.state_basis,
+        kcell_v7.state_basis().cloned(),
         Some(KnowledgeStateBasis::Redaction(RedactionMarker {
             reason: RedactionReason::PrivacyProjection,
             privacy_generation: PrivacyGeneration::parse("privacy:projection:v7")?,
@@ -2248,10 +2248,10 @@ fn test_source_evidence_record_retention_forbidden_exemption() -> Result<(), Box
         capsule: None,
         continuity_witness: None,
     })?;
-    let kcell_upstream = record_upstream.to_knowledge_cell();
-    assert!(kcell_upstream.evidence.is_empty());
+    let kcell_upstream = record_upstream.to_knowledge_cell()?;
+    assert!(kcell_upstream.evidence().is_empty());
     assert_eq!(
-        kcell_upstream.knowledge_state,
+        kcell_upstream.knowledge_state(),
         KnowledgeState::NotObservable
     );
     assert!(kcell_upstream.validate().is_ok());
@@ -2284,25 +2284,25 @@ fn test_source_evidence_gap_before_maps_to_unknown_without_fabricated_basis()
         continuity_witness: None,
     })?;
 
-    let kcell = record.to_knowledge_cell();
-    assert_eq!(kcell.knowledge_state, KnowledgeState::Unknown);
+    let kcell = record.to_knowledge_cell()?;
+    assert_eq!(kcell.knowledge_state(), KnowledgeState::Unknown);
     // The gap reason is a typed basis derived from the capsule's own `gap_before` flag, not a
     // fabricated stale/redaction basis and not free text appended to the statement.
     assert_eq!(
-        kcell.state_basis,
-        Some(KnowledgeStateBasis::Unknown(
+        kcell.state_basis(),
+        Some(&KnowledgeStateBasis::Unknown(
             UnknownReason::ContinuityGapBeforeCapsule
         ))
     );
-    assert_eq!(kcell.statement, "Capsule preceded by gap");
-    assert!(!kcell.statement.contains("continuity gap before capsule"));
+    assert_eq!(kcell.statement(), "Capsule preceded by gap");
+    assert!(!kcell.statement().contains("continuity gap before capsule"));
     assert!(kcell.validate().is_ok());
 
     // The typed reason is only accepted on an `unknown` cell.
-    let mut mismatched = kcell.clone();
-    mismatched.knowledge_state = KnowledgeState::Known;
+    let mut params = kcell.to_params();
+    params.knowledge_state = KnowledgeState::Known;
     assert_eq!(
-        mismatched.validate(),
+        KnowledgeCell::new(params),
         Err(ContractError::KnowledgeStateBasisMismatch)
     );
 

@@ -4,8 +4,9 @@ use std::collections::BTreeSet;
 
 use fss_core::{
     ActionAffordance, AffordanceClass, BudgetVector, ContentDigest, ContractError,
-    EffectRecordVersion, EffectState, IndeterminateEffectReason, KnowledgeCell, KnowledgeState,
-    KnowledgeStateBasis, OperationReceipt, ProvenanceClass, ReconciliationBasis,
+    EffectRecordVersion, EffectState, IndeterminateEffectReason, KnowledgeCell,
+    KnowledgeCellParams, KnowledgeState, KnowledgeStateBasis, OperationReceipt, ProvenanceClass,
+    ReconciliationBasis,
 };
 use fss_ledger::DurableReferenceLedger;
 
@@ -339,7 +340,7 @@ fn annotate_operation_receipt(
         .frame
         .evidence_handles
         .insert(format!("fss://proof/{digest}"));
-    let cell = KnowledgeCell {
+    let cell = KnowledgeCell::new(KnowledgeCellParams {
         claim_id: format!(
             "{EFFECT_CLAIM_PREFIX}{operation_id}{}",
             EffectCellKind::LocalState.claim_suffix()
@@ -349,7 +350,10 @@ fn annotate_operation_receipt(
             operation_receipt.state.as_str()
         ),
         knowledge_state,
-        provenance: ProvenanceClass::Derived,
+        // Local effect journal receipts are classified as Observed under PROV-001 because
+        // they constitute direct canonical effect evidence of local runtime state, distinguishing
+        // them from cognitive derivations and allowing effect reconciliation.
+        provenance: ProvenanceClass::Observed,
         hypothesis: None,
         evidence: vec![digest],
         contradictions: Vec::new(),
@@ -357,8 +361,7 @@ fn annotate_operation_receipt(
         state_basis: (knowledge_state == KnowledgeState::Indeterminate).then(|| {
             KnowledgeStateBasis::Reconciliation(ReconciliationBasis::occurred_or_not(digest))
         }),
-    }
-    .validated()?;
+    })?;
     // The caller validated the receipt against the plan (and against the published outcome, when
     // there is one), so the cell is compiled from verified material in every state. Binding it
     // also keeps an indeterminate local state from being dropped or relabeled later (fss-6sph6).
@@ -373,7 +376,7 @@ fn annotate_operation_receipt(
     // every state, with the missing reason as a typed `unknown` marker, never silently dropped
     // and never flattened into the terminal cell (fss-deir9).
     if operation_receipt.indeterminate_reason == Some(IndeterminateEffectReason::Unrecorded) {
-        let marker = KnowledgeCell {
+        let marker = KnowledgeCell::new(KnowledgeCellParams {
             claim_id: format!("{INDETERMINATE_REASON_UNRECORDED_CLAIM_PREFIX}{operation_id}"),
             statement: format!(
                 "The legacy effect journal recorded no reason when operation {operation_id} entered indeterminate."
@@ -385,8 +388,7 @@ fn annotate_operation_receipt(
             contradictions: Vec::new(),
             valid_until: None,
             state_basis: None,
-        }
-        .validated()?;
+        })?;
         situation.capsule.frame.knowledge_cells.push(marker);
     }
     situation.capsule.frame.now.push(format!(
@@ -503,7 +505,7 @@ fn finalize_projection(situation: &mut ReferenceSituation) -> Result<(), Referen
         .capsule
         .frame
         .knowledge_cells
-        .sort_by(|left, right| left.claim_id.cmp(&right.claim_id));
+        .sort_by(|left, right| left.claim_id().cmp(right.claim_id()));
     situation
         .capsule
         .affordances

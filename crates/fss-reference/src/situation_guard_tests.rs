@@ -3,8 +3,9 @@ use std::fs;
 
 use fss_core::{
     CapsuleId, CaptureInterval, Completeness, ContractBasis, ContractBasisRegistryBytes,
-    EffectJournal, EffectState, EventId, IdempotencyKey, MissionId, ObligationId, OperationId,
-    PrincipalId, ProbabilityInterval, SensorId, SessionId, TimestampNs,
+    EffectJournal, EffectState, EventId, IdempotencyKey, KnowledgeCell, KnowledgeCellParams,
+    KnowledgeState, MissionId, ObligationId, OperationId, PrincipalId, ProbabilityInterval,
+    ProvenanceClass, SensorId, SessionId, TimestampNs,
 };
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
 use fss_object::{InMemoryObjectStore, ObjectLimits};
@@ -774,10 +775,10 @@ fn indeterminate_local_situation(
         .frame
         .knowledge_cells
         .iter()
-        .find(|cell| cell.claim_id == claim_id)
+        .find(|cell| cell.claim_id() == claim_id)
         .ok_or(ReferenceError::InvalidSpec("missing_local_state_cell"))?;
     assert_eq!(
-        cell.knowledge_state,
+        cell.knowledge_state(),
         fss_core::KnowledgeState::Indeterminate
     );
     assert_eq!(
@@ -814,8 +815,7 @@ fn assert_effect_tamper_refused(
     Ok(())
 }
 
-/// fss-6sph6: an indeterminate compiled effect cannot be dropped from the situation, so a
-/// projection cannot lose the reconciliation obligation without a terminal proof.
+/// fss-6sph6: a compiled indeterminate effect cell cannot be dropped from the frame.
 #[test]
 fn compiled_indeterminate_effect_cannot_be_dropped() -> Result<(), Box<dyn Error>> {
     let (harness, genuine, claim_id) = indeterminate_local_situation("drop-effect")?;
@@ -824,7 +824,7 @@ fn compiled_indeterminate_effect_cannot_be_dropped() -> Result<(), Box<dyn Error
         .capsule
         .frame
         .knowledge_cells
-        .retain(|cell| cell.claim_id != claim_id);
+        .retain(|cell| cell.claim_id() != claim_id);
     assert_effect_tamper_refused(
         &genuine,
         tampered,
@@ -846,9 +846,11 @@ fn compiled_indeterminate_effect_cannot_be_relabeled() -> Result<(), Box<dyn Err
     ] {
         let mut tampered = genuine.clone();
         for cell in &mut tampered.capsule.frame.knowledge_cells {
-            if cell.claim_id == claim_id {
-                cell.knowledge_state = state;
-                cell.state_basis = None;
+            if cell.claim_id() == claim_id {
+                let mut params = cell.to_params();
+                params.knowledge_state = state;
+                params.state_basis = None;
+                *cell = fss_core::KnowledgeCell::new(params)?;
             }
         }
         assert_effect_tamper_refused(
@@ -866,16 +868,17 @@ fn compiled_indeterminate_effect_cannot_be_relabeled() -> Result<(), Box<dyn Err
 fn compiled_effect_cannot_be_shadowed_by_a_duplicate_claim() -> Result<(), Box<dyn Error>> {
     let (harness, genuine, claim_id) = indeterminate_local_situation("shadow-effect")?;
     let mut tampered = genuine.clone();
-    let mut shadow = tampered
+    let shadow_cell = tampered
         .capsule
         .frame
         .knowledge_cells
         .iter()
-        .find(|cell| cell.claim_id == claim_id)
-        .cloned()
+        .find(|cell| cell.claim_id() == claim_id)
         .ok_or(ReferenceError::InvalidSpec("missing_local_state_cell"))?;
-    shadow.knowledge_state = fss_core::KnowledgeState::Known;
-    shadow.state_basis = None;
+    let mut params = shadow_cell.to_params();
+    params.knowledge_state = fss_core::KnowledgeState::Known;
+    params.state_basis = None;
+    let shadow = fss_core::KnowledgeCell::new(params)?;
     tampered.capsule.frame.knowledge_cells.push(shadow);
     assert_effect_tamper_refused(
         &genuine,
@@ -896,8 +899,8 @@ fn compiled_effect_evidence_cannot_leave_the_proof_roots() -> Result<(), Box<dyn
         .frame
         .knowledge_cells
         .iter()
-        .find(|cell| cell.claim_id == claim_id)
-        .map(|cell| cell.evidence.clone())
+        .find(|cell| cell.claim_id() == claim_id)
+        .map(|cell| cell.evidence().to_vec())
         .ok_or(ReferenceError::InvalidSpec("missing_local_state_cell"))?;
     assert!(!evidence.is_empty());
     let mut tampered = genuine.clone();
@@ -1373,7 +1376,7 @@ fn bound_effect_cells_are_sealed_to_their_situation() -> Result<(), Box<dyn Erro
         .frame
         .knowledge_cells
         .iter()
-        .filter(|cell| cell.claim_id.starts_with("claim:effect:"))
+        .filter(|cell| cell.claim_id().starts_with("claim:effect:"))
         .cloned()
         .collect();
     assert!(!outcome_cells.is_empty());
@@ -1381,7 +1384,7 @@ fn bound_effect_cells_are_sealed_to_their_situation() -> Result<(), Box<dyn Erro
     capsule
         .frame
         .knowledge_cells
-        .retain(|cell| !cell.claim_id.starts_with("claim:effect:"));
+        .retain(|cell| !cell.claim_id().starts_with("claim:effect:"));
     capsule.frame.knowledge_cells.extend(outcome_cells);
     transplanted.capsule = capsule;
     transplanted
@@ -1419,11 +1422,11 @@ fn rebuilt_situation_cannot_hand_off_or_keep_a_compiled_effect() -> Result<(), B
         .frame
         .knowledge_cells
         .iter()
-        .find(|cell| cell.claim_id.ends_with(":local-state"))
+        .find(|cell| cell.claim_id().ends_with(":local-state"))
         .cloned()
         .ok_or(ReferenceError::InvalidSpec("missing_local_state_cell"))?;
     assert_eq!(
-        local.knowledge_state,
+        local.knowledge_state(),
         fss_core::KnowledgeState::Indeterminate
     );
     let created_at = TimestampNs(1_001);
@@ -1446,7 +1449,7 @@ fn rebuilt_situation_cannot_hand_off_or_keep_a_compiled_effect() -> Result<(), B
     capsule
         .frame
         .knowledge_cells
-        .retain(|cell| cell.claim_id != local.claim_id);
+        .retain(|cell| cell.claim_id() != local.claim_id());
     let stripped = crate::ReferenceSituation::new(capsule, genuine.situation.proof_roots.clone());
     assert!(!stripped.is_sealed());
     let handoff = crate::seal_reference_handoff(
@@ -1497,8 +1500,8 @@ fn sealed_proof_roots_cannot_be_replaced() -> Result<(), Box<dyn Error>> {
         .frame
         .knowledge_cells
         .iter()
-        .filter(|cell| cell.claim_id.starts_with("claim:effect:"))
-        .flat_map(|cell| cell.evidence.iter().copied())
+        .filter(|cell| cell.claim_id().starts_with("claim:effect:"))
+        .flat_map(|cell| cell.evidence().iter().copied())
         .collect();
     roots.insert(fss_core::ContentDigest::sha256(b"rr5-foreign-root"));
     assert!(tampered.proof_roots.difference(&roots).count() > 0);
@@ -1599,7 +1602,7 @@ fn strip_effect_cells(capsule: &mut fss_core::SituationCapsule) {
     capsule
         .frame
         .knowledge_cells
-        .retain(|cell| !cell.claim_id.starts_with("claim:effect:"));
+        .retain(|cell| !cell.claim_id().starts_with("claim:effect:"));
 }
 
 /// Asserts that both bound routes refuse `publication` with the exact unsealed refusal: publishing
@@ -1778,17 +1781,19 @@ fn injected_obligation_cell_is_refused() -> Result<(), Box<dyn Error>> {
         .capsule
         .frame
         .knowledge_cells
-        .push(fss_core::KnowledgeCell {
-            claim_id: "claim:obligation:situation-guard:inject-obligation".to_owned(),
-            statement: "The alert obligation was discharged.".to_owned(),
-            knowledge_state: fss_core::KnowledgeState::Known,
-            provenance: fss_core::ProvenanceClass::Observed,
-            hypothesis: Some(fss_core::HypothesisDisposition::Resolved),
-            evidence: vec![root],
-            contradictions: Vec::new(),
-            valid_until: None,
-            state_basis: None,
-        });
+        .push(fss_core::KnowledgeCell::new(
+            fss_core::KnowledgeCellParams {
+                claim_id: "claim:obligation:situation-guard:inject-obligation".to_owned(),
+                statement: "The alert obligation was discharged.".to_owned(),
+                knowledge_state: fss_core::KnowledgeState::Known,
+                provenance: fss_core::ProvenanceClass::Observed,
+                hypothesis: Some(fss_core::HypothesisDisposition::Resolved),
+                evidence: vec![root],
+                contradictions: Vec::new(),
+                valid_until: None,
+                state_basis: None,
+            },
+        )?);
     tampered.proof_roots.insert(root);
     assert_effect_tamper_refused(
         genuine,
@@ -1842,14 +1847,16 @@ fn sealed_publication_proof_roots_are_exact() -> Result<(), Box<dyn Error>> {
 /// `sensor_tamper_status` delta witnessing the lineage tamper status, so the authority batch the
 /// fixture publishes, and the anchor this publication binds, changed.
 ///
-/// Re-pinned for fss-x4a.30.83.10: the publication v5 and seal v6 digest domains.
+/// Re-pinned for fss-x4a.30.83.10 (publication v5 and seal v6 digest domains) and fss-nozug
+/// (the local-state receipt cell is observed provenance, PROV-001).
 const GOLDEN_SEAL_DIGEST: &str =
     "sha256:a70bb228b51ddbcb8b07ab13926596d548517d42849d85d3d37bca39378afa60";
 /// Pinned v4 publication digest of the fixed compiled publication below.
 ///
 /// Re-pinned for fss-2uftm with the seal digest above (same single cause).
 ///
-/// Re-pinned for fss-x4a.30.83.10: the publication v5 and seal v6 digest domains.
+/// Re-pinned for fss-x4a.30.83.10 (publication v5 and seal v6 digest domains) and fss-nozug
+/// (the local-state receipt cell is observed provenance, PROV-001).
 const GOLDEN_PUBLICATION_DIGEST: &str =
     "sha256:a99a0116f90642b805556ca1b76956f758d7f5d5d9afc894948088fd6ad19922";
 
@@ -1907,7 +1914,7 @@ fn lifecycles_with_colon_heavy_ids_compile_and_verify() -> Result<(), Box<dyn Er
             .frame
             .knowledge_cells
             .iter()
-            .map(|cell| cell.claim_id.as_str())
+            .map(|cell| cell.claim_id())
             .collect();
         assert!(
             claims
@@ -1993,16 +2000,18 @@ fn sealed_situation_proof_roots_are_exact() -> Result<(), Box<dyn Error>> {
 /// evidence of the bound local-state cell. Single cause, checked on this tree: with new receipts
 /// forced to v1 (and admitted by the guard) the previous pins (0905e4b4..., 22685e54...) pass.
 ///
-/// Re-pinned for fss-x4a.30.83.10: the publication v5 and seal v6 digest domains.
+/// Re-pinned for fss-x4a.30.83.10 (publication v5 and seal v6 digest domains) and fss-nozug
+/// (the local-state receipt cell is observed provenance, PROV-001).
 const GOLDEN_BOUND_SEAL_DIGEST: &str =
-    "sha256:9fc21b759c02845425d946de0af4d2aae515d8c2c39483310ab75d927536106d";
+    "sha256:915f04ed8bd569097188cf2801b72d8bb948f21d30bbdfd087538777ed4d4605";
 /// Pinned v4 publication digest of the fixed compiled publication with effect bindings below.
 ///
 /// Re-pinned for fss-wjisz, fss-2uftm and fss-deir9 with the seal digest above (same causes).
 ///
-/// Re-pinned for fss-x4a.30.83.10: the publication v5 and seal v6 digest domains.
+/// Re-pinned for fss-x4a.30.83.10 (publication v5 and seal v6 digest domains) and fss-nozug
+/// (the local-state receipt cell is observed provenance, PROV-001).
 const GOLDEN_BOUND_PUBLICATION_DIGEST: &str =
-    "sha256:5c20ae60707d9f95ca612776e4df3395bc9b6e18a34d2a1e6217835aa248b0b0";
+    "sha256:1e2e15ba1963d32dd0df8ff6eb781a359b48a8a68b92a79942f9b87b635935f4";
 
 /// Round 5: pins the binding part of the seal encoding. The verified publication, bound to its
 /// outcome and local-state cells, has a pinned seal digest and publication digest.
@@ -2016,7 +2025,7 @@ fn bound_compiled_publication_digests_are_pinned() -> Result<(), Box<dyn Error>>
         .frame
         .knowledge_cells
         .iter()
-        .filter_map(|cell| publication.situation.effect_cell_kind(&cell.claim_id))
+        .filter_map(|cell| publication.situation.effect_cell_kind(cell.claim_id()))
         .collect();
     assert_eq!(
         bound_kinds,
@@ -4245,7 +4254,7 @@ fn unrecorded_marker_and_local_state(
     let markers: Vec<_> = cells
         .iter()
         .filter(|cell| {
-            cell.claim_id
+            cell.claim_id()
                 .starts_with(crate::situation_guard::INDETERMINATE_REASON_UNRECORDED_CLAIM_PREFIX)
         })
         .collect();
@@ -4254,15 +4263,15 @@ fn unrecorded_marker_and_local_state(
     };
     let local_state = cells
         .iter()
-        .find(|cell| cell.claim_id.ends_with(":local-state"))
+        .find(|cell| cell.claim_id().ends_with(":local-state"))
         .ok_or("missing local-state cell")?;
     assert!(
         marker
-            .evidence
+            .evidence()
             .iter()
             .all(|digest| situation.proof_roots.contains(digest))
     );
-    Ok((marker.knowledge_state, local_state.knowledge_state))
+    Ok((marker.knowledge_state(), local_state.knowledge_state()))
 }
 
 /// A legacy journal written as pre-deir9 code wrote it (kind-2 records) for a fresh plan, opened
@@ -4495,5 +4504,77 @@ fn v1_receipt_not_from_the_durable_journal_is_refused() -> Result<(), Box<dyn Er
         Ok(receipt)
     })?;
     assert_integrity_refusal(&verdict, "clean v1 verified receipt handed in by a caller");
+    Ok(())
+}
+
+#[test]
+fn effect_journal_receipt_is_observed_and_derived_receipt_cannot_resolve_indeterminate_effect()
+-> Result<(), Box<dyn Error>> {
+    let lifecycle = Lifecycle::new("receipt-prov-pinned")?;
+    let verified = lifecycle.verified(true)?;
+
+    // Find the local state effect cell produced by annotate_operation_receipt
+    let local_state_cell = verified
+        .situation
+        .capsule
+        .frame
+        .knowledge_cells
+        .iter()
+        .find(|c| {
+            verified.situation.effect_cell_kind(c.claim_id())
+                == Some(crate::EffectCellKind::LocalState)
+        })
+        .ok_or(ReferenceError::InvalidSpec("missing_local_state_cell"))?;
+
+    // 1. Pins that the local effect journal receipt is classified as Observed under PROV-001.
+    // Local effect journal receipts are direct canonical effect evidence of local runtime
+    // state execution, not cognitive derivations (see AGENT_CONTRACTS.md Note on PROV-001).
+    assert_eq!(local_state_cell.provenance(), ProvenanceClass::Observed);
+    assert_eq!(local_state_cell.knowledge_state(), KnowledgeState::Known);
+    assert!(
+        local_state_cell
+            .provenance()
+            .may_authorize_irreversible_effect()
+    );
+    assert!(local_state_cell.is_irreversible_effect_premise(verified.situation.capsule.created_at));
+
+    // 2. Pins that a Derived receipt cell can NEVER resolve an Indeterminate effect:
+    // Driving the REAL Indeterminate-effect resolution path in meaningful_delta.rs with a Derived
+    // receipt cell proves that the effect STAYS unresolved!
+    let derived_cell = KnowledgeCell::new(KnowledgeCellParams {
+        claim_id: local_state_cell.claim_id().to_string(),
+        statement: local_state_cell.statement().to_string(),
+        knowledge_state: local_state_cell.knowledge_state(),
+        provenance: ProvenanceClass::Derived,
+        hypothesis: local_state_cell.hypothesis(),
+        evidence: local_state_cell.evidence().to_vec(),
+        contradictions: local_state_cell.contradictions().to_vec(),
+        valid_until: local_state_cell.valid_until(),
+        state_basis: local_state_cell.state_basis().cloned(),
+    })?;
+    assert_eq!(derived_cell.validate(), Ok(()));
+    assert!(
+        !derived_cell
+            .provenance()
+            .may_authorize_irreversible_effect()
+    );
+    assert!(
+        !derived_cell.is_irreversible_effect_premise(verified.situation.capsule.created_at),
+        "Derived receipt cell must not be an irreversible effect premise"
+    );
+
+    let bar = crate::meaningful_delta::ProofBar::of(&verified);
+    assert_eq!(
+        crate::meaningful_delta::indeterminate_effect_successor(local_state_cell, bar),
+        crate::meaningful_delta::IndeterminateEffectSuccessor::Resolved,
+        "Observed receipt cell resolves indeterminate effect"
+    );
+    assert_eq!(
+        crate::meaningful_delta::indeterminate_effect_successor(&derived_cell, bar),
+        crate::meaningful_delta::IndeterminateEffectSuccessor::Unresolved,
+        "Derived receipt cell must leave indeterminate effect UNRESOLVED"
+    );
+
+    lifecycle.harness.cleanup();
     Ok(())
 }

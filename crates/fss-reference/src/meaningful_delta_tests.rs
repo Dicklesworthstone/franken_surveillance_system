@@ -4,8 +4,8 @@ use std::error::Error;
 use fss_core::{
     ActionAffordance, AffordanceClass, BudgetVector, Completeness, ContentDigest, ContractBasis,
     ContractBasisRegistryBytes, DeltaPriority, Generation, HypothesisDisposition, KnowledgeCell,
-    KnowledgeState, KnowledgeStateBasis, LedgerAnchor, MeaningfulDeltaClass, MissionId,
-    ObligationId, PrincipalId, PrivacyGeneration, ProvenanceClass, ReconciliationBasis,
+    KnowledgeCellParams, KnowledgeState, KnowledgeStateBasis, LedgerAnchor, MeaningfulDeltaClass,
+    MissionId, ObligationId, PrincipalId, PrivacyGeneration, ProvenanceClass, ReconciliationBasis,
     RedactionMarker, RedactionReason, ResourcePressure, SessionId, SituationCapsule,
     SituationFrame, StaleBasis, TimestampNs, WorldEnvelope,
 };
@@ -158,7 +158,7 @@ fn publication(variant: &Variant) -> Result<crate::ReferenceSituationPublication
     } else {
         Vec::new()
     };
-    let mut knowledge_cells = vec![KnowledgeCell {
+    let mut knowledge_cells = vec![KnowledgeCell::new(KnowledgeCellParams {
         claim_id: "claim:premise".to_owned(),
         statement: "The reference premise has the current typed state.".to_owned(),
         knowledge_state: variant.premise_state,
@@ -168,9 +168,9 @@ fn publication(variant: &Variant) -> Result<crate::ReferenceSituationPublication
         contradictions: variant.premise_contradictions.clone(),
         valid_until: None,
         state_basis: fixture_state_basis(variant.premise_state, evidence)?,
-    }];
+    })?];
     if let Some(effect_state) = variant.effect_state {
-        knowledge_cells.push(KnowledgeCell {
+        knowledge_cells.push(KnowledgeCell::new(KnowledgeCellParams {
             claim_id: "claim:effect:meaningful-delta:outcome".to_owned(),
             statement: variant.effect_statement.clone().unwrap_or_else(|| {
                 match effect_state {
@@ -219,7 +219,7 @@ fn publication(variant: &Variant) -> Result<crate::ReferenceSituationPublication
                 effect_state,
                 ContentDigest::sha256(b"effect-outcome"),
             )?,
-        });
+        })?);
     }
     knowledge_cells.extend(variant.extra_cells.clone());
     let next = affordances
@@ -263,7 +263,7 @@ fn publication(variant: &Variant) -> Result<crate::ReferenceSituationPublication
     // fixture retains the effect evidence too unless a test withholds it.
     let mut proof_roots = BTreeSet::from([evidence]);
     for cell in &variant.extra_cells {
-        for ev in &cell.evidence {
+        for ev in cell.evidence() {
             proof_roots.insert(*ev);
         }
     }
@@ -280,14 +280,14 @@ fn publication(variant: &Variant) -> Result<crate::ReferenceSituationPublication
             .frame
             .knowledge_cells
             .iter()
-            .filter(|cell| cell.claim_id == EFFECT_CLAIM)
+            .filter(|cell| cell.claim_id() == EFFECT_CLAIM)
             .cloned()
             .collect();
         let operation_id = fss_core::OperationId::parse("meaningful-delta")?;
         for cell in &effect_cells {
             // A `known` fixture cell stands for the terminal state the variant names; any other
             // state stands for a dispatched, unresolved operation.
-            let state = if cell.knowledge_state == KnowledgeState::Known {
+            let state = if cell.knowledge_state() == KnowledgeState::Known {
                 variant.effect_terminal_state
             } else {
                 fss_core::EffectState::Committed
@@ -2030,19 +2030,18 @@ fn classification_refuses_invalid_world_envelope_precondition() -> Result<(), Bo
 #[test]
 fn evidence_less_known_effect_is_refused_as_observed_and_unproved_as_vendor_claim()
 -> Result<(), Box<dyn Error>> {
-    let observed = KnowledgeCell {
-        claim_id: EFFECT_CLAIM.to_owned(),
-        statement: "The external effect reached a retained terminal outcome.".to_owned(),
-        knowledge_state: KnowledgeState::Known,
-        provenance: ProvenanceClass::Observed,
-        hypothesis: None,
-        evidence: Vec::new(),
-        contradictions: Vec::new(),
-        valid_until: None,
-        state_basis: None,
-    };
     assert_eq!(
-        observed.validate(),
+        KnowledgeCell::new(KnowledgeCellParams {
+            claim_id: EFFECT_CLAIM.to_owned(),
+            statement: "The external effect reached a retained terminal outcome.".to_owned(),
+            knowledge_state: KnowledgeState::Known,
+            provenance: ProvenanceClass::Observed,
+            hypothesis: None,
+            evidence: Vec::new(),
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: None,
+        }),
         Err(fss_core::ContractError::EvidenceRequired)
     );
 
@@ -2057,10 +2056,10 @@ fn evidence_less_known_effect_is_refused_as_observed_and_unproved_as_vendor_clai
         .frame
         .knowledge_cells
         .iter()
-        .find(|cell| cell.claim_id == EFFECT_CLAIM)
+        .find(|cell| cell.claim_id() == EFFECT_CLAIM)
         .ok_or(crate::ReferenceError::InvalidSpec("missing_effect_cell"))?;
-    assert_eq!(effect.provenance, ProvenanceClass::VendorClaimed);
-    assert!(effect.evidence.is_empty());
+    assert_eq!(effect.provenance(), ProvenanceClass::VendorClaimed);
+    assert!(effect.evidence().is_empty());
     assert_eq!(effect.validate(), Ok(()));
     assert!(!effect.is_irreversible_effect_premise(now));
     Ok(())
@@ -2076,7 +2075,7 @@ fn effect_binding_requires_known_exactly_for_a_terminal_state() -> Result<(), Bo
     let operation_id = fss_core::OperationId::parse("meaningful-delta")?;
     let root = ContentDigest::sha256(b"effect-outcome");
     let cell = |claim_id: &str, state: KnowledgeState| -> Result<KnowledgeCell, Box<dyn Error>> {
-        Ok(KnowledgeCell {
+        Ok(KnowledgeCell::new(KnowledgeCellParams {
             claim_id: claim_id.to_owned(),
             statement: "The external effect has an explicit typed state.".to_owned(),
             knowledge_state: state,
@@ -2086,7 +2085,7 @@ fn effect_binding_requires_known_exactly_for_a_terminal_state() -> Result<(), Bo
             contradictions: Vec::new(),
             valid_until: None,
             state_basis: fixture_state_basis(state, root)?,
-        })
+        })?)
     };
     let fresh = || {
         ReferenceSituation::new(
@@ -2201,17 +2200,20 @@ fn publication_with_cell(
     let template = publication(&variant)?;
     let mut capsule = template.situation.capsule.clone();
     let root = ContentDigest::sha256(b"self-asserted");
-    capsule.frame.knowledge_cells.push(KnowledgeCell {
-        claim_id: claim_id.to_owned(),
-        statement: "The external alert was delivered.".to_owned(),
-        knowledge_state: KnowledgeState::Known,
-        provenance: ProvenanceClass::Observed,
-        hypothesis,
-        evidence: vec![root],
-        contradictions: Vec::new(),
-        valid_until: None,
-        state_basis: None,
-    });
+    capsule
+        .frame
+        .knowledge_cells
+        .push(KnowledgeCell::new(KnowledgeCellParams {
+            claim_id: claim_id.to_owned(),
+            statement: "The external alert was delivered.".to_owned(),
+            knowledge_state: KnowledgeState::Known,
+            provenance: ProvenanceClass::Observed,
+            hypothesis,
+            evidence: vec![root],
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: None,
+        })?);
     let mut roots = template.situation.proof_roots.clone();
     roots.insert(root);
     let mut situation = ReferenceSituation::new(capsule, roots);
@@ -2375,27 +2377,30 @@ fn hand_built_effect_cell_in_any_state_is_refused() -> Result<(), Box<dyn Error>
 /// Round 4 F6: the event rule's own guard excludes effect and obligation cells, so neither can
 /// drive a terminal transition through a hypothesis even if verification were bypassed.
 #[test]
-fn event_rule_never_applies_to_effect_or_obligation_cells() {
-    let cell = |claim_id: &str| KnowledgeCell {
-        claim_id: claim_id.to_owned(),
-        statement: "The proposition was resolved.".to_owned(),
-        knowledge_state: KnowledgeState::Known,
-        provenance: ProvenanceClass::Observed,
-        hypothesis: Some(HypothesisDisposition::Resolved),
-        evidence: vec![ContentDigest::sha256(b"event-rule-root")],
-        contradictions: Vec::new(),
-        valid_until: None,
-        state_basis: None,
+fn event_rule_never_applies_to_effect_or_obligation_cells() -> Result<(), Box<dyn Error>> {
+    let cell = |claim_id: &str| -> Result<KnowledgeCell, Box<dyn Error>> {
+        Ok(KnowledgeCell::new(KnowledgeCellParams {
+            claim_id: claim_id.to_owned(),
+            statement: "The proposition was resolved.".to_owned(),
+            knowledge_state: KnowledgeState::Known,
+            provenance: ProvenanceClass::Observed,
+            hypothesis: Some(HypothesisDisposition::Resolved),
+            evidence: vec![ContentDigest::sha256(b"event-rule-root")],
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: None,
+        })?)
     };
     assert!(!crate::meaningful_delta::event_rule_applies(&cell(
         "claim:obligation:meaningful-delta"
-    )));
+    )?));
     assert!(!crate::meaningful_delta::event_rule_applies(&cell(
         EFFECT_CLAIM
-    )));
+    )?));
     assert!(crate::meaningful_delta::event_rule_applies(&cell(
         "claim:event:meaningful-delta:policy"
-    )));
+    )?));
+    Ok(())
 }
 
 /// The classifier reads an effect cell's typed state and binding, never its free text: a still
@@ -3160,7 +3165,7 @@ fn selection_witness_covers_removed_claims() -> Result<(), Box<dyn Error>> {
 fn compute_meaningful_delta_draws_no_cross_frame_laundering_verdict_fss_gefi6()
 -> Result<(), Box<dyn Error>> {
     let shared_evidence = ContentDigest::sha256(b"counterfactual_prediction_evidence_001");
-    let predicted = KnowledgeCell {
+    let predicted = KnowledgeCell::new(KnowledgeCellParams {
         claim_id: "claim:fire:predicted_spread".to_owned(),
         statement: "Model predicts fire expansion".to_owned(),
         knowledge_state: KnowledgeState::Estimated,
@@ -3170,9 +3175,8 @@ fn compute_meaningful_delta_draws_no_cross_frame_laundering_verdict_fss_gefi6()
         contradictions: vec![],
         valid_until: None,
         state_basis: None,
-    }
-    .validated()?;
-    let observed = KnowledgeCell {
+    })?;
+    let observed = KnowledgeCell::new(KnowledgeCellParams {
         claim_id: "claim:fire:observed_spread".to_owned(),
         statement: "Physical observation of fire expansion".to_owned(),
         knowledge_state: KnowledgeState::Known,
@@ -3182,8 +3186,7 @@ fn compute_meaningful_delta_draws_no_cross_frame_laundering_verdict_fss_gefi6()
         contradictions: vec![],
         valid_until: None,
         state_basis: None,
-    }
-    .validated()?;
+    })?;
 
     let mut v1 = Variant::baseline()?;
     v1.sequence = 1;
@@ -3216,7 +3219,7 @@ fn classify_unchanged_honest_pair(
     second_class: ProvenanceClass,
 ) -> Result<(), Box<dyn Error>> {
     let digest = ContentDigest::sha256(label.as_bytes());
-    let observed = KnowledgeCell {
+    let observed = KnowledgeCell::new(KnowledgeCellParams {
         claim_id: "claim:carry:observed".to_owned(),
         statement: "Observed telemetry".to_owned(),
         knowledge_state: KnowledgeState::Known,
@@ -3226,9 +3229,8 @@ fn classify_unchanged_honest_pair(
         contradictions: vec![],
         valid_until: None,
         state_basis: None,
-    }
-    .validated()?;
-    let second = KnowledgeCell {
+    })?;
+    let second = KnowledgeCell::new(KnowledgeCellParams {
         claim_id: "claim:carry:second".to_owned(),
         statement: "Computed from the observed telemetry".to_owned(),
         knowledge_state: KnowledgeState::Estimated,
@@ -3238,8 +3240,7 @@ fn classify_unchanged_honest_pair(
         contradictions: vec![],
         valid_until: None,
         state_basis: None,
-    }
-    .validated()?;
+    })?;
     let mut v1 = Variant::baseline()?;
     v1.sequence = 1;
     v1.extra_cells = vec![observed.clone(), second.clone()];

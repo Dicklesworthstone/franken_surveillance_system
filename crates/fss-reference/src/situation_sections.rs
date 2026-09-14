@@ -1047,17 +1047,17 @@ fn context_candidates(
     }
     let mut seen_contradictions: Vec<(&KnowledgeCell, String)> = Vec::new();
     for cell in &frame.knowledge_cells {
-        if !cell.contradictions.is_empty() {
-            let item_id = format!("context:contradiction:{}", cell.claim_id);
+        if !cell.contradictions().is_empty() {
+            let item_id = format!("context:contradiction:{}", cell.claim_id());
             if let Some((_, prev_item_id)) = seen_contradictions.iter().find(|(c, _)| {
-                same_disclosed_statement(c, cell) && c.contradictions == cell.contradictions
+                same_disclosed_statement(c, cell) && c.contradictions() == cell.contradictions()
             }) {
                 if let Some(existing) = candidates.get_mut(prev_item_id) {
-                    existing.item.basis.insert(cell.claim_id.clone());
+                    existing.item.basis.insert(cell.claim_id().to_owned());
                     existing
                         .item
                         .basis
-                        .extend(cell.evidence.iter().map(ToString::to_string));
+                        .extend(cell.evidence().iter().map(ToString::to_string));
                 }
                 let dropped_item_id = if item_id == *prev_item_id {
                     let duplicate_count = redundancy
@@ -1077,9 +1077,9 @@ fn context_candidates(
                 });
             } else {
                 seen_contradictions.push((cell, item_id.clone()));
-                let mut basis = BTreeSet::from([cell.claim_id.clone()]);
-                basis.extend(cell.evidence.iter().map(ToString::to_string));
-                basis.extend(cell.contradictions.iter().map(ToString::to_string));
+                let mut basis = BTreeSet::from([cell.claim_id().to_owned()]);
+                basis.extend(cell.evidence().iter().map(ToString::to_string));
+                basis.extend(cell.contradictions().iter().map(ToString::to_string));
                 insert_candidate(
                     &mut candidates,
                     &mut redundancy,
@@ -1102,12 +1102,12 @@ fn context_candidates(
     let mut seen_epistemic: Vec<(&KnowledgeCell, String)> = Vec::new();
     for cell in &frame.knowledge_cells {
         if cell_state_lane(cell) == CellStateLane::EpistemicBoundary {
-            let item_id = format!("context:epistemic:{}", cell.claim_id);
+            let item_id = format!("context:epistemic:{}", cell.claim_id());
             if let Some((_, prev_item_id)) = seen_epistemic.iter().find(|(c, _)| {
                 same_disclosed_statement(c, cell)
-                    && c.knowledge_state == cell.knowledge_state
-                    && c.evidence == cell.evidence
-                    && c.contradictions == cell.contradictions
+                    && c.knowledge_state() == cell.knowledge_state()
+                    && c.evidence() == cell.evidence()
+                    && c.contradictions() == cell.contradictions()
             }) {
                 redundancy.push(RedundancyRecord {
                     dropped_item_id: item_id,
@@ -1117,9 +1117,9 @@ fn context_candidates(
                 });
             } else {
                 seen_epistemic.push((cell, item_id.clone()));
-                let mut basis = BTreeSet::from([cell.claim_id.clone()]);
-                basis.extend(cell.evidence.iter().map(ToString::to_string));
-                basis.extend(cell.contradictions.iter().map(ToString::to_string));
+                let mut basis = BTreeSet::from([cell.claim_id().to_owned()]);
+                basis.extend(cell.evidence().iter().map(ToString::to_string));
+                basis.extend(cell.contradictions().iter().map(ToString::to_string));
                 insert_candidate(
                     &mut candidates,
                     &mut redundancy,
@@ -1127,7 +1127,7 @@ fn context_candidates(
                         item: ContextItem {
                             item_id,
                             kind: "epistemic_boundary".to_owned(),
-                            epistemic_state: cell.knowledge_state,
+                            epistemic_state: cell.knowledge_state(),
                             content: cell.disclosable_statement().to_owned(),
                             basis,
                             expansion_handles: BTreeSet::new(),
@@ -1173,11 +1173,11 @@ fn context_candidates(
     let mut seen_knowledge: Vec<(&KnowledgeCell, String)> = Vec::new();
     for cell in &frame.knowledge_cells {
         if cell_state_lane(cell) == CellStateLane::Knowledge {
-            let item_id = format!("context:knowledge:{}", cell.claim_id);
+            let item_id = format!("context:knowledge:{}", cell.claim_id());
             if let Some((_, prev_item_id)) = seen_knowledge.iter().find(|(c, _)| {
                 same_disclosed_statement(c, cell)
-                    && c.knowledge_state == cell.knowledge_state
-                    && c.evidence == cell.evidence
+                    && c.knowledge_state() == cell.knowledge_state()
+                    && c.evidence() == cell.evidence()
             }) {
                 let dropped_item_id = if item_id == *prev_item_id {
                     let duplicate_count = redundancy
@@ -1197,8 +1197,8 @@ fn context_candidates(
                 });
             } else {
                 seen_knowledge.push((cell, item_id.clone()));
-                let mut basis = BTreeSet::from([cell.claim_id.clone()]);
-                basis.extend(cell.evidence.iter().map(ToString::to_string));
+                let mut basis = BTreeSet::from([cell.claim_id().to_owned()]);
+                basis.extend(cell.evidence().iter().map(ToString::to_string));
                 insert_candidate(
                     &mut candidates,
                     &mut redundancy,
@@ -1206,7 +1206,7 @@ fn context_candidates(
                         item: ContextItem {
                             item_id,
                             kind: "knowledge".to_owned(),
-                            epistemic_state: cell.knowledge_state,
+                            epistemic_state: cell.knowledge_state(),
                             content: cell.disclosable_statement().to_owned(),
                             basis,
                             expansion_handles: BTreeSet::new(),
@@ -1225,11 +1225,11 @@ fn context_candidates(
     let mut seen_not_applicable: Vec<(&KnowledgeCell, String)> = Vec::new();
     for cell in &frame.knowledge_cells {
         if cell_state_lane(cell) == CellStateLane::NotApplicable {
-            let item_id = format!("context:not_applicable:{}", cell.claim_id);
+            let item_id = format!("context:not_applicable:{}", cell.claim_id());
             if let Some((_, prev_item_id)) = seen_not_applicable.iter().find(|(c, _)| {
                 same_disclosed_statement(c, cell)
-                    && c.evidence == cell.evidence
-                    && c.contradictions == cell.contradictions
+                    && c.evidence() == cell.evidence()
+                    && c.contradictions() == cell.contradictions()
             }) {
                 let dropped_item_id = if item_id == *prev_item_id {
                     let duplicate_count = redundancy
@@ -1249,9 +1249,9 @@ fn context_candidates(
                 });
             } else {
                 seen_not_applicable.push((cell, item_id.clone()));
-                let mut basis = BTreeSet::from([cell.claim_id.clone()]);
-                basis.extend(cell.evidence.iter().map(ToString::to_string));
-                basis.extend(cell.contradictions.iter().map(ToString::to_string));
+                let mut basis = BTreeSet::from([cell.claim_id().to_owned()]);
+                basis.extend(cell.evidence().iter().map(ToString::to_string));
+                basis.extend(cell.contradictions().iter().map(ToString::to_string));
                 insert_candidate(
                     &mut candidates,
                     &mut redundancy,
@@ -1346,11 +1346,13 @@ enum CellStateLane {
 /// so a cell that withholds its statement is never a duplicate of any other cell, whatever the
 /// two withheld statements are.
 fn same_disclosed_statement(left: &KnowledgeCell, right: &KnowledgeCell) -> bool {
-    !left.withholds_statement() && !right.withholds_statement() && left.statement == right.statement
+    !left.withholds_statement()
+        && !right.withholds_statement()
+        && left.statement() == right.statement()
 }
 
 fn cell_state_lane(cell: &KnowledgeCell) -> CellStateLane {
-    match cell.knowledge_state {
+    match cell.knowledge_state() {
         // Admissible or model-supported propositions.
         KnowledgeState::Known | KnowledgeState::Estimated => CellStateLane::Knowledge,
         // Non-known states that bound what the agent may conclude: never optional.
@@ -1362,7 +1364,7 @@ fn cell_state_lane(cell: &KnowledgeCell) -> CellStateLane {
         // A conflicted cell with contradicting roots is projected once, as a contradiction; one
         // without roots is still a conflict boundary.
         KnowledgeState::Conflicted => {
-            if cell.contradictions.is_empty() {
+            if cell.contradictions().is_empty() {
                 CellStateLane::EpistemicBoundary
             } else {
                 CellStateLane::ContradictionItem

@@ -20,9 +20,7 @@ use core::fmt;
 use std::error::Error;
 
 use crate::agent::{ContractBasis, ContractBasisRegistryBytes};
-use crate::canonical::{
-    CanonicalDecode, CanonicalDecoder, CanonicalEncode,
-};
+use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode};
 use crate::contract::ContractError;
 use crate::digest::{ContentDigest, DigestAlgorithm, Sha256Hasher};
 use crate::evidence::LedgerAnchor;
@@ -307,28 +305,52 @@ impl fmt::Display for ContractBasisRefusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::IncompatibleProtocol { expected, actual } => {
-                write!(f, "incompatible protocol: expected {expected}, got {actual}")
+                write!(
+                    f,
+                    "incompatible protocol: expected {expected}, got {actual}"
+                )
             }
             Self::IncompatibleOntology { expected, actual } => {
-                write!(f, "incompatible ontology: expected {expected}, got {actual}")
+                write!(
+                    f,
+                    "incompatible ontology: expected {expected}, got {actual}"
+                )
             }
             Self::IncompatibleSchemaCatalog { expected, actual } => {
-                write!(f, "incompatible schema catalog digest: expected {expected}, got {actual}")
+                write!(
+                    f,
+                    "incompatible schema catalog digest: expected {expected}, got {actual}"
+                )
             }
             Self::IncompatibleOperationRegistry { expected, actual } => {
-                write!(f, "incompatible operation registry digest: expected {expected}, got {actual}")
+                write!(
+                    f,
+                    "incompatible operation registry digest: expected {expected}, got {actual}"
+                )
             }
             Self::IncompatibleViewRegistry { expected, actual } => {
-                write!(f, "incompatible view registry digest: expected {expected}, got {actual}")
+                write!(
+                    f,
+                    "incompatible view registry digest: expected {expected}, got {actual}"
+                )
             }
             Self::IncompatibleCapabilityRegistry { expected, actual } => {
-                write!(f, "incompatible capability registry digest: expected {expected}, got {actual}")
+                write!(
+                    f,
+                    "incompatible capability registry digest: expected {expected}, got {actual}"
+                )
             }
             Self::IncompatibleErrorRegistry { expected, actual } => {
-                write!(f, "incompatible error registry digest: expected {expected}, got {actual}")
+                write!(
+                    f,
+                    "incompatible error registry digest: expected {expected}, got {actual}"
+                )
             }
             Self::IncompatibleCostRegistry { expected, actual } => {
-                write!(f, "incompatible cost registry digest: expected {expected}, got {actual}")
+                write!(
+                    f,
+                    "incompatible cost registry digest: expected {expected}, got {actual}"
+                )
             }
             Self::StaleBasis { reason } => {
                 write!(f, "stale basis: {reason}")
@@ -337,7 +359,10 @@ impl fmt::Display for ContractBasisRefusal {
                 write!(f, "invalid producer release: {reason}")
             }
             Self::IncompatibleNightly { required, actual } => {
-                write!(f, "incompatible nightly toolchain: required {required}, got {actual:?}")
+                write!(
+                    f,
+                    "incompatible nightly toolchain: required {required}, got {actual:?}"
+                )
             }
         }
     }
@@ -488,8 +513,9 @@ impl ContractBasisError {
             Self::ChecksumMismatch { .. } => "ERR-NEG-CHECKSUM-MISMATCH-001",
             Self::InvalidIdentifier { .. } => "ERR-AGENT-PROTOCOL-001",
             Self::Contract(err) => match err {
-                ContractError::StaleBasisRequired
-                | ContractError::StaleBasisNotOlder => "ERR-AGENT-SESSION-STALE-001",
+                ContractError::StaleBasisRequired | ContractError::StaleBasisNotOlder => {
+                    "ERR-AGENT-SESSION-STALE-001"
+                }
                 _ => "ERR-AGENT-PROTOCOL-001",
             },
         }
@@ -503,19 +529,40 @@ impl fmt::Display for ContractBasisError {
                 write!(f, "bad magic header: expected {expected:?}, got {actual:?}")
             }
             Self::UnknownVersion { expected, actual } => {
-                write!(f, "unknown format version: expected {expected}, got {actual}")
+                write!(
+                    f,
+                    "unknown format version: expected {expected}, got {actual}"
+                )
             }
-            Self::Truncated { expected_len, actual_len } => {
-                write!(f, "truncated input: expected at least {expected_len} bytes, got {actual_len}")
+            Self::Truncated {
+                expected_len,
+                actual_len,
+            } => {
+                write!(
+                    f,
+                    "truncated input: expected at least {expected_len} bytes, got {actual_len}"
+                )
             }
             Self::InputOversized { limit, actual_len } => {
-                write!(f, "input oversized: limit is {limit} bytes, got {actual_len}")
+                write!(
+                    f,
+                    "input oversized: limit is {limit} bytes, got {actual_len}"
+                )
             }
-            Self::TrailingBytes { expected_len, actual_len } => {
-                write!(f, "trailing bytes: expected {expected_len} bytes, got {actual_len}")
+            Self::TrailingBytes {
+                expected_len,
+                actual_len,
+            } => {
+                write!(
+                    f,
+                    "trailing bytes: expected {expected_len} bytes, got {actual_len}"
+                )
             }
             Self::ChecksumMismatch { expected, actual } => {
-                write!(f, "checksum mismatch: expected {expected}, computed {actual}")
+                write!(
+                    f,
+                    "checksum mismatch: expected {expected}, computed {actual}"
+                )
             }
             Self::IncompatibleBasis { refusal } => {
                 write!(f, "incompatible contract basis: {refusal}")
@@ -527,7 +574,10 @@ impl fmt::Display for ContractBasisError {
                 write!(f, "invalid identifier in field '{field}'")
             }
             Self::IncompatibleProtocol { expected, actual } => {
-                write!(f, "incompatible protocol: expected {expected}, got {actual}")
+                write!(
+                    f,
+                    "incompatible protocol: expected {expected}, got {actual}"
+                )
             }
             Self::Contract(err) => write!(f, "contract error: {err}"),
         }
@@ -750,8 +800,11 @@ pub fn decode_canonical_binary(bytes: &[u8]) -> Result<ContractBasis, ContractBa
 
     // 6. Decode canonical inner payload
     let mut decoder = CanonicalDecoder::new(&inner[..declared_len]);
-    let basis = ContractBasis::decode_canonical(&mut decoder).map_err(ContractBasisError::Contract)?;
-    decoder.ensure_finished().map_err(ContractBasisError::Contract)?;
+    let basis =
+        ContractBasis::decode_canonical(&mut decoder).map_err(ContractBasisError::Contract)?;
+    decoder
+        .ensure_finished()
+        .map_err(ContractBasisError::Contract)?;
 
     validate_contract_basis(&basis)?;
     Ok(basis)
@@ -784,18 +837,22 @@ pub fn check_compatibility(
 
     // 3. Schema catalog digest must match
     if candidate.schema_catalog_digest != expected.schema_catalog_digest {
-        return CompatibilityResult::Incompatible(ContractBasisRefusal::IncompatibleSchemaCatalog {
-            expected: expected.schema_catalog_digest,
-            actual: candidate.schema_catalog_digest,
-        });
+        return CompatibilityResult::Incompatible(
+            ContractBasisRefusal::IncompatibleSchemaCatalog {
+                expected: expected.schema_catalog_digest,
+                actual: candidate.schema_catalog_digest,
+            },
+        );
     }
 
     // 4. Operation registry digest must match
     if candidate.operation_registry_digest != expected.operation_registry_digest {
-        return CompatibilityResult::Incompatible(ContractBasisRefusal::IncompatibleOperationRegistry {
-            expected: expected.operation_registry_digest,
-            actual: candidate.operation_registry_digest,
-        });
+        return CompatibilityResult::Incompatible(
+            ContractBasisRefusal::IncompatibleOperationRegistry {
+                expected: expected.operation_registry_digest,
+                actual: candidate.operation_registry_digest,
+            },
+        );
     }
 
     // 5. View registry digest must match
@@ -808,18 +865,22 @@ pub fn check_compatibility(
 
     // 6. Capability registry digest must match
     if candidate.capability_registry_digest != expected.capability_registry_digest {
-        return CompatibilityResult::Incompatible(ContractBasisRefusal::IncompatibleCapabilityRegistry {
-            expected: expected.capability_registry_digest,
-            actual: candidate.capability_registry_digest,
-        });
+        return CompatibilityResult::Incompatible(
+            ContractBasisRefusal::IncompatibleCapabilityRegistry {
+                expected: expected.capability_registry_digest,
+                actual: candidate.capability_registry_digest,
+            },
+        );
     }
 
     // 7. Error registry digest must match
     if candidate.error_registry_digest != expected.error_registry_digest {
-        return CompatibilityResult::Incompatible(ContractBasisRefusal::IncompatibleErrorRegistry {
-            expected: expected.error_registry_digest,
-            actual: candidate.error_registry_digest,
-        });
+        return CompatibilityResult::Incompatible(
+            ContractBasisRefusal::IncompatibleErrorRegistry {
+                expected: expected.error_registry_digest,
+                actual: candidate.error_registry_digest,
+            },
+        );
     }
 
     // 8. Cost registry digest must match

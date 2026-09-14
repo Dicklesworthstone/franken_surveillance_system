@@ -361,25 +361,26 @@ fn test_tamper_blocks_known_physical_cell_and_sets_contradiction_integrity_cell(
     let integrity_cell = frame
         .knowledge_cells
         .iter()
-        .find(|c| c.claim_id.ends_with(":sensor-integrity"))
+        .find(|c| c.claim_id().ends_with(":sensor-integrity"))
         .ok_or("missing sensor-integrity cell")?;
-    assert_eq!(integrity_cell.knowledge_state, KnowledgeState::Unknown);
+    assert_eq!(integrity_cell.knowledge_state(), KnowledgeState::Unknown);
     assert_eq!(
-        integrity_cell.hypothesis,
+        integrity_cell.hypothesis(),
         Some(HypothesisDisposition::Disfavored)
     );
-    assert!(!integrity_cell.contradictions.is_empty());
-    assert!(integrity_cell.evidence.is_empty());
+    assert!(!integrity_cell.contradictions().is_empty());
+    assert!(integrity_cell.evidence().is_empty());
 
     // Physical presence cell cannot reach Known while tamper is unretired
     let physical_cell = frame
         .knowledge_cells
         .iter()
         .find(|c| {
-            c.claim_id.ends_with(":unknown-presence") && !c.claim_id.starts_with("claim:policy:")
+            c.claim_id().ends_with(":unknown-presence")
+                && !c.claim_id().starts_with("claim:policy:")
         })
         .ok_or("missing physical presence cell")?;
-    assert_ne!(physical_cell.knowledge_state, KnowledgeState::Known);
+    assert_ne!(physical_cell.knowledge_state(), KnowledgeState::Known);
 
     // Protected tamper world is present in adversarial residuals
     assert!(
@@ -432,7 +433,7 @@ fn test_planted_bypass_omitting_tamper_is_critical_non_coalescible_delta()
             .frame
             .knowledge_cells
             .iter()
-            .any(|c| c.claim_id.ends_with(":sensor-integrity") && !c.contradictions.is_empty())
+            .any(|c| c.claim_id().ends_with(":sensor-integrity") && !c.contradictions().is_empty())
     );
     let basis_physical = basis
         .situation
@@ -441,10 +442,11 @@ fn test_planted_bypass_omitting_tamper_is_critical_non_coalescible_delta()
         .knowledge_cells
         .iter()
         .find(|c| {
-            c.claim_id.ends_with(":unknown-presence") && !c.claim_id.starts_with("claim:policy:")
+            c.claim_id().ends_with(":unknown-presence")
+                && !c.claim_id().starts_with("claim:policy:")
         })
         .ok_or("missing physical presence cell in basis")?;
-    assert_ne!(basis_physical.knowledge_state, KnowledgeState::Known);
+    assert_ne!(basis_physical.knowledge_state(), KnowledgeState::Known);
 
     // Planted bypass in result: a later evaluation omits the tamper observation,
     // reporting only PersonLike on power:alpha and power:beta.
@@ -538,10 +540,10 @@ fn test_planted_bypass_omitting_tamper_is_critical_non_coalescible_delta()
         .frame
         .knowledge_cells
         .iter()
-        .find(|c| c.claim_id.ends_with(":sensor-integrity"))
+        .find(|c| c.claim_id().ends_with(":sensor-integrity"))
         .ok_or("missing sensor-integrity cell in bypass result")?;
-    assert_eq!(integrity_cell.knowledge_state, KnowledgeState::Unknown);
-    assert!(!integrity_cell.contradictions.is_empty());
+    assert_eq!(integrity_cell.knowledge_state(), KnowledgeState::Unknown);
+    assert!(!integrity_cell.contradictions().is_empty());
 
     // Physical presence must NOT become Known while prior tamper is unretired (Item 3)
     let bypass_physical_cell = result
@@ -551,11 +553,12 @@ fn test_planted_bypass_omitting_tamper_is_critical_non_coalescible_delta()
         .knowledge_cells
         .iter()
         .find(|c| {
-            c.claim_id.ends_with(":unknown-presence") && !c.claim_id.starts_with("claim:policy:")
+            c.claim_id().ends_with(":unknown-presence")
+                && !c.claim_id().starts_with("claim:policy:")
         })
         .ok_or("missing physical presence cell in bypass result")?;
     assert_ne!(
-        bypass_physical_cell.knowledge_state,
+        bypass_physical_cell.knowledge_state(),
         KnowledgeState::Known,
         "bypass physical presence must not reach Known while prior tamper is unretired"
     );
@@ -612,7 +615,7 @@ fn test_planted_bypass_omitting_tamper_is_critical_non_coalescible_delta()
     modified_capsule
         .frame
         .knowledge_cells
-        .retain(|c| !c.claim_id.ends_with(":sensor-integrity"));
+        .retain(|c| !c.claim_id().ends_with(":sensor-integrity"));
     let modified_situation =
         ReferenceSituation::new(modified_capsule, basis.situation.proof_roots.clone());
     let modified_basis = project_reference_situation(modified_situation, &test_spec(10_000))?;
@@ -647,7 +650,7 @@ fn test_planted_bypass_omitting_tamper_is_critical_non_coalescible_delta()
         !delta
             .changed_cells
             .iter()
-            .any(|cell| cell.claim_id.ends_with(":sensor-integrity")),
+            .any(|cell| cell.claim_id().ends_with(":sensor-integrity")),
         "a vanished cell must not be reported as a changed cell carrying its basis value"
     );
     delta.validate()?;
@@ -755,15 +758,15 @@ fn test_evidenced_integrity_restoration_retires_tamper_and_enables_known()
     let integrity_cell = frame
         .knowledge_cells
         .iter()
-        .find(|c| c.claim_id.ends_with(":sensor-integrity"))
+        .find(|c| c.claim_id().ends_with(":sensor-integrity"))
         .ok_or("missing sensor-integrity cell in restored situation")?;
-    assert_eq!(integrity_cell.knowledge_state, KnowledgeState::Known);
+    assert_eq!(integrity_cell.knowledge_state(), KnowledgeState::Known);
     assert_eq!(
-        integrity_cell.hypothesis,
+        integrity_cell.hypothesis(),
         Some(HypothesisDisposition::Supported)
     );
-    assert!(!integrity_cell.evidence.is_empty());
-    assert!(integrity_cell.contradictions.is_empty());
+    assert!(!integrity_cell.evidence().is_empty());
+    assert!(integrity_cell.contradictions().is_empty());
 
     // Protected sensor-tamper world is retired
     assert!(
@@ -779,10 +782,11 @@ fn test_evidenced_integrity_restoration_retires_tamper_and_enables_known()
         .knowledge_cells
         .iter()
         .find(|c| {
-            c.claim_id.ends_with(":unknown-presence") && !c.claim_id.starts_with("claim:policy:")
+            c.claim_id().ends_with(":unknown-presence")
+                && !c.claim_id().starts_with("claim:policy:")
         })
         .ok_or("missing physical presence cell")?;
-    assert_eq!(physical_cell.knowledge_state, KnowledgeState::Known);
+    assert_eq!(physical_cell.knowledge_state(), KnowledgeState::Known);
 
     // Meaningful delta between basis and result
     let delta = classify_reference_meaningful_delta(&basis, &result)?;
@@ -874,14 +878,14 @@ fn test_multi_sensor_tamper_partial_restoration() -> Result<(), Box<dyn Error>> 
     let integrity_cell = frame
         .knowledge_cells
         .iter()
-        .find(|c| c.claim_id.ends_with(":sensor-integrity"))
+        .find(|c| c.claim_id().ends_with(":sensor-integrity"))
         .ok_or("missing sensor-integrity cell")?;
-    assert_eq!(integrity_cell.knowledge_state, KnowledgeState::Unknown);
+    assert_eq!(integrity_cell.knowledge_state(), KnowledgeState::Unknown);
     assert_eq!(
-        integrity_cell.hypothesis,
+        integrity_cell.hypothesis(),
         Some(HypothesisDisposition::Disfavored)
     );
-    assert_eq!(integrity_cell.contradictions.len(), 1);
+    assert_eq!(integrity_cell.contradictions().len(), 1);
 
     // Protected tamper world remains active
     assert!(
@@ -974,13 +978,14 @@ fn test_corroborated_with_open_tamper_cannot_reach_known() -> Result<(), Box<dyn
         .knowledge_cells
         .iter()
         .find(|c| {
-            c.claim_id.ends_with(":unknown-presence") && !c.claim_id.starts_with("claim:policy:")
+            c.claim_id().ends_with(":unknown-presence")
+                && !c.claim_id().starts_with("claim:policy:")
         })
         .ok_or("missing physical presence cell")?;
 
     // Mutant M5 check: physical knowledge state must remain Unknown, NOT Known
-    assert_eq!(physical_cell.knowledge_state, KnowledgeState::Unknown);
-    assert_ne!(physical_cell.knowledge_state, KnowledgeState::Known);
+    assert_eq!(physical_cell.knowledge_state(), KnowledgeState::Unknown);
+    assert_ne!(physical_cell.knowledge_state(), KnowledgeState::Known);
 
     harness.cleanup();
     Ok(())
@@ -1026,7 +1031,7 @@ fn test_restoration_with_no_prior_tamper_does_not_produce_known_integrity_cell()
             .frame
             .knowledge_cells
             .iter()
-            .any(|c| c.claim_id.ends_with(":sensor-integrity")),
+            .any(|c| c.claim_id().ends_with(":sensor-integrity")),
         "sensor-integrity cell must be omitted when restoration has no prior tamper"
     );
 
@@ -1101,8 +1106,8 @@ fn test_pr4_pr5_restoration_retiring_nothing_yields_no_integrity_cell() -> Resul
             .frame
             .knowledge_cells
             .iter()
-            .any(|c| c.claim_id.ends_with(":sensor-integrity")
-                && c.knowledge_state == KnowledgeState::Known),
+            .any(|c| c.claim_id().ends_with(":sensor-integrity")
+                && c.knowledge_state() == KnowledgeState::Known),
         "sensor-integrity must NOT be Known when restoration retired nothing"
     );
 
@@ -1118,7 +1123,7 @@ fn r4_cell<'a>(
 ) -> Option<&'a fss_core::KnowledgeCell> {
     cells
         .iter()
-        .find(|c| c.claim_id.ends_with(suffix) && !c.claim_id.starts_with("claim:policy:"))
+        .find(|c| c.claim_id().ends_with(suffix) && !c.claim_id().starts_with("claim:policy:"))
 }
 
 fn r4_sup(
@@ -1267,8 +1272,8 @@ fn round4_pr1_situation_forged_receipts_refused() -> Result<(), Box<dyn Error>> 
     req.revision = 2;
     req.previous_anchor = Some(r1.authority_anchor.clone());
     let sit = compile_reference_situation(req, &h.authority)?;
-    let honest_state =
-        r4_cell(&sit.capsule.frame.knowledge_cells, ":unknown-presence").map(|c| c.knowledge_state);
+    let honest_state = r4_cell(&sit.capsule.frame.knowledge_cells, ":unknown-presence")
+        .map(|c| c.knowledge_state());
     let mut outcomes = Vec::new();
     for (tag, forged) in [
         ("default", r4_forged_default(&honest)),
@@ -1394,7 +1399,7 @@ fn round4_pr4_restoration_without_prior_tamper() -> Result<(), Box<dyn Error>> {
     req.previous_anchor = Some(r1.authority_anchor.clone());
     let s = compile_reference_situation(req, &h.authority)?;
     let cell = r4_cell(&s.capsule.frame.knowledge_cells, ":sensor-integrity")
-        .map(|c| (c.knowledge_state, c.evidence.len()));
+        .map(|c| (c.knowledge_state(), c.evidence().len()));
     h.cleanup();
     assert!(
         refused,
@@ -1443,7 +1448,7 @@ fn round4_pr5_integrity_cell_cites_only_retiring_restoration() -> Result<(), Box
     req.previous_anchor = Some(r1.authority_anchor.clone());
     let s = compile_reference_situation(req, &h.authority)?;
     let cell = r4_cell(&s.capsule.frame.knowledge_cells, ":sensor-integrity")
-        .map(|c| (c.knowledge_state, c.evidence.len()));
+        .map(|c| (c.knowledge_state(), c.evidence().len()));
     h.cleanup();
     assert_eq!(r2.lineage_tamper_status.restorations.len(), 1);
     assert_eq!(
@@ -1595,7 +1600,7 @@ fn r4b_plant(
 }
 
 fn r4b_physical(s: &ReferenceSituation) -> Option<KnowledgeState> {
-    r4_cell(&s.capsule.frame.knowledge_cells, ":unknown-presence").map(|c| c.knowledge_state)
+    r4_cell(&s.capsule.frame.knowledge_cells, ":unknown-presence").map(|c| c.knowledge_state())
 }
 
 /// H2 (r2u4 RP1/RP2): a clean Corroborated revision, then an honestly published tamper revision.
@@ -1638,7 +1643,7 @@ fn round4b_stale_receipt_after_tamper_is_refused() -> Result<(), Box<dyn Error>>
     assert!(stale_alert.is_err());
     assert_ne!(r4b_physical(&current), Some(KnowledgeState::Known));
     let integrity = r4_cell(&current.capsule.frame.knowledge_cells, ":sensor-integrity")
-        .map(|c| c.knowledge_state);
+        .map(|c| c.knowledge_state());
     assert_eq!(integrity, Some(KnowledgeState::Unknown));
     Ok(())
 }

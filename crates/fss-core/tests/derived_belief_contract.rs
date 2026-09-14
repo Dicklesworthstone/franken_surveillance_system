@@ -24,7 +24,7 @@ use fss_core::belief::BeliefInterval;
 use fss_core::{
     AgentAbstractionLayer, CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder,
     ContentDigest, ContractError, DerivationInputs, DerivedBelief, DerivedBeliefParams, Generation,
-    KnowledgeCell, KnowledgeState, KnowledgeStateBasis, LedgerAnchor,
+    KnowledgeCell, KnowledgeCellParams, KnowledgeState, KnowledgeStateBasis, LedgerAnchor,
     MAX_DERIVED_BELIEF_CONTRADICTIONS, MAX_DERIVED_BELIEF_EVIDENCE, Plane, ProvenanceClass,
     StaleBasis, TimestampNs,
 };
@@ -160,10 +160,10 @@ fn test_derived_belief_to_knowledge_cell_hard_gate() -> Result<(), Box<dyn Error
     let cell = belief.to_knowledge_cell(&sample_anchor())?;
 
     // The cell inherits the derived belief's attributes
-    assert_eq!(cell.claim_id, "belief:track:vehicle:002");
-    assert_eq!(cell.knowledge_state, KnowledgeState::Estimated);
-    assert_eq!(cell.provenance, ProvenanceClass::Derived);
-    assert_eq!(cell.evidence.len(), 1);
+    assert_eq!(cell.claim_id(), "belief:track:vehicle:002");
+    assert_eq!(cell.knowledge_state(), KnowledgeState::Estimated);
+    assert_eq!(cell.provenance(), ProvenanceClass::Derived);
+    assert_eq!(cell.evidence().len(), 1);
 
     // Constitutional Hard Gate: A derived proposition can NEVER be an irreversible-effect premise!
     assert!(
@@ -826,8 +826,8 @@ fn test_n1_derived_belief_never_yields_effect_premise_in_any_state() -> Result<(
                 );
                 let cell = belief.to_knowledge_cell(&anchor)?;
                 assert_eq!(cell.validate(), Ok(()), "{state:?} emitted an invalid cell");
-                assert_eq!(cell.knowledge_state, state);
-                assert_eq!(cell.provenance, ProvenanceClass::Derived);
+                assert_eq!(cell.knowledge_state(), state);
+                assert_eq!(cell.provenance(), ProvenanceClass::Derived);
                 assert!(
                     !cell.is_irreversible_effect_premise(now),
                     "{state:?} derived cell became an irreversible-effect premise"
@@ -1010,11 +1010,11 @@ fn test_n3_freshness_uses_full_anchor_order_and_state_root() -> Result<(), Box<d
 
     // The anchored decode rejects stale anchors, while cell conversion emits a stale-labelled cell (KSTATE-005).
     let stale_cell = belief.to_knowledge_cell(&newer_commit)?;
-    assert_eq!(stale_cell.knowledge_state, KnowledgeState::Stale);
-    assert_eq!(stale_cell.provenance, ProvenanceClass::Derived);
+    assert_eq!(stale_cell.knowledge_state(), KnowledgeState::Stale);
+    assert_eq!(stale_cell.provenance(), ProvenanceClass::Derived);
     assert_eq!(
-        stale_cell.state_basis,
-        Some(KnowledgeStateBasis::Stale(StaleBasis::OlderAnchor {
+        stale_cell.state_basis(),
+        Some(&KnowledgeStateBasis::Stale(StaleBasis::OlderAnchor {
             valid_at: Box::new(pinned.clone()),
             current: Box::new(newer_commit.clone()),
         }))
@@ -1307,13 +1307,13 @@ fn test_derived_belief_to_knowledge_cell_anchor_drift_and_refusal_matrix()
 
     // 1. Same anchor: cell preserves original knowledge_state (Estimated), state_basis is None.
     let same_cell = belief.to_knowledge_cell(&pinned)?;
-    assert_eq!(same_cell.claim_id, belief.belief_id());
-    assert_eq!(same_cell.statement, belief.statement());
-    assert_eq!(same_cell.knowledge_state, KnowledgeState::Estimated);
-    assert_eq!(same_cell.provenance, ProvenanceClass::Derived);
-    assert_eq!(same_cell.state_basis, None);
-    assert_eq!(same_cell.evidence, belief.supporting_evidence());
-    assert_eq!(same_cell.contradictions, belief.contradictions());
+    assert_eq!(same_cell.claim_id(), belief.belief_id());
+    assert_eq!(same_cell.statement(), belief.statement());
+    assert_eq!(same_cell.knowledge_state(), KnowledgeState::Estimated);
+    assert_eq!(same_cell.provenance(), ProvenanceClass::Derived);
+    assert_eq!(same_cell.state_basis(), None);
+    assert_eq!(same_cell.evidence(), belief.supporting_evidence());
+    assert_eq!(same_cell.contradictions(), belief.contradictions());
     assert_eq!(same_cell.validate(), Ok(()));
     assert!(
         !same_cell.is_irreversible_effect_premise(now),
@@ -1325,19 +1325,19 @@ fn test_derived_belief_to_knowledge_cell_anchor_drift_and_refusal_matrix()
     let mut commit_advanced = pinned.clone();
     commit_advanced.commit_sequence += 5;
     let stale_commit_cell = belief.to_knowledge_cell(&commit_advanced)?;
-    assert_eq!(stale_commit_cell.claim_id, belief.belief_id());
-    assert_eq!(stale_commit_cell.statement, belief.statement());
-    assert_eq!(stale_commit_cell.knowledge_state, KnowledgeState::Stale);
-    assert_eq!(stale_commit_cell.provenance, ProvenanceClass::Derived);
+    assert_eq!(stale_commit_cell.claim_id(), belief.belief_id());
+    assert_eq!(stale_commit_cell.statement(), belief.statement());
+    assert_eq!(stale_commit_cell.knowledge_state(), KnowledgeState::Stale);
+    assert_eq!(stale_commit_cell.provenance(), ProvenanceClass::Derived);
     assert_eq!(
-        stale_commit_cell.state_basis,
-        Some(KnowledgeStateBasis::Stale(StaleBasis::OlderAnchor {
+        stale_commit_cell.state_basis(),
+        Some(&KnowledgeStateBasis::Stale(StaleBasis::OlderAnchor {
             valid_at: Box::new(pinned.clone()),
             current: Box::new(commit_advanced.clone()),
         }))
     );
-    assert_eq!(stale_commit_cell.evidence, belief.supporting_evidence());
-    assert_eq!(stale_commit_cell.contradictions, belief.contradictions());
+    assert_eq!(stale_commit_cell.evidence(), belief.supporting_evidence());
+    assert_eq!(stale_commit_cell.contradictions(), belief.contradictions());
     assert_eq!(stale_commit_cell.validate(), Ok(()));
     assert!(
         !stale_commit_cell.is_irreversible_effect_premise(now),
@@ -1350,11 +1350,11 @@ fn test_derived_belief_to_knowledge_cell_anchor_drift_and_refusal_matrix()
     epoch_advanced.ledger_epoch += 1;
     epoch_advanced.commit_sequence = 0;
     let stale_epoch_cell = belief.to_knowledge_cell(&epoch_advanced)?;
-    assert_eq!(stale_epoch_cell.knowledge_state, KnowledgeState::Stale);
-    assert_eq!(stale_epoch_cell.provenance, ProvenanceClass::Derived);
+    assert_eq!(stale_epoch_cell.knowledge_state(), KnowledgeState::Stale);
+    assert_eq!(stale_epoch_cell.provenance(), ProvenanceClass::Derived);
     assert_eq!(
-        stale_epoch_cell.state_basis,
-        Some(KnowledgeStateBasis::Stale(StaleBasis::OlderAnchor {
+        stale_epoch_cell.state_basis(),
+        Some(&KnowledgeStateBasis::Stale(StaleBasis::OlderAnchor {
             valid_at: Box::new(pinned.clone()),
             current: Box::new(epoch_advanced.clone()),
         }))
@@ -1413,7 +1413,7 @@ fn test_derived_belief_to_knowledge_cell_anchor_drift_and_refusal_matrix()
 
     // 7. Planted bypasses on KnowledgeCell validation:
     // 7a. Stale cell missing state_basis must fail validate() with StaleBasisRequired
-    let naked_stale_cell = KnowledgeCell {
+    let naked_stale_cell = KnowledgeCell::new(KnowledgeCellParams {
         claim_id: "belief:planted:naked_stale".into(),
         statement: "Planted naked stale proposition".into(),
         knowledge_state: KnowledgeState::Stale,
@@ -1423,18 +1423,15 @@ fn test_derived_belief_to_knowledge_cell_anchor_drift_and_refusal_matrix()
         contradictions: vec![],
         valid_until: None,
         state_basis: None,
-    };
-    assert_eq!(
-        naked_stale_cell.validate(),
-        Err(ContractError::StaleBasisRequired)
-    );
+    });
+    assert_eq!(naked_stale_cell, Err(ContractError::StaleBasisRequired));
 
     // 7b. Stale cell with OlderAnchor where valid_at is not strictly older fails with StaleBasisNotOlder
     let not_older_basis = StaleBasis::OlderAnchor {
         valid_at: Box::new(commit_advanced.clone()),
         current: Box::new(commit_advanced.clone()),
     };
-    let invalid_basis_cell = KnowledgeCell {
+    let invalid_basis_cell = KnowledgeCell::new(KnowledgeCellParams {
         claim_id: "belief:planted:invalid_basis".into(),
         statement: "Planted equal anchor basis".into(),
         knowledge_state: KnowledgeState::Stale,
@@ -1444,11 +1441,8 @@ fn test_derived_belief_to_knowledge_cell_anchor_drift_and_refusal_matrix()
         contradictions: vec![],
         valid_until: None,
         state_basis: Some(KnowledgeStateBasis::Stale(not_older_basis)),
-    };
-    assert_eq!(
-        invalid_basis_cell.validate(),
-        Err(ContractError::StaleBasisNotOlder)
-    );
+    });
+    assert_eq!(invalid_basis_cell, Err(ContractError::StaleBasisNotOlder));
 
     Ok(())
 }

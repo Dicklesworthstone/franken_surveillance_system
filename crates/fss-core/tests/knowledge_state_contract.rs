@@ -19,9 +19,10 @@ use std::str::FromStr;
 
 use fss_core::{
     CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, ContentDigest,
-    ContractError, Generation, KnowledgeCell, KnowledgeState, KnowledgeStateBasis, LedgerAnchor,
-    PrivacyGeneration, ProvenanceClass, REDACTED_STATEMENT_MARKER, ReconciliationBasis,
-    ReconciliationBranch, RedactionMarker, RedactionReason, StaleBasis, TimestampNs,
+    ContractError, Generation, KnowledgeCell, KnowledgeCellParams, KnowledgeState,
+    KnowledgeStateBasis, LedgerAnchor, PrivacyGeneration, ProvenanceClass,
+    REDACTED_STATEMENT_MARKER, ReconciliationBasis, ReconciliationBranch, RedactionMarker,
+    RedactionReason, StaleBasis, TimestampNs,
 };
 
 #[test]
@@ -126,7 +127,7 @@ fn test_estimated_knowledge_cell_irreversible_effect_hard_gate() -> Result<(), B
     let evidence_digest = ContentDigest::sha256(b"admissible_sensor_evidence_anchor");
 
     // Construct a cell with KnowledgeState::Estimated
-    let cell = KnowledgeCell {
+    let cell = KnowledgeCell::new(KnowledgeCellParams {
         claim_id: "claim:motion:estimated:001".to_string(),
         statement: "Estimated vehicle motion trajectory within operating-envelope limits"
             .to_string(),
@@ -137,7 +138,7 @@ fn test_estimated_knowledge_cell_irreversible_effect_hard_gate() -> Result<(), B
         contradictions: vec![],
         valid_until: Some(TimestampNs(2_000_000_000)),
         state_basis: None,
-    };
+    })?;
 
     // Properties on KnowledgeCell
     assert!(cell.is_estimated());
@@ -152,7 +153,7 @@ fn test_estimated_knowledge_cell_irreversible_effect_hard_gate() -> Result<(), B
     );
 
     // Contrast with Known state: Known DOES satisfy premise requirements when evidence is present
-    let known_cell = KnowledgeCell {
+    let known_cell = KnowledgeCell::new(KnowledgeCellParams {
         claim_id: "claim:motion:known:001".to_string(),
         statement: "Established physical presence".to_string(),
         knowledge_state: KnowledgeState::Known,
@@ -162,12 +163,21 @@ fn test_estimated_knowledge_cell_irreversible_effect_hard_gate() -> Result<(), B
         contradictions: vec![],
         valid_until: Some(TimestampNs(2_000_000_000)),
         state_basis: None,
-    };
+    })?;
     assert!(known_cell.is_irreversible_effect_premise(now));
 
     // Changing known_cell to Estimated immediately strips irreversible effect authorization
-    let mut degraded_cell = known_cell;
-    degraded_cell.knowledge_state = KnowledgeState::Estimated;
+    let degraded_cell = KnowledgeCell::new(KnowledgeCellParams {
+        claim_id: known_cell.claim_id().to_owned(),
+        statement: known_cell.statement().to_owned(),
+        knowledge_state: KnowledgeState::Estimated,
+        provenance: known_cell.provenance(),
+        hypothesis: known_cell.hypothesis(),
+        evidence: known_cell.evidence().to_vec(),
+        contradictions: known_cell.contradictions().to_vec(),
+        valid_until: known_cell.valid_until(),
+        state_basis: known_cell.state_basis().cloned(),
+    })?;
     assert!(!degraded_cell.is_irreversible_effect_premise(now));
 
     Ok(())
@@ -345,7 +355,7 @@ fn test_unknown_knowledge_cell_explicit_branch_and_hard_gate() -> Result<(), Box
     let evidence_digest = ContentDigest::sha256(b"preliminary_or_inconclusive_sensor_evidence");
 
     // Construct a cell with KnowledgeState::Unknown
-    let cell = KnowledgeCell {
+    let cell = KnowledgeCell::new(KnowledgeCellParams {
         claim_id: "claim:target:presence:001".to_string(),
         statement: "Unconfirmed target presence in zone B".to_string(),
         knowledge_state: KnowledgeState::Unknown,
@@ -355,7 +365,7 @@ fn test_unknown_knowledge_cell_explicit_branch_and_hard_gate() -> Result<(), Box
         contradictions: vec![],
         valid_until: Some(TimestampNs(2_000_000_000)),
         state_basis: None,
-    };
+    })?;
 
     // Properties on KnowledgeCell
     assert!(cell.is_unknown());
@@ -371,8 +381,17 @@ fn test_unknown_knowledge_cell_explicit_branch_and_hard_gate() -> Result<(), Box
     );
 
     // Changing state to Known satisfies premise requirements
-    let mut resolved_cell = cell;
-    resolved_cell.knowledge_state = KnowledgeState::Known;
+    let resolved_cell = KnowledgeCell::new(KnowledgeCellParams {
+        claim_id: cell.claim_id().to_owned(),
+        statement: cell.statement().to_owned(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: cell.provenance(),
+        hypothesis: cell.hypothesis(),
+        evidence: cell.evidence().to_vec(),
+        contradictions: cell.contradictions().to_vec(),
+        valid_until: cell.valid_until(),
+        state_basis: cell.state_basis().cloned(),
+    })?;
     assert!(resolved_cell.is_irreversible_effect_premise(now));
 
     Ok(())
@@ -457,7 +476,7 @@ fn test_conflicted_knowledge_cell_competing_branches_and_hard_gate() -> Result<(
     let evidence_b = ContentDigest::sha256(b"radar_sensor_evidence_claims_truck");
 
     // Construct a cell with KnowledgeState::Conflicted
-    let cell = KnowledgeCell {
+    let cell = KnowledgeCell::new(KnowledgeCellParams {
         claim_id: "claim:vehicle:classification:001".to_string(),
         statement: "Conflicting classification between camera and radar models".to_string(),
         knowledge_state: KnowledgeState::Conflicted,
@@ -467,7 +486,7 @@ fn test_conflicted_knowledge_cell_competing_branches_and_hard_gate() -> Result<(
         contradictions: vec![evidence_b],
         valid_until: Some(TimestampNs(2_000_000_000)),
         state_basis: None,
-    };
+    })?;
 
     // Properties on KnowledgeCell
     assert!(cell.is_conflicted());
@@ -483,8 +502,17 @@ fn test_conflicted_knowledge_cell_competing_branches_and_hard_gate() -> Result<(
         "Conflicted knowledge state must NEVER authorize irreversible effects"
     );
 
-    let mut without_contradictions = cell;
-    without_contradictions.contradictions.clear();
+    let without_contradictions = KnowledgeCell::new(KnowledgeCellParams {
+        claim_id: "claim:test:conflicted:no-contra".to_string(),
+        statement: "Conflicted state without contradictions".to_string(),
+        knowledge_state: KnowledgeState::Conflicted,
+        provenance: ProvenanceClass::Derived,
+        hypothesis: None,
+        evidence: vec![evidence_a],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+        state_basis: None,
+    })?;
     assert!(
         !without_contradictions.is_irreversible_effect_premise(now),
         "Conflicted state cannot authorize irreversible effect even if contradictions are empty"
@@ -572,7 +600,7 @@ fn test_stale_knowledge_cell_revalidation_and_hard_gate() -> Result<(), Box<dyn 
 
     // Evidence present, no contradictions, and validity NOT expired; the stale state (and the
     // remembered provenance) refuse the premise.
-    let cell = KnowledgeCell {
+    let cell = KnowledgeCell::new(KnowledgeCellParams {
         claim_id: "claim:perimeter:clear:001".to_string(),
         statement: "Perimeter clear at older anchor".to_string(),
         knowledge_state: KnowledgeState::Stale,
@@ -582,8 +610,7 @@ fn test_stale_knowledge_cell_revalidation_and_hard_gate() -> Result<(), Box<dyn 
         contradictions: vec![],
         valid_until: Some(TimestampNs(3_000_000_000)),
         state_basis: Some(KnowledgeStateBasis::Stale(older_anchor_basis())),
-    }
-    .validated()?;
+    })?;
 
     // Properties on KnowledgeCell
     assert!(cell.is_stale());
@@ -601,24 +628,34 @@ fn test_stale_knowledge_cell_revalidation_and_hard_gate() -> Result<(), Box<dyn 
 
     // Relabeling the remembered cell as Known (basis dropped, same evidence) is laundering, not
     // revalidation: remembered provenance (PROV-004) never authorizes an irreversible effect.
-    let mut naive_relabel = cell.clone();
-    naive_relabel.knowledge_state = KnowledgeState::Known;
-    naive_relabel.state_basis = None;
+    let naive_relabel = KnowledgeCell::new(KnowledgeCellParams {
+        claim_id: cell.claim_id().to_owned(),
+        statement: cell.statement().to_owned(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: cell.provenance(),
+        hypothesis: cell.hypothesis(),
+        evidence: cell.evidence().to_vec(),
+        contradictions: cell.contradictions().to_vec(),
+        valid_until: cell.valid_until(),
+        state_basis: None,
+    })?;
     assert!(!naive_relabel.is_irreversible_effect_premise(now));
 
     // Revalidation is a fresh observation at the current anchor: observed provenance, new live
     // evidence distinct from the remembered evidence, no stale basis, and an open validity window.
-    let revalidated = KnowledgeCell {
+    let revalidated = KnowledgeCell::new(KnowledgeCellParams {
+        claim_id: cell.claim_id().to_owned(),
         statement: "Perimeter clear at current anchor".to_string(),
         knowledge_state: KnowledgeState::Known,
         provenance: ProvenanceClass::Observed,
+        hypothesis: cell.hypothesis(),
         evidence: vec![ContentDigest::sha256(
             b"live_perimeter_clear_capture_at_current_anchor",
         )],
+        contradictions: cell.contradictions().to_vec(),
+        valid_until: cell.valid_until(),
         state_basis: None,
-        ..cell
-    }
-    .validated()?;
+    })?;
     assert!(revalidated.is_irreversible_effect_premise(now));
 
     Ok(())
@@ -704,7 +741,7 @@ fn test_not_observable_knowledge_cell_protected_possibility_and_hard_gate()
 
     // Non-empty evidence (the coverage witness bounding observability), no contradictions,
     // and unexpired validity, so only the knowledge state can refuse the premise.
-    let cell = KnowledgeCell {
+    let cell = KnowledgeCell::new(KnowledgeCellParams {
         claim_id: "claim:corridor:motion:001".to_string(),
         statement: "Corridor unobserved due to sensor occlusion during requested interval"
             .to_string(),
@@ -715,8 +752,7 @@ fn test_not_observable_knowledge_cell_protected_possibility_and_hard_gate()
         contradictions: vec![],
         valid_until: Some(TimestampNs(2_000_000_000)),
         state_basis: None,
-    }
-    .validated()?;
+    })?;
 
     // Properties on KnowledgeCell
     assert!(cell.is_not_observable());
@@ -735,8 +771,17 @@ fn test_not_observable_knowledge_cell_protected_possibility_and_hard_gate()
 
     // The identical fixture relabelled Known is a premise, so the refusal above came from the
     // knowledge state alone rather than from missing evidence or expired validity.
-    let mut observed = cell;
-    observed.knowledge_state = KnowledgeState::Known;
+    let observed = KnowledgeCell::new(KnowledgeCellParams {
+        claim_id: cell.claim_id().to_owned(),
+        statement: cell.statement().to_owned(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: cell.provenance(),
+        hypothesis: cell.hypothesis(),
+        evidence: cell.evidence().to_vec(),
+        contradictions: cell.contradictions().to_vec(),
+        valid_until: cell.valid_until(),
+        state_basis: None,
+    })?;
     assert!(observed.is_irreversible_effect_premise(now));
 
     Ok(())
@@ -783,9 +828,17 @@ fn test_not_observable_is_distinct_from_unknown() -> Result<(), Box<dyn Error>> 
 
     // The same claim in each state: disjoint predicates and distinct digests.
     let not_observable_cell = gate_isolating_cell(not_observable)?;
-    let mut unknown_cell = not_observable_cell.clone();
-    unknown_cell.knowledge_state = unknown;
-    unknown_cell.validate()?;
+    let unknown_cell = KnowledgeCell::new(KnowledgeCellParams {
+        claim_id: not_observable_cell.claim_id().to_owned(),
+        statement: not_observable_cell.statement().to_owned(),
+        knowledge_state: unknown,
+        provenance: not_observable_cell.provenance(),
+        hypothesis: not_observable_cell.hypothesis(),
+        evidence: not_observable_cell.evidence().to_vec(),
+        contradictions: not_observable_cell.contradictions().to_vec(),
+        valid_until: not_observable_cell.valid_until(),
+        state_basis: None,
+    })?;
     assert!(not_observable_cell.is_not_observable());
     assert!(!not_observable_cell.is_unknown());
     assert!(unknown_cell.is_unknown());
@@ -876,7 +929,7 @@ fn test_redacted_knowledge_cell_abstract_constraints_and_hard_gate() -> Result<(
     let redacted_witness = ContentDigest::sha256(b"redacted_evidence_mask");
 
     // Construct a cell with KnowledgeState::Redacted
-    let cell = KnowledgeCell {
+    let cell = KnowledgeCell::new(KnowledgeCellParams {
         claim_id: "claim:resident:identity:001".to_string(),
         statement: "[REDACTED under privacy tier T2]".to_string(),
         knowledge_state: KnowledgeState::Redacted,
@@ -886,8 +939,7 @@ fn test_redacted_knowledge_cell_abstract_constraints_and_hard_gate() -> Result<(
         contradictions: vec![],
         valid_until: Some(TimestampNs(2_000_000_000)),
         state_basis: Some(KnowledgeStateBasis::Redaction(redaction_marker()?)),
-    }
-    .validated()?;
+    })?;
 
     // Properties on KnowledgeCell
     assert!(cell.is_redacted());
@@ -988,7 +1040,7 @@ fn test_indeterminate_knowledge_cell_reconciliation_and_hard_gate() -> Result<()
 
     // Evidence present, no contradictions, unexpired validity, and a typed reconciliation
     // basis naming the unresolved attempt with both outcome branches open.
-    let cell = KnowledgeCell {
+    let cell = KnowledgeCell::new(KnowledgeCellParams {
         claim_id: "claim:gate:lock:001".to_string(),
         statement: "Gate lock command sent but physical latch closure unverified due to timeout"
             .to_string(),
@@ -1001,8 +1053,7 @@ fn test_indeterminate_knowledge_cell_reconciliation_and_hard_gate() -> Result<()
         state_basis: Some(KnowledgeStateBasis::Reconciliation(
             ReconciliationBasis::occurred_or_not(ambiguous_receipt),
         )),
-    }
-    .validated()?;
+    })?;
 
     // Properties on KnowledgeCell
     assert!(cell.is_indeterminate());
@@ -1023,9 +1074,17 @@ fn test_indeterminate_knowledge_cell_reconciliation_and_hard_gate() -> Result<()
 
     // Once reconciled to a proved outcome (Known, basis dropped) the same fixture is a
     // premise, so the refusal above came from the knowledge state alone.
-    let mut reconciled = cell;
-    reconciled.knowledge_state = KnowledgeState::Known;
-    reconciled.state_basis = None;
+    let reconciled = KnowledgeCell::new(KnowledgeCellParams {
+        claim_id: cell.claim_id().to_owned(),
+        statement: cell.statement().to_owned(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: cell.provenance(),
+        hypothesis: cell.hypothesis(),
+        evidence: cell.evidence().to_vec(),
+        contradictions: cell.contradictions().to_vec(),
+        valid_until: cell.valid_until(),
+        state_basis: None,
+    })?;
     assert!(reconciled.is_irreversible_effect_premise(now));
 
     Ok(())
@@ -1107,7 +1166,7 @@ fn test_not_applicable_knowledge_cell_no_planning_and_hard_gate() -> Result<(), 
 
     // Non-empty evidence, no contradictions, and no validity bound, so only the knowledge
     // state can refuse the premise (e.g. flight battery status on a mains-powered camera).
-    let cell = KnowledgeCell {
+    let cell = KnowledgeCell::new(KnowledgeCellParams {
         claim_id: "claim:camera:battery_temp:001".to_string(),
         statement: "Battery temperature proposition on mains-powered fixed sensor".to_string(),
         knowledge_state: KnowledgeState::NotApplicable,
@@ -1117,8 +1176,7 @@ fn test_not_applicable_knowledge_cell_no_planning_and_hard_gate() -> Result<(), 
         contradictions: vec![],
         valid_until: None,
         state_basis: None,
-    }
-    .validated()?;
+    })?;
 
     // Properties on KnowledgeCell
     assert!(cell.is_not_applicable());
@@ -1144,8 +1202,17 @@ fn test_not_applicable_knowledge_cell_no_planning_and_hard_gate() -> Result<(), 
 
     // The identical fixture relabelled Known is a premise, so the refusal above came from the
     // knowledge state alone rather than from missing evidence.
-    let mut applicable = cell;
-    applicable.knowledge_state = KnowledgeState::Known;
+    let applicable = KnowledgeCell::new(KnowledgeCellParams {
+        claim_id: cell.claim_id().to_owned(),
+        statement: cell.statement().to_owned(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: cell.provenance(),
+        hypothesis: cell.hypothesis(),
+        evidence: cell.evidence().to_vec(),
+        contradictions: cell.contradictions().to_vec(),
+        valid_until: cell.valid_until(),
+        state_basis: None,
+    })?;
     assert!(applicable.is_irreversible_effect_premise(now));
 
     Ok(())
@@ -1187,7 +1254,7 @@ fn valid_basis_for(state: KnowledgeState) -> Result<Option<KnowledgeStateBasis>,
 /// A valid cell with non-empty evidence, no contradictions, and unexpired validity, so the
 /// knowledge state is the only field that can refuse the irreversible-effect premise.
 fn gate_isolating_cell(state: KnowledgeState) -> Result<KnowledgeCell, ContractError> {
-    KnowledgeCell {
+    KnowledgeCell::new(KnowledgeCellParams {
         claim_id: format!("claim:gate:{}", state.as_str()),
         statement: format!("Gate isolation fixture for {}", state.as_str()),
         knowledge_state: state,
@@ -1197,13 +1264,12 @@ fn gate_isolating_cell(state: KnowledgeState) -> Result<KnowledgeCell, ContractE
         contradictions: vec![],
         valid_until: Some(TimestampNs(2_000_000_000)),
         state_basis: valid_basis_for(state)?,
-    }
-    .validated()
+    })
 }
 
 /// A redacted cell whose withheld statement is `secret`.
-fn redacted_cell(secret: &str, marker: RedactionMarker) -> KnowledgeCell {
-    KnowledgeCell {
+fn redacted_cell(secret: &str, marker: RedactionMarker) -> Result<KnowledgeCell, ContractError> {
+    KnowledgeCell::new(KnowledgeCellParams {
         claim_id: "claim:resident:presence:001".to_string(),
         statement: secret.to_string(),
         knowledge_state: KnowledgeState::Redacted,
@@ -1213,13 +1279,13 @@ fn redacted_cell(secret: &str, marker: RedactionMarker) -> KnowledgeCell {
         contradictions: vec![],
         valid_until: Some(TimestampNs(2_000_000_000)),
         state_basis: Some(KnowledgeStateBasis::Redaction(marker)),
-    }
+    })
 }
 
 #[test]
 fn test_redacted_cell_debug_never_exposes_statement() -> Result<(), Box<dyn Error>> {
     let secret = "SECRET-alice-is-home";
-    let cell = redacted_cell(secret, redaction_marker()?).validated()?;
+    let cell = redacted_cell(secret, redaction_marker()?)?;
 
     let compact = format!("{cell:?}");
     let pretty = format!("{cell:#?}");
@@ -1231,10 +1297,22 @@ fn test_redacted_cell_debug_never_exposes_statement() -> Result<(), Box<dyn Erro
     assert!(compact.contains(REDACTED_STATEMENT_MARKER));
     assert!(compact.contains("claim:resident:presence:001"));
 
-    // Fail closed: a redacted cell that is itself invalid (no marker) still never prints it.
-    let mut unmarked = cell;
-    unmarked.state_basis = None;
-    assert!(!format!("{unmarked:?}").contains(secret));
+    // Fail closed: a redacted cell that is itself invalid (no marker) is refused by constructor.
+    let unmarked_params = KnowledgeCellParams {
+        claim_id: "claim:resident:presence:001".to_string(),
+        statement: secret.to_string(),
+        knowledge_state: KnowledgeState::Redacted,
+        provenance: ProvenanceClass::Observed,
+        hypothesis: None,
+        evidence: vec![ContentDigest::sha256(b"redacted_presence_evidence")],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+        state_basis: None,
+    };
+    assert_eq!(
+        KnowledgeCell::new(unmarked_params),
+        Err(ContractError::RedactionMarkerRequired)
+    );
 
     // Non-redacted cells keep their statement visible for diagnostics.
     let known = gate_isolating_cell(KnowledgeState::Known)?;
@@ -1245,8 +1323,8 @@ fn test_redacted_cell_debug_never_exposes_statement() -> Result<(), Box<dyn Erro
 
 #[test]
 fn test_redacted_cell_digest_is_not_a_statement_oracle() -> Result<(), Box<dyn Error>> {
-    let alice = redacted_cell("SECRET-alice-is-home", redaction_marker()?).validated()?;
-    let bob = redacted_cell("SECRET-bob-is-away", redaction_marker()?).validated()?;
+    let alice = redacted_cell("SECRET-alice-is-home", redaction_marker()?)?.validated()?;
+    let bob = redacted_cell("SECRET-bob-is-away", redaction_marker()?)?.validated()?;
 
     // Different withheld statements under the same marker hash identically.
     assert_eq!(alice.cell_digest(), bob.cell_digest());
@@ -1256,16 +1334,32 @@ fn test_redacted_cell_digest_is_not_a_statement_oracle() -> Result<(), Box<dyn E
         reason: RedactionReason::CapabilityProjection,
         privacy_generation: PrivacyGeneration::parse("privacy:projection:v7")?,
     };
-    let capability = redacted_cell("SECRET-alice-is-home", capability_marker).validated()?;
+    let capability = redacted_cell("SECRET-alice-is-home", capability_marker)?.validated()?;
     assert_ne!(alice.cell_digest(), capability.cell_digest());
 
     // The same statement is still digest-distinct once it is no longer withheld.
-    let mut disclosed = alice.clone();
-    disclosed.knowledge_state = KnowledgeState::Known;
-    disclosed.state_basis = None;
-    let mut other_disclosed = bob;
-    other_disclosed.knowledge_state = KnowledgeState::Known;
-    other_disclosed.state_basis = None;
+    let disclosed = KnowledgeCell::new(KnowledgeCellParams {
+        claim_id: alice.claim_id().to_owned(),
+        statement: alice.statement().to_owned(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: alice.provenance(),
+        hypothesis: alice.hypothesis(),
+        evidence: alice.evidence().to_vec(),
+        contradictions: alice.contradictions().to_vec(),
+        valid_until: alice.valid_until(),
+        state_basis: None,
+    })?;
+    let other_disclosed = KnowledgeCell::new(KnowledgeCellParams {
+        claim_id: bob.claim_id().to_owned(),
+        statement: bob.statement().to_owned(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: bob.provenance(),
+        hypothesis: bob.hypothesis(),
+        evidence: bob.evidence().to_vec(),
+        contradictions: bob.contradictions().to_vec(),
+        valid_until: bob.valid_until(),
+        state_basis: None,
+    })?;
     assert_ne!(disclosed.cell_digest(), other_disclosed.cell_digest());
 
     Ok(())
@@ -1273,19 +1367,26 @@ fn test_redacted_cell_digest_is_not_a_statement_oracle() -> Result<(), Box<dyn E
 
 #[test]
 fn test_redacted_cell_without_marker_is_refused() -> Result<(), Box<dyn Error>> {
-    let mut cell = redacted_cell("SECRET-alice-is-home", redaction_marker()?);
-    cell.state_basis = None;
+    let unmarked_params = KnowledgeCellParams {
+        claim_id: "claim:resident:presence:001".to_string(),
+        statement: "SECRET-alice-is-home".to_string(),
+        knowledge_state: KnowledgeState::Redacted,
+        provenance: ProvenanceClass::Observed,
+        hypothesis: None,
+        evidence: vec![ContentDigest::sha256(b"redacted_presence_evidence")],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+        state_basis: None,
+    };
 
-    assert_eq!(cell.validate(), Err(ContractError::RedactionMarkerRequired));
     assert_eq!(
-        cell.clone().validated(),
+        KnowledgeCell::new(unmarked_params),
         Err(ContractError::RedactionMarkerRequired)
     );
     assert_eq!(
         ContractError::RedactionMarkerRequired.code(),
         "redaction_marker_required"
     );
-    assert!(!cell.is_irreversible_effect_premise(TimestampNs(1_000_000_000)));
 
     Ok(())
 }
@@ -1293,16 +1394,22 @@ fn test_redacted_cell_without_marker_is_refused() -> Result<(), Box<dyn Error>> 
 #[test]
 fn test_state_basis_on_a_different_state_is_refused() -> Result<(), Box<dyn Error>> {
     let now = TimestampNs(1_000_000_000);
-    let mut cell = gate_isolating_cell(KnowledgeState::Known)?;
+    let cell = gate_isolating_cell(KnowledgeState::Known)?;
     assert!(cell.is_irreversible_effect_premise(now));
 
     // A Known cell carrying a redaction marker is incoherent and never a premise.
-    cell.state_basis = Some(KnowledgeStateBasis::Redaction(redaction_marker()?));
-    assert_eq!(
-        cell.validate(),
-        Err(ContractError::KnowledgeStateBasisMismatch)
-    );
-    assert!(!cell.is_irreversible_effect_premise(now));
+    let incoherent = KnowledgeCell::new(KnowledgeCellParams {
+        claim_id: cell.claim_id().to_owned(),
+        statement: cell.statement().to_owned(),
+        knowledge_state: cell.knowledge_state(),
+        provenance: cell.provenance(),
+        hypothesis: cell.hypothesis(),
+        evidence: cell.evidence().to_vec(),
+        contradictions: cell.contradictions().to_vec(),
+        valid_until: cell.valid_until(),
+        state_basis: Some(KnowledgeStateBasis::Redaction(redaction_marker()?)),
+    });
+    assert_eq!(incoherent, Err(ContractError::KnowledgeStateBasisMismatch));
 
     Ok(())
 }
@@ -1397,8 +1504,8 @@ fn older_anchor_basis() -> StaleBasis {
 }
 
 /// A valid stale cell whose only premise blocker is its knowledge state.
-fn stale_cell(basis: StaleBasis) -> KnowledgeCell {
-    KnowledgeCell {
+fn stale_cell(basis: StaleBasis) -> Result<KnowledgeCell, ContractError> {
+    KnowledgeCell::new(KnowledgeCellParams {
         claim_id: "claim:perimeter:clear:002".to_string(),
         statement: "Perimeter clear at an older anchor".to_string(),
         knowledge_state: KnowledgeState::Stale,
@@ -1410,24 +1517,33 @@ fn stale_cell(basis: StaleBasis) -> KnowledgeCell {
         contradictions: vec![],
         valid_until: Some(TimestampNs(3_000_000_000)),
         state_basis: Some(KnowledgeStateBasis::Stale(basis)),
-    }
+    })
 }
 
 #[test]
 fn test_stale_cell_without_basis_is_refused() -> Result<(), Box<dyn Error>> {
-    let mut cell = stale_cell(older_anchor_basis());
-    cell.state_basis = None;
+    let params = KnowledgeCellParams {
+        claim_id: "claim:perimeter:clear:002".to_string(),
+        statement: "Perimeter clear at an older anchor".to_string(),
+        knowledge_state: KnowledgeState::Stale,
+        provenance: ProvenanceClass::Remembered,
+        hypothesis: None,
+        evidence: vec![ContentDigest::sha256(
+            b"historical_perimeter_clear_assertion",
+        )],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(3_000_000_000)),
+        state_basis: None,
+    };
 
-    assert_eq!(cell.validate(), Err(ContractError::StaleBasisRequired));
     assert_eq!(
-        cell.clone().validated(),
+        KnowledgeCell::new(params),
         Err(ContractError::StaleBasisRequired)
     );
     assert_eq!(
         ContractError::StaleBasisRequired.code(),
         "stale_basis_required"
     );
-    assert!(!cell.is_irreversible_effect_premise(TimestampNs(2_000_000_000)));
 
     Ok(())
 }
@@ -1436,11 +1552,11 @@ fn test_stale_cell_without_basis_is_refused() -> Result<(), Box<dyn Error>> {
 fn test_stale_basis_must_name_a_strictly_older_anchor_or_generation() -> Result<(), Box<dyn Error>>
 {
     // Accepted: strictly older anchor on the same lineage, strictly older generation.
-    stale_cell(older_anchor_basis()).validate()?;
+    stale_cell(older_anchor_basis())?.validate()?;
     stale_cell(StaleBasis::OlderGeneration {
         valid_at: Generation::from_u64(3),
         current: Generation::from_u64(4),
-    })
+    })?
     .validate()?;
     let mut older_epoch = anchor_at(50);
     older_epoch.ledger_epoch = 1;
@@ -1449,7 +1565,7 @@ fn test_stale_basis_must_name_a_strictly_older_anchor_or_generation() -> Result<
     stale_cell(StaleBasis::OlderAnchor {
         valid_at: Box::new(older_epoch),
         current: Box::new(newer_epoch),
-    })
+    })?
     .validate()?;
 
     // Refused: the "older" point is the current point, is newer, or is not comparable.
@@ -1478,8 +1594,21 @@ fn test_stale_basis_must_name_a_strictly_older_anchor_or_generation() -> Result<
         },
     ];
     for basis in refused {
+        let params = KnowledgeCellParams {
+            claim_id: "claim:perimeter:clear:002".to_string(),
+            statement: "Perimeter clear at an older anchor".to_string(),
+            knowledge_state: KnowledgeState::Stale,
+            provenance: ProvenanceClass::Remembered,
+            hypothesis: None,
+            evidence: vec![ContentDigest::sha256(
+                b"historical_perimeter_clear_assertion",
+            )],
+            contradictions: vec![],
+            valid_until: Some(TimestampNs(3_000_000_000)),
+            state_basis: Some(KnowledgeStateBasis::Stale(basis)),
+        };
         assert_eq!(
-            stale_cell(basis).validate(),
+            KnowledgeCell::new(params),
             Err(ContractError::StaleBasisNotOlder)
         );
     }
@@ -1490,32 +1619,48 @@ fn test_stale_basis_must_name_a_strictly_older_anchor_or_generation() -> Result<
 #[test]
 fn test_stale_cell_cannot_pass_as_current() -> Result<(), Box<dyn Error>> {
     let now = TimestampNs(2_000_000_000);
-    let stale = stale_cell(older_anchor_basis()).validated()?;
+    let stale = stale_cell(older_anchor_basis())?;
     assert!(!stale.is_irreversible_effect_premise(now));
 
     // Relabelling the state while keeping the stale basis does not launder it into a
     // current fact: the cell is refused and is never a premise.
-    let mut relabelled = stale.clone();
-    relabelled.knowledge_state = KnowledgeState::Known;
+    let relabelled_params = KnowledgeCellParams {
+        claim_id: stale.claim_id().to_owned(),
+        statement: stale.statement().to_owned(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: stale.provenance(),
+        hypothesis: stale.hypothesis(),
+        evidence: stale.evidence().to_vec(),
+        contradictions: stale.contradictions().to_vec(),
+        valid_until: stale.valid_until(),
+        state_basis: stale.state_basis().cloned(),
+    };
     assert_eq!(
-        relabelled.validate(),
+        KnowledgeCell::new(relabelled_params),
         Err(ContractError::KnowledgeStateBasisMismatch)
     );
-    assert!(!relabelled.is_irreversible_effect_premise(now));
 
     // The stale basis is bound into the digest, so a stale cell never shares a digest with
     // the current (revalidated) cell for the same claim.
-    let mut revalidated = stale.clone();
-    revalidated.knowledge_state = KnowledgeState::Known;
-    revalidated.state_basis = None;
+    let revalidated = KnowledgeCell::new(KnowledgeCellParams {
+        claim_id: stale.claim_id().to_owned(),
+        statement: stale.statement().to_owned(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: stale.provenance(),
+        hypothesis: stale.hypothesis(),
+        evidence: stale.evidence().to_vec(),
+        contradictions: stale.contradictions().to_vec(),
+        valid_until: stale.valid_until(),
+        state_basis: None,
+    })?;
     assert_ne!(stale.cell_digest(), revalidated.cell_digest());
 
     Ok(())
 }
 
 /// A valid indeterminate cell for the unresolved attempt rooted at `root`.
-fn indeterminate_cell(basis: ReconciliationBasis) -> KnowledgeCell {
-    KnowledgeCell {
+fn indeterminate_cell(basis: ReconciliationBasis) -> Result<KnowledgeCell, ContractError> {
+    KnowledgeCell::new(KnowledgeCellParams {
         claim_id: "claim:gate:lock:002".to_string(),
         statement: "Gate lock outcome awaits reconciliation".to_string(),
         knowledge_state: KnowledgeState::Indeterminate,
@@ -1527,37 +1672,52 @@ fn indeterminate_cell(basis: ReconciliationBasis) -> KnowledgeCell {
         contradictions: vec![],
         valid_until: Some(TimestampNs(2_000_000_000)),
         state_basis: Some(KnowledgeStateBasis::Reconciliation(basis)),
-    }
+    })
 }
 
 #[test]
 fn test_indeterminate_cell_without_reconciliation_basis_is_refused() -> Result<(), Box<dyn Error>> {
     let root = ContentDigest::sha256(b"attempt_receipt_root");
-    let mut cell = indeterminate_cell(ReconciliationBasis::occurred_or_not(root));
-    cell.validate()?;
-    cell.state_basis = None;
+    let cell_valid = indeterminate_cell(ReconciliationBasis::occurred_or_not(root))?;
+    cell_valid.validate()?;
 
+    let params_without_basis = KnowledgeCellParams {
+        claim_id: cell_valid.claim_id().to_owned(),
+        statement: cell_valid.statement().to_owned(),
+        knowledge_state: cell_valid.knowledge_state(),
+        provenance: cell_valid.provenance(),
+        hypothesis: cell_valid.hypothesis(),
+        evidence: cell_valid.evidence().to_vec(),
+        contradictions: cell_valid.contradictions().to_vec(),
+        valid_until: cell_valid.valid_until(),
+        state_basis: None,
+    };
     assert_eq!(
-        cell.validate(),
-        Err(ContractError::ReconciliationBasisRequired)
-    );
-    assert_eq!(
-        cell.clone().validated(),
+        KnowledgeCell::new(params_without_basis),
         Err(ContractError::ReconciliationBasisRequired)
     );
     assert_eq!(
         ContractError::ReconciliationBasisRequired.code(),
         "reconciliation_basis_required"
     );
-    assert!(!cell.is_irreversible_effect_premise(TimestampNs(1_000_000_000)));
 
     // A reconciliation basis attached to a Known cell is incoherent and refused.
-    let mut known = gate_isolating_cell(KnowledgeState::Known)?;
-    known.state_basis = Some(KnowledgeStateBasis::Reconciliation(
-        ReconciliationBasis::occurred_or_not(root),
-    ));
+    let known = gate_isolating_cell(KnowledgeState::Known)?;
+    let incoherent_params = KnowledgeCellParams {
+        claim_id: known.claim_id().to_owned(),
+        statement: known.statement().to_owned(),
+        knowledge_state: known.knowledge_state(),
+        provenance: known.provenance(),
+        hypothesis: known.hypothesis(),
+        evidence: known.evidence().to_vec(),
+        contradictions: known.contradictions().to_vec(),
+        valid_until: known.valid_until(),
+        state_basis: Some(KnowledgeStateBasis::Reconciliation(
+            ReconciliationBasis::occurred_or_not(root),
+        )),
+    };
     assert_eq!(
-        known.validate(),
+        KnowledgeCell::new(incoherent_params),
         Err(ContractError::KnowledgeStateBasisMismatch)
     );
 
@@ -1574,44 +1734,71 @@ fn test_reconciliation_basis_keeps_occurred_and_not_occurred_branches_open()
     };
 
     // Accepted: both outcome branches open, optionally with a partial-outcome branch.
-    indeterminate_cell(ReconciliationBasis::occurred_or_not(root)).validate()?;
+    indeterminate_cell(ReconciliationBasis::occurred_or_not(root))?.validate()?;
     indeterminate_cell(with_branches(&[
         ReconciliationBranch::Occurred,
         ReconciliationBranch::NotOccurred,
         ReconciliationBranch::PartiallyOccurred,
-    ]))
+    ]))?
     .validate()?;
 
-    // Refused: an unresolved outcome may not drop either branch.
-    let refused: [&[ReconciliationBranch]; 4] = [
-        &[],
-        &[ReconciliationBranch::Occurred],
-        &[ReconciliationBranch::NotOccurred],
-        &[
+    // Refused: fewer than two branches, duplicate branches, or only one of occurred/not_occurred.
+    for branches in [
+        vec![],
+        vec![ReconciliationBranch::Occurred],
+        vec![ReconciliationBranch::NotOccurred],
+        vec![ReconciliationBranch::PartiallyOccurred],
+        vec![
+            ReconciliationBranch::Occurred,
+            ReconciliationBranch::PartiallyOccurred,
+        ],
+        vec![
             ReconciliationBranch::NotOccurred,
             ReconciliationBranch::PartiallyOccurred,
         ],
-    ];
-    for branches in refused {
+        vec![
+            ReconciliationBranch::Occurred,
+            ReconciliationBranch::Occurred,
+        ],
+    ] {
+        let basis = with_branches(&branches);
+        let params = KnowledgeCellParams {
+            claim_id: "claim:gate:lock:002".to_string(),
+            statement: "Gate lock outcome awaits reconciliation".to_string(),
+            knowledge_state: KnowledgeState::Indeterminate,
+            provenance: ProvenanceClass::Observed,
+            hypothesis: None,
+            evidence: vec![ContentDigest::sha256(
+                b"inconclusive_actuator_acknowledgement",
+            )],
+            contradictions: vec![],
+            valid_until: Some(TimestampNs(2_000_000_000)),
+            state_basis: Some(KnowledgeStateBasis::Reconciliation(basis)),
+        };
         assert_eq!(
-            indeterminate_cell(with_branches(branches)).validate(),
+            KnowledgeCell::new(params),
             Err(ContractError::ReconciliationBranchesIncomplete)
         );
     }
 
     // The unresolved attempt root is bound into the digest.
-    let first = indeterminate_cell(ReconciliationBasis::occurred_or_not(root));
+    let first = indeterminate_cell(ReconciliationBasis::occurred_or_not(root))?;
     let second = indeterminate_cell(ReconciliationBasis::occurred_or_not(ContentDigest::sha256(
         b"other_attempt_receipt_root",
-    )));
+    )))?;
     assert_ne!(first.cell_digest(), second.cell_digest());
+    let third = indeterminate_cell(with_branches(&[
+        ReconciliationBranch::Occurred,
+        ReconciliationBranch::NotOccurred,
+        ReconciliationBranch::PartiallyOccurred,
+    ]))?;
+    assert_ne!(first.cell_digest(), third.cell_digest());
 
     Ok(())
 }
 
 #[test]
-fn test_redaction_basis_on_known_or_stale_cell_is_refused_and_still_withheld()
--> Result<(), Box<dyn Error>> {
+fn test_redaction_basis_on_known_or_stale_cell_is_refused() -> Result<(), Box<dyn Error>> {
     let secret = "SECRET-misattached-redaction";
     for (knowledge_state, expected) in [
         (
@@ -1620,21 +1807,20 @@ fn test_redaction_basis_on_known_or_stale_cell_is_refused_and_still_withheld()
         ),
         (KnowledgeState::Stale, ContractError::StaleBasisRequired),
     ] {
-        let mut cell = redacted_cell(secret, redaction_marker()?);
-        cell.knowledge_state = knowledge_state;
+        let params = KnowledgeCellParams {
+            claim_id: "claim:resident:presence:001".to_string(),
+            statement: secret.to_string(),
+            knowledge_state,
+            provenance: ProvenanceClass::Observed,
+            hypothesis: None,
+            evidence: vec![ContentDigest::sha256(b"redacted_presence_evidence")],
+            contradictions: vec![],
+            valid_until: Some(TimestampNs(2_000_000_000)),
+            state_basis: Some(KnowledgeStateBasis::Redaction(redaction_marker()?)),
+        };
 
         // The combination is not a valid cell ...
-        assert_eq!(cell.validate(), Err(expected.clone()));
-        assert_eq!(cell.clone().validated(), Err(expected));
-
-        // ... yet a refused cell still never discloses what its redaction basis withholds.
-        assert!(cell.withholds_statement());
-        assert_eq!(cell.disclosable_statement(), REDACTED_STATEMENT_MARKER);
-        assert!(!format!("{cell:?}").contains(secret));
-        assert!(!format!("{cell:#?}").contains(secret));
-        let mut other = cell.clone();
-        other.statement = "SECRET-a-different-withheld-statement".to_string();
-        assert_eq!(cell.cell_digest(), other.cell_digest());
+        assert_eq!(KnowledgeCell::new(params), Err(expected));
     }
     Ok(())
 }
