@@ -216,6 +216,15 @@ impl ContactTrack {
     /// fail the watermark instead of being silently accepted a second time.
     pub fn ingest(&mut self, twin: &PropertyTwin, observation: ContactObservation,
         association: Option<[u8; 32]>, budget: &mut WorkBudget<'_>) -> Result<TrackUpdate, TrackError> {
+        let prepared = self.prepare_ingest(twin, observation, association, budget)?;
+        budget.charge(0)?;
+        Ok(self.apply_prepared(prepared))
+    }
+
+    // Shared staging path: batch ownership prevents intervening writes. Preparation
+    // performs every fallible operation without mutating the accepted track.
+    fn prepare_ingest(&self, twin: &PropertyTwin, observation: ContactObservation,
+        association: Option<[u8; 32]>, budget: &mut WorkBudget<'_>) -> Result<PreparedIngest, TrackError> {
         budget.charge(0)?;
         if self.invalidated { return Err(TrackError::Invalidated); }
         if twin.basis() != self.geometry || twin.digest() != self.twin_digest
@@ -230,7 +239,8 @@ impl ContactTrack {
                     return Err(TrackError::ConflictingReplay);
                 }
                 budget.charge(0)?;
-                return Ok(TrackUpdate { receipt: prior.receipt, replayed: true });
+                return Ok(PreparedIngest { update: TrackUpdate { receipt: prior.receipt, replayed: true },
+                    replacement: None });
             }
         }
         if self.last.as_ref().is_some_and(|p| observation.capture[0] <= p.observation().capture[0]) {
@@ -263,14 +273,23 @@ impl ContactTrack {
         let receipt = TrackReceipt { scope: self.scope, revision, evidence: observation.evidence,
             disposition, projection_quality: projected.quality(), supports: projected.hypotheses().len(),
             motion_modes: motion.as_ref().map_or(0, |m| m.modes().len()) };
-        // No fallible work follows this last cancellation poll; ownership publishes once.
         budget.charge(0)?;
-        if self.receipts.len() == self.options.receipt_capacity { self.receipts.pop_front(); }
-        self.receipts.push_back(Remembered { observation, association, receipt });
-        self.last = Some(projected);
-        self.motion = motion;
-        self.receipt = Some(receipt);
-        Ok(TrackUpdate { receipt, replayed: false })
+        Ok(PreparedIngest { update: TrackUpdate { receipt, replayed: false },
+            replacement: Some(PreparedState { projected, motion,
+                remembered: Remembered { observation, association, receipt } }) })
+    }
+
+    // Infallible publication only. Receipt capacity was reserved at construction;
+    // no user callback, cancellation poll, allocation or I/O occurs here.
+    fn apply_prepared(&mut self, prepared: PreparedIngest) -> TrackUpdate {
+        if let Some(state) = prepared.replacement {
+            if self.receipts.len() == self.options.receipt_capacity { self.receipts.pop_front(); }
+            self.receipt = Some(state.remembered.receipt);
+            self.receipts.push_back(state.remembered);
+            self.last = Some(state.projected);
+            self.motion = state.motion;
+        }
+        prepared.update
     }
 
     /// Borrow an exact active revision. A later mutation cannot coexist with this borrow.
@@ -301,3 +320,16 @@ impl<'a> TrackSnapshot<'a> {
     /// Frozen admitted camera set; no mutable calibration is read during prediction.
     pub fn cameras(self) -> &'a [TrackingCamera] { self.cameras }
 }
+
+struct PreparedState {
+    projected: ContactProjection,
+    motion: Option<WorldMotion>,
+    remembered: Remembered,
+}
+struct PreparedIngest {
+    update: TrackUpdate,
+    replacement: Option<PreparedState>,
+}
+
+/// Atomic, explicitly adjudicated association updates across a frozen track set.
+pub mod batch;

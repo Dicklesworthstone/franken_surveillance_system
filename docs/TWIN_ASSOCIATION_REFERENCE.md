@@ -74,3 +74,79 @@ persistent track identities, establish cross-camera identity, resolve merged det
 blobs, extract contacts from video or activate effects. Subsequent association logic
 must retain unmatched and alternative assignments instead of choosing the nearest
 person or treating a predicted handoff as its own confirmation.
+
+## Coupled assignment hypotheses
+
+`fss_twin::association_hypotheses::factorize_associations` now consumes the actual
+candidate graph. The caller supplies a nonzero record for the conditional assumption
+of at most one detection per target in this single exposure. The module does not
+assert that arbitrary raw detector outputs, merged blobs or duplicate proposals
+satisfy that assumption. Unsupported many-to-one phenomena remain outside it.
+
+Every connected component retains ALL partial one-to-one matchings. Both source
+tracks and detections may remain unmatched. For two crossing targets with two
+compatible detections this means seven assignments: the two complete permutations,
+four single-link assignments, and all unmatched. Keeping only maximum-cardinality
+or nearest-neighbor assignments would erase legitimate miss/clutter alternatives.
+No probability, rank, personal identity or threat label is assigned to these options.
+
+Disconnected components are stored as separate factors, with their Cartesian
+product defining the joint matching family. This is a combinatorial factorization,
+not a claim of statistically independent map errors, evidence or identity beliefs.
+Thirty-two independent candidate pairs retain 2^32 possible assignments using only
+64 component assignments, rather than materializing billions of joint rows.
+
+When a connected component exceeds its explicit-list ceiling (at most 1024) or the
+complete result exceeds its materialization allowance (at most 4096), its entire
+family is retained implicitly: every partial one-to-one matching over the stored
+complete component edge set, including unmatched inputs. The attempted enumeration
+prefix is discarded. `joint_count` becomes unknown, not zero, when a factor is not
+enumerated or the exact product would overflow. The original graph, unresolved
+conditions and source receipts remain attached. This representation fallback does
+not convert actual work exhaustion or cancellation into success; those still error.
+
+`check_assignment` accepts an explicitly proposed global matching and verifies its
+membership even for implicit factors. It rejects repeated source tracks, repeated
+detections, absent IDs and excluded edges. The resulting selection borrows the same
+source graph. Its `observations` method prepares the original contact records with
+the explicitly chosen anonymous track labels, without ingesting or changing any
+track. The owner must retain/admit association evidence, revalidate `check_current`,
+and perform witnessed updates separately. Matching membership never certifies
+physical identity. The module does not overwrite history or activate effects.
+
+```rust
+let graph = gate_contact_batch(&twin, frame, &snapshots, &detections, gate_policy, &mut budget)?;
+let hypotheses = factorize_associations(&graph, assignment_policy, &mut budget)?;
+// proposed_links are an explicit external proposal, not the enumerator's first row.
+let selection = hypotheses.check_assignment(&proposed_links, &mut budget)?;
+selection.graph().check_current(&twin, current_camera, &current_snapshots, &mut budget)?;
+let prepared_observations = selection.observations(&mut budget)?;
+```
+
+The API is synchronous derived cognition. It does not introduce an Asupersync
+adapter, canonical durable matching format, detector, native video decoder, automatic
+birth/death policy or multi-track atomic authority transaction. Existing owner
+capability, privacy, source custody and publication boundaries remain unchanged.
+
+## Assignment verification
+
+```sh
+cargo test --locked --offline -p fss-twin association_hypotheses
+cargo test --locked --offline -p fss-twin --test association_hypotheses_contract
+python3 -B scripts/test_association_hypotheses_reference.py
+```
+
+Five additional Rust unit contracts test every 3x3 candidate graph against an
+independent edge-subset oracle, exact enumeration ceilings, 32-way factorization,
+isolated unmatched nodes and actual work exhaustion. Six additional integration
+contracts exercise source-motion graphs, crossing and separated targets, complete
+implicit families, explicit selected-observation preparation, current-source
+revalidation, one-to-one violations and cancellation. Together with the first
+increment there are 22 newly authored Rust tests; none was executed here.
+
+The six Python combinatorial reference controls passed, including all 512 3x3
+bipartite graphs, exact product reconstruction, the seven-way crossing, monotonic
+unknown-edge restoration, and the 2^32 factorized case. The seven prior arithmetic
+controls also passed again. Delimiter and uploaded-byte checks do not substitute
+for Rust compilation or testing. Native execution, recorded-video accuracy and
+full FSS-099/BTI-008 qualification remain outstanding.
