@@ -1638,3 +1638,145 @@ fn test_redaction_basis_on_known_or_stale_cell_is_refused_and_still_withheld()
     }
     Ok(())
 }
+
+/// Exact-set validation tests for every provenance x {Known with evidence, Known without evidence, Estimated without evidence}
+/// per KSTATE-001 / bead fss-kdhh7.
+///
+/// KSTATE-001 defines known as "established by admissible evidence or a proved terminal postcondition",
+/// so Known ALWAYS requires admissible evidence, WHATEVER the provenance.
+/// Non-observed/derived claims without evidence must be Estimated (or Unknown), preserving their provenance.
+#[test]
+fn test_knowledge_cell_validation_exact_set_for_known_and_estimated() -> Result<(), Box<dyn Error>>
+{
+    let all_provenances = [
+        ProvenanceClass::Observed,
+        ProvenanceClass::Derived,
+        ProvenanceClass::Predicted,
+        ProvenanceClass::Remembered,
+        ProvenanceClass::OperatorAsserted,
+        ProvenanceClass::VendorClaimed,
+        ProvenanceClass::Policy,
+    ];
+    let evidence_root = ContentDigest::sha256(b"admissible_evidence_root");
+
+    for provenance in all_provenances {
+        // 1. Known with evidence: valid across ALL 7 provenances (KSTATE-001).
+        let known_with_evidence = KnowledgeCell {
+            claim_id: format!("claim:test:known_with_ev:{provenance:?}"),
+            statement: "Proposition in Known state with evidence.".to_string(),
+            knowledge_state: KnowledgeState::Known,
+            provenance,
+            hypothesis: None,
+            evidence: vec![evidence_root],
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: None,
+        };
+        assert_eq!(
+            known_with_evidence.validate(),
+            Ok(()),
+            "Known with evidence must be valid for provenance {provenance:?}"
+        );
+        assert!(known_with_evidence.clone().validated().is_ok());
+
+        // 2. Known without evidence: REFUSED with ContractError::EvidenceRequired across ALL 7 provenances!
+        // Removing this rule would allow non-observed/derived provenances to validate, which violates KSTATE-001.
+        let known_without_evidence = KnowledgeCell {
+            claim_id: format!("claim:test:known_no_ev:{provenance:?}"),
+            statement: "Proposition in Known state without evidence.".to_string(),
+            knowledge_state: KnowledgeState::Known,
+            provenance,
+            hypothesis: None,
+            evidence: Vec::new(),
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: None,
+        };
+        assert_eq!(
+            known_without_evidence.validate(),
+            Err(ContractError::EvidenceRequired),
+            "Known without evidence must be refused with EvidenceRequired for provenance {provenance:?}"
+        );
+        assert_eq!(
+            known_without_evidence.clone().validated(),
+            Err(ContractError::EvidenceRequired)
+        );
+
+        // 3. Estimated without evidence:
+        // - Observed (PROV-001) and Derived (PROV-002) assert present support and require evidence -> Err(EvidenceRequired)
+        // - Non-observed/derived (Predicted, Remembered, OperatorAsserted, VendorClaimed, Policy)
+        //   without evidence are valid as Estimated, keeping their provenance orthogonal -> Ok(())
+        let estimated_without_evidence = KnowledgeCell {
+            claim_id: format!("claim:test:estimated_no_ev:{provenance:?}"),
+            statement: "Proposition in Estimated state without evidence.".to_string(),
+            knowledge_state: KnowledgeState::Estimated,
+            provenance,
+            hypothesis: None,
+            evidence: Vec::new(),
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: None,
+        };
+        let expected_estimated = match provenance {
+            ProvenanceClass::Observed | ProvenanceClass::Derived => {
+                Err(ContractError::EvidenceRequired)
+            }
+            ProvenanceClass::Predicted
+            | ProvenanceClass::Remembered
+            | ProvenanceClass::OperatorAsserted
+            | ProvenanceClass::VendorClaimed
+            | ProvenanceClass::Policy => Ok(()),
+        };
+        assert_eq!(
+            estimated_without_evidence.validate(),
+            expected_estimated,
+            "Estimated without evidence mismatch for provenance {provenance:?}"
+        );
+        match expected_estimated {
+            Ok(()) => {
+                assert!(estimated_without_evidence.clone().validated().is_ok());
+            }
+            Err(err) => {
+                assert_eq!(estimated_without_evidence.clone().validated(), Err(err));
+            }
+        }
+
+        // 4. Estimated with evidence: valid across ALL 7 provenances.
+        let estimated_with_evidence = KnowledgeCell {
+            claim_id: format!("claim:test:estimated_with_ev:{provenance:?}"),
+            statement: "Proposition in Estimated state with evidence.".to_string(),
+            knowledge_state: KnowledgeState::Estimated,
+            provenance,
+            hypothesis: None,
+            evidence: vec![evidence_root],
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: None,
+        };
+        assert_eq!(
+            estimated_with_evidence.validate(),
+            Ok(()),
+            "Estimated with evidence must be valid for provenance {provenance:?}"
+        );
+
+        // 5. Unknown without evidence: valid across ALL 7 provenances (an honest unknown never needs evidence).
+        let unknown_without_evidence = KnowledgeCell {
+            claim_id: format!("claim:test:unknown_no_ev:{provenance:?}"),
+            statement: "Proposition in Unknown state without evidence.".to_string(),
+            knowledge_state: KnowledgeState::Unknown,
+            provenance,
+            hypothesis: None,
+            evidence: Vec::new(),
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: None,
+        };
+        assert_eq!(
+            unknown_without_evidence.validate(),
+            Ok(()),
+            "Unknown without evidence must be valid for provenance {provenance:?}"
+        );
+    }
+
+    Ok(())
+}
