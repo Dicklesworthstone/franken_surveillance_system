@@ -20,8 +20,8 @@ use super::{
     decode_text_set, encode_text_set, valid_text,
 };
 use crate::agent::{
-    KnowledgeCell, KnowledgeStateBasis, REDACTED_STATEMENT_MARKER, RedactionMarker, StaleBasis,
-    UnknownReason,
+    KnowledgeCell, KnowledgeCellParams, KnowledgeStateBasis, REDACTED_STATEMENT_MARKER,
+    RedactionMarker, StaleBasis, UnknownReason,
 };
 use crate::belief::{BeliefInterval, Contradiction};
 use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder};
@@ -812,7 +812,7 @@ impl H1SemanticSynopsis {
     pub fn derived_knowledge_states(&self) -> BTreeSet<KnowledgeState> {
         self.to_knowledge_cells(&H1CellContext::new(self.anchor.clone()))
             .into_iter()
-            .map(|cell| cell.knowledge_state)
+            .map(|cell| cell.knowledge_state())
             .collect()
     }
 
@@ -906,7 +906,7 @@ impl H1SemanticSynopsis {
             (KnowledgeState::Estimated, None)
         };
 
-        KnowledgeCell {
+        let params = KnowledgeCellParams {
             claim_id: fact.fact_id.clone(),
             statement: fact.statement.clone(),
             knowledge_state,
@@ -916,7 +916,9 @@ impl H1SemanticSynopsis {
             contradictions: cell_contradictions,
             valid_until: None,
             state_basis,
-        }
+        };
+        KnowledgeCell::new(params.clone())
+            .unwrap_or_else(|_| KnowledgeCell::new_unvalidated(params))
     }
 
     /// Computes the deterministic canonical digest of this H1 semantic synopsis.

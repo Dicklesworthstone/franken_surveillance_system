@@ -1000,7 +1000,14 @@ def validate_provenance_registry(repo_root: Path = ROOT) -> ValidationResult:
                             "#/mayLaunderEvidenceInto",
                             "Missing or non-object 'mayLaunderEvidenceInto' in agent contracts umbrella",
                         )
-                    elif contract_rs_path.is_file():
+                    elif not contract_rs_path.is_file():
+                        result.add_error(
+                            ERR_PROV_CORRUPT_FILE,
+                            "crates/fss-core/src/contract.rs",
+                            "#",
+                            "Missing crates/fss-core/src/contract.rs for may_launder_evidence_into verification",
+                        )
+                    else:
                         try:
                             rust_launder_matrix = extract_rust_may_launder_matrix(contract_rs_path)
                             for cls_name, expected_targets in rust_launder_matrix.items():

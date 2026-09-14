@@ -17,9 +17,9 @@ use fss_core::{
     BudgetVector, CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, CapsuleId,
     CaptureInterval, ClockBasis, Completeness, ContentDigest, ContractError, CoverageContinuity,
     CoverageStopReason, CoverageWitness, DerivedBelief, DerivedBeliefParams, DigestAlgorithm,
-    Generation, KnowledgeState, KnowledgeStateBasis, LedgerAnchor, NegativeReadClaim,
-    NegativeReadOutcome, ObligationId, OmissionReason, OperationId, Plane, PrivacyGeneration,
-    ProvenanceClass, RUNTIME_AUTHORITY_DOMAIN, RedactionMarker, RedactionReason,
+    Generation, KnowledgeCell, KnowledgeState, KnowledgeStateBasis, LedgerAnchor,
+    NegativeReadClaim, NegativeReadOutcome, ObligationId, OmissionReason, OperationId, Plane,
+    PrivacyGeneration, ProvenanceClass, RUNTIME_AUTHORITY_DOMAIN, RedactionMarker, RedactionReason,
     RuntimeAuthorityAndCustody, RuntimeAuthorityAndCustodyRecord, RuntimeAuthorityParams,
     RuntimeAuthorityRecord, RuntimeGrant, SOURCE_EVIDENCE_RECORD_FORMAT_VERSION, SensorCapsule,
     SensorId, SourceCustody, SourceEvidenceClassification, SourceEvidenceParams,
@@ -75,8 +75,6 @@ fn test_normative_agent_abstraction_layers_census() -> Result<(), Box<dyn Error>
 
     Ok(())
 }
-
-
 
 #[test]
 fn test_pinned_generation_and_freeze_digest_constants() -> Result<(), Box<dyn Error>> {

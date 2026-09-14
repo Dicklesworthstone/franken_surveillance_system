@@ -320,7 +320,10 @@ impl CanonicalDecode for NegativeReadOutcome {
             if item.is_empty() {
                 return Err(ContractError::InvalidIdentifier);
             }
-            if certified_domain.last().is_some_and(|prev: &String| prev >= &item) {
+            if certified_domain
+                .last()
+                .is_some_and(|prev: &String| prev >= &item)
+            {
                 return Err(ContractError::NonCanonicalOrdering);
             }
             certified_domain.insert(item);

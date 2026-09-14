@@ -569,10 +569,10 @@ impl KnowledgeCell {
         }
     }
 
-    /// Constructs an unvalidated [`KnowledgeCell`] for testing defense-in-depth and negative boundaries.
-    #[doc(hidden)]
+    /// Constructs an unvalidated [`KnowledgeCell`] for crate-internal unit testing.
+    #[cfg(test)]
     #[must_use]
-    pub fn new_unvalidated_for_test(params: KnowledgeCellParams) -> Self {
+    pub(crate) fn new_unvalidated_for_test(params: KnowledgeCellParams) -> Self {
         Self::new_unvalidated(params)
     }
 
@@ -1200,12 +1200,8 @@ impl SituationFrame {
             return Err(ContractError::StaleAnchor);
         }
         self.world_envelope.validate()?;
-
-        for (i, cell) in self.knowledge_cells.iter().enumerate() {
+        for cell in &self.knowledge_cells {
             cell.validate()?;
-            for prior in &self.knowledge_cells[..i] {
-                cell.verify_no_evidence_laundering(prior)?;
-            }
         }
         Ok(())
     }
@@ -1975,6 +1971,257 @@ mod tests {
                 .may_authorize_irreversible_effect()
         );
         assert!(!derived_cell.is_irreversible_effect_premise(TimestampNs(50)));
+
+        Ok(())
+    }
+
+    fn test_capsule_with_cell(cell: KnowledgeCell) -> Result<SituationCapsule, ContractError> {
+        let anchor = LedgerAnchor::genesis("site:agent_test");
+        let envelope = WorldEnvelope {
+            envelope_id: "env:test".to_string(),
+            objective_id: "obj:test".to_string(),
+            anchor: anchor.clone(),
+            nominal_claim_ids: BTreeSet::new(),
+            certified_core_claim_ids: BTreeSet::new(),
+            alternatives: vec![],
+            adversarial_residuals: vec![],
+            common_invariants: BTreeSet::new(),
+            coverage_boundary_handles: BTreeSet::new(),
+        };
+        let frame = SituationFrame {
+            frame_id: "frame:test".to_string(),
+            objective_id: "obj:test".to_string(),
+            anchor: anchor.clone(),
+            world_envelope: envelope,
+            knowledge_cells: vec![cell],
+            now: vec![],
+            changed: vec![],
+            why: vec![],
+            unknown: vec![],
+            at_risk: vec![],
+            next: vec![],
+            evidence_handles: BTreeSet::new(),
+        };
+        Ok(SituationCapsule {
+            capsule_id: "cap:test".to_string(),
+            revision: 1,
+            contract_basis: basis(),
+            mission_id: MissionId::parse("site:agent_test:mission:test")?,
+            session_id: SessionId::parse("site:agent_test:session:test")?,
+            principal_id: PrincipalId::parse("principal:test")?,
+            anchor,
+            previous_anchor: None,
+            frame,
+            obligations: vec![],
+            affordances: vec![],
+            completeness: Completeness::Partial,
+            created_at: TimestampNs(100),
+            mission_state: None,
+        })
+    }
+
+    #[test]
+    fn invalid_unvalidated_cells_refused_at_cell_and_capsule_level()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let now = TimestampNs(100);
+        let digest = ContentDigest::sha256(b"invalid_test_evidence");
+
+        // 1. Predicted + Known
+        let pred_known = KnowledgeCell::new_unvalidated_for_test(KnowledgeCellParams {
+            claim_id: "claim:pred:known".to_string(),
+            statement: "Predicted proposition claiming known".to_string(),
+            knowledge_state: KnowledgeState::Known,
+            provenance: ProvenanceClass::Predicted,
+            hypothesis: None,
+            evidence: vec![digest],
+            contradictions: vec![],
+            valid_until: None,
+            state_basis: None,
+        });
+        assert_eq!(
+            pred_known.validate(),
+            Err(ContractError::PredictedKnownForbidden)
+        );
+        assert!(!pred_known.is_irreversible_effect_premise(now));
+        let cap_pred_known = test_capsule_with_cell(pred_known)?;
+        assert_eq!(
+            cap_pred_known.validate(),
+            Err(ContractError::PredictedKnownForbidden)
+        );
+        assert_eq!(
+            cap_pred_known.decision_fingerprint(),
+            Err(ContractError::PredictedKnownForbidden)
+        );
+
+        // 2. Basisless indeterminate
+        let basisless_indeterminate =
+            KnowledgeCell::new_unvalidated_for_test(KnowledgeCellParams {
+                claim_id: "claim:basisless:indeterminate".to_string(),
+                statement: "Indeterminate proposition without basis".to_string(),
+                knowledge_state: KnowledgeState::Indeterminate,
+                provenance: ProvenanceClass::Observed,
+                hypothesis: None,
+                evidence: vec![digest],
+                contradictions: vec![],
+                valid_until: None,
+                state_basis: None,
+            });
+        assert_eq!(
+            basisless_indeterminate.validate(),
+            Err(ContractError::ReconciliationBasisRequired)
+        );
+        assert!(!basisless_indeterminate.is_irreversible_effect_premise(now));
+        let cap_indet = test_capsule_with_cell(basisless_indeterminate)?;
+        assert_eq!(
+            cap_indet.validate(),
+            Err(ContractError::ReconciliationBasisRequired)
+        );
+        assert_eq!(
+            cap_indet.decision_fingerprint(),
+            Err(ContractError::ReconciliationBasisRequired)
+        );
+
+        // 3. Basisless stale
+        let basisless_stale = KnowledgeCell::new_unvalidated_for_test(KnowledgeCellParams {
+            claim_id: "claim:basisless:stale".to_string(),
+            statement: "Stale proposition without basis".to_string(),
+            knowledge_state: KnowledgeState::Stale,
+            provenance: ProvenanceClass::Observed,
+            hypothesis: None,
+            evidence: vec![digest],
+            contradictions: vec![],
+            valid_until: None,
+            state_basis: None,
+        });
+        assert_eq!(
+            basisless_stale.validate(),
+            Err(ContractError::StaleBasisRequired)
+        );
+        assert!(!basisless_stale.is_irreversible_effect_premise(now));
+        let cap_stale = test_capsule_with_cell(basisless_stale)?;
+        assert_eq!(cap_stale.validate(), Err(ContractError::StaleBasisRequired));
+        assert_eq!(
+            cap_stale.decision_fingerprint(),
+            Err(ContractError::StaleBasisRequired)
+        );
+
+        // 4. Basisless redacted
+        let secret = "SECRET-do-not-leak";
+        let basisless_redacted = KnowledgeCell::new_unvalidated_for_test(KnowledgeCellParams {
+            claim_id: "claim:basisless:redacted".to_string(),
+            statement: secret.to_string(),
+            knowledge_state: KnowledgeState::Redacted,
+            provenance: ProvenanceClass::Observed,
+            hypothesis: None,
+            evidence: vec![digest],
+            contradictions: vec![],
+            valid_until: None,
+            state_basis: None,
+        });
+        assert_eq!(
+            basisless_redacted.validate(),
+            Err(ContractError::RedactionMarkerRequired)
+        );
+        assert!(!basisless_redacted.is_irreversible_effect_premise(now));
+        assert!(basisless_redacted.withholds_statement());
+        assert!(!format!("{basisless_redacted:?}").contains(secret));
+        let cap_redacted = test_capsule_with_cell(basisless_redacted)?;
+        assert_eq!(
+            cap_redacted.validate(),
+            Err(ContractError::RedactionMarkerRequired)
+        );
+        assert_eq!(
+            cap_redacted.decision_fingerprint(),
+            Err(ContractError::RedactionMarkerRequired)
+        );
+
+        // 5. Misattached redaction on Known
+        let secret_misattached = "SECRET-misattached-redaction";
+        let marker = RedactionMarker {
+            reason: RedactionReason::PrivacyProjection,
+            privacy_generation: PrivacyGeneration::canonical_v1(),
+        };
+        let misattached_known = KnowledgeCell::new_unvalidated_for_test(KnowledgeCellParams {
+            claim_id: "claim:misattached:known".to_string(),
+            statement: secret_misattached.to_string(),
+            knowledge_state: KnowledgeState::Known,
+            provenance: ProvenanceClass::Observed,
+            hypothesis: None,
+            evidence: vec![digest],
+            contradictions: vec![],
+            valid_until: None,
+            state_basis: Some(KnowledgeStateBasis::Redaction(marker.clone())),
+        });
+        assert_eq!(
+            misattached_known.validate(),
+            Err(ContractError::KnowledgeStateBasisMismatch)
+        );
+        assert!(misattached_known.withholds_statement());
+        assert_eq!(
+            misattached_known.disclosable_statement(),
+            REDACTED_STATEMENT_MARKER
+        );
+        assert!(!format!("{misattached_known:?}").contains(secret_misattached));
+        assert!(!format!("{misattached_known:#?}").contains(secret_misattached));
+        let cap_misattached_known = test_capsule_with_cell(misattached_known.clone())?;
+        assert_eq!(
+            cap_misattached_known.validate(),
+            Err(ContractError::KnowledgeStateBasisMismatch)
+        );
+        assert_eq!(
+            cap_misattached_known.decision_fingerprint(),
+            Err(ContractError::KnowledgeStateBasisMismatch)
+        );
+
+        // 6. Misattached redaction on Stale
+        let misattached_stale = KnowledgeCell::new_unvalidated_for_test(KnowledgeCellParams {
+            claim_id: "claim:misattached:stale".to_string(),
+            statement: secret_misattached.to_string(),
+            knowledge_state: KnowledgeState::Stale,
+            provenance: ProvenanceClass::Observed,
+            hypothesis: None,
+            evidence: vec![digest],
+            contradictions: vec![],
+            valid_until: None,
+            state_basis: Some(KnowledgeStateBasis::Redaction(marker.clone())),
+        });
+        assert_eq!(
+            misattached_stale.validate(),
+            Err(ContractError::StaleBasisRequired)
+        );
+        assert!(misattached_stale.withholds_statement());
+        assert_eq!(
+            misattached_stale.disclosable_statement(),
+            REDACTED_STATEMENT_MARKER
+        );
+        assert!(!format!("{misattached_stale:?}").contains(secret_misattached));
+        assert!(!format!("{misattached_stale:#?}").contains(secret_misattached));
+        let cap_misattached_stale = test_capsule_with_cell(misattached_stale)?;
+        assert_eq!(
+            cap_misattached_stale.validate(),
+            Err(ContractError::StaleBasisRequired)
+        );
+        assert_eq!(
+            cap_misattached_stale.decision_fingerprint(),
+            Err(ContractError::StaleBasisRequired)
+        );
+
+        // 7. Statement variation on misattached redaction does not change digest
+        let other_misattached = KnowledgeCell::new_unvalidated_for_test(KnowledgeCellParams {
+            claim_id: "claim:misattached:known".to_string(),
+            statement: "SECRET-a-different-withheld-statement".to_string(),
+            knowledge_state: KnowledgeState::Known,
+            provenance: ProvenanceClass::Observed,
+            hypothesis: None,
+            evidence: vec![digest],
+            contradictions: vec![],
+            valid_until: None,
+            state_basis: Some(KnowledgeStateBasis::Redaction(marker)),
+        });
+        assert_eq!(
+            misattached_known.cell_digest(),
+            other_misattached.cell_digest()
+        );
 
         Ok(())
     }

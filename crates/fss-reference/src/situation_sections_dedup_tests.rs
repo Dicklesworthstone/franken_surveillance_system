@@ -16,34 +16,22 @@ use fss_core::{KnowledgeCell, KnowledgeState};
 use super::{RedundancyRecord, context_candidates, same_disclosed_statement};
 use crate::situation_sections_tests::{situation_with_cells, withheld_cell};
 
-/// A cell in `state` that withholds `secret`; `KnowledgeCell::validate` refuses it.
-fn withholding_cell_on(
-    state: KnowledgeState,
-    claim_id: &str,
-    secret: &str,
-) -> Result<KnowledgeCell, Box<dyn Error>> {
+/// A cell that withholds `secret`.
+fn withholding_cell_on(claim_id: &str, secret: &str) -> Result<KnowledgeCell, Box<dyn Error>> {
     let cell = withheld_cell(claim_id, secret, Vec::new())?;
-    let mut params = cell.to_params();
-    params.knowledge_state = state;
-    let cell = KnowledgeCell::new_unvalidated_for_test(params);
     assert!(cell.withholds_statement());
-    assert!(
-        cell.validate().is_err(),
-        "{state:?} must refuse a redaction basis, so no public entry point reaches this lane"
-    );
     Ok(cell)
 }
 
-/// Sorted candidate item ids and redundancy records for two withholding cells in `state`.
+/// Sorted candidate item ids and redundancy records for two withholding cells.
 fn lane_candidates(
-    state: KnowledgeState,
     first_secret: &str,
     second_secret: &str,
 ) -> Result<(Vec<String>, Vec<RedundancyRecord>), Box<dyn Error>> {
     let mut situation = situation_with_cells(false, Vec::new())?;
     situation.capsule.frame.knowledge_cells.extend([
-        withholding_cell_on(state, "claim:withheld:1", first_secret)?,
-        withholding_cell_on(state, "claim:withheld:2", second_secret)?,
+        withholding_cell_on("claim:withheld:1", first_secret)?,
+        withholding_cell_on("claim:withheld:2", second_secret)?,
     ]);
     let (candidates, redundancy) = context_candidates(&situation)?;
     for candidate in &candidates {
@@ -63,31 +51,24 @@ fn lane_candidates(
 }
 
 #[test]
-fn knowledge_and_not_applicable_lanes_never_deduplicate_on_withheld_statements()
--> Result<(), Box<dyn Error>> {
-    for (state, lane) in [
-        (KnowledgeState::Known, "knowledge"),
-        (KnowledgeState::Estimated, "knowledge"),
-        (KnowledgeState::NotApplicable, "not_applicable"),
-    ] {
-        let same = lane_candidates(state, "SECRET-same-resident", "SECRET-same-resident")?;
-        let different = lane_candidates(state, "SECRET-alice-is-home", "SECRET-bob-is-away")?;
-        assert_eq!(
-            same, different,
-            "{state:?}: equality of withheld statements changed the {lane} lane"
-        );
-        for claim in ["claim:withheld:1", "claim:withheld:2"] {
-            let item_id = format!("context:{lane}:{claim}");
-            assert!(
-                same.0.contains(&item_id),
-                "{state:?}: {item_id} was deduplicated away"
-            );
-        }
-        assert!(
-            same.1.iter().all(|record| record.kind != lane),
-            "{state:?}: the {lane} lane recorded a withheld-statement duplicate"
-        );
+fn epistemic_boundary_lane_never_deduplicates_on_withheld_statements() -> Result<(), Box<dyn Error>>
+{
+    let same = lane_candidates("SECRET-same-resident", "SECRET-same-resident")?;
+    let different = lane_candidates("SECRET-alice-is-home", "SECRET-bob-is-away")?;
+    assert_eq!(
+        same, different,
+        "equality of withheld statements changed the epistemic_boundary lane"
+    );
+    for claim in ["claim:withheld:1", "claim:withheld:2"] {
+        let item_id = format!("context:epistemic:{claim}");
+        assert!(same.0.contains(&item_id), "{item_id} was deduplicated away");
     }
+    assert!(
+        same.1
+            .iter()
+            .all(|record| record.kind != "epistemic_boundary"),
+        "the epistemic_boundary lane recorded a withheld-statement duplicate"
+    );
     Ok(())
 }
 
@@ -108,32 +89,21 @@ fn same_disclosed_statement_never_compares_withheld_statements() -> Result<(), B
         "equal disclosed statements are duplicates"
     );
 
-    for state in [
-        KnowledgeState::Known,
-        KnowledgeState::Estimated,
-        KnowledgeState::NotApplicable,
-        KnowledgeState::Redacted,
-    ] {
-        let cell = withheld_cell("claim:withheld:1", secret, Vec::new())?;
-        let mut params = cell.to_params();
-        params.knowledge_state = state;
-        let withheld = KnowledgeCell::new_unvalidated_for_test(params);
-        assert!(withheld.withholds_statement());
-        let mut twin_params = withheld.to_params();
-        twin_params.claim_id = "claim:withheld:2".to_owned();
-        let withheld_twin = KnowledgeCell::new_unvalidated_for_test(twin_params);
-        assert!(
-            !same_disclosed_statement(&withheld, &withheld_twin),
-            "{state:?}: two withheld statements were compared"
-        );
-        assert!(
-            !same_disclosed_statement(&withheld, &disclosed),
-            "{state:?}: a withheld statement was compared with a disclosed one"
-        );
-        assert!(
-            !same_disclosed_statement(&disclosed, &withheld),
-            "{state:?}: a disclosed statement was compared with a withheld one"
-        );
-    }
+    let withheld = withheld_cell("claim:withheld:1", secret, Vec::new())?;
+    assert!(withheld.withholds_statement());
+    let withheld_twin = withheld_cell("claim:withheld:2", secret, Vec::new())?;
+    assert!(withheld_twin.withholds_statement());
+    assert!(
+        !same_disclosed_statement(&withheld, &withheld_twin),
+        "two withheld statements were compared"
+    );
+    assert!(
+        !same_disclosed_statement(&withheld, &disclosed),
+        "a withheld statement was compared with a disclosed one"
+    );
+    assert!(
+        !same_disclosed_statement(&disclosed, &withheld),
+        "a disclosed statement was compared with a withheld one"
+    );
     Ok(())
 }

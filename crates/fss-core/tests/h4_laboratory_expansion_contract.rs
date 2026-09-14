@@ -36,9 +36,9 @@ use fss_core::{
     ContractError, H4_CONTENT, H4_LEVEL_ID, H4_LEVEL_NAME, H4_OWNER, H4_SCHEMA,
     H4LaboratoryExpansion, H4LaboratoryExpansionParams, HandleAvailability, HydrationArtifact,
     HydrationError, HydrationLevel, HydrationPurpose, HydrationRequest, HydrationRequestSpec,
-    IntermediateArtifact, KnowledgeCell, KnowledgeState, LABORATORY_PROVENANCE_MARKER,
-    LaboratoryAccess, LaboratoryArtifact, LaboratoryQuarantine, LedgerAnchor,
-    MAX_H4_ALTERNATE_SYSTEMS, MAX_H4_IDENTIFIER_LEN, MAX_H4_INTERMEDIATES,
+    IntermediateArtifact, KnowledgeCell, KnowledgeCellParams, KnowledgeState,
+    LABORATORY_PROVENANCE_MARKER, LaboratoryAccess, LaboratoryArtifact, LaboratoryQuarantine,
+    LedgerAnchor, MAX_H4_ALTERNATE_SYSTEMS, MAX_H4_IDENTIFIER_LEN, MAX_H4_INTERMEDIATES,
     MAX_H4_ORACLE_COMPARISONS, OracleComparison, ProvenanceClass, ReplayBundleRef, SemanticHandle,
     SemanticHandleSpec, SessionId, TimestampNs,
 };
@@ -360,11 +360,11 @@ fn test_h4_cannot_authorize_effects_or_claim_known_knowledge_state() -> Result<(
 
     // 1. Convert to KnowledgeCell
     let cell = expansion.to_knowledge_cell(&anchor)?;
-    assert_eq!(cell.knowledge_state, KnowledgeState::Estimated);
-    assert_eq!(cell.provenance, ProvenanceClass::Predicted);
+    assert_eq!(cell.knowledge_state(), KnowledgeState::Estimated);
+    assert_eq!(cell.provenance(), ProvenanceClass::Predicted);
     assert!(cell.is_laboratory_tainted());
-    assert!(cell.statement.contains(LABORATORY_PROVENANCE_MARKER));
-    assert!(cell.claim_id.starts_with("laboratory:"));
+    assert!(cell.statement().contains(LABORATORY_PROVENANCE_MARKER));
+    assert!(cell.claim_id().starts_with("laboratory:"));
     assert!(
         !cell.is_irreversible_effect_premise(TimestampNs(1_500_000_000)),
         "Laboratory cell must NEVER serve as an irreversible-effect premise"
@@ -372,10 +372,10 @@ fn test_h4_cannot_authorize_effects_or_claim_known_knowledge_state() -> Result<(
 
     // 2. Statement marker path refusal: cell with LABORATORY_PROVENANCE_MARKER claiming Known state is refused
     let normal_evidence = ContentDigest::sha256(b"physical-door-sensor-packet-canonical");
-    let statement_tainted_cell = KnowledgeCell {
+    let statement_tainted_params = KnowledgeCellParams {
         claim_id: "site:statement-tainted".to_owned(),
         statement: format!("{} tainted proposition", LABORATORY_PROVENANCE_MARKER),
-        knowledge_state: KnowledgeState::Known,
+        knowledge_state: KnowledgeState::Estimated,
         provenance: ProvenanceClass::Predicted,
         hypothesis: None,
         evidence: vec![normal_evidence],
@@ -383,25 +383,28 @@ fn test_h4_cannot_authorize_effects_or_claim_known_knowledge_state() -> Result<(
         valid_until: Some(TimestampNs(2_000_000_000)),
         state_basis: None,
     };
+    let statement_tainted_cell = KnowledgeCell::new(statement_tainted_params.clone())?;
     assert!(
         statement_tainted_cell.is_laboratory_tainted(),
         "Cell carrying LABORATORY_PROVENANCE_MARKER must be laboratory-tainted"
-    );
-    assert_eq!(
-        statement_tainted_cell.validate(),
-        Err(ContractError::DerivedLayerAuthorityForbidden),
-        "Cell carrying LABORATORY_PROVENANCE_MARKER must reject Known state"
     );
     assert!(
         !statement_tainted_cell.is_irreversible_effect_premise(TimestampNs(1_500_000_000)),
         "Tainted cell must never serve as an irreversible-effect premise"
     );
+    let mut invalid_statement_params = statement_tainted_params;
+    invalid_statement_params.knowledge_state = KnowledgeState::Known;
+    assert_eq!(
+        KnowledgeCell::new(invalid_statement_params),
+        Err(ContractError::DerivedLayerAuthorityForbidden),
+        "Cell carrying LABORATORY_PROVENANCE_MARKER must reject Known state"
+    );
 
     // 2b. Claim ID prefix path refusal: cell with laboratory: prefix claiming Known state is refused
-    let prefix_tainted_cell = KnowledgeCell {
+    let prefix_tainted_params = KnowledgeCellParams {
         claim_id: "laboratory:door-7".to_owned(),
         statement: "door 7 observation".to_owned(),
-        knowledge_state: KnowledgeState::Known,
+        knowledge_state: KnowledgeState::Estimated,
         provenance: ProvenanceClass::Predicted,
         hypothesis: None,
         evidence: vec![normal_evidence],
@@ -409,18 +412,21 @@ fn test_h4_cannot_authorize_effects_or_claim_known_knowledge_state() -> Result<(
         valid_until: Some(TimestampNs(2_000_000_000)),
         state_basis: None,
     };
+    let prefix_tainted_cell = KnowledgeCell::new(prefix_tainted_params.clone())?;
     assert!(
         prefix_tainted_cell.is_laboratory_tainted(),
         "Cell with laboratory: prefix must be laboratory-tainted"
     );
+    let mut invalid_prefix_params = prefix_tainted_params;
+    invalid_prefix_params.knowledge_state = KnowledgeState::Known;
     assert_eq!(
-        prefix_tainted_cell.validate(),
+        KnowledgeCell::new(invalid_prefix_params),
         Err(ContractError::DerivedLayerAuthorityForbidden),
         "Cell with laboratory: prefix must reject Known state"
     );
 
     // 3. Genuine cell with claim_id site:laboratory:door-7 over non-laboratory evidence is accepted
-    let genuine_cell = KnowledgeCell {
+    let genuine_cell = KnowledgeCell::new(KnowledgeCellParams {
         claim_id: "site:laboratory:door-7".to_owned(),
         statement: "door 7 physical sensor reading".to_owned(),
         knowledge_state: KnowledgeState::Known,
@@ -430,7 +436,7 @@ fn test_h4_cannot_authorize_effects_or_claim_known_knowledge_state() -> Result<(
         contradictions: vec![],
         valid_until: Some(TimestampNs(2_000_000_000)),
         state_basis: None,
-    };
+    })?;
     assert!(
         !genuine_cell.is_laboratory_tainted(),
         "Genuine cell site:laboratory:door-7 must NOT be laboratory-tainted"
@@ -459,7 +465,7 @@ fn test_h4_lone_relabelled_cell_fss_gefi6_behaviour() -> Result<(), Box<dyn Erro
     // does not carry an origin tag on the ContentDigest itself (ContentDigest is algorithm + 32 bytes).
     // Follow-up bead fss-gefi6 introduces typed evidence references carrying origin classes
     // so that evidence-digest-level provenance can be detected even on relabelled cells.
-    let relabelled_cell = KnowledgeCell {
+    let relabelled_cell = KnowledgeCell::new(KnowledgeCellParams {
         claim_id: "site:door-7".to_owned(),
         statement: "door 7 is secured".to_owned(),
         knowledge_state: KnowledgeState::Known,
@@ -469,7 +475,7 @@ fn test_h4_lone_relabelled_cell_fss_gefi6_behaviour() -> Result<(), Box<dyn Erro
         contradictions: vec![],
         valid_until: Some(TimestampNs(2_000_000_000)),
         state_basis: None,
-    };
+    })?;
     // Pin today's behavior: without origin tagging (covered by fss-gefi6), this cell is not text-tainted.
     assert!(!relabelled_cell.is_laboratory_tainted());
     assert_eq!(relabelled_cell.validate(), Ok(()));

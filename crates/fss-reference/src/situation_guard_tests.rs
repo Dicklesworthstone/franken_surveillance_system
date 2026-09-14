@@ -844,7 +844,7 @@ fn compiled_indeterminate_effect_cannot_be_relabeled() -> Result<(), Box<dyn Err
                 let mut params = cell.to_params();
                 params.knowledge_state = state;
                 params.state_basis = None;
-                *cell = fss_core::KnowledgeCell::new_unvalidated_for_test(params);
+                *cell = fss_core::KnowledgeCell::new(params)?;
             }
         }
         assert_effect_tamper_refused(
@@ -872,7 +872,7 @@ fn compiled_effect_cannot_be_shadowed_by_a_duplicate_claim() -> Result<(), Box<d
     let mut params = shadow_cell.to_params();
     params.knowledge_state = fss_core::KnowledgeState::Known;
     params.state_basis = None;
-    let shadow = fss_core::KnowledgeCell::new_unvalidated_for_test(params);
+    let shadow = fss_core::KnowledgeCell::new(params)?;
     tampered.capsule.frame.knowledge_cells.push(shadow);
     assert_effect_tamper_refused(
         &genuine,
@@ -1970,10 +1970,10 @@ fn sealed_situation_proof_roots_are_exact() -> Result<(), Box<dyn Error>> {
 
 /// Pinned v6 seal digest of the fixed compiled publication with effect bindings below.
 const GOLDEN_BOUND_SEAL_DIGEST: &str =
-    "sha256:cbd5d10dc57ed2e27d9845d73c858a9767643b1f5d9d988bca5e6e993c806c68";
+    "sha256:2f9e1a4079aaa82390fac1548b150d208c33ce6d538a2ab628439fdc278cacbb";
 /// Pinned v5 publication digest of the fixed compiled publication with effect bindings below.
 const GOLDEN_BOUND_PUBLICATION_DIGEST: &str =
-    "sha256:f9299f3992154f2b761366e1ae91f0ed57b3edfc5a9c54cf3a25fb55f4bb0c95";
+    "sha256:f6e42d797ba3a0f37e8d54d36a560f658969ef2ae04ccd54a4672a32f24fe8a0";
 
 /// Round 5: pins the binding part of the seal encoding. The verified publication, bound to its
 /// outcome and local-state cells, has a pinned seal digest and publication digest.

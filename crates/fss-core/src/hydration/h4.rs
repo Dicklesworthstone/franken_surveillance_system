@@ -982,7 +982,7 @@ impl H4LaboratoryExpansion {
         if self.anchor.site_lineage != current.site_lineage {
             return Err(ContractError::InvalidAnchorSuccessor);
         }
-        crate::KnowledgeCell {
+        crate::KnowledgeCell::new(crate::agent::KnowledgeCellParams {
             claim_id: format!("laboratory:{}", self.expansion_digest),
             statement: format!(
                 "{} laboratory expansion for subject {}",
@@ -996,8 +996,7 @@ impl H4LaboratoryExpansion {
             contradictions: vec![],
             valid_until: Some(self.retention_until),
             state_basis: None,
-        }
-        .validated()
+        })
     }
 
     /// Decodes an H4 expansion from canonical versioned bytes and ensures no trailing unread bytes exist.

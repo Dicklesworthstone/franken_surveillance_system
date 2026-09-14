@@ -419,8 +419,8 @@ fn test_schema_domain_and_pinned_counts() -> Result<(), Box<dyn Error>> {
     // 53 = 50 + SCHEMA-DOMAIN-REFERENCE-ALERT-REQUEST-001 and
     // SCHEMA-DOMAIN-REFERENCE-ALERT-PRECONDITION-001 (tombstoned) / -002 (fss-wjisz).
     assert_eq!(
-        domain_count, 53,
-        "registries/DIGEST_DOMAINS.md count must remain pinned at 53"
+        domain_count, 55,
+        "registries/DIGEST_DOMAINS.md count must remain pinned at 55"
     );
 
     let schemas_path = Path::new(env!("CARGO_MANIFEST_DIR"))

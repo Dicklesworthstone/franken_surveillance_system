@@ -1297,8 +1297,8 @@ fn test_redacted_cell_debug_never_exposes_statement() -> Result<(), Box<dyn Erro
     assert!(compact.contains(REDACTED_STATEMENT_MARKER));
     assert!(compact.contains("claim:resident:presence:001"));
 
-    // Fail closed: a redacted cell that is itself invalid (no marker) still never prints it.
-    let unmarked = KnowledgeCell::new_unvalidated_for_test(KnowledgeCellParams {
+    // Fail closed: a redacted cell that is itself invalid (no marker) is refused by constructor.
+    let unmarked_params = KnowledgeCellParams {
         claim_id: "claim:resident:presence:001".to_string(),
         statement: secret.to_string(),
         knowledge_state: KnowledgeState::Redacted,
@@ -1308,8 +1308,11 @@ fn test_redacted_cell_debug_never_exposes_statement() -> Result<(), Box<dyn Erro
         contradictions: vec![],
         valid_until: Some(TimestampNs(2_000_000_000)),
         state_basis: None,
-    });
-    assert!(!format!("{unmarked:?}").contains(secret));
+    };
+    assert_eq!(
+        KnowledgeCell::new(unmarked_params),
+        Err(ContractError::RedactionMarkerRequired)
+    );
 
     // Non-redacted cells keep their statement visible for diagnostics.
     let known = gate_isolating_cell(KnowledgeState::Known)?;
@@ -1534,16 +1537,13 @@ fn test_stale_cell_without_basis_is_refused() -> Result<(), Box<dyn Error>> {
     };
 
     assert_eq!(
-        KnowledgeCell::new(params.clone()),
+        KnowledgeCell::new(params),
         Err(ContractError::StaleBasisRequired)
     );
-    let cell = KnowledgeCell::new_unvalidated_for_test(params);
-    assert_eq!(cell.validate(), Err(ContractError::StaleBasisRequired));
     assert_eq!(
         ContractError::StaleBasisRequired.code(),
         "stale_basis_required"
     );
-    assert!(!cell.is_irreversible_effect_premise(TimestampNs(2_000_000_000)));
 
     Ok(())
 }
@@ -1608,11 +1608,9 @@ fn test_stale_basis_must_name_a_strictly_older_anchor_or_generation() -> Result<
             state_basis: Some(KnowledgeStateBasis::Stale(basis)),
         };
         assert_eq!(
-            KnowledgeCell::new(params.clone()),
+            KnowledgeCell::new(params),
             Err(ContractError::StaleBasisNotOlder)
         );
-        let cell = KnowledgeCell::new_unvalidated_for_test(params);
-        assert_eq!(cell.validate(), Err(ContractError::StaleBasisNotOlder));
     }
 
     Ok(())
@@ -1638,15 +1636,9 @@ fn test_stale_cell_cannot_pass_as_current() -> Result<(), Box<dyn Error>> {
         state_basis: stale.state_basis().cloned(),
     };
     assert_eq!(
-        KnowledgeCell::new(relabelled_params.clone()),
+        KnowledgeCell::new(relabelled_params),
         Err(ContractError::KnowledgeStateBasisMismatch)
     );
-    let relabelled = KnowledgeCell::new_unvalidated_for_test(relabelled_params);
-    assert_eq!(
-        relabelled.validate(),
-        Err(ContractError::KnowledgeStateBasisMismatch)
-    );
-    assert!(!relabelled.is_irreversible_effect_premise(now));
 
     // The stale basis is bound into the digest, so a stale cell never shares a digest with
     // the current (revalidated) cell for the same claim.
@@ -1701,19 +1693,13 @@ fn test_indeterminate_cell_without_reconciliation_basis_is_refused() -> Result<(
         state_basis: None,
     };
     assert_eq!(
-        KnowledgeCell::new(params_without_basis.clone()),
-        Err(ContractError::ReconciliationBasisRequired)
-    );
-    let cell = KnowledgeCell::new_unvalidated_for_test(params_without_basis);
-    assert_eq!(
-        cell.validate(),
+        KnowledgeCell::new(params_without_basis),
         Err(ContractError::ReconciliationBasisRequired)
     );
     assert_eq!(
         ContractError::ReconciliationBasisRequired.code(),
         "reconciliation_basis_required"
     );
-    assert!(!cell.is_irreversible_effect_premise(TimestampNs(1_000_000_000)));
 
     // A reconciliation basis attached to a Known cell is incoherent and refused.
     let known = gate_isolating_cell(KnowledgeState::Known)?;
@@ -1795,12 +1781,24 @@ fn test_reconciliation_basis_keeps_occurred_and_not_occurred_branches_open()
         );
     }
 
+    // The unresolved attempt root is bound into the digest.
+    let first = indeterminate_cell(ReconciliationBasis::occurred_or_not(root))?;
+    let second = indeterminate_cell(ReconciliationBasis::occurred_or_not(ContentDigest::sha256(
+        b"other_attempt_receipt_root",
+    )))?;
+    assert_ne!(first.cell_digest(), second.cell_digest());
+    let third = indeterminate_cell(with_branches(&[
+        ReconciliationBranch::Occurred,
+        ReconciliationBranch::NotOccurred,
+        ReconciliationBranch::PartiallyOccurred,
+    ]))?;
+    assert_ne!(first.cell_digest(), third.cell_digest());
+
     Ok(())
 }
 
 #[test]
-fn test_redaction_basis_on_known_or_stale_cell_is_refused_and_still_withheld()
--> Result<(), Box<dyn Error>> {
+fn test_redaction_basis_on_known_or_stale_cell_is_refused() -> Result<(), Box<dyn Error>> {
     let secret = "SECRET-misattached-redaction";
     for (knowledge_state, expected) in [
         (
@@ -1822,19 +1820,7 @@ fn test_redaction_basis_on_known_or_stale_cell_is_refused_and_still_withheld()
         };
 
         // The combination is not a valid cell ...
-        assert_eq!(KnowledgeCell::new(params.clone()), Err(expected.clone()));
-        let cell = KnowledgeCell::new_unvalidated_for_test(params.clone());
-        assert_eq!(cell.validate(), Err(expected.clone()));
-
-        // ... yet a refused cell still never discloses what its redaction basis withholds.
-        assert!(cell.withholds_statement());
-        assert_eq!(cell.disclosable_statement(), REDACTED_STATEMENT_MARKER);
-        assert!(!format!("{cell:?}").contains(secret));
-        assert!(!format!("{cell:#?}").contains(secret));
-        let mut other_params = params;
-        other_params.statement = "SECRET-a-different-withheld-statement".to_string();
-        let other = KnowledgeCell::new_unvalidated_for_test(other_params);
-        assert_eq!(cell.cell_digest(), other.cell_digest());
+        assert_eq!(KnowledgeCell::new(params), Err(expected));
     }
     Ok(())
 }
