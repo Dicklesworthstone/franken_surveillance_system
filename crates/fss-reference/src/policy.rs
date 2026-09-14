@@ -3,9 +3,9 @@
 use std::collections::BTreeSet;
 
 use fss_core::{
-    BatchId, CanonicalEncode, CanonicalEncoder, CaptureInterval, ContentDigest, DecisionPath,
-    EventEvidence, EventHypothesis, EventId, EventKind, EventState, EvidenceClass, EvidenceDelta,
-    EvidenceEdgeRelation, LedgerAnchor, ObjectId, Plane, ProbabilityInterval,
+    BatchId, CanonicalDecode, CanonicalEncode, CanonicalEncoder, CaptureInterval, ContentDigest,
+    DecisionPath, EventEvidence, EventHypothesis, EventId, EventKind, EventState, EvidenceClass,
+    EvidenceDelta, EvidenceEdgeRelation, LedgerAnchor, ObjectId, Plane, ProbabilityInterval,
 };
 use fss_ledger::DurableReferenceLedger;
 use fss_object::{InMemoryObjectStore, ObjectManifest, VerifiedObjectCatalog};
@@ -75,6 +75,8 @@ pub struct ReferenceEventReceipt {
     pub event_revision_digest: ContentDigest,
     /// Authority anchor after publication.
     pub authority_anchor: LedgerAnchor,
+    /// Accumulated sensor tamper status across the event's publication lineage.
+    pub lineage_tamper_status: fss_core::SensorTamperStatus,
 }
 
 /// Evaluates the narrow reference question "is an unknown person present?".
@@ -151,9 +153,7 @@ pub fn evaluate_unknown_presence(
             MockModelOutcome::Finding {
                 label: MockSemanticLabel::IntegrityRestored,
                 ..
-            } => {
-                EvidenceEdgeRelation::SensorIntegrityRestoration
-            }
+            } => EvidenceEdgeRelation::SensorIntegrityRestoration,
             // Unknown and abstention say nothing about presence: a neutral derivation edge that
             // holds the event unresolved without contradicting it.
             MockModelOutcome::Finding {
@@ -165,6 +165,13 @@ pub fn evaluate_unknown_presence(
                 EvidenceEdgeRelation::DerivedFrom
             }
         };
+        let identity_digest = match relation {
+            EvidenceEdgeRelation::SensorTamper
+            | EvidenceEdgeRelation::SensorIntegrityRestoration => Some(ContentDigest::sha256(
+                observation.result.sensor_id.as_str().as_bytes(),
+            )),
+            _ => None,
+        };
         evidence.push(EventEvidence {
             digest: result_digest,
             class: EvidenceClass::Derived,
@@ -172,7 +179,7 @@ pub fn evaluate_unknown_presence(
             supports: relation.required_supports_flag(),
             relation,
             capsule_digest: None,
-            identity_digest: None,
+            identity_digest,
         });
         model_receipts.push(result_digest);
     }
@@ -235,6 +242,53 @@ pub fn publish_reference_event(
     if decision.event.supersedes != predecessor {
         return Err(fss_core::ContractError::SupersessionMismatch.into());
     }
+    let mut prior_events = Vec::new();
+    for batch in ledger.batches() {
+        for delta in &batch.deltas {
+            if delta.object_id == object_id && delta.family == "event_revision" {
+                let manifest = objects.published_manifest(delta.payload_digest)?;
+                let payload = manifest
+                    .metadata_digest()
+                    .or_else(|| manifest.children().first().copied())
+                    .ok_or(fss_core::ContractError::EvidenceRequired)?;
+                let bytes = objects.read_verified(payload)?;
+                let rev = EventHypothesis::from_canonical_bytes(bytes)?;
+                prior_events.push(rev);
+            }
+        }
+    }
+    prior_events.sort_by_key(|e| e.revision);
+    let prior_tamper = fss_core::event::compute_sensor_tamper_status(prior_events.iter(), None);
+    let combined_tamper = fss_core::event::compute_sensor_tamper_status(
+        prior_events.iter(),
+        Some(&decision.event.evidence),
+    );
+    if fss_core::event::sensor_tamper_vetoes(decision.event.state)
+        && combined_tamper.has_open_tamper()
+    {
+        return Err(fss_core::ContractError::SensorIntegrityRisk.into());
+    }
+    if decision
+        .event
+        .evidence
+        .iter()
+        .any(|e| e.reports_integrity_restoration())
+        && prior_tamper.open_tamper_records.is_empty()
+    {
+        return Err(fss_core::ContractError::EvidenceRequired.into());
+    }
+    for domain in &prior_tamper.open_domains {
+        if combined_tamper.open_domains.contains(domain) {
+            let included = decision
+                .event
+                .evidence
+                .iter()
+                .any(|e| e.reports_sensor_tamper() && &e.failure_domain == domain);
+            if !included {
+                return Err(fss_core::ContractError::SensorIntegrityRisk.into());
+            }
+        }
+    }
     for model_receipt in &decision.event.model_receipts {
         objects.require_verified(*model_receipt)?;
     }
@@ -282,6 +336,7 @@ pub fn publish_reference_event(
         event_object_digest,
         event_revision_digest,
         authority_anchor,
+        lineage_tamper_status: combined_tamper,
     })
 }
 

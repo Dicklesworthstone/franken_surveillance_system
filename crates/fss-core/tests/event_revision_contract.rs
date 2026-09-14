@@ -1293,8 +1293,8 @@ fn test_supports_flag_must_agree_with_relation_for_every_variant() -> Result<(),
     let relations: Vec<EvidenceEdgeRelation> = (0..=u8::MAX)
         .filter_map(|tag| EvidenceEdgeRelation::from_u8(tag).ok())
         .collect();
-    if relations.len() != 9 {
-        return Err(format!("expected 9 edge relations, found {}", relations.len()).into());
+    if relations.len() != 10 {
+        return Err(format!("expected 10 edge relations, found {}", relations.len()).into());
     }
     for relation in relations {
         // Only `Supports` may be flagged supporting; every other relation must be supports=false.

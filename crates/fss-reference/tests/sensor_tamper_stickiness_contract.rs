@@ -19,20 +19,23 @@ use std::fs;
 
 use fss_core::event::EventSupersedeParams;
 use fss_core::{
-    BudgetVector, CapsuleId, CaptureInterval, ContractBasis, ContractBasisRegistryBytes,
-    DeltaPriority, EventEvidence, EventHypothesis, EventId, EventKind, EventState, EvidenceClass,
+    BatchId, BudgetVector, CanonicalDecode, CanonicalEncode, CanonicalEncoder, CapsuleId,
+    CaptureInterval, ContractBasis, ContractBasisRegistryBytes, ContractError, DeltaPriority,
+    EventEvidence, EventHypothesis, EventId, EventKind, EventState, EvidenceClass, EvidenceDelta,
     EvidenceEdgeRelation, HypothesisDisposition, KnowledgeState, MeaningfulDeltaClass, MissionId,
-    PrincipalId, ProbabilityInterval, ResourcePressure, SensorId, SessionId, TimestampNs,
+    ObjectId, Plane, PrincipalId, ProbabilityInterval, ResourcePressure, SensorId, SessionId,
+    TimestampNs,
 };
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
-use fss_object::{InMemoryObjectStore, ObjectLimits};
+use fss_object::{InMemoryObjectStore, ObjectLimits, ObjectManifest, VerifiedObjectCatalog};
+use fss_publication::AuthorityPublisher;
 use fss_reference::{
     DeliveryPlan, MockModelScript, MockModelSpec, MockSemanticLabel, ReferenceError,
     ReferenceEventReceipt, ReferenceModelObservation, ReferencePolicyAction,
-    ReferencePolicyDecision, ReferenceProjectionSpec, ReferenceSituationRequest,
-    VirtualCameraSpec, classify_reference_meaningful_delta, compile_reference_situation,
-    evaluate_unknown_presence, execute_mock_model, project_reference_situation,
-    publish_reference_event, run_reference_capture,
+    ReferencePolicyDecision, ReferenceProjectionSpec, ReferenceSituationRequest, VirtualCameraSpec,
+    classify_reference_meaningful_delta, compile_reference_situation, evaluate_unknown_presence,
+    execute_mock_model, project_reference_situation, publish_reference_event,
+    run_reference_capture,
 };
 
 fn create_exclusive_run_dir(
@@ -93,7 +96,9 @@ impl TestHarness {
         label: MockSemanticLabel,
     ) -> Result<ReferenceModelObservation, Box<dyn Error>> {
         let spec = VirtualCameraSpec {
-            capture_id: CapsuleId::parse(format!("capture:tamper-stickiness:{test_name}:{lane}"))?,
+            capture_id: CapsuleId::parse(format!(
+                "capture:tamper-stickiness:{test_name}:{lane}:{seed}"
+            ))?,
             sensor_id: SensorId::parse(format!("sensor:tamper-stickiness:{test_name}:{lane}"))?,
             seed,
             packet_count: 3,
@@ -135,6 +140,93 @@ impl TestHarness {
         let _ = fs::remove_file(&self.path);
         let _ = fs::remove_dir_all(&self.run_dir);
     }
+}
+
+fn force_publish_event(
+    harness: &mut TestHarness,
+    decision: &ReferencePolicyDecision,
+    prior_generation: Option<u64>,
+) -> Result<ReferenceEventReceipt, Box<dyn Error>> {
+    for model_receipt in &decision.event.model_receipts {
+        harness.objects.require_verified(*model_receipt)?;
+    }
+    let event_bytes = decision.event.canonical_bytes();
+    let event_object_digest = harness.objects.put_verified(&event_bytes)?;
+    let mut revision_encoder = CanonicalEncoder::new();
+    revision_encoder.text("fss.canonical.v1");
+    revision_encoder.text("fss.event_hypothesis.v1");
+    decision.event.encode_canonical(&mut revision_encoder);
+    let event_revision_digest = harness.objects.put_verified(&revision_encoder.finish())?;
+    let event_manifest = ObjectManifest::new(
+        "event-revision",
+        decision.event.model_receipts.iter().copied(),
+        Some(event_object_digest),
+    )?;
+    let event_root = harness.objects.publish_manifest(event_manifest)?.root;
+    let event_name = decision.event.event_id.as_str();
+    let object_id = ObjectId::parse(format!("object:event:{event_name}"))?;
+    let delta = EvidenceDelta {
+        delta_id: format!("delta:event:{event_name}:{}", decision.event.revision),
+        family: "event_revision".to_owned(),
+        object_id: object_id.clone(),
+        prior_generation,
+        new_generation: decision.event.revision,
+        validity: decision.event.interval,
+        plane: Plane::Authority,
+        payload_digest: event_root,
+        witness_digest: Some(event_revision_digest),
+        operation_id: None,
+    };
+    let authority_anchor = {
+        let mut publisher = AuthorityPublisher::new(&harness.objects, &mut harness.authority);
+        let batch = publisher.prepare_batch(
+            BatchId::parse(format!(
+                "batch:event:{event_name}:{}",
+                decision.event.revision
+            ))?,
+            vec![delta],
+            [event_root],
+        )?;
+        publisher.append(batch)?
+    };
+    let mut prior_events = Vec::new();
+    for batch in harness.authority.batches() {
+        for d in &batch.deltas {
+            let relevant_delta = d.object_id == object_id
+                && d.family == "event_revision"
+                && d.new_generation < decision.event.revision;
+            if !relevant_delta {
+                continue;
+            }
+            let Ok(manifest) = harness.objects.published_manifest(d.payload_digest) else {
+                continue;
+            };
+            let Some(payload) = manifest
+                .metadata_digest()
+                .or_else(|| manifest.children().first().copied())
+            else {
+                continue;
+            };
+            let Ok(bytes) = harness.objects.read_verified(payload) else {
+                continue;
+            };
+            if let Ok(rev) = EventHypothesis::from_canonical_bytes(bytes) {
+                prior_events.push(rev);
+            }
+        }
+    }
+    prior_events.sort_by_key(|e| e.revision);
+    let lineage_tamper_status = fss_core::event::compute_sensor_tamper_status(
+        prior_events.iter(),
+        Some(&decision.event.evidence),
+    );
+    Ok(ReferenceEventReceipt {
+        event_root,
+        event_object_digest,
+        event_revision_digest,
+        authority_anchor,
+        lineage_tamper_status,
+    })
 }
 
 fn test_basis() -> ContractBasis {
@@ -312,6 +404,17 @@ fn test_planted_bypass_omitting_tamper_is_critical_non_coalescible_delta()
             .iter()
             .any(|c| c.claim_id.ends_with(":sensor-integrity") && !c.contradictions.is_empty())
     );
+    let basis_physical = basis
+        .situation
+        .capsule
+        .frame
+        .knowledge_cells
+        .iter()
+        .find(|c| {
+            c.claim_id.ends_with(":unknown-presence") && !c.claim_id.starts_with("claim:policy:")
+        })
+        .ok_or("missing physical presence cell in basis")?;
+    assert_ne!(basis_physical.knowledge_state, KnowledgeState::Known);
 
     // Planted bypass in result: a later evaluation omits the tamper observation,
     // reporting only PersonLike on power:alpha and power:beta.
@@ -373,11 +476,22 @@ fn test_planted_bypass_omitting_tamper_is_critical_non_coalescible_delta()
         event: bypass_hypothesis,
         action: ReferencePolicyAction::PrepareAlert,
     };
-    let bypass_receipt = publish_reference_event(
+    let pub_err = publish_reference_event(
         &bypass_decision,
         &mut harness.objects,
         &mut harness.authority,
-    )?;
+    );
+    assert!(
+        matches!(
+            pub_err,
+            Err(ReferenceError::Contract(ContractError::SensorIntegrityRisk))
+        ),
+        "publish_reference_event must reject bypass dropping unretired tamper: {pub_err:?}"
+    );
+
+    // Lineage stickiness holds in compilation: compile_reference_situation uses lineage open-tamper
+    // status to cap physical presence to Unknown, keeping it from reaching Known (Item 3).
+    let bypass_receipt = force_publish_event(&mut harness, &bypass_decision, Some(1))?;
     let mut request = test_request(&bypass_decision, &bypass_receipt)?;
     request.revision = 2;
     request.previous_anchor = Some(basis.situation.capsule.anchor.clone());
@@ -387,9 +501,53 @@ fn test_planted_bypass_omitting_tamper_is_critical_non_coalescible_delta()
         &test_spec(10_000),
     )?;
 
-    // In the bypass result, sensor-integrity cell was omitted
+    // By lineage stickiness, sensor-integrity cell remains present with open tamper
+    let integrity_cell = result
+        .situation
+        .capsule
+        .frame
+        .knowledge_cells
+        .iter()
+        .find(|c| c.claim_id.ends_with(":sensor-integrity"))
+        .ok_or("missing sensor-integrity cell in bypass result")?;
+    assert_eq!(integrity_cell.knowledge_state, KnowledgeState::Unknown);
+    assert!(!integrity_cell.contradictions.is_empty());
+
+    // Physical presence must NOT become Known while prior tamper is unretired (Item 3)
+    let bypass_physical_cell = result
+        .situation
+        .capsule
+        .frame
+        .knowledge_cells
+        .iter()
+        .find(|c| {
+            c.claim_id.ends_with(":unknown-presence") && !c.claim_id.starts_with("claim:policy:")
+        })
+        .ok_or("missing physical presence cell in bypass result")?;
+    assert_ne!(
+        bypass_physical_cell.knowledge_state,
+        KnowledgeState::Known,
+        "bypass physical presence must not reach Known while prior tamper is unretired"
+    );
+
+    // Defense in depth: if an omitting situation were produced (e.g. stripping tamper status),
+    // verify that meaningful delta detects the missing contradiction and classifies it as Critical Contradiction.
+    let omitting_receipt = ReferenceEventReceipt {
+        lineage_tamper_status: fss_core::SensorTamperStatus::default(),
+        ..bypass_receipt
+    };
+    let mut omit_request = test_request(&bypass_decision, &omitting_receipt)?;
+    omit_request.revision = 2;
+    omit_request.previous_anchor = Some(basis.situation.capsule.anchor.clone());
+    omit_request.created_at = TimestampNs(2_000);
+    let omitted_result = project_reference_situation(
+        compile_reference_situation(omit_request, &harness.authority)?,
+        &test_spec(10_000),
+    )?;
+
+    // In the omitted result, sensor-integrity cell was omitted
     assert!(
-        !result
+        !omitted_result
             .situation
             .capsule
             .frame
@@ -398,10 +556,10 @@ fn test_planted_bypass_omitting_tamper_is_critical_non_coalescible_delta()
             .any(|c| c.claim_id.ends_with(":sensor-integrity"))
     );
 
-    // Classifying the delta between basis and result:
+    // Classifying the delta between basis and omitted result:
     // The missing prior contradiction MUST NOT produce a coalescible High delta!
     // It MUST be classified as Contradiction and Critical priority.
-    let delta = classify_reference_meaningful_delta(&basis, &result)?;
+    let delta = classify_reference_meaningful_delta(&basis, &omitted_result)?;
     assert!(
         delta.classes.contains(&MeaningfulDeltaClass::Contradiction),
         "expected Contradiction class in delta classes: {:?}",
@@ -457,7 +615,7 @@ fn test_evidenced_integrity_restoration_retires_tamper_and_enables_known()
     // Step 2: Explicit evidenced restoration on power:alpha, plus corroborating person observations
     let obs_restoration = harness.observation(
         "restoration-enables-known",
-        "lane1",
+        "lane0",
         31,
         "power:alpha",
         MockSemanticLabel::IntegrityRestored,
@@ -510,10 +668,7 @@ fn test_evidenced_integrity_restoration_retires_tamper_and_enables_known()
     request.previous_anchor = Some(basis.situation.capsule.anchor.clone());
     request.created_at = TimestampNs(2_000);
     let result = project_reference_situation(
-        compile_reference_situation(
-            request,
-            &harness.authority,
-        )?,
+        compile_reference_situation(request, &harness.authority)?,
         &test_spec(10_000),
     )?;
 
@@ -571,7 +726,7 @@ fn test_evidenced_integrity_restoration_retires_tamper_and_enables_known()
 fn test_multi_sensor_tamper_partial_restoration() -> Result<(), Box<dyn Error>> {
     let mut harness = TestHarness::new("multi-tamper-partial")?;
 
-    // Observation with tamper on both power:alpha and power:beta
+    // Rev 1: Tamper on both power:alpha (lane0) and power:beta (lane1)
     let obs_tamper_a = harness.observation(
         "multi-tamper-partial",
         "lane0",
@@ -586,22 +741,51 @@ fn test_multi_sensor_tamper_partial_restoration() -> Result<(), Box<dyn Error>> 
         "power:beta",
         MockSemanticLabel::TamperLike,
     )?;
-    // And restoration for power:alpha only
+
+    let decision_rev1 = evaluate_unknown_presence(
+        EventId::parse("event:tamper:multi-partial")?,
+        vec![obs_tamper_a, obs_tamper_b],
+    )?;
+    let receipt_rev1 =
+        publish_reference_event(&decision_rev1, &mut harness.objects, &mut harness.authority)?;
+
+    // Rev 2: Evidenced restoration on power:alpha only (same lane0, seed 42)
     let obs_restore_a = harness.observation(
         "multi-tamper-partial",
-        "lane2",
+        "lane0",
         42,
         "power:alpha",
         MockSemanticLabel::IntegrityRestored,
     )?;
-
-    let decision = evaluate_unknown_presence(
+    let ReferencePolicyDecision {
+        event: candidate,
+        action,
+    } = evaluate_unknown_presence(
         EventId::parse("event:tamper:multi-partial")?,
-        vec![obs_tamper_a, obs_tamper_b, obs_restore_a],
+        vec![obs_restore_a],
     )?;
-    let receipt = publish_reference_event(&decision, &mut harness.objects, &mut harness.authority)?;
-    let situation =
-        compile_reference_situation(test_request(&decision, &receipt)?, &harness.authority)?;
+    let revised = decision_rev1.event.supersede(EventSupersedeParams {
+        state: candidate.state,
+        kind: candidate.kind,
+        interval: candidate.interval,
+        uncertainty_reason: candidate.uncertainty_reason,
+        zone_ids: candidate.zone_ids,
+        track_ids: candidate.track_ids,
+        probability: candidate.probability,
+        evidence: candidate.evidence,
+        model_receipts: candidate.model_receipts,
+        decision_path: candidate.decision_path,
+    })?;
+    let decision_rev2 = ReferencePolicyDecision {
+        event: revised,
+        action,
+    };
+    let receipt_rev2 =
+        publish_reference_event(&decision_rev2, &mut harness.objects, &mut harness.authority)?;
+    let mut request = test_request(&decision_rev2, &receipt_rev2)?;
+    request.revision = 2;
+    request.previous_anchor = Some(receipt_rev1.authority_anchor);
+    let situation = compile_reference_situation(request, &harness.authority)?;
 
     let frame = &situation.capsule.frame;
 
@@ -625,6 +809,144 @@ fn test_multi_sensor_tamper_partial_restoration() -> Result<(), Box<dyn Error>> 
             .adversarial_residuals
             .iter()
             .any(|w| w.protected && w.world_id.ends_with(":sensor-tamper"))
+    );
+
+    harness.cleanup();
+    Ok(())
+}
+
+#[test]
+fn test_corroborated_with_open_tamper_cannot_reach_known() -> Result<(), Box<dyn Error>> {
+    let mut harness = TestHarness::new("corroborated-open-tamper")?;
+
+    // Step 1: Rev 1 has tamper observation on power:gamma
+    let obs_tamper = harness.observation(
+        "corroborated-open-tamper",
+        "lane2",
+        52,
+        "power:gamma",
+        MockSemanticLabel::TamperLike,
+    )?;
+    let decision_rev1 = evaluate_unknown_presence(
+        EventId::parse("event:tamper:corroborated-open-tamper")?,
+        vec![obs_tamper],
+    )?;
+    let receipt_rev1 =
+        publish_reference_event(&decision_rev1, &mut harness.objects, &mut harness.authority)?;
+
+    // Step 2: Rev 2 has two person observations on power:alpha and power:beta
+    let obs_person_a = harness.observation(
+        "corroborated-open-tamper",
+        "lane0",
+        50,
+        "power:alpha",
+        MockSemanticLabel::PersonLike,
+    )?;
+    let obs_person_b = harness.observation(
+        "corroborated-open-tamper",
+        "lane1",
+        51,
+        "power:beta",
+        MockSemanticLabel::PersonLike,
+    )?;
+
+    let ReferencePolicyDecision {
+        event: candidate,
+        action,
+    } = evaluate_unknown_presence(
+        EventId::parse("event:tamper:corroborated-open-tamper")?,
+        vec![obs_person_a, obs_person_b],
+    )?;
+
+    // Craft revision 2 superseding rev1, with Corroborated state and omitting tamper
+    let rev2 = EventHypothesis {
+        schema: EventHypothesis::SCHEMA.to_string(),
+        event_id: decision_rev1.event.event_id.clone(),
+        revision: 2,
+        supersedes: Some(decision_rev1.event.revision_digest()),
+        state: EventState::Corroborated,
+        kind: EventKind::UnknownPresence,
+        interval: candidate.interval,
+        uncertainty_reason: None,
+        zone_ids: Vec::new(),
+        track_ids: Vec::new(),
+        probability: candidate.probability,
+        evidence: candidate.evidence,
+        model_receipts: candidate.model_receipts,
+        decision_path: candidate.decision_path,
+    };
+    rev2.validate()?;
+    let decision_rev2 = ReferencePolicyDecision {
+        event: rev2,
+        action,
+    };
+
+    // Force-publish to authority to verify situation compilation defense-in-depth against mutant M5
+    let receipt_rev2 = force_publish_event(&mut harness, &decision_rev2, Some(1))?;
+    let mut request = test_request(&decision_rev2, &receipt_rev2)?;
+    request.revision = 2;
+    request.previous_anchor = Some(receipt_rev1.authority_anchor);
+    let situation = compile_reference_situation(request, &harness.authority)?;
+    let physical_cell = situation
+        .capsule
+        .frame
+        .knowledge_cells
+        .iter()
+        .find(|c| {
+            c.claim_id.ends_with(":unknown-presence") && !c.claim_id.starts_with("claim:policy:")
+        })
+        .ok_or("missing physical presence cell")?;
+
+    // Mutant M5 check: physical knowledge state must remain Unknown, NOT Known
+    assert_eq!(physical_cell.knowledge_state, KnowledgeState::Unknown);
+    assert_ne!(physical_cell.knowledge_state, KnowledgeState::Known);
+
+    harness.cleanup();
+    Ok(())
+}
+
+#[test]
+fn test_restoration_with_no_prior_tamper_does_not_produce_known_integrity_cell()
+-> Result<(), Box<dyn Error>> {
+    let mut harness = TestHarness::new("restoration-no-prior-tamper")?;
+
+    let obs_restore = harness.observation(
+        "restoration-no-prior-tamper",
+        "lane0",
+        60,
+        "power:alpha",
+        MockSemanticLabel::IntegrityRestored,
+    )?;
+
+    let decision = evaluate_unknown_presence(
+        EventId::parse("event:tamper:no-prior-tamper")?,
+        vec![obs_restore],
+    )?;
+
+    // publish_reference_event must reject revision 1 containing an unevidenced restoration
+    let pub_err = publish_reference_event(&decision, &mut harness.objects, &mut harness.authority);
+    assert!(
+        matches!(
+            pub_err,
+            Err(ReferenceError::Contract(ContractError::EvidenceRequired))
+        ),
+        "expected EvidenceRequired when publishing restoration with no prior tamper: {pub_err:?}"
+    );
+
+    // Force-publish to verify situation compilation produces NO integrity cell for revision 1
+    let receipt = force_publish_event(&mut harness, &decision, None)?;
+    let situation =
+        compile_reference_situation(test_request(&decision, &receipt)?, &harness.authority)?;
+
+    // Restoration with no prior tamper must NOT produce a Known/Supported integrity cell
+    assert!(
+        !situation
+            .capsule
+            .frame
+            .knowledge_cells
+            .iter()
+            .any(|c| c.claim_id.ends_with(":sensor-integrity")),
+        "sensor-integrity cell must be omitted when restoration has no prior tamper"
     );
 
     harness.cleanup();

@@ -839,7 +839,10 @@ impl EventKind {
 /// Returns whether a sensor-tamper report vetoes a revision in `state`: the states that establish
 /// physical presence or act on it. Tampered sensing can do neither. The match is exhaustive with
 /// no wildcard, so a new state must choose.
-const fn sensor_tamper_vetoes(state: EventState) -> bool {
+/// Returns whether a sensor-tamper report vetoes a revision in `state`: the states that establish
+/// physical presence or act on it. Tampered sensing can do neither. The match is exhaustive with
+/// no wildcard, so a new state must choose.
+pub const fn sensor_tamper_vetoes(state: EventState) -> bool {
     match state {
         EventState::Corroborated | EventState::Adjudicated | EventState::AlertDelivered => true,
         EventState::Hypothesized
@@ -848,6 +851,19 @@ const fn sensor_tamper_vetoes(state: EventState) -> bool {
         | EventState::Indeterminate
         | EventState::Rejected => false,
     }
+}
+
+/// Internal record of an open sensor-tamper report with provenance metadata.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TamperRecord {
+    /// Failure domain of the tampered sensor.
+    pub failure_domain: String,
+    /// Bound sensor identity digest, if reported.
+    pub identity_digest: Option<ContentDigest>,
+    /// Tamper evidence root digest.
+    pub digest: ContentDigest,
+    /// Revision number at which this tamper report entered the lineage.
+    pub revision: u64,
 }
 
 /// Tracks active and retired sensor-tamper risks across revisions.
@@ -861,6 +877,10 @@ pub struct SensorTamperStatus {
     pub restorations: Vec<(String, ContentDigest)>,
     /// Open tamper reports: (failure_domain, tamper_digest).
     pub open_tamper_reports: Vec<(String, ContentDigest)>,
+    /// Open tamper records with metadata.
+    pub open_tamper_records: Vec<TamperRecord>,
+    /// Historical restoration digests that have retired tamper reports.
+    pub seen_restorations: BTreeSet<ContentDigest>,
 }
 
 impl SensorTamperStatus {
@@ -889,63 +909,81 @@ pub fn compute_sensor_tamper_status<'a>(
     current_evidence: Option<&'a [EventEvidence]>,
 ) -> SensorTamperStatus {
     let mut status = SensorTamperStatus::default();
+    let mut max_rev = 0u64;
 
     for rev in history {
-        apply_evidence_to_tamper_status(&mut status, &rev.evidence);
+        apply_evidence_batch(&mut status, &rev.evidence, rev.revision);
+        if rev.revision > max_rev {
+            max_rev = rev.revision;
+        }
     }
 
     if let Some(evidence) = current_evidence {
-        apply_evidence_to_tamper_status(&mut status, evidence);
+        apply_evidence_batch(&mut status, evidence, max_rev.saturating_add(1));
     }
 
     status
 }
 
-pub(crate) fn apply_evidence_to_tamper_status(
+pub(crate) fn apply_evidence_batch(
     status: &mut SensorTamperStatus,
     evidence: &[EventEvidence],
+    batch_revision: u64,
 ) {
+    for edge in evidence {
+        if edge.reports_integrity_restoration() {
+            let edge_id = edge.identity_digest;
+            if let Some(pos) = status.open_tamper_records.iter().position(|t| {
+                t.revision < batch_revision
+                    && t.failure_domain == edge.failure_domain
+                    && t.digest != edge.digest
+                    && !status.seen_restorations.contains(&edge.digest)
+                    && t.identity_digest.is_some()
+                    && t.identity_digest == edge_id
+            }) {
+                let _retired = status.open_tamper_records.remove(pos);
+                status.seen_restorations.insert(edge.digest);
+                if !status
+                    .restorations
+                    .iter()
+                    .any(|(d, dig)| d == &edge.failure_domain && dig == &edge.digest)
+                {
+                    status
+                        .restorations
+                        .push((edge.failure_domain.clone(), edge.digest));
+                }
+            }
+        }
+    }
     for edge in evidence {
         if edge.reports_sensor_tamper()
             && !status
-                .open_tamper_reports
+                .open_tamper_records
                 .iter()
-                .any(|(d, dig)| d == &edge.failure_domain && dig == &edge.digest)
+                .any(|t| t.failure_domain == edge.failure_domain && t.digest == edge.digest)
         {
-            status
-                .open_tamper_reports
-                .push((edge.failure_domain.clone(), edge.digest));
-        }
-    }
-    for edge in evidence {
-        if edge.reports_integrity_restoration() {
-            if edge.failure_domain.is_empty() {
-                status.open_tamper_reports.clear();
-            } else {
-                status
-                    .open_tamper_reports
-                    .retain(|(d, _)| d != &edge.failure_domain);
-            }
-            if !status
-                .restorations
-                .iter()
-                .any(|(d, dig)| d == &edge.failure_domain && dig == &edge.digest)
-            {
-                status
-                    .restorations
-                    .push((edge.failure_domain.clone(), edge.digest));
-            }
+            status.open_tamper_records.push(TamperRecord {
+                failure_domain: edge.failure_domain.clone(),
+                identity_digest: edge.identity_digest,
+                digest: edge.digest,
+                revision: batch_revision,
+            });
         }
     }
     status.open_domains = status
-        .open_tamper_reports
+        .open_tamper_records
         .iter()
-        .map(|(d, _)| d.clone())
+        .map(|t| t.failure_domain.clone())
+        .collect();
+    status.open_tamper_reports = status
+        .open_tamper_records
+        .iter()
+        .map(|t| (t.failure_domain.clone(), t.digest))
         .collect();
     let mut roots = Vec::new();
-    for (_, dig) in &status.open_tamper_reports {
-        if !roots.contains(dig) {
-            roots.push(*dig);
+    for t in &status.open_tamper_records {
+        if !roots.contains(&t.digest) {
+            roots.push(t.digest);
         }
     }
     status.open_tamper_roots = roots;
@@ -1526,6 +1564,14 @@ impl EventEvidence {
                 ),
             });
         }
+        if self.relation == EvidenceEdgeRelation::SensorIntegrityRestoration {
+            if self.digest.bytes() == [0u8; 32] {
+                return Err(EventDecodeError::Contract(ContractError::InvalidDigest));
+            }
+            if self.identity_digest.is_none() {
+                return Err(EventDecodeError::Contract(ContractError::EvidenceRequired));
+            }
+        }
         Ok(())
     }
 
@@ -1555,7 +1601,11 @@ impl EventEvidence {
     /// a `SensorIntegrityRestoration` relation carrying `supports=false`.
     #[must_use]
     pub fn reports_integrity_restoration(&self) -> bool {
-        !self.supports && self.relation == EvidenceEdgeRelation::SensorIntegrityRestoration
+        !self.supports
+            && self.relation == EvidenceEdgeRelation::SensorIntegrityRestoration
+            && self.digest.bytes() != [0u8; 32]
+            && self.identity_digest.is_some()
+            && !self.failure_domain.is_empty()
     }
 }
 
@@ -1990,7 +2040,9 @@ impl EventHypothesis {
         for edge in &self.evidence {
             if edge.reports_sensor_tamper()
                 && tamper_status.open_domains.contains(&edge.failure_domain)
-                && !final_evidence.iter().any(|e| e.digest == edge.digest)
+                && !final_evidence
+                    .iter()
+                    .any(|e| e.digest == edge.digest && e.relation == edge.relation)
             {
                 final_evidence.push(edge.clone());
             }
@@ -2035,14 +2087,31 @@ impl EventHypothesis {
         let mut prior_digest: Option<ContentDigest> = None;
         let mut prior_rev: Option<&EventHypothesis> = None;
         let mut tamper_status = SensorTamperStatus::default();
+        let mut prior_tamper_domains = BTreeSet::new();
         for (i, rev) in chain.iter().enumerate() {
             rev.verify()?;
-            apply_evidence_to_tamper_status(&mut tamper_status, &rev.evidence);
+            apply_evidence_batch(&mut tamper_status, &rev.evidence, rev.revision);
             if sensor_tamper_vetoes(rev.state) && tamper_status.has_open_tamper() {
                 return Err(EventDecodeError::Contract(
                     ContractError::SensorIntegrityRisk,
                 ));
             }
+            if i > 0 {
+                for domain in &prior_tamper_domains {
+                    if tamper_status.open_domains.contains(domain) {
+                        let included = rev
+                            .evidence
+                            .iter()
+                            .any(|e| e.reports_sensor_tamper() && &e.failure_domain == domain);
+                        if !included {
+                            return Err(EventDecodeError::Contract(
+                                ContractError::SensorIntegrityRisk,
+                            ));
+                        }
+                    }
+                }
+            }
+            prior_tamper_domains = tamper_status.open_domains.clone();
             if &rev.event_id != event_id {
                 return Err(EventDecodeError::Contradiction {
                     field: "chain.eventId",
@@ -3427,7 +3496,9 @@ impl EventLineage {
                 && tamper_status
                     .open_domains
                     .contains(&prior_edge.failure_domain)
-                && !final_evidence.iter().any(|e| e.digest == prior_edge.digest)
+                && !final_evidence
+                    .iter()
+                    .any(|e| e.digest == prior_edge.digest && e.relation == prior_edge.relation)
             {
                 final_evidence.push(prior_edge.clone());
             }

@@ -658,17 +658,13 @@ pub fn compile_reference_situation(
     }
     .validated()?;
     let mut knowledge_cells = vec![policy_cell];
-    let tamper_status = fss_core::event::compute_sensor_tamper_status(
-        std::iter::empty(),
-        Some(&request.decision.event.evidence),
-    );
-    let physical_state = if tamper_status.has_open_tamper() {
-        match request.decision.event.state {
-            EventState::Indeterminate => KnowledgeState::Indeterminate,
-            _ => KnowledgeState::Unknown,
-        }
+    let tamper_status = &request.event_receipt.lineage_tamper_status;
+    let computed =
+        physical_knowledge_state(request.decision.event.state, &supporting, &contradicting);
+    let physical_state = if tamper_status.has_open_tamper() && computed == KnowledgeState::Known {
+        KnowledgeState::Unknown
     } else {
-        physical_knowledge_state(request.decision.event.state, &supporting, &contradicting)
+        computed
     };
     knowledge_cells.push(
         KnowledgeCell {
@@ -687,7 +683,7 @@ pub fn compile_reference_situation(
     // A tamper report is neutral for the physical claim but is evidence against sensor integrity:
     // it is surfaced as its own contradicted claim, never dropped.
     if let Some(integrity_cell) =
-        sensor_integrity_cell(event_name, &request.decision.event.evidence)?
+        sensor_integrity_cell(event_name, &request.decision.event, tamper_status)?
     {
         knowledge_cells.push(integrity_cell);
     }
@@ -1543,7 +1539,7 @@ fn compile_worlds(params: WorldCompilationParams<'_>) -> (WorldEnvelope, Vec<Str
 
     // Sensor tamper is neutral as evidence but never invisible as risk: a protected adversarial
     // world names it and the tampered roots, and at_risk states it.
-    let tamper_roots = sensor_tamper_roots(&params.decision.event.evidence);
+    let tamper_roots = &params.event_receipt.lineage_tamper_status.open_tamper_roots;
     if !tamper_roots.is_empty() {
         at_risk.push(format!(
             "Sensor tamper is reported by {} retained evidence root(s); sensor integrity is unestablished, so tampered coverage can neither support presence nor certify absence.",
@@ -1556,7 +1552,7 @@ fn compile_worlds(params: WorldCompilationParams<'_>) -> (WorldEnvelope, Vec<Str
                 params.policy_claim_id.to_owned(),
                 sensor_integrity_claim_id(event_name),
             ]),
-            evidence: tamper_roots,
+            evidence: tamper_roots.clone(),
             consequence_severity: 5,
             protected: true,
         });
@@ -1816,12 +1812,6 @@ pub(crate) fn sensor_integrity_claim_id(event_name: &str) -> String {
     format!("claim:event:{event_name}:sensor-integrity")
 }
 
-/// Digests of the retained edges that report a sensor-integrity risk.
-pub(crate) fn sensor_tamper_roots(evidence: &[fss_core::EventEvidence]) -> Vec<ContentDigest> {
-    let status = fss_core::event::compute_sensor_tamper_status(std::iter::empty(), Some(evidence));
-    status.open_tamper_roots
-}
-
 /// Compiles the sensor-integrity cell when retained evidence reports sensor tamper.
 ///
 /// A `SensorTamper` edge neither supports nor contradicts physical presence, but it is evidence
@@ -1832,11 +1822,10 @@ pub(crate) fn sensor_tamper_roots(evidence: &[fss_core::EventEvidence]) -> Vec<C
 /// with restoration evidence roots.
 pub(crate) fn sensor_integrity_cell(
     event_name: &str,
-    evidence: &[fss_core::EventEvidence],
+    event: &fss_core::EventHypothesis,
+    status: &fss_core::SensorTamperStatus,
 ) -> Result<Option<KnowledgeCell>, ReferenceError> {
-    let status = fss_core::event::compute_sensor_tamper_status(std::iter::empty(), Some(evidence));
-    let restorations = status.restoration_roots();
-    let tamper = status.open_tamper_roots;
+    let tamper = &status.open_tamper_roots;
 
     if !tamper.is_empty() {
         Ok(Some(
@@ -1847,27 +1836,37 @@ pub(crate) fn sensor_integrity_cell(
                 provenance: ProvenanceClass::Derived,
                 hypothesis: Some(HypothesisDisposition::Disfavored),
                 evidence: Vec::new(),
-                contradictions: tamper,
+                contradictions: tamper.clone(),
                 valid_until: None,
                 state_basis: None,
             }
             .validated()?,
         ))
-    } else if !restorations.is_empty() {
-        Ok(Some(
-            KnowledgeCell {
-                claim_id: sensor_integrity_claim_id(event_name),
-                statement: "Every sensor contributing to this event retains integrity: no tamper, replay, cover, dazzle, or disconnect is indicated.".to_owned(),
-                knowledge_state: KnowledgeState::Known,
-                provenance: ProvenanceClass::Derived,
-                hypothesis: Some(HypothesisDisposition::Supported),
-                evidence: restorations,
-                contradictions: Vec::new(),
-                valid_until: None,
-                state_basis: None,
-            }
-            .validated()?,
-        ))
+    } else if event.revision > 1 {
+        let restorations: Vec<_> = event
+            .evidence
+            .iter()
+            .filter(|e| e.reports_integrity_restoration())
+            .map(|e| e.digest)
+            .collect();
+        if !restorations.is_empty() {
+            Ok(Some(
+                KnowledgeCell {
+                    claim_id: sensor_integrity_claim_id(event_name),
+                    statement: "Every sensor contributing to this event retains integrity: no tamper, replay, cover, dazzle, or disconnect is indicated.".to_owned(),
+                    knowledge_state: KnowledgeState::Known,
+                    provenance: ProvenanceClass::Derived,
+                    hypothesis: Some(HypothesisDisposition::Supported),
+                    evidence: restorations,
+                    contradictions: Vec::new(),
+                    valid_until: None,
+                    state_basis: None,
+                }
+                .validated()?,
+            ))
+        } else {
+            Ok(None)
+        }
     } else {
         Ok(None)
     }

@@ -870,7 +870,15 @@ fn changed_cells(basis: &[KnowledgeCell], result: &[KnowledgeCell]) -> Vec<Knowl
         .filter(|cell| prior.get(cell.claim_id.as_str()) != Some(&cell.cell_digest()))
         .cloned()
         .collect();
+    for prior_cell in basis {
+        let had_contradiction = prior_cell.knowledge_state == KnowledgeState::Conflicted
+            || !prior_cell.contradictions.is_empty();
+        if had_contradiction && !result.iter().any(|c| c.claim_id == prior_cell.claim_id) {
+            changed.push(prior_cell.clone());
+        }
+    }
     changed.sort_by(|left, right| left.claim_id.cmp(&right.claim_id));
+    changed.dedup_by(|left, right| left.claim_id == right.claim_id);
     changed
 }
 

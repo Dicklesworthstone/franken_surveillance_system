@@ -13,9 +13,9 @@ use fss_core::event::{
     compute_sensor_tamper_status,
 };
 use fss_core::{
-    CaptureInterval, ContentDigest, ContractError, DecisionPath, EVENT_HYPOTHESIS_SCHEMA,
-    EventDecodeError, EventEvidence, EventHypothesis, EventId, EventKind, EventState,
-    EvidenceClass, EvidenceEdgeRelation, ProbabilityInterval, TimestampNs,
+    CaptureInterval, ContentDigest, ContractError, DecisionPath, DigestAlgorithm,
+    EVENT_HYPOTHESIS_SCHEMA, EventDecodeError, EventEvidence, EventHypothesis, EventId, EventKind,
+    EventState, EvidenceClass, EvidenceEdgeRelation, ProbabilityInterval, TimestampNs,
 };
 
 fn sample_interval() -> Result<CaptureInterval, ContractError> {
@@ -57,7 +57,7 @@ fn tamper_evidence(domain: &str) -> EventEvidence {
         supports: false,
         relation: EvidenceEdgeRelation::SensorTamper,
         capsule_digest: None,
-        identity_digest: None,
+        identity_digest: Some(ContentDigest::sha256(format!("sensor:{domain}").as_bytes())),
     }
 }
 
@@ -70,7 +70,7 @@ fn restoration_evidence(domain: &str) -> EventEvidence {
         supports: false,
         relation: EvidenceEdgeRelation::SensorIntegrityRestoration,
         capsule_digest: None,
-        identity_digest: None,
+        identity_digest: Some(ContentDigest::sha256(format!("sensor:{domain}").as_bytes())),
     }
 }
 
@@ -531,6 +531,225 @@ fn test_multi_domain_tamper_isolation() -> Result<(), Box<dyn Error>> {
     )?;
     let ok_corroboration = lineage.transition(params_ok);
     assert!(ok_corroboration.is_ok());
+
+    Ok(())
+}
+
+#[test]
+fn test_zero_digest_and_missing_identity_restoration_refused() -> Result<(), Box<dyn Error>> {
+    let zero_edge = EventEvidence {
+        digest: ContentDigest::new(DigestAlgorithm::Sha256, [0u8; 32]),
+        class: EvidenceClass::Derived,
+        failure_domain: "power:alpha".to_string(),
+        supports: false,
+        relation: EvidenceEdgeRelation::SensorIntegrityRestoration,
+        capsule_digest: None,
+        identity_digest: Some(ContentDigest::sha256(b"sensor-1")),
+    };
+    assert_eq!(
+        zero_edge.verify(),
+        Err(EventDecodeError::Contract(ContractError::InvalidDigest))
+    );
+    assert!(!zero_edge.reports_integrity_restoration());
+
+    let missing_id_edge = EventEvidence {
+        digest: ContentDigest::sha256(b"valid-digest"),
+        class: EvidenceClass::Derived,
+        failure_domain: "power:alpha".to_string(),
+        supports: false,
+        relation: EvidenceEdgeRelation::SensorIntegrityRestoration,
+        capsule_digest: None,
+        identity_digest: None,
+    };
+    assert_eq!(
+        missing_id_edge.verify(),
+        Err(EventDecodeError::Contract(ContractError::EvidenceRequired))
+    );
+    assert!(!missing_id_edge.reports_integrity_restoration());
+
+    Ok(())
+}
+
+#[test]
+fn test_same_batch_restoration_does_not_retire_tamper() -> Result<(), Box<dyn Error>> {
+    let t = tamper_evidence("cam-1");
+    let r = restoration_evidence("cam-1");
+    let status = compute_sensor_tamper_status(std::iter::empty(), Some(&[t, r]));
+    assert!(status.has_open_tamper());
+    assert_eq!(status.open_domains.len(), 1);
+    assert!(status.open_domains.contains("cam-1"));
+    assert!(status.restorations.is_empty());
+    Ok(())
+}
+
+#[test]
+fn test_stale_restoration_refused() -> Result<(), Box<dyn Error>> {
+    let event_id = EventId::parse("event:tamper:stale-restoration")?;
+    let genesis = sample_genesis_hypothesis(&event_id, "cam-1", true)?;
+    let mut lineage = EventLineage::new(genesis.clone())?;
+    assert!(lineage.has_open_sensor_tamper());
+
+    let t2 = EventEvidence {
+        digest: ContentDigest::sha256(b"tamper-rev-2"),
+        class: EvidenceClass::Derived,
+        failure_domain: "cam-2".to_string(),
+        supports: false,
+        relation: EvidenceEdgeRelation::SensorTamper,
+        capsule_digest: None,
+        identity_digest: Some(ContentDigest::sha256(b"sensor:cam-2")),
+    };
+    let r2 = EventEvidence {
+        digest: ContentDigest::sha256(b"restoration-rev-2"),
+        class: EvidenceClass::Derived,
+        failure_domain: "cam-2".to_string(),
+        supports: false,
+        relation: EvidenceEdgeRelation::SensorIntegrityRestoration,
+        capsule_digest: None,
+        identity_digest: Some(ContentDigest::sha256(b"sensor:cam-2")),
+    };
+    let params = transition_params(
+        EventState::Witnessed,
+        genesis.interval,
+        vec![sample_evidence("cam-2", true), t2, r2],
+    )?;
+    let res = lineage.transition(params);
+    assert!(res.is_ok());
+    assert!(lineage.open_sensor_tamper_domains().contains("cam-2"));
+    Ok(())
+}
+
+#[test]
+fn test_cross_sensor_restoration_refused() -> Result<(), Box<dyn Error>> {
+    let event_id = EventId::parse("event:tamper:cross-sensor")?;
+    let genesis = sample_genesis_hypothesis(&event_id, "cam-1", true)?;
+    let mut lineage = EventLineage::new(genesis.clone())?;
+
+    let cross_id_restoration = EventEvidence {
+        digest: ContentDigest::sha256(b"cross-sensor-restoration"),
+        class: EvidenceClass::Derived,
+        failure_domain: "cam-1".to_string(),
+        supports: false,
+        relation: EvidenceEdgeRelation::SensorIntegrityRestoration,
+        capsule_digest: None,
+        identity_digest: Some(ContentDigest::sha256(b"sensor:different-sensor")),
+    };
+    let params_cross = transition_params(
+        EventState::Witnessed,
+        genesis.interval,
+        vec![sample_evidence("cam-1", true), cross_id_restoration],
+    )?;
+    let res = lineage.transition(params_cross);
+    assert!(res.is_ok());
+    assert!(lineage.has_open_sensor_tamper());
+    assert!(lineage.open_sensor_tamper_domains().contains("cam-1"));
+
+    let diff_domain_restoration = EventEvidence {
+        digest: ContentDigest::sha256(b"diff-domain-restoration"),
+        class: EvidenceClass::Derived,
+        failure_domain: "cam-other".to_string(),
+        supports: false,
+        relation: EvidenceEdgeRelation::SensorIntegrityRestoration,
+        capsule_digest: None,
+        identity_digest: Some(ContentDigest::sha256(b"sensor:cam-1")),
+    };
+    let params_diff = transition_params(
+        EventState::Indeterminate,
+        genesis.interval,
+        vec![sample_evidence("cam-1", true), diff_domain_restoration],
+    )?;
+    let res_diff = lineage.transition(params_diff);
+    assert!(res_diff.is_ok());
+    assert!(lineage.has_open_sensor_tamper());
+    assert!(lineage.open_sensor_tamper_domains().contains("cam-1"));
+
+    Ok(())
+}
+
+#[test]
+fn test_re_cited_restoration_refused() -> Result<(), Box<dyn Error>> {
+    let event_id = EventId::parse("event:tamper:re-cited")?;
+    let genesis = sample_genesis_hypothesis(&event_id, "cam-1", true)?;
+    let mut lineage = EventLineage::new(genesis.clone())?;
+
+    let r1 = restoration_evidence("cam-1");
+    let params_r1 = transition_params(
+        EventState::Witnessed,
+        genesis.interval,
+        vec![sample_evidence("cam-1", true), r1.clone()],
+    )?;
+    assert!(lineage.transition(params_r1).is_ok());
+    assert!(!lineage.has_open_sensor_tamper());
+
+    let t3 = EventEvidence {
+        digest: ContentDigest::sha256(b"evidence:cam-1:tamper-2"),
+        class: EvidenceClass::Derived,
+        failure_domain: "cam-1".to_string(),
+        supports: false,
+        relation: EvidenceEdgeRelation::SensorTamper,
+        capsule_digest: None,
+        identity_digest: Some(ContentDigest::sha256(b"sensor:cam-1")),
+    };
+    let params_t3 = transition_params(
+        EventState::Indeterminate,
+        genesis.interval,
+        vec![sample_evidence("cam-1", true), t3],
+    )?;
+    assert!(lineage.transition(params_t3).is_ok());
+    assert!(lineage.has_open_sensor_tamper());
+
+    let params_re_cite = transition_params(
+        EventState::Indeterminate,
+        genesis.interval,
+        vec![sample_evidence("cam-1", true), r1],
+    )?;
+    assert!(lineage.transition(params_re_cite).is_ok());
+    assert!(lineage.has_open_sensor_tamper());
+    assert!(lineage.open_sensor_tamper_domains().contains("cam-1"));
+
+    Ok(())
+}
+
+#[test]
+fn test_dedup_by_digest_and_relation() -> Result<(), Box<dyn Error>> {
+    let event_id = EventId::parse("event:tamper:dedup")?;
+    let genesis = sample_genesis_hypothesis(&event_id, "cam-1", true)?;
+    let mut lineage = EventLineage::new(genesis.clone())?;
+
+    let prior_tamper = genesis
+        .evidence
+        .iter()
+        .find(|e| e.reports_sensor_tamper())
+        .ok_or("missing tamper edge")?;
+    let shared_digest = prior_tamper.digest;
+
+    let edge_derived = EventEvidence {
+        digest: shared_digest,
+        class: EvidenceClass::Derived,
+        failure_domain: "cam-1".to_string(),
+        supports: false,
+        relation: EvidenceEdgeRelation::DerivedFrom,
+        capsule_digest: None,
+        identity_digest: None,
+    };
+    let params = transition_params(
+        EventState::Witnessed,
+        genesis.interval,
+        vec![sample_evidence("cam-1", true), edge_derived],
+    )?;
+    let rev = lineage.transition(params)?;
+    let has_tamper = rev
+        .evidence
+        .iter()
+        .any(|e| e.digest == shared_digest && e.relation == EvidenceEdgeRelation::SensorTamper);
+    let has_derived = rev
+        .evidence
+        .iter()
+        .any(|e| e.digest == shared_digest && e.relation == EvidenceEdgeRelation::DerivedFrom);
+    assert!(has_tamper, "sticky tamper edge should be carried forward");
+    assert!(
+        has_derived,
+        "distinct relation with same digest must not be deduplicated away"
+    );
 
     Ok(())
 }
