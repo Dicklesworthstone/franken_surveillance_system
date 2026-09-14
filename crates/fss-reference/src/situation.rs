@@ -587,7 +587,7 @@ pub fn compile_reference_situation(
     authority: &DurableReferenceLedger,
 ) -> Result<ReferenceSituation, ReferenceError> {
     let coverage_witness = request.coverage_witness;
-    validate_request(&request, authority, coverage_witness)?;
+    let lineage_tamper_status = validate_request(&request, authority, coverage_witness)?;
 
     let current_anchor = authority.current().anchor.clone();
     let event_name = request.decision.event.event_id.as_str();
@@ -658,8 +658,14 @@ pub fn compile_reference_situation(
     }
     .validated()?;
     let mut knowledge_cells = vec![policy_cell];
-    let physical_state =
+    let tamper_status = &lineage_tamper_status;
+    let computed =
         physical_knowledge_state(request.decision.event.state, &supporting, &contradicting);
+    let physical_state = if tamper_status.has_open_tamper() && computed == KnowledgeState::Known {
+        KnowledgeState::Unknown
+    } else {
+        computed
+    };
     knowledge_cells.push(
         KnowledgeCell {
             claim_id: physical_claim_id.clone(),
@@ -677,7 +683,7 @@ pub fn compile_reference_situation(
     // A tamper report is neutral for the physical claim but is evidence against sensor integrity:
     // it is surfaced as its own contradicted claim, never dropped.
     if let Some(integrity_cell) =
-        sensor_integrity_cell(event_name, &request.decision.event.evidence)?
+        sensor_integrity_cell(event_name, &request.decision.event, tamper_status)?
     {
         knowledge_cells.push(integrity_cell);
     }
@@ -900,6 +906,7 @@ pub fn compile_reference_situation(
         objective_id: &request.objective_id,
         decision: request.decision,
         event_receipt: request.event_receipt,
+        tamper_status: &lineage_tamper_status,
         physical_claim_id: &physical_claim_id,
         policy_claim_id: &policy_claim_id,
         absence_claim_id: &absence_claim_id,
@@ -1207,7 +1214,7 @@ fn validate_request(
     request: &ReferenceSituationRequest<'_>,
     authority: &DurableReferenceLedger,
     coverage_witness: Option<&CoverageWitness>,
-) -> Result<(), ReferenceError> {
+) -> Result<fss_core::SensorTamperStatus, ReferenceError> {
     if request.objective_id.is_empty()
         || request.objective_id.len() > MAX_OBJECTIVE_BYTES
         || request.revision == 0
@@ -1249,6 +1256,38 @@ fn validate_request(
     });
     if !event_is_published {
         return Err(ReferenceError::InvalidSpec("situation_event_basis"));
+    }
+    let tamper_status_is_published = authority.batches().iter().any(|batch| {
+        batch.new_anchor == request.event_receipt.authority_anchor
+            && batch.deltas.iter().any(|delta| {
+                delta.family == "sensor_tamper_status"
+                    && delta.payload_digest == request.event_receipt.event_root
+                    && delta.witness_digest
+                        == Some(
+                            request
+                                .event_receipt
+                                .lineage_tamper_status
+                                .canonical_digest(),
+                        )
+            })
+    });
+    if !tamper_status_is_published {
+        return Err(ReferenceError::InvalidSpec(
+            "forged_event_receipt_tamper_status",
+        ));
+    }
+    // The receipt must name the event's current revision, and the lineage tamper status is
+    // recomputed from the ledger's revisions of the event: neither the receipt nor the published
+    // witness is trusted alone (fss-2uftm).
+    let lineage_status = crate::alert::recompute_lineage_tamper_status(
+        authority,
+        &request.decision.event,
+        &crate::alert::decode_prior_revisions(&request.event_receipt.prior_revision_encodings)?,
+    )?;
+    if lineage_status != request.event_receipt.lineage_tamper_status {
+        return Err(ReferenceError::InvalidSpec(
+            "forged_event_receipt_tamper_status",
+        ));
     }
     if let Some(previous) = &request.previous_anchor {
         let genesis = LedgerAnchor::genesis(current.site_lineage.clone());
@@ -1332,7 +1371,7 @@ fn validate_request(
             "situation_predecessor_not_latest",
         ));
     }
-    Ok(())
+    Ok(lineage_status)
 }
 
 /// Recomputes a published alert outcome's root from the receipt's own outcome body.
@@ -1376,6 +1415,8 @@ struct WorldCompilationParams<'a> {
     objective_id: &'a str,
     decision: &'a ReferencePolicyDecision,
     event_receipt: &'a ReferenceEventReceipt,
+    /// Lineage tamper status recomputed from the authority ledger (fss-2uftm).
+    tamper_status: &'a fss_core::SensorTamperStatus,
     physical_claim_id: &'a str,
     policy_claim_id: &'a str,
     absence_claim_id: &'a str,
@@ -1533,7 +1574,7 @@ fn compile_worlds(params: WorldCompilationParams<'_>) -> (WorldEnvelope, Vec<Str
 
     // Sensor tamper is neutral as evidence but never invisible as risk: a protected adversarial
     // world names it and the tampered roots, and at_risk states it.
-    let tamper_roots = sensor_tamper_roots(&params.decision.event.evidence);
+    let tamper_roots = &params.tamper_status.open_tamper_roots;
     if !tamper_roots.is_empty() {
         at_risk.push(format!(
             "Sensor tamper is reported by {} retained evidence root(s); sensor integrity is unestablished, so tampered coverage can neither support presence nor certify absence.",
@@ -1546,7 +1587,7 @@ fn compile_worlds(params: WorldCompilationParams<'_>) -> (WorldEnvelope, Vec<Str
                 params.policy_claim_id.to_owned(),
                 sensor_integrity_claim_id(event_name),
             ]),
-            evidence: tamper_roots,
+            evidence: tamper_roots.clone(),
             consequence_severity: 5,
             protected: true,
         });
@@ -1806,44 +1847,59 @@ pub(crate) fn sensor_integrity_claim_id(event_name: &str) -> String {
     format!("claim:event:{event_name}:sensor-integrity")
 }
 
-/// Digests of the retained edges that report a sensor-integrity risk.
-pub(crate) fn sensor_tamper_roots(evidence: &[fss_core::EventEvidence]) -> Vec<ContentDigest> {
-    evidence
-        .iter()
-        .filter(|edge| edge.reports_sensor_tamper())
-        .map(|edge| edge.digest)
-        .collect()
-}
-
 /// Compiles the sensor-integrity cell when retained evidence reports sensor tamper.
 ///
 /// A `SensorTamper` edge neither supports nor contradicts physical presence, but it is evidence
 /// against the integrity of the sensing the event rests on. The integrity claim therefore carries
 /// the tamper roots as contradictions with no supporting root: `unknown` and disfavored, never
 /// established. A new or changed tamper root is therefore a contradiction delta, which is never
-/// coalesced; a cleared one retires the tamper world and is reported as a material change.
+/// coalesced; an explicit, evidenced restoration retires the tamper risk, establishing `Known`
+/// with restoration evidence roots.
 pub(crate) fn sensor_integrity_cell(
     event_name: &str,
-    evidence: &[fss_core::EventEvidence],
+    event: &fss_core::EventHypothesis,
+    status: &fss_core::SensorTamperStatus,
 ) -> Result<Option<KnowledgeCell>, ReferenceError> {
-    let tamper = sensor_tamper_roots(evidence);
-    if tamper.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(
-        KnowledgeCell {
-            claim_id: sensor_integrity_claim_id(event_name),
-            statement: "Every sensor contributing to this event retains integrity: no tamper, replay, cover, dazzle, or disconnect is indicated.".to_owned(),
-            knowledge_state: KnowledgeState::Unknown,
-            provenance: ProvenanceClass::Derived,
-            hypothesis: Some(HypothesisDisposition::Disfavored),
-            evidence: Vec::new(),
-            contradictions: tamper,
-            valid_until: None,
-            state_basis: None,
+    let tamper = &status.open_tamper_roots;
+
+    if !tamper.is_empty() {
+        Ok(Some(
+            KnowledgeCell {
+                claim_id: sensor_integrity_claim_id(event_name),
+                statement: "Every sensor contributing to this event retains integrity: no tamper, replay, cover, dazzle, or disconnect is indicated.".to_owned(),
+                knowledge_state: KnowledgeState::Unknown,
+                provenance: ProvenanceClass::Derived,
+                hypothesis: Some(HypothesisDisposition::Disfavored),
+                evidence: Vec::new(),
+                contradictions: tamper.clone(),
+                valid_until: None,
+                state_basis: None,
+            }
+            .validated()?,
+        ))
+    } else if event.revision > 1 {
+        let retiring_restorations = status.restoration_roots();
+        if !retiring_restorations.is_empty() {
+            Ok(Some(
+                KnowledgeCell {
+                    claim_id: sensor_integrity_claim_id(event_name),
+                    statement: "Every sensor contributing to this event retains integrity: no tamper, replay, cover, dazzle, or disconnect is indicated.".to_owned(),
+                    knowledge_state: KnowledgeState::Known,
+                    provenance: ProvenanceClass::Derived,
+                    hypothesis: Some(HypothesisDisposition::Supported),
+                    evidence: retiring_restorations,
+                    contradictions: Vec::new(),
+                    valid_until: None,
+                    state_basis: None,
+                }
+                .validated()?,
+            ))
+        } else {
+            Ok(None)
         }
-        .validated()?,
-    ))
+    } else {
+        Ok(None)
+    }
 }
 
 pub(crate) fn physical_statement(state: EventState) -> &'static str {

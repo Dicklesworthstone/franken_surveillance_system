@@ -1352,7 +1352,8 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         self.assertEqual(result["status"], "passed")
         self.assertEqual(result["unregisteredImplementedCount"], 0)
         self.assertEqual(result["digestDomainCount"], 53)
-        self.assertEqual(result["implementedCount"], 28)
+        # 29 = 28 + fss.sensor_tamper_status.v1 (owner SensorTamperStatus, fss-2uftm).
+        self.assertEqual(result["implementedCount"], 29)
 
         unreg_findings = [
             f for f in validator.findings

@@ -434,9 +434,10 @@ fn test_schema_domain_and_pinned_counts() -> Result<(), Box<dyn Error>> {
         .filter(|line| line.starts_with("| `SCHEMA-"))
         .count();
     // 73 = 72 + SCHEMA-ROBOT-DOCS-001 (schemas/robot_docs.v1.json).
+    // 74 = 73 + SCHEMA-SENSOR-TAMPER-STATUS-001 (schemas/sensor_tamper_status.v1.json, fss-2uftm).
     assert_eq!(
-        schema_count, 73,
-        "registries/SCHEMAS.md count must remain pinned at 73"
+        schema_count, 74,
+        "registries/SCHEMAS.md count must remain pinned at 74"
     );
     Ok(())
 }

@@ -396,25 +396,38 @@ fn tamper_report_vetoes_alert_preparation() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Builds the revision of `prior` that carries `next`'s policy outcome.
+/// Builds the revision of the genesis `prior` that carries `next`'s policy outcome.
 fn successor(
     prior: &fss_core::EventHypothesis,
     next: &ReferencePolicyDecision,
 ) -> Result<ReferencePolicyDecision, Box<dyn Error>> {
+    successor_in(std::slice::from_ref(prior), next)
+}
+
+/// Builds the successor of the last revision of `chain` (that revision's complete lineage, genesis
+/// first) carrying `next`'s policy outcome.
+fn successor_in(
+    chain: &[fss_core::EventHypothesis],
+    next: &ReferencePolicyDecision,
+) -> Result<ReferencePolicyDecision, Box<dyn Error>> {
+    let prior = chain.last().ok_or("empty lineage")?;
     let event = next.event.clone();
     Ok(ReferencePolicyDecision {
-        event: prior.supersede(fss_core::event::EventSupersedeParams {
-            state: event.state,
-            kind: event.kind,
-            interval: event.interval,
-            uncertainty_reason: event.uncertainty_reason,
-            zone_ids: event.zone_ids,
-            track_ids: event.track_ids,
-            probability: event.probability,
-            evidence: event.evidence,
-            model_receipts: event.model_receipts,
-            decision_path: event.decision_path,
-        })?,
+        event: prior.supersede(
+            fss_core::event::EventSupersedeParams {
+                state: event.state,
+                kind: event.kind,
+                interval: event.interval,
+                uncertainty_reason: event.uncertainty_reason,
+                zone_ids: event.zone_ids,
+                track_ids: event.track_ids,
+                probability: event.probability,
+                evidence: event.evidence,
+                model_receipts: event.model_receipts,
+                decision_path: event.decision_path,
+            },
+            chain,
+        )?,
         action: next.action,
     })
 }
@@ -2437,6 +2450,7 @@ fn forgery_with_encoding(
     forged.event_revision_digest = receipt.event_revision_digest;
     forged.authority_anchor = receipt.authority_anchor.clone();
     forged.event_revision_encoding = crate::alert::event_revision_encoding(encode_from);
+    forged.prior_revision_encodings = receipt.prior_revision_encodings.clone();
     forged.prepared_head_sequence = u64::try_from(authority.batches().len())?;
     forged.prepared_head_digest = head.batch_digest;
     forged.intent.operation_id = OperationId::parse(format!("operation:alert:{tag}-self"))?;
@@ -2953,6 +2967,8 @@ fn dispatch_self_prepared(
                 None
             }
             Err(DurableEffectError::Reference(error)) => Some(error),
+            // A contract refusal keeps its contract identity through the durable journal.
+            Err(DurableEffectError::Contract(error)) => Some(ReferenceError::Contract(error)),
             Err(other) => return Err(format!("{tag}: unexpected error shape: {other:?}").into()),
         };
         if refusal.is_some() {
@@ -2999,15 +3015,18 @@ fn dispatch_self_prepared(
     Ok(refusal)
 }
 
-/// Publishes the successor of `prior` carrying the policy outcome of `observations`.
+/// Publishes the successor of the last decision of `lineage` (oldest first) carrying the policy
+/// outcome of `observations`.
 fn publish_successor(
-    prior: &ReferencePolicyDecision,
+    lineage: &[&ReferencePolicyDecision],
     observations: Vec<ReferenceModelObservation>,
     objects: &mut InMemoryObjectStore,
     authority: &mut DurableReferenceLedger,
 ) -> Result<(ReferencePolicyDecision, crate::ReferenceEventReceipt), Box<dyn Error>> {
+    let prior = lineage.last().ok_or("empty lineage")?;
+    let chain: Vec<fss_core::EventHypothesis> = lineage.iter().map(|d| d.event.clone()).collect();
     let evaluated = evaluate_unknown_presence(prior.event.event_id.clone(), observations)?;
-    let next = successor(&prior.event, &evaluated)?;
+    let next = successor_in(&chain, &evaluated)?;
     let receipt = publish_reference_event(&next, objects, authority)?;
     Ok((next, receipt))
 }
@@ -3049,6 +3068,10 @@ fn unrelated_observation(
 /// supersede one). The self-consistent self-prepared forgery for the current eligible revision
 /// DELIVERS, so every refusal of the same harness below comes from a dispatch check, not from the
 /// harness itself.
+///
+/// A tamper is sticky (fss-2uftm): revision 3 is eligible only because it carries an evidenced
+/// integrity restoration from the tampered sensor, and it and its corroborating observations are
+/// all captured strictly after the tamper's capture ended (seed 1801 ends at 20.0101 ms).
 fn self_prepared_control_case(tag: &str, durable: bool) -> Result<(), Box<dyn Error>> {
     let ledger_path = temp_journal(&format!("{tag}-ledger"));
     let _ = fs::remove_file(&ledger_path);
@@ -3060,11 +3083,25 @@ fn self_prepared_control_case(tag: &str, durable: bool) -> Result<(), Box<dyn Er
     let plan = prepare(&decision, &event_receipt, &authority, &mut journal)?;
 
     let tamper = tamper_observation(tag, 1_801, &mut objects, &mut authority)?;
-    let (dec_2, _rc_2) = publish_successor(&decision, vec![tamper], &mut objects, &mut authority)?;
-    let first = unrelated_observation(&format!("{tag}-e1"), 1_811, &mut objects, &mut authority)?;
-    let second = unrelated_observation(&format!("{tag}-e2"), 1_822, &mut objects, &mut authority)?;
-    let (dec_3, rc_3) =
-        publish_successor(&dec_2, vec![first, second], &mut objects, &mut authority)?;
+    let (dec_2, _rc_2) =
+        publish_successor(&[&decision], vec![tamper], &mut objects, &mut authority)?;
+    let restored = observation_with_label(
+        &format!("capture:alert:{tag}-tamper-restored"),
+        &format!("sensor:alert:{tag}-tamper"),
+        2_002,
+        &format!("power:alert:{tag}-tamper"),
+        MockSemanticLabel::IntegrityRestored,
+        &mut objects,
+        &mut authority,
+    )?;
+    let first = unrelated_observation(&format!("{tag}-e1"), 2_011, &mut objects, &mut authority)?;
+    let second = unrelated_observation(&format!("{tag}-e2"), 2_022, &mut objects, &mut authority)?;
+    let (dec_3, rc_3) = publish_successor(
+        &[&decision, &dec_2],
+        vec![restored, first, second],
+        &mut objects,
+        &mut authority,
+    )?;
     assert!(
         crate::alert::verify_event_alert_eligibility(
             dec_3.event.state,
@@ -3109,7 +3146,8 @@ fn encoding_swap_case(tag: &str, durable: bool) -> Result<(), Box<dyn Error>> {
     let mut journal = EffectJournal::new();
     let plan = prepare(&decision, &event_receipt, &authority, &mut journal)?;
     let tamper = tamper_observation(tag, 1_701, &mut objects, &mut authority)?;
-    let (_dec_2, rc_2) = publish_successor(&decision, vec![tamper], &mut objects, &mut authority)?;
+    let (_dec_2, rc_2) =
+        publish_successor(&[&decision], vec![tamper], &mut objects, &mut authority)?;
 
     let forged = forgery_with_encoding(&plan, &rc_2, &decision.event, &authority, tag)?;
     let refusal = dispatch_self_prepared(tag, &forged, &authority, durable)?;
@@ -3314,4 +3352,265 @@ fn test_m2_unbound_request_digest_refused_mem() -> Result<(), Box<dyn Error>> {
 #[test]
 fn test_m2_unbound_request_digest_refused_dur() -> Result<(), Box<dyn Error>> {
     unbound_request_digest_case("m2-unbound-dur", true)
+}
+
+// ============ Round 4b (fss-2uftm H1): prepare and dispatch recompute the event's lineage ============
+
+/// Publishes `rev` straight through the authority publisher, bypassing every check
+/// `publish_reference_event` runs, with either the honest lineage tamper witness or an all-clear
+/// one. The receipt carries the true lineage.
+fn plant_revision(
+    rev: &fss_core::EventHypothesis,
+    prior: &[fss_core::EventHypothesis],
+    prior_generation: u64,
+    all_clear_witness: bool,
+    objects: &mut InMemoryObjectStore,
+    authority: &mut DurableReferenceLedger,
+) -> Result<crate::ReferenceEventReceipt, Box<dyn Error>> {
+    use fss_core::CanonicalEncode as _;
+    use fss_object::VerifiedObjectCatalog as _;
+    for model_receipt in &rev.model_receipts {
+        objects.require_verified(*model_receipt)?;
+    }
+    let event_object_digest = objects.put_verified(&rev.canonical_bytes())?;
+    let mut encoder = fss_core::CanonicalEncoder::new();
+    encoder.text("fss.canonical.v1");
+    encoder.text("fss.event_hypothesis.v1");
+    rev.encode_canonical(&mut encoder);
+    let event_revision_digest = objects.put_verified(&encoder.finish())?;
+    let manifest = fss_object::ObjectManifest::new(
+        "event-revision",
+        rev.model_receipts.iter().copied(),
+        Some(event_object_digest),
+    )?;
+    let event_root = objects.publish_manifest(manifest)?.root;
+    let name = rev.event_id.as_str();
+    let status = if all_clear_witness {
+        fss_core::SensorTamperStatus::default()
+    } else {
+        fss_core::event::compute_sensor_tamper_status_with_interval(
+            prior.iter(),
+            Some(&rev.evidence),
+            Some(rev.interval),
+        )
+    };
+    let mut status_encoder = fss_core::CanonicalEncoder::new();
+    status.encode_canonical(&mut status_encoder);
+    let _ = objects.put_verified(&status_encoder.finish())?;
+    let delta = fss_core::EvidenceDelta {
+        delta_id: format!("delta:event:{name}:{}", rev.revision),
+        family: "event_revision".to_owned(),
+        object_id: fss_core::ObjectId::parse(format!("object:event:{name}"))?,
+        prior_generation: Some(prior_generation),
+        new_generation: rev.revision,
+        validity: rev.interval,
+        plane: fss_core::Plane::Authority,
+        payload_digest: event_root,
+        witness_digest: Some(event_revision_digest),
+        operation_id: None,
+    };
+    let tamper_delta = fss_core::EvidenceDelta {
+        delta_id: format!("delta:event:{name}:tamper:{}", rev.revision),
+        family: "sensor_tamper_status".to_owned(),
+        object_id: fss_core::ObjectId::parse(format!("object:event:{name}:tamper"))?,
+        prior_generation: Some(prior_generation),
+        new_generation: rev.revision,
+        validity: rev.interval,
+        plane: fss_core::Plane::Authority,
+        payload_digest: event_root,
+        witness_digest: Some(status.canonical_digest()),
+        operation_id: None,
+    };
+    let authority_anchor = {
+        let mut publisher = fss_publication::AuthorityPublisher::new(objects, authority);
+        let batch = publisher.prepare_batch(
+            fss_core::BatchId::parse(format!("batch:event:{name}:{}", rev.revision))?,
+            vec![delta, tamper_delta],
+            [event_root],
+        )?;
+        publisher.append(batch)?
+    };
+    Ok(crate::ReferenceEventReceipt {
+        event_root,
+        event_object_digest,
+        event_revision_digest,
+        authority_anchor,
+        lineage_tamper_status: status,
+        prior_revision_encodings: prior
+            .iter()
+            .map(crate::alert::event_revision_encoding)
+            .collect(),
+    })
+}
+
+/// Outcome of preparing an alert for a planted revision, and the dispatch refusal of the
+/// self-prepared forgery naming it (`None` when dispatch delivered).
+type PlantedOutcome = (Result<(), ReferenceError>, Option<ReferenceError>);
+
+/// Eligible genesis, a published tamper revision, then a Corroborated revision that drops the
+/// unretired tamper, which honest publication refuses and which is planted with the given witness.
+/// Returns the outcome of preparing an alert for it and the dispatch refusal of the fully
+/// self-consistent self-prepared forgery naming it (the C1 harness, which delivers for an eligible
+/// current revision).
+fn planted_drop_case(
+    tag: &str,
+    durable: bool,
+    all_clear_witness: bool,
+) -> Result<PlantedOutcome, Box<dyn Error>> {
+    let ledger_path = temp_journal(&format!("{tag}-ledger"));
+    let _ = fs::remove_file(&ledger_path);
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(768, 12 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&ledger_path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
+    let mut journal = EffectJournal::new();
+    let plan = prepare(&decision, &event_receipt, &authority, &mut journal)?;
+    let tamper = tamper_observation(tag, 1_801, &mut objects, &mut authority)?;
+    let (dec_2, _rc_2) =
+        publish_successor(&[&decision], vec![tamper], &mut objects, &mut authority)?;
+    let first = unrelated_observation(&format!("{tag}-e1"), 2_011, &mut objects, &mut authority)?;
+    let second = unrelated_observation(&format!("{tag}-e2"), 2_022, &mut objects, &mut authority)?;
+    let candidate =
+        evaluate_unknown_presence(decision.event.event_id.clone(), vec![first, second])?;
+    let rev_3 = fss_core::EventHypothesis {
+        revision: dec_2.event.revision + 1,
+        supersedes: Some(dec_2.event.revision_digest()),
+        ..candidate.event.clone()
+    };
+    rev_3.validate()?;
+    let dec_3 = ReferencePolicyDecision {
+        event: rev_3,
+        action: candidate.action,
+    };
+    assert!(
+        publish_reference_event(&dec_3, &mut objects, &mut authority).is_err(),
+        "{tag}: honest publication accepted the tamper-dropping revision"
+    );
+    let rc_3 = plant_revision(
+        &dec_3.event,
+        &[decision.event.clone(), dec_2.event.clone()],
+        2,
+        all_clear_witness,
+        &mut objects,
+        &mut authority,
+    )?;
+    let mut prepare_journal = EffectJournal::new();
+    let prepared = prepare_reference_alert(
+        PrepareAlertParams {
+            decision: &dec_3,
+            event_receipt: &rc_3,
+            authority: &authority,
+            operation_id: OperationId::parse(format!("operation:alert:{tag}-prep").as_str())?,
+            idempotency_key: IdempotencyKey::parse(
+                format!("idempotency:alert:{tag}-prep").as_str(),
+            )?,
+            obligation_id: ObligationId::parse(format!("obligation:alert:{tag}-prep").as_str())?,
+            channel: "security-ops".to_owned(),
+            now: TimestampNs(3_000),
+        },
+        &mut prepare_journal,
+    )
+    .map(|_| ());
+    let forged = self_consistent_forgery(&plan, &dec_3, &rc_3, &authority, tag)?;
+    let refusal = dispatch_self_prepared(tag, &forged, &authority, durable)?;
+    let _ = fs::remove_file(ledger_path);
+    Ok((prepared, refusal))
+}
+
+fn is_integrity_risk(error: Option<&ReferenceError>) -> bool {
+    matches!(
+        error,
+        Some(ReferenceError::Contract(
+            fss_core::ContractError::SensorIntegrityRisk
+        ))
+    )
+}
+
+fn is_witness_mismatch(error: Option<&ReferenceError>) -> bool {
+    matches!(
+        error,
+        Some(ReferenceError::InvalidSpec(
+            "sensor_tamper_witness_mismatch"
+        ))
+    )
+}
+
+/// H1: with the honest witness (whose status names the open tamper), prepare and dispatch both
+/// refuse; dispatch recomputes the lineage rather than trusting the revision's own edges.
+#[test]
+fn planted_tamper_drop_with_honest_witness_is_refused_mem() -> Result<(), Box<dyn Error>> {
+    let (prepared, refusal) = planted_drop_case("h1-honest-mem", false, false)?;
+    assert!(is_integrity_risk(prepared.as_ref().err()), "{prepared:?}");
+    assert!(is_integrity_risk(refusal.as_ref()), "{refusal:?}");
+    Ok(())
+}
+
+#[test]
+fn planted_tamper_drop_with_honest_witness_is_refused_dur() -> Result<(), Box<dyn Error>> {
+    let (prepared, refusal) = planted_drop_case("h1-honest-dur", true, false)?;
+    assert!(is_integrity_risk(prepared.as_ref().err()), "{prepared:?}");
+    assert!(is_integrity_risk(refusal.as_ref()), "{refusal:?}");
+    Ok(())
+}
+
+/// H1 residual: a planted all-clear witness is refused by prepare and by dispatch, because the
+/// status recomputed from the ledger's lineage disagrees with it.
+#[test]
+fn planted_tamper_drop_with_all_clear_witness_is_refused_mem() -> Result<(), Box<dyn Error>> {
+    let (prepared, refusal) = planted_drop_case("h1-clear-mem", false, true)?;
+    assert!(is_witness_mismatch(prepared.as_ref().err()), "{prepared:?}");
+    assert!(is_witness_mismatch(refusal.as_ref()), "{refusal:?}");
+    Ok(())
+}
+
+#[test]
+fn planted_tamper_drop_with_all_clear_witness_is_refused_dur() -> Result<(), Box<dyn Error>> {
+    let (prepared, refusal) = planted_drop_case("h1-clear-dur", true, true)?;
+    assert!(is_witness_mismatch(prepared.as_ref().err()), "{prepared:?}");
+    assert!(is_witness_mismatch(refusal.as_ref()), "{refusal:?}");
+    Ok(())
+}
+
+/// A dispatch plan must carry the event's whole lineage: the same self-consistent forgery with the
+/// earlier revisions omitted is refused (the ledger names more revisions than the plan carries).
+#[test]
+fn dispatch_refuses_a_plan_without_the_event_lineage() -> Result<(), Box<dyn Error>> {
+    let tag = "h1-no-lineage";
+    let ledger_path = temp_journal(&format!("{tag}-ledger"));
+    let _ = fs::remove_file(&ledger_path);
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(768, 12 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&ledger_path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
+    let mut journal = EffectJournal::new();
+    let plan = prepare(&decision, &event_receipt, &authority, &mut journal)?;
+    let tamper = tamper_observation(tag, 1_801, &mut objects, &mut authority)?;
+    let (dec_2, _rc_2) =
+        publish_successor(&[&decision], vec![tamper], &mut objects, &mut authority)?;
+    let restored = observation_with_label(
+        &format!("capture:alert:{tag}-tamper-restored"),
+        &format!("sensor:alert:{tag}-tamper"),
+        2_002,
+        &format!("power:alert:{tag}-tamper"),
+        MockSemanticLabel::IntegrityRestored,
+        &mut objects,
+        &mut authority,
+    )?;
+    let first = unrelated_observation(&format!("{tag}-e1"), 2_011, &mut objects, &mut authority)?;
+    let second = unrelated_observation(&format!("{tag}-e2"), 2_022, &mut objects, &mut authority)?;
+    let (dec_3, rc_3) = publish_successor(
+        &[&decision, &dec_2],
+        vec![restored, first, second],
+        &mut objects,
+        &mut authority,
+    )?;
+    let mut forged = self_consistent_forgery(&plan, &dec_3, &rc_3, &authority, tag)?;
+    forged.prior_revision_encodings.clear();
+    let refusal = dispatch_self_prepared(tag, &forged, &authority, false)?;
+    let _ = fs::remove_file(ledger_path);
+    assert!(
+        matches!(refusal, Some(ReferenceError::StaleEventAuthority)),
+        "{refusal:?}"
+    );
+    Ok(())
 }

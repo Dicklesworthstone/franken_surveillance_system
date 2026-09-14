@@ -238,6 +238,8 @@ fn classify(
     let result_proved = proved_operations(result, result_bar);
     let mut classes = BTreeSet::new();
     let changed_cells = changed_cells(&basis_frame.knowledge_cells, &result_frame.knowledge_cells);
+    let removed_claim_ids =
+        removed_claim_ids(&basis_frame.knowledge_cells, &result_frame.knowledge_cells);
     let mut invalidated_assumptions = Vec::new();
     let mut coverage_changes = Vec::new();
     let mut obligation_changes = Vec::new();
@@ -266,7 +268,7 @@ fn classify(
     }) {
         classes.insert(MeaningfulDeltaClass::Hypothesis);
     }
-    if !changed_cells.is_empty() {
+    if !changed_cells.is_empty() || !removed_claim_ids.is_empty() {
         classes.insert(MeaningfulDeltaClass::MaterialState);
     }
     if contradiction_changed(
@@ -785,6 +787,7 @@ fn classify(
         result,
         classes: &classes,
         changed_cells: &changed_cells,
+        removed_claim_ids: &removed_claim_ids,
         invalidated_assumptions: &invalidated_assumptions,
         coverage_changes: &coverage_changes,
         obligation_changes: &obligation_changes,
@@ -818,6 +821,7 @@ fn classify(
         result_anchor: result_capsule.anchor.clone(),
         classes,
         changed_cells,
+        removed_claim_ids,
         invalidated_assumptions,
         coverage_changes,
         obligation_changes,
@@ -874,6 +878,21 @@ fn changed_cells(basis: &[KnowledgeCell], result: &[KnowledgeCell]) -> Vec<Knowl
     changed
 }
 
+/// Basis claims whose knowledge cell is absent from the result, strictly sorted.
+///
+/// A vanished cell is a typed removal. It is never reported as a changed cell carrying its basis
+/// value, and a vanished contradicted cell is still a contradiction change (see
+/// [`contradiction_changed`]), so it can never be coalesced away (fss-2uftm).
+fn removed_claim_ids(basis: &[KnowledgeCell], result: &[KnowledgeCell]) -> Vec<String> {
+    let current: BTreeSet<&str> = result.iter().map(|cell| cell.claim_id.as_str()).collect();
+    let removed: BTreeSet<String> = basis
+        .iter()
+        .filter(|cell| !current.contains(cell.claim_id.as_str()))
+        .map(|cell| cell.claim_id.clone())
+        .collect();
+    removed.into_iter().collect()
+}
+
 fn contradiction_changed(
     basis: &[KnowledgeCell],
     result: &[KnowledgeCell],
@@ -885,10 +904,15 @@ fn contradiction_changed(
         return true;
     }
     basis.iter().any(|prior| {
-        result
+        let had_contradiction =
+            prior.knowledge_state == KnowledgeState::Conflicted || !prior.contradictions.is_empty();
+        match result
             .iter()
             .find(|current| current.claim_id == prior.claim_id)
-            .is_some_and(|current| prior.contradictions != current.contradictions)
+        {
+            Some(current) => prior.contradictions != current.contradictions,
+            None => had_contradiction,
+        }
     })
 }
 
@@ -1180,6 +1204,7 @@ struct ComparisonWitnessInputs<'a> {
     result: &'a ReferenceSituationPublication,
     classes: &'a BTreeSet<MeaningfulDeltaClass>,
     changed_cells: &'a [KnowledgeCell],
+    removed_claim_ids: &'a [String],
     invalidated_assumptions: &'a [String],
     coverage_changes: &'a [String],
     obligation_changes: &'a [String],
@@ -1201,6 +1226,7 @@ fn comparison_witness(inputs: ComparisonWitnessInputs<'_>) -> ContentDigest {
     for cell in inputs.changed_cells {
         encoder.digest(cell.cell_digest());
     }
+    encode_text(inputs.removed_claim_ids, &mut encoder);
     encode_text(inputs.invalidated_assumptions, &mut encoder);
     encode_text(inputs.coverage_changes, &mut encoder);
     encode_text(inputs.obligation_changes, &mut encoder);

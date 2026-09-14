@@ -2595,7 +2595,7 @@
     },
     {
       "authority": "authority",
-      "compatibilityRule": "immutable revisions; evidence required after hypothesis",
+      "compatibilityRule": "immutable revisions; evidence required after hypothesis; enum widening for relation additions (sensor_tamper, sensor_integrity_restoration)",
       "file": "schemas/event_hypothesis.v1.json",
       "id": "SCHEMA-EVENT-HYPOTHESIS-001",
       "schema": "fss.event_hypothesis.v1"
@@ -2623,7 +2623,7 @@
     },
     {
       "authority": "derived/evidence",
-      "compatibilityRule": "causal evidence graph over capsules, identities, model receipts, and revisions",
+      "compatibilityRule": "causal evidence graph over capsules, identities, model receipts, and revisions; enum widening for relation additions (sensor_tamper, sensor_integrity_restoration)",
       "file": "schemas/evidence_graph.v1.json",
       "id": "SCHEMA-EVIDENCE-GRAPH-001",
       "schema": "fss.evidence_graph.v1"
@@ -2802,6 +2802,13 @@
       "file": "schemas/sensor_capsule.v1.json",
       "id": "SCHEMA-SENSOR-CAPSULE-001",
       "schema": "fss.sensor_capsule.v1"
+    },
+    {
+      "authority": "authority",
+      "compatibilityRule": "lineage sensor-tamper status published with each event revision; the `sensor_tamper_status` witness is the canonical digest of every field; an open tamper is carried forward until an evidenced restoration captured strictly after it retires it; changed meaning requires a new schema",
+      "file": "schemas/sensor_tamper_status.v1.json",
+      "id": "SCHEMA-SENSOR-TAMPER-STATUS-001",
+      "schema": "fss.sensor_tamper_status.v1"
     },
     {
       "authority": "agent driver projection",

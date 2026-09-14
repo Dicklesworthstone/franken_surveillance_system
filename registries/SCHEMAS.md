@@ -3,8 +3,8 @@
 | ID | Schema | File | Authority | Compatibility rule |
 |---|---|---|---|---|
 | `SCHEMA-SENSOR-CAPSULE-001` | `fss.sensor_capsule.v1` | `schemas/sensor_capsule.v1.json` | authority | append/supersede; no silent timestamp/source reinterpretation |
-| `SCHEMA-EVENT-HYPOTHESIS-001` | `fss.event_hypothesis.v1` | `schemas/event_hypothesis.v1.json` | authority | immutable revisions; evidence required after hypothesis |
-| `SCHEMA-EVIDENCE-GRAPH-001` | `fss.evidence_graph.v1` | `schemas/evidence_graph.v1.json` | derived/evidence | causal evidence graph over capsules, identities, model receipts, and revisions |
+| `SCHEMA-EVENT-HYPOTHESIS-001` | `fss.event_hypothesis.v1` | `schemas/event_hypothesis.v1.json` | authority | immutable revisions; evidence required after hypothesis; enum widening for relation additions (sensor_tamper, sensor_integrity_restoration) |
+| `SCHEMA-EVIDENCE-GRAPH-001` | `fss.evidence_graph.v1` | `schemas/evidence_graph.v1.json` | derived/evidence | causal evidence graph over capsules, identities, model receipts, and revisions; enum widening for relation additions (sensor_tamper, sensor_integrity_restoration) |
 | `SCHEMA-EVIDENCE-BUNDLE-001` | `fss.evidence_bundle.v1` | `schemas/evidence_bundle.v1.json` | authority/export | old proof bundles remain replayable or explicitly unsupported |
 | `SCHEMA-OPERATION-RECEIPT-001` | `fss.operation_receipt.v1` | `schemas/operation_receipt.v1.json` | effect truth | state monotonicity; idempotency identity preserved |
 | `SCHEMA-CALIBRATION-CERT-001` | `fss.calibration_certificate.v1` | `schemas/calibration_certificate.v1.json` | authority | generation immutable; invalidation creates new state |
@@ -75,5 +75,6 @@
 | `SCHEMA-PROVIDER-FAILURE-RECEIPT-001` | `fss.provider_failure_receipt.v1` | `schemas/provider_failure_receipt.v1.json` | provider authority | provider-issued failure receipt; nonce and error reason preserved |
 | `SCHEMA-EFFECT-RECONCILIATION-001` | `fss.effect_reconciliation.v1` | `schemas/effect_reconciliation.v1.json` | effect truth | four-valued outcome; verified requires independent evidence witness |
 | `SCHEMA-ROBOT-DOCS-001` | `fss.robot_docs.v1` | `schemas/robot_docs.v1.json` | documentation/metadata | immutable; additions compatible |
+| `SCHEMA-SENSOR-TAMPER-STATUS-001` | `fss.sensor_tamper_status.v1` | `schemas/sensor_tamper_status.v1.json` | authority | lineage sensor-tamper status published with each event revision; the `sensor_tamper_status` witness is the canonical digest of every field; an open tamper is carried forward until an evidenced restoration captured strictly after it retires it; changed meaning requires a new schema |
 
 Binary media, ledger, search-segment, graph-run, and release formats additionally require magic, version, bounded lengths, canonical encoding, migration fixtures, corruption tests, and a named format owner before implementation.

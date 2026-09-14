@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/sensor_tamper_status.v1.json",
+  "title": "SensorTamperStatus v1",
+  "description": "Accumulated sensor-tamper status of one event lineage (fss-core SensorTamperStatus), published beside each event revision as the witness of a sensor_tamper_status evidence delta. The witness is the canonical digest of the schema tag followed by every field below, in this order. A tamper stays open, and must be carried forward on every later revision, until an evidenced integrity restoration from the same failure domain and sensor identity, captured strictly after the tamper's capture ended and citing a digest the lineage has never retained, retires it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "openDomains",
+    "openTamperRoots",
+    "restorations",
+    "openTamperRecords",
+    "openTamperReports",
+    "seenRestorations",
+    "seenLineageDigests"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.sensor_tamper_status.v1"
+    },
+    "openDomains": {
+      "description": "Failure domains with at least one unretired tamper, sorted.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/failureDomain"
+      }
+    },
+    "openTamperRoots": {
+      "description": "Evidence digests of unretired tampers, in lineage order.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "sensor_capsule.v1.json#/$defs/contentDigest"
+      }
+    },
+    "restorations": {
+      "description": "Restorations that actually retired a tamper, in lineage order.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/domainDigest"
+      }
+    },
+    "openTamperRecords": {
+      "description": "Unretired tampers with the revision and capture interval that reported them.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/tamperRecord"
+      }
+    },
+    "openTamperReports": {
+      "description": "Unretired tampers as (failure domain, digest) pairs, in lineage order.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/domainDigest"
+      }
+    },
+    "seenRestorations": {
+      "description": "Digests of every restoration that retired a tamper, sorted.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "sensor_capsule.v1.json#/$defs/contentDigest"
+      }
+    },
+    "seenLineageDigests": {
+      "description": "Every evidence digest the lineage has retained, sorted; a restoration citing one of them retires nothing.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "sensor_capsule.v1.json#/$defs/contentDigest"
+      }
+    }
+  },
+  "$defs": {
+    "failureDomain": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "domainDigest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "failureDomain",
+        "digest"
+      ],
+      "properties": {
+        "failureDomain": {
+          "$ref": "#/$defs/failureDomain"
+        },
+        "digest": {
+          "$ref": "sensor_capsule.v1.json#/$defs/contentDigest"
+        }
+      }
+    },
+    "captureInterval": {
+      "$comment": "CaptureInterval in i128 nanoseconds, earliestNs <= latestNs.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "earliestNs",
+        "latestNs"
+      ],
+      "properties": {
+        "earliestNs": {
+          "type": "integer"
+        },
+        "latestNs": {
+          "type": "integer"
+        }
+      }
+    },
+    "tamperRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "failureDomain",
+        "identityDigest",
+        "digest",
+        "revision",
+        "interval"
+      ],
+      "properties": {
+        "failureDomain": {
+          "$ref": "#/$defs/failureDomain"
+        },
+        "identityDigest": {
+          "anyOf": [
+            {
+              "$ref": "sensor_capsule.v1.json#/$defs/contentDigest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "digest": {
+          "$ref": "sensor_capsule.v1.json#/$defs/contentDigest"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "interval": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/captureInterval"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

@@ -101,7 +101,8 @@ class TestLiveRepoConsistency(unittest.TestCase):
         self.assertEqual(summary["qualification_lanes_count"], 15)
         self.assertEqual(summary["costs_count"], 41)
         # 73 = 72 + SCHEMA-ROBOT-DOCS-001 (schemas/robot_docs.v1.json).
-        self.assertEqual(summary["schemas_count"], 73)
+        # 74 = 73 + SCHEMA-SENSOR-TAMPER-STATUS-001 (schemas/sensor_tamper_status.v1.json, fss-2uftm).
+        self.assertEqual(summary["schemas_count"], 74)
         self.assertGreater(summary["known_active_ids"], 800)
         self.assertGreaterEqual(summary["tombstone_ids"], 14)
 

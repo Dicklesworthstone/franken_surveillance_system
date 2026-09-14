@@ -193,6 +193,11 @@ pub struct MeaningfulDelta {
     pub classes: BTreeSet<MeaningfulDeltaClass>,
     /// Result knowledge cells whose decision semantics changed.
     pub changed_cells: Vec<KnowledgeCell>,
+    /// Basis claims whose knowledge cell is absent from the result, strictly sorted.
+    ///
+    /// A typed removal: a vanished cell is reported here and never as a changed cell carrying its
+    /// basis value, and no claim is both changed and removed.
+    pub removed_claim_ids: Vec<String>,
     /// Assumptions or plans invalidated by the change.
     pub invalidated_assumptions: Vec<String>,
     /// Explicit coverage loss/recovery statements.
@@ -233,6 +238,7 @@ impl MeaningfulDelta {
             return Err(ContractError::InvalidAnchorSuccessor);
         }
         validate_changed_cells(&self.changed_cells)?;
+        validate_removed_claims(&self.removed_claim_ids, &self.changed_cells)?;
         validate_text_vector(&self.invalidated_assumptions)?;
         validate_text_vector(&self.coverage_changes)?;
         validate_text_vector(&self.obligation_changes)?;
@@ -245,6 +251,7 @@ impl MeaningfulDelta {
         if no_change {
             if self.classes.len() != 1
                 || !self.changed_cells.is_empty()
+                || !self.removed_claim_ids.is_empty()
                 || !self.invalidated_assumptions.is_empty()
                 || !self.coverage_changes.is_empty()
                 || !self.obligation_changes.is_empty()
@@ -276,6 +283,7 @@ impl MeaningfulDelta {
 
         if self.classes.contains(&MeaningfulDeltaClass::Contradiction)
             && self.changed_cells.is_empty()
+            && self.removed_claim_ids.is_empty()
         {
             return Err(ContractError::EvidenceRequired);
         }
@@ -367,8 +375,16 @@ impl MeaningfulDelta {
             .cloned()
             .map(|cell| (cell.claim_id.clone(), cell))
             .collect();
+        for claim in &next.removed_claim_ids {
+            cells.remove(claim);
+        }
         for cell in &next.changed_cells {
             cells.insert(cell.claim_id.clone(), cell.clone());
+        }
+        let mut removed: BTreeSet<String> = self.removed_claim_ids.iter().cloned().collect();
+        removed.extend(next.removed_claim_ids.iter().cloned());
+        for cell in &next.changed_cells {
+            removed.remove(&cell.claim_id);
         }
         let coalesced_count = self
             .coalesced_count
@@ -389,6 +405,7 @@ impl MeaningfulDelta {
             result_anchor: next.result_anchor.clone(),
             classes,
             changed_cells: cells.into_values().collect(),
+            removed_claim_ids: removed.into_iter().collect(),
             invalidated_assumptions: merge_text(
                 &self.invalidated_assumptions,
                 &next.invalidated_assumptions,
@@ -437,6 +454,7 @@ impl CanonicalEncode for MeaningfulDelta {
         for cell in &cells {
             cell.encode_canonical(encoder);
         }
+        encode_text_vector(&self.removed_claim_ids, encoder);
         encode_text_vector(&self.invalidated_assumptions, encoder);
         encode_text_vector(&self.coverage_changes, encoder);
         encode_text_vector(&self.obligation_changes, encoder);
@@ -455,6 +473,22 @@ impl CanonicalEncode for MeaningfulDelta {
             None => encoder.bool(false),
         }
     }
+}
+
+fn validate_removed_claims(
+    removed: &[String],
+    changed: &[KnowledgeCell],
+) -> Result<(), ContractError> {
+    validate_text_vector(removed)?;
+    let strictly_sorted = removed.windows(2).all(|pair| pair[0] < pair[1]);
+    if !strictly_sorted
+        || removed
+            .iter()
+            .any(|claim| claim.is_empty() || changed.iter().any(|cell| &cell.claim_id == claim))
+    {
+        return Err(ContractError::NonCanonicalOrdering);
+    }
+    Ok(())
 }
 
 fn validate_changed_cells(cells: &[KnowledgeCell]) -> Result<(), ContractError> {
@@ -583,6 +617,7 @@ mod tests {
             result_anchor: anchor(sequence + 1),
             classes,
             changed_cells,
+            removed_claim_ids: Vec::new(),
             invalidated_assumptions,
             coverage_changes,
             obligation_changes,

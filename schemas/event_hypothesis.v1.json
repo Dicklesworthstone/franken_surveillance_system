@@ -183,7 +183,8 @@
               "observed_after",
               "required_by",
               "explains",
-              "sensor_tamper"
+              "sensor_tamper",
+              "sensor_integrity_restoration"
             ]
           },
           "capsuleDigest": {
