@@ -838,7 +838,7 @@ impl FileIngestAdapter {
             return Err(FileIngestError::CancellationRequested { stage: STAGE_STAT });
         }
 
-        let metadata = match fs::symlink_metadata(&request.path) {
+        let metadata = match fs::metadata(&request.path) {
             Ok(m) => m,
             Err(e) => return Err(FileIngestError::Io(e)),
         };
