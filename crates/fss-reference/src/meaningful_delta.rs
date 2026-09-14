@@ -178,6 +178,31 @@ pub fn classify_reference_meaningful_delta_in_lineage(
     classify(basis, result, Some(LineageBinding { authority, journal }))
 }
 
+/// Refuses a result cell that launders the evidence of the basis cell it supersedes (PROV-001,
+/// PROV-002; registries/AGENT_CONTRACTS.md, "Registry drifts").
+///
+/// A result cell of the same claim as a basis cell is that proposition's next version, so the
+/// basis cell is its known prior and the pairwise check applies:
+/// [`KnowledgeCell::verify_no_evidence_laundering`] refuses exactly the registered
+/// `mayLaunderEvidenceInto` pairs that share a cited digest, with the typed
+/// `evidence_laundering_detected` refusal. A digest shared between different claims names no
+/// producing cell and is never judged here (fss-gefi6). Every basis cell of the claim is checked,
+/// so the verdict does not depend on cell order (fss-2nwxm).
+fn refuse_superseding_evidence_laundering(
+    basis: &[KnowledgeCell],
+    result: &[KnowledgeCell],
+) -> Result<(), ReferenceError> {
+    for current in result {
+        for prior in basis
+            .iter()
+            .filter(|prior| prior.claim_id() == current.claim_id())
+        {
+            current.verify_no_evidence_laundering(prior)?;
+        }
+    }
+    Ok(())
+}
+
 /// The durable stores a lineage-bound classification is checked against.
 #[derive(Clone, Copy)]
 struct LineageBinding<'a> {
@@ -193,6 +218,10 @@ fn classify(
     basis.verify()?;
     result.verify()?;
     validate_comparison_basis(basis, result)?;
+    refuse_superseding_evidence_laundering(
+        &basis.situation.capsule.frame.knowledge_cells,
+        &result.situation.capsule.frame.knowledge_cells,
+    )?;
     // A terminal transition says an obligation was discharged, an effect reached a proved outcome,
     // or an event was settled. Only a compile path's seal vouches for the state on both sides of
     // that claim, so a delta with either side unsealed reports every change, an obligation leaving
@@ -238,10 +267,12 @@ fn classify(
     let result_proved = proved_operations(result, result_bar);
     // Evidence laundering is judged only where it can be attributed. An evidence reference is an
     // untyped digest that names no producing cell, so a digest shared by a basis cell and a
-    // result cell cannot say which cell produced it: an unchanged honest carry-over (the same
-    // Observed and Derived cells in both frames) looks exactly like a relabel. No cross-frame
-    // laundering verdict is drawn here; the limitation is recorded under fss-gefi6 (typed
-    // evidence references) in architecture/agent_contracts.json.
+    // result cell of another claim cannot say which cell produced it: an unchanged honest
+    // carry-over (the same Observed and Derived cells in both frames) looks exactly like a
+    // relabel. No verdict is drawn between different claims; the limitation is recorded under
+    // fss-gefi6 (typed evidence references) in architecture/agent_contracts.json. A result cell
+    // of the same claim as a basis cell supersedes it, so that pair was refused above
+    // (fss-2nwxm).
     let mut classes = BTreeSet::new();
     let changed_cells = changed_cells(&basis_frame.knowledge_cells, &result_frame.knowledge_cells);
     let removed_claim_ids =

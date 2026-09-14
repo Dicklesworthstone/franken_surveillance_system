@@ -12,14 +12,16 @@
 
 use std::collections::BTreeSet;
 use std::error::Error;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use fss_core::{
     BeliefInterval, CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder,
-    ContentDigest, ContractError, DerivedBelief, DerivedBeliefParams, Generation, KnowledgeCell,
-    KnowledgeCellParams, KnowledgeState, KnowledgeStateBasis, LedgerAnchor, PrivacyGeneration,
-    ProvenanceClass, ReconciliationBasis, RedactionMarker, RedactionReason, SituationFrame,
-    StaleBasis, TimestampNs, WorldEnvelope,
+    ContentDigest, ContractBasis, ContractBasisRegistryBytes, ContractError, DeltaPriority,
+    DerivedBelief, DerivedBeliefParams, Generation, KnowledgeCell, KnowledgeCellParams,
+    KnowledgeState, KnowledgeStateBasis, LedgerAnchor, MeaningfulDelta, MeaningfulDeltaClass,
+    PrivacyGeneration, ProvenanceClass, ReconciliationBasis, RedactionMarker, RedactionReason,
+    SessionId, SituationFrame, StaleBasis, TimestampNs, WorldEnvelope,
 };
 
 #[test]
@@ -3573,6 +3575,662 @@ fn test_only_authorizing_known_cells_are_effect_premises() -> Result<(), Box<dyn
             state_basis: None,
         }),
         Err(ContractError::PredictedKnownForbidden)
+    );
+    Ok(())
+}
+
+// fss-2nwxm: the PROV laundering refusal is enforced on production paths, not only in tests.
+
+/// A `MaterialState` delta from `sequence` to `sequence + 1` whose changed cells are
+/// `changed_cells`.
+fn material_delta(
+    sequence: u64,
+    changed_cells: Vec<KnowledgeCell>,
+) -> Result<MeaningfulDelta, Box<dyn Error>> {
+    let anchor = |at: u64| {
+        let mut anchor = LedgerAnchor::genesis("site:coalesce");
+        anchor.commit_sequence = at;
+        anchor
+    };
+    Ok(MeaningfulDelta {
+        delta_id: format!("delta:coalesce:{sequence}"),
+        contract_basis: ContractBasis::from_registry_bytes(ContractBasisRegistryBytes::new(
+            b"schemas",
+            b"operations",
+            b"views",
+            b"capabilities",
+            b"errors",
+            b"costs",
+            "fss:test",
+        )),
+        session_id: SessionId::parse("session:coalesce")?,
+        basis_frame_id: format!("frame:coalesce:{sequence}"),
+        result_frame_id: format!("frame:coalesce:{}", sequence + 1),
+        basis_anchor: anchor(sequence),
+        result_anchor: anchor(sequence + 1),
+        classes: BTreeSet::from([MeaningfulDeltaClass::MaterialState]),
+        changed_cells,
+        removed_claim_ids: Vec::new(),
+        invalidated_assumptions: Vec::new(),
+        coverage_changes: Vec::new(),
+        obligation_changes: Vec::new(),
+        effect_uncertainty_changes: Vec::new(),
+        coalesced_count: 0,
+        omitted_count: 0,
+        omission_reasons: Vec::new(),
+        priority: DeltaPriority::Normal,
+        continuation: format!("continuation:coalesce:{sequence}"),
+        selection_witness: ContentDigest::sha256(b"coalesce_selection"),
+        silence_certificate: None,
+    })
+}
+
+/// fss-2nwxm: `MeaningfulDelta::coalesce` supersedes an earlier changed cell with the later changed
+/// cell of the same claim, so the earlier cell is its known prior. For all 49 ordered class pairs,
+/// coalescing refuses exactly the registered laundering pairs with `EvidenceLaunderingDetected`
+/// when a cited digest is shared, even beside fresh evidence, and accepts disjoint evidence and a
+/// shared digest under another claim.
+#[test]
+fn test_coalesce_refuses_exactly_the_registered_superseding_relabels() -> Result<(), Box<dyn Error>>
+{
+    let shared = ContentDigest::sha256(b"coalesce_shared_evidence");
+    let fresh = ContentDigest::sha256(b"coalesce_fresh_evidence");
+    let merge = |first: &MeaningfulDelta, second: &MeaningfulDelta| {
+        first.coalesce(
+            second,
+            "delta:coalesce:merged",
+            "continuation:coalesce:merged",
+            ContentDigest::sha256(b"coalesce_merged"),
+        )
+    };
+    for source in ALL_CLASSES {
+        for target in ALL_CLASSES {
+            let first =
+                material_delta(1, vec![class_cell("claim:coalesce", source, vec![shared])?])?;
+            let relabel = material_delta(
+                2,
+                vec![class_cell("claim:coalesce", target, vec![shared, fresh])?],
+            )?;
+            if registered_launder_targets(source).contains(&target) {
+                assert_eq!(
+                    merge(&first, &relabel).err(),
+                    Some(ContractError::EvidenceLaunderingDetected),
+                    "{source}->{target}: shared evidence"
+                );
+            } else {
+                let merged = merge(&first, &relabel)?;
+                assert_eq!(
+                    merged
+                        .changed_cells
+                        .iter()
+                        .map(KnowledgeCell::provenance)
+                        .collect::<Vec<_>>(),
+                    vec![target],
+                    "{source}->{target}: the later cell is the final state"
+                );
+            }
+            let disjoint =
+                material_delta(2, vec![class_cell("claim:coalesce", target, vec![fresh])?])?;
+            assert!(
+                merge(&first, &disjoint).is_ok(),
+                "{source}->{target}: disjoint evidence"
+            );
+            let other_claim = material_delta(
+                2,
+                vec![class_cell("claim:coalesce:other", target, vec![shared])?],
+            )?;
+            assert!(
+                merge(&first, &other_claim).is_ok(),
+                "{source}->{target}: a shared digest under another claim"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The PROV laundering check the repository guard looks for.
+const LAUNDERING_CHECK: &[u8] = b"verify_no_evidence_laundering";
+
+/// Words that open an item after its visibility. A gated item ends at its first `;` or at the
+/// close of its first braced body; any other gated target (a field, variant, match arm or
+/// statement) also ends at a `,`.
+const ITEM_KEYWORDS: [&str; 14] = [
+    "mod",
+    "fn",
+    "impl",
+    "trait",
+    "struct",
+    "enum",
+    "union",
+    "const",
+    "static",
+    "type",
+    "use",
+    "extern",
+    "async",
+    "macro_rules",
+];
+
+fn is_ident_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_' || byte >= 0x80
+}
+
+/// Blanks `code[from..to]`, keeping newlines so line numbers survive.
+fn blank(code: &mut [u8], from: usize, to: usize) {
+    for byte in code.iter_mut().take(to).skip(from) {
+        if *byte != b'\n' {
+            *byte = b' ';
+        }
+    }
+}
+
+fn skip_ws(code: &[u8], mut at: usize) -> usize {
+    while code.get(at).is_some_and(u8::is_ascii_whitespace) {
+        at += 1;
+    }
+    at
+}
+
+/// End (exclusive) of the string literal whose body starts at `body`.
+fn string_end(src: &[u8], body: usize) -> usize {
+    let mut at = body;
+    while let Some(&byte) = src.get(at) {
+        match byte {
+            b'\\' => at += 2,
+            b'"' => return at + 1,
+            _ => at += 1,
+        }
+    }
+    src.len()
+}
+
+/// End (exclusive) of the raw string whose `#` run starts at `start`, if one starts there.
+fn raw_string_end(src: &[u8], start: usize) -> Option<usize> {
+    let hashes = src
+        .get(start..)?
+        .iter()
+        .take_while(|&&byte| byte == b'#')
+        .count();
+    if src.get(start + hashes) != Some(&b'"') {
+        return None;
+    }
+    let body = start + hashes + 1;
+    let mut closing = vec![b'"'];
+    closing.resize(hashes + 1, b'#');
+    Some(
+        src.get(body..)?
+            .windows(closing.len())
+            .position(|window| window == closing.as_slice())
+            .map_or(src.len(), |offset| body + offset + closing.len()),
+    )
+}
+
+/// End (exclusive) of the character literal opening at `quote`, or `None` for a lifetime.
+fn char_literal_end(src: &[u8], quote: usize) -> Option<usize> {
+    let first = *src.get(quote + 1)?;
+    if first == b'\\' {
+        let rest = src.get(quote + 3..)?;
+        return rest
+            .iter()
+            .position(|&byte| byte == b'\'')
+            .map(|offset| quote + 4 + offset);
+    }
+    let width = match first {
+        0x00..=0x7f => 1,
+        0xc0..=0xdf => 2,
+        0xe0..=0xef => 3,
+        _ => 4,
+    };
+    (src.get(quote + 1 + width) == Some(&b'\'')).then_some(quote + 2 + width)
+}
+
+/// End (exclusive) of the (nested) block comment opening at `open`.
+fn block_comment_end(src: &[u8], open: usize) -> usize {
+    let mut depth = 0usize;
+    let mut at = open;
+    while at < src.len() {
+        if src[at..].starts_with(b"/*") {
+            depth += 1;
+            at += 2;
+        } else if src[at..].starts_with(b"*/") {
+            depth -= 1;
+            at += 2;
+            if depth == 0 {
+                return at;
+            }
+        } else {
+            at += 1;
+        }
+    }
+    src.len()
+}
+
+/// Returns `source` with every comment, string literal and character literal blanked at the same
+/// offsets, so a comment, doc or string naming the check never reads as code.
+fn mask_rust(source: &str) -> Vec<u8> {
+    let src = source.as_bytes();
+    let mut code = src.to_vec();
+    let mut at = 0;
+    while let Some(&byte) = src.get(at) {
+        let next = src.get(at + 1).copied();
+        let after_ident = at > 0 && is_ident_byte(src[at - 1]);
+        let end = match byte {
+            b'/' if next == Some(b'/') => Some(
+                src[at..]
+                    .iter()
+                    .position(|&byte| byte == b'\n')
+                    .map_or(src.len(), |offset| at + offset),
+            ),
+            b'/' if next == Some(b'*') => Some(block_comment_end(src, at)),
+            b'"' => Some(string_end(src, at + 1)),
+            b'r' if !after_ident => raw_string_end(src, at + 1),
+            b'b' if !after_ident && next == Some(b'r') => raw_string_end(src, at + 2),
+            b'\'' => char_literal_end(src, at),
+            _ => None,
+        };
+        match end {
+            Some(end) => {
+                blank(&mut code, at, end);
+                at = end;
+            }
+            None => at += 1,
+        }
+    }
+    code
+}
+
+/// Parses the attribute opening at `hash`: whether it is inner, its content without whitespace,
+/// and its end (exclusive).
+fn attribute_at(code: &[u8], hash: usize) -> Option<(bool, String, usize)> {
+    if code.get(hash) != Some(&b'#') {
+        return None;
+    }
+    let mut at = skip_ws(code, hash + 1);
+    let inner = code.get(at) == Some(&b'!');
+    if inner {
+        at = skip_ws(code, at + 1);
+    }
+    if code.get(at) != Some(&b'[') {
+        return None;
+    }
+    let mut depth = 0usize;
+    for (offset, &byte) in code.get(at..)?.iter().enumerate() {
+        match byte {
+            b'[' => depth += 1,
+            b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    let close = at + offset;
+                    let content = code[at + 1..close]
+                        .iter()
+                        .filter(|byte| !byte.is_ascii_whitespace())
+                        .map(|&byte| char::from(byte))
+                        .collect();
+                    return Some((inner, content, close + 1));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn is_test_gate(content: &str) -> bool {
+    content == "cfg(test)"
+        || content.starts_with("cfg(all(test,")
+        || content.starts_with("cfg(all(test)")
+}
+
+/// The `"..."` literal inside `source[from..to]`.
+fn literal_in(source: &str, from: usize, to: usize) -> Result<String, String> {
+    let text = source.get(from..to).ok_or("attribute outside the source")?;
+    let open = text.find('"').ok_or("#[path] without a literal")?;
+    let body = &text[open + 1..];
+    let close = body.find('"').ok_or("unterminated #[path] literal")?;
+    Ok(body[..close].to_owned())
+}
+
+/// Index of the `}` closing the `{` at `open`.
+fn matching_brace(code: &[u8], open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (offset, &byte) in code.get(open..)?.iter().enumerate() {
+        match byte {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(open + offset);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The identifier-like word at `from` and its end.
+fn word_at(code: &[u8], from: usize) -> (String, usize) {
+    let end = from
+        + code.get(from..).map_or(0, |rest| {
+            rest.iter().take_while(|&&byte| is_ident_byte(byte)).count()
+        });
+    (String::from_utf8_lossy(&code[from..end]).into_owned(), end)
+}
+
+/// End (exclusive) of the gated target starting at `start`, and the name of the out-of-line
+/// module it declares, if it is one. An item ends at its first `;` or at the close of its first
+/// braced body; any other target also ends at a `,`; every target ends before an unmatched
+/// closing delimiter. Only `(`/`[` nesting is tracked outside braced bodies.
+fn gated_target_end(code: &[u8], start: usize) -> Result<(usize, Option<String>), String> {
+    let (mut word, mut after) = word_at(code, start);
+    if word == "pub" {
+        after = skip_ws(code, after);
+        if code.get(after) == Some(&b'(') {
+            after = code[after..]
+                .iter()
+                .position(|&byte| byte == b')')
+                .map_or(code.len(), |offset| after + offset + 1);
+        }
+        (word, after) = word_at(code, skip_ws(code, after));
+    }
+    let item = ITEM_KEYWORDS.contains(&word.as_str());
+    let module = (word == "mod").then(|| word_at(code, skip_ws(code, after)).0);
+    let mut depth = 0usize;
+    let mut at = start;
+    while let Some(&byte) = code.get(at) {
+        match byte {
+            b'(' | b'[' => depth += 1,
+            b')' | b']' | b'}' if depth == 0 => return Ok((at, None)),
+            b')' | b']' => depth -= 1,
+            b';' if depth == 0 => return Ok((at + 1, module)),
+            b',' if depth == 0 && !item => return Ok((at + 1, None)),
+            b'{' if depth == 0 => {
+                return matching_brace(code, at)
+                    .map(|close| (close + 1, None))
+                    .ok_or_else(|| "unbalanced braces in a test-gated item".to_owned());
+            }
+            _ => {}
+        }
+        at += 1;
+    }
+    Err("unterminated test-gated item".to_owned())
+}
+
+/// An out-of-line module a source declares under `#[cfg(test)]`, with its `#[path]`, if any.
+struct TestModule {
+    name: String,
+    path: Option<String>,
+}
+
+/// Blanks every `#[cfg(test)]`-gated target of the masked `code` (all of it under an inner
+/// `#![cfg(test)]`) and returns the out-of-line modules declared under the gate. `source` is the
+/// unmasked text at the same offsets, read only for `#[path = "..."]` literals.
+fn strip_test_items(code: &mut [u8], source: &str) -> Result<Vec<TestModule>, String> {
+    let mut modules = Vec::new();
+    let mut at = 0;
+    while at < code.len() {
+        let Some((inner, content, attribute_end)) = attribute_at(code, at) else {
+            at += 1;
+            continue;
+        };
+        if !is_test_gate(&content) {
+            at = attribute_end;
+            continue;
+        }
+        if inner {
+            let len = code.len();
+            blank(code, 0, len);
+            return Ok(modules);
+        }
+        let mut target = skip_ws(code, attribute_end);
+        let mut path = None;
+        while let Some((false, content, end)) = attribute_at(code, target) {
+            if content.starts_with("path=") {
+                path = Some(literal_in(source, target, end)?);
+            }
+            target = skip_ws(code, end);
+        }
+        let (end, module) = gated_target_end(code, target)?;
+        if let Some(name) = module {
+            modules.push(TestModule { name, path });
+        }
+        blank(code, at, end);
+        at = end;
+    }
+    Ok(modules)
+}
+
+/// The 1-based lines of `code` that call the check as a method (`.check(`) or by path
+/// (`::check(`).
+fn laundering_call_lines(code: &[u8]) -> Vec<usize> {
+    let mut lines = Vec::new();
+    let mut from = 0;
+    while let Some(offset) = code.get(from..).and_then(|rest| {
+        rest.windows(LAUNDERING_CHECK.len())
+            .position(|window| window == LAUNDERING_CHECK)
+    }) {
+        let at = from + offset;
+        let end = at + LAUNDERING_CHECK.len();
+        from = end;
+        let whole_word = !code.get(end).is_some_and(|&byte| is_ident_byte(byte))
+            && !(at > 0 && is_ident_byte(code[at - 1]));
+        let qualified = code[..at]
+            .iter()
+            .rposition(|byte| !byte.is_ascii_whitespace())
+            .is_some_and(|prev| {
+                code[prev] == b'.' || (code[prev] == b':' && prev > 0 && code[prev - 1] == b':')
+            });
+        let called = code.get(skip_ws(code, end)) == Some(&b'(');
+        if whole_word && qualified && called {
+            lines.push(code[..at].iter().filter(|&&byte| byte == b'\n').count() + 1);
+        }
+    }
+    lines
+}
+
+/// The production call sites (`path:line`) of the check in `sources`, source files given as
+/// (repository-relative path, text) pairs. Test code never counts: `#[cfg(test)]`-gated targets
+/// are blanked, and a file that an out-of-line `#[cfg(test)]` module declaration resolves to is
+/// skipped with every module nested under it. A declaration that resolves to no given file is an
+/// error, never a silent skip.
+fn production_laundering_callers(sources: &[(PathBuf, String)]) -> Result<Vec<String>, String> {
+    let known: BTreeSet<&Path> = sources.iter().map(|(path, _)| path.as_path()).collect();
+    let mut scanned = Vec::new();
+    let mut test_files = BTreeSet::new();
+    let mut test_dirs = Vec::new();
+    for (path, text) in sources {
+        let mut code = mask_rust(text);
+        let modules = strip_test_items(&mut code, text)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        let dir = path
+            .parent()
+            .ok_or_else(|| format!("{}: no parent directory", path.display()))?;
+        let owns_dir = matches!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("lib.rs" | "main.rs" | "mod.rs")
+        );
+        let base = if owns_dir {
+            dir.to_path_buf()
+        } else {
+            path.with_extension("")
+        };
+        for module in modules {
+            let candidates = match &module.path {
+                Some(explicit) => vec![dir.join(explicit)],
+                None => vec![
+                    base.join(format!("{}.rs", module.name)),
+                    base.join(&module.name).join("mod.rs"),
+                ],
+            };
+            let file = candidates
+                .into_iter()
+                .find(|candidate| known.contains(candidate.as_path()))
+                .ok_or_else(|| {
+                    format!(
+                        "{}: test module `{}` resolves to no source file",
+                        path.display(),
+                        module.name
+                    )
+                })?;
+            let nested = if file.ends_with("mod.rs") {
+                file.parent().map(Path::to_path_buf)
+            } else {
+                Some(file.with_extension(""))
+            };
+            test_dirs.extend(nested);
+            test_files.insert(file);
+        }
+        scanned.push((path, code));
+    }
+    let mut callers = Vec::new();
+    for (path, code) in scanned {
+        if test_files.contains(path) || test_dirs.iter().any(|dir| path.starts_with(dir)) {
+            continue;
+        }
+        callers.extend(
+            laundering_call_lines(&code)
+                .into_iter()
+                .map(|line| format!("{}:{line}", path.display())),
+        );
+    }
+    Ok(callers)
+}
+
+/// Fails unless `sources` carries a production caller of the check; returns the call sites.
+fn require_production_caller(sources: &[(PathBuf, String)]) -> Result<Vec<String>, String> {
+    let callers = production_laundering_callers(sources)?;
+    if callers.is_empty() {
+        return Err(
+            "verify_no_evidence_laundering has no production caller, so the PROV laundering \
+             refusal is enforced only in tests (fss-2nwxm)"
+                .to_owned(),
+        );
+    }
+    Ok(callers)
+}
+
+/// Every `.rs` file under each workspace crate's `src`, as (repository-relative path, text).
+fn workspace_sources() -> Result<Vec<(PathBuf, String)>, Box<dyn Error>> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or("missing crates directory")?
+        .parent()
+        .ok_or("missing repository root")?;
+    let mut pending = Vec::new();
+    for entry in std::fs::read_dir(root.join("crates"))? {
+        let src = entry?.path().join("src");
+        if src.is_dir() {
+            pending.push(src);
+        }
+    }
+    let mut sources = Vec::new();
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                let text = std::fs::read_to_string(&path)?;
+                sources.push((path.strip_prefix(root)?.to_path_buf(), text));
+            }
+        }
+    }
+    sources.sort();
+    Ok(sources)
+}
+
+/// fss-2nwxm repository guard: `KnowledgeCell::verify_no_evidence_laundering` has at least one
+/// caller outside test code in the `src` tree of a workspace crate, so the PROV laundering refusal
+/// is enforced on a production path and not only in tests.
+#[test]
+fn test_laundering_refusal_has_a_production_caller() -> Result<(), Box<dyn Error>> {
+    let sources = workspace_sources()?;
+    assert!(
+        sources.iter().any(|(path, text)| {
+            path.ends_with("crates/fss-core/src/agent.rs")
+                && text.contains("pub fn verify_no_evidence_laundering(")
+        }),
+        "the scan did not reach the definition of the check"
+    );
+    require_production_caller(&sources)?;
+    Ok(())
+}
+
+/// The guard's scanner on a planted crate: its one production caller is found, and removing it
+/// (the planted caller removal) fails the guard. A call under `#[cfg(test)]` (inline module,
+/// out-of-line module, `#[path]` module, gated function, gated file) or in a comment, doc, string
+/// or raw string, and the definition itself, never count; an unresolvable test module is refused.
+#[test]
+fn test_laundering_guard_fails_on_a_planted_caller_removal() -> Result<(), Box<dyn Error>> {
+    let lib = "#[cfg(test)]\nmod admit_tests;\n#[cfg(test)]\n#[path = \"planted_probe.rs\"]\nmod probe;\npub mod admit;\npub mod decoys;\npub mod gated;\n";
+    let admit = r#"//! Planted admission path.
+
+pub fn admit<'a>(current: &'a KnowledgeCell, prior: &KnowledgeCell) -> Result<(), ContractError> {
+    current.verify_no_evidence_laundering(prior)
+}
+
+pub struct Probe {
+    #[cfg(test)]
+    armed: BTreeMap<u8, u8>,
+    pub open: u8,
+}
+
+#[cfg(test)]
+fn helper(a: &KnowledgeCell, b: &KnowledgeCell) {
+    let _ = a.verify_no_evidence_laundering(b);
+}
+
+#[cfg(test)]
+mod tests {
+    const CLOSE: &str = "}";
+    const OPEN: char = '{';
+    fn check(a: &K, b: &K) {
+        let _ = a.verify_no_evidence_laundering(b);
+    }
+}
+"#;
+    let decoys = r##"/// Calls `cell.verify_no_evidence_laundering(prior)`.
+// cell.verify_no_evidence_laundering(prior)
+/* outer /* cell.verify_no_evidence_laundering(prior) */ still a comment */
+pub const TEXT: &str = "cell.verify_no_evidence_laundering(prior)";
+pub const RAW: &str = r#"cell.verify_no_evidence_laundering(prior)"#;
+pub fn verify_no_evidence_laundering(&self, prior: &KnowledgeCell) {}
+"##;
+    let gated = "#![cfg(test)]\npub fn g(a: &K, b: &K) {\n    let _ = a.verify_no_evidence_laundering(b);\n}\n";
+    let test_only =
+        "pub fn probe(a: &K, b: &K) {\n    let _ = a.verify_no_evidence_laundering(b);\n}\n";
+    let tree = |admit_text: &str| -> Vec<(PathBuf, String)> {
+        [
+            ("lib.rs", lib),
+            ("admit.rs", admit_text),
+            ("admit_tests.rs", test_only),
+            ("planted_probe.rs", test_only),
+            ("decoys.rs", decoys),
+            ("gated.rs", gated),
+        ]
+        .into_iter()
+        .map(|(name, text)| (Path::new("crates/planted/src").join(name), text.to_owned()))
+        .collect()
+    };
+    assert_eq!(
+        require_production_caller(&tree(admit))?,
+        vec!["crates/planted/src/admit.rs:4".to_owned()]
+    );
+    let removed = admit.replace("current.verify_no_evidence_laundering(prior)", "Ok(())");
+    assert!(
+        require_production_caller(&tree(&removed)).is_err(),
+        "removing the planted caller must fail the guard"
+    );
+    let by_path = admit.replace(
+        "current.verify_no_evidence_laundering(prior)",
+        "KnowledgeCell::verify_no_evidence_laundering(current, prior)",
+    );
+    assert_eq!(require_production_caller(&tree(&by_path))?.len(), 1);
+    let mut orphaned = tree(admit);
+    orphaned.retain(|(path, _)| !path.ends_with("admit_tests.rs"));
+    assert!(
+        production_laundering_callers(&orphaned).is_err(),
+        "an unresolvable test module must be refused"
     );
     Ok(())
 }

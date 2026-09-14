@@ -357,6 +357,10 @@ impl MeaningfulDelta {
     }
 
     /// Coalesces two eligible low-risk deltas while retaining the final cell state and counts.
+    ///
+    /// Refuses with [`ContractError::EvidenceLaunderingDetected`] a changed cell of `next` that
+    /// launders the evidence of the changed cell of the same claim in `self` it supersedes
+    /// ([`KnowledgeCell::verify_no_evidence_laundering`]).
     pub fn coalesce(
         &self,
         next: &Self,
@@ -366,6 +370,18 @@ impl MeaningfulDelta {
     ) -> Result<Self, ContractError> {
         if !self.can_coalesce_with(next)? {
             return Err(ContractError::EvidenceRequired);
+        }
+        // A later changed cell of a claim supersedes the earlier changed cell of that claim, so
+        // the earlier cell is its known prior: coalescing never folds a relabel that launders the
+        // prior's evidence into the final cell state (PROV-001, PROV-002; fss-2nwxm).
+        for current in &next.changed_cells {
+            for prior in self
+                .changed_cells
+                .iter()
+                .filter(|prior| prior.claim_id() == current.claim_id())
+            {
+                current.verify_no_evidence_laundering(prior)?;
+            }
         }
         let mut classes = self.classes.clone();
         classes.extend(next.classes.iter().copied());
