@@ -204,3 +204,6 @@ pub mod association_hypotheses;
 
 /// Frozen-background image-region candidates; not ground contact or threat labels.
 pub mod foreground;
+
+/// Native compressed JPEG to permission-masked foreground integration.
+pub mod mjpeg;
