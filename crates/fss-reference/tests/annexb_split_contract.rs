@@ -487,104 +487,161 @@ fn test_01_fixture_manifest_clean_h264() -> Result<(), Box<dyn Error>> {
         .and_then(|v| v.as_array())
         .ok_or("missing fixtures array")?;
 
-    let clean_entry = fixtures
-        .iter()
-        .find(|f| f.get("name").and_then(|n| n.as_str()) == Some("clean.264"))
-        .ok_or("clean.264 not found in manifest")?;
+    for fixture_entry in fixtures {
+        let fixture_name = fixture_entry
+            .get("name")
+            .and_then(|v| v.as_str())
+            .ok_or("missing fixture name")?;
+        let fixture_format = fixture_entry
+            .get("format")
+            .and_then(|v| v.as_str())
+            .ok_or("missing fixture format")?;
+        assert_eq!(fixture_format, "annex_b");
 
-    let expected_sha256 = clean_entry
-        .get("sha256")
-        .and_then(|v| v.as_str())
-        .ok_or("missing sha256")?;
-    let expected_byte_len = clean_entry
-        .get("byte_len")
-        .and_then(|v| v.as_usize())
-        .ok_or("missing byte_len")?;
-    let expected_nal_count = clean_entry
-        .get("expected_nal_count")
-        .and_then(|v| v.as_usize())
-        .ok_or("missing expected_nal_count")?;
-    let expected_au_count = clean_entry
-        .get("expected_au_count")
-        .and_then(|v| v.as_usize())
-        .ok_or("missing expected_au_count")?;
-    let expected_nals = clean_entry
-        .get("expected_nals")
-        .and_then(|v| v.as_array())
-        .ok_or("missing expected_nals")?;
-
-    let raw_bytes = fs::read(&fixture_path)?;
-    let observed_sha256 = sha256_hex(&raw_bytes);
-    let observed_byte_len = raw_bytes.len();
-
-    let scan = split_annexb(&raw_bytes, AnnexBLimits::default(), &cx)?;
-    let observed_nal_count = scan.nal_count();
-    let observed_au_count = scan.au_count();
-
-    let dur = start.elapsed().as_millis();
-    let expected_json = format!(
-        r#"{{"sha256":"{}","bytes":{},"nals":{},"aus":{}}}"#,
-        expected_sha256, expected_byte_len, expected_nal_count, expected_au_count
-    );
-    let observed_json = format!(
-        r#"{{"sha256":"{}","bytes":{},"nals":{},"aus":{}}}"#,
-        observed_sha256, observed_byte_len, observed_nal_count, observed_au_count
-    );
-
-    emit_caplog(
-        "manifest_clean_h264",
-        "pass",
-        0,
-        &expected_json,
-        &observed_json,
-        dur,
-    );
-
-    assert_eq!(observed_sha256, expected_sha256);
-    assert_eq!(observed_byte_len, expected_byte_len);
-    assert_eq!(observed_nal_count, expected_nal_count);
-    assert_eq!(observed_au_count, expected_au_count);
-    assert_eq!(expected_nals.len(), observed_nal_count);
-
-    for (i, exp_nal) in expected_nals.iter().enumerate() {
-        let exp_idx = exp_nal
-            .get("index")
+        let expected_sha256 = fixture_entry
+            .get("sha256")
+            .and_then(|v| v.as_str())
+            .ok_or("missing sha256")?;
+        let expected_byte_len = fixture_entry
+            .get("byte_len")
             .and_then(|v| v.as_usize())
-            .ok_or("index")?;
-        let exp_offset = exp_nal
-            .get("offset")
+            .ok_or("missing byte_len")?;
+        let expected_nal_count = fixture_entry
+            .get("expected_nal_count")
             .and_then(|v| v.as_usize())
-            .ok_or("offset")?;
-        let exp_len = exp_nal.get("len").and_then(|v| v.as_usize()).ok_or("len")?;
-        let exp_sc_len = exp_nal
-            .get("start_code_len")
+            .ok_or("missing expected_nal_count")?;
+        let expected_au_count = fixture_entry
+            .get("expected_au_count")
             .and_then(|v| v.as_usize())
-            .ok_or("sc_len")?;
-        let exp_nal_type = exp_nal
-            .get("nal_unit_type")
-            .and_then(|v| v.as_usize())
-            .ok_or("type")? as u8;
-        let exp_is_idr = exp_nal
-            .get("is_idr")
-            .and_then(|v| v.as_bool())
-            .ok_or("is_idr")?;
-        let exp_au_idx = exp_nal
-            .get("access_unit_index")
-            .and_then(|v| v.as_usize())
-            .ok_or("au_idx")?;
+            .ok_or("missing expected_au_count")?;
+        let expected_nals = fixture_entry
+            .get("expected_nals")
+            .and_then(|v| v.as_array())
+            .ok_or("missing expected_nals")?;
 
-        assert_eq!(exp_idx, i);
-        let obs_nal = &scan.nals[i];
-        assert_eq!(obs_nal.nal_span.offset, exp_offset);
-        assert_eq!(obs_nal.nal_span.len, exp_len);
-        assert_eq!(obs_nal.start_code_span.len, exp_sc_len);
-        assert_eq!(
-            obs_nal.start_code_span.offset,
-            exp_offset.saturating_sub(exp_sc_len)
+        let fixture_path = root.join("tests/fixtures/media/h264").join(fixture_name);
+        let step_name = if fixture_name == "clean.264" {
+            "manifest_clean_h264".to_string()
+        } else {
+            format!("manifest_{}", fixture_name.replace('.', "_"))
+        };
+
+        if !fixture_path.is_file() {
+            let dur = start.elapsed().as_millis();
+            emit_caplog(
+                &step_name,
+                "skip",
+                0,
+                r#"{"fixture_exists":true}"#,
+                r#"{"reason":"fixture file missing on disk"}"#,
+                dur,
+            );
+            continue;
+        }
+
+        let raw_bytes = fs::read(&fixture_path)?;
+        let observed_sha256 = sha256_hex(&raw_bytes);
+        let observed_byte_len = raw_bytes.len();
+
+        let scan = split_annexb(&raw_bytes, AnnexBLimits::default(), &cx)?;
+        let observed_nal_count = scan.nal_count();
+        let observed_au_count = scan.au_count();
+
+        assert_eq!(observed_sha256, expected_sha256);
+        assert_eq!(observed_byte_len, expected_byte_len);
+        assert_eq!(observed_nal_count, expected_nal_count);
+        assert_eq!(observed_au_count, expected_au_count);
+        assert_eq!(expected_nals.len(), observed_nal_count);
+
+        let mut expected_au_partition: Vec<Vec<usize>> = vec![Vec::new(); expected_au_count];
+
+        for (i, exp_nal) in expected_nals.iter().enumerate() {
+            let exp_idx = exp_nal
+                .get("index")
+                .and_then(|v| v.as_usize())
+                .ok_or("index")?;
+            let exp_offset = exp_nal
+                .get("offset")
+                .and_then(|v| v.as_usize())
+                .ok_or("offset")?;
+            let exp_len = exp_nal.get("len").and_then(|v| v.as_usize()).ok_or("len")?;
+            let exp_sc_len = exp_nal
+                .get("start_code_len")
+                .and_then(|v| v.as_usize())
+                .ok_or("sc_len")?;
+            let exp_trailing_zeros = exp_nal
+                .get("trailing_zeros_before")
+                .and_then(|v| v.as_usize())
+                .unwrap_or(0);
+            let exp_nal_type = exp_nal
+                .get("nal_unit_type")
+                .and_then(|v| v.as_usize())
+                .ok_or("type")? as u8;
+            let exp_is_idr = exp_nal
+                .get("is_idr")
+                .and_then(|v| v.as_bool())
+                .ok_or("is_idr")?;
+            let exp_au_idx = exp_nal
+                .get("access_unit_index")
+                .and_then(|v| v.as_usize())
+                .ok_or("au_idx")?;
+
+            assert_eq!(exp_idx, i);
+            let obs_nal = &scan.nals[i];
+            assert_eq!(obs_nal.nal_span.offset, exp_offset);
+            assert_eq!(obs_nal.nal_span.len, exp_len);
+            assert_eq!(obs_nal.start_code_span.len, exp_sc_len);
+            assert_eq!(
+                obs_nal.start_code_span.offset,
+                exp_offset.saturating_sub(exp_sc_len)
+            );
+            assert_eq!(obs_nal.nal_unit_type, exp_nal_type);
+            assert_eq!(obs_nal.is_idr(), exp_is_idr);
+
+            if exp_au_idx < expected_au_count {
+                expected_au_partition[exp_au_idx].push(i);
+            }
+
+            if exp_trailing_zeros > 0 {
+                let pad_offset = obs_nal
+                    .start_code_span
+                    .offset
+                    .saturating_sub(exp_trailing_zeros);
+                let expected_pad_span = SourceSpan::new(pad_offset, exp_trailing_zeros);
+                assert!(
+                    scan.padding_spans.contains(&expected_pad_span),
+                    "missing padding span {:?} for nal {}",
+                    expected_pad_span,
+                    i
+                );
+                assert!(
+                    raw_bytes[pad_offset..obs_nal.start_code_span.offset]
+                        .iter()
+                        .all(|&b| b == 0x00),
+                    "padding bytes must be zero for nal {}",
+                    i
+                );
+            }
+        }
+
+        let observed_au_partition: Vec<Vec<usize>> = scan
+            .access_units
+            .iter()
+            .map(|a| a.nal_indices.clone())
+            .collect();
+        assert_eq!(observed_au_partition, expected_au_partition);
+
+        let dur = start.elapsed().as_millis();
+        let expected_json = format!(
+            r#"{{"sha256":"{}","bytes":{},"nals":{},"aus":{}}}"#,
+            expected_sha256, expected_byte_len, expected_nal_count, expected_au_count
         );
-        assert_eq!(obs_nal.nal_unit_type, exp_nal_type);
-        assert_eq!(obs_nal.is_idr(), exp_is_idr);
-        assert!(scan.access_units[exp_au_idx].nal_indices.contains(&i));
+        let observed_json = format!(
+            r#"{{"sha256":"{}","bytes":{},"nals":{},"aus":{}}}"#,
+            observed_sha256, observed_byte_len, observed_nal_count, observed_au_count
+        );
+
+        emit_caplog(&step_name, "pass", 0, &expected_json, &observed_json, dur);
     }
 
     Ok(())
@@ -608,20 +665,6 @@ fn test_02_synthetic_standard_stream() -> Result<(), Box<dyn Error>> {
     stream.extend_from_slice(&make_slice_nal(1, 2, 0, &[0xBE, 0xEF], 4)); // NAL 5: Non-IDR (offset 46, len 4)
 
     let scan = split_annexb(&stream, AnnexBLimits::default(), &cx)?;
-    let dur = start.elapsed().as_millis();
-
-    let exp_json = r#"{"nals":6,"aus":2,"has_sps":true,"has_pps":true,"has_idr":true}"#;
-    let obs_json = format!(
-        r#"{{"nals":{},"aus":{},"has_sps":{},"has_pps":{},"has_idr":{}}}"#,
-        scan.nal_count(),
-        scan.au_count(),
-        scan.has_sps(),
-        scan.has_pps(),
-        scan.has_idr()
-    );
-
-    emit_caplog("synthetic_standard", "pass", 0, exp_json, &obs_json, dur);
-
     assert_eq!(scan.total_bytes, stream.len());
     assert_eq!(scan.nal_count(), 6);
     assert_eq!(scan.au_count(), 2);
@@ -640,6 +683,19 @@ fn test_02_synthetic_standard_stream() -> Result<(), Box<dyn Error>> {
     assert!(!scan.access_units[1].is_idr);
     assert_eq!(scan.access_units[1].slice_count, 1);
     assert!(!scan.access_units[1].undecodable_without_parameter_sets);
+
+    let dur = start.elapsed().as_millis();
+    let exp_json = r#"{"nals":6,"aus":2,"has_sps":true,"has_pps":true,"has_idr":true}"#;
+    let obs_json = format!(
+        r#"{{"nals":{},"aus":{},"has_sps":{},"has_pps":{},"has_idr":{}}}"#,
+        scan.nal_count(),
+        scan.au_count(),
+        scan.has_sps(),
+        scan.has_pps(),
+        scan.has_idr()
+    );
+
+    emit_caplog("synthetic_standard", "pass", 0, exp_json, &obs_json, dur);
 
     Ok(())
 }
@@ -665,8 +721,15 @@ fn test_03_synthetic_multi_slice_au() -> Result<(), Box<dyn Error>> {
     stream.extend_from_slice(&make_slice_nal(1, 2, 128, &[0xEE], 3));
 
     let scan = split_annexb(&stream, AnnexBLimits::default(), &cx)?;
-    let dur = start.elapsed().as_millis();
 
+    assert_eq!(scan.nal_count(), 7);
+    assert_eq!(scan.au_count(), 2);
+    assert_eq!(scan.access_units[0].nal_indices, vec![0, 1, 2, 3, 4]);
+    assert_eq!(scan.access_units[0].slice_count, 3);
+    assert_eq!(scan.access_units[1].nal_indices, vec![5, 6]);
+    assert_eq!(scan.access_units[1].slice_count, 2);
+
+    let dur = start.elapsed().as_millis();
     let exp_json = r#"{"nals":7,"aus":2,"au0_slices":3,"au1_slices":2}"#;
     let obs_json = format!(
         r#"{{"nals":{},"aus":{},"au0_slices":{},"au1_slices":{}}}"#,
@@ -677,13 +740,6 @@ fn test_03_synthetic_multi_slice_au() -> Result<(), Box<dyn Error>> {
     );
 
     emit_caplog("synthetic_multi_slice", "pass", 0, exp_json, &obs_json, dur);
-
-    assert_eq!(scan.nal_count(), 7);
-    assert_eq!(scan.au_count(), 2);
-    assert_eq!(scan.access_units[0].nal_indices, vec![0, 1, 2, 3, 4]);
-    assert_eq!(scan.access_units[0].slice_count, 3);
-    assert_eq!(scan.access_units[1].nal_indices, vec![5, 6]);
-    assert_eq!(scan.access_units[1].slice_count, 2);
 
     Ok(())
 }
@@ -710,23 +766,6 @@ fn test_04_synthetic_inter_nal_padding_and_leading_zeros() -> Result<(), Box<dyn
     stream.extend_from_slice(&[0x00, 0x00]);
 
     let scan = split_annexb(&stream, AnnexBLimits::default(), &cx)?;
-    let dur = start.elapsed().as_millis();
-
-    let exp_json = r#"{"nals":2,"padding_spans":3}"#;
-    let obs_json = format!(
-        r#"{{"nals":{},"padding_spans":{}}}"#,
-        scan.nal_count(),
-        scan.padding_spans.len()
-    );
-
-    emit_caplog(
-        "padding_and_leading_zeros",
-        "pass",
-        0,
-        exp_json,
-        &obs_json,
-        dur,
-    );
 
     assert_eq!(scan.nal_count(), 2);
     assert_eq!(scan.padding_spans.len(), 3);
@@ -742,6 +781,23 @@ fn test_04_synthetic_inter_nal_padding_and_leading_zeros() -> Result<(), Box<dyn
     assert_eq!(scan.nals[1].nal_span, SourceSpan::new(15, 4));
     // Trailing padding at EOF: 19..21 (2 zeros)
     assert_eq!(scan.padding_spans[2], SourceSpan::new(19, 2));
+
+    let dur = start.elapsed().as_millis();
+    let exp_json = r#"{"nals":2,"padding_spans":3}"#;
+    let obs_json = format!(
+        r#"{{"nals":{},"padding_spans":{}}}"#,
+        scan.nal_count(),
+        scan.padding_spans.len()
+    );
+
+    emit_caplog(
+        "padding_and_leading_zeros",
+        "pass",
+        0,
+        exp_json,
+        &obs_json,
+        dur,
+    );
 
     Ok(())
 }
@@ -762,8 +818,13 @@ fn test_05_synthetic_no_aud_grouping() -> Result<(), Box<dyn Error>> {
     stream.extend_from_slice(&make_slice_nal(1, 2, 0, &[0xBB], 4)); // Non-IDR
 
     let scan = split_annexb(&stream, AnnexBLimits::default(), &cx)?;
-    let dur = start.elapsed().as_millis();
 
+    assert_eq!(scan.nal_count(), 4);
+    assert_eq!(scan.au_count(), 2);
+    assert_eq!(scan.access_units[0].nal_indices, vec![0, 1, 2]);
+    assert_eq!(scan.access_units[1].nal_indices, vec![3]);
+
+    let dur = start.elapsed().as_millis();
     let exp_json = r#"{"nals":4,"aus":2}"#;
     let obs_json = format!(
         r#"{{"nals":{},"aus":{}}}"#,
@@ -772,11 +833,6 @@ fn test_05_synthetic_no_aud_grouping() -> Result<(), Box<dyn Error>> {
     );
 
     emit_caplog("no_aud_grouping", "pass", 0, exp_json, &obs_json, dur);
-
-    assert_eq!(scan.nal_count(), 4);
-    assert_eq!(scan.au_count(), 2);
-    assert_eq!(scan.access_units[0].nal_indices, vec![0, 1, 2]);
-    assert_eq!(scan.access_units[1].nal_indices, vec![3]);
 
     Ok(())
 }
@@ -798,15 +854,23 @@ fn test_06_edge_empty_and_no_start_code() -> Result<(), Box<dyn Error>> {
     assert_eq!(err_no_sc, Err(AnnexBError::NoStartCode));
 
     let dur = start.elapsed().as_millis();
+    let obs_empty = match &err_empty {
+        Err(e) => format!("{e:?}"),
+        Ok(_) => "Ok".to_string(),
+    };
+    let obs_no_sc = match &err_no_sc {
+        Err(e) => format!("{e:?}"),
+        Ok(_) => "Ok".to_string(),
+    };
     let exp_json = r#"{"empty":"EmptyInput","no_sc":"NoStartCode"}"#;
-    let obs_json = r#"{"empty":"EmptyInput","no_sc":"NoStartCode"}"#;
+    let obs_json = format!(r#"{{"empty":"{}","no_sc":"{}"}}"#, obs_empty, obs_no_sc);
 
     emit_caplog(
         "empty_and_no_start_code",
         "pass",
         0,
         exp_json,
-        obs_json,
+        &obs_json,
         dur,
     );
 
@@ -833,15 +897,23 @@ fn test_07_edge_zero_length_and_truncated_nal() -> Result<(), Box<dyn Error>> {
     assert_eq!(err_trunc, Err(AnnexBError::TruncatedNal { offset: 3 }));
 
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{"zero_len":3,"truncated_eof":3}"#;
-    let obs_json = r#"{"zero_len":3,"truncated_eof":3}"#;
+    let obs_zero = match &err_zero {
+        Err(e) => format!("{e:?}"),
+        Ok(_) => "Ok".to_string(),
+    };
+    let obs_trunc = match &err_trunc {
+        Err(e) => format!("{e:?}"),
+        Ok(_) => "Ok".to_string(),
+    };
+    let exp_json = r#"{"zero":"ZeroLengthNal { offset: 3 }","trunc":"TruncatedNal { offset: 3 }"}"#;
+    let obs_json = format!(r#"{{"zero":"{}","trunc":"{}"}}"#, obs_zero, obs_trunc);
 
     emit_caplog(
         "zero_length_and_truncated",
         "pass",
         0,
         exp_json,
-        obs_json,
+        &obs_json,
         dur,
     );
 
@@ -860,22 +932,16 @@ fn test_08_edge_forbidden_zero_bit() -> Result<(), Box<dyn Error>> {
     // Header with forbidden bit set (0x80 | 0x09 = 0x89)
     let stream = [0x00, 0x00, 0x01, 0x89, 0x10];
     let res = split_annexb(&stream, AnnexBLimits::default(), &cx);
+    assert_eq!(res, Err(AnnexBError::ForbiddenBitSet { nal: 0, offset: 3 }));
 
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{"error":"ForbiddenBitSet","nal":0,"offset":3}"#;
+    let exp_json = r#"{"error":"ForbiddenBitSet { nal: 0, offset: 3 }"}"#;
     let obs_json = match &res {
-        Err(AnnexBError::ForbiddenBitSet { nal, offset }) => {
-            format!(
-                r#"{{"error":"ForbiddenBitSet","nal":{},"offset":{}}}"#,
-                nal, offset
-            )
-        }
-        _ => r#"{"error":"other"}"#.to_string(),
+        Err(e) => format!(r#"{{"error":"{e:?}"}}"#),
+        Ok(_) => r#"{"error":"Ok"}"#.to_string(),
     };
 
     emit_caplog("forbidden_zero_bit", "pass", 0, exp_json, &obs_json, dur);
-
-    assert_eq!(res, Err(AnnexBError::ForbiddenBitSet { nal: 0, offset: 3 }));
 
     Ok(())
 }
@@ -904,10 +970,15 @@ fn test_09_edge_leading_garbage_limits() -> Result<(), Box<dyn Error>> {
     assert_eq!(scan_ok.nals[0].start_code_span, SourceSpan::new(3, 4));
 
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{"excess_len":3,"omission_len":3}"#;
+    let obs_excess = match &err_excess {
+        Err(e) => format!("{e:?}"),
+        Ok(_) => "Ok".to_string(),
+    };
+    let obs_omission_len = scan_ok.omission_spans.first().map(|s| s.len).unwrap_or(0);
+    let exp_json = r#"{"excess":"LeadingGarbage { len: 3 }","omission_len":3}"#;
     let obs_json = format!(
-        r#"{{"excess_len":3,"omission_len":{}}}"#,
-        scan_ok.omission_spans[0].len
+        r#"{{"excess":"{}","omission_len":{}}}"#,
+        obs_excess, obs_omission_len
     );
 
     emit_caplog(
@@ -940,12 +1011,22 @@ fn test_10_edge_emulation_prevention_sequences() -> Result<(), Box<dyn Error>> {
     valid_stream.extend_from_slice(&[0x00, 0x00, 0x03, 0x03]);
     let scan_valid = split_annexb(&valid_stream, AnnexBLimits::default(), &cx)?;
     assert_eq!(scan_valid.nal_count(), 1);
+    assert_eq!(scan_valid.nals[0].start_code_span, SourceSpan::new(0, 3));
+    assert_eq!(
+        scan_valid.nals[0].nal_span,
+        SourceSpan::new(3, valid_stream.len() - 3)
+    );
 
     // 2. Trailing 00 00 03 at end of NAL (cabac_zero_word)
     let mut cabac_stream = Vec::new();
     cabac_stream.extend_from_slice(&[0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x00, 0x03]);
     let scan_cabac = split_annexb(&cabac_stream, AnnexBLimits::default(), &cx)?;
     assert_eq!(scan_cabac.nal_count(), 1);
+    assert_eq!(scan_cabac.nals[0].start_code_span, SourceSpan::new(0, 3));
+    assert_eq!(
+        scan_cabac.nals[0].nal_span,
+        SourceSpan::new(3, cabac_stream.len() - 3)
+    );
 
     // 3. Invalid fourth byte: 00 00 03 04
     let mut invalid_fourth = Vec::new();
@@ -975,10 +1056,29 @@ fn test_10_edge_emulation_prevention_sequences() -> Result<(), Box<dyn Error>> {
     );
 
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{"valid_ep":true,"cabac_trailing":true,"invalid_fourth":true,"invalid_zeros":true,"invalid_two":true}"#;
-    let obs_json = r#"{"valid_ep":true,"cabac_trailing":true,"invalid_fourth":true,"invalid_zeros":true,"invalid_two":true}"#;
+    let obs_fourth = match &err_fourth {
+        Err(e) => format!("{e:?}"),
+        Ok(_) => "Ok".to_string(),
+    };
+    let obs_zeros = match &err_zeros {
+        Err(e) => format!("{e:?}"),
+        Ok(_) => "Ok".to_string(),
+    };
+    let obs_two = match &err_two {
+        Err(e) => format!("{e:?}"),
+        Ok(_) => "Ok".to_string(),
+    };
+    let exp_json = r#"{"valid_len":21,"cabac_len":5,"fourth":"MalformedEmulationPrevention { offset: 5 }","zeros":"MalformedEmulationPrevention { offset: 5 }","two":"MalformedEmulationPrevention { offset: 5 }"}"#;
+    let obs_json = format!(
+        r#"{{"valid_len":{},"cabac_len":{},"fourth":"{}","zeros":"{}","two":"{}"}}"#,
+        scan_valid.nals[0].nal_span.len,
+        scan_cabac.nals[0].nal_span.len,
+        obs_fourth,
+        obs_zeros,
+        obs_two
+    );
 
-    emit_caplog("emulation_prevention", "pass", 0, exp_json, obs_json, dur);
+    emit_caplog("emulation_prevention", "pass", 0, exp_json, &obs_json, dur);
 
     Ok(())
 }
@@ -1017,10 +1117,22 @@ fn test_11_edge_slice_header_syntax() -> Result<(), Box<dyn Error>> {
     );
 
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{"truncated_offset":3,"malformed_offset":3}"#;
-    let obs_json = r#"{"truncated_offset":3,"malformed_offset":3}"#;
+    let obs_trunc = match &err_trunc {
+        Err(e) => format!("{e:?}"),
+        Ok(_) => "Ok".to_string(),
+    };
+    let obs_malformed = match &err_malformed {
+        Err(e) => format!("{e:?}"),
+        Ok(_) => "Ok".to_string(),
+    };
+    let exp_json = r#"{"truncated":"TruncatedSliceHeader { offset: 3 }","malformed":"MalformedSliceHeader { offset: 3, detail: \"ue(v) leading zero count exceeds 31\" }"}"#;
+    let obs_json = format!(
+        r#"{{"truncated":"{}","malformed":"{}"}}"#,
+        obs_trunc.replace('"', "\\\""),
+        obs_malformed.replace('"', "\\\"")
+    );
 
-    emit_caplog("slice_header_syntax", "pass", 0, exp_json, obs_json, dur);
+    emit_caplog("slice_header_syntax", "pass", 0, exp_json, &obs_json, dur);
 
     Ok(())
 }
@@ -1039,6 +1151,12 @@ fn test_12_undecodable_flag_and_parameter_sets() -> Result<(), Box<dyn Error>> {
     stream_early_slice.extend_from_slice(&make_slice_nal(1, 2, 0, &[0xAA], 4));
     let scan_early = split_annexb(&stream_early_slice, AnnexBLimits::default(), &cx)?;
     assert_eq!(scan_early.au_count(), 1);
+    assert_eq!(scan_early.nal_count(), 1);
+    assert_eq!(scan_early.access_units[0].nal_indices, vec![0]);
+    assert_eq!(
+        scan_early.access_units[0].span,
+        SourceSpan::new(0, stream_early_slice.len())
+    );
     assert!(scan_early.access_units[0].undecodable_without_parameter_sets);
 
     // Stream 2: SPS + PPS before slice
@@ -1048,6 +1166,12 @@ fn test_12_undecodable_flag_and_parameter_sets() -> Result<(), Box<dyn Error>> {
     stream_with_params.extend_from_slice(&make_slice_nal(5, 3, 0, &[0xBB], 4));
     let scan_params = split_annexb(&stream_with_params, AnnexBLimits::default(), &cx)?;
     assert_eq!(scan_params.au_count(), 1);
+    assert_eq!(scan_params.nal_count(), 3);
+    assert_eq!(scan_params.access_units[0].nal_indices, vec![0, 1, 2]);
+    assert_eq!(
+        scan_params.access_units[0].span,
+        SourceSpan::new(0, stream_with_params.len())
+    );
     assert!(!scan_params.access_units[0].undecodable_without_parameter_sets);
     assert_eq!(scan_params.sps_spans, vec![SourceSpan::new(4, 4)]);
     assert_eq!(scan_params.pps_spans, vec![SourceSpan::new(12, 4)]);
@@ -1080,8 +1204,21 @@ fn test_13_unsupported_extensions() -> Result<(), Box<dyn Error>> {
     stream.extend_from_slice(&[0x00, 0x00, 0x01, 0x14, 0x99]); // NAL 2: Slice extension (type 20)
 
     let scan = split_annexb(&stream, AnnexBLimits::default(), &cx)?;
-    let dur = start.elapsed().as_millis();
 
+    assert_eq!(scan.nal_count(), 3);
+    assert_eq!(scan.nals[0].start_code_span, SourceSpan::new(0, 4));
+    assert_eq!(scan.nals[0].nal_span, SourceSpan::new(4, 2));
+    assert_eq!(scan.nals[1].start_code_span, SourceSpan::new(6, 3));
+    assert_eq!(scan.nals[1].nal_span, SourceSpan::new(9, 2));
+    assert_eq!(scan.nals[2].start_code_span, SourceSpan::new(11, 3));
+    assert_eq!(scan.nals[2].nal_span, SourceSpan::new(14, 2));
+    assert_eq!(scan.unsupported_extension_spans.len(), 2);
+    assert_eq!(
+        scan.unsupported_extension_spans,
+        vec![SourceSpan::new(9, 2), SourceSpan::new(14, 2)]
+    );
+
+    let dur = start.elapsed().as_millis();
     let exp_json = r#"{"unsupported_count":2}"#;
     let obs_json = format!(
         r#"{{"unsupported_count":{}}}"#,
@@ -1096,10 +1233,6 @@ fn test_13_unsupported_extensions() -> Result<(), Box<dyn Error>> {
         &obs_json,
         dur,
     );
-
-    assert_eq!(scan.unsupported_extension_spans.len(), 2);
-    assert_eq!(scan.unsupported_extension_spans[0], SourceSpan::new(9, 2));
-    assert_eq!(scan.unsupported_extension_spans[1], SourceSpan::new(14, 2));
 
     Ok(())
 }
@@ -1116,10 +1249,16 @@ fn test_14_limits_boundaries() -> Result<(), Box<dyn Error>> {
     // 1. max_input_bytes
     let nal = make_aud_nal(4);
     let limits_input = AnnexBLimits::default().with_max_input_bytes(nal.len());
-    assert!(split_annexb(&nal, limits_input, &cx).is_ok());
+    let scan_input_ok = split_annexb(&nal, limits_input, &cx)?;
+    assert_eq!(scan_input_ok.nal_count(), 1);
+    assert_eq!(scan_input_ok.nals[0].start_code_span, SourceSpan::new(0, 4));
+    assert_eq!(scan_input_ok.nals[0].nal_span, SourceSpan::new(4, 2));
+    assert_eq!(scan_input_ok.access_units[0].nal_indices, vec![0]);
+
     let limits_input_small = AnnexBLimits::default().with_max_input_bytes(nal.len() - 1);
+    let err_input = split_annexb(&nal, limits_input_small, &cx);
     assert_eq!(
-        split_annexb(&nal, limits_input_small, &cx),
+        err_input,
         Err(AnnexBError::InputTooLarge {
             len: nal.len(),
             max: nal.len() - 1,
@@ -1128,10 +1267,16 @@ fn test_14_limits_boundaries() -> Result<(), Box<dyn Error>> {
 
     // 2. max_nal_bytes
     let limits_nal = AnnexBLimits::default().with_max_nal_bytes(2);
-    assert!(split_annexb(&nal, limits_nal, &cx).is_ok());
+    let scan_nal_ok = split_annexb(&nal, limits_nal, &cx)?;
+    assert_eq!(scan_nal_ok.nal_count(), 1);
+    assert_eq!(scan_nal_ok.nals[0].start_code_span, SourceSpan::new(0, 4));
+    assert_eq!(scan_nal_ok.nals[0].nal_span, SourceSpan::new(4, 2));
+    assert_eq!(scan_nal_ok.access_units[0].nal_indices, vec![0]);
+
     let limits_nal_small = AnnexBLimits::default().with_max_nal_bytes(1);
+    let err_nal = split_annexb(&nal, limits_nal_small, &cx);
     assert_eq!(
-        split_annexb(&nal, limits_nal_small, &cx),
+        err_nal,
         Err(AnnexBError::NalTooLarge {
             offset: 4,
             len: 2,
@@ -1148,27 +1293,55 @@ fn test_14_limits_boundaries() -> Result<(), Box<dyn Error>> {
     two_nals.extend_from_slice(&make_aud_nal(4));
     two_nals.extend_from_slice(&make_aud_nal(4));
     let limits_nals2 = AnnexBLimits::default().with_max_nals(2);
-    assert!(split_annexb(&two_nals, limits_nals2, &cx).is_ok());
+    let scan_nals2 = split_annexb(&two_nals, limits_nals2, &cx)?;
+    assert_eq!(scan_nals2.nal_count(), 2);
+    assert_eq!(scan_nals2.nals[0].nal_span, SourceSpan::new(4, 2));
+    assert_eq!(scan_nals2.nals[1].nal_span, SourceSpan::new(10, 2));
+    assert_eq!(scan_nals2.access_units[0].nal_indices, vec![0]);
+    assert_eq!(scan_nals2.access_units[1].nal_indices, vec![1]);
+
     let limits_nals1 = AnnexBLimits::default().with_max_nals(1);
-    assert_eq!(
-        split_annexb(&two_nals, limits_nals1, &cx),
-        Err(AnnexBError::TooManyNals { count: 2, max: 1 })
-    );
+    let err_nals = split_annexb(&two_nals, limits_nals1, &cx);
+    assert_eq!(err_nals, Err(AnnexBError::TooManyNals { count: 2, max: 1 }));
 
     // 5. max_aus
     let limits_aus2 = AnnexBLimits::default().with_max_aus(2);
-    assert!(split_annexb(&two_nals, limits_aus2, &cx).is_ok());
+    let scan_aus2 = split_annexb(&two_nals, limits_aus2, &cx)?;
+    assert_eq!(scan_aus2.au_count(), 2);
+    assert_eq!(scan_aus2.access_units[0].nal_indices, vec![0]);
+    assert_eq!(scan_aus2.access_units[1].nal_indices, vec![1]);
+
     let limits_aus1 = AnnexBLimits::default().with_max_aus(1);
+    let err_aus = split_annexb(&two_nals, limits_aus1, &cx);
     assert_eq!(
-        split_annexb(&two_nals, limits_aus1, &cx),
+        err_aus,
         Err(AnnexBError::TooManyAccessUnits { count: 2, max: 1 })
     );
 
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{"ceiling_clamped":true,"input_bound":true,"nal_bound":true,"nals_bound":true,"aus_bound":true}"#;
-    let obs_json = r#"{"ceiling_clamped":true,"input_bound":true,"nal_bound":true,"nals_bound":true,"aus_bound":true}"#;
+    let obs_input_str = match &err_input {
+        Err(e) => format!("{e:?}"),
+        Ok(_) => "Ok".to_string(),
+    };
+    let obs_nal_str = match &err_nal {
+        Err(e) => format!("{e:?}"),
+        Ok(_) => "Ok".to_string(),
+    };
+    let obs_nals_str = match &err_nals {
+        Err(e) => format!("{e:?}"),
+        Ok(_) => "Ok".to_string(),
+    };
+    let obs_aus_str = match &err_aus {
+        Err(e) => format!("{e:?}"),
+        Ok(_) => "Ok".to_string(),
+    };
+    let exp_json = r#"{"ceiling_clamped":16777216,"input_err":"InputTooLarge { len: 6, max: 5 }","nal_err":"NalTooLarge { offset: 4, len: 2, max: 1 }","nals_err":"TooManyNals { count: 2, max: 1 }","aus_err":"TooManyAccessUnits { count: 2, max: 1 }"}"#;
+    let obs_json = format!(
+        r#"{{"ceiling_clamped":{},"input_err":"{}","nal_err":"{}","nals_err":"{}","aus_err":"{}"}}"#,
+        limits_clamped.max_nal_bytes, obs_input_str, obs_nal_str, obs_nals_str, obs_aus_str
+    );
 
-    emit_caplog("limits_boundaries", "pass", 0, exp_json, obs_json, dur);
+    emit_caplog("limits_boundaries", "pass", 0, exp_json, &obs_json, dur);
 
     Ok(())
 }
@@ -1192,13 +1365,25 @@ fn test_15_cooperative_cancellation() -> Result<(), Box<dyn Error>> {
     assert!(cx.is_cancelled());
 
     let res = split_annexb(&stream, AnnexBLimits::default(), &cx);
+    assert_eq!(res, Err(AnnexBError::Cancelled));
+    assert!(cx.is_drain_completed());
+
+    // Kill A8a: cancellation at pre_scan on stream without start codes
+    let cx_prescan = test_cx("cancel_prescan")?;
+    cx_prescan.request_cancellation();
+    assert!(cx_prescan.is_cancelled());
+    let no_sc = [0x12, 0x34, 0x56, 0x78];
+    let res_prescan = split_annexb(&no_sc, AnnexBLimits::default(), &cx_prescan);
+    assert_eq!(res_prescan, Err(AnnexBError::Cancelled));
+    assert!(cx_prescan.is_drain_completed());
 
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{"cancelled":true,"drain_completed":true}"#;
+    let exp_json = r#"{"cancelled":true,"drain_completed":true,"prescan_cancelled":true}"#;
     let obs_json = format!(
-        r#"{{"cancelled":{},"drain_completed":{}}}"#,
+        r#"{{"cancelled":{},"drain_completed":{},"prescan_cancelled":{}}}"#,
         res == Err(AnnexBError::Cancelled),
-        cx.is_drain_completed()
+        cx.is_drain_completed(),
+        res_prescan == Err(AnnexBError::Cancelled)
     );
 
     emit_caplog(
@@ -1209,9 +1394,6 @@ fn test_15_cooperative_cancellation() -> Result<(), Box<dyn Error>> {
         &obs_json,
         dur,
     );
-
-    assert_eq!(res, Err(AnnexBError::Cancelled));
-    assert!(cx.is_drain_completed());
 
     Ok(())
 }
@@ -1281,8 +1463,10 @@ fn test_16_mutant_kill_table() -> Result<(), Box<dyn Error>> {
     // M7: Cabac_zero_word acceptance off
     // NAL ending with trailing 00 00 03 is accepted per H.264 7.4.1
     let m7_stream = [0x00, 0x00, 0x01, 0x67, 0x42, 0x00, 0x00, 0x03];
-    let m7_scan = split_annexb(&m7_stream, AnnexBLimits::default(), &cx);
-    assert!(m7_scan.is_ok());
+    let m7_scan = split_annexb(&m7_stream, AnnexBLimits::default(), &cx)?;
+    assert_eq!(m7_scan.nal_count(), 1);
+    assert_eq!(m7_scan.nals[0].start_code_span, SourceSpan::new(0, 3));
+    assert_eq!(m7_scan.nals[0].nal_span, SourceSpan::new(3, 5));
 
     // M8: Limit at N+1 accepted
     // Setting max_nals: 2 and inputting 3 NALs must return TooManyNals { count: 3, max: 2 }
@@ -1295,12 +1479,31 @@ fn test_16_mutant_kill_table() -> Result<(), Box<dyn Error>> {
     assert_eq!(m8_res, Err(AnnexBError::TooManyNals { count: 3, max: 2 }));
 
     let dur = start.elapsed().as_millis();
+    let m1_killed = matches!(
+        m1_res,
+        Err(AnnexBError::MalformedEmulationPrevention { offset: 5 })
+    );
+    let m2_killed = m2_scan.nals[0].start_code_span == SourceSpan::new(0, 4)
+        && m2_scan.padding_spans.is_empty();
+    let m3_killed = m3_scan.au_count() == 2
+        && m3_scan.access_units[0].nal_indices == vec![0, 1]
+        && m3_scan.access_units[1].nal_indices == vec![2];
+    let m4_killed = m4_scan.au_count() == 1 && m4_scan.access_units[0].nal_indices == vec![0, 1];
+    let m5_killed = limits_m5.max_nal_bytes == CEILING_MAX_NAL_BYTES;
+    let m6_killed = m6_scan.au_count() == 2
+        && m6_scan.access_units[0].nal_indices == vec![0, 1]
+        && m6_scan.access_units[1].nal_indices == vec![2];
+    let m7_killed = m7_scan.nal_count() == 1 && m7_scan.nals[0].nal_span == SourceSpan::new(3, 5);
+    let m8_killed = matches!(m8_res, Err(AnnexBError::TooManyNals { count: 3, max: 2 }));
+
     let exp_json =
         r#"{"m1":true,"m2":true,"m3":true,"m4":true,"m5":true,"m6":true,"m7":true,"m8":true}"#;
-    let obs_json =
-        r#"{"m1":true,"m2":true,"m3":true,"m4":true,"m5":true,"m6":true,"m7":true,"m8":true}"#;
+    let obs_json = format!(
+        r#"{{"m1":{},"m2":{},"m3":{},"m4":{},"m5":{},"m6":{},"m7":{},"m8":{}}}"#,
+        m1_killed, m2_killed, m3_killed, m4_killed, m5_killed, m6_killed, m7_killed, m8_killed
+    );
 
-    emit_caplog("mutant_kill_table", "pass", 0, exp_json, obs_json, dur);
+    emit_caplog("mutant_kill_table", "pass", 0, exp_json, &obs_json, dur);
 
     Ok(())
 }
@@ -1325,6 +1528,19 @@ fn test_17_mutation_gauntlet_10k() -> Result<(), Box<dyn Error>> {
     template.extend_from_slice(&make_slice_nal(1, 2, 1, &[0xEE], 3));
     template.extend_from_slice(&[0x00, 0x00]); // trailing padding
 
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .ok_or("crates dir not found")?
+        .parent()
+        .ok_or("repo root not found")?
+        .to_path_buf();
+    let clean_path = root.join("tests/fixtures/media/h264/clean.264");
+    let clean_bytes = if clean_path.is_file() {
+        fs::read(&clean_path)?
+    } else {
+        template.clone()
+    };
+
     let limits = AnnexBLimits {
         max_input_bytes: 65536,
         max_nal_bytes: 32768,
@@ -1337,8 +1553,9 @@ fn test_17_mutation_gauntlet_10k() -> Result<(), Box<dyn Error>> {
     let mut observed_panics = 0usize;
     let iterations = 10_000;
 
-    for _ in 0..iterations {
-        let mut mutated = template.clone();
+    for i in 0..iterations {
+        let base = if i < 5000 { &template } else { &clean_bytes };
+        let mut mutated = base.clone();
         let mutation_count = (prng.next_u64() % 8) as usize + 1;
 
         for _ in 0..mutation_count {
@@ -1446,22 +1663,42 @@ fn test_17_mutation_gauntlet_10k() -> Result<(), Box<dyn Error>> {
                 }
                 assert_eq!(cur_offset, scan.total_bytes);
 
-                // 3. AU grouping invariants
-                let mut au_prev_end = 0usize;
+                // 3. AU grouping strong invariants
+                let mut flat = Vec::new();
                 for au in &scan.access_units {
+                    flat.extend_from_slice(&au.nal_indices);
+                }
+                let want: Vec<usize> = (0..scan.nals.len()).collect();
+                assert_eq!(
+                    flat, want,
+                    "AU nal_indices must partition 0..scan.nals.len()"
+                );
+
+                let mut au_prev_end = 0usize;
+                for (k, au) in scan.access_units.iter().enumerate() {
                     assert!(au.span.offset >= au_prev_end);
                     assert!(au.span.offset.saturating_add(au.span.len) <= scan.total_bytes);
                     au_prev_end = au.span.offset.saturating_add(au.span.len);
 
                     assert!(!au.nal_indices.is_empty());
-                    let mut prev_idx: Option<usize> = None;
-                    for &idx in &au.nal_indices {
-                        assert!(idx < scan.nals.len());
-                        if let Some(p) = prev_idx {
-                            assert!(idx > p);
-                        }
-                        prev_idx = Some(idx);
-                    }
+                    let first_sc = scan.nals[au.nal_indices[0]].start_code_span.offset;
+                    assert_eq!(au.span.offset, first_sc);
+
+                    let end = scan
+                        .access_units
+                        .get(k + 1)
+                        .map_or(scan.total_bytes, |next_au| next_au.span.offset);
+                    assert_eq!(au.span.end(), end);
+
+                    let vcl = au
+                        .nal_indices
+                        .iter()
+                        .filter(|&&idx| scan.nals[idx].is_vcl())
+                        .count();
+                    assert_eq!(vcl, au.slice_count);
+
+                    let idr = au.nal_indices.iter().any(|&idx| scan.nals[idx].is_idr());
+                    assert_eq!(idr, au.is_idr);
                 }
             }
             Ok(Err(_)) => {
@@ -1470,17 +1707,153 @@ fn test_17_mutation_gauntlet_10k() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    let dur = start.elapsed().as_millis();
-    let exp_json = r#"{"iterations":10000,"panics":0}"#;
-    let obs_json = format!(
-        r#"{{"iterations":{},"panics":{},"successful_scans":{}}}"#,
-        iterations, observed_panics, successful_scans
-    );
-
-    emit_caplog("mutation_gauntlet_10k", "pass", 0, exp_json, &obs_json, dur);
-
     assert_eq!(observed_panics, 0);
     assert!(successful_scans > 0);
+
+    let dur = start.elapsed().as_millis();
+    let exp_json = format!(
+        r#"{{"has_successful_scans":true,"iterations":{},"panics":0}}"#,
+        iterations
+    );
+    let obs_json = format!(
+        r#"{{"has_successful_scans":{},"iterations":{},"panics":{}}}"#,
+        successful_scans > 0,
+        iterations,
+        observed_panics
+    );
+
+    emit_caplog(
+        "mutation_gauntlet_10k",
+        "pass",
+        0,
+        &exp_json,
+        &obs_json,
+        dur,
+    );
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Step 18: Loop and mid-push boundary limits (kills R8a and R8c)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_18_loop_and_mid_push_limits_kill_r8a_r8c() -> Result<(), Box<dyn Error>> {
+    let start = Instant::now();
+    let cx = test_cx("r8a_r8c")?;
+
+    let aud = [0x00, 0x00, 0x00, 0x01, 0x09, 0x10];
+    let mut three_auds = Vec::new();
+    three_auds.extend_from_slice(&aud);
+    three_auds.extend_from_slice(&aud);
+    three_auds.extend_from_slice(&aud);
+
+    // Kills R8a (loop branch annexb.rs:517)
+    let res_nals = split_annexb(&three_auds, AnnexBLimits::default().with_max_nals(1), &cx);
+    assert_eq!(res_nals, Err(AnnexBError::TooManyNals { count: 2, max: 1 }));
+
+    // Kills R8c (mid-push branch annexb.rs:808)
+    let res_aus = split_annexb(&three_auds, AnnexBLimits::default().with_max_aus(1), &cx);
+    assert_eq!(
+        res_aus,
+        Err(AnnexBError::TooManyAccessUnits { count: 2, max: 1 })
+    );
+
+    let dur = start.elapsed().as_millis();
+    let r8a_killed = matches!(res_nals, Err(AnnexBError::TooManyNals { count: 2, max: 1 }));
+    let r8c_killed = matches!(
+        res_aus,
+        Err(AnnexBError::TooManyAccessUnits { count: 2, max: 1 })
+    );
+    let exp_json = r#"{"r8a_too_many_nals":true,"r8c_too_many_aus":true}"#;
+    let obs_json = format!(
+        r#"{{"r8a_too_many_nals":{},"r8c_too_many_aus":{}}}"#,
+        r8a_killed, r8c_killed
+    );
+
+    emit_caplog(
+        "loop_and_mid_push_limits",
+        "pass",
+        0,
+        exp_json,
+        &obs_json,
+        dur,
+    );
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Step 19: Validation ceiling bypass builder (kills R5b)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_19_validation_ceiling_bypass_builder_kill_r5b() -> Result<(), Box<dyn Error>> {
+    let start = Instant::now();
+    let cx = test_cx("r5b")?;
+
+    // Struct literal bypassing builder clamp, so max_nal_bytes remains usize::MAX
+    let limits = AnnexBLimits {
+        max_input_bytes: 64 << 20,
+        max_nal_bytes: usize::MAX,
+        max_nals: 100,
+        max_aus: 100,
+        max_leading_garbage_bytes: 0,
+    };
+
+    // CEILING + 1: must fail with NalTooLarge { offset: 4, len: CEILING + 1, max: CEILING }
+    // killing R5b (validation-time ceiling clamp)
+    let mut over_stream = vec![0, 0, 0, 1, 0x0C];
+    over_stream.resize(4 + CEILING_MAX_NAL_BYTES + 1, 0xFF);
+
+    let res_over = split_annexb(&over_stream, limits, &cx);
+    assert_eq!(
+        res_over,
+        Err(AnnexBError::NalTooLarge {
+            offset: 4,
+            len: CEILING_MAX_NAL_BYTES + 1,
+            max: CEILING_MAX_NAL_BYTES,
+        })
+    );
+
+    // Exactly CEILING: must succeed with exact nal_span
+    let mut exact_stream = vec![0, 0, 0, 1, 0x0C];
+    exact_stream.resize(4 + CEILING_MAX_NAL_BYTES, 0xFF);
+
+    let scan_exact = split_annexb(&exact_stream, limits, &cx)?;
+    assert_eq!(scan_exact.nal_count(), 1);
+    assert_eq!(scan_exact.nals[0].start_code_span, SourceSpan::new(0, 4));
+    assert_eq!(
+        scan_exact.nals[0].nal_span,
+        SourceSpan::new(4, CEILING_MAX_NAL_BYTES)
+    );
+
+    let dur = start.elapsed().as_millis();
+    let r5b_killed = matches!(
+        res_over,
+        Err(AnnexBError::NalTooLarge {
+            offset: 4,
+            len: _,
+            max: CEILING_MAX_NAL_BYTES,
+        })
+    );
+    let exact_ok = scan_exact.nals[0].nal_span == SourceSpan::new(4, CEILING_MAX_NAL_BYTES);
+
+    let exp_json = r#"{"ceiling_exact_ok":true,"r5b_nal_too_large":true}"#;
+    let obs_json = format!(
+        r#"{{"ceiling_exact_ok":{},"r5b_nal_too_large":{}}}"#,
+        exact_ok, r5b_killed
+    );
+
+    emit_caplog(
+        "validation_ceiling_bypass",
+        "pass",
+        0,
+        exp_json,
+        &obs_json,
+        dur,
+    );
 
     Ok(())
 }

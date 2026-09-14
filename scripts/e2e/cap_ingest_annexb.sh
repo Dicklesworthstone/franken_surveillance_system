@@ -101,9 +101,18 @@ with open(log_file, "w", encoding="utf-8") as f:
 ' "$LOG_FILE" "cap_ingest_annexb.sh" "$BEAD_ID" "$GIT_SHA" "$DIRTY" "$HOST_TRIPLE" "${FSS_BIN_DIR:-}" "${FSS_E2E_LOG_DIR:-}"
 
     # 2. Execute test companion via RCH with --nocapture (retrying on 103 up to 3 times)
-    STDOUT_TMP=$(mktemp)
+    STDOUT_TMP="${LOG_DIR}/stdout.$$"
+    rm -f "$STDOUT_TMP"
+    trap 'rm -f "$STDOUT_TMP"' EXIT INT TERM
     TEST_EXIT=0
     RETRY_COUNT=0
+
+    DEFAULT_ROSTER="manifest_clean_h264,synthetic_standard,synthetic_multi_slice,padding_and_leading_zeros,no_aud_grouping,empty_and_no_start_code,zero_length_and_truncated,forbidden_zero_bit,leading_garbage_limits,emulation_prevention,slice_header_syntax,undecodable_flag,unsupported_extensions,limits_boundaries,cooperative_cancellation,mutant_kill_table,mutation_gauntlet_10k,loop_and_mid_push_limits,validation_ceiling_bypass"
+    if [[ -n "$ONLY_STEP" ]]; then
+        EXPECTED_ROSTER="${FSS_EXPECTED_ROSTER:-}"
+    else
+        EXPECTED_ROSTER="${FSS_EXPECTED_ROSTER:-$DEFAULT_ROSTER}"
+    fi
 
     CARGO_TEST_ARGS=()
     if [[ -n "$ONLY_STEP" ]]; then
@@ -113,7 +122,7 @@ with open(log_file, "w", encoding="utf-8") as f:
 
     while true; do
         TEST_EXIT=0
-        RCH_REQUIRE_REMOTE=1 rch exec -- cargo test -p fss-reference --test annexb_split_contract --locked --offline -- "${CARGO_TEST_ARGS[@]}" > "$STDOUT_TMP" 2>&1 || TEST_EXIT=$?
+        RCH_REQUIRE_REMOTE=1 rch exec -- cargo test -p fss-reference --test annexb_split_contract --locked --offline -j 1 -- "${CARGO_TEST_ARGS[@]}" > "$STDOUT_TMP" 2>&1 || TEST_EXIT=$?
         if [[ $TEST_EXIT -eq 103 && $RETRY_COUNT -lt 3 ]]; then
             RETRY_COUNT=$(( RETRY_COUNT + 1 ))
             sleep $(( RETRY_COUNT * 5 ))
@@ -125,7 +134,7 @@ with open(log_file, "w", encoding="utf-8") as f:
     # Parse CAPLOG records from test output with ANSI stripping and robust error detection
     SUMMARY_JSON=$(python3 -c '
 import datetime, json, re, sys
-stdout_file, log_file, script, bead, test_exit_str = sys.argv[1:6]
+stdout_file, log_file, script, bead, test_exit_str, expected_roster_str = sys.argv[1:7]
 test_exit = int(test_exit_str)
 ansi_strip = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 
@@ -251,12 +260,19 @@ with open(stdout_file, "r", encoding="utf-8", errors="replace") as sf, \
 
             verdict = data["verdict"]
             step_count += 1
-            if verdict == "fail":
+            if verdict == "pass":
+                exp = data.get("expected")
+                obs = data.get("observed")
+                if exp is not None and obs is not None and exp != obs:
+                    verdict = "fail"
+                    fail_count += 1
+                    failures.append(f"{step}:expected_observed_mismatch")
+            elif verdict == "fail":
                 fail_count += 1
                 failures.append(step)
             elif verdict == "skip":
                 skipped.append(step)
-            elif verdict != "pass":
+            else:
                 fail_count += 1
                 failures.append(step)
 
@@ -266,7 +282,7 @@ with open(stdout_file, "r", encoding="utf-8", errors="replace") as sf, \
                 "bead": bead,
                 "step": step,
                 "cmd": f"cargo test -p fss-reference --test annexb_split_contract -- {step}",
-                "exit": data.get("exit", 0),
+                "exit": data.get("exit", 0) if verdict == "pass" else 1,
                 "duration_ms": data.get("duration_ms", 1),
                 "expected": data.get("expected"),
                 "observed": data.get("observed"),
@@ -279,10 +295,37 @@ with open(stdout_file, "r", encoding="utf-8", errors="replace") as sf, \
             }
             lf.write(json.dumps(rec) + "\n")
 
+    if expected_roster_str.strip():
+        expected_steps = [s.strip() for s in expected_roster_str.split(",") if s.strip()]
+        for exp_s in expected_steps:
+            if exp_s not in seen_steps:
+                fail_count += 1
+                failures.append(f"{exp_s}:missing_from_roster")
+                rec = {
+                    "ts": now_iso(),
+                    "script": script,
+                    "bead": bead,
+                    "step": exp_s,
+                    "cmd": f"cargo test -p fss-reference --test annexb_split_contract -- {exp_s}",
+                    "exit": 1,
+                    "duration_ms": 1,
+                    "expected": "step executed in roster",
+                    "observed": "step missing from execution output",
+                    "digest": None,
+                    "stdout_sha256": "",
+                    "stdout_excerpt": "",
+                    "stderr_excerpt": "",
+                    "verdict": "fail",
+                    "repro": f"scripts/e2e/cap_ingest_annexb.sh --only {exp_s}"
+                }
+                lf.write(json.dumps(rec) + "\n")
+
 if test_exit != 0 and "cargo_test_failed" not in failures:
     failures.append("cargo_test_failed")
+    fail_count += 1
 if step_count == 0 and "no_caplog_emitted" not in failures:
     failures.append("no_caplog_emitted")
+    fail_count += 1
 
 print(json.dumps({
     "step_count": step_count,
@@ -290,7 +333,7 @@ print(json.dumps({
     "failures": failures,
     "skipped": skipped
 }))
-' "$STDOUT_TMP" "$LOG_FILE" "cap_ingest_annexb.sh" "$BEAD_ID" "$TEST_EXIT")
+' "$STDOUT_TMP" "$LOG_FILE" "cap_ingest_annexb.sh" "$BEAD_ID" "$TEST_EXIT" "$EXPECTED_ROSTER")
 
     rm -f "$STDOUT_TMP"
 
