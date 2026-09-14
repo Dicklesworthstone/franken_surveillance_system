@@ -6,6 +6,7 @@
 
 pub mod h264;
 pub mod rtpdump;
+pub mod rtsp;
 
 pub use h264::{
     H264AnnexBStream, H264FixtureParams, NalUnitSpan, SyntheticNal, build_h264_manifest_json,
@@ -16,6 +17,18 @@ pub use rtpdump::{
     RtpdumpParams, build_rtp_manifest_json, generate_rtpdump_clean, generate_rtpdump_duplicate,
     generate_rtpdump_large_gap, generate_rtpdump_loss, generate_rtpdump_reorder,
     generate_rtpdump_ssrc_reset, generate_rtpdump_truncated_last_record,
+};
+pub use rtsp::{
+    DEFAULT_RTCP_CNAME, DEFAULT_RTSP_CLOCK_RATE_HZ, DEFAULT_RTSP_INITIAL_SEQUENCE,
+    DEFAULT_RTSP_MTU, DEFAULT_RTSP_PAYLOAD_TYPE, DEFAULT_RTSP_SESSION_ID, DEFAULT_RTSP_SSRC,
+    DEFAULT_RTSP_STREAM_URI, RTSP_TRANSCRIPT_MAGIC_HEADER, RtspSenderReportDesc,
+    RtspTranscriptFixture, RtspTranscriptParams, TranscriptDirection, TranscriptRecord,
+    build_compound_rtcp_sr, build_rtcp_sdes_cname, build_rtcp_sender_report,
+    build_rtsp_manifest_json, encode_interleaved_frame, generate_transcript_auth_required,
+    generate_transcript_bad_content_length, generate_transcript_clean,
+    generate_transcript_get_parameter_keepalive, generate_transcript_interleave_split,
+    generate_transcript_rtcp_rsize, generate_transcript_session_timeout,
+    generate_transcript_sr_absent, parse_transcript, serialize_transcript,
 };
 
 use std::fmt;

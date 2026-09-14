@@ -156,7 +156,9 @@ fn packetize_nals_for_stream(
         .nals
         .iter()
         .find(|n| n.access_unit_index == 0 && n.nal_unit_type == 9)
-        .ok_or(MediaFixtureError::InvalidParam("Annex-B stream missing AU0 AUD"))?;
+        .ok_or(MediaFixtureError::InvalidParam(
+            "Annex-B stream missing AU0 AUD",
+        ))?;
 
     // Find SPS and PPS NALs for STAP-A aggregation
     let sps_nal = annexb.nals.iter().find(|n| n.nal_unit_type == 7).ok_or(
@@ -241,9 +243,7 @@ fn packetize_nals_for_stream(
                         && n.nal_unit_type != 8
                         && n.nal_unit_type != 9
                 } else {
-                    n.access_unit_index == au_idx
-                        && n.nal_unit_type != 7
-                        && n.nal_unit_type != 8
+                    n.access_unit_index == au_idx && n.nal_unit_type != 7 && n.nal_unit_type != 8
                 }
             })
             .collect();

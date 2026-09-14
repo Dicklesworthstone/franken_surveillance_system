@@ -247,10 +247,7 @@ pub fn generate_slice(
         // Explicitly inject byte sequences exercising emulation prevention byte (0x03)
         // insertion across consecutive zero runs and trailing values <= 0x03.
         let ep_pattern = [
-            0x00, 0x00, 0x00,
-            0x00, 0x00, 0x01,
-            0x00, 0x00, 0x02,
-            0x00, 0x00, 0x03,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x02, 0x00, 0x00, 0x03,
         ];
         let pos = extra.len().min(16);
         extra.splice(pos..pos, ep_pattern);
