@@ -265,7 +265,8 @@ pub trait PublishCancellation {
     fn cancel_requested(&self, point: PublishCutPoint) -> bool;
 }
 
-struct NeverCancel;
+/// A cancellation token that never cancels publication.
+pub struct NeverCancel;
 
 impl PublishCancellation for NeverCancel {
     fn cancel_requested(&self, _point: PublishCutPoint) -> bool {
@@ -2535,6 +2536,12 @@ pub fn read_verified_with_io(
         .map_err(LocalPublicationError::Spool)
 }
 
+impl fss_object::VerifiedObjectCatalog for LocalRootPublisher {
+    fn require_verified(&self, digest: ContentDigest) -> Result<(), fss_object::ObjectError> {
+        self.spool.require_verified(digest)
+    }
+}
+
 fn io_error(operation: LocalIoOperation, path: &Path, error: &io::Error) -> LocalPublicationError {
     LocalPublicationError::Io {
         operation,
@@ -2629,9 +2636,12 @@ fn scan_directory(
         let entry =
             entry.map_err(|error| io_error(LocalIoOperation::ScanDirectory, dir, &error))?;
         if found.len() >= bound {
+            // Bounded scan: this entry is the first one past `bound`. The rest of the directory
+            // is never listed, so only a lower bound on its size is known.
             return Err(LocalPublicationError::EntryLimit {
                 directory: dir.to_path_buf(),
                 maximum: bound,
+                at_least: bound.saturating_add(1),
             });
         }
         let file_type = io

@@ -7,6 +7,11 @@ rust-version.workspace = true
 authors.workspace = true
 license-file.workspace = true
 repository.workspace = true
+autotests = true
+
+[[test]]
+name = "reference_deployment_recovery_contract"
+path = "tests/reference_deployment_recovery_contract.rs"
 
 [lints]
 workspace = true

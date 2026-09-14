@@ -317,11 +317,18 @@ pub enum LocalPublicationError {
         maximum: usize,
     },
     /// A publication directory holds more entries than the scan bound admits.
+    ///
+    /// The scan is bounded: it stops at the first entry past `maximum` and never lists the rest of
+    /// the directory, so the true entry count is unknown. `at_least` is a lower bound on that count
+    /// (always `maximum + 1`), never an exact tally.
     EntryLimit {
         /// Directory being scanned.
         directory: PathBuf,
         /// Maximum admitted entries.
         maximum: usize,
+        /// Lower bound on the directory's entry count: the scan observed this many entries and
+        /// stopped. The directory may hold more.
+        at_least: usize,
     },
     /// An encoded or on-disk record exceeds its size bound.
     RecordTooLarge {
@@ -617,9 +624,13 @@ impl fmt::Display for LocalPublicationError {
                 formatter,
                 "manifest names {count} children; maximum is {maximum}"
             ),
-            Self::EntryLimit { directory, maximum } => write!(
+            Self::EntryLimit {
+                directory,
+                maximum,
+                at_least,
+            } => write!(
                 formatter,
-                "directory {} exceeds {maximum} entries",
+                "directory {} holds at least {at_least} entries; the scan limit is {maximum}",
                 directory.display()
             ),
             Self::RecordTooLarge { length, maximum } => {
@@ -818,6 +829,7 @@ mod tests {
             LocalPublicationError::EntryLimit {
                 directory: PathBuf::from("roots"),
                 maximum: 1,
+                at_least: 2,
             },
             LocalPublicationError::RecordTooLarge {
                 length: 2,

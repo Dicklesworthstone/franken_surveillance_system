@@ -27,6 +27,7 @@ mod model;
 mod outcome;
 mod packet_fault;
 mod policy;
+pub mod reference_deployment;
 pub mod rtsp;
 mod situation;
 mod situation_guard;
@@ -52,6 +53,8 @@ mod model_tests;
 mod outcome_tests;
 #[cfg(test)]
 mod policy_tests;
+#[cfg(test)]
+mod reference_deployment_tests;
 #[cfg(test)]
 mod situation_guard_tests;
 #[cfg(test)]
@@ -159,6 +162,12 @@ pub use packet_fault::{
 pub use policy::{
     ReferenceEventReceipt, ReferenceModelObservation, ReferencePolicyAction,
     ReferencePolicyDecision, evaluate_unknown_presence, publish_reference_event,
+};
+pub use reference_deployment::{
+    DEPLOYMENT_CANCEL_STAGES, DEPLOYMENT_LAYOUT_FILENAME, DEPLOYMENT_LAYOUT_FORMAT_VERSION,
+    DEPLOYMENT_LAYOUT_SCHEMA, DeploymentLayout, DeploymentLimits, HostLayoutIo, LayoutIo,
+    RecoveryAction, RecoveryReceipt, ReferenceDeployment, StagedManifestHandle,
+    write_layout_atomic,
 };
 pub use rtsp::{
     DEFAULT_MAX_BODY_BYTES, DEFAULT_MAX_HEADERS, DEFAULT_MAX_INTERLEAVED_BYTES,

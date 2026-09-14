@@ -48,6 +48,7 @@ pub use local::{
     decode_st_dev, detect_writers, inspect, inspect_with_io, inspect_with_ledger_journal,
     inspect_with_options, probe_shared_lock, read_verified, read_verified_with_io,
     root_record_bytes, tombstone_record_bytes,
+    NeverCancel,
 };
 pub use publisher::AuthorityPublisher;
 pub use replay::{

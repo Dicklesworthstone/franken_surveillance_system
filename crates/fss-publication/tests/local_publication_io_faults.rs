@@ -562,3 +562,47 @@ fn interrupted_root_record_write_after_a_partial_write_is_bounded_at_that_offset
     assert_eq!(receipt.claims.local, LocalPublicationState::Durable);
     assert_published_exactly(&root, publisher, &slot_name, &manifest)
 }
+
+// ---------------------------------------------------------------------------------------------
+// Bounded directory scan (fss-2h5zq.9)
+// ---------------------------------------------------------------------------------------------
+
+/// Past `max_scan_entries` the roots scan stops at the first extra entry and reports only a lower
+/// bound, `at_least: maximum + 1`. It never lists the rest of the directory: the number of
+/// directory-entry reads is the same for a slightly and a heavily overfull roots directory.
+#[test]
+fn roots_scan_stops_at_bound_plus_one_regardless_of_directory_size() -> TestResult {
+    let mut entry_reads = Vec::new();
+    for extra in [4_usize, 40] {
+        let root = fresh_root(&format!("roots_scan_stops_at_bound_plus_one_{extra}"))?;
+        drop(LocalRootPublisher::open(&root, limits())?);
+        let roots_dir = root.join(LOCAL_ROOTS_DIR);
+        for index in 0..(64 + extra) {
+            fs::write(roots_dir.join(format!("junk-{index:04}")), b"x")?;
+        }
+        let io = Arc::new(FaultInjectingSpoolIo::new(SpoolFaultPlan::new()));
+        let error = expect_err(LocalRootPublisher::open_with_io(
+            &root,
+            limits(),
+            io.clone(),
+        ))?;
+        assert_eq!(
+            error,
+            LocalPublicationError::EntryLimit {
+                directory: roots_dir,
+                maximum: 64,
+                at_least: 65,
+            }
+        );
+        entry_reads.push(io.calls(SpoolIoCall::NextDirEntry));
+        log_scenario(
+            "roots_scan_stops_at_bound_plus_one_regardless_of_directory_size",
+            &format!("extra={extra}"),
+        );
+    }
+    assert_eq!(
+        entry_reads[0], entry_reads[1],
+        "the roots scan must stop at bound + 1 whatever the directory size"
+    );
+    Ok(())
+}

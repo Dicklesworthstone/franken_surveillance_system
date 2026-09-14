@@ -269,9 +269,14 @@ fn root_scan_limit_holds_at_n_and_fails_typed_at_n_plus_one() -> TestResult {
     assert_eq!(inspected.report.orphaned_temps.len(), 2);
     let roots_dir = root.join(LOCAL_ROOTS_DIR);
     match inspect_quiet(&root, over_n) {
-        Err(LocalPublicationError::EntryLimit { directory, maximum }) => {
+        Err(LocalPublicationError::EntryLimit {
+            directory,
+            maximum,
+            at_least,
+        }) => {
             assert_eq!(directory, roots_dir);
             assert_eq!(maximum, 3);
+            assert_eq!(at_least, 4);
         }
         other => return Err(format!("expected EntryLimit at N+1, got {other:?}").into()),
     }
@@ -293,9 +298,14 @@ fn root_scan_limit_holds_at_n_and_fails_typed_at_n_plus_one() -> TestResult {
     copy_tree(&base, &copy)?;
     let copy_root = copy.join("publication");
     match LocalRootPublisher::open(&copy_root, over_n) {
-        Err(LocalPublicationError::EntryLimit { directory, maximum }) => {
+        Err(LocalPublicationError::EntryLimit {
+            directory,
+            maximum,
+            at_least,
+        }) => {
             assert_eq!(directory, copy_root.join(LOCAL_ROOTS_DIR));
             assert_eq!(maximum, 3);
+            assert_eq!(at_least, 4);
         }
         other => return Err(format!("expected the open's EntryLimit, got {other:?}").into()),
     }
