@@ -3,9 +3,9 @@
 use std::collections::BTreeSet;
 
 use fss_core::{
-    BatchId, CanonicalEncode, CanonicalEncoder, CaptureInterval, ContentDigest, DecisionPath,
-    EventEvidence, EventHypothesis, EventId, EventKind, EventState, EvidenceClass, EvidenceDelta,
-    EvidenceEdgeRelation, LedgerAnchor, ObjectId, Plane, ProbabilityInterval,
+    BatchId, CanonicalDecode, CanonicalEncode, CanonicalEncoder, CaptureInterval, ContentDigest,
+    DecisionPath, EventEvidence, EventHypothesis, EventId, EventKind, EventState, EvidenceClass,
+    EvidenceDelta, EvidenceEdgeRelation, LedgerAnchor, ObjectId, Plane, ProbabilityInterval,
 };
 use fss_ledger::DurableReferenceLedger;
 use fss_object::{InMemoryObjectStore, ObjectManifest, VerifiedObjectCatalog};
@@ -75,6 +75,15 @@ pub struct ReferenceEventReceipt {
     pub event_revision_digest: ContentDigest,
     /// Authority anchor after publication.
     pub authority_anchor: LedgerAnchor,
+    /// Verified accumulated sensor-tamper status across this event lineage.
+    pub lineage_tamper_status: fss_core::SensorTamperStatus,
+    /// Exact canonical encodings of every earlier revision of this event's lineage, oldest first,
+    /// as the authority ledger published them.
+    ///
+    /// Hydration only: alert preparation, alert dispatch and situation compilation admit them
+    /// solely when each decodes to the revision the ledger's `event_revision` witness names at its
+    /// position, then recompute the lineage tamper status from them (fss-2uftm).
+    pub prior_revision_encodings: Vec<Vec<u8>>,
 }
 
 /// Evaluates the narrow reference question "is an unknown person present?".
@@ -147,6 +156,11 @@ pub fn evaluate_unknown_presence(
                 unresolved += 1;
                 EvidenceEdgeRelation::SensorTamper
             }
+            // Evidenced restoration of sensor integrity retires prior tamper.
+            MockModelOutcome::Finding {
+                label: MockSemanticLabel::IntegrityRestored,
+                ..
+            } => EvidenceEdgeRelation::SensorIntegrityRestoration,
             // Unknown and abstention say nothing about presence: a neutral derivation edge that
             // holds the event unresolved without contradicting it.
             MockModelOutcome::Finding {
@@ -158,6 +172,13 @@ pub fn evaluate_unknown_presence(
                 EvidenceEdgeRelation::DerivedFrom
             }
         };
+        let identity_digest = match relation {
+            EvidenceEdgeRelation::SensorTamper
+            | EvidenceEdgeRelation::SensorIntegrityRestoration => Some(ContentDigest::sha256(
+                observation.result.sensor_id.as_str().as_bytes(),
+            )),
+            _ => None,
+        };
         evidence.push(EventEvidence {
             digest: result_digest,
             class: EvidenceClass::Derived,
@@ -165,7 +186,7 @@ pub fn evaluate_unknown_presence(
             supports: relation.required_supports_flag(),
             relation,
             capsule_digest: None,
-            identity_digest: None,
+            identity_digest,
         });
         model_receipts.push(result_digest);
     }
@@ -258,6 +279,45 @@ pub fn publish_reference_event(
     let (prior_generation, predecessor) = authority_predecessor(ledger, &object_id)?;
     let candidate_revision_digest = decision.event.revision_digest();
 
+    let mut prior_events = Vec::new();
+    for batch in ledger.batches() {
+        for delta in &batch.deltas {
+            if delta.object_id == object_id && delta.family == "event_revision" {
+                let manifest = objects.published_manifest(delta.payload_digest)?;
+                let payload = manifest
+                    .metadata_digest()
+                    .or_else(|| manifest.children().first().copied())
+                    .ok_or(fss_core::ContractError::EvidenceRequired)?;
+                let bytes = objects.read_verified(payload)?;
+                let rev = EventHypothesis::from_canonical_bytes(bytes)?;
+                if rev.revision < decision.event.revision {
+                    prior_events.push(rev);
+                }
+            }
+        }
+    }
+    prior_events.sort_by_key(|e| e.revision);
+    prior_events.dedup_by_key(|e| e.revision);
+
+    let prior_tamper = fss_core::event::compute_sensor_tamper_status(prior_events.iter(), None);
+    let mut combined_tamper = prior_tamper.clone();
+
+    // Tamper checks apply to both new publications and idempotent retries: an exact retry of a
+    // revision that drops an unretired tamper must still be refused. The step is the one
+    // `EventHypothesis::verify_chain` and lineage replay use: it refuses a tamper-vetoed state
+    // with any tamper open, and a revision that does not carry forward every tamper that was open
+    // before it and that it did not retire.
+    fss_core::event::apply_revision_tamper_step(&mut combined_tamper, &decision.event)?;
+    if decision
+        .event
+        .evidence
+        .iter()
+        .any(|e| e.reports_integrity_restoration())
+        && prior_tamper.open_tamper_records.is_empty()
+    {
+        return Err(fss_core::ContractError::EvidenceRequired.into());
+    }
+
     // Re-publishing the identical revision that is already current is idempotent.
     // A caller that published and then lost the receipt (e.g. crash after durable commit)
     // can recover it without mutating authority or being confused with a fork.
@@ -284,6 +344,9 @@ pub fn publish_reference_event(
         if staged.event_root != payload_digest {
             return Err(fss_core::ContractError::SupersessionMismatch.into());
         }
+        let mut tamper_encoder = CanonicalEncoder::new();
+        combined_tamper.encode_canonical(&mut tamper_encoder);
+        let _ = objects.put_verified(&tamper_encoder.finish())?;
         let _ = objects.verify_closure(staged.event_root)?;
 
         return Ok(ReferenceEventReceipt {
@@ -291,6 +354,11 @@ pub fn publish_reference_event(
             event_object_digest: staged.event_object_digest,
             event_revision_digest: staged.event_revision_digest,
             authority_anchor: committed_anchor,
+            lineage_tamper_status: combined_tamper,
+            prior_revision_encodings: prior_events
+                .iter()
+                .map(crate::alert::event_revision_encoding)
+                .collect(),
         });
     }
 
@@ -301,17 +369,36 @@ pub fn publish_reference_event(
     }
 
     let staged = stage_event_revision(decision, objects)?;
+    let mut tamper_encoder = CanonicalEncoder::new();
+    combined_tamper.encode_canonical(&mut tamper_encoder);
+    let _ = objects.put_verified(&tamper_encoder.finish())?;
 
     let delta = EvidenceDelta {
         delta_id: format!("delta:event:{event_name}:{}", decision.event.revision),
         family: "event_revision".to_owned(),
-        object_id,
+        object_id: object_id.clone(),
         prior_generation,
         new_generation: decision.event.revision,
         validity: decision.event.interval,
         plane: Plane::Authority,
         payload_digest: staged.event_root,
         witness_digest: Some(staged.event_revision_digest),
+        operation_id: None,
+    };
+
+    let tamper_delta = EvidenceDelta {
+        delta_id: format!(
+            "delta:event:{event_name}:tamper:{}",
+            decision.event.revision
+        ),
+        family: "sensor_tamper_status".to_owned(),
+        object_id: ObjectId::parse(format!("object:event:{event_name}:tamper"))?,
+        prior_generation,
+        new_generation: decision.event.revision,
+        validity: decision.event.interval,
+        plane: Plane::Authority,
+        payload_digest: staged.event_root,
+        witness_digest: Some(combined_tamper.canonical_digest()),
         operation_id: None,
     };
 
@@ -322,7 +409,7 @@ pub fn publish_reference_event(
                 "batch:event:{event_name}:{}",
                 decision.event.revision
             ))?,
-            vec![delta],
+            vec![delta, tamper_delta],
             [staged.event_root],
         )?;
         publisher.append(batch)?
@@ -332,6 +419,11 @@ pub fn publish_reference_event(
         event_object_digest: staged.event_object_digest,
         event_revision_digest: staged.event_revision_digest,
         authority_anchor,
+        lineage_tamper_status: combined_tamper,
+        prior_revision_encodings: prior_events
+            .iter()
+            .map(crate::alert::event_revision_encoding)
+            .collect(),
     })
 }
 

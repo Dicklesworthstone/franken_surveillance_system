@@ -3,8 +3,8 @@
 | ID | Schema | File | Authority | Compatibility rule |
 |---|---|---|---|---|
 | `SCHEMA-SENSOR-CAPSULE-001` | `fss.sensor_capsule.v1` | `schemas/sensor_capsule.v1.json` | authority | append/supersede; no silent timestamp/source reinterpretation |
-| `SCHEMA-EVENT-HYPOTHESIS-001` | `fss.event_hypothesis.v1` | `schemas/event_hypothesis.v1.json` | authority | immutable revisions; evidence required after hypothesis |
-| `SCHEMA-EVIDENCE-GRAPH-001` | `fss.evidence_graph.v1` | `schemas/evidence_graph.v1.json` | derived/evidence | causal evidence graph over capsules, identities, model receipts, and revisions |
+| `SCHEMA-EVENT-HYPOTHESIS-001` | `fss.event_hypothesis.v1` | `schemas/event_hypothesis.v1.json` | authority | immutable revisions; evidence required after hypothesis; enum widening for relation additions (sensor_tamper, sensor_integrity_restoration) |
+| `SCHEMA-EVIDENCE-GRAPH-001` | `fss.evidence_graph.v1` | `schemas/evidence_graph.v1.json` | derived/evidence | causal evidence graph over capsules, identities, model receipts, and revisions; enum widening for relation additions (sensor_tamper, sensor_integrity_restoration) |
 | `SCHEMA-EVIDENCE-BUNDLE-001` | `fss.evidence_bundle.v1` | `schemas/evidence_bundle.v1.json` | authority/export | old proof bundles remain replayable or explicitly unsupported |
 | `SCHEMA-OPERATION-RECEIPT-001` | `fss.operation_receipt.v1` | `schemas/operation_receipt.v1.json` | effect truth | state monotonicity; idempotency identity preserved |
 | `SCHEMA-CALIBRATION-CERT-001` | `fss.calibration_certificate.v1` | `schemas/calibration_certificate.v1.json` | authority | generation immutable; invalidation creates new state |
@@ -35,7 +35,8 @@
 | `SCHEMA-AGENT-WORLD-ENVELOPE-001` | `fss.agent_world_envelope.v1` | `schemas/agent_world_envelope.v1.json` | agent world model | nominal estimate, certified core and absences, material alternatives, adversarial residuals, unresolved dimensions, discriminators, and selection witness remain separate and anchor-pinned |
 | `SCHEMA-AGENT-SITUATION-001` | `fss.agent_situation_frame.v1` | `schemas/agent_situation_frame.v1.json` | situation projection | task-relative selection changes only through a new frame and selection witness |
 | `SCHEMA-AGENT-SITUATION-CAPSULE-001` | `fss.situation_capsule.v1` | `schemas/situation_capsule.v1.json` | agent driver projection | frame, meaningful delta, obligations, resources, affordances, context, and compression proof remain one anchor-pinned publication |
-| `SCHEMA-AGENT-DELTA-001` | `fss.agent_meaningful_delta.v1` | `schemas/agent_meaningful_delta.v1.json` | follow/continuity | terminal, contradiction, coverage, plan-invalidation, and effect-uncertainty deltas cannot be coalesced away |
+| `SCHEMA-AGENT-DELTA-001` | `fss.agent_meaningful_delta.v1` | `schemas/agent_meaningful_delta.v1.json` | follow/continuity | terminal, contradiction, coverage, plan-invalidation, and effect-uncertainty deltas cannot be coalesced away; superseded by `SCHEMA-AGENT-DELTA-002` (`fss.agent_meaningful_delta.v2`), which adds the required typed removal `removedClaimIds`; v1 records stay immutable |
+| `SCHEMA-AGENT-DELTA-002` | `fss.agent_meaningful_delta.v2` | `schemas/agent_meaningful_delta.v2.json` | follow/continuity | terminal, contradiction, coverage, plan-invalidation, and effect-uncertainty deltas cannot be coalesced away; a basis cell absent from the result is a typed removal (`removedClaimIds`), never a changed cell carrying its basis value; supersedes `SCHEMA-AGENT-DELTA-001` |
 | `SCHEMA-AGENT-HYPOTHESIS-001` | `fss.agent_hypothesis_workspace.v1` | `schemas/agent_hypothesis_workspace.v1.json` | investigation cognition | competing hypotheses and support, contradiction, missing evidence, predictions, and falsifiers remain addressable |
 | `SCHEMA-AGENT-INVESTIGATION-001` | `fss.investigation_state.v1` | `schemas/investigation_state.v1.json` | investigation cognition | case revisions preserve question, decision, hypotheses, probes, stop rules, and residual uncertainty |
 | `SCHEMA-AGENT-QUERY-001` | `fss.agent_query_plan.v1` | `schemas/agent_query_plan.v1.json` | query cognition | compiled interpretation, targets, authority, privacy, cost, and output view are reviewable and bounded |
@@ -75,5 +76,6 @@
 | `SCHEMA-PROVIDER-FAILURE-RECEIPT-001` | `fss.provider_failure_receipt.v1` | `schemas/provider_failure_receipt.v1.json` | provider authority | provider-issued failure receipt; nonce and error reason preserved |
 | `SCHEMA-EFFECT-RECONCILIATION-001` | `fss.effect_reconciliation.v1` | `schemas/effect_reconciliation.v1.json` | effect truth | four-valued outcome; verified requires independent evidence witness |
 | `SCHEMA-ROBOT-DOCS-001` | `fss.robot_docs.v1` | `schemas/robot_docs.v1.json` | documentation/metadata | immutable; additions compatible |
+| `SCHEMA-SENSOR-TAMPER-STATUS-001` | `fss.sensor_tamper_status.v1` | `schemas/sensor_tamper_status.v1.json` | authority | lineage sensor-tamper status published with each event revision; the `sensor_tamper_status` witness is the canonical digest of every field; an open tamper is carried forward until an evidenced restoration captured strictly after it retires it; changed meaning requires a new schema |
 
 Binary media, ledger, search-segment, graph-run, and release formats additionally require magic, version, bounded lengths, canonical encoding, migration fixtures, corruption tests, and a named format owner before implementation.

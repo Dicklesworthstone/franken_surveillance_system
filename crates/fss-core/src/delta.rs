@@ -193,6 +193,11 @@ pub struct MeaningfulDelta {
     pub classes: BTreeSet<MeaningfulDeltaClass>,
     /// Result knowledge cells whose decision semantics changed.
     pub changed_cells: Vec<KnowledgeCell>,
+    /// Basis claims whose knowledge cell is absent from the result, strictly sorted.
+    ///
+    /// A typed removal: a vanished cell is reported here and never as a changed cell carrying its
+    /// basis value, and no claim is both changed and removed.
+    pub removed_claim_ids: Vec<String>,
     /// Assumptions or plans invalidated by the change.
     pub invalidated_assumptions: Vec<String>,
     /// Explicit coverage loss/recovery statements.
@@ -233,6 +238,7 @@ impl MeaningfulDelta {
             return Err(ContractError::InvalidAnchorSuccessor);
         }
         validate_changed_cells(&self.changed_cells)?;
+        validate_removed_claims(&self.removed_claim_ids, &self.changed_cells)?;
         validate_text_vector(&self.invalidated_assumptions)?;
         validate_text_vector(&self.coverage_changes)?;
         validate_text_vector(&self.obligation_changes)?;
@@ -245,6 +251,7 @@ impl MeaningfulDelta {
         if no_change {
             if self.classes.len() != 1
                 || !self.changed_cells.is_empty()
+                || !self.removed_claim_ids.is_empty()
                 || !self.invalidated_assumptions.is_empty()
                 || !self.coverage_changes.is_empty()
                 || !self.obligation_changes.is_empty()
@@ -276,6 +283,7 @@ impl MeaningfulDelta {
 
         if self.classes.contains(&MeaningfulDeltaClass::Contradiction)
             && self.changed_cells.is_empty()
+            && self.removed_claim_ids.is_empty()
         {
             return Err(ContractError::EvidenceRequired);
         }
@@ -367,8 +375,16 @@ impl MeaningfulDelta {
             .cloned()
             .map(|cell| (cell.claim_id.clone(), cell))
             .collect();
+        for claim in &next.removed_claim_ids {
+            cells.remove(claim);
+        }
         for cell in &next.changed_cells {
             cells.insert(cell.claim_id.clone(), cell.clone());
+        }
+        let mut removed: BTreeSet<String> = self.removed_claim_ids.iter().cloned().collect();
+        removed.extend(next.removed_claim_ids.iter().cloned());
+        for cell in &next.changed_cells {
+            removed.remove(&cell.claim_id);
         }
         let coalesced_count = self
             .coalesced_count
@@ -389,6 +405,7 @@ impl MeaningfulDelta {
             result_anchor: next.result_anchor.clone(),
             classes,
             changed_cells: cells.into_values().collect(),
+            removed_claim_ids: removed.into_iter().collect(),
             invalidated_assumptions: merge_text(
                 &self.invalidated_assumptions,
                 &next.invalidated_assumptions,
@@ -411,10 +428,31 @@ impl MeaningfulDelta {
         Ok(delta)
     }
 
+    /// Validates the typed removals against the frames they were computed from.
+    ///
+    /// Every removed claim must name a knowledge cell of the basis ([`ContractError::NotFound`]
+    /// otherwise) that is absent from the result ([`ContractError::EvidenceRelationMismatch`]
+    /// otherwise). [`Self::validate`] cannot check this: a delta carries neither frame.
+    pub fn validate_removals_against(
+        &self,
+        basis: &[KnowledgeCell],
+        result: &[KnowledgeCell],
+    ) -> Result<(), ContractError> {
+        for claim in &self.removed_claim_ids {
+            if !basis.iter().any(|cell| &cell.claim_id == claim) {
+                return Err(ContractError::NotFound);
+            }
+            if result.iter().any(|cell| &cell.claim_id == claim) {
+                return Err(ContractError::EvidenceRelationMismatch);
+            }
+        }
+        Ok(())
+    }
+
     /// Returns the canonical decision-impact delta digest.
     #[must_use]
     pub fn delta_digest(&self) -> ContentDigest {
-        self.canonical_digest("fss.agent_meaningful_delta.v1")
+        self.canonical_digest("fss.agent_meaningful_delta.v2")
     }
 }
 
@@ -437,6 +475,7 @@ impl CanonicalEncode for MeaningfulDelta {
         for cell in &cells {
             cell.encode_canonical(encoder);
         }
+        encode_text_vector(&self.removed_claim_ids, encoder);
         encode_text_vector(&self.invalidated_assumptions, encoder);
         encode_text_vector(&self.coverage_changes, encoder);
         encode_text_vector(&self.obligation_changes, encoder);
@@ -455,6 +494,22 @@ impl CanonicalEncode for MeaningfulDelta {
             None => encoder.bool(false),
         }
     }
+}
+
+fn validate_removed_claims(
+    removed: &[String],
+    changed: &[KnowledgeCell],
+) -> Result<(), ContractError> {
+    validate_text_vector(removed)?;
+    let strictly_sorted = removed.windows(2).all(|pair| pair[0] < pair[1]);
+    if !strictly_sorted
+        || removed
+            .iter()
+            .any(|claim| claim.is_empty() || changed.iter().any(|cell| &cell.claim_id == claim))
+    {
+        return Err(ContractError::NonCanonicalOrdering);
+    }
+    Ok(())
 }
 
 fn validate_changed_cells(cells: &[KnowledgeCell]) -> Result<(), ContractError> {
@@ -583,6 +638,7 @@ mod tests {
             result_anchor: anchor(sequence + 1),
             classes,
             changed_cells,
+            removed_claim_ids: Vec::new(),
             invalidated_assumptions,
             coverage_changes,
             obligation_changes,
@@ -610,6 +666,192 @@ mod tests {
                 None
             },
         })
+    }
+
+    /// A MaterialState delta whose only change is the typed removal of `removed`.
+    fn removal_delta(sequence: u64, removed: &[&str]) -> Result<MeaningfulDelta, ContractError> {
+        Ok(MeaningfulDelta {
+            changed_cells: Vec::new(),
+            removed_claim_ids: removed.iter().map(|claim| (*claim).to_owned()).collect(),
+            ..delta(MeaningfulDeltaClass::MaterialState, sequence)?
+        })
+    }
+
+    #[test]
+    fn removed_claims_must_be_strictly_sorted_unique_and_never_also_changed()
+    -> Result<(), ContractError> {
+        removal_delta(1, &["claim:a", "claim:b"])?.validate()?;
+        assert!(matches!(
+            removal_delta(1, &["claim:a", "claim:a"])?.validate(),
+            Err(ContractError::NonCanonicalOrdering)
+        ));
+        assert!(matches!(
+            removal_delta(1, &["claim:b", "claim:a"])?.validate(),
+            Err(ContractError::NonCanonicalOrdering)
+        ));
+        let changed_and_removed = MeaningfulDelta {
+            changed_cells: vec![cell(KnowledgeState::Known)],
+            ..removal_delta(1, &["claim:test"])?
+        };
+        assert!(matches!(
+            changed_and_removed.validate(),
+            Err(ContractError::NonCanonicalOrdering)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn removed_claims_must_name_basis_cells_absent_from_the_result() -> Result<(), ContractError> {
+        let basis = [cell(KnowledgeState::Known)];
+        let removal = removal_delta(1, &["claim:test"])?;
+        removal.validate_removals_against(&basis, &[])?;
+        assert!(matches!(
+            removal.validate_removals_against(&[], &[]),
+            Err(ContractError::NotFound)
+        ));
+        assert!(matches!(
+            removal.validate_removals_against(&basis, &basis),
+            Err(ContractError::EvidenceRelationMismatch)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn coalescing_merges_repeated_removals_of_one_claim() -> Result<(), ContractError> {
+        let first = removal_delta(1, &["claim:gone"])?;
+        let second = removal_delta(2, &["claim:gone"])?;
+        let merged = first.coalesce(
+            &second,
+            "delta:merged",
+            "continuation:merged",
+            ContentDigest::sha256(b"merged"),
+        )?;
+        assert_eq!(merged.removed_claim_ids, vec!["claim:gone".to_owned()]);
+        assert!(merged.changed_cells.is_empty());
+        merged.validate()
+    }
+
+    #[test]
+    fn coalescing_a_later_removal_drops_the_earlier_change() -> Result<(), ContractError> {
+        let first = delta(MeaningfulDeltaClass::MaterialState, 1)?;
+        let second = removal_delta(2, &["claim:test"])?;
+        let merged = first.coalesce(
+            &second,
+            "delta:merged",
+            "continuation:merged",
+            ContentDigest::sha256(b"merged"),
+        )?;
+        assert!(
+            !merged
+                .changed_cells
+                .iter()
+                .any(|cell| cell.claim_id == "claim:test")
+        );
+        assert_eq!(merged.removed_claim_ids, vec!["claim:test".to_owned()]);
+        merged.validate()?;
+
+        // A later change of a removed claim reinstates it.
+        let reinstated = removal_delta(1, &["claim:test"])?.coalesce(
+            &delta(MeaningfulDeltaClass::MaterialState, 2)?,
+            "delta:reinstated",
+            "continuation:reinstated",
+            ContentDigest::sha256(b"reinstated"),
+        )?;
+        assert!(reinstated.removed_claim_ids.is_empty());
+        assert!(
+            reinstated
+                .changed_cells
+                .iter()
+                .any(|cell| cell.claim_id == "claim:test")
+        );
+        reinstated.validate()
+    }
+
+    #[test]
+    fn removal_of_a_contradicted_cell_is_critical_and_non_coalescible() -> Result<(), ContractError>
+    {
+        let removal = MeaningfulDelta {
+            changed_cells: Vec::new(),
+            removed_claim_ids: vec!["claim:sensor-integrity".to_owned()],
+            ..delta(MeaningfulDeltaClass::Contradiction, 1)?
+        };
+        removal.validate()?;
+        assert_eq!(removal.priority, DeltaPriority::Critical);
+        assert!(removal.is_non_coalescible());
+        assert!(!removal.can_coalesce_with(&delta(MeaningfulDeltaClass::MaterialState, 2)?)?);
+        Ok(())
+    }
+
+    #[test]
+    fn removed_claims_change_the_canonical_digest() -> Result<(), ContractError> {
+        let a = removal_delta(1, &["claim:a"])?;
+        assert_ne!(
+            a.delta_digest(),
+            removal_delta(1, &["claim:b"])?.delta_digest()
+        );
+        assert_ne!(a.delta_digest(), removal_delta(1, &[])?.delta_digest());
+        Ok(())
+    }
+
+    /// The delta digest is the SHA-256 of the canonical encoding framed under the v2 domain; the
+    /// golden prefix pins the framing and the delta identity that follows it.
+    #[test]
+    fn delta_digest_is_framed_under_the_v2_domain() -> Result<(), ContractError> {
+        const GOLDEN_PREFIX: &[u8] = b"\0\0\0\0\0\0\0\x10fss.canonical.v1\0\0\0\0\0\0\0\x1dfss.agent_meaningful_delta.v2\0\0\0\0\0\0\0\x07delta:1";
+        let delta = removal_delta(1, &["claim:gone"])?;
+        let mut encoder = CanonicalEncoder::new();
+        encoder.text("fss.canonical.v1");
+        encoder.text("fss.agent_meaningful_delta.v2");
+        delta.encode_canonical(&mut encoder);
+        let bytes = encoder.finish();
+        assert!(bytes.starts_with(GOLDEN_PREFIX));
+        assert_eq!(ContentDigest::sha256(&bytes), delta.delta_digest());
+        Ok(())
+    }
+
+    /// Decodes the canonical encoding field by field through the typed removals: every field before
+    /// them round-trips, and so do the removed claims.
+    #[test]
+    fn canonical_encoding_round_trips_through_the_removed_claims() -> Result<(), ContractError> {
+        use crate::canonical::{CanonicalDecode as _, CanonicalDecoder};
+        let delta = removal_delta(1, &["claim:a", "claim:b"])?;
+        let mut encoder = CanonicalEncoder::new();
+        delta.encode_canonical(&mut encoder);
+        let bytes = encoder.finish();
+        let mut decoder = CanonicalDecoder::new(&bytes);
+        assert_eq!(decoder.text()?, delta.delta_id);
+        assert_eq!(
+            ContractBasis::decode_canonical(&mut decoder)?,
+            delta.contract_basis
+        );
+        assert_eq!(SessionId::decode_canonical(&mut decoder)?, delta.session_id);
+        assert_eq!(decoder.text()?, delta.basis_frame_id);
+        assert_eq!(decoder.text()?, delta.result_frame_id);
+        assert_eq!(
+            LedgerAnchor::decode_canonical(&mut decoder)?,
+            delta.basis_anchor
+        );
+        assert_eq!(
+            LedgerAnchor::decode_canonical(&mut decoder)?,
+            delta.result_anchor
+        );
+        let mut classes = Vec::new();
+        for _ in 0..decoder.u64()? {
+            classes.push(decoder.text()?.to_owned());
+        }
+        let expected: Vec<String> = delta
+            .classes
+            .iter()
+            .map(|class| class.as_str().to_owned())
+            .collect();
+        assert_eq!(classes, expected);
+        assert_eq!(decoder.u64()?, 0, "no changed cells");
+        let mut removed = Vec::new();
+        for _ in 0..decoder.u64()? {
+            removed.push(decoder.text()?.to_owned());
+        }
+        assert_eq!(removed, delta.removed_claim_ids);
+        Ok(())
     }
 
     #[test]

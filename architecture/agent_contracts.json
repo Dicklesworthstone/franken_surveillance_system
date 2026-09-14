@@ -165,7 +165,7 @@
     "WorldEnvelope": "fss.agent_world_envelope.v1",
     "SituationCapsule": "fss.situation_capsule.v1",
     "SituationFrame": "fss.agent_situation_frame.v1",
-    "MeaningfulDelta": "fss.agent_meaningful_delta.v1",
+    "MeaningfulDelta": "fss.agent_meaningful_delta.v2",
     "AgentQueryPlan": "fss.agent_query_plan.v1",
     "InvestigationCase": "fss.investigation_state.v1",
     "HypothesisWorkspace": "fss.agent_hypothesis_workspace.v1",

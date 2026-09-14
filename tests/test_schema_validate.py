@@ -863,7 +863,7 @@ class TestSchemaConstitution(unittest.TestCase):
         unreg_findings = [f for f in validator.findings if f.code == schema_validate.CODE_UNREGISTERED_IMPLEMENTED_SCHEMA]
         self.assertEqual(len(unreg_findings), 0)
         self.assertEqual(result["unregisteredImplementedCount"], 0)
-        self.assertEqual(result["digestDomainCount"], 53)
+        self.assertEqual(result["digestDomainCount"], 54)
 
         # Continuation cursor is verified implemented
         implemented_names = {s["name"] for s in result["schemas"] if s["status"] == "implemented"}
@@ -1351,8 +1351,9 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         )
         self.assertEqual(result["status"], "passed")
         self.assertEqual(result["unregisteredImplementedCount"], 0)
-        self.assertEqual(result["digestDomainCount"], 53)
-        self.assertEqual(result["implementedCount"], 28)
+        self.assertEqual(result["digestDomainCount"], 54)
+        # 29 = 28 + fss.sensor_tamper_status.v1 (owner SensorTamperStatus, fss-2uftm).
+        self.assertEqual(result["implementedCount"], 29)
 
         unreg_findings = [
             f for f in validator.findings

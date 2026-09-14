@@ -839,7 +839,7 @@ impl EventKind {
 /// Returns whether a sensor-tamper report vetoes a revision in `state`: the states that establish
 /// physical presence or act on it. Tampered sensing can do neither. The match is exhaustive with
 /// no wildcard, so a new state must choose.
-const fn sensor_tamper_vetoes(state: EventState) -> bool {
+pub const fn sensor_tamper_vetoes(state: EventState) -> bool {
     match state {
         EventState::Corroborated | EventState::Adjudicated | EventState::AlertDelivered => true,
         EventState::Hypothesized
@@ -848,6 +848,300 @@ const fn sensor_tamper_vetoes(state: EventState) -> bool {
         | EventState::Indeterminate
         | EventState::Rejected => false,
     }
+}
+
+/// Internal record of an open sensor-tamper report with provenance metadata.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TamperRecord {
+    /// Failure domain of the tampered sensor.
+    pub failure_domain: String,
+    /// Bound sensor identity digest, if reported.
+    pub identity_digest: Option<ContentDigest>,
+    /// Tamper evidence root digest.
+    pub digest: ContentDigest,
+    /// Revision number at which this tamper report entered the lineage.
+    pub revision: u64,
+    /// Capture interval of the batch reporting the tamper.
+    pub interval: Option<CaptureInterval>,
+}
+
+impl CanonicalEncode for TamperRecord {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.text(&self.failure_domain);
+        match &self.identity_digest {
+            Some(d) => {
+                encoder.u8(1);
+                d.encode_canonical(encoder);
+            }
+            None => encoder.u8(0),
+        }
+        self.digest.encode_canonical(encoder);
+        encoder.u64(self.revision);
+        match &self.interval {
+            Some(i) => {
+                encoder.u8(1);
+                i.encode_canonical(encoder);
+            }
+            None => encoder.u8(0),
+        }
+    }
+}
+
+/// Tracks active and retired sensor-tamper risks across revisions.
+///
+/// Every field is covered by [`SensorTamperStatus::canonical_digest`], so a receipt that edits any
+/// of them no longer matches the `sensor_tamper_status` witness published with the revision.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SensorTamperStatus {
+    /// Failure domains with unretired sensor-tamper reports.
+    pub open_domains: BTreeSet<String>,
+    /// Retained evidence root digests of unretired sensor-tamper reports.
+    pub open_tamper_roots: Vec<ContentDigest>,
+    /// Evidenced restorations: (failure_domain, restoration_digest).
+    pub restorations: Vec<(String, ContentDigest)>,
+    /// Open tamper reports: (failure_domain, tamper_digest).
+    pub open_tamper_reports: Vec<(String, ContentDigest)>,
+    /// Open tamper records with metadata.
+    pub open_tamper_records: Vec<TamperRecord>,
+    /// Historical restoration digests that have retired tamper reports.
+    pub seen_restorations: BTreeSet<ContentDigest>,
+    /// Retained evidence digests across the lineage ensuring restorations never reuse any digest.
+    pub seen_lineage_digests: BTreeSet<ContentDigest>,
+}
+
+impl CanonicalEncode for SensorTamperStatus {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.text("fss.sensor_tamper_status.v1");
+        encoder.u64(self.open_domains.len() as u64);
+        for d in &self.open_domains {
+            encoder.text(d);
+        }
+        encoder.u64(self.open_tamper_roots.len() as u64);
+        for r in &self.open_tamper_roots {
+            r.encode_canonical(encoder);
+        }
+        encoder.u64(self.restorations.len() as u64);
+        for (dom, dig) in &self.restorations {
+            encoder.text(dom);
+            dig.encode_canonical(encoder);
+        }
+        encoder.u64(self.open_tamper_records.len() as u64);
+        for rec in &self.open_tamper_records {
+            rec.encode_canonical(encoder);
+        }
+        encoder.u64(self.open_tamper_reports.len() as u64);
+        for (dom, dig) in &self.open_tamper_reports {
+            encoder.text(dom);
+            dig.encode_canonical(encoder);
+        }
+        encoder.u64(self.seen_restorations.len() as u64);
+        for dig in &self.seen_restorations {
+            dig.encode_canonical(encoder);
+        }
+        encoder.u64(self.seen_lineage_digests.len() as u64);
+        for dig in &self.seen_lineage_digests {
+            dig.encode_canonical(encoder);
+        }
+    }
+}
+
+impl SensorTamperStatus {
+    /// Returns true if any sensor-tamper risk remains unretired.
+    #[must_use]
+    pub fn has_open_tamper(&self) -> bool {
+        !self.open_domains.is_empty() || !self.open_tamper_roots.is_empty()
+    }
+
+    /// Returns unretired tamper evidence root digests.
+    #[must_use]
+    pub fn open_roots(&self) -> &[ContentDigest] {
+        &self.open_tamper_roots
+    }
+
+    /// Returns evidenced restoration digests.
+    #[must_use]
+    pub fn restoration_roots(&self) -> Vec<ContentDigest> {
+        self.restorations.iter().map(|(_, d)| *d).collect()
+    }
+
+    /// Computes the deterministic canonical digest of this tamper status.
+    #[must_use]
+    pub fn canonical_digest(&self) -> ContentDigest {
+        let mut encoder = CanonicalEncoder::new();
+        self.encode_canonical(&mut encoder);
+        ContentDigest::sha256(&encoder.finish())
+    }
+}
+
+/// Maps a lineage replay refusal onto the chain-verification error vocabulary.
+fn transition_error_as_decode(err: EventTransitionError) -> EventDecodeError {
+    match err {
+        EventTransitionError::Contract(contract) => EventDecodeError::Contract(contract),
+        EventTransitionError::SensorIntegrityRisk => {
+            EventDecodeError::Contract(ContractError::SensorIntegrityRisk)
+        }
+        other => EventDecodeError::Contradiction {
+            field: "chain.lineage",
+            detail: other.to_string(),
+        },
+    }
+}
+
+/// Accumulates sensor-tamper status across an ordered sequence of event revisions and/or evidence edges.
+pub fn compute_sensor_tamper_status<'a>(
+    history: impl IntoIterator<Item = &'a EventHypothesis>,
+    current_evidence: Option<&'a [EventEvidence]>,
+) -> SensorTamperStatus {
+    compute_sensor_tamper_status_with_interval(history, current_evidence, None)
+}
+
+/// Accumulates sensor-tamper status with an optional capture interval for the current evidence.
+///
+/// The current evidence is applied with exactly `current_interval`. It never borrows the previous
+/// revision's interval: without its own capture interval the current batch is not ordered after any
+/// tamper, so no restoration in it can retire one.
+pub fn compute_sensor_tamper_status_with_interval<'a>(
+    history: impl IntoIterator<Item = &'a EventHypothesis>,
+    current_evidence: Option<&'a [EventEvidence]>,
+    current_interval: Option<CaptureInterval>,
+) -> SensorTamperStatus {
+    let mut status = SensorTamperStatus::default();
+    let mut max_rev = 0u64;
+
+    for rev in history {
+        apply_evidence_batch(&mut status, &rev.evidence, rev.revision, Some(rev.interval));
+        max_rev = max_rev.max(rev.revision);
+    }
+
+    if let Some(evidence) = current_evidence {
+        apply_evidence_batch(
+            &mut status,
+            evidence,
+            max_rev.saturating_add(1),
+            current_interval,
+        );
+    }
+
+    status
+}
+
+/// Applies one lineage revision to the running tamper status and enforces both lineage tamper
+/// invariants, refusing with [`ContractError::SensorIntegrityRisk`]:
+///
+/// 1. a revision in a state that [`sensor_tamper_vetoes`] may not leave any tamper open;
+/// 2. every tamper that was open before the revision and that the revision does not retire with an
+///    evidenced restoration must be carried forward on it as a `SensorTamper` edge with the same
+///    digest, so no revision can silently drop an unretired tamper.
+///
+/// The revision's own number and capture interval order its batch. This is the one definition that
+/// [`EventHypothesis::verify_chain`], [`EventLineage::from_revisions`] and
+/// [`EventLineage::replay_from_deltas`] share, so they reach the same verdict on every chain.
+pub fn apply_revision_tamper_step(
+    status: &mut SensorTamperStatus,
+    rev: &EventHypothesis,
+) -> Result<(), ContractError> {
+    let open_before: Vec<ContentDigest> = status
+        .open_tamper_records
+        .iter()
+        .map(|t| t.digest)
+        .collect();
+    apply_evidence_batch(status, &rev.evidence, rev.revision, Some(rev.interval));
+    if sensor_tamper_vetoes(rev.state) && status.has_open_tamper() {
+        return Err(ContractError::SensorIntegrityRisk);
+    }
+    let dropped = status.open_tamper_records.iter().any(|t| {
+        open_before.contains(&t.digest)
+            && !rev
+                .evidence
+                .iter()
+                .any(|e| e.digest == t.digest && e.reports_sensor_tamper())
+    });
+    if dropped {
+        return Err(ContractError::SensorIntegrityRisk);
+    }
+    Ok(())
+}
+
+pub(crate) fn apply_evidence_batch(
+    status: &mut SensorTamperStatus,
+    evidence: &[EventEvidence],
+    batch_revision: u64,
+    batch_interval: Option<CaptureInterval>,
+) {
+    for edge in evidence {
+        if edge.reports_integrity_restoration() {
+            let edge_id = edge.identity_digest;
+            let count_in_batch = evidence.iter().filter(|e| e.digest == edge.digest).count();
+            // `seen_lineage_digests` holds every digest an earlier batch of this lineage retained,
+            // which includes every open tamper digest and every restoration that already retired a
+            // tamper. That one check therefore refuses a restoration reusing a tamper's own digest
+            // or re-citing an earlier restoration; no separate check for either is needed.
+            //
+            // A restoration retires a tamper only when its batch is captured strictly after the
+            // tamper's capture ended. An overlapping or earlier capture cannot attest that integrity
+            // was re-established after the tamper, and a batch or tamper with no capture interval
+            // is not ordered at all, so neither retires anything.
+            if count_in_batch == 1
+                && !status.seen_lineage_digests.contains(&edge.digest)
+                && let Some(pos) = status.open_tamper_records.iter().position(|t| {
+                    t.revision < batch_revision
+                        && t.failure_domain == edge.failure_domain
+                        && t.identity_digest.is_some()
+                        && t.identity_digest == edge_id
+                        && batch_interval
+                            .is_some_and(|bi| t.interval.is_some_and(|ti| bi.earliest > ti.latest))
+                })
+            {
+                let _retired = status.open_tamper_records.remove(pos);
+                status.seen_restorations.insert(edge.digest);
+                if !status
+                    .restorations
+                    .iter()
+                    .any(|(d, dig)| d == &edge.failure_domain && dig == &edge.digest)
+                {
+                    status
+                        .restorations
+                        .push((edge.failure_domain.clone(), edge.digest));
+                }
+            }
+        }
+    }
+    for edge in evidence {
+        if edge.reports_sensor_tamper()
+            && !status
+                .open_tamper_records
+                .iter()
+                .any(|t| t.failure_domain == edge.failure_domain && t.digest == edge.digest)
+        {
+            status.open_tamper_records.push(TamperRecord {
+                failure_domain: edge.failure_domain.clone(),
+                identity_digest: edge.identity_digest,
+                digest: edge.digest,
+                revision: batch_revision,
+                interval: batch_interval,
+            });
+        }
+    }
+    for edge in evidence {
+        status.seen_lineage_digests.insert(edge.digest);
+    }
+    status.open_domains = status
+        .open_tamper_records
+        .iter()
+        .map(|t| t.failure_domain.clone())
+        .collect();
+    status.open_tamper_reports = status
+        .open_tamper_records
+        .iter()
+        .map(|t| (t.failure_domain.clone(), t.digest))
+        .collect();
+    let mut roots = Vec::new();
+    for t in &status.open_tamper_records {
+        if !roots.contains(&t.digest) {
+            roots.push(t.digest);
+        }
+    }
+    status.open_tamper_roots = roots;
 }
 
 /// Semantic relationship of an evidence graph edge.
@@ -873,6 +1167,8 @@ pub enum EvidenceEdgeRelation {
     /// Edge reports a sensor-integrity risk (tamper, replay, cover, dazzle, or disconnect) for
     /// the evidence source; it neither supports nor contradicts the event itself.
     SensorTamper = 9,
+    /// Edge reports explicit, evidenced restoration of sensor integrity retiring prior tamper.
+    SensorIntegrityRestoration = 10,
 }
 
 impl EvidenceEdgeRelation {
@@ -889,6 +1185,7 @@ impl EvidenceEdgeRelation {
             Self::RequiredBy => "required_by",
             Self::Explains => "explains",
             Self::SensorTamper => "sensor_tamper",
+            Self::SensorIntegrityRestoration => "sensor_integrity_restoration",
         }
     }
 
@@ -904,6 +1201,7 @@ impl EvidenceEdgeRelation {
             "required_by" => Ok(Self::RequiredBy),
             "explains" => Ok(Self::Explains),
             "sensor_tamper" => Ok(Self::SensorTamper),
+            "sensor_integrity_restoration" => Ok(Self::SensorIntegrityRestoration),
             _ => Err(EventDecodeError::NonCanonicalEncoding {
                 detail: format!("unknown evidence edge relation '{s}'"),
             }),
@@ -915,9 +1213,10 @@ impl EvidenceEdgeRelation {
     /// Only `Supports` counts as support for the event and only `Contradicts` counts against it.
     /// Every other relation records lineage, revision, ordering, dependency, invalidation, or
     /// explanation structure, or (`SensorTamper`) a sensor-integrity risk about the evidence
-    /// source, and carries no evidential direction for the event, so it must be `supports=false`
-    /// and counts as neither support nor contradiction. The match is exhaustive with no wildcard:
-    /// a new relation must choose its evidential direction here.
+    /// source, or (`SensorIntegrityRestoration`) an evidenced retirement of that risk, and carries
+    /// no evidential direction for the event, so it must be `supports=false` and counts as neither
+    /// support nor contradiction. The match is exhaustive with no wildcard: a new relation must
+    /// choose its evidential direction here.
     #[must_use]
     pub const fn required_supports_flag(self) -> bool {
         match self {
@@ -929,7 +1228,8 @@ impl EvidenceEdgeRelation {
             | Self::ObservedAfter
             | Self::RequiredBy
             | Self::Explains
-            | Self::SensorTamper => false,
+            | Self::SensorTamper
+            | Self::SensorIntegrityRestoration => false,
         }
     }
 
@@ -951,6 +1251,7 @@ impl EvidenceEdgeRelation {
             7 => Ok(Self::RequiredBy),
             8 => Ok(Self::Explains),
             9 => Ok(Self::SensorTamper),
+            10 => Ok(Self::SensorIntegrityRestoration),
             _ => Err(EventDecodeError::NonCanonicalEncoding {
                 detail: format!("unknown evidence edge relation tag {v}"),
             }),
@@ -1418,6 +1719,14 @@ impl EventEvidence {
                 ),
             });
         }
+        if self.relation == EvidenceEdgeRelation::SensorIntegrityRestoration {
+            if self.digest.bytes() == [0u8; 32] {
+                return Err(EventDecodeError::Contract(ContractError::InvalidDigest));
+            }
+            if self.identity_digest.is_none() {
+                return Err(EventDecodeError::Contract(ContractError::EvidenceRequired));
+            }
+        }
         Ok(())
     }
 
@@ -1441,6 +1750,17 @@ impl EventEvidence {
     #[must_use]
     pub fn reports_sensor_tamper(&self) -> bool {
         !self.supports && self.relation == EvidenceEdgeRelation::SensorTamper
+    }
+
+    /// Returns true only for an edge that reports an explicit, evidenced sensor-integrity restoration:
+    /// a `SensorIntegrityRestoration` relation carrying `supports=false`.
+    #[must_use]
+    pub fn reports_integrity_restoration(&self) -> bool {
+        !self.supports
+            && self.relation == EvidenceEdgeRelation::SensorIntegrityRestoration
+            && self.digest.bytes() != [0u8; 32]
+            && self.identity_digest.is_some()
+            && !self.failure_domain.is_empty()
     }
 }
 
@@ -1843,7 +2163,11 @@ impl EventHypothesis {
     /// Constructs a successor revision that supersedes this event hypothesis.
     ///
     /// The successor has `revision = self.revision + 1` and `supersedes = Some(self.revision_digest())`.
-    pub fn supersede(&self, params: EventSupersedeParams) -> Result<Self, EventDecodeError> {
+    pub fn supersede(
+        &self,
+        params: EventSupersedeParams,
+        chain: &[EventHypothesis],
+    ) -> Result<Self, EventDecodeError> {
         if self.state.is_terminal() {
             return Err(EventDecodeError::Contradiction {
                 field: "state",
@@ -1862,6 +2186,42 @@ impl EventHypothesis {
                     self.state, params.state
                 ),
             });
+        }
+        // `chain` must be this revision's own complete lineage, genesis first and `self` last. There
+        // is no fallback: an empty chain, `[self]` alone when `self` has predecessors, or any other
+        // lineage would hide earlier tampers and restorations from the status computed below.
+        let ends_in_self = chain
+            .last()
+            .is_some_and(|last| last.revision_digest() == self.revision_digest());
+        let covers_lineage = u64::try_from(chain.len()).is_ok_and(|len| len == self.revision);
+        if !ends_in_self || !covers_lineage {
+            return Err(EventDecodeError::Contract(
+                ContractError::SupersessionMismatch,
+            ));
+        }
+        Self::verify_chain(chain)?;
+        let full_chain: Vec<&EventHypothesis> = chain.iter().collect();
+        let tamper_status = compute_sensor_tamper_status_with_interval(
+            full_chain.iter().copied(),
+            Some(&params.evidence),
+            Some(params.interval),
+        );
+        if sensor_tamper_vetoes(params.state) && tamper_status.has_open_tamper() {
+            return Err(EventDecodeError::Contract(
+                ContractError::SensorIntegrityRisk,
+            ));
+        }
+
+        let mut final_evidence = params.evidence;
+        for prior_edge in full_chain.iter().flat_map(|r| r.evidence.iter()) {
+            if prior_edge.reports_sensor_tamper()
+                && tamper_status.open_tamper_roots.contains(&prior_edge.digest)
+                && !final_evidence
+                    .iter()
+                    .any(|e| e.digest == prior_edge.digest && e.relation == prior_edge.relation)
+            {
+                final_evidence.push(prior_edge.clone());
+            }
         }
         let rev = Self {
             schema: Self::SCHEMA.to_string(),
@@ -1883,7 +2243,7 @@ impl EventHypothesis {
             zone_ids: params.zone_ids,
             track_ids: params.track_ids,
             probability: params.probability,
-            evidence: params.evidence,
+            evidence: final_evidence,
             model_receipts: params.model_receipts,
             decision_path: params.decision_path,
         };
@@ -1892,7 +2252,22 @@ impl EventHypothesis {
     }
 
     /// Validates an ordered supersession chain of event hypotheses.
+    ///
+    /// The chain must also pass every lineage replay append rule: verification and replay
+    /// ([`EventLineage::from_revisions`], [`EventLineage::replay_from_deltas`]) apply the same
+    /// rules, including one shared lineage tamper step, so they reach the same verdict on every
+    /// chain. The one rule replay adds is [`EventLineage::new`]'s lifecycle rule that a lineage
+    /// begins `Hypothesized`; a chain may begin at a later state (the reference policy publishes
+    /// a first revision that is already witnessed or corroborated), so verification does not
+    /// require it.
     pub fn verify_chain(chain: &[EventHypothesis]) -> Result<(), EventDecodeError> {
+        Self::verify_chain_rules(chain)?;
+        EventLineage::replay_append_rules(chain.to_vec()).map_err(transition_error_as_decode)?;
+        Ok(())
+    }
+
+    /// Supersession, identity, state-machine and lineage tamper rules of [`Self::verify_chain`].
+    fn verify_chain_rules(chain: &[EventHypothesis]) -> Result<(), EventDecodeError> {
         if chain.is_empty() {
             return Err(EventDecodeError::Contradiction {
                 field: "chain",
@@ -1902,8 +2277,10 @@ impl EventHypothesis {
         let event_id = &chain[0].event_id;
         let mut prior_digest: Option<ContentDigest> = None;
         let mut prior_rev: Option<&EventHypothesis> = None;
+        let mut tamper_status = SensorTamperStatus::default();
         for (i, rev) in chain.iter().enumerate() {
             rev.verify()?;
+            apply_revision_tamper_step(&mut tamper_status, rev)?;
             if &rev.event_id != event_id {
                 return Err(EventDecodeError::Contradiction {
                     field: "chain.eventId",
@@ -3096,6 +3473,24 @@ impl EventLineage {
         self.current().revision
     }
 
+    /// Returns the accumulated sensor tamper status across this lineage.
+    #[must_use]
+    pub fn sensor_tamper_status(&self) -> SensorTamperStatus {
+        compute_sensor_tamper_status(self.chain.iter(), None)
+    }
+
+    /// Returns true if any unretired sensor-tamper risk exists in this lineage.
+    #[must_use]
+    pub fn has_open_sensor_tamper(&self) -> bool {
+        self.sensor_tamper_status().has_open_tamper()
+    }
+
+    /// Returns the failure domains with unretired sensor-tamper reports.
+    #[must_use]
+    pub fn open_sensor_tamper_domains(&self) -> BTreeSet<String> {
+        self.sensor_tamper_status().open_domains
+    }
+
     /// Returns the highest canonical progression state reached so far in the lineage.
     #[must_use]
     pub fn highest_canonical_state(&self) -> Option<EventState> {
@@ -3257,14 +3652,27 @@ impl EventLineage {
         }
 
         // Tampered sensing never establishes or acts on presence: refused before the revision is
-        // built, with a typed transition error.
-        if sensor_tamper_vetoes(params.target_state)
-            && params
-                .evidence
-                .iter()
-                .any(EventEvidence::reports_sensor_tamper)
-        {
+        // built, with a typed transition error. Tamper status is sticky across the lineage:
+        // open tamper risks persist until an explicit, evidenced integrity restoration retires them.
+        let tamper_status = compute_sensor_tamper_status_with_interval(
+            self.chain.iter(),
+            Some(&params.evidence),
+            Some(params.interval),
+        );
+        if sensor_tamper_vetoes(params.target_state) && tamper_status.has_open_tamper() {
             return Err(EventTransitionError::SensorIntegrityRisk);
+        }
+
+        let mut final_evidence = params.evidence;
+        for prior_edge in self.chain.iter().flat_map(|r| r.evidence.iter()) {
+            if prior_edge.reports_sensor_tamper()
+                && tamper_status.open_tamper_roots.contains(&prior_edge.digest)
+                && !final_evidence
+                    .iter()
+                    .any(|e| e.digest == prior_edge.digest && e.relation == prior_edge.relation)
+            {
+                final_evidence.push(prior_edge.clone());
+            }
         }
 
         let next_revision =
@@ -3289,7 +3697,7 @@ impl EventLineage {
             zone_ids: params.zone_ids,
             track_ids: params.track_ids,
             probability: params.probability,
-            evidence: params.evidence,
+            evidence: final_evidence,
             model_receipts: params.model_receipts,
             decision_path: params.decision_path,
         };
@@ -3326,16 +3734,55 @@ impl EventLineage {
     }
 
     /// Reconstructs and validates an immutable event lineage from an ordered slice of event revisions.
+    ///
+    /// The revisions must also pass [`EventHypothesis::verify_chain`]'s rules, so replay and chain
+    /// verification reach the same verdict on every chain.
     pub fn from_revisions(revisions: Vec<EventHypothesis>) -> Result<Self, EventTransitionError> {
-        if revisions.is_empty() {
-            return Err(EventTransitionError::Contradiction {
+        let genesis = revisions
+            .first()
+            .ok_or_else(|| EventTransitionError::Contradiction {
                 field: "revisions",
                 detail: "revision list cannot be empty".to_string(),
+            })?;
+        // The lineage lifecycle rules for a genesis, including that it begins `Hypothesized`.
+        Self::new(genesis.clone())?;
+        let lineage = Self::replay_append_rules(revisions)?;
+        // Defensive: the append rules above already enforce every chain rule (revision verify,
+        // the shared tamper step, identity, numbering, supersession, terminal state and the state
+        // machine), so this cannot refuse a chain they accepted today. It keeps replay from
+        // silently accepting a chain verification refuses if either rule set changes later.
+        EventHypothesis::verify_chain_rules(&lineage.chain)?;
+        Ok(lineage)
+    }
+
+    /// Replays revisions through the lineage append rules, with the genesis checked for revision,
+    /// supersession and revision invariants but not for its lifecycle state.
+    fn replay_append_rules(revisions: Vec<EventHypothesis>) -> Result<Self, EventTransitionError> {
+        let mut revisions = revisions.into_iter();
+        let genesis = revisions
+            .next()
+            .ok_or_else(|| EventTransitionError::Contradiction {
+                field: "revisions",
+                detail: "revision list cannot be empty".to_string(),
+            })?;
+        if genesis.revision != 1 {
+            return Err(EventTransitionError::RevisionNotMonotonic {
+                expected: 1,
+                actual: genesis.revision,
             });
         }
-        let genesis = revisions[0].clone();
-        let mut lineage = Self::new(genesis)?;
-        for rev in revisions.into_iter().skip(1) {
+        if genesis.supersedes.is_some() {
+            return Err(EventTransitionError::Contradiction {
+                field: "supersedes",
+                detail: "genesis revision 1 cannot supersede a prior revision".to_string(),
+            });
+        }
+        genesis.verify()?;
+        let mut lineage = Self {
+            chain: vec![genesis],
+            alert_attempts: Vec::new(),
+        };
+        for rev in revisions {
             lineage.append_verified_revision(rev)?;
         }
         Ok(lineage)
@@ -3385,15 +3832,14 @@ impl EventLineage {
                 return Err(EventTransitionError::UrgentExceptionRequired);
             }
         }
-        // Replay refuses a tamper-vetoed revision with the same typed error as a transition.
-        if sensor_tamper_vetoes(rev.state)
-            && rev
-                .evidence
-                .iter()
-                .any(EventEvidence::reports_sensor_tamper)
-        {
-            return Err(EventTransitionError::SensorIntegrityRisk);
-        }
+        // Replay refuses a tamper-vetoed revision, or one that drops an unretired tamper, with the
+        // same typed error as a transition. The revision's own capture interval orders its batch,
+        // through the same step chain verification uses.
+        let mut tamper_status = compute_sensor_tamper_status(self.chain.iter(), None);
+        apply_revision_tamper_step(&mut tamper_status, &rev).map_err(|err| match err {
+            ContractError::SensorIntegrityRisk => EventTransitionError::SensorIntegrityRisk,
+            other => EventTransitionError::Contract(other),
+        })?;
         rev.verify()?;
         let current = self.current();
         if rev.event_id != current.event_id {

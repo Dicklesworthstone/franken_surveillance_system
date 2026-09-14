@@ -1831,11 +1831,17 @@ fn sealed_publication_proof_roots_are_exact() -> Result<(), Box<dyn Error>> {
 }
 
 /// Pinned v4 seal digest of the fixed compiled publication below.
+///
+/// Re-pinned for fss-2uftm: every event publication batch now also carries the
+/// `sensor_tamper_status` delta witnessing the lineage tamper status, so the authority batch the
+/// fixture publishes, and the anchor this publication binds, changed.
 const GOLDEN_SEAL_DIGEST: &str =
-    "sha256:55b2921d6e89eb02eda3fe24b46725f083692145c8ea7ca62d8a7231121cb319";
+    "sha256:6e0dfbc2fe4677dc7eea52389f94b4a71bd556ce3da1bbf512136bcc453ab615";
 /// Pinned v4 publication digest of the fixed compiled publication below.
+///
+/// Re-pinned for fss-2uftm with the seal digest above (same single cause).
 const GOLDEN_PUBLICATION_DIGEST: &str =
-    "sha256:d1a22aa792a0a8488b831142b86f5498f49ccd8c3aed854c1c15fc064efad16e";
+    "sha256:d16650f29f7ad4e350d2ee8a04db95989c9dcb12211a9a519e60bbacff26277d";
 
 /// Review round 4 F5: the seal digest and the v2 publication digest of a fixed compiled
 /// publication are pinned, so any change to either encoding has to change these goldens on purpose.
@@ -1967,13 +1973,17 @@ fn sealed_situation_proof_roots_are_exact() -> Result<(), Box<dyn Error>> {
 ///
 /// Re-pinned for fss-wjisz: the alert intent's precondition digest (a proof root of this
 /// situation) now binds the prepare-time authority ledger head (`...alert_precondition.v2`).
+///
+/// Re-pinned for fss-2uftm: the event publication batch also carries the `sensor_tamper_status`
+/// delta, which changes the published batch, its anchor, and the ledger head the precondition
+/// binds.
 const GOLDEN_BOUND_SEAL_DIGEST: &str =
-    "sha256:0ca9273bb0bbadc71c0570d568a4d1a22e66111dae9f7e71cc0e84ec00a5b332";
+    "sha256:0905e4b421f1858066d12cf1511fb6ebac3028c29504d9184777e9f6de0241ed";
 /// Pinned v4 publication digest of the fixed compiled publication with effect bindings below.
 ///
-/// Re-pinned for fss-wjisz with the seal digest above (same single cause).
+/// Re-pinned for fss-wjisz and fss-2uftm with the seal digest above (same causes).
 const GOLDEN_BOUND_PUBLICATION_DIGEST: &str =
-    "sha256:f237df6176f67dc9f3f4a1913fd0007e63ed221108440c376ca22579937a942d";
+    "sha256:22685e54caa3bb0d747f146b6ac5efb770700c6eb2bfa9bb8aa4d0939b304e46";
 
 /// Round 5: pins the binding part of the seal encoding. The verified publication, bound to its
 /// outcome and local-state cells, has a pinned seal digest and publication digest.

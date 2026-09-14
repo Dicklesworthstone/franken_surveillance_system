@@ -51,6 +51,12 @@ pub struct ReferenceAlertPlan {
     /// Hydration only: dispatch admits it solely when it hashes to the revision the authority
     /// ledger currently holds for this event, then re-derives eligibility from it (fss-wjisz).
     pub event_revision_encoding: Vec<u8>,
+    /// Exact canonical encodings of every earlier revision of the event, oldest first.
+    ///
+    /// Hydration only: dispatch admits each solely when it hashes to the authority ledger's
+    /// `event_revision` witness at its position, then recomputes the lineage tamper status from
+    /// them (fss-2uftm).
+    pub prior_revision_encodings: Vec<Vec<u8>>,
     /// Number of authority batches when the plan was prepared: the prepare-time ledger head.
     pub prepared_head_sequence: u64,
     /// Batch digest of the prepare-time ledger head.
@@ -351,16 +357,122 @@ fn hydrate_event_revision(
     if ContentDigest::sha256(encoding) != revision_digest {
         return Err(ReferenceError::StaleEventAuthority);
     }
+    let event = decode_event_revision(encoding)?;
+    if event.revision_digest() != revision_digest {
+        return Err(ReferenceError::StaleEventAuthority);
+    }
+    Ok(event)
+}
+
+/// Decodes one exact canonical event revision encoding, with no authority binding of its own.
+fn decode_event_revision(encoding: &[u8]) -> Result<EventHypothesis, ReferenceError> {
     let mut decoder = CanonicalDecoder::new(encoding);
     if decoder.text()? != "fss.canonical.v1" || decoder.text()? != EventHypothesis::SCHEMA {
         return Err(ReferenceError::StaleEventAuthority);
     }
     let event = EventHypothesis::decode_canonical(&mut decoder)?;
     decoder.ensure_finished()?;
-    if event.revision_digest() != revision_digest {
+    Ok(event)
+}
+
+/// Decodes the earlier revisions a receipt or plan carries, bounded by the lineage depth limit.
+///
+/// Decoding binds nothing: [`recompute_lineage_tamper_status`] admits the revisions only when they
+/// are exactly the ledger's `event_revision` witnesses for the event.
+pub(crate) fn decode_prior_revisions(
+    encodings: &[Vec<u8>],
+) -> Result<Vec<EventHypothesis>, ReferenceError> {
+    if encodings.len() >= fss_core::event::MAX_LINEAGE_DEPTH {
         return Err(ReferenceError::StaleEventAuthority);
     }
-    Ok(event)
+    encodings
+        .iter()
+        .map(|encoding| decode_event_revision(encoding.as_slice()))
+        .collect()
+}
+
+/// Recomputes the lineage sensor-tamper status of `current` from the authority ledger (fss-2uftm).
+///
+/// The ledger names every revision of the event: the `event_revision` deltas of its event object,
+/// in ledger order. `prior` followed by `current` must be exactly those revisions (each hashing to
+/// the witness at its position, at its generation) and one supersession chain, so `current` is the
+/// event's current revision. The status is recomputed from them with the one accumulation
+/// verification, replay and publication use. The `sensor_tamper_status` witness published with
+/// `current` is a cross-check only: it must equal the recomputed status and is never trusted alone,
+/// and neither is any receipt.
+///
+/// Shared by alert preparation, alert dispatch and situation compilation.
+pub(crate) fn recompute_lineage_tamper_status(
+    authority: &DurableReferenceLedger,
+    current: &EventHypothesis,
+    prior: &[EventHypothesis],
+) -> Result<fss_core::SensorTamperStatus, ReferenceError> {
+    let object_id =
+        fss_core::ObjectId::parse(format!("object:event:{}", current.event_id.as_str()))?;
+    let batches = authority.batches();
+    let published: Vec<(usize, &fss_core::EvidenceDelta)> = batches
+        .iter()
+        .enumerate()
+        .flat_map(|(index, batch)| {
+            batch
+                .deltas
+                .iter()
+                .filter(|delta| delta.object_id == object_id && delta.family == "event_revision")
+                .map(move |delta| (index, delta))
+        })
+        .collect();
+    let lineage: Vec<&EventHypothesis> = prior.iter().chain(std::iter::once(current)).collect();
+    if published.len() != lineage.len() {
+        return Err(ReferenceError::StaleEventAuthority);
+    }
+    let mut predecessor: Option<ContentDigest> = None;
+    for ((_, delta), revision) in published.iter().zip(&lineage) {
+        let digest = revision.revision_digest();
+        if delta.witness_digest != Some(digest)
+            || delta.new_generation != revision.revision
+            || revision.event_id != current.event_id
+            || revision.supersedes != predecessor
+        {
+            return Err(ReferenceError::StaleEventAuthority);
+        }
+        predecessor = Some(digest);
+    }
+    let status = fss_core::event::compute_sensor_tamper_status(lineage.iter().copied(), None);
+    let (current_batch, current_delta) = published
+        .last()
+        .ok_or(ReferenceError::StaleEventAuthority)?;
+    let witnessed = batches.get(*current_batch).is_some_and(|batch| {
+        batch.deltas.iter().any(|delta| {
+            delta.family == "sensor_tamper_status"
+                && delta.payload_digest == current_delta.payload_digest
+                && delta.witness_digest == Some(status.canonical_digest())
+        })
+    });
+    if !witnessed {
+        return Err(ReferenceError::InvalidSpec(
+            "sensor_tamper_witness_mismatch",
+        ));
+    }
+    Ok(status)
+}
+
+/// The alert eligibility preparation and dispatch share (fss-wjisz, fss-2uftm).
+///
+/// The revision's own state, committed action and edges must be eligible, and its lineage,
+/// recomputed from the authority ledger by [`recompute_lineage_tamper_status`], must hold no open,
+/// unretired sensor tamper.
+pub(crate) fn verify_alert_eligibility_in_lineage(
+    authority: &DurableReferenceLedger,
+    event: &EventHypothesis,
+    action: ReferencePolicyAction,
+    prior: &[EventHypothesis],
+) -> Result<fss_core::SensorTamperStatus, ReferenceError> {
+    verify_event_alert_eligibility(event.state, action, &event.evidence)?;
+    let status = recompute_lineage_tamper_status(authority, event, prior)?;
+    if status.has_open_tamper() {
+        return Err(fss_core::ContractError::SensorIntegrityRisk.into());
+    }
+    Ok(status)
 }
 
 /// Policy action an authority event revision commits to.
@@ -479,12 +591,15 @@ fn check_alert_dispatch_authority(
     if !publishing_anchor_matches {
         return Err(ReferenceError::StaleEventAuthority);
     }
-    // 6. Re-derive eligibility from that current authority revision.
+    // 6. Re-derive eligibility from that current authority revision and its whole lineage,
+    // recomputed from the ledger (fss-2uftm): the same check preparation runs.
     let event = hydrate_event_revision(&plan.event_revision_encoding, plan.event_revision_digest)?;
-    verify_event_alert_eligibility(
-        event.state,
+    let prior = decode_prior_revisions(&plan.prior_revision_encodings)?;
+    verify_alert_eligibility_in_lineage(
+        authority,
+        &event,
         committed_policy_action(&event),
-        &event.evidence,
+        &prior,
     )?;
     // 7. The prepare-time head lies in this ledger's history, at or after the publishing batch: a
     // ledger with a different history is refused, an unrelated later batch is not (P6).
@@ -878,6 +993,13 @@ pub fn prepare_reference_alert(
         params.decision.action,
         &params.decision.event.evidence,
     )?;
+    // Defence in depth only: a receipt whose status names an open tamper is refused before any
+    // ledger read. The lineage recomputation below refuses every receipt this refuses (the status
+    // must equal the recomputed one, which then holds the tamper), so the reviewer's M3 mutant of
+    // this check is equivalent and no test claims to kill it.
+    if params.event_receipt.lineage_tamper_status.has_open_tamper() {
+        return Err(fss_core::ContractError::SensorIntegrityRisk.into());
+    }
     if params.event_receipt.event_revision_digest != params.decision.event.revision_digest() {
         return Err(ReferenceError::InvalidSpec("event_receipt_mismatch"));
     }
@@ -890,21 +1012,49 @@ pub fn prepare_reference_alert(
     ) {
         return Err(ReferenceError::InvalidSpec("event_authority_stale"));
     }
-    let latest_contains_event = params
+    let latest_batch = params
         .authority
         .batches()
         .iter()
         .rev()
         .find(|batch| !crate::situation_sections::is_lineage_batch(batch))
-        .is_some_and(|batch| {
-            batch.deltas.iter().any(|delta| {
-                delta.family == "event_revision"
-                    && delta.payload_digest == params.event_receipt.event_root
-                    && delta.witness_digest == Some(params.event_receipt.event_revision_digest)
-            })
-        });
+        .ok_or(ReferenceError::InvalidSpec("event_authority_stale"))?;
+    let latest_contains_event = latest_batch.deltas.iter().any(|delta| {
+        delta.family == "event_revision"
+            && delta.payload_digest == params.event_receipt.event_root
+            && delta.witness_digest == Some(params.event_receipt.event_revision_digest)
+    });
     if !latest_contains_event {
         return Err(ReferenceError::InvalidSpec("event_receipt_mismatch"));
+    }
+    let latest_contains_tamper = latest_batch.deltas.iter().any(|delta| {
+        delta.family == "sensor_tamper_status"
+            && delta.payload_digest == params.event_receipt.event_root
+            && delta.witness_digest
+                == Some(
+                    params
+                        .event_receipt
+                        .lineage_tamper_status
+                        .canonical_digest(),
+                )
+    });
+    if !latest_contains_tamper {
+        return Err(ReferenceError::InvalidSpec(
+            "forged_event_receipt_tamper_status",
+        ));
+    }
+    // The receipt and the witness are cross-checks only: eligibility is re-derived from the event's
+    // lineage as the authority ledger holds it, with the check dispatch runs (fss-2uftm).
+    let lineage_status = verify_alert_eligibility_in_lineage(
+        params.authority,
+        &params.decision.event,
+        params.decision.action,
+        &decode_prior_revisions(&params.event_receipt.prior_revision_encodings)?,
+    )?;
+    if lineage_status != params.event_receipt.lineage_tamper_status {
+        return Err(ReferenceError::InvalidSpec(
+            "forged_event_receipt_tamper_status",
+        ));
     }
 
     let channel = params.channel;
@@ -959,6 +1109,7 @@ pub fn prepare_reference_alert(
         authority_anchor: params.event_receipt.authority_anchor.clone(),
         channel,
         event_revision_encoding: event_revision_encoding(&params.decision.event),
+        prior_revision_encodings: params.event_receipt.prior_revision_encodings.clone(),
         prepared_head_sequence,
         prepared_head_digest,
     })
