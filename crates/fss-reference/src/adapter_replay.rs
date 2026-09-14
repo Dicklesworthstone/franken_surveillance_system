@@ -262,6 +262,16 @@ const STATE_DRAINING: u8 = 2;
 const STATE_FINALIZED: u8 = 3;
 
 /// Execution capability and cooperative cancellation context for replay operations.
+///
+/// # Unforgeable Authority Invariants
+///
+/// External crates cannot call internal test constructor `for_test`:
+///
+/// ```rust,compile_fail
+/// // ReplayCx::for_test is crate-internal and cannot be called from an outside crate.
+/// use fss_reference::ReplayCx;
+/// let _ = ReplayCx::for_test();
+/// ```
 #[derive(Debug)]
 pub struct ReplayCx {
     state: Arc<AtomicU8>,
@@ -278,26 +288,6 @@ impl ReplayCx {
         if !io.is_valid() {
             state.store(STATE_FINALIZED, Ordering::SeqCst);
         }
-        Self {
-            state,
-            checkpoints: AtomicUsize::new(0),
-            io,
-            cancel_at_stage: Mutex::new(None),
-        }
-    }
-
-    /// Constructs a test execution context with isolated test I/O authority.
-    #[must_use]
-    pub fn for_test() -> Self {
-        let state = Arc::new(AtomicU8::new(STATE_ACTIVE));
-        let dir_counter = Arc::new(AtomicUsize::new(0));
-        let io = ReplayIoAuthority {
-            principal: "operator:test".to_string(),
-            capability: ADP_REPLAY_ROW_ID.to_string(),
-            root_dir: std::env::temp_dir().join("test-replay-cx"),
-            state: state.clone(),
-            dir_counter,
-        };
         Self {
             state,
             checkpoints: AtomicUsize::new(0),

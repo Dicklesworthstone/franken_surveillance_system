@@ -5,12 +5,36 @@
 //! oversize, byte-stuffed, restart-marked, and cancellation-governed streams.
 
 use std::error::Error;
+use std::path::PathBuf;
 
-use fss_reference::ReplayCx;
+use fss_core::{BudgetVector, ContentDigest, ContextAuthority, OperationId, RootAuthoritySpec};
 use fss_reference::ingest::{
     JpegFinding, JpegProcess, JpegSplitError, MjpegLimits, OmissionReason, OmissionSpan,
     split_jpeg_stream,
 };
+use fss_reference::{ADP_REPLAY_ROW_ID, ReplayAdapterError, ReplayCx};
+
+fn test_cx(label: &str) -> Result<ReplayCx, Box<dyn Error>> {
+    let spec = RootAuthoritySpec {
+        trace_id: format!("trace:mjpeg-contract-{label}"),
+        operation_id: OperationId::parse(format!("operation:mjpeg-contract-{label}"))?,
+        principal: format!("operator:mjpeg-contract-{label}"),
+        capabilities: vec![ADP_REPLAY_ROW_ID.to_string()],
+        deadline: None,
+        priority: 10,
+        budgets: BudgetVector::default(),
+        privacy_scope: "privacy:internal".to_string(),
+        retention_scope: "retention:ephemeral".to_string(),
+        anchor_universe: ContentDigest::sha256(b"test-anchor-universe"),
+        generation: 1,
+    };
+    let root_auth = ContextAuthority::new_root(spec)?;
+    let scratch_root = std::env::var_os("CARGO_TARGET_TMPDIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join(format!("test-mjpeg-cx-{label}"));
+    Ok(ReplayCx::from_context_authority(&root_auth, &scratch_root)?)
+}
 
 /// Helper to build a synthetic, structurally valid baseline JPEG frame.
 fn build_test_jpeg(width: u16, height: u16, payload_byte: u8) -> Vec<u8> {
@@ -659,7 +683,7 @@ fn cooperative_cancellation_aborts_scanning_cleanly() -> Result<(), Box<dyn Erro
     let frame = build_test_jpeg(640, 480, 0x01);
     let limits = MjpegLimits::default();
 
-    let cx = ReplayCx::for_test();
+    let cx = test_cx("cancel")?;
     cx.request_cancellation();
 
     match split_jpeg_stream(&frame, &limits, Some(&cx)) {
@@ -1696,4 +1720,23 @@ fn probe_p13_huge_declared_appn_length() -> Result<(), Box<dyn Error>> {
         })
     );
     Ok(())
+}
+
+#[test]
+fn replay_adapter_unauthorized_maps_1_to_1_to_splitter_unauthorized() {
+    let adapter_err = ReplayAdapterError::Unauthorized {
+        reason: "missing capability ADP-REPLAY-001",
+    };
+    let split_err: JpegSplitError = adapter_err.into();
+    assert_eq!(
+        split_err,
+        JpegSplitError::Unauthorized {
+            reason: "missing capability ADP-REPLAY-001",
+        }
+    );
+    assert!(
+        split_err
+            .to_string()
+            .contains("missing capability ADP-REPLAY-001")
+    );
 }
