@@ -639,9 +639,10 @@ impl NegativeEvidenceEntry {
         Ok(())
     }
 
-    /// Applies the core [`KnowledgeCell`] rule to the entry's finding: observed or derived
-    /// provenance claiming present support needs evidence, and states that need a basis
-    /// (stale, redacted, indeterminate) are refused because a ledger entry carries none.
+    /// Applies the core [`KnowledgeCell`] rule to the entry's finding: `known` requires
+    /// non-empty evidence roots for every provenance, observed or derived provenance claiming
+    /// present support needs evidence, and states that need a basis (stale, redacted,
+    /// indeterminate) are refused because a ledger entry carries none.
     fn validate_knowledge_cell(&self) -> Result<(), NegativeEvidenceError> {
         let cell = KnowledgeCell::new(KnowledgeCellParams {
             claim_id: self.neg_id.clone(),

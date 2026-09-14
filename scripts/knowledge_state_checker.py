@@ -38,7 +38,7 @@ KNOWLEDGE_STATES_JSON_PATH = "architecture/knowledge_states.json"
 AGENT_CONTRACTS_MD_PATH = "registries/AGENT_CONTRACTS.md"
 
 BASELINE_GENERATION = "gen:fss1:kstate-v1"
-BASELINE_FREEZE_DIGEST = "sha256:bfff3fbe7e9639ba630d70f940fbd01d40ee560a32d64ee2e70be67fb26f4cd8"
+BASELINE_FREEZE_DIGEST = "sha256:7faea17b55195d946ed0c33717dd2b0cdd594928c57406e1065cdeebeae78c61"
 
 EXPECTED_FREEZE_DIGESTS: dict[str, str] = {
     BASELINE_GENERATION: BASELINE_FREEZE_DIGEST,
@@ -49,7 +49,7 @@ BASELINE_KNOWLEDGE_STATES: dict[str, dict[str, str]] = {
     "KSTATE-001": {
         "id": "KSTATE-001",
         "state": "known",
-        "meaning": "The proposition is established for the named anchor and validity scope by admissible evidence or a proved terminal postcondition.",
+        "meaning": "The proposition is established for the named anchor and validity scope by admissible evidence, with any proved terminal postcondition bound as an evidence root.",
         "may_support_planning": "yes",
         "may_authorize_irreversible_effect": "yes, subject to capability and policy",
         "explicit_assumptions_required": "no",
