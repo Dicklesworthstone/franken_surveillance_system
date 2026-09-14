@@ -27,6 +27,7 @@ mod model;
 mod outcome;
 mod packet_fault;
 mod policy;
+pub mod scalar_executor;
 mod situation;
 mod situation_guard;
 mod situation_sections;
@@ -156,6 +157,10 @@ pub use packet_fault::{
 pub use policy::{
     ReferenceEventReceipt, ReferenceModelObservation, ReferencePolicyAction,
     ReferencePolicyDecision, evaluate_unknown_presence, publish_reference_event,
+};
+pub use scalar_executor::{
+    ChannelTransform, ExecBudget, ExecError, ExecOutcome, PreprocessProgram, ScalarExecCx,
+    ScalarExecutor, deterministic_exp_f32, deterministic_sigmoid_f32,
 };
 pub use situation_guard::{
     CAPABILITY_EFFECT_RECONCILE, EFFECT_RECONCILE_AFFORDANCE, EFFECT_STATUS_AFFORDANCE,
