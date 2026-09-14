@@ -365,7 +365,7 @@ fn authority_predecessor(
     Ok((Some(current.generation), Some(witness)))
 }
 
-fn policy_decision_path(
+pub(crate) fn policy_decision_path(
     event_id: &EventId,
     evidence: &[EventEvidence],
     state: EventState,

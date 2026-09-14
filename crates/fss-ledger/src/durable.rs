@@ -299,6 +299,24 @@ impl DurableReferenceLedger {
         self.journal.last_root()
     }
 
+    /// Bounded fail-closed proof that the durable journal still ends exactly where this handle's
+    /// replayed state ends.
+    ///
+    /// Refuses an unresolved append, then delegates to [`Journal::verify_committed_tail`]: the
+    /// path is reopened, its length compared with the reconciled committed length, and only the
+    /// final commit trailer (at most 40 bytes) is read. A commit by another handle, an appended,
+    /// torn, or corrupt suffix, a truncation, a missing path, or an I/O failure is an error. It
+    /// never replays history; [`DurableReferenceLedger::verify_storage`] does.
+    pub fn verify_durable_head(&self) -> Result<(), DurableLedgerError> {
+        if let Some(pending) = &self.pending {
+            return Err(JournalError::ReconciliationRequired {
+                sequence: pending.sequence,
+            }
+            .into());
+        }
+        Ok(self.journal.verify_committed_tail()?)
+    }
+
     /// Sequence of an indeterminate append that must be reconciled, if present.
     #[must_use]
     pub fn pending_append_sequence(&self) -> Option<u64> {

@@ -114,9 +114,13 @@ impl From<ContractError> for DurableEffectError {
 }
 
 impl From<ReferenceError> for DurableEffectError {
+    /// A contract violation keeps its contract identity, and a durable transition failure surfaced
+    /// through the shared alert helper is unwrapped back to the durable error that caused it, so a
+    /// durable caller sees the same error shape whichever layer detected the failure.
     fn from(value: ReferenceError) -> Self {
         match value {
             ReferenceError::Contract(contract_err) => Self::Contract(contract_err),
+            ReferenceError::DurableTransitionFailed(durable_err) => *durable_err,
             other => Self::Reference(other),
         }
     }
@@ -846,7 +850,7 @@ impl crate::alert::AlertEffectTransitioner for DurableEffectJournal {
         .map_err(|e| match e {
             DurableEffectError::Reference(ref_err) => ref_err,
             DurableEffectError::Contract(contract_err) => ReferenceError::Contract(contract_err),
-            other => ReferenceError::DurableTransitionFailed(other.to_string()),
+            other => ReferenceError::DurableTransitionFailed(Box::new(other)),
         })
     }
 
@@ -862,7 +866,7 @@ impl crate::alert::AlertEffectTransitioner for DurableEffectJournal {
                 DurableEffectError::Contract(contract_err) => {
                     ReferenceError::Contract(contract_err)
                 }
-                other => ReferenceError::DurableTransitionFailed(other.to_string()),
+                other => ReferenceError::DurableTransitionFailed(Box::new(other)),
             })
     }
 
@@ -878,7 +882,7 @@ impl crate::alert::AlertEffectTransitioner for DurableEffectJournal {
                 DurableEffectError::Contract(contract_err) => {
                     ReferenceError::Contract(contract_err)
                 }
-                other => ReferenceError::DurableTransitionFailed(other.to_string()),
+                other => ReferenceError::DurableTransitionFailed(Box::new(other)),
             })
     }
 
@@ -895,7 +899,7 @@ impl crate::alert::AlertEffectTransitioner for DurableEffectJournal {
                 DurableEffectError::Contract(contract_err) => {
                     ReferenceError::Contract(contract_err)
                 }
-                other => ReferenceError::DurableTransitionFailed(other.to_string()),
+                other => ReferenceError::DurableTransitionFailed(Box::new(other)),
             })
     }
 
@@ -913,7 +917,7 @@ impl crate::alert::AlertEffectTransitioner for DurableEffectJournal {
                 DurableEffectError::Contract(contract_err) => {
                     ReferenceError::Contract(contract_err)
                 }
-                other => ReferenceError::DurableTransitionFailed(other.to_string()),
+                other => ReferenceError::DurableTransitionFailed(Box::new(other)),
             })
     }
 }

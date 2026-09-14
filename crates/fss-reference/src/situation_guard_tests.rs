@@ -1964,11 +1964,16 @@ fn sealed_situation_proof_roots_are_exact() -> Result<(), Box<dyn Error>> {
 }
 
 /// Pinned v4 seal digest of the fixed compiled publication with effect bindings below.
+///
+/// Re-pinned for fss-wjisz: the alert intent's precondition digest (a proof root of this
+/// situation) now binds the prepare-time authority ledger head (`...alert_precondition.v2`).
 const GOLDEN_BOUND_SEAL_DIGEST: &str =
-    "sha256:eb7992350021104d36d2fd2ee06056abf8cd1f3a9767a93eb5e850e0aa754399";
+    "sha256:0ca9273bb0bbadc71c0570d568a4d1a22e66111dae9f7e71cc0e84ec00a5b332";
 /// Pinned v4 publication digest of the fixed compiled publication with effect bindings below.
+///
+/// Re-pinned for fss-wjisz with the seal digest above (same single cause).
 const GOLDEN_BOUND_PUBLICATION_DIGEST: &str =
-    "sha256:d89b3b6f85119053783faa8d1f8ed9dd2e9f8621bd564c7e2e042d52d0a0b7a8";
+    "sha256:f237df6176f67dc9f3f4a1913fd0007e63ed221108440c376ca22579937a942d";
 
 /// Round 5: pins the binding part of the seal encoding. The verified publication, bound to its
 /// outcome and local-state cells, has a pinned seal digest and publication digest.

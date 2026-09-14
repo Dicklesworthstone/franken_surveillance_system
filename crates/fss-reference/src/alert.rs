@@ -3,11 +3,11 @@
 use std::collections::BTreeMap;
 
 use fss_core::{
-    CanonicalEncode, CanonicalEncoder, ContentDigest, EffectIntent, EffectJournal, EffectState,
-    IdempotencyKey, LedgerAnchor, Obligation, ObligationId, OperationId, OperationReceipt,
-    TimestampNs,
+    CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, ContentDigest,
+    EffectIntent, EffectJournal, EffectState, EventHypothesis, EventState, IdempotencyKey,
+    LedgerAnchor, Obligation, ObligationId, OperationId, OperationReceipt, TimestampNs,
 };
-use fss_ledger::DurableReferenceLedger;
+use fss_ledger::{DurableLedgerError, DurableReferenceLedger, JournalError};
 
 use crate::{
     ReferenceError, ReferenceEventReceipt, ReferencePolicyAction, ReferencePolicyDecision,
@@ -46,6 +46,18 @@ pub struct ReferenceAlertPlan {
     pub authority_anchor: LedgerAnchor,
     /// Stable bounded alert channel identity.
     pub channel: String,
+    /// Exact canonical encoding of the event revision whose SHA-256 is `event_revision_digest`.
+    ///
+    /// Hydration only: dispatch admits it solely when it hashes to the revision the authority
+    /// ledger currently holds for this event, then re-derives eligibility from it (fss-wjisz).
+    pub event_revision_encoding: Vec<u8>,
+    /// Number of authority batches when the plan was prepared: the prepare-time ledger head.
+    pub prepared_head_sequence: u64,
+    /// Batch digest of the prepare-time ledger head.
+    ///
+    /// The head is read from the authority ledger at preparation and bound into the intent's
+    /// precondition digest, which the effect journal records with the operation.
+    pub prepared_head_digest: ContentDigest,
 }
 
 /// Deterministic provider fault choice for one dispatch attempt.
@@ -302,90 +314,227 @@ pub fn alert_cancel_proof(
     ContentDigest::sha256(&encoder.finish())
 }
 
-/// Verifies that the event revision in `plan` remains the current, un-tampered authority in `authority`.
+/// Verifies event alert eligibility against policy, corroboration, and sensor integrity.
+pub(crate) fn verify_event_alert_eligibility(
+    state: fss_core::EventState,
+    action: ReferencePolicyAction,
+    evidence: &[fss_core::EventEvidence],
+) -> Result<(), ReferenceError> {
+    if action != ReferencePolicyAction::PrepareAlert || state != fss_core::EventState::Corroborated
+    {
+        return Err(ReferenceError::InvalidSpec("alert_not_eligible"));
+    }
+    if evidence
+        .iter()
+        .any(fss_core::EventEvidence::reports_sensor_tamper)
+    {
+        return Err(fss_core::ContractError::SensorIntegrityRisk.into());
+    }
+    Ok(())
+}
+
+/// Exact canonical encoding hashed by [`EventHypothesis::revision_digest`].
+pub(crate) fn event_revision_encoding(event: &EventHypothesis) -> Vec<u8> {
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text("fss.canonical.v1");
+    encoder.text(EventHypothesis::SCHEMA);
+    event.encode_canonical(&mut encoder);
+    encoder.finish()
+}
+
+/// Decodes the event revision a plan carries, admitting it only as the exact revision named by
+/// `revision_digest`.
+fn hydrate_event_revision(
+    encoding: &[u8],
+    revision_digest: ContentDigest,
+) -> Result<EventHypothesis, ReferenceError> {
+    if ContentDigest::sha256(encoding) != revision_digest {
+        return Err(ReferenceError::StaleEventAuthority);
+    }
+    let mut decoder = CanonicalDecoder::new(encoding);
+    if decoder.text()? != "fss.canonical.v1" || decoder.text()? != EventHypothesis::SCHEMA {
+        return Err(ReferenceError::StaleEventAuthority);
+    }
+    let event = EventHypothesis::decode_canonical(&mut decoder)?;
+    decoder.ensure_finished()?;
+    if event.revision_digest() != revision_digest {
+        return Err(ReferenceError::StaleEventAuthority);
+    }
+    Ok(event)
+}
+
+/// Policy action an authority event revision commits to.
 ///
-/// Permits unrelated observation or event batches that do not modify this event (P6).
-/// Rejects when this event's revision is no longer the latest or its authority anchor has been forged.
-fn check_event_authority(
+/// The reference policy prepares an alert only on the decision path it fingerprints for
+/// [`ReferencePolicyAction::PrepareAlert`] over this exact event identity, state, and evidence;
+/// every other decision path holds.
+fn committed_policy_action(event: &EventHypothesis) -> ReferencePolicyAction {
+    let alert_path = crate::policy::policy_decision_path(
+        &event.event_id,
+        &event.evidence,
+        event.state,
+        ReferencePolicyAction::PrepareAlert,
+    );
+    if event.decision_path == alert_path {
+        ReferencePolicyAction::PrepareAlert
+    } else {
+        ReferencePolicyAction::Hold
+    }
+}
+
+/// Maps a failed bounded durable-head check to a typed dispatch refusal (fail closed).
+///
+/// A durable journal that moved under this handle (another handle's commit, an appended, torn, or
+/// corrupt suffix, a truncation, or a replaced trailer) makes this handle's view of event
+/// authority stale. Anything else (a missing path, an I/O failure, an unresolved append) makes
+/// current authority unreadable. Both refuse; neither is skipped (fss-wjisz).
+fn authority_head_refusal(error: DurableLedgerError) -> ReferenceError {
+    match error {
+        DurableLedgerError::Journal(JournalError::ExternalMutation { .. }) => {
+            ReferenceError::StaleEventAuthority
+        }
+        other => ReferenceError::AuthorityLedgerUnreadable(Box::new(other)),
+    }
+}
+
+/// Index of the batch that published the ledger's current revision of the event the plan names.
+///
+/// The event object is the one whose `event_revision` delta published the plan's exact event
+/// root and revision digest. Its current revision is the latest `event_revision` delta for that
+/// object, which must agree with the ledger's current object and be the plan's revision exactly.
+fn current_event_revision_batch(
     plan: &ReferenceAlertPlan,
     authority: &DurableReferenceLedger,
-) -> Result<(), ReferenceError> {
-    // 1. Find the batch and delta where this exact event revision was published.
-    let (batch_idx, prepared_delta) = authority
-        .batches()
+) -> Result<usize, ReferenceError> {
+    let batches = authority.batches();
+    let object_id = batches
+        .iter()
+        .rev()
+        .flat_map(|batch| batch.deltas.iter())
+        .find(|delta| {
+            delta.family == "event_revision"
+                && delta.payload_digest == plan.event_root
+                && delta.witness_digest == Some(plan.event_revision_digest)
+        })
+        .map(|delta| delta.object_id.clone())
+        .ok_or(ReferenceError::StaleEventAuthority)?;
+    let current = authority
+        .current()
+        .objects
+        .get(&object_id)
+        .ok_or(ReferenceError::StaleEventAuthority)?;
+    let (batch_index, latest) = batches
         .iter()
         .enumerate()
-        .find_map(|(idx, batch)| {
+        .rev()
+        .find_map(|(index, batch)| {
             batch
                 .deltas
                 .iter()
-                .find(|delta| {
-                    delta.family == "event_revision"
-                        && delta.payload_digest == plan.event_root
-                        && delta.witness_digest == Some(plan.event_revision_digest)
-                })
-                .map(|delta| (idx, delta))
+                .find(|delta| delta.object_id == object_id && delta.family == "event_revision")
+                .map(|delta| (index, delta))
         })
         .ok_or(ReferenceError::StaleEventAuthority)?;
-
-    // 2. The batch that committed this revision must match the prepared plan's authority anchor (P1b).
-    if authority.batches()[batch_idx].new_anchor != plan.authority_anchor {
-        return Err(ReferenceError::StaleEventAuthority);
-    }
-
-    // 3. The current object in authority for this event must match the prepared revision generation and payload.
-    let object_id = &prepared_delta.object_id;
-    let current_obj = authority
-        .current()
-        .objects
-        .get(object_id)
-        .ok_or(ReferenceError::StaleEventAuthority)?;
-
-    if current_obj.generation != prepared_delta.new_generation
-        || current_obj.payload_digest != plan.event_root
+    if latest.new_generation != current.generation
+        || latest.payload_digest != current.payload_digest
+        || latest.payload_digest != plan.event_root
+        || latest.witness_digest != Some(plan.event_revision_digest)
     {
         return Err(ReferenceError::StaleEventAuthority);
     }
+    Ok(batch_index)
+}
 
-    // 4. The latest delta in authority for this event must be this exact revision.
-    // An unrelated observation batch will not touch this event's object_id (P6).
-    let latest_delta = authority
-        .batches()
-        .iter()
-        .rev()
-        .flat_map(|b| b.deltas.iter())
-        .find(|d| d.object_id == *object_id && d.family == "event_revision")
-        .ok_or(ReferenceError::StaleEventAuthority)?;
-
-    if latest_delta.witness_digest != Some(plan.event_revision_digest)
-        || latest_delta.payload_digest != plan.event_root
-        || latest_delta.new_generation != prepared_delta.new_generation
-    {
+/// Every dispatch-time check, in order; the first refusal is returned.
+///
+/// Nothing the caller wrote into the journal is trusted for eligibility: the obligation's terminal
+/// predicate is informational only. Eligibility is re-derived from the revision the authority
+/// ledger currently holds, with the same [`verify_event_alert_eligibility`] preparation uses.
+fn check_alert_dispatch_authority(
+    plan: &ReferenceAlertPlan,
+    authority: &DurableReferenceLedger,
+    prepared_intent: &EffectIntent,
+    obligation: Option<&Obligation>,
+) -> Result<(), ReferenceError> {
+    // 1. The plan is internally consistent (request digest binds root, revision, and channel).
+    validate_reference_alert_plan(plan)?;
+    // 2. The plan names an obligation the journal holds for this exact operation.
+    let obligation = obligation.ok_or(fss_core::ContractError::NotFound)?;
+    // 3. The plan is exactly the intent the journal recorded at prepare.
+    if *prepared_intent != plan.intent || obligation.operation_id != plan.intent.operation_id {
         return Err(ReferenceError::StaleEventAuthority);
     }
-
+    // 4. Fail closed: the durable authority must be readable and exactly this handle's history.
+    // Bounded: one length probe and one 40-byte commit-trailer read, never a history re-read.
+    authority
+        .verify_durable_head()
+        .map_err(authority_head_refusal)?;
+    // 5. The planned revision is the ledger's current revision of the event, published under the
+    // planned authority anchor.
+    let batch_index = current_event_revision_batch(plan, authority)?;
+    let batches = authority.batches();
+    let publishing_anchor_matches = batches
+        .get(batch_index)
+        .is_some_and(|batch| batch.new_anchor == plan.authority_anchor);
+    if !publishing_anchor_matches {
+        return Err(ReferenceError::StaleEventAuthority);
+    }
+    // 6. Re-derive eligibility from that current authority revision.
+    let event = hydrate_event_revision(&plan.event_revision_encoding, plan.event_revision_digest)?;
+    verify_event_alert_eligibility(
+        event.state,
+        committed_policy_action(&event),
+        &event.evidence,
+    )?;
+    // 7. The prepare-time head lies in this ledger's history, at or after the publishing batch: a
+    // ledger with a different history is refused, an unrelated later batch is not (P6).
+    let head_in_history = usize::try_from(plan.prepared_head_sequence)
+        .ok()
+        .and_then(|sequence| sequence.checked_sub(1))
+        .is_some_and(|head_index| {
+            head_index >= batch_index
+                && batches
+                    .get(head_index)
+                    .is_some_and(|batch| batch.batch_digest == plan.prepared_head_digest)
+        });
+    if !head_in_history {
+        return Err(ReferenceError::StaleEventAuthority);
+    }
+    // 8. The journal-recorded precondition binds the revision, anchor, committed decision, and
+    // prepare-time head checked above.
+    let precondition = alert_precondition_digest_parts(
+        plan.event_revision_digest,
+        &plan.authority_anchor,
+        event.state,
+        event.decision_path.fingerprint,
+        plan.prepared_head_sequence,
+        plan.prepared_head_digest,
+    );
+    if prepared_intent.precondition_digest != precondition {
+        return Err(ReferenceError::StaleEventAuthority);
+    }
     Ok(())
 }
 
 /// Revalidates event authority in the ledger before an alert plan is dispatched.
 ///
-/// Ensures:
-/// 1. The plan itself passes canonical validation.
-/// 2. The operation is in [`EffectState::Prepared`] state.
-/// 3. The plan matches what was prepared in the journal (intent, obligation ID, and terminal predicate).
-/// 4. The event revision in the plan remains the current, un-tampered authority in the ledger.
+/// The one shared helper for both public dispatch paths ([`dispatch_reference_alert`] and
+/// [`crate::DurableEffectJournal::dispatch_alert`]). Ensures:
+/// 1. The operation is in [`EffectState::Prepared`] state.
+/// 2. The plan passes canonical validation and is exactly the intent and obligation prepared.
+/// 3. The durable authority ledger is readable and not moved under this handle (bounded check).
+/// 4. The plan's revision is the event's current revision in the ledger, under the planned anchor.
+/// 5. That current revision is alert-eligible, re-derived with [`verify_event_alert_eligibility`].
+/// 6. The prepare-time ledger head is in the ledger's history and bound by the recorded intent.
 ///
-/// If event authority has become stale, superseded, or tampered, or if the plan was modified,
-/// the operation and its obligation are transitioned to [`EffectState::Cancelled`] with a bound
-/// cancel proof and reason, and [`ReferenceError::StaleEventAuthority`] is returned.
+/// Any refusal after step 1 transitions the operation and its obligation to
+/// [`EffectState::Cancelled`] with a bound cancel proof before the error is returned.
 pub(crate) fn revalidate_alert_event_authority<J: AlertEffectTransitioner>(
     plan: &ReferenceAlertPlan,
     authority: &DurableReferenceLedger,
     requested_at: TimestampNs,
     journal: &mut J,
 ) -> Result<(), ReferenceError> {
-    validate_reference_alert_plan(plan)?;
-
     let operation_id = &plan.intent.operation_id;
     let operation = journal
         .operation(operation_id)
@@ -396,55 +545,35 @@ pub(crate) fn revalidate_alert_event_authority<J: AlertEffectTransitioner>(
     if operation.state != EffectState::Prepared {
         return Err(fss_core::ContractError::InvalidEffectTransition.into());
     }
+    let updated_at = operation.updated_at;
+    let prepared_intent = operation.intent.clone();
 
-    let obligation = journal
-        .obligation(&plan.obligation_id)
-        .ok_or(fss_core::ContractError::NotFound)?;
-
-    let plan_matches_prepare =
-        operation.intent == plan.intent && obligation.operation_id == *operation_id;
-
-    if !plan_matches_prepare {
-        let cancel_at = if requested_at > operation.updated_at {
-            requested_at
-        } else {
-            TimestampNs(operation.updated_at.0.saturating_add(1))
-        };
-        let cancel_proof = alert_cancel_proof(
-            operation_id,
-            &plan.authority_anchor,
-            &authority.current().anchor,
-        );
-        journal.transition_cancelled(
-            operation_id,
-            cancel_at,
-            cancel_proof,
-            "stale_event_authority".to_owned(),
-        )?;
-        return Err(ReferenceError::StaleEventAuthority);
-    }
-
-    if let Err(_err) = check_event_authority(plan, authority) {
-        let cancel_at = if requested_at > operation.updated_at {
-            requested_at
-        } else {
-            TimestampNs(operation.updated_at.0.saturating_add(1))
-        };
-        let cancel_proof = alert_cancel_proof(
-            operation_id,
-            &plan.authority_anchor,
-            &authority.current().anchor,
-        );
-        journal.transition_cancelled(
-            operation_id,
-            cancel_at,
-            cancel_proof,
-            "stale_event_authority".to_owned(),
-        )?;
-        return Err(ReferenceError::StaleEventAuthority);
-    }
-
-    Ok(())
+    let verdict = check_alert_dispatch_authority(
+        plan,
+        authority,
+        &prepared_intent,
+        journal.obligation(&plan.obligation_id),
+    );
+    let Err(refusal) = verdict else {
+        return Ok(());
+    };
+    let cancel_at = if requested_at > updated_at {
+        requested_at
+    } else {
+        TimestampNs(updated_at.0.saturating_add(1))
+    };
+    let cancel_proof = alert_cancel_proof(
+        operation_id,
+        &plan.authority_anchor,
+        &authority.current().anchor,
+    );
+    journal.transition_cancelled(
+        operation_id,
+        cancel_at,
+        cancel_proof,
+        "stale_event_authority".to_owned(),
+    )?;
+    Err(refusal)
 }
 
 /// Deterministic idempotent alert provider oracle.
@@ -744,23 +873,11 @@ pub fn prepare_reference_alert(
     params: PrepareAlertParams<'_>,
     journal: &mut EffectJournal,
 ) -> Result<ReferenceAlertPlan, ReferenceError> {
-    if params.decision.action != ReferencePolicyAction::PrepareAlert
-        || params.decision.event.state != fss_core::EventState::Corroborated
-    {
-        return Err(ReferenceError::InvalidSpec("alert_not_eligible"));
-    }
-    // Defence in depth: a sensor-integrity risk never becomes effect authority, even when a
-    // revision carrying a tamper report reached a corroborated state without being verified. The
-    // situation's integrity risk is compiled from exactly these edges.
-    if params
-        .decision
-        .event
-        .evidence
-        .iter()
-        .any(fss_core::EventEvidence::reports_sensor_tamper)
-    {
-        return Err(fss_core::ContractError::SensorIntegrityRisk.into());
-    }
+    verify_event_alert_eligibility(
+        params.decision.event.state,
+        params.decision.action,
+        &params.decision.event.evidence,
+    )?;
     if params.event_receipt.event_revision_digest != params.decision.event.revision_digest() {
         return Err(ReferenceError::InvalidSpec("event_receipt_mismatch"));
     }
@@ -795,8 +912,25 @@ pub fn prepare_reference_alert(
         return Err(ReferenceError::InvalidSpec("alert_channel"));
     }
 
+    // The prepare-time head is read from the authority ledger itself and bound into the
+    // precondition digest the journal records with the operation; no caller string carries it.
+    let batches = params.authority.batches();
+    let prepared_head_digest = batches
+        .last()
+        .map(|batch| batch.batch_digest)
+        .ok_or(ReferenceError::InvalidSpec("event_receipt_mismatch"))?;
+    let prepared_head_sequence =
+        u64::try_from(batches.len()).map_err(|_| ReferenceError::ArithmeticOverflow)?;
+
     let request_digest = alert_request_digest(params.event_receipt, &channel);
-    let precondition_digest = alert_precondition_digest(params.decision, params.event_receipt);
+    let precondition_digest = alert_precondition_digest_parts(
+        params.event_receipt.event_revision_digest,
+        &params.event_receipt.authority_anchor,
+        params.decision.event.state,
+        params.decision.event.decision_path.fingerprint,
+        prepared_head_sequence,
+        prepared_head_digest,
+    );
     let intent = EffectIntent {
         operation_id: params.operation_id,
         idempotency_key: params.idempotency_key,
@@ -824,6 +958,9 @@ pub fn prepare_reference_alert(
         event_revision_digest: params.event_receipt.event_revision_digest,
         authority_anchor: params.event_receipt.authority_anchor.clone(),
         channel,
+        event_revision_encoding: event_revision_encoding(&params.decision.event),
+        prepared_head_sequence,
+        prepared_head_digest,
     })
 }
 
@@ -883,8 +1020,8 @@ pub(crate) fn execute_alert_dispatch<J: AlertEffectTransitioner>(
 /// ```compile_fail,E0308
 /// use fss_core::belief::BeliefInterval;
 /// use fss_core::{EffectJournal, TimestampNs};
-/// use fss_reference::ReferenceAlertPlan;
-/// use fss_reference::{DurableReferenceLedger, ReferenceAlertProvider, ReferenceProviderBehavior, dispatch_reference_alert};
+/// use fss_ledger::DurableReferenceLedger;
+/// use fss_reference::{ReferenceAlertPlan, ReferenceAlertProvider, ReferenceProviderBehavior, dispatch_reference_alert};
 ///
 /// fn legal_dispatch(
 ///     plan: &ReferenceAlertPlan,
@@ -1094,18 +1231,26 @@ pub(crate) fn validate_reference_alert_plan(
     Ok(())
 }
 
-fn alert_precondition_digest(
-    decision: &ReferencePolicyDecision,
-    event_receipt: &ReferenceEventReceipt,
+/// Precondition digest recorded with the prepared alert intent.
+///
+/// Binds the exact event revision, its publishing authority anchor, the committed event state and
+/// decision path, and the prepare-time authority ledger head (sequence and batch digest).
+pub(crate) fn alert_precondition_digest_parts(
+    event_revision_digest: ContentDigest,
+    authority_anchor: &LedgerAnchor,
+    state: EventState,
+    decision_fingerprint: ContentDigest,
+    prepared_head_sequence: u64,
+    prepared_head_digest: ContentDigest,
 ) -> ContentDigest {
     let mut encoder = CanonicalEncoder::new();
-    encoder.text("fss.reference_alert_precondition.v1");
-    encoder.digest(event_receipt.event_revision_digest);
-    event_receipt
-        .authority_anchor
-        .encode_canonical(&mut encoder);
-    encoder.text(decision.event.state.as_str());
-    encoder.digest(decision.event.decision_path.fingerprint);
+    encoder.text("fss.reference_alert_precondition.v2");
+    encoder.digest(event_revision_digest);
+    authority_anchor.encode_canonical(&mut encoder);
+    encoder.text(state.as_str());
+    encoder.digest(decision_fingerprint);
+    encoder.u64(prepared_head_sequence);
+    encoder.digest(prepared_head_digest);
     ContentDigest::sha256(&encoder.finish())
 }
 

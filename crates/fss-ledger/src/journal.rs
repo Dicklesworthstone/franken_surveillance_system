@@ -158,34 +158,7 @@ impl Journal {
                 maximum: MAX_RECORD_PAYLOAD_BYTES,
             });
         }
-        let observed_len = self.file.metadata()?.len();
-        if observed_len != self.committed_len {
-            return Err(JournalError::ExternalMutation {
-                expected_len: self.committed_len,
-                observed_len,
-                kind: ExternalMutationKind::LengthDivergence,
-            });
-        }
-        if self.committed_len > 0 {
-            if self.committed_len < TRAILER_LEN as u64 {
-                return Err(JournalError::ExternalMutation {
-                    expected_len: self.committed_len,
-                    observed_len,
-                    kind: ExternalMutationKind::ContentDivergence,
-                });
-            }
-            let trailer_offset = self.committed_len - TRAILER_LEN as u64;
-            let mut trailer_buf = [0_u8; TRAILER_LEN];
-            self.file.seek(SeekFrom::Start(trailer_offset))?;
-            self.file.read_exact(&mut trailer_buf)?;
-            if trailer_buf[..8] != COMMIT_MAGIC || trailer_buf[8..40] != self.last_root {
-                return Err(JournalError::ExternalMutation {
-                    expected_len: self.committed_len,
-                    observed_len,
-                    kind: ExternalMutationKind::ContentDivergence,
-                });
-            }
-        }
+        check_committed_tail(&mut self.file, self.committed_len, &self.last_root)?;
 
         let sequence = self.next_sequence;
         let next_sequence = sequence
@@ -369,6 +342,26 @@ impl Journal {
         })
     }
 
+    /// Bounded, non-mutating proof that the durable path still ends exactly at this handle's
+    /// reconciled commit trailer.
+    ///
+    /// The path is opened afresh, so a removed or replaced path is observed instead of being read
+    /// through the descriptor this handle retains. The check compares the on-disk length with the
+    /// reconciled committed length and then reads only the final commit trailer: at most
+    /// `TRAILER_LEN` (40) bytes whatever the journal size, so it never re-reads history. Any
+    /// appended, torn, or corrupt suffix, a truncation, a replaced final record, a missing path, an
+    /// unresolved append, or an I/O failure is an error; nothing is repaired or skipped. Full
+    /// historical verification remains [`Journal::verify`].
+    pub fn verify_committed_tail(&self) -> Result<(), JournalError> {
+        if let Some(pending) = &self.pending {
+            return Err(JournalError::ReconciliationRequired {
+                sequence: pending.record.sequence,
+            });
+        }
+        let mut file = OpenOptions::new().read(true).open(&self.path)?;
+        check_committed_tail(&mut file, self.committed_len, &self.last_root)
+    }
+
     /// Re-reads durable bytes and proves they match this handle's reconciled root and length.
     pub fn verify(&mut self) -> Result<RecoveryReport, JournalError> {
         if let Some(pending) = &self.pending {
@@ -464,4 +457,42 @@ impl Journal {
             .checked_add(encoded_len)
             .ok_or(JournalError::LengthOverflow)
     }
+}
+
+/// O(1) check that `file` ends exactly at `committed_len` with the commit trailer naming
+/// `last_root`. Reads at most `TRAILER_LEN` bytes.
+fn check_committed_tail(
+    file: &mut File,
+    committed_len: u64,
+    last_root: &[u8; 32],
+) -> Result<(), JournalError> {
+    let observed_len = file.metadata()?.len();
+    if observed_len != committed_len {
+        return Err(JournalError::ExternalMutation {
+            expected_len: committed_len,
+            observed_len,
+            kind: ExternalMutationKind::LengthDivergence,
+        });
+    }
+    if committed_len > 0 {
+        if committed_len < TRAILER_LEN as u64 {
+            return Err(JournalError::ExternalMutation {
+                expected_len: committed_len,
+                observed_len,
+                kind: ExternalMutationKind::ContentDivergence,
+            });
+        }
+        let trailer_offset = committed_len - TRAILER_LEN as u64;
+        let mut trailer_buf = [0_u8; TRAILER_LEN];
+        file.seek(SeekFrom::Start(trailer_offset))?;
+        file.read_exact(&mut trailer_buf)?;
+        if trailer_buf[..8] != COMMIT_MAGIC || trailer_buf[8..40] != last_root[..] {
+            return Err(JournalError::ExternalMutation {
+                expected_len: committed_len,
+                observed_len,
+                kind: ExternalMutationKind::ContentDivergence,
+            });
+        }
+    }
+    Ok(())
 }
