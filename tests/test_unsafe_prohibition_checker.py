@@ -348,14 +348,14 @@ class TestPlantedNegativeTargetRootsMissingForbid(unittest.TestCase):
             self.assertFalse(is_valid)
             self.assertEqual({f.code for f in findings}, {ERR_TARGET_ROOT_MISSING_FORBID})
 
-    def test_autoexamples_false_still_checks_example_for_forbid(self) -> None:
-        """Example file missing forbid is checked even when autoexamples = false."""
+    def test_autoexamples_false_does_not_check_omitted_example_for_forbid(self) -> None:
+        """Example file missing forbid is not checked when autoexamples = false."""
         with tempfile.TemporaryDirectory() as td:
             tmp_root = Path(td)
             manifest = tmp_root / "Cargo.toml"
             manifest.write_text(
                 """[package]
-name = "fixture-autoex"
+name = "fixture-autoexample"
 version = "0.1.0"
 edition = "2024"
 autoexamples = false
@@ -373,11 +373,11 @@ unsafe_code = "forbid"
             (ex_dir / "ex1.rs").write_text("fn main() {}\n", encoding="utf-8")
 
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
-            self.assertFalse(is_valid)
-            self.assertEqual({f.code for f in findings}, {ERR_TARGET_ROOT_MISSING_FORBID})
+            self.assertTrue(is_valid, f"Expected valid when autoexamples=false, got findings: {findings}")
+            self.assertEqual(findings, [])
 
-    def test_autotests_false_still_checks_test_for_forbid(self) -> None:
-        """Test file missing forbid is checked even when autotests = false."""
+    def test_autotests_false_does_not_check_omitted_test_for_forbid(self) -> None:
+        """Test file missing forbid is not checked when autotests = false."""
         with tempfile.TemporaryDirectory() as td:
             tmp_root = Path(td)
             manifest = tmp_root / "Cargo.toml"
@@ -401,8 +401,8 @@ unsafe_code = "forbid"
             (t_dir / "t1.rs").write_text("fn test() {}\n", encoding="utf-8")
 
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
-            self.assertFalse(is_valid)
-            self.assertEqual({f.code for f in findings}, {ERR_TARGET_ROOT_MISSING_FORBID})
+            self.assertTrue(is_valid, f"Expected valid when autotests=false, got findings: {findings}")
+            self.assertEqual(findings, [])
 
     def test_build_helper_missing_forbid_fails(self) -> None:
         """Build helper file under build/ missing forbid is detected and rejected."""
@@ -3229,6 +3229,59 @@ unsafe_code = "forbid"
             self.assertFalse(is_valid, "Plant R-build: build.rs missing forbid must be caught")
             self.assertTrue(any(f.code == ERR_TARGET_ROOT_MISSING_FORBID and "extra/c/build.rs" in f.file for f in findings))
 
+    def test_planted_nonmember_build_true_kills_q3a(self) -> None:
+        """Mutant Q3a killer: non-member build_enabled scanning must flag build.rs when build=true is explicit."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            root_manifest = tmp_root / "Cargo.toml"
+            root_manifest.write_text(
+                """[workspace]
+resolver = "3"
+members = ["crates/member"]
+exclude = ["extra"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            m_dir = tmp_root / "crates" / "member"
+            (m_dir / "src").mkdir(parents=True)
+            (m_dir / "Cargo.toml").write_text(
+                """[package]
+name = "member"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+""",
+                encoding="utf-8",
+            )
+            (m_dir / "src" / "lib.rs").write_text("#![forbid(unsafe_code)]\npub fn ok() {}\n", encoding="utf-8")
+
+            # Non-member crate with explicit build = true and build.rs lacking forbid
+            c_dir = tmp_root / "extra" / "c"
+            (c_dir / "src").mkdir(parents=True)
+            (c_dir / "Cargo.toml").write_text(
+                """[package]
+name = "c"
+version = "0.1.0"
+edition = "2024"
+build = true
+
+[lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            (c_dir / "src" / "lib.rs").write_text("#![forbid(unsafe_code)]\npub fn f() {}\n", encoding="utf-8")
+            (c_dir / "build.rs").write_text("fn main() {}\n", encoding="utf-8")
+
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
+            self.assertFalse(is_valid, "Plant Q3a: non-member build=true with build.rs missing forbid must be caught")
+            self.assertTrue(any(f.code == ERR_TARGET_ROOT_MISSING_FORBID and "extra/c/build.rs" in f.file for f in findings))
+
     def test_planted_bin_name_only_no_path_kills_r_binname(self) -> None:
         """Mutant R-binname killer: [[bin]] candidate loop must not be dropped."""
         with tempfile.TemporaryDirectory() as td:
@@ -3284,6 +3337,447 @@ unsafe_code = "forbid"
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
             self.assertFalse(is_valid, "Plant R-binname: [[bin]] name='foo' without forbid must be caught")
             self.assertTrue(any(f.code == ERR_TARGET_ROOT_MISSING_FORBID and "extra/c/src/bin/foo.rs" in f.file for f in findings))
+
+    # --- fss-na476: 7 f2plants rows that cargo does not build must not be flagged ---
+
+    def test_f2plant_nonmember_b3_autolib_false_stale_lib_not_flagged(self) -> None:
+        """Non-member crate with autolib=false does not build src/lib.rs; missing forbid is not flagged."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            root_manifest = tmp_root / "Cargo.toml"
+            root_manifest.write_text(
+                """[workspace]
+resolver = "3"
+members = ["crates/member"]
+exclude = ["extra"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            m_dir = tmp_root / "crates" / "member"
+            (m_dir / "src").mkdir(parents=True)
+            (m_dir / "Cargo.toml").write_text(
+                """[package]
+name = "member"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+""",
+                encoding="utf-8",
+            )
+            (m_dir / "src" / "lib.rs").write_text("#![forbid(unsafe_code)]\npub fn ok() {}\n", encoding="utf-8")
+
+            c_dir = tmp_root / "extra" / "c"
+            (c_dir / "src").mkdir(parents=True)
+            (c_dir / "Cargo.toml").write_text(
+                """[package]
+name = "c"
+version = "0.1.0"
+edition = "2024"
+autolib = false
+
+[lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            (c_dir / "src" / "main.rs").write_text("#![forbid(unsafe_code)]\nfn main() {}\n", encoding="utf-8")
+            # src/lib.rs lacks forbid, but autolib=false so cargo does not build it
+            (c_dir / "src" / "lib.rs").write_text("pub fn stale_lib() {}\n", encoding="utf-8")
+
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
+            self.assertTrue(is_valid, f"Expected valid when non-member autolib=false, got: {findings}")
+            self.assertEqual(findings, [])
+
+    def test_f2plant_nonmember_f4_custom_build_stale_build_rs_not_flagged(self) -> None:
+        """Non-member crate with custom build path ignores stale build.rs; missing forbid on build.rs is not flagged."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            root_manifest = tmp_root / "Cargo.toml"
+            root_manifest.write_text(
+                """[workspace]
+resolver = "3"
+members = ["crates/member"]
+exclude = ["extra"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            m_dir = tmp_root / "crates" / "member"
+            (m_dir / "src").mkdir(parents=True)
+            (m_dir / "Cargo.toml").write_text(
+                """[package]
+name = "member"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+""",
+                encoding="utf-8",
+            )
+            (m_dir / "src" / "lib.rs").write_text("#![forbid(unsafe_code)]\npub fn ok() {}\n", encoding="utf-8")
+
+            c_dir = tmp_root / "extra" / "c"
+            (c_dir / "src").mkdir(parents=True)
+            (c_dir / "tools").mkdir(parents=True)
+            (c_dir / "Cargo.toml").write_text(
+                """[package]
+name = "c"
+version = "0.1.0"
+edition = "2024"
+build = "tools/gen.rs"
+
+[lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            (c_dir / "src" / "lib.rs").write_text("#![forbid(unsafe_code)]\npub fn f() {}\n", encoding="utf-8")
+            (c_dir / "tools" / "gen.rs").write_text("#![forbid(unsafe_code)]\nfn main() {}\n", encoding="utf-8")
+            # stale build.rs lacks forbid, but custom build="tools/gen.rs" means cargo does not build build.rs
+            (c_dir / "build.rs").write_text("fn main() {}\n", encoding="utf-8")
+
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
+            self.assertTrue(is_valid, f"Expected valid when non-member custom build ignores build.rs, got: {findings}")
+            self.assertEqual(findings, [])
+
+    def test_f2plant_member_c3_autoexamples_false_stale_example_not_flagged(self) -> None:
+        """Workspace member crate with autoexamples=false does not build examples/; missing forbid is not flagged."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            root_manifest = tmp_root / "Cargo.toml"
+            root_manifest.write_text(
+                """[workspace]
+resolver = "3"
+members = ["crates/member"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            m_dir = tmp_root / "crates" / "member"
+            (m_dir / "src").mkdir(parents=True)
+            (m_dir / "examples").mkdir(parents=True)
+            (m_dir / "Cargo.toml").write_text(
+                """[package]
+name = "member"
+version = "0.1.0"
+edition = "2024"
+autoexamples = false
+
+[lints]
+workspace = true
+""",
+                encoding="utf-8",
+            )
+            (m_dir / "src" / "lib.rs").write_text("#![forbid(unsafe_code)]\npub fn ok() {}\n", encoding="utf-8")
+            # examples/e.rs lacks forbid, but autoexamples=false so cargo does not build it
+            (m_dir / "examples" / "e.rs").write_text("fn main() {}\n", encoding="utf-8")
+
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
+            self.assertTrue(is_valid, f"Expected valid when member autoexamples=false, got: {findings}")
+            self.assertEqual(findings, [])
+
+    def test_f2plant_member_d3_autotests_false_stale_test_not_flagged(self) -> None:
+        """Workspace member crate with autotests=false does not build tests/; missing forbid is not flagged."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            root_manifest = tmp_root / "Cargo.toml"
+            root_manifest.write_text(
+                """[workspace]
+resolver = "3"
+members = ["crates/member"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            m_dir = tmp_root / "crates" / "member"
+            (m_dir / "src").mkdir(parents=True)
+            (m_dir / "tests").mkdir(parents=True)
+            (m_dir / "Cargo.toml").write_text(
+                """[package]
+name = "member"
+version = "0.1.0"
+edition = "2024"
+autotests = false
+
+[lints]
+workspace = true
+""",
+                encoding="utf-8",
+            )
+            (m_dir / "src" / "lib.rs").write_text("#![forbid(unsafe_code)]\npub fn ok() {}\n", encoding="utf-8")
+            # tests/t.rs lacks forbid, but autotests=false so cargo does not build it
+            (m_dir / "tests" / "t.rs").write_text("fn main() {}\n", encoding="utf-8")
+
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
+            self.assertTrue(is_valid, f"Expected valid when member autotests=false, got: {findings}")
+            self.assertEqual(findings, [])
+
+    def test_f2plant_member_e2_autobenches_false_stale_bench_not_flagged(self) -> None:
+        """Workspace member crate with autobenches=false does not build benches/; missing forbid is not flagged."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            root_manifest = tmp_root / "Cargo.toml"
+            root_manifest.write_text(
+                """[workspace]
+resolver = "3"
+members = ["crates/member"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            m_dir = tmp_root / "crates" / "member"
+            (m_dir / "src").mkdir(parents=True)
+            (m_dir / "benches").mkdir(parents=True)
+            (m_dir / "Cargo.toml").write_text(
+                """[package]
+name = "member"
+version = "0.1.0"
+edition = "2024"
+autobenches = false
+
+[lints]
+workspace = true
+""",
+                encoding="utf-8",
+            )
+            (m_dir / "src" / "lib.rs").write_text("#![forbid(unsafe_code)]\npub fn ok() {}\n", encoding="utf-8")
+            # benches/b.rs lacks forbid, but autobenches=false so cargo does not build it
+            (m_dir / "benches" / "b.rs").write_text("fn main() {}\n", encoding="utf-8")
+
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
+            self.assertTrue(is_valid, f"Expected valid when member autobenches=false, got: {findings}")
+            self.assertEqual(findings, [])
+
+    def test_f2plant_member_f2_build_false_stale_build_rs_not_flagged(self) -> None:
+        """Workspace member crate with build=false does not build build.rs; missing forbid is not flagged."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            root_manifest = tmp_root / "Cargo.toml"
+            root_manifest.write_text(
+                """[workspace]
+resolver = "3"
+members = ["crates/member"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            m_dir = tmp_root / "crates" / "member"
+            (m_dir / "src").mkdir(parents=True)
+            (m_dir / "Cargo.toml").write_text(
+                """[package]
+name = "member"
+version = "0.1.0"
+edition = "2024"
+build = false
+
+[lints]
+workspace = true
+""",
+                encoding="utf-8",
+            )
+            (m_dir / "src" / "lib.rs").write_text("#![forbid(unsafe_code)]\npub fn ok() {}\n", encoding="utf-8")
+            # build.rs lacks forbid, but build=false so cargo does not build it
+            (m_dir / "build.rs").write_text("fn main() {}\n", encoding="utf-8")
+
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
+            self.assertTrue(is_valid, f"Expected valid when member build=false, got: {findings}")
+            self.assertEqual(findings, [])
+
+    def test_f2plant_member_f4_custom_build_stale_build_rs_not_flagged(self) -> None:
+        """Workspace member crate with custom build path ignores build.rs; missing forbid on build.rs is not flagged."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            root_manifest = tmp_root / "Cargo.toml"
+            root_manifest.write_text(
+                """[workspace]
+resolver = "3"
+members = ["crates/member"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            m_dir = tmp_root / "crates" / "member"
+            (m_dir / "src").mkdir(parents=True)
+            (m_dir / "tools").mkdir(parents=True)
+            (m_dir / "Cargo.toml").write_text(
+                """[package]
+name = "member"
+version = "0.1.0"
+edition = "2024"
+build = "tools/gen.rs"
+
+[lints]
+workspace = true
+""",
+                encoding="utf-8",
+            )
+            (m_dir / "src" / "lib.rs").write_text("#![forbid(unsafe_code)]\npub fn ok() {}\n", encoding="utf-8")
+            (m_dir / "tools" / "gen.rs").write_text("#![forbid(unsafe_code)]\nfn main() {}\n", encoding="utf-8")
+            # build.rs lacks forbid, but build="tools/gen.rs" so cargo does not build build.rs
+            (m_dir / "build.rs").write_text("fn main() {}\n", encoding="utf-8")
+
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
+            self.assertTrue(is_valid, f"Expected valid when member custom build ignores build.rs, got: {findings}")
+            self.assertEqual(findings, [])
+
+    def test_planted_member_autoexamples_false_declared_example_flagged_kills_q2d(self) -> None:
+        """Mutant Q2d killer: member with autoexamples=false but declared [[example]] (name-only and explicit path) must be flagged."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            root_manifest = tmp_root / "Cargo.toml"
+            root_manifest.write_text(
+                """[workspace]
+resolver = "3"
+members = ["crates/member"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            m_dir = tmp_root / "crates" / "member"
+            (m_dir / "src").mkdir(parents=True)
+            (m_dir / "examples").mkdir(parents=True)
+            (m_dir / "Cargo.toml").write_text(
+                """[package]
+name = "member"
+version = "0.1.0"
+edition = "2024"
+autoexamples = false
+
+[lints]
+workspace = true
+
+[[example]]
+name = "ex_name"
+
+[[example]]
+name = "ex_path"
+path = "examples/custom_ex.rs"
+""",
+                encoding="utf-8",
+            )
+            (m_dir / "src" / "lib.rs").write_text("#![forbid(unsafe_code)]\npub fn ok() {}\n", encoding="utf-8")
+            (m_dir / "examples" / "ex_name.rs").write_text("fn main() {}\n", encoding="utf-8")
+            (m_dir / "examples" / "custom_ex.rs").write_text("fn main() {}\n", encoding="utf-8")
+
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
+            self.assertFalse(is_valid, "Declared examples on member with autoexamples=false must be flagged when missing forbid")
+            flagged_files = {f.file for f in findings if f.code == ERR_TARGET_ROOT_MISSING_FORBID}
+            self.assertTrue(any("crates/member/examples/ex_name.rs" in f for f in flagged_files), f"ex_name.rs not flagged in {flagged_files}")
+            self.assertTrue(any("crates/member/examples/custom_ex.rs" in f for f in flagged_files), f"custom_ex.rs not flagged in {flagged_files}")
+
+    def test_planted_member_autotests_false_declared_test_flagged_kills_q2d(self) -> None:
+        """Mutant Q2d killer: member with autotests=false but declared [[test]] (name-only and explicit path) must be flagged."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            root_manifest = tmp_root / "Cargo.toml"
+            root_manifest.write_text(
+                """[workspace]
+resolver = "3"
+members = ["crates/member"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            m_dir = tmp_root / "crates" / "member"
+            (m_dir / "src").mkdir(parents=True)
+            (m_dir / "tests").mkdir(parents=True)
+            (m_dir / "Cargo.toml").write_text(
+                """[package]
+name = "member"
+version = "0.1.0"
+edition = "2024"
+autotests = false
+
+[lints]
+workspace = true
+
+[[test]]
+name = "t_name"
+
+[[test]]
+name = "t_path"
+path = "tests/custom_t.rs"
+""",
+                encoding="utf-8",
+            )
+            (m_dir / "src" / "lib.rs").write_text("#![forbid(unsafe_code)]\npub fn ok() {}\n", encoding="utf-8")
+            (m_dir / "tests" / "t_name.rs").write_text("fn main() {}\n", encoding="utf-8")
+            (m_dir / "tests" / "custom_t.rs").write_text("fn main() {}\n", encoding="utf-8")
+
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
+            self.assertFalse(is_valid, "Declared tests on member with autotests=false must be flagged when missing forbid")
+            flagged_files = {f.file for f in findings if f.code == ERR_TARGET_ROOT_MISSING_FORBID}
+            self.assertTrue(any("crates/member/tests/t_name.rs" in f for f in flagged_files), f"t_name.rs not flagged in {flagged_files}")
+            self.assertTrue(any("crates/member/tests/custom_t.rs" in f for f in flagged_files), f"custom_t.rs not flagged in {flagged_files}")
+
+    def test_planted_member_autobenches_false_declared_bench_flagged_kills_q2d(self) -> None:
+        """Mutant Q2d killer: member with autobenches=false but declared [[bench]] (name-only and explicit path) must be flagged."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            root_manifest = tmp_root / "Cargo.toml"
+            root_manifest.write_text(
+                """[workspace]
+resolver = "3"
+members = ["crates/member"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            m_dir = tmp_root / "crates" / "member"
+            (m_dir / "src").mkdir(parents=True)
+            (m_dir / "benches").mkdir(parents=True)
+            (m_dir / "Cargo.toml").write_text(
+                """[package]
+name = "member"
+version = "0.1.0"
+edition = "2024"
+autobenches = false
+
+[lints]
+workspace = true
+
+[[bench]]
+name = "b_name"
+
+[[bench]]
+name = "b_path"
+path = "benches/custom_b.rs"
+""",
+                encoding="utf-8",
+            )
+            (m_dir / "src" / "lib.rs").write_text("#![forbid(unsafe_code)]\npub fn ok() {}\n", encoding="utf-8")
+            (m_dir / "benches" / "b_name.rs").write_text("fn main() {}\n", encoding="utf-8")
+            (m_dir / "benches" / "custom_b.rs").write_text("fn main() {}\n", encoding="utf-8")
+
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
+            self.assertFalse(is_valid, "Declared benches on member with autobenches=false must be flagged when missing forbid")
+            flagged_files = {f.file for f in findings if f.code == ERR_TARGET_ROOT_MISSING_FORBID}
+            self.assertTrue(any("crates/member/benches/b_name.rs" in f for f in flagged_files), f"b_name.rs not flagged in {flagged_files}")
+            self.assertTrue(any("crates/member/benches/custom_b.rs" in f for f in flagged_files), f"custom_b.rs not flagged in {flagged_files}")
 
 
 if __name__ == "__main__":
