@@ -2,11 +2,13 @@ use std::error::Error;
 use std::fs;
 
 use fss_core::{
-    CapsuleId, CaptureInterval, ContractError, EffectJournal, EffectState, EventId, IdempotencyKey,
-    ObligationId, ObligationState, OperationId, ProbabilityInterval, SensorId, TimestampNs,
+    BatchId, CapsuleId, CaptureInterval, ContractError, EffectJournal, EffectState, EventId,
+    EvidenceDelta, IdempotencyKey, ObjectId, ObligationId, ObligationState, OperationId, Plane,
+    ProbabilityInterval, SensorId, TimestampNs,
 };
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
 use fss_object::{InMemoryObjectStore, ObjectLimits};
+use fss_publication::AuthorityPublisher;
 
 use crate::{
     DeliveryPlan, DurableEffectError, DurableEffectJournal, MockModelScript, MockModelSpec,
@@ -85,10 +87,42 @@ fn observation_with_label(
         .source_packets
         .last()
         .ok_or(ReferenceError::InvalidSpec("source_packet_count"))?;
+    let interval = CaptureInterval::new(first.capture.earliest, last.capture.latest)?;
+
+    if label == MockSemanticLabel::TamperLike || label == MockSemanticLabel::IntegrityRestored {
+        let suffix = if label == MockSemanticLabel::TamperLike {
+            "tamper"
+        } else {
+            "restoration"
+        };
+        let result_digest = result.object_digest();
+        let delta = EvidenceDelta {
+            delta_id: format!("delta:sensor-{suffix}:{result_digest}"),
+            family: "sensor_tamper_status".to_owned(),
+            object_id: ObjectId::parse(format!(
+                "object:sensor:{sensor_name}:domain:{failure_domain}:{suffix}"
+            ))?,
+            prior_generation: None,
+            new_generation: 1,
+            validity: interval,
+            plane: Plane::Authority,
+            payload_digest: result_digest,
+            witness_digest: None,
+            operation_id: None,
+        };
+        let mut publisher = AuthorityPublisher::new(objects, ledger);
+        let batch = publisher.prepare_batch(
+            BatchId::parse(format!("batch:sensor-{suffix}:{result_digest}"))?,
+            vec![delta],
+            [result_digest],
+        )?;
+        publisher.append(batch)?;
+    }
+
     Ok(ReferenceModelObservation::new(
         result,
         failure_domain,
-        CaptureInterval::new(first.capture.earliest, last.capture.latest)?,
+        interval,
     )?)
 }
 
@@ -1092,6 +1126,590 @@ fn unrelated_observation_batch_still_delivers_alert_p6() -> Result<(), Box<dyn E
             .state,
         EffectState::AdapterAccepted
     );
+
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn unretired_sensor_tamper_without_new_revision_refuses_alert_dispatch_p6c_mem()
+-> Result<(), Box<dyn Error>> {
+    let path = temp_journal("p6c-mem-tamper-veto");
+    let _ = fs::remove_file(&path);
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(768, 12 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
+    let mut journal = EffectJournal::new();
+    let plan = prepare(&decision, &event_receipt, &authority, &mut journal)?;
+    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:p6c:mem");
+
+    assert_eq!(
+        journal
+            .operation(&plan.intent.operation_id)
+            .ok_or(ReferenceError::InvalidSpec("missing_operation"))?
+            .state,
+        EffectState::Prepared
+    );
+    assert_eq!(
+        journal
+            .obligations()
+            .find(|item| item.obligation_id == plan.obligation_id)
+            .ok_or(ReferenceError::InvalidSpec("missing_obligation"))?
+            .state,
+        ObligationState::Pending
+    );
+
+    // Tamper observation recorded AFTER prepare, on a sensor and failure domain that the event relies on.
+    // Notice: NO new event revision is published!
+    let _tamper_obs = observation_with_label(
+        "capture:alert:p6c-tamper",
+        "sensor:alert:a",
+        100,
+        "power:alert:a",
+        MockSemanticLabel::TamperLike,
+        &mut objects,
+        &mut authority,
+    )?;
+
+    // Dispatching against authority must be refused with SensorIntegrityRisk.
+    let dispatch_result = dispatch_reference_alert(
+        &plan,
+        &authority,
+        ReferenceProviderBehavior::Deliver,
+        TimestampNs(101),
+        TimestampNs(102),
+        &mut journal,
+        &mut provider,
+    );
+    assert!(
+        matches!(
+            dispatch_result,
+            Err(ReferenceError::Contract(ContractError::SensorIntegrityRisk))
+        ),
+        "expected SensorIntegrityRisk, got: {dispatch_result:?}"
+    );
+
+    // 0 messages delivered to provider.
+    assert_eq!(provider.message_count(), 0);
+
+    // Operation and obligation transitioned to Cancelled in journal.
+    assert_eq!(
+        journal
+            .operation(&plan.intent.operation_id)
+            .ok_or(ReferenceError::InvalidSpec("missing_operation"))?
+            .state,
+        EffectState::Cancelled
+    );
+    assert_eq!(
+        journal
+            .obligations()
+            .find(|item| item.obligation_id == plan.obligation_id)
+            .ok_or(ReferenceError::InvalidSpec("missing_obligation"))?
+            .state,
+        ObligationState::Cancelled
+    );
+
+    // A second dispatch call on the same plan must also fail (operation not in Prepared state).
+    let second_dispatch = dispatch_reference_alert(
+        &plan,
+        &authority,
+        ReferenceProviderBehavior::Deliver,
+        TimestampNs(103),
+        TimestampNs(104),
+        &mut journal,
+        &mut provider,
+    );
+    assert!(
+        matches!(
+            second_dispatch,
+            Err(ReferenceError::Contract(
+                ContractError::InvalidEffectTransition
+            ))
+        ),
+        "expected InvalidEffectTransition, got: {second_dispatch:?}"
+    );
+
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn unretired_sensor_tamper_without_new_revision_refuses_alert_dispatch_p6c_durable()
+-> Result<(), Box<dyn Error>> {
+    let ledger_path = temp_journal("p6c-durable-ledger");
+    let journal_path = temp_journal("p6c-durable-journal");
+    let _ = fs::remove_file(&ledger_path);
+    let _ = fs::remove_file(&journal_path);
+
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(768, 12 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&ledger_path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
+
+    let mut durable_journal =
+        DurableEffectJournal::open(&journal_path, IncompleteTailPolicy::Reject)?;
+    let plan = durable_journal.prepare_alert(PrepareAlertParams {
+        decision: &decision,
+        event_receipt: &event_receipt,
+        authority: &authority,
+        operation_id: OperationId::parse("op:alert:p6c:dur")?,
+        idempotency_key: IdempotencyKey::parse("idempotency:alert:p6c:dur")?,
+        obligation_id: ObligationId::parse("obligation:alert:p6c:dur")?,
+        channel: "security-ops".to_string(),
+        now: TimestampNs(100),
+    })?;
+
+    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:p6c:dur");
+
+    // Tamper observation recorded AFTER prepare, on sensor:alert:a / power:alert:a.
+    // NO new event revision is published!
+    let _tamper_obs = observation_with_label(
+        "capture:alert:p6c-dur-tamper",
+        "sensor:alert:a",
+        100,
+        "power:alert:a",
+        MockSemanticLabel::TamperLike,
+        &mut objects,
+        &mut authority,
+    )?;
+
+    // Durable dispatch must be refused with ContractError::SensorIntegrityRisk.
+    let dispatch_res = durable_journal.dispatch_alert(
+        &plan,
+        &authority,
+        ReferenceProviderBehavior::Deliver,
+        TimestampNs(110),
+        TimestampNs(120),
+        &mut provider,
+    );
+    assert!(
+        matches!(
+            dispatch_res,
+            Err(DurableEffectError::Contract(ContractError::SensorIntegrityRisk))
+        ),
+        "expected DurableEffectError::Contract(SensorIntegrityRisk), got: {dispatch_res:?}"
+    );
+
+    // 0 messages delivered.
+    assert_eq!(provider.message_count(), 0);
+
+    // In-memory state is Cancelled.
+    let op = durable_journal
+        .operation(&plan.intent.operation_id)
+        .ok_or(ReferenceError::InvalidSpec("missing_operation"))?;
+    assert_eq!(op.state, EffectState::Cancelled);
+
+    let obl = durable_journal
+        .obligations()
+        .find(|item| item.obligation_id == plan.obligation_id)
+        .ok_or(ReferenceError::InvalidSpec("missing_obligation"))?;
+    assert_eq!(obl.state, ObligationState::Cancelled);
+
+    // Drop and reopen from disk: Cancelled state must persist!
+    drop(durable_journal);
+    let reopened =
+        DurableEffectJournal::open(&journal_path, IncompleteTailPolicy::Reject)?;
+    let reopened_op = reopened
+        .operation(&plan.intent.operation_id)
+        .ok_or(ReferenceError::InvalidSpec("missing_operation"))?;
+    assert_eq!(reopened_op.state, EffectState::Cancelled);
+    let reopened_obl = reopened
+        .obligations()
+        .find(|item| item.obligation_id == plan.obligation_id)
+        .ok_or(ReferenceError::InvalidSpec("missing_obligation"))?;
+    assert_eq!(reopened_obl.state, ObligationState::Cancelled);
+
+    let _ = fs::remove_file(ledger_path);
+    let _ = fs::remove_file(journal_path);
+    Ok(())
+}
+
+#[test]
+fn evidenced_restoration_retiring_tamper_allows_alert_dispatch()
+-> Result<(), Box<dyn Error>> {
+    let path = temp_journal("p6c-restoration-allows");
+    let _ = fs::remove_file(&path);
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(768, 12 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
+    let mut journal = EffectJournal::new();
+    let plan = prepare(&decision, &event_receipt, &authority, &mut journal)?;
+    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:p6c:restored");
+
+    // 1. Tamper observation arrives after prepare on sensor:alert:a / power:alert:a (seed 100).
+    let _tamper_obs = observation_with_label(
+        "capture:alert:p6c-res-tamper",
+        "sensor:alert:a",
+        100,
+        "power:alert:a",
+        MockSemanticLabel::TamperLike,
+        &mut objects,
+        &mut authority,
+    )?;
+
+    // 2. Evidenced restoration arrives on that exact sensor and domain, captured strictly after (seed 600).
+    let _restored_obs = observation_with_label(
+        "capture:alert:p6c-res-restored",
+        "sensor:alert:a",
+        600,
+        "power:alert:a",
+        MockSemanticLabel::IntegrityRestored,
+        &mut objects,
+        &mut authority,
+    )?;
+
+    // Dispatching against authority must SUCCEED because the tamper was evidenced retired.
+    let receipt = dispatch_reference_alert(
+        &plan,
+        &authority,
+        ReferenceProviderBehavior::Deliver,
+        TimestampNs(101),
+        TimestampNs(102),
+        &mut journal,
+        &mut provider,
+    )?;
+
+    assert_eq!(receipt.state, EffectState::AdapterAccepted);
+    assert_eq!(provider.message_count(), 1);
+    assert_eq!(
+        journal
+            .operation(&plan.intent.operation_id)
+            .ok_or(ReferenceError::InvalidSpec("missing_operation"))?
+            .state,
+        EffectState::AdapterAccepted
+    );
+    assert_eq!(
+        journal
+            .obligations()
+            .find(|item| item.obligation_id == plan.obligation_id)
+            .ok_or(ReferenceError::InvalidSpec("missing_obligation"))?
+            .state,
+        ObligationState::Pending
+    );
+
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn unrelated_sensor_and_domain_tamper_allows_alert_dispatch()
+-> Result<(), Box<dyn Error>> {
+    let path = temp_journal("p6c-unrelated-tamper-allows");
+    let _ = fs::remove_file(&path);
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(768, 12 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
+    let mut journal = EffectJournal::new();
+    let plan = prepare(&decision, &event_receipt, &authority, &mut journal)?;
+    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:p6c:unrelated");
+
+    // Tamper observation arrives on an unrelated sensor in an unrelated failure domain.
+    let _unrelated_tamper = observation_with_label(
+        "capture:alert:unrelated-tamper",
+        "sensor:alert:unrelated-sensor",
+        100,
+        "power:alert:unrelated",
+        MockSemanticLabel::TamperLike,
+        &mut objects,
+        &mut authority,
+    )?;
+
+    // Dispatching against authority must SUCCEED because the tamper affects an unrelated sensor/domain.
+    let receipt = dispatch_reference_alert(
+        &plan,
+        &authority,
+        ReferenceProviderBehavior::Deliver,
+        TimestampNs(101),
+        TimestampNs(102),
+        &mut journal,
+        &mut provider,
+    )?;
+
+    assert_eq!(receipt.state, EffectState::AdapterAccepted);
+    assert_eq!(provider.message_count(), 1);
+    assert_eq!(
+        journal
+            .operation(&plan.intent.operation_id)
+            .ok_or(ReferenceError::InvalidSpec("missing_operation"))?
+            .state,
+        EffectState::AdapterAccepted
+    );
+    assert_eq!(
+        journal
+            .obligations()
+            .find(|item| item.obligation_id == plan.obligation_id)
+            .ok_or(ReferenceError::InvalidSpec("missing_obligation"))?
+            .state,
+        ObligationState::Pending
+    );
+
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn overlapping_or_earlier_restoration_does_not_retire_tamper_and_refuses_alert_dispatch()
+-> Result<(), Box<dyn Error>> {
+    let path = temp_journal("p6c-overlapping-restoration");
+    let _ = fs::remove_file(&path);
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(768, 12 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
+    let mut journal = EffectJournal::new();
+    let plan = prepare(&decision, &event_receipt, &authority, &mut journal)?;
+    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:p6c:overlap");
+
+    // 1. Tamper observation arrives with seed 300 (start_ns = 3_000_000).
+    let _tamper_obs = observation_with_label(
+        "capture:alert:p6c-overlap-tamper",
+        "sensor:alert:a",
+        300,
+        "power:alert:a",
+        MockSemanticLabel::TamperLike,
+        &mut objects,
+        &mut authority,
+    )?;
+
+    // 2. Restoration observation has seed 200 (start_ns = 2_000_000 <= tamper latest).
+    // An overlapping or earlier capture cannot attest that integrity was re-established after the tamper!
+    let _restored_obs = observation_with_label(
+        "capture:alert:p6c-overlap-restored",
+        "sensor:alert:a",
+        200,
+        "power:alert:a",
+        MockSemanticLabel::IntegrityRestored,
+        &mut objects,
+        &mut authority,
+    )?;
+
+    // Dispatching against authority must still be REFUSED with SensorIntegrityRisk.
+    let dispatch_result = dispatch_reference_alert(
+        &plan,
+        &authority,
+        ReferenceProviderBehavior::Deliver,
+        TimestampNs(101),
+        TimestampNs(102),
+        &mut journal,
+        &mut provider,
+    );
+    assert!(
+        matches!(
+            dispatch_result,
+            Err(ReferenceError::Contract(ContractError::SensorIntegrityRisk))
+        ),
+        "expected SensorIntegrityRisk, got: {dispatch_result:?}"
+    );
+    assert_eq!(provider.message_count(), 0);
+
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn evidenced_restoration_retiring_tamper_allows_durable_alert_dispatch()
+-> Result<(), Box<dyn Error>> {
+    let ledger_path = temp_journal("p6c-durable-res-ledger");
+    let journal_path = temp_journal("p6c-durable-res-journal");
+    let _ = fs::remove_file(&ledger_path);
+    let _ = fs::remove_file(&journal_path);
+
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(768, 12 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&ledger_path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
+
+    let mut durable_journal =
+        DurableEffectJournal::open(&journal_path, IncompleteTailPolicy::Reject)?;
+    let plan = durable_journal.prepare_alert(PrepareAlertParams {
+        decision: &decision,
+        event_receipt: &event_receipt,
+        authority: &authority,
+        operation_id: OperationId::parse("op:alert:p6c:dur:res")?,
+        idempotency_key: IdempotencyKey::parse("idempotency:alert:p6c:dur:res")?,
+        obligation_id: ObligationId::parse("obligation:alert:p6c:dur:res")?,
+        channel: "security-ops".to_string(),
+        now: TimestampNs(100),
+    })?;
+
+    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:p6c:dur:res");
+
+    // 1. Tamper observation arrives on sensor:alert:a / power:alert:a (seed 100).
+    let _tamper_obs = observation_with_label(
+        "capture:alert:p6c-dur-res-tamper",
+        "sensor:alert:a",
+        100,
+        "power:alert:a",
+        MockSemanticLabel::TamperLike,
+        &mut objects,
+        &mut authority,
+    )?;
+
+    // 2. Evidenced restoration arrives on that exact sensor and domain, captured strictly after (seed 600).
+    let _restored_obs = observation_with_label(
+        "capture:alert:p6c-dur-res-restored",
+        "sensor:alert:a",
+        600,
+        "power:alert:a",
+        MockSemanticLabel::IntegrityRestored,
+        &mut objects,
+        &mut authority,
+    )?;
+
+    // Durable dispatch must succeed with AdapterAccepted.
+    let receipt = durable_journal.dispatch_alert(
+        &plan,
+        &authority,
+        ReferenceProviderBehavior::Deliver,
+        TimestampNs(110),
+        TimestampNs(120),
+        &mut provider,
+    )?;
+
+    assert_eq!(receipt.state, EffectState::AdapterAccepted);
+    assert_eq!(provider.message_count(), 1);
+
+    let op = durable_journal
+        .operation(&plan.intent.operation_id)
+        .ok_or(ReferenceError::InvalidSpec("missing_operation"))?;
+    assert_eq!(op.state, EffectState::AdapterAccepted);
+
+    let obl = durable_journal
+        .obligations()
+        .find(|item| item.obligation_id == plan.obligation_id)
+        .ok_or(ReferenceError::InvalidSpec("missing_obligation"))?;
+    assert_eq!(obl.state, ObligationState::Pending);
+
+    let _ = fs::remove_file(ledger_path);
+    let _ = fs::remove_file(journal_path);
+    Ok(())
+}
+
+#[test]
+fn unrelated_sensor_and_domain_tamper_allows_durable_alert_dispatch()
+-> Result<(), Box<dyn Error>> {
+    let ledger_path = temp_journal("p6c-durable-unrelated-ledger");
+    let journal_path = temp_journal("p6c-durable-unrelated-journal");
+    let _ = fs::remove_file(&ledger_path);
+    let _ = fs::remove_file(&journal_path);
+
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(768, 12 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&ledger_path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
+
+    let mut durable_journal =
+        DurableEffectJournal::open(&journal_path, IncompleteTailPolicy::Reject)?;
+    let plan = durable_journal.prepare_alert(PrepareAlertParams {
+        decision: &decision,
+        event_receipt: &event_receipt,
+        authority: &authority,
+        operation_id: OperationId::parse("op:alert:p6c:dur:unrel")?,
+        idempotency_key: IdempotencyKey::parse("idempotency:alert:p6c:dur:unrel")?,
+        obligation_id: ObligationId::parse("obligation:alert:p6c:dur:unrel")?,
+        channel: "security-ops".to_string(),
+        now: TimestampNs(100),
+    })?;
+
+    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:p6c:dur:unrel");
+
+    // Tamper observation arrives on unrelated sensor and domain.
+    let _unrelated_tamper = observation_with_label(
+        "capture:alert:p6c-dur-unrelated",
+        "sensor:alert:unrelated-sensor",
+        100,
+        "power:alert:unrelated",
+        MockSemanticLabel::TamperLike,
+        &mut objects,
+        &mut authority,
+    )?;
+
+    // Durable dispatch must succeed with AdapterAccepted.
+    let receipt = durable_journal.dispatch_alert(
+        &plan,
+        &authority,
+        ReferenceProviderBehavior::Deliver,
+        TimestampNs(110),
+        TimestampNs(120),
+        &mut provider,
+    )?;
+
+    assert_eq!(receipt.state, EffectState::AdapterAccepted);
+    assert_eq!(provider.message_count(), 1);
+
+    let op = durable_journal
+        .operation(&plan.intent.operation_id)
+        .ok_or(ReferenceError::InvalidSpec("missing_operation"))?;
+    assert_eq!(op.state, EffectState::AdapterAccepted);
+
+    let obl = durable_journal
+        .obligations()
+        .find(|item| item.obligation_id == plan.obligation_id)
+        .ok_or(ReferenceError::InvalidSpec("missing_obligation"))?;
+    assert_eq!(obl.state, ObligationState::Pending);
+
+    let _ = fs::remove_file(ledger_path);
+    let _ = fs::remove_file(journal_path);
+    Ok(())
+}
+
+#[test]
+fn restoration_on_different_sensor_does_not_retire_tamper_and_refuses_alert_dispatch()
+-> Result<(), Box<dyn Error>> {
+    let path = temp_journal("p6c-different-sensor-restoration");
+    let _ = fs::remove_file(&path);
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(768, 12 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
+    let mut journal = EffectJournal::new();
+    let plan = prepare(&decision, &event_receipt, &authority, &mut journal)?;
+    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:p6c:diff:sensor");
+
+    // 1. Tamper observation arrives on sensor:alert:a / power:alert:a (seed 100).
+    let _tamper_obs = observation_with_label(
+        "capture:alert:p6c-diff-tamper",
+        "sensor:alert:a",
+        100,
+        "power:alert:a",
+        MockSemanticLabel::TamperLike,
+        &mut objects,
+        &mut authority,
+    )?;
+
+    // 2. Restoration observation arrives on sensor:alert:b / power:alert:b (seed 600).
+    // A restoration on a different sensor/domain CANNOT retire the tamper on sensor:alert:a!
+    let _restored_obs = observation_with_label(
+        "capture:alert:p6c-diff-restored",
+        "sensor:alert:b",
+        600,
+        "power:alert:b",
+        MockSemanticLabel::IntegrityRestored,
+        &mut objects,
+        &mut authority,
+    )?;
+
+    // Dispatching against authority must still be REFUSED with SensorIntegrityRisk.
+    let dispatch_result = dispatch_reference_alert(
+        &plan,
+        &authority,
+        ReferenceProviderBehavior::Deliver,
+        TimestampNs(101),
+        TimestampNs(102),
+        &mut journal,
+        &mut provider,
+    );
+    assert!(
+        matches!(
+            dispatch_result,
+            Err(ReferenceError::Contract(ContractError::SensorIntegrityRisk))
+        ),
+        "expected SensorIntegrityRisk, got: {dispatch_result:?}"
+    );
+    assert_eq!(provider.message_count(), 0);
 
     let _ = fs::remove_file(path);
     Ok(())
