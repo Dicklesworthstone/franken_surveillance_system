@@ -752,12 +752,14 @@ pub fn prepare_reference_alert(
     // Defence in depth: a sensor-integrity risk never becomes effect authority, even when a
     // revision carrying a tamper report reached a corroborated state without being verified. The
     // situation's integrity risk is compiled from exactly these edges.
-    if params
-        .decision
-        .event
-        .evidence
-        .iter()
-        .any(fss_core::EventEvidence::reports_sensor_tamper)
+    let tamper_status = &params.event_receipt.lineage_tamper_status;
+    if tamper_status.has_open_tamper()
+        || params
+            .decision
+            .event
+            .evidence
+            .iter()
+            .any(|edge| edge.reports_sensor_tamper())
     {
         return Err(fss_core::ContractError::SensorIntegrityRisk.into());
     }
@@ -773,21 +775,29 @@ pub fn prepare_reference_alert(
     ) {
         return Err(ReferenceError::InvalidSpec("event_authority_stale"));
     }
-    let latest_contains_event = params
+    let latest_batch = params
         .authority
         .batches()
         .iter()
         .rev()
         .find(|batch| !crate::situation_sections::is_lineage_batch(batch))
-        .is_some_and(|batch| {
-            batch.deltas.iter().any(|delta| {
-                delta.family == "event_revision"
-                    && delta.payload_digest == params.event_receipt.event_root
-                    && delta.witness_digest == Some(params.event_receipt.event_revision_digest)
-            })
-        });
+        .ok_or(ReferenceError::InvalidSpec("event_authority_stale"))?;
+    let latest_contains_event = latest_batch.deltas.iter().any(|delta| {
+        delta.family == "event_revision"
+            && delta.payload_digest == params.event_receipt.event_root
+            && delta.witness_digest == Some(params.event_receipt.event_revision_digest)
+    });
     if !latest_contains_event {
         return Err(ReferenceError::InvalidSpec("event_receipt_mismatch"));
+    }
+    let latest_contains_tamper = latest_batch.deltas.iter().any(|delta| {
+        delta.family == "sensor_tamper_status"
+            && delta.payload_digest == params.event_receipt.event_root
+            && delta.witness_digest
+                == Some(params.event_receipt.lineage_tamper_status.canonical_digest())
+    });
+    if !latest_contains_tamper {
+        return Err(ReferenceError::InvalidSpec("forged_event_receipt_tamper_status"));
     }
 
     let channel = params.channel;

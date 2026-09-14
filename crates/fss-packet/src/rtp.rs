@@ -104,7 +104,7 @@ impl<'a> RtpPacket<'a> {
     /// Contributing sources in wire order, without allocation.
     pub fn csrcs(self) -> impl ExactSizeIterator<Item = u32> + 'a {
         let end = 12 + usize::from(self.bytes[0] & 0x0f) * 4;
-        self.bytes[12..end].chunks_exact(4).map(be32)
+        self.bytes[12..end].as_chunks::<4>().0.iter().map(|b| be32(b))
     }
 
     /// Profile-specific extension, retained without interpreting untrusted text.

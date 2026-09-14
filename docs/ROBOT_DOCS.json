@@ -2560,7 +2560,7 @@
     },
     {
       "authority": "authority",
-      "compatibilityRule": "immutable revisions; evidence required after hypothesis",
+      "compatibilityRule": "immutable revisions; evidence required after hypothesis; enum widening for relation additions (sensor_tamper, sensor_integrity_restoration)",
       "file": "schemas/event_hypothesis.v1.json",
       "id": "SCHEMA-EVENT-HYPOTHESIS-001",
       "schema": "fss.event_hypothesis.v1"
@@ -2588,7 +2588,7 @@
     },
     {
       "authority": "derived/evidence",
-      "compatibilityRule": "causal evidence graph over capsules, identities, model receipts, and revisions",
+      "compatibilityRule": "causal evidence graph over capsules, identities, model receipts, and revisions; enum widening for relation additions (sensor_tamper, sensor_integrity_restoration)",
       "file": "schemas/evidence_graph.v1.json",
       "id": "SCHEMA-EVIDENCE-GRAPH-001",
       "schema": "fss.evidence_graph.v1"

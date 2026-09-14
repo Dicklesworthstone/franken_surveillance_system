@@ -345,11 +345,11 @@ All authoritative schemas cataloged from `registries/SCHEMAS.md`:
 | `SCHEMA-DOCTOR-001` | `fss.doctor.v1` | `CLI output` | `diagnostics` | `bounded and secret-free` |
 | `SCHEMA-EFFECT-INTENT-001` | `fss.effect_intent.v1` | `schemas/effect_intent.v1.json` | `effect truth` | `immutable intent; operation and idempotency identities preserved` |
 | `SCHEMA-EFFECT-RECONCILIATION-001` | `fss.effect_reconciliation.v1` | `schemas/effect_reconciliation.v1.json` | `effect truth` | `four-valued outcome; verified requires independent evidence witness` |
-| `SCHEMA-EVENT-HYPOTHESIS-001` | `fss.event_hypothesis.v1` | `schemas/event_hypothesis.v1.json` | `authority` | `immutable revisions; evidence required after hypothesis` |
+| `SCHEMA-EVENT-HYPOTHESIS-001` | `fss.event_hypothesis.v1` | `schemas/event_hypothesis.v1.json` | `authority` | `immutable revisions; evidence required after hypothesis; enum widening for relation additions (sensor_tamper, sensor_integrity_restoration)` |
 | `SCHEMA-EVIDENCE-ANCHOR-001` | `fss.evidence_anchor.v1` | `schemas/evidence_anchor.v1.json` | `authority` | `no mixed generations; additions require new epoch semantics` |
 | `SCHEMA-EVIDENCE-BUNDLE-001` | `fss.evidence_bundle.v1` | `schemas/evidence_bundle.v1.json` | `authority/export` | `old proof bundles remain replayable or explicitly unsupported` |
 | `SCHEMA-EVIDENCE-DELTA-001` | `fss.evidence_delta_batch.v1` | `schemas/evidence_delta_batch.v1.json` | `authority/version universe` | `basis/new anchors and ordered delta identities preserved` |
-| `SCHEMA-EVIDENCE-GRAPH-001` | `fss.evidence_graph.v1` | `schemas/evidence_graph.v1.json` | `derived/evidence` | `causal evidence graph over capsules, identities, model receipts, and revisions` |
+| `SCHEMA-EVIDENCE-GRAPH-001` | `fss.evidence_graph.v1` | `schemas/evidence_graph.v1.json` | `derived/evidence` | `causal evidence graph over capsules, identities, model receipts, and revisions; enum widening for relation additions (sensor_tamper, sensor_integrity_restoration)` |
 | `SCHEMA-AGENT-EXPERIENCE-001` | `fss.experience_capsule.v1` | `schemas/experience_capsule.v1.json` | `operational memory` | `episode signature, signals, failures, costs, applicability, decay, and privacy remain auditable` |
 | `SCHEMA-GRAPH-WITNESS-001` | `fss.graph_algorithm_witness.v1` | `schemas/graph_algorithm_witness.v1.json` | `derived/evidence` | `algorithm/projection/policy identity and output digest preserved` |
 | `SCHEMA-AGENT-INVESTIGATION-001` | `fss.investigation_state.v1` | `schemas/investigation_state.v1.json` | `investigation cognition` | `case revisions preserve question, decision, hypotheses, probes, stop rules, and residual uncertainty` |
