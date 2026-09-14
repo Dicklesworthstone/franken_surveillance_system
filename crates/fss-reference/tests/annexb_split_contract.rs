@@ -1535,11 +1535,20 @@ fn test_17_mutation_gauntlet_10k() -> Result<(), Box<dyn Error>> {
         .ok_or("repo root not found")?
         .to_path_buf();
     let clean_path = root.join("tests/fixtures/media/h264/clean.264");
-    let clean_bytes = if clean_path.is_file() {
-        fs::read(&clean_path)?
-    } else {
-        template.clone()
-    };
+    if !clean_path.is_file() {
+        // Without clean.264 the second half of the gauntlet would silently fall back to the
+        // synthetic template; record an explicit skip instead of a reduced-coverage pass.
+        emit_caplog(
+            "mutation_gauntlet_10k",
+            "skip",
+            0,
+            r#"{"clean_264_exists":true}"#,
+            r#"{"reason":"tests/fixtures/media/h264/clean.264 missing on disk"}"#,
+            start.elapsed().as_millis(),
+        );
+        return Ok(());
+    }
+    let clean_bytes = fs::read(&clean_path)?;
 
     let limits = AnnexBLimits {
         max_input_bytes: 65536,
