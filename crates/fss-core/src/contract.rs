@@ -2751,6 +2751,14 @@ pub enum ContractError {
     SourceEvidenceByteCountMismatch,
     /// Storage handle for retained source evidence is empty or only whitespace (AGT-LAYER-002, INV-003).
     SourceEvidenceEmptyStorageHandle,
+    /// Storage handle for retained source evidence contains forbidden directory traversal sequence (AGT-LAYER-002, INV-003).
+    SourceEvidenceStorageHandleTraversal,
+    /// Storage handle for retained source evidence contains forbidden absolute path or url (AGT-LAYER-002, INV-003).
+    SourceEvidenceStorageHandleAbsolutePath,
+    /// Storage handle for retained source evidence is malformed, over-length, or contains invalid characters (AGT-LAYER-002, INV-003).
+    SourceEvidenceStorageHandleMalformed,
+    /// Raw wire packets classification cannot carry a sensor capsule payload (AGT-LAYER-002, INV-003).
+    SourceEvidenceRawWirePacketsWithCapsule,
     /// Source evidence statement is empty or exceeds 512 bytes (AGT-LAYER-002, INV-003).
     SourceEvidenceStatementMalformed,
     /// Unknown source evidence classification string token.
@@ -2897,6 +2905,18 @@ impl ContractError {
             }
             Self::SourceEvidenceByteCountMismatch => "source_evidence_byte_count_mismatch",
             Self::SourceEvidenceEmptyStorageHandle => "source_evidence_empty_storage_handle",
+            Self::SourceEvidenceStorageHandleTraversal => {
+                "source_evidence_storage_handle_traversal"
+            }
+            Self::SourceEvidenceStorageHandleAbsolutePath => {
+                "source_evidence_storage_handle_absolute_path"
+            }
+            Self::SourceEvidenceStorageHandleMalformed => {
+                "source_evidence_storage_handle_malformed"
+            }
+            Self::SourceEvidenceRawWirePacketsWithCapsule => {
+                "source_evidence_raw_wire_packets_with_capsule"
+            }
             Self::SourceEvidenceStatementMalformed => "source_evidence_statement_malformed",
             Self::UnknownSourceEvidenceClassification(_) => {
                 "unknown_source_evidence_classification"
@@ -2911,9 +2931,7 @@ impl ContractError {
             Self::SourceEvidenceNotRetainedWithWitness => {
                 "source_evidence_not_retained_with_witness"
             }
-            Self::UnsupportedSourceEvidenceVersion(_) => {
-                "source_evidence_unsupported_version"
-            }
+            Self::UnsupportedSourceEvidenceVersion(_) => "source_evidence_unsupported_version",
             Self::UnknownClockBasisName(_) => "unknown_clock_basis_name",
             Self::UnadjudicatedUncertaintyCollapse => "unadjudicated_uncertainty_collapse",
             Self::CompetingHypothesesRequired => "competing_hypotheses_required",

@@ -602,6 +602,11 @@
       "id": "ERR-CLOCK-BASIS-MISMATCH-001"
     },
     {
+      "description": "clock basis name is unrecognized",
+      "guidance": "supply a registered clock basis name",
+      "id": "ERR-CLOCK-BASIS-UNKNOWN-NAME-001"
+    },
+    {
       "description": "clock synchronization state unknown when synchronised evidence required",
       "guidance": "obtain synchronisation certificate or abstain",
       "id": "ERR-CLOCK-STATE-UNKNOWN-001"
@@ -1405,6 +1410,101 @@
       "description": "secret handle cannot be resolved",
       "guidance": "repair/rotate; bounded retry if provider transient",
       "id": "ERR-SECRET-UNAVAILABLE-001"
+    },
+    {
+      "description": "capsule source bytes does not match custody source bytes",
+      "guidance": "align capsule and custody byte count",
+      "id": "ERR-SOURCE-EVIDENCE-BYTE-COUNT-MISMATCH-001"
+    },
+    {
+      "description": "sensor capsule classification requires a sensor capsule payload",
+      "guidance": "provide sensor capsule or change classification",
+      "id": "ERR-SOURCE-EVIDENCE-CAPSULE-REQUIRED-001"
+    },
+    {
+      "description": "retained source custody storage handle is empty, whitespace, or contains invalid characters",
+      "guidance": "provide non-empty sanitized storage handle",
+      "id": "ERR-SOURCE-EVIDENCE-EMPTY-STORAGE-HANDLE-001"
+    },
+    {
+      "description": "source evidence record missing authoritative anchor",
+      "guidance": "attach authoritative anchor; do not retry unchanged",
+      "id": "ERR-SOURCE-EVIDENCE-MISSING-ANCHOR-001"
+    },
+    {
+      "description": "not-retained source evidence capsule cannot claim non-zero source bytes, non-zero frame count, or non-zero source digest",
+      "guidance": "zero capsule bytes/digest/frames or mark retained",
+      "id": "ERR-SOURCE-EVIDENCE-NOT-RETAINED-WITH-CAPSULE-BYTES-001"
+    },
+    {
+      "description": "source evidence not retained cannot bind a continuity witness",
+      "guidance": "omit witness or retain source evidence",
+      "id": "ERR-SOURCE-EVIDENCE-NOT-RETAINED-WITH-WITNESS-001"
+    },
+    {
+      "description": "not-retained source evidence must declare an explicit omission reason",
+      "guidance": "supply explicit omission reason; do not retry unchanged",
+      "id": "ERR-SOURCE-EVIDENCE-OMISSION-REQUIRED-001"
+    },
+    {
+      "description": "raw wire packets classification cannot carry a sensor capsule payload",
+      "guidance": "omit capsule or change classification",
+      "id": "ERR-SOURCE-EVIDENCE-RAW-WIRE-PACKETS-WITH-CAPSULE-001"
+    },
+    {
+      "description": "retained source evidence cannot declare an omission reason",
+      "guidance": "remove omission reason or mark not-retained",
+      "id": "ERR-SOURCE-EVIDENCE-RETAINED-WITH-OMISSION-001"
+    },
+    {
+      "description": "source evidence statement is empty or exceeds 512 bytes",
+      "guidance": "constrain statement to 1..=512 UTF-8 bytes",
+      "id": "ERR-SOURCE-EVIDENCE-STATEMENT-MALFORMED-001"
+    },
+    {
+      "description": "retained source custody storage handle contains forbidden absolute path or url",
+      "guidance": "provide relative or content-addressed storage handle",
+      "id": "ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-ABSOLUTE-PATH-001"
+    },
+    {
+      "description": "retained source custody storage handle is malformed, over-length, or contains invalid characters",
+      "guidance": "provide non-empty sanitized storage handle up to 4096 bytes without bidi or control characters",
+      "id": "ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-MALFORMED-001"
+    },
+    {
+      "description": "retained source custody storage handle contains forbidden directory traversal sequence",
+      "guidance": "remove path traversal components from storage handle",
+      "id": "ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-TRAVERSAL-001"
+    },
+    {
+      "description": "unknown source evidence classification string token",
+      "guidance": "supply a registered classification token",
+      "id": "ERR-SOURCE-EVIDENCE-UNKNOWN-CLASSIFICATION-001"
+    },
+    {
+      "description": "unknown source custody binary wire tag",
+      "guidance": "supply a registered custody tag",
+      "id": "ERR-SOURCE-EVIDENCE-UNKNOWN-CUSTODY-TAG-001"
+    },
+    {
+      "description": "unknown omission reason string token",
+      "guidance": "supply a registered omission reason token",
+      "id": "ERR-SOURCE-EVIDENCE-UNKNOWN-OMISSION-REASON-001"
+    },
+    {
+      "description": "unsupported source evidence binary wire format version",
+      "guidance": "encode with current supported format version",
+      "id": "ERR-SOURCE-EVIDENCE-UNSUPPORTED-VERSION-001"
+    },
+    {
+      "description": "continuity witness cannot equal source digest",
+      "guidance": "supply distinct continuity witness",
+      "id": "ERR-SOURCE-EVIDENCE-WITNESS-EQUALS-SOURCE-DIGEST-001"
+    },
+    {
+      "description": "continuity witness classification requires a continuity witness digest",
+      "guidance": "provide continuity witness or change classification",
+      "id": "ERR-SOURCE-EVIDENCE-WITNESS-REQUIRED-001"
     },
     {
       "description": "gaps/jitter exceed contract",

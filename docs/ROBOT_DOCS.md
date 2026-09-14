@@ -499,6 +499,7 @@ All stable error identities and normative recovery guidance cataloged from `regi
 | `ERR-CLI-UNKNOWN-COMMAND-001` | command token is not a recognized CLI command or verb | do not retry without valid command name |
 | `ERR-CLI-UNKNOWN-OPTION-001` | option flag is unrecognized for binary or active command | do not retry without valid option flag |
 | `ERR-CLOCK-BASIS-MISMATCH-001` | comparison or association between incompatible clock bases | convert to common basis or synchronise to UTC |
+| `ERR-CLOCK-BASIS-UNKNOWN-NAME-001` | clock basis name is unrecognized | supply a registered clock basis name |
 | `ERR-CLOCK-STATE-UNKNOWN-001` | clock synchronization state unknown when synchronised evidence required | obtain synchronisation certificate or abstain |
 | `ERR-CLOCK-UNCERTAIN-001` | capture interval too wide for requested operation | degrade/abstain/recalibrate |
 | `ERR-CLOCK-UNSYNCHRONISED-001` | clock unsynchronised or drift bound exceeds tolerance | synchronise clock or bound monotonic drift |
@@ -660,6 +661,25 @@ All stable error identities and normative recovery guidance cataloged from `regi
 | `ERR-ROBOT-DOCS-UNREGISTERED-001` | documented operation references unregistered capability, schema, or error identity | register referenced entity in authoritative registry before generating docs |
 | `ERR-SCHEMA-UNSUPPORTED-001` | input durable schema version unsupported | migrate with registered path or reject |
 | `ERR-SECRET-UNAVAILABLE-001` | secret handle cannot be resolved | repair/rotate; bounded retry if provider transient |
+| `ERR-SOURCE-EVIDENCE-BYTE-COUNT-MISMATCH-001` | capsule source bytes does not match custody source bytes | align capsule and custody byte count |
+| `ERR-SOURCE-EVIDENCE-CAPSULE-REQUIRED-001` | sensor capsule classification requires a sensor capsule payload | provide sensor capsule or change classification |
+| `ERR-SOURCE-EVIDENCE-EMPTY-STORAGE-HANDLE-001` | retained source custody storage handle is empty, whitespace, or contains invalid characters | provide non-empty sanitized storage handle |
+| `ERR-SOURCE-EVIDENCE-MISSING-ANCHOR-001` | source evidence record missing authoritative anchor | attach authoritative anchor; do not retry unchanged |
+| `ERR-SOURCE-EVIDENCE-NOT-RETAINED-WITH-CAPSULE-BYTES-001` | not-retained source evidence capsule cannot claim non-zero source bytes, non-zero frame count, or non-zero source digest | zero capsule bytes/digest/frames or mark retained |
+| `ERR-SOURCE-EVIDENCE-NOT-RETAINED-WITH-WITNESS-001` | source evidence not retained cannot bind a continuity witness | omit witness or retain source evidence |
+| `ERR-SOURCE-EVIDENCE-OMISSION-REQUIRED-001` | not-retained source evidence must declare an explicit omission reason | supply explicit omission reason; do not retry unchanged |
+| `ERR-SOURCE-EVIDENCE-RAW-WIRE-PACKETS-WITH-CAPSULE-001` | raw wire packets classification cannot carry a sensor capsule payload | omit capsule or change classification |
+| `ERR-SOURCE-EVIDENCE-RETAINED-WITH-OMISSION-001` | retained source evidence cannot declare an omission reason | remove omission reason or mark not-retained |
+| `ERR-SOURCE-EVIDENCE-STATEMENT-MALFORMED-001` | source evidence statement is empty or exceeds 512 bytes | constrain statement to 1..=512 UTF-8 bytes |
+| `ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-ABSOLUTE-PATH-001` | retained source custody storage handle contains forbidden absolute path or url | provide relative or content-addressed storage handle |
+| `ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-MALFORMED-001` | retained source custody storage handle is malformed, over-length, or contains invalid characters | provide non-empty sanitized storage handle up to 4096 bytes without bidi or control characters |
+| `ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-TRAVERSAL-001` | retained source custody storage handle contains forbidden directory traversal sequence | remove path traversal components from storage handle |
+| `ERR-SOURCE-EVIDENCE-UNKNOWN-CLASSIFICATION-001` | unknown source evidence classification string token | supply a registered classification token |
+| `ERR-SOURCE-EVIDENCE-UNKNOWN-CUSTODY-TAG-001` | unknown source custody binary wire tag | supply a registered custody tag |
+| `ERR-SOURCE-EVIDENCE-UNKNOWN-OMISSION-REASON-001` | unknown omission reason string token | supply a registered omission reason token |
+| `ERR-SOURCE-EVIDENCE-UNSUPPORTED-VERSION-001` | unsupported source evidence binary wire format version | encode with current supported format version |
+| `ERR-SOURCE-EVIDENCE-WITNESS-EQUALS-SOURCE-DIGEST-001` | continuity witness cannot equal source digest | supply distinct continuity witness |
+| `ERR-SOURCE-EVIDENCE-WITNESS-REQUIRED-001` | continuity witness classification requires a continuity witness digest | provide continuity witness or change classification |
 | `ERR-STREAM-CONTINUITY-001` | gaps/jitter exceed contract | degrade coverage; bounded recovery |
 | `ERR-STREAM-NO-FIRST-FRAME-001` | adapter accepted but no decodable frame before budget | reconnect or fail; never claim coverage |
 | `ERR-TIME-INTERVAL-INVERTED-001` | capture or transit interval earliest bound exceeds latest bound | correct interval bounds before evaluation |
