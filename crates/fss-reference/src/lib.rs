@@ -25,6 +25,7 @@ mod model;
 mod outcome;
 mod packet_fault;
 mod policy;
+pub mod rtsp;
 mod situation;
 mod situation_guard;
 mod situation_sections;
@@ -144,6 +145,12 @@ pub use packet_fault::{
 pub use policy::{
     ReferenceEventReceipt, ReferenceModelObservation, ReferencePolicyAction,
     ReferencePolicyDecision, evaluate_unknown_presence, publish_reference_event,
+};
+pub use rtsp::{
+    DEFAULT_MAX_BODY_BYTES, DEFAULT_MAX_HEADERS, DEFAULT_MAX_INTERLEAVED_BYTES,
+    DEFAULT_MAX_LINE_BYTES, MAX_BASE64_INPUT_BYTES, MAX_SDP_LINES, RtspError, RtspEvent,
+    RtspHeader, RtspHeaders, RtspLimits, RtspMethod, RtspParser, RtspRequest, RtspResponse,
+    RtspTransport, SdpError, SdpMedia, SdpSession, decode_base64, parse_sdp, parse_sdp_bytes,
 };
 pub use situation_guard::{
     CAPABILITY_EFFECT_RECONCILE, EFFECT_RECONCILE_AFFORDANCE, EFFECT_STATUS_AFFORDANCE,
