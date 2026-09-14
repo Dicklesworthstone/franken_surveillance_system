@@ -14,18 +14,18 @@ use fss_core::region::{
     ContextAuthority, QuiescenceProof, RegionId, RegionKind, RegionState, RootAuthoritySpec,
 };
 use fss_core::{
-    AGENT_ABSTRACTION_FREEZE_DIGEST, AGENT_ABSTRACTION_GENERATION, AgentAbstractionLayer,
+    AGENT_ABSTRACTION_FREEZE_DIGEST, AGENT_ABSTRACTION_GENERATION, AgentAbstractionLayer, BatchId,
     BudgetVector, CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, CapsuleId,
     CaptureInterval, ClockBasis, Completeness, ContentDigest, ContractError, CoverageContinuity,
     CoverageStopReason, CoverageWitness, DerivedBelief, DerivedBeliefParams, DigestAlgorithm,
-    Generation, KnowledgeState, KnowledgeStateBasis, LedgerAnchor, LedgerSnapshot, NegativeReadClaim,
-    NegativeReadOutcome, ObligationId, OmissionReason, OperationId, Plane, PrivacyGeneration,
-    ProvenanceClass, RUNTIME_AUTHORITY_DOMAIN, RedactionMarker, RedactionReason,
-    RuntimeAuthorityAndCustody, RuntimeAuthorityAndCustodyRecord, RuntimeAuthorityParams,
-    RuntimeAuthorityRecord, RuntimeGrant, SOURCE_EVIDENCE_RECORD_FORMAT_VERSION, SensorCapsule,
-    SensorId, SourceCustody, SourceEvidenceClassification, SourceEvidenceParams,
-    SourceEvidenceRecord, StreamId, TimestampNs, UnknownReason, WorldFact, WorldFactKind,
-    evaluate_negative_read,
+    EvidenceDelta, Generation, KnowledgeState, KnowledgeStateBasis, LedgerAnchor,
+    NegativeReadClaim, NegativeReadOutcome, ObjectId, ObligationId, OmissionReason, OperationId,
+    Plane, PrivacyGeneration, ProvenanceClass, RUNTIME_AUTHORITY_DOMAIN, RedactionMarker,
+    RedactionReason, ReferenceLedger, RuntimeAuthorityAndCustody, RuntimeAuthorityAndCustodyRecord,
+    RuntimeAuthorityParams, RuntimeAuthorityRecord, RuntimeGrant,
+    SOURCE_EVIDENCE_RECORD_FORMAT_VERSION, SensorCapsule, SensorId, SourceCustody,
+    SourceEvidenceClassification, SourceEvidenceParams, SourceEvidenceRecord, StreamId,
+    TimestampNs, UnknownReason, WorldFact, WorldFactKind, evaluate_negative_read,
 };
 
 #[test]
@@ -73,147 +73,6 @@ fn test_normative_agent_abstraction_layers_census() -> Result<(), Box<dyn Error>
         assert!(!layer.prohibition().is_empty());
         assert!(!layer.invariant().is_empty());
     }
-
-    Ok(())
-}
-
-#[test]
-fn test_runtime_authority_and_custody_row_properties() -> Result<(), Box<dyn Error>> {
-    let layer = AgentAbstractionLayer::RuntimeAuthorityAndCustody;
-
-    // 1. Exact normative stable ID
-    assert_eq!(layer.id(), "AGT-LAYER-001");
-
-    // 2. Exact normative schema name
-    assert_eq!(layer.name(), "runtime_authority_and_custody");
-    assert_eq!(format!("{layer}"), "runtime_authority_and_custody");
-
-    // 3. Exact normative owner
-    assert_eq!(layer.owner(), "asupersync/authority/object owners");
-
-    // 4. Exact normative question
-    assert_eq!(
-        layer.agent_question(),
-        "What work, authority, budget, identity, time, and object custody exist?"
-    );
-
-    // 5. Exact normative output
-    assert_eq!(
-        layer.output(),
-        "Context, grants, regions, obligations, object roots, and receipts."
-    );
-
-    // 6. Exact normative prohibition
-    assert_eq!(
-        layer.prohibition(),
-        "Cannot infer mission meaning or physical truth."
-    );
-
-    // 7. Exact normative invariant
-    assert_eq!(layer.invariant(), "INV-006");
-
-    // 8. Exact normative status
-    assert_eq!(layer.status(), "normative");
-
-    // 9. Semantic plane: Authority
-    assert_eq!(layer.plane(), Plane::Authority);
-
-    // 10. Tower level: L0 (0-indexed: 0)
-    assert_eq!(layer.tower_level(), 0);
-
-    // 11. Authority plane permissions:
-    assert!(layer.may_claim_authority());
-    assert!(!layer.may_authorize_effects());
-
-    // 12. Helper predicates:
-    assert!(layer.is_runtime_authority_and_custody());
-    assert!(layer.prohibits_mission_meaning_inference());
-    assert!(layer.prohibits_physical_truth_inference());
-
-    // 13. Invariant validation passes:
-    layer.validate_invariants()?;
-
-    Ok(())
-}
-
-#[test]
-fn test_runtime_authority_and_custody_parse_and_resolution() -> Result<(), Box<dyn Error>> {
-    // Parse from stable ID
-    let from_id = AgentAbstractionLayer::from_id("AGT-LAYER-001")?;
-    assert_eq!(from_id, AgentAbstractionLayer::RuntimeAuthorityAndCustody);
-
-    // Parse from schema name
-    let from_name = AgentAbstractionLayer::from_name("runtime_authority_and_custody")?;
-    assert_eq!(from_name, AgentAbstractionLayer::RuntimeAuthorityAndCustody);
-
-    // Parse via FromStr with stable ID
-    let from_str_id = AgentAbstractionLayer::from_str("AGT-LAYER-001")?;
-    assert_eq!(
-        from_str_id,
-        AgentAbstractionLayer::RuntimeAuthorityAndCustody
-    );
-
-    // Parse via FromStr with schema name
-    let from_str_name = AgentAbstractionLayer::from_str("runtime_authority_and_custody")?;
-    assert_eq!(
-        from_str_name,
-        AgentAbstractionLayer::RuntimeAuthorityAndCustody
-    );
-
-    // Parse from tower level
-    let from_level = AgentAbstractionLayer::from_tower_level(0)?;
-    assert_eq!(
-        from_level,
-        AgentAbstractionLayer::RuntimeAuthorityAndCustody
-    );
-
-    Ok(())
-}
-
-#[test]
-fn test_planted_negative_runtime_authority_and_custody_bypasses() -> Result<(), Box<dyn Error>> {
-    let layer = AgentAbstractionLayer::RuntimeAuthorityAndCustody;
-
-    // Planted bypass 1: Runtime authority must NEVER be permitted to authorize effects directly.
-    assert!(!layer.may_authorize_effects());
-
-    // Planted bypass 2: Runtime authority plane must strictly be Authority, never Cognition or Effect.
-    assert_ne!(layer.plane(), Plane::Cognition);
-    assert_ne!(layer.plane(), Plane::Effect);
-    assert_eq!(layer.plane(), Plane::Authority);
-
-    // Planted bypass 3: Invariant must strictly be INV-006, not any other invariant.
-    assert_eq!(layer.invariant(), "INV-006");
-
-    // Planted bypass 4: Must strictly prohibit mission meaning inference.
-    assert!(layer.prohibits_mission_meaning_inference());
-
-    // Planted bypass 5: Must strictly prohibit physical truth inference.
-    assert!(layer.prohibits_physical_truth_inference());
-
-    // Planted bypass 6: Unknown, malformed, or out-of-range tower level must fail closed.
-    let Err(err_level) = AgentAbstractionLayer::from_tower_level(99) else {
-        return Err("expected out-of-bounds tower level to fail".into());
-    };
-    assert_eq!(err_level, ContractError::UnknownEntryTag(99));
-
-    // Planted bypass 7: Malformed or mutated ID must fail closed.
-    let Err(err_id) = AgentAbstractionLayer::from_id("AGT-LAYER-000") else {
-        return Err("expected unknown ID to fail".into());
-    };
-    assert_eq!(
-        err_id,
-        ContractError::UnknownAbstractionLayer("AGT-LAYER-000".into())
-    );
-
-    // Planted bypass 8: Case-sensitive name mismatch must fail closed.
-    let Err(err_name) = AgentAbstractionLayer::from_name("Runtime_Authority_And_Custody") else {
-        return Err("expected uppercase name to fail".into());
-    };
-    assert_eq!(
-        err_name,
-        ContractError::UnknownAbstractionLayer("Runtime_Authority_And_Custody".into())
-    );
 
     Ok(())
 }
@@ -359,12 +218,52 @@ fn sample_anchor() -> LedgerAnchor {
     LedgerAnchor::genesis("site:us-east:primary")
 }
 
-fn sample_authority(anchor: LedgerAnchor) -> Result<AuthorityAnchor, ContractError> {
-    let head = LedgerSnapshot {
-        anchor,
-        objects: std::collections::BTreeMap::new(),
+fn sample_ledger() -> ReferenceLedger {
+    ReferenceLedger::new("site:us-east:primary")
+}
+
+fn sample_authority(ledger: &ReferenceLedger) -> Result<AuthorityAnchor, ContractError> {
+    AuthorityAnchor::from_committed_head(ledger)
+}
+
+fn make_test_delta(
+    id: &str,
+    object: &str,
+    prior: Option<u64>,
+    generation: u64,
+) -> Result<EvidenceDelta, ContractError> {
+    Ok(EvidenceDelta {
+        delta_id: id.to_owned(),
+        family: "sensor_capsule".to_owned(),
+        object_id: ObjectId::parse(object)?,
+        prior_generation: prior,
+        new_generation: generation,
+        validity: CaptureInterval::new(TimestampNs(10), TimestampNs(20))?,
+        plane: Plane::Authority,
+        payload_digest: ContentDigest::sha256(id.as_bytes()),
+        witness_digest: None,
+        operation_id: None,
+    })
+}
+
+fn advance_ledger(
+    ledger: &mut ReferenceLedger,
+    batch_id: &str,
+    delta_id: &str,
+    object_id: &str,
+) -> Result<(), ContractError> {
+    let parsed_object_id = ObjectId::parse(object_id)?;
+    let (prior, next_gen) = match ledger.current().objects.get(&parsed_object_id) {
+        Some(current) => (Some(current.generation), current.generation + 1),
+        None => (None, 1),
     };
-    AuthorityAnchor::from_committed_head(&head)
+    let batch = ledger.prepare_batch(
+        BatchId::parse(batch_id)?,
+        vec![make_test_delta(delta_id, object_id, prior, next_gen)?],
+        [],
+    )?;
+    ledger.append(batch)?;
+    Ok(())
 }
 
 fn sample_uncertainty() -> Result<BeliefInterval, Box<dyn Error>> {
@@ -1001,8 +900,9 @@ fn test_planted_negative_world_fact_validation_failures() -> Result<(), Box<dyn 
 
 #[test]
 fn test_negative_read_claim_requires_coverage_witness() -> Result<(), Box<dyn Error>> {
-    let anchor = sample_anchor();
-    let authority = sample_authority(anchor.clone())?;
+    let ledger = sample_ledger();
+    let anchor = ledger.current().anchor.clone();
+    let authority = sample_authority(&ledger)?;
     let mut target_domain = BTreeSet::new();
     target_domain.insert("zone:north_perimeter".to_string());
 
@@ -1026,8 +926,9 @@ fn test_negative_read_claim_requires_coverage_witness() -> Result<(), Box<dyn Er
 
 #[test]
 fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<dyn Error>> {
-    let anchor = sample_anchor();
-    let authority = sample_authority(anchor.clone())?;
+    let ledger = sample_ledger();
+    let anchor = ledger.current().anchor.clone();
+    let authority = sample_authority(&ledger)?;
     let mut target_domain = BTreeSet::new();
     target_domain.insert("zone:north_perimeter".to_string());
 
@@ -1222,9 +1123,9 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
         &["zone:north_perimeter"],
         &["zone:north_perimeter"],
     );
-    let mut newer_authority_anchor = anchor.clone();
-    newer_authority_anchor.commit_sequence += 5;
-    let newer_authority = sample_authority(newer_authority_anchor)?;
+    let mut advanced_ledger = sample_ledger();
+    advance_ledger(&mut advanced_ledger, "batch:rm4_adv", "delta:rm4_adv", "object:rm4_adv")?;
+    let newer_authority = sample_authority(&advanced_ledger)?;
     let claim = NegativeReadClaim {
         claim_id: "neg_claim:stale_sequence".to_string(),
         query_predicate: "no_unauthorized_intrusion".to_string(),
@@ -1240,21 +1141,26 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
 
     // 11. (Check 4, RM8) Divergent state root at same sequence:
     // Witness and claim match, same lineage and sequence, but different state root from authority.
-    let mut forked_authority_anchor = anchor.clone();
-    forked_authority_anchor.state_root = ContentDigest::sha256(b"forked_authority_state_root");
-    let forked_authority = sample_authority(forked_authority_anchor)?;
+    let mut ledger_a = sample_ledger();
+    advance_ledger(&mut ledger_a, "batch:rm8_a", "delta:rm8_a", "object:rm8_a")?;
+    let mut ledger_b = sample_ledger();
+    advance_ledger(&mut ledger_b, "batch:rm8_b", "delta:rm8_b", "object:rm8_b")?;
+    let anchor_a = ledger_a.current().anchor.clone();
+    let forked_authority = sample_authority(&ledger_b)?;
     let witness = sample_witness(
         "no_unauthorized_intrusion",
         &["zone:north_perimeter"],
         &["zone:north_perimeter"],
     );
+    let mut witness_a = witness.clone();
+    witness_a.anchor = anchor_a.clone();
     let claim = NegativeReadClaim {
         claim_id: "neg_claim:divergent_state_root".to_string(),
         query_predicate: "no_unauthorized_intrusion".to_string(),
-        anchor: anchor.clone(),
+        anchor: anchor_a,
         target_domain: target_domain.clone(),
         target_generation: 1,
-        coverage_witness: Some(witness.clone()),
+        coverage_witness: Some(witness_a),
     };
     let Err(err) = evaluate_negative_read(&claim, &forked_authority) else {
         return Err("expected error for divergent state root (RM8)".into());
@@ -1374,8 +1280,9 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
 
 #[test]
 fn test_negative_read_outcome_from_witness_direct_contracts() -> Result<(), Box<dyn Error>> {
-    let anchor = sample_anchor();
-    let authority = sample_authority(anchor.clone())?;
+    let ledger = sample_ledger();
+    let anchor = ledger.current().anchor.clone();
+    let authority = sample_authority(&ledger)?;
     let mut target_domain = BTreeSet::new();
     target_domain.insert("zone:north_perimeter".to_string());
 
@@ -1434,9 +1341,8 @@ fn test_negative_read_outcome_from_witness_direct_contracts() -> Result<(), Box<
     assert!(matches!(res, Err(ContractError::StaleAnchor)));
 
     // 4. RM3 in from_witness: site lineage mismatch
-    let mut other_site_anchor = anchor.clone();
-    other_site_anchor.site_lineage = "site:other".to_string();
-    let other_site_authority = sample_authority(other_site_anchor)?;
+    let other_site_ledger = ReferenceLedger::new("site:other");
+    let other_site_authority = sample_authority(&other_site_ledger)?;
     let res = NegativeReadOutcome::from_witness(
         "neg_claim:rm3_direct",
         "no_unauthorized_intrusion",
@@ -1449,9 +1355,9 @@ fn test_negative_read_outcome_from_witness_direct_contracts() -> Result<(), Box<
     assert!(matches!(res, Err(ContractError::StaleAnchor)));
 
     // 5. RM4 in from_witness: strictly older sequence
-    let mut newer_anchor = anchor.clone();
-    newer_anchor.commit_sequence += 1;
-    let newer_authority = sample_authority(newer_anchor)?;
+    let mut newer_ledger = sample_ledger();
+    advance_ledger(&mut newer_ledger, "batch:rm4_dir", "delta:rm4_dir", "object:rm4_dir")?;
+    let newer_authority = sample_authority(&newer_ledger)?;
     let res = NegativeReadOutcome::from_witness(
         "neg_claim:rm4_direct",
         "no_unauthorized_intrusion",
@@ -1464,15 +1370,20 @@ fn test_negative_read_outcome_from_witness_direct_contracts() -> Result<(), Box<
     assert!(matches!(res, Err(ContractError::StaleAnchor)));
 
     // 6. RM8 in from_witness: divergent state root at same sequence
-    let mut forked_anchor = anchor.clone();
-    forked_anchor.state_root = ContentDigest::sha256(b"forked_anchor_state_root");
-    let forked_authority = sample_authority(forked_anchor)?;
+    let mut ledger_a = sample_ledger();
+    advance_ledger(&mut ledger_a, "batch:rm8_da", "delta:rm8_da", "object:rm8_da")?;
+    let mut ledger_b = sample_ledger();
+    advance_ledger(&mut ledger_b, "batch:rm8_db", "delta:rm8_db", "object:rm8_db")?;
+    let anchor_a = ledger_a.current().anchor.clone();
+    let mut witness_a = witness.clone();
+    witness_a.anchor = anchor_a.clone();
+    let forked_authority = sample_authority(&ledger_b)?;
     let res = NegativeReadOutcome::from_witness(
         "neg_claim:rm8_direct",
         "no_unauthorized_intrusion",
-        anchor.clone(),
+        anchor_a,
         target_domain.clone(),
-        &witness,
+        &witness_a,
         &forked_authority,
         1,
     );
@@ -1602,13 +1513,10 @@ fn test_negative_read_outcome_from_witness_direct_contracts() -> Result<(), Box<
 
 #[test]
 fn test_authority_context_as_current_anchor_source() -> Result<(), Box<dyn Error>> {
-    let anchor = sample_anchor();
+    let ledger = sample_ledger();
+    let anchor = ledger.current().anchor.clone();
     let basis = fss_core::contract_basis::reference_contract_basis();
-    let head = LedgerSnapshot {
-        anchor: anchor.clone(),
-        objects: std::collections::BTreeMap::new(),
-    };
-    let authority = AuthorityAnchor::from_committed_head(&head)?;
+    let authority = AuthorityAnchor::from_committed_head(&ledger)?;
 
     // 1. AuthorityContext constructed from AuthorityAnchor implements CurrentAnchorSource
     let auth_ctx = AuthorityContext::new(&basis, &authority);
@@ -1616,7 +1524,7 @@ fn test_authority_context_as_current_anchor_source() -> Result<(), Box<dyn Error
     assert_eq!(auth_ctx.contract_basis(), &basis);
 
     // 2. AuthorityContext constructed from committed head implements CurrentAnchorSource
-    let auth_ctx_head = AuthorityContext::from_committed_head(&basis, &head)?;
+    let auth_ctx_head = AuthorityContext::from_committed_head(&basis, &ledger)?;
     assert_eq!(auth_ctx_head.current_anchor(), &anchor);
     assert_eq!(auth_ctx_head.contract_basis(), &basis);
 
@@ -1647,8 +1555,9 @@ fn test_authority_context_as_current_anchor_source() -> Result<(), Box<dyn Error
 
 #[test]
 fn test_negative_read_claim_with_certified_absence_succeeds() -> Result<(), Box<dyn Error>> {
-    let anchor = sample_anchor();
-    let authority = sample_authority(anchor.clone())?;
+    let ledger = sample_ledger();
+    let anchor = ledger.current().anchor.clone();
+    let authority = sample_authority(&ledger)?;
     let mut target_domain = BTreeSet::new();
     target_domain.insert("zone:north_perimeter".to_string());
     target_domain.insert("zone:east_perimeter".to_string());
@@ -1707,8 +1616,9 @@ fn test_negative_read_claim_with_certified_absence_succeeds() -> Result<(), Box<
 
 #[test]
 fn test_negative_read_outcome_decode_invariants() -> Result<(), Box<dyn Error>> {
-    let anchor = sample_anchor();
-    let authority = sample_authority(anchor.clone())?;
+    let ledger = sample_ledger();
+    let anchor = ledger.current().anchor.clone();
+    let authority = sample_authority(&ledger)?;
     let witness = sample_witness(
         "no_unauthorized_intrusion",
         &["zone:a", "zone:b"],
@@ -1862,6 +1772,145 @@ fn test_negative_read_outcome_decode_invariants() -> Result<(), Box<dyn Error>> 
         return Err("expected error for trailing bytes in decode_verified".into());
     };
     assert_eq!(err, ContractError::NonCanonicalOrdering);
+
+    Ok(())
+}
+
+#[test]
+fn test_older_snapshot_at_head_refused_as_stale_anchor() -> Result<(), Box<dyn Error>> {
+    let mut ledger = sample_ledger();
+    let old_snapshot = ledger.current().clone();
+    let old_anchor = old_snapshot.anchor.clone();
+    advance_ledger(
+        &mut ledger,
+        "batch:snap_advance",
+        "delta:snap_advance",
+        "object:snap_advance",
+    )?;
+
+    // An older snapshot retrieved via snapshot_at(0)
+    let snapshot_0 = ledger.snapshot_at(0).ok_or("snapshot 0 missing")?;
+    assert_eq!(snapshot_0.anchor, old_anchor);
+
+    // Real committed authority from ledger head (now at commit_sequence 1)
+    let authority = AuthorityAnchor::from_committed_head(&ledger)?;
+    assert_eq!(authority.anchor().commit_sequence, 1);
+
+    // Claim and witness at older snapshot anchor (commit_sequence 0)
+    let witness = sample_witness(
+        "no_unauthorized_intrusion",
+        &["zone:north_perimeter"],
+        &["zone:north_perimeter"],
+    );
+    let mut target_domain = BTreeSet::new();
+    target_domain.insert("zone:north_perimeter".to_string());
+    let claim = NegativeReadClaim {
+        claim_id: "neg_claim:old_snapshot".to_string(),
+        query_predicate: "no_unauthorized_intrusion".to_string(),
+        anchor: old_anchor,
+        target_domain,
+        target_generation: 1,
+        coverage_witness: Some(witness),
+    };
+
+    // Evaluating the older snapshot claim against head authority MUST be refused as StaleAnchor
+    let res = evaluate_negative_read(&claim, &authority);
+    assert_eq!(res.err(), Some(ContractError::StaleAnchor));
+
+    Ok(())
+}
+
+#[test]
+fn test_probe_n2d_refuses_stale_witness_and_requires_ledger_authority() -> Result<(), Box<dyn Error>> {
+    let mut ledger = sample_ledger();
+    let old_anchor = ledger.current().anchor.clone();
+
+    // The real ledger head is 5 commits past the stale witness.
+    for i in 1..=5 {
+        advance_ledger(
+            &mut ledger,
+            &format!("batch:probe_n2d:{i}"),
+            &format!("delta:probe_n2d:{i}"),
+            &format!("object:probe_n2d:{i}"),
+        )?;
+    }
+
+    let honest = AuthorityAnchor::from_committed_head(&ledger)?;
+    assert_eq!(honest.anchor().commit_sequence, 5);
+
+    let witness = sample_witness(
+        "no_unauthorized_intrusion",
+        &["zone:north_perimeter"],
+        &["zone:north_perimeter"],
+    );
+    let mut target_domain = BTreeSet::new();
+    target_domain.insert("zone:north_perimeter".to_string());
+    let claim = NegativeReadClaim {
+        claim_id: "neg_claim:probe_n2d".to_string(),
+        query_predicate: "no_unauthorized_intrusion".to_string(),
+        anchor: old_anchor,
+        target_domain,
+        target_generation: 1,
+        coverage_witness: Some(witness),
+    };
+
+    let res = evaluate_negative_read(&claim, &honest);
+    assert_eq!(res.err(), Some(ContractError::StaleAnchor));
+
+    Ok(())
+}
+
+#[test]
+fn test_probe_n2e_context_from_committed_head_refuses_stale_and_mismatched_claims(
+) -> Result<(), Box<dyn Error>> {
+    let basis = fss_core::contract_basis::reference_contract_basis();
+    let mut ledger = sample_ledger();
+    let old_anchor = ledger.current().anchor.clone();
+
+    advance_ledger(
+        &mut ledger,
+        "batch:probe_n2e",
+        "delta:probe_n2e",
+        "object:probe_n2e",
+    )?;
+
+    let ctx = AuthorityContext::from_committed_head(&basis, &ledger)?;
+    assert_eq!(ctx.current_anchor().commit_sequence, 1);
+
+    // 1. Stale claim at sequence 0 against context at sequence 1
+    let witness = sample_witness(
+        "no_unauthorized_intrusion",
+        &["zone:north_perimeter"],
+        &["zone:north_perimeter"],
+    );
+    let mut target_domain = BTreeSet::new();
+    target_domain.insert("zone:north_perimeter".to_string());
+    let stale_claim = NegativeReadClaim {
+        claim_id: "neg_claim:probe_n2e_stale".to_string(),
+        query_predicate: "no_unauthorized_intrusion".to_string(),
+        anchor: old_anchor.clone(),
+        target_domain: target_domain.clone(),
+        target_generation: 1,
+        coverage_witness: Some(witness.clone()),
+    };
+    let res = evaluate_negative_read(&stale_claim, &ctx);
+    assert_eq!(res.err(), Some(ContractError::StaleAnchor));
+
+    // 2. Mismatched lineage claim against context
+    let mut forged_anchor = old_anchor;
+    forged_anchor.site_lineage = "site:arbitrary".to_string();
+    let mut forged_witness = witness;
+    forged_witness.anchor = forged_anchor.clone();
+    let mismatched_claim = NegativeReadClaim {
+        claim_id: "neg_claim:probe_n2e_lineage".to_string(),
+        query_predicate: "no_unauthorized_intrusion".to_string(),
+        anchor: forged_anchor,
+        target_domain,
+        target_generation: 1,
+        coverage_witness: Some(forged_witness),
+    };
+    let res = evaluate_negative_read(&mismatched_claim, &ctx);
+    assert_eq!(res.err(), Some(ContractError::StaleAnchor));
 
     Ok(())
 }
@@ -3571,6 +3620,8 @@ fn test_runtime_authority_and_custody_parse_and_resolution() -> Result<(), Box<d
         RuntimeGrant::from_id("PROHIBITED-INFER-PHYSICAL-TRUTH")?,
         RuntimeGrant::InferPhysicalTruth
     );
+
+    Ok(())
 }
 
 #[test]
