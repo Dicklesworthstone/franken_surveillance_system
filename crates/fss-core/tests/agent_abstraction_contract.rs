@@ -23,7 +23,8 @@ use fss_core::{
     RuntimeAuthorityAndCustody, RuntimeAuthorityAndCustodyRecord, RuntimeAuthorityParams,
     RuntimeAuthorityRecord, RuntimeGrant, SOURCE_EVIDENCE_RECORD_FORMAT_VERSION, SensorCapsule,
     SensorId, SourceCustody, SourceEvidenceClassification, SourceEvidenceParams,
-    SourceEvidenceRecord, StreamId, TimestampNs, WorldFact, WorldFactKind, evaluate_negative_read,
+    SourceEvidenceRecord, StreamId, TimestampNs, UnknownReason, WorldFact, WorldFactKind,
+    evaluate_negative_read,
 };
 
 #[test]
@@ -1419,9 +1420,25 @@ fn test_source_evidence_gap_before_maps_to_unknown_without_fabricated_basis()
 
     let kcell = record.to_knowledge_cell();
     assert_eq!(kcell.knowledge_state, KnowledgeState::Unknown);
-    assert_eq!(kcell.state_basis, None);
-    assert!(kcell.statement.contains("continuity gap before capsule"));
+    // The gap reason is a typed basis derived from the capsule's own `gap_before` flag, not a
+    // fabricated stale/redaction basis and not free text appended to the statement.
+    assert_eq!(
+        kcell.state_basis,
+        Some(KnowledgeStateBasis::Unknown(
+            UnknownReason::ContinuityGapBeforeCapsule
+        ))
+    );
+    assert_eq!(kcell.statement, "Capsule preceded by gap");
+    assert!(!kcell.statement.contains("continuity gap before capsule"));
     assert!(kcell.validate().is_ok());
+
+    // The typed reason is only accepted on an `unknown` cell.
+    let mut mismatched = kcell.clone();
+    mismatched.knowledge_state = KnowledgeState::Known;
+    assert_eq!(
+        mismatched.validate(),
+        Err(ContractError::KnowledgeStateBasisMismatch)
+    );
 
     Ok(())
 }
@@ -2043,7 +2060,7 @@ fn test_source_evidence_storage_handle_and_id_sanitization() -> Result<(), Box<d
         Err(ContractError::SourceEvidenceEmptyStorageHandle)
     );
 
-    // 2. Traversal handles (., .., %2e, %252e, etc.)
+    // 2. Traversal handles: a `.` or `..` segment anywhere.
     let traversal_handles = [
         "..",
         ".",
@@ -2051,18 +2068,38 @@ fn test_source_evidence_storage_handle_and_id_sanitization() -> Result<(), Box<d
         "../parent",
         "dir/./file",
         "dir/../file",
-        "%2e%2e/etc/passwd",
-        "safe/%2E%2E/secret",
-        "%2e./escape",
-        ".%2e/escape",
-        "%252e/escape",
-        "dir/%2e%2e",
-        "foo%bar",
+        "./x",
+        "a/./b",
+        "../x",
+        "a/../b",
+        "a/..",
     ];
     for handle in traversal_handles {
         assert_eq!(
             make_handle_record(handle),
             Err(ContractError::SourceEvidenceStorageHandleTraversal),
+            "handle: {handle}"
+        );
+    }
+
+    // 2b. Any `%` is refused as percent-encoding, never decoded and never reported as
+    // traversal: `foo%bar` names no traversal, and `%2e` / `%252e` are refused before decoding.
+    let percent_handles = [
+        "%2e%2e/etc/passwd",
+        "safe/%2E%2E/secret",
+        "%2e./escape",
+        ".%2e/escape",
+        "%2e/x",
+        "%252e/escape",
+        "%252e/x",
+        "dir/%2e%2e",
+        "foo%bar",
+        "%",
+    ];
+    for handle in percent_handles {
+        assert_eq!(
+            make_handle_record(handle),
+            Err(ContractError::SourceEvidenceStorageHandlePercentEncodingRefused),
             "handle: {handle}"
         );
     }
@@ -2095,12 +2132,19 @@ fn test_source_evidence_storage_handle_and_id_sanitization() -> Result<(), Box<d
         );
     }
 
-    // 4. Malformed handles (empty segments, spaces, bidi, format, non-ASCII, over-length)
+    // 4a. Empty segments: a doubled or trailing separator.
+    let empty_segment_handles = ["foo//bar", "trailing/slash/", "middle///triple", "a/"];
+    for handle in empty_segment_handles {
+        assert_eq!(
+            make_handle_record(handle),
+            Err(ContractError::SourceEvidenceStorageHandleEmptySegment),
+            "handle: {handle}"
+        );
+    }
+
+    // 4b. Characters outside the allow-list (spaces, bidi, format, control, non-ASCII,
+    // backslash), each refused with the dedicated disallowed-character code.
     let malformed_handles = [
-        // Empty segments
-        "foo//bar",
-        "trailing/slash/",
-        "middle///triple",
         // Spaces
         " ",
         "   ",
@@ -2124,18 +2168,47 @@ fn test_source_evidence_storage_handle_and_id_sanitization() -> Result<(), Box<d
         "soft\u{00AD}hyphen",
         "narrow\u{202F}nbsp",
         "joiner\u{2060}word",
+        "a\u{2066}b",
+        "a\u{202A}b",
+        "a\u{061C}b",
+        "a\u{2028}b",
+        "a\u{3000}b",
+        "a\u{00A0}b",
+        "a/\u{FF0E}\u{FF0E}/b",
+        "a/\u{3002}/b",
+        "a b",
+        "a\\b",
     ];
     for handle in malformed_handles {
         assert_eq!(
             make_handle_record(handle),
-            Err(ContractError::SourceEvidenceStorageHandleMalformed),
+            Err(ContractError::SourceEvidenceStorageHandleDisallowedCharacter),
             "handle: {handle}"
         );
     }
+
+    // 4c. Over-length is its own code, distinct from a disallowed character; the bound is
+    // inclusive at 4096 bytes.
     let over_length_handle = "a".repeat(4097);
     assert_eq!(
         make_handle_record(&over_length_handle),
-        Err(ContractError::SourceEvidenceStorageHandleMalformed)
+        Err(ContractError::SourceEvidenceStorageHandleOverLength)
+    );
+    assert!(make_handle_record(&"a".repeat(4096)).is_ok());
+
+    // 4d. Empty segment, over-length, disallowed character, percent and traversal refusals
+    // carry five distinct stable codes.
+    let codes = BTreeSet::from([
+        ContractError::SourceEvidenceStorageHandleEmptySegment.code(),
+        ContractError::SourceEvidenceStorageHandleOverLength.code(),
+        ContractError::SourceEvidenceStorageHandleDisallowedCharacter.code(),
+        ContractError::SourceEvidenceStorageHandlePercentEncodingRefused.code(),
+        ContractError::SourceEvidenceStorageHandleTraversal.code(),
+    ]);
+    assert_eq!(codes.len(), 5);
+    assert_eq!(
+        ContractError::SourceEvidenceStorageHandlePercentEncodingRefused.code(),
+        "source_evidence_storage_handle_percent_encoding_refused"
     );
 
     // 5. Valid handles accepted

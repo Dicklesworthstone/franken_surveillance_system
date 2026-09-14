@@ -54,7 +54,7 @@ pub use agent::{
     HandoffPublishParams, KnowledgeCell, KnowledgeStateBasis, LABORATORY_PROVENANCE_MARKER,
     MissionLifecycleState, PossibleWorld, REDACTED_STATEMENT_MARKER, ReconciliationBasis,
     ReconciliationBranch, RedactionMarker, RedactionReason, SituationCapsule, SituationFrame,
-    StaleBasis, WorldEnvelope,
+    StaleBasis, UnknownReason, WorldEnvelope,
 };
 pub use belief::{
     BELIEF_INTERVAL_DOMAIN, BeliefError, BeliefInterval, CONTRADICTION_DOMAIN, Contradiction,

@@ -9,7 +9,7 @@
 use core::fmt;
 use core::str::FromStr;
 
-use crate::agent::{KnowledgeStateBasis, RedactionMarker, RedactionReason};
+use crate::agent::{KnowledgeStateBasis, RedactionMarker, RedactionReason, UnknownReason};
 use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder};
 use crate::contract::{ContractError, KnowledgeState, Plane, ProvenanceClass};
 use crate::evidence::SensorCapsule;
@@ -25,14 +25,27 @@ pub const SOURCE_EVIDENCE_RECORD_FORMAT_VERSION: u32 = 2;
 /// Maximum allowed length for a storage handle in bytes.
 const MAX_STORAGE_HANDLE_BYTES: usize = 4096;
 
-/// Sanitizes storage handle according to strict allow-list:
-/// ASCII [A-Za-z0-9._-] plus '/' as segment separator.
+/// Sanitizes a storage handle against a strict allow-list.
+///
+/// Allowed: ASCII `[A-Za-z0-9._-]` plus `/` as the segment separator. Each refusal has its own
+/// code, checked in this order:
+/// - empty handle: [`ContractError::SourceEvidenceEmptyStorageHandle`];
+/// - over [`MAX_STORAGE_HANDLE_BYTES`]: [`ContractError::SourceEvidenceStorageHandleOverLength`];
+/// - leading `/` or `\`, or any `:` (schemes, drive letters):
+///   [`ContractError::SourceEvidenceStorageHandleAbsolutePath`];
+/// - any `%`: [`ContractError::SourceEvidenceStorageHandlePercentEncodingRefused`] (percent
+///   encoding is refused, never decoded, so `foo%bar` is not reported as traversal);
+/// - any character outside the allow-list:
+///   [`ContractError::SourceEvidenceStorageHandleDisallowedCharacter`];
+/// - an empty segment (doubled or trailing `/`):
+///   [`ContractError::SourceEvidenceStorageHandleEmptySegment`];
+/// - a `.` or `..` segment: [`ContractError::SourceEvidenceStorageHandleTraversal`].
 fn sanitize_storage_handle(handle: &str) -> Result<(), ContractError> {
     if handle.is_empty() {
         return Err(ContractError::SourceEvidenceEmptyStorageHandle);
     }
     if handle.len() > MAX_STORAGE_HANDLE_BYTES {
-        return Err(ContractError::SourceEvidenceStorageHandleMalformed);
+        return Err(ContractError::SourceEvidenceStorageHandleOverLength);
     }
     if handle.starts_with('/') || handle.starts_with('\\') {
         return Err(ContractError::SourceEvidenceStorageHandleAbsolutePath);
@@ -41,16 +54,16 @@ fn sanitize_storage_handle(handle: &str) -> Result<(), ContractError> {
         return Err(ContractError::SourceEvidenceStorageHandleAbsolutePath);
     }
     if handle.contains('%') {
-        return Err(ContractError::SourceEvidenceStorageHandleTraversal);
+        return Err(ContractError::SourceEvidenceStorageHandlePercentEncodingRefused);
     }
     for b in handle.bytes() {
         if !(b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-' || b == b'/') {
-            return Err(ContractError::SourceEvidenceStorageHandleMalformed);
+            return Err(ContractError::SourceEvidenceStorageHandleDisallowedCharacter);
         }
     }
     for seg in handle.split('/') {
         if seg.is_empty() {
-            return Err(ContractError::SourceEvidenceStorageHandleMalformed);
+            return Err(ContractError::SourceEvidenceStorageHandleEmptySegment);
         }
         if seg == "." || seg == ".." {
             return Err(ContractError::SourceEvidenceStorageHandleTraversal);
@@ -433,7 +446,9 @@ impl SourceEvidenceRecord {
     ///
     /// Truthful knowledge state derivation:
     /// - For `Retained` custody: `KnowledgeState::Known` when unbroken (`gap_before == false`),
-    ///   or `KnowledgeState::Unknown` with an explicit continuity gap statement when `gap_before == true`.
+    ///   or `KnowledgeState::Unknown` carrying the typed basis
+    ///   [`UnknownReason::ContinuityGapBeforeCapsule`] when `gap_before == true`; the statement
+    ///   is left unchanged.
     /// - For `NotRetained` custody:
     ///   - `OmissionReason::PrivacyRedaction` -> `KnowledgeState::Redacted` with [`RedactionMarker`].
     ///   - `OmissionReason::CapabilityFiltered` -> `KnowledgeState::Redacted` with [`RedactionMarker`].
@@ -456,9 +471,11 @@ impl SourceEvidenceRecord {
                 if self.capsule.as_ref().is_some_and(|c| c.gap_before) {
                     (
                         KnowledgeState::Unknown,
-                        None,
+                        Some(KnowledgeStateBasis::Unknown(
+                            UnknownReason::ContinuityGapBeforeCapsule,
+                        )),
                         ev,
-                        format!("{}: continuity gap before capsule", self.statement),
+                        self.statement.clone(),
                     )
                 } else {
                     (KnowledgeState::Known, None, ev, self.statement.clone())

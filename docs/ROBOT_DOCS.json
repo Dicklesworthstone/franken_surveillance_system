@@ -1422,7 +1422,7 @@
       "id": "ERR-SOURCE-EVIDENCE-CAPSULE-REQUIRED-001"
     },
     {
-      "description": "retained source custody storage handle is empty, whitespace, or contains invalid characters",
+      "description": "retained source custody storage handle is empty",
       "guidance": "provide non-empty sanitized storage handle",
       "id": "ERR-SOURCE-EVIDENCE-EMPTY-STORAGE-HANDLE-001"
     },
@@ -1467,12 +1467,32 @@
       "id": "ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-ABSOLUTE-PATH-001"
     },
     {
-      "description": "retained source custody storage handle is malformed, over-length, or contains invalid characters",
-      "guidance": "provide non-empty sanitized storage handle up to 4096 bytes without bidi or control characters",
+      "description": "retained source custody storage handle contains a character outside ASCII `[A-Za-z0-9._-]` and `/` (including space, control, bidi, format and non-ASCII characters)",
+      "guidance": "supply a handle made only of allow-listed characters",
+      "id": "ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-DISALLOWED-CHARACTER-001"
+    },
+    {
+      "description": "retained source custody storage handle has an empty segment (doubled or trailing `/`)",
+      "guidance": "remove the empty segment; do not retry unchanged",
+      "id": "ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-EMPTY-SEGMENT-001"
+    },
+    {
+      "description": "tombstoned, no longer emitted: superseded by the EMPTY-SEGMENT, OVER-LENGTH and DISALLOWED-CHARACTER storage handle identities",
+      "guidance": "not applicable; retained so the stable ID is never reused",
       "id": "ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-MALFORMED-001"
     },
     {
-      "description": "retained source custody storage handle contains forbidden directory traversal sequence",
+      "description": "retained source custody storage handle exceeds 4096 bytes",
+      "guidance": "shorten the storage handle to at most 4096 bytes",
+      "id": "ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-OVER-LENGTH-001"
+    },
+    {
+      "description": "retained source custody storage handle contains `%`; percent-encoding is refused rather than decoded",
+      "guidance": "supply the literal allow-listed handle without percent-encoding",
+      "id": "ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-PERCENT-ENCODING-REFUSED-001"
+    },
+    {
+      "description": "retained source custody storage handle has a `.` or `..` segment",
       "guidance": "remove path traversal components from storage handle",
       "id": "ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-TRAVERSAL-001"
     },

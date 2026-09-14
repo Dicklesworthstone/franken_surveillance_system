@@ -2834,14 +2834,23 @@ pub enum ContractError {
     SourceEvidenceNotRetainedWithCapsuleBytes,
     /// Source evidence custody byte count does not match capsule source byte count (AGT-LAYER-002, INV-003).
     SourceEvidenceByteCountMismatch,
-    /// Storage handle for retained source evidence is empty or only whitespace (AGT-LAYER-002, INV-003).
+    /// Storage handle for retained source evidence is empty (AGT-LAYER-002, INV-003).
     SourceEvidenceEmptyStorageHandle,
     /// Storage handle for retained source evidence contains forbidden directory traversal sequence (AGT-LAYER-002, INV-003).
     SourceEvidenceStorageHandleTraversal,
     /// Storage handle for retained source evidence contains forbidden absolute path or url (AGT-LAYER-002, INV-003).
     SourceEvidenceStorageHandleAbsolutePath,
-    /// Storage handle for retained source evidence is malformed, over-length, or contains invalid characters (AGT-LAYER-002, INV-003).
-    SourceEvidenceStorageHandleMalformed,
+    /// Storage handle for retained source evidence has an empty segment: a doubled or trailing
+    /// `/` separator (AGT-LAYER-002, INV-003).
+    SourceEvidenceStorageHandleEmptySegment,
+    /// Storage handle for retained source evidence exceeds its byte bound (AGT-LAYER-002, INV-003).
+    SourceEvidenceStorageHandleOverLength,
+    /// Storage handle for retained source evidence contains a character outside the allow-list
+    /// ASCII `[A-Za-z0-9._-]` plus `/` (AGT-LAYER-002, INV-003).
+    SourceEvidenceStorageHandleDisallowedCharacter,
+    /// Storage handle for retained source evidence contains `%`; percent-encoding is refused
+    /// outright rather than decoded (AGT-LAYER-002, INV-003).
+    SourceEvidenceStorageHandlePercentEncodingRefused,
     /// Raw wire packets classification cannot carry a sensor capsule payload (AGT-LAYER-002, INV-003).
     SourceEvidenceRawWirePacketsWithCapsule,
     /// Source evidence statement is empty or exceeds 512 bytes (AGT-LAYER-002, INV-003).
@@ -3002,8 +3011,17 @@ impl ContractError {
             Self::SourceEvidenceStorageHandleAbsolutePath => {
                 "source_evidence_storage_handle_absolute_path"
             }
-            Self::SourceEvidenceStorageHandleMalformed => {
-                "source_evidence_storage_handle_malformed"
+            Self::SourceEvidenceStorageHandleEmptySegment => {
+                "source_evidence_storage_handle_empty_segment"
+            }
+            Self::SourceEvidenceStorageHandleOverLength => {
+                "source_evidence_storage_handle_over_length"
+            }
+            Self::SourceEvidenceStorageHandleDisallowedCharacter => {
+                "source_evidence_storage_handle_disallowed_character"
+            }
+            Self::SourceEvidenceStorageHandlePercentEncodingRefused => {
+                "source_evidence_storage_handle_percent_encoding_refused"
             }
             Self::SourceEvidenceRawWirePacketsWithCapsule => {
                 "source_evidence_raw_wire_packets_with_capsule"

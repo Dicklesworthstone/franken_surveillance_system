@@ -17,6 +17,7 @@ Verifies:
 import copy
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -41,11 +42,29 @@ from generate_robot_docs import (
     generate_docs,
     generate_robot_docs_json,
     generate_robot_docs_markdown,
-    parse_errors_registry,
 )
 from robot_docs_checker import (
     validate_robot_docs,
 )
+
+
+ERRORS_MD_ROW = re.compile(r"^\|\s*`(ERR-[A-Z0-9]+(?:-[A-Z0-9]+)*)`\s*\|")
+
+
+def count_errors_md_rows(path: Path) -> int:
+    """Counts `ERR-*` identity rows in ERRORS.md independently of the generator's parser.
+
+    A separate regex parse, so a defect in `generate_robot_docs.parse_errors_registry` cannot
+    make the expected count agree with the generated count by construction. Duplicate IDs fail.
+    """
+    ids = []
+    for raw in path.read_text(encoding="utf-8").split("\n"):
+        match = ERRORS_MD_ROW.match(raw.strip())
+        if match:
+            ids.append(match.group(1))
+    if len(ids) != len(set(ids)):
+        raise AssertionError(f"duplicate ERR identity rows in {path}")
+    return len(ids)
 
 
 class RobotDocsContractTests(unittest.TestCase):
@@ -99,7 +118,7 @@ class RobotDocsContractTests(unittest.TestCase):
         self.assertEqual(res.resources_count, 15)
         self.assertEqual(res.schemas_count, 73)
         self.assertEqual(res.capabilities_count, 12)
-        expected_errors_count = len(parse_errors_registry(ROOT / "registries/ERRORS.md"))
+        expected_errors_count = count_errors_md_rows(ROOT / "registries/ERRORS.md")
         self.assertEqual(res.errors_count, expected_errors_count)
         self.assertEqual(
             res.stats["freeze_digest"],
@@ -592,7 +611,7 @@ class RobotDocsContractTests(unittest.TestCase):
         self.assertEqual(payload["resources_count"], 15)
         self.assertEqual(payload["schemas_count"], 73)
         self.assertEqual(payload["capabilities_count"], 12)
-        expected_errors_count = len(parse_errors_registry(ROOT / "registries/ERRORS.md"))
+        expected_errors_count = count_errors_md_rows(ROOT / "registries/ERRORS.md")
         self.assertEqual(payload["errors_count"], expected_errors_count)
         self.assertEqual(payload["errors"], [])
 

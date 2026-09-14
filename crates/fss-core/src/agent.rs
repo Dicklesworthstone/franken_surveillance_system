@@ -334,6 +334,36 @@ impl CanonicalEncode for ReconciliationBasis {
     }
 }
 
+/// Typed reason an `unknown` proposition (KSTATE-003) is unknown.
+///
+/// Optional on an `unknown` cell; when present it names why the authorized evidence acquired so
+/// far does not establish the proposition, so the reason is a typed field and never free text
+/// appended to the statement.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum UnknownReason {
+    /// The source capsule declares a continuity gap before it (`gap_before`), so custody of the
+    /// preceding interval is unbroken for nothing and the proposition is not established.
+    ContinuityGapBeforeCapsule,
+}
+
+impl UnknownReason {
+    /// Stable wire code for this reason.
+    #[must_use]
+    pub const fn code(self) -> u8 {
+        match self {
+            Self::ContinuityGapBeforeCapsule => 1,
+        }
+    }
+
+    /// Stable snake_case name for this reason.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ContinuityGapBeforeCapsule => "continuity_gap_before_capsule",
+        }
+    }
+}
+
 /// Typed state-specific basis that a knowledge cell must carry when its state names one.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum KnowledgeStateBasis {
@@ -343,6 +373,8 @@ pub enum KnowledgeStateBasis {
     Stale(StaleBasis),
     /// Reconciliation basis and branches required by `indeterminate` (KSTATE-008).
     Reconciliation(ReconciliationBasis),
+    /// Optional typed reason carried by `unknown` (KSTATE-003).
+    Unknown(UnknownReason),
 }
 
 impl KnowledgeStateBasis {
@@ -353,13 +385,14 @@ impl KnowledgeStateBasis {
             Self::Redaction(_) => KnowledgeState::Redacted,
             Self::Stale(_) => KnowledgeState::Stale,
             Self::Reconciliation(_) => KnowledgeState::Indeterminate,
+            Self::Unknown(_) => KnowledgeState::Unknown,
         }
     }
 
     /// Validates the basis payload itself.
     pub fn validate(&self) -> Result<(), ContractError> {
         match self {
-            Self::Redaction(_) => Ok(()),
+            Self::Redaction(_) | Self::Unknown(_) => Ok(()),
             Self::Stale(basis) => basis.validate(),
             Self::Reconciliation(basis) => basis.validate(),
         }
@@ -380,6 +413,10 @@ impl CanonicalEncode for KnowledgeStateBasis {
             Self::Reconciliation(basis) => {
                 encoder.u8(3);
                 basis.encode_canonical(encoder);
+            }
+            Self::Unknown(reason) => {
+                encoder.u8(4);
+                encoder.u8(reason.code());
             }
         }
     }

@@ -663,7 +663,7 @@ All stable error identities and normative recovery guidance cataloged from `regi
 | `ERR-SECRET-UNAVAILABLE-001` | secret handle cannot be resolved | repair/rotate; bounded retry if provider transient |
 | `ERR-SOURCE-EVIDENCE-BYTE-COUNT-MISMATCH-001` | capsule source bytes does not match custody source bytes | align capsule and custody byte count |
 | `ERR-SOURCE-EVIDENCE-CAPSULE-REQUIRED-001` | sensor capsule classification requires a sensor capsule payload | provide sensor capsule or change classification |
-| `ERR-SOURCE-EVIDENCE-EMPTY-STORAGE-HANDLE-001` | retained source custody storage handle is empty, whitespace, or contains invalid characters | provide non-empty sanitized storage handle |
+| `ERR-SOURCE-EVIDENCE-EMPTY-STORAGE-HANDLE-001` | retained source custody storage handle is empty | provide non-empty sanitized storage handle |
 | `ERR-SOURCE-EVIDENCE-MISSING-ANCHOR-001` | source evidence record missing authoritative anchor | attach authoritative anchor; do not retry unchanged |
 | `ERR-SOURCE-EVIDENCE-NOT-RETAINED-WITH-CAPSULE-BYTES-001` | not-retained source evidence capsule cannot claim non-zero source bytes, non-zero frame count, or non-zero source digest | zero capsule bytes/digest/frames or mark retained |
 | `ERR-SOURCE-EVIDENCE-NOT-RETAINED-WITH-WITNESS-001` | source evidence not retained cannot bind a continuity witness | omit witness or retain source evidence |
@@ -672,8 +672,12 @@ All stable error identities and normative recovery guidance cataloged from `regi
 | `ERR-SOURCE-EVIDENCE-RETAINED-WITH-OMISSION-001` | retained source evidence cannot declare an omission reason | remove omission reason or mark not-retained |
 | `ERR-SOURCE-EVIDENCE-STATEMENT-MALFORMED-001` | source evidence statement is empty or exceeds 512 bytes | constrain statement to 1..=512 UTF-8 bytes |
 | `ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-ABSOLUTE-PATH-001` | retained source custody storage handle contains forbidden absolute path or url | provide relative or content-addressed storage handle |
-| `ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-MALFORMED-001` | retained source custody storage handle is malformed, over-length, or contains invalid characters | provide non-empty sanitized storage handle up to 4096 bytes without bidi or control characters |
-| `ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-TRAVERSAL-001` | retained source custody storage handle contains forbidden directory traversal sequence | remove path traversal components from storage handle |
+| `ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-DISALLOWED-CHARACTER-001` | retained source custody storage handle contains a character outside ASCII '[A-Za-z0-9._-]' and '/' (including space, control, bidi, format and non-ASCII characters) | supply a handle made only of allow-listed characters |
+| `ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-EMPTY-SEGMENT-001` | retained source custody storage handle has an empty segment (doubled or trailing '/') | remove the empty segment; do not retry unchanged |
+| `ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-MALFORMED-001` | tombstoned, no longer emitted: superseded by the EMPTY-SEGMENT, OVER-LENGTH and DISALLOWED-CHARACTER storage handle identities | not applicable; retained so the stable ID is never reused |
+| `ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-OVER-LENGTH-001` | retained source custody storage handle exceeds 4096 bytes | shorten the storage handle to at most 4096 bytes |
+| `ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-PERCENT-ENCODING-REFUSED-001` | retained source custody storage handle contains '%'; percent-encoding is refused rather than decoded | supply the literal allow-listed handle without percent-encoding |
+| `ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-TRAVERSAL-001` | retained source custody storage handle has a '.' or '..' segment | remove path traversal components from storage handle |
 | `ERR-SOURCE-EVIDENCE-UNKNOWN-CLASSIFICATION-001` | unknown source evidence classification string token | supply a registered classification token |
 | `ERR-SOURCE-EVIDENCE-UNKNOWN-CUSTODY-TAG-001` | unknown source custody binary wire tag | supply a registered custody tag |
 | `ERR-SOURCE-EVIDENCE-UNKNOWN-OMISSION-REASON-001` | unknown omission reason string token | supply a registered omission reason token |
