@@ -667,6 +667,12 @@ impl PrivacyGeneration {
     pub fn canonical_v1() -> Self {
         Self(String::from(Self::CANONICAL_V1))
     }
+
+    /// Constructs a privacy projection generation for the specified epoch.
+    #[must_use]
+    pub fn for_epoch(epoch: u64) -> Self {
+        Self(format!("privacy:projection:v{epoch}"))
+    }
 }
 subsystem_generation!(
     FirmwareGeneration,
