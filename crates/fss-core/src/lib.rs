@@ -123,9 +123,11 @@ pub use evidence::{
     SensorCapsule, SensorSourceBytesSpec,
 };
 pub use hydration::{
-    HYDRATION_VIEW_ID, HandleAvailability, HydrationArtifact, HydrationError, HydrationLevel,
-    HydrationPurpose, HydrationReceipt, HydrationReceiptSpec, HydrationRequest,
-    HydrationRequestSpec, HydrationResponse, LaboratoryAccess, SemanticHandle, SemanticHandleSpec,
+    H0_CONTENT, H0_LEVEL_ID, H0_LEVEL_NAME, H0_SCHEMA, H0_SEMANTIC_OWNER, H0Identity,
+    H0IdentityParams, HYDRATION_VIEW_ID, HandleAvailability, HydrationArtifact, HydrationError,
+    HydrationLevel, HydrationPurpose, HydrationReceipt, HydrationReceiptSpec, HydrationRequest,
+    HydrationRequestSpec, HydrationResponse, LaboratoryAccess, SEMANTIC_HYDRATION_OWNER,
+    SemanticHandle, SemanticHandleSpec, is_valid_h0_screened_field,
 };
 pub use identity::{
     AdapterCapabilities, AdapterIdentity, AdapterKind, CredentialMethod, DeviceCapabilities,
