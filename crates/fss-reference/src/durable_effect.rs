@@ -11,11 +11,12 @@ use std::path::Path;
 use fss_core::{
     BatchId, CanonicalDecode, CanonicalEncode, ContentDigest, ContractError, EffectIntent,
     EffectJournal, EffectJournalTransition, EffectState, LedgerAnchor, ObjectId, Obligation,
-    ObligationId, OperationId, OperationReceipt, Plane, TimestampNs,
+    ObligationId, ObligationState, OperationId, OperationReceipt, Plane, TimestampNs,
 };
 use fss_ledger::{
-    DurableReferenceLedger, ExternalMutationKind, IncompleteTailPolicy, Journal, JournalError,
-    JournalRecord, RecoveryReport, inspect,
+    DurableLedgerLimits, DurableReferenceLedger, ExternalMutationKind, HostJournalReadIo,
+    IncompleteTailPolicy, Journal, JournalError, JournalReadIo, JournalRecord, RecoveryReport,
+    inspect,
 };
 use fss_object::InMemoryObjectStore;
 
@@ -49,6 +50,22 @@ pub enum DurableEffectError {
         /// Underlying contract decode error.
         error: ContractError,
     },
+    /// Underlying filesystem or read I/O error.
+    Io(std::io::Error),
+    /// The journal path is a symlink or not a regular file.
+    InvalidLayout {
+        /// Offending path.
+        path: std::path::PathBuf,
+    },
+    /// Journal file length exceeded configured byte limit.
+    OverBudget {
+        /// Configured limit in bytes.
+        limit: usize,
+        /// Observed actual length in bytes.
+        actual: usize,
+    },
+    /// The journal doctor failed for a reason with no narrower variant here.
+    Repair(Box<fss_ledger::RepairError>),
     /// An obligation is transient and not persisted in the durable effect journal (INV-111).
     TransientObligation {
         /// Offending transient obligation identity.
@@ -83,6 +100,17 @@ impl fmt::Display for DurableEffectError {
                 formatter,
                 "canonical ledger has uncommitted pending append at sequence {sequence} requiring reconciliation"
             ),
+            Self::Io(error) => write!(formatter, "durable effect I/O error: {error}"),
+            Self::InvalidLayout { path } => write!(
+                formatter,
+                "durable effect journal has invalid layout: {}",
+                path.display()
+            ),
+            Self::OverBudget { limit, actual } => write!(
+                formatter,
+                "durable effect journal size {actual} exceeded limit {limit}"
+            ),
+            Self::Repair(error) => write!(formatter, "durable effect journal doctor: {error}"),
         }
     }
 }
@@ -95,9 +123,96 @@ impl Error for DurableEffectError {
             Self::Reference(error) => Some(error),
             Self::UnexpectedRecordKind { .. }
             | Self::TransientObligation { .. }
-            | Self::LedgerReconciliationRequired { .. } => None,
+            | Self::LedgerReconciliationRequired { .. }
+            | Self::InvalidLayout { .. }
+            | Self::OverBudget { .. } => None,
             Self::Decode { error, .. } => Some(error),
+            Self::Io(error) => Some(error),
+            Self::Repair(error) => Some(error),
         }
+    }
+}
+
+impl From<std::io::Error> for DurableEffectError {
+    fn from(value: std::io::Error) -> Self {
+        Self::Io(value)
+    }
+}
+
+/// Status of a durable effect journal on disk.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EffectJournalStatus {
+    /// Journal file does not exist on disk.
+    Absent,
+    /// Journal file exists on disk.
+    Present,
+}
+
+/// Breakdown of obligations by [`ObligationState`]; every state has its own count, so an
+/// indeterminate obligation is never folded into pending or terminal.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ObligationCounts {
+    /// Total number of obligations recorded.
+    pub total: usize,
+    /// Terminal predicate not yet proved.
+    pub pending: usize,
+    /// Terminal predicate proved.
+    pub verified: usize,
+    /// A known terminal failure proved.
+    pub failed: usize,
+    /// Cancellation completed before external commitment.
+    pub cancelled: usize,
+    /// External outcome unresolved; each has a reconcile affordance.
+    pub indeterminate: usize,
+}
+
+impl ObligationCounts {
+    /// Obligations in a terminal state (verified, failed, or cancelled).
+    #[must_use]
+    pub const fn terminal(&self) -> usize {
+        self.verified + self.failed + self.cancelled
+    }
+}
+
+/// An indeterminate operation and its corresponding reconcile affordance.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IndeterminateOperationInfo {
+    /// Identifier of the indeterminate operation.
+    pub operation_id: OperationId,
+    /// Canonical affordance for reconciling the operation.
+    pub reconcile_affordance: String,
+}
+
+/// Non-mutating inspection of a durable effect journal.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EffectJournalInspection {
+    /// Whether the journal was present or absent.
+    pub status: EffectJournalStatus,
+    /// Reconstructed in-memory effect journal if present.
+    pub journal: Option<EffectJournal>,
+    /// Obligation counts by state.
+    pub obligation_counts: ObligationCounts,
+    /// Operations in indeterminate state paired with reconcile affordances.
+    pub indeterminate_operations: Vec<IndeterminateOperationInfo>,
+    /// Offset of an incomplete journal tail, if present.
+    pub incomplete_tail: Option<u64>,
+    /// Range of foreign trailing bytes, if present.
+    pub foreign_range: Option<fss_ledger::ForeignRange>,
+}
+
+impl EffectJournalInspection {
+    /// True if the journal does not exist on disk.
+    #[must_use]
+    pub fn is_absent(&self) -> bool {
+        self.status == EffectJournalStatus::Absent
+    }
+
+    /// True if the journal exists, has no incomplete tail, and has no foreign trailing bytes.
+    #[must_use]
+    pub fn is_clean(&self) -> bool {
+        self.status == EffectJournalStatus::Present
+            && self.incomplete_tail.is_none()
+            && self.foreign_range.is_none()
     }
 }
 
@@ -237,6 +352,107 @@ impl DurableEffectJournal {
 
         let memory = replay_report(&report)?;
         Ok(Self { journal, memory })
+    }
+
+    /// Non-mutating inspection of a durable effect journal through an injected [`JournalReadIo`].
+    pub fn inspect_with_io(
+        io: &dyn JournalReadIo,
+        path: impl AsRef<Path>,
+        limits: impl Into<DurableLedgerLimits>,
+    ) -> Result<EffectJournalInspection, DurableEffectError> {
+        let path = path.as_ref();
+        let limits = limits.into();
+
+        let meta = match io.symlink_metadata(path) {
+            Ok(meta) => meta,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(EffectJournalInspection {
+                    status: EffectJournalStatus::Absent,
+                    journal: None,
+                    obligation_counts: ObligationCounts::default(),
+                    indeterminate_operations: Vec::new(),
+                    incomplete_tail: None,
+                    foreign_range: None,
+                });
+            }
+            Err(err) => return Err(DurableEffectError::Io(err)),
+        };
+
+        if meta.is_symlink || !meta.is_file {
+            return Err(DurableEffectError::InvalidLayout {
+                path: path.to_path_buf(),
+            });
+        }
+
+        let cap = limits.max_journal_bytes.saturating_add(1);
+        let buf = io.read_bounded(path, cap)?;
+        if buf.len() > limits.max_journal_bytes {
+            return Err(DurableEffectError::OverBudget {
+                limit: limits.max_journal_bytes,
+                actual: usize::try_from(meta.len)
+                    .unwrap_or(usize::MAX)
+                    .max(buf.len()),
+            });
+        }
+
+        let doctor_report = fss_ledger::doctor(&buf).map_err(|err| match err {
+            fss_ledger::RepairError::OverBudget { limit, actual } => {
+                DurableEffectError::OverBudget { limit, actual }
+            }
+            fss_ledger::RepairError::Journal(j) => DurableEffectError::Journal(j),
+            fss_ledger::RepairError::Io(e) => DurableEffectError::Io(e),
+            other => DurableEffectError::Repair(Box::new(other)),
+        })?;
+
+        let committed = usize::try_from(doctor_report.committed_len())
+            .ok()
+            .and_then(|len| buf.get(..len))
+            .ok_or(DurableEffectError::Journal(JournalError::LengthOverflow))?;
+        let recovery = fss_ledger::recover_bytes(committed)?;
+        let journal = replay_report(&recovery)?;
+
+        let mut obligation_counts = ObligationCounts::default();
+        for obl in journal.obligations() {
+            obligation_counts.total += 1;
+            match obl.state {
+                ObligationState::Pending => obligation_counts.pending += 1,
+                ObligationState::Verified => obligation_counts.verified += 1,
+                ObligationState::Failed => obligation_counts.failed += 1,
+                ObligationState::Cancelled => obligation_counts.cancelled += 1,
+                ObligationState::Indeterminate => obligation_counts.indeterminate += 1,
+            }
+        }
+
+        let mut indeterminate_operations = Vec::new();
+        for op in journal.operations() {
+            if op.state == EffectState::Indeterminate {
+                indeterminate_operations.push(IndeterminateOperationInfo {
+                    operation_id: op.intent.operation_id.clone(),
+                    reconcile_affordance: crate::situation_guard::EFFECT_RECONCILE_AFFORDANCE
+                        .to_string(),
+                });
+            }
+        }
+
+        Ok(EffectJournalInspection {
+            status: EffectJournalStatus::Present,
+            journal: Some(journal),
+            obligation_counts,
+            indeterminate_operations,
+            incomplete_tail: doctor_report.incomplete_tail(),
+            foreign_range: doctor_report.foreign_range().cloned(),
+        })
+    }
+
+    /// Non-mutating inspection of a durable effect journal.
+    ///
+    /// Reads up to `limits.max_journal_bytes + 1` bytes without acquiring exclusive locks,
+    /// mutating the file, or fsyncing. If the file is missing, returns [`EffectJournalStatus::Absent`].
+    pub fn inspect(
+        path: impl AsRef<Path>,
+        limits: impl Into<DurableLedgerLimits>,
+    ) -> Result<EffectJournalInspection, DurableEffectError> {
+        Self::inspect_with_io(&HostJournalReadIo, path, limits)
     }
 
     /// Path backing this journal.

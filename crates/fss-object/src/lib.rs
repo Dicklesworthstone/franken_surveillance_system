@@ -27,11 +27,12 @@ pub use model_package::*;
 pub use spool::{
     CorruptObject, CorruptionKind, DiscardReceipt, FaultInjectingSpoolIo, ForeignEntry,
     ForeignReason, HostSpoolIo, MAX_INTERRUPTED_ATTEMPTS, MAX_STAGING_NAME_ATTEMPTS,
-    OrphanedStaging, SPOOL_HOLDS_DIR, SPOOL_HOLDS_MIGRATION_DIR, SPOOL_LOCK_FILE,
+    OrphanedStaging, RecordingSpoolIo, SPOOL_HOLDS_DIR, SPOOL_HOLDS_MIGRATION_DIR, SPOOL_LOCK_FILE,
     SPOOL_OBJECT_FORMAT_VERSION, SPOOL_OBJECT_HEADER_LEN, SPOOL_OBJECT_MAGIC, SPOOL_OBJECTS_DIR,
-    SPOOL_STAGING_DIR, SpoolError, SpoolFaultPlan, SpoolIo, SpoolIoCall, SpoolIoOperation,
-    SpoolLimitViolation, SpoolLimits, SpoolObjectState, SpoolRecoveryReport, StageOutcome,
-    StagePhase, StageReceipt, StagingSpool, encode_spool_object,
+    SPOOL_STAGING_DIR, SpoolError, SpoolFaultPlan, SpoolInspection, SpoolIo, SpoolIoCall,
+    SpoolIoOperation, SpoolLimitViolation, SpoolLimits, SpoolObjectState, SpoolRecoveryReport,
+    StageOutcome, StagePhase, StageReceipt, StagingSpool, encode_spool_object, inspect,
+    inspect_with_io, read_verified_payload,
 };
 
 use fss_core::ContentDigest;

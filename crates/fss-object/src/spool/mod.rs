@@ -65,7 +65,9 @@ use fss_core::{ContentDigest, DigestAlgorithm};
 
 use crate::{ObjectError, VerifiedObjectCatalog};
 
-pub use capability::{FaultInjectingSpoolIo, HostSpoolIo, SpoolFaultPlan, SpoolIo, SpoolIoCall};
+pub use capability::{
+    FaultInjectingSpoolIo, HostSpoolIo, RecordingSpoolIo, SpoolFaultPlan, SpoolIo, SpoolIoCall,
+};
 pub use error::{CorruptionKind, SpoolError, SpoolIoOperation, SpoolLimitViolation, StagePhase};
 pub use format::{
     SPOOL_OBJECT_FORMAT_VERSION, SPOOL_OBJECT_HEADER_LEN, SPOOL_OBJECT_MAGIC, encode_spool_object,
@@ -263,6 +265,40 @@ impl SpoolRecoveryReport {
     }
 }
 
+/// Result of inspecting a spool without taking locks or creating directories.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SpoolInspection {
+    /// Deterministic recovery report embedded from classification.
+    pub report: SpoolRecoveryReport,
+    /// Whether the spool predates the holds directory and requires migration.
+    pub holds_migration_pending: bool,
+    /// Whether any required directory (objects or staging) is missing.
+    pub missing_layout: bool,
+    /// Whether the recovered index or occupied bytes exceeds the configured bounds.
+    pub over_capacity: bool,
+}
+
+impl SpoolInspection {
+    /// True if the spool is completely clean with no pending migration, missing layout, or capacity violation.
+    #[must_use]
+    pub fn is_clean(&self) -> bool {
+        self.report.is_clean()
+            && !self.holds_migration_pending
+            && !self.missing_layout
+            && !self.over_capacity
+    }
+}
+
+/// What the shared classifier found in a spool root, before the open builds its index.
+#[derive(Clone, Debug, Default)]
+struct SpoolClassification {
+    report: SpoolRecoveryReport,
+    index: BTreeMap<ContentDigest, IndexedObject>,
+    orphans: BTreeMap<OsString, OrphanedStaging>,
+    index_bytes: u64,
+    orphan_bytes: u64,
+}
+
 /// Receipt for discarding orphaned staging files.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DiscardReceipt {
@@ -388,7 +424,30 @@ impl StagingSpool {
         io.sync_directory(&root)
             .map_err(|error| io_error(SpoolIoOperation::SyncDirectory, &root, &error))?;
 
-        let mut spool = Self {
+        let layout = SpoolLayout {
+            staging: true,
+            objects: true,
+            legacy,
+        };
+        let mut classification = classify_contents(io.as_ref(), &root, &limits, layout)?;
+        if legacy {
+            migrate_holds(
+                io.as_ref(),
+                &root,
+                &holds_dir,
+                &classification.report.admitted,
+            )?;
+        }
+        let holds = scan_directory(io.as_ref(), &holds_dir, limits.max_scan_entries)?;
+        apply_holds(
+            &mut classification,
+            holds
+                .into_iter()
+                .map(|(name, file_type)| (name, file_type.is_file()))
+                .collect(),
+        );
+
+        let spool = Self {
             io,
             root,
             objects_dir,
@@ -396,15 +455,14 @@ impl StagingSpool {
             holds_dir,
             _lock: lock,
             limits,
-            index: BTreeMap::new(),
-            orphans: BTreeMap::new(),
-            index_bytes: 0,
-            orphan_bytes: 0,
-            recovery: SpoolRecoveryReport::default(),
+            index: classification.index,
+            orphans: classification.orphans,
+            index_bytes: classification.index_bytes,
+            orphan_bytes: classification.orphan_bytes,
+            recovery: classification.report,
             injected_crash: None,
             poisoned: false,
         };
-        spool.recover(legacy)?;
         spool.check_recovered_capacity()?;
         Ok(spool)
     }
@@ -841,17 +899,10 @@ impl StagingSpool {
     /// Fails closed when what recovery found exceeds the configured bounds.
     fn check_recovered_capacity(&self) -> Result<(), SpoolError> {
         let occupied_bytes = self.occupied_bytes()?;
-        if self.index.len() > self.limits.max_objects
-            || occupied_bytes > self.limits.max_total_bytes
-        {
-            return Err(SpoolError::RecoveredOverCapacity {
-                objects: self.index.len(),
-                max_objects: self.limits.max_objects,
-                occupied_bytes,
-                max_total_bytes: self.limits.max_total_bytes,
-            });
+        match recovered_capacity_violation(self.index.len(), occupied_bytes, &self.limits) {
+            Some(violation) => Err(violation),
+            None => Ok(()),
         }
-        Ok(())
     }
 
     /// Arms a one-shot crash point for the next `stage` call.
@@ -1082,51 +1133,108 @@ impl StagingSpool {
             attempts: MAX_STAGING_NAME_ATTEMPTS,
         })
     }
+}
 
-    fn recover(&mut self, legacy: bool) -> Result<(), SpoolError> {
-        for (name, _) in scan_directory(self.io.as_ref(), &self.root, ROOT_SCAN_BOUND)? {
-            if name == SPOOL_OBJECTS_DIR
-                || name == SPOOL_STAGING_DIR
-                || name == SPOOL_LOCK_FILE
-                || name == SPOOL_HOLDS_DIR
-                || (legacy && name == SPOOL_HOLDS_MIGRATION_DIR)
-            {
-                continue;
-            }
-            self.recovery.foreign.push(ForeignEntry {
-                path: PathBuf::from(&name),
-                reason: ForeignReason::UnexpectedRootEntry,
-            });
+/// Records a hold for every admitted object of a spool written before holds existed.
+///
+/// The holds are built in [`SPOOL_HOLDS_MIGRATION_DIR`] and renamed onto
+/// [`SPOOL_HOLDS_DIR`] only once complete and fsynced, so a crash part way leaves the spool
+/// still without holds and the next open resumes. Any failure fails the open.
+fn migrate_holds(
+    io: &dyn SpoolIo,
+    root: &Path,
+    holds_dir: &Path,
+    admitted: &[ContentDigest],
+) -> Result<(), SpoolError> {
+    let staging = root.join(SPOOL_HOLDS_MIGRATION_DIR);
+    ensure_subdirectory(io, &staging)?;
+    let migrate_error = |path: &Path, error: &io::Error| SpoolError::Io {
+        operation: SpoolIoOperation::MigrateHolds,
+        path: path.to_path_buf(),
+        kind: error.kind(),
+    };
+    for digest in admitted {
+        let path = staging.join(digest_hex(*digest));
+        match io.create_new(&path) {
+            Ok(file) => io
+                .sync_file(&file)
+                .map_err(|error| migrate_error(&path, &error))?,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(migrate_error(&path, &error)),
         }
+    }
+    io.sync_directory(&staging)
+        .map_err(|error| migrate_error(&staging, &error))?;
+    io.rename(&staging, holds_dir)
+        .map_err(|error| migrate_error(holds_dir, &error))?;
+    io.sync_directory(root)
+        .map_err(|error| migrate_error(root, &error))
+}
 
-        let staging_entries = scan_directory(
-            self.io.as_ref(),
-            &self.staging_dir,
-            self.limits.max_scan_entries,
-        )?;
-        for (name, file_type) in staging_entries {
+/// Which spool directories exist when the contents are classified.
+///
+/// [`StagingSpool::open_with_io`] creates `objects/` and `staging/` first, so it always classifies
+/// both; [`inspect_with_io`] never creates anything and skips a missing one, which is exactly what
+/// open would find in the empty directory it creates.
+#[derive(Clone, Copy, Debug)]
+struct SpoolLayout {
+    staging: bool,
+    objects: bool,
+    /// The spool predates holds; `holds-migration/` is then a known root entry.
+    legacy: bool,
+}
+
+/// Lists, stats, and reads the spool root, `staging/`, and `objects/`. Never creates, locks,
+/// renames, removes, or fsyncs anything.
+///
+/// This is the one classifier shared by [`StagingSpool::open_with_io`] and [`inspect_with_io`]; it
+/// makes exactly the calls, in exactly the order, that the open made before inspection existed.
+fn classify_contents(
+    io: &dyn SpoolIo,
+    root: &Path,
+    limits: &SpoolLimits,
+    layout: SpoolLayout,
+) -> Result<SpoolClassification, SpoolError> {
+    let mut classified = SpoolClassification::default();
+    for (name, _) in scan_directory(io, root, ROOT_SCAN_BOUND)? {
+        if name == SPOOL_OBJECTS_DIR
+            || name == SPOOL_STAGING_DIR
+            || name == SPOOL_LOCK_FILE
+            || name == SPOOL_HOLDS_DIR
+            || (layout.legacy && name == SPOOL_HOLDS_MIGRATION_DIR)
+        {
+            continue;
+        }
+        classified.report.foreign.push(ForeignEntry {
+            path: PathBuf::from(&name),
+            reason: ForeignReason::UnexpectedRootEntry,
+        });
+    }
+
+    if layout.staging {
+        let staging_dir = root.join(SPOOL_STAGING_DIR);
+        for (name, file_type) in scan_directory(io, &staging_dir, limits.max_scan_entries)? {
             let relative = Path::new(SPOOL_STAGING_DIR).join(&name);
             let Some(claimed_digest) = parse_staging_name(&name) else {
-                self.recovery.foreign.push(ForeignEntry {
+                classified.report.foreign.push(ForeignEntry {
                     path: relative,
                     reason: ForeignReason::UnrecognizedName,
                 });
                 continue;
             };
             if !file_type.is_file() {
-                self.recovery.foreign.push(ForeignEntry {
+                classified.report.foreign.push(ForeignEntry {
                     path: relative,
                     reason: ForeignReason::NotRegularFile,
                 });
                 continue;
             }
-            let path = self.staging_dir.join(&name);
-            let bytes = self
-                .io
+            let path = staging_dir.join(&name);
+            let bytes = io
                 .symlink_metadata(&path)
                 .map_err(|error| io_error(SpoolIoOperation::Inspect, &path, &error))?
                 .len();
-            self.orphan_bytes = self
+            classified.orphan_bytes = classified
                 .orphan_bytes
                 .checked_add(bytes)
                 .ok_or(SpoolError::AccountingOverflow)?;
@@ -1135,33 +1243,26 @@ impl StagingSpool {
                 bytes,
                 claimed_digest,
             };
-            self.recovery.orphaned_staging.push(orphan.clone());
-            self.orphans.insert(name, orphan);
+            classified.report.orphaned_staging.push(orphan.clone());
+            classified.orphans.insert(name, orphan);
         }
+    }
 
-        let object_entries = scan_directory(
-            self.io.as_ref(),
-            &self.objects_dir,
-            self.limits.max_scan_entries,
-        )?;
-        for (name, file_type) in object_entries {
+    if layout.objects {
+        let objects_dir = root.join(SPOOL_OBJECTS_DIR);
+        for (name, file_type) in scan_directory(io, &objects_dir, limits.max_scan_entries)? {
             let Some(digest) = parse_object_name(&name) else {
-                self.recovery.foreign.push(ForeignEntry {
+                classified.report.foreign.push(ForeignEntry {
                     path: Path::new(SPOOL_OBJECTS_DIR).join(&name),
                     reason: ForeignReason::UnrecognizedName,
                 });
                 continue;
             };
             let (state, charged_bytes) = if file_type.is_file() {
-                let path = self.objects_dir.join(&name);
-                match read_object_file(
-                    self.io.as_ref(),
-                    &path,
-                    digest,
-                    self.limits.max_object_bytes,
-                ) {
+                let path = objects_dir.join(&name);
+                match read_object_file(io, &path, digest, limits.max_object_bytes) {
                     Ok(payload) => {
-                        self.recovery.admitted.push(digest);
+                        classified.report.admitted.push(digest);
                         (SpoolObjectState::Staged, payload.len() as u64)
                     }
                     Err(ReadFailure::Corrupt { kind, file_len }) => {
@@ -1179,13 +1280,16 @@ impl StagingSpool {
                 (SpoolObjectState::Corrupt(CorruptionKind::NotRegularFile), 0)
             };
             if let SpoolObjectState::Corrupt(kind) = state {
-                self.recovery.corrupt.push(CorruptObject { digest, kind });
+                classified
+                    .report
+                    .corrupt
+                    .push(CorruptObject { digest, kind });
             }
-            self.index_bytes = self
+            classified.index_bytes = classified
                 .index_bytes
                 .checked_add(charged_bytes)
                 .ok_or(SpoolError::AccountingOverflow)?;
-            self.index.insert(
+            classified.index.insert(
                 digest,
                 IndexedObject {
                     state,
@@ -1194,87 +1298,224 @@ impl StagingSpool {
                 },
             );
         }
-        if legacy {
-            self.migrate_holds()?;
-        }
-        self.recover_holds()
     }
+    Ok(classified)
+}
 
-    /// Records a hold for every admitted object of a spool written before holds existed.
-    ///
-    /// The holds are built in [`SPOOL_HOLDS_MIGRATION_DIR`] and renamed onto
-    /// [`SPOOL_HOLDS_DIR`] only once complete and fsynced, so a crash part way leaves the spool
-    /// still without holds and the next open resumes. Any failure fails the open.
-    fn migrate_holds(&self) -> Result<(), SpoolError> {
-        let staging = self.root.join(SPOOL_HOLDS_MIGRATION_DIR);
-        ensure_subdirectory(self.io.as_ref(), &staging)?;
-        let migrate_error = |path: &Path, error: &io::Error| SpoolError::Io {
-            operation: SpoolIoOperation::MigrateHolds,
-            path: path.to_path_buf(),
-            kind: error.kind(),
+/// Applies every durable hold, given as `(name, is_regular_file)` in ascending name order. A hold
+/// whose object is not indexed is indexed as vanished.
+fn apply_holds(classified: &mut SpoolClassification, entries: Vec<(OsString, bool)>) {
+    for (name, is_file) in entries {
+        let relative = Path::new(SPOOL_HOLDS_DIR).join(&name);
+        let Some(digest) = parse_object_name(&name) else {
+            classified.report.foreign.push(ForeignEntry {
+                path: relative,
+                reason: ForeignReason::UnrecognizedName,
+            });
+            continue;
         };
-        for digest in &self.recovery.admitted {
-            let path = staging.join(digest_hex(*digest));
-            match self.io.create_new(&path) {
-                Ok(file) => self
-                    .io
-                    .sync_file(&file)
-                    .map_err(|error| migrate_error(&path, &error))?,
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(migrate_error(&path, &error)),
-            }
+        // A validly named hold of the wrong file type still protects its object.
+        if !is_file {
+            classified.report.foreign.push(ForeignEntry {
+                path: relative,
+                reason: ForeignReason::NotRegularFile,
+            });
         }
-        self.io
-            .sync_directory(&staging)
-            .map_err(|error| migrate_error(&staging, &error))?;
-        self.io
-            .rename(&staging, &self.holds_dir)
-            .map_err(|error| migrate_error(&self.holds_dir, &error))?;
-        self.io
-            .sync_directory(&self.root)
-            .map_err(|error| migrate_error(&self.root, &error))
+        if let Some(entry) = classified.index.get_mut(&digest) {
+            entry.hold = Hold::Durable;
+            continue;
+        }
+        let kind = CorruptionKind::Vanished;
+        classified
+            .report
+            .corrupt
+            .push(CorruptObject { digest, kind });
+        classified.index.insert(
+            digest,
+            IndexedObject {
+                state: SpoolObjectState::Corrupt(kind),
+                charged: 0,
+                hold: Hold::Durable,
+            },
+        );
     }
+    classified
+        .report
+        .corrupt
+        .sort_by_key(|corrupt| corrupt.digest);
+}
 
-    /// Applies every durable hold. A hold whose object is not indexed is indexed as vanished.
-    fn recover_holds(&mut self) -> Result<(), SpoolError> {
-        let entries = scan_directory(
-            self.io.as_ref(),
-            &self.holds_dir,
-            self.limits.max_scan_entries,
-        )?;
-        for (name, file_type) in entries {
-            let relative = Path::new(SPOOL_HOLDS_DIR).join(&name);
-            let Some(digest) = parse_object_name(&name) else {
-                self.recovery.foreign.push(ForeignEntry {
-                    path: relative,
-                    reason: ForeignReason::UnrecognizedName,
-                });
-                continue;
-            };
-            // A validly named hold of the wrong file type still protects its object.
-            if !file_type.is_file() {
-                self.recovery.foreign.push(ForeignEntry {
-                    path: relative,
-                    reason: ForeignReason::NotRegularFile,
-                });
-            }
-            if let Some(entry) = self.index.get_mut(&digest) {
-                entry.hold = Hold::Durable;
-                continue;
-            }
-            let kind = CorruptionKind::Vanished;
-            self.recovery.corrupt.push(CorruptObject { digest, kind });
-            self.index.insert(
-                digest,
-                IndexedObject {
-                    state: SpoolObjectState::Corrupt(kind),
-                    charged: 0,
-                    hold: Hold::Durable,
-                },
-            );
+/// The holds directory that [`migrate_holds`] would leave for a legacy spool, computed without
+/// writing: every entry an interrupted migration already created, plus one hold file per admitted
+/// object (the migration tolerates names that already exist, whatever their type).
+fn synthesized_migration_holds(
+    io: &dyn SpoolIo,
+    root: &Path,
+    holds_dir: &Path,
+    admitted: &[ContentDigest],
+    bound: usize,
+) -> Result<Vec<(OsString, bool)>, SpoolError> {
+    let over_bound = || SpoolError::EntryLimit {
+        directory: holds_dir.to_path_buf(),
+        maximum: bound,
+    };
+    let staging = root.join(SPOOL_HOLDS_MIGRATION_DIR);
+    let mut entries: BTreeMap<OsString, bool> = BTreeMap::new();
+    if directory_present(io, &staging)? {
+        let listed = match scan_directory(io, &staging, bound) {
+            Ok(listed) => listed,
+            Err(SpoolError::EntryLimit { .. }) => return Err(over_bound()),
+            Err(error) => return Err(error),
+        };
+        for (name, file_type) in listed {
+            entries.insert(name, file_type.is_file());
         }
-        self.recovery.corrupt.sort_by_key(|corrupt| corrupt.digest);
-        Ok(())
+    }
+    for digest in admitted {
+        entries
+            .entry(OsString::from(digest_hex(*digest)))
+            .or_insert(true);
+    }
+    // The open lists the renamed holds directory with the same bound.
+    if entries.len() > bound {
+        return Err(over_bound());
+    }
+    Ok(entries.into_iter().collect())
+}
+
+/// Whether `path` is a directory, without following a symlink. Absent is `false`; any other file
+/// type is [`SpoolError::InvalidLayout`], the class the open reports for the same path.
+fn directory_present(io: &dyn SpoolIo, path: &Path) -> Result<bool, SpoolError> {
+    match io.symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_dir() => Ok(true),
+        Ok(_) => Err(SpoolError::InvalidLayout {
+            path: path.to_path_buf(),
+        }),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(io_error(SpoolIoOperation::Inspect, path, &error)),
+    }
+}
+
+/// The recovered-capacity violation for `objects` indexed entries occupying `occupied_bytes`.
+fn recovered_capacity_violation(
+    objects: usize,
+    occupied_bytes: u64,
+    limits: &SpoolLimits,
+) -> Option<SpoolError> {
+    (objects > limits.max_objects || occupied_bytes > limits.max_total_bytes).then_some(
+        SpoolError::RecoveredOverCapacity {
+            objects,
+            max_objects: limits.max_objects,
+            occupied_bytes,
+            max_total_bytes: limits.max_total_bytes,
+        },
+    )
+}
+
+/// Inspects an on-disk spool root without taking locks, creating directories, or repairing state.
+///
+/// See [`inspect_with_io`].
+pub fn inspect(
+    root: impl AsRef<Path>,
+    limits: &SpoolLimits,
+) -> Result<SpoolInspection, SpoolError> {
+    inspect_with_io(root.as_ref(), limits, &HostSpoolIo)
+}
+
+/// Inspects an on-disk spool root through the given I/O capability.
+///
+/// Only lists, stats, and reads: it never creates, locks, renames, removes, or fsyncs, and never
+/// follows a symlink out of the root. The embedded [`SpoolRecoveryReport`] is the one
+/// [`StagingSpool::open_with_io`] would produce for the same bytes, because both run the same
+/// classifier. The differences are reported, never repaired:
+/// - a missing root, `objects/`, or `staging/` is `missing_layout` (open would create it empty);
+/// - a spool without `holds/` is `holds_migration_pending`, with the holds the migration would
+///   write synthesized so the report still equals open's;
+/// - a recovered index over the configured bounds is `over_capacity` (open fails with
+///   [`SpoolError::RecoveredOverCapacity`]).
+///
+/// A directory listing over its bound is the same [`SpoolError::EntryLimit`] the open returns.
+pub fn inspect_with_io(
+    root: &Path,
+    limits: &SpoolLimits,
+    io: &dyn SpoolIo,
+) -> Result<SpoolInspection, SpoolError> {
+    let limits = limits.validate()?;
+    if !directory_present(io, root)? {
+        return Ok(SpoolInspection {
+            missing_layout: true,
+            ..SpoolInspection::default()
+        });
+    }
+    let objects = directory_present(io, &root.join(SPOOL_OBJECTS_DIR))?;
+    let staging = directory_present(io, &root.join(SPOOL_STAGING_DIR))?;
+    let holds_dir = root.join(SPOOL_HOLDS_DIR);
+    let holds = directory_present(io, &holds_dir)?;
+    // Open creates a missing objects directory together with an empty holds directory; any other
+    // spool without holds predates them and open migrates it.
+    let legacy = objects && !holds;
+    let layout = SpoolLayout {
+        staging,
+        objects,
+        legacy,
+    };
+    let mut classified = classify_contents(io, root, &limits, layout)?;
+    let hold_entries = if legacy {
+        synthesized_migration_holds(
+            io,
+            root,
+            &holds_dir,
+            &classified.report.admitted,
+            limits.max_scan_entries,
+        )?
+    } else if holds {
+        scan_directory(io, &holds_dir, limits.max_scan_entries)?
+            .into_iter()
+            .map(|(name, file_type)| (name, file_type.is_file()))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    apply_holds(&mut classified, hold_entries);
+    let occupied_bytes = classified
+        .index_bytes
+        .checked_add(classified.orphan_bytes)
+        .ok_or(SpoolError::AccountingOverflow)?;
+    let over_capacity =
+        recovered_capacity_violation(classified.index.len(), occupied_bytes, &limits).is_some();
+    Ok(SpoolInspection {
+        report: classified.report,
+        holds_migration_pending: legacy,
+        missing_layout: !objects || !staging,
+        over_capacity,
+    })
+}
+
+/// Reads one object's payload from a spool root and rehashes it, without taking the lock,
+/// placing a hold, or changing anything on disk.
+///
+/// A payload longer than `max_payload`, bytes that do not rehash to `digest`, or an object that is
+/// not a regular file is [`SpoolError::Corrupt`]; a missing `objects/` directory is
+/// [`SpoolError::Missing`]. Symlinks are never followed.
+pub fn read_verified_payload(
+    root: impl AsRef<Path>,
+    digest: ContentDigest,
+    max_payload: usize,
+    io: &dyn SpoolIo,
+) -> Result<Vec<u8>, SpoolError> {
+    let objects_dir = root.as_ref().join(SPOOL_OBJECTS_DIR);
+    if !directory_present(io, &objects_dir)? {
+        return Err(SpoolError::Missing(digest));
+    }
+    let path = objects_dir.join(digest_hex(digest));
+    match read_object_file(io, &path, digest, max_payload) {
+        Ok(payload) => Ok(payload),
+        Err(ReadFailure::Corrupt { kind, .. }) => Err(SpoolError::Corrupt { digest, kind }),
+        Err(ReadFailure::Io { operation, kind }) => Err(SpoolError::Io {
+            operation,
+            path,
+            kind,
+        }),
     }
 }
 
