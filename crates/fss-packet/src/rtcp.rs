@@ -1,4 +1,4 @@
-use std::{fmt, slice::Iter};
+use std::{fmt, slice::ChunksExact};
 
 use crate::error::{PacketError, PacketLimits, be16, be32, span};
 
@@ -241,13 +241,13 @@ impl<'a> RtcpPacket<'a> {
             201 => 8,
             _ => {
                 return ReportBlocks {
-                    chunks: self.bytes[..0].as_chunks::<24>().0.iter(),
+                    chunks: self.bytes[..0].chunks_exact(24),
                 };
             }
         };
         let end = start + usize::from(self.count()) * 24;
         ReportBlocks {
-            chunks: self.bytes[start..end].as_chunks::<24>().0.iter(),
+            chunks: self.bytes[start..end].chunks_exact(24),
         }
     }
 
@@ -275,7 +275,7 @@ impl fmt::Debug for RtcpPacket<'_> {
 /// Allocation-free iterator over validated reception reports.
 #[derive(Clone)]
 pub struct ReportBlocks<'a> {
-    chunks: Iter<'a, [u8; 24]>,
+    chunks: ChunksExact<'a, u8>,
 }
 
 impl Iterator for ReportBlocks<'_> {
@@ -315,7 +315,7 @@ fn validate_packet(packet: RtcpPacket<'_>, sender: Option<u32>) -> Result<bool, 
         200 | 201 => {
             let fixed = if packet.packet_type() == 200 { 28 } else { 8 };
             let minimum = fixed + count * 24;
-            if content.len() < minimum || !(content.len() - minimum).is_multiple_of(4) {
+            if content.len() < minimum || (content.len() - minimum) % 4 != 0 {
                 return Err(PacketError::Report);
             }
         }

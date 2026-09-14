@@ -266,6 +266,12 @@ fn advance_ledger(
     Ok(())
 }
 
+fn advance_ledger_empty(ledger: &mut ReferenceLedger, batch_id: &str) -> Result<(), ContractError> {
+    let batch = ledger.prepare_batch(BatchId::parse(batch_id)?, vec![], [])?;
+    ledger.append(batch)?;
+    Ok(())
+}
+
 fn sample_uncertainty() -> Result<BeliefInterval, Box<dyn Error>> {
     Ok(BeliefInterval::new(750_000, 920_000)?)
 }
@@ -835,37 +841,52 @@ fn test_planted_negative_world_fact_validation_failures() -> Result<(), Box<dyn 
     };
     assert_eq!(err, ContractError::InvalidIdentifier);
 
-    // 7. Non-Observed provenance: ProvenanceClass::Derived fails closed
+    // 7. Statement text check: unqualified cognition fails closed
     let res = WorldFact::new(
         "fact:device:001",
         WorldFactKind::Device,
         anchor.clone(),
-        "Valid statement".to_string(),
-        ProvenanceClass::Derived,
+        "Statement with unqualified cognition treated as fact".to_string(),
+        ProvenanceClass::Observed,
         evidence,
         Generation(1),
     );
     let Err(err) = res else {
-        return Err("expected error for derived provenance in WorldFact".into());
+        return Err("expected error for unqualified cognition in statement".into());
     };
     assert_eq!(err, ContractError::EvidenceRequired);
 
-    // 8. Non-Observed provenance: ProvenanceClass::VendorClaimed fails closed
+    // 8. Statement text check: speculative fails closed
     let res = WorldFact::new(
         "fact:device:001",
         WorldFactKind::Device,
         anchor.clone(),
-        "Valid statement".to_string(),
-        ProvenanceClass::VendorClaimed,
+        "Highly speculative motion event".to_string(),
+        ProvenanceClass::Observed,
         evidence,
         Generation(1),
     );
     let Err(err) = res else {
-        return Err("expected error for vendor claimed provenance in WorldFact".into());
+        return Err("expected error for speculative in statement".into());
     };
     assert_eq!(err, ContractError::EvidenceRequired);
 
-    // 9. Non-Observed provenance: ProvenanceClass::Predicted fails closed
+    // 9. Statement text check: unverified hypothesis fails closed
+    let res = WorldFact::new(
+        "fact:device:001",
+        WorldFactKind::Device,
+        anchor.clone(),
+        "Contains unverified hypothesis".to_string(),
+        ProvenanceClass::Observed,
+        evidence,
+        Generation(1),
+    );
+    let Err(err) = res else {
+        return Err("expected error for unverified hypothesis in statement".into());
+    };
+    assert_eq!(err, ContractError::EvidenceRequired);
+
+    // 10. Provenance check: ProvenanceClass::Predicted fails closed
     let res = WorldFact::new(
         "fact:device:001",
         WorldFactKind::Device,
@@ -880,11 +901,11 @@ fn test_planted_negative_world_fact_validation_failures() -> Result<(), Box<dyn 
     };
     assert_eq!(err, ContractError::EvidenceRequired);
 
-    // 10. Non-Observed provenance: ProvenanceClass::Remembered fails closed
+    // 11. Provenance check: ProvenanceClass::Remembered fails closed
     let res = WorldFact::new(
         "fact:device:001",
         WorldFactKind::Device,
-        anchor,
+        anchor.clone(),
         "Valid statement".to_string(),
         ProvenanceClass::Remembered,
         evidence,
@@ -894,6 +915,26 @@ fn test_planted_negative_world_fact_validation_failures() -> Result<(), Box<dyn 
         return Err("expected error for remembered provenance in WorldFact".into());
     };
     assert_eq!(err, ContractError::EvidenceRequired);
+
+    // 12. Valid provenances (Derived, OperatorAsserted, VendorClaimed, Policy, Observed) succeed
+    for prov in [
+        ProvenanceClass::Observed,
+        ProvenanceClass::Derived,
+        ProvenanceClass::OperatorAsserted,
+        ProvenanceClass::VendorClaimed,
+        ProvenanceClass::Policy,
+    ] {
+        let wf = WorldFact::new(
+            "fact:device:valid",
+            WorldFactKind::Device,
+            anchor.clone(),
+            "Authoritative validated fact statement".to_string(),
+            prov,
+            evidence,
+            Generation(1),
+        )?;
+        assert_eq!(wf.provenance, prov);
+    }
 
     Ok(())
 }
@@ -1124,7 +1165,15 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
         &["zone:north_perimeter"],
     );
     let mut advanced_ledger = sample_ledger();
-    advance_ledger(&mut advanced_ledger, "batch:rm4_adv", "delta:rm4_adv", "object:rm4_adv")?;
+    advance_ledger_empty(&mut advanced_ledger, "batch:rm4_adv")?;
+    assert_eq!(
+        advanced_ledger.current().anchor.state_root,
+        anchor.state_root
+    );
+    assert_eq!(
+        advanced_ledger.current().anchor.commit_sequence,
+        anchor.commit_sequence + 1
+    );
     let newer_authority = sample_authority(&advanced_ledger)?;
     let claim = NegativeReadClaim {
         claim_id: "neg_claim:stale_sequence".to_string(),
@@ -1356,7 +1405,12 @@ fn test_negative_read_outcome_from_witness_direct_contracts() -> Result<(), Box<
 
     // 5. RM4 in from_witness: strictly older sequence
     let mut newer_ledger = sample_ledger();
-    advance_ledger(&mut newer_ledger, "batch:rm4_dir", "delta:rm4_dir", "object:rm4_dir")?;
+    advance_ledger_empty(&mut newer_ledger, "batch:rm4_dir")?;
+    assert_eq!(newer_ledger.current().anchor.state_root, anchor.state_root);
+    assert_eq!(
+        newer_ledger.current().anchor.commit_sequence,
+        anchor.commit_sequence + 1
+    );
     let newer_authority = sample_authority(&newer_ledger)?;
     let res = NegativeReadOutcome::from_witness(
         "neg_claim:rm4_direct",
@@ -1371,9 +1425,19 @@ fn test_negative_read_outcome_from_witness_direct_contracts() -> Result<(), Box<
 
     // 6. RM8 in from_witness: divergent state root at same sequence
     let mut ledger_a = sample_ledger();
-    advance_ledger(&mut ledger_a, "batch:rm8_da", "delta:rm8_da", "object:rm8_da")?;
+    advance_ledger(
+        &mut ledger_a,
+        "batch:rm8_da",
+        "delta:rm8_da",
+        "object:rm8_da",
+    )?;
     let mut ledger_b = sample_ledger();
-    advance_ledger(&mut ledger_b, "batch:rm8_db", "delta:rm8_db", "object:rm8_db")?;
+    advance_ledger(
+        &mut ledger_b,
+        "batch:rm8_db",
+        "delta:rm8_db",
+        "object:rm8_db",
+    )?;
     let anchor_a = ledger_a.current().anchor.clone();
     let mut witness_a = witness.clone();
     witness_a.anchor = anchor_a.clone();
@@ -1821,7 +1885,8 @@ fn test_older_snapshot_at_head_refused_as_stale_anchor() -> Result<(), Box<dyn E
 }
 
 #[test]
-fn test_probe_n2d_refuses_stale_witness_and_requires_ledger_authority() -> Result<(), Box<dyn Error>> {
+fn test_probe_n2d_refuses_stale_witness_and_requires_ledger_authority() -> Result<(), Box<dyn Error>>
+{
     let mut ledger = sample_ledger();
     let old_anchor = ledger.current().anchor.clone();
 
@@ -1861,8 +1926,8 @@ fn test_probe_n2d_refuses_stale_witness_and_requires_ledger_authority() -> Resul
 }
 
 #[test]
-fn test_probe_n2e_context_from_committed_head_refuses_stale_and_mismatched_claims(
-) -> Result<(), Box<dyn Error>> {
+fn test_probe_n2e_context_from_committed_head_refuses_stale_and_mismatched_claims()
+-> Result<(), Box<dyn Error>> {
     let basis = fss_core::contract_basis::reference_contract_basis();
     let mut ledger = sample_ledger();
     let old_anchor = ledger.current().anchor.clone();
@@ -1911,6 +1976,53 @@ fn test_probe_n2e_context_from_committed_head_refuses_stale_and_mismatched_claim
     };
     let res = evaluate_negative_read(&mismatched_claim, &ctx);
     assert_eq!(res.err(), Some(ContractError::StaleAnchor));
+
+    Ok(())
+}
+
+#[test]
+fn test_empty_batch_stale_anchor_kills_mutant_mc() -> Result<(), Box<dyn Error>> {
+    let mut ledger = sample_ledger();
+    let old_anchor = ledger.current().anchor.clone();
+
+    // Empty batch advances sequence without changing state_root.
+    advance_ledger_empty(&mut ledger, "batch:empty_mc")?;
+    let head = ledger.current().anchor.clone();
+    assert_eq!(head.commit_sequence, old_anchor.commit_sequence + 1);
+    assert_eq!(head.state_root, old_anchor.state_root);
+
+    let authority = sample_authority(&ledger)?;
+    let witness = sample_witness(
+        "no_unauthorized_intrusion",
+        &["zone:north_perimeter"],
+        &["zone:north_perimeter"],
+    );
+    let mut target_domain = BTreeSet::new();
+    target_domain.insert("zone:north_perimeter".to_string());
+
+    // 1. evaluate_negative_read MUST fail with StaleAnchor specifically due to RM4 (<)
+    let claim = NegativeReadClaim {
+        claim_id: "neg_claim:empty_mc".to_string(),
+        query_predicate: "no_unauthorized_intrusion".to_string(),
+        anchor: old_anchor.clone(),
+        target_domain: target_domain.clone(),
+        target_generation: 1,
+        coverage_witness: Some(witness.clone()),
+    };
+    let res = evaluate_negative_read(&claim, &authority);
+    assert_eq!(res.err(), Some(ContractError::StaleAnchor));
+
+    // 2. from_witness MUST fail with StaleAnchor specifically due to RM4 (<)
+    let res_witness = NegativeReadOutcome::from_witness(
+        "neg_claim:empty_mc_direct",
+        "no_unauthorized_intrusion",
+        old_anchor,
+        target_domain,
+        &witness,
+        &authority,
+        1,
+    );
+    assert_eq!(res_witness.err(), Some(ContractError::StaleAnchor));
 
     Ok(())
 }

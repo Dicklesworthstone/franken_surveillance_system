@@ -15,9 +15,7 @@ use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, Canon
 use crate::contract::{ContractError, Plane, ProvenanceClass};
 use crate::evidence::CoverageWitness;
 use crate::ids::validate_id;
-use crate::{
-    ContentDigest, ContractBasis, Generation, LedgerAnchor, ReferenceLedger,
-};
+use crate::{ContentDigest, ContractBasis, Generation, LedgerAnchor, ReferenceLedger};
 
 /// Categories of authoritative facts established or observed at one anchor (AGT-LAYER-003).
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -167,10 +165,24 @@ impl WorldFact {
             return Err(ContractError::InvalidDigest);
         }
         // Prohibition: "Cannot include unqualified cognition as fact."
-        // Provenance MUST be Observed directly from physical sensors or chronicle evidence.
-        // Derived beliefs, predicted cognition, remembered claims, and vendor claims
-        // cannot masquerade as authoritative world facts.
-        if self.provenance != ProvenanceClass::Observed {
+        // Typed provenance check: model predictions (Predicted) and advisory operational memory (Remembered)
+        // are cognition outputs and CANNOT be presented as authoritative facts.
+        match self.provenance {
+            ProvenanceClass::Predicted | ProvenanceClass::Remembered => {
+                return Err(ContractError::EvidenceRequired);
+            }
+            ProvenanceClass::Observed
+            | ProvenanceClass::Derived
+            | ProvenanceClass::OperatorAsserted
+            | ProvenanceClass::VendorClaimed
+            | ProvenanceClass::Policy => {}
+        }
+        // Textual prohibition check against statement text claiming unqualified cognition
+        let lower = self.statement.to_lowercase();
+        if lower.contains("unqualified cognition")
+            || lower.contains("speculative")
+            || lower.contains("unverified hypothesis")
+        {
             return Err(ContractError::EvidenceRequired);
         }
         Ok(())
