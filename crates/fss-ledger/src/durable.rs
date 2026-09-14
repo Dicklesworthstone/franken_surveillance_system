@@ -6,8 +6,8 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use fss_core::{
-    BatchId, ContentDigest, ContractError, DigestAlgorithm, EvidenceDelta, EvidenceDeltaBatch,
-    LedgerSnapshot, ReferenceLedger,
+    AuthoritativeLedger, BatchId, ContentDigest, ContractError, DigestAlgorithm, EvidenceDelta,
+    EvidenceDeltaBatch, LedgerSnapshot, ReferenceLedger,
 };
 
 use crate::{
@@ -342,6 +342,40 @@ impl DurableReferenceLedger {
     #[must_use]
     pub fn current(&self) -> &LedgerSnapshot {
         self.ledger.current()
+    }
+
+    /// Returns the authoritative ledger handle witnessing the on-disk committed head.
+    ///
+    /// Borrows this opened `DurableReferenceLedger` handle for lifetime `'_`, guaranteeing at compile
+    /// time that this handle cannot be held across subsequent ledger mutations (`append`).
+    ///
+    /// # Threat Model
+    /// This is type-level discipline against *accidental or stale* authority. Code in the same process
+    /// that can write the deployment can always forge durable state, so the goal is that no public API
+    /// turns a rewound or in-memory ledger into world-fact authority by mistake.
+    ///
+    /// # Compile-fail: cannot append while an `AuthoritativeLedger` handle is held (fss-sz0cc)
+    /// The held handle immutably borrows the durable ledger, so the mutable borrow taken by
+    /// `append` is refused (E0502). No I/O is involved: the probe is a function over an
+    /// already-opened handle and an already-prepared batch.
+    /// ```compile_fail,E0502
+    /// use fss_core::EvidenceDeltaBatch;
+    /// use fss_ledger::DurableReferenceLedger;
+    ///
+    /// fn append_while_held(
+    ///     durable: &mut DurableReferenceLedger,
+    ///     batch: EvidenceDeltaBatch,
+    /// ) -> Result<(), Box<dyn std::error::Error>> {
+    ///     let held = durable.authoritative_ledger()?;
+    ///     durable.append(batch)?;
+    ///     let _ = held.anchor();
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn authoritative_ledger(&self) -> Result<AuthoritativeLedger<'_>, ContractError> {
+        AuthoritativeLedger::__durable_ledger_only_from_committed_anchor(
+            self.current().anchor.clone(),
+        )
     }
 
     /// Immutable batches reconstructed from the durable committed prefix.
