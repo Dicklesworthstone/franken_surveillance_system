@@ -80,9 +80,15 @@ pub const ADP_REPLAY_GOLDEN_AUDIT_HASH: &str =
 /// External crates cannot forge a [`ReplayIoAuthority`]:
 ///
 /// ```rust,compile_fail
-/// // ReplayIoAuthority::authorize is not public and cannot be called from outside.
+/// // ReplayIoAuthority::authorize_internal is private and cannot be called from outside.
 /// use fss_reference::ReplayIoAuthority;
-/// let _ = ReplayIoAuthority::authorize("attacker", "ADP-REPLAY-001");
+/// let _ = ReplayIoAuthority::authorize_internal(
+///     "attacker",
+///     "ADP-REPLAY-001",
+///     std::path::PathBuf::new(),
+///     std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
+///     std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+/// );
 /// ```
 ///
 /// ```rust,compile_fail
@@ -280,6 +286,26 @@ impl ReplayCx {
         }
     }
 
+    /// Constructs a test execution context with isolated test I/O authority.
+    #[must_use]
+    pub fn for_test() -> Self {
+        let state = Arc::new(AtomicU8::new(STATE_ACTIVE));
+        let dir_counter = Arc::new(AtomicUsize::new(0));
+        let io = ReplayIoAuthority {
+            principal: "operator:test".to_string(),
+            capability: ADP_REPLAY_ROW_ID.to_string(),
+            root_dir: std::env::temp_dir().join("test-replay-cx"),
+            state: state.clone(),
+            dir_counter,
+        };
+        Self {
+            state,
+            checkpoints: AtomicUsize::new(0),
+            io,
+            cancel_at_stage: Mutex::new(None),
+        }
+    }
+
     /// Constructs a new replay execution context directly from a validated [`ContextAuthority`]
     /// with an explicit filesystem root directory.
     ///
@@ -294,13 +320,9 @@ impl ReplayCx {
     }
 
     /// Injects cooperative cancellation when the specified checkpoint stage is reached.
-    /// Internal test hook: not part of the stable public production API.
-    #[doc(hidden)]
-    pub fn set_cancel_at_checkpoint(&self, stage: &'static str) {
-        self.set_cancel_at_checkpoint_internal(stage);
-    }
-
-    pub(crate) fn set_cancel_at_checkpoint_internal(&self, stage: &'static str) {
+    /// Internal test hook: crate-internal test use only.
+    #[cfg(test)]
+    pub(crate) fn set_cancel_at_checkpoint(&self, stage: &'static str) {
         if let Ok(mut guard) = self.cancel_at_stage.lock() {
             *guard = Some(stage);
         }

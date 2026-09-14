@@ -14,7 +14,7 @@
 //! 10. Fail-closed target publish rollback on partial failure preventing orphan staged objects (mutants M2, M3)
 //! 11. Unforgeable ReplayIoAuthority and ReplayCx lifecycle state transitions with finalized revocation (N3)
 //! 12. Independent state root and audit hash divergence detection (mutants R2, R3)
-//! 13. Cancellation after commit handling with explicit terminal status and checkpoint tests (mutants R6a, R6b, R6d)
+//! 13. Cancellation after commit handling with explicit terminal status and checkpoint tests (mutants R6a, R6b)
 //! 14. Exact boundary enforcement (mutants R7b, R8a)
 //! 15. Staging directory cleanup on divergence (mutant R10)
 //! 16. Negative registry row drift verification (mutant R11)
@@ -989,40 +989,11 @@ fn test_10_verify_against_expected_success() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn test_11_cancellation_after_commit_and_checkpoints() -> Result<(), Box<dyn Error>> {
+fn test_11_cancellation_preflight_and_drain() -> Result<(), Box<dyn Error>> {
     let adapter = ReplayAdapter::new()?;
     let bundle = sample_bundle()?;
 
-    // 1. Cancel injected BEFORE commit (at run_replay checkpoint):
-    // returns Err(CancellationRequested) and leaves target stores untouched (0 objects, unchanged ledger).
-    let cx_pre = test_cx("cancel_pre")?;
-    cx_pre.set_cancel_at_checkpoint("run_replay");
-    let dir_pre = ScopedLedgerDir::new("cancel_pre_commit", &cx_pre)?;
-    let mut obj_pre = InMemoryObjectStore::new(ObjectLimits::new(64, 1024 * 1024));
-    let mut led_pre = DurableReferenceLedger::open(
-        dir_pre.journal_path("cancel_pre_commit"),
-        bundle.site_lineage(),
-        IncompleteTailPolicy::Reject,
-    )?;
-    let initial_anchor_pre = led_pre.current().anchor.clone();
-    let req_pre = ReplayExecutionRequest::new(bundle.clone());
-
-    match adapter.execute(&cx_pre, &req_pre, &mut obj_pre, &mut led_pre) {
-        Err(ReplayAdapterError::CancellationRequested) => {}
-        other => return Err(format!("expected CancellationRequested, got {other:?}").into()),
-    }
-    assert_eq!(
-        obj_pre.object_count(),
-        0,
-        "No objects committed on pre-commit cancellation"
-    );
-    assert_eq!(
-        led_pre.current().anchor,
-        initial_anchor_pre,
-        "Ledger unchanged on pre-commit cancellation"
-    );
-
-    // 2. Normal execution returns status Committed
+    // 1. Normal execution returns status Committed
     let cx_post = test_cx("cancel_post")?;
     let dir_post = ScopedLedgerDir::new("cancel_post_commit", &cx_post)?;
     let mut obj_post = InMemoryObjectStore::new(ObjectLimits::new(64, 1024 * 1024));
@@ -1037,31 +1008,7 @@ fn test_11_cancellation_after_commit_and_checkpoints() -> Result<(), Box<dyn Err
     assert_eq!(out.status, ReplayTerminalStatus::Committed);
     assert!(obj_post.object_count() > 0);
 
-    // 3. Cancel injected AFTER commit (at compute_audit checkpoint):
-    // returns Ok(...) with status CancelledAfterCommit.
-    // Never report cancelled while the effect stands.
-    let cx_post_cancel = test_cx("cancel_post_cancel")?;
-    cx_post_cancel.set_cancel_at_checkpoint("compute_audit");
-    let dir_post_cancel = ScopedLedgerDir::new("cancel_post_audit", &cx_post_cancel)?;
-    let mut obj_post_cancel = InMemoryObjectStore::new(ObjectLimits::new(64, 1024 * 1024));
-    let mut led_post_cancel = DurableReferenceLedger::open(
-        dir_post_cancel.journal_path("cancel_post_audit"),
-        bundle.site_lineage(),
-        IncompleteTailPolicy::Reject,
-    )?;
-    let req_post_cancel = ReplayExecutionRequest::new(bundle.clone());
-
-    let out_post = adapter.execute(
-        &cx_post_cancel,
-        &req_post_cancel,
-        &mut obj_post_cancel,
-        &mut led_post_cancel,
-    )?;
-    assert_eq!(out_post.status, ReplayTerminalStatus::CancelledAfterCommit);
-    assert!(obj_post_cancel.object_count() > 0);
-    assert!(cx_post_cancel.is_cancelled());
-
-    // 4. Preflight cancellation: if cx is already cancelled before execution,
+    // 2. Preflight cancellation: if cx is already cancelled before execution,
     // returns CancellationRequested with 0 objects committed. Never report cancelled while effect stands.
     let cx_preflight = test_cx("cancel_preflight")?;
     let dir_preflight =
@@ -1320,77 +1267,6 @@ fn test_14_negative_registry_row_constants_r11() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn test_15_all_execute_checkpoints_honoured_r6b() -> Result<(), Box<dyn Error>> {
-    let adapter = ReplayAdapter::new()?;
-    let bundle = sample_bundle()?;
-
-    // Test checkpoint 1: "preflight"
-    let cx1 = test_cx("ckpt1")?;
-    cx1.set_cancel_at_checkpoint("preflight");
-    let dir1 = ScopedLedgerDir::new("ckpt1", &cx1)?;
-    let mut obj1 = InMemoryObjectStore::new(ObjectLimits::new(64, 1024 * 1024));
-    let mut led1 = DurableReferenceLedger::open(
-        dir1.journal_path("ckpt1"),
-        bundle.site_lineage(),
-        IncompleteTailPolicy::Reject,
-    )?;
-    let req1 = ReplayExecutionRequest::new(bundle.clone());
-    match adapter.execute(&cx1, &req1, &mut obj1, &mut led1) {
-        Err(ReplayAdapterError::CancellationRequested) => {
-            assert_eq!(cx1.checkpoints_reached(), 1);
-            assert_eq!(obj1.object_count(), 0);
-        }
-        other => {
-            return Err(
-                format!("expected CancellationRequested at preflight, got {other:?}").into(),
-            );
-        }
-    }
-
-    // Test checkpoint 2: "run_replay" (pre-commit)
-    let cx2 = test_cx("ckpt2")?;
-    cx2.set_cancel_at_checkpoint("run_replay");
-    let dir2 = ScopedLedgerDir::new("ckpt2", &cx2)?;
-    let mut obj2 = InMemoryObjectStore::new(ObjectLimits::new(64, 1024 * 1024));
-    let mut led2 = DurableReferenceLedger::open(
-        dir2.journal_path("ckpt2"),
-        bundle.site_lineage(),
-        IncompleteTailPolicy::Reject,
-    )?;
-    let req2 = ReplayExecutionRequest::new(bundle.clone());
-    match adapter.execute(&cx2, &req2, &mut obj2, &mut led2) {
-        Err(ReplayAdapterError::CancellationRequested) => {
-            assert_eq!(cx2.checkpoints_reached(), 2);
-            assert_eq!(obj2.object_count(), 0);
-        }
-        other => {
-            return Err(
-                format!("expected CancellationRequested at run_replay, got {other:?}").into(),
-            );
-        }
-    }
-
-    // Test checkpoint 3: "compute_audit" (post-commit)
-    let cx3 = test_cx("ckpt3")?;
-    cx3.set_cancel_at_checkpoint("compute_audit");
-    let dir3 = ScopedLedgerDir::new("ckpt3", &cx3)?;
-    let mut obj3 = InMemoryObjectStore::new(ObjectLimits::new(64, 1024 * 1024));
-    let mut led3 = DurableReferenceLedger::open(
-        dir3.journal_path("ckpt3"),
-        bundle.site_lineage(),
-        IncompleteTailPolicy::Reject,
-    )?;
-    let req3 = ReplayExecutionRequest::new(bundle);
-    let out3 = adapter.execute(&cx3, &req3, &mut obj3, &mut led3)?;
-    assert_eq!(cx3.checkpoints_reached(), 3);
-    assert_eq!(out3.status, ReplayTerminalStatus::CancelledAfterCommit);
-    assert!(obj3.object_count() > 0);
-    assert!(cx3.is_cancelled());
-
-    Ok(())
-}
-
-#[test]
 fn test_16_preflight_honours_cx_cancellation_r6d() -> Result<(), Box<dyn Error>> {
     let adapter = ReplayAdapter::new()?;
     let bundle = sample_bundle()?;
@@ -1521,19 +1397,24 @@ fn test_18_scoped_dir_bad_prefix_refused_and_preexisting_preserved() -> Result<(
     }
 
     // 2. Pre-existing directory is NEVER deleted (F3)
-    let victim = cx.root_dir().join("victim-0");
+    let unique_id = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let victim_prefix = format!("victim_{unique_id}");
+    let victim = cx.root_dir().join(format!("{victim_prefix}-0"));
     std::fs::create_dir_all(&victim)?;
     let precious = victim.join("precious.txt");
     std::fs::write(&precious, b"owner data")?;
     assert!(precious.exists());
 
-    // Creating ScopedLedgerDir with prefix "victim" must skip victim-0 and exclusive-create victim-1
-    let d = ScopedLedgerDir::new("victim", &cx)?;
-    assert_eq!(d.path(), cx.root_dir().join("victim-1"));
+    // Creating ScopedLedgerDir with unique prefix must skip -0 and exclusive-create -1
+    let d = ScopedLedgerDir::new(&victim_prefix, &cx)?;
+    assert_eq!(d.path(), cx.root_dir().join(format!("{victim_prefix}-1")));
     assert!(victim.exists());
     assert!(precious.exists());
 
-    // Dropping d must delete victim-1, but leave victim-0 and precious.txt completely intact
+    // Dropping d must delete -1, but leave -0 and precious.txt completely intact
     drop(d);
     assert!(
         victim.exists(),
@@ -1553,27 +1434,27 @@ fn test_19_rollback_snapshot_bounds() -> Result<(), Box<dyn Error>> {
     let bundle = sample_bundle()?;
     let cx = test_cx("snapshot_bounds")?;
     let dir = ScopedLedgerDir::new("snapshot_bounds", &cx)?;
-    let mut obj = InMemoryObjectStore::new(ObjectLimits::new(100, 1024 * 1024));
-    let mut led = DurableReferenceLedger::open(
-        dir.journal_path("snapshot_bounds"),
-        bundle.site_lineage(),
-        IncompleteTailPolicy::Reject,
-    )?;
-    let req = ReplayExecutionRequest::new(bundle);
+    let req = ReplayExecutionRequest::new(bundle.clone());
 
-    // Populate target store with 5 objects
+    // 1. Snapshot objects bound
+    let mut obj_obj = InMemoryObjectStore::new(ObjectLimits::new(100, 1024 * 1024));
     for i in 0..5u32 {
-        obj.put_verified(&i.to_be_bytes())?;
+        obj_obj.put_verified(&i.to_be_bytes())?;
     }
-    assert_eq!(obj.object_count(), 5);
+    assert_eq!(obj_obj.object_count(), 5);
+    assert_eq!(obj_obj.total_bytes(), 20);
 
-    // Config with max_snapshot_objects == 4 refuses
     let cfg_low_obj = ReplayAdapterConfig {
         max_snapshot_objects: 4,
         ..ReplayAdapterConfig::default()
     };
-    let adapter_low = ReplayAdapter::with_config(cfg_low_obj)?;
-    match adapter_low.execute(&cx, &req, &mut obj, &mut led) {
+    let adapter_low_obj = ReplayAdapter::with_config(cfg_low_obj)?;
+    let mut led_low_obj = DurableReferenceLedger::open(
+        dir.journal_path("snapshot_obj_low"),
+        bundle.site_lineage(),
+        IncompleteTailPolicy::Reject,
+    )?;
+    match adapter_low_obj.execute(&cx, &req, &mut obj_obj, &mut led_low_obj) {
         Err(ReplayAdapterError::BoundExceeded(b)) => {
             assert_eq!(b, "target_store_exceeds_rollback_bound");
         }
@@ -1585,108 +1466,90 @@ fn test_19_rollback_snapshot_bounds() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    // Config with max_snapshot_objects == 5 accepts
     let cfg_ok_obj = ReplayAdapterConfig {
         max_snapshot_objects: 5,
         ..ReplayAdapterConfig::default()
     };
-    let adapter_ok = ReplayAdapter::with_config(cfg_ok_obj)?;
-    assert!(adapter_ok.execute(&cx, &req, &mut obj, &mut led).is_ok());
-
-    Ok(())
-}
-
-#[test]
-fn test_20_verify_cancel_injection_checkpoints() -> Result<(), Box<dyn Error>> {
-    let adapter = ReplayAdapter::new()?;
-    let bundle = sample_bundle()?;
-    let golden_root = ContentDigest::parse(ADP_REPLAY_GOLDEN_STATE_ROOT)?;
-    let golden_audit = ContentDigest::parse(ADP_REPLAY_GOLDEN_AUDIT_HASH)?;
-
-    // 1. Checkpoint "staging_execute": cancel injected during isolated staging
-    let cx1 = test_cx("verify_ckpt1")?;
-    cx1.set_cancel_at_checkpoint("staging_execute");
-    let dir1 = ScopedLedgerDir::new("verify_ckpt1", &cx1)?;
-    let mut obj1 = InMemoryObjectStore::new(ObjectLimits::new(64, 1024 * 1024));
-    let mut led1 = DurableReferenceLedger::open(
-        dir1.journal_path("verify_ckpt1"),
+    let adapter_ok_obj = ReplayAdapter::with_config(cfg_ok_obj)?;
+    let mut led_ok_obj = DurableReferenceLedger::open(
+        dir.journal_path("snapshot_obj_ok"),
         bundle.site_lineage(),
         IncompleteTailPolicy::Reject,
     )?;
-    let req1 = ReplayExecutionRequest::new(bundle.clone());
-    match adapter.verify_against_expected(
-        &cx1,
-        &req1,
-        &mut obj1,
-        &mut led1,
-        &golden_root,
-        &golden_audit,
-    ) {
-        Err(ReplayAdapterError::CancellationRequested) => {
-            assert_eq!(obj1.object_count(), 0);
-            assert!(cx1.is_cancelled());
+    assert!(
+        adapter_ok_obj
+            .execute(&cx, &req, &mut obj_obj, &mut led_ok_obj)
+            .is_ok()
+    );
+
+    // 2. Snapshot bytes bound
+    let mut obj_bytes = InMemoryObjectStore::new(ObjectLimits::new(100, 1024 * 1024));
+    for i in 0..5u32 {
+        obj_bytes.put_verified(&i.to_be_bytes())?;
+    }
+    let bytes_before = obj_bytes.total_bytes();
+    assert_eq!(bytes_before, 20);
+
+    let cfg_low_bytes = ReplayAdapterConfig {
+        max_snapshot_bytes: bytes_before.saturating_sub(1),
+        ..ReplayAdapterConfig::default()
+    };
+    let adapter_low_bytes = ReplayAdapter::with_config(cfg_low_bytes)?;
+    let mut led_low_bytes = DurableReferenceLedger::open(
+        dir.journal_path("snapshot_bytes_low"),
+        bundle.site_lineage(),
+        IncompleteTailPolicy::Reject,
+    )?;
+    match adapter_low_bytes.execute(&cx, &req, &mut obj_bytes, &mut led_low_bytes) {
+        Err(ReplayAdapterError::BoundExceeded(b)) => {
+            assert_eq!(b, "target_store_exceeds_rollback_bound");
         }
         other => {
             return Err(format!(
-                "expected CancellationRequested at staging_execute, got {other:?}"
+                "expected BoundExceeded target_store_exceeds_rollback_bound for byte bound, got {other:?}"
             )
             .into());
         }
     }
 
-    // 2. Checkpoint "publish_on_match": cancel injected after match verified, before target commit
-    let cx2 = test_cx("verify_ckpt2")?;
-    cx2.set_cancel_at_checkpoint("publish_on_match");
-    let dir2 = ScopedLedgerDir::new("verify_ckpt2", &cx2)?;
-    let mut obj2 = InMemoryObjectStore::new(ObjectLimits::new(64, 1024 * 1024));
-    let mut led2 = DurableReferenceLedger::open(
-        dir2.journal_path("verify_ckpt2"),
+    let cfg_ok_bytes = ReplayAdapterConfig {
+        max_snapshot_bytes: bytes_before,
+        ..ReplayAdapterConfig::default()
+    };
+    let adapter_ok_bytes = ReplayAdapter::with_config(cfg_ok_bytes)?;
+    let mut led_ok_bytes = DurableReferenceLedger::open(
+        dir.journal_path("snapshot_bytes_ok"),
         bundle.site_lineage(),
         IncompleteTailPolicy::Reject,
     )?;
-    let req2 = ReplayExecutionRequest::new(bundle.clone());
-    match adapter.verify_against_expected(
-        &cx2,
-        &req2,
-        &mut obj2,
-        &mut led2,
-        &golden_root,
-        &golden_audit,
-    ) {
-        Err(ReplayAdapterError::CancellationRequested) => {
-            assert_eq!(obj2.object_count(), 0);
-            assert!(cx2.is_cancelled());
-        }
-        other => {
-            return Err(format!(
-                "expected CancellationRequested at publish_on_match, got {other:?}"
-            )
-            .into());
-        }
-    }
+    assert!(
+        adapter_ok_bytes
+            .execute(&cx, &req, &mut obj_bytes, &mut led_ok_bytes)
+            .is_ok()
+    );
 
-    // 3. Checkpoint "post_publish": cancel injected after target commit
-    let cx3 = test_cx("verify_ckpt3")?;
-    cx3.set_cancel_at_checkpoint("post_publish");
-    let dir3 = ScopedLedgerDir::new("verify_ckpt3", &cx3)?;
-    let mut obj3 = InMemoryObjectStore::new(ObjectLimits::new(64, 1024 * 1024));
-    let mut led3 = DurableReferenceLedger::open(
-        dir3.journal_path("verify_ckpt3"),
-        bundle.site_lineage(),
-        IncompleteTailPolicy::Reject,
-    )?;
-    let req3 = ReplayExecutionRequest::new(bundle);
-    let out3 = adapter.verify_against_expected(
-        &cx3,
-        &req3,
-        &mut obj3,
-        &mut led3,
-        &golden_root,
-        &golden_audit,
-    )?;
-    assert_eq!(out3.status, ReplayTerminalStatus::CancelledAfterCommit);
-    assert!(obj3.object_count() > 0);
-    assert!(cx3.is_cancelled());
+    // 3. Zero bounds rejected at config construction
+    let cfg_zero_bytes = ReplayAdapterConfig {
+        max_snapshot_bytes: 0,
+        ..ReplayAdapterConfig::default()
+    };
+    assert!(matches!(
+        ReplayAdapter::with_config(cfg_zero_bytes),
+        Err(ReplayAdapterError::BoundExceeded(
+            "max_snapshot_bytes cannot be zero"
+        ))
+    ));
+
+    let cfg_zero_obj = ReplayAdapterConfig {
+        max_snapshot_objects: 0,
+        ..ReplayAdapterConfig::default()
+    };
+    assert!(matches!(
+        ReplayAdapter::with_config(cfg_zero_obj),
+        Err(ReplayAdapterError::BoundExceeded(
+            "max_snapshot_objects cannot be zero"
+        ))
+    ));
 
     Ok(())
 }

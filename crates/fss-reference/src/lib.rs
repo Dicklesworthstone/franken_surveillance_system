@@ -33,6 +33,8 @@ mod source;
 pub mod time_tolerance;
 
 #[cfg(test)]
+mod adapter_replay_tests;
+#[cfg(test)]
 mod alert_tests;
 #[cfg(test)]
 mod bundle_tests;
