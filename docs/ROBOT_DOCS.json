@@ -332,6 +332,11 @@
       "id": "ERR-CALIBRATION-INVALID-001"
     },
     {
+      "description": "canonical bytes declare more collection elements than the bytes that remain (truncated buffer)",
+      "guidance": "re-fetch the complete canonical bytes; do not retry unchanged",
+      "id": "ERR-CANONICAL-TRUNCATED-001"
+    },
+    {
       "description": "capability registry or markdown documentation file is missing or corrupt",
       "guidance": "repair or restore capability registry file",
       "id": "ERR-CAPABILITY-CORRUPT-FILE-001"

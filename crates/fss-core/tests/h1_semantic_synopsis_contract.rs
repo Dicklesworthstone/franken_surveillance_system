@@ -18,14 +18,14 @@ use fss_core::{
     BeliefInterval, BudgetVector, CanonicalDecode, CanonicalDecoder, CanonicalEncode,
     CanonicalEncoder, Completeness, ContentDigest, ContractBasis, ContractBasisRegistryBytes,
     ContractError, Contradiction, ContradictionParams, DigestAlgorithm, Generation, H1_CONTENT,
-    H1_LEVEL_ID, H1_LEVEL_NAME, H1_OWNER, H1_SCHEMA, H1ContentSpec, H1SemanticSynopsis,
-    H1SynopsisParams, HandleAvailability, HydrationArtifact, HydrationError, HydrationLevel,
-    HypothesisDisposition, KnowledgeState, KnowledgeStateBasis, LaboratoryAccess, LedgerAnchor,
-    MAX_H1_CAPABILITIES, MAX_H1_CONTRADICTIONS, MAX_H1_FACTS, MAX_H1_KNOWLEDGE_STATES,
-    MAX_H1_OMISSIONS, MAX_H1_PROVENANCE_CLASSES, OmissionReason, ProvenanceClass,
-    REDACTED_STATEMENT_MARKER, RedactionMarker, RedactionReason, RuntimeOutcome, SemanticHandle,
-    SemanticHandleSpec, StaleBasis, SynopsisClassification, SynopsisQuality, TimestampNs,
-    WorldFact, WorldFactKind,
+    H1_LEVEL_ID, H1_LEVEL_NAME, H1_OWNER, H1_SCHEMA, H1CellContext, H1ContentSpec,
+    H1SemanticSynopsis, H1SynopsisParams, HandleAvailability, HydrationArtifact, HydrationError,
+    HydrationLevel, HypothesisDisposition, KnowledgeState, KnowledgeStateBasis, LaboratoryAccess,
+    LedgerAnchor, MAX_H1_CAPABILITIES, MAX_H1_CONTRADICTIONS, MAX_H1_FACTS,
+    MAX_H1_KNOWLEDGE_STATES, MAX_H1_OMISSIONS, MAX_H1_PROVENANCE_CLASSES, OmissionReason,
+    PrivacyGeneration, ProvenanceClass, REDACTED_STATEMENT_MARKER, RedactionMarker,
+    RedactionReason, RuntimeOutcome, SemanticHandle, SemanticHandleSpec, StaleBasis,
+    SynopsisClassification, SynopsisQuality, TimestampNs, UnknownReason, WorldFact, WorldFactKind,
 };
 
 fn sample_basis() -> ContractBasis {
@@ -109,7 +109,6 @@ fn sample_facts() -> Result<Vec<WorldFact>, Box<dyn Error>> {
 
 fn sample_h1_params() -> Result<H1SynopsisParams, Box<dyn Error>> {
     let facts = sample_facts()?;
-    let contra = sample_contradiction()?;
     let quality = SynopsisQuality::new(
         Completeness::Complete,
         Some(BeliefInterval::new(800_000, 950_000)?),
@@ -131,13 +130,9 @@ fn sample_h1_params() -> Result<H1SynopsisParams, Box<dyn Error>> {
         published_at: TimestampNs(100),
         retention_until: TimestampNs(10_000),
         facts,
-        knowledge_states: BTreeSet::from([
-            KnowledgeState::Known,
-            KnowledgeState::Estimated,
-            KnowledgeState::Conflicted,
-        ]),
+        knowledge_states: BTreeSet::from([KnowledgeState::Known, KnowledgeState::Estimated]),
         provenance_classes: BTreeSet::from([ProvenanceClass::Observed, ProvenanceClass::Derived]),
-        contradictions: vec![contra],
+        contradictions: Vec::new(),
         quality,
         omissions: BTreeSet::from([OmissionReason::PrivacyRedaction]),
     })
@@ -221,13 +216,14 @@ fn test_h1_normative_row_identity_and_properties() -> Result<(), Box<dyn Error>>
     assert!(synopsis.fact("fact:nonexistent").is_none());
     assert!(synopsis.has_knowledge_state(KnowledgeState::Known));
     assert!(synopsis.has_knowledge_state(KnowledgeState::Estimated));
-    assert!(synopsis.has_knowledge_state(KnowledgeState::Conflicted));
+    // The fixture declares exactly what its cells derive (item 10); it carries no contradiction.
+    assert!(!synopsis.has_knowledge_state(KnowledgeState::Conflicted));
     assert!(!synopsis.has_knowledge_state(KnowledgeState::Unknown));
     assert!(synopsis.has_provenance(ProvenanceClass::Observed));
     assert!(synopsis.has_provenance(ProvenanceClass::Derived));
     assert!(!synopsis.has_provenance(ProvenanceClass::Predicted));
-    assert!(synopsis.has_contradictions());
-    assert_eq!(synopsis.contradictions().len(), 1);
+    assert!(!synopsis.has_contradictions());
+    assert_eq!(synopsis.contradictions().len(), 0);
     assert!(synopsis.is_complete());
     assert!(synopsis.has_omissions());
     assert!(
@@ -241,6 +237,21 @@ fn test_h1_normative_row_identity_and_properties() -> Result<(), Box<dyn Error>>
     assert!(!synopsis.requires_capability("capability:unknown"));
     assert!(synopsis.satisfies_budget(&sample_budget()?));
 
+    // Contradiction accessors on a synopsis whose contradiction names a fact (zone_a).
+    let mut contra_params = sample_h1_params()?;
+    contra_params.contradictions = vec![contradiction_on(
+        "contra:row:001",
+        ContentDigest::sha256(b"geom:zone_a"),
+        KnowledgeState::Conflicted,
+    )?];
+    contra_params.knowledge_states =
+        BTreeSet::from([KnowledgeState::Known, KnowledgeState::Conflicted]);
+    let contra_synopsis = H1SemanticSynopsis::new(contra_params)?;
+    assert!(contra_synopsis.has_knowledge_state(KnowledgeState::Conflicted));
+    assert!(!contra_synopsis.has_knowledge_state(KnowledgeState::Estimated));
+    assert!(contra_synopsis.has_contradictions());
+    assert_eq!(contra_synopsis.contradictions().len(), 1);
+
     Ok(())
 }
 
@@ -250,7 +261,7 @@ fn test_h1_to_knowledge_cells_binds_evidence_digests_without_state_root()
     let params = sample_h1_params()?;
     let synopsis = H1SemanticSynopsis::new(params)?;
 
-    let cells = synopsis.to_knowledge_cells();
+    let cells = synopsis.to_knowledge_cells(&H1CellContext::new(synopsis.anchor().clone()));
     assert_eq!(cells.len(), 2);
 
     let cam_fact = synopsis.fact("fact:device:cam01");
@@ -318,18 +329,13 @@ fn test_h1_canonical_binary_roundtrip_and_trailing_bytes_refusal() -> Result<(),
 fn test_h1_extract_from_semantic_handle() -> Result<(), Box<dyn Error>> {
     let handle = sample_handle()?;
     let facts = sample_facts()?;
-    let contra = sample_contradiction()?;
     let quality = SynopsisQuality::new(Completeness::Complete, None, 1_000, None)?;
 
     let spec = H1ContentSpec {
         facts,
-        knowledge_states: BTreeSet::from([
-            KnowledgeState::Known,
-            KnowledgeState::Estimated,
-            KnowledgeState::Conflicted,
-        ]),
+        knowledge_states: BTreeSet::from([KnowledgeState::Known, KnowledgeState::Estimated]),
         provenance_classes: BTreeSet::from([ProvenanceClass::Observed, ProvenanceClass::Derived]),
-        contradictions: vec![contra],
+        contradictions: Vec::new(),
         quality,
         omissions: BTreeSet::new(),
         classification: Some(SynopsisClassification::EpistemicBeliefSynopsis),
@@ -676,10 +682,11 @@ fn test_h1_to_knowledge_cells_contradiction_mapping() -> Result<(), Box<dyn Erro
         "Declared Known state must be rejected when its only observed grounding fact is contradicted"
     );
 
-    // Removing Known allows synopsis creation with [Estimated, Conflicted]
+    // Removing Known and declaring Conflicted allows synopsis creation with [Estimated, Conflicted]
     params.knowledge_states.remove(&KnowledgeState::Known);
+    params.knowledge_states.insert(KnowledgeState::Conflicted);
     let synopsis = H1SemanticSynopsis::new(params)?;
-    let cells = synopsis.to_knowledge_cells();
+    let cells = synopsis.to_knowledge_cells(&H1CellContext::new(synopsis.anchor().clone()));
     assert_eq!(cells.len(), 2);
     // fact:device:cam01 is now contradicted -> knowledge_state must be Conflicted
     assert_eq!(cells[0].claim_id, "fact:device:cam01");
@@ -1242,7 +1249,7 @@ fn test_h1_fact_epistemic_grounding_and_irreversible_effect_premise() -> Result<
         .insert(ProvenanceClass::OperatorAsserted);
 
     let synopsis = H1SemanticSynopsis::new(params)?;
-    let cells = synopsis.to_knowledge_cells();
+    let cells = synopsis.to_knowledge_cells(&H1CellContext::new(synopsis.anchor().clone()));
 
     let now = TimestampNs(1_000_000);
 
@@ -1282,7 +1289,8 @@ fn test_h1_fact_epistemic_grounding_and_irreversible_effect_premise() -> Result<
         .insert(ProvenanceClass::Policy);
 
     let synopsis_policy = H1SemanticSynopsis::new(params_policy)?;
-    let policy_cells = synopsis_policy.to_knowledge_cells();
+    let policy_cells =
+        synopsis_policy.to_knowledge_cells(&H1CellContext::new(synopsis_policy.anchor().clone()));
     let policy_cell = policy_cells
         .iter()
         .find(|c| c.claim_id == "fact:policy:retention")
@@ -1308,8 +1316,10 @@ fn test_h1_golden_digest_and_canonical_bytes() -> Result<(), Box<dyn Error>> {
 
     let canonical_bytes = synopsis.to_canonical_bytes()?;
 
-    // Pinned canonical byte vector length (Item 1)
-    assert_eq!(canonical_bytes.len(), 1884);
+    // Pinned canonical byte vector length (Item 1). Round 6: 1884 -> 1432 because the fixture
+    // dropped its contradiction that named no fact (434 encoded bytes) and the declared Conflicted
+    // state it could not derive (18 encoded bytes).
+    assert_eq!(canonical_bytes.len(), 1432);
 
     let bytes_digest = ContentDigest::sha256(&canonical_bytes);
     let canonical_digest = synopsis.canonical_digest()?;
@@ -1317,13 +1327,13 @@ fn test_h1_golden_digest_and_canonical_bytes() -> Result<(), Box<dyn Error>> {
 
     // Independently derived golden digest literal (Item 1)
     let golden_canonical_digest = ContentDigest::parse(
-        "sha256:fc0ce37b21b3a43c2ac6849802baf34272a082f820a21e3437edd5e904a90a39",
+        "sha256:cc3e7f289c2d120bfd2a267c4a62d291050632301484c88d3c573e8168202098",
     )?;
     assert_eq!(canonical_digest, golden_canonical_digest);
 
     let artifact = synopsis.to_hydration_artifact()?;
     let golden_artifact_digest = ContentDigest::parse(
-        "sha256:7bdae56122f2a4425da09ebc692ac6f59dfe1d3e933a136df6ce787d60878b6e",
+        "sha256:1068041f2f95247890707e8b7c9938cf221ade01d4b4e6c66663cfe6d39d6620",
     )?;
     assert_eq!(artifact.artifact_digest, golden_artifact_digest);
     artifact.verify()?;
@@ -1346,7 +1356,7 @@ fn test_h1_derived_knowledge_states_and_operator_asserted() -> Result<(), Box<dy
     let synopsis = H1SemanticSynopsis::new(params)?;
 
     // derived_knowledge_states is the exact union of cell states
-    let cells = synopsis.to_knowledge_cells();
+    let cells = synopsis.to_knowledge_cells(&H1CellContext::new(synopsis.anchor().clone()));
     let expected_derived: BTreeSet<KnowledgeState> =
         cells.iter().map(|c| c.knowledge_state).collect();
     assert_eq!(synopsis.derived_knowledge_states(), expected_derived);
@@ -1374,7 +1384,8 @@ fn test_h1_derived_knowledge_states_and_operator_asserted() -> Result<(), Box<dy
     op_params.provenance_classes = BTreeSet::from([ProvenanceClass::OperatorAsserted]);
     let op_synopsis = H1SemanticSynopsis::new(op_params)?;
 
-    let op_cells = op_synopsis.to_knowledge_cells();
+    let op_cells =
+        op_synopsis.to_knowledge_cells(&H1CellContext::new(op_synopsis.anchor().clone()));
     assert_eq!(op_cells.len(), 1);
     assert_eq!(op_cells[0].knowledge_state, KnowledgeState::Estimated);
     assert_eq!(
@@ -1393,24 +1404,38 @@ fn test_h1_derived_knowledge_states_and_operator_asserted() -> Result<(), Box<dy
 #[test]
 fn test_h1_redacted_only_for_fact_with_own_redaction() -> Result<(), Box<dyn Error>> {
     let mut params = sample_h1_params()?;
-    // Add a redacted fact whose statement has REDACTED_STATEMENT_MARKER
+    // A withheld fact's statement is exactly the REDACTED_STATEMENT_MARKER token.
     let redacted_fact = WorldFact::new(
         "fact:device:cam02:redacted",
         WorldFactKind::Device,
         sample_anchor(1),
-        format!("Camera 02 {}", REDACTED_STATEMENT_MARKER),
+        REDACTED_STATEMENT_MARKER,
         ProvenanceClass::Observed,
         ContentDigest::sha256(b"cam02:redacted:ev"),
         Generation(1),
     )?;
     params.facts.push(redacted_fact);
     params.facts.sort_by(|a, b| a.fact_id.cmp(&b.fact_id));
-    params.knowledge_states.insert(KnowledgeState::Redacted);
+    // The synopsis carries no privacy projection, so its own derived set names the withheld
+    // fact Unknown; declaring Redacted for it is refused.
+    let mut declared_redacted = params.clone();
+    declared_redacted
+        .knowledge_states
+        .insert(KnowledgeState::Redacted);
+    assert_eq!(
+        H1SemanticSynopsis::new(declared_redacted),
+        Err(HydrationError::Contract(
+            ContractError::KnowledgeStateBasisMismatch
+        ))
+    );
+    params.knowledge_states.insert(KnowledgeState::Unknown);
 
     let synopsis = H1SemanticSynopsis::new(params)?;
-    let cells = synopsis.to_knowledge_cells();
+    let marker = sample_redaction_marker();
+    let ctx = H1CellContext::new(synopsis.anchor().clone()).with_redaction(marker.clone());
+    let cells = synopsis.to_knowledge_cells(&ctx);
 
-    // The redacted fact cell must have KnowledgeState::Redacted with RedactionMarker basis
+    // With the caller's projection the withheld cell is Redacted with exactly that marker.
     let red_cell = cells
         .iter()
         .find(|c| c.claim_id == "fact:device:cam02:redacted")
@@ -1423,6 +1448,10 @@ fn test_h1_redacted_only_for_fact_with_own_redaction() -> Result<(), Box<dyn Err
             ..
         }))
     ));
+    assert_eq!(
+        red_cell.state_basis,
+        Some(KnowledgeStateBasis::Redaction(marker))
+    );
     assert!(red_cell.validate().is_ok());
 
     // Other un-redacted fact cells remain Known/Estimated
@@ -1432,6 +1461,22 @@ fn test_h1_redacted_only_for_fact_with_own_redaction() -> Result<(), Box<dyn Err
         .ok_or("missing cam01 cell")?;
     assert_eq!(cam01_cell.knowledge_state, KnowledgeState::Known);
     assert_eq!(cam01_cell.state_basis, None);
+
+    // Without a caller projection the withheld cell is Unknown with a typed reason, never
+    // Redacted with invented values.
+    let bare = synopsis.to_knowledge_cells(&H1CellContext::new(synopsis.anchor().clone()));
+    let bare_cell = bare
+        .iter()
+        .find(|c| c.claim_id == "fact:device:cam02:redacted")
+        .ok_or("missing redacted cell")?;
+    assert_eq!(bare_cell.knowledge_state, KnowledgeState::Unknown);
+    assert_eq!(
+        bare_cell.state_basis,
+        Some(KnowledgeStateBasis::Unknown(
+            UnknownReason::RedactionContextNotSupplied
+        ))
+    );
+    assert!(bare_cell.validate().is_ok());
 
     Ok(())
 }
@@ -1466,7 +1511,7 @@ fn test_h1_stale_only_for_fact_with_own_stale_basis() -> Result<(), Box<dyn Erro
     params.provenance_classes = BTreeSet::from([ProvenanceClass::Observed]);
 
     let synopsis = H1SemanticSynopsis::new(params)?;
-    let cells = synopsis.to_knowledge_cells();
+    let cells = synopsis.to_knowledge_cells(&H1CellContext::new(synopsis.anchor().clone()));
 
     let stale_cell = cells
         .iter()
@@ -1477,6 +1522,13 @@ fn test_h1_stale_only_for_fact_with_own_stale_basis() -> Result<(), Box<dyn Erro
         &stale_cell.state_basis,
         Some(KnowledgeStateBasis::Stale(StaleBasis::OlderAnchor { .. }))
     ));
+    assert_eq!(
+        stale_cell.state_basis,
+        Some(KnowledgeStateBasis::Stale(StaleBasis::OlderAnchor {
+            valid_at: Box::new(sample_anchor(1)),
+            current: Box::new(sample_anchor(10)),
+        }))
+    );
     assert!(stale_cell.validate().is_ok());
 
     let fresh_cell = cells
@@ -1499,43 +1551,109 @@ fn test_h1_completeness_stale_caps_cells_at_stale() -> Result<(), Box<dyn Error>
         Some(ContentDigest::sha256(b"calibration-gen-1")),
     )?;
     params.contradictions = Vec::new();
-    params.knowledge_states = BTreeSet::from([KnowledgeState::Stale]);
+    // Facts and synopsis share anchor seq 1: at the synopsis's own anchor no strictly newer anchor
+    // has been observed, so the cells are unknown with a typed reason. They are never known, and
+    // never stale with a made-up `current` anchor.
+    params.knowledge_states = BTreeSet::from([KnowledgeState::Unknown]);
 
     let synopsis = H1SemanticSynopsis::new(params.clone())?;
-    let cells = synopsis.to_knowledge_cells();
-    // Every cell must be capped at Stale-with-basis
-    for cell in &cells {
-        assert_eq!(cell.knowledge_state, KnowledgeState::Stale);
-        assert!(matches!(
-            &cell.state_basis,
-            Some(KnowledgeStateBasis::Stale(StaleBasis::OlderAnchor { .. }))
-        ));
+    let now = TimestampNs(1_000_000);
+    for cell in &synopsis.to_knowledge_cells(&H1CellContext::new(synopsis.anchor().clone())) {
+        assert_eq!(cell.knowledge_state, KnowledgeState::Unknown);
+        assert_eq!(
+            cell.state_basis,
+            Some(KnowledgeStateBasis::Unknown(
+                UnknownReason::StaleWithoutObservedBasis
+            ))
+        );
         assert!(cell.validate().is_ok());
+        assert!(!cell.is_irreversible_effect_premise(now));
     }
     assert_eq!(
         synopsis.derived_knowledge_states(),
-        BTreeSet::from([KnowledgeState::Stale])
+        BTreeSet::from([KnowledgeState::Unknown])
     );
 
-    // In validate(), KnowledgeState::Known cannot be grounded when Completeness::Stale
-    let mut invalid_params = params;
-    invalid_params
-        .knowledge_states
-        .insert(KnowledgeState::Known);
-    assert_eq!(
-        H1SemanticSynopsis::new(invalid_params),
-        Err(HydrationError::Contract(
-            ContractError::KnowledgeStateBasisMismatch
-        )),
-        "KnowledgeState::Known must NOT be grounded when synopsis completeness is Stale"
-    );
+    // A caller-supplied head strictly newer than the facts caps every cell at Stale, and the
+    // basis names exactly that supplied head as `current`.
+    let head = sample_anchor(2);
+    let cells = synopsis.to_knowledge_cells(&H1CellContext::new(head.clone()));
+    assert_eq!(cells.len(), 2);
+    for cell in &cells {
+        assert_eq!(cell.knowledge_state, KnowledgeState::Stale);
+        assert_eq!(
+            cell.state_basis,
+            Some(KnowledgeStateBasis::Stale(StaleBasis::OlderAnchor {
+                valid_at: Box::new(sample_anchor(1)),
+                current: Box::new(head.clone()),
+            }))
+        );
+        assert!(cell.validate().is_ok());
+        assert!(!cell.is_irreversible_effect_premise(now));
+    }
+
+    // A supplied anchor that is not strictly newer on the same lineage (equal, older, or
+    // cross-lineage) never yields Stale or Known.
+    let mut other_lineage = LedgerAnchor::genesis("site:other:h1");
+    other_lineage.commit_sequence = 5;
+    for not_newer in [sample_anchor(1), sample_anchor(0), other_lineage] {
+        for cell in &synopsis.to_knowledge_cells(&H1CellContext::new(not_newer.clone())) {
+            assert_eq!(cell.knowledge_state, KnowledgeState::Unknown);
+            assert_eq!(
+                cell.state_basis,
+                Some(KnowledgeStateBasis::Unknown(
+                    UnknownReason::StaleWithoutObservedBasis
+                ))
+            );
+        }
+    }
+
+    // At commit_sequence u64::MAX there is no newer anchor to name, and none is made up.
+    let mut max_params = params.clone();
+    max_params.anchor = sample_anchor(u64::MAX);
+    max_params.facts = vec![WorldFact::new(
+        "fact:device:max",
+        WorldFactKind::Device,
+        sample_anchor(u64::MAX),
+        "Fact at the last commit sequence",
+        ProvenanceClass::Observed,
+        ContentDigest::sha256(b"max"),
+        Generation(1),
+    )?];
+    max_params.provenance_classes = BTreeSet::from([ProvenanceClass::Observed]);
+    let max_synopsis = H1SemanticSynopsis::new(max_params)?;
+    for cell in &max_synopsis.to_knowledge_cells(&H1CellContext::new(max_synopsis.anchor().clone()))
+    {
+        assert_eq!(cell.knowledge_state, KnowledgeState::Unknown);
+        assert!(cell.validate().is_ok());
+    }
+
+    // KnowledgeState::Known can never be declared when completeness is Stale, and neither can
+    // the previously fabricated {Stale}.
+    for bad in [
+        BTreeSet::from([KnowledgeState::Unknown, KnowledgeState::Known]),
+        BTreeSet::from([KnowledgeState::Known]),
+        BTreeSet::from([KnowledgeState::Stale]),
+    ] {
+        let mut invalid_params = params.clone();
+        invalid_params.knowledge_states = bad;
+        assert_eq!(
+            H1SemanticSynopsis::new(invalid_params),
+            Err(HydrationError::Contract(
+                ContractError::KnowledgeStateBasisMismatch
+            )),
+            "Known or an unobserved Stale must NOT be declared when completeness is Stale"
+        );
+    }
 
     Ok(())
 }
 
 #[test]
 fn test_h1_indeterminate_only_from_own_effect_outcome() -> Result<(), Box<dyn Error>> {
-    // 1. An Effect fact with own indeterminate statement gets Indeterminate with Reconciliation basis
+    // 1. WorldFact carries no typed effect outcome, so no cell is ever Indeterminate. An Effect
+    // fact whose statement mentions "indeterminate" is classified by its own provenance, and
+    // declaring Indeterminate for it is refused.
     let effect_fact = WorldFact::new(
         "fact:effect:valve_actuation",
         WorldFactKind::Effect,
@@ -1549,22 +1667,55 @@ fn test_h1_indeterminate_only_from_own_effect_outcome() -> Result<(), Box<dyn Er
     let mut params = sample_h1_params()?;
     params.facts.push(effect_fact);
     params.facts.sort_by(|a, b| a.fact_id.cmp(&b.fact_id));
-    params
+    let mut declared_indeterminate = params.clone();
+    declared_indeterminate
         .knowledge_states
         .insert(KnowledgeState::Indeterminate);
+    assert_eq!(
+        H1SemanticSynopsis::new(declared_indeterminate),
+        Err(HydrationError::Contract(
+            ContractError::KnowledgeStateBasisMismatch
+        )),
+        "statement text is not a typed effect outcome and cannot ground Indeterminate"
+    );
 
     let synopsis = H1SemanticSynopsis::new(params)?;
-    let cells = synopsis.to_knowledge_cells();
+    let cells = synopsis.to_knowledge_cells(&H1CellContext::new(synopsis.anchor().clone()));
     let effect_cell = cells
         .iter()
         .find(|c| c.claim_id == "fact:effect:valve_actuation")
         .ok_or("missing effect cell")?;
-    assert_eq!(effect_cell.knowledge_state, KnowledgeState::Indeterminate);
-    assert!(matches!(
-        &effect_cell.state_basis,
-        Some(KnowledgeStateBasis::Reconciliation(_))
-    ));
+    assert_eq!(effect_cell.knowledge_state, KnowledgeState::Known);
+    assert_ne!(effect_cell.knowledge_state, KnowledgeState::Indeterminate);
+    assert_eq!(effect_cell.state_basis, None);
     assert!(effect_cell.validate().is_ok());
+
+    // Negated wording ("no longer indeterminate") never produces Indeterminate either.
+    let negated = WorldFact::new(
+        "fact:effect:valve_closed",
+        WorldFactKind::Effect,
+        sample_anchor(1),
+        "Confirmed closed; no longer indeterminate",
+        ProvenanceClass::Observed,
+        ContentDigest::sha256(b"eff-c"),
+        Generation(1),
+    )?;
+    let mut negated_params = sample_h1_params()?;
+    negated_params.facts = vec![negated];
+    negated_params.knowledge_states = BTreeSet::from([KnowledgeState::Known]);
+    negated_params.provenance_classes = BTreeSet::from([ProvenanceClass::Observed]);
+    let negated_synopsis = H1SemanticSynopsis::new(negated_params.clone())?;
+    assert_eq!(
+        negated_synopsis.derived_knowledge_states(),
+        BTreeSet::from([KnowledgeState::Known])
+    );
+    negated_params.knowledge_states = BTreeSet::from([KnowledgeState::Indeterminate]);
+    assert_eq!(
+        H1SemanticSynopsis::new(negated_params),
+        Err(HydrationError::Contract(
+            ContractError::KnowledgeStateBasisMismatch
+        ))
+    );
 
     // 2. A bare Effect fact without indeterminate outcome cannot ground KnowledgeState::Indeterminate
     let bare_effect_fact = WorldFact::new(
@@ -1662,7 +1813,7 @@ fn test_h1_count_bound_exceeded_via_new() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn test_h1_decode_byte_truncation_returns_invalid_digest() -> Result<(), Box<dyn Error>> {
+fn test_h1_decode_byte_truncation_returns_canonical_truncated() -> Result<(), Box<dyn Error>> {
     let params = sample_h1_params()?;
     let synopsis = H1SemanticSynopsis::new(params)?;
 
@@ -1693,8 +1844,8 @@ fn test_h1_decode_byte_truncation_returns_invalid_digest() -> Result<(), Box<dyn
     let mut dec_facts = CanonicalDecoder::new(&bytes_facts_trunc);
     assert_eq!(
         H1SemanticSynopsis::decode_canonical(&mut dec_facts).err(),
-        Some(ContractError::InvalidDigest),
-        "Facts byte truncation must return InvalidDigest, NOT CountBoundExceeded"
+        Some(ContractError::CanonicalTruncated),
+        "Facts byte truncation must return CanonicalTruncated, NOT CountBoundExceeded or InvalidDigest"
     );
 
     // Case 2: knowledge states count = 10 (within MAX_H1_KNOWLEDGE_STATES=16), but buffer truncated
@@ -1705,8 +1856,8 @@ fn test_h1_decode_byte_truncation_returns_invalid_digest() -> Result<(), Box<dyn
     let mut dec_ks = CanonicalDecoder::new(&bytes_ks_trunc);
     assert_eq!(
         H1SemanticSynopsis::decode_canonical(&mut dec_ks).err(),
-        Some(ContractError::InvalidDigest),
-        "Knowledge states byte truncation must return InvalidDigest, NOT CountBoundExceeded"
+        Some(ContractError::CanonicalTruncated),
+        "Knowledge states byte truncation must return CanonicalTruncated, NOT CountBoundExceeded or InvalidDigest"
     );
 
     // Case 3: provenance classes count = 10 (within MAX_H1_PROVENANCE_CLASSES=16), but buffer truncated
@@ -1719,8 +1870,8 @@ fn test_h1_decode_byte_truncation_returns_invalid_digest() -> Result<(), Box<dyn
     let mut dec_prov = CanonicalDecoder::new(&bytes_prov_trunc);
     assert_eq!(
         H1SemanticSynopsis::decode_canonical(&mut dec_prov).err(),
-        Some(ContractError::InvalidDigest),
-        "Provenance classes byte truncation must return InvalidDigest, NOT CountBoundExceeded"
+        Some(ContractError::CanonicalTruncated),
+        "Provenance classes byte truncation must return CanonicalTruncated, NOT CountBoundExceeded or InvalidDigest"
     );
 
     // Case 4: contradictions count = 50 (within MAX_H1_CONTRADICTIONS=1024), but buffer truncated
@@ -1735,8 +1886,8 @@ fn test_h1_decode_byte_truncation_returns_invalid_digest() -> Result<(), Box<dyn
     let mut dec_contra = CanonicalDecoder::new(&bytes_contra_trunc);
     assert_eq!(
         H1SemanticSynopsis::decode_canonical(&mut dec_contra).err(),
-        Some(ContractError::InvalidDigest),
-        "Contradictions byte truncation must return InvalidDigest, NOT CountBoundExceeded"
+        Some(ContractError::CanonicalTruncated),
+        "Contradictions byte truncation must return CanonicalTruncated, NOT CountBoundExceeded or InvalidDigest"
     );
 
     // Case 5: omissions count = 10 (within MAX_H1_OMISSIONS=64), but buffer truncated
@@ -1752,16 +1903,17 @@ fn test_h1_decode_byte_truncation_returns_invalid_digest() -> Result<(), Box<dyn
     let mut dec_omiss = CanonicalDecoder::new(&bytes_omiss_trunc);
     assert_eq!(
         H1SemanticSynopsis::decode_canonical(&mut dec_omiss).err(),
-        Some(ContractError::InvalidDigest),
-        "Omissions byte truncation must return InvalidDigest, NOT CountBoundExceeded"
+        Some(ContractError::CanonicalTruncated),
+        "Omissions byte truncation must return CanonicalTruncated, NOT CountBoundExceeded or InvalidDigest"
     );
 
     Ok(())
 }
 
 #[test]
-fn test_h1_kill_mutants_x14c_and_x14d() -> Result<(), Box<dyn Error>> {
-    // Mutant X14c: OperatorAsserted fact erroneously promoted to Known when Known is declared in knowledge_states
+fn test_h1_operator_asserted_is_estimated_and_bare_effect_cannot_declare_indeterminate()
+-> Result<(), Box<dyn Error>> {
+    // An OperatorAsserted-only synopsis: its cell is Estimated, never Known.
     let op_fact = WorldFact::new(
         "fact:device:op_only",
         WorldFactKind::Device,
@@ -1778,7 +1930,7 @@ fn test_h1_kill_mutants_x14c_and_x14d() -> Result<(), Box<dyn Error>> {
     params_x14c.provenance_classes = BTreeSet::from([ProvenanceClass::OperatorAsserted]);
     let syn_x14c = H1SemanticSynopsis::new(params_x14c)?;
 
-    let cells = syn_x14c.to_knowledge_cells();
+    let cells = syn_x14c.to_knowledge_cells(&H1CellContext::new(syn_x14c.anchor().clone()));
     assert_eq!(cells.len(), 1);
     // MUST be Estimated, NEVER Known
     assert_eq!(cells[0].knowledge_state, KnowledgeState::Estimated);
@@ -1788,7 +1940,7 @@ fn test_h1_kill_mutants_x14c_and_x14d() -> Result<(), Box<dyn Error>> {
         BTreeSet::from([KnowledgeState::Estimated])
     );
 
-    // Mutant X14d: Bare Effect fact without indeterminate outcome erroneously grounds KnowledgeState::Indeterminate
+    // A bare Effect fact cannot be declared Indeterminate.
     let bare_effect = WorldFact::new(
         "fact:effect:normal_action",
         WorldFactKind::Effect,
@@ -1811,8 +1963,577 @@ fn test_h1_kill_mutants_x14c_and_x14d() -> Result<(), Box<dyn Error>> {
         Err(HydrationError::Contract(
             ContractError::KnowledgeStateBasisMismatch
         )),
-        "Mutant X14d killed: bare effect cannot ground Indeterminate"
+        "bare effect cannot ground Indeterminate"
     );
 
+    Ok(())
+}
+
+fn fact_at(
+    id: &str,
+    kind: WorldFactKind,
+    seq: u64,
+    statement: &str,
+    provenance: ProvenanceClass,
+    evidence: &[u8],
+) -> Result<WorldFact, Box<dyn Error>> {
+    Ok(WorldFact::new(
+        id,
+        kind,
+        sample_anchor(seq),
+        statement,
+        provenance,
+        ContentDigest::sha256(evidence),
+        Generation(1),
+    )?)
+}
+
+fn contradiction_on(
+    id: &str,
+    evidence: ContentDigest,
+    state: KnowledgeState,
+) -> Result<Contradiction, Box<dyn Error>> {
+    Ok(Contradiction::new(ContradictionParams {
+        contradiction_id: id.to_string(),
+        conflicting_evidence: BTreeSet::from([evidence, ContentDigest::sha256(b"other-witness")]),
+        failure_domains: BTreeSet::from(["domain:a".to_string(), "domain:b".to_string()]),
+        unresolved_worlds: BTreeSet::from(["world:a".to_string(), "world:b".to_string()]),
+        claim_id: None,
+        statement: "Contradiction naming a fact by its evidence".to_string(),
+        belief_interval: None,
+        created_at: TimestampNs(100),
+        knowledge_state: state,
+        provenance: ProvenanceClass::Derived,
+        disposition: HypothesisDisposition::Live,
+        outcome: RuntimeOutcome::Indeterminate,
+    })?)
+}
+
+fn observed_only_params(facts: Vec<WorldFact>) -> Result<H1SynopsisParams, Box<dyn Error>> {
+    let mut params = sample_h1_params()?;
+    params.facts = facts;
+    params.contradictions = Vec::new();
+    params.provenance_classes = BTreeSet::from([ProvenanceClass::Observed]);
+    Ok(params)
+}
+
+/// X14c: a declared Conflicted state needs a Conflicted cell. With no contradiction, or with one
+/// that names no fact, declaring Conflicted is refused.
+#[test]
+fn test_h1_declared_conflicted_requires_a_conflicted_cell_x14c() -> Result<(), Box<dyn Error>> {
+    let mut no_contra = sample_h1_params()?;
+    no_contra
+        .knowledge_states
+        .insert(KnowledgeState::Conflicted);
+    assert_eq!(
+        H1SemanticSynopsis::new(no_contra),
+        Err(HydrationError::Contract(
+            ContractError::KnowledgeStateBasisMismatch
+        ))
+    );
+
+    let mut unattached = sample_h1_params()?;
+    unattached.contradictions = vec![sample_contradiction()?];
+    unattached
+        .knowledge_states
+        .insert(KnowledgeState::Conflicted);
+    assert_eq!(
+        H1SemanticSynopsis::new(unattached),
+        Err(HydrationError::Contract(
+            ContractError::KnowledgeStateBasisMismatch
+        ))
+    );
+
+    // Declared set must equal the derived set in both directions.
+    let mut missing = sample_h1_params()?;
+    missing.knowledge_states = BTreeSet::from([KnowledgeState::Known]);
+    assert_eq!(
+        H1SemanticSynopsis::new(missing),
+        Err(HydrationError::Contract(
+            ContractError::KnowledgeStateBasisMismatch
+        ))
+    );
+    let synopsis = H1SemanticSynopsis::new(sample_h1_params()?)?;
+    assert_eq!(
+        synopsis.knowledge_states(),
+        &synopsis.derived_knowledge_states()
+    );
+
+    // With a contradiction that names cam01, Conflicted is derived and may be declared.
+    let mut attached = sample_h1_params()?;
+    attached.contradictions = vec![contradiction_on(
+        "contra:x14c:001",
+        ContentDigest::sha256(b"device:cam01:calib"),
+        KnowledgeState::Conflicted,
+    )?];
+    attached.knowledge_states =
+        BTreeSet::from([KnowledgeState::Conflicted, KnowledgeState::Estimated]);
+    let attached = H1SemanticSynopsis::new(attached)?;
+    let cells = attached.to_knowledge_cells(&H1CellContext::new(attached.anchor().clone()));
+    assert_eq!(cells[0].knowledge_state, KnowledgeState::Conflicted);
+    assert_eq!(cells[0].contradictions.len(), 1);
+    Ok(())
+}
+
+/// X14d: a declared Stale state needs a Stale cell. A RetentionPolicy omission or a fresh fact
+/// does not ground it.
+#[test]
+fn test_h1_declared_stale_requires_a_stale_cell_x14d() -> Result<(), Box<dyn Error>> {
+    let mut retention = sample_h1_params()?;
+    retention.omissions = BTreeSet::from([OmissionReason::RetentionPolicy]);
+    retention.knowledge_states.insert(KnowledgeState::Stale);
+    assert_eq!(
+        H1SemanticSynopsis::new(retention),
+        Err(HydrationError::Contract(
+            ContractError::KnowledgeStateBasisMismatch
+        ))
+    );
+
+    let fresh = fact_at(
+        "fact:device:fresh",
+        WorldFactKind::Device,
+        1,
+        "Fresh fact",
+        ProvenanceClass::Observed,
+        b"fresh",
+    )?;
+    let mut fresh_params = observed_only_params(vec![fresh])?;
+    fresh_params.knowledge_states = BTreeSet::from([KnowledgeState::Known, KnowledgeState::Stale]);
+    assert_eq!(
+        H1SemanticSynopsis::new(fresh_params),
+        Err(HydrationError::Contract(
+            ContractError::KnowledgeStateBasisMismatch
+        ))
+    );
+    Ok(())
+}
+
+/// F3: a stale-state contradiction naming a fact yields Conflicted with it attached, at the
+/// synopsis's own anchor and at any supplied head; never Stale, Unknown or Known.
+#[test]
+fn test_h1_stale_contradiction_yields_conflicted() -> Result<(), Box<dyn Error>> {
+    let cam = fact_at(
+        "fact:device:cam01",
+        WorldFactKind::Device,
+        1,
+        "Camera 01 active",
+        ProvenanceClass::Observed,
+        b"device:cam01:calib",
+    )?;
+    let mut params = observed_only_params(vec![cam])?;
+    params.contradictions = vec![contradiction_on(
+        "contra:stale:001",
+        ContentDigest::sha256(b"device:cam01:calib"),
+        KnowledgeState::Stale,
+    )?];
+    params.knowledge_states = BTreeSet::from([KnowledgeState::Conflicted]);
+    let synopsis = H1SemanticSynopsis::new(params.clone())?;
+
+    for ctx in [
+        H1CellContext::new(synopsis.anchor().clone()),
+        H1CellContext::new(sample_anchor(7)),
+    ] {
+        let cells = synopsis.to_knowledge_cells(&ctx);
+        assert_eq!(cells[0].knowledge_state, KnowledgeState::Conflicted);
+        assert_eq!(cells[0].state_basis, None);
+        assert_eq!(cells[0].contradictions.len(), 1);
+    }
+
+    for bad in [
+        BTreeSet::from([KnowledgeState::Unknown]),
+        BTreeSet::from([KnowledgeState::Stale]),
+        BTreeSet::from([KnowledgeState::Known]),
+    ] {
+        let mut p = params.clone();
+        p.knowledge_states = bad;
+        assert_eq!(
+            H1SemanticSynopsis::new(p),
+            Err(HydrationError::Contract(
+                ContractError::KnowledgeStateBasisMismatch
+            ))
+        );
+    }
+    Ok(())
+}
+
+/// P1: an Effect fact whose statement says "indeterminate" never makes any cell, its own or
+/// another fact's, Indeterminate.
+#[test]
+fn test_h1_no_indeterminate_from_another_effect_fact_p1() -> Result<(), Box<dyn Error>> {
+    let facts = vec![
+        fact_at(
+            "fact:device:cam01",
+            WorldFactKind::Device,
+            1,
+            "Camera 01 active and calibrated",
+            ProvenanceClass::Observed,
+            b"device:cam01:calib",
+        )?,
+        fact_at(
+            "fact:effect:a",
+            WorldFactKind::Effect,
+            1,
+            "Valve command: indeterminate confirmation",
+            ProvenanceClass::Observed,
+            b"eff-a",
+        )?,
+        fact_at(
+            "fact:effect:b",
+            WorldFactKind::Effect,
+            1,
+            "Light switched on, confirmed",
+            ProvenanceClass::Observed,
+            b"eff-b",
+        )?,
+    ];
+    let mut params = observed_only_params(facts)?;
+    params.knowledge_states = BTreeSet::from([KnowledgeState::Known]);
+    let synopsis = H1SemanticSynopsis::new(params.clone())?;
+    for cell in synopsis.to_knowledge_cells(&H1CellContext::new(synopsis.anchor().clone())) {
+        assert_eq!(
+            cell.knowledge_state,
+            KnowledgeState::Known,
+            "{}",
+            cell.claim_id
+        );
+        assert_eq!(cell.state_basis, None);
+    }
+    params.knowledge_states =
+        BTreeSet::from([KnowledgeState::Known, KnowledgeState::Indeterminate]);
+    assert_eq!(
+        H1SemanticSynopsis::new(params),
+        Err(HydrationError::Contract(
+            ContractError::KnowledgeStateBasisMismatch
+        ))
+    );
+    Ok(())
+}
+
+/// P3: a cell never reads the declared set. An observed fact with evidence is Known whatever is
+/// declared, so declaring only Unknown or only Estimated for it is refused rather than turning
+/// the cell into what was declared.
+#[test]
+fn test_h1_cell_never_reads_declared_set_p3() -> Result<(), Box<dyn Error>> {
+    let cam = fact_at(
+        "fact:device:cam01",
+        WorldFactKind::Device,
+        1,
+        "Camera 01 active and calibrated",
+        ProvenanceClass::Observed,
+        b"device:cam01:calib",
+    )?;
+    for declared in [
+        BTreeSet::from([KnowledgeState::Unknown]),
+        BTreeSet::from([KnowledgeState::Estimated]),
+        BTreeSet::from([KnowledgeState::Conflicted]),
+    ] {
+        let mut params = observed_only_params(vec![cam.clone()])?;
+        params.knowledge_states = declared.clone();
+        assert_eq!(
+            H1SemanticSynopsis::new(params),
+            Err(HydrationError::Contract(
+                ContractError::KnowledgeStateBasisMismatch
+            )),
+            "declared: {declared:?}"
+        );
+    }
+    let mut params = observed_only_params(vec![cam])?;
+    params.knowledge_states = BTreeSet::from([KnowledgeState::Known]);
+    let synopsis = H1SemanticSynopsis::new(params)?;
+    let cells = synopsis.to_knowledge_cells(&H1CellContext::new(synopsis.anchor().clone()));
+    assert_eq!(cells[0].knowledge_state, KnowledgeState::Known);
+    Ok(())
+}
+
+/// Item 12: a contradiction alone never yields Redacted (or Indeterminate); it yields Conflicted
+/// with the contradiction attached and no synthesized basis.
+#[test]
+fn test_h1_contradiction_never_synthesizes_redaction() -> Result<(), Box<dyn Error>> {
+    for (state, kind) in [
+        (KnowledgeState::Redacted, WorldFactKind::Device),
+        (KnowledgeState::Indeterminate, WorldFactKind::Effect),
+        (KnowledgeState::NotObservable, WorldFactKind::Device),
+    ] {
+        let fact = fact_at(
+            "fact:any:subject",
+            kind,
+            1,
+            "Plain statement without any marker",
+            ProvenanceClass::Observed,
+            b"subject-evidence",
+        )?;
+        let mut params = observed_only_params(vec![fact])?;
+        params.contradictions = vec![contradiction_on(
+            "contra:item12:001",
+            ContentDigest::sha256(b"subject-evidence"),
+            state,
+        )?];
+        params.knowledge_states = BTreeSet::from([KnowledgeState::Conflicted]);
+        let synopsis = H1SemanticSynopsis::new(params.clone())?;
+        let cells = synopsis.to_knowledge_cells(&H1CellContext::new(synopsis.anchor().clone()));
+        assert_eq!(cells[0].knowledge_state, KnowledgeState::Conflicted);
+        assert_eq!(cells[0].state_basis, None);
+        assert_eq!(cells[0].contradictions.len(), 1);
+        assert!(cells[0].validate().is_ok());
+
+        params.knowledge_states = BTreeSet::from([state]);
+        assert_eq!(
+            H1SemanticSynopsis::new(params),
+            Err(HydrationError::Contract(
+                ContractError::KnowledgeStateBasisMismatch
+            )),
+            "contradiction state {state:?} must not be declared for its cell"
+        );
+    }
+    Ok(())
+}
+
+fn sample_redaction_marker() -> RedactionMarker {
+    RedactionMarker {
+        reason: RedactionReason::PrivacyProjection,
+        privacy_generation: PrivacyGeneration::for_epoch(3),
+    }
+}
+
+fn stale_quality() -> Result<SynopsisQuality, Box<dyn Error>> {
+    Ok(SynopsisQuality::new(
+        Completeness::Stale,
+        Some(BeliefInterval::new(800_000, 950_000)?),
+        1_000_000,
+        Some(ContentDigest::sha256(b"calibration-gen-1")),
+    )?)
+}
+
+/// F3: any attached contradiction yields Conflicted with it attached and no basis. Conflicted
+/// takes precedence over Redacted (J1a), Stale (J1g) and Unknown-from-completeness (H1d3), and
+/// holds for contradiction states Redacted (J1b), Indeterminate (J1c) and NotObservable (J1f),
+/// at the synopsis's own anchor and at a supplied head with a privacy projection. The derived
+/// set, and so the declared set, contains Conflicted in every case.
+#[test]
+fn test_h1_conflicted_takes_precedence_over_redacted_stale_and_unknown()
+-> Result<(), Box<dyn Error>> {
+    let head = sample_anchor(9);
+    let check = |synopsis: &H1SemanticSynopsis, id: &str| -> Result<(), Box<dyn Error>> {
+        for ctx in [
+            H1CellContext::new(synopsis.anchor().clone()),
+            H1CellContext::new(head.clone()).with_redaction(sample_redaction_marker()),
+        ] {
+            let cells = synopsis.to_knowledge_cells(&ctx);
+            let cell = cells
+                .iter()
+                .find(|c| c.claim_id == id)
+                .ok_or("missing cell")?;
+            assert_eq!(cell.knowledge_state, KnowledgeState::Conflicted, "{id}");
+            assert_eq!(cell.state_basis, None, "{id}");
+            assert_eq!(cell.contradictions.len(), 1, "{id}");
+            assert!(cell.validate().is_ok());
+        }
+        assert!(
+            synopsis
+                .derived_knowledge_states()
+                .contains(&KnowledgeState::Conflicted)
+        );
+        assert_eq!(
+            synopsis.knowledge_states(),
+            &synopsis.derived_knowledge_states()
+        );
+        Ok(())
+    };
+
+    // J1a: the fact's own withheld marker plus a contradiction.
+    let marked = fact_at(
+        "fact:device:cam02",
+        WorldFactKind::Device,
+        1,
+        REDACTED_STATEMENT_MARKER,
+        ProvenanceClass::Observed,
+        b"cam02",
+    )?;
+    let mut p = observed_only_params(vec![marked])?;
+    p.contradictions = vec![contradiction_on(
+        "contra:j1a:001",
+        ContentDigest::sha256(b"cam02"),
+        KnowledgeState::Conflicted,
+    )?];
+    p.knowledge_states = BTreeSet::from([KnowledgeState::Conflicted]);
+    check(&H1SemanticSynopsis::new(p.clone())?, "fact:device:cam02")?;
+    p.knowledge_states = BTreeSet::from([KnowledgeState::Unknown]);
+    assert_eq!(
+        H1SemanticSynopsis::new(p),
+        Err(HydrationError::Contract(
+            ContractError::KnowledgeStateBasisMismatch
+        ))
+    );
+
+    // J1g: a fact older than the synopsis anchor plus a contradiction.
+    let fresh = fact_at(
+        "fact:device:a_fresh",
+        WorldFactKind::Device,
+        10,
+        "fresh",
+        ProvenanceClass::Observed,
+        b"fresh",
+    )?;
+    let old = fact_at(
+        "fact:device:b_old",
+        WorldFactKind::Device,
+        1,
+        "old",
+        ProvenanceClass::Observed,
+        b"old",
+    )?;
+    let mut p = observed_only_params(vec![fresh, old])?;
+    p.anchor = sample_anchor(10);
+    p.contradictions = vec![contradiction_on(
+        "contra:j1g:001",
+        ContentDigest::sha256(b"old"),
+        KnowledgeState::Conflicted,
+    )?];
+    p.knowledge_states = BTreeSet::from([KnowledgeState::Known, KnowledgeState::Conflicted]);
+    check(&H1SemanticSynopsis::new(p.clone())?, "fact:device:b_old")?;
+    p.knowledge_states = BTreeSet::from([KnowledgeState::Known, KnowledgeState::Stale]);
+    assert_eq!(
+        H1SemanticSynopsis::new(p),
+        Err(HydrationError::Contract(
+            ContractError::KnowledgeStateBasisMismatch
+        ))
+    );
+
+    // H1d3: completeness Stale plus a contradiction.
+    let cam = fact_at(
+        "fact:device:cam01",
+        WorldFactKind::Device,
+        1,
+        "Camera 01 active and calibrated",
+        ProvenanceClass::Observed,
+        b"device:cam01:calib",
+    )?;
+    let mut p = observed_only_params(vec![cam])?;
+    p.quality = stale_quality()?;
+    p.contradictions = vec![contradiction_on(
+        "contra:h1d3:001",
+        ContentDigest::sha256(b"device:cam01:calib"),
+        KnowledgeState::Conflicted,
+    )?];
+    p.knowledge_states = BTreeSet::from([KnowledgeState::Conflicted]);
+    check(&H1SemanticSynopsis::new(p.clone())?, "fact:device:cam01")?;
+    p.knowledge_states = BTreeSet::from([KnowledgeState::Unknown]);
+    assert_eq!(
+        H1SemanticSynopsis::new(p),
+        Err(HydrationError::Contract(
+            ContractError::KnowledgeStateBasisMismatch
+        ))
+    );
+
+    // J1b, J1c, J1f: contradiction states Redacted, Indeterminate (on an Effect fact) and
+    // NotObservable.
+    for (state, kind, contra_id) in [
+        (
+            KnowledgeState::Redacted,
+            WorldFactKind::Device,
+            "contra:j1b:001",
+        ),
+        (
+            KnowledgeState::Indeterminate,
+            WorldFactKind::Effect,
+            "contra:j1c:001",
+        ),
+        (
+            KnowledgeState::NotObservable,
+            WorldFactKind::Device,
+            "contra:j1f:001",
+        ),
+    ] {
+        let fact = fact_at(
+            "fact:any:subject",
+            kind,
+            1,
+            "Plain statement without any marker",
+            ProvenanceClass::Observed,
+            b"subject-evidence",
+        )?;
+        let mut p = observed_only_params(vec![fact])?;
+        p.contradictions = vec![contradiction_on(
+            contra_id,
+            ContentDigest::sha256(b"subject-evidence"),
+            state,
+        )?];
+        p.knowledge_states = BTreeSet::from([KnowledgeState::Conflicted]);
+        check(&H1SemanticSynopsis::new(p.clone())?, "fact:any:subject")?;
+        p.knowledge_states = BTreeSet::from([state]);
+        assert_eq!(
+            H1SemanticSynopsis::new(p),
+            Err(HydrationError::Contract(
+                ContractError::KnowledgeStateBasisMismatch
+            )),
+            "contradiction state {state:?}"
+        );
+    }
+    Ok(())
+}
+
+/// F4 (J2a): Redacted needs the statement to equal the marker token exactly. A statement that
+/// merely quotes the token is an ordinary observed fact, even with a caller projection.
+#[test]
+fn test_h1_quoted_marker_is_not_redacted_j2a() -> Result<(), Box<dyn Error>> {
+    let quoted_text = format!("Operator quoted {REDACTED_STATEMENT_MARKER} in a log line");
+    let quoted = fact_at(
+        "fact:device:j2a",
+        WorldFactKind::Device,
+        1,
+        &quoted_text,
+        ProvenanceClass::Observed,
+        b"j2a",
+    )?;
+    let mut params = observed_only_params(vec![quoted])?;
+    params.knowledge_states = BTreeSet::from([KnowledgeState::Known]);
+    let synopsis = H1SemanticSynopsis::new(params.clone())?;
+    let ctx =
+        H1CellContext::new(synopsis.anchor().clone()).with_redaction(sample_redaction_marker());
+    let cells = synopsis.to_knowledge_cells(&ctx);
+    assert_eq!(cells[0].knowledge_state, KnowledgeState::Known);
+    assert_ne!(cells[0].knowledge_state, KnowledgeState::Redacted);
+    assert_eq!(cells[0].state_basis, None);
+    assert_eq!(cells[0].disclosable_statement(), quoted_text);
+
+    params.knowledge_states = BTreeSet::from([KnowledgeState::Redacted]);
+    assert_eq!(
+        H1SemanticSynopsis::new(params),
+        Err(HydrationError::Contract(
+            ContractError::KnowledgeStateBasisMismatch
+        ))
+    );
+    Ok(())
+}
+
+/// F5 (H1h): a plain tail truncation of an H1 synopsis is CanonicalTruncated at the H1 decode
+/// boundary. Other types keep the shared decoder's code.
+#[test]
+fn test_h1_tail_truncation_is_canonical_truncated() -> Result<(), Box<dyn Error>> {
+    let synopsis = H1SemanticSynopsis::new(sample_h1_params()?)?;
+    let bytes = synopsis.to_canonical_bytes()?;
+    for cut in [1usize, 5, 40, 400, 1000] {
+        let short = &bytes[..bytes.len() - cut];
+        assert_eq!(
+            H1SemanticSynopsis::from_canonical_bytes(short).err(),
+            Some(ContractError::CanonicalTruncated),
+            "cut {cut}"
+        );
+        let mut dec = CanonicalDecoder::new(short);
+        assert_eq!(
+            H1SemanticSynopsis::decode_canonical(&mut dec).err(),
+            Some(ContractError::CanonicalTruncated),
+            "cut {cut}"
+        );
+    }
+
+    let mut enc = CanonicalEncoder::new();
+    sample_anchor(1).encode_canonical(&mut enc);
+    let anchor_bytes = enc.finish_checked()?;
+    let mut dec = CanonicalDecoder::new(&anchor_bytes[..anchor_bytes.len() - 1]);
+    assert_eq!(
+        LedgerAnchor::decode_canonical(&mut dec).err(),
+        Some(ContractError::InvalidDigest)
+    );
     Ok(())
 }

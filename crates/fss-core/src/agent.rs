@@ -344,6 +344,14 @@ pub enum UnknownReason {
     /// The source capsule declares a continuity gap before it (`gap_before`), so custody of the
     /// preceding interval is unbroken for nothing and the proposition is not established.
     ContinuityGapBeforeCapsule,
+    /// A stale trigger applies (stale completeness, a stale contradiction, or an anchor older than
+    /// its synopsis), but no strictly newer current anchor was observed to name as the `current`
+    /// side of a stale basis. The proposition is not established, and no basis is made up.
+    StaleWithoutObservedBasis,
+    /// The fact is withheld (its statement is exactly the withheld-cell marker), but the caller
+    /// supplied no privacy projection and generation to name. It is not established here, and no
+    /// redaction marker is made up.
+    RedactionContextNotSupplied,
 }
 
 impl UnknownReason {
@@ -352,6 +360,8 @@ impl UnknownReason {
     pub const fn code(self) -> u8 {
         match self {
             Self::ContinuityGapBeforeCapsule => 1,
+            Self::StaleWithoutObservedBasis => 2,
+            Self::RedactionContextNotSupplied => 3,
         }
     }
 
@@ -360,6 +370,8 @@ impl UnknownReason {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ContinuityGapBeforeCapsule => "continuity_gap_before_capsule",
+            Self::StaleWithoutObservedBasis => "stale_without_observed_basis",
+            Self::RedactionContextNotSupplied => "redaction_context_not_supplied",
         }
     }
 }

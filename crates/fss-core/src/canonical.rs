@@ -186,13 +186,27 @@ impl CanonicalEncoder {
 pub struct CanonicalDecoder<'a> {
     bytes: &'a [u8],
     offset: usize,
+    /// Set once any read failed because fewer bytes remained than it needed.
+    hit_eof: bool,
 }
 
 impl<'a> CanonicalDecoder<'a> {
     /// Creates a decoder over the given bytes.
     #[must_use]
     pub const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
+        Self {
+            bytes,
+            offset: 0,
+            hit_eof: false,
+        }
+    }
+
+    /// Returns true once any read failed because fewer bytes remained than it needed (end of
+    /// input). The error each read returns is unchanged; a caller may use this to name a plain
+    /// truncation at its own decode boundary.
+    #[must_use]
+    pub const fn hit_end_of_input(&self) -> bool {
+        self.hit_eof
     }
 
     /// Returns the current read offset in bytes.
@@ -225,6 +239,7 @@ impl<'a> CanonicalDecoder<'a> {
     /// Decodes a 1-byte discriminator tag.
     pub fn tag(&mut self) -> Result<u8, ContractError> {
         if self.remaining() < 1 {
+            self.hit_eof = true;
             return Err(ContractError::InvalidDigest);
         }
         let val = self.bytes[self.offset];
@@ -245,6 +260,7 @@ impl<'a> CanonicalDecoder<'a> {
     /// Decodes an unsigned 32-bit value in network byte order.
     pub fn read_u32(&mut self) -> Result<u32, ContractError> {
         if self.remaining() < 4 {
+            self.hit_eof = true;
             return Err(ContractError::InvalidDigest);
         }
         let slice: [u8; 4] = self.bytes[self.offset..self.offset + 4]
@@ -257,6 +273,7 @@ impl<'a> CanonicalDecoder<'a> {
     /// Decodes an unsigned 64-bit value in network byte order.
     pub fn u64(&mut self) -> Result<u64, ContractError> {
         if self.remaining() < 8 {
+            self.hit_eof = true;
             return Err(ContractError::InvalidDigest);
         }
         let slice: [u8; 8] = self.bytes[self.offset..self.offset + 8]
@@ -269,6 +286,7 @@ impl<'a> CanonicalDecoder<'a> {
     /// Decodes a signed 128-bit value in network byte order.
     pub fn i128(&mut self) -> Result<i128, ContractError> {
         if self.remaining() < 16 {
+            self.hit_eof = true;
             return Err(ContractError::InvalidDigest);
         }
         let slice: [u8; 16] = self.bytes[self.offset..self.offset + 16]
@@ -291,7 +309,11 @@ impl<'a> CanonicalDecoder<'a> {
     pub fn bytes(&mut self) -> Result<&'a [u8], ContractError> {
         let len_u64 = self.u64()?;
         let len = usize::try_from(len_u64).map_err(|_| ContractError::InvalidDigest)?;
-        if len > MAX_CANONICAL_BYTES_LEN || self.remaining() < len {
+        if len > MAX_CANONICAL_BYTES_LEN {
+            return Err(ContractError::InvalidDigest);
+        }
+        if self.remaining() < len {
+            self.hit_eof = true;
             return Err(ContractError::InvalidDigest);
         }
         let slice = &self.bytes[self.offset..self.offset + len];
@@ -317,6 +339,7 @@ impl<'a> CanonicalDecoder<'a> {
             _ => return Err(ContractError::UnsupportedDigestAlgorithm),
         };
         if self.remaining() < 32 {
+            self.hit_eof = true;
             return Err(ContractError::InvalidDigest);
         }
         let digest_bytes: [u8; 32] = self.bytes[self.offset..self.offset + 32]

@@ -445,6 +445,7 @@ All stable error identities and normative recovery guidance cataloged from `regi
 | `ERR-AUTH-DENIED-001` | principal lacks exact capability | do not retry without new authority |
 | `ERR-BUDGET-EXHAUSTED-001` | declared work budget exhausted | return bounded partial/abstention |
 | `ERR-CALIBRATION-INVALID-001` | certificate expired/invalidated/residual failure | no geometry-dependent negative evidence |
+| `ERR-CANONICAL-TRUNCATED-001` | canonical bytes declare more collection elements than the bytes that remain (truncated buffer) | re-fetch the complete canonical bytes; do not retry unchanged |
 | `ERR-CAPABILITY-CORRUPT-FILE-001` | capability registry or markdown documentation file is missing or corrupt | repair or restore capability registry file |
 | `ERR-CAPABILITY-DIGEST-MISMATCH-001` | capability registry digest does not match canonical encoding of sorted rows | recompute canonical capability registry digest |
 | `ERR-CAPABILITY-MISSING-DEFAULT-001` | capability row lacks a default role or default grant policy | declare an explicit default role or default denial in the capability row |

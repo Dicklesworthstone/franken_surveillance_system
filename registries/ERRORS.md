@@ -24,6 +24,7 @@ operation states rather than generic errors.
 | `ERR-NON-MONOTONE-NARROWING-001` | attempted non-monotone uncertainty narrowing violating FORMAL-010 | preserve monotone widening; retain sync evidence |
 | `ERR-DECODE-001` | media decode failed | preserve source; alternate decoder only if registered |
 | `ERR-DECODE-BOUNDS-001` | media exceeds declared bounds | fail closed |
+| `ERR-CANONICAL-TRUNCATED-001` | canonical bytes declare more collection elements than the bytes that remain (truncated buffer) | re-fetch the complete canonical bytes; do not retry unchanged |
 | `ERR-MODEL-UNAVAILABLE-001` | model generation not runnable | route to registered fallback or degrade |
 | `ERR-MODEL-OUTPUT-001` | malformed/out-of-bounds model output | reject output; terminate/quarantine generation |
 | `ERR-MODEL-GENERATION-001` | mixed or stale model/index generation | rebuild/retry at coherent generation |

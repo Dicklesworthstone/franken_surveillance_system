@@ -2945,6 +2945,9 @@ pub enum ContractError {
     InvalidPrivacyClass,
     /// Redaction transform is unrecognized or incompatible with the decision artifact kind.
     InvalidRedactionTransform,
+    /// Canonical bytes declare more collection elements than the bytes that remain: the buffer
+    /// is truncated.
+    CanonicalTruncated,
 }
 
 impl ContractError {
@@ -3080,6 +3083,7 @@ impl ContractError {
             Self::LaboratoryExpansionTransformMismatch => "laboratory_expansion_transform_mismatch",
             Self::InvalidPrivacyClass => "invalid_privacy_class",
             Self::InvalidRedactionTransform => "invalid_redaction_transform",
+            Self::CanonicalTruncated => "canonical_truncated",
         }
     }
 }

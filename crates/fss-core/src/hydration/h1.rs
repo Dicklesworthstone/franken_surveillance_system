@@ -20,17 +20,14 @@ use super::{
     decode_text_set, encode_text_set, valid_text,
 };
 use crate::agent::{
-    KnowledgeCell, KnowledgeStateBasis, REDACTED_STATEMENT_MARKER, ReconciliationBasis,
-    RedactionMarker, RedactionReason, StaleBasis,
+    KnowledgeCell, KnowledgeStateBasis, REDACTED_STATEMENT_MARKER, RedactionMarker, StaleBasis,
+    UnknownReason,
 };
 use crate::belief::{BeliefInterval, Contradiction};
 use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder};
-use crate::contract::{ContractError, KnowledgeState, ProvenanceClass, RuntimeOutcome};
+use crate::contract::{ContractError, KnowledgeState, ProvenanceClass};
 use crate::sensor_capsule::OmissionReason;
-use crate::{
-    BudgetVector, ContentDigest, ContractBasis, LedgerAnchor, PrivacyGeneration, TimestampNs,
-    WorldFact, WorldFactKind,
-};
+use crate::{BudgetVector, ContentDigest, ContractBasis, LedgerAnchor, TimestampNs, WorldFact};
 
 /// Stable identifier for hydration ladder level H1.
 pub const H1_LEVEL_ID: &str = "H1";
@@ -281,6 +278,47 @@ impl CanonicalDecode for SynopsisQuality {
     }
 }
 
+/// Returns whether `contra` names `fact`: by claim identity or by the fact's own evidence digest.
+fn contradiction_names_fact(contra: &Contradiction, fact: &WorldFact) -> bool {
+    contra.claim_id() == Some(fact.fact_id.as_str())
+        || contra
+            .conflicting_evidence()
+            .contains(&fact.evidence_digest)
+}
+
+/// Caller-supplied context for [`H1SemanticSynopsis::to_knowledge_cells`].
+///
+/// Everything a cell may need beyond its own fact comes from here, never from the synopsis or
+/// from invented values.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct H1CellContext {
+    /// Current ledger anchor (a head the caller obtained); only ever the `current` side of a
+    /// stale basis.
+    pub current: LedgerAnchor,
+    /// The caller's current privacy projection and generation, when it holds one. A withheld
+    /// fact is `redacted` only with this marker; without it the cell is `unknown` with
+    /// [`UnknownReason::RedactionContextNotSupplied`].
+    pub redaction: Option<RedactionMarker>,
+}
+
+impl H1CellContext {
+    /// Context with the caller's current anchor and no privacy projection.
+    #[must_use]
+    pub const fn new(current: LedgerAnchor) -> Self {
+        Self {
+            current,
+            redaction: None,
+        }
+    }
+
+    /// Adds the caller's current privacy projection and generation.
+    #[must_use]
+    pub fn with_redaction(mut self, marker: RedactionMarker) -> Self {
+        self.redaction = Some(marker);
+        self
+    }
+}
+
 /// Content specification used when extracting an H1 synopsis from a published [`SemanticHandle`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct H1ContentSpec {
@@ -515,112 +553,31 @@ impl H1SemanticSynopsis {
             }
         }
 
-        // Contradictions validation: each contradiction verified, canonically ordered, no duplicates
+        // Contradictions: each verified and canonically ordered, and each must name at least one
+        // fact. A contradiction naming no fact is attached to no cell, so no derived state can
+        // represent it; it is refused rather than carried without a cell.
         for contra in &self.contradictions {
             contra.verify().map_err(ContractError::from)?;
-            if !self.knowledge_states.contains(&contra.knowledge_state()) {
-                return Err(ContractError::KnowledgeStateBasisMismatch.into());
-            }
         }
         for pair in self.contradictions.windows(2) {
             if pair[0].contradiction_id() >= pair[1].contradiction_id() {
                 return Err(ContractError::NonCanonicalOrdering.into());
             }
         }
-
-        // Bind declared knowledge states to facts and contradictions:
-        // Every declared state must be grounded in at least one fact or contradiction,
-        // and Known requires an uncontradicted fact that qualifies for irreversible effect premises.
-        for ks in &self.knowledge_states {
-            let grounded = match ks {
-                KnowledgeState::Known => {
-                    self.quality.completeness() != Completeness::Stale
-                        && self.facts.iter().any(|f| {
-                            f.provenance.is_observed()
-                                && !self.contradictions.iter().any(|c| {
-                                    c.claim_id() == Some(f.fact_id.as_str())
-                                        || c.conflicting_evidence().contains(&f.evidence_digest)
-                                })
-                        })
-                }
-                KnowledgeState::Estimated => self.facts.iter().any(|f| {
-                    f.provenance == ProvenanceClass::Derived
-                        || f.provenance == ProvenanceClass::Predicted
-                        || f.provenance == ProvenanceClass::Remembered
-                        || f.provenance == ProvenanceClass::OperatorAsserted
-                        || f.provenance == ProvenanceClass::Policy
-                        || f.provenance == ProvenanceClass::VendorClaimed
-                }),
-                KnowledgeState::Conflicted => !self.contradictions.is_empty(),
-                KnowledgeState::Stale => {
-                    self.quality.completeness() == Completeness::Stale
-                        || self.omissions.contains(&OmissionReason::RetentionPolicy)
-                        || self
-                            .contradictions
-                            .iter()
-                            .any(|c| c.knowledge_state() == KnowledgeState::Stale)
-                        || self.facts.iter().any(|f| {
-                            (f.anchor.ledger_epoch, f.anchor.commit_sequence)
-                                < (self.anchor.ledger_epoch, self.anchor.commit_sequence)
-                                && f.anchor.site_lineage == self.anchor.site_lineage
-                        })
-                }
-                KnowledgeState::Redacted => {
-                    self.omissions.contains(&OmissionReason::PrivacyRedaction)
-                        || self.omissions.contains(&OmissionReason::CapabilityFiltered)
-                        || self.quality.completeness() == Completeness::Unauthorized
-                        || self
-                            .contradictions
-                            .iter()
-                            .any(|c| c.knowledge_state() == KnowledgeState::Redacted)
-                        || self
-                            .facts
-                            .iter()
-                            .any(|f| f.statement.contains(REDACTED_STATEMENT_MARKER))
-                }
-                KnowledgeState::NotObservable => {
-                    self.quality.completeness() == Completeness::NotObservable
-                        || self.omissions.contains(&OmissionReason::UpstreamMissing)
-                        || self
-                            .contradictions
-                            .iter()
-                            .any(|c| c.knowledge_state() == KnowledgeState::NotObservable)
-                }
-                KnowledgeState::Indeterminate => {
-                    self.contradictions.iter().any(|c| {
-                        c.knowledge_state() == KnowledgeState::Indeterminate
-                            || c.outcome() == RuntimeOutcome::Indeterminate
-                    }) || self.facts.iter().any(|f| {
-                        f.kind == WorldFactKind::Effect
-                            && (f.statement.to_ascii_lowercase().contains("indeterminate")
-                                || self.contradictions.iter().any(|c| {
-                                    (c.claim_id() == Some(f.fact_id.as_str())
-                                        || c.conflicting_evidence().contains(&f.evidence_digest))
-                                        && (c.knowledge_state() == KnowledgeState::Indeterminate
-                                            || c.outcome() == RuntimeOutcome::Indeterminate)
-                                }))
-                    })
-                }
-                KnowledgeState::Unknown => {
-                    self.quality.completeness() == Completeness::Unknown
-                        || self.facts.is_empty()
-                        || self
-                            .contradictions
-                            .iter()
-                            .any(|c| c.knowledge_state() == KnowledgeState::Unknown)
-                        || self
-                            .facts
-                            .iter()
-                            .any(|f| f.evidence_digest.bytes().iter().all(|&b| b == 0))
-                }
-                KnowledgeState::NotApplicable => self
-                    .contradictions
-                    .iter()
-                    .any(|c| c.knowledge_state() == KnowledgeState::NotApplicable),
-            };
-            if !grounded {
+        for contra in &self.contradictions {
+            if !self
+                .facts
+                .iter()
+                .any(|fact| contradiction_names_fact(contra, fact))
+            {
                 return Err(ContractError::KnowledgeStateBasisMismatch.into());
             }
+        }
+
+        // The declared state set must equal the set derived from the cells (item 10): no declared
+        // state without a cell in that state, and no cell state left undeclared.
+        if self.knowledge_states != self.derived_knowledge_states() {
+            return Err(ContractError::KnowledgeStateBasisMismatch.into());
         }
 
         // Omissions check: cannot contain None as a reason; omissions must be genuine reasons
@@ -844,131 +801,122 @@ impl H1SemanticSynopsis {
         )
     }
 
-    /// Returns the set of knowledge states derived directly from this synopsis's knowledge cells.
+    /// Returns the knowledge states of this synopsis's cells evaluated with the synopsis's own
+    /// anchor as `current` and no caller privacy projection: the only context the synopsis
+    /// itself carries.
     ///
-    /// The synopsis-wide state set is derived as the union of each cell's independently
-    /// grounded epistemic state, preserving provenance, evidence, and outcome orthogonalities.
+    /// [`Self::validate`] refuses a declared state set that differs from this set. A caller with
+    /// a newer head or a privacy projection may see stale or redacted cells through
+    /// [`Self::to_knowledge_cells`] where this set reports unknown ones.
     #[must_use]
     pub fn derived_knowledge_states(&self) -> BTreeSet<KnowledgeState> {
-        self.to_knowledge_cells()
+        self.to_knowledge_cells(&H1CellContext::new(self.anchor.clone()))
             .into_iter()
             .map(|cell| cell.knowledge_state)
             .collect()
     }
 
-    /// Converts this synopsis facts into canonical [`KnowledgeCell`] representations
-    /// carrying exact source evidence digests and their true epistemic knowledge state.
+    /// Converts this synopsis's facts into [`KnowledgeCell`]s.
     ///
-    /// Each cell's state is computed strictly from its own fact: provenance, evidence,
-    /// basis, and own effect outcome.
+    /// Each cell is computed from its own fact only (its provenance, evidence, own anchor, own
+    /// statement and the contradictions that name it) plus the caller-supplied `ctx`. It never
+    /// reads the declared state set or any other fact.
+    ///
+    /// Per fact, first match wins:
+    /// 1. any contradiction names the fact: `conflicted`, with those contradictions attached and
+    ///    no basis. This takes precedence over redacted, stale and unknown, whatever state the
+    ///    contradiction itself carries;
+    /// 2. the fact's statement equals [`REDACTED_STATEMENT_MARKER`] exactly (the withheld-cell
+    ///    form): `redacted` with the caller's `ctx.redaction` marker, or `unknown` with
+    ///    [`UnknownReason::RedactionContextNotSupplied`] when the caller supplied none. No marker
+    ///    is ever synthesized;
+    /// 3. a stale trigger applies (Completeness=Stale, or the fact's anchor is older than the
+    ///    synopsis anchor on the same lineage): `stale` with
+    ///    `OlderAnchor { valid_at: fact anchor, current: ctx.current }` when `ctx.current` is
+    ///    strictly newer than the fact's anchor on the same lineage; otherwise `unknown` with
+    ///    [`UnknownReason::StaleWithoutObservedBasis`], never `known`;
+    /// 4. observed provenance: `known` with non-zero evidence, `unknown` with a zeroed digest;
+    ///    any other provenance: `estimated`.
+    ///
+    /// No cell is ever `indeterminate`: [`WorldFact`] carries no typed effect outcome, and
+    /// statement text is never read as one.
     #[must_use]
-    pub fn to_knowledge_cells(&self) -> Vec<KnowledgeCell> {
+    pub fn to_knowledge_cells(&self, ctx: &H1CellContext) -> Vec<KnowledgeCell> {
         self.facts
             .iter()
-            .map(|fact| {
-                let mut cell_contradictions = Vec::new();
-                let mut has_indeterminate_contra = false;
-                let mut has_redacted_contra = false;
-                let mut has_stale_contra = false;
-
-                for contra in &self.contradictions {
-                    let affects_fact = contra.claim_id() == Some(fact.fact_id.as_str())
-                        || contra
-                            .conflicting_evidence()
-                            .contains(&fact.evidence_digest);
-                    if affects_fact {
-                        cell_contradictions.push(contra.contradiction_digest());
-                        if contra.knowledge_state() == KnowledgeState::Indeterminate
-                            || contra.outcome() == RuntimeOutcome::Indeterminate
-                        {
-                            has_indeterminate_contra = true;
-                        }
-                        if contra.knowledge_state() == KnowledgeState::Redacted {
-                            has_redacted_contra = true;
-                        }
-                        if contra.knowledge_state() == KnowledgeState::Stale {
-                            has_stale_contra = true;
-                        }
-                    }
-                }
-
-                let (knowledge_state, state_basis) = if fact.kind == WorldFactKind::Effect
-                    && (has_indeterminate_contra
-                        || fact
-                            .statement
-                            .to_ascii_lowercase()
-                            .contains("indeterminate"))
-                {
-                    (
-                        KnowledgeState::Indeterminate,
-                        Some(KnowledgeStateBasis::Reconciliation(
-                            ReconciliationBasis::occurred_or_not(fact.evidence_digest),
-                        )),
-                    )
-                } else if fact.statement.contains(REDACTED_STATEMENT_MARKER) || has_redacted_contra
-                {
-                    (
-                        KnowledgeState::Redacted,
-                        Some(KnowledgeStateBasis::Redaction(RedactionMarker {
-                            reason: RedactionReason::PrivacyProjection,
-                            privacy_generation: PrivacyGeneration::for_epoch(
-                                fact.anchor.privacy_epoch,
-                            ),
-                        })),
-                    )
-                } else if !cell_contradictions.is_empty()
-                    && self.quality.completeness() != Completeness::Stale
-                {
-                    (KnowledgeState::Conflicted, None)
-                } else if self.quality.completeness() == Completeness::Stale
-                    || has_stale_contra
-                    || ((fact.anchor.ledger_epoch, fact.anchor.commit_sequence)
-                        < (self.anchor.ledger_epoch, self.anchor.commit_sequence)
-                        && fact.anchor.site_lineage == self.anchor.site_lineage)
-                {
-                    let current_anchor = if (fact.anchor.ledger_epoch, fact.anchor.commit_sequence)
-                        < (self.anchor.ledger_epoch, self.anchor.commit_sequence)
-                        && fact.anchor.site_lineage == self.anchor.site_lineage
-                    {
-                        self.anchor.clone()
-                    } else {
-                        let mut a = fact.anchor.clone();
-                        a.commit_sequence = fact.anchor.commit_sequence.saturating_add(1);
-                        a
-                    };
-                    (
-                        KnowledgeState::Stale,
-                        Some(KnowledgeStateBasis::Stale(StaleBasis::OlderAnchor {
-                            valid_at: Box::new(fact.anchor.clone()),
-                            current: Box::new(current_anchor),
-                        })),
-                    )
-                } else if fact.provenance == ProvenanceClass::Observed {
-                    let has_valid_evidence = !fact.evidence_digest.bytes().iter().all(|&b| b == 0);
-                    if has_valid_evidence {
-                        (KnowledgeState::Known, None)
-                    } else {
-                        (KnowledgeState::Unknown, None)
-                    }
-                } else {
-                    // Non-Observed facts (Derived, OperatorAsserted, Policy, VendorClaimed, Predicted, Remembered)
-                    // can NEVER be Known, always Estimated.
-                    (KnowledgeState::Estimated, None)
-                };
-
-                KnowledgeCell {
-                    claim_id: fact.fact_id.clone(),
-                    statement: fact.statement.clone(),
-                    knowledge_state,
-                    provenance: fact.provenance,
-                    hypothesis: None,
-                    evidence: vec![fact.evidence_digest],
-                    contradictions: cell_contradictions,
-                    valid_until: None,
-                    state_basis,
-                }
-            })
+            .map(|fact| self.cell_for_fact(fact, ctx))
             .collect()
+    }
+
+    /// Computes one fact's cell; see [`Self::to_knowledge_cells`].
+    fn cell_for_fact(&self, fact: &WorldFact, ctx: &H1CellContext) -> KnowledgeCell {
+        let cell_contradictions: Vec<ContentDigest> = self
+            .contradictions
+            .iter()
+            .filter(|contra| contradiction_names_fact(contra, fact))
+            .map(Contradiction::contradiction_digest)
+            .collect();
+        let older_than_synopsis = fact.anchor.site_lineage == self.anchor.site_lineage
+            && (fact.anchor.ledger_epoch, fact.anchor.commit_sequence)
+                < (self.anchor.ledger_epoch, self.anchor.commit_sequence);
+        let stale_trigger =
+            self.quality.completeness() == Completeness::Stale || older_than_synopsis;
+
+        let (knowledge_state, state_basis) = if !cell_contradictions.is_empty() {
+            (KnowledgeState::Conflicted, None)
+        } else if fact.statement == REDACTED_STATEMENT_MARKER {
+            match &ctx.redaction {
+                Some(marker) => (
+                    KnowledgeState::Redacted,
+                    Some(KnowledgeStateBasis::Redaction(marker.clone())),
+                ),
+                None => (
+                    KnowledgeState::Unknown,
+                    Some(KnowledgeStateBasis::Unknown(
+                        UnknownReason::RedactionContextNotSupplied,
+                    )),
+                ),
+            }
+        } else if stale_trigger {
+            let basis = StaleBasis::OlderAnchor {
+                valid_at: Box::new(fact.anchor.clone()),
+                current: Box::new(ctx.current.clone()),
+            };
+            if basis.validate().is_ok() {
+                (
+                    KnowledgeState::Stale,
+                    Some(KnowledgeStateBasis::Stale(basis)),
+                )
+            } else {
+                (
+                    KnowledgeState::Unknown,
+                    Some(KnowledgeStateBasis::Unknown(
+                        UnknownReason::StaleWithoutObservedBasis,
+                    )),
+                )
+            }
+        } else if fact.provenance == ProvenanceClass::Observed {
+            if fact.evidence_digest.bytes().iter().all(|&b| b == 0) {
+                (KnowledgeState::Unknown, None)
+            } else {
+                (KnowledgeState::Known, None)
+            }
+        } else {
+            // Derived, OperatorAsserted, Policy and VendorClaimed facts are never known.
+            (KnowledgeState::Estimated, None)
+        };
+
+        KnowledgeCell {
+            claim_id: fact.fact_id.clone(),
+            statement: fact.statement.clone(),
+            knowledge_state,
+            provenance: fact.provenance,
+            hypothesis: None,
+            evidence: vec![fact.evidence_digest],
+            contradictions: cell_contradictions,
+            valid_until: None,
+            state_basis,
+        }
     }
 
     /// Computes the deterministic canonical digest of this H1 semantic synopsis.
@@ -1052,7 +1000,24 @@ impl CanonicalEncode for H1SemanticSynopsis {
 }
 
 impl CanonicalDecode for H1SemanticSynopsis {
+    /// Decodes an H1 synopsis. When the shared decoder ran out of input (a plain tail
+    /// truncation), the resulting `InvalidDigest` is reported as
+    /// [`ContractError::CanonicalTruncated`]. The mapping lives at this boundary only; other
+    /// types keep the shared decoder's codes.
     fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        Self::decode_fields(decoder).map_err(|err| {
+            if err == ContractError::InvalidDigest && decoder.hit_end_of_input() {
+                ContractError::CanonicalTruncated
+            } else {
+                err
+            }
+        })
+    }
+}
+
+impl H1SemanticSynopsis {
+    /// Decodes the synopsis fields; see [`CanonicalDecode::decode_canonical`] for the boundary.
+    fn decode_fields(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
         let schema = decoder.text()?;
         if schema != H1_SCHEMA {
             return Err(ContractError::InvalidIdentifier);
@@ -1078,7 +1043,7 @@ impl CanonicalDecode for H1SemanticSynopsis {
             return Err(ContractError::CountBoundExceeded);
         }
         if raw_facts_count as usize > remaining_for_facts {
-            return Err(ContractError::InvalidDigest);
+            return Err(ContractError::CanonicalTruncated);
         }
         let facts_count = raw_facts_count as usize;
         let mut facts = Vec::with_capacity(facts_count.min(remaining_for_facts));
@@ -1101,7 +1066,7 @@ impl CanonicalDecode for H1SemanticSynopsis {
             return Err(ContractError::CountBoundExceeded);
         }
         if raw_ks_count as usize > remaining_for_ks {
-            return Err(ContractError::InvalidDigest);
+            return Err(ContractError::CanonicalTruncated);
         }
         let ks_count = raw_ks_count as usize;
         let mut knowledge_states = BTreeSet::new();
@@ -1124,7 +1089,7 @@ impl CanonicalDecode for H1SemanticSynopsis {
             return Err(ContractError::CountBoundExceeded);
         }
         if raw_prov_count as usize > remaining_for_prov {
-            return Err(ContractError::InvalidDigest);
+            return Err(ContractError::CanonicalTruncated);
         }
         let prov_count = raw_prov_count as usize;
         let mut provenance_classes = BTreeSet::new();
@@ -1147,7 +1112,7 @@ impl CanonicalDecode for H1SemanticSynopsis {
             return Err(ContractError::CountBoundExceeded);
         }
         if raw_contra_count as usize > remaining_for_contra {
-            return Err(ContractError::InvalidDigest);
+            return Err(ContractError::CanonicalTruncated);
         }
         let contra_count = raw_contra_count as usize;
         let mut contradictions = Vec::with_capacity(contra_count.min(remaining_for_contra));
@@ -1170,7 +1135,7 @@ impl CanonicalDecode for H1SemanticSynopsis {
             return Err(ContractError::CountBoundExceeded);
         }
         if raw_omission_count as usize > remaining_for_omissions {
-            return Err(ContractError::InvalidDigest);
+            return Err(ContractError::CanonicalTruncated);
         }
         let omission_count = raw_omission_count as usize;
         let mut omissions = BTreeSet::new();
