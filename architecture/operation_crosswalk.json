@@ -282,6 +282,8 @@
       "primary_error_id": "ERR-CLI-RUNTIME-FAILURE-001",
       "error_identities": [
         "ERR-CLI-RUNTIME-FAILURE-001",
+        "ERR-DOCTOR-ATTENTION-REQUIRED-001",
+        "ERR-DOCTOR-NOT-A-DEPLOYMENT-001",
         "ERR-CLOCK-UNCERTAIN-001",
         "ERR-STREAM-CONTINUITY-001",
         "ERR-AUTH-DENIED-001",
@@ -289,7 +291,9 @@
       ],
       "exit_identities": [
         "EXIT-OK-000",
-        "EXIT-CLI-RUNTIME-FAILURE-001"
+        "EXIT-CLI-RUNTIME-FAILURE-001",
+        "EXIT-DOCTOR-ATTENTION-REQUIRED-003",
+        "EXIT-DOCTOR-NOT-A-DEPLOYMENT-004"
       ],
       "status": "specified"
     }

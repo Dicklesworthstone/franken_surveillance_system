@@ -13,6 +13,10 @@ autotests = true
 name = "reference_deployment_recovery_contract"
 path = "tests/reference_deployment_recovery_contract.rs"
 
+[[test]]
+name = "doctor_deployment_contract"
+path = "tests/doctor_deployment_contract.rs"
+
 [lints]
 workspace = true
 

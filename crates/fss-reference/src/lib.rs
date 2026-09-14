@@ -15,6 +15,7 @@ mod clock;
 mod clock_sync;
 mod context_binding;
 mod delivery;
+pub mod doctor;
 mod durable_effect;
 mod encoded_fixture;
 mod error;
@@ -107,6 +108,10 @@ pub use context_binding::{
 pub use delivery::{
     DeliveryContinuity, DeliveryDirective, DeliveryMutation, DeliveryPacket, DeliveryPlan,
     MAX_DELIVERY_DIRECTIVES,
+};
+pub use doctor::{
+    DoctorAffordance, DoctorCheck, DoctorFinding, DoctorIo, DoctorLimits, DoctorReport,
+    DoctorSeverity, DoctorValue, DoctorVerdict, inspect_deployment, inspect_deployment_with,
 };
 pub use durable_effect::{
     DurableEffectError, DurableEffectJournal, EFFECT_TRANSITION_RECORD_KIND,

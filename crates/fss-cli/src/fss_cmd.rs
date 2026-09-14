@@ -2,6 +2,7 @@
 //! Command specification, argument decoding, and grammar validation for the `fss` binary.
 
 use std::ffi::OsString;
+use std::path::PathBuf;
 
 use crate::error::{CliError, ExitIdentity};
 use crate::negative_evidence_cmd::{
@@ -10,6 +11,13 @@ use crate::negative_evidence_cmd::{
 use crate::token::{ArgToken, tokenize_os_args};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Options for the `doctor` command.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DoctorArgs {
+    /// Optional deployment root directory to inspect.
+    pub root: Option<PathBuf>,
+}
 
 /// Canonical commands supported by the `fss` CLI.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -21,7 +29,7 @@ pub enum FssCommand {
     /// Report capabilities in JSON format.
     Capabilities,
     /// Report system diagnostic doctor results in JSON format.
-    Doctor,
+    Doctor(DoctorArgs),
     /// Report system status in JSON format.
     Status,
     /// Negative evidence ledger management.
@@ -33,7 +41,7 @@ impl FssCommand {
     #[must_use]
     pub fn is_json(&self) -> bool {
         match self {
-            Self::Capabilities | Self::Doctor | Self::Status => true,
+            Self::Capabilities | Self::Doctor(_) | Self::Status => true,
             Self::NegativeEvidence(action) => action.is_json(),
             Self::Help | Self::Version => false,
         }
@@ -43,7 +51,7 @@ impl FssCommand {
 /// Returns the static help text for `fss`.
 #[must_use]
 pub const fn help_text() -> &'static str {
-    "Franken Surveillance System design skeleton\n\nUSAGE:\n  fss help\n  fss version\n  fss capabilities --json\n  fss doctor --json\n  fss status --json\n  fss negative-evidence <init|list|verify|append> [--path <file>] [--json]\n\nNo camera, drone, model, archive, or alert operation is implemented yet."
+    "Franken Surveillance System design skeleton\n\nUSAGE:\n  fss help\n  fss version\n  fss capabilities --json\n  fss doctor --json\n      [--root <dir>]  inspect a deployment root read-only (never writes, locks, or repairs)\n  fss status --json\n  fss negative-evidence <init|list|verify|append> [--path <file>] [--json]\n\nNo camera, drone, model, archive, or alert operation is implemented yet."
 }
 
 /// Parses OS-native arguments for `fss` with total validation and exact grammar exhaustion.
@@ -86,7 +94,7 @@ pub fn parse_fss_tokens(tokens: &[ArgToken]) -> Result<FssCommand, CliError> {
         "capabilities" => {
             parse_json_only_subcommand("capabilities", tokens, FssCommand::Capabilities)
         }
-        "doctor" => parse_json_only_subcommand("doctor", tokens, FssCommand::Doctor),
+        "doctor" => parse_doctor_tokens(tokens).map(FssCommand::Doctor),
         "status" => parse_json_only_subcommand("status", tokens, FssCommand::Status),
         "negative-evidence" | "neg" | "negative" => {
             let action = parse_negative_evidence_tokens(&tokens[1..])?;
@@ -108,6 +116,100 @@ pub fn parse_fss_tokens(tokens: &[ArgToken]) -> Result<FssCommand, CliError> {
             }
         }
     }
+}
+
+/// Parses the `doctor` subcommand supporting `--json` and optional `--root <dir>`.
+fn parse_doctor_tokens(tokens: &[ArgToken]) -> Result<DoctorArgs, CliError> {
+    if tokens.len() == 1 {
+        return Err(CliError::MissingValue {
+            option: "--json".to_owned(),
+            command: Some("doctor".to_owned()),
+            expected: "flag `--json` is required for this command".to_owned(),
+        });
+    }
+
+    let mut seen_json = false;
+    let mut root: Option<PathBuf> = None;
+    let mut idx = 1;
+
+    while idx < tokens.len() {
+        let arg = &tokens[idx];
+        match arg.as_str() {
+            "--json" => {
+                if seen_json {
+                    return Err(CliError::DuplicateOption {
+                        option: "--json".to_owned(),
+                        command: Some("doctor".to_owned()),
+                        index: arg.index,
+                    });
+                }
+                seen_json = true;
+                idx += 1;
+            }
+            "--root" => {
+                if root.is_some() {
+                    return Err(CliError::DuplicateOption {
+                        option: "--root".to_owned(),
+                        command: Some("doctor".to_owned()),
+                        index: arg.index,
+                    });
+                }
+                idx += 1;
+                if idx >= tokens.len() {
+                    return Err(CliError::MissingValue {
+                        option: "--root".to_owned(),
+                        command: Some("doctor".to_owned()),
+                        expected: "directory path for `--root`".to_owned(),
+                    });
+                }
+                root = Some(PathBuf::from(tokens[idx].raw.clone()));
+                idx += 1;
+            }
+            s if s.starts_with("--root=") => {
+                if root.is_some() {
+                    return Err(CliError::DuplicateOption {
+                        option: "--root".to_owned(),
+                        command: Some("doctor".to_owned()),
+                        index: arg.index,
+                    });
+                }
+                let val = &s["--root=".len()..];
+                if val.is_empty() {
+                    return Err(CliError::MissingValue {
+                        option: "--root".to_owned(),
+                        command: Some("doctor".to_owned()),
+                        expected: "directory path for `--root`".to_owned(),
+                    });
+                }
+                root = Some(PathBuf::from(val));
+                idx += 1;
+            }
+            opt if opt.starts_with('-') => {
+                return Err(CliError::UnknownOption {
+                    option: opt.to_owned(),
+                    command: Some("doctor".to_owned()),
+                    index: arg.index,
+                });
+            }
+            trailing => {
+                return Err(CliError::TrailingArgument {
+                    argument: trailing.to_owned(),
+                    index: arg.index,
+                    command: Some("doctor".to_owned()),
+                });
+            }
+        }
+    }
+
+    if !seen_json {
+        return Err(CliError::MissingValue {
+            option: "--json".to_owned(),
+            command: Some("doctor".to_owned()),
+            expected: "flag `--json` is required for this command".to_owned(),
+        });
+    }
+
+    Ok(DoctorArgs { root })
 }
 
 /// Parses subcommands whose only permitted option is `--json` with exact exhaustion.
@@ -183,12 +285,28 @@ pub fn execute_fss_with_exit(command: FssCommand) -> (String, ExitIdentity) {
             ),
             ExitIdentity::SUCCESS,
         ),
-        FssCommand::Doctor => (
+        FssCommand::Doctor(DoctorArgs { root: None }) => (
             format!(
                 "{{\"schema\":\"fss.doctor.v1\",\"version\":\"{VERSION}\",\"verdict\":\"design_only\",\"checks\":[{{\"id\":\"core.contracts\",\"status\":\"present\"}},{{\"id\":\"runtime.acquisition\",\"status\":\"not_implemented\"}},{{\"id\":\"release.qualification\",\"status\":\"not_qualified\"}}]}}"
             ),
             ExitIdentity::SUCCESS,
         ),
+        FssCommand::Doctor(DoctorArgs {
+            root: Some(ref root),
+        }) => {
+            let report = fss_reference::doctor::inspect_deployment(root);
+            let exit_id = match report.verdict {
+                fss_reference::doctor::DoctorVerdict::Healthy => ExitIdentity::SUCCESS,
+                fss_reference::doctor::DoctorVerdict::AttentionRequired => {
+                    ExitIdentity::DOCTOR_ATTENTION_REQUIRED
+                }
+                fss_reference::doctor::DoctorVerdict::NotADeployment => {
+                    ExitIdentity::DOCTOR_NOT_A_DEPLOYMENT
+                }
+                fss_reference::doctor::DoctorVerdict::Unreadable => ExitIdentity::RUNTIME_FAILURE,
+            };
+            (report.to_json(), exit_id)
+        }
         FssCommand::Status => (
             format!(
                 "{{\"schema\":\"fss.status.v1\",\"version\":\"{VERSION}\",\"phase\":\"architecture_constitution\",\"sensors\":[],\"events\":[],\"degraded\":[\"no_runtime_implementation\"]}}"
@@ -224,7 +342,19 @@ mod tests {
         );
         assert_eq!(
             parse_fss_args([OsString::from("doctor"), OsString::from("--json")]).ok(),
-            Some(FssCommand::Doctor)
+            Some(FssCommand::Doctor(DoctorArgs { root: None }))
+        );
+        assert_eq!(
+            parse_fss_args([
+                OsString::from("doctor"),
+                OsString::from("--json"),
+                OsString::from("--root"),
+                OsString::from("/deploy/root"),
+            ])
+            .ok(),
+            Some(FssCommand::Doctor(DoctorArgs {
+                root: Some(PathBuf::from("/deploy/root")),
+            }))
         );
         assert_eq!(
             parse_fss_args([OsString::from("status"), OsString::from("--json")]).ok(),

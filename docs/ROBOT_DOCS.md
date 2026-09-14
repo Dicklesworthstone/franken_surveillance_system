@@ -261,8 +261,8 @@ The complete suite of 14 canonical agent control plane operations under `fss/1`:
 - **Required Capabilities**: `CAP-REPAIR-PREPARE-001`
 - **Retry Classes**: `safe_read_retry`, `refresh_and_retry`, `backoff`, `resume_from_continuation`
 - **Primary Error**: `ERR-CLI-RUNTIME-FAILURE-001`
-- **Error Identities**: `ERR-CLI-RUNTIME-FAILURE-001`, `ERR-CLOCK-UNCERTAIN-001`, `ERR-STREAM-CONTINUITY-001`, `ERR-AUTH-DENIED-001`, `ERR-OP-EXECUTION-FAILED-001`
-- **Exit Identities**: `EXIT-OK-000`, `EXIT-CLI-RUNTIME-FAILURE-001`
+- **Error Identities**: `ERR-CLI-RUNTIME-FAILURE-001`, `ERR-DOCTOR-ATTENTION-REQUIRED-001`, `ERR-DOCTOR-NOT-A-DEPLOYMENT-001`, `ERR-CLOCK-UNCERTAIN-001`, `ERR-STREAM-CONTINUITY-001`, `ERR-AUTH-DENIED-001`, `ERR-OP-EXECUTION-FAILED-001`
+- **Exit Identities**: `EXIT-OK-000`, `EXIT-CLI-RUNTIME-FAILURE-001`, `EXIT-DOCTOR-ATTENTION-REQUIRED-003`, `EXIT-DOCTOR-NOT-A-DEPLOYMENT-004`
 
 ## 4. Registered Views Catalog
 
@@ -529,6 +529,8 @@ All stable error identities and normative recovery guidance cataloged from `regi
 | `ERR-DEP-TRACE-UNRESOLVED-001` | a dependency registry row's owner, producer, consumer, ContractBasis link, or a dependency checker diagnostic code does not resolve | name existing repository files and allowlist tables that reference the row, and register every emitted code in registries/ERRORS.md |
 | `ERR-DEP-UNSTABLE-FEATURE-001` | the repository enables a nightly unstable feature (#![feature(...)] including inside cfg_attr, -Z rustflags in .cargo/config or checked-in env/shell files, a cargo [unstable] table, cargo-features, or a -Z literal in a build script) while no unstable-feature allowlist is registered | remove the feature gate or flag, or register an unstable-feature allowlist with owner and removal plan before enabling it |
 | `ERR-DEVICE-UNSUPPORTED-001` | exact product/firmware/app tuple not certified | fail closed or explicit import-only mode |
+| `ERR-DOCTOR-ATTENTION-REQUIRED-001` | doctor inspection detected deployment conditions requiring attention | inspect doctor report and follow next affordance |
+| `ERR-DOCTOR-NOT-A-DEPLOYMENT-001` | target directory is not a recognized reference deployment root | provide a valid reference deployment root |
 | `ERR-EFFECT-INDETERMINATE-001` | dispatch outcome cannot be determined | reconcile before retry |
 | `ERR-EVIDENCE-MISSING-001` | canonical root references unavailable required evidence | repair; no adjudication requiring it |
 | `ERR-FIRMWARE-DRIFT-001` | observed device generation differs from registry | disable/move to shadow; no optimistic retry |

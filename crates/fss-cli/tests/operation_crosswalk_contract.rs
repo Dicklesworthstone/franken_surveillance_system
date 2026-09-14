@@ -168,6 +168,8 @@ fn test_live_crosswalk_passes_validation() -> TestResult {
         "ERR-AGENT-LEARNING-UNSUPPORTED-001",
         "ERR-CLI-RUNTIME-FAILURE-001",
         "ERR-CLOCK-UNCERTAIN-001",
+        "ERR-DOCTOR-ATTENTION-REQUIRED-001",
+        "ERR-DOCTOR-NOT-A-DEPLOYMENT-001",
     ];
 
     validate_crosswalk_entries(REGISTERED_OPERATION_CROSSWALK, &allowed_errors)?;
