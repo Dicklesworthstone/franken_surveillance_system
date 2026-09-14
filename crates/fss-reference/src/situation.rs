@@ -353,7 +353,7 @@ impl ReferenceSituation {
             .capsule
             .validated_digest("fss.reference_effect_binding_capsule.v1")?;
         let mut encoder = CanonicalEncoder::new();
-        encoder.text("fss.reference_effect_binding_seal.v5");
+        encoder.text("fss.reference_effect_binding_seal.v6");
         encoder.digest(capsule);
         // The lineage: what the situation is about and which publication it continues.
         match &self.subject {

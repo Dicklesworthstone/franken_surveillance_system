@@ -236,6 +236,12 @@ fn classify(
     let result_bar = ProofBar::of(result);
     let basis_proved = proved_operations(basis, basis_bar);
     let result_proved = proved_operations(result, result_bar);
+    // Evidence laundering is judged only where it can be attributed. An evidence reference is an
+    // untyped digest that names no producing cell, so a digest shared by a basis cell and a
+    // result cell cannot say which cell produced it: an unchanged honest carry-over (the same
+    // Observed and Derived cells in both frames) looks exactly like a relabel. No cross-frame
+    // laundering verdict is drawn here; the limitation is recorded under fss-gefi6 (typed
+    // evidence references) in architecture/agent_contracts.json.
     let mut classes = BTreeSet::new();
     let changed_cells = changed_cells(&basis_frame.knowledge_cells, &result_frame.knowledge_cells);
     let removed_claim_ids =

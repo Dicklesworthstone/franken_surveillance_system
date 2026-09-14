@@ -653,15 +653,7 @@ impl MockModelOutput {
 }
 
 fn provenance_class_str(class: ProvenanceClass) -> &'static str {
-    match class {
-        ProvenanceClass::Observed => "observed",
-        ProvenanceClass::Derived => "derived",
-        ProvenanceClass::Predicted => "predicted",
-        ProvenanceClass::Remembered => "remembered",
-        ProvenanceClass::OperatorAsserted => "operator_asserted",
-        ProvenanceClass::VendorClaimed => "vendor_claimed",
-        ProvenanceClass::Policy => "policy",
-    }
+    class.as_str()
 }
 
 fn encode_corroboration_status(status: &CorroborationStatus, encoder: &mut CanonicalEncoder) {

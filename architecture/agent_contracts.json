@@ -1,6 +1,6 @@
 {
   "schema": "fss.agent_contracts.v1",
-  "asOf": "2026-08-31",
+  "asOf": "2026-09-13",
   "semanticProtocol": "fss/1",
   "constitutionalDocument": "AGENT_COGNITION_AND_CONTROL.md",
   "controlPlaneDocument": "AGENT_COGNITIVE_CONTROL_PLANE.md",
@@ -123,6 +123,34 @@
       "meaning": "A rule, threshold, capability, or privacy decision from an exact policy generation."
     }
   ],
+  "mayLaunderEvidenceInto": {
+    "observed": [],
+    "derived": [
+      "observed"
+    ],
+    "predicted": [
+      "observed",
+      "derived",
+      "remembered",
+      "operator_asserted",
+      "vendor_claimed",
+      "policy"
+    ],
+    "remembered": [
+      "observed",
+      "derived",
+      "operator_asserted",
+      "policy"
+    ],
+    "operator_asserted": [],
+    "vendor_claimed": [
+      "observed",
+      "derived",
+      "operator_asserted",
+      "policy"
+    ],
+    "policy": []
+  },
   "hypothesisDispositions": [
     "live",
     "supported",
@@ -341,6 +369,22 @@
       "originalValue": "ten invented privacy class names (private:redacted plus raw/unredacted aliases)",
       "reconciledValue": "only private:property, the privacy class fss-core already uses; every other string is refused with invalid_privacy_class",
       "reason": "No machine registry of privacy classes exists in registries/ or architecture/. H2 accepts only the privacy class already used in fss-core/src and invents none.",
+      "status": "open"
+    },
+    {
+      "target": "ProvenanceClass::Predicted (PROV-003)",
+      "field": "knowledge_state",
+      "originalValue": "The PROV-003 row text 'Counterfactual or forward prediction under an explicit branch/model and assumptions.' states no knowledge-state constraint, so a predicted cell could claim known.",
+      "reconciledValue": "KnowledgeCell::validate refuses predicted provenance with the known state (predicted_known_forbidden); a prediction is at most estimated.",
+      "reason": "AGENT_COGNITION_AND_CONTROL.md §8.2 governs: a prediction is a counterfactual or future expectation, never current truth. The registry row does not inline this compatibility rule, so the constitution's rule is recorded here and enforced fail-closed.",
+      "status": "reconciled"
+    },
+    {
+      "target": "KnowledgeCell",
+      "field": "evidence",
+      "originalValue": "AGENT_COGNITION_AND_CONTROL.md §8.3 (derived beliefs cannot become observed) and the mayLaunderEvidenceInto table read as enforceable for any cell, any SituationFrame or MeaningfulDelta cell set, and any basis/result publication pair.",
+      "reconciledValue": "Laundering is refused only where the producing cell is known: KnowledgeCell::verify_no_evidence_laundering(prior) refuses exactly the registered pairs. A lone relabelled cell is accepted; SituationFrame::validate and MeaningfulDelta::validate judge the SET of cells (independent of order and claim-id naming) and accept shared evidence between classes; classify_reference_meaningful_delta draws no laundering verdict across basis and result frames.",
+      "reason": "An evidence reference is an untyped ContentDigest that names no producing cell, so shared evidence cannot be attributed to its author: guessing by list position or claim id refused honest derivations (P4r, P5r) and made verdicts order-dependent (Q1, Q2), and the basis-versus-result check refused honest unchanged carry-overs (identical frames [Observed(D), Derived(D)] returned evidence_laundering_detected) and was removed. Full enforcement needs typed evidence references carrying origin provenance, tracked under fss-gefi6.",
       "status": "open"
     }
   ]

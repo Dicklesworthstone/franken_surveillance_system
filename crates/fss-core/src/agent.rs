@@ -529,6 +529,11 @@ impl KnowledgeCell {
         if self.is_laboratory_tainted() && self.knowledge_state == KnowledgeState::Known {
             return Err(ContractError::DerivedLayerAuthorityForbidden);
         }
+        if self.provenance == ProvenanceClass::Predicted
+            && self.knowledge_state == KnowledgeState::Known
+        {
+            return Err(ContractError::PredictedKnownForbidden);
+        }
         if matches!(
             self.provenance,
             ProvenanceClass::Observed | ProvenanceClass::Derived
@@ -547,6 +552,20 @@ impl KnowledgeCell {
             (Some(_), Some(error)) => Err(error),
             (Some(_), None) => Err(ContractError::KnowledgeStateBasisMismatch),
         }
+    }
+
+    /// Verifies that evidence from `prior` is not being laundered into `self`
+    /// across incompatible provenance classes without fresh live observation (AGENTS.md, Constitution §8.3).
+    pub fn verify_no_evidence_laundering(
+        &self,
+        prior: &KnowledgeCell,
+    ) -> Result<(), ContractError> {
+        if prior.provenance.may_launder_evidence_into(self.provenance)
+            && self.evidence.iter().any(|e| prior.evidence.contains(e))
+        {
+            return Err(ContractError::EvidenceLaunderingDetected);
+        }
+        Ok(())
     }
 
     /// Consumes and returns the cell only when [`Self::validate`] accepts it.
@@ -1016,10 +1035,11 @@ impl SituationFrame {
         {
             return Err(ContractError::StaleAnchor);
         }
+        self.world_envelope.validate()?;
         for cell in &self.knowledge_cells {
             cell.validate()?;
         }
-        self.world_envelope.validate()
+        Ok(())
     }
 
     /// Returns the frame fingerprint.
