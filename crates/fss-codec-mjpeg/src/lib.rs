@@ -186,3 +186,6 @@ pub fn decode_luma(bytes: &[u8], expected_sha256: [u8; 32],
 
 /// Incremental, source-offset-preserving framing for concatenated JPEG streams.
 pub mod stream;
+
+/// Bounded JPEG parts from dechunked multipart/x-mixed-replace entity bytes.
+pub mod multipart;
