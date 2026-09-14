@@ -10,8 +10,9 @@ use fss_object::{InMemoryObjectStore, ObjectLimits};
 
 use crate::{
     DeliveryPlan, DurableEffectError, DurableEffectJournal, MockModelScript, MockModelSpec,
-    MockSemanticLabel, ObligationLedgerState, PrepareAlertParams, ReferenceAlertProvider,
-    ReferenceError, ReferenceModelObservation, ReferencePolicyDecision, ReferenceProviderBehavior,
+    MockSemanticLabel, ObligationLedgerState, PrepareAlertParams,
+    REFERENCE_ALERT_TERMINAL_PREDICATE, ReferenceAlertProvider, ReferenceError,
+    ReferenceModelObservation, ReferencePolicyDecision, ReferenceProviderBehavior,
     VirtualCameraSpec, dispatch_reference_alert, evaluate_unknown_presence, execute_mock_model,
     observe_reference_alert, prepare_reference_alert, publish_reference_event,
     reconcile_reference_alert, run_reference_capture, verify_reference_alert,
@@ -1620,21 +1621,31 @@ fn test_crash_after_commit_recovery_requires_reconcile() -> Result<(), Box<dyn E
         channel: "operator:oncall".to_owned(),
         now: TimestampNs(100),
     })?;
+    let prep_receipt = journal
+        .operation(&plan.intent.operation_id)
+        .ok_or("missing prep operation")?;
+    assert_eq!(prep_receipt.state, EffectState::Prepared);
+
     let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:crash1");
 
     // Session 1: Commit durably on disk, then direct provider dispatch simulates crash before AdapterAccepted
-    journal.transition(
+    let commit_receipt = journal.transition(
         &plan.intent.operation_id,
         EffectState::Committed,
         TimestampNs(110),
         None,
         None,
     )?;
+    assert_eq!(commit_receipt.state, EffectState::Committed);
     provider.dispatch(&plan.intent, ReferenceProviderBehavior::Deliver);
 
     // Session 2: System reboots; journal is replayed from disk in Committed state
-    let mut rebooted = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
-    let redispatch_res = rebooted.dispatch_alert(
+    let mut reopened = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+    let receipt = reopened
+        .operation(&plan.intent.operation_id)
+        .ok_or(ContractError::NotFound)?;
+    assert_eq!(receipt.state, EffectState::Committed);
+    let redispatch_res = reopened.dispatch_alert(
         &plan,
         &authority,
         ReferenceProviderBehavior::Deliver,
@@ -1654,18 +1665,18 @@ fn test_crash_after_commit_recovery_requires_reconcile() -> Result<(), Box<dyn E
         .lookup(&plan.intent)?
         .ok_or(ContractError::NotFound)?
         .receipt_digest();
-    let reconciled = rebooted.reconcile_alert(&plan, TimestampNs(215), &provider)?;
-    let receipt = reconciled.ok_or(ContractError::NotFound)?;
-    assert_eq!(receipt.state, EffectState::Verified);
-    assert_eq!(receipt.result_digest, Some(provider_proof));
+    let reconciled = reopened.reconcile_alert(&plan, TimestampNs(215), &provider)?;
+    let reconciled_receipt = reconciled.ok_or(ContractError::NotFound)?;
+    assert_eq!(reconciled_receipt.state, EffectState::Verified);
+    assert_eq!(reconciled_receipt.result_digest, Some(provider_proof));
 
-    let obligation = rebooted
+    let obligation = reopened
         .obligations()
         .find(|o| o.obligation_id == plan.obligation_id)
         .ok_or(ContractError::NotFound)?;
     assert_eq!(obligation.state, ObligationState::Verified);
 
-    match rebooted.classify_obligation(&plan.obligation_id, &authority)? {
+    match reopened.classify_obligation(&plan.obligation_id, &authority)? {
         ObligationLedgerState::PendingLedger(pending) => {
             assert_eq!(pending.obligation.obligation_id, plan.obligation_id);
             assert_eq!(pending.obligation.state, ObligationState::Verified);
@@ -1793,5 +1804,535 @@ fn test_crash_after_commit_blind_redispatch_refused_on_reboot() -> Result<(), Bo
 
     let _ = fs::remove_file(path);
     let _ = fs::remove_file(ledger_path);
+    Ok(())
+}
+
+#[test]
+fn test_x7_mem_self_prepared_intent_on_tamper_revision() -> Result<(), Box<dyn Error>> {
+    let path = temp_journal("x7m-tamper");
+    let _ = fs::remove_file(&path);
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(768, 12 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
+    let mut journal = EffectJournal::new();
+    let plan = prepare(&decision, &event_receipt, &authority, &mut journal)?;
+
+    // Publish tamper revision
+    let tamper_obs = observation_with_label(
+        "capture:alert:x7m-tamper",
+        "sensor:alert:x7m-tamper",
+        199,
+        "power:alert:x7m-tamper",
+        MockSemanticLabel::TamperLike,
+        &mut objects,
+        &mut authority,
+    )?;
+    let eval_2 = evaluate_unknown_presence(decision.event.event_id.clone(), vec![tamper_obs])?;
+    let dec_2 = successor(&decision.event, &eval_2)?;
+    let rc_2 = publish_reference_event(&dec_2, &mut objects, &mut authority)?;
+
+    // Attacker crafts forged plan pointing to tampered revision and prepares own intent
+    let mut forged = plan.clone();
+    forged.event_root = rc_2.event_root;
+    forged.event_revision_digest = rc_2.event_revision_digest;
+    forged.authority_anchor = rc_2.authority_anchor.clone();
+    forged.intent.operation_id = OperationId::parse("operation:alert:x7m-self")?;
+    forged.intent.idempotency_key = IdempotencyKey::parse("idempotency:alert:x7m-self")?;
+    forged.obligation_id = ObligationId::parse("obligation:alert:x7m-self")?;
+    forged.intent.request_digest = crate::alert::alert_request_digest(&rc_2, &forged.channel);
+
+    let _ = journal.prepare(
+        forged.intent.clone(),
+        forged.obligation_id.clone(),
+        REFERENCE_ALERT_TERMINAL_PREDICATE,
+        TimestampNs(100),
+    )?;
+
+    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:x7m");
+    let res = dispatch_reference_alert(
+        &forged,
+        &authority,
+        ReferenceProviderBehavior::Deliver,
+        TimestampNs(101),
+        TimestampNs(102),
+        &mut journal,
+        &mut provider,
+    );
+
+    assert!(matches!(res, Err(ReferenceError::StaleEventAuthority)));
+    assert_eq!(provider.message_count(), 0);
+    let op = journal
+        .operation(&forged.intent.operation_id)
+        .ok_or("missing op")?;
+    assert_eq!(op.state, EffectState::Cancelled);
+    let ob = journal
+        .obligations()
+        .find(|o| o.obligation_id == forged.obligation_id)
+        .ok_or("missing ob")?;
+    assert_eq!(ob.state, ObligationState::Cancelled);
+
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn test_x7_dur_self_prepared_intent_on_tamper_revision() -> Result<(), Box<dyn Error>> {
+    let ledger_path = temp_journal("x7d-tamper-ledger");
+    let journal_path = temp_journal("x7d-tamper-journal");
+    let _ = fs::remove_file(&ledger_path);
+    let _ = fs::remove_file(&journal_path);
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(768, 12 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&ledger_path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
+    let mut durable_journal =
+        DurableEffectJournal::open(&journal_path, IncompleteTailPolicy::Reject)?;
+    let plan = durable_journal.prepare_alert(PrepareAlertParams {
+        decision: &decision,
+        event_receipt: &event_receipt,
+        authority: &authority,
+        operation_id: OperationId::parse("operation:alert:x7d")?,
+        idempotency_key: IdempotencyKey::parse("idempotency:alert:x7d")?,
+        obligation_id: ObligationId::parse("obligation:alert:x7d")?,
+        channel: "operator:oncall".to_owned(),
+        now: TimestampNs(100),
+    })?;
+
+    // Publish tamper revision
+    let tamper_obs = observation_with_label(
+        "capture:alert:x7d-tamper",
+        "sensor:alert:x7d-tamper",
+        299,
+        "power:alert:x7d-tamper",
+        MockSemanticLabel::TamperLike,
+        &mut objects,
+        &mut authority,
+    )?;
+    let eval_2 = evaluate_unknown_presence(decision.event.event_id.clone(), vec![tamper_obs])?;
+    let dec_2 = successor(&decision.event, &eval_2)?;
+    let rc_2 = publish_reference_event(&dec_2, &mut objects, &mut authority)?;
+
+    let mut forged = plan.clone();
+    forged.event_root = rc_2.event_root;
+    forged.event_revision_digest = rc_2.event_revision_digest;
+    forged.authority_anchor = rc_2.authority_anchor.clone();
+    forged.intent.operation_id = OperationId::parse("operation:alert:x7d-self")?;
+    forged.intent.idempotency_key = IdempotencyKey::parse("idempotency:alert:x7d-self")?;
+    forged.obligation_id = ObligationId::parse("obligation:alert:x7d-self")?;
+    forged.intent.request_digest = crate::alert::alert_request_digest(&rc_2, &forged.channel);
+
+    let _ = durable_journal.prepare(
+        forged.intent.clone(),
+        forged.obligation_id.clone(),
+        REFERENCE_ALERT_TERMINAL_PREDICATE,
+        TimestampNs(100),
+    )?;
+
+    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:x7d");
+    let res = durable_journal.dispatch_alert(
+        &forged,
+        &authority,
+        ReferenceProviderBehavior::Deliver,
+        TimestampNs(101),
+        TimestampNs(102),
+        &mut provider,
+    );
+
+    assert!(matches!(
+        res,
+        Err(DurableEffectError::Reference(
+            ReferenceError::StaleEventAuthority
+        ))
+    ));
+    assert_eq!(provider.message_count(), 0);
+    let op = durable_journal
+        .operation(&forged.intent.operation_id)
+        .ok_or("missing op")?;
+    assert_eq!(op.state, EffectState::Cancelled);
+    let ob = durable_journal
+        .obligation(&forged.obligation_id)
+        .ok_or("missing ob")?;
+    assert_eq!(ob.state, ObligationState::Cancelled);
+
+    let reopened = DurableEffectJournal::open(&journal_path, IncompleteTailPolicy::Reject)?;
+    assert_eq!(
+        reopened
+            .operation(&forged.intent.operation_id)
+            .ok_or("missing reopened op")?
+            .state,
+        EffectState::Cancelled
+    );
+
+    let _ = fs::remove_file(ledger_path);
+    let _ = fs::remove_file(journal_path);
+    Ok(())
+}
+
+#[test]
+fn test_x7b_mem_self_prepared_on_uncorroborated_revision() -> Result<(), Box<dyn Error>> {
+    let path = temp_journal("x7bm-uncorroborated");
+    let _ = fs::remove_file(&path);
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(768, 12 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
+    let mut journal = EffectJournal::new();
+    let plan = prepare(&decision, &event_receipt, &authority, &mut journal)?;
+
+    // Publish uncorroborated revision
+    let unknown_obs = observation_with_label(
+        "capture:alert:x7bm-unknown",
+        "sensor:alert:x7bm-unknown",
+        399,
+        "power:alert:x7bm-unknown",
+        MockSemanticLabel::Unknown,
+        &mut objects,
+        &mut authority,
+    )?;
+    let eval_2 = evaluate_unknown_presence(decision.event.event_id.clone(), vec![unknown_obs])?;
+    let dec_2 = successor(&decision.event, &eval_2)?;
+    let rc_2 = publish_reference_event(&dec_2, &mut objects, &mut authority)?;
+
+    let mut forged = plan.clone();
+    forged.event_root = rc_2.event_root;
+    forged.event_revision_digest = rc_2.event_revision_digest;
+    forged.authority_anchor = rc_2.authority_anchor.clone();
+    forged.intent.operation_id = OperationId::parse("operation:alert:x7bm-self")?;
+    forged.intent.idempotency_key = IdempotencyKey::parse("idempotency:alert:x7bm-self")?;
+    forged.obligation_id = ObligationId::parse("obligation:alert:x7bm-self")?;
+    forged.intent.request_digest = crate::alert::alert_request_digest(&rc_2, &forged.channel);
+
+    let _ = journal.prepare(
+        forged.intent.clone(),
+        forged.obligation_id.clone(),
+        REFERENCE_ALERT_TERMINAL_PREDICATE,
+        TimestampNs(100),
+    )?;
+
+    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:x7bm");
+    let res = dispatch_reference_alert(
+        &forged,
+        &authority,
+        ReferenceProviderBehavior::Deliver,
+        TimestampNs(101),
+        TimestampNs(102),
+        &mut journal,
+        &mut provider,
+    );
+
+    assert!(matches!(res, Err(ReferenceError::StaleEventAuthority)));
+    assert_eq!(provider.message_count(), 0);
+    let op = journal
+        .operation(&forged.intent.operation_id)
+        .ok_or("missing op")?;
+    assert_eq!(op.state, EffectState::Cancelled);
+
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn test_x7b_dur_self_prepared_on_uncorroborated_revision() -> Result<(), Box<dyn Error>> {
+    let ledger_path = temp_journal("x7bd-uncorroborated-ledger");
+    let journal_path = temp_journal("x7bd-uncorroborated-journal");
+    let _ = fs::remove_file(&ledger_path);
+    let _ = fs::remove_file(&journal_path);
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(768, 12 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&ledger_path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
+    let mut durable_journal =
+        DurableEffectJournal::open(&journal_path, IncompleteTailPolicy::Reject)?;
+    let plan = durable_journal.prepare_alert(PrepareAlertParams {
+        decision: &decision,
+        event_receipt: &event_receipt,
+        authority: &authority,
+        operation_id: OperationId::parse("operation:alert:x7bd")?,
+        idempotency_key: IdempotencyKey::parse("idempotency:alert:x7bd")?,
+        obligation_id: ObligationId::parse("obligation:alert:x7bd")?,
+        channel: "operator:oncall".to_owned(),
+        now: TimestampNs(100),
+    })?;
+
+    // Publish uncorroborated revision
+    let unknown_obs = observation_with_label(
+        "capture:alert:x7bd-unknown",
+        "sensor:alert:x7bd-unknown",
+        499,
+        "power:alert:x7bd-unknown",
+        MockSemanticLabel::Unknown,
+        &mut objects,
+        &mut authority,
+    )?;
+    let eval_2 = evaluate_unknown_presence(decision.event.event_id.clone(), vec![unknown_obs])?;
+    let dec_2 = successor(&decision.event, &eval_2)?;
+    let rc_2 = publish_reference_event(&dec_2, &mut objects, &mut authority)?;
+
+    let mut forged = plan.clone();
+    forged.event_root = rc_2.event_root;
+    forged.event_revision_digest = rc_2.event_revision_digest;
+    forged.authority_anchor = rc_2.authority_anchor.clone();
+    forged.intent.operation_id = OperationId::parse("operation:alert:x7bd-self")?;
+    forged.intent.idempotency_key = IdempotencyKey::parse("idempotency:alert:x7bd-self")?;
+    forged.obligation_id = ObligationId::parse("obligation:alert:x7bd-self")?;
+    forged.intent.request_digest = crate::alert::alert_request_digest(&rc_2, &forged.channel);
+
+    let _ = durable_journal.prepare(
+        forged.intent.clone(),
+        forged.obligation_id.clone(),
+        REFERENCE_ALERT_TERMINAL_PREDICATE,
+        TimestampNs(100),
+    )?;
+
+    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:x7bd");
+    let res = durable_journal.dispatch_alert(
+        &forged,
+        &authority,
+        ReferenceProviderBehavior::Deliver,
+        TimestampNs(101),
+        TimestampNs(102),
+        &mut provider,
+    );
+
+    assert!(matches!(
+        res,
+        Err(DurableEffectError::Reference(
+            ReferenceError::StaleEventAuthority
+        ))
+    ));
+    assert_eq!(provider.message_count(), 0);
+    let op = durable_journal
+        .operation(&forged.intent.operation_id)
+        .ok_or("missing op")?;
+    assert_eq!(op.state, EffectState::Cancelled);
+
+    let _ = fs::remove_file(ledger_path);
+    let _ = fs::remove_file(journal_path);
+    Ok(())
+}
+
+#[test]
+fn test_x2_stale_ledger_handle_after_tamper() -> Result<(), Box<dyn Error>> {
+    let path = temp_journal("x2s-stale");
+    let _ = fs::remove_file(&path);
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(768, 12 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
+    let mut journal = EffectJournal::new();
+    let plan = prepare(&decision, &event_receipt, &authority, &mut journal)?;
+
+    // Open second handle on the same journal path and commit tamper
+    let mut h2 = DurableReferenceLedger::open(&path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let tamper_obs = observation_with_label(
+        "capture:alert:x2s-tamper",
+        "sensor:alert:x2s-tamper",
+        599,
+        "power:alert:x2s-tamper",
+        MockSemanticLabel::TamperLike,
+        &mut objects,
+        &mut h2,
+    )?;
+    let eval_2 = evaluate_unknown_presence(decision.event.event_id.clone(), vec![tamper_obs])?;
+    let dec_2 = successor(&decision.event, &eval_2)?;
+    let _rc_2 = publish_reference_event(&dec_2, &mut objects, &mut h2)?;
+
+    // Now dispatch using original authority handle (which has not observed h2 commits)
+    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:x2s");
+    let res = dispatch_reference_alert(
+        &plan,
+        &authority,
+        ReferenceProviderBehavior::Deliver,
+        TimestampNs(101),
+        TimestampNs(102),
+        &mut journal,
+        &mut provider,
+    );
+
+    assert!(matches!(res, Err(ReferenceError::StaleEventAuthority)));
+    assert_eq!(provider.message_count(), 0);
+    let op = journal
+        .operation(&plan.intent.operation_id)
+        .ok_or("missing op")?;
+    assert_eq!(op.state, EffectState::Cancelled);
+
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn test_x6b_mem_root_rewrite_without_request_digest_cancels_prepared_op()
+-> Result<(), Box<dyn Error>> {
+    let path = temp_journal("x6bm-rewrite-noreq");
+    let _ = fs::remove_file(&path);
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(768, 12 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
+    let mut journal = EffectJournal::new();
+    let plan = prepare(&decision, &event_receipt, &authority, &mut journal)?;
+
+    // Tamper published
+    let tamper_obs = observation_with_label(
+        "capture:alert:x6bm-tamper",
+        "sensor:alert:x6bm-tamper",
+        699,
+        "power:alert:x6bm-tamper",
+        MockSemanticLabel::TamperLike,
+        &mut objects,
+        &mut authority,
+    )?;
+    let eval_2 = evaluate_unknown_presence(decision.event.event_id.clone(), vec![tamper_obs])?;
+    let dec_2 = successor(&decision.event, &eval_2)?;
+    let rc_2 = publish_reference_event(&dec_2, &mut objects, &mut authority)?;
+
+    // Forge root/revision WITHOUT updating request digest
+    let mut forged = plan.clone();
+    forged.event_root = rc_2.event_root;
+    forged.event_revision_digest = rc_2.event_revision_digest;
+    forged.authority_anchor = rc_2.authority_anchor.clone();
+
+    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:x6bm");
+    let r1 = dispatch_reference_alert(
+        &forged,
+        &authority,
+        ReferenceProviderBehavior::Deliver,
+        TimestampNs(101),
+        TimestampNs(102),
+        &mut journal,
+        &mut provider,
+    );
+    assert!(r1.is_err());
+    assert_eq!(provider.message_count(), 0);
+
+    // Operation must be Cancelled, NOT left Prepared
+    let op = journal
+        .operation(&plan.intent.operation_id)
+        .ok_or("missing op")?;
+    assert_eq!(op.state, EffectState::Cancelled);
+
+    // Second dispatch attempt with original plan must also fail because op is Cancelled
+    let r2 = dispatch_reference_alert(
+        &plan,
+        &authority,
+        ReferenceProviderBehavior::Deliver,
+        TimestampNs(103),
+        TimestampNs(104),
+        &mut journal,
+        &mut provider,
+    );
+    assert!(r2.is_err());
+    assert_eq!(provider.message_count(), 0);
+
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn test_m8_mismatched_obligation_id_refused_and_cancels() -> Result<(), Box<dyn Error>> {
+    let path = temp_journal("m8-obligation-mismatch");
+    let _ = fs::remove_file(&path);
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(768, 12 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
+    let mut journal = EffectJournal::new();
+
+    // Prepare operation 1
+    let plan1 = prepare(&decision, &event_receipt, &authority, &mut journal)?;
+
+    // Prepare operation 2 on the same event
+    let plan2 = prepare_reference_alert(
+        PrepareAlertParams {
+            decision: &decision,
+            event_receipt: &event_receipt,
+            authority: &authority,
+            operation_id: OperationId::parse("operation:alert:m8-op2")?,
+            idempotency_key: IdempotencyKey::parse("idempotency:alert:m8-op2")?,
+            obligation_id: ObligationId::parse("obligation:alert:m8-obl2")?,
+            channel: "operator:oncall".to_owned(),
+            now: TimestampNs(100),
+        },
+        &mut journal,
+    )?;
+
+    // Mismatched plan: op1's intent but pointing to plan2's obligation_id
+    let mut mismatched = plan1.clone();
+    mismatched.obligation_id = plan2.obligation_id.clone();
+
+    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:m8");
+    let res = dispatch_reference_alert(
+        &mismatched,
+        &authority,
+        ReferenceProviderBehavior::Deliver,
+        TimestampNs(101),
+        TimestampNs(102),
+        &mut journal,
+        &mut provider,
+    );
+
+    assert!(matches!(res, Err(ReferenceError::StaleEventAuthority)));
+    assert_eq!(provider.message_count(), 0);
+
+    // Operation 1 must be Cancelled
+    let op1 = journal
+        .operation(&plan1.intent.operation_id)
+        .ok_or("missing op1")?;
+    assert_eq!(op1.state, EffectState::Cancelled);
+
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn test_divergent_ledger_head_refused_and_cancels() -> Result<(), Box<dyn Error>> {
+    let path_a = temp_journal("div-ledger-a");
+    let path_b = temp_journal("div-ledger-b");
+    let _ = fs::remove_file(&path_a);
+    let _ = fs::remove_file(&path_b);
+    let mut objects_a = InMemoryObjectStore::new(ObjectLimits::new(768, 12 * 1024 * 1024));
+    let mut ledger_a =
+        DurableReferenceLedger::open(&path_a, "site:alert", IncompleteTailPolicy::Reject)?;
+    let (decision, event_receipt) = eligible_event(&mut objects_a, &mut ledger_a)?;
+    let mut journal = EffectJournal::new();
+    let plan = prepare(&decision, &event_receipt, &ledger_a, &mut journal)?;
+
+    // Ledger B has the same event, but a divergent subsequent batch / head
+    let mut objects_b = InMemoryObjectStore::new(ObjectLimits::new(768, 12 * 1024 * 1024));
+    let mut ledger_b =
+        DurableReferenceLedger::open(&path_b, "site:alert", IncompleteTailPolicy::Reject)?;
+    let (_dec_b, _rc_b) = eligible_event(&mut objects_b, &mut ledger_b)?;
+    let divergent_obs = observation_with_label(
+        "capture:alert:div-other",
+        "sensor:alert:div-other",
+        799,
+        "power:alert:div-other",
+        MockSemanticLabel::PersonLike,
+        &mut objects_b,
+        &mut ledger_b,
+    )?;
+    let _ = divergent_obs;
+
+    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:divergent");
+    let res = dispatch_reference_alert(
+        &plan,
+        &ledger_b,
+        ReferenceProviderBehavior::Deliver,
+        TimestampNs(101),
+        TimestampNs(102),
+        &mut journal,
+        &mut provider,
+    );
+
+    assert!(matches!(res, Err(ReferenceError::StaleEventAuthority)));
+    assert_eq!(provider.message_count(), 0);
+    let op = journal
+        .operation(&plan.intent.operation_id)
+        .ok_or("missing op")?;
+    assert_eq!(op.state, EffectState::Cancelled);
+
+    let _ = fs::remove_file(path_a);
+    let _ = fs::remove_file(path_b);
     Ok(())
 }

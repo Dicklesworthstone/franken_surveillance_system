@@ -115,10 +115,7 @@ impl From<ContractError> for DurableEffectError {
 
 impl From<ReferenceError> for DurableEffectError {
     fn from(value: ReferenceError) -> Self {
-        match value {
-            ReferenceError::Contract(contract_err) => Self::Contract(contract_err),
-            other => Self::Reference(other),
-        }
+        Self::Reference(value)
     }
 }
 
@@ -789,10 +786,15 @@ impl DurableEffectJournal {
         let now = params.now;
         let mut validation_journal = EffectJournal::new();
         let plan = crate::alert::prepare_reference_alert(params, &mut validation_journal)?;
+        let terminal_predicate = validation_journal
+            .obligations()
+            .find(|o| o.obligation_id == plan.obligation_id)
+            .map(|o| o.terminal_predicate.as_str())
+            .unwrap_or(crate::alert::REFERENCE_ALERT_TERMINAL_PREDICATE);
         self.prepare(
             plan.intent.clone(),
             plan.obligation_id.clone(),
-            crate::alert::REFERENCE_ALERT_TERMINAL_PREDICATE,
+            terminal_predicate,
             now,
         )?;
         Ok(plan)
@@ -846,7 +848,7 @@ impl crate::alert::AlertEffectTransitioner for DurableEffectJournal {
         .map_err(|e| match e {
             DurableEffectError::Reference(ref_err) => ref_err,
             DurableEffectError::Contract(contract_err) => ReferenceError::Contract(contract_err),
-            other => ReferenceError::DurableTransitionFailed(other.to_string()),
+            other => ReferenceError::DurableTransitionFailed(Box::new(other)),
         })
     }
 
@@ -862,7 +864,7 @@ impl crate::alert::AlertEffectTransitioner for DurableEffectJournal {
                 DurableEffectError::Contract(contract_err) => {
                     ReferenceError::Contract(contract_err)
                 }
-                other => ReferenceError::DurableTransitionFailed(other.to_string()),
+                other => ReferenceError::DurableTransitionFailed(Box::new(other)),
             })
     }
 
@@ -878,7 +880,7 @@ impl crate::alert::AlertEffectTransitioner for DurableEffectJournal {
                 DurableEffectError::Contract(contract_err) => {
                     ReferenceError::Contract(contract_err)
                 }
-                other => ReferenceError::DurableTransitionFailed(other.to_string()),
+                other => ReferenceError::DurableTransitionFailed(Box::new(other)),
             })
     }
 
@@ -895,7 +897,7 @@ impl crate::alert::AlertEffectTransitioner for DurableEffectJournal {
                 DurableEffectError::Contract(contract_err) => {
                     ReferenceError::Contract(contract_err)
                 }
-                other => ReferenceError::DurableTransitionFailed(other.to_string()),
+                other => ReferenceError::DurableTransitionFailed(Box::new(other)),
             })
     }
 
@@ -913,7 +915,7 @@ impl crate::alert::AlertEffectTransitioner for DurableEffectJournal {
                 DurableEffectError::Contract(contract_err) => {
                     ReferenceError::Contract(contract_err)
                 }
-                other => ReferenceError::DurableTransitionFailed(other.to_string()),
+                other => ReferenceError::DurableTransitionFailed(Box::new(other)),
             })
     }
 }
