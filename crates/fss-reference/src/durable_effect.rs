@@ -397,14 +397,20 @@ impl DurableEffectJournal {
             });
         }
 
-        let cap = limits.max_journal_bytes.saturating_add(1);
-        let buf = io.read_bounded(path, cap)?;
-        if buf.len() > limits.max_journal_bytes {
+        // A journal whose stat length already exceeds the limit is rejected before any read. The
+        // read itself stays bounded at `limit + 1` bytes, so a journal that grows after the stat
+        // is still caught.
+        let stat_len = usize::try_from(meta.len).unwrap_or(usize::MAX);
+        let stat_over_limit = stat_len > limits.max_journal_bytes;
+        let buf = if stat_over_limit {
+            Vec::new()
+        } else {
+            io.read_bounded(path, limits.max_journal_bytes.saturating_add(1))?
+        };
+        if stat_over_limit || buf.len() > limits.max_journal_bytes {
             return Err(DurableEffectError::OverBudget {
                 limit: limits.max_journal_bytes,
-                actual: usize::try_from(meta.len)
-                    .unwrap_or(usize::MAX)
-                    .max(buf.len()),
+                actual: stat_len.max(buf.len()),
             });
         }
 
@@ -459,8 +465,10 @@ impl DurableEffectJournal {
 
     /// Non-mutating inspection of a durable effect journal.
     ///
-    /// Reads up to `limits.max_journal_bytes + 1` bytes without acquiring exclusive locks,
-    /// mutating the file, or fsyncing. If the file is missing, returns [`EffectJournalStatus::Absent`].
+    /// A journal whose stat length exceeds `limits.max_journal_bytes` is rejected with
+    /// [`DurableEffectError::OverBudget`] before any read; otherwise reads up to
+    /// `limits.max_journal_bytes + 1` bytes without acquiring locks, mutating the file, or
+    /// fsyncing. If the file is missing, returns [`EffectJournalStatus::Absent`].
     pub fn inspect(
         path: impl AsRef<Path>,
         limits: impl Into<DurableLedgerLimits>,

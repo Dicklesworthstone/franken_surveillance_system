@@ -716,9 +716,16 @@ pub fn inspect_durable_with_io(
         });
     }
 
-    let cap = limits.max_journal_bytes.saturating_add(1);
-    let buf = io.read_bounded(path, cap)?;
-    if buf.len() > limits.max_journal_bytes {
+    // A journal whose stat length already exceeds the limit is rejected before any read. The
+    // read itself stays bounded at `limit + 1` bytes, so a journal that grows after the stat is
+    // still caught.
+    let stat_over_limit = observed_len(meta.len, 0) > limits.max_journal_bytes;
+    let buf = if stat_over_limit {
+        Vec::new()
+    } else {
+        io.read_bounded(path, limits.max_journal_bytes.saturating_add(1))?
+    };
+    if stat_over_limit || buf.len() > limits.max_journal_bytes {
         return Err(DurableLedgerError::OverBudget {
             limit: limits.max_journal_bytes,
             actual: observed_len(meta.len, buf.len()),
@@ -757,9 +764,11 @@ fn committed_prefix(bytes: &[u8], committed_len: u64) -> Result<&[u8], DurableLe
 
 /// Inspects a durable reference ledger without acquiring locks or modifying files.
 ///
-/// Performs a bounded read (capped at `limits.max_journal_bytes + 1` bytes) to prevent
-/// memory exhaustion and race conditions with concurrent writers. If the journal does
-/// not exist, an empty [`LedgerInspection`] is returned without creating the file.
+/// A journal whose stat length exceeds `limits.max_journal_bytes` is rejected with
+/// [`DurableLedgerError::OverBudget`] before any read; otherwise the read is capped at
+/// `limits.max_journal_bytes + 1` bytes, so a journal that grows after the stat is still rejected
+/// and memory stays bounded. If the journal does not exist, an empty [`LedgerInspection`] is
+/// returned without creating the file.
 /// If the path is a symlink or non-regular file, [`DurableLedgerError::InvalidLayout`] is returned.
 pub fn inspect_durable(
     path: impl AsRef<Path>,
