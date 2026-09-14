@@ -11,6 +11,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "fss-codec-mjpeg"
+version = "0.0.1"
+dependencies = [
+ "fss-core",
+]
+
+[[package]]
 name = "fss-core"
 version = "0.0.1"
 

@@ -1,0 +1,12 @@
+[package]
+name = "fss-codec-mjpeg"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+
+[dependencies]
+fss-core = { path = "../fss-core" }
+
+[lints]
+workspace = true
