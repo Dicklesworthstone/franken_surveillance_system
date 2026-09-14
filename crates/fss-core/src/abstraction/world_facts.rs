@@ -15,7 +15,9 @@ use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, Canon
 use crate::contract::{ContractError, Plane, ProvenanceClass};
 use crate::evidence::CoverageWitness;
 use crate::ids::validate_id;
-use crate::{ContentDigest, ContractBasis, Generation, LedgerAnchor, LedgerSnapshot};
+use crate::{
+    ContentDigest, ContractBasis, Generation, LedgerAnchor, ReferenceLedger,
+};
 
 /// Categories of authoritative facts established or observed at one anchor (AGT-LAYER-003).
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -270,8 +272,9 @@ pub trait CurrentAnchorSource: sealed::Sealed {
 
 /// An explicit authority-plane anchor token proving current ledger state (INV-063).
 ///
-/// Cannot be constructed from an arbitrary or bare [`LedgerAnchor`] through the public API.
-/// Must be witnessed from a committed ledger snapshot or the authoritative ledger-head path.
+/// Cannot be constructed from an arbitrary or bare [`LedgerAnchor`], nor from a [`LedgerSnapshot`]
+/// through the public API. Must be witnessed directly from the authoritative committed ledger head
+/// via [`ReferenceLedger`].
 ///
 /// # Compile-fail probe N2: caller cannot construct from a bare anchor via private `from_authority`
 /// ```compile_fail
@@ -281,15 +284,28 @@ pub trait CurrentAnchorSource: sealed::Sealed {
 /// let anchor = LedgerAnchor::genesis("site:main");
 /// let _ = AuthorityAnchor::from_authority(anchor);
 /// ```
+///
+/// # Compile-fail: caller cannot construct from a `LedgerSnapshot`
+/// ```compile_fail
+/// use std::collections::BTreeMap;
+/// use fss_core::abstraction::AuthorityAnchor;
+/// use fss_core::{LedgerAnchor, LedgerSnapshot};
+///
+/// let snap = LedgerSnapshot {
+///     anchor: LedgerAnchor::genesis("site:main"),
+///     objects: BTreeMap::new(),
+/// };
+/// let _ = AuthorityAnchor::from_committed_head(&snap);
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthorityAnchor {
     anchor: LedgerAnchor,
 }
 
 impl AuthorityAnchor {
-    /// Constructs an authoritative anchor token witnessing the committed ledger snapshot head.
-    pub fn from_committed_head(head: &LedgerSnapshot) -> Result<Self, ContractError> {
-        Self::from_authority(head.anchor.clone())
+    /// Constructs an authoritative anchor token witnessing the current committed ledger head.
+    pub fn from_committed_head(ledger: &ReferenceLedger) -> Result<Self, ContractError> {
+        Self::from_authority(ledger.current().anchor.clone())
     }
 
     /// Constructs an authoritative anchor token witnessing the given ledger anchor.
@@ -332,6 +348,21 @@ impl CurrentAnchorSource for AuthorityAnchor {
 ///     anchor,
 /// };
 /// ```
+///
+/// # Compile-fail: caller cannot construct from a `LedgerSnapshot`
+/// ```compile_fail
+/// use std::collections::BTreeMap;
+/// use fss_core::abstraction::AuthorityContext;
+/// use fss_core::contract_basis::reference_contract_basis;
+/// use fss_core::{LedgerAnchor, LedgerSnapshot};
+///
+/// let basis = reference_contract_basis();
+/// let snap = LedgerSnapshot {
+///     anchor: LedgerAnchor::genesis("site:main"),
+///     objects: BTreeMap::new(),
+/// };
+/// let _ = AuthorityContext::from_committed_head(&basis, &snap);
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthorityContext<'a> {
     /// Active contract basis from the authority plane.
@@ -349,12 +380,12 @@ impl<'a> AuthorityContext<'a> {
         }
     }
 
-    /// Creates a new authority context binding a contract basis and committed ledger snapshot head.
+    /// Creates a new authority context binding a contract basis and current committed ledger head.
     pub fn from_committed_head(
         contract_basis: &'a ContractBasis,
-        head: &LedgerSnapshot,
+        ledger: &ReferenceLedger,
     ) -> Result<Self, ContractError> {
-        let authority = AuthorityAnchor::from_committed_head(head)?;
+        let authority = AuthorityAnchor::from_committed_head(ledger)?;
         Ok(Self::new(contract_basis, &authority))
     }
 
