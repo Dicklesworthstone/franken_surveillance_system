@@ -106,6 +106,7 @@ fn sample_operation_receipt() -> Result<OperationReceipt, Box<dyn Error>> {
         updated_at: TimestampNs(1_700_000_000_000_000_000),
         result_digest: None,
         error_code: None,
+        indeterminate_reason: None,
     })
 }
 
@@ -1028,5 +1029,158 @@ fn test_review_562_finding_1_three_valued_lookup_status() -> Result<(), Box<dyn 
         "Indeterminate failure lookup must yield IndeterminateLookup error, not UnverifiedReceipt"
     );
 
+    Ok(())
+}
+
+/// fss-deir9: the indeterminate reason rides in the error-code flag byte, so a receipt without one
+/// keeps the exact canonical bytes it had before the field existed, and every shape round-trips.
+#[test]
+fn operation_receipt_reason_tag_keeps_legacy_bytes_and_round_trips() -> Result<(), Box<dyn Error>> {
+    use fss_core::{
+        CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder,
+        IndeterminateEffectReason,
+    };
+
+    let base = sample_operation_receipt()?;
+    let recorded = IndeterminateEffectReason::Recorded("provider_timeout".to_owned());
+    let shapes = [
+        (None, None),
+        (Some("provider_timeout"), None),
+        (None, Some(IndeterminateEffectReason::Unrecorded)),
+        (Some("provider_timeout"), Some(recorded)),
+    ];
+    for (error_code, reason) in shapes {
+        let mut receipt = base.clone();
+        receipt.error_code = error_code.map(str::to_owned);
+        receipt.indeterminate_reason = reason;
+        let mut encoder = CanonicalEncoder::new();
+        receipt.encode_canonical(&mut encoder);
+        let bytes = encoder.finish();
+        let mut decoder = CanonicalDecoder::new(&bytes);
+        let decoded = OperationReceipt::decode_canonical(&mut decoder)?;
+        assert_eq!(decoded, receipt, "round trip of {error_code:?}");
+        if receipt.indeterminate_reason.is_none() {
+            // The layout before the reason existed: the error code behind a plain bool flag.
+            let mut legacy = CanonicalEncoder::new();
+            receipt.intent.encode_canonical(&mut legacy);
+            legacy.text(receipt.state.as_str());
+            receipt.authority.encode_canonical(&mut legacy);
+            receipt.prepared_at.encode_canonical(&mut legacy);
+            legacy.bool(false);
+            receipt.updated_at.encode_canonical(&mut legacy);
+            legacy.bool(false);
+            match &receipt.error_code {
+                Some(code) => {
+                    legacy.bool(true);
+                    legacy.text(code);
+                }
+                None => legacy.bool(false),
+            }
+            assert_eq!(bytes, legacy.finish(), "legacy bytes of {error_code:?}");
+        }
+    }
+    Ok(())
+}
+
+/// fss-deir9: every target state has an explicit transition payload rule, and `validate_transition`
+/// and `transition` agree on it. The exhaustive matches below stop compiling when a state is added,
+/// so a new state must be given its predecessor path and payload rule here too.
+#[test]
+fn every_effect_state_has_an_explicit_transition_payload_rule() -> Result<(), Box<dyn Error>> {
+    let digest = ContentDigest::sha256(b"payload-rule");
+    let every_state = [
+        EffectState::Prepared,
+        EffectState::Committed,
+        EffectState::AdapterAccepted,
+        EffectState::Observed,
+        EffectState::Verified,
+        EffectState::Cancelled,
+        EffectState::Failed,
+        EffectState::Indeterminate,
+    ];
+    for next in every_state {
+        // Legal, payload-correct steps from `prepared` to a state that `next` may follow.
+        let path: &[(EffectState, Option<ContentDigest>, Option<&str>)] = match next {
+            EffectState::Prepared | EffectState::Committed | EffectState::Cancelled => &[],
+            EffectState::AdapterAccepted | EffectState::Failed | EffectState::Indeterminate => {
+                &[(EffectState::Committed, None, None)]
+            }
+            EffectState::Observed => &[
+                (EffectState::Committed, None, None),
+                (EffectState::AdapterAccepted, None, None),
+            ],
+            EffectState::Verified => &[
+                (EffectState::Committed, None, None),
+                (EffectState::AdapterAccepted, None, None),
+                (EffectState::Observed, Some(digest), None),
+            ],
+        };
+        // The (result, error) payload shapes the journal accepts for a transition into `next`.
+        let accepts = |result: bool, error: Option<&str>| match next {
+            EffectState::Prepared => false,
+            EffectState::Committed | EffectState::AdapterAccepted => !result && error.is_none(),
+            EffectState::Observed | EffectState::Verified => result && error.is_none(),
+            EffectState::Cancelled => result && error.is_none_or(|reason| !reason.is_empty()),
+            EffectState::Failed => result && error.is_some_and(|reason| !reason.is_empty()),
+            EffectState::Indeterminate => error.is_some_and(|reason| !reason.is_empty()),
+        };
+        for result in [false, true] {
+            for error in [None, Some(""), Some("payload_rule")] {
+                let intent = sample_intent()?;
+                let operation_id = intent.operation_id.clone();
+                let mut journal = EffectJournal::new();
+                let _ = journal.prepare(
+                    intent,
+                    ObligationId::parse("obligation:payload-rule")?,
+                    "delivery_proved",
+                    TimestampNs(100),
+                )?;
+                let mut now = 100;
+                for &(state, step_digest, step_error) in path {
+                    now += 1;
+                    let _ = journal.transition(
+                        &operation_id,
+                        state,
+                        TimestampNs(now),
+                        step_digest,
+                        step_error.map(str::to_owned),
+                    )?;
+                }
+                now += 1;
+                let result_digest = result.then_some(digest);
+                let expected = accepts(result, error);
+                let validated = journal
+                    .validate_transition(
+                        &operation_id,
+                        next,
+                        TimestampNs(now),
+                        result_digest,
+                        error,
+                    )
+                    .is_ok();
+                assert_eq!(
+                    validated,
+                    expected,
+                    "validate_transition into {} with result={result} error={error:?}",
+                    next.as_str()
+                );
+                let applied = journal
+                    .transition(
+                        &operation_id,
+                        next,
+                        TimestampNs(now),
+                        result_digest,
+                        error.map(str::to_owned),
+                    )
+                    .is_ok();
+                assert_eq!(
+                    applied,
+                    expected,
+                    "transition into {} with result={result} error={error:?}",
+                    next.as_str()
+                );
+            }
+        }
+    }
     Ok(())
 }

@@ -1581,6 +1581,21 @@ impl CanonicalDecode for EffectAuthority {
     }
 }
 
+/// Why an operation entered `indeterminate`, kept on its receipt through reconciliation.
+///
+/// Reconciliation keeps the indeterminate reason in [`OperationReceipt::error_code`] as
+/// provenance, so a later observed, verified, or failed receipt may still carry it. This marker is
+/// what tells that inherited reason apart from an error code attached without any indeterminate
+/// episode.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum IndeterminateEffectReason {
+    /// The indeterminate transition recorded this non-empty reason.
+    Recorded(String),
+    /// A legacy journal entry, written before a reason was required, recorded the indeterminate
+    /// transition without one. Replay keeps it explicitly unrecorded instead of inventing a reason.
+    Unrecorded,
+}
+
 /// Durable operation receipt.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OperationReceipt {
@@ -1600,6 +1615,10 @@ pub struct OperationReceipt {
     pub result_digest: Option<ContentDigest>,
     /// Stable error code.
     pub error_code: Option<String>,
+    /// Why the operation entered `indeterminate`, when it ever did; kept through reconciliation.
+    ///
+    /// Like `updated_at`, it is not part of the JSON projection.
+    pub indeterminate_reason: Option<IndeterminateEffectReason>,
 }
 
 impl OperationReceipt {
@@ -1818,6 +1837,7 @@ impl OperationReceipt {
             updated_at: prepared_at,
             result_digest,
             error_code,
+            indeterminate_reason: None,
         })
     }
 }
@@ -1843,12 +1863,22 @@ impl CanonicalEncode for OperationReceipt {
             }
             None => encoder.bool(false),
         }
-        match &self.error_code {
-            Some(value) => {
-                encoder.bool(true);
-                encoder.text(value);
+        // The error-code flag byte doubles as the tag for the indeterminate reason. Tags 0 and 1 are
+        // the original `bool` encoding, so a receipt without an indeterminate reason keeps its exact
+        // bytes and digest; tags 2 and 3 append the reason.
+        let tag = u8::from(self.error_code.is_some())
+            | (u8::from(self.indeterminate_reason.is_some()) << 1);
+        encoder.u8(tag);
+        if let Some(value) = &self.error_code {
+            encoder.text(value);
+        }
+        match &self.indeterminate_reason {
+            Some(IndeterminateEffectReason::Recorded(reason)) => {
+                encoder.u8(1);
+                encoder.text(reason);
             }
-            None => encoder.bool(false),
+            Some(IndeterminateEffectReason::Unrecorded) => encoder.u8(0),
+            None => {}
         }
     }
 }
@@ -1870,8 +1900,21 @@ impl CanonicalDecode for OperationReceipt {
         } else {
             None
         };
-        let error_code = if decoder.bool()? {
+        let tag = decoder.u8()?;
+        if tag > 3 {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        let error_code = if tag & 1 == 1 {
             Some(decoder.text()?.to_string())
+        } else {
+            None
+        };
+        let indeterminate_reason = if tag & 2 == 2 {
+            Some(match decoder.u8()? {
+                0 => IndeterminateEffectReason::Unrecorded,
+                1 => IndeterminateEffectReason::Recorded(decoder.text()?.to_string()),
+                _ => return Err(ContractError::InvalidIdentifier),
+            })
         } else {
             None
         };
@@ -1884,6 +1927,7 @@ impl CanonicalDecode for OperationReceipt {
             updated_at,
             result_digest,
             error_code,
+            indeterminate_reason,
         })
     }
 }
@@ -2224,6 +2268,7 @@ impl EffectJournal {
                 updated_at: now,
                 result_digest: None,
                 error_code: None,
+                indeterminate_reason: None,
             },
         );
         self.idempotency
@@ -2347,47 +2392,40 @@ impl EffectJournal {
         result_digest: Option<ContentDigest>,
         error_code: Option<String>,
     ) -> Result<&OperationReceipt, ContractError> {
+        self.transition_under(
+            operation_id,
+            next,
+            now,
+            result_digest,
+            error_code,
+            TransitionRules::Current,
+        )
+    }
+
+    /// Applies one transition under `rules`: the current rules for every new transition, the
+    /// legacy rules only while replaying persisted history.
+    fn transition_under(
+        &mut self,
+        operation_id: &OperationId,
+        next: EffectState,
+        now: TimestampNs,
+        result_digest: Option<ContentDigest>,
+        error_code: Option<String>,
+        rules: TransitionRules,
+    ) -> Result<&OperationReceipt, ContractError> {
         {
             let receipt = self
                 .operations
                 .get_mut(operation_id)
                 .ok_or(ContractError::NotFound)?;
-            if now <= receipt.updated_at {
-                return Err(ContractError::InvertedTimeInterval);
-            }
-            if !valid_transition(receipt.state, next) {
-                return Err(if receipt.state == EffectState::Indeterminate {
-                    ContractError::ReconciliationRequired
-                } else {
-                    ContractError::InvalidEffectTransition
-                });
-            }
-            if (next == EffectState::Observed
-                || next == EffectState::Verified
-                || next == EffectState::Cancelled)
-                && result_digest.is_none()
-            {
-                return Err(ContractError::EvidenceRequired);
-            }
-            if next == EffectState::Verified {
-                let obs_digest = receipt
-                    .result_digest
-                    .ok_or(ContractError::EvidenceRequired)?;
-                if result_digest != Some(obs_digest) {
-                    return Err(ContractError::InvalidDigest);
-                }
-            }
-            if next == EffectState::Failed
-                && (result_digest.is_none() || error_code.as_deref().is_none_or(str::is_empty))
-            {
-                return Err(ContractError::EvidenceRequired);
-            }
-            // An indeterminate outcome must name why it is unproved, as `mark_indeterminate`
-            // requires, so no reason-less indeterminate receipt exists for projection to refuse.
-            if next == EffectState::Indeterminate && error_code.as_deref().is_none_or(str::is_empty)
-            {
-                return Err(ContractError::EvidenceRequired);
-            }
+            check_transition(
+                receipt,
+                next,
+                now,
+                result_digest,
+                error_code.as_deref(),
+                rules,
+            )?;
             if next == EffectState::Committed && receipt.committed_at.is_none() {
                 receipt.committed_at = Some(now);
             }
@@ -2395,6 +2433,16 @@ impl EffectJournal {
             receipt.updated_at = now;
             if result_digest.is_some() {
                 receipt.result_digest = result_digest;
+            }
+            if next == EffectState::Indeterminate {
+                // The current rules guarantee a non-empty reason; only legacy replay reaches the
+                // unrecorded arm, which keeps the missing reason explicit (fss-deir9).
+                receipt.indeterminate_reason = Some(
+                    match error_code.as_deref().filter(|reason| !reason.is_empty()) {
+                        Some(reason) => IndeterminateEffectReason::Recorded(reason.to_owned()),
+                        None => IndeterminateEffectReason::Unrecorded,
+                    },
+                );
             }
             if error_code.is_some() {
                 receipt.error_code = error_code;
@@ -2594,40 +2642,16 @@ impl EffectJournal {
             .operations
             .get(operation_id)
             .ok_or(ContractError::NotFound)?;
-        if now <= receipt.updated_at {
-            return Err(ContractError::InvertedTimeInterval);
-        }
-        if !receipt.state.can_transition_to(next) {
-            return Err(if receipt.state == EffectState::Indeterminate {
-                ContractError::ReconciliationRequired
-            } else {
-                ContractError::InvalidEffectTransition
-            });
-        }
-        if (next == EffectState::Observed
-            || next == EffectState::Verified
-            || next == EffectState::Cancelled)
-            && result_digest.is_none()
-        {
-            return Err(ContractError::EvidenceRequired);
-        }
-        if next == EffectState::Verified {
-            let obs_digest = receipt
-                .result_digest
-                .ok_or(ContractError::EvidenceRequired)?;
-            if result_digest != Some(obs_digest) {
-                return Err(ContractError::InvalidDigest);
-            }
-        }
-        if next == EffectState::Failed
-            && (result_digest.is_none() || error_code.is_none_or(str::is_empty))
-        {
-            return Err(ContractError::EvidenceRequired);
-        }
-        // Mirrors `transition`: an indeterminate outcome must name why it is unproved.
-        if next == EffectState::Indeterminate && error_code.is_none_or(str::is_empty) {
-            return Err(ContractError::EvidenceRequired);
-        }
+        // The same checker as `transition`, so the durable path never writes a record the journal
+        // would then refuse (fss-deir9).
+        check_transition(
+            receipt,
+            next,
+            now,
+            result_digest,
+            error_code,
+            TransitionRules::Current,
+        )?;
         Ok(receipt)
     }
 
@@ -2721,9 +2745,39 @@ impl EffectJournal {
     ) -> Result<Self, ContractError> {
         let mut journal = Self::new();
         for transition in transitions {
-            let _receipt = journal.apply_transition(transition)?;
+            let _receipt = journal.replay_transition(transition)?;
         }
         Ok(journal)
+    }
+
+    /// Applies one persisted transition under the rules it was written under.
+    ///
+    /// History is replayed with the legacy transition rules, so a record the journal accepted
+    /// before a rule was tightened (such as a reason-less `indeterminate`) still loads. It is kept
+    /// as recorded, with an unrecorded indeterminate reason made explicit, and is never refused or
+    /// rewritten (fss-deir9). New transitions, including [`Self::apply_transition`], use the
+    /// current rules.
+    fn replay_transition(
+        &mut self,
+        transition: EffectJournalTransition,
+    ) -> Result<&OperationReceipt, ContractError> {
+        match transition {
+            EffectJournalTransition::Transition {
+                operation_id,
+                next,
+                now,
+                result_digest,
+                error_code,
+            } => self.transition_under(
+                &operation_id,
+                next,
+                now,
+                result_digest,
+                error_code,
+                TransitionRules::Legacy,
+            ),
+            other => self.apply_transition(other),
+        }
     }
 
     /// Applies one transition to the journal, returning receipt or error on invariant failure.
@@ -3186,6 +3240,103 @@ impl<'a> JsonParser<'a> {
         }
         self.depth -= 1;
         Ok(JsonValue::Object(fields))
+    }
+}
+
+/// Which transition rules apply: the current rules for every new transition, the legacy rules
+/// only while replaying persisted history (fss-deir9).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TransitionRules {
+    Current,
+    Legacy,
+}
+
+/// Checks one transition of `receipt` to `next`.
+///
+/// [`EffectJournal::transition`] and [`EffectJournal::validate_transition`] both use it, so they
+/// cannot disagree. The legacy rules are exactly the rules history was written under; the current
+/// rules add the payload each state may carry, so every receipt the journal produces is one the
+/// situation guard accepts.
+fn check_transition(
+    receipt: &OperationReceipt,
+    next: EffectState,
+    now: TimestampNs,
+    result_digest: Option<ContentDigest>,
+    error_code: Option<&str>,
+    rules: TransitionRules,
+) -> Result<(), ContractError> {
+    if now <= receipt.updated_at {
+        return Err(ContractError::InvertedTimeInterval);
+    }
+    if !valid_transition(receipt.state, next) {
+        return Err(if receipt.state == EffectState::Indeterminate {
+            ContractError::ReconciliationRequired
+        } else {
+            ContractError::InvalidEffectTransition
+        });
+    }
+    if matches!(
+        next,
+        EffectState::Observed | EffectState::Verified | EffectState::Cancelled
+    ) && result_digest.is_none()
+    {
+        return Err(ContractError::EvidenceRequired);
+    }
+    if next == EffectState::Verified {
+        let obs_digest = receipt
+            .result_digest
+            .ok_or(ContractError::EvidenceRequired)?;
+        if result_digest != Some(obs_digest) {
+            return Err(ContractError::InvalidDigest);
+        }
+    }
+    let names_a_reason = error_code.is_some_and(|reason| !reason.is_empty());
+    if next == EffectState::Failed && (result_digest.is_none() || !names_a_reason) {
+        return Err(ContractError::EvidenceRequired);
+    }
+    if rules == TransitionRules::Legacy {
+        return Ok(());
+    }
+    // Exhaustive over `EffectState`, so a new state must choose its payload rule here instead of
+    // passing through a default (fss-deir9).
+    match next {
+        // Nothing transitions into `prepared`; `valid_transition` already refused it above.
+        EffectState::Prepared => Err(ContractError::InvalidEffectTransition),
+        // Commit and adapter acceptance carry neither a result nor an error.
+        EffectState::Committed | EffectState::AdapterAccepted => {
+            if result_digest.is_some() || error_code.is_some() {
+                Err(ContractError::InvalidEffectTransition)
+            } else {
+                Ok(())
+            }
+        }
+        // An observed or verified receipt may only inherit the reason of an earlier indeterminate
+        // episode; it never gains a new error code.
+        EffectState::Observed | EffectState::Verified => {
+            if error_code.is_some() {
+                Err(ContractError::InvalidEffectTransition)
+            } else {
+                Ok(())
+            }
+        }
+        // A cancellation reason is optional, but never empty.
+        EffectState::Cancelled => {
+            if error_code.is_some_and(str::is_empty) {
+                Err(ContractError::EvidenceRequired)
+            } else {
+                Ok(())
+            }
+        }
+        // A failure's proof and non-empty reason are checked above, under every rule set.
+        EffectState::Failed => Ok(()),
+        // An indeterminate outcome must name why it is unproved, as `mark_indeterminate` requires.
+        EffectState::Indeterminate => {
+            if names_a_reason {
+                Ok(())
+            } else {
+                Err(ContractError::EvidenceRequired)
+            }
+        }
     }
 }
 
