@@ -6,8 +6,8 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use fss_core::{
-    BatchId, ContentDigest, ContractError, DigestAlgorithm, EvidenceDelta, EvidenceDeltaBatch,
-    LedgerSnapshot, ReferenceLedger,
+    AuthoritativeLedger, BatchId, ContentDigest, ContractError, DigestAlgorithm, EvidenceDelta,
+    EvidenceDeltaBatch, LedgerSnapshot, ReferenceLedger,
 };
 
 use crate::{
@@ -342,6 +342,18 @@ impl DurableReferenceLedger {
     #[must_use]
     pub fn current(&self) -> &LedgerSnapshot {
         self.ledger.current()
+    }
+
+    /// Returns the authoritative ledger handle witnessing the on-disk committed head.
+    ///
+    /// # Threat Model
+    /// This is type-level discipline against *accidental or stale* authority. Code in the same process
+    /// that can write the deployment can always forge durable state, so the goal is that no public API
+    /// turns a rewound or in-memory ledger into world-fact authority by mistake.
+    pub fn authoritative_ledger(&self) -> Result<AuthoritativeLedger, ContractError> {
+        AuthoritativeLedger::__durable_ledger_only_from_committed_anchor(
+            self.current().anchor.clone(),
+        )
     }
 
     /// Immutable batches reconstructed from the durable committed prefix.
