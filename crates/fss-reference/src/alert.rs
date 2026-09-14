@@ -4,8 +4,9 @@ use std::collections::BTreeMap;
 
 use fss_core::{
     CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, ContentDigest,
-    EffectIntent, EffectJournal, EffectState, EventHypothesis, EventState, IdempotencyKey,
-    LedgerAnchor, Obligation, ObligationId, OperationId, OperationReceipt, TimestampNs,
+    EffectIntent, EffectJournal, EffectState, EventEvidence, EventHypothesis, EventState,
+    IdempotencyKey, LedgerAnchor, Obligation, ObligationId, OperationId, OperationReceipt,
+    TimestampNs,
 };
 use fss_ledger::{DurableLedgerError, DurableReferenceLedger, JournalError};
 
@@ -456,11 +457,12 @@ pub(crate) fn recompute_lineage_tamper_status(
     Ok(status)
 }
 
-/// The alert eligibility preparation and dispatch share (fss-wjisz, fss-2uftm).
+/// The alert eligibility preparation and dispatch share (fss-wjisz, fss-2uftm, fss-ct73p).
 ///
-/// The revision's own state, committed action and edges must be eligible, and its lineage,
+/// The revision's own state, committed action and edges must be eligible, its lineage,
 /// recomputed from the authority ledger by [`recompute_lineage_tamper_status`], must hold no open,
-/// unretired sensor tamper.
+/// unretired sensor tamper, and the authority ledger must contain no open, unretired sensor-tamper
+/// observation affecting any sensor or failure domain the event relies on (bead fss-ct73p).
 pub(crate) fn verify_alert_eligibility_in_lineage(
     authority: &DurableReferenceLedger,
     event: &EventHypothesis,
@@ -472,7 +474,107 @@ pub(crate) fn verify_alert_eligibility_in_lineage(
     if status.has_open_tamper() {
         return Err(fss_core::ContractError::SensorIntegrityRisk.into());
     }
+    verify_no_unretired_sensor_tamper_in_ledger(authority, event)?;
     Ok(status)
+}
+
+struct ActiveLedgerTamper {
+    sensor: String,
+    sensor_digest: Option<ContentDigest>,
+    domain: String,
+    latest: TimestampNs,
+}
+
+/// Recomputes whether any open, unretired sensor-tamper observation in the authority ledger affects
+/// `event`, refusing with [`ContractError::SensorIntegrityRisk`].
+///
+/// An alert dispatch cannot proceed if a sensor or failure domain that the event relies on has an
+/// active tamper report in the ledger, even if no new event revision was published to record it
+/// (bead fss-ct73p).
+///
+/// A sensor tamper is retired only when an evidenced integrity restoration for that exact sensor
+/// identity and failure domain is captured strictly after the tamper ended
+/// (`restoration.validity.earliest > tamper.validity.latest`).
+pub(crate) fn verify_no_unretired_sensor_tamper_in_ledger(
+    authority: &DurableReferenceLedger,
+    event: &EventHypothesis,
+) -> Result<(), ReferenceError> {
+    let mut active_tampers: Vec<ActiveLedgerTamper> = Vec::new();
+
+    for batch in authority.batches() {
+        for delta in &batch.deltas {
+            if delta.family != "sensor_tamper_status" {
+                continue;
+            }
+            let object_id_str = delta.object_id.as_str();
+            let Some(rest) = object_id_str.strip_prefix("object:sensor:") else {
+                continue;
+            };
+            if let Some(inner) = rest.strip_suffix(":tamper") {
+                let (sensor, domain) = if let Some((s, d)) = inner.split_once(":domain:") {
+                    (s.to_owned(), d.to_owned())
+                } else {
+                    (inner.to_owned(), String::new())
+                };
+                let sensor_digest = delta
+                    .witness_digest
+                    .or_else(|| (!sensor.is_empty()).then(|| ContentDigest::sha256(sensor.as_bytes())));
+                active_tampers.push(ActiveLedgerTamper {
+                    sensor,
+                    sensor_digest,
+                    domain,
+                    latest: delta.validity.latest,
+                });
+            } else if let Some(inner) = rest.strip_suffix(":restoration") {
+                let (sensor, domain) = if let Some((s, d)) = inner.split_once(":domain:") {
+                    (s.to_owned(), d.to_owned())
+                } else {
+                    (inner.to_owned(), String::new())
+                };
+                let restoration_earliest = delta.validity.earliest;
+                let restoration_sensor_digest = delta
+                    .witness_digest
+                    .or_else(|| (!sensor.is_empty()).then(|| ContentDigest::sha256(sensor.as_bytes())));
+
+                active_tampers.retain(|t| {
+                    let domain_matches = domain.is_empty() || t.domain == domain;
+                    let sensor_matches = sensor.is_empty()
+                        || t.sensor == sensor
+                        || (t.sensor_digest.is_some()
+                            && t.sensor_digest == restoration_sensor_digest);
+                    !(domain_matches && sensor_matches && restoration_earliest > t.latest)
+                });
+            }
+        }
+    }
+
+    if active_tampers.is_empty() {
+        return Ok(());
+    }
+
+    for tamper in &active_tampers {
+        for edge in &event.evidence {
+            if tamper_affects_edge(tamper, edge) {
+                return Err(fss_core::ContractError::SensorIntegrityRisk.into());
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn tamper_affects_edge(tamper: &ActiveLedgerTamper, edge: &EventEvidence) -> bool {
+    let domain_matches = !tamper.domain.is_empty() && tamper.domain == edge.failure_domain;
+    let sensor_matches = match (edge.identity_digest, tamper.sensor_digest) {
+        (Some(edge_id), Some(tamper_id)) => edge_id == tamper_id,
+        _ => false,
+    };
+
+    if edge.identity_digest.is_some() && tamper.sensor_digest.is_some() {
+        sensor_matches && (tamper.domain.is_empty() || domain_matches)
+    } else {
+        domain_matches || sensor_matches
+    }
 }
 
 /// Policy action an authority event revision commits to.
