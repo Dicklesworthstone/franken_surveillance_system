@@ -57,7 +57,12 @@ fn sample_intent(op_name: &str, key_name: &str) -> Result<EffectIntent, Box<dyn 
     })
 }
 
+/// Builds the eligible reference alert plan and prepares it durably in `journal_path` through the
+/// eligible path: `prepare_alert` verifies the published event's eligibility against the authority
+/// ledger and records the prepare-time ledger head from the ledger itself (fss-wjisz). The same
+/// plan is also prepared in a process-local in-memory journal, returned for crash modelling.
 fn setup_alert_plan(
+    journal_path: &std::path::Path,
     ledger_path: &std::path::Path,
 ) -> Result<(ReferenceAlertPlan, EffectJournal, DurableReferenceLedger), Box<dyn Error>> {
     let mut objects = InMemoryObjectStore::new(ObjectLimits::new(512, 8 * 1024 * 1024));
@@ -149,6 +154,26 @@ fn setup_alert_plan(
         },
         &mut journal,
     )?;
+
+    let durable_plan = {
+        let mut durable = DurableEffectJournal::open(journal_path, IncompleteTailPolicy::Reject)?;
+        let durable_plan = durable.prepare_alert(PrepareAlertParams {
+            decision: &decision,
+            event_receipt: &event_receipt,
+            authority: &authority,
+            operation_id: OperationId::parse("op:alert:durable:test")?,
+            idempotency_key: IdempotencyKey::parse("idempotency:alert:durable:test")?,
+            obligation_id: ObligationId::parse("obligation:alert:durable:test")?,
+            channel: "security-sms".to_string(),
+            now: TimestampNs(100),
+        })?;
+        let prepared = durable
+            .operation(&durable_plan.intent.operation_id)
+            .ok_or(ContractError::NotFound)?;
+        assert_eq!(prepared.state, EffectState::Prepared);
+        durable_plan
+    };
+    assert_eq!(durable_plan, plan);
 
     Ok((plan, journal, authority))
 }
@@ -376,18 +401,12 @@ fn test_planted_negative_lose_ack_reopen_refuses_second_commit_before_provider_t
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, _init_journal, authority) = setup_alert_plan(&ledger_path)?;
+    let (plan, _init_journal, authority) = setup_alert_plan(&path, &ledger_path)?;
     let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:durable:lose_ack");
 
     // Session 1: Prepare and dispatch with LoseAckAfterDelivery
     {
         let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
-        let _ = journal.prepare(
-            plan.intent.clone(),
-            plan.obligation_id.clone(),
-            "delivery_acknowledged_by_provider",
-            TimestampNs(100),
-        )?;
 
         let outcome = journal.dispatch_alert(
             &plan,
@@ -446,18 +465,12 @@ fn test_planted_negative_reconciliation_after_reopen_closes_obligation_with_prov
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, _, authority) = setup_alert_plan(&ledger_path)?;
+    let (plan, _, authority) = setup_alert_plan(&path, &ledger_path)?;
     let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:durable:reopen");
 
     // Session 1: Prepare and dispatch with LoseAckAfterDelivery
     {
         let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
-        let _ = journal.prepare(
-            plan.intent.clone(),
-            plan.obligation_id.clone(),
-            "delivery_acknowledged_by_provider",
-            TimestampNs(100),
-        )?;
         let outcome = journal.dispatch_alert(
             &plan,
             &authority,
@@ -601,7 +614,7 @@ fn test_crash_after_commit_recovery_via_reconcile_failed() -> Result<(), Box<dyn
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, _, _) = setup_alert_plan(&ledger_path)?;
+    let (plan, _, _) = setup_alert_plan(&path, &ledger_path)?;
     let mut provider =
         ReferenceAlertProvider::with_provider_id("provider:test:durable:crash_commit_fail");
 
@@ -611,12 +624,6 @@ fn test_crash_after_commit_recovery_via_reconcile_failed() -> Result<(), Box<dyn
     // Session 1: Committed on disk
     {
         let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
-        let _ = journal.prepare(
-            plan.intent.clone(),
-            plan.obligation_id.clone(),
-            "delivery_acknowledged_by_provider",
-            TimestampNs(100),
-        )?;
         let _ = journal.transition(
             &plan.intent.operation_id,
             EffectState::Committed,
@@ -661,19 +668,13 @@ fn test_reconcile_alert_accepts_adapter_accepted_after_restart() -> Result<(), B
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, _, authority) = setup_alert_plan(&ledger_path)?;
+    let (plan, _, authority) = setup_alert_plan(&path, &ledger_path)?;
     let mut provider =
         ReferenceAlertProvider::with_provider_id("provider:test:durable:reconcile_accepted");
 
     // Session 1: Prepare and dispatch alert; provider accepts delivery
     {
         let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
-        let _ = journal.prepare(
-            plan.intent.clone(),
-            plan.obligation_id.clone(),
-            "delivery_acknowledged_by_provider",
-            TimestampNs(100),
-        )?;
         let outcome = journal.dispatch_alert(
             &plan,
             &authority,
@@ -1238,18 +1239,12 @@ fn test_finding_f4_reconcile_alert_must_not_drop_provider_failure() -> Result<()
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, _, _) = setup_alert_plan(&ledger_path)?;
+    let (plan, _, _) = setup_alert_plan(&path, &ledger_path)?;
     let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:finding:fail_drop");
 
     // Session 1: Indeterminate with terminal provider failure
     {
         let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
-        let _ = journal.prepare(
-            plan.intent.clone(),
-            plan.obligation_id.clone(),
-            "delivery_acknowledged_by_provider",
-            TimestampNs(100),
-        )?;
         let _ = journal.transition(
             &plan.intent.operation_id,
             EffectState::Committed,
@@ -1536,7 +1531,7 @@ fn test_crash_after_commit_recovery_via_reconcile() -> Result<(), Box<dyn Error>
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, mut crashed_process_journal, authority) = setup_alert_plan(&ledger_path)?;
+    let (plan, mut crashed_process_journal, authority) = setup_alert_plan(&path, &ledger_path)?;
     let mut provider =
         ReferenceAlertProvider::with_provider_id("provider:test:durable:crash_commit_reconcile");
 
@@ -1555,12 +1550,6 @@ fn test_crash_after_commit_recovery_via_reconcile() -> Result<(), Box<dyn Error>
     // Session 1: Committed on disk
     {
         let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
-        let _ = journal.prepare(
-            plan.intent.clone(),
-            plan.obligation_id.clone(),
-            "delivery_acknowledged_by_provider",
-            TimestampNs(100),
-        )?;
         let _ = journal.transition(
             &plan.intent.operation_id,
             EffectState::Committed,
@@ -1599,7 +1588,8 @@ fn test_crash_after_commit_recovery_via_redispatch() -> Result<(), Box<dyn Error
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, mut crashed_process_journal, setup_authority) = setup_alert_plan(&ledger_path)?;
+    let (plan, mut crashed_process_journal, setup_authority) =
+        setup_alert_plan(&path, &ledger_path)?;
     let mut provider =
         ReferenceAlertProvider::with_provider_id("provider:test:durable:crash_commit_redispatch");
 
@@ -1607,12 +1597,9 @@ fn test_crash_after_commit_recovery_via_redispatch() -> Result<(), Box<dyn Error
     // immediately between Step 1 (commit) and Step 2 (provider dispatch).
     {
         let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
-        let prep_receipt = journal.prepare(
-            plan.intent.clone(),
-            plan.obligation_id.clone(),
-            "delivery_acknowledged_by_provider",
-            TimestampNs(100),
-        )?;
+        let prep_receipt = journal
+            .operation(&plan.intent.operation_id)
+            .ok_or(ContractError::NotFound)?;
         assert_eq!(prep_receipt.state, EffectState::Prepared);
 
         let commit_receipt = journal.transition(
@@ -1704,18 +1691,12 @@ fn test_finding_f1_crash_after_commit_blind_duplicate_redispatch_fails()
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, mut crashed_process_journal, authority) = setup_alert_plan(&ledger_path)?;
+    let (plan, mut crashed_process_journal, authority) = setup_alert_plan(&path, &ledger_path)?;
     let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:finding:redispatch");
 
     // Session 1: Committed on disk; external dispatch occurred before crash
     {
         let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
-        let _ = journal.prepare(
-            plan.intent.clone(),
-            plan.obligation_id.clone(),
-            "delivery_acknowledged_by_provider",
-            TimestampNs(100),
-        )?;
         let _ = journal.transition(
             &plan.intent.operation_id,
             EffectState::Committed,

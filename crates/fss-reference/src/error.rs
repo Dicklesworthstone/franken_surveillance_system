@@ -112,7 +112,11 @@ pub enum ReferenceError {
     /// Event authority in the ledger is stale or has moved since the alert plan was prepared.
     StaleEventAuthority,
     /// Durable journal transition write failure.
-    DurableTransitionFailed(String),
+    DurableTransitionFailed(Box<crate::durable_effect::DurableEffectError>),
+    /// Durable event authority could not be read or verified at alert dispatch (a missing path,
+    /// an I/O failure, or an unresolved ledger append). Dispatch fails closed: it is refused and
+    /// the prepared operation is cancelled.
+    AuthorityLedgerUnreadable(Box<fss_ledger::DurableLedgerError>),
 }
 
 impl fmt::Display for ReferenceError {
@@ -222,8 +226,14 @@ impl fmt::Display for ReferenceError {
             Self::StaleEventAuthority => {
                 formatter.write_str("event authority in the ledger is stale or has moved")
             }
-            Self::DurableTransitionFailed(reason) => {
-                write!(formatter, "durable journal transition failed: {reason}")
+            Self::DurableTransitionFailed(error) => {
+                write!(formatter, "durable journal transition failed: {error}")
+            }
+            Self::AuthorityLedgerUnreadable(error) => {
+                write!(
+                    formatter,
+                    "event authority ledger could not be verified: {error}"
+                )
             }
         }
     }
@@ -251,8 +261,9 @@ impl Error for ReferenceError {
             | Self::StaleEstimatePastValidity { .. }
             | Self::ContradictedEstimate { .. }
             | Self::InvalidEstimatorConfig { .. }
-            | Self::StaleEventAuthority
-            | Self::DurableTransitionFailed(_) => None,
+            | Self::StaleEventAuthority => None,
+            Self::DurableTransitionFailed(error) => Some(error.as_ref()),
+            Self::AuthorityLedgerUnreadable(error) => Some(error.as_ref()),
         }
     }
 }
