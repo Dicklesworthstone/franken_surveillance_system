@@ -3,7 +3,10 @@
 
 use std::error::Error;
 
-use fss_reference::{AnnexBError, AnnexBLimits, AnnexBScan, ReplayCx, SourceSpan, split_annexb};
+use fss_reference::{
+    AnnexBError, AnnexBLimits, AnnexBScan, CEILING_MAX_NAL_BYTES, DEFAULT_MAX_INPUT_BYTES,
+    ReplayCx, SourceSpan, split_annexb,
+};
 
 /// Helper: builds a 4-byte start code AUD NAL (type 9).
 fn make_aud_nal() -> Vec<u8> {
@@ -1167,4 +1170,467 @@ fn p14_structured_round_trip() {
         });
         assert_eq!(got, Ok(expect), "iter {iter} bytes {v:02x?}");
     }
+}
+
+type ProbeRow = (usize, usize, usize, usize, u8);
+const PROBE_SC: &[u8] = &[0, 0, 1];
+
+fn probe_spans(
+    bytes: &[u8],
+    l: AnnexBLimits,
+) -> Result<(Vec<ProbeRow>, Vec<SourceSpan>), AnnexBError> {
+    run(bytes, l).map(|s| {
+        (
+            s.nals
+                .iter()
+                .map(|n| {
+                    (
+                        n.start_code_span.offset,
+                        n.start_code_span.len,
+                        n.nal_span.offset,
+                        n.nal_span.len,
+                        n.nal_unit_type,
+                    )
+                })
+                .collect(),
+            s.padding_spans.clone(),
+        )
+    })
+}
+
+fn probe_aus(bytes: &[u8]) -> Result<Vec<(Vec<usize>, SourceSpan)>, AnnexBError> {
+    run(bytes, d()).map(|s| {
+        s.access_units
+            .iter()
+            .map(|a| (a.nal_indices.clone(), a.span))
+            .collect()
+    })
+}
+
+fn probe_groups(bytes: &[u8]) -> Result<Vec<Vec<usize>>, AnnexBError> {
+    run(bytes, d()).map(|s| {
+        s.access_units
+            .iter()
+            .map(|a| a.nal_indices.clone())
+            .collect()
+    })
+}
+
+fn probe_cat(parts: &[&[u8]]) -> Vec<u8> {
+    parts.concat()
+}
+
+fn probe_mep(offset: usize) -> Result<AnnexBScan, AnnexBError> {
+    Err(AnnexBError::MalformedEmulationPrevention { offset })
+}
+
+#[test]
+fn probe_q01_start_codes_leading_and_trailing_zeros() {
+    assert_eq!(
+        probe_spans(&[0, 0, 1, 0x09, 0x10], d()),
+        Ok((vec![(0, 3, 3, 2, 9)], vec![]))
+    );
+    assert_eq!(
+        probe_spans(&[0, 0, 0, 1, 0x09, 0x10], d()),
+        Ok((vec![(0, 4, 4, 2, 9)], vec![]))
+    );
+    assert_eq!(
+        probe_spans(&[0, 0, 0, 0, 0, 0, 1, 0x09, 0x10], d()),
+        Ok((vec![(3, 4, 7, 2, 9)], vec![SourceSpan::new(0, 3)]))
+    );
+    assert_eq!(
+        probe_spans(&[0, 0, 1, 0x09, 0x10, 0, 0, 0, 1, 0x67, 0x42], d()),
+        Ok((vec![(0, 3, 3, 2, 9), (5, 4, 9, 2, 7)], vec![]))
+    );
+    assert_eq!(
+        probe_spans(&[0, 0, 1, 0x09, 0x10, 0, 0, 0, 0, 0, 1, 0x67, 0x42], d()),
+        Ok((
+            vec![(0, 3, 3, 2, 9), (7, 4, 11, 2, 7)],
+            vec![SourceSpan::new(5, 2)]
+        ))
+    );
+    assert_eq!(
+        probe_spans(&[0, 0, 1, 0x09, 0x10, 0, 0, 0, 0], d()),
+        Ok((vec![(0, 3, 3, 2, 9)], vec![SourceSpan::new(5, 4)]))
+    );
+}
+
+#[test]
+fn probe_q02_ep_followers_and_cabac_zero_word() {
+    for x in 0u8..=3 {
+        let s = [0, 0, 1, 0x0C, 0xAA, 0, 0, 3, x, 0xBB];
+        assert_eq!(
+            probe_spans(&s, d()),
+            Ok((vec![(0, 3, 3, 7, 12)], vec![])),
+            "follower {x}"
+        );
+    }
+    for x in [4u8, 0x10, 0x80, 0xFF] {
+        let s = [0, 0, 1, 0x0C, 0xAA, 0, 0, 3, x, 0xBB];
+        assert_eq!(run(&s, d()), probe_mep(5), "follower {x}");
+    }
+    assert_eq!(
+        probe_spans(&[0, 0, 1, 0x0C, 0xAA, 0, 0, 3], d()),
+        Ok((vec![(0, 3, 3, 5, 12)], vec![]))
+    );
+    assert_eq!(
+        probe_spans(&[0, 0, 1, 0x0C, 0xAA, 0, 0, 3, 0, 0, 1, 0x09, 0x10], d()),
+        Ok((vec![(0, 3, 3, 5, 12), (8, 3, 11, 2, 9)], vec![]))
+    );
+    assert_eq!(
+        probe_spans(&[0, 0, 1, 0x0C, 0xAA, 0, 0, 3, 0, 0, 0, 1, 0x09, 0x10], d()),
+        Ok((vec![(0, 3, 3, 5, 12), (8, 4, 12, 2, 9)], vec![]))
+    );
+    assert_eq!(
+        probe_spans(
+            &[0, 0, 1, 0x0C, 0xAA, 0, 0, 3, 0, 0, 3, 0, 0, 3, 1, 0xBB],
+            d()
+        ),
+        Ok((vec![(0, 3, 3, 13, 12)], vec![]))
+    );
+    assert_eq!(
+        probe_spans(&[0, 0, 1, 0x41, 0x80, 0, 0, 3], d()),
+        Ok((vec![(0, 3, 3, 5, 1)], vec![]))
+    );
+}
+
+#[test]
+fn probe_q03_forbidden_sequences_in_payload() {
+    assert_eq!(
+        run(&[0, 0, 1, 0x0C, 0xAA, 0, 0, 0, 0xBB], d()),
+        probe_mep(5)
+    );
+    assert_eq!(
+        run(&[0, 0, 1, 0x0C, 0xAA, 0, 0, 2, 0xBB], d()),
+        probe_mep(5)
+    );
+    assert_eq!(
+        run(&[0, 0, 1, 0x0C, 0x11, 0, 0, 0, 3, 1, 0xFF], d()),
+        probe_mep(5)
+    );
+    assert_eq!(run(&[0, 0, 1, 0x0C, 0, 0, 0, 0xBB], d()), probe_mep(4));
+}
+
+#[test]
+fn probe_q03b_header_spanning_forbidden_sequences() {
+    let a = run(&[0, 0, 1, 0x00, 0x00, 0x02, 0xAA], d());
+    let b = run(&[0, 0, 1, 0x00, 0x00, 0x00, 0xAA], d());
+    assert!(
+        a.is_err() && b.is_err(),
+        "header-spanning forbidden 3-byte sequence accepted"
+    );
+}
+
+#[test]
+fn probe_q04_eos_terminal() {
+    let s = probe_cat(&[
+        PROBE_SC,
+        &[0x65, 0x80],
+        PROBE_SC,
+        &[0x0A],
+        PROBE_SC,
+        &[0x67, 0x42],
+        PROBE_SC,
+        &[0x68, 0xCE],
+        PROBE_SC,
+        &[0x65, 0x80],
+        PROBE_SC,
+        &[0x0B],
+    ]);
+    assert_eq!(
+        probe_aus(&s),
+        Ok(vec![
+            (vec![0, 1], SourceSpan::new(0, 9)),
+            (vec![2, 3, 4, 5], SourceSpan::new(9, 19))
+        ])
+    );
+    let s = probe_cat(&[
+        PROBE_SC,
+        &[0x65, 0x80],
+        PROBE_SC,
+        &[0x0A],
+        PROBE_SC,
+        &[0x41, 0x40],
+    ]);
+    assert_eq!(probe_groups(&s), Ok(vec![vec![0, 1], vec![2]]));
+    let s = probe_cat(&[
+        PROBE_SC,
+        &[0x65, 0x80],
+        PROBE_SC,
+        &[0x0B],
+        PROBE_SC,
+        &[0x41, 0x40],
+    ]);
+    assert_eq!(probe_groups(&s), Ok(vec![vec![0, 1], vec![2]]));
+    let s = probe_cat(&[
+        PROBE_SC,
+        &[0x67, 0x42],
+        PROBE_SC,
+        &[0x0A],
+        PROBE_SC,
+        &[0x67, 0x42],
+    ]);
+    assert_eq!(probe_groups(&s), Ok(vec![vec![0, 1], vec![2]]));
+    let s = probe_cat(&[PROBE_SC, &[0x0A], PROBE_SC, &[0x65, 0x80]]);
+    assert_eq!(probe_groups(&s), Ok(vec![vec![0], vec![1]]));
+    let s = [0, 0, 1, 0x65, 0x80, 0, 0, 1, 0x0A, 0, 0];
+    assert_eq!(
+        probe_aus(&s),
+        Ok(vec![(vec![0, 1], SourceSpan::new(0, 11))])
+    );
+    assert_eq!(
+        probe_spans(&s, d()).map(|x| x.1),
+        Ok(vec![SourceSpan::new(9, 2)])
+    );
+}
+
+#[test]
+fn probe_q05_first_mb_expgolomb() {
+    let s = probe_cat(&[
+        PROBE_SC,
+        &[0x41, 0x80],
+        PROBE_SC,
+        &[0x41, 0x40],
+        PROBE_SC,
+        &[0x41, 0x60],
+        PROBE_SC,
+        &[0x41, 0x20],
+        PROBE_SC,
+        &[0x41, 0x10],
+        PROBE_SC,
+        &[0x41, 0x80],
+        PROBE_SC,
+        &[0x41, 0x38],
+    ]);
+    assert_eq!(probe_groups(&s), Ok(vec![vec![0, 1, 2, 3, 4], vec![5, 6]]));
+    let s = probe_cat(&[
+        PROBE_SC,
+        &[0x41, 0x80],
+        PROBE_SC,
+        &[0x41, 0, 0, 3, 0, 1, 0xFF, 0xFF, 0xFF, 0xFE],
+    ]);
+    assert_eq!(probe_groups(&s), Ok(vec![vec![0, 1]]));
+    assert_eq!(
+        run(&[0, 0, 1, 0x41, 0, 0, 3, 0, 0, 0x80], d()),
+        Err(AnnexBError::MalformedSliceHeader {
+            offset: 3,
+            detail: "ue(v) leading zero count exceeds 31"
+        })
+    );
+    assert_eq!(
+        run(&[0, 0, 1, 0x41, 0, 0, 3], d()),
+        Err(AnnexBError::TruncatedSliceHeader { offset: 3 })
+    );
+    assert_eq!(
+        run(&[0, 0, 1, 0x65], d()),
+        Err(AnnexBError::TruncatedSliceHeader { offset: 3 })
+    );
+    let s = probe_cat(&[
+        PROBE_SC,
+        &[0x67, 0x42],
+        PROBE_SC,
+        &[0x68, 0xCE],
+        PROBE_SC,
+        &[0x65, 0x80],
+        PROBE_SC,
+        &[0x65, 0x80],
+    ]);
+    assert_eq!(probe_groups(&s), Ok(vec![vec![0, 1, 2], vec![3]]));
+}
+
+#[test]
+fn probe_q06_partitions() {
+    let s = probe_cat(&[
+        PROBE_SC,
+        &[0x62, 0x80],
+        PROBE_SC,
+        &[0x63, 0x80],
+        PROBE_SC,
+        &[0x64, 0x80],
+        PROBE_SC,
+        &[0x62, 0x80],
+        PROBE_SC,
+        &[0x63, 0x80],
+    ]);
+    assert_eq!(probe_groups(&s), Ok(vec![vec![0, 1, 2], vec![3, 4]]));
+    let s = probe_cat(&[PROBE_SC, &[0x62, 0x80], PROBE_SC, &[0x63, 0, 0, 3]]);
+    assert_eq!(probe_groups(&s), Ok(vec![vec![0, 1]]));
+}
+
+#[test]
+fn probe_q07_truncated_final() {
+    let t = |offset| Err(AnnexBError::TruncatedNal { offset });
+    assert_eq!(run(&[0, 0, 1, 0x09, 0x10, 0, 0, 1], d()), t(8));
+    assert_eq!(run(&[0, 0, 1, 0x09, 0x10, 0, 0, 0, 1], d()), t(9));
+    assert_eq!(run(&[0, 0, 1, 0x09, 0x10, 0, 0, 1, 0, 0], d()), t(8));
+    assert_eq!(run(&[0, 0, 1], d()), t(3));
+    assert_eq!(run(&[0, 0, 0, 1], d()), t(4));
+}
+
+#[test]
+fn probe_q08_limits_exact() {
+    let fin = [0, 0, 1, 0x0C, 0xFF, 0xFF, 0, 0, 1, 0x0C, 0xFF, 0xFF, 0xFF];
+    assert!(run(&fin, d().with_max_nal_bytes(4)).is_ok());
+    assert_eq!(
+        run(&fin, d().with_max_nal_bytes(3)),
+        Err(AnnexBError::NalTooLarge {
+            offset: 9,
+            len: 4,
+            max: 3
+        })
+    );
+    let mid = [0, 0, 1, 0x0C, 0xFF, 0xFF, 0xFF, 0, 0, 1, 0x0C, 0xFF, 0xFF];
+    assert!(run(&mid, d().with_max_nal_bytes(4)).is_ok());
+    assert_eq!(
+        run(&mid, d().with_max_nal_bytes(3)),
+        Err(AnnexBError::NalTooLarge {
+            offset: 3,
+            len: 4,
+            max: 3
+        })
+    );
+    let three = [
+        0, 0, 1, 0x09, 0x10, 0, 0, 1, 0x67, 0x42, 0, 0, 1, 0x68, 0xCE,
+    ];
+    assert!(run(&three, d().with_max_nals(3)).is_ok());
+    assert_eq!(
+        run(&three, d().with_max_nals(1)),
+        Err(AnnexBError::TooManyNals { count: 2, max: 1 })
+    );
+    assert_eq!(
+        run(&three, d().with_max_nals(0)),
+        Err(AnnexBError::TooManyNals { count: 1, max: 0 })
+    );
+    assert!(run(&three, d().with_max_aus(1)).is_ok());
+    assert_eq!(
+        run(&three, d().with_max_aus(0)),
+        Err(AnnexBError::TooManyAccessUnits { count: 1, max: 0 })
+    );
+    assert!(run(&three, d().with_max_input_bytes(15)).is_ok());
+    assert_eq!(
+        run(&three, d().with_max_input_bytes(14)),
+        Err(AnnexBError::InputTooLarge { len: 15, max: 14 })
+    );
+    let g = [0xAA, 0xBB, 0, 0, 1, 0x09, 0x10];
+    assert!(run(&g, d().with_max_leading_garbage_bytes(2)).is_ok());
+    assert_eq!(
+        run(&g, d().with_max_leading_garbage_bytes(1)),
+        Err(AnnexBError::LeadingGarbage { len: 2 })
+    );
+    assert_eq!(run(&g, d()), Err(AnnexBError::LeadingGarbage { len: 2 }));
+}
+
+#[test]
+fn probe_q09_ceiling() {
+    assert_eq!(CEILING_MAX_NAL_BYTES, 16 * 1024 * 1024);
+    assert_eq!(
+        d().with_max_nal_bytes(usize::MAX).max_nal_bytes,
+        CEILING_MAX_NAL_BYTES
+    );
+    assert_eq!(
+        d().with_max_nal_bytes(CEILING_MAX_NAL_BYTES).max_nal_bytes,
+        CEILING_MAX_NAL_BYTES
+    );
+    let literal = AnnexBLimits {
+        max_input_bytes: 64 << 20,
+        max_nal_bytes: usize::MAX,
+        max_nals: 10,
+        max_aus: 10,
+        max_leading_garbage_bytes: 0,
+    };
+    let mut v = vec![0, 0, 0, 1, 0x0C];
+    v.resize(4 + CEILING_MAX_NAL_BYTES, 0xFF);
+    assert_eq!(
+        probe_spans(&v, literal).map(|x| x.0),
+        Ok(vec![(0, 4, 4, CEILING_MAX_NAL_BYTES, 12)])
+    );
+    v.push(0xFF);
+    let want = Err(AnnexBError::NalTooLarge {
+        offset: 4,
+        len: CEILING_MAX_NAL_BYTES + 1,
+        max: CEILING_MAX_NAL_BYTES,
+    });
+    assert_eq!(run(&v, literal), want, "struct-literal limits");
+    let built = d()
+        .with_max_input_bytes(64 << 20)
+        .with_max_nal_bytes(usize::MAX);
+    assert_eq!(run(&v, built), want, "builder limits");
+}
+
+#[test]
+fn probe_q10_default_input_boundary() {
+    assert_eq!(DEFAULT_MAX_INPUT_BYTES, 512 * 1024 * 1024);
+    let n = DEFAULT_MAX_INPUT_BYTES;
+    let v = vec![0u8; n + 1];
+    assert_eq!(
+        run(&v, d()),
+        Err(AnnexBError::InputTooLarge { len: n + 1, max: n })
+    );
+    assert_eq!(run(&v[..n], d()), Err(AnnexBError::NoStartCode));
+}
+
+#[test]
+fn probe_q11_au_boundaries() {
+    let s = probe_cat(&[
+        PROBE_SC,
+        &[0x06, 0x05],
+        PROBE_SC,
+        &[0x67, 0x42],
+        PROBE_SC,
+        &[0x68, 0xCE],
+        PROBE_SC,
+        &[0x65, 0x80],
+        PROBE_SC,
+        &[0x65, 0x40],
+    ]);
+    assert_eq!(probe_groups(&s), Ok(vec![vec![0, 1, 2, 3, 4]]));
+    let s = probe_cat(&[
+        PROBE_SC,
+        &[0x41, 0x80],
+        PROBE_SC,
+        &[0x06, 0x05],
+        PROBE_SC,
+        &[0x41, 0x80],
+    ]);
+    assert_eq!(probe_groups(&s), Ok(vec![vec![0], vec![1, 2]]));
+    let s = probe_cat(&[
+        PROBE_SC,
+        &[0x41, 0x80],
+        PROBE_SC,
+        &[0x0C, 0xFF],
+        PROBE_SC,
+        &[0x41, 0x40],
+    ]);
+    assert_eq!(probe_groups(&s), Ok(vec![vec![0, 1, 2]]));
+    let s = probe_cat(&[
+        PROBE_SC,
+        &[0x65, 0x80],
+        PROBE_SC,
+        &[0x68, 0xCE],
+        PROBE_SC,
+        &[0x41, 0x80],
+    ]);
+    assert_eq!(probe_groups(&s), Ok(vec![vec![0], vec![1, 2]]));
+    let s = probe_cat(&[
+        PROBE_SC,
+        &[0x41, 0x80],
+        PROBE_SC,
+        &[0x09, 0x10],
+        PROBE_SC,
+        &[0x41, 0x40],
+    ]);
+    assert_eq!(probe_groups(&s), Ok(vec![vec![0], vec![1, 2]]));
+    let s = probe_cat(&[PROBE_SC, &[0x09, 0x10], PROBE_SC, &[0x09, 0x10]]);
+    assert_eq!(probe_groups(&s), Ok(vec![vec![0], vec![1]]));
+}
+
+#[test]
+fn probe_q12_cancel_before_scan() {
+    let cx = ReplayCx::for_test();
+    cx.request_cancellation();
+    assert_eq!(
+        split_annexb(&[0, 0, 1, 0x09, 0x10], d(), &cx),
+        Err(AnnexBError::Cancelled)
+    );
+    assert!(cx.is_drain_completed());
 }

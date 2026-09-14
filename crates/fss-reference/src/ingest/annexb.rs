@@ -513,18 +513,19 @@ pub fn split_annexb(
                 }
 
                 let nal_len = pad_start.saturating_sub(cur_nal_start);
-                if pad_start < next_sc_offset {
-                    padding_spans.push(SourceSpan::new(
-                        pad_start,
-                        next_sc_offset.saturating_sub(pad_start),
-                    ));
-                }
 
                 if nals.len() >= limits.max_nals {
                     return Err(AnnexBError::TooManyNals {
                         count: nals.len().saturating_add(1),
                         max: limits.max_nals,
                     });
+                }
+
+                if pad_start < next_sc_offset {
+                    padding_spans.push(SourceSpan::new(
+                        pad_start,
+                        next_sc_offset.saturating_sub(pad_start),
+                    ));
                 }
 
                 let nal = validate_and_create_nal(
@@ -562,18 +563,19 @@ pub fn split_annexb(
                 }
 
                 let nal_len = pad_start.saturating_sub(cur_nal_start);
-                if pad_start < bytes.len() {
-                    padding_spans.push(SourceSpan::new(
-                        pad_start,
-                        bytes.len().saturating_sub(pad_start),
-                    ));
-                }
 
                 if nals.len() >= limits.max_nals {
                     return Err(AnnexBError::TooManyNals {
                         count: nals.len().saturating_add(1),
                         max: limits.max_nals,
                     });
+                }
+
+                if pad_start < bytes.len() {
+                    padding_spans.push(SourceSpan::new(
+                        pad_start,
+                        bytes.len().saturating_sub(pad_start),
+                    ));
                 }
 
                 let nal = validate_and_create_nal(
@@ -683,9 +685,10 @@ fn validate_and_create_nal(
     let nal_ref_idc = (header_byte >> 5) & 0x03;
     let nal_unit_type = header_byte & 0x1F;
 
-    // Validate emulation prevention in payload
-    let payload = &bytes[nal_offset.saturating_add(1)..nal_offset.saturating_add(nal_len)];
-    validate_emulation_prevention(payload, nal_offset.saturating_add(1))?;
+    // Validate emulation prevention across the entire NAL unit (including header byte)
+    // per H.264 7.4.1 (00 00 00, 00 00 01, and 00 00 02 are forbidden anywhere in the NAL).
+    let nal_bytes = &bytes[nal_offset..nal_offset.saturating_add(nal_len)];
+    validate_emulation_prevention(nal_bytes, nal_offset)?;
 
     Ok(AnnexBNal {
         start_code_span: SourceSpan::new(sc_offset, sc_len),
@@ -1020,5 +1023,83 @@ mod tests {
         let res_au = split_annexb(&[0, 0, 1, 0x65, 0x80], AnnexBLimits::default(), &cx_au);
         assert_eq!(res_au, Err(AnnexBError::Cancelled));
     }
-}
 
+    #[test]
+    fn test_m07_in_scan_checkpoint_nal_scan() {
+        // In-scan checkpoint inside nal_scan loop (line 480) with many small NALs.
+        // Each NAL: 3-byte start code [0, 0, 1] + 1-byte header 0x0C + 1023 payload bytes = 1027 bytes.
+        // 1100 NALs = 1_129_700 bytes (> 1 MiB checkpoint interval).
+        let mut stream = Vec::with_capacity(1100 * 1027);
+        let nal_payload = vec![0xFF; 1023];
+        for _ in 0..1100 {
+            stream.extend_from_slice(&[0, 0, 1, 0x0C]);
+            stream.extend_from_slice(&nal_payload);
+        }
+
+        let cx = ReplayCx::for_test();
+        cx.set_cancel_at_checkpoint("nal_scan");
+        let limits = AnnexBLimits::default().with_max_nals(2000);
+        let res = split_annexb(&stream, limits, &cx);
+        assert_eq!(res, Err(AnnexBError::Cancelled));
+        assert!(cx.is_drain_completed());
+    }
+
+    #[test]
+    fn test_validation_time_ceiling_refuses_oversize_nal_bypassing_builder() {
+        // Bypass the builder clamp at :190-197 using a struct literal:
+        let limits = AnnexBLimits {
+            max_input_bytes: 64 << 20,
+            max_nal_bytes: usize::MAX, // Bypasses builder clamp
+            max_nals: 10,
+            max_aus: 10,
+            max_leading_garbage_bytes: 0,
+        };
+
+        // NAL of exactly CEILING_MAX_NAL_BYTES: accepted
+        let mut v = vec![0, 0, 0, 1, 0x0C];
+        v.resize(4 + CEILING_MAX_NAL_BYTES, 0xFF);
+        let cx = ReplayCx::for_test();
+        let scan = split_annexb(&v, limits, &cx);
+        assert!(scan.is_ok());
+
+        // NAL of CEILING_MAX_NAL_BYTES + 1: refused ONLY by the validation-time ceiling (:661)
+        v.push(0xFF);
+        let cx2 = ReplayCx::for_test();
+        let res = split_annexb(&v, limits, &cx2);
+        assert_eq!(
+            res,
+            Err(AnnexBError::NalTooLarge {
+                offset: 4,
+                len: CEILING_MAX_NAL_BYTES + 1,
+                max: CEILING_MAX_NAL_BYTES,
+            })
+        );
+    }
+
+    #[test]
+    fn test_header_spanning_forbidden_sequences() {
+        let cx = ReplayCx::for_test();
+        // Header 00 followed by 00 02
+        let res1 = split_annexb(
+            &[0, 0, 1, 0x00, 0x00, 0x02, 0xAA],
+            AnnexBLimits::default(),
+            &cx,
+        );
+        assert_eq!(
+            res1,
+            Err(AnnexBError::MalformedEmulationPrevention { offset: 3 })
+        );
+
+        // Header 00 followed by 00 00
+        let cx2 = ReplayCx::for_test();
+        let res2 = split_annexb(
+            &[0, 0, 1, 0x00, 0x00, 0x00, 0xAA],
+            AnnexBLimits::default(),
+            &cx2,
+        );
+        assert_eq!(
+            res2,
+            Err(AnnexBError::MalformedEmulationPrevention { offset: 3 })
+        );
+    }
+}
