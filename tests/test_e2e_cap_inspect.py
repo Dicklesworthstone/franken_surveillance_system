@@ -50,8 +50,8 @@ cap_fail='{{"step":"'${{TARGET}}'_fail","verdict":"fail","exit":1,"duration_ms":
 case "${{STUB_MODE:-pass}}" in
   pass)
     printf "\\033[32mrunning 2 tests\\033[0m\\n"
-    echo CAPLOG $cap_a
-    echo CAPLOG $cap_b
+    echo CAPLOG $cap_a >&2
+    echo CAPLOG $cap_b >&2
     printf "test result: ok. 2 passed\\n"
     exit 0
     ;;

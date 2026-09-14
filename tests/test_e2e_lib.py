@@ -302,9 +302,13 @@ e2e_init "cap_suite" "fss-2h5zq.2"
 # Create initial record to know base size
 e2e_step "s_base" echo "base"
 
-# Bloat log file up to exactly near the boundary
+# Bloat log file up to exactly near the boundary. A full step record is ~500 bytes, so the probe
+# leaves ~900 bytes of headroom beyond the 4096-byte summary reserve: enough for the small
+# "within cap" step record (N) to be written, while the 5000-byte "over limit" record (N+1) is
+# still refused. (The original -300 headroom was smaller than any real record, so N could never
+# be written; widened here without changing the boundary intent.)
 cur_size=$(wc -c < "$_E2E_LOG_FILE")
-needed=$(( 10485760 - 4096 - cur_size - 300 ))
+needed=$(( 10485760 - 4096 - cur_size - 900 ))
 
 # Append a dummy line directly to bring it to exact boundary N
 python3 -c 'import sys; open(sys.argv[1], "a").write("{\"pad\": \"" + "P" * (int(sys.argv[2]) - 13) + "\"}\n")' "$_E2E_LOG_FILE" "$needed"
