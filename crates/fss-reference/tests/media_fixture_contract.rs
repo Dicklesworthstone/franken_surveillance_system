@@ -576,10 +576,7 @@ fn test_committed_fixtures_regeneration_identity() -> Result<(), Box<dyn Error>>
 
     for (fname, fix, pinned_sha) in rtp_files {
         let rtp_path = repo_root.join("tests/fixtures/media/rtp").join(fname);
-        assert!(
-            rtp_path.is_file(),
-            "committed {fname} must exist on disk"
-        );
+        assert!(rtp_path.is_file(), "committed {fname} must exist on disk");
         let on_disk = fs::read(&rtp_path)?;
         assert_eq!(
             on_disk, fix.bytes,
@@ -660,6 +657,8 @@ fn test_structural_fua_and_marker_bits() -> Result<(), Box<dyn Error>> {
     assert_eq!(rtp_packets.len(), clean.packets.len());
 
     let mut found_fua = false;
+    let mut in_fua = false;
+    let mut fua_inner_type = 0u8;
     for (idx, rtp_wire) in rtp_packets.iter().enumerate() {
         assert!(rtp_wire.len() >= 12);
         let m_bit = (rtp_wire[1] & 0x80) != 0;
@@ -679,12 +678,41 @@ fn test_structural_fua_and_marker_bits() -> Result<(), Box<dyn Error>> {
 
             // Structural FU-A assertions (M2 guard against corrupted reserved/end bits)
             assert!(!r_bit, "pkt {idx}: FU-A reserved bit must be 0 (M2 guard)");
-            assert!(!(s_bit && e_bit), "pkt {idx}: FU-A S and E cannot both be set");
+            assert!(
+                !(s_bit && e_bit),
+                "pkt {idx}: FU-A S and E cannot both be set"
+            );
             let inner_type = fu_header & 0x1f;
             assert!(
                 (1..=23).contains(&inner_type),
                 "pkt {idx}: FU-A inner type {inner_type} must be valid"
             );
+
+            // F2 / M1 guard: assert S on first fragment, E on last, and fragment contiguity
+            if !in_fua {
+                assert!(
+                    s_bit,
+                    "pkt {idx}: first FU-A fragment must have S bit set (M1 guard)"
+                );
+                assert!(
+                    !e_bit,
+                    "pkt {idx}: first FU-A fragment must not have E bit set"
+                );
+                in_fua = true;
+                fua_inner_type = inner_type;
+            } else {
+                assert!(
+                    !s_bit,
+                    "pkt {idx}: continuation FU-A fragment must not have S bit set (M1 guard)"
+                );
+                assert_eq!(
+                    inner_type, fua_inner_type,
+                    "pkt {idx}: FU-A continuation fragment inner type {inner_type} differs from start {fua_inner_type}"
+                );
+                if e_bit {
+                    in_fua = false;
+                }
+            }
 
             if m_bit {
                 assert!(
@@ -692,8 +720,14 @@ fn test_structural_fua_and_marker_bits() -> Result<(), Box<dyn Error>> {
                     "pkt {idx}: RTP marker bit on FU-A packet may only be set if FU-A E bit is set"
                 );
             }
+        } else {
+            assert!(
+                !in_fua,
+                "pkt {idx}: non-FU-A packet (nal_type={nal_type}) observed while FU-A fragment sequence was incomplete"
+            );
         }
     }
+    assert!(!in_fua, "FU-A sequence did not terminate with an E bit");
     assert!(found_fua, "clean.rtp must exercise FU-A fragmentation");
 
     // Group packets by access unit timestamp and verify marker bit placement (M5 guard)

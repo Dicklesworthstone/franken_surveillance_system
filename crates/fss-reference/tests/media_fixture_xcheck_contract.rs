@@ -146,7 +146,10 @@ fn test_media_fixture_xcheck_with_fss_packet() -> Result<(), Box<dyn Error>> {
                 }
             }
             let (ec, ed) = match f1.packets.get(idx) {
-                Some(d) => (d.expected_sequence_class.as_str().to_string(), d.expected_delivered),
+                Some(d) => (
+                    d.expected_sequence_class.as_str().to_string(),
+                    d.expected_delivered,
+                ),
                 None => ("<none>".to_string(), false),
             };
             let ok = ec == class && ed == dlv;
@@ -176,4 +179,74 @@ fn test_media_fixture_xcheck_with_fss_packet() -> Result<(), Box<dyn Error>> {
     } else {
         Err(format!("{} mismatches: {bad:#?}", bad.len()).into())
     }
+}
+
+#[test]
+fn test_non_default_params_gop_smaller_than_frame_count_nal_equivalence()
+-> Result<(), Box<dyn Error>> {
+    // F3 test: non-default parameters where gop_size < frame_count.
+    // Multiple GOPs must each re-send SPS/PPS at IDR boundaries in rtpdump,
+    // achieving exact byte-for-byte NAL equivalence with Annex-B via H264Depacketizer.
+    let test_configs = [
+        (6, 2), // 3 GOPs (AU0, AU2, AU4 are IDR; AU1, AU3, AU5 are non-IDR)
+        (5, 1), // 5 GOPs (every AU is IDR)
+        (7, 3), // 3 GOPs (AU0, AU3, AU6 are IDR; AU1, AU2, AU4, AU5 are non-IDR)
+    ];
+
+    for (frame_count, gop_size) in test_configs {
+        let hp = H264FixtureParams {
+            seed: 12345,
+            frame_count,
+            gop_size,
+            include_aud: true,
+            include_sei: true,
+            two_slice_au: true,
+            force_emulation_prevention: true,
+            trailing_zeros: 1,
+        };
+        let annexb = generate_h264_annexb(&hp)?;
+        let rp = RtpdumpParams::default();
+        let clean = generate_rtpdump_clean(&annexb, &rp)?;
+
+        let (recs, trunc) = records(&clean.bytes);
+        assert!(
+            !trunc,
+            "clean stream with frame_count={frame_count}, gop_size={gop_size} must not be truncated"
+        );
+
+        let key = StreamKey {
+            ingress: 1,
+            generation: 1,
+            ssrc: rp.ssrc,
+        };
+        let mut tracker = SequenceTracker::new(key, rp.payload_type).map_err(|e| format!("{e}"))?;
+        let mut depack = H264Depacketizer::new(
+            key,
+            rp.payload_type,
+            H264Mode::NonInterleaved,
+            H264Limits::default(),
+        )
+        .map_err(|e| format!("{e}"))?;
+
+        let mut delivered = Vec::new();
+        for (idx, rec) in recs.iter().enumerate() {
+            let pkt = RtpPacket::parse(rec, PacketLimits::default())?;
+            let obs = tracker.observe(key, pkt).map_err(|e| format!("{e}"))?;
+            if let Some(ext) = obs.extended_sequence {
+                let out = depack
+                    .push(key, ext, pkt, idx as u64 * 1_000_000)
+                    .map_err(|e| format!("{e}"))?;
+                for n in &out.nals {
+                    delivered.push(n.bytes().to_vec());
+                }
+            }
+        }
+
+        let annex: Vec<Vec<u8>> = annexb.nals.iter().map(|n| n.wire_bytes.clone()).collect();
+        assert_eq!(
+            delivered, annex,
+            "exact NAL equivalence failed for non-default params frame_count={frame_count}, gop_size={gop_size}"
+        );
+    }
+    Ok(())
 }
