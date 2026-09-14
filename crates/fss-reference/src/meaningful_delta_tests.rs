@@ -192,10 +192,11 @@ fn publication(variant: &Variant) -> Result<crate::ReferenceSituationPublication
                 .to_owned()
             }),
             knowledge_state: effect_state,
-            // PROV-001 refuses an observed cell asserting `known` without evidence, and a bound
-            // effect cell whose evidence is not a retained proof root is refused at verify. An
-            // evidence-less effect claim is therefore modeled as what it is: a provider claim
-            // (PROV-006) that no retained proof supports, valid but never a proved outcome.
+            // PROV-001 refuses an observed cell asserting `known` without evidence, and KSTATE-001
+            // requires non-empty evidence roots for `known` across every provenance class
+            // (admissibility is tracked by fss-gefi6). An
+            // evidence-less effect claim is therefore modeled as what it is: an unproved provider claim
+            // (PROV-006) in Estimated state that no retained proof supports, valid but never a proved outcome.
             provenance: if variant.effect_evidence {
                 ProvenanceClass::Observed
             } else {
@@ -768,15 +769,15 @@ fn indeterminate_effect_becoming_not_applicable_stays_unresolved() -> Result<(),
 }
 
 #[test]
-fn indeterminate_effect_becoming_known_without_evidence_stays_unresolved()
+fn indeterminate_effect_becoming_estimated_without_evidence_stays_unresolved()
 -> Result<(), Box<dyn Error>> {
-    let delta = indeterminate_effect_delta(Some(KnowledgeState::Known), |variant| {
+    let delta = indeterminate_effect_delta(Some(KnowledgeState::Estimated), |variant| {
         variant.effect_evidence = false;
     })?;
     assert_effect_unresolved(
         &delta,
-        &became(KnowledgeState::Known),
-        Some(&degraded_to(KnowledgeState::Known)),
+        &became(KnowledgeState::Estimated),
+        Some(&degraded_to(KnowledgeState::Estimated)),
     )
 }
 
@@ -1140,29 +1141,45 @@ fn assert_unproved_known_effect_not_terminal(
 }
 
 #[test]
-fn unknown_effect_becoming_known_without_evidence_is_not_terminal() -> Result<(), Box<dyn Error>> {
+fn unknown_effect_becoming_estimated_without_evidence_is_not_terminal() -> Result<(), Box<dyn Error>>
+{
     let delta = effect_transition_delta(
         Some(KnowledgeState::Unknown),
-        Some(KnowledgeState::Known),
+        Some(KnowledgeState::Estimated),
         drop_effect_evidence,
     )?;
-    assert_unproved_known_effect_not_terminal(&delta, "unknown->known without evidence")
+    assert_unproved_effect_still_reported(
+        &delta,
+        KnowledgeState::Estimated,
+        "unknown->estimated without evidence",
+    )
 }
 
 #[test]
-fn absent_effect_becoming_known_without_evidence_is_not_terminal() -> Result<(), Box<dyn Error>> {
-    let delta = effect_transition_delta(None, Some(KnowledgeState::Known), drop_effect_evidence)?;
-    assert_unproved_known_effect_not_terminal(&delta, "absent->known without evidence")
+fn absent_effect_becoming_estimated_without_evidence_is_not_terminal() -> Result<(), Box<dyn Error>>
+{
+    let delta =
+        effect_transition_delta(None, Some(KnowledgeState::Estimated), drop_effect_evidence)?;
+    assert_unproved_effect_still_reported(
+        &delta,
+        KnowledgeState::Estimated,
+        "absent->estimated without evidence",
+    )
 }
 
 #[test]
-fn stale_effect_becoming_known_without_evidence_is_not_terminal() -> Result<(), Box<dyn Error>> {
+fn stale_effect_becoming_estimated_without_evidence_is_not_terminal() -> Result<(), Box<dyn Error>>
+{
     let delta = effect_transition_delta(
         Some(KnowledgeState::Stale),
-        Some(KnowledgeState::Known),
+        Some(KnowledgeState::Estimated),
         drop_effect_evidence,
     )?;
-    assert_unproved_known_effect_not_terminal(&delta, "stale->known without evidence")
+    assert_unproved_effect_still_reported(
+        &delta,
+        KnowledgeState::Estimated,
+        "stale->estimated without evidence",
+    )
 }
 
 #[test]
@@ -1184,6 +1201,40 @@ fn unknown_effect_becoming_known_with_expired_validity_is_not_terminal()
         expire_effect,
     )?;
     assert_unproved_known_effect_not_terminal(&delta, "unknown->known with expired validity")
+}
+
+#[test]
+fn stale_effect_becoming_contradicted_known_is_not_terminal() -> Result<(), Box<dyn Error>> {
+    let delta = effect_transition_delta(
+        Some(KnowledgeState::Stale),
+        Some(KnowledgeState::Known),
+        contradict_effect,
+    )?;
+    assert_unproved_known_effect_not_terminal(&delta, "stale->contradicted known")
+}
+
+#[test]
+fn stale_effect_becoming_known_with_expired_validity_is_not_terminal() -> Result<(), Box<dyn Error>>
+{
+    let delta = effect_transition_delta(
+        Some(KnowledgeState::Stale),
+        Some(KnowledgeState::Known),
+        expire_effect,
+    )?;
+    assert_unproved_known_effect_not_terminal(&delta, "stale->known with expired validity")
+}
+
+#[test]
+fn absent_effect_becoming_contradicted_known_is_not_terminal() -> Result<(), Box<dyn Error>> {
+    let delta = effect_transition_delta(None, Some(KnowledgeState::Known), contradict_effect)?;
+    assert_unproved_known_effect_not_terminal(&delta, "absent->contradicted known")
+}
+
+#[test]
+fn absent_effect_becoming_known_with_expired_validity_is_not_terminal() -> Result<(), Box<dyn Error>>
+{
+    let delta = effect_transition_delta(None, Some(KnowledgeState::Known), expire_effect)?;
+    assert_unproved_known_effect_not_terminal(&delta, "absent->known with expired validity")
 }
 
 #[test]
@@ -1225,7 +1276,7 @@ fn indeterminate_effect_laundered_through_unknown_never_terminalizes() -> Result
     let mut third = second.clone();
     third.sequence = 3;
     third.effect_state = Some(KnowledgeState::Known);
-    third.effect_evidence = false;
+    third.effect_contradicted = true;
     let first = publication(&first)?;
     let second = successor_of(&first, &second)?;
     let third = successor_of(&second, &third)?;
@@ -1327,6 +1378,14 @@ fn assert_unproved_effect_still_reported(
         delta.effect_uncertainty_changes
     );
     assert!(
+        !delta
+            .effect_uncertainty_changes
+            .iter()
+            .any(|change| change.contains("resolved")),
+        "{context}: an unproved effect must not be reported as resolved: {:?}",
+        delta.effect_uncertainty_changes
+    );
+    assert!(
         delta.classes.contains(&MeaningfulDeltaClass::CoverageLoss),
         "{context}: an unproved effect is coverage loss: {:?}",
         delta.classes
@@ -1339,6 +1398,7 @@ fn assert_unproved_effect_still_reported(
         delta.coverage_changes
     );
     assert_eq!(delta.priority, DeltaPriority::Critical);
+    assert!(delta.is_non_coalescible());
     delta.validate()?;
     Ok(())
 }
@@ -1408,11 +1468,14 @@ fn unproved_effect_stays_effect_uncertainty_in_every_delta() -> Result<(), Box<d
         (KnowledgeState::Estimated, true),
         (KnowledgeState::NotApplicable, true),
         (KnowledgeState::Indeterminate, true),
-        (KnowledgeState::Known, false),
+        (KnowledgeState::Known, true),
     ] {
         let mut basis_variant = Variant::baseline()?;
         basis_variant.effect_state = Some(state);
         basis_variant.effect_evidence = evidence;
+        if state == KnowledgeState::Known {
+            basis_variant.effect_contradicted = true;
+        }
         let basis = publication(&basis_variant)?;
         let mut result_variant = basis_variant.clone();
         result_variant.sequence = 2;
@@ -1508,11 +1571,14 @@ fn unestablished_effect_removed_is_effect_uncertainty_not_silence() -> Result<()
         (KnowledgeState::Conflicted, true),
         (KnowledgeState::NotApplicable, true),
         (KnowledgeState::Estimated, true),
-        (KnowledgeState::Known, false),
+        (KnowledgeState::Known, true),
     ] {
         let mut basis_variant = Variant::baseline()?;
         basis_variant.effect_state = Some(prior);
         basis_variant.effect_evidence = evidence;
+        if prior == KnowledgeState::Known {
+            basis_variant.effect_contradicted = true;
+        }
         let basis = publication(&basis_variant)?;
         let mut result_variant = basis_variant.clone();
         result_variant.sequence = 2;
@@ -1761,7 +1827,7 @@ fn absent_effect_becoming_unproved_known_with_terminal_hypothesis_is_not_termina
 -> Result<(), Box<dyn Error>> {
     for hypothesis in TERMINAL_HYPOTHESES {
         let delta = effect_transition_delta(None, Some(KnowledgeState::Known), |variant| {
-            variant.effect_evidence = false;
+            variant.effect_contradicted = true;
             variant.effect_hypothesis = Some(hypothesis);
         })?;
         assert_unproved_known_effect_not_terminal(
@@ -2024,11 +2090,11 @@ fn classification_refuses_invalid_world_envelope_precondition() -> Result<(), Bo
     Ok(())
 }
 
-/// Pins why the unproved-known fixtures carry vendor-claimed provenance: PROV-001 refuses an
-/// observed effect cell asserting `known` without evidence, while the evidence-less provider claim
-/// stays valid and is never a proved outcome.
+/// KSTATE-001 / PROV-001 / PROV-006: an evidence-less effect claim asserting `known` is refused for
+/// both observed and non-observed provenances (including vendor claim), while an unproved vendor claim
+/// without evidence is valid as Estimated and is never a proved outcome.
 #[test]
-fn evidence_less_known_effect_is_refused_as_observed_and_unproved_as_vendor_claim()
+fn evidence_less_known_effect_is_refused_for_all_provenances_and_unproved_as_vendor_claim()
 -> Result<(), Box<dyn Error>> {
     assert_eq!(
         KnowledgeCell::new(KnowledgeCellParams {
@@ -2045,8 +2111,23 @@ fn evidence_less_known_effect_is_refused_as_observed_and_unproved_as_vendor_clai
         Err(fss_core::ContractError::EvidenceRequired)
     );
 
+    assert_eq!(
+        KnowledgeCell::new(KnowledgeCellParams {
+            claim_id: EFFECT_CLAIM.to_owned(),
+            statement: "The external effect reached a retained terminal outcome.".to_owned(),
+            knowledge_state: KnowledgeState::Known,
+            provenance: ProvenanceClass::VendorClaimed,
+            hypothesis: None,
+            evidence: Vec::new(),
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: None,
+        }),
+        Err(fss_core::ContractError::EvidenceRequired)
+    );
+
     let mut variant = Variant::baseline()?;
-    variant.effect_state = Some(KnowledgeState::Known);
+    variant.effect_state = Some(KnowledgeState::Estimated);
     variant.effect_evidence = false;
     let projected = publication(&variant)?;
     let now = projected.situation.capsule.created_at;
@@ -2058,10 +2139,82 @@ fn evidence_less_known_effect_is_refused_as_observed_and_unproved_as_vendor_clai
         .iter()
         .find(|cell| cell.claim_id() == EFFECT_CLAIM)
         .ok_or(crate::ReferenceError::InvalidSpec("missing_effect_cell"))?;
+    assert_eq!(effect.knowledge_state(), KnowledgeState::Estimated);
     assert_eq!(effect.provenance(), ProvenanceClass::VendorClaimed);
     assert!(effect.evidence().is_empty());
     assert_eq!(effect.validate(), Ok(()));
     assert!(!effect.is_irreversible_effect_premise(now));
+    Ok(())
+}
+
+/// An evidence-less `known` variant is refused at publication and at successor chaining with
+/// exact `ContractError::EvidenceRequired`, and rebuilding a proved Known effect cell with its
+/// evidence cleared is refused with exact `EvidenceRequired` (fss-kdhh7 Item B2).
+///
+/// No classification-level case exists: clearing the evidence of a cell that a publication
+/// already holds is impossible after PROV (fss-nozug) made the `KnowledgeCell` fields private.
+/// The only public constructor validates, and no public decode path yields a `SituationCapsule`
+/// or a reference situation (see `knowledge_cell_decode_refusal_contract.rs`), so a result that
+/// holds an evidence-less Known cell cannot be built for `classify_reference_meaningful_delta`.
+/// The rebuild through `KnowledgeCell::new` below is the one remaining route, and it is refused.
+#[test]
+fn evidence_less_known_variant_publication_and_successor_and_cell_rebuild_refused()
+-> Result<(), Box<dyn Error>> {
+    let mut v = Variant::baseline()?;
+    v.effect_state = Some(KnowledgeState::Known);
+    v.effect_evidence = false;
+
+    let r = publication(&v);
+    let err = match r {
+        Err(e) => e,
+        Ok(_) => return Err("expected publication of evidence-less Known to fail".into()),
+    };
+    assert_eq!(
+        err.downcast_ref::<fss_core::ContractError>(),
+        Some(&fss_core::ContractError::EvidenceRequired),
+        "publication must fail with exact ContractError::EvidenceRequired"
+    );
+
+    let basis = publication(&Variant::baseline()?)?;
+    let mut s = Variant::baseline()?;
+    s.sequence = 2;
+    s.effect_state = Some(KnowledgeState::Known);
+    s.effect_evidence = false;
+
+    let r2 = successor_of(&basis, &s);
+    let err2 = match r2 {
+        Err(e) => e,
+        Ok(_) => return Err("expected successor_of of evidence-less Known to fail".into()),
+    };
+    assert_eq!(
+        err2.downcast_ref::<fss_core::ContractError>(),
+        Some(&fss_core::ContractError::EvidenceRequired),
+        "successor_of must fail with exact ContractError::EvidenceRequired"
+    );
+
+    let mut b = Variant::baseline()?;
+    b.effect_state = Some(KnowledgeState::Unknown);
+    let valid_basis = publication(&b)?;
+    let mut rv = b.clone();
+    rv.sequence = 2;
+    rv.effect_state = Some(KnowledgeState::Known);
+    let result = successor_of(&valid_basis, &rv)?;
+    let effect_cell = result
+        .situation
+        .capsule
+        .frame
+        .knowledge_cells
+        .iter()
+        .find(|cell| cell.claim_id() == EFFECT_CLAIM)
+        .ok_or(crate::ReferenceError::InvalidSpec("missing_effect_cell"))?;
+    let mut params = effect_cell.to_params();
+    params.evidence.clear();
+    params.provenance = ProvenanceClass::VendorClaimed;
+    assert_eq!(
+        KnowledgeCell::new(params),
+        Err(fss_core::ContractError::EvidenceRequired)
+    );
+
     Ok(())
 }
 

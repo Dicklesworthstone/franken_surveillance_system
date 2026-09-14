@@ -142,7 +142,7 @@ impl KnowledgeState {
     pub const fn meaning(self) -> &'static str {
         match self {
             Self::Known => {
-                "The proposition is established for the named anchor and validity scope by admissible evidence or a proved terminal postcondition."
+                "The proposition is established for the named anchor and validity scope by admissible evidence, with any proved terminal postcondition bound as an evidence root."
             }
             Self::Estimated => {
                 "The proposition is supported by a declared derivation or model with explicit uncertainty and operating-envelope limits."
