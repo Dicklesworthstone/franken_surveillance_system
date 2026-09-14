@@ -156,7 +156,9 @@ fn packetize_nals_for_stream(
         .nals
         .iter()
         .find(|n| n.access_unit_index == 0 && n.nal_unit_type == 9)
-        .ok_or(MediaFixtureError::InvalidParam("Annex-B stream missing AU0 AUD"))?;
+        .ok_or(MediaFixtureError::InvalidParam(
+            "Annex-B stream missing AU0 AUD",
+        ))?;
 
     // Find SPS and PPS NALs for STAP-A aggregation
     let sps_nal = annexb.nals.iter().find(|n| n.nal_unit_type == 7).ok_or(
@@ -241,9 +243,7 @@ fn packetize_nals_for_stream(
                         && n.nal_unit_type != 8
                         && n.nal_unit_type != 9
                 } else {
-                    n.access_unit_index == au_idx
-                        && n.nal_unit_type != 7
-                        && n.nal_unit_type != 8
+                    n.access_unit_index == au_idx && n.nal_unit_type != 7 && n.nal_unit_type != 8
                 }
             })
             .collect();
@@ -591,27 +591,71 @@ pub fn generate_rtpdump_ssrc_reset(
     });
     seq2 = seq2.wrapping_add(1);
 
-    // Slice for generation 2 (SingleNal slice with marker = true)
-    let slice_pkt = proto
+    // Slice for generation 2: prefer SingleNal IDR slice if present; otherwise
+    // handle fragmented FU-A IDR slice (e.g. when two_slice_au=false or small MTU).
+    if let Some(slice_pkt) = proto
         .iter()
         .find(|p| p.packetization == "SingleNal" && p.nal_types == vec![5])
-        .ok_or(MediaFixtureError::InvalidParam(
-            "missing slice packet in proto",
-        ))?;
-    reset_proto.push(ProtoPacket {
-        offset_ms: offset2,
-        sequence: seq2,
-        timestamp: ts2,
-        ssrc: ssrc2,
-        marker: true,
-        payload_type: params.payload_type,
-        payload: slice_pkt.payload.clone(),
-        expected_sequence_class: ExpectedSequenceClass::Advanced,
-        is_sacrificial: false,
-        expected_delivered: true,
-        packetization: "SingleNal",
-        nal_types: vec![5],
-    });
+    {
+        reset_proto.push(ProtoPacket {
+            offset_ms: offset2,
+            sequence: seq2,
+            timestamp: ts2,
+            ssrc: ssrc2,
+            marker: true,
+            payload_type: params.payload_type,
+            payload: slice_pkt.payload.clone(),
+            expected_sequence_class: ExpectedSequenceClass::Advanced,
+            is_sacrificial: false,
+            expected_delivered: true,
+            packetization: "SingleNal",
+            nal_types: vec![5],
+        });
+    } else {
+        let start_pos = proto
+            .iter()
+            .position(|p| {
+                p.packetization == "FU-A"
+                    && p.nal_types == vec![5]
+                    && p.payload.len() >= 2
+                    && (p.payload[1] & 0x80) != 0
+            })
+            .ok_or(MediaFixtureError::InvalidParam(
+                "missing slice packet in proto",
+            ))?;
+
+        let mut found_end = false;
+        for p in &proto[start_pos..] {
+            if p.packetization != "FU-A" || p.nal_types != vec![5] || p.payload.len() < 2 {
+                break;
+            }
+            let is_end = (p.payload[1] & 0x40) != 0;
+            reset_proto.push(ProtoPacket {
+                offset_ms: offset2,
+                sequence: seq2,
+                timestamp: ts2,
+                ssrc: ssrc2,
+                marker: is_end,
+                payload_type: params.payload_type,
+                payload: p.payload.clone(),
+                expected_sequence_class: ExpectedSequenceClass::Advanced,
+                is_sacrificial: false,
+                expected_delivered: true,
+                packetization: "FU-A",
+                nal_types: vec![5],
+            });
+            seq2 = seq2.wrapping_add(1);
+            if is_end {
+                found_end = true;
+                break;
+            }
+        }
+        if !found_end {
+            return Err(MediaFixtureError::InvalidParam(
+                "incomplete FU-A slice in proto",
+            ));
+        }
+    }
 
     Ok(serialize_rtpdump(
         "ssrc_reset",

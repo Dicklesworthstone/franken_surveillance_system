@@ -247,15 +247,22 @@ pub fn generate_slice(
         // Explicitly inject byte sequences exercising emulation prevention byte (0x03)
         // insertion across consecutive zero runs and trailing values <= 0x03.
         let ep_pattern = [
-            0x00, 0x00, 0x00,
-            0x00, 0x00, 0x01,
-            0x00, 0x00, 0x02,
-            0x00, 0x00, 0x03,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x02, 0x00, 0x00, 0x03,
         ];
         let pos = extra.len().min(16);
         extra.splice(pos..pos, ep_pattern);
     }
     rbsp.extend_from_slice(&extra);
+
+    // In H.264, every NAL RBSP must terminate with rbsp_trailing_bits: an
+    // rbsp_stop_one_bit (1) followed by zero alignment bits. Consequently, the
+    // final byte of a synthesized slice RBSP can never be 0x00 (which would be
+    // stripped as trailing_zero_8bits by Annex-B parsers, desynchronizing from RTP).
+    if let Some(last) = rbsp.last_mut() {
+        if *last == 0x00 {
+            *last = 0x80; // rbsp_stop_one_bit (0b1000_0000: 1 stop bit + 7 alignment zeros)
+        }
+    }
 
     let nal_header = if is_idr {
         0x65 // NRI=3 (0b01100000), type=5
