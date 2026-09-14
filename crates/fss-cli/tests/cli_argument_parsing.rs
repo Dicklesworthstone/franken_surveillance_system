@@ -21,7 +21,22 @@ fn registered_commands_decode_successfully() {
         (&["--version"], FssCommand::Version),
         (&["-V"], FssCommand::Version),
         (&["capabilities", "--json"], FssCommand::Capabilities),
-        (&["doctor", "--json"], FssCommand::Doctor),
+        (
+            &["doctor", "--json"],
+            FssCommand::Doctor(fss_cli::DoctorArgs { root: None }),
+        ),
+        (
+            &["doctor", "--json", "--root", "/path/to/dep"],
+            FssCommand::Doctor(fss_cli::DoctorArgs {
+                root: Some(std::path::PathBuf::from("/path/to/dep")),
+            }),
+        ),
+        (
+            &["doctor", "--root=/path/to/dep", "--json"],
+            FssCommand::Doctor(fss_cli::DoctorArgs {
+                root: Some(std::path::PathBuf::from("/path/to/dep")),
+            }),
+        ),
         (&["status", "--json"], FssCommand::Status),
         (
             &["negative-evidence", "help"],
@@ -434,6 +449,8 @@ fn real_process_execution_tests() -> Result<(), Box<dyn std::error::Error>> {
         vec!["--json", "capabilities"],
         vec!["status", "--json", "extra\"with\"quotes"],
         vec!["doctor", "--password=supersecret"],
+        vec!["doctor", "--json", "--root"],
+        vec!["doctor", "--json", "--root", "/a", "--root", "/b"],
         vec!["capabilities", "--dir=C:\\Windows\\System32"],
     ];
 

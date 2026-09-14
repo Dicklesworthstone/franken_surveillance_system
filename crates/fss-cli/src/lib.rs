@@ -27,11 +27,12 @@ pub use diagnostic::{emit_diagnostic, escape_json_str, render_diagnostic};
 pub use error::{
     CliError, ERR_CLI_DUPLICATE_OPTION, ERR_CLI_INVALID_UNICODE, ERR_CLI_MALFORMED_VALUE,
     ERR_CLI_MISSING_VALUE, ERR_CLI_RUNTIME_FAILURE, ERR_CLI_TRAILING_ARGUMENT,
-    ERR_CLI_UNEXPECTED_POSITIONAL, ERR_CLI_UNKNOWN_COMMAND, ERR_CLI_UNKNOWN_OPTION, ExitIdentity,
+    ERR_CLI_UNEXPECTED_POSITIONAL, ERR_CLI_UNKNOWN_COMMAND, ERR_CLI_UNKNOWN_OPTION,
+    ERR_DOCTOR_ATTENTION_REQUIRED, ERR_DOCTOR_NOT_A_DEPLOYMENT, ExitIdentity,
 };
 pub use fss_cmd::{
-    FssCommand, execute_fss, execute_fss_with_exit, help_text as fss_help_text, parse_fss_args,
-    parse_fss_tokens,
+    DoctorArgs, FssCommand, execute_fss, execute_fss_with_exit, help_text as fss_help_text,
+    parse_fss_args, parse_fss_tokens,
 };
 pub use hydration_cmd::{
     HydrationAction, VALID_HYDRATION_SCENARIOS, help_text as hydration_help_text,

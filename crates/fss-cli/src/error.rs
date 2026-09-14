@@ -25,6 +25,10 @@ pub const ERR_CLI_UNEXPECTED_POSITIONAL: &str = "ERR-CLI-UNEXPECTED-POSITIONAL-0
 pub const ERR_CLI_TRAILING_ARGUMENT: &str = "ERR-CLI-TRAILING-ARGUMENT-001";
 /// Stable error identity for runtime execution failure.
 pub const ERR_CLI_RUNTIME_FAILURE: &str = "ERR-CLI-RUNTIME-FAILURE-001";
+/// Stable error identity for doctor inspection requiring attention.
+pub const ERR_DOCTOR_ATTENTION_REQUIRED: &str = "ERR-DOCTOR-ATTENTION-REQUIRED-001";
+/// Stable error identity when target is not a recognized deployment.
+pub const ERR_DOCTOR_NOT_A_DEPLOYMENT: &str = "ERR-DOCTOR-NOT-A-DEPLOYMENT-001";
 
 /// Stable exit identity representing an exit code and a registered identifier.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -94,6 +98,18 @@ impl ExitIdentity {
     pub const TRAILING_ARGUMENT: Self = Self {
         code: 2,
         identifier: "EXIT-CLI-TRAILING-ARGUMENT-002",
+    };
+
+    /// Doctor inspection detected deployment conditions requiring attention.
+    pub const DOCTOR_ATTENTION_REQUIRED: Self = Self {
+        code: 3,
+        identifier: "EXIT-DOCTOR-ATTENTION-REQUIRED-003",
+    };
+
+    /// Target directory is not a recognized reference deployment root.
+    pub const DOCTOR_NOT_A_DEPLOYMENT: Self = Self {
+        code: 4,
+        identifier: "EXIT-DOCTOR-NOT-A-DEPLOYMENT-004",
     };
 }
 
