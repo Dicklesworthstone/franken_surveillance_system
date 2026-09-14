@@ -1513,7 +1513,7 @@ impl FileIngestAdapter {
                 if earliest > receive_time {
                     Ok(CaptureInterval::new(receive_time, receive_time)?)
                 } else {
-                    Ok(CaptureInterval::new(earliest, receive_time)?)
+                    Ok(CaptureInterval::new(receive_time, receive_time)?)
                 }
             }
         }
