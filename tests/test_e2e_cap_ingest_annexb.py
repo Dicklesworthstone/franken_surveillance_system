@@ -17,7 +17,9 @@ SCRIPT = ROOT / "scripts/e2e/cap_ingest_annexb.sh"
 
 class TestE2eCapIngestAnnexB(unittest.TestCase):
     def setUp(self) -> None:
-        self.tmp_dir = tempfile.TemporaryDirectory()
+        target_tmp = ROOT / "target/tmp"
+        target_tmp.mkdir(parents=True, exist_ok=True)
+        self.tmp_dir = tempfile.TemporaryDirectory(dir=str(target_tmp))
         self.tmp_path = Path(self.tmp_dir.name)
         self.bin_dir = self.tmp_path / "bin"
         self.bin_dir.mkdir()
@@ -29,6 +31,14 @@ class TestE2eCapIngestAnnexB(unittest.TestCase):
         cap_a = chr(39) + chr(123) + chr(34) + "step" + chr(34) + ":" + chr(34) + "a" + chr(34) + "," + chr(34) + "verdict" + chr(34) + ":" + chr(34) + "pass" + chr(34) + "," + chr(34) + "exit" + chr(34) + ":0," + chr(34) + "duration_ms" + chr(34) + ":1," + chr(34) + "expected" + chr(34) + ":{}," + chr(34) + "observed" + chr(34) + ":{}" + chr(125) + chr(39)
         cap_b = chr(39) + chr(123) + chr(34) + "step" + chr(34) + ":" + chr(34) + "b" + chr(34) + "," + chr(34) + "verdict" + chr(34) + ":" + chr(34) + "pass" + chr(34) + "," + chr(34) + "exit" + chr(34) + ":0," + chr(34) + "duration_ms" + chr(34) + ":2," + chr(34) + "expected" + chr(34) + ":{}," + chr(34) + "observed" + chr(34) + ":{}" + chr(125) + chr(39)
         cap_skip = chr(39) + chr(123) + chr(34) + "step" + chr(34) + ":" + chr(34) + "b" + chr(34) + "," + chr(34) + "verdict" + chr(34) + ":" + chr(34) + "skip" + chr(34) + "," + chr(34) + "exit" + chr(34) + ":0," + chr(34) + "duration_ms" + chr(34) + ":1," + chr(34) + "expected" + chr(34) + ":{" + chr(34) + "m" + chr(34) + ":1}," + chr(34) + "observed" + chr(34) + ":{" + chr(34) + "r" + chr(34) + ":" + chr(34) + "skip" + chr(34) + "}" + chr(125) + chr(39)
+        cap_mismatch = chr(39) + json.dumps({
+            "step": "a",
+            "verdict": "pass",
+            "exit": 0,
+            "duration_ms": 1,
+            "expected": {"val": 1},
+            "observed": {"val": 2},
+        }) + chr(39)
         cap_fail = chr(39) + chr(123) + chr(34) + "step" + chr(34) + ":" + chr(34) + "a" + chr(34) + "," + chr(34) + "verdict" + chr(34) + ":" + chr(34) + "fail" + chr(34) + chr(125) + chr(39)
         cap_bad = chr(39) + chr(123) + chr(34) + "step" + chr(34) + ":" + chr(34) + "a" + chr(34) + ", broken json" + chr(39)
         cap_noverdict = chr(39) + chr(123) + chr(34) + "step" + chr(34) + ":" + chr(34) + "a" + chr(34) + chr(125) + chr(39)
@@ -82,6 +92,19 @@ case "${{STUB_MODE:-pass}}" in
     echo CAPLOG {cap_b}
     exit 0
     ;;
+  missing_from_roster)
+    printf "\\033[32mrunning 1 tests\\033[0m\\n"
+    echo CAPLOG {cap_a}
+    printf "test result: ok. 1 passed\\n"
+    exit 0
+    ;;
+  mismatched_pass)
+    printf "\\033[32mrunning 2 tests\\033[0m\\n"
+    echo CAPLOG {cap_mismatch}
+    echo CAPLOG {cap_b}
+    printf "test result: ok. 2 passed\\n"
+    exit 0
+    ;;
   e101)
     echo CAPLOG {cap_a}
     exit 101
@@ -106,6 +129,7 @@ esac
         env["PATH"] = f"{self.bin_dir}:{env.get('PATH', '')}"
         env["FSS_E2E_LOG_DIR"] = str(self.log_dir)
         env["RCH_REQUIRE_REMOTE"] = "1"
+        env.setdefault("FSS_EXPECTED_ROSTER", "a,b")
         if extra_env:
             env.update(extra_env)
 
@@ -203,7 +227,7 @@ esac
         self.assertIn("malformed_caplog", summary["failures"])
 
     def test_failverdict_populates_failures(self) -> None:
-        proc = self.run_harness(extra_env={"STUB_MODE": "failverdict"})
+        proc = self.run_harness(extra_env={"STUB_MODE": "failverdict", "FSS_EXPECTED_ROSTER": "a"})
         self.assertEqual(proc.returncode, 1, "Expected exit 1 on failed step")
 
         records = self.read_latest_log_records()
@@ -212,7 +236,7 @@ esac
         self.assertIn("a", summary["failures"])
 
     def test_missing_verdict_fails(self) -> None:
-        proc = self.run_harness(extra_env={"STUB_MODE": "noverdict"})
+        proc = self.run_harness(extra_env={"STUB_MODE": "noverdict", "FSS_EXPECTED_ROSTER": "a"})
         self.assertEqual(proc.returncode, 1, "Expected exit 1 on missing verdict key")
         self.assertIn("fail summary", proc.stdout)
 
@@ -222,7 +246,7 @@ esac
         self.assertIn("a:missing_verdict", summary["failures"])
 
     def test_missing_step_fails(self) -> None:
-        proc = self.run_harness(extra_env={"STUB_MODE": "nostep"})
+        proc = self.run_harness(extra_env={"STUB_MODE": "nostep", "FSS_EXPECTED_ROSTER": ""})
         self.assertEqual(proc.returncode, 1, "Expected exit 1 on missing step key")
         self.assertIn("fail summary", proc.stdout)
 
@@ -232,7 +256,7 @@ esac
         self.assertIn("missing_step", summary["failures"])
 
     def test_all_steps_skipped_fails(self) -> None:
-        proc = self.run_harness(extra_env={"STUB_MODE": "all_skip"})
+        proc = self.run_harness(extra_env={"STUB_MODE": "all_skip", "FSS_EXPECTED_ROSTER": "b"})
         self.assertEqual(proc.returncode, 1, "Expected exit 1 when all steps are skipped")
         self.assertIn("fail summary", proc.stdout)
 
@@ -242,7 +266,7 @@ esac
         self.assertIn("all_steps_skipped", summary["failures"])
 
     def test_duplicate_step_fails(self) -> None:
-        proc = self.run_harness(extra_env={"STUB_MODE": "duplicate_step"})
+        proc = self.run_harness(extra_env={"STUB_MODE": "duplicate_step", "FSS_EXPECTED_ROSTER": "a"})
         self.assertEqual(proc.returncode, 1, "Expected exit 1 on duplicate step names")
         self.assertIn("fail summary", proc.stdout)
 
@@ -250,6 +274,26 @@ esac
         summary = records[-1]
         self.assertEqual(summary["verdict"], "fail")
         self.assertIn("a:duplicate_step", summary["failures"])
+
+    def test_missing_from_roster_fails(self) -> None:
+        proc = self.run_harness(extra_env={"STUB_MODE": "missing_from_roster"})
+        self.assertEqual(proc.returncode, 1, "Expected exit 1 on step missing from roster")
+        self.assertIn("fail summary", proc.stdout)
+
+        records = self.read_latest_log_records()
+        summary = records[-1]
+        self.assertEqual(summary["verdict"], "fail")
+        self.assertIn("b:missing_from_roster", summary["failures"])
+
+    def test_expected_observed_mismatch_fails(self) -> None:
+        proc = self.run_harness(extra_env={"STUB_MODE": "mismatched_pass"})
+        self.assertEqual(proc.returncode, 1, "Expected exit 1 on expected != observed mismatch")
+        self.assertIn("fail summary", proc.stdout)
+
+        records = self.read_latest_log_records()
+        summary = records[-1]
+        self.assertEqual(summary["verdict"], "fail")
+        self.assertIn("a:expected_observed_mismatch", summary["failures"])
 
     def test_nocaplog_fails(self) -> None:
         proc = self.run_harness(extra_env={"STUB_MODE": "nocaplog"})
