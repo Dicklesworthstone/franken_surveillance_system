@@ -3,16 +3,17 @@
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use fss_core::{
-    BatchId, ContentDigest, ContractError, EvidenceDelta, EvidenceDeltaBatch, LedgerSnapshot,
-    ReferenceLedger,
+    BatchId, ContentDigest, ContractError, DigestAlgorithm, EvidenceDelta, EvidenceDeltaBatch,
+    LedgerSnapshot, ReferenceLedger,
 };
 
 use crate::{
-    AppendPhase, AppendReconciliation, BatchCodecError, ExternalMutationKind, IncompleteTailPolicy,
-    Journal, JournalError, RecoveryReport, decode_batch, encode_batch,
+    AppendPhase, AppendReconciliation, BatchCodecError, ExternalMutationKind, ForeignRange,
+    IncompleteTailPolicy, Journal, JournalError, RecoveryReport, RepairError, decode_batch,
+    encode_batch,
 };
 
 const EVIDENCE_BATCH_RECORD_KIND: u16 = 1;
@@ -58,6 +59,22 @@ pub enum DurableLedgerError {
         /// Commit sequence declared by the decoded batch new anchor.
         batch_commit_sequence: u64,
     },
+    /// A journal path is a symlink or the wrong file type.
+    InvalidLayout {
+        /// Offending path.
+        path: PathBuf,
+    },
+    /// Journal file length exceeded configured byte limit.
+    OverBudget {
+        /// Configured limit in bytes.
+        limit: usize,
+        /// Observed actual length in bytes.
+        actual: usize,
+    },
+    /// Low-level repair or doctor failure.
+    Repair(RepairError),
+    /// Low-level journal I/O failure.
+    Io(std::io::Error),
 }
 
 impl DurableLedgerError {
@@ -70,7 +87,11 @@ impl DurableLedgerError {
             Self::Codec(_)
             | Self::Contract(_)
             | Self::UnexpectedRecordKind { .. }
-            | Self::RecordSequenceMismatch { .. } => None,
+            | Self::RecordSequenceMismatch { .. }
+            | Self::InvalidLayout { .. }
+            | Self::OverBudget { .. }
+            | Self::Repair(_)
+            | Self::Io(_) => None,
         }
     }
 }
@@ -101,6 +122,21 @@ impl fmt::Display for DurableLedgerError {
                 formatter,
                 "durable ledger batch id {batch_id} committed at sequence {committed_sequence} as {committed_digest}, offered as {offered_digest} ({ERR_LEDGER_DURABLE_BATCH_ID_CONFLICT_001})"
             ),
+            Self::InvalidLayout { path } => {
+                write!(
+                    formatter,
+                    "durable ledger path is not a regular file: {}",
+                    path.display()
+                )
+            }
+            Self::OverBudget { limit, actual } => {
+                write!(
+                    formatter,
+                    "durable ledger size {actual} bytes exceeds limit of {limit} bytes"
+                )
+            }
+            Self::Repair(error) => write!(formatter, "durable ledger repair error: {error}"),
+            Self::Io(error) => write!(formatter, "durable ledger I/O error: {error}"),
         }
     }
 }
@@ -111,9 +147,13 @@ impl Error for DurableLedgerError {
             Self::Journal(error) => Some(error),
             Self::Codec(error) => Some(error),
             Self::Contract(error) => Some(error),
+            Self::Repair(error) => Some(error),
+            Self::Io(error) => Some(error),
             Self::UnexpectedRecordKind { .. }
             | Self::BatchIdConflict { .. }
-            | Self::RecordSequenceMismatch { .. } => None,
+            | Self::RecordSequenceMismatch { .. }
+            | Self::InvalidLayout { .. }
+            | Self::OverBudget { .. } => None,
         }
     }
 }
@@ -133,6 +173,23 @@ impl From<BatchCodecError> for DurableLedgerError {
 impl From<ContractError> for DurableLedgerError {
     fn from(value: ContractError) -> Self {
         Self::Contract(value)
+    }
+}
+
+impl From<RepairError> for DurableLedgerError {
+    fn from(value: RepairError) -> Self {
+        match value {
+            RepairError::Journal(error) => Self::Journal(error),
+            RepairError::Io(error) => Self::Io(error),
+            RepairError::OverBudget { limit, actual } => Self::OverBudget { limit, actual },
+            other => Self::Repair(other),
+        }
+    }
+}
+
+impl From<std::io::Error> for DurableLedgerError {
+    fn from(value: std::io::Error) -> Self {
+        Self::Io(value)
     }
 }
 
@@ -414,6 +471,15 @@ impl DurableReferenceLedger {
     pub fn fail_journal_after_phase(&mut self, phase: AppendPhase) {
         self.journal.fail_after_phase(phase);
     }
+
+    /// Non-mutating inspection of a durable reference ledger.
+    pub fn inspect(
+        path: impl AsRef<Path>,
+        site_lineage: impl Into<String>,
+        limits: impl Into<DurableLedgerLimits>,
+    ) -> Result<LedgerInspection, DurableLedgerError> {
+        inspect_durable(path, site_lineage, limits)
+    }
 }
 
 /// Replays the committed prefix through the live identity and core-ledger checks.
@@ -444,4 +510,126 @@ fn replay_report(
         identities.insert(batch_id, identity);
     }
     Ok((ledger, identities))
+}
+
+/// Resource limits for durable ledger inspection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DurableLedgerLimits {
+    /// Maximum journal file size in bytes to read and inspect.
+    pub max_journal_bytes: usize,
+}
+
+impl DurableLedgerLimits {
+    /// Default limit (64 MiB).
+    pub const DEFAULT_MAX_JOURNAL_BYTES: usize = 64 * 1024 * 1024;
+}
+
+impl Default for DurableLedgerLimits {
+    fn default() -> Self {
+        Self {
+            max_journal_bytes: Self::DEFAULT_MAX_JOURNAL_BYTES,
+        }
+    }
+}
+
+impl From<usize> for DurableLedgerLimits {
+    fn from(max_journal_bytes: usize) -> Self {
+        Self { max_journal_bytes }
+    }
+}
+
+/// Non-mutating inspection of a durable reference ledger.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LedgerInspection {
+    /// Committed evidence batches replayed in sequence order.
+    pub batches: Vec<EvidenceDeltaBatch>,
+    /// Replayed ledger snapshot at the latest committed batch.
+    pub snapshot: LedgerSnapshot,
+    /// Committed length in bytes.
+    pub committed_len: u64,
+    /// Root of the last committed record, or zero if empty.
+    pub last_root: ContentDigest,
+    /// Offset of an incomplete journal tail, if present.
+    pub incomplete_tail: Option<u64>,
+    /// Range of foreign trailing bytes, if present.
+    pub foreign_range: Option<ForeignRange>,
+}
+
+impl LedgerInspection {
+    /// Returns true if the journal has neither an incomplete tail nor foreign trailing bytes.
+    #[must_use]
+    pub fn is_clean(&self) -> bool {
+        self.incomplete_tail.is_none() && self.foreign_range.is_none()
+    }
+}
+
+/// Inspects a durable reference ledger without acquiring locks or modifying files.
+///
+/// Performs a bounded read (capped at `limits.max_journal_bytes + 1` bytes) to prevent
+/// memory exhaustion and race conditions with concurrent writers. If the journal does
+/// not exist, an empty [`LedgerInspection`] is returned without creating the file.
+/// If the path is a symlink or non-regular file, [`DurableLedgerError::InvalidLayout`] is returned.
+pub fn inspect_durable(
+    path: impl AsRef<Path>,
+    site_lineage: impl Into<String>,
+    limits: impl Into<DurableLedgerLimits>,
+) -> Result<LedgerInspection, DurableLedgerError> {
+    use std::io::Read;
+
+    let path = path.as_ref();
+    let site_lineage = site_lineage.into();
+    let limits = limits.into();
+
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            let ledger = ReferenceLedger::new(site_lineage);
+            let snapshot = ledger.current().clone();
+            return Ok(LedgerInspection {
+                batches: Vec::new(),
+                snapshot,
+                committed_len: 0,
+                last_root: ContentDigest::new(DigestAlgorithm::Sha256, [0_u8; 32]),
+                incomplete_tail: None,
+                foreign_range: None,
+            });
+        }
+        Err(err) => return Err(DurableLedgerError::Io(err)),
+    };
+
+    if meta.file_type().is_symlink() || !meta.file_type().is_file() {
+        return Err(DurableLedgerError::InvalidLayout {
+            path: path.to_path_buf(),
+        });
+    }
+
+    let mut file = std::fs::File::open(path)?;
+    let mut buf = Vec::new();
+    let cap = (limits.max_journal_bytes as u64).saturating_add(1);
+    std::io::Read::by_ref(&mut file)
+        .take(cap)
+        .read_to_end(&mut buf)?;
+    if buf.len() > limits.max_journal_bytes {
+        let actual = match file.metadata() {
+            Ok(m) => m.len() as usize,
+            Err(_) => buf.len(),
+        };
+        return Err(DurableLedgerError::OverBudget {
+            limit: limits.max_journal_bytes,
+            actual,
+        });
+    }
+
+    let doctor_report = crate::doctor(&buf)?;
+    let recovery = crate::recover_bytes(&buf[..doctor_report.committed_len as usize])?;
+    let (ledger, _) = replay_report(&recovery, &site_lineage)?;
+
+    Ok(LedgerInspection {
+        batches: ledger.batches().to_vec(),
+        snapshot: ledger.current().clone(),
+        committed_len: doctor_report.committed_len,
+        last_root: doctor_report.last_root,
+        incomplete_tail: doctor_report.incomplete_tail,
+        foreign_range: doctor_report.foreign_range,
+    })
 }

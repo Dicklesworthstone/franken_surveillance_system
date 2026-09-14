@@ -71,17 +71,17 @@ use std::fmt;
 
 use fss_core::{
     BatchId, CaptureInterval, ContentDigest, ContractError, EvidenceDelta, EvidenceDeltaBatch,
-    LedgerAnchor, ObjectId, Plane,
+    LedgerAnchor, ObjectId, ObjectRevision, Plane,
 };
 use fss_ledger::{
     DurableAppendReconciliation, DurableLedgerError, DurableReferenceLedger, IncompleteTailPolicy,
-    JournalError,
+    JournalError, LedgerInspection,
 };
 use fss_object::ObjectManifest;
 
 use crate::local::{
-    LocalPublicationError, LocalPublicationGuidance, LocalPublicationState, LocalRootPublisher,
-    SlotName,
+    LocalInspection, LocalPublicationError, LocalPublicationGuidance, LocalPublicationState,
+    LocalRootPublisher, SlotName, VisibleRoot,
 };
 use crate::{AuthorityPublisher, PublicationError};
 
@@ -314,6 +314,8 @@ pub struct RootLedgerReconciliation {
     /// Slots whose local root record failed verification or whose root visibility is
     /// indeterminate; none of them is admitted or ledgered.
     pub broken: Vec<SlotName>,
+    /// First byte offset of an incomplete ledger tail, if present.
+    pub ledger_tail_incomplete: Option<u64>,
 }
 
 impl RootLedgerReconciliation {
@@ -326,6 +328,7 @@ impl RootLedgerReconciliation {
             && self.unledgerable.is_empty()
             && self.unbacked_ledger_claims.is_empty()
             && self.broken.is_empty()
+            && self.ledger_tail_incomplete.is_none()
     }
 }
 
@@ -571,7 +574,7 @@ impl Error for RootLedgerError {
 
 /// The current ledger revision of one root reachability object.
 #[derive(Clone, Debug)]
-struct LedgerClaim {
+pub(crate) struct LedgerClaim {
     root: ContentDigest,
     family: String,
     plane: Plane,
@@ -587,10 +590,13 @@ impl LedgerClaim {
     }
 }
 
-/// Every ledger object in the root reachability namespace, with the batch that last wrote it.
-fn ledger_claims(ledger: &DurableReferenceLedger) -> BTreeMap<ObjectId, LedgerClaim> {
+/// Every ledger object in the root reachability namespace from views of batches and objects.
+pub(crate) fn ledger_claims_from_views(
+    batches: &[EvidenceDeltaBatch],
+    objects: &BTreeMap<ObjectId, ObjectRevision>,
+) -> BTreeMap<ObjectId, LedgerClaim> {
     let mut last_writer: BTreeMap<&ObjectId, &EvidenceDeltaBatch> = BTreeMap::new();
-    for batch in ledger.batches() {
+    for batch in batches {
         for delta in &batch.deltas {
             if delta
                 .object_id
@@ -601,7 +607,6 @@ fn ledger_claims(ledger: &DurableReferenceLedger) -> BTreeMap<ObjectId, LedgerCl
             }
         }
     }
-    let objects = &ledger.current().objects;
     last_writer
         .into_iter()
         .filter_map(|(object_id, batch)| {
@@ -619,6 +624,11 @@ fn ledger_claims(ledger: &DurableReferenceLedger) -> BTreeMap<ObjectId, LedgerCl
             })
         })
         .collect()
+}
+
+/// Every ledger object in the root reachability namespace, with the batch that last wrote it.
+fn ledger_claims(ledger: &DurableReferenceLedger) -> BTreeMap<ObjectId, LedgerClaim> {
+    ledger_claims_from_views(ledger.batches(), &ledger.current().objects)
 }
 
 /// Everything needed to commit the reachability of one durable root.
@@ -909,41 +919,13 @@ impl<'a> LedgeredRootPublisher<'a> {
     }
 
     fn classify(&self, slot: &SlotName, claim: Option<&LedgerClaim>) -> RootLedgerState {
-        let Some(visible) = self.local.root(slot) else {
-            return match claim {
-                Some(claim) => RootLedgerState::LedgerWithoutDurableRoot {
-                    ledgered_root: claim.root,
-                },
-                None if self.local.is_broken_slot(slot) => RootLedgerState::BrokenLocalRoot,
-                None => RootLedgerState::Absent,
-            };
-        };
-        if visible.state == LocalPublicationState::Staged {
-            return RootLedgerState::Staged { root: visible.root };
-        }
-        if visible.state != LocalPublicationState::Durable {
-            return RootLedgerState::VisibleNotDurable { root: visible.root };
-        }
-        let Some(closure) = self.local.root_closure(slot) else {
-            return RootLedgerState::VisibleNotDurable { root: visible.root };
-        };
-        match claim {
-            None => RootLedgerState::PendingLedger(PendingLedgerRoot {
-                slot: slot.clone(),
-                root: visible.root,
-                closure_object_count: closure.len(),
-            }),
-            Some(claim) if claim.matches(visible.root) => RootLedgerState::Ledgered {
-                root: visible.root,
-                anchor: claim.anchor.clone(),
-                batch_id: claim.batch_id.clone(),
-            },
-            Some(claim) => RootLedgerState::LedgerConflict {
-                durable_root: visible.root,
-                ledgered_root: claim.root,
-                ledgered_family: claim.family.clone(),
-            },
-        }
+        classify_view(
+            self.local.root(slot),
+            self.local.root_closure(slot).map(|c| c.len()),
+            self.local.is_broken_slot(slot),
+            slot,
+            claim,
+        )
     }
 
     /// Requires a live local publisher, no unreconciled append, a durable root, and no
@@ -1027,6 +1009,125 @@ impl<'a> LedgeredRootPublisher<'a> {
             Err(cause) => Err(commit_failure(target.pending.clone(), cause)),
         }
     }
+}
+
+/// Classifies a slot given views of local publication and ledger state.
+pub(crate) fn classify_view(
+    visible_root: Option<&VisibleRoot>,
+    closure_len: Option<usize>,
+    is_broken: bool,
+    slot: &SlotName,
+    claim: Option<&LedgerClaim>,
+) -> RootLedgerState {
+    let Some(visible) = visible_root else {
+        return match claim {
+            Some(claim) => RootLedgerState::LedgerWithoutDurableRoot {
+                ledgered_root: claim.root,
+            },
+            None if is_broken => RootLedgerState::BrokenLocalRoot,
+            None => RootLedgerState::Absent,
+        };
+    };
+    if visible.state == LocalPublicationState::Staged {
+        return RootLedgerState::Staged { root: visible.root };
+    }
+    if visible.state != LocalPublicationState::Durable {
+        return RootLedgerState::VisibleNotDurable { root: visible.root };
+    }
+    let Some(closure_count) = closure_len else {
+        return RootLedgerState::VisibleNotDurable { root: visible.root };
+    };
+    match claim {
+        None => RootLedgerState::PendingLedger(PendingLedgerRoot {
+            slot: slot.clone(),
+            root: visible.root,
+            closure_object_count: closure_count,
+        }),
+        Some(claim) if claim.matches(visible.root) => RootLedgerState::Ledgered {
+            root: visible.root,
+            anchor: claim.anchor.clone(),
+            batch_id: claim.batch_id.clone(),
+        },
+        Some(claim) => RootLedgerState::LedgerConflict {
+            durable_root: visible.root,
+            ledgered_root: claim.root,
+            ledgered_family: claim.family.clone(),
+        },
+    }
+}
+
+/// Classifies the relationship between durable local roots and canonical ledger claims
+/// without acquiring locks or modifying state.
+#[must_use]
+pub fn inspect_linkage(
+    local: &LocalInspection,
+    ledger: &LedgerInspection,
+) -> RootLedgerReconciliation {
+    let claims = ledger_claims_from_views(&ledger.batches, &ledger.snapshot.objects);
+    let mut report = RootLedgerReconciliation::default();
+    let mut durable_ids = BTreeSet::new();
+
+    for visible in local.visible_roots() {
+        let slot = &visible.slot;
+        let Ok(object_id) = root_reachability_object_id(slot) else {
+            report.unledgerable.push(slot.clone());
+            continue;
+        };
+        if visible.state == LocalPublicationState::Durable {
+            durable_ids.insert(object_id.clone());
+        }
+        let closure_len = local.root_closure(slot).map(|c| c.len());
+        let is_broken = local.is_broken_slot(slot);
+        match classify_view(
+            Some(visible),
+            closure_len,
+            is_broken,
+            slot,
+            claims.get(&object_id),
+        ) {
+            RootLedgerState::Ledgered {
+                root,
+                anchor,
+                batch_id,
+            } => report.ledgered.push(LedgeredRoot {
+                slot: slot.clone(),
+                root,
+                anchor,
+                batch_id,
+            }),
+            RootLedgerState::PendingLedger(pending) => report.pending.push(pending),
+            RootLedgerState::VisibleNotDurable { .. } => report.not_durable.push(slot.clone()),
+            RootLedgerState::LedgerConflict {
+                durable_root,
+                ledgered_root,
+                ledgered_family,
+            } => report.conflicts.push(LedgerSlotConflict {
+                slot: slot.clone(),
+                durable_root,
+                ledgered_root,
+                ledgered_family,
+            }),
+            RootLedgerState::Absent
+            | RootLedgerState::BrokenLocalRoot
+            | RootLedgerState::Staged { .. }
+            | RootLedgerState::LedgerWithoutDurableRoot { .. } => {}
+        }
+    }
+
+    for (object_id, claim) in &claims {
+        if !durable_ids.contains(object_id) {
+            report.unbacked_ledger_claims.push(UnbackedLedgerClaim {
+                object_id: object_id.clone(),
+                slot: slot_of(object_id),
+                ledgered_root: claim.root,
+                anchor: claim.anchor.clone(),
+            });
+        }
+    }
+
+    report.broken = local.broken_slots().cloned().collect();
+    report.ledger_tail_incomplete = ledger.incomplete_tail;
+    report
 }
 
 #[cfg(test)]

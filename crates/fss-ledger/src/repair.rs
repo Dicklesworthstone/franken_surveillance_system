@@ -385,6 +385,32 @@ pub fn doctor_path(path: impl AsRef<Path>) -> Result<RepairDoctorReport, RepairE
     doctor(&bytes)
 }
 
+/// Reads a journal file at `path` up to `max_bytes` and produces a [`RepairDoctorReport`].
+///
+/// Fails with [`RepairError::OverBudget`] if the file length exceeds `max_bytes`.
+pub fn doctor_bounded(
+    path: impl AsRef<Path>,
+    max_bytes: usize,
+) -> Result<RepairDoctorReport, RepairError> {
+    use std::io::Read;
+    let path = path.as_ref();
+    let mut file = fs::File::open(path)?;
+    let mut buf = Vec::new();
+    let cap = (max_bytes as u64).saturating_add(1);
+    Read::by_ref(&mut file).take(cap).read_to_end(&mut buf)?;
+    if buf.len() > max_bytes {
+        let actual = match file.metadata() {
+            Ok(meta) => meta.len() as usize,
+            Err(_) => buf.len(),
+        };
+        return Err(RepairError::OverBudget {
+            limit: max_bytes,
+            actual,
+        });
+    }
+    doctor(&buf)
+}
+
 fn compute_plan_digest(
     journal_path: &Path,
     journal_dev: u64,
@@ -1061,11 +1087,22 @@ pub enum RepairError {
     SequenceExhausted,
     /// Length calculation overflowed 64 bits.
     LengthOverflow,
+    /// Journal file length exceeded configured byte limit.
+    OverBudget {
+        /// Configured limit in bytes.
+        limit: usize,
+        /// Observed actual length in bytes.
+        actual: usize,
+    },
 }
 
 impl fmt::Display for RepairError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::OverBudget { limit, actual } => write!(
+                formatter,
+                "journal size {actual} bytes exceeds limit of {limit} bytes"
+            ),
             Self::Io(error) => write!(formatter, "repair I/O error: {error}"),
             Self::Journal(error) => write!(formatter, "repair journal error: {error}"),
             Self::NoForeignBytes => formatter.write_str("no foreign trailing bytes to repair"),

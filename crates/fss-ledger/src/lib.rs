@@ -25,8 +25,8 @@ mod tests;
 
 pub use batch_codec::{BatchCodecError, decode_batch, encode_batch};
 pub use durable::{
-    DurableAppendReconciliation, DurableLedgerError, DurableReferenceLedger,
-    ERR_LEDGER_DURABLE_BATCH_ID_CONFLICT_001,
+    DurableAppendReconciliation, DurableLedgerError, DurableLedgerLimits, DurableReferenceLedger,
+    ERR_LEDGER_DURABLE_BATCH_ID_CONFLICT_001, LedgerInspection, inspect_durable,
 };
 pub use error::{
     AppendPhase, CorruptionKind, ERR_LEDGER_LENGTH_OVERFLOW_001, ExternalMutationKind, JournalError,
@@ -43,7 +43,8 @@ pub use recovery::{JournalRecord, RecoveryReport, inspect, recover_bytes};
 pub use repair::{
     DoctorReport, ForeignRange, JournalDoctorReport, MAX_QUARANTINE_TEMP_ATTEMPTS,
     RepairDoctorReport, RepairError, RepairPlan, RepairReceipt, SealedRepairPlan, apply, doctor,
-    doctor_path, plan, plan_with_cut, quarantine_path_for, quarantine_temp_path_for,
+    doctor_bounded, doctor_path, plan, plan_with_cut, quarantine_path_for,
+    quarantine_temp_path_for,
 };
 
 /// Maximum payload accepted by one reference-journal record.

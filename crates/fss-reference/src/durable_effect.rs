@@ -235,6 +235,16 @@ impl DurableEffectJournal {
         Ok(Self { journal, memory })
     }
 
+    /// Non-mutating inspection of a durable effect journal.
+    ///
+    /// Verifies the journal on disk and replays its committed records into an in-memory
+    /// [`EffectJournal`] without acquiring exclusive locks, mutating the file, or fsyncing.
+    pub fn inspect(path: impl AsRef<Path>) -> Result<EffectJournal, DurableEffectError> {
+        let path = path.as_ref();
+        let report = inspect(path)?;
+        replay_report(&report)
+    }
+
     /// Path backing this journal.
     #[must_use]
     pub fn path(&self) -> &Path {
