@@ -1774,6 +1774,198 @@ class RobotDocsContractTests(unittest.TestCase):
         self.assertEqual(ctx.exception.code, ERR_ROBOT_DOCS_MISSING)
         self.assertIn("AGENT_OPERATIONS.md", ctx.exception.message)
 
+    # ---- Item 2: CLI Discovery Tests ----
+
+    def test_cli_discovery_missing_doctor_help_usage_line_raises_corrupt(self) -> None:
+        """P2c: Removing doctor usage line from help_text() raises ERR-ROBOT-DOCS-CORRUPT-001."""
+        cmd_file = self.fake_root / "crates/fss-cli/src/fss_cmd.rs"
+        raw = cmd_file.read_text(encoding="utf-8")
+        target_line = "  fss doctor --json\\n"
+        self.assertIn(target_line, raw)
+        cmd_file.write_text(raw.replace(target_line, ""), encoding="utf-8")
+        with self.assertRaises(RobotDocsError) as ctx:
+            generate_docs(self.fake_root)
+        self.assertEqual(ctx.exception.code, ERR_ROBOT_DOCS_CORRUPT)
+        self.assertIn("doctor", ctx.exception.message)
+
+    def test_cli_discovery_renamed_parse_fss_tokens_raises_corrupt(self) -> None:
+        """P2d: Renaming parse_fss_tokens raises ERR-ROBOT-DOCS-CORRUPT-001."""
+        cmd_file = self.fake_root / "crates/fss-cli/src/fss_cmd.rs"
+        raw = cmd_file.read_text(encoding="utf-8")
+        self.assertIn("pub fn parse_fss_tokens(", raw)
+        cmd_file.write_text(raw.replace("pub fn parse_fss_tokens(", "pub fn parse_fss_tokens_v2("), encoding="utf-8")
+        with self.assertRaises(RobotDocsError) as ctx:
+            generate_docs(self.fake_root)
+        self.assertEqual(ctx.exception.code, ERR_ROBOT_DOCS_CORRUPT)
+        self.assertIn("parse_fss_tokens", ctx.exception.message)
+
+    def test_cli_discovery_renamed_help_text_raises_corrupt(self) -> None:
+        """P2e: Renaming help_text raises ERR-ROBOT-DOCS-CORRUPT-001."""
+        cmd_file = self.fake_root / "crates/fss-cli/src/fss_cmd.rs"
+        raw = cmd_file.read_text(encoding="utf-8")
+        self.assertIn("pub const fn help_text()", raw)
+        cmd_file.write_text(raw.replace("pub const fn help_text()", "pub const fn help_text_v2()"), encoding="utf-8")
+        with self.assertRaises(RobotDocsError) as ctx:
+            generate_docs(self.fake_root)
+        self.assertEqual(ctx.exception.code, ERR_ROBOT_DOCS_CORRUPT)
+        self.assertIn("help_text", ctx.exception.message)
+
+    def test_cli_discovery_missing_negative_evidence_usage_raises_corrupt(self) -> None:
+        """P2f: Removing negative-evidence usage from help_text raises ERR-ROBOT-DOCS-CORRUPT-001."""
+        cmd_file = self.fake_root / "crates/fss-cli/src/fss_cmd.rs"
+        raw = cmd_file.read_text(encoding="utf-8")
+        target_line = "  fss negative-evidence <init|list|verify|append> [--path <file>] [--json]\\n"
+        self.assertIn(target_line, raw)
+        cmd_file.write_text(raw.replace(target_line, ""), encoding="utf-8")
+        with self.assertRaises(RobotDocsError) as ctx:
+            generate_docs(self.fake_root)
+        self.assertEqual(ctx.exception.code, ERR_ROBOT_DOCS_CORRUPT)
+        self.assertIn("negative-evidence", ctx.exception.message)
+
+    def test_cli_discovery_negative_evidence_usage_without_subcommand_raises_corrupt(self) -> None:
+        """Negative evidence usage line lacking subcommand specification raises ERR-ROBOT-DOCS-CORRUPT-001."""
+        cmd_file = self.fake_root / "crates/fss-cli/src/fss_cmd.rs"
+        raw = cmd_file.read_text(encoding="utf-8")
+        old_line = "  fss negative-evidence <init|list|verify|append> [--path <file>] [--json]\\n"
+        new_line = "  fss negative-evidence [--path <file>] [--json]\\n"
+        self.assertIn(old_line, raw)
+        cmd_file.write_text(raw.replace(old_line, new_line), encoding="utf-8")
+        with self.assertRaises(RobotDocsError) as ctx:
+            generate_docs(self.fake_root)
+        self.assertEqual(ctx.exception.code, ERR_ROBOT_DOCS_CORRUPT)
+        self.assertIn("negative-evidence", ctx.exception.message)
+
+    # ---- Item 3: Compatibility Classes Tests ----
+
+    def test_compatibility_classes_section_removed_raises_corrupt(self) -> None:
+        """P3b: Missing or removed '## Compatibility classes' section raises ERR-ROBOT-DOCS-CORRUPT-001."""
+        ao_file = self.fake_root / "registries/AGENT_OPERATIONS.md"
+        raw = ao_file.read_text(encoding="utf-8")
+        idx = raw.index("## Compatibility classes")
+        ao_file.write_text(raw[:idx], encoding="utf-8")
+        with self.assertRaises(RobotDocsError) as ctx:
+            generate_docs(self.fake_root)
+        self.assertEqual(ctx.exception.code, ERR_ROBOT_DOCS_CORRUPT)
+        self.assertIn("compatibility classes", ctx.exception.message)
+
+    def test_compatibility_classes_removed_and_fss1_bogus_compat_planted_raises_corrupt(self) -> None:
+        """P3c: Removing compatibility classes section and planting bogus_compat in fss1 raises ERR-ROBOT-DOCS-CORRUPT-001 (no circular fallback)."""
+        ao_file = self.fake_root / "registries/AGENT_OPERATIONS.md"
+        raw = ao_file.read_text(encoding="utf-8")
+        idx = raw.index("## Compatibility classes")
+        ao_file.write_text(raw[:idx], encoding="utf-8")
+
+        f1_file = self.fake_root / "architecture/fss1_public_registry.json"
+        data = json.loads(f1_file.read_text(encoding="utf-8"))
+        data["operations"][0]["compatibilityClass"] = "bogus_compat"
+        f1_file.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+        with self.assertRaises(RobotDocsError) as ctx:
+            generate_docs(self.fake_root)
+        self.assertEqual(ctx.exception.code, ERR_ROBOT_DOCS_CORRUPT)
+        self.assertIn("compatibility classes", ctx.exception.message)
+
+    # ---- Item 4: Statuses Tests ----
+
+    def test_operation_lifecycle_statuses_section_removed_raises_corrupt(self) -> None:
+        """P3e: Removing '## Operation lifecycle statuses' section raises ERR-ROBOT-DOCS-CORRUPT-001."""
+        ao_file = self.fake_root / "registries/AGENT_OPERATIONS.md"
+        raw = ao_file.read_text(encoding="utf-8")
+        idx = raw.index("## Operation lifecycle statuses")
+        next_sec = raw.find("\n## ", idx + 1)
+        stripped = raw[:idx] + (raw[next_sec + 1:] if next_sec != -1 else "")
+        ao_file.write_text(stripped, encoding="utf-8")
+
+        with self.assertRaises(RobotDocsError) as ctx:
+            generate_docs(self.fake_root)
+        self.assertEqual(ctx.exception.code, ERR_ROBOT_DOCS_CORRUPT)
+        self.assertIn("operation statuses", ctx.exception.message)
+
+    def test_unrelated_table_in_crosswalk_with_bogus_status_rejected(self) -> None:
+        """P3f: Unrelated table in OPERATION_CROSSWALK.md with bogus_status does not register it, view fails with ERR-ROBOT-DOCS-UNREGISTERED-001."""
+        cw_file = self.fake_root / "registries/OPERATION_CROSSWALK.md"
+        cw_text = cw_file.read_text(encoding="utf-8")
+        cw_file.write_text(cw_text + "\n\n| Note | Value |\n|---|---|\n| `x` | `bogus_status` |\n", encoding="utf-8")
+
+        views_file = self.fake_root / "architecture/agent_views.json"
+        vdata = json.loads(views_file.read_text(encoding="utf-8"))
+        vdata["views"][0]["status"] = "bogus_status"
+        views_file.write_text(json.dumps(vdata, indent=2) + "\n", encoding="utf-8")
+
+        with self.assertRaises(RobotDocsError) as ctx:
+            generate_docs(self.fake_root)
+        self.assertEqual(ctx.exception.code, ERR_ROBOT_DOCS_UNREGISTERED)
+        self.assertIn("bogus_status", ctx.exception.message)
+
+    # ---- Item 5: Modes Tests ----
+
+    def test_operation_modes_renamed_header_kind_raises_corrupt(self) -> None:
+        """P3i: Renaming Mode header cell to Kind in AGENT_OPERATIONS.md raises ERR-ROBOT-DOCS-CORRUPT-001."""
+        ao_file = self.fake_root / "registries/AGENT_OPERATIONS.md"
+        raw = ao_file.read_text(encoding="utf-8")
+        self.assertIn("| Owner | Mode |", raw)
+        ao_file.write_text(raw.replace("| Owner | Mode |", "| Owner | Kind |"), encoding="utf-8")
+
+        with self.assertRaises(RobotDocsError) as ctx:
+            generate_docs(self.fake_root)
+        self.assertEqual(ctx.exception.code, ERR_ROBOT_DOCS_CORRUPT)
+        self.assertIn("Mode", ctx.exception.message)
+
+    def test_operation_modes_inserted_column_raises_corrupt(self) -> None:
+        """P3g: Inserting an extra column into AGENT_OPERATIONS.md table raises ERR-ROBOT-DOCS-CORRUPT-001."""
+        ao_file = self.fake_root / "registries/AGENT_OPERATIONS.md"
+        raw = ao_file.read_text(encoding="utf-8")
+        lines = []
+        for ln in raw.splitlines():
+            if ln.startswith("| ID | Name | Owner | Mode"):
+                ln = ln.replace("| Owner | Mode", "| Owner | Alias | Mode")
+            elif ln.startswith("|---|---|---|---|---|"):
+                ln = "|---|" + ln[1:]
+            elif ln.startswith("| `AOP-"):
+                parts = ln.split("|")
+                parts.insert(4, " `alias` ")
+                ln = "|".join(parts)
+            lines.append(ln)
+        ao_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        with self.assertRaises(RobotDocsError) as ctx:
+            generate_docs(self.fake_root)
+        self.assertEqual(ctx.exception.code, ERR_ROBOT_DOCS_CORRUPT)
+        self.assertIn("Alias", ctx.exception.message)
+
+    # ---- Item 6: Typed Missing-File Tests (kills N15 and N16) ----
+
+    def test_every_required_file_missing_raises_typed_missing_error(self) -> None:
+        """Item 6: generate_docs() in-process raises RobotDocsError(ERR-ROBOT-DOCS-MISSING-001) for every required file (kills N15 and N16)."""
+        required_files = [
+            "architecture/fss1_public_registry.json",
+            "architecture/agent_operations.json",
+            "architecture/agent_views.json",
+            "architecture/capabilities.json",
+            "architecture/operation_crosswalk.json",
+            "architecture/release_qualification.json",
+            "registries/ERRORS.md",
+            "registries/SCHEMAS.md",
+            "registries/AGENT_OPERATIONS.md",
+            "registries/AGENT_VIEWS.md",
+            "registries/OPERATION_CROSSWALK.md",
+            "schemas/agent_response_envelope.v1.json",
+            "crates/fss-cli/src/fss_cmd.rs",
+        ]
+        for rel_path in required_files:
+            with self.subTest(missing_file=rel_path):
+                with tempfile.TemporaryDirectory() as td:
+                    t_root = Path(td)
+                    for d in ["architecture", "registries", "schemas", "docs", "crates/fss-cli/src"]:
+                        shutil.copytree(self.fake_root / d, t_root / d)
+                    target = t_root / rel_path
+                    self.assertTrue(target.is_file(), f"Expected {target} to exist before unlinking")
+                    target.unlink()
+
+                    with self.assertRaises(RobotDocsError) as ctx:
+                        generate_docs(t_root)
+                    self.assertEqual(ctx.exception.code, ERR_ROBOT_DOCS_MISSING)
+
 
 if __name__ == "__main__":
     unittest.main()
