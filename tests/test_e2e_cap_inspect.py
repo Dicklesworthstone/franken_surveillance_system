@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
-"""Tests for scripts/e2e/cap_inspect.sh with stubbed rch."""
+"""Tests for scripts/e2e/cap_inspect.sh on the shared scripts/e2e/lib.sh harness, with a stub rch.
+
+Every scratch path lives under the repo's git-ignored target/ directory; nothing is written to the
+system temp directory or the ambient TMPDIR (the harness gets a sentinel TMPDIR that must stay
+empty).
+"""
 from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import subprocess
 import tempfile
@@ -12,208 +18,244 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/e2e/cap_inspect.sh"
+SCRATCH_BASE = ROOT / "target" / "test-e2e-cap-inspect"
+
+# (crate, target) in the order the script runs them.
+TARGETS = [
+    ("fss-object", "spool_inspect_contract"),
+    ("fss-publication", "local_inspect_contract"),
+    ("fss-ledger", "durable_inspect_contract"),
+    ("fss-reference", "effect_journal_inspect_contract"),
+]
+TARGET_NAMES = [target for _, target in TARGETS]
+
+# The stub prints CAPLOG records named after the --test target it was asked to run.
+STUB = r"""#!/usr/bin/env bash
+echo "$@" >> "@CALLS@"
+T=unknown; prev=""
+for arg in "$@"; do
+  if [[ "$prev" == "--test" ]]; then T="$arg"; fi
+  prev="$arg"
+done
+pass_line() {
+  printf 'CAPLOG {"step":"%s_%s","verdict":"pass","exit":0,"duration_ms":1,"expected":{"count":%s},"observed":{"count":%s}}\n' "$T" "$1" "$2" "$2"
+}
+skip_line() {
+  printf 'CAPLOG {"step":"%s_%s","verdict":"skip","exit":1,"duration_ms":1,"expected":{},"observed":{"skip_reason":"privileged: create_new succeeded"}}\n' "$T" "$1"
+}
+case "${STUB_MODE:-pass}" in
+  pass)
+    pass_line a 1; pass_line b 2
+    echo "test result: ok. 2 passed; 0 failed"
+    exit 0 ;;
+  pass_with_skip)
+    pass_line a 1; skip_line s
+    echo "test result: ok. 2 passed; 0 failed"
+    exit 0 ;;
+  all_skip)
+    skip_line s
+    exit 0 ;;
+  failverdict)
+    printf 'CAPLOG {"step":"%s_f","verdict":"fail","exit":1,"duration_ms":1,"expected":{"count":1},"observed":{"count":2}}\n' "$T"
+    exit 0 ;;
+  e101)
+    pass_line a 1
+    exit 101 ;;
+  nocaplog)
+    echo "test result: ok. 0 passed; 0 failed"
+    exit 0 ;;
+  retry103)
+    count=0
+    if [[ -f "@COUNTER@" ]]; then count=$(cat "@COUNTER@"); fi
+    count=$((count + 1))
+    echo "$count" > "@COUNTER@"
+    if (( count == 1 )); then exit 103; fi
+    pass_line a 1
+    exit 0 ;;
+esac
+"""
 
 
 class TestE2eCapInspect(unittest.TestCase):
     def setUp(self) -> None:
-        self.tmp_dir = tempfile.TemporaryDirectory()
+        SCRATCH_BASE.mkdir(parents=True, exist_ok=True)
+        self.tmp_dir = tempfile.TemporaryDirectory(dir=SCRATCH_BASE, prefix="run-")
         self.tmp_path = Path(self.tmp_dir.name)
         self.bin_dir = self.tmp_path / "bin"
         self.bin_dir.mkdir()
         self.log_dir = self.tmp_path / "logs"
         self.log_dir.mkdir()
+        self.tmpdir_env = self.tmp_path / "tmpdir"
+        self.tmpdir_env.mkdir()
         self.calls_file = self.tmp_path / "stub_calls.txt"
-        self.counter_file = self.tmp_path / "stub_counter.txt"
-
-        stub_rch = self.bin_dir / "rch"
-        cap_a = chr(39) + chr(123) + chr(34) + "step" + chr(34) + ":" + chr(34) + "step_a" + chr(34) + "," + chr(34) + "verdict" + chr(34) + ":" + chr(34) + "pass" + chr(34) + "," + chr(34) + "exit" + chr(34) + ":0," + chr(34) + "duration_ms" + chr(34) + ":1," + chr(34) + "expected" + chr(34) + ":{}," + chr(34) + "observed" + chr(34) + ":{}" + chr(125) + chr(39)
-        cap_b = chr(39) + chr(123) + chr(34) + "step" + chr(34) + ":" + chr(34) + "step_b" + chr(34) + "," + chr(34) + "verdict" + chr(34) + ":" + chr(34) + "pass" + chr(34) + "," + chr(34) + "exit" + chr(34) + ":0," + chr(34) + "duration_ms" + chr(34) + ":2," + chr(34) + "expected" + chr(34) + ":{}," + chr(34) + "observed" + chr(34) + ":{}" + chr(125) + chr(39)
-        cap_skip = chr(39) + chr(123) + chr(34) + "step" + chr(34) + ":" + chr(34) + "step_skip" + chr(34) + "," + chr(34) + "verdict" + chr(34) + ":" + chr(34) + "skip" + chr(34) + "," + chr(34) + "exit" + chr(34) + ":0," + chr(34) + "duration_ms" + chr(34) + ":1," + chr(34) + "expected" + chr(34) + ":{}," + chr(34) + "observed" + chr(34) + ":{}" + chr(125) + chr(39)
-        cap_fail = chr(39) + chr(123) + chr(34) + "step" + chr(34) + ":" + chr(34) + "step_fail" + chr(34) + "," + chr(34) + "verdict" + chr(34) + ":" + chr(34) + "fail" + chr(34) + chr(125) + chr(39)
-
-        stub_content = f"""#!/usr/bin/env bash
-echo "$@" >> "{self.calls_file}"
-TARGET="test"
-prev=""
-for arg in "$@"; do
-  if [[ "$prev" == "--test" ]]; then
-    TARGET="$arg"
-  fi
-  prev="$arg"
-done
-
-cap_a='{{"step":"'${{TARGET}}'_a","verdict":"pass","exit":0,"duration_ms":1,"expected":{{}},"observed":{{}}}}'
-cap_b='{{"step":"'${{TARGET}}'_b","verdict":"pass","exit":0,"duration_ms":2,"expected":{{}},"observed":{{}}}}'
-cap_skip='{{"step":"'${{TARGET}}'_skip","verdict":"skip","exit":0,"duration_ms":1,"expected":{{}},"observed":{{}}}}'
-cap_fail='{{"step":"'${{TARGET}}'_fail","verdict":"fail","exit":1,"duration_ms":1,"expected":{{}},"observed":{{}}}}'
-
-case "${{STUB_MODE:-pass}}" in
-  pass)
-    printf "\\033[32mrunning 2 tests\\033[0m\\n"
-    echo CAPLOG $cap_a
-    echo CAPLOG $cap_b
-    printf "test result: ok. 2 passed\\n"
-    exit 0
-    ;;
-  pass_with_skip)
-    printf "\\033[32mrunning 2 tests\\033[0m\\n"
-    echo CAPLOG $cap_a
-    echo CAPLOG $cap_skip
-    printf "test result: ok. 2 passed\\n"
-    exit 0
-    ;;
-  all_skip)
-    printf "\\033[32mrunning 1 tests\\033[0m\\n"
-    echo CAPLOG $cap_skip
-    printf "test result: ok. 1 passed\\n"
-    exit 0
-    ;;
-  failverdict)
-    echo CAPLOG $cap_fail
-    exit 0
-    ;;
-  nocaplog)
-    echo "test result: ok. 0 passed"
-    exit 0
-    ;;
-  retry103)
-    CNT=0
-    if [[ -f "{self.counter_file}" ]]; then
-      CNT=$(cat "{self.counter_file}")
-    fi
-    CNT=$((CNT + 1))
-    echo "$CNT" > "{self.counter_file}"
-    if (( CNT == 1 )); then
-      exit 103
-    fi
-    echo CAPLOG $cap_a
-    exit 0
-    ;;
-  e101)
-    exit 101
-    ;;
-esac
-"""
-        stub_rch.write_text(stub_content, encoding="utf-8")
-        stub_rch.chmod(stub_rch.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        counter_file = self.tmp_path / "stub_counter.txt"
+        stub = self.bin_dir / "rch"
+        stub.write_text(
+            STUB.replace("@CALLS@", str(self.calls_file)).replace("@COUNTER@", str(counter_file)),
+            encoding="utf-8",
+        )
+        stub.chmod(stub.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
     def tearDown(self) -> None:
         self.tmp_dir.cleanup()
 
-    def run_harness(
-        self,
-        args: list[str] | None = None,
-        extra_env: dict[str, str] | None = None,
-    ) -> subprocess.CompletedProcess:
+    def run_harness(self, args: list[str] | None = None, mode: str | None = None) -> subprocess.CompletedProcess:
         env = dict(os.environ)
         env["PATH"] = f"{self.bin_dir}:{env.get('PATH', '')}"
         env["FSS_E2E_LOG_DIR"] = str(self.log_dir)
         env["RCH_REQUIRE_REMOTE"] = "1"
-        if extra_env:
-            env.update(extra_env)
+        env["TMPDIR"] = str(self.tmpdir_env)
+        if mode is not None:
+            env["STUB_MODE"] = mode
+        proc = subprocess.run(
+            ["bash", str(SCRIPT), *(args or [])],
+            cwd=str(ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(sorted(os.listdir(self.tmpdir_env)), [], "harness wrote into TMPDIR")
+        return proc
 
-        cmd = ["bash", str(SCRIPT)]
-        if args:
-            cmd.extend(args)
-        return subprocess.run(cmd, cwd=str(ROOT), env=env, capture_output=True, text=True)
-
-    def read_latest_log_records(self) -> list[dict]:
+    def records(self) -> list[dict]:
         suite_dir = self.log_dir / "cap_inspect"
-        self.assertTrue(suite_dir.is_dir(), f"Suite log directory {suite_dir} does not exist")
         log_files = sorted(suite_dir.glob("run_*.log"))
-        self.assertTrue(len(log_files) > 0, "No log files found")
-        latest = log_files[-1]
-        records = []
-        with open(latest, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    records.append(json.loads(line))
-        return records
+        self.assertEqual(len(log_files), 1, f"expected exactly one run log in {suite_dir}")
+        return [json.loads(line) for line in log_files[0].read_text(encoding="utf-8").splitlines() if line.strip()]
 
-    def test_pass_summary(self) -> None:
-        proc = self.run_harness(extra_env={"STUB_MODE": "pass"})
-        self.assertEqual(proc.returncode, 0, f"Expected exit 0, got {proc.returncode}: {proc.stderr}")
-        self.assertIn("pass summary:", proc.stdout)
+    def calls(self) -> list[str]:
+        if not self.calls_file.exists():
+            return []
+        return [line for line in self.calls_file.read_text(encoding="utf-8").splitlines() if line.strip()]
 
-        records = self.read_latest_log_records()
-        self.assertTrue(len(records) >= 3)
-        self.assertEqual(records[0]["step"], "env")
-        summary = records[-1]
-        self.assertEqual(summary["step"], "summary")
-        self.assertEqual(summary["verdict"], "pass")
-        self.assertEqual(len(summary["failures"]), 0)
+    def expected_calls(self) -> list[str]:
+        return [
+            f"exec -- cargo test -p {crate} --test {target} --locked --offline -- --nocapture"
+            for crate, target in TARGETS
+        ]
 
-        # Validate with validate_log.py if available
-        validator_path = ROOT / "scripts/e2e/validate_log.py"
-        if not validator_path.is_file():
-            validator_path = Path("/tmp/validate_log.py")
-        if validator_path.is_file():
-            suite_dir = self.log_dir / "cap_inspect"
-            log_files = sorted(suite_dir.glob("run_*.log"))
-            vp = subprocess.run(
-                ["python3", str(validator_path), str(log_files[-1])],
-                capture_output=True,
-                text=True,
-            )
-            self.assertEqual(vp.returncode, 0, f"validate_log.py failed: {vp.stderr}")
+    def step_records(self, records: list[dict]) -> list[tuple[str, str]]:
+        return [(r["step"], r["verdict"]) for r in records[1:-1]]
 
-    def test_pass_with_skip(self) -> None:
-        proc = self.run_harness(extra_env={"STUB_MODE": "pass_with_skip"})
-        self.assertEqual(proc.returncode, 0, f"Expected exit 0, got {proc.returncode}: {proc.stderr}")
-        self.assertIn("pass summary:", proc.stdout)
-
-        records = self.read_latest_log_records()
-        summary = records[-1]
-        self.assertEqual(summary["verdict"], "pass")
-
-    def test_all_skip_fails_closed(self) -> None:
-        proc = self.run_harness(extra_env={"STUB_MODE": "all_skip"})
-        self.assertNotEqual(proc.returncode, 0, "Expected non-zero exit for all-skip")
-        records = self.read_latest_log_records()
-        summary = records[-1]
-        self.assertEqual(summary["verdict"], "fail")
-        self.assertIn("all_steps_skipped", summary["failures"])
-
-    def test_failverdict(self) -> None:
-        proc = self.run_harness(extra_env={"STUB_MODE": "failverdict"})
-        self.assertNotEqual(proc.returncode, 0)
-        records = self.read_latest_log_records()
-        summary = records[-1]
-        self.assertEqual(summary["verdict"], "fail")
-
-    def test_nocaplog_fails_closed(self) -> None:
-        proc = self.run_harness(extra_env={"STUB_MODE": "nocaplog"})
-        self.assertNotEqual(proc.returncode, 0)
-        records = self.read_latest_log_records()
-        summary = records[-1]
-        self.assertEqual(summary["verdict"], "fail")
-
-    def test_e103_retry_success(self) -> None:
-        proc = self.run_harness(extra_env={"STUB_MODE": "retry103"})
-        self.assertEqual(proc.returncode, 0, f"Expected retry success, got {proc.returncode}: {proc.stderr}")
-        records = self.read_latest_log_records()
-        summary = records[-1]
-        self.assertEqual(summary["verdict"], "pass")
+    def test_script_relies_on_lib_without_overrides(self) -> None:
+        text = SCRIPT.read_text(encoding="utf-8")
+        code = [line for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+        self.assertIn('source "${SCRIPT_DIR}/lib.sh"', code)
+        for forbidden in (r"\beval\b", r"\bsed\b", r"^\s*(function\s+)?_?e2e_[a-z_]*\s*\(\)", r"/tmp\b"):
+            offenders = [line for line in code if re.search(forbidden, line)]
+            self.assertEqual(offenders, [], f"{forbidden!r} in cap_inspect.sh")
+        self.assertEqual(
+            [line.strip() for line in code if line.strip().startswith("e2e_cargo_test")],
+            [f'e2e_cargo_test "{crate}" "{target}"' for crate, target in TARGETS],
+        )
 
     def test_list_flag(self) -> None:
         proc = self.run_harness(args=["--list"])
-        self.assertEqual(proc.returncode, 0)
-        lines = [line.strip() for line in proc.stdout.strip().splitlines() if line.strip()]
-        self.assertIn("spool_inspect_contract", lines)
-        self.assertIn("local_inspect_contract", lines)
-        self.assertIn("durable_inspect_contract", lines)
-        self.assertIn("effect_journal_inspect_contract", lines)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(proc.stdout.split(), TARGET_NAMES)
+        self.assertEqual(self.calls(), [])
 
-    def test_only_flag(self) -> None:
-        proc = self.run_harness(
-            args=["--only", "spool_inspect_contract"],
-            extra_env={"STUB_MODE": "pass"},
+    def test_pass_summary(self) -> None:
+        proc = self.run_harness(mode="pass")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.calls(), self.expected_calls())
+
+        records = self.records()
+        self.assertEqual(len(records), 1 + 2 * len(TARGETS) + 1)
+        self.assertEqual(records[0]["step"], "env")
+        self.assertEqual(
+            self.step_records(records),
+            [(f"{target}_{suffix}", "pass") for target in TARGET_NAMES for suffix in ("a", "b")],
         )
-        self.assertEqual(proc.returncode, 0)
-        records = self.read_latest_log_records()
+        # Expected and observed are carried through from the CAPLOG record, not rewritten.
+        self.assertEqual(records[1]["expected"], {"count": 1})
+        self.assertEqual(records[2]["observed"], {"count": 2})
         summary = records[-1]
-        self.assertEqual(summary["steps"], 2)
+        self.assertEqual(summary["step"], "summary")
+        self.assertEqual(summary["verdict"], "pass")
+        # lib.sh counts one step per CAPLOG record.
+        self.assertEqual(summary["steps"], 2 * len(TARGETS))
+        self.assertEqual(summary["failures"], [])
+        # lib.sh records the script path exactly as it was invoked.
+        self.assertEqual(summary["repro"], str(SCRIPT))
+        self.assertIn(f"E2E Log: {self.log_dir / 'cap_inspect' / 'run_0001.log'}", proc.stdout)
+
+    def test_skip_never_passes_and_keeps_its_reason(self) -> None:
+        # A skip record is never relabelled a pass: the step keeps verdict "skip" with the reason
+        # the test observed, and the run fails log validation even when every other step passed.
+        proc = self.run_harness(mode="pass_with_skip")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("ERR_SUMMARY_INCONSISTENCY", proc.stdout + proc.stderr)
+        records = self.records()
+        self.assertEqual(len(records), 1 + 2 * len(TARGETS) + 1)
+        self.assertEqual(
+            self.step_records(records),
+            [(f"{target}_{suffix}", verdict) for target in TARGET_NAMES for suffix, verdict in (("a", "pass"), ("s", "skip"))],
+        )
+        for record in records[1:-1]:
+            if record["verdict"] == "skip":
+                self.assertEqual(record["observed"], {"skip_reason": "privileged: create_new succeeded"})
+        self.assertEqual(records[-1]["verdict"], "pass")
+
+    def test_all_skip_fails_closed(self) -> None:
+        proc = self.run_harness(mode="all_skip")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("ERR_ALL_STEPS_SKIPPED", proc.stdout + proc.stderr)
+        records = self.records()
+        self.assertEqual(len(records), 1 + len(TARGETS) + 1)
+        self.assertEqual(self.step_records(records), [(f"{target}_s", "skip") for target in TARGET_NAMES])
+
+    def test_fail_verdict_fails(self) -> None:
+        proc = self.run_harness(mode="failverdict")
+        self.assertEqual(proc.returncode, 1)
+        records = self.records()
+        self.assertEqual(len(records), 1 + len(TARGETS) + 1)
+        self.assertEqual(self.step_records(records), [(f"{target}_f", "fail") for target in TARGET_NAMES])
+        summary = records[-1]
+        self.assertEqual(summary["verdict"], "fail")
+        self.assertEqual(summary["failures"], [f"{target}_f" for target in TARGET_NAMES])
+
+    def test_cargo_exit_nonzero_fails(self) -> None:
+        proc = self.run_harness(mode="e101")
+        self.assertEqual(proc.returncode, 1)
+        records = self.records()
+        self.assertEqual(len(records), 1 + len(TARGETS) + 1)
+        self.assertEqual(self.step_records(records), [(target, "fail") for target in TARGET_NAMES])
+        for record in records[1:-1]:
+            self.assertEqual(record["exit"], 101)
+            self.assertEqual(record["observed"], "cargo test failed (exit 101)")
+        self.assertEqual(records[-1]["failures"], TARGET_NAMES)
+
+    def test_no_caplog_fails_closed(self) -> None:
+        proc = self.run_harness(mode="nocaplog")
+        self.assertEqual(proc.returncode, 1)
+        records = self.records()
+        self.assertEqual(len(records), 1 + len(TARGETS) + 1)
+        self.assertEqual(self.step_records(records), [(target, "fail") for target in TARGET_NAMES])
+        for record in records[1:-1]:
+            self.assertEqual(record["observed"], "no CAPLOG line observed")
+        self.assertEqual(records[-1]["verdict"], "fail")
+
+    def test_e103_retry_success(self) -> None:
+        proc = self.run_harness(mode="retry103")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        expected = self.expected_calls()
+        self.assertEqual(self.calls(), [expected[0], *expected])
+        records = self.records()
+        self.assertEqual(len(records), 1 + len(TARGETS) + 1)
+        self.assertEqual(self.step_records(records), [(f"{target}_a", "pass") for target in TARGET_NAMES])
+
+    def test_only_flag_runs_the_named_target(self) -> None:
+        proc = self.run_harness(args=["--only", "local_inspect_contract"], mode="pass")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        calls = self.calls()
+        self.assertIn(self.expected_calls()[1], calls)
+        records = self.records()
+        # lib.sh decides which targets an --only pattern selects; the summary counts exactly the
+        # CAPLOG records (two per stubbed target) of those targets.
+        self.assertEqual(records[-1]["steps"], 2 * len(calls))
+        self.assertEqual(len(records), 1 + 2 * len(calls) + 1)
+        self.assertIn(("local_inspect_contract_a", "pass"), self.step_records(records))
 
 
 if __name__ == "__main__":
