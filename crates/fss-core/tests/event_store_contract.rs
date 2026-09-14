@@ -22,8 +22,9 @@ use fss_core::{
     EventStoreCommit, EventStoreEntry, EventStoreError, EventTransitionParams, EvidenceClass,
     EvidenceEdgeRelation, EvidenceGraph, EvidenceNode, EvidenceNodeKind, GraphReadResult,
     HypothesisDisposition, KnowledgeState, LedgerAnchor, LineageReadResult,
-    MAX_CONTRADICTIONS_PER_EVENT, MAX_GRAPHS_PER_REVISION, MAX_STORE_LINEAGE_DEPTH,
-    NotObservableReason, ProbabilityInterval, ProvenanceClass, RuntimeOutcome, TimestampNs,
+    MAX_CONTRADICTIONS_PER_EVENT, MAX_GRAPHS_PER_REVISION, MAX_STORE_COMMITS,
+    MAX_STORE_COVERAGE_WITNESSES, MAX_STORE_LINEAGE_DEPTH, NotObservableReason,
+    ProbabilityInterval, ProvenanceClass, RuntimeOutcome, TimestampNs,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -648,7 +649,7 @@ fn criterion_5_explicit_coverage_boundary_and_not_observable_reads() -> TestResu
 
     // 2. Querying an event outside coverage (no CoverageWitness) returns NotObservable, NEVER absence/None!
     match store.read_event(&absent_id, None)? {
-        EventReadResult::NotObservable { domain, reason } => {
+        EventReadResult::NotObservable { domain, reason, .. } => {
             assert_eq!(domain, "unknown");
             assert_eq!(reason, NotObservableReason::UnknownDomain);
         }
@@ -659,7 +660,7 @@ fn criterion_5_explicit_coverage_boundary_and_not_observable_reads() -> TestResu
 
     // Querying with an explicit domain without coverage witness
     match store.read_event_in_domain(&absent_id, "domain.monitored_gate", None)? {
-        EventReadResult::NotObservable { domain, reason } => {
+        EventReadResult::NotObservable { domain, reason, .. } => {
             assert_eq!(domain, "domain.monitored_gate");
             assert_eq!(reason, NotObservableReason::NoCoverageWitness);
         }
@@ -702,7 +703,7 @@ fn criterion_5_explicit_coverage_boundary_and_not_observable_reads() -> TestResu
     // Querying in gapped domain returns NotObservable with CoverageWitnessGapped, NEVER absence!
     let gapped_id = EventId::parse("evt_gapped_03")?;
     match store.read_event_in_domain(&gapped_id, "domain.gapped_gate", None)? {
-        EventReadResult::NotObservable { domain, reason } => {
+        EventReadResult::NotObservable { domain, reason, .. } => {
             assert_eq!(domain, "domain.gapped_gate");
             assert_eq!(reason, NotObservableReason::CoverageWitnessGapped);
         }
@@ -723,7 +724,7 @@ fn criterion_5_explicit_coverage_boundary_and_not_observable_reads() -> TestResu
     )?;
 
     match store.read_event_in_domain(&absent_id, "domain.partial_gate", None)? {
-        EventReadResult::NotObservable { domain, reason } => {
+        EventReadResult::NotObservable { domain, reason, .. } => {
             assert_eq!(domain, "domain.partial_gate");
             assert_eq!(reason, NotObservableReason::CoverageWitnessUncertified);
         }
@@ -744,7 +745,7 @@ fn criterion_5_explicit_coverage_boundary_and_not_observable_reads() -> TestResu
     )?;
 
     match store.read_event_in_domain(&absent_id, "domain.excluded_gate", None)? {
-        EventReadResult::NotObservable { domain, reason } => {
+        EventReadResult::NotObservable { domain, reason, .. } => {
             assert_eq!(domain, "domain.excluded_gate");
             assert_eq!(
                 reason,
@@ -810,7 +811,7 @@ fn criterion_6_evidence_graph_attachment_and_indexing() -> TestResult {
 
     // Read non-existent graph outside coverage returns NotObservable
     match store.read_evidence_graph("graph_nonexistent", "domain.unobserved")? {
-        GraphReadResult::NotObservable { domain, reason } => {
+        GraphReadResult::NotObservable { domain, reason, .. } => {
             assert_eq!(domain, "domain.unobserved");
             assert_eq!(reason, NotObservableReason::NoCoverageWitness);
         }
@@ -999,7 +1000,7 @@ fn unknown_domain_never_yields_absent_with_coverage() -> TestResult {
     let unknown_id = EventId::parse("evt:test:unknown_never_registered")?;
 
     match store.read_event(&unknown_id, None)? {
-        EventReadResult::NotObservable { domain, reason } => {
+        EventReadResult::NotObservable { domain, reason, .. } => {
             assert_eq!(domain, "unknown");
             assert_eq!(reason, NotObservableReason::UnknownDomain);
         }
@@ -1012,7 +1013,7 @@ fn unknown_domain_never_yields_absent_with_coverage() -> TestResult {
     }
 
     match store.read_lineage(&unknown_id)? {
-        LineageReadResult::NotObservable { domain, reason } => {
+        LineageReadResult::NotObservable { domain, reason, .. } => {
             assert_eq!(domain, "unknown");
             assert_eq!(reason, NotObservableReason::UnknownDomain);
         }
@@ -1026,7 +1027,7 @@ fn unknown_domain_never_yields_absent_with_coverage() -> TestResult {
 
     // Querying with an explicitly empty domain in read_event_in_domain must also return NotObservable(UnknownDomain)
     match store.read_event_in_domain(&unknown_id, "", None)? {
-        EventReadResult::NotObservable { domain, reason } => {
+        EventReadResult::NotObservable { domain, reason, .. } => {
             assert_eq!(domain, "");
             assert_eq!(reason, NotObservableReason::UnknownDomain);
         }
@@ -1040,7 +1041,7 @@ fn unknown_domain_never_yields_absent_with_coverage() -> TestResult {
 
     // Querying with domain "unknown" in read_event_in_domain must also return NotObservable(UnknownDomain)
     match store.read_event_in_domain(&unknown_id, "unknown", None)? {
-        EventReadResult::NotObservable { domain, reason } => {
+        EventReadResult::NotObservable { domain, reason, .. } => {
             assert_eq!(domain, "unknown");
             assert_eq!(reason, NotObservableReason::UnknownDomain);
         }
@@ -1351,6 +1352,7 @@ fn test_unknown_domain_guard_is_case_and_whitespace_insensitive() -> TestResult 
             EventReadResult::NotObservable {
                 domain: reported,
                 reason,
+                ..
             } => {
                 assert_eq!(reported, domain);
                 assert_eq!(reason, NotObservableReason::UnknownDomain, "{domain:?}");
@@ -1367,6 +1369,7 @@ fn test_unknown_domain_guard_is_case_and_whitespace_insensitive() -> TestResult 
             LineageReadResult::NotObservable {
                 domain: reported,
                 reason,
+                ..
             } => {
                 assert_eq!(reported, domain);
                 assert_eq!(reason, NotObservableReason::UnknownDomain, "{domain:?}");
@@ -1383,6 +1386,7 @@ fn test_unknown_domain_guard_is_case_and_whitespace_insensitive() -> TestResult 
             GraphReadResult::NotObservable {
                 domain: reported,
                 reason,
+                ..
             } => {
                 assert_eq!(reported, domain);
                 assert_eq!(reason, NotObservableReason::UnknownDomain, "{domain:?}");
@@ -1640,6 +1644,1104 @@ fn retired_contradiction_never_hides_an_active_one_on_the_same_world() -> TestRe
             );
         }
         assert_eq!(store.contradictions_for_event(&ev_id).len(), 2);
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------
+// Criterion: ANY-GAP-WINS Order-Independent Coverage for Absence (fss-3qlsa)
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn coverage_for_absence_certifying_then_gapped_yields_gapped() -> TestResult {
+    let mut store = EventRevisionStore::new(LedgerAnchor::genesis("site-coverage-order-1"));
+    let absent_id = EventId::parse("evt_absent_test_01")?;
+    let domain = "domain.monitored_gate";
+
+    let certifying = sample_coverage_witness(domain, true, true, false)?;
+    let gapped = sample_coverage_witness(domain, false, true, false)?;
+
+    store.register_coverage_witness(
+        store.current_anchor().clone(),
+        certifying,
+        TimestampNs(1_000),
+    )?;
+    store.register_coverage_witness(store.current_anchor().clone(), gapped, TimestampNs(2_000))?;
+
+    // Certifying registered first, then gapped: must NOT yield AbsentWithCoverage.
+    // ANY-GAP-WINS mandates CoverageWitnessGapped.
+    let expected_reasons = vec![NotObservableReason::CoverageWitnessGapped];
+    let result = store.read_event_in_domain(&absent_id, domain, None)?;
+    assert_eq!(
+        result,
+        EventReadResult::NotObservable {
+            domain: domain.to_string(),
+            reason: NotObservableReason::CoverageWitnessGapped,
+            all_reasons: expected_reasons.clone(),
+        }
+    );
+
+    let lineage_result = store.read_lineage_in_domain(&absent_id, domain)?;
+    assert_eq!(
+        lineage_result,
+        LineageReadResult::NotObservable {
+            domain: domain.to_string(),
+            reason: NotObservableReason::CoverageWitnessGapped,
+            all_reasons: expected_reasons,
+        }
+    );
+    Ok(())
+}
+
+#[test]
+fn coverage_for_absence_gapped_then_certifying_yields_exact_same_gapped() -> TestResult {
+    let mut store = EventRevisionStore::new(LedgerAnchor::genesis("site-coverage-order-2"));
+    let absent_id = EventId::parse("evt_absent_test_02")?;
+    let domain = "domain.monitored_gate";
+
+    let gapped = sample_coverage_witness(domain, false, true, false)?;
+    let certifying = sample_coverage_witness(domain, true, true, false)?;
+
+    store.register_coverage_witness(store.current_anchor().clone(), gapped, TimestampNs(1_000))?;
+    store.register_coverage_witness(
+        store.current_anchor().clone(),
+        certifying,
+        TimestampNs(2_000),
+    )?;
+
+    // Gapped registered first, then certifying: must yield identical CoverageWitnessGapped.
+    let expected_reasons = vec![NotObservableReason::CoverageWitnessGapped];
+    let result = store.read_event_in_domain(&absent_id, domain, None)?;
+    assert_eq!(
+        result,
+        EventReadResult::NotObservable {
+            domain: domain.to_string(),
+            reason: NotObservableReason::CoverageWitnessGapped,
+            all_reasons: expected_reasons.clone(),
+        }
+    );
+
+    let lineage_result = store.read_lineage_in_domain(&absent_id, domain)?;
+    assert_eq!(
+        lineage_result,
+        LineageReadResult::NotObservable {
+            domain: domain.to_string(),
+            reason: NotObservableReason::CoverageWitnessGapped,
+            all_reasons: expected_reasons,
+        }
+    );
+    Ok(())
+}
+
+#[test]
+fn coverage_for_absence_two_certifying_witnesses_yields_absent_with_coverage() -> TestResult {
+    let mut store = EventRevisionStore::new(LedgerAnchor::genesis("site-coverage-two-cert"));
+    let absent_id = EventId::parse("evt_absent_test_03")?;
+    let domain = "domain.monitored_gate";
+
+    let cert1 = sample_coverage_witness(domain, true, true, false)?;
+    let mut cert2 = sample_coverage_witness(domain, true, true, false)?;
+    cert2.negative_predicate = "no_unauthorized_vehicle".to_string();
+
+    store.register_coverage_witness(store.current_anchor().clone(), cert1, TimestampNs(1_000))?;
+    store.register_coverage_witness(store.current_anchor().clone(), cert2, TimestampNs(2_000))?;
+
+    let result = store.read_event_in_domain(&absent_id, domain, None)?;
+    match result {
+        EventReadResult::AbsentWithCoverage(w) => {
+            assert!(w.certifies_absence());
+            assert!(w.observed_domain.contains(domain));
+        }
+        other => return Err(format!("expected AbsentWithCoverage, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn coverage_for_absence_different_domain_witness_does_not_affect_result() -> TestResult {
+    let mut store = EventRevisionStore::new(LedgerAnchor::genesis("site-coverage-diff-domain"));
+    let absent_id = EventId::parse("evt_absent_test_04")?;
+    let domain_a = "domain.monitored_gate";
+    let domain_b = "domain.other_gate";
+
+    let cert_a = sample_coverage_witness(domain_a, true, true, false)?;
+    let gapped_b = sample_coverage_witness(domain_b, false, true, false)?;
+
+    store.register_coverage_witness(store.current_anchor().clone(), cert_a, TimestampNs(1_000))?;
+    store.register_coverage_witness(
+        store.current_anchor().clone(),
+        gapped_b,
+        TimestampNs(2_000),
+    )?;
+
+    // Query domain_a: the gap in domain_b must not affect domain_a
+    let result_a = store.read_event_in_domain(&absent_id, domain_a, None)?;
+    match result_a {
+        EventReadResult::AbsentWithCoverage(w) => {
+            assert!(w.certifies_absence());
+            assert!(w.observed_domain.contains(domain_a));
+        }
+        other => {
+            return Err(format!("expected AbsentWithCoverage for domain_a, got {other:?}").into());
+        }
+    }
+
+    // Query domain_b: must observe CoverageWitnessGapped
+    let result_b = store.read_event_in_domain(&absent_id, domain_b, None)?;
+    assert_eq!(
+        result_b,
+        EventReadResult::NotObservable {
+            domain: domain_b.to_string(),
+            reason: NotObservableReason::CoverageWitnessGapped,
+            all_reasons: vec![NotObservableReason::CoverageWitnessGapped],
+        }
+    );
+
+    // Query unobserved domain_c: must observe NoCoverageWitness
+    let result_c = store.read_event_in_domain(&absent_id, "domain.unobserved_gate", None)?;
+    assert_eq!(
+        result_c,
+        EventReadResult::NotObservable {
+            domain: "domain.unobserved_gate".to_string(),
+            reason: NotObservableReason::NoCoverageWitness,
+            all_reasons: vec![NotObservableReason::NoCoverageWitness],
+        }
+    );
+    Ok(())
+}
+
+fn generate_permutations<T: Clone>(items: &[T]) -> Vec<Vec<T>> {
+    if items.is_empty() {
+        return vec![Vec::new()];
+    }
+    let mut result = Vec::new();
+    for i in 0..items.len() {
+        let mut rest = items.to_vec();
+        let item = rest.remove(i);
+        for sub in generate_permutations(&rest) {
+            let mut perm = vec![item.clone()];
+            perm.extend(sub);
+            result.push(perm);
+        }
+    }
+    result
+}
+
+#[test]
+fn coverage_for_absence_permutation_order_invariance_contract() -> TestResult {
+    let domain = "domain.monitored_gate";
+    let absent_id = EventId::parse("evt_absent_perm")?;
+
+    let cert1 = sample_coverage_witness(domain, true, true, false)?;
+    let mut cert2 = sample_coverage_witness(domain, true, true, false)?;
+    cert2.negative_predicate = "no_unauthorized_vehicle".to_string();
+
+    let gapped = sample_coverage_witness(domain, false, true, false)?;
+    let uncert = sample_coverage_witness(domain, true, false, false)?;
+
+    // Scenario 1: Mixed set with 4 witnesses (2 certifying, 1 gapped, 1 uncertified)
+    // ANY-GAP-WINS: All 24 permutations must produce CoverageWitnessGapped.
+    let four_witnesses = vec![cert1.clone(), cert2.clone(), gapped.clone(), uncert.clone()];
+    let perms_4 = generate_permutations(&four_witnesses);
+    assert_eq!(perms_4.len(), 24);
+
+    let expected_gapped = EventReadResult::NotObservable {
+        domain: domain.to_string(),
+        reason: NotObservableReason::CoverageWitnessGapped,
+        all_reasons: vec![
+            NotObservableReason::CoverageWitnessGapped,
+            NotObservableReason::CoverageWitnessUncertified,
+        ],
+    };
+
+    for (idx, perm) in perms_4.iter().enumerate() {
+        let mut store = EventRevisionStore::new(LedgerAnchor::genesis("site-coverage-perm-4"));
+        for (step, w) in perm.iter().enumerate() {
+            store.register_coverage_witness(
+                store.current_anchor().clone(),
+                w.clone(),
+                TimestampNs(1_000 + (step as i128) * 100),
+            )?;
+        }
+        let result = store.read_event_in_domain(&absent_id, domain, None)?;
+        assert_eq!(
+            result, expected_gapped,
+            "permutation {idx} must yield CoverageWitnessGapped regardless of registration order"
+        );
+    }
+
+    // Scenario 2: 3 certifying witnesses (cert1, cert2, cert3)
+    // All 6 permutations must produce identical AbsentWithCoverage (canonical selection).
+    let mut cert3 = sample_coverage_witness(domain, true, true, false)?;
+    cert3.negative_predicate = "no_perimeter_breach".to_string();
+
+    let cert_witnesses = vec![cert1.clone(), cert2.clone(), cert3.clone()];
+    let perms_cert = generate_permutations(&cert_witnesses);
+    assert_eq!(perms_cert.len(), 6);
+
+    let mut baseline_cert_witness: Option<CoverageWitness> = None;
+    for (idx, perm) in perms_cert.iter().enumerate() {
+        let mut store = EventRevisionStore::new(LedgerAnchor::genesis("site-coverage-perm-cert"));
+        for (step, w) in perm.iter().enumerate() {
+            store.register_coverage_witness(
+                store.current_anchor().clone(),
+                w.clone(),
+                TimestampNs(1_000 + (step as i128) * 100),
+            )?;
+        }
+        let result = store.read_event_in_domain(&absent_id, domain, None)?;
+        let witness_clone = match result {
+            EventReadResult::AbsentWithCoverage(w) => {
+                assert!(w.certifies_absence());
+                w.clone()
+            }
+            other => return Err(format!("expected AbsentWithCoverage, got {other:?}").into()),
+        };
+        if let Some(ref baseline) = baseline_cert_witness {
+            assert_eq!(
+                &witness_clone, baseline,
+                "permutation {idx} must yield identical certifying witness"
+            );
+        } else {
+            baseline_cert_witness = Some(witness_clone);
+        }
+    }
+
+    // Scenario 3: Precedence test with 3 witnesses (certifying, uncertified, generation mismatch)
+    // No gap, no exclusion: GenerationMismatch has precedence over CoverageWitnessUncertified.
+    let mut gen_mismatch = sample_coverage_witness(domain, true, true, false)?;
+    gen_mismatch.authorized_generation = 2;
+    gen_mismatch.observed_generation = 1;
+
+    let prec_witnesses = vec![cert1, uncert, gen_mismatch];
+    let perms_prec = generate_permutations(&prec_witnesses);
+    assert_eq!(perms_prec.len(), 6);
+
+    let expected_gen_mismatch = EventReadResult::NotObservable {
+        domain: domain.to_string(),
+        reason: NotObservableReason::GenerationMismatch {
+            expected: 2,
+            observed: 1,
+        },
+        all_reasons: vec![
+            NotObservableReason::GenerationMismatch {
+                expected: 2,
+                observed: 1,
+            },
+            NotObservableReason::CoverageWitnessUncertified,
+        ],
+    };
+
+    for (idx, perm) in perms_prec.iter().enumerate() {
+        let mut store = EventRevisionStore::new(LedgerAnchor::genesis("site-coverage-perm-prec"));
+        for (step, w) in perm.iter().enumerate() {
+            store.register_coverage_witness(
+                store.current_anchor().clone(),
+                w.clone(),
+                TimestampNs(1_000 + (step as i128) * 100),
+            )?;
+        }
+        let result = store.read_event_in_domain(&absent_id, domain, None)?;
+        assert_eq!(
+            result, expected_gen_mismatch,
+            "permutation {idx} must yield GenerationMismatch by order-independent precedence"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn coverage_for_absence_two_witnesses_certifying_plus_uncertified_gives_uncertified() -> TestResult
+{
+    let domain = "domain.cert_plus_uncert";
+    let absent_id = EventId::parse("evt_absent_uncert")?;
+
+    let cert = sample_coverage_witness(domain, true, true, false)?;
+    let uncert = sample_coverage_witness(domain, true, false, false)?;
+
+    // Registration order 1: cert then uncert
+    let mut store1 = EventRevisionStore::new(LedgerAnchor::genesis("site-cert-uncert-1"));
+    store1.register_coverage_witness(
+        store1.current_anchor().clone(),
+        cert.clone(),
+        TimestampNs(1_000),
+    )?;
+    store1.register_coverage_witness(
+        store1.current_anchor().clone(),
+        uncert.clone(),
+        TimestampNs(2_000),
+    )?;
+
+    let result1 = store1.read_event_in_domain(&absent_id, domain, None)?;
+    assert_eq!(
+        result1,
+        EventReadResult::NotObservable {
+            domain: domain.to_string(),
+            reason: NotObservableReason::CoverageWitnessUncertified,
+            all_reasons: vec![NotObservableReason::CoverageWitnessUncertified],
+        }
+    );
+
+    // Registration order 2: uncert then cert
+    let mut store2 = EventRevisionStore::new(LedgerAnchor::genesis("site-cert-uncert-2"));
+    store2.register_coverage_witness(
+        store2.current_anchor().clone(),
+        uncert,
+        TimestampNs(1_000),
+    )?;
+    store2.register_coverage_witness(store2.current_anchor().clone(), cert, TimestampNs(2_000))?;
+
+    let result2 = store2.read_event_in_domain(&absent_id, domain, None)?;
+    assert_eq!(
+        result2,
+        EventReadResult::NotObservable {
+            domain: domain.to_string(),
+            reason: NotObservableReason::CoverageWitnessUncertified,
+            all_reasons: vec![NotObservableReason::CoverageWitnessUncertified],
+        }
+    );
+
+    Ok(())
+}
+
+#[test]
+fn coverage_for_absence_two_witnesses_certifying_plus_excluded_gives_excluded() -> TestResult {
+    let domain = "domain.cert_plus_excluded";
+    let absent_id = EventId::parse("evt_absent_excluded")?;
+
+    let cert = sample_coverage_witness(domain, true, true, false)?;
+    let excluded = sample_coverage_witness(domain, true, true, true)?;
+
+    let expected_excluded = NotObservableReason::ExcludedDomain {
+        domain: domain.to_string(),
+    };
+
+    // Registration order 1: cert then excluded
+    let mut store1 = EventRevisionStore::new(LedgerAnchor::genesis("site-cert-excl-1"));
+    store1.register_coverage_witness(
+        store1.current_anchor().clone(),
+        cert.clone(),
+        TimestampNs(1_000),
+    )?;
+    store1.register_coverage_witness(
+        store1.current_anchor().clone(),
+        excluded.clone(),
+        TimestampNs(2_000),
+    )?;
+
+    let result1 = store1.read_event_in_domain(&absent_id, domain, None)?;
+    assert_eq!(
+        result1,
+        EventReadResult::NotObservable {
+            domain: domain.to_string(),
+            reason: expected_excluded.clone(),
+            all_reasons: vec![expected_excluded.clone()],
+        }
+    );
+
+    // Registration order 2: excluded then cert
+    let mut store2 = EventRevisionStore::new(LedgerAnchor::genesis("site-cert-excl-2"));
+    store2.register_coverage_witness(
+        store2.current_anchor().clone(),
+        excluded,
+        TimestampNs(1_000),
+    )?;
+    store2.register_coverage_witness(store2.current_anchor().clone(), cert, TimestampNs(2_000))?;
+
+    let result2 = store2.read_event_in_domain(&absent_id, domain, None)?;
+    assert_eq!(
+        result2,
+        EventReadResult::NotObservable {
+            domain: domain.to_string(),
+            reason: expected_excluded.clone(),
+            all_reasons: vec![expected_excluded],
+        }
+    );
+
+    Ok(())
+}
+
+#[test]
+fn coverage_for_absence_two_witnesses_gapped_plus_excluded_precedence() -> TestResult {
+    let domain = "domain.gapped_plus_excluded";
+    let absent_id = EventId::parse("evt_gapped_excl")?;
+
+    let gapped = sample_coverage_witness(domain, false, true, false)?;
+    let excluded = sample_coverage_witness(domain, true, true, true)?;
+
+    let expected_all_reasons = vec![
+        NotObservableReason::CoverageWitnessGapped,
+        NotObservableReason::ExcludedDomain {
+            domain: domain.to_string(),
+        },
+    ];
+
+    // Registration order 1: gapped then excluded
+    let mut store1 = EventRevisionStore::new(LedgerAnchor::genesis("site-gap-excl-1"));
+    store1.register_coverage_witness(
+        store1.current_anchor().clone(),
+        gapped.clone(),
+        TimestampNs(1_000),
+    )?;
+    store1.register_coverage_witness(
+        store1.current_anchor().clone(),
+        excluded.clone(),
+        TimestampNs(2_000),
+    )?;
+
+    let result1 = store1.read_event_in_domain(&absent_id, domain, None)?;
+    assert_eq!(
+        result1,
+        EventReadResult::NotObservable {
+            domain: domain.to_string(),
+            reason: NotObservableReason::CoverageWitnessGapped,
+            all_reasons: expected_all_reasons.clone(),
+        }
+    );
+
+    // Registration order 2: excluded then gapped
+    let mut store2 = EventRevisionStore::new(LedgerAnchor::genesis("site-gap-excl-2"));
+    store2.register_coverage_witness(
+        store2.current_anchor().clone(),
+        excluded,
+        TimestampNs(1_000),
+    )?;
+    store2.register_coverage_witness(
+        store2.current_anchor().clone(),
+        gapped,
+        TimestampNs(2_000),
+    )?;
+
+    let result2 = store2.read_event_in_domain(&absent_id, domain, None)?;
+    assert_eq!(
+        result2,
+        EventReadResult::NotObservable {
+            domain: domain.to_string(),
+            reason: NotObservableReason::CoverageWitnessGapped,
+            all_reasons: expected_all_reasons,
+        }
+    );
+
+    Ok(())
+}
+
+#[test]
+fn coverage_witness_capacity_exceeded_refusal_fails_closed() -> TestResult {
+    let mut store = EventRevisionStore::new(LedgerAnchor::genesis("site-cap-refusal"));
+    let domain = "domain.capacity_test";
+    let absent_id = EventId::parse("evt_absent_cap")?;
+
+    // Fill store to capacity (1024) with certifying witnesses.
+    for i in 0..MAX_STORE_COVERAGE_WITNESSES {
+        let mut witness = sample_coverage_witness(domain, true, true, false)?;
+        witness.negative_predicate = format!("no_unauthorized_intrusion_{i:04}");
+        store.register_coverage_witness(
+            store.current_anchor().clone(),
+            witness,
+            TimestampNs(1_000 + (i as i128)),
+        )?;
+    }
+    // Capacity is a pure function of the admitted witnesses; no refusal has happened yet.
+    assert!(store.coverage_registry_at_capacity());
+    let anchor_at_capacity = store.current_anchor().clone();
+
+    // 1025th witness: a gapped witness for the same domain
+    let gapped = sample_coverage_witness(domain, false, true, false)?;
+    let refusal = store.register_coverage_witness(
+        store.current_anchor().clone(),
+        gapped,
+        TimestampNs(100_000),
+    );
+    assert_eq!(
+        refusal.err(),
+        Some(EventStoreError::CoverageWitnessCapacityExceeded {
+            limit: MAX_STORE_COVERAGE_WITNESSES,
+            actual: MAX_STORE_COVERAGE_WITNESSES + 1,
+        })
+    );
+
+    // The refusal leaves canonical history untouched: nothing outside history records it.
+    assert_eq!(store.current_anchor(), &anchor_at_capacity);
+    assert_eq!(store.commit_count(), MAX_STORE_COVERAGE_WITNESSES);
+
+    // Absence read MUST NOT certify absence (fail-closed)
+    let result = store.read_event_in_domain(&absent_id, domain, None)?;
+    assert!(
+        !matches!(result, EventReadResult::AbsentWithCoverage(_)),
+        "capacity-refused domain must never certify absence"
+    );
+
+    match result {
+        EventReadResult::NotObservable {
+            domain: reported_domain,
+            reason,
+            all_reasons,
+        } => {
+            assert_eq!(reported_domain, domain);
+            assert_eq!(
+                reason,
+                NotObservableReason::CoverageRegistryCapacityExceeded
+            );
+            assert!(all_reasons.contains(&NotObservableReason::CoverageRegistryCapacityExceeded));
+            assert_eq!(
+                all_reasons,
+                vec![NotObservableReason::CoverageRegistryCapacityExceeded]
+            );
+        }
+        other => return Err(format!("expected NotObservable, got {other:?}").into()),
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------
+// Criterion: global fail-closed coverage capacity derived from canonical history (fss-3qlsa)
+// ---------------------------------------------------------------------------------------------
+
+const CAPACITY_SITE: &str = "site-coverage-capacity";
+
+/// A certifying witness for `domain` whose predicate is made unique by `index`.
+fn certifying_witness(domain: &str, index: usize) -> Result<CoverageWitness, Box<dyn Error>> {
+    let mut witness = sample_coverage_witness(domain, true, true, false)?;
+    witness.negative_predicate = format!("no_unauthorized_intrusion_{index:05}");
+    Ok(witness)
+}
+
+/// Registers `count` witnesses; witness `i` is built by `witness_for(i)`.
+fn register_witnesses(
+    store: &mut EventRevisionStore,
+    count: usize,
+    witness_for: impl Fn(usize) -> Result<CoverageWitness, Box<dyn Error>>,
+) -> TestResult {
+    for i in 0..count {
+        store.register_coverage_witness(
+            store.current_anchor().clone(),
+            witness_for(i)?,
+            TimestampNs(1_000 + (i as i128)),
+        )?;
+    }
+    Ok(())
+}
+
+/// Witness 0 certifies `domain.x`, witness 1 is gapped for `domain.b_gapped`, and every other
+/// witness certifies its own filler domain.
+fn capacity_fixture_witness(i: usize) -> Result<CoverageWitness, Box<dyn Error>> {
+    match i {
+        0 => certifying_witness("domain.x", i),
+        1 => sample_coverage_witness("domain.b_gapped", false, true, false),
+        _ => certifying_witness(&format!("domain.fill_{i:04}"), i),
+    }
+}
+
+/// Asserts the exact fail-closed capacity result on the event, lineage and graph read paths.
+fn assert_capacity_fail_closed(
+    store: &EventRevisionStore,
+    domain: &str,
+    expected_all: &[NotObservableReason],
+) -> TestResult {
+    let absent_id = EventId::parse("evt_capacity_absent")?;
+    let reason = NotObservableReason::CoverageRegistryCapacityExceeded;
+    assert_eq!(
+        store.read_event_in_domain(&absent_id, domain, None)?,
+        EventReadResult::NotObservable {
+            domain: domain.to_string(),
+            reason: reason.clone(),
+            all_reasons: expected_all.to_vec(),
+        },
+        "event read for {domain}"
+    );
+    assert_eq!(
+        store.read_lineage_in_domain(&absent_id, domain)?,
+        LineageReadResult::NotObservable {
+            domain: domain.to_string(),
+            reason: reason.clone(),
+            all_reasons: expected_all.to_vec(),
+        },
+        "lineage read for {domain}"
+    );
+    assert_eq!(
+        store.read_evidence_graph("graph_capacity_absent", domain)?,
+        GraphReadResult::NotObservable {
+            domain: domain.to_string(),
+            reason,
+            all_reasons: expected_all.to_vec(),
+        },
+        "graph read for {domain}"
+    );
+    assert_eq!(
+        store.coverage_non_observability_reasons(domain),
+        expected_all.to_vec(),
+        "reasons for {domain}"
+    );
+    Ok(())
+}
+
+/// Asserts that `domain` certifies absence from exactly `expected` on all three read paths.
+fn assert_certified_absent(
+    store: &EventRevisionStore,
+    domain: &str,
+    expected: &CoverageWitness,
+) -> TestResult {
+    let absent_id = EventId::parse("evt_capacity_absent")?;
+    assert_eq!(
+        store.read_event_in_domain(&absent_id, domain, None)?,
+        EventReadResult::AbsentWithCoverage(expected)
+    );
+    assert_eq!(
+        store.read_lineage_in_domain(&absent_id, domain)?,
+        LineageReadResult::AbsentWithCoverage(expected)
+    );
+    assert_eq!(
+        store.read_evidence_graph("graph_capacity_absent", domain)?,
+        GraphReadResult::AbsentWithCoverage(expected)
+    );
+    assert_eq!(store.coverage_non_observability_reasons(domain), Vec::new());
+    Ok(())
+}
+
+fn capacity_refusal() -> EventStoreError {
+    EventStoreError::CoverageWitnessCapacityExceeded {
+        limit: MAX_STORE_COVERAGE_WITNESSES,
+        actual: MAX_STORE_COVERAGE_WITNESSES + 1,
+    }
+}
+
+/// r3q2 probe p5: one refused witness naming 1024 domains, then a refused gapped witness for X.
+/// Round 2 saturated its refused-domain table here and certified X absent from the older witness.
+#[test]
+fn coverage_capacity_one_refusal_naming_1024_domains_then_gapped_x_never_certifies() -> TestResult {
+    let mut store = EventRevisionStore::new(LedgerAnchor::genesis(CAPACITY_SITE));
+    register_witnesses(
+        &mut store,
+        MAX_STORE_COVERAGE_WITNESSES,
+        capacity_fixture_witness,
+    )?;
+    let anchor_at_capacity = store.current_anchor().clone();
+
+    let mut big = sample_coverage_witness("domain.junk_0000", true, true, false)?;
+    for j in 1..MAX_STORE_COVERAGE_WITNESSES {
+        big.observed_domain.insert(format!("domain.junk_{j:04}"));
+        big.authorized_domain.insert(format!("domain.junk_{j:04}"));
+    }
+    assert_eq!(big.observed_domain.len(), MAX_STORE_COVERAGE_WITNESSES);
+    let big_refusal = expect_err(store.register_coverage_witness(
+        store.current_anchor().clone(),
+        big,
+        TimestampNs(50_000),
+    ))?;
+    assert_eq!(big_refusal, capacity_refusal());
+
+    let gapped_x = sample_coverage_witness("domain.x", false, true, false)?;
+    let x_refusal = expect_err(store.register_coverage_witness(
+        store.current_anchor().clone(),
+        gapped_x,
+        TimestampNs(50_001),
+    ))?;
+    assert_eq!(x_refusal, capacity_refusal());
+    assert_eq!(store.current_anchor(), &anchor_at_capacity);
+
+    let cap = NotObservableReason::CoverageRegistryCapacityExceeded;
+    assert_capacity_fail_closed(&store, "domain.x", std::slice::from_ref(&cap))?;
+    assert_capacity_fail_closed(
+        &store,
+        "domain.junk_0007",
+        &[cap.clone(), NotObservableReason::NoCoverageWitness],
+    )?;
+    assert_capacity_fail_closed(&store, "domain.fill_0002", std::slice::from_ref(&cap))?;
+    Ok(())
+}
+
+/// r3q2 probe p6: 1024 single-domain refusals, then a refused gapped witness for X.
+#[test]
+fn coverage_capacity_1024_single_domain_refusals_then_gapped_x_never_certifies() -> TestResult {
+    let mut store = EventRevisionStore::new(LedgerAnchor::genesis(CAPACITY_SITE));
+    register_witnesses(
+        &mut store,
+        MAX_STORE_COVERAGE_WITNESSES,
+        capacity_fixture_witness,
+    )?;
+    let anchor_at_capacity = store.current_anchor().clone();
+
+    for j in 0..MAX_STORE_COVERAGE_WITNESSES {
+        let late = certifying_witness(&format!("domain.late_{j:04}"), j)?;
+        let refusal = expect_err(store.register_coverage_witness(
+            store.current_anchor().clone(),
+            late,
+            TimestampNs(60_000 + (j as i128)),
+        ))?;
+        assert_eq!(refusal, capacity_refusal());
+    }
+
+    let gapped_x = sample_coverage_witness("domain.x", false, true, false)?;
+    let x_refusal = expect_err(store.register_coverage_witness(
+        store.current_anchor().clone(),
+        gapped_x,
+        TimestampNs(70_000),
+    ))?;
+    assert_eq!(x_refusal, capacity_refusal());
+    assert_eq!(store.current_anchor(), &anchor_at_capacity);
+    assert_eq!(store.commit_count(), MAX_STORE_COVERAGE_WITNESSES);
+
+    let cap = NotObservableReason::CoverageRegistryCapacityExceeded;
+    assert_capacity_fail_closed(&store, "domain.x", std::slice::from_ref(&cap))?;
+    assert_capacity_fail_closed(
+        &store,
+        "domain.late_0000",
+        &[cap, NotObservableReason::NoCoverageWitness],
+    )?;
+    Ok(())
+}
+
+/// At capacity every domain fails closed, whether or not a witness naming it was ever refused:
+/// A had a refused gapped witness, B was never refused (and carries an admitted gap), C was
+/// never seen, and a certified filler domain was never refused either.
+#[test]
+fn coverage_capacity_fails_closed_for_every_domain_on_event_lineage_and_graph_reads() -> TestResult
+{
+    let mut store = EventRevisionStore::new(LedgerAnchor::genesis(CAPACITY_SITE));
+    register_witnesses(
+        &mut store,
+        MAX_STORE_COVERAGE_WITNESSES,
+        capacity_fixture_witness,
+    )?;
+    assert!(store.coverage_registry_at_capacity());
+
+    // The stale-basis check precedes the capacity check.
+    let stale = expect_err(store.register_coverage_witness(
+        LedgerAnchor::genesis("site-wrong-basis"),
+        sample_coverage_witness("domain.x", false, true, false)?,
+        TimestampNs(80_000),
+    ))?;
+    assert!(
+        matches!(stale, EventStoreError::StaleAnchor { .. }),
+        "stale basis must be reported before capacity, got {stale:?}"
+    );
+
+    let refusal = expect_err(store.register_coverage_witness(
+        store.current_anchor().clone(),
+        sample_coverage_witness("domain.x", false, true, false)?,
+        TimestampNs(80_001),
+    ))?;
+    assert_eq!(refusal, capacity_refusal());
+
+    let cap = NotObservableReason::CoverageRegistryCapacityExceeded;
+    // A: certified by witness 0, then a gapped witness was refused.
+    assert_capacity_fail_closed(&store, "domain.x", std::slice::from_ref(&cap))?;
+    // B: never refused; its admitted gap is still reported, after the capacity reason.
+    assert_capacity_fail_closed(
+        &store,
+        "domain.b_gapped",
+        &[cap.clone(), NotObservableReason::CoverageWitnessGapped],
+    )?;
+    // C: never seen.
+    assert_capacity_fail_closed(
+        &store,
+        "domain.c_never_seen",
+        &[cap.clone(), NotObservableReason::NoCoverageWitness],
+    )?;
+    // A certified filler domain that no refused witness named.
+    assert_capacity_fail_closed(&store, "domain.fill_0512", std::slice::from_ref(&cap))?;
+
+    // The reserved unknown domain names nothing any witness could cover.
+    assert_eq!(
+        store.coverage_non_observability_reasons("unknown"),
+        vec![NotObservableReason::UnknownDomain]
+    );
+    Ok(())
+}
+
+/// INV-015: capacity is derived from canonical history, so the rebuilt store equals the live
+/// store and evaluates every domain identically, including after capacity refusals.
+#[test]
+fn coverage_capacity_rebuild_from_history_is_exact() -> TestResult {
+    let genesis = LedgerAnchor::genesis(CAPACITY_SITE);
+    let mut store = EventRevisionStore::new(genesis.clone());
+    register_witnesses(
+        &mut store,
+        MAX_STORE_COVERAGE_WITNESSES,
+        capacity_fixture_witness,
+    )?;
+    for (step, domain) in ["domain.x", "domain.c_never_seen", "domain.fill_0003"]
+        .iter()
+        .enumerate()
+    {
+        let refusal = expect_err(store.register_coverage_witness(
+            store.current_anchor().clone(),
+            sample_coverage_witness(domain, false, true, false)?,
+            TimestampNs(90_000 + (step as i128)),
+        ))?;
+        assert_eq!(refusal, capacity_refusal());
+    }
+
+    let rebuilt = EventRevisionStore::rebuild_from_history(genesis.clone(), store.history())?;
+    assert_eq!(rebuilt, store);
+    assert_eq!(rebuilt.current_anchor(), store.current_anchor());
+    assert_eq!(
+        rebuilt.current_anchor().state_root,
+        store.current_anchor().state_root
+    );
+    assert!(rebuilt.coverage_registry_at_capacity());
+    assert_eq!(
+        rebuilt.coverage_registry_at_capacity(),
+        store.coverage_registry_at_capacity()
+    );
+
+    let absent_id = EventId::parse("evt_capacity_absent")?;
+    let mut domains: Vec<String> = (2..MAX_STORE_COVERAGE_WITNESSES)
+        .map(|i| format!("domain.fill_{i:04}"))
+        .collect();
+    domains.extend(
+        [
+            "domain.x",
+            "domain.b_gapped",
+            "domain.c_never_seen",
+            "unknown",
+            "",
+        ]
+        .iter()
+        .map(|d| (*d).to_string()),
+    );
+    for domain in &domains {
+        assert_eq!(
+            rebuilt.read_event_in_domain(&absent_id, domain, None)?,
+            store.read_event_in_domain(&absent_id, domain, None)?,
+            "event read for {domain}"
+        );
+        assert_eq!(
+            rebuilt.read_lineage_in_domain(&absent_id, domain)?,
+            store.read_lineage_in_domain(&absent_id, domain)?,
+            "lineage read for {domain}"
+        );
+        assert_eq!(
+            rebuilt.read_evidence_graph("graph_capacity_absent", domain)?,
+            store.read_evidence_graph("graph_capacity_absent", domain)?,
+            "graph read for {domain}"
+        );
+        assert_eq!(
+            rebuilt.coverage_non_observability_reasons(domain),
+            store.coverage_non_observability_reasons(domain),
+            "reasons for {domain}"
+        );
+    }
+    assert_capacity_fail_closed(
+        &rebuilt,
+        "domain.x",
+        &[NotObservableReason::CoverageRegistryCapacityExceeded],
+    )?;
+
+    // Rebuilding one commit short of capacity certifies again, exactly as the live store did.
+    let short_history = store
+        .history()
+        .get(..MAX_STORE_COVERAGE_WITNESSES - 1)
+        .ok_or("history must hold at least N-1 commits")?;
+    let prefix = EventRevisionStore::rebuild_from_history(genesis, short_history)?;
+    assert!(!prefix.coverage_registry_at_capacity());
+    let witness_x = capacity_fixture_witness(0)?;
+    assert_certified_absent(&prefix, "domain.x", &witness_x)?;
+    Ok(())
+}
+
+/// Control at the boundary: with N-1 witnesses one certifying witness still certifies absence;
+/// admitting the N-th witness puts the store at capacity and every domain fails closed.
+#[test]
+fn coverage_capacity_boundary_n_minus_one_certifies_and_n_fails_closed() -> TestResult {
+    let mut store = EventRevisionStore::new(LedgerAnchor::genesis(CAPACITY_SITE));
+    register_witnesses(
+        &mut store,
+        MAX_STORE_COVERAGE_WITNESSES - 1,
+        capacity_fixture_witness,
+    )?;
+    assert!(!store.coverage_registry_at_capacity());
+    let witness_x = capacity_fixture_witness(0)?;
+    assert_certified_absent(&store, "domain.x", &witness_x)?;
+    let witness_fill = capacity_fixture_witness(700)?;
+    assert_certified_absent(&store, "domain.fill_0700", &witness_fill)?;
+    assert_eq!(
+        store.coverage_non_observability_reasons("domain.c_never_seen"),
+        vec![NotObservableReason::NoCoverageWitness]
+    );
+
+    // The N-th witness is admitted.
+    store.register_coverage_witness(
+        store.current_anchor().clone(),
+        certifying_witness("domain.last_admitted", MAX_STORE_COVERAGE_WITNESSES - 1)?,
+        TimestampNs(95_000),
+    )?;
+    assert!(store.coverage_registry_at_capacity());
+    assert_eq!(store.commit_count(), MAX_STORE_COVERAGE_WITNESSES);
+    let cap = NotObservableReason::CoverageRegistryCapacityExceeded;
+    assert_capacity_fail_closed(&store, "domain.x", std::slice::from_ref(&cap))?;
+    assert_capacity_fail_closed(&store, "domain.last_admitted", std::slice::from_ref(&cap))?;
+    assert_capacity_fail_closed(
+        &store,
+        "domain.c_never_seen",
+        &[cap, NotObservableReason::NoCoverageWitness],
+    )?;
+
+    // The (N+1)-th is refused with the typed error.
+    let refusal = expect_err(store.register_coverage_witness(
+        store.current_anchor().clone(),
+        certifying_witness("domain.x", MAX_STORE_COVERAGE_WITNESSES)?,
+        TimestampNs(95_001),
+    ))?;
+    assert_eq!(refusal, capacity_refusal());
+    Ok(())
+}
+
+/// Fills a store's history with genesis revisions and contradictions (no coverage witnesses).
+struct CommitFill {
+    contradiction: Contradiction,
+    current_event: Option<EventId>,
+    per_event: usize,
+    event_index: usize,
+    tick: i128,
+}
+
+impl CommitFill {
+    fn fill_to(&mut self, store: &mut EventRevisionStore, target: usize) -> TestResult {
+        while store.commit_count() < target {
+            self.tick += 1;
+            match self.current_event.clone() {
+                Some(event_id) if self.per_event < MAX_CONTRADICTIONS_PER_EVENT => {
+                    store.record_contradiction(
+                        store.current_anchor().clone(),
+                        event_id,
+                        self.contradiction.clone(),
+                        TimestampNs(self.tick),
+                    )?;
+                    self.per_event += 1;
+                }
+                _ => {
+                    let genesis_rev =
+                        sample_genesis(&format!("evt_commit_cap_{:05}", self.event_index))?;
+                    let event_id = genesis_rev.event_id.clone();
+                    store.append_genesis(
+                        store.current_anchor().clone(),
+                        genesis_rev,
+                        "domain.commit_cap_events",
+                        TimestampNs(self.tick),
+                    )?;
+                    self.current_event = Some(event_id);
+                    self.per_event = 0;
+                    self.event_index += 1;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The commit-capacity branch: with only two witnesses admitted (far below the witness bound),
+/// a full commit history refuses every later witness, so every domain fails closed.
+#[test]
+fn coverage_commit_capacity_refuses_witness_and_fails_closed_for_every_domain() -> TestResult {
+    let genesis = LedgerAnchor::genesis("site-commit-capacity");
+    let mut store = EventRevisionStore::new(genesis);
+    let witness_x = certifying_witness("domain.x", 0)?;
+    store.register_coverage_witness(
+        store.current_anchor().clone(),
+        witness_x.clone(),
+        TimestampNs(1),
+    )?;
+    store.register_coverage_witness(
+        store.current_anchor().clone(),
+        sample_coverage_witness("domain.b_gapped", false, true, false)?,
+        TimestampNs(2),
+    )?;
+
+    let mut fill = CommitFill {
+        contradiction: sample_contradiction(
+            "contra_commit_cap",
+            "claim_commit_cap",
+            &["world.commit_cap"],
+        )?,
+        current_event: None,
+        per_event: 0,
+        event_index: 0,
+        tick: 10,
+    };
+
+    // One commit below the commit bound: still below capacity, X still certifies.
+    fill.fill_to(&mut store, MAX_STORE_COMMITS - 1)?;
+    assert!(!store.coverage_registry_at_capacity());
+    assert_certified_absent(&store, "domain.x", &witness_x)?;
+
+    fill.fill_to(&mut store, MAX_STORE_COMMITS)?;
+    let tick = fill.tick;
+    assert_eq!(store.commit_count(), MAX_STORE_COMMITS);
+    assert!(store.coverage_registry_at_capacity());
+    let anchor_at_capacity = store.current_anchor().clone();
+
+    // The stale-basis check still comes first.
+    let stale = expect_err(store.register_coverage_witness(
+        LedgerAnchor::genesis("site-wrong-basis"),
+        sample_coverage_witness("domain.x", false, true, false)?,
+        TimestampNs(tick + 1),
+    ))?;
+    assert!(
+        matches!(stale, EventStoreError::StaleAnchor { .. }),
+        "stale basis must be reported before capacity, got {stale:?}"
+    );
+
+    // A gapped witness for X is refused by the commit-capacity branch, not the witness bound.
+    let refusal = expect_err(store.register_coverage_witness(
+        store.current_anchor().clone(),
+        sample_coverage_witness("domain.x", false, true, false)?,
+        TimestampNs(tick + 2),
+    ))?;
+    assert_eq!(
+        refusal,
+        EventStoreError::StoreCommitCapacityExceeded {
+            limit: MAX_STORE_COMMITS,
+            actual: MAX_STORE_COMMITS + 1,
+        }
+    );
+    assert_eq!(store.current_anchor(), &anchor_at_capacity);
+
+    let cap = NotObservableReason::CoverageRegistryCapacityExceeded;
+    assert_capacity_fail_closed(&store, "domain.x", std::slice::from_ref(&cap))?;
+    assert_capacity_fail_closed(
+        &store,
+        "domain.b_gapped",
+        &[cap.clone(), NotObservableReason::CoverageWitnessGapped],
+    )?;
+    assert_capacity_fail_closed(
+        &store,
+        "domain.c_never_seen",
+        &[cap, NotObservableReason::NoCoverageWitness],
+    )?;
+    Ok(())
+}
+
+/// Tie-break: with several certifying witnesses on one domain, the certifying witness returned is
+/// exactly the one with the lowest witness digest, whatever the registration order. The witnesses
+/// are registered so that the lowest-digest one is neither first nor last.
+#[test]
+fn coverage_for_absence_multiple_certifying_witnesses_returns_lowest_digest() -> TestResult {
+    let domain = "domain.tie_break";
+    let mut witnesses = vec![
+        certifying_witness(domain, 1)?,
+        certifying_witness(domain, 2)?,
+        certifying_witness(domain, 3)?,
+    ];
+    witnesses.sort_by_key(CoverageWitness::witness_digest);
+    let [lowest, middle, highest] = witnesses.as_slice() else {
+        return Err("expected exactly three witnesses".into());
+    };
+    assert!(lowest.witness_digest() < middle.witness_digest());
+    assert!(middle.witness_digest() < highest.witness_digest());
+
+    for order in [[middle, lowest, highest], [highest, lowest, middle]] {
+        let mut store = EventRevisionStore::new(LedgerAnchor::genesis("site-tie-break"));
+        for (step, witness) in order.iter().enumerate() {
+            store.register_coverage_witness(
+                store.current_anchor().clone(),
+                (*witness).clone(),
+                TimestampNs(1_000 + (step as i128)),
+            )?;
+        }
+        assert_certified_absent(&store, domain, lowest)?;
     }
     Ok(())
 }
