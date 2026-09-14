@@ -464,6 +464,21 @@ impl EffectIntent {
         encoder.text(error_code);
         ContentDigest::sha256(&encoder.finish())
     }
+
+    /// Computes the unique canonical cancellation proof digest binding operation id, plan digest, and time evidence.
+    pub fn cancellation_proof(
+        &self,
+        prepared_at: TimestampNs,
+        cancelled_at: TimestampNs,
+    ) -> Result<ContentDigest, ContractError> {
+        let record = EffectCancellationRecord::new(
+            self.operation_id.clone(),
+            self.intent_digest(),
+            prepared_at,
+            cancelled_at,
+        )?;
+        Ok(record.proof_digest())
+    }
 }
 
 /// Immutable prepared operation binding intent, obligation, and predicate.
@@ -1472,6 +1487,82 @@ impl CanonicalDecode for EffectReconciliationRecord {
     }
 }
 
+/// Canonical record proving that an external effect was cancelled before commitment.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EffectCancellationRecord {
+    /// Operation identity of the cancelled effect.
+    pub operation_id: OperationId,
+    /// Canonical content digest of the prepared effect intent / plan.
+    pub plan_digest: ContentDigest,
+    /// Timestamp at which the operation was prepared.
+    pub prepared_at: TimestampNs,
+    /// Timestamp at which the cancellation occurred.
+    pub cancelled_at: TimestampNs,
+}
+
+impl EffectCancellationRecord {
+    /// Schema identity and digest domain.
+    pub const SCHEMA: &'static str = "fss.effect_proof.cancellation.v1";
+
+    /// Creates a validated cancellation record.
+    pub fn new(
+        operation_id: OperationId,
+        plan_digest: ContentDigest,
+        prepared_at: TimestampNs,
+        cancelled_at: TimestampNs,
+    ) -> Result<Self, ContractError> {
+        if cancelled_at <= prepared_at {
+            return Err(ContractError::InvertedTimeInterval);
+        }
+        Ok(Self {
+            operation_id,
+            plan_digest,
+            prepared_at,
+            cancelled_at,
+        })
+    }
+
+    /// Computes the canonical content digest of this cancellation record under its registered digest domain.
+    #[must_use]
+    pub fn proof_digest(&self) -> ContentDigest {
+        let mut encoder = CanonicalEncoder::new();
+        self.encode_canonical(&mut encoder);
+        ContentDigest::sha256(&encoder.finish())
+    }
+}
+
+impl CanonicalEncode for EffectCancellationRecord {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.text(Self::SCHEMA);
+        self.operation_id.encode_canonical(encoder);
+        encoder.digest(self.plan_digest);
+        self.prepared_at.encode_canonical(encoder);
+        self.cancelled_at.encode_canonical(encoder);
+    }
+}
+
+impl CanonicalDecode for EffectCancellationRecord {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        let schema = decoder.text()?;
+        if schema != Self::SCHEMA {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        let operation_id = OperationId::decode_canonical(decoder)?;
+        let plan_digest = decoder.digest()?;
+        let prepared_at = TimestampNs::decode_canonical(decoder)?;
+        let cancelled_at = TimestampNs::decode_canonical(decoder)?;
+        if cancelled_at <= prepared_at {
+            return Err(ContractError::InvertedTimeInterval);
+        }
+        Ok(Self {
+            operation_id,
+            plan_digest,
+            prepared_at,
+            cancelled_at,
+        })
+    }
+}
+
 /// Explicit authority granting permission to prepare and execute effects.
 ///
 /// # Plane boundary (ADR-0001)
@@ -1680,6 +1771,12 @@ impl OperationReceipt {
             EffectRecordVersion::V1 => Self::SCHEMA,
             EffectRecordVersion::V2 => Self::DIGEST_DOMAIN_V2,
         }
+    }
+
+    /// Computes the expected canonical cancellation proof digest for this receipt, if valid.
+    pub fn expected_cancellation_proof(&self) -> Result<ContentDigest, ContractError> {
+        self.intent
+            .cancellation_proof(self.prepared_at, self.updated_at)
     }
 
     /// Emits a deterministic canonical JSON string projection per schemas/operation_receipt.v1.json.
@@ -2594,6 +2691,29 @@ impl EffectJournal {
         )
     }
 
+    /// Cancels a prepared operation before commitment, computing its bound cancellation proof digest.
+    pub fn cancel(
+        &mut self,
+        operation_id: &OperationId,
+        now: TimestampNs,
+        reason: Option<String>,
+    ) -> Result<&OperationReceipt, ContractError> {
+        let receipt = self
+            .operations
+            .get(operation_id)
+            .ok_or(ContractError::NotFound)?;
+        let proof = receipt
+            .intent
+            .cancellation_proof(receipt.prepared_at, now)?;
+        self.transition(
+            operation_id,
+            EffectState::Cancelled,
+            now,
+            Some(proof),
+            reason,
+        )
+    }
+
     /// Reconciles an observed operation using independently observed terminal proof.
     pub fn reconcile_verified(
         &mut self,
@@ -3460,12 +3580,20 @@ fn check_transition(
                 Ok(())
             }
         }
-        // A cancellation reason is optional, but never empty.
+        // A cancellation reason is optional, but never empty. The cancellation proof digest
+        // must be bound to the operation id, plan digest, and time interval (fss-thzlz).
         EffectState::Cancelled => {
             if error_code.is_some_and(str::is_empty) {
                 Err(ContractError::EvidenceRequired)
             } else {
-                Ok(())
+                let expected = receipt
+                    .intent
+                    .cancellation_proof(receipt.prepared_at, now)?;
+                if result_digest != Some(expected) {
+                    Err(ContractError::InvalidDigest)
+                } else {
+                    Ok(())
+                }
             }
         }
         // A failure's proof and non-empty reason are checked above, under every rule set.
@@ -3749,6 +3877,63 @@ mod tests {
         let replayed = EffectJournal::replay(decoded_transitions)?;
         assert_eq!(replayed, live);
         assert_eq!(replayed.journal_root(), live.journal_root());
+        Ok(())
+    }
+
+    #[test]
+    fn test_cancellation_record_codec_and_journal_binding() -> Result<(), ContractError> {
+        let effect = intent(b"cancel-binding-test")?;
+        let op = effect.operation_id.clone();
+        let obl = ObligationId::parse("obligation:cancel:test")?;
+        let t1 = TimestampNs(10);
+        let t2 = TimestampNs(20);
+
+        // Cancellation record codec roundtrip
+        let record = EffectCancellationRecord::new(op.clone(), effect.intent_digest(), t1, t2)?;
+        let mut enc = CanonicalEncoder::new();
+        record.encode_canonical(&mut enc);
+        let bytes = enc.finish();
+        let mut dec = CanonicalDecoder::new(&bytes);
+        let decoded = EffectCancellationRecord::decode_canonical(&mut dec)?;
+        dec.ensure_finished()?;
+        assert_eq!(decoded, record);
+        assert_eq!(decoded.proof_digest(), record.proof_digest());
+
+        // Inverted time interval rejected
+        assert_eq!(
+            EffectCancellationRecord::new(op.clone(), effect.intent_digest(), t2, t1),
+            Err(ContractError::InvertedTimeInterval)
+        );
+        assert_eq!(
+            EffectCancellationRecord::new(op.clone(), effect.intent_digest(), t1, t1),
+            Err(ContractError::InvertedTimeInterval)
+        );
+
+        // Journal honest cancellation via journal.cancel
+        let mut journal = EffectJournal::new();
+        let _ = journal.prepare(effect.clone(), obl, "cancelled", t1)?;
+        let cancelled_receipt = journal.cancel(&op, t2, Some("operator_aborted".to_string()))?;
+        assert_eq!(cancelled_receipt.state, EffectState::Cancelled);
+        let expected_proof = effect.cancellation_proof(t1, t2)?;
+        assert_eq!(cancelled_receipt.result_digest, Some(expected_proof));
+        assert_eq!(
+            cancelled_receipt.expected_cancellation_proof()?,
+            expected_proof
+        );
+
+        // Transition with forged proof rejected by journal
+        let mut forged_journal = EffectJournal::new();
+        let obl_forged = ObligationId::parse("obligation:cancel:forged")?;
+        let _ = forged_journal.prepare(effect, obl_forged, "cancelled", t1)?;
+        let forged_proof = ContentDigest::sha256(b"forged-cancel-proof");
+        let res = forged_journal.transition(
+            &op,
+            EffectState::Cancelled,
+            t2,
+            Some(forged_proof),
+            Some("operator_aborted".to_string()),
+        );
+        assert_eq!(res, Err(ContractError::InvalidDigest));
         Ok(())
     }
 }

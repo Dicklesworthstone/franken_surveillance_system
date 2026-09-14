@@ -411,7 +411,14 @@ fn receipt_in_state(
                 Some("provider_timeout".to_owned()),
             ),
         ],
-        EffectState::Cancelled => vec![(EffectState::Cancelled, Some(observed), None)],
+        EffectState::Cancelled => vec![(
+            EffectState::Cancelled,
+            Some(
+                plan.intent
+                    .cancellation_proof(TimestampNs(100), TimestampNs(101))?,
+            ),
+            None,
+        )],
     };
     let mut now = 100;
     for (next, digest, error) in steps {
@@ -3770,14 +3777,15 @@ fn verified_without_indeterminate(
 
 /// A cancellation of the prepared operation with a proof digest, as the journal records it.
 fn cancelled_receipt(journal: &mut EffectJournal, plan: &ReferenceAlertPlan) -> ReceiptResult {
+    let proof = plan
+        .intent
+        .cancellation_proof(TimestampNs(100), TimestampNs(101))?;
     Ok(journal
         .transition(
             &plan.intent.operation_id,
             EffectState::Cancelled,
             TimestampNs(101),
-            Some(fss_core::ContentDigest::sha256(
-                b"situation-guard-cancellation",
-            )),
+            Some(proof),
             None,
         )?
         .clone())
@@ -4023,7 +4031,9 @@ fn cancelled_receipt_without_elapsed_time_is_refused() -> Result<(), Box<dyn Err
 #[test]
 fn journal_and_guard_refuse_an_empty_cancellation_reason() -> Result<(), Box<dyn Error>> {
     let (harness, mut journal, plan) = prepared_journal("cancelled-empty-reason")?;
-    let proof = fss_core::ContentDigest::sha256(b"cancelled-empty-reason");
+    let proof = plan
+        .intent
+        .cancellation_proof(TimestampNs(100), TimestampNs(101))?;
     let refused = journal.transition(
         &plan.intent.operation_id,
         EffectState::Cancelled,
@@ -4042,6 +4052,133 @@ fn journal_and_guard_refuse_an_empty_cancellation_reason() -> Result<(), Box<dyn
         Ok(cancelled)
     })?;
     assert_integrity_refusal(&verdict, "a cancelled receipt with an empty reason");
+    Ok(())
+}
+
+#[test]
+fn honest_cancellation_verifies_in_journal_and_guard() -> Result<(), Box<dyn Error>> {
+    let (harness, mut journal, plan) = prepared_journal("cancelled-honest")?;
+    let proof = plan
+        .intent
+        .cancellation_proof(TimestampNs(100), TimestampNs(101))?;
+    let receipt = journal.transition(
+        &plan.intent.operation_id,
+        EffectState::Cancelled,
+        TimestampNs(101),
+        Some(proof),
+        Some("operator_cancelled".to_string()),
+    )?;
+    assert_eq!(receipt.state, EffectState::Cancelled);
+    assert_eq!(receipt.result_digest, Some(proof));
+    harness.cleanup();
+
+    let verdict = guard_verdict("cancelled-honest-guard", |journal, plan| {
+        cancelled_receipt(journal, plan)
+    })?;
+    assert!(
+        verdict.is_ok(),
+        "honest cancelled receipt accepted by guard: {verdict:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn forged_cancellation_digest_is_refused_by_journal_and_guard() -> Result<(), Box<dyn Error>> {
+    let (harness, mut journal, plan) = prepared_journal("cancelled-forged")?;
+    let forged = fss_core::ContentDigest::sha256(b"forged-cancellation-proof");
+    let refused = journal.transition(
+        &plan.intent.operation_id,
+        EffectState::Cancelled,
+        TimestampNs(101),
+        Some(forged),
+        None,
+    );
+    assert!(
+        matches!(refused, Err(fss_core::ContractError::InvalidDigest)),
+        "journal: {refused:?}"
+    );
+    harness.cleanup();
+
+    let verdict = guard_verdict("cancelled-forged-guard", |journal, plan| {
+        let mut cancelled = cancelled_receipt(journal, plan)?;
+        cancelled.result_digest = Some(forged);
+        Ok(cancelled)
+    })?;
+    assert_integrity_refusal(&verdict, "forged cancellation digest refused by guard");
+    Ok(())
+}
+
+#[test]
+fn different_operation_cancellation_digest_is_refused_by_journal_and_guard()
+-> Result<(), Box<dyn Error>> {
+    let (harness, mut journal, plan) = prepared_journal("cancelled-diff-op")?;
+    let other_intent = fss_core::EffectIntent::new(
+        fss_core::OperationId::parse("operation:alert:other-op")?,
+        fss_core::IdempotencyKey::parse("idempotency:other-op")?,
+        "alert.test",
+        plan.intent.request_digest,
+        plan.intent.precondition_digest,
+    )?;
+    let other_proof = other_intent.cancellation_proof(TimestampNs(100), TimestampNs(101))?;
+    let refused = journal.transition(
+        &plan.intent.operation_id,
+        EffectState::Cancelled,
+        TimestampNs(101),
+        Some(other_proof),
+        None,
+    );
+    assert!(
+        matches!(refused, Err(fss_core::ContractError::InvalidDigest)),
+        "journal: {refused:?}"
+    );
+    harness.cleanup();
+
+    let verdict = guard_verdict("cancelled-diff-op-guard", |journal, plan| {
+        let mut cancelled = cancelled_receipt(journal, plan)?;
+        cancelled.result_digest = Some(other_proof);
+        Ok(cancelled)
+    })?;
+    assert_integrity_refusal(
+        &verdict,
+        "different operation cancellation digest refused by guard",
+    );
+    Ok(())
+}
+
+#[test]
+fn different_plan_cancellation_digest_is_refused_by_journal_and_guard() -> Result<(), Box<dyn Error>>
+{
+    let (harness, mut journal, plan) = prepared_journal("cancelled-diff-plan")?;
+    let other_intent = fss_core::EffectIntent::new(
+        plan.intent.operation_id.clone(),
+        plan.intent.idempotency_key.clone(),
+        "alert.test",
+        fss_core::ContentDigest::sha256(b"different-request"),
+        plan.intent.precondition_digest,
+    )?;
+    let other_proof = other_intent.cancellation_proof(TimestampNs(100), TimestampNs(101))?;
+    let refused = journal.transition(
+        &plan.intent.operation_id,
+        EffectState::Cancelled,
+        TimestampNs(101),
+        Some(other_proof),
+        None,
+    );
+    assert!(
+        matches!(refused, Err(fss_core::ContractError::InvalidDigest)),
+        "journal: {refused:?}"
+    );
+    harness.cleanup();
+
+    let verdict = guard_verdict("cancelled-diff-plan-guard", |journal, plan| {
+        let mut cancelled = cancelled_receipt(journal, plan)?;
+        cancelled.result_digest = Some(other_proof);
+        Ok(cancelled)
+    })?;
+    assert_integrity_refusal(
+        &verdict,
+        "different plan cancellation digest refused by guard",
+    );
     Ok(())
 }
 

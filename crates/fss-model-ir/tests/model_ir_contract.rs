@@ -427,9 +427,10 @@ fn test_schema_domain_and_pinned_counts() -> Result<(), Box<dyn Error>> {
     // SCHEMA-DOMAIN-REFERENCE-DEPLOYMENT-LIMITS-001 (fss-2h5zq.9).
     // 59 = 57 + SCHEMA-DOMAIN-REFERENCE-SITUATION-PUBLICATION-001 (v5) and
     // SCHEMA-DOMAIN-REFERENCE-EFFECT-BINDING-SEAL-001 (v6) (fss-x4a.30.83.10).
+    // 60 = 59 + SCHEMA-DOMAIN-EFFECT-PROOF-CANCELLATION-001 (fss-thzlz).
     assert_eq!(
-        domain_count, 59,
-        "registries/DIGEST_DOMAINS.md count must remain pinned at 59"
+        domain_count, 60,
+        "registries/DIGEST_DOMAINS.md count must remain pinned at 60"
     );
 
     let schemas_path = Path::new(env!("CARGO_MANIFEST_DIR"))

@@ -441,7 +441,7 @@ fn test_f4_adapter_acceptance_does_not_promote_to_verified_without_observation()
     };
     let cancel_ob_id = ObligationId::parse("obligation:alert:cancel")?;
     journal.prepare(
-        cancel_intent,
+        cancel_intent.clone(),
         cancel_ob_id.clone(),
         "cancelled with proof",
         TimestampNs(200),
@@ -466,7 +466,7 @@ fn test_f4_adapter_acceptance_does_not_promote_to_verified_without_observation()
     }
 
     // Transition to Cancelled with proof succeeds
-    let cancel_proof = ContentDigest::sha256(b"cancel-reason-proof");
+    let cancel_proof = cancel_intent.cancellation_proof(TimestampNs(200), TimestampNs(202))?;
     let cancelled = journal.transition(
         &cancel_op_id,
         EffectState::Cancelled,
