@@ -3015,6 +3015,8 @@ pub enum ContractError {
     EvidenceLaunderingDetected,
     /// A prediction cannot claim the `known` knowledge state (PROV-003, AGENTS.md, Constitution §8.2).
     PredictedKnownForbidden,
+    /// Laboratory target root directory already contains files.
+    RootNotEmpty,
 }
 
 impl ContractError {
@@ -3154,6 +3156,7 @@ impl ContractError {
             Self::CanonicalTruncated => "canonical_truncated",
             Self::EvidenceLaunderingDetected => "evidence_laundering_detected",
             Self::PredictedKnownForbidden => "predicted_known_forbidden",
+            Self::RootNotEmpty => "root_not_empty",
         }
     }
 }
