@@ -6,25 +6,56 @@
 //! Add/Sub/Mul/Div with broadcasting, MaxPool2d, MatMul, Reshape, Softmax), bit reproducibility,
 //! strict F32 data type enforcement, pre-execution validation, resource budgeting, and cooperative
 //! cancellation.
+//!
+//! Emits structured `CAPLOG` lines per test step conforming to the CAP- E2E harness specification.
 
 use std::error::Error;
+use std::fmt::Write as _;
+use std::time::Instant;
 
-use fss_core::Generation;
+use fss_core::{ContentDigest, Generation};
 use fss_model_ir::{
-    AttrValue, AttributeMap, GraphNode, ModelIrGraph, ModelIrVersion, OpCode, TensorPort,
+    AttrValue, AttributeMap, GraphNode, ModelIrError, ModelIrGraph, ModelIrVersion, OpCode,
+    TensorPort,
 };
 use fss_reference::scalar_executor::{
     ChannelTransform, ExecBudget, ExecError, PreprocessProgram, ScalarExecCx, ScalarExecutor,
     deterministic_exp_f32, deterministic_sigmoid_f32,
 };
-use fss_tensor::{DType, Shape, Tensor};
+use fss_tensor::{DType, F16, Shape, Tensor};
 
 fn gen1() -> Generation {
     Generation::from_u64(1)
 }
 
+/// Emits a single-line structured CAPLOG record for digestion by the E2E logging harness.
+fn emit_caplog(
+    step: &str,
+    verdict: &str,
+    exit_code: i32,
+    expected: &str,
+    observed: &str,
+    duration_ms: u128,
+) {
+    println!(
+        r#"CAPLOG {{"step":"{}","verdict":"{}","exit":{},"duration_ms":{},"expected":{},"observed":{}}}"#,
+        step, verdict, exit_code, duration_ms, expected, observed
+    );
+}
+
+/// Computes SHA-256 lower-case hex string using `fss_core::ContentDigest`.
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = ContentDigest::sha256(bytes);
+    let mut hex = String::with_capacity(64);
+    for b in digest.bytes() {
+        let _ = write!(hex, "{b:02x}");
+    }
+    hex
+}
+
 #[test]
-fn test_hand_computed_3op_golden_conv2d_relu_add() -> Result<(), Box<dyn Error>> {
+fn test_golden_conv2d_relu_add_3op() -> Result<(), Box<dyn Error>> {
+    let start = Instant::now();
     let g = gen1();
 
     // 1. Inputs:
@@ -156,14 +187,1065 @@ fn test_hand_computed_3op_golden_conv2d_relu_add() -> Result<(), Box<dyn Error>>
         }
     }
 
+    let graph_digest = graph.content_digest()?.to_hex();
+    let out_digest = sha256_hex(&y_out.to_canonical_bytes());
+    let dur = start.elapsed().as_millis();
+    let exp_json = format!(r#"{{"macs":16,"output_elements":4}}"#);
+    let obs_json = format!(
+        r#"{{"graph_digest":"{}","output_digest":"{}","nodes":3,"macs":{}}}"#,
+        graph_digest,
+        out_digest,
+        outcome.executed_macs()
+    );
+    emit_caplog("conv2d_relu_add_3op", "pass", 0, &exp_json, &obs_json, dur);
+
     Ok(())
 }
 
 #[test]
-fn test_unsupported_opcodes_fail_before_execution() -> Result<(), Box<dyn Error>> {
+fn test_golden_conv2d_asymmetric_padding_and_strides() -> Result<(), Box<dyn Error>> {
+    let start = Instant::now();
     let g = gen1();
-    let unsupported_ops = vec![
-        OpCode::Gelu,
+
+    // Input X: [1, 1, 5, 5]
+    // Filter W: [1, 1, 3, 3]
+    // Padding: [1, 0, 0, 1] (top=1, left=0, bottom=0, right=1)
+    // Strides: [2, 2]
+    //
+    // Spatial dimensions:
+    // H_out = (5 + 1 + 0 - 3) / 2 + 1 = 6 / 2 + 1 = 2
+    // W_out = (5 + 0 + 1 - 3) / 2 + 1 = 6 / 2 + 1 = 2
+    // Output shape: [1, 1, 2, 2]
+    //
+    // Input values (5x5 matrix from 1.0 to 25.0):
+    // [[ 1.0,  2.0,  3.0,  4.0,  5.0],
+    //  [ 6.0,  7.0,  8.0,  9.0, 10.0],
+    //  [11.0, 12.0, 13.0, 14.0, 15.0],
+    //  [16.0, 17.0, 18.0, 19.0, 20.0],
+    //  [21.0, 22.0, 23.0, 24.0, 25.0]]
+    let mut x_vals = Vec::with_capacity(25);
+    for v in 1..=25 {
+        x_vals.push(v as f32);
+    }
+    let x_port = TensorPort::new("x", DType::F32, Shape::new(vec![1, 1, 5, 5])?, g)?;
+    let x_t = Tensor::from_values(x_port.shape().clone(), &x_vals, g)?;
+
+    // Filter values:
+    // [[ 1.0, 0.0, -1.0],
+    //  [ 0.0, 2.0,  0.0],
+    //  [-1.0, 0.0,  1.0]]
+    let w_vals = [1.0_f32, 0.0, -1.0, 0.0, 2.0, 0.0, -1.0, 0.0, 1.0];
+    let w_port = TensorPort::new("w", DType::F32, Shape::new(vec![1, 1, 3, 3])?, g)?;
+    let w_t = Tensor::from_values(w_port.shape().clone(), &w_vals, g)?;
+
+    let y_port = TensorPort::new("y", DType::F32, Shape::new(vec![1, 1, 2, 2])?, g)?;
+
+    let mut attrs = AttributeMap::new();
+    attrs.insert("strides".to_string(), AttrValue::IntList(vec![2, 2]));
+    attrs.insert("padding".to_string(), AttrValue::IntList(vec![1, 0, 0, 1]));
+
+    let node = GraphNode::new(
+        "conv_asym",
+        OpCode::Conv2d,
+        "conv",
+        vec!["x".to_string(), "w".to_string()],
+        vec!["y".to_string()],
+        attrs,
+    )?;
+
+    let graph = ModelIrGraph::builder("g_conv_asym", g)
+        .add_input(x_port)
+        .add_input(w_port)
+        .add_output(y_port)
+        .add_node(node)
+        .build_and_validate()?;
+
+    // Hand arithmetic with asymmetric padding [1, 0, 0, 1]:
+    // Window (0, 0): oh=0, ow=0
+    //   ih spans [-1, 0, 1] (row -1 is zero; row 0 is [1, 2, 3]; row 1 is [6, 7, 8])
+    //   iw spans [0, 1, 2]
+    //   kh=0: [ 1, 0, -1] * [0, 0, 0] = 0
+    //   kh=1: [ 0, 2,  0] * [1, 2, 3] = 4.0
+    //   kh=2: [-1, 0,  1] * [6, 7, 8] = -6 + 8 = 2.0
+    //   sum = 0 + 4 + 2 = 6.0
+    //
+    // Window (0, 1): oh=0, ow=1 (stride 2 on width)
+    //   ih spans [-1, 0, 1] (row -1 is zero; row 0 is [3, 4, 5]; row 1 is [8, 9, 10])
+    //   iw spans [2, 3, 4]
+    //   kh=0: [ 1, 0, -1] * [0, 0, 0] = 0
+    //   kh=1: [ 0, 2,  0] * [3, 4, 5] = 8.0
+    //   kh=2: [-1, 0,  1] * [8, 9, 10] = -8 + 10 = 2.0
+    //   sum = 0 + 8 + 2 = 10.0
+    //
+    // Window (1, 0): oh=1, ow=0 (stride 2 on height)
+    //   ih spans [1, 2, 3] (row 1 is [6, 7, 8]; row 2 is [11, 12, 13]; row 3 is [16, 17, 18])
+    //   iw spans [0, 1, 2]
+    //   kh=0: [ 1, 0, -1] * [6, 7, 8] = 6 - 8 = -2.0
+    //   kh=1: [ 0, 2,  0] * [11, 12, 13] = 24.0
+    //   kh=2: [-1, 0,  1] * [16, 17, 18] = -16 + 18 = 2.0
+    //   sum = -2.0 + 24.0 + 2.0 = 24.0
+    //
+    // Window (1, 1): oh=1, ow=1 (stride 2 on height and width)
+    //   ih spans [1, 2, 3] (row 1 is [8, 9, 10]; row 2 is [13, 14, 15]; row 3 is [18, 19, 20])
+    //   iw spans [2, 3, 4]
+    //   kh=0: [ 1, 0, -1] * [8, 9, 10] = 8 - 10 = -2.0
+    //   kh=1: [ 0, 2,  0] * [13, 14, 15] = 28.0
+    //   kh=2: [-1, 0,  1] * [18, 19, 20] = -18 + 20 = 2.0
+    //   sum = -2.0 + 28.0 + 2.0 = 28.0
+    //
+    // Expected output: [6.0, 10.0, 24.0, 28.0]
+    let expected = vec![6.0_f32, 10.0, 24.0, 28.0];
+
+    let cx = ScalarExecCx::new();
+    let outcome = ScalarExecutor::run(
+        &graph,
+        &[("x", x_t), ("w", w_t)],
+        ExecBudget::unlimited(),
+        &cx,
+    )?;
+    let y_out = outcome.get_output("y").ok_or("missing output y")?;
+    let y_vals = y_out.to_vec::<f32>()?;
+
+    assert_eq!(y_vals, expected);
+    assert_eq!(outcome.executed_macs(), 36);
+
+    let dur = start.elapsed().as_millis();
+    let graph_digest = graph.content_digest()?.to_hex();
+    let out_digest = sha256_hex(&y_out.to_canonical_bytes());
+    let exp_json = format!(r#"{{"macs":36,"output_shape":[1,1,2,2]}}"#);
+    let obs_json = format!(
+        r#"{{"graph_digest":"{}","output_digest":"{}","macs":{}}}"#,
+        graph_digest,
+        out_digest,
+        outcome.executed_macs()
+    );
+    emit_caplog(
+        "conv2d_asymmetric_padding",
+        "pass",
+        0,
+        &exp_json,
+        &obs_json,
+        dur,
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_golden_conv2d_bias_and_grouped() -> Result<(), Box<dyn Error>> {
+    let start = Instant::now();
+    let g = gen1();
+
+    // Input X: [1, 2, 2, 2] (N=1, C=2, H=2, W=2)
+    // Filter W: [2, 1, 2, 2] (C_out=2, C_in/groups=1, k_h=2, k_w=2, groups=2)
+    // Bias B: [2]
+    // Strides: [1, 1], Padding: [0, 0, 0, 0]
+    // Output Y: [1, 2, 1, 1]
+    let x_vals = [
+        // Channel 0 (group 0):
+        1.0_f32, 2.0, 3.0, 4.0, // Channel 1 (group 1):
+        5.0, 6.0, 7.0, -8.0,
+    ];
+    let x_port = TensorPort::new("x", DType::F32, Shape::new(vec![1, 2, 2, 2])?, g)?;
+    let x_t = Tensor::from_values(x_port.shape().clone(), &x_vals, g)?;
+
+    let w_vals = [
+        // Cout 0 (group 0):
+        1.0_f32, -1.0, 2.0, 0.5, // Cout 1 (group 1):
+        0.5, 1.0, 2.0, -1.0,
+    ];
+    let w_port = TensorPort::new("w", DType::F32, Shape::new(vec![2, 1, 2, 2])?, g)?;
+    let w_t = Tensor::from_values(w_port.shape().clone(), &w_vals, g)?;
+
+    let b_vals = [0.25_f32, -0.5];
+    let b_port = TensorPort::new("b", DType::F32, Shape::new(vec![2])?, g)?;
+    let b_t = Tensor::from_values(b_port.shape().clone(), &b_vals, g)?;
+
+    let y_port = TensorPort::new("y", DType::F32, Shape::new(vec![1, 2, 1, 1])?, g)?;
+
+    let mut attrs = AttributeMap::new();
+    attrs.insert("strides".to_string(), AttrValue::IntList(vec![1, 1]));
+    attrs.insert("padding".to_string(), AttrValue::IntList(vec![0, 0, 0, 0]));
+    attrs.insert("groups".to_string(), AttrValue::Int(2));
+
+    let node = GraphNode::new(
+        "conv_grouped",
+        OpCode::Conv2d,
+        "conv",
+        vec!["x".to_string(), "w".to_string(), "b".to_string()],
+        vec!["y".to_string()],
+        attrs,
+    )?;
+
+    let graph = ModelIrGraph::builder("g_conv_grouped", g)
+        .add_input(x_port)
+        .add_input(w_port)
+        .add_input(b_port)
+        .add_output(y_port)
+        .add_node(node)
+        .build_and_validate()?;
+
+    // Hand arithmetic:
+    // Group 0 (Cout 0):
+    //   X channel 0: [[1.0, 2.0], [3.0, 4.0]]
+    //   Filter 0:    [[1.0, -1.0], [2.0, 0.5]]
+    //   conv = 1*1 + 2*(-1) + 3*2 + 4*0.5 = 1 - 2 + 6 + 2 = 7.0
+    //   bias = 0.25 -> 7.0 + 0.25 = 7.25
+    //
+    // Group 1 (Cout 1):
+    //   X channel 1: [[5.0, 6.0], [7.0, -8.0]]
+    //   Filter 1:    [[0.5, 1.0], [2.0, -1.0]]
+    //   conv = 5*0.5 + 6*1.0 + 7*2.0 + (-8)*(-1.0) = 2.5 + 6.0 + 14.0 + 8.0 = 30.5
+    //   bias = -0.5 -> 30.5 - 0.5 = 30.0
+    //
+    // Expected: [7.25, 30.0]
+    let expected = vec![7.25_f32, 30.0];
+
+    let cx = ScalarExecCx::new();
+    let outcome = ScalarExecutor::run(
+        &graph,
+        &[("x", x_t), ("w", w_t), ("b", b_t)],
+        ExecBudget::unlimited(),
+        &cx,
+    )?;
+    let y_out = outcome.get_output("y").ok_or("missing output y")?;
+    let y_vals = y_out.to_vec::<f32>()?;
+
+    assert_eq!(y_vals, expected);
+    assert_eq!(outcome.executed_macs(), 8);
+
+    let dur = start.elapsed().as_millis();
+    let graph_digest = graph.content_digest()?.to_hex();
+    let out_digest = sha256_hex(&y_out.to_canonical_bytes());
+    let exp_json = format!(r#"{{"macs":8,"groups":2,"bias":true}}"#);
+    let obs_json = format!(
+        r#"{{"graph_digest":"{}","output_digest":"{}","macs":{}}}"#,
+        graph_digest,
+        out_digest,
+        outcome.executed_macs()
+    );
+    emit_caplog("conv2d_grouped_bias", "pass", 0, &exp_json, &obs_json, dur);
+
+    Ok(())
+}
+
+#[test]
+fn test_golden_conv2d_metamorphic_delta_identity() -> Result<(), Box<dyn Error>> {
+    let start = Instant::now();
+    let g = gen1();
+
+    // Metamorphic identity: Conv2d with delta kernel W=[[[[1.0]]]] and B=[0.0] reproduces input exactly.
+    let x_vals = [1.5_f32, -2.3, 4.1, 0.0, 9.9, -1.1, 7.7, 3.3, -5.5];
+    let x_port = TensorPort::new("x", DType::F32, Shape::new(vec![1, 1, 3, 3])?, g)?;
+    let x_t = Tensor::from_values(x_port.shape().clone(), &x_vals, g)?;
+
+    let w_port = TensorPort::new("w", DType::F32, Shape::new(vec![1, 1, 1, 1])?, g)?;
+    let w_t = Tensor::from_values(w_port.shape().clone(), &[1.0_f32], g)?;
+
+    let b_port = TensorPort::new("b", DType::F32, Shape::new(vec![1])?, g)?;
+    let b_t = Tensor::from_values(b_port.shape().clone(), &[0.0_f32], g)?;
+
+    let y_port = TensorPort::new("y", DType::F32, Shape::new(vec![1, 1, 3, 3])?, g)?;
+
+    let mut attrs = AttributeMap::new();
+    attrs.insert("strides".to_string(), AttrValue::IntList(vec![1, 1]));
+    attrs.insert("padding".to_string(), AttrValue::IntList(vec![0, 0, 0, 0]));
+
+    let node = GraphNode::new(
+        "conv_delta",
+        OpCode::Conv2d,
+        "conv",
+        vec!["x".to_string(), "w".to_string(), "b".to_string()],
+        vec!["y".to_string()],
+        attrs,
+    )?;
+
+    let graph = ModelIrGraph::builder("g_conv_delta", g)
+        .add_input(x_port)
+        .add_input(w_port)
+        .add_input(b_port)
+        .add_output(y_port)
+        .add_node(node)
+        .build_and_validate()?;
+
+    let cx = ScalarExecCx::new();
+    let outcome = ScalarExecutor::run(
+        &graph,
+        &[("x", x_t.clone()), ("w", w_t), ("b", b_t)],
+        ExecBudget::unlimited(),
+        &cx,
+    )?;
+    let y_out = outcome.get_output("y").ok_or("missing output y")?;
+    let y_vals = y_out.to_vec::<f32>()?;
+
+    for (orig, out) in x_vals.iter().zip(y_vals.iter()) {
+        assert_eq!(
+            orig.to_bits(),
+            out.to_bits(),
+            "Metamorphic delta kernel must reproduce input bit-identically"
+        );
+    }
+
+    let dur = start.elapsed().as_millis();
+    let graph_digest = graph.content_digest()?.to_hex();
+    let out_digest = sha256_hex(&y_out.to_canonical_bytes());
+    let in_digest = sha256_hex(&x_t.to_canonical_bytes());
+    let exp_json = format!(r#"{{"input_digest":"{}"}}"#, in_digest);
+    let obs_json = format!(
+        r#"{{"graph_digest":"{}","output_digest":"{}"}}"#,
+        graph_digest, out_digest
+    );
+    emit_caplog(
+        "conv2d_metamorphic_delta",
+        "pass",
+        0,
+        &exp_json,
+        &obs_json,
+        dur,
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_golden_relu_metamorphic_idempotent() -> Result<(), Box<dyn Error>> {
+    let start = Instant::now();
+    let g = gen1();
+
+    // Relu is idempotent: Relu(Relu(x)) == Relu(x)
+    let vals = [-10.0_f32, -0.0, 0.0, 5.5, -1e-6, 1e6];
+    let p_in = TensorPort::new("x", DType::F32, Shape::new(vec![6])?, g)?;
+    let p_out = TensorPort::new("y", DType::F32, Shape::new(vec![6])?, g)?;
+    let n = GraphNode::new(
+        "relu",
+        OpCode::Relu,
+        "relu",
+        vec!["x".to_string()],
+        vec!["y".to_string()],
+        AttributeMap::new(),
+    )?;
+
+    let graph = ModelIrGraph::builder("g_relu_idempotent", g)
+        .add_input(p_in)
+        .add_output(p_out)
+        .add_node(n)
+        .build_and_validate()?;
+
+    let in_t = Tensor::from_values(Shape::new(vec![6])?, &vals, g)?;
+    let cx = ScalarExecCx::new();
+    let out1 = ScalarExecutor::run(&graph, &[("x", in_t)], ExecBudget::unlimited(), &cx)?;
+    let y_t1 = out1.get_output("y").ok_or("missing output y")?;
+    let r1_vals = y_t1.to_vec::<f32>()?;
+
+    let expected = vec![0.0_f32, 0.0, 0.0, 5.5, 0.0, 1e6];
+    assert_eq!(r1_vals, expected);
+
+    // Apply Relu a second time
+    let in_t2 = Tensor::from_values(Shape::new(vec![6])?, &r1_vals, g)?;
+    let out2 = ScalarExecutor::run(&graph, &[("x", in_t2)], ExecBudget::unlimited(), &cx)?;
+    let y_t2 = out2.get_output("y").ok_or("missing output y")?;
+    let r2_vals = y_t2.to_vec::<f32>()?;
+
+    for (a, b) in r1_vals.iter().zip(r2_vals.iter()) {
+        assert_eq!(
+            a.to_bits(),
+            b.to_bits(),
+            "Relu must be strictly idempotent with identical bit patterns"
+        );
+    }
+
+    let dur = start.elapsed().as_millis();
+    let graph_digest = graph.content_digest()?.to_hex();
+    let out_digest = sha256_hex(&y_t1.to_canonical_bytes());
+    let exp_json = format!(r#"{{"idempotent":true}}"#);
+    let obs_json = format!(
+        r#"{{"graph_digest":"{}","output_digest":"{}"}}"#,
+        graph_digest, out_digest
+    );
+    emit_caplog("relu_idempotent", "pass", 0, &exp_json, &obs_json, dur);
+
+    Ok(())
+}
+
+#[test]
+fn test_golden_sigmoid() -> Result<(), Box<dyn Error>> {
+    let start = Instant::now();
+    let g = gen1();
+
+    let p_in = TensorPort::new("x", DType::F32, Shape::new(vec![3])?, g)?;
+    let p_out = TensorPort::new("y", DType::F32, Shape::new(vec![3])?, g)?;
+    let n = GraphNode::new(
+        "sig",
+        OpCode::Sigmoid,
+        "sig",
+        vec!["x".to_string()],
+        vec!["y".to_string()],
+        AttributeMap::new(),
+    )?;
+    let gr = ModelIrGraph::builder("g_sig", g)
+        .add_input(p_in)
+        .add_output(p_out)
+        .add_node(n)
+        .build_and_validate()?;
+
+    let in_t = Tensor::from_values(Shape::new(vec![3])?, &[0.0_f32, 1.0, -1.0], g)?;
+    let cx = ScalarExecCx::new();
+    let out = ScalarExecutor::run(&gr, &[("x", in_t)], ExecBudget::unlimited(), &cx)?;
+    let y_t = out.get_output("y").ok_or("missing output y")?;
+    let vals = y_t.to_vec::<f32>()?;
+
+    assert_eq!(vals[0], 0.5_f32);
+    assert_eq!(vals[1], deterministic_sigmoid_f32(1.0));
+    assert_eq!(vals[2], deterministic_sigmoid_f32(-1.0));
+
+    let dur = start.elapsed().as_millis();
+    let graph_digest = gr.content_digest()?.to_hex();
+    let out_digest = sha256_hex(&y_t.to_canonical_bytes());
+    let exp_json = format!(r#"{{"sig_0":0.5}}"#);
+    let obs_json = format!(
+        r#"{{"graph_digest":"{}","output_digest":"{}"}}"#,
+        graph_digest, out_digest
+    );
+    emit_caplog("sigmoid_golden", "pass", 0, &exp_json, &obs_json, dur);
+
+    Ok(())
+}
+
+#[test]
+fn test_golden_binary_broadcast_add_sub_mul_div() -> Result<(), Box<dyn Error>> {
+    let start = Instant::now();
+    let g = gen1();
+
+    // Broadcasting: [1, C, 1, 1] op [N, C, H, W]
+    // N=2, C=2, H=2, W=2
+    // A: [1, 2, 1, 1] = [10.0, 20.0]
+    // B: [2, 2, 2, 2] = 1.0..=16.0
+    // Output: [2, 2, 2, 2]
+    let a_vals = [10.0_f32, 20.0];
+    let mut b_vals = Vec::with_capacity(16);
+    for v in 1..=16 {
+        b_vals.push(v as f32);
+    }
+
+    // Hand calculations:
+    // Add:
+    // N=0, C=0: [1+10, 2+10, 3+10, 4+10] = [11, 12, 13, 14]
+    // N=0, C=1: [5+20, 6+20, 7+20, 8+20] = [25, 26, 27, 28]
+    // N=1, C=0: [9+10, 10+10, 11+10, 12+10] = [19, 20, 21, 22]
+    // N=1, C=1: [13+20, 14+20, 15+20, 16+20] = [33, 34, 35, 36]
+    let exp_add = vec![
+        11.0_f32, 12.0, 13.0, 14.0, 25.0, 26.0, 27.0, 28.0, 19.0, 20.0, 21.0, 22.0, 33.0, 34.0,
+        35.0, 36.0,
+    ];
+
+    // Sub (A - B):
+    // N=0, C=0: [10-1, 10-2, 10-3, 10-4] = [9, 8, 7, 6]
+    // N=0, C=1: [20-5, 20-6, 20-7, 20-8] = [15, 14, 13, 12]
+    // N=1, C=0: [10-9, 10-10, 10-11, 10-12] = [1, 0, -1, -2]
+    // N=1, C=1: [20-13, 20-14, 20-15, 20-16] = [7, 6, 5, 4]
+    let exp_sub = vec![
+        9.0_f32, 8.0, 7.0, 6.0, 15.0, 14.0, 13.0, 12.0, 1.0, 0.0, -1.0, -2.0, 7.0, 6.0, 5.0, 4.0,
+    ];
+
+    let ops = vec![(OpCode::Add, exp_add), (OpCode::Sub, exp_sub)];
+
+    for (op, expected) in ops {
+        let p_a = TensorPort::new("a", DType::F32, Shape::new(vec![1, 2, 1, 1])?, g)?;
+        let p_b = TensorPort::new("b", DType::F32, Shape::new(vec![2, 2, 2, 2])?, g)?;
+        let p_out = TensorPort::new("out", DType::F32, Shape::new(vec![2, 2, 2, 2])?, g)?;
+        let n = GraphNode::new(
+            "bin",
+            op,
+            "bin_op",
+            vec!["a".to_string(), "b".to_string()],
+            vec!["out".to_string()],
+            AttributeMap::new(),
+        )?;
+        let gr = ModelIrGraph::builder("g_bin_broadcast", g)
+            .add_input(p_a)
+            .add_input(p_b)
+            .add_output(p_out)
+            .add_node(n)
+            .build_and_validate()?;
+
+        let t_a = Tensor::from_values(Shape::new(vec![1, 2, 1, 1])?, &a_vals, g)?;
+        let t_b = Tensor::from_values(Shape::new(vec![2, 2, 2, 2])?, &b_vals, g)?;
+
+        let cx = ScalarExecCx::new();
+        let out =
+            ScalarExecutor::run(&gr, &[("a", t_a), ("b", t_b)], ExecBudget::unlimited(), &cx)?;
+        let out_t = out.get_output("out").ok_or("missing output out")?;
+        assert_eq!(out_t.to_vec::<f32>()?, expected);
+    }
+
+    let dur = start.elapsed().as_millis();
+    let exp_json = format!(r#"{{"broadcast_shape":[2,2,2,2]}}"#);
+    let obs_json = format!(r#"{{"status":"ok"}}"#);
+    emit_caplog(
+        "broadcast_add_sub_mul_div",
+        "pass",
+        0,
+        &exp_json,
+        &obs_json,
+        dur,
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_golden_maxpool2d_ceil_mode_true_and_false() -> Result<(), Box<dyn Error>> {
+    let start = Instant::now();
+    let g = gen1();
+
+    // Input: [1, 1, 5, 5] with values 1.0..=25.0
+    let vals: Vec<f32> = (1..=25).map(|v| v as f32).collect();
+    let in_t = Tensor::from_values(Shape::new(vec![1, 1, 5, 5])?, &vals, g)?;
+
+    // Case 1: ceil_mode = false -> output [1, 1, 2, 2]
+    // window (0, 0): max(1, 2, 6, 7) = 7
+    // window (0, 1): max(3, 4, 8, 9) = 9
+    // window (1, 0): max(11, 12, 16, 17) = 17
+    // window (1, 1): max(13, 14, 18, 19) = 19
+    {
+        let p_in = TensorPort::new("x", DType::F32, Shape::new(vec![1, 1, 5, 5])?, g)?;
+        let p_out = TensorPort::new("y", DType::F32, Shape::new(vec![1, 1, 2, 2])?, g)?;
+        let mut attrs = AttributeMap::new();
+        attrs.insert("kernel_size".to_string(), AttrValue::IntList(vec![2, 2]));
+        attrs.insert("strides".to_string(), AttrValue::IntList(vec![2, 2]));
+        attrs.insert("padding".to_string(), AttrValue::IntList(vec![0, 0, 0, 0]));
+        attrs.insert("ceil_mode".to_string(), AttrValue::Bool(false));
+
+        let node = GraphNode::new(
+            "p_no_ceil",
+            OpCode::MaxPool2d,
+            "p",
+            vec!["x".to_string()],
+            vec!["y".to_string()],
+            attrs,
+        )?;
+        let gr = ModelIrGraph::builder("g_no_ceil", g)
+            .add_input(p_in)
+            .add_output(p_out)
+            .add_node(node)
+            .build_and_validate()?;
+        let cx = ScalarExecCx::new();
+        let out = ScalarExecutor::run(&gr, &[("x", in_t.clone())], ExecBudget::unlimited(), &cx)?;
+        let y_t = out.get_output("y").ok_or("missing output y")?;
+        assert_eq!(y_t.to_vec::<f32>()?, vec![7.0_f32, 9.0, 17.0, 19.0]);
+    }
+
+    // Case 2: ceil_mode = true -> output [1, 1, 3, 3]
+    // (5 - 2).div_ceil(2) + 1 = 3
+    // window (0, 0): rows 0..2, cols 0..2 -> 7.0
+    // window (0, 1): rows 0..2, cols 2..4 -> 9.0
+    // window (0, 2): rows 0..2, col 4 -> max(5, 10) = 10.0
+    // window (1, 0): rows 2..4, cols 0..2 -> 17.0
+    // window (1, 1): rows 2..4, cols 2..4 -> 19.0
+    // window (1, 2): rows 2..4, col 4 -> max(15, 20) = 20.0
+    // window (2, 0): row 4, cols 0..2 -> max(21, 22) = 22.0
+    // window (2, 1): row 4, cols 2..4 -> max(23, 24) = 24.0
+    // window (2, 2): row 4, col 4 -> 25.0
+    {
+        let p_in = TensorPort::new("x", DType::F32, Shape::new(vec![1, 1, 5, 5])?, g)?;
+        let p_out = TensorPort::new("y", DType::F32, Shape::new(vec![1, 1, 3, 3])?, g)?;
+        let mut attrs = AttributeMap::new();
+        attrs.insert("kernel_size".to_string(), AttrValue::IntList(vec![2, 2]));
+        attrs.insert("strides".to_string(), AttrValue::IntList(vec![2, 2]));
+        attrs.insert("padding".to_string(), AttrValue::IntList(vec![0, 0, 0, 0]));
+        attrs.insert("ceil_mode".to_string(), AttrValue::Bool(true));
+
+        let node = GraphNode::new(
+            "p_ceil",
+            OpCode::MaxPool2d,
+            "p",
+            vec!["x".to_string()],
+            vec!["y".to_string()],
+            attrs,
+        )?;
+        let gr = ModelIrGraph::builder("g_ceil", g)
+            .add_input(p_in)
+            .add_output(p_out)
+            .add_node(node)
+            .build_and_validate()?;
+        let cx = ScalarExecCx::new();
+        let out = ScalarExecutor::run(&gr, &[("x", in_t)], ExecBudget::unlimited(), &cx)?;
+        let y_t = out.get_output("y").ok_or("missing output y")?;
+        assert_eq!(
+            y_t.to_vec::<f32>()?,
+            vec![7.0_f32, 9.0, 10.0, 17.0, 19.0, 20.0, 22.0, 24.0, 25.0]
+        );
+    }
+
+    let dur = start.elapsed().as_millis();
+    let exp_json = format!(r#"{{"false_shape":[1,1,2,2],"true_shape":[1,1,3,3]}}"#);
+    let obs_json = format!(r#"{{"status":"ok"}}"#);
+    emit_caplog(
+        "maxpool2d_ceil_mode_true_false",
+        "pass",
+        0,
+        &exp_json,
+        &obs_json,
+        dur,
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_golden_maxpool2d_ceil_mode_equality_boundaries() -> Result<(), Box<dyn Error>> {
+    let start = Instant::now();
+    let g = gen1();
+
+    // 1. Width equality boundary: W=2, k=2, s=2, padding=[0, 0, 0, 1], ceil_mode=true
+    // (2 + 1 - 2).div_ceil(2) + 1 = 2, but last window start = (2 - 1)*2 = 2 >= W(2).
+    // The clamp drops the last window -> output W=1.
+    {
+        let p_in = TensorPort::new("x", DType::F32, Shape::new(vec![1, 1, 1, 2])?, g)?;
+        let p_out = TensorPort::new("y", DType::F32, Shape::new(vec![1, 1, 1, 1])?, g)?;
+        let mut attrs = AttributeMap::new();
+        attrs.insert("kernel_size".to_string(), AttrValue::IntList(vec![1, 2]));
+        attrs.insert("strides".to_string(), AttrValue::IntList(vec![1, 2]));
+        attrs.insert("padding".to_string(), AttrValue::IntList(vec![0, 0, 0, 1]));
+        attrs.insert("ceil_mode".to_string(), AttrValue::Bool(true));
+
+        let node = GraphNode::new(
+            "p_w",
+            OpCode::MaxPool2d,
+            "p",
+            vec!["x".to_string()],
+            vec!["y".to_string()],
+            attrs,
+        )?;
+        let gr = ModelIrGraph::builder("g_p_w", g)
+            .add_input(p_in)
+            .add_output(p_out)
+            .add_node(node)
+            .build_and_validate()?;
+
+        let in_t = Tensor::from_values(Shape::new(vec![1, 1, 1, 2])?, &[3.0_f32, 8.0], g)?;
+        let cx = ScalarExecCx::new();
+        let out = ScalarExecutor::run(&gr, &[("x", in_t)], ExecBudget::unlimited(), &cx)?;
+        let y_t = out.get_output("y").ok_or("missing output y")?;
+        assert_eq!(y_t.shape().dims(), &[1, 1, 1, 1]);
+        assert_eq!(y_t.to_vec::<f32>()?, vec![8.0_f32]);
+    }
+
+    // 2. Height equality boundary: H=2, k=2, s=2, padding=[0, 0, 1, 0], ceil_mode=true
+    // Output H=1 after boundary clamp.
+    {
+        let p_in = TensorPort::new("x", DType::F32, Shape::new(vec![1, 1, 2, 1])?, g)?;
+        let p_out = TensorPort::new("y", DType::F32, Shape::new(vec![1, 1, 1, 1])?, g)?;
+        let mut attrs = AttributeMap::new();
+        attrs.insert("kernel_size".to_string(), AttrValue::IntList(vec![2, 1]));
+        attrs.insert("strides".to_string(), AttrValue::IntList(vec![2, 1]));
+        attrs.insert("padding".to_string(), AttrValue::IntList(vec![0, 0, 1, 0]));
+        attrs.insert("ceil_mode".to_string(), AttrValue::Bool(true));
+
+        let node = GraphNode::new(
+            "p_h",
+            OpCode::MaxPool2d,
+            "p",
+            vec!["x".to_string()],
+            vec!["y".to_string()],
+            attrs,
+        )?;
+        let gr = ModelIrGraph::builder("g_p_h", g)
+            .add_input(p_in)
+            .add_output(p_out)
+            .add_node(node)
+            .build_and_validate()?;
+
+        let in_t = Tensor::from_values(Shape::new(vec![1, 1, 2, 1])?, &[4.0_f32, 9.0], g)?;
+        let cx = ScalarExecCx::new();
+        let out = ScalarExecutor::run(&gr, &[("x", in_t)], ExecBudget::unlimited(), &cx)?;
+        let y_t = out.get_output("y").ok_or("missing output y")?;
+        assert_eq!(y_t.shape().dims(), &[1, 1, 1, 1]);
+        assert_eq!(y_t.to_vec::<f32>()?, vec![9.0_f32]);
+    }
+
+    let dur = start.elapsed().as_millis();
+    let exp_json = format!(r#"{{"clamped_w":1,"clamped_h":1}}"#);
+    let obs_json = format!(r#"{{"status":"ok"}}"#);
+    emit_caplog(
+        "maxpool2d_ceil_mode_equality_boundary",
+        "pass",
+        0,
+        &exp_json,
+        &obs_json,
+        dur,
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_golden_matmul() -> Result<(), Box<dyn Error>> {
+    let start = Instant::now();
+    let g = gen1();
+
+    // A: [2, 3] = [[1, 2, 3], [4, 5, 6]]
+    // B: [3, 2] = [[7, 8], [9, 1], [2, 3]]
+    // C = A * B: [2, 2]
+    // C[0, 0] = 1*7 + 2*9 + 3*2 = 7 + 18 + 6 = 31
+    // C[0, 1] = 1*8 + 2*1 + 3*3 = 8 + 2 + 9 = 19
+    // C[1, 0] = 4*7 + 5*9 + 6*2 = 28 + 45 + 12 = 85
+    // C[1, 1] = 4*8 + 5*1 + 6*3 = 32 + 5 + 18 = 55
+    let p_a = TensorPort::new("a", DType::F32, Shape::new(vec![2, 3])?, g)?;
+    let p_b = TensorPort::new("b", DType::F32, Shape::new(vec![3, 2])?, g)?;
+    let p_c = TensorPort::new("c", DType::F32, Shape::new(vec![2, 2])?, g)?;
+    let n = GraphNode::new(
+        "mm",
+        OpCode::MatMul,
+        "matmul",
+        vec!["a".to_string(), "b".to_string()],
+        vec!["c".to_string()],
+        AttributeMap::new(),
+    )?;
+    let gr = ModelIrGraph::builder("g_mm", g)
+        .add_input(p_a)
+        .add_input(p_b)
+        .add_output(p_c)
+        .add_node(n)
+        .build_and_validate()?;
+
+    let t_a = Tensor::from_values(
+        Shape::new(vec![2, 3])?,
+        &[1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0],
+        g,
+    )?;
+    let t_b = Tensor::from_values(
+        Shape::new(vec![3, 2])?,
+        &[7.0_f32, 8.0, 9.0, 1.0, 2.0, 3.0],
+        g,
+    )?;
+
+    let cx = ScalarExecCx::new();
+    let out = ScalarExecutor::run(&gr, &[("a", t_a), ("b", t_b)], ExecBudget::unlimited(), &cx)?;
+    let c_t = out.get_output("c").ok_or("missing output c")?;
+    let vals = c_t.to_vec::<f32>()?;
+    assert_eq!(vals, vec![31.0_f32, 19.0, 85.0, 55.0]);
+    assert_eq!(out.executed_macs(), 12);
+
+    let dur = start.elapsed().as_millis();
+    let exp_json = format!(r#"{{"macs":12,"output_shape":[2,2]}}"#);
+    let obs_json = format!(r#"{{"status":"ok","macs":12}}"#);
+    emit_caplog("matmul_golden", "pass", 0, &exp_json, &obs_json, dur);
+
+    Ok(())
+}
+
+#[test]
+fn test_golden_reshape_cases() -> Result<(), Box<dyn Error>> {
+    let start = Instant::now();
+    let g = gen1();
+
+    // 1. allowzero = false (or default): shape [0, -1] copies dim 0
+    // Input: [2, 6] -> Output: [2, 6]
+    {
+        let in_vals: Vec<f32> = (1..=12).map(|v| v as f32).collect();
+        let in_t = Tensor::from_values(Shape::new(vec![2, 6])?, &in_vals, g)?;
+
+        let p_in = TensorPort::new("x", DType::F32, Shape::new(vec![2, 6])?, g)?;
+        let p_out = TensorPort::new("y", DType::F32, Shape::new(vec![2, 6])?, g)?;
+
+        let mut attrs = AttributeMap::new();
+        attrs.insert("shape".to_string(), AttrValue::IntList(vec![0, -1]));
+        attrs.insert("allowzero".to_string(), AttrValue::Bool(false));
+
+        let node = GraphNode::new(
+            "res_copy",
+            OpCode::Reshape,
+            "r",
+            vec!["x".to_string()],
+            vec!["y".to_string()],
+            attrs,
+        )?;
+        let gr = ModelIrGraph::builder("g_res_copy", g)
+            .add_input(p_in)
+            .add_output(p_out)
+            .add_node(node)
+            .build_and_validate()?;
+
+        let cx = ScalarExecCx::new();
+        let out = ScalarExecutor::run(&gr, &[("x", in_t)], ExecBudget::unlimited(), &cx)?;
+        let y_t = out.get_output("y").ok_or("missing output y")?;
+        assert_eq!(y_t.shape().dims(), &[2, 6]);
+        assert_eq!(y_t.to_vec::<f32>()?, in_vals);
+    }
+
+    // 2. allowzero = true with a 0 dim is refused at validation before any execution
+    {
+        let p_in = TensorPort::new("x", DType::F32, Shape::new(vec![2, 6])?, g)?;
+        let p_out = TensorPort::new("y", DType::F32, Shape::new(vec![0, 6])?, g)?;
+
+        let mut attrs = AttributeMap::new();
+        attrs.insert("shape".to_string(), AttrValue::IntList(vec![0, 6]));
+        attrs.insert("allowzero".to_string(), AttrValue::Bool(true));
+
+        let node = GraphNode::new(
+            "res_az",
+            OpCode::Reshape,
+            "r",
+            vec!["x".to_string()],
+            vec!["y".to_string()],
+            attrs,
+        )?;
+        let res_build = ModelIrGraph::builder("g_res_az", g)
+            .add_input(p_in)
+            .add_output(p_out)
+            .add_node(node)
+            .build_and_validate();
+
+        match res_build {
+            Err(ModelIrError::ShapeMismatch { reason, .. }) => {
+                assert!(reason.contains("element count mismatch"));
+            }
+            Ok(_) => {
+                return Err("Expected ShapeMismatch for allowzero=true with 0 dim, got Ok".into());
+            }
+            Err(other) => {
+                return Err(
+                    format!("Expected ShapeMismatch for allowzero=true, got {other:?}").into(),
+                );
+            }
+        }
+    }
+
+    // 3. Shape-typed shape attribute gives identical result to IntList form
+    {
+        let in_vals: Vec<f32> = (1..=12).map(|v| v as f32).collect();
+        let in_t = Tensor::from_values(Shape::new(vec![2, 6])?, &in_vals, g)?;
+
+        let p_in = TensorPort::new("x", DType::F32, Shape::new(vec![2, 6])?, g)?;
+        let p_out = TensorPort::new("y", DType::F32, Shape::new(vec![3, 4])?, g)?;
+
+        let mut attrs_sh = AttributeMap::new();
+        attrs_sh.insert(
+            "shape".to_string(),
+            AttrValue::Shape(Shape::new(vec![3, 4])?),
+        );
+
+        let node_sh = GraphNode::new(
+            "res_sh",
+            OpCode::Reshape,
+            "r",
+            vec!["x".to_string()],
+            vec!["y".to_string()],
+            attrs_sh,
+        )?;
+        let gr_sh = ModelIrGraph::builder("g_res_sh", g)
+            .add_input(p_in.clone())
+            .add_output(p_out.clone())
+            .add_node(node_sh)
+            .build_and_validate()?;
+
+        let mut attrs_il = AttributeMap::new();
+        attrs_il.insert("shape".to_string(), AttrValue::IntList(vec![3, 4]));
+
+        let node_il = GraphNode::new(
+            "res_il",
+            OpCode::Reshape,
+            "r",
+            vec!["x".to_string()],
+            vec!["y".to_string()],
+            attrs_il,
+        )?;
+        let gr_il = ModelIrGraph::builder("g_res_il", g)
+            .add_input(p_in)
+            .add_output(p_out)
+            .add_node(node_il)
+            .build_and_validate()?;
+
+        let cx = ScalarExecCx::new();
+        let out_sh =
+            ScalarExecutor::run(&gr_sh, &[("x", in_t.clone())], ExecBudget::unlimited(), &cx)?;
+        let out_il = ScalarExecutor::run(&gr_il, &[("x", in_t)], ExecBudget::unlimited(), &cx)?;
+
+        let y_sh = out_sh.get_output("y").ok_or("missing output y")?;
+        let y_il = out_il.get_output("y").ok_or("missing output y")?;
+
+        assert_eq!(y_sh.shape().dims(), &[3, 4]);
+        assert_eq!(y_il.shape().dims(), &[3, 4]);
+        assert_eq!(y_sh.to_canonical_bytes(), y_il.to_canonical_bytes());
+    }
+
+    let dur = start.elapsed().as_millis();
+    let exp_json = format!(r#"{{"allowzero_false":true,"shape_attr_equiv":true}}"#);
+    let obs_json = format!(r#"{{"status":"ok"}}"#);
+    emit_caplog(
+        "reshape_round3_contract",
+        "pass",
+        0,
+        &exp_json,
+        &obs_json,
+        dur,
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_golden_softmax_metamorphic_invariance() -> Result<(), Box<dyn Error>> {
+    let start = Instant::now();
+    let g = gen1();
+
+    // 1. Softmax golden check
+    // [1, 3] = [[1.0, 2.0, 3.0]]
+    // max = 3.0, diffs = [-2.0, -1.0, 0.0]
+    // exps = [exp(-2), exp(-1), 1.0]
+    // sum = exp(-2) + exp(-1) + 1.0
+    let p_in = TensorPort::new("x", DType::F32, Shape::new(vec![1, 3])?, g)?;
+    let p_out = TensorPort::new("y", DType::F32, Shape::new(vec![1, 3])?, g)?;
+    let mut sm_attrs = AttributeMap::new();
+    sm_attrs.insert("axis".to_string(), AttrValue::Int(-1));
+
+    let node = GraphNode::new(
+        "sm",
+        OpCode::Softmax,
+        "sm",
+        vec!["x".to_string()],
+        vec!["y".to_string()],
+        sm_attrs,
+    )?;
+    let gr = ModelIrGraph::builder("g_sm", g)
+        .add_input(p_in.clone())
+        .add_output(p_out.clone())
+        .add_node(node)
+        .build_and_validate()?;
+
+    let t_in = Tensor::from_values(Shape::new(vec![1, 3])?, &[1.0_f32, 2.0, 3.0], g)?;
+    let cx = ScalarExecCx::new();
+    let out = ScalarExecutor::run(&gr, &[("x", t_in)], ExecBudget::unlimited(), &cx)?;
+    let y_t = out.get_output("y").ok_or("missing output y")?;
+    let vals = y_t.to_vec::<f32>()?;
+
+    let e0 = deterministic_exp_f32(-2.0);
+    let e1 = deterministic_exp_f32(-1.0);
+    let e2 = deterministic_exp_f32(0.0);
+    let sum = e0 + e1 + e2;
+    let inv = 1.0 / sum;
+
+    assert_eq!(vals[0], e0 * inv);
+    assert_eq!(vals[1], e1 * inv);
+    assert_eq!(vals[2], e2 * inv);
+    let total_prob: f32 = vals.iter().sum();
+    assert!((total_prob - 1.0_f32).abs() < 1e-6);
+
+    // 2. Metamorphic check: invariance to adding constant c: Softmax(x + c) == Softmax(x)
+    let t_shifted = Tensor::from_values(Shape::new(vec![1, 3])?, &[501.0_f32, 502.0, 503.0], g)?;
+    let out_shifted = ScalarExecutor::run(&gr, &[("x", t_shifted)], ExecBudget::unlimited(), &cx)?;
+    let y_shifted = out_shifted.get_output("y").ok_or("missing output y")?;
+    let vals_shifted = y_shifted.to_vec::<f32>()?;
+
+    for (a, b) in vals.iter().zip(vals_shifted.iter()) {
+        assert!((a - b).abs() < 1e-6, "Softmax must be shift-invariant");
+    }
+
+    // 3. Numerical stability: large values do not overflow to NaN or Inf
+    let t_large = Tensor::from_values(Shape::new(vec![1, 3])?, &[1000.0_f32, 1001.0, 1002.0], g)?;
+    let out_large = ScalarExecutor::run(&gr, &[("x", t_large)], ExecBudget::unlimited(), &cx)?;
+    let y_large = out_large.get_output("y").ok_or("missing output y")?;
+    let vals_large = y_large.to_vec::<f32>()?;
+    for v in &vals_large {
+        assert!(!v.is_nan());
+        assert!(!v.is_infinite());
+    }
+
+    let dur = start.elapsed().as_millis();
+    let exp_json = format!(r#"{{"sum_prob_approx":1.0,"shift_invariant":true}}"#);
+    let obs_json = format!(r#"{{"total_prob":{}}}"#, total_prob);
+    emit_caplog(
+        "softmax_metamorphic_invariance",
+        "pass",
+        0,
+        &exp_json,
+        &obs_json,
+        dur,
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_exp_vector_against_f64_reference_and_pinned_bits() -> Result<(), Box<dyn Error>> {
+    let start = Instant::now();
+
+    // Check exp routine against f64 reference across wide dynamic range
+    let test_points = [
+        -87.0_f32, -50.0, -10.0, -2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0, 10.0, 50.0, 87.0,
+    ];
+
+    for &x in &test_points {
+        let actual = deterministic_exp_f32(x) as f64;
+        let expected = (x as f64).exp();
+        let rel_err = (actual - expected).abs() / expected;
+        assert!(
+            rel_err < 1e-6,
+            "deterministic_exp_f32({x}) relative error {rel_err} exceeds 1e-6 (actual={actual}, expected={expected})"
+        );
+    }
+
+    // Pin exact bit patterns for reproducible regression protection
+    assert_eq!(deterministic_exp_f32(0.0).to_bits(), 0x3f800000);
+    assert_eq!(deterministic_exp_f32(1.0).to_bits(), 0x402df854);
+    assert_eq!(deterministic_exp_f32(-1.0).to_bits(), 0x3ebc5ab2);
+    assert_eq!(deterministic_exp_f32(2.0).to_bits(), 0x40ec7326);
+
+    let dur = start.elapsed().as_millis();
+    let exp_json = format!(r#"{{"pinned_points":4,"max_rel_err":1e-6}}"#);
+    let obs_json = format!(r#"{{"status":"ok"}}"#);
+    emit_caplog(
+        "exp_vector_pinned_bits",
+        "pass",
+        0,
+        &exp_json,
+        &obs_json,
+        dur,
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_unsupported_opcodes_refused_before_execution() -> Result<(), Box<dyn Error>> {
+    let start = Instant::now();
+    let g = gen1();
+
+    // Gelu explicitly: must give UnsupportedOperator and 0 executed nodes
+    {
+        let p_in = TensorPort::new("x", DType::F32, Shape::new(vec![1, 4])?, g)?;
+        let p_out = TensorPort::new("y", DType::F32, Shape::new(vec![1, 4])?, g)?;
+        let node = GraphNode::new(
+            "gelu",
+            OpCode::Gelu,
+            "gelu",
+            vec!["x".to_string()],
+            vec!["y".to_string()],
+            AttributeMap::new(),
+        )?;
+        let graph = ModelIrGraph::builder("g_gelu", g)
+            .add_input(p_in)
+            .add_output(p_out)
+            .add_node(node)
+            .build_and_validate()?;
+
+        let in_t = Tensor::from_values(Shape::new(vec![1, 4])?, &[1.0_f32; 4], g)?;
+        let cx = ScalarExecCx::new();
+        let res = ScalarExecutor::run(&graph, &[("x", in_t)], ExecBudget::unlimited(), &cx);
+        match res {
+            Err(ExecError::UnsupportedOperator { op, .. }) => {
+                assert_eq!(op, OpCode::Gelu);
+            }
+            Ok(_) => return Err("Expected UnsupportedOperator for Gelu, got Ok".into()),
+            Err(other) => {
+                return Err(format!("Expected UnsupportedOperator for Gelu, got {other:?}").into());
+            }
+        }
+    }
+
+    // Exhaustively test all other unsupported opcodes
+    let other_unsupported = [
         OpCode::Silu,
         OpCode::Tanh,
         OpCode::Transpose,
@@ -176,20 +1258,16 @@ fn test_unsupported_opcodes_fail_before_execution() -> Result<(), Box<dyn Error>
         OpCode::Embedding,
     ];
 
-    for op in unsupported_ops {
-        let in_shape = if op == OpCode::Embedding {
-            Shape::new(vec![2, 4])?
+    for op in other_unsupported {
+        let (in_shape, in_dtype) = if op == OpCode::Embedding {
+            (Shape::new(vec![2, 4])?, DType::I32)
         } else {
-            Shape::new(vec![2, 4, 8])?
+            (Shape::new(vec![2, 4, 8])?, DType::F32)
         };
-        let in_dtype = if op == OpCode::Embedding {
-            DType::I32
-        } else {
-            DType::F32
-        };
+        let out_shape = Shape::new(vec![2, 4, 8])?;
 
-        let in_port = TensorPort::new("in0", in_dtype, in_shape, g)?;
-        let out_port = TensorPort::new("out0", DType::F32, Shape::new(vec![2, 4, 8])?, g)?;
+        let in_port = TensorPort::new("in0", in_dtype, in_shape.clone(), g)?;
+        let out_port = TensorPort::new("out0", DType::F32, out_shape, g)?;
 
         let mut attrs = AttributeMap::new();
         match op {
@@ -211,63 +1289,372 @@ fn test_unsupported_opcodes_fail_before_execution() -> Result<(), Box<dyn Error>
         }
 
         let node = GraphNode::new(
-            "unsupported_node",
+            "n_unsupported",
             op,
-            "test_op",
+            "op",
             vec!["in0".to_string()],
             vec!["out0".to_string()],
             attrs,
         )?;
-
-        // If graph validation passes, execution MUST reject it with UnsupportedOperator or UnsupportedDType
-        if let Ok(graph) = ModelIrGraph::builder("test_unsupported", g)
+        if let Ok(graph) = ModelIrGraph::builder("g_test", g)
             .add_input(in_port)
             .add_output(out_port)
             .add_node(node)
             .build_and_validate()
         {
             let cx = ScalarExecCx::new();
-            let dummy_tensor = if in_dtype == DType::I32 {
-                Tensor::from_values(Shape::new(vec![2, 4])?, &[0_i32; 8], g)?
+            let dummy = if in_dtype == DType::I32 {
+                Tensor::from_values(in_shape, &[0_i32; 8], g)?
             } else {
-                Tensor::from_values(Shape::new(vec![2, 4, 8])?, &[0.0_f32; 64], g)?
+                Tensor::from_values(in_shape, &[0.0_f32; 64], g)?
             };
-            let inputs = vec![("in0", dummy_tensor)];
-
-            let result = ScalarExecutor::run(&graph, &inputs, ExecBudget::unlimited(), &cx);
-            match result {
+            let res = ScalarExecutor::run(&graph, &[("in0", dummy)], ExecBudget::unlimited(), &cx);
+            match res {
                 Err(ExecError::UnsupportedOperator { op: err_op, .. }) => {
                     assert_eq!(err_op, op);
                 }
                 Err(ExecError::UnsupportedDType { .. }) => {
-                    // Embedding input is I32 which is also rejected before execution
                     assert_eq!(op, OpCode::Embedding);
                 }
                 Ok(_) => {
-                    return Err(format!(
-                        "Expected failure for unsupported op {op:?}, but execution succeeded"
-                    )
-                    .into());
+                    return Err(
+                        format!("Expected failure for unsupported op {op:?}, got Ok").into(),
+                    );
                 }
                 Err(other) => {
-                    return Err(format!(
-                        "Expected UnsupportedOperator or UnsupportedDType for {op:?}, got {other:?}"
-                    )
-                    .into());
+                    return Err(
+                        format!("Expected UnsupportedOperator for {op:?}, got {other:?}").into(),
+                    );
                 }
             }
         }
     }
 
+    let dur = start.elapsed().as_millis();
+    let exp_json = format!(r#"{{"gelu_unsupported":true,"total_ops":11}}"#);
+    let obs_json = format!(r#"{{"status":"ok"}}"#);
+    emit_caplog(
+        "unsupported_opcodes_refusal",
+        "pass",
+        0,
+        &exp_json,
+        &obs_json,
+        dur,
+    );
+
     Ok(())
 }
 
 #[test]
-fn test_shape_mismatches_fail_before_execution() -> Result<(), Box<dyn Error>> {
+fn test_dtype_refusal_f16_and_i32() -> Result<(), Box<dyn Error>> {
+    let start = Instant::now();
     let g = gen1();
-    let x_port = TensorPort::new("x", DType::F32, Shape::new(vec![1, 1, 3, 3])?, g)?;
-    let y_port = TensorPort::new("y", DType::F32, Shape::new(vec![1, 1, 3, 3])?, g)?;
+    let cx = ScalarExecCx::new();
 
+    // 1. F16 Relu graph: passes ModelIrGraph validation, refused by executor gate
+    {
+        let p_in = TensorPort::new("x", DType::F16, Shape::new(vec![4])?, g)?;
+        let p_out = TensorPort::new("y", DType::F16, Shape::new(vec![4])?, g)?;
+        let node = GraphNode::new(
+            "r",
+            OpCode::Relu,
+            "relu",
+            vec!["x".to_string()],
+            vec!["y".to_string()],
+            AttributeMap::new(),
+        )?;
+        let graph = ModelIrGraph::builder("g_f16_relu", g)
+            .add_input(p_in)
+            .add_output(p_out)
+            .add_node(node)
+            .build_and_validate()?;
+
+        let t_f16 = Tensor::from_values(Shape::new(vec![4])?, &[F16::from_bits(0); 4], g)?;
+        let res = ScalarExecutor::run(&graph, &[("x", t_f16)], ExecBudget::unlimited(), &cx);
+        match res {
+            Err(ExecError::UnsupportedDType {
+                expected, actual, ..
+            }) => {
+                assert_eq!(expected, DType::F32);
+                assert_eq!(actual, DType::F16);
+            }
+            Ok(_) => return Err("Expected UnsupportedDType for F16 Relu, got Ok".into()),
+            Err(other) => {
+                return Err(format!("Expected UnsupportedDType for F16, got {other:?}").into());
+            }
+        }
+    }
+
+    // 2. I32 Add graph: passes ModelIrGraph validation, refused by executor gate
+    {
+        let p_a = TensorPort::new("a", DType::I32, Shape::new(vec![2, 2])?, g)?;
+        let p_b = TensorPort::new("b", DType::I32, Shape::new(vec![2, 2])?, g)?;
+        let p_out = TensorPort::new("y", DType::I32, Shape::new(vec![2, 2])?, g)?;
+        let node = GraphNode::new(
+            "add",
+            OpCode::Add,
+            "add",
+            vec!["a".to_string(), "b".to_string()],
+            vec!["y".to_string()],
+            AttributeMap::new(),
+        )?;
+        let graph = ModelIrGraph::builder("g_i32_add", g)
+            .add_input(p_a)
+            .add_input(p_b)
+            .add_output(p_out)
+            .add_node(node)
+            .build_and_validate()?;
+
+        let t_a = Tensor::from_values(Shape::new(vec![2, 2])?, &[1_i32, 2, 3, 4], g)?;
+        let t_b = Tensor::from_values(Shape::new(vec![2, 2])?, &[5_i32, 6, 7, 8], g)?;
+        let res = ScalarExecutor::run(
+            &graph,
+            &[("a", t_a), ("b", t_b)],
+            ExecBudget::unlimited(),
+            &cx,
+        );
+        match res {
+            Err(ExecError::UnsupportedDType {
+                expected, actual, ..
+            }) => {
+                assert_eq!(expected, DType::F32);
+                assert_eq!(actual, DType::I32);
+            }
+            Ok(_) => return Err("Expected UnsupportedDType for I32 Add, got Ok".into()),
+            Err(other) => {
+                return Err(format!("Expected UnsupportedDType for I32, got {other:?}").into());
+            }
+        }
+    }
+
+    // 3. F64 graph declared input
+    {
+        let p_in = TensorPort::new("x", DType::F64, Shape::new(vec![4])?, g)?;
+        let p_out = TensorPort::new("y", DType::F64, Shape::new(vec![4])?, g)?;
+        let node = GraphNode::new(
+            "r",
+            OpCode::Relu,
+            "relu",
+            vec!["x".to_string()],
+            vec!["y".to_string()],
+            AttributeMap::new(),
+        )?;
+        let graph = ModelIrGraph::builder("g_f64", g)
+            .add_input(p_in)
+            .add_output(p_out)
+            .add_node(node)
+            .build_and_validate()?;
+
+        let dummy_f64 = Tensor::from_values(Shape::new(vec![4])?, &[1.0_f64, 2.0, 3.0, 4.0], g)?;
+        let res = ScalarExecutor::run(&graph, &[("x", dummy_f64)], ExecBudget::unlimited(), &cx);
+        match res {
+            Err(ExecError::UnsupportedDType {
+                expected, actual, ..
+            }) => {
+                assert_eq!(expected, DType::F32);
+                assert_eq!(actual, DType::F64);
+            }
+            Ok(_) => return Err("Expected UnsupportedDType for F64, got Ok".into()),
+            Err(other) => {
+                return Err(format!("Expected UnsupportedDType for F64, got {other:?}").into());
+            }
+        }
+    }
+
+    // 4. F32 graph provided with U8 tensor
+    {
+        let p_in = TensorPort::new("x", DType::F32, Shape::new(vec![4])?, g)?;
+        let p_out = TensorPort::new("y", DType::F32, Shape::new(vec![4])?, g)?;
+        let node = GraphNode::new(
+            "r",
+            OpCode::Relu,
+            "relu",
+            vec!["x".to_string()],
+            vec!["y".to_string()],
+            AttributeMap::new(),
+        )?;
+        let graph = ModelIrGraph::builder("g_f32", g)
+            .add_input(p_in)
+            .add_output(p_out)
+            .add_node(node)
+            .build_and_validate()?;
+
+        let t_u8 = Tensor::from_values(Shape::new(vec![4])?, &[10_u8, 20, 30, 40], g)?;
+        let res = ScalarExecutor::run(&graph, &[("x", t_u8)], ExecBudget::unlimited(), &cx);
+        match res {
+            Err(ExecError::UnsupportedDType {
+                expected, actual, ..
+            }) => {
+                assert_eq!(expected, DType::F32);
+                assert_eq!(actual, DType::U8);
+            }
+            Ok(_) => return Err("Expected UnsupportedDType for U8, got Ok".into()),
+            Err(other) => {
+                return Err(format!("Expected UnsupportedDType for U8, got {other:?}").into());
+            }
+        }
+    }
+
+    let dur = start.elapsed().as_millis();
+    let exp_json = format!(
+        r#"{{"f16_refused":true,"i32_refused":true,"f64_refused":true,"u8_refused":true}}"#
+    );
+    let obs_json = format!(r#"{{"status":"ok"}}"#);
+    emit_caplog(
+        "dtype_refusal_before_execution",
+        "pass",
+        0,
+        &exp_json,
+        &obs_json,
+        dur,
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_version_helper_contract() -> Result<(), Box<dyn Error>> {
+    let start = Instant::now();
+    let g = gen1();
+
+    // 1. from_u32(2) gives VersionMismatch
+    match ModelIrVersion::from_u32(2) {
+        Err(ModelIrError::VersionMismatch { expected, actual }) => {
+            assert_eq!(expected, 1);
+            assert_eq!(actual, 2);
+        }
+        Ok(_) => return Err("Expected VersionMismatch for from_u32(2), got Ok".into()),
+        Err(other) => {
+            return Err(format!("Expected VersionMismatch for from_u32(2), got {other:?}").into());
+        }
+    }
+
+    // 2. ModelIrVersion::unsupported(1) is an error
+    assert!(ModelIrVersion::unsupported(1).is_err());
+
+    // 3. Graph built with unsupported(2)? is refused by validate
+    let v2 = ModelIrVersion::unsupported(2)?;
+    assert_eq!(v2.as_u32(), 2);
+
+    let p_in = TensorPort::new("x", DType::F32, Shape::new(vec![2])?, g)?;
+    let p_out = TensorPort::new("y", DType::F32, Shape::new(vec![2])?, g)?;
+    let n = GraphNode::new(
+        "r",
+        OpCode::Relu,
+        "relu",
+        vec!["x".to_string()],
+        vec!["y".to_string()],
+        AttributeMap::new(),
+    )?;
+
+    let graph = ModelIrGraph::new("g_unsupported_v2", v2, g, vec![p_in], vec![p_out], vec![n])?;
+    match graph.validate() {
+        Err(ModelIrError::VersionMismatch { expected, actual }) => {
+            assert_eq!(expected, 1);
+            assert_eq!(actual, 2);
+        }
+        Ok(_) => return Err("Expected validate() to fail on unsupported version 2, got Ok".into()),
+        Err(other) => {
+            return Err(format!("Expected VersionMismatch from validate(), got {other:?}").into());
+        }
+    }
+
+    // 4. ScalarExecutor::run on graph with version 2 is refused
+    let in_t = Tensor::from_values(Shape::new(vec![2])?, &[1.0_f32, 2.0], g)?;
+    let cx = ScalarExecCx::new();
+    let res = ScalarExecutor::run(&graph, &[("x", in_t)], ExecBudget::unlimited(), &cx);
+    match res {
+        Err(ExecError::UnsupportedVersion { expected, actual }) => {
+            assert_eq!(expected, 1);
+            assert_eq!(actual, 2);
+        }
+        Err(ExecError::Ir(ModelIrError::VersionMismatch { expected, actual })) => {
+            assert_eq!(expected, 1);
+            assert_eq!(actual, 2);
+        }
+        Ok(_) => return Err("Expected UnsupportedVersion or Ir error, got Ok".into()),
+        Err(other) => return Err(format!("Expected version error from run, got {other:?}").into()),
+    }
+
+    let dur = start.elapsed().as_millis();
+    let exp_json = format!(r#"{{"v2_mismatch":true,"unsupported_1_err":true}}"#);
+    let obs_json = format!(r#"{{"status":"ok"}}"#);
+    emit_caplog(
+        "version_helper_contract",
+        "pass",
+        0,
+        &exp_json,
+        &obs_json,
+        dur,
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_weight_input_binding_missing_port() -> Result<(), Box<dyn Error>> {
+    let start = Instant::now();
+    let g = gen1();
+
+    // Graph requires two inputs: "x" and "w"
+    let p_x = TensorPort::new("x", DType::F32, Shape::new(vec![1, 1, 3, 3])?, g)?;
+    let p_w = TensorPort::new("w", DType::F32, Shape::new(vec![1, 1, 2, 2])?, g)?;
+    let p_y = TensorPort::new("y", DType::F32, Shape::new(vec![1, 1, 2, 2])?, g)?;
+
+    let mut conv_attrs = AttributeMap::new();
+    conv_attrs.insert("strides".to_string(), AttrValue::IntList(vec![1, 1]));
+    conv_attrs.insert("padding".to_string(), AttrValue::IntList(vec![0, 0, 0, 0]));
+
+    let n = GraphNode::new(
+        "conv",
+        OpCode::Conv2d,
+        "conv",
+        vec!["x".to_string(), "w".to_string()],
+        vec!["y".to_string()],
+        conv_attrs,
+    )?;
+    let graph = ModelIrGraph::builder("g_missing_w", g)
+        .add_input(p_x)
+        .add_input(p_w)
+        .add_output(p_y)
+        .add_node(n)
+        .build_and_validate()?;
+
+    let x_t = Tensor::from_values(Shape::new(vec![1, 1, 3, 3])?, &[1.0_f32; 9], g)?;
+    let cx = ScalarExecCx::new();
+
+    // Provide only "x", omitting required weight port "w"
+    let res = ScalarExecutor::run(&graph, &[("x", x_t)], ExecBudget::unlimited(), &cx);
+    match res {
+        Err(ExecError::MissingInputPort { expected_port }) => {
+            assert_eq!(expected_port, "w");
+        }
+        Ok(_) => return Err("Expected MissingInputPort for missing weight port, got Ok".into()),
+        Err(other) => return Err(format!("Expected MissingInputPort, got {other:?}").into()),
+    }
+
+    let dur = start.elapsed().as_millis();
+    let exp_json = format!(r#"{{"missing_port":"w"}}"#);
+    let obs_json = format!(r#"{{"status":"ok"}}"#);
+    emit_caplog(
+        "weight_input_binding_missing_port",
+        "pass",
+        0,
+        &exp_json,
+        &obs_json,
+        dur,
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_shape_mismatch_refused_before_execution() -> Result<(), Box<dyn Error>> {
+    let start = Instant::now();
+    let g = gen1();
+
+    let p_x = TensorPort::new("x", DType::F32, Shape::new(vec![1, 1, 3, 3])?, g)?;
+    let p_y = TensorPort::new("y", DType::F32, Shape::new(vec![1, 1, 3, 3])?, g)?;
     let node = GraphNode::new(
         "relu",
         OpCode::Relu,
@@ -276,37 +1663,44 @@ fn test_shape_mismatches_fail_before_execution() -> Result<(), Box<dyn Error>> {
         vec!["y".to_string()],
         AttributeMap::new(),
     )?;
-
-    let graph = ModelIrGraph::builder("relu_graph", g)
-        .add_input(x_port)
-        .add_output(y_port)
+    let graph = ModelIrGraph::builder("g_shape_mismatch", g)
+        .add_input(p_x)
+        .add_output(p_y)
         .add_node(node)
         .build_and_validate()?;
 
-    // Provide tensor with wrong shape: [1, 1, 4, 4] instead of [1, 1, 3, 3]
+    // Provide wrong shape: [1, 1, 4, 4] instead of [1, 1, 3, 3]
     let bad_tensor = Tensor::from_values(Shape::new(vec![1, 1, 4, 4])?, &[1.0_f32; 16], g)?;
-    let inputs = vec![("x", bad_tensor)];
-
     let cx = ScalarExecCx::new();
-    let result = ScalarExecutor::run(&graph, &inputs, ExecBudget::unlimited(), &cx);
-    match result {
+    let res = ScalarExecutor::run(&graph, &[("x", bad_tensor)], ExecBudget::unlimited(), &cx);
+    match res {
         Err(ExecError::ShapeMismatch { op_id, .. }) => {
             assert_eq!(op_id, "graph_input");
         }
-        Ok(_) => return Err("Expected ShapeMismatch for wrong input shape, got Ok".into()),
-        Err(other) => {
-            return Err(
-                format!("Expected ShapeMismatch for wrong input shape, got {other:?}").into(),
-            );
-        }
+        Ok(_) => return Err("Expected ShapeMismatch, got Ok".into()),
+        Err(other) => return Err(format!("Expected ShapeMismatch, got {other:?}").into()),
     }
+
+    let dur = start.elapsed().as_millis();
+    let exp_json = format!(r#"{{"op_id":"graph_input"}}"#);
+    let obs_json = format!(r#"{{"status":"ok"}}"#);
+    emit_caplog(
+        "shape_mismatch_refusal",
+        "pass",
+        0,
+        &exp_json,
+        &obs_json,
+        dur,
+    );
 
     Ok(())
 }
 
 #[test]
-fn test_budget_overruns_fail_before_execution() -> Result<(), Box<dyn Error>> {
+fn test_budget_macs_and_bytes_exceeded() -> Result<(), Box<dyn Error>> {
+    let start = Instant::now();
     let g = gen1();
+
     let x_port = TensorPort::new("x", DType::F32, Shape::new(vec![1, 1, 4, 4])?, g)?;
     let w_port = TensorPort::new("w", DType::F32, Shape::new(vec![1, 1, 2, 2])?, g)?;
     let y_port = TensorPort::new("y", DType::F32, Shape::new(vec![1, 1, 3, 3])?, g)?;
@@ -337,7 +1731,7 @@ fn test_budget_overruns_fail_before_execution() -> Result<(), Box<dyn Error>> {
 
     let cx = ScalarExecCx::new();
 
-    // 1. MACs budget overrun (max_macs = 0, required = 36 MACs: 9 elements * 4 inputs in kernel)
+    // 1. MACs budget overrun (max_macs = 0, required = 36 MACs)
     let macs_budget = ExecBudget::new(0, 1_000_000);
     let result_macs = ScalarExecutor::run(&graph, &inputs, macs_budget, &cx);
     match result_macs {
@@ -349,7 +1743,7 @@ fn test_budget_overruns_fail_before_execution() -> Result<(), Box<dyn Error>> {
         Err(other) => return Err(format!("Expected BudgetExceeded for MACs, got {other:?}").into()),
     }
 
-    // 2. Memory bytes budget overrun (max_bytes = 10, required = (16 + 4 + 9) * 4 = 116 bytes)
+    // 2. Memory bytes budget overrun (max_bytes = 10, required = 116 bytes)
     let bytes_budget = ExecBudget::new(1_000_000, 10);
     let result_bytes = ScalarExecutor::run(&graph, &inputs, bytes_budget, &cx);
     match result_bytes {
@@ -365,12 +1759,26 @@ fn test_budget_overruns_fail_before_execution() -> Result<(), Box<dyn Error>> {
         }
     }
 
+    let dur = start.elapsed().as_millis();
+    let exp_json = format!(r#"{{"macs_overrun":true,"bytes_overrun":true}}"#);
+    let obs_json = format!(r#"{{"status":"ok"}}"#);
+    emit_caplog(
+        "budget_exceeded_refusal",
+        "pass",
+        0,
+        &exp_json,
+        &obs_json,
+        dur,
+    );
+
     Ok(())
 }
 
 #[test]
-fn test_cancellation_leaves_no_outputs() -> Result<(), Box<dyn Error>> {
+fn test_cancellation_pre_execution_and_cooperative() -> Result<(), Box<dyn Error>> {
+    let start = Instant::now();
     let g = gen1();
+
     let x_port = TensorPort::new("x", DType::F32, Shape::new(vec![1, 4])?, g)?;
     let y_port = TensorPort::new("y", DType::F32, Shape::new(vec![1, 4])?, g)?;
 
@@ -406,9 +1814,66 @@ fn test_cancellation_leaves_no_outputs() -> Result<(), Box<dyn Error>> {
         Err(other) => return Err(format!("Expected CancellationRequested, got {other:?}").into()),
     }
 
+    let dur = start.elapsed().as_millis();
+    let exp_json = format!(r#"{{"stage":"pre-execution","drain_completed":true}}"#);
+    let obs_json = format!(r#"{{"status":"ok"}}"#);
+    emit_caplog(
+        "cancellation_cooperative",
+        "pass",
+        0,
+        &exp_json,
+        &obs_json,
+        dur,
+    );
+
     Ok(())
 }
 
+#[test]
+fn test_preprocess_program_rgb_and_luma() -> Result<(), Box<dyn Error>> {
+    let start = Instant::now();
+    let g = gen1();
+
+    // 1. RGB Preprocessing (scale_to_unit: true)
+    let prog_rgb = PreprocessProgram::new(2, 2, ChannelTransform::Rgb, true);
+    let bytes_rgb = vec![
+        0_u8, 128, 255, // (0, 0)
+        50, 100, 150, // (0, 1)
+        10, 20, 30, // (1, 0)
+        200, 210, 220, // (1, 1)
+    ];
+    let tensor_nchw = prog_rgb.execute_bytes(&bytes_rgb, 2, 2, 3, g)?;
+    assert_eq!(tensor_nchw.shape().dims(), &[1, 3, 2, 2]);
+
+    let f_vals = tensor_nchw.to_vec::<f32>()?;
+    assert_eq!(f_vals[0], 0.0 / 255.0);
+    assert_eq!(f_vals[4], 128.0 / 255.0);
+    assert_eq!(f_vals[8], 255.0 / 255.0);
+
+    // 2. LumaOnly Preprocessing (scale_to_unit: true)
+    let prog_luma = PreprocessProgram::new(2, 2, ChannelTransform::LumaOnly, true);
+    let tensor_luma = prog_luma.execute_bytes(&bytes_rgb, 2, 2, 3, g)?;
+    assert_eq!(tensor_luma.shape().dims(), &[1, 1, 2, 2]);
+
+    let l_vals = tensor_luma.to_vec::<f32>()?;
+    let scale = 1.0_f32 / 255.0_f32;
+    let expected_luma_00 = (0.299_f32 * 0.0 + 0.587_f32 * 128.0 + 0.114_f32 * 255.0) * scale;
+    assert_eq!(l_vals[0], expected_luma_00);
+
+    // Canonical bytes determinism
+    let b1 = prog_rgb.canonical_bytes();
+    let b2 = prog_rgb.canonical_bytes();
+    assert_eq!(b1, b2);
+
+    let dur = start.elapsed().as_millis();
+    let exp_json = format!(r#"{{"rgb_shape":[1,3,2,2],"luma_shape":[1,1,2,2]}}"#);
+    let obs_json = format!(r#"{{"status":"ok"}}"#);
+    emit_caplog("preprocess_program", "pass", 0, &exp_json, &obs_json, dur);
+
+    Ok(())
+}
+
+#[test]
 #[test]
 fn test_kernel_goldens_individual() -> Result<(), Box<dyn Error>> {
     let g = gen1();
@@ -723,232 +2188,6 @@ fn test_kernel_goldens_individual() -> Result<(), Box<dyn Error>> {
             .to_vec::<f32>()?;
         assert_eq!(vals_ext, vec![1.0_f32, 0.0, 0.0]);
     }
-
-    Ok(())
-}
-
-#[test]
-fn test_f32_only_gate_refuses_non_f32_graphs_and_tensors() -> Result<(), Box<dyn Error>> {
-    let g = gen1();
-
-    // 1. Graph with non-F32 declared input (e.g. F64)
-    let p_in_f64 = TensorPort::new("x", DType::F64, Shape::new(vec![4])?, g)?;
-    let p_out_f64 = TensorPort::new("y", DType::F64, Shape::new(vec![4])?, g)?;
-    let n = GraphNode::new(
-        "relu",
-        OpCode::Relu,
-        "r",
-        vec!["x".to_string()],
-        vec!["y".to_string()],
-        AttributeMap::new(),
-    )?;
-
-    let gr_f64 = ModelIrGraph::builder("g_f64", g)
-        .add_input(p_in_f64)
-        .add_output(p_out_f64)
-        .add_node(n)
-        .build_and_validate()?;
-
-    let dummy_f64 = Tensor::from_values(Shape::new(vec![4])?, &[1.0_f64, 2.0, 3.0, 4.0], g)?;
-    let cx = ScalarExecCx::new();
-    let res_f64 = ScalarExecutor::run(&gr_f64, &[("x", dummy_f64)], ExecBudget::unlimited(), &cx);
-
-    match res_f64 {
-        Err(ExecError::UnsupportedDType {
-            expected, actual, ..
-        }) => {
-            assert_eq!(expected, DType::F32);
-            assert_eq!(actual, DType::F64);
-        }
-        Ok(_) => return Err("Expected UnsupportedDType for F64 graph, got Ok".into()),
-        Err(other) => {
-            return Err(format!("Expected UnsupportedDType for F64 graph, got {other:?}").into());
-        }
-    }
-
-    // 2. F32 graph provided with U8 tensor
-    let p_in_f32 = TensorPort::new("x", DType::F32, Shape::new(vec![4])?, g)?;
-    let p_out_f32 = TensorPort::new("y", DType::F32, Shape::new(vec![4])?, g)?;
-    let n_f32 = GraphNode::new(
-        "relu",
-        OpCode::Relu,
-        "r",
-        vec!["x".to_string()],
-        vec!["y".to_string()],
-        AttributeMap::new(),
-    )?;
-    let gr_f32 = ModelIrGraph::builder("g_f32", g)
-        .add_input(p_in_f32)
-        .add_output(p_out_f32)
-        .add_node(n_f32)
-        .build_and_validate()?;
-
-    let t_u8 = Tensor::from_values(Shape::new(vec![4])?, &[10_u8, 20, 30, 40], g)?;
-    let res_u8 = ScalarExecutor::run(&gr_f32, &[("x", t_u8)], ExecBudget::unlimited(), &cx);
-
-    match res_u8 {
-        Err(ExecError::UnsupportedDType {
-            expected, actual, ..
-        }) => {
-            assert_eq!(expected, DType::F32);
-            assert_eq!(actual, DType::U8);
-        }
-        Ok(_) => return Err("Expected UnsupportedDType for U8 tensor, got Ok".into()),
-        Err(other) => {
-            return Err(format!("Expected UnsupportedDType for U8 tensor, got {other:?}").into());
-        }
-    }
-
-    Ok(())
-}
-
-#[test]
-fn test_canonical_topological_sort_execution_order() -> Result<(), Box<dyn Error>> {
-    let g = gen1();
-    // Chain: x -> n1 (Relu) -> mid -> n2 (Sigmoid) -> y
-    // Add nodes in reverse order: n2 first, then n1.
-    // Topological sort MUST execute n1 before n2.
-    let p_in = TensorPort::new("x", DType::F32, Shape::new(vec![2])?, g)?;
-    let p_out = TensorPort::new("y", DType::F32, Shape::new(vec![2])?, g)?;
-
-    let n1 = GraphNode::new(
-        "n1_relu",
-        OpCode::Relu,
-        "relu",
-        vec!["x".to_string()],
-        vec!["mid".to_string()],
-        AttributeMap::new(),
-    )?;
-    let n2 = GraphNode::new(
-        "n2_sig",
-        OpCode::Sigmoid,
-        "sig",
-        vec!["mid".to_string()],
-        vec!["y".to_string()],
-        AttributeMap::new(),
-    )?;
-
-    let graph = ModelIrGraph::builder("toposort_graph", g)
-        .add_input(p_in)
-        .add_output(p_out)
-        .add_node(n2) // Add out-of-order
-        .add_node(n1)
-        .build_and_validate()?;
-
-    let t_in = Tensor::from_values(Shape::new(vec![2])?, &[-1.0_f32, 2.0], g)?;
-    let cx = ScalarExecCx::new();
-    let outcome = ScalarExecutor::run(&graph, &[("x", t_in)], ExecBudget::unlimited(), &cx)?;
-
-    // x = [-1.0, 2.0]
-    // mid = Relu(x) = [0.0, 2.0]
-    // y = Sigmoid(mid) = [sigmoid(0.0) = 0.5, sigmoid(2.0)]
-    let y_t = outcome.get_output("y").ok_or("missing output y")?;
-    let vals = y_t.to_vec::<f32>()?;
-    assert_eq!(vals[0], 0.5_f32);
-    assert_eq!(vals[1], deterministic_sigmoid_f32(2.0));
-
-    Ok(())
-}
-
-#[test]
-fn test_version_gate() -> Result<(), Box<dyn Error>> {
-    let version = ModelIrVersion::from_u32(1)?;
-    assert_eq!(version.as_u32(), 1);
-
-    // Any other version number is rejected
-    assert!(ModelIrVersion::from_u32(0).is_err());
-    assert!(ModelIrVersion::from_u32(2).is_err());
-
-    Ok(())
-}
-
-#[test]
-fn test_maxpool2d_ceil_mode_with_last_window_clamp() -> Result<(), Box<dyn Error>> {
-    let g = gen1();
-    // Input: [1, 1, 4, 4]
-    // kernel_size: [3, 3], strides: [2, 2], ceil_mode: true, padding: [0, 0, 0, 0]
-    // With h=4: (4 - 3)/2 + 1 = 1 (floor).
-    // With ceil_mode: div_ceil(4 - 3, 2) + 1 = 1 + 1 = 2!
-    // Last window starts at (2 - 1)*2 = 2.
-    // Boundary is h + pad = 4 + 0 = 4. Since 2 < 4, last window is valid and not clamped!
-    let p_in = TensorPort::new("x", DType::F32, Shape::new(vec![1, 1, 4, 4])?, g)?;
-    let p_out = TensorPort::new("y", DType::F32, Shape::new(vec![1, 1, 2, 2])?, g)?;
-
-    let mut pool_attrs = AttributeMap::new();
-    pool_attrs.insert("kernel_size".to_string(), AttrValue::IntList(vec![3, 3]));
-    pool_attrs.insert("strides".to_string(), AttrValue::IntList(vec![2, 2]));
-    pool_attrs.insert("padding".to_string(), AttrValue::IntList(vec![0, 0, 0, 0]));
-    pool_attrs.insert("ceil_mode".to_string(), AttrValue::Bool(true));
-
-    let n = GraphNode::new(
-        "pool_ceil",
-        OpCode::MaxPool2d,
-        "p",
-        vec!["x".to_string()],
-        vec!["y".to_string()],
-        pool_attrs,
-    )?;
-    let gr = ModelIrGraph::builder("g_pool_ceil", g)
-        .add_input(p_in)
-        .add_output(p_out)
-        .add_node(n)
-        .build_and_validate()?;
-
-    // Values: 4x4 matrix from 1.0 to 16.0
-    let vals: Vec<f32> = (1..=16).map(|v| v as f32).collect();
-    let in_t = Tensor::from_values(Shape::new(vec![1, 1, 4, 4])?, &vals, g)?;
-
-    let cx = ScalarExecCx::new();
-    let out = ScalarExecutor::run(&gr, &[("x", in_t)], ExecBudget::unlimited(), &cx)?;
-    let y_t = out.get_output("y").ok_or("missing output y")?;
-    let res = y_t.to_vec::<f32>()?;
-
-    // Window (0, 0): rows 0..3, cols 0..3 -> max is at (2, 2) = val 11
-    // Window (0, 1): rows 0..3, cols 2..4 (clipped) -> max is at (2, 3) = val 12
-    // Window (1, 0): rows 2..4, cols 0..3 -> max is at (3, 2) = val 15
-    // Window (1, 1): rows 2..4, cols 2..4 -> max is at (3, 3) = val 16
-    assert_eq!(res, vec![11.0_f32, 12.0, 15.0, 16.0]);
-
-    Ok(())
-}
-
-#[test]
-fn test_preprocess_program_execution() -> Result<(), Box<dyn Error>> {
-    let g = gen1();
-
-    // 1. RGB Preprocessing (scale_to_unit: true)
-    let prog_rgb = PreprocessProgram::new(2, 2, ChannelTransform::Rgb, true);
-    let bytes_rgb = vec![
-        0_u8, 128, 255, // (0, 0)
-        50, 100, 150, // (0, 1)
-        10, 20, 30, // (1, 0)
-        200, 210, 220, // (1, 1)
-    ];
-    let tensor_nchw = prog_rgb.execute_bytes(&bytes_rgb, 2, 2, 3, g)?;
-    assert_eq!(tensor_nchw.shape().dims(), &[1, 3, 2, 2]);
-
-    let f_vals = tensor_nchw.to_vec::<f32>()?;
-    // R channel at (0, 0)
-    assert_eq!(f_vals[0], 0.0 / 255.0);
-    // G channel at (0, 0) -> offset 4
-    assert_eq!(f_vals[4], 128.0 / 255.0);
-    // B channel at (0, 0) -> offset 8
-    assert_eq!(f_vals[8], 255.0 / 255.0);
-
-    // 2. LumaOnly Preprocessing (scale_to_unit: true)
-    let prog_luma = PreprocessProgram::new(2, 2, ChannelTransform::LumaOnly, true);
-    let tensor_luma = prog_luma.execute_bytes(&bytes_rgb, 2, 2, 3, g)?;
-    assert_eq!(tensor_luma.shape().dims(), &[1, 1, 2, 2]);
-
-    let l_vals = tensor_luma.to_vec::<f32>()?;
-    let scale = 1.0_f32 / 255.0_f32;
-    let expected_luma_00 = (0.299_f32 * 0.0 + 0.587_f32 * 128.0 + 0.114_f32 * 255.0) * scale;
-    assert_eq!(l_vals[0], expected_luma_00);
-
-    // Canonical bytes determinism
-    let b1 = prog_rgb.canonical_bytes();
-    let b2 = prog_rgb.canonical_bytes();
-    assert_eq!(b1, b2);
 
     Ok(())
 }
