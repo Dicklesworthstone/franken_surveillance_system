@@ -126,6 +126,60 @@ impl fmt::Display for MediaFixtureError {
 
 impl std::error::Error for MediaFixtureError {}
 
+/// Verifies that `fixture_bytes` matches the expected sha256 for `fixture_name`
+/// specified in the manifest JSON.
+///
+/// Returns `Ok(())` on match, or `MediaFixtureError::DigestMismatch` if the
+/// computed SHA-256 does not match the manifest entry.
+pub fn verify_fixture_manifest(
+    manifest_json: &str,
+    fixture_name: &str,
+    fixture_bytes: &[u8],
+) -> Result<(), MediaFixtureError> {
+    let name_needle = format!("\"name\": \"{fixture_name}\"");
+    let name_pos = manifest_json
+        .find(&name_needle)
+        .ok_or(MediaFixtureError::InvalidParam(
+            "fixture name not found in manifest",
+        ))?;
+
+    let after_name = &manifest_json[name_pos..];
+    let entry_end = match after_name.find('}') {
+        Some(pos) => pos,
+        None => after_name.len(),
+    };
+    let entry_scope = &after_name[..entry_end];
+
+    let sha_marker = "\"sha256\": \"";
+    let sha_pos = entry_scope
+        .find(sha_marker)
+        .ok_or(MediaFixtureError::InvalidParam(
+            "sha256 not found for fixture in manifest",
+        ))?;
+    let sha_start = sha_pos + sha_marker.len();
+    let after_sha = &entry_scope[sha_start..];
+    let sha_end = after_sha.find('"').ok_or(MediaFixtureError::InvalidParam(
+        "malformed sha256 string in manifest",
+    ))?;
+    let expected_sha = &after_sha[..sha_end];
+
+    let digest = fss_core::ContentDigest::sha256(fixture_bytes);
+    let mut actual_sha = String::with_capacity(64);
+    for b in digest.bytes() {
+        use std::fmt::Write;
+        let _ = write!(actual_sha, "{b:02x}");
+    }
+
+    if actual_sha != expected_sha {
+        return Err(MediaFixtureError::DigestMismatch {
+            expected: expected_sha.to_string(),
+            actual: actual_sha,
+        });
+    }
+
+    Ok(())
+}
+
 /// Lightweight, deterministic SplitMix64 pseudo-random generator.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeterministicMediaPrng {
