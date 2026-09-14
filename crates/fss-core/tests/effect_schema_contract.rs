@@ -1290,7 +1290,7 @@ fn every_effect_state_has_an_explicit_transition_payload_rule() -> Result<(), Bo
                 let operation_id = intent.operation_id.clone();
                 let mut journal = EffectJournal::new();
                 let _ = journal.prepare(
-                    intent,
+                    intent.clone(),
                     ObligationId::parse("obligation:payload-rule")?,
                     "delivery_proved",
                     TimestampNs(100),
@@ -1307,7 +1307,15 @@ fn every_effect_state_has_an_explicit_transition_payload_rule() -> Result<(), Bo
                     )?;
                 }
                 now += 1;
-                let result_digest = result.then_some(digest);
+                let result_digest = if result {
+                    if next == EffectState::Cancelled {
+                        Some(intent.cancellation_proof(TimestampNs(100), TimestampNs(now))?)
+                    } else {
+                        Some(digest)
+                    }
+                } else {
+                    None
+                };
                 let expected = expected_verdict(result, error);
                 let validated = journal
                     .validate_transition(

@@ -1343,22 +1343,26 @@ fn cancel_proof_binds_operation_id_and_both_anchors_p10() -> Result<(), Box<dyn 
     );
     assert!(matches!(res, Err(ReferenceError::StaleEventAuthority)));
 
-    let expected_proof = crate::alert_cancel_proof(
-        &plan.intent.operation_id,
-        &plan.authority_anchor,
-        &displacing_anchor,
-    );
+    let expected_proof = plan
+        .intent
+        .cancellation_proof(TimestampNs(100), TimestampNs(101))?;
 
     let op = journal
         .operation(&plan.intent.operation_id)
         .ok_or(ReferenceError::InvalidSpec("missing_operation"))?;
     assert_eq!(op.result_digest, Some(expected_proof));
+    assert_eq!(op.expected_cancellation_proof()?, expected_proof);
 
-    // Ensure cancel proof is distinct when operation_id or displacing anchor changes.
+    // Ensure alert_cancel_proof is distinct when operation_id or displacing anchor changes.
+    let anchor_proof = crate::alert_cancel_proof(
+        &plan.intent.operation_id,
+        &plan.authority_anchor,
+        &displacing_anchor,
+    );
     let diff_op = OperationId::parse("operation:alert:different")?;
     let diff_proof =
         crate::alert_cancel_proof(&diff_op, &plan.authority_anchor, &displacing_anchor);
-    assert_ne!(expected_proof, diff_proof);
+    assert_ne!(anchor_proof, diff_proof);
 
     let _ = fs::remove_file(path);
     Ok(())

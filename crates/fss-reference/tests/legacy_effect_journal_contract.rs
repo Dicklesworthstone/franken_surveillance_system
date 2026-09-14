@@ -234,6 +234,74 @@ fn legacy_rules_are_reachable_only_through_versioned_v1_records() -> Result<(), 
     Ok(())
 }
 
+/// fss-thzlz: legacy (v1) records with an unbound cancellation digest still replay and open.
+#[test]
+fn legacy_v1_cancelled_records_still_replay_and_open() -> Result<(), Box<dyn Error>> {
+    let unbound_digest = ContentDigest::sha256(b"legacy-unbound-cancellation-proof");
+    let records = vec![
+        EffectJournalTransition::Prepare {
+            intent: intent("legacy-cancel")?,
+            obligation_id: obligation("legacy-cancel")?,
+            terminal_predicate: "cancelled".to_owned(),
+            now: TimestampNs(10),
+        },
+        EffectJournalTransition::Transition {
+            operation_id: operation("legacy-cancel")?,
+            next: EffectState::Cancelled,
+            now: TimestampNs(20),
+            result_digest: Some(unbound_digest),
+            error_code: Some("operator_aborted".to_owned()),
+        },
+    ];
+
+    // Public replay applies current rules and rejects unbound cancellation digest
+    let public = EffectJournal::replay(records.clone());
+    assert!(
+        matches!(public, Err(ContractError::InvalidDigest)),
+        "{:?}",
+        public.as_ref().err()
+    );
+
+    // v2 replay also rejects unbound cancellation digest
+    let as_v2 = EffectJournal::replay_versioned(
+        records
+            .iter()
+            .cloned()
+            .map(|record| (EffectRecordVersion::V2, record)),
+    );
+    assert!(
+        matches!(as_v2, Err(ContractError::InvalidDigest)),
+        "{:?}",
+        as_v2.as_ref().err()
+    );
+
+    // v1 versioned replay succeeds under legacy rules
+    let as_v1 = EffectJournal::replay_versioned(
+        records
+            .iter()
+            .cloned()
+            .map(|record| (EffectRecordVersion::V1, record)),
+    )?;
+    let op = as_v1
+        .operation(&operation("legacy-cancel")?)
+        .ok_or(ContractError::NotFound)?;
+    assert_eq!(op.record_version(), EffectRecordVersion::V1);
+    assert_eq!(op.state, EffectState::Cancelled);
+    assert_eq!(op.result_digest, Some(unbound_digest));
+
+    // Durable journal file with EFFECT_TRANSITION_RECORD_KIND (v1) opens
+    let dir = ScratchDir::new("v1-cancel")?;
+    write_records(&dir.journal_path(), &records)?;
+    let durable = DurableEffectJournal::open(dir.journal_path(), IncompleteTailPolicy::Reject)?;
+    let durable_op = durable
+        .operation(&operation("legacy-cancel")?)
+        .ok_or("missing legacy cancel operation")?;
+    assert_eq!(durable_op.record_version(), EffectRecordVersion::V1);
+    assert_eq!(durable_op.state, EffectState::Cancelled);
+    assert_eq!(durable_op.result_digest, Some(unbound_digest));
+    Ok(())
+}
+
 /// fss-deir9 (D1/D3): the durable journal names the version of every record. A legacy operation
 /// keeps the v1 receipt encoding after the upgrade, new records are v2, the legacy prefix is never
 /// rewritten, and a v1 record after a v2 record is refused on open.
