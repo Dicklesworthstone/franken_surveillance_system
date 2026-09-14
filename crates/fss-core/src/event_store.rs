@@ -588,6 +588,9 @@ pub enum NotObservableReason {
         /// Requested revision number.
         revision: u64,
     },
+    /// Coverage witness registration was refused due to registry capacity limit;
+    /// absence cannot be safely certified without complete witness admission.
+    CoverageRegistryCapacityExceeded,
 }
 
 impl fmt::Display for NotObservableReason {
@@ -623,6 +626,12 @@ impl fmt::Display for NotObservableReason {
             Self::RevisionNotFound { revision } => {
                 write!(f, "revision {revision} not found in recorded lineage")
             }
+            Self::CoverageRegistryCapacityExceeded => {
+                write!(
+                    f,
+                    "coverage witness registration refused due to capacity; absence cannot be certified"
+                )
+            }
         }
     }
 }
@@ -638,8 +647,10 @@ pub enum EventReadResult<'a> {
     NotObservable {
         /// Queried coverage domain.
         domain: String,
-        /// Specific non-observability reason.
+        /// Specific non-observability reason (primary under canonical precedence).
         reason: NotObservableReason,
+        /// Full set of non-observability reasons that applied, in canonical precedence order.
+        all_reasons: Vec<NotObservableReason>,
     },
 }
 
@@ -654,8 +665,10 @@ pub enum LineageReadResult<'a> {
     NotObservable {
         /// Queried coverage domain.
         domain: String,
-        /// Specific non-observability reason.
+        /// Specific non-observability reason (primary under canonical precedence).
         reason: NotObservableReason,
+        /// Full set of non-observability reasons that applied, in canonical precedence order.
+        all_reasons: Vec<NotObservableReason>,
     },
 }
 
@@ -670,8 +683,10 @@ pub enum GraphReadResult<'a> {
     NotObservable {
         /// Queried coverage domain.
         domain: String,
-        /// Specific non-observability reason.
+        /// Specific non-observability reason (primary under canonical precedence).
         reason: NotObservableReason,
+        /// Full set of non-observability reasons that applied, in canonical precedence order.
+        all_reasons: Vec<NotObservableReason>,
     },
 }
 
@@ -688,6 +703,7 @@ pub struct EventRevisionStore {
     contradictions: BTreeMap<EventId, Vec<Contradiction>>,
     unresolved_worlds: BTreeSet<String>,
     coverage_witnesses: Vec<CoverageWitness>,
+    refused_coverage_domains: BTreeSet<String>,
 }
 
 impl EventRevisionStore {
@@ -704,6 +720,7 @@ impl EventRevisionStore {
             contradictions: BTreeMap::new(),
             unresolved_worlds: BTreeSet::new(),
             coverage_witnesses: Vec::new(),
+            refused_coverage_domains: BTreeSet::new(),
         }
     }
 
@@ -711,6 +728,12 @@ impl EventRevisionStore {
     #[must_use]
     pub const fn current_anchor(&self) -> &LedgerAnchor {
         &self.current_anchor
+    }
+
+    /// Returns the set of domains whose coverage witness registrations were refused due to capacity.
+    #[must_use]
+    pub const fn refused_coverage_domains(&self) -> &BTreeSet<String> {
+        &self.refused_coverage_domains
     }
 
     /// Returns the immutable append-only commit history of the store.
@@ -1123,12 +1146,26 @@ impl EventRevisionStore {
     ) -> Result<ContentDigest, EventStoreError> {
         self.check_basis_anchor(&basis_anchor)?;
         if self.history.len() >= MAX_STORE_COMMITS {
+            for d in &witness.observed_domain {
+                if !is_unknown_domain(d)
+                    && self.refused_coverage_domains.len() < MAX_STORE_COVERAGE_WITNESSES
+                {
+                    self.refused_coverage_domains.insert(d.clone());
+                }
+            }
             return Err(EventStoreError::StoreCommitCapacityExceeded {
                 limit: MAX_STORE_COMMITS,
                 actual: self.history.len() + 1,
             });
         }
         if self.coverage_witnesses.len() >= MAX_STORE_COVERAGE_WITNESSES {
+            for d in &witness.observed_domain {
+                if !is_unknown_domain(d)
+                    && self.refused_coverage_domains.len() < MAX_STORE_COVERAGE_WITNESSES
+                {
+                    self.refused_coverage_domains.insert(d.clone());
+                }
+            }
             return Err(EventStoreError::CoverageWitnessCapacityExceeded {
                 limit: MAX_STORE_COVERAGE_WITNESSES,
                 actual: self.coverage_witnesses.len() + 1,
@@ -1166,11 +1203,13 @@ impl EventRevisionStore {
                             .get(event_id)
                             .cloned()
                             .unwrap_or_else(|| UNKNOWN_DOMAIN.to_string());
+                        let reason = NotObservableReason::RevisionNotFound {
+                            revision: target_rev,
+                        };
                         Ok(EventReadResult::NotObservable {
                             domain,
-                            reason: NotObservableReason::RevisionNotFound {
-                                revision: target_rev,
-                            },
+                            all_reasons: vec![reason.clone()],
+                            reason,
                         })
                     }
                 }
@@ -1180,6 +1219,7 @@ impl EventRevisionStore {
                 Ok(EventReadResult::NotObservable {
                     domain: domain.clone(),
                     reason: NotObservableReason::UnknownDomain,
+                    all_reasons: vec![NotObservableReason::UnknownDomain],
                 })
             } else {
                 Ok(self.evaluate_coverage_for_absent(domain))
@@ -1188,6 +1228,7 @@ impl EventRevisionStore {
             Ok(EventReadResult::NotObservable {
                 domain: UNKNOWN_DOMAIN.to_string(),
                 reason: NotObservableReason::UnknownDomain,
+                all_reasons: vec![NotObservableReason::UnknownDomain],
             })
         }
     }
@@ -1206,11 +1247,13 @@ impl EventRevisionStore {
                     if let Some(rev) = lineage.history().iter().find(|r| r.revision == target_rev) {
                         Ok(EventReadResult::Found(rev))
                     } else {
+                        let reason = NotObservableReason::RevisionNotFound {
+                            revision: target_rev,
+                        };
                         Ok(EventReadResult::NotObservable {
                             domain: domain.to_string(),
-                            reason: NotObservableReason::RevisionNotFound {
-                                revision: target_rev,
-                            },
+                            all_reasons: vec![reason.clone()],
+                            reason,
                         })
                     }
                 }
@@ -1232,18 +1275,26 @@ impl EventRevisionStore {
                 Ok(LineageReadResult::NotObservable {
                     domain: domain.clone(),
                     reason: NotObservableReason::UnknownDomain,
+                    all_reasons: vec![NotObservableReason::UnknownDomain],
                 })
             } else {
                 match self.evaluate_coverage_for_absent(domain) {
                     EventReadResult::AbsentWithCoverage(w) => {
                         Ok(LineageReadResult::AbsentWithCoverage(w))
                     }
-                    EventReadResult::NotObservable { domain, reason } => {
-                        Ok(LineageReadResult::NotObservable { domain, reason })
-                    }
+                    EventReadResult::NotObservable {
+                        domain,
+                        reason,
+                        all_reasons,
+                    } => Ok(LineageReadResult::NotObservable {
+                        domain,
+                        reason,
+                        all_reasons,
+                    }),
                     EventReadResult::Found(_) => Ok(LineageReadResult::NotObservable {
                         domain: domain.clone(),
                         reason: NotObservableReason::NoCoverageWitness,
+                        all_reasons: vec![NotObservableReason::NoCoverageWitness],
                     }),
                 }
             }
@@ -1251,6 +1302,7 @@ impl EventRevisionStore {
             Ok(LineageReadResult::NotObservable {
                 domain: UNKNOWN_DOMAIN.to_string(),
                 reason: NotObservableReason::UnknownDomain,
+                all_reasons: vec![NotObservableReason::UnknownDomain],
             })
         }
     }
@@ -1268,12 +1320,19 @@ impl EventRevisionStore {
                 EventReadResult::AbsentWithCoverage(w) => {
                     Ok(LineageReadResult::AbsentWithCoverage(w))
                 }
-                EventReadResult::NotObservable { domain, reason } => {
-                    Ok(LineageReadResult::NotObservable { domain, reason })
-                }
+                EventReadResult::NotObservable {
+                    domain,
+                    reason,
+                    all_reasons,
+                } => Ok(LineageReadResult::NotObservable {
+                    domain,
+                    reason,
+                    all_reasons,
+                }),
                 EventReadResult::Found(_) => Ok(LineageReadResult::NotObservable {
                     domain: domain.to_string(),
                     reason: NotObservableReason::NoCoverageWitness,
+                    all_reasons: vec![NotObservableReason::NoCoverageWitness],
                 }),
             }
         }
@@ -1321,12 +1380,19 @@ impl EventRevisionStore {
                 EventReadResult::AbsentWithCoverage(w) => {
                     Ok(GraphReadResult::AbsentWithCoverage(w))
                 }
-                EventReadResult::NotObservable { domain, reason } => {
-                    Ok(GraphReadResult::NotObservable { domain, reason })
-                }
+                EventReadResult::NotObservable {
+                    domain,
+                    reason,
+                    all_reasons,
+                } => Ok(GraphReadResult::NotObservable {
+                    domain,
+                    reason,
+                    all_reasons,
+                }),
                 EventReadResult::Found(_) => Ok(GraphReadResult::NotObservable {
                     domain: domain.to_string(),
                     reason: NotObservableReason::NoCoverageWitness,
+                    all_reasons: vec![NotObservableReason::NoCoverageWitness],
                 }),
             }
         }
@@ -1461,74 +1527,136 @@ impl EventRevisionStore {
         Ok(commit_digest)
     }
 
-    fn evaluate_coverage_for_absent(&self, domain: &str) -> EventReadResult<'_> {
+    /// Returns the full set of non-observability reasons for `domain` in canonical precedence order:
+    /// 1. `CoverageRegistryCapacityExceeded`: witness registration was refused due to capacity limit.
+    /// 2. `CoverageWitnessGapped`: physical continuity gap in observation window.
+    /// 3. `ExcludedDomain`: domain was explicitly excluded in witness.
+    /// 4. `GenerationMismatch`: authorized generation differed from observed generation.
+    /// 5. `CoverageWitnessUncertified`: completeness or stop reason did not certify absence.
+    /// 6. `NoCoverageWitness`: no coverage witness registered for domain.
+    ///
+    /// Canonical precedence rationale:
+    /// - `CoverageRegistryCapacityExceeded` (fail-closed): when the store reached
+    ///   `MAX_STORE_COVERAGE_WITNESSES`, subsequent witness registrations were refused.
+    ///   Because unadmitted witnesses may have reported continuity gaps or exclusions,
+    ///   absence cannot be safely certified.
+    /// - `CoverageWitnessGapped` (physical continuity failure): under AGENTS.md, treating missing
+    ///   detection during a coverage gap as absence is strictly prohibited. Continuity breach
+    ///   invalidates any claim of absence regardless of whether the domain was also excluded
+    ///   or uncertified.
+    /// - `ExcludedDomain` (explicit spatial/logical exclusion): if continuity was preserved,
+    ///   but the domain was explicitly excluded from monitoring scope, no observation occurred.
+    /// - `GenerationMismatch` (authority/configuration drift): the sensor observed under an
+    ///   unapproved or stale generation (`authorized_generation != observed_generation` or 0).
+    /// - `CoverageWitnessUncertified` (completeness / stop-reason deficit): the sensor observed
+    ///   continuously on the authorized generation without excluding the domain, but completed
+    ///   with partial completeness, a non-Complete stop reason, or did not certify absence.
+    /// - `NoCoverageWitness`: no witness was registered for the requested domain.
+    ///
+    /// If `domain` is empty or reserved unknown, returns `[UnknownDomain]`.
+    /// If all matching witnesses certify absence and no non-observability conditions apply,
+    /// returns an empty vector.
+    #[must_use]
+    pub fn coverage_non_observability_reasons(&self, domain: &str) -> Vec<NotObservableReason> {
         if is_unknown_domain(domain) {
-            return EventReadResult::NotObservable {
-                domain: domain.to_string(),
-                reason: NotObservableReason::UnknownDomain,
-            };
+            return vec![NotObservableReason::UnknownDomain];
         }
 
-        let candidate = self
+        let mut reasons = Vec::with_capacity(4);
+
+        if self.refused_coverage_domains.contains(domain) {
+            reasons.push(NotObservableReason::CoverageRegistryCapacityExceeded);
+        }
+
+        let matching: Vec<&CoverageWitness> = self
             .coverage_witnesses
             .iter()
-            .find(|w| w.observed_domain.iter().any(|d| d == domain));
+            .filter(|w| w.observed_domain.iter().any(|d| d == domain))
+            .collect();
 
-        let witness = match candidate {
-            Some(w) => w,
-            None => {
-                return EventReadResult::NotObservable {
-                    domain: domain.to_string(),
-                    reason: NotObservableReason::NoCoverageWitness,
-                };
-            }
-        };
-
-        if witness.excluded_domain.iter().any(|d| d == domain) {
-            return EventReadResult::NotObservable {
-                domain: domain.to_string(),
-                reason: NotObservableReason::ExcludedDomain {
-                    domain: domain.to_string(),
-                },
-            };
+        if matching.is_empty() {
+            reasons.push(NotObservableReason::NoCoverageWitness);
+            return reasons;
         }
 
-        if witness.continuity != CoverageContinuity::Continuous {
-            return EventReadResult::NotObservable {
-                domain: domain.to_string(),
-                reason: NotObservableReason::CoverageWitnessGapped,
-            };
-        }
-
-        if witness.completeness != Completeness::Complete
-            || witness.stop_reason != CoverageStopReason::Complete
+        if matching
+            .iter()
+            .any(|w| w.continuity != CoverageContinuity::Continuous)
         {
-            return EventReadResult::NotObservable {
-                domain: domain.to_string(),
-                reason: NotObservableReason::CoverageWitnessUncertified,
-            };
+            reasons.push(NotObservableReason::CoverageWitnessGapped);
         }
 
-        if witness.authorized_generation == 0
-            || witness.authorized_generation != witness.observed_generation
+        if matching
+            .iter()
+            .any(|w| w.excluded_domain.iter().any(|d| d == domain))
         {
+            reasons.push(NotObservableReason::ExcludedDomain {
+                domain: domain.to_string(),
+            });
+        }
+
+        if let Some(mismatched) = matching
+            .iter()
+            .filter(|w| {
+                w.authorized_generation == 0 || w.authorized_generation != w.observed_generation
+            })
+            .min_by_key(|w| {
+                (
+                    w.authorized_generation,
+                    w.observed_generation,
+                    w.witness_digest(),
+                )
+            })
+        {
+            reasons.push(NotObservableReason::GenerationMismatch {
+                expected: mismatched.authorized_generation,
+                observed: mismatched.observed_generation,
+            });
+        }
+
+        if matching.iter().any(|w| {
+            w.completeness != Completeness::Complete
+                || w.stop_reason != CoverageStopReason::Complete
+                || w.negative_predicate.trim().is_empty()
+                || w.authorized_domain != w.observed_domain
+                || (w.continuity == CoverageContinuity::Continuous
+                    && !w.excluded_domain.iter().any(|d| d == domain)
+                    && w.authorized_generation > 0
+                    && w.authorized_generation == w.observed_generation
+                    && !w.certifies_absence())
+        }) {
+            reasons.push(NotObservableReason::CoverageWitnessUncertified);
+        }
+
+        reasons
+    }
+
+    fn evaluate_coverage_for_absent(&self, domain: &str) -> EventReadResult<'_> {
+        let reasons = self.coverage_non_observability_reasons(domain);
+
+        if let Some(primary_reason) = reasons.first() {
             return EventReadResult::NotObservable {
                 domain: domain.to_string(),
-                reason: NotObservableReason::GenerationMismatch {
-                    expected: witness.authorized_generation,
-                    observed: witness.observed_generation,
-                },
+                reason: primary_reason.clone(),
+                all_reasons: reasons,
             };
         }
 
-        if !witness.certifies_absence() {
-            return EventReadResult::NotObservable {
+        // All matching witnesses certify absence and no non-observability conditions apply.
+        // Deterministically select the witness with lowest digest.
+        match self
+            .coverage_witnesses
+            .iter()
+            .filter(|w| w.observed_domain.iter().any(|d| d == domain))
+            .min_by_key(|w| w.witness_digest())
+        {
+            Some(certifying_witness) => EventReadResult::AbsentWithCoverage(certifying_witness),
+            None => EventReadResult::NotObservable {
                 domain: domain.to_string(),
-                reason: NotObservableReason::CoverageWitnessUncertified,
-            };
+                reason: NotObservableReason::NoCoverageWitness,
+                all_reasons: vec![NotObservableReason::NoCoverageWitness],
+            },
         }
-
-        EventReadResult::AbsentWithCoverage(witness)
     }
 }
 
