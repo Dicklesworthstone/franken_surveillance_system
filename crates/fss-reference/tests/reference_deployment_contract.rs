@@ -14,10 +14,9 @@ use fss_ledger::{DurableLedgerError, doctor_path};
 use fss_object::ObjectManifest;
 use fss_publication::SlotName;
 use fss_reference::{
-    AFFORDANCE_DOCTOR_REPAIR, DEPLOYMENT_CANCEL_STAGES, DEPLOYMENT_LAYOUT_FILENAME,
-    DeploymentLayout, DeploymentLimits, KNOWN_LEDGER_DELTA_FAMILIES, RecoveryAction,
-    RecoveryReceipt, ReferenceAlertPlan, ReferenceDeployment, ReferenceError,
-    ReferenceProviderBehavior, ReplayCx,
+    DEPLOYMENT_CANCEL_STAGES, DEPLOYMENT_LAYOUT_FILENAME, DeploymentLayout, DeploymentLimits,
+    KNOWN_LEDGER_DELTA_FAMILIES, RecoveryAction, RecoveryReceipt, ReferenceAlertPlan,
+    ReferenceDeployment, ReferenceError, ReferenceProviderBehavior, ReplayCx,
 };
 
 fn temp_deployment_dir(tag: &str) -> Result<PathBuf, Box<dyn Error>> {
@@ -37,10 +36,33 @@ fn sample_interval(start: u64, end: u64) -> Result<CaptureInterval, Box<dyn Erro
     Ok(CaptureInterval::new(earliest, latest)?)
 }
 
+fn test_cx(label: &str) -> Result<ReplayCx, Box<dyn Error>> {
+    let spec = fss_core::RootAuthoritySpec {
+        trace_id: format!("trace:test-{label}"),
+        operation_id: OperationId::parse(format!("operation:test-{label}"))?,
+        principal: format!("operator:test-{label}"),
+        capabilities: vec![fss_reference::ADP_REPLAY_ROW_ID.to_string()],
+        deadline: None,
+        priority: 10,
+        budgets: fss_core::BudgetVector::default(),
+        privacy_scope: "privacy:internal".to_string(),
+        retention_scope: "retention:ephemeral".to_string(),
+        anchor_universe: ContentDigest::sha256(b"test-anchor-universe"),
+        generation: 1,
+    };
+    let root_auth = fss_core::ContextAuthority::new_root(spec)?;
+    let scratch_root = std::env::var_os("CARGO_TARGET_TMPDIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join(format!("test-replay-cx-{label}-{}", std::process::id()));
+    let io = fss_reference::ReplayIoAuthority::from_context_authority(&root_auth, scratch_root)?;
+    Ok(ReplayCx::new(io))
+}
+
 #[test]
 fn open_and_reopen_empty_and_existing_root() -> Result<(), Box<dyn Error>> {
     let dir = temp_deployment_dir("open-reopen")?;
-    let cx = ReplayCx::for_test();
+    let cx = test_cx("open-reopen")?;
 
     // 1. Open empty root creates all required directories and LAYOUT.
     let mut dep = ReferenceDeployment::open(&dir, "site:deploy:test", &cx)?;
@@ -75,7 +97,7 @@ fn open_and_reopen_empty_and_existing_root() -> Result<(), Box<dyn Error>> {
 #[test]
 fn not_a_deployment_on_non_empty_root_without_layout() -> Result<(), Box<dyn Error>> {
     let dir = temp_deployment_dir("not-a-deployment")?;
-    let cx = ReplayCx::for_test();
+    let cx = test_cx("not-a-deployment")?;
 
     // Populate directory with foreign file and no LAYOUT.
     fs::write(dir.join("foreign.txt"), b"foreign data")?;
@@ -106,7 +128,7 @@ fn not_a_deployment_on_non_empty_root_without_layout() -> Result<(), Box<dyn Err
 fn path_independence_produces_identical_digests_and_anchors() -> Result<(), Box<dyn Error>> {
     let dir_a = temp_deployment_dir("path-indep-a")?;
     let dir_b = temp_deployment_dir("path-indep-b")?;
-    let cx = ReplayCx::for_test();
+    let cx = test_cx("path-indep")?;
 
     let mut dep_a = ReferenceDeployment::open(&dir_a, "site:path:indep", &cx)?;
     let mut dep_b = ReferenceDeployment::open(&dir_b, "site:path:indep", &cx)?;
@@ -142,7 +164,7 @@ fn path_independence_produces_identical_digests_and_anchors() -> Result<(), Box<
 #[test]
 fn second_concurrent_open_returns_deployment_locked() -> Result<(), Box<dyn Error>> {
     let dir = temp_deployment_dir("locked")?;
-    let cx = ReplayCx::for_test();
+    let cx = test_cx("locked")?;
 
     let dep1 = ReferenceDeployment::open(&dir, "site:lock:test", &cx)?;
 
@@ -153,7 +175,12 @@ fn second_concurrent_open_returns_deployment_locked() -> Result<(), Box<dyn Erro
     };
 
     assert!(err.is_deployment_locked());
-    assert!(matches!(err, ReferenceError::DeploymentLocked { .. }));
+    match err {
+        ReferenceError::DeploymentLocked { path } => {
+            assert_eq!(path, dir.join("objects").join("LOCK"));
+        }
+        other => return Err(format!("expected DeploymentLocked, got {other:?}").into()),
+    }
 
     // Drop first deployment; second open now succeeds.
     drop(dep1);
@@ -167,7 +194,7 @@ fn second_concurrent_open_returns_deployment_locked() -> Result<(), Box<dyn Erro
 #[test]
 fn refused_second_open_leaves_both_journals_byte_identical() -> Result<(), Box<dyn Error>> {
     let dir = temp_deployment_dir("journals-untouched")?;
-    let cx = ReplayCx::for_test();
+    let cx = test_cx("journals-untouched")?;
 
     let mut dep1 = ReferenceDeployment::open(&dir, "site:untouched", &cx)?;
     let slot = SlotName::parse("slot-untouched")?;
@@ -203,7 +230,7 @@ fn refused_second_open_leaves_both_journals_byte_identical() -> Result<(), Box<d
 fn incomplete_journal_tail_surfaces_typed_error_and_open_for_recovery_truncates()
 -> Result<(), Box<dyn Error>> {
     let dir = temp_deployment_dir("incomplete-tail")?;
-    let cx = ReplayCx::for_test();
+    let cx = test_cx("incomplete-tail")?;
 
     let mut dep = ReferenceDeployment::open(&dir, "site:tail:test", &cx)?;
     let slot = SlotName::parse("slot-tail")?;
@@ -255,10 +282,13 @@ fn incomplete_journal_tail_surfaces_typed_error_and_open_for_recovery_truncates(
             path,
             committed_len,
             truncated_bytes,
+            last_root_before,
+            last_root_after,
         } => {
             assert_eq!(path, ledger_path);
             assert_eq!(committed_len, len_before);
             assert_eq!(truncated_bytes, 8 + 2 + 17); // magic (8) + version (2) + torn text (17)
+            assert_eq!(last_root_before, last_root_after);
         }
         other => return Err(format!("unexpected recovery receipt: {other:?}").into()),
     }
@@ -274,7 +304,7 @@ fn incomplete_journal_tail_surfaces_typed_error_and_open_for_recovery_truncates(
 #[test]
 fn recovery_refuses_corrupt_history_with_structurally_valid_record() -> Result<(), Box<dyn Error>> {
     let dir = temp_deployment_dir("corrupt-history")?;
-    let cx = ReplayCx::for_test();
+    let cx = test_cx("corrupt-history")?;
 
     let mut dep = ReferenceDeployment::open(&dir, "site:history:test", &cx)?;
     let slot = SlotName::parse("slot-history")?;
@@ -357,7 +387,7 @@ fn recovery_refuses_corrupt_history_with_structurally_valid_record() -> Result<(
 #[test]
 fn recovery_applies_sealed_repair_for_non_record_foreign_bytes() -> Result<(), Box<dyn Error>> {
     let dir = temp_deployment_dir("quarantine-garbage")?;
-    let cx = ReplayCx::for_test();
+    let cx = test_cx("quarantine-garbage")?;
 
     let mut dep = ReferenceDeployment::open(&dir, "site:garbage:test", &cx)?;
     let slot = SlotName::parse("slot-garbage")?;
@@ -407,7 +437,7 @@ fn recovery_applies_sealed_repair_for_non_record_foreign_bytes() -> Result<(), B
 #[test]
 fn append_batch_idempotency_and_conflict() -> Result<(), Box<dyn Error>> {
     let dir = temp_deployment_dir("batch-idempotency")?;
-    let cx = ReplayCx::for_test();
+    let cx = test_cx("batch-idempotency")?;
 
     let mut dep = ReferenceDeployment::open(&dir, "site:batch:idemp", &cx)?;
     let payload_digest_1 = dep.stage_payload(b"batch-payload-1")?;
@@ -500,7 +530,6 @@ fn append_batch_idempotency_and_conflict() -> Result<(), Box<dyn Error>> {
         vec![payload_digest_1],
         &cx,
     );
-    assert!(conflict_err.is_err());
     assert!(matches!(
         conflict_err,
         Err(ReferenceError::DurableLedger(ref boxed))
@@ -514,7 +543,7 @@ fn append_batch_idempotency_and_conflict() -> Result<(), Box<dyn Error>> {
 #[test]
 fn capacity_limits_refusals_name_limits() -> Result<(), Box<dyn Error>> {
     let dir = temp_deployment_dir("capacity-limits")?;
-    let cx = ReplayCx::for_test();
+    let cx = test_cx("capacity-limits")?;
 
     let dep = ReferenceDeployment::open(&dir, "site:capacity:test", &cx)?;
 
@@ -531,7 +560,6 @@ fn capacity_limits_refusals_name_limits() -> Result<(), Box<dyn Error>> {
         ReferenceDeployment::open_with_limits(&dir, "site:capacity:test", custom_limits, &cx)?;
 
     let err = dep_limited.stage_payload(&huge_payload);
-    assert!(err.is_err());
     match err {
         Err(ReferenceError::CapacityExceeded {
             limit,
@@ -552,13 +580,32 @@ fn capacity_limits_refusals_name_limits() -> Result<(), Box<dyn Error>> {
 #[test]
 fn simulated_alert_dispatch_routes_through_deployment_provider() -> Result<(), Box<dyn Error>> {
     let dir = temp_deployment_dir("alert-dispatch")?;
-    let cx = ReplayCx::for_test();
+    let cx = test_cx("alert-dispatch")?;
 
     let mut dep = ReferenceDeployment::open(&dir, "site:alert:dispatch", &cx)?;
 
-    // Prepare an alert in the effect journal.
-    let event_root = ContentDigest::sha256(b"event-root");
-    let event_revision_digest = ContentDigest::sha256(b"rev-digest");
+    // Publish event revision in the deployment ledger to satisfy event authority revalidation.
+    let event_root = dep.stage_payload(b"event-root-data")?;
+    let event_revision_digest = dep.stage_payload(b"rev-digest-data")?;
+    let event_delta = EvidenceDelta {
+        delta_id: "delta:event:001".to_owned(),
+        family: "event_revision".to_owned(),
+        object_id: ObjectId::parse("object:event:001")?,
+        prior_generation: None,
+        new_generation: 1,
+        validity: sample_interval(100, 200)?,
+        plane: Plane::Authority,
+        payload_digest: event_root,
+        witness_digest: Some(event_revision_digest),
+        operation_id: None,
+    };
+    let authority_anchor = dep.append_batch(
+        BatchId::parse("batch:event:001")?,
+        vec![event_delta],
+        vec![event_root, event_revision_digest],
+        &cx,
+    )?;
+
     let channel = "simulated-channel".to_owned();
 
     let mut req_enc = fss_core::CanonicalEncoder::new();
@@ -579,6 +626,7 @@ fn simulated_alert_dispatch_routes_through_deployment_provider() -> Result<(), B
         obligation_id: fss_core::ObligationId::parse("ob:alert:001")?,
         event_root,
         event_revision_digest,
+        authority_anchor,
         channel,
     };
 
@@ -613,14 +661,14 @@ fn simulated_alert_dispatch_routes_through_deployment_provider() -> Result<(), B
 #[test]
 fn cooperative_cancellation_aborts_operations_and_drains() -> Result<(), Box<dyn Error>> {
     let dir = temp_deployment_dir("cancellation")?;
-    let cx = ReplayCx::for_test();
+    let cx = test_cx("cancellation")?;
     cx.request_cancellation();
 
-    let mut dep = ReferenceDeployment::open(&dir, "site:cancel:test", &ReplayCx::for_test())?;
+    let cx_open = test_cx("cancellation-open")?;
+    let mut dep = ReferenceDeployment::open(&dir, "site:cancel:test", &cx_open)?;
     let slot = SlotName::parse("slot-cancel")?;
 
     let res = dep.stage_and_publish(&slot, &[b"payload"], &cx);
-    assert!(res.is_err());
     assert!(cx.is_drain_completed());
     match res {
         Err(ReferenceError::CancellationRequested { stage }) => {
@@ -645,6 +693,4 @@ fn exported_constants_and_tables_integrity() {
     for stage in DEPLOYMENT_CANCEL_STAGES {
         assert!(!stage.is_empty());
     }
-
-    assert_eq!(AFFORDANCE_DOCTOR_REPAIR, "fss doctor --root <dir>");
 }

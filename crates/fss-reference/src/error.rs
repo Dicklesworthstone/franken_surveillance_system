@@ -6,8 +6,10 @@ use std::path::PathBuf;
 
 use fss_core::{ContentDigest, ContractError, TimestampNs};
 use fss_ledger::{DurableLedgerError, JournalError, RepairError};
-use fss_object::ObjectError;
-use fss_publication::{LocalPublicationError, PublicationError, RootLedgerError};
+use fss_object::{ObjectError, SpoolError};
+use fss_publication::{
+    CapacityResource, LocalPublicationError, PublicationError, PublishCutPoint, RootLedgerError,
+};
 
 use crate::durable_effect::DurableEffectError;
 
@@ -468,13 +470,77 @@ impl From<JournalError> for ReferenceError {
 
 impl From<LocalPublicationError> for ReferenceError {
     fn from(value: LocalPublicationError) -> Self {
-        Self::LocalPublication(Box::new(value))
+        match value {
+            LocalPublicationError::Locked { path } => Self::DeploymentLocked { path },
+            LocalPublicationError::Cancelled { point } => Self::CancellationRequested {
+                stage: match point {
+                    PublishCutPoint::AfterChildrenVerified => "after_children_verified",
+                    PublishCutPoint::AfterManifestBody => "after_manifest_body",
+                    PublishCutPoint::AfterRootTempWrite => "after_root_temp_write",
+                    PublishCutPoint::AfterRootRename => "after_root_rename",
+                },
+            },
+            LocalPublicationError::Spool(SpoolError::ByteQuotaExceeded {
+                current,
+                requested,
+                maximum,
+            }) => Self::CapacityExceeded {
+                limit: "spool_total_max_bytes",
+                maximum,
+                actual: current.saturating_add(requested),
+            },
+            LocalPublicationError::Spool(SpoolError::ObjectCountLimit { current, maximum }) => {
+                Self::CapacityExceeded {
+                    limit: "spool_max_objects",
+                    maximum: maximum as u64,
+                    actual: (current + 1) as u64,
+                }
+            }
+            LocalPublicationError::Spool(SpoolError::ObjectTooLarge { length, maximum }) => {
+                Self::CapacityExceeded {
+                    limit: "spool_object_max_bytes",
+                    maximum: maximum as u64,
+                    actual: length as u64,
+                }
+            }
+            LocalPublicationError::Capacity {
+                resource,
+                current,
+                maximum,
+            } => {
+                let limit = match resource {
+                    CapacityResource::Roots => "max_roots",
+                    CapacityResource::Tombstones => "max_tombstones",
+                };
+                Self::CapacityExceeded {
+                    limit,
+                    maximum: maximum as u64,
+                    actual: (current + 1) as u64,
+                }
+            }
+            LocalPublicationError::ManifestChildBound { count, maximum } => {
+                Self::CapacityExceeded {
+                    limit: "manifest_children_max",
+                    maximum: maximum as u64,
+                    actual: count as u64,
+                }
+            }
+            LocalPublicationError::EntryLimit { maximum, .. } => Self::CapacityExceeded {
+                limit: "scan_max_objects",
+                maximum: maximum as u64,
+                actual: (maximum + 1) as u64,
+            },
+            other => Self::LocalPublication(Box::new(other)),
+        }
     }
 }
 
 impl From<RootLedgerError> for ReferenceError {
     fn from(value: RootLedgerError) -> Self {
-        Self::RootLedger(Box::new(value))
+        match value {
+            RootLedgerError::Local(local) => Self::from(local),
+            other => Self::RootLedger(Box::new(other)),
+        }
     }
 }
 

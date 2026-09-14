@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 
 use fss_core::{
     BatchId, CanonicalEncode, CanonicalEncoder, CaptureInterval, ContentDigest, ContractError,
-    EventId, EvidenceDelta, HandoffCapsule, HandoffId, LedgerAnchor, OperationReceipt, TimestampNs,
+    EventId, EvidenceDelta, EvidenceDeltaBatch, HandoffCapsule, HandoffId, LedgerAnchor,
+    OperationReceipt, TimestampNs,
 };
 use fss_ledger::{
     DurableLedgerError, DurableReferenceLedger, IncompleteTailPolicy, JournalError, RepairReceipt,
@@ -50,9 +51,6 @@ pub const RELATIVE_PATH_LEDGER: &str = "ledger/journal.fssj";
 pub const RELATIVE_PATH_OBJECTS: &str = "objects";
 /// Relative path to durable effect journal.
 pub const RELATIVE_PATH_EFFECTS: &str = "effects/journal.fssj";
-
-/// Stable next affordance recommendation for an incomplete journal tail.
-pub const AFFORDANCE_DOCTOR_REPAIR: &str = "fss doctor --root <dir>";
 
 /// Registered ledger delta family: sensor capsule.
 pub const FAMILY_SENSOR_CAPSULE: &str = "sensor_capsule";
@@ -94,6 +92,8 @@ pub const STAGE_STAGE_OBJECTS: &str = "stage_objects";
 pub const STAGE_STAGE_MANIFEST: &str = "stage_manifest";
 /// Replay cancellation stage: publish root.
 pub const STAGE_PUBLISH_ROOT: &str = "publish_root";
+/// Replay cancellation stage: publish event.
+pub const STAGE_PUBLISH_EVENT: &str = "publish_event";
 /// Replay cancellation stage: append batch.
 pub const STAGE_APPEND_BATCH: &str = "append_batch";
 /// Replay cancellation stage: evaluate policy.
@@ -104,8 +104,6 @@ pub const STAGE_DISPATCH_ALERT: &str = "dispatch_alert";
 pub const STAGE_COMPILE_SITUATION: &str = "compile_situation";
 /// Replay cancellation stage: seal handoff.
 pub const STAGE_SEAL_HANDOFF: &str = "seal_handoff";
-/// Replay cancellation stage: reconcile.
-pub const STAGE_RECONCILE: &str = "reconcile";
 
 /// Exported list of all deployment cancellation checkpoint stages.
 pub const DEPLOYMENT_CANCEL_STAGES: &[&str] = &[
@@ -113,13 +111,133 @@ pub const DEPLOYMENT_CANCEL_STAGES: &[&str] = &[
     STAGE_STAGE_OBJECTS,
     STAGE_STAGE_MANIFEST,
     STAGE_PUBLISH_ROOT,
+    STAGE_PUBLISH_EVENT,
     STAGE_APPEND_BATCH,
     STAGE_EVALUATE_POLICY,
     STAGE_DISPATCH_ALERT,
     STAGE_COMPILE_SITUATION,
     STAGE_SEAL_HANDOFF,
-    STAGE_RECONCILE,
 ];
+
+/// Validates that `site_lineage` meets token grammar constraints.
+///
+/// Refuses empty strings, whitespace, control characters, and non-ASCII characters.
+pub fn validate_site_lineage(lineage: &str) -> Result<(), ReferenceError> {
+    if lineage.is_empty() {
+        return Err(ReferenceError::InvalidSpec("deployment site_lineage is empty"));
+    }
+    if lineage.contains(|c: char| c.is_whitespace() || c.is_control()) {
+        return Err(ReferenceError::InvalidSpec(
+            "deployment site_lineage contains whitespace or control characters",
+        ));
+    }
+    if !lineage.chars().all(|c| c.is_ascii_graphic()) {
+        return Err(ReferenceError::InvalidSpec(
+            "deployment site_lineage must consist of ASCII graphic characters",
+        ));
+    }
+    Ok(())
+}
+
+fn is_skeleton_or_empty(root: &Path) -> Result<bool, ReferenceError> {
+    if !root.exists() {
+        return Ok(true);
+    }
+    if !root.is_dir() {
+        return Ok(false);
+    }
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let s = name.to_string_lossy();
+        if s == DEPLOYMENT_LAYOUT_FILENAME {
+            continue;
+        }
+        if s.starts_with("LAYOUT.tmp.") {
+            continue;
+        }
+        if s == "objects" {
+            let path = entry.path();
+            if path.is_dir() {
+                for sub in fs::read_dir(&path)? {
+                    let sub = sub?;
+                    let sub_name = sub.file_name();
+                    let sub_s = sub_name.to_string_lossy();
+                    if sub_s == "LOCK" || sub_s.starts_with("LOCK.tmp.") {
+                        continue;
+                    }
+                    if sub_s == "roots" || sub_s == "tombstones" {
+                        let sub_path = sub.path();
+                        if sub_path.is_dir() {
+                            if fs::read_dir(&sub_path)?.next().is_some() {
+                                return Ok(false);
+                            }
+                            continue;
+                        }
+                        return Ok(false);
+                    }
+                    if sub_s == "spool" {
+                        let sub_path = sub.path();
+                        if sub_path.is_dir() {
+                            for inner in fs::read_dir(&sub_path)? {
+                                let inner = inner?;
+                                let inner_name = inner.file_name();
+                                let inner_s = inner_name.to_string_lossy();
+                                if inner_s == "LOCK" || inner_s.starts_with("LOCK.tmp.") {
+                                    continue;
+                                }
+                                if (inner_s == "objects"
+                                    || inner_s == "staging"
+                                    || inner_s == "verified"
+                                    || inner_s == "verified.tmp"
+                                    || inner_s == "holds"
+                                    || inner_s == "staged"
+                                    || inner_s == "corrupt")
+                                    && inner.path().is_dir()
+                                {
+                                    if fs::read_dir(inner.path())?.next().is_some() {
+                                        return Ok(false);
+                                    }
+                                    continue;
+                                }
+                                return Ok(false);
+                            }
+                            continue;
+                        }
+                        return Ok(false);
+                    }
+                    return Ok(false);
+                }
+                continue;
+            }
+            return Ok(false);
+        }
+        if s == "ledger" {
+            let path = entry.path();
+            if path.is_dir() {
+                let j = path.join("journal.fssj");
+                if j.exists() && fs::metadata(&j)?.len() > 0 {
+                    return Ok(false);
+                }
+                continue;
+            }
+            return Ok(false);
+        }
+        if s == "effects" {
+            let path = entry.path();
+            if path.is_dir() {
+                let j = path.join("journal.fssj");
+                if j.exists() && fs::metadata(&j)?.len() > 0 {
+                    return Ok(false);
+                }
+                continue;
+            }
+            return Ok(false);
+        }
+        return Ok(false);
+    }
+    Ok(true)
+}
 
 const ROOT_DOMAIN: &[u8] = b"FSS-JOURNAL-RECORD-ROOT-V1\0";
 const RECORD_MAGIC: [u8; 8] = *b"FSSJRN01";
@@ -144,6 +262,15 @@ fn compute_record_root(
     bytes.extend_from_slice(previous_root);
     bytes.extend_from_slice(payload_digest);
     fss_core::sha256(&bytes)
+}
+
+fn delta_order_key(delta: &EvidenceDelta) -> (&str, &str, u64, &str) {
+    (
+        delta.family.as_str(),
+        delta.object_id.as_str(),
+        delta.new_generation,
+        delta.delta_id.as_str(),
+    )
 }
 
 fn read_u16(bytes: &[u8], offset: usize) -> u16 {
@@ -257,6 +384,14 @@ pub struct DeploymentLimits {
     pub batch_entries_max: usize,
     /// Maximum size of a single journal record payload in bytes (default: 16 MiB).
     pub journal_record_max_bytes: u32,
+    /// Maximum visible roots (default: 128).
+    pub max_roots: usize,
+    /// Maximum durable tombstones (default: 128).
+    pub max_tombstones: usize,
+    /// Maximum unique staged objects in the spool (default: 65,536).
+    pub spool_max_objects: usize,
+    /// Maximum entries listed from directory on open (default: 4,096).
+    pub scan_max_objects: usize,
 }
 
 impl Default for DeploymentLimits {
@@ -276,6 +411,14 @@ impl DeploymentLimits {
     pub const STANDARD_BATCH_ENTRIES_MAX: usize = 16_384;
     /// Standard 16 MiB journal record payload maximum.
     pub const STANDARD_JOURNAL_RECORD_MAX_BYTES: u32 = 16 * 1024 * 1024;
+    /// Standard 128 visible roots maximum.
+    pub const STANDARD_MAX_ROOTS: usize = 128;
+    /// Standard 128 durable tombstones maximum.
+    pub const STANDARD_MAX_TOMBSTONES: usize = 128;
+    /// Standard 65,536 spool objects maximum.
+    pub const STANDARD_SPOOL_MAX_OBJECTS: usize = 65_536;
+    /// Standard 4,096 directory entries scan maximum.
+    pub const STANDARD_SCAN_MAX_OBJECTS: usize = 4096;
 
     /// Standard deployment bounds.
     #[must_use]
@@ -286,6 +429,10 @@ impl DeploymentLimits {
             manifest_children_max: Self::STANDARD_MANIFEST_CHILDREN_MAX,
             batch_entries_max: Self::STANDARD_BATCH_ENTRIES_MAX,
             journal_record_max_bytes: Self::STANDARD_JOURNAL_RECORD_MAX_BYTES,
+            max_roots: Self::STANDARD_MAX_ROOTS,
+            max_tombstones: Self::STANDARD_MAX_TOMBSTONES,
+            spool_max_objects: Self::STANDARD_SPOOL_MAX_OBJECTS,
+            scan_max_objects: Self::STANDARD_SCAN_MAX_OBJECTS,
         }
     }
 
@@ -298,6 +445,10 @@ impl DeploymentLimits {
         encoder.u64(self.manifest_children_max as u64);
         encoder.u64(self.batch_entries_max as u64);
         encoder.u32(self.journal_record_max_bytes);
+        encoder.u64(self.max_roots as u64);
+        encoder.u64(self.max_tombstones as u64);
+        encoder.u64(self.spool_max_objects as u64);
+        encoder.u64(self.scan_max_objects as u64);
         let bytes = encoder.finish_checked()?;
         Ok(ContentDigest::sha256(&bytes))
     }
@@ -309,12 +460,18 @@ impl DeploymentLimits {
             Ok(n) => n,
             Err(_) => usize::MAX,
         };
+        let spool_scan = self.spool_max_objects.max(self.scan_max_objects);
         LocalPublicationLimits::new(
-            128,
+            self.max_roots,
             self.manifest_children_max,
-            128,
-            4096,
-            SpoolLimits::new(4096, self.spool_total_max_bytes, max_object_bytes, 4096),
+            self.max_tombstones,
+            self.scan_max_objects.max(self.max_roots).max(self.max_tombstones),
+            SpoolLimits::new(
+                self.spool_max_objects,
+                self.spool_total_max_bytes,
+                max_object_bytes,
+                spool_scan,
+            ),
         )
     }
 }
@@ -397,32 +554,77 @@ impl DeploymentLayout {
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            let (key, value) = if let Some((k, v)) = line.split_once('=') {
-                (k.trim(), v.trim())
-            } else if let Some((k, v)) = line.split_once(':') {
-                (k.trim(), v.trim())
-            } else {
-                continue;
+            let Some((key, value)) = line.split_once('=') else {
+                return Err(ReferenceError::InvalidSpec(
+                    "layout line must use '=' separator",
+                ));
             };
+            let key = key.trim();
+            let value = value.trim();
 
             match key {
-                "schema" => schema = Some(value.to_owned()),
-                "version" | "format_version" => {
+                "schema" => {
+                    if schema.is_some() {
+                        return Err(ReferenceError::InvalidSpec("duplicate layout key: schema"));
+                    }
+                    schema = Some(value.to_owned());
+                }
+                "version" => {
+                    if version.is_some() {
+                        return Err(ReferenceError::InvalidSpec("duplicate layout key: version"));
+                    }
                     let v = value.parse::<u32>().map_err(|_| {
                         ReferenceError::InvalidSpec("invalid layout format version")
                     })?;
                     version = Some(v);
                 }
-                "site_lineage" => site_lineage = Some(value.to_owned()),
-                "ledger" | "ledger_relpath" => ledger = Some(value.to_owned()),
-                "objects" | "objects_relpath" => objects = Some(value.to_owned()),
-                "effects" | "effects_relpath" => effects = Some(value.to_owned()),
+                "site_lineage" => {
+                    if site_lineage.is_some() {
+                        return Err(ReferenceError::InvalidSpec(
+                            "duplicate layout key: site_lineage",
+                        ));
+                    }
+                    validate_site_lineage(value)?;
+                    site_lineage = Some(value.to_owned());
+                }
+                "ledger" => {
+                    if ledger.is_some() {
+                        return Err(ReferenceError::InvalidSpec("duplicate layout key: ledger"));
+                    }
+                    if value != RELATIVE_PATH_LEDGER {
+                        return Err(ReferenceError::InvalidSpec("invalid layout ledger relpath"));
+                    }
+                    ledger = Some(value.to_owned());
+                }
+                "objects" => {
+                    if objects.is_some() {
+                        return Err(ReferenceError::InvalidSpec("duplicate layout key: objects"));
+                    }
+                    if value != RELATIVE_PATH_OBJECTS {
+                        return Err(ReferenceError::InvalidSpec("invalid layout objects relpath"));
+                    }
+                    objects = Some(value.to_owned());
+                }
+                "effects" => {
+                    if effects.is_some() {
+                        return Err(ReferenceError::InvalidSpec("duplicate layout key: effects"));
+                    }
+                    if value != RELATIVE_PATH_EFFECTS {
+                        return Err(ReferenceError::InvalidSpec("invalid layout effects relpath"));
+                    }
+                    effects = Some(value.to_owned());
+                }
                 "limits_digest" => {
+                    if limits_digest.is_some() {
+                        return Err(ReferenceError::InvalidSpec(
+                            "duplicate layout key: limits_digest",
+                        ));
+                    }
                     let digest = ContentDigest::parse(value)
                         .map_err(|_| ReferenceError::InvalidSpec("invalid layout limits digest"))?;
                     limits_digest = Some(digest);
                 }
-                _ => {}
+                _ => return Err(ReferenceError::InvalidSpec("unknown layout key")),
             }
         }
 
@@ -456,6 +658,7 @@ impl DeploymentLayout {
 }
 
 fn write_layout_atomic(root: &Path, layout: &DeploymentLayout) -> Result<(), ReferenceError> {
+    validate_site_lineage(&layout.site_lineage)?;
     let layout_path = root.join(DEPLOYMENT_LAYOUT_FILENAME);
     let temp_path = root.join(format!(
         "{}.tmp.{}",
@@ -473,9 +676,8 @@ fn write_layout_atomic(root: &Path, layout: &DeploymentLayout) -> Result<(), Ref
         file.sync_all()?;
     }
     fs::rename(&temp_path, &layout_path)?;
-    if let Ok(dir) = fs::File::open(root) {
-        let _ = dir.sync_all();
-    }
+    let dir = fs::File::open(root)?;
+    dir.sync_all()?;
     Ok(())
 }
 
@@ -509,6 +711,10 @@ pub enum RecoveryReceipt {
         committed_len: u64,
         /// Number of incomplete trailing bytes truncated.
         truncated_bytes: u64,
+        /// Last root digest before truncation.
+        last_root_before: ContentDigest,
+        /// Last root digest after truncation.
+        last_root_after: ContentDigest,
     },
     /// Incomplete effect tail was truncated.
     TruncatedEffectTail {
@@ -518,6 +724,10 @@ pub enum RecoveryReceipt {
         committed_len: u64,
         /// Number of incomplete trailing bytes truncated.
         truncated_bytes: u64,
+        /// Last root digest before truncation.
+        last_root_before: ContentDigest,
+        /// Last root digest after truncation.
+        last_root_after: ContentDigest,
     },
     /// Sealed ledger repair plan was applied.
     AppliedLedgerRepair(RepairReceipt),
@@ -578,27 +788,20 @@ impl ReferenceDeployment {
             });
         }
 
+        validate_site_lineage(site_lineage)?;
+
         let root_buf = root.to_path_buf();
+        if root.exists() && !root.is_dir() {
+            return Err(ReferenceError::NotADeployment { path: root_buf });
+        }
+
         let ledger_path = root.join(RELATIVE_PATH_LEDGER);
         let objects_dir = root.join(RELATIVE_PATH_OBJECTS);
         let effects_path = root.join(RELATIVE_PATH_EFFECTS);
         let layout_path = root.join(DEPLOYMENT_LAYOUT_FILENAME);
 
-        // Check if root exists and whether it is a non-empty directory lacking LAYOUT.
         if !root.exists() {
             fs::create_dir_all(root)?;
-        } else if let Some(entry) = fs::read_dir(root)?.next() {
-            let _ = entry?;
-            if !layout_path.exists() {
-                return Err(ReferenceError::NotADeployment { path: root_buf });
-            }
-        }
-
-        if let Some(parent) = ledger_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        if let Some(parent) = effects_path.parent() {
-            fs::create_dir_all(parent)?;
         }
         fs::create_dir_all(&objects_dir)?;
 
@@ -614,6 +817,14 @@ impl ReferenceDeployment {
         };
 
         // 2. Initialize or verify layout descriptor atomically.
+        if let Ok(entries) = fs::read_dir(root) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                if name.to_string_lossy().starts_with("LAYOUT.tmp.") {
+                    let _ = fs::remove_file(entry.path());
+                }
+            }
+        }
         let limits_digest = limits.canonical_digest()?;
         let layout = if layout_path.exists() {
             let content = fs::read_to_string(&layout_path)?;
@@ -630,10 +841,20 @@ impl ReferenceDeployment {
             }
             parsed
         } else {
+            if !is_skeleton_or_empty(root)? {
+                return Err(ReferenceError::NotADeployment { path: root_buf });
+            }
             let new_layout = DeploymentLayout::new(site_lineage, limits_digest);
             write_layout_atomic(root, &new_layout)?;
             new_layout
         };
+
+        if let Some(parent) = ledger_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        if let Some(parent) = effects_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
 
         // 3. Open durable authority ledger: reject incomplete tails on open.
         let ledger = match DurableReferenceLedger::open(
@@ -703,14 +924,11 @@ impl ReferenceDeployment {
         }
 
         let root_buf = root.to_path_buf();
-        let layout_path = root.join(DEPLOYMENT_LAYOUT_FILENAME);
-        if !root.exists() || !layout_path.exists() {
+        if !root.exists() || !root.is_dir() {
             return Err(ReferenceError::NotADeployment { path: root_buf });
         }
 
-        // Verify layout descriptor exists and is valid; open_for_recovery never creates LAYOUT.
-        let content = fs::read_to_string(&layout_path)?;
-        let _layout = DeploymentLayout::parse_canonical_text(&content)?;
+        let layout_path = root.join(DEPLOYMENT_LAYOUT_FILENAME);
 
         // Acquire exclusive deployment lock on <root>/objects/LOCK for the whole recovery duration.
         let objects_dir = root.join(RELATIVE_PATH_OBJECTS);
@@ -730,22 +948,49 @@ impl ReferenceDeployment {
             Err(TryLockError::Error(e)) => return Err(ReferenceError::Io(e)),
         }
 
+        // Under lock: clean up stale LAYOUT.tmp.*
+        if let Ok(entries) = fs::read_dir(root) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                if name.to_string_lossy().starts_with("LAYOUT.tmp.") {
+                    let _ = fs::remove_file(entry.path());
+                }
+            }
+        }
+
+        // Verify layout descriptor exists and is valid; open_for_recovery never creates LAYOUT.
+        if layout_path.exists() {
+            let content = fs::read_to_string(&layout_path)?;
+            let _layout = DeploymentLayout::parse_canonical_text(&content)?;
+        } else if !is_skeleton_or_empty(root)? {
+            return Err(ReferenceError::NotADeployment { path: root_buf });
+        }
+
         match action {
             RecoveryAction::TruncateIncompleteLedgerTail => {
                 let target_path = root.join(RELATIVE_PATH_LEDGER);
+                if !target_path.exists() {
+                    return Err(ReferenceError::NoIncompleteTail { path: target_path });
+                }
                 let bytes = fs::read(&target_path)?;
                 let recovery = recover_bytes(&bytes)?;
                 if recovery.incomplete_tail().is_some() {
                     let total_len = bytes.len() as u64;
                     let committed_len = recovery.committed_len();
                     let truncated_bytes = total_len.saturating_sub(committed_len);
+                    let last_root_before = recovery.last_root();
                     let file = OpenOptions::new().write(true).open(&target_path)?;
                     file.set_len(committed_len)?;
                     file.sync_all()?;
+                    let after_bytes = fs::read(&target_path)?;
+                    let after_recovery = recover_bytes(&after_bytes)?;
+                    let last_root_after = after_recovery.last_root();
                     Ok(RecoveryReceipt::TruncatedLedgerTail {
                         path: target_path,
                         committed_len,
                         truncated_bytes,
+                        last_root_before,
+                        last_root_after,
                     })
                 } else {
                     Err(ReferenceError::NoIncompleteTail { path: target_path })
@@ -753,19 +998,28 @@ impl ReferenceDeployment {
             }
             RecoveryAction::TruncateIncompleteEffectTail => {
                 let target_path = root.join(RELATIVE_PATH_EFFECTS);
+                if !target_path.exists() {
+                    return Err(ReferenceError::NoIncompleteTail { path: target_path });
+                }
                 let bytes = fs::read(&target_path)?;
                 let recovery = recover_bytes(&bytes)?;
                 if recovery.incomplete_tail().is_some() {
                     let total_len = bytes.len() as u64;
                     let committed_len = recovery.committed_len();
                     let truncated_bytes = total_len.saturating_sub(committed_len);
+                    let last_root_before = recovery.last_root();
                     let file = OpenOptions::new().write(true).open(&target_path)?;
                     file.set_len(committed_len)?;
                     file.sync_all()?;
+                    let after_bytes = fs::read(&target_path)?;
+                    let after_recovery = recover_bytes(&after_bytes)?;
+                    let last_root_after = after_recovery.last_root();
                     Ok(RecoveryReceipt::TruncatedEffectTail {
                         path: target_path,
                         committed_len,
                         truncated_bytes,
+                        last_root_before,
+                        last_root_after,
                     })
                 } else {
                     Err(ReferenceError::NoIncompleteTail { path: target_path })
@@ -829,6 +1083,9 @@ impl ReferenceDeployment {
     }
 
     /// Stages child objects and manifest body, then publishes root-last with cooperative cancellation.
+    ///
+    /// This is a stage-only local root publication: it bypasses the canonical ledger and surfaces
+    /// in [`ReferenceDeployment::reconcile`] as an uncommitted or orphaned root.
     pub fn stage_and_publish(
         &mut self,
         slot: &SlotName,
@@ -940,6 +1197,12 @@ impl ReferenceDeployment {
             });
         }
 
+        let mut deltas = deltas;
+        deltas.sort_by(|left, right| delta_order_key(left).cmp(&delta_order_key(right)));
+        let mut children = children;
+        children.sort_unstable();
+        children.dedup();
+
         // Idempotency check: check if batch_id already exists in ledger history.
         if let Some(existing) = self
             .ledger
@@ -950,19 +1213,15 @@ impl ReferenceDeployment {
             if existing.deltas == deltas && existing.children == children {
                 return Ok(existing.new_anchor.clone());
             }
-            let mut encoder = CanonicalEncoder::new();
-            existing.batch_id.encode_canonical(&mut encoder);
-            existing.basis_anchor.encode_canonical(&mut encoder);
-            existing.new_anchor.encode_canonical(&mut encoder);
-            encoder.u64(deltas.len() as u64);
-            for delta in &deltas {
-                delta.encode_canonical(&mut encoder);
-            }
-            encoder.u64(children.len() as u64);
-            for child in &children {
-                encoder.digest(*child);
-            }
-            let offered_digest = ContentDigest::sha256(&encoder.finish());
+            let candidate_batch = EvidenceDeltaBatch {
+                batch_id: batch_id.clone(),
+                basis_anchor: existing.basis_anchor.clone(),
+                new_anchor: existing.new_anchor.clone(),
+                deltas: deltas.clone(),
+                children: children.clone(),
+                batch_digest: ContentDigest::sha256(b""),
+            };
+            let offered_digest = candidate_batch.computed_digest();
             return Err(DurableLedgerError::BatchIdConflict {
                 batch_id: existing.batch_id.clone(),
                 committed_sequence: existing.new_anchor.commit_sequence,
@@ -970,6 +1229,16 @@ impl ReferenceDeployment {
                 offered_digest,
             }
             .into());
+        }
+
+        for child in &children {
+            let _ = self.publisher.verify_object(*child);
+        }
+        for delta in &deltas {
+            let _ = self.publisher.verify_object(delta.payload_digest);
+            if let Some(witness) = delta.witness_digest {
+                let _ = self.publisher.verify_object(witness);
+            }
         }
 
         let mut auth = AuthorityPublisher::new(self.publisher.spool(), &mut self.ledger);
@@ -1028,9 +1297,22 @@ impl ReferenceDeployment {
         if cx.is_cancelled() {
             cx.drain_and_finalize();
             return Err(ReferenceError::CancellationRequested {
-                stage: STAGE_PUBLISH_ROOT,
+                stage: STAGE_PUBLISH_EVENT,
             });
         }
+        let event_bytes = decision.event.canonical_bytes();
+        let _ = self.publisher.stage_object(&event_bytes)?;
+        for model_receipt in &decision.event.model_receipts {
+            let bytes = objects.read_verified(*model_receipt)?;
+            let _ = self.publisher.stage_object(bytes)?;
+        }
+        let mut revision_encoder = CanonicalEncoder::new();
+        revision_encoder.text("fss.canonical.v1");
+        revision_encoder.text("fss.event_hypothesis.v1");
+        decision.event.encode_canonical(&mut revision_encoder);
+        let revision_bytes = revision_encoder.finish();
+        let _ = self.publisher.stage_object(&revision_bytes)?;
+
         publish_reference_event(decision, objects, &mut self.ledger)
     }
 
@@ -1051,6 +1333,7 @@ impl ReferenceDeployment {
         }
         let receipt = self.effects.dispatch_alert(
             plan,
+            &self.ledger,
             behavior,
             committed_at,
             outcome_at,
