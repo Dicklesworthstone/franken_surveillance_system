@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+#![deny(clippy::wildcard_enum_match_arm)]
 //! Deterministic scalar reference executor over `fss_model_ir::ModelIrGraph`.
 //!
 //! Evaluates frozen Model IR v1 graphs over typed `fss_tensor::Tensor` instances with
@@ -28,10 +30,13 @@ pub fn deterministic_exp_f32(x: f32) -> f32 {
     if x.is_nan() {
         return x;
     }
-    if x < -87.3_f32 {
+    if x == f32::INFINITY {
+        return f32::INFINITY;
+    }
+    if x == f32::NEG_INFINITY || x < -104.0_f32 {
         return 0.0_f32;
     }
-    if x > 88.0_f32 {
+    if x > 88.722839_f32 {
         return f32::INFINITY;
     }
 
@@ -58,11 +63,12 @@ pub fn deterministic_exp_f32(x: f32) -> f32 {
 
     let poly = 1.0_f64 + r * (c1 + r * (c2 + r * (c3 + r * (c4 + r * (c5 + r * (c6 + r * c7))))));
 
-    // IEEE 754 single-precision 2^k scaling via integer exponent addition
-    let scale_bits = ((k + 127) as u32) << 23;
-    let scale_f32 = f32::from_bits(scale_bits);
+    // IEEE 754 power-of-two scaling via exact f64 exponent bias (1023)
+    let k_i64 = k as i64;
+    let scale_bits = ((k_i64 + 1023) as u64) << 52;
+    let scale_f64 = f64::from_bits(scale_bits);
 
-    (poly * (scale_f32 as f64)) as f32
+    (poly * scale_f64) as f32
 }
 
 /// Deterministic scalar single-precision logistic sigmoid function $\sigma(x) = \frac{1}{1 + e^{-x}}$.
@@ -639,15 +645,54 @@ fn compute_node_macs(
                     })?;
             Ok(total)
         }
+        OpCode::MaxPool2d => {
+            if out_ports.is_empty() {
+                return Ok(0);
+            }
+            let out_elems = out_ports[0].shape().num_elements()? as u64;
+            let (k_h, k_w) = match node.attributes().get("kernel_size") {
+                Some(fss_model_ir::AttrValue::IntList(ks)) => {
+                    let h = match ks.first() {
+                        Some(&val) => val.max(1) as u64,
+                        None => 1,
+                    };
+                    let w = match ks.get(1) {
+                        Some(&val) => val.max(1) as u64,
+                        None => h,
+                    };
+                    (h, w)
+                }
+                Some(fss_model_ir::AttrValue::Int(k)) => {
+                    let k_val = (*k).max(1) as u64;
+                    (k_val, k_val)
+                }
+                _ => (1, 1),
+            };
+            let window_work = k_h.checked_mul(k_w).ok_or(ExecError::ArithmeticOverflow {
+                operation: "maxpool kernel size",
+            })?;
+            let total =
+                out_elems
+                    .checked_mul(window_work)
+                    .ok_or(ExecError::ArithmeticOverflow {
+                        operation: "maxpool total macs",
+                    })?;
+            Ok(total)
+        }
         OpCode::Add
         | OpCode::Sub
         | OpCode::Mul
         | OpCode::Div
         | OpCode::Relu
         | OpCode::Sigmoid
-        | OpCode::MaxPool2d
-        | OpCode::Reshape
-        | OpCode::Softmax => Ok(0),
+        | OpCode::Softmax => {
+            if out_ports.is_empty() {
+                return Ok(0);
+            }
+            let out_elems = out_ports[0].shape().num_elements()? as u64;
+            Ok(out_elems)
+        }
+        OpCode::Reshape => Ok(0),
         OpCode::Gelu
         | OpCode::Silu
         | OpCode::Tanh
@@ -1128,20 +1173,34 @@ impl ScalarExecutor {
                         for cin_g in 0..c_per_g_in {
                             let cin = cin_start + cin_g;
                             for kh in 0..k_h {
-                                let ih =
-                                    (oh * stride_h + kh * dilation_h) as isize - pad_top as isize;
-                                if ih < 0 || ih >= h_in as isize {
+                                let in_h_pos = match (oh.checked_mul(stride_h))
+                                    .and_then(|s| s.checked_add(kh.checked_mul(dilation_h)?))
+                                {
+                                    Some(pos) => pos,
+                                    None => continue,
+                                };
+                                if in_h_pos < pad_top {
                                     continue;
                                 }
-                                let ih_u = ih as usize;
+                                let ih_u = in_h_pos - pad_top;
+                                if ih_u >= h_in {
+                                    continue;
+                                }
 
                                 for kw in 0..k_w {
-                                    let iw = (ow * stride_w + kw * dilation_w) as isize
-                                        - pad_left as isize;
-                                    if iw < 0 || iw >= w_in as isize {
+                                    let in_w_pos = match (ow.checked_mul(stride_w))
+                                        .and_then(|s| s.checked_add(kw.checked_mul(dilation_w)?))
+                                    {
+                                        Some(pos) => pos,
+                                        None => continue,
+                                    };
+                                    if in_w_pos < pad_left {
                                         continue;
                                     }
-                                    let iw_u = iw as usize;
+                                    let iw_u = in_w_pos - pad_left;
+                                    if iw_u >= w_in {
+                                        continue;
+                                    }
 
                                     let x_idx = ((n * c_in + cin) * h_in + ih_u) * w_in + iw_u;
                                     let w_idx = ((cout * c_per_g_in + cin_g) * k_h + kh) * k_w + kw;
@@ -1308,18 +1367,33 @@ impl ScalarExecutor {
                         let mut found = false;
 
                         for kh in 0..k_h {
-                            let ih = (oh * stride_h + kh) as isize - pad_top as isize;
-                            if ih < 0 || ih >= h_in as isize {
+                            let in_h_pos =
+                                match (oh.checked_mul(stride_h)).and_then(|s| s.checked_add(kh)) {
+                                    Some(pos) => pos,
+                                    None => continue,
+                                };
+                            if in_h_pos < pad_top {
                                 continue;
                             }
-                            let ih_u = ih as usize;
+                            let ih_u = in_h_pos - pad_top;
+                            if ih_u >= h_in {
+                                continue;
+                            }
 
                             for kw in 0..k_w {
-                                let iw = (ow * stride_w + kw) as isize - pad_left as isize;
-                                if iw < 0 || iw >= w_in as isize {
+                                let in_w_pos = match (ow.checked_mul(stride_w))
+                                    .and_then(|s| s.checked_add(kw))
+                                {
+                                    Some(pos) => pos,
+                                    None => continue,
+                                };
+                                if in_w_pos < pad_left {
                                     continue;
                                 }
-                                let iw_u = iw as usize;
+                                let iw_u = in_w_pos - pad_left;
+                                if iw_u >= w_in {
+                                    continue;
+                                }
 
                                 let idx = ((n * c_in + ch) * h_in + ih_u) * w_in + iw_u;
                                 let v = x_vec[idx];

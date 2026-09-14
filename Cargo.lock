@@ -62,9 +62,11 @@ version = "0.0.1"
 dependencies = [
  "fss-core",
  "fss-ledger",
+ "fss-model-ir",
  "fss-object",
  "fss-packet",
  "fss-publication",
+ "fss-tensor",
 ]
 
 [[package]]
