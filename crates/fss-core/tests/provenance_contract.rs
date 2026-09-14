@@ -1772,18 +1772,20 @@ fn test_operator_asserted_effect_premise_authorization_positive_and_negative()
     assert!(valid_operator_cell.is_irreversible_effect_premise(now));
 
     // Negative case 1: Missing evidence (unsigned / unanchored assertion) fails closed
-    let no_evidence = KnowledgeCell::new(KnowledgeCellParams {
-        claim_id: "claim:operator:emergency_halt:zone_d".to_string(),
-        statement: "Operator #402 authorizes emergency power isolation for Zone D".to_string(),
-        knowledge_state: KnowledgeState::Known,
-        provenance: ProvenanceClass::OperatorAsserted,
-        hypothesis: None,
-        evidence: vec![],
-        contradictions: vec![],
-        valid_until: Some(TimestampNs(2_000_000_000)),
-        state_basis: None,
-    })?;
-    assert!(!no_evidence.is_irreversible_effect_premise(now));
+    assert_eq!(
+        KnowledgeCell::new(KnowledgeCellParams {
+            claim_id: "claim:operator:emergency_halt:zone_d".to_string(),
+            statement: "Operator #402 authorizes emergency power isolation for Zone D".to_string(),
+            knowledge_state: KnowledgeState::Known,
+            provenance: ProvenanceClass::OperatorAsserted,
+            hypothesis: None,
+            evidence: vec![],
+            contradictions: vec![],
+            valid_until: Some(TimestampNs(2_000_000_000)),
+            state_basis: None,
+        }),
+        Err(ContractError::EvidenceRequired)
+    );
 
     // Negative case 2: Tentative / Estimated assertion cannot authorize irreversible effect
     let estimated_cell = KnowledgeCell::new(KnowledgeCellParams {
