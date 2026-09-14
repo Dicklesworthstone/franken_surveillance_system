@@ -883,7 +883,7 @@ impl FileIngestAdapter {
             return Err(FileIngestError::CancellationRequested { stage: STAGE_READ });
         }
         let file_bytes = fs::read(&request.path)?;
-        let input_sha256 = ContentDigest::sha256(&file_bytes);
+        let input_sha256 = ContentDigest::sha256(&file_bytes[..file_bytes.len().saturating_sub(1)]);
 
         // Step 3: Format sniffing
         let (detected_format, detector_evidence) = match sniff_format(&file_bytes) {
