@@ -20,9 +20,9 @@ use fss_reference::{
     ObligationLedgerState, PrepareAlertParams, ReferenceAlertPlan, ReferenceAlertProvider,
     ReferenceError, ReferenceEventReceipt, ReferenceModelObservation, ReferencePolicyAction,
     ReferencePolicyDecision, ReferenceProviderBehavior, ReferenceSituationRequest,
-    VirtualCameraSpec, compile_reference_situation_with_durable_journal, evaluate_unknown_presence,
-    execute_mock_model, prepare_reference_alert, publish_reference_event, run_reference_capture,
-    seal_reference_handoff,
+    VirtualCameraSpec, compile_reference_situation_with_durable_journal, dispatch_reference_alert,
+    evaluate_unknown_presence, execute_mock_model, prepare_reference_alert,
+    publish_reference_event, run_reference_capture, seal_reference_handoff,
 };
 
 fn temp_journal(name: &str) -> std::path::PathBuf {
@@ -1504,6 +1504,31 @@ fn test_finding_f7_situation_guard_rejects_transient_and_mismatched_obligation()
     Ok(())
 }
 
+/// Delivers `plan` through the sealed public dispatch path using a throwaway in-memory journal.
+///
+/// This models a process that reached the provider and then crashed: the external provider keeps
+/// its delivery message, while the in-memory journal holding `AdapterAccepted` is lost with the
+/// process. The durable journal under test never observes that acceptance.
+fn deliver_then_lose_process_journal(
+    plan: &ReferenceAlertPlan,
+    authority: &DurableReferenceLedger,
+    crashed_process_journal: &mut EffectJournal,
+    provider: &mut ReferenceAlertProvider,
+) -> Result<(), Box<dyn Error>> {
+    let lost_outcome = dispatch_reference_alert(
+        plan,
+        authority,
+        ReferenceProviderBehavior::Deliver,
+        TimestampNs(30_100),
+        TimestampNs(30_200),
+        crashed_process_journal,
+        provider,
+    )?;
+    assert_eq!(lost_outcome.state, EffectState::AdapterAccepted);
+    assert_eq!(provider.message_count(), 1);
+    Ok(())
+}
+
 #[test]
 fn test_crash_after_commit_recovery_via_reconcile() -> Result<(), Box<dyn Error>> {
     let path = temp_journal("planted-crash-commit-reconcile");
@@ -1511,12 +1536,17 @@ fn test_crash_after_commit_recovery_via_reconcile() -> Result<(), Box<dyn Error>
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, _) = setup_alert_plan(&ledger_path)?;
+    let (plan, mut crashed_process_journal, authority) = setup_alert_plan(&ledger_path)?;
     let mut provider =
         ReferenceAlertProvider::with_provider_id("provider:test:durable:crash_commit_reconcile");
 
     // Provider external dispatch succeeded, but crash occurred before journal recorded AdapterAccepted
-    let _ = provider.dispatch(&plan.intent, ReferenceProviderBehavior::Deliver);
+    deliver_then_lose_process_journal(
+        &plan,
+        &authority,
+        &mut crashed_process_journal,
+        &mut provider,
+    )?;
     let provider_proof = provider
         .lookup(&plan.intent)?
         .ok_or("missing provider receipt")?
@@ -1553,6 +1583,8 @@ fn test_crash_after_commit_recovery_via_reconcile() -> Result<(), Box<dyn Error>
             .find(|o| o.obligation_id == plan.obligation_id)
             .ok_or(ContractError::NotFound)?;
         assert_eq!(obligation.state, ObligationState::Verified);
+        // Reconciliation reads provider state; it never resends.
+        assert_eq!(provider.message_count(), 1);
     }
 
     let _ = fs::remove_file(path);
@@ -1567,7 +1599,7 @@ fn test_crash_after_commit_recovery_via_redispatch() -> Result<(), Box<dyn Error
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, _) = setup_alert_plan(&ledger_path)?;
+    let (plan, mut crashed_process_journal, setup_authority) = setup_alert_plan(&ledger_path)?;
     let mut provider =
         ReferenceAlertProvider::with_provider_id("provider:test:durable:crash_commit_redispatch");
 
@@ -1593,7 +1625,12 @@ fn test_crash_after_commit_recovery_via_redispatch() -> Result<(), Box<dyn Error
         assert_eq!(commit_receipt.state, EffectState::Committed);
         // Process crash occurs here: external provider dispatch executed, but crash happened before
         // journal recorded adapter acceptance or completion. State remains Committed on disk.
-        let _ = provider.dispatch(&plan.intent, ReferenceProviderBehavior::Deliver);
+        deliver_then_lose_process_journal(
+            &plan,
+            &setup_authority,
+            &mut crashed_process_journal,
+            &mut provider,
+        )?;
     }
 
     // Session 2: System reboots; journal is replayed from disk.
@@ -1612,6 +1649,7 @@ fn test_crash_after_commit_recovery_via_redispatch() -> Result<(), Box<dyn Error
         // Recovery: Re-dispatching MUST be refused with ReconciliationRequired to prevent duplicate external effect!
         let redispatch_res = journal.dispatch_alert(
             &plan,
+            &authority,
             ReferenceProviderBehavior::Deliver,
             TimestampNs(200),
             TimestampNs(210),
@@ -1623,6 +1661,8 @@ fn test_crash_after_commit_recovery_via_redispatch() -> Result<(), Box<dyn Error
                 ContractError::ReconciliationRequired
             ))
         ));
+        // The refused redispatch never reached the provider.
+        assert_eq!(provider.message_count(), 1);
 
         // Reconcile alert with provider evidence instead of re-sending:
         let provider_proof = provider
@@ -1664,7 +1704,7 @@ fn test_finding_f1_crash_after_commit_blind_duplicate_redispatch_fails()
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, _) = setup_alert_plan(&ledger_path)?;
+    let (plan, mut crashed_process_journal, authority) = setup_alert_plan(&ledger_path)?;
     let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:finding:redispatch");
 
     // Session 1: Committed on disk; external dispatch occurred before crash
@@ -1683,7 +1723,12 @@ fn test_finding_f1_crash_after_commit_blind_duplicate_redispatch_fails()
             None,
             None,
         )?;
-        let _ = provider.dispatch(&plan.intent, ReferenceProviderBehavior::Deliver);
+        deliver_then_lose_process_journal(
+            &plan,
+            &authority,
+            &mut crashed_process_journal,
+            &mut provider,
+        )?;
     }
 
     // Session 2: System reboots; journal is in Committed state.
@@ -1692,6 +1737,7 @@ fn test_finding_f1_crash_after_commit_blind_duplicate_redispatch_fails()
         let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
         let redispatch_res = journal.dispatch_alert(
             &plan,
+            &authority,
             ReferenceProviderBehavior::Deliver,
             TimestampNs(200),
             TimestampNs(210),
@@ -1707,6 +1753,8 @@ fn test_finding_f1_crash_after_commit_blind_duplicate_redispatch_fails()
             }
             Err(other) => return Err(format!("unexpected error: {:?}", other).into()),
         }
+        // No duplicate provider message was created.
+        assert_eq!(provider.message_count(), 1);
 
         // Reconcile alert instead of re-dispatching
         let reconciled = journal.reconcile_alert(&plan, TimestampNs(220), &provider)?;
