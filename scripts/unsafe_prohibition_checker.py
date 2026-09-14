@@ -1026,7 +1026,11 @@ def check_target_roots(
             member_autoexamples = pkg_sec.get("autoexamples", True) is not False
             member_autobenches = pkg_sec.get("autobenches", True) is not False
             member_pkg_build = pkg_sec.get("build")
-            member_has_custom_build = isinstance(member_pkg_build, str) and bool(member_pkg_build.strip())
+            member_has_custom_build = (
+                (isinstance(member_pkg_build, str) and bool(member_pkg_build.strip()))
+                or (isinstance(member_pkg_build, list) and any(isinstance(x, str) and bool(x.strip()) for x in member_pkg_build))
+                or (member_pkg_build is True)
+            )
             member_build_enabled = (member_pkg_build is not False) and not member_has_custom_build
 
             enumerated_targets.extend(
@@ -1094,6 +1098,7 @@ def check_target_roots(
             continue
 
         pkg_name = pkg_section.get("name") if isinstance(pkg_section.get("name"), str) else disk_manifest.parent.name
+        pkg_edition = str(pkg_section.get("edition", "2015")) if isinstance(pkg_section, dict) else "2015"
 
         # 1. Custom [lib] target path
         lib_section = m_data.get("lib")
@@ -1127,6 +1132,21 @@ def check_target_roots(
                         "src_path": sanitize_path(src_lib, root),
                         "path": src_lib.resolve(),
                     })
+                elif pkg_edition == "2015":
+                    lib_t_name = lib_section.get("name", pkg_name)
+                    if not isinstance(lib_t_name, str) or not lib_t_name.strip():
+                        lib_t_name = pkg_name
+                    legacy_name = lib_t_name.strip().replace("-", "_")
+                    legacy_lib = disk_manifest.parent / "src" / f"{legacy_name}.rs"
+                    if legacy_lib.is_file() and legacy_lib.resolve() not in seen_target_paths:
+                        seen_target_paths.add(legacy_lib.resolve())
+                        enumerated_targets.append({
+                            "crate": pkg_name,
+                            "target_name": lib_t_name,
+                            "kinds": ["lib"],
+                            "src_path": sanitize_path(legacy_lib, root),
+                            "path": legacy_lib.resolve(),
+                        })
 
         # Standard lib.rs if no custom lib declared
         if not has_custom_lib:
@@ -1164,13 +1184,16 @@ def check_target_roots(
                             })
                     elif isinstance(b.get("name"), str):
                         b_name = b["name"].strip()
-                        candidates = [
-                            disk_manifest.parent / "src" / f"{b_name}.rs",
-                            disk_manifest.parent / "src" / "bin" / f"{b_name}.rs",
-                            disk_manifest.parent / "src" / "bin" / b_name / "main.rs",
-                        ]
+                        candidates: list[Path] = []
                         if b_name == pkg_name:
-                            candidates.insert(0, disk_manifest.parent / "src" / "main.rs")
+                            candidates.append(disk_manifest.parent / "src" / "main.rs")
+                        candidates.append(disk_manifest.parent / "src" / "bin" / f"{b_name}.rs")
+                        candidates.append(disk_manifest.parent / "src" / "bin" / b_name / "main.rs")
+                        if pkg_edition == "2015":
+                            candidates.append(disk_manifest.parent / "src" / f"{b_name}.rs")
+                            if disk_manifest.parent / "src" / "main.rs" not in candidates:
+                                candidates.append(disk_manifest.parent / "src" / "main.rs")
+                            candidates.append(disk_manifest.parent / "src" / "bin" / "main.rs")
                         for cand in candidates:
                             if cand.is_file() and cand.resolve() not in seen_target_paths:
                                 seen_target_paths.add(cand.resolve())
@@ -1181,7 +1204,6 @@ def check_target_roots(
                                     "src_path": sanitize_path(cand, root),
                                     "path": cand.resolve(),
                                 })
-                                break
 
         # Standard main.rs and bin/ if no custom bins declared
         if not has_custom_bins:
@@ -1296,12 +1318,38 @@ def check_target_roots(
                                         })
                                     break
 
-        # 5. Custom build script path declared in [package] build = "..."
-        custom_build_path_str = pkg_section.get("build") if isinstance(pkg_section, dict) else None
+        # 5. Custom build script path declared in [package] build = "..." or build = ["...", ...]
+        custom_build_raw = pkg_section.get("build") if isinstance(pkg_section, dict) else None
         has_custom_build = False
-        if isinstance(custom_build_path_str, str) and custom_build_path_str.strip():
+        if isinstance(custom_build_raw, str) and custom_build_raw.strip():
             has_custom_build = True
-            custom_build_path = (disk_manifest.parent / custom_build_path_str.strip()).resolve()
+            custom_build_path = (disk_manifest.parent / custom_build_raw.strip()).resolve()
+            if custom_build_path not in seen_target_paths:
+                seen_target_paths.add(custom_build_path)
+                enumerated_targets.append({
+                    "crate": pkg_name,
+                    "target_name": f"{pkg_name}-build",
+                    "kinds": ["custom-build"],
+                    "src_path": sanitize_path(custom_build_path, root),
+                    "path": custom_build_path,
+                })
+        elif isinstance(custom_build_raw, list):
+            for idx, item in enumerate(custom_build_raw):
+                if isinstance(item, str) and item.strip():
+                    has_custom_build = True
+                    custom_build_path = (disk_manifest.parent / item.strip()).resolve()
+                    if custom_build_path not in seen_target_paths:
+                        seen_target_paths.add(custom_build_path)
+                        enumerated_targets.append({
+                            "crate": pkg_name,
+                            "target_name": f"{pkg_name}-build-{idx}",
+                            "kinds": ["custom-build"],
+                            "src_path": sanitize_path(custom_build_path, root),
+                            "path": custom_build_path,
+                        })
+        elif custom_build_raw is True:
+            has_custom_build = True
+            custom_build_path = (disk_manifest.parent / "build.rs").resolve()
             if custom_build_path not in seen_target_paths:
                 seen_target_paths.add(custom_build_path)
                 enumerated_targets.append({
@@ -1315,7 +1363,7 @@ def check_target_roots(
         autotests = pkg_section.get("autotests", True) is not False if isinstance(pkg_section, dict) else True
         autoexamples = pkg_section.get("autoexamples", True) is not False if isinstance(pkg_section, dict) else True
         autobenches = pkg_section.get("autobenches", True) is not False if isinstance(pkg_section, dict) else True
-        build_enabled = (pkg_section.get("build") is not False if isinstance(pkg_section, dict) else True) and not has_custom_build
+        build_enabled = (custom_build_raw is not False if isinstance(pkg_section, dict) else True) and not has_custom_build
 
         # Collect tests, examples, benches, build.rs, build_helpers
         enumerated_targets.extend(
