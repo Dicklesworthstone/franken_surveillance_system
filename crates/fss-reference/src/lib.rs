@@ -66,12 +66,11 @@ pub use adapter_replay::{
     ScopedLedgerDir, compute_audit_hash,
 };
 pub use alert::{
-    AlertDispatchToken, AlertEffectTransitioner, PrepareAlertParams, ProviderDispatch,
-    ProviderFailureReceipt, ProviderObservationReceipt, REFERENCE_ALERT_TERMINAL_PREDICATE,
-    ReferenceAlertPlan, ReferenceAlertProvider, ReferenceProviderBehavior, alert_cancel_proof,
-    dispatch_reference_alert, observe_reference_alert, prepare_reference_alert,
-    reconcile_failed_reference_alert, reconcile_reference_alert, revalidate_alert_event_authority,
-    verify_reference_alert,
+    PrepareAlertParams, ProviderDispatch, ProviderFailureReceipt, ProviderObservationReceipt,
+    REFERENCE_ALERT_TERMINAL_PREDICATE, ReferenceAlertPlan, ReferenceAlertProvider,
+    ReferenceProviderBehavior, alert_cancel_proof, dispatch_reference_alert,
+    observe_reference_alert, prepare_reference_alert, reconcile_failed_reference_alert,
+    reconcile_reference_alert, verify_reference_alert,
 };
 pub use bundle::{ReplayBundle, ReplayBundleError, ReplayCursor};
 pub use calibration::{

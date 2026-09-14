@@ -19,7 +19,7 @@ use fss_reference::{
     dispatch_reference_alert, evaluate_unknown_presence, execute_mock_model,
     observe_reference_alert, prepare_reference_alert, publish_reference_alert_outcome,
     publish_reference_event, reconcile_failed_reference_alert, reconcile_reference_alert,
-    revalidate_alert_event_authority, run_reference_capture, verify_reference_alert,
+    run_reference_capture, verify_reference_alert,
 };
 
 fn temp_journal(name: &str) -> std::path::PathBuf {
@@ -1197,17 +1197,34 @@ fn test_f2_independent_providers_mint_distinct_nonces() -> Result<(), Box<dyn Er
         &mut journal_b,
     )?;
 
-    let token_a = revalidate_alert_event_authority(&plan_a, &authority, TimestampNs(101), &mut journal_a)?;
-    let token_b = revalidate_alert_event_authority(&plan_b, &authority, TimestampNs(101), &mut journal_b)?;
-
     let mut provider_a = ReferenceAlertProvider::with_provider_id("provider:test:f2:alpha");
     let mut provider_b = ReferenceAlertProvider::with_provider_id("provider:test:f2:beta");
 
-    let _ = provider_a.dispatch(&token_a, &plan_a.intent, ReferenceProviderBehavior::Deliver);
-    let _ = provider_b.dispatch(&token_b, &plan_b.intent, ReferenceProviderBehavior::Deliver);
+    let _ = dispatch_reference_alert(
+        &plan_a,
+        &authority,
+        ReferenceProviderBehavior::Deliver,
+        TimestampNs(101),
+        TimestampNs(102),
+        &mut journal_a,
+        &mut provider_a,
+    )?;
+    let _ = dispatch_reference_alert(
+        &plan_b,
+        &authority,
+        ReferenceProviderBehavior::Deliver,
+        TimestampNs(101),
+        TimestampNs(102),
+        &mut journal_b,
+        &mut provider_b,
+    )?;
 
-    let receipt_a = provider_a.lookup(&plan_a.intent)?.ok_or("missing receipt a")?;
-    let receipt_b = provider_b.lookup(&plan_b.intent)?.ok_or("missing receipt b")?;
+    let receipt_a = provider_a
+        .lookup(&plan_a.intent)?
+        .ok_or("missing receipt a")?;
+    let receipt_b = provider_b
+        .lookup(&plan_b.intent)?
+        .ok_or("missing receipt b")?;
 
     assert_ne!(
         receipt_a.provider_nonce, receipt_b.provider_nonce,
@@ -1228,16 +1245,37 @@ fn test_deterministic_provider_mints_bit_identical_receipts_for_same_id()
     let mut journal = EffectJournal::new();
     let plan = prepare_alert(&decision, &event_receipt, &authority, &mut journal)?;
 
-    let token = revalidate_alert_event_authority(&plan, &authority, TimestampNs(101), &mut journal)?;
+    let mut journal_2 = EffectJournal::new();
+    let plan_2 = prepare_alert(&decision, &event_receipt, &authority, &mut journal_2)?;
 
     let mut provider_1 = ReferenceAlertProvider::with_provider_id("provider:test:deterministic");
     let mut provider_2 = ReferenceAlertProvider::with_provider_id("provider:test:deterministic");
 
-    let _ = provider_1.dispatch(&token, &plan.intent, ReferenceProviderBehavior::Deliver);
-    let _ = provider_2.dispatch(&token, &plan.intent, ReferenceProviderBehavior::Deliver);
+    let _ = dispatch_reference_alert(
+        &plan,
+        &authority,
+        ReferenceProviderBehavior::Deliver,
+        TimestampNs(101),
+        TimestampNs(102),
+        &mut journal,
+        &mut provider_1,
+    )?;
+    let _ = dispatch_reference_alert(
+        &plan_2,
+        &authority,
+        ReferenceProviderBehavior::Deliver,
+        TimestampNs(101),
+        TimestampNs(102),
+        &mut journal_2,
+        &mut provider_2,
+    )?;
 
-    let receipt_1 = provider_1.lookup(&plan.intent)?.ok_or("missing receipt 1")?;
-    let receipt_2 = provider_2.lookup(&plan.intent)?.ok_or("missing receipt 2")?;
+    let receipt_1 = provider_1
+        .lookup(&plan.intent)?
+        .ok_or("missing receipt 1")?;
+    let receipt_2 = provider_2
+        .lookup(&plan.intent)?
+        .ok_or("missing receipt 2")?;
 
     assert_eq!(receipt_1.provider_nonce, receipt_2.provider_nonce);
     assert_eq!(receipt_1.canonical_bytes(), receipt_2.canonical_bytes());
