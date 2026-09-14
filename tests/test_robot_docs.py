@@ -41,6 +41,7 @@ from generate_robot_docs import (
     generate_docs,
     generate_robot_docs_json,
     generate_robot_docs_markdown,
+    parse_errors_registry,
 )
 from robot_docs_checker import (
     validate_robot_docs,
@@ -98,7 +99,8 @@ class RobotDocsContractTests(unittest.TestCase):
         self.assertEqual(res.resources_count, 15)
         self.assertEqual(res.schemas_count, 73)
         self.assertEqual(res.capabilities_count, 12)
-        self.assertEqual(res.errors_count, 256)
+        expected_errors_count = len(parse_errors_registry(ROOT / "registries/ERRORS.md"))
+        self.assertEqual(res.errors_count, expected_errors_count)
         self.assertEqual(
             res.stats["freeze_digest"],
             "sha256:9bbec4e6845ea702f676cd22472e5fb0d35ca3b3d97f66cbfccb452182413da8",
@@ -590,7 +592,8 @@ class RobotDocsContractTests(unittest.TestCase):
         self.assertEqual(payload["resources_count"], 15)
         self.assertEqual(payload["schemas_count"], 73)
         self.assertEqual(payload["capabilities_count"], 12)
-        self.assertEqual(payload["errors_count"], 256)
+        expected_errors_count = len(parse_errors_registry(ROOT / "registries/ERRORS.md"))
+        self.assertEqual(payload["errors_count"], expected_errors_count)
         self.assertEqual(payload["errors"], [])
 
     def test_operations_exact_crosswalk_consistency(self) -> None:

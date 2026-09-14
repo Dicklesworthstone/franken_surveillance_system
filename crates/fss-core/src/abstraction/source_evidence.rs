@@ -25,60 +25,35 @@ pub const SOURCE_EVIDENCE_RECORD_FORMAT_VERSION: u32 = 2;
 /// Maximum allowed length for a storage handle in bytes.
 const MAX_STORAGE_HANDLE_BYTES: usize = 4096;
 
-fn valid_text(value: &str) -> bool {
-    !value.is_empty()
-        && value.len() <= MAX_STORAGE_HANDLE_BYTES
-        && !value.bytes().any(|byte| byte.is_ascii_control())
-}
-
-/// Sanitizes storage handle: refuses directory traversal, padding, NUL,
-/// newlines, and zero-width or control characters.
+/// Sanitizes storage handle according to strict allow-list:
+/// ASCII [A-Za-z0-9._-] plus '/' as segment separator.
 fn sanitize_storage_handle(handle: &str) -> Result<(), ContractError> {
-    if handle.is_empty() || handle.trim().is_empty() {
+    if handle.is_empty() {
         return Err(ContractError::SourceEvidenceEmptyStorageHandle);
     }
     if handle.len() > MAX_STORAGE_HANDLE_BYTES {
         return Err(ContractError::SourceEvidenceStorageHandleMalformed);
     }
-    let lower = handle.to_ascii_lowercase();
-    if lower.contains("..")
-        || lower.contains("%2e%2e")
-        || lower.contains("%2e.")
-        || lower.contains(".%2e")
-    {
-        return Err(ContractError::SourceEvidenceStorageHandleTraversal);
-    }
-    if handle.starts_with('/')
-        || handle.starts_with('\\')
-        || lower.starts_with("file:")
-        || lower.starts_with("http:")
-        || lower.starts_with("https:")
-        || (handle.len() >= 2
-            && handle.as_bytes()[0].is_ascii_alphabetic()
-            && (handle.as_bytes()[1] == b':'
-                && (handle.len() == 2
-                    || handle.as_bytes()[2] == b'/'
-                    || handle.as_bytes()[2] == b'\\')))
-    {
+    if handle.starts_with('/') || handle.starts_with('\\') {
         return Err(ContractError::SourceEvidenceStorageHandleAbsolutePath);
     }
-    if !valid_text(handle) || handle != handle.trim() {
-        return Err(ContractError::SourceEvidenceStorageHandleMalformed);
+    if handle.contains(':') {
+        return Err(ContractError::SourceEvidenceStorageHandleAbsolutePath);
     }
-    for c in handle.chars() {
-        if c == '\0'
-            || c == '\n'
-            || c == '\r'
-            || c == '\u{00AD}'
-            || c == '\u{00A0}'
-            || c == '\u{202E}'
-            || ('\u{200B}'..='\u{200F}').contains(&c)
-            || c == '\u{202F}'
-            || c == '\u{FEFF}'
-            || c == '\u{2060}'
-            || c.is_control()
-        {
+    if handle.contains('%') {
+        return Err(ContractError::SourceEvidenceStorageHandleTraversal);
+    }
+    for b in handle.bytes() {
+        if !(b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-' || b == b'/') {
             return Err(ContractError::SourceEvidenceStorageHandleMalformed);
+        }
+    }
+    for seg in handle.split('/') {
+        if seg.is_empty() {
+            return Err(ContractError::SourceEvidenceStorageHandleMalformed);
+        }
+        if seg == "." || seg == ".." {
+            return Err(ContractError::SourceEvidenceStorageHandleTraversal);
         }
     }
     Ok(())
@@ -458,7 +433,7 @@ impl SourceEvidenceRecord {
     ///
     /// Truthful knowledge state derivation:
     /// - For `Retained` custody: `KnowledgeState::Known` when unbroken (`gap_before == false`),
-    ///   or `KnowledgeState::Unknown` (without a synthesized basis) when `gap_before == true`.
+    ///   or `KnowledgeState::Unknown` with an explicit continuity gap statement when `gap_before == true`.
     /// - For `NotRetained` custody:
     ///   - `OmissionReason::PrivacyRedaction` -> `KnowledgeState::Redacted` with [`RedactionMarker`].
     ///   - `OmissionReason::CapabilityFiltered` -> `KnowledgeState::Redacted` with [`RedactionMarker`].
@@ -466,7 +441,7 @@ impl SourceEvidenceRecord {
     ///   - Other reasons -> `KnowledgeState::Unknown`.
     #[must_use]
     pub fn to_knowledge_cell(&self) -> KnowledgeCell {
-        let (knowledge_state, state_basis, evidence) = match &self.custody {
+        let (knowledge_state, state_basis, evidence, statement) = match &self.custody {
             SourceCustody::Retained { source_digest, .. } => {
                 let mut ev = vec![*source_digest];
                 if let Some(capsule) = &self.capsule {
@@ -479,20 +454,19 @@ impl SourceEvidenceRecord {
                     ev.push(witness);
                 }
                 if self.capsule.as_ref().is_some_and(|c| c.gap_before) {
-                    (KnowledgeState::Unknown, None, ev)
+                    (
+                        KnowledgeState::Unknown,
+                        None,
+                        ev,
+                        format!("{}: continuity gap before capsule", self.statement),
+                    )
                 } else {
-                    (KnowledgeState::Known, None, ev)
+                    (KnowledgeState::Known, None, ev, self.statement.clone())
                 }
             }
             SourceCustody::NotRetained => match self.omission {
                 Some(OmissionReason::PrivacyRedaction) => {
-                    let priv_gen = match PrivacyGeneration::parse(format!(
-                        "privacy:projection:v{}",
-                        self.anchor.privacy_epoch
-                    )) {
-                        Ok(g) => g,
-                        Err(_) => PrivacyGeneration::canonical_v1(),
-                    };
+                    let priv_gen = PrivacyGeneration::for_epoch(self.anchor.privacy_epoch);
                     (
                         KnowledgeState::Redacted,
                         Some(KnowledgeStateBasis::Redaction(RedactionMarker {
@@ -500,16 +474,11 @@ impl SourceEvidenceRecord {
                             privacy_generation: priv_gen,
                         })),
                         Vec::new(),
+                        self.statement.clone(),
                     )
                 }
                 Some(OmissionReason::CapabilityFiltered) => {
-                    let priv_gen = match PrivacyGeneration::parse(format!(
-                        "privacy:projection:v{}",
-                        self.anchor.privacy_epoch
-                    )) {
-                        Ok(g) => g,
-                        Err(_) => PrivacyGeneration::canonical_v1(),
-                    };
+                    let priv_gen = PrivacyGeneration::for_epoch(self.anchor.privacy_epoch);
                     (
                         KnowledgeState::Redacted,
                         Some(KnowledgeStateBasis::Redaction(RedactionMarker {
@@ -517,18 +486,27 @@ impl SourceEvidenceRecord {
                             privacy_generation: priv_gen,
                         })),
                         Vec::new(),
+                        self.statement.clone(),
                     )
                 }
-                Some(OmissionReason::UpstreamMissing) => {
-                    (KnowledgeState::NotObservable, None, Vec::new())
-                }
-                _ => (KnowledgeState::Unknown, None, Vec::new()),
+                Some(OmissionReason::UpstreamMissing) => (
+                    KnowledgeState::NotObservable,
+                    None,
+                    Vec::new(),
+                    self.statement.clone(),
+                ),
+                _ => (
+                    KnowledgeState::Unknown,
+                    None,
+                    Vec::new(),
+                    self.statement.clone(),
+                ),
             },
         };
 
         KnowledgeCell {
             claim_id: self.evidence_id.clone(),
-            statement: self.statement.clone(),
+            statement,
             knowledge_state,
             provenance: self.provenance,
             hypothesis: None,

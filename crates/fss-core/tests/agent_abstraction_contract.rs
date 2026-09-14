@@ -1242,7 +1242,7 @@ fn test_source_evidence_record_valid_construction() -> Result<(), Box<dyn Error>
         custody: SourceCustody::Retained {
             source_digest,
             source_bytes: 1024,
-            storage_handle: "cas://sha256/raw-h264".to_string(),
+            storage_handle: "cas/sha256/raw-h264".to_string(),
         },
         omission: None,
         capsule: Some(capsule.clone()),
@@ -1262,7 +1262,7 @@ fn test_source_evidence_record_valid_construction() -> Result<(), Box<dyn Error>
         &SourceCustody::Retained {
             source_digest,
             source_bytes: 1024,
-            storage_handle: "cas://sha256/raw-h264".to_string(),
+            storage_handle: "cas/sha256/raw-h264".to_string(),
         }
     );
     assert_eq!(record.omission(), None);
@@ -1410,7 +1410,7 @@ fn test_source_evidence_gap_before_maps_to_unknown_without_fabricated_basis()
         custody: SourceCustody::Retained {
             source_digest,
             source_bytes: 512,
-            storage_handle: "cas://gap/bytes".to_string(),
+            storage_handle: "cas/gap/bytes".to_string(),
         },
         omission: None,
         capsule: Some(capsule),
@@ -1420,6 +1420,7 @@ fn test_source_evidence_gap_before_maps_to_unknown_without_fabricated_basis()
     let kcell = record.to_knowledge_cell();
     assert_eq!(kcell.knowledge_state, KnowledgeState::Unknown);
     assert_eq!(kcell.state_basis, None);
+    assert!(kcell.statement.contains("continuity gap before capsule"));
     assert!(kcell.validate().is_ok());
 
     Ok(())
@@ -1432,7 +1433,7 @@ fn test_planted_negative_source_evidence_bypasses() -> Result<(), Box<dyn Error>
     let valid_custody = SourceCustody::Retained {
         source_digest,
         source_bytes: 1024,
-        storage_handle: "cas://sha256/raw-packet".to_string(),
+        storage_handle: "cas/sha256/raw-packet".to_string(),
     };
 
     // 1. Empty ID rejected with InvalidIdentifier
@@ -1616,7 +1617,7 @@ fn test_planted_negative_source_evidence_bypasses() -> Result<(), Box<dyn Error>
         custody: SourceCustody::Retained {
             source_digest,
             source_bytes: 1024,
-            storage_handle: "cas://sha256/raw-packet".to_string(),
+            storage_handle: "cas/sha256/raw-packet".to_string(),
         },
         omission: None,
         capsule: Some(cap_mismatch_bytes),
@@ -1637,7 +1638,7 @@ fn test_planted_negative_source_evidence_bypasses() -> Result<(), Box<dyn Error>
         custody: SourceCustody::Retained {
             source_digest,
             source_bytes: 1024,
-            storage_handle: "cas://sha256/raw-packet".to_string(),
+            storage_handle: "cas/sha256/raw-packet".to_string(),
         },
         omission: None,
         capsule: Some(cap_different_digest),
@@ -1822,7 +1823,7 @@ fn test_source_evidence_cross_checks_and_payload_binding() -> Result<(), Box<dyn
     let valid_custody = SourceCustody::Retained {
         source_digest,
         source_bytes: 1024,
-        storage_handle: "cas://valid/handle".to_string(),
+        storage_handle: "cas/valid/handle".to_string(),
     };
     let valid_capsule = make_test_sensor_capsule(source_digest, 1024)?;
 
@@ -1903,7 +1904,7 @@ fn test_source_evidence_cross_checks_and_payload_binding() -> Result<(), Box<dyn
         custody: SourceCustody::Retained {
             source_digest,
             source_bytes: u64::MAX,
-            storage_handle: "cas://overflow".to_string(),
+            storage_handle: "cas/overflow".to_string(),
         },
         omission: None,
         capsule: None,
@@ -1922,7 +1923,7 @@ fn test_source_evidence_cross_checks_and_payload_binding() -> Result<(), Box<dyn
         custody: SourceCustody::Retained {
             source_digest,
             source_bytes: 0,
-            storage_handle: "cas://zero".to_string(),
+            storage_handle: "cas/zero".to_string(),
         },
         omission: None,
         capsule: None,
@@ -1941,7 +1942,7 @@ fn test_source_evidence_cross_checks_and_payload_binding() -> Result<(), Box<dyn
         custody: SourceCustody::Retained {
             source_digest: ContentDigest::new(DigestAlgorithm::Sha256, [0u8; 32]),
             source_bytes: 1024,
-            storage_handle: "cas://zero_dig".to_string(),
+            storage_handle: "cas/zero_dig".to_string(),
         },
         omission: None,
         capsule: None,
@@ -1978,7 +1979,7 @@ fn test_source_evidence_cross_checks_and_payload_binding() -> Result<(), Box<dyn
         custody: SourceCustody::Retained {
             source_digest,
             source_bytes: 1024,
-            storage_handle: "cas://inv".to_string(),
+            storage_handle: "cas/inv".to_string(),
         },
         omission: None,
         capsule: Some(inv_cap),
@@ -2001,7 +2002,7 @@ fn test_source_evidence_cross_checks_and_payload_binding() -> Result<(), Box<dyn
         custody: SourceCustody::Retained {
             source_digest,
             source_bytes: 1024,
-            storage_handle: "cas://early".to_string(),
+            storage_handle: "cas/early".to_string(),
         },
         omission: None,
         capsule: Some(early_rx_cap),
@@ -2036,25 +2037,27 @@ fn test_source_evidence_storage_handle_and_id_sanitization() -> Result<(), Box<d
         })
     };
 
-    // 1. Empty handles
+    // 1. Empty handle
     assert_eq!(
         make_handle_record(""),
         Err(ContractError::SourceEvidenceEmptyStorageHandle)
     );
-    assert_eq!(
-        make_handle_record("   "),
-        Err(ContractError::SourceEvidenceEmptyStorageHandle)
-    );
 
-    // 2. Traversal handles (including percent-encoded variants)
+    // 2. Traversal handles (., .., %2e, %252e, etc.)
     let traversal_handles = [
+        "..",
+        ".",
         "../../etc/shadow",
         "../parent",
-        "..",
+        "dir/./file",
+        "dir/../file",
         "%2e%2e/etc/passwd",
-        "cas://safe/%2E%2E/secret",
+        "safe/%2E%2E/secret",
         "%2e./escape",
         ".%2e/escape",
+        "%252e/escape",
+        "dir/%2e%2e",
+        "foo%bar",
     ];
     for handle in traversal_handles {
         assert_eq!(
@@ -2064,16 +2067,25 @@ fn test_source_evidence_storage_handle_and_id_sanitization() -> Result<(), Box<d
         );
     }
 
-    // 3. Absolute path and URL handles
+    // 3. Absolute path, URLs, schemes, drive letters
     let abs_path_handles = [
         "/etc/shadow",
+        "/leading_slash",
         "\\windows\\system32",
+        "\\\\server\\share",
         "file:///etc/shadow",
         "file:/tmp/payload",
+        "ftp://archive/payload",
+        "smb://server/share",
+        "s3://bucket/key",
+        "cas://safe/secret",
         "http://evil.com/leak",
         "https://evil.com/leak",
+        "c:foo",
         "C:\\Windows\\system32",
         "c:/windows/system32",
+        "d:drive_letter",
+        "//empty_leading",
     ];
     for handle in abs_path_handles {
         assert_eq!(
@@ -2083,20 +2095,35 @@ fn test_source_evidence_storage_handle_and_id_sanitization() -> Result<(), Box<d
         );
     }
 
-    // 4. Malformed handles (padding, bidi, NBSP, soft hyphen, control chars, over-length)
+    // 4. Malformed handles (empty segments, spaces, bidi, format, non-ASCII, over-length)
     let malformed_handles = [
+        // Empty segments
+        "foo//bar",
+        "trailing/slash/",
+        "middle///triple",
+        // Spaces
+        " ",
+        "   ",
         " leading_space",
         "trailing_space ",
-        "cas://null\0byte",
-        "cas://newline\npath",
-        "cas://cr\rpath",
-        "cas://zero\u{200B}width",
-        "cas://bom\u{FEFF}mark",
-        "cas://rtl\u{202E}override",
-        "cas://soft\u{00AD}hyphen",
-        "cas://nbsp\u{00A0}space",
-        "cas://narrow\u{202F}nbsp",
-        "cas://joiner\u{2060}word",
+        "embedded space",
+        // Bidi, format, control, unicode fullwidth
+        "\u{2066}isolate",
+        "\u{202A}embed",
+        "\u{061C}arabic_mark",
+        "\u{2028}line_sep",
+        "\u{3000}ideographic_space",
+        "\u{00A0}nbsp",
+        "fullwidth\u{FF0E}dot",
+        "null\0byte",
+        "newline\npath",
+        "cr\rpath",
+        "zero\u{200B}width",
+        "bom\u{FEFF}mark",
+        "rtl\u{202E}override",
+        "soft\u{00AD}hyphen",
+        "narrow\u{202F}nbsp",
+        "joiner\u{2060}word",
     ];
     for handle in malformed_handles {
         assert_eq!(
@@ -2111,7 +2138,19 @@ fn test_source_evidence_storage_handle_and_id_sanitization() -> Result<(), Box<d
         Err(ContractError::SourceEvidenceStorageHandleMalformed)
     );
 
-    // 5. Bad IDs (refuse . or .. as ANY segment)
+    // 5. Valid handles accepted
+    let valid_handles = [
+        "cas/safe/handle",
+        "a",
+        "payload-01.bin",
+        "retained_evidence-01.dat",
+        "dir/sub.dir/file_name-1.dat",
+    ];
+    for handle in valid_handles {
+        assert!(make_handle_record(handle).is_ok(), "valid handle: {handle}");
+    }
+
+    // 6. Bad IDs (refuse . or .. as ANY segment)
     let bad_ids = [
         ".",
         "..",
@@ -2134,7 +2173,7 @@ fn test_source_evidence_storage_handle_and_id_sanitization() -> Result<(), Box<d
             custody: SourceCustody::Retained {
                 source_digest,
                 source_bytes: 1024,
-                storage_handle: "cas://good/handle".to_string(),
+                storage_handle: "cas/good/handle".to_string(),
             },
             omission: None,
             capsule: None,
@@ -2143,7 +2182,7 @@ fn test_source_evidence_storage_handle_and_id_sanitization() -> Result<(), Box<d
         assert_eq!(res, Err(ContractError::InvalidIdentifier), "id: {bad_id}");
     }
 
-    // 6. RawWirePackets carrying a capsule is strictly refused
+    // 7. RawWirePackets carrying a capsule is strictly refused
     let capsule = make_test_sensor_capsule(source_digest, 1024)?;
     let raw_with_capsule = SourceEvidenceRecord::new(SourceEvidenceParams {
         evidence_id: "source:raw:with:capsule".to_string(),
@@ -2155,7 +2194,7 @@ fn test_source_evidence_storage_handle_and_id_sanitization() -> Result<(), Box<d
         custody: SourceCustody::Retained {
             source_digest,
             source_bytes: 1024,
-            storage_handle: "cas://good/handle".to_string(),
+            storage_handle: "cas/good/handle".to_string(),
         },
         omission: None,
         capsule: Some(capsule),
@@ -2176,7 +2215,7 @@ fn test_source_evidence_statement_512_byte_boundary() -> Result<(), Box<dyn Erro
     let custody = SourceCustody::Retained {
         source_digest,
         source_bytes: 1024,
-        storage_handle: "cas://boundary".to_string(),
+        storage_handle: "cas/boundary".to_string(),
     };
 
     // 0 bytes: Err
@@ -2261,7 +2300,7 @@ fn test_source_evidence_decode_path_negatives_kill_m8_m9_m10() -> Result<(), Box
         custody: SourceCustody::Retained {
             source_digest,
             source_bytes: 1024,
-            storage_handle: "cas://dec/neg".to_string(),
+            storage_handle: "cas/dec/neg".to_string(),
         },
         omission: None,
         capsule: Some(capsule),
@@ -2575,7 +2614,7 @@ fn test_source_evidence_canonical_roundtrip() -> Result<(), Box<dyn Error>> {
         custody: SourceCustody::Retained {
             source_digest,
             source_bytes: 4096,
-            storage_handle: "cas://dock-bay/packets".to_string(),
+            storage_handle: "cas/dock-bay/packets".to_string(),
         },
         omission: None,
         capsule: Some(capsule),
@@ -2645,7 +2684,7 @@ fn valid_runtime_authority_params() -> Result<RuntimeAuthorityParams, Box<dyn Er
     let custody = SourceCustody::Retained {
         source_digest,
         source_bytes: 1024,
-        storage_handle: "storage:handle:raw:001".to_string(),
+        storage_handle: "storage/handle/raw/001".to_string(),
     };
 
     let obligation = Obligation {
@@ -3070,7 +3109,7 @@ fn test_planted_negative_runtime_authority_and_custody_bypasses() -> Result<(), 
     bad_params.custody = SourceCustody::Retained {
         source_digest,
         source_bytes: 0,
-        storage_handle: "storage:handle:raw:001".to_string(),
+        storage_handle: "storage/handle/raw/001".to_string(),
     };
     bad_params.object_roots = vec![source_digest];
     assert_eq!(
@@ -3618,7 +3657,7 @@ fn test_source_evidence_golden_vector() -> Result<(), Box<dyn Error>> {
         custody: SourceCustody::Retained {
             source_digest,
             source_bytes: 2048,
-            storage_handle: "cas://sha256/golden-source-payload".to_string(),
+            storage_handle: "cas/sha256/golden-source-payload".to_string(),
         },
         omission: None,
         capsule: Some(capsule),
@@ -3628,7 +3667,7 @@ fn test_source_evidence_golden_vector() -> Result<(), Box<dyn Error>> {
     assert_eq!(SOURCE_EVIDENCE_RECORD_FORMAT_VERSION, 2);
 
     let canonical_bytes = record.to_canonical_bytes()?;
-    let expected_hex = "000000020000000000000011736f757263653a676f6c64656e3a303031000000000000000b736974653a676f6c64656e0000000000000001000000000000000100000000000000010000000000000001000000000000000100000000000000010116a86d9757449df9918f423fc0bf7fb115fccedaf6547fb294c34919d994f0aa00000000000000050000000000000044476f6c64656e20736f757263652065766964656e6365207265636f726420666f722063616e6f6e6963616c207769726520666f726d617420766572696669636174696f6e00000000000000086f62736572766564000000000000000e73656e736f725f63617073756c650101b9474e3237099ce42c7040178cb9a4601d56f29f3362e5ef114989ea5244f7d2000000000000080000000000000000226361733a2f2f7368613235362f676f6c64656e2d736f757263652d7061796c6f61640001000000000000000e6361703a676f6c64656e3a303031000000000000001373656e736f723a676f6c64656e3a63616d3031000000000000001173747265616d3a676f6c64656e3a7267620000000000000064000000000000000017979cfe362a0000000000000000000017979cfe71c4ca00000000000000000017979cfe77baab00000000000000000f7574635f6469736369706c696e656401b9474e3237099ce42c7040178cb9a4601d56f29f3362e5ef114989ea5244f7d200000000000008000000003c0001019a2af80ebb359fc05dccf283e344594d86d4556e4448eb19ec3ed084a6840f70";
+    let expected_hex = "000000020000000000000011736f757263653a676f6c64656e3a303031000000000000000b736974653a676f6c64656e0000000000000001000000000000000100000000000000010000000000000001000000000000000100000000000000010116a86d9757449df9918f423fc0bf7fb115fccedaf6547fb294c34919d994f0aa00000000000000050000000000000044476f6c64656e20736f757263652065766964656e6365207265636f726420666f722063616e6f6e6963616c207769726520666f726d617420766572696669636174696f6e00000000000000086f62736572766564000000000000000e73656e736f725f63617073756c650101b9474e3237099ce42c7040178cb9a4601d56f29f3362e5ef114989ea5244f7d2000000000000080000000000000000206361732f7368613235362f676f6c64656e2d736f757263652d7061796c6f61640001000000000000000e6361703a676f6c64656e3a303031000000000000001373656e736f723a676f6c64656e3a63616d3031000000000000001173747265616d3a676f6c64656e3a7267620000000000000064000000000000000017979cfe362a0000000000000000000017979cfe71c4ca00000000000000000017979cfe77baab00000000000000000f7574635f6469736369706c696e656401b9474e3237099ce42c7040178cb9a4601d56f29f3362e5ef114989ea5244f7d200000000000008000000003c0001019a2af80ebb359fc05dccf283e344594d86d4556e4448eb19ec3ed084a6840f70";
     let actual_hex = canonical_bytes
         .iter()
         .map(|b| format!("{b:02x}"))
@@ -3640,7 +3679,7 @@ fn test_source_evidence_golden_vector() -> Result<(), Box<dyn Error>> {
 
     let digest = record.canonical_digest()?;
     let expected_digest = ContentDigest::parse(
-        "sha256:7b7a1b70a7812c2fa676ac00e51c03d16b025250f412d7676d7ea983fabffcd0",
+        "sha256:9394e4b5cc079e1a4c3b609a7680c5e9e61434b5570320698bea3f06c567c2fc",
     )?;
     assert_eq!(
         digest, expected_digest,
