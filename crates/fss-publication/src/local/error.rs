@@ -322,6 +322,8 @@ pub enum LocalPublicationError {
         directory: PathBuf,
         /// Maximum admitted entries.
         maximum: usize,
+        /// Actual observed entries.
+        actual: usize,
     },
     /// An encoded or on-disk record exceeds its size bound.
     RecordTooLarge {
@@ -617,9 +619,13 @@ impl fmt::Display for LocalPublicationError {
                 formatter,
                 "manifest names {count} children; maximum is {maximum}"
             ),
-            Self::EntryLimit { directory, maximum } => write!(
+            Self::EntryLimit {
+                directory,
+                maximum,
+                actual,
+            } => write!(
                 formatter,
-                "directory {} exceeds {maximum} entries",
+                "directory {} holds {actual} entries exceeding scan limit {maximum}",
                 directory.display()
             ),
             Self::RecordTooLarge { length, maximum } => {
@@ -818,6 +824,7 @@ mod tests {
             LocalPublicationError::EntryLimit {
                 directory: PathBuf::from("roots"),
                 maximum: 1,
+                actual: 2,
             },
             LocalPublicationError::RecordTooLarge {
                 length: 2,

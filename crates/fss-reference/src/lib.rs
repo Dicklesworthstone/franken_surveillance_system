@@ -27,6 +27,7 @@ mod model;
 mod outcome;
 mod packet_fault;
 mod policy;
+pub mod reference_deployment;
 mod situation;
 mod situation_guard;
 mod situation_sections;
@@ -156,6 +157,12 @@ pub use packet_fault::{
 pub use policy::{
     ReferenceEventReceipt, ReferenceModelObservation, ReferencePolicyAction,
     ReferencePolicyDecision, evaluate_unknown_presence, publish_reference_event,
+};
+pub use reference_deployment::{
+    DEPLOYMENT_CANCEL_STAGES, DEPLOYMENT_LAYOUT_FILENAME, DEPLOYMENT_LAYOUT_FORMAT_VERSION,
+    DEPLOYMENT_LAYOUT_SCHEMA, DeploymentLayout, DeploymentLimits, LAYOUT_INJECT_FAIL_BEFORE_RENAME,
+    RecoveryAction, RecoveryReceipt, ReferenceDeployment, StagedManifestHandle,
+    write_layout_atomic,
 };
 pub use situation_guard::{
     CAPABILITY_EFFECT_RECONCILE, EFFECT_RECONCILE_AFFORDANCE, EFFECT_STATUS_AFFORDANCE,

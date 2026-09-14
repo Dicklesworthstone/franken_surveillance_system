@@ -2,10 +2,16 @@
 
 use std::error::Error;
 use std::fmt;
+use std::path::PathBuf;
 
-use fss_core::{ContractError, TimestampNs};
-use fss_object::ObjectError;
-use fss_publication::PublicationError;
+use fss_core::{ContentDigest, ContractError, TimestampNs};
+use fss_ledger::{DurableLedgerError, JournalError, RepairError};
+use fss_object::{ObjectError, SpoolError};
+use fss_publication::{
+    CapacityResource, LocalPublicationError, PublicationError, PublishCutPoint, RootLedgerError,
+};
+
+use crate::durable_effect::DurableEffectError;
 
 /// Failures from virtual source generation, transport replay, custody, or publication.
 #[derive(Debug)]
@@ -117,6 +123,86 @@ pub enum ReferenceError {
     /// an I/O failure, or an unresolved ledger append). Dispatch fails closed: it is refused and
     /// the prepared operation is cancelled.
     AuthorityLedgerUnreadable(Box<fss_ledger::DurableLedgerError>),
+    /// The reference deployment root is already locked by another active instance.
+    DeploymentLocked {
+        /// Filesystem path of the root or lock file that is locked.
+        path: PathBuf,
+    },
+    /// A deployment journal ends in an incomplete tail; repair is required.
+    IncompleteJournalTail {
+        /// Byte offset where the incomplete record begins.
+        offset: u64,
+        /// Journal path.
+        path: PathBuf,
+        /// Next affordance guidance for repair.
+        next_affordance: String,
+    },
+    /// Cooperative cancellation was requested at the named checkpoint stage.
+    CancellationRequested {
+        /// The checkpoint stage where cancellation was requested.
+        stage: &'static str,
+    },
+    /// A directory exists and is non-empty but is not a valid deployment root (missing LAYOUT).
+    NotADeployment {
+        /// Root path that failed deployment validation.
+        path: PathBuf,
+    },
+    /// A deployment capacity limit was exceeded.
+    CapacityExceeded {
+        /// Named limit.
+        limit: &'static str,
+        /// Declared maximum bound.
+        maximum: u64,
+        /// Actual requested value.
+        actual: u64,
+    },
+    /// Recovery was refused because foreign bytes contain a structurally valid committed record.
+    RecoverCorruptHistory {
+        /// Journal path containing the corrupt history.
+        path: PathBuf,
+        /// Byte offset where a structurally valid record was discovered.
+        offset: u64,
+    },
+    /// Recovery was refused because the supplied repair plan digest does not match the journal plan.
+    PlanDigestMismatch {
+        /// Expected plan digest.
+        expected: ContentDigest,
+        /// Computed actual plan digest.
+        actual: ContentDigest,
+    },
+    /// Recovery was requested to truncate an incomplete tail but no incomplete tail was found.
+    NoIncompleteTail {
+        /// Journal path inspected.
+        path: PathBuf,
+    },
+    /// Deployment site lineage does not match the configured or expected lineage.
+    SiteLineageMismatch {
+        /// Expected site lineage.
+        expected: String,
+        /// Actual site lineage found in layout.
+        actual: String,
+    },
+    /// Deployment limits digest does not match the configured limits digest.
+    LimitsDigestMismatch {
+        /// Expected limits digest.
+        expected: ContentDigest,
+        /// Actual limits digest found in layout.
+        actual: ContentDigest,
+    },
+    /// Ledger repair operation failure.
+    Repair(Box<RepairError>),
+    /// Low-level journal framing or I/O failure.
+    Journal(JournalError),
+    /// Local root publication failure.
+    LocalPublication(Box<LocalPublicationError>),
+    /// Root-ledger coordinator failure.
+    RootLedger(Box<RootLedgerError>),
+    /// Durable ledger failure.
+    DurableLedger(Box<DurableLedgerError>),
+    /// Durable effect journal failure.
+    DurableEffect(Box<DurableEffectError>),
+    /// Host filesystem I/O failure.
+    Io(std::io::Error),
 }
 
 impl fmt::Display for ReferenceError {
@@ -235,7 +321,121 @@ impl fmt::Display for ReferenceError {
                     "event authority ledger could not be verified: {error}"
                 )
             }
+            Self::DeploymentLocked { path } => {
+                write!(
+                    formatter,
+                    "reference deployment is locked: {}",
+                    path.display()
+                )
+            }
+            Self::IncompleteJournalTail {
+                offset,
+                path,
+                next_affordance,
+            } => {
+                write!(
+                    formatter,
+                    "incomplete journal tail at offset {offset} in {}: {next_affordance}",
+                    path.display()
+                )
+            }
+            Self::CancellationRequested { stage } => {
+                write!(
+                    formatter,
+                    "cooperative cancellation requested at stage '{stage}'"
+                )
+            }
+            Self::NotADeployment { path } => {
+                write!(
+                    formatter,
+                    "directory is not a valid reference deployment: {}",
+                    path.display()
+                )
+            }
+            Self::CapacityExceeded {
+                limit,
+                maximum,
+                actual,
+            } => {
+                write!(
+                    formatter,
+                    "deployment capacity limit exceeded: {limit} (maximum {maximum}, actual {actual})"
+                )
+            }
+            Self::RecoverCorruptHistory { path, offset } => {
+                write!(
+                    formatter,
+                    "refusing recovery due to corrupt committed history at offset {offset} in {}",
+                    path.display()
+                )
+            }
+            Self::PlanDigestMismatch { expected, actual } => {
+                write!(
+                    formatter,
+                    "repair plan digest mismatch: expected {expected}, actual {actual}"
+                )
+            }
+            Self::NoIncompleteTail { path } => {
+                write!(
+                    formatter,
+                    "no incomplete journal tail found in {}",
+                    path.display()
+                )
+            }
+            Self::SiteLineageMismatch { expected, actual } => {
+                write!(
+                    formatter,
+                    "deployment site_lineage mismatch: expected {expected}, actual {actual}"
+                )
+            }
+            Self::LimitsDigestMismatch { expected, actual } => {
+                write!(
+                    formatter,
+                    "deployment limits_digest mismatch: expected {expected}, actual {actual}"
+                )
+            }
+            Self::Repair(error) => write!(formatter, "reference ledger repair error: {error}"),
+            Self::Journal(error) => write!(formatter, "reference journal error: {error}"),
+            Self::LocalPublication(error) => {
+                write!(formatter, "reference local publication error: {error}")
+            }
+            Self::RootLedger(error) => {
+                write!(formatter, "reference root ledger error: {error}")
+            }
+            Self::DurableLedger(error) => {
+                write!(formatter, "reference durable ledger error: {error}")
+            }
+            Self::DurableEffect(error) => {
+                write!(formatter, "reference durable effect error: {error}")
+            }
+            Self::Io(error) => write!(formatter, "reference io error: {error}"),
         }
+    }
+}
+
+impl ReferenceError {
+    /// Returns true if this error indicates the deployment root is locked.
+    #[must_use]
+    pub const fn is_deployment_locked(&self) -> bool {
+        matches!(self, Self::DeploymentLocked { .. })
+    }
+
+    /// Returns true if this error indicates the path is not a deployment root.
+    #[must_use]
+    pub const fn is_not_a_deployment(&self) -> bool {
+        matches!(self, Self::NotADeployment { .. })
+    }
+
+    /// Returns true if this error indicates a capacity limit was exceeded.
+    #[must_use]
+    pub const fn is_capacity_exceeded(&self) -> bool {
+        matches!(self, Self::CapacityExceeded { .. })
+    }
+
+    /// Returns true if this error indicates recovery was refused due to corrupt history.
+    #[must_use]
+    pub const fn is_recover_corrupt_history(&self) -> bool {
+        matches!(self, Self::RecoverCorruptHistory { .. })
     }
 }
 
@@ -245,6 +445,13 @@ impl Error for ReferenceError {
             Self::Contract(error) => Some(error),
             Self::Object(error) => Some(error),
             Self::Publication(error) => Some(error),
+            Self::Repair(error) => Some(error.as_ref()),
+            Self::Journal(error) => Some(error),
+            Self::LocalPublication(error) => Some(error.as_ref()),
+            Self::RootLedger(error) => Some(error.as_ref()),
+            Self::DurableLedger(error) => Some(error.as_ref()),
+            Self::DurableEffect(error) => Some(error.as_ref()),
+            Self::Io(error) => Some(error),
             Self::InvalidSpec(_)
             | Self::UnknownSourceSequence(_)
             | Self::ArithmeticOverflow
@@ -261,7 +468,17 @@ impl Error for ReferenceError {
             | Self::StaleEstimatePastValidity { .. }
             | Self::ContradictedEstimate { .. }
             | Self::InvalidEstimatorConfig { .. }
-            | Self::StaleEventAuthority => None,
+            | Self::StaleEventAuthority
+            | Self::DeploymentLocked { .. }
+            | Self::IncompleteJournalTail { .. }
+            | Self::CancellationRequested { .. }
+            | Self::NotADeployment { .. }
+            | Self::CapacityExceeded { .. }
+            | Self::RecoverCorruptHistory { .. }
+            | Self::PlanDigestMismatch { .. }
+            | Self::NoIncompleteTail { .. }
+            | Self::SiteLineageMismatch { .. }
+            | Self::LimitsDigestMismatch { .. } => None,
             Self::DurableTransitionFailed(error) => Some(error.as_ref()),
             Self::AuthorityLedgerUnreadable(error) => Some(error.as_ref()),
         }
@@ -283,5 +500,113 @@ impl From<ObjectError> for ReferenceError {
 impl From<PublicationError> for ReferenceError {
     fn from(value: PublicationError) -> Self {
         Self::Publication(value)
+    }
+}
+
+impl From<RepairError> for ReferenceError {
+    fn from(value: RepairError) -> Self {
+        Self::Repair(Box::new(value))
+    }
+}
+
+impl From<JournalError> for ReferenceError {
+    fn from(value: JournalError) -> Self {
+        Self::Journal(value)
+    }
+}
+
+impl From<LocalPublicationError> for ReferenceError {
+    fn from(value: LocalPublicationError) -> Self {
+        match value {
+            LocalPublicationError::Locked { path } => Self::DeploymentLocked { path },
+            LocalPublicationError::Cancelled { point } => Self::CancellationRequested {
+                stage: match point {
+                    PublishCutPoint::AfterChildrenVerified => "after_children_verified",
+                    PublishCutPoint::AfterManifestBody => "after_manifest_body",
+                    PublishCutPoint::AfterRootTempWrite => "after_root_temp_write",
+                    PublishCutPoint::AfterRootRename => "after_root_rename",
+                },
+            },
+            LocalPublicationError::Spool(SpoolError::ByteQuotaExceeded {
+                current,
+                requested,
+                maximum,
+            }) => Self::CapacityExceeded {
+                limit: "spool_total_max_bytes",
+                maximum,
+                actual: current.saturating_add(requested),
+            },
+            LocalPublicationError::Spool(SpoolError::ObjectCountLimit { current, maximum }) => {
+                Self::CapacityExceeded {
+                    limit: "spool_max_objects",
+                    maximum: maximum as u64,
+                    actual: (current + 1) as u64,
+                }
+            }
+            LocalPublicationError::Spool(SpoolError::ObjectTooLarge { length, maximum }) => {
+                Self::CapacityExceeded {
+                    limit: "spool_object_max_bytes",
+                    maximum: maximum as u64,
+                    actual: length as u64,
+                }
+            }
+            LocalPublicationError::Capacity {
+                resource,
+                current,
+                maximum,
+            } => {
+                let limit = match resource {
+                    CapacityResource::Roots => "max_roots",
+                    CapacityResource::Tombstones => "max_tombstones",
+                };
+                Self::CapacityExceeded {
+                    limit,
+                    maximum: maximum as u64,
+                    actual: (current + 1) as u64,
+                }
+            }
+            LocalPublicationError::ManifestChildBound { count, maximum } => {
+                Self::CapacityExceeded {
+                    limit: "manifest_children_max",
+                    maximum: maximum as u64,
+                    actual: count as u64,
+                }
+            }
+            LocalPublicationError::EntryLimit {
+                maximum, actual, ..
+            } => Self::CapacityExceeded {
+                limit: "scan_max_objects",
+                maximum: maximum as u64,
+                actual: actual as u64,
+            },
+            other => Self::LocalPublication(Box::new(other)),
+        }
+    }
+}
+
+impl From<RootLedgerError> for ReferenceError {
+    fn from(value: RootLedgerError) -> Self {
+        match value {
+            RootLedgerError::Local(local) => Self::from(local),
+            other => Self::RootLedger(Box::new(other)),
+        }
+    }
+}
+
+impl From<DurableLedgerError> for ReferenceError {
+    fn from(value: DurableLedgerError) -> Self {
+        Self::DurableLedger(Box::new(value))
+    }
+}
+
+impl From<DurableEffectError> for ReferenceError {
+    fn from(value: DurableEffectError) -> Self {
+        Self::DurableEffect(Box::new(value))
+    }
+}
+
+impl From<std::io::Error> for ReferenceError {
+    fn from(value: std::io::Error) -> Self {
+        Self::Io(value)
     }
 }

@@ -81,7 +81,7 @@ use fss_object::ObjectManifest;
 
 use crate::local::{
     LocalPublicationError, LocalPublicationGuidance, LocalPublicationState, LocalRootPublisher,
-    SlotName,
+    NeverCancel, PublishCancellation, SlotName,
 };
 use crate::{AuthorityPublisher, PublicationError};
 
@@ -708,16 +708,13 @@ impl<'a> LedgeredRootPublisher<'a> {
         self.injected_crash = Some(point);
     }
 
-    /// Publishes `manifest` into `slot` root-last until durable, then commits its reachability.
-    ///
-    /// A slot without a ledger identity, an unreconciled ledger append, or a ledger that already
-    /// names a different root for the slot is refused before any disk mutation. Once the root is
-    /// durable, every failure leaves it in the explicit [`RootLedgerState::PendingLedger`] state.
-    pub fn publish_and_commit(
+    /// Publishes `manifest` into `slot` root-last until durable, with cancellation support, then commits its reachability.
+    pub fn publish_and_commit_cancellable(
         &mut self,
         slot: &SlotName,
         manifest: &ObjectManifest,
         validity: CaptureInterval,
+        cancel: &dyn PublishCancellation,
     ) -> Result<RootLedgerReceipt, RootLedgerError> {
         self.require_no_pending_append()?;
         let object_id = root_reachability_object_id(slot)?;
@@ -733,7 +730,7 @@ impl<'a> LedgeredRootPublisher<'a> {
             });
         }
         self.local
-            .publish(slot, manifest)
+            .publish_cancellable(slot, manifest, cancel)
             .map_err(RootLedgerError::Local)?;
         if self.injected_crash == Some(LedgerCutPoint::AfterRootDurable) {
             self.injected_crash = None;
@@ -743,6 +740,20 @@ impl<'a> LedgeredRootPublisher<'a> {
             });
         }
         self.commit_root(slot, validity)
+    }
+
+    /// Publishes `manifest` into `slot` root-last until durable, then commits its reachability.
+    ///
+    /// A slot without a ledger identity, an unreconciled ledger append, or a ledger that already
+    /// names a different root for the slot is refused before any disk mutation. Once the root is
+    /// durable, every failure leaves it in the explicit [`RootLedgerState::PendingLedger`] state.
+    pub fn publish_and_commit(
+        &mut self,
+        slot: &SlotName,
+        manifest: &ObjectManifest,
+        validity: CaptureInterval,
+    ) -> Result<RootLedgerReceipt, RootLedgerError> {
+        self.publish_and_commit_cancellable(slot, manifest, validity, &NeverCancel)
     }
 
     /// Commits the reachability of the root already durable in `slot`.
