@@ -7,24 +7,25 @@ use std::collections::BTreeSet;
 use std::error::Error;
 use std::str::FromStr;
 
+use fss_core::abstraction::{AuthorityAnchor, AuthorityContext, CurrentAnchorSource};
 use fss_core::belief::BeliefInterval;
 use fss_core::effect::{Obligation, ObligationState};
 use fss_core::region::{
     ContextAuthority, QuiescenceProof, RegionId, RegionKind, RegionState, RootAuthoritySpec,
 };
 use fss_core::{
-    AGENT_ABSTRACTION_FREEZE_DIGEST, AGENT_ABSTRACTION_GENERATION, AgentAbstractionLayer,
+    AGENT_ABSTRACTION_FREEZE_DIGEST, AGENT_ABSTRACTION_GENERATION, AgentAbstractionLayer, BatchId,
     BudgetVector, CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, CapsuleId,
     CaptureInterval, ClockBasis, Completeness, ContentDigest, ContractError, CoverageContinuity,
     CoverageStopReason, CoverageWitness, DerivedBelief, DerivedBeliefParams, DigestAlgorithm,
-    Generation, KnowledgeState, KnowledgeStateBasis, LedgerAnchor, NegativeReadClaim,
-    NegativeReadOutcome, ObligationId, OmissionReason, OperationId, Plane, PrivacyGeneration,
-    ProvenanceClass, RUNTIME_AUTHORITY_DOMAIN, RedactionMarker, RedactionReason,
-    RuntimeAuthorityAndCustody, RuntimeAuthorityAndCustodyRecord, RuntimeAuthorityParams,
-    RuntimeAuthorityRecord, RuntimeGrant, SOURCE_EVIDENCE_RECORD_FORMAT_VERSION, SensorCapsule,
-    SensorId, SourceCustody, SourceEvidenceClassification, SourceEvidenceParams,
-    SourceEvidenceRecord, StreamId, TimestampNs, UnknownReason, WorldFact, WorldFactKind,
-    evaluate_negative_read,
+    EvidenceDelta, Generation, KnowledgeState, KnowledgeStateBasis, LedgerAnchor,
+    NegativeReadClaim, NegativeReadOutcome, ObjectId, ObligationId, OmissionReason, OperationId,
+    Plane, PrivacyGeneration, ProvenanceClass, RUNTIME_AUTHORITY_DOMAIN, RedactionMarker,
+    RedactionReason, ReferenceLedger, RuntimeAuthorityAndCustody, RuntimeAuthorityAndCustodyRecord,
+    RuntimeAuthorityParams, RuntimeAuthorityRecord, RuntimeGrant,
+    SOURCE_EVIDENCE_RECORD_FORMAT_VERSION, SensorCapsule, SensorId, SourceCustody,
+    SourceEvidenceClassification, SourceEvidenceParams, SourceEvidenceRecord, StreamId,
+    TimestampNs, UnknownReason, WorldFact, WorldFactKind, evaluate_negative_read,
 };
 
 #[test]
@@ -215,6 +216,60 @@ fn test_agent_abstraction_layer_canonical_roundtrip() -> Result<(), Box<dyn Erro
 
 fn sample_anchor() -> LedgerAnchor {
     LedgerAnchor::genesis("site:us-east:primary")
+}
+
+fn sample_ledger() -> ReferenceLedger {
+    ReferenceLedger::new("site:us-east:primary")
+}
+
+fn sample_authority(ledger: &ReferenceLedger) -> Result<AuthorityAnchor, ContractError> {
+    AuthorityAnchor::from_committed_head(ledger)
+}
+
+fn make_test_delta(
+    id: &str,
+    object: &str,
+    prior: Option<u64>,
+    generation: u64,
+) -> Result<EvidenceDelta, ContractError> {
+    Ok(EvidenceDelta {
+        delta_id: id.to_owned(),
+        family: "sensor_capsule".to_owned(),
+        object_id: ObjectId::parse(object)?,
+        prior_generation: prior,
+        new_generation: generation,
+        validity: CaptureInterval::new(TimestampNs(10), TimestampNs(20))?,
+        plane: Plane::Authority,
+        payload_digest: ContentDigest::sha256(id.as_bytes()),
+        witness_digest: None,
+        operation_id: None,
+    })
+}
+
+fn advance_ledger(
+    ledger: &mut ReferenceLedger,
+    batch_id: &str,
+    delta_id: &str,
+    object_id: &str,
+) -> Result<(), ContractError> {
+    let parsed_object_id = ObjectId::parse(object_id)?;
+    let (prior, next_gen) = match ledger.current().objects.get(&parsed_object_id) {
+        Some(current) => (Some(current.generation), current.generation + 1),
+        None => (None, 1),
+    };
+    let batch = ledger.prepare_batch(
+        BatchId::parse(batch_id)?,
+        vec![make_test_delta(delta_id, object_id, prior, next_gen)?],
+        [],
+    )?;
+    ledger.append(batch)?;
+    Ok(())
+}
+
+fn advance_ledger_empty(ledger: &mut ReferenceLedger, batch_id: &str) -> Result<(), ContractError> {
+    let batch = ledger.prepare_batch(BatchId::parse(batch_id)?, vec![], [])?;
+    ledger.append(batch)?;
+    Ok(())
 }
 
 fn sample_uncertainty() -> Result<BeliefInterval, Box<dyn Error>> {
@@ -755,7 +810,38 @@ fn test_planted_negative_world_fact_validation_failures() -> Result<(), Box<dyn 
     };
     assert_eq!(err, ContractError::GenerationConflict);
 
-    // 5. Prohibition: "Cannot include unqualified cognition as fact" (INV-063)
+    // 5. Zero evidence digest fails closed
+    let zero_digest = ContentDigest::new(DigestAlgorithm::Sha256, [0u8; 32]);
+    let res = WorldFact::new(
+        "fact:device:001",
+        WorldFactKind::Device,
+        anchor.clone(),
+        "Valid statement".to_string(),
+        ProvenanceClass::Observed,
+        zero_digest,
+        Generation(1),
+    );
+    let Err(err) = res else {
+        return Err("expected error for zero evidence digest".into());
+    };
+    assert_eq!(err, ContractError::InvalidDigest);
+
+    // 6. Malformed fact_id fails closed (validate_id rejects whitespace)
+    let res = WorldFact::new(
+        "fact device 001",
+        WorldFactKind::Device,
+        anchor.clone(),
+        "Valid statement".to_string(),
+        ProvenanceClass::Observed,
+        evidence,
+        Generation(1),
+    );
+    let Err(err) = res else {
+        return Err("expected error for malformed fact_id".into());
+    };
+    assert_eq!(err, ContractError::InvalidIdentifier);
+
+    // 7. Statement text check: unqualified cognition fails closed
     let res = WorldFact::new(
         "fact:device:001",
         WorldFactKind::Device,
@@ -766,11 +852,41 @@ fn test_planted_negative_world_fact_validation_failures() -> Result<(), Box<dyn 
         Generation(1),
     );
     let Err(err) = res else {
-        return Err("expected error for unqualified cognition".into());
+        return Err("expected error for unqualified cognition in statement".into());
     };
     assert_eq!(err, ContractError::EvidenceRequired);
 
-    // 6. Planted bypass: ProvenanceClass::Predicted fails closed
+    // 8. Statement text check: speculative fails closed
+    let res = WorldFact::new(
+        "fact:device:001",
+        WorldFactKind::Device,
+        anchor.clone(),
+        "Highly speculative motion event".to_string(),
+        ProvenanceClass::Observed,
+        evidence,
+        Generation(1),
+    );
+    let Err(err) = res else {
+        return Err("expected error for speculative in statement".into());
+    };
+    assert_eq!(err, ContractError::EvidenceRequired);
+
+    // 9. Statement text check: unverified hypothesis fails closed
+    let res = WorldFact::new(
+        "fact:device:001",
+        WorldFactKind::Device,
+        anchor.clone(),
+        "Contains unverified hypothesis".to_string(),
+        ProvenanceClass::Observed,
+        evidence,
+        Generation(1),
+    );
+    let Err(err) = res else {
+        return Err("expected error for unverified hypothesis in statement".into());
+    };
+    assert_eq!(err, ContractError::EvidenceRequired);
+
+    // 10. Provenance check: ProvenanceClass::Predicted fails closed
     let res = WorldFact::new(
         "fact:device:001",
         WorldFactKind::Device,
@@ -785,11 +901,11 @@ fn test_planted_negative_world_fact_validation_failures() -> Result<(), Box<dyn 
     };
     assert_eq!(err, ContractError::EvidenceRequired);
 
-    // 7. Planted bypass: ProvenanceClass::Remembered fails closed
+    // 11. Provenance check: ProvenanceClass::Remembered fails closed
     let res = WorldFact::new(
         "fact:device:001",
         WorldFactKind::Device,
-        anchor,
+        anchor.clone(),
         "Valid statement".to_string(),
         ProvenanceClass::Remembered,
         evidence,
@@ -800,12 +916,34 @@ fn test_planted_negative_world_fact_validation_failures() -> Result<(), Box<dyn 
     };
     assert_eq!(err, ContractError::EvidenceRequired);
 
+    // 12. Valid provenances (Derived, OperatorAsserted, VendorClaimed, Policy, Observed) succeed
+    for prov in [
+        ProvenanceClass::Observed,
+        ProvenanceClass::Derived,
+        ProvenanceClass::OperatorAsserted,
+        ProvenanceClass::VendorClaimed,
+        ProvenanceClass::Policy,
+    ] {
+        let wf = WorldFact::new(
+            "fact:device:valid",
+            WorldFactKind::Device,
+            anchor.clone(),
+            "Authoritative validated fact statement".to_string(),
+            prov,
+            evidence,
+            Generation(1),
+        )?;
+        assert_eq!(wf.provenance, prov);
+    }
+
     Ok(())
 }
 
 #[test]
 fn test_negative_read_claim_requires_coverage_witness() -> Result<(), Box<dyn Error>> {
-    let anchor = sample_anchor();
+    let ledger = sample_ledger();
+    let anchor = ledger.current().anchor.clone();
+    let authority = sample_authority(&ledger)?;
     let mut target_domain = BTreeSet::new();
     target_domain.insert("zone:north_perimeter".to_string());
 
@@ -813,13 +951,13 @@ fn test_negative_read_claim_requires_coverage_witness() -> Result<(), Box<dyn Er
     let claim = NegativeReadClaim {
         claim_id: "neg_claim:001".to_string(),
         query_predicate: "no_unauthorized_intrusion".to_string(),
-        anchor,
+        anchor: anchor.clone(),
         target_domain,
         target_generation: 1,
         coverage_witness: None,
     };
 
-    let Err(err) = evaluate_negative_read(&claim) else {
+    let Err(err) = evaluate_negative_read(&claim, &authority) else {
         return Err("expected error for uncertified coverage".into());
     };
     assert_eq!(err, ContractError::CoverageUncertified);
@@ -829,7 +967,9 @@ fn test_negative_read_claim_requires_coverage_witness() -> Result<(), Box<dyn Er
 
 #[test]
 fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<dyn Error>> {
-    let anchor = sample_anchor();
+    let ledger = sample_ledger();
+    let anchor = ledger.current().anchor.clone();
+    let authority = sample_authority(&ledger)?;
     let mut target_domain = BTreeSet::new();
     target_domain.insert("zone:north_perimeter".to_string());
 
@@ -848,7 +988,7 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
         target_generation: 1,
         coverage_witness: Some(witness),
     };
-    let Err(err) = evaluate_negative_read(&claim) else {
+    let Err(err) = evaluate_negative_read(&claim, &authority) else {
         return Err("expected error for gapped coverage".into());
     };
     assert_eq!(err, ContractError::CoverageUncertified);
@@ -868,7 +1008,7 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
         target_generation: 1,
         coverage_witness: Some(witness),
     };
-    let Err(err) = evaluate_negative_read(&claim) else {
+    let Err(err) = evaluate_negative_read(&claim, &authority) else {
         return Err("expected error for partial coverage".into());
     };
     assert_eq!(err, ContractError::CoverageUncertified);
@@ -888,7 +1028,7 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
         target_generation: 1,
         coverage_witness: Some(witness),
     };
-    let Err(err) = evaluate_negative_read(&claim) else {
+    let Err(err) = evaluate_negative_read(&claim, &authority) else {
         return Err("expected error for budget exhausted stop reason".into());
     };
     assert_eq!(err, ContractError::CoverageUncertified);
@@ -910,7 +1050,7 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
         target_generation: 1,
         coverage_witness: Some(witness),
     };
-    let Err(err) = evaluate_negative_read(&claim) else {
+    let Err(err) = evaluate_negative_read(&claim, &authority) else {
         return Err("expected error for non-empty excluded domain".into());
     };
     assert_eq!(err, ContractError::CoverageUncertified);
@@ -929,7 +1069,7 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
         target_generation: 1,
         coverage_witness: Some(witness),
     };
-    let Err(err) = evaluate_negative_read(&claim) else {
+    let Err(err) = evaluate_negative_read(&claim, &authority) else {
         return Err("expected error for domain mismatch".into());
     };
     assert_eq!(err, ContractError::CoverageUncertified);
@@ -948,7 +1088,7 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
         target_generation: 1,
         coverage_witness: Some(witness),
     };
-    let Err(err) = evaluate_negative_read(&claim) else {
+    let Err(err) = evaluate_negative_read(&claim, &authority) else {
         return Err("expected error for predicate mismatch".into());
     };
     assert_eq!(err, ContractError::CoverageUncertified);
@@ -963,58 +1103,224 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
         claim_id: "neg_claim:gen_mismatch".to_string(),
         query_predicate: "no_unauthorized_intrusion".to_string(),
         anchor: anchor.clone(),
-        target_domain,
+        target_domain: target_domain.clone(),
         target_generation: 2, // Witness has gen 1
         coverage_witness: Some(witness),
     };
-    let Err(err) = evaluate_negative_read(&claim) else {
+    let Err(err) = evaluate_negative_read(&claim, &authority) else {
         return Err("expected error for generation mismatch".into());
     };
     assert_eq!(err, ContractError::GenerationConflict);
 
-    // 8. Anchor lineage mismatch
+    // 8. (Check 1, RM7) Witness anchor mismatch from claim anchor:
+    // Witness is at authority anchor, but claim has different anchor.
     let witness = sample_witness(
         "no_unauthorized_intrusion",
         &["zone:north_perimeter"],
         &["zone:north_perimeter"],
     );
-    let mut rogue_anchor = anchor.clone();
-    rogue_anchor.site_lineage = "site:rogue_lineage".to_string();
-    let mut target_domain = BTreeSet::new();
-    target_domain.insert("zone:north_perimeter".to_string());
+    let mut different_claim_anchor = anchor.clone();
+    different_claim_anchor.commit_sequence += 1;
     let claim = NegativeReadClaim {
-        claim_id: "neg_claim:stale_anchor".to_string(),
+        claim_id: "neg_claim:witness_claim_anchor_mismatch".to_string(),
         query_predicate: "no_unauthorized_intrusion".to_string(),
-        anchor: rogue_anchor,
-        target_domain,
+        anchor: different_claim_anchor,
+        target_domain: target_domain.clone(),
         target_generation: 1,
         coverage_witness: Some(witness),
     };
-    let Err(err) = evaluate_negative_read(&claim) else {
-        return Err("expected error for stale anchor".into());
+    let Err(err) = evaluate_negative_read(&claim, &authority) else {
+        return Err("expected error for witness != claim anchor (RM7)".into());
     };
     assert_eq!(err, ContractError::StaleAnchor);
 
-    // 9. Anchor epoch/seq_no mismatch (stale anchor)
+    // 9. (Check 2, RM3) Site lineage mismatch:
+    // Witness and claim match each other, but have different site lineage from authority.
+    let mut other_site_anchor = anchor.clone();
+    other_site_anchor.site_lineage = "site:other_lineage".to_string();
+    let mut other_witness = sample_witness(
+        "no_unauthorized_intrusion",
+        &["zone:north_perimeter"],
+        &["zone:north_perimeter"],
+    );
+    other_witness.anchor = other_site_anchor.clone();
+    let claim = NegativeReadClaim {
+        claim_id: "neg_claim:site_lineage_mismatch".to_string(),
+        query_predicate: "no_unauthorized_intrusion".to_string(),
+        anchor: other_site_anchor,
+        target_domain: target_domain.clone(),
+        target_generation: 1,
+        coverage_witness: Some(other_witness),
+    };
+    let Err(err) = evaluate_negative_read(&claim, &authority) else {
+        return Err("expected error for site lineage mismatch (RM3)".into());
+    };
+    assert_eq!(err, ContractError::StaleAnchor);
+
+    // 10. (Check 3, RM4) Strictly older commit sequence/epoch (stale anchor):
+    // Witness and claim match, same lineage, but sequence is older than authority anchor.
     let witness = sample_witness(
         "no_unauthorized_intrusion",
         &["zone:north_perimeter"],
         &["zone:north_perimeter"],
     );
-    let mut stale_anchor = anchor;
-    stale_anchor.ledger_epoch += 1;
-    let mut target_domain = BTreeSet::new();
-    target_domain.insert("zone:north_perimeter".to_string());
+    let mut advanced_ledger = sample_ledger();
+    advance_ledger_empty(&mut advanced_ledger, "batch:rm4_adv")?;
+    assert_eq!(
+        advanced_ledger.current().anchor.state_root,
+        anchor.state_root
+    );
+    assert_eq!(
+        advanced_ledger.current().anchor.commit_sequence,
+        anchor.commit_sequence + 1
+    );
+    let newer_authority = sample_authority(&advanced_ledger)?;
     let claim = NegativeReadClaim {
-        claim_id: "neg_claim:stale_epoch".to_string(),
+        claim_id: "neg_claim:stale_sequence".to_string(),
         query_predicate: "no_unauthorized_intrusion".to_string(),
-        anchor: stale_anchor,
-        target_domain,
+        anchor: anchor.clone(),
+        target_domain: target_domain.clone(),
         target_generation: 1,
         coverage_witness: Some(witness),
     };
-    let Err(err) = evaluate_negative_read(&claim) else {
-        return Err("expected error for stale anchor epoch".into());
+    let Err(err) = evaluate_negative_read(&claim, &newer_authority) else {
+        return Err("expected error for strictly older sequence (RM4)".into());
+    };
+    assert_eq!(err, ContractError::StaleAnchor);
+
+    // 11. (Check 4, RM8) Divergent state root at same sequence:
+    // Witness and claim match, same lineage and sequence, but different state root from authority.
+    let mut ledger_a = sample_ledger();
+    advance_ledger(&mut ledger_a, "batch:rm8_a", "delta:rm8_a", "object:rm8_a")?;
+    let mut ledger_b = sample_ledger();
+    advance_ledger(&mut ledger_b, "batch:rm8_b", "delta:rm8_b", "object:rm8_b")?;
+    let anchor_a = ledger_a.current().anchor.clone();
+    let forked_authority = sample_authority(&ledger_b)?;
+    let witness = sample_witness(
+        "no_unauthorized_intrusion",
+        &["zone:north_perimeter"],
+        &["zone:north_perimeter"],
+    );
+    let mut witness_a = witness.clone();
+    witness_a.anchor = anchor_a.clone();
+    let claim = NegativeReadClaim {
+        claim_id: "neg_claim:divergent_state_root".to_string(),
+        query_predicate: "no_unauthorized_intrusion".to_string(),
+        anchor: anchor_a,
+        target_domain: target_domain.clone(),
+        target_generation: 1,
+        coverage_witness: Some(witness_a),
+    };
+    let Err(err) = evaluate_negative_read(&claim, &forked_authority) else {
+        return Err("expected error for divergent state root (RM8)".into());
+    };
+    assert_eq!(err, ContractError::StaleAnchor);
+
+    // 12. (Check 4, RM8f) Future witness anchor (ledger_epoch ahead of current)
+    let mut future_epoch_anchor = anchor.clone();
+    future_epoch_anchor.ledger_epoch += 1;
+    let mut future_witness = witness.clone();
+    future_witness.anchor = future_epoch_anchor.clone();
+    let claim = NegativeReadClaim {
+        claim_id: "neg_claim:future_ledger_epoch".to_string(),
+        query_predicate: "no_unauthorized_intrusion".to_string(),
+        anchor: future_epoch_anchor,
+        target_domain: target_domain.clone(),
+        target_generation: 1,
+        coverage_witness: Some(future_witness),
+    };
+    let Err(err) = evaluate_negative_read(&claim, &authority) else {
+        return Err("expected error for future ledger epoch (RM8f)".into());
+    };
+    assert_eq!(err, ContractError::StaleAnchor);
+
+    // 13. (Check 4, RM8f) Future witness anchor (commit_sequence ahead of current)
+    let mut future_seq_anchor = anchor.clone();
+    future_seq_anchor.commit_sequence += 1;
+    let mut future_witness = witness.clone();
+    future_witness.anchor = future_seq_anchor.clone();
+    let claim = NegativeReadClaim {
+        claim_id: "neg_claim:future_commit_sequence".to_string(),
+        query_predicate: "no_unauthorized_intrusion".to_string(),
+        anchor: future_seq_anchor,
+        target_domain: target_domain.clone(),
+        target_generation: 1,
+        coverage_witness: Some(future_witness),
+    };
+    let Err(err) = evaluate_negative_read(&claim, &authority) else {
+        return Err("expected error for future commit sequence (RM8f)".into());
+    };
+    assert_eq!(err, ContractError::StaleAnchor);
+
+    // 14. (Check 4, RM8p) Divergent policy_epoch from authority
+    let mut divergent_policy_anchor = anchor.clone();
+    divergent_policy_anchor.policy_epoch += 1;
+    let mut divergent_policy_witness = witness.clone();
+    divergent_policy_witness.anchor = divergent_policy_anchor.clone();
+    let claim = NegativeReadClaim {
+        claim_id: "neg_claim:divergent_policy_epoch".to_string(),
+        query_predicate: "no_unauthorized_intrusion".to_string(),
+        anchor: divergent_policy_anchor,
+        target_domain: target_domain.clone(),
+        target_generation: 1,
+        coverage_witness: Some(divergent_policy_witness),
+    };
+    let Err(err) = evaluate_negative_read(&claim, &authority) else {
+        return Err("expected error for divergent policy epoch (RM8p)".into());
+    };
+    assert_eq!(err, ContractError::StaleAnchor);
+
+    // 15. (Check 4, RM8) Divergent privacy_epoch from authority
+    let mut divergent_privacy_anchor = anchor.clone();
+    divergent_privacy_anchor.privacy_epoch += 1;
+    let mut divergent_privacy_witness = witness.clone();
+    divergent_privacy_witness.anchor = divergent_privacy_anchor.clone();
+    let claim = NegativeReadClaim {
+        claim_id: "neg_claim:divergent_privacy_epoch".to_string(),
+        query_predicate: "no_unauthorized_intrusion".to_string(),
+        anchor: divergent_privacy_anchor,
+        target_domain: target_domain.clone(),
+        target_generation: 1,
+        coverage_witness: Some(divergent_privacy_witness),
+    };
+    let Err(err) = evaluate_negative_read(&claim, &authority) else {
+        return Err("expected error for divergent privacy epoch (RM8)".into());
+    };
+    assert_eq!(err, ContractError::StaleAnchor);
+
+    // 16. (Check 4, RM8) Divergent schema_epoch from authority
+    let mut divergent_schema_anchor = anchor.clone();
+    divergent_schema_anchor.schema_epoch += 1;
+    let mut divergent_schema_witness = witness.clone();
+    divergent_schema_witness.anchor = divergent_schema_anchor.clone();
+    let claim = NegativeReadClaim {
+        claim_id: "neg_claim:divergent_schema_epoch".to_string(),
+        query_predicate: "no_unauthorized_intrusion".to_string(),
+        anchor: divergent_schema_anchor,
+        target_domain: target_domain.clone(),
+        target_generation: 1,
+        coverage_witness: Some(divergent_schema_witness),
+    };
+    let Err(err) = evaluate_negative_read(&claim, &authority) else {
+        return Err("expected error for divergent schema epoch (RM8)".into());
+    };
+    assert_eq!(err, ContractError::StaleAnchor);
+
+    // 17. (Check 4, RM8) Divergent adapter_registry_epoch from authority
+    let mut divergent_adapter_anchor = anchor.clone();
+    divergent_adapter_anchor.adapter_registry_epoch += 1;
+    let mut divergent_adapter_witness = witness;
+    divergent_adapter_witness.anchor = divergent_adapter_anchor.clone();
+    let claim = NegativeReadClaim {
+        claim_id: "neg_claim:divergent_adapter_epoch".to_string(),
+        query_predicate: "no_unauthorized_intrusion".to_string(),
+        anchor: divergent_adapter_anchor,
+        target_domain,
+        target_generation: 1,
+        coverage_witness: Some(divergent_adapter_witness),
+    };
+    let Err(err) = evaluate_negative_read(&claim, &authority) else {
+        return Err("expected error for divergent adapter registry epoch (RM8)".into());
     };
     assert_eq!(err, ContractError::StaleAnchor);
 
@@ -1022,8 +1328,300 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
 }
 
 #[test]
+fn test_negative_read_outcome_from_witness_direct_contracts() -> Result<(), Box<dyn Error>> {
+    let ledger = sample_ledger();
+    let anchor = ledger.current().anchor.clone();
+    let authority = sample_authority(&ledger)?;
+    let mut target_domain = BTreeSet::new();
+    target_domain.insert("zone:north_perimeter".to_string());
+
+    // 1. Direct construction succeeds with valid parameters (generation taken from claim)
+    let witness = sample_witness(
+        "no_unauthorized_intrusion",
+        &["zone:north_perimeter"],
+        &["zone:north_perimeter"],
+    );
+    let outcome = NegativeReadOutcome::from_witness(
+        "neg_claim:direct_ok",
+        "no_unauthorized_intrusion",
+        anchor.clone(),
+        target_domain.clone(),
+        &witness,
+        &authority,
+        1,
+    )?;
+    assert_eq!(outcome.claim_id(), "neg_claim:direct_ok");
+    assert_eq!(outcome.query_predicate(), "no_unauthorized_intrusion");
+    assert_eq!(outcome.anchor(), &anchor);
+    assert_eq!(outcome.certified_domain(), &target_domain);
+    assert_eq!(outcome.witness_digest(), witness.witness_digest());
+    assert_eq!(outcome.generation(), 1);
+
+    // 2. RM9 killer: Dropping require_certified_absence in from_witness must fail
+    let mut uncertified_witness = sample_witness(
+        "no_unauthorized_intrusion",
+        &["zone:north_perimeter"],
+        &["zone:north_perimeter"],
+    );
+    uncertified_witness.stop_reason = CoverageStopReason::BudgetExhausted;
+    let res = NegativeReadOutcome::from_witness(
+        "neg_claim:rm9_direct",
+        "no_unauthorized_intrusion",
+        anchor.clone(),
+        target_domain.clone(),
+        &uncertified_witness,
+        &authority,
+        1,
+    );
+    assert!(matches!(res, Err(ContractError::CoverageUncertified)));
+
+    // 3. RM7 killer: Dropping witness.anchor != anchor in from_witness must fail
+    let mut different_anchor = anchor.clone();
+    different_anchor.commit_sequence += 1;
+    let res = NegativeReadOutcome::from_witness(
+        "neg_claim:rm7_direct",
+        "no_unauthorized_intrusion",
+        different_anchor,
+        target_domain.clone(),
+        &witness,
+        &authority,
+        1,
+    );
+    assert!(matches!(res, Err(ContractError::StaleAnchor)));
+
+    // 4. RM3 in from_witness: site lineage mismatch
+    let other_site_ledger = ReferenceLedger::new("site:other");
+    let other_site_authority = sample_authority(&other_site_ledger)?;
+    let res = NegativeReadOutcome::from_witness(
+        "neg_claim:rm3_direct",
+        "no_unauthorized_intrusion",
+        anchor.clone(),
+        target_domain.clone(),
+        &witness,
+        &other_site_authority,
+        1,
+    );
+    assert!(matches!(res, Err(ContractError::StaleAnchor)));
+
+    // 5. RM4 in from_witness: strictly older sequence
+    let mut newer_ledger = sample_ledger();
+    advance_ledger_empty(&mut newer_ledger, "batch:rm4_dir")?;
+    assert_eq!(newer_ledger.current().anchor.state_root, anchor.state_root);
+    assert_eq!(
+        newer_ledger.current().anchor.commit_sequence,
+        anchor.commit_sequence + 1
+    );
+    let newer_authority = sample_authority(&newer_ledger)?;
+    let res = NegativeReadOutcome::from_witness(
+        "neg_claim:rm4_direct",
+        "no_unauthorized_intrusion",
+        anchor.clone(),
+        target_domain.clone(),
+        &witness,
+        &newer_authority,
+        1,
+    );
+    assert!(matches!(res, Err(ContractError::StaleAnchor)));
+
+    // 6. RM8 in from_witness: divergent state root at same sequence
+    let mut ledger_a = sample_ledger();
+    advance_ledger(
+        &mut ledger_a,
+        "batch:rm8_da",
+        "delta:rm8_da",
+        "object:rm8_da",
+    )?;
+    let mut ledger_b = sample_ledger();
+    advance_ledger(
+        &mut ledger_b,
+        "batch:rm8_db",
+        "delta:rm8_db",
+        "object:rm8_db",
+    )?;
+    let anchor_a = ledger_a.current().anchor.clone();
+    let mut witness_a = witness.clone();
+    witness_a.anchor = anchor_a.clone();
+    let forked_authority = sample_authority(&ledger_b)?;
+    let res = NegativeReadOutcome::from_witness(
+        "neg_claim:rm8_direct",
+        "no_unauthorized_intrusion",
+        anchor_a,
+        target_domain.clone(),
+        &witness_a,
+        &forked_authority,
+        1,
+    );
+    assert!(matches!(res, Err(ContractError::StaleAnchor)));
+
+    // 6b. RM8f in from_witness: future witness anchor (ledger_epoch ahead of current)
+    let mut future_epoch_anchor = anchor.clone();
+    future_epoch_anchor.ledger_epoch += 1;
+    let mut future_witness = witness.clone();
+    future_witness.anchor = future_epoch_anchor.clone();
+    let res = NegativeReadOutcome::from_witness(
+        "neg_claim:rm8f_future_epoch",
+        "no_unauthorized_intrusion",
+        future_epoch_anchor,
+        target_domain.clone(),
+        &future_witness,
+        &authority,
+        1,
+    );
+    assert!(matches!(res, Err(ContractError::StaleAnchor)));
+
+    // 6c. RM8f in from_witness: future witness anchor (commit_sequence ahead of current)
+    let mut future_seq_anchor = anchor.clone();
+    future_seq_anchor.commit_sequence += 1;
+    let mut future_witness = witness.clone();
+    future_witness.anchor = future_seq_anchor.clone();
+    let res = NegativeReadOutcome::from_witness(
+        "neg_claim:rm8f_future_seq",
+        "no_unauthorized_intrusion",
+        future_seq_anchor,
+        target_domain.clone(),
+        &future_witness,
+        &authority,
+        1,
+    );
+    assert!(matches!(res, Err(ContractError::StaleAnchor)));
+
+    // 6d. RM8p in from_witness: divergent policy_epoch from authority
+    let mut divergent_policy_anchor = anchor.clone();
+    divergent_policy_anchor.policy_epoch += 1;
+    let mut divergent_policy_witness = witness.clone();
+    divergent_policy_witness.anchor = divergent_policy_anchor.clone();
+    let res = NegativeReadOutcome::from_witness(
+        "neg_claim:rm8p_policy_epoch",
+        "no_unauthorized_intrusion",
+        divergent_policy_anchor,
+        target_domain.clone(),
+        &divergent_policy_witness,
+        &authority,
+        1,
+    );
+    assert!(matches!(res, Err(ContractError::StaleAnchor)));
+
+    // 6e. RM8 in from_witness: divergent privacy_epoch from authority
+    let mut divergent_privacy_anchor = anchor.clone();
+    divergent_privacy_anchor.privacy_epoch += 1;
+    let mut divergent_privacy_witness = witness.clone();
+    divergent_privacy_witness.anchor = divergent_privacy_anchor.clone();
+    let res = NegativeReadOutcome::from_witness(
+        "neg_claim:rm8_privacy_epoch",
+        "no_unauthorized_intrusion",
+        divergent_privacy_anchor,
+        target_domain.clone(),
+        &divergent_privacy_witness,
+        &authority,
+        1,
+    );
+    assert!(matches!(res, Err(ContractError::StaleAnchor)));
+
+    // 6f. RM8 in from_witness: divergent schema_epoch from authority
+    let mut divergent_schema_anchor = anchor.clone();
+    divergent_schema_anchor.schema_epoch += 1;
+    let mut divergent_schema_witness = witness.clone();
+    divergent_schema_witness.anchor = divergent_schema_anchor.clone();
+    let res = NegativeReadOutcome::from_witness(
+        "neg_claim:rm8_schema_epoch",
+        "no_unauthorized_intrusion",
+        divergent_schema_anchor,
+        target_domain.clone(),
+        &divergent_schema_witness,
+        &authority,
+        1,
+    );
+    assert!(matches!(res, Err(ContractError::StaleAnchor)));
+
+    // 6g. RM8 in from_witness: divergent adapter_registry_epoch from authority
+    let mut divergent_adapter_anchor = anchor.clone();
+    divergent_adapter_anchor.adapter_registry_epoch += 1;
+    let mut divergent_adapter_witness = witness.clone();
+    divergent_adapter_witness.anchor = divergent_adapter_anchor.clone();
+    let res = NegativeReadOutcome::from_witness(
+        "neg_claim:rm8_adapter_epoch",
+        "no_unauthorized_intrusion",
+        divergent_adapter_anchor,
+        target_domain.clone(),
+        &divergent_adapter_witness,
+        &authority,
+        1,
+    );
+    assert!(matches!(res, Err(ContractError::StaleAnchor)));
+
+    // 7. Generation mismatch or zero generation fails closed (N6)
+    let res = NegativeReadOutcome::from_witness(
+        "neg_claim:gen_zero",
+        "no_unauthorized_intrusion",
+        anchor.clone(),
+        target_domain.clone(),
+        &witness,
+        &authority,
+        0,
+    );
+    assert!(matches!(res, Err(ContractError::GenerationConflict)));
+
+    let res = NegativeReadOutcome::from_witness(
+        "neg_claim:gen_mismatch",
+        "no_unauthorized_intrusion",
+        anchor,
+        target_domain,
+        &witness,
+        &authority,
+        99,
+    );
+    assert!(matches!(res, Err(ContractError::GenerationConflict)));
+
+    Ok(())
+}
+
+#[test]
+fn test_authority_context_as_current_anchor_source() -> Result<(), Box<dyn Error>> {
+    let ledger = sample_ledger();
+    let anchor = ledger.current().anchor.clone();
+    let basis = fss_core::contract_basis::reference_contract_basis();
+    let authority = AuthorityAnchor::from_committed_head(&ledger)?;
+
+    // 1. AuthorityContext constructed from AuthorityAnchor implements CurrentAnchorSource
+    let auth_ctx = AuthorityContext::new(&basis, &authority);
+    assert_eq!(auth_ctx.current_anchor(), &anchor);
+    assert_eq!(auth_ctx.contract_basis(), &basis);
+
+    // 2. AuthorityContext constructed from committed head implements CurrentAnchorSource
+    let auth_ctx_head = AuthorityContext::from_committed_head(&basis, &ledger)?;
+    assert_eq!(auth_ctx_head.current_anchor(), &anchor);
+    assert_eq!(auth_ctx_head.contract_basis(), &basis);
+
+    let witness = sample_witness(
+        "no_unauthorized_intrusion",
+        &["zone:north_perimeter"],
+        &["zone:north_perimeter"],
+    );
+    let mut target_domain = BTreeSet::new();
+    target_domain.insert("zone:north_perimeter".to_string());
+    let claim = NegativeReadClaim {
+        claim_id: "neg_claim:auth_ctx_ok".to_string(),
+        query_predicate: "no_unauthorized_intrusion".to_string(),
+        anchor: anchor.clone(),
+        target_domain: target_domain.clone(),
+        target_generation: 1,
+        coverage_witness: Some(witness.clone()),
+    };
+
+    let outcome = evaluate_negative_read(&claim, &auth_ctx)?;
+    assert_eq!(outcome.claim_id(), "neg_claim:auth_ctx_ok");
+
+    let outcome_head = evaluate_negative_read(&claim, &auth_ctx_head)?;
+    assert_eq!(outcome_head.claim_id(), "neg_claim:auth_ctx_ok");
+
+    Ok(())
+}
+
+#[test]
 fn test_negative_read_claim_with_certified_absence_succeeds() -> Result<(), Box<dyn Error>> {
-    let anchor = sample_anchor();
+    let ledger = sample_ledger();
+    let anchor = ledger.current().anchor.clone();
+    let authority = sample_authority(&ledger)?;
     let mut target_domain = BTreeSet::new();
     target_domain.insert("zone:north_perimeter".to_string());
     target_domain.insert("zone:east_perimeter".to_string());
@@ -1043,21 +1641,38 @@ fn test_negative_read_claim_with_certified_absence_succeeds() -> Result<(), Box<
         coverage_witness: Some(witness.clone()),
     };
 
-    let outcome = evaluate_negative_read(&claim)?;
-    assert_eq!(outcome.claim_id, "neg_claim:certified_ok");
-    assert_eq!(outcome.query_predicate, "no_unauthorized_intrusion");
-    assert_eq!(outcome.anchor, anchor);
-    assert_eq!(outcome.certified_domain, target_domain);
-    assert_eq!(outcome.witness_digest, witness.witness_digest());
-    assert_eq!(outcome.generation, 1);
+    let outcome = evaluate_negative_read(&claim, &authority)?;
+    assert_eq!(outcome.claim_id(), "neg_claim:certified_ok");
+    assert_eq!(outcome.query_predicate(), "no_unauthorized_intrusion");
+    assert_eq!(outcome.anchor(), &anchor);
+    assert_eq!(outcome.certified_domain(), &target_domain);
+    assert_eq!(outcome.witness_digest(), witness.witness_digest());
+    assert_eq!(outcome.generation(), 1);
 
-    // Canonical roundtrip
+    // Direct construction via NegativeReadOutcome::from_witness
+    let direct = NegativeReadOutcome::from_witness(
+        "neg_claim:direct_ok",
+        "no_unauthorized_intrusion",
+        anchor.clone(),
+        target_domain.clone(),
+        &witness,
+        &authority,
+        1,
+    )?;
+    assert_eq!(direct.claim_id(), "neg_claim:direct_ok");
+    assert_eq!(direct.query_predicate(), "no_unauthorized_intrusion");
+    assert_eq!(direct.anchor(), &anchor);
+    assert_eq!(direct.certified_domain(), &target_domain);
+    assert_eq!(direct.witness_digest(), witness.witness_digest());
+    assert_eq!(direct.generation(), 1);
+
+    // Canonical roundtrip with verified decode
     let mut encoder = CanonicalEncoder::new();
     outcome.encode_canonical(&mut encoder);
     let encoded = encoder.finish();
 
     let mut decoder = CanonicalDecoder::new(&encoded);
-    let decoded = NegativeReadOutcome::decode_canonical(&mut decoder)?;
+    let decoded = NegativeReadOutcome::decode_verified(&mut decoder, &witness, &authority)?;
     assert_eq!(decoded, outcome);
 
     Ok(())
@@ -1065,8 +1680,15 @@ fn test_negative_read_claim_with_certified_absence_succeeds() -> Result<(), Box<
 
 #[test]
 fn test_negative_read_outcome_decode_invariants() -> Result<(), Box<dyn Error>> {
-    let anchor = sample_anchor();
-    let witness_digest = ContentDigest::sha256(b"sample_witness_digest");
+    let ledger = sample_ledger();
+    let anchor = ledger.current().anchor.clone();
+    let authority = sample_authority(&ledger)?;
+    let witness = sample_witness(
+        "no_unauthorized_intrusion",
+        &["zone:a", "zone:b"],
+        &["zone:a", "zone:b"],
+    );
+    let witness_digest = witness.witness_digest();
 
     // 1. Non-canonical ordering (duplicate or unsorted items in certified_domain)
     let mut encoder = CanonicalEncoder::new();
@@ -1081,7 +1703,7 @@ fn test_negative_read_outcome_decode_invariants() -> Result<(), Box<dyn Error>> 
     let bytes = encoder.finish();
 
     let mut decoder = CanonicalDecoder::new(&bytes);
-    let Err(err) = NegativeReadOutcome::decode_canonical(&mut decoder) else {
+    let Err(err) = NegativeReadOutcome::decode_verified(&mut decoder, &witness, &authority) else {
         return Err("expected error for non-canonical ordering".into());
     };
     assert_eq!(err, ContractError::NonCanonicalOrdering);
@@ -1099,7 +1721,7 @@ fn test_negative_read_outcome_decode_invariants() -> Result<(), Box<dyn Error>> 
     let bytes = encoder.finish();
 
     let mut decoder = CanonicalDecoder::new(&bytes);
-    let Err(err) = NegativeReadOutcome::decode_canonical(&mut decoder) else {
+    let Err(err) = NegativeReadOutcome::decode_verified(&mut decoder, &witness, &authority) else {
         return Err("expected error for duplicate domain items".into());
     };
     assert_eq!(err, ContractError::NonCanonicalOrdering);
@@ -1116,7 +1738,7 @@ fn test_negative_read_outcome_decode_invariants() -> Result<(), Box<dyn Error>> 
     let bytes = encoder.finish();
 
     let mut decoder = CanonicalDecoder::new(&bytes);
-    let Err(err) = NegativeReadOutcome::decode_canonical(&mut decoder) else {
+    let Err(err) = NegativeReadOutcome::decode_verified(&mut decoder, &witness, &authority) else {
         return Err("expected error for zero generation".into());
     };
     assert_eq!(err, ContractError::GenerationConflict);
@@ -1136,7 +1758,7 @@ fn test_negative_read_outcome_decode_invariants() -> Result<(), Box<dyn Error>> 
     let bytes = encoder.finish();
 
     let mut decoder = CanonicalDecoder::new(&bytes);
-    let Err(err) = NegativeReadOutcome::decode_canonical(&mut decoder) else {
+    let Err(err) = NegativeReadOutcome::decode_verified(&mut decoder, &witness, &authority) else {
         return Err("expected error for zero witness digest".into());
     };
     assert_eq!(err, ContractError::InvalidDigest);
@@ -1153,10 +1775,254 @@ fn test_negative_read_outcome_decode_invariants() -> Result<(), Box<dyn Error>> 
     let bytes = encoder.finish();
 
     let mut decoder = CanonicalDecoder::new(&bytes);
-    let Err(err) = NegativeReadOutcome::decode_canonical(&mut decoder) else {
+    let Err(err) = NegativeReadOutcome::decode_verified(&mut decoder, &witness, &authority) else {
         return Err("expected error for empty claim_id".into());
     };
     assert_eq!(err, ContractError::InvalidIdentifier);
+
+    // 6. Malformed claim_id (spaces) rejected by validate_id
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text("claim with spaces");
+    encoder.text("no_unauthorized_intrusion");
+    anchor.encode_canonical(&mut encoder);
+    encoder.u64(1);
+    encoder.text("zone:a");
+    encoder.digest(witness_digest);
+    encoder.u64(1);
+    let bytes = encoder.finish();
+
+    let mut decoder = CanonicalDecoder::new(&bytes);
+    let Err(err) = NegativeReadOutcome::decode_verified(&mut decoder, &witness, &authority) else {
+        return Err("expected error for malformed claim_id".into());
+    };
+    assert_eq!(err, ContractError::InvalidIdentifier);
+
+    // 7. Witness digest mismatch rejected
+    let other_witness = sample_witness(
+        "no_unauthorized_intrusion",
+        &["zone:other"],
+        &["zone:other"],
+    );
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text("neg_claim:001");
+    encoder.text("no_unauthorized_intrusion");
+    anchor.encode_canonical(&mut encoder);
+    encoder.u64(1);
+    encoder.text("zone:a");
+    encoder.digest(other_witness.witness_digest()); // mismatched digest!
+    encoder.u64(1);
+    let bytes = encoder.finish();
+
+    let mut decoder = CanonicalDecoder::new(&bytes);
+    let Err(err) = NegativeReadOutcome::decode_verified(&mut decoder, &witness, &authority) else {
+        return Err("expected error for mismatched witness digest".into());
+    };
+    assert_eq!(err, ContractError::CoverageUncertified);
+
+    // 8. Trailing unconsumed bytes rejected by ensure_finished()
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text("neg_claim:001");
+    encoder.text("no_unauthorized_intrusion");
+    anchor.encode_canonical(&mut encoder);
+    encoder.u64(1);
+    encoder.text("zone:a");
+    encoder.digest(witness_digest);
+    encoder.u64(1);
+    encoder.u8(0xFF); // trailing byte!
+    let bytes = encoder.finish();
+
+    let mut decoder = CanonicalDecoder::new(&bytes);
+    let Err(err) = NegativeReadOutcome::decode_verified(&mut decoder, &witness, &authority) else {
+        return Err("expected error for trailing bytes in decode_verified".into());
+    };
+    assert_eq!(err, ContractError::NonCanonicalOrdering);
+
+    Ok(())
+}
+
+#[test]
+fn test_older_snapshot_at_head_refused_as_stale_anchor() -> Result<(), Box<dyn Error>> {
+    let mut ledger = sample_ledger();
+    let old_snapshot = ledger.current().clone();
+    let old_anchor = old_snapshot.anchor.clone();
+    advance_ledger(
+        &mut ledger,
+        "batch:snap_advance",
+        "delta:snap_advance",
+        "object:snap_advance",
+    )?;
+
+    // An older snapshot retrieved via snapshot_at(0)
+    let snapshot_0 = ledger.snapshot_at(0).ok_or("snapshot 0 missing")?;
+    assert_eq!(snapshot_0.anchor, old_anchor);
+
+    // Real committed authority from ledger head (now at commit_sequence 1)
+    let authority = AuthorityAnchor::from_committed_head(&ledger)?;
+    assert_eq!(authority.anchor().commit_sequence, 1);
+
+    // Claim and witness at older snapshot anchor (commit_sequence 0)
+    let witness = sample_witness(
+        "no_unauthorized_intrusion",
+        &["zone:north_perimeter"],
+        &["zone:north_perimeter"],
+    );
+    let mut target_domain = BTreeSet::new();
+    target_domain.insert("zone:north_perimeter".to_string());
+    let claim = NegativeReadClaim {
+        claim_id: "neg_claim:old_snapshot".to_string(),
+        query_predicate: "no_unauthorized_intrusion".to_string(),
+        anchor: old_anchor,
+        target_domain,
+        target_generation: 1,
+        coverage_witness: Some(witness),
+    };
+
+    // Evaluating the older snapshot claim against head authority MUST be refused as StaleAnchor
+    let res = evaluate_negative_read(&claim, &authority);
+    assert_eq!(res.err(), Some(ContractError::StaleAnchor));
+
+    Ok(())
+}
+
+#[test]
+fn test_probe_n2d_refuses_stale_witness_and_requires_ledger_authority() -> Result<(), Box<dyn Error>>
+{
+    let mut ledger = sample_ledger();
+    let old_anchor = ledger.current().anchor.clone();
+
+    // The real ledger head is 5 commits past the stale witness.
+    for i in 1..=5 {
+        advance_ledger(
+            &mut ledger,
+            &format!("batch:probe_n2d:{i}"),
+            &format!("delta:probe_n2d:{i}"),
+            &format!("object:probe_n2d:{i}"),
+        )?;
+    }
+
+    let honest = AuthorityAnchor::from_committed_head(&ledger)?;
+    assert_eq!(honest.anchor().commit_sequence, 5);
+
+    let witness = sample_witness(
+        "no_unauthorized_intrusion",
+        &["zone:north_perimeter"],
+        &["zone:north_perimeter"],
+    );
+    let mut target_domain = BTreeSet::new();
+    target_domain.insert("zone:north_perimeter".to_string());
+    let claim = NegativeReadClaim {
+        claim_id: "neg_claim:probe_n2d".to_string(),
+        query_predicate: "no_unauthorized_intrusion".to_string(),
+        anchor: old_anchor,
+        target_domain,
+        target_generation: 1,
+        coverage_witness: Some(witness),
+    };
+
+    let res = evaluate_negative_read(&claim, &honest);
+    assert_eq!(res.err(), Some(ContractError::StaleAnchor));
+
+    Ok(())
+}
+
+#[test]
+fn test_probe_n2e_context_from_committed_head_refuses_stale_and_mismatched_claims()
+-> Result<(), Box<dyn Error>> {
+    let basis = fss_core::contract_basis::reference_contract_basis();
+    let mut ledger = sample_ledger();
+    let old_anchor = ledger.current().anchor.clone();
+
+    advance_ledger(
+        &mut ledger,
+        "batch:probe_n2e",
+        "delta:probe_n2e",
+        "object:probe_n2e",
+    )?;
+
+    let ctx = AuthorityContext::from_committed_head(&basis, &ledger)?;
+    assert_eq!(ctx.current_anchor().commit_sequence, 1);
+
+    // 1. Stale claim at sequence 0 against context at sequence 1
+    let witness = sample_witness(
+        "no_unauthorized_intrusion",
+        &["zone:north_perimeter"],
+        &["zone:north_perimeter"],
+    );
+    let mut target_domain = BTreeSet::new();
+    target_domain.insert("zone:north_perimeter".to_string());
+    let stale_claim = NegativeReadClaim {
+        claim_id: "neg_claim:probe_n2e_stale".to_string(),
+        query_predicate: "no_unauthorized_intrusion".to_string(),
+        anchor: old_anchor.clone(),
+        target_domain: target_domain.clone(),
+        target_generation: 1,
+        coverage_witness: Some(witness.clone()),
+    };
+    let res = evaluate_negative_read(&stale_claim, &ctx);
+    assert_eq!(res.err(), Some(ContractError::StaleAnchor));
+
+    // 2. Mismatched lineage claim against context
+    let mut forged_anchor = old_anchor;
+    forged_anchor.site_lineage = "site:arbitrary".to_string();
+    let mut forged_witness = witness;
+    forged_witness.anchor = forged_anchor.clone();
+    let mismatched_claim = NegativeReadClaim {
+        claim_id: "neg_claim:probe_n2e_lineage".to_string(),
+        query_predicate: "no_unauthorized_intrusion".to_string(),
+        anchor: forged_anchor,
+        target_domain,
+        target_generation: 1,
+        coverage_witness: Some(forged_witness),
+    };
+    let res = evaluate_negative_read(&mismatched_claim, &ctx);
+    assert_eq!(res.err(), Some(ContractError::StaleAnchor));
+
+    Ok(())
+}
+
+#[test]
+fn test_empty_batch_stale_anchor_kills_mutant_mc() -> Result<(), Box<dyn Error>> {
+    let mut ledger = sample_ledger();
+    let old_anchor = ledger.current().anchor.clone();
+
+    // Empty batch advances sequence without changing state_root.
+    advance_ledger_empty(&mut ledger, "batch:empty_mc")?;
+    let head = ledger.current().anchor.clone();
+    assert_eq!(head.commit_sequence, old_anchor.commit_sequence + 1);
+    assert_eq!(head.state_root, old_anchor.state_root);
+
+    let authority = sample_authority(&ledger)?;
+    let witness = sample_witness(
+        "no_unauthorized_intrusion",
+        &["zone:north_perimeter"],
+        &["zone:north_perimeter"],
+    );
+    let mut target_domain = BTreeSet::new();
+    target_domain.insert("zone:north_perimeter".to_string());
+
+    // 1. evaluate_negative_read MUST fail with StaleAnchor specifically due to RM4 (<)
+    let claim = NegativeReadClaim {
+        claim_id: "neg_claim:empty_mc".to_string(),
+        query_predicate: "no_unauthorized_intrusion".to_string(),
+        anchor: old_anchor.clone(),
+        target_domain: target_domain.clone(),
+        target_generation: 1,
+        coverage_witness: Some(witness.clone()),
+    };
+    let res = evaluate_negative_read(&claim, &authority);
+    assert_eq!(res.err(), Some(ContractError::StaleAnchor));
+
+    // 2. from_witness MUST fail with StaleAnchor specifically due to RM4 (<)
+    let res_witness = NegativeReadOutcome::from_witness(
+        "neg_claim:empty_mc_direct",
+        "no_unauthorized_intrusion",
+        old_anchor,
+        target_domain,
+        &witness,
+        &authority,
+        1,
+    );
+    assert_eq!(res_witness.err(), Some(ContractError::StaleAnchor));
 
     Ok(())
 }
@@ -2871,6 +3737,365 @@ fn test_runtime_authority_and_custody_parse_and_resolution() -> Result<(), Box<d
 }
 
 #[test]
+fn test_outcome_and_workspace_layers_belong_to_cognition_plane() -> Result<(), Box<dyn Error>> {
+    let outcome = AgentAbstractionLayer::OutcomeAndEpisode;
+    assert_eq!(outcome.plane(), Plane::Cognition);
+    assert!(!outcome.may_claim_authority());
+    assert!(!outcome.may_authorize_effects());
+
+    let workspace = AgentAbstractionLayer::WorkspaceAndHandoff;
+    assert_eq!(workspace.plane(), Plane::Cognition);
+    assert!(!workspace.may_claim_authority());
+    assert!(!workspace.may_authorize_effects());
+
+    // Verify all 11 layer planes conform to the architecture specification
+    assert_eq!(
+        AgentAbstractionLayer::RuntimeAuthorityAndCustody.plane(),
+        Plane::Authority
+    );
+    assert_eq!(
+        AgentAbstractionLayer::SourceEvidence.plane(),
+        Plane::Authority
+    );
+    assert_eq!(
+        AgentAbstractionLayer::WorldFactsAndCoverage.plane(),
+        Plane::Authority
+    );
+    assert_eq!(
+        AgentAbstractionLayer::DerivedBeliefs.plane(),
+        Plane::Cognition
+    );
+    assert_eq!(
+        AgentAbstractionLayer::SituationCapsule.plane(),
+        Plane::Cognition
+    );
+    assert_eq!(
+        AgentAbstractionLayer::InvestigationAndHypotheses.plane(),
+        Plane::Cognition
+    );
+    assert_eq!(
+        AgentAbstractionLayer::AffordanceFrontier.plane(),
+        Plane::Cognition
+    );
+    assert_eq!(AgentAbstractionLayer::PlanAndEffect.plane(), Plane::Effect);
+    assert_eq!(
+        AgentAbstractionLayer::OutcomeAndEpisode.plane(),
+        Plane::Cognition
+    );
+    assert_eq!(
+        AgentAbstractionLayer::LearningAndMemory.plane(),
+        Plane::Cognition
+    );
+    assert_eq!(
+        AgentAbstractionLayer::WorkspaceAndHandoff.plane(),
+        Plane::Cognition
+    );
+
+    // Authority permissions
+    assert!(AgentAbstractionLayer::RuntimeAuthorityAndCustody.may_claim_authority());
+    assert!(AgentAbstractionLayer::SourceEvidence.may_claim_authority());
+    assert!(AgentAbstractionLayer::WorldFactsAndCoverage.may_claim_authority());
+    assert!(!AgentAbstractionLayer::DerivedBeliefs.may_claim_authority());
+    assert!(!AgentAbstractionLayer::SituationCapsule.may_claim_authority());
+    assert!(!AgentAbstractionLayer::InvestigationAndHypotheses.may_claim_authority());
+    assert!(!AgentAbstractionLayer::AffordanceFrontier.may_claim_authority());
+    assert!(!AgentAbstractionLayer::PlanAndEffect.may_claim_authority());
+    assert!(!AgentAbstractionLayer::OutcomeAndEpisode.may_claim_authority());
+    assert!(!AgentAbstractionLayer::LearningAndMemory.may_claim_authority());
+    assert!(!AgentAbstractionLayer::WorkspaceAndHandoff.may_claim_authority());
+
+    Ok(())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum MiniJson {
+    Null,
+    Bool(bool),
+    Num(String),
+    Str(String),
+    Arr(Vec<MiniJson>),
+    Obj(Vec<(String, MiniJson)>),
+}
+
+struct MiniJsonParser<'a> {
+    src: &'a [u8],
+    pos: usize,
+}
+
+impl MiniJsonParser<'_> {
+    fn ws(&mut self) {
+        while matches!(self.src.get(self.pos), Some(b' ' | b'\n' | b'\r' | b'\t')) {
+            self.pos += 1;
+        }
+    }
+
+    fn eat(&mut self, byte: u8) -> Option<()> {
+        self.ws();
+        if self.src.get(self.pos) == Some(&byte) {
+            self.pos += 1;
+            Some(())
+        } else {
+            None
+        }
+    }
+
+    fn lit(&mut self, word: &[u8]) -> Option<()> {
+        if self.src.get(self.pos..)?.starts_with(word) {
+            self.pos += word.len();
+            Some(())
+        } else {
+            None
+        }
+    }
+
+    fn value(&mut self) -> Option<MiniJson> {
+        self.ws();
+        match *self.src.get(self.pos)? {
+            b'{' => {
+                self.pos += 1;
+                let mut fields = Vec::new();
+                if self.eat(b'}').is_some() {
+                    return Some(MiniJson::Obj(fields));
+                }
+                loop {
+                    self.ws();
+                    let key = self.string()?;
+                    self.eat(b':')?;
+                    fields.push((key, self.value()?));
+                    if self.eat(b',').is_none() {
+                        self.eat(b'}')?;
+                        return Some(MiniJson::Obj(fields));
+                    }
+                }
+            }
+            b'[' => {
+                self.pos += 1;
+                let mut items = Vec::new();
+                if self.eat(b']').is_some() {
+                    return Some(MiniJson::Arr(items));
+                }
+                loop {
+                    items.push(self.value()?);
+                    if self.eat(b',').is_none() {
+                        self.eat(b']')?;
+                        return Some(MiniJson::Arr(items));
+                    }
+                }
+            }
+            b'"' => self.string().map(MiniJson::Str),
+            b't' => self.lit(b"true").map(|()| MiniJson::Bool(true)),
+            b'f' => self.lit(b"false").map(|()| MiniJson::Bool(false)),
+            b'n' => self.lit(b"null").map(|()| MiniJson::Null),
+            _ => {
+                let start = self.pos;
+                while matches!(
+                    self.src.get(self.pos),
+                    Some(b'-' | b'+' | b'.' | b'e' | b'E' | b'0'..=b'9')
+                ) {
+                    self.pos += 1;
+                }
+                if start == self.pos {
+                    return None;
+                }
+                String::from_utf8(self.src.get(start..self.pos)?.to_vec())
+                    .ok()
+                    .map(MiniJson::Num)
+            }
+        }
+    }
+
+    fn string(&mut self) -> Option<String> {
+        if self.src.get(self.pos) != Some(&b'"') {
+            return None;
+        }
+        self.pos += 1;
+        let mut out = Vec::new();
+        loop {
+            let byte = *self.src.get(self.pos)?;
+            self.pos += 1;
+            match byte {
+                b'"' => return String::from_utf8(out).ok(),
+                b'\\' => {
+                    let esc = *self.src.get(self.pos)?;
+                    self.pos += 1;
+                    match esc {
+                        b'"' | b'\\' | b'/' => out.push(esc),
+                        b'n' => out.push(b'\n'),
+                        b't' => out.push(b'\t'),
+                        b'r' => out.push(b'\r'),
+                        b'b' => out.push(0x08),
+                        b'f' => out.push(0x0c),
+                        b'u' => {
+                            let hex =
+                                std::str::from_utf8(self.src.get(self.pos..self.pos + 4)?).ok()?;
+                            self.pos += 4;
+                            let ch = char::from_u32(u32::from_str_radix(hex, 16).ok()?)?;
+                            let mut buf = [0u8; 4];
+                            out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
+                        }
+                        _ => return None,
+                    }
+                }
+                other => out.push(other),
+            }
+        }
+    }
+}
+
+impl MiniJson {
+    fn parse(text: &str) -> Option<Self> {
+        let mut parser = MiniJsonParser {
+            src: text.as_bytes(),
+            pos: 0,
+        };
+        let value = parser.value()?;
+        parser.ws();
+        (parser.pos == parser.src.len()).then_some(value)
+    }
+
+    fn get(&self, key: &str) -> Option<&Self> {
+        match self {
+            Self::Obj(fields) => fields.iter().find(|(k, _)| k == key).map(|(_, v)| v),
+            _ => None,
+        }
+    }
+
+    fn as_str(&self) -> Option<&str> {
+        match self {
+            Self::Str(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    fn write_canonical(&self, out: &mut String) {
+        match self {
+            Self::Null => out.push_str("null"),
+            Self::Bool(true) => out.push_str("true"),
+            Self::Bool(false) => out.push_str("false"),
+            Self::Num(n) => out.push_str(n),
+            Self::Str(s) => {
+                out.push('"');
+                for c in s.chars() {
+                    match c {
+                        '"' => out.push_str("\\\""),
+                        '\\' => out.push_str("\\\\"),
+                        '\n' => out.push_str("\\n"),
+                        '\r' => out.push_str("\\r"),
+                        '\t' => out.push_str("\\t"),
+                        _ => out.push(c),
+                    }
+                }
+                out.push('"');
+            }
+            Self::Arr(items) => {
+                out.push('[');
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    item.write_canonical(out);
+                }
+                out.push(']');
+            }
+            Self::Obj(fields) => {
+                out.push('{');
+                let mut sorted = fields.clone();
+                sorted.sort_by(|a, b| a.0.cmp(&b.0));
+                for (i, (k, v)) in sorted.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    out.push('"');
+                    for c in k.chars() {
+                        match c {
+                            '"' => out.push_str("\\\""),
+                            '\\' => out.push_str("\\\\"),
+                            _ => out.push(c),
+                        }
+                    }
+                    out.push('"');
+                    out.push(':');
+                    v.write_canonical(out);
+                }
+                out.push('}');
+            }
+        }
+    }
+}
+
+#[test]
+fn test_all_rust_layer_strings_match_machine_registry_json() -> Result<(), Box<dyn Error>> {
+    let stack_json = include_str!("../../../architecture/agent_abstraction_stack.json");
+    let root = MiniJson::parse(stack_json).ok_or("failed to parse agent_abstraction_stack.json")?;
+    let layers_arr = root.get("layers").ok_or("missing layers array")?;
+    let MiniJson::Arr(layers) = layers_arr else {
+        return Err("layers is not an array".into());
+    };
+    assert_eq!(layers.len(), 11, "expected 11 layers in machine registry");
+
+    for (layer, json_layer) in AgentAbstractionLayer::ALL.iter().zip(layers.iter()) {
+        let id = json_layer
+            .get("id")
+            .and_then(MiniJson::as_str)
+            .ok_or("missing id")?;
+        let name = json_layer
+            .get("name")
+            .and_then(MiniJson::as_str)
+            .ok_or("missing name")?;
+        let owner = json_layer
+            .get("owner")
+            .and_then(MiniJson::as_str)
+            .ok_or("missing owner")?;
+        let question = json_layer
+            .get("question")
+            .and_then(MiniJson::as_str)
+            .ok_or("missing question")?;
+        let output = json_layer
+            .get("output")
+            .and_then(MiniJson::as_str)
+            .ok_or("missing output")?;
+        let prohibition = json_layer
+            .get("prohibition")
+            .and_then(MiniJson::as_str)
+            .ok_or("missing prohibition")?;
+        let invariant = json_layer
+            .get("invariant")
+            .and_then(MiniJson::as_str)
+            .ok_or("missing invariant")?;
+        let status = json_layer
+            .get("status")
+            .and_then(MiniJson::as_str)
+            .ok_or("missing status")?;
+
+        assert_eq!(layer.id(), id, "ID mismatch for {}", layer.id());
+        assert_eq!(layer.name(), name, "name mismatch for {}", layer.id());
+        assert_eq!(layer.owner(), owner, "owner mismatch for {}", layer.id());
+        assert_eq!(
+            layer.agent_question(),
+            question,
+            "question mismatch for {}",
+            layer.id()
+        );
+        assert_eq!(layer.output(), output, "output mismatch for {}", layer.id());
+        assert_eq!(
+            layer.prohibition(),
+            prohibition,
+            "prohibition mismatch for {}",
+            layer.id()
+        );
+        assert_eq!(
+            layer.invariant(),
+            invariant,
+            "invariant mismatch for {}",
+            layer.id()
+        );
+        assert_eq!(layer.status(), status, "status mismatch for {}", layer.id());
+    }
+
+    Ok(())
+}
+
+#[test]
 fn test_runtime_authority_record_valid_construction() -> Result<(), Box<dyn Error>> {
     let params = valid_runtime_authority_params()?;
     let record = RuntimeAuthorityAndCustodyRecord::new(params)?;
@@ -3762,6 +4987,73 @@ fn test_source_evidence_golden_vector() -> Result<(), Box<dyn Error>> {
     // Decode back and verify roundtrip identity
     let decoded = SourceEvidenceRecord::from_canonical_bytes(&canonical_bytes)?;
     assert_eq!(decoded, record);
+
+    Ok(())
+}
+
+#[test]
+fn test_agent_abstraction_freeze_digest_recomputed_in_rust() -> Result<(), Box<dyn Error>> {
+    let stack_json = include_str!("../../../architecture/agent_abstraction_stack.json");
+    let root = MiniJson::parse(stack_json).ok_or("failed to parse agent_abstraction_stack.json")?;
+    let MiniJson::Obj(mut fields) = root else {
+        return Err("expected root to be an object".into());
+    };
+
+    // Remove registryDigest before computing canonical freeze digest
+    fields.retain(|(k, _)| k != "registryDigest");
+
+    // Canonicalize layers: sort by id, retain only known keys
+    const KNOWN_LAYER_KEYS: &[&str] = &[
+        "id",
+        "invariant",
+        "name",
+        "output",
+        "owner",
+        "prohibition",
+        "question",
+        "status",
+    ];
+    for (k, v) in &mut fields {
+        match (k.as_str(), v) {
+            ("layers", MiniJson::Arr(layers)) => {
+                layers.sort_by(|a, b| {
+                    let id_a = a.get("id").and_then(MiniJson::as_str).unwrap_or("");
+                    let id_b = b.get("id").and_then(MiniJson::as_str).unwrap_or("");
+                    id_a.cmp(id_b)
+                });
+                for layer in layers.iter_mut() {
+                    if let MiniJson::Obj(layer_fields) = layer {
+                        layer_fields.retain(|(lk, _)| KNOWN_LAYER_KEYS.contains(&lk.as_str()));
+                    }
+                }
+            }
+            ("hydrationLevels", MiniJson::Arr(hydration)) => {
+                hydration.sort_by(|a, b| {
+                    let id_a = a.get("id").and_then(MiniJson::as_str).unwrap_or("");
+                    let id_b = b.get("id").and_then(MiniJson::as_str).unwrap_or("");
+                    id_a.cmp(id_b)
+                });
+                const KNOWN_HYDRATION_KEYS: &[&str] = &["content", "id", "name"];
+                for hyd in hydration.iter_mut() {
+                    if let MiniJson::Obj(hyd_fields) = hyd {
+                        hyd_fields.retain(|(hk, _)| KNOWN_HYDRATION_KEYS.contains(&hk.as_str()));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let canonical_root = MiniJson::Obj(fields);
+    let mut canonical_json = String::new();
+    canonical_root.write_canonical(&mut canonical_json);
+
+    let digest = ContentDigest::sha256(canonical_json.as_bytes());
+    assert_eq!(
+        digest.to_string(),
+        AGENT_ABSTRACTION_FREEZE_DIGEST,
+        "Rust recomputed freeze digest must match AGENT_ABSTRACTION_FREEZE_DIGEST"
+    );
 
     Ok(())
 }

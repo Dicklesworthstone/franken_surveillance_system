@@ -1186,6 +1186,9 @@ class AgentAbstractionRegistryCheckerTests(unittest.TestCase):
         res = validate_agent_abstraction_registry(self.fake_root)
         self.assertFalse(res.passed)
         self.assertEqual({e.code for e in res.errors}, {ERR_AGT_INVARIANT_VIOLATION})
+        self.assertEqual(len(res.errors), 1)
+        self.assertEqual(res.errors[0].target, "#/unknownTopLevelKey")
+        self.assertIn("Unknown top-level key 'unknownTopLevelKey'", res.errors[0].message)
 
     def test_planted_negative_unknown_layer_key(self) -> None:
         """Unknown layer JSON key must emit ERR-AGT-INVARIANT-VIOLATION-001."""
@@ -1196,6 +1199,9 @@ class AgentAbstractionRegistryCheckerTests(unittest.TestCase):
         res = validate_agent_abstraction_registry(self.fake_root)
         self.assertFalse(res.passed)
         self.assertEqual({e.code for e in res.errors}, {ERR_AGT_INVARIANT_VIOLATION})
+        self.assertEqual(len(res.errors), 1)
+        self.assertEqual(res.errors[0].target, "#/layers/AGT-LAYER-001/unknownLayerKey")
+        self.assertIn("Unknown layer key 'unknownLayerKey'", res.errors[0].message)
 
     def test_planted_negative_unknown_hydration_key(self) -> None:
         """Unknown hydration JSON key must emit ERR-AGT-INVARIANT-VIOLATION-001."""
@@ -1206,6 +1212,18 @@ class AgentAbstractionRegistryCheckerTests(unittest.TestCase):
         res = validate_agent_abstraction_registry(self.fake_root)
         self.assertFalse(res.passed)
         self.assertEqual({e.code for e in res.errors}, {ERR_AGT_INVARIANT_VIOLATION})
+        self.assertEqual(len(res.errors), 1)
+        self.assertEqual(res.errors[0].target, "#/hydrationLevels/H0/unknownHydrationKey")
+        self.assertIn("Unknown hydration level key 'unknownHydrationKey'", res.errors[0].message)
+
+    def test_canonical_agent_abstraction_digest_computes_without_raising_on_unknown_keys(self) -> None:
+        """compute_canonical_agent_abstraction_digest does not duplicate validation, delegating to validator loop."""
+        data = self._read_json()
+        data["unknownTopKey"] = "extra"
+        data["layers"][0]["unknownLayerKey"] = "extra"
+        data["hydrationLevels"][0]["unknownHydKey"] = "extra"
+        d = compute_canonical_agent_abstraction_digest(data)
+        self.assertTrue(d.startswith("sha256:"))
 
     def test_planted_negative_duplicate_markdown_layer_row(self) -> None:
         """Duplicate layer row in markdown mirror must emit ERR-AGT-STABLE-ID-REUSED-001."""
@@ -1356,6 +1374,145 @@ class AgentAbstractionRegistryCheckerTests(unittest.TestCase):
         res = validate_agent_abstraction_registry(self.fake_root)
         self.assertFalse(res.passed)
         self.assertEqual({e.code for e in res.errors}, {ERR_AGT_REGISTRY_DRIFT})
+
+    def test_planted_negative_markdown_question_mismatch(self) -> None:
+        """Agent question mismatch between markdown mirror and JSON must emit ERR-AGT-REGISTRY-DRIFT-001."""
+        md_file = self.fake_root / "registries/AGENT_ABSTRACTIONS.md"
+        md = md_file.read_text(encoding="utf-8")
+        tampered = md.replace(
+            "What did the system authoritatively observe or do at one anchor?",
+            "What did the system unauthoritatively guess at one anchor?",
+        )
+        md_file.write_text(tampered, encoding="utf-8")
+
+        res = validate_agent_abstraction_registry(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertIn(ERR_AGT_REGISTRY_DRIFT, {e.code for e in res.errors})
+        self.assertTrue(any("question mismatch" in e.message for e in res.errors))
+
+    def test_planted_negative_misplaced_hydration_row(self) -> None:
+        """Hydration row outside '## Hydration ladder' section must emit ERR-AGT-REGISTRY-DRIFT-001."""
+        md_file = self.fake_root / "registries/AGENT_ABSTRACTIONS.md"
+        md = md_file.read_text(encoding="utf-8")
+        lines = md.splitlines()
+        lines.insert(12, "| `H0` | `identity` | digest, type, time/spatial bounds, source, availability, cost, and authority |")
+        md_file.write_text("\n".join(lines), encoding="utf-8")
+
+        res = validate_agent_abstraction_registry(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertIn(ERR_AGT_REGISTRY_DRIFT, {e.code for e in res.errors})
+        self.assertTrue(any("outside '## Hydration ladder'" in e.message for e in res.errors))
+
+    def test_markdown_row_strips_padded_whitespace(self) -> None:
+        """Whitespace padding around cells or leading spaces must be stripped and not cause false drift."""
+        md_file = self.fake_root / "registries/AGENT_ABSTRACTIONS.md"
+        md = md_file.read_text(encoding="utf-8")
+        target = "| `AGT-LAYER-001` | `runtime_authority_and_custody` | `asupersync/authority/object owners` | What work, authority, budget, identity, time, and object custody exist? | `INV-006` | `normative` |"
+        padded = "   |   `AGT-LAYER-001`   |   `runtime_authority_and_custody`   |   `asupersync/authority/object owners`   |   What work, authority, budget, identity, time, and object custody exist?   |   `INV-006`   |   `normative`   |  "
+        md_padded = md.replace(target, padded)
+        md_file.write_text(md_padded, encoding="utf-8")
+
+        res = validate_agent_abstraction_registry(self.fake_root)
+        self.assertTrue(res.passed, f"Padded markdown table row must be stripped cleanly: {res.errors}")
+
+    def test_planted_negative_layer_006_prohibition_exact_match(self) -> None:
+        """AGT-LAYER-006 prohibition must match exactly; appended or prepended text fails."""
+        data = self._read_json()
+        for layer in data["layers"]:
+            if layer["id"] == "AGT-LAYER-006":
+                layer["prohibition"] = "Cannot collapse uncertainty into truth without adjudication. But maybe sometimes allowed."
+                break
+        self._write_json(data)
+
+        res = validate_agent_abstraction_registry(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertIn(ERR_AGT_INVARIANT_VIOLATION, {e.code for e in res.errors})
+        self.assertTrue(any("AGT-LAYER-006 prohibition must be" in e.message for e in res.errors))
+
+    def test_canonical_digest_preserves_whitespace_kills_m03(self) -> None:
+        """Mutant M03: compute_canonical_agent_abstraction_digest must not strip string fields."""
+        data = self._read_json()
+        data["asOf"] = "  2026-09-13T00:00:00Z  "
+        digest_unstripped = compute_canonical_agent_abstraction_digest(data)
+
+        data_stripped = dict(data)
+        data_stripped["asOf"] = "2026-09-13T00:00:00Z"
+        digest_stripped = compute_canonical_agent_abstraction_digest(data_stripped)
+
+        self.assertNotEqual(digest_unstripped, digest_stripped)
+
+        raw_layers = data.get("layers", [])
+        raw_hydration = data.get("hydrationLevels", [])
+        from agent_abstraction_checker import KNOWN_HYDRATION_KEYS, KNOWN_LAYER_KEYS, canonicalize_value
+        import hashlib
+        sorted_layers = sorted(raw_layers, key=lambda r: str(r.get("id", "") if isinstance(r, dict) else ""))
+        sorted_hydration = sorted(raw_hydration, key=lambda r: str(r.get("id", "") if isinstance(r, dict) else ""))
+        expected_payload = {
+            "asOf": "  2026-09-13T00:00:00Z  ",
+            "constitutionalRole": str(data.get("constitutionalRole", "")),
+            "gate": str(data.get("gate", "")),
+            "generation": str(data.get("generation", "")),
+            "humanRegistry": str(data.get("humanRegistry", "")),
+            "hydrationLevels": [
+                {k: canonicalize_value(v) for k, v in sorted(r.items()) if k in KNOWN_HYDRATION_KEYS}
+                if isinstance(r, dict)
+                else canonicalize_value(r)
+                for r in sorted_hydration
+            ],
+            "knowledgeStateRefs": canonicalize_value(data.get("knowledgeStateRefs", [])),
+            "layers": [
+                {k: canonicalize_value(v) for k, v in sorted(r.items()) if k in KNOWN_LAYER_KEYS}
+                if isinstance(r, dict)
+                else canonicalize_value(r)
+                for r in sorted_layers
+            ],
+            "operationRefs": canonicalize_value(data.get("operationRefs", [])),
+            "primaryReadSurface": str(data.get("primaryReadSurface", "")),
+            "provenanceClassRefs": canonicalize_value(data.get("provenanceClassRefs", [])),
+            "qualificationLane": str(data.get("qualificationLane", "")),
+            "requestComposition": canonicalize_value(data.get("requestComposition", {})),
+            "responseComposition": canonicalize_value(data.get("responseComposition", {})),
+            "rules": canonicalize_value(data.get("rules", [])),
+            "schema": str(data.get("schema", "")),
+            "semanticObjectSchemas": canonicalize_value(data.get("semanticObjectSchemas", [])),
+            "semanticProtocol": str(data.get("semanticProtocol", "")),
+            "truthOwnership": str(data.get("truthOwnership", "")),
+            "viewRefs": canonicalize_value(data.get("viewRefs", [])),
+        }
+        expected_bytes = json.dumps(expected_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        expected_digest = f"sha256:{hashlib.sha256(expected_bytes).hexdigest()}"
+        self.assertEqual(digest_unstripped, expected_digest)
+
+    def test_planted_negative_unregistered_hydration_row_outside_ladder_p21(self) -> None:
+        """P21: An unregistered H-row (e.g. H9) outside hydration ladder must emit ERR-AGT-REGISTRY-DRIFT-001."""
+        md_file = self.fake_root / "registries/AGENT_ABSTRACTIONS.md"
+        md = md_file.read_text(encoding="utf-8")
+        lines = md.splitlines()
+        lines.insert(12, "| `H9` | `unregistered_outside` | arbitrary content |")
+        md_file.write_text("\n".join(lines), encoding="utf-8")
+
+        res = validate_agent_abstraction_registry(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertIn(ERR_AGT_REGISTRY_DRIFT, {e.code for e in res.errors})
+        self.assertTrue(any("outside '## Hydration ladder'" in e.message for e in res.errors))
+
+    def test_planted_negative_unregistered_hydration_row_inside_ladder_p21(self) -> None:
+        """P21: An unregistered H-row (e.g. H9) inside hydration ladder must be refused."""
+        md_file = self.fake_root / "registries/AGENT_ABSTRACTIONS.md"
+        md = md_file.read_text(encoding="utf-8")
+        target = "| `H4` | `laboratory_expansion` | replay bundle, intermediates, alternate decoders/models, and oracle comparisons |"
+        tampered = md.replace(
+            target,
+            target + "\n| `H9` | `unregistered_level` | unknown unregistered content |",
+        )
+        self.assertNotEqual(md, tampered, "target string must be present in AGENT_ABSTRACTIONS.md")
+        md_file.write_text(tampered, encoding="utf-8")
+
+        res = validate_agent_abstraction_registry(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertIn(ERR_AGT_STABLE_ID_REUSED, {e.code for e in res.errors})
+        self.assertTrue(any("Unregistered hydration level ID 'H9'" in e.message for e in res.errors))
+
 
 if __name__ == "__main__":
     unittest.main()

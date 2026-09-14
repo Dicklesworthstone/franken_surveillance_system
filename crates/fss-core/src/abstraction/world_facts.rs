@@ -14,7 +14,8 @@ use std::collections::BTreeSet;
 use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder};
 use crate::contract::{ContractError, Plane, ProvenanceClass};
 use crate::evidence::CoverageWitness;
-use crate::{ContentDigest, Generation, LedgerAnchor};
+use crate::ids::validate_id;
+use crate::{ContentDigest, ContractBasis, Generation, LedgerAnchor, ReferenceLedger};
 
 /// Categories of authoritative facts established or observed at one anchor (AGT-LAYER-003).
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -150,9 +151,7 @@ impl WorldFact {
 
     /// Validates constitutional invariants for this world fact (INV-063).
     pub fn validate(&self) -> Result<(), ContractError> {
-        if self.fact_id.is_empty() || self.fact_id.len() > 128 {
-            return Err(ContractError::InvalidIdentifier);
-        }
+        validate_id(&self.fact_id)?;
         if self.statement.is_empty() || self.statement.len() > 512 {
             return Err(ContractError::InvalidIdentifier);
         }
@@ -161,6 +160,9 @@ impl WorldFact {
         }
         if self.generation.0 == 0 {
             return Err(ContractError::GenerationConflict);
+        }
+        if self.evidence_digest.bytes().iter().all(|&b| b == 0) {
+            return Err(ContractError::InvalidDigest);
         }
         // Prohibition: "Cannot include unqualified cognition as fact."
         // Typed provenance check: model predictions (Predicted) and advisory operational memory (Remembered)
@@ -234,6 +236,192 @@ impl CanonicalDecode for WorldFact {
     }
 }
 
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// Authority-side source providing the authoritative current ledger anchor (INV-063).
+///
+/// Per AGENTS.md Prime Directive:
+/// - Authority, cognition, and effect planes are type-distinct.
+/// - Negative reads require a coverage witness verified against the authority plane.
+/// - The current anchor must originate from the authority plane rather than an arbitrary caller argument.
+///
+/// This trait is sealed and cannot be implemented outside `fss-core`.
+///
+/// # Compile-fail probe N2b: external callers cannot implement sealed `CurrentAnchorSource`
+/// ```compile_fail
+/// use fss_core::abstraction::CurrentAnchorSource;
+/// use fss_core::LedgerAnchor;
+///
+/// struct Liar {
+///     anchor: LedgerAnchor,
+/// }
+///
+/// impl CurrentAnchorSource for Liar {
+///     fn current_anchor(&self) -> &LedgerAnchor {
+///         &self.anchor
+///     }
+/// }
+/// ```
+///
+/// # Compile-fail probe N2c: `(&ContractBasis, &LedgerAnchor)` does not implement `CurrentAnchorSource`
+/// ```compile_fail
+/// use fss_core::abstraction::CurrentAnchorSource;
+/// use fss_core::contract_basis::reference_contract_basis;
+/// use fss_core::LedgerAnchor;
+///
+/// let basis = reference_contract_basis();
+/// let anchor = LedgerAnchor::genesis("site:main");
+/// let tuple_source = (&basis, &anchor);
+/// fn require_source<A: CurrentAnchorSource>(_: &A) {}
+/// require_source(&tuple_source);
+/// ```
+pub trait CurrentAnchorSource: sealed::Sealed {
+    /// Returns the authoritative current ledger anchor.
+    fn current_anchor(&self) -> &LedgerAnchor;
+}
+
+/// An explicit authority-plane anchor token proving current ledger state (INV-063).
+///
+/// Cannot be constructed from an arbitrary or bare [`LedgerAnchor`], nor from a [`LedgerSnapshot`]
+/// through the public API. Must be witnessed directly from the authoritative committed ledger head
+/// via [`ReferenceLedger`].
+///
+/// # Compile-fail probe N2: caller cannot construct from a bare anchor via private `from_authority`
+/// ```compile_fail
+/// use fss_core::abstraction::AuthorityAnchor;
+/// use fss_core::LedgerAnchor;
+///
+/// let anchor = LedgerAnchor::genesis("site:main");
+/// let _ = AuthorityAnchor::from_authority(anchor);
+/// ```
+///
+/// # Compile-fail: caller cannot construct from a `LedgerSnapshot`
+/// ```compile_fail
+/// use std::collections::BTreeMap;
+/// use fss_core::abstraction::AuthorityAnchor;
+/// use fss_core::{LedgerAnchor, LedgerSnapshot};
+///
+/// let snap = LedgerSnapshot {
+///     anchor: LedgerAnchor::genesis("site:main"),
+///     objects: BTreeMap::new(),
+/// };
+/// let _ = AuthorityAnchor::from_committed_head(&snap);
+/// ```
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthorityAnchor {
+    anchor: LedgerAnchor,
+}
+
+impl AuthorityAnchor {
+    /// Constructs an authoritative anchor token witnessing the current committed ledger head.
+    pub fn from_committed_head(ledger: &ReferenceLedger) -> Result<Self, ContractError> {
+        Self::from_authority(ledger.current().anchor.clone())
+    }
+
+    /// Constructs an authoritative anchor token witnessing the given ledger anchor.
+    ///
+    /// Restricted to `pub(crate)` so external callers cannot forge arbitrary anchors.
+    pub(crate) fn from_authority(anchor: LedgerAnchor) -> Result<Self, ContractError> {
+        if anchor.site_lineage.is_empty() {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        Ok(Self { anchor })
+    }
+
+    /// Returns a reference to the underlying ledger anchor.
+    #[must_use]
+    pub const fn anchor(&self) -> &LedgerAnchor {
+        &self.anchor
+    }
+}
+
+impl sealed::Sealed for AuthorityAnchor {}
+
+impl CurrentAnchorSource for AuthorityAnchor {
+    fn current_anchor(&self) -> &LedgerAnchor {
+        &self.anchor
+    }
+}
+
+/// Authority context binding an authoritative [`ContractBasis`] and current anchor (INV-063).
+///
+/// Fields are private and cannot be constructed via struct literal:
+/// ```compile_fail
+/// use fss_core::abstraction::AuthorityContext;
+/// use fss_core::contract_basis::reference_contract_basis;
+/// use fss_core::LedgerAnchor;
+///
+/// let basis = reference_contract_basis();
+/// let anchor = LedgerAnchor::genesis("site:main");
+/// let _ = AuthorityContext {
+///     contract_basis: &basis,
+///     anchor,
+/// };
+/// ```
+///
+/// # Compile-fail: caller cannot construct from a `LedgerSnapshot`
+/// ```compile_fail
+/// use std::collections::BTreeMap;
+/// use fss_core::abstraction::AuthorityContext;
+/// use fss_core::contract_basis::reference_contract_basis;
+/// use fss_core::{LedgerAnchor, LedgerSnapshot};
+///
+/// let basis = reference_contract_basis();
+/// let snap = LedgerSnapshot {
+///     anchor: LedgerAnchor::genesis("site:main"),
+///     objects: BTreeMap::new(),
+/// };
+/// let _ = AuthorityContext::from_committed_head(&basis, &snap);
+/// ```
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthorityContext<'a> {
+    /// Active contract basis from the authority plane.
+    contract_basis: &'a ContractBasis,
+    /// Authoritative current anchor.
+    anchor: LedgerAnchor,
+}
+
+impl<'a> AuthorityContext<'a> {
+    /// Creates a new authority context binding a contract basis and authoritative anchor.
+    pub fn new(contract_basis: &'a ContractBasis, authority: &AuthorityAnchor) -> Self {
+        Self {
+            contract_basis,
+            anchor: authority.anchor().clone(),
+        }
+    }
+
+    /// Creates a new authority context binding a contract basis and current committed ledger head.
+    pub fn from_committed_head(
+        contract_basis: &'a ContractBasis,
+        ledger: &ReferenceLedger,
+    ) -> Result<Self, ContractError> {
+        let authority = AuthorityAnchor::from_committed_head(ledger)?;
+        Ok(Self::new(contract_basis, &authority))
+    }
+
+    /// Returns a reference to the contract basis.
+    #[must_use]
+    pub const fn contract_basis(&self) -> &ContractBasis {
+        self.contract_basis
+    }
+
+    /// Returns a reference to the anchor.
+    #[must_use]
+    pub const fn anchor(&self) -> &LedgerAnchor {
+        &self.anchor
+    }
+}
+
+impl sealed::Sealed for AuthorityContext<'_> {}
+
+impl<'a> CurrentAnchorSource for AuthorityContext<'a> {
+    fn current_anchor(&self) -> &LedgerAnchor {
+        &self.anchor
+    }
+}
+
 /// A query or assertion claiming the absence of an event, intrusion, or entity (INV-063).
 ///
 /// Per AGENTS.md Prime Directive:
@@ -259,30 +447,201 @@ pub struct NegativeReadClaim {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NegativeReadOutcome {
     /// Stable claim identifier.
-    pub claim_id: String,
+    claim_id: String,
     /// Certified negative predicate.
-    pub query_predicate: String,
+    query_predicate: String,
     /// Authoritative anchor.
-    pub anchor: LedgerAnchor,
+    anchor: LedgerAnchor,
     /// Certified domain set.
-    pub certified_domain: BTreeSet<String>,
+    certified_domain: BTreeSet<String>,
     /// Pinned witness digest proving absence.
-    pub witness_digest: ContentDigest,
+    witness_digest: ContentDigest,
     /// Generation at which coverage was certified.
-    pub generation: u64,
+    generation: u64,
 }
 
 impl NegativeReadOutcome {
-    /// Validates all invariants on the outcome.
+    /// Constructs a validated negative read outcome directly bound to a certified coverage witness.
+    pub fn from_witness<A: CurrentAnchorSource>(
+        claim_id: impl Into<String>,
+        query_predicate: impl Into<String>,
+        anchor: LedgerAnchor,
+        certified_domain: BTreeSet<String>,
+        witness: &CoverageWitness,
+        authority: &A,
+        claim_generation: u64,
+    ) -> Result<Self, ContractError> {
+        let claim_id = claim_id.into();
+        let query_predicate = query_predicate.into();
+        validate_id(&claim_id)?;
+        if query_predicate.is_empty() || query_predicate.len() > 128 {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        if certified_domain.is_empty() || anchor.site_lineage.is_empty() {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        for item in &certified_domain {
+            if item.is_empty() || item.len() > 128 {
+                return Err(ContractError::InvalidIdentifier);
+            }
+        }
+        let current_anchor = authority.current_anchor();
+        if current_anchor.site_lineage.is_empty() {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        if claim_generation == 0 || witness.authorized_generation != claim_generation {
+            return Err(ContractError::GenerationConflict);
+        }
+
+        // Witness must certify absence (RM9)
+        witness.require_certified_absence()?;
+
+        // 1. Witness anchor must match claim anchor (RM7)
+        if witness.anchor != anchor {
+            return Err(ContractError::StaleAnchor);
+        }
+
+        // 2. Site lineage must match current anchor (RM3)
+        if witness.anchor.site_lineage != current_anchor.site_lineage {
+            return Err(ContractError::StaleAnchor);
+        }
+
+        // 3. Strictly older commit sequence/epoch is stale (RM4)
+        if (witness.anchor.ledger_epoch, witness.anchor.commit_sequence)
+            < (current_anchor.ledger_epoch, current_anchor.commit_sequence)
+        {
+            return Err(ContractError::StaleAnchor);
+        }
+
+        // 4. Divergent state root / epochs at current sequence, or future anchor (RM8)
+        if witness.anchor.state_root != current_anchor.state_root
+            || witness.anchor.policy_epoch != current_anchor.policy_epoch
+            || witness.anchor.adapter_registry_epoch != current_anchor.adapter_registry_epoch
+            || witness.anchor.schema_epoch != current_anchor.schema_epoch
+            || witness.anchor.privacy_epoch != current_anchor.privacy_epoch
+            || (witness.anchor.ledger_epoch, witness.anchor.commit_sequence)
+                > (current_anchor.ledger_epoch, current_anchor.commit_sequence)
+        {
+            return Err(ContractError::StaleAnchor);
+        }
+
+        if witness.negative_predicate != query_predicate {
+            return Err(ContractError::CoverageUncertified);
+        }
+        if !certified_domain.is_subset(&witness.observed_domain) {
+            return Err(ContractError::CoverageUncertified);
+        }
+
+        let outcome = Self {
+            claim_id,
+            query_predicate,
+            anchor,
+            certified_domain,
+            witness_digest: witness.witness_digest(),
+            generation: claim_generation,
+        };
+        outcome.validate()?;
+        Ok(outcome)
+    }
+
+    /// Decodes a negative read outcome from canonical bytes, re-verifying it against
+    /// an authoritative coverage witness and authority anchor source (INV-063).
+    pub fn decode_verified<A: CurrentAnchorSource>(
+        decoder: &mut CanonicalDecoder<'_>,
+        witness: &CoverageWitness,
+        authority: &A,
+    ) -> Result<Self, ContractError> {
+        let claim_id = decoder.text()?.to_owned();
+        let query_predicate = decoder.text()?.to_owned();
+        let anchor = LedgerAnchor::decode_canonical(decoder)?;
+        let count = decoder.u64()? as usize;
+        let mut certified_domain = BTreeSet::new();
+        for _ in 0..count {
+            let item = decoder.text()?.to_owned();
+            if item.is_empty() {
+                return Err(ContractError::InvalidIdentifier);
+            }
+            if certified_domain
+                .last()
+                .is_some_and(|prev: &String| prev >= &item)
+            {
+                return Err(ContractError::NonCanonicalOrdering);
+            }
+            certified_domain.insert(item);
+        }
+        let witness_digest = decoder.digest()?;
+        let generation = decoder.u64()?;
+
+        if witness_digest.bytes().iter().all(|&b| b == 0) {
+            return Err(ContractError::InvalidDigest);
+        }
+        if witness.witness_digest() != witness_digest {
+            return Err(ContractError::CoverageUncertified);
+        }
+
+        decoder.ensure_finished()?;
+
+        Self::from_witness(
+            claim_id,
+            query_predicate,
+            anchor,
+            certified_domain,
+            witness,
+            authority,
+            generation,
+        )
+    }
+
+    /// Returns the stable claim identifier.
+    #[must_use]
+    pub fn claim_id(&self) -> &str {
+        &self.claim_id
+    }
+
+    /// Returns the certified negative query predicate.
+    #[must_use]
+    pub fn query_predicate(&self) -> &str {
+        &self.query_predicate
+    }
+
+    /// Returns the authoritative anchor at which absence was certified.
+    #[must_use]
+    pub const fn anchor(&self) -> &LedgerAnchor {
+        &self.anchor
+    }
+
+    /// Returns the set of domains certified free of the predicate.
+    #[must_use]
+    pub const fn certified_domain(&self) -> &BTreeSet<String> {
+        &self.certified_domain
+    }
+
+    /// Returns the pinned digest of the coverage witness proving absence.
+    #[must_use]
+    pub const fn witness_digest(&self) -> ContentDigest {
+        self.witness_digest
+    }
+
+    /// Returns the generation at which coverage was certified.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Validates all constitutional invariants on the outcome.
     pub fn validate(&self) -> Result<(), ContractError> {
-        if self.claim_id.is_empty()
-            || self.claim_id.len() > 128
-            || self.query_predicate.is_empty()
+        validate_id(&self.claim_id)?;
+        if self.query_predicate.is_empty()
             || self.query_predicate.len() > 128
             || self.certified_domain.is_empty()
             || self.anchor.site_lineage.is_empty()
         {
             return Err(ContractError::InvalidIdentifier);
+        }
+        for item in &self.certified_domain {
+            if item.is_empty() || item.len() > 128 {
+                return Err(ContractError::InvalidIdentifier);
+            }
         }
         if self.generation == 0 {
             return Err(ContractError::GenerationConflict);
@@ -308,83 +667,30 @@ impl CanonicalEncode for NegativeReadOutcome {
     }
 }
 
-impl CanonicalDecode for NegativeReadOutcome {
-    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
-        let claim_id = decoder.text()?.to_owned();
-        let query_predicate = decoder.text()?.to_owned();
-        let anchor = LedgerAnchor::decode_canonical(decoder)?;
-        let count = decoder.u64()? as usize;
-        let mut certified_domain = BTreeSet::new();
-        for _ in 0..count {
-            let item = decoder.text()?.to_owned();
-            if item.is_empty() {
-                return Err(ContractError::InvalidIdentifier);
-            }
-            if certified_domain.last().is_some_and(|prev: &String| prev >= &item) {
-                return Err(ContractError::NonCanonicalOrdering);
-            }
-            certified_domain.insert(item);
-        }
-        let witness_digest = decoder.digest()?;
-        let generation = decoder.u64()?;
-
-        let outcome = Self {
-            claim_id,
-            query_predicate,
-            anchor,
-            certified_domain,
-            witness_digest,
-            generation,
-        };
-        outcome.validate()?;
-        Ok(outcome)
-    }
-}
-
-/// Evaluates a negative read claim against its coverage witness (INV-063).
+/// Evaluates a negative read claim against its coverage witness and authority anchor source (INV-063).
 ///
-/// Reuses [`CoverageWitness::require_certified_absence`] from `evidence.rs:575`.
 /// Fails closed if the witness cannot certify absence, if the anchor does not match,
+/// if the witness is stale relative to the authority anchor source (KSTATE-005),
 /// or if the target generation or domain bounds mismatch.
-pub fn evaluate_negative_read(
+///
+/// Delegates directly to [`NegativeReadOutcome::from_witness`] to ensure unified validation
+/// order and avoid duplicated check logic.
+pub fn evaluate_negative_read<A: CurrentAnchorSource>(
     claim: &NegativeReadClaim,
+    authority: &A,
 ) -> Result<NegativeReadOutcome, ContractError> {
-    if claim.claim_id.is_empty() || claim.query_predicate.is_empty() {
-        return Err(ContractError::InvalidIdentifier);
-    }
     let witness = claim
         .coverage_witness
         .as_ref()
         .ok_or(ContractError::CoverageUncertified)?;
 
-    // REUSE evidence.rs:575 require_certified_absence instead of duplicating it
-    witness.require_certified_absence()?;
-
-    // Compare anchor / generation / coverage window
-    if witness.anchor != claim.anchor {
-        return Err(ContractError::StaleAnchor);
-    }
-
-    if claim.target_generation == 0 || witness.authorized_generation != claim.target_generation {
-        return Err(ContractError::GenerationConflict);
-    }
-
-    if claim.target_domain.is_empty() || !claim.target_domain.is_subset(&witness.observed_domain) {
-        return Err(ContractError::CoverageUncertified);
-    }
-
-    if witness.negative_predicate != claim.query_predicate {
-        return Err(ContractError::CoverageUncertified);
-    }
-
-    let outcome = NegativeReadOutcome {
-        claim_id: claim.claim_id.clone(),
-        query_predicate: claim.query_predicate.clone(),
-        anchor: claim.anchor.clone(),
-        certified_domain: claim.target_domain.clone(),
-        witness_digest: witness.witness_digest(),
-        generation: claim.target_generation,
-    };
-    outcome.validate()?;
-    Ok(outcome)
+    NegativeReadOutcome::from_witness(
+        claim.claim_id.clone(),
+        claim.query_predicate.clone(),
+        claim.anchor.clone(),
+        claim.target_domain.clone(),
+        witness,
+        authority,
+        claim.target_generation,
+    )
 }

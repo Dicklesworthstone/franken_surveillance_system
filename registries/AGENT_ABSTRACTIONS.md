@@ -12,7 +12,7 @@ Registry digest: `sha256:98dfe512d870a36079fe49435d1f53d669c63a0034d03a771248fba
 | `AGT-LAYER-002` | `source_evidence` | `fss-capture/fss-media/fss-chronicle` | What exact packets, files, measurements, continuity, and capture-time intervals exist? | `INV-003` | `normative` |
 | `AGT-LAYER-003` | `world_facts_and_coverage` | `fss-chronicle/fss-coverage` | What did the system authoritatively observe or do at one anchor? | `INV-063` | `normative` |
 | `AGT-LAYER-004` | `derived_beliefs` | `fss-perception/fss-association/fss-graph` | What entities, tracks, events, relations, and uncertainties are supported? | `INV-069` | `normative` |
-| `AGT-LAYER-005` | `situation_capsule` | `fss-situation/fss-context-pack/fss-affordance` | What is established, what materially different worlds remain possible, what changed, and what is robustly or conditionally safe to do next? | `INV-116` | `normative` |
+| `AGT-LAYER-005` | `situation_capsule` | `fss-situation/fss-context-pack/fss-affordance` | What is the smallest sufficient mission-relative driver view now, what changed, and what can safely be done next? | `INV-116` | `normative` |
 | `AGT-LAYER-006` | `investigation_and_hypotheses` | `fss-investigation` | Which competing explanations remain viable and how can they be discriminated? | `INV-104` | `normative` |
 | `AGT-LAYER-007` | `affordance_frontier` | `fss-attention/fss-affordance` | What can be done next, under current capability and budget, and why is it worth doing? | `INV-106` | `normative` |
 | `AGT-LAYER-008` | `plan_and_effect` | `fss-agent-plan/fss-effect` | Which witnessed contingent DAG should run and did each effect happen? | `INV-088` | `normative` |
