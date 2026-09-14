@@ -20,7 +20,7 @@ Knowledge-state permission is deliberately split. An estimate may support specul
 
 | ID | State | Meaning | May support planning | May authorize irreversible effect | Explicit assumptions required |
 |---|---|---|---:|---:|---:|
-| `KSTATE-001` | `known` | The proposition is established for the named anchor and validity scope by admissible evidence or a proved terminal postcondition. | yes | yes, subject to capability and policy | no |
+| `KSTATE-001` | `known` | The proposition is established for the named anchor and validity scope by admissible evidence, with any proved terminal postcondition bound as an evidence root. | yes | yes, subject to capability and policy | no |
 | `KSTATE-002` | `estimated` | The proposition is supported by a declared derivation or model with explicit uncertainty and operating-envelope limits. | yes | no | yes |
 | `KSTATE-003` | `unknown` | The authorized evidence acquired so far does not establish the proposition. | yes, as an explicit branch or open variable | no | yes |
 | `KSTATE-004` | `conflicted` | Material admissible evidence supports incompatible propositions or generations. | yes, only as competing branches | no | yes |

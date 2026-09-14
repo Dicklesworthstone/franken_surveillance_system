@@ -916,6 +916,49 @@ fn terminal_effect_outcome_without_result_digest_is_refused() -> Result<(), Box<
     Ok(())
 }
 
+/// Second angle on the KSTATE-001 guard (fss-kdhh7): a terminal outcome whose result digest and
+/// proof object digest are both dropped, with every caller-held digest re-derived to match, is
+/// still refused as an effect outcome without a proved root. Without the guard the body would
+/// reach the root recomputation and fail only as a digest mismatch.
+#[test]
+fn terminal_effect_outcome_without_result_digest_is_refused_even_when_rederived()
+-> Result<(), Box<dyn Error>> {
+    use fss_core::CanonicalEncode;
+
+    let (harness, decision, event_receipt, plan, outcome) =
+        verified_outcome_fixture("digestless-rederived")?;
+    for state in [
+        fss_core::EffectState::Failed,
+        fss_core::EffectState::Verified,
+    ] {
+        let mut tampered = outcome.clone();
+        tampered.outcome.operation_receipt.state = state;
+        tampered.outcome.operation_receipt.result_digest = None;
+        tampered.outcome.proof_object_digest = None;
+        tampered.outcome.operation_object_digest =
+            ContentDigest::sha256(&tampered.outcome.operation_receipt.canonical_bytes());
+        tampered.outcome_object_digest = ContentDigest::sha256(&tampered.outcome.canonical_bytes());
+        let mut compile_request = request(
+            &decision,
+            &event_receipt,
+            capabilities(&["capability:alert.commit"]),
+        )?;
+        compile_request.alert_plan = Some(&plan);
+        compile_request.alert_outcome = Some(&tampered);
+        compile_request.previous_anchor = Some(event_receipt.authority_anchor.clone());
+        let compiled = compile_reference_situation(compile_request, &harness.authority);
+        assert!(
+            matches!(
+                compiled,
+                Err(ReferenceError::InvalidSpec("situation_effect_outcome"))
+            ),
+            "{state:?} without result or proof digest, re-derived: {compiled:?}"
+        );
+    }
+    harness.cleanup();
+    Ok(())
+}
+
 /// `validate_request` binds the receipt to the ledger only through `outcome_root`, so the root must
 /// be recomputed from the outcome body: an edited result digest is refused even when every digest
 /// the caller holds is re-derived to match it.

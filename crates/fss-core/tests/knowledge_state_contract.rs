@@ -1824,3 +1824,248 @@ fn test_redaction_basis_on_known_or_stale_cell_is_refused() -> Result<(), Box<dy
     }
     Ok(())
 }
+
+/// Exact-set validation tests for every provenance x {Known with evidence, Known without evidence, Estimated without evidence}
+/// per KSTATE-001 / bead fss-kdhh7.
+///
+/// KSTATE-001 defines known as "established by admissible evidence, with any proved terminal
+/// postcondition bound as an evidence root", so Known requires non-empty evidence roots whatever
+/// the provenance; admissibility is tracked by fss-gefi6.
+/// Non-observed/derived claims without evidence must be Estimated (or Unknown), preserving their provenance.
+#[test]
+fn test_knowledge_cell_validation_exact_set_for_known_and_estimated() -> Result<(), Box<dyn Error>>
+{
+    let all_provenances = [
+        ProvenanceClass::Observed,
+        ProvenanceClass::Derived,
+        ProvenanceClass::Predicted,
+        ProvenanceClass::Remembered,
+        ProvenanceClass::OperatorAsserted,
+        ProvenanceClass::VendorClaimed,
+        ProvenanceClass::Policy,
+    ];
+    let evidence_root = ContentDigest::sha256(b"admissible_evidence_root");
+
+    for provenance in all_provenances {
+        // 1. Known with evidence: valid across provenances, EXCEPT Predicted is refused per
+        // AGENT_COGNITION_AND_CONTROL.md:610 (§8.2: predicted is "counterfactual or future
+        // expectation, never current truth") and fss-x4a.30.83.12/PROV-003 (PredictedKnownForbidden).
+        let known_ev_params = KnowledgeCellParams {
+            claim_id: format!("claim:test:known_with_ev:{provenance:?}"),
+            statement: "Proposition in Known state with evidence.".to_string(),
+            knowledge_state: KnowledgeState::Known,
+            provenance,
+            hypothesis: None,
+            evidence: vec![evidence_root],
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: None,
+        };
+        if provenance == ProvenanceClass::Predicted {
+            assert_eq!(
+                KnowledgeCell::new(known_ev_params),
+                Err(ContractError::PredictedKnownForbidden)
+            );
+        } else {
+            let known_with_evidence = KnowledgeCell::new(known_ev_params)?;
+            assert_eq!(
+                known_with_evidence.validate(),
+                Ok(()),
+                "Known with evidence must be valid for provenance {provenance:?}"
+            );
+            assert!(known_with_evidence.validated().is_ok());
+        }
+
+        // 2. Known without evidence: REFUSED with ContractError::EvidenceRequired across ALL 7 provenances!
+        // Removing this rule would allow non-observed/derived provenances to validate, which violates KSTATE-001.
+        let known_no_ev_params = KnowledgeCellParams {
+            claim_id: format!("claim:test:known_no_ev:{provenance:?}"),
+            statement: "Proposition in Known state without evidence.".to_string(),
+            knowledge_state: KnowledgeState::Known,
+            provenance,
+            hypothesis: None,
+            evidence: Vec::new(),
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: None,
+        };
+        let expected_known_no_ev = if provenance == ProvenanceClass::Predicted {
+            ContractError::PredictedKnownForbidden
+        } else {
+            ContractError::EvidenceRequired
+        };
+        assert_eq!(
+            KnowledgeCell::new(known_no_ev_params),
+            Err(expected_known_no_ev),
+            "Known without evidence must be refused for provenance {provenance:?}"
+        );
+
+        // 3. Estimated without evidence:
+        // - Observed (PROV-001) and Derived (PROV-002) assert present support and require evidence -> Err(EvidenceRequired)
+        // - Non-observed/derived (Predicted, Remembered, OperatorAsserted, VendorClaimed, Policy)
+        //   without evidence are valid as Estimated, keeping their provenance orthogonal -> Ok(())
+        let estimated_no_ev_params = KnowledgeCellParams {
+            claim_id: format!("claim:test:estimated_no_ev:{provenance:?}"),
+            statement: "Proposition in Estimated state without evidence.".to_string(),
+            knowledge_state: KnowledgeState::Estimated,
+            provenance,
+            hypothesis: None,
+            evidence: Vec::new(),
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: None,
+        };
+        let expected_estimated = match provenance {
+            ProvenanceClass::Observed | ProvenanceClass::Derived => {
+                Err(ContractError::EvidenceRequired)
+            }
+            ProvenanceClass::Predicted
+            | ProvenanceClass::Remembered
+            | ProvenanceClass::OperatorAsserted
+            | ProvenanceClass::VendorClaimed
+            | ProvenanceClass::Policy => Ok(()),
+        };
+        match expected_estimated {
+            Ok(()) => {
+                let cell = KnowledgeCell::new(estimated_no_ev_params)?;
+                assert_eq!(cell.validate(), Ok(()));
+                assert!(cell.validated().is_ok());
+            }
+            Err(err) => {
+                assert_eq!(
+                    KnowledgeCell::new(estimated_no_ev_params),
+                    Err(err),
+                    "Estimated without evidence mismatch for provenance {provenance:?}"
+                );
+            }
+        }
+
+        // 4. Estimated with evidence: valid across ALL 7 provenances.
+        let estimated_with_evidence = KnowledgeCell::new(KnowledgeCellParams {
+            claim_id: format!("claim:test:estimated_with_ev:{provenance:?}"),
+            statement: "Proposition in Estimated state with evidence.".to_string(),
+            knowledge_state: KnowledgeState::Estimated,
+            provenance,
+            hypothesis: None,
+            evidence: vec![evidence_root],
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: None,
+        })?;
+        assert_eq!(
+            estimated_with_evidence.validate(),
+            Ok(()),
+            "Estimated with evidence must be valid for provenance {provenance:?}"
+        );
+
+        // 5. Unknown without evidence: valid across ALL 7 provenances (an honest unknown never needs evidence).
+        let unknown_without_evidence = KnowledgeCell::new(KnowledgeCellParams {
+            claim_id: format!("claim:test:unknown_no_ev:{provenance:?}"),
+            statement: "Proposition in Unknown state without evidence.".to_string(),
+            knowledge_state: KnowledgeState::Unknown,
+            provenance,
+            hypothesis: None,
+            evidence: Vec::new(),
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: None,
+        })?;
+        assert_eq!(
+            unknown_without_evidence.validate(),
+            Ok(()),
+            "Unknown without evidence must be valid for provenance {provenance:?}"
+        );
+    }
+
+    Ok(())
+}
+
+/// Returns the text of the `"meaning"` field in the one flat row whose `"id"` is `id`.
+fn json_registry_meaning<'a>(registry: &'a str, id: &str) -> Result<&'a str, Box<dyn Error>> {
+    let id_key = format!("\"id\": \"{id}\"");
+    if registry.matches(id_key.as_str()).count() != 1 {
+        return Err(format!("{id} must name exactly one registry row").into());
+    }
+    let row_start = registry
+        .find(id_key.as_str())
+        .ok_or("missing registry row")?;
+    let row = &registry[row_start..];
+    let row = &row[..row.find('}').ok_or("unterminated registry row")?];
+    let key = "\"meaning\": \"";
+    let start = row.find(key).ok_or("registry row lacks a meaning")? + key.len();
+    let len = row[start..].find('"').ok_or("unterminated meaning")?;
+    Ok(&row[start..start + len])
+}
+
+/// Returns the Meaning cell of the `registries/AGENT_CONTRACTS.md` table row for `id`.
+fn markdown_registry_meaning<'a>(registry: &'a str, id: &str) -> Result<&'a str, Box<dyn Error>> {
+    let prefix = format!("| `{id}` |");
+    let mut rows = registry
+        .lines()
+        .filter(|line| line.starts_with(prefix.as_str()));
+    let row = rows.next().ok_or("missing Markdown registry row")?;
+    if rows.next().is_some() {
+        return Err(format!("{id} must name exactly one Markdown registry row").into());
+    }
+    let meaning = row
+        .split(" | ")
+        .nth(2)
+        .ok_or("Markdown row lacks a meaning cell")?;
+    Ok(meaning)
+}
+
+/// `KnowledgeState::meaning()` claims to return the exact registry text, so every copy of each
+/// knowledge-state meaning must equal it byte for byte: the frozen registry, the umbrella agent
+/// contract, the machine-readable operating model and the human registry (fss-kdhh7). No checker
+/// compared these copies, which is how KSTATE-001 kept the evidence-free "or a proved terminal
+/// postcondition" wording in some of them after the registry was reconciled.
+#[test]
+fn knowledge_state_meaning_equals_every_registry_row_text() -> Result<(), Box<dyn Error>> {
+    let json_registries = [
+        (
+            "architecture/knowledge_states.json",
+            include_str!("../../../architecture/knowledge_states.json"),
+        ),
+        (
+            "architecture/agent_contracts.json",
+            include_str!("../../../architecture/agent_contracts.json"),
+        ),
+        (
+            "architecture/agent_operating_model.json",
+            include_str!("../../../architecture/agent_operating_model.json"),
+        ),
+    ];
+    let markdown = include_str!("../../../registries/AGENT_CONTRACTS.md");
+    let states = [
+        KnowledgeState::Known,
+        KnowledgeState::Estimated,
+        KnowledgeState::Unknown,
+        KnowledgeState::Conflicted,
+        KnowledgeState::Stale,
+        KnowledgeState::NotObservable,
+        KnowledgeState::Redacted,
+        KnowledgeState::Indeterminate,
+        KnowledgeState::NotApplicable,
+    ];
+    for state in states {
+        for (path, registry) in json_registries {
+            assert_eq!(
+                state.meaning(),
+                json_registry_meaning(registry, state.id())?,
+                "{} meaning differs from {path}",
+                state.id()
+            );
+        }
+        assert_eq!(
+            state.meaning(),
+            markdown_registry_meaning(markdown, state.id())?,
+            "{} meaning differs from registries/AGENT_CONTRACTS.md",
+            state.id()
+        );
+    }
+    assert_eq!(
+        KnowledgeState::Known.meaning(),
+        "The proposition is established for the named anchor and validity scope by admissible evidence, with any proved terminal postcondition bound as an evidence root."
+    );
+    Ok(())
+}

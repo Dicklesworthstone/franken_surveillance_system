@@ -400,7 +400,7 @@ hypothesis disposition, access transform, and operation outcome:
 
 | State | Meaning | Agent implication |
 |---|---|---|
-| `known` | Established for the named anchor and validity scope by admissible evidence or a proved terminal postcondition | May be used as a premise only within its declared scope and freshness. |
+| `known` | Established for the named anchor and validity scope by admissible evidence, with any proved terminal postcondition bound as an evidence root | May be used as a premise only within its declared scope and freshness. |
 | `estimated` | Supported by a declared derivation/model with explicit uncertainty and operating envelope | May guide bounded reasoning or policy only under its calibration contract. |
 | `unknown` | Authorized evidence acquired so far is insufficient | Do not infer false, absent, benign, or failed. |
 | `conflicted` | Material admissible evidence supports incompatible propositions or generations | Preserve alternatives and seek discriminating evidence. |
