@@ -79,6 +79,8 @@ pub enum MockSemanticLabel {
     AnimalLike,
     /// Sensor tamper/replay-like evidence.
     TamperLike,
+    /// Evidenced sensor-integrity restoration.
+    IntegrityRestored,
     /// Evidence does not fit the small reference vocabulary.
     Unknown,
 }
@@ -92,6 +94,7 @@ impl MockSemanticLabel {
             Self::AnimalLike => 2,
             Self::TamperLike => 3,
             Self::Unknown => 4,
+            Self::IntegrityRestored => 5,
         }
     }
 }
@@ -1472,6 +1475,7 @@ pub fn evaluate_corroboration(
         MockSemanticLabel::AnimalLike => 1,
         MockSemanticLabel::TamperLike => 2,
         MockSemanticLabel::Unknown => 3,
+        MockSemanticLabel::IntegrityRestored => 4,
     });
 
     let mut last_disjoint_spatial = None;

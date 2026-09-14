@@ -402,18 +402,21 @@ fn successor(
 ) -> Result<ReferencePolicyDecision, Box<dyn Error>> {
     let event = next.event.clone();
     Ok(ReferencePolicyDecision {
-        event: prior.supersede(fss_core::event::EventSupersedeParams {
-            state: event.state,
-            kind: event.kind,
-            interval: event.interval,
-            uncertainty_reason: event.uncertainty_reason,
-            zone_ids: event.zone_ids,
-            track_ids: event.track_ids,
-            probability: event.probability,
-            evidence: event.evidence,
-            model_receipts: event.model_receipts,
-            decision_path: event.decision_path,
-        })?,
+        event: prior.supersede(
+            fss_core::event::EventSupersedeParams {
+                state: event.state,
+                kind: event.kind,
+                interval: event.interval,
+                uncertainty_reason: event.uncertainty_reason,
+                zone_ids: event.zone_ids,
+                track_ids: event.track_ids,
+                probability: event.probability,
+                evidence: event.evidence,
+                model_receipts: event.model_receipts,
+                decision_path: event.decision_path,
+            },
+            std::slice::from_ref(prior),
+        )?,
         action: next.action,
     })
 }
