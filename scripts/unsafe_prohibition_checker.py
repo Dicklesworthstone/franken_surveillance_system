@@ -1010,11 +1010,36 @@ def check_target_roots(
             })
 
         # Also inspect package directory for target files that might be omitted from cargo metadata
-        # (e.g. autotests = false, autoexamples = false, autobenches = false, or build helpers)
+        # (e.g. build helpers) while respecting explicit autotests/autoexamples/autobenches/build settings
         if manifest_str:
             pkg_dir = Path(manifest_str).parent
+            m_data_member: dict[str, Any] = {}
+            try:
+                m_data_member = tomllib.loads(Path(manifest_str).read_text(encoding="utf-8"))
+            except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError):
+                pass
+            pkg_sec = m_data_member.get("package") if isinstance(m_data_member, dict) else None
+            if not isinstance(pkg_sec, dict):
+                pkg_sec = {}
+
+            member_autotests = pkg_sec.get("autotests", True) is not False
+            member_autoexamples = pkg_sec.get("autoexamples", True) is not False
+            member_autobenches = pkg_sec.get("autobenches", True) is not False
+            member_pkg_build = pkg_sec.get("build")
+            member_has_custom_build = isinstance(member_pkg_build, str) and bool(member_pkg_build.strip())
+            member_build_enabled = (member_pkg_build is not False) and not member_has_custom_build
+
             enumerated_targets.extend(
-                _collect_directory_targets(pkg_dir, pkg_name, root, seen_target_paths)
+                _collect_directory_targets(
+                    pkg_dir,
+                    pkg_name,
+                    root,
+                    seen_target_paths,
+                    autotests=member_autotests,
+                    autoexamples=member_autoexamples,
+                    autobenches=member_autobenches,
+                    build_enabled=member_build_enabled,
+                )
             )
 
     # Also inspect any unlisted / unregistered crate directories on disk
@@ -1073,6 +1098,7 @@ def check_target_roots(
         # 1. Custom [lib] target path
         lib_section = m_data.get("lib")
         has_custom_lib = False
+        autolib = pkg_section.get("autolib", True) is not False if isinstance(pkg_section, dict) else True
         if isinstance(lib_section, dict):
             custom_lib_path_str = lib_section.get("path")
             if isinstance(custom_lib_path_str, str) and custom_lib_path_str.strip():
@@ -1088,19 +1114,33 @@ def check_target_roots(
                         "src_path": sanitize_path(custom_lib_path, root),
                         "path": custom_lib_path,
                     })
+            else:
+                has_custom_lib = True
+                src_lib = disk_manifest.parent / "src" / "lib.rs"
+                if src_lib.is_file() and src_lib.resolve() not in seen_target_paths:
+                    seen_target_paths.add(src_lib.resolve())
+                    lib_t_name = lib_section.get("name", pkg_name)
+                    enumerated_targets.append({
+                        "crate": pkg_name,
+                        "target_name": lib_t_name if isinstance(lib_t_name, str) else pkg_name,
+                        "kinds": ["lib"],
+                        "src_path": sanitize_path(src_lib, root),
+                        "path": src_lib.resolve(),
+                    })
 
         # Standard lib.rs if no custom lib declared
         if not has_custom_lib:
-            src_lib = disk_manifest.parent / "src" / "lib.rs"
-            if src_lib.is_file() and src_lib.resolve() not in seen_target_paths:
-                seen_target_paths.add(src_lib.resolve())
-                enumerated_targets.append({
-                    "crate": pkg_name,
-                    "target_name": pkg_name,
-                    "kinds": ["lib"],
-                    "src_path": sanitize_path(src_lib, root),
-                    "path": src_lib.resolve(),
-                })
+            if autolib:
+                src_lib = disk_manifest.parent / "src" / "lib.rs"
+                if src_lib.is_file() and src_lib.resolve() not in seen_target_paths:
+                    seen_target_paths.add(src_lib.resolve())
+                    enumerated_targets.append({
+                        "crate": pkg_name,
+                        "target_name": pkg_name,
+                        "kinds": ["lib"],
+                        "src_path": sanitize_path(src_lib, root),
+                        "path": src_lib.resolve(),
+                    })
 
         # 2. Custom [[bin]] target paths
         bin_sections = m_data.get("bin")
@@ -1258,7 +1298,9 @@ def check_target_roots(
 
         # 5. Custom build script path declared in [package] build = "..."
         custom_build_path_str = pkg_section.get("build") if isinstance(pkg_section, dict) else None
+        has_custom_build = False
         if isinstance(custom_build_path_str, str) and custom_build_path_str.strip():
+            has_custom_build = True
             custom_build_path = (disk_manifest.parent / custom_build_path_str.strip()).resolve()
             if custom_build_path not in seen_target_paths:
                 seen_target_paths.add(custom_build_path)
@@ -1273,7 +1315,7 @@ def check_target_roots(
         autotests = pkg_section.get("autotests", True) is not False if isinstance(pkg_section, dict) else True
         autoexamples = pkg_section.get("autoexamples", True) is not False if isinstance(pkg_section, dict) else True
         autobenches = pkg_section.get("autobenches", True) is not False if isinstance(pkg_section, dict) else True
-        build_enabled = pkg_section.get("build") is not False if isinstance(pkg_section, dict) else True
+        build_enabled = (pkg_section.get("build") is not False if isinstance(pkg_section, dict) else True) and not has_custom_build
 
         # Collect tests, examples, benches, build.rs, build_helpers
         enumerated_targets.extend(
