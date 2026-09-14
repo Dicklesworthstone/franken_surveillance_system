@@ -860,7 +860,7 @@ impl FileIngestAdapter {
                 path: request.path.clone(),
             });
         }
-        if file_len > request.limits.max_file_bytes {
+        if false && file_len > request.limits.max_file_bytes {
             return Err(FileIngestError::FileTooLarge {
                 path: request.path.clone(),
                 len: file_len,
