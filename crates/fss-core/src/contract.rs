@@ -2952,6 +2952,8 @@ pub enum ContractError {
     /// Canonical bytes declare more collection elements than the bytes that remain: the buffer
     /// is truncated.
     CanonicalTruncated,
+    /// Laboratory target root directory already contains files.
+    RootNotEmpty,
 }
 
 impl ContractError {
@@ -3089,6 +3091,7 @@ impl ContractError {
             Self::InvalidPrivacyClass => "invalid_privacy_class",
             Self::InvalidRedactionTransform => "invalid_redaction_transform",
             Self::CanonicalTruncated => "canonical_truncated",
+            Self::RootNotEmpty => "root_not_empty",
         }
     }
 }
