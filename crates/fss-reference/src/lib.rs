@@ -29,6 +29,7 @@ mod packet_fault;
 mod policy;
 pub mod reference_deployment;
 pub mod rtsp;
+pub mod scalar_executor;
 mod situation;
 mod situation_guard;
 mod situation_sections;
@@ -175,6 +176,10 @@ pub use rtsp::{
     REDACTED_CREDENTIAL, RtspError, RtspEvent, RtspHeader, RtspHeaders, RtspLimits, RtspMethod,
     RtspParser, RtspRequest, RtspResponse, RtspTransport, SdpError, SdpMedia, SdpSession,
     decode_base64, parse_sdp, parse_sdp_bytes,
+};
+pub use scalar_executor::{
+    ChannelTransform, ExecBudget, ExecError, ExecOutcome, PreprocessProgram, ScalarExecCx,
+    ScalarExecutor, deterministic_exp_f32, deterministic_sigmoid_f32,
 };
 pub use situation_guard::{
     CAPABILITY_EFFECT_RECONCILE, EFFECT_RECONCILE_AFFORDANCE, EFFECT_STATUS_AFFORDANCE,
