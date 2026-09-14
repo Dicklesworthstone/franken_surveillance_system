@@ -2030,19 +2030,18 @@ fn classification_refuses_invalid_world_envelope_precondition() -> Result<(), Bo
 #[test]
 fn evidence_less_known_effect_is_refused_as_observed_and_unproved_as_vendor_claim()
 -> Result<(), Box<dyn Error>> {
-    let observed = KnowledgeCell::new_unvalidated_for_test(KnowledgeCellParams {
-        claim_id: EFFECT_CLAIM.to_owned(),
-        statement: "The external effect reached a retained terminal outcome.".to_owned(),
-        knowledge_state: KnowledgeState::Known,
-        provenance: ProvenanceClass::Observed,
-        hypothesis: None,
-        evidence: Vec::new(),
-        contradictions: Vec::new(),
-        valid_until: None,
-        state_basis: None,
-    });
     assert_eq!(
-        observed.validate(),
+        KnowledgeCell::new(KnowledgeCellParams {
+            claim_id: EFFECT_CLAIM.to_owned(),
+            statement: "The external effect reached a retained terminal outcome.".to_owned(),
+            knowledge_state: KnowledgeState::Known,
+            provenance: ProvenanceClass::Observed,
+            hypothesis: None,
+            evidence: Vec::new(),
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: None,
+        }),
         Err(fss_core::ContractError::EvidenceRequired)
     );
 

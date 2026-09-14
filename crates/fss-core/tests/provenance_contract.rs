@@ -2417,12 +2417,6 @@ fn test_observed_and_derived_asserting_cells_require_evidence() -> Result<(), Bo
                 Err(ContractError::EvidenceRequired),
                 "{provenance} {state} without evidence must be refused by constructor"
             );
-            let cell = KnowledgeCell::new_unvalidated_for_test(params.clone());
-            assert_eq!(
-                cell.validate(),
-                Err(ContractError::EvidenceRequired),
-                "{provenance} {state} without evidence must be refused by validate"
-            );
             let anchored_params = KnowledgeCellParams {
                 evidence: vec![ContentDigest::sha256(b"asserting_cell_anchor")],
                 ..params
@@ -2506,16 +2500,7 @@ fn test_predicted_known_forbidden() -> Result<(), Box<dyn Error>> {
         state_basis: None,
     };
     assert_eq!(
-        KnowledgeCell::new(params_predicted_known.clone()),
-        Err(ContractError::PredictedKnownForbidden)
-    );
-    let cell_predicted_known = KnowledgeCell::new_unvalidated_for_test(params_predicted_known);
-    assert_eq!(
-        cell_predicted_known.validate(),
-        Err(ContractError::PredictedKnownForbidden)
-    );
-    assert_eq!(
-        cell_predicted_known.validated(),
+        KnowledgeCell::new(params_predicted_known),
         Err(ContractError::PredictedKnownForbidden)
     );
 
@@ -2738,7 +2723,8 @@ fn make_test_frame(cells: Vec<KnowledgeCell>) -> SituationFrame {
 }
 
 #[test]
-fn test_p2b_sibling_derived_into_observed_laundering_refused() -> Result<(), Box<dyn Error>> {
+fn test_derived_into_observed_directional_laundering_and_unattributable_frame()
+-> Result<(), Box<dyn Error>> {
     let shared_digest = ContentDigest::sha256(b"shared_derived_to_observed_001");
     let cell_derived = KnowledgeCell::new(KnowledgeCellParams {
         claim_id: "claim:derived:1".to_string(),
@@ -2762,18 +2748,28 @@ fn test_p2b_sibling_derived_into_observed_laundering_refused() -> Result<(), Box
         valid_until: None,
         state_basis: None,
     })?;
-    let frame = make_test_frame(vec![cell_derived, cell_observed]);
+
+    // Directional check: Derived into Observed is refused (Constitution §8.3).
     assert_eq!(
-        frame.validate(),
+        cell_observed.verify_no_evidence_laundering(&cell_derived),
         Err(ContractError::EvidenceLaunderingDetected),
-        "Derived into Observed sibling laundering must be refused (Constitution §8.3)"
+        "Derived into Observed directional laundering must be refused"
     );
+    // Honest derivation: Observed into Derived is accepted.
+    assert!(cell_derived.verify_no_evidence_laundering(&cell_observed).is_ok());
+
+    // Intra-frame unattributable shared evidence (fss-gefi6): both permutations validate.
+    let frame_forward = make_test_frame(vec![cell_derived.clone(), cell_observed.clone()]);
+    assert!(frame_forward.validate().is_ok());
+    let frame_reverse = make_test_frame(vec![cell_observed, cell_derived]);
+    assert!(frame_reverse.validate().is_ok());
+
     Ok(())
 }
 
 #[test]
-fn test_p3_sibling_remembered_and_vendor_claimed_laundering_refused() -> Result<(), Box<dyn Error>>
-{
+fn test_p3_remembered_and_vendor_claimed_directional_laundering_and_unattributable_frame()
+-> Result<(), Box<dyn Error>> {
     let shared_digest1 = ContentDigest::sha256(b"shared_remembered_to_policy_001");
     let cell_remembered = KnowledgeCell::new(KnowledgeCellParams {
         claim_id: "claim:remembered:1".to_string(),
@@ -2797,12 +2793,18 @@ fn test_p3_sibling_remembered_and_vendor_claimed_laundering_refused() -> Result<
         valid_until: None,
         state_basis: None,
     })?;
-    let frame1 = make_test_frame(vec![cell_remembered, cell_policy]);
+
+    // Directional check: Remembered into Policy is refused.
     assert_eq!(
-        frame1.validate(),
+        cell_policy.verify_no_evidence_laundering(&cell_remembered),
         Err(ContractError::EvidenceLaunderingDetected),
-        "Remembered into Policy sibling laundering must be refused"
+        "Remembered into Policy directional laundering must be refused"
     );
+    assert!(cell_remembered.verify_no_evidence_laundering(&cell_policy).is_ok());
+
+    // Intra-frame: both permutations validate under fss-gefi6.
+    assert!(make_test_frame(vec![cell_remembered.clone(), cell_policy.clone()]).validate().is_ok());
+    assert!(make_test_frame(vec![cell_policy, cell_remembered]).validate().is_ok());
 
     let shared_digest2 = ContentDigest::sha256(b"shared_vendor_to_observed_001");
     let cell_vendor = KnowledgeCell::new(KnowledgeCellParams {
@@ -2827,17 +2829,70 @@ fn test_p3_sibling_remembered_and_vendor_claimed_laundering_refused() -> Result<
         valid_until: None,
         state_basis: None,
     })?;
-    let frame2 = make_test_frame(vec![cell_vendor, cell_observed]);
+
+    // Directional check: VendorClaimed into Observed is refused.
     assert_eq!(
-        frame2.validate(),
+        cell_observed.verify_no_evidence_laundering(&cell_vendor),
         Err(ContractError::EvidenceLaunderingDetected),
-        "VendorClaimed into Observed sibling laundering must be refused"
+        "VendorClaimed into Observed directional laundering must be refused"
     );
+    assert!(cell_vendor.verify_no_evidence_laundering(&cell_observed).is_ok());
+
+    // Intra-frame: both permutations validate under fss-gefi6.
+    assert!(make_test_frame(vec![cell_vendor.clone(), cell_observed.clone()]).validate().is_ok());
+    assert!(make_test_frame(vec![cell_observed, cell_vendor]).validate().is_ok());
+
     Ok(())
 }
 
 #[test]
-fn test_p4_normal_derivation_observed_into_derived_validates() -> Result<(), Box<dyn Error>> {
+fn test_p2b_prediction_and_observation_directional_laundering_and_unattributable_frame()
+-> Result<(), Box<dyn Error>> {
+    let shared_digest = ContentDigest::sha256(b"shared_predicted_to_observed_p2b");
+    let cell_predicted = KnowledgeCell::new(KnowledgeCellParams {
+        claim_id: "claim:predicted:p2b".to_string(),
+        statement: "Predicted future condition".to_string(),
+        knowledge_state: KnowledgeState::Estimated,
+        provenance: ProvenanceClass::Predicted,
+        hypothesis: None,
+        evidence: vec![shared_digest],
+        contradictions: vec![],
+        valid_until: None,
+        state_basis: None,
+    })?;
+    let cell_observed = KnowledgeCell::new(KnowledgeCellParams {
+        claim_id: "claim:observed:p2b".to_string(),
+        statement: "Observed assertion claiming prediction evidence".to_string(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Observed,
+        hypothesis: None,
+        evidence: vec![shared_digest],
+        contradictions: vec![],
+        valid_until: None,
+        state_basis: None,
+    })?;
+
+    // Directional check: Predicted into Observed is refused.
+    assert_eq!(
+        cell_observed.verify_no_evidence_laundering(&cell_predicted),
+        Err(ContractError::EvidenceLaunderingDetected),
+        "Predicted into Observed directional laundering must be refused (P2b)"
+    );
+    // Honest prediction from observation: Observed into Predicted is accepted.
+    assert!(cell_predicted.verify_no_evidence_laundering(&cell_observed).is_ok());
+
+    // Intra-frame unattributable shared evidence (fss-gefi6): both permutations validate.
+    let frame_forward = make_test_frame(vec![cell_predicted.clone(), cell_observed.clone()]);
+    assert!(frame_forward.validate().is_ok());
+    let frame_reverse = make_test_frame(vec![cell_observed, cell_predicted]);
+    assert!(frame_reverse.validate().is_ok());
+
+    Ok(())
+}
+
+#[test]
+fn test_p4_and_p4r_normal_derivation_observed_and_derived_both_permutations_validate()
+-> Result<(), Box<dyn Error>> {
     let shared_digest = ContentDigest::sha256(b"sensor_raw_telemetry_packet_p4");
     let cell_observed = KnowledgeCell::new(KnowledgeCellParams {
         claim_id: "claim:sensor:raw:1".to_string(),
@@ -2861,16 +2916,27 @@ fn test_p4_normal_derivation_observed_into_derived_validates() -> Result<(), Box
         valid_until: None,
         state_basis: None,
     })?;
-    let frame = make_test_frame(vec![cell_observed, cell_derived]);
+
+    // P4: Observed then Derived validates
+    let frame_p4 = make_test_frame(vec![cell_observed.clone(), cell_derived.clone()]);
     assert!(
-        frame.validate().is_ok(),
-        "Observed into Derived normal derivation citing same input evidence digest must validate (P4)"
+        frame_p4.validate().is_ok(),
+        "Observed into Derived normal derivation must validate (P4)"
     );
+
+    // P4r: Derived then Observed validates (honest derivation must not be refused by order)
+    let frame_p4r = make_test_frame(vec![cell_derived, cell_observed]);
+    assert!(
+        frame_p4r.validate().is_ok(),
+        "Derived then Observed normal derivation must validate (P4r)"
+    );
+
     Ok(())
 }
 
 #[test]
-fn test_p5_normal_derivation_observed_into_predicted_validates() -> Result<(), Box<dyn Error>> {
+fn test_p5_and_p5r_normal_prediction_observed_and_predicted_both_permutations_validate()
+-> Result<(), Box<dyn Error>> {
     let shared_digest = ContentDigest::sha256(b"sensor_raw_telemetry_packet_p5");
     let cell_observed = KnowledgeCell::new(KnowledgeCellParams {
         claim_id: "claim:sensor:raw:2".to_string(),
@@ -2894,11 +2960,110 @@ fn test_p5_normal_derivation_observed_into_predicted_validates() -> Result<(), B
         valid_until: None,
         state_basis: None,
     })?;
-    let frame = make_test_frame(vec![cell_observed, cell_predicted]);
+
+    // P5: Observed then Predicted validates
+    let frame_p5 = make_test_frame(vec![cell_observed.clone(), cell_predicted.clone()]);
     assert!(
-        frame.validate().is_ok(),
-        "Observed into Predicted normal derivation citing same input evidence digest must validate (P5)"
+        frame_p5.validate().is_ok(),
+        "Observed then Predicted normal derivation must validate (P5)"
     );
+
+    // P5r: Predicted then Observed validates
+    let frame_p5r = make_test_frame(vec![cell_predicted, cell_observed]);
+    assert!(
+        frame_p5r.validate().is_ok(),
+        "Predicted then Observed normal derivation must validate (P5r)"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_q1_verdict_order_independent_all_pairs() -> Result<(), Box<dyn Error>> {
+    let shared_digest = ContentDigest::sha256(b"shared_telemetry_q1");
+    let cell_observed = KnowledgeCell::new(KnowledgeCellParams {
+        claim_id: "claim:obs:q1".to_string(),
+        statement: "Observed fact".to_string(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Observed,
+        hypothesis: None,
+        evidence: vec![shared_digest],
+        contradictions: vec![],
+        valid_until: None,
+        state_basis: None,
+    })?;
+    let cell_predicted = KnowledgeCell::new(KnowledgeCellParams {
+        claim_id: "claim:pred:q1".to_string(),
+        statement: "Predicted future fact".to_string(),
+        knowledge_state: KnowledgeState::Estimated,
+        provenance: ProvenanceClass::Predicted,
+        hypothesis: None,
+        evidence: vec![shared_digest],
+        contradictions: vec![],
+        valid_until: None,
+        state_basis: None,
+    })?;
+    let cell_derived = KnowledgeCell::new(KnowledgeCellParams {
+        claim_id: "claim:der:q1".to_string(),
+        statement: "Derived computation".to_string(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Derived,
+        hypothesis: None,
+        evidence: vec![shared_digest],
+        contradictions: vec![],
+        valid_until: None,
+        state_basis: None,
+    })?;
+
+    // Q1: validate() verdict must not change with non-canonical cell order.
+    let f1 = make_test_frame(vec![cell_predicted.clone(), cell_observed.clone()]);
+    let f2 = make_test_frame(vec![cell_observed.clone(), cell_predicted.clone()]);
+    assert_eq!(f1.validate(), f2.validate(), "Predicted vs Observed order must not change verdict");
+
+    let f3 = make_test_frame(vec![cell_derived.clone(), cell_observed.clone()]);
+    let f4 = make_test_frame(vec![cell_observed, cell_derived]);
+    assert_eq!(f3.validate(), f4.validate(), "Derived vs Observed order must not change verdict");
+
+    Ok(())
+}
+
+#[test]
+fn test_q2_sorted_by_claim_id_order_independent() -> Result<(), Box<dyn Error>> {
+    let shared_digest = ContentDigest::sha256(b"shared_telemetry_q2");
+    // "claim:a" comes before "claim:z" lexicographically.
+    let cell_a = KnowledgeCell::new(KnowledgeCellParams {
+        claim_id: "claim:a".to_string(),
+        statement: "Claim A observed".to_string(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Observed,
+        hypothesis: None,
+        evidence: vec![shared_digest],
+        contradictions: vec![],
+        valid_until: None,
+        state_basis: None,
+    })?;
+    let cell_z = KnowledgeCell::new(KnowledgeCellParams {
+        claim_id: "claim:z".to_string(),
+        statement: "Claim Z predicted".to_string(),
+        knowledge_state: KnowledgeState::Estimated,
+        provenance: ProvenanceClass::Predicted,
+        hypothesis: None,
+        evidence: vec![shared_digest],
+        contradictions: vec![],
+        valid_until: None,
+        state_basis: None,
+    })?;
+
+    let frame_az = make_test_frame(vec![cell_a.clone(), cell_z.clone()]);
+    let frame_za = make_test_frame(vec![cell_z, cell_a]);
+
+    assert_eq!(
+        frame_az.validate(),
+        frame_za.validate(),
+        "Frame validation must be identical regardless of claim ID ordering"
+    );
+    assert!(frame_az.validate().is_ok());
+
     Ok(())
 }
 

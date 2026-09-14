@@ -190,7 +190,7 @@ fss://doctor/{bundle}
   - Target field: `evidence`
   - Registry text: "Evidence digests in KnowledgeCell are ContentDigest values without inline origin provenance."
   - Constitutional authority: `AGENT_COGNITION_AND_CONTROL.md` §8.3: "derived beliefs cannot become observed"
-  - Reconciled invariant: Single isolated KnowledgeCell with untyped evidence digest cannot be detected as relabelled without sibling or prior context; tracked in follow-up bead `fss-gefi6` (typed evidence references).
+  - Reconciled invariant: Single isolated KnowledgeCell with untyped evidence digest, as well as intra-set shared evidence between authorizing and non-authorizing classes in a single SituationFrame or MeaningfulDelta (P2, P2b, P3, Q2), cannot be attributed to an author vs consumer without origin tracking and validates as Ok; tracked in follow-up bead `fss-gefi6` (typed evidence references).
   - Status: `tracked_limitation`
-  - Reason: A lone relabelled cell cannot be detected from the digest alone because ContentDigest is an untyped hash. Full enforcement without sibling/prior context requires typed evidence references carrying origin provenance, tracked under follow-up bead `fss-gefi6`.
+  - Reason: A lone relabelled cell cannot be detected from the digest alone because ContentDigest is an untyped hash. Furthermore, within a single SituationFrame or MeaningfulDelta, shared evidence between an authorizing and non-authorizing class cannot be attributed by list position or claim ID ordering without breaking honest derivations (P4, P4r, P5, P5r) or creating order-dependent verdicts (Q1, Q2). Full enforcement without guessing by position requires typed evidence references carrying origin provenance, tracked under follow-up bead `fss-gefi6`.
 

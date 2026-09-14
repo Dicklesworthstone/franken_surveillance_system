@@ -844,7 +844,7 @@ fn compiled_indeterminate_effect_cannot_be_relabeled() -> Result<(), Box<dyn Err
                 let mut params = cell.to_params();
                 params.knowledge_state = state;
                 params.state_basis = None;
-                *cell = fss_core::KnowledgeCell::new_unvalidated_for_test(params);
+                *cell = fss_core::KnowledgeCell::new(params)?;
             }
         }
         assert_effect_tamper_refused(
@@ -872,7 +872,7 @@ fn compiled_effect_cannot_be_shadowed_by_a_duplicate_claim() -> Result<(), Box<d
     let mut params = shadow_cell.to_params();
     params.knowledge_state = fss_core::KnowledgeState::Known;
     params.state_basis = None;
-    let shadow = fss_core::KnowledgeCell::new_unvalidated_for_test(params);
+    let shadow = fss_core::KnowledgeCell::new(params)?;
     tampered.capsule.frame.knowledge_cells.push(shadow);
     assert_effect_tamper_refused(
         &genuine,
