@@ -138,7 +138,7 @@ fn test_hand_computed_3op_golden_conv2d_relu_add() -> Result<(), Box<dyn Error>>
         "Hand-computed golden mismatch for 3-op graph"
     );
     assert_eq!(outcome.nodes_executed(), 3);
-    assert_eq!(outcome.executed_macs(), 16); // 4 output elements * 4 inputs in filter = 16 MACs
+    assert_eq!(outcome.executed_macs(), 24); // Conv 16 (4 output elements * 4 inputs in filter) + Relu 4 + Add 4 = 24 MACs
 
     // Repeated execution test for bit-identical reproducibility
     for _ in 0..10 {
@@ -959,7 +959,12 @@ fn test_deterministic_exp_f32_pinned_bit_constants() {
     assert_eq!(deterministic_exp_f32(1.0).to_bits(), 0x402DF854);
     assert_eq!(deterministic_exp_f32(0.0).to_bits(), 0x3F800000);
     assert_eq!(deterministic_exp_f32(-1.0).to_bits(), 0x3EBC5AB2);
-    assert_eq!(deterministic_exp_f32(10.0).to_bits(), 0x46AC54EE);
+    assert_eq!(deterministic_exp_f32(10.0).to_bits(), 0x46AC14EE);
+
+    // M4 kill pins: points where deterministic_exp_f32 differs from libm (f32::exp)
+    assert_eq!(deterministic_exp_f32(1.75).to_bits(), 0x40B825B4);
+    assert_eq!(deterministic_exp_f32(0.33).to_bits(), 0x3FB20B3E);
+    assert_eq!(deterministic_exp_f32(-0.98).to_bits(), 0x3EC028C6);
 }
 
 #[test]
@@ -981,6 +986,12 @@ fn test_m7_kill_no_wildcard_arms_in_scalar_executor_opcode_matches() -> Result<(
     assert!(
         !has_wildcard,
         "scalar_executor.rs must not contain wildcard arms"
+    );
+
+    // Source guard: verify scalar_executor.rs does not call f32::exp directly (kills M4)
+    assert!(
+        !src.contains(".exp("),
+        "scalar_executor.rs must not call f32::exp; must use deterministic_exp_f32"
     );
 
     // Verify all 3 match blocks explicitly name the unsupported variants (Gelu | Silu | ...)

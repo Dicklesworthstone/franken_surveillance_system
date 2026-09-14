@@ -36,7 +36,7 @@ pub fn deterministic_exp_f32(x: f32) -> f32 {
     if x == f32::NEG_INFINITY || x < -104.0_f32 {
         return 0.0_f32;
     }
-    if x > 88.722839_f32 {
+    if x > 88.722_84_f32 {
         return f32::INFINITY;
     }
 
@@ -384,7 +384,15 @@ impl std::error::Error for ExecError {
         match self {
             Self::Ir(err) => Some(err),
             Self::Tensor(err) => Some(err),
-            _ => None,
+            Self::UnsupportedVersion { .. }
+            | Self::UnsupportedOperator { .. }
+            | Self::UnsupportedDType { .. }
+            | Self::MissingInputPort { .. }
+            | Self::ShapeMismatch { .. }
+            | Self::GenerationMismatch { .. }
+            | Self::BudgetExceeded { .. }
+            | Self::CancellationRequested { .. }
+            | Self::ArithmeticOverflow { .. } => None,
         }
     }
 }
@@ -650,23 +658,15 @@ fn compute_node_macs(
                 return Ok(0);
             }
             let out_elems = out_ports[0].shape().num_elements()? as u64;
-            let (k_h, k_w) = match node.attributes().get("kernel_size") {
-                Some(fss_model_ir::AttrValue::IntList(ks)) => {
-                    let h = match ks.first() {
-                        Some(&val) => val.max(1) as u64,
-                        None => 1,
-                    };
-                    let w = match ks.get(1) {
-                        Some(&val) => val.max(1) as u64,
-                        None => h,
-                    };
-                    (h, w)
-                }
-                Some(fss_model_ir::AttrValue::Int(k)) => {
-                    let k_val = (*k).max(1) as u64;
-                    (k_val, k_val)
-                }
-                _ => (1, 1),
+            let (k_h, k_w) = if let Some(a) = node.attributes().get("kernel_size") {
+                let ks = a
+                    .as_usize_list(node.id(), "kernel_size")
+                    .map_err(ExecError::Ir)?;
+                let h = ks.first().copied().unwrap_or(1).max(1) as u64;
+                let w = ks.get(1).copied().unwrap_or(h as usize).max(1) as u64;
+                (h, w)
+            } else {
+                (1, 1)
             };
             let window_work = k_h.checked_mul(k_w).ok_or(ExecError::ArithmeticOverflow {
                 operation: "maxpool kernel size",
