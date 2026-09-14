@@ -27,7 +27,8 @@ pub use batch_codec::{BatchCodecError, decode_batch, encode_batch};
 pub use durable::{
     DurableAppendReconciliation, DurableLedgerError, DurableLedgerLimits, DurableReferenceLedger,
     ERR_LEDGER_DURABLE_BATCH_ID_CONFLICT_001, HostJournalReadIo, JournalFileMetadata,
-    JournalReadIo, LedgerInspection, inspect_durable, inspect_durable_with_io,
+    JournalReadIo, LedgerInspection, RecordingJournalReadIo, inspect_durable,
+    inspect_durable_with_io,
 };
 pub use error::{
     AppendPhase, CorruptionKind, ERR_LEDGER_LENGTH_OVERFLOW_001, ExternalMutationKind, JournalError,

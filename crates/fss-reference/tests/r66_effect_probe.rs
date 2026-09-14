@@ -82,7 +82,7 @@ fn r66_effect_inspect_probe() -> Result<(), Box<dyn Error>> {
     assert_eq!(r.indeterminate_operations[0].operation_id, op);
     assert_eq!(
         r.indeterminate_operations[0].reconcile_affordance,
-        "effect.reconcile"
+        fss_reference::EFFECT_RECONCILE_AFFORDANCE
     );
 
     let after = dir_digest(&dir)?;
