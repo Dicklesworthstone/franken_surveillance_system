@@ -206,6 +206,16 @@
       "plane": "authority",
       "description": "Outcome status of effect reconciliation"
     },
+    "IndeterminateEffectReason": {
+      "file": "crates/fss-core/src/effect.rs",
+      "plane": "authority",
+      "description": "Typed reason an operation entered indeterminate, kept on its receipt through reconciliation; unrecorded only for legacy v1 records (fss-deir9)"
+    },
+    "EffectRecordVersion": {
+      "file": "crates/fss-core/src/effect.rs",
+      "plane": "authority",
+      "description": "Version of a durable effect journal record and of the receipt encoding its operation uses; v1 keeps pre-deir9 witness bytes (fss-deir9)"
+    },
     "ReceiptLookupStatus": {
       "file": "crates/fss-core/src/effect.rs",
       "plane": "authority",

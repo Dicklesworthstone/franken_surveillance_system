@@ -133,6 +133,25 @@ key with different content fails. An indeterminate operation is reconciled befor
 could duplicate an effect. Provider acceptance is never represented as delivery or physical
 outcome.
 
+The receipt's canonical encoding is versioned, never migrated (fss-deir9). An operation prepared by
+an effect journal record written before fss-deir9 (durable record kind 2, `EffectRecordVersion::V1`)
+keeps the original canonical layout and the `fss.operation_receipt.v1` digest domain for its whole
+life, so every witness already published for it verifies against the exact bytes it was computed
+from; those bytes never carried the indeterminate reason, and a legacy reason-less indeterminate
+episode is kept as an explicit `unrecorded` marker that only a v1 receipt may hold. An operation
+prepared by a current record (kind 3, `EffectRecordVersion::V2`) uses the v2 layout, which opens
+with the `fss.operation_receipt.v2` tag, binds the indeterminate reason, and is digested under that
+registered domain. The durable effect journal names the version of every record in its record kind,
+replays each record under the transition rules it was written with, refuses a v1 record after any
+v2 record, and never rewrites stored bytes.
+A durable effect journal file made only of kind-2 records is treated as legacy: all of its
+operations replay as v1, since it cannot be told apart from one written before fss-deir9.
+The indeterminate reason of a v1 receipt is not bound by its digest (v1 bytes never held
+it). A v1 receipt therefore exists only as the product of that versioned durable replay:
+the public canonical decoder refuses v1 receipt bytes (`legacy_receipt_requires_journal`),
+and the situation guard admits a v1 receipt, and its `unrecorded` marker, only when it
+compiles against the durable journal; a receipt handed to it any other way must be v2.
+
 ## 8. Calibration certificate and coverage witness
 
 [`schemas/calibration_certificate.v1.json`](schemas/calibration_certificate.v1.json) binds:

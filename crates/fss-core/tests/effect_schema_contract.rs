@@ -97,16 +97,18 @@ fn sample_operation_receipt() -> Result<OperationReceipt, Box<dyn Error>> {
     let intent = sample_intent()?;
     let authority =
         EffectAuthority::new("principal:operator:sec-ops", "cap:alert:dispatch", Some(42))?;
-    Ok(OperationReceipt {
-        intent,
-        state: EffectState::Prepared,
-        authority,
-        prepared_at: TimestampNs(1_700_000_000_000_000_000),
-        committed_at: None,
-        updated_at: TimestampNs(1_700_000_000_000_000_000),
-        result_digest: None,
-        error_code: None,
-    })
+    // Only the effect journal builds a receipt (its encoding version is private, fss-deir9); a
+    // fresh preparation yields exactly the prepared receipt this helper used to spell out.
+    let mut journal = EffectJournal::new();
+    Ok(journal
+        .prepare_with_authority(
+            intent,
+            ObligationId::parse("obligation:sample-receipt")?,
+            "delivery_proved",
+            authority,
+            TimestampNs(1_700_000_000_000_000_000),
+        )?
+        .clone())
 }
 
 // ---------------------------------------------------------------------------
@@ -1028,5 +1030,317 @@ fn test_review_562_finding_1_three_valued_lookup_status() -> Result<(), Box<dyn 
         "Indeterminate failure lookup must yield IndeterminateLookup error, not UnverifiedReceipt"
     );
 
+    Ok(())
+}
+
+/// The canonical digest of `bytes` under `domain`, spelled out independently of the codec.
+fn receipt_domain_digest(domain: &str, bytes: &[u8]) -> ContentDigest {
+    let mut prefix = CanonicalEncoder::new();
+    prefix.text("fss.canonical.v1");
+    prefix.text(domain);
+    let mut preimage = prefix.finish();
+    preimage.extend_from_slice(bytes);
+    ContentDigest::sha256(&preimage)
+}
+
+/// A v1 receipt of `receipt`'s intent, as only the journal's versioned replay of a v1 record
+/// produces one (prepared at `receipt.prepared_at`, system authority).
+fn replayed_v1_receipt(receipt: &OperationReceipt) -> Result<OperationReceipt, Box<dyn Error>> {
+    use fss_core::{EffectJournalTransition, EffectRecordVersion};
+    let journal = EffectJournal::replay_versioned([(
+        EffectRecordVersion::V1,
+        EffectJournalTransition::Prepare {
+            intent: receipt.intent.clone(),
+            obligation_id: ObligationId::parse("obligation:replayed-v1")?,
+            terminal_predicate: "delivery_proved".to_owned(),
+            now: receipt.prepared_at,
+        },
+    )])?;
+    Ok(journal
+        .operation(&receipt.intent.operation_id)
+        .ok_or(ContractError::NotFound)?
+        .clone())
+}
+
+/// The pre-deir9 canonical layout of a receipt with no commit time and no result digest.
+fn v1_layout(receipt: &OperationReceipt) -> Vec<u8> {
+    let mut legacy = CanonicalEncoder::new();
+    receipt.intent.encode_canonical(&mut legacy);
+    legacy.text(receipt.state.as_str());
+    receipt.authority.encode_canonical(&mut legacy);
+    receipt.prepared_at.encode_canonical(&mut legacy);
+    legacy.bool(false);
+    receipt.updated_at.encode_canonical(&mut legacy);
+    legacy.bool(false);
+    match &receipt.error_code {
+        Some(code) => {
+            legacy.bool(true);
+            legacy.text(code);
+        }
+        None => legacy.bool(false),
+    }
+    legacy.finish()
+}
+
+/// fss-deir9 (D1): a v1 receipt keeps exactly its pre-deir9 canonical bytes and digest domain, and
+/// its indeterminate reason is not in them; a v2 receipt opens with its own domain tag, its digest
+/// binds the reason, and every shape round-trips. The public decoder refuses v1 bytes: a v1 receipt
+/// exists only as the product of the journal's versioned replay.
+#[test]
+fn operation_receipt_versions_keep_v1_bytes_and_bind_the_v2_reason() -> Result<(), Box<dyn Error>> {
+    use fss_core::{
+        CanonicalDecode, CanonicalDecoder, EffectRecordVersion, IndeterminateEffectReason,
+    };
+
+    let base = sample_operation_receipt()?;
+    assert_eq!(base.record_version(), EffectRecordVersion::V2);
+    assert_eq!(base.digest_domain(), OperationReceipt::DIGEST_DOMAIN_V2);
+    let v1_base = replayed_v1_receipt(&base)?;
+    assert_eq!(v1_base.record_version(), EffectRecordVersion::V1);
+    assert_eq!(v1_base.digest_domain(), OperationReceipt::SCHEMA);
+    let recorded = IndeterminateEffectReason::Recorded("provider_timeout".to_owned());
+    let shapes = [
+        (None, None),
+        (Some("provider_timeout"), None),
+        (None, Some(IndeterminateEffectReason::Unrecorded)),
+        (Some("provider_timeout"), Some(recorded)),
+    ];
+    let mut v2_digests = BTreeSet::new();
+    let mut v2_tag = CanonicalEncoder::new();
+    v2_tag.u64(0);
+    v2_tag.text(OperationReceipt::DIGEST_DOMAIN_V2);
+    let v2_tag = v2_tag.finish();
+    for (error_code, reason) in shapes {
+        let mut receipt = base.clone();
+        receipt.error_code = error_code.map(str::to_owned);
+        receipt.indeterminate_reason = reason.clone();
+        let mut encoder = CanonicalEncoder::new();
+        receipt.encode_canonical(&mut encoder);
+        let bytes = encoder.finish();
+        assert!(
+            bytes.starts_with(&v2_tag),
+            "v2 opens with its tag: {error_code:?}"
+        );
+        let mut decoder = CanonicalDecoder::new(&bytes);
+        let decoded = OperationReceipt::decode_canonical(&mut decoder)?;
+        decoder.ensure_finished()?;
+        assert_eq!(decoded, receipt, "v2 round trip of {error_code:?}");
+        assert_eq!(
+            receipt.receipt_digest(),
+            receipt_domain_digest(OperationReceipt::DIGEST_DOMAIN_V2, &bytes)
+        );
+        assert!(
+            v2_digests.insert(receipt.receipt_digest()),
+            "the v2 digest binds the reason: {error_code:?}"
+        );
+
+        // v1: exactly the layout before the reason existed; the reason is not in its bytes.
+        let mut v1 = v1_base.clone();
+        v1.error_code = error_code.map(str::to_owned);
+        let mut without_reason = CanonicalEncoder::new();
+        v1.encode_canonical(&mut without_reason);
+        let without_reason = without_reason.finish();
+        v1.indeterminate_reason = reason;
+        let mut with_reason = CanonicalEncoder::new();
+        v1.encode_canonical(&mut with_reason);
+        let legacy = with_reason.finish();
+        assert_eq!(legacy, v1_layout(&v1), "v1 bytes of {error_code:?}");
+        assert_eq!(
+            legacy, without_reason,
+            "a v1 receipt's reason is not digest-bound"
+        );
+        assert_eq!(
+            v1.receipt_digest(),
+            receipt_domain_digest(OperationReceipt::SCHEMA, &legacy)
+        );
+        let refused = OperationReceipt::decode_canonical(&mut CanonicalDecoder::new(&legacy));
+        assert!(
+            matches!(refused, Err(ContractError::LegacyReceiptRequiresJournal)),
+            "{error_code:?}: {refused:?}"
+        );
+    }
+    assert_eq!(v2_digests.len(), 4);
+
+    // An unknown v2 reason tag is refused, never read as some reason.
+    let mut encoder = CanonicalEncoder::new();
+    base.encode_canonical(&mut encoder);
+    let mut bytes = encoder.finish();
+    let last = bytes.len().checked_sub(1).ok_or("empty receipt bytes")?;
+    assert_eq!(bytes.get(last), Some(&0));
+    if let Some(tag) = bytes.get_mut(last) {
+        *tag = 3;
+    }
+    let refused = OperationReceipt::decode_canonical(&mut CanonicalDecoder::new(&bytes));
+    assert!(
+        matches!(refused, Err(ContractError::InvalidIdentifier)),
+        "{refused:?}"
+    );
+
+    // An operation id spelled like the v2 tag is a valid id; its v1 bytes are still v1, refused.
+    let mut lookalike = base.clone();
+    lookalike.intent.operation_id = OperationId::parse(OperationReceipt::DIGEST_DOMAIN_V2)?;
+    let refused =
+        OperationReceipt::decode_canonical(&mut CanonicalDecoder::new(&v1_layout(&lookalike)));
+    assert!(
+        matches!(refused, Err(ContractError::LegacyReceiptRequiresJournal)),
+        "{refused:?}"
+    );
+    Ok(())
+}
+
+/// fss-deir9 round 4: stripping the 40-byte v2 prefix and the trailing reason byte off a current
+/// receipt yields exactly v1 bytes of the same fields, and the public decoder refuses them, so a
+/// current receipt cannot be relabelled as legacy (and so carry the legacy unrecorded marker).
+#[test]
+fn stripped_v2_receipt_cannot_be_decoded_as_legacy() -> Result<(), Box<dyn Error>> {
+    use fss_core::{CanonicalDecode, CanonicalDecoder, IndeterminateEffectReason};
+
+    let base = sample_operation_receipt()?;
+    for (error_code, reason) in [
+        (None, None),
+        (None, Some(IndeterminateEffectReason::Unrecorded)),
+        (Some("provider_timeout"), None),
+    ] {
+        let mut receipt = base.clone();
+        receipt.error_code = error_code.map(str::to_owned);
+        receipt.indeterminate_reason = reason;
+        let mut encoder = CanonicalEncoder::new();
+        receipt.encode_canonical(&mut encoder);
+        let bytes = encoder.finish();
+        let end = bytes.len().checked_sub(1).ok_or("empty receipt bytes")?;
+        let stripped = bytes.get(40..end).ok_or("short receipt bytes")?;
+        assert_eq!(stripped, v1_layout(&receipt).as_slice(), "{error_code:?}");
+        let refused = OperationReceipt::decode_canonical(&mut CanonicalDecoder::new(stripped));
+        assert!(
+            matches!(refused, Err(ContractError::LegacyReceiptRequiresJournal)),
+            "{error_code:?}: {refused:?}"
+        );
+    }
+    Ok(())
+}
+
+/// fss-deir9: every target state has an explicit transition payload rule, and `validate_transition`
+/// and `transition` agree on it. The exhaustive matches below stop compiling when a state is added,
+/// so a new state must be given its predecessor path and payload rule here too.
+#[test]
+fn every_effect_state_has_an_explicit_transition_payload_rule() -> Result<(), Box<dyn Error>> {
+    let digest = ContentDigest::sha256(b"payload-rule");
+    let every_state = [
+        EffectState::Prepared,
+        EffectState::Committed,
+        EffectState::AdapterAccepted,
+        EffectState::Observed,
+        EffectState::Verified,
+        EffectState::Cancelled,
+        EffectState::Failed,
+        EffectState::Indeterminate,
+    ];
+    for next in every_state {
+        // Legal, payload-correct steps from `prepared` to a state that `next` may follow.
+        let path: &[(EffectState, Option<ContentDigest>, Option<&str>)] = match next {
+            EffectState::Prepared | EffectState::Committed | EffectState::Cancelled => &[],
+            EffectState::AdapterAccepted | EffectState::Failed | EffectState::Indeterminate => {
+                &[(EffectState::Committed, None, None)]
+            }
+            EffectState::Observed => &[
+                (EffectState::Committed, None, None),
+                (EffectState::AdapterAccepted, None, None),
+            ],
+            EffectState::Verified => &[
+                (EffectState::Committed, None, None),
+                (EffectState::AdapterAccepted, None, None),
+                (EffectState::Observed, Some(digest), None),
+            ],
+        };
+        // The exact verdict on each (result, error) payload for a transition into `next`: the
+        // acceptance, or the typed refusal the journal names.
+        let expected_verdict = |result: bool, error: Option<&str>| -> Result<(), ContractError> {
+            let names_a_reason = error.is_some_and(|reason| !reason.is_empty());
+            let accepted_unless = |refused: bool, refusal: ContractError| {
+                if refused { Err(refusal) } else { Ok(()) }
+            };
+            match next {
+                EffectState::Prepared => Err(ContractError::InvalidEffectTransition),
+                EffectState::Committed | EffectState::AdapterAccepted => accepted_unless(
+                    result || error.is_some(),
+                    ContractError::InvalidEffectTransition,
+                ),
+                EffectState::Observed | EffectState::Verified => {
+                    if result {
+                        accepted_unless(error.is_some(), ContractError::InvalidEffectTransition)
+                    } else {
+                        Err(ContractError::EvidenceRequired)
+                    }
+                }
+                EffectState::Cancelled => accepted_unless(
+                    !result || error.is_some_and(str::is_empty),
+                    ContractError::EvidenceRequired,
+                ),
+                EffectState::Failed => {
+                    accepted_unless(!result || !names_a_reason, ContractError::EvidenceRequired)
+                }
+                EffectState::Indeterminate => {
+                    accepted_unless(!names_a_reason, ContractError::EvidenceRequired)
+                }
+            }
+        };
+        for result in [false, true] {
+            for error in [None, Some(""), Some("payload_rule")] {
+                let intent = sample_intent()?;
+                let operation_id = intent.operation_id.clone();
+                let mut journal = EffectJournal::new();
+                let _ = journal.prepare(
+                    intent,
+                    ObligationId::parse("obligation:payload-rule")?,
+                    "delivery_proved",
+                    TimestampNs(100),
+                )?;
+                let mut now = 100;
+                for &(state, step_digest, step_error) in path {
+                    now += 1;
+                    let _ = journal.transition(
+                        &operation_id,
+                        state,
+                        TimestampNs(now),
+                        step_digest,
+                        step_error.map(str::to_owned),
+                    )?;
+                }
+                now += 1;
+                let result_digest = result.then_some(digest);
+                let expected = expected_verdict(result, error);
+                let validated = journal
+                    .validate_transition(
+                        &operation_id,
+                        next,
+                        TimestampNs(now),
+                        result_digest,
+                        error,
+                    )
+                    .map(|_| ());
+                assert_eq!(
+                    validated,
+                    expected,
+                    "validate_transition into {} with result={result} error={error:?}",
+                    next.as_str()
+                );
+                let applied = journal
+                    .transition(
+                        &operation_id,
+                        next,
+                        TimestampNs(now),
+                        result_digest,
+                        error.map(str::to_owned),
+                    )
+                    .map(|_| ());
+                assert_eq!(
+                    applied,
+                    expected,
+                    "transition into {} with result={result} error={error:?}",
+                    next.as_str()
+                );
+            }
+        }
+    }
     Ok(())
 }

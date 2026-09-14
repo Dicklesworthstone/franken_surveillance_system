@@ -2805,6 +2805,10 @@ pub enum ContractError {
     StaleBasisNotOlder,
     /// An `indeterminate` knowledge cell lacks its typed reconciliation basis.
     ReconciliationBasisRequired,
+    /// Legacy (v1) operation receipt bytes were offered to the public canonical decoder. A v1
+    /// receipt exists only as the product of the effect journal's versioned durable replay
+    /// (fss-deir9).
+    LegacyReceiptRequiresJournal,
     /// A reconciliation basis dropped the occurred or the not-occurred branch.
     ReconciliationBranchesIncomplete,
     /// A derived abstraction layer or cognition type illegally claimed authority or effect ownership.
@@ -2991,6 +2995,7 @@ impl ContractError {
             Self::StaleBasisRequired => "stale_basis_required",
             Self::StaleBasisNotOlder => "stale_basis_not_older",
             Self::ReconciliationBasisRequired => "reconciliation_basis_required",
+            Self::LegacyReceiptRequiresJournal => "legacy_receipt_requires_journal",
             Self::ReconciliationBranchesIncomplete => "reconciliation_branches_incomplete",
             Self::DerivedLayerAuthorityForbidden => "derived_layer_authority_forbidden",
             Self::DerivedBeliefMissingAnchor => "derived_belief_missing_anchor",

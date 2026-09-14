@@ -10,8 +10,9 @@ use std::path::Path;
 
 use fss_core::{
     BatchId, CanonicalDecode, CanonicalEncode, ContentDigest, ContractError, EffectIntent,
-    EffectJournal, EffectJournalTransition, EffectState, LedgerAnchor, ObjectId, Obligation,
-    ObligationId, ObligationState, OperationId, OperationReceipt, Plane, TimestampNs,
+    EffectJournal, EffectJournalTransition, EffectRecordVersion, EffectState, LedgerAnchor,
+    ObjectId, Obligation, ObligationId, ObligationState, OperationId, OperationReceipt, Plane,
+    TimestampNs,
 };
 use fss_ledger::{
     DurableLedgerLimits, DurableReferenceLedger, ExternalMutationKind, HostJournalReadIo,
@@ -24,8 +25,20 @@ use crate::alert::{ReferenceAlertPlan, ReferenceAlertProvider, ReferenceProvider
 use crate::error::ReferenceError;
 use crate::outcome::{ALERT_OUTCOME_FAMILY, ReferenceAlertOutcomeReceipt};
 
-/// Dedicated journal record kind for canonical effect journal transitions.
+/// Journal record kind of an effect transition written before fss-deir9
+/// ([`EffectRecordVersion::V1`]).
+///
+/// Replay still reads it, under the legacy rules the record was written under, and the operation
+/// it prepared keeps the v1 receipt encoding; the journal never writes it again (fss-deir9).
 pub const EFFECT_TRANSITION_RECORD_KIND: u16 = 2;
+
+/// Journal record kind of an effect transition written by fss-deir9 or later
+/// ([`EffectRecordVersion::V2`]).
+///
+/// The payload is the same `fss.effect_transition.v1` encoding; the kind records which transition
+/// rules and receipt encoding the record was written under, so replay verifies every witness
+/// under its own version without migrating or rewriting any stored byte.
+pub const EFFECT_TRANSITION_V2_RECORD_KIND: u16 = 3;
 
 /// Errors raised by the durable effect journal.
 #[derive(Debug)]
@@ -699,7 +712,8 @@ impl DurableEffectJournal {
             now,
         };
         let bytes = transition.try_canonical_bytes()?;
-        self.journal.append(EFFECT_TRANSITION_RECORD_KIND, &bytes)?;
+        self.journal
+            .append(EFFECT_TRANSITION_V2_RECORD_KIND, &bytes)?;
         let receipt = self
             .memory
             .prepare(intent, obligation_id, terminal_predicate_str, now)?;
@@ -731,7 +745,8 @@ impl DurableEffectJournal {
             error_code: error_code.clone(),
         };
         let bytes = transition.try_canonical_bytes()?;
-        self.journal.append(EFFECT_TRANSITION_RECORD_KIND, &bytes)?;
+        self.journal
+            .append(EFFECT_TRANSITION_V2_RECORD_KIND, &bytes)?;
         let receipt = self
             .memory
             .transition(operation_id, next, now, result_digest, error_code)?;
@@ -778,7 +793,8 @@ impl DurableEffectJournal {
             now,
         };
         let bytes = transition.try_canonical_bytes()?;
-        self.journal.append(EFFECT_TRANSITION_RECORD_KIND, &bytes)?;
+        self.journal
+            .append(EFFECT_TRANSITION_V2_RECORD_KIND, &bytes)?;
         let receipt = self
             .memory
             .reconcile_verified(operation_id, proof_digest, now)?;
@@ -808,7 +824,8 @@ impl DurableEffectJournal {
             reason: reason_str.clone(),
         };
         let bytes = transition.try_canonical_bytes()?;
-        self.journal.append(EFFECT_TRANSITION_RECORD_KIND, &bytes)?;
+        self.journal
+            .append(EFFECT_TRANSITION_V2_RECORD_KIND, &bytes)?;
         let receipt = self
             .memory
             .reconcile_failed(operation_id, proof_digest, now, reason_str)?;
@@ -1142,16 +1159,32 @@ fn replay_report(report: &RecoveryReport) -> Result<EffectJournal, DurableEffect
     replay_records(report.records())
 }
 
-/// Replays `records`, in commit order, into a fresh effect journal.
+/// Replays `records`, in commit order, into a fresh effect journal, each under the version its
+/// record kind names (fss-deir9).
+///
+/// A legacy (v1) record after a current (v2) one is refused as an unexpected record kind: the
+/// legacy rules are reachable only for history written before any current record.
 fn replay_records(records: &[JournalRecord]) -> Result<EffectJournal, DurableEffectError> {
     let mut transitions = Vec::with_capacity(records.len());
+    let mut newest = EffectRecordVersion::V1;
     for record in records {
-        if record.kind() != EFFECT_TRANSITION_RECORD_KIND {
+        let version = match record.kind() {
+            EFFECT_TRANSITION_RECORD_KIND => EffectRecordVersion::V1,
+            EFFECT_TRANSITION_V2_RECORD_KIND => EffectRecordVersion::V2,
+            _ => {
+                return Err(DurableEffectError::UnexpectedRecordKind {
+                    sequence: record.sequence(),
+                    kind: record.kind(),
+                });
+            }
+        };
+        if version < newest {
             return Err(DurableEffectError::UnexpectedRecordKind {
                 sequence: record.sequence(),
                 kind: record.kind(),
             });
         }
+        newest = version;
         let transition =
             EffectJournalTransition::from_canonical_bytes(record.payload()).map_err(|error| {
                 DurableEffectError::Decode {
@@ -1159,8 +1192,8 @@ fn replay_records(records: &[JournalRecord]) -> Result<EffectJournal, DurableEff
                     error,
                 }
             })?;
-        transitions.push(transition);
+        transitions.push((version, transition));
     }
-    let journal = EffectJournal::replay(transitions)?;
+    let journal = EffectJournal::replay_versioned(transitions)?;
     Ok(journal)
 }

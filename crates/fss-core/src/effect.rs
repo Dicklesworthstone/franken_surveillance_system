@@ -1581,6 +1581,43 @@ impl CanonicalDecode for EffectAuthority {
     }
 }
 
+/// Why an operation entered `indeterminate`, kept on its receipt through reconciliation.
+///
+/// Reconciliation keeps the indeterminate reason in [`OperationReceipt::error_code`] as
+/// provenance, so a later observed, verified, or failed receipt may still carry it. This marker is
+/// what tells that inherited reason apart from an error code attached without any indeterminate
+/// episode.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum IndeterminateEffectReason {
+    /// The indeterminate transition recorded this non-empty reason.
+    Recorded(String),
+    /// A legacy journal entry, written before a reason was required, recorded the indeterminate
+    /// transition without one. Replay keeps it explicitly unrecorded instead of inventing a reason.
+    ///
+    /// Only the replay of a [`EffectRecordVersion::V1`] record produces it, so only a v1 receipt
+    /// may carry it; the situation guard refuses it on a v2 receipt.
+    Unrecorded,
+}
+
+/// Version of a persisted effect journal record, and of the receipt encoding an operation it
+/// prepares uses (fss-deir9).
+///
+/// The durable effect journal names the version of every record it writes. A record written
+/// before fss-deir9 is [`Self::V1`]: replay applies it under the transition rules it was written
+/// under, and the operation it prepared keeps the pre-deir9 receipt encoding (digest domain
+/// `fss.operation_receipt.v1`) for life, so every witness published for that operation, before or
+/// after the upgrade, verifies against the exact bytes it was computed from. Every record written
+/// now is [`Self::V2`]: replay applies the current rules, and an operation it prepares uses the v2
+/// receipt encoding (digest domain `fss.operation_receipt.v2`), which also binds the indeterminate
+/// reason. Stored bytes are never migrated or rewritten.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum EffectRecordVersion {
+    /// Written before fss-deir9: legacy transition rules and pre-deir9 receipt bytes.
+    V1,
+    /// Written by fss-deir9 or later: current transition rules and v2 receipt bytes.
+    V2,
+}
+
 /// Durable operation receipt.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OperationReceipt {
@@ -1600,16 +1637,49 @@ pub struct OperationReceipt {
     pub result_digest: Option<ContentDigest>,
     /// Stable error code.
     pub error_code: Option<String>,
+    /// Why the operation entered `indeterminate`, when it ever did; kept through reconciliation.
+    ///
+    /// Like `updated_at`, it is not part of the JSON projection. The v2 receipt digest binds it;
+    /// the v1 digest never did (fss-deir9).
+    pub indeterminate_reason: Option<IndeterminateEffectReason>,
+    /// Receipt encoding version, fixed by the journal record that prepared the operation.
+    ///
+    /// It is private, and a v1 receipt exists only as the product of the effect journal's
+    /// versioned replay of a v1 durable record ([`EffectJournal::replay_versioned`]): the public
+    /// canonical decoding refuses v1 bytes ([`ContractError::LegacyReceiptRequiresJournal`]), so
+    /// a current receipt cannot be relabelled as legacy by re-encoding it. Callers that accept a
+    /// receipt from elsewhere must still treat a v1 receipt as untrusted (the situation guard admits
+    /// one only from the durable journal).
+    version: EffectRecordVersion,
 }
 
 impl OperationReceipt {
     /// Schema identity.
     pub const SCHEMA: &'static str = "fss.operation_receipt.v1";
 
-    /// Returns the receipt digest.
+    /// Digest domain and leading tag of the v2 receipt encoding (`SCHEMA-DOMAIN-OPERATION-RECEIPT-002`).
+    pub const DIGEST_DOMAIN_V2: &'static str = "fss.operation_receipt.v2";
+
+    /// Returns the receipt digest, under this receipt's own encoding version and digest domain.
     #[must_use]
     pub fn receipt_digest(&self) -> ContentDigest {
-        self.canonical_digest(Self::SCHEMA)
+        self.canonical_digest(self.digest_domain())
+    }
+
+    /// Encoding version of this receipt, fixed by the record that prepared its operation.
+    #[must_use]
+    pub const fn record_version(&self) -> EffectRecordVersion {
+        self.version
+    }
+
+    /// Digest domain of this receipt: [`Self::SCHEMA`] for v1 (the pre-deir9 domain, unchanged),
+    /// [`Self::DIGEST_DOMAIN_V2`] for v2.
+    #[must_use]
+    pub const fn digest_domain(&self) -> &'static str {
+        match self.version {
+            EffectRecordVersion::V1 => Self::SCHEMA,
+            EffectRecordVersion::V2 => Self::DIGEST_DOMAIN_V2,
+        }
     }
 
     /// Emits a deterministic canonical JSON string projection per schemas/operation_receipt.v1.json.
@@ -1818,12 +1888,22 @@ impl OperationReceipt {
             updated_at: prepared_at,
             result_digest,
             error_code,
+            indeterminate_reason: None,
+            version: EffectRecordVersion::V2,
         })
     }
 }
 
 impl CanonicalEncode for OperationReceipt {
     fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        // v1 is exactly the pre-deir9 layout, so a v1 receipt keeps its bytes and digest; it never
+        // carried the indeterminate reason. v2 opens with a zero length word, which no v1 encoding
+        // can open with (v1 opens with the non-empty operation id), then its domain tag, and
+        // appends the reason (fss-deir9).
+        if self.version == EffectRecordVersion::V2 {
+            encoder.u64(0);
+            encoder.text(Self::DIGEST_DOMAIN_V2);
+        }
         self.intent.encode_canonical(encoder);
         encoder.text(self.state.as_str());
         self.authority.encode_canonical(encoder);
@@ -1850,11 +1930,36 @@ impl CanonicalEncode for OperationReceipt {
             }
             None => encoder.bool(false),
         }
+        if self.version == EffectRecordVersion::V2 {
+            match &self.indeterminate_reason {
+                None => encoder.u8(0),
+                Some(IndeterminateEffectReason::Unrecorded) => encoder.u8(1),
+                Some(IndeterminateEffectReason::Recorded(reason)) => {
+                    encoder.u8(2);
+                    encoder.text(reason);
+                }
+            }
+        }
     }
 }
 
 impl CanonicalDecode for OperationReceipt {
     fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        // A v2 receipt opens with a zero length word and its domain tag. A v1 receipt opens with
+        // the length of its operation id, which is never zero (an empty id is invalid); its bytes
+        // are refused here, because a v1 receipt exists only as the product of the journal's
+        // versioned replay, never of decoding (fss-deir9). Stripping the v2 prefix and reason off
+        // a current receipt therefore cannot relabel it as legacy.
+        let mut probe = decoder.clone();
+        let version = if probe.u64()? == 0 {
+            if probe.text()? != Self::DIGEST_DOMAIN_V2 {
+                return Err(ContractError::InvalidIdentifier);
+            }
+            *decoder = probe;
+            EffectRecordVersion::V2
+        } else {
+            return Err(ContractError::LegacyReceiptRequiresJournal);
+        };
         let intent = EffectIntent::decode_canonical(decoder)?;
         let state = EffectState::decode_canonical(decoder)?;
         let authority = EffectAuthority::decode_canonical(decoder)?;
@@ -1875,6 +1980,17 @@ impl CanonicalDecode for OperationReceipt {
         } else {
             None
         };
+        let indeterminate_reason = match version {
+            EffectRecordVersion::V1 => None,
+            EffectRecordVersion::V2 => match decoder.u8()? {
+                0 => None,
+                1 => Some(IndeterminateEffectReason::Unrecorded),
+                2 => Some(IndeterminateEffectReason::Recorded(
+                    decoder.text()?.to_string(),
+                )),
+                _ => return Err(ContractError::InvalidIdentifier),
+            },
+        };
         Ok(Self {
             intent,
             state,
@@ -1884,6 +2000,8 @@ impl CanonicalDecode for OperationReceipt {
             updated_at,
             result_digest,
             error_code,
+            indeterminate_reason,
+            version,
         })
     }
 }
@@ -2195,6 +2313,28 @@ impl EffectJournal {
         authority: EffectAuthority,
         now: TimestampNs,
     ) -> Result<&OperationReceipt, ContractError> {
+        self.prepare_versioned(
+            intent,
+            obligation_id,
+            terminal_predicate,
+            authority,
+            now,
+            EffectRecordVersion::V2,
+        )
+    }
+
+    /// Prepares an effect whose receipts use encoding `version`: [`EffectRecordVersion::V2`] for
+    /// every new preparation, [`EffectRecordVersion::V1`] only while replaying a record written
+    /// before fss-deir9.
+    fn prepare_versioned(
+        &mut self,
+        intent: EffectIntent,
+        obligation_id: ObligationId,
+        terminal_predicate: impl Into<String>,
+        authority: EffectAuthority,
+        now: TimestampNs,
+        version: EffectRecordVersion,
+    ) -> Result<&OperationReceipt, ContractError> {
         if let Some(existing_id) = self.idempotency.get(&intent.idempotency_key) {
             let existing = self
                 .operations
@@ -2224,6 +2364,8 @@ impl EffectJournal {
                 updated_at: now,
                 result_digest: None,
                 error_code: None,
+                indeterminate_reason: None,
+                version,
             },
         );
         self.idempotency
@@ -2347,47 +2489,40 @@ impl EffectJournal {
         result_digest: Option<ContentDigest>,
         error_code: Option<String>,
     ) -> Result<&OperationReceipt, ContractError> {
+        self.transition_under(
+            operation_id,
+            next,
+            now,
+            result_digest,
+            error_code,
+            TransitionRules::Current,
+        )
+    }
+
+    /// Applies one transition under `rules`: the current rules for every new transition, the
+    /// legacy rules only while replaying persisted history.
+    fn transition_under(
+        &mut self,
+        operation_id: &OperationId,
+        next: EffectState,
+        now: TimestampNs,
+        result_digest: Option<ContentDigest>,
+        error_code: Option<String>,
+        rules: TransitionRules,
+    ) -> Result<&OperationReceipt, ContractError> {
         {
             let receipt = self
                 .operations
                 .get_mut(operation_id)
                 .ok_or(ContractError::NotFound)?;
-            if now <= receipt.updated_at {
-                return Err(ContractError::InvertedTimeInterval);
-            }
-            if !valid_transition(receipt.state, next) {
-                return Err(if receipt.state == EffectState::Indeterminate {
-                    ContractError::ReconciliationRequired
-                } else {
-                    ContractError::InvalidEffectTransition
-                });
-            }
-            if (next == EffectState::Observed
-                || next == EffectState::Verified
-                || next == EffectState::Cancelled)
-                && result_digest.is_none()
-            {
-                return Err(ContractError::EvidenceRequired);
-            }
-            if next == EffectState::Verified {
-                let obs_digest = receipt
-                    .result_digest
-                    .ok_or(ContractError::EvidenceRequired)?;
-                if result_digest != Some(obs_digest) {
-                    return Err(ContractError::InvalidDigest);
-                }
-            }
-            if next == EffectState::Failed
-                && (result_digest.is_none() || error_code.as_deref().is_none_or(str::is_empty))
-            {
-                return Err(ContractError::EvidenceRequired);
-            }
-            // An indeterminate outcome must name why it is unproved, as `mark_indeterminate`
-            // requires, so no reason-less indeterminate receipt exists for projection to refuse.
-            if next == EffectState::Indeterminate && error_code.as_deref().is_none_or(str::is_empty)
-            {
-                return Err(ContractError::EvidenceRequired);
-            }
+            check_transition(
+                receipt,
+                next,
+                now,
+                result_digest,
+                error_code.as_deref(),
+                rules,
+            )?;
             if next == EffectState::Committed && receipt.committed_at.is_none() {
                 receipt.committed_at = Some(now);
             }
@@ -2395,6 +2530,16 @@ impl EffectJournal {
             receipt.updated_at = now;
             if result_digest.is_some() {
                 receipt.result_digest = result_digest;
+            }
+            if next == EffectState::Indeterminate {
+                // The current rules guarantee a non-empty reason; only legacy replay reaches the
+                // unrecorded arm, which keeps the missing reason explicit (fss-deir9).
+                receipt.indeterminate_reason = Some(
+                    match error_code.as_deref().filter(|reason| !reason.is_empty()) {
+                        Some(reason) => IndeterminateEffectReason::Recorded(reason.to_owned()),
+                        None => IndeterminateEffectReason::Unrecorded,
+                    },
+                );
             }
             if error_code.is_some() {
                 receipt.error_code = error_code;
@@ -2594,40 +2739,16 @@ impl EffectJournal {
             .operations
             .get(operation_id)
             .ok_or(ContractError::NotFound)?;
-        if now <= receipt.updated_at {
-            return Err(ContractError::InvertedTimeInterval);
-        }
-        if !receipt.state.can_transition_to(next) {
-            return Err(if receipt.state == EffectState::Indeterminate {
-                ContractError::ReconciliationRequired
-            } else {
-                ContractError::InvalidEffectTransition
-            });
-        }
-        if (next == EffectState::Observed
-            || next == EffectState::Verified
-            || next == EffectState::Cancelled)
-            && result_digest.is_none()
-        {
-            return Err(ContractError::EvidenceRequired);
-        }
-        if next == EffectState::Verified {
-            let obs_digest = receipt
-                .result_digest
-                .ok_or(ContractError::EvidenceRequired)?;
-            if result_digest != Some(obs_digest) {
-                return Err(ContractError::InvalidDigest);
-            }
-        }
-        if next == EffectState::Failed
-            && (result_digest.is_none() || error_code.is_none_or(str::is_empty))
-        {
-            return Err(ContractError::EvidenceRequired);
-        }
-        // Mirrors `transition`: an indeterminate outcome must name why it is unproved.
-        if next == EffectState::Indeterminate && error_code.is_none_or(str::is_empty) {
-            return Err(ContractError::EvidenceRequired);
-        }
+        // The same checker as `transition`, so the durable path never writes a record the journal
+        // would then refuse (fss-deir9).
+        check_transition(
+            receipt,
+            next,
+            now,
+            result_digest,
+            error_code,
+            TransitionRules::Current,
+        )?;
         Ok(receipt)
     }
 
@@ -2715,15 +2836,89 @@ impl EffectJournal {
         self.operations.values()
     }
 
-    /// Replays a sequence of transitions from a durable log, reconstructing the exact in-memory state.
+    /// Replays transitions, reconstructing the exact in-memory state, under the current rules.
+    ///
+    /// Every transition is checked exactly as a new one is, and every operation uses the v2
+    /// receipt encoding. History written before fss-deir9 is replayed only through
+    /// [`Self::replay_versioned`], whose records name their version; this entry point never
+    /// applies the legacy rules (fss-deir9).
     pub fn replay(
         transitions: impl IntoIterator<Item = EffectJournalTransition>,
     ) -> Result<Self, ContractError> {
+        Self::replay_versioned(
+            transitions
+                .into_iter()
+                .map(|transition| (EffectRecordVersion::V2, transition)),
+        )
+    }
+
+    /// Replays durable records, each under the version its journal record names (fss-deir9).
+    ///
+    /// A [`EffectRecordVersion::V1`] record, written before fss-deir9, is applied under the legacy
+    /// transition rules it was written under: a reason-less `indeterminate` still loads, kept as
+    /// recorded with the missing reason made explicitly [`IndeterminateEffectReason::Unrecorded`],
+    /// and an operation it prepares keeps the v1 receipt encoding. A [`EffectRecordVersion::V2`]
+    /// record is applied under the current rules. Versions never go backwards: a v1 record after
+    /// any v2 record is refused as [`ContractError::InvalidEffectTransition`], so the legacy rules
+    /// cannot be reached by appending to a current journal. Records are never rewritten.
+    pub fn replay_versioned(
+        records: impl IntoIterator<Item = (EffectRecordVersion, EffectJournalTransition)>,
+    ) -> Result<Self, ContractError> {
         let mut journal = Self::new();
-        for transition in transitions {
-            let _receipt = journal.apply_transition(transition)?;
+        let mut newest = EffectRecordVersion::V1;
+        for (version, transition) in records {
+            if version < newest {
+                return Err(ContractError::InvalidEffectTransition);
+            }
+            newest = version;
+            let _receipt = journal.apply_versioned(version, transition)?;
         }
         Ok(journal)
+    }
+
+    /// Applies one persisted record under the rules of its `version`.
+    fn apply_versioned(
+        &mut self,
+        version: EffectRecordVersion,
+        transition: EffectJournalTransition,
+    ) -> Result<&OperationReceipt, ContractError> {
+        let rules = match version {
+            EffectRecordVersion::V1 => TransitionRules::Legacy,
+            EffectRecordVersion::V2 => TransitionRules::Current,
+        };
+        match transition {
+            EffectJournalTransition::Prepare {
+                intent,
+                obligation_id,
+                terminal_predicate,
+                now,
+            } => self.prepare_versioned(
+                intent,
+                obligation_id,
+                terminal_predicate,
+                EffectAuthority::system_default(),
+                now,
+                version,
+            ),
+            EffectJournalTransition::Transition {
+                operation_id,
+                next,
+                now,
+                result_digest,
+                error_code,
+            } => self.transition_under(&operation_id, next, now, result_digest, error_code, rules),
+            EffectJournalTransition::ReconcileVerified {
+                operation_id,
+                proof_digest,
+                now,
+            } => self.reconcile_verified(&operation_id, proof_digest, now),
+            EffectJournalTransition::ReconcileFailed {
+                operation_id,
+                proof_digest,
+                now,
+                reason,
+            } => self.reconcile_failed(&operation_id, proof_digest, now, reason),
+        }
     }
 
     /// Applies one transition to the journal, returning receipt or error on invariant failure.
@@ -3186,6 +3381,103 @@ impl<'a> JsonParser<'a> {
         }
         self.depth -= 1;
         Ok(JsonValue::Object(fields))
+    }
+}
+
+/// Which transition rules apply: the current rules for every new transition, the legacy rules
+/// only while replaying persisted history (fss-deir9).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TransitionRules {
+    Current,
+    Legacy,
+}
+
+/// Checks one transition of `receipt` to `next`.
+///
+/// [`EffectJournal::transition`] and [`EffectJournal::validate_transition`] both use it, so they
+/// cannot disagree. The legacy rules are exactly the rules history was written under; the current
+/// rules add the payload each state may carry, so every receipt the journal produces is one the
+/// situation guard accepts.
+fn check_transition(
+    receipt: &OperationReceipt,
+    next: EffectState,
+    now: TimestampNs,
+    result_digest: Option<ContentDigest>,
+    error_code: Option<&str>,
+    rules: TransitionRules,
+) -> Result<(), ContractError> {
+    if now <= receipt.updated_at {
+        return Err(ContractError::InvertedTimeInterval);
+    }
+    if !valid_transition(receipt.state, next) {
+        return Err(if receipt.state == EffectState::Indeterminate {
+            ContractError::ReconciliationRequired
+        } else {
+            ContractError::InvalidEffectTransition
+        });
+    }
+    if matches!(
+        next,
+        EffectState::Observed | EffectState::Verified | EffectState::Cancelled
+    ) && result_digest.is_none()
+    {
+        return Err(ContractError::EvidenceRequired);
+    }
+    if next == EffectState::Verified {
+        let obs_digest = receipt
+            .result_digest
+            .ok_or(ContractError::EvidenceRequired)?;
+        if result_digest != Some(obs_digest) {
+            return Err(ContractError::InvalidDigest);
+        }
+    }
+    let names_a_reason = error_code.is_some_and(|reason| !reason.is_empty());
+    if next == EffectState::Failed && (result_digest.is_none() || !names_a_reason) {
+        return Err(ContractError::EvidenceRequired);
+    }
+    if rules == TransitionRules::Legacy {
+        return Ok(());
+    }
+    // Exhaustive over `EffectState`, so a new state must choose its payload rule here instead of
+    // passing through a default (fss-deir9).
+    match next {
+        // Nothing transitions into `prepared`; `valid_transition` already refused it above.
+        EffectState::Prepared => Err(ContractError::InvalidEffectTransition),
+        // Commit and adapter acceptance carry neither a result nor an error.
+        EffectState::Committed | EffectState::AdapterAccepted => {
+            if result_digest.is_some() || error_code.is_some() {
+                Err(ContractError::InvalidEffectTransition)
+            } else {
+                Ok(())
+            }
+        }
+        // An observed or verified receipt may only inherit the reason of an earlier indeterminate
+        // episode; it never gains a new error code.
+        EffectState::Observed | EffectState::Verified => {
+            if error_code.is_some() {
+                Err(ContractError::InvalidEffectTransition)
+            } else {
+                Ok(())
+            }
+        }
+        // A cancellation reason is optional, but never empty.
+        EffectState::Cancelled => {
+            if error_code.is_some_and(str::is_empty) {
+                Err(ContractError::EvidenceRequired)
+            } else {
+                Ok(())
+            }
+        }
+        // A failure's proof and non-empty reason are checked above, under every rule set.
+        EffectState::Failed => Ok(()),
+        // An indeterminate outcome must name why it is unproved, as `mark_indeterminate` requires.
+        EffectState::Indeterminate => {
+            if names_a_reason {
+                Ok(())
+            } else {
+                Err(ContractError::EvidenceRequired)
+            }
+        }
     }
 }
 

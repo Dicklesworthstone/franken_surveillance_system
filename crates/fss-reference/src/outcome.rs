@@ -195,7 +195,8 @@ pub fn publish_reference_alert_outcome(
     }
     let mut receipt_encoder = CanonicalEncoder::new();
     receipt_encoder.text("fss.canonical.v1");
-    receipt_encoder.text("fss.operation_receipt.v1");
+    // The receipt object is stored under the receipt's own digest domain, v1 or v2 (fss-deir9).
+    receipt_encoder.text(operation.digest_domain());
     operation.encode_canonical(&mut receipt_encoder);
     let stored_receipt = objects.put_verified(&receipt_encoder.finish())?;
     if stored_receipt != operation.receipt_digest() {

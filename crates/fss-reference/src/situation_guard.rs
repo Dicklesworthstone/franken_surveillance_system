@@ -3,9 +3,9 @@
 use std::collections::BTreeSet;
 
 use fss_core::{
-    ActionAffordance, AffordanceClass, BudgetVector, ContentDigest, ContractError, EffectState,
-    KnowledgeCell, KnowledgeState, KnowledgeStateBasis, OperationReceipt, ProvenanceClass,
-    ReconciliationBasis,
+    ActionAffordance, AffordanceClass, BudgetVector, ContentDigest, ContractError,
+    EffectRecordVersion, EffectState, IndeterminateEffectReason, KnowledgeCell, KnowledgeState,
+    KnowledgeStateBasis, OperationReceipt, ProvenanceClass, ReconciliationBasis,
 };
 use fss_ledger::DurableReferenceLedger;
 
@@ -20,6 +20,11 @@ pub const CAPABILITY_EFFECT_RECONCILE: &str = "capability:effect.reconcile";
 pub const EFFECT_STATUS_AFFORDANCE: &str = "affordance:alert:effect-status";
 /// Stable affordance identity for reconciling an indeterminate effect.
 pub const EFFECT_RECONCILE_AFFORDANCE: &str = "affordance:alert:reconcile";
+
+/// Claim-id prefix of the typed marker that a legacy (v1) operation entered `indeterminate` with
+/// no recorded reason: an `unknown` cell per operation, next to its local-state cell (fss-deir9).
+pub(crate) const INDETERMINATE_REASON_UNRECORDED_CLAIM_PREFIX: &str =
+    "claim:indeterminate-reason-unrecorded:";
 
 /// Compiles a conservative situation without trusting caller-hidden local effect state.
 ///
@@ -66,16 +71,39 @@ pub fn compile_reference_situation(
 ///
 /// Only an exact `Prepared` receipt can preserve the commit affordance. Every later state exposes
 /// status/reconciliation instead, preventing a blind resend after dispatch or acknowledgement loss.
+///
+/// The receipt must be a current (v2) receipt. A legacy (v1) receipt exists only as the product
+/// of the durable journal's versioned replay, so it is admitted only through
+/// [`compile_reference_situation_with_durable_journal`]; handed in here, it is refused as
+/// `situation_operation_receipt_integrity` (fss-deir9).
 pub fn compile_reference_situation_with_operation_receipt(
     request: ReferenceSituationRequest<'_>,
     operation_receipt: &OperationReceipt,
     authority: &DurableReferenceLedger,
 ) -> Result<ReferenceSituation, ReferenceError> {
+    compile_with_operation_receipt(request, operation_receipt, authority, ReceiptSource::Caller)
+}
+
+/// Where the operation receipt handed to the guard came from (fss-deir9).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReceiptSource {
+    /// Supplied by the caller: it must be a current (v2) receipt.
+    Caller,
+    /// Read from the durable effect journal, whose versioned replay alone produces v1 receipts.
+    DurableJournal,
+}
+
+fn compile_with_operation_receipt(
+    request: ReferenceSituationRequest<'_>,
+    operation_receipt: &OperationReceipt,
+    authority: &DurableReferenceLedger,
+    source: ReceiptSource,
+) -> Result<ReferenceSituation, ReferenceError> {
     let plan = request
         .alert_plan
         .cloned()
         .ok_or(ReferenceError::InvalidSpec("situation_effect_basis"))?;
-    validate_operation_receipt(operation_receipt, &plan)?;
+    validate_operation_receipt(operation_receipt, &plan, source)?;
     if request
         .alert_outcome
         .is_some_and(|outcome| operation_receipt != &outcome.outcome.operation_receipt)
@@ -149,7 +177,12 @@ fn compile_against_durable_journal(
         let operation_receipt = durable_journal
             .operation(&plan.intent.operation_id)
             .ok_or(ReferenceError::InvalidSpec("transient_obligation_rejected"))?;
-        compile_reference_situation_with_operation_receipt(request, operation_receipt, authority)
+        compile_with_operation_receipt(
+            request,
+            operation_receipt,
+            authority,
+            ReceiptSource::DurableJournal,
+        )
     } else if let Some(outcome) = request.alert_outcome {
         let obligation = durable_journal
             .acknowledge_obligation(&outcome.outcome.obligation_id)
@@ -160,7 +193,12 @@ fn compile_against_durable_journal(
         let operation_receipt = durable_journal
             .operation(&outcome.outcome.operation_receipt.intent.operation_id)
             .ok_or(ReferenceError::InvalidSpec("transient_obligation_rejected"))?;
-        compile_reference_situation_with_operation_receipt(request, operation_receipt, authority)
+        compile_with_operation_receipt(
+            request,
+            operation_receipt,
+            authority,
+            ReceiptSource::DurableJournal,
+        )
     } else {
         compile_reference_situation(request, authority)
     }
@@ -179,6 +217,7 @@ pub fn seal_reference_handoff(
 fn validate_operation_receipt(
     receipt: &OperationReceipt,
     plan: &ReferenceAlertPlan,
+    source: ReceiptSource,
 ) -> Result<(), ReferenceError> {
     if receipt.intent != plan.intent || receipt.updated_at < receipt.prepared_at {
         return Err(ReferenceError::InvalidSpec(
@@ -192,37 +231,99 @@ fn validate_operation_receipt(
             "situation_operation_receipt_integrity",
         ));
     }
-    let structurally_valid = match receipt.state {
-        EffectState::Prepared => {
-            receipt.committed_at.is_none()
-                && receipt.updated_at == receipt.prepared_at
-                && receipt.result_digest.is_none()
-                && receipt.error_code.is_none()
-        }
-        EffectState::Committed | EffectState::AdapterAccepted => {
-            receipt.committed_at.is_some()
-                && receipt.result_digest.is_none()
-                && receipt.error_code.is_none()
-        }
-        // Reconciliation keeps the indeterminate reason as provenance
-        // (`EffectJournal::reconcile_verified`), so an observed or verified receipt may carry one.
-        EffectState::Observed | EffectState::Verified => {
-            receipt.committed_at.is_some() && receipt.result_digest.is_some()
-        }
-        // The journal cancels only a prepared operation and only with a cancellation proof digest;
-        // a reason is optional (`EffectJournal::transition`).
-        EffectState::Cancelled => receipt.committed_at.is_none() && receipt.result_digest.is_some(),
-        EffectState::Failed => receipt.result_digest.is_some() && receipt.error_code.is_some(),
-        EffectState::Indeterminate => {
-            receipt.committed_at.is_some() && receipt.error_code.is_some()
+    // A legacy (v1) receipt exists only as the product of the durable journal's versioned
+    // replay, so one reaching the guard any other way is refused; a current (v2) receipt never
+    // carries the legacy `unrecorded` marker, which only that replay produces (fss-deir9).
+    let version_admissible = match receipt.record_version() {
+        EffectRecordVersion::V1 => source == ReceiptSource::DurableJournal,
+        EffectRecordVersion::V2 => {
+            receipt.indeterminate_reason != Some(IndeterminateEffectReason::Unrecorded)
         }
     };
+    let structurally_valid = version_admissible
+        && match receipt.state {
+            EffectState::Prepared => {
+                receipt.committed_at.is_none()
+                    && receipt.updated_at == receipt.prepared_at
+                    && receipt.result_digest.is_none()
+                    && receipt.error_code.is_none()
+                    && receipt.indeterminate_reason.is_none()
+            }
+            EffectState::Committed | EffectState::AdapterAccepted => {
+                receipt.committed_at.is_some()
+                    && receipt.result_digest.is_none()
+                    && receipt.error_code.is_none()
+                    && receipt.indeterminate_reason.is_none()
+            }
+            EffectState::Observed | EffectState::Verified => {
+                receipt.committed_at.is_some()
+                    && receipt.result_digest.is_some()
+                    && carries_only_an_inherited_reason(receipt)
+            }
+            // The journal cancels only a prepared operation, strictly later than its preparation,
+            // and only with a cancellation proof digest; a reason is optional but never empty.
+            EffectState::Cancelled => {
+                receipt.committed_at.is_none()
+                    && receipt.updated_at > receipt.prepared_at
+                    && receipt.result_digest.is_some()
+                    && receipt
+                        .error_code
+                        .as_deref()
+                        .is_none_or(|reason| !reason.is_empty())
+                    && receipt.indeterminate_reason.is_none()
+            }
+            // A failure names its own non-empty reason; an earlier indeterminate episode, if any,
+            // keeps its recorded (never empty) or legacy unrecorded reason.
+            EffectState::Failed => {
+                receipt.result_digest.is_some()
+                    && names_a_reason(receipt.error_code.as_deref())
+                    && !matches!(
+                        &receipt.indeterminate_reason,
+                        Some(IndeterminateEffectReason::Recorded(reason)) if reason.is_empty()
+                    )
+            }
+            EffectState::Indeterminate => {
+                receipt.committed_at.is_some() && indeterminate_reason_is_consistent(receipt)
+            }
+        };
     if !structurally_valid {
         return Err(ReferenceError::InvalidSpec(
             "situation_operation_receipt_integrity",
         ));
     }
     Ok(())
+}
+
+/// Returns whether `code` names a non-empty reason, as the effect journal requires.
+fn names_a_reason(code: Option<&str>) -> bool {
+    code.is_some_and(|reason| !reason.is_empty())
+}
+
+/// An observed or verified receipt may carry an error code only as the reason recorded when the
+/// operation entered `indeterminate`, which reconciliation keeps as provenance
+/// (`EffectJournal::reconcile_verified`); the journal never attaches a new one. A legacy (v1)
+/// reason-less episode left no code or an empty one behind its unrecorded marker (fss-deir9).
+fn carries_only_an_inherited_reason(receipt: &OperationReceipt) -> bool {
+    match (&receipt.indeterminate_reason, receipt.error_code.as_deref()) {
+        (None, None) => true,
+        (Some(IndeterminateEffectReason::Recorded(reason)), Some(code)) => {
+            names_a_reason(Some(code)) && reason == code
+        }
+        (Some(IndeterminateEffectReason::Unrecorded), None | Some("")) => true,
+        _ => false,
+    }
+}
+
+/// An indeterminate receipt records the non-empty reason it names, or is a legacy (v1) entry whose
+/// missing (absent or empty) reason replay made explicitly unrecorded (fss-deir9).
+fn indeterminate_reason_is_consistent(receipt: &OperationReceipt) -> bool {
+    match (&receipt.indeterminate_reason, receipt.error_code.as_deref()) {
+        (Some(IndeterminateEffectReason::Recorded(reason)), Some(code)) => {
+            names_a_reason(Some(code)) && reason == code
+        }
+        (Some(IndeterminateEffectReason::Unrecorded), None | Some("")) => true,
+        _ => false,
+    }
 }
 
 fn annotate_operation_receipt(
@@ -268,6 +369,26 @@ fn annotate_operation_receipt(
         &cell,
     )?;
     situation.capsule.frame.knowledge_cells.push(cell);
+    // A legacy (v1) operation that entered `indeterminate` without a reason still projects, in
+    // every state, with the missing reason as a typed `unknown` marker, never silently dropped
+    // and never flattened into the terminal cell (fss-deir9).
+    if operation_receipt.indeterminate_reason == Some(IndeterminateEffectReason::Unrecorded) {
+        let marker = KnowledgeCell {
+            claim_id: format!("{INDETERMINATE_REASON_UNRECORDED_CLAIM_PREFIX}{operation_id}"),
+            statement: format!(
+                "The legacy effect journal recorded no reason when operation {operation_id} entered indeterminate."
+            ),
+            knowledge_state: KnowledgeState::Unknown,
+            provenance: ProvenanceClass::Derived,
+            hypothesis: None,
+            evidence: vec![digest],
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: None,
+        }
+        .validated()?;
+        situation.capsule.frame.knowledge_cells.push(marker);
+    }
     situation.capsule.frame.now.push(format!(
         "Local operation {operation_id} is {}.",
         operation_receipt.state.as_str()
