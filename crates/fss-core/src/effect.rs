@@ -607,6 +607,18 @@ impl PreparedEffect {
         })
     }
 
+    /// SHA-256 of the whole prepared record: its canonical bytes under [`Self::SCHEMA`], which bind
+    /// the intent, the obligation id, the terminal predicate, and the preparation time.
+    ///
+    /// A cancellation proof binds this digest, not the intent alone (fss-thzlz).
+    #[must_use]
+    pub fn prepared_record_digest(&self) -> ContentDigest {
+        let mut encoder = CanonicalEncoder::new();
+        encoder.text(Self::SCHEMA);
+        self.encode_canonical(&mut encoder);
+        ContentDigest::sha256(&encoder.finish())
+    }
+
     /// Encodes to canonical versioned binary bytes.
     pub fn to_canonical_bytes(&self) -> Result<Vec<u8>, EffectSchemaError> {
         let mut encoder = CanonicalEncoder::new();
@@ -1472,6 +1484,80 @@ impl CanonicalDecode for EffectReconciliationRecord {
     }
 }
 
+/// The canonical cancellation proof: what the result digest of a proof-bound `cancelled` receipt
+/// proves (fss-thzlz).
+///
+/// It binds the whole prepared record the cancellation ends
+/// ([`PreparedEffect::prepared_record_digest`]: intent, obligation id, terminal predicate,
+/// preparation time) and the digest of the evidence object that caused the cancel. It never
+/// binds the receipt's own fields, so it cannot be recomputed from the receipt alone. For a
+/// reference alert the evidence is `fss.alert_cancel_proof.v1` over the operation id, the prepared
+/// authority anchor, and the authority ledger anchor at which dispatch was refused.
+///
+/// The effect journal computes the proof from its own prepared record and the evidence the
+/// canceller supplies, and records that evidence with the cancellation (a
+/// [`EffectJournalTransition::Cancel`] record, [`EffectRecordVersion::V3`]). Whoever holds the
+/// source of the evidence verifies it independently: the situation guard checks a reference
+/// alert's evidence against the anchors its authority ledger published.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EffectCancellationRecord {
+    /// [`PreparedEffect::prepared_record_digest`] of the cancelled operation's prepared record.
+    pub prepared_record_digest: ContentDigest,
+    /// Digest of the evidence object that caused the cancel.
+    pub cancel_request_evidence: ContentDigest,
+}
+
+impl EffectCancellationRecord {
+    /// Schema identity and digest domain (`SCHEMA-DOMAIN-EFFECT-PROOF-CANCELLATION-001`).
+    pub const SCHEMA: &'static str = "fss.effect_proof.cancellation.v1";
+
+    /// Binds a prepared record digest to the evidence that caused the cancel.
+    #[must_use]
+    pub const fn new(
+        prepared_record_digest: ContentDigest,
+        cancel_request_evidence: ContentDigest,
+    ) -> Self {
+        Self {
+            prepared_record_digest,
+            cancel_request_evidence,
+        }
+    }
+
+    /// Binds the whole prepared record `prepared` to the evidence that caused the cancel.
+    #[must_use]
+    pub fn for_prepared(prepared: &PreparedEffect, cancel_request_evidence: ContentDigest) -> Self {
+        Self::new(prepared.prepared_record_digest(), cancel_request_evidence)
+    }
+
+    /// The cancellation proof digest: SHA-256 of this record's canonical bytes, which open with
+    /// [`Self::SCHEMA`].
+    #[must_use]
+    pub fn proof_digest(&self) -> ContentDigest {
+        let mut encoder = CanonicalEncoder::new();
+        self.encode_canonical(&mut encoder);
+        ContentDigest::sha256(&encoder.finish())
+    }
+}
+
+impl CanonicalEncode for EffectCancellationRecord {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.text(Self::SCHEMA);
+        encoder.digest(self.prepared_record_digest);
+        encoder.digest(self.cancel_request_evidence);
+    }
+}
+
+impl CanonicalDecode for EffectCancellationRecord {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        if decoder.text()? != Self::SCHEMA {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        let prepared_record_digest = decoder.digest()?;
+        let cancel_request_evidence = decoder.digest()?;
+        Ok(Self::new(prepared_record_digest, cancel_request_evidence))
+    }
+}
+
 /// Explicit authority granting permission to prepare and execute effects.
 ///
 /// # Plane boundary (ADR-0001)
@@ -1599,23 +1685,30 @@ pub enum IndeterminateEffectReason {
     Unrecorded,
 }
 
-/// Version of a persisted effect journal record, and of the receipt encoding an operation it
-/// prepares uses (fss-deir9).
+/// Version of a persisted effect journal record, and of the receipt encoding and transition rules
+/// an operation it prepares uses (fss-deir9, fss-thzlz).
 ///
 /// The durable effect journal names the version of every record it writes. A record written
 /// before fss-deir9 is [`Self::V1`]: replay applies it under the transition rules it was written
 /// under, and the operation it prepared keeps the pre-deir9 receipt encoding (digest domain
 /// `fss.operation_receipt.v1`) for life, so every witness published for that operation, before or
-/// after the upgrade, verifies against the exact bytes it was computed from. Every record written
-/// now is [`Self::V2`]: replay applies the current rules, and an operation it prepares uses the v2
-/// receipt encoding (digest domain `fss.operation_receipt.v2`), which also binds the indeterminate
-/// reason. Stored bytes are never migrated or rewritten.
+/// after the upgrade, verifies against the exact bytes it was computed from. A record written from
+/// fss-deir9 until fss-thzlz is [`Self::V2`]: replay applies the fss-deir9 rules, under which a
+/// cancellation carries any result digest, and an operation it prepares uses the v2 receipt
+/// encoding (digest domain `fss.operation_receipt.v2`), which also binds the indeterminate reason.
+/// Every record written now is [`Self::V3`]: the same receipt encoding and payload rules as v2,
+/// except that a cancellation must be a proof-bound [`EffectJournalTransition::Cancel`] whose
+/// result digest is the [`EffectCancellationRecord`] proof. Stored bytes are never migrated or
+/// rewritten, so a v2 journal still opens with the cancellations it holds.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum EffectRecordVersion {
     /// Written before fss-deir9: legacy transition rules and pre-deir9 receipt bytes.
     V1,
-    /// Written by fss-deir9 or later: current transition rules and v2 receipt bytes.
+    /// Written from fss-deir9 until fss-thzlz: v2 receipt bytes; a cancellation's digest is
+    /// unbound.
     V2,
+    /// Written by fss-thzlz or later: v2 receipt bytes; a cancellation is proof-bound.
+    V3,
 }
 
 /// Durable operation receipt.
@@ -1647,9 +1740,12 @@ pub struct OperationReceipt {
     /// It is private, and a v1 receipt exists only as the product of the effect journal's
     /// versioned replay of a v1 durable record ([`EffectJournal::replay_versioned`]): the public
     /// canonical decoding refuses v1 bytes ([`ContractError::LegacyReceiptRequiresJournal`]), so
-    /// a current receipt cannot be relabelled as legacy by re-encoding it. Callers that accept a
-    /// receipt from elsewhere must still treat a v1 receipt as untrusted (the situation guard admits
-    /// one only from the durable journal).
+    /// a current receipt cannot be relabelled as legacy by re-encoding it. v2 and v3 receipts share
+    /// one encoding, which the public decoding reads as v3, so a v2 receipt (whose cancellation
+    /// digest is unbound) likewise exists only as the product of replaying a v2 record (fss-thzlz).
+    /// Callers that accept a receipt from elsewhere must still treat a v1 or v2 receipt as
+    /// untrusted (the situation guard admits a v1 receipt, and exempts a v2 cancellation from the
+    /// proof binding, only when it reads the receipt from the durable journal).
     version: EffectRecordVersion,
 }
 
@@ -1673,12 +1769,12 @@ impl OperationReceipt {
     }
 
     /// Digest domain of this receipt: [`Self::SCHEMA`] for v1 (the pre-deir9 domain, unchanged),
-    /// [`Self::DIGEST_DOMAIN_V2`] for v2.
+    /// [`Self::DIGEST_DOMAIN_V2`] for v2 and v3, which share one encoding (fss-thzlz).
     #[must_use]
     pub const fn digest_domain(&self) -> &'static str {
         match self.version {
             EffectRecordVersion::V1 => Self::SCHEMA,
-            EffectRecordVersion::V2 => Self::DIGEST_DOMAIN_V2,
+            EffectRecordVersion::V2 | EffectRecordVersion::V3 => Self::DIGEST_DOMAIN_V2,
         }
     }
 
@@ -1889,7 +1985,7 @@ impl OperationReceipt {
             result_digest,
             error_code,
             indeterminate_reason: None,
-            version: EffectRecordVersion::V2,
+            version: EffectRecordVersion::V3,
         })
     }
 }
@@ -1899,8 +1995,9 @@ impl CanonicalEncode for OperationReceipt {
         // v1 is exactly the pre-deir9 layout, so a v1 receipt keeps its bytes and digest; it never
         // carried the indeterminate reason. v2 opens with a zero length word, which no v1 encoding
         // can open with (v1 opens with the non-empty operation id), then its domain tag, and
-        // appends the reason (fss-deir9).
-        if self.version == EffectRecordVersion::V2 {
+        // appends the reason (fss-deir9). v3 uses the v2 bytes unchanged (fss-thzlz).
+        let v2_layout = self.version != EffectRecordVersion::V1;
+        if v2_layout {
             encoder.u64(0);
             encoder.text(Self::DIGEST_DOMAIN_V2);
         }
@@ -1930,7 +2027,7 @@ impl CanonicalEncode for OperationReceipt {
             }
             None => encoder.bool(false),
         }
-        if self.version == EffectRecordVersion::V2 {
+        if v2_layout {
             match &self.indeterminate_reason {
                 None => encoder.u8(0),
                 Some(IndeterminateEffectReason::Unrecorded) => encoder.u8(1),
@@ -1949,14 +2046,16 @@ impl CanonicalDecode for OperationReceipt {
         // the length of its operation id, which is never zero (an empty id is invalid); its bytes
         // are refused here, because a v1 receipt exists only as the product of the journal's
         // versioned replay, never of decoding (fss-deir9). Stripping the v2 prefix and reason off
-        // a current receipt therefore cannot relabel it as legacy.
+        // a current receipt therefore cannot relabel it as legacy. The v2 layout decodes as v3,
+        // the current version sharing it; a v2 receipt, whose cancellation digest is unbound, is
+        // likewise only the product of replaying a v2 record (fss-thzlz).
         let mut probe = decoder.clone();
         let version = if probe.u64()? == 0 {
             if probe.text()? != Self::DIGEST_DOMAIN_V2 {
                 return Err(ContractError::InvalidIdentifier);
             }
             *decoder = probe;
-            EffectRecordVersion::V2
+            EffectRecordVersion::V3
         } else {
             return Err(ContractError::LegacyReceiptRequiresJournal);
         };
@@ -1982,7 +2081,7 @@ impl CanonicalDecode for OperationReceipt {
         };
         let indeterminate_reason = match version {
             EffectRecordVersion::V1 => None,
-            EffectRecordVersion::V2 => match decoder.u8()? {
+            EffectRecordVersion::V2 | EffectRecordVersion::V3 => match decoder.u8()? {
                 0 => None,
                 1 => Some(IndeterminateEffectReason::Unrecorded),
                 2 => Some(IndeterminateEffectReason::Recorded(
@@ -2146,6 +2245,23 @@ pub enum EffectJournalTransition {
         /// Terminal failure reason.
         reason: String,
     },
+    /// Proof-bound cancellation of a prepared operation (fss-thzlz).
+    ///
+    /// Only a [`EffectRecordVersion::V3`] record carries it. Replay recomputes the
+    /// [`EffectCancellationRecord`] proof from the journal's own prepared record and the recorded
+    /// evidence, and refuses the record unless `proof_digest` equals it.
+    Cancel {
+        /// Target operation id.
+        operation_id: OperationId,
+        /// Cancellation timestamp.
+        now: TimestampNs,
+        /// Digest of the evidence object that caused the cancel.
+        cancel_request_evidence: ContentDigest,
+        /// The cancellation proof the record claims; it becomes the receipt's result digest.
+        proof_digest: ContentDigest,
+        /// Optional, never empty, cancellation reason.
+        reason: Option<String>,
+    },
 }
 
 impl CanonicalEncode for EffectJournalTransition {
@@ -2211,6 +2327,26 @@ impl CanonicalEncode for EffectJournalTransition {
                 encoder.digest(*proof_digest);
                 now.encode_canonical(encoder);
                 encoder.text(reason);
+            }
+            Self::Cancel {
+                operation_id,
+                now,
+                cancel_request_evidence,
+                proof_digest,
+                reason,
+            } => {
+                encoder.u8(5);
+                operation_id.encode_canonical(encoder);
+                now.encode_canonical(encoder);
+                encoder.digest(*cancel_request_evidence);
+                encoder.digest(*proof_digest);
+                match reason {
+                    Some(reason) => {
+                        encoder.bool(true);
+                        encoder.text(reason);
+                    }
+                    None => encoder.bool(false),
+                }
             }
         }
     }
@@ -2280,6 +2416,24 @@ impl CanonicalDecode for EffectJournalTransition {
                     reason,
                 })
             }
+            5 => {
+                let operation_id = OperationId::decode_canonical(decoder)?;
+                let now = TimestampNs::decode_canonical(decoder)?;
+                let cancel_request_evidence = decoder.digest()?;
+                let proof_digest = decoder.digest()?;
+                let reason = if decoder.bool()? {
+                    Some(decoder.text()?.to_string())
+                } else {
+                    None
+                };
+                Ok(Self::Cancel {
+                    operation_id,
+                    now,
+                    cancel_request_evidence,
+                    proof_digest,
+                    reason,
+                })
+            }
             _ => Err(ContractError::InvalidIdentifier),
         }
     }
@@ -2291,6 +2445,10 @@ pub struct EffectJournal {
     operations: BTreeMap<OperationId, OperationReceipt>,
     idempotency: BTreeMap<IdempotencyKey, OperationId>,
     obligations: BTreeMap<ObligationId, Obligation>,
+    /// For each cancelled operation, the version of the record that wrote its cancellation
+    /// (fss-thzlz): the rule that cancellation was checked under, independent of the version the
+    /// operation was prepared under. Receipt bytes and digests never carry it.
+    cancelled_under: BTreeMap<OperationId, EffectRecordVersion>,
 }
 
 impl EffectJournal {
@@ -2301,6 +2459,7 @@ impl EffectJournal {
             operations: BTreeMap::new(),
             idempotency: BTreeMap::new(),
             obligations: BTreeMap::new(),
+            cancelled_under: BTreeMap::new(),
         }
     }
 
@@ -2319,13 +2478,12 @@ impl EffectJournal {
             terminal_predicate,
             authority,
             now,
-            EffectRecordVersion::V2,
+            EffectRecordVersion::V3,
         )
     }
 
-    /// Prepares an effect whose receipts use encoding `version`: [`EffectRecordVersion::V2`] for
-    /// every new preparation, [`EffectRecordVersion::V1`] only while replaying a record written
-    /// before fss-deir9.
+    /// Prepares an effect whose receipts use version `version`: [`EffectRecordVersion::V3`] for
+    /// every new preparation, an earlier version only while replaying a record written under it.
     fn prepare_versioned(
         &mut self,
         intent: EffectIntent,
@@ -2481,6 +2639,10 @@ impl EffectJournal {
     }
 
     /// Advances an operation through a valid lifecycle transition.
+    ///
+    /// A cancellation requires the digest of the evidence that caused it, which this transition
+    /// cannot carry, so the current rules refuse [`EffectState::Cancelled`] here as
+    /// [`ContractError::EvidenceRequired`]: cancel through [`Self::cancel`] (fss-thzlz).
     pub fn transition(
         &mut self,
         operation_id: &OperationId,
@@ -2495,12 +2657,132 @@ impl EffectJournal {
             now,
             result_digest,
             error_code,
-            TransitionRules::Current,
+            TransitionRules::Current { bound_proof: None },
         )
     }
 
-    /// Applies one transition under `rules`: the current rules for every new transition, the
-    /// legacy rules only while replaying persisted history.
+    /// The version of the journal record that wrote the cancellation of `operation_id`, or `None`
+    /// when the operation is not cancelled (fss-thzlz).
+    ///
+    /// It is the version the cancellation was checked under, not the version the operation was
+    /// prepared under: a v1 or v2 record kept the unbound digest it was written with, while every
+    /// cancellation written now is a v3 proof-bound record, even for an operation a v1 or v2
+    /// record prepared. The situation guard keys its legacy exemption on exactly this.
+    #[must_use]
+    pub fn cancellation_record_version(
+        &self,
+        operation_id: &OperationId,
+    ) -> Option<EffectRecordVersion> {
+        self.cancelled_under.get(operation_id).copied()
+    }
+
+    /// The whole prepared record of `operation_id`: the intent and preparation time the journal
+    /// recorded, and the obligation (identity and terminal predicate) the preparation opened.
+    pub fn prepared_record(
+        &self,
+        operation_id: &OperationId,
+    ) -> Result<PreparedEffect, ContractError> {
+        let receipt = self
+            .operations
+            .get(operation_id)
+            .ok_or(ContractError::NotFound)?;
+        let obligation = self
+            .obligations
+            .values()
+            .find(|obligation| obligation.operation_id == *operation_id)
+            .ok_or(ContractError::NotFound)?;
+        Ok(PreparedEffect {
+            intent: receipt.intent.clone(),
+            obligation_id: obligation.obligation_id.clone(),
+            terminal_predicate: obligation.terminal_predicate.clone(),
+            prepared_at: receipt.prepared_at,
+        })
+    }
+
+    /// The cancellation proof of `operation_id` for `cancel_request_evidence`: the
+    /// [`EffectCancellationRecord`] of this journal's own prepared record and that evidence.
+    pub fn cancellation_proof(
+        &self,
+        operation_id: &OperationId,
+        cancel_request_evidence: ContentDigest,
+    ) -> Result<ContentDigest, ContractError> {
+        let prepared = self.prepared_record(operation_id)?;
+        Ok(
+            EffectCancellationRecord::for_prepared(&prepared, cancel_request_evidence)
+                .proof_digest(),
+        )
+    }
+
+    /// Cancels a prepared operation before commitment (fss-thzlz).
+    ///
+    /// `cancel_request_evidence` is the digest of the evidence object that caused the cancel; it
+    /// is required. The receipt's result digest, and the obligation's proof, become the
+    /// [`EffectCancellationRecord`] proof binding this journal's whole prepared record to that
+    /// evidence. A reason is optional, but never empty.
+    pub fn cancel(
+        &mut self,
+        operation_id: &OperationId,
+        now: TimestampNs,
+        cancel_request_evidence: ContentDigest,
+        reason: Option<String>,
+    ) -> Result<&OperationReceipt, ContractError> {
+        let proof = self.cancellation_proof(operation_id, cancel_request_evidence)?;
+        self.cancel_under(operation_id, now, cancel_request_evidence, proof, reason)
+    }
+
+    /// Pre-validates [`Self::cancel`] without mutating the journal, and returns the cancellation
+    /// proof the cancel would record.
+    pub fn validate_cancel(
+        &self,
+        operation_id: &OperationId,
+        now: TimestampNs,
+        cancel_request_evidence: ContentDigest,
+        reason: Option<&str>,
+    ) -> Result<ContentDigest, ContractError> {
+        let receipt = self
+            .operations
+            .get(operation_id)
+            .ok_or(ContractError::NotFound)?;
+        let proof = self.cancellation_proof(operation_id, cancel_request_evidence)?;
+        check_transition(
+            receipt,
+            EffectState::Cancelled,
+            now,
+            Some(proof),
+            reason,
+            TransitionRules::Current {
+                bound_proof: Some(proof),
+            },
+        )?;
+        Ok(proof)
+    }
+
+    /// Applies a cancellation claiming `claimed_proof`, which must equal the proof this journal
+    /// computes from its own prepared record and `cancel_request_evidence`. Only the current rules
+    /// admit a proof-bound cancellation, so it is always checked under them.
+    fn cancel_under(
+        &mut self,
+        operation_id: &OperationId,
+        now: TimestampNs,
+        cancel_request_evidence: ContentDigest,
+        claimed_proof: ContentDigest,
+        reason: Option<String>,
+    ) -> Result<&OperationReceipt, ContractError> {
+        let expected = self.cancellation_proof(operation_id, cancel_request_evidence)?;
+        self.transition_under(
+            operation_id,
+            EffectState::Cancelled,
+            now,
+            Some(claimed_proof),
+            reason,
+            TransitionRules::Current {
+                bound_proof: Some(expected),
+            },
+        )
+    }
+
+    /// Applies one transition under `rules`: the current rules for every new transition, earlier
+    /// rules only while replaying persisted history.
     fn transition_under(
         &mut self,
         operation_id: &OperationId,
@@ -2544,6 +2826,12 @@ impl EffectJournal {
             if error_code.is_some() {
                 receipt.error_code = error_code;
             }
+        }
+        if next == EffectState::Cancelled {
+            // Record which rule wrote this cancellation; the guard exempts only v1 and v2 records.
+            let _ = self
+                .cancelled_under
+                .insert(operation_id.clone(), rules.record_version());
         }
         let obligation_state = match next {
             EffectState::Verified => Some(ObligationState::Verified),
@@ -2747,7 +3035,7 @@ impl EffectJournal {
             now,
             result_digest,
             error_code,
-            TransitionRules::Current,
+            TransitionRules::Current { bound_proof: None },
         )?;
         Ok(receipt)
     }
@@ -2838,17 +3126,17 @@ impl EffectJournal {
 
     /// Replays transitions, reconstructing the exact in-memory state, under the current rules.
     ///
-    /// Every transition is checked exactly as a new one is, and every operation uses the v2
-    /// receipt encoding. History written before fss-deir9 is replayed only through
-    /// [`Self::replay_versioned`], whose records name their version; this entry point never
-    /// applies the legacy rules (fss-deir9).
+    /// Every transition is checked exactly as a new one is, and every operation is a v3 one.
+    /// History written under earlier rules is replayed only through [`Self::replay_versioned`],
+    /// whose records name their version; this entry point never applies the legacy rules
+    /// (fss-deir9) or the unbound v2 cancellation rule (fss-thzlz).
     pub fn replay(
         transitions: impl IntoIterator<Item = EffectJournalTransition>,
     ) -> Result<Self, ContractError> {
         Self::replay_versioned(
             transitions
                 .into_iter()
-                .map(|transition| (EffectRecordVersion::V2, transition)),
+                .map(|transition| (EffectRecordVersion::V3, transition)),
         )
     }
 
@@ -2858,9 +3146,12 @@ impl EffectJournal {
     /// transition rules it was written under: a reason-less `indeterminate` still loads, kept as
     /// recorded with the missing reason made explicitly [`IndeterminateEffectReason::Unrecorded`],
     /// and an operation it prepares keeps the v1 receipt encoding. A [`EffectRecordVersion::V2`]
-    /// record is applied under the current rules. Versions never go backwards: a v1 record after
-    /// any v2 record is refused as [`ContractError::InvalidEffectTransition`], so the legacy rules
-    /// cannot be reached by appending to a current journal. Records are never rewritten.
+    /// record is applied under the fss-deir9 rules, under which a cancellation carries any result
+    /// digest. A [`EffectRecordVersion::V3`] record is applied under the current rules: a
+    /// cancellation must be a proof-bound [`EffectJournalTransition::Cancel`], which only a v3
+    /// record may carry (fss-thzlz). Versions never go backwards: a record older than any record
+    /// before it is refused as [`ContractError::InvalidEffectTransition`], so earlier rules cannot
+    /// be reached by appending to a current journal. Records are never rewritten.
     pub fn replay_versioned(
         records: impl IntoIterator<Item = (EffectRecordVersion, EffectJournalTransition)>,
     ) -> Result<Self, ContractError> {
@@ -2884,7 +3175,8 @@ impl EffectJournal {
     ) -> Result<&OperationReceipt, ContractError> {
         let rules = match version {
             EffectRecordVersion::V1 => TransitionRules::Legacy,
-            EffectRecordVersion::V2 => TransitionRules::Current,
+            EffectRecordVersion::V2 => TransitionRules::UnboundCancellation,
+            EffectRecordVersion::V3 => TransitionRules::Current { bound_proof: None },
         };
         match transition {
             EffectJournalTransition::Prepare {
@@ -2918,6 +3210,26 @@ impl EffectJournal {
                 now,
                 reason,
             } => self.reconcile_failed(&operation_id, proof_digest, now, reason),
+            // A proof-bound cancellation exists only in a v3 record; an earlier record carrying
+            // one was never written by the rules it names (fss-thzlz).
+            EffectJournalTransition::Cancel {
+                operation_id,
+                now,
+                cancel_request_evidence,
+                proof_digest,
+                reason,
+            } => {
+                if version < EffectRecordVersion::V3 {
+                    return Err(ContractError::InvalidEffectTransition);
+                }
+                self.cancel_under(
+                    &operation_id,
+                    now,
+                    cancel_request_evidence,
+                    proof_digest,
+                    reason,
+                )
+            }
         }
     }
 
@@ -2951,6 +3263,19 @@ impl EffectJournal {
                 now,
                 reason,
             } => self.reconcile_failed(&operation_id, proof_digest, now, reason),
+            EffectJournalTransition::Cancel {
+                operation_id,
+                now,
+                cancel_request_evidence,
+                proof_digest,
+                reason,
+            } => self.cancel_under(
+                &operation_id,
+                now,
+                cancel_request_evidence,
+                proof_digest,
+                reason,
+            ),
         }
     }
 
@@ -3384,12 +3709,32 @@ impl<'a> JsonParser<'a> {
     }
 }
 
-/// Which transition rules apply: the current rules for every new transition, the legacy rules
-/// only while replaying persisted history (fss-deir9).
+/// Which transition rules apply: the current rules for every new transition, earlier rules only
+/// while replaying persisted history written under them (fss-deir9, fss-thzlz).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TransitionRules {
-    Current,
+    /// v3: the payload rules, and a cancellation must carry `bound_proof`, the cancellation proof
+    /// the journal computed from its own prepared record and the recorded cancel-request evidence
+    /// (`None` when no evidence came with the transition).
+    Current {
+        /// The journal-computed cancellation proof, when evidence came with the transition.
+        bound_proof: Option<ContentDigest>,
+    },
+    /// v2: the payload rules, but a cancellation carries any result digest (pre-fss-thzlz).
+    UnboundCancellation,
+    /// v1: only the rules history was written under before fss-deir9.
     Legacy,
+}
+
+impl TransitionRules {
+    /// The record version these rules belong to.
+    const fn record_version(self) -> EffectRecordVersion {
+        match self {
+            Self::Legacy => EffectRecordVersion::V1,
+            Self::UnboundCancellation => EffectRecordVersion::V2,
+            Self::Current { .. } => EffectRecordVersion::V3,
+        }
+    }
 }
 
 /// Checks one transition of `receipt` to `next`.
@@ -3460,12 +3805,24 @@ fn check_transition(
                 Ok(())
             }
         }
-        // A cancellation reason is optional, but never empty.
+        // A cancellation reason is optional, but never empty. Under the current rules the result
+        // digest must be the proof binding the journal's prepared record to the evidence that
+        // caused the cancel, so a cancellation without that evidence is refused; a v2 record keeps
+        // the unbound digest it was written with (fss-thzlz).
         EffectState::Cancelled => {
             if error_code.is_some_and(str::is_empty) {
-                Err(ContractError::EvidenceRequired)
-            } else {
-                Ok(())
+                return Err(ContractError::EvidenceRequired);
+            }
+            match rules {
+                TransitionRules::Current { bound_proof } => {
+                    let expected = bound_proof.ok_or(ContractError::EvidenceRequired)?;
+                    if result_digest == Some(expected) {
+                        Ok(())
+                    } else {
+                        Err(ContractError::InvalidDigest)
+                    }
+                }
+                TransitionRules::UnboundCancellation | TransitionRules::Legacy => Ok(()),
             }
         }
         // A failure's proof and non-empty reason are checked above, under every rule set.
@@ -3749,6 +4106,439 @@ mod tests {
         let replayed = EffectJournal::replay(decoded_transitions)?;
         assert_eq!(replayed, live);
         assert_eq!(replayed.journal_root(), live.journal_root());
+        Ok(())
+    }
+
+    // fss-thzlz: a cancellation's result digest is the proof binding the journal's whole prepared
+    // record to the evidence that caused the cancel.
+
+    fn named_intent(name: &str) -> Result<EffectIntent, ContractError> {
+        Ok(EffectIntent {
+            operation_id: OperationId::parse(format!("operation:alert:{name}"))?,
+            idempotency_key: IdempotencyKey::parse(format!("idem:alert:{name}"))?,
+            effect_class: "alert.dispatch".to_owned(),
+            request_digest: ContentDigest::sha256(name.as_bytes()),
+            precondition_digest: ContentDigest::sha256(b"event-corroborated"),
+        })
+    }
+
+    fn named_operation(name: &str) -> Result<OperationId, ContractError> {
+        OperationId::parse(format!("operation:alert:{name}"))
+    }
+
+    fn prepare_record(name: &str) -> Result<EffectJournalTransition, ContractError> {
+        Ok(EffectJournalTransition::Prepare {
+            intent: named_intent(name)?,
+            obligation_id: ObligationId::parse(format!("obligation:{name}"))?,
+            terminal_predicate: "delivery_proved".to_owned(),
+            now: TimestampNs(10),
+        })
+    }
+
+    /// A journal holding `names`, each prepared at 10, and the records that prepared them.
+    fn prepared_journal(
+        names: &[&str],
+    ) -> Result<(EffectJournal, Vec<EffectJournalTransition>), ContractError> {
+        let mut journal = EffectJournal::new();
+        let mut records = Vec::new();
+        for name in names {
+            let record = prepare_record(name)?;
+            let _ = journal.apply_transition(record.clone())?;
+            records.push(record);
+        }
+        Ok((journal, records))
+    }
+
+    #[test]
+    fn cancellation_proof_layout_and_domain_are_pinned() -> Result<(), ContractError> {
+        let prepared = PreparedEffect {
+            intent: named_intent("pin")?,
+            obligation_id: ObligationId::parse("obligation:pin")?,
+            terminal_predicate: "delivery_proved".to_owned(),
+            prepared_at: TimestampNs(10),
+        };
+        // The whole prepared record: intent, obligation id, terminal predicate, preparation time.
+        let mut manual = CanonicalEncoder::new();
+        manual.text("fss.prepared_effect.v1");
+        prepared.intent.encode_canonical(&mut manual);
+        prepared.obligation_id.encode_canonical(&mut manual);
+        manual.text("delivery_proved");
+        TimestampNs(10).encode_canonical(&mut manual);
+        let prepared_digest = ContentDigest::sha256(&manual.finish());
+        assert_eq!(prepared.prepared_record_digest(), prepared_digest);
+
+        let evidence = ContentDigest::sha256(b"cancel-request-evidence");
+        let record = EffectCancellationRecord::for_prepared(&prepared, evidence);
+        assert_eq!(
+            record,
+            EffectCancellationRecord {
+                prepared_record_digest: prepared_digest,
+                cancel_request_evidence: evidence,
+            }
+        );
+        let mut manual = CanonicalEncoder::new();
+        manual.text("fss.effect_proof.cancellation.v1");
+        manual.digest(prepared_digest);
+        manual.digest(evidence);
+        let bytes = manual.finish();
+        assert_eq!(record.canonical_bytes(), bytes);
+        assert_eq!(record.proof_digest(), ContentDigest::sha256(&bytes));
+        assert_eq!(
+            EffectCancellationRecord::from_canonical_bytes(&bytes),
+            Ok(record)
+        );
+        let mut wrong_domain = CanonicalEncoder::new();
+        wrong_domain.text("fss.effect_proof.terminal.v1");
+        wrong_domain.digest(prepared_digest);
+        wrong_domain.digest(evidence);
+        assert_eq!(
+            EffectCancellationRecord::from_canonical_bytes(&wrong_domain.finish()),
+            Err(ContractError::InvalidIdentifier)
+        );
+
+        // Every part of the prepared record, and the evidence, is bound.
+        let variants = [
+            prepared.clone(),
+            PreparedEffect {
+                intent: named_intent("pin-other")?,
+                ..prepared.clone()
+            },
+            PreparedEffect {
+                obligation_id: ObligationId::parse("obligation:pin-other")?,
+                ..prepared.clone()
+            },
+            PreparedEffect {
+                terminal_predicate: "delivery_refuted".to_owned(),
+                ..prepared.clone()
+            },
+            PreparedEffect {
+                prepared_at: TimestampNs(11),
+                ..prepared.clone()
+            },
+        ];
+        let mut proofs = std::collections::BTreeSet::new();
+        for variant in &variants {
+            let _ = proofs
+                .insert(EffectCancellationRecord::for_prepared(variant, evidence).proof_digest());
+        }
+        let _ = proofs.insert(
+            EffectCancellationRecord::for_prepared(
+                &prepared,
+                ContentDigest::sha256(b"other-evidence"),
+            )
+            .proof_digest(),
+        );
+        assert_eq!(proofs.len(), variants.len() + 1);
+        Ok(())
+    }
+
+    #[test]
+    fn cancel_binds_the_prepared_record_and_the_evidence_and_replays() -> Result<(), ContractError>
+    {
+        let (mut journal, mut records) = prepared_journal(&["one"])?;
+        let operation_id = named_operation("one")?;
+        let evidence = ContentDigest::sha256(b"displacing-anchor-evidence");
+        let expected = EffectCancellationRecord::for_prepared(
+            &journal.prepared_record(&operation_id)?,
+            evidence,
+        )
+        .proof_digest();
+        assert_eq!(
+            journal.cancellation_proof(&operation_id, evidence),
+            Ok(expected)
+        );
+        assert_eq!(
+            journal.validate_cancel(&operation_id, TimestampNs(20), evidence, Some("stale")),
+            Ok(expected)
+        );
+        let receipt = journal
+            .cancel(
+                &operation_id,
+                TimestampNs(20),
+                evidence,
+                Some("stale".to_owned()),
+            )?
+            .clone();
+        assert_eq!(receipt.state, EffectState::Cancelled);
+        assert_eq!(receipt.result_digest, Some(expected));
+        assert_eq!(receipt.error_code.as_deref(), Some("stale"));
+        assert_eq!(receipt.record_version(), EffectRecordVersion::V3);
+        assert_eq!(receipt.digest_domain(), OperationReceipt::DIGEST_DOMAIN_V2);
+        let obligation = journal
+            .obligations()
+            .find(|obligation| obligation.operation_id == operation_id)
+            .ok_or(ContractError::NotFound)?;
+        assert_eq!(obligation.state, ObligationState::Cancelled);
+        assert_eq!(obligation.proof_digest, Some(expected));
+        assert_eq!(
+            journal.cancellation_record_version(&operation_id),
+            Some(EffectRecordVersion::V3)
+        );
+
+        let record = EffectJournalTransition::Cancel {
+            operation_id: operation_id.clone(),
+            now: TimestampNs(20),
+            cancel_request_evidence: evidence,
+            proof_digest: expected,
+            reason: Some("stale".to_owned()),
+        };
+        let bytes = record.canonical_bytes();
+        assert_eq!(
+            EffectJournalTransition::from_canonical_bytes(&bytes),
+            Ok(record.clone())
+        );
+        records.push(record);
+        let replayed = EffectJournal::replay(records.clone())?;
+        assert_eq!(replayed, journal);
+        assert_eq!(replayed.journal_root(), journal.journal_root());
+        let versioned = EffectJournal::replay_versioned(
+            records
+                .into_iter()
+                .map(|record| (EffectRecordVersion::V3, record)),
+        )?;
+        assert_eq!(versioned, journal);
+        Ok(())
+    }
+
+    #[test]
+    fn journal_refuses_a_cancellation_not_bound_to_its_prepared_record() -> Result<(), ContractError>
+    {
+        let (journal, records) = prepared_journal(&["one", "two"])?;
+        let one = named_operation("one")?;
+        let two = named_operation("two")?;
+        let evidence = ContentDigest::sha256(b"cancel-request-evidence");
+        let honest = journal.cancellation_proof(&one, evidence)?;
+        assert_eq!(journal.cancellation_record_version(&one), None);
+
+        // Missing evidence: the generic transition cannot carry it, so it is refused with or
+        // without a digest, even the honest proof, and nothing changes.
+        for digest in [None, Some(honest), Some(evidence)] {
+            let mut live = journal.clone();
+            assert_eq!(
+                live.validate_transition(
+                    &one,
+                    EffectState::Cancelled,
+                    TimestampNs(20),
+                    digest,
+                    None
+                )
+                .map(|_| ()),
+                Err(ContractError::EvidenceRequired),
+                "{digest:?}"
+            );
+            assert_eq!(
+                live.transition(&one, EffectState::Cancelled, TimestampNs(20), digest, None)
+                    .map(|_| ()),
+                Err(ContractError::EvidenceRequired),
+                "{digest:?}"
+            );
+            assert_eq!(live, journal, "{digest:?}");
+        }
+
+        // A proof that is not this journal's proof for this operation and this evidence.
+        let prepared_one = journal.prepared_record(&one)?;
+        let other_plan = EffectCancellationRecord::for_prepared(
+            &PreparedEffect {
+                obligation_id: ObligationId::parse("obligation:elsewhere")?,
+                ..prepared_one.clone()
+            },
+            evidence,
+        )
+        .proof_digest();
+        let other_predicate = EffectCancellationRecord::for_prepared(
+            &PreparedEffect {
+                terminal_predicate: "delivery_refuted".to_owned(),
+                ..prepared_one.clone()
+            },
+            evidence,
+        )
+        .proof_digest();
+        let intent_only =
+            EffectCancellationRecord::new(prepared_one.intent.intent_digest(), evidence)
+                .proof_digest();
+        let cases = [
+            (
+                "forged",
+                ContentDigest::sha256(b"forged-cancellation-proof"),
+            ),
+            ("bare evidence", evidence),
+            (
+                "other operation",
+                journal.cancellation_proof(&two, evidence)?,
+            ),
+            ("other plan", other_plan),
+            ("other terminal predicate", other_predicate),
+            ("intent only", intent_only),
+            (
+                "other evidence",
+                journal.cancellation_proof(&one, ContentDigest::sha256(b"other-evidence"))?,
+            ),
+        ];
+        for (label, proof) in cases {
+            assert_ne!(proof, honest, "{label}");
+            let record = EffectJournalTransition::Cancel {
+                operation_id: one.clone(),
+                now: TimestampNs(20),
+                cancel_request_evidence: evidence,
+                proof_digest: proof,
+                reason: None,
+            };
+            let mut live = journal.clone();
+            assert_eq!(
+                live.apply_transition(record.clone()).map(|_| ()),
+                Err(ContractError::InvalidDigest),
+                "{label}"
+            );
+            assert_eq!(live, journal, "{label}");
+            let mut replay = records.clone();
+            replay.push(record);
+            assert_eq!(
+                EffectJournal::replay(replay),
+                Err(ContractError::InvalidDigest),
+                "{label}"
+            );
+        }
+
+        // A reason is optional, but never empty.
+        assert_eq!(
+            journal.validate_cancel(&one, TimestampNs(20), evidence, Some("")),
+            Err(ContractError::EvidenceRequired)
+        );
+        assert_eq!(
+            journal
+                .clone()
+                .cancel(&one, TimestampNs(20), evidence, Some(String::new()))
+                .map(|_| ()),
+            Err(ContractError::EvidenceRequired)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn v2_records_keep_the_unbound_cancellation_and_v3_records_require_the_proof()
+    -> Result<(), ContractError> {
+        let operation_id = named_operation("legacy")?;
+        let prepare = prepare_record("legacy")?;
+        let unbound_digest = ContentDigest::sha256(b"alert-cancel-proof-as-written");
+        let unbound = EffectJournalTransition::Transition {
+            operation_id: operation_id.clone(),
+            next: EffectState::Cancelled,
+            now: TimestampNs(20),
+            result_digest: Some(unbound_digest),
+            error_code: Some("stale_event_authority".to_owned()),
+        };
+
+        // A v2 journal keeps the unbound cancellation it holds.
+        let v2 = EffectJournal::replay_versioned([
+            (EffectRecordVersion::V2, prepare.clone()),
+            (EffectRecordVersion::V2, unbound.clone()),
+        ])?;
+        let receipt = v2.operation(&operation_id).ok_or(ContractError::NotFound)?;
+        assert_eq!(receipt.state, EffectState::Cancelled);
+        assert_eq!(receipt.record_version(), EffectRecordVersion::V2);
+        assert_eq!(receipt.result_digest, Some(unbound_digest));
+        assert_eq!(
+            v2.cancellation_record_version(&operation_id),
+            Some(EffectRecordVersion::V2)
+        );
+        let v1 = EffectJournal::replay_versioned([
+            (EffectRecordVersion::V1, prepare.clone()),
+            (EffectRecordVersion::V1, unbound.clone()),
+        ])?;
+        assert_eq!(
+            v1.cancellation_record_version(&operation_id),
+            Some(EffectRecordVersion::V1)
+        );
+        assert_eq!(receipt.digest_domain(), OperationReceipt::DIGEST_DOMAIN_V2);
+
+        // The same cancellation in a v3 record, or through the unmarked replay, is refused.
+        assert_eq!(
+            EffectJournal::replay_versioned([
+                (EffectRecordVersion::V3, prepare.clone()),
+                (EffectRecordVersion::V3, unbound.clone()),
+            ]),
+            Err(ContractError::EvidenceRequired)
+        );
+        assert_eq!(
+            EffectJournal::replay([prepare.clone(), unbound.clone()]),
+            Err(ContractError::EvidenceRequired)
+        );
+
+        // A proof-bound cancellation exists only in a v3 record.
+        let evidence = ContentDigest::sha256(b"cancel-request-evidence");
+        let proof = EffectCancellationRecord::for_prepared(
+            &PreparedEffect {
+                intent: named_intent("legacy")?,
+                obligation_id: ObligationId::parse("obligation:legacy")?,
+                terminal_predicate: "delivery_proved".to_owned(),
+                prepared_at: TimestampNs(10),
+            },
+            evidence,
+        )
+        .proof_digest();
+        let bound = |proof_digest| EffectJournalTransition::Cancel {
+            operation_id: operation_id.clone(),
+            now: TimestampNs(20),
+            cancel_request_evidence: evidence,
+            proof_digest,
+            reason: None,
+        };
+        for version in [EffectRecordVersion::V1, EffectRecordVersion::V2] {
+            assert_eq!(
+                EffectJournal::replay_versioned([
+                    (version, prepare.clone()),
+                    (version, bound(proof)),
+                ]),
+                Err(ContractError::InvalidEffectTransition),
+                "{version:?}"
+            );
+        }
+        // Versions never go backwards: a v2 record after a v3 one is refused.
+        assert_eq!(
+            EffectJournal::replay_versioned([
+                (EffectRecordVersion::V3, prepare.clone()),
+                (EffectRecordVersion::V2, unbound.clone()),
+            ]),
+            Err(ContractError::InvalidEffectTransition)
+        );
+
+        // The exemption follows the record that cancels, not the version the operation was
+        // prepared under: a v1 or v2 operation cancelled by a v3 record must be bound.
+        for version in [EffectRecordVersion::V1, EffectRecordVersion::V2] {
+            assert_eq!(
+                EffectJournal::replay_versioned([
+                    (version, prepare.clone()),
+                    (
+                        EffectRecordVersion::V3,
+                        bound(ContentDigest::sha256(b"forged-cancellation-proof")),
+                    ),
+                ]),
+                Err(ContractError::InvalidDigest),
+                "{version:?}"
+            );
+            assert_eq!(
+                EffectJournal::replay_versioned([
+                    (version, prepare.clone()),
+                    (EffectRecordVersion::V3, unbound.clone()),
+                ]),
+                Err(ContractError::EvidenceRequired),
+                "{version:?}"
+            );
+            let upgraded = EffectJournal::replay_versioned([
+                (version, prepare.clone()),
+                (EffectRecordVersion::V3, bound(proof)),
+            ])?;
+            let receipt = upgraded
+                .operation(&operation_id)
+                .ok_or(ContractError::NotFound)?;
+            assert_eq!(receipt.record_version(), version);
+            assert_eq!(receipt.result_digest, Some(proof));
+            // The operation keeps its prepare-time version; the cancellation is a v3 record.
+            assert_eq!(
+                upgraded.cancellation_record_version(&operation_id),
+                Some(EffectRecordVersion::V3)
+            );
+        }
         Ok(())
     }
 }

@@ -1175,6 +1175,40 @@ fn refusal_at_or_before_prepare_time_cancels_op_and_obligation_p7() -> Result<()
         ObligationState::Cancelled,
         "obligation must be Cancelled, not left Pending"
     );
+    // The tamper successor published a newer revision of the event after the prepared anchor, so
+    // the refusal's recorded evidence names that displacing anchor and verifies (fss-thzlz). The
+    // same cancellation claimed at the prepared anchor itself, where nothing was displaced, is
+    // refused (rthz2 H2).
+    let prepared = journal.prepared_record(&plan.intent.operation_id)?;
+    let displacing_anchor = authority.current().anchor.clone();
+    assert_ne!(displacing_anchor, plan.authority_anchor);
+    let recorded = journal
+        .operation(&plan.intent.operation_id)
+        .and_then(|operation| operation.result_digest)
+        .ok_or(ReferenceError::InvalidSpec("missing_cancellation_proof"))?;
+    assert_eq!(
+        recorded,
+        crate::alert::alert_cancellation_proof(
+            &prepared,
+            &plan.authority_anchor,
+            &displacing_anchor
+        )
+    );
+    assert!(crate::alert::alert_cancellation_is_bound(
+        recorded, &prepared, &plan, &authority
+    ));
+    let undisplaced = crate::alert::alert_cancellation_proof(
+        &prepared,
+        &plan.authority_anchor,
+        &plan.authority_anchor,
+    );
+    assert_ne!(undisplaced, recorded);
+    assert!(!crate::alert::alert_cancellation_is_bound(
+        undisplaced,
+        &prepared,
+        &plan,
+        &authority
+    ));
 
     let _ = fs::remove_file(path);
     Ok(())
@@ -1343,22 +1377,126 @@ fn cancel_proof_binds_operation_id_and_both_anchors_p10() -> Result<(), Box<dyn 
     );
     assert!(matches!(res, Err(ReferenceError::StaleEventAuthority)));
 
-    let expected_proof = crate::alert_cancel_proof(
+    // The cancel-request evidence binds the operation id and both anchors; the journal binds it
+    // with its whole prepared record (obligation id and terminal predicate included) into the
+    // cancellation proof that becomes the result digest (fss-thzlz).
+    let expected_evidence = crate::alert_cancel_proof(
         &plan.intent.operation_id,
         &plan.authority_anchor,
         &displacing_anchor,
+    );
+    let prepared = journal.prepared_record(&plan.intent.operation_id)?;
+    assert_eq!(prepared.intent, plan.intent);
+    assert_eq!(prepared.obligation_id, plan.obligation_id);
+    assert_eq!(
+        prepared.terminal_predicate,
+        REFERENCE_ALERT_TERMINAL_PREDICATE
+    );
+    let expected_proof =
+        fss_core::EffectCancellationRecord::for_prepared(&prepared, expected_evidence)
+            .proof_digest();
+    assert_eq!(
+        expected_proof,
+        crate::alert::alert_cancellation_proof(
+            &prepared,
+            &plan.authority_anchor,
+            &displacing_anchor
+        )
     );
 
     let op = journal
         .operation(&plan.intent.operation_id)
         .ok_or(ReferenceError::InvalidSpec("missing_operation"))?;
     assert_eq!(op.result_digest, Some(expected_proof));
+    let obligation = journal
+        .obligations()
+        .find(|item| item.obligation_id == plan.obligation_id)
+        .ok_or(ReferenceError::InvalidSpec("missing_obligation"))?;
+    assert_eq!(obligation.proof_digest, Some(expected_proof));
 
     // Ensure cancel proof is distinct when operation_id or displacing anchor changes.
     let diff_op = OperationId::parse("operation:alert:different")?;
-    let diff_proof =
+    let diff_evidence =
         crate::alert_cancel_proof(&diff_op, &plan.authority_anchor, &displacing_anchor);
+    assert_ne!(expected_evidence, diff_evidence);
+    let diff_proof =
+        fss_core::EffectCancellationRecord::for_prepared(&prepared, diff_evidence).proof_digest();
     assert_ne!(expected_proof, diff_proof);
+    // A different displacing anchor: here the prepared anchor itself, as if nothing displaced it.
+    let undisplaced_evidence = crate::alert_cancel_proof(
+        &plan.intent.operation_id,
+        &plan.authority_anchor,
+        &plan.authority_anchor,
+    );
+    assert_ne!(expected_evidence, undisplaced_evidence);
+    assert_ne!(
+        expected_proof,
+        crate::alert::alert_cancellation_proof(
+            &prepared,
+            &plan.authority_anchor,
+            &plan.authority_anchor
+        )
+    );
+    // A different prepared anchor gives different evidence too.
+    assert_ne!(
+        expected_evidence,
+        crate::alert_cancel_proof(
+            &plan.intent.operation_id,
+            &displacing_anchor,
+            &displacing_anchor
+        )
+    );
+    // The proof binds the whole prepared record: another obligation gives another proof.
+    let other_obligation = fss_core::PreparedEffect {
+        obligation_id: ObligationId::parse("obligation:alert:different")?,
+        ..prepared.clone()
+    };
+    assert_ne!(
+        expected_proof,
+        fss_core::EffectCancellationRecord::for_prepared(&other_obligation, expected_evidence)
+            .proof_digest()
+    );
+
+    // The guard's check (rthz2 H2): a proof verifies only at an anchor the ledger published at or
+    // after the batch that displaced the plan's event revision; never at the prepared anchor, never
+    // before it, and never at a later anchor that changed no revision of the event (the tamper
+    // capture published between them).
+    let batches = authority.batches();
+    let prepared_index = batches
+        .iter()
+        .position(|batch| batch.new_anchor == plan.authority_anchor)
+        .ok_or(ReferenceError::InvalidSpec("missing_prepared_batch"))?;
+    let successor_revision = decision_2.event.revision_digest();
+    let displacing_index = batches
+        .iter()
+        .position(|batch| {
+            batch.deltas.iter().any(|delta| {
+                delta.family == "event_revision" && delta.witness_digest == Some(successor_revision)
+            })
+        })
+        .ok_or(ReferenceError::InvalidSpec("missing_successor_batch"))?;
+    assert!(
+        displacing_index > prepared_index + 1,
+        "a later, non-displacing anchor lies between the prepared and the displacing batch"
+    );
+    for (index, batch) in batches.iter().enumerate() {
+        let proof = crate::alert::alert_cancellation_proof(
+            &prepared,
+            &plan.authority_anchor,
+            &batch.new_anchor,
+        );
+        assert_eq!(
+            crate::alert::alert_cancellation_is_bound(proof, &prepared, &plan, &authority),
+            index >= displacing_index,
+            "anchor of batch {index} (prepared {prepared_index}, displacing {displacing_index})"
+        );
+    }
+    assert!(crate::alert::alert_cancellation_is_bound(
+        expected_proof,
+        &prepared,
+        &plan,
+        &authority
+    ));
 
     let _ = fs::remove_file(path);
     Ok(())

@@ -139,11 +139,17 @@ keeps the original canonical layout and the `fss.operation_receipt.v1` digest do
 life, so every witness already published for it verifies against the exact bytes it was computed
 from; those bytes never carried the indeterminate reason, and a legacy reason-less indeterminate
 episode is kept as an explicit `unrecorded` marker that only a v1 receipt may hold. An operation
-prepared by a current record (kind 3, `EffectRecordVersion::V2`) uses the v2 layout, which opens
-with the `fss.operation_receipt.v2` tag, binds the indeterminate reason, and is digested under that
-registered domain. The durable effect journal names the version of every record in its record kind,
-replays each record under the transition rules it was written with, refuses a v1 record after any
-v2 record, and never rewrites stored bytes.
+prepared by a record written from fss-deir9 until fss-thzlz (kind 3, `EffectRecordVersion::V2`)
+uses the v2 layout, which opens with the `fss.operation_receipt.v2` tag, binds the indeterminate
+reason, and is digested under that registered domain. Every record written now is kind 4
+(`EffectRecordVersion::V3`, fss-thzlz): its operations use the same v2 layout and domain, and a
+cancellation must be a proof-bound `Cancel` record whose result digest is the
+`fss.effect_proof.cancellation.v1` proof, binding the whole prepared record to the digest of the
+evidence that caused the cancel; replay recomputes that proof. A v2 record keeps the unbound
+cancellation digest it was written with, so a v2 journal still opens. The durable effect journal
+names the version of every record in its record kind, replays each record under the transition
+rules it was written with, refuses a record older than any record before it, and never rewrites
+stored bytes.
 A durable effect journal file made only of kind-2 records is treated as legacy: all of its
 operations replay as v1, since it cannot be told apart from one written before fss-deir9.
 The indeterminate reason of a v1 receipt is not bound by its digest (v1 bytes never held

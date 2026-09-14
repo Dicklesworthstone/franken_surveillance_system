@@ -1093,7 +1093,8 @@ fn operation_receipt_versions_keep_v1_bytes_and_bind_the_v2_reason() -> Result<(
     };
 
     let base = sample_operation_receipt()?;
-    assert_eq!(base.record_version(), EffectRecordVersion::V2);
+    // A fresh preparation is v3, which keeps the v2 bytes and digest domain (fss-thzlz).
+    assert_eq!(base.record_version(), EffectRecordVersion::V3);
     assert_eq!(base.digest_domain(), OperationReceipt::DIGEST_DOMAIN_V2);
     let v1_base = replayed_v1_receipt(&base)?;
     assert_eq!(v1_base.record_version(), EffectRecordVersion::V1);
@@ -1272,10 +1273,10 @@ fn every_effect_state_has_an_explicit_transition_payload_rule() -> Result<(), Bo
                         Err(ContractError::EvidenceRequired)
                     }
                 }
-                EffectState::Cancelled => accepted_unless(
-                    !result || error.is_some_and(str::is_empty),
-                    ContractError::EvidenceRequired,
-                ),
+                // The generic transition cannot carry the cancel-request evidence a cancellation
+                // requires, so every payload is refused; `cancel` is the only way to cancel
+                // (fss-thzlz).
+                EffectState::Cancelled => Err(ContractError::EvidenceRequired),
                 EffectState::Failed => {
                     accepted_unless(!result || !names_a_reason, ContractError::EvidenceRequired)
                 }
@@ -1341,6 +1342,45 @@ fn every_effect_state_has_an_explicit_transition_payload_rule() -> Result<(), Bo
                 );
             }
         }
+    }
+    Ok(())
+}
+
+/// fss-thzlz: `cancel` is the only way to cancel. `validate_cancel` and `cancel` share its payload
+/// rule (a reason is optional, never empty), and the result digest is the bound proof.
+#[test]
+fn cancel_payload_rule_is_shared_by_validate_cancel_and_cancel() -> Result<(), Box<dyn Error>> {
+    let evidence = ContentDigest::sha256(b"cancel-request-evidence");
+    for reason in [None, Some(""), Some("operator_revoked")] {
+        let intent = sample_intent()?;
+        let operation_id = intent.operation_id.clone();
+        let mut journal = EffectJournal::new();
+        let _ = journal.prepare(
+            intent,
+            ObligationId::parse("obligation:cancel-rule")?,
+            "delivery_proved",
+            TimestampNs(100),
+        )?;
+        let proof = journal.cancellation_proof(&operation_id, evidence)?;
+        let expected = if reason == Some("") {
+            Err(ContractError::EvidenceRequired)
+        } else {
+            Ok(proof)
+        };
+        assert_eq!(
+            journal.validate_cancel(&operation_id, TimestampNs(101), evidence, reason),
+            expected,
+            "{reason:?}"
+        );
+        let applied = journal
+            .cancel(
+                &operation_id,
+                TimestampNs(101),
+                evidence,
+                reason.map(str::to_owned),
+            )
+            .map(|receipt| receipt.result_digest);
+        assert_eq!(applied, expected.map(Some), "{reason:?}");
     }
     Ok(())
 }

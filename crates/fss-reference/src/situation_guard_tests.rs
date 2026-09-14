@@ -374,6 +374,16 @@ pub(crate) fn guard_projection_spec() -> Result<crate::ReferenceProjectionSpec, 
     })
 }
 
+/// The cancel-request evidence of a dispatch refused before the authority ledger moved: the
+/// prepared authority anchor is also the anchor at refusal (fss-thzlz).
+fn unmoved_cancel_evidence(plan: &ReferenceAlertPlan) -> fss_core::ContentDigest {
+    crate::alert_cancel_proof(
+        &plan.intent.operation_id,
+        &plan.authority_anchor,
+        &plan.authority_anchor,
+    )
+}
+
 /// Drives the plan's operation through legal journal transitions into `state`.
 fn receipt_in_state(
     journal: &mut EffectJournal,
@@ -411,7 +421,8 @@ fn receipt_in_state(
                 Some("provider_timeout".to_owned()),
             ),
         ],
-        EffectState::Cancelled => vec![(EffectState::Cancelled, Some(observed), None)],
+        // A cancellation carries its cancel-request evidence, never a bare digest (fss-thzlz).
+        EffectState::Cancelled => Vec::new(),
     };
     let mut now = 100;
     for (next, digest, error) in steps {
@@ -422,6 +433,14 @@ fn receipt_in_state(
             TimestampNs(now),
             digest,
             error,
+        )?;
+    }
+    if state == EffectState::Cancelled {
+        let _ = journal.cancel(
+            &plan.intent.operation_id,
+            TimestampNs(101),
+            unmoved_cancel_evidence(plan),
+            None,
         )?;
     }
     Ok(journal
@@ -533,11 +552,10 @@ fn non_terminal_local_receipt_without_outcome_is_effect_uncertainty_not_terminal
 /// Control: a terminal local receipt is a proved terminal postcondition.
 #[test]
 fn terminal_local_receipt_is_a_terminal_effect() -> Result<(), Box<dyn Error>> {
-    for state in [
-        EffectState::Verified,
-        EffectState::Failed,
-        EffectState::Cancelled,
-    ] {
+    // A cancelled local receipt is terminal only when the guard admits its cancellation: a v2
+    // cancellation read from the durable journal (asserted in the v2 durable test). A v3
+    // cancellation the ledger did not displace is refused, never projected (fss-thzlz, rthz2 H2).
+    for state in [EffectState::Verified, EffectState::Failed] {
         let delta = local_receipt_delta(state)?;
         assert!(
             delta
@@ -3722,6 +3740,25 @@ fn assert_integrity_refusal(verdict: &GuardVerdict, context: &str) {
     );
 }
 
+/// fss-thzlz: the guard refuses a cancellation whose proof it cannot verify with the typed error
+/// naming the operation, not the generic integrity refusal.
+fn assert_unverifiable_cancellation(
+    verdict: &GuardVerdict,
+    operation_id: &OperationId,
+    context: &str,
+) {
+    assert!(
+        matches!(
+            verdict,
+            Err(ReferenceError::UnverifiableCancellationEvidence {
+                operation_id: refused,
+                ..
+            }) if refused == operation_id
+        ),
+        "{context}: {verdict:?}"
+    );
+}
+
 fn committed_receipt(journal: &mut EffectJournal, plan: &ReferenceAlertPlan) -> ReceiptResult {
     Ok(journal
         .transition(
@@ -3768,16 +3805,14 @@ fn verified_without_indeterminate(
         .clone())
 }
 
-/// A cancellation of the prepared operation with a proof digest, as the journal records it.
+/// A cancellation of the prepared operation with its cancel-request evidence, as the journal
+/// records it (fss-thzlz).
 fn cancelled_receipt(journal: &mut EffectJournal, plan: &ReferenceAlertPlan) -> ReceiptResult {
     Ok(journal
-        .transition(
+        .cancel(
             &plan.intent.operation_id,
-            EffectState::Cancelled,
             TimestampNs(101),
-            Some(fss_core::ContentDigest::sha256(
-                b"situation-guard-cancellation",
-            )),
+            unmoved_cancel_evidence(plan),
             None,
         )?
         .clone())
@@ -3996,9 +4031,14 @@ fn cancelled_receipt_that_was_committed_is_refused() -> Result<(), Box<dyn Error
         Ok(cancelled)
     })?;
     assert_integrity_refusal(&verdict, "a cancelled receipt with a commit time");
+    // The journal's own cancelled receipt passes every structural check: its only refusal is the
+    // typed one for its undisplaced evidence, not the committed variant's integrity refusal.
     let control = guard_verdict("cancelled-clean", cancelled_receipt)?;
     assert!(
-        control.is_ok(),
+        matches!(
+            control,
+            Err(ReferenceError::UnverifiableCancellationEvidence { .. })
+        ),
         "the journal's cancelled receipt: {control:?}"
     );
     Ok(())
@@ -4023,12 +4063,10 @@ fn cancelled_receipt_without_elapsed_time_is_refused() -> Result<(), Box<dyn Err
 #[test]
 fn journal_and_guard_refuse_an_empty_cancellation_reason() -> Result<(), Box<dyn Error>> {
     let (harness, mut journal, plan) = prepared_journal("cancelled-empty-reason")?;
-    let proof = fss_core::ContentDigest::sha256(b"cancelled-empty-reason");
-    let refused = journal.transition(
+    let refused = journal.cancel(
         &plan.intent.operation_id,
-        EffectState::Cancelled,
         TimestampNs(101),
-        Some(proof),
+        unmoved_cancel_evidence(&plan),
         Some(String::new()),
     );
     assert!(
@@ -4423,7 +4461,7 @@ fn hand_set_unrecorded_marker_on_a_v2_receipt_is_refused() -> Result<(), Box<dyn
                         "provider_timeout",
                     )?
                     .clone();
-                assert_eq!(receipt.record_version(), fss_core::EffectRecordVersion::V2);
+                assert_eq!(receipt.record_version(), fss_core::EffectRecordVersion::V3);
                 receipt.indeterminate_reason = unrecorded();
                 if clear_code {
                     receipt.error_code = None;
@@ -4576,5 +4614,997 @@ fn effect_journal_receipt_is_observed_and_derived_receipt_cannot_resolve_indeter
     );
 
     lifecycle.harness.cleanup();
+    Ok(())
+}
+
+// fss-thzlz: a cancelled receipt's result digest is the proof binding the journal's whole prepared
+// record to the evidence that caused the cancel. The journal requires the evidence and re-verifies
+// the binding on replay; the guard recomputes the proof from the prepared record and the anchors
+// the authority ledger published, never from the receipt's own fields.
+
+const THZLZ_CAPABILITIES: [&str; 2] = ["capability:alert.commit", CAPABILITY_EFFECT_RECONCILE];
+
+/// A plan prepared at 100 in an in-memory journal, with the authority ledger then moved past its
+/// prepared anchor by a publication lineage record, which leaves the event current.
+struct CancelCase {
+    harness: GuardHarness,
+    decision: ReferencePolicyDecision,
+    receipt: ReferenceEventReceipt,
+    journal: EffectJournal,
+    plan: ReferenceAlertPlan,
+    displacing: fss_core::LedgerAnchor,
+}
+
+impl CancelCase {
+    fn new(name: &str) -> Result<Self, Box<dyn Error>> {
+        let mut harness = GuardHarness::new(name)?;
+        let (decision, receipt) = harness.corroborated(name)?;
+        let mut journal = EffectJournal::new();
+        let plan = prepare(&decision, &receipt, &harness.authority, &mut journal, name)?;
+        let displacing = displace_authority(&mut harness, &decision, &receipt, &plan)?;
+        Ok(Self {
+            harness,
+            decision,
+            receipt,
+            journal,
+            plan,
+            displacing,
+        })
+    }
+
+    fn operation_id(&self) -> OperationId {
+        self.plan.intent.operation_id.clone()
+    }
+
+    /// The evidence of a dispatch of the plan refused at `anchor`.
+    fn evidence_at(&self, anchor: &fss_core::LedgerAnchor) -> fss_core::ContentDigest {
+        crate::alert_cancel_proof(
+            &self.plan.intent.operation_id,
+            &self.plan.authority_anchor,
+            anchor,
+        )
+    }
+
+    /// The guard's verdict on `receipt` handed in by the caller.
+    fn caller_verdict(
+        &self,
+        receipt: &fss_core::OperationReceipt,
+    ) -> Result<GuardVerdict, Box<dyn Error>> {
+        let mut projection_request = request(&self.decision, &self.receipt, &THZLZ_CAPABILITIES)?;
+        projection_request.alert_plan = Some(&self.plan);
+        Ok(compile_reference_situation_with_operation_receipt(
+            projection_request,
+            receipt,
+            &self.harness.authority,
+        )
+        .map(|_| ()))
+    }
+}
+
+/// Records a publication lineage batch after the plan's prepared anchor and returns the new
+/// (displacing) authority anchor.
+fn displace_authority(
+    harness: &mut GuardHarness,
+    decision: &ReferencePolicyDecision,
+    receipt: &ReferenceEventReceipt,
+    plan: &ReferenceAlertPlan,
+) -> Result<fss_core::LedgerAnchor, Box<dyn Error>> {
+    let mut basis_request = request(decision, receipt, &THZLZ_CAPABILITIES)?;
+    basis_request.alert_plan = Some(plan);
+    let basis = crate::project_reference_situation(
+        compile_reference_situation(basis_request, &harness.authority)?,
+        &guard_projection_spec()?,
+    )?;
+    crate::record_reference_publication(&mut harness.authority, &basis)?;
+    let displacing = harness.authority.current().anchor.clone();
+    assert_ne!(displacing, plan.authority_anchor);
+    Ok(displacing)
+}
+
+/// The prepared (v3) record and the proof-bound cancel record of an honest cancellation.
+fn honest_cancel_records(
+    plan: &ReferenceAlertPlan,
+    evidence: fss_core::ContentDigest,
+    proof: fss_core::ContentDigest,
+) -> [fss_core::EffectJournalTransition; 2] {
+    [
+        fss_core::EffectJournalTransition::Prepare {
+            intent: plan.intent.clone(),
+            obligation_id: plan.obligation_id.clone(),
+            terminal_predicate: crate::REFERENCE_ALERT_TERMINAL_PREDICATE.to_owned(),
+            now: TimestampNs(100),
+        },
+        fss_core::EffectJournalTransition::Cancel {
+            operation_id: plan.intent.operation_id.clone(),
+            now: TimestampNs(101),
+            cancel_request_evidence: evidence,
+            proof_digest: proof,
+            reason: Some("stale_event_authority".to_owned()),
+        },
+    ]
+}
+
+#[test]
+fn honest_cancellation_binds_in_the_journal_and_the_guard_requires_a_displacing_anchor()
+-> Result<(), Box<dyn Error>> {
+    let mut case = CancelCase::new("thzlz-honest")?;
+    let operation_id = case.operation_id();
+    let evidence = case.evidence_at(&case.displacing);
+    let cancelled = case
+        .journal
+        .cancel(
+            &operation_id,
+            TimestampNs(101),
+            evidence,
+            Some("stale_event_authority".to_owned()),
+        )?
+        .clone();
+    let prepared = case.journal.prepared_record(&operation_id)?;
+    let expected = crate::alert::alert_cancellation_proof(
+        &prepared,
+        &case.plan.authority_anchor,
+        &case.displacing,
+    );
+    assert_eq!(cancelled.state, EffectState::Cancelled);
+    assert_eq!(cancelled.result_digest, Some(expected));
+    assert_eq!(
+        cancelled.record_version(),
+        fss_core::EffectRecordVersion::V3
+    );
+    // The journal re-verifies the binding when it replays the record.
+    let replayed = EffectJournal::replay(honest_cancel_records(&case.plan, evidence, expected))?;
+    assert_eq!(replayed.operation(&operation_id), Some(&cancelled));
+    assert_eq!(replayed.journal_root(), case.journal.journal_root());
+    // A publication lineage record changes no revision of the event, so it displaced nothing: the
+    // guard refuses the evidence it names, typed (p10 verifies a displaced proof).
+    let verdict = case.caller_verdict(&cancelled)?;
+    assert_unverifiable_cancellation(&verdict, &operation_id, "evidence at a lineage-only anchor");
+    // A refusal before the ledger moved names the prepared anchor itself: the journal records it,
+    // and the guard refuses it, typed (rthz2 H2).
+    let [prepare_record, _] = honest_cancel_records(&case.plan, evidence, expected);
+    let mut unmoved = EffectJournal::replay([prepare_record])?;
+    let unmoved_receipt = unmoved
+        .cancel(
+            &operation_id,
+            TimestampNs(101),
+            case.evidence_at(&case.plan.authority_anchor),
+            None,
+        )?
+        .clone();
+    let verdict = case.caller_verdict(&unmoved_receipt)?;
+    assert_unverifiable_cancellation(&verdict, &operation_id, "evidence at the prepared anchor");
+    case.harness.cleanup();
+    Ok(())
+}
+
+#[test]
+fn unbound_cancellation_proofs_are_refused_by_the_journal_and_the_guard()
+-> Result<(), Box<dyn Error>> {
+    let case = CancelCase::new("thzlz-unbound")?;
+    let operation_id = case.operation_id();
+    let evidence = case.evidence_at(&case.displacing);
+    let prepared = case.journal.prepared_record(&operation_id)?;
+    let honest = case
+        .journal
+        .clone()
+        .cancel(&operation_id, TimestampNs(101), evidence, None)?
+        .clone();
+    let other_operation = OperationId::parse("operation:situation-guard:thzlz-elsewhere")?;
+    let earlier_anchor = case
+        .harness
+        .authority
+        .batches()
+        .first()
+        .map(|batch| batch.new_anchor.clone())
+        .ok_or("empty authority ledger")?;
+    assert_ne!(earlier_anchor, case.plan.authority_anchor);
+    let record = |prepared: &fss_core::PreparedEffect, evidence| {
+        fss_core::EffectCancellationRecord::for_prepared(prepared, evidence).proof_digest()
+    };
+    let own_fields = fss_core::ContentDigest::sha256(
+        format!("{}:{}", honest.prepared_at.0, honest.updated_at.0).as_bytes(),
+    );
+    let cases = [
+        (
+            "forged digest",
+            fss_core::ContentDigest::sha256(b"forged-cancellation-proof"),
+        ),
+        ("bare evidence, as a v2 record holds it", evidence),
+        (
+            "self-minted from the receipt's own fields",
+            record(&prepared, own_fields),
+        ),
+        (
+            "evidence of another operation",
+            record(
+                &prepared,
+                crate::alert_cancel_proof(
+                    &other_operation,
+                    &case.plan.authority_anchor,
+                    &case.displacing,
+                ),
+            ),
+        ),
+        (
+            "prepared record of another operation",
+            record(
+                &fss_core::PreparedEffect {
+                    intent: fss_core::EffectIntent {
+                        operation_id: other_operation.clone(),
+                        ..prepared.intent.clone()
+                    },
+                    ..prepared.clone()
+                },
+                evidence,
+            ),
+        ),
+        (
+            "another plan's prepared anchor",
+            record(
+                &prepared,
+                crate::alert_cancel_proof(&operation_id, &earlier_anchor, &case.displacing),
+            ),
+        ),
+        (
+            "a refusal anchor before the prepared anchor",
+            case.journal
+                .cancellation_proof(&operation_id, case.evidence_at(&earlier_anchor))?,
+        ),
+        (
+            "another plan's obligation",
+            record(
+                &fss_core::PreparedEffect {
+                    obligation_id: ObligationId::parse("obligation:situation-guard:elsewhere")?,
+                    ..prepared.clone()
+                },
+                evidence,
+            ),
+        ),
+        (
+            "another terminal predicate",
+            record(
+                &fss_core::PreparedEffect {
+                    terminal_predicate: "delivery_refuted".to_owned(),
+                    ..prepared.clone()
+                },
+                evidence,
+            ),
+        ),
+        (
+            "the intent alone",
+            fss_core::EffectCancellationRecord::new(prepared.intent.intent_digest(), evidence)
+                .proof_digest(),
+        ),
+    ];
+    for (label, proof) in cases {
+        assert_ne!(Some(proof), honest.result_digest, "{label}");
+        // The journal refuses a record claiming it for the honest evidence ...
+        let [_, cancel] = honest_cancel_records(&case.plan, evidence, proof);
+        let mut live = case.journal.clone();
+        let applied = live.apply_transition(cancel).map(|_| ());
+        assert!(
+            matches!(applied, Err(fss_core::ContractError::InvalidDigest)),
+            "journal, {label}: {applied:?}"
+        );
+        assert_eq!(live, case.journal, "journal, {label}");
+        // ... and the guard refuses the receipt carrying it.
+        let mut forged = honest.clone();
+        forged.result_digest = Some(proof);
+        assert_unverifiable_cancellation(
+            &case.caller_verdict(&forged)?,
+            &operation_id,
+            &format!("guard, {label}"),
+        );
+    }
+    // The honest proof names a lineage-only anchor, which displaced nothing, so the guard refuses it
+    // too; the journal tells it apart from every forged proof above, and p10 verifies a displaced
+    // proof (rthz2 H2).
+    let verdict = case.caller_verdict(&honest)?;
+    assert_unverifiable_cancellation(&verdict, &operation_id, "control at a lineage-only anchor");
+    case.harness.cleanup();
+    Ok(())
+}
+
+#[test]
+fn cancellation_without_evidence_is_refused_by_the_journal_and_the_guard()
+-> Result<(), Box<dyn Error>> {
+    let mut case = CancelCase::new("thzlz-no-evidence")?;
+    let operation_id = case.operation_id();
+    let honest_proof = case
+        .journal
+        .cancellation_proof(&operation_id, case.evidence_at(&case.displacing))?;
+    // The journal: the generic transition carries no evidence, so even the honest proof is
+    // refused, and nothing is recorded.
+    let before = case.journal.clone();
+    for digest in [None, Some(honest_proof)] {
+        let validated = case.journal.validate_transition(
+            &operation_id,
+            EffectState::Cancelled,
+            TimestampNs(101),
+            digest,
+            Some("stale_event_authority"),
+        );
+        assert!(
+            matches!(validated, Err(fss_core::ContractError::EvidenceRequired)),
+            "{digest:?}: {validated:?}"
+        );
+        let applied = case.journal.transition(
+            &operation_id,
+            EffectState::Cancelled,
+            TimestampNs(101),
+            digest,
+            Some("stale_event_authority".to_owned()),
+        );
+        assert!(
+            matches!(applied, Err(fss_core::ContractError::EvidenceRequired)),
+            "{digest:?}: {applied:?}"
+        );
+    }
+    assert_eq!(case.journal, before);
+    // The guard: a cancelled receipt with no proof, or with evidence the authority ledger never
+    // published, is refused. The journal cannot see the ledger, so it records such evidence as
+    // given; only its proof is checked there.
+    let fabricated = fss_core::ContentDigest::sha256(b"evidence-no-ledger-published");
+    let recorded = case
+        .journal
+        .clone()
+        .cancel(&operation_id, TimestampNs(101), fabricated, None)?
+        .clone();
+    assert_unverifiable_cancellation(
+        &case.caller_verdict(&recorded)?,
+        &operation_id,
+        "evidence the ledger never published",
+    );
+    let mut proofless = recorded.clone();
+    proofless.result_digest = None;
+    assert_integrity_refusal(&case.caller_verdict(&proofless)?, "no proof at all");
+    case.harness.cleanup();
+    Ok(())
+}
+
+#[test]
+fn self_minted_cancellation_is_refused_by_the_guard() -> Result<(), Box<dyn Error>> {
+    // The rthz probe, inverted: a receipt the journal never recorded, whose proof is minted from
+    // the receipt's own fields and the prepared record the plan names.
+    let verdict = guard_verdict("thzlz-self-minted", |journal, plan| {
+        let mut receipt = journal
+            .operation(&plan.intent.operation_id)
+            .ok_or(ReferenceError::InvalidSpec("self_minted_missing"))?
+            .clone();
+        receipt.state = EffectState::Cancelled;
+        receipt.updated_at = TimestampNs(150);
+        let prepared = journal.prepared_record(&plan.intent.operation_id)?;
+        let own_fields = fss_core::ContentDigest::sha256(
+            format!("{}:{}", receipt.prepared_at.0, receipt.updated_at.0).as_bytes(),
+        );
+        receipt.result_digest = Some(
+            fss_core::EffectCancellationRecord::for_prepared(&prepared, own_fields).proof_digest(),
+        );
+        Ok(receipt)
+    })?;
+    assert_unverifiable_cancellation(
+        &verdict,
+        &OperationId::parse("operation:situation-guard:thzlz-self-minted")?,
+        "a self-minted cancellation",
+    );
+    Ok(())
+}
+
+#[test]
+fn evidence_free_cancellation_is_refused_by_the_journal() -> Result<(), Box<dyn Error>> {
+    // The rthz probe, inverted: a cancellation minted from the journal's own prepared record and
+    // a caller-chosen time, with no cancel-request evidence.
+    let (harness, mut journal, plan) = prepared_journal("thzlz-evidence-free")?;
+    let prepared = journal.prepared_record(&plan.intent.operation_id)?;
+    let minted = fss_core::EffectCancellationRecord::for_prepared(
+        &prepared,
+        fss_core::ContentDigest::sha256(b"999"),
+    )
+    .proof_digest();
+    let before = journal.clone();
+    let refused = journal.transition(
+        &plan.intent.operation_id,
+        EffectState::Cancelled,
+        TimestampNs(999),
+        Some(minted),
+        None,
+    );
+    assert!(
+        matches!(refused, Err(fss_core::ContractError::EvidenceRequired)),
+        "{refused:?}"
+    );
+    assert_eq!(journal, before);
+    harness.cleanup();
+    Ok(())
+}
+
+/// Writes `records` as raw durable effect journal records of `kind`, as an earlier release wrote
+/// them, and opens the journal.
+fn raw_durable_journal(
+    name: &str,
+    kind: u16,
+    records: &[fss_core::EffectJournalTransition],
+) -> Result<(crate::DurableEffectJournal, std::path::PathBuf), Box<dyn Error>> {
+    let path = std::env::temp_dir().join(format!(
+        "fss-reference-guard-thzlz-{}-{name}.journal",
+        std::process::id()
+    ));
+    let _ = fs::remove_file(&path);
+    {
+        let mut raw = fss_ledger::Journal::open(&path, IncompleteTailPolicy::Reject)?;
+        for record in records {
+            let _ = raw.append(
+                kind,
+                &fss_core::CanonicalEncode::try_canonical_bytes(record)?,
+            )?;
+        }
+    }
+    let journal = crate::DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+    Ok((journal, path))
+}
+
+/// The records an earlier release wrote for a dispatch refused before the ledger moved: the
+/// prepared plan, then a cancellation holding the bare `alert_cancel_proof` digest.
+fn unbound_alert_cancel_records(
+    plan: &ReferenceAlertPlan,
+) -> [fss_core::EffectJournalTransition; 2] {
+    [
+        fss_core::EffectJournalTransition::Prepare {
+            intent: plan.intent.clone(),
+            obligation_id: plan.obligation_id.clone(),
+            terminal_predicate: crate::REFERENCE_ALERT_TERMINAL_PREDICATE.to_owned(),
+            now: TimestampNs(100),
+        },
+        fss_core::EffectJournalTransition::Transition {
+            operation_id: plan.intent.operation_id.clone(),
+            next: EffectState::Cancelled,
+            now: TimestampNs(101),
+            result_digest: Some(unmoved_cancel_evidence(plan)),
+            error_code: Some("stale_event_authority".to_owned()),
+        },
+    ]
+}
+
+#[test]
+fn v2_alert_cancel_proof_cancellation_opens_and_the_guard_accepts_it_from_the_journal()
+-> Result<(), Box<dyn Error>> {
+    let name = "thzlz-v2-durable";
+    let mut harness = GuardHarness::new(name)?;
+    let (decision, receipt) = harness.corroborated(name)?;
+    let plan = prepare(
+        &decision,
+        &receipt,
+        &harness.authority,
+        &mut EffectJournal::new(),
+        name,
+    )?;
+    let (journal, path) = raw_durable_journal(
+        name,
+        crate::EFFECT_TRANSITION_V2_RECORD_KIND,
+        &unbound_alert_cancel_records(&plan),
+    )?;
+    let held = journal
+        .operation(&plan.intent.operation_id)
+        .ok_or(fss_core::ContractError::NotFound)?
+        .clone();
+    assert_eq!(held.state, EffectState::Cancelled);
+    assert_eq!(held.record_version(), fss_core::EffectRecordVersion::V2);
+    assert_eq!(held.result_digest, Some(unmoved_cancel_evidence(&plan)));
+
+    // Read from the journal, whose v2 record wrote it, the guard accepts it.
+    let published = durable_publication(
+        &harness,
+        &journal,
+        &decision,
+        &receipt,
+        Some(&plan),
+        None,
+        None,
+    );
+    assert!(published.is_ok(), "{:?}", published.err());
+
+    // A v2 record wrote this cancellation, so the guard exempts it, and the local-state cell is a
+    // known, terminal effect.
+    assert_eq!(
+        journal
+            .effect_journal()
+            .cancellation_record_version(&plan.intent.operation_id),
+        Some(fss_core::EffectRecordVersion::V2)
+    );
+    if let Ok(publication) = &published {
+        let local_state = publication
+            .situation
+            .capsule
+            .frame
+            .knowledge_cells
+            .iter()
+            .find(|cell| cell.claim_id().ends_with(":local-state"))
+            .ok_or("missing local-state cell")?;
+        assert_eq!(local_state.knowledge_state(), KnowledgeState::Known);
+    }
+
+    // Handed in by a caller, the same receipt is held to the proof binding and refused.
+    let mut projection_request = request(&decision, &receipt, &THZLZ_CAPABILITIES)?;
+    projection_request.alert_plan = Some(&plan);
+    let verdict = compile_reference_situation_with_operation_receipt(
+        projection_request,
+        &held,
+        &harness.authority,
+    )
+    .map(|_| ());
+    assert_unverifiable_cancellation(
+        &verdict,
+        &plan.intent.operation_id,
+        "a caller's v2 unbound cancellation",
+    );
+
+    // The same records written as v3 never open: a v3 cancellation must be bound.
+    let (refused, v3_path) = {
+        let path = std::env::temp_dir().join(format!(
+            "fss-reference-guard-thzlz-{}-{name}-v3.journal",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&path);
+        {
+            let mut raw = fss_ledger::Journal::open(&path, IncompleteTailPolicy::Reject)?;
+            for record in unbound_alert_cancel_records(&plan) {
+                let _ = raw.append(
+                    crate::EFFECT_TRANSITION_V3_RECORD_KIND,
+                    &fss_core::CanonicalEncode::try_canonical_bytes(&record)?,
+                )?;
+            }
+        }
+        (
+            crate::DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject),
+            path,
+        )
+    };
+    assert!(
+        matches!(
+            refused,
+            Err(crate::DurableEffectError::Contract(
+                fss_core::ContractError::EvidenceRequired
+            ))
+        ),
+        "{:?}",
+        refused.as_ref().err()
+    );
+    drop(journal);
+    harness.cleanup();
+    let _ = fs::remove_file(&path);
+    let _ = fs::remove_file(&v3_path);
+    Ok(())
+}
+
+#[test]
+fn v1_cancellation_is_refused_from_a_caller_and_accepted_from_the_journal()
+-> Result<(), Box<dyn Error>> {
+    let name = "thzlz-v1-durable";
+    let mut harness = GuardHarness::new(name)?;
+    let (decision, receipt) = harness.corroborated(name)?;
+    let plan = prepare(
+        &decision,
+        &receipt,
+        &harness.authority,
+        &mut EffectJournal::new(),
+        name,
+    )?;
+    let (journal, path) = raw_durable_journal(
+        name,
+        crate::EFFECT_TRANSITION_RECORD_KIND,
+        &unbound_alert_cancel_records(&plan),
+    )?;
+    let held = journal
+        .operation(&plan.intent.operation_id)
+        .ok_or(fss_core::ContractError::NotFound)?
+        .clone();
+    assert_eq!(held.state, EffectState::Cancelled);
+    assert_eq!(held.record_version(), fss_core::EffectRecordVersion::V1);
+
+    let published = durable_publication(
+        &harness,
+        &journal,
+        &decision,
+        &receipt,
+        Some(&plan),
+        None,
+        None,
+    );
+    assert!(published.is_ok(), "{:?}", published.err());
+
+    // A caller-supplied v1 receipt is refused (fss-deir9), and so is one replayed in memory.
+    let in_memory = EffectJournal::replay_versioned(
+        unbound_alert_cancel_records(&plan)
+            .into_iter()
+            .map(|record| (fss_core::EffectRecordVersion::V1, record)),
+    )?;
+    let replayed = in_memory
+        .operation(&plan.intent.operation_id)
+        .ok_or(fss_core::ContractError::NotFound)?;
+    assert_eq!(replayed, &held);
+    for candidate in [&held, replayed] {
+        let mut projection_request = request(&decision, &receipt, &THZLZ_CAPABILITIES)?;
+        projection_request.alert_plan = Some(&plan);
+        let verdict = compile_reference_situation_with_operation_receipt(
+            projection_request,
+            candidate,
+            &harness.authority,
+        )
+        .map(|_| ());
+        assert_integrity_refusal(&verdict, "a caller's v1 cancellation");
+    }
+    drop(journal);
+    harness.cleanup();
+    let _ = fs::remove_file(&path);
+    Ok(())
+}
+
+#[test]
+fn durable_bound_cancellation_reopens_and_the_guard_requires_a_displacing_anchor()
+-> Result<(), Box<dyn Error>> {
+    let name = "thzlz-durable-bound";
+    let mut harness = GuardHarness::new(name)?;
+    let (decision, receipt) = harness.corroborated(name)?;
+    let (mut journal, path) = durable_journal(name)?;
+    let plan = durable_prepare(&mut journal, &harness, &decision, &receipt, name)?;
+    let displacing = displace_authority(&mut harness, &decision, &receipt, &plan)?;
+    let evidence = crate::alert_cancel_proof(
+        &plan.intent.operation_id,
+        &plan.authority_anchor,
+        &displacing,
+    );
+    let cancelled = journal
+        .cancel(
+            &plan.intent.operation_id,
+            TimestampNs(101),
+            evidence,
+            Some("stale_event_authority".to_owned()),
+        )?
+        .clone();
+    assert_eq!(
+        cancelled.record_version(),
+        fss_core::EffectRecordVersion::V3
+    );
+    let root = journal.last_root();
+    drop(journal);
+    let reopened = crate::DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+    assert_eq!(
+        reopened.operation(&plan.intent.operation_id),
+        Some(&cancelled)
+    );
+    assert_eq!(reopened.last_root(), root);
+    // Reopened, the cancellation is still keyed as written by a v3 record, and its lineage-only
+    // anchor displaced nothing: the guard refuses it, typed, from the durable journal.
+    assert_eq!(
+        reopened
+            .effect_journal()
+            .cancellation_record_version(&plan.intent.operation_id),
+        Some(fss_core::EffectRecordVersion::V3)
+    );
+    let mut durable_request = request(&decision, &receipt, &THZLZ_CAPABILITIES)?;
+    durable_request.alert_plan = Some(&plan);
+    let verdict = crate::compile_reference_situation_with_durable_journal(
+        durable_request,
+        &reopened,
+        &harness.authority,
+    )
+    .map(|_| ());
+    assert_unverifiable_cancellation(
+        &verdict,
+        &plan.intent.operation_id,
+        "a durable v3 cancellation at a lineage-only anchor",
+    );
+    drop(reopened);
+    harness.cleanup();
+    let _ = fs::remove_file(&path);
+    Ok(())
+}
+
+/// fss-thzlz: the journal records, the guard verifies. The effect journal holds no ledger, so it
+/// records a cancellation whose evidence the authority ledger never published; the situation guard
+/// refuses it with the typed error naming the unverifiable cancellation evidence, read from the
+/// durable journal or handed in by a caller. The operation therefore never surfaces as cancelled,
+/// and never as still pending.
+#[test]
+fn unpublished_cancellation_evidence_is_refused_typed_never_cancelled_or_pending()
+-> Result<(), Box<dyn Error>> {
+    let name = "thzlz-unpublished-evidence";
+    let mut harness = GuardHarness::new(name)?;
+    let (decision, receipt) = harness.corroborated(name)?;
+    let (mut journal, path) = durable_journal(name)?;
+    let plan = durable_prepare(&mut journal, &harness, &decision, &receipt, name)?;
+    let operation_id = plan.intent.operation_id.clone();
+    let fabricated = fss_core::ContentDigest::sha256(b"evidence-the-ledger-never-published");
+
+    // The journal records it: its proof binds the journal's own prepared record.
+    let recorded = journal
+        .cancel(
+            &operation_id,
+            TimestampNs(101),
+            fabricated,
+            Some("stale_event_authority".to_owned()),
+        )?
+        .clone();
+    let proof = journal
+        .effect_journal()
+        .cancellation_proof(&operation_id, fabricated)?;
+    assert_eq!(recorded.state, EffectState::Cancelled);
+    assert_eq!(recorded.result_digest, Some(proof));
+    drop(journal);
+    let reopened = crate::DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+    assert_eq!(reopened.operation(&operation_id), Some(&recorded));
+
+    // Read from the durable journal, the guard refuses it with the typed error: no situation, so
+    // no cancelled and no pending projection of the operation.
+    let mut durable_request = request(&decision, &receipt, &THZLZ_CAPABILITIES)?;
+    durable_request.alert_plan = Some(&plan);
+    let refusal = crate::compile_reference_situation_with_durable_journal(
+        durable_request,
+        &reopened,
+        &harness.authority,
+    )
+    .err()
+    .ok_or("the guard projected a cancellation it cannot verify")?;
+    assert!(
+        matches!(
+            &refusal,
+            ReferenceError::UnverifiableCancellationEvidence {
+                operation_id: refused,
+                proof_digest,
+            } if *refused == operation_id && *proof_digest == Some(proof)
+        ),
+        "{refusal:?}"
+    );
+    let message = refusal.to_string();
+    assert!(
+        message.contains(operation_id.as_str())
+            && message.contains("neither cancelled nor pending"),
+        "{message}"
+    );
+
+    // Handed in by a caller: the same typed refusal.
+    let mut caller_request = request(&decision, &receipt, &THZLZ_CAPABILITIES)?;
+    caller_request.alert_plan = Some(&plan);
+    let verdict = compile_reference_situation_with_operation_receipt(
+        caller_request,
+        &recorded,
+        &harness.authority,
+    )
+    .map(|_| ());
+    assert_unverifiable_cancellation(
+        &verdict,
+        &operation_id,
+        "a caller's cancellation with unpublished evidence",
+    );
+    drop(reopened);
+    harness.cleanup();
+    let _ = fs::remove_file(&path);
+    Ok(())
+}
+
+// rthz2 H1/H3: the guard keys its legacy exemption on the version of the record that WROTE the
+// cancellation, the same key the journal checks it under, never on the version the operation was
+// prepared under. A cancellation written today is a v3 record, so it is verified against published
+// evidence even for an operation a v1 or v2 record prepared.
+
+/// An operation prepared by a legacy record of `kind`, cancelled today through the durable journal
+/// with evidence the ledger never published: the journal records it as a v3 cancellation, and the
+/// guard refuses it, never projecting it as cancelled.
+fn legacy_prepared_fabricated_cancel_is_refused(
+    name: &str,
+    kind: u16,
+    prepared_version: fss_core::EffectRecordVersion,
+) -> Result<(), Box<dyn Error>> {
+    let mut harness = GuardHarness::new(name)?;
+    let (decision, receipt) = harness.corroborated(name)?;
+    let plan = prepare(
+        &decision,
+        &receipt,
+        &harness.authority,
+        &mut EffectJournal::new(),
+        name,
+    )?;
+    let operation_id = plan.intent.operation_id.clone();
+    let [prepare_record, _] = unbound_alert_cancel_records(&plan);
+    let (mut journal, path) = raw_durable_journal(name, kind, &[prepare_record])?;
+    let fabricated = fss_core::ContentDigest::sha256(b"rthz2-evidence-the-ledger-never-published");
+    let recorded = journal
+        .cancel(
+            &operation_id,
+            TimestampNs(101),
+            fabricated,
+            Some("stale_event_authority".to_owned()),
+        )?
+        .clone();
+    assert_eq!(recorded.state, EffectState::Cancelled);
+    // The receipt keeps its prepare-time version (and its bytes); the cancellation is a v3 record.
+    assert_eq!(recorded.record_version(), prepared_version);
+    assert_eq!(
+        journal
+            .effect_journal()
+            .cancellation_record_version(&operation_id),
+        Some(fss_core::EffectRecordVersion::V3)
+    );
+    drop(journal);
+    let reopened = crate::DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+    assert_eq!(
+        reopened
+            .effect_journal()
+            .cancellation_record_version(&operation_id),
+        Some(fss_core::EffectRecordVersion::V3)
+    );
+
+    // From the durable journal: the typed refusal.
+    let mut durable_request = request(&decision, &receipt, &THZLZ_CAPABILITIES)?;
+    durable_request.alert_plan = Some(&plan);
+    let durable = crate::compile_reference_situation_with_durable_journal(
+        durable_request,
+        &reopened,
+        &harness.authority,
+    )
+    .map(|_| ());
+    assert_unverifiable_cancellation(
+        &durable,
+        &operation_id,
+        &format!("{prepared_version:?}-prepared, fabricated v3 cancel, durable journal"),
+    );
+
+    // From a caller: a v2 receipt is held to the proof binding, so the same typed refusal; a v1
+    // receipt is never admitted from a caller at all (fss-deir9), so it is refused before its
+    // evidence is examined. Either way it never projects as cancelled.
+    let mut caller_request = request(&decision, &receipt, &THZLZ_CAPABILITIES)?;
+    caller_request.alert_plan = Some(&plan);
+    let caller = compile_reference_situation_with_operation_receipt(
+        caller_request,
+        &recorded,
+        &harness.authority,
+    )
+    .map(|_| ());
+    if prepared_version == fss_core::EffectRecordVersion::V1 {
+        assert_integrity_refusal(&caller, "v1-prepared, fabricated v3 cancel, caller");
+    } else {
+        assert_unverifiable_cancellation(
+            &caller,
+            &operation_id,
+            "v2-prepared, fabricated v3 cancel, caller",
+        );
+    }
+    drop(reopened);
+    harness.cleanup();
+    let _ = fs::remove_file(&path);
+    Ok(())
+}
+
+/// The rthz2 H3 probe, inverted.
+#[test]
+fn v1_prepared_fabricated_v3_cancel_is_refused_typed() -> Result<(), Box<dyn Error>> {
+    legacy_prepared_fabricated_cancel_is_refused(
+        "thzlz-v1-prepared-fabricated",
+        crate::EFFECT_TRANSITION_RECORD_KIND,
+        fss_core::EffectRecordVersion::V1,
+    )
+}
+
+/// The rthz2 H1 probe, inverted.
+#[test]
+fn v2_prepared_fabricated_v3_cancel_is_refused_typed() -> Result<(), Box<dyn Error>> {
+    legacy_prepared_fabricated_cancel_is_refused(
+        "thzlz-v2-prepared-fabricated",
+        crate::EFFECT_TRANSITION_V2_RECORD_KIND,
+        fss_core::EffectRecordVersion::V2,
+    )
+}
+
+/// The rthz2 H2 probes, inverted: evidence whose "displacing" anchor is the plan's own prepared
+/// anchor proves that an anchor was published, not that dispatch was displaced. It is refused,
+/// typed, from a caller and from the durable journal.
+#[test]
+fn undisplaced_anchor_evidence_is_refused_typed_from_caller_and_durable()
+-> Result<(), Box<dyn Error>> {
+    let verdict = guard_verdict("thzlz-undisplaced-caller", |journal, plan| {
+        Ok(journal
+            .cancel(
+                &plan.intent.operation_id,
+                TimestampNs(101),
+                unmoved_cancel_evidence(plan),
+                Some("stale_event_authority".to_owned()),
+            )?
+            .clone())
+    })?;
+    assert_unverifiable_cancellation(
+        &verdict,
+        &OperationId::parse("operation:situation-guard:thzlz-undisplaced-caller")?,
+        "undisplaced-anchor evidence from a caller",
+    );
+
+    let name = "thzlz-undisplaced-durable";
+    let mut harness = GuardHarness::new(name)?;
+    let (decision, receipt) = harness.corroborated(name)?;
+    let (mut journal, path) = durable_journal(name)?;
+    let plan = durable_prepare(&mut journal, &harness, &decision, &receipt, name)?;
+    let _ = journal.cancel(
+        &plan.intent.operation_id,
+        TimestampNs(101),
+        unmoved_cancel_evidence(&plan),
+        Some("stale_event_authority".to_owned()),
+    )?;
+    let mut durable_request = request(&decision, &receipt, &THZLZ_CAPABILITIES)?;
+    durable_request.alert_plan = Some(&plan);
+    let verdict = crate::compile_reference_situation_with_durable_journal(
+        durable_request,
+        &journal,
+        &harness.authority,
+    )
+    .map(|_| ());
+    assert_unverifiable_cancellation(
+        &verdict,
+        &plan.intent.operation_id,
+        "undisplaced-anchor evidence from the durable journal",
+    );
+    drop(journal);
+    harness.cleanup();
+    let _ = fs::remove_file(&path);
+    Ok(())
+}
+
+/// Revalidation can refuse a dispatch while the authority anchor has not moved (here, a rewritten
+/// plan whose prepare-time head is not in the ledger's history): the journal records the
+/// cancellation with evidence at the prepared anchor, and the guard surfaces it as unverifiable cancellation evidence, never as
+/// cancelled and never as pending (fss-thzlz, rthz2 H2).
+#[test]
+fn revalidation_refusal_before_the_anchor_moved_is_refused_typed_by_the_guard()
+-> Result<(), Box<dyn Error>> {
+    let name = "thzlz-unmoved-refusal";
+    let mut harness = GuardHarness::new(name)?;
+    let (decision, receipt) = harness.corroborated(name)?;
+    let mut journal = EffectJournal::new();
+    let plan = prepare(&decision, &receipt, &harness.authority, &mut journal, name)?;
+    let mut provider = crate::ReferenceAlertProvider::with_provider_id("provider:thzlz:unmoved");
+    // Step 7 of revalidation refuses a prepare-time head outside the ledger's history; the plan
+    // still names the prepared anchor and the ledger has not moved.
+    let mut rewritten = plan.clone();
+    rewritten.prepared_head_digest =
+        fss_core::ContentDigest::sha256(b"thzlz:rewritten-prepared-head");
+    let refused = crate::dispatch_reference_alert(
+        &rewritten,
+        &harness.authority,
+        crate::ReferenceProviderBehavior::Deliver,
+        TimestampNs(50),
+        TimestampNs(60),
+        &mut journal,
+        &mut provider,
+    );
+    assert!(
+        matches!(refused, Err(ReferenceError::StaleEventAuthority)),
+        "{refused:?}"
+    );
+    assert_eq!(provider.message_count(), 0);
+    assert_eq!(harness.authority.current().anchor, plan.authority_anchor);
+    let recorded = journal
+        .operation(&plan.intent.operation_id)
+        .ok_or(fss_core::ContractError::NotFound)?
+        .clone();
+    assert_eq!(recorded.state, EffectState::Cancelled);
+    assert_eq!(
+        recorded.result_digest,
+        Some(
+            journal
+                .cancellation_proof(&plan.intent.operation_id, unmoved_cancel_evidence(&plan))?
+        )
+    );
+    let mut caller_request = request(&decision, &receipt, &THZLZ_CAPABILITIES)?;
+    caller_request.alert_plan = Some(&plan);
+    let verdict = compile_reference_situation_with_operation_receipt(
+        caller_request,
+        &recorded,
+        &harness.authority,
+    )
+    .map(|_| ());
+    assert_unverifiable_cancellation(
+        &verdict,
+        &plan.intent.operation_id,
+        "a revalidation refusal before the anchor moved",
+    );
+    harness.cleanup();
     Ok(())
 }

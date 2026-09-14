@@ -32,13 +32,23 @@ use crate::outcome::{ALERT_OUTCOME_FAMILY, ReferenceAlertOutcomeReceipt};
 /// it prepared keeps the v1 receipt encoding; the journal never writes it again (fss-deir9).
 pub const EFFECT_TRANSITION_RECORD_KIND: u16 = 2;
 
-/// Journal record kind of an effect transition written by fss-deir9 or later
+/// Journal record kind of an effect transition written from fss-deir9 until fss-thzlz
 /// ([`EffectRecordVersion::V2`]).
 ///
 /// The payload is the same `fss.effect_transition.v1` encoding; the kind records which transition
 /// rules and receipt encoding the record was written under, so replay verifies every witness
-/// under its own version without migrating or rewriting any stored byte.
+/// under its own version without migrating or rewriting any stored byte. Replay still reads it,
+/// with a cancellation keeping the unbound digest it was written with; the journal never writes it
+/// again (fss-thzlz).
 pub const EFFECT_TRANSITION_V2_RECORD_KIND: u16 = 3;
+
+/// Journal record kind of an effect transition written by fss-thzlz or later
+/// ([`EffectRecordVersion::V3`]).
+///
+/// The payload is the same `fss.effect_transition.v1` encoding. Its receipts use the v2 receipt
+/// encoding; a cancellation is a proof-bound `Cancel` record, which replay re-verifies against the
+/// journal's own prepared record and the recorded cancel-request evidence.
+pub const EFFECT_TRANSITION_V3_RECORD_KIND: u16 = 4;
 
 /// Errors raised by the durable effect journal.
 #[derive(Debug)]
@@ -713,7 +723,7 @@ impl DurableEffectJournal {
         };
         let bytes = transition.try_canonical_bytes()?;
         self.journal
-            .append(EFFECT_TRANSITION_V2_RECORD_KIND, &bytes)?;
+            .append(EFFECT_TRANSITION_V3_RECORD_KIND, &bytes)?;
         let receipt = self
             .memory
             .prepare(intent, obligation_id, terminal_predicate_str, now)?;
@@ -721,6 +731,10 @@ impl DurableEffectJournal {
     }
 
     /// Transitions an operation state durably.
+    ///
+    /// A cancellation needs the evidence that caused it, which this transition cannot carry, so
+    /// [`EffectState::Cancelled`] is refused here before any record is written; cancel through
+    /// [`Self::cancel`] (fss-thzlz).
     pub fn transition(
         &mut self,
         operation_id: &OperationId,
@@ -746,10 +760,44 @@ impl DurableEffectJournal {
         };
         let bytes = transition.try_canonical_bytes()?;
         self.journal
-            .append(EFFECT_TRANSITION_V2_RECORD_KIND, &bytes)?;
+            .append(EFFECT_TRANSITION_V3_RECORD_KIND, &bytes)?;
         let receipt = self
             .memory
             .transition(operation_id, next, now, result_digest, error_code)?;
+        Ok(receipt)
+    }
+
+    /// Cancels a prepared operation durably, binding the journal's whole prepared record to the
+    /// digest of the evidence that caused the cancel (fss-thzlz).
+    ///
+    /// The cancellation is validated before its v3 `Cancel` record, which carries the evidence and
+    /// the proof, is written; replay re-verifies that proof.
+    pub fn cancel(
+        &mut self,
+        operation_id: &OperationId,
+        now: TimestampNs,
+        cancel_request_evidence: ContentDigest,
+        reason: Option<String>,
+    ) -> Result<&OperationReceipt, DurableEffectError> {
+        let proof_digest = self.memory.validate_cancel(
+            operation_id,
+            now,
+            cancel_request_evidence,
+            reason.as_deref(),
+        )?;
+        let transition = EffectJournalTransition::Cancel {
+            operation_id: operation_id.clone(),
+            now,
+            cancel_request_evidence,
+            proof_digest,
+            reason: reason.clone(),
+        };
+        let bytes = transition.try_canonical_bytes()?;
+        self.journal
+            .append(EFFECT_TRANSITION_V3_RECORD_KIND, &bytes)?;
+        let receipt = self
+            .memory
+            .cancel(operation_id, now, cancel_request_evidence, reason)?;
         Ok(receipt)
     }
 
@@ -794,7 +842,7 @@ impl DurableEffectJournal {
         };
         let bytes = transition.try_canonical_bytes()?;
         self.journal
-            .append(EFFECT_TRANSITION_V2_RECORD_KIND, &bytes)?;
+            .append(EFFECT_TRANSITION_V3_RECORD_KIND, &bytes)?;
         let receipt = self
             .memory
             .reconcile_verified(operation_id, proof_digest, now)?;
@@ -825,7 +873,7 @@ impl DurableEffectJournal {
         };
         let bytes = transition.try_canonical_bytes()?;
         self.journal
-            .append(EFFECT_TRANSITION_V2_RECORD_KIND, &bytes)?;
+            .append(EFFECT_TRANSITION_V3_RECORD_KIND, &bytes)?;
         let receipt = self
             .memory
             .reconcile_failed(operation_id, proof_digest, now, reason_str)?;
@@ -1069,22 +1117,18 @@ impl crate::alert::AlertEffectTransitioner for DurableEffectJournal {
         &mut self,
         operation_id: &OperationId,
         now: TimestampNs,
-        proof: ContentDigest,
+        cancel_request_evidence: ContentDigest,
         reason: String,
     ) -> Result<(), ReferenceError> {
-        self.transition(
-            operation_id,
-            EffectState::Cancelled,
-            now,
-            Some(proof),
-            Some(reason),
-        )
-        .map(|_| ())
-        .map_err(|e| match e {
-            DurableEffectError::Reference(ref_err) => ref_err,
-            DurableEffectError::Contract(contract_err) => ReferenceError::Contract(contract_err),
-            other => ReferenceError::DurableTransitionFailed(Box::new(other)),
-        })
+        self.cancel(operation_id, now, cancel_request_evidence, Some(reason))
+            .map(|_| ())
+            .map_err(|e| match e {
+                DurableEffectError::Reference(ref_err) => ref_err,
+                DurableEffectError::Contract(contract_err) => {
+                    ReferenceError::Contract(contract_err)
+                }
+                other => ReferenceError::DurableTransitionFailed(Box::new(other)),
+            })
     }
 
     fn transition_committed(
@@ -1160,10 +1204,11 @@ fn replay_report(report: &RecoveryReport) -> Result<EffectJournal, DurableEffect
 }
 
 /// Replays `records`, in commit order, into a fresh effect journal, each under the version its
-/// record kind names (fss-deir9).
+/// record kind names (fss-deir9, fss-thzlz).
 ///
-/// A legacy (v1) record after a current (v2) one is refused as an unexpected record kind: the
-/// legacy rules are reachable only for history written before any current record.
+/// A record of an older version after a newer one (v1 after v2 or v3, v2 after v3) is refused as
+/// an unexpected record kind: earlier rules are reachable only for history written before any
+/// newer record.
 fn replay_records(records: &[JournalRecord]) -> Result<EffectJournal, DurableEffectError> {
     let mut transitions = Vec::with_capacity(records.len());
     let mut newest = EffectRecordVersion::V1;
@@ -1171,6 +1216,7 @@ fn replay_records(records: &[JournalRecord]) -> Result<EffectJournal, DurableEff
         let version = match record.kind() {
             EFFECT_TRANSITION_RECORD_KIND => EffectRecordVersion::V1,
             EFFECT_TRANSITION_V2_RECORD_KIND => EffectRecordVersion::V2,
+            EFFECT_TRANSITION_V3_RECORD_KIND => EffectRecordVersion::V3,
             _ => {
                 return Err(DurableEffectError::UnexpectedRecordKind {
                     sequence: record.sequence(),

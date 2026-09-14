@@ -5,8 +5,8 @@ use std::collections::BTreeSet;
 use fss_core::{
     ActionAffordance, AffordanceClass, BudgetVector, ContentDigest, ContractError,
     EffectRecordVersion, EffectState, IndeterminateEffectReason, KnowledgeCell,
-    KnowledgeCellParams, KnowledgeState, KnowledgeStateBasis, OperationReceipt, ProvenanceClass,
-    ReconciliationBasis,
+    KnowledgeCellParams, KnowledgeState, KnowledgeStateBasis, OperationReceipt, PreparedEffect,
+    ProvenanceClass, ReconciliationBasis,
 };
 use fss_ledger::DurableReferenceLedger;
 
@@ -73,10 +73,12 @@ pub fn compile_reference_situation(
 /// Only an exact `Prepared` receipt can preserve the commit affordance. Every later state exposes
 /// status/reconciliation instead, preventing a blind resend after dispatch or acknowledgement loss.
 ///
-/// The receipt must be a current (v2) receipt. A legacy (v1) receipt exists only as the product
-/// of the durable journal's versioned replay, so it is admitted only through
+/// The receipt must not be a legacy (v1) receipt. A v1 receipt exists only as the product of the
+/// durable journal's versioned replay, so it is admitted only through
 /// [`compile_reference_situation_with_durable_journal`]; handed in here, it is refused as
-/// `situation_operation_receipt_integrity` (fss-deir9).
+/// `situation_operation_receipt_integrity` (fss-deir9). A cancelled receipt handed in here must
+/// carry the cancellation proof binding the plan's prepared record to ledger-published evidence,
+/// whatever its version (fss-thzlz).
 pub fn compile_reference_situation_with_operation_receipt(
     request: ReferenceSituationRequest<'_>,
     operation_receipt: &OperationReceipt,
@@ -85,13 +87,29 @@ pub fn compile_reference_situation_with_operation_receipt(
     compile_with_operation_receipt(request, operation_receipt, authority, ReceiptSource::Caller)
 }
 
-/// Where the operation receipt handed to the guard came from (fss-deir9).
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Where the operation receipt handed to the guard came from (fss-deir9), with the prepared
+/// record a cancellation proof must bind (fss-thzlz).
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum ReceiptSource {
-    /// Supplied by the caller: it must be a current (v2) receipt.
+    /// Supplied by the caller: never a v1 receipt, and a cancellation must be proof-bound. Its
+    /// prepared record is the plan's intent and obligation, prepared with the reference alert
+    /// terminal predicate at the receipt's preparation time.
     Caller,
-    /// Read from the durable effect journal, whose versioned replay alone produces v1 receipts.
-    DurableJournal,
+    /// Read from the durable effect journal, whose versioned replay alone produces v1 and v2
+    /// receipts, together with that journal's own prepared record of the operation and the
+    /// version of the record that wrote its cancellation, if it is cancelled (fss-thzlz).
+    DurableJournal {
+        /// The journal's own prepared record of the operation.
+        prepared: Box<PreparedEffect>,
+        /// The version of the journal record that wrote the cancellation.
+        cancelled_under: Option<EffectRecordVersion>,
+    },
+}
+
+impl ReceiptSource {
+    const fn is_durable_journal(&self) -> bool {
+        matches!(self, Self::DurableJournal { .. })
+    }
 }
 
 fn compile_with_operation_receipt(
@@ -104,7 +122,7 @@ fn compile_with_operation_receipt(
         .alert_plan
         .cloned()
         .ok_or(ReferenceError::InvalidSpec("situation_effect_basis"))?;
-    validate_operation_receipt(operation_receipt, &plan, source)?;
+    validate_operation_receipt(operation_receipt, &plan, &source, authority)?;
     if request
         .alert_outcome
         .is_some_and(|outcome| operation_receipt != &outcome.outcome.operation_receipt)
@@ -178,11 +196,19 @@ fn compile_against_durable_journal(
         let operation_receipt = durable_journal
             .operation(&plan.intent.operation_id)
             .ok_or(ReferenceError::InvalidSpec("transient_obligation_rejected"))?;
+        let prepared = durable_journal
+            .effect_journal()
+            .prepared_record(&plan.intent.operation_id)?;
         compile_with_operation_receipt(
             request,
             operation_receipt,
             authority,
-            ReceiptSource::DurableJournal,
+            ReceiptSource::DurableJournal {
+                prepared: Box::new(prepared),
+                cancelled_under: durable_journal
+                    .effect_journal()
+                    .cancellation_record_version(&operation_receipt.intent.operation_id),
+            },
         )
     } else if let Some(outcome) = request.alert_outcome {
         let obligation = durable_journal
@@ -194,11 +220,19 @@ fn compile_against_durable_journal(
         let operation_receipt = durable_journal
             .operation(&outcome.outcome.operation_receipt.intent.operation_id)
             .ok_or(ReferenceError::InvalidSpec("transient_obligation_rejected"))?;
+        let prepared = durable_journal
+            .effect_journal()
+            .prepared_record(&outcome.outcome.operation_receipt.intent.operation_id)?;
         compile_with_operation_receipt(
             request,
             operation_receipt,
             authority,
-            ReceiptSource::DurableJournal,
+            ReceiptSource::DurableJournal {
+                prepared: Box::new(prepared),
+                cancelled_under: durable_journal
+                    .effect_journal()
+                    .cancellation_record_version(&operation_receipt.intent.operation_id),
+            },
         )
     } else {
         compile_reference_situation(request, authority)
@@ -218,7 +252,8 @@ pub fn seal_reference_handoff(
 fn validate_operation_receipt(
     receipt: &OperationReceipt,
     plan: &ReferenceAlertPlan,
-    source: ReceiptSource,
+    source: &ReceiptSource,
+    authority: &DurableReferenceLedger,
 ) -> Result<(), ReferenceError> {
     if receipt.intent != plan.intent || receipt.updated_at < receipt.prepared_at {
         return Err(ReferenceError::InvalidSpec(
@@ -233,11 +268,11 @@ fn validate_operation_receipt(
         ));
     }
     // A legacy (v1) receipt exists only as the product of the durable journal's versioned
-    // replay, so one reaching the guard any other way is refused; a current (v2) receipt never
+    // replay, so one reaching the guard any other way is refused; a v2 or v3 receipt never
     // carries the legacy `unrecorded` marker, which only that replay produces (fss-deir9).
     let version_admissible = match receipt.record_version() {
-        EffectRecordVersion::V1 => source == ReceiptSource::DurableJournal,
-        EffectRecordVersion::V2 => {
+        EffectRecordVersion::V1 => source.is_durable_journal(),
+        EffectRecordVersion::V2 | EffectRecordVersion::V3 => {
             receipt.indeterminate_reason != Some(IndeterminateEffectReason::Unrecorded)
         }
     };
@@ -262,7 +297,8 @@ fn validate_operation_receipt(
                     && carries_only_an_inherited_reason(receipt)
             }
             // The journal cancels only a prepared operation, strictly later than its preparation,
-            // and only with a cancellation proof digest; a reason is optional but never empty.
+            // and only with a cancellation proof digest; a reason is optional but never empty. The
+            // digest is verified as a proof below (fss-thzlz).
             EffectState::Cancelled => {
                 receipt.committed_at.is_none()
                     && receipt.updated_at > receipt.prepared_at
@@ -292,7 +328,65 @@ fn validate_operation_receipt(
             "situation_operation_receipt_integrity",
         ));
     }
+    // The journal records a cancellation with the evidence the canceller supplied; the guard
+    // verifies it. A structurally valid cancellation whose proof does not verify against the
+    // prepared record and the ledger-published evidence is refused with its own typed error, so it
+    // is never projected as cancelled, and never as pending (fss-thzlz).
+    if receipt.state == EffectState::Cancelled
+        && !cancellation_proof_is_admissible(receipt, plan, source, authority)
+    {
+        return Err(ReferenceError::UnverifiableCancellationEvidence {
+            operation_id: receipt.intent.operation_id.clone(),
+            proof_digest: receipt.result_digest,
+        });
+    }
     Ok(())
+}
+
+/// Whether a cancelled receipt's result digest is an admissible cancellation proof (fss-thzlz).
+///
+/// The effect journal keeps the rule a v1 or v2 record was written under, so a cancellation that a
+/// v1 or v2 record wrote carries the digest it was written with; the guard exempts exactly those
+/// cancellations, keyed on the version of the record that wrote the cancellation (the same key the
+/// journal checks it under, never the operation's prepare-time version), and only when it reads
+/// them from the journal itself. Every other cancelled receipt, including
+/// a v2 receipt handed in by a caller, must carry the proof the journal binds for a v3 record: the
+/// [`fss_core::EffectCancellationRecord`] of the prepared record and the evidence that caused the
+/// cancel. For a reference alert that evidence is [`crate::alert_cancel_proof`] over the plan's
+/// prepared authority anchor and an anchor the authority ledger published at or after it. The
+/// proof is recomputed from the journal's prepared record (the plan's, for a caller receipt) and
+/// the ledger, never from the receipt's own fields.
+fn cancellation_proof_is_admissible(
+    receipt: &OperationReceipt,
+    plan: &ReferenceAlertPlan,
+    source: &ReceiptSource,
+    authority: &DurableReferenceLedger,
+) -> bool {
+    // Keyed on the same thing the journal keys its rule on: the version of the record that wrote
+    // the cancellation, never the version the operation was prepared under. A cancellation written
+    // today is a v3 record, even for an operation a v1 or v2 record prepared (rthz2 H1/H3).
+    let written_by_a_legacy_cancel_record = match source {
+        ReceiptSource::DurableJournal {
+            cancelled_under, ..
+        } => cancelled_under.is_some_and(|version| version < EffectRecordVersion::V3),
+        ReceiptSource::Caller => false,
+    };
+    if written_by_a_legacy_cancel_record {
+        return true;
+    }
+    let prepared = match source {
+        ReceiptSource::DurableJournal { prepared, .. } => PreparedEffect::clone(prepared),
+        ReceiptSource::Caller => PreparedEffect {
+            intent: plan.intent.clone(),
+            obligation_id: plan.obligation_id.clone(),
+            terminal_predicate: crate::REFERENCE_ALERT_TERMINAL_PREDICATE.to_owned(),
+            prepared_at: receipt.prepared_at,
+        },
+    };
+    prepared.intent == plan.intent
+        && receipt.result_digest.is_some_and(|proof| {
+            crate::alert::alert_cancellation_is_bound(proof, &prepared, plan, authority)
+        })
 }
 
 /// Returns whether `code` names a non-empty reason, as the effect journal requires.
