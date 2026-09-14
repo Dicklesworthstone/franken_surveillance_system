@@ -6,7 +6,7 @@
 //! trailing zeros before start codes.
 //!
 //! Note on media decodability: all generated payloads have structurally valid
-//! NAL syntax, slice headers, and packet framing; pictures are not decodable.
+//! NAL syntax, synthetic slice payloads, and packet framing; pictures are not decodable.
 
 use super::{
     BitWriter, DeterministicMediaPrng, MEDIA_FIXTURE_NOTE, MediaFixtureError, rbsp_to_nal_wire,
@@ -128,7 +128,7 @@ pub const fn nal_type_name(t: u8) -> &'static str {
 
 /// Generates a valid minimal H.264 Baseline Profile Sequence Parameter Set (SPS).
 #[must_use]
-pub fn generate_sps(_seed: u64) -> Vec<u8> {
+pub fn generate_sps() -> Vec<u8> {
     let mut writer = BitWriter::new();
     writer.write_bits(66, 8); // profile_idc = 66 (Baseline)
     writer.write_bits(0xc0, 8); // constraint_set0_flag=1, constraint_set1_flag=1
@@ -152,7 +152,7 @@ pub fn generate_sps(_seed: u64) -> Vec<u8> {
 
 /// Generates a valid minimal H.264 Picture Parameter Set (PPS).
 #[must_use]
-pub fn generate_pps(_seed: u64) -> Vec<u8> {
+pub fn generate_pps() -> Vec<u8> {
     let mut writer = BitWriter::new();
     writer.write_ue(0); // pic_parameter_set_id = 0
     writer.write_ue(0); // seq_parameter_set_id = 0
@@ -186,7 +186,7 @@ pub fn generate_aud(primary_pic_type: u8) -> Vec<u8> {
 
 /// Generates an SEI user_data_unregistered payload (type 6).
 #[must_use]
-pub fn generate_sei(_seed: u64, message: &str) -> Vec<u8> {
+pub fn generate_sei(message: &str) -> Vec<u8> {
     let mut rbsp = Vec::new();
     // SEI message: payloadType = 5 (user_data_unregistered)
     rbsp.push(0x05);
@@ -247,10 +247,7 @@ pub fn generate_slice(
         // Explicitly inject byte sequences exercising emulation prevention byte (0x03)
         // insertion across consecutive zero runs and trailing values <= 0x03.
         let ep_pattern = [
-            0x00, 0x00, 0x00,
-            0x00, 0x00, 0x01,
-            0x00, 0x00, 0x02,
-            0x00, 0x00, 0x03,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x02, 0x00, 0x00, 0x03,
         ];
         let pos = extra.len().min(16);
         extra.splice(pos..pos, ep_pattern);
@@ -294,7 +291,7 @@ pub fn generate_h264_annexb(
 
         // Parameter sets at IDR boundary
         if is_idr_au {
-            let sps_wire = generate_sps(params.seed);
+            let sps_wire = generate_sps();
             nals.push(SyntheticNal {
                 nal_unit_type: 7,
                 is_idr: false,
@@ -304,7 +301,7 @@ pub fn generate_h264_annexb(
                 trailing_zeros_before: 0,
             });
 
-            let pps_wire = generate_pps(params.seed);
+            let pps_wire = generate_pps();
             nals.push(SyntheticNal {
                 nal_unit_type: 8,
                 is_idr: false,
@@ -315,7 +312,7 @@ pub fn generate_h264_annexb(
             });
 
             if params.include_sei {
-                let sei_wire = generate_sei(params.seed, "fss.media_fixture.synthetic.v1");
+                let sei_wire = generate_sei("fss.media_fixture.synthetic.v1");
                 nals.push(SyntheticNal {
                     nal_unit_type: 6,
                     is_idr: false,

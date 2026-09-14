@@ -7,7 +7,7 @@
 //! and `large_gap`.
 //!
 //! Note on media decodability: all generated payloads have structurally valid
-//! NAL syntax, slice headers, and packet framing; pictures are not decodable.
+//! NAL syntax, synthetic slice payloads, and packet framing; pictures are not decodable.
 
 use super::{ExpectedSequenceClass, MEDIA_FIXTURE_NOTE, MediaFixtureError, h264::H264AnnexBStream};
 use fss_core::ContentDigest;
@@ -156,7 +156,9 @@ fn packetize_nals_for_stream(
         .nals
         .iter()
         .find(|n| n.access_unit_index == 0 && n.nal_unit_type == 9)
-        .ok_or(MediaFixtureError::InvalidParam("Annex-B stream missing AU0 AUD"))?;
+        .ok_or(MediaFixtureError::InvalidParam(
+            "Annex-B stream missing AU0 AUD",
+        ))?;
 
     // Find SPS and PPS NALs for STAP-A aggregation
     let sps_nal = annexb.nals.iter().find(|n| n.nal_unit_type == 7).ok_or(
@@ -229,8 +231,74 @@ fn packetize_nals_for_stream(
     });
     seq = seq.wrapping_add(1);
 
-    // 4. Process remaining NALs (for AU0: exclude AUD, SPS, PPS; for AU > 0: exclude SPS, PPS)
+    // 4. Process remaining NALs:
+    // AU0 AUD and SPS+PPS were emitted above.
+    // For AU > 0: if IDR boundary (SPS+PPS present in AU), emit AUD and STAP-A (SPS+PPS)
+    // per RFC 6184 / Annex-B GOP structure before remaining NALs.
     for au_idx in 0..annexb.access_unit_count {
+        let au_timestamp = base_timestamp.wrapping_add((au_idx as u32).wrapping_mul(3_000));
+        let au_offset_ms = (au_idx as u32).wrapping_mul(33);
+
+        if au_idx > 0 {
+            let sps_for_au = annexb
+                .nals
+                .iter()
+                .find(|n| n.access_unit_index == au_idx && n.nal_unit_type == 7);
+            let pps_for_au = annexb
+                .nals
+                .iter()
+                .find(|n| n.access_unit_index == au_idx && n.nal_unit_type == 8);
+
+            if let (Some(sps), Some(pps)) = (sps_for_au, pps_for_au) {
+                // If AU has an AUD, emit it first
+                if let Some(aud) = annexb
+                    .nals
+                    .iter()
+                    .find(|n| n.access_unit_index == au_idx && n.nal_unit_type == 9)
+                {
+                    packets.push(ProtoPacket {
+                        offset_ms: au_offset_ms,
+                        sequence: seq,
+                        timestamp: au_timestamp,
+                        ssrc,
+                        marker: false,
+                        payload_type: pt,
+                        payload: aud.wire_bytes.clone(),
+                        expected_sequence_class: ExpectedSequenceClass::Advanced,
+                        is_sacrificial: false,
+                        expected_delivered: true,
+                        packetization: "SingleNal",
+                        nal_types: vec![9],
+                    });
+                    seq = seq.wrapping_add(1);
+                }
+
+                // Aggregate SPS and PPS into STAP-A packet
+                let mut au_stap_payload = Vec::new();
+                au_stap_payload.push(0x78); // NRI=3, type=24
+                au_stap_payload.extend_from_slice(&(sps.wire_bytes.len() as u16).to_be_bytes());
+                au_stap_payload.extend_from_slice(&sps.wire_bytes);
+                au_stap_payload.extend_from_slice(&(pps.wire_bytes.len() as u16).to_be_bytes());
+                au_stap_payload.extend_from_slice(&pps.wire_bytes);
+
+                packets.push(ProtoPacket {
+                    offset_ms: au_offset_ms,
+                    sequence: seq,
+                    timestamp: au_timestamp,
+                    ssrc,
+                    marker: false,
+                    payload_type: pt,
+                    payload: au_stap_payload,
+                    expected_sequence_class: ExpectedSequenceClass::Advanced,
+                    is_sacrificial: false,
+                    expected_delivered: true,
+                    packetization: "STAP-A",
+                    nal_types: vec![7, 8],
+                });
+                seq = seq.wrapping_add(1);
+            }
+        }
+
         let au_nals: Vec<&super::h264::SyntheticNal> = annexb
             .nals
             .iter()
@@ -241,15 +309,23 @@ fn packetize_nals_for_stream(
                         && n.nal_unit_type != 8
                         && n.nal_unit_type != 9
                 } else {
-                    n.access_unit_index == au_idx
-                        && n.nal_unit_type != 7
-                        && n.nal_unit_type != 8
+                    let has_idr_ps = annexb
+                        .nals
+                        .iter()
+                        .any(|other| other.access_unit_index == au_idx && other.nal_unit_type == 7);
+                    if has_idr_ps {
+                        n.access_unit_index == au_idx
+                            && n.nal_unit_type != 7
+                            && n.nal_unit_type != 8
+                            && n.nal_unit_type != 9
+                    } else {
+                        n.access_unit_index == au_idx
+                            && n.nal_unit_type != 7
+                            && n.nal_unit_type != 8
+                    }
                 }
             })
             .collect();
-
-        let au_timestamp = base_timestamp.wrapping_add((au_idx as u32).wrapping_mul(3_000));
-        let au_offset_ms = (au_idx as u32).wrapping_mul(33);
 
         for (nal_in_au_idx, nal) in au_nals.iter().enumerate() {
             let is_last_nal_in_au = nal_in_au_idx + 1 == au_nals.len();
