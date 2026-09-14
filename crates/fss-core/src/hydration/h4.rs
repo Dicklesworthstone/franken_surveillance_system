@@ -49,7 +49,7 @@ pub const H4_CONTENT: &str =
 pub const H4_OWNER: &str = "fss-agent-core";
 
 /// Canonical schema discriminator tag for H4 laboratory expansion binary envelopes.
-pub const H4_SCHEMA: &str = "fss.h4_laboratory_expansion.v1";
+pub const H4_SCHEMA: &str = "fss.h4_laboratory_expansion.v2";
 
 /// Maximum allowed intermediate artifacts in one H4 expansion.
 pub const MAX_H4_INTERMEDIATES: usize = 256;
@@ -195,10 +195,37 @@ impl IntermediateArtifact {
             };
             total_elements = next;
         }
-        if self.byte_count < total_elements || self.byte_count > super::MAX_ARTIFACT_BYTES as u64 {
+        let Some(min_bytes) = total_elements.checked_mul(self.element_size()) else {
+            return Err(ContractError::LaboratoryExpansionShapeMalformed);
+        };
+        if self.byte_count < min_bytes || self.byte_count > super::MAX_ARTIFACT_BYTES as u64 {
             return Err(ContractError::LaboratoryExpansionShapeMalformed);
         }
         Ok(())
+    }
+
+    /// Returns the element size in bytes inferred from the tensor content type.
+    #[must_use]
+    pub fn element_size(&self) -> u64 {
+        if self.content_type.ends_with("-f64")
+            || self.content_type.ends_with("-i64")
+            || self.content_type.ends_with("-u64")
+        {
+            8
+        } else if self.content_type.ends_with("-f32")
+            || self.content_type.ends_with("-i32")
+            || self.content_type.ends_with("-u32")
+        {
+            4
+        } else if self.content_type.ends_with("-f16")
+            || self.content_type.ends_with("-bf16")
+            || self.content_type.ends_with("-i16")
+            || self.content_type.ends_with("-u16")
+        {
+            2
+        } else {
+            1
+        }
     }
 }
 
@@ -550,8 +577,7 @@ impl H4LaboratoryExpansion {
             proof_roots: params.proof_roots,
             completeness: params.completeness,
             applied_transform: params.applied_transform,
-            expansion_digest: ContentDigest::sha256(b"unpublished-h4-expansion")
-                .with_laboratory(true),
+            expansion_digest: ContentDigest::sha256(b"unpublished-h4-expansion"),
         };
         expansion.validate()?;
         expansion.expansion_digest = expansion.computed_digest();
@@ -828,7 +854,7 @@ impl H4LaboratoryExpansion {
     pub fn computed_digest(&self) -> ContentDigest {
         let mut encoder = CanonicalEncoder::new();
         self.encode_canonical_body(&mut encoder);
-        ContentDigest::sha256(&encoder.finish()).with_laboratory(true)
+        ContentDigest::sha256(&encoder.finish())
     }
 
     /// Encodes the body of this expansion (all fields except expansion_digest itself).
@@ -942,7 +968,7 @@ impl H4LaboratoryExpansion {
     /// Converts this H4 expansion into a canonical [`KnowledgeCell`](crate::KnowledgeCell) with quarantined taint.
     ///
     /// The resulting cell carries [`LABORATORY_PROVENANCE_MARKER`](crate::agent::LABORATORY_PROVENANCE_MARKER),
-    /// epistemic state `Estimated`, and provenance `Derived`. It can NEVER claim `Known`
+    /// epistemic state `Estimated`, and provenance `Predicted`. It can NEVER claim `Known`
     /// or serve as an irreversible-effect premise.
     pub fn to_knowledge_cell(
         &self,
@@ -964,7 +990,7 @@ impl H4LaboratoryExpansion {
                 self.subject_id
             ),
             knowledge_state: crate::KnowledgeState::Estimated,
-            provenance: crate::ProvenanceClass::Derived,
+            provenance: crate::ProvenanceClass::Predicted,
             hypothesis: None,
             evidence: vec![self.expansion_digest, self.subject_digest],
             contradictions: vec![],
@@ -1124,7 +1150,7 @@ impl CanonicalDecode for H4LaboratoryExpansion {
             None
         };
 
-        let expansion_digest = decoder.digest()?.with_laboratory(true);
+        let expansion_digest = decoder.digest()?;
 
         let expansion = Self {
             handle_id,

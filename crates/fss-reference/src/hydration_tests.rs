@@ -178,12 +178,20 @@ fn catalog(
     availability: HandleAvailability,
     retention_until: TimestampNs,
 ) -> Result<(ReferenceHydrationCatalog, SemanticHandle), HydrationError> {
+    catalog_with_purpose(availability, retention_until, HydrationPurpose::Qualification)
+}
+
+fn catalog_with_purpose(
+    availability: HandleAvailability,
+    retention_until: TimestampNs,
+    purpose: HydrationPurpose,
+) -> Result<(ReferenceHydrationCatalog, SemanticHandle), HydrationError> {
     let descriptor = descriptor(availability, retention_until)?;
     let mut catalog = ReferenceHydrationCatalog::new();
     catalog.register_descriptor(descriptor.clone())?;
     for level in level_set() {
         let artifact = if level == HydrationLevel::H4 {
-            h4_artifact(&descriptor, HydrationPurpose::Qualification)?
+            h4_artifact(&descriptor, purpose)?
         } else {
             HydrationArtifact::publish(
                 level,
@@ -407,6 +415,7 @@ fn h4_requires_qualification_or_explicit_debug_grant() -> Result<(), Box<dyn Err
         Some(HydrationLevel::H4)
     );
 
+    // Cross-purpose mismatch: Debugging request against Qualification artifact in catalog is refused
     let debugging = request(
         &descriptor,
         HydrationLevel::H4,
@@ -416,8 +425,27 @@ fn h4_requires_qualification_or_explicit_debug_grant() -> Result<(), Box<dyn Err
         HydrationPurpose::Debugging,
     )?;
     assert_eq!(
-        catalog
-            .hydrate(&debugging, TimestampNs(101))?
+        catalog.hydrate(&debugging, TimestampNs(101)),
+        Err(HydrationError::LaboratoryGrantRequired)
+    );
+
+    // Matching Debugging artifact in catalog succeeds with debug grant capability
+    let (mut debug_catalog, debug_descriptor) = catalog_with_purpose(
+        HandleAvailability::Available,
+        TimestampNs(10_000),
+        HydrationPurpose::Debugging,
+    )?;
+    let debug_request = request(
+        &debug_descriptor,
+        HydrationLevel::H4,
+        false,
+        ample_budget()?,
+        &["capability:hydrate:H4", "capability:hydrate:debug"],
+        HydrationPurpose::Debugging,
+    )?;
+    assert_eq!(
+        debug_catalog
+            .hydrate(&debug_request, TimestampNs(101))?
             .receipt
             .delivered_level,
         Some(HydrationLevel::H4)

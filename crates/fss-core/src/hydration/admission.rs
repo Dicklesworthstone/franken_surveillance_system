@@ -129,6 +129,19 @@ impl HydrationRequest {
                 return Err(ContractError::DigestMismatch.into());
             }
 
+            // Envelope verification against decoded expansion
+            if artifact.content_type != "application/vnd.fss.h4-laboratory-expansion+canonical" {
+                return Err(ContractError::InvalidIdentifier.into());
+            }
+            if artifact.completeness != expansion.completeness() {
+                return Err(ContractError::EvidenceRequired.into());
+            }
+            let mut expected_roots = expansion.proof_roots().clone();
+            expected_roots.insert(artifact.payload_digest);
+            if artifact.proof_roots != expected_roots {
+                return Err(ContractError::DigestMismatch.into());
+            }
+
             // Bind expansion to this handle and request
             if expansion.handle_id() != handle.handle_id {
                 return Err(ContractError::LaboratoryExpansionHandleMismatch.into());
@@ -137,7 +150,7 @@ impl HydrationRequest {
                 return Err(ContractError::LaboratoryExpansionSubjectMismatch.into());
             }
             if expansion.subject_digest() != handle.subject_digest {
-                return Err(ContractError::DigestMismatch.into());
+                return Err(ContractError::LaboratoryExpansionSubjectDigestMismatch.into());
             }
             if expansion.anchor() != &handle.anchor {
                 return Err(ContractError::LaboratoryExpansionAnchorMismatch.into());
@@ -152,14 +165,12 @@ impl HydrationRequest {
                 return Err(ContractError::LaboratoryExpansionExpired.into());
             }
             if expansion.applied_transform() != handle.applied_transform.as_deref() {
-                return Err(ContractError::DigestMismatch.into());
+                return Err(ContractError::LaboratoryExpansionTransformMismatch.into());
             }
             if expansion.laboratory_access() != handle.laboratory_access {
                 return Err(HydrationError::LaboratoryGrantRequired);
             }
-            if handle.laboratory_access == LaboratoryAccess::QualificationOnly
-                && expansion.purpose() != HydrationPurpose::Qualification
-            {
+            if expansion.purpose() != self.purpose {
                 return Err(HydrationError::LaboratoryGrantRequired);
             }
         }

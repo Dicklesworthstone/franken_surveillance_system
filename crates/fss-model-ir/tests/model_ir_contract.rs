@@ -417,8 +417,8 @@ fn test_schema_domain_and_pinned_counts() -> Result<(), Box<dyn Error>> {
         .filter(|line| line.starts_with("| `SCHEMA-DOMAIN-"))
         .count();
     assert_eq!(
-        domain_count, 46,
-        "registries/DIGEST_DOMAINS.md count must remain pinned at 46"
+        domain_count, 47,
+        "registries/DIGEST_DOMAINS.md count must remain pinned at 47"
     );
 
     let schemas_path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -431,11 +431,10 @@ fn test_schema_domain_and_pinned_counts() -> Result<(), Box<dyn Error>> {
         .lines()
         .filter(|line| line.starts_with("| `SCHEMA-"))
         .count();
-    // 72 = 71 + SCHEMA-NEGATIVE-EVIDENCE-REPORT-001 (fss.negative_evidence_report.v1, the
-    // `fss negative-evidence --json` report added by fss-x4a.6.12).
+    // 73 = 72 + SCHEMA-ROBOT-DOCS-001 (fss.robot_docs.v1, added by fss-x4a.24.34).
     assert_eq!(
-        schema_count, 72,
-        "registries/SCHEMAS.md count must remain pinned at 72"
+        schema_count, 73,
+        "registries/SCHEMAS.md count must remain pinned at 73"
     );
     Ok(())
 }
