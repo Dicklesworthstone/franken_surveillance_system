@@ -22,10 +22,8 @@ use std::time::Instant;
 use fss_reference::media_fixture::h264::{generate_pps, generate_sps};
 use fss_reference::media_fixture::{TranscriptDirection, TranscriptRecord, parse_transcript};
 use fss_reference::rtsp::{
-    AuthScheme, ContentLengthConflict, DuplicateHeader, HeaderLimitFault, HeaderValueFault,
-    LengthLimit, NulSite, PoisonCause, REDACTED_CREDENTIAL, RtspError, RtspEvent, RtspLimits,
-    RtspMethod, RtspParser, StartLineFault, TransportFault, UnsupportedMethod, UserinfoSite,
-    Utf8Fault, VersionFault, parse_sdp,
+    AuthScheme, REDACTED_CREDENTIAL, RtspError, RtspEvent, RtspLimits, RtspMethod, RtspParser,
+    UserinfoSite, parse_sdp,
 };
 
 fn get_repo_root() -> Result<PathBuf, Box<dyn Error>> {
@@ -177,8 +175,8 @@ fn test_transcript_clean_literal_expected_sequences() -> Result<(), Box<dyn Erro
     assert_eq!(video.packetization_mode, Some(1));
     assert_eq!(video.control.as_deref(), Some("trackID=1"));
     assert!(!video.rtcp_reduced_size);
-    assert_eq!(video.sps.as_ref(), Some(&generate_sps(42)));
-    assert_eq!(video.pps.as_ref(), Some(&generate_pps(42)));
+    assert_eq!(video.sps.as_ref(), Some(&generate_sps()));
+    assert_eq!(video.pps.as_ref(), Some(&generate_pps()));
 
     // S2C [2]: SETUP response
     let RtspEvent::Response(resp2) = &s2c_events[2] else {
@@ -449,8 +447,8 @@ fn test_transcript_rtcp_rsize_literal_expected_sequences() -> Result<(), Box<dyn
     let sdp = parse_sdp(std::str::from_utf8(&resp1.body)?)?;
     let video = sdp.video_media.ok_or("missing video media")?;
     assert!(video.rtcp_reduced_size);
-    assert_eq!(video.sps.as_ref(), Some(&generate_sps(42)));
-    assert_eq!(video.pps.as_ref(), Some(&generate_pps(42)));
+    assert_eq!(video.sps.as_ref(), Some(&generate_sps()));
+    assert_eq!(video.pps.as_ref(), Some(&generate_pps()));
 
     // Channel 1 RTCP frames have reduced length 28 (indices 4, 14, 21)
     for &event_idx in &[4, 14, 21] {
