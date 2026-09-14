@@ -22,13 +22,40 @@ pub enum ClockBasis {
 }
 
 impl ClockBasis {
-    fn as_str(self) -> &'static str {
+    /// Returns the canonical string representation of this clock basis.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::UtcDisciplined => "utc_disciplined",
             Self::DeviceMonotonic => "device_monotonic",
             Self::HostMonotonic => "host_monotonic",
             Self::Estimated => "estimated",
         }
+    }
+
+    /// Parses a clock basis from its canonical string representation.
+    pub fn parse(s: &str) -> Result<Self, ContractError> {
+        match s {
+            "utc_disciplined" => Ok(Self::UtcDisciplined),
+            "device_monotonic" => Ok(Self::DeviceMonotonic),
+            "host_monotonic" => Ok(Self::HostMonotonic),
+            "estimated" => Ok(Self::Estimated),
+            other => Err(ContractError::UnknownClockBasisName(other.to_string())),
+        }
+    }
+}
+
+impl core::fmt::Display for ClockBasis {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl core::str::FromStr for ClockBasis {
+    type Err = ContractError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
     }
 }
 
@@ -137,6 +164,40 @@ impl CanonicalEncode for SensorCapsule {
         encoder.u64(self.source_bytes);
         encoder.u32(self.frame_count);
         encoder.bool(self.gap_before);
+    }
+}
+
+impl CanonicalDecode for SensorCapsule {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        let capsule_id = CapsuleId::decode_canonical(decoder)?;
+        let sensor_id = SensorId::decode_canonical(decoder)?;
+        let stream_id = StreamId::decode_canonical(decoder)?;
+        let sequence = decoder.u64()?;
+        let capture = CaptureInterval::decode_canonical(decoder)?;
+        let receive_time = TimestampNs::decode_canonical(decoder)?;
+        let clock_basis = ClockBasis::parse(decoder.text()?)?;
+        let source_digest = decoder.digest()?;
+        let source_bytes = decoder.u64()?;
+        let frame_count = decoder.u32()?;
+        let gap_before = decoder.bool()?;
+
+        if capture.earliest > capture.latest || receive_time < capture.earliest {
+            return Err(ContractError::InvertedTimeInterval);
+        }
+
+        Ok(Self {
+            capsule_id,
+            sensor_id,
+            stream_id,
+            sequence,
+            capture,
+            receive_time,
+            clock_basis,
+            source_digest,
+            source_bytes,
+            frame_count,
+            gap_before,
+        })
     }
 }
 

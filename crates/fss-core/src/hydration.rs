@@ -21,6 +21,8 @@ mod admission;
 mod artifact;
 mod error;
 mod h0;
+pub mod h1;
+pub mod h2;
 pub mod h4;
 mod handle;
 mod receipt;
@@ -32,6 +34,8 @@ pub use h0::{
     H0_CONTENT, H0_LEVEL_ID, H0_LEVEL_NAME, H0_SCHEMA, H0_SEMANTIC_OWNER, H0Identity,
     H0IdentityParams, is_valid_h0_screened_field,
 };
+pub use h1::*;
+pub use h2::*;
 pub use h4::{
     AlternateSystem, H4_CONTENT, H4_LEVEL_ID, H4_LEVEL_NAME, H4_OWNER, H4_SCHEMA,
     H4LaboratoryExpansion, H4LaboratoryExpansionParams, IntermediateArtifact, LaboratoryArtifact,
@@ -98,6 +102,12 @@ impl HydrationLevel {
     /// Returns the exact normative content declaration from the agent abstraction registry.
     #[must_use]
     pub const fn content(self) -> &'static str {
+        self.content_declaration()
+    }
+
+    /// Returns the normative content declaration from the agent abstraction registry.
+    #[must_use]
+    pub const fn content_declaration(self) -> &'static str {
         match self {
             Self::H0 => {
                 "digest, type, time/spatial bounds, source, availability, cost, and authority"
@@ -397,7 +407,8 @@ fn validate_contiguous_levels(levels: &BTreeSet<HydrationLevel>) -> Result<(), H
     Ok(())
 }
 
-pub(crate) fn valid_text(value: &str) -> bool {
+/// Validates that text is non-empty, within byte limit, and free of ASCII control characters.
+pub fn valid_text(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_TEXT_BYTES
         && !value.chars().any(|c| {
@@ -413,10 +424,8 @@ pub(crate) fn valid_text(value: &str) -> bool {
         })
 }
 
-pub(crate) fn encode_optional_interval(
-    value: Option<CaptureInterval>,
-    encoder: &mut CanonicalEncoder,
-) {
+/// Encodes an optional capture interval with a boolean discriminator.
+pub fn encode_optional_interval(value: Option<CaptureInterval>, encoder: &mut CanonicalEncoder) {
     match value {
         Some(interval) => {
             encoder.bool(true);
@@ -426,7 +435,8 @@ pub(crate) fn encode_optional_interval(
     }
 }
 
-pub(crate) fn decode_optional_interval(
+/// Decodes an optional capture interval with a boolean discriminator.
+pub fn decode_optional_interval(
     decoder: &mut CanonicalDecoder<'_>,
 ) -> Result<Option<CaptureInterval>, ContractError> {
     if decoder.bool()? {
@@ -494,34 +504,26 @@ pub(crate) fn encode_text_set(values: &BTreeSet<String>, encoder: &mut Canonical
 
 pub(crate) fn decode_text_set(
     decoder: &mut CanonicalDecoder<'_>,
-) -> Result<BTreeSet<String>, HydrationError> {
-    let count_u64 = decoder.u64().map_err(|err| match err {
-        ContractError::InvalidDigest => HydrationError::Truncated,
-        other => HydrationError::Contract(other),
-    })?;
-    let count = usize::try_from(count_u64).map_err(|_| HydrationError::CapacityExceeded)?;
+) -> Result<BTreeSet<String>, ContractError> {
+    let count_u64 = decoder.u64()?;
+    let count = usize::try_from(count_u64).map_err(|_| ContractError::CountBoundExceeded)?;
     if count > MAX_REQUEST_SET_ITEMS {
-        return Err(HydrationError::CapacityExceeded);
+        return Err(ContractError::CountBoundExceeded);
     }
     if decoder.remaining() < count {
-        return Err(HydrationError::Truncated);
+        return Err(ContractError::InvalidDigest);
     }
     let mut set = BTreeSet::new();
     let mut prev: Option<&str> = None;
     for _ in 0..count {
-        let text = decoder.text().map_err(|err| match err {
-            ContractError::InvalidDigest => HydrationError::Truncated,
-            other => HydrationError::Contract(other),
-        })?;
+        let text = decoder.text()?;
         if text.trim().is_empty() || !valid_text(text) {
-            return Err(HydrationError::Contract(ContractError::InvalidIdentifier));
+            return Err(ContractError::InvalidIdentifier);
         }
         if let Some(p) = prev
             && p >= text
         {
-            return Err(HydrationError::Contract(
-                ContractError::NonCanonicalOrdering,
-            ));
+            return Err(ContractError::NonCanonicalOrdering);
         }
         prev = Some(text);
         set.insert(text.to_string());

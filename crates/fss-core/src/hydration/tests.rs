@@ -197,3 +197,21 @@ fn payload_integrity_is_not_sufficient_provenance() {
         Err(HydrationError::Contract(ContractError::EvidenceRequired))
     );
 }
+
+#[test]
+fn optional_interval_codec_round_trip() -> Result<(), ContractError> {
+    let interval = CaptureInterval::new(TimestampNs(10), TimestampNs(20))?;
+    let mut encoder = CanonicalEncoder::new();
+    encode_optional_interval(Some(interval), &mut encoder);
+    encode_optional_interval(None, &mut encoder);
+    let bytes = encoder.finish_checked()?;
+
+    let mut decoder = CanonicalDecoder::new(&bytes);
+    let decoded_some = decode_optional_interval(&mut decoder)?;
+    let decoded_none = decode_optional_interval(&mut decoder)?;
+    decoder.ensure_finished()?;
+
+    assert_eq!(decoded_some, Some(interval));
+    assert_eq!(decoded_none, None);
+    Ok(())
+}

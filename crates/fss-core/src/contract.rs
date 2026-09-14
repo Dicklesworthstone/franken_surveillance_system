@@ -421,7 +421,7 @@ impl CanonicalEncode for ProvenanceClass {
 impl CanonicalDecode for ProvenanceClass {
     fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
         let text = decoder.text()?;
-        Self::from_name(text).or_else(|_| Self::from_id(text))
+        Self::from_name(text)
     }
 }
 
@@ -540,6 +540,91 @@ pub enum Completeness {
     Unauthorized,
     /// The result is older than its permitted freshness interval.
     Stale,
+}
+
+impl Completeness {
+    /// Returns the stable schema spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::Bounded => "bounded",
+            Self::Partial => "partial",
+            Self::Unknown => "unknown",
+            Self::NotObservable => "not_observable",
+            Self::Unauthorized => "unauthorized",
+            Self::Stale => "stale",
+        }
+    }
+
+    /// Parses completeness from its schema spelling.
+    pub fn from_name(name: &str) -> Result<Self, ContractError> {
+        match name {
+            "complete" => Ok(Self::Complete),
+            "bounded" => Ok(Self::Bounded),
+            "partial" => Ok(Self::Partial),
+            "unknown" => Ok(Self::Unknown),
+            "not_observable" => Ok(Self::NotObservable),
+            "unauthorized" => Ok(Self::Unauthorized),
+            "stale" => Ok(Self::Stale),
+            _ => Err(ContractError::InvalidIdentifier),
+        }
+    }
+
+    /// Numeric code (1..=7) used across chronicle/projection envelopes.
+    #[must_use]
+    pub const fn code(self) -> u8 {
+        match self {
+            Self::Complete => 1,
+            Self::Bounded => 2,
+            Self::Partial => 3,
+            Self::Unknown => 4,
+            Self::NotObservable => 5,
+            Self::Unauthorized => 6,
+            Self::Stale => 7,
+        }
+    }
+
+    /// Resolves completeness from numeric code (1..=7).
+    pub fn from_code(code: u8) -> Result<Self, ContractError> {
+        match code {
+            1 => Ok(Self::Complete),
+            2 => Ok(Self::Bounded),
+            3 => Ok(Self::Partial),
+            4 => Ok(Self::Unknown),
+            5 => Ok(Self::NotObservable),
+            6 => Ok(Self::Unauthorized),
+            7 => Ok(Self::Stale),
+            _ => Err(ContractError::UnknownEntryTag(code)),
+        }
+    }
+}
+
+impl CanonicalEncode for Completeness {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.text(self.as_str());
+    }
+}
+
+impl CanonicalDecode for Completeness {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        let text = decoder.text()?;
+        Self::from_name(text)
+    }
+}
+
+impl fmt::Display for Completeness {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl core::str::FromStr for Completeness {
+    type Err = ContractError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::from_name(s)
+    }
 }
 
 /// Four-valued runtime completion plus explicit partial and indeterminate states.
@@ -2739,6 +2824,46 @@ pub enum ContractError {
     UnknownAbstractionLayer(String),
     /// Attempted to promote decode or model output into source evidence (AGT-LAYER-002, INV-003).
     ProhibitedEvidencePromotion,
+    /// Source evidence lacks an authoritative anchor lineage (AGT-LAYER-002, INV-003).
+    SourceEvidenceMissingAnchor,
+    /// Source evidence not retained under custody requires an explicit omission reason (AGT-LAYER-002, INV-003).
+    SourceEvidenceOmissionRequired,
+    /// Source evidence retained under custody cannot declare an omission reason (AGT-LAYER-002, INV-003).
+    SourceEvidenceRetainedWithOmission,
+    /// Source evidence not retained under custody cannot bind non-empty capsule bytes or non-zero digest (AGT-LAYER-002, INV-003).
+    SourceEvidenceNotRetainedWithCapsuleBytes,
+    /// Source evidence custody byte count does not match capsule source byte count (AGT-LAYER-002, INV-003).
+    SourceEvidenceByteCountMismatch,
+    /// Storage handle for retained source evidence is empty or only whitespace (AGT-LAYER-002, INV-003).
+    SourceEvidenceEmptyStorageHandle,
+    /// Storage handle for retained source evidence contains forbidden directory traversal sequence (AGT-LAYER-002, INV-003).
+    SourceEvidenceStorageHandleTraversal,
+    /// Storage handle for retained source evidence contains forbidden absolute path or url (AGT-LAYER-002, INV-003).
+    SourceEvidenceStorageHandleAbsolutePath,
+    /// Storage handle for retained source evidence is malformed, over-length, or contains invalid characters (AGT-LAYER-002, INV-003).
+    SourceEvidenceStorageHandleMalformed,
+    /// Raw wire packets classification cannot carry a sensor capsule payload (AGT-LAYER-002, INV-003).
+    SourceEvidenceRawWirePacketsWithCapsule,
+    /// Source evidence statement is empty or exceeds 512 bytes (AGT-LAYER-002, INV-003).
+    SourceEvidenceStatementMalformed,
+    /// Unknown source evidence classification string token.
+    UnknownSourceEvidenceClassification(String),
+    /// Unknown omission reason string token.
+    UnknownOmissionReason(String),
+    /// Unknown source custody binary wire tag.
+    UnknownSourceCustodyTag(u8),
+    /// Sensor capsule classification requires a sensor capsule payload (AGT-LAYER-002).
+    SourceEvidenceCapsuleRequired,
+    /// Continuity witness classification requires a continuity witness digest (AGT-LAYER-002).
+    SourceEvidenceWitnessRequired,
+    /// Continuity witness cannot equal source digest (circular self-witness) (AGT-LAYER-002).
+    SourceEvidenceWitnessEqualsSourceDigest,
+    /// Source evidence not retained cannot bind a continuity witness (AGT-LAYER-002).
+    SourceEvidenceNotRetainedWithWitness,
+    /// Source evidence binary wire format version is unsupported (AGT-LAYER-002).
+    UnsupportedSourceEvidenceVersion(u32),
+    /// Clock basis name string is unrecognized.
+    UnknownClockBasisName(String),
     /// Attempted to collapse uncertainty into truth or resolve an investigation without adjudication (AGT-LAYER-006, INV-104).
     UnadjudicatedUncertaintyCollapse,
     /// An investigation requires at least two competing hypotheses to preserve alternatives (AGT-LAYER-006, INV-104, AGENTS.md).
@@ -2747,6 +2872,8 @@ pub enum ContractError {
     HypothesisMissingFalsifier,
     /// An investigation hypothesis cannot claim the `known` knowledge state (AGT-LAYER-006, INV-104).
     HypothesisKnownForbidden,
+    /// Spatial extent, bounding box, waypoint coordinates, or crop geometry is invalid.
+    InvalidSpatialExtent,
     /// An active grant is not held by the context authority (Cx).
     UnboundCapabilityGrant(String),
     /// A non-root region lacks an owning parent region (orphan work forbidden).
@@ -2857,10 +2984,47 @@ impl ContractError {
             Self::DerivedBeliefEvidenceOverlap => "derived_belief_evidence_overlap",
             Self::UnknownAbstractionLayer(_) => "unknown_abstraction_layer",
             Self::ProhibitedEvidencePromotion => "prohibited_evidence_promotion",
+            Self::SourceEvidenceMissingAnchor => "source_evidence_missing_anchor",
+            Self::SourceEvidenceOmissionRequired => "source_evidence_omission_required",
+            Self::SourceEvidenceRetainedWithOmission => "source_evidence_retained_with_omission",
+            Self::SourceEvidenceNotRetainedWithCapsuleBytes => {
+                "source_evidence_not_retained_with_capsule_bytes"
+            }
+            Self::SourceEvidenceByteCountMismatch => "source_evidence_byte_count_mismatch",
+            Self::SourceEvidenceEmptyStorageHandle => "source_evidence_empty_storage_handle",
+            Self::SourceEvidenceStorageHandleTraversal => {
+                "source_evidence_storage_handle_traversal"
+            }
+            Self::SourceEvidenceStorageHandleAbsolutePath => {
+                "source_evidence_storage_handle_absolute_path"
+            }
+            Self::SourceEvidenceStorageHandleMalformed => {
+                "source_evidence_storage_handle_malformed"
+            }
+            Self::SourceEvidenceRawWirePacketsWithCapsule => {
+                "source_evidence_raw_wire_packets_with_capsule"
+            }
+            Self::SourceEvidenceStatementMalformed => "source_evidence_statement_malformed",
+            Self::UnknownSourceEvidenceClassification(_) => {
+                "unknown_source_evidence_classification"
+            }
+            Self::UnknownOmissionReason(_) => "unknown_omission_reason",
+            Self::UnknownSourceCustodyTag(_) => "unknown_source_custody_tag",
+            Self::SourceEvidenceCapsuleRequired => "source_evidence_capsule_required",
+            Self::SourceEvidenceWitnessRequired => "source_evidence_witness_required",
+            Self::SourceEvidenceWitnessEqualsSourceDigest => {
+                "source_evidence_witness_equals_source_digest"
+            }
+            Self::SourceEvidenceNotRetainedWithWitness => {
+                "source_evidence_not_retained_with_witness"
+            }
+            Self::UnsupportedSourceEvidenceVersion(_) => "source_evidence_unsupported_version",
+            Self::UnknownClockBasisName(_) => "unknown_clock_basis_name",
             Self::UnadjudicatedUncertaintyCollapse => "unadjudicated_uncertainty_collapse",
             Self::CompetingHypothesesRequired => "competing_hypotheses_required",
             Self::HypothesisMissingFalsifier => "hypothesis_missing_falsifier",
             Self::HypothesisKnownForbidden => "hypothesis_known_forbidden",
+            Self::InvalidSpatialExtent => "invalid_spatial_extent",
             Self::UnboundCapabilityGrant(_) => "unbound_capability_grant",
             Self::OrphanRegion(_) => "orphan_region",
             Self::SelfParentedRegion(_) => "self_parented_region",

@@ -417,8 +417,8 @@ fn test_schema_domain_and_pinned_counts() -> Result<(), Box<dyn Error>> {
         .filter(|line| line.starts_with("| `SCHEMA-DOMAIN-"))
         .count();
     assert_eq!(
-        domain_count, 48,
-        "registries/DIGEST_DOMAINS.md count must remain pinned at 48"
+        domain_count, 50,
+        "registries/DIGEST_DOMAINS.md count must remain pinned at 50"
     );
 
     let schemas_path = Path::new(env!("CARGO_MANIFEST_DIR"))
