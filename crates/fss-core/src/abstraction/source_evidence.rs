@@ -9,13 +9,11 @@
 use core::fmt;
 use core::str::FromStr;
 
-use crate::agent::{KnowledgeStateBasis, RedactionMarker, RedactionReason, StaleBasis};
-use crate::canonical::{
-    CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder,
-};
+use crate::agent::{KnowledgeStateBasis, RedactionMarker, RedactionReason};
+use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder};
 use crate::contract::{ContractError, KnowledgeState, Plane, ProvenanceClass};
 use crate::evidence::SensorCapsule;
-use crate::ids::{validate_id, PrivacyGeneration};
+use crate::ids::{PrivacyGeneration, validate_id};
 use crate::sensor_capsule::{OmissionReason, SourceCustody};
 use crate::{ContentDigest, Generation, KnowledgeCell, LedgerAnchor};
 
@@ -23,6 +21,68 @@ use super::AgentAbstractionLayer;
 
 /// Binary wire format version for [`SourceEvidenceRecord`] canonical encoding.
 pub const SOURCE_EVIDENCE_RECORD_FORMAT_VERSION: u32 = 2;
+
+/// Maximum allowed length for a storage handle in bytes.
+const MAX_STORAGE_HANDLE_BYTES: usize = 4096;
+
+fn valid_text(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_STORAGE_HANDLE_BYTES
+        && !value.bytes().any(|byte| byte.is_ascii_control())
+}
+
+/// Sanitizes storage handle: refuses directory traversal, padding, NUL,
+/// newlines, and zero-width or control characters.
+fn sanitize_storage_handle(handle: &str) -> Result<(), ContractError> {
+    if handle.is_empty() || handle.trim().is_empty() {
+        return Err(ContractError::SourceEvidenceEmptyStorageHandle);
+    }
+    if handle.len() > MAX_STORAGE_HANDLE_BYTES {
+        return Err(ContractError::SourceEvidenceStorageHandleMalformed);
+    }
+    let lower = handle.to_ascii_lowercase();
+    if lower.contains("..")
+        || lower.contains("%2e%2e")
+        || lower.contains("%2e.")
+        || lower.contains(".%2e")
+    {
+        return Err(ContractError::SourceEvidenceStorageHandleTraversal);
+    }
+    if handle.starts_with('/')
+        || handle.starts_with('\\')
+        || lower.starts_with("file:")
+        || lower.starts_with("http:")
+        || lower.starts_with("https:")
+        || (handle.len() >= 2
+            && handle.as_bytes()[0].is_ascii_alphabetic()
+            && (handle.as_bytes()[1] == b':'
+                && (handle.len() == 2
+                    || handle.as_bytes()[2] == b'/'
+                    || handle.as_bytes()[2] == b'\\')))
+    {
+        return Err(ContractError::SourceEvidenceStorageHandleAbsolutePath);
+    }
+    if !valid_text(handle) || handle != handle.trim() {
+        return Err(ContractError::SourceEvidenceStorageHandleMalformed);
+    }
+    for c in handle.chars() {
+        if c == '\0'
+            || c == '\n'
+            || c == '\r'
+            || c == '\u{00AD}'
+            || c == '\u{00A0}'
+            || c == '\u{202E}'
+            || ('\u{200B}'..='\u{200F}').contains(&c)
+            || c == '\u{202F}'
+            || c == '\u{FEFF}'
+            || c == '\u{2060}'
+            || c.is_control()
+        {
+            return Err(ContractError::SourceEvidenceStorageHandleMalformed);
+        }
+    }
+    Ok(())
+}
 
 /// Canonical classification of source evidence (AGT-LAYER-002, INV-003).
 ///
@@ -129,30 +189,6 @@ impl CanonicalDecode for SourceEvidenceClassification {
         let text = decoder.text()?;
         Self::parse(text)
     }
-}
-
-/// Sanitizes storage handle: refuses directory traversal, padding, NUL,
-/// newlines, and zero-width or control characters.
-fn sanitize_storage_handle(handle: &str) -> Result<(), ContractError> {
-    if handle.is_empty() || handle != handle.trim() {
-        return Err(ContractError::SourceEvidenceEmptyStorageHandle);
-    }
-    if handle.contains("..") || handle.starts_with('/') || handle.starts_with('\\') {
-        return Err(ContractError::SourceEvidenceEmptyStorageHandle);
-    }
-    for c in handle.chars() {
-        if c == '\0'
-            || c == '\n'
-            || c == '\r'
-            || ('\u{200B}'..='\u{200F}').contains(&c)
-            || c == '\u{FEFF}'
-            || c == '\u{2060}'
-            || c.is_control()
-        {
-            return Err(ContractError::SourceEvidenceEmptyStorageHandle);
-        }
-    }
-    Ok(())
 }
 
 /// An authoritative source evidence record (AGT-LAYER-002, INV-003).
@@ -283,7 +319,11 @@ impl SourceEvidenceRecord {
     /// Validates constitutional invariants for this source evidence record (INV-003).
     pub fn validate(&self) -> Result<(), ContractError> {
         validate_id(&self.evidence_id)?;
-        if self.evidence_id == "." || self.evidence_id == ".." || self.evidence_id == ":" {
+        if self
+            .evidence_id
+            .split(':')
+            .any(|seg| seg.is_empty() || seg == "." || seg == "..")
+        {
             return Err(ContractError::InvalidIdentifier);
         }
         if self.anchor.site_lineage.is_empty() {
@@ -310,6 +350,11 @@ impl SourceEvidenceRecord {
             && self.capsule.is_none()
         {
             return Err(ContractError::SourceEvidenceCapsuleRequired);
+        }
+        if self.classification == SourceEvidenceClassification::RawWirePackets
+            && self.capsule.is_some()
+        {
+            return Err(ContractError::SourceEvidenceRawWirePacketsWithCapsule);
         }
         if self.classification == SourceEvidenceClassification::ContinuityWitness
             && self.continuity_witness.is_none()
@@ -346,10 +391,7 @@ impl SourceEvidenceRecord {
                         return Err(ContractError::SourceEvidenceByteCountMismatch);
                     }
                 }
-                if self
-                    .continuity_witness
-                    .is_some_and(|w| w == *source_digest)
-                {
+                if self.continuity_witness.is_some_and(|w| w == *source_digest) {
                     return Err(ContractError::SourceEvidenceWitnessEqualsSourceDigest);
                 }
             }
@@ -363,9 +405,7 @@ impl SourceEvidenceRecord {
                     return Err(ContractError::SourceEvidenceNotRetainedWithWitness);
                 }
                 if self.capsule.as_ref().is_some_and(|c| {
-                    c.source_bytes > 0
-                        || c.source_digest.bytes() != [0u8; 32]
-                        || c.frame_count > 0
+                    c.source_bytes > 0 || c.source_digest.bytes() != [0u8; 32] || c.frame_count > 0
                 }) {
                     return Err(ContractError::SourceEvidenceNotRetainedWithCapsuleBytes);
                 }
@@ -418,7 +458,7 @@ impl SourceEvidenceRecord {
     ///
     /// Truthful knowledge state derivation:
     /// - For `Retained` custody: `KnowledgeState::Known` when unbroken (`gap_before == false`),
-    ///   or `KnowledgeState::Stale` with [`StaleBasis`] when `gap_before == true`.
+    ///   or `KnowledgeState::Unknown` (without a synthesized basis) when `gap_before == true`.
     /// - For `NotRetained` custody:
     ///   - `OmissionReason::PrivacyRedaction` -> `KnowledgeState::Redacted` with [`RedactionMarker`].
     ///   - `OmissionReason::CapabilityFiltered` -> `KnowledgeState::Redacted` with [`RedactionMarker`].
@@ -439,46 +479,46 @@ impl SourceEvidenceRecord {
                     ev.push(witness);
                 }
                 if self.capsule.as_ref().is_some_and(|c| c.gap_before) {
-                    let stale_basis = if self.anchor.commit_sequence > 0 {
-                        let mut older_anchor = self.anchor.clone();
-                        older_anchor.commit_sequence =
-                            self.anchor.commit_sequence.saturating_sub(1);
-                        StaleBasis::OlderAnchor {
-                            valid_at: Box::new(older_anchor),
-                            current: Box::new(self.anchor.clone()),
-                        }
-                    } else {
-                        StaleBasis::OlderGeneration {
-                            valid_at: Generation(self.generation.0.saturating_sub(1)),
-                            current: self.generation,
-                        }
-                    };
-                    (
-                        KnowledgeState::Stale,
-                        Some(KnowledgeStateBasis::Stale(stale_basis)),
-                        ev,
-                    )
+                    (KnowledgeState::Unknown, None, ev)
                 } else {
                     (KnowledgeState::Known, None, ev)
                 }
             }
             SourceCustody::NotRetained => match self.omission {
-                Some(OmissionReason::PrivacyRedaction) => (
-                    KnowledgeState::Redacted,
-                    Some(KnowledgeStateBasis::Redaction(RedactionMarker {
-                        reason: RedactionReason::PrivacyProjection,
-                        privacy_generation: PrivacyGeneration::canonical_v1(),
-                    })),
-                    Vec::new(),
-                ),
-                Some(OmissionReason::CapabilityFiltered) => (
-                    KnowledgeState::Redacted,
-                    Some(KnowledgeStateBasis::Redaction(RedactionMarker {
-                        reason: RedactionReason::CapabilityProjection,
-                        privacy_generation: PrivacyGeneration::canonical_v1(),
-                    })),
-                    Vec::new(),
-                ),
+                Some(OmissionReason::PrivacyRedaction) => {
+                    let priv_gen = match PrivacyGeneration::parse(format!(
+                        "privacy:projection:v{}",
+                        self.anchor.privacy_epoch
+                    )) {
+                        Ok(g) => g,
+                        Err(_) => PrivacyGeneration::canonical_v1(),
+                    };
+                    (
+                        KnowledgeState::Redacted,
+                        Some(KnowledgeStateBasis::Redaction(RedactionMarker {
+                            reason: RedactionReason::PrivacyProjection,
+                            privacy_generation: priv_gen,
+                        })),
+                        Vec::new(),
+                    )
+                }
+                Some(OmissionReason::CapabilityFiltered) => {
+                    let priv_gen = match PrivacyGeneration::parse(format!(
+                        "privacy:projection:v{}",
+                        self.anchor.privacy_epoch
+                    )) {
+                        Ok(g) => g,
+                        Err(_) => PrivacyGeneration::canonical_v1(),
+                    };
+                    (
+                        KnowledgeState::Redacted,
+                        Some(KnowledgeStateBasis::Redaction(RedactionMarker {
+                            reason: RedactionReason::CapabilityProjection,
+                            privacy_generation: priv_gen,
+                        })),
+                        Vec::new(),
+                    )
+                }
                 Some(OmissionReason::UpstreamMissing) => {
                     (KnowledgeState::NotObservable, None, Vec::new())
                 }
@@ -500,11 +540,10 @@ impl SourceEvidenceRecord {
     }
 
     /// Serializes this record to canonical bytes.
-    #[must_use]
-    pub fn to_canonical_bytes(&self) -> Vec<u8> {
+    pub fn to_canonical_bytes(&self) -> Result<Vec<u8>, ContractError> {
         let mut encoder = CanonicalEncoder::new();
         self.encode_canonical(&mut encoder);
-        encoder.finish()
+        encoder.finish_checked()
     }
 
     /// Decodes a source evidence record from canonical bytes, rejecting trailing data.
@@ -516,9 +555,8 @@ impl SourceEvidenceRecord {
     }
 
     /// Computes canonical content digest of this record's canonical encoding.
-    #[must_use]
-    pub fn canonical_digest(&self) -> ContentDigest {
-        ContentDigest::sha256(&self.to_canonical_bytes())
+    pub fn canonical_digest(&self) -> Result<ContentDigest, ContractError> {
+        Ok(ContentDigest::sha256(&self.to_canonical_bytes()?))
     }
 }
 
@@ -587,7 +625,6 @@ impl CanonicalDecode for SourceEvidenceRecord {
         } else {
             None
         };
-        decoder.ensure_finished()?;
 
         let record = Self {
             evidence_id,
