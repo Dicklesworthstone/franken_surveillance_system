@@ -41,17 +41,7 @@ ERR_ROBOT_DOCS_DRIFT = "ERR-ROBOT-DOCS-DRIFT-001"
 ERR_ROBOT_DOCS_CORRUPT = "ERR-ROBOT-DOCS-CORRUPT-001"
 ERR_ROBOT_DOCS_UNREGISTERED = "ERR-ROBOT-DOCS-UNREGISTERED-001"
 ERR_ROBOT_DOCS_SECRET_DETECTED = "ERR-ROBOT-DOCS-SECRET-DETECTED-001"
-
-VALID_RECOVERY_CLASSES = frozenset({
-    "never_unchanged",
-    "safe_read_retry",
-    "refresh_and_retry",
-    "rebase_required",
-    "backoff",
-    "reconciliation_required",
-    "operator_action_required",
-    "resume_from_continuation",
-})
+# VALID_RECOVERY_CLASSES is dynamically derived from schemas/agent_response_envelope.v1.json below
 
 
 class RobotDocsError(Exception):
@@ -160,8 +150,14 @@ def load_json(path: Path) -> dict[str, Any]:
             object_pairs_hook=_duplicate_key_detector,
             parse_constant=_fail_on_nan_constant,
         )
+    except RobotDocsError:
+        raise
     except Exception as exc:
-        raise ValueError(f"Failed to parse JSON in {path}: {exc}") from exc
+        raise RobotDocsError(
+            ERR_ROBOT_DOCS_CORRUPT,
+            f"Failed to parse JSON in {path.name}: {exc}",
+            target=path.name,
+        ) from exc
     if not isinstance(doc, dict):
         raise RobotDocsError(
             ERR_ROBOT_DOCS_CORRUPT,
@@ -170,6 +166,179 @@ def load_json(path: Path) -> dict[str, Any]:
         )
     check_no_nan_inf(doc, path.name)
     return doc
+
+
+def load_valid_recovery_classes(root: Path) -> frozenset[str]:
+    """Derives valid recovery classes from schemas/agent_response_envelope.v1.json."""
+    schema_path = root / "schemas/agent_response_envelope.v1.json"
+    if not schema_path.is_file():
+        raise RobotDocsError(
+            ERR_ROBOT_DOCS_MISSING,
+            f"Missing required schema for recovery classes: {schema_path}",
+            target="schemas/agent_response_envelope.v1.json",
+        )
+    data = load_json(schema_path)
+    classes = data.get("properties", {}).get("recoveryClass", {}).get("enum")
+    if not isinstance(classes, list) or not classes:
+        raise RobotDocsError(
+            ERR_ROBOT_DOCS_CORRUPT,
+            "Missing or invalid recoveryClass enum in agent_response_envelope.v1.json",
+            target="agent_response_envelope.v1.json:recoveryClass",
+        )
+    return frozenset(classes)
+
+
+def parse_agent_operation_modes(root: Path) -> set[str]:
+    """Derives valid operation execution modes from registries/AGENT_OPERATIONS.md."""
+    md_path = root / "registries/AGENT_OPERATIONS.md"
+    if not md_path.is_file():
+        raise RobotDocsError(
+            ERR_ROBOT_DOCS_MISSING,
+            f"Missing required registry for operation modes: {md_path}",
+            target="registries/AGENT_OPERATIONS.md",
+        )
+    content = md_path.read_text(encoding="utf-8")
+    scan_for_secrets(content, "registries/AGENT_OPERATIONS.md")
+    modes: set[str] = set()
+    for line in content.splitlines():
+        line = line.strip()
+        if not line.startswith("|") or line.startswith("|---") or "Mode" in line:
+            continue
+        parts = [c.strip().strip("`") for c in line.split("|")[1:-1]]
+        if len(parts) >= 4:
+            mode_val = parts[3].strip()
+            if mode_val:
+                modes.add(mode_val)
+    if not modes:
+        raise RobotDocsError(
+            ERR_ROBOT_DOCS_CORRUPT,
+            "Failed to parse operation modes from registries/AGENT_OPERATIONS.md",
+            target="registries/AGENT_OPERATIONS.md",
+        )
+    return modes
+
+
+def parse_registered_statuses(root: Path) -> set[str]:
+    """Extracts registered status values from architecture registries and markdown tables."""
+    md_path = root / "registries/AGENT_OPERATIONS.md"
+    if not md_path.is_file():
+        raise RobotDocsError(
+            ERR_ROBOT_DOCS_MISSING,
+            f"Missing required registry for operation statuses: {md_path}",
+            target="registries/AGENT_OPERATIONS.md",
+        )
+    content = md_path.read_text(encoding="utf-8")
+    scan_for_secrets(content, "registries/AGENT_OPERATIONS.md")
+    statuses: set[str] = set()
+    in_status_section = False
+    for line in content.splitlines():
+        sline = line.strip()
+        if sline.startswith("## Operation lifecycle statuses"):
+            in_status_section = True
+            continue
+        if in_status_section:
+            if sline.startswith("## "):
+                break
+            for token in re.findall(r"`([A-Za-z0-9_]+)`", sline):
+                statuses.add(token)
+    for rel_path in ["registries/AGENT_OPERATIONS.md", "registries/AGENT_VIEWS.md", "registries/OPERATION_CROSSWALK.md"]:
+        p = root / rel_path
+        if p.is_file():
+            c_text = p.read_text(encoding="utf-8")
+            for line in c_text.splitlines():
+                line = line.strip()
+                if not line.startswith("|") or line.startswith("|---") or "Status" in line:
+                    continue
+                parts = [c.strip().strip("`") for c in line.split("|")[1:-1]]
+                if parts:
+                    val = parts[-1].strip()
+                    if val and val != "-":
+                        statuses.add(val)
+    if not statuses:
+        raise RobotDocsError(
+            ERR_ROBOT_DOCS_CORRUPT,
+            "Failed to parse registered operation statuses from registries/AGENT_OPERATIONS.md",
+            target="registries/AGENT_OPERATIONS.md",
+        )
+    return statuses
+
+
+def load_valid_compatibility_classes(root: Path) -> frozenset[str]:
+    """Derives registered compatibility classes from registries/AGENT_OPERATIONS.md."""
+    md_path = root / "registries/AGENT_OPERATIONS.md"
+    if not md_path.is_file():
+        raise RobotDocsError(
+            ERR_ROBOT_DOCS_MISSING,
+            f"Missing required registry for compatibility classes: {md_path}",
+            target="registries/AGENT_OPERATIONS.md",
+        )
+    content = md_path.read_text(encoding="utf-8")
+    scan_for_secrets(content, "registries/AGENT_OPERATIONS.md")
+    classes: set[str] = set()
+    in_compat_section = False
+    for line in content.splitlines():
+        sline = line.strip()
+        if sline.startswith("## Compatibility classes"):
+            in_compat_section = True
+            continue
+        if in_compat_section:
+            if sline.startswith("## "):
+                break
+            for token in re.findall(r"`([A-Za-z0-9_]+)`", sline):
+                classes.add(token)
+    if not classes:
+        fss1_path = root / "architecture/fss1_public_registry.json"
+        if fss1_path.is_file():
+            d = load_json(fss1_path)
+            for item in d.get("resources", []) + d.get("operations", []):
+                if isinstance(item, dict) and "compatibilityClass" in item:
+                    classes.add(item["compatibilityClass"])
+    if not classes:
+        raise RobotDocsError(
+            ERR_ROBOT_DOCS_CORRUPT,
+            "Failed to parse compatibility classes from registries/AGENT_OPERATIONS.md",
+            target="registries/AGENT_OPERATIONS.md",
+        )
+    return frozenset(classes)
+
+
+def load_valid_view_sections(root: Path) -> frozenset[str]:
+    """Derives registered view sections from registries/AGENT_VIEWS.md."""
+    md_path = root / "registries/AGENT_VIEWS.md"
+    if not md_path.is_file():
+        raise RobotDocsError(
+            ERR_ROBOT_DOCS_MISSING,
+            f"Missing required registry for view sections: {md_path}",
+            target="registries/AGENT_VIEWS.md",
+        )
+    content = md_path.read_text(encoding="utf-8")
+    scan_for_secrets(content, "registries/AGENT_VIEWS.md")
+    sections: set[str] = set()
+    in_sec_section = False
+    for line in content.splitlines():
+        sline = line.strip()
+        if sline.startswith("## View sections"):
+            in_sec_section = True
+            continue
+        if in_sec_section:
+            if sline.startswith("## "):
+                break
+            for token in re.findall(r"`([A-Za-z0-9_]+)`", sline):
+                sections.add(token)
+    if not sections:
+        raise RobotDocsError(
+            ERR_ROBOT_DOCS_CORRUPT,
+            "Failed to parse view sections from registries/AGENT_VIEWS.md",
+            target="registries/AGENT_VIEWS.md",
+        )
+    return frozenset(sections)
+
+
+VALID_COMPATIBILITY_CLASSES: frozenset[str] = frozenset()
+VALID_VIEW_SECTIONS: frozenset[str] = frozenset()
+VALID_RECOVERY_CLASSES: frozenset[str] = frozenset()
+
+
 
 
 def escape_markdown_cell(val: Any) -> str:
@@ -317,6 +486,30 @@ def collect_cli_discovery_endpoints(root: Path) -> dict[str, dict[str, str]]:
         raise FileNotFoundError(f"Missing CLI command specification: {fss_cmd_path}")
     content = fss_cmd_path.read_text(encoding="utf-8")
     scan_for_secrets(content, "crates/fss-cli/src/fss_cmd.rs")
+
+    # Extract usage lines from help_text() by decoding escaped newlines and splitlines
+    help_match = re.search(r'fn help_text\(\)[^{]*\{[^"0-9a-zA-Z]*"((?:[^"\\]|\\.)*)"', content, re.DOTALL)
+    usage_cmds: dict[str, str] = {}
+    if help_match:
+        raw_help = help_match.group(1)
+        for line in re.split(r"\\n|\n", raw_help):
+            line = line.strip()
+            m_usage = re.search(r"fss\s+([a-z0-9_-]+)(.*)", line)
+            if m_usage:
+                cmd_word = m_usage.group(1)
+                full_cmd = f"fss {cmd_word}{m_usage.group(2)}".strip()
+                usage_cmds[cmd_word] = full_cmd
+
+    # Extract primary parser literal from parse_fss_tokens match arms
+    parser_match_arms: dict[str, str] = {}
+    m_fn = re.search(r"fn parse_fss_tokens\b[^{]*\{([\s\S]*?)\n\}\n", content)
+    if m_fn:
+        for arm in re.finditer(r'"([a-z0-9_-]+)"(?:\s*\|\s*"[a-z0-9_-]+")*\s*=>.*?FssCommand::([A-Za-z0-9_]+)', m_fn.group(1), re.DOTALL):
+            var = arm.group(2)
+            lit = arm.group(1)
+            if var not in parser_match_arms:
+                parser_match_arms[var] = lit
+
     enum_match = re.search(r"pub enum FssCommand\s*\{([^}]+)\}", content)
     if not enum_match:
         raise RobotDocsError(
@@ -324,29 +517,64 @@ def collect_cli_discovery_endpoints(root: Path) -> dict[str, dict[str, str]]:
             "Failed to find FssCommand enum in fss_cmd.rs",
             target="fss_cmd.rs",
         )
-    variants = re.findall(r"///\s*(.*?)\n\s*([A-Za-z0-9_]+)", enum_match.group(1))
-    var_docs = {name: doc.strip() for doc, name in variants}
+
+    # Parse variants and doc comments
+    variant_pattern = re.compile(
+        r"((?:///[^\n]*\n)+)\s*([A-Za-z0-9_]+)",
+        re.MULTILINE,
+    )
+
+    var_docs: dict[str, str] = {}
+    for doc_block, var_ident in variant_pattern.findall(enum_match.group(1)):
+        doc = " ".join(line.strip().lstrip("/").strip() for line in doc_block.strip().splitlines())
+        var_docs[var_ident] = doc
+
     scan_for_secrets(var_docs, "crates/fss-cli/src/fss_cmd.rs:doc_comments")
 
     endpoints: dict[str, dict[str, str]] = {}
     if "Capabilities" in var_docs:
+        cmd_word = parser_match_arms.get("Capabilities", "capabilities")
+        cli_str = usage_cmds.get(cmd_word, f"fss {cmd_word} --json")
+        if "--json" not in cli_str and "--format json" not in cli_str:
+            cli_str += " --json"
         endpoints["capabilities"] = {
-            "cli": "fss capabilities --json",
+            "cli": cli_str,
             "description": var_docs["Capabilities"],
         }
     if "Doctor" in var_docs:
+        cmd_word = parser_match_arms.get("Doctor", "doctor")
+        cli_str = usage_cmds.get(cmd_word, f"fss {cmd_word} --json")
+        if "--json" not in cli_str and "--format json" not in cli_str:
+            cli_str += " --json"
         endpoints["doctor"] = {
-            "cli": "fss doctor --json",
+            "cli": cli_str,
             "description": var_docs["Doctor"],
         }
     if "Status" in var_docs:
+        cmd_word = parser_match_arms.get("Status", "status")
+        cli_str = usage_cmds.get(cmd_word, f"fss {cmd_word} --json")
+        if "--json" not in cli_str and "--format json" not in cli_str:
+            cli_str += " --json"
         endpoints["status"] = {
-            "cli": "fss status --json",
+            "cli": cli_str,
             "description": var_docs["Status"],
         }
     if "NegativeEvidence" in var_docs:
+        cmd_word = parser_match_arms.get("NegativeEvidence", "negative-evidence")
+        usage_line = usage_cmds.get(cmd_word, "")
+        subcmd = "list"
+        m_sub = re.search(r"<[^>]*\b([a-z]+)\b[^>]*>", usage_line)
+        if m_sub:
+            alternatives = re.findall(r"\b([a-z0-9_-]+)\b", m_sub.group(0))
+            if "list" in alternatives:
+                subcmd = "list"
+            elif "ls" in alternatives:
+                subcmd = "ls"
+            elif len(alternatives) > 1:
+                subcmd = alternatives[1]
+        cli_str = f"fss {cmd_word} {subcmd} --json"
         endpoints["negative_evidence"] = {
-            "cli": "fss negative-evidence list --json",
+            "cli": cli_str,
             "description": var_docs["NegativeEvidence"],
         }
 
@@ -391,6 +619,13 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
     schemas_map = parse_schemas_registry(root / "registries/SCHEMAS.md")
     valid_gates = parse_qualification_lanes(root)
     discovery = collect_cli_discovery_endpoints(root)
+
+    global VALID_RECOVERY_CLASSES, VALID_COMPATIBILITY_CLASSES, VALID_VIEW_SECTIONS
+    VALID_RECOVERY_CLASSES = load_valid_recovery_classes(root)
+    valid_modes = parse_agent_operation_modes(root)
+    valid_statuses = parse_registered_statuses(root)
+    VALID_COMPATIBILITY_CLASSES = load_valid_compatibility_classes(root)
+    VALID_VIEW_SECTIONS = load_valid_view_sections(root)
 
     # Scan raw registry structures for secrets
     scan_for_secrets(fss1_reg, "architecture/fss1_public_registry.json")
@@ -589,13 +824,39 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
                     f"View {v_id} invalid requiredSection name: {sec!r}",
                     target=f"views.{v_id}.requiredSections",
                 )
+            if sec not in VALID_VIEW_SECTIONS:
+                raise RobotDocsError(
+                    ERR_ROBOT_DOCS_UNREGISTERED,
+                    f"View {v_id} references unregistered section: {sec}",
+                    target=f"views.{v_id}.requiredSections",
+                )
 
         v_gate = v["gate"]
+        if not isinstance(v_gate, str):
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                f"View {v_id} gate must be a string, got {type(v_gate).__name__}",
+                target=f"views.{v_id}.gate",
+            )
         if v_gate not in valid_gates:
             raise RobotDocsError(
                 ERR_ROBOT_DOCS_UNREGISTERED,
                 f"View {v_id} references unregistered gate: {v_gate}",
                 target=f"views.{v_id}.gate",
+            )
+
+        v_status = v["status"]
+        if not isinstance(v_status, str):
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                f"View {v_id} status must be a string, got {type(v_status).__name__}",
+                target=f"views.{v_id}.status",
+            )
+        if v_status not in valid_statuses:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_UNREGISTERED,
+                f"View {v_id} references unregistered status: {v_status}",
+                target=f"views.{v_id}.status",
             )
 
     # Check capabilities for duplicate IDs and index them
@@ -620,18 +881,29 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
                 f"Duplicate capability ID in capabilities.json: {c_id}",
                 target="capabilities.json",
             )
-        for req_k in ["capability", "scope", "plane", "defaultRole"]:
+        for req_k in [
+            "capability", "scope", "plane", "defaultRole",
+            "denialReason", "safeAlternative", "generation"
+        ]:
             if req_k not in cap or cap[req_k] is None:
                 raise RobotDocsError(
                     ERR_ROBOT_DOCS_CORRUPT,
                     f"Capability {c_id} missing required key '{req_k}'",
                     target=f"capabilities.{c_id}.{req_k}",
                 )
-            if not isinstance(cap[req_k], str):
+            if not isinstance(cap[req_k], str) or not cap[req_k].strip():
                 raise RobotDocsError(
                     ERR_ROBOT_DOCS_CORRUPT,
-                    f"Capability {c_id} field '{req_k}' must be a string, got {type(cap[req_k]).__name__}",
+                    f"Capability {c_id} field '{req_k}' must be a non-empty string, got {type(cap[req_k]).__name__}",
                     target=f"capabilities.{c_id}.{req_k}",
+                )
+        if "status" in cap:
+            c_status = cap["status"]
+            if not isinstance(c_status, str) or c_status not in valid_statuses:
+                raise RobotDocsError(
+                    ERR_ROBOT_DOCS_UNREGISTERED,
+                    f"Capability {c_id} references unregistered status: {c_status}",
+                    target=f"capabilities.{c_id}.status",
                 )
         caps_by_id[c_id] = cap
 
@@ -721,10 +993,11 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
             target="operations_crosswalk",
         )
 
-    # Filter out tombstoned operations so they never render as live
+    # Filter out tombstoned, superseded, and deprecated operations so they never render as live
     live_op_ids = [
         op_id for op_id in seen_agent_ops
         if op_id not in fss1_tombstones and agent_ops_by_id[op_id].get("status") not in ("tombstone", "tombstoned")
+        and agent_ops_by_id[op_id].get("status") not in ("superseded", "deprecated")
     ]
 
     # Consolidated operations (sorted deterministically by ID)
@@ -747,12 +1020,13 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
                     target=f"operations.{op_id}.{req_k}",
                 )
 
-        if not isinstance(raw_op["name"], str):
-            raise RobotDocsError(
-                ERR_ROBOT_DOCS_CORRUPT,
-                f"Operation {op_id} name must be a string, got {type(raw_op['name']).__name__}",
-                target=f"operations.{op_id}.name",
-            )
+        for str_field in ["name", "purpose", "mode", "owner", "defaultView", "inputSchema", "outputSchema", "requestPayloadSchema"]:
+            if not isinstance(raw_op[str_field], str) or not raw_op[str_field].strip():
+                raise RobotDocsError(
+                    ERR_ROBOT_DOCS_CORRUPT,
+                    f"Operation {op_id} {str_field} must be a non-empty string, got {raw_op[str_field]!r}",
+                    target=f"operations.{op_id}.{str_field}",
+                )
         if not isinstance(raw_op["effectful"], bool):
             raise RobotDocsError(
                 ERR_ROBOT_DOCS_CORRUPT,
@@ -769,7 +1043,8 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
         # Check required fields in fss1_op
         for fss1_k in [
             "name", "owner", "status", "responseEnvelope", "responsePayloadSchemas",
-            "requestEnvelope", "requestPayloadSchema", "defaultView", "cliCommand", "mcpToolName"
+            "requestEnvelope", "requestPayloadSchema", "defaultView", "cliCommand", "mcpToolName",
+            "compatibilityClass",
         ]:
             if fss1_k not in fss1_op or fss1_op[fss1_k] is None:
                 raise RobotDocsError(
@@ -778,11 +1053,20 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
                     target=f"fss1_public_registry.json:{op_id}.{fss1_k}",
                 )
 
-        if not isinstance(fss1_op["name"], str):
+        for str_field in ["name", "owner", "status", "responseEnvelope", "requestEnvelope", "requestPayloadSchema", "defaultView", "cliCommand", "mcpToolName", "compatibilityClass"]:
+            if not isinstance(fss1_op[str_field], str) or not fss1_op[str_field].strip():
+                raise RobotDocsError(
+                    ERR_ROBOT_DOCS_CORRUPT,
+                    f"Operation {op_id} {str_field} in fss1 must be a non-empty string, got {fss1_op[str_field]!r}",
+                    target=f"fss1_public_registry.json:{op_id}.{str_field}",
+                )
+
+        op_compat = fss1_op["compatibilityClass"]
+        if op_compat not in VALID_COMPATIBILITY_CLASSES:
             raise RobotDocsError(
-                ERR_ROBOT_DOCS_CORRUPT,
-                f"Operation {op_id} name in fss1 must be a string, got {type(fss1_op['name']).__name__}",
-                target=f"fss1_public_registry.json:{op_id}.name",
+                ERR_ROBOT_DOCS_UNREGISTERED,
+                f"Operation {op_id} references unregistered compatibility class: {op_compat}",
+                target=f"fss1_public_registry.json:{op_id}.compatibilityClass",
             )
 
         # Check required fields in cw
@@ -797,12 +1081,13 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
                     target=f"operation_crosswalk.json:{op_id}.{cw_k}",
                 )
 
-        if not isinstance(cw["operation_name"], str):
-            raise RobotDocsError(
-                ERR_ROBOT_DOCS_CORRUPT,
-                f"Operation {op_id} operation_name in crosswalk must be a string, got {type(cw['operation_name']).__name__}",
-                target=f"operation_crosswalk.json:{op_id}.operation_name",
-            )
+        for str_field in ["operation_name", "owner", "status", "cli_command", "mcp_tool_name", "library_entry_point", "primary_error_id"]:
+            if not isinstance(cw[str_field], str) or not cw[str_field].strip():
+                raise RobotDocsError(
+                    ERR_ROBOT_DOCS_CORRUPT,
+                    f"Operation {op_id} {str_field} in crosswalk must be a non-empty string, got {cw[str_field]!r}",
+                    target=f"operation_crosswalk.json:{op_id}.{str_field}",
+                )
 
         # Cross-registry field conflict detection (DRIFT)
         # 1. name
@@ -834,6 +1119,12 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
             )
 
         # 3. status
+        if raw_op["status"] not in valid_statuses:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_UNREGISTERED,
+                f"Operation {op_id} references unregistered status: {raw_op['status']}",
+                target=f"operations.{op_id}.status",
+            )
         if raw_op["status"] != fss1_op["status"]:
             raise RobotDocsError(
                 ERR_ROBOT_DOCS_DRIFT,
@@ -845,6 +1136,14 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
                 ERR_ROBOT_DOCS_DRIFT,
                 f"Operation {op_id} status conflict: agent_operations has {raw_op['status']!r}, crosswalk has {cw['status']!r}",
                 target=f"operations.{op_id}.status",
+            )
+
+        # Validate mode
+        if raw_op["mode"] not in valid_modes:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_UNREGISTERED,
+                f"Operation {op_id} references unregistered mode: {raw_op['mode']}",
+                target=f"operations.{op_id}.mode",
             )
 
         # 4. responseEnvelope (outputSchema in agent_operations)
@@ -921,6 +1220,12 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
 
         # Validate gate reference
         op_gate = raw_op["gate"]
+        if not isinstance(op_gate, str):
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                f"Operation {op_id} gate must be a string, got {type(op_gate).__name__}",
+                target=f"operations.{op_id}.gate",
+            )
         if op_gate not in valid_gates:
             raise RobotDocsError(
                 ERR_ROBOT_DOCS_UNREGISTERED,
@@ -936,6 +1241,12 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
                 target=f"operations.{op_id}.exitIdentities",
             )
         for exit_id in exit_ids:
+            if not isinstance(exit_id, str):
+                raise RobotDocsError(
+                    ERR_ROBOT_DOCS_CORRUPT,
+                    f"Operation {op_id} exit identity must be a string, got {type(exit_id).__name__}",
+                    target=f"operations.{op_id}.exitIdentities",
+                )
             if exit_id not in exit_codes_set:
                 raise RobotDocsError(
                     ERR_ROBOT_DOCS_UNREGISTERED,
@@ -952,6 +1263,12 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
                 target=f"operations.{op_id}.retryClasses",
             )
         for r_cls in retry_classes:
+            if not isinstance(r_cls, str):
+                raise RobotDocsError(
+                    ERR_ROBOT_DOCS_CORRUPT,
+                    f"Operation {op_id} retry class must be a string, got {type(r_cls).__name__}",
+                    target=f"operations.{op_id}.retryClasses",
+                )
             if r_cls not in VALID_RECOVERY_CLASSES:
                 raise RobotDocsError(
                     ERR_ROBOT_DOCS_UNREGISTERED,
@@ -965,25 +1282,35 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
         req_payload = raw_op["requestPayloadSchema"]
         resp_payloads = raw_op["responsePayloadSchemas"]
 
-        if not isinstance(resp_payloads, list):
-            raise RobotDocsError(
-                ERR_ROBOT_DOCS_CORRUPT,
-                f"Operation {op_id} responsePayloadSchemas must be a list, got {type(resp_payloads).__name__}",
-                target=f"operations.{op_id}.responsePayloadSchemas",
-            )
-
-        for s in [req_env, resp_env, req_payload]:
-            if s and s not in schemas_map:
+        for schema_label, s in [
+            ("inputSchema", req_env),
+            ("outputSchema", resp_env),
+            ("requestPayloadSchema", req_payload),
+        ]:
+            if not isinstance(s, str) or not s.strip():
+                raise RobotDocsError(
+                    ERR_ROBOT_DOCS_CORRUPT,
+                    f"Operation {op_id} {schema_label} must be a non-empty string, got {s!r}",
+                    target=f"operations.{op_id}.{schema_label}",
+                )
+            if s not in schemas_map:
                 raise RobotDocsError(
                     ERR_ROBOT_DOCS_UNREGISTERED,
                     f"Operation {op_id} references unregistered schema: {s}",
                     target=f"operations.{op_id}.schemas",
                 )
+
+        if not isinstance(resp_payloads, list) or len(resp_payloads) == 0:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                f"Operation {op_id} responsePayloadSchemas must be a non-empty list, got {type(resp_payloads).__name__}",
+                target=f"operations.{op_id}.responsePayloadSchemas",
+            )
         for s in resp_payloads:
-            if not isinstance(s, str):
+            if not isinstance(s, str) or not s.strip():
                 raise RobotDocsError(
                     ERR_ROBOT_DOCS_CORRUPT,
-                    f"Schema in responsePayloadSchemas for {op_id} must be a string",
+                    f"Schema in responsePayloadSchemas for {op_id} must be a non-empty string",
                     target=f"operations.{op_id}.responsePayloadSchemas",
                 )
             if s not in schemas_map:
@@ -1035,6 +1362,12 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
                 target=f"operations.{op_id}.errorIdentities",
             )
         for err_id in error_ids:
+            if not isinstance(err_id, str):
+                raise RobotDocsError(
+                    ERR_ROBOT_DOCS_CORRUPT,
+                    f"Operation {op_id} error identity must be a string, got {type(err_id).__name__}",
+                    target=f"operations.{op_id}.errorIdentities",
+                )
             if err_id not in errors_map:
                 raise RobotDocsError(
                     ERR_ROBOT_DOCS_UNREGISTERED,
@@ -1082,9 +1415,8 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
             "status": raw_view["status"],
         })
 
-    # Consolidated resources (sorted deterministically by ID)
-    consolidated_resources: list[dict[str, Any]] = []
-    for raw_res in sorted(resources_list, key=lambda r: str(r.get("id", ""))):
+    # Validate resources structure before sorting
+    for raw_res in resources_list:
         if not isinstance(raw_res, dict):
             raise RobotDocsError(
                 ERR_ROBOT_DOCS_CORRUPT,
@@ -1098,6 +1430,11 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
                 "Resource id must be a string",
                 target="fss1_public_registry.json:resources.id",
             )
+
+    # Consolidated resources (sorted deterministically by ID)
+    consolidated_resources: list[dict[str, Any]] = []
+    for raw_res in sorted(resources_list, key=lambda r: r["id"]):
+        res_id = raw_res["id"]
         for req_k in ["name", "owner", "uriTemplate", "payloadSchema", "requestEnvelope", "responseEnvelope", "compatibilityClass", "status"]:
             if req_k not in raw_res or raw_res[req_k] is None:
                 raise RobotDocsError(
@@ -1106,29 +1443,59 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
                     target=f"resources.{res_id}.{req_k}",
                 )
 
-        if not isinstance(raw_res["name"], str):
-            raise RobotDocsError(
-                ERR_ROBOT_DOCS_CORRUPT,
-                f"Resource {res_id} name must be a string, got {type(raw_res['name']).__name__}",
-                target=f"resources.{res_id}.name",
-            )
+        for str_k in ["name", "owner", "uriTemplate"]:
+            if not isinstance(raw_res[str_k], str) or not raw_res[str_k].strip():
+                raise RobotDocsError(
+                    ERR_ROBOT_DOCS_CORRUPT,
+                    f"Resource {res_id} {str_k} must be a non-empty string, got {type(raw_res[str_k]).__name__}",
+                    target=f"resources.{res_id}.{str_k}",
+                )
 
         res_req_env = raw_res["requestEnvelope"]
         res_resp_env = raw_res["responseEnvelope"]
         res_payload = raw_res["payloadSchema"]
 
-        for s in [res_req_env, res_resp_env]:
-            if s and s not in schemas_map:
+        for env_k, s in [("requestEnvelope", res_req_env), ("responseEnvelope", res_resp_env)]:
+            if not isinstance(s, str) or not s.strip():
+                raise RobotDocsError(
+                    ERR_ROBOT_DOCS_CORRUPT,
+                    f"Resource {res_id} {env_k} must be a non-empty string, got {s!r}",
+                    target=f"resources.{res_id}.{env_k}",
+                )
+            if s not in schemas_map:
                 raise RobotDocsError(
                     ERR_ROBOT_DOCS_UNREGISTERED,
                     f"Resource {res_id} references unregistered envelope schema: {s}",
                     target=f"resources.{res_id}.envelopes",
                 )
-        if res_payload and res_payload not in schemas_map:
+
+        if not isinstance(res_payload, str) or not res_payload.strip():
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                f"Resource {res_id} payloadSchema must be a non-empty string, got {res_payload!r}",
+                target=f"resources.{res_id}.payloadSchema",
+            )
+        if res_payload not in schemas_map:
             raise RobotDocsError(
                 ERR_ROBOT_DOCS_UNREGISTERED,
                 f"Resource {res_id} references unregistered payload schema: {res_payload}",
                 target=f"resources.{res_id}.payloadSchema",
+            )
+
+        res_compat = raw_res["compatibilityClass"]
+        if not isinstance(res_compat, str) or res_compat not in VALID_COMPATIBILITY_CLASSES:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_UNREGISTERED,
+                f"Resource {res_id} references unregistered compatibility class: {res_compat}",
+                target=f"resources.{res_id}.compatibilityClass",
+            )
+
+        res_status = raw_res["status"]
+        if not isinstance(res_status, str) or res_status not in valid_statuses:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_UNREGISTERED,
+                f"Resource {res_id} references unregistered status: {res_status}",
+                target=f"resources.{res_id}.status",
             )
 
         consolidated_resources.append({
@@ -1139,8 +1506,8 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
             "requestEnvelope": res_req_env,
             "responseEnvelope": res_resp_env,
             "payloadSchema": res_payload,
-            "compatibilityClass": raw_res["compatibilityClass"],
-            "status": raw_res["status"],
+            "compatibilityClass": res_compat,
+            "status": res_status,
         })
 
     # Complete Schemas Catalog: all authoritative schemas registered in registries/SCHEMAS.md
@@ -1170,9 +1537,9 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
             "scope": cap["scope"],
             "plane": cap["plane"],
             "defaultRole": cap["defaultRole"],
-            "denialReason": cap.get("denialReason", ""),
-            "safeAlternative": cap.get("safeAlternative", ""),
-            "generation": cap.get("generation", ""),
+            "denialReason": cap["denialReason"],
+            "safeAlternative": cap["safeAlternative"],
+            "generation": cap["generation"],
         })
 
     # Complete Errors Catalog: all authoritative errors registered in registries/ERRORS.md
@@ -1288,7 +1655,7 @@ def generate_robot_docs_markdown(model: dict[str, Any]) -> str:
         "",
         "## 3. Canonical Operations Catalog",
         "",
-        "The complete suite of 14 canonical agent control plane operations under `fss/1`:",
+        f"The complete suite of {len(model['operations'])} canonical agent control plane operations under `fss/1`:",
         "",
         "| ID | Name | CLI Command | MCP Tool | Library Entry Point | Primary Error |",
         "|---|---|---|---|---|---|",
