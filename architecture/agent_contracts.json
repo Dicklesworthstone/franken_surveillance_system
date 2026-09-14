@@ -328,10 +328,20 @@
   },
   "drifts": [
     {
-      "target": "H2DecisionArtifact::RedactionTransform",
+      "target": "H2DecisionArtifact",
       "field": "applied_redaction_transform",
-      "status": "unregistered_tokens_internal_enum",
-      "reason": "Redaction transform URI tokens (transform:face_blur, etc.) are internal typed enum values and not yet backed by a standalone machine registry in registries/ or architecture/."
+      "originalValue": "transform:* tokens presented as registered redaction transforms through the public predicate is_registered_redaction_transform",
+      "reconciledValue": "internal typed enum RedactionTransform parsed only inside fss-core; no public predicate claims registration",
+      "reason": "The nine transform:* tokens are not backed by any machine registry in registries/ or architecture/. They stay an internal typed vocabulary and must not be called registered until a canonical registry is ratified.",
+      "status": "open"
+    },
+    {
+      "target": "H2DecisionArtifact",
+      "field": "privacy_class",
+      "originalValue": "ten invented privacy class names (private:redacted plus raw/unredacted aliases)",
+      "reconciledValue": "only private:property, the privacy class fss-core already uses; every other string is refused with invalid_privacy_class",
+      "reason": "No machine registry of privacy classes exists in registries/ or architecture/. H2 accepts only the privacy class already used in fss-core/src and invents none.",
+      "status": "open"
     }
   ]
 }

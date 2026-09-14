@@ -504,34 +504,26 @@ pub(crate) fn encode_text_set(values: &BTreeSet<String>, encoder: &mut Canonical
 
 pub(crate) fn decode_text_set(
     decoder: &mut CanonicalDecoder<'_>,
-) -> Result<BTreeSet<String>, HydrationError> {
-    let count_u64 = decoder.u64().map_err(|err| match err {
-        ContractError::InvalidDigest => HydrationError::Truncated,
-        other => HydrationError::Contract(other),
-    })?;
-    let count = usize::try_from(count_u64).map_err(|_| HydrationError::CapacityExceeded)?;
+) -> Result<BTreeSet<String>, ContractError> {
+    let count_u64 = decoder.u64()?;
+    let count = usize::try_from(count_u64).map_err(|_| ContractError::CountBoundExceeded)?;
     if count > MAX_REQUEST_SET_ITEMS {
-        return Err(HydrationError::CapacityExceeded);
+        return Err(ContractError::CountBoundExceeded);
     }
     if decoder.remaining() < count {
-        return Err(HydrationError::Truncated);
+        return Err(ContractError::InvalidDigest);
     }
     let mut set = BTreeSet::new();
     let mut prev: Option<&str> = None;
     for _ in 0..count {
-        let text = decoder.text().map_err(|err| match err {
-            ContractError::InvalidDigest => HydrationError::Truncated,
-            other => HydrationError::Contract(other),
-        })?;
+        let text = decoder.text()?;
         if text.trim().is_empty() || !valid_text(text) {
-            return Err(HydrationError::Contract(ContractError::InvalidIdentifier));
+            return Err(ContractError::InvalidIdentifier);
         }
         if let Some(p) = prev
             && p >= text
         {
-            return Err(HydrationError::Contract(
-                ContractError::NonCanonicalOrdering,
-            ));
+            return Err(ContractError::NonCanonicalOrdering);
         }
         prev = Some(text);
         set.insert(text.to_string());

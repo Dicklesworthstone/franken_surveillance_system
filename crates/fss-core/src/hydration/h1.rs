@@ -1065,12 +1065,7 @@ impl CanonicalDecode for H1SemanticSynopsis {
         let anchor = LedgerAnchor::decode_canonical(decoder)?;
         let contract_basis = ContractBasis::decode_canonical(decoder)?;
         let estimated_cost = <BudgetVector as CanonicalDecode>::decode_canonical(decoder)?;
-        let required_capabilities = decode_text_set(decoder).map_err(|err| match err {
-            HydrationError::CapacityExceeded => ContractError::CountBoundExceeded,
-            HydrationError::Truncated => ContractError::InvalidDigest,
-            HydrationError::Contract(c) => c,
-            _ => ContractError::InvalidIdentifier,
-        })?;
+        let required_capabilities = decode_text_set(decoder)?;
         let privacy_class = decoder.text()?.to_string();
         let published_at = TimestampNs::decode_canonical(decoder)?;
         let retention_until = TimestampNs::decode_canonical(decoder)?;

@@ -822,5 +822,64 @@ class TestGraphAlgorithmRegistryConsistency(unittest.TestCase):
             self.assertGreaterEqual(len(drift_findings), 1)
 
 
+
+class TestAgentContractDriftRecords(unittest.TestCase):
+    """architecture/agent_contracts.json `drifts` are validated, not free-form (fss-x4a.30.82.14)."""
+
+    def _write_agent_contracts(self, repo: Path, mutate) -> None:
+        target = repo / "architecture/agent_contracts.json"
+        raw = json.loads((ROOT / "architecture/agent_contracts.json").read_text(encoding="utf-8"))
+        mutate(raw)
+        target.unlink()
+        target.write_text(json.dumps(raw), encoding="utf-8")
+
+    def test_live_h2_drift_records_present_and_valid(self) -> None:
+        raw = json.loads((ROOT / "architecture/agent_contracts.json").read_text(encoding="utf-8"))
+        fields = {(d["target"], d["field"]) for d in raw["drifts"]}
+        self.assertIn(("H2DecisionArtifact", "applied_redaction_transform"), fields)
+        self.assertIn(("H2DecisionArtifact", "privacy_class"), fields)
+        _, findings, _ = validate_consistency(ROOT)
+        self.assertEqual([f for f in findings if f.file == "architecture/agent_contracts.json" and "/drifts" in f.location], [])
+
+    def test_drifts_not_a_list_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            repo = create_mock_repo(Path(td))
+            self._write_agent_contracts(repo, lambda raw: raw.__setitem__("drifts", {"target": "x"}))
+            is_valid, findings, _ = validate_consistency(repo)
+            self.assertFalse(is_valid)
+            self.assertTrue(any(f.code == ERR_CORRUPT_FILE and f.location == "#/drifts" for f in findings))
+
+    def test_drift_missing_required_field_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            repo = create_mock_repo(Path(td))
+            self._write_agent_contracts(repo, lambda raw: raw["drifts"][0].pop("reason"))
+            is_valid, findings, _ = validate_consistency(repo)
+            self.assertFalse(is_valid)
+            self.assertTrue(any(f.code == ERR_CORRUPT_FILE and f.location == "#/drifts/0/reason" for f in findings))
+
+    def test_drift_empty_target_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            repo = create_mock_repo(Path(td))
+            self._write_agent_contracts(repo, lambda raw: raw["drifts"][1].__setitem__("target", "  "))
+            is_valid, findings, _ = validate_consistency(repo)
+            self.assertFalse(is_valid)
+            self.assertTrue(any(f.code == ERR_CORRUPT_FILE and f.location == "#/drifts/1/target" for f in findings))
+
+    def test_drift_unknown_status_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            repo = create_mock_repo(Path(td))
+            self._write_agent_contracts(repo, lambda raw: raw["drifts"][0].__setitem__("status", "registered"))
+            is_valid, findings, _ = validate_consistency(repo)
+            self.assertFalse(is_valid)
+            self.assertTrue(any(f.code == ERR_CONTRADICTED_METADATA and f.location == "#/drifts/0/status" for f in findings))
+
+    def test_duplicate_drift_target_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            repo = create_mock_repo(Path(td))
+            self._write_agent_contracts(repo, lambda raw: raw["drifts"].append(dict(raw["drifts"][0])))
+            is_valid, findings, _ = validate_consistency(repo)
+            self.assertFalse(is_valid)
+            self.assertTrue(any(f.code == ERR_CONTRADICTED_METADATA and "duplicate drift" in f.message for f in findings))
+
 if __name__ == "__main__":
     unittest.main()

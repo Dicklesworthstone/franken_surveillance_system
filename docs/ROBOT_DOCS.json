@@ -797,6 +797,16 @@
       "id": "ERR-GRAPH-UNREGISTERED-PROJECTION-001"
     },
     {
+      "description": "H2 decision artifact privacy class is not `private:property`, the only privacy class fss-core uses; raw or unredacted media included (code `invalid_privacy_class`)",
+      "guidance": "supply the authorized privacy class; do not retry unchanged",
+      "id": "ERR-HYDRATION-INVALID-PRIVACY-CLASS-001"
+    },
+    {
+      "description": "H2 redaction transform is not a recognized `transform:*` token or is incompatible with the artifact kind (code `invalid_redaction_transform`)",
+      "guidance": "apply a recognized transform compatible with the artifact kind",
+      "id": "ERR-HYDRATION-INVALID-REDACTION-TRANSFORM-001"
+    },
+    {
       "description": "same key used with different request digest",
       "guidance": "reject permanently",
       "id": "ERR-IDEMPOTENCY-CONFLICT-001"

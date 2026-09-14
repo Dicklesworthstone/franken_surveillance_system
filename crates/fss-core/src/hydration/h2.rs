@@ -11,9 +11,13 @@
 //! Invariants:
 //! - Level is strictly [`HydrationLevel::H2`].
 //! - Artifacts must be explicitly authorized with an authorization grant ID.
-//! - Artifacts must carry certified redaction / privacy transform metadata from registered transforms.
+//! - Artifacts must carry a redaction transform from the internal [`RedactionTransform`] vocabulary
+//!   (not a registry; see the drift records in `architecture/agent_contracts.json`) and the only
+//!   privacy class fss-core already uses, `private:property`.
 //! - Raw unredacted media, raw camera streams, and ungrounded cognition are strictly prohibited.
-//! - Proof roots must include both the exact payload digest and the subject digest.
+//! - Proof roots must include both the exact payload digest and the subject digest, and every other
+//!   root must come from caller-held [`RetainedProvenance`]; decoding goes only through
+//!   [`H2DecisionArtifact::decode_verified`], which re-checks the roots against that provenance.
 //! - Completeness must not be Unknown, NotObservable, Unauthorized, or Stale.
 
 use std::collections::BTreeSet;
@@ -48,9 +52,9 @@ pub const H2_SCHEMA: &str = "fss.h2_decision_artifact.v1";
 
 /// Recognized privacy redaction transforms for H2 decision artifacts.
 ///
-/// Drift record: The `transform:*` identifiers are unbacked by a standalone machine registry
-/// in `registries/` or `architecture/`. They are defined here as an internal typed enum and
-/// must not be claimed as externally registered until a canonical registry is ratified.
+/// Drift: the `transform:*` identifiers are not backed by any machine registry in `registries/` or
+/// `architecture/` (drift record in `architecture/agent_contracts.json`). They are an internal
+/// typed vocabulary and must not be called registered until a canonical registry is ratified.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum RedactionTransform {
     /// Face blurring filter.
@@ -151,47 +155,41 @@ impl RedactionTransform {
     }
 }
 
-/// Verifies whether a string is one of the recognized H2 redaction transforms.
+/// Returns the internal [`RedactionTransform`] a token names, if any.
 ///
-/// Note: These transform identifiers are internal recognized tokens, not externally registered schemas.
-#[must_use]
-pub fn is_registered_redaction_transform(s: &str) -> bool {
-    RedactionTransform::parse(s).is_ok()
+/// Crate-internal on purpose: the `transform:*` tokens have no machine registry behind them, so no
+/// public predicate may present them as registered.
+pub(crate) fn recognized_redaction_transform(s: &str) -> Option<RedactionTransform> {
+    RedactionTransform::parse(s).ok()
 }
 
-/// Typed representation of privacy classification evaluated for H2 decision artifacts.
+/// Typed privacy class accepted by H2 decision artifacts.
+///
+/// Reuses the only privacy class fss-core already uses, `private:property`, and invents no other
+/// vocabulary. Every other string, raw or unredacted media included, is refused with
+/// [`ContractError::InvalidPrivacyClass`]. Drift: no machine registry of privacy classes exists
+/// (drift record in `architecture/agent_contracts.json`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum H2PrivacyClass {
-    /// Private property classification.
+    /// Private property classification (`private:property`).
     PrivateProperty,
-    /// Explicitly redacted private content classification.
-    PrivateRedacted,
-    /// Raw unredacted media (prohibited for H2 decision artifacts).
-    RawUnredactedMedia,
 }
 
 impl H2PrivacyClass {
-    /// Parses a privacy class identifier into its typed representation.
-    pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "private:property" => Some(Self::PrivateProperty),
-            "private:redacted" => Some(Self::PrivateRedacted),
-            "raw:unredacted_media"
-            | "raw:media"
-            | "raw:unredacted"
-            | "unredacted"
-            | "unredacted_raw_media"
-            | "raw_undecoded_stream"
-            | "raw_camera_packets"
-            | "unmasked_pii" => Some(Self::RawUnredactedMedia),
-            _ => None,
+    /// Canonical token of this privacy class.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PrivateProperty => "private:property",
         }
     }
 
-    /// Returns true if this privacy class is authorized for H2 decision artifacts.
-    #[must_use]
-    pub const fn is_authorized_for_h2(self) -> bool {
-        matches!(self, Self::PrivateProperty | Self::PrivateRedacted)
+    /// Parses an exact privacy class token; anything else is [`ContractError::InvalidPrivacyClass`].
+    pub fn parse(s: &str) -> Result<Self, ContractError> {
+        match s {
+            "private:property" => Ok(Self::PrivateProperty),
+            _ => Err(ContractError::InvalidPrivacyClass),
+        }
     }
 }
 
@@ -972,12 +970,7 @@ impl CanonicalDecode for GraphNeighborhoodArtifact {
         let node_count = decoder.u32()?;
         let edge_count = decoder.u32()?;
         let subgraph_digest = decoder.digest()?;
-        let masked_attributes = decode_text_set(decoder).map_err(|err| match err {
-            HydrationError::CapacityExceeded => ContractError::CountBoundExceeded,
-            HydrationError::Truncated => ContractError::InvalidDigest,
-            HydrationError::Contract(c) => c,
-            _ => ContractError::InvalidIdentifier,
-        })?;
+        let masked_attributes = decode_text_set(decoder)?;
         let artifact = Self {
             center_entity_id,
             radius_hops,
@@ -1204,7 +1197,8 @@ pub struct H2DecisionArtifactParams {
     pub artifact_kind: DecisionArtifactKind,
     /// Exact bounded payload bytes.
     pub payload: Vec<u8>,
-    /// Retained provenance roots (must include payload digest plus subject digest).
+    /// Proof roots: exactly the payload digest, the subject digest, and a non-empty subset of
+    /// [`Self::retained_provenance`].
     pub proof_roots: BTreeSet<ContentDigest>,
     /// Strongly typed retained provenance collection.
     pub retained_provenance: RetainedProvenance,
@@ -1212,7 +1206,7 @@ pub struct H2DecisionArtifactParams {
     pub completeness: Completeness,
     /// Authorized privacy class.
     pub privacy_class: String,
-    /// Explicit privacy/redaction transform applied (must be a registered transform).
+    /// Explicit redaction transform applied (a recognized [`RedactionTransform`] token).
     pub applied_redaction_transform: String,
     /// Capability grant proving explicit authorization for H2 materialization.
     pub authorization_grant_id: String,
@@ -1228,28 +1222,46 @@ pub struct H2DecisionArtifactParams {
     pub retention_until: TimestampNs,
 }
 
-/// Strongly typed collection of retained provenance roots (AGT-H2, INV-003).
+/// Maximum number of digests in one [`RetainedProvenance`].
 ///
-/// Wraps a [`BTreeSet<ContentDigest>`] to guarantee canonical ordering and non-empty validation.
+/// Two below [`MAX_REQUEST_SET_ITEMS`], so proof roots made of the payload digest, the subject
+/// digest and every retained root always stay inside the decoder's proof-root bound.
+pub const MAX_H2_RETAINED_PROVENANCE_ROOTS: usize = MAX_REQUEST_SET_ITEMS - 2;
+
+/// Bounded collection of retained provenance roots the caller obtained from the evidence or ledger
+/// store (AGT-H2, INV-003).
+///
+/// Every constructor goes through [`Self::new`]: never empty, at most
+/// [`MAX_H2_RETAINED_PROVENANCE_ROOTS`] digests. [`Default`] is the empty collection, which H2
+/// construction and [`H2DecisionArtifact::decode_verified`] refuse with
+/// [`ContractError::EvidenceRequired`].
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RetainedProvenance(BTreeSet<ContentDigest>);
 
 impl RetainedProvenance {
     /// Creates a new [`RetainedProvenance`] from an iterator of content digests.
     ///
-    /// Refuses empty roots with [`ContractError::EvidenceRequired`].
+    /// Refuses more than [`MAX_H2_RETAINED_PROVENANCE_ROOTS`] distinct digests with
+    /// [`ContractError::CountBoundExceeded`], stopping as soon as the bound is exceeded, and an
+    /// empty collection with [`ContractError::EvidenceRequired`].
     pub fn new(roots: impl IntoIterator<Item = ContentDigest>) -> Result<Self, ContractError> {
-        let set: BTreeSet<ContentDigest> = roots.into_iter().collect();
+        let mut set = BTreeSet::new();
+        for root in roots {
+            set.insert(root);
+            if set.len() > MAX_H2_RETAINED_PROVENANCE_ROOTS {
+                return Err(ContractError::CountBoundExceeded);
+            }
+        }
         if set.is_empty() {
             return Err(ContractError::EvidenceRequired);
         }
         Ok(Self(set))
     }
 
-    /// Creates a [`RetainedProvenance`] directly from a set without validation.
-    #[must_use]
-    pub const fn from_set(set: BTreeSet<ContentDigest>) -> Self {
-        Self(set)
+    /// Creates a [`RetainedProvenance`] from a set through the validating constructor
+    /// [`Self::new`].
+    pub fn from_set(set: BTreeSet<ContentDigest>) -> Result<Self, ContractError> {
+        Self::new(set)
     }
 
     /// Returns true if the collection contains no digests.
@@ -1282,9 +1294,11 @@ impl RetainedProvenance {
     }
 }
 
-impl From<BTreeSet<ContentDigest>> for RetainedProvenance {
-    fn from(set: BTreeSet<ContentDigest>) -> Self {
-        Self(set)
+impl TryFrom<BTreeSet<ContentDigest>> for RetainedProvenance {
+    type Error = ContractError;
+
+    fn try_from(set: BTreeSet<ContentDigest>) -> Result<Self, Self::Error> {
+        Self::new(set)
     }
 }
 
@@ -1519,11 +1533,7 @@ impl H2DecisionArtifact {
         if !transform.is_compatible_with_kind(&self.artifact_kind) {
             return Err(ContractError::InvalidRedactionTransform.into());
         }
-        let class = H2PrivacyClass::parse(&self.privacy_class)
-            .ok_or(HydrationError::Contract(ContractError::InvalidPrivacyClass))?;
-        if !class.is_authorized_for_h2() {
-            return Err(ContractError::InvalidPrivacyClass.into());
-        }
+        H2PrivacyClass::parse(&self.privacy_class).map_err(HydrationError::Contract)?;
 
         Ok(())
     }
@@ -1547,7 +1557,8 @@ impl H2DecisionArtifact {
     /// Checks whether the artifact is authorized, explicitly redacted using a recognized transform, and contains no raw unredacted media.
     #[must_use]
     pub fn is_authorized_and_redacted(&self) -> bool {
-        let Ok(transform) = RedactionTransform::parse(&self.applied_redaction_transform) else {
+        let Some(transform) = recognized_redaction_transform(&self.applied_redaction_transform)
+        else {
             return false;
         };
         if !transform.is_compatible_with_kind(&self.artifact_kind) {
@@ -1556,10 +1567,7 @@ impl H2DecisionArtifact {
         if !valid_text(&self.privacy_class) || !valid_text(&self.authorization_grant_id) {
             return false;
         }
-        let Some(class) = H2PrivacyClass::parse(&self.privacy_class) else {
-            return false;
-        };
-        class.is_authorized_for_h2()
+        H2PrivacyClass::parse(&self.privacy_class).is_ok()
     }
 
     /// Returns the exact hydration level ([`HydrationLevel::H2`]).
@@ -1765,24 +1773,49 @@ impl H2DecisionArtifact {
         encoder.finish_checked()
     }
 
-    /// Decodes an [`H2DecisionArtifact`] from canonical binary bytes and verifies no trailing bytes exist.
-    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, ContractError> {
+    /// Decodes canonical bytes into a validated [`H2DecisionArtifact`], checking its proof roots
+    /// against caller truth.
+    ///
+    /// This is the only decode path; there is deliberately no unverified decode. It refuses:
+    /// trailing bytes; every [`Self::validate`] failure; an artifact digest mismatch; an empty
+    /// `retained_provenance` ([`ContractError::EvidenceRequired`]); and any proof root outside
+    /// {payload digest, subject digest} union `retained_provenance`
+    /// ([`ContractError::EvidenceRequired`]). The provenance must be what the caller obtained from
+    /// the evidence or ledger store, never something read back out of the bytes.
+    pub fn decode_verified(
+        bytes: &[u8],
+        retained_provenance: &RetainedProvenance,
+    ) -> Result<Self, ContractError> {
         let mut decoder = CanonicalDecoder::new(bytes);
-        let artifact = Self::decode_canonical(&mut decoder)?;
+        let artifact = Self::decode_fields(&mut decoder)?;
         decoder.ensure_finished()?;
+        artifact.check_roots_against(retained_provenance)?;
         Ok(artifact)
     }
-}
 
-impl CanonicalEncode for H2DecisionArtifact {
-    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
-        self.encode_body(encoder);
-        encoder.digest(self.artifact_digest);
+    /// Refuses an empty provenance and any proof root outside
+    /// {payload digest, subject digest} union `retained_provenance`.
+    fn check_roots_against(
+        &self,
+        retained_provenance: &RetainedProvenance,
+    ) -> Result<(), ContractError> {
+        if retained_provenance.is_empty() {
+            return Err(ContractError::EvidenceRequired);
+        }
+        let foreign = self.proof_roots.iter().any(|root| {
+            *root != self.payload_digest
+                && *root != self.subject_digest
+                && !retained_provenance.contains(root)
+        });
+        if foreign {
+            return Err(ContractError::EvidenceRequired);
+        }
+        Ok(())
     }
-}
 
-impl CanonicalDecode for H2DecisionArtifact {
-    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+    /// Decodes and self-validates the fields. Private: the result has not yet been checked against
+    /// caller-held provenance, so it must never escape except through [`Self::decode_verified`].
+    fn decode_fields(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
         let schema = decoder.text()?;
         if schema != H2_SCHEMA {
             return Err(ContractError::InvalidIdentifier);
@@ -1858,6 +1891,13 @@ impl CanonicalDecode for H2DecisionArtifact {
         }
 
         Ok(artifact)
+    }
+}
+
+impl CanonicalEncode for H2DecisionArtifact {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        self.encode_body(encoder);
+        encoder.digest(self.artifact_digest);
     }
 }
 

@@ -38,6 +38,8 @@ operation states rather than generic errors.
 | `ERR-LEASE-STALE-001` | effect lease fence is not current | re-prepare under fresh lease |
 | `ERR-PRECONDITION-STALE-001` | plan anchor changed before commit | re-plan; never auto-commit changed intent |
 | `ERR-PRIVACY-MASK-001` | required redaction could not be applied | fail closed at restricted boundary |
+| `ERR-HYDRATION-INVALID-PRIVACY-CLASS-001` | H2 decision artifact privacy class is not `private:property`, the only privacy class fss-core uses; raw or unredacted media included (code `invalid_privacy_class`) | supply the authorized privacy class; do not retry unchanged |
+| `ERR-HYDRATION-INVALID-REDACTION-TRANSFORM-001` | H2 redaction transform is not a recognized `transform:*` token or is incompatible with the artifact kind (code `invalid_redaction_transform`) | apply a recognized transform compatible with the artifact kind |
 | `ERR-DELETION-BLOCKED-001` | deletion closure blocked by hold/backend/offline copy | report exact blockers and obligation |
 | `ERR-BUDGET-EXHAUSTED-001` | declared work budget exhausted | return bounded partial/abstention |
 | `ERR-REPLAY-DIVERGED-001` | semantic decision fingerprint differs from proof | block claim/release |

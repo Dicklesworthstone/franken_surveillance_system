@@ -89,6 +89,10 @@ ERR_GRAPH_MISSING_OUTPUT_WITNESS = "ERR-GRAPH-MISSING-OUTPUT-WITNESS-001"
 ERR_GRAPH_PROJECTION_MISMATCH = "ERR-GRAPH-PROJECTION-MISMATCH-001"
 ERR_GRAPH_STABLE_ID_DRIFT = "ERR-GRAPH-STABLE-ID-DRIFT-001"
 
+# Required fields and admitted statuses for architecture/agent_contracts.json drift records.
+AGENT_CONTRACT_DRIFT_FIELDS = ("target", "field", "originalValue", "reconciledValue", "reason", "status")
+AGENT_CONTRACT_DRIFT_STATUSES = frozenset({"open", "reconciled", "reconciled_pending_owner_decision"})
+
 REGISTERED_GRAPH_PROJECTIONS = frozenset({
     "SensorCoverageGraph",
     "SpatioTemporalTrackGraph",
@@ -1015,6 +1019,55 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
     for req_key in ("knowledgeStates", "provenanceClasses", "hypothesisDispositions", "semanticObjects", "resourceTemplates", "responsePriority"):
         if req_key not in ac_doc:
             emit(ERR_CORRUPT_FILE, "architecture/agent_contracts.json", "#", f"missing mandatory '{req_key}' root key")
+
+    # 2.9a Agent contract drift records (optional). Each entry records a vocabulary that code uses
+    # but no machine registry backs, so the vocabulary can never be read as registered. Same
+    # shape as the graph_algorithms.json drifts, with a free-form `target` instead of an
+    # algorithm ID.
+    if "drifts" in ac_doc:
+        ac_drifts = ac_doc["drifts"]
+        if not isinstance(ac_drifts, list):
+            emit(ERR_CORRUPT_FILE, "architecture/agent_contracts.json", "#/drifts", "'drifts' must be an array")
+        else:
+            seen_targets: set[tuple[str, str]] = set()
+            for d_idx, drift in enumerate(ac_drifts):
+                if not isinstance(drift, dict):
+                    emit(ERR_CORRUPT_FILE, "architecture/agent_contracts.json", f"#/drifts/{d_idx}", "drift entry must be an object")
+                    continue
+                for req_field in AGENT_CONTRACT_DRIFT_FIELDS:
+                    if req_field not in drift:
+                        emit(
+                            ERR_CORRUPT_FILE,
+                            "architecture/agent_contracts.json",
+                            f"#/drifts/{d_idx}/{req_field}",
+                            f"drift entry missing required field '{req_field}'",
+                        )
+                for text_field in ("target", "field", "reason", "status"):
+                    value = drift.get(text_field)
+                    if text_field in drift and (not isinstance(value, str) or not value.strip()):
+                        emit(
+                            ERR_CORRUPT_FILE,
+                            "architecture/agent_contracts.json",
+                            f"#/drifts/{d_idx}/{text_field}",
+                            f"drift entry field '{text_field}' must be a non-empty string",
+                        )
+                status = drift.get("status")
+                if isinstance(status, str) and status.strip() and status not in AGENT_CONTRACT_DRIFT_STATUSES:
+                    emit(
+                        ERR_CONTRADICTED_METADATA,
+                        "architecture/agent_contracts.json",
+                        f"#/drifts/{d_idx}/status",
+                        f"drift entry status '{status}' is not one of {sorted(AGENT_CONTRACT_DRIFT_STATUSES)}",
+                    )
+                key = (str(drift.get("target")), str(drift.get("field")))
+                if key in seen_targets:
+                    emit(
+                        ERR_CONTRADICTED_METADATA,
+                        "architecture/agent_contracts.json",
+                        f"#/drifts/{d_idx}",
+                        f"duplicate drift entry for target '{key[0]}' field '{key[1]}'",
+                    )
+                seen_targets.add(key)
 
     kstate_arch = ac_doc.get("knowledgeStates", [])
     kstate_arch_map = build_arch_map("architecture/agent_contracts.json", kstate_arch)

@@ -22,11 +22,11 @@ use fss_core::{
     CanonicalEncode, CanonicalEncoder, CaptureInterval, Completeness, ContentDigest, ContractBasis,
     ContractBasisRegistryBytes, ContractError, CropArtifact, DecisionArtifactKind,
     GraphNeighborhoodArtifact, H2_CONTENT, H2_LEVEL_ID, H2_LEVEL_NAME, H2_OWNER, H2_SCHEMA,
-    H2DecisionArtifact, H2DecisionArtifactParams, HandleAvailability, HydrationArtifact,
-    HydrationError, HydrationLevel, KeyframeArtifact, LaboratoryAccess, LedgerAnchor,
-    MAX_CANONICAL_BYTES_LEN, RedactedRegion, RedactionTransform, RetainedProvenance,
-    SemanticHandle, SemanticHandleSpec, TimestampNs, TrajectoryArtifact, TrajectoryWaypoint,
-    is_registered_redaction_transform,
+    H2DecisionArtifact, H2DecisionArtifactParams, H2PrivacyClass, HandleAvailability,
+    HydrationArtifact, HydrationError, HydrationLevel, KeyframeArtifact, LaboratoryAccess,
+    LedgerAnchor, MAX_CANONICAL_BYTES_LEN, MAX_H2_RETAINED_PROVENANCE_ROOTS, RedactedRegion,
+    RedactionTransform, RetainedProvenance, SemanticHandle, SemanticHandleSpec, TimestampNs,
+    TrajectoryArtifact, TrajectoryWaypoint,
 };
 
 fn sample_basis() -> ContractBasis {
@@ -130,6 +130,10 @@ fn sample_audio_features() -> Result<DecisionArtifactKind, Box<dyn Error>> {
         true,
     )?;
     Ok(DecisionArtifactKind::AudioFeatures(audio))
+}
+
+fn sample_retained_provenance() -> Result<RetainedProvenance, Box<dyn Error>> {
+    Ok(RetainedProvenance::new([sample_digest(0xcc)])?)
 }
 
 fn sample_h2_params(
@@ -493,7 +497,8 @@ fn test_h2_all_5_kinds_roundtrip_and_properties() -> Result<(), Box<dyn Error>> 
         assert_eq!(artifact.content_type(), expected_content_type);
 
         let art_bytes = artifact.to_canonical_bytes()?;
-        let decoded_art = H2DecisionArtifact::from_canonical_bytes(&art_bytes)?;
+        let decoded_art =
+            H2DecisionArtifact::decode_verified(&art_bytes, &sample_retained_provenance()?)?;
         decoded_art.verify()?;
         assert_eq!(artifact, decoded_art);
 
@@ -646,7 +651,10 @@ fn test_h2_planted_bypasses_refusal() -> Result<(), Box<dyn Error>> {
         "unknown:arbitrary_transform",
     ];
     for red in unregistered_transforms {
-        assert!(!is_registered_redaction_transform(red));
+        assert_eq!(
+            RedactionTransform::parse(red),
+            Err(ContractError::InvalidRedactionTransform)
+        );
         let mut p6 = sample_h2_params(sample_keyframe()?)?;
         p6.applied_redaction_transform = red.to_string();
         let err6 = H2DecisionArtifact::new(p6);
@@ -664,7 +672,7 @@ fn test_h2_planted_bypasses_refusal() -> Result<(), Box<dyn Error>> {
 
     // Recognized transforms pass when paired with compatible artifact kinds
     for t in RedactionTransform::ALL {
-        assert!(is_registered_redaction_transform(t.as_str()));
+        assert_eq!(RedactionTransform::parse(t.as_str()), Ok(t));
         let kind = match t {
             RedactionTransform::FaceBlur
             | RedactionTransform::PlateMask
@@ -704,6 +712,9 @@ fn test_h2_planted_bypasses_refusal() -> Result<(), Box<dyn Error>> {
         "raw_camera_packets",
         "unmasked_pii",
         "invalid:arbitrary_unknown",
+        "private:redacted",
+        "privacy:operational",
+        "public",
     ];
     for priv_class in prohibited_privacy_classes {
         let mut p_prohib = sample_h2_params(sample_keyframe()?)?;
@@ -720,7 +731,7 @@ fn test_h2_planted_bypasses_refusal() -> Result<(), Box<dyn Error>> {
     }
 
     // Authorized privacy classes pass
-    let authorized_privacy_classes = ["private:property", "private:redacted"];
+    let authorized_privacy_classes = ["private:property"];
     for priv_class in authorized_privacy_classes {
         let mut p_auth = sample_h2_params(sample_keyframe()?)?;
         p_auth.privacy_class = priv_class.to_string();
@@ -749,7 +760,7 @@ fn test_h2_trailing_bytes_refusal() -> Result<(), Box<dyn Error>> {
     // Append extra rogue trailing byte
     bytes.push(0xff);
 
-    let res = H2DecisionArtifact::from_canonical_bytes(&bytes);
+    let res = H2DecisionArtifact::decode_verified(&bytes, &sample_retained_provenance()?);
     assert_eq!(res.err(), Some(ContractError::NonCanonicalOrdering));
 
     Ok(())
@@ -769,7 +780,7 @@ fn test_h2_schema_discriminator_mismatch_refusal() -> Result<(), Box<dyn Error>>
         bytes[0..custom_bytes.len()].copy_from_slice(&custom_bytes);
     }
 
-    let res = H2DecisionArtifact::from_canonical_bytes(&bytes);
+    let res = H2DecisionArtifact::decode_verified(&bytes, &sample_retained_provenance()?);
     assert_eq!(res.err(), Some(ContractError::InvalidIdentifier));
 
     Ok(())
@@ -1001,7 +1012,8 @@ fn test_h2_decode_level_negatives_kill_mutants() -> Result<(), Box<dyn Error>> {
     let mut tampered_digest_bytes = canonical_bytes.clone();
     let tail_len = tampered_digest_bytes.len();
     tampered_digest_bytes[tail_len - 1] ^= 0x01;
-    let err_m2d = H2DecisionArtifact::from_canonical_bytes(&tampered_digest_bytes);
+    let err_m2d =
+        H2DecisionArtifact::decode_verified(&tampered_digest_bytes, &sample_retained_provenance()?);
     assert_eq!(err_m2d.err(), Some(ContractError::DigestMismatch));
 
     // 2. M2e: Encoded H2DecisionArtifact whose fields decode successfully but fail validate() (exact error)
@@ -1039,7 +1051,8 @@ fn test_h2_decode_level_negatives_kill_mutants() -> Result<(), Box<dyn Error>> {
         body.extend(digest_enc.finish_checked()?);
         body
     };
-    let err_m2e = H2DecisionArtifact::from_canonical_bytes(&bad_validate_bytes);
+    let err_m2e =
+        H2DecisionArtifact::decode_verified(&bad_validate_bytes, &sample_retained_provenance()?);
     assert_eq!(err_m2e.err(), Some(ContractError::EvidenceRequired));
 
     // 3. M2f: Payload-digest mismatch whose artifact digest is correctly recomputed, asserting exactly DigestMismatch
@@ -1077,7 +1090,10 @@ fn test_h2_decode_level_negatives_kill_mutants() -> Result<(), Box<dyn Error>> {
         body.extend(digest_enc.finish_checked()?);
         body
     };
-    let err_m2f = H2DecisionArtifact::from_canonical_bytes(&tampered_payload_digest_bytes);
+    let err_m2f = H2DecisionArtifact::decode_verified(
+        &tampered_payload_digest_bytes,
+        &sample_retained_provenance()?,
+    );
     assert_eq!(err_m2f.err(), Some(ContractError::DigestMismatch));
 
     // 4. M2h: TrajectoryArtifact decode with non-increasing waypoints
@@ -1122,8 +1138,8 @@ fn test_h2_decode_level_negatives_kill_mutants() -> Result<(), Box<dyn Error>> {
         enc.digest(sample_digest(0xaa));
         enc.finish_checked()?
     };
-    let mut dec_roots = CanonicalDecoder::new(&bad_proof_roots_bytes);
-    let res_roots = H2DecisionArtifact::decode_canonical(&mut dec_roots);
+    let res_roots =
+        H2DecisionArtifact::decode_verified(&bad_proof_roots_bytes, &sample_retained_provenance()?);
     assert_eq!(res_roots.err(), Some(ContractError::NonCanonicalOrdering));
 
     // 6. Item 10: Decode-level subject-root test (proof roots missing subject_digest)
@@ -1158,7 +1174,10 @@ fn test_h2_decode_level_negatives_kill_mutants() -> Result<(), Box<dyn Error>> {
         body.extend(digest_enc.finish_checked()?);
         body
     };
-    let err_subj_root = H2DecisionArtifact::from_canonical_bytes(&missing_subj_root_bytes);
+    let err_subj_root = H2DecisionArtifact::decode_verified(
+        &missing_subj_root_bytes,
+        &sample_retained_provenance()?,
+    );
     assert_eq!(err_subj_root.err(), Some(ContractError::EvidenceRequired));
 
     // 7. Item 10: Decode-level circular proof roots test (contains payload & subject but no retained root)
@@ -1196,7 +1215,8 @@ fn test_h2_decode_level_negatives_kill_mutants() -> Result<(), Box<dyn Error>> {
         body.extend(digest_enc.finish_checked()?);
         body
     };
-    let err_circ_root = H2DecisionArtifact::from_canonical_bytes(&circular_root_bytes);
+    let err_circ_root =
+        H2DecisionArtifact::decode_verified(&circular_root_bytes, &sample_retained_provenance()?);
     assert_eq!(err_circ_root.err(), Some(ContractError::EvidenceRequired));
 
     Ok(())
@@ -1231,10 +1251,304 @@ fn test_h2_golden_digest_and_canonical_bytes() -> Result<(), Box<dyn Error>> {
     assert_eq!(artifact_digest, golden_artifact_digest);
 
     // Verify bit-exact roundtrip
-    let decoded = H2DecisionArtifact::from_canonical_bytes(&canonical_bytes)?;
+    let decoded =
+        H2DecisionArtifact::decode_verified(&canonical_bytes, &sample_retained_provenance()?)?;
     assert_eq!(decoded, artifact);
     assert_eq!(decoded.canonical_digest()?, golden_canonical_digest);
     assert_eq!(decoded.artifact_digest(), golden_artifact_digest);
 
+    Ok(())
+}
+
+/// Canonical H2 bytes whose proof roots are {payload, subject} plus `extra_roots`, valid in every
+/// self-contained respect (schema, digests, completeness, transform, privacy).
+fn h2_bytes_with_roots(extra_roots: &[ContentDigest]) -> Result<Vec<u8>, Box<dyn Error>> {
+    let mut enc = CanonicalEncoder::new();
+    enc.text(H2_SCHEMA);
+    enc.text("handle:decode-roots");
+    enc.text("subject:decode-roots");
+    let subj = sample_digest(0x11);
+    enc.digest(subj);
+    sample_keyframe()?.encode_canonical(&mut enc);
+    let payload = b"sample-payload-decode-roots";
+    enc.bytes(payload);
+    let p_digest = ContentDigest::sha256(payload);
+    enc.digest(p_digest);
+    let mut roots: BTreeSet<ContentDigest> = extra_roots.iter().copied().collect();
+    roots.insert(p_digest);
+    roots.insert(subj);
+    enc.u64(u64::try_from(roots.len())?);
+    for root in &roots {
+        enc.digest(*root);
+    }
+    enc.u8(Completeness::Complete.code());
+    enc.text("private:property");
+    enc.text("transform:face_blur");
+    enc.text("grant:decode-roots");
+    sample_anchor(1).encode_canonical(&mut enc);
+    sample_basis().encode_canonical(&mut enc);
+    sample_budget()?.encode_canonical(&mut enc);
+    TimestampNs(1_000).encode_canonical(&mut enc);
+    TimestampNs(2_000).encode_canonical(&mut enc);
+    let mut body = enc.finish_checked()?;
+    let body_digest = ContentDigest::sha256(&body);
+    let mut digest_enc = CanonicalEncoder::new();
+    digest_enc.digest(body_digest);
+    body.extend(digest_enc.finish_checked()?);
+    Ok(body)
+}
+
+fn provenance(roots: &[ContentDigest]) -> Result<RetainedProvenance, Box<dyn Error>> {
+    Ok(RetainedProvenance::new(roots.iter().copied())?)
+}
+
+#[test]
+fn test_h2_decode_verified_refuses_foreign_roots() -> Result<(), Box<dyn Error>> {
+    let foreign_a = sample_digest(0x98);
+    let foreign_b = sample_digest(0x99);
+    let retained = sample_digest(0xcc);
+
+    // One foreign root: refused against caller provenance that does not hold it.
+    let one_foreign = h2_bytes_with_roots(&[foreign_b])?;
+    assert_eq!(
+        H2DecisionArtifact::decode_verified(&one_foreign, &provenance(&[retained])?).err(),
+        Some(ContractError::EvidenceRequired)
+    );
+    // The same bytes decode once the caller really retains that root.
+    let accepted = H2DecisionArtifact::decode_verified(&one_foreign, &provenance(&[foreign_b])?)?;
+    assert!(accepted.proof_roots().contains(&foreign_b));
+
+    // Two foreign roots: refused unless the caller retains both.
+    let two_foreign = h2_bytes_with_roots(&[foreign_a, foreign_b])?;
+    for held in [
+        vec![retained],
+        vec![foreign_a],
+        vec![foreign_b],
+        vec![retained, foreign_b],
+    ] {
+        assert_eq!(
+            H2DecisionArtifact::decode_verified(&two_foreign, &provenance(&held)?).err(),
+            Some(ContractError::EvidenceRequired),
+            "held: {held:?}"
+        );
+    }
+    assert!(
+        H2DecisionArtifact::decode_verified(&two_foreign, &provenance(&[foreign_a, foreign_b])?)
+            .is_ok()
+    );
+
+    // A retained root mixed with a foreign one is still refused.
+    let mixed = h2_bytes_with_roots(&[retained, foreign_b])?;
+    assert_eq!(
+        H2DecisionArtifact::decode_verified(&mixed, &provenance(&[retained])?).err(),
+        Some(ContractError::EvidenceRequired)
+    );
+
+    // An empty caller provenance is refused even when every root is otherwise admissible.
+    let own = h2_bytes_with_roots(&[retained])?;
+    assert_eq!(
+        H2DecisionArtifact::decode_verified(&own, &RetainedProvenance::default()).err(),
+        Some(ContractError::EvidenceRequired)
+    );
+    assert!(H2DecisionArtifact::decode_verified(&own, &provenance(&[retained])?).is_ok());
+
+    // A constructed artifact round-trips only against the caller's provenance, not the bytes'.
+    let artifact = H2DecisionArtifact::new(sample_h2_params(sample_keyframe()?)?)?;
+    let bytes = artifact.to_canonical_bytes()?;
+    assert_eq!(
+        H2DecisionArtifact::decode_verified(&bytes, &provenance(&[sample_digest(0xdd)])?).err(),
+        Some(ContractError::EvidenceRequired)
+    );
+    assert_eq!(
+        H2DecisionArtifact::decode_verified(&bytes, &sample_retained_provenance()?)?,
+        artifact
+    );
+    Ok(())
+}
+
+#[test]
+fn test_h2_retained_provenance_bounded_at_n_and_n_plus_one() -> Result<(), Box<dyn Error>> {
+    let n = MAX_H2_RETAINED_PROVENANCE_ROOTS;
+    let digests = |count: usize| -> Result<BTreeSet<ContentDigest>, Box<dyn Error>> {
+        let mut set = BTreeSet::new();
+        for i in 0..count {
+            set.insert(ContentDigest::sha256(&u64::try_from(i)?.to_le_bytes()));
+        }
+        Ok(set)
+    };
+    let at_n = digests(n)?;
+    let over = digests(n + 1)?;
+    assert_eq!(at_n.len(), n);
+    assert_eq!(over.len(), n + 1);
+
+    // N is accepted by every constructor.
+    assert_eq!(RetainedProvenance::new(at_n.clone())?.len(), n);
+    assert_eq!(RetainedProvenance::from_set(at_n.clone())?.len(), n);
+    assert_eq!(RetainedProvenance::try_from(at_n.clone())?.len(), n);
+
+    // N + 1 is refused by every constructor, including from_set and the conversion.
+    assert_eq!(
+        RetainedProvenance::new(over.clone()).err(),
+        Some(ContractError::CountBoundExceeded)
+    );
+    assert_eq!(
+        RetainedProvenance::from_set(over.clone()).err(),
+        Some(ContractError::CountBoundExceeded)
+    );
+    assert_eq!(
+        RetainedProvenance::try_from(over).err(),
+        Some(ContractError::CountBoundExceeded)
+    );
+
+    // Empty is refused by every constructor.
+    assert_eq!(
+        RetainedProvenance::new(Vec::<ContentDigest>::new()).err(),
+        Some(ContractError::EvidenceRequired)
+    );
+    assert_eq!(
+        RetainedProvenance::from_set(BTreeSet::new()).err(),
+        Some(ContractError::EvidenceRequired)
+    );
+    assert_eq!(
+        RetainedProvenance::try_from(BTreeSet::new()).err(),
+        Some(ContractError::EvidenceRequired)
+    );
+
+    // A full-size provenance still round-trips: N retained roots plus payload and subject stay
+    // inside the decoder's proof-root bound.
+    let mut params = sample_h2_params(sample_keyframe()?)?;
+    let payload_digest = ContentDigest::sha256(&params.payload);
+    let subject_digest = params.subject_digest;
+    params.proof_roots = BTreeSet::from([payload_digest, subject_digest]);
+    params.proof_roots.extend(at_n.iter().copied());
+    let full = RetainedProvenance::new(at_n)?;
+    params.retained_provenance = full.clone();
+    let artifact = H2DecisionArtifact::new(params)?;
+    assert_eq!(artifact.proof_roots().len(), n + 2);
+    let decoded = H2DecisionArtifact::decode_verified(&artifact.to_canonical_bytes()?, &full)?;
+    assert_eq!(decoded, artifact);
+    Ok(())
+}
+
+fn sample_h2_handle() -> Result<SemanticHandle, Box<dyn Error>> {
+    let levels = BTreeSet::from([HydrationLevel::H0, HydrationLevel::H1, HydrationLevel::H2]);
+    let mut required_capabilities = BTreeMap::new();
+    let mut costs = BTreeMap::new();
+    for &lvl in &levels {
+        required_capabilities.insert(
+            lvl,
+            BTreeSet::from([format!("cap:hydrate:{}", lvl.as_str())]),
+        );
+        costs.insert(lvl, sample_budget()?);
+    }
+    Ok(SemanticHandle::publish(SemanticHandleSpec {
+        contract_basis: sample_basis(),
+        anchor: sample_anchor(1),
+        subject_id: "subject:sensor-01".to_string(),
+        subject_digest: sample_digest(0x11),
+        semantic_type: "evidence_bundle".to_string(),
+        source_id: "sensor:cam-01".to_string(),
+        capture_interval: None,
+        spatial_scope: None,
+        privacy_class: "private:property".to_string(),
+        applied_transform: Some("transform:blur".to_string()),
+        availability: HandleAvailability::Available,
+        retention_until: TimestampNs(10_000_000),
+        required_capabilities,
+        estimated_costs: costs,
+        levels,
+        laboratory_access: LaboratoryAccess::Unavailable,
+        debug_capability: None,
+        derivative_handles: BTreeSet::new(),
+        published_at: TimestampNs(1_000),
+    })?)
+}
+
+#[test]
+fn test_h2_from_semantic_handle_inserts_no_root_of_its_own() -> Result<(), Box<dyn Error>> {
+    let handle = sample_h2_handle()?;
+    let payload = b"decision-keyframe-data".to_vec();
+    let payload_digest = ContentDigest::sha256(&payload);
+
+    // No caller provenance: refused, never back-filled with a root the handle makes up.
+    let refused = handle.to_h2_decision_artifact(
+        sample_keyframe()?,
+        payload.clone(),
+        RetainedProvenance::default(),
+        "transform:face_blur",
+        "grant:auth-oper-99",
+        Completeness::Complete,
+    );
+    assert!(matches!(
+        refused,
+        Err(HydrationError::Contract(ContractError::EvidenceRequired))
+    ));
+
+    // Provenance that only restates the subject digest is circular and refused.
+    let circular = handle.to_h2_decision_artifact(
+        sample_keyframe()?,
+        payload.clone(),
+        RetainedProvenance::new([handle.subject_digest])?,
+        "transform:face_blur",
+        "grant:auth-oper-99",
+        Completeness::Complete,
+    );
+    assert!(matches!(
+        circular,
+        Err(HydrationError::Contract(ContractError::EvidenceRequired))
+    ));
+
+    // With a real retained root the proof roots are exactly payload, subject and that root.
+    let retained = sample_digest(0x33);
+    let artifact = handle.to_h2_decision_artifact(
+        sample_keyframe()?,
+        payload,
+        RetainedProvenance::new([retained])?,
+        "transform:face_blur",
+        "grant:auth-oper-99",
+        Completeness::Complete,
+    )?;
+    assert_eq!(
+        artifact.proof_roots(),
+        &BTreeSet::from([payload_digest, handle.subject_digest, retained])
+    );
+    Ok(())
+}
+
+#[test]
+fn test_h2_privacy_vocabulary_is_existing_fss_core_only() -> Result<(), Box<dyn Error>> {
+    assert_eq!(
+        H2PrivacyClass::parse("private:property"),
+        Ok(H2PrivacyClass::PrivateProperty)
+    );
+    assert_eq!(H2PrivacyClass::PrivateProperty.as_str(), "private:property");
+    for refused in [
+        "private:redacted",
+        "raw:unredacted_media",
+        "raw:media",
+        "raw:unredacted",
+        "unredacted",
+        "unredacted_raw_media",
+        "raw_undecoded_stream",
+        "raw_camera_packets",
+        "unmasked_pii",
+        "privacy:operational",
+        "public",
+    ] {
+        assert_eq!(
+            H2PrivacyClass::parse(refused),
+            Err(ContractError::InvalidPrivacyClass),
+            "privacy class: {refused}"
+        );
+        let mut params = sample_h2_params(sample_keyframe()?)?;
+        params.privacy_class = refused.to_string();
+        assert!(
+            matches!(
+                H2DecisionArtifact::new(params),
+                Err(HydrationError::Contract(ContractError::InvalidPrivacyClass))
+            ),
+            "privacy class: {refused}"
+        );
+    }
     Ok(())
 }

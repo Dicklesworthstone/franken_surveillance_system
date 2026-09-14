@@ -538,6 +538,8 @@ All stable error identities and normative recovery guidance cataloged from `regi
 | `ERR-GRAPH-PROJECTION-MISMATCH-001` | graph algorithm projections differ between machine source and registry markdown mirror | reconcile machine source and registry markdown projections |
 | `ERR-GRAPH-STABLE-ID-DRIFT-001` | graph algorithm stable identifier renumbered or superseded row not tombstoned | restore stable algorithm identity and retain superseded rows as tombstones |
 | `ERR-GRAPH-UNREGISTERED-PROJECTION-001` | graph algorithm specifies an unregistered or nonexistent graph projection ID | update algorithm projection to a registered projection ID from docs/GRAPH_ALGORITHM_ATLAS.md |
+| `ERR-HYDRATION-INVALID-PRIVACY-CLASS-001` | H2 decision artifact privacy class is not 'private:property', the only privacy class fss-core uses; raw or unredacted media included (code 'invalid_privacy_class') | supply the authorized privacy class; do not retry unchanged |
+| `ERR-HYDRATION-INVALID-REDACTION-TRANSFORM-001` | H2 redaction transform is not a recognized 'transform:*' token or is incompatible with the artifact kind (code 'invalid_redaction_transform') | apply a recognized transform compatible with the artifact kind |
 | `ERR-IDEMPOTENCY-CONFLICT-001` | same key used with different request digest | reject permanently |
 | `ERR-INTERNAL-PANIC-001` | boundary converted an internal panic to structured crash receipt | quarantine, preserve support bundle |
 | `ERR-KSTATE-CORRUPT-FILE-001` | knowledge state registry or markdown documentation file is missing or corrupt | repair or restore knowledge state registry file |

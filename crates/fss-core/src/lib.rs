@@ -136,12 +136,12 @@ pub use hydration::{
     HydrationReceiptSpec, HydrationRequest, HydrationRequestSpec, HydrationResponse,
     IntermediateArtifact, KeyframeArtifact, LaboratoryAccess, LaboratoryArtifact,
     LaboratoryQuarantine, MAX_H1_CAPABILITIES, MAX_H1_CONTRADICTIONS, MAX_H1_FACTS,
-    MAX_H1_KNOWLEDGE_STATES, MAX_H1_OMISSIONS, MAX_H1_PROVENANCE_CLASSES, MAX_H4_ALTERNATE_SYSTEMS,
-    MAX_H4_IDENTIFIER_LEN, MAX_H4_INTERMEDIATES, MAX_H4_METADATA_LEN, MAX_H4_ORACLE_COMPARISONS,
-    MAX_H4_PROOF_ROOTS, OracleComparison, RedactedRegion, RedactionTransform, ReplayBundleRef,
-    RetainedProvenance, SEMANTIC_HYDRATION_OWNER, SemanticHandle, SemanticHandleSpec,
-    SynopsisClassification, SynopsisQuality, TrajectoryArtifact, TrajectoryWaypoint,
-    is_registered_redaction_transform, is_valid_h0_screened_field,
+    MAX_H1_KNOWLEDGE_STATES, MAX_H1_OMISSIONS, MAX_H1_PROVENANCE_CLASSES,
+    MAX_H2_RETAINED_PROVENANCE_ROOTS, MAX_H4_ALTERNATE_SYSTEMS, MAX_H4_IDENTIFIER_LEN,
+    MAX_H4_INTERMEDIATES, MAX_H4_METADATA_LEN, MAX_H4_ORACLE_COMPARISONS, MAX_H4_PROOF_ROOTS,
+    OracleComparison, RedactedRegion, RedactionTransform, ReplayBundleRef, RetainedProvenance,
+    SEMANTIC_HYDRATION_OWNER, SemanticHandle, SemanticHandleSpec, SynopsisClassification,
+    SynopsisQuality, TrajectoryArtifact, TrajectoryWaypoint, is_valid_h0_screened_field,
 };
 pub use identity::{
     AdapterCapabilities, AdapterIdentity, AdapterKind, CredentialMethod, DeviceCapabilities,
