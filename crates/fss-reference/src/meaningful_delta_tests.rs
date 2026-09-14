@@ -38,6 +38,7 @@ struct Variant {
     created_at: Option<TimestampNs>,
     pressure: ResourcePressure,
     degraded_dimensions: BTreeSet<String>,
+    extra_cells: Vec<KnowledgeCell>,
 }
 
 impl Variant {
@@ -67,6 +68,7 @@ impl Variant {
             created_at: None,
             pressure: ResourcePressure::Nominal,
             degraded_dimensions: BTreeSet::new(),
+            extra_cells: Vec::new(),
         })
     }
 }
@@ -219,6 +221,7 @@ fn publication(variant: &Variant) -> Result<crate::ReferenceSituationPublication
             )?,
         });
     }
+    knowledge_cells.extend(variant.extra_cells.clone());
     let next = affordances
         .iter()
         .map(|affordance| affordance.affordance_id.clone())
@@ -259,6 +262,11 @@ fn publication(variant: &Variant) -> Result<crate::ReferenceSituationPublication
     // Situation compilation retains a published outcome's proof object as a proof root, so the
     // fixture retains the effect evidence too unless a test withholds it.
     let mut proof_roots = BTreeSet::from([evidence]);
+    for cell in &variant.extra_cells {
+        for ev in &cell.evidence {
+            proof_roots.insert(*ev);
+        }
+    }
     if variant.effect_state.is_some() && variant.effect_evidence && variant.effect_evidence_retained
     {
         proof_roots.insert(ContentDigest::sha256(b"effect-outcome"));
@@ -3141,4 +3149,120 @@ fn selection_witness_covers_removed_claims() -> Result<(), Box<dyn Error>> {
     };
     assert_ne!(witness(&["claim:premise".to_owned()]), witness(&[]));
     Ok(())
+}
+
+/// fss-gefi6 limitation (orchestrator decision b): an evidence reference is an untyped digest that
+/// names no producing cell, so a digest shared by a basis cell and a result cell cannot be
+/// attributed across frames. The classifier draws no cross-frame laundering verdict: a Predicted
+/// basis cell and an Observed result cell citing the same digest classify. The refusal stays with
+/// the attributable pairwise check, `KnowledgeCell::verify_no_evidence_laundering`, pinned below.
+#[test]
+fn compute_meaningful_delta_draws_no_cross_frame_laundering_verdict_fss_gefi6()
+-> Result<(), Box<dyn Error>> {
+    let shared_evidence = ContentDigest::sha256(b"counterfactual_prediction_evidence_001");
+    let predicted = KnowledgeCell {
+        claim_id: "claim:fire:predicted_spread".to_owned(),
+        statement: "Model predicts fire expansion".to_owned(),
+        knowledge_state: KnowledgeState::Estimated,
+        provenance: ProvenanceClass::Predicted,
+        hypothesis: None,
+        evidence: vec![shared_evidence],
+        contradictions: vec![],
+        valid_until: None,
+        state_basis: None,
+    }
+    .validated()?;
+    let observed = KnowledgeCell {
+        claim_id: "claim:fire:observed_spread".to_owned(),
+        statement: "Physical observation of fire expansion".to_owned(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Observed,
+        hypothesis: None,
+        evidence: vec![shared_evidence],
+        contradictions: vec![],
+        valid_until: None,
+        state_basis: None,
+    }
+    .validated()?;
+
+    let mut v1 = Variant::baseline()?;
+    v1.sequence = 1;
+    v1.extra_cells.push(predicted.clone());
+    let first = publication(&v1)?;
+
+    let mut v2 = Variant::baseline()?;
+    v2.sequence = 2;
+    v2.predecessor = Some(first.publication_digest);
+    v2.extra_cells.push(observed.clone());
+    let second = publication(&v2)?;
+
+    let res = classify_reference_meaningful_delta(&first, &second);
+    assert!(
+        res.is_ok(),
+        "the classifier cannot attribute a digest across frames and must not refuse: {res:?}"
+    );
+    // Where the producing cell is known, the pairwise check still refuses this exact pair.
+    assert_eq!(
+        observed.verify_no_evidence_laundering(&predicted),
+        Err(fss_core::ContractError::EvidenceLaunderingDetected)
+    );
+    Ok(())
+}
+
+/// Classifies two consecutive publications that carry the identical honest cell pair
+/// `[Observed(D), second(D)]`: nothing changed, so nothing may be refused as laundering.
+fn classify_unchanged_honest_pair(
+    label: &str,
+    second_class: ProvenanceClass,
+) -> Result<(), Box<dyn Error>> {
+    let digest = ContentDigest::sha256(label.as_bytes());
+    let observed = KnowledgeCell {
+        claim_id: "claim:carry:observed".to_owned(),
+        statement: "Observed telemetry".to_owned(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Observed,
+        hypothesis: None,
+        evidence: vec![digest],
+        contradictions: vec![],
+        valid_until: None,
+        state_basis: None,
+    }
+    .validated()?;
+    let second = KnowledgeCell {
+        claim_id: "claim:carry:second".to_owned(),
+        statement: "Computed from the observed telemetry".to_owned(),
+        knowledge_state: KnowledgeState::Estimated,
+        provenance: second_class,
+        hypothesis: None,
+        evidence: vec![digest],
+        contradictions: vec![],
+        valid_until: None,
+        state_basis: None,
+    }
+    .validated()?;
+    let mut v1 = Variant::baseline()?;
+    v1.sequence = 1;
+    v1.extra_cells = vec![observed.clone(), second.clone()];
+    let first = publication(&v1)?;
+    let mut v2 = Variant::baseline()?;
+    v2.sequence = 2;
+    v2.predecessor = Some(first.publication_digest);
+    v2.extra_cells = vec![observed, second];
+    let next = publication(&v2)?;
+    let res = classify_reference_meaningful_delta(&first, &next);
+    assert!(
+        res.is_ok(),
+        "{label}: an unchanged honest carry-over was refused: {res:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn unchanged_observed_and_derived_frames_classify() -> Result<(), Box<dyn Error>> {
+    classify_unchanged_honest_pair("unchanged observed+derived", ProvenanceClass::Derived)
+}
+
+#[test]
+fn unchanged_observed_and_predicted_frames_classify() -> Result<(), Box<dyn Error>> {
+    classify_unchanged_honest_pair("unchanged observed+predicted", ProvenanceClass::Predicted)
 }

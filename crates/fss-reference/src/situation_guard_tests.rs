@@ -1841,13 +1841,17 @@ fn sealed_publication_proof_roots_are_exact() -> Result<(), Box<dyn Error>> {
 /// Re-pinned for fss-2uftm: every event publication batch now also carries the
 /// `sensor_tamper_status` delta witnessing the lineage tamper status, so the authority batch the
 /// fixture publishes, and the anchor this publication binds, changed.
+///
+/// Re-pinned for fss-x4a.30.83.10: the publication v5 and seal v6 digest domains.
 const GOLDEN_SEAL_DIGEST: &str =
-    "sha256:6e0dfbc2fe4677dc7eea52389f94b4a71bd556ce3da1bbf512136bcc453ab615";
+    "sha256:a70bb228b51ddbcb8b07ab13926596d548517d42849d85d3d37bca39378afa60";
 /// Pinned v4 publication digest of the fixed compiled publication below.
 ///
 /// Re-pinned for fss-2uftm with the seal digest above (same single cause).
+///
+/// Re-pinned for fss-x4a.30.83.10: the publication v5 and seal v6 digest domains.
 const GOLDEN_PUBLICATION_DIGEST: &str =
-    "sha256:d16650f29f7ad4e350d2ee8a04db95989c9dcb12211a9a519e60bbacff26277d";
+    "sha256:a99a0116f90642b805556ca1b76956f758d7f5d5d9afc894948088fd6ad19922";
 
 /// Review round 4 F5: the seal digest and the v2 publication digest of a fixed compiled
 /// publication are pinned, so any change to either encoding has to change these goldens on purpose.
@@ -1988,13 +1992,17 @@ fn sealed_situation_proof_roots_are_exact() -> Result<(), Box<dyn Error>> {
 /// digest domain (`fss.operation_receipt.v2`), and that receipt digest is a proof root and the
 /// evidence of the bound local-state cell. Single cause, checked on this tree: with new receipts
 /// forced to v1 (and admitted by the guard) the previous pins (0905e4b4..., 22685e54...) pass.
+///
+/// Re-pinned for fss-x4a.30.83.10: the publication v5 and seal v6 digest domains.
 const GOLDEN_BOUND_SEAL_DIGEST: &str =
-    "sha256:b0e82794ea6bdae36ada3f0b69e4f4a3a524c5e3ccd7013dda036b2c0cff5aa1";
+    "sha256:9fc21b759c02845425d946de0af4d2aae515d8c2c39483310ab75d927536106d";
 /// Pinned v4 publication digest of the fixed compiled publication with effect bindings below.
 ///
 /// Re-pinned for fss-wjisz, fss-2uftm and fss-deir9 with the seal digest above (same causes).
+///
+/// Re-pinned for fss-x4a.30.83.10: the publication v5 and seal v6 digest domains.
 const GOLDEN_BOUND_PUBLICATION_DIGEST: &str =
-    "sha256:f523fb19ce260ac9e4ee350fe6b047a8c2a1cb874e39727be5ba9e51dd1fb792";
+    "sha256:5c20ae60707d9f95ca612776e4df3395bc9b6e18a34d2a1e6217835aa248b0b0";
 
 /// Round 5: pins the binding part of the seal encoding. The verified publication, bound to its
 /// outcome and local-state cells, has a pinned seal digest and publication digest.

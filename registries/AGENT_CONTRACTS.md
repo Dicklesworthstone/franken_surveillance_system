@@ -173,3 +173,19 @@ fss://session/{session}/handoff/{root}
 fss://experience/{capsule}
 fss://doctor/{bundle}
 ```
+
+## Registry drifts
+
+Mirrors the provenance entries of `drifts` in `architecture/agent_contracts.json`.
+
+- Target: `ProvenanceClass::Predicted (PROV-003)`; field: `knowledge_state`
+  - Original value: The PROV-003 row text 'Counterfactual or forward prediction under an explicit branch/model and assumptions.' states no knowledge-state constraint, so a predicted cell could claim known.
+  - Reconciled value: KnowledgeCell::validate refuses predicted provenance with the known state (predicted_known_forbidden); a prediction is at most estimated.
+  - Reason: AGENT_COGNITION_AND_CONTROL.md §8.2 governs: a prediction is a counterfactual or future expectation, never current truth. The registry row does not inline this compatibility rule, so the constitution's rule is recorded here and enforced fail-closed.
+  - Status: `reconciled`
+
+- Target: `KnowledgeCell`; field: `evidence`
+  - Original value: AGENT_COGNITION_AND_CONTROL.md §8.3 (derived beliefs cannot become observed) and the mayLaunderEvidenceInto table read as enforceable for any cell, any SituationFrame or MeaningfulDelta cell set, and any basis/result publication pair.
+  - Reconciled value: Laundering is refused only where the producing cell is known: KnowledgeCell::verify_no_evidence_laundering(prior) refuses exactly the registered pairs. A lone relabelled cell is accepted; SituationFrame::validate and MeaningfulDelta::validate judge the SET of cells (independent of order and claim-id naming) and accept shared evidence between classes; classify_reference_meaningful_delta draws no laundering verdict across basis and result frames.
+  - Reason: An evidence reference is an untyped ContentDigest that names no producing cell, so shared evidence cannot be attributed to its author: guessing by list position or claim id refused honest derivations (P4r, P5r) and made verdicts order-dependent (Q1, Q2), and the basis-versus-result check refused honest unchanged carry-overs (identical frames [Observed(D), Derived(D)] returned evidence_laundering_detected) and was removed. Full enforcement needs typed evidence references carrying origin provenance, tracked under fss-gefi6.
+  - Status: `open`

@@ -411,6 +411,99 @@ def validate_cell_provenance_invariants(
     return errors
 
 
+def extract_rust_may_launder_matrix(contract_rs_path: Path) -> dict[str, list[str]]:
+    """Parses `pub const fn may_launder_evidence_into` from `crates/fss-core/src/contract.rs`.
+
+    Evaluates the Rust match expression against all 7 canonical provenance classes to produce
+    a mapping of `{source_provenance: [target_provenances]}`.
+    """
+    content = contract_rs_path.read_text(encoding="utf-8")
+    m = re.search(
+        r"pub const fn may_launder_evidence_into\s*\(\s*self\s*,\s*target\s*:\s*Self\s*\)\s*->\s*bool\s*\{(.*?)\n    \}",
+        content,
+        re.DOTALL,
+    )
+    if not m:
+        raise ValueError("Cannot locate pub const fn may_launder_evidence_into in contract.rs")
+    lines = m.group(1).splitlines()
+    arms: list[tuple[str, str]] = []
+    curr_pat: str | None = None
+    curr_expr: list[str] = []
+    depth = 0
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped == "match self {" or stripped == "}":
+            continue
+        if curr_pat is None and "=>" in stripped:
+            pat_part, expr_part = stripped.split("=>", 1)
+            curr_pat = pat_part.strip()
+            curr_expr = [expr_part.strip()]
+            depth = expr_part.count("(") - expr_part.count(")")
+            if depth == 0 and expr_part.strip().endswith(","):
+                arms.append((curr_pat, " ".join(curr_expr).rstrip(",")))
+                curr_pat = None
+                curr_expr = []
+        elif curr_pat is not None:
+            curr_expr.append(stripped)
+            depth += stripped.count("(") - stripped.count(")")
+            if depth == 0 and stripped.endswith(","):
+                arms.append((curr_pat, " ".join(curr_expr).rstrip(",")))
+                curr_pat = None
+                curr_expr = []
+
+    variants = [
+        "Observed",
+        "Derived",
+        "Predicted",
+        "Remembered",
+        "OperatorAsserted",
+        "VendorClaimed",
+        "Policy",
+    ]
+    name_map = {
+        "Observed": "observed",
+        "Derived": "derived",
+        "Predicted": "predicted",
+        "Remembered": "remembered",
+        "OperatorAsserted": "operator_asserted",
+        "VendorClaimed": "vendor_claimed",
+        "Policy": "policy",
+    }
+    matrix: dict[str, list[str]] = {}
+    for v_self in variants:
+        self_name = name_map[v_self]
+        expr = None
+        for arm_pat, arm_expr in arms:
+            pats = [p.strip().replace("Self::", "").strip() for p in arm_pat.split("|")]
+            if v_self in pats:
+                expr = arm_expr
+                break
+        if expr is None:
+            raise ValueError(f"No match arm found in contract.rs for variant Self::{v_self}")
+        targets: list[str] = []
+        for v_target in variants:
+            if expr == "false":
+                matches = False
+            elif "!matches!" in expr:
+                m_not = re.search(r"!matches!\s*\(\s*target\s*,\s*Self::(\w+)\s*\)", expr)
+                if not m_not:
+                    raise ValueError(f"Cannot parse !matches expr: {expr}")
+                negated_var = m_not.group(1)
+                matches = v_target != negated_var
+            elif "matches!" in expr:
+                m_match = re.search(r"matches!\s*\(\s*target\s*,\s*(.*?)\)", expr)
+                if not m_match:
+                    raise ValueError(f"Cannot parse matches expr: {expr}")
+                allowed = [p.strip().replace("Self::", "").strip() for p in m_match.group(1).split("|")]
+                matches = v_target in allowed
+            else:
+                raise ValueError(f"Unknown match arm expression: {expr}")
+            if matches:
+                targets.append(name_map[v_target])
+        matrix[self_name] = targets
+    return matrix
+
+
 def validate_provenance_registry(repo_root: Path = ROOT) -> ValidationResult:
     result = ValidationResult()
     json_path = repo_root / PROVENANCE_CLASSES_JSON_PATH
@@ -895,6 +988,59 @@ def validate_provenance_registry(repo_root: Path = ROOT) -> ValidationResult:
                                 PROVENANCE_CLASSES_JSON_PATH,
                                 f"#/provenanceClasses/{ac_pid}",
                                 f"Provenance class '{ac_pid}' present in agent_contracts.json but missing in provenance_classes.json",
+                            )
+
+                    # Check mayLaunderEvidenceInto table in agent_contracts.json against contract.rs
+                    contract_rs_path = repo_root / "crates/fss-core/src/contract.rs"
+                    ac_launder_table = ac_data.get("mayLaunderEvidenceInto")
+                    if not isinstance(ac_launder_table, dict):
+                        result.add_error(
+                            ERR_PROV_MISSING_FIELD,
+                            AGENT_CONTRACTS_JSON_PATH,
+                            "#/mayLaunderEvidenceInto",
+                            "Missing or non-object 'mayLaunderEvidenceInto' in agent contracts umbrella",
+                        )
+                    elif not contract_rs_path.is_file():
+                        result.add_error(
+                            ERR_PROV_CORRUPT_FILE,
+                            "crates/fss-core/src/contract.rs",
+                            "#",
+                            "Missing crates/fss-core/src/contract.rs for may_launder_evidence_into verification",
+                        )
+                    else:
+                        try:
+                            rust_launder_matrix = extract_rust_may_launder_matrix(contract_rs_path)
+                            for cls_name, expected_targets in rust_launder_matrix.items():
+                                if cls_name not in ac_launder_table:
+                                    result.add_error(
+                                        ERR_PROV_REGISTRY_DRIFT,
+                                        AGENT_CONTRACTS_JSON_PATH,
+                                        f"#/mayLaunderEvidenceInto/{cls_name}",
+                                        f"Provenance class '{cls_name}' missing from mayLaunderEvidenceInto in agent contracts",
+                                    )
+                                    continue
+                                actual_targets = ac_launder_table[cls_name]
+                                if not isinstance(actual_targets, list) or sorted(actual_targets) != sorted(expected_targets):
+                                    result.add_error(
+                                        ERR_PROV_REGISTRY_DRIFT,
+                                        AGENT_CONTRACTS_JSON_PATH,
+                                        f"#/mayLaunderEvidenceInto/{cls_name}",
+                                        f"mayLaunderEvidenceInto table for '{cls_name}' drifted between JSON ({actual_targets}) and contract.rs ({expected_targets})",
+                                    )
+                            for extra_cls in ac_launder_table:
+                                if extra_cls not in rust_launder_matrix:
+                                    result.add_error(
+                                        ERR_PROV_REGISTRY_DRIFT,
+                                        AGENT_CONTRACTS_JSON_PATH,
+                                        f"#/mayLaunderEvidenceInto/{extra_cls}",
+                                        f"Extraneous provenance class '{extra_cls}' in mayLaunderEvidenceInto table",
+                                    )
+                        except Exception as exc:
+                            result.add_error(
+                                ERR_PROV_CORRUPT_FILE,
+                                "crates/fss-core/src/contract.rs",
+                                "#/may_launder_evidence_into",
+                                f"Failed to parse may_launder_evidence_into from contract.rs: {exc}",
                             )
 
     return result
