@@ -1469,22 +1469,42 @@ impl EventRevisionStore {
             };
         }
 
-        let candidate = self
+        let matching: Vec<&CoverageWitness> = self
             .coverage_witnesses
             .iter()
-            .find(|w| w.observed_domain.iter().any(|d| d == domain));
+            .filter(|w| w.observed_domain.iter().any(|d| d == domain))
+            .collect();
 
-        let witness = match candidate {
-            Some(w) => w,
-            None => {
-                return EventReadResult::NotObservable {
-                    domain: domain.to_string(),
-                    reason: NotObservableReason::NoCoverageWitness,
-                };
-            }
-        };
+        if matching.is_empty() {
+            return EventReadResult::NotObservable {
+                domain: domain.to_string(),
+                reason: NotObservableReason::NoCoverageWitness,
+            };
+        }
 
-        if witness.excluded_domain.iter().any(|d| d == domain) {
+        // ANY-GAP-WINS: Evaluate all matching witnesses.
+        // Absence is certified only if at least one matching witness certifies
+        // and no matching witness reports a gap or non-certifying state.
+        // Order-independent reason precedence:
+        // 1. CoverageWitnessGapped
+        // 2. ExcludedDomain
+        // 3. GenerationMismatch
+        // 4. CoverageWitnessUncertified
+
+        if matching
+            .iter()
+            .any(|w| w.continuity != CoverageContinuity::Continuous)
+        {
+            return EventReadResult::NotObservable {
+                domain: domain.to_string(),
+                reason: NotObservableReason::CoverageWitnessGapped,
+            };
+        }
+
+        if matching
+            .iter()
+            .any(|w| w.excluded_domain.iter().any(|d| d == domain))
+        {
             return EventReadResult::NotObservable {
                 domain: domain.to_string(),
                 reason: NotObservableReason::ExcludedDomain {
@@ -1493,42 +1513,54 @@ impl EventRevisionStore {
             };
         }
 
-        if witness.continuity != CoverageContinuity::Continuous {
-            return EventReadResult::NotObservable {
-                domain: domain.to_string(),
-                reason: NotObservableReason::CoverageWitnessGapped,
-            };
-        }
-
-        if witness.completeness != Completeness::Complete
-            || witness.stop_reason != CoverageStopReason::Complete
-        {
-            return EventReadResult::NotObservable {
-                domain: domain.to_string(),
-                reason: NotObservableReason::CoverageWitnessUncertified,
-            };
-        }
-
-        if witness.authorized_generation == 0
-            || witness.authorized_generation != witness.observed_generation
+        if let Some(mismatched) = matching
+            .iter()
+            .filter(|w| {
+                w.authorized_generation == 0
+                    || w.authorized_generation != w.observed_generation
+            })
+            .min_by_key(|w| {
+                (
+                    w.authorized_generation,
+                    w.observed_generation,
+                    w.witness_digest(),
+                )
+            })
         {
             return EventReadResult::NotObservable {
                 domain: domain.to_string(),
                 reason: NotObservableReason::GenerationMismatch {
-                    expected: witness.authorized_generation,
-                    observed: witness.observed_generation,
+                    expected: mismatched.authorized_generation,
+                    observed: mismatched.observed_generation,
                 },
             };
         }
 
-        if !witness.certifies_absence() {
+        if matching.iter().any(|w| {
+            w.completeness != Completeness::Complete
+                || w.stop_reason != CoverageStopReason::Complete
+                || !w.certifies_absence()
+        }) {
             return EventReadResult::NotObservable {
                 domain: domain.to_string(),
                 reason: NotObservableReason::CoverageWitnessUncertified,
             };
         }
 
-        EventReadResult::AbsentWithCoverage(witness)
+        // All matching witnesses certify absence.
+        // Select deterministically by witness digest so the result is invariant to registration order.
+        let Some(certifying_witness) = matching
+            .iter()
+            .min_by_key(|w| w.witness_digest())
+            .copied()
+        else {
+            return EventReadResult::NotObservable {
+                domain: domain.to_string(),
+                reason: NotObservableReason::NoCoverageWitness,
+            };
+        };
+
+        EventReadResult::AbsentWithCoverage(certifying_witness)
     }
 }
 

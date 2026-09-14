@@ -1643,3 +1643,308 @@ fn retired_contradiction_never_hides_an_active_one_on_the_same_world() -> TestRe
     }
     Ok(())
 }
+
+// ---------------------------------------------------------------------------------------------
+// Criterion: ANY-GAP-WINS Order-Independent Coverage for Absence (fss-3qlsa)
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn coverage_for_absence_certifying_then_gapped_yields_gapped() -> TestResult {
+    let mut store = EventRevisionStore::new(LedgerAnchor::genesis("site-coverage-order-1"));
+    let absent_id = EventId::parse("evt_absent_test_01")?;
+    let domain = "domain.monitored_gate";
+
+    let certifying = sample_coverage_witness(domain, true, true, false)?;
+    let gapped = sample_coverage_witness(domain, false, true, false)?;
+
+    store.register_coverage_witness(
+        store.current_anchor().clone(),
+        certifying,
+        TimestampNs(1_000),
+    )?;
+    store.register_coverage_witness(
+        store.current_anchor().clone(),
+        gapped,
+        TimestampNs(2_000),
+    )?;
+
+    // Certifying registered first, then gapped: must NOT yield AbsentWithCoverage.
+    // ANY-GAP-WINS mandates CoverageWitnessGapped.
+    let result = store.read_event_in_domain(&absent_id, domain, None)?;
+    assert_eq!(
+        result,
+        EventReadResult::NotObservable {
+            domain: domain.to_string(),
+            reason: NotObservableReason::CoverageWitnessGapped,
+        }
+    );
+
+    let lineage_result = store.read_lineage_in_domain(&absent_id, domain)?;
+    assert_eq!(
+        lineage_result,
+        LineageReadResult::NotObservable {
+            domain: domain.to_string(),
+            reason: NotObservableReason::CoverageWitnessGapped,
+        }
+    );
+    Ok(())
+}
+
+#[test]
+fn coverage_for_absence_gapped_then_certifying_yields_exact_same_gapped() -> TestResult {
+    let mut store = EventRevisionStore::new(LedgerAnchor::genesis("site-coverage-order-2"));
+    let absent_id = EventId::parse("evt_absent_test_02")?;
+    let domain = "domain.monitored_gate";
+
+    let gapped = sample_coverage_witness(domain, false, true, false)?;
+    let certifying = sample_coverage_witness(domain, true, true, false)?;
+
+    store.register_coverage_witness(
+        store.current_anchor().clone(),
+        gapped,
+        TimestampNs(1_000),
+    )?;
+    store.register_coverage_witness(
+        store.current_anchor().clone(),
+        certifying,
+        TimestampNs(2_000),
+    )?;
+
+    // Gapped registered first, then certifying: must yield identical CoverageWitnessGapped.
+    let result = store.read_event_in_domain(&absent_id, domain, None)?;
+    assert_eq!(
+        result,
+        EventReadResult::NotObservable {
+            domain: domain.to_string(),
+            reason: NotObservableReason::CoverageWitnessGapped,
+        }
+    );
+
+    let lineage_result = store.read_lineage_in_domain(&absent_id, domain)?;
+    assert_eq!(
+        lineage_result,
+        LineageReadResult::NotObservable {
+            domain: domain.to_string(),
+            reason: NotObservableReason::CoverageWitnessGapped,
+        }
+    );
+    Ok(())
+}
+
+#[test]
+fn coverage_for_absence_two_certifying_witnesses_yields_absent_with_coverage() -> TestResult {
+    let mut store = EventRevisionStore::new(LedgerAnchor::genesis("site-coverage-two-cert"));
+    let absent_id = EventId::parse("evt_absent_test_03")?;
+    let domain = "domain.monitored_gate";
+
+    let cert1 = sample_coverage_witness(domain, true, true, false)?;
+    let mut cert2 = sample_coverage_witness(domain, true, true, false)?;
+    cert2.negative_predicate = "no_unauthorized_vehicle".to_string();
+
+    store.register_coverage_witness(
+        store.current_anchor().clone(),
+        cert1,
+        TimestampNs(1_000),
+    )?;
+    store.register_coverage_witness(
+        store.current_anchor().clone(),
+        cert2,
+        TimestampNs(2_000),
+    )?;
+
+    let result = store.read_event_in_domain(&absent_id, domain, None)?;
+    match result {
+        EventReadResult::AbsentWithCoverage(w) => {
+            assert!(w.certifies_absence());
+            assert!(w.observed_domain.contains(domain));
+        }
+        other => return Err(format!("expected AbsentWithCoverage, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn coverage_for_absence_different_domain_witness_does_not_affect_result() -> TestResult {
+    let mut store = EventRevisionStore::new(LedgerAnchor::genesis("site-coverage-diff-domain"));
+    let absent_id = EventId::parse("evt_absent_test_04")?;
+    let domain_a = "domain.monitored_gate";
+    let domain_b = "domain.other_gate";
+
+    let cert_a = sample_coverage_witness(domain_a, true, true, false)?;
+    let gapped_b = sample_coverage_witness(domain_b, false, true, false)?;
+
+    store.register_coverage_witness(
+        store.current_anchor().clone(),
+        cert_a,
+        TimestampNs(1_000),
+    )?;
+    store.register_coverage_witness(
+        store.current_anchor().clone(),
+        gapped_b,
+        TimestampNs(2_000),
+    )?;
+
+    // Query domain_a: the gap in domain_b must not affect domain_a
+    let result_a = store.read_event_in_domain(&absent_id, domain_a, None)?;
+    match result_a {
+        EventReadResult::AbsentWithCoverage(w) => {
+            assert!(w.certifies_absence());
+            assert!(w.observed_domain.contains(domain_a));
+        }
+        other => {
+            return Err(format!("expected AbsentWithCoverage for domain_a, got {other:?}").into());
+        }
+    }
+
+    // Query domain_b: must observe CoverageWitnessGapped
+    let result_b = store.read_event_in_domain(&absent_id, domain_b, None)?;
+    assert_eq!(
+        result_b,
+        EventReadResult::NotObservable {
+            domain: domain_b.to_string(),
+            reason: NotObservableReason::CoverageWitnessGapped,
+        }
+    );
+
+    // Query unobserved domain_c: must observe NoCoverageWitness
+    let result_c = store.read_event_in_domain(&absent_id, "domain.unobserved_gate", None)?;
+    assert_eq!(
+        result_c,
+        EventReadResult::NotObservable {
+            domain: "domain.unobserved_gate".to_string(),
+            reason: NotObservableReason::NoCoverageWitness,
+        }
+    );
+    Ok(())
+}
+
+fn generate_permutations<T: Clone>(items: &[T]) -> Vec<Vec<T>> {
+    if items.is_empty() {
+        return vec![Vec::new()];
+    }
+    let mut result = Vec::new();
+    for i in 0..items.len() {
+        let mut rest = items.to_vec();
+        let item = rest.remove(i);
+        for sub in generate_permutations(&rest) {
+            let mut perm = vec![item.clone()];
+            perm.extend(sub);
+            result.push(perm);
+        }
+    }
+    result
+}
+
+#[test]
+fn coverage_for_absence_permutation_order_invariance_contract() -> TestResult {
+    let domain = "domain.monitored_gate";
+    let absent_id = EventId::parse("evt_absent_perm")?;
+
+    let cert1 = sample_coverage_witness(domain, true, true, false)?;
+    let mut cert2 = sample_coverage_witness(domain, true, true, false)?;
+    cert2.negative_predicate = "no_unauthorized_vehicle".to_string();
+
+    let gapped = sample_coverage_witness(domain, false, true, false)?;
+    let uncert = sample_coverage_witness(domain, true, false, false)?;
+
+    // Scenario 1: Mixed set with 4 witnesses (2 certifying, 1 gapped, 1 uncertified)
+    // ANY-GAP-WINS: All 24 permutations must produce CoverageWitnessGapped.
+    let four_witnesses = vec![cert1.clone(), cert2.clone(), gapped.clone(), uncert.clone()];
+    let perms_4 = generate_permutations(&four_witnesses);
+    assert_eq!(perms_4.len(), 24);
+
+    let expected_gapped = EventReadResult::NotObservable {
+        domain: domain.to_string(),
+        reason: NotObservableReason::CoverageWitnessGapped,
+    };
+
+    for (idx, perm) in perms_4.iter().enumerate() {
+        let mut store = EventRevisionStore::new(LedgerAnchor::genesis("site-coverage-perm-4"));
+        for (step, w) in perm.iter().enumerate() {
+            store.register_coverage_witness(
+                store.current_anchor().clone(),
+                w.clone(),
+                TimestampNs(1_000 + (step as i128) * 100),
+            )?;
+        }
+        let result = store.read_event_in_domain(&absent_id, domain, None)?;
+        assert_eq!(
+            result, expected_gapped,
+            "permutation {idx} must yield CoverageWitnessGapped regardless of registration order"
+        );
+    }
+
+    // Scenario 2: 3 certifying witnesses (cert1, cert2, cert3)
+    // All 6 permutations must produce identical AbsentWithCoverage (canonical selection).
+    let mut cert3 = sample_coverage_witness(domain, true, true, false)?;
+    cert3.negative_predicate = "no_perimeter_breach".to_string();
+
+    let cert_witnesses = vec![cert1.clone(), cert2.clone(), cert3.clone()];
+    let perms_cert = generate_permutations(&cert_witnesses);
+    assert_eq!(perms_cert.len(), 6);
+
+    let mut baseline_cert_witness: Option<CoverageWitness> = None;
+    for (idx, perm) in perms_cert.iter().enumerate() {
+        let mut store = EventRevisionStore::new(LedgerAnchor::genesis("site-coverage-perm-cert"));
+        for (step, w) in perm.iter().enumerate() {
+            store.register_coverage_witness(
+                store.current_anchor().clone(),
+                w.clone(),
+                TimestampNs(1_000 + (step as i128) * 100),
+            )?;
+        }
+        let result = store.read_event_in_domain(&absent_id, domain, None)?;
+        let witness_clone = match result {
+            EventReadResult::AbsentWithCoverage(w) => {
+                assert!(w.certifies_absence());
+                w.clone()
+            }
+            other => return Err(format!("expected AbsentWithCoverage, got {other:?}").into()),
+        };
+        if let Some(ref baseline) = baseline_cert_witness {
+            assert_eq!(
+                &witness_clone, baseline,
+                "permutation {idx} must yield identical certifying witness"
+            );
+        } else {
+            baseline_cert_witness = Some(witness_clone);
+        }
+    }
+
+    // Scenario 3: Precedence test with 3 witnesses (certifying, uncertified, generation mismatch)
+    // No gap, no exclusion: GenerationMismatch has precedence over CoverageWitnessUncertified.
+    let mut gen_mismatch = sample_coverage_witness(domain, true, true, false)?;
+    gen_mismatch.authorized_generation = 2;
+    gen_mismatch.observed_generation = 1;
+
+    let prec_witnesses = vec![cert1, uncert, gen_mismatch];
+    let perms_prec = generate_permutations(&prec_witnesses);
+    assert_eq!(perms_prec.len(), 6);
+
+    let expected_gen_mismatch = EventReadResult::NotObservable {
+        domain: domain.to_string(),
+        reason: NotObservableReason::GenerationMismatch {
+            expected: 2,
+            observed: 1,
+        },
+    };
+
+    for (idx, perm) in perms_prec.iter().enumerate() {
+        let mut store = EventRevisionStore::new(LedgerAnchor::genesis("site-coverage-perm-prec"));
+        for (step, w) in perm.iter().enumerate() {
+            store.register_coverage_witness(
+                store.current_anchor().clone(),
+                w.clone(),
+                TimestampNs(1_000 + (step as i128) * 100),
+            )?;
+        }
+        let result = store.read_event_in_domain(&absent_id, domain, None)?;
+        assert_eq!(
+            result, expected_gen_mismatch,
+            "permutation {idx} must yield GenerationMismatch by order-independent precedence"
+        );
+    }
+
+    Ok(())
+}
+
