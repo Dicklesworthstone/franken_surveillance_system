@@ -20,6 +20,14 @@ MAX_LINE_BYTES = 65536  # 64 KiB line cap
 SECRET_KEY_PATTERN = re.compile(
     r"authorization|password|token|secret|cookie|api_key|apikey", re.IGNORECASE
 )
+SECRET_VALUE_PATTERNS = [
+    re.compile(r"ghp_[A-Za-z0-9_]{16,}"),
+    re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
+    re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}"),
+    re.compile(r"sk-[A-Za-z0-9_\-]{16,}"),
+    re.compile(r"xox[bpa]-[A-Za-z0-9_\-]{4,}"),
+    re.compile(r"glpat-[A-Za-z0-9_\-]{20,}"),
+]
 HEX_64_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
 STEP_VERDICTS = {"ran", "pass", "fail", "skip"}
 SUMMARY_VERDICTS = {"pass", "fail"}
@@ -49,6 +57,25 @@ def check_no_secret_keys(data, path=""):
     elif isinstance(data, list):
         for idx, item in enumerate(data):
             check_no_secret_keys(item, f"{path}[{idx}]")
+
+
+def check_no_secret_values(data, path=""):
+    """Recursively checks that no string value in data matches known secret token shapes."""
+    if isinstance(data, dict):
+        for k, v in data.items():
+            k_str = str(k)
+            check_no_secret_values(v, f"{path}.{k_str}" if path else k_str)
+    elif isinstance(data, list):
+        for idx, item in enumerate(data):
+            check_no_secret_values(item, f"{path}[{idx}]")
+    elif isinstance(data, str):
+        for pat in SECRET_VALUE_PATTERNS:
+            if pat.search(data):
+                loc = path if path else "<root>"
+                raise ValidationError(
+                    "ERR_SECRET_VALUE_FOUND",
+                    f"Secret token pattern matched in value at '{loc}'",
+                )
 
 
 def _strict_int(val, field_name, line_no):
@@ -211,12 +238,33 @@ def validate_summary_record(rec, line_no):
             f"Summary record (line {line_no}) field 'failures' must be list",
             line_no=line_no,
         )
+    for f_idx, f_val in enumerate(rec["failures"]):
+        if not isinstance(f_val, str):
+            raise ValidationError(
+                "ERR_TYPE_MISMATCH",
+                f"Summary record (line {line_no}) failures[{f_idx}] must be str",
+                line_no=line_no,
+            )
     if not isinstance(rec["skipped"], list):
         raise ValidationError(
             "ERR_TYPE_MISMATCH",
             f"Summary record (line {line_no}) field 'skipped' must be list",
             line_no=line_no,
         )
+    for s_idx, s_val in enumerate(rec["skipped"]):
+        if isinstance(s_val, dict):
+            if "step" not in s_val or not isinstance(s_val["step"], str):
+                raise ValidationError(
+                    "ERR_TYPE_MISMATCH",
+                    f"Summary record (line {line_no}) skipped[{s_idx}] dict must have str field 'step'",
+                    line_no=line_no,
+                )
+        elif not isinstance(s_val, str):
+            raise ValidationError(
+                "ERR_TYPE_MISMATCH",
+                f"Summary record (line {line_no}) skipped[{s_idx}] must be str or dict",
+                line_no=line_no,
+            )
     _check_duration(rec["duration_ms"], "duration_ms", line_no, allow_float=False)
     if not isinstance(rec["log_path"], str):
         raise ValidationError(
@@ -230,6 +278,20 @@ def validate_summary_record(rec, line_no):
             f"Summary record (line {line_no}) field 'repro' must be str",
             line_no=line_no,
         )
+    if "preserved_tmpdirs" in rec:
+        if not isinstance(rec["preserved_tmpdirs"], list):
+            raise ValidationError(
+                "ERR_TYPE_MISMATCH",
+                f"Summary record (line {line_no}) field 'preserved_tmpdirs' must be list",
+                line_no=line_no,
+            )
+        for p_idx, p_val in enumerate(rec["preserved_tmpdirs"]):
+            if not isinstance(p_val, str):
+                raise ValidationError(
+                    "ERR_TYPE_MISMATCH",
+                    f"Summary record (line {line_no}) preserved_tmpdirs[{p_idx}] must be str",
+                    line_no=line_no,
+                )
 
 
 def validate_step_record(rec, line_no):
@@ -453,6 +515,7 @@ def validate_file(file_path: Path):
 
         try:
             check_no_secret_keys(rec)
+            check_no_secret_values(rec)
 
             step = rec.get("step")
             if not step or not isinstance(step, str):
@@ -545,6 +608,43 @@ def validate_file(file_path: Path):
 
     # 3. pass implies no fail verdicts and an empty failures list
     failed_steps = [r["step"] for r in step_records if r["verdict"] == "fail"]
+    skipped_steps = [r["step"] for r in step_records if r["verdict"] == "skip"]
+
+    for f_step in summary_failures:
+        if f_step not in seen_step_ids:
+            raise ValidationError(
+                "ERR_SUMMARY_INCONSISTENCY",
+                f"Summary failures contains unknown step id '{f_step}' (no record in log)",
+                line_no=summary_line_no,
+            )
+
+    for fs in failed_steps:
+        if fs not in summary_failures:
+            raise ValidationError(
+                "ERR_SUMMARY_INCONSISTENCY",
+                f"Step '{fs}' failed but is not in summary failures list",
+                line_no=summary_line_no,
+            )
+
+    summary_skipped_names = set()
+    for s_item in summary_record["skipped"]:
+        s_name = s_item["step"] if isinstance(s_item, dict) else s_item
+        if s_name not in seen_step_ids:
+            raise ValidationError(
+                "ERR_SUMMARY_INCONSISTENCY",
+                f"Summary skipped contains unknown step id '{s_name}' (no record in log)",
+                line_no=summary_line_no,
+            )
+        summary_skipped_names.add(s_name)
+
+    for ss in skipped_steps:
+        if ss not in summary_skipped_names:
+            raise ValidationError(
+                "ERR_SUMMARY_INCONSISTENCY",
+                f"Step '{ss}' was skipped but is not in summary skipped list",
+                line_no=summary_line_no,
+            )
+
     if summary_verdict == "pass":
         if failed_steps:
             raise ValidationError(
@@ -559,7 +659,7 @@ def validate_file(file_path: Path):
                 line_no=summary_line_no,
             )
     elif summary_verdict == "fail":
-        if not summary_failures:
+        if failed_steps and not summary_failures:
             raise ValidationError(
                 "ERR_SUMMARY_INCONSISTENCY",
                 "Summary verdict is 'fail' but summary failures list is empty",
@@ -580,6 +680,8 @@ def find_log_files(target: Path):
                     continue
             except Exception:
                 pass
+            if p.name.endswith(".tmpdirs"):
+                continue
             if p.is_file() and (p.suffix in {".log", ".jsonl"} or p.name.startswith("run_")):
                 files.append(p)
         return files

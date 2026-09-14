@@ -421,6 +421,25 @@ class TestValidateLog(unittest.TestCase):
         self.assertIn(good_log, found)
         self.assertNotIn(ignored_log, found)
 
+    def test_find_log_files_when_parent_has_tmp_prefix(self):
+        parent_dir = Path(self.tmp_dir) / "tmp_container" / "suite_target"
+        parent_dir.mkdir(parents=True)
+        good_log = parent_dir / "run_0001.log"
+        good_log.write_text("dummy")
+        found = find_log_files(parent_dir)
+        self.assertIn(good_log, found)
+
+    def test_summary_consistency_pass_with_nonempty_failures(self):
+        records = [
+            self._valid_env_record(),
+            self._valid_step_record("s1", "pass"),
+            self._valid_summary_record("pass", steps=1, failures=["s1"])
+        ]
+        self._write_records(records)
+        with self.assertRaises(ValidationError) as ctx:
+            validate_file(self.log_path)
+        self.assertEqual(ctx.exception.code, "ERR_SUMMARY_INCONSISTENCY")
+
 
 if __name__ == "__main__":
     unittest.main()

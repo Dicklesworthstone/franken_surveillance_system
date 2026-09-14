@@ -28,11 +28,13 @@ _E2E_LIST=0
 _E2E_ONLY=""
 _E2E_SUMMARY_WRITTEN=0
 _E2E_CAP_EXCEEDED=0
+_E2E_CURRENT_RUNNING_STEP=""
 
 declare -A _E2E_STEP_EXIT=()
 declare -A _E2E_STEP_STDOUT=()
 declare -A _E2E_STEP_STDERR=()
 declare -A _E2E_SEEN_STEPS=()
+declare -A _E2E_STEP_TARGET=()
 
 # Max log file size: 10 MiB (10485760 bytes)
 _E2E_MAX_LOG_BYTES=10485760
@@ -123,6 +125,7 @@ _e2e_step_matches_only() {
 # Append a line to the run log with 10 MiB cap enforcement
 _e2e_append_log() {
     local line="$1"
+    local step_id="${2:-}"
     if [[ -z "${_E2E_LOG_FILE:-}" ]]; then
         return 0
     fi
@@ -139,8 +142,6 @@ _e2e_append_log() {
     if (( cur_size + line_bytes > _E2E_MAX_LOG_BYTES - 4096 )); then
         if [[ "$_E2E_CAP_EXCEEDED" -eq 0 ]]; then
             _E2E_CAP_EXCEEDED=1
-            local cap_step="${_E2E_LAST_STEP:-log_cap_exceeded}"
-            _E2E_FAILURES+=("$cap_step")
             echo "Error: 10 MiB log cap exceeded" >&2
             e2e_summary
         fi
@@ -148,6 +149,10 @@ _e2e_append_log() {
     fi
 
     printf "%s\n" "$line" >> "$_E2E_LOG_FILE"
+    if [[ -n "$step_id" ]]; then
+        _E2E_STEP_COUNT=$((_E2E_STEP_COUNT + 1))
+        _E2E_LAST_STEP="$step_id"
+    fi
 }
 
 _e2e_redact_file() {
@@ -173,11 +178,12 @@ token_patterns = [
     re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
     re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}"),
     re.compile(r"sk-[A-Za-z0-9_\-]{16,}"),
-    re.compile(r"xox[bpa]-[A-Za-z0-9_\-]{10,}"),
+    re.compile(r"xox[bpa]-[A-Za-z0-9_\-]{4,}"),
     re.compile(r"glpat-[A-Za-z0-9_\-]{20,}"),
-    re.compile(r"Bearer\s+[A-Za-z0-9_\-\.+/=]+", re.IGNORECASE),
+    re.compile(r"(?i)\b(?:Basic|Bearer)\s+[A-Za-z0-9_\-\.+/=]+"),
     re.compile(r"""(?i)\b([A-Za-z0-9_]*(?:authorization|password|passwd|token|secret|cookie|api_key|apikey|mypass|privkey|secret_key|(?:(?<![a-zA-Z])pass)|(?:(?<![a-zA-Z])key))[A-Za-z0-9_]*)\s*[:=]\s*(?:\"[^\"]*\"|\x27[^\x27]*\x27|[^\s,;\x22\x27]+)"""),
 ]
+drop_line_pat = re.compile(r"authorization|password|token|secret|cookie", re.IGNORECASE)
 hex_pat = re.compile(r"[0-9a-fA-F]{65,}")
 max_bytes = 4096
 
@@ -186,11 +192,16 @@ total_bytes = 0
 try:
     with open(input_path, "r", encoding="utf-8", errors="replace") as f:
         for line in f:
+            if drop_line_pat.search(line):
+                continue
             for s in env_secrets:
                 if s in line:
                     line = line.replace(s, "<redacted>")
             for pat in token_patterns:
                 line = pat.sub("<redacted>", line)
+            line = re.sub(r"(--password(?:=|\s+))\S+", r"\g<1><redacted>", line)
+            line = re.sub(r"([A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:)[^/\s:@]+(@)", r"\g<1><redacted>\g<2>", line)
+            line = re.sub(r"(?<!\S)-p\S+", "-p<redacted>", line)
             line = hex_pat.sub(lambda m: f"<{len(m.group(0))} hex chars>", line)
             out_lines.append(line)
             total_bytes += len(line.encode("utf-8"))
@@ -232,7 +243,11 @@ e2e_init() {
         echo "Error: invalid suite name '${_E2E_NAME}'" >&2
         exit 1
     fi
-    if [[ ! "$_E2E_BEAD" =~ ^[A-Za-z0-9_.-]+$ ]] || [[ "$_E2E_BEAD" == *".."* ]]; then
+    if [[ "$_E2E_NAME" == "." ]]; then
+        echo "Error: invalid suite name '${_E2E_NAME}'" >&2
+        exit 1
+    fi
+    if [[ ! "$_E2E_BEAD" =~ ^[A-Za-z0-9_.-]+$ ]] || [[ "$_E2E_BEAD" == *".."* ]] || [[ "$_E2E_BEAD" == "." ]]; then
         echo "Error: invalid bead id '${_E2E_BEAD}'" >&2
         exit 1
     fi
@@ -361,10 +376,17 @@ _e2e_trap_exit() {
         return
     fi
     if [[ $rc -ne 0 ]]; then
-        _E2E_FAILURES+=("${_E2E_LAST_STEP:-unexpected_exit}")
+        local blamed_step="${_E2E_CURRENT_RUNNING_STEP:-${_E2E_LAST_STEP:-unexpected_exit}}"
+        _E2E_FAILURES+=("$blamed_step")
+    fi
+    if [[ -n "${_E2E_RUN_DIR:-}" && -d "${_E2E_RUN_DIR:-}" ]]; then
+        rm -f "${_E2E_RUN_DIR}"/stdout_* "${_E2E_RUN_DIR}"/stderr_* "${_E2E_RUN_DIR}"/cargo_test_* 2>/dev/null || true
     fi
     e2e_summary
 }
+
+# Install EXIT trap so any uninitialized exit fails closed
+trap _e2e_trap_exit EXIT
 
 e2e_step() {
     local step="$1"
@@ -389,8 +411,7 @@ e2e_step() {
         idx=$((idx + 1))
     done
     _E2E_SEEN_STEPS["$record_step"]=1
-    _E2E_STEP_COUNT=$((_E2E_STEP_COUNT + 1))
-    _E2E_LAST_STEP="$record_step"
+    _E2E_CURRENT_RUNNING_STEP="$step"
 
     local stdout_file
     stdout_file=$(mktemp "${_E2E_RUN_DIR}/stdout_XXXXXX")
@@ -444,9 +465,9 @@ token_patterns = [
     re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
     re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}"),
     re.compile(r"sk-[A-Za-z0-9_\-]{16,}"),
-    re.compile(r"xox[bpa]-[A-Za-z0-9_\-]{10,}"),
+    re.compile(r"xox[bpa]-[A-Za-z0-9_\-]{4,}"),
     re.compile(r"glpat-[A-Za-z0-9_\-]{20,}"),
-    re.compile(r"Bearer\s+[A-Za-z0-9_\-\.+/=]+", re.IGNORECASE),
+    re.compile(r"(?i)\b(?:Basic|Bearer)\s+[A-Za-z0-9_\-\.+/=]+"),
     re.compile(r"""(?i)\b([A-Za-z0-9_]*(?:authorization|password|passwd|token|secret|cookie|api_key|apikey|mypass|privkey|secret_key|(?:(?<![a-zA-Z])pass)|(?:(?<![a-zA-Z])key))[A-Za-z0-9_]*)\s*[:=]\s*(?:\"[^\"]*\"|\x27[^\x27]*\x27|[^\s,;\x22\x27]+)"""),
 ]
 hex_pat = re.compile(r"[0-9a-fA-F]{65,}")
@@ -459,6 +480,9 @@ def sanitize(s):
             s = s.replace(sec, "<redacted>")
     for pat in token_patterns:
         s = pat.sub("<redacted>", s)
+    s = re.sub(r"(--password(?:=|\s+))\S+", r"\g<1><redacted>", s)
+    s = re.sub(r"([A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:)[^/\s:@]+(@)", r"\g<1><redacted>\g<2>", s)
+    s = re.sub(r"(?<!\S)-p\S+", "-p<redacted>", s)
     s = hex_pat.sub(lambda m: f"<{len(m.group(0))} hex chars>", s)
     b = s.encode("utf-8")
     if len(b) > 4096:
@@ -485,8 +509,9 @@ rec = {
 print(json.dumps(rec))
 ' "$ts" "$_E2E_SCRIPT_NAME" "$_E2E_BEAD" "$record_step" "$cmd_str" "$cmd_exit" "$duration_ms" "$stdout_sha256" "$stdout_excerpt" "$stderr_excerpt" "$repro_cmd")
 
-    _e2e_append_log "$rec_json"
     rm -f "$stdout_file" "$stderr_file"
+    _E2E_CURRENT_RUNNING_STEP=""
+    _e2e_append_log "$rec_json" "$record_step"
 }
 
 e2e_expect_eq() {
@@ -509,8 +534,7 @@ e2e_expect_eq() {
         idx=$((idx + 1))
     done
     _E2E_SEEN_STEPS["$record_step"]=1
-    _E2E_STEP_COUNT=$((_E2E_STEP_COUNT + 1))
-    _E2E_LAST_STEP="$record_step"
+    _E2E_CURRENT_RUNNING_STEP="$step"
 
     local verdict="pass"
     if [[ "$expected" != "$observed" ]]; then
@@ -542,9 +566,9 @@ token_patterns = [
     re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
     re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}"),
     re.compile(r"sk-[A-Za-z0-9_\-]{16,}"),
-    re.compile(r"xox[bpa]-[A-Za-z0-9_\-]{10,}"),
+    re.compile(r"xox[bpa]-[A-Za-z0-9_\-]{4,}"),
     re.compile(r"glpat-[A-Za-z0-9_\-]{20,}"),
-    re.compile(r"Bearer\s+[A-Za-z0-9_\-\.+/=]+", re.IGNORECASE),
+    re.compile(r"(?i)\b(?:Basic|Bearer)\s+[A-Za-z0-9_\-\.+/=]+"),
     re.compile(r"""(?i)\b([A-Za-z0-9_]*(?:authorization|password|passwd|token|secret|cookie|api_key|apikey|mypass|privkey|secret_key|(?:(?<![a-zA-Z])pass)|(?:(?<![a-zA-Z])key))[A-Za-z0-9_]*)\s*[:=]\s*(?:\"[^\"]*\"|\x27[^\x27]*\x27|[^\s,;\x22\x27]+)"""),
 ]
 hex_pat = re.compile(r"[0-9a-fA-F]{65,}")
@@ -557,6 +581,9 @@ def sanitize(s):
             s = s.replace(sec, "<redacted>")
     for pat in token_patterns:
         s = pat.sub("<redacted>", s)
+    s = re.sub(r"(--password(?:=|\s+))\S+", r"\g<1><redacted>", s)
+    s = re.sub(r"([A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:)[^/\s:@]+(@)", r"\g<1><redacted>\g<2>", s)
+    s = re.sub(r"(?<!\S)-p\S+", "-p<redacted>", s)
     s = hex_pat.sub(lambda m: f"<{len(m.group(0))} hex chars>", s)
     b = s.encode("utf-8")
     if len(b) > 4096:
@@ -583,8 +610,8 @@ rec = {
     "ts": ts,
     "script": script,
     "bead": bead,
-    "step": step,
-    "cmd": ["e2e_expect_eq", step, sanitize(expected_str), sanitize(observed_str)],
+    "step": sanitize(step),
+    "cmd": ["e2e_expect_eq", sanitize(step), sanitize(expected_str), sanitize(observed_str)],
     "exit": 0 if verdict == "pass" else 1,
     "duration_ms": 0,
     "expected": parse_val(expected_str),
@@ -599,7 +626,8 @@ rec = {
 print(json.dumps(rec))
 ' "$ts" "$_E2E_SCRIPT_NAME" "$_E2E_BEAD" "$record_step" "$expected" "$observed" "$verdict" "$repro_cmd")
 
-    _e2e_append_log "$rec_json"
+    _E2E_CURRENT_RUNNING_STEP=""
+    _e2e_append_log "$rec_json" "$record_step"
 }
 
 e2e_expect_exit() {
@@ -634,8 +662,7 @@ e2e_expect_exit() {
         idx=$((idx + 1))
     done
     _E2E_SEEN_STEPS["$record_step"]=1
-    _E2E_STEP_COUNT=$((_E2E_STEP_COUNT + 1))
-    _E2E_LAST_STEP="$record_step"
+    _E2E_CURRENT_RUNNING_STEP="$step"
 
     local verdict="pass"
     if [[ "$observed_code" != "$expected_code" ]]; then
@@ -649,41 +676,89 @@ e2e_expect_exit() {
 
     local rec_json
     rec_json=$(python3 -c '
-import json, sys
+import os, json, sys, re
 
 ts, script, bead, step, expected_str, observed_str, verdict, repro = sys.argv[1:9]
+
+secret_var_pat = re.compile(r"authorization|password|token|secret|cookie|pass|key", re.IGNORECASE)
+env_secrets = []
+for k, v in os.environ.items():
+    if secret_var_pat.search(k):
+        sv = v.strip()
+        if len(sv) >= 4:
+            env_secrets.append(sv)
+env_secrets.sort(key=len, reverse=True)
+
+token_patterns = [
+    re.compile(r"ghp_[A-Za-z0-9_]{16,}"),
+    re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
+    re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}"),
+    re.compile(r"sk-[A-Za-z0-9_\-]{16,}"),
+    re.compile(r"xox[bpa]-[A-Za-z0-9_\-]{4,}"),
+    re.compile(r"glpat-[A-Za-z0-9_\-]{20,}"),
+    re.compile(r"(?i)\b(?:Basic|Bearer)\s+[A-Za-z0-9_\-\.+/=]+"),
+    re.compile(r"""(?i)\b([A-Za-z0-9_]*(?:authorization|password|passwd|token|secret|cookie|api_key|apikey|mypass|privkey|secret_key|(?:(?<![a-zA-Z])pass)|(?:(?<![a-zA-Z])key))[A-Za-z0-9_]*)\s*[:=]\s*(?:\"[^\"]*\"|\x27[^\x27]*\x27|[^\s,;\x22\x27]+)"""),
+]
+hex_pat = re.compile(r"[0-9a-fA-F]{65,}")
+
+def sanitize(s):
+    if not isinstance(s, str):
+        return s
+    for sec in env_secrets:
+        if sec in s:
+            s = s.replace(sec, "<redacted>")
+    for pat in token_patterns:
+        s = pat.sub("<redacted>", s)
+    s = re.sub(r"(--password(?:=|\s+))\S+", r"\g<1><redacted>", s)
+    s = re.sub(r"([A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:)[^/\s:@]+(@)", r"\g<1><redacted>\g<2>", s)
+    s = re.sub(r"(?<!\S)-p\S+", "-p<redacted>", s)
+    s = hex_pat.sub(lambda m: f"<{len(m.group(0))} hex chars>", s)
+    b = s.encode("utf-8")
+    if len(b) > 4096:
+        s = b[:4096].decode("utf-8", errors="ignore")
+    return s
+
+def sanitize_data(data):
+    if isinstance(data, str):
+        return sanitize(data)
+    elif isinstance(data, dict):
+        return {sanitize(str(k)): sanitize_data(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [sanitize_data(x) for x in data]
+    return data
 
 try:
     expected_val = int(expected_str)
 except Exception:
-    expected_val = expected_str
+    expected_val = sanitize(expected_str)
 
 try:
     observed_val = int(observed_str)
 except Exception:
-    observed_val = observed_str
+    observed_val = sanitize(observed_str)
 
 rec = {
     "ts": ts,
     "script": script,
     "bead": bead,
-    "step": step,
-    "cmd": ["e2e_expect_exit", step, expected_str],
+    "step": sanitize(step),
+    "cmd": [sanitize(x) for x in ["e2e_expect_exit", step, str(expected_str)]],
     "exit": 0 if verdict == "pass" else 1,
     "duration_ms": 0,
-    "expected": expected_val,
-    "observed": observed_val,
+    "expected": sanitize_data(expected_val),
+    "observed": sanitize_data(observed_val),
     "digest": None,
     "stdout_sha256": "",
     "stdout_excerpt": "",
     "stderr_excerpt": "",
     "verdict": verdict,
-    "repro": repro
+    "repro": sanitize(repro)
 }
 print(json.dumps(rec))
 ' "$ts" "$_E2E_SCRIPT_NAME" "$_E2E_BEAD" "$record_step" "$expected_code" "$observed_code" "$verdict" "$repro_cmd")
 
-    _e2e_append_log "$rec_json"
+    _E2E_CURRENT_RUNNING_STEP=""
+    _e2e_append_log "$rec_json" "$record_step"
 }
 
 e2e_expect_json_field() {
@@ -729,9 +804,9 @@ token_patterns = [
     re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
     re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}"),
     re.compile(r"sk-[A-Za-z0-9_\-]{16,}"),
-    re.compile(r"xox[bpa]-[A-Za-z0-9_\-]{10,}"),
+    re.compile(r"xox[bpa]-[A-Za-z0-9_\-]{4,}"),
     re.compile(r"glpat-[A-Za-z0-9_\-]{20,}"),
-    re.compile(r"Bearer\s+[A-Za-z0-9_\-\.+/=]+", re.IGNORECASE),
+    re.compile(r"(?i)\b(?:Basic|Bearer)\s+[A-Za-z0-9_\-\.+/=]+"),
     re.compile(r"""(?i)\b([A-Za-z0-9_]*(?:authorization|password|passwd|token|secret|cookie|api_key|apikey|mypass|privkey|secret_key|(?:(?<![a-zA-Z])pass)|(?:(?<![a-zA-Z])key))[A-Za-z0-9_]*)\s*[:=]\s*(?:\"[^\"]*\"|\x27[^\x27]*\x27|[^\s,;\x22\x27]+)"""),
 ]
 hex_pat = re.compile(r"[0-9a-fA-F]{65,}")
@@ -744,6 +819,9 @@ def sanitize(s):
             s = s.replace(sec, "<redacted>")
     for pat in token_patterns:
         s = pat.sub("<redacted>", s)
+    s = re.sub(r"(--password(?:=|\s+))\S+", r"\g<1><redacted>", s)
+    s = re.sub(r"([A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:)[^/\s:@]+(@)", r"\g<1><redacted>\g<2>", s)
+    s = re.sub(r"(?<!\S)-p\S+", "-p<redacted>", s)
     s = hex_pat.sub(lambda m: f"<{len(m.group(0))} hex chars>", s)
     b = s.encode("utf-8")
     if len(b) > 4096:
@@ -798,7 +876,7 @@ try:
 except Exception as e:
     out = {
         "matched": False,
-        "observed": f"Error: {e}",
+        "observed": sanitize(f"Error: {e}"),
         "expected": sanitize(expected_str)
     }
     print(json.dumps(out))
@@ -812,8 +890,7 @@ except Exception as e:
         idx=$((idx + 1))
     done
     _E2E_SEEN_STEPS["$record_step"]=1
-    _E2E_STEP_COUNT=$((_E2E_STEP_COUNT + 1))
-    _E2E_LAST_STEP="$record_step"
+    _E2E_CURRENT_RUNNING_STEP="$step"
 
     local verdict="pass"
     if [[ $match_status -ne 0 ]]; then
@@ -827,32 +904,80 @@ except Exception as e:
 
     local rec_json
     rec_json=$(python3 -c '
-import json, sys
+import os, json, sys, re
 
 ts, script, bead, step, py_json_str, path, verdict, repro = sys.argv[1:9]
 info = json.loads(py_json_str)
+
+secret_var_pat = re.compile(r"authorization|password|token|secret|cookie|pass|key", re.IGNORECASE)
+env_secrets = []
+for k, v in os.environ.items():
+    if secret_var_pat.search(k):
+        sv = v.strip()
+        if len(sv) >= 4:
+            env_secrets.append(sv)
+env_secrets.sort(key=len, reverse=True)
+
+token_patterns = [
+    re.compile(r"ghp_[A-Za-z0-9_]{16,}"),
+    re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
+    re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}"),
+    re.compile(r"sk-[A-Za-z0-9_\-]{16,}"),
+    re.compile(r"xox[bpa]-[A-Za-z0-9_\-]{4,}"),
+    re.compile(r"glpat-[A-Za-z0-9_\-]{20,}"),
+    re.compile(r"(?i)\b(?:Basic|Bearer)\s+[A-Za-z0-9_\-\.+/=]+"),
+    re.compile(r"""(?i)\b([A-Za-z0-9_]*(?:authorization|password|passwd|token|secret|cookie|api_key|apikey|mypass|privkey|secret_key|(?:(?<![a-zA-Z])pass)|(?:(?<![a-zA-Z])key))[A-Za-z0-9_]*)\s*[:=]\s*(?:\"[^\"]*\"|\x27[^\x27]*\x27|[^\s,;\x22\x27]+)"""),
+]
+hex_pat = re.compile(r"[0-9a-fA-F]{65,}")
+
+def sanitize(s):
+    if not isinstance(s, str):
+        return s
+    for sec in env_secrets:
+        if sec in s:
+            s = s.replace(sec, "<redacted>")
+    for pat in token_patterns:
+        s = pat.sub("<redacted>", s)
+    s = re.sub(r"(--password(?:=|\s+))\S+", r"\g<1><redacted>", s)
+    s = re.sub(r"([A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:)[^/\s:@]+(@)", r"\g<1><redacted>\g<2>", s)
+    s = re.sub(r"(?<!\S)-p\S+", "-p<redacted>", s)
+    s = hex_pat.sub(lambda m: f"<{len(m.group(0))} hex chars>", s)
+    b = s.encode("utf-8")
+    if len(b) > 4096:
+        s = b[:4096].decode("utf-8", errors="ignore")
+    return s
+
+def sanitize_data(data):
+    if isinstance(data, str):
+        return sanitize(data)
+    elif isinstance(data, dict):
+        return {sanitize(str(k)): sanitize_data(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [sanitize_data(x) for x in data]
+    return data
 
 rec = {
     "ts": ts,
     "script": script,
     "bead": bead,
-    "step": step,
-    "cmd": ["e2e_expect_json_field", step, path],
+    "step": sanitize(step),
+    "cmd": [sanitize(x) for x in ["e2e_expect_json_field", step, path]],
     "exit": 0 if verdict == "pass" else 1,
     "duration_ms": 0,
-    "expected": info.get("expected"),
-    "observed": info.get("observed"),
+    "expected": sanitize_data(info.get("expected")),
+    "observed": sanitize_data(info.get("observed")),
     "digest": None,
     "stdout_sha256": "",
     "stdout_excerpt": "",
     "stderr_excerpt": "",
     "verdict": verdict,
-    "repro": repro
+    "repro": sanitize(repro)
 }
 print(json.dumps(rec))
 ' "$ts" "$_E2E_SCRIPT_NAME" "$_E2E_BEAD" "$record_step" "$py_output" "$path" "$verdict" "$repro_cmd")
 
-    _e2e_append_log "$rec_json"
+    _E2E_CURRENT_RUNNING_STEP=""
+    _e2e_append_log "$rec_json" "$record_step"
 }
 
 e2e_skip() {
@@ -875,8 +1000,6 @@ e2e_skip() {
         idx=$((idx + 1))
     done
     _E2E_SEEN_STEPS["$record_step"]=1
-    _E2E_STEP_COUNT=$((_E2E_STEP_COUNT + 1))
-    _E2E_LAST_STEP="$record_step"
 
     local skip_entry
     skip_entry=$(python3 -c '
@@ -897,9 +1020,9 @@ token_patterns = [
     re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
     re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}"),
     re.compile(r"sk-[A-Za-z0-9_\-]{16,}"),
-    re.compile(r"xox[bpa]-[A-Za-z0-9_\-]{10,}"),
+    re.compile(r"xox[bpa]-[A-Za-z0-9_\-]{4,}"),
     re.compile(r"glpat-[A-Za-z0-9_\-]{20,}"),
-    re.compile(r"Bearer\s+[A-Za-z0-9_\-\.+/=]+", re.IGNORECASE),
+    re.compile(r"(?i)\b(?:Basic|Bearer)\s+[A-Za-z0-9_\-\.+/=]+"),
     re.compile(r"""(?i)\b([A-Za-z0-9_]*(?:authorization|password|passwd|token|secret|cookie|api_key|apikey|mypass|privkey|secret_key|(?:(?<![a-zA-Z])pass)|(?:(?<![a-zA-Z])key))[A-Za-z0-9_]*)\s*[:=]\s*(?:\"[^\"]*\"|\x27[^\x27]*\x27|[^\s,;\x22\x27]+)"""),
 ]
 hex_pat = re.compile(r"[0-9a-fA-F]{65,}")
@@ -912,13 +1035,16 @@ def sanitize(s):
             s = s.replace(sec, "<redacted>")
     for pat in token_patterns:
         s = pat.sub("<redacted>", s)
+    s = re.sub(r"(--password(?:=|\s+))\S+", r"\g<1><redacted>", s)
+    s = re.sub(r"([A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:)[^/\s:@]+(@)", r"\g<1><redacted>\g<2>", s)
+    s = re.sub(r"(?<!\S)-p\S+", "-p<redacted>", s)
     s = hex_pat.sub(lambda m: f"<{len(m.group(0))} hex chars>", s)
     b = s.encode("utf-8")
     if len(b) > 4096:
         s = b[:4096].decode("utf-8", errors="ignore")
     return s
 
-print(json.dumps({"step": step, "reason": sanitize(reason)}))
+print(json.dumps({"step": sanitize(step), "reason": sanitize(reason)}))
 ' "$step" "$reason")
     _E2E_SKIPPED+=("$skip_entry")
 
@@ -945,9 +1071,9 @@ token_patterns = [
     re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
     re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}"),
     re.compile(r"sk-[A-Za-z0-9_\-]{16,}"),
-    re.compile(r"xox[bpa]-[A-Za-z0-9_\-]{10,}"),
+    re.compile(r"xox[bpa]-[A-Za-z0-9_\-]{4,}"),
     re.compile(r"glpat-[A-Za-z0-9_\-]{20,}"),
-    re.compile(r"Bearer\s+[A-Za-z0-9_\-\.+/=]+", re.IGNORECASE),
+    re.compile(r"(?i)\b(?:Basic|Bearer)\s+[A-Za-z0-9_\-\.+/=]+"),
     re.compile(r"""(?i)\b([A-Za-z0-9_]*(?:authorization|password|passwd|token|secret|cookie|api_key|apikey|mypass|privkey|secret_key|(?:(?<![a-zA-Z])pass)|(?:(?<![a-zA-Z])key))[A-Za-z0-9_]*)\s*[:=]\s*(?:\"[^\"]*\"|\x27[^\x27]*\x27|[^\s,;\x22\x27]+)"""),
 ]
 hex_pat = re.compile(r"[0-9a-fA-F]{65,}")
@@ -960,6 +1086,9 @@ def sanitize(s):
             s = s.replace(sec, "<redacted>")
     for pat in token_patterns:
         s = pat.sub("<redacted>", s)
+    s = re.sub(r"(--password(?:=|\s+))\S+", r"\g<1><redacted>", s)
+    s = re.sub(r"([A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:)[^/\s:@]+(@)", r"\g<1><redacted>\g<2>", s)
+    s = re.sub(r"(?<!\S)-p\S+", "-p<redacted>", s)
     s = hex_pat.sub(lambda m: f"<{len(m.group(0))} hex chars>", s)
     b = s.encode("utf-8")
     if len(b) > 4096:
@@ -970,7 +1099,7 @@ rec = {
     "ts": ts,
     "script": script,
     "bead": bead,
-    "step": step,
+    "step": sanitize(step),
     "cmd": ["skip", sanitize(reason)],
     "exit": 0,
     "duration_ms": 0,
@@ -986,7 +1115,7 @@ rec = {
 print(json.dumps(rec))
 ' "$ts" "$_E2E_SCRIPT_NAME" "$_E2E_BEAD" "$record_step" "$reason" "$repro_cmd")
 
-    _e2e_append_log "$rec_json"
+    _e2e_append_log "$rec_json" "$record_step"
 }
 
 e2e_bin() {
@@ -1028,7 +1157,29 @@ e2e_cargo_test() {
         return 0
     fi
 
-    if ! _e2e_step_matches_only "$target"; then
+    local should_run=0
+    if [[ -z "${_E2E_ONLY:-}" ]]; then
+        should_run=1
+    elif _e2e_step_matches_only "$target"; then
+        should_run=1
+    else
+        local matched_regular=0
+        if [[ -n "${_E2E_SCRIPT_PATH:-}" && -f "$_E2E_SCRIPT_PATH" ]]; then
+            local IFS=','
+            for p in $_E2E_ONLY; do
+                p="$(echo "$p" | tr -d '\"'\'' ')"
+                if [[ -n "$p" ]] && grep -qE "e2e_(step|skip|expect_eq|expect_exit|expect_json_field)[[:space:]]+(\")?${p}(\")?" "$_E2E_SCRIPT_PATH" 2>/dev/null; then
+                    matched_regular=1
+                    break
+                fi
+            done
+        fi
+        if [[ $matched_regular -eq 0 ]]; then
+            should_run=1
+        fi
+    fi
+
+    if [[ $should_run -eq 0 ]]; then
         return 0
     fi
 
@@ -1056,10 +1207,21 @@ e2e_cargo_test() {
 
     local cmd_display="RCH_REQUIRE_REMOTE=1 ${cmd_args[*]}"
 
-    (
-        cd "$_E2E_REPO_ROOT"
-        RCH_REQUIRE_REMOTE=1 "${cmd_args[@]}"
-    ) > "$stdout_file" 2> "$stderr_file" || test_exit=$?
+    local retries=0
+    while true; do
+        test_exit=0
+        (
+            cd "$_E2E_REPO_ROOT"
+            RCH_REQUIRE_REMOTE=1 "${cmd_args[@]}"
+        ) > "$stdout_file" 2> "$stderr_file" || test_exit=$?
+
+        if [[ $test_exit -eq 103 && $retries -lt 3 ]]; then
+            retries=$((retries + 1))
+            python3 -c 'import time; time.sleep(0.1)' 2>/dev/null || true
+            continue
+        fi
+        break
+    done
 
     local end_ms
     end_ms=$(_e2e_now_ms)
@@ -1075,20 +1237,32 @@ e2e_cargo_test() {
     local ts
     ts=$(_e2e_iso8601)
 
+    local current_caplog_step=""
     # Ingest CAPLOG lines in current shell via process substitution
     while IFS= read -r line; do
         if [[ "$line" =~ ^__FAIL__:\ (.*)$ ]]; then
             _E2E_FAILURES+=("${BASH_REMATCH[1]}")
+        elif [[ "$line" =~ ^__STEP__:\ (.*)$ ]]; then
+            current_caplog_step="${BASH_REMATCH[1]}"
+            _E2E_STEP_TARGET["$current_caplog_step"]="$target"
         elif [[ -n "$line" ]]; then
-            _E2E_STEP_COUNT=$((_E2E_STEP_COUNT + 1))
-            _e2e_append_log "$line"
+            _e2e_append_log "$line" "${current_caplog_step:-$target}"
         fi
     done < <(python3 -c '
 import os, sys, re, json
 
 stdout_path, stderr_path, crate, target, test_exit_str, script, bead, duration_ms_str, repro, cmd_display, stdout_sha256, stdout_excerpt, stderr_excerpt, ts = sys.argv[1:15]
-test_exit = int(test_exit_str)
-duration_ms = max(0, int(duration_ms_str))
+
+def safe_int(val, default=0):
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return default
+
+test_exit = safe_int(test_exit_str, 0)
+duration_ms = max(0, safe_int(duration_ms_str, 0))
 
 secret_var_pat = re.compile(r"authorization|password|token|secret|cookie|pass|key", re.IGNORECASE)
 env_secrets = []
@@ -1104,9 +1278,9 @@ token_patterns = [
     re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
     re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}"),
     re.compile(r"sk-[A-Za-z0-9_\-]{16,}"),
-    re.compile(r"xox[bpa]-[A-Za-z0-9_\-]{10,}"),
+    re.compile(r"xox[bpa]-[A-Za-z0-9_\-]{4,}"),
     re.compile(r"glpat-[A-Za-z0-9_\-]{20,}"),
-    re.compile(r"Bearer\s+[A-Za-z0-9_\-\.+/=]+", re.IGNORECASE),
+    re.compile(r"(?i)\b(?:Basic|Bearer)\s+[A-Za-z0-9_\-\.+/=]+"),
     re.compile(r"""(?i)\b([A-Za-z0-9_]*(?:authorization|password|passwd|token|secret|cookie|api_key|apikey|mypass|privkey|secret_key|(?:(?<![a-zA-Z])pass)|(?:(?<![a-zA-Z])key))[A-Za-z0-9_]*)\s*[:=]\s*(?:\"[^\"]*\"|\x27[^\x27]*\x27|[^\s,;\x22\x27]+)"""),
 ]
 hex_pat = re.compile(r"[0-9a-fA-F]{65,}")
@@ -1119,6 +1293,9 @@ def sanitize(s):
             s = s.replace(sec, "<redacted>")
     for pat in token_patterns:
         s = pat.sub("<redacted>", s)
+    s = re.sub(r"(--password(?:=|\s+))\S+", r"\g<1><redacted>", s)
+    s = re.sub(r"([A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:)[^/\s:@]+(@)", r"\g<1><redacted>\g<2>", s)
+    s = re.sub(r"(?<!\S)-p\S+", "-p<redacted>", s)
     s = hex_pat.sub(lambda m: f"<{len(m.group(0))} hex chars>", s)
     b = s.encode("utf-8")
     if len(b) > 4096:
@@ -1147,6 +1324,7 @@ has_malformed = False
 
 VALID_STEP_VERDICTS = {"ran", "pass", "fail", "skip"}
 
+seen_caplog_steps = set()
 for line in lines:
     sline = line.strip()
     if not sline.startswith("CAPLOG "):
@@ -1160,6 +1338,11 @@ for line in lines:
         if data["verdict"] not in VALID_STEP_VERDICTS:
             has_malformed = True
             break
+        st = data["step"]
+        if not isinstance(st, str) or not st or st in seen_caplog_steps or st in ("summary", "env"):
+            has_malformed = True
+            break
+        seen_caplog_steps.add(st)
         caplog_records.append(data)
     except Exception:
         has_malformed = True
@@ -1178,7 +1361,7 @@ if test_exit != 0 or len(caplog_records) == 0 or has_malformed:
         "bead": bead,
         "step": target,
         "cmd": sanitize(cmd_display),
-        "exit": test_exit,
+        "exit": test_exit if test_exit != 0 else 1,
         "duration_ms": duration_ms,
         "expected": "valid CAPLOG line and exit 0",
         "observed": fail_reason,
@@ -1189,40 +1372,81 @@ if test_exit != 0 or len(caplog_records) == 0 or has_malformed:
         "verdict": "fail",
         "repro": sanitize(repro)
     }
+    print(f"__STEP__: {target}")
     print(json.dumps(rec))
     print(f"__FAIL__: {target}")
 else:
     for item in caplog_records:
-        st_name = item.get("step", target)
+        st_name = sanitize(item.get("step", target))
         v = item.get("verdict", "pass")
+        def_exit = 0 if v == "pass" else 1
+        item_exit = safe_int(item.get("exit", def_exit), default=def_exit)
+        item_duration = max(0, safe_int(item.get("duration_ms", duration_ms), default=duration_ms))
+
+        raw_cmd = item.get("cmd", cmd_display)
+        if isinstance(raw_cmd, list):
+            cmd_val = [sanitize_data(x) for x in raw_cmd]
+        else:
+            cmd_val = sanitize_data(raw_cmd)
+
+        raw_se = item.get("stdout_excerpt", stdout_excerpt)
+        if isinstance(raw_se, list):
+            raw_se = "\n".join(str(x) for x in raw_se)
+        se_val = sanitize(raw_se)
+
+        raw_sde = item.get("stderr_excerpt", stderr_excerpt)
+        if isinstance(raw_sde, list):
+            raw_sde = "\n".join(str(x) for x in raw_sde)
+        sde_val = sanitize(raw_sde)
+
+        raw_digest = item.get("digest")
+        digest_val = None
+        if raw_digest is not None and isinstance(raw_digest, str):
+            san_digest = sanitize(raw_digest)
+            if re.match(r"^[0-9a-fA-F]{64}$", san_digest):
+                digest_val = san_digest
+        if digest_val is None and stdout_sha256 and re.match(r"^[0-9a-fA-F]{64}$", stdout_sha256):
+            digest_val = stdout_sha256
+
         rec = {
-            "ts": item.get("ts", ts),
-            "script": item.get("script", script),
-            "bead": item.get("bead", bead),
+            "ts": sanitize(item.get("ts", ts)),
+            "script": sanitize(item.get("script", script)),
+            "bead": sanitize(item.get("bead", bead)),
             "step": st_name,
-            "cmd": sanitize(item.get("cmd", cmd_display)),
-            "exit": int(item.get("exit", 0)),
-            "duration_ms": max(0, int(item.get("duration_ms", duration_ms))),
+            "cmd": cmd_val,
+            "exit": item_exit,
+            "duration_ms": item_duration,
             "expected": sanitize_data(item.get("expected", None)),
             "observed": sanitize_data(item.get("observed", None)),
-            "digest": item.get("digest", stdout_sha256 if stdout_sha256 else None),
-            "stdout_sha256": item.get("stdout_sha256", stdout_sha256),
-            "stdout_excerpt": sanitize(item.get("stdout_excerpt", stdout_excerpt)),
-            "stderr_excerpt": sanitize(item.get("stderr_excerpt", stderr_excerpt)),
+            "digest": digest_val,
+            "stdout_sha256": sanitize(item.get("stdout_sha256", stdout_sha256)),
+            "stdout_excerpt": se_val,
+            "stderr_excerpt": sde_val,
             "verdict": v,
             "repro": sanitize(item.get("repro", repro))
         }
+        print(f"__STEP__: {st_name}")
         print(json.dumps(rec))
         if v == "fail":
             print(f"__FAIL__: {st_name}")
 ' "$stdout_file" "$stderr_file" "$crate" "$target" "$test_exit" "$_E2E_SCRIPT_NAME" "$_E2E_BEAD" "$duration_ms" "$repro_cmd" "$cmd_display" "$stdout_sha256" "$stdout_excerpt" "$stderr_excerpt" "$ts")
 
     rm -f "$stdout_file" "$stderr_file"
+
+    local py_rc=0
+    wait $! || py_rc=$?
+    if [[ $py_rc -ne 0 ]]; then
+        if ! [[ " ${_E2E_FAILURES[*]:-} " =~ " ${target} " ]]; then
+            _E2E_FAILURES+=("$target")
+        fi
+    fi
 }
 
 _e2e_write_summary_record() {
     _E2E_SUMMARY_WRITTEN=1
     local verdict="$1"
+    shift || true
+    local kept_tmpdirs=("$@")
     local end_ms
     end_ms=$(_e2e_now_ms)
     local total_ms=$(( end_ms - _E2E_START_MS ))
@@ -1243,6 +1467,11 @@ _e2e_write_summary_record() {
     local skipped_json="[]"
     if [[ ${#_E2E_SKIPPED[@]} -gt 0 ]]; then
         skipped_json=$(python3 -c 'import json, sys; print(json.dumps([json.loads(x) for x in sys.argv[1:]]))' "${_E2E_SKIPPED[@]}")
+    fi
+
+    local kept_tmpdirs_json="[]"
+    if [[ "$verdict" == "fail" && ${#kept_tmpdirs[@]} -gt 0 ]]; then
+        kept_tmpdirs_json=$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' "${kept_tmpdirs[@]}")
     fi
 
     local repro_cmd="${_E2E_SCRIPT_PATH}"
@@ -1266,7 +1495,7 @@ _e2e_write_summary_record() {
     summary_json=$(python3 -c '
 import json, sys
 
-verdict, steps, failures_raw, skipped_raw, total_ms, log_path, repro = sys.argv[1:8]
+verdict, steps, failures_raw, skipped_raw, total_ms, log_path, repro, kept_tmpdirs_raw = sys.argv[1:9]
 rec = {
     "step": "summary",
     "verdict": verdict,
@@ -1275,10 +1504,11 @@ rec = {
     "skipped": json.loads(skipped_raw),
     "duration_ms": max(0, int(total_ms)),
     "log_path": log_path,
-    "repro": repro
+    "repro": repro,
+    "preserved_tmpdirs": json.loads(kept_tmpdirs_raw)
 }
 print(json.dumps(rec))
-' "$verdict" "$_E2E_STEP_COUNT" "$failures_json" "$skipped_json" "$total_ms" "${_E2E_LOG_FILE:-}" "$repro_cmd")
+' "$verdict" "$_E2E_STEP_COUNT" "$failures_json" "$skipped_json" "$total_ms" "${_E2E_LOG_FILE:-}" "$repro_cmd" "$kept_tmpdirs_json")
 
     if [[ -n "${_E2E_LOG_FILE:-}" ]]; then
         printf "%s\n" "$summary_json" >> "$_E2E_LOG_FILE"
@@ -1288,6 +1518,11 @@ print(json.dumps(rec))
 e2e_summary() {
     if [[ "${_E2E_LIST:-0}" -eq 1 ]]; then
         exit 0
+    fi
+
+    if [[ "${_E2E_INITIALIZED:-0}" -ne 1 || -z "${_E2E_LOG_FILE:-}" ]]; then
+        echo "Error: E2E uninitialized or log file not set (failing closed)" >&2
+        exit 1
     fi
 
     if [[ "${_E2E_SUMMARY_WRITTEN:-0}" -eq 1 ]]; then
@@ -1316,11 +1551,11 @@ e2e_summary() {
 
     if [[ "$verdict" == "fail" ]]; then
         for tmp in "${all_tmpdirs[@]}"; do
-            echo "{\"event\":\"forensics_preserved\",\"tmpdir\":\"$tmp\"}" >&2
+            python3 -c 'import json, sys; print(json.dumps({"event": "forensics_preserved", "tmpdir": sys.argv[1]}))' "$tmp" >&2
         done
     fi
 
-    _e2e_write_summary_record "$verdict"
+    _e2e_write_summary_record "$verdict" "${all_tmpdirs[@]}"
 
     # Validate log file using validate_log.py
     if [[ -f "${_E2E_LOG_FILE:-}" ]]; then
@@ -1332,6 +1567,10 @@ e2e_summary() {
             rm -rf "$tmp"
         done
         [[ -n "${_E2E_LOG_FILE:-}" ]] && rm -f "$tmpdirs_file"
+    fi
+
+    if [[ -n "${_E2E_RUN_DIR:-}" && -d "${_E2E_RUN_DIR:-}" ]]; then
+        rm -f "${_E2E_RUN_DIR}"/stdout_* "${_E2E_RUN_DIR}"/stderr_* "${_E2E_RUN_DIR}"/cargo_test_* 2>/dev/null || true
     fi
 
     if [[ -n "${_E2E_LOG_FILE:-}" ]]; then
