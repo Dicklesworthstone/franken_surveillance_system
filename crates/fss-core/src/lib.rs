@@ -40,13 +40,13 @@ mod time;
 pub use abstraction::{
     AGENT_ABSTRACTION_FREEZE_DIGEST, AGENT_ABSTRACTION_GENERATION,
     AGENT_ABSTRACTIONS_FREEZE_DIGEST, AGENT_ABSTRACTIONS_GENERATION, AgentAbstractionLayer,
-    CANONICAL_LAYERS, DERIVED_BELIEF_DOMAIN, DERIVED_BELIEF_RECEIPT_DOMAIN, DerivationInputs,
-    DerivedBelief, DerivedBeliefParams, MAX_DERIVED_BELIEF_CONTRADICTIONS,
-    MAX_DERIVED_BELIEF_EVIDENCE, NegativeReadClaim, NegativeReadOutcome, RUNTIME_AUTHORITY_DOMAIN,
-    RuntimeAuthorityAndCustody, RuntimeAuthorityAndCustodyRecord, RuntimeAuthorityParams,
-    RuntimeAuthorityRecord, RuntimeGrant, SOURCE_EVIDENCE_RECORD_FORMAT_VERSION,
-    SourceEvidenceClassification, SourceEvidenceParams, SourceEvidenceRecord, WorldFact,
-    WorldFactKind, evaluate_negative_read,
+    AuthoritativeLedger, AuthorityAnchor, AuthorityContext, CANONICAL_LAYERS, CurrentAnchorSource,
+    DERIVED_BELIEF_DOMAIN, DERIVED_BELIEF_RECEIPT_DOMAIN, DerivationInputs, DerivedBelief,
+    DerivedBeliefParams, MAX_DERIVED_BELIEF_CONTRADICTIONS, MAX_DERIVED_BELIEF_EVIDENCE,
+    NegativeReadClaim, NegativeReadOutcome, RUNTIME_AUTHORITY_DOMAIN, RuntimeAuthorityAndCustody,
+    RuntimeAuthorityAndCustodyRecord, RuntimeAuthorityParams, RuntimeAuthorityRecord, RuntimeGrant,
+    SOURCE_EVIDENCE_RECORD_FORMAT_VERSION, SourceEvidenceClassification, SourceEvidenceParams,
+    SourceEvidenceRecord, WorldFact, WorldFactKind, evaluate_negative_read,
 };
 
 pub use agent::{
