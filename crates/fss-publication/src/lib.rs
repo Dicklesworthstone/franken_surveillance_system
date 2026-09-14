@@ -15,8 +15,8 @@
 //! root the ledger does not name yet is the explicit [`RootLedgerState::PendingLedger`] state.
 
 mod error;
-mod ledger;
-mod local;
+pub mod ledger;
+pub mod local;
 mod publisher;
 mod replay;
 
@@ -30,20 +30,23 @@ pub use ledger::{
     ROOT_REACHABILITY_BATCH_PREFIX, ROOT_REACHABILITY_DELTA_PREFIX, ROOT_REACHABILITY_FAMILY,
     ROOT_REACHABILITY_OBJECT_PREFIX, RootLedgerError, RootLedgerGuidance, RootLedgerOutcome,
     RootLedgerReceipt, RootLedgerReconciliation, RootLedgerState, UnbackedLedgerClaim,
-    root_reachability_batch_id, root_reachability_object_id,
+    inspect_linkage, root_reachability_batch_id, root_reachability_object_id,
 };
 pub use local::{
-    BlockReason, BrokenRoot, BrokenRootReason, CapacityResource, ClaimStatus, InjectedIoFault,
-    IoFaultPoint, LOCAL_LOCK_FILE, LOCAL_PUBLICATION_ERROR_CODES, LOCAL_ROOT_RECORD_DOMAIN,
-    LOCAL_ROOT_RECORD_FORMAT_VERSION, LOCAL_ROOTS_DIR, LOCAL_SPOOL_DIR,
-    LOCAL_TOMBSTONE_RECORD_DOMAIN, LOCAL_TOMBSTONES_DIR, LocalIoOperation, LocalLimitViolation,
-    LocalPublicationError, LocalPublicationGuidance, LocalPublicationLimits,
+    BlockReason, BrokenRoot, BrokenRootReason, CapacityResource, ClaimStatus, HostLockTableSource,
+    InjectedIoFault, IoFaultPoint, LOCAL_LOCK_FILE, LOCAL_PUBLICATION_ERROR_CODES,
+    LOCAL_ROOT_RECORD_DOMAIN, LOCAL_ROOT_RECORD_FORMAT_VERSION, LOCAL_ROOTS_DIR, LOCAL_SPOOL_DIR,
+    LOCAL_TOMBSTONE_RECORD_DOMAIN, LOCAL_TOMBSTONES_DIR, LocalInspection, LocalIoOperation,
+    LocalLimitViolation, LocalPublicationError, LocalPublicationGuidance, LocalPublicationLimits,
     LocalPublicationReceipt, LocalPublicationState, LocalRecoveryReport, LocalRootPublisher,
-    MAX_LOCAL_ROOTS, MAX_LOCAL_TOMBSTONES, MAX_ROOT_RECORD_BYTES, MAX_SLOT_NAME_BYTES,
-    MAX_TOMBSTONE_RECORD_BYTES, PublicationClaims, PublicationTransition, PublishCancellation,
-    PublishCutPoint, PublishOutcome, ROOT_INDETERMINATE_SUFFIX, ROOT_RECORD_SUFFIX,
-    ROOT_TEMP_SUFFIX, ReferenceRole, SlotName, SlotViolation, TOMBSTONE_RECORD_SUFFIX,
-    TombstoneOutcome, VisibleRoot, root_record_bytes, tombstone_record_bytes,
+    LockTableSource, MAX_LOCAL_ROOTS, MAX_LOCAL_TOMBSTONES, MAX_LOCK_TABLE_BYTES,
+    MAX_ROOT_RECORD_BYTES, MAX_SLOT_NAME_BYTES, MAX_TOMBSTONE_RECORD_BYTES, PublicationClaims,
+    PublicationTransition, PublishCancellation, PublishCutPoint, PublishOutcome,
+    ROOT_INDETERMINATE_SUFFIX, ROOT_RECORD_SUFFIX, ROOT_TEMP_SUFFIX, ReferenceRole, SlotName,
+    SlotViolation, StringLockTableSource, TOMBSTONE_RECORD_SUFFIX, TombstoneOutcome,
+    UnknownLockReason, VisibleRoot, WriterDetectionOptions, WriterLockBasis, WriterState,
+    decode_st_dev, detect_writers, inspect, inspect_with_options, probe_shared_lock, read_verified,
+    read_verified_with_io, root_record_bytes, tombstone_record_bytes,
 };
 pub use publisher::AuthorityPublisher;
 pub use replay::{

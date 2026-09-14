@@ -11,6 +11,7 @@ use std::fs::{self, DirEntry, File, FileType, Metadata, OpenOptions, ReadDir, Tr
 use std::io::{self, Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// One kind of filesystem call the spool makes through its [`SpoolIo`] capability.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -51,11 +52,13 @@ pub enum SpoolIoCall {
     SyncDirectory,
     /// Creating a hard link.
     HardLink,
+    /// Taking a shared, non-blocking lock on an opened lock file.
+    TryLockShared,
 }
 
 impl SpoolIoCall {
     /// Every call kind, in declaration order.
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 19] = [
         Self::CreateDirAll,
         Self::Metadata,
         Self::SymlinkMetadata,
@@ -74,10 +77,37 @@ impl SpoolIoCall {
         Self::RemoveFile,
         Self::SyncDirectory,
         Self::HardLink,
+        Self::TryLockShared,
     ];
 
     const fn index(self) -> usize {
         self as usize
+    }
+
+    /// Returns whether this filesystem call may mutate state or acquire exclusive locks.
+    #[must_use]
+    pub const fn is_mutating(self) -> bool {
+        match self {
+            Self::CreateDirAll
+            | Self::OpenLock
+            | Self::TryLock
+            | Self::TryLockShared
+            | Self::CreateDir
+            | Self::CreateNew
+            | Self::Write
+            | Self::SyncFile
+            | Self::Rename
+            | Self::RemoveFile
+            | Self::SyncDirectory
+            | Self::HardLink => true,
+            Self::Metadata
+            | Self::SymlinkMetadata
+            | Self::ReadDir
+            | Self::NextDirEntry
+            | Self::EntryFileType
+            | Self::OpenRead
+            | Self::Read => false,
+        }
     }
 }
 
@@ -102,6 +132,7 @@ impl fmt::Display for SpoolIoCall {
             Self::RemoveFile => "remove_file",
             Self::SyncDirectory => "sync_directory",
             Self::HardLink => "hard_link",
+            Self::TryLockShared => "try_lock_shared",
         })
     }
 }
@@ -121,6 +152,10 @@ pub trait SpoolIo: fmt::Debug + Send + Sync {
     fn open_lock(&self, path: &Path) -> io::Result<File>;
     /// Takes an exclusive, non-blocking lock on an opened lock file.
     fn try_lock(&self, file: &File) -> Result<(), TryLockError>;
+    /// Takes a shared, non-blocking lock on an opened lock file.
+    fn try_lock_shared(&self, file: &File) -> Result<(), TryLockError> {
+        file.try_lock_shared()
+    }
     /// Creates one directory whose parent exists.
     fn create_dir(&self, path: &Path) -> io::Result<()>;
     /// Opens a directory listing.
@@ -179,6 +214,10 @@ impl SpoolIo for HostSpoolIo {
 
     fn try_lock(&self, file: &File) -> Result<(), TryLockError> {
         file.try_lock()
+    }
+
+    fn try_lock_shared(&self, file: &File) -> Result<(), TryLockError> {
+        file.try_lock_shared()
     }
 
     fn create_dir(&self, path: &Path) -> io::Result<()> {
@@ -448,6 +487,17 @@ impl SpoolIo for FaultInjectingSpoolIo {
         }
     }
 
+    fn try_lock_shared(&self, file: &File) -> Result<(), TryLockError> {
+        match self.next_fault(SpoolIoCall::TryLockShared) {
+            Some(Fault::Error(kind)) => Err(TryLockError::Error(io::Error::from(kind))),
+            Some(Fault::ErrorAfterApplying(kind)) => {
+                self.host.try_lock_shared(file)?;
+                Err(TryLockError::Error(io::Error::from(kind)))
+            }
+            Some(Fault::ShortWrite(_)) | None => self.host.try_lock_shared(file),
+        }
+    }
+
     fn create_dir(&self, path: &Path) -> io::Result<()> {
         self.intercept(SpoolIoCall::CreateDir, |host| host.create_dir(path))
     }
@@ -521,5 +571,161 @@ impl SpoolIo for FaultInjectingSpoolIo {
 
     fn hard_link(&self, from: &Path, to: &Path) -> io::Result<()> {
         self.intercept(SpoolIoCall::HardLink, |host| host.hard_link(from, to))
+    }
+}
+
+/// Recording wrapper around a [`SpoolIo`] capability.
+///
+/// Records every method call made through the interface. Used to prove that inspection
+/// and verification operations are purely read-only and perform no mutating or lock calls.
+#[derive(Debug)]
+pub struct RecordingSpoolIo {
+    inner: Arc<dyn SpoolIo>,
+    calls: Mutex<Vec<SpoolIoCall>>,
+}
+
+impl RecordingSpoolIo {
+    /// Wraps `inner` in a new recording wrapper.
+    pub fn new(inner: Arc<dyn SpoolIo>) -> Self {
+        Self {
+            inner,
+            calls: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn record(&self, call: SpoolIoCall) {
+        if let Ok(mut guard) = self.calls.lock() {
+            guard.push(call);
+        }
+    }
+
+    /// Returns a snapshot of all recorded calls in invocation order.
+    pub fn calls(&self) -> Vec<SpoolIoCall> {
+        match self.calls.lock() {
+            Ok(guard) => guard.clone(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// Returns only the mutating or locking calls recorded.
+    pub fn mutating_calls(&self) -> Vec<SpoolIoCall> {
+        self.calls()
+            .into_iter()
+            .filter(|call| call.is_mutating())
+            .collect()
+    }
+
+    /// Returns true if no mutating or locking calls have been recorded.
+    pub fn is_read_only(&self) -> bool {
+        self.mutating_calls().is_empty()
+    }
+
+    /// Returns the number of times `call` was invoked.
+    pub fn call_count(&self, call: SpoolIoCall) -> usize {
+        self.calls().into_iter().filter(|c| *c == call).count()
+    }
+
+    /// Clears recorded calls.
+    pub fn clear(&self) {
+        if let Ok(mut guard) = self.calls.lock() {
+            guard.clear();
+        }
+    }
+}
+
+impl SpoolIo for RecordingSpoolIo {
+    fn create_dir_all(&self, path: &Path) -> io::Result<()> {
+        self.record(SpoolIoCall::CreateDirAll);
+        self.inner.create_dir_all(path)
+    }
+
+    fn metadata(&self, path: &Path) -> io::Result<Metadata> {
+        self.record(SpoolIoCall::Metadata);
+        self.inner.metadata(path)
+    }
+
+    fn symlink_metadata(&self, path: &Path) -> io::Result<Metadata> {
+        self.record(SpoolIoCall::SymlinkMetadata);
+        self.inner.symlink_metadata(path)
+    }
+
+    fn open_lock(&self, path: &Path) -> io::Result<File> {
+        self.record(SpoolIoCall::OpenLock);
+        self.inner.open_lock(path)
+    }
+
+    fn try_lock(&self, file: &File) -> Result<(), TryLockError> {
+        self.record(SpoolIoCall::TryLock);
+        self.inner.try_lock(file)
+    }
+
+    fn try_lock_shared(&self, file: &File) -> Result<(), TryLockError> {
+        self.record(SpoolIoCall::TryLockShared);
+        self.inner.try_lock_shared(file)
+    }
+
+    fn create_dir(&self, path: &Path) -> io::Result<()> {
+        self.record(SpoolIoCall::CreateDir);
+        self.inner.create_dir(path)
+    }
+
+    fn read_dir(&self, path: &Path) -> io::Result<ReadDir> {
+        self.record(SpoolIoCall::ReadDir);
+        self.inner.read_dir(path)
+    }
+
+    fn next_dir_entry(&self, entries: &mut ReadDir) -> Option<io::Result<DirEntry>> {
+        self.record(SpoolIoCall::NextDirEntry);
+        self.inner.next_dir_entry(entries)
+    }
+
+    fn entry_file_type(&self, entry: &DirEntry) -> io::Result<FileType> {
+        self.record(SpoolIoCall::EntryFileType);
+        self.inner.entry_file_type(entry)
+    }
+
+    fn create_new(&self, path: &Path) -> io::Result<File> {
+        self.record(SpoolIoCall::CreateNew);
+        self.inner.create_new(path)
+    }
+
+    fn write(&self, file: &mut File, bytes: &[u8]) -> io::Result<usize> {
+        self.record(SpoolIoCall::Write);
+        self.inner.write(file, bytes)
+    }
+
+    fn sync_file(&self, file: &File) -> io::Result<()> {
+        self.record(SpoolIoCall::SyncFile);
+        self.inner.sync_file(file)
+    }
+
+    fn open_read(&self, path: &Path) -> io::Result<File> {
+        self.record(SpoolIoCall::OpenRead);
+        self.inner.open_read(path)
+    }
+
+    fn read_bounded(&self, file: &mut File, limit: u64) -> io::Result<Vec<u8>> {
+        self.record(SpoolIoCall::Read);
+        self.inner.read_bounded(file, limit)
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        self.record(SpoolIoCall::Rename);
+        self.inner.rename(from, to)
+    }
+
+    fn remove_file(&self, path: &Path) -> io::Result<()> {
+        self.record(SpoolIoCall::RemoveFile);
+        self.inner.remove_file(path)
+    }
+
+    fn sync_directory(&self, path: &Path) -> io::Result<()> {
+        self.record(SpoolIoCall::SyncDirectory);
+        self.inner.sync_directory(path)
+    }
+
+    fn hard_link(&self, from: &Path, to: &Path) -> io::Result<()> {
+        self.record(SpoolIoCall::HardLink);
+        self.inner.hard_link(from, to)
     }
 }

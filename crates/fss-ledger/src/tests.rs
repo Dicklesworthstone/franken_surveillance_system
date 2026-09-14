@@ -4,8 +4,8 @@ use std::fs::OpenOptions;
 use std::io::Write;
 
 use fss_core::{
-    BatchId, CaptureInterval, ContentDigest, EvidenceDelta, ObjectId, Plane, ReferenceLedger,
-    TimestampNs, sha256,
+    BatchId, CaptureInterval, ContentDigest, DigestAlgorithm, EvidenceDelta, ObjectId, Plane,
+    ReferenceLedger, TimestampNs, sha256,
 };
 
 use crate::batch_codec::{BatchCodecError, decode_batch, encode_batch};
@@ -282,6 +282,151 @@ fn durable_reference_ledger_restarts_to_identical_anchor() -> Result<(), Box<dyn
         assert_eq!(reopened.journal_root(), expected_journal_root);
         assert_eq!(reopened.batches().len(), 1);
         assert_eq!(reopened.verify_storage()?, expected_journal_root);
+    }
+
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn inspect_durable_absent_file() -> Result<(), Box<dyn Error>> {
+    let path = std::env::temp_dir().join(format!(
+        "fss-inspect-absent-{}-{}.journal",
+        std::process::id(),
+        sha256(b"inspect_durable_absent_file")[0]
+    ));
+    let _ = fs::remove_file(&path);
+
+    let inspection = crate::inspect_durable(&path, "test-site", 1024 * 1024)?;
+    assert!(inspection.batches.is_empty());
+    assert_eq!(inspection.committed_len, 0);
+    assert_eq!(
+        inspection.last_root,
+        ContentDigest::new(DigestAlgorithm::Sha256, [0_u8; 32])
+    );
+    assert!(inspection.incomplete_tail.is_none());
+    assert!(inspection.foreign_range.is_none());
+    assert!(inspection.is_clean());
+    assert_eq!(inspection.snapshot.anchor.commit_sequence, 0);
+    assert!(!path.exists());
+    Ok(())
+}
+
+#[test]
+fn inspect_durable_clean_replays_history() -> Result<(), Box<dyn Error>> {
+    let path = std::env::temp_dir().join(format!(
+        "fss-inspect-clean-{}-{}.journal",
+        std::process::id(),
+        sha256(b"inspect_durable_clean_replays_history")[0]
+    ));
+    let _ = fs::remove_file(&path);
+
+    let batch = sample_batch()?;
+    {
+        let mut durable =
+            DurableReferenceLedger::open(&path, "test-site", IncompleteTailPolicy::Reject)?;
+        durable.append(batch.clone())?;
+    }
+
+    let inspection = crate::inspect_durable(&path, "test-site", 1024 * 1024)?;
+    assert_eq!(inspection.batches.len(), 1);
+    assert_eq!(inspection.batches[0].batch_id, batch.batch_id);
+    assert_eq!(inspection.snapshot.anchor.commit_sequence, 1);
+    assert!(inspection.committed_len > 0);
+    assert_ne!(
+        inspection.last_root,
+        ContentDigest::new(DigestAlgorithm::Sha256, [0_u8; 32])
+    );
+    assert!(inspection.is_clean());
+
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn inspect_durable_reports_incomplete_tail_and_foreign_bytes() -> Result<(), Box<dyn Error>> {
+    let path = std::env::temp_dir().join(format!(
+        "fss-inspect-tail-{}-{}.journal",
+        std::process::id(),
+        sha256(b"inspect_durable_reports_incomplete_tail_and_foreign_bytes")[0]
+    ));
+    let _ = fs::remove_file(&path);
+
+    let batch = sample_batch()?;
+    let committed_len;
+    {
+        let mut durable =
+            DurableReferenceLedger::open(&path, "test-site", IncompleteTailPolicy::Reject)?;
+        durable.append(batch)?;
+        committed_len = durable.verify_storage()?;
+    }
+    let _ = committed_len;
+
+    // Append incomplete record header
+    {
+        let mut file = OpenOptions::new().append(true).open(&path)?;
+        file.write_all(&RECORD_MAGIC[..4])?;
+    }
+
+    let inspection = crate::inspect_durable(&path, "test-site", 1024 * 1024)?;
+    assert_eq!(inspection.batches.len(), 1);
+    assert!(inspection.incomplete_tail.is_some());
+    assert!(!inspection.is_clean());
+
+    // Replace incomplete header with foreign bytes
+    let clean_len = inspection.committed_len;
+    {
+        let file = OpenOptions::new().write(true).open(&path)?;
+        file.set_len(clean_len)?;
+    }
+    {
+        let mut file = OpenOptions::new().append(true).open(&path)?;
+        file.write_all(b"foreign-data-not-a-record")?;
+    }
+
+    let inspection2 = crate::inspect_durable(&path, "test-site", 1024 * 1024)?;
+    assert_eq!(inspection2.batches.len(), 1);
+    assert!(inspection2.foreign_range.is_some());
+    assert!(!inspection2.is_clean());
+
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn inspect_durable_and_doctor_bounded_budget() -> Result<(), Box<dyn Error>> {
+    let path = std::env::temp_dir().join(format!(
+        "fss-inspect-budget-{}-{}.journal",
+        std::process::id(),
+        sha256(b"inspect_durable_and_doctor_bounded_budget")[0]
+    ));
+    let _ = fs::remove_file(&path);
+
+    let batch = sample_batch()?;
+    {
+        let mut durable =
+            DurableReferenceLedger::open(&path, "test-site", IncompleteTailPolicy::Reject)?;
+        durable.append(batch)?;
+    }
+
+    // Attempt inspect with a budget too small
+    let err = crate::inspect_durable(&path, "test-site", 10).err();
+    match err {
+        Some(crate::DurableLedgerError::OverBudget { limit, actual }) => {
+            assert_eq!(limit, 10);
+            assert!(actual > 10);
+        }
+        other => return Err(format!("expected OverBudget, got {other:?}").into()),
+    }
+
+    // Attempt doctor_bounded with a budget too small
+    let err2 = crate::doctor_bounded(&path, 10).err();
+    match err2 {
+        Some(crate::RepairError::OverBudget { limit, actual }) => {
+            assert_eq!(limit, 10);
+            assert!(actual > 10);
+        }
+        other => return Err(format!("expected RepairError::OverBudget, got {other:?}").into()),
     }
 
     let _ = fs::remove_file(path);

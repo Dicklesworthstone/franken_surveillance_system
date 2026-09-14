@@ -385,6 +385,35 @@ pub fn doctor_path(path: impl AsRef<Path>) -> Result<RepairDoctorReport, RepairE
     doctor(&bytes)
 }
 
+/// Reads a journal file at `path` up to `max_bytes` and produces a [`RepairDoctorReport`].
+///
+/// Inspects the tail of a journal file with a byte limit through an injected read capability.
+pub fn doctor_bounded_with_io(
+    io: &dyn crate::durable::JournalReadIo,
+    path: impl AsRef<Path>,
+    max_bytes: usize,
+) -> Result<RepairDoctorReport, RepairError> {
+    let path = path.as_ref();
+    let meta = io.symlink_metadata(path)?;
+    let cap = max_bytes.saturating_add(1);
+    let buf = io.read_bounded(path, cap)?;
+    if buf.len() > max_bytes {
+        return Err(RepairError::OverBudget {
+            limit: max_bytes,
+            actual: meta.len as usize,
+        });
+    }
+    doctor(&buf)
+}
+
+/// Fails with [`RepairError::OverBudget`] if the file length exceeds `max_bytes`.
+pub fn doctor_bounded(
+    path: impl AsRef<Path>,
+    max_bytes: usize,
+) -> Result<RepairDoctorReport, RepairError> {
+    doctor_bounded_with_io(&crate::durable::HostJournalReadIo, path, max_bytes)
+}
+
 fn compute_plan_digest(
     journal_path: &Path,
     journal_dev: u64,
@@ -1061,11 +1090,22 @@ pub enum RepairError {
     SequenceExhausted,
     /// Length calculation overflowed 64 bits.
     LengthOverflow,
+    /// Journal file length exceeded configured byte limit.
+    OverBudget {
+        /// Configured limit in bytes.
+        limit: usize,
+        /// Observed actual length in bytes.
+        actual: usize,
+    },
 }
 
 impl fmt::Display for RepairError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::OverBudget { limit, actual } => write!(
+                formatter,
+                "journal size {actual} bytes exceeds limit of {limit} bytes"
+            ),
             Self::Io(error) => write!(formatter, "repair I/O error: {error}"),
             Self::Journal(error) => write!(formatter, "repair journal error: {error}"),
             Self::NoForeignBytes => formatter.write_str("no foreign trailing bytes to repair"),
