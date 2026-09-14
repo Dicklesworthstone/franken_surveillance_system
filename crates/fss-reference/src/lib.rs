@@ -122,6 +122,10 @@ pub use extrinsics::{
     MAX_EXTRINSICS_REPROJECTION_TOLERANCE_UPX, MIN_EXTRINSICS_CORRESPONDENCES,
     ReferenceExtrinsicsSolver, RigidTransform3D, solve_extrinsics,
 };
+pub use fss_object::{
+    InMemoryObjectStore, ObjectLimits, ObjectManifest, SpoolLimits, StagingSpool,
+};
+pub use fss_publication::SlotName;
 pub use hydration::{ReferenceHydrationCatalog, ReferenceHydrationLimits};
 pub use ingest::{
     AnnexBAccessUnit, AnnexBError, AnnexBLimits, AnnexBNal, AnnexBScan, CEILING_MAX_NAL_BYTES,

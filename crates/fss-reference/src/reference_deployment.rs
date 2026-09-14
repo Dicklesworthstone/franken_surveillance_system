@@ -1341,9 +1341,8 @@ impl ReferenceDeployment {
 
         let mut auth = AuthorityPublisher::new(&self.publisher, &mut self.ledger);
         let batch = auth.prepare_batch(batch_id, deltas, children)?;
-        let encoded = fss_ledger::encode_batch(&batch).map_err(|e| {
-            ReferenceError::DurableLedger(Box::new(DurableLedgerError::BatchCodec(e)))
-        })?;
+        let encoded = fss_ledger::encode_batch(&batch)
+            .map_err(|e| ReferenceError::DurableLedger(Box::new(DurableLedgerError::Codec(e))))?;
         if encoded.len() > self.limits.journal_record_max_bytes as usize {
             return Err(ReferenceError::CapacityExceeded {
                 limit: "journal_record_max_bytes",
@@ -1537,6 +1536,43 @@ impl ReferenceDeployment {
             outcome_at,
             &mut self.alert_provider,
         )?;
+        Ok(receipt)
+    }
+
+    /// Prepares an authoritative reference alert effect in the deployment's durable effect journal.
+    pub fn prepare_alert_plan(
+        &mut self,
+        decision: &ReferencePolicyDecision,
+        event_receipt: &ReferenceEventReceipt,
+        operation_id: OperationId,
+        idempotency_key: IdempotencyKey,
+        obligation_id: ObligationId,
+        channel: String,
+        now: TimestampNs,
+    ) -> Result<ReferenceAlertPlan, ReferenceError> {
+        let params = crate::alert::PrepareAlertParams {
+            decision,
+            event_receipt,
+            authority: &self.ledger,
+            operation_id,
+            idempotency_key,
+            obligation_id,
+            channel,
+            now,
+        };
+        let plan = self.effects.prepare_alert(params)?;
+        Ok(plan)
+    }
+
+    /// Reconciles an alert effect through the deployment's durable effect journal and alert provider.
+    pub fn reconcile_alert(
+        &mut self,
+        plan: &ReferenceAlertPlan,
+        now: TimestampNs,
+    ) -> Result<Option<OperationReceipt>, ReferenceError> {
+        let receipt = self
+            .effects
+            .reconcile_alert(plan, now, &self.alert_provider)?;
         Ok(receipt)
     }
 

@@ -1,17 +1,14 @@
 #![forbid(unsafe_code)]
 //! Deterministic reference surveillance laboratory CLI.
 //!
-//! Laboratory scenarios use in-memory state tracking (`ledger.rs`).
-//! Canonical crash-safe append journaling and durable recovery are owned
-//! normatively by `fss_ledger::Journal` and `fss_ledger::DurableReferenceLedger`.
+//! Laboratory scenarios drive the real pure-Rust stack through [`ReferenceDeployment`](fss_reference::ReferenceDeployment)
+//! under a caller-given `--root` directory.
 
-mod digest;
-mod effects;
-mod ledger;
 mod scenario;
-mod spool;
 
 use std::env;
+use std::fs;
+use std::path::Path;
 use std::process::ExitCode;
 
 #[cfg(test)]
@@ -51,16 +48,50 @@ fn run_action(action: LabAction) -> Result<String, String> {
     match action {
         LabAction::Help => Ok(help_text().to_owned()),
         LabAction::List => Ok(render_scenario_list()),
-        LabAction::Matrix => render_matrix(),
-        LabAction::SelfTest => self_test(),
-        LabAction::Run { scenario } => {
+        LabAction::Matrix { root } => {
+            check_root_empty(&root)?;
+            render_matrix(&root)
+        }
+        LabAction::SelfTest { root } => {
+            check_root_empty(&root)?;
+            self_test(&root)
+        }
+        LabAction::Run { scenario, root } => {
+            check_root_empty(&root)?;
             let scenario = ScenarioKind::parse(&scenario).map_err(|error| error.to_string())?;
-            run_scenario(scenario)
+            run_scenario(scenario, &root)
                 .map(|report| report.render_json())
                 .map_err(|error| error.to_string())
         }
-        LabAction::Replay { scenario, repeat } => replay(&scenario, repeat),
+        LabAction::Replay {
+            scenario,
+            repeat,
+            root,
+        } => {
+            check_root_empty(&root)?;
+            replay(&scenario, repeat, &root)
+        }
     }
+}
+
+fn check_root_empty(root: &Path) -> Result<(), String> {
+    if root.exists() {
+        if !root.is_dir() {
+            return Err(format!(
+                "ERR-LAB-ROOT-NOT-EMPTY-001: root_not_empty: target root is not a directory: {}",
+                root.display()
+            ));
+        }
+        let read_dir = fs::read_dir(root).map_err(|err| format!("io error reading root: {err}"))?;
+        for entry in read_dir {
+            let _ = entry.map_err(|err| format!("io error reading root entry: {err}"))?;
+            return Err(format!(
+                "ERR-LAB-ROOT-NOT-EMPTY-001: root_not_empty: target root directory is not empty: {}",
+                root.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -88,14 +119,15 @@ fn render_scenario_list() -> String {
     output
 }
 
-fn render_matrix() -> Result<String, String> {
+fn render_matrix(root: &Path) -> Result<String, String> {
     let mut output = String::from("{\"schema\":\"fss.lab.matrix.v1\",\"reports\":[");
     for (index, scenario) in ALL_SCENARIOS.iter().copied().enumerate() {
         if index > 0 {
             output.push(',');
         }
+        let scenario_root = root.join(scenario.as_str());
         output.push_str(
-            &run_scenario(scenario)
+            &run_scenario(scenario, &scenario_root)
                 .map_err(|error| error.to_string())?
                 .render_json(),
         );
@@ -104,7 +136,7 @@ fn render_matrix() -> Result<String, String> {
     Ok(output)
 }
 
-fn replay(scenario: &str, repeat: usize) -> Result<String, String> {
+fn replay(scenario: &str, repeat: usize, root: &Path) -> Result<String, String> {
     if repeat < 2 {
         return Err("replay requires --repeat >= 2".to_owned());
     }
@@ -112,11 +144,13 @@ fn replay(scenario: &str, repeat: usize) -> Result<String, String> {
         return Err("replay repeat count exceeds the 10000-run bound".to_owned());
     }
     let scenario = ScenarioKind::parse(scenario).map_err(|error| error.to_string())?;
-    let expected = run_scenario(scenario)
+    let run_0_root = root.join("run-0");
+    let expected = run_scenario(scenario, &run_0_root)
         .map_err(|error| error.to_string())?
         .render_json();
     for iteration in 1..repeat {
-        let observed = run_scenario(scenario)
+        let run_i_root = root.join(format!("run-{iteration}"));
+        let observed = run_scenario(scenario, &run_i_root)
             .map_err(|error| error.to_string())?
             .render_json();
         if observed != expected {
@@ -126,8 +160,11 @@ fn replay(scenario: &str, repeat: usize) -> Result<String, String> {
             ));
         }
     }
-    let digest = digest::domain_digest("fss-lab-replay-transcript-v1", expected.as_bytes())
-        .map_err(|error| error.to_string())?;
+    let mut encoder = fss_core::CanonicalEncoder::new();
+    encoder.text("fss.lab.replay.transcript.v1");
+    encoder.bytes(expected.as_bytes());
+    let digest = fss_core::ContentDigest::sha256(&encoder.finish()).to_string();
+
     Ok(format!(
         "{{\"schema\":\"fss.lab.replay.v1\",\"scenario\":\"{}\",\"runs\":{},\"deterministic\":true,\"transcript_digest\":\"{}\",\"report\":{}}}",
         scenario.as_str(),
@@ -137,14 +174,17 @@ fn replay(scenario: &str, repeat: usize) -> Result<String, String> {
     ))
 }
 
-fn self_test() -> Result<String, String> {
-    let first = render_matrix()?;
-    let second = render_matrix()?;
+fn self_test(root: &Path) -> Result<String, String> {
+    let first = render_matrix(&root.join("test-1"))?;
+    let second = render_matrix(&root.join("test-2"))?;
     if first != second {
         return Err("scenario matrix is not deterministic".to_owned());
     }
-    let digest = digest::domain_digest("fss-lab-self-test-v1", first.as_bytes())
-        .map_err(|error| error.to_string())?;
+    let mut encoder = fss_core::CanonicalEncoder::new();
+    encoder.text("fss.lab.self_test.matrix.v1");
+    encoder.bytes(first.as_bytes());
+    let digest = fss_core::ContentDigest::sha256(&encoder.finish()).to_string();
+
     Ok(format!(
         "{{\"schema\":\"fss.lab.self_test.v1\",\"status\":\"pass\",\"scenario_count\":{},\"matrix_digest\":\"{}\"}}",
         ALL_SCENARIOS.len(),
@@ -154,7 +194,7 @@ fn self_test() -> Result<String, String> {
 
 const fn help_text() -> &'static str {
     "fss-lab — deterministic reference surveillance laboratory\n\n\
-USAGE\n  fss-lab list\n  fss-lab run <scenario>\n  fss-lab matrix\n  fss-lab replay <scenario> [--repeat N]\n  fss-lab self-test\n\n\
+USAGE\n  fss-lab list\n  fss-lab run <scenario> --root <dir>\n  fss-lab matrix --root <dir>\n  fss-lab replay <scenario> --root <dir> [--repeat N]\n  fss-lab self-test --root <dir>\n\n\
 SCENARIOS\n  quiet           complete coverage and a certified absence\n  raccoon         benign wildlife with no alert effect\n  intrusion       independently corroborated person and verified alert\n  sneaky          material person residual plus an observability gap\n  lost-ack        indeterminate alert dispatch resolved by reconciliation\n  corrupt-source  source corruption detected before evidence publication\n"
 }
 
@@ -162,40 +202,71 @@ SCENARIOS\n  quiet           complete coverage and a certified absence\n  raccoo
 mod tests {
     use super::{render_matrix, replay, run, self_test};
 
+    fn temp_root(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "fss-lab-main-test-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
     #[test]
     fn public_commands_are_deterministic() {
-        let first = render_matrix();
-        let second = render_matrix();
+        let root_mat = temp_root("mat");
+        let first = render_matrix(&root_mat.join("m1"));
+        let second = render_matrix(&root_mat.join("m2"));
         assert!(first.is_ok());
         assert!(second.is_ok());
         if let (Ok(f), Ok(s)) = (first, second) {
             assert_eq!(f, s);
         }
-        let st = self_test();
+        let root_st = temp_root("st");
+        let st = self_test(&root_st);
         assert!(st.is_ok());
         if let Ok(text) = st {
             assert!(text.contains("\"status\":\"pass\""));
         }
-        let rep = replay("intrusion", 10);
+        let root_rep = temp_root("rep");
+        let rep = replay("intrusion", 3, &root_rep);
         assert!(rep.is_ok());
         if let Ok(text) = rep {
             assert!(text.contains("\"deterministic\":true"));
         }
+        let _ = std::fs::remove_dir_all(&root_mat);
+        let _ = std::fs::remove_dir_all(&root_st);
+        let _ = std::fs::remove_dir_all(&root_rep);
     }
 
     #[test]
     fn replay_bounds_are_enforced() {
-        assert!(replay("quiet", 1).is_err());
-        assert!(replay("quiet", 10_001).is_err());
+        let root = temp_root("rep-bounds");
+        assert!(replay("quiet", 1, &root).is_err());
+        assert!(replay("quiet", 10_001, &root).is_err());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
     fn malformed_cli_is_rejected() {
-        assert!(run(vec!["run".to_owned(), "unknown".to_owned()]).is_err());
+        assert!(
+            run(vec![
+                "run".to_owned(),
+                "unknown".to_owned(),
+                "--root".to_owned(),
+                "/tmp/fss-lab-dummy".to_owned()
+            ])
+            .is_err()
+        );
         assert!(
             run(vec![
                 "replay".to_owned(),
                 "quiet".to_owned(),
+                "--root".to_owned(),
+                "/tmp/fss-lab-dummy".to_owned(),
                 "--repeat".to_owned(),
                 "x".to_owned()
             ])

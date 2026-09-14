@@ -862,6 +862,11 @@
       "id": "ERR-KSTATE-STABLE-ID-REUSED-001"
     },
     {
+      "description": "laboratory target root directory already contains files",
+      "guidance": "choose an empty or new target root directory",
+      "id": "ERR-LAB-ROOT-NOT-EMPTY-001"
+    },
+    {
       "description": "effect lease fence is not current",
       "guidance": "re-prepare under fresh lease",
       "id": "ERR-LEASE-STALE-001"
