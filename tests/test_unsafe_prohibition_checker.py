@@ -3779,6 +3779,612 @@ path = "benches/custom_b.rs"
             self.assertTrue(any("crates/member/benches/b_name.rs" in f for f in flagged_files), f"b_name.rs not flagged in {flagged_files}")
             self.assertTrue(any("crates/member/benches/custom_b.rs" in f for f in flagged_files), f"custom_b.rs not flagged in {flagged_files}")
 
+    def test_planted_nonmember_ed2015_lib_custom_name_legacy_src_flagged_kills_a7(self) -> None:
+        """Case A7: Non-member crate edition 2015 [lib] with name='foo' and no path flags src/foo.rs."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            root_manifest = tmp_root / "Cargo.toml"
+            root_manifest.write_text(
+                """[workspace]
+resolver = "2"
+members = ["crates/member"]
+exclude = ["extra/nonmember"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            m_dir = tmp_root / "crates" / "member"
+            (m_dir / "src").mkdir(parents=True)
+            (m_dir / "Cargo.toml").write_text(
+                """[package]
+name = "member"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+""",
+                encoding="utf-8",
+            )
+            (m_dir / "src" / "lib.rs").write_text("#![forbid(unsafe_code)]\npub fn ok() {}\n", encoding="utf-8")
+
+            nm_dir = tmp_root / "extra" / "nonmember"
+            (nm_dir / "src").mkdir(parents=True)
+            (nm_dir / "Cargo.toml").write_text(
+                """[package]
+name = "nonmember"
+version = "0.1.0"
+edition = "2015"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lib]
+name = "foo"
+""",
+                encoding="utf-8",
+            )
+            # Legacy src/foo.rs lacks the forbid attribute; src/lib.rs absent
+            (nm_dir / "src" / "foo.rs").write_text("pub fn f() {}\n", encoding="utf-8")
+            (nm_dir / "src" / "main.rs").write_text("#![forbid(unsafe_code)]\nfn main() {}\n", encoding="utf-8")
+
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
+            self.assertFalse(is_valid, "Legacy 2015 lib file src/foo.rs must be flagged when lacking the forbid attribute")
+            flagged = {f.file for f in findings if f.code == ERR_TARGET_ROOT_MISSING_FORBID}
+            self.assertTrue(any("extra/nonmember/src/foo.rs" in f for f in flagged), f"src/foo.rs not flagged: {flagged}")
+
+    def test_planted_nonmember_ed2015_lib_pkg_name_legacy_src_flagged_kills_a8(self) -> None:
+        """Case A8: Non-member crate edition 2015 [lib] with no name and no path flags src/{pkg_name}.rs."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            root_manifest = tmp_root / "Cargo.toml"
+            root_manifest.write_text(
+                """[workspace]
+resolver = "2"
+members = ["crates/member"]
+exclude = ["extra/nonmember"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            m_dir = tmp_root / "crates" / "member"
+            (m_dir / "src").mkdir(parents=True)
+            (m_dir / "Cargo.toml").write_text(
+                """[package]
+name = "member"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+""",
+                encoding="utf-8",
+            )
+            (m_dir / "src" / "lib.rs").write_text("#![forbid(unsafe_code)]\npub fn ok() {}\n", encoding="utf-8")
+
+            nm_dir = tmp_root / "extra" / "nonmember"
+            (nm_dir / "src").mkdir(parents=True)
+            (nm_dir / "Cargo.toml").write_text(
+                """[package]
+name = "nonmember"
+version = "0.1.0"
+edition = "2015"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lib]
+""",
+                encoding="utf-8",
+            )
+            # Legacy src/nonmember.rs lacks the forbid attribute; src/lib.rs absent
+            (nm_dir / "src" / "nonmember.rs").write_text("pub fn f() {}\n", encoding="utf-8")
+            (nm_dir / "src" / "main.rs").write_text("#![forbid(unsafe_code)]\nfn main() {}\n", encoding="utf-8")
+
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
+            self.assertFalse(is_valid, "Legacy 2015 lib file src/nonmember.rs must be flagged when lacking the forbid attribute")
+            flagged = {f.file for f in findings if f.code == ERR_TARGET_ROOT_MISSING_FORBID}
+            self.assertTrue(any("extra/nonmember/src/nonmember.rs" in f for f in flagged), f"src/nonmember.rs not flagged: {flagged}")
+
+    def test_planted_nonmember_ed2024_bin_candidate_order_flags_bin_foo_kills_b5(self) -> None:
+        """Case B5: Non-member crate edition 2024 [[bin]] name='foo' flags src/bin/foo.rs not src/foo.rs."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            root_manifest = tmp_root / "Cargo.toml"
+            root_manifest.write_text(
+                """[workspace]
+resolver = "2"
+members = ["crates/member"]
+exclude = ["extra/nonmember"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            m_dir = tmp_root / "crates" / "member"
+            (m_dir / "src").mkdir(parents=True)
+            (m_dir / "Cargo.toml").write_text(
+                """[package]
+name = "member"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+""",
+                encoding="utf-8",
+            )
+            (m_dir / "src" / "lib.rs").write_text("#![forbid(unsafe_code)]\npub fn ok() {}\n", encoding="utf-8")
+
+            nm_dir = tmp_root / "extra" / "nonmember"
+            (nm_dir / "src" / "bin").mkdir(parents=True)
+            (nm_dir / "Cargo.toml").write_text(
+                """[package]
+name = "nonmember"
+version = "0.1.0"
+edition = "2024"
+autobins = false
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[[bin]]
+name = "foo"
+""",
+                encoding="utf-8",
+            )
+            (nm_dir / "src" / "lib.rs").write_text("#![forbid(unsafe_code)]\npub fn ok() {}\n", encoding="utf-8")
+            # Both src/foo.rs and src/bin/foo.rs lack the forbid attribute. cargo metadata reports only
+            # src/bin/foo.rs for bin foo in edition 2024, so src/foo.rs must NOT be flagged (kills C8:
+            # the edition-2015 legacy src/{name}.rs candidate re-added for every edition).
+            (nm_dir / "src" / "foo.rs").write_text("fn main() {}\n", encoding="utf-8")
+            (nm_dir / "src" / "bin" / "foo.rs").write_text("fn main() {}\n", encoding="utf-8")
+
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
+            self.assertFalse(is_valid, "In edition 2024, src/bin/foo.rs is the built binary and must be flagged")
+            flagged = {f.file for f in findings if f.code == ERR_TARGET_ROOT_MISSING_FORBID}
+            self.assertTrue(any("extra/nonmember/src/bin/foo.rs" in f for f in flagged), f"src/bin/foo.rs not flagged: {flagged}")
+            self.assertFalse(any("extra/nonmember/src/foo.rs" in f for f in flagged), f"src/foo.rs should not be flagged in 2024: {flagged}")
+
+    def test_planted_nonmember_ed2015_bin_fallback_src_main_flagged_kills_b6(self) -> None:
+        """Case B6: Non-member crate edition 2015 [[bin]] name='foo' falls back to src/main.rs."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            root_manifest = tmp_root / "Cargo.toml"
+            root_manifest.write_text(
+                """[workspace]
+resolver = "2"
+members = ["crates/member"]
+exclude = ["extra/nonmember"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            m_dir = tmp_root / "crates" / "member"
+            (m_dir / "src").mkdir(parents=True)
+            (m_dir / "Cargo.toml").write_text(
+                """[package]
+name = "member"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+""",
+                encoding="utf-8",
+            )
+            (m_dir / "src" / "lib.rs").write_text("#![forbid(unsafe_code)]\npub fn ok() {}\n", encoding="utf-8")
+
+            nm_dir = tmp_root / "extra" / "nonmember"
+            (nm_dir / "src").mkdir(parents=True)
+            (nm_dir / "Cargo.toml").write_text(
+                """[package]
+name = "nonmember"
+version = "0.1.0"
+edition = "2015"
+autobins = false
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[[bin]]
+name = "foo"
+""",
+                encoding="utf-8",
+            )
+            (nm_dir / "src" / "lib.rs").write_text("#![forbid(unsafe_code)]\npub fn ok() {}\n", encoding="utf-8")
+            # src/main.rs lacks the forbid attribute
+            (nm_dir / "src" / "main.rs").write_text("fn main() {}\n", encoding="utf-8")
+
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
+            self.assertFalse(is_valid, "Legacy 2015 bin fallback src/main.rs must be flagged when lacking the forbid attribute")
+            flagged = {f.file for f in findings if f.code == ERR_TARGET_ROOT_MISSING_FORBID}
+            self.assertTrue(any("extra/nonmember/src/main.rs" in f for f in flagged), f"src/main.rs not flagged: {flagged}")
+
+    def test_planted_nonmember_ed2015_bin_fallback_src_bin_main_flagged_kills_b9(self) -> None:
+        """Case B9: Non-member crate edition 2015 [[bin]] name='foo' falls back to src/bin/main.rs."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            root_manifest = tmp_root / "Cargo.toml"
+            root_manifest.write_text(
+                """[workspace]
+resolver = "2"
+members = ["crates/member"]
+exclude = ["extra/nonmember"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            m_dir = tmp_root / "crates" / "member"
+            (m_dir / "src").mkdir(parents=True)
+            (m_dir / "Cargo.toml").write_text(
+                """[package]
+name = "member"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+""",
+                encoding="utf-8",
+            )
+            (m_dir / "src" / "lib.rs").write_text("#![forbid(unsafe_code)]\npub fn ok() {}\n", encoding="utf-8")
+
+            nm_dir = tmp_root / "extra" / "nonmember"
+            (nm_dir / "src" / "bin").mkdir(parents=True)
+            (nm_dir / "Cargo.toml").write_text(
+                """[package]
+name = "nonmember"
+version = "0.1.0"
+edition = "2015"
+autobins = false
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[[bin]]
+name = "foo"
+""",
+                encoding="utf-8",
+            )
+            (nm_dir / "src" / "lib.rs").write_text("#![forbid(unsafe_code)]\npub fn ok() {}\n", encoding="utf-8")
+            # src/bin/main.rs lacks the forbid attribute
+            (nm_dir / "src" / "bin" / "main.rs").write_text("fn main() {}\n", encoding="utf-8")
+
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
+            self.assertFalse(is_valid, "Legacy 2015 bin fallback src/bin/main.rs must be flagged when lacking the forbid attribute")
+            flagged = {f.file for f in findings if f.code == ERR_TARGET_ROOT_MISSING_FORBID}
+            self.assertTrue(any("extra/nonmember/src/bin/main.rs" in f for f in flagged), f"src/bin/main.rs not flagged: {flagged}")
+
+    def test_planted_nonmember_build_list_multiple_scripts_flagged_kills_f10(self) -> None:
+        """Case F10: Non-member crate with build = [a, b] flags each custom build script."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            root_manifest = tmp_root / "Cargo.toml"
+            root_manifest.write_text(
+                """[workspace]
+resolver = "2"
+members = ["crates/member"]
+exclude = ["extra/nonmember"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            m_dir = tmp_root / "crates" / "member"
+            (m_dir / "src").mkdir(parents=True)
+            (m_dir / "Cargo.toml").write_text(
+                """[package]
+name = "member"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+""",
+                encoding="utf-8",
+            )
+            (m_dir / "src" / "lib.rs").write_text("#![forbid(unsafe_code)]\npub fn ok() {}\n", encoding="utf-8")
+
+            nm_dir = tmp_root / "extra" / "nonmember"
+            (nm_dir / "src").mkdir(parents=True)
+            (nm_dir / "tools").mkdir(parents=True)
+            (nm_dir / "Cargo.toml").write_text(
+                """cargo-features = ["multiple-build-scripts"]
+
+[package]
+name = "nonmember"
+version = "0.1.0"
+edition = "2024"
+build = ["tools/a.rs", "tools/b.rs"]
+
+[lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            (nm_dir / "src" / "lib.rs").write_text("#![forbid(unsafe_code)]\npub fn ok() {}\n", encoding="utf-8")
+            (nm_dir / "tools" / "a.rs").write_text("fn main() {}\n", encoding="utf-8")
+            (nm_dir / "tools" / "b.rs").write_text("fn main() {}\n", encoding="utf-8")
+            # build.rs present but should not be treated as built
+            (nm_dir / "build.rs").write_text("fn main() {}\n", encoding="utf-8")
+
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
+            self.assertFalse(is_valid, "Multiple build scripts in build list must be flagged when lacking the forbid attribute")
+            flagged = {f.file for f in findings if f.code == ERR_TARGET_ROOT_MISSING_FORBID}
+            self.assertTrue(any("extra/nonmember/tools/a.rs" in f for f in flagged), f"tools/a.rs not flagged: {flagged}")
+            self.assertTrue(any("extra/nonmember/tools/b.rs" in f for f in flagged), f"tools/b.rs not flagged: {flagged}")
+            self.assertFalse(any("extra/nonmember/build.rs" in f for f in flagged), f"build.rs should not be treated as built: {flagged}")
+
+    def test_planted_member_build_list_stale_build_rs_not_flagged_kills_f10(self) -> None:
+        """Case F10 member: Member crate with build = [a, b] does not treat stale build.rs as built."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            root_manifest = tmp_root / "Cargo.toml"
+            root_manifest.write_text(
+                """cargo-features = ["multiple-build-scripts"]
+
+[workspace]
+resolver = "2"
+members = ["crates/member"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            m_dir = tmp_root / "crates" / "member"
+            (m_dir / "src").mkdir(parents=True)
+            (m_dir / "tools").mkdir(parents=True)
+            (m_dir / "Cargo.toml").write_text(
+                """cargo-features = ["multiple-build-scripts"]
+
+[package]
+name = "member"
+version = "0.1.0"
+edition = "2024"
+build = ["tools/a.rs", "tools/b.rs"]
+
+[lints]
+workspace = true
+""",
+                encoding="utf-8",
+            )
+            (m_dir / "src" / "lib.rs").write_text("#![forbid(unsafe_code)]\npub fn ok() {}\n", encoding="utf-8")
+            (m_dir / "tools" / "a.rs").write_text("#![forbid(unsafe_code)]\nfn main() {}\n", encoding="utf-8")
+            (m_dir / "tools" / "b.rs").write_text("#![forbid(unsafe_code)]\nfn main() {}\n", encoding="utf-8")
+            # build.rs lacks the forbid attribute, but cargo builds tools/a.rs and tools/b.rs, not build.rs
+            (m_dir / "build.rs").write_text("fn main() {}\n", encoding="utf-8")
+
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
+            self.assertTrue(is_valid, f"Expected valid when member build list overrides build.rs, got: {findings}")
+            self.assertEqual(findings, [])
+
+    def test_planted_nonmember_build_true_missing_file_flagged_kills_f9(self) -> None:
+        """Case F9: Non-member crate with build = true flags missing build.rs file."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            root_manifest = tmp_root / "Cargo.toml"
+            root_manifest.write_text(
+                """[workspace]
+resolver = "2"
+members = ["crates/member"]
+exclude = ["extra/nonmember"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            m_dir = tmp_root / "crates" / "member"
+            (m_dir / "src").mkdir(parents=True)
+            (m_dir / "Cargo.toml").write_text(
+                """[package]
+name = "member"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+""",
+                encoding="utf-8",
+            )
+            (m_dir / "src" / "lib.rs").write_text("#![forbid(unsafe_code)]\npub fn ok() {}\n", encoding="utf-8")
+
+            nm_dir = tmp_root / "extra" / "nonmember"
+            (nm_dir / "src").mkdir(parents=True)
+            (nm_dir / "Cargo.toml").write_text(
+                """[package]
+name = "nonmember"
+version = "0.1.0"
+edition = "2024"
+build = true
+
+[lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            (nm_dir / "src" / "lib.rs").write_text("#![forbid(unsafe_code)]\npub fn ok() {}\n", encoding="utf-8")
+            # build.rs is declared via build = true, but does not exist on disk
+
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
+            self.assertFalse(is_valid, "Missing build.rs when build=true must be flagged")
+            flagged = {f.file for f in findings if f.code == ERR_TARGET_ROOT_MISSING_FORBID}
+            self.assertTrue(any("extra/nonmember/build.rs" in f for f in flagged), f"build.rs not flagged: {flagged}")
+
+
+    def _c255k_nonmember_workspace(self, tmp_root: Path, nonmember_manifest: str, files: dict[str, str]) -> Path:
+        """Member crate (forbid-compliant) plus excluded non-member crate extra/nonmember with the given files."""
+        root_manifest = tmp_root / "Cargo.toml"
+        root_manifest.write_text(
+            """[workspace]
+resolver = "2"
+members = ["crates/member"]
+exclude = ["extra/nonmember"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+""",
+            encoding="utf-8",
+        )
+        m_dir = tmp_root / "crates" / "member"
+        (m_dir / "src").mkdir(parents=True)
+        (m_dir / "Cargo.toml").write_text(
+            """[package]
+name = "member"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+""",
+            encoding="utf-8",
+        )
+        (m_dir / "src" / "lib.rs").write_text("#![forbid(unsafe_code)]\npub fn ok() {}\n", encoding="utf-8")
+        nm_dir = tmp_root / "extra" / "nonmember"
+        nm_dir.mkdir(parents=True)
+        (nm_dir / "Cargo.toml").write_text(nonmember_manifest, encoding="utf-8")
+        for rel, body in files.items():
+            (nm_dir / rel).parent.mkdir(parents=True, exist_ok=True)
+            (nm_dir / rel).write_text(body, encoding="utf-8")
+        return root_manifest
+
+    def test_planted_nonmember_ed2015_lib_present_bin_foo_flags_src_main_kills_c2(self) -> None:
+        """Kills C2 (break restored in the [[bin]] candidate loop).
+
+        Edition 2015, autobins = false, [[bin]] name = "foo" (no path), with src/lib.rs present.
+        cargo metadata: bin foo -> src/main.rs (the legacy src/{name}.rs applies only without a lib).
+        The checker also visits src/foo.rs (compliant here); a break after that first hit hides src/main.rs.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            root_manifest = self._c255k_nonmember_workspace(
+                tmp_root,
+                """[package]
+name = "nonmember"
+version = "0.1.0"
+edition = "2015"
+autobins = false
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[[bin]]
+name = "foo"
+""",
+                {
+                    "src/lib.rs": "#![forbid(unsafe_code)]\npub fn ok() {}\n",
+                    "src/foo.rs": "#![forbid(unsafe_code)]\nfn main() {}\n",
+                    "src/main.rs": "fn main() {}\n",
+                },
+            )
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
+            self.assertFalse(is_valid, "src/main.rs is the built bin foo and lacks the forbid attribute; must fail")
+            flagged = {f.file for f in findings if f.code == ERR_TARGET_ROOT_MISSING_FORBID}
+            self.assertTrue(any("extra/nonmember/src/main.rs" in f for f in flagged), f"src/main.rs not flagged: {flagged}")
+
+    def test_planted_nonmember_no_edition_lib_foo_legacy_src_flagged_kills_c6(self) -> None:
+        """Kills C6 (a missing edition key treated as 2021).
+
+        No edition key, [lib] name = "foo" (no path), no src/lib.rs. cargo treats a missing edition as
+        2015; cargo metadata: lib foo -> src/foo.rs, which lacks the forbid attribute.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            root_manifest = self._c255k_nonmember_workspace(
+                tmp_root,
+                """[package]
+name = "nonmember"
+version = "0.1.0"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lib]
+name = "foo"
+""",
+                {
+                    "src/foo.rs": "pub fn f() {}\n",
+                    "src/main.rs": "#![forbid(unsafe_code)]\nfn main() {}\n",
+                },
+            )
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
+            self.assertFalse(is_valid, "No edition key means 2015: legacy lib src/foo.rs must be flagged")
+            flagged = {f.file for f in findings if f.code == ERR_TARGET_ROOT_MISSING_FORBID}
+            self.assertTrue(any("extra/nonmember/src/foo.rs" in f for f in flagged), f"src/foo.rs not flagged: {flagged}")
+
+    def test_planted_nonmember_no_edition_bin_foo_legacy_src_main_flagged_kills_c6_h3(self) -> None:
+        """Kills C6 via H3 (a missing edition key treated as 2021).
+
+        No edition key, autobins = false, [[bin]] name = "foo" (no path), src/lib.rs present.
+        cargo metadata (edition 2015): bin foo -> src/main.rs, which lacks the forbid attribute.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            root_manifest = self._c255k_nonmember_workspace(
+                tmp_root,
+                """[package]
+name = "nonmember"
+version = "0.1.0"
+autobins = false
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[[bin]]
+name = "foo"
+""",
+                {
+                    "src/lib.rs": "#![forbid(unsafe_code)]\npub fn ok() {}\n",
+                    "src/main.rs": "fn main() {}\n",
+                },
+            )
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
+            self.assertFalse(is_valid, "No edition key means 2015: bin foo falls back to src/main.rs, must be flagged")
+            flagged = {f.file for f in findings if f.code == ERR_TARGET_ROOT_MISSING_FORBID}
+            self.assertTrue(any("extra/nonmember/src/main.rs" in f for f in flagged), f"src/main.rs not flagged: {flagged}")
+
+    def test_planted_nonmember_ed2015_hyphen_pkg_lib_legacy_underscore_src_flagged_kills_c7(self) -> None:
+        """Kills C7 (legacy lib name keeps hyphens).
+
+        Edition 2015 package "my-crate", [lib] with no name and no path, no src/lib.rs.
+        cargo metadata: lib my_crate -> src/my_crate.rs (hyphens become underscores), lacking the attribute.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            root_manifest = self._c255k_nonmember_workspace(
+                tmp_root,
+                """[package]
+name = "my-crate"
+version = "0.1.0"
+edition = "2015"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lib]
+""",
+                {
+                    "src/my_crate.rs": "pub fn f() {}\n",
+                    "src/main.rs": "#![forbid(unsafe_code)]\nfn main() {}\n",
+                },
+            )
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
+            self.assertFalse(is_valid, "Legacy lib src/my_crate.rs (from package my-crate) must be flagged")
+            flagged = {f.file for f in findings if f.code == ERR_TARGET_ROOT_MISSING_FORBID}
+            self.assertTrue(any("extra/nonmember/src/my_crate.rs" in f for f in flagged), f"src/my_crate.rs not flagged: {flagged}")
+
 
 if __name__ == "__main__":
     unittest.main()
