@@ -829,6 +829,7 @@ impl From<ReplayAdapterError> for JpegSplitError {
             ReplayAdapterError::Reference(e) => Self::Reference(std::sync::Arc::new(e)),
             ReplayAdapterError::Ledger(e) => Self::Ledger(std::sync::Arc::new(e)),
             ReplayAdapterError::DurableLedger(e) => Self::DurableLedger(std::sync::Arc::new(e)),
+            ReplayAdapterError::Unauthorized { reason } => Self::BoundExceeded(reason),
         }
     }
 }
