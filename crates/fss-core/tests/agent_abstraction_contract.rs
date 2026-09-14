@@ -7,17 +7,16 @@ use std::collections::BTreeSet;
 use std::error::Error;
 use std::str::FromStr;
 
-use fss_core::abstraction::{
-    AuthorityAnchor, AuthorityContext, CurrentAnchorSource,
-};
+use fss_core::abstraction::{AuthorityAnchor, AuthorityContext, CurrentAnchorSource};
 use fss_core::belief::BeliefInterval;
 use fss_core::{
     AGENT_ABSTRACTION_FREEZE_DIGEST, AGENT_ABSTRACTION_GENERATION, AgentAbstractionLayer,
     CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, Completeness,
     ContentDigest, ContractError, CoverageContinuity, CoverageStopReason, CoverageWitness,
     DerivedBelief, DerivedBeliefParams, DigestAlgorithm, Generation, KnowledgeState, LedgerAnchor,
-    NegativeReadClaim, NegativeReadOutcome, Plane, ProvenanceClass, SourceEvidenceParams,
-    SourceEvidenceRecord, TimestampNs, WorldFact, WorldFactKind, evaluate_negative_read,
+    LedgerSnapshot, NegativeReadClaim, NegativeReadOutcome, Plane, ProvenanceClass,
+    SourceEvidenceParams, SourceEvidenceRecord, TimestampNs, WorldFact, WorldFactKind,
+    evaluate_negative_read,
 };
 
 #[test]
@@ -349,6 +348,14 @@ fn test_agent_abstraction_layer_canonical_roundtrip() -> Result<(), Box<dyn Erro
 
 fn sample_anchor() -> LedgerAnchor {
     LedgerAnchor::genesis("site:us-east:primary")
+}
+
+fn sample_authority(anchor: LedgerAnchor) -> Result<AuthorityAnchor, ContractError> {
+    let head = LedgerSnapshot {
+        anchor,
+        objects: std::collections::BTreeMap::new(),
+    };
+    AuthorityAnchor::from_committed_head(&head)
 }
 
 fn sample_uncertainty() -> Result<BeliefInterval, Box<dyn Error>> {
@@ -986,7 +993,7 @@ fn test_planted_negative_world_fact_validation_failures() -> Result<(), Box<dyn 
 #[test]
 fn test_negative_read_claim_requires_coverage_witness() -> Result<(), Box<dyn Error>> {
     let anchor = sample_anchor();
-    let authority = AuthorityAnchor::from_authority(anchor.clone())?;
+    let authority = sample_authority(anchor.clone())?;
     let mut target_domain = BTreeSet::new();
     target_domain.insert("zone:north_perimeter".to_string());
 
@@ -1011,7 +1018,7 @@ fn test_negative_read_claim_requires_coverage_witness() -> Result<(), Box<dyn Er
 #[test]
 fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<dyn Error>> {
     let anchor = sample_anchor();
-    let authority = AuthorityAnchor::from_authority(anchor.clone())?;
+    let authority = sample_authority(anchor.clone())?;
     let mut target_domain = BTreeSet::new();
     target_domain.insert("zone:north_perimeter".to_string());
 
@@ -1208,7 +1215,7 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
     );
     let mut newer_authority_anchor = anchor.clone();
     newer_authority_anchor.commit_sequence += 5;
-    let newer_authority = AuthorityAnchor::from_authority(newer_authority_anchor)?;
+    let newer_authority = sample_authority(newer_authority_anchor)?;
     let claim = NegativeReadClaim {
         claim_id: "neg_claim:stale_sequence".to_string(),
         query_predicate: "no_unauthorized_intrusion".to_string(),
@@ -1226,7 +1233,7 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
     // Witness and claim match, same lineage and sequence, but different state root from authority.
     let mut forked_authority_anchor = anchor.clone();
     forked_authority_anchor.state_root = ContentDigest::sha256(b"forked_authority_state_root");
-    let forked_authority = AuthorityAnchor::from_authority(forked_authority_anchor)?;
+    let forked_authority = sample_authority(forked_authority_anchor)?;
     let witness = sample_witness(
         "no_unauthorized_intrusion",
         &["zone:north_perimeter"],
@@ -1236,12 +1243,120 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
         claim_id: "neg_claim:divergent_state_root".to_string(),
         query_predicate: "no_unauthorized_intrusion".to_string(),
         anchor: anchor.clone(),
-        target_domain,
+        target_domain: target_domain.clone(),
         target_generation: 1,
-        coverage_witness: Some(witness),
+        coverage_witness: Some(witness.clone()),
     };
     let Err(err) = evaluate_negative_read(&claim, &forked_authority) else {
         return Err("expected error for divergent state root (RM8)".into());
+    };
+    assert_eq!(err, ContractError::StaleAnchor);
+
+    // 12. (Check 4, RM8f) Future witness anchor (ledger_epoch ahead of current)
+    let mut future_epoch_anchor = anchor.clone();
+    future_epoch_anchor.ledger_epoch += 1;
+    let mut future_witness = witness.clone();
+    future_witness.anchor = future_epoch_anchor.clone();
+    let claim = NegativeReadClaim {
+        claim_id: "neg_claim:future_ledger_epoch".to_string(),
+        query_predicate: "no_unauthorized_intrusion".to_string(),
+        anchor: future_epoch_anchor,
+        target_domain: target_domain.clone(),
+        target_generation: 1,
+        coverage_witness: Some(future_witness),
+    };
+    let Err(err) = evaluate_negative_read(&claim, &authority) else {
+        return Err("expected error for future ledger epoch (RM8f)".into());
+    };
+    assert_eq!(err, ContractError::StaleAnchor);
+
+    // 13. (Check 4, RM8f) Future witness anchor (commit_sequence ahead of current)
+    let mut future_seq_anchor = anchor.clone();
+    future_seq_anchor.commit_sequence += 1;
+    let mut future_witness = witness.clone();
+    future_witness.anchor = future_seq_anchor.clone();
+    let claim = NegativeReadClaim {
+        claim_id: "neg_claim:future_commit_sequence".to_string(),
+        query_predicate: "no_unauthorized_intrusion".to_string(),
+        anchor: future_seq_anchor,
+        target_domain: target_domain.clone(),
+        target_generation: 1,
+        coverage_witness: Some(future_witness),
+    };
+    let Err(err) = evaluate_negative_read(&claim, &authority) else {
+        return Err("expected error for future commit sequence (RM8f)".into());
+    };
+    assert_eq!(err, ContractError::StaleAnchor);
+
+    // 14. (Check 4, RM8p) Divergent policy_epoch from authority
+    let mut divergent_policy_anchor = anchor.clone();
+    divergent_policy_anchor.policy_epoch += 1;
+    let mut divergent_policy_witness = witness.clone();
+    divergent_policy_witness.anchor = divergent_policy_anchor.clone();
+    let claim = NegativeReadClaim {
+        claim_id: "neg_claim:divergent_policy_epoch".to_string(),
+        query_predicate: "no_unauthorized_intrusion".to_string(),
+        anchor: divergent_policy_anchor,
+        target_domain: target_domain.clone(),
+        target_generation: 1,
+        coverage_witness: Some(divergent_policy_witness),
+    };
+    let Err(err) = evaluate_negative_read(&claim, &authority) else {
+        return Err("expected error for divergent policy epoch (RM8p)".into());
+    };
+    assert_eq!(err, ContractError::StaleAnchor);
+
+    // 15. (Check 4, RM8) Divergent privacy_epoch from authority
+    let mut divergent_privacy_anchor = anchor.clone();
+    divergent_privacy_anchor.privacy_epoch += 1;
+    let mut divergent_privacy_witness = witness.clone();
+    divergent_privacy_witness.anchor = divergent_privacy_anchor.clone();
+    let claim = NegativeReadClaim {
+        claim_id: "neg_claim:divergent_privacy_epoch".to_string(),
+        query_predicate: "no_unauthorized_intrusion".to_string(),
+        anchor: divergent_privacy_anchor,
+        target_domain: target_domain.clone(),
+        target_generation: 1,
+        coverage_witness: Some(divergent_privacy_witness),
+    };
+    let Err(err) = evaluate_negative_read(&claim, &authority) else {
+        return Err("expected error for divergent privacy epoch (RM8)".into());
+    };
+    assert_eq!(err, ContractError::StaleAnchor);
+
+    // 16. (Check 4, RM8) Divergent schema_epoch from authority
+    let mut divergent_schema_anchor = anchor.clone();
+    divergent_schema_anchor.schema_epoch += 1;
+    let mut divergent_schema_witness = witness.clone();
+    divergent_schema_witness.anchor = divergent_schema_anchor.clone();
+    let claim = NegativeReadClaim {
+        claim_id: "neg_claim:divergent_schema_epoch".to_string(),
+        query_predicate: "no_unauthorized_intrusion".to_string(),
+        anchor: divergent_schema_anchor,
+        target_domain: target_domain.clone(),
+        target_generation: 1,
+        coverage_witness: Some(divergent_schema_witness),
+    };
+    let Err(err) = evaluate_negative_read(&claim, &authority) else {
+        return Err("expected error for divergent schema epoch (RM8)".into());
+    };
+    assert_eq!(err, ContractError::StaleAnchor);
+
+    // 17. (Check 4, RM8) Divergent adapter_registry_epoch from authority
+    let mut divergent_adapter_anchor = anchor.clone();
+    divergent_adapter_anchor.adapter_registry_epoch += 1;
+    let mut divergent_adapter_witness = witness;
+    divergent_adapter_witness.anchor = divergent_adapter_anchor.clone();
+    let claim = NegativeReadClaim {
+        claim_id: "neg_claim:divergent_adapter_epoch".to_string(),
+        query_predicate: "no_unauthorized_intrusion".to_string(),
+        anchor: divergent_adapter_anchor,
+        target_domain,
+        target_generation: 1,
+        coverage_witness: Some(divergent_adapter_witness),
+    };
+    let Err(err) = evaluate_negative_read(&claim, &authority) else {
+        return Err("expected error for divergent adapter registry epoch (RM8)".into());
     };
     assert_eq!(err, ContractError::StaleAnchor);
 
@@ -1251,7 +1366,7 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
 #[test]
 fn test_negative_read_outcome_from_witness_direct_contracts() -> Result<(), Box<dyn Error>> {
     let anchor = sample_anchor();
-    let authority = AuthorityAnchor::from_authority(anchor.clone())?;
+    let authority = sample_authority(anchor.clone())?;
     let mut target_domain = BTreeSet::new();
     target_domain.insert("zone:north_perimeter".to_string());
 
@@ -1312,7 +1427,7 @@ fn test_negative_read_outcome_from_witness_direct_contracts() -> Result<(), Box<
     // 4. RM3 in from_witness: site lineage mismatch
     let mut other_site_anchor = anchor.clone();
     other_site_anchor.site_lineage = "site:other".to_string();
-    let other_site_authority = AuthorityAnchor::from_authority(other_site_anchor)?;
+    let other_site_authority = sample_authority(other_site_anchor)?;
     let res = NegativeReadOutcome::from_witness(
         "neg_claim:rm3_direct",
         "no_unauthorized_intrusion",
@@ -1327,7 +1442,7 @@ fn test_negative_read_outcome_from_witness_direct_contracts() -> Result<(), Box<
     // 5. RM4 in from_witness: strictly older sequence
     let mut newer_anchor = anchor.clone();
     newer_anchor.commit_sequence += 1;
-    let newer_authority = AuthorityAnchor::from_authority(newer_anchor)?;
+    let newer_authority = sample_authority(newer_anchor)?;
     let res = NegativeReadOutcome::from_witness(
         "neg_claim:rm4_direct",
         "no_unauthorized_intrusion",
@@ -1342,7 +1457,7 @@ fn test_negative_read_outcome_from_witness_direct_contracts() -> Result<(), Box<
     // 6. RM8 in from_witness: divergent state root at same sequence
     let mut forked_anchor = anchor.clone();
     forked_anchor.state_root = ContentDigest::sha256(b"forked_anchor_state_root");
-    let forked_authority = AuthorityAnchor::from_authority(forked_anchor)?;
+    let forked_authority = sample_authority(forked_anchor)?;
     let res = NegativeReadOutcome::from_witness(
         "neg_claim:rm8_direct",
         "no_unauthorized_intrusion",
@@ -1350,6 +1465,102 @@ fn test_negative_read_outcome_from_witness_direct_contracts() -> Result<(), Box<
         target_domain.clone(),
         &witness,
         &forked_authority,
+        1,
+    );
+    assert!(matches!(res, Err(ContractError::StaleAnchor)));
+
+    // 6b. RM8f in from_witness: future witness anchor (ledger_epoch ahead of current)
+    let mut future_epoch_anchor = anchor.clone();
+    future_epoch_anchor.ledger_epoch += 1;
+    let mut future_witness = witness.clone();
+    future_witness.anchor = future_epoch_anchor.clone();
+    let res = NegativeReadOutcome::from_witness(
+        "neg_claim:rm8f_future_epoch",
+        "no_unauthorized_intrusion",
+        future_epoch_anchor,
+        target_domain.clone(),
+        &future_witness,
+        &authority,
+        1,
+    );
+    assert!(matches!(res, Err(ContractError::StaleAnchor)));
+
+    // 6c. RM8f in from_witness: future witness anchor (commit_sequence ahead of current)
+    let mut future_seq_anchor = anchor.clone();
+    future_seq_anchor.commit_sequence += 1;
+    let mut future_witness = witness.clone();
+    future_witness.anchor = future_seq_anchor.clone();
+    let res = NegativeReadOutcome::from_witness(
+        "neg_claim:rm8f_future_seq",
+        "no_unauthorized_intrusion",
+        future_seq_anchor,
+        target_domain.clone(),
+        &future_witness,
+        &authority,
+        1,
+    );
+    assert!(matches!(res, Err(ContractError::StaleAnchor)));
+
+    // 6d. RM8p in from_witness: divergent policy_epoch from authority
+    let mut divergent_policy_anchor = anchor.clone();
+    divergent_policy_anchor.policy_epoch += 1;
+    let mut divergent_policy_witness = witness.clone();
+    divergent_policy_witness.anchor = divergent_policy_anchor.clone();
+    let res = NegativeReadOutcome::from_witness(
+        "neg_claim:rm8p_policy_epoch",
+        "no_unauthorized_intrusion",
+        divergent_policy_anchor,
+        target_domain.clone(),
+        &divergent_policy_witness,
+        &authority,
+        1,
+    );
+    assert!(matches!(res, Err(ContractError::StaleAnchor)));
+
+    // 6e. RM8 in from_witness: divergent privacy_epoch from authority
+    let mut divergent_privacy_anchor = anchor.clone();
+    divergent_privacy_anchor.privacy_epoch += 1;
+    let mut divergent_privacy_witness = witness.clone();
+    divergent_privacy_witness.anchor = divergent_privacy_anchor.clone();
+    let res = NegativeReadOutcome::from_witness(
+        "neg_claim:rm8_privacy_epoch",
+        "no_unauthorized_intrusion",
+        divergent_privacy_anchor,
+        target_domain.clone(),
+        &divergent_privacy_witness,
+        &authority,
+        1,
+    );
+    assert!(matches!(res, Err(ContractError::StaleAnchor)));
+
+    // 6f. RM8 in from_witness: divergent schema_epoch from authority
+    let mut divergent_schema_anchor = anchor.clone();
+    divergent_schema_anchor.schema_epoch += 1;
+    let mut divergent_schema_witness = witness.clone();
+    divergent_schema_witness.anchor = divergent_schema_anchor.clone();
+    let res = NegativeReadOutcome::from_witness(
+        "neg_claim:rm8_schema_epoch",
+        "no_unauthorized_intrusion",
+        divergent_schema_anchor,
+        target_domain.clone(),
+        &divergent_schema_witness,
+        &authority,
+        1,
+    );
+    assert!(matches!(res, Err(ContractError::StaleAnchor)));
+
+    // 6g. RM8 in from_witness: divergent adapter_registry_epoch from authority
+    let mut divergent_adapter_anchor = anchor.clone();
+    divergent_adapter_anchor.adapter_registry_epoch += 1;
+    let mut divergent_adapter_witness = witness.clone();
+    divergent_adapter_witness.anchor = divergent_adapter_anchor.clone();
+    let res = NegativeReadOutcome::from_witness(
+        "neg_claim:rm8_adapter_epoch",
+        "no_unauthorized_intrusion",
+        divergent_adapter_anchor,
+        target_domain.clone(),
+        &divergent_adapter_witness,
+        &authority,
         1,
     );
     assert!(matches!(res, Err(ContractError::StaleAnchor)));
@@ -1381,14 +1592,24 @@ fn test_negative_read_outcome_from_witness_direct_contracts() -> Result<(), Box<
 }
 
 #[test]
-fn test_authority_context_and_contract_basis_as_current_anchor_source() -> Result<(), Box<dyn Error>> {
+fn test_authority_context_as_current_anchor_source() -> Result<(), Box<dyn Error>> {
     let anchor = sample_anchor();
     let basis = fss_core::contract_basis::reference_contract_basis();
+    let head = LedgerSnapshot {
+        anchor: anchor.clone(),
+        objects: std::collections::BTreeMap::new(),
+    };
+    let authority = AuthorityAnchor::from_committed_head(&head)?;
 
-    // 1. AuthorityContext implements CurrentAnchorSource
-    let auth_ctx = AuthorityContext::new(&basis, anchor.clone())?;
+    // 1. AuthorityContext constructed from AuthorityAnchor implements CurrentAnchorSource
+    let auth_ctx = AuthorityContext::new(&basis, &authority);
     assert_eq!(auth_ctx.current_anchor(), &anchor);
     assert_eq!(auth_ctx.contract_basis(), &basis);
+
+    // 2. AuthorityContext constructed from committed head implements CurrentAnchorSource
+    let auth_ctx_head = AuthorityContext::from_committed_head(&basis, &head)?;
+    assert_eq!(auth_ctx_head.current_anchor(), &anchor);
+    assert_eq!(auth_ctx_head.contract_basis(), &basis);
 
     let witness = sample_witness(
         "no_unauthorized_intrusion",
@@ -1409,11 +1630,8 @@ fn test_authority_context_and_contract_basis_as_current_anchor_source() -> Resul
     let outcome = evaluate_negative_read(&claim, &auth_ctx)?;
     assert_eq!(outcome.claim_id(), "neg_claim:auth_ctx_ok");
 
-    // 2. (&ContractBasis, &LedgerAnchor) tuple implements CurrentAnchorSource
-    let tuple_source = (&basis, &anchor);
-    assert_eq!(tuple_source.current_anchor(), &anchor);
-    let outcome_tuple = evaluate_negative_read(&claim, &tuple_source)?;
-    assert_eq!(outcome_tuple.claim_id(), "neg_claim:auth_ctx_ok");
+    let outcome_head = evaluate_negative_read(&claim, &auth_ctx_head)?;
+    assert_eq!(outcome_head.claim_id(), "neg_claim:auth_ctx_ok");
 
     Ok(())
 }
@@ -1421,7 +1639,7 @@ fn test_authority_context_and_contract_basis_as_current_anchor_source() -> Resul
 #[test]
 fn test_negative_read_claim_with_certified_absence_succeeds() -> Result<(), Box<dyn Error>> {
     let anchor = sample_anchor();
-    let authority = AuthorityAnchor::from_authority(anchor.clone())?;
+    let authority = sample_authority(anchor.clone())?;
     let mut target_domain = BTreeSet::new();
     target_domain.insert("zone:north_perimeter".to_string());
     target_domain.insert("zone:east_perimeter".to_string());
@@ -1481,7 +1699,7 @@ fn test_negative_read_claim_with_certified_absence_succeeds() -> Result<(), Box<
 #[test]
 fn test_negative_read_outcome_decode_invariants() -> Result<(), Box<dyn Error>> {
     let anchor = sample_anchor();
-    let authority = AuthorityAnchor::from_authority(anchor.clone())?;
+    let authority = sample_authority(anchor.clone())?;
     let witness = sample_witness(
         "no_unauthorized_intrusion",
         &["zone:a", "zone:b"],
@@ -1617,6 +1835,24 @@ fn test_negative_read_outcome_decode_invariants() -> Result<(), Box<dyn Error>> 
         return Err("expected error for mismatched witness digest".into());
     };
     assert_eq!(err, ContractError::CoverageUncertified);
+
+    // 8. Trailing unconsumed bytes rejected by ensure_finished()
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text("neg_claim:001");
+    encoder.text("no_unauthorized_intrusion");
+    anchor.encode_canonical(&mut encoder);
+    encoder.u64(1);
+    encoder.text("zone:a");
+    encoder.digest(witness_digest);
+    encoder.u64(1);
+    encoder.u8(0xFF); // trailing byte!
+    let bytes = encoder.finish();
+
+    let mut decoder = CanonicalDecoder::new(&bytes);
+    let Err(err) = NegativeReadOutcome::decode_verified(&mut decoder, &witness, &authority) else {
+        return Err("expected error for trailing bytes in decode_verified".into());
+    };
+    assert_eq!(err, ContractError::NonCanonicalOrdering);
 
     Ok(())
 }
