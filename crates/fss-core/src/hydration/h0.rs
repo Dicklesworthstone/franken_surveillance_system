@@ -520,7 +520,6 @@ impl H0Identity {
 fn map_decode_err(err: ContractError) -> HydrationError {
     match err {
         ContractError::InvalidDigest => HydrationError::Truncated,
-        ContractError::CountBoundExceeded => HydrationError::CapacityExceeded,
         other => HydrationError::Contract(other),
     }
 }

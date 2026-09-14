@@ -2932,6 +2932,10 @@ pub enum ContractError {
     LaboratoryExpansionSubjectDigestMismatch,
     /// An H4 laboratory expansion applied transform disagrees with the bound handle (AGT-H4).
     LaboratoryExpansionTransformMismatch,
+    /// Privacy class is unrecognized or unauthorized for hydration artifact.
+    InvalidPrivacyClass,
+    /// Redaction transform is unrecognized or incompatible with the decision artifact kind.
+    InvalidRedactionTransform,
 }
 
 impl ContractError {
@@ -3056,6 +3060,8 @@ impl ContractError {
                 "laboratory_expansion_subject_digest_mismatch"
             }
             Self::LaboratoryExpansionTransformMismatch => "laboratory_expansion_transform_mismatch",
+            Self::InvalidPrivacyClass => "invalid_privacy_class",
+            Self::InvalidRedactionTransform => "invalid_redaction_transform",
         }
     }
 }

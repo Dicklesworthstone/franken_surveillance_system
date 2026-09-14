@@ -24,8 +24,8 @@ use fss_core::{
     GraphNeighborhoodArtifact, H2_CONTENT, H2_LEVEL_ID, H2_LEVEL_NAME, H2_OWNER, H2_SCHEMA,
     H2DecisionArtifact, H2DecisionArtifactParams, HandleAvailability, HydrationArtifact,
     HydrationError, HydrationLevel, KeyframeArtifact, LaboratoryAccess, LedgerAnchor,
-    MAX_CANONICAL_BYTES_LEN, RedactedRegion, RedactionTransform, SemanticHandle,
-    SemanticHandleSpec, TimestampNs, TrajectoryArtifact, TrajectoryWaypoint,
+    MAX_CANONICAL_BYTES_LEN, RedactedRegion, RedactionTransform, RetainedProvenance,
+    SemanticHandle, SemanticHandleSpec, TimestampNs, TrajectoryArtifact, TrajectoryWaypoint,
     is_registered_redaction_transform,
 };
 
@@ -136,8 +136,14 @@ fn sample_h2_params(
     artifact_kind: DecisionArtifactKind,
 ) -> Result<H2DecisionArtifactParams, Box<dyn Error>> {
     let payload = b"authorized-redacted-artifact-payload-bytes".to_vec();
+    let payload_digest = ContentDigest::sha256(&payload);
+    let subject_digest = sample_digest(0xbb);
+    let retained_root = sample_digest(0xcc);
     let mut proof_roots = BTreeSet::new();
-    proof_roots.insert(sample_digest(0xbb));
+    proof_roots.insert(payload_digest);
+    proof_roots.insert(subject_digest);
+    proof_roots.insert(retained_root);
+    let retained_provenance = RetainedProvenance::new([retained_root])?;
 
     let transform = match &artifact_kind {
         DecisionArtifactKind::Keyframe(_) | DecisionArtifactKind::Crop(_) => {
@@ -151,12 +157,13 @@ fn sample_h2_params(
     Ok(H2DecisionArtifactParams {
         handle_id: "semantic-handle:sha256:h2-test-handle".to_string(),
         subject_id: "evidence:cam-stream-01".to_string(),
-        subject_digest: sample_digest(0xbb),
+        subject_digest,
         artifact_kind,
         payload,
         proof_roots,
+        retained_provenance,
         completeness: Completeness::Complete,
-        privacy_class: "privacy:redacted_operational".to_string(),
+        privacy_class: "private:property".to_string(),
         applied_redaction_transform: transform.to_string(),
         authorization_grant_id: "grant:auth-oper-8891".to_string(),
         anchor: sample_anchor(42),
@@ -534,7 +541,7 @@ fn test_h2_planted_bypasses_refusal() -> Result<(), Box<dyn Error>> {
         Err(HydrationError::Contract(ContractError::EvidenceRequired))
     ));
 
-    // 4. Proof roots must bind subject digest
+    // 4. Proof roots must bind subject digest, payload digest, and non-empty subset of retained_provenance
     let p3 = sample_h2_params(sample_keyframe()?)?;
     let artifact3 = H2DecisionArtifact::new(p3)?;
     assert!(
@@ -548,21 +555,51 @@ fn test_h2_planted_bypasses_refusal() -> Result<(), Box<dyn Error>> {
             .contains(&artifact3.payload_digest())
     );
 
+    // Empty retained_provenance is refused with EvidenceRequired
+    let mut p_no_ret = sample_h2_params(sample_keyframe()?)?;
+    p_no_ret.retained_provenance = RetainedProvenance::default();
+    let err_no_ret = H2DecisionArtifact::new(p_no_ret);
+    assert!(matches!(
+        err_no_ret,
+        Err(HydrationError::Contract(ContractError::EvidenceRequired))
+    ));
+
     // Proof roots: missing subject digest is refused
     let mut p_no_subj = sample_h2_params(sample_keyframe()?)?;
-    p_no_subj.proof_roots = BTreeSet::new(); // does not contain subject_digest
+    p_no_subj.proof_roots.remove(&p_no_subj.subject_digest);
     let err_no_subj = H2DecisionArtifact::new(p_no_subj);
     assert!(matches!(
         err_no_subj,
         Err(HydrationError::Contract(ContractError::EvidenceRequired))
     ));
 
-    // Proof roots: arbitrary extra root is refused
+    // Proof roots: missing payload digest is refused
+    let mut p_no_payload = sample_h2_params(sample_keyframe()?)?;
+    let p_digest = ContentDigest::sha256(&p_no_payload.payload);
+    p_no_payload.proof_roots.remove(&p_digest);
+    let err_no_payload = H2DecisionArtifact::new(p_no_payload);
+    assert!(matches!(
+        err_no_payload,
+        Err(HydrationError::Contract(ContractError::EvidenceRequired))
+    ));
+
+    // Proof roots: foreign root not in retained_provenance is refused
     let mut p_extra = sample_h2_params(sample_keyframe()?)?;
     p_extra.proof_roots.insert(sample_digest(0x99));
     let err_extra = H2DecisionArtifact::new(p_extra);
     assert!(matches!(
         err_extra,
+        Err(HydrationError::Contract(ContractError::EvidenceRequired))
+    ));
+
+    // Proof roots: only payload_digest and subject_digest (circular, empty retained subset) is refused
+    let mut p_circular = sample_h2_params(sample_keyframe()?)?;
+    let p_dig = ContentDigest::sha256(&p_circular.payload);
+    let s_dig = p_circular.subject_digest;
+    p_circular.proof_roots = BTreeSet::from([p_dig, s_dig]);
+    let err_circular = H2DecisionArtifact::new(p_circular);
+    assert!(matches!(
+        err_circular,
         Err(HydrationError::Contract(ContractError::EvidenceRequired))
     ));
 
@@ -617,10 +654,10 @@ fn test_h2_planted_bypasses_refusal() -> Result<(), Box<dyn Error>> {
             matches!(
                 err6,
                 Err(HydrationError::Contract(
-                    ContractError::ProhibitedEvidencePromotion
+                    ContractError::InvalidRedactionTransform
                 ))
             ),
-            "Expected ProhibitedEvidencePromotion for applied redaction {:?}",
+            "Expected InvalidRedactionTransform for applied redaction {:?}",
             red
         );
     }
@@ -652,19 +689,21 @@ fn test_h2_planted_bypasses_refusal() -> Result<(), Box<dyn Error>> {
     assert!(matches!(
         err_incompat,
         Err(HydrationError::Contract(
-            ContractError::ProhibitedEvidencePromotion
+            ContractError::InvalidRedactionTransform
         ))
     ));
 
-    // Prohibited unredacted privacy classes are refused by typed privacy check
+    // Prohibited unredacted and unrecognized privacy classes are refused by typed privacy check
     let prohibited_privacy_classes = [
-        "privacy:unredacted_raw_media",
-        "privacy:raw_undecoded_stream",
-        "privacy:raw_camera_packets",
-        "privacy:unmasked_pii",
-        "privacy:unredacted",
-        "privacy:none",
-        "privacy:arbitrary_unknown",
+        "raw:unredacted_media",
+        "raw:media",
+        "raw:unredacted",
+        "unredacted",
+        "unredacted_raw_media",
+        "raw_undecoded_stream",
+        "raw_camera_packets",
+        "unmasked_pii",
+        "invalid:arbitrary_unknown",
     ];
     for priv_class in prohibited_privacy_classes {
         let mut p_prohib = sample_h2_params(sample_keyframe()?)?;
@@ -673,22 +712,15 @@ fn test_h2_planted_bypasses_refusal() -> Result<(), Box<dyn Error>> {
         assert!(
             matches!(
                 err_prohib,
-                Err(HydrationError::Contract(
-                    ContractError::ProhibitedEvidencePromotion
-                ))
+                Err(HydrationError::Contract(ContractError::InvalidPrivacyClass))
             ),
-            "Expected ProhibitedEvidencePromotion for privacy class {:?}",
+            "Expected InvalidPrivacyClass for privacy class {:?}",
             priv_class
         );
     }
 
     // Authorized privacy classes pass
-    let authorized_privacy_classes = [
-        "privacy:redacted_operational",
-        "privacy:redacted_zone",
-        "privacy:operational",
-        "privacy:nonessential",
-    ];
+    let authorized_privacy_classes = ["private:property", "private:redacted"];
     for priv_class in authorized_privacy_classes {
         let mut p_auth = sample_h2_params(sample_keyframe()?)?;
         p_auth.privacy_class = priv_class.to_string();
@@ -766,7 +798,7 @@ fn test_h2_semantic_handle_materialization() -> Result<(), Box<dyn Error>> {
         source_id: "sensor:cam-01".to_string(),
         capture_interval: None,
         spatial_scope: None,
-        privacy_class: "privacy:redacted_zone".to_string(),
+        privacy_class: "private:property".to_string(),
         applied_transform: Some("transform:blur".to_string()),
         availability: HandleAvailability::Available,
         retention_until: TimestampNs(10_000_000),
@@ -781,10 +813,14 @@ fn test_h2_semantic_handle_materialization() -> Result<(), Box<dyn Error>> {
 
     let handle = SemanticHandle::publish(handle_spec)?;
 
+    let payload = b"decision-keyframe-data".to_vec();
+    let retained_root = sample_digest(0x33);
+    let retained_provenance = RetainedProvenance::new([retained_root])?;
+
     let artifact = handle.to_h2_decision_artifact(
         sample_keyframe()?,
-        b"decision-keyframe-data".to_vec(),
-        [handle.subject_digest],
+        payload,
+        retained_provenance,
         "transform:face_blur".to_string(),
         "grant:auth-oper-99".to_string(),
         Completeness::Complete,
@@ -808,7 +844,7 @@ fn test_h2_semantic_handle_materialization() -> Result<(), Box<dyn Error>> {
     let err_cost = handle_missing_cost.to_h2_decision_artifact(
         sample_keyframe()?,
         b"data".to_vec(),
-        [],
+        RetainedProvenance::default(),
         "transform:face_blur",
         "grant:1",
         Completeness::Complete,
@@ -823,7 +859,7 @@ fn test_h2_semantic_handle_materialization() -> Result<(), Box<dyn Error>> {
     let err_caps = handle_missing_caps.to_h2_decision_artifact(
         sample_keyframe()?,
         b"data".to_vec(),
-        [],
+        RetainedProvenance::default(),
         "transform:face_blur",
         "grant:1",
         Completeness::Complete,
@@ -836,7 +872,7 @@ fn test_h2_semantic_handle_materialization() -> Result<(), Box<dyn Error>> {
     let err_tampered = tampered_handle.to_h2_decision_artifact(
         sample_keyframe()?,
         b"data".to_vec(),
-        [],
+        RetainedProvenance::default(),
         "transform:face_blur",
         "grant:1",
         Completeness::Complete,
@@ -862,7 +898,7 @@ fn test_h2_semantic_handle_materialization() -> Result<(), Box<dyn Error>> {
         source_id: "sensor:cam-02".to_string(),
         capture_interval: None,
         spatial_scope: None,
-        privacy_class: "privacy:redacted_zone".to_string(),
+        privacy_class: "private:property".to_string(),
         applied_transform: Some("transform:blur".to_string()),
         availability: HandleAvailability::Available,
         retention_until: TimestampNs(10_000_000),
@@ -879,7 +915,7 @@ fn test_h2_semantic_handle_materialization() -> Result<(), Box<dyn Error>> {
     let err = no_h2_handle.to_h2_decision_artifact(
         sample_keyframe()?,
         b"decision-keyframe-data".to_vec(),
-        [sample_digest(0x77)],
+        RetainedProvenance::default(),
         "transform:face_blur".to_string(),
         "grant:auth-oper-99".to_string(),
         Completeness::Complete,
@@ -1075,7 +1111,7 @@ fn test_h2_decode_level_negatives_kill_mutants() -> Result<(), Box<dyn Error>> {
         enc.digest(sample_digest(0x99));
         enc.digest(sample_digest(0x11)); // out of order: 0x99 > 0x11
         enc.u8(Completeness::Complete.code());
-        enc.text("privacy:operational");
+        enc.text("private:property");
         enc.text("transform:face_blur");
         enc.text("grant:m2j");
         sample_anchor(1).encode_canonical(&mut enc);
@@ -1107,7 +1143,7 @@ fn test_h2_decode_level_negatives_kill_mutants() -> Result<(), Box<dyn Error>> {
         enc.u64(1);
         enc.digest(p_digest);
         enc.u8(Completeness::Complete.code());
-        enc.text("privacy:operational");
+        enc.text("private:property");
         enc.text("transform:face_blur");
         enc.text("grant:subj-root");
         sample_anchor(1).encode_canonical(&mut enc);
@@ -1125,6 +1161,44 @@ fn test_h2_decode_level_negatives_kill_mutants() -> Result<(), Box<dyn Error>> {
     let err_subj_root = H2DecisionArtifact::from_canonical_bytes(&missing_subj_root_bytes);
     assert_eq!(err_subj_root.err(), Some(ContractError::EvidenceRequired));
 
+    // 7. Item 10: Decode-level circular proof roots test (contains payload & subject but no retained root)
+    let circular_root_bytes = {
+        let mut enc = CanonicalEncoder::new();
+        enc.text(H2_SCHEMA);
+        enc.text("handle:circ-root");
+        enc.text("subject:circ-root");
+        let subj = sample_digest(0x11);
+        enc.digest(subj);
+        sample_keyframe()?.encode_canonical(&mut enc);
+        let payload = b"sample-payload-circ";
+        enc.bytes(payload);
+        let p_digest = ContentDigest::sha256(payload);
+        enc.digest(p_digest);
+        // Proof roots contains only payload_digest and subject_digest in sorted order
+        let mut roots = [p_digest, subj];
+        roots.sort();
+        enc.u64(2);
+        enc.digest(roots[0]);
+        enc.digest(roots[1]);
+        enc.u8(Completeness::Complete.code());
+        enc.text("private:property");
+        enc.text("transform:face_blur");
+        enc.text("grant:circ-root");
+        sample_anchor(1).encode_canonical(&mut enc);
+        sample_basis().encode_canonical(&mut enc);
+        sample_budget()?.encode_canonical(&mut enc);
+        TimestampNs(1_000).encode_canonical(&mut enc);
+        TimestampNs(2_000).encode_canonical(&mut enc);
+        let mut body = enc.finish_checked()?;
+        let body_digest = ContentDigest::sha256(&body);
+        let mut digest_enc = CanonicalEncoder::new();
+        digest_enc.digest(body_digest);
+        body.extend(digest_enc.finish_checked()?);
+        body
+    };
+    let err_circ_root = H2DecisionArtifact::from_canonical_bytes(&circular_root_bytes);
+    assert_eq!(err_circ_root.err(), Some(ContractError::EvidenceRequired));
+
     Ok(())
 }
 
@@ -1137,7 +1211,7 @@ fn test_h2_golden_digest_and_canonical_bytes() -> Result<(), Box<dyn Error>> {
     let canonical_bytes = artifact.to_canonical_bytes()?;
 
     // Pinned canonical byte vector length (Item 1)
-    assert_eq!(canonical_bytes.len(), 1051);
+    assert_eq!(canonical_bytes.len(), 1072);
 
     let bytes_digest = ContentDigest::sha256(&canonical_bytes);
     let canonical_digest = artifact.canonical_digest()?;
@@ -1147,10 +1221,10 @@ fn test_h2_golden_digest_and_canonical_bytes() -> Result<(), Box<dyn Error>> {
 
     // Independently derived golden digest literals (Item 1)
     let golden_canonical_digest = ContentDigest::parse(
-        "sha256:0cfaf70a3fcf4309bd9314ecaae4187ad47dbf4ca330e251d62475abe26698e8",
+        "sha256:a8f5b6328c62a54983f7b346eca1952e609c078b279cd945afad85ae96172af6",
     )?;
     let golden_artifact_digest = ContentDigest::parse(
-        "sha256:67d7c9dc1b9122d7cfc1e04966bbe9b95b417c00b1e4bd55772b913bc88cc111",
+        "sha256:b0805d74d4ba4ea2bcc0effb68a50424efe626a88d9ed7842498d5a636b60223",
     )?;
 
     assert_eq!(canonical_digest, golden_canonical_digest);

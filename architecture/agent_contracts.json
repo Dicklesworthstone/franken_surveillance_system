@@ -325,5 +325,13 @@
     ],
     "compositionRule": "a SituationCapsule is composed only from capability-projected facets pinned to one compatible version universe; the compositor may select and connect facts but may not redefine a facet owner’s semantics",
     "forbidden": "subsystem-specific free-form agent replies, hidden ambient reads, unversioned side chronologies, or direct effect authority in a facet"
-  }
+  },
+  "drifts": [
+    {
+      "target": "H2DecisionArtifact::RedactionTransform",
+      "field": "applied_redaction_transform",
+      "status": "unregistered_tokens_internal_enum",
+      "reason": "Redaction transform URI tokens (transform:face_blur, etc.) are internal typed enum values and not yet backed by a standalone machine registry in registries/ or architecture/."
+    }
+  ]
 }
