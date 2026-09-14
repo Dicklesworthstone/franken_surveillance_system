@@ -518,8 +518,16 @@ impl KnowledgeCell {
     /// A state whose registry meaning names a basis is refused without it, and a basis is
     /// refused on any state it does not belong to.
     ///
+    /// Per KSTATE-001, `known` is established by admissible evidence or a proved terminal
+    /// postcondition; every `known` cell must bind admissible evidence regardless of provenance.
+    ///
     /// An `observed` (PROV-001) or `derived` (PROV-002) cell whose knowledge state asserts
-    /// present support for its proposition must bind source evidence or named input anchors.
+    /// present support for its proposition (`known`, `estimated`, `conflicted`) must bind
+    /// source evidence or named input anchors.
+    ///
+    /// Non-observed/derived propositions without evidence (such as unproved vendor claims or
+    /// operator assertions) are valid as `estimated` or `unknown`, preserving their provenance.
+    ///
     /// States that assert no present support (`unknown`, `stale`, `not_observable`, `redacted`,
     /// `indeterminate`, `not_applicable`) stay valid without evidence, so an honest unknown is
     /// never refused for lacking the support it reports it does not have.
@@ -529,12 +537,12 @@ impl KnowledgeCell {
         if self.is_laboratory_tainted() && self.knowledge_state == KnowledgeState::Known {
             return Err(ContractError::DerivedLayerAuthorityForbidden);
         }
-        if matches!(
-            self.provenance,
-            ProvenanceClass::Observed | ProvenanceClass::Derived
-        ) && asserts_present_support(self.knowledge_state)
-            && self.evidence.is_empty()
-        {
+        let evidence_required = self.knowledge_state == KnowledgeState::Known
+            || (matches!(
+                self.provenance,
+                ProvenanceClass::Observed | ProvenanceClass::Derived
+            ) && asserts_present_support(self.knowledge_state));
+        if evidence_required && self.evidence.is_empty() {
             return Err(ContractError::EvidenceRequired);
         }
         match (
