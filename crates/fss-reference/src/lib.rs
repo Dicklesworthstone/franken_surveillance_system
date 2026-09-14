@@ -118,8 +118,10 @@ pub use extrinsics::{
 };
 pub use hydration::{ReferenceHydrationCatalog, ReferenceHydrationLimits};
 pub use ingest::{
-    JpegFinding, JpegFrameSpan, JpegProcess, JpegScan, JpegSofInfo, JpegSplitError, MjpegLimits,
-    OmissionReason, OmissionSpan, split_jpeg_stream,
+    AnnexBAccessUnit, AnnexBError, AnnexBLimits, AnnexBNal, AnnexBScan, CEILING_MAX_NAL_BYTES,
+    DEFAULT_MAX_AUS, DEFAULT_MAX_INPUT_BYTES, DEFAULT_MAX_NAL_BYTES, DEFAULT_MAX_NALS, JpegFinding,
+    JpegFrameSpan, JpegProcess, JpegScan, JpegSofInfo, JpegSplitError, MjpegLimits, OmissionReason,
+    OmissionSpan, SourceSpan, split_annexb, split_jpeg_stream,
 };
 pub use meaningful_delta::{
     classify_reference_meaningful_delta, classify_reference_meaningful_delta_in_lineage,

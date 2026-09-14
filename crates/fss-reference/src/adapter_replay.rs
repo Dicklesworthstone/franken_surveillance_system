@@ -87,6 +87,7 @@ pub struct ReplayCx {
     cancelled: AtomicBool,
     drain_completed: AtomicBool,
     io: ReplayIoAuthority,
+    cancel_at_stage: std::sync::Mutex<Option<&'static str>>,
 }
 
 impl ReplayCx {
@@ -97,6 +98,7 @@ impl ReplayCx {
             cancelled: AtomicBool::new(false),
             drain_completed: AtomicBool::new(false),
             io,
+            cancel_at_stage: std::sync::Mutex::new(None),
         }
     }
 
@@ -111,6 +113,14 @@ impl ReplayCx {
         self.cancelled.store(true, Ordering::SeqCst);
     }
 
+    /// Injects cooperative cancellation when the specified checkpoint stage is reached.
+    #[cfg(test)]
+    pub(crate) fn set_cancel_at_checkpoint(&self, stage: &'static str) {
+        if let Ok(mut guard) = self.cancel_at_stage.lock() {
+            *guard = Some(stage);
+        }
+    }
+
     /// Returns `true` if cancellation has been requested.
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
@@ -119,7 +129,13 @@ impl ReplayCx {
 
     /// Cooperative checkpoint during execution. Fails closed with [`ReplayAdapterError::CancellationRequested`]
     /// if cancellation was requested, completing the drain/finalize cycle.
-    pub fn checkpoint(&self, _stage: &'static str) -> Result<(), ReplayAdapterError> {
+    pub fn checkpoint(&self, stage: &'static str) -> Result<(), ReplayAdapterError> {
+        if let Ok(guard) = self.cancel_at_stage.lock()
+            && let Some(target) = *guard
+            && target == stage
+        {
+            self.request_cancellation();
+        }
         if self.is_cancelled() {
             self.drain_and_finalize();
             Err(ReplayAdapterError::CancellationRequested)
