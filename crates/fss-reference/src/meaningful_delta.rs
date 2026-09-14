@@ -953,7 +953,11 @@ fn verify_discharge(
         | crate::DurableEffectError::UnexpectedRecordKind { .. }
         | crate::DurableEffectError::Decode { .. }
         | crate::DurableEffectError::TransientObligation { .. }
-        | crate::DurableEffectError::LedgerReconciliationRequired { .. } => {
+        | crate::DurableEffectError::LedgerReconciliationRequired { .. }
+        | crate::DurableEffectError::Io(_)
+        | crate::DurableEffectError::InvalidLayout { .. }
+        | crate::DurableEffectError::OverBudget { .. }
+        | crate::DurableEffectError::Repair(_) => {
             ReferenceError::InvalidSpec("meaningful_delta_journal_unreadable")
         }
     };

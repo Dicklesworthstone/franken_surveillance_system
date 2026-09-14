@@ -76,6 +76,9 @@
 
 mod error;
 mod record;
+mod writer;
+
+pub use writer::*;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -88,7 +91,7 @@ use std::sync::Arc;
 use fss_core::{CanonicalEncode, ContentDigest, TombstoneRecord};
 use fss_object::{
     HostSpoolIo, MAX_INTERRUPTED_ATTEMPTS, MAX_MANIFEST_CHILDREN, ObjectManifest, SpoolError,
-    SpoolIo, SpoolLimits, SpoolObjectState, SpoolRecoveryReport, StagingSpool,
+    SpoolInspection, SpoolIo, SpoolLimits, SpoolObjectState, SpoolRecoveryReport, StagingSpool,
     VerifiedObjectCatalog,
 };
 
@@ -520,6 +523,91 @@ impl LocalRecoveryReport {
     }
 }
 
+/// Non-mutating inspection of a local publication root: what [`LocalRootPublisher::open`] would
+/// classify, observed without locks, directory creation, fsync, or repair.
+///
+/// `report` is built by the same classifier the open runs. Its documented differences from the
+/// open's [`LocalRecoveryReport`] are the extra fields below: roots stay
+/// [`LocalPublicationState::Visible`] because inspection never fsyncs (`durability_not_resynced`),
+/// root temp files the open would delete stay listed in `redundant_temps`, and a spool without
+/// holds is reported as `holds_migration_pending` instead of being migrated.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LocalInspection {
+    /// Classification by the open's classifier; admitted roots are `Visible`, never `Durable`.
+    pub report: LocalRecoveryReport,
+    /// Root temp files that open would delete because their target record already exists.
+    pub redundant_temps: Vec<PathBuf>,
+    /// True when roots were admitted from records observed on disk whose directory was not
+    /// fsynced by this inspection; their durability basis is the observation, not an fsync.
+    pub durability_not_resynced: bool,
+    /// Whether the underlying spool predates holds; open would migrate it.
+    pub holds_migration_pending: bool,
+    /// Whether the root, `roots/`, `tombstones/`, or a spool directory is missing; open would
+    /// create it empty.
+    pub missing_layout: bool,
+    /// Whether the spool's recovered index exceeds its bounds; open would fail with
+    /// [`fss_object::SpoolError::RecoveredOverCapacity`].
+    pub spool_over_capacity: bool,
+    /// Concurrently observed writer state.
+    pub writer_state: WriterState,
+    /// Maps each admitted slot to its closure of object digests.
+    pub root_closures: BTreeMap<SlotName, BTreeSet<ContentDigest>>,
+    /// Broken slots that failed verification.
+    pub broken_slots: BTreeSet<SlotName>,
+    /// Whether the snapshot may already be stale: a writer or shared holder was observed, or the
+    /// writer state could not be determined.
+    pub possibly_stale: bool,
+    /// Whether modifications are possibly in flight due to an active writer or pending temporary
+    /// files.
+    pub possibly_in_flight: bool,
+}
+
+impl LocalInspection {
+    /// True only when nothing but admitted roots, reachable objects, and tombstones was observed,
+    /// the layout is complete, nothing is pending, and no writer was observed by a probe that
+    /// actually ran (`not_observed` or `not_held`). Any unknown, shared, held, unprobed, or
+    /// lock-file-missing writer state is never clean.
+    #[must_use]
+    pub fn is_clean(&self) -> bool {
+        self.report.is_clean()
+            && self.redundant_temps.is_empty()
+            && !self.holds_migration_pending
+            && !self.missing_layout
+            && !self.spool_over_capacity
+            && !self.possibly_stale
+            && !self.possibly_in_flight
+            && self.writer_state.is_clear()
+    }
+
+    /// Returns the visible root for a slot, if admitted.
+    #[must_use]
+    pub fn root(&self, slot: &SlotName) -> Option<&VisibleRoot> {
+        self.report.roots.iter().find(|r| &r.slot == slot)
+    }
+
+    /// Iterates over all admitted visible roots.
+    pub fn visible_roots(&self) -> impl Iterator<Item = &VisibleRoot> {
+        self.report.roots.iter()
+    }
+
+    /// Returns the closure of object digests reachable from a root slot.
+    #[must_use]
+    pub fn root_closure(&self, slot: &SlotName) -> Option<&BTreeSet<ContentDigest>> {
+        self.root_closures.get(slot)
+    }
+
+    /// Iterates over slots that failed verification.
+    pub fn broken_slots(&self) -> impl Iterator<Item = &SlotName> {
+        self.broken_slots.iter()
+    }
+
+    /// Returns true if a slot failed verification.
+    #[must_use]
+    pub fn is_broken_slot(&self, slot: &SlotName) -> bool {
+        self.broken_slots.contains(slot)
+    }
+}
+
 /// Result of recording a tombstone.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum TombstoneOutcome {
@@ -560,7 +648,7 @@ pub struct LocalRootPublisher {
 impl LocalRootPublisher {
     /// Opens the publication directory at `root`, recovering any visible roots and tombstones.
     ///
-    /// Acquires an exclusive advisory lock on `root/fss.local_publication.lock`. Every root record is
+    /// Acquires an exclusive advisory lock on `<root>/LOCK`. Every root record is
     /// re-verified with its manifest body and children before admission; broken ones are reported
     /// and never admitted. Admitted roots are reported `Durable` only after this call fsyncs the
     /// roots directory.
@@ -1191,16 +1279,7 @@ impl LocalRootPublisher {
             .filter(|entry| entry.visible.state == LocalPublicationState::Durable)
             .map(|entry| (entry.visible.root, entry.children.as_slice()))
             .collect();
-        let mut seen = BTreeSet::from([root]);
-        let mut pending = children.to_vec();
-        while let Some(digest) = pending.pop() {
-            if seen.insert(digest)
-                && let Some(grandchildren) = manifests.get(&digest)
-            {
-                pending.extend_from_slice(grandchildren);
-            }
-        }
-        seen
+        compute_closure(&manifests, root, children)
     }
 
     fn spool_error(&mut self, error: SpoolError) -> LocalPublicationError {
@@ -1631,45 +1710,24 @@ impl LocalRootPublisher {
         })
     }
 
-    /// Checks one reference during reopen: `Ok(Err(_))` classifies it, `Err(_)` fails the open.
-    fn verify_reference(
-        &mut self,
-        object: ContentDigest,
-    ) -> Result<Result<(), BlockReason>, LocalPublicationError> {
-        if self.tombstones.contains_key(&object) {
-            return Ok(Err(BlockReason::Tombstoned));
-        }
-        match self.spool.verify(object) {
-            Ok(SpoolObjectState::Verified) => Ok(Ok(())),
-            Ok(SpoolObjectState::Staged) => Ok(Err(BlockReason::NotVerified)),
-            Ok(SpoolObjectState::Corrupt(_)) | Err(SpoolError::Corrupt { .. }) => {
-                Ok(Err(BlockReason::Corrupt))
-            }
-            Err(SpoolError::Missing(_)) => Ok(Err(BlockReason::Missing)),
-            Err(error) => Err(self.spool_error(error)),
-        }
-    }
-
+    /// Classifies the publication root through [`classify_local`], verifying every reference
+    /// through the owned spool, then fsyncs `roots/` and `tombstones/`. Admitted roots are
+    /// reported `Durable` only if the roots fsync succeeded.
     fn recover(&mut self) -> Result<(), LocalPublicationError> {
-        let mut report = LocalRecoveryReport {
-            spool: self.spool.recovery_report().clone(),
-            ..LocalRecoveryReport::default()
+        let io = Arc::clone(&self.io);
+        let root = self.root.clone();
+        let limits = self.limits;
+        let spool = self.spool.recovery_report().clone();
+        let layout = LocalLayout {
+            roots: true,
+            tombstones: true,
         };
-
-        for (name, _) in scan_directory(self.io.as_ref(), &self.root, TOP_LEVEL_SCAN_BOUND)? {
-            let known = [
-                LOCAL_LOCK_FILE,
-                LOCAL_SPOOL_DIR,
-                LOCAL_ROOTS_DIR,
-                LOCAL_TOMBSTONES_DIR,
-            ];
-            if !known.iter().any(|entry| name == *entry) {
-                report.foreign.push(PathBuf::from(&name));
-            }
-        }
-
-        self.recover_tombstones(&mut report)?;
-        self.recover_roots(&mut report)?;
+        let classified = classify_local(io.as_ref(), &root, &limits, layout, spool, self)?;
+        let mut report = classified.report;
+        self.visible = classified.visible;
+        self.broken_slots = classified.broken_slots;
+        self.orphan_temps = classified.orphan_temps;
+        self.tombstones = classified.tombstones;
 
         let roots_synced = self.io.sync_directory(&self.roots_dir).is_ok();
         let _ = self.io.sync_directory(&self.tombstones_dir);
@@ -1684,402 +1742,797 @@ impl LocalRootPublisher {
         for entry in self.visible.values() {
             referenced.extend(self.closure(entry.visible.root, &entry.children));
         }
-        let spool_objects = report
-            .spool
-            .admitted
-            .iter()
-            .copied()
-            .chain(report.spool.corrupt.iter().map(|corrupt| corrupt.digest))
-            .collect::<BTreeSet<_>>();
-        report.unreferenced_objects = spool_objects.difference(&referenced).copied().collect();
-        report.tombstones = self.tombstones.keys().copied().collect();
-        report.orphaned_temps = self.orphan_temps.iter().cloned().collect();
-        report.foreign.sort();
+        report.unreferenced_objects = unreferenced_spool_objects(&report.spool, &referenced);
         self.recovery = report;
         Ok(())
     }
+}
 
-    fn recover_tombstones(
+impl ReferenceCheck for LocalRootPublisher {
+    /// Verifies through the owned spool, placing its durable hold: a corrupt or missing object
+    /// classifies the reference, any other spool failure fails the open.
+    fn check_reference(
         &mut self,
-        report: &mut LocalRecoveryReport,
-    ) -> Result<(), LocalPublicationError> {
-        let entries = scan_directory(
-            self.io.as_ref(),
-            &self.tombstones_dir,
-            self.limits.max_scan_entries,
-        )?;
-        for (name, file_type) in entries {
-            let relative = Path::new(LOCAL_TOMBSTONES_DIR).join(&name);
-            let Some(text) = name.to_str() else {
-                report.foreign.push(relative);
-                continue;
-            };
-            if let Some(stem) = text.strip_suffix(ROOT_INDETERMINATE_SUFFIX) {
-                let parsed = stem
-                    .strip_suffix(TOMBSTONE_RECORD_SUFFIX)
-                    .and_then(parse_digest_file_stem);
-                if parsed.is_some() {
-                    return Err(LocalPublicationError::CorruptTombstone { path: relative });
-                }
-                report.foreign.push(relative);
-                continue;
+        object: ContentDigest,
+    ) -> Result<Result<(), BlockReason>, LocalPublicationError> {
+        match self.spool.verify(object) {
+            Ok(SpoolObjectState::Verified) => Ok(Ok(())),
+            Ok(SpoolObjectState::Staged) => Ok(Err(BlockReason::NotVerified)),
+            Ok(SpoolObjectState::Corrupt(_)) | Err(SpoolError::Corrupt { .. }) => {
+                Ok(Err(BlockReason::Corrupt))
             }
-            if let Some(stem) = text.strip_suffix(ROOT_TEMP_SUFFIX) {
-                let parsed = stem
-                    .strip_suffix(TOMBSTONE_RECORD_SUFFIX)
-                    .and_then(parse_digest_file_stem);
-                if parsed.is_some() && file_type.is_file() {
-                    self.orphan_temps.insert(relative);
-                } else {
-                    report.foreign.push(relative);
-                }
-                continue;
-            }
-            let Some(object) = text
-                .strip_suffix(TOMBSTONE_RECORD_SUFFIX)
-                .and_then(parse_digest_file_stem)
-            else {
-                report.foreign.push(relative);
-                continue;
-            };
-            if !file_type.is_file() {
-                return Err(LocalPublicationError::CorruptTombstone { path: relative });
-            }
-            let path = self.tombstones_dir.join(&name);
-            let Some(bytes) = read_bounded(self.io.as_ref(), &path, MAX_TOMBSTONE_RECORD_BYTES)?
-            else {
-                return Err(LocalPublicationError::CorruptTombstone { path: relative });
-            };
-            let record = match record::decode_tombstone_record(&bytes) {
-                Ok(record) if record.payload_digest == object => record,
-                _ => return Err(LocalPublicationError::CorruptTombstone { path: relative }),
-            };
-            self.tombstones.insert(object, record);
+            Err(SpoolError::Missing(_)) => Ok(Err(BlockReason::Missing)),
+            Err(error) => Err(self.spool_error(error)),
         }
-        if self.tombstones.len() > self.limits.max_tombstones {
-            return Err(LocalPublicationError::Capacity {
-                resource: CapacityResource::Tombstones,
-                current: self.tombstones.len(),
-                maximum: self.limits.max_tombstones,
-            });
-        }
-        Ok(())
     }
 
-    fn recover_roots(
+    fn manifest_body(&mut self, root: ContentDigest) -> Result<Vec<u8>, LocalPublicationError> {
+        self.spool
+            .read(root)
+            .map_err(|error| self.spool_error(error))
+    }
+
+    fn redundant_temp(&mut self, path: &Path) -> RedundantTemp {
+        match self.io.remove_file(path) {
+            Ok(()) => RedundantTemp::Removed,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => RedundantTemp::Removed,
+            Err(_) => RedundantTemp::Kept,
+        }
+    }
+}
+
+fn compute_closure(
+    manifests: &BTreeMap<ContentDigest, &[ContentDigest]>,
+    root: ContentDigest,
+    children: &[ContentDigest],
+) -> BTreeSet<ContentDigest> {
+    let mut seen = BTreeSet::from([root]);
+    let mut pending = children.to_vec();
+    while let Some(digest) = pending.pop() {
+        if seen.insert(digest)
+            && let Some(grandchildren) = manifests.get(&digest)
+        {
+            pending.extend_from_slice(grandchildren);
+        }
+    }
+    seen
+}
+
+/// Spool objects, admitted or corrupt, that no closure in `referenced` reaches.
+fn unreferenced_spool_objects(
+    spool: &SpoolRecoveryReport,
+    referenced: &BTreeSet<ContentDigest>,
+) -> Vec<ContentDigest> {
+    let spool_objects = spool
+        .admitted
+        .iter()
+        .copied()
+        .chain(spool.corrupt.iter().map(|corrupt| corrupt.digest))
+        .collect::<BTreeSet<_>>();
+    spool_objects.difference(referenced).copied().collect()
+}
+
+/// How a root temp file whose target record exists was settled.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RedundantTemp {
+    /// The open removed it (or it was already gone).
+    Removed,
+    /// The open could not remove it; it stays an orphaned temp.
+    Kept,
+    /// Inspection left it in place and reports it.
+    Reported,
+}
+
+/// What the shared classifier asks of its caller.
+///
+/// [`LocalRootPublisher`] verifies through, and holds in, its owned spool and removes redundant
+/// temps; [`ObservedReferences`] answers from the spool classification without writing.
+trait ReferenceCheck {
+    /// Classifies one reference that no tombstone names: `Ok(Err(_))` blocks it, `Err(_)` fails
+    /// the caller.
+    fn check_reference(
         &mut self,
-        report: &mut LocalRecoveryReport,
-    ) -> Result<(), LocalPublicationError> {
-        let entries = scan_directory(
-            self.io.as_ref(),
-            &self.roots_dir,
-            self.limits.max_scan_entries,
-        )?;
+        object: ContentDigest,
+    ) -> Result<Result<(), BlockReason>, LocalPublicationError>;
+    /// The rehashed body of a manifest whose reference check passed.
+    fn manifest_body(&mut self, root: ContentDigest) -> Result<Vec<u8>, LocalPublicationError>;
+    /// Settles the root temp at `path`, whose target record exists.
+    fn redundant_temp(&mut self, path: &Path) -> RedundantTemp;
+}
 
-        struct CandidateRoot {
-            relative: PathBuf,
-            root: ContentDigest,
-            manifest: ObjectManifest,
-            record_bytes: Vec<u8>,
+/// Which publication directories exist when the root is classified. The open creates both
+/// first; inspection skips a missing one, which is what the open would find in the empty
+/// directory it creates.
+#[derive(Clone, Copy, Debug)]
+struct LocalLayout {
+    roots: bool,
+    tombstones: bool,
+}
+
+/// What [`classify_local`] found; the caller decides durability.
+#[derive(Clone, Debug, Default)]
+struct LocalClassification {
+    /// Everything but `roots` and `unreferenced_objects`, which depend on durability.
+    report: LocalRecoveryReport,
+    /// Root temps inspection left in place; always empty for the open.
+    redundant_temps: Vec<PathBuf>,
+    visible: BTreeMap<SlotName, RootEntry>,
+    tombstones: BTreeMap<ContentDigest, TombstoneRecord>,
+    broken_slots: BTreeSet<SlotName>,
+    orphan_temps: BTreeSet<PathBuf>,
+}
+
+/// The one classifier of a publication root, shared by [`LocalRootPublisher::open`] and
+/// [`inspect_with_io`].
+///
+/// It lists, stats, and reads, and asks `references` to check every reference, read every
+/// manifest body, and settle every redundant temp; those three are the only points where the
+/// open and inspection differ. For the open it makes exactly the calls, in exactly the order, the
+/// open made before inspection existed.
+fn classify_local(
+    io: &dyn SpoolIo,
+    root: &Path,
+    limits: &LocalPublicationLimits,
+    layout: LocalLayout,
+    spool: SpoolRecoveryReport,
+    references: &mut dyn ReferenceCheck,
+) -> Result<LocalClassification, LocalPublicationError> {
+    let mut classified = LocalClassification {
+        report: LocalRecoveryReport {
+            spool,
+            ..LocalRecoveryReport::default()
+        },
+        ..LocalClassification::default()
+    };
+
+    for (name, _) in scan_directory(io, root, TOP_LEVEL_SCAN_BOUND)? {
+        let known = [
+            LOCAL_LOCK_FILE,
+            LOCAL_SPOOL_DIR,
+            LOCAL_ROOTS_DIR,
+            LOCAL_TOMBSTONES_DIR,
+        ];
+        if !known.iter().any(|entry| name == *entry) {
+            classified.report.foreign.push(PathBuf::from(&name));
         }
+    }
 
-        let mut candidates: BTreeMap<SlotName, CandidateRoot> = BTreeMap::new();
-        let mut broken_slot_roots: BTreeSet<ContentDigest> = BTreeSet::new();
-        let mut indeterminate: BTreeMap<SlotName, PathBuf> = BTreeMap::new();
-        let mut record_slots: BTreeSet<SlotName> = BTreeSet::new();
+    if layout.tombstones {
+        classify_tombstones(io, root, limits, &mut classified)?;
+    }
+    if layout.roots {
+        classify_roots(io, root, limits, &mut classified, references)?;
+    }
 
-        for (name, file_type) in entries {
-            let relative = Path::new(LOCAL_ROOTS_DIR).join(&name);
-            let Some(text) = name.to_str() else {
-                report.foreign.push(relative);
-                continue;
-            };
-            if let Some(stem) = text.strip_suffix(ROOT_INDETERMINATE_SUFFIX) {
-                // Classified by existence alone, whatever its type or contents: fail closed.
-                match stem.strip_suffix(ROOT_RECORD_SUFFIX).map(SlotName::parse) {
-                    Some(Ok(slot)) => {
-                        indeterminate.insert(slot, relative);
-                    }
-                    Some(Err(_)) | None => report.foreign.push(relative),
-                }
-                continue;
+    classified.report.tombstones = classified.tombstones.keys().copied().collect();
+    classified.report.orphaned_temps = classified.orphan_temps.iter().cloned().collect();
+    classified.report.foreign.sort();
+    Ok(classified)
+}
+
+/// A reference named by a durable tombstone is blocked before `references` is asked.
+fn check_reference(
+    tombstones: &BTreeMap<ContentDigest, TombstoneRecord>,
+    references: &mut dyn ReferenceCheck,
+    object: ContentDigest,
+) -> Result<Result<(), BlockReason>, LocalPublicationError> {
+    if tombstones.contains_key(&object) {
+        return Ok(Err(BlockReason::Tombstoned));
+    }
+    references.check_reference(object)
+}
+
+fn classify_tombstones(
+    io: &dyn SpoolIo,
+    root: &Path,
+    limits: &LocalPublicationLimits,
+    classified: &mut LocalClassification,
+) -> Result<(), LocalPublicationError> {
+    let tombstones_dir = root.join(LOCAL_TOMBSTONES_DIR);
+    let entries = scan_directory(io, &tombstones_dir, limits.max_scan_entries)?;
+    for (name, file_type) in entries {
+        let relative = Path::new(LOCAL_TOMBSTONES_DIR).join(&name);
+        let Some(text) = name.to_str() else {
+            classified.report.foreign.push(relative);
+            continue;
+        };
+        if let Some(stem) = text.strip_suffix(ROOT_INDETERMINATE_SUFFIX) {
+            let parsed = stem
+                .strip_suffix(TOMBSTONE_RECORD_SUFFIX)
+                .and_then(parse_digest_file_stem);
+            if parsed.is_some() {
+                return Err(LocalPublicationError::CorruptTombstone { path: relative });
             }
-            if let Some(stem) = text.strip_suffix(ROOT_TEMP_SUFFIX) {
-                let parsed = stem.strip_suffix(ROOT_RECORD_SUFFIX).map(SlotName::parse);
-                if let Some(Ok(slot)) = parsed {
-                    if file_type.is_file() {
-                        let target_path =
-                            self.roots_dir.join(format!("{slot}{ROOT_RECORD_SUFFIX}"));
-                        if self.io.symlink_metadata(&target_path).is_ok() {
-                            let temp_path = self.root.join(&relative);
-                            match self.io.remove_file(&temp_path) {
-                                Ok(()) => {}
-                                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                                Err(_) => {
-                                    self.orphan_temps.insert(relative);
-                                }
+            classified.report.foreign.push(relative);
+            continue;
+        }
+        if let Some(stem) = text.strip_suffix(ROOT_TEMP_SUFFIX) {
+            let parsed = stem
+                .strip_suffix(TOMBSTONE_RECORD_SUFFIX)
+                .and_then(parse_digest_file_stem);
+            if parsed.is_some() && file_type.is_file() {
+                classified.orphan_temps.insert(relative);
+            } else {
+                classified.report.foreign.push(relative);
+            }
+            continue;
+        }
+        let Some(object) = text
+            .strip_suffix(TOMBSTONE_RECORD_SUFFIX)
+            .and_then(parse_digest_file_stem)
+        else {
+            classified.report.foreign.push(relative);
+            continue;
+        };
+        if !file_type.is_file() {
+            return Err(LocalPublicationError::CorruptTombstone { path: relative });
+        }
+        let path = tombstones_dir.join(&name);
+        let Some(bytes) = read_bounded(io, &path, MAX_TOMBSTONE_RECORD_BYTES)? else {
+            return Err(LocalPublicationError::CorruptTombstone { path: relative });
+        };
+        let record = match record::decode_tombstone_record(&bytes) {
+            Ok(record) if record.payload_digest == object => record,
+            _ => return Err(LocalPublicationError::CorruptTombstone { path: relative }),
+        };
+        classified.tombstones.insert(object, record);
+    }
+    if classified.tombstones.len() > limits.max_tombstones {
+        return Err(LocalPublicationError::Capacity {
+            resource: CapacityResource::Tombstones,
+            current: classified.tombstones.len(),
+            maximum: limits.max_tombstones,
+        });
+    }
+    Ok(())
+}
+
+fn classify_roots(
+    io: &dyn SpoolIo,
+    root: &Path,
+    limits: &LocalPublicationLimits,
+    classified: &mut LocalClassification,
+    references: &mut dyn ReferenceCheck,
+) -> Result<(), LocalPublicationError> {
+    struct CandidateRoot {
+        relative: PathBuf,
+        root: ContentDigest,
+        manifest: ObjectManifest,
+        record_bytes: Vec<u8>,
+    }
+
+    let roots_dir = root.join(LOCAL_ROOTS_DIR);
+    let entries = scan_directory(io, &roots_dir, limits.max_scan_entries)?;
+
+    let mut candidates: BTreeMap<SlotName, CandidateRoot> = BTreeMap::new();
+    let mut broken_slot_roots: BTreeSet<ContentDigest> = BTreeSet::new();
+    let mut indeterminate: BTreeMap<SlotName, PathBuf> = BTreeMap::new();
+    let mut record_slots: BTreeSet<SlotName> = BTreeSet::new();
+
+    for (name, file_type) in entries {
+        let relative = Path::new(LOCAL_ROOTS_DIR).join(&name);
+        let Some(text) = name.to_str() else {
+            classified.report.foreign.push(relative);
+            continue;
+        };
+        if let Some(stem) = text.strip_suffix(ROOT_INDETERMINATE_SUFFIX) {
+            // Classified by existence alone, whatever its type or contents: fail closed.
+            match stem.strip_suffix(ROOT_RECORD_SUFFIX).map(SlotName::parse) {
+                Some(Ok(slot)) => {
+                    indeterminate.insert(slot, relative);
+                }
+                Some(Err(_)) | None => classified.report.foreign.push(relative),
+            }
+            continue;
+        }
+        if let Some(stem) = text.strip_suffix(ROOT_TEMP_SUFFIX) {
+            let parsed = stem.strip_suffix(ROOT_RECORD_SUFFIX).map(SlotName::parse);
+            if let Some(Ok(slot)) = parsed {
+                if file_type.is_file() {
+                    let target_path = roots_dir.join(format!("{slot}{ROOT_RECORD_SUFFIX}"));
+                    if io.symlink_metadata(&target_path).is_ok() {
+                        match references.redundant_temp(&root.join(&relative)) {
+                            RedundantTemp::Removed => {}
+                            RedundantTemp::Kept => {
+                                classified.orphan_temps.insert(relative);
                             }
-                            continue;
+                            RedundantTemp::Reported => classified.redundant_temps.push(relative),
                         }
-                        self.orphan_temps.insert(relative);
-                    } else {
-                        report.foreign.push(relative);
+                        continue;
                     }
+                    classified.orphan_temps.insert(relative);
                 } else {
-                    report.foreign.push(relative);
+                    classified.report.foreign.push(relative);
                 }
-                continue;
+            } else {
+                classified.report.foreign.push(relative);
             }
-            let Some(Ok(slot)) = text.strip_suffix(ROOT_RECORD_SUFFIX).map(SlotName::parse) else {
-                report.foreign.push(relative);
-                continue;
-            };
-            record_slots.insert(slot.clone());
-            if !file_type.is_file() {
-                self.broken_slots.insert(slot);
-                report.broken_roots.push(BrokenRoot {
-                    path: relative,
-                    reason: BrokenRootReason::NotRegularFile,
-                });
-                continue;
-            }
-            let path = self.roots_dir.join(format!("{slot}{ROOT_RECORD_SUFFIX}"));
-            let Some(bytes) = read_bounded(self.io.as_ref(), &path, MAX_ROOT_RECORD_BYTES)? else {
-                self.broken_slots.insert(slot);
-                report.broken_roots.push(BrokenRoot {
-                    path: relative,
-                    reason: BrokenRootReason::RecordTooLarge,
-                });
-                continue;
-            };
-            let decoded = match record::decode_root_record(&bytes) {
-                Ok(decoded) => decoded,
-                Err(reason) => {
-                    self.broken_slots.insert(slot);
-                    report.broken_roots.push(BrokenRoot {
-                        path: relative,
-                        reason,
-                    });
-                    continue;
-                }
-            };
-            if decoded.slot != slot.as_str() {
-                broken_slot_roots.insert(decoded.root);
-                self.broken_slots.insert(slot);
-                report.broken_roots.push(BrokenRoot {
-                    path: relative,
-                    reason: BrokenRootReason::SlotMismatch,
-                });
-                continue;
-            }
-            let root = decoded.root;
-            if let Err(reason) = self.verify_reference(root)? {
-                broken_slot_roots.insert(root);
-                self.broken_slots.insert(slot);
-                report.broken_roots.push(BrokenRoot {
-                    path: relative,
-                    reason: BrokenRootReason::ReferenceBlocked {
-                        object: root,
-                        role: ReferenceRole::ManifestBody,
-                        reason,
-                    },
-                });
-                continue;
-            }
-            let body = self
-                .spool
-                .read(root)
-                .map_err(|error| self.spool_error(error))?;
-            let manifest = match ObjectManifest::from_canonical_bytes(&body) {
-                Ok(manifest) if manifest.root() == root => manifest,
-                _ => {
-                    broken_slot_roots.insert(root);
-                    self.broken_slots.insert(slot);
-                    report.broken_roots.push(BrokenRoot {
-                        path: relative,
-                        reason: BrokenRootReason::ManifestUndecodable,
-                    });
-                    continue;
-                }
-            };
-            let child_count = manifest.children().len();
-            if decoded.child_count != child_count as u64 {
-                broken_slot_roots.insert(root);
-                self.broken_slots.insert(slot);
-                report.broken_roots.push(BrokenRoot {
-                    path: relative,
-                    reason: BrokenRootReason::ChildCountMismatch {
-                        recorded: decoded.child_count,
-                        actual: child_count,
-                    },
-                });
-                continue;
-            }
-            if child_count > self.limits.max_children {
-                broken_slot_roots.insert(root);
-                self.broken_slots.insert(slot);
-                report.broken_roots.push(BrokenRoot {
-                    path: relative,
-                    reason: BrokenRootReason::ChildBoundExceeded {
-                        count: child_count,
-                        maximum: self.limits.max_children,
-                    },
-                });
-                continue;
-            }
-            candidates.insert(
-                slot,
-                CandidateRoot {
-                    relative,
-                    root,
-                    manifest,
-                    record_bytes: bytes,
-                },
-            );
+            continue;
         }
-
-        // A durable indeterminate marker overrides whatever the slot's record says: its record,
-        // if any, is never admitted, and roots that reach it are broken below.
-        for (slot, relative) in indeterminate {
-            if let Some(candidate) = candidates.remove(&slot) {
-                broken_slot_roots.insert(candidate.root);
-            }
-            let record_present = record_slots.contains(&slot);
-            self.broken_slots.insert(slot);
-            report.broken_roots.push(BrokenRoot {
+        let Some(Ok(slot)) = text.strip_suffix(ROOT_RECORD_SUFFIX).map(SlotName::parse) else {
+            classified.report.foreign.push(relative);
+            continue;
+        };
+        record_slots.insert(slot.clone());
+        if !file_type.is_file() {
+            classified.broken_slots.insert(slot);
+            classified.report.broken_roots.push(BrokenRoot {
                 path: relative,
-                reason: BrokenRootReason::VisibilityIndeterminate { record_present },
+                reason: BrokenRootReason::NotRegularFile,
             });
+            continue;
         }
+        let path = roots_dir.join(format!("{slot}{ROOT_RECORD_SUFFIX}"));
+        let Some(bytes) = read_bounded(io, &path, MAX_ROOT_RECORD_BYTES)? else {
+            classified.broken_slots.insert(slot);
+            classified.report.broken_roots.push(BrokenRoot {
+                path: relative,
+                reason: BrokenRootReason::RecordTooLarge,
+            });
+            continue;
+        };
+        let decoded = match record::decode_root_record(&bytes) {
+            Ok(decoded) => decoded,
+            Err(reason) => {
+                classified.broken_slots.insert(slot);
+                classified.report.broken_roots.push(BrokenRoot {
+                    path: relative,
+                    reason,
+                });
+                continue;
+            }
+        };
+        if decoded.slot != slot.as_str() {
+            broken_slot_roots.insert(decoded.root);
+            classified.broken_slots.insert(slot);
+            classified.report.broken_roots.push(BrokenRoot {
+                path: relative,
+                reason: BrokenRootReason::SlotMismatch,
+            });
+            continue;
+        }
+        let root_digest = decoded.root;
+        if let Err(reason) = check_reference(&classified.tombstones, references, root_digest)? {
+            broken_slot_roots.insert(root_digest);
+            classified.broken_slots.insert(slot);
+            classified.report.broken_roots.push(BrokenRoot {
+                path: relative,
+                reason: BrokenRootReason::ReferenceBlocked {
+                    object: root_digest,
+                    role: ReferenceRole::ManifestBody,
+                    reason,
+                },
+            });
+            continue;
+        }
+        let body = references.manifest_body(root_digest)?;
+        let manifest = match ObjectManifest::from_canonical_bytes(&body) {
+            Ok(manifest) if manifest.root() == root_digest => manifest,
+            _ => {
+                broken_slot_roots.insert(root_digest);
+                classified.broken_slots.insert(slot);
+                classified.report.broken_roots.push(BrokenRoot {
+                    path: relative,
+                    reason: BrokenRootReason::ManifestUndecodable,
+                });
+                continue;
+            }
+        };
+        let child_count = manifest.children().len();
+        if decoded.child_count != child_count as u64 {
+            broken_slot_roots.insert(root_digest);
+            classified.broken_slots.insert(slot);
+            classified.report.broken_roots.push(BrokenRoot {
+                path: relative,
+                reason: BrokenRootReason::ChildCountMismatch {
+                    recorded: decoded.child_count,
+                    actual: child_count,
+                },
+            });
+            continue;
+        }
+        if child_count > limits.max_children {
+            broken_slot_roots.insert(root_digest);
+            classified.broken_slots.insert(slot);
+            classified.report.broken_roots.push(BrokenRoot {
+                path: relative,
+                reason: BrokenRootReason::ChildBoundExceeded {
+                    count: child_count,
+                    maximum: limits.max_children,
+                },
+            });
+            continue;
+        }
+        candidates.insert(
+            slot,
+            CandidateRoot {
+                relative,
+                root: root_digest,
+                manifest,
+                record_bytes: bytes,
+            },
+        );
+    }
 
-        // Multi-pass fixed-point validation of direct references and transitive descendants
-        loop {
-            let mut newly_broken = Vec::new();
-            let candidate_manifests: BTreeMap<ContentDigest, Vec<ContentDigest>> = candidates
-                .values()
-                .map(|c| (c.root, c.manifest.children().to_vec()))
-                .collect();
+    // A durable indeterminate marker overrides whatever the slot's record says: its record,
+    // if any, is never admitted, and roots that reach it are broken below.
+    for (slot, relative) in indeterminate {
+        if let Some(candidate) = candidates.remove(&slot) {
+            broken_slot_roots.insert(candidate.root);
+        }
+        let record_present = record_slots.contains(&slot);
+        classified.broken_slots.insert(slot);
+        classified.report.broken_roots.push(BrokenRoot {
+            path: relative,
+            reason: BrokenRootReason::VisibilityIndeterminate { record_present },
+        });
+    }
 
-            for (slot, candidate) in &candidates {
-                let mut broken_reason = None;
+    // Multi-pass fixed-point validation of direct references and transitive descendants
+    loop {
+        let mut newly_broken = Vec::new();
+        let candidate_manifests: BTreeMap<ContentDigest, Vec<ContentDigest>> = candidates
+            .values()
+            .map(|c| (c.root, c.manifest.children().to_vec()))
+            .collect();
 
-                // 1. Direct children
-                for child in candidate.manifest.children() {
-                    let role = if candidate.manifest.metadata_digest() == Some(*child) {
-                        ReferenceRole::Metadata
-                    } else {
-                        ReferenceRole::Child
-                    };
-                    if broken_slot_roots.contains(child) {
+        for (slot, candidate) in &candidates {
+            let mut broken_reason = None;
+
+            // 1. Direct children
+            for child in candidate.manifest.children() {
+                let role = if candidate.manifest.metadata_digest() == Some(*child) {
+                    ReferenceRole::Metadata
+                } else {
+                    ReferenceRole::Child
+                };
+                if broken_slot_roots.contains(child) {
+                    broken_reason = Some(BrokenRootReason::ReferenceBlocked {
+                        object: *child,
+                        role,
+                        reason: BlockReason::NotVerified,
+                    });
+                    break;
+                }
+                match check_reference(&classified.tombstones, references, *child)? {
+                    Ok(()) => {}
+                    Err(reason) => {
                         broken_reason = Some(BrokenRootReason::ReferenceBlocked {
                             object: *child,
                             role,
+                            reason,
+                        });
+                        break;
+                    }
+                }
+            }
+
+            // 2. Transitive descendants
+            if broken_reason.is_none() {
+                let direct: BTreeSet<ContentDigest> =
+                    candidate.manifest.children().iter().copied().collect();
+                let mut seen = BTreeSet::from([candidate.root]);
+                let mut pending = candidate.manifest.children().to_vec();
+                while let Some(digest) = pending.pop() {
+                    if seen.insert(digest)
+                        && let Some(grandchildren) = candidate_manifests.get(&digest)
+                    {
+                        pending.extend_from_slice(grandchildren);
+                    }
+                }
+                for descendant in seen {
+                    if descendant == candidate.root || direct.contains(&descendant) {
+                        continue;
+                    }
+                    if broken_slot_roots.contains(&descendant) {
+                        broken_reason = Some(BrokenRootReason::ReferenceBlocked {
+                            object: descendant,
+                            role: ReferenceRole::Descendant,
                             reason: BlockReason::NotVerified,
                         });
                         break;
                     }
-                    match self.verify_reference(*child)? {
+                    match check_reference(&classified.tombstones, references, descendant)? {
                         Ok(()) => {}
                         Err(reason) => {
                             broken_reason = Some(BrokenRootReason::ReferenceBlocked {
-                                object: *child,
-                                role,
+                                object: descendant,
+                                role: ReferenceRole::Descendant,
                                 reason,
                             });
                             break;
                         }
                     }
                 }
-
-                // 2. Transitive descendants
-                if broken_reason.is_none() {
-                    let direct: BTreeSet<ContentDigest> =
-                        candidate.manifest.children().iter().copied().collect();
-                    let mut seen = BTreeSet::from([candidate.root]);
-                    let mut pending = candidate.manifest.children().to_vec();
-                    while let Some(digest) = pending.pop() {
-                        if seen.insert(digest)
-                            && let Some(grandchildren) = candidate_manifests.get(&digest)
-                        {
-                            pending.extend_from_slice(grandchildren);
-                        }
-                    }
-                    for descendant in seen {
-                        if descendant == candidate.root || direct.contains(&descendant) {
-                            continue;
-                        }
-                        if broken_slot_roots.contains(&descendant) {
-                            broken_reason = Some(BrokenRootReason::ReferenceBlocked {
-                                object: descendant,
-                                role: ReferenceRole::Descendant,
-                                reason: BlockReason::NotVerified,
-                            });
-                            break;
-                        }
-                        match self.verify_reference(descendant)? {
-                            Ok(()) => {}
-                            Err(reason) => {
-                                broken_reason = Some(BrokenRootReason::ReferenceBlocked {
-                                    object: descendant,
-                                    role: ReferenceRole::Descendant,
-                                    reason,
-                                });
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                if let Some(reason) = broken_reason {
-                    newly_broken.push((slot.clone(), reason));
-                }
             }
 
-            if newly_broken.is_empty() {
-                break;
-            }
-
-            for (slot, reason) in newly_broken {
-                if let Some(candidate) = candidates.remove(&slot) {
-                    broken_slot_roots.insert(candidate.root);
-                    self.broken_slots.insert(slot);
-                    report.broken_roots.push(BrokenRoot {
-                        path: candidate.relative,
-                        reason,
-                    });
-                }
+            if let Some(reason) = broken_reason {
+                newly_broken.push((slot.clone(), reason));
             }
         }
 
-        report
-            .broken_roots
-            .sort_by(|left, right| left.path.cmp(&right.path));
-
-        for (slot, candidate) in candidates {
-            self.visible.insert(
-                slot.clone(),
-                RootEntry {
-                    visible: VisibleRoot {
-                        slot,
-                        root: candidate.root,
-                        record_digest: ContentDigest::sha256(&candidate.record_bytes),
-                        child_count: candidate.manifest.children().len(),
-                        state: LocalPublicationState::Visible,
-                    },
-                    children: candidate.manifest.children().to_vec(),
-                },
-            );
+        if newly_broken.is_empty() {
+            break;
         }
 
-        if self.visible.len() > self.limits.max_roots {
-            return Err(LocalPublicationError::Capacity {
-                resource: CapacityResource::Roots,
-                current: self.visible.len(),
-                maximum: self.limits.max_roots,
-            });
+        for (slot, reason) in newly_broken {
+            if let Some(candidate) = candidates.remove(&slot) {
+                broken_slot_roots.insert(candidate.root);
+                classified.broken_slots.insert(slot);
+                classified.report.broken_roots.push(BrokenRoot {
+                    path: candidate.relative,
+                    reason,
+                });
+            }
         }
-        Ok(())
     }
+
+    classified
+        .report
+        .broken_roots
+        .sort_by(|left, right| left.path.cmp(&right.path));
+
+    for (slot, candidate) in candidates {
+        classified.visible.insert(
+            slot.clone(),
+            RootEntry {
+                visible: VisibleRoot {
+                    slot,
+                    root: candidate.root,
+                    record_digest: ContentDigest::sha256(&candidate.record_bytes),
+                    child_count: candidate.manifest.children().len(),
+                    state: LocalPublicationState::Visible,
+                },
+                children: candidate.manifest.children().to_vec(),
+            },
+        );
+    }
+
+    if classified.visible.len() > limits.max_roots {
+        return Err(LocalPublicationError::Capacity {
+            resource: CapacityResource::Roots,
+            current: classified.visible.len(),
+            maximum: limits.max_roots,
+        });
+    }
+    Ok(())
+}
+
+/// Read-only reference checks for inspection.
+///
+/// The spool classification has already reread and rehashed every object file, so a reference
+/// passes exactly when the open's verify would accept it for the same bytes: admitted objects
+/// pass, corrupt (including vanished) ones are `Corrupt`, anything unindexed is `Missing`.
+/// Manifest bodies are reread and rehashed without the lock; nothing is held or written.
+struct ObservedReferences<'a> {
+    io: &'a dyn SpoolIo,
+    spool_root: PathBuf,
+    max_object_bytes: usize,
+    admitted: BTreeSet<ContentDigest>,
+    corrupt: BTreeSet<ContentDigest>,
+}
+
+impl ReferenceCheck for ObservedReferences<'_> {
+    fn check_reference(
+        &mut self,
+        object: ContentDigest,
+    ) -> Result<Result<(), BlockReason>, LocalPublicationError> {
+        if self.corrupt.contains(&object) {
+            return Ok(Err(BlockReason::Corrupt));
+        }
+        if self.admitted.contains(&object) {
+            return Ok(Ok(()));
+        }
+        Ok(Err(BlockReason::Missing))
+    }
+
+    fn manifest_body(&mut self, root: ContentDigest) -> Result<Vec<u8>, LocalPublicationError> {
+        fss_object::read_verified_payload(&self.spool_root, root, self.max_object_bytes, self.io)
+            .map_err(LocalPublicationError::Spool)
+    }
+
+    fn redundant_temp(&mut self, _path: &Path) -> RedundantTemp {
+        RedundantTemp::Reported
+    }
+}
+
+/// Whether `path` is a directory, without following a symlink. Absent is `false`; any other file
+/// type is [`LocalPublicationError::InvalidLayout`], the class the open reports.
+fn directory_present(io: &dyn SpoolIo, path: &Path) -> Result<bool, LocalPublicationError> {
+    match io.symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_dir() => Ok(true),
+        Ok(_) => Err(LocalPublicationError::InvalidLayout {
+            path: path.to_path_buf(),
+        }),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(io_error(LocalIoOperation::Inspect, path, &error)),
+    }
+}
+
+/// Inspects a local publication root without taking locks, creating directories, or repairing
+/// state, with the host filesystem and the default read-only writer check. See
+/// [`inspect_with_io`].
+pub fn inspect(
+    root: impl AsRef<Path>,
+    limits: impl Into<LocalPublicationLimits>,
+) -> Result<LocalInspection, LocalPublicationError> {
+    inspect_with_io(
+        &HostSpoolIo,
+        root.as_ref(),
+        limits.into(),
+        None,
+        WriterDetectionOptions::default(),
+    )
+}
+
+/// [`inspect_with_io`] taking a shared I/O capability.
+pub fn inspect_with_options(
+    io: Arc<dyn SpoolIo>,
+    root: &Path,
+    limits: LocalPublicationLimits,
+    lock_table: Option<&dyn LockTableSource>,
+    options: WriterDetectionOptions,
+) -> Result<LocalInspection, LocalPublicationError> {
+    inspect_with_io(io.as_ref(), root, limits, lock_table, options)
+}
+
+/// Inspects a local publication root through explicit I/O and lock-table capabilities.
+///
+/// Only lists, stats, and reads through `io`: it never creates, locks, renames, removes, or
+/// fsyncs, and the only lock call is the opt-in shared probe of
+/// [`WriterDetectionOptions::probe_shared_lock`]. The spool and the root are classified by the
+/// same classifiers the open runs (see [`LocalInspection`] for the documented differences). A
+/// listing over its bound is the typed [`LocalPublicationError::EntryLimit`] or
+/// [`fss_object::SpoolError::EntryLimit`] the open returns.
+pub fn inspect_with_io(
+    io: &dyn SpoolIo,
+    root: &Path,
+    limits: LocalPublicationLimits,
+    lock_table: Option<&dyn LockTableSource>,
+    options: WriterDetectionOptions,
+) -> Result<LocalInspection, LocalPublicationError> {
+    inspect_with_ledger_journal(io, root, None, limits, lock_table, options)
+}
+
+/// [`inspect_with_io`] that also checks the deployment's canonical ledger journal for a writer.
+///
+/// `root` is the publication root; writer detection checks exactly `<root>/LOCK`,
+/// `<root>/spool/LOCK`, and `ledger_journal` when given. The journal path is always passed
+/// explicitly, never derived from the publication root, because the deployment layout places it
+/// beside the publication root (a ledger repair apply flocks it). With `None` the journal is not
+/// checked.
+pub fn inspect_with_ledger_journal(
+    io: &dyn SpoolIo,
+    root: &Path,
+    ledger_journal: Option<&Path>,
+    limits: LocalPublicationLimits,
+    lock_table: Option<&dyn LockTableSource>,
+    options: WriterDetectionOptions,
+) -> Result<LocalInspection, LocalPublicationError> {
+    let limits = limits.validate()?;
+    let spool_root = root.join(LOCAL_SPOOL_DIR);
+    let root_present = directory_present(io, root)?;
+    let (roots, tombstones) = if root_present {
+        (
+            directory_present(io, &root.join(LOCAL_ROOTS_DIR))?,
+            directory_present(io, &root.join(LOCAL_TOMBSTONES_DIR))?,
+        )
+    } else {
+        (false, false)
+    };
+    let spool = if root_present {
+        fss_object::inspect_with_io(&spool_root, &limits.spool, io)
+            .map_err(LocalPublicationError::Spool)?
+    } else {
+        SpoolInspection {
+            missing_layout: true,
+            ..SpoolInspection::default()
+        }
+    };
+    let classified = if root_present {
+        let mut references = ObservedReferences {
+            io,
+            spool_root: spool_root.clone(),
+            max_object_bytes: limits.spool.max_object_bytes,
+            admitted: spool.report.admitted.iter().copied().collect(),
+            corrupt: spool.report.corrupt.iter().map(|c| c.digest).collect(),
+        };
+        let layout = LocalLayout { roots, tombstones };
+        classify_local(
+            io,
+            root,
+            &limits,
+            layout,
+            spool.report.clone(),
+            &mut references,
+        )?
+    } else {
+        LocalClassification {
+            report: LocalRecoveryReport {
+                spool: spool.report.clone(),
+                ..LocalRecoveryReport::default()
+            },
+            ..LocalClassification::default()
+        }
+    };
+
+    let LocalClassification {
+        mut report,
+        redundant_temps,
+        visible,
+        broken_slots,
+        ..
+    } = classified;
+    // Every admitted root is one the open would fsync and admit, so closures span all of them.
+    // Their state stays `Visible`: this inspection observed no fsync.
+    let manifests: BTreeMap<ContentDigest, &[ContentDigest]> = visible
+        .values()
+        .map(|entry| (entry.visible.root, entry.children.as_slice()))
+        .collect();
+    let mut referenced = BTreeSet::new();
+    let mut root_closures = BTreeMap::new();
+    for (slot, entry) in &visible {
+        let closure = compute_closure(&manifests, entry.visible.root, &entry.children);
+        referenced.extend(closure.iter().copied());
+        root_closures.insert(slot.clone(), closure);
+        report.roots.push(entry.visible.clone());
+    }
+    report.unreferenced_objects = unreferenced_spool_objects(&report.spool, &referenced);
+
+    let mut lock_paths = vec![
+        root.join(LOCAL_LOCK_FILE),
+        spool_root.join(fss_object::SPOOL_LOCK_FILE),
+    ];
+    lock_paths.extend(ledger_journal.map(Path::to_path_buf));
+    let writer_state = detect_writers(io, &lock_paths, lock_table, options);
+    let possibly_stale = writer_state.possibly_stale();
+    let possibly_in_flight = writer_state.is_held()
+        || !redundant_temps.is_empty()
+        || !report.spool.orphaned_staging.is_empty();
+
+    Ok(LocalInspection {
+        report,
+        redundant_temps,
+        durability_not_resynced: !visible.is_empty(),
+        holds_migration_pending: spool.holds_migration_pending,
+        missing_layout: !root_present || !roots || !tombstones || spool.missing_layout,
+        spool_over_capacity: spool.over_capacity,
+        writer_state,
+        root_closures,
+        broken_slots,
+        possibly_stale,
+        possibly_in_flight,
+    })
+}
+
+/// Reads and verifies an object's payload directly from a deployment's spool
+/// without taking locks, creating holds, or modifying state.
+pub fn read_verified(
+    root: impl AsRef<Path>,
+    digest: ContentDigest,
+    max_bytes: usize,
+) -> Result<Vec<u8>, LocalPublicationError> {
+    read_verified_with_io(root.as_ref(), digest, max_bytes, &HostSpoolIo)
+}
+
+/// Reads and verifies an object's payload through the given I/O capability without taking
+/// locks, creating holds, or modifying state.
+///
+/// A missing or non-directory `<root>/spool` is [`LocalPublicationError::InvalidLayout`]; the
+/// root itself is never read as a spool. A payload longer than `max_bytes` or bytes that do not
+/// rehash to `digest` are [`fss_object::SpoolError::Corrupt`].
+pub fn read_verified_with_io(
+    root: &Path,
+    digest: ContentDigest,
+    max_bytes: usize,
+    io: &dyn SpoolIo,
+) -> Result<Vec<u8>, LocalPublicationError> {
+    let spool_root = root.join(LOCAL_SPOOL_DIR);
+    if !directory_present(io, &spool_root)? {
+        return Err(LocalPublicationError::InvalidLayout { path: spool_root });
+    }
+    fss_object::read_verified_payload(&spool_root, digest, max_bytes, io)
+        .map_err(LocalPublicationError::Spool)
 }
 
 fn io_error(operation: LocalIoOperation, path: &Path, error: &io::Error) -> LocalPublicationError {
