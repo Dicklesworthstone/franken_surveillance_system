@@ -22,3 +22,11 @@ Every operation accepts `fss.agent_request_envelope.v1` and returns `fss.agent_r
 | `AOP-014` | `doctor` | `fss-doctor` | `diagnostic_prepare` | `AVIEW-004` | `fss.agent_query_plan.v1` | no | yes | `QL-AGENT-001` | `specified` |
 
 Suboperations such as counterfactual comparison, evidence hydration, work claiming, repair planning, reconciliation, resolution, and adjudication are typed targets or intent families under these operations. They do not create a second public verb universe. An effectful operation still requires its domain capability and ordinary prepare/revalidate/idempotency/fencing semantics.
+
+## Operation lifecycle statuses
+
+`specified` · `active` · `preview` · `deprecated` · `superseded` · `tombstone` · `tombstoned`
+
+## Compatibility classes
+
+`backward_compatible`

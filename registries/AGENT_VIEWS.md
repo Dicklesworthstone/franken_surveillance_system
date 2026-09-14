@@ -14,3 +14,7 @@ Machine source: `architecture/agent_views.json`.
 | `AVIEW-008` | `epistemic_map` | `fss-knowledge` | known/estimated/unknown/conflicted/stale/not-observable/redacted/indeterminate map plus certified core, material alternative worlds, adversarial residuals, and discriminators | 1500 | 3000 | `QL-AGENT-001` | `specified` |
 
 Token values are design targets and admission budgets, not measured current behavior. Every bounded view carries a selection/compression receipt, omitted counts and reasons, completeness/coverage state, and expansion handles.
+
+## View sections
+
+`adversarialResiduals` · `atRisk` · `authority` · `basisAfter` · `basisBefore` · `budgets` · `cases` · `certified` · `certifiedAbsences` · `certifiedCore` · `changed` · `changedEvidence` · `continuity` · `contradictions` · `controlEnvelope` · `coverage` · `coverageChanges` · `criticalChanges` · `decisionImpact` · `derivations` · `discriminators` · `effectUncertainty` · `evidence` · `evidenceGraph` · `gaps` · `hypotheses` · `invalidatedAssumptions` · `materialAlternatives` · `mission` · `next` · `nextDiscriminators` · `now` · `obligations` · `plans` · `possible` · `progress` · `proofExpected` · `question` · `receipts` · `reconciliation` · `redactions` · `replay` · `situation` · `sourceHandles` · `state` · `states` · `stopRule` · `unknown` · `unknowns` · `urgentObligations` · `whatWouldReverse` · `why`
