@@ -86,7 +86,7 @@ SECRET_PATTERNS = [
     re.compile(r"\bnpm_[A-Za-z0-9_]{10,}\b"),
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
     re.compile(r"\.ssh/(?:id_rsa|id_ed25519|id_ecdsa|id_dsa)"),
-    re.compile(r"~/(?!second\b)[a-zA-Z0-9._-]+"),
+    re.compile(r"~/(?:\.[a-zA-Z0-9._-]+|[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+)"),
     re.compile(r"/data/projects/[a-zA-Z0-9._-]+"),
     re.compile(r"/home/[a-zA-Z0-9._-]+"),
     re.compile(r"/Users/[a-zA-Z0-9._-]+"),

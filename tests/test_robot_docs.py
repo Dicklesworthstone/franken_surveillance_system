@@ -1071,6 +1071,47 @@ class RobotDocsContractTests(unittest.TestCase):
         self.assertFalse(res.passed)
         self.assertEqual({e.code for e in res.errors}, {ERR_ROBOT_DOCS_SECRET_DETECTED})
 
+    def test_secret_scan_rate_forms_accepted(self) -> None:
+        """Rate prose ('tokens per ~/s', ~/seconds, ~/ms, ~/min, ~/day) are accepted as benign."""
+        rate_forms = [
+            "tokens per ~/s",
+            "throughput is 100 ~/seconds",
+            "latency is 5 ~/ms",
+            "frequency is 2 ~/min",
+            "budget is 10 ~/day",
+        ]
+        for form in rate_forms:
+            views_file = self.fake_root / "architecture/agent_views.json"
+            data = json.loads(views_file.read_text(encoding="utf-8"))
+            data["views"][0]["purpose"] = f"Measurement: {form}"
+            views_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            res = validate_robot_docs(self.fake_root)
+            self.assertNotIn(
+                ERR_ROBOT_DOCS_SECRET_DETECTED,
+                [e.code for e in res.errors],
+                f"Rate form '{form}' was unexpectedly refused as secret",
+            )
+
+    def test_secret_scan_tilde_paths_refused(self) -> None:
+        """Path-shaped tilde text (~/secrets/x, ~/.aws/credentials, ~/second-factor/key) are refused."""
+        forbidden_paths = [
+            "~/secrets/x",
+            "~/.aws/credentials",
+            "~/second-factor/key",
+        ]
+        for path in forbidden_paths:
+            views_file = self.fake_root / "architecture/agent_views.json"
+            data = json.loads(views_file.read_text(encoding="utf-8"))
+            data["views"][0]["purpose"] = f"Look at {path} for keys"
+            views_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            res = validate_robot_docs(self.fake_root)
+            self.assertFalse(res.passed, f"Path '{path}' was not refused")
+            self.assertIn(
+                ERR_ROBOT_DOCS_SECRET_DETECTED,
+                [e.code for e in res.errors],
+                f"Path '{path}' did not trigger ERR_ROBOT_DOCS_SECRET_DETECTED",
+            )
+
     # --- Item 5: Malformed on-disk capabilities, non-list tombstones, wrongly typed fields ---
 
     def test_checker_malformed_on_disk_capabilities(self) -> None:
