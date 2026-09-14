@@ -35,6 +35,7 @@ from generate_robot_docs import (
     ERR_ROBOT_DOCS_SECRET_DETECTED,
     ERR_ROBOT_DOCS_STALE,
     ERR_ROBOT_DOCS_UNREGISTERED,
+    RobotDocsError,
     collect_robot_docs_model,
     escape_markdown_cell,
     escape_markdown_inline,
@@ -81,6 +82,8 @@ class RobotDocsContractTests(unittest.TestCase):
         (self.fake_root / "docs").mkdir(parents=True, exist_ok=True)
         (self.fake_root / "crates/fss-cli/src").mkdir(parents=True, exist_ok=True)
 
+        (self.fake_root / "schemas").mkdir(parents=True, exist_ok=True)
+
         for arch_file in [
             "fss1_public_registry.json",
             "agent_operations.json",
@@ -93,10 +96,20 @@ class RobotDocsContractTests(unittest.TestCase):
             if src.exists():
                 shutil.copyfile(src, self.fake_root / "architecture" / arch_file)
 
-        for reg_file in ["ERRORS.md", "SCHEMAS.md"]:
+        for reg_file in [
+            "ERRORS.md",
+            "SCHEMAS.md",
+            "AGENT_OPERATIONS.md",
+            "AGENT_VIEWS.md",
+            "OPERATION_CROSSWALK.md",
+        ]:
             src = ROOT / "registries" / reg_file
             if src.exists():
                 shutil.copyfile(src, self.fake_root / "registries" / reg_file)
+
+        envelope_schema = ROOT / "schemas/agent_response_envelope.v1.json"
+        if envelope_schema.exists():
+            shutil.copyfile(envelope_schema, self.fake_root / "schemas/agent_response_envelope.v1.json")
 
         fss_cmd = ROOT / "crates/fss-cli/src/fss_cmd.rs"
         if fss_cmd.exists():
@@ -258,6 +271,7 @@ class RobotDocsContractTests(unittest.TestCase):
         self.assertFalse(res.passed)
         error_codes = [e.code for e in res.errors]
         self.assertEqual(set(error_codes), {ERR_ROBOT_DOCS_STALE})
+        self.assertTrue(any(e.target == "operations_ordering" for e in res.errors))
 
     def test_mutant_m4_tampered_view_sections(self) -> None:
         """Mutant M4: Modifying view maximumTokens in agent_views.json triggers ERR-ROBOT-DOCS-STALE-001."""
@@ -1415,6 +1429,350 @@ class RobotDocsContractTests(unittest.TestCase):
         self.assertEqual(len(purpose_lines), 1)
         self.assertNotIn("\n", purpose_lines[0])
         self.assertIn("- **Purpose**: negotiate principal - fake bullet '''bash echo evil '''", purpose_lines[0])
+
+    def test_checker_c4_operations_id_drift(self) -> None:
+        """C4: Operation ID set mismatch between on-disk JSON and registry triggers ERR-ROBOT-DOCS-DRIFT-001."""
+        json_file = self.fake_root / "docs/ROBOT_DOCS.json"
+        data = json.loads(json_file.read_text(encoding="utf-8"))
+        data["operations"].pop()
+        json_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        drift_errs = [e for e in res.errors if e.code == ERR_ROBOT_DOCS_DRIFT and e.target == "operations"]
+        self.assertEqual(len(drift_errs), 1)
+        self.assertIn("Operation IDs drift", drift_errs[0].message)
+
+    def test_checker_c5_operations_ordering(self) -> None:
+        """C5: Operation ordering mismatch triggers ERR-ROBOT-DOCS-STALE-001 with target operations_ordering."""
+        json_file = self.fake_root / "docs/ROBOT_DOCS.json"
+        data = json.loads(json_file.read_text(encoding="utf-8"))
+        data["operations"][0], data["operations"][1] = data["operations"][1], data["operations"][0]
+        json_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        ordering_errs = [e for e in res.errors if e.code == ERR_ROBOT_DOCS_STALE and e.target == "operations_ordering"]
+        self.assertEqual(len(ordering_errs), 1)
+        self.assertIn("canonical sorted order", ordering_errs[0].message)
+
+    def test_checker_c6_views_id_drift(self) -> None:
+        """C6: View ID set mismatch triggers ERR-ROBOT-DOCS-DRIFT-001 with target views."""
+        json_file = self.fake_root / "docs/ROBOT_DOCS.json"
+        data = json.loads(json_file.read_text(encoding="utf-8"))
+        data["views"].pop()
+        json_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        drift_errs = [e for e in res.errors if e.code == ERR_ROBOT_DOCS_DRIFT and e.target == "views"]
+        self.assertEqual(len(drift_errs), 1)
+        self.assertIn("View IDs drift", drift_errs[0].message)
+
+    def test_checker_c7_resources_id_drift(self) -> None:
+        """C7: Resource ID set mismatch triggers ERR-ROBOT-DOCS-DRIFT-001 with target resources."""
+        json_file = self.fake_root / "docs/ROBOT_DOCS.json"
+        data = json.loads(json_file.read_text(encoding="utf-8"))
+        data["resources"].pop()
+        json_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        drift_errs = [e for e in res.errors if e.code == ERR_ROBOT_DOCS_DRIFT and e.target == "resources"]
+        self.assertEqual(len(drift_errs), 1)
+        self.assertIn("Resource IDs drift", drift_errs[0].message)
+
+    def test_checker_c8_capabilities_id_drift(self) -> None:
+        """C8: Capability ID set mismatch triggers ERR-ROBOT-DOCS-DRIFT-001 with target capabilities."""
+        json_file = self.fake_root / "docs/ROBOT_DOCS.json"
+        data = json.loads(json_file.read_text(encoding="utf-8"))
+        data["capabilities"].pop()
+        json_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        drift_errs = [e for e in res.errors if e.code == ERR_ROBOT_DOCS_DRIFT and e.target == "capabilities"]
+        self.assertEqual(len(drift_errs), 1)
+        self.assertIn("Capability IDs drift", drift_errs[0].message)
+
+    def test_empty_input_schema_refused(self) -> None:
+        """Empty inputSchema string in agent_operations triggers ERR-ROBOT-DOCS-CORRUPT-001."""
+        ops_file = self.fake_root / "architecture/agent_operations.json"
+        data = json.loads(ops_file.read_text(encoding="utf-8"))
+        data["operations"][0]["inputSchema"] = ""
+        ops_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertTrue(any(e.code == ERR_ROBOT_DOCS_CORRUPT for e in res.errors))
+
+    def test_empty_operation_request_payload_schema_refused(self) -> None:
+        """Empty requestPayloadSchema string in agent_operations triggers ERR-ROBOT-DOCS-CORRUPT-001."""
+        ops_file = self.fake_root / "architecture/agent_operations.json"
+        data = json.loads(ops_file.read_text(encoding="utf-8"))
+        data["operations"][0]["requestPayloadSchema"] = ""
+        ops_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertTrue(any(e.code == ERR_ROBOT_DOCS_CORRUPT for e in res.errors))
+
+    def test_empty_resource_payload_schema_refused(self) -> None:
+        """Empty payloadSchema string in resources triggers ERR-ROBOT-DOCS-CORRUPT-001."""
+        f1_file = self.fake_root / "architecture/fss1_public_registry.json"
+        data = json.loads(f1_file.read_text(encoding="utf-8"))
+        data["resources"][0]["payloadSchema"] = ""
+        f1_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertTrue(any(e.code == ERR_ROBOT_DOCS_CORRUPT for e in res.errors))
+
+    def test_unregistered_operation_mode_refused(self) -> None:
+        """Unregistered operation mode triggers ERR-ROBOT-DOCS-UNREGISTERED-001."""
+        ops_file = self.fake_root / "architecture/agent_operations.json"
+        data = json.loads(ops_file.read_text(encoding="utf-8"))
+        data["operations"][0]["mode"] = "unregistered_mode"
+        ops_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertTrue(any(e.code == ERR_ROBOT_DOCS_UNREGISTERED and "mode" in e.message for e in res.errors))
+
+    def test_unregistered_operation_status_refused(self) -> None:
+        """Unregistered operation status in both registries triggers ERR-ROBOT-DOCS-UNREGISTERED-001."""
+        for rel in ["architecture/agent_operations.json", "architecture/fss1_public_registry.json"]:
+            p = self.fake_root / rel
+            data = json.loads(p.read_text(encoding="utf-8"))
+            data["operations"][0]["status"] = "bogus_status"
+            p.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertTrue(any(e.code == ERR_ROBOT_DOCS_UNREGISTERED and "status" in e.message for e in res.errors))
+
+    def test_unregistered_view_status_refused(self) -> None:
+        """Unregistered view status triggers ERR-ROBOT-DOCS-UNREGISTERED-001."""
+        views_file = self.fake_root / "architecture/agent_views.json"
+        data = json.loads(views_file.read_text(encoding="utf-8"))
+        data["views"][0]["status"] = "bogus_status"
+        views_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertTrue(any(e.code == ERR_ROBOT_DOCS_UNREGISTERED and "status" in e.message for e in res.errors))
+
+    def test_unregistered_resource_status_refused(self) -> None:
+        """Unregistered resource status triggers ERR-ROBOT-DOCS-UNREGISTERED-001."""
+        f1_file = self.fake_root / "architecture/fss1_public_registry.json"
+        data = json.loads(f1_file.read_text(encoding="utf-8"))
+        data["resources"][0]["status"] = "bogus_status"
+        f1_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertTrue(any(e.code == ERR_ROBOT_DOCS_UNREGISTERED and "status" in e.message for e in res.errors))
+
+    def test_unregistered_resource_compatibility_class_refused(self) -> None:
+        """Unregistered resource compatibilityClass triggers ERR-ROBOT-DOCS-UNREGISTERED-001."""
+        f1_file = self.fake_root / "architecture/fss1_public_registry.json"
+        data = json.loads(f1_file.read_text(encoding="utf-8"))
+        data["resources"][0]["compatibilityClass"] = "bogus_compat"
+        f1_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertTrue(any(e.code == ERR_ROBOT_DOCS_UNREGISTERED and "compatibility class" in e.message for e in res.errors))
+
+    def test_unregistered_view_required_sections_refused(self) -> None:
+        """Unregistered section name in requiredSections triggers ERR-ROBOT-DOCS-UNREGISTERED-001."""
+        views_file = self.fake_root / "architecture/agent_views.json"
+        data = json.loads(views_file.read_text(encoding="utf-8"))
+        data["views"][0]["requiredSections"].append("nonexistent_view_section_xyz")
+        views_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertTrue(any(e.code == ERR_ROBOT_DOCS_UNREGISTERED and "unregistered section" in e.message for e in res.errors))
+
+    def test_missing_capability_required_fields_refused(self) -> None:
+        """Missing denialReason, safeAlternative, or generation in capability triggers ERR-ROBOT-DOCS-CORRUPT-001."""
+        caps_file = self.fake_root / "architecture/capabilities.json"
+        data = json.loads(caps_file.read_text(encoding="utf-8"))
+        data["capabilities"][0].pop("denialReason", None)
+        caps_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertTrue(any(e.code == ERR_ROBOT_DOCS_CORRUPT and "missing required key" in e.message for e in res.errors))
+
+    def test_missing_crosswalk_fields_refused(self) -> None:
+        """Missing required crosswalk fields (library_entry_point, primary_error_id, etc.) triggers ERR-ROBOT-DOCS-CORRUPT-001."""
+        cw_file = self.fake_root / "architecture/operation_crosswalk.json"
+        data = json.loads(cw_file.read_text(encoding="utf-8"))
+        data["crosswalk"][0].pop("library_entry_point", None)
+        cw_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertTrue(any(e.code == ERR_ROBOT_DOCS_CORRUPT and "missing required key" in e.message for e in res.errors))
+
+    def test_dynamic_canonical_operations_count(self) -> None:
+        """The canonical count in Markdown header is derived from active operations, not hardcoded 14."""
+        f1_file = self.fake_root / "architecture/fss1_public_registry.json"
+        data = json.loads(f1_file.read_text(encoding="utf-8"))
+        last_op_id = data["operations"][-1]["id"]
+        data["tombstones"] = [{"id": last_op_id, "reason": "Tombstoned for test"}]
+        f1_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        model = collect_robot_docs_model(self.fake_root)
+        md = generate_robot_docs_markdown(model)
+        self.assertEqual(len(model["operations"]), 13)
+        self.assertIn("The complete suite of 13 canonical agent control plane operations under `fss/1`:", md)
+        self.assertNotIn("The complete suite of 14 canonical", md)
+
+    def test_cli_discovery_derived_from_help_and_parser_literals(self) -> None:
+        """Modifying help usage or parser match arms in fss_cmd.rs updates discovery endpoints (kills M5)."""
+        fss_cmd_file = self.fake_root / "crates/fss-cli/src/fss_cmd.rs"
+        orig_text = fss_cmd_file.read_text(encoding="utf-8")
+
+        # 1. Changing status usage in help_text updates discovery status cli string
+        fss_cmd_file.write_text(orig_text.replace("fss status --json", "fss status --json --verbose", 1), encoding="utf-8")
+        _, js_str = generate_docs(self.fake_root)
+        disc = json.loads(js_str)["discovery"]
+        self.assertEqual(disc["status"]["cli"], "fss status --json --verbose", "CLI discovery must reflect help_text changes")
+
+        # 2. Changing doctor usage in help_text updates discovery doctor cli string
+        fss_cmd_file.write_text(orig_text.replace("fss doctor --json", "fss doctor --format json", 1), encoding="utf-8")
+        _, js_str = generate_docs(self.fake_root)
+        disc = json.loads(js_str)["discovery"]
+        self.assertEqual(disc["doctor"]["cli"], "fss doctor --format json", "CLI discovery must reflect help_text changes")
+
+        # 3. Changing negative-evidence list to ls in help_text updates negative_evidence cli string
+        fss_cmd_file.write_text(orig_text.replace("fss negative-evidence <init|list|verify|append>", "fss negative-evidence <init|ls|verify|append>", 1), encoding="utf-8")
+        _, js_str = generate_docs(self.fake_root)
+        disc = json.loads(js_str)["discovery"]
+        self.assertEqual(disc["negative_evidence"]["cli"], "fss negative-evidence ls --json", "CLI discovery must reflect help_text changes")
+
+        # 4. Changing parser literal 'status' => to 'state' => updates discovery status cli string
+        fss_cmd_file.write_text(orig_text.replace('"status" =>', '"state" =>', 1), encoding="utf-8")
+        _, js_str = generate_docs(self.fake_root)
+        disc = json.loads(js_str)["discovery"]
+        self.assertEqual(disc["status"]["cli"], "fss state --json", "CLI discovery must reflect parser match arms")
+
+        # 5. Changing status doc comment updates description
+        fss_cmd_file.write_text(orig_text.replace("/// Report system status in JSON format.", "/// Report CHANGED status.", 1), encoding="utf-8")
+        _, js_str = generate_docs(self.fake_root)
+        disc = json.loads(js_str)["discovery"]
+        self.assertEqual(disc["status"]["description"], "Report CHANGED status.")
+
+        # 6. Renaming variant Status to Health triggers missing endpoint error
+        fss_cmd_file.write_text(orig_text.replace("    Status,", "    Health,", 1), encoding="utf-8")
+        with self.assertRaises(RobotDocsError) as ctx:
+            generate_docs(self.fake_root)
+        self.assertEqual(ctx.exception.code, ERR_ROBOT_DOCS_CORRUPT)
+        self.assertIn("Missing CLI discovery endpoints", ctx.exception.message)
+
+    def test_recovery_classes_dynamically_derived_kills_m2g(self) -> None:
+        """Adding a recovery class to schemas/agent_response_envelope.v1.json dynamically permits its use (kills M2g)."""
+        env_file = self.fake_root / "schemas/agent_response_envelope.v1.json"
+        env_data = json.loads(env_file.read_text(encoding="utf-8"))
+        env_data["properties"]["recoveryClass"]["enum"].append("brand_new_test_class")
+        env_file.write_text(json.dumps(env_data, indent=2) + "\n", encoding="utf-8")
+
+        ops_file = self.fake_root / "architecture/agent_operations.json"
+        ops_data = json.loads(ops_file.read_text(encoding="utf-8"))
+        ops_data["operations"][0]["retryClasses"].append("brand_new_test_class")
+        ops_file.write_text(json.dumps(ops_data, indent=2) + "\n", encoding="utf-8")
+
+        # Must succeed because VALID_RECOVERY_CLASSES is dynamically derived from the schema
+        md, js_str = generate_docs(self.fake_root)
+        self.assertIn("brand_new_test_class", js_str)
+
+    def test_operation_modes_dynamically_derived_kills_m2h(self) -> None:
+        """Adding an operation mode in registries/AGENT_OPERATIONS.md dynamically permits its use (kills M2h)."""
+        ops_file = self.fake_root / "architecture/agent_operations.json"
+        ops_data = json.loads(ops_file.read_text(encoding="utf-8"))
+        ops_data["operations"][0]["mode"] = "session_custom_mode"
+        ops_file.write_text(json.dumps(ops_data, indent=2) + "\n", encoding="utf-8")
+
+        md_file = self.fake_root / "registries/AGENT_OPERATIONS.md"
+        text = md_file.read_text(encoding="utf-8")
+        row = "\n| `AOP-999` | `custom.op` | `fss-custom` | `session_custom_mode` | `AVIEW-001` | `fss.custom.v1` | no | no | `QL-AGENT-001` | `specified` |"
+        text = text.replace("\nSuboperations", f"{row}\n\nSuboperations")
+        md_file.write_text(text, encoding="utf-8")
+
+        # Must succeed because valid_modes is dynamically derived from registries/AGENT_OPERATIONS.md
+        md, js_str = generate_docs(self.fake_root)
+        self.assertIn("session_custom_mode", js_str)
+
+    def test_robot_docs_json_formatting_drift_fails_stale(self) -> None:
+        """Formatting-only drift in docs/ROBOT_DOCS.json (e.g. indent=4 or compact) fails closed as ERR_ROBOT_DOCS_STALE."""
+        json_path = self.fake_root / "docs/ROBOT_DOCS.json"
+        d = json.loads(json_path.read_text(encoding="utf-8"))
+
+        # 4-space indentation drift
+        json_path.write_text(json.dumps(d, indent=4) + "\n", encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed, "Re-indented docs/ROBOT_DOCS.json must fail validation")
+        self.assertTrue(any(e.code == ERR_ROBOT_DOCS_STALE for e in res.errors))
+
+        # Compact formatting drift
+        json_path.write_text(json.dumps(d, separators=(",", ":")), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed, "Compact docs/ROBOT_DOCS.json must fail validation")
+        self.assertTrue(any(e.code == ERR_ROBOT_DOCS_STALE for e in res.errors))
+
+        # Missing trailing newline drift
+        json_path.write_text(json.dumps(d, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed, "docs/ROBOT_DOCS.json without trailing newline must fail validation")
+        self.assertTrue(any(e.code == ERR_ROBOT_DOCS_STALE for e in res.errors))
+
+    def test_canonical_operations_count_excludes_superseded_and_deprecated(self) -> None:
+        """Superseded and deprecated operations are excluded from canonical operation count."""
+        def set_status(st: str) -> None:
+            for rel in ["architecture/agent_operations.json", "architecture/fss1_public_registry.json"]:
+                p = self.fake_root / rel
+                d = json.loads(p.read_text(encoding="utf-8"))
+                d["operations"][0]["status"] = st
+                p.write_text(json.dumps(d, indent=2) + "\n", encoding="utf-8")
+            cw_p = self.fake_root / "architecture/operation_crosswalk.json"
+            cw_d = json.loads(cw_p.read_text(encoding="utf-8"))
+            cw_d["crosswalk"][0]["status"] = st
+            cw_p.write_text(json.dumps(cw_d, indent=2) + "\n", encoding="utf-8")
+
+        # Superseded operation excluded from canonical count
+        set_status("superseded")
+        md, js_str = generate_docs(self.fake_root)
+        model = json.loads(js_str)
+        self.assertEqual(len(model["operations"]), 13)
+        self.assertIn("The complete suite of 13 canonical agent control plane operations under `fss/1`:", md)
+
+        # Deprecated operation excluded from canonical count
+        set_status("deprecated")
+        md, js_str = generate_docs(self.fake_root)
+        model = json.loads(js_str)
+        self.assertEqual(len(model["operations"]), 13)
+        self.assertIn("The complete suite of 13 canonical agent control plane operations under `fss/1`:", md)
+
+        # Tombstoned operation excluded from canonical count
+        set_status("tombstoned")
+        md, js_str = generate_docs(self.fake_root)
+        model = json.loads(js_str)
+        self.assertEqual(len(model["operations"]), 13)
+        self.assertIn("The complete suite of 13 canonical agent control plane operations under `fss/1`:", md)
+
+        # Active operation included in canonical count
+        set_status("active")
+        md, js_str = generate_docs(self.fake_root)
+        model = json.loads(js_str)
+        self.assertEqual(len(model["operations"]), 14)
+        self.assertIn("The complete suite of 14 canonical agent control plane operations under `fss/1`:", md)
+
+    def test_fss1_operation_compatibility_class_validated(self) -> None:
+        """Operation in fss1_public_registry.json with invalid compatibilityClass fails with ERR-ROBOT-DOCS-UNREGISTERED-001."""
+        f1_file = self.fake_root / "architecture/fss1_public_registry.json"
+        data = json.loads(f1_file.read_text(encoding="utf-8"))
+        data["operations"][0]["compatibilityClass"] = "bogus_compat"
+        f1_file.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+        with self.assertRaises(RobotDocsError) as ctx:
+            generate_docs(self.fake_root)
+        self.assertEqual(ctx.exception.code, ERR_ROBOT_DOCS_UNREGISTERED)
+        self.assertIn("unregistered compatibility class", ctx.exception.message)
+
+    def test_missing_registry_or_schema_fails_missing_no_repo_root_fallback(self) -> None:
+        """Missing registry or schema in target root fails with ERR-ROBOT-DOCS-MISSING-001 without falling back to repo root."""
+        # Missing registries/AGENT_OPERATIONS.md
+        (self.fake_root / "registries/AGENT_OPERATIONS.md").unlink()
+        with self.assertRaises(RobotDocsError) as ctx:
+            generate_docs(self.fake_root)
+        self.assertEqual(ctx.exception.code, ERR_ROBOT_DOCS_MISSING)
+        self.assertIn("AGENT_OPERATIONS.md", ctx.exception.message)
 
 
 if __name__ == "__main__":
