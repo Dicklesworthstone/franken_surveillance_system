@@ -292,7 +292,7 @@
     {
       "id": "KSTATE-001",
       "name": "known",
-      "meaning": "The proposition is established for the named anchor and validity scope by admissible evidence or a proved terminal postcondition.",
+      "meaning": "The proposition is established for the named anchor and validity scope by admissible evidence, with any proved terminal postcondition bound as an evidence root.",
       "mayAuthorizePremise": true
     },
     {
