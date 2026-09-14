@@ -1395,7 +1395,7 @@ fn test_delegated_jpeg_fixtures() -> Result<(), Box<dyn Error>> {
 
     let jpeg_dir = repo_root.join("tests/fixtures/media/jpeg");
     let app_com = jpeg_dir.join("rgb_64x48_app_com_ffd9.jpg");
-    let restart = jpeg_dir.join("rgb_64x48_restart_ri3.jpg");
+    let restart = jpeg_dir.join("rgb_64x48_restart_ri5.jpg");
 
     let limits = MjpegLimits::default();
     let mut fixtures_verified = 0usize;
@@ -1448,7 +1448,13 @@ fn test_delegated_jpeg_fixtures() -> Result<(), Box<dyn Error>> {
         skip_reasons.push("rgb_64x48_app_com_ffd9.jpg not found on disk".to_string());
     }
 
-    // Check 2: rgb_64x48_restart_ri3.jpg
+    // Check 2: rgb_64x48_restart_ri5.jpg (the restart fixture fss-2h5zq.5 produces).
+    // Expected values are derived from the committed file bytes and agree with the
+    // independent baseline decoder in media_fixture_jpeg_contract.rs (DRI 5, 12 MCUs
+    // decoded as [5, 5, 2] per entropy-coded segment, RST0 at 736, RST1 at 865):
+    // 917 bytes; APP0@2, DQT@20, SOF0@154, DRI@173, DHT@179, SOS@599 = 6 marker
+    // segments; SOS header ends at 613; RSTn inside the entropy-coded data are not
+    // counted by the splitter; EOI@915 ends the frame at 917.
     if restart.is_file() {
         match fs::read(&restart) {
             Ok(bytes) => match split_jpeg_stream(&bytes, &limits, None) {
@@ -1462,10 +1468,32 @@ fn test_delegated_jpeg_fixtures() -> Result<(), Box<dyn Error>> {
                         ok = false;
                     }
                     if let Some(f0) = scan.frames.first() {
-                        if f0.restart_interval != 3 {
+                        if f0.restart_interval != 5 {
                             failure_reasons.push(format!(
-                                "restart: restart_interval is {} != 3",
+                                "restart: restart_interval is {} != 5",
                                 f0.restart_interval
+                            ));
+                            ok = false;
+                        }
+                        let span = (
+                            f0.start_offset,
+                            f0.end_offset,
+                            f0.has_eoi,
+                            f0.is_truncated,
+                            f0.marker_count,
+                        );
+                        if span != (0, 917, true, false, 6) {
+                            failure_reasons.push(format!(
+                                "restart: (start, end, has_eoi, is_truncated, marker_count) {span:?} != (0, 917, true, false, 6)"
+                            ));
+                            ok = false;
+                        }
+                        if let Some(sof) = f0.sof.as_ref()
+                            && (sof.components != 3 || sof.precision != 8)
+                        {
+                            failure_reasons.push(format!(
+                                "restart: components/precision ({},{}) != (3,8)",
+                                sof.components, sof.precision
                             ));
                             ok = false;
                         }
@@ -1488,6 +1516,33 @@ fn test_delegated_jpeg_fixtures() -> Result<(), Box<dyn Error>> {
                         failure_reasons.push("restart: missing frame 0".to_string());
                         ok = false;
                     }
+                    if !scan.findings.is_empty() || !scan.omissions.is_empty() {
+                        failure_reasons.push(format!(
+                            "restart: findings {:?} / omissions {:?} must both be empty",
+                            scan.findings, scan.omissions
+                        ));
+                        ok = false;
+                    }
+                    // Byte-level cross-check against the decoder's known facts: exactly two
+                    // restart markers, RST0 at 736 and RST1 at 865, both strictly between the
+                    // SOS header end (613) and EOI (915).
+                    let rst_positions: Vec<(usize, u8)> = bytes
+                        .windows(2)
+                        .enumerate()
+                        .filter(|(_, w)| w[0] == 0xFF && (0xD0..=0xD7).contains(&w[1]))
+                        .map(|(i, w)| (i, w[1]))
+                        .collect();
+                    if bytes.len() != 917
+                        || rst_positions != vec![(736, 0xD0), (865, 0xD1)]
+                        || bytes.get(915..917) != Some(&[0xFF, 0xD9][..])
+                        || !rst_positions.iter().all(|&(i, _)| i > 613 && i < 915)
+                    {
+                        failure_reasons.push(format!(
+                            "restart: file bytes len {} rst {rst_positions:?} != 917 / [(736, 0xD0), (865, 0xD1)] with EOI at 915",
+                            bytes.len()
+                        ));
+                        ok = false;
+                    }
                     if ok {
                         fixtures_verified += 1;
                     }
@@ -1502,7 +1557,7 @@ fn test_delegated_jpeg_fixtures() -> Result<(), Box<dyn Error>> {
         }
     } else {
         fixtures_skipped += 1;
-        skip_reasons.push("rgb_64x48_restart_ri3.jpg not found on disk".to_string());
+        skip_reasons.push("rgb_64x48_restart_ri5.jpg not found on disk".to_string());
     }
 
     let duration_ms = start.elapsed().as_millis().max(1);
