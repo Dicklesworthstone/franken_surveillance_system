@@ -20,10 +20,10 @@ use fss_core::{
     ContractError, Contradiction, ContradictionParams, DigestAlgorithm, Generation, H1_CONTENT,
     H1_LEVEL_ID, H1_LEVEL_NAME, H1_OWNER, H1_SCHEMA, H1ContentSpec, H1SemanticSynopsis,
     H1SynopsisParams, HandleAvailability, HydrationArtifact, HydrationError, HydrationLevel,
-    HypothesisDisposition, KnowledgeState, LaboratoryAccess, LedgerAnchor, MAX_H1_FACTS,
-    MAX_H1_KNOWLEDGE_STATES, OmissionReason, ProvenanceClass, RuntimeOutcome, SemanticHandle,
-    SemanticHandleSpec, SynopsisClassification, SynopsisQuality, TimestampNs, WorldFact,
-    WorldFactKind,
+    HypothesisDisposition, KnowledgeState, LaboratoryAccess, LedgerAnchor, MAX_H1_CONTRADICTIONS,
+    MAX_H1_FACTS, MAX_H1_KNOWLEDGE_STATES, MAX_H1_OMISSIONS, MAX_H1_PROVENANCE_CLASSES,
+    OmissionReason, ProvenanceClass, RuntimeOutcome, SemanticHandle, SemanticHandleSpec,
+    SynopsisClassification, SynopsisQuality, TimestampNs, WorldFact, WorldFactKind,
 };
 
 fn sample_basis() -> ContractBasis {
@@ -618,9 +618,14 @@ fn test_h1_synopsis_classification_parsing_and_display() -> Result<(), Box<dyn E
 fn test_h1_owner_pinned_to_registry() -> Result<(), Box<dyn Error>> {
     let registry = include_str!("../../../architecture/semantic_hydration.json");
     let key = "\"semantic_owner\": \"";
-    let pos = registry.find(key).ok_or("missing semantic_owner in registry")?;
+    let pos = registry
+        .find(key)
+        .ok_or("missing semantic_owner in registry")?;
     let start = pos + key.len();
-    let end = registry[start..].find('"').ok_or("malformed semantic_owner string")? + start;
+    let end = registry[start..]
+        .find('"')
+        .ok_or("malformed semantic_owner string")?
+        + start;
     let expected_owner = &registry[start..end];
     assert_eq!(expected_owner, "fss-agent-core");
     assert_eq!(H1_OWNER, expected_owner);
@@ -768,18 +773,26 @@ fn test_h1_tampered_handle_refuses() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn test_h1_synopsis_classification_exact_match_no_aliases() -> Result<(), Box<dyn Error>> {
-    assert!(" semantic_synopsis"
-        .parse::<SynopsisClassification>()
-        .is_err());
-    assert!("semantic_synopsis "
-        .parse::<SynopsisClassification>()
-        .is_err());
-    assert!("semantic_synopsis\n"
-        .parse::<SynopsisClassification>()
-        .is_err());
-    assert!("SEMANTIC_SYNOPSIS"
-        .parse::<SynopsisClassification>()
-        .is_err());
+    assert!(
+        " semantic_synopsis"
+            .parse::<SynopsisClassification>()
+            .is_err()
+    );
+    assert!(
+        "semantic_synopsis "
+            .parse::<SynopsisClassification>()
+            .is_err()
+    );
+    assert!(
+        "semantic_synopsis\n"
+            .parse::<SynopsisClassification>()
+            .is_err()
+    );
+    assert!(
+        "SEMANTIC_SYNOPSIS"
+            .parse::<SynopsisClassification>()
+            .is_err()
+    );
     assert!("synopsis".parse::<SynopsisClassification>().is_err());
     assert!(SynopsisClassification::from_name(" semantic_synopsis").is_err());
     assert!(SynopsisClassification::from_name("").is_err());
@@ -835,7 +848,7 @@ fn test_h1_dos_protection_collection_bounds() -> Result<(), Box<dyn Error>> {
     let mut dec = CanonicalDecoder::new(&bytes_bad_facts);
     assert_eq!(
         H1SemanticSynopsis::decode_canonical(&mut dec).err(),
-        Some(ContractError::InvalidDigest)
+        Some(ContractError::CountBoundExceeded)
     );
 
     // 2. Oversized facts count: u64::MAX
@@ -845,7 +858,7 @@ fn test_h1_dos_protection_collection_bounds() -> Result<(), Box<dyn Error>> {
     let mut dec_max = CanonicalDecoder::new(&bytes_bad_facts_max);
     assert_eq!(
         H1SemanticSynopsis::decode_canonical(&mut dec_max).err(),
-        Some(ContractError::InvalidDigest)
+        Some(ContractError::CountBoundExceeded)
     );
 
     // 3. Oversized knowledge states count: MAX_H1_KNOWLEDGE_STATES + 1
@@ -856,7 +869,51 @@ fn test_h1_dos_protection_collection_bounds() -> Result<(), Box<dyn Error>> {
     let mut dec_ks = CanonicalDecoder::new(&bytes_bad_ks);
     assert_eq!(
         H1SemanticSynopsis::decode_canonical(&mut dec_ks).err(),
-        Some(ContractError::InvalidDigest)
+        Some(ContractError::CountBoundExceeded)
+    );
+
+    // 4. Oversized provenance classes count: MAX_H1_PROVENANCE_CLASSES + 1
+    let mut bad_prov = enc.clone();
+    bad_prov.u64(0); // 0 facts
+    bad_prov.u64(1); // 1 ks
+    KnowledgeState::Known.encode_canonical(&mut bad_prov);
+    bad_prov.u64((MAX_H1_PROVENANCE_CLASSES + 1) as u64);
+    let bytes_bad_prov = bad_prov.finish_checked()?;
+    let mut dec_prov = CanonicalDecoder::new(&bytes_bad_prov);
+    assert_eq!(
+        H1SemanticSynopsis::decode_canonical(&mut dec_prov).err(),
+        Some(ContractError::CountBoundExceeded)
+    );
+
+    // 5. Oversized contradictions count: MAX_H1_CONTRADICTIONS + 1
+    let mut bad_contra = enc.clone();
+    bad_contra.u64(0); // 0 facts
+    bad_contra.u64(1); // 1 ks
+    KnowledgeState::Known.encode_canonical(&mut bad_contra);
+    bad_contra.u64(1); // 1 prov
+    ProvenanceClass::Observed.encode_canonical(&mut bad_contra);
+    bad_contra.u64((MAX_H1_CONTRADICTIONS + 1) as u64);
+    let bytes_bad_contra = bad_contra.finish_checked()?;
+    let mut dec_contra = CanonicalDecoder::new(&bytes_bad_contra);
+    assert_eq!(
+        H1SemanticSynopsis::decode_canonical(&mut dec_contra).err(),
+        Some(ContractError::CountBoundExceeded)
+    );
+
+    // 6. Oversized omissions count: MAX_H1_OMISSIONS + 1
+    let mut bad_omissions = enc.clone();
+    bad_omissions.u64(0); // 0 facts
+    bad_omissions.u64(1); // 1 ks
+    KnowledgeState::Known.encode_canonical(&mut bad_omissions);
+    bad_omissions.u64(1); // 1 prov
+    ProvenanceClass::Observed.encode_canonical(&mut bad_omissions);
+    bad_omissions.u64(0); // 0 contra
+    bad_omissions.u64((MAX_H1_OMISSIONS + 1) as u64);
+    let bytes_bad_omissions = bad_omissions.finish_checked()?;
+    let mut dec_omissions = CanonicalDecoder::new(&bytes_bad_omissions);
+    assert_eq!(
+        H1SemanticSynopsis::decode_canonical(&mut dec_omissions).err(),
+        Some(ContractError::CountBoundExceeded)
     );
 
     Ok(())
@@ -1080,6 +1137,164 @@ fn test_h1_contract_mutants_killed() -> Result<(), Box<dyn Error>> {
         Some(ContractError::InvalidIdentifier),
         "M1i: Invalid capability text must be rejected in decode"
     );
+
+    Ok(())
+}
+
+#[test]
+fn test_h1_validate_via_new_mutants_killed() -> Result<(), Box<dyn Error>> {
+    // 1. M1d: Unordered contradiction list via new() must fail with NonCanonicalOrdering
+    let contra1 = sample_contradiction()?;
+    let d1 = ContentDigest::sha256(b"optical-2");
+    let d2 = ContentDigest::sha256(b"radar-2");
+    let contra2 = Contradiction::new(ContradictionParams {
+        contradiction_id: "contra:test:002".to_string(),
+        conflicting_evidence: BTreeSet::from([d1, d2]),
+        failure_domains: BTreeSet::from([
+            "domain:optical:cam2".to_string(),
+            "domain:rf:radar2".to_string(),
+        ]),
+        unresolved_worlds: BTreeSet::from(["world:a".to_string(), "world:b".to_string()]),
+        claim_id: Some("claim:test:002".to_string()),
+        statement: "Second contradiction statement for ordering test".to_string(),
+        belief_interval: Some(BeliefInterval::new(200_000, 800_000)?),
+        created_at: TimestampNs(2_000_000),
+        knowledge_state: KnowledgeState::Conflicted,
+        provenance: ProvenanceClass::Derived,
+        disposition: HypothesisDisposition::Live,
+        outcome: RuntimeOutcome::Indeterminate,
+    })?;
+    assert!(contra1.contradiction_id() < contra2.contradiction_id());
+    let mut params_unordered_contra = sample_h1_params()?;
+    params_unordered_contra.contradictions = vec![contra2, contra1.clone()];
+    assert_eq!(
+        H1SemanticSynopsis::new(params_unordered_contra),
+        Err(HydrationError::Contract(
+            ContractError::NonCanonicalOrdering
+        )),
+        "M1d: Unordered contradiction list via new() must fail with NonCanonicalOrdering"
+    );
+
+    // 2. M1h: Invalid struct-literal fact (empty statement) via new() must fail with InvalidIdentifier
+    let bad_fact = WorldFact {
+        fact_id: "fact:test:bad_empty_stmt".to_string(),
+        kind: WorldFactKind::Device,
+        anchor: sample_anchor(1),
+        statement: "".to_string(),
+        provenance: ProvenanceClass::Observed,
+        evidence_digest: ContentDigest::sha256(b"bad-fact-evidence"),
+        generation: Generation(1),
+    };
+    let mut params_bad_fact = sample_h1_params()?;
+    params_bad_fact.facts = vec![bad_fact];
+    assert_eq!(
+        H1SemanticSynopsis::new(params_bad_fact),
+        Err(HydrationError::Contract(ContractError::InvalidIdentifier)),
+        "M1h: Invalid struct-literal fact via new() must fail with InvalidIdentifier"
+    );
+
+    // 3. M1i: Invalid capability via new() must fail with InvalidIdentifier
+    let mut params_bad_cap = sample_h1_params()?;
+    params_bad_cap.required_capabilities.insert("".to_string());
+    assert_eq!(
+        H1SemanticSynopsis::new(params_bad_cap),
+        Err(HydrationError::Contract(ContractError::InvalidIdentifier)),
+        "M1i: Invalid capability text via new() must fail with InvalidIdentifier"
+    );
+
+    // 4. R3: Contradiction with state not in declared knowledge_states must fail with KnowledgeStateBasisMismatch
+    let mut params_r3 = sample_h1_params()?;
+    params_r3.contradictions = vec![contra1];
+    params_r3
+        .knowledge_states
+        .remove(&KnowledgeState::Conflicted);
+    assert_eq!(
+        H1SemanticSynopsis::new(params_r3),
+        Err(HydrationError::Contract(
+            ContractError::KnowledgeStateBasisMismatch
+        )),
+        "R3: Contradiction state not in declared knowledge_states must fail with KnowledgeStateBasisMismatch"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_h1_fact_epistemic_grounding_and_irreversible_effect_premise() -> Result<(), Box<dyn Error>>
+{
+    let mut params = sample_h1_params()?;
+    let op_fact = WorldFact::new(
+        "fact:device:operator_asserted",
+        WorldFactKind::Device,
+        sample_anchor(1),
+        "Operator asserted fact statement",
+        ProvenanceClass::OperatorAsserted,
+        ContentDigest::sha256(b"op-assertion"),
+        Generation(1),
+    )?;
+
+    params.facts.push(op_fact);
+    params.facts.sort_by(|a, b| a.fact_id.cmp(&b.fact_id));
+    params
+        .provenance_classes
+        .insert(ProvenanceClass::OperatorAsserted);
+
+    let synopsis = H1SemanticSynopsis::new(params)?;
+    let cells = synopsis.to_knowledge_cells();
+
+    let now = TimestampNs(1_000_000);
+
+    let observed_cell = cells
+        .iter()
+        .find(|c| c.claim_id == "fact:device:cam01")
+        .ok_or("missing observed cell")?;
+    assert_eq!(observed_cell.knowledge_state, KnowledgeState::Known);
+    assert_eq!(observed_cell.provenance, ProvenanceClass::Observed);
+    assert!(observed_cell.is_irreversible_effect_premise(now));
+
+    let op_cell = cells
+        .iter()
+        .find(|c| c.claim_id == "fact:device:operator_asserted")
+        .ok_or("missing operator cell")?;
+    assert_eq!(op_cell.knowledge_state, KnowledgeState::Estimated);
+    assert_eq!(op_cell.provenance, ProvenanceClass::OperatorAsserted);
+    assert!(!op_cell.is_irreversible_effect_premise(now));
+
+    // Policy fact also must not become Known
+    let mut params_policy = sample_h1_params()?;
+    let policy_fact = WorldFact::new(
+        "fact:policy:retention",
+        WorldFactKind::Device,
+        sample_anchor(1),
+        "Policy statement",
+        ProvenanceClass::Policy,
+        ContentDigest::sha256(b"policy"),
+        Generation(1),
+    )?;
+    params_policy.facts.push(policy_fact);
+    params_policy
+        .facts
+        .sort_by(|a, b| a.fact_id.cmp(&b.fact_id));
+    params_policy
+        .provenance_classes
+        .insert(ProvenanceClass::Policy);
+
+    let synopsis_policy = H1SemanticSynopsis::new(params_policy)?;
+    let policy_cells = synopsis_policy.to_knowledge_cells();
+    let policy_cell = policy_cells
+        .iter()
+        .find(|c| c.claim_id == "fact:policy:retention")
+        .ok_or("missing policy cell")?;
+    assert_eq!(policy_cell.knowledge_state, KnowledgeState::Estimated);
+    assert_eq!(policy_cell.provenance, ProvenanceClass::Policy);
+    assert!(!policy_cell.is_irreversible_effect_premise(now));
+
+    // Conflicted is NEVER emitted without an attached contradiction
+    for cell in &policy_cells {
+        if cell.knowledge_state == KnowledgeState::Conflicted {
+            assert!(!cell.contradictions.is_empty());
+        }
+    }
 
     Ok(())
 }

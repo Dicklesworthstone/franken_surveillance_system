@@ -22,9 +22,11 @@ use super::{
 use crate::agent::KnowledgeCell;
 use crate::belief::{BeliefInterval, Contradiction};
 use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder};
-use crate::contract::{ContractError, KnowledgeState, ProvenanceClass};
+use crate::contract::{ContractError, KnowledgeState, ProvenanceClass, RuntimeOutcome};
 use crate::sensor_capsule::OmissionReason;
-use crate::{BudgetVector, ContentDigest, ContractBasis, LedgerAnchor, TimestampNs, WorldFact};
+use crate::{
+    BudgetVector, ContentDigest, ContractBasis, LedgerAnchor, TimestampNs, WorldFact, WorldFactKind,
+};
 
 /// Stable identifier for hydration ladder level H1.
 pub const H1_LEVEL_ID: &str = "H1";
@@ -527,8 +529,7 @@ impl H1SemanticSynopsis {
         for ks in &self.knowledge_states {
             let grounded = match ks {
                 KnowledgeState::Known => self.facts.iter().any(|f| {
-                    f.provenance.may_authorize_irreversible_effect()
-                        && f.provenance != ProvenanceClass::Derived
+                    f.provenance.is_observed()
                         && !self.contradictions.iter().any(|c| {
                             c.claim_id() == Some(f.fact_id.as_str())
                                 || c.conflicting_evidence().contains(&f.evidence_digest)
@@ -538,17 +539,54 @@ impl H1SemanticSynopsis {
                     f.provenance == ProvenanceClass::Derived
                         || f.provenance == ProvenanceClass::Predicted
                         || f.provenance == ProvenanceClass::Remembered
+                        || f.provenance == ProvenanceClass::OperatorAsserted
+                        || f.provenance == ProvenanceClass::Policy
+                        || f.provenance == ProvenanceClass::VendorClaimed
                 }),
-                KnowledgeState::Conflicted => {
-                    !self.contradictions.is_empty()
-                        || self.facts.iter().any(|f| {
-                            self.contradictions.iter().any(|c| {
-                                c.claim_id() == Some(f.fact_id.as_str())
-                                    || c.conflicting_evidence().contains(&f.evidence_digest)
-                            })
-                        })
+                KnowledgeState::Conflicted => !self.contradictions.is_empty(),
+                KnowledgeState::Stale => {
+                    self.quality.completeness() == Completeness::Stale
+                        || self.omissions.contains(&OmissionReason::RetentionPolicy)
+                        || self
+                            .contradictions
+                            .iter()
+                            .any(|c| c.knowledge_state() == KnowledgeState::Stale)
                 }
-                _ => true,
+                KnowledgeState::Redacted => {
+                    self.omissions.contains(&OmissionReason::PrivacyRedaction)
+                        || self.omissions.contains(&OmissionReason::CapabilityFiltered)
+                        || self.quality.completeness() == Completeness::Unauthorized
+                        || self
+                            .contradictions
+                            .iter()
+                            .any(|c| c.knowledge_state() == KnowledgeState::Redacted)
+                }
+                KnowledgeState::NotObservable => {
+                    self.quality.completeness() == Completeness::NotObservable
+                        || self.omissions.contains(&OmissionReason::UpstreamMissing)
+                        || self
+                            .contradictions
+                            .iter()
+                            .any(|c| c.knowledge_state() == KnowledgeState::NotObservable)
+                }
+                KnowledgeState::Indeterminate => {
+                    self.contradictions.iter().any(|c| {
+                        c.knowledge_state() == KnowledgeState::Indeterminate
+                            || c.outcome() == RuntimeOutcome::Indeterminate
+                    }) || self.facts.iter().any(|f| f.kind == WorldFactKind::Effect)
+                }
+                KnowledgeState::Unknown => {
+                    self.quality.completeness() == Completeness::Unknown
+                        || self.facts.is_empty()
+                        || self
+                            .contradictions
+                            .iter()
+                            .any(|c| c.knowledge_state() == KnowledgeState::Unknown)
+                }
+                KnowledgeState::NotApplicable => self
+                    .contradictions
+                    .iter()
+                    .any(|c| c.knowledge_state() == KnowledgeState::NotApplicable),
             };
             if !grounded {
                 return Err(ContractError::KnowledgeStateBasisMismatch.into());
@@ -758,7 +796,9 @@ impl H1SemanticSynopsis {
     /// Converts this synopsis to a [`HydrationArtifact`] envelope, re-validating invariants.
     pub fn to_hydration_artifact(&self) -> Result<HydrationArtifact, HydrationError> {
         self.validate()?;
-        let canonical_bytes = self.to_canonical_bytes().map_err(HydrationError::Contract)?;
+        let canonical_bytes = self
+            .to_canonical_bytes()
+            .map_err(HydrationError::Contract)?;
         let mut proof_roots = BTreeSet::new();
         proof_roots.insert(self.subject_digest);
         for fact in &self.facts {
@@ -784,7 +824,9 @@ impl H1SemanticSynopsis {
                 let mut cell_contradictions = Vec::new();
                 for contra in &self.contradictions {
                     if contra.claim_id() == Some(fact.fact_id.as_str())
-                        || contra.conflicting_evidence().contains(&fact.evidence_digest)
+                        || contra
+                            .conflicting_evidence()
+                            .contains(&fact.evidence_digest)
                     {
                         cell_contradictions.push(contra.contradiction_digest());
                     }
@@ -792,33 +834,28 @@ impl H1SemanticSynopsis {
 
                 let knowledge_state = if !cell_contradictions.is_empty() {
                     KnowledgeState::Conflicted
-                } else if fact.provenance == ProvenanceClass::Derived
-                    || fact.provenance == ProvenanceClass::Predicted
-                    || fact.provenance == ProvenanceClass::Remembered
-                {
+                } else if fact.provenance == ProvenanceClass::Observed {
+                    if self.knowledge_states.contains(&KnowledgeState::Known) {
+                        KnowledgeState::Known
+                    } else if self.knowledge_states.contains(&KnowledgeState::Estimated) {
+                        KnowledgeState::Estimated
+                    } else if self.knowledge_states.contains(&KnowledgeState::Unknown) {
+                        KnowledgeState::Unknown
+                    } else {
+                        KnowledgeState::Estimated
+                    }
+                } else {
                     if self.knowledge_states.contains(&KnowledgeState::Estimated) {
                         KnowledgeState::Estimated
                     } else if self.knowledge_states.contains(&KnowledgeState::Unknown) {
                         KnowledgeState::Unknown
                     } else {
-                        match self
-                            .knowledge_states
-                            .iter()
-                            .copied()
-                            .find(|&s| s != KnowledgeState::Known)
-                        {
+                        match self.knowledge_states.iter().copied().find(|&s| {
+                            s != KnowledgeState::Known && s != KnowledgeState::Conflicted
+                        }) {
                             Some(s) => s,
                             None => KnowledgeState::Estimated,
                         }
-                    }
-                } else if self.knowledge_states.contains(&KnowledgeState::Known) {
-                    KnowledgeState::Known
-                } else if self.knowledge_states.contains(&KnowledgeState::Estimated) {
-                    KnowledgeState::Estimated
-                } else {
-                    match self.knowledge_states.iter().copied().next() {
-                        Some(s) => s,
-                        None => KnowledgeState::Estimated,
                     }
                 };
 
@@ -941,7 +978,7 @@ impl CanonicalDecode for H1SemanticSynopsis {
         let raw_facts_count = decoder.u64()?;
         let remaining_for_facts = decoder.remaining();
         if raw_facts_count > MAX_H1_FACTS as u64 || raw_facts_count as usize > remaining_for_facts {
-            return Err(ContractError::InvalidDigest);
+            return Err(ContractError::CountBoundExceeded);
         }
         let facts_count = raw_facts_count as usize;
         let mut facts = Vec::with_capacity(facts_count.min(remaining_for_facts));
@@ -960,8 +997,9 @@ impl CanonicalDecode for H1SemanticSynopsis {
         // Decode knowledge states (DoS safe: bounded by MAX_H1_KNOWLEDGE_STATES and remaining bytes)
         let raw_ks_count = decoder.u64()?;
         let remaining_for_ks = decoder.remaining();
-        if raw_ks_count > MAX_H1_KNOWLEDGE_STATES as u64 || raw_ks_count as usize > remaining_for_ks {
-            return Err(ContractError::InvalidDigest);
+        if raw_ks_count > MAX_H1_KNOWLEDGE_STATES as u64 || raw_ks_count as usize > remaining_for_ks
+        {
+            return Err(ContractError::CountBoundExceeded);
         }
         let ks_count = raw_ks_count as usize;
         let mut knowledge_states = BTreeSet::new();
@@ -980,8 +1018,10 @@ impl CanonicalDecode for H1SemanticSynopsis {
         // Decode provenance classes (DoS safe: bounded by MAX_H1_PROVENANCE_CLASSES and remaining bytes)
         let raw_prov_count = decoder.u64()?;
         let remaining_for_prov = decoder.remaining();
-        if raw_prov_count > MAX_H1_PROVENANCE_CLASSES as u64 || raw_prov_count as usize > remaining_for_prov {
-            return Err(ContractError::InvalidDigest);
+        if raw_prov_count > MAX_H1_PROVENANCE_CLASSES as u64
+            || raw_prov_count as usize > remaining_for_prov
+        {
+            return Err(ContractError::CountBoundExceeded);
         }
         let prov_count = raw_prov_count as usize;
         let mut provenance_classes = BTreeSet::new();
@@ -1000,8 +1040,10 @@ impl CanonicalDecode for H1SemanticSynopsis {
         // Decode contradictions (DoS safe: bounded by MAX_H1_CONTRADICTIONS and remaining bytes)
         let raw_contra_count = decoder.u64()?;
         let remaining_for_contra = decoder.remaining();
-        if raw_contra_count > MAX_H1_CONTRADICTIONS as u64 || raw_contra_count as usize > remaining_for_contra {
-            return Err(ContractError::InvalidDigest);
+        if raw_contra_count > MAX_H1_CONTRADICTIONS as u64
+            || raw_contra_count as usize > remaining_for_contra
+        {
+            return Err(ContractError::CountBoundExceeded);
         }
         let contra_count = raw_contra_count as usize;
         let mut contradictions = Vec::with_capacity(contra_count.min(remaining_for_contra));
@@ -1020,8 +1062,10 @@ impl CanonicalDecode for H1SemanticSynopsis {
         // Decode omissions (DoS safe: bounded by MAX_H1_OMISSIONS and remaining bytes)
         let raw_omission_count = decoder.u64()?;
         let remaining_for_omissions = decoder.remaining();
-        if raw_omission_count > MAX_H1_OMISSIONS as u64 || raw_omission_count as usize > remaining_for_omissions {
-            return Err(ContractError::InvalidDigest);
+        if raw_omission_count > MAX_H1_OMISSIONS as u64
+            || raw_omission_count as usize > remaining_for_omissions
+        {
+            return Err(ContractError::CountBoundExceeded);
         }
         let omission_count = raw_omission_count as usize;
         let mut omissions = BTreeSet::new();
