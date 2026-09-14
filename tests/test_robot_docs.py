@@ -1872,6 +1872,71 @@ class RobotDocsContractTests(unittest.TestCase):
         self.assertEqual(ctx.exception.code, ERR_ROBOT_DOCS_CORRUPT)
         self.assertIn("Negative-evidence usage must include 'list' or 'ls' subcommand", ctx.exception.message)
 
+    def test_cli_discovery_symmetric_missing_help_usage_line_all_endpoints_raises_corrupt(self) -> None:
+        """fss-77my8: Missing help usage line for any of the four discovery endpoints raises ERR-ROBOT-DOCS-CORRUPT-001 (kills S4)."""
+        cmd_file = self.fake_root / "crates/fss-cli/src/fss_cmd.rs"
+        orig = cmd_file.read_text(encoding="utf-8")
+        help_cases = [
+            ("capabilities", r"  fss capabilities --json\n"),
+            ("doctor", r"  fss doctor --json\n"),
+            ("status", r"  fss status --json\n"),
+            ("negative_evidence", r"  fss negative-evidence <init|list|verify|append> [--path <file>] [--json]\n"),
+        ]
+        for name, line in help_cases:
+            with self.subTest(endpoint=name):
+                self.assertIn(line, orig)
+                cmd_file.write_text(orig.replace(line, ""), encoding="utf-8")
+                with self.assertRaises(RobotDocsError) as ctx:
+                    generate_docs(self.fake_root)
+                self.assertEqual(ctx.exception.code, ERR_ROBOT_DOCS_CORRUPT)
+                self.assertIn("Missing help usage line for", ctx.exception.message)
+                cmd_file.write_text(orig, encoding="utf-8")
+
+    def test_cli_discovery_symmetric_missing_parser_arm_all_endpoints_raises_corrupt(self) -> None:
+        """fss-77my8: Missing parser match arm for any of the four discovery endpoints raises ERR-ROBOT-DOCS-CORRUPT-001 (kills S6)."""
+        cmd_file = self.fake_root / "crates/fss-cli/src/fss_cmd.rs"
+        orig = cmd_file.read_text(encoding="utf-8")
+        arm_cases = [
+            ("Capabilities", "FssCommand::Capabilities"),
+            ("Doctor", "FssCommand::Doctor"),
+            ("Status", "FssCommand::Status"),
+            ("NegativeEvidence", "FssCommand::NegativeEvidence"),
+        ]
+        for name, token in arm_cases:
+            with self.subTest(endpoint=name):
+                self.assertIn(token, orig)
+                cmd_file.write_text(orig.replace(token, f"{token}_Missing", 1), encoding="utf-8")
+                with self.assertRaises(RobotDocsError) as ctx:
+                    generate_docs(self.fake_root)
+                self.assertEqual(ctx.exception.code, ERR_ROBOT_DOCS_CORRUPT)
+                self.assertIn(f"Missing parser match arm for {name}", ctx.exception.message)
+                cmd_file.write_text(orig, encoding="utf-8")
+
+    def test_cli_discovery_missing_status_help_usage_line_raises_corrupt(self) -> None:
+        """fss-77my8: Removing status usage line from help_text() raises ERR-ROBOT-DOCS-CORRUPT-001 (kills S4)."""
+        cmd_file = self.fake_root / "crates/fss-cli/src/fss_cmd.rs"
+        orig = cmd_file.read_text(encoding="utf-8")
+        target_line = r"  fss status --json\n"
+        self.assertIn(target_line, orig)
+        cmd_file.write_text(orig.replace(target_line, ""), encoding="utf-8")
+        with self.assertRaises(RobotDocsError) as ctx:
+            generate_docs(self.fake_root)
+        self.assertEqual(ctx.exception.code, ERR_ROBOT_DOCS_CORRUPT)
+        self.assertIn("Missing help usage line for status", ctx.exception.message)
+
+    def test_cli_discovery_missing_status_parser_arm_raises_corrupt(self) -> None:
+        """fss-77my8: Removing status parser match arm raises ERR-ROBOT-DOCS-CORRUPT-001 (kills S6)."""
+        cmd_file = self.fake_root / "crates/fss-cli/src/fss_cmd.rs"
+        orig = cmd_file.read_text(encoding="utf-8")
+        token = "FssCommand::Status"
+        self.assertIn(token, orig)
+        cmd_file.write_text(orig.replace(token, "FssCommand::Status_Missing", 1), encoding="utf-8")
+        with self.assertRaises(RobotDocsError) as ctx:
+            generate_docs(self.fake_root)
+        self.assertEqual(ctx.exception.code, ERR_ROBOT_DOCS_CORRUPT)
+        self.assertIn("Missing parser match arm for Status", ctx.exception.message)
+
+
     # ---- Item 3: Compatibility Classes Tests ----
 
     def test_compatibility_classes_section_removed_raises_corrupt(self) -> None:
