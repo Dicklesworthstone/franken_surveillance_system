@@ -99,6 +99,7 @@
     "crates/fss-reference/src/context_binding.rs": "authority",
     "crates/fss-reference/src/context_binding_tests.rs": "support",
     "crates/fss-reference/src/delivery.rs": "authority",
+    "crates/fss-reference/src/doctor.rs": "support",
     "crates/fss-reference/src/durable_effect.rs": "effect",
     "crates/fss-reference/src/encoded_fixture.rs": "authority",
     "crates/fss-reference/src/error.rs": "support",

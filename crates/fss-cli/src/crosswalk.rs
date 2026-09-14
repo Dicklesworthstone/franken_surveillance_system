@@ -278,12 +278,19 @@ pub static REGISTERED_OPERATION_CROSSWALK: &[OperationCrosswalkEntry] = &[
         primary_error_id: "ERR-CLI-RUNTIME-FAILURE-001",
         error_identities: &[
             "ERR-CLI-RUNTIME-FAILURE-001",
+            "ERR-DOCTOR-ATTENTION-REQUIRED-001",
+            "ERR-DOCTOR-NOT-A-DEPLOYMENT-001",
             "ERR-CLOCK-UNCERTAIN-001",
             "ERR-STREAM-CONTINUITY-001",
             "ERR-AUTH-DENIED-001",
             "ERR-OP-EXECUTION-FAILED-001",
         ],
-        exit_identities: &[ExitIdentity::SUCCESS, ExitIdentity::RUNTIME_FAILURE],
+        exit_identities: &[
+            ExitIdentity::SUCCESS,
+            ExitIdentity::RUNTIME_FAILURE,
+            ExitIdentity::DOCTOR_ATTENTION_REQUIRED,
+            ExitIdentity::DOCTOR_NOT_A_DEPLOYMENT,
+        ],
         status: "specified",
     },
 ];
@@ -665,6 +672,8 @@ pub static REGISTERED_EXIT_IDENTITIES: &[&str] = &[
     "EXIT-CLI-INVALID-UNICODE-002",
     "EXIT-CLI-UNEXPECTED-POSITIONAL-002",
     "EXIT-CLI-TRAILING-ARGUMENT-002",
+    "EXIT-DOCTOR-ATTENTION-REQUIRED-003",
+    "EXIT-DOCTOR-NOT-A-DEPLOYMENT-004",
 ];
 
 fn normalize_identifier(s: &str) -> String {
