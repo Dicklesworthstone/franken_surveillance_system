@@ -462,11 +462,6 @@ impl KnowledgeCell {
     pub fn is_laboratory_tainted(&self) -> bool {
         self.statement.contains(LABORATORY_PROVENANCE_MARKER)
             || self.claim_id.starts_with("laboratory:")
-            || self.evidence.iter().any(|digest| digest.is_laboratory())
-            || self
-                .contradictions
-                .iter()
-                .any(|digest| digest.is_laboratory())
     }
 
     /// Validates that the typed state basis matches the knowledge state.

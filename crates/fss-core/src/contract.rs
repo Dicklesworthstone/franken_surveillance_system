@@ -2801,6 +2801,10 @@ pub enum ContractError {
     LaboratoryExpansionRetentionMismatch,
     /// An H4 laboratory expansion was presented past its retention deadline (AGT-H4).
     LaboratoryExpansionExpired,
+    /// An H4 laboratory expansion subject digest disagrees with the bound handle (AGT-H4).
+    LaboratoryExpansionSubjectDigestMismatch,
+    /// An H4 laboratory expansion applied transform disagrees with the bound handle (AGT-H4).
+    LaboratoryExpansionTransformMismatch,
 }
 
 impl ContractError {
@@ -2884,6 +2888,10 @@ impl ContractError {
             Self::LaboratoryExpansionBasisMismatch => "laboratory_expansion_basis_mismatch",
             Self::LaboratoryExpansionRetentionMismatch => "laboratory_expansion_retention_mismatch",
             Self::LaboratoryExpansionExpired => "laboratory_expansion_expired",
+            Self::LaboratoryExpansionSubjectDigestMismatch => {
+                "laboratory_expansion_subject_digest_mismatch"
+            }
+            Self::LaboratoryExpansionTransformMismatch => "laboratory_expansion_transform_mismatch",
         }
     }
 }

@@ -144,7 +144,6 @@ impl CanonicalDecode for DigestAlgorithm {
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ContentDigest {
     algorithm: DigestAlgorithm,
-    is_laboratory: bool,
     bytes: [u8; 32],
 }
 
@@ -152,34 +151,7 @@ impl ContentDigest {
     /// Creates a digest from an algorithm and exact digest bytes.
     #[must_use]
     pub const fn new(algorithm: DigestAlgorithm, bytes: [u8; 32]) -> Self {
-        Self {
-            algorithm,
-            is_laboratory: false,
-            bytes,
-        }
-    }
-
-    /// Creates a digest with explicit laboratory marker.
-    #[must_use]
-    pub const fn new_laboratory(algorithm: DigestAlgorithm, bytes: [u8; 32]) -> Self {
-        Self {
-            algorithm,
-            is_laboratory: true,
-            bytes,
-        }
-    }
-
-    /// Returns whether this content digest carries a quarantined laboratory evidence marker.
-    #[must_use]
-    pub const fn is_laboratory(self) -> bool {
-        self.is_laboratory
-    }
-
-    /// Sets or clears the laboratory evidence marker.
-    #[must_use]
-    pub const fn with_laboratory(mut self, is_laboratory: bool) -> Self {
-        self.is_laboratory = is_laboratory;
-        self
+        Self { algorithm, bytes }
     }
 
     /// Computes the canonical SHA-256 digest of bytes.

@@ -203,7 +203,7 @@ fn test_h4_laboratory_expansion_normative_row_properties() {
         "replay bundle, intermediates, alternate decoders/models, and oracle comparisons"
     );
     assert_eq!(H4_OWNER, "fss-agent-core");
-    assert_eq!(H4_SCHEMA, "fss.h4_laboratory_expansion.v1");
+    assert_eq!(H4_SCHEMA, "fss.h4_laboratory_expansion.v2");
 
     assert_eq!(HydrationLevel::H4.as_str(), "H4");
     assert_eq!(HydrationLevel::H4.ordinal(), 4);
@@ -273,11 +273,10 @@ fn test_h4_laboratory_expansion_valid_construction_and_gates() -> Result<(), Box
 fn test_h4_pinned_digest_literal() -> Result<(), Box<dyn Error>> {
     let expansion = sample_valid_expansion()?;
     let digest = expansion.expansion_digest();
-    assert!(digest.is_laboratory());
     assert_eq!(digest.algorithm(), fss_core::DigestAlgorithm::Sha256);
     assert_eq!(
         digest.to_string(),
-        "sha256:d8e4f0ccb8e13df26282ae1e3ff2702a333284f5e60896a5ac10ba5c99c75298"
+        "sha256:cec8cdf67df86d19e68c442b7dbbe6a77b6998ce8cf9f32b735488b8537809ee"
     );
     Ok(())
 }
@@ -362,42 +361,65 @@ fn test_h4_cannot_authorize_effects_or_claim_known_knowledge_state() -> Result<(
     // 1. Convert to KnowledgeCell
     let cell = expansion.to_knowledge_cell(&anchor)?;
     assert_eq!(cell.knowledge_state, KnowledgeState::Estimated);
-    assert_eq!(cell.provenance, ProvenanceClass::Derived);
+    assert_eq!(cell.provenance, ProvenanceClass::Predicted);
     assert!(cell.is_laboratory_tainted());
     assert!(cell.statement.contains(LABORATORY_PROVENANCE_MARKER));
+    assert!(cell.claim_id.starts_with("laboratory:"));
     assert!(
         !cell.is_irreversible_effect_premise(TimestampNs(1_500_000_000)),
         "Laboratory cell must NEVER serve as an irreversible-effect premise"
     );
 
-    // 2. Relabelled cell over H4 evidence: no "laboratory" text anywhere in claim_id or statement
-    let relabelled_cell = KnowledgeCell {
-        claim_id: "site:door-7".to_owned(),
-        statement: "door 7 is secured".to_owned(),
+    // 2. Statement marker path refusal: cell with LABORATORY_PROVENANCE_MARKER claiming Known state is refused
+    let normal_evidence = ContentDigest::sha256(b"physical-door-sensor-packet-canonical");
+    let statement_tainted_cell = KnowledgeCell {
+        claim_id: "site:statement-tainted".to_owned(),
+        statement: format!("{} tainted proposition", LABORATORY_PROVENANCE_MARKER),
         knowledge_state: KnowledgeState::Known,
-        provenance: ProvenanceClass::Observed,
+        provenance: ProvenanceClass::Predicted,
         hypothesis: None,
-        evidence: vec![expansion.expansion_digest()],
+        evidence: vec![normal_evidence],
         contradictions: vec![],
         valid_until: Some(TimestampNs(2_000_000_000)),
         state_basis: None,
     };
     assert!(
-        relabelled_cell.is_laboratory_tainted(),
-        "Cell carrying H4 evidence digest must be laboratory-tainted even when relabelled"
+        statement_tainted_cell.is_laboratory_tainted(),
+        "Cell carrying LABORATORY_PROVENANCE_MARKER must be laboratory-tainted"
     );
     assert_eq!(
-        relabelled_cell.validate(),
+        statement_tainted_cell.validate(),
         Err(ContractError::DerivedLayerAuthorityForbidden),
-        "Relabelled cell over H4 evidence must reject Known state"
+        "Cell carrying LABORATORY_PROVENANCE_MARKER must reject Known state"
     );
     assert!(
-        !relabelled_cell.is_irreversible_effect_premise(TimestampNs(1_500_000_000)),
-        "Relabelled cell over H4 evidence must be refused as an irreversible-effect premise"
+        !statement_tainted_cell.is_irreversible_effect_premise(TimestampNs(1_500_000_000)),
+        "Tainted cell must never serve as an irreversible-effect premise"
+    );
+
+    // 2b. Claim ID prefix path refusal: cell with laboratory: prefix claiming Known state is refused
+    let prefix_tainted_cell = KnowledgeCell {
+        claim_id: "laboratory:door-7".to_owned(),
+        statement: "door 7 observation".to_owned(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Predicted,
+        hypothesis: None,
+        evidence: vec![normal_evidence],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+        state_basis: None,
+    };
+    assert!(
+        prefix_tainted_cell.is_laboratory_tainted(),
+        "Cell with laboratory: prefix must be laboratory-tainted"
+    );
+    assert_eq!(
+        prefix_tainted_cell.validate(),
+        Err(ContractError::DerivedLayerAuthorityForbidden),
+        "Cell with laboratory: prefix must reject Known state"
     );
 
     // 3. Genuine cell with claim_id site:laboratory:door-7 over non-laboratory evidence is accepted
-    let normal_evidence = ContentDigest::sha256(b"physical-door-sensor-packet-canonical");
     let genuine_cell = KnowledgeCell {
         claim_id: "site:laboratory:door-7".to_owned(),
         statement: "door 7 physical sensor reading".to_owned(),
@@ -426,6 +448,82 @@ fn test_h4_cannot_authorize_effects_or_claim_known_knowledge_state() -> Result<(
     let Err(ContractError::InvalidAnchorSuccessor) = diff_err else {
         return Err("to_knowledge_cell must reject mismatched anchor lineage".into());
     };
+
+    Ok(())
+}
+
+#[test]
+fn test_h4_lone_relabelled_cell_fss_gefi6_behaviour() -> Result<(), Box<dyn Error>> {
+    let expansion = sample_valid_expansion()?;
+    // Today, a lone relabelled cell citing an H4 digest without statement/claim_id marker
+    // does not carry an origin tag on the ContentDigest itself (ContentDigest is algorithm + 32 bytes).
+    // Follow-up bead fss-gefi6 introduces typed evidence references carrying origin classes
+    // so that evidence-digest-level provenance can be detected even on relabelled cells.
+    let relabelled_cell = KnowledgeCell {
+        claim_id: "site:door-7".to_owned(),
+        statement: "door 7 is secured".to_owned(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Observed,
+        hypothesis: None,
+        evidence: vec![expansion.expansion_digest()],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+        state_basis: None,
+    };
+    // Pin today's behavior: without origin tagging (covered by fss-gefi6), this cell is not text-tainted.
+    assert!(!relabelled_cell.is_laboratory_tainted());
+    assert_eq!(relabelled_cell.validate(), Ok(()));
+    Ok(())
+}
+
+#[test]
+fn test_h4_expansion_citing_prior_h4_digest_as_proof_root_validates() -> Result<(), Box<dyn Error>>
+{
+    let expansion_a = sample_valid_expansion()?;
+    let prior_h4_digest = expansion_a.expansion_digest();
+
+    let mut params_b = sample_valid_params()?;
+    // Cite prior H4 digest as an additional proof root alongside subject digest
+    params_b.proof_roots.insert(prior_h4_digest);
+
+    let expansion_b = H4LaboratoryExpansion::new(params_b)?;
+    assert!(expansion_b.proof_roots().contains(&prior_h4_digest));
+    expansion_b.validate()?;
+
+    // Byte roundtrip determinism
+    let mut encoder = CanonicalEncoder::new();
+    expansion_b.encode_canonical(&mut encoder);
+    let payload = encoder.finish();
+    let decoded_b = H4LaboratoryExpansion::from_canonical_bytes(&payload)?;
+    assert_eq!(expansion_b, decoded_b);
+
+    Ok(())
+}
+
+#[test]
+fn test_h4_digest_roundtrip_parse_to_string_equality() -> Result<(), Box<dyn Error>> {
+    let expansion = sample_valid_expansion()?;
+    let digests = [
+        expansion.expansion_digest(),
+        expansion.subject_digest(),
+        expansion.replay_bundle().bundle_digest,
+        expansion.intermediates()[0].digest,
+        expansion.intermediates()[1].digest,
+        expansion.quarantine().quarantine_receipt_digest,
+        expansion.quarantine().process_drain_witness,
+    ];
+
+    for d in digests {
+        let string_rep = d.to_string();
+        let parsed = ContentDigest::parse(&string_rep)?;
+        assert_eq!(
+            parsed, d,
+            "parse(to_string(d)) must equal d for every H4 digest: {}",
+            string_rep
+        );
+        assert_eq!(parsed.bytes(), d.bytes());
+        assert_eq!(parsed.algorithm(), d.algorithm());
+    }
 
     Ok(())
 }
@@ -1565,7 +1663,7 @@ fn test_decode_canonical_validates_and_kills_mutant_r22_and_m1() -> Result<(), B
     encoder.u8(1); // Complete
     encoder.bool(false); // applied_transform: None
 
-    let computed_digest = ContentDigest::sha256(&encoder.clone().finish()).with_laboratory(true);
+    let computed_digest = ContentDigest::sha256(&encoder.clone().finish());
     encoder.digest(computed_digest);
 
     let payload = encoder.finish();
@@ -1800,6 +1898,59 @@ fn sample_handle_with_transform(
         },
         laboratory_access: LaboratoryAccess::QualificationOnly,
         debug_capability: None,
+        derivative_handles: BTreeSet::new(),
+        published_at: TimestampNs(1_000_000_000),
+    })?)
+}
+
+fn sample_handle_with_debug_capability() -> Result<SemanticHandle, Box<dyn Error>> {
+    let levels = BTreeSet::from([
+        HydrationLevel::H0,
+        HydrationLevel::H1,
+        HydrationLevel::H2,
+        HydrationLevel::H3,
+        HydrationLevel::H4,
+    ]);
+
+    let subject_digest = ContentDigest::sha256(b"canonical-evidence-subject-data");
+    Ok(SemanticHandle::publish(SemanticHandleSpec {
+        contract_basis: sample_basis(),
+        anchor: sample_anchor(),
+        subject_id: "evidence:packet:cam-east:1042".to_owned(),
+        subject_digest,
+        semantic_type: "evidence_bundle".to_owned(),
+        source_id: "sensor:cam-east".to_owned(),
+        capture_interval: None,
+        spatial_scope: None,
+        privacy_class: "private:property".to_owned(),
+        applied_transform: None,
+        availability: HandleAvailability::Available,
+        retention_until: TimestampNs(2_000_000_000),
+        levels: levels.clone(),
+        required_capabilities: levels
+            .iter()
+            .map(|l| {
+                (
+                    *l,
+                    BTreeSet::from([format!("capability:hydrate:{}", l.as_str())]),
+                )
+            })
+            .collect(),
+        estimated_costs: {
+            let mut costs = BTreeMap::new();
+            for &l in &levels {
+                costs.insert(
+                    l,
+                    BudgetVector::builder()
+                        .bytes(100_000)
+                        .tokens(2_000)
+                        .build()?,
+                );
+            }
+            costs
+        },
+        laboratory_access: LaboratoryAccess::QualificationOrDebugGrant,
+        debug_capability: Some("capability:debug:h4".to_owned()),
         derivative_handles: BTreeSet::new(),
         published_at: TimestampNs(1_000_000_000),
     })?)
@@ -2096,12 +2247,197 @@ fn test_h4_handle_binding_kills_mutants_n1_n2_n3_n7() -> Result<(), Box<dyn Erro
     let err_n7_handle = handle.to_h4_laboratory_expansion(&request, now, &n7_exp);
     assert_eq!(
         err_n7_handle,
-        Err(HydrationError::Contract(ContractError::DigestMismatch))
+        Err(HydrationError::Contract(
+            ContractError::LaboratoryExpansionSubjectDigestMismatch
+        ))
     );
     let n7_art = n7_exp.to_hydration_artifact(None)?;
     let err_n7_deliv = request.validate_delivery(&handle, &n7_art, now);
     assert_eq!(
         err_n7_deliv,
+        Err(HydrationError::Contract(
+            ContractError::LaboratoryExpansionSubjectDigestMismatch
+        ))
+    );
+
+    // Mutant T3: transform mismatch (admission.rs check)
+    let mut t3_params = sample_valid_params()?;
+    t3_params.handle_id = handle.handle_id.clone();
+    t3_params.subject_id = handle.subject_id.clone();
+    t3_params.subject_digest = handle.subject_digest;
+    t3_params.anchor = handle.anchor.clone();
+    t3_params.contract_basis = handle.contract_basis.clone();
+    t3_params.retention_until = handle.retention_until;
+    t3_params.proof_roots = roots.clone();
+    t3_params.applied_transform = Some("foreign_transform_v1".to_owned());
+    let t3_exp = H4LaboratoryExpansion::new(t3_params)?;
+    let mut t3_enc = CanonicalEncoder::new();
+    t3_exp.encode_canonical(&mut t3_enc);
+    let t3_payload = t3_enc.finish();
+    let t3_art = HydrationArtifact::publish(
+        HydrationLevel::H4,
+        "application/vnd.fss.h4-laboratory-expansion+canonical",
+        t3_payload,
+        roots.clone(),
+        Completeness::Complete,
+        None,
+    )?;
+    let err_t3_deliv = request.validate_delivery(&handle, &t3_art, now);
+    assert_eq!(
+        err_t3_deliv,
+        Err(HydrationError::Contract(
+            ContractError::LaboratoryExpansionTransformMismatch
+        ))
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_h4_validate_delivery_purpose_binding_qualification_or_debug_grant()
+-> Result<(), Box<dyn Error>> {
+    let debug_handle = sample_handle_with_debug_capability()?;
+    let now = TimestampNs(1_500_000_000);
+
+    // Qualification request
+    let qual_req = HydrationRequest::publish(HydrationRequestSpec {
+        contract_basis: debug_handle.contract_basis.clone(),
+        session_id: SessionId::parse("session:qualification")?,
+        handle_id: debug_handle.handle_id.clone(),
+        expected_descriptor_digest: debug_handle.descriptor_digest,
+        expected_subject_digest: debug_handle.subject_digest,
+        anchor: debug_handle.anchor.clone(),
+        requested_level: HydrationLevel::H4,
+        allow_lower_level: false,
+        available_capabilities: debug_handle
+            .required_capabilities
+            .values()
+            .flatten()
+            .cloned()
+            .collect(),
+        authorized_privacy_classes: BTreeSet::from([debug_handle.privacy_class.clone()]),
+        budget: BudgetVector::builder()
+            .bytes(200_000)
+            .tokens(4_000)
+            .build()?,
+        purpose: HydrationPurpose::Qualification,
+        continuation: None,
+        issued_at: TimestampNs(1_500_000_000),
+    })?;
+
+    // Create expansion declared with Debugging purpose
+    let mut debug_exp_params = sample_valid_params()?;
+    debug_exp_params.handle_id = debug_handle.handle_id.clone();
+    debug_exp_params.subject_id = debug_handle.subject_id.clone();
+    debug_exp_params.subject_digest = debug_handle.subject_digest;
+    debug_exp_params.anchor = debug_handle.anchor.clone();
+    debug_exp_params.contract_basis = debug_handle.contract_basis.clone();
+    debug_exp_params.retention_until = debug_handle.retention_until;
+    let mut debug_roots = BTreeSet::new();
+    debug_roots.insert(debug_handle.subject_digest);
+    debug_roots.insert(ContentDigest::sha256(b"debug-root"));
+    debug_exp_params.proof_roots = debug_roots;
+    debug_exp_params.laboratory_access = LaboratoryAccess::QualificationOrDebugGrant;
+    debug_exp_params.purpose = HydrationPurpose::Debugging;
+    let debug_exp = H4LaboratoryExpansion::new(debug_exp_params)?;
+    let debug_art = debug_exp.to_hydration_artifact(None)?;
+
+    // Probe I2p: Debugging expansion presented with Qualification request must fail validate_delivery
+    let err_i2p = qual_req.validate_delivery(&debug_handle, &debug_art, now);
+    assert_eq!(err_i2p, Err(HydrationError::LaboratoryGrantRequired));
+
+    Ok(())
+}
+
+#[test]
+fn test_h4_validate_delivery_refuses_envelope_mismatches_probe_i1c() -> Result<(), Box<dyn Error>> {
+    let handle = sample_handle_with_transform(None)?;
+    let now = TimestampNs(1_500_000_000);
+
+    let request = HydrationRequest::publish(HydrationRequestSpec {
+        contract_basis: handle.contract_basis.clone(),
+        session_id: SessionId::parse("session:qualification")?,
+        handle_id: handle.handle_id.clone(),
+        expected_descriptor_digest: handle.descriptor_digest,
+        expected_subject_digest: handle.subject_digest,
+        anchor: handle.anchor.clone(),
+        requested_level: HydrationLevel::H4,
+        allow_lower_level: false,
+        available_capabilities: handle
+            .required_capabilities
+            .values()
+            .flatten()
+            .cloned()
+            .collect(),
+        authorized_privacy_classes: BTreeSet::from([handle.privacy_class.clone()]),
+        budget: BudgetVector::builder()
+            .bytes(200_000)
+            .tokens(4_000)
+            .build()?,
+        purpose: HydrationPurpose::Qualification,
+        continuation: None,
+        issued_at: TimestampNs(1_500_000_000),
+    })?;
+
+    let mut exp_params = sample_valid_params()?;
+    exp_params.handle_id = handle.handle_id.clone();
+    exp_params.subject_id = handle.subject_id.clone();
+    exp_params.subject_digest = handle.subject_digest;
+    exp_params.anchor = handle.anchor.clone();
+    exp_params.contract_basis = handle.contract_basis.clone();
+    exp_params.retention_until = handle.retention_until;
+    let mut roots = BTreeSet::new();
+    roots.insert(handle.subject_digest);
+    roots.insert(ContentDigest::sha256(b"sec-root"));
+    exp_params.proof_roots = roots.clone();
+    let exp = H4LaboratoryExpansion::new(exp_params)?;
+
+    // Encode canonical payload
+    let mut encoder = CanonicalEncoder::new();
+    exp.encode_canonical(&mut encoder);
+    let payload = encoder.finish();
+
+    // Probe I1c check 1: content_type = text/plain must be rejected
+    let bad_ct_artifact = HydrationArtifact::publish(
+        HydrationLevel::H4,
+        "text/plain",
+        payload.clone(),
+        roots.clone(),
+        Completeness::Complete,
+        None,
+    )?;
+    assert_eq!(
+        request.validate_delivery(&handle, &bad_ct_artifact, now),
+        Err(HydrationError::Contract(ContractError::InvalidIdentifier))
+    );
+
+    // Probe I1c check 2: completeness = Partial must be rejected
+    let bad_comp_artifact = HydrationArtifact::publish(
+        HydrationLevel::H4,
+        "application/vnd.fss.h4-laboratory-expansion+canonical",
+        payload.clone(),
+        roots.clone(),
+        Completeness::Partial,
+        None,
+    )?;
+    assert_eq!(
+        request.validate_delivery(&handle, &bad_comp_artifact, now),
+        Err(HydrationError::Contract(ContractError::EvidenceRequired))
+    );
+
+    // Probe I1c check 3: unrelated proof root must be rejected
+    let mut unrelated_roots = roots.clone();
+    unrelated_roots.insert(ContentDigest::sha256(b"unrelated-foreign-root"));
+    let bad_roots_artifact = HydrationArtifact::publish(
+        HydrationLevel::H4,
+        "application/vnd.fss.h4-laboratory-expansion+canonical",
+        payload.clone(),
+        unrelated_roots,
+        Completeness::Complete,
+        None,
+    )?;
+    assert_eq!(
+        request.validate_delivery(&handle, &bad_roots_artifact, now),
         Err(HydrationError::Contract(ContractError::DigestMismatch))
     );
 
@@ -2171,8 +2507,9 @@ fn test_h4_validate_delivery_refuses_forged_payload_and_unbound_expansion()
 
 #[test]
 fn test_h4_intermediate_artifact_byte_count_less_than_shape_elements_rejected() {
-    // Shape [1, 64, 56, 56] has 200,704 elements; byte_count = 1 must be rejected
-    let malformed_intermediate = IntermediateArtifact {
+    // Shape [1, 64, 56, 56] has 200,704 elements; with f32 (4 bytes/element), min bytes = 802,816
+    // 1. byte_count = 1 must be rejected
+    let malformed_1 = IntermediateArtifact {
         stage_name: "backbone.layer3.feature_map".to_owned(),
         content_type: "application/x-fss-tensor-f32".to_owned(),
         digest: ContentDigest::sha256(b"feature-map-data"),
@@ -2180,7 +2517,30 @@ fn test_h4_intermediate_artifact_byte_count_less_than_shape_elements_rejected() 
         byte_count: 1,
     };
     assert_eq!(
-        malformed_intermediate.validate(),
+        malformed_1.validate(),
         Err(ContractError::LaboratoryExpansionShapeMalformed)
     );
+
+    // 2. byte_count = 200_704 (the element count itself) must also be rejected because f32 needs 4 bytes/element
+    let malformed_2 = IntermediateArtifact {
+        stage_name: "backbone.layer3.feature_map".to_owned(),
+        content_type: "application/x-fss-tensor-f32".to_owned(),
+        digest: ContentDigest::sha256(b"feature-map-data"),
+        shape: vec![1, 64, 56, 56],
+        byte_count: 200_704,
+    };
+    assert_eq!(
+        malformed_2.validate(),
+        Err(ContractError::LaboratoryExpansionShapeMalformed)
+    );
+
+    // 3. byte_count = 802_816 (200,704 * 4) must be accepted
+    let valid_intermediate = IntermediateArtifact {
+        stage_name: "backbone.layer3.feature_map".to_owned(),
+        content_type: "application/x-fss-tensor-f32".to_owned(),
+        digest: ContentDigest::sha256(b"feature-map-data"),
+        shape: vec![1, 64, 56, 56],
+        byte_count: 802_816,
+    };
+    assert_eq!(valid_intermediate.validate(), Ok(()));
 }
