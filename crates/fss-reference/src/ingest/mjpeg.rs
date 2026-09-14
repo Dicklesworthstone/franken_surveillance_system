@@ -465,6 +465,11 @@ pub enum JpegSplitError {
     Ledger(std::sync::Arc<JournalError>),
     /// Durable reference ledger failure during replay.
     DurableLedger(std::sync::Arc<DurableLedgerError>),
+    /// Replay adapter authorization failure.
+    Unauthorized {
+        /// Reason for authorization failure.
+        reason: &'static str,
+    },
     /// Cooperative cancellation was requested during splitting.
     CancellationRequested,
 }
@@ -544,6 +549,7 @@ impl Clone for JpegSplitError {
             Self::Reference(r) => Self::Reference(std::sync::Arc::clone(r)),
             Self::Ledger(l) => Self::Ledger(std::sync::Arc::clone(l)),
             Self::DurableLedger(d) => Self::DurableLedger(std::sync::Arc::clone(d)),
+            Self::Unauthorized { reason } => Self::Unauthorized { reason },
             Self::CancellationRequested => Self::CancellationRequested,
         }
     }
@@ -676,6 +682,7 @@ impl PartialEq for JpegSplitError {
             (Self::DurableLedger(d1), Self::DurableLedger(d2)) => {
                 std::sync::Arc::ptr_eq(d1, d2) || d1.to_string() == d2.to_string()
             }
+            (Self::Unauthorized { reason: r1 }, Self::Unauthorized { reason: r2 }) => r1 == r2,
             (Self::CancellationRequested, Self::CancellationRequested) => true,
             _ => false,
         }
@@ -781,6 +788,9 @@ impl std::fmt::Display for JpegSplitError {
             Self::Reference(e) => write!(f, "reference error: {e}"),
             Self::Ledger(e) => write!(f, "ledger error: {e}"),
             Self::DurableLedger(e) => write!(f, "durable ledger error: {e}"),
+            Self::Unauthorized { reason } => {
+                write!(f, "replay adapter unauthorized: {reason}")
+            }
             Self::CancellationRequested => {
                 write!(f, "cancellation requested during JPEG stream split")
             }
@@ -829,7 +839,7 @@ impl From<ReplayAdapterError> for JpegSplitError {
             ReplayAdapterError::Reference(e) => Self::Reference(std::sync::Arc::new(e)),
             ReplayAdapterError::Ledger(e) => Self::Ledger(std::sync::Arc::new(e)),
             ReplayAdapterError::DurableLedger(e) => Self::DurableLedger(std::sync::Arc::new(e)),
-            ReplayAdapterError::Unauthorized { reason } => Self::BoundExceeded(reason),
+            ReplayAdapterError::Unauthorized { reason } => Self::Unauthorized { reason },
         }
     }
 }

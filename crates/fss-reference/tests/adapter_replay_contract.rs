@@ -1553,3 +1553,151 @@ fn test_19_rollback_snapshot_bounds() -> Result<(), Box<dyn Error>> {
 
     Ok(())
 }
+
+fn p7_tmp_base(label: &str) -> PathBuf {
+    std::env::var_os("CARGO_TARGET_TMPDIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join(format!("r891d-{label}-{}", std::process::id()))
+}
+
+fn p7_stores(
+    dir: &ScopedLedgerDir,
+    name: &str,
+    cap: usize,
+) -> Result<(InMemoryObjectStore, DurableReferenceLedger), Box<dyn Error>> {
+    Ok((
+        InMemoryObjectStore::new(ObjectLimits::new(cap, 1 << 24)),
+        DurableReferenceLedger::open(
+            dir.journal_path(name),
+            "site:replay-contract",
+            IncompleteTailPolicy::Reject,
+        )?,
+    ))
+}
+
+#[test]
+fn p7_scoped_dir_collision_same_root() -> Result<(), Box<dyn Error>> {
+    let auth = test_context_authority("p7")?;
+    let base = p7_tmp_base("p7");
+    let shared = base.join("p7-shared");
+    std::fs::create_dir_all(&shared)?;
+    let pre = shared.join("ledger-0");
+    std::fs::create_dir_all(&pre)?;
+    std::fs::write(pre.join("precious.txt"), b"owner data")?;
+    let victim = base.join("p7-outside-victim");
+    std::fs::create_dir_all(&victim)?;
+    std::fs::write(victim.join("precious.txt"), b"outside data")?;
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&victim, shared.join("ledger-1"))?;
+        std::os::unix::fs::symlink(base.join("nonexistent"), shared.join("ledger-2"))?;
+    }
+
+    let cx_a = ReplayCx::from_context_authority(&auth, &shared)?;
+    let cx_b = ReplayCx::from_context_authority(&auth, &shared)?;
+    let da = ScopedLedgerDir::new("ledger", &cx_a)?;
+    let db = ScopedLedgerDir::new("ledger", &cx_b)?;
+    assert_ne!(da.path(), db.path());
+    let jp = db.journal_path("b");
+    let (mut obj, mut led) = p7_stores(&db, "b", 1024)?;
+    ReplayAdapter::new()?.execute(
+        &cx_b,
+        &ReplayExecutionRequest::new(sample_bundle()?),
+        &mut obj,
+        &mut led,
+    )?;
+    let before = jp.exists();
+    drop(da);
+    let after = jp.exists();
+    assert!(before && after);
+    drop(led);
+    drop(db);
+    let pre_ok = pre.join("precious.txt").exists();
+    #[cfg(unix)]
+    let link_ok = shared.join("ledger-1").exists() && victim.join("precious.txt").exists();
+    #[cfg(not(unix))]
+    let link_ok = true;
+    #[cfg(unix)]
+    let dangling_ok = std::fs::symlink_metadata(shared.join("ledger-2")).is_ok();
+    #[cfg(not(unix))]
+    let dangling_ok = true;
+    assert!(pre_ok && link_ok && dangling_ok);
+
+    let conc = base.join("p7-conc");
+    let paths = std::sync::Mutex::new(Vec::new());
+    std::thread::scope(|s| {
+        for _ in 0..16 {
+            s.spawn(|| {
+                if let Ok(cx) = ReplayCx::from_context_authority(&auth, &conc) {
+                    let mut keep = Vec::new();
+                    for _ in 0..8 {
+                        if let Ok(d) = ScopedLedgerDir::new("c", &cx) {
+                            keep.push(d);
+                        }
+                    }
+                    if let Ok(mut g) = paths.lock() {
+                        for d in &keep {
+                            g.push(d.path().to_path_buf());
+                        }
+                    }
+                    std::mem::forget(keep);
+                }
+            });
+        }
+    });
+    let mut v = paths.into_inner().map_err(|_| "poison")?;
+    let n = v.len();
+    v.sort();
+    v.dedup();
+    assert_eq!(n, 128);
+    assert_eq!(v.len(), 128);
+    let _ = std::fs::remove_dir_all(&base);
+    Ok(())
+}
+
+#[test]
+fn p8_prefix_escape_and_preexisting_delete() -> Result<(), Box<dyn Error>> {
+    let base = p7_tmp_base("p8");
+    let victim = base.join("victim-0");
+    std::fs::create_dir_all(&victim)?;
+    std::fs::write(victim.join("precious.txt"), b"owner data")?;
+    let auth = test_context_authority("p8")?;
+    let cx = ReplayCx::new(ReplayIoAuthority::from_context_authority(
+        &auth,
+        base.join("root"),
+    )?);
+    let abs_prefix = base.join("victim");
+    let mut refused = 0usize;
+    let bad: Vec<String> = vec![
+        abs_prefix.to_string_lossy().into_owned(),
+        "../escaped".into(),
+        "..".into(),
+        ".".into(),
+        "a/b".into(),
+        "a\\b".into(),
+        String::new(),
+        "x\0y".into(),
+        "caf\u{e9}".into(),
+        "\u{ff21}".into(),
+        "a b".into(),
+        "~".into(),
+    ];
+    for p in &bad {
+        match ScopedLedgerDir::new(p, &cx) {
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => refused += 1,
+            _ => {}
+        }
+    }
+    assert_eq!(refused, bad.len());
+    let inside = base.join("root").join("victim-0");
+    std::fs::create_dir_all(&inside)?;
+    std::fs::write(inside.join("precious.txt"), b"owner data")?;
+    let d = ScopedLedgerDir::new("victim", &cx)?;
+    let got = d.path().to_path_buf();
+    drop(d);
+    assert!(inside.join("precious.txt").exists() && victim.join("precious.txt").exists());
+    assert!(!got.exists());
+    let _ = std::fs::remove_dir_all(&base);
+    Ok(())
+}
