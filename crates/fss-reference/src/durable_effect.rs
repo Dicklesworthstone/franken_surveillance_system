@@ -19,9 +19,7 @@ use fss_ledger::{
 };
 use fss_object::InMemoryObjectStore;
 
-use crate::alert::{
-    ProviderDispatch, ReferenceAlertPlan, ReferenceAlertProvider, ReferenceProviderBehavior,
-};
+use crate::alert::{ReferenceAlertPlan, ReferenceAlertProvider, ReferenceProviderBehavior};
 use crate::error::ReferenceError;
 use crate::outcome::{ALERT_OUTCOME_FAMILY, ReferenceAlertOutcomeReceipt};
 
@@ -117,7 +115,10 @@ impl From<ContractError> for DurableEffectError {
 
 impl From<ReferenceError> for DurableEffectError {
     fn from(value: ReferenceError) -> Self {
-        Self::Reference(value)
+        match value {
+            ReferenceError::Contract(contract_err) => Self::Contract(contract_err),
+            other => Self::Reference(other),
+        }
     }
 }
 
@@ -598,74 +599,22 @@ impl DurableEffectJournal {
     pub fn dispatch_alert(
         &mut self,
         plan: &ReferenceAlertPlan,
+        authority: &DurableReferenceLedger,
         behavior: ReferenceProviderBehavior,
         committed_at: TimestampNs,
         outcome_at: TimestampNs,
         provider: &mut ReferenceAlertProvider,
     ) -> Result<OperationReceipt, DurableEffectError> {
-        crate::alert::validate_reference_alert_plan(plan)?;
-        let current_state = self
-            .operation(&plan.intent.operation_id)
-            .map(|r| r.state)
-            .ok_or(ContractError::NotFound)?;
-
-        match current_state {
-            EffectState::Prepared => {
-                // Step 1: Durably commit first. Refuses blind retry if already Indeterminate!
-                self.transition(
-                    &plan.intent.operation_id,
-                    EffectState::Committed,
-                    committed_at,
-                    None,
-                    None,
-                )?;
-            }
-            EffectState::Committed => {
-                // A Committed operation across restart cannot be blindly re-dispatched to the external provider!
-                // It must be reconciled or resolved via reconcile_alert.
-                return Err(ContractError::ReconciliationRequired.into());
-            }
-            EffectState::Indeterminate => {
-                // Indeterminate effects must be reconciled, not blindly retried!
-                return Err(ContractError::ReconciliationRequired.into());
-            }
-            _ => return Err(ContractError::InvalidEffectTransition.into()),
-        }
-
-        // Step 2: Provider interaction only after durable commitment:
-        match provider.dispatch(&plan.intent, behavior) {
-            ProviderDispatch::Delivered(_proof) => {
-                let receipt = self.transition(
-                    &plan.intent.operation_id,
-                    EffectState::AdapterAccepted,
-                    outcome_at,
-                    None,
-                    None,
-                )?;
-                Ok(receipt.clone())
-            }
-            ProviderDispatch::LostAck => {
-                let receipt = self.mark_indeterminate(
-                    &plan.intent.operation_id,
-                    outcome_at,
-                    "provider_ack_lost",
-                )?;
-                Ok(receipt.clone())
-            }
-            ProviderDispatch::KnownFailure(proof) => {
-                let receipt = self.transition(
-                    &plan.intent.operation_id,
-                    EffectState::Failed,
-                    outcome_at,
-                    Some(proof),
-                    Some(crate::alert::REFERENCE_ALERT_FAILURE_REASON.to_owned()),
-                )?;
-                Ok(receipt.clone())
-            }
-            ProviderDispatch::ConflictingIdempotency => {
-                Err(ContractError::IdempotencyConflict.into())
-            }
-        }
+        crate::alert::execute_alert_dispatch(
+            plan,
+            authority,
+            behavior,
+            committed_at,
+            outcome_at,
+            self,
+            provider,
+        )
+        .map_err(DurableEffectError::from)
     }
 
     /// Observes a delivered alert with provider observation receipt.
@@ -867,6 +816,105 @@ impl DurableEffectJournal {
             provider,
         )?;
         Ok(receipt)
+    }
+}
+
+impl crate::alert::AlertEffectTransitioner for DurableEffectJournal {
+    fn operation(&self, operation_id: &OperationId) -> Option<&OperationReceipt> {
+        self.operation(operation_id)
+    }
+
+    fn obligation(&self, obligation_id: &ObligationId) -> Option<&Obligation> {
+        self.obligation(obligation_id)
+    }
+
+    fn transition_cancelled(
+        &mut self,
+        operation_id: &OperationId,
+        now: TimestampNs,
+        proof: ContentDigest,
+        reason: String,
+    ) -> Result<(), ReferenceError> {
+        self.transition(
+            operation_id,
+            EffectState::Cancelled,
+            now,
+            Some(proof),
+            Some(reason),
+        )
+        .map(|_| ())
+        .map_err(|e| match e {
+            DurableEffectError::Reference(ref_err) => ref_err,
+            DurableEffectError::Contract(contract_err) => ReferenceError::Contract(contract_err),
+            other => ReferenceError::DurableTransitionFailed(other.to_string()),
+        })
+    }
+
+    fn transition_committed(
+        &mut self,
+        operation_id: &OperationId,
+        now: TimestampNs,
+    ) -> Result<(), ReferenceError> {
+        self.transition(operation_id, EffectState::Committed, now, None, None)
+            .map(|_| ())
+            .map_err(|e| match e {
+                DurableEffectError::Reference(ref_err) => ref_err,
+                DurableEffectError::Contract(contract_err) => {
+                    ReferenceError::Contract(contract_err)
+                }
+                other => ReferenceError::DurableTransitionFailed(other.to_string()),
+            })
+    }
+
+    fn transition_adapter_accepted(
+        &mut self,
+        operation_id: &OperationId,
+        now: TimestampNs,
+    ) -> Result<OperationReceipt, ReferenceError> {
+        self.transition(operation_id, EffectState::AdapterAccepted, now, None, None)
+            .cloned()
+            .map_err(|e| match e {
+                DurableEffectError::Reference(ref_err) => ref_err,
+                DurableEffectError::Contract(contract_err) => {
+                    ReferenceError::Contract(contract_err)
+                }
+                other => ReferenceError::DurableTransitionFailed(other.to_string()),
+            })
+    }
+
+    fn mark_indeterminate(
+        &mut self,
+        operation_id: &OperationId,
+        now: TimestampNs,
+        reason: &str,
+    ) -> Result<OperationReceipt, ReferenceError> {
+        self.mark_indeterminate(operation_id, now, reason)
+            .cloned()
+            .map_err(|e| match e {
+                DurableEffectError::Reference(ref_err) => ref_err,
+                DurableEffectError::Contract(contract_err) => {
+                    ReferenceError::Contract(contract_err)
+                }
+                other => ReferenceError::DurableTransitionFailed(other.to_string()),
+            })
+    }
+
+    fn transition_failed(
+        &mut self,
+        operation_id: &OperationId,
+        now: TimestampNs,
+        proof: Option<ContentDigest>,
+        reason: Option<String>,
+    ) -> Result<OperationReceipt, ReferenceError> {
+        self.transition(operation_id, EffectState::Failed, now, proof, reason)
+            .cloned()
+            .map_err(|e| match e {
+                DurableEffectError::Reference(ref_err) => ref_err,
+                DurableEffectError::Contract(contract_err) => {
+                    ReferenceError::Contract(contract_err)
+                }
+                other => ReferenceError::DurableTransitionFailed(other.to_string()),
+            })
     }
 }
 

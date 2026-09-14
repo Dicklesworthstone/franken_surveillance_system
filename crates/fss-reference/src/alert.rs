@@ -4,7 +4,8 @@ use std::collections::BTreeMap;
 
 use fss_core::{
     CanonicalEncode, CanonicalEncoder, ContentDigest, EffectIntent, EffectJournal, EffectState,
-    IdempotencyKey, ObligationId, OperationId, OperationReceipt, TimestampNs,
+    IdempotencyKey, LedgerAnchor, Obligation, ObligationId, OperationId, OperationReceipt,
+    TimestampNs,
 };
 use fss_ledger::DurableReferenceLedger;
 
@@ -41,6 +42,8 @@ pub struct ReferenceAlertPlan {
     pub event_root: ContentDigest,
     /// Event revision fingerprint.
     pub event_revision_digest: ContentDigest,
+    /// Authority anchor after publication.
+    pub authority_anchor: LedgerAnchor,
     /// Stable bounded alert channel identity.
     pub channel: String,
 }
@@ -168,7 +171,306 @@ impl ProviderFailureMessage {
     }
 }
 
+/// Trait for in-memory or durable effect journals to transition operations on refusal.
+pub(crate) trait AlertEffectTransitioner {
+    /// Look up an operation by identity.
+    fn operation(&self, operation_id: &OperationId) -> Option<&OperationReceipt>;
+    /// Look up an obligation by identity.
+    fn obligation(&self, obligation_id: &ObligationId) -> Option<&Obligation>;
+    /// Transition an operation to [`EffectState::Cancelled`] with cancel proof and reason.
+    fn transition_cancelled(
+        &mut self,
+        operation_id: &OperationId,
+        now: TimestampNs,
+        proof: ContentDigest,
+        reason: String,
+    ) -> Result<(), ReferenceError>;
+    /// Transition an operation to [`EffectState::Committed`].
+    fn transition_committed(
+        &mut self,
+        operation_id: &OperationId,
+        now: TimestampNs,
+    ) -> Result<(), ReferenceError>;
+    /// Transition an operation to [`EffectState::AdapterAccepted`].
+    fn transition_adapter_accepted(
+        &mut self,
+        operation_id: &OperationId,
+        now: TimestampNs,
+    ) -> Result<OperationReceipt, ReferenceError>;
+    /// Mark an operation as [`EffectState::Indeterminate`].
+    fn mark_indeterminate(
+        &mut self,
+        operation_id: &OperationId,
+        now: TimestampNs,
+        reason: &str,
+    ) -> Result<OperationReceipt, ReferenceError>;
+    /// Transition an operation to [`EffectState::Failed`].
+    fn transition_failed(
+        &mut self,
+        operation_id: &OperationId,
+        now: TimestampNs,
+        proof: Option<ContentDigest>,
+        reason: Option<String>,
+    ) -> Result<OperationReceipt, ReferenceError>;
+}
+
+impl AlertEffectTransitioner for EffectJournal {
+    fn operation(&self, operation_id: &OperationId) -> Option<&OperationReceipt> {
+        self.operation(operation_id)
+    }
+
+    fn obligation(&self, obligation_id: &ObligationId) -> Option<&Obligation> {
+        self.obligations()
+            .find(|o| &o.obligation_id == obligation_id)
+    }
+
+    fn transition_cancelled(
+        &mut self,
+        operation_id: &OperationId,
+        now: TimestampNs,
+        proof: ContentDigest,
+        reason: String,
+    ) -> Result<(), ReferenceError> {
+        self.transition(
+            operation_id,
+            EffectState::Cancelled,
+            now,
+            Some(proof),
+            Some(reason),
+        )
+        .map(|_| ())
+        .map_err(ReferenceError::from)
+    }
+
+    fn transition_committed(
+        &mut self,
+        operation_id: &OperationId,
+        now: TimestampNs,
+    ) -> Result<(), ReferenceError> {
+        self.transition(operation_id, EffectState::Committed, now, None, None)
+            .map(|_| ())
+            .map_err(ReferenceError::from)
+    }
+
+    fn transition_adapter_accepted(
+        &mut self,
+        operation_id: &OperationId,
+        now: TimestampNs,
+    ) -> Result<OperationReceipt, ReferenceError> {
+        self.transition(operation_id, EffectState::AdapterAccepted, now, None, None)
+            .cloned()
+            .map_err(ReferenceError::from)
+    }
+
+    fn mark_indeterminate(
+        &mut self,
+        operation_id: &OperationId,
+        now: TimestampNs,
+        reason: &str,
+    ) -> Result<OperationReceipt, ReferenceError> {
+        self.mark_indeterminate(operation_id, now, reason)
+            .cloned()
+            .map_err(ReferenceError::from)
+    }
+
+    fn transition_failed(
+        &mut self,
+        operation_id: &OperationId,
+        now: TimestampNs,
+        proof: Option<ContentDigest>,
+        reason: Option<String>,
+    ) -> Result<OperationReceipt, ReferenceError> {
+        self.transition(operation_id, EffectState::Failed, now, proof, reason)
+            .cloned()
+            .map_err(ReferenceError::from)
+    }
+}
+
+/// Computes a canonical cancellation proof bound to the operation identity,
+/// the prepared authority anchor, and the displacing authority anchor (P10).
+#[must_use]
+pub fn alert_cancel_proof(
+    operation_id: &OperationId,
+    prepared_anchor: &LedgerAnchor,
+    displacing_anchor: &LedgerAnchor,
+) -> ContentDigest {
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text("fss.alert_cancel_proof.v1");
+    operation_id.encode_canonical(&mut encoder);
+    prepared_anchor.encode_canonical(&mut encoder);
+    displacing_anchor.encode_canonical(&mut encoder);
+    ContentDigest::sha256(&encoder.finish())
+}
+
+/// Verifies that the event revision in `plan` remains the current, un-tampered authority in `authority`.
+///
+/// Permits unrelated observation or event batches that do not modify this event (P6).
+/// Rejects when this event's revision is no longer the latest or its authority anchor has been forged.
+fn check_event_authority(
+    plan: &ReferenceAlertPlan,
+    authority: &DurableReferenceLedger,
+) -> Result<(), ReferenceError> {
+    // 1. Find the batch and delta where this exact event revision was published.
+    let (batch_idx, prepared_delta) = authority
+        .batches()
+        .iter()
+        .enumerate()
+        .find_map(|(idx, batch)| {
+            batch
+                .deltas
+                .iter()
+                .find(|delta| {
+                    delta.family == "event_revision"
+                        && delta.payload_digest == plan.event_root
+                        && delta.witness_digest == Some(plan.event_revision_digest)
+                })
+                .map(|delta| (idx, delta))
+        })
+        .ok_or(ReferenceError::StaleEventAuthority)?;
+
+    // 2. The batch that committed this revision must match the prepared plan's authority anchor (P1b).
+    if authority.batches()[batch_idx].new_anchor != plan.authority_anchor {
+        return Err(ReferenceError::StaleEventAuthority);
+    }
+
+    // 3. The current object in authority for this event must match the prepared revision generation and payload.
+    let object_id = &prepared_delta.object_id;
+    let current_obj = authority
+        .current()
+        .objects
+        .get(object_id)
+        .ok_or(ReferenceError::StaleEventAuthority)?;
+
+    if current_obj.generation != prepared_delta.new_generation
+        || current_obj.payload_digest != plan.event_root
+    {
+        return Err(ReferenceError::StaleEventAuthority);
+    }
+
+    // 4. The latest delta in authority for this event must be this exact revision.
+    // An unrelated observation batch will not touch this event's object_id (P6).
+    let latest_delta = authority
+        .batches()
+        .iter()
+        .rev()
+        .flat_map(|b| b.deltas.iter())
+        .find(|d| d.object_id == *object_id && d.family == "event_revision")
+        .ok_or(ReferenceError::StaleEventAuthority)?;
+
+    if latest_delta.witness_digest != Some(plan.event_revision_digest)
+        || latest_delta.payload_digest != plan.event_root
+        || latest_delta.new_generation != prepared_delta.new_generation
+    {
+        return Err(ReferenceError::StaleEventAuthority);
+    }
+
+    Ok(())
+}
+
+/// Revalidates event authority in the ledger before an alert plan is dispatched.
+///
+/// Ensures:
+/// 1. The plan itself passes canonical validation.
+/// 2. The operation is in [`EffectState::Prepared`] state.
+/// 3. The plan matches what was prepared in the journal (intent, obligation ID, and terminal predicate).
+/// 4. The event revision in the plan remains the current, un-tampered authority in the ledger.
+///
+/// If event authority has become stale, superseded, or tampered, or if the plan was modified,
+/// the operation and its obligation are transitioned to [`EffectState::Cancelled`] with a bound
+/// cancel proof and reason, and [`ReferenceError::StaleEventAuthority`] is returned.
+pub(crate) fn revalidate_alert_event_authority<J: AlertEffectTransitioner>(
+    plan: &ReferenceAlertPlan,
+    authority: &DurableReferenceLedger,
+    requested_at: TimestampNs,
+    journal: &mut J,
+) -> Result<(), ReferenceError> {
+    validate_reference_alert_plan(plan)?;
+
+    let operation_id = &plan.intent.operation_id;
+    let operation = journal
+        .operation(operation_id)
+        .ok_or(fss_core::ContractError::NotFound)?;
+    if operation.state == EffectState::Committed || operation.state == EffectState::Indeterminate {
+        return Err(fss_core::ContractError::ReconciliationRequired.into());
+    }
+    if operation.state != EffectState::Prepared {
+        return Err(fss_core::ContractError::InvalidEffectTransition.into());
+    }
+
+    let obligation = journal
+        .obligation(&plan.obligation_id)
+        .ok_or(fss_core::ContractError::NotFound)?;
+
+    let plan_matches_prepare =
+        operation.intent == plan.intent && obligation.operation_id == *operation_id;
+
+    if !plan_matches_prepare {
+        let cancel_at = if requested_at > operation.updated_at {
+            requested_at
+        } else {
+            TimestampNs(operation.updated_at.0.saturating_add(1))
+        };
+        let cancel_proof = alert_cancel_proof(
+            operation_id,
+            &plan.authority_anchor,
+            &authority.current().anchor,
+        );
+        journal.transition_cancelled(
+            operation_id,
+            cancel_at,
+            cancel_proof,
+            "stale_event_authority".to_owned(),
+        )?;
+        return Err(ReferenceError::StaleEventAuthority);
+    }
+
+    if let Err(_err) = check_event_authority(plan, authority) {
+        let cancel_at = if requested_at > operation.updated_at {
+            requested_at
+        } else {
+            TimestampNs(operation.updated_at.0.saturating_add(1))
+        };
+        let cancel_proof = alert_cancel_proof(
+            operation_id,
+            &plan.authority_anchor,
+            &authority.current().anchor,
+        );
+        journal.transition_cancelled(
+            operation_id,
+            cancel_at,
+            cancel_proof,
+            "stale_event_authority".to_owned(),
+        )?;
+        return Err(ReferenceError::StaleEventAuthority);
+    }
+
+    Ok(())
+}
+
 /// Deterministic idempotent alert provider oracle.
+///
+/// External callers cannot invoke provider dispatch directly; delivery requires revalidation
+/// through [`dispatch_reference_alert`] or [`crate::DurableEffectJournal::dispatch_alert`].
+///
+/// ```compile_fail,E0624
+/// use fss_core::effect::EffectIntent;
+/// use fss_core::{ContentDigest, IdempotencyKey, OperationId};
+/// use fss_reference::{ReferenceAlertProvider, ReferenceProviderBehavior};
+///
+/// fn direct_dispatch_forbidden() -> Result<(), Box<dyn std::error::Error>> {
+///     let mut provider = ReferenceAlertProvider::with_provider_id("external:provider");
+///     let intent = EffectIntent {
+///         operation_id: OperationId::parse("op:alert:forbidden")?,
+///         idempotency_key: IdempotencyKey::parse("idempotency:alert:forbidden")?,
+///         effect_class: "alert.dispatch".to_owned(),
+///         request_digest: ContentDigest::sha256(b"req"),
+///         precondition_digest: ContentDigest::sha256(b"pre"),
+///     };
+///     // ReferenceAlertProvider::dispatch is pub(crate); calling it outside the crate fails to compile.
+///     provider.dispatch(&intent, ReferenceProviderBehavior::Deliver);
+///     Ok(())
+/// }
+/// ```
 #[derive(Clone, Debug)]
 pub struct ReferenceAlertProvider {
     provider_id: String,
@@ -214,7 +516,7 @@ impl ReferenceAlertProvider {
     }
 
     /// Dispatches an intent to the provider oracle under the requested behavior.
-    pub fn dispatch(
+    pub(crate) fn dispatch(
         &mut self,
         intent: &EffectIntent,
         behavior: ReferenceProviderBehavior,
@@ -520,8 +822,52 @@ pub fn prepare_reference_alert(
         obligation_id: actual_obligation,
         event_root: params.event_receipt.event_root,
         event_revision_digest: params.event_receipt.event_revision_digest,
+        authority_anchor: params.event_receipt.authority_anchor.clone(),
         channel,
     })
+}
+
+/// Shared execution helper for alert dispatch through the deterministic provider oracle.
+///
+/// Ensures event authority and plan integrity are revalidated atomically before committing
+/// and invoking provider dispatch.
+pub(crate) fn execute_alert_dispatch<J: AlertEffectTransitioner>(
+    plan: &ReferenceAlertPlan,
+    authority: &DurableReferenceLedger,
+    behavior: ReferenceProviderBehavior,
+    commit_at: TimestampNs,
+    outcome_at: TimestampNs,
+    journal: &mut J,
+    provider: &mut ReferenceAlertProvider,
+) -> Result<OperationReceipt, ReferenceError> {
+    revalidate_alert_event_authority(plan, authority, commit_at, journal)?;
+
+    let operation_id = &plan.intent.operation_id;
+    journal.transition_committed(operation_id, commit_at)?;
+
+    match provider.dispatch(&plan.intent, behavior) {
+        ProviderDispatch::Delivered(_proof) => {
+            let receipt = journal.transition_adapter_accepted(operation_id, outcome_at)?;
+            Ok(receipt)
+        }
+        ProviderDispatch::LostAck => {
+            let receipt =
+                journal.mark_indeterminate(operation_id, outcome_at, "provider_ack_lost")?;
+            Ok(receipt)
+        }
+        ProviderDispatch::KnownFailure(proof) => {
+            let receipt = journal.transition_failed(
+                operation_id,
+                outcome_at,
+                Some(proof),
+                Some(REFERENCE_ALERT_FAILURE_REASON.to_owned()),
+            )?;
+            Ok(receipt)
+        }
+        ProviderDispatch::ConflictingIdempotency => Err(ReferenceError::Contract(
+            fss_core::ContractError::IdempotencyConflict,
+        )),
+    }
 }
 
 /// Commits and dispatches one exact prepared alert plan through the deterministic provider oracle.
@@ -538,66 +884,41 @@ pub fn prepare_reference_alert(
 /// use fss_core::belief::BeliefInterval;
 /// use fss_core::{EffectJournal, TimestampNs};
 /// use fss_reference::ReferenceAlertPlan;
-/// use fss_reference::{ReferenceAlertProvider, ReferenceProviderBehavior, dispatch_reference_alert};
+/// use fss_reference::{DurableReferenceLedger, ReferenceAlertProvider, ReferenceProviderBehavior, dispatch_reference_alert};
 ///
 /// fn legal_dispatch(
 ///     plan: &ReferenceAlertPlan,
+///     authority: &DurableReferenceLedger,
 ///     journal: &mut EffectJournal,
 ///     provider: &mut ReferenceAlertProvider,
 /// ) {
 ///     let behavior = ReferenceProviderBehavior::Deliver;
-///     let _ = dispatch_reference_alert(plan, behavior, TimestampNs(1), TimestampNs(2), journal, provider);
+///     let _ = dispatch_reference_alert(plan, authority, behavior, TimestampNs(1), TimestampNs(2), journal, provider);
 /// }
 ///
 /// fn forbidden_dispatch(
 ///     belief: &BeliefInterval,
+///     authority: &DurableReferenceLedger,
 ///     journal: &mut EffectJournal,
 ///     provider: &mut ReferenceAlertProvider,
 /// ) {
 ///     // adr-0001/inv-4-reference: a belief is not a prepared alert plan.
 ///     let behavior = ReferenceProviderBehavior::Deliver;
-///     let _ = dispatch_reference_alert(belief, behavior, TimestampNs(1), TimestampNs(2), journal, provider);
+///     let _ = dispatch_reference_alert(belief, authority, behavior, TimestampNs(1), TimestampNs(2), journal, provider);
 /// }
 /// ```
 pub fn dispatch_reference_alert(
     plan: &ReferenceAlertPlan,
+    authority: &DurableReferenceLedger,
     behavior: ReferenceProviderBehavior,
     commit_at: TimestampNs,
     outcome_at: TimestampNs,
     journal: &mut EffectJournal,
     provider: &mut ReferenceAlertProvider,
 ) -> Result<OperationReceipt, ReferenceError> {
-    validate_reference_alert_plan(plan)?;
-    let operation_id = &plan.intent.operation_id;
-    let _ = journal.transition(operation_id, EffectState::Committed, commit_at, None, None)?;
-
-    match provider.dispatch(&plan.intent, behavior) {
-        ProviderDispatch::Delivered(_proof) => {
-            let receipt = journal.transition(
-                operation_id,
-                EffectState::AdapterAccepted,
-                outcome_at,
-                None,
-                None,
-            )?;
-            Ok(receipt.clone())
-        }
-        ProviderDispatch::LostAck => Ok(journal
-            .mark_indeterminate(operation_id, outcome_at, "provider_ack_lost")?
-            .clone()),
-        ProviderDispatch::KnownFailure(proof) => Ok(journal
-            .transition(
-                operation_id,
-                EffectState::Failed,
-                outcome_at,
-                Some(proof),
-                Some(REFERENCE_ALERT_FAILURE_REASON.to_owned()),
-            )?
-            .clone()),
-        ProviderDispatch::ConflictingIdempotency => Err(ReferenceError::Contract(
-            fss_core::ContractError::IdempotencyConflict,
-        )),
-    }
+    execute_alert_dispatch(
+        plan, authority, behavior, commit_at, outcome_at, journal, provider,
+    )
 }
 
 /// Records an independent observation of an adapter-accepted alert.
@@ -731,7 +1052,10 @@ pub fn reconcile_reference_alert(
     }
 }
 
-fn alert_request_digest(event_receipt: &ReferenceEventReceipt, channel: &str) -> ContentDigest {
+pub(crate) fn alert_request_digest(
+    event_receipt: &ReferenceEventReceipt,
+    channel: &str,
+) -> ContentDigest {
     alert_request_digest_parts(
         event_receipt.event_root,
         event_receipt.event_revision_digest,

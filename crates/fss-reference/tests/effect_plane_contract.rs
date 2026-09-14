@@ -211,6 +211,7 @@ fn test_f2_idempotency_key_shared_by_different_intents_is_typed_conflict()
     // 3. First dispatch of plan_a through dispatch_reference_alert succeeds:
     let dispatch_a = dispatch_reference_alert(
         &plan_a,
+        &authority,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(101),
         TimestampNs(102),
@@ -222,6 +223,7 @@ fn test_f2_idempotency_key_shared_by_different_intents_is_typed_conflict()
     // 4. Conflicting dispatch of plan_b with different intent under same idempotency key fails:
     let err_b = dispatch_reference_alert(
         &plan_b,
+        &authority,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(103),
         TimestampNs(104),
@@ -382,6 +384,7 @@ fn test_f4_adapter_acceptance_does_not_promote_to_verified_without_observation()
     // 1. Adapter delivery transitions to AdapterAccepted only, not Observed or Verified
     let receipt = dispatch_reference_alert(
         &plan,
+        &authority,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(101),
         TimestampNs(102),
@@ -667,6 +670,7 @@ fn test_f6_reconciliation_preserves_indeterminate_provenance_and_publishes_succe
     // Dispatch with LoseAckAfterDelivery
     let dispatched = dispatch_reference_alert(
         &plan,
+        &authority,
         ReferenceProviderBehavior::LoseAckAfterDelivery,
         TimestampNs(101),
         TimestampNs(102),
@@ -833,6 +837,7 @@ fn test_finding_1_failure_proof_cross_operation_replay() -> Result<(), Box<dyn E
     // Dispatch plan1 and plan2 which both lose ACK and become Indeterminate:
     let _ = dispatch_reference_alert(
         &plan1,
+        &authority,
         ReferenceProviderBehavior::LoseAckAfterDelivery,
         TimestampNs(150),
         TimestampNs(200),
@@ -841,6 +846,7 @@ fn test_finding_1_failure_proof_cross_operation_replay() -> Result<(), Box<dyn E
     )?;
     let _ = dispatch_reference_alert(
         &plan2,
+        &authority,
         ReferenceProviderBehavior::LoseAckAfterDelivery,
         TimestampNs(150),
         TimestampNs(200),
@@ -1031,6 +1037,7 @@ fn test_finding_5_delivered_effect_marked_failed() -> Result<(), Box<dyn Error>>
     let t2 = TimestampNs(102);
     let dispatch_res = dispatch_reference_alert(
         &plan,
+        &authority,
         ReferenceProviderBehavior::LoseAckAfterDelivery,
         t1,
         t2,
@@ -1079,6 +1086,7 @@ fn test_finding_6_reconciliation_not_idempotent() -> Result<(), Box<dyn Error>> 
     let t2 = TimestampNs(102);
     let dispatch_res = dispatch_reference_alert(
         &plan,
+        &authority,
         ReferenceProviderBehavior::LoseAckAfterDelivery,
         t1,
         t2,
@@ -1154,29 +1162,69 @@ fn test_f1_uncalled_provider_refuses_failure_reconciliation() -> Result<(), Box<
 
 #[test]
 fn test_f2_independent_providers_mint_distinct_nonces() -> Result<(), Box<dyn Error>> {
+    let path = temp_journal("f2-nonces");
+    let _ = fs::remove_file(&path);
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(512, 8 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
+    let mut journal_a = EffectJournal::new();
+    let mut journal_b = EffectJournal::new();
+    let plan_a = prepare_reference_alert(
+        PrepareAlertParams {
+            decision: &decision,
+            event_receipt: &event_receipt,
+            authority: &authority,
+            operation_id: OperationId::parse("op:alert:nonce:a")?,
+            idempotency_key: IdempotencyKey::parse("idempotency:alert:nonce:a")?,
+            obligation_id: ObligationId::parse("obligation:alert:nonce:a")?,
+            channel: "operator:oncall".to_owned(),
+            now: TimestampNs(100),
+        },
+        &mut journal_a,
+    )?;
+    let plan_b = prepare_reference_alert(
+        PrepareAlertParams {
+            decision: &decision,
+            event_receipt: &event_receipt,
+            authority: &authority,
+            operation_id: OperationId::parse("op:alert:nonce:b")?,
+            idempotency_key: IdempotencyKey::parse("idempotency:alert:nonce:b")?,
+            obligation_id: ObligationId::parse("obligation:alert:nonce:b")?,
+            channel: "operator:oncall".to_owned(),
+            now: TimestampNs(100),
+        },
+        &mut journal_b,
+    )?;
+
     let mut provider_a = ReferenceAlertProvider::with_provider_id("provider:test:f2:alpha");
     let mut provider_b = ReferenceAlertProvider::with_provider_id("provider:test:f2:beta");
 
-    let intent_a = EffectIntent {
-        operation_id: OperationId::parse("op:alert:nonce:a")?,
-        idempotency_key: IdempotencyKey::parse("idempotency:alert:nonce:a")?,
-        effect_class: "alert.dispatch".to_string(),
-        request_digest: ContentDigest::sha256(b"req_a"),
-        precondition_digest: ContentDigest::sha256(b"pre_a"),
-    };
-    let intent_b = EffectIntent {
-        operation_id: OperationId::parse("op:alert:nonce:b")?,
-        idempotency_key: IdempotencyKey::parse("idempotency:alert:nonce:b")?,
-        effect_class: "alert.dispatch".to_string(),
-        request_digest: ContentDigest::sha256(b"req_b"),
-        precondition_digest: ContentDigest::sha256(b"pre_b"),
-    };
+    let _ = dispatch_reference_alert(
+        &plan_a,
+        &authority,
+        ReferenceProviderBehavior::Deliver,
+        TimestampNs(101),
+        TimestampNs(102),
+        &mut journal_a,
+        &mut provider_a,
+    )?;
+    let _ = dispatch_reference_alert(
+        &plan_b,
+        &authority,
+        ReferenceProviderBehavior::Deliver,
+        TimestampNs(101),
+        TimestampNs(102),
+        &mut journal_b,
+        &mut provider_b,
+    )?;
 
-    let _ = provider_a.dispatch(&intent_a, ReferenceProviderBehavior::Deliver);
-    let _ = provider_b.dispatch(&intent_b, ReferenceProviderBehavior::Deliver);
-
-    let receipt_a = provider_a.lookup(&intent_a)?.ok_or("missing receipt a")?;
-    let receipt_b = provider_b.lookup(&intent_b)?.ok_or("missing receipt b")?;
+    let receipt_a = provider_a
+        .lookup(&plan_a.intent)?
+        .ok_or("missing receipt a")?;
+    let receipt_b = provider_b
+        .lookup(&plan_b.intent)?
+        .ok_or("missing receipt b")?;
 
     assert_ne!(
         receipt_a.provider_nonce, receipt_b.provider_nonce,
@@ -1188,22 +1236,46 @@ fn test_f2_independent_providers_mint_distinct_nonces() -> Result<(), Box<dyn Er
 #[test]
 fn test_deterministic_provider_mints_bit_identical_receipts_for_same_id()
 -> Result<(), Box<dyn Error>> {
+    let path = temp_journal("f2-deterministic");
+    let _ = fs::remove_file(&path);
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(512, 8 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
+    let mut journal = EffectJournal::new();
+    let plan = prepare_alert(&decision, &event_receipt, &authority, &mut journal)?;
+
+    let mut journal_2 = EffectJournal::new();
+    let plan_2 = prepare_alert(&decision, &event_receipt, &authority, &mut journal_2)?;
+
     let mut provider_1 = ReferenceAlertProvider::with_provider_id("provider:test:deterministic");
     let mut provider_2 = ReferenceAlertProvider::with_provider_id("provider:test:deterministic");
 
-    let intent = EffectIntent {
-        operation_id: OperationId::parse("op:alert:nonce:det")?,
-        idempotency_key: IdempotencyKey::parse("idempotency:alert:nonce:det")?,
-        effect_class: "alert.dispatch".to_string(),
-        request_digest: ContentDigest::sha256(b"req_det"),
-        precondition_digest: ContentDigest::sha256(b"pre_det"),
-    };
+    let _ = dispatch_reference_alert(
+        &plan,
+        &authority,
+        ReferenceProviderBehavior::Deliver,
+        TimestampNs(101),
+        TimestampNs(102),
+        &mut journal,
+        &mut provider_1,
+    )?;
+    let _ = dispatch_reference_alert(
+        &plan_2,
+        &authority,
+        ReferenceProviderBehavior::Deliver,
+        TimestampNs(101),
+        TimestampNs(102),
+        &mut journal_2,
+        &mut provider_2,
+    )?;
 
-    let _ = provider_1.dispatch(&intent, ReferenceProviderBehavior::Deliver);
-    let _ = provider_2.dispatch(&intent, ReferenceProviderBehavior::Deliver);
-
-    let receipt_1 = provider_1.lookup(&intent)?.ok_or("missing receipt 1")?;
-    let receipt_2 = provider_2.lookup(&intent)?.ok_or("missing receipt 2")?;
+    let receipt_1 = provider_1
+        .lookup(&plan.intent)?
+        .ok_or("missing receipt 1")?;
+    let receipt_2 = provider_2
+        .lookup(&plan.intent)?
+        .ok_or("missing receipt 2")?;
 
     assert_eq!(receipt_1.provider_nonce, receipt_2.provider_nonce);
     assert_eq!(receipt_1.canonical_bytes(), receipt_2.canonical_bytes());

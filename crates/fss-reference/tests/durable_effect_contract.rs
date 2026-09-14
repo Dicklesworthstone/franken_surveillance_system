@@ -59,7 +59,7 @@ fn sample_intent(op_name: &str, key_name: &str) -> Result<EffectIntent, Box<dyn 
 
 fn setup_alert_plan(
     ledger_path: &std::path::Path,
-) -> Result<(ReferenceAlertPlan, EffectJournal), Box<dyn Error>> {
+) -> Result<(ReferenceAlertPlan, EffectJournal, DurableReferenceLedger), Box<dyn Error>> {
     let mut objects = InMemoryObjectStore::new(ObjectLimits::new(512, 8 * 1024 * 1024));
     let mut authority = DurableReferenceLedger::open(
         ledger_path,
@@ -150,7 +150,7 @@ fn setup_alert_plan(
         &mut journal,
     )?;
 
-    Ok((plan, journal))
+    Ok((plan, journal, authority))
 }
 
 struct AlertTestContext {
@@ -376,7 +376,7 @@ fn test_planted_negative_lose_ack_reopen_refuses_second_commit_before_provider_t
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, _init_journal) = setup_alert_plan(&ledger_path)?;
+    let (plan, _init_journal, authority) = setup_alert_plan(&ledger_path)?;
     let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:durable:lose_ack");
 
     // Session 1: Prepare and dispatch with LoseAckAfterDelivery
@@ -391,6 +391,7 @@ fn test_planted_negative_lose_ack_reopen_refuses_second_commit_before_provider_t
 
         let outcome = journal.dispatch_alert(
             &plan,
+            &authority,
             ReferenceProviderBehavior::LoseAckAfterDelivery,
             TimestampNs(110),
             TimestampNs(120),
@@ -414,6 +415,7 @@ fn test_planted_negative_lose_ack_reopen_refuses_second_commit_before_provider_t
         // Must be REFUSED before provider is touched!
         let commit_res = journal.dispatch_alert(
             &plan,
+            &authority,
             ReferenceProviderBehavior::Deliver,
             TimestampNs(200),
             TimestampNs(210),
@@ -444,7 +446,7 @@ fn test_planted_negative_reconciliation_after_reopen_closes_obligation_with_prov
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, _) = setup_alert_plan(&ledger_path)?;
+    let (plan, _, authority) = setup_alert_plan(&ledger_path)?;
     let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:durable:reopen");
 
     // Session 1: Prepare and dispatch with LoseAckAfterDelivery
@@ -458,6 +460,7 @@ fn test_planted_negative_reconciliation_after_reopen_closes_obligation_with_prov
         )?;
         let outcome = journal.dispatch_alert(
             &plan,
+            &authority,
             ReferenceProviderBehavior::LoseAckAfterDelivery,
             TimestampNs(110),
             TimestampNs(120),
@@ -592,165 +595,13 @@ fn test_planted_negative_edited_record_chain_is_corrupt() -> Result<(), Box<dyn 
 }
 
 #[test]
-fn test_crash_after_commit_recovery_via_redispatch() -> Result<(), Box<dyn Error>> {
-    let path = temp_journal("planted-crash-commit-redispatch");
-    let ledger_path = temp_journal("planted-crash-commit-redispatch-ledger");
-    let _ = fs::remove_file(&path);
-    let _ = fs::remove_file(&ledger_path);
-
-    let (plan, _) = setup_alert_plan(&ledger_path)?;
-    let mut provider =
-        ReferenceAlertProvider::with_provider_id("provider:test:durable:crash_commit_redispatch");
-
-    // Session 1: Prepare and commit effect to durable journal, then simulate crash
-    // immediately between Step 1 (commit) and Step 2 (provider dispatch).
-    {
-        let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
-        let prep_receipt = journal.prepare(
-            plan.intent.clone(),
-            plan.obligation_id.clone(),
-            "delivery_acknowledged_by_provider",
-            TimestampNs(100),
-        )?;
-        assert_eq!(prep_receipt.state, EffectState::Prepared);
-
-        let commit_receipt = journal.transition(
-            &plan.intent.operation_id,
-            EffectState::Committed,
-            TimestampNs(110),
-            None,
-            None,
-        )?;
-        assert_eq!(commit_receipt.state, EffectState::Committed);
-        // Process crash occurs here: external provider dispatch executed, but crash happened before
-        // journal recorded adapter acceptance or completion. State remains Committed on disk.
-        let _ = provider.dispatch(&plan.intent, ReferenceProviderBehavior::Deliver);
-    }
-
-    // Session 2: System reboots; journal is replayed from disk.
-    {
-        let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
-        let authority = DurableReferenceLedger::open(
-            &ledger_path,
-            "site:durable_alert",
-            IncompleteTailPolicy::Reject,
-        )?;
-        let receipt = journal
-            .operation(&plan.intent.operation_id)
-            .ok_or(ContractError::NotFound)?;
-        assert_eq!(receipt.state, EffectState::Committed);
-
-        // Recovery: Re-dispatching MUST be refused with ReconciliationRequired to prevent duplicate external effect!
-        let redispatch_res = journal.dispatch_alert(
-            &plan,
-            ReferenceProviderBehavior::Deliver,
-            TimestampNs(200),
-            TimestampNs(210),
-            &mut provider,
-        );
-        assert!(matches!(
-            redispatch_res,
-            Err(DurableEffectError::Contract(
-                ContractError::ReconciliationRequired
-            ))
-        ));
-
-        // Reconcile alert with provider evidence instead of re-sending:
-        let provider_proof = provider
-            .lookup(&plan.intent)?
-            .ok_or("missing provider receipt")?
-            .receipt_digest();
-        let reconciled_receipt = journal
-            .reconcile_alert(&plan, TimestampNs(215), &provider)?
-            .ok_or("reconciliation failed")?;
-        assert_eq!(reconciled_receipt.state, EffectState::Verified);
-        assert_eq!(reconciled_receipt.result_digest, Some(provider_proof));
-
-        let obligation = journal
-            .obligations()
-            .find(|o| o.obligation_id == plan.obligation_id)
-            .ok_or(ContractError::NotFound)?;
-        assert_eq!(obligation.state, ObligationState::Verified);
-
-        // Obligation is now verified and classified as PendingLedger
-        match journal.classify_obligation(&plan.obligation_id, &authority)? {
-            ObligationLedgerState::PendingLedger(pending) => {
-                assert_eq!(pending.obligation.obligation_id, plan.obligation_id);
-                assert_eq!(pending.obligation.state, ObligationState::Verified);
-            }
-            other => return Err(format!("expected PendingLedger, got {other:?}").into()),
-        }
-    }
-
-    let _ = fs::remove_file(path);
-    let _ = fs::remove_file(ledger_path);
-    Ok(())
-}
-
-#[test]
-fn test_crash_after_commit_recovery_via_reconcile() -> Result<(), Box<dyn Error>> {
-    let path = temp_journal("planted-crash-commit-reconcile");
-    let ledger_path = temp_journal("planted-crash-commit-reconcile-ledger");
-    let _ = fs::remove_file(&path);
-    let _ = fs::remove_file(&ledger_path);
-
-    let (plan, _) = setup_alert_plan(&ledger_path)?;
-    let mut provider =
-        ReferenceAlertProvider::with_provider_id("provider:test:durable:crash_commit_reconcile");
-
-    // Provider external dispatch succeeded, but crash occurred before journal recorded AdapterAccepted
-    let _ = provider.dispatch(&plan.intent, ReferenceProviderBehavior::Deliver);
-    let provider_proof = provider
-        .lookup(&plan.intent)?
-        .ok_or("missing provider receipt")?
-        .receipt_digest();
-
-    // Session 1: Committed on disk
-    {
-        let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
-        let _ = journal.prepare(
-            plan.intent.clone(),
-            plan.obligation_id.clone(),
-            "delivery_acknowledged_by_provider",
-            TimestampNs(100),
-        )?;
-        let _ = journal.transition(
-            &plan.intent.operation_id,
-            EffectState::Committed,
-            TimestampNs(110),
-            None,
-            None,
-        )?;
-    }
-
-    // Session 2: System reboots; operator runs reconciliation on open obligations
-    {
-        let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
-        let reconciled = journal.reconcile_alert(&plan, TimestampNs(200), &provider)?;
-        let receipt = reconciled.ok_or(ContractError::NotFound)?;
-        assert_eq!(receipt.state, EffectState::Verified);
-        assert_eq!(receipt.result_digest, Some(provider_proof));
-
-        let obligation = journal
-            .obligations()
-            .find(|o| o.obligation_id == plan.obligation_id)
-            .ok_or(ContractError::NotFound)?;
-        assert_eq!(obligation.state, ObligationState::Verified);
-    }
-
-    let _ = fs::remove_file(path);
-    let _ = fs::remove_file(ledger_path);
-    Ok(())
-}
-
-#[test]
 fn test_crash_after_commit_recovery_via_reconcile_failed() -> Result<(), Box<dyn Error>> {
     let path = temp_journal("planted-crash-commit-fail");
     let ledger_path = temp_journal("planted-crash-commit-fail-ledger");
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, _) = setup_alert_plan(&ledger_path)?;
+    let (plan, _, _) = setup_alert_plan(&ledger_path)?;
     let mut provider =
         ReferenceAlertProvider::with_provider_id("provider:test:durable:crash_commit_fail");
 
@@ -810,7 +661,7 @@ fn test_reconcile_alert_accepts_adapter_accepted_after_restart() -> Result<(), B
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, _) = setup_alert_plan(&ledger_path)?;
+    let (plan, _, authority) = setup_alert_plan(&ledger_path)?;
     let mut provider =
         ReferenceAlertProvider::with_provider_id("provider:test:durable:reconcile_accepted");
 
@@ -825,6 +676,7 @@ fn test_reconcile_alert_accepts_adapter_accepted_after_restart() -> Result<(), B
         )?;
         let outcome = journal.dispatch_alert(
             &plan,
+            &authority,
             ReferenceProviderBehavior::Deliver,
             TimestampNs(110),
             TimestampNs(120),
@@ -896,6 +748,7 @@ fn test_inv_111_crash_with_open_indeterminate_obligation_reopens_with_reconcile_
 
         let outcome = journal.dispatch_alert(
             &plan,
+            &ctx.authority,
             ReferenceProviderBehavior::LoseAckAfterDelivery,
             TimestampNs(31_000),
             TimestampNs(32_000),
@@ -1149,6 +1002,7 @@ fn test_inv_111_obligation_classification_states() -> Result<(), Box<dyn Error>>
     // 3. Dispatch and reconcile to Verified
     let _ = journal.dispatch_alert(
         &plan,
+        &ctx.authority,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(31_000),
         TimestampNs(32_000),
@@ -1208,69 +1062,6 @@ fn test_inv_111_obligation_classification_states() -> Result<(), Box<dyn Error>>
     let _ = fs::remove_file(path);
     let _ = fs::remove_file(ledger_path);
     let _ = fs::remove_file(empty_path);
-    Ok(())
-}
-
-#[test]
-fn test_finding_f1_crash_after_commit_blind_duplicate_redispatch_fails()
--> Result<(), Box<dyn Error>> {
-    let path = temp_journal("finding-crash-redispatch");
-    let ledger_path = temp_journal("finding-crash-redispatch-ledger");
-    let _ = fs::remove_file(&path);
-    let _ = fs::remove_file(&ledger_path);
-
-    let (plan, _) = setup_alert_plan(&ledger_path)?;
-    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:finding:redispatch");
-
-    // Session 1: Committed on disk; external dispatch occurred before crash
-    {
-        let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
-        let _ = journal.prepare(
-            plan.intent.clone(),
-            plan.obligation_id.clone(),
-            "delivery_acknowledged_by_provider",
-            TimestampNs(100),
-        )?;
-        let _ = journal.transition(
-            &plan.intent.operation_id,
-            EffectState::Committed,
-            TimestampNs(110),
-            None,
-            None,
-        )?;
-        let _ = provider.dispatch(&plan.intent, ReferenceProviderBehavior::Deliver);
-    }
-
-    // Session 2: System reboots; journal is in Committed state.
-    // Calling dispatch_alert MUST NOT blindly redispatch to the provider!
-    {
-        let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
-        let redispatch_res = journal.dispatch_alert(
-            &plan,
-            ReferenceProviderBehavior::Deliver,
-            TimestampNs(200),
-            TimestampNs(210),
-            &mut provider,
-        );
-
-        match redispatch_res {
-            Err(DurableEffectError::Contract(ContractError::ReconciliationRequired)) => {
-                // Correct behavior: fails closed to prevent duplicate physical/external effect
-            }
-            Ok(_) => {
-                return Err("CRITICAL: dispatch_alert allowed blind duplicate provider dispatch on Committed state!".into());
-            }
-            Err(other) => return Err(format!("unexpected error: {:?}", other).into()),
-        }
-
-        // Reconcile alert instead of re-dispatching
-        let reconciled = journal.reconcile_alert(&plan, TimestampNs(220), &provider)?;
-        let receipt = reconciled.ok_or(ContractError::NotFound)?;
-        assert_eq!(receipt.state, EffectState::Verified);
-    }
-
-    let _ = fs::remove_file(path);
-    let _ = fs::remove_file(ledger_path);
     Ok(())
 }
 
@@ -1447,7 +1238,7 @@ fn test_finding_f4_reconcile_alert_must_not_drop_provider_failure() -> Result<()
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, _) = setup_alert_plan(&ledger_path)?;
+    let (plan, _, _) = setup_alert_plan(&ledger_path)?;
     let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:finding:fail_drop");
 
     // Session 1: Indeterminate with terminal provider failure
@@ -1570,6 +1361,7 @@ fn test_finding_f6_delta_payload_mismatch_fails_closed_to_ledger_conflict()
     })?;
     let _ = journal.dispatch_alert(
         &plan,
+        &ctx.authority,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(31_000),
         TimestampNs(32_000),
@@ -1706,6 +1498,221 @@ fn test_finding_f7_situation_guard_rejects_transient_and_mismatched_obligation()
         Err(ReferenceError::InvalidSpec("transient_obligation_rejected"))
             | Err(ReferenceError::InvalidSpec("obligation_operation_mismatch"))
     ));
+
+    let _ = fs::remove_file(path);
+    let _ = fs::remove_file(ledger_path);
+    Ok(())
+}
+
+#[test]
+fn test_crash_after_commit_recovery_via_reconcile() -> Result<(), Box<dyn Error>> {
+    let path = temp_journal("planted-crash-commit-reconcile");
+    let ledger_path = temp_journal("planted-crash-commit-reconcile-ledger");
+    let _ = fs::remove_file(&path);
+    let _ = fs::remove_file(&ledger_path);
+
+    let (plan, _) = setup_alert_plan(&ledger_path)?;
+    let mut provider =
+        ReferenceAlertProvider::with_provider_id("provider:test:durable:crash_commit_reconcile");
+
+    // Provider external dispatch succeeded, but crash occurred before journal recorded AdapterAccepted
+    let _ = provider.dispatch(&plan.intent, ReferenceProviderBehavior::Deliver);
+    let provider_proof = provider
+        .lookup(&plan.intent)?
+        .ok_or("missing provider receipt")?
+        .receipt_digest();
+
+    // Session 1: Committed on disk
+    {
+        let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+        let _ = journal.prepare(
+            plan.intent.clone(),
+            plan.obligation_id.clone(),
+            "delivery_acknowledged_by_provider",
+            TimestampNs(100),
+        )?;
+        let _ = journal.transition(
+            &plan.intent.operation_id,
+            EffectState::Committed,
+            TimestampNs(110),
+            None,
+            None,
+        )?;
+    }
+
+    // Session 2: System reboots; operator runs reconciliation on open obligations
+    {
+        let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+        let reconciled = journal.reconcile_alert(&plan, TimestampNs(200), &provider)?;
+        let receipt = reconciled.ok_or(ContractError::NotFound)?;
+        assert_eq!(receipt.state, EffectState::Verified);
+        assert_eq!(receipt.result_digest, Some(provider_proof));
+
+        let obligation = journal
+            .obligations()
+            .find(|o| o.obligation_id == plan.obligation_id)
+            .ok_or(ContractError::NotFound)?;
+        assert_eq!(obligation.state, ObligationState::Verified);
+    }
+
+    let _ = fs::remove_file(path);
+    let _ = fs::remove_file(ledger_path);
+    Ok(())
+}
+
+#[test]
+fn test_crash_after_commit_recovery_via_redispatch() -> Result<(), Box<dyn Error>> {
+    let path = temp_journal("planted-crash-commit-redispatch");
+    let ledger_path = temp_journal("planted-crash-commit-redispatch-ledger");
+    let _ = fs::remove_file(&path);
+    let _ = fs::remove_file(&ledger_path);
+
+    let (plan, _) = setup_alert_plan(&ledger_path)?;
+    let mut provider =
+        ReferenceAlertProvider::with_provider_id("provider:test:durable:crash_commit_redispatch");
+
+    // Session 1: Prepare and commit effect to durable journal, then simulate crash
+    // immediately between Step 1 (commit) and Step 2 (provider dispatch).
+    {
+        let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+        let prep_receipt = journal.prepare(
+            plan.intent.clone(),
+            plan.obligation_id.clone(),
+            "delivery_acknowledged_by_provider",
+            TimestampNs(100),
+        )?;
+        assert_eq!(prep_receipt.state, EffectState::Prepared);
+
+        let commit_receipt = journal.transition(
+            &plan.intent.operation_id,
+            EffectState::Committed,
+            TimestampNs(110),
+            None,
+            None,
+        )?;
+        assert_eq!(commit_receipt.state, EffectState::Committed);
+        // Process crash occurs here: external provider dispatch executed, but crash happened before
+        // journal recorded adapter acceptance or completion. State remains Committed on disk.
+        let _ = provider.dispatch(&plan.intent, ReferenceProviderBehavior::Deliver);
+    }
+
+    // Session 2: System reboots; journal is replayed from disk.
+    {
+        let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+        let authority = DurableReferenceLedger::open(
+            &ledger_path,
+            "site:durable_alert",
+            IncompleteTailPolicy::Reject,
+        )?;
+        let receipt = journal
+            .operation(&plan.intent.operation_id)
+            .ok_or(ContractError::NotFound)?;
+        assert_eq!(receipt.state, EffectState::Committed);
+
+        // Recovery: Re-dispatching MUST be refused with ReconciliationRequired to prevent duplicate external effect!
+        let redispatch_res = journal.dispatch_alert(
+            &plan,
+            ReferenceProviderBehavior::Deliver,
+            TimestampNs(200),
+            TimestampNs(210),
+            &mut provider,
+        );
+        assert!(matches!(
+            redispatch_res,
+            Err(DurableEffectError::Contract(
+                ContractError::ReconciliationRequired
+            ))
+        ));
+
+        // Reconcile alert with provider evidence instead of re-sending:
+        let provider_proof = provider
+            .lookup(&plan.intent)?
+            .ok_or("missing provider receipt")?
+            .receipt_digest();
+        let reconciled_receipt = journal
+            .reconcile_alert(&plan, TimestampNs(215), &provider)?
+            .ok_or("reconciliation failed")?;
+        assert_eq!(reconciled_receipt.state, EffectState::Verified);
+        assert_eq!(reconciled_receipt.result_digest, Some(provider_proof));
+
+        let obligation = journal
+            .obligations()
+            .find(|o| o.obligation_id == plan.obligation_id)
+            .ok_or(ContractError::NotFound)?;
+        assert_eq!(obligation.state, ObligationState::Verified);
+
+        // Obligation is now verified and classified as PendingLedger
+        match journal.classify_obligation(&plan.obligation_id, &authority)? {
+            ObligationLedgerState::PendingLedger(pending) => {
+                assert_eq!(pending.obligation.obligation_id, plan.obligation_id);
+                assert_eq!(pending.obligation.state, ObligationState::Verified);
+            }
+            other => return Err(format!("expected PendingLedger, got {other:?}").into()),
+        }
+    }
+
+    let _ = fs::remove_file(path);
+    let _ = fs::remove_file(ledger_path);
+    Ok(())
+}
+
+#[test]
+fn test_finding_f1_crash_after_commit_blind_duplicate_redispatch_fails()
+-> Result<(), Box<dyn Error>> {
+    let path = temp_journal("finding-crash-redispatch");
+    let ledger_path = temp_journal("finding-crash-redispatch-ledger");
+    let _ = fs::remove_file(&path);
+    let _ = fs::remove_file(&ledger_path);
+
+    let (plan, _) = setup_alert_plan(&ledger_path)?;
+    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:finding:redispatch");
+
+    // Session 1: Committed on disk; external dispatch occurred before crash
+    {
+        let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+        let _ = journal.prepare(
+            plan.intent.clone(),
+            plan.obligation_id.clone(),
+            "delivery_acknowledged_by_provider",
+            TimestampNs(100),
+        )?;
+        let _ = journal.transition(
+            &plan.intent.operation_id,
+            EffectState::Committed,
+            TimestampNs(110),
+            None,
+            None,
+        )?;
+        let _ = provider.dispatch(&plan.intent, ReferenceProviderBehavior::Deliver);
+    }
+
+    // Session 2: System reboots; journal is in Committed state.
+    // Calling dispatch_alert MUST NOT blindly redispatch to the provider!
+    {
+        let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+        let redispatch_res = journal.dispatch_alert(
+            &plan,
+            ReferenceProviderBehavior::Deliver,
+            TimestampNs(200),
+            TimestampNs(210),
+            &mut provider,
+        );
+
+        match redispatch_res {
+            Err(DurableEffectError::Contract(ContractError::ReconciliationRequired)) => {
+                // Correct behavior: fails closed to prevent duplicate physical/external effect
+            }
+            Ok(_) => {
+                return Err("CRITICAL: dispatch_alert allowed blind duplicate provider dispatch on Committed state!".into());
+            }
+            Err(other) => return Err(format!("unexpected error: {:?}", other).into()),
+        }
+
+        // Reconcile alert instead of re-dispatching
+        let reconciled = journal.reconcile_alert(&plan, TimestampNs(220), &provider)?;
+        let receipt = reconciled.ok_or(ContractError::NotFound)?;
+        assert_eq!(receipt.state, EffectState::Verified);
+    }
 
     let _ = fs::remove_file(path);
     let _ = fs::remove_file(ledger_path);
