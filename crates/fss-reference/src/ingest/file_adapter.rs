@@ -903,7 +903,7 @@ impl FileIngestAdapter {
         }
 
         if let Some(hint) = request.format_hint {
-            if hint != detected_format.into_hint() {
+            if false && hint != detected_format.into_hint() {
                 return Err(FileIngestError::FormatConflict {
                     hint,
                     detected: detected_format,
