@@ -1343,22 +1343,85 @@ fn cancel_proof_binds_operation_id_and_both_anchors_p10() -> Result<(), Box<dyn 
     );
     assert!(matches!(res, Err(ReferenceError::StaleEventAuthority)));
 
-    let expected_proof = crate::alert_cancel_proof(
+    // The cancel-request evidence binds the operation id and both anchors; the journal binds it
+    // with its whole prepared record (obligation id and terminal predicate included) into the
+    // cancellation proof that becomes the result digest (fss-thzlz).
+    let expected_evidence = crate::alert_cancel_proof(
         &plan.intent.operation_id,
         &plan.authority_anchor,
         &displacing_anchor,
+    );
+    let prepared = journal.prepared_record(&plan.intent.operation_id)?;
+    assert_eq!(prepared.intent, plan.intent);
+    assert_eq!(prepared.obligation_id, plan.obligation_id);
+    assert_eq!(
+        prepared.terminal_predicate,
+        REFERENCE_ALERT_TERMINAL_PREDICATE
+    );
+    let expected_proof =
+        fss_core::EffectCancellationRecord::for_prepared(&prepared, expected_evidence)
+            .proof_digest();
+    assert_eq!(
+        expected_proof,
+        crate::alert::alert_cancellation_proof(
+            &prepared,
+            &plan.authority_anchor,
+            &displacing_anchor
+        )
     );
 
     let op = journal
         .operation(&plan.intent.operation_id)
         .ok_or(ReferenceError::InvalidSpec("missing_operation"))?;
     assert_eq!(op.result_digest, Some(expected_proof));
+    let obligation = journal
+        .obligations()
+        .find(|item| item.obligation_id == plan.obligation_id)
+        .ok_or(ReferenceError::InvalidSpec("missing_obligation"))?;
+    assert_eq!(obligation.proof_digest, Some(expected_proof));
 
     // Ensure cancel proof is distinct when operation_id or displacing anchor changes.
     let diff_op = OperationId::parse("operation:alert:different")?;
-    let diff_proof =
+    let diff_evidence =
         crate::alert_cancel_proof(&diff_op, &plan.authority_anchor, &displacing_anchor);
+    assert_ne!(expected_evidence, diff_evidence);
+    let diff_proof =
+        fss_core::EffectCancellationRecord::for_prepared(&prepared, diff_evidence).proof_digest();
     assert_ne!(expected_proof, diff_proof);
+    // A different displacing anchor: here the prepared anchor itself, as if nothing displaced it.
+    let undisplaced_evidence = crate::alert_cancel_proof(
+        &plan.intent.operation_id,
+        &plan.authority_anchor,
+        &plan.authority_anchor,
+    );
+    assert_ne!(expected_evidence, undisplaced_evidence);
+    assert_ne!(
+        expected_proof,
+        crate::alert::alert_cancellation_proof(
+            &prepared,
+            &plan.authority_anchor,
+            &plan.authority_anchor
+        )
+    );
+    // A different prepared anchor gives different evidence too.
+    assert_ne!(
+        expected_evidence,
+        crate::alert_cancel_proof(
+            &plan.intent.operation_id,
+            &displacing_anchor,
+            &displacing_anchor
+        )
+    );
+    // The proof binds the whole prepared record: another obligation gives another proof.
+    let other_obligation = fss_core::PreparedEffect {
+        obligation_id: ObligationId::parse("obligation:alert:different")?,
+        ..prepared.clone()
+    };
+    assert_ne!(
+        expected_proof,
+        fss_core::EffectCancellationRecord::for_prepared(&other_obligation, expected_evidence)
+            .proof_digest()
+    );
 
     let _ = fs::remove_file(path);
     Ok(())

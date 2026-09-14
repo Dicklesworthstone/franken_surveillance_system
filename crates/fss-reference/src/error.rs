@@ -4,7 +4,7 @@ use std::error::Error;
 use std::fmt;
 use std::path::PathBuf;
 
-use fss_core::{ContentDigest, ContractError, TimestampNs};
+use fss_core::{ContentDigest, ContractError, OperationId, TimestampNs};
 use fss_ledger::{DurableLedgerError, JournalError, RepairError};
 use fss_object::{ObjectError, SpoolError};
 use fss_publication::{CapacityResource, LocalPublicationError, PublicationError, RootLedgerError};
@@ -115,6 +115,19 @@ pub enum ReferenceError {
     },
     /// Event authority in the ledger is stale or has moved since the alert plan was prepared.
     StaleEventAuthority,
+    /// A locally cancelled operation's cancellation proof does not verify against its prepared
+    /// record and the evidence the authority ledger published (fss-thzlz).
+    ///
+    /// The effect journal records a cancellation with the evidence the canceller supplied, but it
+    /// holds no ledger; the situation guard verifies that evidence. A cancellation it cannot
+    /// verify is refused with this error: it is never projected as cancelled, and never as still
+    /// pending.
+    UnverifiableCancellationEvidence {
+        /// The operation whose cancellation evidence is unverifiable.
+        operation_id: OperationId,
+        /// The cancellation proof digest the receipt carries.
+        proof_digest: Option<ContentDigest>,
+    },
     /// Durable journal transition write failure.
     DurableTransitionFailed(Box<crate::durable_effect::DurableEffectError>),
     /// Durable event authority could not be read or verified at alert dispatch (a missing path,
@@ -333,6 +346,23 @@ impl fmt::Display for ReferenceError {
             Self::StaleEventAuthority => {
                 formatter.write_str("event authority in the ledger is stale or has moved")
             }
+            Self::UnverifiableCancellationEvidence {
+                operation_id,
+                proof_digest,
+            } => {
+                write!(
+                    formatter,
+                    "operation {operation_id} is locally cancelled, but its cancellation proof "
+                )?;
+                match proof_digest {
+                    Some(digest) => write!(formatter, "{digest}")?,
+                    None => formatter.write_str("(absent)")?,
+                }
+                formatter.write_str(
+                    " binds no evidence the authority ledger published; the cancellation is \
+                     refused, neither cancelled nor pending",
+                )
+            }
             Self::DurableTransitionFailed(error) => {
                 write!(formatter, "durable journal transition failed: {error}")
             }
@@ -514,6 +544,7 @@ impl Error for ReferenceError {
             | Self::ContradictedEstimate { .. }
             | Self::InvalidEstimatorConfig { .. }
             | Self::StaleEventAuthority
+            | Self::UnverifiableCancellationEvidence { .. }
             | Self::DeploymentLocked { .. }
             | Self::IncompleteJournalTail { .. }
             | Self::CancellationRequested { .. }

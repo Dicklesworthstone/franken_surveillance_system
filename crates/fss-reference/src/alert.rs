@@ -195,12 +195,13 @@ pub(crate) trait AlertEffectTransitioner {
     fn operation(&self, operation_id: &OperationId) -> Option<&OperationReceipt>;
     /// Look up an obligation by identity.
     fn obligation(&self, obligation_id: &ObligationId) -> Option<&Obligation>;
-    /// Transition an operation to [`EffectState::Cancelled`] with cancel proof and reason.
+    /// Cancel an operation ([`EffectState::Cancelled`]) with the digest of the evidence that caused
+    /// the cancel, which the journal binds to its prepared record (fss-thzlz), and a reason.
     fn transition_cancelled(
         &mut self,
         operation_id: &OperationId,
         now: TimestampNs,
-        proof: ContentDigest,
+        cancel_request_evidence: ContentDigest,
         reason: String,
     ) -> Result<(), ReferenceError>;
     /// Transition an operation to [`EffectState::Committed`].
@@ -246,18 +247,12 @@ impl AlertEffectTransitioner for EffectJournal {
         &mut self,
         operation_id: &OperationId,
         now: TimestampNs,
-        proof: ContentDigest,
+        cancel_request_evidence: ContentDigest,
         reason: String,
     ) -> Result<(), ReferenceError> {
-        self.transition(
-            operation_id,
-            EffectState::Cancelled,
-            now,
-            Some(proof),
-            Some(reason),
-        )
-        .map(|_| ())
-        .map_err(ReferenceError::from)
+        self.cancel(operation_id, now, cancel_request_evidence, Some(reason))
+            .map(|_| ())
+            .map_err(ReferenceError::from)
     }
 
     fn transition_committed(
@@ -304,8 +299,15 @@ impl AlertEffectTransitioner for EffectJournal {
     }
 }
 
-/// Computes a canonical cancellation proof bound to the operation identity,
-/// the prepared authority anchor, and the displacing authority anchor (P10).
+/// Computes the cancel-request evidence of a refused alert dispatch, bound to the operation
+/// identity, the prepared authority anchor, and the displacing authority anchor (P10): the anchor
+/// the authority ledger held when dispatch revalidation refused.
+///
+/// The effect journal binds this evidence with its whole prepared record into the cancellation
+/// proof ([`fss_core::EffectCancellationRecord`], fss-thzlz); the situation guard recomputes it
+/// from the plan's prepared anchor and the anchors the authority ledger published. A v2 journal
+/// record, written before fss-thzlz, holds this digest itself, unbound, as the cancellation's
+/// result digest.
 #[must_use]
 pub fn alert_cancel_proof(
     operation_id: &OperationId,
@@ -318,6 +320,47 @@ pub fn alert_cancel_proof(
     prepared_anchor.encode_canonical(&mut encoder);
     displacing_anchor.encode_canonical(&mut encoder);
     ContentDigest::sha256(&encoder.finish())
+}
+
+/// The cancellation proof of an alert dispatch refused at `displacing_anchor` (fss-thzlz): the
+/// [`fss_core::EffectCancellationRecord`] binding the whole prepared record `prepared` to the
+/// [`alert_cancel_proof`] evidence over its operation, `prepared_anchor`, and `displacing_anchor`.
+#[must_use]
+pub(crate) fn alert_cancellation_proof(
+    prepared: &fss_core::PreparedEffect,
+    prepared_anchor: &LedgerAnchor,
+    displacing_anchor: &LedgerAnchor,
+) -> ContentDigest {
+    fss_core::EffectCancellationRecord::for_prepared(
+        prepared,
+        alert_cancel_proof(
+            &prepared.intent.operation_id,
+            prepared_anchor,
+            displacing_anchor,
+        ),
+    )
+    .proof_digest()
+}
+
+/// Whether `proof` is the cancellation proof of `prepared` for a dispatch of `plan` refused at an
+/// anchor `authority` published at or after the plan's prepared authority anchor (fss-thzlz).
+///
+/// The proof is recomputed from the prepared record and the ledger's own anchors, never from the
+/// fields of the receipt that carries it, so a digest minted without that ledger evidence is
+/// refused. A plan whose prepared anchor the ledger never published admits no proof.
+pub(crate) fn alert_cancellation_is_bound(
+    proof: ContentDigest,
+    prepared: &fss_core::PreparedEffect,
+    plan: &ReferenceAlertPlan,
+    authority: &DurableReferenceLedger,
+) -> bool {
+    authority
+        .batches()
+        .iter()
+        .skip_while(|batch| batch.new_anchor != plan.authority_anchor)
+        .any(|batch| {
+            alert_cancellation_proof(prepared, &plan.authority_anchor, &batch.new_anchor) == proof
+        })
 }
 
 /// Verifies event alert eligibility against policy, corroboration, and sensor integrity.
@@ -643,7 +686,9 @@ fn check_alert_dispatch_authority(
 /// 6. The prepare-time ledger head is in the ledger's history and bound by the recorded intent.
 ///
 /// Any refusal after step 1 transitions the operation and its obligation to
-/// [`EffectState::Cancelled`] with a bound cancel proof before the error is returned.
+/// [`EffectState::Cancelled`] before the error is returned. The cancel-request evidence is
+/// [`alert_cancel_proof`] over the plan's prepared anchor and the ledger's current anchor, and the
+/// journal binds it with its prepared record into the cancellation proof (fss-thzlz).
 pub(crate) fn revalidate_alert_event_authority<J: AlertEffectTransitioner>(
     plan: &ReferenceAlertPlan,
     authority: &DurableReferenceLedger,
@@ -677,7 +722,7 @@ pub(crate) fn revalidate_alert_event_authority<J: AlertEffectTransitioner>(
     } else {
         TimestampNs(updated_at.0.saturating_add(1))
     };
-    let cancel_proof = alert_cancel_proof(
+    let cancel_request_evidence = alert_cancel_proof(
         operation_id,
         &plan.authority_anchor,
         &authority.current().anchor,
@@ -685,7 +730,7 @@ pub(crate) fn revalidate_alert_event_authority<J: AlertEffectTransitioner>(
     journal.transition_cancelled(
         operation_id,
         cancel_at,
-        cancel_proof,
+        cancel_request_evidence,
         "stale_event_authority".to_owned(),
     )?;
     Err(refusal)

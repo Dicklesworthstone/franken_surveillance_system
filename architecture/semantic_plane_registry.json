@@ -201,6 +201,11 @@
       "plane": "authority",
       "description": "External provider failure receipt confirming failure of effect"
     },
+    "EffectCancellationRecord": {
+      "file": "crates/fss-core/src/effect.rs",
+      "plane": "authority",
+      "description": "Canonical cancellation proof binding the whole prepared record to the digest of the evidence that caused the cancel (fss-thzlz)"
+    },
     "EffectReconciliationRecord": {
       "file": "crates/fss-core/src/effect.rs",
       "plane": "authority",
@@ -219,7 +224,7 @@
     "EffectRecordVersion": {
       "file": "crates/fss-core/src/effect.rs",
       "plane": "authority",
-      "description": "Version of a durable effect journal record and of the receipt encoding its operation uses; v1 keeps pre-deir9 witness bytes (fss-deir9)"
+      "description": "Version of a durable effect journal record and of the receipt encoding its operation uses; v1 keeps pre-deir9 witness bytes (fss-deir9); v3 requires a proof-bound cancellation (fss-thzlz)"
     },
     "ReceiptLookupStatus": {
       "file": "crates/fss-core/src/effect.rs",

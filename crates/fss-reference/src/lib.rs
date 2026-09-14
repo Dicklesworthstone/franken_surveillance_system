@@ -110,9 +110,9 @@ pub use delivery::{
 };
 pub use durable_effect::{
     DurableEffectError, DurableEffectJournal, EFFECT_TRANSITION_RECORD_KIND,
-    EFFECT_TRANSITION_V2_RECORD_KIND, EffectJournalInspection, EffectJournalStatus,
-    IndeterminateOperationInfo, LedgeredObligation, ObligationCounts, ObligationLedgerState,
-    PendingLedgerObligation,
+    EFFECT_TRANSITION_V2_RECORD_KIND, EFFECT_TRANSITION_V3_RECORD_KIND, EffectJournalInspection,
+    EffectJournalStatus, IndeterminateOperationInfo, LedgeredObligation, ObligationCounts,
+    ObligationLedgerState, PendingLedgerObligation,
 };
 pub use encoded_fixture::{
     ContainerFormat, EncodedCameraGenerator, EncodedCameraSpec, EncodedFixtureError,

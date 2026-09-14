@@ -5,9 +5,10 @@ use std::error::Error;
 use std::fs;
 
 use fss_core::{
-    CanonicalEncode, CapsuleId, CaptureInterval, ContentDigest, ContractError, EffectIntent,
-    EffectJournal, EffectState, EventId, EventState, IdempotencyKey, ObligationId, ObligationState,
-    OperationId, ProbabilityInterval, SensorId, TimestampNs,
+    CanonicalEncode, CapsuleId, CaptureInterval, ContentDigest, ContractError,
+    EffectCancellationRecord, EffectIntent, EffectJournal, EffectState, EventId, EventState,
+    IdempotencyKey, ObligationId, ObligationState, OperationId, ProbabilityInterval, SensorId,
+    TimestampNs,
 };
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
 use fss_object::{InMemoryObjectStore, ObjectLimits};
@@ -447,35 +448,42 @@ fn test_f4_adapter_acceptance_does_not_promote_to_verified_without_observation()
         TimestampNs(200),
     )?;
 
-    // Transition to Cancelled with proof None fails with EvidenceRequired
-    let cancel_no_proof = journal.transition(
-        &cancel_op_id,
-        EffectState::Cancelled,
-        TimestampNs(201),
-        None,
-        None,
-    );
-    match cancel_no_proof {
-        Err(ContractError::EvidenceRequired) => {}
-        other => {
-            return Err(format!(
-                "expected EvidenceRequired on cancel without proof, got: {other:?}"
-            )
-            .into());
+    // The generic transition carries no cancel-request evidence, so it cannot cancel, with or
+    // without a digest (fss-thzlz).
+    for digest in [None, Some(ContentDigest::sha256(b"cancel-reason-proof"))] {
+        let cancel_without_evidence = journal.transition(
+            &cancel_op_id,
+            EffectState::Cancelled,
+            TimestampNs(201),
+            digest,
+            None,
+        );
+        match cancel_without_evidence {
+            Err(ContractError::EvidenceRequired) => {}
+            other => {
+                return Err(format!(
+                    "expected EvidenceRequired on cancel without evidence, got: {other:?}"
+                )
+                .into());
+            }
         }
     }
 
-    // Transition to Cancelled with proof succeeds
-    let cancel_proof = ContentDigest::sha256(b"cancel-reason-proof");
-    let cancelled = journal.transition(
+    // Cancelling with evidence records the proof binding the prepared record to it.
+    let cancel_evidence = ContentDigest::sha256(b"cancel-request-evidence");
+    let cancel_proof = EffectCancellationRecord::for_prepared(
+        &journal.prepared_record(&cancel_op_id)?,
+        cancel_evidence,
+    )
+    .proof_digest();
+    let cancelled = journal.cancel(
         &cancel_op_id,
-        EffectState::Cancelled,
         TimestampNs(202),
-        Some(cancel_proof),
+        cancel_evidence,
         Some("operator_revoked".to_owned()),
     )?;
-    if cancelled.state != EffectState::Cancelled {
-        return Err("expected Cancelled state".into());
+    if cancelled.state != EffectState::Cancelled || cancelled.result_digest != Some(cancel_proof) {
+        return Err("expected Cancelled state with the bound cancellation proof".into());
     }
     let cancel_ob = journal
         .obligations()
