@@ -25,7 +25,7 @@ fn scan()->FocalScanOptions{FocalScanOptions{minimum_fx_px:400.0,maximum_fx_px:1
 fn holdout()->Vec<Correspondence>{(101..=112).map(|id|Correspondence{landmark:id,physical_group:id,world:world(id),pixel:pixel(world(id))}).collect()}
 
 #[test]
-fn only_unique_held_out_mode_becomes_registration_candidate()->Test{
+fn only_unique_held_out_mode_becomes_registration_candidate_and_owner_bound_snapshot()->Test{
     let twin=common::twin(&[0.0],None)?;let mut budget=WorkBudget::new(1_500_000_000);let atlas=atlas(&twin,&mut budget)?;
     let query=frame(2,true,&mut budget)?;
     let localization=localize_focal_scan(&atlas,&twin,&query,[3;32],MatchOptions{maximum_distance:0,ratio_percent:80},scan(),&mut budget)?;
@@ -36,6 +36,16 @@ fn only_unique_held_out_mode_becomes_registration_candidate()->Test{
     assert!((candidate.intrinsics.focal_lengths()[0]-800.0).abs()<1e-9);
     assert_eq!(candidate.query.exposure,[2;32]);assert_eq!(candidate.fit_landmarks.len(),32);
     assert!(candidate.holdout.passed);assert!(candidate.fit_rms_px<1e-5);
+    let frozen=candidate.frozen_calibration([8;32])?;
+    assert_eq!(frozen.camera.image_domain,[3;32]);assert_eq!(frozen.pose,candidate.pose);
+    let tracking=candidate.bind_tracking_camera(&twin,TrackingCameraBinding{camera:7,calibration:9,image_domain:11,
+        image_domain_digest:[3;32],clock:13,validity:[100,200],error:Some(0.1)})?;
+    assert_eq!(tracking.camera,7);assert_eq!(tracking.calibration,9);assert_eq!(tracking.pose,candidate.pose);
+    assert_eq!(tracking.intrinsics,candidate.intrinsics);
+    let mut wrong=TrackingCameraBinding{camera:7,calibration:9,image_domain:11,image_domain_digest:[4;32],clock:13,validity:[100,200],error:None};
+    assert!(matches!(candidate.bind_tracking_camera(&twin,wrong),Err(RegistrationCandidateError::InvalidBinding)));
+    wrong.image_domain_digest=[3;32];wrong.camera=0;
+    assert!(matches!(candidate.bind_tracking_camera(&twin,wrong),Err(RegistrationCandidateError::InvalidBinding)));
     Ok(())
 }
 
