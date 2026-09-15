@@ -327,7 +327,18 @@ pub trait CurrentAnchorSource: sealed::Sealed {
 /// use fss_core::LedgerAnchor;
 ///
 /// let anchor = LedgerAnchor::genesis("site:us-east:primary");
-/// let _ = AuthoritativeLedger { anchor };
+/// let _ = AuthoritativeLedger { anchor, _marker: std::marker::PhantomData };
+/// ```
+///
+/// # Compile-fail probe M1: `AuthoritativeLedger::for_test` is not callable outside `fss-core` (fss-sz0cc)
+/// The in-memory test helper exists only under `#[cfg(test)]` inside `fss-core`, so an external
+/// caller cannot turn a fresh `ReferenceLedger` into authority through it.
+/// ```compile_fail,E0599
+/// use fss_core::abstraction::AuthoritativeLedger;
+/// use fss_core::ReferenceLedger;
+///
+/// let fresh = ReferenceLedger::new("site:us-east:primary");
+/// let _ = AuthoritativeLedger::for_test(&fresh);
 /// ```
 #[derive(Debug, Eq, PartialEq)]
 pub struct AuthoritativeLedger<'a> {
@@ -364,8 +375,10 @@ impl<'a> AuthoritativeLedger<'a> {
     /// # Threat Model and Residual Limits
     /// This is type-level discipline against *accidental or stale* authority within the same process.
     /// Because `fss-core` (L1) cannot depend on `fss-ledger` (L2), Rust's visibility system cannot
-    /// restrict this constructor exclusively to `fss-ledger` at compile time. Static repository guard
-    /// tests verify that this constructor appears nowhere else outside `crates/fss-core/` except
+    /// restrict this constructor exclusively to `fss-ledger` at compile time. The static repository
+    /// guard test scans every `*.rs` file under `crates/*/{src,tests,examples,benches}` (fss-core
+    /// included) and allows this constructor name only in its definition file
+    /// `crates/fss-core/src/abstraction/world_facts.rs` and in its sole caller
     /// `crates/fss-ledger/src/durable.rs`.
     #[doc(hidden)]
     pub fn __durable_ledger_only_from_committed_anchor(
@@ -377,16 +390,9 @@ impl<'a> AuthoritativeLedger<'a> {
     /// Test helper for constructing an authoritative handle from an in-memory ledger in tests.
     ///
     /// Restricted to `pub(crate)` and `#[cfg(test)]` so external crates cannot use it
-    /// to forge authority.
-    ///
-    /// # Compile-fail: `AuthoritativeLedger::for_test` is not accessible outside `fss-core` (fss-sz0cc)
-    /// ```compile_fail,E0599
-    /// use fss_core::abstraction::AuthoritativeLedger;
-    /// use fss_core::ReferenceLedger;
-    ///
-    /// let fresh = ReferenceLedger::new("site:us-east:primary");
-    /// let _ = AuthoritativeLedger::for_test(&fresh);
-    /// ```
+    /// to forge authority. The external-caller `compile_fail,E0599` probe lives on the
+    /// [`AuthoritativeLedger`] type docs (probe M1), because rustdoc does not collect doctests
+    /// from `#[cfg(test)]` items.
     #[cfg(test)]
     pub(crate) fn for_test(ledger: &'a crate::ReferenceLedger) -> Result<Self, ContractError> {
         Self::from_authority(ledger.current().anchor.clone())
