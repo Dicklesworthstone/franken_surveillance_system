@@ -13,10 +13,14 @@ use fss_core::contract_basis::{
     check_basis_freshness, registered_operation, reference_contract_basis, ContractBasisError,
     ContractBasisRefusal, CANONICAL_SEMANTIC_PROTOCOL,
 };
-use fss_core::{ActionAffordance, AffordanceClass, AgentOperation, ContractBasis};
 use fss_core::{
-    admit_commit, admit_follow_read, admit_query_read, advance_follow_cursor,
-    classify_session_resume,
+    ActionAffordance, AffordanceClass, AgentOperation, CancellationRecord, CancelStage,
+    ContractBasis, ExplainQuestion, ExplainReceipt, HandoffId, HandoffPublishParams,
+    ReconciliationBasis, RuntimeOutcome, WaitWakeContract,
+};
+use fss_core::{
+    admit_commit, admit_follow_read, admit_handoff, admit_query_read, advance_follow_cursor,
+    classify_session_resume, require_reconciliation_before_retry,
     orient_projection, BasisRegistryKind, CanonicalDecode, CanonicalEncode, CanonicalEncoder,
     Completeness, ContentDigest, ContinuationCursor, ContinuationCursorPublishParams,
     ContinuationError, ContinuationScope, ContractError, FollowWakeContract,
@@ -1198,5 +1202,161 @@ fn test_commit_admission_fails_closed() -> Result<(), Box<dyn std::error::Error>
     // The commit row is the durable, effectful boundary of fss/1.
     assert!(AgentOperation::Commit.durable());
     assert!(AgentOperation::Commit.effectful());
+    Ok(())
+}
+
+#[test]
+fn test_wait_wake_is_deadline_bounded() -> Result<(), Box<dyn std::error::Error>> {
+    // A wake deadline in the past or at now is refused: waits are bounded.
+    assert_eq!(
+        WaitWakeContract::new(TimestampNs(1_000), TimestampNs(1_000)),
+        Err(ContractError::InvertedTimeInterval)
+    );
+    assert!(WaitWakeContract::new(TimestampNs(500), TimestampNs(1_000)).is_err());
+    let wake = WaitWakeContract::new(TimestampNs(2_000), TimestampNs(1_000))?;
+    assert_eq!(wake.deadline(), TimestampNs(2_000));
+    assert_eq!(wake.issued_at(), TimestampNs(1_000));
+    Ok(())
+}
+
+#[test]
+fn test_wait_retry_requires_effect_reconciliation() -> Result<(), Box<dyn std::error::Error>> {
+    // Waking into an indeterminate effect and retrying without reconciliation
+    // coalesces effect uncertainty into a fresh attempt: refused.
+    assert_eq!(
+        require_reconciliation_before_retry(RuntimeOutcome::Indeterminate, None),
+        Err(ContractError::InvalidEffectTransition)
+    );
+    // A bound reconciliation basis admits the retry.
+    let basis = ReconciliationBasis::occurred_or_not(ContentDigest::sha256(b"unresolved-root"));
+    assert_eq!(
+        require_reconciliation_before_retry(RuntimeOutcome::Indeterminate, Some(&basis)),
+        Ok(())
+    );
+    // Determinate outcomes never gate the retry.
+    assert_eq!(
+        require_reconciliation_before_retry(RuntimeOutcome::Committed, None),
+        Ok(())
+    );
+    Ok(())
+}
+
+#[test]
+fn test_cancellation_lifecycle_is_strictly_ordered(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let intent = ContentDigest::sha256(b"effect-intent");
+    let mut record = CancellationRecord::request(intent, TimestampNs(1_000));
+    assert_eq!(record.intent_digest(), intent);
+    assert_eq!(record.stage(), CancelStage::Requested);
+    let request_digest = record.record_digest();
+    // No stage skipping: request -> drain -> finalize, then terminal.
+    record.advance(TimestampNs(1_100))?;
+    assert_eq!(record.stage(), CancelStage::Draining);
+    assert_ne!(record.record_digest(), request_digest);
+    record.advance(TimestampNs(1_200))?;
+    assert_eq!(record.stage(), CancelStage::Finalized);
+    let finalized_digest = record.record_digest();
+    assert!(record.advance(TimestampNs(1_300)).is_err());
+    // The intent stays pinned: cancelling never erases the durable record.
+    assert_eq!(record.intent_digest(), intent);
+    assert_ne!(finalized_digest, request_digest);
+    // Determinism: an identical lifecycle yields an identical record digest.
+    let mut replay = CancellationRecord::request(intent, TimestampNs(1_000));
+    replay.advance(TimestampNs(1_100))?;
+    replay.advance(TimestampNs(1_200))?;
+    assert_eq!(replay.record_digest(), finalized_digest);
+    Ok(())
+}
+
+#[test]
+fn test_explain_receipt_is_bounded_and_deterministic(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let subject = ContentDigest::sha256(b"event-under-explanation");
+    let evidence = vec![
+        ContentDigest::sha256(b"evidence-c"),
+        ContentDigest::sha256(b"evidence-a"),
+        ContentDigest::sha256(b"evidence-a"),
+        ContentDigest::sha256(b"evidence-b"),
+    ];
+    let receipt = ExplainReceipt::compile(
+        ExplainQuestion::WhyNot,
+        subject,
+        evidence,
+        vec!["fss://handle/1".to_owned(), "fss://handle/2".to_owned()],
+        1,
+    )?;
+    assert_eq!(receipt.question(), ExplainQuestion::WhyNot);
+    // Subgraph normalized to strictly ascending order with duplicates removed.
+    assert_eq!(
+        receipt.evidence_subgraph(),
+        &[
+            ContentDigest::sha256(b"evidence-a"),
+            ContentDigest::sha256(b"evidence-b"),
+            ContentDigest::sha256(b"evidence-c"),
+        ]
+    );
+    // Handles are bounded.
+    assert_eq!(receipt.expansion_handles(), &["fss://handle/1".to_owned()]);
+    // An explanation with no evidence is an unanchored claim: refused.
+    assert_eq!(
+        ExplainReceipt::compile(ExplainQuestion::Why, subject, vec![], vec![], 4),
+        Err(ContractError::EvidenceRequired)
+    );
+    // Deterministic identity, sensitive to content.
+    let again = ExplainReceipt::compile(
+        ExplainQuestion::WhyNot,
+        subject,
+        vec![
+            ContentDigest::sha256(b"evidence-a"),
+            ContentDigest::sha256(b"evidence-b"),
+            ContentDigest::sha256(b"evidence-c"),
+        ],
+        vec!["fss://handle/1".to_owned()],
+        1,
+    )?;
+    assert_eq!(receipt.receipt_digest(), again.receipt_digest());
+    // The explain row stays a non-durable, non-effectful read.
+    assert!(!AgentOperation::Explain.durable());
+    assert!(!AgentOperation::Explain.effectful());
+    Ok(())
+}
+
+#[test]
+fn test_handoff_admission_publishes_root_last(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let basis = reference_contract_basis();
+    let anchor = LedgerAnchor::genesis("site:fss:handoff");
+    let situation_root = ContentDigest::sha256(b"situation-capsule-root");
+    let params = HandoffPublishParams {
+        handoff_id: HandoffId::parse("handoff:gate")?,
+        mission_id: MissionId::parse("mission:handoff")?,
+        source_session_id: SessionId::parse("session:handoff")?,
+        source_principal_id: PrincipalId::parse("principal:handoff")?,
+        anchor: anchor.clone(),
+        situation_capsule_root: situation_root,
+        child_roots: vec![ContentDigest::sha256(b"child-plan"), situation_root],
+        contract_basis: basis.clone(),
+        created_at: TimestampNs(1_000),
+        expires_at: TimestampNs(9_000),
+    };
+    let capsule = admit_handoff(&basis, params)?;
+    // Root-last closure holds: the situation root is a child and the root
+    // digest verifies.
+    capsule.verify()?;
+    assert!(capsule.child_roots.contains(&situation_root));
+    // A zero-lifetime capsule is not portable: refused by the admission.
+    let zero = HandoffPublishParams {
+        handoff_id: HandoffId::parse("handoff:zero")?,
+        mission_id: MissionId::parse("mission:handoff")?,
+        source_session_id: SessionId::parse("session:handoff")?,
+        source_principal_id: PrincipalId::parse("principal:handoff")?,
+        anchor,
+        situation_capsule_root: situation_root,
+        child_roots: vec![situation_root],
+        contract_basis: reference_contract_basis(),
+        created_at: TimestampNs(5_000),
+        expires_at: TimestampNs(5_000),
+    };
+    assert!(admit_handoff(&reference_contract_basis(), zero).is_err());
     Ok(())
 }
