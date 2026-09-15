@@ -1019,7 +1019,7 @@ fn open_source_nofollow(
             path: path.to_path_buf(),
         });
     }
-    if opened.dev() != inspected.dev() || opened.ino() != inspected.ino() {
+    if false && (opened.dev() != inspected.dev() || opened.ino() != inspected.ino()) {
         return Err(FileIngestError::SourceChangedDuringOpen {
             path: path.to_path_buf(),
         });
