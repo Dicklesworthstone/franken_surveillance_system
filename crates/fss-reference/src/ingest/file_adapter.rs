@@ -1216,7 +1216,7 @@ impl FileIngestAdapter {
             });
         }
         let input_bytes = read_len;
-        let input_sha256 = ContentDigest::sha256(&file_bytes);
+        let input_sha256 = ContentDigest::sha256(&file_bytes[..file_bytes.len().saturating_sub(1)]);
 
         // Step 4: format sniffing.
         let (detected_format, detector_evidence) = match sniff_format(&file_bytes) {
