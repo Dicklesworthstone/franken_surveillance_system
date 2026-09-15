@@ -1,399 +1,91 @@
 #!/usr/bin/env bash
 # scripts/e2e/cap_ingest_annexb.sh
-# End-to-end integration test runner for CAP- INGEST Annex-B stream splitter (fss-2h5zq.20).
+# End-to-end runner for CAP- INGEST Annex-B stream splitter (fss-2h5zq.20) on the shared harness
+# scripts/e2e/lib.sh (fss-2h5zq.1). It runs one cargo test target, annexb_split_contract, remotely
+# through rch; every CAPLOG record it prints becomes one step of
+# ${FSS_E2E_LOG_DIR:-target/e2e-logs}/ingest_annexb/run_NNNN.log.
+#
+# After ingestion, a roster/comparison gate (fss-qwp8y) fails the run when any of the 19 required
+# roster steps is missing or a pass record's expected != observed (type-strict, observed required),
+# so the B8 contract checks can never silently vanish. The gate follows the target: it runs whenever
+# the target runs, fails closed when selected alone, and its repro is --only annexb_split_contract. Without lib.sh the script fails closed: there is no second, divergent
+# harness.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
-# Parse arguments: support --only <step> or --only=<step>
-ONLY_STEP=""
-PASS_THROUGH_ARGS=()
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-        --only)
-            if [[ $# -lt 2 ]]; then
-                echo "Error: --only requires a step argument" >&2
-                exit 1
-            fi
-            ONLY_STEP="$2"
-            PASS_THROUGH_ARGS+=("$1" "$2")
-            shift 2
-            ;;
-        --only=*)
-            ONLY_STEP="${1#--only=}"
-            PASS_THROUGH_ARGS+=("$1")
-            shift
-            ;;
-        *)
-            PASS_THROUGH_ARGS+=("$1")
-            shift
-            ;;
-    esac
-done
-
-# If scripts/e2e/lib.sh is present (fss-2h5zq.1 harness), use the shared runner.
-if [[ -f "${SCRIPT_DIR}/lib.sh" ]]; then
-    source "${SCRIPT_DIR}/lib.sh"
-    e2e_init "ingest_annexb" "fss-2h5zq.20" "${PASS_THROUGH_ARGS[@]}"
-    e2e_cargo_test "fss-reference" "annexb_split_contract"
-    e2e_summary
-else
-    # Standalone harness conforming to CAP- structured JSON-lines logging specification.
-    SUITE_NAME="ingest_annexb"
-    BEAD_ID="fss-2h5zq.20"
-    LOG_DIR="${FSS_E2E_LOG_DIR:-${REPO_ROOT}/target/e2e-logs}/${SUITE_NAME}"
-    mkdir -p "$LOG_DIR"
-
-    # Find next monotonic run log index
-    MAX_IDX=0
-    if [[ -d "$LOG_DIR" ]]; then
-        for f in "${LOG_DIR}"/run_*.log; do
-            if [[ -f "$f" ]]; then
-                BN=$(basename "$f" .log)
-                IDX_STR="${BN#run_}"
-                if [[ "$IDX_STR" =~ ^[0-9]+$ ]]; then
-                    IDX=$((10#$IDX_STR))
-                    if (( IDX > MAX_IDX )); then
-                        MAX_IDX=$IDX
-                    fi
-                fi
-            fi
-        done
-    fi
-    NEXT_IDX=$(( MAX_IDX + 1 ))
-    LOG_FILE=$(printf "%s/run_%04d.log" "$LOG_DIR" "$NEXT_IDX")
-
-    START_MS=$(python3 -c 'import time; print(int(time.time()*1000))')
-    GIT_SHA=$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo "unknown")
-    HOST_TRIPLE="$(uname -m)-$(uname -s)"
-    DIRTY="false"
-    if [[ -n "$(git -C "$REPO_ROOT" status --porcelain 2>/dev/null)" ]]; then
-        DIRTY="true"
-    fi
-
-    # 1. Write environment record
-    python3 -c '
-import json, os, sys
-log_file, script, bead, git_sha, dirty_str, host, bin_dir, log_dir = sys.argv[1:9]
-dirty = (dirty_str.lower() == "true")
-bins = []
-if bin_dir and os.path.isdir(bin_dir):
-    for name in sorted(os.listdir(bin_dir)):
-        p = os.path.join(bin_dir, name)
-        if os.path.isfile(p) and os.access(p, os.X_OK):
-            bins.append(name)
-rec = {
-    "step": "env",
-    "script": script,
-    "bead": bead,
-    "git_sha": git_sha,
-    "dirty": dirty,
-    "host": host,
-    "bins": bins,
-    "fss_env": {
-        "FSS_BIN_DIR": bin_dir,
-        "FSS_E2E_LOG_DIR": log_dir
-    }
-}
-with open(log_file, "w", encoding="utf-8") as f:
-    f.write(json.dumps(rec) + "\n")
-' "$LOG_FILE" "cap_ingest_annexb.sh" "$BEAD_ID" "$GIT_SHA" "$DIRTY" "$HOST_TRIPLE" "${FSS_BIN_DIR:-}" "${FSS_E2E_LOG_DIR:-}"
-
-    # 2. Execute test companion via RCH with --nocapture (retrying on 103 up to 3 times)
-    STDOUT_TMP="${LOG_DIR}/stdout.$$"
-    rm -f "$STDOUT_TMP"
-    trap 'rm -f "$STDOUT_TMP"' EXIT INT TERM
-    TEST_EXIT=0
-    RETRY_COUNT=0
-
-    DEFAULT_ROSTER="manifest_clean_h264,synthetic_standard,synthetic_multi_slice,padding_and_leading_zeros,no_aud_grouping,empty_and_no_start_code,zero_length_and_truncated,forbidden_zero_bit,leading_garbage_limits,emulation_prevention,slice_header_syntax,undecodable_flag,unsupported_extensions,limits_boundaries,cooperative_cancellation,mutant_kill_table,mutation_gauntlet_10k,loop_and_mid_push_limits,validation_ceiling_bypass"
-    if [[ -n "$ONLY_STEP" ]]; then
-        EXPECTED_ROSTER="${FSS_EXPECTED_ROSTER:-}"
-    else
-        EXPECTED_ROSTER="${FSS_EXPECTED_ROSTER:-$DEFAULT_ROSTER}"
-    fi
-
-    CARGO_TEST_ARGS=()
-    if [[ -n "$ONLY_STEP" ]]; then
-        CARGO_TEST_ARGS+=("$ONLY_STEP")
-    fi
-    CARGO_TEST_ARGS+=("--nocapture")
-
-    while true; do
-        TEST_EXIT=0
-        RCH_REQUIRE_REMOTE=1 rch exec -- cargo test -p fss-reference --test annexb_split_contract --locked --offline -j 1 -- "${CARGO_TEST_ARGS[@]}" > "$STDOUT_TMP" 2>&1 || TEST_EXIT=$?
-        if [[ $TEST_EXIT -eq 103 && $RETRY_COUNT -lt 3 ]]; then
-            RETRY_COUNT=$(( RETRY_COUNT + 1 ))
-            sleep $(( RETRY_COUNT * 5 ))
-            continue
-        fi
-        break
-    done
-
-    # Parse CAPLOG records from test output with ANSI stripping and robust error detection
-    SUMMARY_JSON=$(python3 -c '
-import datetime, json, re, sys
-stdout_file, log_file, script, bead, test_exit_str, expected_roster_str = sys.argv[1:7]
-test_exit = int(test_exit_str)
-ansi_strip = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
-
-def now_iso():
-    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-step_count = 0
-fail_count = 0
-failures = []
-skipped = []
-seen_steps = set()
-
-with open(stdout_file, "r", encoding="utf-8", errors="replace") as sf, \
-     open(log_file, "a", encoding="utf-8") as lf:
-    for raw_line in sf:
-        line = ansi_strip.sub("", raw_line).strip()
-        if "CAPLOG " in line:
-            idx = line.find("CAPLOG ")
-            json_part = line[idx + 7:].strip()
-            try:
-                data = json.loads(json_part)
-                if not isinstance(data, dict):
-                    raise ValueError("CAPLOG payload is not a JSON object")
-            except Exception as exc:
-                fail_count += 1
-                step_count += 1
-                step_name = "malformed_caplog"
-                failures.append(step_name)
-                rec = {
-                    "ts": now_iso(),
-                    "script": script,
-                    "bead": bead,
-                    "step": step_name,
-                    "cmd": "cargo test -p fss-reference --test annexb_split_contract",
-                    "exit": 1,
-                    "duration_ms": 1,
-                    "expected": "valid json object",
-                    "observed": f"unparseable json: {json_part[:200]}",
-                    "digest": None,
-                    "stdout_sha256": "",
-                    "stdout_excerpt": line[:200],
-                    "stderr_excerpt": "",
-                    "verdict": "fail",
-                    "repro": "scripts/e2e/cap_ingest_annexb.sh"
-                }
-                lf.write(json.dumps(rec) + "\n")
-                continue
-
-            if "step" not in data or data["step"] is None or not str(data["step"]).strip():
-                fail_count += 1
-                step_count += 1
-                failures.append("missing_step")
-                rec = {
-                    "ts": now_iso(),
-                    "script": script,
-                    "bead": bead,
-                    "step": "missing_step",
-                    "cmd": "cargo test -p fss-reference --test annexb_split_contract",
-                    "exit": 1,
-                    "duration_ms": data.get("duration_ms", 1) if isinstance(data, dict) else 1,
-                    "expected": "step key present",
-                    "observed": "missing step key",
-                    "digest": None,
-                    "stdout_sha256": "",
-                    "stdout_excerpt": line[:200],
-                    "stderr_excerpt": "",
-                    "verdict": "fail",
-                    "repro": "scripts/e2e/cap_ingest_annexb.sh"
-                }
-                lf.write(json.dumps(rec) + "\n")
-                continue
-
-            step = str(data["step"]).strip()
-            if step in seen_steps:
-                fail_count += 1
-                step_count += 1
-                failures.append(f"{step}:duplicate_step")
-                rec = {
-                    "ts": now_iso(),
-                    "script": script,
-                    "bead": bead,
-                    "step": step,
-                    "cmd": f"cargo test -p fss-reference --test annexb_split_contract -- {step}",
-                    "exit": 1,
-                    "duration_ms": 1,
-                    "expected": "unique step name",
-                    "observed": f"duplicate step name: {step}",
-                    "digest": None,
-                    "stdout_sha256": "",
-                    "stdout_excerpt": line[:200],
-                    "stderr_excerpt": "",
-                    "verdict": "fail",
-                    "repro": f"scripts/e2e/cap_ingest_annexb.sh --only {step}"
-                }
-                lf.write(json.dumps(rec) + "\n")
-                continue
-
-            seen_steps.add(step)
-
-            if "verdict" not in data or data["verdict"] is None:
-                fail_count += 1
-                step_count += 1
-                failures.append(f"{step}:missing_verdict")
-                rec = {
-                    "ts": now_iso(),
-                    "script": script,
-                    "bead": bead,
-                    "step": step,
-                    "cmd": f"cargo test -p fss-reference --test annexb_split_contract -- {step}",
-                    "exit": 1,
-                    "duration_ms": data.get("duration_ms", 1),
-                    "expected": "verdict key present",
-                    "observed": "missing verdict key",
-                    "digest": None,
-                    "stdout_sha256": "",
-                    "stdout_excerpt": line[:200],
-                    "stderr_excerpt": "",
-                    "verdict": "fail",
-                    "repro": f"scripts/e2e/cap_ingest_annexb.sh --only {step}"
-                }
-                lf.write(json.dumps(rec) + "\n")
-                continue
-
-            verdict = data["verdict"]
-            step_count += 1
-            if verdict == "pass":
-                exp = data.get("expected")
-                obs = data.get("observed")
-                if exp is not None and obs is not None and exp != obs:
-                    verdict = "fail"
-                    fail_count += 1
-                    failures.append(f"{step}:expected_observed_mismatch")
-            elif verdict == "fail":
-                fail_count += 1
-                failures.append(step)
-            elif verdict == "skip":
-                skipped.append(step)
-            else:
-                fail_count += 1
-                failures.append(step)
-
-            rec = {
-                "ts": now_iso(),
-                "script": script,
-                "bead": bead,
-                "step": step,
-                "cmd": f"cargo test -p fss-reference --test annexb_split_contract -- {step}",
-                "exit": data.get("exit", 0) if verdict == "pass" else 1,
-                "duration_ms": data.get("duration_ms", 1),
-                "expected": data.get("expected"),
-                "observed": data.get("observed"),
-                "digest": None,
-                "stdout_sha256": "",
-                "stdout_excerpt": "",
-                "stderr_excerpt": "",
-                "verdict": verdict,
-                "repro": f"scripts/e2e/cap_ingest_annexb.sh --only {step}"
-            }
-            lf.write(json.dumps(rec) + "\n")
-
-    if expected_roster_str.strip():
-        expected_steps = [s.strip() for s in expected_roster_str.split(",") if s.strip()]
-        for exp_s in expected_steps:
-            if exp_s not in seen_steps:
-                fail_count += 1
-                failures.append(f"{exp_s}:missing_from_roster")
-                rec = {
-                    "ts": now_iso(),
-                    "script": script,
-                    "bead": bead,
-                    "step": exp_s,
-                    "cmd": f"cargo test -p fss-reference --test annexb_split_contract -- {exp_s}",
-                    "exit": 1,
-                    "duration_ms": 1,
-                    "expected": "step executed in roster",
-                    "observed": "step missing from execution output",
-                    "digest": None,
-                    "stdout_sha256": "",
-                    "stdout_excerpt": "",
-                    "stderr_excerpt": "",
-                    "verdict": "fail",
-                    "repro": f"scripts/e2e/cap_ingest_annexb.sh --only {exp_s}"
-                }
-                lf.write(json.dumps(rec) + "\n")
-
-if test_exit != 0 and "cargo_test_failed" not in failures:
-    failures.append("cargo_test_failed")
-    fail_count += 1
-if step_count == 0 and "no_caplog_emitted" not in failures:
-    failures.append("no_caplog_emitted")
-    fail_count += 1
-
-print(json.dumps({
-    "step_count": step_count,
-    "fail_count": fail_count,
-    "failures": failures,
-    "skipped": skipped
-}))
-' "$STDOUT_TMP" "$LOG_FILE" "cap_ingest_annexb.sh" "$BEAD_ID" "$TEST_EXIT" "$EXPECTED_ROSTER")
-
-    rm -f "$STDOUT_TMP"
-
-    END_MS=$(python3 -c 'import time; print(int(time.time()*1000))')
-    DURATION_MS=$(( END_MS - START_MS ))
-
-    REPRO="scripts/e2e/cap_ingest_annexb.sh"
-    if [[ -n "$ONLY_STEP" ]]; then
-        REPRO="scripts/e2e/cap_ingest_annexb.sh --only ${ONLY_STEP}"
-    fi
-
-    # 3. Write summary record and determine script verdict
-    VERDICT=$(python3 -c '
-import json, sys
-log_file, summary_json_str, duration_ms, repro, test_exit_str = sys.argv[1:6]
-test_exit = int(test_exit_str)
-info = json.loads(summary_json_str)
-step_count = info["step_count"]
-fail_count = info["fail_count"]
-failures = info["failures"]
-skipped = info["skipped"]
-
-verdict = "pass"
-if test_exit != 0 or fail_count > 0 or step_count == 0 or (len(skipped) == step_count and step_count > 0):
-    verdict = "fail"
-if len(skipped) == step_count and step_count > 0 and "all_steps_skipped" not in failures:
-    failures.append("all_steps_skipped")
-    fail_count += 1
-
-rec = {
-    "step": "summary",
-    "verdict": verdict,
-    "steps": step_count,
-    "failures": failures,
-    "skipped": skipped,
-    "duration_ms": max(0, int(duration_ms)),
-    "log_path": log_file,
-    "repro": repro
-}
-with open(log_file, "a", encoding="utf-8") as f:
-    f.write(json.dumps(rec) + "\n")
-print(verdict)
-' "$LOG_FILE" "$SUMMARY_JSON" "$DURATION_MS" "$REPRO" "$TEST_EXIT")
-
-    echo "E2E Log: ${LOG_FILE}"
-
-    STEP_COUNT=$(python3 -c 'import json, sys; print(json.loads(sys.argv[1])["step_count"])' "$SUMMARY_JSON")
-    FAIL_COUNT=$(python3 -c 'import json, sys; print(json.loads(sys.argv[1])["fail_count"])' "$SUMMARY_JSON")
-    SKIP_COUNT=$(python3 -c 'import json, sys; print(len(json.loads(sys.argv[1])["skipped"]))' "$SUMMARY_JSON")
-    PASS_COUNT=$(( STEP_COUNT - FAIL_COUNT - SKIP_COUNT ))
-
-    if [[ "$VERDICT" == "pass" ]]; then
-        if [[ "$SKIP_COUNT" -gt 0 ]]; then
-            echo "pass summary: ${PASS_COUNT} steps passed, ${SKIP_COUNT} skipped, 0 failures"
-        else
-            echo "pass summary: ${PASS_COUNT} steps passed, 0 failures"
-        fi
-        exit 0
-    else
-        echo "fail summary: ${FAIL_COUNT} steps failed (cargo exit ${TEST_EXIT})"
-        exit 1
-    fi
+if [[ ! -f "${SCRIPT_DIR}/lib.sh" ]]; then
+    echo "Error: ${SCRIPT_DIR}/lib.sh (the fss-2h5zq.1 harness) is required; refusing to run without it" >&2
+    exit 1
 fi
+
+# The 19-step roster every full annexb_split_contract run must execute (override for a scoped run).
+_ANNEXB_ROSTER="${FSS_EXPECTED_ROSTER:-manifest_clean_h264,synthetic_standard,synthetic_multi_slice,padding_and_leading_zeros,no_aud_grouping,empty_and_no_start_code,zero_length_and_truncated,forbidden_zero_bit,leading_garbage_limits,emulation_prevention,slice_header_syntax,undecodable_flag,unsupported_extensions,limits_boundaries,cooperative_cancellation,mutant_kill_table,mutation_gauntlet_10k,loop_and_mid_push_limits,validation_ceiling_bypass}"
+
+# Reads the run log written so far and fails (exit 1) when:
+#   - there is no annexb_split_contract record at all (the gate was selected alone: fail closed);
+#   - any roster step is missing;
+#   - a pass record lacks expected or observed, or its expected != observed, compared TYPE-STRICTLY
+#     (1, 1.0 and true all differ; JSON objects compare key by key, arrays element by element).
+# It runs as `e2e_step --selector annexb_split_contract`, so it runs whenever the target runs (also
+# under --only annexb_split_contract) and a gate failure reruns --only annexb_split_contract.
+_annexb_roster_gate() {
+    python3 - "$_E2E_LOG_FILE" "$_ANNEXB_ROSTER" <<'PY'
+import json
+import sys
+
+log_path, roster_csv = sys.argv[1], sys.argv[2]
+roster = [s.strip() for s in roster_csv.split(",") if s.strip()]
+
+
+def strict_eq(a, b):
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, dict):
+        return a.keys() == b.keys() and all(strict_eq(a[k], b[k]) for k in a)
+    if isinstance(a, list):
+        return len(a) == len(b) and all(strict_eq(x, y) for x, y in zip(a, b))
+    return a == b
+
+
+seen = set()
+problems = []
+with open(log_path, "r", encoding="utf-8") as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        rec = json.loads(line)
+        step = rec.get("step")
+        if step in ("env", "summary"):
+            continue
+        seen.add(step)
+        if rec.get("verdict") == "pass":
+            missing = [k for k in ("expected", "observed") if rec.get(k) is None]
+            if missing:
+                problems.append(f"pass record of step {step!r} without {' and '.join(missing)}")
+            elif not strict_eq(rec["expected"], rec["observed"]):
+                problems.append(f"pass record of step {step!r} has expected != observed")
+
+if not seen:
+    problems.append("no annexb_split_contract record in this run: the gate audits the target's "
+                    "records and cannot run alone (rerun with --only annexb_split_contract)")
+else:
+    missing_steps = [s for s in roster if s not in seen]
+    if missing_steps:
+        problems.append("missing roster steps: " + ", ".join(missing_steps))
+
+if problems:
+    for p in problems:
+        sys.stderr.write("annexb roster/comparison violation: " + p + "\n")
+    sys.exit(1)
+sys.exit(0)
+PY
+}
+
+# shellcheck source=lib.sh
+source "${SCRIPT_DIR}/lib.sh"
+e2e_init "ingest_annexb" "fss-2h5zq.20" "$@"
+e2e_cargo_test "fss-reference" "annexb_split_contract"
+e2e_step --selector annexb_split_contract "annexb_roster_gate" -- _annexb_roster_gate
+e2e_summary
