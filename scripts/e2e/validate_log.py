@@ -17,16 +17,25 @@ MAX_EXCERPT_BYTES = 4096
 MAX_FILE_BYTES = 10 * 1024 * 1024  # 10 MiB
 MAX_LINE_BYTES = 65536  # 64 KiB line cap
 
-SECRET_KEY_PATTERN = re.compile(
-    r"authorization|password|token|secret|cookie|api_key|apikey", re.IGNORECASE
+# Same secret-name set as scripts/e2e/lib.sh SECRET_NAMES (dict-key rule; L4).
+_SECRET_NAMES = (
+    r"authorization|passwd|password|pass|pwd|token|secret_key|secret|cookie|api[_-]?key|"
+    r"apikey|mypass|priv(?:ate)?[_-]?key|credentials?"
 )
+SECRET_KEY_PATTERN = re.compile(_SECRET_NAMES, re.IGNORECASE)
+# Value shapes an unredacted leak would still contain. A properly redacted field holds "<redacted>",
+# which none of these match (creds patterns exclude '<'); matches carrying "<redacted>" are ignored.
 SECRET_VALUE_PATTERNS = [
-    re.compile(r"ghp_[A-Za-z0-9_]{16,}"),
+    re.compile(r"ghp_[A-Za-z0-9_]{12,}"),
     re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
     re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}"),
     re.compile(r"sk-[A-Za-z0-9_\-]{16,}"),
     re.compile(r"xox[bpa]-[A-Za-z0-9_\-]{4,}"),
     re.compile(r"glpat-[A-Za-z0-9_\-]{20,}"),
+    re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"),
+    re.compile(r"(?<!\S)(?:-u|--user)(?:=|\s+)[^\s<][^\s]*:[^\s<][^\s]*"),
+    re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:[^\s<@][^\s@]*@"),
+    re.compile(r"(?<![\w:/@.+-])[A-Za-z0-9_.+-]+:[^\s:@/<][^\s:@/]*@[A-Za-z0-9_.-]+"),
 ]
 HEX_64_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
 STEP_VERDICTS = {"ran", "pass", "fail", "skip"}
@@ -70,7 +79,8 @@ def check_no_secret_values(data, path=""):
             check_no_secret_values(item, f"{path}[{idx}]")
     elif isinstance(data, str):
         for pat in SECRET_VALUE_PATTERNS:
-            if pat.search(data):
+            m = pat.search(data)
+            if m and "<redacted>" not in m.group(0):
                 loc = path if path else "<root>"
                 raise ValidationError(
                     "ERR_SECRET_VALUE_FOUND",
@@ -276,6 +286,13 @@ def validate_summary_record(rec, line_no):
         raise ValidationError(
             "ERR_TYPE_MISMATCH",
             f"Summary record (line {line_no}) field 'repro' must be str",
+            line_no=line_no,
+        )
+    # A fail summary must carry a runnable repro; an empty one hides a script whose name was blanked.
+    if rec["verdict"] == "fail" and not rec["repro"].strip():
+        raise ValidationError(
+            "ERR_EMPTY_REPRO",
+            f"Summary record (line {line_no}) has verdict 'fail' but an empty repro",
             line_no=line_no,
         )
     if "preserved_tmpdirs" in rec:
@@ -667,19 +684,33 @@ def validate_file(file_path: Path):
             )
 
 
+def _is_harness_tmpdir(d: Path) -> bool:
+    """A scratch dir created by e2e_tmpdir: named tmp_* and sitting directly inside a suite dir (its
+    parent holds run_*.log files). A suite dir that merely happens to be named tmp_* is NOT one -
+    e2e_init forbids that name, and its broken logs must still be validated."""
+    if not d.name.startswith("tmp_"):
+        return False
+    try:
+        return any(sib.name.startswith("run_") and sib.is_file() for sib in d.parent.iterdir())
+    except OSError:
+        return False
+
+
 def find_log_files(target: Path):
     if target.is_file():
         return [target]
     if target.is_dir():
         files = []
         for p in sorted(target.rglob("*")):
-            # Skip temp directories created by e2e_tmpdir (tmp_* relative to target)
+            # Skip only a suite's own tmp_* scratch dir (<suite>/tmp_*), never an arbitrary tmp_*
+            # path component (a suite named tmp_evil must still be validated).
             try:
-                rel_parts = p.relative_to(target).parts
-                if any(part.startswith("tmp_") for part in rel_parts):
-                    continue
-            except Exception:
-                pass
+                rel = p.relative_to(target)
+            except ValueError:
+                rel = p
+            if any(_is_harness_tmpdir(target.joinpath(*rel.parts[:i + 1]))
+                   for i in range(len(rel.parts) - 1)):
+                continue
             if p.name.endswith(".tmpdirs"):
                 continue
             if p.is_file() and (p.suffix in {".log", ".jsonl"} or p.name.startswith("run_")):

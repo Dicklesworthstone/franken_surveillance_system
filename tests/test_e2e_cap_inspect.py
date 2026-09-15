@@ -176,16 +176,19 @@ class TestE2eCapInspect(unittest.TestCase):
         # lib.sh counts one step per CAPLOG record.
         self.assertEqual(summary["steps"], 2 * len(TARGETS))
         self.assertEqual(summary["failures"], [])
-        # lib.sh records the script path exactly as it was invoked.
-        self.assertEqual(summary["repro"], str(SCRIPT))
+        # lib.sh records the script path relative to the repository root when the script lives in it.
+        self.assertEqual(summary["repro"], str(SCRIPT.relative_to(ROOT)))
         self.assertIn(f"E2E Log: {self.log_dir / 'cap_inspect' / 'run_0001.log'}", proc.stdout)
 
     def test_skip_never_passes_and_keeps_its_reason(self) -> None:
         # A skip record is never relabelled a pass: the step keeps verdict "skip" with the reason
-        # the test observed, and the run fails log validation even when every other step passed.
+        # the test observed, and lib.sh lists it in summary.skipped (never among the passes), so the
+        # log validates and the run passes on its real passes alone.
         proc = self.run_harness(mode="pass_with_skip")
-        self.assertEqual(proc.returncode, 1)
-        self.assertIn("ERR_SUMMARY_INCONSISTENCY", proc.stdout + proc.stderr)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertNotIn("ERR_", proc.stdout + proc.stderr)
+        n = len(TARGETS)
+        self.assertIn(f"pass summary: {n} steps passed, {n} skipped, 0 failures", proc.stdout)
         records = self.records()
         self.assertEqual(len(records), 1 + 2 * len(TARGETS) + 1)
         self.assertEqual(
@@ -196,6 +199,14 @@ class TestE2eCapInspect(unittest.TestCase):
             if record["verdict"] == "skip":
                 self.assertEqual(record["observed"], {"skip_reason": "privileged: create_new succeeded"})
         self.assertEqual(records[-1]["verdict"], "pass")
+        self.assertEqual(records[-1]["failures"], [])
+        self.assertEqual(
+            records[-1]["skipped"],
+            [
+                {"step": f"{target}_s", "reason": json.dumps({"skip_reason": "privileged: create_new succeeded"})}
+                for target in TARGET_NAMES
+            ],
+        )
 
     def test_all_skip_fails_closed(self) -> None:
         proc = self.run_harness(mode="all_skip")
@@ -219,9 +230,16 @@ class TestE2eCapInspect(unittest.TestCase):
         proc = self.run_harness(mode="e101")
         self.assertEqual(proc.returncode, 1)
         records = self.records()
-        self.assertEqual(len(records), 1 + len(TARGETS) + 1)
-        self.assertEqual(self.step_records(records), [(target, "fail") for target in TARGET_NAMES])
-        for record in records[1:-1]:
+        # lib.sh keeps each CAPLOG record the target printed as its own step and adds one failing
+        # record for the target itself, which carries the cargo exit.
+        self.assertEqual(len(records), 1 + 2 * len(TARGETS) + 1)
+        self.assertEqual(
+            self.step_records(records),
+            [step for target in TARGET_NAMES for step in ((f"{target}_a", "pass"), (target, "fail"))],
+        )
+        target_records = [record for record in records[1:-1] if record["step"] in TARGET_NAMES]
+        self.assertEqual([record["step"] for record in target_records], TARGET_NAMES)
+        for record in target_records:
             self.assertEqual(record["exit"], 101)
             self.assertEqual(record["observed"], "cargo test failed (exit 101)")
         self.assertEqual(records[-1]["failures"], TARGET_NAMES)
