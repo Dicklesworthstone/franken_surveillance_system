@@ -1033,35 +1033,6 @@ fn test_review_562_finding_1_three_valued_lookup_status() -> Result<(), Box<dyn 
     Ok(())
 }
 
-/// The canonical digest of `bytes` under `domain`, spelled out independently of the codec.
-fn receipt_domain_digest(domain: &str, bytes: &[u8]) -> ContentDigest {
-    let mut prefix = CanonicalEncoder::new();
-    prefix.text("fss.canonical.v1");
-    prefix.text(domain);
-    let mut preimage = prefix.finish();
-    preimage.extend_from_slice(bytes);
-    ContentDigest::sha256(&preimage)
-}
-
-/// A v1 receipt of `receipt`'s intent, as only the journal's versioned replay of a v1 record
-/// produces one (prepared at `receipt.prepared_at`, system authority).
-fn replayed_v1_receipt(receipt: &OperationReceipt) -> Result<OperationReceipt, Box<dyn Error>> {
-    use fss_core::{EffectJournalTransition, EffectRecordVersion};
-    let journal = EffectJournal::replay_versioned([(
-        EffectRecordVersion::V1,
-        EffectJournalTransition::Prepare {
-            intent: receipt.intent.clone(),
-            obligation_id: ObligationId::parse("obligation:replayed-v1")?,
-            terminal_predicate: "delivery_proved".to_owned(),
-            now: receipt.prepared_at,
-        },
-    )])?;
-    Ok(journal
-        .operation(&receipt.intent.operation_id)
-        .ok_or(ContractError::NotFound)?
-        .clone())
-}
-
 /// The pre-deir9 canonical layout of a receipt with no commit time and no result digest.
 fn v1_layout(receipt: &OperationReceipt) -> Vec<u8> {
     let mut legacy = CanonicalEncoder::new();
@@ -1082,111 +1053,9 @@ fn v1_layout(receipt: &OperationReceipt) -> Vec<u8> {
     legacy.finish()
 }
 
-/// fss-deir9 (D1): a v1 receipt keeps exactly its pre-deir9 canonical bytes and digest domain, and
-/// its indeterminate reason is not in them; a v2 receipt opens with its own domain tag, its digest
-/// binds the reason, and every shape round-trips. The public decoder refuses v1 bytes: a v1 receipt
-/// exists only as the product of the journal's versioned replay.
-#[test]
-fn operation_receipt_versions_keep_v1_bytes_and_bind_the_v2_reason() -> Result<(), Box<dyn Error>> {
-    use fss_core::{
-        CanonicalDecode, CanonicalDecoder, EffectRecordVersion, IndeterminateEffectReason,
-    };
-
-    let base = sample_operation_receipt()?;
-    assert_eq!(base.record_version(), EffectRecordVersion::V2);
-    assert_eq!(base.digest_domain(), OperationReceipt::DIGEST_DOMAIN_V2);
-    let v1_base = replayed_v1_receipt(&base)?;
-    assert_eq!(v1_base.record_version(), EffectRecordVersion::V1);
-    assert_eq!(v1_base.digest_domain(), OperationReceipt::SCHEMA);
-    let recorded = IndeterminateEffectReason::Recorded("provider_timeout".to_owned());
-    let shapes = [
-        (None, None),
-        (Some("provider_timeout"), None),
-        (None, Some(IndeterminateEffectReason::Unrecorded)),
-        (Some("provider_timeout"), Some(recorded)),
-    ];
-    let mut v2_digests = BTreeSet::new();
-    let mut v2_tag = CanonicalEncoder::new();
-    v2_tag.u64(0);
-    v2_tag.text(OperationReceipt::DIGEST_DOMAIN_V2);
-    let v2_tag = v2_tag.finish();
-    for (error_code, reason) in shapes {
-        let mut receipt = base.clone();
-        receipt.error_code = error_code.map(str::to_owned);
-        receipt.indeterminate_reason = reason.clone();
-        let mut encoder = CanonicalEncoder::new();
-        receipt.encode_canonical(&mut encoder);
-        let bytes = encoder.finish();
-        assert!(
-            bytes.starts_with(&v2_tag),
-            "v2 opens with its tag: {error_code:?}"
-        );
-        let mut decoder = CanonicalDecoder::new(&bytes);
-        let decoded = OperationReceipt::decode_canonical(&mut decoder)?;
-        decoder.ensure_finished()?;
-        assert_eq!(decoded, receipt, "v2 round trip of {error_code:?}");
-        assert_eq!(
-            receipt.receipt_digest(),
-            receipt_domain_digest(OperationReceipt::DIGEST_DOMAIN_V2, &bytes)
-        );
-        assert!(
-            v2_digests.insert(receipt.receipt_digest()),
-            "the v2 digest binds the reason: {error_code:?}"
-        );
-
-        // v1: exactly the layout before the reason existed; the reason is not in its bytes.
-        let mut v1 = v1_base.clone();
-        v1.error_code = error_code.map(str::to_owned);
-        let mut without_reason = CanonicalEncoder::new();
-        v1.encode_canonical(&mut without_reason);
-        let without_reason = without_reason.finish();
-        v1.indeterminate_reason = reason;
-        let mut with_reason = CanonicalEncoder::new();
-        v1.encode_canonical(&mut with_reason);
-        let legacy = with_reason.finish();
-        assert_eq!(legacy, v1_layout(&v1), "v1 bytes of {error_code:?}");
-        assert_eq!(
-            legacy, without_reason,
-            "a v1 receipt's reason is not digest-bound"
-        );
-        assert_eq!(
-            v1.receipt_digest(),
-            receipt_domain_digest(OperationReceipt::SCHEMA, &legacy)
-        );
-        let refused = OperationReceipt::decode_canonical(&mut CanonicalDecoder::new(&legacy));
-        assert!(
-            matches!(refused, Err(ContractError::LegacyReceiptRequiresJournal)),
-            "{error_code:?}: {refused:?}"
-        );
-    }
-    assert_eq!(v2_digests.len(), 4);
-
-    // An unknown v2 reason tag is refused, never read as some reason.
-    let mut encoder = CanonicalEncoder::new();
-    base.encode_canonical(&mut encoder);
-    let mut bytes = encoder.finish();
-    let last = bytes.len().checked_sub(1).ok_or("empty receipt bytes")?;
-    assert_eq!(bytes.get(last), Some(&0));
-    if let Some(tag) = bytes.get_mut(last) {
-        *tag = 3;
-    }
-    let refused = OperationReceipt::decode_canonical(&mut CanonicalDecoder::new(&bytes));
-    assert!(
-        matches!(refused, Err(ContractError::InvalidIdentifier)),
-        "{refused:?}"
-    );
-
-    // An operation id spelled like the v2 tag is a valid id; its v1 bytes are still v1, refused.
-    let mut lookalike = base.clone();
-    lookalike.intent.operation_id = OperationId::parse(OperationReceipt::DIGEST_DOMAIN_V2)?;
-    let refused =
-        OperationReceipt::decode_canonical(&mut CanonicalDecoder::new(&v1_layout(&lookalike)));
-    assert!(
-        matches!(refused, Err(ContractError::LegacyReceiptRequiresJournal)),
-        "{refused:?}"
-    );
-    Ok(())
-}
+// `operation_receipt_versions_keep_v1_bytes_and_bind_the_v2_reason` lives in
+// crates/fss-reference/tests/legacy_effect_journal_contract.rs: a v1 receipt is obtainable only
+// through the durable journal's sealed replay, which that crate owns (fss-8dnfo).
 
 /// fss-deir9 round 4: stripping the 40-byte v2 prefix and the trailing reason byte off a current
 /// receipt yields exactly v1 bytes of the same fields, and the public decoder refuses them, so a

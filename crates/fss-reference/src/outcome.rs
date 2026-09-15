@@ -2,7 +2,8 @@
 
 use fss_core::{
     BatchId, CanonicalEncode, CanonicalEncoder, CaptureInterval, ContentDigest, EffectJournal,
-    EffectState, EvidenceDelta, LedgerAnchor, ObjectId, ObligationState, OperationReceipt, Plane,
+    EffectRecordVersion, EffectState, EvidenceDelta, LedgerAnchor, ObjectId, ObligationState,
+    OperationReceipt, Plane,
 };
 use fss_ledger::DurableReferenceLedger;
 use fss_object::{InMemoryObjectStore, ObjectManifest};
@@ -80,12 +81,48 @@ pub struct ReferenceAlertOutcomeReceipt {
 /// outcome is published without fabricating proof and remains `Indeterminate`. Exact retries return
 /// the existing authority state; a different payload under the same operation identity fails before
 /// staging any conflicting object.
+///
+/// The journal here is caller-held, so the operation must have a current (v2) receipt. A legacy
+/// (v1) receipt exists only as the product of the durable journal's sealed replay, and is published
+/// under the v1 digest domain only through `DurableEffectJournal::publish_alert_outcome`; handed in
+/// here (a clone of a durable journal's memory, an inspection's journal, or any journal mutated in
+/// memory), it is refused as `alert_outcome_legacy_receipt_custody` before anything is staged
+/// (fss-8dnfo).
 pub fn publish_reference_alert_outcome(
     plan: &ReferenceAlertPlan,
     journal: &EffectJournal,
     objects: &mut InMemoryObjectStore,
     ledger: &mut DurableReferenceLedger,
     provider: &ReferenceAlertProvider,
+) -> Result<ReferenceAlertOutcomeReceipt, ReferenceError> {
+    publish_reference_alert_outcome_in_custody(
+        plan,
+        journal,
+        objects,
+        ledger,
+        provider,
+        OutcomeJournalCustody::Caller,
+    )
+}
+
+/// Who holds the effect journal an alert outcome is published from (fss-8dnfo).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OutcomeJournalCustody {
+    /// A journal held by the caller: only current (v2) receipts may be published from it.
+    Caller,
+    /// The memory of an open `DurableEffectJournal`, exactly its durably written history: the
+    /// only custody in which a legacy (v1) receipt may be published under the v1 digest domain.
+    DurableJournal,
+}
+
+/// Publishes an alert outcome from a journal in the given custody (fss-8dnfo).
+pub(crate) fn publish_reference_alert_outcome_in_custody(
+    plan: &ReferenceAlertPlan,
+    journal: &EffectJournal,
+    objects: &mut InMemoryObjectStore,
+    ledger: &mut DurableReferenceLedger,
+    provider: &ReferenceAlertProvider,
+    custody: OutcomeJournalCustody,
 ) -> Result<ReferenceAlertOutcomeReceipt, ReferenceError> {
     validate_reference_alert_plan(plan)?;
     let operation = journal
@@ -94,6 +131,15 @@ pub fn publish_reference_alert_outcome(
         .clone();
     if operation.intent != plan.intent || operation.committed_at.is_none() {
         return Err(ReferenceError::InvalidSpec("alert_outcome_operation"));
+    }
+    // Seal: a legacy (v1) receipt is published under the v1 digest domain only from the durable
+    // journal's own memory, never from a caller-held journal (fss-8dnfo).
+    if operation.record_version() == EffectRecordVersion::V1
+        && custody != OutcomeJournalCustody::DurableJournal
+    {
+        return Err(ReferenceError::InvalidSpec(
+            "alert_outcome_legacy_receipt_custody",
+        ));
     }
 
     let obligation = journal

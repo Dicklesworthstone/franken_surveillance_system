@@ -305,3 +305,158 @@ fn mutated_plan_is_rejected_before_object_or_authority_mutation() -> Result<(), 
     harness.cleanup();
     Ok(())
 }
+
+/// fss-8dnfo: a caller-built journal cannot publish a v1-domain outcome. A legacy (v1) receipt,
+/// obtainable only through the durable journal's sealed replay, is refused by the public publish
+/// entry point whenever the journal left the durable handle: its memory cloned, the journal of a
+/// non-mutating inspection of the same file, or a clone reconciled to verified in memory only (with
+/// genuine provider proof, but never durably recorded). Nothing is staged or ledgered by a refusal.
+/// The same operation publishes under the v1 digest domain through the durable journal itself.
+#[test]
+fn caller_built_journal_cannot_publish_a_v1_domain_outcome() -> Result<(), Box<dyn Error>> {
+    let mut harness = OutcomeHarness::new(
+        "legacy-custody",
+        ReferenceProviderBehavior::LoseAckAfterDelivery,
+    )?;
+    let plan = harness.plan.clone();
+    let journal_path = std::env::temp_dir().join(format!(
+        "fss-reference-outcome-{}-legacy-custody-effect.journal",
+        std::process::id()
+    ));
+    let _ = fs::remove_file(&journal_path);
+    {
+        // The plan's records exactly as pre-deir9 code wrote them (record kind 2, v1).
+        let mut raw = fss_ledger::Journal::open(&journal_path, IncompleteTailPolicy::Reject)?;
+        for record in [
+            fss_core::EffectJournalTransition::Prepare {
+                intent: plan.intent.clone(),
+                obligation_id: plan.obligation_id.clone(),
+                terminal_predicate: "delivery_proved".to_owned(),
+                now: TimestampNs(100),
+            },
+            fss_core::EffectJournalTransition::Transition {
+                operation_id: plan.intent.operation_id.clone(),
+                next: EffectState::Committed,
+                now: TimestampNs(101),
+                result_digest: None,
+                error_code: None,
+            },
+            fss_core::EffectJournalTransition::Transition {
+                operation_id: plan.intent.operation_id.clone(),
+                next: EffectState::Indeterminate,
+                now: TimestampNs(102),
+                result_digest: None,
+                error_code: Some("provider_timeout".to_owned()),
+            },
+        ] {
+            let _ = raw.append(
+                crate::EFFECT_TRANSITION_RECORD_KIND,
+                &fss_core::CanonicalEncode::try_canonical_bytes(&record)?,
+            )?;
+        }
+    }
+    let durable = crate::DurableEffectJournal::open(&journal_path, IncompleteTailPolicy::Reject)?;
+    let held = durable
+        .operation(&plan.intent.operation_id)
+        .ok_or(fss_core::ContractError::NotFound)?
+        .clone();
+    assert_eq!(held.state, EffectState::Indeterminate);
+    assert_eq!(held.record_version(), fss_core::EffectRecordVersion::V1);
+    assert_eq!(held.digest_domain(), fss_core::OperationReceipt::SCHEMA);
+
+    let cloned = durable.effect_journal().clone();
+    let inspected = crate::DurableEffectJournal::inspect(
+        &journal_path,
+        fss_ledger::DurableLedgerLimits::default(),
+    )?
+    .journal
+    .ok_or(ReferenceError::InvalidSpec("inspection_found_no_journal"))?;
+    let mut reconciled = durable.effect_journal().clone();
+    let provider_receipt = harness
+        .provider
+        .lookup(&plan.intent)?
+        .ok_or(ReferenceError::InvalidSpec("missing_provider_receipt"))?;
+    let provider_proof = fss_core::ContentDigest::sha256(&provider_receipt.canonical_bytes());
+    let _ = reconciled.transition(
+        &plan.intent.operation_id,
+        EffectState::Observed,
+        TimestampNs(103),
+        Some(provider_proof),
+        None,
+    )?;
+    let in_memory_verified = reconciled
+        .reconcile_verified(&plan.intent.operation_id, provider_proof, TimestampNs(104))?
+        .clone();
+    assert_eq!(in_memory_verified.state, EffectState::Verified);
+    assert_eq!(
+        in_memory_verified.record_version(),
+        fss_core::EffectRecordVersion::V1
+    );
+
+    let effect_object_id = ObjectId::parse(format!(
+        "object:effect:{}",
+        plan.intent.operation_id.as_str()
+    ))?;
+    let before_batches = harness.authority.batches().len();
+    for (label, journal) in [
+        ("cloned", &cloned),
+        ("inspected", &inspected),
+        ("reconciled in memory", &reconciled),
+    ] {
+        let refused = publish_reference_alert_outcome(
+            &plan,
+            journal,
+            &mut harness.objects,
+            &mut harness.authority,
+            &harness.provider,
+        );
+        assert!(
+            matches!(
+                refused,
+                Err(ReferenceError::InvalidSpec(
+                    "alert_outcome_legacy_receipt_custody"
+                ))
+            ),
+            "{label}: {refused:?}"
+        );
+        assert_eq!(
+            harness.authority.batches().len(),
+            before_batches,
+            "{label}: a refusal publishes nothing"
+        );
+        assert!(
+            !harness
+                .authority
+                .current()
+                .objects
+                .contains_key(&effect_object_id),
+            "{label}: no effect object"
+        );
+    }
+
+    // The durable journal itself publishes the same v1 receipt under the v1 digest domain.
+    let published = durable.publish_alert_outcome(
+        &plan,
+        &mut harness.objects,
+        &mut harness.authority,
+        &harness.provider,
+    )?;
+    assert_eq!(published.outcome.operation_receipt, held);
+    assert_eq!(
+        published.outcome.operation_receipt.digest_domain(),
+        fss_core::OperationReceipt::SCHEMA
+    );
+    assert_eq!(harness.authority.batches().len(), before_batches + 1);
+    assert!(
+        harness
+            .authority
+            .current()
+            .objects
+            .contains_key(&effect_object_id)
+    );
+
+    drop(durable);
+    let _ = fs::remove_file(&journal_path);
+    harness.cleanup();
+    Ok(())
+}

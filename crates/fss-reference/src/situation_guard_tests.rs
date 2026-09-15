@@ -4214,18 +4214,35 @@ fn legacy_records_for(
     ]
 }
 
-/// A v1 receipt built by replaying legacy records in memory, not read from a durable journal:
-/// indeterminate, or reconciled to verified after the upgrade.
+/// A v1 receipt held by the caller rather than read by the guard from a durable journal: legacy
+/// records written as a pre-deir9 journal file, replayed by opening that file durably (the only
+/// way to obtain a v1 receipt, fss-8dnfo), then the journal's memory cloned out of the durable
+/// handle and, if `reconcile`, reconciled to verified in memory only (never durably written).
 fn in_memory_v1_receipt(
     plan: &ReferenceAlertPlan,
     error_code: Option<String>,
     reconcile: bool,
 ) -> ReceiptResult {
-    let mut journal = EffectJournal::replay_versioned(
-        legacy_records_for(plan, error_code)
-            .into_iter()
-            .map(|record| (fss_core::EffectRecordVersion::V1, record)),
-    )?;
+    let path = std::env::temp_dir().join(format!(
+        "fss-reference-guard-caller-v1-{}-{}.journal",
+        std::process::id(),
+        plan.intent.operation_id.as_str().replace(':', "-")
+    ));
+    let _ = fs::remove_file(&path);
+    {
+        let mut raw = fss_ledger::Journal::open(&path, IncompleteTailPolicy::Reject)?;
+        for record in legacy_records_for(plan, error_code) {
+            let _ = raw.append(
+                crate::EFFECT_TRANSITION_RECORD_KIND,
+                &fss_core::CanonicalEncode::try_canonical_bytes(&record)?,
+            )?;
+        }
+    }
+    let mut journal = {
+        let durable = crate::DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+        durable.effect_journal().clone()
+    };
+    let _ = fs::remove_file(&path);
     let operation_id = &plan.intent.operation_id;
     if reconcile {
         let observed = fss_core::ContentDigest::sha256(b"legacy-reconciled-observation");
@@ -4467,8 +4484,9 @@ fn hand_set_unrecorded_marker_on_a_v2_receipt_is_refused() -> Result<(), Box<dyn
     Ok(())
 }
 
-/// fss-deir9 round 4: a v1 receipt constructed any way other than the durable journal's replay
-/// (here, replaying legacy records in memory) never passes the guard: not with the unrecorded
+/// fss-deir9 round 4: a v1 receipt reaching the guard any way other than from the durable journal
+/// (here, read from a durable file but then held, and reconciled, in memory by the caller,
+/// fss-8dnfo) never passes the guard: not with the unrecorded
 /// marker, not reconciled, not clean, and not as a verified receipt with a forged recorded reason
 /// and matching code. The same legacy shapes pass when read from the durable journal (above).
 #[test]
