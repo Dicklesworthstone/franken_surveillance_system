@@ -2,11 +2,14 @@ use crate::{GeometryBasis, GeometryError, PinholeIntrinsics, RigidPose, WorkBudg
 use crate::math::{V3, checked};
 mod search;
 mod planar;
+mod focal;
 
 pub use search::estimate_camera_pose as estimate_nonplanar_camera_pose;
 pub use planar::estimate_camera_pose_adaptive as estimate_camera_pose;
 pub use planar::{DEFAULT_PLANAR_RESIDUAL_RATIO, PlanarSupport,
     estimate_camera_pose_adaptive, estimate_planar_camera_pose};
+pub use focal::{FocalPoseScan, FocalSample, FocalSampleOutcome, FocalScanOptions,
+    scan_camera_focal_length};
 
 #[derive(Clone, Copy, PartialEq)]
 pub struct Correspondence {
