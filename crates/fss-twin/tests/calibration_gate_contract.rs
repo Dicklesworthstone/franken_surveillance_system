@@ -20,15 +20,15 @@ fn report(twin:&fss_twin::PropertyTwin,disposition:CalibrationDisposition)->Cali
         residuals:vec![],projected:12,inliers:12,rms_inlier_px:Some(0.0),maximum_inlier_error_px:Some(0.0),
         image_span_fraction:[0.4,0.3],disposition}
 }
-fn basis()->CalibrationGateBasis{CalibrationGateBasis{calibration_digest:[8;32],camera:7,calibration:9,
-    image_domain:11,image_domain_digest:[4;32],clock:13,checked_capture:[120,130]}}
+fn basis(twin:&fss_twin::PropertyTwin)->CalibrationGateBasis{CalibrationGateBasis{twin_digest:twin.digest(),atlas_digest:[7;32],
+    calibration_digest:[8;32],camera:7,calibration:9,image_domain:11,image_domain_digest:[4;32],clock:13,checked_capture:[120,130]}}
 fn observation(capture:[u64;2])->ContactObservation{ContactObservation{evidence:[5;32],track:1,camera:7,
     exposure:2,image_domain:11,clock:13,capture,pixel_min:[320.0,240.0],pixel_max:[320.0,240.0],visible_contact:false}}
 
 #[test]
 fn valid_monitor_receipt_admits_only_its_checked_capture_interval()->Test{
     let twin=common::twin(&[0.0],None)?; let camera=camera(&twin)?; let report=report(&twin,CalibrationDisposition::ValidUnderPolicy);
-    let admitted=admit_tracking_camera(camera,&report,basis())?;
+    let admitted=admit_tracking_camera(camera,&report,basis(&twin))?;
     let projected=admitted.project_contact(&twin,observation([125,125]),ProjectionOptions::default(),&mut WorkBudget::new(100_000))?;
     assert_eq!(projected.quality(),ProjectionQuality::ContactUnknown);
     assert!(matches!(admitted.project_contact(&twin,observation([131,131]),ProjectionOptions::default(),&mut WorkBudget::new(100_000)),Err(CalibrationGateError::BasisMismatch)));
@@ -38,19 +38,23 @@ fn valid_monitor_receipt_admits_only_its_checked_capture_interval()->Test{
 #[test]
 fn invalidated_and_indeterminate_calibrations_never_expose_tracking_camera()->Test{
     let twin=common::twin(&[0.0],None)?; let camera=camera(&twin)?;
-    assert!(matches!(admit_tracking_camera(camera,&report(&twin,CalibrationDisposition::Invalidate),basis()),Err(CalibrationGateError::Invalidated)));
-    assert!(matches!(admit_tracking_camera(camera,&report(&twin,CalibrationDisposition::Indeterminate),basis()),Err(CalibrationGateError::Indeterminate)));
+    assert!(matches!(admit_tracking_camera(camera,&report(&twin,CalibrationDisposition::Invalidate),basis(&twin)),Err(CalibrationGateError::Invalidated)));
+    assert!(matches!(admit_tracking_camera(camera,&report(&twin,CalibrationDisposition::Indeterminate),basis(&twin)),Err(CalibrationGateError::Indeterminate)));
     Ok(())
 }
 
 #[test]
-fn digest_handle_clock_and_validity_rebinding_are_refused()->Test{
+fn twin_atlas_digest_handle_clock_and_validity_rebinding_are_refused()->Test{
     let twin=common::twin(&[0.0],None)?; let camera=camera(&twin)?; let report=report(&twin,CalibrationDisposition::ValidUnderPolicy);
-    let mut wrong=basis(); wrong.image_domain_digest=[6;32];
+    let mut wrong=basis(&twin); wrong.image_domain_digest=[6;32];
     assert!(matches!(admit_tracking_camera(camera,&report,wrong),Err(CalibrationGateError::BasisMismatch)));
-    let mut wrong=basis(); wrong.checked_capture=[90,130];
+    let mut wrong=basis(&twin); wrong.atlas_digest=[6;32];
     assert!(matches!(admit_tracking_camera(camera,&report,wrong),Err(CalibrationGateError::BasisMismatch)));
-    let mut wrong=basis(); wrong.clock=99;
+    let mut wrong=basis(&twin); wrong.twin_digest=[6;32];
+    assert!(matches!(admit_tracking_camera(camera,&report,wrong),Err(CalibrationGateError::BasisMismatch)));
+    let mut wrong=basis(&twin); wrong.checked_capture=[90,130];
+    assert!(matches!(admit_tracking_camera(camera,&report,wrong),Err(CalibrationGateError::BasisMismatch)));
+    let mut wrong=basis(&twin); wrong.clock=99;
     assert!(matches!(admit_tracking_camera(camera,&report,wrong),Err(CalibrationGateError::BasisMismatch)));
     Ok(())
 }
