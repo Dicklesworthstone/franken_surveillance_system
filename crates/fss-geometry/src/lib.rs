@@ -16,6 +16,7 @@ mod refine;
 mod registration;
 mod motion;
 mod handoff;
+mod handoff_scenarios;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -26,15 +27,15 @@ pub use registration::{Correspondence, LandmarkResidual, PoseCandidate, PoseSear
     estimate_nonplanar_camera_pose, DEFAULT_PLANAR_RESIDUAL_RATIO, estimate_camera_pose_adaptive,
     estimate_planar_camera_pose, FocalCandidateValidation, FocalPoseScan, FocalSample,
     FocalSampleOutcome, FocalScanOptions, FocalValidationSet, scan_camera_focal_length};
-
 pub use motion::{ForecastBasis, MAX_FORECAST_NS, MAX_MOTION_ROUTES, MAX_ROUTE_POINTS,
     MotionForecast, MotionHypothesis, MotionKnot, RouteCandidate, RouteEnd, RoutePriors,
     RouteSurface, forecast_routes};
-
 pub use handoff::{BodySamples, CameraAvailability, CameraHandoffForecast, CaptureSchedule,
     HandoffCamera, HandoffCameraScope, HandoffOptions, ImageRect, MAX_BODY_SAMPLES,
     MAX_HANDOFF_CAMERAS, NanosecondInterval, NextCameraOutcome, PredictedObservation,
     RouteBody, RouteHandoff, predict_camera_handoffs};
+pub use handoff_scenarios::{HandoffScenario, MAX_HANDOFF_SCENARIOS, ScenarioCameraEnvelope,
+    ScenarioHandoffForecast, ScenarioRouteEnvelope, predict_camera_handoff_scenarios};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GeometryError {
