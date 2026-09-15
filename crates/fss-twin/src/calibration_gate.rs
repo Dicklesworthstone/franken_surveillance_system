@@ -1,27 +1,19 @@
 #![forbid(unsafe_code)]
-//! Fail-closed bridge from a current calibration monitor result to world projection.
+//! Fail-closed bridge from a current calibration monitor result to world projection and handoff modeling.
 
-use fss_geometry::WorkBudget;
+use fss_geometry::{HandoffCamera, WorkBudget};
 use crate::{ContactObservation, ContactProjection, ProjectionOptions, PropertyTwin, TrackingCamera,
     TwinError, project_contact};
 use crate::calibration_monitor::{CalibrationDisposition, CalibrationMonitorReport};
 
-/// External binding between the digest-oriented monitor and process-local tracking handles.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CalibrationGateBasis {
-    /// Exact calibration digest used by the monitor.
     pub calibration_digest: [u8; 32],
-    /// Process-local physical camera handle.
     pub camera: u64,
-    /// Process-local calibration generation.
     pub calibration: u64,
-    /// Process-local image-domain generation.
     pub image_domain: u64,
-    /// Digest of the same image-domain transform chain used by localization.
     pub image_domain_digest: [u8; 32],
-    /// Capture clock generation.
     pub clock: u64,
-    /// Capture interval for which this monitor observation is admitted.
     pub checked_capture: [u64; 2],
 }
 
@@ -47,8 +39,6 @@ impl std::fmt::Display for CalibrationGateError {
 }
 impl std::error::Error for CalibrationGateError {}
 
-/// Camera snapshot admitted only for the exact monitor capture interval.
-/// The underlying camera is private so callers cannot accidentally widen the receipt.
 pub struct MonitoredTrackingCamera {
     camera: TrackingCamera,
     basis: CalibrationGateBasis,
@@ -63,21 +53,32 @@ impl std::fmt::Debug for MonitoredTrackingCamera {
 impl MonitoredTrackingCamera {
     pub fn basis(&self) -> CalibrationGateBasis { self.basis }
 
-    /// Project only observations captured inside the monitor's exact witnessed interval.
-    /// A later observation requires a later monitor receipt; stale validity cannot leak through.
     pub fn project_contact(&self, twin: &PropertyTwin, observation: ContactObservation,
         options: ProjectionOptions, budget: &mut WorkBudget<'_>)
         -> Result<ContactProjection, CalibrationGateError> {
-        if observation.capture[0] < self.basis.checked_capture[0]
-            || observation.capture[1] > self.basis.checked_capture[1] {
+        if !contains(self.basis.checked_capture, observation.capture) {
             return Err(CalibrationGateError::BasisMismatch);
         }
         Ok(project_contact(twin, self.camera, observation, options, budget)?)
     }
+
+    /// Verify that one modeled handoff view is exactly the admitted camera snapshot and
+    /// that the source observation used to launch the forecast was covered by the current
+    /// calibration check. This does not extend the camera's future validity interval.
+    pub fn check_handoff_camera(&self, view: HandoffCamera<'_>, source_capture: [u64;2])
+        -> Result<(), CalibrationGateError> {
+        if !contains(self.basis.checked_capture, source_capture)
+            || view.id != self.camera.camera || view.geometry != self.camera.geometry
+            || view.clock != self.camera.clock || view.image_mode != self.camera.image_domain
+            || view.pose != self.camera.pose || view.intrinsics != self.camera.intrinsics
+            || view.valid.earliest() < self.camera.validity[0]
+            || view.valid.latest() > self.camera.validity[1] {
+            return Err(CalibrationGateError::BasisMismatch);
+        }
+        Ok(())
+    }
 }
 
-/// Convert a monitor result into a narrow world-projection capability.
-/// Invalid or indeterminate monitoring never returns the raw TrackingCamera.
 pub fn admit_tracking_camera(camera: TrackingCamera, report: &CalibrationMonitorReport,
     basis: CalibrationGateBasis) -> Result<MonitoredTrackingCamera, CalibrationGateError> {
     if basis.calibration_digest == [0;32] || basis.image_domain_digest == [0;32]
@@ -98,4 +99,8 @@ pub fn admit_tracking_camera(camera: TrackingCamera, report: &CalibrationMonitor
         CalibrationDisposition::Invalidate => Err(CalibrationGateError::Invalidated),
         CalibrationDisposition::Indeterminate => Err(CalibrationGateError::Indeterminate),
     }
+}
+
+fn contains(outer:[u64;2], inner:[u64;2])->bool {
+    inner[0] <= inner[1] && outer[0] <= inner[0] && inner[1] <= outer[1]
 }
