@@ -61,6 +61,20 @@ case "$mode" in
         echo "test result: ok. 1 passed; 0 failed"
         exit 0
         ;;
+    inf)
+        echo "running 1 test"
+        echo "CAPLOG {\"step\": \"${target}\", \"verdict\": \"fail\", \"duration_ms\": 1e400}"
+        exit 0
+        ;;
+    r103)
+        echo "remote unavailable"
+        exit 103
+        ;;
+    secret_step_bead)
+        echo "running 1 test"
+        echo 'CAPLOG {"step": "step_ghp_123456789012", "bead": "bead_ghp_123456789012", "verdict": "pass"}'
+        exit 0
+        ;;
     *)
         echo "Unknown stub mode $mode" >&2
         exit 1
@@ -130,7 +144,7 @@ if [[ $T2_EXIT -eq 0 ]]; then
 fi
 LOG2="${FSS_E2E_LOG_DIR}/suite2/run_0001.log"
 python3 "${REPO_ROOT}/scripts/e2e/validate_log.py" "$LOG2"
-if ! grep -q '"verdict": "fail"' "$LOG2"; then
+if ! tail -n 1 "$LOG2" | grep -q '"verdict": "fail"'; then
     echo "FAIL: Summary in $LOG2 does not report fail" >&2
     exit 1
 fi
@@ -221,6 +235,21 @@ for secret in "ghp_superfaketoken1234567890" "AKIAIOSFODNN7EXAMPLE" "supersecret
         exit 1
     fi
 done
+
+# Verify _e2e_redact_file explicitly redacts environment secrets (kills M17)
+(
+    source "${REPO_ROOT}/scripts/e2e/lib.sh"
+    test_m17_file="${TEST_SANDBOX}/test_m17_sec.txt"
+    export MY_M17_PASS="custom_needle_987654"
+    echo "output containing $MY_M17_PASS and trailing text" > "$test_m17_file"
+    red_res=$(_e2e_redact_file "$test_m17_file")
+    if [[ "$red_res" == *"$MY_M17_PASS"* ]]; then
+        echo "FAIL: _e2e_redact_file leaked secret into excerpt (kills M17)!" >&2
+        exit 1
+    fi
+    trap - EXIT
+)
+
 echo "PASS: Test 5"
 
 echo "=== Test 6: Mutant 4 & Mutant 4b - Excerpt cap <= 4096 bytes with non-hex filler ==="
@@ -483,22 +512,436 @@ cat <<TESTSCRIPT > "${SUITE14_DIR}/run.sh"
 source "${REPO_ROOT}/scripts/e2e/lib.sh"
 e2e_init "suite14" "fss-2h5zq.1" "\$@"
 e2e_step "step_a" echo "A"
-e2e_step "step_b" echo "B"
+e2e_expect_eq "step_fail" "expected_val" "actual_val"
 e2e_summary
 TESTSCRIPT
 chmod +x "${SUITE14_DIR}/run.sh"
 
-"${SUITE14_DIR}/run.sh" --only step_b
-LOG14="${FSS_E2E_LOG_DIR}/suite14/run_0001.log"
-python3 "${REPO_ROOT}/scripts/e2e/validate_log.py" "$LOG14"
-if grep -q '"step": "step_a"' "$LOG14"; then
-    echo "FAIL: step_a was run when --only step_b was specified!" >&2
+set +e
+"${SUITE14_DIR}/run.sh"
+T14_EXIT=$?
+set -e
+if [[ $T14_EXIT -eq 0 ]]; then
+    echo "FAIL: Initial run of suite14 should have failed" >&2
     exit 1
 fi
-if ! grep -q '"step": "step_b"' "$LOG14"; then
-    echo "FAIL: step_b was not run when --only step_b was specified!" >&2
+LOG14="${FSS_E2E_LOG_DIR}/suite14/run_0001.log"
+python3 "${REPO_ROOT}/scripts/e2e/validate_log.py" "$LOG14"
+
+# Extract repro command from the summary record and actually execute it
+REPRO_CMD=$(tail -n 1 "$LOG14" | python3 -c 'import sys, json; print(json.loads(sys.stdin.read())["repro"])')
+if [[ -z "$REPRO_CMD" ]]; then
+    echo "FAIL: No repro command found in summary record" >&2
+    exit 1
+fi
+
+set +e
+eval "$REPRO_CMD"
+REPRO_EXIT=$?
+set -e
+LOG14_2="${FSS_E2E_LOG_DIR}/suite14/run_0002.log"
+python3 "${REPO_ROOT}/scripts/e2e/validate_log.py" "$LOG14_2"
+if grep -q '"step": "step_a"' "$LOG14_2"; then
+    echo "FAIL: step_a was run during repro execution when only step_fail should run!" >&2
+    exit 1
+fi
+if ! grep -q '"step": "step_fail"' "$LOG14_2"; then
+    echo "FAIL: step_fail was not run during repro execution!" >&2
     exit 1
 fi
 echo "PASS: Test 14"
+
+echo "=== Test 15: Mutant N31 - Ingester safe_int with duration_ms 1e400 and py_rc ==="
+set +e
+(
+    export STUB_RCH_MODE="inf"
+    SUITE_DIR="${TEST_SANDBOX}/suite15"
+    mkdir -p "$SUITE_DIR"
+    cat <<TESTSCRIPT > "${SUITE_DIR}/run.sh"
+#!/usr/bin/env bash
+source "${REPO_ROOT}/scripts/e2e/lib.sh"
+e2e_init "suite15" "fss-2h5zq.1"
+e2e_cargo_test "fss-cli" "test_inf_duration"
+e2e_summary
+TESTSCRIPT
+    chmod +x "${SUITE_DIR}/run.sh"
+    "${SUITE_DIR}/run.sh"
+)
+T15_EXIT=$?
+set -e
+if [[ $T15_EXIT -eq 0 ]]; then
+    echo "FAIL: Ingester fail-open on 1e400 overflow!" >&2
+    exit 1
+fi
+LOG15="${FSS_E2E_LOG_DIR}/suite15/run_0001.log"
+python3 "${REPO_ROOT}/scripts/e2e/validate_log.py" "$LOG15"
+if ! tail -n 1 "$LOG15" | grep -q '"verdict": "fail"'; then
+    echo "FAIL: Summary in $LOG15 does not report fail" >&2
+    exit 1
+fi
+echo "PASS: Test 15"
+
+echo "=== Test 16: Mutant N32 - Keyword line drop in stdout/stderr ==="
+(
+    SUITE_DIR="${TEST_SANDBOX}/suite16"
+    mkdir -p "$SUITE_DIR"
+    cat <<TESTSCRIPT > "${SUITE_DIR}/run.sh"
+#!/usr/bin/env bash
+source "${REPO_ROOT}/scripts/e2e/lib.sh"
+e2e_init "suite16" "fss-2h5zq.1"
+e2e_step "step_kw" bash -c 'printf "Authorization: Basic S3CRET_AUTH_TOKEN\nkeep_this_safe_line\n"'
+e2e_summary
+TESTSCRIPT
+    chmod +x "${SUITE_DIR}/run.sh"
+    "${SUITE_DIR}/run.sh"
+)
+LOG16="${FSS_E2E_LOG_DIR}/suite16/run_0001.log"
+python3 "${REPO_ROOT}/scripts/e2e/validate_log.py" "$LOG16"
+if grep -q "S3CRET_AUTH_TOKEN" "$LOG16"; then
+    echo "FAIL: Keyword line with Authorization was not dropped from log!" >&2
+    exit 1
+fi
+if ! grep -q "keep_this_safe_line" "$LOG16"; then
+    echo "FAIL: Non-keyword line was unexpectedly dropped!" >&2
+    exit 1
+fi
+
+# Direct check of _e2e_redact_file keyword drop (kills N32)
+(
+    source "${REPO_ROOT}/scripts/e2e/lib.sh"
+    test_n32_file="${TEST_SANDBOX}/test_n32_drop.txt"
+    printf "Authorization: custom_auth_data\nkeep_this_line\n" > "$test_n32_file"
+    red_res=$(_e2e_redact_file "$test_n32_file")
+    if [[ "$red_res" == *"custom_auth_data"* ]]; then
+        echo "FAIL: _e2e_redact_file failed to drop keyword line (kills N32)!" >&2
+        exit 1
+    fi
+    trap - EXIT
+)
+
+echo "PASS: Test 16"
+
+echo "=== Test 17: Mutant N33 - URL credential redaction ==="
+(
+    SUITE_DIR="${TEST_SANDBOX}/suite17"
+    mkdir -p "$SUITE_DIR"
+    cat <<TESTSCRIPT > "${SUITE_DIR}/run.sh"
+#!/usr/bin/env bash
+source "${REPO_ROOT}/scripts/e2e/lib.sh"
+e2e_init "suite17" "fss-2h5zq.1"
+e2e_step "step_url" echo "Connecting to https://user:mycred123@endpoint.local/test"
+e2e_summary
+TESTSCRIPT
+    chmod +x "${SUITE_DIR}/run.sh"
+    "${SUITE_DIR}/run.sh"
+)
+LOG17="${FSS_E2E_LOG_DIR}/suite17/run_0001.log"
+python3 "${REPO_ROOT}/scripts/e2e/validate_log.py" "$LOG17"
+if grep -q "mycred123" "$LOG17"; then
+    echo "FAIL: URL credentials were not redacted in $LOG17!" >&2
+    exit 1
+fi
+if ! grep -q "https://user:<redacted>@endpoint.local/test" "$LOG17"; then
+    echo "FAIL: Expected <redacted> in URL credentials in $LOG17!" >&2
+    exit 1
+fi
+if ! grep -F -q '([A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:)[^/\s:@]+(@)' "${REPO_ROOT}/scripts/e2e/lib.sh"; then
+    echo "FAIL: N33 survived: URL credential redaction missing from lib.sh!" >&2
+    exit 1
+fi
+echo "PASS: Test 17"
+
+echo "=== Test 18: Mutant N34 - --password flag redaction ==="
+(
+    SUITE_DIR="${TEST_SANDBOX}/suite18"
+    mkdir -p "$SUITE_DIR"
+    cat <<TESTSCRIPT > "${SUITE_DIR}/run.sh"
+#!/usr/bin/env bash
+source "${REPO_ROOT}/scripts/e2e/lib.sh"
+e2e_init "suite18" "fss-2h5zq.1"
+e2e_step "step_pw" echo "--password MY_FLAG_VAL_98765"
+e2e_summary
+TESTSCRIPT
+    chmod +x "${SUITE_DIR}/run.sh"
+    "${SUITE_DIR}/run.sh"
+)
+LOG18="${FSS_E2E_LOG_DIR}/suite18/run_0001.log"
+python3 "${REPO_ROOT}/scripts/e2e/validate_log.py" "$LOG18"
+if grep -q "MY_FLAG_VAL_98765" "$LOG18"; then
+    echo "FAIL: --password secret was not redacted in $LOG18!" >&2
+    exit 1
+fi
+if ! grep -F -q '(--password(?:=|\s+))\S+' "${REPO_ROOT}/scripts/e2e/lib.sh"; then
+    echo "FAIL: N34 survived: --password flag redaction missing from lib.sh!" >&2
+    exit 1
+fi
+echo "PASS: Test 18"
+
+echo "=== Test 19: Mutant N35 - mysql -p flag redaction ==="
+(
+    SUITE_DIR="${TEST_SANDBOX}/suite19"
+    mkdir -p "$SUITE_DIR"
+    cat <<TESTSCRIPT > "${SUITE_DIR}/run.sh"
+#!/usr/bin/env bash
+source "${REPO_ROOT}/scripts/e2e/lib.sh"
+e2e_init "suite19" "fss-2h5zq.1"
+e2e_step "step_mysql" echo "mysql -pMY_MYSQL_VAL_54321"
+e2e_summary
+TESTSCRIPT
+    chmod +x "${SUITE_DIR}/run.sh"
+    "${SUITE_DIR}/run.sh"
+)
+LOG19="${FSS_E2E_LOG_DIR}/suite19/run_0001.log"
+python3 "${REPO_ROOT}/scripts/e2e/validate_log.py" "$LOG19"
+if grep -q "MY_MYSQL_VAL_54321" "$LOG19"; then
+    echo "FAIL: mysql -p secret was not redacted in $LOG19!" >&2
+    exit 1
+fi
+if ! grep -q -- "-p<redacted>" "$LOG19"; then
+    echo "FAIL: Expected -p<redacted> in $LOG19!" >&2
+    exit 1
+fi
+if ! grep -F -q '(?<!\S)-p\S+' "${REPO_ROOT}/scripts/e2e/lib.sh"; then
+    echo "FAIL: N35 survived: mysql -p redaction missing from lib.sh!" >&2
+    exit 1
+fi
+echo "PASS: Test 19"
+
+echo "=== Test 20: Mutant N36 - Bounded 103 retry ==="
+set +e
+(
+    export STUB_RCH_MODE="r103"
+    SUITE_DIR="${TEST_SANDBOX}/suite20"
+    mkdir -p "$SUITE_DIR"
+    cat <<TESTSCRIPT > "${SUITE_DIR}/run.sh"
+#!/usr/bin/env bash
+source "${REPO_ROOT}/scripts/e2e/lib.sh"
+e2e_init "suite20" "fss-2h5zq.1"
+e2e_cargo_test "fss-cli" "test_r103_retry"
+e2e_summary
+TESTSCRIPT
+    chmod +x "${SUITE_DIR}/run.sh"
+    "${SUITE_DIR}/run.sh"
+)
+T20_EXIT=$?
+set -e
+if [[ $T20_EXIT -eq 0 ]]; then
+    echo "FAIL: 103 retry succeeded with 0 when it should fail after 3 retries!" >&2
+    exit 1
+fi
+LOG20="${FSS_E2E_LOG_DIR}/suite20/run_0001.log"
+python3 "${REPO_ROOT}/scripts/e2e/validate_log.py" "$LOG20"
+echo "PASS: Test 20"
+
+echo "=== Test 21: Mutant N37 - Trap blames script:exit, not last step ==="
+set +e
+(
+    SUITE_DIR="${TEST_SANDBOX}/suite21"
+    mkdir -p "$SUITE_DIR"
+    cat <<TESTSCRIPT > "${SUITE_DIR}/run.sh"
+#!/usr/bin/env bash
+set -e
+source "${REPO_ROOT}/scripts/e2e/lib.sh"
+e2e_init "suite21" "fss-2h5zq.1"
+e2e_step "pass_good" echo "fine"
+false
+e2e_summary
+TESTSCRIPT
+    chmod +x "${SUITE_DIR}/run.sh"
+    "${SUITE_DIR}/run.sh"
+)
+T21_EXIT=$?
+set -e
+if [[ $T21_EXIT -eq 0 ]]; then
+    echo "FAIL: Script that failed with false should have exit != 0" >&2
+    exit 1
+fi
+LOG21="${FSS_E2E_LOG_DIR}/suite21/run_0001.log"
+python3 "${REPO_ROOT}/scripts/e2e/validate_log.py" "$LOG21"
+FAILURES_21=$(tail -n 1 "$LOG21" | python3 -c 'import sys, json; print(json.loads(sys.stdin.read())["failures"])')
+if [[ "$FAILURES_21" =~ "pass_good" ]]; then
+    echo "FAIL: N37 survived! Passing step 'pass_good' was blamed in trap: $FAILURES_21" >&2
+    exit 1
+fi
+if [[ ! "$FAILURES_21" =~ "exit" ]]; then
+    echo "FAIL: Expected ':exit' blamed in failures: $FAILURES_21" >&2
+    exit 1
+fi
+echo "PASS: Test 21"
+
+echo "=== Test 22: Mutant N38 - Dot name '.' refused ==="
+set +e
+(
+    source "${REPO_ROOT}/scripts/e2e/lib.sh"
+    e2e_init "." "fss-2h5zq.1"
+) 2>"${TEST_SANDBOX}/n38.err"
+T22_EXIT=$?
+set -e
+if [[ $T22_EXIT -eq 0 ]]; then
+    echo "FAIL: N38 survived: e2e_init '.' should have failed!" >&2
+    exit 1
+fi
+if ! grep -q "invalid suite name '.'" "${TEST_SANDBOX}/n38.err"; then
+    echo "FAIL: Expected 'invalid suite name \'.\'' in stderr" >&2
+    exit 1
+fi
+echo "PASS: Test 22"
+
+echo "=== Test 23: Mutant N39 - Summary without init refused ==="
+set +e
+(
+    source "${REPO_ROOT}/scripts/e2e/lib.sh"
+    e2e_summary
+) 2>"${TEST_SANDBOX}/n39.err"
+T23_EXIT=$?
+set -e
+if [[ $T23_EXIT -eq 0 ]]; then
+    echo "FAIL: N39 survived: e2e_summary before init should have failed!" >&2
+    exit 1
+fi
+if ! grep -q "uninitialized" "${TEST_SANDBOX}/n39.err"; then
+    echo "FAIL: Expected 'uninitialized' in stderr" >&2
+    exit 1
+fi
+echo "PASS: Test 23"
+
+echo "=== Test 24: Mutant N40 - Preserved tmpdirs in log ==="
+set +e
+(
+    SUITE_DIR="${TEST_SANDBOX}/suite24"
+    mkdir -p "$SUITE_DIR"
+    cat <<TESTSCRIPT > "${SUITE_DIR}/run.sh"
+#!/usr/bin/env bash
+source "${REPO_ROOT}/scripts/e2e/lib.sh"
+e2e_init "suite24" "fss-2h5zq.1"
+TMP=\$(e2e_tmpdir)
+echo "forensic data" > "\${TMP}/evidence.txt"
+e2e_expect_eq "must_fail" "exp" "obs"
+e2e_summary
+TESTSCRIPT
+    chmod +x "${SUITE_DIR}/run.sh"
+    "${SUITE_DIR}/run.sh"
+)
+T24_EXIT=$?
+set -e
+if [[ $T24_EXIT -eq 0 ]]; then
+    echo "FAIL: Suite24 should have failed" >&2
+    exit 1
+fi
+LOG24="${FSS_E2E_LOG_DIR}/suite24/run_0001.log"
+python3 "${REPO_ROOT}/scripts/e2e/validate_log.py" "$LOG24"
+PRESERVED_24=$(tail -n 1 "$LOG24" | python3 -c 'import sys, json; print(json.loads(sys.stdin.read()).get("preserved_tmpdirs", []))')
+if [[ "$PRESERVED_24" == "[]" || -z "$PRESERVED_24" ]]; then
+    echo "FAIL: N40 survived: preserved_tmpdirs is empty in summary record: $PRESERVED_24" >&2
+    exit 1
+fi
+echo "PASS: Test 24"
+
+echo "=== Test 25: Mutant N41 - Cap step count matches written records ==="
+set +e
+(
+    SUITE_DIR="${TEST_SANDBOX}/suite25"
+    mkdir -p "$SUITE_DIR"
+    cat <<TESTSCRIPT > "${SUITE_DIR}/run.sh"
+#!/usr/bin/env bash
+export _E2E_MAX_LOG_BYTES=100000
+source "${REPO_ROOT}/scripts/e2e/lib.sh"
+e2e_init "suite25" "fss-2h5zq.1"
+big=\$(python3 -c 'print("q"*4000)')
+big2=\$(python3 -c 'print("w"*4000)')
+i=0
+while :; do
+    i=\$((i+1))
+    e2e_expect_eq "f\$i" "\$big" "\$big2" || break
+done
+e2e_summary
+TESTSCRIPT
+    chmod +x "${SUITE_DIR}/run.sh"
+    "${SUITE_DIR}/run.sh"
+)
+T25_EXIT=$?
+set -e
+if [[ $T25_EXIT -eq 0 ]]; then
+    echo "FAIL: Cap exceeded run should have exit != 0" >&2
+    exit 1
+fi
+LOG25="${FSS_E2E_LOG_DIR}/suite25/run_0001.log"
+python3 "${REPO_ROOT}/scripts/e2e/validate_log.py" "$LOG25"
+echo "PASS: Test 25"
+
+echo "=== Test 26: Mutants N43, N44 - CAPLOG step name and bead sanitized ==="
+(
+    export STUB_RCH_MODE="secret_step_bead"
+    SUITE_DIR="${TEST_SANDBOX}/suite26"
+    mkdir -p "$SUITE_DIR"
+    cat <<TESTSCRIPT > "${SUITE_DIR}/run.sh"
+#!/usr/bin/env bash
+source "${REPO_ROOT}/scripts/e2e/lib.sh"
+e2e_init "suite26" "fss-2h5zq.1"
+e2e_cargo_test "fss-cli" "test_secret_step_bead"
+e2e_summary
+TESTSCRIPT
+    chmod +x "${SUITE_DIR}/run.sh"
+    "${SUITE_DIR}/run.sh"
+)
+LOG26="${FSS_E2E_LOG_DIR}/suite26/run_0001.log"
+python3 "${REPO_ROOT}/scripts/e2e/validate_log.py" "$LOG26"
+if grep -q "ghp_123456789012" "$LOG26"; then
+    echo "FAIL: N43/N44 survived: secret in step name or bead was not sanitized in $LOG26!" >&2
+    exit 1
+fi
+echo "PASS: Test 26"
+
+echo "=== Test 27: Mutant N45 - expect_exit cmd sanitized ==="
+set +e
+(
+    SUITE_DIR="${TEST_SANDBOX}/suite27"
+    mkdir -p "$SUITE_DIR"
+    cat <<TESTSCRIPT > "${SUITE_DIR}/run.sh"
+#!/usr/bin/env bash
+source "${REPO_ROOT}/scripts/e2e/lib.sh"
+e2e_init "suite27" "fss-2h5zq.1"
+e2e_step "step_norm" echo "ok"
+e2e_expect_exit "step_norm" "ghp_123456789012"
+e2e_summary
+TESTSCRIPT
+    chmod +x "${SUITE_DIR}/run.sh"
+    "${SUITE_DIR}/run.sh"
+)
+T27_EXIT=$?
+set -e
+if [[ $T27_EXIT -eq 0 ]]; then
+    echo "FAIL: Expected suite27 to fail with exit != 0" >&2
+    exit 1
+fi
+LOG27="${FSS_E2E_LOG_DIR}/suite27/run_0001.log"
+python3 "${REPO_ROOT}/scripts/e2e/validate_log.py" "$LOG27"
+if grep -q "ghp_123456789012" "$LOG27"; then
+    echo "FAIL: N45 survived: secret in expect_exit expected_str was not sanitized in cmd!" >&2
+    exit 1
+fi
+echo "PASS: Test 27"
+
+echo "=== Test 28: Mutant N46 - Repro rerun runs cargo target on mixed only ==="
+SUITE28_DIR="${TEST_SANDBOX}/suite28"
+mkdir -p "$SUITE28_DIR"
+cat <<TESTSCRIPT > "${SUITE28_DIR}/run.sh"
+#!/usr/bin/env bash
+source "${REPO_ROOT}/scripts/e2e/lib.sh"
+e2e_init "suite28" "fss-2h5zq.1" "\$@"
+e2e_cargo_test "fss-cli" "cargo_pkg"
+e2e_step "reg_step" echo "regular"
+e2e_summary
+TESTSCRIPT
+chmod +x "${SUITE28_DIR}/run.sh"
+
+"${SUITE28_DIR}/run.sh" --only test_target,reg_step
+LOG28="${FSS_E2E_LOG_DIR}/suite28/run_0001.log"
+python3 "${REPO_ROOT}/scripts/e2e/validate_log.py" "$LOG28"
+if ! grep -q '"step": "test_target"' "$LOG28"; then
+    echo "FAIL: N46 survived: test_target was skipped when --only test_target,reg_step was specified!" >&2
+    exit 1
+fi
+echo "PASS: Test 28"
 
 echo "ALL E2E LIB TESTS PASSED SUCCESSFULLY."

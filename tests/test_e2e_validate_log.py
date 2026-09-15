@@ -30,10 +30,14 @@ if str(sys_path_e2e) not in sys.path:
 import validate_log
 from validate_log import ValidationError, validate_file, find_log_files
 
+_TEST_SANDBOX = REPO_ROOT / "target" / "test_sandboxes"
+_TEST_SANDBOX.mkdir(parents=True, exist_ok=True)
+tempfile.tempdir = str(_TEST_SANDBOX)
+
 
 class TestValidateLog(unittest.TestCase):
     def setUp(self):
-        self.tmp_dir = tempfile.mkdtemp(prefix="test_val_log_")
+        self.tmp_dir = tempfile.mkdtemp(prefix="test_val_log_", dir=str(_TEST_SANDBOX))
         self.log_path = Path(self.tmp_dir) / "run_0001.log"
 
     def tearDown(self):
@@ -439,6 +443,66 @@ class TestValidateLog(unittest.TestCase):
         with self.assertRaises(ValidationError) as ctx:
             validate_file(self.log_path)
         self.assertEqual(ctx.exception.code, "ERR_SUMMARY_INCONSISTENCY")
+
+    def test_n25_summary_failures_contains_unknown_step_rejected(self):
+        records = [
+            self._valid_env_record(),
+            self._valid_step_record("s1", "pass"),
+            self._valid_summary_record("fail", steps=1, failures=["unknown_ghost_step"])
+        ]
+        self._write_records(records)
+        with self.assertRaises(ValidationError) as ctx:
+            validate_file(self.log_path)
+        self.assertEqual(ctx.exception.code, "ERR_SUMMARY_INCONSISTENCY")
+
+    def test_n26_failed_step_not_reported_in_summary_failures_rejected(self):
+        records = [
+            self._valid_env_record(),
+            self._valid_step_record("s1", "fail", exit_code=1),
+            self._valid_step_record("s2", "fail", exit_code=1),
+            self._valid_summary_record("fail", steps=2, failures=["s1"])
+        ]
+        self._write_records(records)
+        with self.assertRaises(ValidationError) as ctx:
+            validate_file(self.log_path)
+        self.assertEqual(ctx.exception.code, "ERR_SUMMARY_INCONSISTENCY")
+
+    def test_n27_summary_skipped_contains_unknown_step_rejected(self):
+        records = [
+            self._valid_env_record(),
+            self._valid_step_record("s1", "pass"),
+            self._valid_summary_record("pass", steps=1, failures=[], skipped=[{"step": "ghost_skip", "reason": "unseen"}])
+        ]
+        self._write_records(records)
+        with self.assertRaises(ValidationError) as ctx:
+            validate_file(self.log_path)
+        self.assertEqual(ctx.exception.code, "ERR_SUMMARY_INCONSISTENCY")
+
+    def test_n28_secret_value_scan_catches_short_ghp_token(self):
+        step = self._valid_step_record("s1", "pass")
+        step["stdout_excerpt"] = "leak: ghp_123456789012\n"
+        records = [
+            self._valid_env_record(),
+            step,
+            self._valid_summary_record("pass", steps=1)
+        ]
+        self._write_records(records)
+        with self.assertRaises(ValidationError) as ctx:
+            validate_file(self.log_path)
+        self.assertEqual(ctx.exception.code, "ERR_SECRET_VALUE_FOUND")
+
+    def test_n29_find_log_files_ignores_tmpdirs_extension(self):
+        target_dir = Path(self.tmp_dir) / "suite_tmpdirs"
+        target_dir.mkdir(parents=True)
+        good_log = target_dir / "run_0001.log"
+        good_log.write_text(json.dumps(self._valid_env_record()) + "\n")
+        tmpdirs_file = target_dir / "run_0001.log.tmpdirs"
+        tmpdirs_file.write_text("/path/to/some/tmpdir\n")
+
+        found = find_log_files(target_dir)
+        self.assertIn(good_log, found)
+        self.assertNotIn(tmpdirs_file, found)
+        self.assertEqual(found, [good_log])
 
 
 if __name__ == "__main__":
