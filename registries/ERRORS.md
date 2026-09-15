@@ -165,6 +165,12 @@ operation states rather than generic errors.
 | `ERR-PROV-FREEZE-DIVERGENCE-001` | provenance registry digest diverged from pinned baseline freeze digest | restore frozen provenance registry or bump generation |
 | `ERR-PROV-GENERATION-MISMATCH-001` | provenance registry generation diverged from baseline generation | assign expected generation to provenance registry |
 | `ERR-PROV-SEMANTIC-INVARIANT-001` | provenance semantic invariant violation: non-permissible irreversible authorization, missing anchors, or score flattening | enforce provenance orthogonality and class-specific evidence/authorization gates |
+| `ERR-OP-REGISTRY-DRIFT-001` | operation registry row drift between machine registry and markdown mirror | synchronize architecture/agent_operations.json and registries/AGENT_OPERATIONS.md |
+| `ERR-OP-STABLE-ID-REUSED-001` | operation stable identifier was reused, duplicated, or renumbered outside AOP-001..AOP-014 | allocate a new unique stable identifier; never reuse stable IDs |
+| `ERR-OP-MISSING-FIELD-001` | operation row or registry metadata lacks a mandatory field or is empty/corrupt | declare all mandatory fields in the operation row |
+| `ERR-OP-CORRUPT-FILE-001` | operation registry, frozen public registry, or markdown documentation file is missing or corrupt | repair or restore the operation registry file |
+| `ERR-OP-SEMANTIC-INVARIANT-001` | operation semantic invariant violation: effect/mode contradiction, durability contradiction, or unregistered view/payload/capability/gate/retry spelling | enforce the registered operation mode table and row invariants |
+| `ERR-OP-RUST-DRIFT-001` | typed Rust operation table drifted from or is missing versus the machine registry | regenerate crates/fss-core/src/agent_operation.rs canonical rows from architecture/agent_operations.json |
 | `ERR-ADAPTER-REGISTRY-DRIFT-001` | adapter registry row drift between machine registry and markdown | synchronize architecture/device_adapters.json and registries/DEVICE_ADAPTERS.md |
 | `ERR-ADAPTER-STABLE-ID-REUSED-001` | adapter stable identifier was reused, renumbered, or resurrected | allocate a new unique stable identifier; never reuse stable IDs |
 | `ERR-ADAPTER-SEMANTIC-INVARIANT-001` | adapter row violates semantic invariants (tier, state, gate) | fail closed; enforce normative row definitions |

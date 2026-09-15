@@ -3015,6 +3015,9 @@ pub enum ContractError {
     EvidenceLaunderingDetected,
     /// A prediction cannot claim the `known` knowledge state (PROV-003, AGENTS.md, Constitution §8.2).
     PredictedKnownForbidden,
+    /// An operation row's effectful/durable flags contradict its registered mode
+    /// (AOP-001..014, `architecture/agent_operations.json`).
+    OperationEffectModeMismatch,
 }
 
 impl ContractError {
@@ -3154,6 +3157,7 @@ impl ContractError {
             Self::CanonicalTruncated => "canonical_truncated",
             Self::EvidenceLaunderingDetected => "evidence_laundering_detected",
             Self::PredictedKnownForbidden => "predicted_known_forbidden",
+            Self::OperationEffectModeMismatch => "operation_effect_mode_mismatch",
         }
     }
 }

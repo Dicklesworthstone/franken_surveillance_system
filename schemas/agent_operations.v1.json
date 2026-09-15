@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/agent_operations.v1.json",
+  "title": "Agent Operations v1",
+  "description": "Machine registry of the registered fss/1 agent operations (AOP-001..AOP-014). The dedicated executable/public operation surface; mirrored by registries/AGENT_OPERATIONS.md and enforced against the typed Rust table in crates/fss-core/src/agent_operation.rs by scripts/agent_operation_registry_checker.py.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "asOf",
+    "semanticProtocol",
+    "operations",
+    "worldEnvelopeRule"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.agent_operations.v1"
+    },
+    "asOf": {
+      "type": "string",
+      "minLength": 1
+    },
+    "semanticProtocol": {
+      "const": "fss/1"
+    },
+    "worldEnvelopeRule": {
+      "type": "string",
+      "minLength": 1
+    },
+    "operations": {
+      "type": "array",
+      "minItems": 14,
+      "maxItems": 14,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "name",
+          "purpose",
+          "mode",
+          "owner",
+          "defaultView",
+          "effectful",
+          "durable",
+          "requiredCapabilities",
+          "inputSchema",
+          "outputSchema",
+          "retryClasses",
+          "gate",
+          "status",
+          "requestPayloadSchema",
+          "responsePayloadSchemas"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^AOP-0(0[1-9]|1[0-4])$"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "purpose": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "mode": {
+            "enum": [
+              "session_control",
+              "read",
+              "read_wait",
+              "read_compile",
+              "read_compute",
+              "cognition_write",
+              "plan_prepare",
+              "effect_commit",
+              "lifecycle_effect",
+              "continuity_publish",
+              "advisory_write",
+              "diagnostic_prepare"
+            ]
+          },
+          "owner": {
+            "type": "string",
+            "pattern": "^fss-[a-z0-9-]+$"
+          },
+          "defaultView": {
+            "type": "string",
+            "pattern": "^AVIEW-\\d{3}$"
+          },
+          "effectful": {
+            "type": "boolean"
+          },
+          "durable": {
+            "type": "boolean"
+          },
+          "requiredCapabilities": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "pattern": "^CAP-[A-Z0-9-]+$"
+            }
+          },
+          "inputSchema": {
+            "const": "fss.agent_request_envelope.v1"
+          },
+          "outputSchema": {
+            "const": "fss.agent_response_envelope.v1"
+          },
+          "retryClasses": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "never_unchanged",
+                "backoff",
+                "operator_action_required",
+                "resume_from_continuation",
+                "safe_read_retry",
+                "refresh_and_retry",
+                "rebase_required",
+                "reconciliation_required"
+              ]
+            }
+          },
+          "gate": {
+            "const": "QL-AGENT-001"
+          },
+          "status": {
+            "const": "specified"
+          },
+          "requestPayloadSchema": {
+            "type": "string",
+            "pattern": "^fss\\.[a-z0-9_.]+\\.v\\d+$"
+          },
+          "responsePayloadSchemas": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^fss\\.[a-z0-9_.]+\\.v\\d+$"
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -105,7 +105,8 @@ class TestLiveRepoConsistency(unittest.TestCase):
         # 75 = 74 + SCHEMA-AGENT-DELTA-002 (schemas/agent_meaningful_delta.v2.json, fss-2uftm).
         # 76 = 75 + SCHEMA-JPEG-FIXTURE-MANIFEST-001 (schemas/jpeg_fixture_manifest.v1.json, fss-2h5zq.5).
         # 77 = 76 + SCHEMA-MJPEG-FIXTURE-MANIFEST-001 (schemas/mjpeg_fixture_manifest.v1.json, fss-2h5zq.5).
-        self.assertEqual(summary["schemas_count"], 77)
+        # 78 = 77 + SCHEMA-AGENT-OPERATIONS-001 (schemas/agent_operations.v1.json, fss-x4a.30.83.17).
+        self.assertEqual(summary["schemas_count"], 78)
         self.assertGreater(summary["known_active_ids"], 800)
         self.assertGreaterEqual(summary["tombstone_ids"], 14)
 

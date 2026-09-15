@@ -9,6 +9,7 @@
 pub mod abstraction;
 pub mod acquisition;
 mod agent;
+pub mod agent_operation;
 pub mod belief;
 mod canonical;
 mod compression;
@@ -56,6 +57,11 @@ pub use agent::{
     ReconciliationBasis, ReconciliationBranch, RedactionMarker, RedactionReason, SituationCapsule,
     SituationFrame, StaleBasis, UnknownReason, WorldEnvelope,
 };
+pub use agent_operation::{
+    AgentOperation, CapabilityList, OPERATION_REGISTRY_GENERATION, OPERATION_ROW_DIGEST_DOMAIN,
+    OperationMode, OperationRetryClass, REGISTERED_OPERATION_COUNT, REGISTERED_OPERATION_GATE,
+    ResponseSchemaList, RetryClassList,
+};
 pub use belief::{
     BELIEF_INTERVAL_DOMAIN, BeliefError, BeliefInterval, CONTRADICTION_DOMAIN, Contradiction,
     ContradictionParams, MAX_CLAIM_ID_LEN, MAX_CONFLICTING_EVIDENCE, MAX_CONTRADICTION_ID_LEN,
@@ -86,11 +92,10 @@ pub use contract_basis::{
     MIN_CONTRACT_BASIS_BINARY_BYTES, REFERENCE_CAPABILITY_REGISTRY_DIGEST,
     REFERENCE_CONTRACT_BASIS_CANONICAL_DIGEST, REFERENCE_CONTRACT_BASIS_FREEZE_DIGEST,
     REFERENCE_CONTRACT_BASIS_GENERATION, REFERENCE_COST_REGISTRY_DIGEST,
-    REFERENCE_ERROR_REGISTRY_DIGEST, REFERENCE_OPERATION_REGISTRY_DIGEST,
-    REFERENCE_SCHEMA_CATALOG_DIGEST, REFERENCE_VIEW_REGISTRY_DIGEST, RegistryDigestSet,
-    SCHEMA_CONTRACT_BASIS, StaleBasisReason, check_basis_freshness, check_compatibility,
-    decode_canonical_binary, encode_canonical_binary, negotiate_basis, reference_contract_basis,
-    refuse_stale_anchor, validate_contract_basis,
+    REFERENCE_ERROR_REGISTRY_DIGEST, REFERENCE_OPERATION_REGISTRY_DIGEST, SCHEMA_CONTRACT_BASIS,
+    StaleBasisReason, check_basis_freshness, check_compatibility, decode_canonical_binary,
+    encode_canonical_binary, negotiate_basis, reference_contract_basis, refuse_stale_anchor,
+    registered_operation, validate_contract_basis,
 };
 pub use delta::{DeltaPriority, MeaningfulDelta, MeaningfulDeltaClass, SilenceCertificate};
 pub use digest::{ContentDigest, DigestAlgorithm, Sha256Hasher, sha256};

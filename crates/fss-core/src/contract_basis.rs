@@ -20,6 +20,7 @@ use core::fmt;
 use std::error::Error;
 
 use crate::agent::{ContractBasis, ContractBasisRegistryBytes};
+use crate::agent_operation::AgentOperation;
 use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode};
 use crate::contract::ContractError;
 use crate::digest::{ContentDigest, DigestAlgorithm, Sha256Hasher};
@@ -239,6 +240,11 @@ pub enum ContractBasisRefusal {
         /// Candidate nightly toolchain.
         actual: Option<String>,
     },
+    /// Operation name is not a registered `fss/1` operation (`AOP-001`..`AOP-014`).
+    UnregisteredOperation {
+        /// The refused operation name.
+        name: String,
+    },
 }
 
 impl ContractBasisRefusal {
@@ -256,7 +262,8 @@ impl ContractBasisRefusal {
             | Self::IncompatibleErrorRegistry { .. }
             | Self::IncompatibleCostRegistry { .. }
             | Self::InvalidProducerRelease { .. }
-            | Self::IncompatibleNightly { .. } => "ERR-AGENT-PROTOCOL-001",
+            | Self::IncompatibleNightly { .. }
+            | Self::UnregisteredOperation { .. } => "ERR-AGENT-PROTOCOL-001",
         }
     }
 
@@ -296,6 +303,9 @@ impl ContractBasisRefusal {
             }
             Self::IncompatibleNightly { .. } => {
                 "use the pinned nightly toolchain matching the server contract basis"
+            }
+            Self::UnregisteredOperation { .. } => {
+                "fetch current public operations from architecture/fss1_public_registry.json and address only registered AOP-001..AOP-014 operation names"
             }
         }
     }
@@ -363,6 +373,9 @@ impl fmt::Display for ContractBasisRefusal {
                     f,
                     "incompatible nightly toolchain: required {required}, got {actual:?}"
                 )
+            }
+            Self::UnregisteredOperation { name } => {
+                write!(f, "unregistered operation name: {name}")
             }
         }
     }
@@ -950,6 +963,41 @@ pub fn negotiate_basis(
             Err(ContractBasisError::IncompatibleBasis { refusal })
         }
     }
+}
+
+/// Resolves an operation name against a negotiated basis (AOP-001..AOP-014).
+///
+/// This is the decision-bearing `session.open` boundary: an operation is addressable
+/// only under a basis whose semantic protocol is exactly `fss/1`, and only by its
+/// registered canonical name. Unknown names fail closed with
+/// `ContractBasisRefusal::UnregisteredOperation` (`ERR-AGENT-PROTOCOL-001`) and
+/// deterministic remediation guidance; stable IDs (`AOP-001`) are never accepted as
+/// names at this boundary.
+///
+/// Failures are typed; no unregistered surface is ever silently mapped.
+pub fn registered_operation(
+    basis: &ContractBasis,
+    operation_name: &str,
+) -> Result<AgentOperation, ContractBasisError> {
+    if basis.semantic_protocol != CANONICAL_SEMANTIC_PROTOCOL {
+        return Err(ContractBasisError::IncompatibleBasis {
+            refusal: ContractBasisRefusal::IncompatibleProtocol {
+                expected: CANONICAL_SEMANTIC_PROTOCOL.to_owned(),
+                actual: basis.semantic_protocol.clone(),
+            },
+        });
+    }
+    let operation = AgentOperation::from_name(operation_name).map_err(|_| {
+        ContractBasisError::IncompatibleBasis {
+            refusal: ContractBasisRefusal::UnregisteredOperation {
+                name: operation_name.to_owned(),
+            },
+        }
+    })?;
+    operation
+        .validate_row()
+        .map_err(ContractBasisError::Contract)?;
+    Ok(operation)
 }
 
 /// Checks that a basis does not reference known tombstoned or superseded registry digests.
