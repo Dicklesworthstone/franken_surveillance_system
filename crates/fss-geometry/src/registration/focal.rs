@@ -1,10 +1,8 @@
 #![forbid(unsafe_code)]
 //! Bounded known-principal-point focal scan over the existing adaptive pose solver.
-//!
-//! The scan preserves every sampled outcome. It does not silently choose one focal
-//! length, claim identifiability, or convert image fit into a calibration certificate.
+//! Every sampled outcome is preserved; no focal value becomes authority by ranking alone.
 
-use super::{Correspondence, PoseSearch, PoseSolverOptions};
+use super::{Correspondence, PoseSearch, PoseSolverOptions, PoseValidation};
 use super::planar::estimate_camera_pose_adaptive;
 use crate::{GeometryBasis, GeometryError, PinholeIntrinsics, WorkBudget};
 
@@ -31,18 +29,31 @@ impl FocalScanOptions {
 }
 
 #[derive(Debug)]
-pub enum FocalSampleOutcome {
-    Candidates(PoseSearch),
-    GeometricFailure(GeometryError),
-}
+pub enum FocalSampleOutcome { Candidates(PoseSearch), GeometricFailure(GeometryError) }
 #[derive(Debug)]
-pub struct FocalSample {
-    intrinsics:PinholeIntrinsics,
-    outcome:FocalSampleOutcome,
-}
+pub struct FocalSample { intrinsics:PinholeIntrinsics, outcome:FocalSampleOutcome }
 impl FocalSample {
     pub fn intrinsics(&self)->PinholeIntrinsics{self.intrinsics}
     pub fn outcome(&self)->&FocalSampleOutcome{&self.outcome}
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FocalCandidateValidation {
+    pub sample: usize,
+    pub candidate: usize,
+    pub validation: PoseValidation,
+}
+#[derive(Clone, Debug, PartialEq)]
+pub struct FocalValidationSet {
+    reports:Vec<FocalCandidateValidation>,
+    passing:Vec<(usize,usize)>,
+}
+impl FocalValidationSet {
+    pub fn reports(&self)->&[FocalCandidateValidation]{&self.reports}
+    pub fn passing_candidates(&self)->&[(usize,usize)]{&self.passing}
+    pub fn unique_passing_candidate(&self)->Option<(usize,usize)>{
+        (self.passing.len()==1).then_some(self.passing[0])
+    }
 }
 
 #[derive(Debug)]
@@ -77,6 +88,30 @@ impl FocalPoseScan {
             }
         }
         Ok(output)
+    }
+
+    /// Validate every retained focal/pose candidate against the same excluded landmarks.
+    /// No refitting occurs. A unique passing pair is merely a validation outcome, not an
+    /// activation or proof of absolute metric accuracy.
+    pub fn validate_all_candidates(&self,basis:GeometryBasis,holdout:&[Correspondence],
+        maximum_error_px:f64,budget:&mut WorkBudget<'_>)->Result<FocalValidationSet,GeometryError>{
+        budget.charge(0)?;
+        if basis!=self.basis{return Err(GeometryError::BasisMismatch);}
+        let capacity=self.samples.len().saturating_mul(8);
+        let mut reports=Vec::new(); let mut passing=Vec::new();
+        reports.try_reserve_exact(capacity).map_err(|_|GeometryError::LimitExceeded)?;
+        passing.try_reserve_exact(capacity).map_err(|_|GeometryError::LimitExceeded)?;
+        for (sample_index,sample) in self.samples.iter().enumerate(){
+            if let FocalSampleOutcome::Candidates(search)=&sample.outcome{
+                for candidate_index in 0..search.candidates().len(){
+                    let validation=search.validate_candidate(candidate_index,basis,holdout,maximum_error_px,budget)?;
+                    if validation.passed{passing.push((sample_index,candidate_index));}
+                    reports.push(FocalCandidateValidation{sample:sample_index,candidate:candidate_index,validation});
+                }
+            }
+        }
+        budget.charge(0)?;
+        Ok(FocalValidationSet{reports,passing})
     }
 }
 
