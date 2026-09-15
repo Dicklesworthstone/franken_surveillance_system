@@ -26,12 +26,14 @@
 //! possibility envelope (`worldEnvelopeRule`); `commit` is the sole operation that
 //! starts a prepared plan's effects.
 
-use crate::agent::ContractBasis;
+use crate::agent::{ContractBasis, SituationCapsule};
 use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder};
 use crate::contract::ContractError;
 use crate::digest::ContentDigest;
 use crate::evidence::LedgerAnchor;
+use crate::{Completeness, MissionId, PrincipalId, SessionId};
 use core::fmt;
+
 /// Number of registered operations (`AOP-001`..`AOP-014`).
 pub const REGISTERED_OPERATION_COUNT: usize = 14;
 
@@ -1133,4 +1135,288 @@ pub fn classify_session_resume(
         invalidations.push(ResumeInvalidation::AnchorNotStrictlyOlder);
     }
     ResumeAssessment { invalidations }
+}
+
+/// Driver-facing frame section of an orient projection (AOP-003).
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum OrientSection {
+    /// Current situation statements.
+    Now,
+    /// Meaningful changes.
+    Changed,
+    /// Causal or evidentiary explanation.
+    Why,
+    /// Material unknowns and contradictions.
+    Unknown,
+    /// Risks, invalidators, and urgent obligations.
+    AtRisk,
+    /// Nondominated next affordance identities.
+    Next,
+}
+
+impl OrientSection {
+    /// Returns the stable registry spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Now => "now",
+            Self::Changed => "changed",
+            Self::Why => "why",
+            Self::Unknown => "unknown",
+            Self::AtRisk => "at_risk",
+            Self::Next => "next",
+        }
+    }
+
+    /// Returns the canonical wire tag (frame declaration order).
+    #[must_use]
+    pub const fn to_code(self) -> u32 {
+        match self {
+            Self::Now => 1,
+            Self::Changed => 2,
+            Self::Why => 3,
+            Self::Unknown => 4,
+            Self::AtRisk => 5,
+            Self::Next => 6,
+        }
+    }
+}
+
+impl fmt::Display for OrientSection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// What an orient omission dropped (AOP-003).
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum OrientOmissionTarget {
+    /// Entries of one driver-facing frame section.
+    Section(OrientSection),
+    /// Sorted evidence handles beyond the handle budget.
+    EvidenceHandles,
+}
+
+impl OrientOmissionTarget {
+    /// Returns the canonical wire tag.
+    #[must_use]
+    pub const fn to_code(self) -> u32 {
+        match self {
+            Self::Section(section) => section.to_code(),
+            Self::EvidenceHandles => 7,
+        }
+    }
+}
+
+/// Entry budget of one orient projection (AOP-003).
+///
+/// Both bounds must be at least 1: an orient read that admits nothing is
+/// refused with [`ContractError::BudgetExhausted`] rather than returning an
+/// empty projection that looks like a complete answer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OrientBudget {
+    max_per_section: u32,
+    max_evidence_handles: u32,
+}
+
+impl OrientBudget {
+    /// Validates and constructs a projection budget.
+    pub fn new(max_per_section: u32, max_evidence_handles: u32) -> Result<Self, ContractError> {
+        if max_per_section == 0 || max_evidence_handles == 0 {
+            return Err(ContractError::BudgetExhausted);
+        }
+        Ok(Self {
+            max_per_section,
+            max_evidence_handles,
+        })
+    }
+
+    /// Returns the per-section entry bound.
+    #[must_use]
+    pub const fn max_per_section(&self) -> u32 {
+        self.max_per_section
+    }
+
+    /// Returns the evidence-handle bound.
+    #[must_use]
+    pub const fn max_evidence_handles(&self) -> u32 {
+        self.max_evidence_handles
+    }
+}
+
+/// One typed omission of an orient projection.
+///
+/// Omissions are never silent: entries dropped by the budget are enumerated
+/// with their target and count, so compactness can never flatten `unknown`,
+/// `at_risk`, or `next` content into absence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OrientOmission {
+    /// What was dropped.
+    pub target: OrientOmissionTarget,
+    /// How many entries were dropped.
+    pub omitted_entries: u32,
+}
+
+/// The smallest-sufficient read projection of a [`SituationCapsule`] (AOP-003
+/// `session.orient`).
+///
+/// A pure read product: it publishes no durable artifact and carries affordance
+/// identities only (never affordance authority). Every section is bounded by
+/// the caller's budget with typed omissions for everything dropped.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OrientProjection {
+    /// Capsule identity the projection was derived from.
+    pub capsule_id: String,
+    /// Monotone capsule revision of the source capsule.
+    pub revision: u64,
+    /// Mission identity.
+    pub mission_id: MissionId,
+    /// Session identity.
+    pub session_id: SessionId,
+    /// Principal identity.
+    pub principal_id: PrincipalId,
+    /// Exact current anchor (equals the frame anchor; validated).
+    pub anchor: LedgerAnchor,
+    /// Completeness of the source capsule for its mission and view.
+    pub completeness: Completeness,
+    /// Current situation statements (bounded).
+    pub now: Vec<String>,
+    /// Meaningful changes (bounded).
+    pub changed: Vec<String>,
+    /// Causal or evidentiary explanations (bounded).
+    pub why: Vec<String>,
+    /// Material unknowns and contradictions (bounded).
+    pub unknown: Vec<String>,
+    /// Risks, invalidators, and urgent obligations (bounded).
+    pub at_risk: Vec<String>,
+    /// Nondominated next affordance identities (bounded).
+    pub next: Vec<String>,
+    /// Evidence handles, sorted and bounded.
+    pub evidence_handles: Vec<String>,
+    /// Typed omissions: sections or handles dropped by the budget.
+    pub omissions: Vec<OrientOmission>,
+}
+
+/// Canonical digest domain of one orient projection.
+pub const ORIENT_PROJECTION_DIGEST_DOMAIN: &str = "fss.agent.orient.projection.v1";
+
+impl OrientProjection {
+    /// Returns the domain-separated canonical digest of this projection.
+    #[must_use]
+    pub fn projection_digest(&self) -> ContentDigest {
+        self.canonical_digest(ORIENT_PROJECTION_DIGEST_DOMAIN)
+    }
+
+    /// Returns the retained entries of one section.
+    #[must_use]
+    pub fn section(&self, section: OrientSection) -> &[String] {
+        match section {
+            OrientSection::Now => &self.now,
+            OrientSection::Changed => &self.changed,
+            OrientSection::Why => &self.why,
+            OrientSection::Unknown => &self.unknown,
+            OrientSection::AtRisk => &self.at_risk,
+            OrientSection::Next => &self.next,
+        }
+    }
+}
+
+impl CanonicalEncode for OrientProjection {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.text(&self.capsule_id);
+        encoder.u64(self.revision);
+        encoder.text(self.mission_id.as_str());
+        encoder.text(self.session_id.as_str());
+        encoder.text(self.principal_id.as_str());
+        self.anchor.encode_canonical(encoder);
+        self.completeness.encode_canonical(encoder);
+        for section in [
+            OrientSection::Now,
+            OrientSection::Changed,
+            OrientSection::Why,
+            OrientSection::Unknown,
+            OrientSection::AtRisk,
+            OrientSection::Next,
+        ] {
+            let entries = self.section(section);
+            encoder.u32(entries.len() as u32);
+            for entry in entries {
+                encoder.text(entry);
+            }
+        }
+        encoder.u32(self.evidence_handles.len() as u32);
+        for handle in &self.evidence_handles {
+            encoder.text(handle);
+        }
+        encoder.u32(self.omissions.len() as u32);
+        for omission in &self.omissions {
+            encoder.u32(omission.target.to_code());
+            encoder.u32(omission.omitted_entries);
+        }
+    }
+}
+
+/// Projects the smallest-sufficient orient read of `capsule` under `budget`
+/// (AOP-003 `session.orient`).
+///
+/// Fails closed if the capsule is invalid (stale anchor, refused knowledge
+/// cells) or the budget admits nothing. Selection keeps entries in their frame
+/// order up to the bound and enumerates every dropped entry as a typed
+/// omission; evidence handles are kept in sorted order.
+pub fn orient_projection(
+    capsule: &SituationCapsule,
+    budget: OrientBudget,
+) -> Result<OrientProjection, ContractError> {
+    capsule.validate()?;
+    let frame = &capsule.frame;
+    let clip = |entries: &[String], section: OrientSection, omissions: &mut Vec<OrientOmission>| {
+        if entries.len() > budget.max_per_section as usize {
+            omissions.push(OrientOmission {
+                target: OrientOmissionTarget::Section(section),
+                omitted_entries: (entries.len() - budget.max_per_section as usize) as u32,
+            });
+        }
+        entries
+            .iter()
+            .take(budget.max_per_section as usize)
+            .cloned()
+            .collect::<Vec<String>>()
+    };
+    let mut omissions = Vec::new();
+    let now = clip(&frame.now, OrientSection::Now, &mut omissions);
+    let changed = clip(&frame.changed, OrientSection::Changed, &mut omissions);
+    let why = clip(&frame.why, OrientSection::Why, &mut omissions);
+    let unknown = clip(&frame.unknown, OrientSection::Unknown, &mut omissions);
+    let at_risk = clip(&frame.at_risk, OrientSection::AtRisk, &mut omissions);
+    let next = clip(&frame.next, OrientSection::Next, &mut omissions);
+    let handle_total = frame.evidence_handles.len();
+    let evidence_handles: Vec<String> = frame
+        .evidence_handles
+        .iter()
+        .take(budget.max_evidence_handles as usize)
+        .cloned()
+        .collect();
+    if handle_total > evidence_handles.len() {
+        omissions.push(OrientOmission {
+            target: OrientOmissionTarget::EvidenceHandles,
+            omitted_entries: (handle_total - evidence_handles.len()) as u32,
+        });
+    }
+    Ok(OrientProjection {
+        capsule_id: capsule.capsule_id.clone(),
+        revision: capsule.revision,
+        mission_id: capsule.mission_id.clone(),
+        session_id: capsule.session_id.clone(),
+        principal_id: capsule.principal_id.clone(),
+        anchor: capsule.anchor.clone(),
+        completeness: capsule.completeness,
+        now,
+        changed,
+        why,
+        unknown,
+        at_risk,
+        next,
+        evidence_handles,
+        omissions,
+    })
 }

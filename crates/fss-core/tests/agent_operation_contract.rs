@@ -15,10 +15,13 @@ use fss_core::contract_basis::{
 };
 use fss_core::{AgentOperation, ContractBasis};
 use fss_core::{
-    classify_session_resume, BasisRegistryKind, CanonicalDecode, CanonicalEncode, CanonicalEncoder,
-    ContentDigest, ContractError, LedgerAnchor, OperationMode, OperationRetryClass,
-    REGISTERED_OPERATION_COUNT, ResumeInvalidation,
+    classify_session_resume, orient_projection, BasisRegistryKind, CanonicalDecode,
+    CanonicalEncode, CanonicalEncoder, Completeness, ContentDigest, ContractError, LedgerAnchor,
+    MissionId, OperationMode, OperationRetryClass, PossibleWorld, PrincipalId,
+    REGISTERED_OPERATION_COUNT, ResumeInvalidation, SessionId, SituationCapsule, SituationFrame,
+    TimestampNs, WorldEnvelope, OrientBudget, OrientOmissionTarget, OrientSection,
 };
+use std::collections::BTreeSet;
 
 const EXPECTED_IDS: [&str; 14] = [
     "AOP-001", "AOP-002", "AOP-003", "AOP-004", "AOP-005", "AOP-006", "AOP-007", "AOP-008",
@@ -578,5 +581,151 @@ fn test_resume_assessment_is_deterministic() -> Result<(), Box<dyn std::error::E
         &tombstones,
     );
     assert_eq!(first, second);
+    Ok(())
+}
+
+fn orient_test_capsule(
+    section_len: usize,
+    handle_count: usize,
+) -> Result<SituationCapsule, Box<dyn std::error::Error>> {
+    let anchor = LedgerAnchor::genesis("site:fss:orient");
+    let world_envelope = WorldEnvelope {
+        envelope_id: "world-envelope:orient".to_owned(),
+        objective_id: "objective:orient".to_owned(),
+        anchor: anchor.clone(),
+        nominal_claim_ids: BTreeSet::from(["claim:orient".to_owned()]),
+        certified_core_claim_ids: BTreeSet::new(),
+        alternatives: vec![PossibleWorld {
+            world_id: "world:orient:protected".to_owned(),
+            description: "A protected high-loss world stays decision-relevant.".to_owned(),
+            claim_ids: BTreeSet::from(["claim:orient".to_owned()]),
+            evidence: vec![ContentDigest::sha256(b"orient-evidence")],
+            consequence_severity: 5,
+            protected: true,
+        }],
+        adversarial_residuals: Vec::new(),
+        common_invariants: BTreeSet::new(),
+        coverage_boundary_handles: BTreeSet::new(),
+    };
+    let entries = |tag: &str| {
+        (0..section_len)
+            .map(|index| format!("{tag}:{index}"))
+            .collect::<Vec<String>>()
+    };
+    let frame = SituationFrame {
+        frame_id: "frame:orient".to_owned(),
+        objective_id: "objective:orient".to_owned(),
+        anchor: anchor.clone(),
+        world_envelope,
+        knowledge_cells: Vec::new(),
+        now: entries("now"),
+        changed: entries("changed"),
+        why: entries("why"),
+        unknown: entries("unknown"),
+        at_risk: entries("at-risk"),
+        next: Vec::new(),
+        evidence_handles: (0..handle_count)
+            .map(|index| format!("fss://proof/orient/{index:03}"))
+            .collect(),
+    };
+    let capsule = SituationCapsule {
+        capsule_id: "situation:orient".to_owned(),
+        revision: 3,
+        contract_basis: reference_contract_basis(),
+        mission_id: MissionId::parse("mission:orient")?,
+        session_id: SessionId::parse("session:orient")?,
+        principal_id: PrincipalId::parse("principal:orient")?,
+        anchor,
+        previous_anchor: None,
+        frame,
+        obligations: Vec::new(),
+        affordances: Vec::new(),
+        completeness: Completeness::Complete,
+        created_at: TimestampNs(1_000),
+        mission_state: None,
+    };
+    capsule.validate()?;
+    Ok(capsule)
+}
+
+#[test]
+fn test_orient_projection_clips_sections_with_typed_omissions(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let capsule = orient_test_capsule(5, 4)?;
+    let budget = OrientBudget::new(3, 4)?;
+    let projection = orient_projection(&capsule, budget)?;
+    for section in [
+        OrientSection::Now,
+        OrientSection::Changed,
+        OrientSection::Why,
+        OrientSection::Unknown,
+        OrientSection::AtRisk,
+    ] {
+        let retained = projection.section(section);
+        assert_eq!(retained.len(), 3, "{section} must retain the bound");
+    }
+    // The fixture carries no affordances, so `next` is empty and retains none.
+    assert!(projection.section(OrientSection::Next).is_empty());
+    assert_eq!(projection.omissions.len(), 5);
+    for omission in &projection.omissions {
+        assert_eq!(omission.omitted_entries, 2);
+    }
+    // Section entries keep their frame order (head retention, no reordering).
+    assert_eq!(projection.section(OrientSection::Now)[0], "now:0");
+    assert_eq!(projection.section(OrientSection::Now)[2], "now:2");
+    Ok(())
+}
+
+#[test]
+fn test_orient_projection_bounds_evidence_handles(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let capsule = orient_test_capsule(1, 6)?;
+    let budget = OrientBudget::new(1, 4)?;
+    let projection = orient_projection(&capsule, budget)?;
+    assert_eq!(projection.evidence_handles.len(), 4);
+    // Handles are kept in sorted order (BTreeSet iteration order).
+    assert_eq!(projection.evidence_handles[0], "fss://proof/orient/000");
+    let mut omissions = projection.omissions.iter();
+    let handle_omission = omissions
+        .find(|omission| omission.target == OrientOmissionTarget::EvidenceHandles)
+        .ok_or("expected an evidence-handle omission")?;
+    assert_eq!(handle_omission.omitted_entries, 2);
+    Ok(())
+}
+
+#[test]
+fn test_orient_projection_refuses_empty_budget() {
+    assert!(OrientBudget::new(0, 4).is_err());
+    assert!(OrientBudget::new(3, 0).is_err());
+    assert_eq!(
+        OrientBudget::new(0, 0).map_err(|err| err.code()),
+        Err(ContractError::BudgetExhausted.code())
+    );
+}
+
+#[test]
+fn test_orient_projection_refuses_invalid_capsule() -> Result<(), Box<dyn std::error::Error>> {
+    let mut capsule = orient_test_capsule(1, 1)?;
+    // A stale capsule anchor diverges from the frame anchor: the read must
+    // refuse instead of projecting stale state.
+    capsule.anchor = LedgerAnchor::genesis("site:fss:orient-other");
+    let budget = OrientBudget::new(2, 2)?;
+    assert!(orient_projection(&capsule, budget).is_err());
+    Ok(())
+}
+
+#[test]
+fn test_orient_projection_digest_stability() -> Result<(), Box<dyn std::error::Error>> {
+    let capsule = orient_test_capsule(4, 3)?;
+    let first = orient_projection(&capsule, OrientBudget::new(2, 2)?)?;
+    let second = orient_projection(&capsule, OrientBudget::new(2, 2)?)?;
+    assert_eq!(first, second);
+    assert_eq!(first.projection_digest(), second.projection_digest());
+    // A different budget yields different retained content and a different digest.
+    let wider = orient_projection(&capsule, OrientBudget::new(3, 3)?)?;
+    assert_ne!(first.projection_digest(), wider.projection_digest());
+    // The orient read is a non-durable operation (AOP-003 durable = no).
+    assert!(!AgentOperation::SessionOrient.durable());
+    assert!(!AgentOperation::SessionOrient.effectful());
     Ok(())
 }

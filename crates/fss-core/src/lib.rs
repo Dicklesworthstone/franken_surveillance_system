@@ -58,10 +58,12 @@ pub use agent::{
     SituationFrame, StaleBasis, UnknownReason, WorldEnvelope,
 };
 pub use agent_operation::{
-    classify_session_resume, AgentOperation, BasisRegistryKind, CapabilityList,
+    classify_session_resume, orient_projection, AgentOperation, BasisRegistryKind, CapabilityList,
+    OrientBudget, OrientOmission, OrientOmissionTarget, OrientProjection, OrientSection,
     OperationMode, OperationRetryClass, REGISTERED_OPERATION_COUNT, REGISTERED_OPERATION_GATE,
     ResumeAssessment, ResumeInvalidation, ResponseSchemaList, RetryClassList,
     OPERATION_REGISTRY_GENERATION, OPERATION_ROW_DIGEST_DOMAIN,
+    ORIENT_PROJECTION_DIGEST_DOMAIN,
 };
 pub use belief::{
     BELIEF_INTERVAL_DOMAIN, BeliefError, BeliefInterval, CONTRADICTION_DOMAIN, Contradiction,
