@@ -1001,7 +1001,7 @@ fn open_source_nofollow(
     if !io.is_valid() {
         return Err(FileIngestError::IoAuthorityRevoked);
     }
-    let inspected = fs::symlink_metadata(path)?;
+    let inspected = fs::metadata(path)?;
     if inspected.file_type().is_symlink() {
         return Err(FileIngestError::SymlinkNotAllowed {
             path: path.to_path_buf(),
