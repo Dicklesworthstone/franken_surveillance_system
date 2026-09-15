@@ -1,52 +1,37 @@
 use crate::{GeometryBasis, GeometryError, PinholeIntrinsics, RigidPose, WorkBudget};
 use crate::math::{V3, checked};
 mod search;
+mod planar;
 
-pub use search::estimate_camera_pose;
+pub use search::estimate_camera_pose as estimate_nonplanar_camera_pose;
+pub use planar::estimate_camera_pose_adaptive as estimate_camera_pose;
+pub use planar::{DEFAULT_PLANAR_RESIDUAL_RATIO, PlanarSupport,
+    estimate_camera_pose_adaptive, estimate_planar_camera_pose};
 
-/// A supplied association between a static image landmark and a property point.
-///
-/// The caller must bind both to their source evidence. Matching, distortion
-/// correction, map-error modeling, and assigning physical groups are not inferred.
 #[derive(Clone, Copy, PartialEq)]
 pub struct Correspondence {
-    /// Nonzero owner-resolved landmark identity within the pinned map.
     pub landmark: u64,
-    /// Nonzero physical-point group, shared by duplicate exposures/aliases.
     pub physical_group: u64,
-    /// Property-world coordinates in the declared geometry basis and units.
     pub world: V3,
-    /// Observed undistorted pinhole coordinates in the exact pixel-edge grid.
     pub pixel: [f64; 2],
 }
-
 impl std::fmt::Debug for Correspondence {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Correspondence").field("landmark", &self.landmark).finish_non_exhaustive()
     }
 }
 
-/// Bounded controls for the nonplanar, known-intrinsics PnP reference solver.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PoseSolverOptions {
-    /// Deterministic six-point trials after the initial all-point fit; 0..=1024.
     pub ransac_trials: usize,
-    /// Maximum LM iterations per local fit; 1..=100.
     pub refinement_iterations: usize,
-    /// Seed for the explicitly reproducible subset schedule, never ambient randomness.
     pub seed: u64,
-    /// Absolute image error required for an inlier; 0.001..=128 pixels.
     pub inlier_threshold_px: f64,
-    /// Minimum inlier count, at least six and at most the supplied count.
     pub minimum_inliers: usize,
-    /// Minimum inlier fraction in addition to the count floor; (0,1].
     pub minimum_inlier_fraction: f64,
-    /// Smallest/largest 3D covariance eigenvalue floor; [1e-10,0.1].
     pub minimum_axis_ratio: f64,
-    /// Minimum inlier image span along both axes, as a fraction of image size.
     pub minimum_image_span: f64,
 }
-
 impl Default for PoseSolverOptions {
     fn default() -> Self {
         Self { ransac_trials: 128, refinement_iterations: 30, seed: 481_993,
@@ -54,9 +39,8 @@ impl Default for PoseSolverOptions {
             minimum_axis_ratio: 1e-6, minimum_image_span: 0.05 }
     }
 }
-
 impl PoseSolverOptions {
-    fn validate(self, count: usize) -> Result<(), GeometryError> {
+    pub(crate) fn validate(self, count: usize) -> Result<(), GeometryError> {
         if self.ransac_trials > 1024 || !(1..=100).contains(&self.refinement_iterations)
             || self.minimum_inliers < 6 || self.minimum_inliers > count
             || !self.inlier_threshold_px.is_finite() || !(0.001..=128.0).contains(&self.inlier_threshold_px)
@@ -69,58 +53,56 @@ impl PoseSolverOptions {
     }
 }
 
-/// A retained geometric hypothesis, not a calibration or accuracy certificate.
 #[derive(Clone, Debug)]
 pub struct PoseCandidate {
-    pose: RigidPose,
-    inlier_landmarks: Vec<u64>,
-    rms_px: f64,
-    maximum_error_px: f64,
-    support_scale: f64,
+    pub(crate) pose: RigidPose,
+    pub(crate) inlier_landmarks: Vec<u64>,
+    pub(crate) rms_px: f64,
+    pub(crate) maximum_error_px: f64,
+    pub(crate) support_scale: f64,
 }
-
 impl PoseCandidate {
-    /// Estimated world-to-camera pose under the supplied fixed map and intrinsics.
     pub fn pose(&self) -> RigidPose { self.pose }
-    /// Sorted inlier identities; rejected observations remain in the search input.
     pub fn inlier_landmarks(&self) -> &[u64] { &self.inlier_landmarks }
-    /// Inlier reprojection RMS in pixels; not physical position uncertainty.
     pub fn rms_px(&self) -> f64 { self.rms_px }
-    /// Largest inlier reprojection error, not the error of excluded observations.
     pub fn maximum_error_px(&self) -> f64 { self.maximum_error_px }
 }
 
-/// Search result retaining distinct successful pose modes instead of guessing one.
-///
-/// The bounded sampled search cannot prove that every possible pose was explored.
-/// Near-identical modes are clustered within 0.01 times the smaller inlier-support RMS extent and 0.02
-/// radians. Those are numerical clustering thresholds, not accuracy guarantees.
 #[derive(Debug)]
 pub struct PoseSearch {
-    basis: GeometryBasis,
-    intrinsics: PinholeIntrinsics,
-    fit: Vec<Correspondence>,
-    candidates: Vec<PoseCandidate>,
-    trials_attempted: usize,
-    work_units: u64,
+    pub(crate) basis: GeometryBasis,
+    pub(crate) intrinsics: PinholeIntrinsics,
+    pub(crate) fit: Vec<Correspondence>,
+    pub(crate) candidates: Vec<PoseCandidate>,
+    pub(crate) trials_attempted: usize,
+    pub(crate) work_units: u64,
+    pub(crate) planar_support: Option<PlanarSupport>,
 }
-
 impl PoseSearch {
-    /// Surviving modes, ordered by descending support then ascending fit error.
     pub fn candidates(&self) -> &[PoseCandidate] { &self.candidates }
-    /// Exact supplied geometry frame/revision.
+    pub fn planar_support(&self) -> Option<PlanarSupport> { self.planar_support }
     pub fn basis(&self) -> GeometryBasis { self.basis }
-    /// Number of all-point and minimal-subset seeds attempted.
     pub fn trials_attempted(&self) -> usize { self.trials_attempted }
-    /// Charged reference work, excluding any earlier work on the same budget.
     pub fn work_units(&self) -> u64 { self.work_units }
 
-    /// Score an explicitly selected candidate against at least four held landmarks.
-    ///
-    /// No refitting occurs. All fitting inputs, including rejected outliers, are
-    /// barred from the holdout by identity, physical group, exact world position,
-    /// or exact observed pixel. These guards do not prove remaining independence.
-    /// The result measures fixed-map consistency, never absolute metric accuracy.
+    pub fn validate_all_candidates(&self, basis: GeometryBasis, holdout: &[Correspondence],
+        maximum_error_px: f64, budget: &mut WorkBudget<'_>) -> Result<PoseValidationSet<'_>, GeometryError> {
+        budget.charge(0)?;
+        if basis != self.basis { return Err(GeometryError::BasisMismatch); }
+        let holdout = validate_points(holdout, self.intrinsics, 4, budget)?;
+        let mut reports = Vec::new();
+        let mut passing = Vec::new();
+        reports.try_reserve_exact(self.candidates.len()).map_err(|_| GeometryError::LimitExceeded)?;
+        passing.try_reserve_exact(self.candidates.len()).map_err(|_| GeometryError::LimitExceeded)?;
+        for index in 0..self.candidates.len() {
+            let report = self.validate_candidate(index, basis, &holdout, maximum_error_px, budget)?;
+            if report.passed { passing.push(index); }
+            reports.push(report);
+        }
+        budget.charge(0)?;
+        Ok(PoseValidationSet { search: self, holdout, maximum_error_px, reports, passing })
+    }
+
     pub fn validate_candidate(&self, candidate: usize, basis: GeometryBasis,
         holdout: &[Correspondence], maximum_error_px: f64, budget: &mut WorkBudget<'_>)
         -> Result<PoseValidation, GeometryError> {
@@ -168,32 +150,35 @@ impl PoseSearch {
     }
 }
 
-/// An excluded physical landmark's measured image residual.
-#[derive(Clone, Debug, PartialEq)]
-pub struct LandmarkResidual {
-    /// Owner-resolved landmark identity.
-    pub landmark: u64,
-    /// Image error, or None when no positive-depth projection exists.
-    pub error_px: Option<f64>,
+#[derive(Debug)]
+pub struct PoseValidationSet<'a> {
+    search: &'a PoseSearch,
+    holdout: Vec<Correspondence>,
+    maximum_error_px: f64,
+    reports: Vec<PoseValidation>,
+    passing: Vec<usize>,
+}
+impl<'a> PoseValidationSet<'a> {
+    pub fn search(&self) -> &'a PoseSearch { self.search }
+    pub fn holdout(&self) -> &[Correspondence] { &self.holdout }
+    pub fn maximum_error_px(&self) -> f64 { self.maximum_error_px }
+    pub fn reports(&self) -> &[PoseValidation] { &self.reports }
+    pub fn passing_candidates(&self) -> &[usize] { &self.passing }
 }
 
-/// Immutable holdout result; failure preserves its numerical evidence.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LandmarkResidual { pub landmark: u64, pub error_px: Option<f64> }
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct PoseValidation {
-    /// Every held point projects in-domain and meets the caller's pixel bound.
     pub passed: bool,
-    /// RMS over projectable points, not including missing projections as zeros.
     pub rms_px: Option<f64>,
-    /// Maximum over projectable points.
     pub maximum_error_px: Option<f64>,
-    /// Behind-camera or out-of-image projections.
     pub invalid_projection_count: usize,
-    /// Every supplied held landmark, in canonical identity order.
     pub residuals: Vec<LandmarkResidual>,
 }
 
-
-fn validate_points(points: &[Correspondence], k: PinholeIntrinsics, minimum: usize,
+pub(crate) fn validate_points(points: &[Correspondence], k: PinholeIntrinsics, minimum: usize,
     budget: &mut WorkBudget<'_>) -> Result<Vec<Correspondence>, GeometryError> {
     if points.len() < minimum { return Err(GeometryError::InsufficientCorrespondences); }
     if points.len() > 512 { return Err(GeometryError::LimitExceeded); }
