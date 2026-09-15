@@ -58,14 +58,17 @@ pub use agent::{
     SituationFrame, StaleBasis, UnknownReason, WorldEnvelope,
 };
 pub use agent_operation::{
-    admit_follow_read, admit_query_read, advance_follow_cursor, classify_session_resume,
+    admit_commit, admit_follow_read, admit_query_read, advance_follow_cursor,
+    classify_session_resume,
     orient_projection, AgentOperation, BasisRegistryKind, CapabilityList, FollowBatchPlan,
     FollowWakeContract, OrientBudget, OrientOmission, OrientOmissionTarget, OrientProjection,
-    OrientSection, OperationMode, OperationRetryClass, QueryReadReceipt,
+    InvestigationCaseState, OrientSection, OperationMode, OperationRetryClass,
+    CommitReceipt, PreparedPlan, PreparedPlanStep, QueryReadReceipt,
     REGISTERED_OPERATION_COUNT, REGISTERED_OPERATION_GATE, ResumeAssessment,
     ResumeInvalidation, ResponseSchemaList, RetryClassList, OPERATION_REGISTRY_GENERATION,
     OPERATION_ROW_DIGEST_DOMAIN, ORIENT_PROJECTION_DIGEST_DOMAIN,
-    QUERY_READ_RECEIPT_DIGEST_DOMAIN,
+    COMMIT_RECEIPT_DIGEST_DOMAIN, INVESTIGATION_CASE_DIGEST_DOMAIN,
+    PREPARED_PLAN_DIGEST_DOMAIN, QUERY_READ_RECEIPT_DIGEST_DOMAIN,
 };
 pub use belief::{
     BELIEF_INTERVAL_DOMAIN, BeliefError, BeliefInterval, CONTRADICTION_DOMAIN, Contradiction,

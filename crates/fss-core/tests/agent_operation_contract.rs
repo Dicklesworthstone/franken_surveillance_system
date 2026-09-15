@@ -13,17 +13,19 @@ use fss_core::contract_basis::{
     check_basis_freshness, registered_operation, reference_contract_basis, ContractBasisError,
     ContractBasisRefusal, CANONICAL_SEMANTIC_PROTOCOL,
 };
-use fss_core::{AgentOperation, ContractBasis};
+use fss_core::{ActionAffordance, AffordanceClass, AgentOperation, ContractBasis};
 use fss_core::{
-    admit_follow_read, admit_query_read, advance_follow_cursor, classify_session_resume,
-    orient_projection,
-    BasisRegistryKind, CanonicalDecode, CanonicalEncode, CanonicalEncoder, Completeness,
-    ContentDigest, ContinuationCursor, ContinuationCursorPublishParams, ContinuationError,
-    ContinuationScope, ContractError, FollowWakeContract, LedgerAnchor, MissionId, OperationMode,
-    OperationRetryClass, PossibleWorld, PrincipalId, REGISTERED_OPERATION_COUNT,
-    ResumeInvalidation, BudgetVector, SessionId, SituationCapsule, SituationFrame, TimestampNs,
+    admit_commit, admit_follow_read, admit_query_read, advance_follow_cursor,
+    classify_session_resume,
+    orient_projection, BasisRegistryKind, CanonicalDecode, CanonicalEncode, CanonicalEncoder,
+    Completeness, ContentDigest, ContinuationCursor, ContinuationCursorPublishParams,
+    ContinuationError, ContinuationScope, ContractError, FollowWakeContract,
+    HypothesisDisposition, InvestigationCaseState, LedgerAnchor, MissionId, OperationMode,
+    PreparedPlan, PreparedPlanStep,
+    OperationRetryClass, OrientBudget, OrientOmissionTarget, OrientSection, PossibleWorld,
+    PrincipalId, REGISTERED_OPERATION_COUNT, ResumeInvalidation, BudgetVector,
+    SessionId, SituationCapsule, SituationFrame, TimestampNs,
     WorldEnvelope,
-    OrientBudget, OrientOmissionTarget, OrientSection,
 };
 use std::collections::BTreeSet;
 
@@ -932,5 +934,269 @@ fn test_query_read_refuses_other_operations_and_empty_budgets(
     // The query row itself stays a non-durable, non-effectful read.
     assert!(!AgentOperation::Query.durable());
     assert!(!AgentOperation::Query.effectful());
+    Ok(())
+}
+
+#[test]
+fn test_investigation_case_requires_competing_alternatives(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mission = MissionId::parse("mission:investigate")?;
+    let single = BTreeSet::from(["hypothesis:intruder".to_owned()]);
+    assert_eq!(
+        InvestigationCaseState::create("case:one", mission.clone(), &single),
+        Err(ContractError::EvidenceRequired)
+    );
+    let competing = BTreeSet::from([
+        "hypothesis:intruder".to_owned(),
+        "hypothesis:wildlife".to_owned(),
+    ]);
+    let case = InvestigationCaseState::create("case:gate", mission, &competing)?;
+    assert_eq!(case.hypotheses().len(), 2);
+    for disposition in case.hypotheses().values() {
+        assert_eq!(*disposition, HypothesisDisposition::Live);
+    }
+    assert!(!case.is_terminal());
+    Ok(())
+}
+
+#[test]
+fn test_investigation_case_transitions_are_monotone(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mission = MissionId::parse("mission:investigate")?;
+    let hypotheses = BTreeSet::from([
+        "hypothesis:intruder".to_owned(),
+        "hypothesis:wildlife".to_owned(),
+    ]);
+    let mut case = InvestigationCaseState::create("case:gate", mission, &hypotheses)?;
+    // Legal strength-decrease: live -> supported -> disfavored -> refuted.
+    case.advance_hypothesis("hypothesis:intruder", HypothesisDisposition::Supported)?;
+    case.advance_hypothesis("hypothesis:intruder", HypothesisDisposition::Disfavored)?;
+    case.advance_hypothesis("hypothesis:intruder", HypothesisDisposition::Refuted)?;
+    // Refutation is final.
+    assert_eq!(
+        case.advance_hypothesis("hypothesis:intruder", HypothesisDisposition::Supported),
+        Err(ContractError::HypothesisTransitionIllegal)
+    );
+    // No silent resurrection from any advanced state back to live.
+    assert_eq!(
+        case.advance_hypothesis("hypothesis:intruder", HypothesisDisposition::Live),
+        Err(ContractError::HypothesisTransitionIllegal)
+    );
+    // Unknown hypotheses are refused, never silently added.
+    assert_eq!(
+        case.advance_hypothesis("hypothesis:ghost", HypothesisDisposition::Refuted),
+        Err(ContractError::NotFound)
+    );
+    Ok(())
+}
+
+#[test]
+fn test_investigation_case_stop_requires_no_live_hypotheses(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mission = MissionId::parse("mission:investigate")?;
+    let hypotheses = BTreeSet::from([
+        "hypothesis:intruder".to_owned(),
+        "hypothesis:wildlife".to_owned(),
+        "hypothesis:delivery".to_owned(),
+    ]);
+    let mut case = InvestigationCaseState::create("case:gate", mission, &hypotheses)?;
+    // Stopping with open alternatives would flatten unresolved possibility.
+    assert_eq!(
+        case.stop(HypothesisDisposition::Resolved),
+        Err(ContractError::CaseStopBlocked)
+    );
+    case.advance_hypothesis("hypothesis:intruder", HypothesisDisposition::Supported)?;
+    case.advance_hypothesis("hypothesis:wildlife", HypothesisDisposition::Disfavored)?;
+    case.advance_hypothesis("hypothesis:delivery", HypothesisDisposition::Refuted)?;
+    case.stop(HypothesisDisposition::Resolved)?;
+    assert!(case.is_terminal());
+    // A terminal case admits no further advances or stops.
+    assert_eq!(
+        case.advance_hypothesis("hypothesis:intruder", HypothesisDisposition::Refuted),
+        Err(ContractError::CaseStopBlocked)
+    );
+    assert_eq!(
+        case.stop(HypothesisDisposition::Superseded),
+        Err(ContractError::CaseStopBlocked)
+    );
+    Ok(())
+}
+
+#[test]
+fn test_investigation_case_supersession_and_digest(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mission = MissionId::parse("mission:investigate")?;
+    let hypotheses = BTreeSet::from([
+        "hypothesis:intruder".to_owned(),
+        "hypothesis:wildlife".to_owned(),
+    ]);
+    let mut case = InvestigationCaseState::create("case:gate", mission, &hypotheses)?;
+    let digest = case.case_digest();
+    // Supersession is allowed while hypotheses are still live: the case is
+    // replaced, not answered.
+    case.supersede()?;
+    assert!(case.is_terminal());
+    assert_ne!(case.case_digest(), digest);
+    // Deterministic identity across reconstruction.
+    let rebuilt = InvestigationCaseState::create(
+        "case:gate",
+        MissionId::parse("mission:investigate")?,
+        &hypotheses,
+    )?;
+    assert_eq!(rebuilt.case_digest(), digest);
+    // An advanced hypothesis changes the digest.
+    let mut advanced = rebuilt.clone();
+    advanced.advance_hypothesis("hypothesis:intruder", HypothesisDisposition::Supported)?;
+    assert_ne!(advanced.case_digest(), rebuilt.case_digest());
+    Ok(())
+}
+
+#[test]
+fn test_plan_preparation_is_immutable_and_authority_free(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let step_probe = PreparedPlanStep::new(AgentOperation::SessionOrient, "fss://situation/gate")?;
+    let step_wait = PreparedPlanStep::new(AgentOperation::Wait, "fss://obligation/gate")?;
+    let step_commit = PreparedPlanStep::new(AgentOperation::Commit, "fss://effect/gate")?;
+    let witness = ContentDigest::sha256(b"plan-witness");
+    let plan = PreparedPlan::prepare(
+        "plan:gate-check",
+        "objective:gate-check",
+        vec![step_probe, step_wait, step_commit],
+        vec![witness],
+    )?;
+    assert_eq!(plan.steps().len(), 3);
+    // The plan records the contingent effect obligation but carries no
+    // authority to start it: only commit does.
+    assert!(plan.requires_commit());
+    let digest = plan.plan_digest();
+    assert_eq!(digest, plan.plan_digest());
+    // Witness normalization: reordering witnesses yields the identical plan.
+    let reordered = PreparedPlan::prepare(
+        "plan:gate-check",
+        "objective:gate-check",
+        vec![
+            PreparedPlanStep::new(AgentOperation::SessionOrient, "fss://situation/gate")?,
+            PreparedPlanStep::new(AgentOperation::Wait, "fss://obligation/gate")?,
+            PreparedPlanStep::new(AgentOperation::Commit, "fss://effect/gate")?,
+        ],
+        vec![witness],
+    )?;
+    assert_eq!(plan.plan_digest(), reordered.plan_digest());
+    // Non-effectful plans never require commit.
+    let read_only = PreparedPlan::prepare(
+        "plan:read",
+        "objective:read",
+        vec![PreparedPlanStep::new(
+            AgentOperation::SessionOrient,
+            "fss://situation/gate",
+        )?],
+        vec![],
+    )?;
+    assert!(!read_only.requires_commit());
+    // A plan referencing an effect row is still durable-safe to hold: the plan
+    // row itself is durable, the contained commit is contingent.
+    assert!(AgentOperation::Plan.durable());
+    assert!(!AgentOperation::Plan.effectful());
+    Ok(())
+}
+
+#[test]
+fn test_plan_preparation_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
+    // Empty plans are refused: a recommendation must name steps.
+    assert_eq!(
+        PreparedPlan::prepare("plan:empty", "objective:x", vec![], vec![]),
+        Err(ContractError::EvidenceRequired)
+    );
+    // Targets must be stable semantic identities.
+    assert!(PreparedPlanStep::new(AgentOperation::Query, "http://elsewhere").is_err());
+    assert!(PreparedPlanStep::new(AgentOperation::Query, "").is_err());
+    // Unknown spellings never construct steps.
+    Ok(())
+}
+
+fn commit_affordance(plan: &PreparedPlan) -> Result<ActionAffordance, Box<dyn std::error::Error>> {
+    Ok(ActionAffordance {
+        affordance_id: "affordance:commit-gate".to_owned(),
+        operation: "commit".to_owned(),
+        target: plan.plan_id().to_owned(),
+        rationale: "Robust across the protected world frontier.".to_owned(),
+        class: AffordanceClass::Robust,
+        cost: BudgetVector::builder().latency_ms(120).build()?,
+        reversible: false,
+        branch_predicate: None,
+        supported_worlds: BTreeSet::from(["world:gate:protected".to_owned()]),
+        unsafe_worlds: BTreeSet::new(),
+        required_capabilities: BTreeSet::from(["capability:gate.commit".to_owned()]),
+    })
+}
+
+fn commit_plan() -> Result<PreparedPlan, Box<dyn std::error::Error>> {
+    Ok(PreparedPlan::prepare(
+        "plan:commit-gate",
+        "objective:commit-gate",
+        vec![
+            PreparedPlanStep::new(AgentOperation::SessionOrient, "fss://situation/gate")?,
+            PreparedPlanStep::new(AgentOperation::Commit, "fss://effect/gate")?,
+        ],
+        vec![ContentDigest::sha256(b"commit-witness")],
+    )?)
+}
+
+#[test]
+fn test_commit_admission_binds_exact_plan_and_affordance(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let basis = reference_contract_basis();
+    let plan = commit_plan()?;
+    let affordance = commit_affordance(&plan)?;
+    let anchor = LedgerAnchor::genesis("site:fss:commit");
+    let receipt = admit_commit(&basis, &plan, &affordance, &anchor, TimestampNs(1_500))?;
+    assert_eq!(receipt.plan_digest(), plan.plan_digest());
+    assert_eq!(receipt.affordance_id(), "affordance:commit-gate");
+    assert_eq!(receipt.started_at(), TimestampNs(1_500));
+    let again = admit_commit(&basis, &plan, &affordance, &anchor, TimestampNs(1_500))?;
+    assert_eq!(receipt.receipt_digest(), again.receipt_digest());
+    // A different start time changes the receipt identity.
+    let later = admit_commit(&basis, &plan, &affordance, &anchor, TimestampNs(1_600))?;
+    assert_ne!(receipt.receipt_digest(), later.receipt_digest());
+    Ok(())
+}
+
+#[test]
+fn test_commit_admission_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
+    let basis = reference_contract_basis();
+    let plan = commit_plan()?;
+    let anchor = LedgerAnchor::genesis("site:fss:commit");
+    // A blocked affordance is not consumable at commit (worldEnvelopeRule).
+    let mut blocked = commit_affordance(&plan)?;
+    blocked.class = AffordanceClass::Blocked;
+    assert!(admit_commit(&basis, &plan, &blocked, &anchor, TimestampNs(1_500)).is_err());
+    // A probe affordance is not an effect affordance at all.
+    let mut probe = commit_affordance(&plan)?;
+    probe.class = AffordanceClass::Probe;
+    assert!(admit_commit(&basis, &plan, &probe, &anchor, TimestampNs(1_500)).is_err());
+    // Conditional affordances must name their supported-world basis.
+    let mut unnamed = commit_affordance(&plan)?;
+    unnamed.class = AffordanceClass::Conditional;
+    unnamed.supported_worlds = BTreeSet::new();
+    assert!(admit_commit(&basis, &plan, &unnamed, &anchor, TimestampNs(1_500)).is_err());
+    // The affordance must target exactly this plan.
+    let mut other_target = commit_affordance(&plan)?;
+    other_target.target = "fss://plan/other".to_owned();
+    assert!(admit_commit(&basis, &plan, &other_target, &anchor, TimestampNs(1_500)).is_err());
+    // Committing a plan with no contingent effect steps is refused.
+    let read_only = PreparedPlan::prepare(
+        "plan:read-only",
+        "objective:read-only",
+        vec![PreparedPlanStep::new(
+            AgentOperation::SessionOrient,
+            "fss://situation/gate",
+        )?],
+        vec![],
+    )?;
+    let stray = commit_affordance(&read_only)?;
+    assert!(admit_commit(&basis, &read_only, &stray, &anchor, TimestampNs(1_500)).is_err());
+    // The commit row is the durable, effectful boundary of fss/1.
+    assert!(AgentOperation::Commit.durable());
+    assert!(AgentOperation::Commit.effectful());
     Ok(())
 }

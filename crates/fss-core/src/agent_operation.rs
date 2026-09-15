@@ -26,7 +26,7 @@
 //! possibility envelope (`worldEnvelopeRule`); `commit` is the sole operation that
 //! starts a prepared plan's effects.
 
-use crate::agent::{ContractBasis, SituationCapsule};
+use crate::agent::{ActionAffordance, AffordanceClass, ContractBasis, SituationCapsule};
 use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder};
 use crate::continuation::{ContinuationCursor, ContinuationError, ContinuationScope};
 use crate::contract::ContractError;
@@ -34,9 +34,11 @@ use crate::contract_basis::{registered_operation, ContractBasisError};
 use crate::digest::ContentDigest;
 use crate::evidence::LedgerAnchor;
 use crate::{
-    BudgetVector, Completeness, MissionId, PrincipalId, SessionId, TimestampNs,
+    BudgetVector, Completeness, HypothesisDisposition, MissionId, PrincipalId, SessionId,
+    TimestampNs,
 };
 use core::fmt;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Number of registered operations (`AOP-001`..`AOP-014`).
 pub const REGISTERED_OPERATION_COUNT: usize = 14;
@@ -1649,5 +1651,420 @@ pub fn admit_query_read(
         max_entries,
         completeness: Completeness::Bounded,
         cost,
+    })
+}
+
+/// Canonical digest domain of one durable investigation case state.
+pub const INVESTIGATION_CASE_DIGEST_DOMAIN: &str = "fss.agent.investigation.case.v1";
+
+/// One durable investigation case (AOP-006 `investigate`, cognition_write).
+///
+/// Preserves competing alternatives: a case is created with at least two live
+/// hypotheses and every disposition advance follows a monotone, one-way
+/// transition table - strength decreases and refutation is final. Stopping is
+/// refused while any hypothesis is still live, so a case can never coalesce
+/// away open alternatives into a false terminal answer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InvestigationCaseState {
+    case_id: String,
+    mission_id: MissionId,
+    hypotheses: BTreeMap<String, HypothesisDisposition>,
+    terminal: bool,
+}
+
+impl InvestigationCaseState {
+    /// Creates a durable case with at least two competing live hypotheses.
+    pub fn create(
+        case_id: impl Into<String>,
+        mission_id: MissionId,
+        hypotheses: &BTreeSet<String>,
+    ) -> Result<Self, ContractError> {
+        let case_id = case_id.into();
+        if case_id.is_empty() || hypotheses.len() < 2 {
+            // A single-hypothesis "case" preserves no alternative to discriminate.
+            return Err(ContractError::EvidenceRequired);
+        }
+        let mut state = BTreeMap::new();
+        for hypothesis in hypotheses {
+            if hypothesis.is_empty() {
+                return Err(ContractError::InvalidIdentifier);
+            }
+            state.insert(hypothesis.clone(), HypothesisDisposition::Live);
+        }
+        Ok(Self {
+            case_id,
+            mission_id,
+            hypotheses: state,
+            terminal: false,
+        })
+    }
+
+    /// Returns the stable case identity.
+    #[must_use]
+    pub fn case_id(&self) -> &str {
+        &self.case_id
+    }
+
+    /// Returns the owning mission.
+    #[must_use]
+    pub const fn mission_id(&self) -> &MissionId {
+        &self.mission_id
+    }
+
+    /// Returns the hypothesis dispositions in canonical (sorted) order.
+    #[must_use]
+    pub fn hypotheses(&self) -> &BTreeMap<String, HypothesisDisposition> {
+        &self.hypotheses
+    }
+
+    /// Returns whether the case reached a terminal answer or was superseded.
+    #[must_use]
+    pub const fn is_terminal(&self) -> bool {
+        self.terminal
+    }
+
+    /// Advances one hypothesis's disposition along the registered transition table.
+    ///
+    /// Legal one-way moves (registered monotone table, AOP-006):
+    /// `live -> supported | disfavored | refuted`, `supported -> disfavored | refuted`,
+    /// `disfavored -> refuted`. Refutation is final; no transition ever relabels a
+    /// refuted or advanced hypothesis back toward `live`.
+    pub fn advance_hypothesis(
+        &mut self,
+        hypothesis: &str,
+        to: HypothesisDisposition,
+    ) -> Result<(), ContractError> {
+        if self.terminal {
+            return Err(ContractError::CaseStopBlocked);
+        }
+        let current = self
+            .hypotheses
+            .get(hypothesis)
+            .ok_or(ContractError::NotFound)?;
+        let legal = matches!(
+            (current, to),
+            (HypothesisDisposition::Live, HypothesisDisposition::Supported)
+                | (HypothesisDisposition::Live, HypothesisDisposition::Disfavored)
+                | (HypothesisDisposition::Live, HypothesisDisposition::Refuted)
+                | (HypothesisDisposition::Supported, HypothesisDisposition::Disfavored)
+                | (HypothesisDisposition::Supported, HypothesisDisposition::Refuted)
+                | (HypothesisDisposition::Disfavored, HypothesisDisposition::Refuted)
+        );
+        if !legal {
+            return Err(ContractError::HypothesisTransitionIllegal);
+        }
+        self.hypotheses
+            .insert(hypothesis.to_owned(), to);
+        Ok(())
+    }
+
+    /// Stops the case with a terminal answer.
+    ///
+    /// Refused while any hypothesis is still live: stopping with open
+    /// alternatives would flatten unresolved possibility into a false
+    /// terminal disposition.
+    pub fn stop(&mut self, resolution: HypothesisDisposition) -> Result<(), ContractError> {
+        if self.terminal {
+            return Err(ContractError::CaseStopBlocked);
+        }
+        let live = self
+            .hypotheses
+            .values()
+            .any(|disposition| *disposition == HypothesisDisposition::Live);
+        if live {
+            return Err(ContractError::CaseStopBlocked);
+        }
+        if !matches!(
+            resolution,
+            HypothesisDisposition::Resolved | HypothesisDisposition::Superseded
+        ) {
+            return Err(ContractError::HypothesisTransitionIllegal);
+        }
+        self.terminal = true;
+        Ok(())
+    }
+
+    /// Marks the case superseded by a newer revision. Allowed at any state.
+    pub fn supersede(&mut self) -> Result<(), ContractError> {
+        if self.terminal {
+            return Err(ContractError::CaseStopBlocked);
+        }
+        self.terminal = true;
+        Ok(())
+    }
+
+    /// Returns the domain-separated canonical digest of this case state.
+    #[must_use]
+    pub fn case_digest(&self) -> ContentDigest {
+        self.canonical_digest(INVESTIGATION_CASE_DIGEST_DOMAIN)
+    }
+}
+
+impl CanonicalEncode for InvestigationCaseState {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.text(&self.case_id);
+        encoder.text(self.mission_id.as_str());
+        encoder.u32(self.hypotheses.len() as u32);
+        for (hypothesis, disposition) in &self.hypotheses {
+            encoder.text(hypothesis);
+            disposition.encode_canonical(encoder);
+        }
+        encoder.bool(self.terminal);
+    }
+}
+
+/// Canonical digest domain of one immutable prepared plan.
+pub const PREPARED_PLAN_DIGEST_DOMAIN: &str = "fss.agent.prepared.plan.v1";
+
+/// One immutable step of a prepared plan (AOP-007).
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct PreparedPlanStep {
+    /// Registered operation this step will request when committed.
+    pub operation: AgentOperation,
+    /// Stable semantic target identity (`fss://...`).
+    pub target: String,
+}
+
+impl PreparedPlanStep {
+    /// Validates one step: registered operation, stable target spelling.
+    pub fn new(operation: AgentOperation, target: impl Into<String>) -> Result<Self, ContractError> {
+        let target = target.into();
+        if !target.starts_with("fss://") {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        operation.validate_row()?;
+        Ok(Self {
+            operation,
+            target,
+        })
+    }
+}
+
+/// An immutable witnessed contingent plan compiled by `plan` (AOP-007).
+///
+/// Preparation never crosses the effect boundary: the plan is a recommendation
+/// artifact and carries no effect authority. Steps naming effect rows
+/// ([`AgentOperation::Commit`] / [`AgentOperation::Cancel`]) are recorded as
+/// contingent and only ever start through `commit` (AOP-008) against a valid
+/// affordance; [`requires_commit`](Self::requires_commit) reports that
+/// obligation explicitly.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PreparedPlan {
+    plan_id: String,
+    objective_id: String,
+    steps: Vec<PreparedPlanStep>,
+    witnesses: Vec<ContentDigest>,
+    plan_digest: ContentDigest,
+}
+
+impl PreparedPlan {
+    /// Compiles an immutable plan and seals its digest.
+    ///
+    /// Fails closed on an empty objective, an empty step list, an invalid step,
+    /// or unsorted witnesses. Witnesses are normalized to strictly ascending
+    /// digest order so the sealed digest is order-deterministic.
+    pub fn prepare(
+        plan_id: impl Into<String>,
+        objective_id: impl Into<String>,
+        steps: Vec<PreparedPlanStep>,
+        mut witnesses: Vec<ContentDigest>,
+    ) -> Result<Self, ContractError> {
+        let plan_id = plan_id.into();
+        let objective_id = objective_id.into();
+        if plan_id.is_empty() || objective_id.is_empty() || steps.is_empty() {
+            return Err(ContractError::EvidenceRequired);
+        }
+        for step in &steps {
+            if !step.target.starts_with("fss://") {
+                return Err(ContractError::InvalidIdentifier);
+            }
+            step.operation.validate_row()?;
+        }
+        if witnesses.len() > 1 {
+            witnesses.sort();
+            witnesses.dedup();
+        }
+        let mut plan = Self {
+            plan_id,
+            objective_id,
+            steps,
+            witnesses,
+            plan_digest: ContentDigest::sha256(b"unsealed"),
+        };
+        let mut encoder = CanonicalEncoder::new();
+        plan.encode_canonical(&mut encoder);
+        plan.plan_digest = ContentDigest::sha256(&encoder.finish());
+        Ok(plan)
+    }
+
+    /// Returns the stable plan identity.
+    #[must_use]
+    pub fn plan_id(&self) -> &str {
+        &self.plan_id
+    }
+
+    /// Returns the objective the plan serves.
+    #[must_use]
+    pub fn objective_id(&self) -> &str {
+        &self.objective_id
+    }
+
+    /// Returns the immutable step list in compilation order.
+    #[must_use]
+    pub fn steps(&self) -> &[PreparedPlanStep] {
+        &self.steps
+    }
+
+    /// Returns the precondition witness digests (strictly ascending).
+    #[must_use]
+    pub fn witnesses(&self) -> &[ContentDigest] {
+        &self.witnesses
+    }
+
+    /// Returns the sealed plan digest (identity of the exact immutable plan).
+    #[must_use]
+    pub const fn plan_digest(&self) -> ContentDigest {
+        self.plan_digest
+    }
+
+    /// Returns whether the plan contains contingent effect steps that only
+    /// `commit` may start.
+    #[must_use]
+    pub fn requires_commit(&self) -> bool {
+        self.steps.iter().any(|step| step.operation.effectful())
+    }
+
+    /// Returns the plan's domain-separated digest under the plan domain.
+    #[must_use]
+    pub fn sealed_plan_digest(&self) -> ContentDigest {
+        self.canonical_digest(PREPARED_PLAN_DIGEST_DOMAIN)
+    }
+}
+
+impl CanonicalEncode for PreparedPlan {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.text(&self.plan_id);
+        encoder.text(&self.objective_id);
+        encoder.u32(self.steps.len() as u32);
+        for step in &self.steps {
+            encoder.text(step.operation.name());
+            encoder.text(&step.target);
+        }
+        encoder.u32(self.witnesses.len() as u32);
+        for witness in &self.witnesses {
+            encoder.digest(*witness);
+        }
+    }
+}
+
+/// Canonical digest domain of one commit admission receipt.
+pub const COMMIT_RECEIPT_DIGEST_DOMAIN: &str = "fss.agent.commit.receipt.v1";
+
+/// Typed receipt of one admitted `commit` (AOP-008).
+///
+/// Binds the exact immutable plan digest, the consumed affordance identity,
+/// the anchor the admission was evaluated against, and the deterministic start
+/// time. The receipt is produced by admission only: terminal proof remains an
+/// effect-journal obligation of the started plan.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CommitReceipt {
+    plan_digest: ContentDigest,
+    affordance_id: String,
+    anchor: LedgerAnchor,
+    started_at: TimestampNs,
+}
+
+impl CommitReceipt {
+    /// Returns the sealed digest of the exact plan being committed.
+    #[must_use]
+    pub const fn plan_digest(&self) -> ContentDigest {
+        self.plan_digest
+    }
+
+    /// Returns the consumed affordance identity.
+    #[must_use]
+    pub fn affordance_id(&self) -> &str {
+        &self.affordance_id
+    }
+
+    /// Returns the anchor the admission was evaluated against.
+    #[must_use]
+    pub const fn anchor(&self) -> &LedgerAnchor {
+        &self.anchor
+    }
+
+    /// Returns the deterministic start time.
+    #[must_use]
+    pub const fn started_at(&self) -> TimestampNs {
+        self.started_at
+    }
+
+    /// Returns the domain-separated canonical digest of this receipt.
+    #[must_use]
+    pub fn receipt_digest(&self) -> ContentDigest {
+        self.canonical_digest(COMMIT_RECEIPT_DIGEST_DOMAIN)
+    }
+}
+
+impl CanonicalEncode for CommitReceipt {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.digest(self.plan_digest);
+        encoder.text(&self.affordance_id);
+        self.anchor.encode_canonical(encoder);
+        encoder.i128(self.started_at.0);
+    }
+}
+
+/// Admits one `commit` of an exact prepared plan through a valid effect
+/// affordance (AOP-008).
+///
+/// Registry rule (`worldEnvelopeRule`): effect operations consume only
+/// affordances whose robustness class and named-world basis remain valid at
+/// commit. Fail closed unless:
+/// - the operation resolves under `basis` to exactly the registered `commit`
+///   row (AOP-008);
+/// - the affordance names the `commit` operation and targets exactly this
+///   plan's identity ([`ContractError::NotFound`]);
+/// - the affordance class is consumable at commit ([`ContractError::InvalidEffectTransition`]):
+///   `Blocked`/`Unavailable` affordances are not consumable, and `Probe`/`Wait`
+///   affordances are not effect affordances at all; and
+/// - the affordance names a non-empty supported-world basis
+///   ([`ContractError::InvalidEffectTransition`]).
+///
+/// Committing a plan without contingent effect steps is refused: there is
+/// nothing to revalidate and start.
+pub fn admit_commit(
+    basis: &ContractBasis,
+    plan: &PreparedPlan,
+    affordance: &ActionAffordance,
+    anchor: &LedgerAnchor,
+    now: TimestampNs,
+) -> Result<CommitReceipt, ContractBasisError> {
+    let operation = registered_operation(basis, "commit")?;
+    if operation != AgentOperation::Commit {
+        return Err(ContractBasisError::Contract(ContractError::NotFound));
+    }
+    if affordance.operation != "commit" || affordance.target != plan.plan_id() {
+        return Err(ContractBasisError::Contract(ContractError::NotFound));
+    }
+    if !plan.requires_commit() {
+        return Err(ContractBasisError::Contract(
+            ContractError::InvalidEffectTransition,
+        ));
+    }
+    let consumable = matches!(
+        affordance.class,
+        AffordanceClass::Robust | AffordanceClass::Conditional
+    );
+    if !consumable || affordance.supported_worlds.is_empty() {
+        return Err(ContractBasisError::Contract(
+            ContractError::InvalidEffectTransition,
+        ));
+    }
+    Ok(CommitReceipt {
+        plan_digest: plan.plan_digest(),
+        affordance_id: affordance.affordance_id.clone(),
+        anchor: anchor.clone(),
+        started_at: now,
     })
 }

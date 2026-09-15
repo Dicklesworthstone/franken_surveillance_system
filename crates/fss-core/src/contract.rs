@@ -3018,6 +3018,12 @@ pub enum ContractError {
     /// An operation row's effectful/durable flags contradict its registered mode
     /// (AOP-001..014, `architecture/agent_operations.json`).
     OperationEffectModeMismatch,
+    /// A hypothesis disposition moved outside the registered monotone transition
+    /// table: strength decreases and refutation are one-way (AOP-006).
+    HypothesisTransitionIllegal,
+    /// A durable case was stopped while hypotheses remain live: stopping would
+    /// coalesce away open alternatives (AOP-006).
+    CaseStopBlocked,
 }
 
 impl ContractError {
@@ -3158,6 +3164,8 @@ impl ContractError {
             Self::EvidenceLaunderingDetected => "evidence_laundering_detected",
             Self::PredictedKnownForbidden => "predicted_known_forbidden",
             Self::OperationEffectModeMismatch => "operation_effect_mode_mismatch",
+            Self::HypothesisTransitionIllegal => "hypothesis_transition_illegal",
+            Self::CaseStopBlocked => "case_stop_blocked",
         }
     }
 }
