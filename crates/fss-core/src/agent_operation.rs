@@ -26,7 +26,10 @@
 //! possibility envelope (`worldEnvelopeRule`); `commit` is the sole operation that
 //! starts a prepared plan's effects.
 
-use crate::agent::{ActionAffordance, AffordanceClass, ContractBasis, SituationCapsule};
+use crate::agent::{
+    ActionAffordance, AffordanceClass, ContractBasis, HandoffCapsule, HandoffPublishParams,
+    ReconciliationBasis, SituationCapsule,
+};
 use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder};
 use crate::continuation::{ContinuationCursor, ContinuationError, ContinuationScope};
 use crate::contract::ContractError;
@@ -34,8 +37,8 @@ use crate::contract_basis::{registered_operation, ContractBasisError};
 use crate::digest::ContentDigest;
 use crate::evidence::LedgerAnchor;
 use crate::{
-    BudgetVector, Completeness, HypothesisDisposition, MissionId, PrincipalId, SessionId,
-    TimestampNs,
+    BudgetVector, Completeness, HypothesisDisposition, MissionId, PrincipalId, RuntimeOutcome,
+    SessionId, TimestampNs,
 };
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
@@ -2067,4 +2070,298 @@ pub fn admit_commit(
         anchor: anchor.clone(),
         started_at: now,
     })
+}
+
+/// Bounded wake contract of one `wait` read (AOP-009).
+///
+/// A wait is always deadline-bounded: waking in the past or without a
+/// deadline is refused. The deadline is absolute, matching the registry wake
+/// rule "observe ... until a predicate, deadline, or meaningful delta fires".
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WaitWakeContract {
+    deadline: TimestampNs,
+    issued_at: TimestampNs,
+}
+
+impl WaitWakeContract {
+    /// Validates and constructs a wait wake contract.
+    pub fn new(deadline: TimestampNs, now: TimestampNs) -> Result<Self, ContractError> {
+        if deadline <= now {
+            return Err(ContractError::InvertedTimeInterval);
+        }
+        Ok(Self {
+            deadline,
+            issued_at: now,
+        })
+    }
+
+    /// Returns the absolute wake deadline.
+    #[must_use]
+    pub const fn deadline(&self) -> TimestampNs {
+        self.deadline
+    }
+
+    /// Returns the issue time.
+    #[must_use]
+    pub const fn issued_at(&self) -> TimestampNs {
+        self.issued_at
+    }
+}
+
+/// What woke one `wait` read (AOP-009).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WaitWake {
+    /// The observed predicate fired before the deadline.
+    PredicateFired,
+    /// The deadline elapsed without the predicate firing.
+    DeadlineReached,
+}
+
+/// Gates a wait retry on effect reconciliation (AOP-009, retry class
+/// `reconciliation_required`).
+///
+/// Waking with an indeterminate effect outcome and retrying without a
+/// recorded reconciliation basis would coalesce effect uncertainty into a
+/// fresh attempt; that transition is refused until the caller binds the
+/// reconciliation (compensation or verified-no-effect) basis.
+pub fn require_reconciliation_before_retry(
+    outcome: RuntimeOutcome,
+    reconciled: Option<&ReconciliationBasis>,
+) -> Result<(), ContractError> {
+    if outcome == RuntimeOutcome::Indeterminate && reconciled.is_none() {
+        return Err(ContractError::InvalidEffectTransition);
+    }
+    Ok(())
+}
+
+/// Stages of a `cancel` lifecycle (AOP-010, lifecycle_effect).
+///
+/// The registered order is request -> drain -> finalize; no stage may be
+/// skipped, and finalization preserves the intent digest so the durable
+/// record of the cancelled work is never erased.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum CancelStage {
+    /// Cancellation was requested; owned work must drain.
+    Requested,
+    /// Owned work is draining; no new effect steps may start.
+    Draining,
+    /// Drain completed; reconciliation or compensation was recorded.
+    Finalized,
+}
+
+impl CancelStage {
+    /// Returns the stable registry spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Requested => "requested",
+            Self::Draining => "draining",
+            Self::Finalized => "finalized",
+        }
+    }
+}
+
+/// Durable record of one `cancel` lifecycle over one effect intent (AOP-010).
+///
+/// The intent digest is pinned at request time and every stage transition is
+/// folded into the running record digest: the cancelled work stays provable
+/// after finalization (nothing erases the durable record).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CancellationRecord {
+    intent_digest: ContentDigest,
+    stage: CancelStage,
+    record_digest: ContentDigest,
+}
+
+impl CancellationRecord {
+    /// Opens a cancellation request over one effect intent.
+    pub fn request(intent_digest: ContentDigest, now: TimestampNs) -> Self {
+        let mut encoder = CanonicalEncoder::new();
+        encoder.text("requested");
+        encoder.digest(intent_digest);
+        encoder.i128(now.0);
+        Self {
+            intent_digest,
+            stage: CancelStage::Requested,
+            record_digest: ContentDigest::sha256(&encoder.finish()),
+        }
+    }
+
+    /// Returns the pinned effect intent digest.
+    #[must_use]
+    pub const fn intent_digest(&self) -> ContentDigest {
+        self.intent_digest
+    }
+
+    /// Returns the current stage.
+    #[must_use]
+    pub const fn stage(&self) -> CancelStage {
+        self.stage
+    }
+
+    /// Returns the running durable record digest.
+    #[must_use]
+    pub const fn record_digest(&self) -> ContentDigest {
+        self.record_digest
+    }
+
+    /// Advances to the next stage.
+    ///
+    /// Drain must precede finalize; finalizing closes the lifecycle and
+    /// folds the closing time into the record digest. Any skip is refused as
+    /// an invalid effect transition.
+    pub fn advance(&mut self, now: TimestampNs) -> Result<(), ContractError> {
+        let next = match self.stage {
+            CancelStage::Requested => CancelStage::Draining,
+            CancelStage::Draining => CancelStage::Finalized,
+            CancelStage::Finalized => return Err(ContractError::InvalidEffectTransition),
+        };
+        self.stage = next;
+        let mut encoder = CanonicalEncoder::new();
+        encoder.digest(self.record_digest);
+        encoder.text(next.as_str());
+        encoder.i128(now.0);
+        self.record_digest = ContentDigest::sha256(&encoder.finish());
+        Ok(())
+    }
+}
+
+/// One bounded `explain` answer (AOP-011, read_compute).
+///
+/// Binds the question kind, the exact subject digest, a bounded minimal
+/// evidence subgraph in strictly ascending order, and bounded expansion
+/// handles. Pure read product: non-durable, no effect authority.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExplainReceipt {
+    question: ExplainQuestion,
+    subject: ContentDigest,
+    evidence_subgraph: Vec<ContentDigest>,
+    expansion_handles: Vec<String>,
+}
+
+/// The registered explain question kinds (AOP-011).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExplainQuestion {
+    /// Why did the subject happen or hold?
+    Why,
+    /// Why did the subject not happen?
+    WhyNot,
+    /// What changed about the subject?
+    WhatChanged,
+    /// What would change under a hypothetical branch?
+    WhatIf,
+}
+
+impl ExplainQuestion {
+    /// Returns the stable registry spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Why => "why",
+            Self::WhyNot => "why_not",
+            Self::WhatChanged => "what_changed",
+            Self::WhatIf => "what_if",
+        }
+    }
+}
+
+/// Canonical digest domain of one explain receipt.
+pub const EXPLAIN_RECEIPT_DIGEST_DOMAIN: &str = "fss.agent.explain.receipt.v1";
+
+impl ExplainReceipt {
+    /// Compiles a bounded explanation receipt.
+    ///
+    /// Fails closed on an empty subject subgraph (an explanation with no
+    /// evidence is an unanchored claim) or unsorted input; the subgraph is
+    /// normalized to strictly ascending order.
+    pub fn compile(
+        question: ExplainQuestion,
+        subject: ContentDigest,
+        mut evidence_subgraph: Vec<ContentDigest>,
+        expansion_handles: Vec<String>,
+        max_handles: u32,
+    ) -> Result<Self, ContractError> {
+        if evidence_subgraph.is_empty() {
+            return Err(ContractError::EvidenceRequired);
+        }
+        evidence_subgraph.sort_unstable();
+        evidence_subgraph.dedup();
+        let expansion_handles: Vec<String> = expansion_handles
+            .into_iter()
+            .take(max_handles as usize)
+            .collect();
+        Ok(Self {
+            question,
+            subject,
+            evidence_subgraph,
+            expansion_handles,
+        })
+    }
+
+    /// Returns the question kind.
+    #[must_use]
+    pub const fn question(&self) -> ExplainQuestion {
+        self.question
+    }
+
+    /// Returns the subject digest.
+    #[must_use]
+    pub const fn subject(&self) -> ContentDigest {
+        self.subject
+    }
+
+    /// Returns the minimal evidence subgraph (strictly ascending).
+    #[must_use]
+    pub fn evidence_subgraph(&self) -> &[ContentDigest] {
+        &self.evidence_subgraph
+    }
+
+    /// Returns the bounded expansion handles.
+    #[must_use]
+    pub fn expansion_handles(&self) -> &[String] {
+        &self.expansion_handles
+    }
+
+    /// Returns the domain-separated canonical digest of this receipt.
+    #[must_use]
+    pub fn receipt_digest(&self) -> ContentDigest {
+        self.canonical_digest(EXPLAIN_RECEIPT_DIGEST_DOMAIN)
+    }
+}
+
+impl CanonicalEncode for ExplainReceipt {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.text(self.question.as_str());
+        encoder.digest(self.subject);
+        encoder.u32(self.evidence_subgraph.len() as u32);
+        for digest in &self.evidence_subgraph {
+            encoder.digest(*digest);
+        }
+        encoder.u32(self.expansion_handles.len() as u32);
+        for handle in &self.expansion_handles {
+            encoder.text(handle);
+        }
+    }
+}
+
+/// Admits one `handoff` publication through the registered row (AOP-012).
+///
+/// Resolves the operation through the fail-closed registered boundary and
+/// requires a strictly positive portable lifetime (a zero-lifetime capsule is
+/// refused; publication itself reuses the existing root-last
+/// [`HandoffCapsule::publish`] with its child-closure and digest rules).
+pub fn admit_handoff(
+    basis: &ContractBasis,
+    params: HandoffPublishParams,
+) -> Result<HandoffCapsule, ContractBasisError> {
+    let operation = registered_operation(basis, "handoff")?;
+    if operation != AgentOperation::Handoff {
+        return Err(ContractBasisError::Contract(ContractError::NotFound));
+    }
+    if params.expires_at <= params.created_at {
+        return Err(ContractBasisError::Contract(
+            ContractError::InvertedTimeInterval,
+        ));
+    }
+    HandoffCapsule::publish(params).map_err(ContractBasisError::Contract)
 }
