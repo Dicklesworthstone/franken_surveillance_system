@@ -10,13 +10,14 @@
 //! - the `registered_operation` ContractBasis boundary (fail closed, typed refusal).
 
 use fss_core::contract_basis::{
-    registered_operation, reference_contract_basis, ContractBasisError, ContractBasisRefusal,
-    CANONICAL_SEMANTIC_PROTOCOL,
+    check_basis_freshness, registered_operation, reference_contract_basis, ContractBasisError,
+    ContractBasisRefusal, CANONICAL_SEMANTIC_PROTOCOL,
 };
 use fss_core::{AgentOperation, ContractBasis};
 use fss_core::{
-    CanonicalDecode, CanonicalEncode, CanonicalEncoder, ContractError, OperationMode,
-    OperationRetryClass, REGISTERED_OPERATION_COUNT,
+    classify_session_resume, BasisRegistryKind, CanonicalDecode, CanonicalEncode, CanonicalEncoder,
+    ContentDigest, ContractError, LedgerAnchor, OperationMode, OperationRetryClass,
+    REGISTERED_OPERATION_COUNT, ResumeInvalidation,
 };
 
 const EXPECTED_IDS: [&str; 14] = [
@@ -423,4 +424,159 @@ fn test_retry_class_registry_spellings() -> Result<(), Box<dyn std::error::Error
 fn test_error_code_pin_for_mode_mismatch() {
     let err = ContractError::OperationEffectModeMismatch;
     assert_eq!(err.code(), "operation_effect_mode_mismatch");
+}
+
+#[test]
+fn test_resume_clean_when_root_matches_current() -> Result<(), Box<dyn std::error::Error>> {
+    let basis = reference_contract_basis();
+    let anchor = LedgerAnchor::genesis("site:fss:test");
+    let assessment = classify_session_resume(&basis, &basis, &anchor, &anchor, &[]);
+    assert!(assessment.is_clean());
+    assert!(assessment.invalidations().is_empty());
+    // Equal anchors are not an invalidation: nothing was missed since the root.
+    Ok(())
+}
+
+#[test]
+fn test_resume_enumerates_anchor_invalidations() -> Result<(), Box<dyn std::error::Error>> {
+    let basis = reference_contract_basis();
+    let recorded = LedgerAnchor::genesis("site:fss:test");
+    let mut current = LedgerAnchor::genesis("site:fss:test");
+    current.commit_sequence = recorded.commit_sequence + 7;
+    // Recorded strictly older than current: expected lag, not an invalidation.
+    let assessment = classify_session_resume(&basis, &basis, &recorded, &current, &[]);
+    assert!(assessment.is_clean());
+    // Recorded strictly newer than current: the root claims history current
+    // authority does not have.
+    let assessment = classify_session_resume(&basis, &basis, &current, &recorded, &[]);
+    assert_eq!(
+        assessment.invalidations(),
+        &[ResumeInvalidation::AnchorNotStrictlyOlder]
+    );
+    // Lineage divergence: the recorded history is not an ancestor.
+    let divergent = LedgerAnchor::genesis("site:fss:other");
+    let assessment = classify_session_resume(&basis, &basis, &divergent, &recorded, &[]);
+    assert_eq!(
+        assessment.invalidations(),
+        &[ResumeInvalidation::AnchorLineageDivergence]
+    );
+    Ok(())
+}
+
+#[test]
+fn test_resume_enumerates_each_registry_drift() -> Result<(), Box<dyn std::error::Error>> {
+    let reference = reference_contract_basis();
+    let drifted: [(BasisRegistryKind, ContentDigest); 6] = [
+        (BasisRegistryKind::SchemaCatalog, ContentDigest::sha256(b"other-schema")),
+        (BasisRegistryKind::Operations, ContentDigest::sha256(b"other-ops")),
+        (BasisRegistryKind::Views, ContentDigest::sha256(b"other-views")),
+        (BasisRegistryKind::Capabilities, ContentDigest::sha256(b"other-caps")),
+        (BasisRegistryKind::Errors, ContentDigest::sha256(b"other-errors")),
+        (BasisRegistryKind::Costs, ContentDigest::sha256(b"other-costs")),
+    ];
+    for (kind, replacement) in drifted {
+        let mut current = reference.clone();
+        match kind {
+            BasisRegistryKind::SchemaCatalog => current.schema_catalog_digest = replacement,
+            BasisRegistryKind::Operations => current.operation_registry_digest = replacement,
+            BasisRegistryKind::Views => current.view_registry_digest = replacement,
+            BasisRegistryKind::Capabilities => current.capability_registry_digest = replacement,
+            BasisRegistryKind::Errors => current.error_registry_digest = replacement,
+            BasisRegistryKind::Costs => current.cost_registry_digest = replacement,
+        }
+        let anchor = LedgerAnchor::genesis("site:fss:test");
+        let assessment = classify_session_resume(&reference, &current, &anchor, &anchor, &[]);
+        assert_eq!(
+            assessment.invalidations(),
+            &[ResumeInvalidation::RegistryDrift { registry: kind }],
+        );
+        assert!(!assessment.is_clean());
+    }
+    Ok(())
+}
+
+#[test]
+fn test_resume_classifies_tombstoned_digest_as_tombstone(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let reference = reference_contract_basis();
+    let mut current = reference.clone();
+    // The current deployment moved to a new operations registry generation; the
+    // generation the root pinned was tombstoned during that move.
+    current.operation_registry_digest = ContentDigest::sha256(b"new-ops-generation");
+    let anchor = LedgerAnchor::genesis("site:fss:test");
+    let tombstones = [reference.operation_registry_digest];
+    let assessment = classify_session_resume(&reference, &current, &anchor, &anchor, &tombstones);
+    assert_eq!(
+        assessment.invalidations(),
+        &[ResumeInvalidation::TombstonedRegistryDigest {
+            registry: BasisRegistryKind::Operations
+        }],
+        "tombstone must be the stronger, non-duplicated classification"
+    );
+    // A plain drift (no tombstone) enumerates the weaker classification.
+    let assessment = classify_session_resume(&reference, &current, &anchor, &anchor, &[]);
+    assert_eq!(
+        assessment.invalidations(),
+        &[ResumeInvalidation::RegistryDrift {
+            registry: BasisRegistryKind::Operations
+        }]
+    );
+    // The tombstoned root is refused outright by the request-time freshness
+    // check: resume inventories what non-resume paths refuse.
+    assert!(check_basis_freshness(&reference, &current, &tombstones).is_err());
+    Ok(())
+}
+
+#[test]
+fn test_resume_enumerates_identity_drift() -> Result<(), Box<dyn std::error::Error>> {
+    let mut current = reference_contract_basis();
+    current.semantic_protocol = "fss/2".to_owned();
+    current.ontology_generation_id = "ontology:next:v9".to_owned();
+    current.producer_release_id = "fss:release:v9".to_owned();
+    let anchor = LedgerAnchor::genesis("site:fss:test");
+    let assessment = classify_session_resume(&reference_contract_basis(), &current, &anchor, &anchor, &[]);
+    assert_eq!(
+        assessment.invalidations(),
+        &[
+            ResumeInvalidation::ProtocolDrift {
+                recorded: "fss/1".to_owned(),
+                current: "fss/2".to_owned(),
+            },
+            ResumeInvalidation::OntologyDrift {
+                recorded: "ontology:reference:v1".to_owned(),
+                current: "ontology:next:v9".to_owned(),
+            },
+            ResumeInvalidation::ProducerReleaseDrift {
+                recorded: "fss:release:v1".to_owned(),
+                current: "fss:release:v9".to_owned(),
+            },
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn test_resume_assessment_is_deterministic() -> Result<(), Box<dyn std::error::Error>> {
+    let mut current = reference_contract_basis();
+    current.view_registry_digest = ContentDigest::sha256(b"drifted-views");
+    let recorded_anchor = LedgerAnchor::genesis("site:fss:test");
+    let mut current_anchor = LedgerAnchor::genesis("site:fss:test");
+    current_anchor.commit_sequence = recorded_anchor.commit_sequence + 3;
+    let tombstones = [ContentDigest::sha256(b"missing")];
+    let first = classify_session_resume(
+        &reference_contract_basis(),
+        &current,
+        &recorded_anchor,
+        &current_anchor,
+        &tombstones,
+    );
+    let second = classify_session_resume(
+        &reference_contract_basis(),
+        &current,
+        &recorded_anchor,
+        &current_anchor,
+        &tombstones,
+    );
+    assert_eq!(first, second);
+    Ok(())
 }

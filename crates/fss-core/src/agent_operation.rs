@@ -26,9 +26,11 @@
 //! possibility envelope (`worldEnvelopeRule`); `commit` is the sole operation that
 //! starts a prepared plan's effects.
 
+use crate::agent::ContractBasis;
 use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder};
 use crate::contract::ContractError;
 use crate::digest::ContentDigest;
+use crate::evidence::LedgerAnchor;
 use core::fmt;
 /// Number of registered operations (`AOP-001`..`AOP-014`).
 pub const REGISTERED_OPERATION_COUNT: usize = 14;
@@ -947,4 +949,188 @@ impl core::str::FromStr for AgentOperation {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::from_name(s)
     }
+}
+
+/// The six pinned registry digests of a [`ContractBasis`], as typed identities.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum BasisRegistryKind {
+    /// JSON Schema catalog.
+    SchemaCatalog,
+    /// Public operation registry.
+    Operations,
+    /// Registered views.
+    Views,
+    /// Capability registry.
+    Capabilities,
+    /// Error registry.
+    Errors,
+    /// Operation cost registry.
+    Costs,
+}
+
+impl BasisRegistryKind {
+    /// Returns the stable registry spelling used in drift enumeration.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SchemaCatalog => "schema_catalog",
+            Self::Operations => "operations",
+            Self::Views => "views",
+            Self::Capabilities => "capabilities",
+            Self::Errors => "errors",
+            Self::Costs => "costs",
+        }
+    }
+
+    /// Returns the pinned digest of this registry inside `basis`.
+    #[must_use]
+    pub fn digest_of(self, basis: &ContractBasis) -> ContentDigest {
+        match self {
+            Self::SchemaCatalog => basis.schema_catalog_digest,
+            Self::Operations => basis.operation_registry_digest,
+            Self::Views => basis.view_registry_digest,
+            Self::Capabilities => basis.capability_registry_digest,
+            Self::Errors => basis.error_registry_digest,
+            Self::Costs => basis.cost_registry_digest,
+        }
+    }
+}
+
+impl fmt::Display for BasisRegistryKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// One enumerated difference between a recorded session/handoff root and the
+/// current authority state (AOP-002 `session.resume`).
+///
+/// Resume never silently accepts drift: every difference is enumerated as a
+/// typed entry so the driver can accept or rebase explicitly. Enumeration order
+/// is deterministic and follows the field order of `ContractBasis` followed by
+/// the anchor axis.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ResumeInvalidation {
+    /// The recorded semantic protocol differs from the current protocol.
+    ProtocolDrift {
+        /// Protocol identity recorded in the root.
+        recorded: String,
+        /// Current protocol identity.
+        current: String,
+    },
+    /// The recorded ontology generation differs from the current generation.
+    OntologyDrift {
+        /// Ontology generation recorded in the root.
+        recorded: String,
+        /// Current ontology generation.
+        current: String,
+    },
+    /// The recorded producer release identity differs from the current one.
+    ProducerReleaseDrift {
+        /// Producer release recorded in the root.
+        recorded: String,
+        /// Current producer release.
+        current: String,
+    },
+    /// A pinned registry digest differs from the current digest. The recorded
+    /// generation itself still exists, so resuming after explicit rebase is
+    /// meaningful.
+    RegistryDrift {
+        /// The registry whose pinned digest drifted.
+        registry: BasisRegistryKind,
+    },
+    /// A recorded registry digest is tombstoned: that generation was superseded
+    /// and erased, so the root cannot be resumed without a full rebuild of the
+    /// invalidated registry's derived state.
+    TombstonedRegistryDigest {
+        /// The registry whose pinned digest is tombstoned.
+        registry: BasisRegistryKind,
+    },
+    /// The recorded anchor's deployment lineage diverges from the current
+    /// lineage: the recorded history is not an ancestor of current state.
+    AnchorLineageDivergence,
+    /// The recorded anchor is strictly newer than the current anchor: the root
+    /// claims history the current authority does not have.
+    AnchorNotStrictlyOlder,
+}
+
+/// Typed outcome of classifying a `session.resume` root against current state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResumeAssessment {
+    invalidations: Vec<ResumeInvalidation>,
+}
+
+impl ResumeAssessment {
+    /// Returns every enumerated invalidation, in deterministic enumeration order.
+    #[must_use]
+    pub fn invalidations(&self) -> &[ResumeInvalidation] {
+        &self.invalidations
+    }
+
+    /// Returns whether the root matches current state with no invalidation.
+    #[must_use]
+    pub const fn is_clean(&self) -> bool {
+        self.invalidations.is_empty()
+    }
+}
+
+/// Classifies a `session.resume` root (AOP-002) against current state.
+///
+/// Unlike request-time staleness checks ([`fss_core::contract_basis`]
+/// `check_basis_freshness`/`refuse_stale_anchor`, which fail closed), resume
+/// converts staleness into an explicit, complete inventory: the caller must
+/// accept or rebase every enumerated invalidation. An anchor equal to the
+/// current anchor is NOT an invalidation (nothing was missed); lineage
+/// divergence or a strictly newer recorded anchor is.
+#[must_use]
+pub fn classify_session_resume(
+    recorded: &ContractBasis,
+    current: &ContractBasis,
+    recorded_anchor: &LedgerAnchor,
+    current_anchor: &LedgerAnchor,
+    tombstoned_digests: &[ContentDigest],
+) -> ResumeAssessment {
+    let registry_order = [
+        BasisRegistryKind::SchemaCatalog,
+        BasisRegistryKind::Operations,
+        BasisRegistryKind::Views,
+        BasisRegistryKind::Capabilities,
+        BasisRegistryKind::Errors,
+        BasisRegistryKind::Costs,
+    ];
+    let mut invalidations = Vec::new();
+    if recorded.semantic_protocol != current.semantic_protocol {
+        invalidations.push(ResumeInvalidation::ProtocolDrift {
+            recorded: recorded.semantic_protocol.clone(),
+            current: current.semantic_protocol.clone(),
+        });
+    }
+    if recorded.ontology_generation_id != current.ontology_generation_id {
+        invalidations.push(ResumeInvalidation::OntologyDrift {
+            recorded: recorded.ontology_generation_id.clone(),
+            current: current.ontology_generation_id.clone(),
+        });
+    }
+    if recorded.producer_release_id != current.producer_release_id {
+        invalidations.push(ResumeInvalidation::ProducerReleaseDrift {
+            recorded: recorded.producer_release_id.clone(),
+            current: current.producer_release_id.clone(),
+        });
+    }
+    for registry in registry_order {
+        let recorded_digest = registry.digest_of(recorded);
+        if tombstoned_digests.contains(&recorded_digest) {
+            invalidations.push(ResumeInvalidation::TombstonedRegistryDigest { registry });
+        } else if recorded_digest != registry.digest_of(current) {
+            invalidations.push(ResumeInvalidation::RegistryDrift { registry });
+        }
+    }
+    if recorded_anchor.site_lineage != current_anchor.site_lineage {
+        invalidations.push(ResumeInvalidation::AnchorLineageDivergence);
+    } else if (recorded_anchor.ledger_epoch, recorded_anchor.commit_sequence)
+        > (current_anchor.ledger_epoch, current_anchor.commit_sequence)
+    {
+        invalidations.push(ResumeInvalidation::AnchorNotStrictlyOlder);
+    }
+    ResumeAssessment { invalidations }
 }

@@ -58,9 +58,10 @@ pub use agent::{
     SituationFrame, StaleBasis, UnknownReason, WorldEnvelope,
 };
 pub use agent_operation::{
-    AgentOperation, CapabilityList, OPERATION_REGISTRY_GENERATION, OPERATION_ROW_DIGEST_DOMAIN,
+    classify_session_resume, AgentOperation, BasisRegistryKind, CapabilityList,
     OperationMode, OperationRetryClass, REGISTERED_OPERATION_COUNT, REGISTERED_OPERATION_GATE,
-    ResponseSchemaList, RetryClassList,
+    ResumeAssessment, ResumeInvalidation, ResponseSchemaList, RetryClassList,
+    OPERATION_REGISTRY_GENERATION, OPERATION_ROW_DIGEST_DOMAIN,
 };
 pub use belief::{
     BELIEF_INTERVAL_DOMAIN, BeliefError, BeliefInterval, CONTRADICTION_DOMAIN, Contradiction,
