@@ -22,7 +22,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub use camera::{PinholeIntrinsics, Ray, RigidPose};
 pub use mesh::{GeometryBasis, IndexedTriangle, MeshLimits, SurfaceHit, TriangleMesh};
 pub use registration::{Correspondence, LandmarkResidual, PoseCandidate, PoseSearch,
-    PoseSolverOptions, PoseValidation, estimate_camera_pose};
+    PoseSolverOptions, PoseValidation, PoseValidationSet, estimate_camera_pose, PlanarSupport,
+    estimate_nonplanar_camera_pose,
+    DEFAULT_PLANAR_RESIDUAL_RATIO, estimate_camera_pose_adaptive, estimate_planar_camera_pose};
 
 pub use motion::{ForecastBasis, MAX_FORECAST_NS, MAX_MOTION_ROUTES, MAX_ROUTE_POINTS,
     MotionForecast, MotionHypothesis, MotionKnot, RouteCandidate, RouteEnd, RoutePriors,
