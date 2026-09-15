@@ -23,8 +23,9 @@ pub use camera::{PinholeIntrinsics, Ray, RigidPose};
 pub use mesh::{GeometryBasis, IndexedTriangle, MeshLimits, SurfaceHit, TriangleMesh};
 pub use registration::{Correspondence, LandmarkResidual, PoseCandidate, PoseSearch,
     PoseSolverOptions, PoseValidation, PoseValidationSet, estimate_camera_pose, PlanarSupport,
-    estimate_nonplanar_camera_pose,
-    DEFAULT_PLANAR_RESIDUAL_RATIO, estimate_camera_pose_adaptive, estimate_planar_camera_pose};
+    estimate_nonplanar_camera_pose, DEFAULT_PLANAR_RESIDUAL_RATIO, estimate_camera_pose_adaptive,
+    estimate_planar_camera_pose, FocalPoseScan, FocalSample, FocalSampleOutcome,
+    FocalScanOptions, scan_camera_focal_length};
 
 pub use motion::{ForecastBasis, MAX_FORECAST_NS, MAX_MOTION_ROUTES, MAX_ROUTE_POINTS,
     MotionForecast, MotionHypothesis, MotionKnot, RouteCandidate, RouteEnd, RoutePriors,
@@ -35,50 +36,28 @@ pub use handoff::{BodySamples, CameraAvailability, CameraHandoffForecast, Captur
     MAX_HANDOFF_CAMERAS, NanosecondInterval, NextCameraOutcome, PredictedObservation,
     RouteBody, RouteHandoff, predict_camera_handoffs};
 
-/// Stable, non-disclosing failures at the numerical boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GeometryError {
-    /// A supplied value or an intermediate result is not finite.
     NonFinite,
-    /// A numerical value lies outside the reference kernel's admitted range.
     OutOfRange,
-    /// Image dimensions, focal lengths, or intrinsic parameters are invalid.
     InvalidCamera,
-    /// A transform is not a proper orthonormal rotation.
     InvalidRotation,
-    /// A point is behind or too close to the optical center.
     BehindCamera,
-    /// A requested observation lies outside its declared image domain.
     OutOfImage,
-    /// A direction, triangle, or geometric constraint is degenerate.
     Degenerate,
-    /// Required input geometry is empty.
     EmptyInput,
-    /// A count, allocation, or output bound was exceeded.
     LimitExceeded,
-    /// The caller's deterministic work allowance was exhausted.
     BudgetExhausted,
-    /// The owner requested cancellation; no partial result is published.
     Cancelled,
-    /// The supplied query refers to another property or geometry revision.
     BasisMismatch,
-    /// A mesh triangle references an absent vertex or invalid feature handle.
     InvalidIndex,
-    /// The requested solver configuration is invalid.
     InvalidSolverOptions,
-    /// A landmark association is invalid, duplicated, or non-independent by supplied identity.
     InvalidCorrespondence,
-    /// Too few distinct landmarks were supplied.
     InsufficientCorrespondences,
-    /// The known-intrinsics nonplanar solver cannot admit this map geometry.
     UnsupportedGeometry,
-    /// The bounded numerical solver could not converge.
     SolverDidNotConverge,
-    /// No sampled hypothesis met all fixed support and image-error floors.
     NoPoseConsensus,
-    /// More distinct passing modes exist than the bounded output can preserve.
     TooManyPoseCandidates,
-    /// An excluded landmark overlaps fitting inputs by identity, group, position, or pixel.
     HoldoutLeak,
 }
 
@@ -110,46 +89,26 @@ impl std::fmt::Display for GeometryError {
         f.write_str(message)
     }
 }
-
 impl std::error::Error for GeometryError {}
 
-/// A deterministic work counter with an optional owner-owned cancellation flag.
-///
-/// Units count bounded scalar operations/iterations, not elapsed time or joules.
-/// An Asupersync adapter can narrow the allowance and own the cancellation flag;
-/// this synchronous kernel never creates a competing runtime or worker thread.
 #[derive(Debug)]
 pub struct WorkBudget<'a> {
     limit: u64,
     used: u64,
     cancellation: Option<&'a AtomicBool>,
 }
-
 impl WorkBudget<'_> {
-    /// Start a work allowance without a cancellation flag.
-    pub fn new(limit: u64) -> Self {
-        Self { limit, used: 0, cancellation: None }
-    }
-
-    /// Consumed units, including work preceding an unsuccessful call.
+    pub fn new(limit: u64) -> Self { Self { limit, used: 0, cancellation: None } }
     pub fn used(&self) -> u64 { self.used }
-
-    /// Units still available.
     pub fn remaining(&self) -> u64 { self.limit - self.used }
-
-    /// Poll cancellation and reserve work before performing it.
     pub fn charge(&mut self, units: u64) -> Result<(), GeometryError> {
-        if self.cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
-            return Err(GeometryError::Cancelled);
-        }
+        if self.cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) { return Err(GeometryError::Cancelled); }
         if units > self.remaining() { return Err(GeometryError::BudgetExhausted); }
         self.used += units;
         Ok(())
     }
 }
-
 impl<'a> WorkBudget<'a> {
-    /// Start an allowance attached to a flag whose lifetime belongs to the owner.
     pub fn cancellable(limit: u64, cancellation: &'a AtomicBool) -> Self {
         Self { limit, used: 0, cancellation: Some(cancellation) }
     }
