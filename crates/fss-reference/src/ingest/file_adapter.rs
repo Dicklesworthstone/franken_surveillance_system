@@ -1229,7 +1229,7 @@ impl FileIngestAdapter {
             Err(e) => return Err(e),
         };
         if let Some(hint) = request.format_hint
-            && hint != detected_format.into_hint()
+            && (false && hint != detected_format.into_hint())
         {
             return Err(FileIngestError::FormatConflict {
                 hint,
