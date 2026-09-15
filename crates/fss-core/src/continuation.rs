@@ -58,6 +58,12 @@ pub enum ContinuationError {
     NonMonotone,
     /// Resume position exceeds the immutable stream bound.
     OutOfRange,
+    /// The wake contract admits zero entries: a follow read must always be
+    /// bounded by at least one entry (AOP-004).
+    UnboundedWake,
+    /// The wake deadline lies beyond the cursor expiry: the read would outlive
+    /// the cursor's validated lifetime and must be rebased first (AOP-004).
+    WakeBeyondExpiry,
 }
 
 impl ContinuationError {
@@ -70,6 +76,8 @@ impl ContinuationError {
             Self::WrongStream => "continuation_wrong_stream",
             Self::NonMonotone => "continuation_non_monotone",
             Self::OutOfRange => "continuation_out_of_range",
+            Self::UnboundedWake => "continuation_unbounded_wake",
+            Self::WakeBeyondExpiry => "continuation_wake_beyond_expiry",
         }
     }
 
@@ -84,6 +92,7 @@ impl ContinuationError {
             Self::Contract(_) | Self::NonMonotone | Self::OutOfRange => {
                 RecoveryClass::NeverUnchanged
             }
+            Self::UnboundedWake | Self::WakeBeyondExpiry => RecoveryClass::RebaseRequired,
         }
     }
 }
@@ -93,12 +102,16 @@ impl fmt::Display for ContinuationError {
         formatter.write_str(self.code())
     }
 }
-
 impl std::error::Error for ContinuationError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Contract(error) => Some(error),
-            Self::Expired | Self::WrongStream | Self::NonMonotone | Self::OutOfRange => None,
+            Self::Expired
+            | Self::WrongStream
+            | Self::NonMonotone
+            | Self::OutOfRange
+            | Self::UnboundedWake
+            | Self::WakeBeyondExpiry => None,
         }
     }
 }

@@ -15,11 +15,13 @@ use fss_core::contract_basis::{
 };
 use fss_core::{AgentOperation, ContractBasis};
 use fss_core::{
-    classify_session_resume, orient_projection, BasisRegistryKind, CanonicalDecode,
-    CanonicalEncode, CanonicalEncoder, Completeness, ContentDigest, ContractError, LedgerAnchor,
-    MissionId, OperationMode, OperationRetryClass, PossibleWorld, PrincipalId,
-    REGISTERED_OPERATION_COUNT, ResumeInvalidation, SessionId, SituationCapsule, SituationFrame,
-    TimestampNs, WorldEnvelope, OrientBudget, OrientOmissionTarget, OrientSection,
+    admit_follow_read, advance_follow_cursor, classify_session_resume, orient_projection,
+    BasisRegistryKind, CanonicalDecode, CanonicalEncode, CanonicalEncoder, Completeness,
+    ContentDigest, ContinuationCursor, ContinuationCursorPublishParams, ContinuationError,
+    ContinuationScope, ContractError, FollowWakeContract, LedgerAnchor, MissionId, OperationMode,
+    OperationRetryClass, PossibleWorld, PrincipalId, REGISTERED_OPERATION_COUNT,
+    ResumeInvalidation, SessionId, SituationCapsule, SituationFrame, TimestampNs, WorldEnvelope,
+    OrientBudget, OrientOmissionTarget, OrientSection,
 };
 use std::collections::BTreeSet;
 
@@ -727,5 +729,131 @@ fn test_orient_projection_digest_stability() -> Result<(), Box<dyn std::error::E
     // The orient read is a non-durable operation (AOP-003 durable = no).
     assert!(!AgentOperation::SessionOrient.durable());
     assert!(!AgentOperation::SessionOrient.effectful());
+    Ok(())
+}
+
+fn follow_cursor() -> Result<ContinuationCursor, Box<dyn std::error::Error>> {
+    let anchor = LedgerAnchor::genesis("site:fss:follow");
+    let cursor = ContinuationCursor::publish(ContinuationCursorPublishParams {
+        scope: ContinuationScope::FollowStream,
+        stream_id: "stream:fss:follow".to_owned(),
+        contract_basis: reference_contract_basis(),
+        session_id: SessionId::parse("session:follow")?,
+        view_id: "AVIEW-001".to_owned(),
+        basis_anchor: anchor.clone(),
+        resume_anchor: anchor,
+        source_digest: ContentDigest::sha256(b"follow-stream"),
+        position: 10,
+        upper_bound: 20,
+        selection_witness: ContentDigest::sha256(b"follow-witness"),
+        predecessor_digest: None,
+        issued_at: TimestampNs(1_000),
+        expires_at: TimestampNs(2_000),
+    })?;
+    Ok(cursor)
+}
+
+#[test]
+fn test_follow_admission_is_bounded() -> Result<(), Box<dyn std::error::Error>> {
+    let cursor = follow_cursor()?;
+    let wake = FollowWakeContract::new(5, TimestampNs(1_500), TimestampNs(1_200))?;
+    let plan = admit_follow_read(&cursor, wake, TimestampNs(1_200))?;
+    assert_eq!(plan.deliverable_entries, 5);
+    assert!(!plan.caught_up);
+    assert_eq!(plan.resume_position, 15);
+    assert_eq!(plan.wake_at, TimestampNs(1_500));
+    // A budget covering the remaining stream catches up at the upper bound.
+    let wake = FollowWakeContract::new(50, TimestampNs(1_500), TimestampNs(1_200))?;
+    let plan = admit_follow_read(&cursor, wake, TimestampNs(1_200))?;
+    assert_eq!(plan.deliverable_entries, 10);
+    assert!(plan.caught_up);
+    assert_eq!(plan.resume_position, 20);
+    Ok(())
+}
+
+#[test]
+fn test_follow_refuses_unbounded_and_outlived_wakes(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let cursor = follow_cursor()?;
+    // Zero-entry wake: unbounded follow is refused, never silently truncated.
+    let wake = FollowWakeContract::new(0, TimestampNs(1_500), TimestampNs(1_200));
+    assert!(matches!(wake, Err(ContinuationError::UnboundedWake)));
+    // Wake deadline past cursor expiry: rebase required before waiting.
+    let wake = FollowWakeContract::new(5, TimestampNs(2_500), TimestampNs(1_200));
+    assert_eq!(
+        admit_follow_read(&cursor, wake?, TimestampNs(1_200)),
+        Err(ContinuationError::WakeBeyondExpiry)
+    );
+    // Expired cursor at read time.
+    let wake = FollowWakeContract::new(5, TimestampNs(1_500), TimestampNs(1_200))?;
+    assert_eq!(
+        admit_follow_read(&cursor, wake, TimestampNs(2_000)),
+        Err(ContinuationError::Expired)
+    );
+    Ok(())
+}
+
+#[test]
+fn test_follow_refuses_non_follow_stream_cursors(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let anchor = LedgerAnchor::genesis("site:fss:follow");
+    let cursor = ContinuationCursor::publish(ContinuationCursorPublishParams {
+        scope: ContinuationScope::MeaningfulDelta,
+        stream_id: "stream:fss:follow".to_owned(),
+        contract_basis: reference_contract_basis(),
+        session_id: SessionId::parse("session:follow")?,
+        view_id: "AVIEW-001".to_owned(),
+        basis_anchor: anchor.clone(),
+        resume_anchor: anchor,
+        source_digest: ContentDigest::sha256(b"follow-stream"),
+        position: 0,
+        upper_bound: 4,
+        selection_witness: ContentDigest::sha256(b"follow-witness"),
+        predecessor_digest: None,
+        issued_at: TimestampNs(1_000),
+        expires_at: TimestampNs(2_000),
+    })?;
+    let wake = FollowWakeContract::new(2, TimestampNs(1_500), TimestampNs(1_200))?;
+    assert_eq!(
+        admit_follow_read(&cursor, wake, TimestampNs(1_200)),
+        Err(ContinuationError::WrongStream)
+    );
+    Ok(())
+}
+
+#[test]
+fn test_follow_advance_links_predecessor_cursor() -> Result<(), Box<dyn std::error::Error>> {
+    let cursor = follow_cursor()?;
+    let wake = FollowWakeContract::new(5, TimestampNs(1_500), TimestampNs(1_200))?;
+    let plan = admit_follow_read(&cursor, wake, TimestampNs(1_200))?;
+    let anchor = LedgerAnchor::genesis("site:fss:follow");
+    let successor = advance_follow_cursor(
+        &cursor,
+        plan.deliverable_entries,
+        anchor.clone(),
+        TimestampNs(1_300),
+        TimestampNs(2_000),
+    )?;
+    assert_eq!(successor.position, 15);
+    assert_eq!(successor.predecessor_digest, Some(cursor.cursor_digest));
+    // The successor cursor admits the next bounded batch and reaches the bound.
+    let wake = FollowWakeContract::new(5, TimestampNs(1_600), TimestampNs(1_400))?;
+    let plan = admit_follow_read(&successor, wake, TimestampNs(1_400))?;
+    assert!(plan.caught_up);
+    assert_eq!(plan.resume_position, 20);
+    // A zero-entry advance is refused as non-monotone.
+    assert!(matches!(
+        advance_follow_cursor(
+            &cursor,
+            0,
+            anchor,
+            TimestampNs(1_300),
+            TimestampNs(2_000)
+        ),
+        Err(ContinuationError::NonMonotone)
+    ));
+    // The follow read is durable (AOP-004 durable = yes) and never effectful.
+    assert!(AgentOperation::SessionFollow.durable());
+    assert!(!AgentOperation::SessionFollow.effectful());
     Ok(())
 }

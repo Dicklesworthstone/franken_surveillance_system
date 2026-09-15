@@ -58,7 +58,8 @@ pub use agent::{
     SituationFrame, StaleBasis, UnknownReason, WorldEnvelope,
 };
 pub use agent_operation::{
-    classify_session_resume, orient_projection, AgentOperation, BasisRegistryKind, CapabilityList,
+    admit_follow_read, advance_follow_cursor, classify_session_resume, orient_projection,
+    AgentOperation, BasisRegistryKind, CapabilityList, FollowBatchPlan, FollowWakeContract,
     OrientBudget, OrientOmission, OrientOmissionTarget, OrientProjection, OrientSection,
     OperationMode, OperationRetryClass, REGISTERED_OPERATION_COUNT, REGISTERED_OPERATION_GATE,
     ResumeAssessment, ResumeInvalidation, ResponseSchemaList, RetryClassList,

@@ -127,7 +127,9 @@ impl From<ContinuationError> for HydrationError {
             ContinuationError::Expired => Self::ContinuationExpired,
             ContinuationError::WrongStream
             | ContinuationError::NonMonotone
-            | ContinuationError::OutOfRange => Self::WrongContinuation,
+            | ContinuationError::OutOfRange
+            | ContinuationError::UnboundedWake
+            | ContinuationError::WakeBeyondExpiry => Self::WrongContinuation,
         }
     }
 }

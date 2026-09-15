@@ -27,11 +27,14 @@
 //! starts a prepared plan's effects.
 
 use crate::agent::{ContractBasis, SituationCapsule};
+use crate::continuation::{
+    ContinuationCursor, ContinuationError, ContinuationScope,
+};
 use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder};
 use crate::contract::ContractError;
 use crate::digest::ContentDigest;
 use crate::evidence::LedgerAnchor;
-use crate::{Completeness, MissionId, PrincipalId, SessionId};
+use crate::{Completeness, MissionId, PrincipalId, SessionId, TimestampNs};
 use core::fmt;
 
 /// Number of registered operations (`AOP-001`..`AOP-014`).
@@ -1419,4 +1422,130 @@ pub fn orient_projection(
         evidence_handles,
         omissions,
     })
+}
+
+/// Bounded wake contract of one `session.follow` read (AOP-004).
+///
+/// A follow read is always bounded twice: by an entry budget and by a wake
+/// deadline no later than the cursor's validated expiry. An unbounded follow
+/// is refused, never silently truncated into unbounded waiting.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FollowWakeContract {
+    max_entries: u32,
+    deadline: TimestampNs,
+}
+
+impl FollowWakeContract {
+    /// Validates and constructs a wake contract.
+    ///
+    /// `max_entries` must be at least 1 and `deadline` must be strictly after
+    /// `now`; otherwise the wake admits nothing and is refused with
+    /// [`ContinuationError::UnboundedWake`].
+    pub fn new(max_entries: u32, deadline: TimestampNs, now: TimestampNs) -> Result<Self, ContinuationError> {
+        if max_entries == 0 || deadline <= now {
+            return Err(ContinuationError::UnboundedWake);
+        }
+        Ok(Self {
+            max_entries,
+            deadline,
+        })
+    }
+
+    /// Returns the entry bound of one delivered batch.
+    #[must_use]
+    pub const fn max_entries(&self) -> u32 {
+        self.max_entries
+    }
+
+    /// Returns the absolute wake deadline.
+    #[must_use]
+    pub const fn deadline(&self) -> TimestampNs {
+        self.deadline
+    }
+}
+
+/// The admitted plan of one `session.follow` read (AOP-004).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FollowBatchPlan {
+    /// Entries deliverable in this bounded batch.
+    pub deliverable_entries: u32,
+    /// Whether this batch reaches the cursor's immutable upper bound.
+    pub caught_up: bool,
+    /// Cursor position after this batch is delivered.
+    pub resume_position: u64,
+    /// When the read must wake at the latest (deadline or cursor expiry).
+    pub wake_at: TimestampNs,
+}
+
+/// Admits one bounded `session.follow` read over an exact continuation cursor
+/// (AOP-004).
+///
+/// Fails closed unless:
+/// - the cursor drives a registered `FollowStream` scope ([`ContinuationError::WrongStream`]);
+/// - the cursor is unexpired at `now` ([`ContinuationError::Expired`]);
+/// - the cursor position is within its immutable bound ([`ContinuationError::OutOfRange`]);
+/// - the wake contract is bounded ([`ContinuationError::UnboundedWake`]); and
+/// - the wake deadline lies within the cursor's validated lifetime
+///   ([`ContinuationError::WakeBeyondExpiry`]).
+///
+/// The deliverable batch is the smaller of the wake budget and the entries
+/// remaining before the cursor's upper bound; `caught_up` reports whether the
+/// batch reaches that bound.
+pub fn admit_follow_read(
+    cursor: &ContinuationCursor,
+    wake: FollowWakeContract,
+    now: TimestampNs,
+) -> Result<FollowBatchPlan, ContinuationError> {
+    if cursor.scope != ContinuationScope::FollowStream {
+        return Err(ContinuationError::WrongStream);
+    }
+    cursor.validate_at(now)?;
+    if wake.max_entries() == 0 {
+        return Err(ContinuationError::UnboundedWake);
+    }
+    if wake.deadline() > cursor.expires_at {
+        return Err(ContinuationError::WakeBeyondExpiry);
+    }
+    if cursor.position > cursor.upper_bound {
+        return Err(ContinuationError::OutOfRange);
+    }
+    let remaining = cursor.upper_bound - cursor.position;
+    let deliverable = u32::try_from(remaining.min(u64::from(wake.max_entries())))
+        .map_err(|_| ContinuationError::OutOfRange)?;
+    let resume_position = cursor.position + u64::from(deliverable);
+    Ok(FollowBatchPlan {
+        deliverable_entries: deliverable,
+        caught_up: resume_position == cursor.upper_bound,
+        resume_position,
+        wake_at: wake.deadline().min(cursor.expires_at),
+    })
+}
+
+/// Produces the successor cursor after one admitted follow batch delivered
+/// `delivered_entries` entries (AOP-004, retry class `resume_from_continuation`).
+///
+/// The successor links the delivered batch through the predecessor digest and
+/// resumes exactly at [`FollowBatchPlan::resume_position`]; the resume anchor
+/// must stay within the cursor's lineage and epoch, and expiry can only shrink.
+pub fn advance_follow_cursor(
+    cursor: &ContinuationCursor,
+    delivered_entries: u32,
+    new_resume_anchor: LedgerAnchor,
+    issued_at: TimestampNs,
+    expires_at: TimestampNs,
+) -> Result<ContinuationCursor, ContinuationError> {
+    if delivered_entries == 0 {
+        return Err(ContinuationError::NonMonotone);
+    }
+    let new_position = cursor
+        .position
+        .checked_add(u64::from(delivered_entries))
+        .ok_or(ContinuationError::OutOfRange)?;
+    cursor.advance(
+        new_position,
+        new_resume_anchor,
+        cursor.selection_witness,
+        issued_at,
+        expires_at,
+    )
 }
