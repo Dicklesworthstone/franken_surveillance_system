@@ -189,3 +189,6 @@ pub mod stream;
 
 /// Bounded JPEG parts from dechunked multipart/x-mixed-replace entity bytes.
 pub mod multipart;
+
+/// HTTP response framing with exact plaintext-to-entity source mappings.
+pub mod http;
