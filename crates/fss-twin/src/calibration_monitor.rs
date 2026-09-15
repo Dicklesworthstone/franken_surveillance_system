@@ -9,8 +9,6 @@ use crate::PropertyTwin;
 use crate::localization::{FeatureFrame, LocalizationAtlas, LocalizationCamera, LocalizationError,
     MatchOptions, MatchReport};
 
-/// Exact calibration generation being checked. The digest is owner-supplied identity,
-/// not proof that the calibration is physically correct.
 #[derive(Clone, Copy, Debug)]
 pub struct FrozenCalibration {
     pub id: [u8; 32],
@@ -18,18 +16,12 @@ pub struct FrozenCalibration {
     pub pose: RigidPose,
 }
 
-/// Explicit admission thresholds. No deployment defaults are inferred from image content.
 #[derive(Clone, Copy, Debug)]
 pub struct CalibrationMonitorPolicy {
-    /// Residual threshold used to count a geometrically consistent landmark.
     pub inlier_threshold_px: f64,
-    /// RMS ceiling over retained inliers.
     pub maximum_rms_px: f64,
-    /// Minimum number of accepted descriptor correspondences and inlier projections.
     pub minimum_support: usize,
-    /// Minimum inlier fraction among accepted descriptor correspondences, in (0,1].
     pub minimum_inlier_fraction: f64,
-    /// Minimum inlier span on each image axis as a fraction of image dimensions.
     pub minimum_image_span: f64,
 }
 impl Default for CalibrationMonitorPolicy {
@@ -53,14 +45,7 @@ impl CalibrationMonitorPolicy {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CalibrationDisposition {
-    /// Current observations remain geometrically consistent under the supplied policy.
-    ValidUnderPolicy,
-    /// Sufficient current support exists and materially contradicts the frozen pose.
-    Invalidate,
-    /// Current evidence cannot safely confirm or invalidate the pose.
-    Indeterminate,
-}
+pub enum CalibrationDisposition { ValidUnderPolicy, Invalidate, Indeterminate }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CalibrationMonitorError {
@@ -70,12 +55,8 @@ pub enum CalibrationMonitorError {
     Localization(LocalizationError),
     Geometry(GeometryError),
 }
-impl From<LocalizationError> for CalibrationMonitorError {
-    fn from(value: LocalizationError) -> Self { Self::Localization(value) }
-}
-impl From<GeometryError> for CalibrationMonitorError {
-    fn from(value: GeometryError) -> Self { Self::Geometry(value) }
-}
+impl From<LocalizationError> for CalibrationMonitorError { fn from(value: LocalizationError) -> Self { Self::Localization(value) } }
+impl From<GeometryError> for CalibrationMonitorError { fn from(value: GeometryError) -> Self { Self::Geometry(value) } }
 impl std::fmt::Display for CalibrationMonitorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
@@ -92,14 +73,11 @@ impl std::error::Error for CalibrationMonitorError {}
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CalibrationResidual {
     pub landmark: u64,
-    /// None means the landmark was behind the frozen camera or otherwise not projectable.
     pub error_px: Option<f64>,
     pub in_image: bool,
     pub inlier: bool,
 }
 
-/// Complete current comparison. The original match report is retained so an invalidate
-/// decision cannot hide descriptor ambiguity or rejected image features.
 #[derive(Debug)]
 pub struct CalibrationMonitorReport {
     pub calibration: [u8; 32],
@@ -115,11 +93,6 @@ pub struct CalibrationMonitorReport {
     pub disposition: CalibrationDisposition,
 }
 
-/// Compare one current feature frame against one frozen pose without changing either.
-/// Descriptor scarcity or narrow/local support is Indeterminate, not evidence of drift.
-/// Once sufficient distributed support exists, failing the inlier fraction/RMS policy
-/// produces Invalidate. This is a typed recommendation; the calibration owner still
-/// controls generation invalidation and replacement.
 pub fn monitor_calibration(twin: &PropertyTwin, atlas: &LocalizationAtlas,
     query: &FeatureFrame, frozen: FrozenCalibration, matching: MatchOptions,
     policy: CalibrationMonitorPolicy, budget: &mut WorkBudget<'_>)
@@ -141,23 +114,21 @@ pub fn monitor_calibration(twin: &PropertyTwin, atlas: &LocalizationAtlas,
     let mut inliers = 0usize;
     let mut squared = 0.0;
     let mut maximum = 0.0_f64;
-    let mut minimum = [f64::INFINITY; 2];
-    let mut maximum_pixel = [f64::NEG_INFINITY; 2];
+    let mut support_min = [f64::INFINITY; 2];
+    let mut support_max = [f64::NEG_INFINITY; 2];
     for point in &matches.correspondences {
         budget.charge(4)?;
+        for axis in 0..2 {
+            support_min[axis] = support_min[axis].min(point.pixel[axis]);
+            support_max[axis] = support_max[axis].max(point.pixel[axis]);
+        }
         match frozen.pose.project(frozen.camera.intrinsics, point.world) {
             Ok(expected) => {
                 let in_image = frozen.camera.intrinsics.contains(expected);
                 let error = (expected[0] - point.pixel[0]).hypot(expected[1] - point.pixel[1]);
                 let inlier = in_image && error <= policy.inlier_threshold_px;
                 projected += usize::from(in_image);
-                if inlier {
-                    inliers += 1; squared += error * error; maximum = maximum.max(error);
-                    for axis in 0..2 {
-                        minimum[axis] = minimum[axis].min(point.pixel[axis]);
-                        maximum_pixel[axis] = maximum_pixel[axis].max(point.pixel[axis]);
-                    }
-                }
+                if inlier { inliers += 1; squared += error * error; maximum = maximum.max(error); }
                 residuals.push(CalibrationResidual { landmark: point.landmark, error_px: Some(error), in_image, inlier });
             }
             Err(GeometryError::BehindCamera | GeometryError::OutOfRange) => {
@@ -167,19 +138,20 @@ pub fn monitor_calibration(twin: &PropertyTwin, atlas: &LocalizationAtlas,
         }
     }
     let dimensions = frozen.camera.intrinsics.dimensions();
-    let span = if inliers == 0 { [0.0; 2] } else { [
-        (maximum_pixel[0] - minimum[0]).max(0.0) / f64::from(dimensions[0]),
-        (maximum_pixel[1] - minimum[1]).max(0.0) / f64::from(dimensions[1]),
+    let span = if matches.correspondences.is_empty() { [0.0; 2] } else { [
+        (support_max[0] - support_min[0]).max(0.0) / f64::from(dimensions[0]),
+        (support_max[1] - support_min[1]).max(0.0) / f64::from(dimensions[1]),
     ] };
     let rms = (inliers != 0).then(|| (squared / inliers as f64).sqrt());
     let max_error = (inliers != 0).then_some(maximum);
     let enough_matches = matches.correspondences.len() >= policy.minimum_support;
-    let enough_inliers = inliers >= policy.minimum_support;
+    let enough_projected = projected >= policy.minimum_support;
     let distributed = span.iter().all(|value| *value >= policy.minimum_image_span);
     let fraction = if matches.correspondences.is_empty() { 0.0 } else { inliers as f64 / matches.correspondences.len() as f64 };
-    let disposition = if !enough_matches || !enough_inliers || !distributed {
+    let disposition = if !enough_matches || !enough_projected || !distributed {
         CalibrationDisposition::Indeterminate
-    } else if fraction >= policy.minimum_inlier_fraction && rms.is_some_and(|value| value <= policy.maximum_rms_px) {
+    } else if inliers >= policy.minimum_support && fraction >= policy.minimum_inlier_fraction
+        && rms.is_some_and(|value| value <= policy.maximum_rms_px) {
         CalibrationDisposition::ValidUnderPolicy
     } else {
         CalibrationDisposition::Invalidate
