@@ -91,6 +91,7 @@ impl PropertyTwin {
 
 pub mod localization;
 pub mod focal_localization;
+pub mod radial_localization;
 pub mod validated_registration;
 pub mod atlas_archive;
 pub mod stream;
