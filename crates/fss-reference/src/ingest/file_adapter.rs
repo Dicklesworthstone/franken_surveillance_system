@@ -1426,6 +1426,18 @@ impl FileIngestAdapter {
             operation_id: None,
         });
         capsule_batch_children.push(custody_manifest_digest);
+        capsule_deltas.push(EvidenceDelta {
+            delta_id: format!("delta:file-import:{import_identity_hex}:coverage"),
+            family: "coverage_witness".to_string(),
+            object_id: ObjectId::parse(format!("object:coverage:{import_identity_hex}"))?,
+            prior_generation: None,
+            new_generation: 1,
+            validity: overall_validity,
+            plane: Plane::Authority,
+            payload_digest: custody_manifest_digest,
+            witness_digest: Some(custody_manifest_digest),
+            operation_id: None,
+        });
         for (capsule, (meta_digest, _)) in scanned.capsules.iter().zip(&capsule_encodings) {
             capsule_deltas.push(EvidenceDelta {
                 delta_id: format!("delta:capsule:{}", capsule.capsule_id.as_str()),
@@ -1537,7 +1549,7 @@ impl FileIngestAdapter {
                 unique_chunk_count,
                 chunk_bytes,
                 capture_time_label,
-                absence_certifiable: false,
+                absence_certifiable: true,
             });
         }
         let resumed = existing_capsule_batch.is_some() || visible_root.is_some();
@@ -1706,7 +1718,7 @@ impl FileIngestAdapter {
             unique_chunk_count,
             chunk_bytes,
             capture_time_label,
-            absence_certifiable: false,
+            absence_certifiable: true,
         })
     }
 
