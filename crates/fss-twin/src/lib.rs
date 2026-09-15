@@ -25,9 +25,7 @@ use fss_geometry::{GeometryBasis, GeometryError, IndexedTriangle, TriangleMesh};
 pub use wire::{ImportExpectation, ImportLimits, import_twin};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TwinError {
-    Limit, Format, Digest, Basis, Reference, Numeric, Unobservable, Geometry(GeometryError),
-}
+pub enum TwinError { Limit, Format, Digest, Basis, Reference, Numeric, Unobservable, Geometry(GeometryError) }
 impl From<GeometryError> for TwinError { fn from(error: GeometryError) -> Self { Self::Geometry(error) } }
 impl std::fmt::Display for TwinError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -44,17 +42,14 @@ impl std::error::Error for TwinError {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SurfaceKind { Unknown, PedestrianPath, Grass, Stairs, Deck, Structure }
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ScaleEvidence {
     Relative,
     Estimated { metres_per_unit: f64, error: Option<f64> },
     MeasuredAnchor { metres_per_unit: f64, error: Option<f64> },
 }
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TwinFeature { pub id: String, pub surface: SurfaceKind }
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TwinObject { pub id: String, pub feature: u32, pub support: bool, pub opaque: bool }
 
@@ -106,3 +101,4 @@ pub mod association_hypotheses;
 pub mod foreground;
 pub mod mjpeg;
 pub mod calibration_monitor;
+pub mod calibration_gate;
