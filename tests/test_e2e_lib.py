@@ -15,6 +15,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -525,27 +526,52 @@ e2e_summary
                                            '            *)\n                shift; continue\n                exit 1')]),
         }
 
+        def make_sandbox(parent):
+            # A private copy of scripts/e2e plus the shell suite. The suite resolves lib.sh from its
+            # own location, so it runs against the copy: the tracked lib.sh is never written, and a
+            # concurrent run can never pick up a mutant.
+            sandbox = Path(parent)
+            shutil.copytree(REPO_ROOT / "scripts" / "e2e", sandbox / "scripts" / "e2e")
+            (sandbox / "tests").mkdir()
+            shutil.copy2(REPO_ROOT / "tests" / "test_e2e_lib.sh", sandbox / "tests" / "test_e2e_lib.sh")
+            return sandbox
+
+        def run_suite(sandbox):
+            return subprocess.run(
+                ["bash", str(sandbox / "tests" / "test_e2e_lib.sh")],
+                cwd=str(sandbox),
+                capture_output=True,
+                text=True
+            )
+
+        scratch = REPO_ROOT / "target"
+        scratch.mkdir(exist_ok=True)
+        tracked = {rel: (REPO_ROOT / rel).read_text(encoding="utf-8") for rel, _ in mutants.values()}
+
+        # Control: the unmutated sandbox copy passes, so every kill below is the mutant's doing.
+        with tempfile.TemporaryDirectory(dir=scratch, prefix="e2e-mutant-control-") as sb:
+            res = run_suite(make_sandbox(sb))
+            self.assertEqual(res.returncode, 0,
+                             f"unmutated sandbox copy failed:\n{res.stdout[-2000:]}\n{res.stderr[-2000:]}")
+
         for mid, (rel_path, subs) in mutants.items():
-            target_path = REPO_ROOT / rel_path
-            orig_content = target_path.read_text(encoding="utf-8")
+            orig_content = tracked[rel_path]
             mutated_content = orig_content
 
             for old, new in subs:
                 self.assertIn(old, mutated_content, f"Mutant pattern {old[:40]} not found for {mid}")
                 mutated_content = mutated_content.replace(old, new, 1)
 
-            try:
-                target_path.write_text(mutated_content, encoding="utf-8")
-                # Run self-test shell suite to verify mutant is killed
-                res = subprocess.run(
-                    ["bash", str(REPO_ROOT / "tests" / "test_e2e_lib.sh")],
-                    cwd=str(REPO_ROOT),
-                    capture_output=True,
-                    text=True
-                )
+            with tempfile.TemporaryDirectory(dir=scratch, prefix=f"e2e-mutant-{mid}-") as sb:
+                sandbox = make_sandbox(sb)
+                (sandbox / rel_path).write_text(mutated_content, encoding="utf-8")
+                # Run the sandbox's self-test shell suite to verify the mutant is killed
+                res = run_suite(sandbox)
                 self.assertNotEqual(res.returncode, 0, f"Mutant {mid} survived tests!")
-            finally:
-                target_path.write_text(orig_content, encoding="utf-8")
+
+        # The tracked files were never written.
+        for rel, content in tracked.items():
+            self.assertEqual((REPO_ROOT / rel).read_text(encoding="utf-8"), content, f"{rel} was modified")
 
 
 if __name__ == "__main__":
