@@ -69,3 +69,75 @@ They are reference checks, not execution of the Rust implementation.
 
 Primary protocol reference: RFC 9112 sections 4-8,
 https://www.rfc-editor.org/rfc/rfc9112.html . No source implementation was copied.
+
+## HTTP to decoded images and the property-image pipeline
+
+`http_mjpeg::HttpMultipartStream` consumes actual `ResponseHead` and `EntityData`
+objects produced by `HttpResponseStream`. It takes the multipart boundary from
+that exact response, checks response and entity identity and consecutive offsets,
+and invokes the existing MIME parser. Each push borrows the original data event,
+accepts at most one part, and reports the consumed entity prefix. Several MIME
+frames in one HTTP fragment are handled by submitting the remaining suffix of
+that same event. The caller always retains the original HTTP records, even if
+MIME parsing, map construction or decoding fails later.
+
+`HttpJpegFrame` couples an existing `MultipartFrame` with a complete, ordered map
+from its JPEG payload offsets to the original plaintext HTTP response ranges.
+Chunk headers, CRLF, trailers and MIME delimiters never enter JPEG payload maps.
+Adjacent map runs coalesce only if BOTH domains are contiguous and the chunk
+identity agrees. This makes network fragmentation independent of source mapping
+without merging across actual transfer overhead. The configured run ceiling is
+1..=65536, applied to complete retained lineage; overflow fails instead of
+truncating a map. Older run storage is released after frame publication, not
+retained for the duration of an unbounded camera connection.
+
+Mapping/cancellation failure after MIME framing retains the completed but
+unexposed frame for `abort`; the input HTTP event also remains caller-owned.
+The same applies to final MIME completion. Successful `finish` requires the
+matching HTTP end receipt AND successful MIME closure at that exact entity
+length. The HTTP termination classification survives unchanged. A complete JPEG
+or MIME delimiter does not manufacture a successful HTTP termination. None of
+these process-local public records authenticates the original transport or
+substitutes for existing persistent custody/publication contracts.
+
+`fss_twin::mjpeg::http::detect_http` checks the independently expected HTTP stream
+identity and original frame hash before reusing `detect_multipart`, JPEG decoding,
+rectification and frozen-background foreground analysis. The result borrows the
+HTTP/MIME frame alongside its image analysis so the full wire relationship is
+not discarded. Camera capture time, mask, calibration, image domain and semantic
+contact claims remain separate explicit inputs. No model labels or clock values
+are inferred from a response header. No production dependency is added.
+
+## Executable composition and verification
+
+```sh
+cargo test --locked --offline -p fss-codec-mjpeg --test http_contract --test http_mjpeg_contract
+cargo test --locked --offline -p fss-twin --test http_mjpeg_pipeline_contract
+cargo run --locked --offline -p fss-codec-mjpeg --example decode_http -- RESPONSE SHA256 grayscale 4096
+python3 -B scripts/test_mjpeg_http_pipeline_reference.py
+python3 -B scripts/test_mjpeg_http_native.py
+```
+
+The read-only file harness bounds and hashes the actual response bytes, streams
+those bytes through HTTP/MIME/JPEG, and emits only genuinely decoded frame
+receipts plus exact JPEG/wire maps. Its final completion line requires every
+frame and both framing layers to succeed. This is an owner-operated replay
+harness, not a new registered fss/1 operation or live network/device service.
+
+Nine additional codec composition contracts cover all response modes, every
+fixture fragment size, one-byte HTTP chunks, several MIME parts in one data
+record, EOF-finalized delimiters, original-byte map reconstruction, decoder
+agreement, source changes, partial-publication cancellation and mapping overflow.
+Two twin contracts compose chunked response bytes through actual compressed-frame
+analysis and check mask preservation and stale-response refusal. Together with
+the first increment there are 24 authored Rust contracts; none has executed here.
+
+Six independent Python composition checks passed, including standard-library
+HTTP and MIME decoding, actual encoded JPEG decoding through the laboratory
+Pillow oracle, 300 randomized source-map comparisons with a per-byte-origin
+oracle, missing MIME termination and exact compressed-input identity. The
+native driver's golden luma digest comes from the independent Q14 reference
+calculation. Its actual invocation returned NOT_RUN (exit 3) because Cargo is
+absent. Native compilation, Rust tests, live transport ownership, authentication,
+TLS, reconnection, H.264/HEVC, semantic/contact inference and real footage/field
+qualification remain open. These reference tests do not close any release gate.

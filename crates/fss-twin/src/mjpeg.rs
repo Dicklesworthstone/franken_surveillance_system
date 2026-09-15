@@ -2,10 +2,10 @@
 //! Complete JPEG bytes -> native luma -> rectification -> image-region proposals.
 //! The owner frames compressed input and supplies capture, calibration and permission.
 
-use fss_codec_mjpeg::{ComponentInterpretation, DecodeBudget, DecodeError, DecodeLimits,
-    DecodeReceipt, DecodedLuma, decode_luma, decoder_identity};
 use fss_core::ContentDigest;
 use fss_geometry::{GeometryError, WorkBudget};
+use fss_codec_mjpeg::{ComponentInterpretation, DecodeBudget, DecodeError, DecodeLimits,
+    DecodeReceipt, DecodedLuma, decode_luma, decoder_identity};
 use crate::foreground::{BackgroundPolicy, ForegroundPolicy, MAX_BACKGROUND_FRAMES};
 use crate::foreground::pipeline::{FrameCapture, ForegroundPipelineError, RectifiedBackground,
     RectifiedForeground, RectifiedReference};
@@ -190,3 +190,6 @@ pub mod stream;
 
 /// Multipart entity parts retaining their MIME and compressed-source identities.
 pub mod multipart;
+
+/// Source-mapped HTTP frames entering the existing foreground pipeline.
+pub mod http;
