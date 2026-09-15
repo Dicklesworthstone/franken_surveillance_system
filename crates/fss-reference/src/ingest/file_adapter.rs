@@ -1933,7 +1933,7 @@ impl FileIngestAdapter {
                     return Err(FileIngestError::ReceiveTimeBeforeEpoch { receive_time });
                 }
                 Ok(CaptureInterval::new(
-                    UNKNOWN_CAPTURE_EARLIEST,
+                    receive_time,
                     receive_time,
                 )?)
             }
