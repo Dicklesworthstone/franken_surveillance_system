@@ -1898,7 +1898,7 @@ impl FileIngestAdapter {
             sequence: index as u64,
             capture,
             receive_time,
-            clock_basis: ClockBasis::Estimated,
+            clock_basis: if hint.is_none() { ClockBasis::UtcDisciplined } else { ClockBasis::Estimated },
             source,
             frame_count: 1,
             gap_before,
