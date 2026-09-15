@@ -3,7 +3,7 @@
 //! It can compile the exact native rectification generation needed by downstream pinhole code,
 //! but activation and process-local handles remain owner-controlled.
 
-use fss_geometry::{FocalSampleOutcome,PoseValidation,RigidPose,PinholeIntrinsics,WorkBudget};
+use fss_geometry::{PoseValidation,RigidPose,PinholeIntrinsics,WorkBudget};
 use crate::{PropertyTwin,TrackingCamera};
 use crate::calibration_monitor::FrozenCalibration;
 use crate::localization::{ImageIdentity,LocalizationAtlas,LocalizationCamera};
@@ -44,8 +44,6 @@ impl ValidatedRadialCameraRegistration {
         ->Result<RectificationPlan,RadialRegistrationError>{
         Ok(RectificationPlan::compile(self.rectification_spec(calibration,range)?,budget)?)
     }
-    /// Bind the validated geometry to a compiled rectification and owner handles.
-    /// The tracking image-domain digest must be the plan's derived pinhole domain.
     pub fn bind_tracking_camera(&self,twin:&PropertyTwin,plan:&RectificationPlan,binding:TrackingCameraBinding)
         ->Result<TrackingCamera,RadialRegistrationError>{
         let spec=plan.spec();
