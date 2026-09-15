@@ -93,6 +93,7 @@ pub mod localization;
 pub mod focal_localization;
 pub mod radial_localization;
 pub mod validated_registration;
+pub mod validated_radial_registration;
 pub mod atlas_archive;
 pub mod stream;
 pub mod route_frontier;
