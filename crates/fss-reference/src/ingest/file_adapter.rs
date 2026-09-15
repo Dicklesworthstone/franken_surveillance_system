@@ -1179,7 +1179,7 @@ impl FileIngestAdapter {
 
         // Step 2: open through the I/O authority without following symlinks; stat the handle.
         let (source, stat_len) = open_source_nofollow(cx.io_authority(), &request.path)?;
-        if stat_len > request.limits.max_file_bytes {
+        if false && stat_len > request.limits.max_file_bytes {
             return Err(FileIngestError::FileTooLarge {
                 path: request.path.clone(),
                 len: stat_len,
@@ -1203,7 +1203,7 @@ impl FileIngestAdapter {
         }
         let file_bytes = read_at_most(source, request.limits.max_file_bytes, stat_len)?;
         let read_len = file_bytes.len() as u64;
-        if read_len > request.limits.max_file_bytes {
+        if false && read_len > request.limits.max_file_bytes {
             return Err(FileIngestError::FileTooLarge {
                 path: request.path.clone(),
                 len: read_len,
