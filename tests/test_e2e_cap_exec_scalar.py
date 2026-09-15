@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Tests for scripts/e2e/cap_exec_scalar.sh with stubbed rch."""
+"""Tests for scripts/e2e/cap_exec_scalar.sh with stubbed rch.
+
+The runner is lib-only (scripts/e2e/lib.sh, fss-2h5zq.1): a malformed or missing CAPLOG stream, a
+cargo failure or a fail verdict fails the cargo target's record (reason in `observed`), --only
+selects steps by name and CAPLOG steps by their cargo target, and summary.skipped carries
+{step, reason} entries. CAPLOG is read from stdout and stderr (real rch forwards on stderr).
+"""
 from __future__ import annotations
 
 import json
@@ -40,6 +46,11 @@ case "${{STUB_MODE:-pass}}" in
     echo CAPLOG {cap_a}
     echo CAPLOG {cap_b}
     printf "test result: ok. 2 passed\\n"
+    exit 0
+    ;;
+  pass_stderr)
+    echo CAPLOG {cap_a} >&2
+    echo CAPLOG {cap_b} >&2
     exit 0
     ;;
   pass_with_skip)
@@ -133,6 +144,14 @@ esac
                     records.append(json.loads(line))
         return records
 
+    TARGET = "scalar_executor_contract"
+
+    def target_record(self, records: list[dict]) -> dict:
+        for r in records:
+            if r.get("step") == self.TARGET:
+                return r
+        self.fail(f"no {self.TARGET} record in {[r.get('step') for r in records]}")
+
     def test_pass_summary_and_locked_offline(self) -> None:
         proc = self.run_harness(extra_env={"STUB_MODE": "pass"})
         self.assertEqual(proc.returncode, 0, f"Expected exit 0, got {proc.returncode}: {proc.stderr}")
@@ -168,29 +187,38 @@ esac
         self.assertEqual(summary["verdict"], "pass")
         self.assertEqual(summary["steps"], 2)
         self.assertEqual(summary["failures"], [])
-        self.assertEqual(summary["skipped"], ["b"])
+        self.assertEqual([k["step"] for k in summary["skipped"]], ["b"])
+        self.assertEqual(summary["skipped"][0]["reason"], '{"r": "skip"}')
 
     def test_only_filter_args(self) -> None:
-        proc = self.run_harness(args=["--only", "step_custom"], extra_env={"STUB_MODE": "pass"})
+        proc = self.run_harness(args=["--only", self.TARGET], extra_env={"STUB_MODE": "pass"})
         self.assertEqual(proc.returncode, 0, f"Expected exit 0: {proc.stderr}")
 
         calls = self.calls_file.read_text(encoding="utf-8")
-        self.assertIn("step_custom", calls)
+        self.assertIn(self.TARGET, calls)
 
         records = self.read_latest_log_records()
         summary = records[-1]
-        self.assertEqual(summary["repro"], "scripts/e2e/cap_exec_scalar.sh --only step_custom")
+        self.assertEqual(summary["repro"], f"scripts/e2e/cap_exec_scalar.sh --only {self.TARGET}")
 
     def test_only_equals_syntax(self) -> None:
-        proc = self.run_harness(args=["--only=step_custom_eq"], extra_env={"STUB_MODE": "pass"})
+        proc = self.run_harness(args=[f"--only={self.TARGET}"], extra_env={"STUB_MODE": "pass"})
         self.assertEqual(proc.returncode, 0, f"Expected exit 0: {proc.stderr}")
 
         calls = self.calls_file.read_text(encoding="utf-8")
-        self.assertIn("step_custom_eq", calls)
+        self.assertIn(self.TARGET, calls)
 
         records = self.read_latest_log_records()
         summary = records[-1]
-        self.assertEqual(summary["repro"], "scripts/e2e/cap_exec_scalar.sh --only step_custom_eq")
+        self.assertEqual(summary["repro"], f"scripts/e2e/cap_exec_scalar.sh --only {self.TARGET}")
+
+    def test_only_caplog_step_name_runs_nothing(self) -> None:
+        # A CAPLOG step name is not a selector: nothing runs (no rch call) and the empty run fails.
+        proc = self.run_harness(args=["--only", "step_custom"], extra_env={"STUB_MODE": "pass"})
+        self.assertEqual(proc.returncode, 1, f"Expected exit 1: {proc.stdout}")
+        self.assertIn("no step matched --only 'step_custom'", proc.stderr)
+        self.assertFalse(self.calls_file.exists(), "rch was called for an unmatched --only")
+        self.assertEqual(self.read_latest_log_records()[-1]["verdict"], "fail")
 
     def test_badjson_fails_and_populates_failures(self) -> None:
         proc = self.run_harness(extra_env={"STUB_MODE": "badjson"})
@@ -200,7 +228,8 @@ esac
         records = self.read_latest_log_records()
         summary = records[-1]
         self.assertEqual(summary["verdict"], "fail")
-        self.assertIn("malformed_caplog", summary["failures"])
+        self.assertEqual(summary["failures"], [self.TARGET])
+        self.assertEqual(self.target_record(records)["observed"], "malformed CAPLOG line observed: invalid JSON")
 
     def test_missing_step_fails(self) -> None:
         proc = self.run_harness(extra_env={"STUB_MODE": "nostep"})
@@ -209,7 +238,9 @@ esac
         records = self.read_latest_log_records()
         summary = records[-1]
         self.assertEqual(summary["verdict"], "fail")
-        self.assertIn("missing_step", summary["failures"])
+        self.assertEqual(summary["failures"], [self.TARGET])
+        self.assertEqual(self.target_record(records)["observed"],
+                         "malformed CAPLOG line observed: not an object with step and verdict")
 
     def test_missing_verdict_fails(self) -> None:
         proc = self.run_harness(extra_env={"STUB_MODE": "noverdict"})
@@ -218,7 +249,9 @@ esac
         records = self.read_latest_log_records()
         summary = records[-1]
         self.assertEqual(summary["verdict"], "fail")
-        self.assertIn("a:missing_verdict", summary["failures"])
+        self.assertEqual(summary["failures"], [self.TARGET])
+        self.assertEqual(self.target_record(records)["observed"],
+                         "malformed CAPLOG line observed: not an object with step and verdict")
 
     def test_duplicate_step_fails(self) -> None:
         proc = self.run_harness(extra_env={"STUB_MODE": "duplicate_step"})
@@ -227,7 +260,9 @@ esac
         records = self.read_latest_log_records()
         summary = records[-1]
         self.assertEqual(summary["verdict"], "fail")
-        self.assertIn("a:duplicate_step", summary["failures"])
+        self.assertEqual(summary["failures"], [self.TARGET])
+        self.assertEqual(self.target_record(records)["observed"],
+                         "malformed CAPLOG line observed: missing, duplicate or reserved step")
 
     def test_all_skip_fails(self) -> None:
         proc = self.run_harness(extra_env={"STUB_MODE": "all_skip"})
@@ -245,7 +280,8 @@ esac
         records = self.read_latest_log_records()
         summary = records[-1]
         self.assertEqual(summary["verdict"], "fail")
-        self.assertIn("no_caplog_emitted", summary["failures"])
+        self.assertEqual(summary["failures"], [self.TARGET])
+        self.assertEqual(self.target_record(records)["observed"], "no CAPLOG line observed")
 
     def test_fail_verdict_fails(self) -> None:
         proc = self.run_harness(extra_env={"STUB_MODE": "failverdict"})
@@ -263,7 +299,8 @@ esac
         records = self.read_latest_log_records()
         summary = records[-1]
         self.assertEqual(summary["verdict"], "fail")
-        self.assertIn("cargo_test_failed", summary["failures"])
+        self.assertIn(self.TARGET, summary["failures"])
+        self.assertIn("cargo test failed (exit 101)", self.target_record(records)["observed"])
 
     def test_monotonic_log_file_numbering(self) -> None:
         proc1 = self.run_harness(extra_env={"STUB_MODE": "pass"})
@@ -275,6 +312,28 @@ esac
         self.assertEqual(len(log_files), 2)
         self.assertEqual(log_files[0].name, "run_0001.log")
         self.assertEqual(log_files[1].name, "run_0002.log")
+
+    def test_pass_on_stderr(self) -> None:
+        # Real rch forwards the remote CAPLOG lines on stderr: a stderr-only run passes.
+        proc = self.run_harness(extra_env={"STUB_MODE": "pass_stderr"})
+        self.assertEqual(proc.returncode, 0, f"Expected exit 0: {proc.stderr}")
+        records = self.read_latest_log_records()
+        self.assertEqual([r["step"] for r in records[1:-1]], ["a", "b"])
+        self.assertEqual(records[-1]["verdict"], "pass")
+
+    def test_fails_closed_without_lib(self) -> None:
+        lone = self.tmp_path / "nolib" / "scripts" / "e2e" / "cap_exec_scalar.sh"
+        lone.parent.mkdir(parents=True)
+        lone.write_text(SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
+        lone.chmod(0o755)
+        env = os.environ.copy()
+        env["PATH"] = f"{self.bin_dir}:{env.get('PATH', '')}"
+        env["FSS_E2E_LOG_DIR"] = str(self.log_dir)
+        env["STUB_MODE"] = "pass"
+        proc = subprocess.run([str(lone)], cwd=str(ROOT), env=env, capture_output=True, text=True, check=False)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("lib.sh (the fss-2h5zq.1 harness) is required", proc.stderr)
+        self.assertFalse(self.calls_file.exists(), "rch was called without lib.sh")
 
     def test_env_record_structure(self) -> None:
         proc = self.run_harness(extra_env={"STUB_MODE": "pass"})

@@ -255,7 +255,7 @@ fn test_golden_conv2d_relu_add_3op() -> Result<(), Box<dyn Error>> {
     let graph_digest = graph.content_digest()?.to_hex();
     let out_digest = sha256_hex(&y_out.to_canonical_bytes());
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{{"macs":16,"output_elements":4}}"#.to_string();
+    let exp_json = r#"{"macs":16,"output_elements":4}"#.to_string();
     let obs_json = format!(
         r#"{{"graph_digest":"{}","output_digest":"{}","nodes":3,"macs":{}}}"#,
         graph_digest,
@@ -377,7 +377,7 @@ fn test_golden_conv2d_asymmetric_padding_and_strides() -> Result<(), Box<dyn Err
     let dur = start.elapsed().as_millis();
     let graph_digest = graph.content_digest()?.to_hex();
     let out_digest = sha256_hex(&y_out.to_canonical_bytes());
-    let exp_json = r#"{{"macs":36,"output_shape":[1,1,2,2]}}"#.to_string();
+    let exp_json = r#"{"macs":36,"output_shape":[1,1,2,2]}"#.to_string();
     let obs_json = format!(
         r#"{{"graph_digest":"{}","output_digest":"{}","macs":{}}}"#,
         graph_digest,
@@ -482,7 +482,7 @@ fn test_golden_conv2d_bias_and_grouped() -> Result<(), Box<dyn Error>> {
     let dur = start.elapsed().as_millis();
     let graph_digest = graph.content_digest()?.to_hex();
     let out_digest = sha256_hex(&y_out.to_canonical_bytes());
-    let exp_json = r#"{{"macs":8,"groups":2,"bias":true}}"#.to_string();
+    let exp_json = r#"{"macs":8,"groups":2,"bias":true}"#.to_string();
     let obs_json = format!(
         r#"{{"graph_digest":"{}","output_digest":"{}","macs":{}}}"#,
         graph_digest,
@@ -622,7 +622,7 @@ fn test_golden_relu_metamorphic_idempotent() -> Result<(), Box<dyn Error>> {
     let dur = start.elapsed().as_millis();
     let graph_digest = graph.content_digest()?.to_hex();
     let out_digest = sha256_hex(&y_t1.to_canonical_bytes());
-    let exp_json = r#"{{"idempotent":true}}"#.to_string();
+    let exp_json = r#"{"idempotent":true}"#.to_string();
     let obs_json = format!(
         r#"{{"graph_digest":"{}","output_digest":"{}"}}"#,
         graph_digest, out_digest
@@ -666,7 +666,7 @@ fn test_golden_sigmoid() -> Result<(), Box<dyn Error>> {
     let dur = start.elapsed().as_millis();
     let graph_digest = gr.content_digest()?.to_hex();
     let out_digest = sha256_hex(&y_t.to_canonical_bytes());
-    let exp_json = r#"{{"sig_0":0.5}}"#.to_string();
+    let exp_json = r#"{"sig_0":0.5}"#.to_string();
     let obs_json = format!(
         r#"{{"graph_digest":"{}","output_digest":"{}"}}"#,
         graph_digest, out_digest
@@ -744,8 +744,8 @@ fn test_golden_binary_broadcast_add_sub_mul_div() -> Result<(), Box<dyn Error>> 
     }
 
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{{"broadcast_shape":[2,2,2,2]}}"#.to_string();
-    let obs_json = r#"{{"status":"ok"}}"#.to_string();
+    let exp_json = r#"{"broadcast_shape":[2,2,2,2]}"#.to_string();
+    let obs_json = r#"{"status":"ok"}"#.to_string();
     emit_caplog(
         "broadcast_add_sub_mul_div",
         "pass",
@@ -843,8 +843,8 @@ fn test_golden_maxpool2d_ceil_mode_true_and_false() -> Result<(), Box<dyn Error>
     }
 
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{{"false_shape":[1,1,2,2],"true_shape":[1,1,3,3]}}"#.to_string();
-    let obs_json = r#"{{"status":"ok"}}"#.to_string();
+    let exp_json = r#"{"false_shape":[1,1,2,2],"true_shape":[1,1,3,3]}"#.to_string();
+    let obs_json = r#"{"status":"ok"}"#.to_string();
     emit_caplog(
         "maxpool2d_ceil_mode_true_false",
         "pass",
@@ -930,8 +930,8 @@ fn test_golden_maxpool2d_ceil_mode_equality_boundaries() -> Result<(), Box<dyn E
     }
 
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{{"clamped_w":1,"clamped_h":1}}"#.to_string();
-    let obs_json = r#"{{"status":"ok"}}"#.to_string();
+    let exp_json = r#"{"clamped_w":1,"clamped_h":1}"#.to_string();
+    let obs_json = r#"{"status":"ok"}"#.to_string();
     emit_caplog(
         "maxpool2d_ceil_mode_equality_boundary",
         "pass",
@@ -993,8 +993,8 @@ fn test_golden_matmul() -> Result<(), Box<dyn Error>> {
     assert_eq!(out.executed_macs(), 12);
 
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{{"macs":12,"output_shape":[2,2]}}"#.to_string();
-    let obs_json = r#"{{"status":"ok","macs":12}}"#.to_string();
+    let exp_json = r#"{"macs":12,"output_shape":[2,2]}"#.to_string();
+    let obs_json = r#"{"status":"ok","macs":12}"#.to_string();
     emit_caplog("matmul_golden", "pass", 0, &exp_json, &obs_json, dur);
 
     Ok(())
@@ -1136,8 +1136,8 @@ fn test_golden_reshape_cases() -> Result<(), Box<dyn Error>> {
     }
 
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{{"allowzero_false":true,"shape_attr_equiv":true}}"#.to_string();
-    let obs_json = r#"{{"status":"ok"}}"#.to_string();
+    let exp_json = r#"{"allowzero_false":true,"shape_attr_equiv":true}"#.to_string();
+    let obs_json = r#"{"status":"ok"}"#.to_string();
     emit_caplog(
         "reshape_round3_contract",
         "pass",
@@ -1218,7 +1218,7 @@ fn test_golden_softmax_metamorphic_invariance() -> Result<(), Box<dyn Error>> {
     }
 
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{{"sum_prob_approx":1.0,"shift_invariant":true}}"#.to_string();
+    let exp_json = r#"{"sum_prob_approx":1.0,"shift_invariant":true}"#.to_string();
     let obs_json = format!(r#"{{"total_prob":{}}}"#, total_prob);
     emit_caplog(
         "softmax_metamorphic_invariance",
@@ -1258,8 +1258,8 @@ fn test_exp_vector_against_f64_reference_and_pinned_bits() -> Result<(), Box<dyn
     assert_eq!(deterministic_exp_f32(2.0).to_bits(), 0x40ec7326);
 
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{{"pinned_points":4,"max_rel_err":1e-6}}"#.to_string();
-    let obs_json = r#"{{"status":"ok"}}"#.to_string();
+    let exp_json = r#"{"pinned_points":4,"max_rel_err":1e-6}"#.to_string();
+    let obs_json = r#"{"status":"ok"}"#.to_string();
     emit_caplog(
         "exp_vector_pinned_bits",
         "pass",
@@ -1396,8 +1396,8 @@ fn test_unsupported_opcodes_refused_before_execution() -> Result<(), Box<dyn Err
     }
 
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{{"gelu_unsupported":true,"total_ops":11}}"#.to_string();
-    let obs_json = r#"{{"status":"ok"}}"#.to_string();
+    let exp_json = r#"{"gelu_unsupported":true,"total_ops":11}"#.to_string();
+    let obs_json = r#"{"status":"ok"}"#.to_string();
     emit_caplog(
         "unsupported_opcodes_refusal",
         "pass",
@@ -1562,9 +1562,9 @@ fn test_dtype_refusal_f16_and_i32() -> Result<(), Box<dyn Error>> {
 
     let dur = start.elapsed().as_millis();
     let exp_json =
-        r#"{{"f16_refused":true,"i32_refused":true,"f64_refused":true,"u8_refused":true}}"#
+        r#"{"f16_refused":true,"i32_refused":true,"f64_refused":true,"u8_refused":true}"#
             .to_string();
-    let obs_json = r#"{{"status":"ok"}}"#.to_string();
+    let obs_json = r#"{"status":"ok"}"#.to_string();
     emit_caplog(
         "dtype_refusal_before_execution",
         "pass",
@@ -1642,8 +1642,8 @@ fn test_version_helper_contract() -> Result<(), Box<dyn Error>> {
     }
 
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{{"v2_mismatch":true,"unsupported_1_err":true}}"#.to_string();
-    let obs_json = r#"{{"status":"ok"}}"#.to_string();
+    let exp_json = r#"{"v2_mismatch":true,"unsupported_1_err":true}"#.to_string();
+    let obs_json = r#"{"status":"ok"}"#.to_string();
     emit_caplog(
         "version_helper_contract",
         "pass",
@@ -1699,8 +1699,8 @@ fn test_weight_input_binding_missing_port() -> Result<(), Box<dyn Error>> {
     }
 
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{{"missing_port":"w"}}"#.to_string();
-    let obs_json = r#"{{"status":"ok"}}"#.to_string();
+    let exp_json = r#"{"missing_port":"w"}"#.to_string();
+    let obs_json = r#"{"status":"ok"}"#.to_string();
     emit_caplog(
         "weight_input_binding_missing_port",
         "pass",
@@ -1747,8 +1747,8 @@ fn test_shape_mismatch_refused_before_execution() -> Result<(), Box<dyn Error>> 
     }
 
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{{"op_id":"graph_input"}}"#.to_string();
-    let obs_json = r#"{{"status":"ok"}}"#.to_string();
+    let exp_json = r#"{"op_id":"graph_input"}"#.to_string();
+    let obs_json = r#"{"status":"ok"}"#.to_string();
     emit_caplog(
         "shape_mismatch_refusal",
         "pass",
@@ -1825,8 +1825,8 @@ fn test_budget_macs_and_bytes_exceeded() -> Result<(), Box<dyn Error>> {
     }
 
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{{"macs_overrun":true,"bytes_overrun":true}}"#.to_string();
-    let obs_json = r#"{{"status":"ok"}}"#.to_string();
+    let exp_json = r#"{"macs_overrun":true,"bytes_overrun":true}"#.to_string();
+    let obs_json = r#"{"status":"ok"}"#.to_string();
     emit_caplog(
         "budget_exceeded_refusal",
         "pass",
@@ -1880,8 +1880,8 @@ fn test_cancellation_pre_execution_and_cooperative() -> Result<(), Box<dyn Error
     }
 
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{{"stage":"pre-execution","drain_completed":true}}"#.to_string();
-    let obs_json = r#"{{"status":"ok"}}"#.to_string();
+    let exp_json = r#"{"stage":"pre-execution","drain_completed":true}"#.to_string();
+    let obs_json = r#"{"status":"ok"}"#.to_string();
     emit_caplog(
         "cancellation_cooperative",
         "pass",
@@ -1931,8 +1931,8 @@ fn test_preprocess_program_rgb_and_luma() -> Result<(), Box<dyn Error>> {
     assert_eq!(b1, b2);
 
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{{"rgb_shape":[1,3,2,2],"luma_shape":[1,1,2,2]}}"#.to_string();
-    let obs_json = r#"{{"status":"ok"}}"#.to_string();
+    let exp_json = r#"{"rgb_shape":[1,3,2,2],"luma_shape":[1,1,2,2]}"#.to_string();
+    let obs_json = r#"{"status":"ok"}"#.to_string();
     emit_caplog("preprocess_program", "pass", 0, &exp_json, &obs_json, dur);
 
     Ok(())
