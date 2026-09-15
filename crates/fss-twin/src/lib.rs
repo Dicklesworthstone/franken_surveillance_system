@@ -95,6 +95,7 @@ pub mod validated_registration;
 pub mod atlas_archive;
 pub mod stream;
 pub mod route_frontier;
+pub mod frontier_handoff;
 pub mod observed_handoff;
 pub mod monitored_handoff;
 pub mod rectification;
