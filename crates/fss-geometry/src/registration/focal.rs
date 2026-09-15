@@ -8,16 +8,13 @@ use super::{Correspondence, PoseSearch, PoseSolverOptions};
 use super::planar::estimate_camera_pose_adaptive;
 use crate::{GeometryBasis, GeometryError, PinholeIntrinsics, WorkBudget};
 
-/// One-dimensional focal family: fx is scanned and fy = fx * y_over_x.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FocalScanOptions {
     pub minimum_fx_px: f64,
     pub maximum_fx_px: f64,
     pub y_over_x: f64,
     pub principal_point: [f64;2],
-    /// Log-spaced complete sample count, 3..=129.
     pub samples: usize,
-    /// Existing robust pose policy applied independently at every focal sample.
     pub pose: PoseSolverOptions,
 }
 impl FocalScanOptions {
@@ -33,9 +30,6 @@ impl FocalScanOptions {
     }
 }
 
-/// Geometric result at one exact focal sample. Ordinary fit failures are retained;
-/// resource/cancellation failures abort the whole scan so a partial profile is never
-/// mistaken for a complete search.
 #[derive(Debug)]
 pub enum FocalSampleOutcome {
     Candidates(PoseSearch),
@@ -51,7 +45,6 @@ impl FocalSample {
     pub fn outcome(&self)->&FocalSampleOutcome{&self.outcome}
 }
 
-/// Complete sampled focal profile. Sampling is evidence about this finite scan only.
 #[derive(Debug)]
 pub struct FocalPoseScan {
     basis:GeometryBasis,
@@ -67,13 +60,13 @@ impl FocalPoseScan {
     pub fn samples(&self)->&[FocalSample]{&self.samples}
     pub fn work_units(&self)->u64{self.work_units}
     pub fn successful_samples(&self)->usize{
-        self.samples.iter().filter(|s|matches!(s.outcome,FocalSampleOutcome::Candidates(_))).count()
+        self.samples.iter().filter(|s|matches!(&s.outcome,FocalSampleOutcome::Candidates(_))).count()
     }
-    /// Return every sampled (sample,candidate) meeting explicit caller thresholds.
-    /// No normalization or best-only pruning occurs.
-    pub fn admissible_candidates(&self,minimum_inliers:usize,maximum_rms_px:f64)->Vec<(usize,usize)> {
+    pub fn admissible_candidates(&self,minimum_inliers:usize,maximum_rms_px:f64)
+        ->Result<Vec<(usize,usize)>,GeometryError> {
         let mut output=Vec::new();
-        if minimum_inliers==0 || !maximum_rms_px.is_finite() || maximum_rms_px<0.0{return output;}
+        if minimum_inliers==0 || !maximum_rms_px.is_finite() || maximum_rms_px<0.0{return Ok(output);}
+        output.try_reserve_exact(self.samples.len().saturating_mul(8)).map_err(|_|GeometryError::LimitExceeded)?;
         for (sample_index,sample) in self.samples.iter().enumerate(){
             if let FocalSampleOutcome::Candidates(search)=&sample.outcome{
                 for (candidate_index,candidate) in search.candidates().iter().enumerate(){
@@ -83,12 +76,10 @@ impl FocalPoseScan {
                 }
             }
         }
-        output
+        Ok(output)
     }
 }
 
-/// Evaluate a complete log-spaced focal profile using the adaptive nonplanar/planar
-/// camera solver. Fixed principal point and focal aspect ratio are explicit assumptions.
 pub fn scan_camera_focal_length(basis:GeometryBasis,dimensions:[u32;2],
     correspondences:&[Correspondence],options:FocalScanOptions,budget:&mut WorkBudget<'_>)
     ->Result<FocalPoseScan,GeometryError>{
