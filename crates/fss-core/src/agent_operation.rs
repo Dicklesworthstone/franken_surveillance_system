@@ -27,14 +27,15 @@
 //! starts a prepared plan's effects.
 
 use crate::agent::{ContractBasis, SituationCapsule};
-use crate::continuation::{
-    ContinuationCursor, ContinuationError, ContinuationScope,
-};
 use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder};
+use crate::continuation::{ContinuationCursor, ContinuationError, ContinuationScope};
 use crate::contract::ContractError;
+use crate::contract_basis::{registered_operation, ContractBasisError};
 use crate::digest::ContentDigest;
 use crate::evidence::LedgerAnchor;
-use crate::{Completeness, MissionId, PrincipalId, SessionId, TimestampNs};
+use crate::{
+    BudgetVector, Completeness, MissionId, PrincipalId, SessionId, TimestampNs,
+};
 use core::fmt;
 
 /// Number of registered operations (`AOP-001`..`AOP-014`).
@@ -1548,4 +1549,105 @@ pub fn advance_follow_cursor(
         issued_at,
         expires_at,
     )
+}
+
+/// Canonical digest domain of one bounded query read receipt.
+pub const QUERY_READ_RECEIPT_DIGEST_DOMAIN: &str = "fss.agent.query.read.receipt.v1";
+
+/// Typed receipt of one admitted `query` read (AOP-005).
+///
+/// A compiled read is complete only within its explicit top-k boundary, so the
+/// receipt always reports [`Completeness::Bounded`] and binds the anchor, the
+/// entry bound, and the read-relevant cost dimensions. The receipt is a pure
+/// read product: it carries no durable artifact and no effect authority.
+#[derive(Clone, Debug, PartialEq)]
+pub struct QueryReadReceipt {
+    operation: AgentOperation,
+    anchor: LedgerAnchor,
+    max_entries: u32,
+    completeness: Completeness,
+    cost: BudgetVector,
+}
+
+impl QueryReadReceipt {
+    /// Returns the resolved operation row (always `AOP-005`).
+    #[must_use]
+    pub const fn operation(&self) -> AgentOperation {
+        self.operation
+    }
+
+    /// Returns the exact anchor the read is compiled over (one-anchor scope).
+    #[must_use]
+    pub const fn anchor(&self) -> &LedgerAnchor {
+        &self.anchor
+    }
+
+    /// Returns the compiled entry bound.
+    #[must_use]
+    pub const fn max_entries(&self) -> u32 {
+        self.max_entries
+    }
+
+    /// Returns the completeness class (always `Bounded` for compiled reads).
+    #[must_use]
+    pub const fn completeness(&self) -> Completeness {
+        self.completeness
+    }
+
+    /// Returns the bound cost of the read.
+    #[must_use]
+    pub const fn cost(&self) -> &BudgetVector {
+        &self.cost
+    }
+
+    /// Returns the domain-separated canonical digest of this receipt.
+    #[must_use]
+    pub fn receipt_digest(&self) -> ContentDigest {
+        self.canonical_digest(QUERY_READ_RECEIPT_DIGEST_DOMAIN)
+    }
+}
+
+impl CanonicalEncode for QueryReadReceipt {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.text(self.operation.name());
+        self.anchor.encode_canonical(encoder);
+        encoder.u32(self.max_entries);
+        self.completeness.encode_canonical(encoder);
+        self.cost.encode_canonical(encoder);
+    }
+}
+
+/// Admits one bounded compiled read (AOP-005 `query`).
+///
+/// Fail closed unless:
+/// - `operation_name` resolves under `basis` to exactly the registered `query`
+///   row ([`ContractError::NotFound`] for any other operation - this boundary
+///   never compiles reads for other rows); and
+/// - the entry bound is at least 1 and the latency cost bound is positive
+///   ([`ContractError::BudgetExhausted`]): a compiled read that admits nothing
+///   is refused rather than answered with a deceptively complete receipt.
+///
+/// Refusals are typed [`ContractBasisError`]s; budget refusals ride the
+/// `Contract` variant so the stable code of the underlying refusal survives.
+pub fn admit_query_read(
+    basis: &ContractBasis,
+    anchor: &LedgerAnchor,
+    operation_name: &str,
+    max_entries: u32,
+    cost: BudgetVector,
+) -> Result<QueryReadReceipt, ContractBasisError> {
+    let operation = registered_operation(basis, operation_name)?;
+    if operation != AgentOperation::Query {
+        return Err(ContractBasisError::Contract(ContractError::NotFound));
+    }
+    if max_entries == 0 || cost.latency_ms == 0 {
+        return Err(ContractBasisError::Contract(ContractError::BudgetExhausted));
+    }
+    Ok(QueryReadReceipt {
+        operation,
+        anchor: anchor.clone(),
+        max_entries,
+        completeness: Completeness::Bounded,
+        cost,
+    })
 }

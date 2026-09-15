@@ -15,12 +15,14 @@ use fss_core::contract_basis::{
 };
 use fss_core::{AgentOperation, ContractBasis};
 use fss_core::{
-    admit_follow_read, advance_follow_cursor, classify_session_resume, orient_projection,
+    admit_follow_read, admit_query_read, advance_follow_cursor, classify_session_resume,
+    orient_projection,
     BasisRegistryKind, CanonicalDecode, CanonicalEncode, CanonicalEncoder, Completeness,
     ContentDigest, ContinuationCursor, ContinuationCursorPublishParams, ContinuationError,
     ContinuationScope, ContractError, FollowWakeContract, LedgerAnchor, MissionId, OperationMode,
     OperationRetryClass, PossibleWorld, PrincipalId, REGISTERED_OPERATION_COUNT,
-    ResumeInvalidation, SessionId, SituationCapsule, SituationFrame, TimestampNs, WorldEnvelope,
+    ResumeInvalidation, BudgetVector, SessionId, SituationCapsule, SituationFrame, TimestampNs,
+    WorldEnvelope,
     OrientBudget, OrientOmissionTarget, OrientSection,
 };
 use std::collections::BTreeSet;
@@ -46,6 +48,11 @@ const EXPECTED_NAMES: [&str; 14] = [
     "feedback",
     "doctor",
 ];
+
+
+fn test_query_cost(latency_ms: u64) -> Result<BudgetVector, fss_core::BudgetError> {
+    BudgetVector::builder().latency_ms(latency_ms).build()
+}
 
 fn all_rows() -> Vec<AgentOperation> {
     AgentOperation::ALL_OPERATIONS.to_vec()
@@ -855,5 +862,75 @@ fn test_follow_advance_links_predecessor_cursor() -> Result<(), Box<dyn std::err
     // The follow read is durable (AOP-004 durable = yes) and never effectful.
     assert!(AgentOperation::SessionFollow.durable());
     assert!(!AgentOperation::SessionFollow.effectful());
+    Ok(())
+}
+
+#[test]
+fn test_query_read_admission_compiles_bounded_receipt(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let basis = reference_contract_basis();
+    let anchor = LedgerAnchor::genesis("site:fss:query");
+    let cost = test_query_cost(250)?;
+    let receipt = admit_query_read(&basis, &anchor, "query", 25, cost)?;
+    assert_eq!(receipt.operation(), AgentOperation::Query);
+    assert_eq!(receipt.max_entries(), 25);
+    // A compiled read is complete only within its explicit boundary.
+    assert_eq!(receipt.completeness(), Completeness::Bounded);
+    assert_eq!(receipt.cost().latency_ms, 250);
+    assert_eq!(receipt.anchor().site_lineage, "site:fss:query");
+    // Deterministic identity; different bounds yield different receipts.
+    let again = admit_query_read(
+        &basis,
+        &anchor,
+        "query",
+        25,
+        test_query_cost(250)?,
+    )?;
+    assert_eq!(receipt.receipt_digest(), again.receipt_digest());
+    let other = admit_query_read(
+        &basis,
+        &anchor,
+        "query",
+        26,
+        test_query_cost(250)?,
+    )?;
+    assert_ne!(receipt.receipt_digest(), other.receipt_digest());
+    Ok(())
+}
+
+#[test]
+fn test_query_read_refuses_other_operations_and_empty_budgets(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let basis = reference_contract_basis();
+    let anchor = LedgerAnchor::genesis("site:fss:query");
+    let cost = test_query_cost(100)?;
+    // This boundary never compiles reads for another registered row.
+    let err = admit_query_read(&basis, &anchor, "explain", 10, cost)
+        .err()
+        .ok_or("expected refusal for non-query operation")?;
+    assert_eq!(
+        err,
+        ContractBasisError::Contract(ContractError::NotFound)
+    );
+    // Unregistered names refuse before any budget work.
+    assert!(admit_query_read(&basis, &anchor, "queryx", 10, cost).is_err());
+    // A zero entry bound admits nothing.
+    assert_eq!(
+        admit_query_read(&basis, &anchor, "query", 0, cost),
+        Err(ContractBasisError::Contract(
+            ContractError::BudgetExhausted
+        ))
+    );
+    // A zero latency bound is unbounded work.
+    let free = test_query_cost(0)?;
+    assert_eq!(
+        admit_query_read(&basis, &anchor, "query", 10, free),
+        Err(ContractBasisError::Contract(
+            ContractError::BudgetExhausted
+        ))
+    );
+    // The query row itself stays a non-durable, non-effectful read.
+    assert!(!AgentOperation::Query.durable());
+    assert!(!AgentOperation::Query.effectful());
     Ok(())
 }
