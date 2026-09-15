@@ -33,7 +33,7 @@ fn scan_preserves_all_samples_and_contains_true_focal_solution()->Test{
     let FocalSampleOutcome::Candidates(search)=midpoint.outcome() else{return Err("true focal sample failed".into());};
     assert_eq!(search.candidates()[0].inlier_landmarks().len(),32);
     assert!(search.candidates()[0].rms_px()<1e-5);
-    assert!(scan.admissible_candidates(30,0.01).contains(&(16,0)));
+    assert!(scan.admissible_candidates(30,0.01)?.contains(&(16,0)));
     Ok(())
 }
 
