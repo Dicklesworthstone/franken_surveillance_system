@@ -4,15 +4,6 @@ use crate::linear::{linear_pose, map_normalization};
 use crate::math::{norm, sub};
 use crate::refine::refine;
 
-/// Estimate camera pose from supplied, nonplanar 2D-to-3D correspondences.
-///
-/// Uses normalized DLT seeds, bounded deterministic six-point sampling, proper
-/// rotation recovery, robust LM refinement, cheirality and support checks. The
-/// imported map and supplied pinhole intrinsics never move to improve a fit.
-/// Planar/collinear maps explicitly require another solver. This function does
-/// not match images, authenticate cameras, activate calibration, or assign a
-/// probability to any returned mode. More than eight distinct passing modes is
-/// an explicit ambiguity failure, not an arbitrary truncated success.
 pub fn estimate_camera_pose(basis: GeometryBasis, intrinsics: PinholeIntrinsics,
     correspondences: &[Correspondence], options: PoseSolverOptions, budget: &mut WorkBudget<'_>)
     -> Result<PoseSearch, GeometryError> {
@@ -82,14 +73,14 @@ pub fn estimate_camera_pose(basis: GeometryBasis, intrinsics: PinholeIntrinsics,
     candidates.sort_by(|a, b| b.inlier_landmarks.len().cmp(&a.inlier_landmarks.len()).then(a.rms_px.total_cmp(&b.rms_px)));
     budget.charge(0)?;
     Ok(PoseSearch { basis, intrinsics, fit: points, candidates,
-        trials_attempted: options.ransac_trials + 1, work_units: budget.used() - started })
+        trials_attempted: options.ransac_trials + 1, work_units: budget.used() - started, planar_support: None })
 }
 
-fn control_failure(error: GeometryError) -> bool {
+pub(super) fn control_failure(error: GeometryError) -> bool {
     matches!(error, GeometryError::Cancelled | GeometryError::BudgetExhausted | GeometryError::LimitExceeded)
 }
 
-fn score(points: &[Correspondence], k: PinholeIntrinsics, pose: RigidPose, threshold: f64,
+pub(super) fn score(points: &[Correspondence], k: PinholeIntrinsics, pose: RigidPose, threshold: f64,
     budget: &mut WorkBudget<'_>) -> Result<(Vec<usize>, f64, f64), GeometryError> {
     let mut inliers = Vec::new();
     inliers.try_reserve_exact(points.len()).map_err(|_| GeometryError::LimitExceeded)?;
@@ -113,7 +104,7 @@ fn score(points: &[Correspondence], k: PinholeIntrinsics, pose: RigidPose, thres
     Ok((inliers, rms, maximum))
 }
 
-fn image_spread(points: &[Correspondence], indices: &[usize], k: PinholeIntrinsics, floor: f64) -> bool {
+pub(super) fn image_spread(points: &[Correspondence], indices: &[usize], k: PinholeIntrinsics, floor: f64) -> bool {
     let mut minimum = [f64::INFINITY; 2];
     let mut maximum = [f64::NEG_INFINITY; 2];
     for &i in indices {
@@ -123,7 +114,7 @@ fn image_spread(points: &[Correspondence], indices: &[usize], k: PinholeIntrinsi
     (0..2).all(|axis| maximum[axis] - minimum[axis] >= floor * f64::from(dimensions[axis]))
 }
 
-fn equivalent_pose(a: RigidPose, b: RigidPose, size: f64) -> bool {
+pub(super) fn equivalent_pose(a: RigidPose, b: RigidPose, size: f64) -> bool {
     if norm(sub(a.center(), b.center())) > 0.01 * size { return false; }
     let ra = a.rotation();
     let rb = b.rotation();
@@ -132,12 +123,12 @@ fn equivalent_pose(a: RigidPose, b: RigidPose, size: f64) -> bool {
     ((trace - 1.0) * 0.5).clamp(-1.0, 1.0).acos() <= 0.02
 }
 
-fn better(a: &PoseCandidate, b: &PoseCandidate) -> bool {
+pub(super) fn better(a: &PoseCandidate, b: &PoseCandidate) -> bool {
     a.inlier_landmarks.len() > b.inlier_landmarks.len()
         || (a.inlier_landmarks.len() == b.inlier_landmarks.len() && a.rms_px < b.rms_px)
 }
 
-fn next_random(state: &mut u64) -> u64 {
+pub(super) fn next_random(state: &mut u64) -> u64 {
     *state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
     let mut value = *state;
     value = (value ^ (value >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
