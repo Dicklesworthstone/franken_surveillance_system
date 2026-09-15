@@ -13,7 +13,6 @@ mod navigation;
 
 pub use navigation::{MAX_NAVIGATION_TRIANGLES, MovementClass, NavigationError, NavigationProfile,
     RouteOutcome, RouteQuery, RouteSearch, SupportLocation, SupportNetwork, SurfaceRoute};
-
 pub use interval::{Bounds3, Interval};
 pub use tracking::{ContactHypothesis, ContactObservation, ContactProjection, ProjectionError,
     ProjectionOptions, ProjectionQuality, TrackingCamera, project_contact};
@@ -21,7 +20,6 @@ pub use track_motion::{MotionFitOptions, PropagatedPosition, WorldMotion, WorldM
     fit_world_motion, propagate_motion};
 
 use fss_geometry::{GeometryBasis, GeometryError, IndexedTriangle, TriangleMesh};
-
 pub use wire::{ImportExpectation, ImportLimits, import_twin};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -95,6 +93,7 @@ pub mod localization;
 pub mod atlas_archive;
 pub mod stream;
 pub mod observed_handoff;
+pub mod monitored_handoff;
 pub mod rectification;
 pub mod association;
 pub mod association_hypotheses;
