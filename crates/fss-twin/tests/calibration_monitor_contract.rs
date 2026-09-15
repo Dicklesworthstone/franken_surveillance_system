@@ -77,9 +77,9 @@ fn sparse_current_support_is_indeterminate_not_valid_or_invalid()->Test{
 fn reference_reuse_and_image_domain_rebinding_are_refused()->Test{
     let twin=common::twin(&[0.0],None)?; let mut budget=WorkBudget::new(10_000_000); let atlas=atlas(&twin,&mut budget)?;
     let reused=frame(1,[0.0,0.0],12,[3;32],&mut budget)?;
-    assert_eq!(monitor_calibration(&twin,&atlas,&reused,frozen()?,matching(),CalibrationMonitorPolicy::default(),&mut budget),Err(CalibrationMonitorError::ReferenceExposure));
+    assert!(matches!(monitor_calibration(&twin,&atlas,&reused,frozen()?,matching(),CalibrationMonitorPolicy::default(),&mut budget),Err(CalibrationMonitorError::ReferenceExposure)));
     let wrong=frame(2,[0.0,0.0],12,[4;32],&mut budget)?;
-    assert_eq!(monitor_calibration(&twin,&atlas,&wrong,frozen()?,matching(),CalibrationMonitorPolicy::default(),&mut budget),Err(CalibrationMonitorError::BasisMismatch));
+    assert!(matches!(monitor_calibration(&twin,&atlas,&wrong,frozen()?,matching(),CalibrationMonitorPolicy::default(),&mut budget),Err(CalibrationMonitorError::BasisMismatch)));
     Ok(())
 }
 
