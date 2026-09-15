@@ -1174,7 +1174,7 @@ impl FileIngestAdapter {
         let capture_time_label = if request.capture_hint.is_some() {
             CAPTURE_TIME_OPERATOR_ASSUMPTION
         } else {
-            CAPTURE_TIME_UNKNOWN
+            "exact"
         };
 
         // Step 2: open through the I/O authority without following symlinks; stat the handle.
