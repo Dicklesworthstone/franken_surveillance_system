@@ -1235,7 +1235,7 @@ fn test_wait_retry_requires_effect_reconciliation() -> Result<(), Box<dyn std::e
     );
     // Determinate outcomes never gate the retry.
     assert_eq!(
-        require_reconciliation_before_retry(RuntimeOutcome::Committed, None),
+        require_reconciliation_before_retry(RuntimeOutcome::Ok, None),
         Ok(())
     );
     Ok(())
@@ -1286,15 +1286,14 @@ fn test_explain_receipt_is_bounded_and_deterministic(
         1,
     )?;
     assert_eq!(receipt.question(), ExplainQuestion::WhyNot);
-    // Subgraph normalized to strictly ascending order with duplicates removed.
-    assert_eq!(
-        receipt.evidence_subgraph(),
-        &[
-            ContentDigest::sha256(b"evidence-a"),
-            ContentDigest::sha256(b"evidence-b"),
-            ContentDigest::sha256(b"evidence-c"),
-        ]
-    );
+    // Subgraph normalized to strictly ascending digest order, deduplicated,
+    // with every distinct input retained.
+    let subgraph = receipt.evidence_subgraph();
+    assert_eq!(subgraph.len(), 3);
+    assert!(subgraph.windows(2).all(|pair| pair[0] < pair[1]));
+    for named in ["evidence-a", "evidence-b", "evidence-c"] {
+        assert!(subgraph.contains(&ContentDigest::sha256(named.as_bytes())));
+    }
     // Handles are bounded.
     assert_eq!(receipt.expansion_handles(), &["fss://handle/1".to_owned()]);
     // An explanation with no evidence is an unanchored claim: refused.
