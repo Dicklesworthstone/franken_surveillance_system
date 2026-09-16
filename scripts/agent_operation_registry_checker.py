@@ -36,6 +36,24 @@ AGENT_OPERATIONS_JSON_PATH = "architecture/agent_operations.json"
 AGENT_OPERATIONS_MD_PATH = "registries/AGENT_OPERATIONS.md"
 FROZEN_PUBLIC_REGISTRY_PATH = "architecture/fss1_public_registry.json"
 AGENT_OPERATION_RS_PATH = "crates/fss-core/src/agent_operation.rs"
+AGENT_VIEWS_JSON_PATH = "architecture/agent_views.json"
+AGENT_VIEWS_MD_PATH = "registries/AGENT_VIEWS.md"
+AGENT_VIEW_RS_PATH = "crates/fss-core/src/agent_view.rs"
+
+# Views: registered stable diagnostic finding IDs (registries/ERRORS.md)
+ERR_VW_REGISTRY_DRIFT = "ERR-VW-REGISTRY-DRIFT-001"
+ERR_VW_STABLE_ID_REUSED = "ERR-VW-STABLE-ID-REUSED-001"
+ERR_VW_MISSING_FIELD = "ERR-VW-MISSING-FIELD-001"
+ERR_VW_CORRUPT_FILE = "ERR-VW-CORRUPT-FILE-001"
+ERR_VW_SEMANTIC_INVARIANT = "ERR-VW-SEMANTIC-INVARIANT-001"
+ERR_VW_RUST_DRIFT = "ERR-VW-RUST-DRIFT-001"
+
+EXPECTED_VIEW_IDS = [f"AVIEW-{i:03d}" for i in range(1, 9)]
+VIEW_ROW_KEYS = [
+    "id", "name", "owner", "purpose", "requiredSections",
+    "targetTokens", "maximumTokens", "gate", "status",
+]
+CANONICAL_VIEW_ROW_RE = re.compile(r'"(AVIEW-\d{3}\|[^"\n]+)"')
 
 EXPECTED_IDS = [f"AOP-{i:03d}" for i in range(1, 15)]
 
@@ -105,6 +123,7 @@ class DiagnosticError:
 class ValidationResult:
     passed: bool = True
     operation_count: int = 0
+    view_count: int = 0
     errors: list[DiagnosticError] = field(default_factory=list)
 
     def add_error(self, code: str, file_path: str, target: str, message: str) -> None:
@@ -512,6 +531,171 @@ def validate_agent_operation_registry(repo_root: Path) -> ValidationResult:
     return result
 
 
+def canonical_view_fields_from_text(text: str) -> dict[str, Any] | None:
+    fields = text.split("|")
+    if len(fields) != 7:
+        return None
+    sections = fields[6].split(";") if fields[6] else []
+    return {
+        "id": fields[0],
+        "name": fields[1],
+        "owner": fields[2],
+        "targetTokens": int(fields[3]),
+        "maximumTokens": int(fields[4]),
+        "gate": fields[5],
+        "requiredSections": sections,
+    }
+
+
+def extract_rust_view_rows(rs_path: Path) -> dict[str, str]:
+    content = rs_path.read_text(encoding="utf-8")
+    fn_start = content.index("pub const fn canonical_row_encoding(self)")
+    fn_body = content[fn_start:]
+    return {text.split("|", 1)[0]: text for text in CANONICAL_VIEW_ROW_RE.findall(fn_body)}
+
+
+def validate_agent_view_registry(
+    repo_root: Path, result: ValidationResult
+) -> ValidationResult:
+    json_path = repo_root / AGENT_VIEWS_JSON_PATH
+    md_path = repo_root / AGENT_VIEWS_MD_PATH
+    rs_path = repo_root / AGENT_VIEW_RS_PATH
+
+    views: list[dict[str, Any]] = []
+    if not json_path.is_file():
+        result.add_error(ERR_VW_CORRUPT_FILE, AGENT_VIEWS_JSON_PATH, "#", "missing mandatory view registry")
+    else:
+        try:
+            doc = json.loads(json_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            result.add_error(ERR_VW_CORRUPT_FILE, AGENT_VIEWS_JSON_PATH, "#", f"corrupt view registry: {exc}")
+            doc = None
+        if isinstance(doc, dict):
+            if doc.get("schema") != "fss.agent_views.v1":
+                result.add_error(ERR_VW_MISSING_FIELD, AGENT_VIEWS_JSON_PATH, "#/schema", "registry schema must be fss.agent_views.v1")
+            if not isinstance(doc.get("asOf"), str) or not doc.get("asOf", "").strip():
+                result.add_error(ERR_VW_MISSING_FIELD, AGENT_VIEWS_JSON_PATH, "#/asOf", "missing or empty asOf metadata")
+            raw = doc.get("views")
+            if not isinstance(raw, list):
+                result.add_error(ERR_VW_CORRUPT_FILE, AGENT_VIEWS_JSON_PATH, "#/views", "missing mandatory 'views' collection")
+            else:
+                views = [v for v in raw if isinstance(v, dict)]
+    if not md_path.is_file():
+        result.add_error(ERR_VW_CORRUPT_FILE, AGENT_VIEWS_MD_PATH, "#", "missing mandatory view mirror")
+    if not rs_path.is_file():
+        result.add_error(ERR_VW_RUST_DRIFT, AGENT_VIEW_RS_PATH, "#", "missing typed view table crates/fss-core/src/agent_view.rs")
+
+    view_map: dict[str, dict[str, Any]] = {}
+    for row in views:
+        vid = row.get("id")
+        if not isinstance(vid, str) or not vid:
+            result.add_error(ERR_VW_MISSING_FIELD, AGENT_VIEWS_JSON_PATH, "#/views", "view row without a stable ID")
+            continue
+        if vid in view_map:
+            result.add_error(ERR_VW_STABLE_ID_REUSED, AGENT_VIEWS_JSON_PATH, f"#/views/{vid}", f"stable ID '{vid}' duplicated")
+            continue
+        view_map[vid] = row
+    if sorted(view_map) != EXPECTED_VIEW_IDS:
+        result.add_error(ERR_VW_STABLE_ID_REUSED, AGENT_VIEWS_JSON_PATH, "#/views", f"stable ID set diverged from AVIEW-001..008: found {sorted(view_map)}")
+
+    incomplete: set[str] = set()
+    for vid, row in view_map.items():
+        for key in VIEW_ROW_KEYS:
+            value = row.get(key)
+            if value is None or (isinstance(value, str) and not value.strip()):
+                result.add_error(ERR_VW_MISSING_FIELD, AGENT_VIEWS_JSON_PATH, f"#/views/{vid}/{key}", "missing or empty mandatory view field")
+                incomplete.add(vid)
+            elif isinstance(value, list) and not value:
+                result.add_error(ERR_VW_MISSING_FIELD, AGENT_VIEWS_JSON_PATH, f"#/views/{vid}/{key}", "empty mandatory view list field")
+                incomplete.add(vid)
+    result.view_count = len(view_map)
+
+    md_rows = parse_markdown_table(md_path)
+    md_map = {row["ID"]: row for row in md_rows if row.get("ID", "").startswith("AVIEW-")}
+    if set(md_map) != set(view_map):
+        for vid in set(view_map) - set(md_map):
+            result.add_error(ERR_VW_REGISTRY_DRIFT, AGENT_VIEWS_MD_PATH, f"#{vid}", f"view '{vid}' in architecture is missing from the markdown mirror")
+        for vid in set(md_map) - set(view_map):
+            result.add_error(ERR_VW_REGISTRY_DRIFT, AGENT_VIEWS_JSON_PATH, f"#/views/{vid}", f"view '{vid}' in markdown is missing from the machine registry")
+    for vid in sorted(set(view_map) & set(md_map)):
+        row, md = view_map[vid], md_map[vid]
+        for json_key, md_key, in (("name", "Name"), ("owner", "Owner"), ("gate", "Gate"), ("status", "Status")):
+            if row.get(json_key) != md.get(md_key):
+                result.add_error(ERR_VW_REGISTRY_DRIFT, AGENT_VIEWS_JSON_PATH, f"#/views/{vid}/{json_key}", f"field '{json_key}' drifted between machine registry ({row.get(json_key)!r}) and markdown mirror ({md.get(md_key)!r})")
+        try:
+            md_target = int(str(md.get("Target tokens", "")).strip())
+        except ValueError:
+            md_target = md.get("Target tokens")
+        if row.get("targetTokens") != md_target:
+            result.add_error(ERR_VW_REGISTRY_DRIFT, AGENT_VIEWS_JSON_PATH, f"#/views/{vid}/targetTokens", f"targetTokens drifted: JSON {row.get('targetTokens')!r} vs markdown {md.get('Target tokens')!r}")
+        try:
+            md_maximum = int(str(md.get("Maximum tokens", "")).strip())
+        except ValueError:
+            md_maximum = md.get("Maximum tokens")
+        if row.get("maximumTokens") != md_maximum:
+            result.add_error(ERR_VW_REGISTRY_DRIFT, AGENT_VIEWS_JSON_PATH, f"#/views/{vid}/maximumTokens", f"maximumTokens drifted: JSON {row.get('maximumTokens')!r} vs markdown {md.get('Maximum tokens')!r}")
+
+    for vid in sorted(view_map):
+        if vid in incomplete:
+            continue
+        row = view_map[vid]
+        target, maximum = row.get("targetTokens"), row.get("maximumTokens")
+        if not isinstance(target, int) or not isinstance(maximum, int) or target < 1 or maximum < target:
+            result.add_error(ERR_VW_SEMANTIC_INVARIANT, AGENT_VIEWS_JSON_PATH, f"#/views/{vid}/targetTokens", f"view '{vid}' token bounds violate 1 <= target <= maximum")
+        if row.get("gate") != REGISTERED_GATE:
+            result.add_error(ERR_VW_SEMANTIC_INVARIANT, AGENT_VIEWS_JSON_PATH, f"#/views/{vid}/gate", f"view '{vid}' gate diverges from '{REGISTERED_GATE}'")
+        if row.get("status") != REGISTERED_STATUS:
+            result.add_error(ERR_VW_SEMANTIC_INVARIANT, AGENT_VIEWS_JSON_PATH, f"#/views/{vid}/status", f"view '{vid}' status diverges from baseline; a transition requires a registry generation bump")
+        if not str(row.get("owner", "")).startswith("fss-"):
+            result.add_error(ERR_VW_SEMANTIC_INVARIANT, AGENT_VIEWS_JSON_PATH, f"#/views/{vid}/owner", f"view '{vid}' owner is not an fss- crate identity")
+
+    # Foreign key: every operation default view must be a registered view.
+    operations_path = repo_root / AGENT_OPERATIONS_JSON_PATH
+    try:
+        operations_doc = json.loads(operations_path.read_text(encoding="utf-8"))
+        for op in operations_doc.get("operations", []):
+            default_view = op.get("defaultView")
+            if default_view not in view_map:
+                result.add_error(ERR_VW_SEMANTIC_INVARIANT, AGENT_OPERATIONS_JSON_PATH, f"#/operations/{op.get('id')}/defaultView", f"default view '{default_view}' is not a registered view")
+    except (OSError, json.JSONDecodeError):
+        pass
+
+    # Typed Rust table agreement.
+    if rs_path.is_file():
+        try:
+            rust_rows = extract_rust_view_rows(rs_path)
+        except (OSError, ValueError) as exc:
+            result.add_error(ERR_VW_RUST_DRIFT, AGENT_VIEW_RS_PATH, "#/canonical_row_encoding", f"failed to parse canonical view rows: {exc}")
+            rust_rows = {}
+        for vid in EXPECTED_VIEW_IDS:
+            if vid not in rust_rows:
+                result.add_error(ERR_VW_RUST_DRIFT, AGENT_VIEW_RS_PATH, f"#/canonical_row_encoding/{vid}", f"typed view table is missing canonical row '{vid}'")
+        for vid in sorted(rust_rows):
+            if vid not in EXPECTED_VIEW_IDS:
+                result.add_error(ERR_VW_RUST_DRIFT, AGENT_VIEW_RS_PATH, f"#/canonical_row_encoding/{vid}", f"typed view table carries unregistered row '{vid}'")
+                continue
+            fields = canonical_view_fields_from_text(rust_rows[vid])
+            row = view_map.get(vid, {})
+            if fields is None:
+                result.add_error(ERR_VW_RUST_DRIFT, AGENT_VIEW_RS_PATH, f"#/canonical_row_encoding/{vid}", f"canonical view row '{vid}' does not have exactly 7 fields")
+                continue
+            if vid in incomplete:
+                continue
+            expected = {
+                "id": vid,
+                "name": row.get("name"),
+                "owner": row.get("owner"),
+                "targetTokens": row.get("targetTokens"),
+                "maximumTokens": row.get("maximumTokens"),
+                "gate": row.get("gate"),
+                "requiredSections": list(row.get("requiredSections", [])),
+            }
+            for key, value in expected.items():
+                if fields.get(key) != value:
+                    result.add_error(ERR_VW_RUST_DRIFT, AGENT_VIEW_RS_PATH, f"#/canonical_row_encoding/{vid}/{key}", f"Rust view row field '{key}' ({fields.get(key)!r}) drifted from machine registry ({value!r})")
+    return result
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Validate agent operation registry against markdown, frozen registry, and typed Rust table"
@@ -521,11 +705,13 @@ def main() -> int:
     args = parser.parse_args()
 
     result = validate_agent_operation_registry(args.repo_root)
+    result = validate_agent_view_registry(args.repo_root, result)
     if args.json:
         payload = {
             "schema": "fss.agent_operation_registry_validation.v1",
             "passed": result.passed,
             "operationCount": result.operation_count,
+            "viewCount": result.view_count,
             "errorCount": len(result.errors),
             "errors": [asdict(e) for e in result.errors],
         }
@@ -533,8 +719,8 @@ def main() -> int:
     else:
         if result.passed:
             print(
-                f"[PASS] Agent operation registry verified: {result.operation_count} operations "
-                "with typed Rust agreement."
+                f"[PASS] Agent operation and view registries verified: {result.operation_count} operations, "
+                f"{result.view_count} views with typed Rust agreement."
             )
         else:
             print(
