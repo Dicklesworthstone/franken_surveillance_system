@@ -8,6 +8,7 @@
 mod continuity;
 mod error;
 mod h264;
+mod reorder;
 mod rtcp;
 mod rtp;
 mod timing;
@@ -27,4 +28,8 @@ pub use timing::{JitterEstimator, SenderReportClock, SenderTimeEstimate, arrival
 pub use h264::{
     FragmentDiscard, H264Depacketizer, H264Error, H264Failure, H264Limits, H264Mode, H264Output,
     H264Status, NalSourceSpan, NalUnit,
+};
+pub use reorder::{
+    OrderedRtpPacket, QueueDiscard, QueueDiscardReason, ReorderAdmission, ReorderDisposition,
+    ReorderError, ReorderGap, ReorderGapReason, ReorderLimits, ReorderPoll, RtpReorderBuffer,
 };
