@@ -17,6 +17,8 @@ pub mod recording;
 pub mod recording_collector;
 /// Bounded receiver-event capture with explicit timing and automatic failure fencing.
 pub mod recording_capture;
+/// Immutable multi-window discovery and bounded, verified decode-range retrieval.
+pub mod recording_catalog;
 pub mod sdp;
 
 pub use message::{
