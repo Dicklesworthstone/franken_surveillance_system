@@ -19,6 +19,8 @@ pub mod recording_collector;
 pub mod recording_capture;
 /// Immutable multi-window discovery and bounded, verified decode-range retrieval.
 pub mod recording_catalog;
+/// Bounded local archive discovery, restart recovery, and cross-page retrieval.
+pub mod recording_archive;
 pub mod sdp;
 
 pub use message::{
