@@ -16,6 +16,7 @@ pub mod agent_query_plan;
 pub mod agent_operation;
 pub mod agent_request;
 pub mod agent_view;
+pub mod agent_workspace;
 pub mod belief;
 mod canonical;
 mod compression;
@@ -80,6 +81,12 @@ pub use agent_contracts::{
     AgentSession, AgentSessionParams, MissionContract, MissionContractParams, MissionState,
     ObjectiveContract, ObjectiveContractParams, ObjectiveScope, SessionCapsule,
     SessionCapsuleParams,
+};
+pub use agent_workspace::{
+    AgentFeedbackProposal, CompetitionPolicy, ControlEdge, ControlPlan, ControlStep,
+    ControlStepKind, FeedbackProposalKind, FeedbackPrivacyClass, HypothesisWorkspace,
+    RequestedDisposition, StepReversibility, StepRisk, StepRobustness,
+    WorkspaceHypothesis, WorkspaceHypothesisStatus,
 };
 pub use agent_request::{
     AgentRequestEnvelope, AgentRequestEnvelopeParams, PrivacyProjection, RequestTaint,

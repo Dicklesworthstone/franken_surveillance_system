@@ -5,13 +5,12 @@
 
 use std::collections::BTreeSet;
 
-use crate::agent::ContractBasis;
 use crate::canonical::{CanonicalEncode, CanonicalEncoder};
 use crate::contract::ContractError;
 use crate::digest::ContentDigest;
 use crate::evidence::LedgerAnchor;
 use crate::ids::validate_id;
-use crate::{PrincipalId, SessionId};
+use crate::{BudgetVector, PrincipalId, SessionId};
 
 fn check_portable(value: &str, max_len: usize) -> Result<(), ContractError> {
     validate_id(value)?;
@@ -120,7 +119,9 @@ pub struct WorkspaceHypothesis {
     pub distinguishing_tests: Vec<String>,
     /// Consequences of accepting, rejecting, or leaving unresolved.
     pub consequences_accept: Vec<String>,
+    /// Consequences of rejecting.
     pub consequences_reject: Vec<String>,
+    /// Consequences of leaving unresolved.
     pub consequences_unresolved: Vec<String>,
 }
 
@@ -503,6 +504,7 @@ impl ControlPlan {
     ///
     /// Fails closed unless entry steps and edges reference existing steps and
     /// the decision digest carries the registered lowercase spelling.
+    #[allow(clippy::too_many_arguments)] // constructor mirrors the registered schema field list 1:1
     pub fn compile(
         plan_id: impl Into<String>,
         objective_id: impl Into<String>,
@@ -663,7 +665,7 @@ impl CanonicalEncode for ControlPlan {
             encoder.text(&edge.from);
             encoder.text(&edge.to);
             encoder.text(&edge.condition);
-            encoder.i64(edge.priority);
+            encoder.i128(i128::from(edge.priority));
         }
         encoder.u32(self.entry_steps.len() as u32);
         for entry in &self.entry_steps {
@@ -683,7 +685,7 @@ impl CanonicalEncode for ControlPlan {
 
 /// Registered feedback kinds.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FeedbackKind {
+pub enum FeedbackProposalKind {
     /// Correction.
     Correction,
     /// Adjudication.
@@ -710,7 +712,7 @@ pub enum FeedbackKind {
     ModelCandidate,
 }
 
-impl FeedbackKind {
+impl FeedbackProposalKind {
     /// Returns the stable registry spelling.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -809,7 +811,7 @@ pub struct AgentFeedbackProposal {
     /// Feedback target (pinned canonical JSON).
     pub target_json: String,
     /// Feedback kind.
-    pub kind: FeedbackKind,
+    pub kind: FeedbackProposalKind,
     /// Statement.
     pub statement: String,
     /// Supporting evidence handles (lowercase digest spelling).
@@ -832,13 +834,14 @@ impl AgentFeedbackProposal {
     pub const ACTIVE_POLICY_MUTATION: bool = false;
 
     /// Validates and constructs a feedback proposal.
+    #[allow(clippy::too_many_arguments)] // constructor mirrors the registered schema field list 1:1
     pub fn new(
         feedback_id: impl Into<String>,
         principal_id: PrincipalId,
         session_id: SessionId,
         basis_anchor: LedgerAnchor,
         target_json: impl Into<String>,
-        kind: FeedbackKind,
+        kind: FeedbackProposalKind,
         statement: impl Into<String>,
         supporting_evidence: Vec<String>,
         contradicting_evidence: Vec<String>,

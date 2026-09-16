@@ -815,9 +815,6 @@ class TestSchemaConstitution(unittest.TestCase):
         expected_declared_only = {
             "fss.adapter_compatibility_certificate.v1",
             "fss.agent_cognitive_envelope.v1",
-            "fss.agent_control_plan.v1",
-            "fss.agent_feedback_proposal.v1",
-            "fss.agent_hypothesis_workspace.v1",
             "fss.agent_response_envelope.v1",
             "fss.calibration_certificate.v1",
             "fss.cancellation_drain_certificate.v1",
@@ -1351,8 +1348,11 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         # + fss.agent_work_claim.v1 / fss.agent_finding.v1 / fss.agent_learning_proposal.v1 /
         #   fss.experience_capsule.v1 / fss.agent_execution_episode.v1
         #   (owners WorkClaim / AgentFinding / LearningProposal / ExperienceCapsule /
-        #   ExecutionEpisode, fss-x4a.30.83.57-62).
-        self.assertEqual(result["implementedCount"], 45)
+        #   ExecutionEpisode, fss-x4a.30.83.57-62)
+        # + fss.agent_hypothesis_workspace.v1 / fss.agent_control_plan.v1 /
+        #   fss.agent_feedback_proposal.v1 (owners HypothesisWorkspace / ControlPlan /
+        #   AgentFeedbackProposal, fss-x4a.30.83.52/56/61).
+        self.assertEqual(result["implementedCount"], 48)
 
         unreg_findings = [
             f for f in validator.findings
