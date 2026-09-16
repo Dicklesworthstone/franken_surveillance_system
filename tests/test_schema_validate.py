@@ -823,12 +823,8 @@ class TestSchemaConstitution(unittest.TestCase):
             "fss.agent_handoff_capsule.v1",
             "fss.agent_hypothesis_workspace.v1",
             "fss.agent_learning_proposal.v1",
-            "fss.agent_mission.v1",
-            "fss.agent_objective_contract.v1",
             "fss.agent_query_plan.v1",
             "fss.agent_response_envelope.v1",
-            "fss.agent_session.v1",
-            "fss.agent_session_capsule.v1",
             "fss.agent_work_claim.v1",
             "fss.calibration_certificate.v1",
             "fss.cancellation_drain_certificate.v1",
@@ -1113,7 +1109,7 @@ class TestSchemaConstitution(unittest.TestCase):
     def test_unowned_implemented_schema_claim_fails_closed(self) -> None:
         validator = schema_validate.Validator()
         claimed = {
-            "fss.agent_mission.v1": "implemented"  # declared-only; has no Rust owner in fss-core
+            "fss.agent_response_envelope.v1": "implemented"  # declared-only; has no Rust owner in fss-core (fss-x4a.30.83.41+ owns its realization)
         }
         result = schema_validate.validate_schema_constitution(
             repo_root=ROOT,
@@ -1351,11 +1347,13 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         self.assertEqual(result["status"], "passed")
         self.assertEqual(result["unregisteredImplementedCount"], 0)
         self.assertEqual(result["digestDomainCount"], 71)
-        # 32 = 28 + fss.sensor_tamper_status.v1 (owner SensorTamperStatus, fss-2uftm)
-        # + fss.agent_operations.v1 (owner AgentOperation, fss-x4a.30.83.17)
-        # + fss.agent_views.v1 (owner AgentView, fss-x4a.30.83.31-38)
-        # + fss.agent_request_envelope.v1 (owner AgentRequestEnvelope, fss-x4a.30.83.40).
-        self.assertEqual(result["implementedCount"], 32)
+        # 36 = 28 + fss.sensor_tamper_status.v1 (owner SensorTamperStatus, fss-2uftm)
+        # + fss.agent_operations.v1 / fss.agent_views.v1 / fss.agent_request_envelope.v1
+        #   (owners AgentOperation / AgentView / AgentRequestEnvelope, fss-x4a.30.83.17-40)
+        # + fss.agent_mission.v1 / fss.agent_objective_contract.v1 / fss.agent_session.v1 /
+        #   fss.agent_session_capsule.v1 (owners MissionContract / ObjectiveContract /
+        #   AgentSession / SessionCapsule, fss-x4a.30.83.41-44).
+        self.assertEqual(result["implementedCount"], 36)
 
         unreg_findings = [
             f for f in validator.findings

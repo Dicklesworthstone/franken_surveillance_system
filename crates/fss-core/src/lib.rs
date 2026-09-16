@@ -9,6 +9,7 @@
 pub mod abstraction;
 pub mod acquisition;
 mod agent;
+pub mod agent_contracts;
 pub mod agent_operation;
 pub mod agent_request;
 pub mod agent_view;
@@ -58,6 +59,11 @@ pub use agent::{
     LABORATORY_PROVENANCE_MARKER, MissionLifecycleState, PossibleWorld, REDACTED_STATEMENT_MARKER,
     ReconciliationBasis, ReconciliationBranch, RedactionMarker, RedactionReason, SituationCapsule,
     SituationFrame, StaleBasis, UnknownReason, WorldEnvelope,
+};
+pub use agent_contracts::{
+    AgentSession, AgentSessionParams, MissionContract, MissionContractParams, MissionState,
+    ObjectiveContract, ObjectiveContractParams, ObjectiveScope, SessionCapsule,
+    SessionCapsuleParams,
 };
 pub use agent_request::{
     AgentRequestEnvelope, AgentRequestEnvelopeParams, PrivacyProjection, RequestTaint,
