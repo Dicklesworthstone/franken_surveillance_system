@@ -47,6 +47,40 @@ This API opens no socket, reads no ambient clock, spawns no worker, and grants
 no sensor authority. It does not certify access-unit completeness, decodability,
 physical absence, capture continuity, or durable publication.
 
+## Composed H.264 receiver
+
+`H264Receiver` composes this queue with `H264Depacketizer`. Use `ingest` for
+transport admission, then drive `poll` until pending. Each packet event owns its
+exact original datagram alongside either complete/pending NAL reconstruction
+or a typed codec refusal. A malformed aggregation, missing fragment, allocation
+failure, or codec budget refusal never erases that event's original bytes.
+Input not admitted to the queue remains independently owned by the caller.
+
+A delivery-gap event immediately retires an incomplete FU chain and returns its
+receipt before the next packet is released. A reconstruction timeout can produce
+a retirement event without network traffic. `next_wake_ns` combines the earlier
+of the queue and reconstruction deadlines; expired codec state is reported before
+consuming the next source packet. The owner must continue polling at the same time
+until pending so queued originals are not stranded behind a retirement event.
+
+Reconstruction uses monotonic **delivery** time, while each original packet keeps
+its supplied **admission** time. Arrival times can reverse in sequence order and
+must not be fed directly into the codec's monotonic timer. Reconstruction lifetime
+starts when the FU start reaches the codec; queue waiting has its separate bound.
+An unrepresentable FU deadline is refused rather than retained without a timer.
+
+`finish` first drains accepted packets (including recoverable out-of-order FUs),
+then finalizes codec EOF. Cancellation retires both layers with separate receipts.
+Confirmed restart retires queued originals and any incomplete NAL, closes the old
+epoch, and requires an explicit newer generation. No callback, detached task,
+ambient clock, socket, or new authority is introduced by composition.
+
+The existing `h264_packet_replay` example now drives this composed path. It emits
+payload-free JSONL receipts for original packets, ordered delivery, NAL digests,
+codec refusals, a timer-driven gap, and cancellation. Its fixture recovers an
+out-of-order three-fragment NAL across sequence wrap, then exercises actual loss.
+This remains a deterministic reference rehearsal, not live-camera qualification.
+
 ## Regression coverage and qualification
 
 `tests/reorder_contract.rs` covers all 720 permutations of six packets, each
@@ -54,7 +88,17 @@ single-hole position, wrap, deadline-only progress, duplicate storms, late input
 transactional byte/packet refusal, source-byte ownership, clock reversal, wrong
 bindings, restart, EOF, cancellation, arithmetic exhaustion, and debug redaction.
 
-Targeted command: `cargo test -p fss-packet --test reorder_contract`.
+`tests/receiver_contract.rs` adds 16 composition contracts covering reordered FU
+source spans and arrival times, gap retirement, both deadline orderings, malformed
+STAP input, codec byte limits, EOF drain, cancellation, epoch restart, shared-clock
+refusal, backpressure retry, debug redaction, and representable deadline boundaries.
+
+Targeted commands:
+
+```sh
+cargo test -p fss-packet --test reorder_contract --test receiver_contract
+cargo run --locked -p fss-packet --example h264_packet_replay
+```
 Repository authority remains `bash scripts/qualify.sh --lane rust` and the
 policy lane. The authoring environment has no Rust toolchain; these Rust tests
 are supplied but not represented as executed or qualified here.

@@ -8,6 +8,7 @@
 mod continuity;
 mod error;
 mod h264;
+mod receiver;
 mod reorder;
 mod rtcp;
 mod rtp;
@@ -32,4 +33,7 @@ pub use h264::{
 pub use reorder::{
     OrderedRtpPacket, QueueDiscard, QueueDiscardReason, ReorderAdmission, ReorderDisposition,
     ReorderError, ReorderGap, ReorderGapReason, ReorderLimits, ReorderPoll, RtpReorderBuffer,
+};
+pub use receiver::{
+    H264ReceiveAdmission, H264ReceiveCancellation, H264ReceiveError, H264ReceivePoll, H264Receiver,
 };
