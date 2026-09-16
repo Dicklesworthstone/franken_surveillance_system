@@ -52,7 +52,7 @@ pub enum H264Error {
     Unsupported,
     /// A forbidden bit reports corrupted source media.
     Corrupt,
-    /// Reconstruction exceeded its byte, NAL-count, or fragment-count budget.
+    /// Reconstruction exceeded a byte/count budget or its representable deadline.
     Limit,
     /// A bounded allocation could not be reserved.
     Allocation,
@@ -254,6 +254,20 @@ impl H264Depacketizer {
         self.pending.as_ref().map_or(0, |nal| nal.bytes.len())
     }
 
+    /// Earliest poll time for pending reconstruction, absent when nothing is retained.
+    /// FU starts with an unrepresentable deadline are refused rather than retained forever.
+    pub fn next_deadline_ns(&self) -> Option<u64> {
+        self.pending.as_ref().and_then(|nal| {
+            nal.started_ns.checked_add(self.limits.max_pending_age_ns)
+        })
+    }
+
+    /// Retire an incomplete chain immediately on an owner-confirmed delivery gap.
+    /// This does not admit a packet, advance sequence/time, or close the receiver.
+    pub fn discard_gap(&mut self) -> Option<FragmentDiscard> {
+        self.discard(H264Error::Gap)
+    }
+
     /// Process one complete parsed RTP packet with its caller-validated extended sequence.
     pub fn push(
         &mut self,
@@ -417,6 +431,10 @@ impl H264Depacketizer {
                     return Err(H264Error::Malformed);
                 }
                 if start {
+                    // Every retained chain must have a representable timer wake.
+                    now_ns
+                        .checked_add(self.limits.max_pending_age_ns)
+                        .ok_or(H264Error::Limit)?;
                     let mut bytes = Vec::new();
                     reserve(&mut bytes, payload.len() - 1, self.limits.max_nal_bytes)?;
                     bytes.push(nal_header);
