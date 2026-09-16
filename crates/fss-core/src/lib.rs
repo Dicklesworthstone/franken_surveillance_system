@@ -59,8 +59,8 @@ pub use agent::{
     SituationFrame, StaleBasis, UnknownReason, WorldEnvelope,
 };
 pub use agent_view::{
-    AgentView, REGISTERED_VIEW_COUNT, REGISTERED_VIEW_GATE, SCHEMA_AGENT_VIEWS,
-    ViewSectionList, VIEW_ROW_DIGEST_DOMAIN,
+    AgentView, REGISTERED_VIEW_COUNT, REGISTERED_VIEW_GATE, ViewSectionList,
+    VIEW_ROW_DIGEST_DOMAIN,
 };
 pub use agent_operation::{
     admit_commit, admit_follow_read, admit_handoff, admit_query_read, advance_follow_cursor,
