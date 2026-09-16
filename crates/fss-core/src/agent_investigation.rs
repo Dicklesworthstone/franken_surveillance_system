@@ -109,15 +109,21 @@ pub struct CaseDiscriminator {
 /// The durable investigation record (AOP-006 `investigate` payload).
 #[derive(Clone, Debug, PartialEq)]
 pub struct InvestigationState {
+    /// Stable investigation identity.
     pub investigation_id: String,
+    /// Exact semantic contract universe.
     pub contract_basis: ContractBasis,
+    /// Mission the investigation serves.
     pub mission_id: MissionId,
+    /// Monotone revision.
     pub revision: u64,
+    /// Lifecycle state.
     pub state: InvestigationLifecycle,
     /// The investigation question.
     pub question: String,
     /// Which decision this investigation informs.
     pub decision_informed: String,
+    /// Basis authority anchor.
     pub basis_anchor: LedgerAnchor,
     /// Competing hypotheses (at least two by construction).
     pub hypotheses: Vec<CaseHypothesis>,
@@ -154,6 +160,41 @@ fn check_portable(value: &str, max_len: usize) -> Result<(), ContractError> {
     Ok(())
 }
 
+/// Validated parameters for an investigation record.
+#[derive(Clone, Debug)]
+pub struct InvestigationStateParams {
+    /// Stable investigation identity.
+    pub investigation_id: String,
+    /// Exact semantic contract universe.
+    pub contract_basis: ContractBasis,
+    /// Mission the investigation serves.
+    pub mission_id: MissionId,
+    /// Monotone revision.
+    pub revision: u64,
+    /// Lifecycle state.
+    pub state: InvestigationLifecycle,
+    /// The investigation question.
+    pub question: String,
+    /// Which decision this investigation informs.
+    pub decision_informed: String,
+    /// Basis authority anchor.
+    pub basis_anchor: LedgerAnchor,
+    /// Competing hypotheses (at least two).
+    pub hypotheses: Vec<CaseHypothesis>,
+    /// Known statements.
+    pub knowns: Vec<KnownStatement>,
+    /// Unknowns carried explicitly.
+    pub unknowns: Vec<KnownStatement>,
+    /// Discriminators separating hypotheses.
+    pub discriminators: Vec<CaseDiscriminator>,
+    /// Probe handles.
+    pub probes: Vec<String>,
+    /// Stop rules (at least one).
+    pub stop_rules: Vec<String>,
+    /// Absolute decision deadline.
+    pub decision_deadline_ns: i128,
+}
+
 impl InvestigationState {
     /// Schema identity implemented by this type.
     pub const SCHEMA: &str = "fss.investigation_state.v1";
@@ -163,30 +204,28 @@ impl InvestigationState {
     /// Competition is structural: fewer than two hypotheses is refused.
     /// Every discriminator must separate at least two hypotheses that exist,
     /// and stop rules are mandatory (at least one).
-    pub fn new(
-        investigation_id: impl Into<String>,
-        contract_basis: ContractBasis,
-        mission_id: MissionId,
-        revision: u64,
-        state: InvestigationLifecycle,
-        question: impl Into<String>,
-        decision_informed: impl Into<String>,
-        basis_anchor: LedgerAnchor,
-        hypotheses: Vec<CaseHypothesis>,
-        knowns: Vec<KnownStatement>,
-        unknowns: Vec<KnownStatement>,
-        discriminators: Vec<CaseDiscriminator>,
-        probes: Vec<String>,
-        stop_rules: Vec<String>,
-        decision_deadline_ns: i128,
-    ) -> Result<Self, ContractError> {
-        let investigation_id = investigation_id.into();
+    pub fn new(params: InvestigationStateParams) -> Result<Self, ContractError> {
+        let InvestigationStateParams {
+            investigation_id,
+            contract_basis,
+            mission_id,
+            revision,
+            state,
+            question,
+            decision_informed,
+            basis_anchor,
+            hypotheses,
+            knowns,
+            unknowns,
+            discriminators,
+            probes,
+            stop_rules,
+            decision_deadline_ns,
+        } = params;
         validate_portable(&investigation_id, 256)?;
-        let question = question.into();
         if question.is_empty() || question.len() > 8192 {
             return Err(ContractError::InvalidIdentifier);
         }
-        let decision_informed = decision_informed.into();
         if decision_informed.is_empty() || decision_informed.len() > 1024 {
             return Err(ContractError::InvalidIdentifier);
         }

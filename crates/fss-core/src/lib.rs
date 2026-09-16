@@ -67,7 +67,7 @@ pub use agent_query_plan::{
 };
 pub use agent_investigation::{
     CaseDiscriminator, CaseHypothesis, InvestigationLifecycle, InvestigationState,
-    KnownStatement, INVESTIGATION_STATE_DIGEST_DOMAIN,
+    InvestigationStateParams, KnownStatement, INVESTIGATION_STATE_DIGEST_DOMAIN,
 };
 pub use agent_contracts::{
     AgentSession, AgentSessionParams, MissionContract, MissionContractParams, MissionState,

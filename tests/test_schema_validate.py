@@ -814,13 +814,11 @@ class TestSchemaConstitution(unittest.TestCase):
         # Identity and explicit set of expected declared-only schemas
         expected_declared_only = {
             "fss.adapter_compatibility_certificate.v1",
-            "fss.agent_affordance.v1",
             "fss.agent_cognitive_envelope.v1",
             "fss.agent_control_plan.v1",
             "fss.agent_execution_episode.v1",
             "fss.agent_feedback_proposal.v1",
             "fss.agent_finding.v1",
-            "fss.agent_handoff_capsule.v1",
             "fss.agent_hypothesis_workspace.v1",
             "fss.agent_learning_proposal.v1",
             "fss.agent_response_envelope.v1",
@@ -835,7 +833,6 @@ class TestSchemaConstitution(unittest.TestCase):
             "fss.evidence_delta_batch.v1",
             "fss.experience_capsule.v1",
             "fss.graph_algorithm_witness.v1",
-            "fss.investigation_state.v1",
             "fss.license_inventory.v1",
             "fss.model_execution_receipt.v1",
             "fss.model_manifest.v1",
@@ -1352,8 +1349,11 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         # + fss.agent_mission.v1 / fss.agent_objective_contract.v1 / fss.agent_session.v1 /
         #   fss.agent_session_capsule.v1 (owners MissionContract / ObjectiveContract /
         #   AgentSession / SessionCapsule, fss-x4a.30.83.41-44)
-        # + fss.agent_query_plan.v1 (owner AgentQueryPlan, fss-x4a.30.83.50).
-        self.assertEqual(result["implementedCount"], 37)
+        # + fss.agent_query_plan.v1 (owner AgentQueryPlan, fss-x4a.30.83.50)
+        # + fss.agent_affordance.v1 / fss.agent_handoff_capsule.v1 /
+        #   fss.investigation_state.v1 (owners ActionAffordance / HandoffCapsule /
+        #   InvestigationState, fss-x4a.30.83.51-55).
+        self.assertEqual(result["implementedCount"], 40)
 
         unreg_findings = [
             f for f in validator.findings
