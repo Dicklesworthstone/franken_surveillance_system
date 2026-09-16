@@ -10,6 +10,7 @@ pub mod abstraction;
 pub mod acquisition;
 mod agent;
 pub mod agent_contracts;
+pub mod agent_investigation;
 pub mod agent_query_plan;
 pub mod agent_operation;
 pub mod agent_request;
@@ -63,6 +64,10 @@ pub use agent::{
 };
 pub use agent_query_plan::{
     AgentQueryPlan, QueryCompletenessRequested, QueryInterpretation,
+};
+pub use agent_investigation::{
+    CaseDiscriminator, CaseHypothesis, InvestigationLifecycle, InvestigationState,
+    KnownStatement, INVESTIGATION_STATE_DIGEST_DOMAIN,
 };
 pub use agent_contracts::{
     AgentSession, AgentSessionParams, MissionContract, MissionContractParams, MissionState,
