@@ -10,6 +10,7 @@ pub mod abstraction;
 pub mod acquisition;
 mod agent;
 pub mod agent_operation;
+pub mod agent_view;
 pub mod belief;
 mod canonical;
 mod compression;
@@ -56,6 +57,10 @@ pub use agent::{
     LABORATORY_PROVENANCE_MARKER, MissionLifecycleState, PossibleWorld, REDACTED_STATEMENT_MARKER,
     ReconciliationBasis, ReconciliationBranch, RedactionMarker, RedactionReason, SituationCapsule,
     SituationFrame, StaleBasis, UnknownReason, WorldEnvelope,
+};
+pub use agent_view::{
+    AgentView, REGISTERED_VIEW_COUNT, REGISTERED_VIEW_GATE, SCHEMA_AGENT_VIEWS,
+    ViewSectionList, VIEW_ROW_DIGEST_DOMAIN,
 };
 pub use agent_operation::{
     admit_commit, admit_follow_read, admit_handoff, admit_query_read, advance_follow_cursor,
