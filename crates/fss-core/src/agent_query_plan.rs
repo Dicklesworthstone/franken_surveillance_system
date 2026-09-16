@@ -20,7 +20,7 @@ use crate::contract_basis::ContractBasisError;
 use crate::digest::ContentDigest;
 use crate::evidence::LedgerAnchor;
 use crate::ids::validate_id;
-use crate::{BudgetVector, MissionId, SessionId, TimestampNs};
+use crate::{BudgetVector, MissionId, SessionId};
 
 /// Requested completeness of one compiled query (registered enum).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
