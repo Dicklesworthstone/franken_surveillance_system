@@ -1,0 +1,14 @@
+[package]
+name = "fss-container"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+repository.workspace = true
+description = "Bounded source-linked AVC fragmented MP4 remuxing for FSS"
+
+[lints]
+workspace = true
+
+[dependencies]
+fss-packet = { path = "../fss-packet" }

@@ -18,6 +18,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "fss-container"
+version = "0.0.1"
+dependencies = [
+ "fss-packet",
+]
+
+[[package]]
 name = "fss-core"
 version = "0.0.1"
 

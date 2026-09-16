@@ -2365,3 +2365,275 @@ pub fn admit_handoff(
     }
     HandoffCapsule::publish(params).map_err(ContractBasisError::Contract)
 }
+
+/// Registered feedback proposal kinds (AOP-013).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FeedbackKind {
+    /// A correction to a recorded belief or statement.
+    Correction,
+    /// An outcome signal from executed work.
+    OutcomeSignal,
+    /// An adjudication of a proposal or contradiction.
+    Adjudication,
+    /// An evidence-linked learning proposal.
+    LearningProposal,
+}
+
+impl FeedbackKind {
+    /// Returns the stable registry spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Correction => "correction",
+            Self::OutcomeSignal => "outcome_signal",
+            Self::Adjudication => "adjudication",
+            Self::LearningProposal => "learning_proposal",
+        }
+    }
+}
+
+/// Canonical digest domain of one feedback proposal.
+pub const FEEDBACK_PROPOSAL_DIGEST_DOMAIN: &str = "fss.agent.feedback.proposal.v1";
+
+/// One durable feedback proposal (AOP-013, advisory_write).
+///
+/// Advisory by construction: the type has no activation path. A proposal
+/// records a correction, outcome signal, adjudication, or learning proposal
+/// with its evidence; changing active truth or policy requires a separate,
+/// explicitly authorized decision - recording a proposal never silently
+/// changes anything.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FeedbackProposal {
+    kind: FeedbackKind,
+    statement: String,
+    evidence: Vec<ContentDigest>,
+}
+
+impl FeedbackProposal {
+    /// Records a feedback proposal.
+    ///
+    /// Fails closed without evidence ([`ContractError::EvidenceRequired`] -
+    /// every proposal is evidence-linked), an empty statement, or more
+    /// evidence entries than the bound. Evidence normalizes to strictly
+    /// ascending deduplicated order.
+    pub fn record(
+        kind: FeedbackKind,
+        statement: impl Into<String>,
+        mut evidence: Vec<ContentDigest>,
+        max_evidence: u32,
+    ) -> Result<Self, ContractError> {
+        let statement = statement.into();
+        if statement.is_empty() {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        if evidence.is_empty() {
+            return Err(ContractError::EvidenceRequired);
+        }
+        evidence.sort_unstable();
+        evidence.dedup();
+        evidence.truncate(max_evidence as usize);
+        if evidence.is_empty() {
+            return Err(ContractError::EvidenceRequired);
+        }
+        Ok(Self {
+            kind,
+            statement,
+            evidence,
+        })
+    }
+
+    /// Returns the proposal kind.
+    #[must_use]
+    pub const fn kind(&self) -> FeedbackKind {
+        self.kind
+    }
+
+    /// Returns the proposal statement.
+    #[must_use]
+    pub fn statement(&self) -> &str {
+        &self.statement
+    }
+
+    /// Returns the linked evidence (strictly ascending).
+    #[must_use]
+    pub fn evidence(&self) -> &[ContentDigest] {
+        &self.evidence
+    }
+
+    /// Returns the domain-separated canonical digest of this proposal.
+    #[must_use]
+    pub fn proposal_digest(&self) -> ContentDigest {
+        self.canonical_digest(FEEDBACK_PROPOSAL_DIGEST_DOMAIN)
+    }
+}
+
+impl CanonicalEncode for FeedbackProposal {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.text(self.kind.as_str());
+        encoder.text(&self.statement);
+        encoder.u32(self.evidence.len() as u32);
+        for digest in &self.evidence {
+            encoder.digest(*digest);
+        }
+    }
+}
+
+/// Diagnosed subsystem domains of a doctor report (AOP-014).
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum DiagnosisDomain {
+    /// Deployment layout and custody.
+    Deployment,
+    /// Evidence integrity and coverage.
+    Evidence,
+    /// Cognition and hydration consistency.
+    Cognition,
+    /// Workspace and session continuity.
+    Workspace,
+    /// Investigation cases.
+    Cases,
+    /// Obligations and effect uncertainty.
+    Obligations,
+    /// Protocol and registry consistency.
+    Protocol,
+}
+
+impl DiagnosisDomain {
+    /// Returns the stable registry spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Deployment => "deployment",
+            Self::Evidence => "evidence",
+            Self::Cognition => "cognition",
+            Self::Workspace => "workspace",
+            Self::Cases => "cases",
+            Self::Obligations => "obligations",
+            Self::Protocol => "protocol",
+        }
+    }
+}
+
+/// One sealed repair affordance of a doctor report.
+///
+/// A named identity only: the report can never apply a repair - applying is a
+/// separate authorized effect decision outside `doctor`'s prepare-only mode.
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct RepairAffordance {
+    /// Stable affordance identity (`fss://repair/...`).
+    pub repair_id: String,
+    /// The diagnosed domain the repair addresses.
+    pub domain: DiagnosisDomain,
+}
+
+/// One durable doctor report (AOP-014, diagnostic_prepare).
+///
+/// Diagnose-only by construction: unhealthy findings must each carry a sealed
+/// repair affordance, healthy findings must carry none, and the type exposes
+/// no way to apply anything. The report digest binds every finding and
+/// affordance.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DoctorReport {
+    findings: Vec<(DiagnosisDomain, bool)>,
+    repairs: Vec<RepairAffordance>,
+    report_digest: ContentDigest,
+}
+
+/// Canonical digest domain of one doctor report.
+pub const DOCTOR_REPORT_DIGEST_DOMAIN: &str = "fss.agent.doctor.report.v1";
+
+impl DoctorReport {
+    /// Compiles a diagnosis report.
+    ///
+    /// Fails closed on duplicate domains ([`ContractError::InvalidIdentifier`])
+    /// and on the diagnose-only pairing rules: an unhealthy finding without a
+    /// sealed repair affordance ([`ContractError::EvidenceRequired`]) or a
+    /// repair affordance addressing a healthy or absent domain
+    /// ([`ContractError::InvalidEffectTransition`]). Findings are stored in
+    /// canonical domain order; repairs sorted by (domain, id).
+    pub fn diagnose(
+        findings: Vec<(DiagnosisDomain, bool)>,
+        repairs: Vec<RepairAffordance>,
+    ) -> Result<Self, ContractError> {
+        let mut sorted = findings;
+        sorted.sort();
+        for pair in sorted.windows(2) {
+            if pair[0].0 == pair[1].0 {
+                return Err(ContractError::InvalidIdentifier);
+            }
+        }
+        let unhealthy: BTreeSet<DiagnosisDomain> = sorted
+            .iter()
+            .filter(|(_, healthy)| !healthy)
+            .map(|(domain, _)| *domain)
+            .collect();
+        let mut sorted_repairs = repairs;
+        sorted_repairs.sort();
+        for (index, repair) in sorted_repairs.iter().enumerate() {
+            if !repair.repair_id.starts_with("fss://repair/") {
+                return Err(ContractError::InvalidIdentifier);
+            }
+            if !unhealthy.contains(&repair.domain) {
+                return Err(ContractError::InvalidEffectTransition);
+            }
+            if sorted_repairs[..index]
+                .iter()
+                .any(|prior| prior.repair_id == repair.repair_id)
+            {
+                return Err(ContractError::InvalidIdentifier);
+            }
+        }
+        for domain in &unhealthy {
+            if !sorted_repairs.iter().any(|repair| &repair.domain == domain) {
+                return Err(ContractError::EvidenceRequired);
+            }
+        }
+        let mut report = Self {
+            findings: sorted,
+            repairs: sorted_repairs,
+            report_digest: ContentDigest::sha256(b"unsealed"),
+        };
+        let mut encoder = CanonicalEncoder::new();
+        report.encode_canonical(&mut encoder);
+        report.report_digest = ContentDigest::sha256(&encoder.finish());
+        Ok(report)
+    }
+
+    /// Returns the findings in canonical domain order.
+    #[must_use]
+    pub fn findings(&self) -> &[(DiagnosisDomain, bool)] {
+        &self.findings
+    }
+
+    /// Returns the sealed repair affordances.
+    #[must_use]
+    pub fn repairs(&self) -> &[RepairAffordance] {
+        &self.repairs
+    }
+
+    /// Returns the sealed report digest.
+    #[must_use]
+    pub const fn report_digest(&self) -> ContentDigest {
+        self.report_digest
+    }
+
+    /// Returns the domain-separated canonical digest of this report.
+    #[must_use]
+    pub fn sealed_report_digest(&self) -> ContentDigest {
+        self.canonical_digest(DOCTOR_REPORT_DIGEST_DOMAIN)
+    }
+}
+
+impl CanonicalEncode for DoctorReport {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.u32(self.findings.len() as u32);
+        for (domain, healthy) in &self.findings {
+            encoder.text(domain.as_str());
+            encoder.bool(*healthy);
+        }
+        encoder.u32(self.repairs.len() as u32);
+        for repair in &self.repairs {
+            encoder.text(&repair.repair_id);
+            encoder.text(repair.domain.as_str());
+        }
+    }
+}
