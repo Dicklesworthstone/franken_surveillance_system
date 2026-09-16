@@ -10,6 +10,7 @@ pub mod abstraction;
 pub mod acquisition;
 mod agent;
 pub mod agent_operation;
+pub mod agent_request;
 pub mod agent_view;
 pub mod belief;
 mod canonical;
@@ -57,6 +58,9 @@ pub use agent::{
     LABORATORY_PROVENANCE_MARKER, MissionLifecycleState, PossibleWorld, REDACTED_STATEMENT_MARKER,
     ReconciliationBasis, ReconciliationBranch, RedactionMarker, RedactionReason, SituationCapsule,
     SituationFrame, StaleBasis, UnknownReason, WorldEnvelope,
+};
+pub use agent_request::{
+    AgentRequestEnvelope, AgentRequestEnvelopeParams, PrivacyProjection, RequestTaint,
 };
 pub use agent_view::{
     AgentView, REGISTERED_VIEW_COUNT, REGISTERED_VIEW_GATE, ViewSectionList,
