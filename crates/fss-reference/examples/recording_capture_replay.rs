@@ -1,0 +1,144 @@
+#![forbid(unsafe_code)]
+//! Bounded real-bitstream packet capture -> GOP collection -> root-last archive -> reopen.
+//! Run: cargo run --locked -p fss-reference --example recording_capture_replay -- NEW_DIRECTORY
+//! Laboratory timing comes from the retained four-frame, 25 fps Baseline fixture, not RTP inference.
+
+#[path = "../tests/collector_support/mod.rs"]
+mod fixture;
+
+use fss_core::ContentDigest;
+use fss_object::SpoolLimits;
+use fss_packet::avc::{AvcReceivePoll, AvcReceiver};
+use fss_publication::{LocalPublicationLimits, LocalPublicationState, LocalRootPublisher, NeverCancel, SlotName};
+use fss_reference::rtsp::recording::PreparedRecording;
+use fss_reference::rtsp::recording::local::{RecordingProgress, RecordingPublication, load_recording};
+use fss_reference::rtsp::recording_capture::{CapturePoll, RecordingCapture, TimedCapture};
+use fss_reference::rtsp::recording_collector::CollectorLimits;
+
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+const MAX_WINDOWS: usize = 8;
+
+struct ExpectedWindow {
+    slot: SlotName,
+    root: ContentDigest,
+    source: ContentDigest,
+    media: ContentDigest,
+    samples: usize,
+}
+struct Archive {
+    publisher: LocalRootPublisher,
+    expected: Vec<ExpectedWindow>,
+    samples: u64,
+    packets: usize,
+}
+impl Archive {
+    fn publish(&mut self, window: PreparedRecording, now: u64) -> Result<()> {
+        if self.expected.len() == MAX_WINDOWS { return Err("fixture window bound".into()); }
+        self.expected.try_reserve(1)?;
+        let slot = SlotName::parse(format!("capture-window-{:04}", self.expected.len() + 1))?;
+        let expected = ExpectedWindow { slot: slot.clone(), root: window.manifest().root(),
+            source: ContentDigest::try_sha256(window.objects().source)?,
+            media: ContentDigest::try_sha256(window.objects().media)?, samples: window.summary().samples };
+        let mut publication = RecordingPublication::new(&window, &mut self.publisher,
+            slot, window.byte_len(), now.checked_add(100).ok_or("fixture deadline overflow")?)?;
+        for step in 0..5 {
+            match publication.step(now + step, &NeverCancel)? {
+                RecordingProgress::ChildStaged { role, digest, bytes, .. } if step < 4 => println!(
+                    "{{\"kind\":\"child_staged\",\"role\":\"{role:?}\",\"digest\":\"{}\",\"bytes\":{bytes}}}", digest.to_text()),
+                RecordingProgress::Published(receipt) if step == 4 && receipt.claims.local == LocalPublicationState::Durable => println!(
+                    "{{\"kind\":\"window_published\",\"root\":\"{}\",\"samples\":{},\"local\":\"Durable\"}}",
+                    receipt.root.to_text(), expected.samples),
+                other => return Err(format!("unexpected publication step: {other:?}").into()),
+            }
+        }
+        self.expected.push(expected);
+        Ok(())
+    }
+    fn capture_step(&mut self, capture: &mut RecordingCapture, now: u64) -> Result<bool> {
+        for _ in 0..64 {
+            match capture.poll(now)? {
+                CapturePoll::Receiver(AvcReceivePoll::Source { source, .. }) => {
+                    self.packets += 1;
+                    println!("{{\"kind\":\"source\",\"sequence\":{},\"digest\":\"{}\"}}",
+                        source.sequence(), ContentDigest::try_sha256(source.bytes())?.to_text());
+                    return Ok(false);
+                }
+                CapturePoll::Receiver(_) | CapturePoll::Pending { .. } => return Ok(false),
+                CapturePoll::TimingRequired(request) => {
+                    if self.samples >= 4 { return Err("unexpected extra fixture picture".into()); }
+                    match capture.supply_timing(fixture::timing(self.samples * 3600), now)? {
+                        TimedCapture::Collected { unselected, .. } if unselected.is_empty() => {}
+                        other => return Err(format!("unexpected fixture selection: {other:?}").into()),
+                    }
+                    self.samples += 1;
+                    println!("{{\"kind\":\"picture_timed\",\"basis\":\"synthetic_fixture_25fps\",\"frame_num\":{},\"boundary\":\"{:?}\",\"complete_picture_certified\":false}}",
+                        request.frame_num, request.boundary);
+                }
+                CapturePoll::Window(window) => self.publish(window, now)?,
+                CapturePoll::InputEnded => {}
+                CapturePoll::Tail(out) if out.picture.is_none() && out.retired.is_none() => {}
+                CapturePoll::Ended { trailing } => {
+                    if trailing.is_some_and(|t| !t.sources.is_empty() || !t.pictures.is_empty()) {
+                        return Err("clean fixture left unselected originals".into());
+                    }
+                    return Ok(true);
+                }
+                // This laboratory rehearsal stops on non-clean input rather than declaring
+                // a clean archive. A real owner must retain/receipt returned media before stopping.
+                other => return Err(format!("fixture stopped instead of claiming clean capture: {other:?}").into()),
+            }
+        }
+        Err("fixture capture-step bound".into())
+    }
+    fn drain(&mut self, receiver: &mut AvcReceiver, capture: &mut RecordingCapture, now: u64) -> Result<bool> {
+        for _ in 0..1024 {
+            let event = receiver.poll(now)?;
+            let pending = matches!(&event, AvcReceivePoll::Pending { .. });
+            capture.offer(event, now)?;
+            if self.capture_step(capture, now)? { return Ok(true); }
+            if pending { return Ok(false); }
+        }
+        Err("fixture receiver-step bound".into())
+    }
+}
+
+fn main() -> Result<()> {
+    let mut args = std::env::args_os().skip(1);
+    let root = std::path::PathBuf::from(args.next().ok_or("supply an explicit new laboratory archive directory")?);
+    if args.next().is_some() || root.exists() { return Err("exactly one new directory is required; existing data is never replaced".into()); }
+    let limits = LocalPublicationLimits::new(8, 16, 8, 64,
+        SpoolLimits::new(64, 4 * 1024 * 1024, 1024 * 1024, 64));
+    let mut archive = Archive { publisher: LocalRootPublisher::open(&root, limits)?,
+        expected: Vec::new(), samples: 0, packets: 0 };
+    let mut receiver = fixture::receiver()?;
+    let mut capture = RecordingCapture::new(fixture::collector(CollectorLimits::default())?);
+    let nals = fixture::nals();
+    receiver.ingest(fixture::key(), &fixture::packet(0, 90_000, false, nals[0]), 0)?;
+    let mut frame = 0;
+    for (index, nal) in nals.iter().enumerate() {
+        let sequence = index as u64 + 1;
+        let vcl = matches!(nal[0] & 31, 1 | 5);
+        let wire = fixture::packet(sequence, 90_000 + frame * 3600, vcl, nal);
+        receiver.ingest(fixture::key(), &wire, sequence)?;
+        if archive.drain(&mut receiver, &mut capture, sequence)? { return Err("premature fixture EOF".into()); }
+        if vcl { frame += 1; }
+    }
+    receiver.finish();
+    if !archive.drain(&mut receiver, &mut capture, 1000)? || archive.samples != 4
+        || archive.expected.len() != 2 || archive.packets != nals.len()
+    { return Err("capture did not produce two complete fixture windows and quiescence".into()); }
+    let Archive { publisher, expected, .. } = archive;
+    drop(publisher);
+    let reopened = LocalRootPublisher::open(&root, limits)?;
+    for expected in expected {
+        let loaded = load_recording(&reopened, &expected.slot, expected.root, &fixture::scope()?, &NeverCancel)?;
+        if ContentDigest::try_sha256(loaded.objects().source)? != expected.source
+            || ContentDigest::try_sha256(loaded.objects().media)? != expected.media
+            || loaded.summary().samples != expected.samples
+        { return Err("archive reopen differs from captured source/media".into()); }
+        println!("{{\"kind\":\"verified_readback\",\"root\":\"{}\",\"samples\":{},\"packets\":{}}}",
+            expected.root.to_text(), loaded.summary().samples, loaded.summary().packets);
+    }
+    println!("{{\"kind\":\"terminal\",\"windows\":2,\"samples\":4,\"pending_bytes\":0,\"live_camera\":false,\"qualification\":\"reference_rehearsal_only\"}}");
+    Ok(())
+}
