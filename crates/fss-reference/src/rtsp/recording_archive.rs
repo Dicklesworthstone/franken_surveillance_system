@@ -3,7 +3,9 @@
 //! Namespace slots are routing, not a grant or an authoritative camera-coverage ledger.
 
 mod read;
+mod write;
 pub use read::*;
+pub use write::*;
 
 use fss_core::{CanonicalEncoder, ContentDigest};
 use fss_publication::{LocalPublicationState, LocalRootPublisher, PublishCancellation,
