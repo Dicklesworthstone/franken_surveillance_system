@@ -15,8 +15,9 @@ use fss_core::contract_basis::{
 };
 use fss_core::{
     ActionAffordance, AffordanceClass, AgentOperation, CancellationRecord, CancelStage,
-    ContractBasis, ExplainQuestion, ExplainReceipt, HandoffId, HandoffPublishParams,
-    ReconciliationBasis, RuntimeOutcome, WaitWakeContract,
+    ContractBasis, DiagnosisDomain, DoctorReport, ExplainQuestion, ExplainReceipt,
+    FeedbackKind, FeedbackProposal, HandoffId, HandoffPublishParams,
+    RepairAffordance, ReconciliationBasis, RuntimeOutcome, WaitWakeContract,
 };
 use fss_core::{
     admit_commit, admit_follow_read, admit_handoff, admit_query_read, advance_follow_cursor,
@@ -1357,5 +1358,111 @@ fn test_handoff_admission_publishes_root_last(
         expires_at: TimestampNs(5_000),
     };
     assert!(admit_handoff(&reference_contract_basis(), zero).is_err());
+    Ok(())
+}
+
+#[test]
+fn test_feedback_proposal_is_advisory_and_evidence_linked(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let evidence = vec![
+        ContentDigest::sha256(b"feedback-evidence-b"),
+        ContentDigest::sha256(b"feedback-evidence-a"),
+        ContentDigest::sha256(b"feedback-evidence-a"),
+    ];
+    let proposal = FeedbackProposal::record(
+        FeedbackKind::Correction,
+        "Coverage witness for cam01 night window was misattributed".to_owned(),
+        evidence,
+        8,
+    )?;
+    assert_eq!(proposal.kind(), FeedbackKind::Correction);
+    // Evidence normalized to strictly ascending deduplicated order.
+    assert_eq!(proposal.evidence().len(), 2);
+    assert!(proposal.evidence().windows(2).all(|pair| pair[0] < pair[1]));
+    // Deterministic identity, sensitive to kind and content.
+    let same = FeedbackProposal::record(
+        FeedbackKind::Correction,
+        "Coverage witness for cam01 night window was misattributed".to_owned(),
+        vec![ContentDigest::sha256(b"feedback-evidence-a")],
+        8,
+    )?;
+    let other_kind = FeedbackProposal::record(
+        FeedbackKind::LearningProposal,
+        "Coverage witness for cam01 night window was misattributed".to_owned(),
+        vec![ContentDigest::sha256(b"feedback-evidence-a")],
+        8,
+    )?;
+    assert_ne!(same.proposal_digest(), other_kind.proposal_digest());
+    let _ = proposal;
+    // Evidence-free proposals are refused: every proposal is evidence-linked.
+    assert_eq!(
+        FeedbackProposal::record(FeedbackKind::Adjudication, "no evidence".to_owned(), vec![], 8),
+        Err(ContractError::EvidenceRequired)
+    );
+    // Empty statements are refused.
+    assert!(FeedbackProposal::record(FeedbackKind::Correction, "", vec![ContentDigest::sha256(b"e")], 8).is_err());
+    // The feedback row is a durable advisory write that is never effectful.
+    assert!(AgentOperation::Feedback.durable());
+    assert!(!AgentOperation::Feedback.effectful());
+    Ok(())
+}
+
+#[test]
+fn test_doctor_report_is_diagnose_only() -> Result<(), Box<dyn std::error::Error>> {
+    let repair = RepairAffordance {
+        repair_id: "fss://repair/coverage-recalibrate".to_owned(),
+        domain: DiagnosisDomain::Evidence,
+    };
+    let report = DoctorReport::diagnose(
+        vec![
+            (DiagnosisDomain::Evidence, false),
+            (DiagnosisDomain::Protocol, true),
+        ],
+        vec![repair],
+    )?;
+    // Findings in canonical domain order (Evidence < Protocol).
+    assert_eq!(report.findings()[0].0, DiagnosisDomain::Evidence);
+    assert!(report.findings()[1].1);
+    // Digest determinism and sensitivity.
+    let again = DoctorReport::diagnose(
+        vec![
+            (DiagnosisDomain::Protocol, true),
+            (DiagnosisDomain::Evidence, false),
+        ],
+        vec![RepairAffordance {
+            repair_id: "fss://repair/coverage-recalibrate".to_owned(),
+            domain: DiagnosisDomain::Evidence,
+        }],
+    )?;
+    assert_eq!(report.report_digest(), again.report_digest());
+    // A healthy domain must not carry a repair affordance: diagnose-only.
+    let healthy_repair = RepairAffordance {
+        repair_id: "fss://repair/protocol-rewrite".to_owned(),
+        domain: DiagnosisDomain::Protocol,
+    };
+    assert_eq!(
+        DoctorReport::diagnose(
+            vec![(DiagnosisDomain::Protocol, true)],
+            vec![healthy_repair],
+        ),
+        Err(ContractError::InvalidEffectTransition)
+    );
+    // An unhealthy finding without a sealed repair is refused.
+    assert_eq!(
+        DoctorReport::diagnose(vec![(DiagnosisDomain::Obligations, false)], vec![]),
+        Err(ContractError::EvidenceRequired)
+    );
+    // Repair identities are stable semantic URIs; duplicates refused.
+    assert!(DoctorReport::diagnose(
+        vec![(DiagnosisDomain::Evidence, false)],
+        vec![RepairAffordance {
+            repair_id: "repair:unsealed".to_owned(),
+            domain: DiagnosisDomain::Evidence,
+        }],
+    )
+    .is_err());
+    // The doctor row is a durable diagnostic prepare that is never effectful.
+    assert!(AgentOperation::Doctor.durable());
+    assert!(!AgentOperation::Doctor.effectful());
     Ok(())
 }
