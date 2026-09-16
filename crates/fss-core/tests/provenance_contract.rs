@@ -3578,3 +3578,34 @@ fn test_only_authorizing_known_cells_are_effect_premises() -> Result<(), Box<dyn
     );
     Ok(())
 }
+
+#[test]
+fn test_policy_provenance_row_semantics() -> Result<(), Box<dyn std::error::Error>> {
+    // PROV-007 (policy): a rule, threshold, capability, or privacy decision
+    // from an exact policy generation. Identity, spelling, meaning.
+    let policy = ProvenanceClass::Policy;
+    assert_eq!(policy.id(), "PROV-007");
+    assert_eq!(policy.as_str(), "policy");
+    assert_eq!(ProvenanceClass::from_id("PROV-007")?, policy);
+    assert_eq!(ProvenanceClass::from_name("policy")?, policy);
+    // Policy is an authorizing class but is NEVER observed/derived: it cannot
+    // claim source custody and cannot launder evidence into anything.
+    assert!(policy.may_authorize_irreversible_effect());
+    for target in [
+        ProvenanceClass::Observed,
+        ProvenanceClass::Derived,
+        ProvenanceClass::Predicted,
+        ProvenanceClass::Remembered,
+        ProvenanceClass::OperatorAsserted,
+        ProvenanceClass::VendorClaimed,
+        ProvenanceClass::Policy,
+    ] {
+        assert!(
+            !policy.may_launder_evidence_into(target),
+            "policy provenance must not launder into {target:?}"
+        );
+    }
+    // Round trip via canonical wire tag.
+    assert_eq!(ProvenanceClass::from_code(policy.to_code())?, policy);
+    Ok(())
+}
