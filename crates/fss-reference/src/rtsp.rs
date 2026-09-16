@@ -1,11 +1,12 @@
 #![forbid(unsafe_code)]
-//! Sans-IO RTSP/1.0 message and SDP parser for FSS.
+//! Sans-IO RTSP/1.0 parsing and owner-driven client negotiation for FSS.
 //!
-//! Provides bounded, incremental parsing of RTSP/1.0 requests, responses,
-//! interleaved frames, and Session Description Protocol (SDP) payloads.
-//! Performs zero I/O and never handles credentials. Errors carry only typed
-//! reasons plus byte offsets or lengths, never input text.
+//! Bounded wire parsing and explicit DESCRIBE/SETUP/PLAY/keepalive/TEARDOWN
+//! transitions perform no I/O and never handle credentials. A PLAY response
+//! is not proof of frames, source custody, or continuous camera coverage.
 
+/// Capability-scoped, owner-driven RTSP/1.0 client session reference.
+pub mod client;
 pub mod message;
 pub mod sdp;
 
