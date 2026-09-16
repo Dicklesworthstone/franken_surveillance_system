@@ -150,3 +150,21 @@ fn query_partition_covers_each_tick_exactly_once() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn incremental_builder_retains_only_metadata_and_refusal_does_not_advance() -> TestResult {
+    let mut b = CatalogBuilder::new(catalog_scope()?)?;
+    assert!(b.is_empty());
+    {
+        let first = window(1, 3600)?;
+        b.push(&SlotName::parse("first")?, &first)?;
+        assert_eq!(b.push(&SlotName::parse("first")?, &first), Err(CatalogError::Order));
+        assert_eq!(b.len(), 1);
+    }
+    let second = window(3, 10800)?;
+    b.push(&SlotName::parse("second")?, &second)?;
+    drop(second);
+    let catalog = b.prepare()?;
+    assert_eq!(catalog.index_bytes(), pair()?.index_bytes());
+    Ok(())
+}
