@@ -74,6 +74,7 @@ dependencies = [
 name = "fss-reference"
 version = "0.0.1"
 dependencies = [
+ "fss-container",
  "fss-core",
  "fss-ledger",
  "fss-model-ir",

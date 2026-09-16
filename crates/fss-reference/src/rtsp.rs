@@ -11,6 +11,8 @@ pub mod avc_client;
 /// Capability-scoped, owner-driven RTSP/1.0 client session reference.
 pub mod client;
 pub mod message;
+/// Sealed source-linked recording windows and byte-provenance verification.
+pub mod recording;
 pub mod sdp;
 
 pub use message::{
