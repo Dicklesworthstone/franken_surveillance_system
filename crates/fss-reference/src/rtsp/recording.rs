@@ -6,6 +6,9 @@
 //! and media are four root-linked objects. These are local unencrypted reference
 //! artifacts, not permission to disclose footage or an authentication certificate.
 
+/// Root-last local publication and verified retrieval through an existing I/O owner.
+pub mod local;
+
 mod verify;
 mod wire;
 
