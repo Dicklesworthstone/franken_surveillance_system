@@ -9,10 +9,12 @@
 pub mod abstraction;
 pub mod acquisition;
 mod agent;
+pub mod agent_cognitive;
 pub mod agent_contracts;
 pub mod agent_records;
 pub mod agent_investigation;
 pub mod agent_query_plan;
+pub mod agent_response;
 pub mod agent_operation;
 pub mod agent_request;
 pub mod agent_view;
@@ -64,12 +66,20 @@ pub use agent::{
     ReconciliationBasis, ReconciliationBranch, RedactionMarker, RedactionReason, SituationCapsule,
     SituationFrame, StaleBasis, UnknownReason, WorldEnvelope,
 };
+pub use agent_response::{
+    AgentResponseEnvelope, ExecutionBoundary, ResponseOutcome, ResponseSafeRetry,
+    ResponseTaskState,
+};
 pub use agent_query_plan::{
     AgentQueryPlan, QueryCompletenessRequested, QueryInterpretation,
 };
 pub use agent_investigation::{
     CaseDiscriminator, CaseHypothesis, InvestigationLifecycle, InvestigationState,
     InvestigationStateParams, KnownStatement, INVESTIGATION_STATE_DIGEST_DOMAIN,
+};
+pub use agent_cognitive::{
+    AgentCognitiveEnvelope, CognitiveAnswerClass, EnvelopeBudget, EnvelopeContinuity,
+    EnvelopeCoverage, EnvelopeEpistemic, EnvelopeProposition,
 };
 pub use agent_records::{
     AgentFinding, AttributionCauseClass, AttributionHypothesis, EpisodeOutcome,

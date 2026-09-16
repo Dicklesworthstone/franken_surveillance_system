@@ -814,8 +814,6 @@ class TestSchemaConstitution(unittest.TestCase):
         # Identity and explicit set of expected declared-only schemas
         expected_declared_only = {
             "fss.adapter_compatibility_certificate.v1",
-            "fss.agent_cognitive_envelope.v1",
-            "fss.agent_response_envelope.v1",
             "fss.calibration_certificate.v1",
             "fss.cancellation_drain_certificate.v1",
             "fss.capabilities.v1",
@@ -1097,7 +1095,7 @@ class TestSchemaConstitution(unittest.TestCase):
     def test_unowned_implemented_schema_claim_fails_closed(self) -> None:
         validator = schema_validate.Validator()
         claimed = {
-            "fss.agent_response_envelope.v1": "implemented"  # declared-only; has no Rust owner in fss-core (fss-x4a.30.83.41+ owns its realization)
+            "fss.evidence_bundle.v1": "implemented"  # declared-only; has no Rust owner in fss-core
         }
         result = schema_validate.validate_schema_constitution(
             repo_root=ROOT,
@@ -1351,8 +1349,10 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         #   ExecutionEpisode, fss-x4a.30.83.57-62)
         # + fss.agent_hypothesis_workspace.v1 / fss.agent_control_plan.v1 /
         #   fss.agent_feedback_proposal.v1 (owners HypothesisWorkspace / ControlPlan /
-        #   AgentFeedbackProposal, fss-x4a.30.83.52/56/61).
-        self.assertEqual(result["implementedCount"], 48)
+        #   AgentFeedbackProposal, fss-x4a.30.83.52/56/61)
+        # + fss.agent_cognitive_envelope.v1 / fss.agent_response_envelope.v1
+        #   (owners AgentCognitiveEnvelope / AgentResponseEnvelope, fss-x4a.30.83.64-65).
+        self.assertEqual(result["implementedCount"], 50)
 
         unreg_findings = [
             f for f in validator.findings
