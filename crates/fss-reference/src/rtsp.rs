@@ -5,6 +5,9 @@
 //! transitions perform no I/O and never handle credentials. A PLAY response
 //! is not proof of frames, source custody, or continuous camera coverage.
 
+/// RTSP framing, negotiated video, and source-linked AVC receiver composition.
+pub mod avc_client;
+
 /// Capability-scoped, owner-driven RTSP/1.0 client session reference.
 pub mod client;
 pub mod message;

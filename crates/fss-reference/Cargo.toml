@@ -25,10 +25,10 @@ fss-core = { path = "../fss-core" }
 fss-ledger = { path = "../fss-ledger" }
 fss-model-ir = { path = "../fss-model-ir" }
 fss-object = { path = "../fss-object" }
+fss-packet = { path = "../fss-packet" }
 fss-publication = { path = "../fss-publication" }
 fss-tensor = { path = "../fss-tensor" }
 
 [dev-dependencies]
 fss-core = { path = "../fss-core", features = ["test-support"] }
-fss-packet = { path = "../fss-packet" }
 
