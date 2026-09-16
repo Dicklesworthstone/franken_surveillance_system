@@ -28,9 +28,6 @@ use crate::digest::ContentDigest;
 use crate::AgentOperation;
 use core::fmt;
 
-/// Registry schema identity of the dedicated view registry.
-pub const SCHEMA_AGENT_VIEWS: &str = "fss.agent_views.v1";
-
 /// Qualification gate shared by every registered view row.
 pub const REGISTERED_VIEW_GATE: &str = "QL-AGENT-001";
 
@@ -73,6 +70,9 @@ pub enum AgentView {
 pub type ViewSectionList = &'static [&'static str];
 
 impl AgentView {
+    /// Registry schema identity of the dedicated view registry.
+    pub const SCHEMA_AGENT_VIEWS: &str = "fss.agent_views.v1";
+
     /// Every registered view in canonical registry order.
     pub const ALL_VIEWS: [AgentView; REGISTERED_VIEW_COUNT] = [
         Self::Pulse,
