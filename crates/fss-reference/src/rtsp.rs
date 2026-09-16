@@ -1,10 +1,12 @@
 #![forbid(unsafe_code)]
 //! Sans-IO RTSP/1.0 parsing and owner-driven client negotiation for FSS.
 //!
-//! Bounded wire parsing and explicit DESCRIBE/SETUP/PLAY/keepalive/TEARDOWN
-//! transitions perform no I/O and never handle credentials. A PLAY response
-//! is not proof of frames, source custody, or continuous camera coverage.
+//! Public wire parsing redacts credentials. Explicit authentication helpers
+//! borrow owner-supplied secrets without I/O. A PLAY response is not proof of
+//! frames, source custody, or continuous camera coverage.
 
+/// Bounded opt-in Digest authentication for an explicit credential owner.
+pub mod authentication;
 /// RTSP framing, negotiated video, and source-linked AVC receiver composition.
 pub mod avc_client;
 
