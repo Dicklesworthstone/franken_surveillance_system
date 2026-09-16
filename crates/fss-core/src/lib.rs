@@ -10,6 +10,7 @@ pub mod abstraction;
 pub mod acquisition;
 mod agent;
 pub mod agent_contracts;
+pub mod agent_records;
 pub mod agent_investigation;
 pub mod agent_query_plan;
 pub mod agent_operation;
@@ -68,6 +69,12 @@ pub use agent_query_plan::{
 pub use agent_investigation::{
     CaseDiscriminator, CaseHypothesis, InvestigationLifecycle, InvestigationState,
     InvestigationStateParams, KnownStatement, INVESTIGATION_STATE_DIGEST_DOMAIN,
+};
+pub use agent_records::{
+    AgentFinding, AttributionCauseClass, AttributionHypothesis, EpisodeOutcome,
+    EpisodeOutcomeState, EpisodePrediction, EvidenceStrength, ExecutionEpisode,
+    ExperienceCapsule, LearningClass, LearningProposal, PromotionState, WorkClaim,
+    WorkClaimState,
 };
 pub use agent_contracts::{
     AgentSession, AgentSessionParams, MissionContract, MissionContractParams, MissionState,
