@@ -84,3 +84,61 @@ ownership, expiry, timing, replay, cancellation and EOF. These are authored
 Rust tests, not retained passing Rust receipts: the authoring environment has
 no Rust compiler. No live-camera, decoding, complete-picture, privacy-transform,
 production-storage or whole-repository qualification claim is made.
+
+## Receiver-event capture
+
+`rtsp::recording_capture::RecordingCapture` owns the collector and at most one
+receiver event or picture awaiting explicit timing. Feed `AvcReceivePoll` values
+in order using `offer`, then drive `poll`. A source event is returned intact
+after bounded collection retention. `TimingRequired` holds the actual picture
+until `supply_timing` admits the caller's DTS/duration/composition offset; invalid
+timing leaves it held for correction. A retained event or untimed picture has
+a fixed five-second lifetime even when collection has no source deadline yet.
+
+`Window` transfers immutable prepared bytes to the existing publication owner.
+If source capacity is full, `Backpressure` holds that original event for retry;
+`seal` can prepare the already complete prefix when its packet boundary is
+valid. A pending loss/refusal/retirement event cannot be bypassed by `seal`.
+Every explicit receiver gap, codec/assembly refusal, fragment retirement, or
+discontinuous picture stops recording and returns the exact invalidating event,
+all unsealed originals and pictures, and any prior sealed plan separately. No
+receiver failure is silently discarded to obtain a clean archive.
+
+An unverified EOF picture is returned as `Tail`, not admitted as a sample. An
+already completed prefix can still be sealed; trailing originals are returned
+exactly once by `Ended`. The bridge's `cancel` affects only its own state. The
+caller separately cancels/drains the upstream receiver or RTSP connection and
+retains raw/probation/refused ingress outside this ordered-delivery collector.
+A stopped capture never silently restarts or changes its owner epoch.
+
+The example below feeds all nine NALs of the real synthetic Baseline fixture
+through the packet receiver and capture bridge. Its four pictures produce two
+IDR-led windows, each published before more receiver output is requested. It
+then reopens the archive and compares source/media identities after full
+verification. Timing is a declared laboratory 25 fps fixture schedule, not a
+production timing inference. The example requires a new explicitly supplied
+directory and does not open a network connection.
+
+```sh
+cargo test --locked -p fss-reference --test recording_capture_contract
+cargo run --locked -p fss-reference --example recording_capture_replay -- NEW_DIRECTORY
+```
+
+There are 20 collector and 15 event-capture contracts, including real source
+loss and FU deadlines plus archive/reopen. Rust compilation, all 35 tests and
+the example remain unexecuted in the authoring environment.
+
+The independent laboratory check can be run with:
+
+```sh
+python3 scripts/check_recording_capture_fixture.py
+```
+
+It pins the original fixture blob, constructs single-NAL and FU-A packets,
+partitions them into two independently configured IDR-led windows, and checks
+that each original appears exactly once and every reconstructed NAL matches.
+FFmpeg decodes both windows and compares their concatenated pixels against the
+original four-frame stream. This check ran during authoring and passed for both
+packetizations; its separate incomplete-FU check refused a missing start. It
+does not execute or qualify the Rust collector, capture bridge or filesystem
+publication path. No Python/FFmpeg runtime dependency is added to those paths.
