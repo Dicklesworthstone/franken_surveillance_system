@@ -226,17 +226,51 @@ impl CatalogSelection {
 /// retention. Preparation performs no I/O and asserts no publication success.
 pub fn prepare_catalog(scope: CatalogScope, windows: &[CatalogWindow<'_>]) -> Result<RecordingCatalog> {
     if windows.is_empty() || windows.len() > MAX_CATALOG_WINDOWS { return Err(CatalogError::Limit); }
-    let mut entries = bounded_vec(windows.len())?;
-    for window in windows {
-        if window.recording.summary().scope != scope.recording
-            || window.recording.summary().time_scale != scope.time_scale { return Err(CatalogError::Scope); }
-        entries.push(CatalogEntry::from_window(window.slot, window.recording));
+    let mut builder = CatalogBuilder::new(scope)?;
+    for window in windows { builder.push(window.slot, window.recording)?; }
+    builder.prepare()
+}
+
+/// Incremental metadata-only page construction. A caller can load, push, and drop
+/// each large recording instead of retaining an entire page's media in memory.
+#[derive(Debug)]
+pub struct CatalogBuilder {
+    scope: CatalogScope,
+    entries: Vec<CatalogEntry>,
+}
+impl CatalogBuilder {
+    /// Bind the explicit owner scope before admitting any recording.
+    pub fn new(scope: CatalogScope) -> Result<Self> {
+        if scope.recording.generation == 0 || scope.time_scale == 0 { return Err(CatalogError::Scope); }
+        Ok(Self { scope, entries: Vec::new() })
     }
-    validate(&scope, &entries)?;
-    let index = wire::encode(&scope, &entries)?;
-    let manifest = manifest(&entries, digest(&index)?)?;
-    if index.len() + manifest.canonical_bytes().len() > MAX_CATALOG_BYTES { return Err(CatalogError::Limit); }
-    Ok(RecordingCatalog { scope, entries, index, manifest })
+    /// Number of descriptors retained; no original/media payload is owned here.
+    pub fn len(&self) -> usize { self.entries.len() }
+    /// Whether no recording has been selected for this page.
+    pub fn is_empty(&self) -> bool { self.entries.is_empty() }
+    /// Admit one already verified recording, transactionally. Refusal leaves all
+    /// prior descriptors and the caller's original recording untouched.
+    pub fn push(&mut self, slot: &SlotName, recording: &PreparedRecording) -> Result<()> {
+        if self.entries.len() == MAX_CATALOG_WINDOWS { return Err(CatalogError::Limit); }
+        if recording.summary().scope != self.scope.recording || recording.summary().time_scale != self.scope.time_scale {
+            return Err(CatalogError::Scope);
+        }
+        let entry = CatalogEntry::from_window(slot, recording);
+        validate(&self.scope, std::slice::from_ref(&entry))?;
+        if self.entries.last().is_some_and(|last| last.interval.end > entry.interval.start)
+            || self.entries.iter().any(|p| p.root == entry.root || p.slot == entry.slot) { return Err(CatalogError::Order); }
+        self.entries.try_reserve_exact(1).map_err(|_| CatalogError::Limit)?;
+        self.entries.push(entry);
+        Ok(())
+    }
+    /// Seal immutable metadata. Original-window publication is verified separately.
+    pub fn prepare(self) -> Result<RecordingCatalog> {
+        validate(&self.scope, &self.entries)?;
+        let index = wire::encode(&self.scope, &self.entries)?;
+        let manifest = manifest(&self.entries, digest(&index)?)?;
+        if index.len() + manifest.canonical_bytes().len() > MAX_CATALOG_BYTES { return Err(CatalogError::Limit); }
+        Ok(RecordingCatalog { scope: self.scope, entries: self.entries, index, manifest })
+    }
 }
 
 /// Verify checksum, canonical fields, expected owner time basis, and exact flat
