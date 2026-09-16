@@ -106,7 +106,8 @@ class TestLiveRepoConsistency(unittest.TestCase):
         # 76 = 75 + SCHEMA-JPEG-FIXTURE-MANIFEST-001 (schemas/jpeg_fixture_manifest.v1.json, fss-2h5zq.5).
         # 77 = 76 + SCHEMA-MJPEG-FIXTURE-MANIFEST-001 (schemas/mjpeg_fixture_manifest.v1.json, fss-2h5zq.5).
         # 78 = 77 + SCHEMA-AGENT-OPERATIONS-001 (schemas/agent_operations.v1.json, fss-x4a.30.83.17).
-        self.assertEqual(summary["schemas_count"], 78)
+        # 79 = 78 + SCHEMA-AGENT-VIEWS-001 (schemas/agent_views.v1.json, fss-x4a.30.83.31-38).
+        self.assertEqual(summary["schemas_count"], 79)
         self.assertGreater(summary["known_active_ids"], 800)
         self.assertGreaterEqual(summary["tombstone_ids"], 14)
 
