@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Bounded real-bitstream packet capture -> GOP collection -> root-last archive -> reopen.
+//! Bounded real-bitstream capture -> window archive -> immutable catalog -> verified range.
 //! Run: cargo run --locked -p fss-reference --example recording_capture_replay -- NEW_DIRECTORY
 //! Laboratory timing comes from the retained four-frame, 25 fps Baseline fixture, not RTP inference.
 
@@ -14,6 +14,9 @@ use fss_reference::rtsp::recording::PreparedRecording;
 use fss_reference::rtsp::recording::local::{RecordingProgress, RecordingPublication, load_recording};
 use fss_reference::rtsp::recording_capture::{CapturePoll, RecordingCapture, TimedCapture};
 use fss_reference::rtsp::recording_collector::CollectorLimits;
+use fss_reference::rtsp::recording_catalog::{CatalogBuilder, CatalogScope, CatalogQueryLimits};
+use fss_reference::rtsp::recording_catalog::local::{CatalogPublication, CatalogProgress,
+    RecordingRangeRead, RangeProgress, load_catalog};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 const MAX_WINDOWS: usize = 8;
@@ -28,6 +31,7 @@ struct ExpectedWindow {
 struct Archive {
     publisher: LocalRootPublisher,
     expected: Vec<ExpectedWindow>,
+    catalog: CatalogBuilder,
     samples: u64,
     packets: usize,
 }
@@ -35,7 +39,7 @@ impl Archive {
     fn publish(&mut self, window: PreparedRecording, now: u64) -> Result<()> {
         if self.expected.len() == MAX_WINDOWS { return Err("fixture window bound".into()); }
         self.expected.try_reserve(1)?;
-        let slot = SlotName::parse(format!("capture-window-{:04}", self.expected.len() + 1))?;
+        let slot = SlotName::parse(&format!("capture-window-{:04}", self.expected.len() + 1))?;
         let expected = ExpectedWindow { slot: slot.clone(), root: window.manifest().root(),
             source: ContentDigest::try_sha256(window.objects().source)?,
             media: ContentDigest::try_sha256(window.objects().media)?, samples: window.summary().samples };
@@ -51,6 +55,7 @@ impl Archive {
                 other => return Err(format!("unexpected publication step: {other:?}").into()),
             }
         }
+        self.catalog.push(&expected.slot, &window)?;
         self.expected.push(expected);
         Ok(())
     }
@@ -108,8 +113,10 @@ fn main() -> Result<()> {
     if args.next().is_some() || root.exists() { return Err("exactly one new directory is required; existing data is never replaced".into()); }
     let limits = LocalPublicationLimits::new(8, 16, 8, 64,
         SpoolLimits::new(64, 4 * 1024 * 1024, 1024 * 1024, 64));
+    let catalog_scope = CatalogScope { recording: fixture::scope()?,
+        decode_clock: ContentDigest::try_sha256(b"fixture-dts-epoch")?, time_scale: 90_000 };
     let mut archive = Archive { publisher: LocalRootPublisher::open(&root, limits)?,
-        expected: Vec::new(), samples: 0, packets: 0 };
+        expected: Vec::new(), catalog: CatalogBuilder::new(catalog_scope.clone())?, samples: 0, packets: 0 };
     let mut receiver = fixture::receiver()?;
     let mut capture = RecordingCapture::new(fixture::collector(CollectorLimits::default())?);
     let nals = fixture::nals();
@@ -127,7 +134,23 @@ fn main() -> Result<()> {
     if !archive.drain(&mut receiver, &mut capture, 1000)? || archive.samples != 4
         || archive.expected.len() != 2 || archive.packets != nals.len()
     { return Err("capture did not produce two complete fixture windows and quiescence".into()); }
-    let Archive { publisher, expected, .. } = archive;
+    let Archive { mut publisher, expected, catalog, .. } = archive;
+    let catalog = catalog.prepare()?;
+    let catalog_slot = SlotName::parse("catalog-page-1")?;
+    {
+        let mut job = CatalogPublication::new(&catalog, &mut publisher, catalog_slot.clone(), catalog.byte_len(), 2000)?;
+        for i in 0..catalog.entries().len() {
+            if !matches!(job.step(1000 + i as u64, &NeverCancel)?, CatalogProgress::WindowVerified { .. }) {
+                return Err("catalog child verification did not complete".into());
+            }
+        }
+        if !matches!(job.step(1100, &NeverCancel)?, CatalogProgress::IndexStaged { .. }) {
+            return Err("catalog index staging did not complete".into());
+        }
+        if !matches!(job.step(1101, &NeverCancel)?, CatalogProgress::Published(_)) {
+            return Err("catalog root publication did not complete".into());
+        }
+    }
     drop(publisher);
     let reopened = LocalRootPublisher::open(&root, limits)?;
     for expected in expected {
@@ -138,6 +161,18 @@ fn main() -> Result<()> {
         { return Err("archive reopen differs from captured source/media".into()); }
         println!("{{\"kind\":\"verified_readback\",\"root\":\"{}\",\"samples\":{},\"packets\":{}}}",
             expected.root.to_text(), loaded.summary().samples, loaded.summary().packets);
+    }
+    let catalog = load_catalog(&reopened, &catalog_slot, catalog.manifest().root(), &catalog_scope, &NeverCancel)?;
+    let mut read = RecordingRangeRead::new(&reopened, &catalog, &catalog_slot, 0..14400, CatalogQueryLimits::default(), 2000)?;
+    for i in 0..2 {
+        if !matches!(read.step(1200 + i, &NeverCancel)?, RangeProgress::Window { .. }) {
+            return Err("catalog did not retrieve both complete windows".into());
+        }
+    }
+    match read.step(1202, &NeverCancel)? {
+        RangeProgress::Complete(receipt) if receipt.windows == 2 && receipt.unindexed.is_empty() => println!(
+            "{{\"kind\":\"catalog_range_verified\",\"root\":\"{}\",\"windows\":2,\"unindexed_intervals\":0,\"camera_coverage_certified\":false}}", receipt.catalog_root),
+        other => return Err(format!("unexpected range result: {other:?}").into()),
     }
     println!("{{\"kind\":\"terminal\",\"windows\":2,\"samples\":4,\"pending_bytes\":0,\"live_camera\":false,\"qualification\":\"reference_rehearsal_only\"}}");
     Ok(())
