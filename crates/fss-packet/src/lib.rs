@@ -5,6 +5,8 @@
 //! sender, and does not turn packet acceptance into continuity or capture truth.
 //! The owning adapter retains the original datagram and its stream generation.
 
+pub mod avc;
+
 mod continuity;
 mod error;
 mod h264;
