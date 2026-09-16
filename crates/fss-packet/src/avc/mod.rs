@@ -7,10 +7,16 @@
 //! data partitioning, slice groups, and extensions fail explicitly. Original
 //! NAL bytes and their source custody remain the caller's responsibility.
 
+mod assembly;
 mod bits;
 mod parameters;
 mod slice;
 
+pub use assembly::{
+    AvcAssembler, AvcAssemblyError, AvcAssemblyLimits, AvcAssemblyOutput, AvcAssemblyPoll,
+    AvcAssemblyRefusal, AvcAssemblyRetirement, AvcAssemblyStep, AvcBoundary, AvcPictureGroup,
+    AvcRetirementReason,
+};
 pub use parameters::{AvcPps, AvcSps, AvcTimingInfo, PocMode, parse_pps, parse_sps};
 pub use slice::{AvcSliceIdentity, AvcSliceType, parse_slice_identity};
 
