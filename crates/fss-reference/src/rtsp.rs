@@ -13,6 +13,8 @@ pub mod client;
 pub mod message;
 /// Sealed source-linked recording windows and byte-provenance verification.
 pub mod recording;
+/// Continuous bounded IDR collection with explicit source ownership and backpressure.
+pub mod recording_collector;
 pub mod sdp;
 
 pub use message::{
