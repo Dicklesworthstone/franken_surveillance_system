@@ -1,5 +1,9 @@
 #![forbid(unsafe_code)]
-//! Owner-driven RTSP client negotiation. No sockets, credentials, or ambient time.
+//! Owner-driven RTSP client negotiation. No sockets or ambient time.
+//! Opt-in Digest helpers borrow credentials from an explicit owner.
+
+/// Bounded credential-owner integration preserving this session's request lifecycle.
+pub mod authenticated;
 
 use std::fmt;
 use super::{AuthScheme, RtspHeaders, RtspResponse, parse_sdp_bytes};
@@ -204,6 +208,7 @@ pub struct RtspClientSession {
     keepalive_ns: Option<u64>,
     remote_may_exist: bool,
     ssrc: Option<u32>,
+    digest: Option<authenticated::DigestState>,
 }
 impl fmt::Debug for RtspClientSession {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -230,7 +235,7 @@ impl RtspClientSession {
             config, state: ClientState::Idle, last_ns: 0, next_cseq: 1,
             pending: None, media: None, track_uri: String::new(), aggregate_uri: String::new(),
             session_id: None, expires_ns: None, keepalive_ns: None,
-            remote_may_exist: false, ssrc: None,
+            remote_may_exist: false, ssrc: None, digest: None,
         })
     }
     /// Local protocol state only, not a camera health certificate.
@@ -264,7 +269,12 @@ impl RtspClientSession {
         } else { ClientProgress::Pending })
     }
     /// Prepare a single request and reserve its CSeq/deadline. No unchanged retry is automatic.
+    /// An explicitly Digest-enabled session requires request_digest, even for its first request.
     pub fn request(&mut self, command: ClientCommand, now_ns: u64) -> Result<ClientRequest, ClientError> {
+        if self.digest.is_some() { return Err(ClientError::Authentication(Some(AuthScheme::Digest))); }
+        self.unsigned_request(command, now_ns)
+    }
+    fn unsigned_request(&mut self, command: ClientCommand, now_ns: u64) -> Result<ClientRequest, ClientError> {
         self.tick(now_ns)?;
         if self.pending.is_some() { return Err(ClientError::State); }
         let valid = match command {
@@ -314,7 +324,11 @@ impl RtspClientSession {
         let result = self.accept_matching(response, pending, now_ns);
         match result {
             Ok(ClientProgress::Interim) => {},
-            Ok(_) => self.pending = None,
+            Ok(_) => {
+                self.pending = None;
+                if let Some(auth) = &mut self.digest { auth.settled(); }
+                if self.state == ClientState::Closed { self.digest = None; }
+            },
             Err(_) => self.state = ClientState::Failed,
         }
         result
@@ -374,7 +388,7 @@ impl RtspClientSession {
     pub fn cancel(&mut self) -> ClientCloseReceipt {
         let receipt = ClientCloseReceipt { remote_session_may_exist: self.remote_may_exist, pending_cseq: self.pending.map(|p| p.cseq) };
         self.state = ClientState::Closed; self.pending = None; self.session_id = None;
-        self.expires_ns = None; self.keepalive_ns = None;
+        self.expires_ns = None; self.keepalive_ns = None; self.digest = None;
         receipt
     }
 }
