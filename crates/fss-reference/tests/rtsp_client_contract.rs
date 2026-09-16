@@ -291,3 +291,30 @@ fn every_description_wire_split_reaches_the_same_negotiation() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn fmtp_duplicate_spelling_cannot_change_packetization_silently() -> TestResult {
+    for duplicate in ["packetization-mode =0", "PACKETIZATION-MODE=0"] {
+        let body = sdp().replace("packetization-mode=1", &format!("packetization-mode=1;{duplicate}"));
+        let mut c = RtspClientSession::new(config())?;
+        c.request(C::Describe, 0)?;
+        assert_eq!(c.accept(&response(1, 200, &[("Content-Type", "application/sdp")], body.as_bytes()), 1), Err(E::Description));
+    }
+    Ok(())
+}
+
+#[test]
+fn signaled_profile_must_match_exact_sps_profile_constraints_and_level() -> TestResult {
+    for profile in ["42c00b", "42C00B", "64000b", "42c00c", "42c00", "42c0GG"] {
+        let body = sdp().replace("packetization-mode=1", &format!("packetization-mode=1;profile-level-id={profile}"));
+        let mut c = RtspClientSession::new(config())?;
+        c.request(C::Describe, 0)?;
+        let result = c.accept(&response(1, 200, &[("Content-Type", "application/sdp")], body.as_bytes()), 1);
+        if matches!(profile, "42c00b" | "42C00B") {
+            assert_eq!(result?, P::Accepted(S::Described));
+        } else {
+            assert_eq!(result, Err(E::Description));
+        }
+    }
+    Ok(())
+}

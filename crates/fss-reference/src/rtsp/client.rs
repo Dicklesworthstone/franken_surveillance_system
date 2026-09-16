@@ -463,8 +463,9 @@ fn description(config: &ClientConfig, r: &RtspResponse) -> Result<(ClientMedia, 
             let mut seen = std::collections::BTreeSet::new();
             let attrs = line.split_once(' ').ok_or(ClientError::Description)?.1;
             for attr in attrs.split(';') {
-                let key = attr.trim().split('=').next().ok_or(ClientError::Description)?;
-                if !seen.insert(key) { return Err(ClientError::Description); }
+                let key = attr.trim().split('=').next().ok_or(ClientError::Description)?
+                    .trim().to_ascii_lowercase();
+                if key.is_empty() || !seen.insert(key) { return Err(ClientError::Description); }
             }
         }
     }
@@ -479,6 +480,18 @@ fn description(config: &ClientConfig, r: &RtspResponse) -> Result<(ClientMedia, 
     if sps.len() < 4 || pps.len() < 2 || sps.len() > 16_384 || pps.len() > 16_384
         || sps[0] & 0x9f != 7 || pps[0] & 0x9f != 8
     { return Err(ClientError::Description); }
+    // The advertised profile/constraints/level must agree with the selected SPS.
+    // Missing signaling stays missing; it is never replaced with an invented profile.
+    if let Some(profile) = &m.profile_level_id {
+        if profile.len() != 6 || !profile.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(ClientError::Description);
+        }
+        for index in 0..3 {
+            let value = u8::from_str_radix(&profile[index * 2..index * 2 + 2], 16)
+                .map_err(|_| ClientError::Description)?;
+            if value != sps[index + 1] { return Err(ClientError::Description); }
+        }
+    }
     let content_base = singleton(&r.headers, "Content-Base")?;
     let location = singleton(&r.headers, "Content-Location")?;
     let base = if let Some(base) = content_base { scoped(config, base)?; base.to_string() }

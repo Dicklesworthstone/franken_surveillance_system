@@ -266,3 +266,62 @@ fn cancellation_accounts_for_queued_media_and_redacts_debug() -> TestResult {
     assert!(matches!(c.poll(6)?, P::Ended { retirement: None, .. }));
     Ok(())
 }
+
+#[test]
+fn late_final_tcp_byte_cannot_erase_a_partial_frame_deadline() -> TestResult {
+    let wire = interleaved(1, &[0x80, 201, 0, 1, 0, 0, 0, 7]);
+    for last_byte_time in [5_000_000_005, 5_000_000_006, 5_000_000_007] {
+        let mut c = playing(AvcReceiveLimits::default(), true)?;
+        c.ingest(&wire[..wire.len() - 1], 6)?;
+        let result = c.ingest(&wire[wire.len() - 1..], last_byte_time);
+        if last_byte_time < 5_000_000_006 {
+            result?;
+            assert!(matches!(c.poll(last_byte_time)?, P::Rtcp { validation: Ok(1), .. }));
+        } else {
+            let failure = result.err().ok_or("expired framing resurrected")?;
+            assert_eq!(failure.reason, E::PartialTimeout);
+            assert_eq!(failure.retirement.ok_or("retirement missing")?.partial_wire_bytes, wire.len() - 1);
+            assert_eq!(c.state(), ClientState::Closed);
+            assert_eq!(c.buffered_wire_bytes(), 0);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn expired_partial_input_prevents_a_new_keepalive_request() -> TestResult {
+    let mut c = playing(AvcReceiveLimits::default(), false)?;
+    c.ingest(b"RTSP/1.0", 6)?;
+    let failure = c.request(C::KeepAlive, 5_000_000_006).err().ok_or("expired framing survived request")?;
+    assert_eq!(failure.reason, E::PartialTimeout);
+    let retirement = failure.retirement.ok_or("missing closure")?;
+    assert_eq!(retirement.session.pending_cseq, None);
+    assert!(retirement.session.remote_session_may_exist);
+    Ok(())
+}
+
+#[test]
+fn expired_session_refuses_new_wire_before_parsing_or_admission() -> TestResult {
+    let mut c = playing(AvcReceiveLimits::default(), false)?;
+    let wire = interleaved(0, &packet(1, 90_000, nals(BASELINE)[0]));
+    let failure = c.ingest(&wire, 60_000_000_004).err().ok_or("expired session accepted input")?;
+    assert_eq!(failure.reason, E::Session(ClientError::SessionExpired));
+    assert_eq!(failure.retirement.ok_or("missing closure")?.pending_events, 0);
+    assert_eq!(c.buffered_wire_bytes(), 0);
+    Ok(())
+}
+
+#[test]
+fn a_new_partial_frame_gets_its_own_deadline_after_a_proven_boundary() -> TestResult {
+    let mut c = playing(AvcReceiveLimits::default(), true)?;
+    let wire = interleaved(1, &[0x80, 201, 0, 1, 0, 0, 0, 7]);
+    c.ingest(&wire[..1], 6)?;
+    let mut suffix_and_next = wire[1..].to_vec();
+    suffix_and_next.extend_from_slice(&wire[..1]);
+    c.ingest(&suffix_and_next, 4_000_000_006)?;
+    assert!(matches!(c.poll(4_000_000_006)?, P::Rtcp { validation: Ok(1), .. }));
+    assert_eq!(c.next_wake_ns(), Some(9_000_000_006));
+    c.ingest(&wire[1..], 8_000_000_006)?;
+    assert!(matches!(c.poll(8_000_000_006)?, P::Rtcp { validation: Ok(1), .. }));
+    Ok(())
+}

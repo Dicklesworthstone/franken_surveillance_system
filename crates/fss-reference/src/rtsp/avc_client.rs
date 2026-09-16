@@ -198,6 +198,9 @@ impl RtspAvcClient {
         self.check_time(now).map_err(refusal)?;
         if self.closed || self.input_ended { return Err(refusal(AvcClientError::Closed)); }
         self.last_ns = now;
+        if self.partial_deadline_ns.is_some_and(|at| now >= at) {
+            return Err(AvcClientFailure { reason: AvcClientError::PartialTimeout, retirement: Some(self.cancel()) });
+        }
         match self.session.request(command, now) {
             Ok(request) => Ok(request),
             Err(error) => {
@@ -217,10 +220,21 @@ impl RtspAvcClient {
         }
         let deadline = now.checked_add(PARTIAL_TIMEOUT).ok_or_else(|| refusal(AvcClientError::Session(ClientError::Exhausted)))?;
         self.last_ns = now;
+        // Check before feeding: otherwise a late final byte could empty the
+        // parser buffer and erase the expired partial-frame deadline.
+        if self.partial_deadline_ns.is_some_and(|at| now >= at) {
+            return Err(AvcClientFailure { reason: AvcClientError::PartialTimeout, retirement: Some(self.cancel()) });
+        }
+        if let Err(error) = self.session.tick(now) {
+            return Err(AvcClientFailure { reason: AvcClientError::Session(error), retirement: Some(self.cancel()) });
+        }
         match self.parser.feed(bytes) {
             Ok(events) => {
                 self.events = events.into_iter(); self.event_time_ns = now;
                 self.partial_deadline_ns = if self.parser.buffered_bytes() == 0 { None }
+                    // A complete event proves the prior frame ended; a residual
+                    // partial frame belongs to the next message, with its own age.
+                    else if self.events.len() != 0 { Some(deadline) }
                     else { self.partial_deadline_ns.or(Some(deadline)) };
                 Ok(())
             }
@@ -282,11 +296,13 @@ impl RtspAvcClient {
         match self.parser.feed(&[]) {
             Err(error) => return Ok(self.fault(AvcClientError::Wire(error), None)),
             Ok(events) if !events.is_empty() => {
+                if self.parser.buffered_bytes() == 0 { self.partial_deadline_ns = None; }
                 self.events = events.into_iter();
                 return Ok(AvcClientPoll::Pending { wake_at_ns: Some(now) });
             }
             Ok(_) => {},
         }
+        if self.parser.buffered_bytes() == 0 { self.partial_deadline_ns = None; }
         if self.input_ended {
             if self.parser.buffered_bytes() != 0 { return Ok(self.fault(AvcClientError::Truncated, None)); }
             self.draining = true;
