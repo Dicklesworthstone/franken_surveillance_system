@@ -10,6 +10,7 @@
 mod assembly;
 mod bits;
 mod parameters;
+mod receiver;
 mod slice;
 
 pub use assembly::{
@@ -18,6 +19,10 @@ pub use assembly::{
     AvcRetirementReason,
 };
 pub use parameters::{AvcPps, AvcSps, AvcTimingInfo, PocMode, parse_pps, parse_sps};
+pub use receiver::{
+    AvcQueuedNalRetirement, AvcReceiveAdmission, AvcReceiveCancellation, AvcReceiveError,
+    AvcReceiveLimits, AvcReceivePoll, AvcReceiver,
+};
 pub use slice::{AvcSliceIdentity, AvcSliceType, parse_slice_identity};
 
 /// Independent syntax and allocation ceilings; not H.264 level-conformance claims.
