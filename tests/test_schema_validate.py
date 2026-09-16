@@ -823,7 +823,6 @@ class TestSchemaConstitution(unittest.TestCase):
             "fss.agent_handoff_capsule.v1",
             "fss.agent_hypothesis_workspace.v1",
             "fss.agent_learning_proposal.v1",
-            "fss.agent_query_plan.v1",
             "fss.agent_response_envelope.v1",
             "fss.agent_work_claim.v1",
             "fss.calibration_certificate.v1",
@@ -1352,8 +1351,9 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         #   (owners AgentOperation / AgentView / AgentRequestEnvelope, fss-x4a.30.83.17-40)
         # + fss.agent_mission.v1 / fss.agent_objective_contract.v1 / fss.agent_session.v1 /
         #   fss.agent_session_capsule.v1 (owners MissionContract / ObjectiveContract /
-        #   AgentSession / SessionCapsule, fss-x4a.30.83.41-44).
-        self.assertEqual(result["implementedCount"], 36)
+        #   AgentSession / SessionCapsule, fss-x4a.30.83.41-44)
+        # + fss.agent_query_plan.v1 (owner AgentQueryPlan, fss-x4a.30.83.50).
+        self.assertEqual(result["implementedCount"], 37)
 
         unreg_findings = [
             f for f in validator.findings
