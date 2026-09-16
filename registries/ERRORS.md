@@ -171,6 +171,12 @@ operation states rather than generic errors.
 | `ERR-OP-CORRUPT-FILE-001` | operation registry, frozen public registry, or markdown documentation file is missing or corrupt | repair or restore the operation registry file |
 | `ERR-OP-SEMANTIC-INVARIANT-001` | operation semantic invariant violation: effect/mode contradiction, durability contradiction, or unregistered view/payload/capability/gate/retry spelling | enforce the registered operation mode table and row invariants |
 | `ERR-OP-RUST-DRIFT-001` | typed Rust operation table drifted from or is missing versus the machine registry | regenerate crates/fss-core/src/agent_operation.rs canonical rows from architecture/agent_operations.json |
+| `ERR-VW-REGISTRY-DRIFT-001` | view registry row drift between machine registry and markdown mirror | synchronize architecture/agent_views.json and registries/AGENT_VIEWS.md |
+| `ERR-VW-STABLE-ID-REUSED-001` | view stable identifier was reused, duplicated, or renumbered outside AVIEW-001..008 | allocate a new unique stable identifier; never reuse stable IDs |
+| `ERR-VW-MISSING-FIELD-001` | view row or registry metadata lacks a mandatory field or is empty/corrupt | declare all mandatory fields in the view row |
+| `ERR-VW-CORRUPT-FILE-001` | view registry or markdown documentation file is missing or corrupt | repair or restore the view registry file |
+| `ERR-VW-SEMANTIC-INVARIANT-001` | view semantic invariant violation: token bound contradiction, unregistered gate/status, or operation default view foreign-key miss | enforce the registered view row invariants and default-view foreign keys |
+| `ERR-VW-RUST-DRIFT-001` | typed Rust view table drifted from or is missing versus the machine registry | regenerate crates/fss-core/src/agent_view.rs canonical rows from architecture/agent_views.json |
 | `ERR-ADAPTER-REGISTRY-DRIFT-001` | adapter registry row drift between machine registry and markdown | synchronize architecture/device_adapters.json and registries/DEVICE_ADAPTERS.md |
 | `ERR-ADAPTER-STABLE-ID-REUSED-001` | adapter stable identifier was reused, renumbered, or resurrected | allocate a new unique stable identifier; never reuse stable IDs |
 | `ERR-ADAPTER-SEMANTIC-INVARIANT-001` | adapter row violates semantic invariants (tier, state, gate) | fail closed; enforce normative row definitions |
