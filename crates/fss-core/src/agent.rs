@@ -1119,6 +1119,9 @@ pub struct ActionAffordance {
 }
 
 impl ActionAffordance {
+    /// Schema identity implemented by this type.
+    pub const SCHEMA: &str = "fss.agent_affordance.v1";
+
     /// Validates the classification against a world envelope.
     pub fn validate_against(&self, envelope: &WorldEnvelope) -> Result<(), ContractError> {
         let retained = envelope.world_ids();
@@ -1493,6 +1496,9 @@ pub struct HandoffPublishParams<I = Vec<ContentDigest>> {
 }
 
 impl HandoffCapsule {
+    /// Schema identity implemented by this type.
+    pub const SCHEMA: &str = "fss.agent_handoff_capsule.v1";
+
     /// Materializes and seals a complete root-last handoff capsule.
     pub fn publish<I>(params: HandoffPublishParams<I>) -> Result<Self, ContractError>
     where
