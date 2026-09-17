@@ -156,6 +156,7 @@ impl ReplayIoAuthority {
                 reason: "capability does not grant ADP-REPLAY-001 I/O authority",
             });
         }
+        std::fs::create_dir_all(&root_dir).map_err(|e| ReplayAdapterError::Io(e))?;
         Ok(Self {
             principal,
             capability,
