@@ -40,7 +40,7 @@ impl<'a> FocalValidationSet<'a> {
     pub fn scan(&self)->&'a FocalPoseScan{self.scan}
     pub fn reports(&self)->&[FocalCandidateValidation]{&self.reports}
     pub fn passing_candidates(&self)->&[(usize,usize)]{&self.passing}
-    pub fn unique_passing_candidate(&self)->Option<(usize,usize)>{(self.passing.len()==1).then_some(self.passing[0])}
+    pub fn unique_passing_candidate(&self)->Option<(usize,usize)>{match self.passing.as_slice(){&[(index,candidate)]=>Some((index,candidate)),_=>None}}
 }
 
 #[derive(Debug)]
@@ -79,6 +79,37 @@ impl FocalPoseScan {
             }
         }}
         budget.charge(0)?; Ok(FocalValidationSet{scan:self,reports,passing})
+    }
+}
+
+#[cfg(test)]
+mod unique_selection_tests {
+    use super::*;
+
+    fn scan()->FocalPoseScan{
+        FocalPoseScan{basis:GeometryBasis::new(1,1).expect("basis"),dimensions:[1,1],
+            options:FocalScanOptions{minimum_fx_px:1.,maximum_fx_px:2.,y_over_x:1.,
+            principal_point:[0.,0.],samples:3,pose:PoseSolverOptions::default()},
+            samples:Vec::new(),work_units:0}
+    }
+    fn set(scan:&FocalPoseScan,passing:Vec<(usize,usize)>)->FocalValidationSet<'_>{
+        FocalValidationSet{scan,reports:Vec::new(),passing}
+    }
+
+    #[test]
+    fn empty_passing_selection_is_none_without_panic(){
+        let scan=scan();
+        assert_eq!(set(&scan,Vec::new()).unique_passing_candidate(),None);
+    }
+    #[test]
+    fn single_passing_selection_returns_indices(){
+        let scan=scan();
+        assert_eq!(set(&scan,vec![(2,1)]).unique_passing_candidate(),Some((2,1)));
+    }
+    #[test]
+    fn multiple_passing_selection_stays_none(){
+        let scan=scan();
+        assert_eq!(set(&scan,vec![(2,1),(2,0)]).unique_passing_candidate(),None);
     }
 }
 
