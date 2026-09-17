@@ -340,7 +340,9 @@ impl RtpReorderBuffer {
                     .try_reserve_exact(wire.len())
                     .map_err(|_| ReorderError::Allocation)?;
                 owned.extend_from_slice(wire);
-                let index = self.queue.partition_point(|queued| queued.sequence < extended);
+                let index = self
+                    .queue
+                    .partition_point(|queued| queued.sequence < extended);
                 self.queue.insert(
                     index,
                     OrderedRtpPacket {
@@ -359,7 +361,8 @@ impl RtpReorderBuffer {
             }
         } else if sequence.class == SequenceClass::Duplicate {
             if self.queue.iter().any(|queued| {
-                Some(queued.sequence) == sequence.extended_sequence && queued.bytes.as_slice() != wire
+                Some(queued.sequence) == sequence.extended_sequence
+                    && queued.bytes.as_slice() != wire
             }) {
                 return Err(ReorderError::ConflictingDuplicate);
             }

@@ -257,9 +257,9 @@ impl H264Depacketizer {
     /// Earliest poll time for pending reconstruction, absent when nothing is retained.
     /// FU starts with an unrepresentable deadline are refused rather than retained forever.
     pub fn next_deadline_ns(&self) -> Option<u64> {
-        self.pending.as_ref().and_then(|nal| {
-            nal.started_ns.checked_add(self.limits.max_pending_age_ns)
-        })
+        self.pending
+            .as_ref()
+            .and_then(|nal| nal.started_ns.checked_add(self.limits.max_pending_age_ns))
     }
 
     /// Retire an incomplete chain immediately on an owner-confirmed delivery gap.

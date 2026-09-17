@@ -29,7 +29,10 @@ fn drain(
 ) -> Result<(), Box<dyn std::error::Error>> {
     loop {
         match receiver.poll(now_ns)? {
-            H264ReceivePoll::Packet { source, reconstruction } => {
+            H264ReceivePoll::Packet {
+                source,
+                reconstruction,
+            } => {
                 let extended = source.sequence();
                 let digest = ContentDigest::try_sha256(source.bytes())?.to_text();
                 println!(
@@ -46,7 +49,10 @@ fn drain(
                             let digest = ContentDigest::try_sha256(nal.bytes())?.to_text();
                             println!(
                                 "{{\"kind\":\"nal\",\"ingress\":1,\"generation\":1,\"sequence\":{extended},\"digest\":\"{digest}\",\"bytes\":{},\"source_spans\":{},\"nal_type\":{},\"marker\":{}}}",
-                                nal.bytes().len(), nal.sources().len(), nal.nal_type(), nal.marker()
+                                nal.bytes().len(),
+                                nal.sources().len(),
+                                nal.nal_type(),
+                                nal.marker()
                             );
                             if nal.nal_type() == 5 {
                                 assert_eq!(nal.bytes(), &[0x65, 10, 20, 30]);
@@ -93,7 +99,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         key,
         96,
         H264Mode::NonInterleaved,
-        ReorderLimits { max_delay_ns: 3_000_000, ..ReorderLimits::default() },
+        ReorderLimits {
+            max_delay_ns: 3_000_000,
+            ..ReorderLimits::default()
+        },
         H264Limits::default(),
     )?;
     let mut counts = Counts::default();
@@ -130,11 +139,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         drain(&mut receiver, now_ns, &mut counts)?;
     }
     // Drive the advertised loss deadline without fabricating a new network packet.
-    let wake = receiver.next_wake_ns().ok_or("loss must provide a timer wake")?;
+    let wake = receiver
+        .next_wake_ns()
+        .ok_or("loss must provide a timer wake")?;
     assert_eq!(wake, 10_000_000);
     drain(&mut receiver, wake, &mut counts)?;
     let cancelled = receiver.cancel();
-    let discard = cancelled.fragment.ok_or("final fragment must be cancelled")?;
+    let discard = cancelled
+        .fragment
+        .ok_or("final fragment must be cancelled")?;
     assert_eq!(discard.reason, H264Error::Cancelled);
     assert_eq!(cancelled.queue.packets, 0);
     assert_eq!(receiver.pending_nal_bytes(), 0);

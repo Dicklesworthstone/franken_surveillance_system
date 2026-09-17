@@ -2,6 +2,9 @@ use std::{fmt, ops::Range};
 
 use crate::error::{PacketError, PacketLimits, be16, be32, span};
 
+/// Contributing-source word size in bytes.
+const CSRC_BYTES: usize = 4;
+
 /// An uninterpreted, length-validated RTP header extension.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct HeaderExtension<'a> {
@@ -104,7 +107,7 @@ impl<'a> RtpPacket<'a> {
     /// Contributing sources in wire order, without allocation.
     pub fn csrcs(self) -> impl ExactSizeIterator<Item = u32> + 'a {
         let end = 12 + usize::from(self.bytes[0] & 0x0f) * 4;
-        self.bytes[12..end].chunks_exact(4).map(be32)
+        self.bytes[12..end].chunks_exact(CSRC_BYTES).map(be32)
     }
 
     /// Profile-specific extension, retained without interpreting untrusted text.

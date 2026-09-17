@@ -1,15 +1,13 @@
 #![forbid(unsafe_code)]
 
-use crate::{
-    H264Limits, H264Mode, H264Output, H264ReceiveAdmission, H264ReceiveCancellation,
-    H264ReceiveError, H264ReceivePoll, H264Receiver, H264Status, FragmentDiscard,
-    NalUnit, OrderedRtpPacket, ReorderDisposition, ReorderGap, ReorderLimits,
-    SequenceStats, StreamKey,
-};
 use super::{
-    AvcAssembler, AvcAssemblyError, AvcAssemblyLimits, AvcAssemblyOutput,
-    AvcAssemblyPoll, AvcAssemblyRetirement, AvcAssemblyStep, AvcPictureGroup,
-    AvcPps, AvcSps, AvcSyntaxLimits,
+    AvcAssembler, AvcAssemblyError, AvcAssemblyLimits, AvcAssemblyOutput, AvcAssemblyPoll,
+    AvcAssemblyRetirement, AvcAssemblyStep, AvcPictureGroup, AvcPps, AvcSps, AvcSyntaxLimits,
+};
+use crate::{
+    FragmentDiscard, H264Limits, H264Mode, H264Output, H264ReceiveAdmission,
+    H264ReceiveCancellation, H264ReceiveError, H264ReceivePoll, H264Receiver, H264Status, NalUnit,
+    OrderedRtpPacket, ReorderDisposition, ReorderGap, ReorderLimits, SequenceStats, StreamKey,
 };
 
 /// Independent limits for transport, NAL reconstruction, syntax, and picture assembly.
@@ -188,34 +186,66 @@ impl AvcReceiver {
         limits: AvcReceiveLimits,
         parameters: (AvcSps, AvcPps),
     ) -> Result<Self, AvcReceiveError> {
-        let assembler = AvcAssembler::new(key, parameters.0, parameters.1, limits.syntax, limits.assembly)
-            .map_err(AvcReceiveError::Assembly)?;
-        let transport = H264Receiver::new(key, payload_type, mode, limits.reorder, limits.reconstruction)
-            .map_err(AvcReceiveError::Transport)?;
+        let assembler = AvcAssembler::new(
+            key,
+            parameters.0,
+            parameters.1,
+            limits.syntax,
+            limits.assembly,
+        )
+        .map_err(AvcReceiveError::Assembly)?;
+        let transport = H264Receiver::new(
+            key,
+            payload_type,
+            mode,
+            limits.reorder,
+            limits.reconstruction,
+        )
+        .map_err(AvcReceiveError::Transport)?;
         Ok(Self {
-            key, transport, assembler, pending_nals: Vec::new().into_iter(),
-            last_now_ns: 0, finishing: false, ended: false,
+            key,
+            transport,
+            assembler,
+            pending_nals: Vec::new().into_iter(),
+            last_now_ns: 0,
+            finishing: false,
+            ended: false,
         })
     }
 
     /// Transport accounting; late recovery cannot retract prior picture retirements.
-    pub fn stats(&self) -> SequenceStats { self.transport.stats() }
+    pub fn stats(&self) -> SequenceStats {
+        self.transport.stats()
+    }
     /// Queued original datagrams awaiting ordered delivery.
-    pub fn queued_packets(&self) -> usize { self.transport.queued_packets() }
+    pub fn queued_packets(&self) -> usize {
+        self.transport.queued_packets()
+    }
     /// Complete NALs awaiting bounded picture-admission steps.
-    pub fn queued_nals(&self) -> usize { self.pending_nals.len() }
+    pub fn queued_nals(&self) -> usize {
+        self.pending_nals.len()
+    }
     /// Incomplete FU bytes plus queued complete NAL bytes plus pending picture bytes.
     /// Source-spool storage and metadata overhead are separate owner costs.
     pub fn retained_nal_bytes(&self) -> usize {
         self.transport.pending_nal_bytes()
-            + self.pending_nals.as_slice().iter().map(|n| n.bytes().len()).sum::<usize>()
+            + self
+                .pending_nals
+                .as_slice()
+                .iter()
+                .map(|n| n.bytes().len())
+                .sum::<usize>()
             + self.assembler.pending_bytes()
     }
     /// Earliest useful wake. Ready NALs, marked pictures, and EOF drain request
     /// immediate polling; other wakes preserve their original monotonic deadlines.
     pub fn next_wake_ns(&self) -> Option<u64> {
-        if self.ended { return None; }
-        if !self.pending_nals.as_slice().is_empty() || self.finishing { return Some(self.last_now_ns); }
+        if self.ended {
+            return None;
+        }
+        if !self.pending_nals.as_slice().is_empty() || self.finishing {
+            return Some(self.last_now_ns);
+        }
         let wake = match (self.transport.next_wake_ns(), self.assembler.next_wake_ns()) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
@@ -225,17 +255,35 @@ impl AvcReceiver {
 
     /// Admit complete original wire bytes. Failed admission preserves all state;
     /// confirmed source restart retires all old-epoch derivatives immediately.
-    pub fn ingest(&mut self, key: StreamKey, wire: &[u8], now_ns: u64) -> Result<AvcReceiveAdmission, AvcReceiveError> {
+    pub fn ingest(
+        &mut self,
+        key: StreamKey,
+        wire: &[u8],
+        now_ns: u64,
+    ) -> Result<AvcReceiveAdmission, AvcReceiveError> {
         self.check_time(now_ns)?;
-        let transport = self.transport.ingest(key, wire, now_ns).map_err(AvcReceiveError::Transport)?;
+        let transport = self
+            .transport
+            .ingest(key, wire, now_ns)
+            .map_err(AvcReceiveError::Transport)?;
         self.last_now_ns = now_ns;
-        let (queued_nals, picture) = if transport.transport.disposition == ReorderDisposition::RestartRequired {
-            let picture = self.assembler.discontinuity(self.key, now_ns).map_err(AvcReceiveError::Assembly)?;
-            let _ = self.assembler.cancel(); // discontinuity already returned the sole pending receipt.
-            self.ended = true;
-            (Some(self.retire_queue()), picture)
-        } else { (None, None) };
-        Ok(AvcReceiveAdmission { transport, queued_nals, picture })
+        let (queued_nals, picture) =
+            if transport.transport.disposition == ReorderDisposition::RestartRequired {
+                let picture = self
+                    .assembler
+                    .discontinuity(self.key, now_ns)
+                    .map_err(AvcReceiveError::Assembly)?;
+                let _ = self.assembler.cancel(); // discontinuity already returned the sole pending receipt.
+                self.ended = true;
+                (Some(self.retire_queue()), picture)
+            } else {
+                (None, None)
+            };
+        Ok(AvcReceiveAdmission {
+            transport,
+            queued_nals,
+            picture,
+        })
     }
 
     /// Perform at most one visible progress step. Drive until Pending/Ended after
@@ -244,11 +292,21 @@ impl AvcReceiver {
         self.check_time(now_ns)?;
         self.last_now_ns = now_ns;
         if self.ended {
-            return Ok(AvcReceivePoll::Ended { fragment: None, interrupted_picture: None, tail: None });
+            return Ok(AvcReceivePoll::Ended {
+                fragment: None,
+                interrupted_picture: None,
+                tail: None,
+            });
         }
-        match self.assembler.poll(now_ns).map_err(AvcReceiveError::Assembly)? {
+        match self
+            .assembler
+            .poll(now_ns)
+            .map_err(AvcReceiveError::Assembly)?
+        {
             AvcAssemblyPoll::Picture(picture) => return Ok(AvcReceivePoll::Picture(picture)),
-            AvcAssemblyPoll::Retired(retired) => return Ok(AvcReceivePoll::PictureRetired(retired)),
+            AvcAssemblyPoll::Retired(retired) => {
+                return Ok(AvcReceivePoll::PictureRetired(retired));
+            }
             AvcAssemblyPoll::Pending { .. } | AvcAssemblyPoll::Ended => {}
         }
         if let Some(nal) = self.pending_nals.next() {
@@ -261,37 +319,90 @@ impl AvcReceiver {
             }
             return Ok(AvcReceivePoll::Assembly(step));
         }
-        match self.transport.poll(now_ns).map_err(AvcReceiveError::Transport)? {
-            H264ReceivePoll::Packet { source, reconstruction } => match reconstruction {
-                Ok(H264Output { status, nals, gap_before, discarded }) => {
+        match self
+            .transport
+            .poll(now_ns)
+            .map_err(AvcReceiveError::Transport)?
+        {
+            H264ReceivePoll::Packet {
+                source,
+                reconstruction,
+            } => match reconstruction {
+                Ok(H264Output {
+                    status,
+                    nals,
+                    gap_before,
+                    discarded,
+                }) => {
                     let picture = if gap_before || discarded.is_some() {
-                        self.assembler.discontinuity(self.key, now_ns).map_err(AvcReceiveError::Assembly)?
-                    } else { None };
+                        self.assembler
+                            .discontinuity(self.key, now_ns)
+                            .map_err(AvcReceiveError::Assembly)?
+                    } else {
+                        None
+                    };
                     let queued_nals = nals.len();
                     self.pending_nals = nals.into_iter();
-                    Ok(AvcReceivePoll::Source { source, status, queued_nals, gap_before, fragment: discarded, picture })
+                    Ok(AvcReceivePoll::Source {
+                        source,
+                        status,
+                        queued_nals,
+                        gap_before,
+                        fragment: discarded,
+                        picture,
+                    })
                 }
                 Err(error) => {
-                    let picture = self.assembler.discontinuity(self.key, now_ns).map_err(AvcReceiveError::Assembly)?;
-                    Ok(AvcReceivePoll::CodecRefused { source, error, picture })
+                    let picture = self
+                        .assembler
+                        .discontinuity(self.key, now_ns)
+                        .map_err(AvcReceiveError::Assembly)?;
+                    Ok(AvcReceivePoll::CodecRefused {
+                        source,
+                        error,
+                        picture,
+                    })
                 }
             },
             H264ReceivePoll::Gap { gap, discarded } => {
-                let picture = self.assembler.discontinuity(self.key, now_ns).map_err(AvcReceiveError::Assembly)?;
-                Ok(AvcReceivePoll::Gap { gap, fragment: discarded, picture })
+                let picture = self
+                    .assembler
+                    .discontinuity(self.key, now_ns)
+                    .map_err(AvcReceiveError::Assembly)?;
+                Ok(AvcReceivePoll::Gap {
+                    gap,
+                    fragment: discarded,
+                    picture,
+                })
             }
             H264ReceivePoll::FragmentDiscarded(fragment) => {
-                let picture = self.assembler.discontinuity(self.key, now_ns).map_err(AvcReceiveError::Assembly)?;
+                let picture = self
+                    .assembler
+                    .discontinuity(self.key, now_ns)
+                    .map_err(AvcReceiveError::Assembly)?;
                 Ok(AvcReceivePoll::FragmentRetired { fragment, picture })
             }
-            H264ReceivePoll::Pending { .. } => Ok(AvcReceivePoll::Pending { wake_at_ns: self.next_wake_ns() }),
+            H264ReceivePoll::Pending { .. } => Ok(AvcReceivePoll::Pending {
+                wake_at_ns: self.next_wake_ns(),
+            }),
             H264ReceivePoll::Ended { discarded } => {
                 let interrupted_picture = if discarded.is_some() {
-                    self.assembler.discontinuity(self.key, now_ns).map_err(AvcReceiveError::Assembly)?
-                } else { None };
-                let tail = self.assembler.finish(now_ns).map_err(AvcReceiveError::Assembly)?;
+                    self.assembler
+                        .discontinuity(self.key, now_ns)
+                        .map_err(AvcReceiveError::Assembly)?
+                } else {
+                    None
+                };
+                let tail = self
+                    .assembler
+                    .finish(now_ns)
+                    .map_err(AvcReceiveError::Assembly)?;
                 self.ended = true;
-                Ok(AvcReceivePoll::Ended { fragment: discarded, interrupted_picture, tail: Some(tail) })
+                Ok(AvcReceivePoll::Ended {
+                    fragment: discarded,
+                    interrupted_picture,
+                    tail: Some(tail),
+                })
             }
         }
     }
@@ -307,21 +418,29 @@ impl AvcReceiver {
     pub fn cancel(&mut self) -> AvcReceiveCancellation {
         self.ended = true;
         AvcReceiveCancellation {
-            transport: self.transport.cancel(), queued_nals: self.retire_queue(), picture: self.assembler.cancel(),
+            transport: self.transport.cancel(),
+            queued_nals: self.retire_queue(),
+            picture: self.assembler.cancel(),
         }
     }
 
     /// Validate a strictly newer epoch before retiring this receiver. A refused
     /// reconfiguration changes nothing. Successful restart returns all old receipts.
     pub fn restart(
-        &mut self, key: StreamKey, payload_type: u8, mode: H264Mode,
-        limits: AvcReceiveLimits, parameters: (AvcSps, AvcPps),
+        &mut self,
+        key: StreamKey,
+        payload_type: u8,
+        mode: H264Mode,
+        limits: AvcReceiveLimits,
+        parameters: (AvcSps, AvcPps),
     ) -> Result<(Self, AvcReceiveCancellation), AvcReceiveError> {
         if key.ingress != self.key.ingress {
             return Err(AvcReceiveError::Assembly(AvcAssemblyError::StreamMismatch));
         }
         if key.generation <= self.key.generation {
-            return Err(AvcReceiveError::Assembly(AvcAssemblyError::GenerationRequired));
+            return Err(AvcReceiveError::Assembly(
+                AvcAssemblyError::GenerationRequired,
+            ));
         }
         let next = Self::new(key, payload_type, mode, limits, parameters)?;
         Ok((next, self.cancel()))
@@ -337,9 +456,17 @@ impl AvcReceiver {
     fn retire_queue(&mut self) -> AvcQueuedNalRetirement {
         let queue = self.pending_nals.as_slice();
         let receipt = AvcQueuedNalRetirement {
-            key: self.key, nals: queue.len(), bytes: queue.iter().map(|n| n.bytes().len()).sum(),
-            first_sequence: queue.first().and_then(|n| n.sources().first()).map(|s| s.sequence),
-            last_sequence: queue.last().and_then(|n| n.sources().last()).map(|s| s.sequence),
+            key: self.key,
+            nals: queue.len(),
+            bytes: queue.iter().map(|n| n.bytes().len()).sum(),
+            first_sequence: queue
+                .first()
+                .and_then(|n| n.sources().first())
+                .map(|s| s.sequence),
+            last_sequence: queue
+                .last()
+                .and_then(|n| n.sources().last())
+                .map(|s| s.sequence),
         };
         self.pending_nals = Vec::new().into_iter();
         receipt

@@ -241,13 +241,13 @@ impl<'a> RtcpPacket<'a> {
             201 => 8,
             _ => {
                 return ReportBlocks {
-                    chunks: self.bytes[..0].chunks_exact(24),
+                    chunks: self.bytes[..0].chunks_exact(REPORT_BLOCK_BYTES),
                 };
             }
         };
-        let end = start + usize::from(self.count()) * 24;
+        let end = start + usize::from(self.count()) * REPORT_BLOCK_BYTES;
         ReportBlocks {
-            chunks: self.bytes[start..end].chunks_exact(24),
+            chunks: self.bytes[start..end].chunks_exact(REPORT_BLOCK_BYTES),
         }
     }
 
@@ -308,14 +308,17 @@ impl Iterator for ReportBlocks<'_> {
 impl ExactSizeIterator for ReportBlocks<'_> {}
 impl std::iter::FusedIterator for ReportBlocks<'_> {}
 
+/// Exact RTCP report block size in bytes.
+const REPORT_BLOCK_BYTES: usize = 24;
+
 fn validate_packet(packet: RtcpPacket<'_>, sender: Option<u32>) -> Result<bool, PacketError> {
     let content = &packet.bytes[..packet.content_end];
     let count = usize::from(packet.count());
     match packet.packet_type() {
         200 | 201 => {
             let fixed = if packet.packet_type() == 200 { 28 } else { 8 };
-            let minimum = fixed + count * 24;
-            if content.len() < minimum || (content.len() - minimum) % 4 != 0 {
+            let minimum = fixed + count * REPORT_BLOCK_BYTES;
+            if content.len() < minimum || !(content.len() - minimum).is_multiple_of(4) {
                 return Err(PacketError::Report);
             }
         }

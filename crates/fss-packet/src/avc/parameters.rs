@@ -235,7 +235,9 @@ pub fn parse_sps(nal: &[u8], limits: AvcSyntaxLimits) -> Result<AvcSps, AvcError
     }
     let frame_num_bits = b.ue(12)? as u8 + 4;
     let poc = match b.ue(2)? {
-        0 => PocMode::Lsb { bits: b.ue(12)? as u8 + 4 },
+        0 => PocMode::Lsb {
+            bits: b.ue(12)? as u8 + 4,
+        },
         1 => {
             let always_zero = b.bit()?;
             b.se(i32::MIN + 1, i32::MAX)?;
@@ -276,16 +278,31 @@ pub fn parse_sps(nal: &[u8], limits: AvcSyntaxLimits) -> Result<AvcSps, AvcError
     if horizontal_crop >= coded_width || vertical_crop >= coded_height {
         return Err(AvcError::Malformed);
     }
-    let timing = if b.bit()? { vui(&mut b, reference_frames)? } else { None };
+    let timing = if b.bit()? {
+        vui(&mut b, reference_frames)?
+    } else {
+        None
+    };
     b.finish()?;
     Ok(AvcSps {
         source: retain(nal)?,
-        id, profile, level, constraints, frame_num_bits, poc, frame_mbs_only,
-        mb_adaptive_frame_field, width_mbs, height_map_units, coded_width, coded_height,
+        id,
+        profile,
+        level,
+        constraints,
+        frame_num_bits,
+        poc,
+        frame_mbs_only,
+        mb_adaptive_frame_field,
+        width_mbs,
+        height_map_units,
+        coded_width,
+        coded_height,
         display_width: coded_width - horizontal_crop,
         display_height: coded_height - vertical_crop,
         crop_origin: (crop[0] * 2, crop[2] * 2 * field_factor),
-        reference_frames, timing,
+        reference_frames,
+        timing,
     })
 }
 
@@ -336,8 +353,16 @@ pub fn parse_pps(nal: &[u8], sps: &AvcSps, limits: AvcSyntaxLimits) -> Result<Av
         b.se(-12, 12)?; // second_chroma_qp_index_offset
     }
     b.finish()?;
-    Ok(AvcPps { source: retain(nal)?, sps_source: Arc::clone(&sps.source), id, sps_id, bottom_poc_present, redundant_pic_cnt_present,
-        entropy_coding, transform_8x8 })
+    Ok(AvcPps {
+        source: retain(nal)?,
+        sps_source: Arc::clone(&sps.source),
+        id,
+        sps_id,
+        bottom_poc_present,
+        redundant_pic_cnt_present,
+        entropy_coding,
+        transform_8x8,
+    })
 }
 
 fn scaling_list(b: &mut Bits<'_>, size: usize) -> Result<(), AvcError> {
@@ -347,7 +372,9 @@ fn scaling_list(b: &mut Bits<'_>, size: usize) -> Result<(), AvcError> {
         if next != 0 {
             next = (last + b.se(-128, 127)? + 256) % 256;
         }
-        if next != 0 { last = next; }
+        if next != 0 {
+            last = next;
+        }
     }
     Ok(())
 }
@@ -361,12 +388,15 @@ fn hrd(b: &mut Bits<'_>) -> Result<(), AvcError> {
         b.ue(u32::MAX - 1)?;
         b.bit()?;
     }
-    for _ in 0..4 { b.uint(5)?; }
+    for _ in 0..4 {
+        b.uint(5)?;
+    }
     Ok(())
 }
 
 fn vui(b: &mut Bits<'_>, reference_frames: u32) -> Result<Option<AvcTimingInfo>, AvcError> {
-    if b.bit()? { // aspect_ratio_info_present_flag
+    if b.bit()? {
+        // aspect_ratio_info_present_flag
         let idc = b.uint(8)?;
         if idc == 255 {
             if b.uint(16)? == 0 || b.uint(16)? == 0 {
@@ -376,29 +406,58 @@ fn vui(b: &mut Bits<'_>, reference_frames: u32) -> Result<Option<AvcTimingInfo>,
             return Err(AvcError::Malformed);
         }
     }
-    if b.bit()? { b.bit()?; } // overscan_info_present_flag
-    if b.bit()? { // video_signal_type_present_flag
-        if b.uint(3)? > 5 { return Err(AvcError::Malformed); }
+    if b.bit()? {
         b.bit()?;
-        if b.bit()? { b.uint(8)?; b.uint(8)?; b.uint(8)?; }
+    } // overscan_info_present_flag
+    if b.bit()? {
+        // video_signal_type_present_flag
+        if b.uint(3)? > 5 {
+            return Err(AvcError::Malformed);
+        }
+        b.bit()?;
+        if b.bit()? {
+            b.uint(8)?;
+            b.uint(8)?;
+            b.uint(8)?;
+        }
     }
-    if b.bit()? { b.ue(5)?; b.ue(5)?; } // chroma_loc_info_present_flag
+    if b.bit()? {
+        b.ue(5)?;
+        b.ue(5)?;
+    } // chroma_loc_info_present_flag
     let timing = if b.bit()? {
         let num_units_in_tick = b.uint(32)?;
         let time_scale = b.uint(32)?;
         let fixed_frame_rate = b.bit()?;
-        if num_units_in_tick == 0 || time_scale == 0 { return Err(AvcError::Malformed); }
-        Some(AvcTimingInfo { num_units_in_tick, time_scale, fixed_frame_rate })
-    } else { None };
+        if num_units_in_tick == 0 || time_scale == 0 {
+            return Err(AvcError::Malformed);
+        }
+        Some(AvcTimingInfo {
+            num_units_in_tick,
+            time_scale,
+            fixed_frame_rate,
+        })
+    } else {
+        None
+    };
     let nal_hrd = b.bit()?;
-    if nal_hrd { hrd(b)?; }
+    if nal_hrd {
+        hrd(b)?;
+    }
     let vcl_hrd = b.bit()?;
-    if vcl_hrd { hrd(b)?; }
-    if nal_hrd || vcl_hrd { b.bit()?; }
-    b.bit()?; // pic_struct_present_flag
-    if b.bit()? { // bitstream_restriction_flag
+    if vcl_hrd {
+        hrd(b)?;
+    }
+    if nal_hrd || vcl_hrd {
         b.bit()?;
-        for _ in 0..4 { b.ue(16)?; }
+    }
+    b.bit()?; // pic_struct_present_flag
+    if b.bit()? {
+        // bitstream_restriction_flag
+        b.bit()?;
+        for _ in 0..4 {
+            b.ue(16)?;
+        }
         let reordered = b.ue(16)?;
         let buffered = b.ue(16)?;
         if reordered > buffered || buffered < reference_frames {
@@ -410,7 +469,9 @@ fn vui(b: &mut Bits<'_>, reference_frames: u32) -> Result<Option<AvcTimingInfo>,
 
 fn retain(nal: &[u8]) -> Result<Arc<[u8]>, AvcError> {
     let mut bytes = Vec::new();
-    bytes.try_reserve_exact(nal.len()).map_err(|_| AvcError::Allocation)?;
+    bytes
+        .try_reserve_exact(nal.len())
+        .map_err(|_| AvcError::Allocation)?;
     bytes.extend_from_slice(nal);
     Ok(Arc::from(bytes))
 }

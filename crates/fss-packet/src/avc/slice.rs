@@ -111,10 +111,16 @@ pub fn parse_slice_identity(
         2..=4 | 19..=21 => return Err(AvcError::UnsupportedPicture),
         _ => return Err(AvcError::UnexpectedNal),
     };
-    if idr && header & 0x60 == 0 { return Err(AvcError::Malformed); }
+    if idr && header & 0x60 == 0 {
+        return Err(AvcError::Malformed);
+    }
     sps.check_limits(limits)?;
-    if pps.nal_bytes().len() > limits.max_parameter_set_bytes { return Err(AvcError::Limit); }
-    if !pps.binds(sps) { return Err(AvcError::ParameterSetMismatch); }
+    if pps.nal_bytes().len() > limits.max_parameter_set_bytes {
+        return Err(AvcError::Limit);
+    }
+    if !pps.binds(sps) {
+        return Err(AvcError::ParameterSetMismatch);
+    }
     let mut b = Bits::new(&nal[1..], limits.max_slice_identity_bits);
     let first_mb = b.ue(1_048_575)?;
     let slice_type = match b.ue(9)? % 5 {
@@ -123,14 +129,24 @@ pub fn parse_slice_identity(
         2 => AvcSliceType::I,
         _ => return Err(AvcError::UnsupportedPicture),
     };
-    if idr && slice_type != AvcSliceType::I { return Err(AvcError::Malformed); }
+    if idr && slice_type != AvcSliceType::I {
+        return Err(AvcError::Malformed);
+    }
     let pps_id = b.ue(255)? as u16;
-    if pps_id != pps.id { return Err(AvcError::ParameterSetMismatch); }
+    if pps_id != pps.id {
+        return Err(AvcError::ParameterSetMismatch);
+    }
     let frame_num = b.uint(sps.frame_num_bits)? as u16;
-    if idr && frame_num != 0 { return Err(AvcError::Malformed); }
+    if idr && frame_num != 0 {
+        return Err(AvcError::Malformed);
+    }
     let field_pic = !sps.frame_mbs_only && b.bit()?;
     let bottom_field = field_pic && b.bit()?;
-    let idr_pic_id = if idr { Some(b.ue(65_535)? as u16) } else { None };
+    let idr_pic_id = if idr {
+        Some(b.ue(65_535)? as u16)
+    } else {
+        None
+    };
     let mut poc_lsb = None;
     let mut delta_bottom = 0;
     let mut delta_poc = [0; 2];
@@ -149,16 +165,38 @@ pub fn parse_slice_identity(
         }
         _ => {}
     }
-    let redundant_pic_cnt = if pps.redundant_pic_cnt_present { b.ue(127)? as u8 } else { 0 };
-    let frame_factor = if sps.frame_mbs_only || field_pic { 1 } else { 2 };
-    let mbaff_factor = if sps.mb_adaptive_frame_field && !field_pic { 2 } else { 1 };
+    let redundant_pic_cnt = if pps.redundant_pic_cnt_present {
+        b.ue(127)? as u8
+    } else {
+        0
+    };
+    let frame_factor = if sps.frame_mbs_only || field_pic {
+        1
+    } else {
+        2
+    };
+    let mbaff_factor = if sps.mb_adaptive_frame_field && !field_pic {
+        2
+    } else {
+        1
+    };
     let picture_mbs = sps.width_mbs * sps.height_map_units * frame_factor;
     if u64::from(first_mb) * mbaff_factor >= u64::from(picture_mbs) {
         return Err(AvcError::Malformed);
     }
     Ok(AvcSliceIdentity {
-        first_mb, slice_type, pps_id, frame_num, field_pic, bottom_field,
-        reference: header & 0x60 != 0, idr_pic_id, poc_lsb, delta_bottom,
-        delta_poc, redundant_pic_cnt, prefix_bits: b.consumed(),
+        first_mb,
+        slice_type,
+        pps_id,
+        frame_num,
+        field_pic,
+        bottom_field,
+        reference: header & 0x60 != 0,
+        idr_pic_id,
+        poc_lsb,
+        delta_bottom,
+        delta_poc,
+        redundant_pic_cnt,
+        prefix_bits: b.consumed(),
     })
 }

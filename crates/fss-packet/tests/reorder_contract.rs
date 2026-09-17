@@ -103,25 +103,37 @@ fn configuration_is_bounded_and_owner_bound() -> TestResult {
         },
     ] {
         assert_eq!(
-            RtpReorderBuffer::new(key(), 96, config).err().ok_or("expected refusal")?,
+            RtpReorderBuffer::new(key(), 96, config)
+                .err()
+                .ok_or("expected refusal")?,
             ReorderError::Configuration
         );
     }
     assert_eq!(
-        RtpReorderBuffer::new(StreamKey {
-            ingress: 0,
-            ..key()
-        }, 96, limits()).err().ok_or("expected refusal")?,
+        RtpReorderBuffer::new(
+            StreamKey {
+                ingress: 0,
+                ..key()
+            },
+            96,
+            limits()
+        )
+        .err()
+        .ok_or("expected refusal")?,
         ReorderError::Continuity(ContinuityError::Configuration)
     );
     assert_eq!(
-        RtpReorderBuffer::new(key(), 128, limits()).err().ok_or("expected refusal")?,
+        RtpReorderBuffer::new(key(), 128, limits())
+            .err()
+            .ok_or("expected refusal")?,
         ReorderError::Continuity(ContinuityError::Configuration)
     );
     let mut invalid = limits();
     invalid.packet.max_packet_bytes = 11;
     assert_eq!(
-        RtpReorderBuffer::new(key(), 96, invalid).err().ok_or("expected refusal")?,
+        RtpReorderBuffer::new(key(), 96, invalid)
+            .err()
+            .ok_or("expected refusal")?,
         ReorderError::Packet(PacketError::InvalidLimits)
     );
     Ok(())
@@ -131,7 +143,12 @@ fn configuration_is_bounded_and_owner_bound() -> TestResult {
 fn out_of_order_packets_recover_without_publishing_a_gap() -> TestResult {
     let mut buffer = open(limits())?;
     buffer.ingest(key(), &wire(12, &[2]), 1)?;
-    assert_eq!(buffer.poll(1)?, ReorderPoll::Pending { wake_at_ns: Some(11) });
+    assert_eq!(
+        buffer.poll(1)?,
+        ReorderPoll::Pending {
+            wake_at_ns: Some(11)
+        }
+    );
     let recovered = buffer.ingest(key(), &wire(11, &[1]), 2)?;
     assert_eq!(recovered.sequence.class, SequenceClass::Reordered);
     assert_eq!(buffer.next_wake_ns(), Some(2));
@@ -166,7 +183,12 @@ fn oldest_witness_fixes_deadline_despite_duplicates_and_lower_recoveries() -> Te
     let duplicate = buffer.ingest(key(), &wire(14, &[4]), 10)?;
     assert_eq!(duplicate.disposition, ReorderDisposition::Duplicate);
     assert_eq!(buffer.next_wake_ns(), Some(11));
-    assert_eq!(buffer.poll(10)?, ReorderPoll::Pending { wake_at_ns: Some(11) });
+    assert_eq!(
+        buffer.poll(10)?,
+        ReorderPoll::Pending {
+            wake_at_ns: Some(11)
+        }
+    );
     gap(&mut buffer, 11, 11, 11, ReorderGapReason::Deadline)?;
     for expected in 12..=14 {
         packet(&mut buffer, 11, expected)?;
@@ -198,7 +220,10 @@ fn full_packet_queue_does_not_consume_refused_sequence() -> TestResult {
     buffer.ingest(key(), &wire(11, &[1]), 1)?;
     buffer.ingest(key(), &wire(12, &[2]), 2)?;
     let before = buffer.stats();
-    assert_eq!(buffer.ingest(key(), &wire(13, &[3]), 3), Err(ReorderError::PacketCapacity));
+    assert_eq!(
+        buffer.ingest(key(), &wire(13, &[3]), 3),
+        Err(ReorderError::PacketCapacity)
+    );
     assert_eq!(buffer.stats(), before);
     assert_eq!(buffer.queued_packets(), 2);
     packet(&mut buffer, 3, 11)?;
@@ -219,7 +244,10 @@ fn byte_budget_is_independent_and_refusal_is_retryable() -> TestResult {
     buffer.ingest(key(), &wire(11, &[1]), 1)?;
     buffer.ingest(key(), &wire(12, &[2]), 2)?;
     let before = buffer.stats();
-    assert_eq!(buffer.ingest(key(), &wire(13, &[3]), 3), Err(ReorderError::ByteCapacity));
+    assert_eq!(
+        buffer.ingest(key(), &wire(13, &[3]), 3),
+        Err(ReorderError::ByteCapacity)
+    );
     assert_eq!(buffer.stats(), before);
     assert_eq!(buffer.queued_bytes(), 26);
     packet(&mut buffer, 3, 11)?;
@@ -232,14 +260,24 @@ fn byte_budget_is_independent_and_refusal_is_retryable() -> TestResult {
 
 #[test]
 fn refused_baseline_does_not_end_probation() -> TestResult {
-    let mut buffer = RtpReorderBuffer::new(key(), 96, ReorderLimits {
-        max_bytes: 12,
-        ..limits()
-    })?;
+    let mut buffer = RtpReorderBuffer::new(
+        key(),
+        96,
+        ReorderLimits {
+            max_bytes: 12,
+            ..limits()
+        },
+    )?;
     buffer.ingest(key(), &wire(9, &[]), 0)?;
-    assert_eq!(buffer.ingest(key(), &wire(10, &[1]), 1), Err(ReorderError::ByteCapacity));
+    assert_eq!(
+        buffer.ingest(key(), &wire(10, &[1]), 1),
+        Err(ReorderError::ByteCapacity)
+    );
     assert_eq!(buffer.stats().received, 0);
-    assert_eq!(buffer.ingest(key(), &wire(10, &[]), 1)?.sequence.class, SequenceClass::Baseline);
+    assert_eq!(
+        buffer.ingest(key(), &wire(10, &[]), 1)?.sequence.class,
+        SequenceClass::Baseline
+    );
     Ok(())
 }
 
@@ -261,10 +299,14 @@ fn wrong_stream_payload_malformed_input_and_clock_do_not_mutate() -> TestResult 
         Err(ReorderError::Continuity(ContinuityError::PayloadType))
     );
     assert_eq!(
-        buffer.ingest(StreamKey {
-            generation: 2,
-            ..key()
-        }, &wire(11, &[1]), 2),
+        buffer.ingest(
+            StreamKey {
+                generation: 2,
+                ..key()
+            },
+            &wire(11, &[1]),
+            2
+        ),
         Err(ReorderError::Continuity(ContinuityError::StreamMismatch))
     );
     let mut bad_ssrc = wire(11, &[1]);
@@ -294,27 +336,46 @@ fn confirmed_restart_retires_old_queue_and_requires_new_epoch() -> TestResult {
     let mut buffer = open(limits())?;
     buffer.ingest(key(), &wire(12, &[2]), 1)?;
     let suspect = buffer.ingest(key(), &wire(20000, &[3]), 2)?;
-    assert_eq!(suspect.sequence.class, SequenceClass::DiscontinuitySuspected);
+    assert_eq!(
+        suspect.sequence.class,
+        SequenceClass::DiscontinuitySuspected
+    );
     assert_eq!(buffer.queued_packets(), 1);
     let restart = buffer.ingest(key(), &wire(20001, &[4]), 3)?;
     assert_eq!(restart.disposition, ReorderDisposition::RestartRequired);
     let retired = restart.discarded.ok_or("expected retirement receipt")?;
     assert_eq!(retired.reason, QueueDiscardReason::RestartRequired);
     assert_eq!((retired.packets, retired.bytes), (1, 13));
-    assert_eq!((retired.first_sequence, retired.last_sequence), (Some(12), Some(12)));
+    assert_eq!(
+        (retired.first_sequence, retired.last_sequence),
+        (Some(12), Some(12))
+    );
     assert_eq!(buffer.queued_bytes(), 0);
     assert_eq!(buffer.poll(3)?, ReorderPoll::Ended);
-    assert_eq!(buffer.ingest(key(), &wire(13, &[3]), 3), Err(ReorderError::Closed));
     assert_eq!(
-        buffer.restart(key(), 96, limits()).err().ok_or("expected refusal")?,
+        buffer.ingest(key(), &wire(13, &[3]), 3),
+        Err(ReorderError::Closed)
+    );
+    assert_eq!(
+        buffer
+            .restart(key(), 96, limits())
+            .err()
+            .ok_or("expected refusal")?,
         ReorderError::Continuity(ContinuityError::GenerationRequired)
     );
     assert_eq!(
-        buffer.restart(StreamKey {
-            ingress: 2,
-            generation: 2,
-            ..key()
-        }, 96, limits()).err().ok_or("expected refusal")?,
+        buffer
+            .restart(
+                StreamKey {
+                    ingress: 2,
+                    generation: 2,
+                    ..key()
+                },
+                96,
+                limits()
+            )
+            .err()
+            .ok_or("expected refusal")?,
         ReorderError::Continuity(ContinuityError::StreamMismatch)
     );
     let new_key = StreamKey {
@@ -335,7 +396,10 @@ fn eof_drains_packets_with_gaps_but_never_invents_a_missing_tail() -> TestResult
     buffer.ingest(key(), &wire(12, &[2]), 1)?;
     buffer.ingest(key(), &wire(14, &[4]), 2)?;
     buffer.finish();
-    assert_eq!(buffer.ingest(key(), &wire(11, &[1]), 2), Err(ReorderError::Closed));
+    assert_eq!(
+        buffer.ingest(key(), &wire(11, &[1]), 2),
+        Err(ReorderError::Closed)
+    );
     gap(&mut buffer, 2, 11, 11, ReorderGapReason::EndOfInput)?;
     packet(&mut buffer, 2, 12)?;
     gap(&mut buffer, 2, 13, 13, ReorderGapReason::EndOfInput)?;
@@ -362,11 +426,17 @@ fn cancellation_retires_queue_without_releasing_packets() -> TestResult {
     let retired = buffer.cancel();
     assert_eq!(retired.reason, QueueDiscardReason::Cancelled);
     assert_eq!((retired.packets, retired.bytes), (2, 26));
-    assert_eq!((retired.first_sequence, retired.last_sequence), (Some(12), Some(14)));
+    assert_eq!(
+        (retired.first_sequence, retired.last_sequence),
+        (Some(12), Some(14))
+    );
     assert_eq!(buffer.poll(2)?, ReorderPoll::Ended);
     assert_eq!(buffer.cancel().packets, 0);
     buffer.finish();
-    assert_eq!(buffer.ingest(key(), &wire(15, &[5]), 3), Err(ReorderError::Closed));
+    assert_eq!(
+        buffer.ingest(key(), &wire(15, &[5]), 3),
+        Err(ReorderError::Closed)
+    );
     Ok(())
 }
 
