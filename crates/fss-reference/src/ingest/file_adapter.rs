@@ -1080,13 +1080,16 @@ impl FileIngestAdapter {
             candidate_objects.push((*digest, slice));
         }
         candidate_objects.push((custody_manifest_digest, &custody_manifest_bytes));
-        let capsule_encodings: Vec<Vec<u8>> = scanned
+        let capsule_encodings: Vec<(ContentDigest, Vec<u8>)> = scanned
             .capsules
             .iter()
-            .map(|c| c.canonical_bytes())
+            .map(|c| {
+                let bytes = c.canonical_bytes();
+                (ContentDigest::sha256(&bytes), bytes)
+            })
             .collect();
-        for (c, enc) in scanned.capsules.iter().zip(&capsule_encodings) {
-            candidate_objects.push((c.metadata_digest(), enc.as_slice()));
+        for (digest, enc) in &capsule_encodings {
+            candidate_objects.push((*digest, enc.as_slice()));
         }
         candidate_objects.push((manifest_digest, &manifest_bytes));
 
@@ -1139,7 +1142,7 @@ impl FileIngestAdapter {
             .publisher_mut()
             .stage_object(&custody_manifest_bytes)?;
         // Stage capsules
-        for enc in &capsule_encodings {
+        for (_, enc) in &capsule_encodings {
             deployment.publisher_mut().stage_object(enc.as_slice())?;
         }
         // Stage FileImportManifest
@@ -1212,8 +1215,7 @@ impl FileIngestAdapter {
         capsule_batch_children.push(custody_manifest_digest);
 
         // Capsule deltas
-        for capsule in &scanned.capsules {
-            let meta_digest = capsule.metadata_digest();
+        for (capsule, (payload_digest, _)) in scanned.capsules.iter().zip(&capsule_encodings) {
             capsule_deltas.push(EvidenceDelta {
                 delta_id: format!("delta:capsule:{}", capsule.capsule_id.as_str()),
                 family: "sensor_capsule".to_string(),
@@ -1225,11 +1227,11 @@ impl FileIngestAdapter {
                 new_generation: 1,
                 validity: capsule.capture,
                 plane: Plane::Authority,
-                payload_digest: meta_digest,
+                payload_digest: *payload_digest,
                 witness_digest: None,
                 operation_id: None,
             });
-            capsule_batch_children.push(meta_digest);
+            capsule_batch_children.push(*payload_digest);
         }
 
         let capsule_batch_id =
