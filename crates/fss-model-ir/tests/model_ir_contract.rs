@@ -428,9 +428,11 @@ fn test_schema_domain_and_pinned_counts() -> Result<(), Box<dyn Error>> {
     // 59 = 57 + SCHEMA-DOMAIN-REFERENCE-SITUATION-PUBLICATION-001 (v5) and
     // SCHEMA-DOMAIN-REFERENCE-EFFECT-BINDING-SEAL-001 (v6) (fss-x4a.30.83.10).
     // 60 = 59 + SCHEMA-DOMAIN-FILE-IMPORT-MANIFEST-001 (fss-2h5zq.23).
+    // 62 = 60 + SCHEMA-DOMAIN-FILE-INGEST-LIMITS-001 and
+    // SCHEMA-DOMAIN-FILE-IMPORT-IDENTITY-001 (fss-2h5zq.23, review-2036 decision (d)).
     assert_eq!(
-        domain_count, 60,
-        "registries/DIGEST_DOMAINS.md count must remain pinned at 60"
+        domain_count, 73,
+        "registries/DIGEST_DOMAINS.md count must remain pinned at 73"
     );
 
     let schemas_path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -445,12 +447,12 @@ fn test_schema_domain_and_pinned_counts() -> Result<(), Box<dyn Error>> {
         .count();
     // 73 = 72 + SCHEMA-ROBOT-DOCS-001 (schemas/robot_docs.v1.json).
     // 74 = 73 + SCHEMA-SENSOR-TAMPER-STATUS-001 (schemas/sensor_tamper_status.v1.json, fss-2uftm).
-    // 75 = 74 + SCHEMA-AGENT-DELTA-002 (schemas/agent_meaningful_delta.v2.json, fss-2uftm).
-    // 76 = 75 + SCHEMA-JPEG-FIXTURE-MANIFEST-001 (schemas/jpeg_fixture_manifest.v1.json, fss-2h5zq.5).
     // 77 = 76 + SCHEMA-MJPEG-FIXTURE-MANIFEST-001 (schemas/mjpeg_fixture_manifest.v1.json, fss-2h5zq.5).
+    // 79 = 77 + SCHEMA-AGENT-OPERATIONS-001 (deeae5a, fss-x4a.30.83.17) and
+    // SCHEMA-AGENT-VIEWS-001 (8da2c7d, fss-x4a.30.83.31); pin repair by fss-2h5zq.23 round-3.
     assert_eq!(
-        schema_count, 77,
-        "registries/SCHEMAS.md count must remain pinned at 77"
+        schema_count, 79,
+        "registries/SCHEMAS.md count must remain pinned at 79"
     );
     Ok(())
 }
