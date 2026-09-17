@@ -111,3 +111,6 @@ pub mod calibration_gate;
 
 /// Source-linked sensor-health screening and bounded semantic-analysis admission.
 pub mod screening;
+
+/// Native JPEG/stream decoding composed with foreground, health and sentinel admission.
+pub mod screened_mjpeg;
