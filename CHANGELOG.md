@@ -37,6 +37,8 @@ All notable changes to Franken Surveillance System are recorded here. The projec
 
 ### Fixed
 
+- Fixed owner-supplied RTSP Digest retries to accept the parser's typed `AuthRequired` response while preserving exact framing, CSeq, deadline, realm, and replay checks. Removed the obsolete parser-only source-text ban on authentication headers; behavioral authentication and redaction tests remain.
+- Removed the superseded hydration test requiring eviction of unexpired consumed cursors; existing cursor-lifecycle regressions retain replay tombstones under capacity pressure and reclaim only expired records.
 - Repaired shared CAP e2e logging: retained CAPLOG outcomes and typed skip reasons now reach structured summaries; run-level failures remain separate from recorded step failures. Empty evidence, all-skipped runs, exhausted remote execution, and script aborts fail closed without blaming completed steps. Summary failure IDs derive from retained records at the log cap, and mixed shell/Cargo selections no longer suppress Cargo execution.
 - Aligned the MJPEG cancellation-checkpoint CAPLOG expected/observed objects and derived its success verdict through the shared helper; elapsed time remains record metadata rather than part of the compared result.
 - Fixed stable-ID test imports so combined pytest collection preserves the checker module identity and exercises corrupt/empty-index fail-closed checks correctly.

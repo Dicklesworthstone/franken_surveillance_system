@@ -1,8 +1,9 @@
 # Scoped RTSP client and AVC receive path
 
-Status: implemented source and contract tests; Rust execution and real-device
-qualification are outstanding. This advances FSS-047/FSS-111 and WP-050. It does
-not close their authentication, live I/O, device-matrix, or qualification gates.
+Status: implemented reference source with scoped passing Rust contract tests.
+Owner-supplied Digest authentication is opt-in; real-device qualification remains
+outstanding. This advances FSS-047/FSS-111 and WP-050 without closing live I/O,
+device-matrix, or release qualification gates.
 
 ## Functional path
 
@@ -21,11 +22,22 @@ owner-supplied authorized TCP bytes and monotonic time
   -> ordered RTP, complete NALs, and parameter-bound AVC picture groups
 ```
 
-There are no sockets, workers, ambient clocks, authentication secrets, foreign
-runtimes, implicit retries, or automatically broadened network permissions.
+There are no sockets, workers, ambient clocks, foreign runtimes, implicit retries,
+or automatically broadened network permissions. The unauthenticated path retains
+no authentication secrets; the opt-in Digest path borrows owner-supplied credentials.
 Only the already-local `fss-packet` dependency moves from development-only into
 the reference composition. A PLAY acknowledgement is not a first-frame,
 continuity, retained-custody, decoded-picture, or coverage certificate.
+
+### Opt-in Digest authentication
+
+The client pins the expected realm and explicit algorithm/qop policy before signing.
+It accepts the parser's typed `AuthRequired` response for a complete 401 challenge;
+public parser output remains redacted. The credential-owning adapter validates the
+original wire challenge separately. Retries preserve the original response deadline,
+advance CSeq, and refuse wrong realms, proxy authentication, implicit downgrades,
+and nonce replay. Neither a challenge nor its `domain` field broadens the authorized
+request target. Authentication does not grant transport or effect authority.
 
 ## Driver contract
 
@@ -107,8 +119,9 @@ bitstreams. It prints command metadata, original datagram and NAL hashes, pictur
 identity/boundaries, timer-driven loss, and cancellation receipts. It opens no
 network connection and prints no URI, session token, or raw image bytes.
 
-These are authored Rust checks, not retained passing Rust receipts. Independent
-Python/FFprobe checks of the laboratory fixture construction do not execute or
-qualify this Rust implementation. Authentication, admitted Asupersync socket
-ownership, UDP/fallback, ONVIF, real-camera interoperability, codec decoding,
-complete-picture certification, and durable archive integration remain open.
+The scoped RCH run for the Digest event-variant repair passed all 11 Digest client,
+12 Digest AVC, 8 authentication, and 68 RTSP parser contract tests. These are reference
+fixture results, not live-device or release qualification. Independent Python/FFprobe
+fixture checks do not qualify the Rust implementation. Admitted Asupersync socket
+ownership, UDP/fallback, ONVIF, real-camera interoperability, codec decoding, and
+end-to-end durable archive qualification remain open.

@@ -193,7 +193,8 @@ fn challenge_response(wire: &[u8]) -> Result<(RtspResponse, &str)> {
     let mut events = parser.feed(wire).map_err(|_| AuthenticationError::Response)?;
     if parser.buffered_bytes() != 0 || events.len() != 1 { return Err(AuthenticationError::Response.into()); }
     let response = match events.pop() {
-        Some(RtspEvent::Response(response)) if response.status_code == 401 => response,
+        Some(RtspEvent::Response(response) | RtspEvent::AuthRequired { response, .. })
+            if response.status_code == 401 => response,
         _ => return Err(AuthenticationError::Response.into()),
     };
     Ok((response, challenge.ok_or(AuthenticationError::Response)?))

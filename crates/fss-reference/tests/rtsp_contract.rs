@@ -653,52 +653,6 @@ fn test_sdp_malformed_errors() {
     );
 }
 
-fn scan_file_for_forbidden(path: &std::path::Path) -> Result<(), Box<dyn Error>> {
-    let content = std::fs::read_to_string(path)?;
-    let lower = content.to_ascii_lowercase();
-    assert!(
-        !lower.contains("authorization:"),
-        "source file {path:?} must not contain 'authorization:' builder code"
-    );
-    assert!(
-        !lower.contains("proxy-authorization:"),
-        "source file {path:?} must not contain 'proxy-authorization:' builder code"
-    );
-    assert!(
-        !lower.contains("www-authenticate:"),
-        "source file {path:?} must not contain 'www-authenticate:' builder code"
-    );
-    Ok(())
-}
-
-fn scan_dir_recursive(dir: &std::path::Path) -> Result<(), Box<dyn Error>> {
-    if !dir.exists() {
-        return Ok(());
-    }
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            scan_dir_recursive(&path)?;
-        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-            scan_file_for_forbidden(&path)?;
-        }
-    }
-    Ok(())
-}
-
-#[test]
-fn test_no_authorization_header_builder_in_crate_source() -> Result<(), Box<dyn Error>> {
-    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let rtsp_rs = manifest_dir.join("src").join("rtsp.rs");
-    if rtsp_rs.exists() {
-        scan_file_for_forbidden(&rtsp_rs)?;
-    }
-    let rtsp_dir = manifest_dir.join("src").join("rtsp");
-    scan_dir_recursive(&rtsp_dir)?;
-    Ok(())
-}
-
 #[test]
 fn test_bare_lf_with_body_kills_mutant_2() -> Result<(), Box<dyn Error>> {
     let mut parser = RtspParser::new();
