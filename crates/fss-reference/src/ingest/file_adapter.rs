@@ -942,6 +942,14 @@ impl FileIngestAdapter {
         };
 
         if let Some(hint) = &request.capture_hint {
+            if hint.start_ns < TimestampNs(0) {
+                return Err(FileIngestError::InvalidCaptureHint {
+                    detail: format!(
+                        "capture hint start_ns must be non-negative, got {}",
+                        hint.start_ns.0
+                    ),
+                });
+            }
             if hint.start_ns > receive_time {
                 return Err(FileIngestError::CaptureHintAfterReceive {
                     hint_start: hint.start_ns,
