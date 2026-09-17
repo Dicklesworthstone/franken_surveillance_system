@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Executable session lifecycle and session-local semantic symbols.
 //!
 //! The runtime must authenticate the principal and project grants before opening a session.
@@ -15,6 +16,11 @@ use fss_core::{
 };
 
 use crate::ReferenceHydrationCatalog;
+
+mod hydration;
+
+#[cfg(test)]
+mod tests;
 
 /// Storage ceilings, including closed-session tombstones.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -97,7 +103,7 @@ pub enum ReferenceSessionError {
     ClockRegression,
     /// The symbol table was explicitly invalidated.
     StaleGeneration,
-    /// Unknown symbol, superseded descriptor, or otherwise stale exact reference.
+    /// Unknown, ungranted, superseded, or otherwise stale exact reference.
     StaleAlias,
     /// Authority lineage, anchor, contract basis, or optimistic state no longer matches.
     StaleBasis,
@@ -107,6 +113,8 @@ pub enum ReferenceSessionError {
     HandleUnavailable,
     /// A bounded store ceiling would be exceeded.
     CapacityExceeded,
+    /// A request exceeds the remaining cumulative session token grant.
+    BudgetExceeded,
     /// A monotone counter cannot advance without wrapping.
     GenerationExhausted,
     /// Core session contract validation failed.
@@ -121,11 +129,12 @@ impl fmt::Display for ReferenceSessionError {
             Self::Unavailable => "session unavailable",
             Self::ClockRegression => "session clock regressed",
             Self::StaleGeneration => "symbol generation is stale; refresh the session",
-            Self::StaleAlias => "symbol is stale; explicitly bind an authorized raw handle",
+            Self::StaleAlias => "symbol unavailable; explicitly bind an authorized raw handle",
             Self::StaleBasis => "session authority basis is stale",
             Self::GrantEscalation => "session grants do not authorize the request",
             Self::HandleUnavailable => "session handle unavailable",
             Self::CapacityExceeded => "session storage capacity exceeded",
+            Self::BudgetExceeded => "session token budget exceeded",
             Self::GenerationExhausted => "session generation exhausted",
             Self::Contract(_) => "invalid session contract",
             Self::Hydration(_) => "session hydration refused",
@@ -155,6 +164,7 @@ struct SessionEntry {
     basis: ContractBasis,
     symbols: BTreeMap<u64, ResolvedSessionHandle>,
     next_slot: u64,
+    spent_tokens: u64,
     last_observed_at: TimestampNs,
     closed: bool,
 }
@@ -239,6 +249,7 @@ impl ReferenceSessionStore {
                 basis,
                 symbols: BTreeMap::new(),
                 next_slot: 0,
+                spent_tokens: 0,
                 last_observed_at: now,
                 closed: false,
             },
@@ -457,6 +468,17 @@ impl ReferenceSessionStore {
         descriptor: &SemanticHandle,
         now: TimestampNs,
     ) -> Result<(), ReferenceSessionError> {
+        // H0 admission precedes diagnostic detail: absent and unauthorized targets must not
+        // expose different basis, availability, or integrity information to a probing agent.
+        let required = descriptor
+            .required_capabilities
+            .get(&HydrationLevel::H0)
+            .ok_or(ReferenceSessionError::StaleAlias)?;
+        if !required.is_subset(&entry.session.capabilities)
+            || !entry.session.privacy_scope.contains(&descriptor.privacy_class)
+        {
+            return Err(ReferenceSessionError::StaleAlias);
+        }
         descriptor.verify()?;
         if descriptor.contract_basis != entry.basis
             || descriptor.anchor != entry.session.current_anchor
@@ -464,224 +486,9 @@ impl ReferenceSessionStore {
         {
             return Err(ReferenceSessionError::StaleBasis);
         }
-        let required = descriptor
-            .required_capabilities
-            .get(&HydrationLevel::H0)
-            .ok_or(ReferenceSessionError::GrantEscalation)?;
-        if !required.is_subset(&entry.session.capabilities)
-            || !entry.session.privacy_scope.contains(&descriptor.privacy_class)
-        {
-            return Err(ReferenceSessionError::GrantEscalation);
-        }
         if descriptor.availability_at(now) != HandleAvailability::Available {
             return Err(ReferenceSessionError::HandleUnavailable);
         }
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::error::Error;
-    use fss_core::{BudgetVector, ContractBasisRegistryBytes, LaboratoryAccess, MissionId, SemanticHandleSpec};
-
-    type TestResult = Result<(), Box<dyn Error>>;
-
-    fn basis() -> ContractBasis {
-        ContractBasis::from_registry_bytes(
-            ContractBasisRegistryBytes::new(
-                b"schemas", b"operations", b"views", b"capabilities", b"errors", b"costs",
-                "fss-reference:session-test",
-            ).with_accepted_nightly("nightly-2026-08-31"),
-        )
-    }
-
-    fn params() -> Result<AgentSessionParams, ContractError> {
-        Ok(AgentSessionParams {
-            session_id: SessionId::parse("session:test")?,
-            mission_id: MissionId::parse("mission:test")?,
-            principal_id: PrincipalId::parse("principal:owner")?,
-            capabilities: BTreeSet::from(["capability:hydrate:H0".to_owned()]),
-            privacy_scope: BTreeSet::from(["private:property".to_owned()]),
-            current_anchor: LedgerAnchor::genesis("site:session-test"),
-            view_id: "AVIEW-001".to_owned(),
-            token_budget: 100,
-            symbol_table_generation: 0,
-            last_acknowledged_situation_fingerprint: None,
-            created_at_ns: 0,
-            expires_at_ns: 1_000,
-        })
-    }
-
-    fn descriptor(subject: &str) -> Result<SemanticHandle, Box<dyn Error>> {
-        let cost = BudgetVector::builder().tokens(1).build()?;
-        SemanticHandle::publish(SemanticHandleSpec {
-            contract_basis: basis(),
-            anchor: LedgerAnchor::genesis("site:session-test"),
-            subject_id: subject.to_owned(),
-            subject_digest: ContentDigest::sha256(subject.as_bytes()),
-            semantic_type: "evidence_bundle".to_owned(),
-            source_id: "sensor:owner-camera".to_owned(),
-            capture_interval: None,
-            spatial_scope: None,
-            privacy_class: "private:property".to_owned(),
-            applied_transform: None,
-            availability: HandleAvailability::Available,
-            retention_until: TimestampNs(900),
-            levels: HydrationLevel::ALL.into_iter().collect(),
-            required_capabilities: HydrationLevel::ALL.into_iter().map(|level| {
-                (level, BTreeSet::from([format!("capability:hydrate:{}", level.as_str())]))
-            }).collect(),
-            estimated_costs: HydrationLevel::ALL.into_iter().map(|level| (level, cost)).collect(),
-            laboratory_access: LaboratoryAccess::QualificationOrDebugGrant,
-            debug_capability: Some("capability:hydrate:debug".to_owned()),
-            derivative_handles: BTreeSet::new(),
-            published_at: TimestampNs(1),
-        }).map_err(Into::into)
-    }
-
-    fn bind(
-        store: &mut ReferenceSessionStore,
-        session: &AgentSession,
-        descriptor: &SemanticHandle,
-        catalog: &ReferenceHydrationCatalog,
-    ) -> Result<SessionAlias, ReferenceSessionError> {
-        store.bind(&session.principal_id, &SessionBindingRequest {
-            session_id: session.session_id.clone(),
-            generation: session.symbol_table_generation,
-            handle_id: descriptor.handle_id.clone(),
-            descriptor_digest: descriptor.descriptor_digest,
-        }, catalog, TimestampNs(10))
-    }
-
-    #[test]
-    fn open_retry_keeps_generation_and_original_expiry() -> TestResult {
-        let mut store = ReferenceSessionStore::default();
-        let session = store.open(params()?, basis(), TimestampNs(10))?;
-        let rotated = store.rotate_symbols(&session.principal_id, &session.session_id, 0, TimestampNs(20))?;
-        let retry = store.open(params()?, basis(), TimestampNs(50))?;
-        assert_eq!(retry, rotated);
-        assert_eq!(retry.expires_at_ns, 1_000);
-        assert_eq!(retry.symbol_table_generation, 1);
-        Ok(())
-    }
-
-    #[test]
-    fn close_and_expiry_never_reopen_even_after_clock_rollback() -> TestResult {
-        let mut store = ReferenceSessionStore::default();
-        let session = store.open(params()?, basis(), TimestampNs(10))?;
-        assert!(matches!(store.session(&session.principal_id, &session.session_id, TimestampNs(1_000)), Err(ReferenceSessionError::Unavailable)));
-        assert!(matches!(store.open(params()?, basis(), TimestampNs(10)), Err(ReferenceSessionError::Unavailable)));
-        store.close(&session.principal_id, &session.session_id, TimestampNs(1_001))?;
-        store.close(&session.principal_id, &session.session_id, TimestampNs(1_002))?;
-        assert!(matches!(store.open(params()?, basis(), TimestampNs(1_003)), Err(ReferenceSessionError::Unavailable)));
-        Ok(())
-    }
-
-    #[test]
-    fn wrong_principal_and_unknown_session_have_same_refusal() -> TestResult {
-        let mut store = ReferenceSessionStore::default();
-        let session = store.open(params()?, basis(), TimestampNs(10))?;
-        let other = PrincipalId::parse("principal:other")?;
-        assert!(matches!(store.session(&other, &session.session_id, TimestampNs(10)), Err(ReferenceSessionError::Unavailable)));
-        assert!(matches!(store.session(&other, &SessionId::parse("session:absent")?, TimestampNs(10)), Err(ReferenceSessionError::Unavailable)));
-        assert!(matches!(store.session(&session.principal_id, &session.session_id, TimestampNs(9)), Err(ReferenceSessionError::ClockRegression)));
-        Ok(())
-    }
-
-    #[test]
-    fn exact_binding_retry_and_generation_invalidation() -> TestResult {
-        let mut store = ReferenceSessionStore::default();
-        let session = store.open(params()?, basis(), TimestampNs(10))?;
-        let descriptor = descriptor("evidence:first")?;
-        let mut catalog = ReferenceHydrationCatalog::new();
-        catalog.register_descriptor(descriptor.clone())?;
-        let alias = bind(&mut store, &session, &descriptor, &catalog)?;
-        assert_eq!(alias, bind(&mut store, &session, &descriptor, &catalog)?);
-        let raw = store.resolve(&session.principal_id, &alias, &catalog, TimestampNs(10))?;
-        assert_eq!(raw.handle_id, descriptor.handle_id);
-        store.rotate_symbols(&session.principal_id, &session.session_id, 0, TimestampNs(10))?;
-        assert!(matches!(store.resolve(&session.principal_id, &alias, &catalog, TimestampNs(10)), Err(ReferenceSessionError::StaleGeneration)));
-        assert_eq!(raw.descriptor_digest, descriptor.descriptor_digest);
-        Ok(())
-    }
-
-    #[test]
-    fn symbol_capacity_does_not_evict_or_rebind_existing_symbols() -> TestResult {
-        let mut store = ReferenceSessionStore::with_limits(ReferenceSessionLimits {
-            max_symbols_per_session: 1, ..ReferenceSessionLimits::default()
-        });
-        let session = store.open(params()?, basis(), TimestampNs(10))?;
-        let first = descriptor("evidence:first")?;
-        let second = descriptor("evidence:second")?;
-        let mut catalog = ReferenceHydrationCatalog::new();
-        catalog.register_descriptor(first.clone())?;
-        catalog.register_descriptor(second.clone())?;
-        let alias = bind(&mut store, &session, &first, &catalog)?;
-        assert!(matches!(bind(&mut store, &session, &second, &catalog), Err(ReferenceSessionError::CapacityExceeded)));
-        assert_eq!(alias, bind(&mut store, &session, &first, &catalog)?);
-        assert_eq!(store.resolve(&session.principal_id, &alias, &catalog, TimestampNs(10))?.handle_id, first.handle_id);
-        Ok(())
-    }
-
-    #[test]
-    fn session_tombstones_and_grant_bytes_are_bounded() -> TestResult {
-        let mut store = ReferenceSessionStore::with_limits(ReferenceSessionLimits {
-            max_sessions: 1, ..ReferenceSessionLimits::default()
-        });
-        let session = store.open(params()?, basis(), TimestampNs(10))?;
-        store.close(&session.principal_id, &session.session_id, TimestampNs(10))?;
-        let mut another = params()?;
-        another.session_id = SessionId::parse("session:another")?;
-        assert!(matches!(store.open(another, basis(), TimestampNs(10)), Err(ReferenceSessionError::CapacityExceeded)));
-        let mut no_bytes = ReferenceSessionStore::with_limits(ReferenceSessionLimits {
-            max_grant_bytes_per_session: 0, ..ReferenceSessionLimits::default()
-        });
-        assert!(matches!(no_bytes.open(params()?, basis(), TimestampNs(10)), Err(ReferenceSessionError::CapacityExceeded)));
-        Ok(())
-    }
-
-    #[test]
-    fn refresh_cannot_escalate_or_renew_and_invalidates_old_symbols() -> TestResult {
-        let mut store = ReferenceSessionStore::default();
-        let session = store.open(params()?, basis(), TimestampNs(10))?;
-        let descriptor = descriptor("evidence:first")?;
-        let mut catalog = ReferenceHydrationCatalog::new();
-        catalog.register_descriptor(descriptor.clone())?;
-        let alias = bind(&mut store, &session, &descriptor, &catalog)?;
-        let mut capabilities = session.capabilities.clone();
-        capabilities.insert("capability:hydrate:H3".to_owned());
-        let refresh = SessionRefresh {
-            expected_session_digest: session.session_digest(),
-            current_anchor: session.current_anchor.clone(),
-            capabilities,
-            privacy_scope: session.privacy_scope.clone(),
-        };
-        assert!(matches!(store.refresh(&session.principal_id, &session.session_id, refresh, TimestampNs(10)), Err(ReferenceSessionError::GrantEscalation)));
-        assert!(store.resolve(&session.principal_id, &alias, &catalog, TimestampNs(10)).is_ok());
-        let refresh = SessionRefresh {
-            expected_session_digest: session.session_digest(),
-            current_anchor: session.current_anchor.clone(),
-            capabilities: BTreeSet::new(),
-            privacy_scope: session.privacy_scope.clone(),
-        };
-        let narrowed = store.refresh(&session.principal_id, &session.session_id, refresh, TimestampNs(10))?;
-        assert_eq!(narrowed.expires_at_ns, session.expires_at_ns);
-        assert_eq!(narrowed.symbol_table_generation, 1);
-        assert!(matches!(store.resolve(&session.principal_id, &alias, &catalog, TimestampNs(10)), Err(ReferenceSessionError::StaleGeneration)));
-        assert!(store.open(params()?, basis(), TimestampNs(10))?.capabilities.is_empty());
-        Ok(())
-    }
-
-    #[test]
-    fn generation_overflow_is_atomic() -> TestResult {
-        let mut input = params()?;
-        input.symbol_table_generation = u64::MAX;
-        let mut store = ReferenceSessionStore::default();
-        let session = store.open(input, basis(), TimestampNs(10))?;
-        assert!(matches!(store.rotate_symbols(&session.principal_id, &session.session_id, u64::MAX, TimestampNs(10)), Err(ReferenceSessionError::GenerationExhausted)));
-        assert_eq!(store.session(&session.principal_id, &session.session_id, TimestampNs(10))?, session);
         Ok(())
     }
 }
