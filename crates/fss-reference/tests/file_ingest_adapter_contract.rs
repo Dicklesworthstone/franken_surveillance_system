@@ -73,6 +73,7 @@ fn test_cx(label: &str) -> Result<ReplayCx, Box<dyn Error>> {
             "test-file-ingest-cx-{label}-{}",
             std::process::id()
         ));
+    fs::create_dir_all(&scratch_root)?;
     let io = ReplayIoAuthority::from_context_authority(&root_auth, scratch_root)?;
     Ok(ReplayCx::new(io))
 }
@@ -484,7 +485,7 @@ fn test_11_time_truth_unspecified_vs_specified() -> Result<(), Box<dyn Error>> {
     let cx = test_cx("time-truth")?;
     let mut deployment = ReferenceDeployment::open(&dep_dir, "site:deploy:time-truth", &cx)?;
 
-    let receive_time = TimestampNs(2_000_000_000);
+    let receive_time = TimestampNs(20_000_000_000);
 
     // 1. Ingest without capture hint
     let request_unspecified = FileIngestRequest::new(
@@ -502,8 +503,25 @@ fn test_11_time_truth_unspecified_vs_specified() -> Result<(), Box<dyn Error>> {
         assert_eq!(capsule.capture.latest, receive_time);
     }
 
-    // 2. Ingest with capture hint
-    let hint_start = TimestampNs(receive_time.0 - 10_000_000_000); // 10s ago
+    // A capture hint starting before the epoch is refused typed (owner decision (a)):
+    // never clamped into a fabricated window.
+    let negative_hint = CaptureHint::new(TimestampNs(-1_000_000_000), 250_000, 25.0)?;
+    let request_negative = FileIngestRequest::new(
+        h264_path.clone(),
+        SensorId::parse("sensor:cam-time-3")?,
+        StreamId::parse("stream:h264-negative")?,
+    )
+    .with_receive_time(receive_time)
+    .with_capture_hint(negative_hint);
+    match FileIngestAdapter::ingest(request_negative, &cx, &mut deployment) {
+        Err(FileIngestError::InvalidCaptureHint { detail }) => {
+            assert!(detail.contains("non-negative"), "unexpected detail: {detail}");
+        }
+        other => return Err(format!("expected InvalidCaptureHint, got {other:?}").into()),
+    }
+
+    // 2. Ingest with capture hint inside the representable window
+    let hint_start = TimestampNs(receive_time.0 - 10_000_000_000); // 10s ago, still positive
     let hint = CaptureHint::new(hint_start, 250_000, 25.0)?;
 
     let request_specified = FileIngestRequest::new(
@@ -520,7 +538,7 @@ fn test_11_time_truth_unspecified_vs_specified() -> Result<(), Box<dyn Error>> {
     let frame_period_ns: i128 = 40_000_000;
     for (i, capsule) in receipt2.capsules.iter().enumerate() {
         let nominal = hint_start.0 + (i as i128) * frame_period_ns;
-        let expected_earliest = TimestampNs((nominal - 250_000).max(0));
+        let expected_earliest = TimestampNs(nominal - 250_000);
         let expected_latest = TimestampNs(nominal + 250_000);
         assert_eq!(capsule.capture.earliest, expected_earliest);
         assert_eq!(capsule.capture.latest, expected_latest);
@@ -572,12 +590,13 @@ fn test_13_mjpeg_garbage_tracks_gap_before() -> Result<(), Box<dyn Error>> {
 
     let receipt = FileIngestAdapter::ingest(request, &cx, &mut deployment)?;
 
-    // Frame 0 has no gap before it. Frame 1 had garbage before it, so gap_before must be true!
-    assert_eq!(receipt.manifest.segment_spans.len(), 2);
+    // Frames 1 and 2 follow garbage spans; frame 0 does not (3-frame fixture).
+    assert_eq!(receipt.manifest.segment_spans.len(), 3);
     assert!(!receipt.manifest.segment_spans[0].gap_before);
     assert!(
-        receipt.manifest.segment_spans[1].gap_before,
-        "segment after garbage span must have gap_before == true"
+        receipt.manifest.segment_spans[1].gap_before
+            && receipt.manifest.segment_spans[2].gap_before,
+        "segments after garbage spans must have gap_before == true"
     );
 
     Ok(())
