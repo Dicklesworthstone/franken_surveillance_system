@@ -553,11 +553,25 @@ def collect_cli_discovery_endpoints(root: Path) -> dict[str, dict[str, str]]:
             target="fss_cmd.rs",
         )
     parser_match_arms: dict[str, str] = {}
-    for arm in re.finditer(r'"([a-z0-9_-]+)"(?:\s*\|\s*"[a-z0-9_-]+")*\s*=>.*?FssCommand::([A-Za-z0-9_]+)', m_fn.group(1), re.DOTALL):
-        var = arm.group(2)
-        lit = arm.group(1)
-        if var not in parser_match_arms:
-            parser_match_arms[var] = lit
+    arms = list(re.finditer(
+        r'^        "([a-z0-9_-]+)"(?:\s*\|\s*"[a-z0-9_-]+")*\s*=>',
+        m_fn.group(1), re.MULTILINE,
+    ))
+    for index, arm in enumerate(arms):
+        end = arms[index + 1].start() if index + 1 < len(arms) else len(m_fn.group(1))
+        body = m_fn.group(1)[arm.end():end]
+        variant = re.search(r'FssCommand::([A-Za-z0-9_]+)', body)
+        if variant is None:
+            delegate = re.match(r'\s*(parse_[a-z0-9_]+)\(tokens\)', body)
+            if delegate is not None:
+                helper = re.search(
+                    r'fn ' + re.escape(delegate.group(1)) + r'\b[^{]*\{([\s\S]*?)\n\}\n',
+                    content,
+                )
+                if helper is not None:
+                    variant = re.search(r'Ok\(FssCommand::([A-Za-z0-9_]+)', helper.group(1))
+        if variant is not None:
+            parser_match_arms.setdefault(variant.group(1), arm.group(1))
 
     enum_match = re.search(r"pub enum FssCommand\s*\{([^}]+)\}", content)
     if not enum_match:
