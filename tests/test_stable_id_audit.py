@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import importlib.util
 import json
 import subprocess
 import sys
@@ -11,11 +10,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/stable_id_audit.py"
 
-spec = importlib.util.spec_from_file_location("stable_id_audit", SCRIPT)
-assert spec is not None and spec.loader is not None
-module = importlib.util.module_from_spec(spec)
-sys.modules["stable_id_audit"] = module
-spec.loader.exec_module(module)
+sys.path.insert(0, str(ROOT / "scripts"))
+import stable_id_audit as module
 
 
 def write_fixture(
