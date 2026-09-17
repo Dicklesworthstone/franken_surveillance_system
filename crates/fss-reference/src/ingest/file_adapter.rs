@@ -535,6 +535,13 @@ pub enum FileIngestError {
         /// Detail describing why the capture hint was invalid.
         detail: String,
     },
+    /// No explicit receive time was supplied; fabricated precision is refused.
+    MissingReceiveTime {},
+    /// Request limits are invalid (e.g. zero chunk size).
+    InvalidLimits {
+        /// Detail describing the invalid limit.
+        detail: String,
+    },
     /// Resumed import encountered a batch ID conflict against existing ledger history.
     ImportPlanConflict {
         /// Batch ID in conflict.
@@ -643,6 +650,15 @@ impl std::fmt::Display for FileIngestError {
             }
             Self::InvalidCaptureHint { detail } => {
                 write!(f, "invalid capture hint: {}", detail)
+            }
+            Self::MissingReceiveTime {} => {
+                write!(
+                    f,
+                    "no explicit receive_time supplied; refusing to fabricate precision"
+                )
+            }
+            Self::InvalidLimits { detail } => {
+                write!(f, "invalid ingest limits: {}", detail)
             }
             Self::ImportPlanConflict { batch_id, detail } => {
                 write!(
@@ -882,7 +898,36 @@ impl FileIngestAdapter {
             cx.drain_and_finalize();
             return Err(FileIngestError::CancellationRequested { stage: STAGE_READ });
         }
-        let file_bytes = fs::read(&request.path)?;
+        if request.limits.chunk_bytes == 0 {
+            return Err(FileIngestError::InvalidLimits {
+                detail: "chunk_bytes must be strictly positive".to_string(),
+            });
+        }
+        if request.limits.max_file_bytes == 0 {
+            return Err(FileIngestError::InvalidLimits {
+                detail: "max_file_bytes must be strictly positive".to_string(),
+            });
+        }
+        // Bounded read: never read past the admitted limit even if the file grew
+        // after the stat check (review-2036: the read must be bounded, not fs::read).
+        let file = std::fs::File::open(&request.path)?;
+        let mut file_bytes = Vec::with_capacity(
+            usize::try_from(file.metadata()?.len().min(request.limits.max_file_bytes))
+                .unwrap_or(usize::MAX),
+        );
+        {
+            use std::io::Read;
+            let mut handle = file.take(request.limits.max_file_bytes);
+            handle.read_to_end(&mut file_bytes)?;
+        }
+        let stat_len = fs::metadata(&request.path)?.len();
+        if stat_len > request.limits.max_file_bytes {
+            return Err(FileIngestError::FileTooLarge {
+                path: request.path.clone(),
+                len: stat_len,
+                max: request.limits.max_file_bytes,
+            });
+        }
         let input_sha256 = ContentDigest::sha256(&file_bytes);
 
         // Step 3: Format sniffing
@@ -934,7 +979,7 @@ impl FileIngestAdapter {
             BatchId::parse(format!("batch:file-import:{import_identity_hex}:manifest"))?;
 
         // Step 5: Time truth configuration
-        let receive_time = request.receive_time.unwrap_or(TimestampNs(1_000_000_000));
+        let receive_time = request.receive_time.ok_or(FileIngestError::MissingReceiveTime {})?;
         let capture_time_label = if request.capture_hint.is_some() {
             "operator_assumption"
         } else {

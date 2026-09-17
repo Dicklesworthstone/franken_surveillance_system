@@ -31,8 +31,8 @@ use fss_core::{
 };
 use fss_reference::ingest::{
     CaptureHint, DetectedFileFormat, FILE_IMPORT_MANIFEST_SCHEMA, FileFormatHint,
-    FileIngestAdapter, FileIngestError, FileIngestOutcome, FileIngestRequest, fetch_segment_bytes,
-    sniff_format,
+    FileIngestAdapter, FileIngestError, FileIngestLimits, FileIngestOutcome, FileIngestRequest,
+    fetch_segment_bytes, sniff_format,
 };
 use fss_reference::{
     ADP_FILE_ROW_ID, ADP_REPLAY_ROW_ID, DeploymentLimits, ReferenceDeployment, ReplayCx,
@@ -103,7 +103,8 @@ fn test_01_h264_clean_file_import() -> Result<(), Box<dyn Error>> {
         SensorId::parse("sensor:cam-001")?,
         StreamId::parse("stream:h264-main")?,
     )
-    .with_format_hint(FileFormatHint::AnnexB);
+    .with_format_hint(FileFormatHint::AnnexB)
+    .with_receive_time(TimestampNs(2_000_000_000));
 
     let receipt = FileIngestAdapter::ingest(request, &cx, &mut deployment)?;
 
@@ -177,7 +178,8 @@ fn test_02_mjpeg_clean_file_import() -> Result<(), Box<dyn Error>> {
         mjpeg_path.clone(),
         SensorId::parse("sensor:cam-mjpeg")?,
         StreamId::parse("stream:mjpeg-live")?,
-    );
+    )
+    .with_receive_time(TimestampNs(2_000_000_000));
 
     let receipt = FileIngestAdapter::ingest(request, &cx, &mut deployment)?;
 
@@ -358,7 +360,8 @@ fn test_08_chunking_and_fetch_segment_bytes() -> Result<(), Box<dyn Error>> {
         h264_path,
         SensorId::parse("sensor:cam-001")?,
         StreamId::parse("stream:h264")?,
-    );
+    )
+    .with_receive_time(TimestampNs(2_000_000_000));
     request.limits.chunk_bytes = 512; // Small chunks so a ~2.6KB file creates 6 chunks
 
     let receipt = FileIngestAdapter::ingest(request, &cx, &mut deployment)?;
@@ -401,7 +404,8 @@ fn test_09_idempotent_reimport() -> Result<(), Box<dyn Error>> {
         h264_path.clone(),
         SensorId::parse("sensor:cam-001")?,
         StreamId::parse("stream:h264")?,
-    );
+    )
+    .with_receive_time(TimestampNs(2_000_000_000));
 
     // Ingest 1
     let receipt1 = FileIngestAdapter::ingest(request1, &cx, &mut deployment)?;
@@ -414,7 +418,8 @@ fn test_09_idempotent_reimport() -> Result<(), Box<dyn Error>> {
         h264_path,
         SensorId::parse("sensor:cam-001")?,
         StreamId::parse("stream:h264")?,
-    );
+    )
+    .with_receive_time(TimestampNs(2_000_000_000));
     let receipt2 = FileIngestAdapter::ingest(request2, &cx, &mut deployment)?;
 
     assert_eq!(receipt2.outcome, FileIngestOutcome::IdempotentExisting);
@@ -444,7 +449,8 @@ fn test_10_absence_query_not_certifiable() -> Result<(), Box<dyn Error>> {
         h264_path,
         SensorId::parse("sensor:cam-001")?,
         StreamId::parse("stream:h264")?,
-    );
+    )
+    .with_receive_time(TimestampNs(2_000_000_000));
 
     FileIngestAdapter::ingest(request, &cx, &mut deployment)?;
 
@@ -586,7 +592,8 @@ fn test_13_mjpeg_garbage_tracks_gap_before() -> Result<(), Box<dyn Error>> {
         mjpeg_path,
         SensorId::parse("sensor:cam-mjpeg-gap")?,
         StreamId::parse("stream:mjpeg-gap")?,
-    );
+    )
+    .with_receive_time(TimestampNs(2_000_000_000));
 
     let receipt = FileIngestAdapter::ingest(request, &cx, &mut deployment)?;
 
@@ -692,7 +699,8 @@ fn test_m05_kill_fetch_segment_bounds_check() -> Result<(), Box<dyn Error>> {
         h264_path,
         SensorId::parse("sensor:cam-001")?,
         StreamId::parse("stream:h264")?,
-    );
+    )
+    .with_receive_time(TimestampNs(2_000_000_000));
 
     let receipt = FileIngestAdapter::ingest(request, &cx, &mut deployment)?;
 
@@ -703,6 +711,96 @@ fn test_m05_kill_fetch_segment_bounds_check() -> Result<(), Box<dyn Error>> {
             assert_eq!(count, receipt.manifest.segment_spans.len());
         }
         other => return Err(format!("expected SegmentIndexOutOfBounds, got {other:?}").into()),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_15_receive_time_must_be_explicit() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let h264_path = root.join("tests/fixtures/media/h264/clean.264");
+
+    let dep_dir = temp_deployment_dir("receive-time-explicit")?;
+    let cx = test_cx("receive-time-explicit")?;
+    let mut deployment =
+        ReferenceDeployment::open(&dep_dir, "site:deploy:receive-time-explicit", &cx)?;
+
+    // No with_receive_time: the adapter must refuse rather than fabricate 1 s precision
+    // (review-2036 finding (b): receive_time comes from the caller, never a default).
+    let request = FileIngestRequest::new(
+        h264_path,
+        SensorId::parse("sensor:cam-recv")?,
+        StreamId::parse("stream:h264-recv")?,
+    );
+
+    match FileIngestAdapter::ingest(request, &cx, &mut deployment) {
+        Err(FileIngestError::MissingReceiveTime {}) => {}
+        other => return Err(format!("expected MissingReceiveTime, got {other:?}").into()),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_15_zero_chunk_bytes_refused_typed() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let h264_path = root.join("tests/fixtures/media/h264/clean.264");
+
+    let dep_dir = temp_deployment_dir("zero-chunk")?;
+    let cx = test_cx("zero-chunk")?;
+    let mut deployment = ReferenceDeployment::open(&dep_dir, "site:deploy:zero-chunk", &cx)?;
+
+    let limits = FileIngestLimits {
+        chunk_bytes: 0,
+        ..FileIngestLimits::standard()
+    };
+    let request = FileIngestRequest::new(
+        h264_path,
+        SensorId::parse("sensor:cam-zero")?,
+        StreamId::parse("stream:h264-zero")?,
+    )
+    .with_limits(limits)
+    .with_receive_time(TimestampNs(2_000_000_000));
+
+    match FileIngestAdapter::ingest(request, &cx, &mut deployment) {
+        Err(FileIngestError::InvalidLimits { detail }) => {
+            assert!(detail.contains("chunk_bytes"), "unexpected detail: {detail}");
+        }
+        other => return Err(format!("expected InvalidLimits, got {other:?}").into()),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_16_file_too_large_for_limit_refused_typed() -> Result<(), Box<dyn Error>> {
+    let root = repo_root()?;
+    let h264_path = root.join("tests/fixtures/media/h264/clean.264");
+    let file_len = fs::metadata(&h264_path)?.len();
+
+    let dep_dir = temp_deployment_dir("bounded-read")?;
+    let cx = test_cx("bounded-read")?;
+    let mut deployment =
+        ReferenceDeployment::open(&dep_dir, "site:deploy:bounded-read", &cx)?;
+
+    // max_file_bytes below the fixture size: refusal must come from the stat check
+    // (FileTooLarge) BEFORE any read; the read itself must be bounded by that limit.
+    let limits = FileIngestLimits {
+        max_file_bytes: file_len - 1,
+        ..FileIngestLimits::standard()
+    };
+    let request = FileIngestRequest::new(
+        h264_path,
+        SensorId::parse("sensor:cam-bounded")?,
+        StreamId::parse("stream:h264-bounded")?,
+    )
+    .with_limits(limits)
+    .with_receive_time(TimestampNs(2_000_000_000));
+
+    match FileIngestAdapter::ingest(request, &cx, &mut deployment) {
+        Err(FileIngestError::FileTooLarge { .. }) => {}
+        other => return Err(format!("expected FileTooLarge, got {other:?}").into()),
     }
 
     Ok(())
