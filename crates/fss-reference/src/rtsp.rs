@@ -9,6 +9,8 @@
 pub mod authentication;
 /// RTSP framing, negotiated video, and source-linked AVC receiver composition.
 pub mod avc_client;
+/// Exact bounded wire frames for explicit authentication and source-custody owners.
+pub mod framed;
 
 /// Capability-scoped, owner-driven RTSP/1.0 client session reference.
 pub mod client;
