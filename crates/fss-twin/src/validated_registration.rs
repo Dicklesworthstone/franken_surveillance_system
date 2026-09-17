@@ -35,7 +35,7 @@ pub struct TrackingCameraBinding {
     pub image_domain_digest:[u8;32],
     pub clock:u64,
     pub validity:[u64;2],
-    pub error:Option<f64>,
+    pub error:Option<crate::ProjectionError>,
 }
 
 #[derive(Clone, Debug)]
@@ -63,7 +63,7 @@ impl ValidatedCameraRegistration {
         if twin.digest()!=self.twin_digest || binding.image_domain_digest!=self.query.image_domain
             || binding.camera==0 || binding.calibration==0 || binding.image_domain==0 || binding.clock==0
             || binding.validity[0]>binding.validity[1]
-            || binding.error.is_some_and(|e|!e.is_finite() || e<0.0 || e>1e9){
+            || binding.error.is_some_and(|e|!e.valid_for(self.intrinsics)){
             return Err(RegistrationCandidateError::InvalidBinding);
         }
         Ok(TrackingCamera{geometry:twin.basis(),camera:binding.camera,calibration:binding.calibration,

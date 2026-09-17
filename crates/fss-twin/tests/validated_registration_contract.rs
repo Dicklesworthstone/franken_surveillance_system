@@ -39,12 +39,15 @@ fn only_unique_held_out_mode_becomes_registration_candidate_and_owner_bound_snap
     let frozen=candidate.frozen_calibration([8;32])?;
     assert_eq!(frozen.camera.image_domain,[3;32]);assert_eq!(frozen.pose,candidate.pose);
     let tracking=candidate.bind_tracking_camera(&twin,TrackingCameraBinding{camera:7,calibration:9,image_domain:11,
-        image_domain_digest:[3;32],clock:13,validity:[100,200],error:Some(0.1)})?;
+        image_domain_digest:[3;32],clock:13,validity:[100,200],error:Some(fss_twin::ProjectionError{centre:[0.1;3],rotation_entry:0.001,focal:[0.1;2],principal:[0.1;2]})})?;
     assert_eq!(tracking.camera,7);assert_eq!(tracking.calibration,9);assert_eq!(tracking.pose,candidate.pose);
     assert_eq!(tracking.intrinsics,candidate.intrinsics);
     let mut wrong=TrackingCameraBinding{camera:7,calibration:9,image_domain:11,image_domain_digest:[4;32],clock:13,validity:[100,200],error:None};
     assert!(matches!(candidate.bind_tracking_camera(&twin,wrong),Err(RegistrationCandidateError::InvalidBinding)));
     wrong.image_domain_digest=[3;32];wrong.camera=0;
+    assert!(matches!(candidate.bind_tracking_camera(&twin,wrong),Err(RegistrationCandidateError::InvalidBinding)));
+    wrong.camera=7;
+    wrong.error=Some(fss_twin::ProjectionError{rotation_entry:f64::NAN,..fss_twin::ProjectionError::EXACT});
     assert!(matches!(candidate.bind_tracking_camera(&twin,wrong),Err(RegistrationCandidateError::InvalidBinding)));
     Ok(())
 }

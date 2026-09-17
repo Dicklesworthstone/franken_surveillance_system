@@ -53,7 +53,7 @@ impl ValidatedRadialCameraRegistration {
             || (spec.maximum_radius-self.maximum_undistorted_radius).abs()>1e-12
             || binding.image_domain_digest!=plan.output_domain() || binding.camera==0||binding.calibration==0
             || binding.image_domain==0||binding.clock==0||binding.validity[0]>binding.validity[1]
-            || binding.error.is_some_and(|e|!e.is_finite()||e<0.0||e>1e9){return Err(RadialRegistrationError::InvalidBinding);}
+            || binding.error.is_some_and(|e|!e.valid_for(self.raw_intrinsics)){return Err(RadialRegistrationError::InvalidBinding);}
         Ok(TrackingCamera{geometry:twin.basis(),camera:binding.camera,calibration:binding.calibration,
             image_domain:binding.image_domain,clock:binding.clock,validity:binding.validity,pose:self.pose,
             intrinsics:self.raw_intrinsics,error:binding.error})

@@ -19,6 +19,13 @@ pub struct ProjectionError {
 impl ProjectionError {
     /// Exact represented calibration, useful for synthetic controls, not a default fit claim.
     pub const EXACT:Self=Self{centre:[0.0;3],rotation_entry:0.0,focal:[0.0;2],principal:[0.0;2]};
+    pub(crate) fn valid_for(self, intrinsics: PinholeIntrinsics) -> bool {
+        self.centre.iter().chain(self.focal.iter()).chain(self.principal.iter())
+            .all(|x| x.is_finite() && (0.0..=1e12).contains(x))
+            && self.rotation_entry.is_finite()
+            && (0.0..=2.0).contains(&self.rotation_entry)
+            && (0..2).all(|i| self.focal[i] < intrinsics.focal_lengths()[i])
+    }
 }
 
 /// Owner-resolved camera snapshot. No field authenticates or grants effect authority.
@@ -192,10 +199,7 @@ fn validate(c:TrackingCamera,o:ContactObservation,basis:GeometryBasis,opt:Projec
     }
     if opt.max_hypotheses==0 || opt.max_hypotheses>128 {return Err(TwinError::Limit);}
     if let Some(e)=c.error {
-        if e.centre.iter().chain(e.focal.iter()).chain(e.principal.iter())
-            .any(|x|!x.is_finite() || *x<0.0 || *x>1e12)
-            || !e.rotation_entry.is_finite() || !(0.0..=2.0).contains(&e.rotation_entry)
-            || (0..2).any(|i|e.focal[i]>=c.intrinsics.focal_lengths()[i]) {
+        if !e.valid_for(c.intrinsics) {
             return Err(TwinError::Numeric);
         }
     }
