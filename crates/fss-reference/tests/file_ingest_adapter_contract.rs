@@ -139,10 +139,18 @@ fn test_01_h264_clean_file_import() -> Result<(), Box<dyn Error>> {
     // Verify all 5 capsules can be read and decoded from the publisher spool
     for (i, seg) in receipt.manifest.segment_spans.iter().enumerate() {
         let capsule = &receipt.capsules[i];
+        let object_id = format!("object:capsule:{}", capsule.capsule_id.as_str());
+        let payload_digest = ledger
+            .batches()
+            .iter()
+            .flat_map(|batch| &batch.deltas)
+            .find(|delta| delta.family == "sensor_capsule" && delta.object_id.as_str() == object_id)
+            .ok_or("capsule must have a published ledger payload")?
+            .payload_digest;
         let capsule_bytes = deployment
             .publisher()
             .spool()
-            .read(capsule.metadata_digest())?;
+            .read(payload_digest)?;
         let mut decoder = CanonicalDecoder::new(&capsule_bytes);
         let decoded = SensorCapsule::decode_canonical(&mut decoder)?;
         assert_eq!(&decoded.capsule_id, &seg.capsule_id);
