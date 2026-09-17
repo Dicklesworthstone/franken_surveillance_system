@@ -20,7 +20,7 @@ fn twin()->Result<PropertyTwin,Box<dyn Error>>{
     let mut body=vec![1;32];text(&mut body,"handoff/Z-up");text(&mut body,"synthetic");body.push(0);
     for n in [0.0f64,-1.0,0.0]{body.extend_from_slice(&n.to_le_bytes());}
     for n in [2u32,2,4,2]{body.extend_from_slice(&n.to_le_bytes());}
-    for (id,kind) in [("path",1u8),("grass",2u8)]{text(&mut body,id);body.push(kind);}
+    for (id,kind) in [("grass",2u8),("path",1u8)]{text(&mut body,id);body.push(kind);}
     for i in 0..2{text(&mut body,&format!("object{i}"));body.extend_from_slice(&(i as u32).to_le_bytes());body.extend_from_slice(&[1,0]);}
     for p in [[0.0f64,0.,0.],[2.,0.,0.],[2.,2.,0.],[0.,2.,0.]]{for n in p{body.extend_from_slice(&n.to_le_bytes());}}
     for (tri,obj) in [([0u32,1,2],0u32),([0,2,3],1)]{for n in tri{body.extend_from_slice(&n.to_le_bytes());}body.extend_from_slice(&obj.to_le_bytes());}
