@@ -11,12 +11,12 @@ use fss_twin::stream::{ContactTrack,TrackOptions,TrackScope};
 type Test=Result<(),Box<dyn Error>>;
 fn text(bytes:&mut Vec<u8>,value:&str){bytes.extend_from_slice(&(value.len() as u16).to_le_bytes());bytes.extend_from_slice(value.as_bytes());}
 fn twin()->Result<PropertyTwin,Box<dyn Error>>{
-    let vertices=[[0.,0.,0.],[2.,0.,0.],[2.,2.,0.],[0.,2.,0.]];
+    let vertices=[[0.0f64,0.,0.],[2.,0.,0.],[2.,2.,0.],[0.,2.,0.]];
     let faces=[([0u32,1,2],0u32),([0,2,3],1)];
     let mut body=vec![1;32];text(&mut body,"frontier/Z-up");text(&mut body,"synthetic");body.push(0);
     for n in [0.0f64,-1.0,0.0]{body.extend_from_slice(&n.to_le_bytes());}
     for n in [2u32,2,4,2]{body.extend_from_slice(&n.to_le_bytes());}
-    for (id,kind) in [("path",1u8),("grass",2u8)]{text(&mut body,id);body.push(kind);}
+    for (id,kind) in [("grass",2u8),("path",1u8)]{text(&mut body,id);body.push(kind);}
     for i in 0..2{text(&mut body,&format!("object{i}"));body.extend_from_slice(&(i as u32).to_le_bytes());body.extend_from_slice(&[1,0]);}
     for p in vertices{for n in p{body.extend_from_slice(&n.to_le_bytes());}}
     for (indices,object) in faces{for n in indices{body.extend_from_slice(&n.to_le_bytes());}body.extend_from_slice(&object.to_le_bytes());}
