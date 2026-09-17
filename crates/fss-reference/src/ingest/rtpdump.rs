@@ -6,3 +6,5 @@ pub use framing::*;
 pub mod replay;
 /// Source-first publication, capsule linkage and verified readback.
 pub mod import;
+/// Root-based read-only verification and explicitly committed crash recovery.
+pub mod recovery;
