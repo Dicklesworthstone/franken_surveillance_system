@@ -7,6 +7,7 @@
 //! canonical authority delta through `fss-publication`.
 
 mod adapter_replay;
+pub mod agent_session;
 mod alert;
 mod bundle;
 mod calibration;
@@ -77,6 +78,10 @@ pub use adapter_replay::{
     ReplayAuditRecord, ReplayCx, ReplayDivergence, ReplayExecutionOutput, ReplayExecutionRequest,
     ReplayIoAuthority, ReplayLifecycleState, ReplayTerminalStatus, ScopedLedgerDir,
     compute_audit_hash,
+};
+pub use agent_session::{
+    ReferenceSessionError, ReferenceSessionLimits, ReferenceSessionStore, ResolvedSessionHandle,
+    SessionAlias, SessionBindingRequest, SessionRefresh,
 };
 pub use alert::{
     PrepareAlertParams, ProviderDispatch, ProviderFailureReceipt, ProviderObservationReceipt,
