@@ -1,0 +1,36 @@
+{
+  "cases": [
+    {
+      "copy_spans": 9,
+      "decoded_frames": 4,
+      "decoded_pixel_sha256": "abe52a95d21f902537f3cdeb2c76e951fa429c9a44c4bc1d5f751312460a0031",
+      "incomplete_record_cuts_refused": 7243,
+      "nals": 9,
+      "packetization": "single-nal",
+      "records": 10,
+      "source_bytes": 7292,
+      "source_sha256": "9025dbd790effa4203aa2d84684200ecf3ae73ab633cc31cf46a4da5f6b7e7a5"
+    },
+    {
+      "copy_spans": 13,
+      "decoded_frames": 4,
+      "decoded_pixel_sha256": "abe52a95d21f902537f3cdeb2c76e951fa429c9a44c4bc1d5f751312460a0031",
+      "incomplete_record_cuts_refused": 7331,
+      "nals": 9,
+      "packetization": "fu-a",
+      "records": 14,
+      "source_bytes": 7384,
+      "source_sha256": "9cd4d9457ebc1069e14e455b855c3bba0035adfa4a7c39a6f184e1be50dbb442"
+    }
+  ],
+  "fixture_sha256": "2a3e84de3a938a60ad254a69fa2fa7f38ada910cad72447b807f3d6266796d32",
+  "missing_fu_start_refused": true,
+  "qualification": "independent_fixture_and_source_mapping_oracle_only",
+  "rust_compilation_executed": false,
+  "rust_executed": false,
+  "rust_execution_blocker": "cargo and rustc are not installed in the delivery environment",
+  "rust_source_commit": "cc7c93a46ebb2e9e1990955d8cc6cdf63a76dffa",
+  "rust_tests_authored": 42,
+  "rust_tests_executed": false,
+  "status": "passed"
+}

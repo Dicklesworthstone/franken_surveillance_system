@@ -382,3 +382,6 @@ fn earlier(a: Option<u64>, b: Option<u64>) -> Option<u64> {
     match (a, b) { (Some(a), Some(b)) => Some(a.min(b)), (a, b) => a.or(b) }
 }
 fn refusal(reason: AvcClientError) -> AvcClientFailure { AvcClientFailure { reason, retirement: None } }
+
+/// Explicitly authenticated TCP intake using the same session and AVC receiver.
+pub mod authenticated;
