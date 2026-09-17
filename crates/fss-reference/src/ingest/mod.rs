@@ -6,6 +6,8 @@
 pub mod annexb;
 pub mod file_adapter;
 pub mod mjpeg;
+/// Bounded recorded-RTP framing and source-preserving ingest.
+pub mod rtpdump;
 
 pub use annexb::{
     AnnexBAccessUnit, AnnexBError, AnnexBLimits, AnnexBNal, AnnexBScan, CEILING_MAX_NAL_BYTES,
