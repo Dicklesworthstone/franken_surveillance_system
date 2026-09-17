@@ -2291,11 +2291,14 @@ fn test_m7_kill_no_wildcard_arms_in_scalar_executor_opcode_matches() -> Result<(
         "scalar_executor.rs must not contain wildcard arms"
     );
 
-    // Source guard: verify scalar_executor.rs does not call f32::exp directly (kills M4)
-    assert!(
-        !src.contains(".exp("),
-        "scalar_executor.rs must not call f32::exp; must use deterministic_exp_f32"
-    );
+    // Source guard: scalar_executor.rs must never call native f32::exp at any call site,
+    // including fully-qualified `f32::exp(` and `::exp(` spellings that bypass `.exp(`.
+    for banned in [".exp(", "f32::exp(", "::exp("] {
+        assert!(
+            !src.contains(banned),
+            "scalar_executor.rs must not call native exp ({banned}); must use deterministic_exp_f32"
+        );
+    }
 
     // Verify all 3 match blocks explicitly name the unsupported variants (Gelu | Silu | ...)
     let unsupported_count = src.matches("OpCode::Gelu").count();
@@ -2655,10 +2658,87 @@ mod reviewer_probes {
         let y = out(&run(&gr, vec![("x", t(&[7], &xs)?)])?, "y")?;
         assert_eq!(y[0], 1.0);
         assert!(y[1] >= 0.0 && y[1] < 1e-30, "{}", y[1]);
-        assert!(close(&y[2..4], &[0.731_058_6, 0.268_941_43], 2e-7), "{y:?}");
+        assert_eq!(y[2].to_bits(), 0x3F3B_26A8, "sigmoid(1.0) bits drifted");
+        assert_eq!(y[3].to_bits(), 0x3E89_B2B1, "sigmoid(-1.0) bits drifted");
         assert!(y[4].is_nan());
         assert_eq!(y[5], 1.0);
         assert_eq!(y[6], 0.0);
+        Ok(())
+    }
+
+    #[test]
+    fn p10b_sigmoid_bits_pinned_against_native_exp_call_site() -> R {
+        // Independent literal golden bits captured from the deterministic executor on the
+        // pinned toolchain; a native `f32::exp` swapped into either sigmoid branch (M4g)
+        // flips at least one of these final values.
+        let gr = ModelIrGraph::builder("p10b", g())
+            .add_input(f("x", &[7])?)
+            .add_output(f("y", &[7])?)
+            .add_node(node(
+                "s",
+                OpCode::Sigmoid,
+                &["x"],
+                &["y"],
+                AttributeMap::new(),
+            )?)
+            .build_and_validate()?;
+        let xs = [0.98_f32, -0.98, 1.75, -1.75, 0.33, 1.0, -1.0];
+        let y = out(&run(&gr, vec![("x", t(&[7], &xs)?)])?, "y")?;
+        let expected: [u32; 7] = [
+            0x3F3A_23C3, 0x3E8B_B878, 0x3F5A_1993, 0x3E17_99AF, 0x3F14_EE2E, 0x3F3B_26A8,
+            0x3E89_B2B1,
+        ];
+        let actual: Vec<u32> = y.iter().map(|v| v.to_bits()).collect();
+        assert_eq!(actual, expected, "sigmoid bits drifted for xs {xs:?}: {actual:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn p11c_exp_upper_clamp_returns_positive_infinity() {
+        // M6a: loosening the upper clamp to 1000 must fail here. True exp overflows f32 for
+        // arguments above ~88.72, so 711, 1000, and f32::MAX are all +INFINITY.
+        for x in [711.0_f32, 1000.0, f32::MAX] {
+            let v = deterministic_exp_f32(x);
+            assert_eq!(
+                v.to_bits(),
+                f32::INFINITY.to_bits(),
+                "deterministic_exp_f32({x}) must be +INFINITY, got {v:?} (bits 0x{:08X})",
+                v.to_bits()
+            );
+        }
+    }
+
+    #[test]
+    fn p10c_softmax_large_negative_row_bits_pinned() -> R {
+        // M10: a row max starting at 0.0 instead of NEG_INFINITY collapses
+        // exp(-1000 - 0) to zero, so the row normalizes to [0, 0, 0] and misses these pins.
+        let o = run(
+            &softmax_graph(&[1, 3], -1)?,
+            vec![("x", t(&[1, 3], &[-1000.0, -1001.0, -1002.0])?)],
+        )?;
+        let expected: [u32; 3] = [0x3F2A_4D3B, 0x3E7A_9A1A, 0x3DB8_61F3];
+        let actual: Vec<u32> = out(&o, "y")?.iter().map(|v| v.to_bits()).collect();
+        assert_eq!(
+            actual, expected,
+            "softmax large-negative row drifted: expected {expected:?}, got {actual:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn p10d_softmax_shifted_row_bits_pinned() -> R {
+        // M4s: swapping `deterministic_exp_f32` for `f32::exp` inside the softmax kernel
+        // flips at least one final bit of this shifted row (max at 0.0).
+        let o = run(
+            &softmax_graph(&[1, 3], -1)?,
+            vec![("x", t(&[1, 3], &[0.0, -0.98, -1.75])?)],
+        )?;
+        let expected: [u32; 3] = [0x3F25_4243, 0x3E78_1809, 0x3DE5_BDCF];
+        let actual: Vec<u32> = out(&o, "y")?.iter().map(|v| v.to_bits()).collect();
+        assert_eq!(
+            actual, expected,
+            "softmax shifted-row bits drifted: expected {expected:?}, got {actual:?}"
+        );
         Ok(())
     }
 
@@ -2945,10 +3025,11 @@ mod reviewer_probes {
         assert_eq!(out(&o, "y")?, vec![100.0, 200.0, 300.0, 0.0, 0.0]);
         Ok(())
     }
-
     #[test]
     fn p19_maxpool_window_work_is_budgeted() -> R {
-        // K=2^20 window with stride K: 1 output element, 2^21 window visits, 0 MACs charged.
+        // compute_node_macs charges out_elems * k_h * k_w = 1 * 2^20 * 2^20 = 2^40 "MACs",
+        // exceeding the 0-MAC budget and failing closed (the 2^21 inner-loop visits are not
+        // the charged quantity).
         let k: i64 = 1 << 20;
         let gr = pool_graph(
             "p19",

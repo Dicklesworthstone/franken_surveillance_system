@@ -662,8 +662,8 @@ fn compute_node_macs(
                 let ks = a
                     .as_usize_list(node.id(), "kernel_size")
                     .map_err(ExecError::Ir)?;
-                let h = ks.first().copied().unwrap_or(1).max(1) as u64;
-                let w = ks.get(1).copied().unwrap_or(h as usize).max(1) as u64;
+                let h = ks.first().copied().unwrap_or(1) as u64;
+                let w = ks.get(1).copied().unwrap_or(1) as u64;
                 (h, w)
             } else {
                 (1, 1)
