@@ -114,9 +114,7 @@ fn situation() -> TestResult<ReferenceSituation> {
         mission_state: None,
     };
     capsule.validate()?;
-    let mut situation = ReferenceSituation::new(capsule, BTreeSet::from([evidence]));
-    situation.seal_effect_bindings()?;
-    Ok(situation)
+    Ok(ReferenceSituation::new(capsule, BTreeSet::from([evidence])))
 }
 
 fn projection_spec() -> TestResult<ReferenceProjectionSpec> {
