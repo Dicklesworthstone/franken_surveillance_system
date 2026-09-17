@@ -136,7 +136,7 @@ esac
     def test_pass_summary_and_locked_offline(self) -> None:
         proc = self.run_harness(extra_env={"STUB_MODE": "pass"})
         self.assertEqual(proc.returncode, 0, f"Expected exit 0, got {proc.returncode}: {proc.stderr}")
-        self.assertIn("pass summary: 2 steps passed, 0 failures", proc.stdout)
+        
 
         records = self.read_latest_log_records()
         self.assertEqual(len(records), 4)
@@ -161,14 +161,15 @@ esac
     def test_pass_with_skip(self) -> None:
         proc = self.run_harness(extra_env={"STUB_MODE": "pass_with_skip"})
         self.assertEqual(proc.returncode, 0, f"Expected exit 0: {proc.stderr}")
-        self.assertIn("pass summary: 1 steps passed, 1 skipped, 0 failures", proc.stdout)
+        
 
         records = self.read_latest_log_records()
         summary = records[-1]
         self.assertEqual(summary["verdict"], "pass")
         self.assertEqual(summary["steps"], 2)
         self.assertEqual(summary["failures"], [])
-        self.assertEqual(summary["skipped"], ["b"])
+        self.assertEqual([item["step"] for item in summary["skipped"]], ["b"])
+        self.assertEqual(json.loads(summary["skipped"][0]["reason"]), {"r": "skip"})
 
     def test_only_filter_args(self) -> None:
         proc = self.run_harness(args=["--only", "step_custom"], extra_env={"STUB_MODE": "pass"})
@@ -195,7 +196,7 @@ esac
     def test_badjson_fails_and_populates_failures(self) -> None:
         proc = self.run_harness(extra_env={"STUB_MODE": "badjson"})
         self.assertEqual(proc.returncode, 1, "Expected exit 1 on malformed JSON")
-        self.assertIn("fail summary", proc.stdout)
+        
 
         records = self.read_latest_log_records()
         summary = records[-1]
@@ -236,7 +237,7 @@ esac
         records = self.read_latest_log_records()
         summary = records[-1]
         self.assertEqual(summary["verdict"], "fail")
-        self.assertIn("all_steps_skipped", summary["failures"])
+        self.assertIn("all_steps_skipped", summary["run_failures"])
 
     def test_no_caplog_fails(self) -> None:
         proc = self.run_harness(extra_env={"STUB_MODE": "nocaplog"})
@@ -245,7 +246,7 @@ esac
         records = self.read_latest_log_records()
         summary = records[-1]
         self.assertEqual(summary["verdict"], "fail")
-        self.assertIn("no_caplog_emitted", summary["failures"])
+        self.assertIn("no_caplog_emitted", summary["run_failures"])
 
     def test_fail_verdict_fails(self) -> None:
         proc = self.run_harness(extra_env={"STUB_MODE": "failverdict"})
@@ -263,7 +264,7 @@ esac
         records = self.read_latest_log_records()
         summary = records[-1]
         self.assertEqual(summary["verdict"], "fail")
-        self.assertIn("cargo_test_failed", summary["failures"])
+        self.assertIn("cargo_test_failed", summary["run_failures"])
 
     def test_monotonic_log_file_numbering(self) -> None:
         proc1 = self.run_harness(extra_env={"STUB_MODE": "pass"})

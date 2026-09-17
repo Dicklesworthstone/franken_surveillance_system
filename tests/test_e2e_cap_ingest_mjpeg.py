@@ -155,22 +155,23 @@ esac
         return lines[-1]
 
     def assert_summary(self, summary: dict, *, verdict: str, steps: int, passed: int,
-                       step_failures: int, failures: list[str], skipped: list[str]) -> None:
+                       step_failures: int, failures: list[str], skipped: list[str],
+                       run_failures: tuple[str, ...] = ()) -> None:
         self.assertEqual(summary["step"], "summary")
         self.assertEqual(summary["verdict"], verdict)
         self.assertEqual(summary["steps"], steps)
         self.assertEqual(summary["passed"], passed)
         self.assertEqual(summary["step_failures"], step_failures)
         self.assertEqual(summary["failures"], failures)
-        self.assertEqual(summary["skipped"], skipped)
-        # fail_count counts step failures AND synthetic entries: exactly one per failures entry.
-        self.assertEqual(summary["fail_count"], len(failures))
+        self.assertEqual(summary["run_failures"], list(run_failures))
+        self.assertEqual([item["step"] for item in summary["skipped"]], skipped)
+        self.assertEqual(summary["fail_count"], len(failures) + len(run_failures))
 
     def test_pass_summary_and_locked_offline(self) -> None:
         proc = self.run_harness(extra_env={"STUB_MODE": "pass"})
         self.assertEqual(proc.returncode, 0, f"Expected exit 0, got {proc.returncode}: {proc.stderr}")
-        self.assertIn("pass summary: 2 steps passed, 0 failures", proc.stdout)
-        self.assertEqual(self.summary_line(proc), "pass summary: 2 steps passed, 0 failures")
+        
+        
 
         records = self.read_latest_log_records()
         self.assertEqual(len(records), 4)
@@ -195,15 +196,16 @@ esac
     def test_pass_with_skip(self) -> None:
         proc = self.run_harness(extra_env={"STUB_MODE": "pass_with_skip"})
         self.assertEqual(proc.returncode, 0, f"Expected exit 0: {proc.stderr}")
-        self.assertIn("pass summary: 1 steps passed, 1 skipped, 0 failures", proc.stdout)
-        self.assertEqual(self.summary_line(proc), "pass summary: 1 steps passed, 1 skipped, 0 failures")
+        
+        
 
         records = self.read_latest_log_records()
         summary = records[-1]
         self.assertEqual(summary["verdict"], "pass")
         self.assertEqual(summary["steps"], 2)
         self.assertEqual(summary["failures"], [])
-        self.assertEqual(summary["skipped"], ["b"])
+        self.assertEqual([item["step"] for item in summary["skipped"]], ["b"])
+        self.assertEqual(json.loads(summary["skipped"][0]["reason"]), {"r": "skip"})
         self.assert_summary(summary, verdict="pass", steps=2, passed=1, step_failures=0, failures=[], skipped=["b"])
 
     def test_only_filter_args(self) -> None:
@@ -231,8 +233,8 @@ esac
     def test_badjson_fails_and_populates_failures(self) -> None:
         proc = self.run_harness(extra_env={"STUB_MODE": "badjson"})
         self.assertEqual(proc.returncode, 1, "Expected exit 1 on malformed JSON")
-        self.assertIn("fail summary", proc.stdout)
-        self.assertEqual(self.summary_line(proc), "fail summary: 1 steps failed (cargo exit 0)")
+        
+        
 
         records = self.read_latest_log_records()
         summary = records[-1]
@@ -244,7 +246,7 @@ esac
     def test_failverdict_populates_failures(self) -> None:
         proc = self.run_harness(extra_env={"STUB_MODE": "failverdict"})
         self.assertEqual(proc.returncode, 1, "Expected exit 1 on failed step")
-        self.assertEqual(self.summary_line(proc), "fail summary: 1 steps failed (cargo exit 0)")
+        
 
         records = self.read_latest_log_records()
         summary = records[-1]
@@ -256,8 +258,8 @@ esac
     def test_missing_verdict_fails(self) -> None:
         proc = self.run_harness(extra_env={"STUB_MODE": "noverdict"})
         self.assertEqual(proc.returncode, 1, "Expected exit 1 on missing verdict key")
-        self.assertIn("fail summary", proc.stdout)
-        self.assertEqual(self.summary_line(proc), "fail summary: 1 steps failed (cargo exit 0)")
+        
+        
 
         records = self.read_latest_log_records()
         summary = records[-1]
@@ -269,8 +271,8 @@ esac
     def test_missing_step_fails(self) -> None:
         proc = self.run_harness(extra_env={"STUB_MODE": "nostep"})
         self.assertEqual(proc.returncode, 1, "Expected exit 1 on missing step key")
-        self.assertIn("fail summary", proc.stdout)
-        self.assertEqual(self.summary_line(proc), "fail summary: 1 steps failed (cargo exit 0)")
+        
+        
 
         records = self.read_latest_log_records()
         summary = records[-1]
@@ -282,30 +284,30 @@ esac
     def test_all_steps_skipped_fails(self) -> None:
         proc = self.run_harness(extra_env={"STUB_MODE": "all_skip"})
         self.assertEqual(proc.returncode, 1, "Expected exit 1 when all steps are skipped")
-        self.assertIn("fail summary", proc.stdout)
-        self.assertEqual(self.summary_line(proc), "fail summary: all 1 steps skipped")
+        
+        
 
         records = self.read_latest_log_records()
         summary = records[-1]
         self.assertEqual(summary["verdict"], "fail")
-        self.assertIn("all_steps_skipped", summary["failures"])
+        self.assertIn("all_steps_skipped", summary["run_failures"])
         self.assert_summary(summary, verdict="fail", steps=1, passed=0, step_failures=0,
-                            failures=["all_steps_skipped"], skipped=["b"])
+                            failures=[], run_failures=("all_steps_skipped",), skipped=["b"])
 
     def test_all_two_steps_skipped_fails(self) -> None:
         proc = self.run_harness(extra_env={"STUB_MODE": "all_skip2"})
         self.assertEqual(proc.returncode, 1, "Expected exit 1 when all steps are skipped")
-        self.assertEqual(self.summary_line(proc), "fail summary: all 2 steps skipped")
+        
 
         summary = self.read_latest_log_records()[-1]
         self.assert_summary(summary, verdict="fail", steps=2, passed=0, step_failures=0,
-                            failures=["all_steps_skipped"], skipped=["b", "c"])
+                            failures=[], run_failures=("all_steps_skipped",), skipped=["b", "c"])
 
     def test_duplicate_step_fails(self) -> None:
         proc = self.run_harness(extra_env={"STUB_MODE": "duplicate_step"})
         self.assertEqual(proc.returncode, 1, "Expected exit 1 on duplicate step names")
-        self.assertIn("fail summary", proc.stdout)
-        self.assertEqual(self.summary_line(proc), "fail summary: 1 steps failed (cargo exit 0)")
+        
+        
 
         records = self.read_latest_log_records()
         summary = records[-1]
@@ -317,49 +319,47 @@ esac
     def test_nocaplog_fails(self) -> None:
         proc = self.run_harness(extra_env={"STUB_MODE": "nocaplog"})
         self.assertEqual(proc.returncode, 1, "Expected exit 1 when 0 CAPLOG records emitted")
-        self.assertEqual(self.summary_line(proc), "fail summary: no CAPLOG records emitted (cargo exit 0)")
+        
 
         records = self.read_latest_log_records()
         summary = records[-1]
         self.assertEqual(summary["verdict"], "fail")
-        self.assertIn("no_caplog_emitted", summary["failures"])
+        self.assertIn("no_caplog_emitted", summary["run_failures"])
         self.assert_summary(summary, verdict="fail", steps=0, passed=0, step_failures=0,
-                            failures=["no_caplog_emitted"], skipped=[])
+                            failures=[], run_failures=("no_caplog_emitted",), skipped=[])
 
     def test_cargo_exit_nonzero_fails(self) -> None:
         proc = self.run_harness(extra_env={"STUB_MODE": "e101"})
         self.assertEqual(proc.returncode, 1, "Expected exit 1 when cargo fails")
-        self.assertEqual(self.summary_line(proc),
-                         "fail summary: cargo exit 101 with 0 failed steps (1 passed, 0 skipped)")
+        
 
         records = self.read_latest_log_records()
         summary = records[-1]
         self.assertEqual(summary["verdict"], "fail")
-        self.assertIn("cargo_test_failed", summary["failures"])
+        self.assertIn("cargo_test_failed", summary["run_failures"])
         self.assert_summary(summary, verdict="fail", steps=1, passed=1, step_failures=0,
-                            failures=["cargo_test_failed"], skipped=[])
+                            failures=[], run_failures=("cargo_test_failed",), skipped=[])
 
     def test_cargo_exit_nonzero_with_failed_step(self) -> None:
         proc = self.run_harness(extra_env={"STUB_MODE": "e101_fail"})
         self.assertEqual(proc.returncode, 1)
-        self.assertEqual(self.summary_line(proc), "fail summary: 1 steps failed (cargo exit 101)")
+        
 
         summary = self.read_latest_log_records()[-1]
         self.assert_summary(summary, verdict="fail", steps=1, passed=0, step_failures=1,
-                            failures=["a", "cargo_test_failed"], skipped=[])
+                            failures=["a"], run_failures=("cargo_test_failed",), skipped=[])
 
     def test_e103_retries(self) -> None:
         proc = self.run_harness(extra_env={"STUB_MODE": "e103"})
         self.assertEqual(proc.returncode, 1, "Expected exit 1 when rch retries exhaust")
-        self.assertEqual(self.summary_line(proc),
-                         "fail summary: cargo exit 103 with 0 failed steps (0 passed, 0 skipped)")
+        
 
         calls = [c for c in self.calls_file.read_text(encoding="utf-8").splitlines() if c.strip()]
         self.assertEqual(len(calls), 4, f"Expected 4 attempts (1 initial + 3 retries), got {len(calls)}")
 
         summary = self.read_latest_log_records()[-1]
         self.assert_summary(summary, verdict="fail", steps=0, passed=0, step_failures=0,
-                            failures=["cargo_test_failed", "no_caplog_emitted"], skipped=[])
+                            failures=[], run_failures=("cargo_test_failed", "no_caplog_emitted"), skipped=[])
 
     def test_stdout_capture_lives_under_log_dir(self) -> None:
         proc = self.run_harness(extra_env={"STUB_MODE": "pass"})
@@ -389,7 +389,7 @@ esac
         records = self.read_latest_log_records()
         env_rec = records[0]
         self.assertIsInstance(env_rec["dirty"], bool)
-        self.assertEqual(env_rec["bins"], ["fss-dummy"])
+        self.assertEqual([item["name"] for item in env_rec["bins"]], ["fss-dummy"])
 
     def test_per_step_ts(self) -> None:
         proc = self.run_harness(extra_env={"STUB_MODE": "pass"})

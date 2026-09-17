@@ -21,7 +21,7 @@ SECRET_KEY_PATTERN = re.compile(
     r"authorization|password|token|secret|cookie|api_key|apikey", re.IGNORECASE
 )
 SECRET_VALUE_PATTERNS = [
-    re.compile(r"ghp_[A-Za-z0-9_]{16,}"),
+    re.compile(r"ghp_[A-Za-z0-9_]{8,}"),
     re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
     re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}"),
     re.compile(r"sk-[A-Za-z0-9_\-]{16,}"),
@@ -245,6 +245,23 @@ def validate_summary_record(rec, line_no):
                 f"Summary record (line {line_no}) failures[{f_idx}] must be str",
                 line_no=line_no,
             )
+    run_failures = rec.get("run_failures", [])
+    allowed_run_failures = {
+        "cargo_test_failed", "no_caplog_emitted", "all_steps_skipped", "caplog_parser_failed",
+    }
+    if (not isinstance(run_failures, list)
+            or any(not isinstance(value, str) or value not in allowed_run_failures
+                   for value in run_failures)
+            or len(run_failures) != len(set(run_failures))):
+        raise ValidationError(
+            "ERR_TYPE_MISMATCH", "Summary run_failures must contain unique known run failures",
+            line_no=line_no,
+        )
+    if run_failures and rec["verdict"] == "pass":
+        raise ValidationError(
+            "ERR_SUMMARY_INCONSISTENCY", "Passing summary contains run failures",
+            line_no=line_no,
+        )
     if not isinstance(rec["skipped"], list):
         raise ValidationError(
             "ERR_TYPE_MISMATCH",

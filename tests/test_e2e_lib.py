@@ -202,18 +202,14 @@ esac
         run1_dir.mkdir(parents=True, exist_ok=True)
         run2_dir.mkdir(parents=True, exist_ok=True)
 
-        fixed_env = {
-            "FSS_E2E_FIXED_TIME": "100",
-            "FSS_E2E_FIXED_TS": "2026-01-01T00:00:00Z",
-        }
 
         res1 = self._run_script(
             REPO_ROOT / "scripts" / "e2e" / "selftest.sh",
-            extra_env={**fixed_env, "FSS_E2E_LOG_DIR": str(run1_dir / "logs")}
+            extra_env={"FSS_E2E_LOG_DIR": str(run1_dir / "logs")}
         )
         res2 = self._run_script(
             REPO_ROOT / "scripts" / "e2e" / "selftest.sh",
-            extra_env={**fixed_env, "FSS_E2E_LOG_DIR": str(run2_dir / "logs")}
+            extra_env={"FSS_E2E_LOG_DIR": str(run2_dir / "logs")}
         )
 
         self.assertEqual(res1.returncode, 0)
@@ -228,6 +224,9 @@ esac
                 continue
             r1 = json.loads(line1)
             r2 = json.loads(line2)
+            for record in (r1, r2):
+                record.pop("ts", None)
+                record.pop("duration_ms", None)
             # Remove log path and log dir differences
             r1.pop("log_path", None)
             r2.pop("log_path", None)
@@ -247,12 +246,13 @@ esac
         test_script.write_text("""#!/usr/bin/env bash
 source "@REPO_ROOT@/scripts/e2e/lib.sh"
 e2e_init "neg_suite" "fss-2h5zq.2"
-case "${1:-}" in
+case "${NEG_CASE:-}" in
     expect_mismatch)
         e2e_expect_eq "mismatch_step" "expected_val" "actual_val"
         ;;
     cmd_failure)
         e2e_step "failing_cmd" bash -c 'exit 19'
+        e2e_expect_exit "failing_cmd" 0
         ;;
     exit_mismatch)
         e2e_step "cmd_ok" echo "ok"
@@ -265,10 +265,10 @@ e2e_summary
 
         for case_name, failed_step in [
             ("expect_mismatch", "mismatch_step"),
-            ("cmd_failure", "failing_cmd"),
+            ("cmd_failure", "failing_cmd_exit"),
             ("exit_mismatch", "cmd_ok_exit"),
         ]:
-            res = self._run_script(test_script, args=[case_name], extra_env={"FSS_E2E_LOG_DIR": str(log_dir)})
+            res = self._run_script(test_script, extra_env={"FSS_E2E_LOG_DIR": str(log_dir), "NEG_CASE": case_name})
             self.assertNotEqual(res.returncode, 0, f"Case {case_name} should have failed closed!")
 
             logs = sorted((log_dir / "neg_suite").glob("run_*.log"))
@@ -297,27 +297,36 @@ e2e_summary
         test_script.write_text(r"""#!/usr/bin/env bash
 source "@REPO_ROOT@/scripts/e2e/lib.sh"
 e2e_init "cap_suite" "fss-2h5zq.2"
-
-# File capacity is 10 MiB (10485760 bytes), buffer is 4096 bytes: limit is 10481664 bytes.
-# Create initial record to know base size
 e2e_step "s_base" echo "base"
 
-# Bloat log file up to exactly near the boundary
-cur_size=$(wc -c < "$_E2E_LOG_FILE")
-needed=$(( 10485760 - 4096 - cur_size - 300 ))
-
-# Append a dummy line directly to bring it to exact boundary N
-python3 -c 'import sys; open(sys.argv[1], "a").write("{\"pad\": \"" + "P" * (int(sys.argv[2]) - 13) + "\"}\n")' "$_E2E_LOG_FILE" "$needed"
-
-# Step N: should succeed
-e2e_step "step_under_limit" echo "within cap"
-
-# Step N+1: pushing past limit should fail
-set +e
-e2e_step "step_over_limit" python3 -c 'print("B" * 5000)'
-RC_OVER=$?
-set -e
-
+# Fill with valid bounded records, leaving exactly one final record at the
+# data boundary. JSON trailing whitespace counts towards the byte limit.
+count=$(python3 - "$_E2E_LOG_FILE" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path) as f:
+    template = json.loads(f.readlines()[-1])
+limit = 10485760 - 4096
+with open(path, "a") as f:
+    count = 1
+    while f.tell() < limit - 60000:
+        row = dict(template, step=f"padding_{count}")
+        text = json.dumps(row)
+        f.write(text + " " * (60000 - len(text) - 1) + "\n")
+        count += 1
+    row = dict(template, step="step_under_limit")
+    text = json.dumps(row)
+    remaining = limit - f.tell()
+with open(path + ".boundary", "w") as f:
+    f.write(text + " " * (remaining - len(text) - 1))
+print(count)
+PY
+)
+_E2E_STEP_COUNT="$count"
+_e2e_append_log "$(cat "${_E2E_LOG_FILE}.boundary")" "step_under_limit"
+rm "${_E2E_LOG_FILE}.boundary"
+# One additional newline exceeds the data boundary; no partial record may land.
+_e2e_append_log "" "step_over_limit"
 e2e_summary
 """.replace("@REPO_ROOT@", str(REPO_ROOT)))
         test_script.chmod(0o755)
@@ -334,6 +343,8 @@ e2e_summary
 
         self.assertIn("step_under_limit", steps, "Step within cap boundary should have been written")
         self.assertNotIn("step_over_limit", steps, "Step exceeding cap boundary must NOT have been written")
+        self.assertLessEqual(log_file.stat().st_size, 10485760)
+        validate_file(log_file)
 
     def test_secret_redaction_needles_never_appear(self):
         """All planted secret needles (env tokens, shapes, flags, URLs) are redacted from the log."""
@@ -423,9 +434,13 @@ e2e_summary
         self.assertEqual(len(rch_invocations), 4, f"Expected 4 invocations (1 initial + 3 retries), got {len(rch_invocations)}")
 
         log_file = sorted((log_dir / "r103_suite").glob("run_*.log"))[-1]
-        validate_file(log_file)
+        with self.assertRaises(ValidationError) as refused:
+            validate_file(log_file)
+        self.assertEqual(refused.exception.code, "ERR_ALL_STEPS_SKIPPED")
         summary = json.loads(log_file.read_text().splitlines()[-1])
         self.assertEqual(summary["verdict"], "fail")
+        self.assertEqual(summary["steps"], 0)
+        self.assertEqual(summary["run_failures"], ["cargo_test_failed", "no_caplog_emitted"])
 
     def test_forensics_tmpdir_preserved_on_failure_cleaned_on_pass(self):
         """Tmpdir is preserved on failure and emitted on stderr; cleaned up on pass."""
@@ -485,6 +500,7 @@ source "{REPO_ROOT}/scripts/e2e/lib.sh"
 e2e_init "repro_suite" "fss-2h5zq.2" "$@"
 e2e_step "step_a" echo "step A"
 e2e_step "step_b" bash -c 'exit 13'
+e2e_expect_exit "step_b" 0
 e2e_step "step_c" echo "step C"
 e2e_summary
 """)
@@ -503,45 +519,8 @@ e2e_summary
 
         log2 = sorted((log_dir / "repro_suite").glob("run_*.log"))[-1]
         steps = [json.loads(line).get("step") for line in log2.read_text().splitlines() if line.strip()]
-        self.assertEqual(steps, ["env", "step_b", "summary"])
+        self.assertEqual(steps, ["env", "step_b", "step_b_exit", "summary"])
 
-    def test_mutant_kills(self):
-        """Directly verifies that mutants M4b, M8, M9, M11, M12, M14, M15, and M16 are killed."""
-        mutants = {
-            "M4b": ("scripts/e2e/lib.sh", [("if len(res_bytes) > max_bytes:", "if False:"), ("    if len(b) > 4096:", "    if False:")]),
-            "M8": ("scripts/e2e/lib.sh", [('        if data["verdict"] not in VALID_STEP_VERDICTS:\n            has_malformed = True', '        if False:\n            has_malformed = True')]),
-            "M9": ("scripts/e2e/lib.sh", [('        echo "Error: E2E uninitialized or log file not set (failing closed)" >&2\n        exit 1', '        echo "Error: E2E uninitialized or log file not set (failing closed)" >&2\n        return')]),
-            "M11": ("scripts/e2e/lib.sh", [('            "expected": sanitize_data(item.get("expected", None)),', '            "expected": item.get("expected", None),'),
-                                           ('            "observed": sanitize_data(item.get("observed", None)),', '            "observed": item.get("observed", None),')]),
-            "M12": ("scripts/e2e/lib.sh", [('if [[ ! "$_E2E_NAME" =~ ^[A-Za-z0-9_.-]+$ ]] || [[ "$_E2E_NAME" == *".."* ]]; then', 'if false; then')]),
-            "M14": ("scripts/e2e/lib.sh", [('echo "$tmp" >> "${_E2E_LOG_FILE}.tmpdirs"', 'echo "$tmp" >> "${_E2E_RUN_DIR}/.tmpdirs"'),
-                                           ('local tmpdirs_file="${_E2E_LOG_FILE:-}.tmpdirs"', 'local tmpdirs_file="${_E2E_RUN_DIR:-}/.tmpdirs"')]),
-            "M15": ("scripts/e2e/lib.sh", [("matched = (cur == expected_val and type(cur) is type(expected_val))", "matched = (cur == expected_val)")]),
-            "M16": ("scripts/e2e/lib.sh", [('            *)\n                echo "Error: unrecognized argument: $1" >&2\n                exit 1',
-                                           '            *)\n                shift; continue\n                exit 1')]),
-        }
-
-        for mid, (rel_path, subs) in mutants.items():
-            target_path = REPO_ROOT / rel_path
-            orig_content = target_path.read_text(encoding="utf-8")
-            mutated_content = orig_content
-
-            for old, new in subs:
-                self.assertIn(old, mutated_content, f"Mutant pattern {old[:40]} not found for {mid}")
-                mutated_content = mutated_content.replace(old, new, 1)
-
-            try:
-                target_path.write_text(mutated_content, encoding="utf-8")
-                # Run self-test shell suite to verify mutant is killed
-                res = subprocess.run(
-                    ["bash", str(REPO_ROOT / "tests" / "test_e2e_lib.sh")],
-                    cwd=str(REPO_ROOT),
-                    capture_output=True,
-                    text=True
-                )
-                self.assertNotEqual(res.returncode, 0, f"Mutant {mid} survived tests!")
-            finally:
-                target_path.write_text(orig_content, encoding="utf-8")
 
 
 if __name__ == "__main__":

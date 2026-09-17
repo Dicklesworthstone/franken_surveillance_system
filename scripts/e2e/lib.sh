@@ -22,6 +22,9 @@ _E2E_LOG_FILE=""
 _E2E_STEP_COUNT=0
 _E2E_LAST_STEP=""
 _E2E_FAILURES=()
+_E2E_RUN_FAILURES=()
+_E2E_CARGO_USED=0
+_E2E_CARGO_EXIT=0
 _E2E_SKIPPED=()
 _E2E_TMPDIRS=()
 _E2E_LIST=0
@@ -138,7 +141,7 @@ _e2e_append_log() {
     local line_bytes
     line_bytes=$(printf "%s\n" "$line" | wc -c)
 
-    # Reserve 4096 bytes buffer for the closing summary record
+    # Reserve 4096 bytes for the closing summary record.
     if (( cur_size + line_bytes > _E2E_MAX_LOG_BYTES - 4096 )); then
         if [[ "$_E2E_CAP_EXCEEDED" -eq 0 ]]; then
             _E2E_CAP_EXCEEDED=1
@@ -174,7 +177,7 @@ env_secrets.sort(key=len, reverse=True)
 
 # Known token shape patterns
 token_patterns = [
-    re.compile(r"ghp_[A-Za-z0-9_]{16,}"),
+    re.compile(r"ghp_[A-Za-z0-9_]{8,}"),
     re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
     re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}"),
     re.compile(r"sk-[A-Za-z0-9_\-]{16,}"),
@@ -262,6 +265,9 @@ e2e_init() {
     _E2E_STEP_COUNT=0
     _E2E_LAST_STEP=""
     _E2E_FAILURES=()
+    _E2E_RUN_FAILURES=()
+    _E2E_CARGO_USED=0
+    _E2E_CARGO_EXIT=0
     _E2E_SKIPPED=()
     _E2E_TMPDIRS=()
     _E2E_SEEN_STEPS=()
@@ -380,7 +386,7 @@ _e2e_trap_exit() {
         _E2E_FAILURES+=("$blamed_step")
     fi
     if [[ -n "${_E2E_RUN_DIR:-}" && -d "${_E2E_RUN_DIR:-}" ]]; then
-        rm -f "${_E2E_RUN_DIR}"/stdout_* "${_E2E_RUN_DIR}"/stderr_* "${_E2E_RUN_DIR}"/cargo_test_* 2>/dev/null || true
+        rm -f "${_E2E_RUN_DIR}"/stdout_* "${_E2E_RUN_DIR}"/stderr_* "${_E2E_RUN_DIR}"/cargo_test_* "${_E2E_RUN_DIR}"/cargo_stdout.* 2>/dev/null || true
     fi
     e2e_summary
 }
@@ -461,7 +467,7 @@ for k, v in os.environ.items():
 env_secrets.sort(key=len, reverse=True)
 
 token_patterns = [
-    re.compile(r"ghp_[A-Za-z0-9_]{16,}"),
+    re.compile(r"ghp_[A-Za-z0-9_]{8,}"),
     re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
     re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}"),
     re.compile(r"sk-[A-Za-z0-9_\-]{16,}"),
@@ -508,7 +514,6 @@ rec = {
 }
 print(json.dumps(rec))
 ' "$ts" "$_E2E_SCRIPT_NAME" "$_E2E_BEAD" "$record_step" "$cmd_str" "$cmd_exit" "$duration_ms" "$stdout_sha256" "$stdout_excerpt" "$stderr_excerpt" "$repro_cmd")
-
     rm -f "$stdout_file" "$stderr_file"
     _E2E_CURRENT_RUNNING_STEP=""
     _e2e_append_log "$rec_json" "$record_step"
@@ -562,7 +567,7 @@ for k, v in os.environ.items():
 env_secrets.sort(key=len, reverse=True)
 
 token_patterns = [
-    re.compile(r"ghp_[A-Za-z0-9_]{16,}"),
+    re.compile(r"ghp_[A-Za-z0-9_]{8,}"),
     re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
     re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}"),
     re.compile(r"sk-[A-Za-z0-9_\-]{16,}"),
@@ -690,7 +695,7 @@ for k, v in os.environ.items():
 env_secrets.sort(key=len, reverse=True)
 
 token_patterns = [
-    re.compile(r"ghp_[A-Za-z0-9_]{16,}"),
+    re.compile(r"ghp_[A-Za-z0-9_]{8,}"),
     re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
     re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}"),
     re.compile(r"sk-[A-Za-z0-9_\-]{16,}"),
@@ -800,7 +805,7 @@ for k, v in os.environ.items():
 env_secrets.sort(key=len, reverse=True)
 
 token_patterns = [
-    re.compile(r"ghp_[A-Za-z0-9_]{16,}"),
+    re.compile(r"ghp_[A-Za-z0-9_]{8,}"),
     re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
     re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}"),
     re.compile(r"sk-[A-Za-z0-9_\-]{16,}"),
@@ -919,7 +924,7 @@ for k, v in os.environ.items():
 env_secrets.sort(key=len, reverse=True)
 
 token_patterns = [
-    re.compile(r"ghp_[A-Za-z0-9_]{16,}"),
+    re.compile(r"ghp_[A-Za-z0-9_]{8,}"),
     re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
     re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}"),
     re.compile(r"sk-[A-Za-z0-9_\-]{16,}"),
@@ -1016,7 +1021,7 @@ for k, v in os.environ.items():
 env_secrets.sort(key=len, reverse=True)
 
 token_patterns = [
-    re.compile(r"ghp_[A-Za-z0-9_]{16,}"),
+    re.compile(r"ghp_[A-Za-z0-9_]{8,}"),
     re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
     re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}"),
     re.compile(r"sk-[A-Za-z0-9_\-]{16,}"),
@@ -1067,7 +1072,7 @@ for k, v in os.environ.items():
 env_secrets.sort(key=len, reverse=True)
 
 token_patterns = [
-    re.compile(r"ghp_[A-Za-z0-9_]{16,}"),
+    re.compile(r"ghp_[A-Za-z0-9_]{8,}"),
     re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
     re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}"),
     re.compile(r"sk-[A-Za-z0-9_\-]{16,}"),
@@ -1182,9 +1187,13 @@ e2e_cargo_test() {
     if [[ $should_run -eq 0 ]]; then
         return 0
     fi
+    if [[ -z "$filter" && -n "${_E2E_ONLY:-}" && "$target" != $_E2E_ONLY ]]; then
+        filter="$_E2E_ONLY"
+    fi
+    _E2E_CARGO_USED=1
 
     _E2E_LAST_STEP="$target"
-    _E2E_SEEN_STEPS["$target"]=1
+    _E2E_CURRENT_RUNNING_STEP="$target"
 
     if [[ -z "${_E2E_RUN_DIR:-}" || ! -d "$_E2E_RUN_DIR" ]]; then
         echo "Error: E2E uninitialized; _E2E_RUN_DIR is not set" >&2
@@ -1192,9 +1201,11 @@ e2e_cargo_test() {
     fi
 
     local stdout_file
-    stdout_file=$(mktemp "${_E2E_RUN_DIR}/cargo_test_stdout_XXXXXX")
+    stdout_file=$(mktemp "${_E2E_RUN_DIR}/cargo_stdout.XXXXXX")
     local stderr_file
     stderr_file=$(mktemp "${_E2E_RUN_DIR}/cargo_test_stderr_XXXXXX")
+    local parsed_file
+    parsed_file=$(mktemp "${_E2E_RUN_DIR}/cargo_test_parsed_XXXXXX")
 
     local start_ms
     start_ms=$(_e2e_now_ms)
@@ -1222,6 +1233,9 @@ e2e_cargo_test() {
         fi
         break
     done
+    if [[ "$test_exit" -ne 0 ]]; then
+        _E2E_CARGO_EXIT="$test_exit"
+    fi
 
     local end_ms
     end_ms=$(_e2e_now_ms)
@@ -1237,21 +1251,12 @@ e2e_cargo_test() {
     local ts
     ts=$(_e2e_iso8601)
 
-    local current_caplog_step=""
-    # Ingest CAPLOG lines in current shell via process substitution
-    while IFS= read -r line; do
-        if [[ "$line" =~ ^__FAIL__:\ (.*)$ ]]; then
-            _E2E_FAILURES+=("${BASH_REMATCH[1]}")
-        elif [[ "$line" =~ ^__STEP__:\ (.*)$ ]]; then
-            current_caplog_step="${BASH_REMATCH[1]}"
-            _E2E_STEP_TARGET["$current_caplog_step"]="$target"
-        elif [[ -n "$line" ]]; then
-            _e2e_append_log "$line" "${current_caplog_step:-$target}"
-        fi
-    done < <(python3 -c '
+    local py_rc=0
+    python3 -c '
 import os, sys, re, json
 
 stdout_path, stderr_path, crate, target, test_exit_str, script, bead, duration_ms_str, repro, cmd_display, stdout_sha256, stdout_excerpt, stderr_excerpt, ts = sys.argv[1:15]
+log_path, script_path, only_filter = sys.argv[15:18]
 
 def safe_int(val, default=0):
     if val is None or isinstance(val, bool):
@@ -1274,7 +1279,7 @@ for k, v in os.environ.items():
 env_secrets.sort(key=len, reverse=True)
 
 token_patterns = [
-    re.compile(r"ghp_[A-Za-z0-9_]{16,}"),
+    re.compile(r"ghp_[A-Za-z0-9_]{8,}"),
     re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
     re.compile(r"(?:AKIA|ASIA)[0-9A-Z]{16}"),
     re.compile(r"sk-[A-Za-z0-9_\-]{16,}"),
@@ -1311,141 +1316,132 @@ def sanitize_data(data):
         return [sanitize_data(x) for x in data]
     return data
 
-ansi_re = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+ansi_re = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+with open(log_path, encoding="utf-8") as existing:
+    used_ids = {json.loads(line)["step"] for line in existing}
+seen_caplog_steps = set(used_ids)
+emitted = 0
 
-with open(stdout_path, "r", encoding="utf-8", errors="replace") as f:
-    raw_stdout = f.read()
+def unique_id(step):
+    candidate = step
+    suffix = 1
+    while candidate in used_ids:
+        candidate = f"{step}_{suffix}"
+        suffix += 1
+    used_ids.add(candidate)
+    return candidate
 
-clean_stdout = ansi_re.sub("", raw_stdout)
-lines = clean_stdout.splitlines()
-
-caplog_records = []
-has_malformed = False
-
-VALID_STEP_VERDICTS = {"ran", "pass", "fail", "skip"}
-
-seen_caplog_steps = set()
-for line in lines:
-    sline = line.strip()
-    if not sline.startswith("CAPLOG "):
-        continue
-    payload = sline[7:].strip()
-    try:
-        data = json.loads(payload)
-        if not isinstance(data, dict) or "step" not in data or "verdict" not in data:
-            has_malformed = True
-            break
-        if data["verdict"] not in VALID_STEP_VERDICTS:
-            has_malformed = True
-            break
-        st = data["step"]
-        if not isinstance(st, str) or not st or st in seen_caplog_steps or st in ("summary", "env"):
-            has_malformed = True
-            break
-        seen_caplog_steps.add(st)
-        caplog_records.append(data)
-    except Exception:
-        has_malformed = True
-        break
-
-if test_exit != 0 or len(caplog_records) == 0 or has_malformed:
-    fail_reason = f"cargo test failed (exit {test_exit})"
-    if has_malformed:
-        fail_reason = "malformed CAPLOG line observed"
-    elif len(caplog_records) == 0:
-        fail_reason = "no CAPLOG line observed"
-
+def emit(item, step, verdict, reason=None):
+    step = unique_id(sanitize(step))
     rec = {
-        "ts": ts,
-        "script": script,
-        "bead": bead,
-        "step": target,
-        "cmd": sanitize(cmd_display),
-        "exit": test_exit if test_exit != 0 else 1,
-        "duration_ms": duration_ms,
-        "expected": "valid CAPLOG line and exit 0",
-        "observed": fail_reason,
-        "digest": stdout_sha256 if stdout_sha256 else None,
-        "stdout_sha256": stdout_sha256,
-        "stdout_excerpt": sanitize(stdout_excerpt),
-        "stderr_excerpt": sanitize(stderr_excerpt),
-        "verdict": "fail",
-        "repro": sanitize(repro)
+        "ts": ts, "script": script, "bead": bead, "step": step,
+        "cmd": sanitize_data(item.get("cmd", cmd_display)),
+        "exit": safe_int(item.get("exit"), 0 if verdict == "pass" else 1),
+        "duration_ms": max(0, safe_int(item.get("duration_ms"), duration_ms)),
+        "expected": sanitize_data(item.get("expected")),
+        "observed": sanitize_data(reason if reason is not None else item.get("observed")),
+        "digest": stdout_sha256 or None, "stdout_sha256": stdout_sha256,
+        "stdout_excerpt": sanitize(stdout_excerpt), "stderr_excerpt": sanitize(stderr_excerpt),
+        "verdict": verdict,
+        "repro": sanitize(repro if reason is not None else f"{script_path} --only {step}")
     }
-    print(f"__STEP__: {target}")
+    print(f"__STEP__: {step}")
     print(json.dumps(rec))
-    print(f"__FAIL__: {target}")
-else:
-    for item in caplog_records:
-        st_name = sanitize(item.get("step", target))
-        v = item.get("verdict", "pass")
-        def_exit = 0 if v == "pass" else 1
-        item_exit = safe_int(item.get("exit", def_exit), default=def_exit)
-        item_duration = max(0, safe_int(item.get("duration_ms", duration_ms), default=duration_ms))
+    if verdict == "fail":
+        print(f"__FAIL__: {step}")
+    elif verdict == "skip":
+        skip_reason = item.get("reason", item.get("observed", "skipped"))
+        if not isinstance(skip_reason, str):
+            skip_reason = json.dumps(skip_reason, sort_keys=True)
+        print("__SKIP__: " + json.dumps({"step": step, "reason": sanitize(skip_reason)}))
 
-        raw_cmd = item.get("cmd", cmd_display)
-        if isinstance(raw_cmd, list):
-            cmd_val = [sanitize_data(x) for x in raw_cmd]
+def object_pairs(pairs):
+    obj = {}
+    for key, value in pairs:
+        if key in obj:
+            raise ValueError("duplicate JSON key")
+        obj[key] = value
+    return obj
+
+def invalid_constant(value):
+    raise ValueError(f"invalid JSON constant: {value}")
+
+with open(stdout_path, encoding="utf-8", errors="replace") as output:
+    for raw_line in output:
+        line = ansi_re.sub("", raw_line).strip()
+        marker = re.search(r"\bCAPLOG(?:\s+|$)", line)
+        if marker is None:
+            continue
+        emitted += 1
+        try:
+            item = json.loads(line[marker.end():], object_pairs_hook=object_pairs,
+                              parse_constant=invalid_constant)
+            if not isinstance(item, dict):
+                raise ValueError("CAPLOG payload is not an object")
+        except (ValueError, RecursionError):
+            emit({}, "malformed_caplog", "fail", "malformed CAPLOG line observed")
+            continue
+        step = item.get("step")
+        if not isinstance(step, str) or not step.strip():
+            emit(item, "missing_step", "fail", "missing or invalid step key")
+            continue
+        step = step.strip()
+        if step in ("env", "summary") or any(ord(c) < 32 for c in step):
+            emit(item, "malformed_caplog", "fail", "invalid CAPLOG step name")
+            continue
+        if step in seen_caplog_steps:
+            emit(item, f"{step}:duplicate_step", "fail", f"duplicate step name: {step}")
+            continue
+        seen_caplog_steps.add(step)
+        verdict = item.get("verdict")
+        if verdict is None:
+            emit(item, f"{step}:missing_verdict", "fail", "missing verdict key")
+        elif verdict not in ("pass", "fail", "skip"):
+            emit(item, f"{step}:invalid_verdict", "fail", "invalid CAPLOG verdict")
+        elif verdict == "pass" and item.get("expected") is not None and item.get("observed") is not None and item["expected"] != item["observed"]:
+            emit(item, f"{step}:expected_observed_mismatch", "fail")
         else:
-            cmd_val = sanitize_data(raw_cmd)
+            emit(item, step, verdict)
 
-        raw_se = item.get("stdout_excerpt", stdout_excerpt)
-        if isinstance(raw_se, list):
-            raw_se = "\n".join(str(x) for x in raw_se)
-        se_val = sanitize(raw_se)
+if not only_filter:
+    for step in dict.fromkeys(s.strip() for s in os.environ.get("FSS_EXPECTED_ROSTER", "").split(",") if s.strip()):
+        if step not in seen_caplog_steps:
+            emit({}, f"{step}:missing_from_roster", "fail", "step missing from execution output")
+if test_exit != 0:
+    print("__RUN_FAIL__: cargo_test_failed")
+if emitted == 0:
+    print("__RUN_FAIL__: no_caplog_emitted")
+' "$stdout_file" "$stderr_file" "$crate" "$target" "$test_exit" "$_E2E_SCRIPT_NAME" "$_E2E_BEAD" "$duration_ms" "$repro_cmd" "$cmd_display" "$stdout_sha256" "$stdout_excerpt" "$stderr_excerpt" "$ts" "$_E2E_LOG_FILE" "$_E2E_SCRIPT_PATH" "$filter" > "$parsed_file" || py_rc=$?
 
-        raw_sde = item.get("stderr_excerpt", stderr_excerpt)
-        if isinstance(raw_sde, list):
-            raw_sde = "\n".join(str(x) for x in raw_sde)
-        sde_val = sanitize(raw_sde)
-
-        raw_digest = item.get("digest")
-        digest_val = None
-        if raw_digest is not None and isinstance(raw_digest, str):
-            san_digest = sanitize(raw_digest)
-            if re.match(r"^[0-9a-fA-F]{64}$", san_digest):
-                digest_val = san_digest
-        if digest_val is None and stdout_sha256 and re.match(r"^[0-9a-fA-F]{64}$", stdout_sha256):
-            digest_val = stdout_sha256
-
-        rec = {
-            "ts": sanitize(item.get("ts", ts)),
-            "script": sanitize(item.get("script", script)),
-            "bead": sanitize(item.get("bead", bead)),
-            "step": st_name,
-            "cmd": cmd_val,
-            "exit": item_exit,
-            "duration_ms": item_duration,
-            "expected": sanitize_data(item.get("expected", None)),
-            "observed": sanitize_data(item.get("observed", None)),
-            "digest": digest_val,
-            "stdout_sha256": sanitize(item.get("stdout_sha256", stdout_sha256)),
-            "stdout_excerpt": se_val,
-            "stderr_excerpt": sde_val,
-            "verdict": v,
-            "repro": sanitize(item.get("repro", repro))
-        }
-        print(f"__STEP__: {st_name}")
-        print(json.dumps(rec))
-        if v == "fail":
-            print(f"__FAIL__: {st_name}")
-' "$stdout_file" "$stderr_file" "$crate" "$target" "$test_exit" "$_E2E_SCRIPT_NAME" "$_E2E_BEAD" "$duration_ms" "$repro_cmd" "$cmd_display" "$stdout_sha256" "$stdout_excerpt" "$stderr_excerpt" "$ts")
-
-    rm -f "$stdout_file" "$stderr_file"
-
-    local py_rc=0
-    wait $! || py_rc=$?
-    if [[ $py_rc -ne 0 ]]; then
-        if ! [[ " ${_E2E_FAILURES[*]:-} " =~ " ${target} " ]]; then
-            _E2E_FAILURES+=("$target")
-        fi
+    local current_caplog_step="" line
+    if [[ "$py_rc" -eq 0 ]]; then
+        while IFS= read -r line; do
+            if [[ "$line" =~ ^__FAIL__:\ (.*)$ ]]; then
+                _E2E_FAILURES+=("${BASH_REMATCH[1]}")
+            elif [[ "$line" =~ ^__RUN_FAIL__:\ (.*)$ ]]; then
+                _E2E_RUN_FAILURES+=("${BASH_REMATCH[1]}")
+            elif [[ "$line" =~ ^__STEP__:\ (.*)$ ]]; then
+                current_caplog_step="${BASH_REMATCH[1]}"
+                _E2E_STEP_TARGET["$current_caplog_step"]="$target"
+                _E2E_SEEN_STEPS["$current_caplog_step"]=1
+            elif [[ "$line" =~ ^__SKIP__:\ (.*)$ ]]; then
+                _E2E_SKIPPED+=("${BASH_REMATCH[1]}")
+            elif [[ -n "$line" ]]; then
+                _e2e_append_log "$line" "$current_caplog_step"
+            fi
+        done < "$parsed_file"
+    else
+        _E2E_RUN_FAILURES+=("caplog_parser_failed")
     fi
+    rm -f "$stdout_file" "$stderr_file" "$parsed_file"
+    _E2E_CURRENT_RUNNING_STEP=""
 }
 
 _e2e_write_summary_record() {
     _E2E_SUMMARY_WRITTEN=1
     local verdict="$1"
-    shift || true
+    local passed="$2" step_failures="$3"
+    shift 3
     local kept_tmpdirs=("$@")
     local end_ms
     end_ms=$(_e2e_now_ms)
@@ -1463,6 +1459,8 @@ _e2e_write_summary_record() {
     if [[ ${#_E2E_FAILURES[@]} -gt 0 ]]; then
         failures_json=$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1:]))' "${_E2E_FAILURES[@]}")
     fi
+    local run_failures_json
+    run_failures_json=$(python3 -c 'import json, sys; print(json.dumps(list(dict.fromkeys(sys.argv[1:]))))' "${_E2E_RUN_FAILURES[@]}")
 
     local skipped_json="[]"
     if [[ ${#_E2E_SKIPPED[@]} -gt 0 ]]; then
@@ -1475,7 +1473,9 @@ _e2e_write_summary_record() {
     fi
 
     local repro_cmd="${_E2E_SCRIPT_PATH}"
-    if [[ "$verdict" == "fail" && ${#_E2E_FAILURES[@]} -gt 0 ]]; then
+    if [[ -n "${_E2E_ONLY:-}" ]]; then
+        repro_cmd="${_E2E_SCRIPT_PATH} --only ${_E2E_ONLY}"
+    elif [[ "${_E2E_CARGO_USED:-0}" -eq 0 && "$verdict" == "fail" && ${#_E2E_FAILURES[@]} -gt 0 ]]; then
         local real_steps=()
         for f in "${_E2E_FAILURES[@]}"; do
             local rf="${f%_exit*}"
@@ -1496,11 +1496,18 @@ _e2e_write_summary_record() {
 import json, sys
 
 verdict, steps, failures_raw, skipped_raw, total_ms, log_path, repro, kept_tmpdirs_raw = sys.argv[1:9]
+passed, step_failures, run_failures_raw = sys.argv[9:12]
+failures = json.loads(failures_raw)
+run_failures = json.loads(run_failures_raw)
 rec = {
     "step": "summary",
     "verdict": verdict,
     "steps": int(steps),
-    "failures": json.loads(failures_raw),
+    "passed": int(passed),
+    "step_failures": int(step_failures),
+    "fail_count": len(failures) + len(run_failures),
+    "failures": failures,
+    "run_failures": run_failures,
     "skipped": json.loads(skipped_raw),
     "duration_ms": max(0, int(total_ms)),
     "log_path": log_path,
@@ -1508,7 +1515,7 @@ rec = {
     "preserved_tmpdirs": json.loads(kept_tmpdirs_raw)
 }
 print(json.dumps(rec))
-' "$verdict" "$_E2E_STEP_COUNT" "$failures_json" "$skipped_json" "$total_ms" "${_E2E_LOG_FILE:-}" "$repro_cmd" "$kept_tmpdirs_json")
+' "$verdict" "$_E2E_STEP_COUNT" "$failures_json" "$skipped_json" "$total_ms" "${_E2E_LOG_FILE:-}" "$repro_cmd" "$kept_tmpdirs_json" "$passed" "$step_failures" "$run_failures_json")
 
     if [[ -n "${_E2E_LOG_FILE:-}" ]]; then
         printf "%s\n" "$summary_json" >> "$_E2E_LOG_FILE"
@@ -1529,8 +1536,25 @@ e2e_summary() {
         return 0
     fi
 
+    local counts passed step_failures skip_count record_count
+    counts=$(python3 -c '
+import json, sys
+counts = {"pass": 0, "fail": 0, "skip": 0, "ran": 0}
+with open(sys.argv[1], encoding="utf-8") as log:
+    for line in log:
+        record = json.loads(line)
+        if record["step"] != "env":
+            counts[record["verdict"]] += 1
+print(counts["pass"], counts["fail"], counts["skip"], sum(counts.values()))
+' "$_E2E_LOG_FILE")
+    read -r passed step_failures skip_count record_count <<< "$counts"
+    if [[ "$record_count" -gt 0 && "$skip_count" -eq "$record_count" ]]; then
+        _E2E_RUN_FAILURES+=("all_steps_skipped")
+    elif [[ "$record_count" -eq 0 && "${_E2E_CARGO_USED:-0}" -eq 0 ]]; then
+        _E2E_RUN_FAILURES+=("no_steps_executed")
+    fi
     local verdict="pass"
-    if [[ ${#_E2E_FAILURES[@]} -gt 0 || "${_E2E_CAP_EXCEEDED:-0}" -eq 1 ]]; then
+    if [[ ${#_E2E_FAILURES[@]} -gt 0 || ${#_E2E_RUN_FAILURES[@]} -gt 0 || "$step_failures" -gt 0 || "${_E2E_CAP_EXCEEDED:-0}" -eq 1 ]]; then
         verdict="fail"
     fi
 
@@ -1555,14 +1579,15 @@ e2e_summary() {
         done
     fi
 
-    _e2e_write_summary_record "$verdict" "${all_tmpdirs[@]}"
+    _e2e_write_summary_record "$verdict" "$passed" "$step_failures" "${all_tmpdirs[@]}"
 
     # Validate log file using validate_log.py
+    local validation_rc=0
     if [[ -f "${_E2E_LOG_FILE:-}" ]]; then
-        python3 "${_E2E_LIB_DIR}/validate_log.py" "$_E2E_LOG_FILE"
+        python3 "${_E2E_LIB_DIR}/validate_log.py" "$_E2E_LOG_FILE" || validation_rc=$?
     fi
 
-    if [[ "$verdict" == "pass" ]]; then
+    if [[ "$verdict" == "pass" && "$validation_rc" -eq 0 ]]; then
         for tmp in "${all_tmpdirs[@]}"; do
             rm -rf "$tmp"
         done
@@ -1570,14 +1595,36 @@ e2e_summary() {
     fi
 
     if [[ -n "${_E2E_RUN_DIR:-}" && -d "${_E2E_RUN_DIR:-}" ]]; then
-        rm -f "${_E2E_RUN_DIR}"/stdout_* "${_E2E_RUN_DIR}"/stderr_* "${_E2E_RUN_DIR}"/cargo_test_* 2>/dev/null || true
+        rm -f "${_E2E_RUN_DIR}"/stdout_* "${_E2E_RUN_DIR}"/stderr_* "${_E2E_RUN_DIR}"/cargo_test_* "${_E2E_RUN_DIR}"/cargo_stdout.* 2>/dev/null || true
     fi
 
     if [[ -n "${_E2E_LOG_FILE:-}" ]]; then
         echo "E2E Log: ${_E2E_LOG_FILE}"
     fi
+    if [[ "${_E2E_CARGO_USED:-0}" -eq 1 ]]; then
+        local cargo_exit="${_E2E_CARGO_EXIT:-0}"
+        if [[ "$validation_rc" -ne 0 && "$verdict" == "pass" ]]; then
+            echo "fail summary: log validation failed"
+        elif [[ "$verdict" == "pass" ]]; then
+            if [[ "$skip_count" -gt 0 ]]; then
+                echo "pass summary: ${passed} steps passed, ${skip_count} skipped, 0 failures"
+            else
+                echo "pass summary: ${passed} steps passed, 0 failures"
+            fi
+        elif [[ "$step_failures" -eq 0 && "$cargo_exit" -ne 0 ]]; then
+            echo "fail summary: cargo exit ${cargo_exit} with 0 failed steps (${passed} passed, ${skip_count} skipped)"
+        elif [[ "$step_failures" -eq 0 && "$record_count" -eq 0 ]]; then
+            echo "fail summary: no CAPLOG records emitted (cargo exit ${cargo_exit})"
+        elif [[ "$step_failures" -eq 0 && "$skip_count" -eq "$record_count" ]]; then
+            echo "fail summary: all ${record_count} steps skipped"
+        elif [[ "$step_failures" -gt 0 ]]; then
+            echo "fail summary: ${step_failures} steps failed (cargo exit ${cargo_exit})"
+        else
+            echo "fail summary: runner failure (${passed} passed, ${skip_count} skipped)"
+        fi
+    fi
 
-    if [[ "$verdict" == "pass" ]]; then
+    if [[ "$verdict" == "pass" && "$validation_rc" -eq 0 ]]; then
         exit 0
     else
         exit 1

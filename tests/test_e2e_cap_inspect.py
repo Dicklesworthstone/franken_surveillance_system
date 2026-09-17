@@ -181,11 +181,9 @@ class TestE2eCapInspect(unittest.TestCase):
         self.assertIn(f"E2E Log: {self.log_dir / 'cap_inspect' / 'run_0001.log'}", proc.stdout)
 
     def test_skip_never_passes_and_keeps_its_reason(self) -> None:
-        # A skip record is never relabelled a pass: the step keeps verdict "skip" with the reason
-        # the test observed, and the run fails log validation even when every other step passed.
+        # Mixed success and skip retains the skip reason without claiming a pass for it.
         proc = self.run_harness(mode="pass_with_skip")
-        self.assertEqual(proc.returncode, 1)
-        self.assertIn("ERR_SUMMARY_INCONSISTENCY", proc.stdout + proc.stderr)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
         records = self.records()
         self.assertEqual(len(records), 1 + 2 * len(TARGETS) + 1)
         self.assertEqual(
@@ -196,6 +194,8 @@ class TestE2eCapInspect(unittest.TestCase):
             if record["verdict"] == "skip":
                 self.assertEqual(record["observed"], {"skip_reason": "privileged: create_new succeeded"})
         self.assertEqual(records[-1]["verdict"], "pass")
+        self.assertEqual([item["step"] for item in records[-1]["skipped"]],
+                         [f"{target}_s" for target in TARGET_NAMES])
 
     def test_all_skip_fails_closed(self) -> None:
         proc = self.run_harness(mode="all_skip")
@@ -220,20 +220,20 @@ class TestE2eCapInspect(unittest.TestCase):
         self.assertEqual(proc.returncode, 1)
         records = self.records()
         self.assertEqual(len(records), 1 + len(TARGETS) + 1)
-        self.assertEqual(self.step_records(records), [(target, "fail") for target in TARGET_NAMES])
+        self.assertEqual(self.step_records(records), [(f"{target}_a", "pass") for target in TARGET_NAMES])
         for record in records[1:-1]:
-            self.assertEqual(record["exit"], 101)
-            self.assertEqual(record["observed"], "cargo test failed (exit 101)")
-        self.assertEqual(records[-1]["failures"], TARGET_NAMES)
+            self.assertEqual(record["exit"], 0)
+            self.assertEqual(record["observed"], {"count": 1})
+        self.assertEqual(records[-1]["failures"], [])
+        self.assertEqual(records[-1]["run_failures"], ["cargo_test_failed"])
 
     def test_no_caplog_fails_closed(self) -> None:
         proc = self.run_harness(mode="nocaplog")
         self.assertEqual(proc.returncode, 1)
         records = self.records()
-        self.assertEqual(len(records), 1 + len(TARGETS) + 1)
-        self.assertEqual(self.step_records(records), [(target, "fail") for target in TARGET_NAMES])
-        for record in records[1:-1]:
-            self.assertEqual(record["observed"], "no CAPLOG line observed")
+        self.assertEqual(len(records), 2)
+        self.assertEqual(self.step_records(records), [])
+        self.assertEqual(records[-1]["run_failures"], ["no_caplog_emitted"])
         self.assertEqual(records[-1]["verdict"], "fail")
 
     def test_e103_retry_success(self) -> None:
