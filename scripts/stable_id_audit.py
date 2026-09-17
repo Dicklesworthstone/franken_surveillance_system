@@ -340,6 +340,20 @@ def _is_exact_family_token(token: str) -> bool:
     """True for tokens whose leading segment is exactly (case-sensitively) a normative family."""
     return token.split("-")[0] in NORMATIVE_FAMILIES
 
+def _is_candidate_identifier(token: str) -> bool:
+    """True when a hyphenated token is ID-like enough to warrant strict grammar validation.
+
+    Uppercase-leading tokens are ID-like even with an unknown family (fail closed with
+    ERR_UNKNOWN_FAMILY). Lowercase tokens are prose unless their leading alpha run names a
+    normative family when upper-cased ("goal-001" is a malformed GOAL reference, while
+    "first-240" and "Draft-3" are ordinary prose).
+    """
+    match = FAMILY_SHAPED_RE.match(token)
+    if match is None:
+        return False
+    alpha = match.group("alpha")
+    return alpha.isupper() or alpha.upper() in NORMATIVE_FAMILIES
+
 
 def _definition_candidate(match: re.Match[str]) -> str | None:
     groups = match.groupdict()
@@ -516,6 +530,10 @@ def _scan_markdown(text: str, source_name: str) -> MarkdownScan:
             token = m.group(1)
             prefix = token.split("-")[0]
             if prefix in EXCLUDED_PROSE_PREFIXES and prefix not in NORMATIVE_FAMILIES:
+                continue
+            # Ordinary lowercase prose phrases (e.g. "first-240", "Draft-3") are not
+            # stable-ID references; only candidate identifiers enter strict validation.
+            if not _is_candidate_identifier(token):
                 continue
             if token == defined_id:
                 continue

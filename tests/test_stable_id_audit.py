@@ -286,6 +286,30 @@ def test_exhaustive_grammar_families_and_widths() -> None:
             raise AssertionError(f"Expected zero padding failure for {bad_ns}")
 
 
+def test_scan_markdown_ignores_lowercase_prose_phrases() -> None:
+    """Ordinary lowercase prose like 'first-240' must not enter strict stable-ID validation."""
+    scan = module._scan_markdown(
+        "The earlier first-240 claim is superseded history.\n"
+        "Draft-3 revision pending.\n",
+        "plan.md",
+    )
+    assert scan.references == []
+
+
+def test_scan_markdown_still_validates_family_shaped_references() -> None:
+    """Uppercase normative-family tokens in prose must still be validated."""
+    try:
+        module._scan_markdown(
+            "Reference to GOAL-001 mid-prose.\n"
+            "Reference to LOWERCASE-goal-001 must not bypass the gate.\n",
+            "plan.md",
+        )
+    except module.AuditError as exc:
+        assert exc.error_id == module.ERR_MALFORMED_CASE
+    else:
+        raise AssertionError("family-shaped reference must remain validated")
+
+
 def test_grammar_case_and_unknown_families() -> None:
     for bad_case in ["goal-001", "Goal-001", "ns-1", "Adr-0001"]:
         try:
