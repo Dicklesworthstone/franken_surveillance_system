@@ -16,6 +16,9 @@ use fss_core::{
 
 use super::{ReferenceSessionLimits, ReferenceSessionStore, ResolvedSessionHandle, SessionEntry};
 
+/// Crash-classifying, journal-backed session lifecycle and delivery.
+pub mod journal;
+
 /// Private reference checkpoint format; not a replacement for the public session schema.
 pub const SESSION_CHECKPOINT_FORMAT: &str = "fss.reference_session_checkpoint.v1";
 /// Hard allocation/admission ceiling, even when the caller supplies a larger budget.

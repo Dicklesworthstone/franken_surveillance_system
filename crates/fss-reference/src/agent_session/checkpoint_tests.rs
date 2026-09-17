@@ -11,14 +11,14 @@ use crate::ReferenceHydrationCatalog;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-fn basis() -> ContractBasis {
+pub(super) fn basis() -> ContractBasis {
     ContractBasis::from_registry_bytes(ContractBasisRegistryBytes::new(
         b"schemas", b"operations", b"views", b"capabilities", b"errors", b"costs",
         "fss-reference:checkpoint-test",
     ))
 }
 
-fn params() -> Result<AgentSessionParams, ContractError> {
+pub(super) fn params() -> Result<AgentSessionParams, ContractError> {
     Ok(AgentSessionParams {
         session_id: SessionId::parse("session:checkpoint")?,
         mission_id: MissionId::parse("mission:checkpoint")?,
@@ -49,7 +49,7 @@ fn restore(store: &ReferenceSessionStore) -> Result<ReferenceSessionStore, Sessi
     )
 }
 
-fn register(catalog: &mut ReferenceHydrationCatalog, subject: &str) -> Result<SemanticHandle, Box<dyn Error>> {
+pub(super) fn register(catalog: &mut ReferenceHydrationCatalog, subject: &str) -> Result<SemanticHandle, Box<dyn Error>> {
     let cost = BudgetVector::builder().tokens(1).bytes(32).build()?;
     let descriptor = SemanticHandle::publish(SemanticHandleSpec {
         contract_basis: basis(),
