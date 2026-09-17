@@ -222,6 +222,7 @@ policy_lane() {
   run architecture-registry-consistency python3 scripts/architecture_registry_consistency.py
   run manifest-audit python3 scripts/manifest_audit.py
   run stable-id-audit python3 scripts/stable_id_audit.py
+  run seed-requirements python3 scripts/seed_requirement_checker.py
   run dependency-audit python3 scripts/dependency_audit.py
   run schema-validate-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_schema_validate.py
   run slo-validate-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_slo_validate.py
@@ -229,6 +230,7 @@ policy_lane() {
   run architecture-registry-consistency-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_architecture_registry_consistency.py
   run manifest-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_manifest_audit.py
   run stable-id-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_stable_id_audit.py
+  run seed-requirements-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_seed_requirement_checker.py
   run dependency-dag-checker python3 scripts/dependency_dag_checker.py
   run dependency-dag-checker-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_dependency_dag_checker.py
   run claim-proof-bundle-checker python3 scripts/claim_proof_bundle_checker.py
