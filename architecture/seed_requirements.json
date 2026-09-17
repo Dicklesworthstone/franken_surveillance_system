@@ -1,0 +1,1037 @@
+{
+  "schema": "fss.seed_requirements.v1",
+  "version": 1,
+  "expectedCount": 250,
+  "freezeDigest": "sha256:30f0fcd35543039192b35d5707b748c4f19024eb0deeacb4d8c3c5810671b6fa",
+  "owner": "PROGRAM-GOV / DRIFT-003",
+  "requirements": [
+    {
+      "id": "FSS-001",
+      "title": "Freeze stable ID and generation newtypes."
+    },
+    {
+      "id": "FSS-002",
+      "title": "Implement canonical digest parsing/formatting."
+    },
+    {
+      "id": "FSS-003",
+      "title": "Implement conservative time-interval arithmetic."
+    },
+    {
+      "id": "FSS-004",
+      "title": "Define four-valued operation outcomes and stable errors."
+    },
+    {
+      "id": "FSS-005",
+      "title": "Define source/device/adapter identity schemas."
+    },
+    {
+      "id": "FSS-006",
+      "title": "Define sensor capsule v1 binary/JSON contract."
+    },
+    {
+      "id": "FSS-007",
+      "title": "Define event revision and evidence graph schemas."
+    },
+    {
+      "id": "FSS-008",
+      "title": "Define prepared-effect/receipt schemas."
+    },
+    {
+      "id": "FSS-009",
+      "title": "Implement architecture/registry consistency checker."
+    },
+    {
+      "id": "FSS-010",
+      "title": "Implement dependency DAG checker."
+    },
+    {
+      "id": "FSS-011",
+      "title": "Implement claim/proof-bundle checker."
+    },
+    {
+      "id": "FSS-012",
+      "title": "Add negative-evidence ledger schema and CLI."
+    },
+    {
+      "id": "FSS-013",
+      "title": "Build deterministic virtual clock/source."
+    },
+    {
+      "id": "FSS-014",
+      "title": "Build virtual encoded-camera fixture generator."
+    },
+    {
+      "id": "FSS-015",
+      "title": "Build packet loss/reorder/duplication fault injector."
+    },
+    {
+      "id": "FSS-016",
+      "title": "Implement in-memory canonical ledger oracle."
+    },
+    {
+      "id": "FSS-017",
+      "title": "Implement content-addressed staging spool."
+    },
+    {
+      "id": "FSS-018",
+      "title": "Implement root-last local manifest publication."
+    },
+    {
+      "id": "FSS-019",
+      "title": "Implement replay bundle v1 reader/writer."
+    },
+    {
+      "id": "FSS-020",
+      "title": "Implement deterministic mock model executor."
+    },
+    {
+      "id": "FSS-021",
+      "title": "Integrate Asupersync `Cx` and region hierarchy."
+    },
+    {
+      "id": "FSS-022",
+      "title": "Implement typed budgets and pressure propagation."
+    },
+    {
+      "id": "FSS-023",
+      "title": "Implement obligation registry and leak oracle."
+    },
+    {
+      "id": "FSS-024",
+      "title": "Implement sealed laboratory-oracle process ownership, drain, taint, and production-absence proof harness."
+    },
+    {
+      "id": "FSS-025",
+      "title": "Implement capability grants and resource scopes."
+    },
+    {
+      "id": "FSS-026",
+      "title": "Implement leases, epochs, and fencing."
+    },
+    {
+      "id": "FSS-027",
+      "title": "Implement two-phase effect coordinator."
+    },
+    {
+      "id": "FSS-028",
+      "title": "Model effect idempotency in TLA+."
+    },
+    {
+      "id": "FSS-029",
+      "title": "Model root-last publication in TLA+."
+    },
+    {
+      "id": "FSS-030",
+      "title": "Create crash/cancellation cut-point harness."
+    },
+    {
+      "id": "FSS-031",
+      "title": "Define FrankenSQLite storage integration trait."
+    },
+    {
+      "id": "FSS-032",
+      "title": "Qualify required FrankenSQLite APIs."
+    },
+    {
+      "id": "FSS-033",
+      "title": "Implement ledger schema/migrations."
+    },
+    {
+      "id": "FSS-034",
+      "title": "Implement derived-index rebuild cursor."
+    },
+    {
+      "id": "FSS-035",
+      "title": "Implement backup/restore manifest."
+    },
+    {
+      "id": "FSS-036",
+      "title": "Implement retention/hold obligation tables."
+    },
+    {
+      "id": "FSS-037",
+      "title": "Implement deletion reachability planner."
+    },
+    {
+      "id": "FSS-038",
+      "title": "Implement UVC device enumeration."
+    },
+    {
+      "id": "FSS-039",
+      "title": "Implement UVC mode negotiation."
+    },
+    {
+      "id": "FSS-040",
+      "title": "Implement UVC capture session lifecycle."
+    },
+    {
+      "id": "FSS-041",
+      "title": "Prove audio-disabled UVC path produces no artifacts."
+    },
+    {
+      "id": "FSS-042",
+      "title": "Build UVC unplug/replug soak suite."
+    },
+    {
+      "id": "FSS-043",
+      "title": "Implement scoped ONVIF discovery."
+    },
+    {
+      "id": "FSS-044",
+      "title": "Implement ONVIF capability negotiation."
+    },
+    {
+      "id": "FSS-045",
+      "title": "Implement Profile T media configuration."
+    },
+    {
+      "id": "FSS-046",
+      "title": "Implement Profile M analytics metadata ingestion."
+    },
+    {
+      "id": "FSS-047",
+      "title": "Implement RTSP authentication/session state."
+    },
+    {
+      "id": "FSS-048",
+      "title": "Implement RTP/RTCP sequence/timing evidence."
+    },
+    {
+      "id": "FSS-049",
+      "title": "Implement transport fallback and reconnect."
+    },
+    {
+      "id": "FSS-050",
+      "title": "Implement PTZ prepare/commit with leases."
+    },
+    {
+      "id": "FSS-051",
+      "title": "Build ONVIF/RTSP protocol fixture corpus."
+    },
+    {
+      "id": "FSS-052",
+      "title": "Define pure-Rust media kernel contracts and limits."
+    },
+    {
+      "id": "FSS-053",
+      "title": "Implement bounded pure-Rust media probe engine."
+    },
+    {
+      "id": "FSS-054",
+      "title": "Implement bounded pure-Rust decode engine with scalar reference semantics."
+    },
+    {
+      "id": "FSS-055",
+      "title": "Implement bounded pure-Rust encode/rendition kernels."
+    },
+    {
+      "id": "FSS-056",
+      "title": "Implement keyframe-aware chunker."
+    },
+    {
+      "id": "FSS-057",
+      "title": "Implement live preview bounded fan-out."
+    },
+    {
+      "id": "FSS-058",
+      "title": "Implement decoded-frame/tensor buffer accounting."
+    },
+    {
+      "id": "FSS-059",
+      "title": "Build malformed media gauntlet."
+    },
+    {
+      "id": "FSS-060",
+      "title": "Build decode/timestamp differential oracle."
+    },
+    {
+      "id": "FSS-061",
+      "title": "Define object-store provider trait."
+    },
+    {
+      "id": "FSS-062",
+      "title": "Implement local object-store oracle."
+    },
+    {
+      "id": "FSS-063",
+      "title": "Implement Asupersync-owned S3-compatible staged uploader."
+    },
+    {
+      "id": "FSS-064",
+      "title": "Implement multipart idempotency/reconciliation."
+    },
+    {
+      "id": "FSS-065",
+      "title": "Implement encryption-context manifest."
+    },
+    {
+      "id": "FSS-066",
+      "title": "Implement dated provider-pricing manifest."
+    },
+    {
+      "id": "FSS-067",
+      "title": "Implement archive cost/chunk planner."
+    },
+    {
+      "id": "FSS-068",
+      "title": "Implement incident retrieval/verification."
+    },
+    {
+      "id": "FSS-069",
+      "title": "Run remote archive restore/fault matrix."
+    },
+    {
+      "id": "FSS-070",
+      "title": "Define immutable model manifest v1."
+    },
+    {
+      "id": "FSS-071",
+      "title": "Implement offline model-package import, staging, and verifier."
+    },
+    {
+      "id": "FSS-072",
+      "title": "Implement pure-Rust model invocation/receipt protocol."
+    },
+    {
+      "id": "FSS-073",
+      "title": "Implement model invocation quotas and memory-pressure handling."
+    },
+    {
+      "id": "FSS-074",
+      "title": "Implement qualification/shadow/activation/rollback."
+    },
+    {
+      "id": "FSS-075",
+      "title": "Add model license/profile policy checker."
+    },
+    {
+      "id": "FSS-076",
+      "title": "Integrate first detector/segmenter candidate."
+    },
+    {
+      "id": "FSS-077",
+      "title": "Integrate first tracker candidate."
+    },
+    {
+      "id": "FSS-078",
+      "title": "Implement deterministic activity/sentinel gate."
+    },
+    {
+      "id": "FSS-079",
+      "title": "Implement open-vocabulary verification lane."
+    },
+    {
+      "id": "FSS-080",
+      "title": "Build perception held-out evaluation harness."
+    },
+    {
+      "id": "FSS-081",
+      "title": "Implement event evidence graph/revision store."
+    },
+    {
+      "id": "FSS-082",
+      "title": "Implement belief interval and contradiction types."
+    },
+    {
+      "id": "FSS-083",
+      "title": "Implement temporal verifier orchestration."
+    },
+    {
+      "id": "FSS-084",
+      "title": "Implement policy abstention/escalation states."
+    },
+    {
+      "id": "FSS-085",
+      "title": "Implement prepared alert and provider adapter."
+    },
+    {
+      "id": "FSS-086",
+      "title": "Build lost-ACK/duplicate-alert reconciliation suite."
+    },
+    {
+      "id": "FSS-087",
+      "title": "Implement operator adjudication and immutable feedback."
+    },
+    {
+      "id": "FSS-088",
+      "title": "Implement clock offset/skew estimator interface."
+    },
+    {
+      "id": "FSS-089",
+      "title": "Implement intrinsics/distortion certificate."
+    },
+    {
+      "id": "FSS-090",
+      "title": "Implement cross-camera extrinsics solver interface."
+    },
+    {
+      "id": "FSS-091",
+      "title": "Implement calibration invalidators and rollback."
+    },
+    {
+      "id": "FSS-092",
+      "title": "Implement privacy-mask reprojection with margins."
+    },
+    {
+      "id": "FSS-093",
+      "title": "Define drone/manual capture mission manifest."
+    },
+    {
+      "id": "FSS-094",
+      "title": "Implement recorded DJI media/telemetry importer."
+    },
+    {
+      "id": "FSS-095",
+      "title": "Evaluate authorized DJI Flip live capture routes."
+    },
+    {
+      "id": "FSS-096",
+      "title": "Integrate first reconstruction backend in lab."
+    },
+    {
+      "id": "FSS-097",
+      "title": "Implement sensor localization into digital twin."
+    },
+    {
+      "id": "FSS-098",
+      "title": "Implement visibility/coverage map and validation."
+    },
+    {
+      "id": "FSS-099",
+      "title": "Implement geometry/time-gated cross-camera association."
+    },
+    {
+      "id": "FSS-100",
+      "title": "Build sealed event-level threat/hard-negative release gauntlet."
+    },
+    {
+      "id": "FSS-101",
+      "title": "Freeze `EvidenceDeltaBatch` v1 canonical ordering and anchor semantics."
+    },
+    {
+      "id": "FSS-102",
+      "title": "Implement single-thread reference delta ledger and replay cursor."
+    },
+    {
+      "id": "FSS-103",
+      "title": "Implement positive, negative, and hierarchical witness types."
+    },
+    {
+      "id": "FSS-104",
+      "title": "Implement deterministic commit combiner and semantic conflict oracle."
+    },
+    {
+      "id": "FSS-105",
+      "title": "Implement intent-replay/structural/commutative merge certificate ladder."
+    },
+    {
+      "id": "FSS-106",
+      "title": "Build negative-read phantom and SSI write-skew schedule corpus."
+    },
+    {
+      "id": "FSS-107",
+      "title": "Implement derived high-water protocol for graph/search/model caches."
+    },
+    {
+      "id": "FSS-108",
+      "title": "Implement counterfactual branch overlay and live-intent recompilation."
+    },
+    {
+      "id": "FSS-109",
+      "title": "Implement canonical durable-format framework with magic/limits/checksums."
+    },
+    {
+      "id": "FSS-110",
+      "title": "Enforce no Serde-derived canonical durable bytes."
+    },
+    {
+      "id": "FSS-111",
+      "title": "Implement RTSP parser/session state machine in safe Rust."
+    },
+    {
+      "id": "FSS-112",
+      "title": "Implement RTP/RTCP sequence, wrap, jitter, loss, and sender-report model."
+    },
+    {
+      "id": "FSS-113",
+      "title": "Implement bounded H.264 access-unit/SPS/PPS parser."
+    },
+    {
+      "id": "FSS-114",
+      "title": "Implement bounded H.265 access-unit/VPS/SPS/PPS parser."
+    },
+    {
+      "id": "FSS-115",
+      "title": "Implement deterministic fragmented MP4/CMAF writer and reader."
+    },
+    {
+      "id": "FSS-116",
+      "title": "Implement canonical packet replay object format."
+    },
+    {
+      "id": "FSS-117",
+      "title": "Implement safe JPEG/MJPEG reference decoder vertical slice."
+    },
+    {
+      "id": "FSS-118",
+      "title": "Build FFmpeg/ffprobe lab-only media differential runner."
+    },
+    {
+      "id": "FSS-119",
+      "title": "Implement generation-leased immutable frame pools."
+    },
+    {
+      "id": "FSS-120",
+      "title": "Prove source-to-tensor span/transform lineage."
+    },
+    {
+      "id": "FSS-121",
+      "title": "Implement registered media pressure degradation ladder."
+    },
+    {
+      "id": "FSS-122",
+      "title": "Implement scalar image resize/color/normalize reference kernels."
+    },
+    {
+      "id": "FSS-123",
+      "title": "Implement safe SIMD image transform candidates with same-binary gates."
+    },
+    {
+      "id": "FSS-124",
+      "title": "Implement first admitted H.264 profile decoder subset."
+    },
+    {
+      "id": "FSS-125",
+      "title": "Add malformed compressed-stream adversarial corpus and minimizer."
+    },
+    {
+      "id": "FSS-126",
+      "title": "Implement ATP transfer receipt and resumable journal v1."
+    },
+    {
+      "id": "FSS-127",
+      "title": "Implement ATP object-graph closure verifier."
+    },
+    {
+      "id": "FSS-128",
+      "title": "Implement RaptorQ post-repair canonical digest gate."
+    },
+    {
+      "id": "FSS-129",
+      "title": "Implement multipath transfer race and loser-drain protocol."
+    },
+    {
+      "id": "FSS-130",
+      "title": "Implement focused safe-Rust S3-compatible multipart/conditional protocol."
+    },
+    {
+      "id": "FSS-131",
+      "title": "Implement archive replication-state and retrievability challenge ledger."
+    },
+    {
+      "id": "FSS-132",
+      "title": "Build remote eventual-consistency/partial-list provider simulator."
+    },
+    {
+      "id": "FSS-133",
+      "title": "Implement graph-complete archive deletion traversal."
+    },
+    {
+      "id": "FSS-134",
+      "title": "Implement archive Decision Cards for path, repair, and object sizing."
+    },
+    {
+      "id": "FSS-135",
+      "title": "Prove independent reconstruction of archive roots from manifests."
+    },
+    {
+      "id": "FSS-136",
+      "title": "Implement tensor dtype/shape/stride/storage/view/version core."
+    },
+    {
+      "id": "FSS-137",
+      "title": "Define frozen first-party model operator IR v1."
+    },
+    {
+      "id": "FSS-138",
+      "title": "Implement deterministic model package importer and canonical tensors."
+    },
+    {
+      "id": "FSS-139",
+      "title": "Implement scalar operator executor for first detector graph."
+    },
+    {
+      "id": "FSS-140",
+      "title": "Implement shape/layout/liveness scratch planner."
+    },
+    {
+      "id": "FSS-141",
+      "title": "Implement static kernel dispatch and decision-path receipts."
+    },
+    {
+      "id": "FSS-142",
+      "title": "Implement packed-weight and tiled CPU matrix kernels in safe Rust."
+    },
+    {
+      "id": "FSS-143",
+      "title": "Implement model preprocess/postprocess fusion laws and reference tests."
+    },
+    {
+      "id": "FSS-144",
+      "title": "Build PyTorch/ONNX lab-only operator/model differential harness."
+    },
+    {
+      "id": "FSS-145",
+      "title": "Classify model oracle results as agree/diverge/error-only/unexercised."
+    },
+    {
+      "id": "FSS-146",
+      "title": "Implement quantized model generation and calibration receipts."
+    },
+    {
+      "id": "FSS-147",
+      "title": "Add model package RaptorQ protection and ATP activation."
+    },
+    {
+      "id": "FSS-148",
+      "title": "Implement shadow/canary/rollback Decision Cards for model generations."
+    },
+    {
+      "id": "FSS-149",
+      "title": "Prove production release closure contains no foreign model runtime."
+    },
+    {
+      "id": "FSS-150",
+      "title": "Implement CPU thermal/pressure-aware model scheduler with hard floors."
+    },
+    {
+      "id": "FSS-151",
+      "title": "Define immutable graph projection and generational-handle core."
+    },
+    {
+      "id": "FSS-152",
+      "title": "Implement O(1) Arc-shared graph snapshot views and invalidation tests."
+    },
+    {
+      "id": "FSS-153",
+      "title": "Implement canonical graph serialization and hash verification."
+    },
+    {
+      "id": "FSS-154",
+      "title": "Implement dynamic connectivity reference/optimized lanes."
+    },
+    {
+      "id": "FSS-155",
+      "title": "Implement articulation, bridge, dominator, and cut-analysis family."
+    },
+    {
+      "id": "FSS-156",
+      "title": "Implement shortest/k-shortest/temporal path family."
+    },
+    {
+      "id": "FSS-157",
+      "title": "Implement matching, k-best assignment, and min-cost-flow association."
+    },
+    {
+      "id": "FSS-158",
+      "title": "Implement max-flow and Gomory-Hu failure-analysis family."
+    },
+    {
+      "id": "FSS-159",
+      "title": "Implement SCC/condensation/topological/critical-path family."
+    },
+    {
+      "id": "FSS-160",
+      "title": "Implement set-cover/submodular active-perception family."
+    },
+    {
+      "id": "FSS-161",
+      "title": "Implement d-separation/shared-failure-domain analysis."
+    },
+    {
+      "id": "FSS-162",
+      "title": "Implement factorized graph-relational query reference planner."
+    },
+    {
+      "id": "FSS-163",
+      "title": "Implement incremental retract/add standing predicates."
+    },
+    {
+      "id": "FSS-164",
+      "title": "Build full-recompute versus incremental graph equivalence fuzzer."
+    },
+    {
+      "id": "FSS-165",
+      "title": "Implement graph algorithm complexity/output witness v1."
+    },
+    {
+      "id": "FSS-166",
+      "title": "Build adversarial graph-family generator and NetworkX oracle runner."
+    },
+    {
+      "id": "FSS-167",
+      "title": "Enforce capability projection before graph/search expansion."
+    },
+    {
+      "id": "FSS-168",
+      "title": "Implement offline Forge-style safe-Rust specialization proof path."
+    },
+    {
+      "id": "FSS-169",
+      "title": "Implement Quill absolute doc-range/searchable-delta reference slice."
+    },
+    {
+      "id": "FSS-170",
+      "title": "Implement search absence/coverage certificates."
+    },
+    {
+      "id": "FSS-171",
+      "title": "Implement typed operational memory rows and evidence edges."
+    },
+    {
+      "id": "FSS-172",
+      "title": "Implement memory confidence decay, trauma guard, and anti-pattern inversion."
+    },
+    {
+      "id": "FSS-173",
+      "title": "Implement immutable curation/supersession/retirement/revival transitions."
+    },
+    {
+      "id": "FSS-174",
+      "title": "Implement deterministic context pack with score ledger and pack hash."
+    },
+    {
+      "id": "FSS-175",
+      "title": "Prove memory text cannot grant capabilities or rewrite policy."
+    },
+    {
+      "id": "FSS-176",
+      "title": "Define MCP/CLI/library operation registry crosswalk."
+    },
+    {
+      "id": "FSS-177",
+      "title": "Implement request-owned MCP regions and bounded outputs."
+    },
+    {
+      "id": "FSS-178",
+      "title": "Implement durable application-owned task projection over MCP."
+    },
+    {
+      "id": "FSS-179",
+      "title": "Implement protocol taint/secret/redaction conformance suite."
+    },
+    {
+      "id": "FSS-180",
+      "title": "Prohibit generic shell/SQL/vendor/codec/model/drone MCP escape hatches."
+    },
+    {
+      "id": "FSS-181",
+      "title": "Implement dependency-closure scanner against allowlist v2."
+    },
+    {
+      "id": "FSS-182",
+      "title": "Enforce FSS unsafe prohibition across targets/features/examples/tests."
+    },
+    {
+      "id": "FSS-183",
+      "title": "Enforce no network access in build scripts and sealed qualification."
+    },
+    {
+      "id": "FSS-184",
+      "title": "Implement candidate-latest-nightly probe and promotion report."
+    },
+    {
+      "id": "FSS-185",
+      "title": "Implement DSR clean-snapshot and exact sibling-closure manifest."
+    },
+    {
+      "id": "FSS-186",
+      "title": "Implement disk-backed host capacity and quarantine checks."
+    },
+    {
+      "id": "FSS-187",
+      "title": "Implement local qualification lane receipt schema and aggregator."
+    },
+    {
+      "id": "FSS-188",
+      "title": "Implement interrupted target-matrix resume without partial blessing."
+    },
+    {
+      "id": "FSS-189",
+      "title": "Implement exact release asset enumeration and extra-file refusal."
+    },
+    {
+      "id": "FSS-190",
+      "title": "Implement SBOM/provenance/source/license/qualification cross-check."
+    },
+    {
+      "id": "FSS-191",
+      "title": "Separate build and minisign/Ed25519 signing authorities."
+    },
+    {
+      "id": "FSS-192",
+      "title": "Implement upload then download-and-verify release publication."
+    },
+    {
+      "id": "FSS-193",
+      "title": "Convert workflow YAML to repository-script-only portable specifications."
+    },
+    {
+      "id": "FSS-194",
+      "title": "Test complete qualification/release with GitHub-hosted runners unavailable."
+    },
+    {
+      "id": "FSS-195",
+      "title": "Implement public claim scope/evidence/exclusion/expiry evaluator."
+    },
+    {
+      "id": "FSS-196",
+      "title": "Implement same-binary A/A and A/B experiment receipt framework."
+    },
+    {
+      "id": "FSS-197",
+      "title": "Implement Decision Card hard-clamp/shadow/fallback/rollback property tests."
+    },
+    {
+      "id": "FSS-198",
+      "title": "Expand operation cost registry to all hot and consequential paths."
+    },
+    {
+      "id": "FSS-199",
+      "title": "Build integrated one-version media→model→graph→event→ATP replay scenario."
+    },
+    {
+      "id": "FSS-200",
+      "title": "Run the first full local DSR release rehearsal and retain negative evidence."
+    },
+    {
+      "id": "FSS-201",
+      "title": "Freeze the `fss/1` public operation and resource registry."
+    },
+    {
+      "id": "FSS-202",
+      "title": "Implement mission contract negotiation and immutable revision model."
+    },
+    {
+      "id": "FSS-203",
+      "title": "Implement Asupersync-owned agent sessions with explicit grants, budgets, and closure receipts."
+    },
+    {
+      "id": "FSS-204",
+      "title": "Implement versioned `AgentWorkspace` / `AgentSessionCapsule` persistence and rebase."
+    },
+    {
+      "id": "FSS-205",
+      "title": "Implement `KnowledgeCell` state/provenance/validity/uncertainty core."
+    },
+    {
+      "id": "FSS-206",
+      "title": "Implement deterministic `SituationCapsule` composition with an inner `SituationFrame` over the reference deployment."
+    },
+    {
+      "id": "FSS-207",
+      "title": "Implement NOW/CHANGED/WHY/UNKNOWN/AT-RISK/NEXT SituationFrame grammar plus obligation, resource, affordance, context, and compression capsule sections."
+    },
+    {
+      "id": "FSS-208",
+      "title": "Implement `MeaningfulDelta` classification and protected non-coalescible transitions."
+    },
+    {
+      "id": "FSS-209",
+      "title": "Implement silence certificates and exact continuation cursors."
+    },
+    {
+      "id": "FSS-210",
+      "title": "Implement semantic handles and H0–H4 bounded hydration."
+    },
+    {
+      "id": "FSS-211",
+      "title": "Implement semantic context packs and compression receipts."
+    },
+    {
+      "id": "FSS-212",
+      "title": "Build omission counterfactual tests proving load-bearing evidence preservation."
+    },
+    {
+      "id": "FSS-213",
+      "title": "Implement durable investigation case state machine and immutable revisions."
+    },
+    {
+      "id": "FSS-214",
+      "title": "Implement competing-hypothesis workspace with support, contradiction, missing evidence, and shared failure domains."
+    },
+    {
+      "id": "FSS-215",
+      "title": "Implement predicted-observation, falsifier, discriminator, and stop-rule contracts."
+    },
+    {
+      "id": "FSS-216",
+      "title": "Implement expected decision-loss and value-of-information reference scheduler."
+    },
+    {
+      "id": "FSS-217",
+      "title": "Implement submodular context/evidence selector with hard safety/privacy/coverage inclusions."
+    },
+    {
+      "id": "FSS-218",
+      "title": "Implement `ActionAffordance` decomposition and Pareto frontier."
+    },
+    {
+      "id": "FSS-219",
+      "title": "Implement affordance sensitivity and invalidation tests."
+    },
+    {
+      "id": "FSS-220",
+      "title": "Implement plan-step type system and witnessed contingent DAG compiler."
+    },
+    {
+      "id": "FSS-221",
+      "title": "Implement agent obligation cockpit and terminal-proof projection."
+    },
+    {
+      "id": "FSS-222",
+      "title": "Implement `explain` why/why-not/what-changed/what-if modes."
+    },
+    {
+      "id": "FSS-223",
+      "title": "Implement minimal evidence/decision subgraph selection and expansion handles."
+    },
+    {
+      "id": "FSS-224",
+      "title": "Implement recovery-rich error envelope and safe-next-operation generator."
+    },
+    {
+      "id": "FSS-225",
+      "title": "Implement private agent branches and immutable shared case-board revisions."
+    },
+    {
+      "id": "FSS-226",
+      "title": "Implement bounded `AgentWorkClaim` leases with no-effect-authority proof."
+    },
+    {
+      "id": "FSS-227",
+      "title": "Implement immutable multi-agent findings, disagreements, and conflict reports."
+    },
+    {
+      "id": "FSS-228",
+      "title": "Implement root-last ATP `HandoffCapsule` publication and closure verification."
+    },
+    {
+      "id": "FSS-229",
+      "title": "Implement handoff resume under anchor/policy/model/calibration drift."
+    },
+    {
+      "id": "FSS-230",
+      "title": "Implement immutable `ExecutionEpisode` and outcome-attribution hypotheses."
+    },
+    {
+      "id": "FSS-231",
+      "title": "Implement feedback proposals and evidence-linked adjudication/correction flow."
+    },
+    {
+      "id": "FSS-232",
+      "title": "Implement learning proposal applicability, counterexample, expiry, and promotion states."
+    },
+    {
+      "id": "FSS-233",
+      "title": "Implement harmful-outcome trauma guard and anti-pattern inversion."
+    },
+    {
+      "id": "FSS-234",
+      "title": "Implement self-describing robot docs generated from operation/view/schema registries."
+    },
+    {
+      "id": "FSS-235",
+      "title": "Implement direct Rust API, CLI, and MCP transcript-equivalence harness."
+    },
+    {
+      "id": "FSS-236",
+      "title": "Build sealed agent scenario corpus for cold orientation, ambiguity, hard budgets, drift, and lost ACKs."
+    },
+    {
+      "id": "FSS-237",
+      "title": "Implement agent task-quality, calibration, resource, safety, and handoff metrics."
+    },
+    {
+      "id": "FSS-238",
+      "title": "Implement subsystem-command baseline for controlled agent-efficiency comparison."
+    },
+    {
+      "id": "FSS-239",
+      "title": "Add `QL-AGENT-001` local qualification lane and proof-bundle schema."
+    },
+    {
+      "id": "FSS-240",
+      "title": "Run the first end-to-end orient→investigate→plan→commit→verify→learn→handoff rehearsal."
+    },
+    {
+      "id": "FSS-241",
+      "title": "Freeze `ContractBasis` canonical encoding, registry-digest computation, negotiation,\n     compatibility, and stale-basis refusal semantics."
+    },
+    {
+      "id": "FSS-242",
+      "title": "Implement universal `AgentRequestEnvelope`/`AgentResponseEnvelope` dispatch with\n     operation-registry-owned typed payload validation and transcript equivalence."
+    },
+    {
+      "id": "FSS-243",
+      "title": "Implement the deterministic reference `WorldEnvelope` builder over an exact\n     SituationFrame and evidence anchor."
+    },
+    {
+      "id": "FSS-244",
+      "title": "Implement certified-absence objects with domain, continuity, authorization,\n     coverage, model-floor, exclusions, validity, and invalidation witnesses."
+    },
+    {
+      "id": "FSS-245",
+      "title": "Implement material-alternative and adversarial-residual generation with protected\n     high-loss retention and shared-failure-domain accounting."
+    },
+    {
+      "id": "FSS-246",
+      "title": "Implement robust/conditional/probe/wait/blocked affordance classification against a\n     factorized possible-world frontier."
+    },
+    {
+      "id": "FSS-247",
+      "title": "Implement belief-space contingent-plan validation with per-step supported/unsafe\n     worlds, observable branch predicates, and envelope-digest revalidation."
+    },
+    {
+      "id": "FSS-248",
+      "title": "Implement semantic possible-world compression receipts proving preserved certified\n     core, alternatives, protected residuals, invariants, and decision-equivalent control classes."
+    },
+    {
+      "id": "FSS-249",
+      "title": "Build the sealed WorldEnvelope adversarial scenario corpus, including benign top-rank\n     but high-loss residual cases, coverage loss, model abstention, and shared-mode false\n     corroboration."
+    },
+    {
+      "id": "FSS-250",
+      "title": "Prove ContractBasis, WorldEnvelope digest, knowledge/provenance/hypothesis state,\n     control-envelope classification, and safe-next-step equivalence across every public surface."
+    }
+  ],
+  "history": {
+    "resolution": "DRIFT-003",
+    "supersededClaim": "first-240",
+    "decision": "Preserve every published identity and intent; correct the count, not the requirements.",
+    "crosswalk": "identity",
+    "tombstones": [],
+    "migration": "Prose-only reconciliation; no ID or runtime format migration. Future count or intent changes require a reviewed versioned migration and claim-impact record plus checker admission.",
+    "claimImpact": [
+      "GATE-000",
+      "WP-000",
+      "GATE-120"
+    ],
+    "releaseRule": "Seed completeness does not qualify implementation. Dependent claims remain blocked until this proof and all other gate prerequisites pass."
+  },
+  "mirrors": [
+    {
+      "path": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+      "template": "- Appendix F. First {count} implementation issues"
+    },
+    {
+      "path": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+      "template": "## Appendix F — First {count} implementation issues"
+    },
+    {
+      "path": "README.md",
+      "template": "| [`COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md`](COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md) | Normative architecture, execution plan, and first {count} issues |"
+    }
+  ]
+}
