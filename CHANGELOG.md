@@ -37,6 +37,7 @@ All notable changes to Franken Surveillance System are recorded here. The projec
 
 ### Fixed
 
+- Fixed camera registration bindings to preserve typed projection uncertainty and reject invalid component bounds consistently with tracking; corrected radial registration fixtures.
 - Prevented a prepared alert plan from being treated as proof that an operation has not already crossed an external boundary.
 - Prevented forged or structurally inconsistent local effect receipts from preserving commit authority.
 - Prevented unavailable affordances from appearing in the actionable `NEXT` frontier.
