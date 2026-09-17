@@ -19,6 +19,12 @@ use crate::ReferenceHydrationCatalog;
 
 mod hydration;
 
+/// Exact bounded recovery of session identities, grants, tombstones, aliases, and charges.
+pub mod checkpoint;
+
+/// Session-authorized delivery of exact published context expansions.
+pub mod context_hydration;
+
 #[cfg(test)]
 mod tests;
 
