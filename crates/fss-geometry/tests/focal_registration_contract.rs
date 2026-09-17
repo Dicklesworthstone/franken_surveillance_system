@@ -46,6 +46,29 @@ fn excluded_landmarks_can_leave_a_unique_focal_pose_without_refitting()->Test{
 }
 
 #[test]
+fn rejected_holdout_has_no_unique_focal_candidate()->Test{
+    let basis=GeometryBasis::new(1,1)?;
+    let scan=scan_camera_focal_length(basis,[1920,1080],&points(1,32),options(),&mut WorkBudget::new(500_000_000))?;
+    let mut holdout=points(101,12);
+    for point in &mut holdout{point.pixel[0]+=300.0;}
+    let validation=scan.validate_all_candidates(basis,&holdout,0.01,&mut WorkBudget::new(100_000_000))?;
+    assert!(!validation.reports().is_empty());
+    assert!(validation.passing_candidates().is_empty());
+    assert_eq!(validation.unique_passing_candidate(),None);
+    Ok(())
+}
+
+#[test]
+fn ambiguous_holdout_has_no_unique_focal_candidate()->Test{
+    let basis=GeometryBasis::new(1,1)?;
+    let scan=scan_camera_focal_length(basis,[1920,1080],&points(1,32),options(),&mut WorkBudget::new(500_000_000))?;
+    let validation=scan.validate_all_candidates(basis,&points(101,12),128.0,&mut WorkBudget::new(100_000_000))?;
+    assert!(validation.passing_candidates().len()>1);
+    assert_eq!(validation.unique_passing_candidate(),None);
+    Ok(())
+}
+
+#[test]
 fn scan_does_not_silently_select_or_drop_geometric_failures()->Test{
     let mut opt=options(); opt.samples=9;
     let scan=scan_camera_focal_length(GeometryBasis::new(1,1)?,[1920,1080],&points(1,32),opt,&mut WorkBudget::new(200_000_000))?;
