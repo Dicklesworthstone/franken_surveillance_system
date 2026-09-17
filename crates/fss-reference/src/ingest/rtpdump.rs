@@ -4,3 +4,5 @@ mod framing;
 pub use framing::*;
 /// Recorded packets through the real sequence and H.264 kernels.
 pub mod replay;
+/// Source-first publication, capsule linkage and verified readback.
+pub mod import;
