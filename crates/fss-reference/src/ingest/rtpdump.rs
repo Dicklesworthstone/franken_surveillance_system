@@ -8,3 +8,5 @@ pub mod replay;
 pub mod import;
 /// Root-based read-only verification and explicitly committed crash recovery.
 pub mod recovery;
+/// Ordered recorded-RTP picture grouping through the existing AVC receiver.
+pub mod avc;
