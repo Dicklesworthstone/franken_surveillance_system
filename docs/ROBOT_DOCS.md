@@ -31,7 +31,7 @@ Standard machine introspection entrypoints available on every conforming node:
 | `capabilities` | `fss capabilities --json` | Report capabilities in JSON format. |
 | `doctor` | `fss doctor --json [--root &lt;dir&gt;]` | Report system diagnostic doctor results in JSON format. |
 | `negative_evidence` | `fss negative-evidence list --json` | Negative evidence ledger management. |
-| `status` | `fss doctor --json [--root &lt;dir&gt;]` | Report system status in JSON format. |
+| `status` | `fss status --json` | Report system status in JSON format. |
 
 ## 2. Core Protocol Error Taxonomy
 
@@ -326,12 +326,14 @@ All authoritative schemas cataloged from `registries/SCHEMAS.md`:
 | `SCHEMA-AGENT-DELTA-002` | `fss.agent_meaningful_delta.v2` | `schemas/agent_meaningful_delta.v2.json` | `follow/continuity` | `terminal, contradiction, coverage, plan-invalidation, and effect-uncertainty deltas cannot be coalesced away; a basis cell absent from the result is a typed removal ('removedClaimIds'), never a changed cell carrying its basis value; supersedes 'SCHEMA-AGENT-DELTA-001'` |
 | `SCHEMA-AGENT-MISSION-001` | `fss.agent_mission.v1` | `schemas/agent_mission.v1.json` | `mission/workspace` | `mission revisions preserve scope, constraints, budgets, capability projection, and terminal criteria` |
 | `SCHEMA-AGENT-OBJECTIVE-001` | `fss.agent_objective_contract.v1` | `schemas/agent_objective_contract.v1.json` | `control intent` | `hard constraints, budgets, authority, success, failure, stop predicates, and terminal proof are immutable` |
+| `SCHEMA-AGENT-OPERATIONS-001` | `fss.agent_operations.v1` | `schemas/agent_operations.v1.json` | `agent operations` | `operation rows stay aligned with the frozen public registry, the markdown mirror, and the typed Rust table; effect authority is mode-typed and row statuses only move with a registry generation bump` |
 | `SCHEMA-AGENT-QUERY-001` | `fss.agent_query_plan.v1` | `schemas/agent_query_plan.v1.json` | `query cognition` | `compiled interpretation, targets, authority, privacy, cost, and output view are reviewable and bounded` |
 | `SCHEMA-AGENT-REQUEST-001` | `fss.agent_request_envelope.v1` | `schemas/agent_request_envelope.v1.json` | `transport request` | `contract basis, operation, lifecycle, anchor/workspace preconditions, view, targets, typed payload, budget, authority/privacy request, continuation, idempotency, and taint remain explicit` |
 | `SCHEMA-AGENT-RESPONSE-001` | `fss.agent_response_envelope.v1` | `schemas/agent_response_envelope.v1.json` | `transport response` | `operation, session, anchors, outcome, payload, errors, budgets, proof, continuation, and safe retry remain explicit` |
 | `SCHEMA-AGENT-SESSION-001` | `fss.agent_session.v1` | `schemas/agent_session.v1.json` | `session/runtime` | `session identity, authority, privacy projection, view, continuations, and expiry remain explicit` |
 | `SCHEMA-AGENT-WORKSPACE-001` | `fss.agent_session_capsule.v1` | `schemas/agent_session_capsule.v1.json` | `workspace continuity` | `workspace revisions are immutable and resume records stale and invalidated state` |
 | `SCHEMA-AGENT-SITUATION-001` | `fss.agent_situation_frame.v1` | `schemas/agent_situation_frame.v1.json` | `situation projection` | `task-relative selection changes only through a new frame and selection witness` |
+| `SCHEMA-AGENT-VIEWS-001` | `fss.agent_views.v1` | `schemas/agent_views.v1.json` | `agent views` | `view rows stay aligned with the markdown mirror and the typed Rust table; token bounds are decision-bearing budget discipline (target &lt;= maximum) and statuses only move with a registry generation bump` |
 | `SCHEMA-AGENT-WORK-CLAIM-001` | `fss.agent_work_claim.v1` | `schemas/agent_work_claim.v1.json` | `multi-agent coordination` | `scope, basis, owner, lease, progress, result, expiry, and no-effect-authority property remain explicit` |
 | `SCHEMA-AGENT-WORLD-ENVELOPE-001` | `fss.agent_world_envelope.v1` | `schemas/agent_world_envelope.v1.json` | `agent world model` | `nominal estimate, certified core and absences, material alternatives, adversarial residuals, unresolved dimensions, discriminators, and selection witness remain separate and anchor-pinned` |
 | `SCHEMA-CALIBRATION-CERT-001` | `fss.calibration_certificate.v1` | `schemas/calibration_certificate.v1.json` | `authority` | `generation immutable; invalidation creates new state` |
@@ -602,13 +604,19 @@ All stable error identities and normative recovery guidance cataloged from `regi
 | `ERR-NEG-UNKNOWN-VERSION-001` | negative evidence binary ledger format version is unknown or unsupported | refuse unknown version; never guess ledger encoding format |
 | `ERR-NEG-VALIDATION-FAILED-001` | negative evidence entry semantic validation failed | provide valid required fields conforming to negative evidence contract |
 | `ERR-NON-MONOTONE-NARROWING-001` | attempted non-monotone uncertainty narrowing violating FORMAL-010 | preserve monotone widening; retain sync evidence |
+| `ERR-OP-CORRUPT-FILE-001` | operation registry, frozen public registry, or markdown documentation file is missing or corrupt | repair or restore the operation registry file |
 | `ERR-OP-EXECUTION-FAILED-001` | operation execution failed with expected domain error | inspect error details and apply recovery guidance |
 | `ERR-OP-ID-MALFORMED-001` | error identity does not conform to stable ERR pattern | fix error identity to match stable registry format |
 | `ERR-OP-INDETERMINATE-001` | tombstone: superseded by 'ERR-EFFECT-INDETERMINATE-001' | historical duplicate preserved for audit; indeterminate outcomes must use Indeterminate variant |
 | `ERR-OP-INVALID-OUTCOME-001` | operation outcome state transition or representation is invalid | inspect outcome payload and repair state machine |
+| `ERR-OP-MISSING-FIELD-001` | operation row or registry metadata lacks a mandatory field or is empty/corrupt | declare all mandatory fields in the operation row |
 | `ERR-OP-NOT-OBSERVABLE-001` | tombstone: superseded by 'ERR-COVERAGE-UNKNOWN-001' | historical duplicate preserved for audit; canonical target is 'ERR-COVERAGE-UNKNOWN-001' |
 | `ERR-OP-PRECONDITION-FAILED-001` | tombstone: superseded by 'ERR-PRECONDITION-STALE-001' | historical duplicate preserved for audit; canonical target is 'ERR-PRECONDITION-STALE-001' |
 | `ERR-OP-RECONCILIATION-REQUIRED-001` | pending unresolved operation must be reconciled before further mutation | reconcile pending sequence before retry |
+| `ERR-OP-REGISTRY-DRIFT-001` | operation registry row drift between machine registry and markdown mirror | synchronize architecture/agent_operations.json and registries/AGENT_OPERATIONS.md |
+| `ERR-OP-RUST-DRIFT-001` | typed Rust operation table drifted from or is missing versus the machine registry | regenerate crates/fss-core/src/agent_operation.rs canonical rows from architecture/agent_operations.json |
+| `ERR-OP-SEMANTIC-INVARIANT-001` | operation semantic invariant violation: effect/mode contradiction, durability contradiction, or unregistered view/payload/capability/gate/retry spelling | enforce the registered operation mode table and row invariants |
+| `ERR-OP-STABLE-ID-REUSED-001` | operation stable identifier was reused, duplicated, or renumbered outside AOP-001..AOP-014 | allocate a new unique stable identifier; never reuse stable IDs |
 | `ERR-OP-TIMEOUT-001` | operation budget or deadline expired before completion | retry with higher budget or backoff |
 | `ERR-OP-UNAUTHORIZED-001` | tombstone: superseded by 'ERR-AUTH-DENIED-001' | historical duplicate preserved for audit; canonical target is 'ERR-AUTH-DENIED-001' |
 | `ERR-OPERATION-UNREGISTERED-001` | surveillance operation not registered in time uncertainty budget catalog | register operation tolerance before evaluation |
@@ -696,6 +704,12 @@ All stable error identities and normative recovery guidance cataloged from `regi
 | `ERR-STREAM-CONTINUITY-001` | gaps/jitter exceed contract | degrade coverage; bounded recovery |
 | `ERR-STREAM-NO-FIRST-FRAME-001` | adapter accepted but no decodable frame before budget | reconnect or fail; never claim coverage |
 | `ERR-TIME-INTERVAL-INVERTED-001` | capture or transit interval earliest bound exceeds latest bound | correct interval bounds before evaluation |
+| `ERR-VW-CORRUPT-FILE-001` | view registry or markdown documentation file is missing or corrupt | repair or restore the view registry file |
+| `ERR-VW-MISSING-FIELD-001` | view row or registry metadata lacks a mandatory field or is empty/corrupt | declare all mandatory fields in the view row |
+| `ERR-VW-REGISTRY-DRIFT-001` | view registry row drift between machine registry and markdown mirror | synchronize architecture/agent_views.json and registries/AGENT_VIEWS.md |
+| `ERR-VW-RUST-DRIFT-001` | typed Rust view table drifted from or is missing versus the machine registry | regenerate crates/fss-core/src/agent_view.rs canonical rows from architecture/agent_views.json |
+| `ERR-VW-SEMANTIC-INVARIANT-001` | view semantic invariant violation: token bound contradiction, unregistered gate/status, or operation default view foreign-key miss | enforce the registered view row invariants and default-view foreign keys |
+| `ERR-VW-STABLE-ID-REUSED-001` | view stable identifier was reused, duplicated, or renumbered outside AVIEW-001..008 | allocate a new unique stable identifier; never reuse stable IDs |
 
 ---
 *Robot documentation generated deterministically by `scripts/generate_robot_docs.py`.*

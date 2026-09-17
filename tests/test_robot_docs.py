@@ -1629,7 +1629,7 @@ class RobotDocsContractTests(unittest.TestCase):
         fss_cmd_file.write_text(orig_text.replace("fss doctor --json", "fss doctor --format json", 1), encoding="utf-8")
         _, js_str = generate_docs(self.fake_root)
         disc = json.loads(js_str)["discovery"]
-        self.assertEqual(disc["doctor"]["cli"], "fss doctor --format json", "CLI discovery must reflect help_text changes")
+        self.assertEqual(disc["doctor"]["cli"], "fss doctor --format json [--root <dir>]", "CLI discovery must reflect help_text changes")
 
         # 3. Changing negative-evidence list to ls in help_text updates negative_evidence cli string
         fss_cmd_file.write_text(orig_text.replace("fss negative-evidence <init|list|verify|append>", "fss negative-evidence <init|ls|verify|append>", 1), encoding="utf-8")
@@ -1658,6 +1658,22 @@ class RobotDocsContractTests(unittest.TestCase):
             generate_docs(self.fake_root)
         self.assertEqual(ctx.exception.code, ERR_ROBOT_DOCS_CORRUPT)
         self.assertIn("Missing CLI discovery endpoints", ctx.exception.message)
+
+    def test_delegated_doctor_does_not_consume_next_command(self) -> None:
+        """A helper-backed command remains distinct from its adjacent status arm."""
+        fss_cmd_file = self.fake_root / "crates/fss-cli/src/fss_cmd.rs"
+        content = fss_cmd_file.read_text(encoding="utf-8")
+        _, document = generate_docs(self.fake_root)
+        discovery = json.loads(document)["discovery"]
+        self.assertEqual(discovery["doctor"]["cli"], "fss doctor --json [--root <dir>]")
+        self.assertEqual(discovery["status"]["cli"], "fss status --json")
+        fss_cmd_file.write_text(
+            content.replace("parse_doctor_tokens(tokens)", "missing_parser(tokens)", 1),
+            encoding="utf-8",
+        )
+        with self.assertRaises(RobotDocsError) as error:
+            generate_docs(self.fake_root)
+        self.assertEqual(error.exception.code, ERR_ROBOT_DOCS_CORRUPT)
 
     def test_recovery_classes_dynamically_derived_kills_m2g(self) -> None:
         """Adding a recovery class to schemas/agent_response_envelope.v1.json dynamically permits its use (kills M2g)."""

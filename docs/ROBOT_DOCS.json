@@ -136,7 +136,7 @@
       "description": "Negative evidence ledger management."
     },
     "status": {
-      "cli": "fss doctor --json [--root <dir>]",
+      "cli": "fss status --json",
       "description": "Report system status in JSON format."
     }
   },
@@ -1097,6 +1097,11 @@
       "id": "ERR-NON-MONOTONE-NARROWING-001"
     },
     {
+      "description": "operation registry, frozen public registry, or markdown documentation file is missing or corrupt",
+      "guidance": "repair or restore the operation registry file",
+      "id": "ERR-OP-CORRUPT-FILE-001"
+    },
+    {
       "description": "operation execution failed with expected domain error",
       "guidance": "inspect error details and apply recovery guidance",
       "id": "ERR-OP-EXECUTION-FAILED-001"
@@ -1117,6 +1122,11 @@
       "id": "ERR-OP-INVALID-OUTCOME-001"
     },
     {
+      "description": "operation row or registry metadata lacks a mandatory field or is empty/corrupt",
+      "guidance": "declare all mandatory fields in the operation row",
+      "id": "ERR-OP-MISSING-FIELD-001"
+    },
+    {
       "description": "tombstone: superseded by `ERR-COVERAGE-UNKNOWN-001`",
       "guidance": "historical duplicate preserved for audit; canonical target is `ERR-COVERAGE-UNKNOWN-001`",
       "id": "ERR-OP-NOT-OBSERVABLE-001"
@@ -1130,6 +1140,26 @@
       "description": "pending unresolved operation must be reconciled before further mutation",
       "guidance": "reconcile pending sequence before retry",
       "id": "ERR-OP-RECONCILIATION-REQUIRED-001"
+    },
+    {
+      "description": "operation registry row drift between machine registry and markdown mirror",
+      "guidance": "synchronize architecture/agent_operations.json and registries/AGENT_OPERATIONS.md",
+      "id": "ERR-OP-REGISTRY-DRIFT-001"
+    },
+    {
+      "description": "typed Rust operation table drifted from or is missing versus the machine registry",
+      "guidance": "regenerate crates/fss-core/src/agent_operation.rs canonical rows from architecture/agent_operations.json",
+      "id": "ERR-OP-RUST-DRIFT-001"
+    },
+    {
+      "description": "operation semantic invariant violation: effect/mode contradiction, durability contradiction, or unregistered view/payload/capability/gate/retry spelling",
+      "guidance": "enforce the registered operation mode table and row invariants",
+      "id": "ERR-OP-SEMANTIC-INVARIANT-001"
+    },
+    {
+      "description": "operation stable identifier was reused, duplicated, or renumbered outside AOP-001..AOP-014",
+      "guidance": "allocate a new unique stable identifier; never reuse stable IDs",
+      "id": "ERR-OP-STABLE-ID-REUSED-001"
     },
     {
       "description": "operation budget or deadline expired before completion",
@@ -1565,6 +1595,36 @@
       "description": "capture or transit interval earliest bound exceeds latest bound",
       "guidance": "correct interval bounds before evaluation",
       "id": "ERR-TIME-INTERVAL-INVERTED-001"
+    },
+    {
+      "description": "view registry or markdown documentation file is missing or corrupt",
+      "guidance": "repair or restore the view registry file",
+      "id": "ERR-VW-CORRUPT-FILE-001"
+    },
+    {
+      "description": "view row or registry metadata lacks a mandatory field or is empty/corrupt",
+      "guidance": "declare all mandatory fields in the view row",
+      "id": "ERR-VW-MISSING-FIELD-001"
+    },
+    {
+      "description": "view registry row drift between machine registry and markdown mirror",
+      "guidance": "synchronize architecture/agent_views.json and registries/AGENT_VIEWS.md",
+      "id": "ERR-VW-REGISTRY-DRIFT-001"
+    },
+    {
+      "description": "typed Rust view table drifted from or is missing versus the machine registry",
+      "guidance": "regenerate crates/fss-core/src/agent_view.rs canonical rows from architecture/agent_views.json",
+      "id": "ERR-VW-RUST-DRIFT-001"
+    },
+    {
+      "description": "view semantic invariant violation: token bound contradiction, unregistered gate/status, or operation default view foreign-key miss",
+      "guidance": "enforce the registered view row invariants and default-view foreign keys",
+      "id": "ERR-VW-SEMANTIC-INVARIANT-001"
+    },
+    {
+      "description": "view stable identifier was reused, duplicated, or renumbered outside AVIEW-001..008",
+      "guidance": "allocate a new unique stable identifier; never reuse stable IDs",
+      "id": "ERR-VW-STABLE-ID-REUSED-001"
     }
   ],
   "freezeDigest": "sha256:9bbec4e6845ea702f676cd22472e5fb0d35ca3b3d97f66cbfccb452182413da8",
@@ -2475,6 +2535,13 @@
       "schema": "fss.agent_objective_contract.v1"
     },
     {
+      "authority": "agent operations",
+      "compatibilityRule": "operation rows stay aligned with the frozen public registry, the markdown mirror, and the typed Rust table; effect authority is mode-typed and row statuses only move with a registry generation bump",
+      "file": "schemas/agent_operations.v1.json",
+      "id": "SCHEMA-AGENT-OPERATIONS-001",
+      "schema": "fss.agent_operations.v1"
+    },
+    {
       "authority": "query cognition",
       "compatibilityRule": "compiled interpretation, targets, authority, privacy, cost, and output view are reviewable and bounded",
       "file": "schemas/agent_query_plan.v1.json",
@@ -2515,6 +2582,13 @@
       "file": "schemas/agent_situation_frame.v1.json",
       "id": "SCHEMA-AGENT-SITUATION-001",
       "schema": "fss.agent_situation_frame.v1"
+    },
+    {
+      "authority": "agent views",
+      "compatibilityRule": "view rows stay aligned with the markdown mirror and the typed Rust table; token bounds are decision-bearing budget discipline (target <= maximum) and statuses only move with a registry generation bump",
+      "file": "schemas/agent_views.v1.json",
+      "id": "SCHEMA-AGENT-VIEWS-001",
+      "schema": "fss.agent_views.v1"
     },
     {
       "authority": "multi-agent coordination",
