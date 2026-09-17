@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "scenario", "artifact", "matched", "owner", "recovery", "context"],
+  "properties": {
+    "schema": {"const": "fss.seed_proof_record.v1"},
+    "scenario": {"enum": ["corpus", "missing-first", "missing-last", "internal-gap", "duplicate", "reorder", "count-240", "count-249", "count-251", "version", "corpus-count-240", "corpus-count-249", "corpus-count-251", "recovery", "before"]},
+    "artifact": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "matched": {"type": "boolean"},
+    "owner": {"const": "architecture/seed_requirements.json"},
+    "recovery": {"type": "string", "minLength": 1},
+    "context": {
+      "type": "object", "additionalProperties": false,
+      "required": ["seed", "schedule", "authority", "obligations", "continuation"],
+      "properties": {
+        "seed": {"const": 0},
+        "schedule": {"const": "sequential; no clock/randomness"},
+        "authority": {"const": "public contracts only"},
+        "obligations": {"const": "terminal"},
+        "continuation": {"type": "null"}
+      }
+    }
+  }
+}

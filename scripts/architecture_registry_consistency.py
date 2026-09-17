@@ -72,6 +72,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import schema_validate
 import stable_id_audit
+import seed_requirement_checker
 
 # Stable diagnostic error codes
 ERR_MISSING_IDENTIFIER = "ERR-CONSISTENCY-MISSING-IDENTIFIER-001"
@@ -1682,6 +1683,11 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
     except Exception as exc:
         emit(ERR_CORRUPT_FILE, "registries/SCHEMAS.md", "#", f"failed to validate schema constitution: {exc}")
 
+    # DRIFT-003 has one canonical catalog and one guard, shared with direct E2E.
+    seed_report = seed_requirement_checker.check(repo_root)
+    for error in seed_report["findings"]:
+        emit(error["code"], error["file"], error["location"], error["message"])
+
     is_valid = len(findings) == 0
     summary = {
         "status": "pass" if is_valid else "fail",
@@ -1696,6 +1702,7 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
         "costs_count": len(costs_toml_map),
         "schemas_count": len(schemas_rows),
         "known_active_ids": len(known_active_ids),
+        "seed_requirements_count": seed_report["actualCount"],
         "tombstone_ids": len(tombstoned_ids),
     }
     return is_valid, findings, summary

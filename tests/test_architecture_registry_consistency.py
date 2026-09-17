@@ -76,6 +76,8 @@ def create_mock_repo(tmp_path: Path) -> Path:
     plan_file = ROOT / "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md"
     if plan_file.is_file():
         (tmp_path / plan_file.name).symlink_to(plan_file)
+    (tmp_path / "README.md").symlink_to(ROOT / "README.md")
+    (tmp_path / "docs").symlink_to(ROOT / "docs")
 
     return tmp_path
 

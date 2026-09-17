@@ -463,7 +463,7 @@ See [`LOCAL_QUALIFICATION_AND_RELEASE.md`](LOCAL_QUALIFICATION_AND_RELEASE.md).
 
 | Path | Purpose |
 |---|---|
-| [`COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md`](COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md) | Normative architecture, execution plan, and first 240 issues |
+| [`COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md`](COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md) | Normative architecture, execution plan, and first 250 issues |
 | [`FRANKENSTACK_DEEP_DIVE.md`](FRANKENSTACK_DEEP_DIVE.md) | Cross-project synthesis and constitutional imports |
 | [`AGENT_COGNITION_AND_CONTROL.md`](AGENT_COGNITION_AND_CONTROL.md) | Canonical agent cognition/control/accretion constitution and public `fss/1` semantic protocol |
 | [`AGENT_COGNITIVE_CONTROL_PLANE.md`](AGENT_COGNITIVE_CONTROL_PLANE.md) | Internal cognitive membrane, evidence hydration, control-loop, and crate-composition design |
