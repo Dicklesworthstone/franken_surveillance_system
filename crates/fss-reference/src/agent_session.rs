@@ -19,6 +19,9 @@ use crate::ReferenceHydrationCatalog;
 
 mod hydration;
 
+/// Session-authorized delivery of exact published context expansions.
+pub mod context_hydration;
+
 #[cfg(test)]
 mod tests;
 
