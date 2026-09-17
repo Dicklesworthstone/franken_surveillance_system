@@ -140,7 +140,7 @@ fn test_01_h264_clean_file_import() -> Result<(), Box<dyn Error>> {
     for (i, seg) in receipt.manifest.segment_spans.iter().enumerate() {
         let capsule = &receipt.capsules[i];
         let object_id = format!("object:capsule:{}", capsule.capsule_id.as_str());
-        let payload_digest = ledger
+        let payload_digest = deployment.effects_and_ledger().1
             .batches()
             .iter()
             .flat_map(|batch| &batch.deltas)
