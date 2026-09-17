@@ -108,3 +108,6 @@ pub mod foreground;
 pub mod mjpeg;
 pub mod calibration_monitor;
 pub mod calibration_gate;
+
+/// Source-linked sensor-health screening and bounded semantic-analysis admission.
+pub mod screening;
