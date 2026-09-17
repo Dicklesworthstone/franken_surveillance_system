@@ -2,14 +2,16 @@
 //! fss-deir9: an effect journal written before an indeterminate reason was required still opens,
 //! and the durable path never writes a record that the journal would then refuse.
 
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::path::{Path, PathBuf};
 
+use fss_core::effect::EffectAuthority;
 use fss_core::{
-    BatchId, CanonicalEncode, CaptureInterval, ContentDigest, ContractError, EffectIntent,
-    EffectJournal, EffectJournalTransition, EffectRecordVersion, EffectState, EvidenceDelta,
-    IdempotencyKey, IndeterminateEffectReason, ObjectId, ObligationId, OperationId,
-    OperationReceipt, Plane, TimestampNs,
+    BatchId, CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, CaptureInterval,
+    ContentDigest, ContractError, EffectIntent, EffectJournal, EffectJournalTransition,
+    EffectRecordVersion, EffectState, EvidenceDelta, IdempotencyKey, IndeterminateEffectReason,
+    ObjectId, ObligationId, OperationId, OperationReceipt, Plane, TimestampNs,
 };
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy, Journal, JournalRecord, inspect};
 use fss_reference::{
@@ -68,6 +70,18 @@ fn write_records(path: &Path, records: &[EffectJournalTransition]) -> Result<(),
             EFFECT_TRANSITION_RECORD_KIND,
             &record.try_canonical_bytes()?,
         )?;
+    }
+    Ok(())
+}
+
+/// Appends each record under its own journal record kind, which names its version.
+fn write_kind_records(
+    path: &Path,
+    records: &[(u16, EffectJournalTransition)],
+) -> Result<(), Box<dyn Error>> {
+    let mut journal = Journal::open(path, IncompleteTailPolicy::Reject)?;
+    for (kind, record) in records {
+        let _ = journal.append(*kind, &record.try_canonical_bytes()?)?;
     }
     Ok(())
 }
@@ -179,11 +193,14 @@ fn new_reasonless_indeterminate_is_refused_before_it_is_written() -> Result<(), 
     Ok(())
 }
 
-/// fss-deir9 (D3): the unmarked public replay applies the current rules only. The legacy rules are
-/// reachable only for records named v1, and never after a v2 record.
+/// fss-deir9 (D3), through the sealed durable replay (fss-8dnfo): the unmarked public replay
+/// applies the current rules only. The legacy rules are reachable only for records a durable journal
+/// file names v1, and never after a v2 record. The versioned replay itself is private to fss-core;
+/// its own copy of these assertions is the `versioned_replay_reaches_legacy_rules_only_for_v1_records`
+/// unit test there.
 #[test]
 fn legacy_rules_are_reachable_only_through_versioned_v1_records() -> Result<(), Box<dyn Error>> {
-    for error_code in [None, Some(String::new())] {
+    for (label, error_code) in [("none", None), ("empty", Some(String::new()))] {
         let records = legacy_records(error_code.clone())?;
         let public = EffectJournal::replay(records.clone());
         assert!(
@@ -191,23 +208,31 @@ fn legacy_rules_are_reachable_only_through_versioned_v1_records() -> Result<(), 
             "{error_code:?}: {:?}",
             public.as_ref().err()
         );
-        let as_v2 = EffectJournal::replay_versioned(
-            records
-                .iter()
-                .cloned()
-                .map(|record| (EffectRecordVersion::V2, record)),
-        );
+
+        let v2_dir = ScratchDir::new(&format!("rules-v2-{label}"))?;
+        let v2_path = v2_dir.journal_path();
+        let as_v2_records: Vec<_> = records
+            .iter()
+            .cloned()
+            .map(|record| (EFFECT_TRANSITION_V2_RECORD_KIND, record))
+            .collect();
+        write_kind_records(&v2_path, &as_v2_records)?;
+        let as_v2 = DurableEffectJournal::open(&v2_path, IncompleteTailPolicy::Reject);
         assert!(
-            matches!(as_v2, Err(ContractError::EvidenceRequired)),
+            matches!(
+                as_v2,
+                Err(DurableEffectError::Contract(
+                    ContractError::EvidenceRequired
+                ))
+            ),
             "{error_code:?}: {:?}",
             as_v2.as_ref().err()
         );
-        let as_v1 = EffectJournal::replay_versioned(
-            records
-                .iter()
-                .cloned()
-                .map(|record| (EffectRecordVersion::V1, record)),
-        )?;
+
+        let v1_dir = ScratchDir::new(&format!("rules-v1-{label}"))?;
+        let v1_path = v1_dir.journal_path();
+        write_records(&v1_path, &records)?;
+        let as_v1 = DurableEffectJournal::open(&v1_path, IncompleteTailPolicy::Reject)?;
         let legacy = as_v1
             .operation(&operation("legacy")?)
             .ok_or(ContractError::NotFound)?;
@@ -216,17 +241,30 @@ fn legacy_rules_are_reachable_only_through_versioned_v1_records() -> Result<(), 
             legacy.indeterminate_reason,
             Some(IndeterminateEffectReason::Unrecorded)
         );
+
+        let backwards_dir = ScratchDir::new(&format!("rules-backwards-{label}"))?;
+        let backwards_path = backwards_dir.journal_path();
         let mut backwards: Vec<_> = records
             .iter()
             .cloned()
-            .map(|record| (EffectRecordVersion::V1, record))
+            .map(|record| (EFFECT_TRANSITION_RECORD_KIND, record))
             .collect();
         if let Some(first) = backwards.first_mut() {
-            first.0 = EffectRecordVersion::V2;
+            first.0 = EFFECT_TRANSITION_V2_RECORD_KIND;
         }
-        let backwards = EffectJournal::replay_versioned(backwards);
+        write_kind_records(&backwards_path, &backwards)?;
+        let late_sequence = inspect(&backwards_path)?
+            .records()
+            .get(1)
+            .map(JournalRecord::sequence)
+            .ok_or(ContractError::NotFound)?;
+        let backwards = DurableEffectJournal::open(&backwards_path, IncompleteTailPolicy::Reject);
         assert!(
-            matches!(backwards, Err(ContractError::InvalidEffectTransition)),
+            matches!(
+                backwards,
+                Err(DurableEffectError::UnexpectedRecordKind { sequence, kind })
+                    if sequence == late_sequence && kind == EFFECT_TRANSITION_RECORD_KIND
+            ),
             "{error_code:?}: {:?}",
             backwards.as_ref().err()
         );
@@ -492,5 +530,184 @@ fn pre_deir9_journal_replays_with_its_published_witnesses_and_no_ledger_conflict
             "{label}"
         );
     }
+    Ok(())
+}
+
+/// The receipt the effect journal builds for a fresh preparation with explicit authority (only
+/// the effect journal builds a receipt; its encoding version is private, fss-deir9).
+fn sample_operation_receipt() -> Result<OperationReceipt, Box<dyn Error>> {
+    let intent = EffectIntent::new(
+        OperationId::parse("op:alert:dispatch:01")?,
+        IdempotencyKey::parse("idem:alert:2026-09-12:001")?,
+        "alert.dispatch",
+        ContentDigest::sha256(b"alert-request-body"),
+        ContentDigest::sha256(b"precondition:event-corroborated"),
+    )?;
+    let authority =
+        EffectAuthority::new("principal:operator:sec-ops", "cap:alert:dispatch", Some(42))?;
+    let mut journal = EffectJournal::new();
+    Ok(journal
+        .prepare_with_authority(
+            intent,
+            ObligationId::parse("obligation:sample-receipt")?,
+            "delivery_proved",
+            authority,
+            TimestampNs(1_700_000_000_000_000_000),
+        )?
+        .clone())
+}
+
+/// The canonical digest of `bytes` under `domain`, spelled out independently of the codec.
+fn receipt_domain_digest(domain: &str, bytes: &[u8]) -> ContentDigest {
+    let mut prefix = CanonicalEncoder::new();
+    prefix.text("fss.canonical.v1");
+    prefix.text(domain);
+    let mut preimage = prefix.finish();
+    preimage.extend_from_slice(bytes);
+    ContentDigest::sha256(&preimage)
+}
+
+/// A v1 receipt of `receipt`'s intent (prepared at `receipt.prepared_at`, system authority), as
+/// only the durable journal's sealed replay of a v1 record produces one: the record is written to a
+/// real journal file as pre-deir9 code wrote it (kind 2) and the file is opened durably (fss-8dnfo).
+fn replayed_v1_receipt(receipt: &OperationReceipt) -> Result<OperationReceipt, Box<dyn Error>> {
+    let dir = ScratchDir::new("replayed-v1-receipt")?;
+    let path = dir.journal_path();
+    write_records(
+        &path,
+        &[EffectJournalTransition::Prepare {
+            intent: receipt.intent.clone(),
+            obligation_id: ObligationId::parse("obligation:replayed-v1")?,
+            terminal_predicate: "delivery_proved".to_owned(),
+            now: receipt.prepared_at,
+        }],
+    )?;
+    let journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+    Ok(journal
+        .operation(&receipt.intent.operation_id)
+        .ok_or(ContractError::NotFound)?
+        .clone())
+}
+
+/// The pre-deir9 canonical layout of a receipt with no commit time and no result digest.
+fn v1_layout(receipt: &OperationReceipt) -> Vec<u8> {
+    let mut legacy = CanonicalEncoder::new();
+    receipt.intent.encode_canonical(&mut legacy);
+    legacy.text(receipt.state.as_str());
+    receipt.authority.encode_canonical(&mut legacy);
+    receipt.prepared_at.encode_canonical(&mut legacy);
+    legacy.bool(false);
+    receipt.updated_at.encode_canonical(&mut legacy);
+    legacy.bool(false);
+    match &receipt.error_code {
+        Some(code) => {
+            legacy.bool(true);
+            legacy.text(code);
+        }
+        None => legacy.bool(false),
+    }
+    legacy.finish()
+}
+
+/// fss-deir9 (D1): a v1 receipt keeps exactly its pre-deir9 canonical bytes and digest domain, and
+/// its indeterminate reason is not in them; a v2 receipt opens with its own domain tag, its digest
+/// binds the reason, and every shape round-trips. The public decoder refuses v1 bytes: a v1 receipt
+/// exists only as the product of the durable journal's sealed replay (moved here from fss-core's
+/// effect_schema_contract.rs by fss-8dnfo, its v1 receipt now read from a real durable file).
+#[test]
+fn operation_receipt_versions_keep_v1_bytes_and_bind_the_v2_reason() -> Result<(), Box<dyn Error>> {
+    let base = sample_operation_receipt()?;
+    assert_eq!(base.record_version(), EffectRecordVersion::V2);
+    assert_eq!(base.digest_domain(), OperationReceipt::DIGEST_DOMAIN_V2);
+    let v1_base = replayed_v1_receipt(&base)?;
+    assert_eq!(v1_base.record_version(), EffectRecordVersion::V1);
+    assert_eq!(v1_base.digest_domain(), OperationReceipt::SCHEMA);
+    let recorded = IndeterminateEffectReason::Recorded("provider_timeout".to_owned());
+    let shapes = [
+        (None, None),
+        (Some("provider_timeout"), None),
+        (None, Some(IndeterminateEffectReason::Unrecorded)),
+        (Some("provider_timeout"), Some(recorded)),
+    ];
+    let mut v2_digests = BTreeSet::new();
+    let mut v2_tag = CanonicalEncoder::new();
+    v2_tag.u64(0);
+    v2_tag.text(OperationReceipt::DIGEST_DOMAIN_V2);
+    let v2_tag = v2_tag.finish();
+    for (error_code, reason) in shapes {
+        let mut receipt = base.clone();
+        receipt.error_code = error_code.map(str::to_owned);
+        receipt.indeterminate_reason = reason.clone();
+        let mut encoder = CanonicalEncoder::new();
+        receipt.encode_canonical(&mut encoder);
+        let bytes = encoder.finish();
+        assert!(
+            bytes.starts_with(&v2_tag),
+            "v2 opens with its tag: {error_code:?}"
+        );
+        let mut decoder = CanonicalDecoder::new(&bytes);
+        let decoded = OperationReceipt::decode_canonical(&mut decoder)?;
+        decoder.ensure_finished()?;
+        assert_eq!(decoded, receipt, "v2 round trip of {error_code:?}");
+        assert_eq!(
+            receipt.receipt_digest(),
+            receipt_domain_digest(OperationReceipt::DIGEST_DOMAIN_V2, &bytes)
+        );
+        assert!(
+            v2_digests.insert(receipt.receipt_digest()),
+            "the v2 digest binds the reason: {error_code:?}"
+        );
+
+        // v1: exactly the layout before the reason existed; the reason is not in its bytes.
+        let mut v1 = v1_base.clone();
+        v1.error_code = error_code.map(str::to_owned);
+        let mut without_reason = CanonicalEncoder::new();
+        v1.encode_canonical(&mut without_reason);
+        let without_reason = without_reason.finish();
+        v1.indeterminate_reason = reason;
+        let mut with_reason = CanonicalEncoder::new();
+        v1.encode_canonical(&mut with_reason);
+        let legacy = with_reason.finish();
+        assert_eq!(legacy, v1_layout(&v1), "v1 bytes of {error_code:?}");
+        assert_eq!(
+            legacy, without_reason,
+            "a v1 receipt's reason is not digest-bound"
+        );
+        assert_eq!(
+            v1.receipt_digest(),
+            receipt_domain_digest(OperationReceipt::SCHEMA, &legacy)
+        );
+        let refused = OperationReceipt::decode_canonical(&mut CanonicalDecoder::new(&legacy));
+        assert!(
+            matches!(refused, Err(ContractError::LegacyReceiptRequiresJournal)),
+            "{error_code:?}: {refused:?}"
+        );
+    }
+    assert_eq!(v2_digests.len(), 4);
+
+    // An unknown v2 reason tag is refused, never read as some reason.
+    let mut encoder = CanonicalEncoder::new();
+    base.encode_canonical(&mut encoder);
+    let mut bytes = encoder.finish();
+    let last = bytes.len().checked_sub(1).ok_or("empty receipt bytes")?;
+    assert_eq!(bytes.get(last), Some(&0));
+    if let Some(tag) = bytes.get_mut(last) {
+        *tag = 3;
+    }
+    let refused = OperationReceipt::decode_canonical(&mut CanonicalDecoder::new(&bytes));
+    assert!(
+        matches!(refused, Err(ContractError::InvalidIdentifier)),
+        "{refused:?}"
+    );
+
+    // An operation id spelled like the v2 tag is a valid id; its v1 bytes are still v1, refused.
+    let mut lookalike = base.clone();
+    lookalike.intent.operation_id = OperationId::parse(OperationReceipt::DIGEST_DOMAIN_V2)?;
+    let refused =
+        OperationReceipt::decode_canonical(&mut CanonicalDecoder::new(&v1_layout(&lookalike)));
+    assert!(
+        matches!(refused, Err(ContractError::LegacyReceiptRequiresJournal)),
+        "{refused:?}"
+    );
     Ok(())
 }

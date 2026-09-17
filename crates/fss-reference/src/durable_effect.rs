@@ -1053,12 +1053,15 @@ impl DurableEffectJournal {
         provider: &ReferenceAlertProvider,
     ) -> Result<ReferenceAlertOutcomeReceipt, DurableEffectError> {
         self.acknowledge_obligation(&plan.obligation_id)?;
-        let receipt = crate::outcome::publish_reference_alert_outcome(
+        // This handle's memory is exactly its durably written history, so a legacy (v1) receipt
+        // it holds is durable custody, not a caller-held journal (fss-8dnfo).
+        let receipt = crate::outcome::publish_reference_alert_outcome_in_custody(
             plan,
             &self.memory,
             objects,
             ledger,
             provider,
+            crate::outcome::OutcomeJournalCustody::DurableJournal,
         )?;
         Ok(receipt)
     }
@@ -1202,6 +1205,8 @@ fn replay_records(records: &[JournalRecord]) -> Result<EffectJournal, DurableEff
             })?;
         transitions.push((version, transition));
     }
-    let journal = EffectJournal::replay_versioned(transitions)?;
+    // The sealed durable-replay constructor: only this durable file path may reach the legacy
+    // rules and v1 receipts (fss-8dnfo).
+    let journal = EffectJournal::replay_durable(transitions)?;
     Ok(journal)
 }

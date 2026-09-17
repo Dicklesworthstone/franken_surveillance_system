@@ -1645,7 +1645,7 @@ pub struct OperationReceipt {
     /// Receipt encoding version, fixed by the journal record that prepared the operation.
     ///
     /// It is private, and a v1 receipt exists only as the product of the effect journal's
-    /// versioned replay of a v1 durable record ([`EffectJournal::replay_versioned`]): the public
+    /// sealed durable replay of a v1 durable record ([`EffectJournal::replay_durable`]): the public
     /// canonical decoding refuses v1 bytes ([`ContractError::LegacyReceiptRequiresJournal`]), so
     /// a current receipt cannot be relabelled as legacy by re-encoding it. Callers that accept a
     /// receipt from elsewhere must still treat a v1 receipt as untrusted (the situation guard admits
@@ -2839,9 +2839,9 @@ impl EffectJournal {
     /// Replays transitions, reconstructing the exact in-memory state, under the current rules.
     ///
     /// Every transition is checked exactly as a new one is, and every operation uses the v2
-    /// receipt encoding. History written before fss-deir9 is replayed only through
-    /// [`Self::replay_versioned`], whose records name their version; this entry point never
-    /// applies the legacy rules (fss-deir9).
+    /// receipt encoding. History written before fss-deir9 is replayed only through the sealed
+    /// durable replay ([`Self::replay_durable`]), whose records name their version; this entry
+    /// point never applies the legacy rules (fss-deir9).
     pub fn replay(
         transitions: impl IntoIterator<Item = EffectJournalTransition>,
     ) -> Result<Self, ContractError> {
@@ -2852,7 +2852,37 @@ impl EffectJournal {
         )
     }
 
+    /// Sealed durable-replay constructor: replays the records of a durable effect journal file,
+    /// each under the version its journal record names (fss-deir9, fss-8dnfo).
+    ///
+    /// This is the only way outside this crate to obtain a legacy (v1) receipt. It exists for the
+    /// durable effect journal (`fss-reference`'s `DurableEffectJournal`), which calls it only with
+    /// the records it has just read and verified from its own file; the repository guard
+    /// (`crates/fss-core/tests/effect_replay_guard_contract.rs`) refuses any other caller in the
+    /// workspace. A journal it returns is still only as trustworthy as its custody: once it leaves
+    /// the durable handle (cloned, inspected, or mutated in memory), its v1 receipts are
+    /// caller-held, and publication and the situation guard refuse them (fss-8dnfo).
+    ///
+    /// The versioned replay it seals is private to this crate:
+    ///
+    /// ```compile_fail,E0624
+    /// use fss_core::{EffectJournal, EffectJournalTransition, EffectRecordVersion};
+    ///
+    /// let records: Vec<(EffectRecordVersion, EffectJournalTransition)> = Vec::new();
+    /// let _journal = EffectJournal::replay_versioned(records);
+    /// ```
+    ///
+    /// Record semantics are those of the versioned replay: see [`EffectRecordVersion`].
+    pub fn replay_durable(
+        records: impl IntoIterator<Item = (EffectRecordVersion, EffectJournalTransition)>,
+    ) -> Result<Self, ContractError> {
+        Self::replay_versioned(records)
+    }
+
     /// Replays durable records, each under the version its journal record names (fss-deir9).
+    ///
+    /// Private to this crate (fss-8dnfo): outside it, only the sealed [`Self::replay_durable`]
+    /// reaches it, so a caller cannot label in-memory records v1 and so build legacy receipts.
     ///
     /// A [`EffectRecordVersion::V1`] record, written before fss-deir9, is applied under the legacy
     /// transition rules it was written under: a reason-less `indeterminate` still loads, kept as
@@ -2861,7 +2891,7 @@ impl EffectJournal {
     /// record is applied under the current rules. Versions never go backwards: a v1 record after
     /// any v2 record is refused as [`ContractError::InvalidEffectTransition`], so the legacy rules
     /// cannot be reached by appending to a current journal. Records are never rewritten.
-    pub fn replay_versioned(
+    pub(crate) fn replay_versioned(
         records: impl IntoIterator<Item = (EffectRecordVersion, EffectJournalTransition)>,
     ) -> Result<Self, ContractError> {
         let mut journal = Self::new();
@@ -3749,6 +3779,107 @@ mod tests {
         let replayed = EffectJournal::replay(decoded_transitions)?;
         assert_eq!(replayed, live);
         assert_eq!(replayed.journal_root(), live.journal_root());
+        Ok(())
+    }
+
+    /// Records of an operation committed and marked indeterminate with `error_code`, as a journal
+    /// written before fss-deir9 holds them.
+    fn legacy_reasonless_records(
+        error_code: Option<String>,
+    ) -> Result<[EffectJournalTransition; 3], ContractError> {
+        let operation_id = OperationId::parse("operation:alert:one")?;
+        Ok([
+            EffectJournalTransition::Prepare {
+                intent: intent(b"legacy")?,
+                obligation_id: ObligationId::parse("obligation:legacy")?,
+                terminal_predicate: "delivery_proved".to_owned(),
+                now: TimestampNs(10),
+            },
+            EffectJournalTransition::Transition {
+                operation_id: operation_id.clone(),
+                next: EffectState::Committed,
+                now: TimestampNs(20),
+                result_digest: None,
+                error_code: None,
+            },
+            EffectJournalTransition::Transition {
+                operation_id,
+                next: EffectState::Indeterminate,
+                now: TimestampNs(30),
+                result_digest: None,
+                error_code,
+            },
+        ])
+    }
+
+    /// fss-deir9 (D3), kept in-crate by fss-8dnfo: the versioned replay applies the legacy rules
+    /// only to records named v1, never after a v2 record, and the sealed durable replay is exactly
+    /// the versioned replay.
+    #[test]
+    fn versioned_replay_reaches_legacy_rules_only_for_v1_records() -> Result<(), ContractError> {
+        for error_code in [None, Some(String::new())] {
+            let records = legacy_reasonless_records(error_code.clone())?;
+            assert_eq!(
+                EffectJournal::replay(records.clone()),
+                Err(ContractError::EvidenceRequired),
+                "{error_code:?}"
+            );
+            assert_eq!(
+                EffectJournal::replay_versioned(
+                    records
+                        .iter()
+                        .cloned()
+                        .map(|record| (EffectRecordVersion::V2, record)),
+                ),
+                Err(ContractError::EvidenceRequired),
+                "{error_code:?}"
+            );
+            let as_v1 = EffectJournal::replay_versioned(
+                records
+                    .iter()
+                    .cloned()
+                    .map(|record| (EffectRecordVersion::V1, record)),
+            )?;
+            let legacy = as_v1
+                .operation(&OperationId::parse("operation:alert:one")?)
+                .ok_or(ContractError::NotFound)?;
+            assert_eq!(legacy.record_version(), EffectRecordVersion::V1);
+            assert_eq!(legacy.digest_domain(), OperationReceipt::SCHEMA);
+            assert_eq!(legacy.error_code, error_code);
+            assert_eq!(
+                legacy.indeterminate_reason,
+                Some(IndeterminateEffectReason::Unrecorded)
+            );
+            let sealed = EffectJournal::replay_durable(
+                records
+                    .iter()
+                    .cloned()
+                    .map(|record| (EffectRecordVersion::V1, record)),
+            )?;
+            assert_eq!(
+                sealed, as_v1,
+                "the sealed durable replay is the versioned replay"
+            );
+
+            let mut backwards: Vec<_> = records
+                .iter()
+                .cloned()
+                .map(|record| (EffectRecordVersion::V1, record))
+                .collect();
+            if let Some(first) = backwards.first_mut() {
+                first.0 = EffectRecordVersion::V2;
+            }
+            assert_eq!(
+                EffectJournal::replay_versioned(backwards.clone()),
+                Err(ContractError::InvalidEffectTransition),
+                "{error_code:?}"
+            );
+            assert_eq!(
+                EffectJournal::replay_durable(backwards),
+                Err(ContractError::InvalidEffectTransition),
+                "{error_code:?}"
+            );
+        }
         Ok(())
     }
 }
