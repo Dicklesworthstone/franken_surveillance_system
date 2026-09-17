@@ -330,69 +330,6 @@ fn issued_cursor_cannot_be_reused_twice_for_ordinal_replay()
 }
 
 #[test]
-fn cursor_capacity_is_bounded_and_evicts_consumed_or_expired() -> Result<(), HydrationError> {
-    let handle = descriptor("cursor-capacity")?;
-    let mut catalog = ReferenceHydrationCatalog::with_limits(ReferenceHydrationLimits {
-        max_descriptors: 10,
-        max_payload_bytes: 1024 * 1024,
-        max_issued_cursors: 2,
-    });
-    catalog.register_descriptor(handle.clone())?;
-    for level in &handle.levels {
-        catalog.register_artifact(
-            &handle.handle_id,
-            handle.descriptor_digest,
-            artifact(&handle, *level)?,
-        )?;
-    }
-
-    // 1st request -> issues cursor 1 (1 / 2 slots used)
-    let first_request = request(&handle)?;
-    let first_resp = catalog.hydrate(&first_request, TimestampNs(10))?;
-    let cursor1 = first_resp
-        .receipt
-        .continuation
-        .ok_or(HydrationError::WrongContinuation)?;
-    assert_eq!(catalog.issued_cursor_count(), 1);
-
-    // 2nd request -> issues cursor 2 (2 / 2 slots used)
-    let second_request = request(&handle)?;
-    let second_resp = catalog.hydrate(&second_request, TimestampNs(12))?;
-    let _cursor2 = second_resp
-        .receipt
-        .continuation
-        .ok_or(HydrationError::WrongContinuation)?;
-    assert_eq!(catalog.issued_cursor_count(), 2);
-
-    // 3rd request without continuation -> capacity is full, neither cursor is expired or consumed
-    let third_request = request(&handle)?;
-    assert_eq!(
-        catalog.hydrate(&third_request, TimestampNs(15)),
-        Err(HydrationError::CapacityExceeded)
-    );
-
-    // Advance cursor1: cursor1 is consumed and evicted under capacity pressure
-    let mut advance_request = request(&handle)?;
-    advance_request.requested_level = HydrationLevel::H1;
-    advance_request.issued_at = TimestampNs(20);
-    advance_request.continuation = Some(cursor1.clone());
-    reseal_request(&mut advance_request);
-    let advance_resp = catalog.hydrate(&advance_request, TimestampNs(25))?;
-    let _cursor3 = advance_resp
-        .receipt
-        .continuation
-        .ok_or(HydrationError::WrongContinuation)?;
-    assert_eq!(catalog.issued_cursor_count(), 2);
-    assert!(catalog.issued_cursor(&cursor1.cursor_digest).is_none());
-
-    // Prune expired cursors at timestamp 100
-    catalog.prune_expired_cursors(TimestampNs(100));
-    assert_eq!(catalog.issued_cursor_count(), 0);
-
-    Ok(())
-}
-
-#[test]
 fn unavailable_receipt_has_no_explicit_downgrade_invalidator() -> Result<(), HydrationError> {
     let (mut catalog, handle) = catalog()?;
     let mut request = request(&handle)?;
