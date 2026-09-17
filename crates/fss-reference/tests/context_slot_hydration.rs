@@ -9,19 +9,23 @@ use fss_core::hydration::{
     LaboratoryAccess, SemanticHandle, SemanticHandleSpec,
 };
 use fss_core::{
-    ActionAffordance, AffordanceClass, AgentSession, AgentSessionParams, BudgetVector,
+    AgentSession, AgentSessionParams, BudgetVector, CapsuleId, CaptureInterval,
     Completeness, ContentDigest, ContextExpansionBindingSet, ContractBasis,
-    ContractBasisRegistryBytes, ContractError, KnowledgeCell, KnowledgeCellParams, KnowledgeState,
-    LedgerAnchor, MissionId, ObligationId, PrincipalId, ProvenanceClass, ResourcePressure,
-    SessionId, SituationCapsule, SituationFrame, TimestampNs, WorldEnvelope,
+    ContractBasisRegistryBytes, ContractError, EventId, LedgerAnchor, MissionId,
+    PrincipalId, ProbabilityInterval, ResourcePressure, SensorId, SessionId, TimestampNs,
 };
+use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
+use fss_object::{InMemoryObjectStore, ObjectLimits};
 use fss_reference::agent_session::context_hydration::{
     BoundContextHydration, ContextHydrationError, ContextSlotRead,
 };
 use fss_reference::{
     BoundReferenceSituationPublication, ReferenceExpansionBindingSpec, ReferenceHydrationCatalog,
     ReferenceProjectionSpec, ReferenceSessionError, ReferenceSessionLimits, ReferenceSessionStore,
-    ReferenceSituation, SessionRefresh, project_reference_situation,
+    ReferenceSituation, ReferenceSituationRequest, SessionRefresh, VirtualCameraSpec,
+    DeliveryPlan, MockModelScript, MockModelSpec, MockSemanticLabel, ReferenceModelObservation,
+    compile_reference_situation, evaluate_unknown_presence, execute_mock_model,
+    project_reference_situation, publish_reference_event, run_reference_capture,
 };
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
@@ -36,85 +40,84 @@ fn basis() -> ContractBasis {
     )
 }
 
+struct RunDirectory(std::path::PathBuf);
+
+impl RunDirectory {
+    fn new() -> TestResult<Self> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let base = std::env::var_os("CARGO_TARGET_TMPDIR")
+            .map(std::path::PathBuf::from)
+            .or_else(|| option_env!("CARGO_TARGET_TMPDIR").map(std::path::PathBuf::from))
+            .unwrap_or_else(std::env::temp_dir);
+        for _ in 0..64 {
+            let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = base.join(format!("fss-context-hydration-{}-{id}", std::process::id()));
+            match std::fs::create_dir(&path) {
+                Ok(()) => return Ok(Self(path)),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Err("exhausted exclusive hydration fixture directories".into())
+    }
+}
+
+impl Drop for RunDirectory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn situation() -> TestResult<ReferenceSituation> {
-    let mut anchor = LedgerAnchor::genesis("site:bound-context");
-    anchor.commit_sequence = 10;
-    let evidence = ContentDigest::sha256(b"bound-context-evidence");
-    let envelope = WorldEnvelope {
-        envelope_id: "world-envelope:bound-context".to_owned(),
-        objective_id: "objective:bound-context".to_owned(),
-        anchor: anchor.clone(),
-        nominal_claim_ids: BTreeSet::from(["claim:presence".to_owned()]),
-        certified_core_claim_ids: BTreeSet::new(),
-        alternatives: vec![fss_core::PossibleWorld {
-            world_id: "world:bound-context:protected".to_owned(),
-            description: "A protected high-loss world remains live.".to_owned(),
-            claim_ids: BTreeSet::from(["claim:presence".to_owned()]),
-            evidence: vec![evidence],
-            consequence_severity: 5,
-            protected: true,
-        }],
-        adversarial_residuals: Vec::new(),
-        common_invariants: BTreeSet::from(["invariant:no-blind-effect".to_owned()]),
-        coverage_boundary_handles: BTreeSet::from(["fss://coverage/bound-context".to_owned()]),
+    let run_dir = RunDirectory::new()?;
+    let mut authority = DurableReferenceLedger::open(
+        run_dir.0.join("authority.journal"), "site:bound-context", IncompleteTailPolicy::Reject,
+    )?;
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(2048, 32 * 1024 * 1024));
+    let spec = VirtualCameraSpec {
+        capture_id: CapsuleId::parse("capture:bound-context")?,
+        sensor_id: SensorId::parse("sensor:bound-context")?,
+        seed: 60,
+        packet_count: 3,
+        packet_bytes: 32,
+        start_ns: 100,
+        period_ns: 100,
+        uncertainty_ns: 1,
     };
-    let affordance = ActionAffordance {
-        affordance_id: "affordance:bound-context:investigate".to_owned(),
-        operation: "investigate".to_owned(),
-        target: "fss://event/bound-context/evidence".to_owned(),
-        rationale: "Acquire independent evidence.".to_owned(),
-        class: AffordanceClass::Probe,
-        supported_worlds: envelope.world_ids(),
-        unsafe_worlds: BTreeSet::new(),
-        required_capabilities: BTreeSet::from(["capability:evidence.query".to_owned()]),
-        cost: BudgetVector::builder()
-            .latency_ms(100).tokens(10).bytes(128).cpu_millis(5).privacy_exposure(0.1)
-            .build()?,
-        reversible: true,
-        branch_predicate: None,
-    };
-    let frame = SituationFrame {
-        frame_id: "frame:bound-context".to_owned(),
-        objective_id: "objective:bound-context".to_owned(),
-        anchor: anchor.clone(),
-        world_envelope: envelope,
-        knowledge_cells: vec![KnowledgeCell::new(KnowledgeCellParams {
-            claim_id: "claim:presence".to_owned(),
-            statement: "Presence remains unresolved.".to_owned(),
-            knowledge_state: KnowledgeState::Conflicted,
-            provenance: ProvenanceClass::Derived,
-            hypothesis: None,
-            evidence: vec![evidence],
-            contradictions: vec![ContentDigest::sha256(b"bound-context-contradiction")],
-            valid_until: None,
-            state_basis: None,
-        })?],
-        now: vec!["A candidate event remains under investigation.".to_owned()],
-        changed: vec!["A contradictory observation arrived.".to_owned()],
-        why: vec!["optional explanatory detail ".repeat(400)],
-        unknown: vec!["Independent corroboration is absent.".to_owned()],
-        at_risk: vec!["An irreversible alert remains blocked.".to_owned()],
-        next: vec!["affordance:bound-context:investigate".to_owned()],
-        evidence_handles: BTreeSet::from([format!("fss://proof/{evidence}")]),
-    };
-    let capsule = SituationCapsule {
-        capsule_id: "situation:bound-context".to_owned(),
-        revision: 1,
-        contract_basis: basis(),
+    let capture = run_reference_capture(
+        &spec, &DeliveryPlan::identity(spec.packet_count)?, &mut objects, &mut authority,
+    )?;
+    let model = MockModelSpec::new("mock:bound-context:v1", MockModelScript::Fixed {
+        label: MockSemanticLabel::PersonLike,
+        probability: ProbabilityInterval::new(0.9, 1.0)?,
+    })?;
+    let observation = ReferenceModelObservation::new(
+        execute_mock_model(&model, &capture, &mut objects)?,
+        "power:bound-context",
+        CaptureInterval::new(
+            capture.source_packets.first().ok_or(ContractError::NotFound)?.capture.earliest,
+            capture.source_packets.last().ok_or(ContractError::NotFound)?.capture.latest,
+        )?,
+    )?;
+    let decision = evaluate_unknown_presence(EventId::parse("event:bound-context")?, vec![observation])?;
+    let receipt = publish_reference_event(&decision, &mut objects, &mut authority)?;
+    Ok(compile_reference_situation(ReferenceSituationRequest {
         mission_id: MissionId::parse("mission:bound-context")?,
         session_id: SessionId::parse("session:bound-context")?,
         principal_id: PrincipalId::parse("principal:bound-context")?,
-        anchor,
+        objective_id: "objective:bound-context".to_owned(),
+        revision: 1,
+        contract_basis: basis(),
         previous_anchor: None,
-        frame,
-        obligations: vec![ObligationId::parse("obligation:bound-context")?],
-        affordances: vec![affordance],
-        completeness: Completeness::Partial,
+        predecessor_publication: None,
+        decision: &decision,
+        event_receipt: &receipt,
+        alert_plan: None,
+        alert_outcome: None,
+        coverage_witness: None,
+        available_capabilities: BTreeSet::from(["capability:evidence.query".to_owned()]),
         created_at: TimestampNs(1_000),
-        mission_state: None,
-    };
-    capsule.validate()?;
-    Ok(ReferenceSituation::new(capsule, BTreeSet::from([evidence])))
+    }, &authority)?)
 }
 
 fn projection_spec() -> TestResult<ReferenceProjectionSpec> {
@@ -186,7 +189,8 @@ impl Fixture {
         let publication = project_reference_situation(situation()?, &projection_spec()?)?;
         let mut evidence_anchor = publication.context_pack.anchor.clone();
         if older_descriptor {
-            evidence_anchor.commit_sequence = 5;
+            evidence_anchor.commit_sequence = evidence_anchor.commit_sequence.checked_sub(1)
+                .ok_or(ContractError::NotFound)?;
         }
         let specs = ContextExpansionBindingSet::required_slots(
             &publication.context_pack, &publication.compression_receipt,
@@ -294,8 +298,10 @@ fn exact_slot_delivers_with_two_anchors_and_no_alias_capacity() -> TestResult {
         let delivery = fixture.deliver(TimestampNs(1_001))?;
         delivery.verify_for(&fixture.publication, &fixture.session)?;
         assert_eq!(delivery.response.receipt.delivered_level, Some(HydrationLevel::H1));
-        assert_eq!(delivery.request.anchor.commit_sequence, if older { 5 } else { 10 });
-        assert_eq!(fixture.session.current_anchor.commit_sequence, 10);
+        let publication_anchor = &fixture.publication.publication.context_pack.anchor;
+        assert_eq!(delivery.request.anchor.commit_sequence,
+            publication_anchor.commit_sequence - u64::from(older));
+        assert_eq!(&fixture.session.current_anchor, publication_anchor);
         assert_eq!(delivery.session_digest, session_digest);
         assert_eq!(delivery.request.available_capabilities, fixture.session.capabilities);
         assert_eq!(fixture.remaining(TimestampNs(1_001))?, 5_000 - 1_024);
