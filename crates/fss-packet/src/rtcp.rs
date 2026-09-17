@@ -1,4 +1,4 @@
-use std::{fmt, slice::ChunksExact};
+use std::fmt;
 
 use crate::error::{PacketError, PacketLimits, be16, be32, span};
 
@@ -241,13 +241,13 @@ impl<'a> RtcpPacket<'a> {
             201 => 8,
             _ => {
                 return ReportBlocks {
-                    chunks: self.bytes[..0].chunks_exact(REPORT_BLOCK_BYTES),
+                    blocks: self.bytes[..0].as_chunks::<REPORT_BLOCK_BYTES>().0,
                 };
             }
         };
         let end = start + usize::from(self.count()) * REPORT_BLOCK_BYTES;
         ReportBlocks {
-            chunks: self.bytes[start..end].chunks_exact(REPORT_BLOCK_BYTES),
+            blocks: self.bytes[start..end].as_chunks::<REPORT_BLOCK_BYTES>().0,
         }
     }
 
@@ -275,14 +275,15 @@ impl fmt::Debug for RtcpPacket<'_> {
 /// Allocation-free iterator over validated reception reports.
 #[derive(Clone)]
 pub struct ReportBlocks<'a> {
-    chunks: ChunksExact<'a, u8>,
+    blocks: &'a [[u8; REPORT_BLOCK_BYTES]],
 }
 
 impl Iterator for ReportBlocks<'_> {
     type Item = ReceptionReport;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let b = self.chunks.next()?;
+        let (b, rest) = self.blocks.split_first()?;
+        self.blocks = rest;
         let lost = i32::from_be_bytes([0, b[5], b[6], b[7]]);
         let cumulative_lost = if lost & 0x80_0000 != 0 {
             lost | !0xff_ffff
@@ -301,7 +302,8 @@ impl Iterator for ReportBlocks<'_> {
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        self.chunks.size_hint()
+        let remaining = self.blocks.len();
+        (remaining, Some(remaining))
     }
 }
 

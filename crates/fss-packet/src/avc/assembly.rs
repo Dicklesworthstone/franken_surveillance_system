@@ -394,22 +394,20 @@ impl AvcAssembler {
                 });
             }
         }
-        if let (Incoming::Vcl(identity), Some(pending)) = (incoming, &self.pending) {
-            if let Some((previous, timestamp)) = pending.picture {
-                if !expires
-                    && !identity.starts_new_picture(previous)
-                    && timestamp != nal.timestamp()
-                {
-                    self.discontinuity_before = true;
-                    self.last_now_ns = now_ns;
-                    let retired = self.retire(AvcRetirementReason::InvalidInput);
-                    return AvcAssemblyStep::Refused(AvcAssemblyRefusal {
-                        reason: AvcAssemblyError::TimestampMismatch,
-                        nal,
-                        retired,
-                    });
-                }
-            }
+        if let (Incoming::Vcl(identity), Some(pending)) = (incoming, &self.pending)
+            && let Some((previous, timestamp)) = pending.picture
+            && !expires
+            && !identity.starts_new_picture(previous)
+            && timestamp != nal.timestamp()
+        {
+            self.discontinuity_before = true;
+            self.last_now_ns = now_ns;
+            let retired = self.retire(AvcRetirementReason::InvalidInput);
+            return AvcAssemblyStep::Refused(AvcAssemblyRefusal {
+                reason: AvcAssemblyError::TimestampMismatch,
+                nal,
+                retired,
+            });
         }
         let fresh = self.pending.is_none() || boundary.is_some() || expires;
         let prior_bytes = if fresh { 0 } else { self.pending_bytes() };

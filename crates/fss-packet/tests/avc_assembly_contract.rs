@@ -3,17 +3,42 @@
 
 mod avc_support;
 
-use avc_support::{Error, KEY, accept, nal, parameters, slice, split, wire};
+use avc_support::{Error, KEY, parameters, slice, split, wire};
 use fss_packet::avc::{
-    AvcAssembler, AvcAssemblyError, AvcAssemblyLimits, AvcAssemblyPoll, AvcAssemblyStep,
-    AvcBoundary, AvcRetirementReason, AvcSyntaxLimits, parse_pps, parse_sps,
+    AvcAssembler, AvcAssemblyError, AvcAssemblyLimits, AvcAssemblyOutput, AvcAssemblyPoll,
+    AvcAssemblyStep, AvcBoundary, AvcRetirementReason, AvcSyntaxLimits, parse_pps, parse_sps,
 };
 use fss_packet::{
-    H264Depacketizer, H264Limits, H264Mode, H264ReceivePoll, H264Receiver, PacketLimits,
+    H264Depacketizer, H264Limits, H264Mode, H264ReceivePoll, H264Receiver, NalUnit, PacketLimits,
     ReorderLimits, RtpPacket, StreamKey,
 };
 
 type TestResult = Result<(), Error>;
+
+fn nal(
+    key: StreamKey,
+    sequence: u64,
+    timestamp: u32,
+    marker: bool,
+    payload: &[u8],
+) -> Result<NalUnit, Error> {
+    let bytes = wire(key, sequence, timestamp, marker, payload);
+    let packet = RtpPacket::parse(&bytes, PacketLimits::default())?;
+    let mut receiver =
+        H264Depacketizer::new(key, 96, H264Mode::NonInterleaved, H264Limits::default())?;
+    receiver
+        .push(key, sequence, packet, 0)?
+        .nals
+        .pop()
+        .ok_or_else(|| "no reconstructed NAL".into())
+}
+
+fn accept(step: AvcAssemblyStep) -> Result<AvcAssemblyOutput, Error> {
+    match step {
+        AvcAssemblyStep::Accepted(output) => Ok(output),
+        AvcAssemblyStep::Refused(refusal) => Err(refusal.reason.into()),
+    }
+}
 
 fn assembler(limits: AvcAssemblyLimits) -> Result<AvcAssembler, Error> {
     let (sps, pps) = parameters()?;

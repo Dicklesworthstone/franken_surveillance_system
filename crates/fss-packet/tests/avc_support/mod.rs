@@ -1,9 +1,7 @@
 #![forbid(unsafe_code)]
 //! Small, deterministic integration-test helpers; no device or network access.
 
-use fss_packet::avc::{
-    AvcAssemblyOutput, AvcAssemblyStep, AvcPps, AvcSps, AvcSyntaxLimits, parse_pps, parse_sps,
-};
+use fss_packet::avc::{AvcPps, AvcSps, AvcSyntaxLimits, parse_pps, parse_sps};
 use fss_packet::{
     H264Depacketizer, H264Limits, H264Mode, NalUnit, PacketLimits, RtpPacket, StreamKey,
 };
@@ -43,10 +41,10 @@ pub fn split(bytes: &[u8]) -> Vec<&[u8]> {
             at += 1;
         }
     }
-    if let Some(begin) = start {
-        if begin < bytes.len() {
-            result.push(&bytes[begin..]);
-        }
+    if let Some(begin) = start
+        && begin < bytes.len()
+    {
+        result.push(&bytes[begin..]);
     }
     result
 }
@@ -73,31 +71,6 @@ pub fn wire(
     bytes
 }
 
-pub fn nal(
-    key: StreamKey,
-    sequence: u64,
-    timestamp: u32,
-    marker: bool,
-    payload: &[u8],
-) -> Result<NalUnit, Error> {
-    let bytes = wire(key, sequence, timestamp, marker, payload);
-    let packet = RtpPacket::parse(&bytes, PacketLimits::default())?;
-    let mut receiver =
-        H264Depacketizer::new(key, 96, H264Mode::NonInterleaved, H264Limits::default())?;
-    receiver
-        .push(key, sequence, packet, 0)?
-        .nals
-        .pop()
-        .ok_or_else(|| "no reconstructed NAL".into())
-}
-
-pub fn accept(step: AvcAssemblyStep) -> Result<AvcAssemblyOutput, Error> {
-    match step {
-        AvcAssemblyStep::Accepted(output) => Ok(output),
-        AvcAssemblyStep::Refused(refusal) => Err(refusal.reason.into()),
-    }
-}
-
 pub fn slice(first_mb: u32, frame: u32) -> Vec<u8> {
     let mut bits = Vec::new();
     for value in [first_mb, 0, 0] {
@@ -119,7 +92,7 @@ pub fn slice(first_mb: u32, frame: u32) -> Vec<u8> {
     }
     let mut bytes = vec![0x41];
     let mut zeros = 0;
-    for chunk in bits.chunks_exact(8) {
+    for chunk in bits.as_chunks::<8>().0 {
         let byte = chunk.iter().fold(0_u8, |v, b| (v << 1) | u8::from(*b));
         if zeros == 2 && byte <= 3 {
             bytes.push(3);

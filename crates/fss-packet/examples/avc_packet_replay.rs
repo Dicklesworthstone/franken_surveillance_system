@@ -175,10 +175,10 @@ fn split(bytes: &[u8]) -> Vec<&[u8]> {
             at += 1;
         }
     }
-    if let Some(begin) = start {
-        if begin < bytes.len() {
-            out.push(&bytes[begin..]);
-        }
+    if let Some(begin) = start
+        && begin < bytes.len()
+    {
+        out.push(&bytes[begin..]);
     }
     out
 }

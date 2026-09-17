@@ -252,14 +252,25 @@ fn rtcp_padding_only_belongs_to_last_packet() -> TestResult {
 }
 
 #[test]
-fn source_description_must_terminate_and_match_chunk_count() {
-    for (index, value) in [(0, 0x82), (9, 200), (13, 2), (15, 1)] {
+fn source_description_must_terminate_and_match_chunk_count() -> TestResult {
+    for (index, value) in [(0, 0x82), (9, 200), (15, 1)] {
         let mut bytes = sdes(7);
         bytes[index] = value;
         assert!(
             RtcpCompound::parse(&bytes, PacketLimits::default(), RtcpMode::ReducedSize).is_err()
         );
     }
+    // An empty NAME item followed by END is valid, not a missing terminator.
+    let mut bytes = sdes(7);
+    bytes[13] = 2;
+    RtcpCompound::parse(&bytes, PacketLimits::default(), RtcpMode::ReducedSize)?;
+    // Consume the final byte as NAME data, leaving no END item.
+    bytes[14] = 1;
+    assert_eq!(
+        RtcpCompound::parse(&bytes, PacketLimits::default(), RtcpMode::ReducedSize),
+        Err(PacketError::SourceDescription)
+    );
+    Ok(())
 }
 
 #[test]

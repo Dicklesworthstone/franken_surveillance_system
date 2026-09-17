@@ -38,12 +38,12 @@ impl Writer {
     }
     fn nal(mut self, header: u8) -> Vec<u8> {
         self.bit(true);
-        while self.0.len() % 8 != 0 {
+        while !self.0.len().is_multiple_of(8) {
             self.bit(false);
         }
         let mut wire = vec![header];
         let mut zeros = 0;
-        for chunk in self.0.chunks_exact(8) {
+        for chunk in self.0.as_chunks::<8>().0 {
             let byte = chunk.iter().fold(0_u8, |v, b| (v << 1) | u8::from(*b));
             if zeros == 2 && byte <= 3 {
                 wire.push(3);
@@ -1039,10 +1039,10 @@ fn fixture_nals(bytes: &[u8]) -> Vec<&[u8]> {
             at += 1;
         }
     }
-    if let Some(begin) = start {
-        if begin < bytes.len() {
-            spans.push(&bytes[begin..]);
-        }
+    if let Some(begin) = start
+        && begin < bytes.len()
+    {
+        spans.push(&bytes[begin..]);
     }
     spans
 }
