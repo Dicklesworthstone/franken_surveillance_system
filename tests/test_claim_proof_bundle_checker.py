@@ -6525,6 +6525,56 @@ class TestRound8ByteCap(unittest.TestCase):
             self.assertEqual(run_json_cli(root)[:2], (1, [ERR_UNREADABLE_INPUT]))
 
 
+
+class TestAggregateIndexByteCap(unittest.TestCase):
+    """Review X1: an aggregate byte cap across every file the stable-ID tombstone index reads.
+    Beyond the cap the index is unavailable before any read or snapshot allocation (fail closed);
+    exact equality stays available."""
+
+    def test_aggregate_over_cap_is_unavailable_before_any_read(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            for i in range(9):  # 9 x 32 MiB sparse = 288 MiB > the 256 MiB aggregate cap
+                with open(root / f"architecture/big{i}.json", "wb") as handle:
+                    handle.truncate(cpb.MAX_INPUT_BYTES)  # sparse: st_size without disk bytes
+            reads: list[Path] = []
+            real_read = cpb._read_regular_file
+
+            def spy(path: Path) -> bytes:
+                reads.append(path)
+                return real_read(path)
+
+            with mock.patch.object(cpb, "_read_regular_file", spy):
+                tombstones, findings = cpb.load_tombstone_index(root)
+            self.assertEqual((tombstones, codes(findings)), (set(), [TOMBSTONE_UNAVAILABLE]))
+            self.assertIn("aggregate cap", findings[0].message)
+            self.assertEqual(
+                [p.name for p in reads],
+                ["stable_id_resolution.json"],
+                "over-budget sources must be refused before any source-set read",
+            )
+
+    def test_exact_equality_stays_available_and_one_byte_over_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            extra = root / "architecture/extra.json"
+            extra.write_bytes(b'{"items":[{"id":"FSS-990","status":"tombstoned"}]}')
+            folders = (("registries", "*.md"), ("docs/adr", "*.md"), ("architecture", "*.json"))
+            total = sum(
+                p.stat().st_size
+                for folder, pattern in folders
+                if (root / folder).is_dir()
+                for p in (root / folder).glob(pattern)
+            )
+            with mock.patch.object(cpb, "MAX_INDEX_BYTES", total):
+                tombstones, findings = cpb.load_tombstone_index(root)
+            self.assertEqual(findings, [])
+            self.assertIn(cpb.normalize_id("FSS-990"), tombstones)
+            with mock.patch.object(cpb, "MAX_INDEX_BYTES", total - 1):
+                tombstones, findings = cpb.load_tombstone_index(root)
+            self.assertEqual((tombstones, codes(findings)), (set(), [TOMBSTONE_UNAVAILABLE]))
+
+
 # ---------------------------------------------------------------------------
 # Round-9 review, 30.87.2: N1 fail-closed receipt schema interpretation, N2 no stdout, N3 index
 # re-hash, N4 containment on the open descriptor

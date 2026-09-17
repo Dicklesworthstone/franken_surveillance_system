@@ -73,6 +73,7 @@ import json
 import math
 import os
 import re
+import select
 import stat
 import sys
 import tempfile
@@ -697,6 +698,12 @@ class _NotRegularFile(OSError):
 MAX_INPUT_BYTES = 32 * 1024 * 1024
 
 
+# Aggregate byte cap across every file the stable-ID tombstone index reads (review X1). Sparse
+# registries can otherwise cost unbounded memory, time, and snapshot bytes; beyond the cap the
+# index is unavailable (fail closed) before any read or snapshot allocation.
+MAX_INDEX_BYTES = 8 * MAX_INPUT_BYTES
+
+
 class _InputTooLarge(OSError):
     """A regular file larger than MAX_INPUT_BYTES."""
 
@@ -1006,6 +1013,19 @@ def load_tombstone_index(root: Path) -> tuple[set[str], list[ClaimFinding]]:
         )
 
     read_by_index = files_read_by_index()
+    # Review X1: the aggregate size of the whole source set is bounded before any read, so a
+    # directory of sparse near-cap files cannot cost unbounded memory, time, or snapshot bytes.
+    total_bytes = 0
+    for index_path in read_by_index:
+        try:
+            total_bytes += index_path.stat().st_size
+        except OSError as exc:
+            return unavailable(f"'{sanitize_path(index_path, root)}' could not be stat'ed: {exc}", error=str(exc))
+    if total_bytes > MAX_INDEX_BYTES:
+        return unavailable(
+            f"the files the stable-ID index reads total {total_bytes} bytes, over the aggregate cap of {MAX_INDEX_BYTES};"
+            " the index is refused before any read or snapshot allocation"
+        )
     snapshot: dict[Path, str] = {}
     pre_read: dict[Path, bytes] = {}
     for index_path in read_by_index:
@@ -5553,17 +5573,37 @@ def _emit_report(args: argparse.Namespace, is_valid: bool, findings: list[ClaimF
 
 
 def _flush_or_silence(stream: Any) -> bool:
-    """Flushes a standard stream. If it cannot be written (a closed pipe, a full disk, a closed
-    descriptor), its descriptor is pointed at /dev/null so that neither this nor the interpreter's
-    final flush can raise, and the failure is reported (review round 8, F2). No stream at all (its
-    descriptor was closed before start) has nothing to flush; the caller decides what that means."""
+    """Flushes a standard stream and verifies the kernel accepted the delivery. If it cannot be
+    written (a closed pipe, a full disk, a closed descriptor), its descriptor is pointed at
+    /dev/null so that neither this nor the interpreter's final flush can raise, and the failure
+    is reported (review round 8, F2). No stream at all (its descriptor was closed before start)
+    has nothing to flush; the caller decides what that means.
+
+    A bare stream.flush() is not evidence of delivery (review: F2 closed-pipe tests): the write
+    can already sit in the kernel pipe buffer from an earlier flush while the reader has since
+    closed, or flush can succeed while a later exit-time flush of newly written text will EPIPE.
+    A pipe's write end is therefore polled for POLLERR/POLLHUP, which the kernel reports once its
+    read end is fully closed (a zero-byte write does NOT raise on a readerless pipe, so it is no
+    substitute). Failure to poll (non-pipe descriptor, poll unavailable) leaves the flush verdict
+    standing; this check only ever turns success into failure, never the reverse."""
     if stream is None:
         return True
     try:
         stream.flush()
-        return True
+        flush_ok = True
     except (OSError, ValueError):  # ValueError: a stream object that is already closed
-        pass
+        flush_ok = False
+    try:
+        fd = stream.fileno()
+        poller = select.poll()
+        poller.register(fd, select.POLLERR | select.POLLHUP)
+        if poller.poll(0) and flush_ok:
+            # The kernel has refused this descriptor's pipe: nothing more can be delivered.
+            flush_ok = False
+    except (OSError, ValueError):
+        flush_ok = False
+    if flush_ok:
+        return True
     try:
         fd = stream.fileno()
     except (OSError, ValueError):
