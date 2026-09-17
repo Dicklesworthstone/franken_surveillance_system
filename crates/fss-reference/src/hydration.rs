@@ -111,7 +111,7 @@ impl ReferenceHydrationCatalog {
         self.issued_cursors.get(cursor_digest)
     }
 
-    /// Returns the number of active cursor issuance records retained by this catalog.
+    /// Returns the number of retained cursor records, including consumed replay tombstones.
     #[must_use]
     pub fn issued_cursor_count(&self) -> usize {
         self.issued_cursors.len()
@@ -123,10 +123,12 @@ impl ReferenceHydrationCatalog {
             .retain(|_, record| now < record.expires_at);
     }
 
-    /// Prunes consumed cursor issuance records to reclaim cursor capacity.
-    pub fn prune_consumed_cursors(&mut self) {
-        self.issued_cursors.retain(|_, record| !record.consumed);
-    }
+    /// Compatibility no-op: consumption is not permission to forget an issuance.
+    ///
+    /// A deterministic read can reproduce the same cursor digest. Removing a live consumed
+    /// record would allow that read to resurrect the cursor. Reclaim capacity only through
+    /// [`Self::prune_expired_cursors`] using the runtime's trusted, nondecreasing clock.
+    pub fn prune_consumed_cursors(&mut self) {}
 
     /// Registers an exact revision without allowing rollback, equal-anchor forks, or resurrection.
     ///
@@ -239,6 +241,8 @@ impl ReferenceHydrationCatalog {
     ///
     /// Replays are deterministic for the same request, catalog, and service time. A retry at a
     /// later time is revalidated rather than replaying cached disclosure past retention expiry.
+    /// Exact active cursor reissuance is idempotent, but a consumed cursor is never reactivated.
+    /// Cursor-capacity refusals leave the catalog unchanged, including the input continuation.
     pub fn hydrate(
         &mut self,
         request: &HydrationRequest,
@@ -358,40 +362,54 @@ impl ReferenceHydrationCatalog {
                 receipt,
             };
             response.validate_for(request, &descriptor)?;
+            // Preflight issuance before consuming the predecessor or reclaiming any records.
+            // Active exact retries reuse their slot; consumed identities are never reactivated.
+            let next_record = if let Some(cursor) = &continuation {
+                let candidate = IssuedCursorRecord {
+                    cursor_digest: cursor.cursor_digest,
+                    session_id: request.session_id.clone(),
+                    handle_id: descriptor.handle_id.clone(),
+                    expires_at: cursor.expires_at,
+                    next_ordinal: u8::try_from(cursor.position)
+                        .map_err(|_| HydrationError::WrongContinuation)?,
+                    consumed: false,
+                };
+                match self.issued_cursors.get(&cursor.cursor_digest) {
+                    Some(existing) if existing.consumed => {
+                        return Err(HydrationError::ContinuationAlreadyConsumed);
+                    }
+                    Some(existing) if existing != &candidate => {
+                        return Err(HydrationError::WrongContinuation);
+                    }
+                    Some(_) => None,
+                    None => {
+                        let retained = self
+                            .issued_cursors
+                            .values()
+                            .filter(|record| now < record.expires_at)
+                            .count();
+                        if retained >= self.limits.max_issued_cursors {
+                            return Err(HydrationError::CapacityExceeded);
+                        }
+                        Some(candidate)
+                    }
+                }
+            } else {
+                None
+            };
+
+            // No fallible work remains. Live consumed records count against the same ceiling as
+            // active cursors. In particular, pressure cannot erase single-use history.
+            if next_record.is_some() {
+                self.prune_expired_cursors(now);
+            }
             if let Some(cursor) = &request.continuation
                 && let Some(record) = self.issued_cursors.get_mut(&cursor.cursor_digest)
             {
                 record.consumed = true;
             }
-            if let Some(cursor) = &continuation {
-                let next_ordinal =
-                    u8::try_from(cursor.position).map_err(|_| HydrationError::WrongContinuation)?;
-                if self.issued_cursors.len() >= self.limits.max_issued_cursors {
-                    self.prune_expired_cursors(now);
-                }
-                if self.issued_cursors.len() >= self.limits.max_issued_cursors {
-                    self.prune_consumed_cursors();
-                }
-                if self.issued_cursors.len() >= self.limits.max_issued_cursors {
-                    if let Some(prior_cursor) = &request.continuation
-                        && let Some(record) =
-                            self.issued_cursors.get_mut(&prior_cursor.cursor_digest)
-                    {
-                        record.consumed = false;
-                    }
-                    return Err(HydrationError::CapacityExceeded);
-                }
-                self.issued_cursors.insert(
-                    cursor.cursor_digest,
-                    IssuedCursorRecord {
-                        cursor_digest: cursor.cursor_digest,
-                        session_id: request.session_id.clone(),
-                        handle_id: descriptor.handle_id.clone(),
-                        expires_at: cursor.expires_at,
-                        next_ordinal,
-                        consumed: false,
-                    },
-                );
+            if let Some(record) = next_record {
+                self.issued_cursors.insert(record.cursor_digest, record);
             }
             return Ok(response);
         }
