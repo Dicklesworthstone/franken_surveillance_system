@@ -22,7 +22,7 @@ fn twin()->Result<PropertyTwin,Box<dyn Error>>{
     for n in [2u32,2,4,2]{body.extend_from_slice(&n.to_le_bytes());}
     for (id,kind) in [("path",1u8),("grass",2u8)]{text(&mut body,id);body.push(kind);}
     for i in 0..2{text(&mut body,&format!("object{i}"));body.extend_from_slice(&(i as u32).to_le_bytes());body.extend_from_slice(&[1,0]);}
-    for p in [[0.,0.,0.],[2.,0.,0.],[2.,2.,0.],[0.,2.,0.]]{for n in p{body.extend_from_slice(&n.to_le_bytes());}}
+    for p in [[0.0f64,0.,0.],[2.,0.,0.],[2.,2.,0.],[0.,2.,0.]]{for n in p{body.extend_from_slice(&n.to_le_bytes());}}
     for (tri,obj) in [([0u32,1,2],0u32),([0,2,3],1)]{for n in tri{body.extend_from_slice(&n.to_le_bytes());}body.extend_from_slice(&obj.to_le_bytes());}
     let mut bytes=b"FSSTWIN1".to_vec();bytes.extend_from_slice(&(body.len() as u64).to_le_bytes());bytes.extend_from_slice(&body);bytes.extend_from_slice(&ContentDigest::sha256(&bytes).bytes());
     Ok(import_twin(&bytes,ImportExpectation{package_sha256:ContentDigest::sha256(&bytes).bytes(),source_scene_sha256:[1;32],basis:GeometryBasis::new(1,1)?},ImportLimits::default(),&mut WorkBudget::new(1_000_000))?)
