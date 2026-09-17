@@ -538,13 +538,12 @@ fn test_cancellation_checkpoints() -> Result<(), Box<dyn Error>> {
         Ok(cx) => cx,
         Err(e) => {
             let duration_ms = start.elapsed().as_millis().max(1);
-            let observed = format!(r#"{{"error":"{}"}}"#, escape_json_str(&e.to_string()));
             emit_caplog(
                 "cancellation_checkpoints",
                 "fail",
                 1,
-                r#"{"cancellation_refused":true,"error":"CancellationRequested"}"#,
-                &observed,
+                r#"{"cancellation_refused":true,"error":"Err(CancellationRequested)"}"#,
+                r#"{"cancellation_refused":false,"error":"test context creation failed"}"#,
                 duration_ms,
             );
             return Err(e);
@@ -556,22 +555,16 @@ fn test_cancellation_checkpoints() -> Result<(), Box<dyn Error>> {
     let res = split_jpeg_stream(&frame, &limits, Some(&cx));
     let duration_ms = start.elapsed().as_millis().max(1);
     let cancellation_refused = res == Err(JpegSplitError::CancellationRequested);
-    let (verdict, exit_code) = if cancellation_refused {
-        ("pass", 0)
-    } else {
-        ("fail", 1)
-    };
-    let expected = r#"{"cancellation_refused":true,"error":"CancellationRequested"}"#;
+    let expected = r#"{"cancellation_refused":true,"error":"Err(CancellationRequested)"}"#;
     let observed = format!(
-        r#"{{"cancellation_refused":{},"observed_error":"{}","duration_ms":{}}}"#,
+        r#"{{"cancellation_refused":{},"error":"{}"}}"#,
         cancellation_refused,
-        escape_json_str(&format!("{res:?}")),
-        duration_ms
+        escape_json_str(&format!("{res:?}"))
     );
-    emit_caplog(
+    let passed = observed == expected;
+    emit_verdict(
         "cancellation_checkpoints",
-        verdict,
-        exit_code,
+        passed,
         expected,
         &observed,
         duration_ms,
