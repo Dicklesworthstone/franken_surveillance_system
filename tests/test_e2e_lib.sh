@@ -175,8 +175,13 @@ if [[ $T3_EXIT -eq 0 ]]; then
 fi
 LOG3="${FSS_E2E_LOG_DIR}/suite3/run_0001.log"
 python3 "${REPO_ROOT}/scripts/e2e/validate_log.py" "$LOG3"
-if ! grep -q "no CAPLOG line observed" "$LOG3"; then
-    echo "FAIL: Expected 'no CAPLOG line observed' in $LOG3" >&2
+if ! python3 -c '
+import json, sys
+summary = json.loads(open(sys.argv[1]).read().splitlines()[-1])
+assert summary["verdict"] == "fail" and summary["steps"] == 0
+assert summary["run_failures"] == ["no_caplog_emitted"]
+' "$LOG3"; then
+    echo "FAIL: Expected documented no-evidence run failure in $LOG3" >&2
     exit 1
 fi
 echo "PASS: Test 3"
@@ -457,8 +462,8 @@ if [[ $RC_11 -eq 0 ]]; then
 fi
 LOG11="${FSS_E2E_LOG_DIR}/suite11/run_0001.log"
 python3 "${REPO_ROOT}/scripts/e2e/validate_log.py" "$LOG11"
-if ! grep -q "malformed CAPLOG line observed" "$LOG11"; then
-    echo "FAIL: M8 mutant survived: expected 'malformed CAPLOG line observed' in $LOG11" >&2
+if ! grep -q '"step": "test_target:invalid_verdict"' "$LOG11"; then
+    echo "FAIL: M8 mutant survived: expected test_target:invalid_verdict failure record in $LOG11" >&2
     exit 1
 fi
 echo "PASS: Test 11"
@@ -480,6 +485,7 @@ fi
 echo "PASS: Test 12"
 
 echo "=== Test 13: Mutant 11 - Plant secret in CAPLOG expected and observed ==="
+set +e
 (
     export STUB_RCH_MODE="secret_caplog"
     SUITE_DIR="${TEST_SANDBOX}/suite13"
@@ -494,6 +500,12 @@ TESTSCRIPT
     chmod +x "${SUITE_DIR}/run.sh"
     "${SUITE_DIR}/run.sh"
 )
+T13_EXIT=$?
+set -e
+if [[ $T13_EXIT -eq 0 ]]; then
+    echo "FAIL: Secret-CAPLOG run should have failed closed!" >&2
+    exit 1
+fi
 LOG13="${FSS_E2E_LOG_DIR}/suite13/run_0001.log"
 python3 "${REPO_ROOT}/scripts/e2e/validate_log.py" "$LOG13"
 
@@ -758,15 +770,16 @@ if [[ $T21_EXIT -eq 0 ]]; then
 fi
 LOG21="${FSS_E2E_LOG_DIR}/suite21/run_0001.log"
 python3 "${REPO_ROOT}/scripts/e2e/validate_log.py" "$LOG21"
-FAILURES_21=$(tail -n 1 "$LOG21" | python3 -c 'import sys, json; print(json.loads(sys.stdin.read())["failures"])')
-if [[ "$FAILURES_21" =~ "pass_good" ]]; then
-    echo "FAIL: N37 survived! Passing step 'pass_good' was blamed in trap: $FAILURES_21" >&2
-    exit 1
-fi
-if [[ ! "$FAILURES_21" =~ "exit" ]]; then
-    echo "FAIL: Expected ':exit' blamed in failures: $FAILURES_21" >&2
-    exit 1
-fi
+python3 - "$LOG21" <<'PY'
+import json, sys
+records = [json.loads(line) for line in open(sys.argv[1])]
+summary = records[-1]
+assert summary["verdict"] == "fail"
+assert summary["failures"] == [], summary
+assert summary["run_failures"] == ["script_exit"], summary
+assert records[1]["step"] == "pass_good" and records[1]["verdict"] == "ran"
+assert "--only" not in summary["repro"], summary
+PY
 echo "PASS: Test 21"
 
 echo "=== Test 22: Mutant N38 - Dot name '.' refused ==="

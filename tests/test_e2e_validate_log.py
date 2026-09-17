@@ -83,12 +83,13 @@ class TestValidateLog(unittest.TestCase):
             "repro": "test.sh --only " + step
         }
 
-    def _valid_summary_record(self, verdict="pass", steps=1, failures=None, skipped=None):
+    def _valid_summary_record(self, verdict="pass", steps=1, failures=None, skipped=None, run_failures=None):
         return {
             "step": "summary",
             "verdict": verdict,
             "steps": steps,
             "failures": failures if failures is not None else [],
+            "run_failures": run_failures if run_failures is not None else [],
             "skipped": skipped if skipped is not None else [],
             "duration_ms": 25,
             "log_path": str(self.log_path),
@@ -347,6 +348,24 @@ class TestValidateLog(unittest.TestCase):
             self._valid_env_record(),
             step,
             self._valid_summary_record("pass", steps=1, skipped=[{"step": "s1", "reason": "test"}])
+        ]
+        self._write_records(records)
+        with self.assertRaises(ValidationError) as ctx:
+            validate_file(self.log_path)
+        self.assertEqual(ctx.exception.code, "ERR_ALL_STEPS_SKIPPED")
+
+    def test_all_steps_skipped_with_documented_run_failure_accepted(self):
+        records = [
+            self._valid_env_record(),
+            self._valid_summary_record("fail", steps=0, run_failures=["no_caplog_emitted"])
+        ]
+        self._write_records(records)
+        validate_file(self.log_path)
+
+    def test_zero_steps_without_run_failures_rejected(self):
+        records = [
+            self._valid_env_record(),
+            self._valid_summary_record("fail", steps=0)
         ]
         self._write_records(records)
         with self.assertRaises(ValidationError) as ctx:

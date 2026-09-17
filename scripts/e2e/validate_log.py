@@ -248,6 +248,7 @@ def validate_summary_record(rec, line_no):
     run_failures = rec.get("run_failures", [])
     allowed_run_failures = {
         "cargo_test_failed", "no_caplog_emitted", "all_steps_skipped", "caplog_parser_failed",
+        "script_exit", "no_steps_executed",
     }
     if (not isinstance(run_failures, list)
             or any(not isinstance(value, str) or value not in allowed_run_failures
@@ -614,9 +615,15 @@ def validate_file(file_path: Path):
             line_no=summary_line_no,
         )
 
-    # 2. at least one non-skip record
+    # 2. at least one non-skip record. A zero-step run (e.g. exhausted remote
+    # retries producing no CAPLOG evidence) is internally consistent when its
+    # summary documents the absence in run_failures.
     non_skip_count = sum(1 for r in step_records if r["verdict"] != "skip")
-    if non_skip_count == 0:
+    documented_no_evidence = set(rec.get("run_failures", [])) & {
+        "no_caplog_emitted", "all_steps_skipped", "cargo_test_failed", "caplog_parser_failed",
+        "script_exit", "no_steps_executed",
+    }
+    if non_skip_count == 0 and not documented_no_evidence:
         raise ValidationError(
             "ERR_ALL_STEPS_SKIPPED",
             "At least one non-skip step record is required; all steps are skipped",

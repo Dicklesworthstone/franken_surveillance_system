@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # scripts/e2e/lib.sh
 # Deterministic E2E test harness and structured JSON-lines logging library.
+# Summary failures name retained failed records only. run_failures carries
+# cargo_test_failed, no_caplog_emitted, all_steps_skipped, caplog_parser_failed,
+# script_exit, and no_steps_executed. A valid failure log never implies success.
 # Strictly conforms to the CAP- E2E harness specification (fss-2h5zq.1).
 
 set -euo pipefail
@@ -382,8 +385,7 @@ _e2e_trap_exit() {
         return
     fi
     if [[ $rc -ne 0 ]]; then
-        local blamed_step="${_E2E_CURRENT_RUNNING_STEP:-${_E2E_LAST_STEP:-unexpected_exit}}"
-        _E2E_FAILURES+=("$blamed_step")
+        _E2E_RUN_FAILURES+=("script_exit")
     fi
     if [[ -n "${_E2E_RUN_DIR:-}" && -d "${_E2E_RUN_DIR:-}" ]]; then
         rm -f "${_E2E_RUN_DIR}"/stdout_* "${_E2E_RUN_DIR}"/stderr_* "${_E2E_RUN_DIR}"/cargo_test_* "${_E2E_RUN_DIR}"/cargo_stdout.* 2>/dev/null || true
@@ -1168,16 +1170,18 @@ e2e_cargo_test() {
     elif _e2e_step_matches_only "$target"; then
         should_run=1
     else
-        local matched_regular=0
+        local matched_regular=1
         if [[ -n "${_E2E_SCRIPT_PATH:-}" && -f "$_E2E_SCRIPT_PATH" ]]; then
             local IFS=','
             for p in $_E2E_ONLY; do
                 p="$(echo "$p" | tr -d '\"'\'' ')"
-                if [[ -n "$p" ]] && grep -qE "e2e_(step|skip|expect_eq|expect_exit|expect_json_field)[[:space:]]+(\")?${p}(\")?" "$_E2E_SCRIPT_PATH" 2>/dev/null; then
-                    matched_regular=1
+                if [[ -z "$p" ]] || ! grep -qE "e2e_(step|skip|expect_eq|expect_exit|expect_json_field)[[:space:]]+(\")?${p}(\")?" "$_E2E_SCRIPT_PATH" 2>/dev/null; then
+                    matched_regular=0
                     break
                 fi
             done
+        else
+            matched_regular=0
         fi
         if [[ $matched_regular -eq 0 ]]; then
             should_run=1
@@ -1540,14 +1544,23 @@ e2e_summary() {
     counts=$(python3 -c '
 import json, sys
 counts = {"pass": 0, "fail": 0, "skip": 0, "ran": 0}
+failures = []
 with open(sys.argv[1], encoding="utf-8") as log:
     for line in log:
         record = json.loads(line)
         if record["step"] != "env":
             counts[record["verdict"]] += 1
+            if record["verdict"] == "fail":
+                failures.append(record["step"])
 print(counts["pass"], counts["fail"], counts["skip"], sum(counts.values()))
+for failure in failures:
+    print(failure)
 ' "$_E2E_LOG_FILE")
     read -r passed step_failures skip_count record_count <<< "$counts"
+    _E2E_FAILURES=()
+    while IFS= read -r failure; do
+        [[ -n "$failure" ]] && _E2E_FAILURES+=("$failure")
+    done < <(printf '%s\n' "$counts" | sed '1d')
     if [[ "$record_count" -gt 0 && "$skip_count" -eq "$record_count" ]]; then
         _E2E_RUN_FAILURES+=("all_steps_skipped")
     elif [[ "$record_count" -eq 0 && "${_E2E_CARGO_USED:-0}" -eq 0 ]]; then

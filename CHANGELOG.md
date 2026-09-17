@@ -37,6 +37,7 @@ All notable changes to Franken Surveillance System are recorded here. The projec
 
 ### Fixed
 
+- Repaired shared CAP e2e logging: retained CAPLOG outcomes and typed skip reasons now reach structured summaries; run-level failures remain separate from recorded step failures. Empty evidence, all-skipped runs, exhausted remote execution, and script aborts fail closed without blaming completed steps. Summary failure IDs derive from retained records at the log cap, and mixed shell/Cargo selections no longer suppress Cargo execution.
 - Fixed stable-ID test imports so combined pytest collection preserves the checker module identity and exercises corrupt/empty-index fail-closed checks correctly.
 - Fixed stable-ID reference scanning so ordinary lowercase prose phrases (e.g. "first-240") are not forced through strict identifier grammar, while uppercase and normative-family candidates still fail closed.
 - Fixed camera registration bindings to preserve typed projection uncertainty and reject invalid component bounds consistently with tracking; corrected radial registration fixtures.

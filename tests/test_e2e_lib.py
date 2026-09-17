@@ -434,10 +434,9 @@ e2e_summary
         self.assertEqual(len(rch_invocations), 4, f"Expected 4 invocations (1 initial + 3 retries), got {len(rch_invocations)}")
 
         log_file = sorted((log_dir / "r103_suite").glob("run_*.log"))[-1]
-        with self.assertRaises(ValidationError) as refused:
-            validate_file(log_file)
-        self.assertEqual(refused.exception.code, "ERR_ALL_STEPS_SKIPPED")
+        validate_file(log_file)
         summary = json.loads(log_file.read_text().splitlines()[-1])
+        self.assertEqual(summary["run_failures"], ["cargo_test_failed", "no_caplog_emitted"])
         self.assertEqual(summary["verdict"], "fail")
         self.assertEqual(summary["steps"], 0)
         self.assertEqual(summary["run_failures"], ["cargo_test_failed", "no_caplog_emitted"])
