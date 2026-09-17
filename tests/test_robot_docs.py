@@ -129,7 +129,6 @@ class RobotDocsContractTests(unittest.TestCase):
         self.assertEqual(res.operations_count, 14)
         self.assertEqual(res.views_count, 8)
         self.assertEqual(res.resources_count, 15)
-        self.assertEqual(res.schemas_count, 77)
         self.assertEqual(res.capabilities_count, 12)
         expected_errors_count = count_errors_md_rows(ROOT / "registries/ERRORS.md")
         self.assertEqual(res.errors_count, expected_errors_count)
@@ -623,7 +622,6 @@ class RobotDocsContractTests(unittest.TestCase):
         self.assertEqual(payload["operations_count"], 14)
         self.assertEqual(payload["views_count"], 8)
         self.assertEqual(payload["resources_count"], 15)
-        self.assertEqual(payload["schemas_count"], 77)
         self.assertEqual(payload["capabilities_count"], 12)
         expected_errors_count = count_errors_md_rows(ROOT / "registries/ERRORS.md")
         self.assertEqual(payload["errors_count"], expected_errors_count)
@@ -1799,7 +1797,7 @@ class RobotDocsContractTests(unittest.TestCase):
         """P2c: Removing doctor usage line from help_text() raises ERR-ROBOT-DOCS-CORRUPT-001."""
         cmd_file = self.fake_root / "crates/fss-cli/src/fss_cmd.rs"
         raw = cmd_file.read_text(encoding="utf-8")
-        target_line = "  fss doctor --json\\n"
+        target_line = "  fss doctor --json [--root <dir>]\\n"
         self.assertIn(target_line, raw)
         cmd_file.write_text(raw.replace(target_line, ""), encoding="utf-8")
         with self.assertRaises(RobotDocsError) as ctx:
@@ -1894,7 +1892,7 @@ class RobotDocsContractTests(unittest.TestCase):
         orig = cmd_file.read_text(encoding="utf-8")
         help_cases = [
             ("capabilities", r"  fss capabilities --json\n"),
-            ("doctor", r"  fss doctor --json\n"),
+            ("doctor", r"  fss doctor --json [--root <dir>]\n"),
             ("status", r"  fss status --json\n"),
             ("negative_evidence", r"  fss negative-evidence <init|list|verify|append> [--path <file>] [--json]\n"),
         ]

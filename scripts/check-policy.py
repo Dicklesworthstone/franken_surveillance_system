@@ -1327,7 +1327,7 @@ def main() -> int:
         f"{len(json_files)} JSON files, {len(toml_files)} TOML files, "
         f"{len(stable_ids)} stable IDs, {len(invariants)} invariants, "
         f"{len(imports)} imports, {len(algorithms)} graph algorithms, "
-        f"{len(publications)} publication primitives, {len(agent_layers)} agent layers, "
+        f"{len(publications)} publication primitives, {len(agent_doc['layers'])} agent layers, "
         f"{len(agent_operations)} agent operations, {len(agent_views)} agent views, {len(lanes)} local lanes, "
         f"{manifest_entries} manifest entries"
     )
