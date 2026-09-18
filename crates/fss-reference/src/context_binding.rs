@@ -257,6 +257,50 @@ impl BoundReferenceSituationPublication {
     }
 }
 
+impl crate::ReferenceHydrationCatalog {
+    /// Expands one slot from a verified, descriptor-bound situation publication.
+    ///
+    /// The embedded descriptors prove what the publication offered; they do not register
+    /// themselves in this authority-owned catalog or authorize disclosure. The request must
+    /// name the publication's session, exact slot level, and exact registered descriptor.
+    /// Capability and privacy grants must already be projected by the authority-owning caller.
+    ///
+    /// All context checks happen before calling [`Self::hydrate`], so a rejected publication,
+    /// slot, or session cannot consume or issue a continuation. Delivery then uses the existing
+    /// current-descriptor, retention, full-budget, downgrade, and single-use-cursor rules and
+    /// returns the normal independently verifiable hydration response. No latest-revision
+    /// substitution or parallel continuation protocol is introduced.
+    pub fn hydrate_context_slot(
+        &mut self,
+        publication: &BoundReferenceSituationPublication,
+        slot_id: &str,
+        request: &fss_core::HydrationRequest,
+        now: TimestampNs,
+    ) -> Result<fss_core::HydrationResponse, ReferenceContextBindingError> {
+        request.verify()?;
+        publication.verify()?;
+        let binding = publication
+            .expansion_bindings
+            .binding_for_slot(slot_id)
+            .ok_or_else(|| ContextBindingError::MissingSlot(slot_id.to_owned()))?;
+        let descriptor = self
+            .descriptor(
+                &binding.reference.handle_id,
+                binding.reference.descriptor_digest,
+            )
+            .ok_or(HydrationError::DescriptorNotFound)?;
+        request.validate_for_context_slot(
+            &publication.publication.context_pack,
+            &publication.publication.compression_receipt,
+            &publication.expansion_bindings,
+            slot_id,
+            descriptor,
+            now,
+        )?;
+        Ok(self.hydrate(request, now)?)
+    }
+}
+
 /// Seals a handoff rooted in the exact publication, bindings, and descriptor revisions.
 pub fn seal_bound_reference_publication_handoff(
     publication: &BoundReferenceSituationPublication,

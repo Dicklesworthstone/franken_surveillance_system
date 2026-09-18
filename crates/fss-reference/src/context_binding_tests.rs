@@ -390,3 +390,316 @@ fn tampered_bound_publication_yields_no_proof_roots() -> Result<(), Box<dyn Erro
     ));
     Ok(())
 }
+
+mod hydration_delivery {
+    use super::*;
+    use crate::ReferenceHydrationCatalog;
+    use fss_core::hydration::{
+        HydrationArtifact, HydrationError, HydrationPurpose, HydrationRequest,
+        HydrationRequestSpec, HydrationResponse,
+    };
+
+    struct Fixture {
+        bound: BoundReferenceSituationPublication,
+        slot_id: String,
+        descriptor: SemanticHandle,
+        catalog: ReferenceHydrationCatalog,
+        spec: HydrationRequestSpec,
+    }
+
+    impl Fixture {
+        fn new() -> Result<Self, Box<dyn Error>> {
+            let publication = project_reference_situation(sealed_situation()?, &projection_spec())?;
+            let specs = binding_specs(&publication)?;
+            let bound = BoundReferenceSituationPublication::publish(publication, specs)?;
+            let binding = bound
+                .expansion_bindings
+                .bindings
+                .first()
+                .ok_or(ContractError::NotFound)?;
+            let slot_id = binding.slot_id.clone();
+            let descriptor = bound
+                .descriptors
+                .iter()
+                .find(|descriptor| {
+                    descriptor.handle_id == binding.reference.handle_id
+                        && descriptor.descriptor_digest == binding.reference.descriptor_digest
+                })
+                .cloned()
+                .ok_or(HydrationError::DescriptorNotFound)?;
+            let mut catalog = ReferenceHydrationCatalog::new();
+            catalog.register_descriptor(descriptor.clone())?;
+            for level in [HydrationLevel::H0, HydrationLevel::H1] {
+                let artifact = HydrationArtifact::publish(
+                    level,
+                    "application/fss+json",
+                    format!("exact context {level:?}").into_bytes(),
+                    [descriptor.subject_digest],
+                    Completeness::Complete,
+                    descriptor.applied_transform.clone(),
+                )?;
+                catalog.register_artifact(
+                    &descriptor.handle_id,
+                    descriptor.descriptor_digest,
+                    artifact,
+                )?;
+            }
+            let spec = HydrationRequestSpec {
+                contract_basis: descriptor.contract_basis.clone(),
+                session_id: bound.publication.context_pack.session_id.clone(),
+                handle_id: descriptor.handle_id.clone(),
+                expected_descriptor_digest: descriptor.descriptor_digest,
+                expected_subject_digest: descriptor.subject_digest,
+                anchor: descriptor.anchor.clone(),
+                requested_level: HydrationLevel::H1,
+                allow_lower_level: false,
+                available_capabilities: descriptor
+                    .required_capabilities
+                    .values()
+                    .flatten()
+                    .cloned()
+                    .collect(),
+                authorized_privacy_classes: BTreeSet::from([descriptor.privacy_class.clone()]),
+                budget: descriptor
+                    .estimated_cost(HydrationLevel::H1)
+                    .ok_or(HydrationError::LevelUnavailable)?,
+                purpose: HydrationPurpose::IncidentAdjudication,
+                continuation: None,
+                issued_at: TimestampNs(2_000),
+            };
+            Ok(Self {
+                bound,
+                slot_id,
+                descriptor,
+                catalog,
+                spec,
+            })
+        }
+
+        fn request(&self) -> Result<HydrationRequest, HydrationError> {
+            HydrationRequest::publish(self.spec.clone())
+        }
+
+        fn hydrate(
+            &mut self,
+            now: TimestampNs,
+        ) -> Result<HydrationResponse, ReferenceContextBindingError> {
+            let request = self.request()?;
+            self.catalog
+                .hydrate_context_slot(&self.bound, &self.slot_id, &request, now)
+        }
+
+        fn h0_budget(&self) -> Result<BudgetVector, HydrationError> {
+            self.descriptor
+                .estimated_cost(HydrationLevel::H0)
+                .ok_or(HydrationError::LevelUnavailable)
+        }
+    }
+
+    #[test]
+    fn context_slot_delivers_verified_artifact_deterministically() -> Result<(), Box<dyn Error>> {
+        let mut fixture = Fixture::new()?;
+        let request = fixture.request()?;
+        let first = fixture.hydrate(TimestampNs(2_000))?;
+        let second = fixture.hydrate(TimestampNs(2_000))?;
+        assert_eq!(first.receipt, second.receipt);
+        assert_eq!(first.artifact, second.artifact);
+        assert_eq!(first.receipt.delivered_level, Some(HydrationLevel::H1));
+        assert_eq!(first.receipt.completeness, Completeness::Complete);
+        assert!(first.artifact.is_some());
+        first.validate_for(&request, &fixture.descriptor)?;
+        Ok(())
+    }
+
+    #[test]
+    fn embedded_descriptor_does_not_register_itself_in_catalog() -> Result<(), Box<dyn Error>> {
+        let mut fixture = Fixture::new()?;
+        fixture.catalog = ReferenceHydrationCatalog::new();
+        assert!(matches!(
+            fixture.hydrate(TimestampNs(2_000)),
+            Err(ReferenceContextBindingError::Binding(
+                ContextBindingError::Hydration(HydrationError::DescriptorNotFound)
+            ))
+        ));
+        assert_eq!(fixture.catalog.issued_cursor_count(), 0);
+        assert_eq!(fixture.catalog.stored_payload_bytes(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn another_session_cannot_use_a_valid_bound_publication() -> Result<(), Box<dyn Error>> {
+        let mut fixture = Fixture::new()?;
+        fixture.spec.session_id = SessionId::parse("session:context-intruder")?;
+        fixture.spec.allow_lower_level = true;
+        fixture.spec.budget = fixture.h0_budget()?;
+        let stored = fixture.catalog.stored_payload_bytes();
+        assert!(matches!(
+            fixture.hydrate(TimestampNs(2_000)),
+            Err(ReferenceContextBindingError::Binding(
+                ContextBindingError::Hydration(HydrationError::ContinuationCrossSession)
+            ))
+        ));
+        assert_eq!(fixture.catalog.issued_cursor_count(), 0);
+        assert_eq!(fixture.catalog.stored_payload_bytes(), stored);
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_slot_and_resealed_price_forgery_never_deliver() -> Result<(), Box<dyn Error>> {
+        let mut fixture = Fixture::new()?;
+        let request = fixture.request()?;
+        assert!(matches!(
+            fixture.catalog.hydrate_context_slot(
+                &fixture.bound,
+                "slot:missing",
+                &request,
+                TimestampNs(2_000),
+            ),
+            Err(ReferenceContextBindingError::Binding(ContextBindingError::MissingSlot(_)))
+        ));
+        let binding = fixture
+            .bound
+            .expansion_bindings
+            .bindings
+            .first_mut()
+            .ok_or(ContractError::NotFound)?;
+        binding.estimated_cost = BudgetVector::ZERO;
+        binding.binding_digest = binding.computed_digest();
+        fixture.bound.expansion_bindings.binding_set_digest =
+            fixture.bound.expansion_bindings.computed_digest();
+        fixture.bound.bound_publication_digest = fixture.bound.computed_digest();
+        assert!(fixture.hydrate(TimestampNs(2_000)).is_err());
+        assert_eq!(fixture.catalog.issued_cursor_count(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn newer_catalog_revision_never_retargets_an_old_context() -> Result<(), Box<dyn Error>> {
+        let mut fixture = Fixture::new()?;
+        let mut anchor = fixture.descriptor.anchor.clone();
+        anchor.commit_sequence += 1;
+        let newer = descriptor_for_slot(
+            &fixture.slot_id,
+            &fixture.descriptor.contract_basis,
+            &anchor,
+        )?;
+        fixture.catalog.register_descriptor(newer.clone())?;
+        assert!(matches!(
+            fixture.hydrate(TimestampNs(2_000)),
+            Err(ReferenceContextBindingError::Binding(ContextBindingError::Hydration(
+                HydrationError::Contract(ContractError::StaleAnchor)
+            )))
+        ));
+        assert_eq!(
+            fixture.catalog.current_descriptor(&fixture.descriptor.handle_id),
+            Some(&newer),
+        );
+        assert_eq!(fixture.catalog.issued_cursor_count(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn retention_expiry_is_an_explicit_verified_non_delivery() -> Result<(), Box<dyn Error>> {
+        let mut fixture = Fixture::new()?;
+        let request = fixture.request()?;
+        let response = fixture.hydrate(TimestampNs(10_000))?;
+        assert!(response.artifact.is_none());
+        assert_eq!(response.receipt.availability, HandleAvailability::Expired);
+        assert_eq!(response.receipt.cost, BudgetVector::ZERO);
+        response.validate_for(&request, &fixture.descriptor)?;
+        assert_eq!(fixture.catalog.issued_cursor_count(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn authority_grants_and_non_token_resource_limits_are_enforced() -> Result<(), Box<dyn Error>> {
+        let mut fixture = Fixture::new()?;
+        let original = fixture.spec.clone();
+        let stored = fixture.catalog.stored_payload_bytes();
+        for expected in [
+            HydrationError::CapabilityDenied,
+            HydrationError::PrivacyDenied,
+            HydrationError::BudgetExceeded,
+        ] {
+            fixture.spec = original.clone();
+            match expected {
+                HydrationError::CapabilityDenied => fixture.spec.available_capabilities.clear(),
+                HydrationError::PrivacyDenied => fixture.spec.authorized_privacy_classes.clear(),
+                _ => {
+                    // Tokens and bytes are sufficient; latency, CPU, storage and privacy are not.
+                    fixture.spec.budget = BudgetVector::builder()
+                        .tokens(1_024)
+                        .bytes(16_384)
+                        .build()?;
+                }
+            }
+            assert!(matches!(
+                fixture.hydrate(TimestampNs(2_000)),
+                Err(ReferenceContextBindingError::Binding(
+                    ContextBindingError::Hydration(error)
+                )) if error == expected
+            ));
+            assert_eq!(fixture.catalog.issued_cursor_count(), 0);
+            assert_eq!(fixture.catalog.stored_payload_bytes(), stored);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn lower_level_delivery_requires_explicit_consent() -> Result<(), Box<dyn Error>> {
+        let mut fixture = Fixture::new()?;
+        fixture.spec.budget = fixture.h0_budget()?;
+        assert!(matches!(
+            fixture.hydrate(TimestampNs(2_000)),
+            Err(ReferenceContextBindingError::Binding(
+                ContextBindingError::Hydration(HydrationError::BudgetExceeded)
+            ))
+        ));
+        assert_eq!(fixture.catalog.issued_cursor_count(), 0);
+        fixture.spec.allow_lower_level = true;
+        let response = fixture.hydrate(TimestampNs(2_000))?;
+        assert_eq!(response.receipt.delivered_level, Some(HydrationLevel::H0));
+        assert_eq!(response.receipt.completeness, Completeness::Partial);
+        assert!(response.receipt.continuation.is_some());
+        response.validate_for(&fixture.request()?, &fixture.descriptor)?;
+        Ok(())
+    }
+
+    #[test]
+    fn context_expansion_reuses_exact_single_use_continuation() -> Result<(), Box<dyn Error>> {
+        let mut fixture = Fixture::new()?;
+        let full_spec = fixture.spec.clone();
+        fixture.spec.allow_lower_level = true;
+        fixture.spec.budget = fixture.h0_budget()?;
+        let first = fixture.hydrate(TimestampNs(2_000))?;
+        let cursor = first
+            .receipt
+            .continuation
+            .ok_or(HydrationError::WrongContinuation)?;
+        fixture.spec = full_spec;
+        fixture.spec.continuation = Some(cursor.clone());
+        fixture.spec.session_id = SessionId::parse("session:context-intruder")?;
+        assert!(fixture.hydrate(TimestampNs(2_001)).is_err());
+        assert!(!fixture
+            .catalog
+            .issued_cursor(&cursor.cursor_digest)
+            .ok_or(HydrationError::ContinuationUnissued)?
+            .consumed);
+        fixture.spec.session_id = fixture.bound.publication.context_pack.session_id.clone();
+        let response = fixture.hydrate(TimestampNs(2_001))?;
+        assert_eq!(response.receipt.delivered_level, Some(HydrationLevel::H1));
+        response.validate_for(&fixture.request()?, &fixture.descriptor)?;
+        assert!(fixture
+            .catalog
+            .issued_cursor(&cursor.cursor_digest)
+            .ok_or(HydrationError::ContinuationUnissued)?
+            .consumed);
+        assert!(matches!(
+            fixture.hydrate(TimestampNs(2_001)),
+            Err(ReferenceContextBindingError::Binding(ContextBindingError::Hydration(
+                HydrationError::ContinuationAlreadyConsumed
+            )))
+        ));
+        Ok(())
+    }
+}
