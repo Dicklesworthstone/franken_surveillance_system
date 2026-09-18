@@ -15,6 +15,10 @@ path = "src/lib.rs"
 name = "fss"
 path = "src/main.rs"
 
+[[bin]]
+name = "fss-file"
+path = "src/bin/fss-file.rs"
+
 [dependencies]
 fss-core = { path = "../fss-core" }
 fss-reference = { path = "../fss-reference" }
