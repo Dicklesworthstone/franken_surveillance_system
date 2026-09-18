@@ -6,6 +6,8 @@
 pub mod annexb;
 pub mod file_adapter;
 pub mod mjpeg;
+/// Restart-safe recovery and verified reads of completed file imports.
+pub mod retained;
 /// Bounded recorded-RTP framing and source-preserving ingest.
 pub mod rtpdump;
 
@@ -25,3 +27,4 @@ pub use mjpeg::{
     JpegFinding, JpegFrameSpan, JpegProcess, JpegScan, JpegSofInfo, JpegSplitError, MjpegLimits,
     OmissionReason, OmissionSpan, split_jpeg_stream,
 };
+pub use retained::{RetainedFileImport, RetainedReadLimits};
