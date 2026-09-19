@@ -1,0 +1,24 @@
+{
+  "schema": "fss.formal_toolchains.v1",
+  "generation": "gen:fss1:formal-toolchains-v1",
+  "sourceDocument": "registries/FORMAL_TOOLCHAINS.md",
+  "toolchains": [
+    {
+      "id": "lean4",
+      "kind": "theorem_prover",
+      "source_suffixes": [
+        ".lean"
+      ],
+      "backs_theorem_claims": true
+    },
+    {
+      "id": "tlaps",
+      "kind": "theorem_prover",
+      "source_suffixes": [
+        ".tla"
+      ],
+      "backs_theorem_claims": true
+    }
+  ],
+  "freezeDigest": "sha256:3fb613a59eff8aa19e98504a94aae77610da2f8ed3dd2c05fa53e43652002341"
+}
