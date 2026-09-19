@@ -8,6 +8,8 @@
 
 /// Root-last local publication and verified retrieval through an existing I/O owner.
 pub mod local;
+/// Replay-verified HEVC recording windows, with a separate versioned index and codec contract.
+pub mod hevc;
 
 mod verify;
 mod wire;
