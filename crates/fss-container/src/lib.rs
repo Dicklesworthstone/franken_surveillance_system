@@ -1,16 +1,21 @@
 #![forbid(unsafe_code)]
-//! Deterministic AVC fragmented MP4 without transcoding or ambient I/O (FSS-115).
+//! Deterministic AVC/HEVC fragmented MP4 without transcoding or ambient I/O (FSS-115).
 //!
-//! This is a narrow single-video-track, avc1, IDR-led fragment writer. Timing is
+//! Narrow single-video-track, avc1 or hev1, IDR-led fragment writers. Timing is
 //! explicitly supplied in track ticks, never guessed from RTP, VUI, or arrival
 //! clocks. Picture grouping is not decoding or a complete-picture certificate.
 //! Source custody, privacy, storage publication, and authentication remain with
 //! the owner. No codec, socket, filesystem, worker, or external runtime is used.
 
 mod boxes;
+mod hevc;
 mod init;
 mod mux;
 
+pub use hevc::{
+    HevcFragment, HevcInitialization, HevcMuxer, HevcNalMapping, HevcSampleMapping,
+    TimedHevcPicture,
+};
 pub use mux::{
     AvcFragment, AvcMuxer, InitializationSegment, NalMapping, NalTarget, SampleMapping,
     TimedAvcPicture,
@@ -63,15 +68,15 @@ impl Mp4Limits {
 pub enum Mp4Error {
     /// Invalid owner identity, time scale, or bounds.
     Configuration,
-    /// Only progressive frame-coded AVC is admitted in this initial remux subset.
+    /// Only the writer's declared progressive codec/sample-format subset is admitted.
     UnsupportedFormat,
-    /// Parameter sets do not bind exactly, are too long for avcC, or changed.
+    /// Parameter sets do not bind exactly, exceed configuration-record bounds, or changed.
     ParameterSet,
     /// Input is from a different owner stream epoch/SSRC.
     StreamMismatch,
     /// First sample must be an observed IDR picture, not merely an intra slice.
     RandomAccessRequired,
-    /// An unverified EOF tail or missing first macroblock cannot be remuxed here.
+    /// An unverified EOF tail or missing required first-slice evidence cannot be remuxed here.
     UnverifiedPicture,
     /// A picture resumes after a declared input discontinuity.
     Discontinuity,

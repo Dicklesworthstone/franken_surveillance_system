@@ -1,0 +1,56 @@
+{
+  "scope": "Independent Python layout oracle; Rust not executed",
+  "tool": "ffmpeg version 7.1.5-0+deb13u1 Copyright (c) 2000-2026 the FFmpeg developers",
+  "initialization_bytes": 725,
+  "fragment_bytes": [
+    1361,
+    1394
+  ],
+  "decoded_frames": 4,
+  "decoded_bytes": 17112,
+  "decoded_sha256": "496ce8250220aa97f58ed8bdd2ff8e39486271a750125d055e30d4eac1eba48f",
+  "source_nals_sha256": "ec1a01a426e1ea3b46237e5c35e96357981f047bd6118efb82103082cfb81db5",
+  "initialization_sha256": "f2b7854b123fa3888552a521d0c69f18bccca6532a8c8196bf7ece41fb2822a1",
+  "mp4_sha256": "0f6559a984f4bb734c1bf6ec96e16b344272bcb8ac12e329d25f57103ed2d11c",
+  "ffprobe": {
+    "packets": [
+      {
+        "pts": 0,
+        "dts": 0,
+        "duration": 18000,
+        "flags": "K__"
+      },
+      {
+        "pts": 18000,
+        "dts": 18000,
+        "duration": 18000,
+        "flags": "___"
+      },
+      {
+        "pts": 36000,
+        "dts": 36000,
+        "duration": 18000,
+        "flags": "K__"
+      },
+      {
+        "pts": 54000,
+        "dts": 54000,
+        "duration": 18000,
+        "flags": "___"
+      }
+    ],
+    "programs": [],
+    "stream_groups": [],
+    "streams": [
+      {
+        "codec_name": "hevc",
+        "codec_tag_string": "hev1",
+        "width": 62,
+        "height": 46,
+        "pix_fmt": "yuv420p"
+      }
+    ]
+  },
+  "generator": "ffmpeg -f lavfi -i testsrc2=size=62x46:rate=5 -frames:v 4 -pix_fmt yuv420p -c:v libx265 -preset ultrafast -x265-params pools=none:frame-threads=1:bframes=0:keyint=2:min-keyint=2:scenecut=0:open-gop=0:repeat-headers=1:info=0:log-level=error -f hevc cropped8.hevc",
+  "source_representation": "One NAL per lowercase hex line, excluding Annex-B start codes; the layout check adds an explicit EOS NAL 480180."
+}
