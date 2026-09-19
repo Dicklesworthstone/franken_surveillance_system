@@ -19,8 +19,8 @@ reconstruction with payload-free receipts. Duplicate or late packets cannot
 resurrect retired chains. Wrong-owner and reversed-time inputs do not consume
 sequence state or alter a pending chain.
 
-The owner must order packets and drive `expire` at `next_deadline_ns`, including
-when no network input arrives. Original source custody remains independent of
+For already ordered input, the owner drives `H265Depacketizer::expire` at
+`next_deadline_ns`, including when no network input arrives. Original source custody remains independent of
 this derivative receiver. Debug and refusal output contain metadata, not media.
 
 This is not a HEVC decoder, access-unit/picture validator, complete RTSP HEVC
@@ -29,12 +29,29 @@ ordering, PACI, and cross-stream decoding order are explicitly unsupported.
 Parameter-set availability and random-access decodability are not inferred from
 a NAL type or RTP marker.
 
+## Ordered receiver
+
+`fss-packet::H265Receiver` composes the shared `RtpReorderBuffer` and HEVC
+reconstruction. Supply complete datagrams to `ingest`, then drive `poll` until
+pending and at `next_wake_ns`. A poll returns one original datagram plus its
+reconstruction result, one delivery gap, or one retirement receipt. Codec refusal
+never hides the original datagram. Sequence probation, duplicates, conflicting
+retransmissions, late recovery, and queue pressure retain the shared RTP semantics.
+
+Reconstruction uses monotonic delivery time; each original retains its possibly
+out-of-order arrival time. Timer expiry does not consume queued source input.
+Capacity refusals leave the packet retryable after draining. `finish` drains
+accepted input before codec EOF, while `cancel` accounts for both layers at once.
+Confirmed source restarts close the old receiver. `restart` requires a strictly
+newer generation for the same ingress and never discards the old owner's work;
+the owner must separately drain or cancel that instance.
+
 ## Verification
 
 The public-API regression suite is `crates/fss-packet/tests/h265_contract.rs`:
 
 ```sh
-cargo test -p fss-packet --test h265_contract
+cargo test -p fss-packet --test h265_contract --test h265_receiver_contract
 ```
 
 The suite covers valid reconstruction, all layer/temporal bit combinations,
