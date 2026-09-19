@@ -202,6 +202,109 @@ fn test_transcript_container_framing_and_roundtrip() -> Result<(), Box<dyn Error
     Ok(())
 }
 
+/// The RFC 2617 example nonce carried by the fixture's Digest challenge. Any other challenge
+/// token in a committed transcript means real credentials leaked into the fixtures.
+const KNOWN_FIXTURE_NONCE: &str = "dcd98b7102dd2f0e8b11d0f600bfb0c093";
+
+/// Returns `true` when `s` contains a dotted-quad IPv4 literal (four 1-3 digit groups).
+fn contains_dotted_quad(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    let n = bytes.len();
+    let mut i = 0;
+    while i < n {
+        if bytes[i].is_ascii_digit() {
+            let start = i;
+            let mut j = i;
+            let mut dots = 0;
+            while j < n && (bytes[j].is_ascii_digit() || bytes[j] == b'.') {
+                if bytes[j] == b'.' {
+                    dots += 1;
+                }
+                j += 1;
+            }
+            let token = &s[start..j];
+            let groups: Vec<&str> = token.split('.').collect();
+            if dots == 3
+                && groups.len() == 4
+                && groups
+                    .iter()
+                    .all(|g| !g.is_empty() && g.len() <= 3 && g.bytes().all(|c| c.is_ascii_digit()))
+            {
+                return true;
+            }
+            i = j.max(start + 1);
+        } else {
+            i += 1;
+        }
+    }
+    false
+}
+
+/// Security-boundary guard for committed RTSP transcripts: every violation found is returned as
+/// a human-readable reason. The fixture set must carry zero violations.
+fn credential_guard_violations(
+    name: &str,
+    records: &[TranscriptRecord],
+) -> Vec<String> {
+    let mut violations = Vec::new();
+    let forbidden_headers = ["authorization:", "proxy-authorization:"];
+    let forbidden_ip_prefixes = ["192.168.", "10.", "172.16.", "127.0.0.1", "0.0.0.0"];
+
+    for r in records {
+        let s = String::from_utf8_lossy(&r.bytes).to_lowercase();
+        let mut at = |what: &str| {
+            violations.push(format!(
+                "{name} record at offset {}: {what}",
+                r.offset_ms
+            ));
+        };
+
+        for f in forbidden_headers {
+            if s.contains(f) {
+                at(&format!("forbidden header '{f}'"));
+            }
+        }
+        if s.contains("bearer ") {
+            at("bearer credential token");
+        }
+        if contains_dotted_quad(&s) {
+            at("dotted-quad IPv4 literal");
+        }
+        for ip in forbidden_ip_prefixes {
+            if s.contains(ip) {
+                at(&format!("forbidden IP address '{ip}'"));
+            }
+        }
+        // Credentials as userinfo inside rtsp:// URIs (rtsp://user@host/).
+        let mut search = 0usize;
+        while let Some(rel) = s[search..].find("rtsp://") {
+            let uri_start = search + rel;
+            let rest = &s[uri_start..];
+            let uri_len = rest
+                .find(['\r', '\n', ' '])
+                .unwrap_or(rest.len());
+            let uri = &rest[..uri_len];
+            if uri.contains('@') {
+                at(&format!("rtsp URI with userinfo '@': {uri}"));
+            }
+            if !uri.contains("fixture.invalid") {
+                at(&format!("RTSP URI without fixture.invalid: {uri}"));
+            }
+            search = uri_start + uri_len;
+        }
+        // RFC 2617 challenge tokens other than the fixture's known nonce.
+        if s.contains("www-authenticate:") {
+            for segment in s.split("nonce=\"").skip(1) {
+                let nonce = segment.split('"').next().unwrap_or("");
+                if nonce != KNOWN_FIXTURE_NONCE {
+                    at(&format!("non-fixture www-authenticate nonce '{nonce}'"));
+                }
+            }
+        }
+    }
+    violations
+}
+
 #[test]
 fn test_no_credentials_or_real_addresses_guard() -> Result<(), Box<dyn Error>> {
     let repo_root = get_repo_root()?;
@@ -218,45 +321,120 @@ fn test_no_credentials_or_real_addresses_guard() -> Result<(), Box<dyn Error>> {
         "get_parameter_keepalive.transcript",
     ];
 
-    // Forbidden tokens for credentials or real network addresses
-    let forbidden_headers = ["authorization:", "proxy-authorization:"];
-
-    let forbidden_ip_prefixes = ["192.168.", "10.", "172.16.", "127.0.0.1", "0.0.0.0"];
-
+    let mut records_scanned = 0usize;
     for name in filenames {
         let bytes = fs::read(rtsp_dir.join(name))?;
         let records = parse_transcript(&bytes)?;
-
-        for r in &records {
-            let s = String::from_utf8_lossy(&r.bytes).to_lowercase();
-
-            // Guard against credentials
-            for f in forbidden_headers {
-                assert!(
-                    !s.contains(f),
-                    "forbidden header '{f}' found in {name} record at offset {}",
-                    r.offset_ms
-                );
-            }
-
-            // Guard against real IP addresses
-            for ip in forbidden_ip_prefixes {
-                assert!(
-                    !s.contains(ip),
-                    "forbidden IP address '{ip}' found in {name} record at offset {}",
-                    r.offset_ms
-                );
-            }
-
-            // Host must always be fixture.invalid if rtsp:// URI is present
-            if s.contains("rtsp://") {
-                assert!(
-                    s.contains("rtsp://fixture.invalid"),
-                    "RTSP URI without fixture.invalid found in {name}"
-                );
-            }
-        }
+        records_scanned += records.len();
+        let violations = credential_guard_violations(name, &records);
+        assert!(
+            violations.is_empty(),
+            "credential/address guard violations in committed transcripts: {violations:?}"
+        );
     }
+    // REAL totals: the guard must have actually scanned the committed corpus.
+    assert!(
+        records_scanned >= 16,
+        "guard scanned only {records_scanned} records; committed corpus is larger"
+    );
+
+    Ok(())
+}
+
+/// Executed mutant table for the credential/address guard: each planted credential, address, or
+/// challenge-token mutation must turn the guard red with the matching category.
+#[test]
+fn credential_guard_mutant_table() -> Result<(), Box<dyn Error>> {
+    let repo_root = get_repo_root()?;
+    let rtsp_dir = repo_root.join("tests/fixtures/media/rtsp");
+
+    fn violations_for(records: &[TranscriptRecord]) -> Vec<String> {
+        credential_guard_violations("mutant", records)
+    }
+    fn replace_all(bytes: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut rest = bytes;
+        while let Some(pos) = rest
+            .windows(from.len())
+            .position(|w| w == from)
+        {
+            out.extend_from_slice(&rest[..pos]);
+            out.extend_from_slice(to);
+            rest = &rest[pos + from.len()..];
+        }
+        out.extend_from_slice(rest);
+        out
+    }
+
+    // M1: planted basic credential header turns the guard red on the forbidden-header rule.
+    let clean = parse_transcript(&fs::read(rtsp_dir.join("clean.transcript"))?)?;
+    let mut m1 = clean.clone();
+    let planted = b"authorization: basic cm9vdDpyb290\r\n";
+    let first = m1[0].bytes.clone();
+    let mut mutated = Vec::new();
+    mutated.extend_from_slice(&first);
+    mutated.extend_from_slice(planted);
+    mutated.extend_from_slice(&first);
+    m1[0].bytes = mutated;
+    let v = violations_for(&m1);
+    assert!(
+        v.iter().any(|x| x.contains("authorization:")),
+        "M1 planted credential header must be caught: {v:?}"
+    );
+
+    // M2: planted dotted-quad IP turns the guard red on the IPv4 rule.
+    let m2_records: Vec<TranscriptRecord> = clean
+        .iter()
+        .map(|r| TranscriptRecord {
+            direction: r.direction,
+            offset_ms: r.offset_ms,
+            bytes: replace_all(&r.bytes, b"fixture.invalid", b"192.168.10.5"),
+        })
+        .collect();
+    let v = violations_for(&m2_records);
+    assert!(
+        v.iter().any(|x| x.contains("IPv4") || x.contains("IP address")),
+        "M2 planted dotted-quad IP must be caught: {v:?}"
+    );
+
+    // M3: planted userinfo '@' in the rtsp:// URI turns the guard red.
+    let m3_records: Vec<TranscriptRecord> = clean
+        .iter()
+        .map(|r| TranscriptRecord {
+            direction: r.direction,
+            offset_ms: r.offset_ms,
+            bytes: replace_all(
+                &r.bytes,
+                b"rtsp://fixture.invalid",
+                b"rtsp://operator@fixture.invalid",
+            ),
+        })
+        .collect();
+    let v = violations_for(&m3_records);
+    assert!(
+        v.iter().any(|x| x.contains("userinfo")),
+        "M3 planted URI userinfo must be caught: {v:?}"
+    );
+
+    // M4: a non-fixture RFC 2617 nonce turns the guard red.
+    let auth = parse_transcript(&fs::read(rtsp_dir.join("auth_required.transcript"))?)?;
+    let m4_records: Vec<TranscriptRecord> = auth
+        .iter()
+        .map(|r| TranscriptRecord {
+            direction: r.direction,
+            offset_ms: r.offset_ms,
+            bytes: replace_all(
+                &r.bytes,
+                KNOWN_FIXTURE_NONCE.as_bytes(),
+                b"00000000000000000000000000000000",
+            ),
+        })
+        .collect();
+    let v = violations_for(&m4_records);
+    assert!(
+        v.iter().any(|x| x.contains("nonce")),
+        "M4 planted non-fixture nonce must be caught: {v:?}"
+    );
 
     Ok(())
 }
@@ -320,13 +498,35 @@ fn test_rtsp_parser_two_way_splits() -> Result<(), Box<dyn Error>> {
         }
     }
 
+    // Reference prefix: feeding record-by-record, the events emitted before the error are the
+    // deterministic prefix every byte split must reproduce exactly.
+    let mut ref_events = Vec::new();
+    let mut ref_errored = false;
     let mut ref_parser = RtspParser::new();
-    let ref_res = ref_parser
-        .feed(&bcl_stream)
-        .and_then(|_| ref_parser.feed(&[]));
+    for r in &bcl_records {
+        if r.direction != TranscriptDirection::ServerToClient || ref_errored {
+            continue;
+        }
+        match ref_parser.feed(&r.bytes) {
+            Ok(mut events) => ref_events.append(&mut events),
+            Err(RtspError::BadContentLength(_)) => ref_errored = true,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    if !ref_errored {
+        match ref_parser.feed(&[]) {
+            Ok(mut events) => ref_events.append(&mut events),
+            Err(RtspError::BadContentLength(_)) => ref_errored = true,
+            Err(e) => return Err(e.into()),
+        }
+    }
     assert!(
-        matches!(ref_res, Err(RtspError::BadContentLength(_))),
+        ref_errored,
         "expected BadContentLength error in bad_content_length"
+    );
+    assert!(
+        !ref_events.is_empty(),
+        "reference prefix must contain the events emitted before the error"
     );
 
     for split_pos in 0..=bcl_stream.len() {
@@ -334,13 +534,27 @@ fn test_rtsp_parser_two_way_splits() -> Result<(), Box<dyn Error>> {
         let chunk2 = &bcl_stream[split_pos..];
 
         let mut parser = RtspParser::new();
-        let split_res = parser
-            .feed(chunk1)
-            .and_then(|_| parser.feed(chunk2))
-            .and_then(|_| parser.feed(&[]));
+        let mut split_events = Vec::new();
+        let mut surfaced = false;
+        for chunk in [chunk1, chunk2, b"".as_slice()] {
+            match parser.feed(chunk) {
+                Ok(mut events) => split_events.append(&mut events),
+                Err(RtspError::BadContentLength(_)) => {
+                    surfaced = true;
+                    break;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
         assert!(
-            matches!(split_res, Err(RtspError::BadContentLength(_))),
+            surfaced,
             "split at {split_pos} did not surface BadContentLength in bad_content_length"
+        );
+        // The events emitted before the error must equal the reference prefix: a split that
+        // drops or reorders them is a parser defect even when the error still surfaces.
+        assert_eq!(
+            split_events, ref_events,
+            "split at {split_pos}: events before the error diverge from the reference prefix"
         );
     }
 
@@ -531,10 +745,15 @@ fn test_auth_required_variant() -> Result<(), Box<dyn Error>> {
             ..
         }
     ));
-    if let RtspEvent::AuthRequired { ref response, .. } = events[0] {
-        assert_eq!(response.status_code, 401);
-        assert_eq!(response.auth_challenge, Some(AuthScheme::Digest));
-    }
+    let RtspEvent::AuthRequired { ref response, .. } = events[0] else {
+        return Err(format!(
+            "expected AuthRequired event, got: {:?}",
+            events[0]
+        )
+        .into());
+    };
+    assert_eq!(response.status_code, 401);
+    assert_eq!(response.auth_challenge, Some(AuthScheme::Digest));
 
     Ok(())
 }
