@@ -18,6 +18,12 @@ use fss_ledger::{
     JournalReadIo, RecoveryReport, recover_bytes,
 };
 
+/// Work claims sharing this journal's exact session authority and durable root.
+pub mod coordination;
+
+use coordination::CoordinationState;
+use crate::agent_session::work_claims::{WorkClaimError, WorkClaimLimits};
+
 use super::{MAX_SESSION_CHECKPOINT_BYTES, SessionCheckpoint, SessionCheckpointError};
 use crate::ReferenceHydrationCatalog;
 use crate::agent_session::{
@@ -61,6 +67,10 @@ impl Default for DurableSessionLimits {
 pub enum DurableSessionError {
     /// The session protocol refused an operation; any clock/tombstone change was committed.
     Session(ReferenceSessionError),
+    /// Coordination refused; its session clock/tombstone changes were committed before return.
+    WorkClaim(WorkClaimError),
+    /// A private coordination record could not be encoded or decoded canonically.
+    CoordinationEncoding(fss_core::ContractError),
     /// Checkpoint encoding or recovery failed.
     Checkpoint(SessionCheckpointError),
     /// Journal corruption, external mutation, or append uncertainty.
@@ -83,6 +93,8 @@ impl fmt::Display for DurableSessionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::Session(_) => "durable session request refused",
+            Self::WorkClaim(_) => "durable work claim request refused",
+            Self::CoordinationEncoding(_) => "invalid durable coordination encoding",
             Self::Checkpoint(_) => "durable session checkpoint refused",
             Self::Journal(_) => "durable session journal failed",
             Self::Io(_) => "durable session I/O failed",
@@ -96,6 +108,10 @@ impl fmt::Display for DurableSessionError {
 }
 
 impl std::error::Error for DurableSessionError {}
+
+impl From<fss_core::ContractError> for DurableSessionError {
+    fn from(error: fss_core::ContractError) -> Self { Self::CoordinationEncoding(error) }
+}
 
 impl From<SessionCheckpointError> for DurableSessionError {
     fn from(error: SessionCheckpointError) -> Self { Self::Checkpoint(error) }
@@ -135,6 +151,19 @@ pub enum SessionAppendRecovery {
 struct PendingSession {
     memory: ReferenceSessionStore,
     checkpoint: SessionCheckpoint,
+    // None preserves the current coordinator; there is no disable/reset operation.
+    coordination: Option<CoordinationState>,
+    record: Option<(u16, Vec<u8>)>,
+}
+
+impl PendingSession {
+    fn kind(&self) -> u16 {
+        self.record.as_ref().map_or(SESSION_CHECKPOINT_RECORD_KIND, |(kind, _)| *kind)
+    }
+
+    fn payload(&self) -> &[u8] {
+        self.record.as_ref().map_or_else(|| self.checkpoint.as_bytes(), |(_, bytes)| bytes.as_slice())
+    }
 }
 
 /// Session lifecycle with publication after durable commit, including error-side mutations.
@@ -150,6 +179,7 @@ pub struct DurableSessionStore {
     records: usize,
     fenced: bool,
     pending: Option<PendingSession>,
+    coordination: Option<CoordinationState>,
 }
 
 impl DurableSessionStore {
@@ -173,7 +203,7 @@ impl DurableSessionStore {
         File::open(parent)?.sync_all()?;
         Ok(Self {
             journal, memory, checkpoint_digest: checkpoint.digest(), limits,
-            records: 1, fenced: false, pending: None,
+            records: 1, fenced: false, pending: None, coordination: None,
         })
     }
 
@@ -183,7 +213,15 @@ impl DurableSessionStore {
         expected_root: ContentDigest,
         limits: DurableSessionLimits,
     ) -> Result<Self, DurableSessionError> {
-        let path = path.as_ref();
+        Self::open_with_coordination_ceiling(path.as_ref(), expected_root, limits, None)
+    }
+
+    fn open_with_coordination_ceiling(
+        path: &Path,
+        expected_root: ContentDigest,
+        limits: DurableSessionLimits,
+        claim_ceilings: Option<WorkClaimLimits>,
+    ) -> Result<Self, DurableSessionError> {
         let report = read_report(path, limits)?;
         if report.last_root() != expected_root {
             return Err(DurableSessionError::RootMismatch);
@@ -191,26 +229,33 @@ impl DurableSessionStore {
         if let Some(offset) = report.incomplete_tail() {
             return Err(JournalError::IncompleteTail { offset }.into());
         }
-        let memory = replay(&report, limits)?;
-        let checkpoint_digest = report.records().last()
-            .ok_or(DurableSessionError::InvalidHistory)?.payload_digest();
+        let (memory, coordination) = replay(&report, limits, claim_ceilings)?;
+        let checkpoint_digest = memory.checkpoint(limits.max_checkpoint_bytes)?.digest();
         let journal = Journal::open(path, IncompleteTailPolicy::Reject)?;
         if journal.last_root() != expected_root || journal.committed_len() != report.committed_len() {
             return Err(DurableSessionError::RootMismatch);
         }
         Ok(Self {
             journal, memory, checkpoint_digest, limits, records: report.records().len(),
-            fenced: false, pending: None,
+            fenced: false, pending: None, coordination,
         })
     }
 
     /// Validates every complete record without creating, truncating, or synchronizing the file.
     pub fn inspect(path: impl AsRef<Path>, limits: DurableSessionLimits) -> Result<SessionJournalInspection, DurableSessionError> {
-        let report = read_report(path.as_ref(), limits)?;
-        replay(&report, limits)?;
-        let last = report.records().last().ok_or(DurableSessionError::InvalidHistory)?;
+        Self::inspect_with_coordination_ceiling(path.as_ref(), limits, None)
+    }
+
+    fn inspect_with_coordination_ceiling(
+        path: &Path,
+        limits: DurableSessionLimits,
+        claim_ceilings: Option<WorkClaimLimits>,
+    ) -> Result<SessionJournalInspection, DurableSessionError> {
+        let report = read_report(path, limits)?;
+        let (memory, _) = replay(&report, limits, claim_ceilings)?;
         Ok(SessionJournalInspection {
-            root: report.last_root(), checkpoint_digest: last.payload_digest(),
+            root: report.last_root(),
+            checkpoint_digest: memory.checkpoint(limits.max_checkpoint_bytes)?.digest(),
             records: report.records().len(), committed_bytes: report.committed_len(),
             incomplete_tail: report.incomplete_tail(),
         })
@@ -231,7 +276,9 @@ impl DurableSessionStore {
     /// Verifies the complete bounded history against this handle, not only the final trailer.
     pub fn verify_storage(&self) -> Result<SessionJournalInspection, DurableSessionError> {
         if self.fenced { return Err(DurableSessionError::ReconciliationRequired); }
-        let inspection = Self::inspect(self.path(), self.limits)?;
+        let inspection = Self::inspect_with_coordination_ceiling(
+            self.path(), self.limits, self.coordination.as_ref().map(|state| state.limits),
+        )?;
         if inspection.root != self.committed_root()
             || inspection.committed_bytes != self.journal.committed_len()
             || inspection.incomplete_tail.is_some()
@@ -305,13 +352,16 @@ impl DurableSessionStore {
             return Err(DurableSessionError::ReconciliationRequired);
         }
         let report = read_report(self.path(), self.limits)?;
-        replay(&report, self.limits)?;
+        let ceilings = self.pending.as_ref()
+            .and_then(|pending| pending.coordination.as_ref())
+            .or(self.coordination.as_ref()).map(|state| state.limits);
+        replay(&report, self.limits, ceilings)?;
         match self.journal.reconcile_pending(tail_policy)? {
             AppendReconciliation::Committed(record) => {
                 let pending = self.pending.as_ref().ok_or(DurableSessionError::ReconciliationRequired)?;
-                if record.kind() != SESSION_CHECKPOINT_RECORD_KIND
-                    || record.payload_digest() != pending.checkpoint.digest()
-                    || record.payload() != pending.checkpoint.as_bytes()
+                if record.kind() != pending.kind()
+                    || record.payload_digest() != ContentDigest::sha256(pending.payload())
+                    || record.payload() != pending.payload()
                 {
                     return Err(DurableSessionError::InvalidHistory);
                 }
@@ -327,11 +377,7 @@ impl DurableSessionStore {
     }
 
     fn transact<T>(&mut self, operation: impl FnOnce(&mut ReferenceSessionStore) -> Result<T, ReferenceSessionError>) -> Result<T, DurableSessionError> {
-        if self.fenced { return Err(DurableSessionError::ReconciliationRequired); }
-        if let Err(error) = self.journal.verify_committed_tail() {
-            self.fenced = true;
-            return Err(error.into());
-        }
+        self.preflight()?;
         let mut candidate = self.memory.clone();
         let result = operation(&mut candidate);
         let checkpoint = match candidate.checkpoint(self.limits.max_checkpoint_bytes) {
@@ -344,19 +390,37 @@ impl DurableSessionStore {
         if checkpoint.digest() == self.checkpoint_digest {
             return result.map_err(DurableSessionError::Session);
         }
-        self.fenced = true;
-        check_capacity(self.journal.committed_len(), self.records, checkpoint.as_bytes().len(), self.limits)?;
-        self.pending = Some(PendingSession { memory: candidate, checkpoint });
-        let pending = self.pending.as_ref().ok_or(DurableSessionError::ReconciliationRequired)?;
-        self.journal.append(SESSION_CHECKPOINT_RECORD_KIND, pending.checkpoint.as_bytes())?;
-        self.install_pending()?;
+        self.commit_candidate(PendingSession {
+            memory: candidate, checkpoint, coordination: None, record: None,
+        })?;
         result.map_err(DurableSessionError::Session)
+    }
+
+    fn preflight(&mut self) -> Result<(), DurableSessionError> {
+        if self.fenced { return Err(DurableSessionError::ReconciliationRequired); }
+        if let Err(error) = self.journal.verify_committed_tail() {
+            self.fenced = true;
+            return Err(error.into());
+        }
+        Ok(())
+    }
+
+    fn commit_candidate(&mut self, candidate: PendingSession) -> Result<(), DurableSessionError> {
+        self.fenced = true;
+        check_capacity(self.journal.committed_len(), self.records, candidate.payload().len(), self.limits)?;
+        self.pending = Some(candidate);
+        let pending = self.pending.as_ref().ok_or(DurableSessionError::ReconciliationRequired)?;
+        self.journal.append(pending.kind(), pending.payload())?;
+        self.install_pending()
     }
 
     fn install_pending(&mut self) -> Result<(), DurableSessionError> {
         let next_records = self.records.checked_add(1).ok_or(DurableSessionError::CapacityExceeded)?;
         let pending = self.pending.take().ok_or(DurableSessionError::ReconciliationRequired)?;
         self.memory = pending.memory;
+        if let Some(coordination) = pending.coordination {
+            self.coordination = Some(coordination);
+        }
         self.checkpoint_digest = pending.checkpoint.digest();
         self.records = next_records;
         self.fenced = false;
@@ -391,19 +455,42 @@ fn read_report(path: &Path, limits: DurableSessionLimits) -> Result<RecoveryRepo
     Ok(report)
 }
 
-fn replay(report: &RecoveryReport, limits: DurableSessionLimits) -> Result<ReferenceSessionStore, DurableSessionError> {
+fn replay(
+    report: &RecoveryReport,
+    limits: DurableSessionLimits,
+    claim_ceilings: Option<WorkClaimLimits>,
+) -> Result<(ReferenceSessionStore, Option<CoordinationState>), DurableSessionError> {
     let mut memory: Option<ReferenceSessionStore> = None;
+    let mut coordination: Option<CoordinationState> = None;
     for record in report.records() {
-        if record.kind() != SESSION_CHECKPOINT_RECORD_KIND { return Err(DurableSessionError::InvalidHistory); }
-        let candidate = ReferenceSessionStore::restore_checkpoint(
-            record.payload(), record.payload_digest(), limits.sessions, limits.max_checkpoint_bytes,
-        )?;
-        if memory.as_ref().is_some_and(|previous| previous.limits != candidate.limits) {
-            return Err(DurableSessionError::InvalidHistory);
+        match record.kind() {
+            SESSION_CHECKPOINT_RECORD_KIND => {
+                let candidate = ReferenceSessionStore::restore_checkpoint(
+                    record.payload(), record.payload_digest(), limits.sessions, limits.max_checkpoint_bytes,
+                )?;
+                if memory.as_ref().is_some_and(|previous| previous.limits != candidate.limits) {
+                    return Err(DurableSessionError::InvalidHistory);
+                }
+                memory = Some(candidate);
+            }
+            coordination::COORDINATION_INIT_RECORD_KIND => {
+                // Explicit one-way adoption. A second initialization would erase every fence.
+                if coordination.is_some() { return Err(DurableSessionError::InvalidHistory); }
+                let sessions = memory.as_ref().ok_or(DurableSessionError::InvalidHistory)?;
+                let ceiling = claim_ceilings.ok_or(DurableSessionError::InvalidHistory)?;
+                coordination = Some(coordination::restore_initialization(
+                    record.payload(), sessions.checkpoint(limits.max_checkpoint_bytes)?.digest(), ceiling,
+                )?);
+            }
+            coordination::COORDINATION_COMMAND_RECORD_KIND => {
+                let sessions = memory.as_mut().ok_or(DurableSessionError::InvalidHistory)?;
+                let state = coordination.as_mut().ok_or(DurableSessionError::InvalidHistory)?;
+                coordination::replay_command(record.payload(), sessions, state, limits)?;
+            }
+            _ => return Err(DurableSessionError::InvalidHistory),
         }
-        memory = Some(candidate);
     }
-    memory.ok_or(DurableSessionError::InvalidHistory)
+    Ok((memory.ok_or(DurableSessionError::InvalidHistory)?, coordination))
 }
 
 #[cfg(test)]

@@ -220,7 +220,7 @@ impl From<ReferenceSessionError> for WorkClaimError {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct ClaimEntry {
     opening: WorkClaimRequest,
     creator: SessionId,
@@ -247,6 +247,17 @@ impl Default for ReferenceWorkClaimStore {
 }
 
 impl ReferenceWorkClaimStore {
+    // Only persistence owners may stage a private candidate. Do not expose Clone on the
+    // public authority store: two independently writable clones are not two lease owners.
+    pub(crate) fn fork_for_transaction(&self) -> Self {
+        Self {
+            claims: self.claims.clone(),
+            limits: self.limits,
+            revisions: self.revisions,
+            last_observed_at: self.last_observed_at,
+        }
+    }
+
     /// Creates a single-owner in-memory reference with explicit storage and duration bounds.
     #[must_use]
     pub fn with_limits(limits: WorkClaimLimits) -> Self {
