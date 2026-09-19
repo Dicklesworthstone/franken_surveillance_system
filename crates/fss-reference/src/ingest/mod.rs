@@ -20,6 +20,8 @@ pub mod detections;
 pub mod tracking;
 /// Complete, restart-reproducible detector/tracker reports over retained recordings.
 pub mod analysis;
+/// Durable unresolved event candidates from exact replayed analysis reports.
+pub mod recorded_event;
 /// Bounded recorded-RTP framing and source-preserving ingest.
 pub mod rtpdump;
 
