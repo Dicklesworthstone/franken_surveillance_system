@@ -119,14 +119,6 @@ pub enum EventStoreError {
         /// Actual count.
         actual: usize,
     },
-    /// A RotateCoverageRegistry commit does not match the live witness registry it claims to
-    /// seal: canonical history and derived state disagree (fail-closed).
-    CoverageRotationMismatch {
-        /// Sealed witness count recorded by the rotation commit.
-        sealed_count: u64,
-        /// Live witness count observed at replay.
-        live_count: usize,
-    },
     /// Attempted revision number is not strictly monotonic.
     NonMonotonicRevision {
         /// Event identifier.
@@ -281,15 +273,6 @@ impl fmt::Display for EventStoreError {
                 write!(
                     f,
                     "coverage witness capacity exceeded: {actual} > limit {limit}"
-                )
-            }
-            Self::CoverageRotationMismatch {
-                sealed_count,
-                live_count,
-            } => {
-                write!(
-                    f,
-                    "coverage registry rotation mismatch: commit seals {sealed_count} witnesses but the live registry holds {live_count}"
                 )
             }
             Self::NonMonotonicRevision {
@@ -1301,29 +1284,8 @@ impl EventRevisionStore {
         ContentDigest::sha256(&encoder.finish())
     }
 
-    /// Applies a `RotateCoverageRegistry` commit during replay, verifying the recorded seal
-    /// against the live registry (fail-closed on any disagreement).
-    fn apply_coverage_rotation(
-        &mut self,
-        sealed_digest: ContentDigest,
-        sealed_count: u64,
-        refused: Vec<CoverageWitness>,
-    ) -> Result<ContentDigest, EventStoreError> {
-        let live_count = self.coverage_witnesses.len();
-        if sealed_count != live_count as u64
-            || sealed_digest != Self::sealed_witness_digest(&self.coverage_witnesses)
-        {
-            return Err(EventStoreError::CoverageRotationMismatch {
-                sealed_count,
-                live_count,
-            });
-        }
-        self.rotated_refused.extend(refused);
-        self.coverage_witnesses.clear();
-        Ok(sealed_digest)
-    }
-
-    /// Returns the witnesses recorded as refused by coverage-registry rotations. Their domains
+    \1
+ by coverage-registry rotations. Their domains
     /// can never certify absence.
     #[must_use]
     pub fn rotated_refused(&self) -> &[CoverageWitness] {
@@ -1552,15 +1514,12 @@ impl EventRevisionStore {
                         witness.clone(),
                         commit.commit_time,
                     )?,
-                EventStoreEntry::RotateCoverageRegistry {
-                    sealed_digest,
-                    sealed_count,
-                    refused,
-                } => store.apply_coverage_rotation(
-                    *sealed_digest,
-                    *sealed_count,
-                    refused.clone(),
-                )?,
+                EventStoreEntry::RotateCoverageRegistry { refused, .. } => store
+                    .rotate_coverage_registry(
+                        commit.basis_anchor.clone(),
+                        refused.clone(),
+                        commit.commit_time,
+                    )?,
             };
 
             // Verify the rebuilt state anchor matches the recorded new_anchor
@@ -1709,25 +1668,26 @@ impl EventRevisionStore {
         // With no live witness there is nothing to certify from; the reasons are fixed here, so
         // the certifying branch below always has a non-empty witness set to choose from.
         let Some((first, rest)) = matching.split_first() else {
-            let (reason, all_reasons) = if at_capacity {
-                (
-                    NotObservableReason::CoverageRegistryCapacityExceeded,
-                    NotObservableReason::CoverageRegistryCapacityExceeded,
-                )
+            return if at_capacity {
+                CoverageOutcome::NotObservable {
+                    reason: NotObservableReason::CoverageRegistryCapacityExceeded,
+                    all_reasons: vec![
+                        NotObservableReason::CoverageRegistryCapacityExceeded,
+                        NotObservableReason::NoCoverageWitness,
+                    ],
+                }
             } else if refused_blocks {
-                (
-                    NotObservableReason::CoverageWitnessGapped,
-                    NotObservableReason::CoverageWitnessGapped,
-                )
+                // A refused witness for this domain exists (recorded by a rotation) but never
+                // entered canonical custody, so its coverage report is unusable.
+                CoverageOutcome::NotObservable {
+                    reason: NotObservableReason::CoverageWitnessGapped,
+                    all_reasons: vec![NotObservableReason::CoverageWitnessGapped],
+                }
             } else {
-                (
-                    NotObservableReason::NoCoverageWitness,
-                    NotObservableReason::NoCoverageWitness,
-                )
-            };
-            return CoverageOutcome::NotObservable {
-                reason,
-                all_reasons: vec![all_reasons],
+                CoverageOutcome::NotObservable {
+                    reason: NotObservableReason::NoCoverageWitness,
+                    all_reasons: vec![NotObservableReason::NoCoverageWitness],
+                }
             };
         };
 

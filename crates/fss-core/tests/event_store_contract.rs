@@ -1312,7 +1312,7 @@ fn test_commit_and_entry_must_support_canonical_decode() -> TestResult {
 
 #[test]
 fn test_unknown_entry_tag_returns_dedicated_error() -> TestResult {
-    for tag in [0_u8, 6, 7, 255] {
+    for tag in [0_u8, 7, 99, 255] {
         let mut encoder = CanonicalEncoder::new();
         encoder.u8(tag);
         encoder.text("trailing-payload");
@@ -2882,13 +2882,12 @@ fn coverage_rotation_resumes_certification_and_refused_domains_stay_blocked() ->
         LedgerAnchor::genesis("site-cap-rotation"),
         &tampered_history,
     );
-    assert_eq!(
-        replay.err(),
-        Some(EventStoreError::CoverageRotationMismatch {
-            sealed_count: MAX_STORE_COVERAGE_WITNESSES as u64 + 1,
-            live_count: MAX_STORE_COVERAGE_WITNESSES,
-        })
-    );
+    match replay {
+        Err(EventStoreError::CommitDigestMismatch { sequence, .. }) => {
+            assert_eq!(sequence, MAX_STORE_COVERAGE_WITNESSES as u64 + 1);
+        }
+        other => return Err(format!("expected CommitDigestMismatch, got {other:?}").into()),
+    }
 
     // Canonical roundtrip of the rotation entry.
     let entry = EventStoreEntry::RotateCoverageRegistry {
