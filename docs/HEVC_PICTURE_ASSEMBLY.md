@@ -40,6 +40,42 @@ no picture is returned as a standalone NAL. EOB closes assembly; EOS only ends
 the current sequence. Cancellation is terminal and accounts for pending bytes
 once. Independent original-source custody remains the transport owner's duty.
 
+## Picture-aware RTSP client
+
+`fss_reference::rtsp::hevc_client::pictures::RtspHevcPictureClient` connects this
+assembler directly to the existing plain/Digest `RtspHevcClient`. It does not
+replace or change that client's public NAL-only API. Its constructors add
+independent `HevcAssemblyLimits`; requests and borrowed credentials use the
+existing authentication, URL scope, correlation, lifetime and teardown owners.
+
+Poll until a waiting/terminal state and always arrange `next_wake_ns`. Original
+control frames, RTP admission and RTCP validation events remain intact. Ordered
+source datagrams are returned before their complete NALs are processed one at a
+time. Gaps, reconstruction refusals, fragment deadlines and incomplete-FU EOF
+invalidate picture assembly automatically; callers cannot forget this wiring.
+An invalid RTCP compound does not become a video discontinuity.
+
+The extra complete-NAL queue holds at most one reconstruction output and has a
+fixed residence deadline. Delayed consumers cannot revive expired NALs by
+starting fresh picture deadlines. Queue expiry retires both queued NALs and
+any affected pending picture while permitting explicit discontinuous recovery.
+Client/session/wire deadlines take priority over queued derivative work. Picture
+timers remain visible while a Digest challenge is waiting for credentials.
+
+Assembly refusals return the original NAL, source failures retain their original
+datagrams, and cancellation accounts for the complete-NAL queue, picture work,
+raw-client queues/fragments, held challenges/retries, and unprocessed TCP. EOB
+closes the local connection without sending an invented TEARDOWN; later buffered
+wire is retained and remote-session uncertainty remains explicit. Clean EOF or
+TEARDOWN can return an unverified picture tail, but incomplete-fragment EOF may
+not flush the preceding partial picture. Repeated terminal polls never repeat
+picture or source retirement ownership.
+
+This path groups supplied TCP media; it still does not open sockets, decode HEVC,
+verify parameter-set compatibility, write an archive, prove camera coverage, or
+turn source bytes into durable custody. Those remain separate qualification and
+implementation boundaries.
+
 ## Bounds and validation
 
 All retained NAL bytes, NAL count, source-span count, and age have independent
@@ -51,10 +87,14 @@ bounded NAL length. No output, queue, recursion or retry is unbounded.
 `hevc_assembly_contract.rs` exercises the public API with NALs created by the real
 RTP depacketizer, not a bypass constructor. It covers all admitted prefix-field
 combinations, first-slice versus marker behavior, metadata boundaries, AP source
-spans, loss/expiry, owner/time isolation, resource limits, cancellation and EOF:
+spans, loss/expiry, owner/time isolation, resource limits, cancellation and EOF.
+`rtsp_hevc_picture_contract.rs` adds wire-level negotiation, authentication,
+reordering, fault propagation, queue pressure/residence, cancellation, EOF,
+EOB, RTCP isolation and TCP-partition invariance contracts:
 
 ```sh
 cargo test -p fss-packet --test hevc_assembly_contract
+cargo test -p fss-reference --test rtsp_hevc_picture_contract
 ```
 
 Rust execution is unavailable in the editing environment. Added tests are not

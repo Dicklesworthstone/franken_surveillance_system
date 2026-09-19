@@ -591,3 +591,6 @@ fn earlier(a: Option<u64>, b: Option<u64>) -> Option<u64> {
 fn safe(reason: HevcClientError) -> HevcClientFailure {
     HevcClientFailure { reason, retirement: None }
 }
+
+/// Loss-aware picture assembly on the same plain or authenticated HEVC client.
+pub mod pictures;

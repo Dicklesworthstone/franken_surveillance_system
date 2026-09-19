@@ -260,8 +260,13 @@ impl HevcAssembler {
         if key != self.key { return Err(HevcAssemblyError::StreamMismatch); }
         self.check_time(now)?;
         self.last_ns = now;
+        Ok(self.discard_gap())
+    }
+    /// Retire grouping for an already-confirmed input gap without advancing the
+    /// clock or source watermark. The mutable assembler reference owns this derivative.
+    pub fn discard_gap(&mut self) -> Option<HevcAssemblyRetirement> {
         self.discontinuity = true;
-        Ok(self.retire(HevcRetirementReason::InputDiscontinuity))
+        self.retire(HevcRetirementReason::InputDiscontinuity)
     }
     /// Consume one ordered source-linked NAL or return it intact. Wrong-owner and
     /// reversed-clock inputs leave both the pending group and source watermark untouched.
@@ -352,7 +357,7 @@ impl HevcAssembler {
         if let Some(p) = &self.pending {
             if boundary.is_some() {
                 if nal.timestamp() == p.timestamp { return Err(HevcAssemblyError::TimestampMismatch); }
-            } else if !matches!(kind, Kind::End(_) | Kind::Aud) && nal.timestamp() != p.timestamp {
+            } else if !matches!(kind, Kind::Aud) && nal.timestamp() != p.timestamp {
                 return Err(HevcAssemblyError::TimestampMismatch);
             }
             if let Kind::Slice(prefix) = kind {

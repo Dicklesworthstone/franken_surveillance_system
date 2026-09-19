@@ -198,6 +198,8 @@ fn conflicting_slice_identity_timestamp_and_post_suffix_vcl_fail_closed() -> Tes
         (slice(19, false, 0, 1, true), 100, E::PictureMismatch),
         (slice(19, false, 0, 1, false), 200, E::TimestampMismatch),
         (slice(19, true, 0, 1, false), 100, E::TimestampMismatch),
+        (vec![72, 1, 0x80], 200, E::TimestampMismatch),
+        (vec![74, 1, 0x80], 200, E::TimestampMismatch),
     ] {
         let mut a = HevcAssembler::new(KEY, Limits::default())?;
         push(&mut a, 1, 100, &slice(19, true, 0, 1, false), 0)?;
