@@ -1,7 +1,7 @@
 {
   "schema": "fss.claims.v1",
-  "generation": "gen:fss1:claims-v1",
-  "freezeDigest": "sha256:a771b73ed343bbbb04a4cc98a9a7d2853caa533b2600b60090f1ab14d74e1916",
+  "generation": "gen:fss1:claims-v2",
+  "freezeDigest": "sha256:9248739868b32243903b5acb35bef9367beb850524de809b8a55a222a1784665",
   "sourceDocument": "registries/CLAIMS.md",
   "classes": [
     {
@@ -21,6 +21,7 @@
       "meaning": "theorem under declared formal model",
       "minimum_evidence": "formal artifact, assumptions, toolchain identity, check receipt",
       "requiredEvidence": [
+        "assumptions",
         "formal_artifact",
         "toolchain_identity",
         "proof_check_receipt"
@@ -34,7 +35,9 @@
       "requiredEvidence": [
         "assumptions",
         "derivation",
-        "sensitivity_analysis"
+        "sensitivity_analysis",
+        "units",
+        "invalidators"
       ]
     },
     {

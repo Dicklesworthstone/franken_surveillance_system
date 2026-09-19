@@ -4793,9 +4793,14 @@ def scan_markdown_claim_tables(
 
 BASELINE_CLAIMS_GENERATION = "gen:fss1:claims-v1"
 BASELINE_CLAIMS_FREEZE_DIGEST = "sha256:a771b73ed343bbbb04a4cc98a9a7d2853caa533b2600b60090f1ab14d74e1916"
+# fss-spiyn: v2 reconciles minimum_evidence with requiredEvidence (proof gains assumptions;
+# bounded_model gains units and invalidators). The v1 baseline stays pinned as history.
+CLAIMS_V2_GENERATION = "gen:fss1:claims-v2"
+CLAIMS_V2_FREEZE_DIGEST = "sha256:9248739868b32243903b5acb35bef9367beb850524de809b8a55a222a1784665"
 
 EXPECTED_CLAIMS_FREEZE_DIGESTS: dict[str, str] = {
     BASELINE_CLAIMS_GENERATION: BASELINE_CLAIMS_FREEZE_DIGEST,
+    CLAIMS_V2_GENERATION: CLAIMS_V2_FREEZE_DIGEST,
 }
 
 CANONICAL_PROHIBITED_PROMOTIONS: tuple[str, ...] = (
@@ -4828,6 +4833,7 @@ CANONICAL_CLAIM_CLASSES: dict[str, dict[str, Any]] = {
         "meaning": "theorem under declared formal model",
         "minimum_evidence": "formal artifact, assumptions, toolchain identity, check receipt",
         "requiredEvidence": [
+            "assumptions",
             "formal_artifact",
             "toolchain_identity",
             "proof_check_receipt",
@@ -4842,6 +4848,8 @@ CANONICAL_CLAIM_CLASSES: dict[str, dict[str, Any]] = {
             "assumptions",
             "derivation",
             "sensitivity_analysis",
+            "units",
+            "invalidators",
         ],
     },
     "statistical": {

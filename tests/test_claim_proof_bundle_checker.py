@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import pathlib
 import subprocess
 import sys
 import tempfile
@@ -62,6 +63,8 @@ from claim_proof_bundle_checker import (
     verify_proof_bundle,
     BASELINE_CLAIMS_FREEZE_DIGEST,
     BASELINE_CLAIMS_GENERATION,
+    CLAIMS_V2_FREEZE_DIGEST,
+    CLAIMS_V2_GENERATION,
     CANONICAL_CLAIM_CLASSES,
     CANONICAL_PROHIBITED_PROMOTIONS,
     EXPECTED_CLAIMS_FREEZE_DIGESTS,
@@ -2205,12 +2208,12 @@ class TestClaimKindRegistryAuditing(unittest.TestCase):
         self.assertEqual(errors, [], f"Claim kind registry audit failed on real files: {errors}")
 
     def test_live_claims_freeze_digest_exact_match(self) -> None:
-        """The real claims.json must match BASELINE_CLAIMS_GENERATION and BASELINE_CLAIMS_FREEZE_DIGEST exactly."""
+        """The real claims.json must match CLAIMS_V2_GENERATION and CLAIMS_V2_FREEZE_DIGEST exactly."""
         data = json.loads(self.claims_json_path.read_text(encoding="utf-8"))
-        self.assertEqual(data.get("generation"), BASELINE_CLAIMS_GENERATION)
-        self.assertEqual(data.get("freezeDigest"), BASELINE_CLAIMS_FREEZE_DIGEST)
+        self.assertEqual(data.get("generation"), CLAIMS_V2_GENERATION)
+        self.assertEqual(data.get("freezeDigest"), CLAIMS_V2_FREEZE_DIGEST)
         computed = compute_canonical_claims_digest(data)
-        self.assertEqual(computed, BASELINE_CLAIMS_FREEZE_DIGEST)
+        self.assertEqual(computed, CLAIMS_V2_FREEZE_DIGEST)
         self.assertEqual(data.get("freezeDigest"), computed)
 
     def test_claims_freeze_digest_mismatch_fails(self) -> None:
@@ -3001,7 +3004,12 @@ class TestSloIndependentReviewBypasses(unittest.TestCase):
 # Claim class 'proof' realization (fss-x4a.30.87.2)
 # ---------------------------------------------------------------------------
 
-PROOF_EVIDENCE = ["formal_artifact", "toolchain_identity", "proof_check_receipt"]
+PROOF_EVIDENCE = [
+    "formal_artifact",
+    "toolchain_identity",
+    "proof_check_receipt",
+    "assumptions",
+]
 PROOF_CLAIM_ID = "FORMAL-002"
 PROOF_GENERATION = "gen:fss1:formal-publication-v1"
 PROOF_MODEL_ID = "MODEL-TLA-PUBLICATION-001"
@@ -3162,7 +3170,10 @@ class TestProofClaimClassRealization(unittest.TestCase):
         self.assertEqual(row["claim_class"], "proof")
         self.assertEqual(row["meaning"], "theorem under declared formal model")
         self.assertEqual(row["minimum_evidence"], "formal artifact, assumptions, toolchain identity, check receipt")
-        self.assertEqual(row["requiredEvidence"], ["formal_artifact", "toolchain_identity", "proof_check_receipt"])
+        self.assertEqual(
+            row["requiredEvidence"],
+            ["assumptions", "formal_artifact", "toolchain_identity", "proof_check_receipt"],
+        )
         self.assertEqual(CANONICAL_CLAIM_CLASSES["proof"], row)
 
     def test_proof_finding_ids_are_registered(self) -> None:
@@ -3350,7 +3361,13 @@ class TestProofClaimClassRealization(unittest.TestCase):
 # Claim class 'bounded_model' realization (fss-x4a.30.87.3)
 # ---------------------------------------------------------------------------
 
-BOUND_EVIDENCE = ["assumptions", "derivation", "sensitivity_analysis"]
+BOUND_EVIDENCE = [
+    "assumptions",
+    "derivation",
+    "sensitivity_analysis",
+    "units",
+    "invalidators",
+]
 BOUND_CLAIM_ID = "BOUND-INGEST-LATENCY-001"
 BOUND_GENERATION = "gen:fss1:bound-ingest-v1"
 BOUND_DERIVATION_REL = "proofs/bounds/ingest_latency.derivation.json"
@@ -3454,7 +3471,10 @@ class TestBoundedModelClaimClassRealization(unittest.TestCase):
         self.assertEqual(row["claim_class"], "bounded_model")
         self.assertEqual(row["meaning"], "analytically derived bound under assumptions")
         self.assertEqual(row["minimum_evidence"], "derivation, units, assumptions, sensitivity and invalidators")
-        self.assertEqual(row["requiredEvidence"], ["assumptions", "derivation", "sensitivity_analysis"])
+        self.assertEqual(
+            row["requiredEvidence"],
+            ["assumptions", "derivation", "sensitivity_analysis", "units", "invalidators"],
+        )
         self.assertEqual(CANONICAL_CLAIM_CLASSES["bounded_model"], row)
 
     def test_bounded_model_finding_ids_are_registered(self) -> None:
@@ -6945,9 +6965,31 @@ class TestFixturesFollowTheLiveCostGeneration(unittest.TestCase):
             ok, findings, _ = verify_slo_bundle(root, build_slo_fixture(root, measurement={"operation_cost_generation": self.STALE_LITERAL}))
             self.assertEqual((ok, error_code_set(findings)), (False, [ERR_STALE_GENERATION]))
 
+class ClaimErrorCodeRegistrationTests(unittest.TestCase):
+    """fss-spiyn: every ERR-CLAIM code the checker emits must be registered."""
+
+    def test_every_emitted_code_is_registered_in_errors_md(self) -> None:
+        import re
+
+        checker_src = (
+            pathlib.Path(ROOT / "scripts" / "claim_proof_bundle_checker.py")
+            .read_text(encoding="utf-8")
+        )
+        errors_md = (
+            pathlib.Path(ROOT / "registries" / "ERRORS.md").read_text(encoding="utf-8")
+        )
+        emitted = set(
+            re.findall(r'"(ERR-CLAIM-[A-Z0-9-]+)"', checker_src)
+        )
+        registered = set(re.findall(r"`(ERR-CLAIM-[A-Z0-9-]+)`", errors_md))
+        missing = sorted(emitted - registered)
+        self.assertEqual(
+            missing,
+            [],
+            "checker emits ERR-CLAIM codes absent from registries/ERRORS.md; "
+            "register them or fix the spelling",
+        )
 
 
 if __name__ == "__main__":
     unittest.main()
-
-

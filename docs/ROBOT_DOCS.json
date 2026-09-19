@@ -442,6 +442,21 @@
       "id": "ERR-CLAIM-GENERATION-UNBOUND-001"
     },
     {
+      "description": "A claim class ID is duplicated, renumbered, or reused across different claim classes",
+      "guidance": "give every stable id exactly one row; never reuse or renumber stable ids",
+      "id": "ERR-CLAIM-ID-REUSED-001"
+    },
+    {
+      "description": "A claim class entry in the registry is missing required normative fields (id, meaning, minimum_evidence, requiredEvidence) or a table row lacks required columns",
+      "guidance": "declare all required normative fields for each claim class row",
+      "id": "ERR-CLAIM-MISSING-FIELD-001"
+    },
+    {
+      "description": "A claim cites a proof bundle, or a bundle declares an artifact, that does not exist on disk, has forbidden traversal ('..'), is absolute, resolves outside the repository root, is not a regular file, or cannot be verified locally",
+      "guidance": "retain the cited proof bundle at the declared path before promotion",
+      "id": "ERR-CLAIM-PROOF-BUNDLE-NOT-FOUND-001"
+    },
+    {
       "description": "a proof bundle's schema is missing or not exactly `fss.proof_bundle.v1`, or its bundle_id is present but not an exact token",
       "guidance": "declare the schema byte for byte and, when present, a bundle_id of printable ASCII with no whitespace",
       "id": "ERR-CLAIM-PROOF-BUNDLE-SCHEMA-INVALID-001"
@@ -450,6 +465,21 @@
       "description": "proof check receipt is missing, malformed, non-passing, or not bound to the claim, formal model, and formal artifact digest",
       "guidance": "re-run the formal checker and retain a passing bound receipt",
       "id": "ERR-CLAIM-PROOF-CHECK-RECEIPT-INVALID-001"
+    },
+    {
+      "description": "A proof bundle binds no claim ID or a different claim than the one citing it, a promoted claim row has no claim ID, or a claim cites a qualification receipt (which binds no claim)",
+      "guidance": "bind the proof bundle to the exact claim id that cites it",
+      "id": "ERR-CLAIM-PROOF-CLAIM-BINDING-MISMATCH-001"
+    },
+    {
+      "description": "A proof bundle's content digest or an artifact digest is missing, ambiguous, malformed, or does not match the actual computed cryptographic digest",
+      "guidance": "declare one content digest per artifact and recompute it after any edit",
+      "id": "ERR-CLAIM-PROOF-DIGEST-MISMATCH-001"
+    },
+    {
+      "description": "An input file is empty (0 bytes or empty text), contains an empty JSON collection, or a required claim surface declares no claim table",
+      "guidance": "provide non-empty inputs; empty files or collections are not evidence",
+      "id": "ERR-CLAIM-PROOF-EMPTY-INPUT-001"
     },
     {
       "description": "proof claim formal artifact is absent, not on disk, empty, digest-unbound, or not written in the declared checker language",
@@ -462,9 +492,24 @@
       "id": "ERR-CLAIM-PROOF-FORMAL-MODEL-UNBOUND-001"
     },
     {
+      "description": "A proof bundle declares no claim class, a claim class not recognized in architecture/claims.json, or no claim-class registry was supplied",
+      "guidance": "declare a claim class registered in architecture/claims.json",
+      "id": "ERR-CLAIM-PROOF-INVALID-CLASS-001"
+    },
+    {
+      "description": "A claim level (e.g. achieved, qualified, verified) is higher than its retained proof supports, the proof is non-passing, or required evidence for the claim class is missing",
+      "guidance": "retain proof evidence for every claimed level before raising the level",
+      "id": "ERR-CLAIM-PROOF-LEVEL-EXCEEDED-001"
+    },
+    {
       "description": "proof claim formal model generation differs from the claim generation, the declared model reference, or the check receipt",
       "guidance": "re-check the proof at the claim generation; never splice generations",
       "id": "ERR-CLAIM-PROOF-MODEL-GENERATION-MISMATCH-001"
+    },
+    {
+      "description": "A claim attempts a promotion explicitly prohibited by architecture/claims.json",
+      "guidance": "remove the prohibited promotion; claim only what the retained evidence supports",
+      "id": "ERR-CLAIM-PROOF-PROHIBITED-PROMOTION-001"
     },
     {
       "description": "promoted proof bundle passed the static pre-filter, but a proof is verified only by a qualification receipt from running the prover, and no such receipt mechanism is defined yet",
@@ -487,6 +532,11 @@
       "id": "ERR-CLAIM-PROOF-THEOREM-UNBOUND-001"
     },
     {
+      "description": "The stable-ID tombstone index (architecture/stable_id_resolution.json plus the repository stable-ID index) is missing, unreadable, empty, corrupt, or has the wrong schema, so tombstoned identities cannot be refused",
+      "guidance": "restore or rebuild architecture/stable_id_resolution.json and the registry tombstone rows",
+      "id": "ERR-CLAIM-PROOF-TOMBSTONE-INDEX-UNAVAILABLE-001"
+    },
+    {
       "description": "proof claim formal checker identity is missing, unregistered, latest-aliased, or differs between bundle and check receipt",
       "guidance": "pin the exact registered formal checker and version in bundle and receipt",
       "id": "ERR-CLAIM-PROOF-TOOLCHAIN-UNBOUND-001"
@@ -497,9 +547,24 @@
       "id": "ERR-CLAIM-PROOF-UNPROVEN-PLACEHOLDER-001"
     },
     {
+      "description": "An input file or directory could not be read (including a file over the per-file byte cap, MAX_INPUT_BYTES), decoded, or parsed as valid JSON/Markdown, or is structurally malformed (including a qualification receipt that violates schemas/release_qualification_receipt.v1.json)",
+      "guidance": "make every input readable and within the per-file byte bound",
+      "id": "ERR-CLAIM-PROOF-UNREADABLE-INPUT-001"
+    },
+    {
+      "description": "A claim status, bundle status, supported level, retention state, expiry marker, or readiness registry state is outside the closed vocabulary",
+      "guidance": "use a recognized status/level/retention spelling from the closed vocabularies",
+      "id": "ERR-CLAIM-PROOF-UNRECOGNIZED-STATE-001"
+    },
+    {
       "description": "proof claim formal artifact contains a known unsound escape (Lean axiom, compiler trust, lcProof, kernel bypass, metaprogramming, a #-command, an import outside Init/Std/Lean; TLA+ AXIOM, ASSUMPTION or non-sequent ASSUME, or EXTENDS/INSTANCE of a non-standard module)",
       "guidance": "remove the escape; declare assumptions in the bundle and model",
       "id": "ERR-CLAIM-PROOF-UNSOUND-ESCAPE-001"
+    },
+    {
+      "description": "The machine-readable claims registry (architecture/claims.json) and its human-readable markdown source (registries/CLAIMS.md) differ in claim class IDs, ordering, meaning, minimum evidence, or row count",
+      "guidance": "synchronize architecture/claims.json and registries/CLAIMS.md",
+      "id": "ERR-CLAIM-REGISTRY-DRIFT-001"
     },
     {
       "description": "slo measurement has no single canonical numeric 'actual': it is missing, non-numeric, boolean, negative, overflowing, or rounded-only (an actual-like key is ERR-CLAIM-EVIDENCE-FIELD-UNKNOWN-001)",
