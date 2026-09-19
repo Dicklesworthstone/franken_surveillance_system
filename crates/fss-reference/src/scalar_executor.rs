@@ -701,12 +701,11 @@ fn compute_node_macs(
         OpCode::Squeeze | OpCode::Unsqueeze | OpCode::Concat => {
             Ok(out_ports[0].shape().num_elements()? as u64)
         }
+        OpCode::LayerNorm | OpCode::RMSNorm => normalization_work(node, in_ports, &out_ports[0]),
         OpCode::Reshape => Ok(0),
         OpCode::Gelu
         | OpCode::Silu
         | OpCode::Tanh
-        | OpCode::LayerNorm
-        | OpCode::RMSNorm
         | OpCode::Embedding => Err(ExecError::UnsupportedOperator {
             node_id: node.id().to_string(),
             op: node.op(),
@@ -794,12 +793,12 @@ impl ScalarExecutor {
                 | OpCode::Squeeze
                 | OpCode::Unsqueeze
                 | OpCode::Concat
-                | OpCode::Slice => {}
+                | OpCode::Slice
+                | OpCode::LayerNorm
+                | OpCode::RMSNorm => {}
                 OpCode::Gelu
                 | OpCode::Silu
                 | OpCode::Tanh
-                | OpCode::LayerNorm
-                | OpCode::RMSNorm
                 | OpCode::Embedding => {
                     return Err(ExecError::UnsupportedOperator {
                         node_id: node.id().to_string(),
@@ -1040,11 +1039,12 @@ impl ScalarExecutor {
                 | OpCode::Concat | OpCode::Slice => Self::execute_layout(
                     node, &node_in_tensors, &out_ports[0], graph.generation(), cx,
                 )?,
+                OpCode::LayerNorm | OpCode::RMSNorm => Self::execute_normalization(
+                    node, &node_in_tensors, &out_ports[0], graph.generation(), cx,
+                )?,
                 OpCode::Gelu
                 | OpCode::Silu
                 | OpCode::Tanh
-                | OpCode::LayerNorm
-                | OpCode::RMSNorm
                 | OpCode::Embedding => {
                     return Err(ExecError::UnsupportedOperator {
                         node_id: node.id().to_string(),
@@ -1751,4 +1751,108 @@ fn layout_strides(dims: &[usize]) -> Result<Vec<usize>, ExecError> {
             .ok_or(ExecError::ArithmeticOverflow { operation: "layout stride product" })?;
     }
     Ok(strides)
+}
+
+// Frozen v1 normalization: trailing dimensions, population variance, epsilon inside
+// the square root, and optional per-element weight/bias. Statistics and affine math
+// use ordered binary64 operations; only the final value is rounded to binary32.
+// sqrt is the IEEE-754 correctly rounded primitive, not a host transcendental.
+fn normalization_width(
+    node: &fss_model_ir::GraphNode,
+    input_dims: &[usize],
+    weight_dims: Option<&[usize]>,
+) -> Result<usize, ExecError> {
+    let dims = match node.attributes().get("normalized_shape") {
+        Some(fss_model_ir::AttrValue::Shape(shape)) => shape.dims().to_vec(),
+        Some(value) => value.as_usize_list(node.id(), "normalized_shape")?,
+        None => match weight_dims {
+            Some(dims) => dims.to_vec(),
+            None => input_dims.last().copied().into_iter().collect(),
+        },
+    };
+    let width = layout_product(&dims)?;
+    if dims.is_empty() || width == 0 || !input_dims.ends_with(&dims) {
+        return Err(layout_mismatch(node, "invalid trailing normalization dimensions"));
+    }
+    Ok(width)
+}
+
+fn normalization_work(
+    node: &fss_model_ir::GraphNode,
+    inputs: &[TensorPort],
+    output: &TensorPort,
+) -> Result<u64, ExecError> {
+    let count = output.shape().num_elements()?;
+    // Empty tensors do not construct products over their other, potentially huge axes.
+    if count == 0 { return Ok(0); }
+    let width = normalization_width(node, inputs[0].shape().dims(),
+        inputs.get(1).map(|port| port.shape().dims()))?;
+    (count as u64).checked_mul(8)
+        .and_then(|work| (count as u64 / width as u64).checked_mul(4)
+            .and_then(|rows| work.checked_add(rows)))
+        .ok_or(ExecError::ArithmeticOverflow { operation: "normalization work bound" })
+}
+
+impl ScalarExecutor {
+    fn execute_normalization(
+        node: &fss_model_ir::GraphNode,
+        inputs: &[&Tensor],
+        output: &TensorPort,
+        generation: Generation,
+        cx: &ScalarExecCx,
+    ) -> Result<Tensor, ExecError> {
+        cx.checkpoint("normalization:begin")?;
+        let count = output.shape().num_elements()?;
+        if count == 0 {
+            return Tensor::from_values(output.shape().clone(), &[] as &[f32], generation)
+                .map_err(ExecError::Tensor);
+        }
+        let width = normalization_width(node, inputs[0].shape().dims(),
+            inputs.get(1).map(|tensor| tensor.shape().dims()))?;
+        let epsilon = match node.attributes().get("epsilon") {
+            Some(value) => value.as_float(node.id(), "epsilon")?,
+            None => 1e-5_f64,
+        };
+        let centered = node.op() == OpCode::LayerNorm;
+        let source = inputs[0].to_vec::<f32>()?;
+        let weight = inputs.get(1).map(|tensor| tensor.to_vec::<f32>()).transpose()?;
+        let bias = inputs.get(2).map(|tensor| tensor.to_vec::<f32>()).transpose()?;
+        let mut values = Vec::with_capacity(count);
+        for row in source.chunks(width) {
+            let mut sum = 0.0_f64;
+            let mut finite = true;
+            for (index, &value) in row.iter().enumerate() {
+                if index % 1024 == 0 { cx.checkpoint("normalization:mean")?; }
+                finite &= value.is_finite();
+                sum += f64::from(value);
+            }
+            // One nonfinite sample makes the complete reduction row undefined. Canonical
+            // NaN bits avoid platform-dependent payload propagation; other rows are independent.
+            if !finite {
+                for index in 0..width {
+                    if index % 1024 == 0 { cx.checkpoint("normalization:nonfinite")?; }
+                    values.push(f32::from_bits(0x7fc0_0000));
+                }
+                continue;
+            }
+            let mean = if centered { sum / width as f64 } else { 0.0 };
+            let mut squares = 0.0_f64;
+            for (index, &value) in row.iter().enumerate() {
+                if index % 1024 == 0 { cx.checkpoint("normalization:variance")?; }
+                let deviation = f64::from(value) - mean;
+                squares += deviation * deviation;
+            }
+            let divisor = (squares / width as f64 + epsilon).sqrt();
+            for (index, &value) in row.iter().enumerate() {
+                if index % 1024 == 0 { cx.checkpoint("normalization:affine")?; }
+                let mut normalized = (f64::from(value) - mean) / divisor;
+                if let Some(weight) = &weight { normalized *= f64::from(weight[index]); }
+                if let Some(bias) = &bias { normalized += f64::from(bias[index]); }
+                values.push(if normalized.is_nan() { f32::from_bits(0x7fc0_0000) }
+                    else { normalized as f32 });
+            }
+        }
+        cx.checkpoint("normalization:publish")?;
+        Tensor::from_values(output.shape().clone(), &values, generation).map_err(ExecError::Tensor)
+    }
 }
