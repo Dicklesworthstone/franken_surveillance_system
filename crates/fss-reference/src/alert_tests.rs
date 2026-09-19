@@ -162,7 +162,8 @@ fn delivered_alert_closes_verified_obligation() -> Result<(), Box<dyn Error>> {
     let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:alert");
     let receipt = dispatch_reference_alert(
         &plan,
-        &authority, &objects,
+        &authority,
+        &objects,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(101),
         TimestampNs(102),
@@ -216,7 +217,8 @@ fn lost_ack_blocks_resend_until_provider_reconciliation() -> Result<(), Box<dyn 
 
     let first = dispatch_reference_alert(
         &plan,
-        &authority, &objects,
+        &authority,
+        &objects,
         ReferenceProviderBehavior::LoseAckAfterDelivery,
         TimestampNs(101),
         TimestampNs(102),
@@ -229,7 +231,8 @@ fn lost_ack_blocks_resend_until_provider_reconciliation() -> Result<(), Box<dyn 
     assert!(matches!(
         dispatch_reference_alert(
             &plan,
-            &authority, &objects,
+            &authority,
+            &objects,
             ReferenceProviderBehavior::Deliver,
             TimestampNs(103),
             TimestampNs(104),
@@ -265,7 +268,8 @@ fn known_pre_delivery_failure_never_creates_provider_message() -> Result<(), Box
 
     let receipt = dispatch_reference_alert(
         &plan,
-        &authority, &objects,
+        &authority,
+        &objects,
         ReferenceProviderBehavior::FailBeforeDelivery,
         TimestampNs(101),
         TimestampNs(102),
@@ -868,7 +872,8 @@ fn stale_event_authority_cannot_dispatch_alert() -> Result<(), Box<dyn Error>> {
     // Dispatching against authority (which now has revision 2) fails with StaleEventAuthority.
     let res = dispatch_reference_alert(
         &plan,
-        &authority, &objects,
+        &authority,
+        &objects,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(101),
         TimestampNs(102),
@@ -899,7 +904,8 @@ fn stale_event_authority_cannot_dispatch_alert() -> Result<(), Box<dyn Error>> {
     // A second dispatch call on the same plan must also fail (operation not in Prepared state).
     let second_res = dispatch_reference_alert(
         &plan,
-        &authority, &objects,
+        &authority,
+        &objects,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(103),
         TimestampNs(104),
@@ -996,7 +1002,8 @@ fn later_tamper_revision_vetoes_in_flight_alert_dispatch_p5b() -> Result<(), Box
     // Dispatching against authority after tamper revision published must refuse with StaleEventAuthority.
     let dispatch_result = dispatch_reference_alert(
         &plan,
-        &authority, &objects,
+        &authority,
+        &objects,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(101),
         TimestampNs(102),
@@ -1028,7 +1035,8 @@ fn later_tamper_revision_vetoes_in_flight_alert_dispatch_p5b() -> Result<(), Box
     // A second dispatch call on the same plan must also fail (operation not in Prepared state).
     let second_dispatch = dispatch_reference_alert(
         &plan,
-        &authority, &objects,
+        &authority,
+        &objects,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(103),
         TimestampNs(104),
@@ -1075,7 +1083,8 @@ fn unrelated_observation_batch_still_delivers_alert_p6() -> Result<(), Box<dyn E
     // Dispatching against authority must SUCCEED because this event's revision was not modified.
     let receipt = dispatch_reference_alert(
         &plan,
-        &authority, &objects,
+        &authority,
+        &objects,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(101),
         TimestampNs(102),
@@ -1140,7 +1149,8 @@ fn refusal_at_or_before_prepare_time_cancels_op_and_obligation_p7() -> Result<()
     // Dispatch requested at commit_at = 50ns (STRICTLY BEFORE prepare time 100ns).
     let res = dispatch_reference_alert(
         &plan,
-        &authority, &objects,
+        &authority,
+        &objects,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(50),
         TimestampNs(60),
@@ -1226,7 +1236,8 @@ fn durable_dispatch_refuses_on_tamper_and_persists_cancelled_record_p8()
     // Durable dispatch must be refused with StaleEventAuthority.
     let dispatch_res = durable_journal.dispatch_alert(
         &plan,
-        &authority, &objects,
+        &authority,
+        &objects,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(110),
         TimestampNs(120),
@@ -1335,7 +1346,8 @@ fn cancel_proof_binds_operation_id_and_both_anchors_p10() -> Result<(), Box<dyn 
 
     let res = dispatch_reference_alert(
         &plan,
-        &authority, &objects,
+        &authority,
+        &objects,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(101),
         TimestampNs(102),
@@ -1400,7 +1412,8 @@ fn test_rewritten_plan_refused_on_in_memory_dispatch_x6() -> Result<(), Box<dyn 
 
     let res = dispatch_reference_alert(
         &plan,
-        &authority, &objects,
+        &authority,
+        &objects,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(101),
         TimestampNs(102),
@@ -1475,7 +1488,8 @@ fn test_rewritten_plan_refused_on_durable_dispatch_x6() -> Result<(), Box<dyn Er
 
     let res = durable_journal.dispatch_alert(
         &plan,
-        &authority, &objects,
+        &authority,
+        &objects,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(101),
         TimestampNs(102),
@@ -1547,7 +1561,8 @@ fn test_tamper_before_dispatch_refused_and_cancels_x1() -> Result<(), Box<dyn Er
     // Public dispatch call must refuse
     let res = dispatch_reference_alert(
         &plan,
-        &authority, &objects,
+        &authority,
+        &objects,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(101),
         TimestampNs(102),
@@ -1592,7 +1607,8 @@ fn test_cross_ledger_authority_refused_and_cancels_x2() -> Result<(), Box<dyn Er
     // Attempting to dispatch plan B using authority ledger A must be refused
     let res = dispatch_reference_alert(
         &plan_b,
-        &authority_a, &objects,
+        &authority_a,
+        &objects,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(101),
         TimestampNs(102),
@@ -1868,7 +1884,8 @@ fn test_x7_mem_self_prepared_intent_on_tamper_revision() -> Result<(), Box<dyn E
     let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:x7m");
     let res = dispatch_reference_alert(
         &forged,
-        &authority, &objects,
+        &authority,
+        &objects,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(101),
         TimestampNs(102),
@@ -1948,7 +1965,8 @@ fn test_x7_dur_self_prepared_intent_on_tamper_revision() -> Result<(), Box<dyn E
     let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:x7d");
     let res = durable_journal.dispatch_alert(
         &forged,
-        &authority, &objects,
+        &authority,
+        &objects,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(101),
         TimestampNs(102),
@@ -2029,7 +2047,8 @@ fn test_x7b_mem_self_prepared_on_uncorroborated_revision() -> Result<(), Box<dyn
     let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:x7bm");
     let res = dispatch_reference_alert(
         &forged,
-        &authority, &objects,
+        &authority,
+        &objects,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(101),
         TimestampNs(102),
@@ -2104,7 +2123,8 @@ fn test_x7b_dur_self_prepared_on_uncorroborated_revision() -> Result<(), Box<dyn
     let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:x7bd");
     let res = durable_journal.dispatch_alert(
         &forged,
-        &authority, &objects,
+        &authority,
+        &objects,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(101),
         TimestampNs(102),
@@ -2158,7 +2178,8 @@ fn test_x2_stale_ledger_handle_after_tamper() -> Result<(), Box<dyn Error>> {
     let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:x2s");
     let res = dispatch_reference_alert(
         &plan,
-        &authority, &objects,
+        &authority,
+        &objects,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(101),
         TimestampNs(102),
@@ -2212,7 +2233,8 @@ fn test_x6b_mem_root_rewrite_without_request_digest_cancels_prepared_op()
     let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:x6bm");
     let r1 = dispatch_reference_alert(
         &forged,
-        &authority, &objects,
+        &authority,
+        &objects,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(101),
         TimestampNs(102),
@@ -2231,7 +2253,8 @@ fn test_x6b_mem_root_rewrite_without_request_digest_cancels_prepared_op()
     // Second dispatch attempt with original plan must also fail because op is Cancelled
     let r2 = dispatch_reference_alert(
         &plan,
-        &authority, &objects,
+        &authority,
+        &objects,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(103),
         TimestampNs(104),
@@ -2280,7 +2303,8 @@ fn test_m8_mismatched_obligation_id_refused_and_cancels() -> Result<(), Box<dyn 
     let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:m8");
     let res = dispatch_reference_alert(
         &mismatched,
-        &authority, &objects,
+        &authority,
+        &objects,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(101),
         TimestampNs(102),
@@ -2349,7 +2373,8 @@ fn test_divergent_ledger_head_refused_and_cancels() -> Result<(), Box<dyn Error>
     let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:divergent");
     let res = dispatch_reference_alert(
         &plan,
-        &ledger_b, &objects_b,
+        &ledger_b,
+        &objects_b,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(101),
         TimestampNs(102),
@@ -2545,7 +2570,8 @@ fn forged_predicate_on_ineligible_revision(
         )?;
         let res = durable_journal.dispatch_alert(
             &forged,
-            &authority, &objects,
+            &authority,
+            &objects,
             ReferenceProviderBehavior::Deliver,
             TimestampNs(101),
             TimestampNs(102),
@@ -2574,7 +2600,8 @@ fn forged_predicate_on_ineligible_revision(
         )?;
         let res = dispatch_reference_alert(
             &forged,
-            &authority, &objects,
+            &authority,
+            &objects,
             ReferenceProviderBehavior::Deliver,
             TimestampNs(101),
             TimestampNs(102),
@@ -2694,7 +2721,8 @@ fn authority_fault_case(
     let refusal = if durable {
         match durable_journal.dispatch_alert(
             &plan,
-            &authority, &objects,
+            &authority,
+            &objects,
             ReferenceProviderBehavior::Deliver,
             TimestampNs(101),
             TimestampNs(102),
@@ -2707,7 +2735,8 @@ fn authority_fault_case(
     } else {
         match dispatch_reference_alert(
             &plan,
-            &authority, &objects,
+            &authority,
+            &objects,
             ReferenceProviderBehavior::Deliver,
             TimestampNs(101),
             TimestampNs(102),
@@ -2810,7 +2839,8 @@ fn test_m1_plan_intent_must_equal_prepared_intent() -> Result<(), Box<dyn Error>
     let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:m1");
     let res = dispatch_reference_alert(
         &rekeyed,
-        &authority, &objects,
+        &authority,
+        &objects,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(101),
         TimestampNs(102),
@@ -2850,7 +2880,8 @@ fn test_m1_rerouted_channel_plan_is_not_the_prepared_intent() -> Result<(), Box<
     let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:m1-rerouted");
     let res = dispatch_reference_alert(
         &rerouted,
-        &authority, &objects,
+        &authority,
+        &objects,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(101),
         TimestampNs(102),
@@ -2913,7 +2944,8 @@ fn test_m4_foreign_authority_anchor_refused() -> Result<(), Box<dyn Error>> {
     let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:m4");
     let res = dispatch_reference_alert(
         &reanchored,
-        &authority, &objects,
+        &authority,
+        &objects,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(101),
         TimestampNs(102),
@@ -2960,7 +2992,8 @@ fn dispatch_self_prepared(
         )?;
         let refusal = match journal.dispatch_alert(
             plan,
-            authority, &objects,
+            authority,
+            &objects,
             ReferenceProviderBehavior::Deliver,
             TimestampNs(101),
             TimestampNs(102),
@@ -2992,7 +3025,8 @@ fn dispatch_self_prepared(
         )?;
         match dispatch_reference_alert(
             plan,
-            authority, &objects,
+            authority,
+            &objects,
             ReferenceProviderBehavior::Deliver,
             TimestampNs(101),
             TimestampNs(102),
@@ -3260,7 +3294,8 @@ fn head_rebinding_case(tag: &str, durable: bool) -> Result<(), Box<dyn Error>> {
     if durable {
         let res = durable_journal.dispatch_alert(
             &moved,
-            &authority, &objects,
+            &authority,
+            &objects,
             ReferenceProviderBehavior::Deliver,
             TimestampNs(101),
             TimestampNs(102),
@@ -3283,7 +3318,8 @@ fn head_rebinding_case(tag: &str, durable: bool) -> Result<(), Box<dyn Error>> {
     } else {
         let res = dispatch_reference_alert(
             &moved,
-            &authority, &objects,
+            &authority,
+            &objects,
             ReferenceProviderBehavior::Deliver,
             TimestampNs(101),
             TimestampNs(102),
@@ -4011,10 +4047,8 @@ fn cross_event_domain_tamper_refuses_dispatch_p6c() -> Result<(), Box<dyn Error>
         &mut objects,
         &mut authority,
     )?;
-    let health_eval = evaluate_unknown_presence(
-        EventId::parse("event:alert:p6c-health")?,
-        vec![tamper_obs],
-    )?;
+    let health_eval =
+        evaluate_unknown_presence(EventId::parse("event:alert:p6c-health")?, vec![tamper_obs])?;
     let _health_receipt = publish_reference_event(&health_eval, &mut objects, &mut authority)?;
 
     let dispatch_result = dispatch_reference_alert(

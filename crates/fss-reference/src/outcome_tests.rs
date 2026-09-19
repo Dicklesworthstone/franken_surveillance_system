@@ -75,7 +75,8 @@ impl OutcomeHarness {
         let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:outcome");
         let _ = dispatch_reference_alert(
             &plan,
-            &authority, &objects,
+            &authority,
+            &objects,
             behavior,
             TimestampNs(101),
             TimestampNs(102),

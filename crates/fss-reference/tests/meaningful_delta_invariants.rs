@@ -1179,7 +1179,8 @@ fn test_f4_real_situation_f2_terminal_effect_transition_non_coalescible()
     let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:meaningful_delta");
     let _ = dispatch_reference_alert(
         &alert_plan,
-        &harness.authority, &harness.objects,
+        &harness.authority,
+        &harness.objects,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(1_001),
         TimestampNs(1_002),

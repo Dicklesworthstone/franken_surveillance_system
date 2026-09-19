@@ -1021,7 +1021,8 @@ impl Lifecycle {
         ));
         let _ = crate::dispatch_reference_alert(
             &plan,
-            &harness.authority, &harness.objects,
+            &harness.authority,
+            &harness.objects,
             crate::ReferenceProviderBehavior::Deliver,
             TimestampNs(101),
             TimestampNs(102),
@@ -2418,7 +2419,8 @@ fn durable_discharge_is_terminal_once_the_journal_closes_it() -> Result<(), Box<
     ));
     let _ = journal.dispatch_alert(
         &plan,
-        &harness.authority, &harness.objects,
+        &harness.authority,
+        &harness.objects,
         crate::ReferenceProviderBehavior::Deliver,
         TimestampNs(101),
         TimestampNs(102),
@@ -3245,7 +3247,8 @@ fn a_raw_record_never_makes_a_stale_sibling_a_terminal_basis() -> Result<(), Box
     ));
     let _ = crate::dispatch_reference_alert(
         &plan,
-        &harness.authority, &harness.objects,
+        &harness.authority,
+        &harness.objects,
         crate::ReferenceProviderBehavior::Deliver,
         TimestampNs(101),
         TimestampNs(102),
@@ -3499,7 +3502,8 @@ fn a_displaced_basis_is_refused_not_silently_downgraded() -> Result<(), Box<dyn 
     ));
     let _ = crate::dispatch_reference_alert(
         &plan,
-        &harness.authority, &harness.objects,
+        &harness.authority,
+        &harness.objects,
         crate::ReferenceProviderBehavior::Deliver,
         TimestampNs(101),
         TimestampNs(102),

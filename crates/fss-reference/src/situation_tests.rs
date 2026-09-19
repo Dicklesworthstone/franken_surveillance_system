@@ -309,7 +309,8 @@ fn lost_ack_projects_only_reconciliation_and_seals_root_closed_handoff()
     let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:situation:lost_ack");
     let _ = dispatch_reference_alert(
         &plan,
-        &harness.authority, &harness.objects,
+        &harness.authority,
+        &harness.objects,
         ReferenceProviderBehavior::LoseAckAfterDelivery,
         TimestampNs(101),
         TimestampNs(102),
@@ -402,7 +403,8 @@ fn canonical_effect_outcome_cannot_be_omitted_from_projection() -> Result<(), Bo
     let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:situation:omission");
     let _ = dispatch_reference_alert(
         &plan,
-        &harness.authority, &harness.objects,
+        &harness.authority,
+        &harness.objects,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(101),
         TimestampNs(102),
@@ -851,7 +853,8 @@ fn verified_outcome_fixture(name: &str) -> Result<VerifiedFixture, Box<dyn Error
         ReferenceAlertProvider::with_provider_id(format!("provider:test:situation:{name}"));
     let _ = dispatch_reference_alert(
         &plan,
-        &harness.authority, &harness.objects,
+        &harness.authority,
+        &harness.objects,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(101),
         TimestampNs(102),
