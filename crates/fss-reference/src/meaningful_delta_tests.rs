@@ -265,7 +265,7 @@ fn publication(variant: &Variant) -> Result<crate::ReferenceSituationPublication
     let mut proof_roots = BTreeSet::from([evidence]);
     for cell in &variant.extra_cells {
         for ev in cell.evidence() {
-            proof_roots.insert(*ev);
+            proof_roots.insert(ev.digest);
         }
     }
     if variant.effect_state.is_some() && variant.effect_evidence && variant.effect_evidence_retained

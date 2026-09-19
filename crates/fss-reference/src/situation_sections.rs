@@ -1059,7 +1059,7 @@ fn context_candidates(
                     existing
                         .item
                         .basis
-                        .extend(cell.evidence().iter().map(ToString::to_string));
+                        .extend(cell.evidence_digests().iter().map(ToString::to_string));
                 }
                 let dropped_item_id = if item_id == *prev_item_id {
                     let duplicate_count = redundancy
@@ -1080,7 +1080,7 @@ fn context_candidates(
             } else {
                 seen_contradictions.push((cell, item_id.clone()));
                 let mut basis = BTreeSet::from([cell.claim_id().to_owned()]);
-                basis.extend(cell.evidence().iter().map(ToString::to_string));
+                basis.extend(cell.evidence_digests().iter().map(ToString::to_string));
                 basis.extend(cell.contradictions().iter().map(ToString::to_string));
                 insert_candidate(
                     &mut candidates,
@@ -1120,7 +1120,7 @@ fn context_candidates(
             } else {
                 seen_epistemic.push((cell, item_id.clone()));
                 let mut basis = BTreeSet::from([cell.claim_id().to_owned()]);
-                basis.extend(cell.evidence().iter().map(ToString::to_string));
+                basis.extend(cell.evidence_digests().iter().map(ToString::to_string));
                 basis.extend(cell.contradictions().iter().map(ToString::to_string));
                 insert_candidate(
                     &mut candidates,
@@ -1200,7 +1200,7 @@ fn context_candidates(
             } else {
                 seen_knowledge.push((cell, item_id.clone()));
                 let mut basis = BTreeSet::from([cell.claim_id().to_owned()]);
-                basis.extend(cell.evidence().iter().map(ToString::to_string));
+                basis.extend(cell.evidence_digests().iter().map(ToString::to_string));
                 insert_candidate(
                     &mut candidates,
                     &mut redundancy,
@@ -1252,7 +1252,7 @@ fn context_candidates(
             } else {
                 seen_not_applicable.push((cell, item_id.clone()));
                 let mut basis = BTreeSet::from([cell.claim_id().to_owned()]);
-                basis.extend(cell.evidence().iter().map(ToString::to_string));
+                basis.extend(cell.evidence_digests().iter().map(ToString::to_string));
                 basis.extend(cell.contradictions().iter().map(ToString::to_string));
                 insert_candidate(
                     &mut candidates,

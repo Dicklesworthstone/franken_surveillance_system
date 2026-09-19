@@ -1018,7 +1018,7 @@ fn forged_result_digest_is_refused() -> Result<(), Box<dyn Error>> {
         effect
             .evidence()
             .iter()
-            .all(|root| situation.proof_roots.contains(root)),
+            .all(|root| situation.proof_roots.contains(&root.digest)),
         "{:?}",
         effect.evidence()
     );

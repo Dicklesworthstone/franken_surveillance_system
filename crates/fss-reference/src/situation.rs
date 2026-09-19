@@ -486,7 +486,7 @@ impl ReferenceSituation {
             if !cell
                 .evidence()
                 .iter()
-                .all(|root| self.proof_roots.contains(root))
+                .all(|root| self.proof_roots.contains(&root.digest))
             {
                 return Err(fss_core::ContractError::IncompletePublicationGraph.into());
             }

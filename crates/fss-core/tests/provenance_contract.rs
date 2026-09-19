@@ -16,10 +16,10 @@ use std::str::FromStr;
 
 use fss_core::{
     BeliefInterval, CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder,
-    ContentDigest, ContractError, DerivedBelief, DerivedBeliefParams, Generation, KnowledgeCell,
-    KnowledgeCellParams, KnowledgeState, KnowledgeStateBasis, LedgerAnchor, PrivacyGeneration,
-    ProvenanceClass, ReconciliationBasis, RedactionMarker, RedactionReason, SituationFrame,
-    StaleBasis, TimestampNs, WorldEnvelope,
+    ContentDigest, ContractError, DerivedBelief, DerivedBeliefParams, EvidenceOrigin, Generation,
+    KnowledgeCell, KnowledgeCellParams, KnowledgeState, KnowledgeStateBasis, LedgerAnchor,
+    PrivacyGeneration, ProvenanceClass, ReconciliationBasis, RedactionMarker, RedactionReason,
+    SituationFrame, StaleBasis, TimestampNs, WorldEnvelope,
 };
 
 #[test]
@@ -154,7 +154,7 @@ fn test_observed_requires_source_evidence_anchors_fail_closed() -> Result<(), Bo
     let validated = cell_with_evidence.validated()?;
     assert!(validated.is_observed());
     assert_eq!(validated.evidence().len(), 1);
-    assert_eq!(validated.evidence()[0], evidence_digest);
+    assert_eq!(validated.evidence_digests()[0], evidence_digest);
 
     Ok(())
 }
@@ -538,7 +538,7 @@ fn test_derived_requires_named_input_evidence_anchors_fail_closed() -> Result<()
     assert!(validated.is_derived());
     assert!(!validated.is_observed());
     assert_eq!(validated.evidence().len(), 1);
-    assert_eq!(validated.evidence()[0], input_digest);
+    assert_eq!(validated.evidence_digests()[0], input_digest);
 
     Ok(())
 }
@@ -1087,8 +1087,8 @@ fn test_predicted_counterfactual_branch_and_assumptions_semantics() -> Result<()
     assert!(!validated.is_observed());
     assert!(!validated.is_derived());
     assert_eq!(validated.evidence().len(), 2);
-    assert_eq!(validated.evidence()[0], branch_assumption);
-    assert_eq!(validated.evidence()[1], model_digest);
+    assert_eq!(validated.evidence_digests()[0], branch_assumption);
+    assert_eq!(validated.evidence_digests()[1], model_digest);
 
     // Counterfactual prediction requires explicit assumptions for planning
     assert!(!validated.is_irreversible_effect_premise(TimestampNs(1_000_000_000)));
@@ -2190,7 +2190,7 @@ fn test_vendor_claimed_cannot_authorize_irreversible_effects_even_when_known()
         knowledge_state: vendor_known_cell.knowledge_state(),
         provenance: ProvenanceClass::Observed,
         hypothesis: vendor_known_cell.hypothesis(),
-        evidence: vendor_known_cell.evidence().to_vec(),
+        evidence: vendor_known_cell.evidence_digests(),
         contradictions: vendor_known_cell.contradictions().to_vec(),
         valid_until: vendor_known_cell.valid_until(),
         state_basis: vendor_known_cell.state_basis().cloned(),
@@ -2203,7 +2203,7 @@ fn test_vendor_claimed_cannot_authorize_irreversible_effects_even_when_known()
         knowledge_state: vendor_known_cell.knowledge_state(),
         provenance: ProvenanceClass::Derived,
         hypothesis: vendor_known_cell.hypothesis(),
-        evidence: vendor_known_cell.evidence().to_vec(),
+        evidence: vendor_known_cell.evidence_digests(),
         contradictions: vendor_known_cell.contradictions().to_vec(),
         valid_until: vendor_known_cell.valid_until(),
         state_basis: vendor_known_cell.state_basis().cloned(),
@@ -3212,7 +3212,7 @@ fn test_fss_nozug_planted_bypass_derived_to_known_relabel_refused_as_effect_prem
         knowledge_state: KnowledgeState::Known,
         provenance: ProvenanceClass::Derived,
         hypothesis: cell.hypothesis(),
-        evidence: cell.evidence().to_vec(),
+        evidence: cell.evidence_digests(),
         contradictions: cell.contradictions().to_vec(),
         valid_until: cell.valid_until(),
         state_basis: cell.state_basis().cloned(),
@@ -3294,7 +3294,7 @@ fn test_fss_nozug_knowledge_cell_constructor_and_getters_integrity() -> Result<(
     assert_eq!(observed_cell.statement(), "Motion detected by PIR sensor");
     assert_eq!(observed_cell.knowledge_state(), KnowledgeState::Known);
     assert_eq!(observed_cell.provenance(), ProvenanceClass::Observed);
-    assert_eq!(observed_cell.evidence(), &[evidence_digest]);
+    assert_eq!(observed_cell.evidence_digests(), &[evidence_digest]);
     assert_eq!(observed_cell.contradictions(), &[]);
     assert_eq!(
         observed_cell.valid_until(),
@@ -3607,5 +3607,187 @@ fn test_policy_provenance_row_semantics() -> Result<(), Box<dyn std::error::Erro
     }
     // Round trip via canonical wire tag.
     assert_eq!(ProvenanceClass::from_code(policy.to_code())?, policy);
+    Ok(())
+}
+
+/// fss-gefi6: an irreversible-effect premise requires every supporting evidence reference's
+/// origin to authorize. Predicted, Remembered, VendorClaimed, and Laboratory origins never
+/// support an irreversible effect however the citing cell labels itself; Observed, Derived,
+/// OperatorAsserted, and Policy origins remain admissible (the deir9 receipt pattern).
+#[test]
+fn premise_requires_authorizing_evidence_origin_fss_gefi6() -> Result<(), Box<dyn Error>> {
+    let digest = ContentDigest::sha256(b"gefi6-premise-evidence");
+    let now = TimestampNs(1_000);
+    let cell_with = |origin: EvidenceOrigin| {
+        KnowledgeCell::new(KnowledgeCellParams {
+            claim_id: "claim:gefi6:premise".to_owned(),
+            statement: "The gate is forced open.".to_owned(),
+            knowledge_state: KnowledgeState::Known,
+            provenance: ProvenanceClass::Observed,
+            hypothesis: None,
+            evidence: vec![digest],
+            contradictions: vec![],
+            valid_until: None,
+            state_basis: None,
+        })?
+        .with_evidence_origins(&[origin])
+    };
+
+    assert!(
+        cell_with(EvidenceOrigin::Produced(ProvenanceClass::Observed))?
+            .is_irreversible_effect_premise(now)
+    );
+    assert!(
+        !cell_with(EvidenceOrigin::Produced(ProvenanceClass::Predicted))?
+            .is_irreversible_effect_premise(now),
+        "Predicted-origin evidence must never support a premise"
+    );
+    assert!(
+        !cell_with(EvidenceOrigin::Produced(ProvenanceClass::Remembered))?
+            .is_irreversible_effect_premise(now),
+        "Remembered-origin evidence must never support a premise"
+    );
+    assert!(
+        !cell_with(EvidenceOrigin::Produced(ProvenanceClass::VendorClaimed))?
+            .is_irreversible_effect_premise(now),
+        "VendorClaimed-origin evidence must never support a premise"
+    );
+    assert!(
+        !cell_with(EvidenceOrigin::Laboratory)?.is_irreversible_effect_premise(now),
+        "Laboratory-origin evidence must never support a premise (H4)"
+    );
+    Ok(())
+}
+
+/// fss-gefi6: a digest's recorded origin travelling with the reference detects a relabel even
+/// when both cells claim the SAME provenance: the prior cites the digest as Predicted-produced,
+/// the result cites it as Observed-produced, and the derived-into-observed pair is refused from
+/// the references alone.
+#[test]
+fn origin_relabel_detected_even_when_cell_provenance_matches_fss_gefi6()
+-> Result<(), Box<dyn Error>> {
+    let digest = ContentDigest::sha256(b"gefi6-relabelled-origin");
+    let cell = |origin: EvidenceOrigin| {
+        KnowledgeCell::new(KnowledgeCellParams {
+            claim_id: "claim:gefi6:relabel".to_owned(),
+            statement: "The same proposition, differently sourced.".to_owned(),
+            knowledge_state: KnowledgeState::Known,
+            provenance: ProvenanceClass::Observed,
+            hypothesis: None,
+            evidence: vec![digest],
+            contradictions: vec![],
+            valid_until: None,
+            state_basis: None,
+        })?
+        .with_evidence_origins(&[origin])
+    };
+    let prior = cell(EvidenceOrigin::Produced(ProvenanceClass::Derived))?;
+    let result = cell(EvidenceOrigin::Produced(ProvenanceClass::Observed))?;
+    assert_eq!(
+        result.verify_no_evidence_laundering(&prior),
+        Err(ContractError::EvidenceLaunderingDetected),
+        "same digest re-classified Derived into Observed must be refused from the references"
+    );
+    // Honest control: agreeing origins classify.
+    let honest_prior = cell(EvidenceOrigin::Produced(ProvenanceClass::Observed))?;
+    assert_eq!(result.verify_no_evidence_laundering(&honest_prior), Ok(()));
+    Ok(())
+}
+
+/// fss-gefi6: honest derivation — an Observed input digest re-cited by a Derived cell under the
+/// SAME origin — is accepted; the origin-aware check refuses re-classification, not sharing.
+#[test]
+fn honest_derivation_sharing_origin_is_accepted_fss_gefi6() -> Result<(), Box<dyn Error>> {
+    let digest = ContentDigest::sha256(b"gefi6-shared-observed-input");
+    let observed = KnowledgeCell::new(KnowledgeCellParams {
+        claim_id: "claim:gefi6:observed".to_owned(),
+        statement: "Observed telemetry.".to_owned(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Observed,
+        hypothesis: None,
+        evidence: vec![digest],
+        contradictions: vec![],
+        valid_until: None,
+        state_basis: None,
+    })?;
+    let derived = KnowledgeCell::new(KnowledgeCellParams {
+        claim_id: "claim:gefi6:derived".to_owned(),
+        statement: "Deterministically computed from the observed telemetry.".to_owned(),
+        knowledge_state: KnowledgeState::Estimated,
+        provenance: ProvenanceClass::Derived,
+        hypothesis: None,
+        evidence: vec![digest],
+        contradictions: vec![],
+        valid_until: None,
+        state_basis: None,
+    })?;
+    assert_eq!(
+        derived.verify_no_evidence_laundering(&observed),
+        Ok(()),
+        "citing an observed input under a Derived cell is honest derivation, not laundering"
+    );
+    Ok(())
+}
+
+/// fss-gefi6: the origin is part of the cell's canonical digest — the same digests under
+/// different origins produce different cell digests, and encoding is deterministic.
+#[test]
+fn cell_digest_binds_evidence_origin_fss_gefi6() -> Result<(), Box<dyn Error>> {
+    let digest = ContentDigest::sha256(b"gefi6-origin-binding");
+    let build = |origin: EvidenceOrigin| {
+        KnowledgeCell::new(KnowledgeCellParams {
+            claim_id: "claim:gefi6:binding".to_owned(),
+            statement: "Origin is canonical.".to_owned(),
+            knowledge_state: KnowledgeState::Known,
+            provenance: ProvenanceClass::Observed,
+            hypothesis: None,
+            evidence: vec![digest],
+            contradictions: vec![],
+            valid_until: None,
+            state_basis: None,
+        })?
+        .with_evidence_origins(&[origin])
+    };
+    let observed_cell = build(EvidenceOrigin::Produced(ProvenanceClass::Observed))?;
+    let laboratory_cell = build(EvidenceOrigin::Laboratory)?;
+    assert_ne!(
+        observed_cell.canonical_digest("fss.agent_knowledge_cell.v2"),
+        laboratory_cell.canonical_digest("fss.agent_knowledge_cell.v2"),
+        "the recorded origin must change the canonical cell digest"
+    );
+    assert_eq!(
+        observed_cell.canonical_digest("fss.agent_knowledge_cell.v2"),
+        observed_cell.canonical_digest("fss.agent_knowledge_cell.v2"),
+        "encoding must be deterministic"
+    );
+    Ok(())
+}
+
+/// fss-gefi6: re-stamping refuses an origin slice that does not match the evidence count.
+#[test]
+fn with_evidence_origins_refuses_misaligned_slice_fss_gefi6() -> Result<(), Box<dyn Error>> {
+    let digest = ContentDigest::sha256(b"gefi6-misaligned");
+    let cell = KnowledgeCell::new(KnowledgeCellParams {
+        claim_id: "claim:gefi6:misaligned".to_owned(),
+        statement: "Alignment matters.".to_owned(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Observed,
+        hypothesis: None,
+        evidence: vec![digest],
+        contradictions: vec![],
+        valid_until: None,
+        state_basis: None,
+    })?;
+    assert_eq!(
+        cell.clone()
+            .with_evidence_origins(&[EvidenceOrigin::Laboratory, EvidenceOrigin::Laboratory])
+            .map(|_| ())
+            .unwrap_err(),
+        ContractError::InvalidIdentifier
+    );
+    assert_eq!(
+        cell.with_evidence_origins(&[]).map(|_| ()).unwrap_err(),
+        ContractError::InvalidIdentifier
+    );
     Ok(())
 }

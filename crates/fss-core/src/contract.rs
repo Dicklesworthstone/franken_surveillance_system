@@ -258,7 +258,7 @@ impl core::str::FromStr for KnowledgeState {
 }
 
 /// How a proposition entered the knowledge system.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum ProvenanceClass {
     /// Directly observed from a retained source capsule.
     Observed,

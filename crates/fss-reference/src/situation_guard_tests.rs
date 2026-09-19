@@ -913,7 +913,7 @@ fn compiled_effect_evidence_cannot_leave_the_proof_roots() -> Result<(), Box<dyn
     assert!(!evidence.is_empty());
     let mut tampered = genuine.clone();
     for root in &evidence {
-        tampered.proof_roots.remove(root);
+        tampered.proof_roots.remove(&root.digest);
     }
     assert_effect_tamper_refused(
         &genuine,
@@ -1539,7 +1539,7 @@ fn sealed_proof_roots_cannot_be_replaced() -> Result<(), Box<dyn Error>> {
         .knowledge_cells
         .iter()
         .filter(|cell| cell.claim_id().starts_with("claim:effect:"))
-        .flat_map(|cell| cell.evidence().iter().copied())
+        .flat_map(|cell| cell.evidence().iter().map(|r| r.digest))
         .collect();
     roots.insert(fss_core::ContentDigest::sha256(b"rr5-foreign-root"));
     assert!(tampered.proof_roots.difference(&roots).count() > 0);
@@ -1887,16 +1887,19 @@ fn sealed_publication_proof_roots_are_exact() -> Result<(), Box<dyn Error>> {
 ///
 /// Re-pinned for fss-x4a.30.83.10 (publication v5 and seal v6 digest domains) and fss-nozug
 /// (the local-state receipt cell is observed provenance, PROV-001).
+/// Re-pinned for fss-gefi6 (KnowledgeCell evidence encodes typed origin per reference; cell
+/// digest domain bumped to fss.agent_knowledge_cell.v2).
 const GOLDEN_SEAL_DIGEST: &str =
-    "sha256:a70bb228b51ddbcb8b07ab13926596d548517d42849d85d3d37bca39378afa60";
+    "sha256:9946f2eaf04282cf4bd05374a5758cdb97eb2a9cc21c3c06d70dfeb7b4761bbe";
 /// Pinned v4 publication digest of the fixed compiled publication below.
 ///
 /// Re-pinned for fss-2uftm with the seal digest above (same single cause).
 ///
 /// Re-pinned for fss-x4a.30.83.10 (publication v5 and seal v6 digest domains) and fss-nozug
 /// (the local-state receipt cell is observed provenance, PROV-001).
+/// Re-pinned for fss-gefi6 with the seal digest above (same single cause).
 const GOLDEN_PUBLICATION_DIGEST: &str =
-    "sha256:a99a0116f90642b805556ca1b76956f758d7f5d5d9afc894948088fd6ad19922";
+    "sha256:6507773dbf53c0b6e16d1940c21e861a3cecbea85b05c53ffc38f39de29810d9";
 
 /// Review round 4 F5: the seal digest and the v2 publication digest of a fixed compiled
 /// publication are pinned, so any change to either encoding has to change these goldens on purpose.
@@ -2040,16 +2043,19 @@ fn sealed_situation_proof_roots_are_exact() -> Result<(), Box<dyn Error>> {
 ///
 /// Re-pinned for fss-x4a.30.83.10 (publication v5 and seal v6 digest domains) and fss-nozug
 /// (the local-state receipt cell is observed provenance, PROV-001).
+/// Re-pinned for fss-gefi6 (typed evidence origins in the cell encoding; cell digest domain
+/// bumped to fss.agent_knowledge_cell.v2).
 const GOLDEN_BOUND_SEAL_DIGEST: &str =
-    "sha256:915f04ed8bd569097188cf2801b72d8bb948f21d30bbdfd087538777ed4d4605";
+    "sha256:3da331754982a73367d2e9b23b1f5af0308dab6c37508469897bf1ca38f0e0ac";
 /// Pinned v4 publication digest of the fixed compiled publication with effect bindings below.
 ///
 /// Re-pinned for fss-wjisz, fss-2uftm and fss-deir9 with the seal digest above (same causes).
 ///
 /// Re-pinned for fss-x4a.30.83.10 (publication v5 and seal v6 digest domains) and fss-nozug
 /// (the local-state receipt cell is observed provenance, PROV-001).
+/// Re-pinned for fss-gefi6 with the bound seal digest above (same single cause).
 const GOLDEN_BOUND_PUBLICATION_DIGEST: &str =
-    "sha256:1e2e15ba1963d32dd0df8ff6eb781a359b48a8a68b92a79942f9b87b635935f4";
+    "sha256:12c8746609df989ffe783c2fe48c4a5ede506ff4e5f04e7549cd5cb21a98f7f6";
 
 /// Round 5: pins the binding part of the seal encoding. The verified publication, bound to its
 /// outcome and local-state cells, has a pinned seal digest and publication digest.
@@ -4337,7 +4343,7 @@ fn unrecorded_marker_and_local_state(
         marker
             .evidence()
             .iter()
-            .all(|digest| situation.proof_roots.contains(digest))
+            .all(|reference| situation.proof_roots.contains(&reference.digest))
     );
     Ok((marker.knowledge_state(), local_state.knowledge_state()))
 }
@@ -4616,7 +4622,7 @@ fn effect_journal_receipt_is_observed_and_derived_receipt_cannot_resolve_indeter
         knowledge_state: local_state_cell.knowledge_state(),
         provenance: ProvenanceClass::Derived,
         hypothesis: local_state_cell.hypothesis(),
-        evidence: local_state_cell.evidence().to_vec(),
+        evidence: local_state_cell.evidence_digests(),
         contradictions: local_state_cell.contradictions().to_vec(),
         valid_until: local_state_cell.valid_until(),
         state_basis: local_state_cell.state_basis().cloned(),

@@ -1312,7 +1312,7 @@ fn test_derived_belief_to_knowledge_cell_anchor_drift_and_refusal_matrix()
     assert_eq!(same_cell.knowledge_state(), KnowledgeState::Estimated);
     assert_eq!(same_cell.provenance(), ProvenanceClass::Derived);
     assert_eq!(same_cell.state_basis(), None);
-    assert_eq!(same_cell.evidence(), belief.supporting_evidence());
+    assert_eq!(same_cell.evidence_digests(), belief.supporting_evidence());
     assert_eq!(same_cell.contradictions(), belief.contradictions());
     assert_eq!(same_cell.validate(), Ok(()));
     assert!(
@@ -1336,7 +1336,10 @@ fn test_derived_belief_to_knowledge_cell_anchor_drift_and_refusal_matrix()
             current: Box::new(commit_advanced.clone()),
         }))
     );
-    assert_eq!(stale_commit_cell.evidence(), belief.supporting_evidence());
+    assert_eq!(
+        stale_commit_cell.evidence_digests(),
+        belief.supporting_evidence()
+    );
     assert_eq!(stale_commit_cell.contradictions(), belief.contradictions());
     assert_eq!(stale_commit_cell.validate(), Ok(()));
     assert!(

@@ -977,7 +977,7 @@ fn test_source_evidence_record_valid_construction() -> Result<(), Box<dyn Error>
     assert_eq!(kcell.knowledge_state(), KnowledgeState::Known);
     assert_eq!(kcell.provenance(), ProvenanceClass::Observed);
     assert_eq!(
-        kcell.evidence(),
+        kcell.evidence_digests(),
         &[source_digest, capsule.metadata_digest(), continuity_digest]
     );
     assert!(kcell.validate().is_ok());

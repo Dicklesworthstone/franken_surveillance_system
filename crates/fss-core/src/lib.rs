@@ -11,12 +11,12 @@ pub mod acquisition;
 mod agent;
 pub mod agent_cognitive;
 pub mod agent_contracts;
-pub mod agent_records;
 pub mod agent_investigation;
-pub mod agent_query_plan;
-pub mod agent_response;
 pub mod agent_operation;
+pub mod agent_query_plan;
+pub mod agent_records;
 pub mod agent_request;
+pub mod agent_response;
 pub mod agent_view;
 pub mod agent_workspace;
 pub mod belief;
@@ -60,67 +60,60 @@ pub use abstraction::{
 };
 
 pub use agent::{
-    ActionAffordance, AffordanceClass, ContractBasis, ContractBasisRegistryBytes, HandoffCapsule,
-    HandoffPublishParams, KnowledgeCell, KnowledgeCellParams, KnowledgeStateBasis,
-    LABORATORY_PROVENANCE_MARKER, MissionLifecycleState, PossibleWorld, REDACTED_STATEMENT_MARKER,
-    ReconciliationBasis, ReconciliationBranch, RedactionMarker, RedactionReason, SituationCapsule,
-    SituationFrame, StaleBasis, UnknownReason, WorldEnvelope,
-};
-pub use agent_response::{
-    AgentResponseEnvelope, ExecutionBoundary, ResponseOutcome, ResponseSafeRetry,
-    ResponseTaskState,
-};
-pub use agent_query_plan::{
-    AgentQueryPlan, QueryCompletenessRequested, QueryInterpretation,
-};
-pub use agent_investigation::{
-    CaseDiscriminator, CaseHypothesis, InvestigationLifecycle, InvestigationState,
-    InvestigationStateParams, KnownStatement, INVESTIGATION_STATE_DIGEST_DOMAIN,
+    ActionAffordance, AffordanceClass, ContractBasis, ContractBasisRegistryBytes, EvidenceOrigin,
+    EvidenceReference, HandoffCapsule, HandoffPublishParams, KnowledgeCell, KnowledgeCellParams,
+    KnowledgeStateBasis, LABORATORY_PROVENANCE_MARKER, MissionLifecycleState, PossibleWorld,
+    REDACTED_STATEMENT_MARKER, ReconciliationBasis, ReconciliationBranch, RedactionMarker,
+    RedactionReason, SituationCapsule, SituationFrame, StaleBasis, UnknownReason, WorldEnvelope,
 };
 pub use agent_cognitive::{
     AgentCognitiveEnvelope, CognitiveAnswerClass, EnvelopeBudget, EnvelopeContinuity,
     EnvelopeCoverage, EnvelopeEpistemic, EnvelopeProposition,
-};
-pub use agent_records::{
-    AgentFinding, AttributionCauseClass, AttributionHypothesis, EpisodeOutcome,
-    EpisodeOutcomeState, EpisodePrediction, EvidenceStrength, ExecutionEpisode,
-    ExperienceCapsule, LearningClass, LearningProposal, PromotionState, WorkClaim,
-    WorkClaimState,
 };
 pub use agent_contracts::{
     AgentSession, AgentSessionParams, MissionContract, MissionContractParams, MissionState,
     ObjectiveContract, ObjectiveContractParams, ObjectiveScope, SessionCapsule,
     SessionCapsuleParams,
 };
-pub use agent_workspace::{
-    AgentFeedbackProposal, CompetitionPolicy, ControlEdge, ControlPlan, ControlStep,
-    ControlStepKind, FeedbackProposalKind, FeedbackPrivacyClass, HypothesisWorkspace,
-    RequestedDisposition, StepReversibility, StepRisk, StepRobustness,
-    WorkspaceHypothesis, WorkspaceHypothesisStatus,
+pub use agent_investigation::{
+    CaseDiscriminator, CaseHypothesis, INVESTIGATION_STATE_DIGEST_DOMAIN, InvestigationLifecycle,
+    InvestigationState, InvestigationStateParams, KnownStatement,
+};
+pub use agent_operation::{
+    AgentOperation, BasisRegistryKind, COMMIT_RECEIPT_DIGEST_DOMAIN, CancelStage,
+    CancellationRecord, CapabilityList, CommitReceipt, DOCTOR_REPORT_DIGEST_DOMAIN,
+    DiagnosisDomain, DoctorReport, EXPLAIN_RECEIPT_DIGEST_DOMAIN, ExplainQuestion, ExplainReceipt,
+    FEEDBACK_PROPOSAL_DIGEST_DOMAIN, FeedbackKind, FeedbackProposal, FollowBatchPlan,
+    FollowWakeContract, INVESTIGATION_CASE_DIGEST_DOMAIN, InvestigationCaseState,
+    OPERATION_REGISTRY_GENERATION, OPERATION_ROW_DIGEST_DOMAIN, ORIENT_PROJECTION_DIGEST_DOMAIN,
+    OperationMode, OperationRetryClass, OrientBudget, OrientOmission, OrientOmissionTarget,
+    OrientProjection, OrientSection, PREPARED_PLAN_DIGEST_DOMAIN, PreparedPlan, PreparedPlanStep,
+    QUERY_READ_RECEIPT_DIGEST_DOMAIN, QueryReadReceipt, REGISTERED_OPERATION_COUNT,
+    REGISTERED_OPERATION_GATE, RepairAffordance, ResponseSchemaList, ResumeAssessment,
+    ResumeInvalidation, RetryClassList, WaitWake, WaitWakeContract, admit_commit,
+    admit_follow_read, admit_handoff, admit_query_read, advance_follow_cursor,
+    classify_session_resume, orient_projection, require_reconciliation_before_retry,
+};
+pub use agent_query_plan::{AgentQueryPlan, QueryCompletenessRequested, QueryInterpretation};
+pub use agent_records::{
+    AgentFinding, AttributionCauseClass, AttributionHypothesis, EpisodeOutcome,
+    EpisodeOutcomeState, EpisodePrediction, EvidenceStrength, ExecutionEpisode, ExperienceCapsule,
+    LearningClass, LearningProposal, PromotionState, WorkClaim, WorkClaimState,
 };
 pub use agent_request::{
     AgentRequestEnvelope, AgentRequestEnvelopeParams, PrivacyProjection, RequestTaint,
 };
-pub use agent_view::{
-    AgentView, REGISTERED_VIEW_COUNT, REGISTERED_VIEW_GATE, ViewSectionList,
-    VIEW_ROW_DIGEST_DOMAIN,
+pub use agent_response::{
+    AgentResponseEnvelope, ExecutionBoundary, ResponseOutcome, ResponseSafeRetry, ResponseTaskState,
 };
-pub use agent_operation::{
-    admit_commit, admit_follow_read, admit_handoff, admit_query_read, advance_follow_cursor,
-    classify_session_resume, require_reconciliation_before_retry,
-    orient_projection, AgentOperation, BasisRegistryKind, CapabilityList, FollowBatchPlan,
-    FollowWakeContract, OrientBudget, OrientOmission, OrientOmissionTarget, OrientProjection,
-    InvestigationCaseState, OrientSection, OperationMode, OperationRetryClass,
-    CancellationRecord, CancelStage, CommitReceipt, DiagnosisDomain, DoctorReport,
-    ExplainQuestion, ExplainReceipt, FeedbackKind, FeedbackProposal, PreparedPlan,
-    PreparedPlanStep, QueryReadReceipt, RepairAffordance, WaitWake, WaitWakeContract,
-    REGISTERED_OPERATION_COUNT, REGISTERED_OPERATION_GATE, ResumeAssessment,
-    ResumeInvalidation, ResponseSchemaList, RetryClassList, OPERATION_REGISTRY_GENERATION,
-    OPERATION_ROW_DIGEST_DOMAIN, ORIENT_PROJECTION_DIGEST_DOMAIN,
-    COMMIT_RECEIPT_DIGEST_DOMAIN, DOCTOR_REPORT_DIGEST_DOMAIN,
-    EXPLAIN_RECEIPT_DIGEST_DOMAIN, FEEDBACK_PROPOSAL_DIGEST_DOMAIN,
-    INVESTIGATION_CASE_DIGEST_DOMAIN, PREPARED_PLAN_DIGEST_DOMAIN,
-    QUERY_READ_RECEIPT_DIGEST_DOMAIN,
+pub use agent_view::{
+    AgentView, REGISTERED_VIEW_COUNT, REGISTERED_VIEW_GATE, VIEW_ROW_DIGEST_DOMAIN, ViewSectionList,
+};
+pub use agent_workspace::{
+    AgentFeedbackProposal, CompetitionPolicy, ControlEdge, ControlPlan, ControlStep,
+    ControlStepKind, FeedbackPrivacyClass, FeedbackProposalKind, HypothesisWorkspace,
+    RequestedDisposition, StepReversibility, StepRisk, StepRobustness, WorkspaceHypothesis,
+    WorkspaceHypothesisStatus,
 };
 pub use belief::{
     BELIEF_INTERVAL_DOMAIN, BeliefError, BeliefInterval, CONTRADICTION_DOMAIN, Contradiction,

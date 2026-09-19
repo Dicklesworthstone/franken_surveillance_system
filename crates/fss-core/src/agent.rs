@@ -491,6 +491,121 @@ pub struct KnowledgeCellParams {
     pub state_basis: Option<KnowledgeStateBasis>,
 }
 
+/// Epistemic origin of one evidence digest, recorded with the reference that cites it (fss-gefi6).
+///
+/// The origin is the class of the process that PRODUCED the digest, sourced from the producing
+/// artifact — never self-declared by a consumer. `Laboratory` marks digests produced inside a
+/// sealed laboratory expansion, artifact, intermediate, or oracle (H4); such digests are refused
+/// as irreversible-effect premises however they are re-parsed or rebuilt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub enum EvidenceOrigin {
+    /// Produced under a registered provenance class.
+    Produced(ProvenanceClass),
+    /// Produced inside a sealed laboratory boundary (H4); never authorizes an effect.
+    Laboratory,
+}
+
+impl EvidenceOrigin {
+    /// Returns whether evidence with this origin may support an irreversible-effect premise.
+    ///
+    /// Predicted, Remembered, and VendorClaimed origins never authorize (PROV-003/004/006 and
+    /// the mayLaunderEvidenceInto table). Laboratory origins never authorize (H4). Derived
+    /// origins stay admissible on a cell whose own provenance authorizes: model outputs are
+    /// instrumentation for observed operations (the deir9 receipt pattern), pending the
+    /// producer-side origin registry stage of fss-gefi6.
+    #[must_use]
+    pub const fn authorizes_effect_premise(self) -> bool {
+        match self {
+            Self::Produced(class) => !matches!(
+                class,
+                ProvenanceClass::Predicted
+                    | ProvenanceClass::Remembered
+                    | ProvenanceClass::VendorClaimed
+            ),
+            Self::Laboratory => false,
+        }
+    }
+
+    /// Returns the produced provenance class, when this origin is not laboratory.
+    #[must_use]
+    pub const fn produced_class(self) -> Option<ProvenanceClass> {
+        match self {
+            Self::Produced(class) => Some(class),
+            Self::Laboratory => None,
+        }
+    }
+
+    /// Encodes this origin into its canonical byte tag.
+    #[must_use]
+    pub const fn to_code(self) -> u8 {
+        match self {
+            Self::Produced(class) => class.to_code(),
+            Self::Laboratory => 0,
+        }
+    }
+
+    /// Decodes an origin from its canonical byte tag.
+    pub fn from_code(code: u8) -> Result<Self, ContractError> {
+        if code == 0 {
+            return Ok(Self::Laboratory);
+        }
+        ProvenanceClass::from_code(code).map(Self::Produced)
+    }
+}
+
+impl CanonicalEncode for EvidenceOrigin {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.u8(self.to_code());
+    }
+}
+
+/// One typed evidence reference: the digest plus the epistemic origin that produced it (fss-gefi6).
+///
+/// The origin travels WITH the digest, so a lone relabelled cell — a digest produced under one
+/// class cited as support by a cell claiming another — is detectable at the reference itself,
+/// and the registered mayLaunderEvidenceInto pairs are enforced wherever the producing cell is
+/// known.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct EvidenceReference {
+    /// Evidence digest.
+    pub digest: ContentDigest,
+    /// Origin that produced the digest.
+    pub origin: EvidenceOrigin,
+}
+
+impl EvidenceReference {
+    /// Builds a reference for a digest produced under `origin`.
+    #[must_use]
+    pub const fn new(digest: ContentDigest, origin: EvidenceOrigin) -> Self {
+        Self { digest, origin }
+    }
+
+    /// Builds a reference produced under the registered provenance class `class`.
+    #[must_use]
+    pub const fn produced(digest: ContentDigest, class: ProvenanceClass) -> Self {
+        Self {
+            digest,
+            origin: EvidenceOrigin::Produced(class),
+        }
+    }
+
+    /// Builds a reference for a digest produced inside a sealed laboratory boundary (H4).
+    #[must_use]
+    pub const fn laboratory(digest: ContentDigest) -> Self {
+        Self {
+            digest,
+            origin: EvidenceOrigin::Laboratory,
+        }
+    }
+}
+
+impl CanonicalEncode for EvidenceReference {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.digest(self.digest);
+        encoder.u8(self.origin.to_code());
+    }
+}
+
 /// One proposition with orthogonal epistemic, provenance, and hypothesis states.
 ///
 /// `Debug` is implemented by hand so that a `redacted` cell never prints its statement.
@@ -526,8 +641,8 @@ pub struct KnowledgeCell {
     provenance: ProvenanceClass,
     /// Hypothesis disposition, when applicable.
     hypothesis: Option<HypothesisDisposition>,
-    /// Evidence roots supporting the proposition.
-    evidence: Vec<ContentDigest>,
+    /// Typed evidence references supporting the proposition (fss-gefi6).
+    evidence: Vec<EvidenceReference>,
     /// Contradicting evidence roots.
     contradictions: Vec<ContentDigest>,
     /// Validity end, when bounded.
@@ -545,13 +660,36 @@ impl KnowledgeCell {
             knowledge_state: params.knowledge_state,
             provenance: params.provenance,
             hypothesis: params.hypothesis,
-            evidence: params.evidence,
+            evidence: params
+                .evidence
+                .into_iter()
+                .map(|digest| EvidenceReference::produced(digest, params.provenance))
+                .collect(),
             contradictions: params.contradictions,
             valid_until: params.valid_until,
             state_basis: params.state_basis,
         };
         cell.validate()?;
         Ok(cell)
+    }
+
+    /// Re-stamps every evidence reference's origin and re-validates the cell (fss-gefi6).
+    ///
+    /// Producers that know better than the default stamp — a sealed laboratory expansion (H4) or
+    /// a producing artifact whose class differs from the citing cell — record origins here. The
+    /// slice is position-aligned with the cell's evidence order; a length mismatch is refused.
+    pub fn with_evidence_origins(
+        mut self,
+        origins: &[EvidenceOrigin],
+    ) -> Result<Self, ContractError> {
+        if origins.len() != self.evidence.len() {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        for (reference, origin) in self.evidence.iter_mut().zip(origins) {
+            reference.origin = *origin;
+        }
+        self.validate()?;
+        Ok(self)
     }
 
     /// Constructs an unvalidated [`KnowledgeCell`] for crate-internal unit tests only.
@@ -566,7 +704,11 @@ impl KnowledgeCell {
             knowledge_state: params.knowledge_state,
             provenance: params.provenance,
             hypothesis: params.hypothesis,
-            evidence: params.evidence,
+            evidence: params
+                .evidence
+                .into_iter()
+                .map(|digest| EvidenceReference::produced(digest, params.provenance))
+                .collect(),
             contradictions: params.contradictions,
             valid_until: params.valid_until,
             state_basis: params.state_basis,
@@ -582,7 +724,7 @@ impl KnowledgeCell {
             knowledge_state: self.knowledge_state,
             provenance: self.provenance,
             hypothesis: self.hypothesis,
-            evidence: self.evidence.clone(),
+            evidence: self.evidence_digests(),
             contradictions: self.contradictions.clone(),
             valid_until: self.valid_until,
             state_basis: self.state_basis.clone(),
@@ -619,10 +761,19 @@ impl KnowledgeCell {
         self.hypothesis
     }
 
-    /// Returns the supporting evidence roots.
+    /// Returns the typed supporting evidence references (fss-gefi6).
     #[must_use]
-    pub fn evidence(&self) -> &[ContentDigest] {
+    pub fn evidence(&self) -> &[EvidenceReference] {
         &self.evidence
+    }
+
+    /// Returns the supporting evidence digests, in reference order.
+    #[must_use]
+    pub fn evidence_digests(&self) -> Vec<ContentDigest> {
+        self.evidence
+            .iter()
+            .map(|reference| reference.digest)
+            .collect()
     }
 
     /// Returns the contradicting evidence roots.
@@ -663,6 +814,13 @@ impl KnowledgeCell {
             && !self.is_laboratory_tainted()
             && self.validate().is_ok()
             && !self.evidence.is_empty()
+            // fss-gefi6: every supporting reference's origin must authorize. Predicted,
+            // Remembered, VendorClaimed, and Laboratory origins never support an irreversible
+            // effect however the citing cell labels itself.
+            && self
+                .evidence
+                .iter()
+                .all(|reference| reference.origin.authorizes_effect_premise())
             && self.contradictions.is_empty()
             && self.valid_until.is_none_or(|limit| now <= limit)
     }
@@ -740,6 +898,28 @@ impl KnowledgeCell {
             && self.evidence.iter().any(|e| prior.evidence.contains(e))
         {
             return Err(ContractError::EvidenceLaunderingDetected);
+        }
+        // fss-gefi6: where both cells cite the SAME digest, their recorded origins must agree
+        // wherever the prior origin may launder into the recorded one. A relabel — a digest
+        // produced under one class cited under another, even by a lone cell in a lineage — is
+        // refused from the references themselves.
+        for reference in &self.evidence {
+            if let Some(prior_reference) = prior
+                .evidence
+                .iter()
+                .find(|candidate| candidate.digest == reference.digest)
+            {
+                let laundered = match (prior_reference.origin, reference.origin) {
+                    (EvidenceOrigin::Produced(source), EvidenceOrigin::Produced(target)) => {
+                        source.may_launder_evidence_into(target)
+                    }
+                    (EvidenceOrigin::Laboratory, EvidenceOrigin::Laboratory) => false,
+                    (EvidenceOrigin::Laboratory, _) | (_, EvidenceOrigin::Laboratory) => true,
+                };
+                if laundered {
+                    return Err(ContractError::EvidenceLaunderingDetected);
+                }
+            }
         }
         Ok(())
     }
@@ -875,7 +1055,7 @@ impl KnowledgeCell {
     /// capsule carrying a refused cell has no frame digest and no decision fingerprint.
     #[must_use]
     pub fn cell_digest(&self) -> ContentDigest {
-        self.canonical_digest("fss.agent_knowledge_cell.v1")
+        self.canonical_digest("fss.agent_knowledge_cell.v2")
     }
 }
 
@@ -917,7 +1097,7 @@ impl CanonicalEncode for KnowledgeCell {
             }
             None => encoder.bool(false),
         }
-        encode_sorted_digests(&self.evidence, encoder);
+        encode_sorted_references(&self.evidence, encoder);
         encode_sorted_digests(&self.contradictions, encoder);
         match self.valid_until {
             Some(value) => {
@@ -1576,6 +1756,16 @@ fn encode_sorted_digests(values: &[ContentDigest], encoder: &mut CanonicalEncode
     }
 }
 
+fn encode_sorted_references(values: &[EvidenceReference], encoder: &mut CanonicalEncoder) {
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    encoder.u64(sorted.len() as u64);
+    for value in sorted {
+        value.encode_canonical(encoder);
+    }
+}
+
 fn encode_sorted_text(values: &BTreeSet<String>, encoder: &mut CanonicalEncoder) {
     encoder.u64(values.len() as u64);
     for value in values {
@@ -1811,7 +2001,7 @@ mod tests {
         assert_eq!(refused.validate(), Err(ContractError::StaleBasisRequired));
         assert_eq!(
             refused.cell_digest(),
-            refused.canonical_digest("fss.agent_knowledge_cell.v1")
+            refused.canonical_digest("fss.agent_knowledge_cell.v2")
         );
 
         let mut relabelled = refused.clone();
@@ -1946,7 +2136,13 @@ mod tests {
         assert_eq!(cell.knowledge_state(), KnowledgeState::Known);
         assert_eq!(cell.provenance(), ProvenanceClass::Observed);
         assert_eq!(cell.hypothesis(), None);
-        assert_eq!(cell.evidence(), &[digest]);
+        assert_eq!(
+            cell.evidence(),
+            &[EvidenceReference::produced(
+                digest,
+                ProvenanceClass::Observed
+            )]
+        );
         assert_eq!(cell.contradictions(), &[]);
         assert_eq!(cell.valid_until(), Some(TimestampNs(100)));
         assert_eq!(cell.state_basis(), None);

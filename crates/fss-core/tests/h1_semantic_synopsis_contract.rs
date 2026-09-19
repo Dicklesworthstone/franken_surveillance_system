@@ -274,7 +274,7 @@ fn test_h1_to_knowledge_cells_binds_evidence_digests_without_state_root()
         assert_eq!(cell.provenance(), fact.provenance);
         assert_eq!(cell.hypothesis(), None);
         // Must contain exact fact evidence digest and NOT state_root
-        assert_eq!(cell.evidence(), &[fact.evidence_digest]);
+        assert_eq!(cell.evidence_digests(), &[fact.evidence_digest]);
         assert_eq!(cell.contradictions(), &[]);
         assert_eq!(cell.valid_until(), None);
         assert_eq!(cell.state_basis(), None);
@@ -290,7 +290,7 @@ fn test_h1_to_knowledge_cells_binds_evidence_digests_without_state_root()
         assert_eq!(cell.knowledge_state(), KnowledgeState::Estimated);
         assert_eq!(cell.provenance(), fact.provenance);
         assert_eq!(cell.hypothesis(), None);
-        assert_eq!(cell.evidence(), &[fact.evidence_digest]);
+        assert_eq!(cell.evidence_digests(), &[fact.evidence_digest]);
         assert_eq!(cell.contradictions(), &[]);
         assert_eq!(cell.valid_until(), None);
         assert_eq!(cell.state_basis(), None);
