@@ -22,6 +22,9 @@ use super::{
 mod codec;
 mod recovery;
 
+/// Session-admitted case lifecycle with immutable evidence-preserving revisions.
+pub mod investigations;
+
 pub use recovery::SessionRecoveryReceipt;
 
 /// One-way initialization of bounded coordination within an existing session journal.
