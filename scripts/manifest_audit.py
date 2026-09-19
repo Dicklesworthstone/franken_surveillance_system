@@ -17,6 +17,7 @@ EXCLUDED_TOP_LEVEL = {
     ".beads",
     ".claude",
     ".ntm",
+    ".agent_mail.db",
     "target",
     "dist",
     "secrets",

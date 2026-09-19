@@ -239,4 +239,23 @@ with tempfile.TemporaryDirectory() as temporary:
     finally:
         module.ROOT = old_root
 
+# Agent-runtime state (.agent_mail.db) is excluded from the covered source set, so its
+# presence on disk neither creates a missing-source finding nor enters the effective root.
+with tempfile.TemporaryDirectory() as temporary:
+    fixture = Path(temporary)
+    (fixture / "a.txt").write_text("a\n", encoding="utf-8")
+    (fixture / ".agent_mail.db").write_text("runtime state\n", encoding="utf-8")
+    base = fixture / "MANIFEST.sha256"
+    delta = fixture / "MANIFEST.delta.sha256"
+    base.write_text(f"{sha(fixture / 'a.txt')}  a.txt\n", encoding="utf-8")
+    delta.write_text("", encoding="utf-8")
+    old_root = module.ROOT
+    module.ROOT = fixture
+    try:
+        report = module.audit(base, delta)
+        assert report["status"] == "passed"
+        assert report["effectiveEntries"] == 1
+    finally:
+        module.ROOT = old_root
+
 print("layered manifest audit tests passed")

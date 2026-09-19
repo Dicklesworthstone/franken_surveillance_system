@@ -25,3 +25,6 @@ __pycache__/
 
 # bv (beads viewer) local config and caches
 /.bv/
+
+# Agent Mail local runtime state (excluded from manifest coverage via scripts/manifest_audit.py)
+.agent_mail.db
