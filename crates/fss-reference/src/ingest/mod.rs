@@ -22,6 +22,8 @@ pub mod tracking;
 pub mod analysis;
 /// Durable unresolved event candidates from exact replayed analysis reports.
 pub mod recorded_event;
+/// Bounded recording-to-model-to-analysis execution with verified restart reuse.
+pub mod recording_pipeline;
 /// Bounded recorded-RTP framing and source-preserving ingest.
 pub mod rtpdump;
 
