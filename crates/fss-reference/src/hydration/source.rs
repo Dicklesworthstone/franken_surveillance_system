@@ -157,6 +157,49 @@ pub struct SourceObjectBinding {
 }
 
 impl SourceObjectBinding {
+    /// Independently checks an H3 response against this trusted source-custody binding.
+    ///
+    /// Ordinary receipt validation checks request admission and internal artifact integrity;
+    /// it does not by itself prove that a payload is the original source. This additional
+    /// consumer-side check requires exact source bytes, descriptor and publication roots,
+    /// the bound artifact identity, and an untransformed complete H3 delivery. Lower-level
+    /// previews and unavailable responses cannot be mistaken for disclosed source evidence.
+    ///
+    /// The binding and descriptor must come from a trusted publication/situation, not from
+    /// the same untrusted response being checked. This proves their consistency, not current
+    /// remote custody or authentication. A previously valid response does not prove present
+    /// availability after retention expiry or deletion; request a fresh authorized disclosure.
+    pub fn validate_response(
+        &self,
+        request: &HydrationRequest,
+        descriptor: &SemanticHandle,
+        response: &HydrationResponse,
+    ) -> Result<(), SourceHydrationError> {
+        response.validate_for(request, descriptor)?;
+        let artifact = response
+            .artifact
+            .as_ref()
+            .ok_or(HydrationError::LevelUnavailable)?;
+        if artifact.level != HydrationLevel::H3 {
+            return Err(HydrationError::LevelUnavailable.into());
+        }
+        if artifact.applied_transform.is_some() || descriptor.applied_transform.is_some() {
+            return Err(SourceHydrationError::TransformedSource);
+        }
+        if self.subject_digest != descriptor.subject_digest
+            || artifact.payload_digest != self.subject_digest
+            || artifact.payload.len() as u64 != self.payload_bytes
+            || artifact.artifact_digest != self.artifact_digest
+            || artifact.content_type != SOURCE_OBJECT_CONTENT_TYPE
+            || artifact.completeness != Completeness::Complete
+            || !artifact.proof_roots.contains(&self.publication_root)
+            || !artifact.proof_roots.contains(&descriptor.descriptor_digest)
+        {
+            return Err(SourceHydrationError::SourceMismatch);
+        }
+        Ok(())
+    }
+
     /// Exact publication root which must be reverified at disclosure time.
     #[must_use]
     pub const fn publication_root(&self) -> ContentDigest {
