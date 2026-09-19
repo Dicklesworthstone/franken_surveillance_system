@@ -2140,7 +2140,10 @@ fn lf_crlf_terminator_is_not_recognized_and_poisons_unterminated_fss_0i0ue()
     // Below the header budget: the partial terminator must simply wait (no events, no error).
     let waiting = b"RTSP/1.0 200 OK\r\nCSeq: 1\n\r\n";
     let events = parser.feed(&waiting[..waiting.len() - 1])?;
-    assert!(events.is_empty(), "partial terminator must wait: {events:?}");
+    assert!(
+        events.is_empty(),
+        "partial terminator must wait: {events:?}"
+    );
 
     // Exceeding the header budget without a recognized terminator poisons the session.
     let flooded = b"RTSP/1.0 200 OK\r\nCSeq: 1\n\r\n" // begins with the non-standard terminator
