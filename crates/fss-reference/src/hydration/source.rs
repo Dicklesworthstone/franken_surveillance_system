@@ -1,5 +1,7 @@
 //! Live, root-scoped H3 disclosure without a second source-payload cache.
 
+mod local;
+
 use core::fmt;
 use std::collections::BTreeSet;
 
@@ -22,6 +24,10 @@ pub enum SourceHydrationError {
     Hydration(HydrationError),
     /// The custody owner refused an exact object or its publication closure.
     Object(ObjectError),
+    /// The local publication or its on-disk source custody failed verification.
+    Publication(fss_publication::LocalPublicationError),
+    /// A fresh disk inspection disagrees with the live lock-owning publication authority.
+    SnapshotChanged,
     /// The source is not reachable from the explicitly authorized publication root.
     NotReachable,
     /// Exact source delivery cannot stand in for a privacy transform.
@@ -39,6 +45,8 @@ impl SourceHydrationError {
         match self {
             Self::Hydration(error) => error.code(),
             Self::Object(_) => "source_hydration_custody_failed",
+            Self::Publication(_) => "source_hydration_local_publication_failed",
+            Self::SnapshotChanged => "source_hydration_snapshot_changed",
             Self::NotReachable => "source_hydration_not_reachable",
             Self::TransformedSource => "source_hydration_transform_required",
             Self::BindingConflict => "source_hydration_binding_conflict",
@@ -58,6 +66,7 @@ impl std::error::Error for SourceHydrationError {
         match self {
             Self::Hydration(error) => Some(error),
             Self::Object(error) => Some(error),
+            Self::Publication(error) => Some(error),
             _ => None,
         }
     }
@@ -72,6 +81,12 @@ impl From<HydrationError> for SourceHydrationError {
 impl From<ObjectError> for SourceHydrationError {
     fn from(error: ObjectError) -> Self {
         Self::Object(error)
+    }
+}
+
+impl From<fss_publication::LocalPublicationError> for SourceHydrationError {
+    fn from(error: fss_publication::LocalPublicationError) -> Self {
+        Self::Publication(error)
     }
 }
 
