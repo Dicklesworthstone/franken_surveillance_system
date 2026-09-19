@@ -7,6 +7,8 @@
 
 /// Publication, reopening, and incremental verified retrieval through an existing owner.
 pub mod local;
+/// Codec-pinned HEVC catalogs over the same bounded discovery and selection core.
+pub mod hevc;
 mod wire;
 
 use std::ops::Range;
@@ -22,6 +24,28 @@ pub const MAX_CATALOG_WINDOWS: usize = 64;
 pub const MAX_CATALOG_BYTES: usize = 64 * 1024;
 /// Typed manifest family. The index is its metadata child.
 pub const CATALOG_KIND: &str = "avc_recording_catalog_v1";
+
+// Chosen by the typed public entrypoint, NEVER inferred from an untrusted root.
+// No public callback can substitute a weaker window verifier.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CatalogFamily { Avc, Hevc }
+impl CatalogFamily {
+    fn domain(self) -> &'static str {
+        match self {
+            Self::Avc => "fss.recording_catalog.v1",
+            Self::Hevc => "fss.hevc_recording_catalog.v1",
+        }
+    }
+    fn kind(self) -> &'static str {
+        match self { Self::Avc => CATALOG_KIND, Self::Hevc => hevc::HEVC_CATALOG_KIND }
+    }
+    fn window_kind(self) -> &'static str {
+        match self {
+            Self::Avc => super::recording::RECORDING_KIND,
+            Self::Hevc => super::recording::hevc::HEVC_RECORDING_KIND,
+        }
+    }
+}
 
 /// Owner-supplied time basis. Receive-clock identity alone does not identify DTS.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -113,6 +137,7 @@ impl CatalogEntry {
 /// Publish pages in distinct slots; this API neither overwrites an old page nor
 /// invents an unbounded linked list or a mutable "latest" pointer.
 pub struct RecordingCatalog {
+    family: CatalogFamily,
     scope: CatalogScope,
     entries: Vec<CatalogEntry>,
     index: Vec<u8>,
@@ -121,7 +146,7 @@ pub struct RecordingCatalog {
 impl std::fmt::Debug for RecordingCatalog {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RecordingCatalog").field("root", &self.manifest.root())
-            .field("windows", &self.entries.len()).finish_non_exhaustive()
+            .field("windows", &self.entries.len()).field("family", &self.family).finish_non_exhaustive()
     }
 }
 impl RecordingCatalog {
@@ -235,14 +260,18 @@ pub fn prepare_catalog(scope: CatalogScope, windows: &[CatalogWindow<'_>]) -> Re
 /// each large recording instead of retaining an entire page's media in memory.
 #[derive(Debug)]
 pub struct CatalogBuilder {
+    family: CatalogFamily,
     scope: CatalogScope,
     entries: Vec<CatalogEntry>,
 }
 impl CatalogBuilder {
     /// Bind the explicit owner scope before admitting any recording.
     pub fn new(scope: CatalogScope) -> Result<Self> {
+        Self::new_for(scope, CatalogFamily::Avc)
+    }
+    fn new_for(scope: CatalogScope, family: CatalogFamily) -> Result<Self> {
         if scope.recording.generation == 0 || scope.time_scale == 0 { return Err(CatalogError::Scope); }
-        Ok(Self { scope, entries: Vec::new() })
+        Ok(Self { family, scope, entries: Vec::new() })
     }
     /// Number of descriptors retained; no original/media payload is owned here.
     pub fn len(&self) -> usize { self.entries.len() }
@@ -255,8 +284,9 @@ impl CatalogBuilder {
         if recording.summary().scope != self.scope.recording || recording.summary().time_scale != self.scope.time_scale {
             return Err(CatalogError::Scope);
         }
+        if recording.manifest().kind() != self.family.window_kind() { return Err(CatalogError::Digest); }
         let entry = CatalogEntry::from_window(slot, recording);
-        validate(&self.scope, std::slice::from_ref(&entry))?;
+        validate(&self.scope, std::slice::from_ref(&entry), self.family)?;
         if self.entries.last().is_some_and(|last| last.interval.end > entry.interval.start)
             || self.entries.iter().any(|p| p.root == entry.root || p.slot == entry.slot) { return Err(CatalogError::Order); }
         self.entries.try_reserve_exact(1).map_err(|_| CatalogError::Limit)?;
@@ -265,11 +295,11 @@ impl CatalogBuilder {
     }
     /// Seal immutable metadata. Original-window publication is verified separately.
     pub fn prepare(self) -> Result<RecordingCatalog> {
-        validate(&self.scope, &self.entries)?;
-        let index = wire::encode(&self.scope, &self.entries)?;
-        let manifest = manifest(&self.entries, digest(&index)?)?;
+        validate(&self.scope, &self.entries, self.family)?;
+        let index = wire::encode(&self.scope, &self.entries, self.family)?;
+        let manifest = manifest(&self.entries, digest(&index)?, self.family)?;
         if index.len() + manifest.canonical_bytes().len() > MAX_CATALOG_BYTES { return Err(CatalogError::Limit); }
-        Ok(RecordingCatalog { scope: self.scope, entries: self.entries, index, manifest })
+        Ok(RecordingCatalog { family: self.family, scope: self.scope, entries: self.entries, index, manifest })
     }
 }
 
@@ -278,19 +308,25 @@ impl CatalogBuilder {
 pub fn verify_catalog(manifest_value: &ObjectManifest, index: &[u8], expected: &CatalogScope)
     -> Result<RecordingCatalog>
 {
-    if index.len().checked_add(manifest_value.canonical_bytes().len())
-        .is_none_or(|n| n > MAX_CATALOG_BYTES) { return Err(CatalogError::Limit); }
-    let (scope, entries) = wire::decode(index)?;
-    if &scope != expected { return Err(CatalogError::Scope); }
-    validate(&scope, &entries)?;
-    if manifest(&entries, digest(index)?)? != *manifest_value { return Err(CatalogError::Digest); }
-    if wire::encode(&scope, &entries)? != index { return Err(CatalogError::Malformed); }
-    let mut owned = bounded_vec(index.len())?;
-    owned.extend_from_slice(index);
-    Ok(RecordingCatalog { scope, entries, index: owned, manifest: manifest_value.clone() })
+    verify_catalog_for(manifest_value, index, expected, CatalogFamily::Avc)
 }
 
-fn validate(scope: &CatalogScope, entries: &[CatalogEntry]) -> Result<()> {
+fn verify_catalog_for(manifest_value: &ObjectManifest, index: &[u8], expected: &CatalogScope,
+    family: CatalogFamily) -> Result<RecordingCatalog>
+{
+    if index.len().checked_add(manifest_value.canonical_bytes().len())
+        .is_none_or(|n| n > MAX_CATALOG_BYTES) { return Err(CatalogError::Limit); }
+    let (scope, entries) = wire::decode(index, family)?;
+    if &scope != expected { return Err(CatalogError::Scope); }
+    validate(&scope, &entries, family)?;
+    if manifest(&entries, digest(index)?, family)? != *manifest_value { return Err(CatalogError::Digest); }
+    if wire::encode(&scope, &entries, family)? != index { return Err(CatalogError::Malformed); }
+    let mut owned = bounded_vec(index.len())?;
+    owned.extend_from_slice(index);
+    Ok(RecordingCatalog { family, scope, entries, index: owned, manifest: manifest_value.clone() })
+}
+
+fn validate(scope: &CatalogScope, entries: &[CatalogEntry], family: CatalogFamily) -> Result<()> {
     if scope.recording.generation == 0 || scope.time_scale == 0 { return Err(CatalogError::Scope); }
     if entries.is_empty() || entries.len() > MAX_CATALOG_WINDOWS { return Err(CatalogError::Limit); }
     for (i, e) in entries.iter().enumerate() {
@@ -305,7 +341,7 @@ fn validate(scope: &CatalogScope, entries: &[CatalogEntry]) -> Result<()> {
         }
         // A descriptor must name the exact standard recording manifest, not an
         // arbitrary object that merely happens to have plausible time/count fields.
-        let window = ObjectManifest::new(super::recording::RECORDING_KIND,
+        let window = ObjectManifest::new(family.window_kind(),
             [e.objects[0], e.objects[1], e.objects[2]], Some(e.objects[3]))
             .map_err(|_| CatalogError::Digest)?;
         if window.root() != e.root { return Err(CatalogError::Digest); }
@@ -314,13 +350,13 @@ fn validate(scope: &CatalogScope, entries: &[CatalogEntry]) -> Result<()> {
     }
     Ok(())
 }
-fn manifest(entries: &[CatalogEntry], index: ContentDigest) -> Result<ObjectManifest> {
+fn manifest(entries: &[CatalogEntry], index: ContentDigest, family: CatalogFamily) -> Result<ObjectManifest> {
     let mut closure = bounded_vec(entries.len() * 5)?;
     for e in entries { closure.push(e.root); closure.extend_from_slice(&e.objects); }
     closure.sort_unstable(); closure.dedup();
     // Flatten leaf references so tombstoning any source/derivative invalidates this
     // catalog even when a child root is unavailable to the publisher's descent.
-    ObjectManifest::new(CATALOG_KIND, closure, Some(index)).map_err(|_| CatalogError::Digest)
+    ObjectManifest::new(family.kind(), closure, Some(index)).map_err(|_| CatalogError::Digest)
 }
 fn digest(bytes: &[u8]) -> Result<ContentDigest> {
     ContentDigest::try_sha256(bytes).map_err(|_| CatalogError::Limit)
