@@ -79,6 +79,7 @@ ERR_MISSING_IDENTIFIER = "ERR-CONSISTENCY-MISSING-IDENTIFIER-001"
 ERR_CONTRADICTED_METADATA = "ERR-CONSISTENCY-CONTRADICTED-METADATA-001"
 ERR_COUNT_MISMATCH = "ERR-CONSISTENCY-COUNT-MISMATCH-001"
 ERR_DANGLING_REFERENCE = "ERR-CONSISTENCY-DANGLING-REFERENCE-001"
+ERR_RISK_CROSSWALK = "ERR-CONSISTENCY-RISK-CROSSWALK-001"
 ERR_TOMBSTONE_IN_USE = "ERR-CONSISTENCY-TOMBSTONE-IN-USE-001"
 ERR_UNREGISTERED_RUST_IDENTIFIER = "ERR-CONSISTENCY-UNREGISTERED-RUST-001"
 ERR_MISSING_FILE = "ERR-CONSISTENCY-MISSING-FILE-001"
@@ -1688,10 +1689,56 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
     for error in seed_report["findings"]:
         emit(error["code"], error["file"], error["location"], error["message"])
 
+    # DRIFT-005: the typed risk crosswalk must map every prose plan risk (RISK-001..030) exactly
+    # once onto declared machine risk rows (registries/RISKS.md), with honest coverage states.
+    risk_crosswalk_summary: dict[str, int] = {"entries": 0, "uncovered": 0}
+    crosswalk_path = repo_root / "architecture/risk_crosswalk.json"
+    risks_rows = parse_markdown_table_rows((repo_root / "registries/RISKS.md").read_text(encoding="utf-8"))
+    machine_risk_ids = {row[0] for row in risks_rows if row and row[0].startswith("RISK-")}
+    if crosswalk_path.is_file():
+        try:
+            crosswalk = json.loads(crosswalk_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            emit(ERR_RISK_CROSSWALK, "architecture/risk_crosswalk.json", "#", f"risk crosswalk is not valid JSON: {exc}")
+            crosswalk = {}
+        if crosswalk:
+            if crosswalk.get("schema") != "fss.risk_crosswalk.v1":
+                emit(ERR_RISK_CROSSWALK, "architecture/risk_crosswalk.json", "schema", "risk crosswalk schema must be fss.risk_crosswalk.v1")
+            entries = crosswalk.get("crosswalk")
+            if not isinstance(entries, list):
+                emit(ERR_RISK_CROSSWALK, "architecture/risk_crosswalk.json", "crosswalk", "risk crosswalk must declare a crosswalk array")
+                entries = []
+            prose_ids = [e.get("prose_id") for e in entries if isinstance(e, dict)]
+            expected_prose = [f"RISK-{i:03d}" for i in range(1, 31)]
+            if sorted(filter(None, prose_ids)) != expected_prose:
+                emit(ERR_RISK_CROSSWALK, "architecture/risk_crosswalk.json", "crosswalk", f"risk crosswalk must map exactly {expected_prose[0]}..{expected_prose[-1]} once each")
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                pid = entry.get("prose_id", "?")
+                for machine_id in entry.get("machine_risk_ids", []):
+                    if machine_id not in machine_risk_ids:
+                        emit(ERR_RISK_CROSSWALK, "architecture/risk_crosswalk.json", pid, f"machine risk id '{machine_id}' is not declared in registries/RISKS.md")
+                if entry.get("coverage") not in {"covered", "partial", "uncovered"}:
+                    emit(ERR_RISK_CROSSWALK, "architecture/risk_crosswalk.json", pid, f"invalid coverage state: {entry.get('coverage')}")
+                if entry.get("coverage") == "uncovered" and not entry.get("note"):
+                    emit(ERR_RISK_CROSSWALK, "architecture/risk_crosswalk.json", pid, "uncovered crosswalk entries must name the exposure in their note")
+            stated = crosswalk.get("coverage_summary", {})
+            actual = {
+                "covered": sum(1 for e in entries if isinstance(e, dict) and e.get("coverage") == "covered"),
+                "partial": sum(1 for e in entries if isinstance(e, dict) and e.get("coverage") == "partial"),
+                "uncovered": sum(1 for e in entries if isinstance(e, dict) and e.get("coverage") == "uncovered"),
+            }
+            if stated.get("covered") != actual["covered"] or stated.get("partial") != actual["partial"] or stated.get("uncovered") != actual["uncovered"]:
+                emit(ERR_RISK_CROSSWALK, "architecture/risk_crosswalk.json", "coverage_summary", f"coverage summary {stated} does not match the crosswalk entries {actual}")
+            risk_crosswalk_summary = {"entries": len(entries), "uncovered": actual["uncovered"]}
+
     is_valid = len(findings) == 0
     summary = {
         "status": "pass" if is_valid else "fail",
         "error_count": len(findings),
+        "risk_crosswalk_entries": risk_crosswalk_summary.get("entries", 0),
+        "risk_crosswalk_uncovered": risk_crosswalk_summary.get("uncovered", 0),
         "invariants_count": len(inv_arch_map),
         "algorithms_count": len(alg_arch_map),
         "publication_primitives_count": len(pub_arch_map),

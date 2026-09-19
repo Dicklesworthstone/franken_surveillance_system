@@ -1,0 +1,224 @@
+{
+  "schema": "fss.risk_crosswalk.v1",
+  "asOf": "2026-09-19",
+  "description": "Typed crosswalk (DRIFT-005) mapping the comprehensive plan's prose risk register (RISK-001..030, plan §30) to the machine risk vocabulary in registries/RISKS.md. The two namespaces are distinct: prose rows carry plan-facing mitigations; machine rows carry registry-owned mitigations and release consequences. Coverage states: covered (a machine row owns the risk family), partial (a machine row covers part of the family), uncovered (no machine row owns it - exposed gap requiring either a new machine row or an explicit ownership decision). Machine IDs must exist in registries/RISKS.md; every prose row maps exactly once; conflation of the namespaces is prohibited.",
+  "prose_source": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md §30",
+  "machine_source": "registries/RISKS.md",
+  "coverage_summary": {
+    "covered": 20,
+    "partial": 7,
+    "uncovered": 3
+  },
+  "crosswalk": [
+    {
+      "prose_id": "RISK-001",
+      "prose_risk": "Proprietary camera protocols drift frequently",
+      "machine_risk_ids": ["RISK-VENDOR-001"],
+      "coverage": "covered",
+      "note": "proprietary protocol drift is the vendor/adapter risk"
+    },
+    {
+      "prose_id": "RISK-002",
+      "prose_risk": "DJI Flip lacks a supportable low-latency SDK path",
+      "machine_risk_ids": ["RISK-SDK-001"],
+      "coverage": "covered",
+      "note": "DJI Flip SDK path is the SDK-absence risk"
+    },
+    {
+      "prose_id": "RISK-003",
+      "prose_risk": "Cheap cameras provide poor/unstable timestamps",
+      "machine_risk_ids": ["RISK-TIME-001"],
+      "coverage": "covered",
+      "note": "timestamp instability is the clock/buffering corruption risk"
+    },
+    {
+      "prose_id": "RISK-004",
+      "prose_risk": "Night/IR/weather imagery defeats ordinary detectors",
+      "machine_risk_ids": ["RISK-MODEL-001"],
+      "coverage": "covered",
+      "note": "detector-defeating imagery is the model calibration/recall risk"
+    },
+    {
+      "prose_id": "RISK-005",
+      "prose_risk": "Cross-camera association creates privacy-invasive re-identification",
+      "machine_risk_ids": ["RISK-BIOMETRIC-001"],
+      "coverage": "covered",
+      "note": "re-identification is the identity-as-surveillance-network risk"
+    },
+    {
+      "prose_id": "RISK-006",
+      "prose_risk": "3D reconstruction looks convincing but is metrically wrong",
+      "machine_risk_ids": ["RISK-GEOMETRY-001"],
+      "coverage": "covered",
+      "note": "untrustworthy 3D is the geometry certificate risk"
+    },
+    {
+      "prose_id": "RISK-007",
+      "prose_risk": "Model cascade misses threats filtered by cheap stage",
+      "machine_risk_ids": ["RISK-MODEL-001"],
+      "coverage": "covered",
+      "note": "cascade misses are the model recall risk; sentinel sampling economics is OPEN-006"
+    },
+    {
+      "prose_id": "RISK-008",
+      "prose_risk": "Full-resolution continuous inference is economically impossible",
+      "machine_risk_ids": ["RISK-ARCHIVE-001"],
+      "coverage": "partial",
+      "note": "economics exposure; the operation-cost registry owns measurement, but no dedicated inference-economics risk row exists"
+    },
+    {
+      "prose_id": "RISK-009",
+      "prose_risk": "Pure-Rust codec/model scope is large and may delay capabilities",
+      "machine_risk_ids": ["RISK-COMPLEXITY-001", "RISK-DEPENDENCY-001"],
+      "coverage": "covered",
+      "note": "pure-Rust scope delay is the complexity risk; foreign fallback is the dependency risk"
+    },
+    {
+      "prose_id": "RISK-010",
+      "prose_risk": "Object store outage or pricing changes break operation",
+      "machine_risk_ids": ["RISK-ARCHIVE-001"],
+      "coverage": "covered",
+      "note": "object store outage/pricing is the archive economics risk"
+    },
+    {
+      "prose_id": "RISK-011",
+      "prose_risk": "Franken dependencies are not API-ready",
+      "machine_risk_ids": ["RISK-DEPENDENCY-001"],
+      "coverage": "covered",
+      "note": "Franken API readiness is the dependency/foreign-runtime risk"
+    },
+    {
+      "prose_id": "RISK-012",
+      "prose_risk": "Event labels are subjective/rare",
+      "machine_risk_ids": ["RISK-DATASET-001"],
+      "coverage": "partial",
+      "note": "label subjectivity feeds the dataset-quality risk; annotation graph is plan-side mitigation"
+    },
+    {
+      "prose_id": "RISK-013",
+      "prose_risk": "Zero observed misses causes overconfidence",
+      "machine_risk_ids": ["RISK-GUARANTEE-001"],
+      "coverage": "covered",
+      "note": "zero-miss overconfidence is the false-assurance risk"
+    },
+    {
+      "prose_id": "RISK-014",
+      "prose_risk": "Alert provider ambiguity creates duplicates or missing alerts",
+      "machine_risk_ids": ["RISK-RECOVERY-001"],
+      "coverage": "covered",
+      "note": "alert ambiguity is the ambiguous-effect/reconciliation risk"
+    },
+    {
+      "prose_id": "RISK-015",
+      "prose_risk": "Calibration/privacy masks drift after physical movement",
+      "machine_risk_ids": ["RISK-COVERAGE-001"],
+      "coverage": "covered",
+      "note": "mask/calibration drift is the stale-coverage risk"
+    },
+    {
+      "prose_id": "RISK-016",
+      "prose_risk": "Camera vendor terms/accounts resist interoperability",
+      "machine_risk_ids": ["RISK-VENDOR-001"],
+      "coverage": "covered",
+      "note": "vendor terms resistance is the vendor/adapter risk"
+    },
+    {
+      "prose_id": "RISK-017",
+      "prose_risk": "Local hardware heterogeneity makes performance claims brittle",
+      "machine_risk_ids": [],
+      "coverage": "uncovered",
+      "note": "hardware heterogeneity has no machine risk row; platform manifests live in LOCAL_QUALIFICATION_AND_RELEASE only"
+    },
+    {
+      "prose_id": "RISK-018",
+      "prose_risk": "Search/memory feeds stale harmful assumptions into policy",
+      "machine_risk_ids": ["RISK-DATASET-001"],
+      "coverage": "partial",
+      "note": "stale memory feeding policy is the dataset/decay family; memory decay is registry doctrine, no dedicated row"
+    },
+    {
+      "prose_id": "RISK-019",
+      "prose_risk": "Support artifacts leak sensitive footage/secrets",
+      "machine_risk_ids": ["RISK-SECRET-001"],
+      "coverage": "covered",
+      "note": "support-artifact leakage is the secret-leak risk"
+    },
+    {
+      "prose_id": "RISK-020",
+      "prose_risk": "Dataset leakage from neighboring frames/properties inflates metrics",
+      "machine_risk_ids": ["RISK-DATASET-001"],
+      "coverage": "covered",
+      "note": "leakage inflation is the dataset risk"
+    },
+    {
+      "prose_id": "RISK-021",
+      "prose_risk": "System normalizes excessive household/bystander surveillance",
+      "machine_risk_ids": ["RISK-PRIVACY-001"],
+      "coverage": "covered",
+      "note": "surveillance normalization is the over-collection risk"
+    },
+    {
+      "prose_id": "RISK-022",
+      "prose_risk": "Residents/guests do not understand collection",
+      "machine_risk_ids": ["RISK-PRIVACY-001"],
+      "coverage": "partial",
+      "note": "comprehensibility is the privacy-doctrine family; no dedicated comprehensibility row"
+    },
+    {
+      "prose_id": "RISK-023",
+      "prose_risk": "False alarms create panic or dangerous escalation",
+      "machine_risk_ids": ["RISK-MODEL-001"],
+      "coverage": "partial",
+      "note": "false-alarm severity is the model calibration family; no dedicated false-alarm row"
+    },
+    {
+      "prose_id": "RISK-024",
+      "prose_risk": "Missed event creates false sense of certainty",
+      "machine_risk_ids": ["RISK-GUARANTEE-001"],
+      "coverage": "covered",
+      "note": "missed-event false certainty is the false-assurance risk"
+    },
+    {
+      "prose_id": "RISK-025",
+      "prose_risk": "Evidence export is misleading after transforms",
+      "machine_risk_ids": [],
+      "coverage": "uncovered",
+      "note": "export trustworthiness has no machine risk row; chain-of-custody is plan-side doctrine"
+    },
+    {
+      "prose_id": "RISK-026",
+      "prose_risk": "Cloud/remote model silently receives sensitive data",
+      "machine_risk_ids": ["RISK-PRIVACY-001", "RISK-SECRET-001"],
+      "coverage": "covered",
+      "note": "cloud data egress spans the privacy and secret risks"
+    },
+    {
+      "prose_id": "RISK-027",
+      "prose_risk": "Project is repurposed for oppressive tracking",
+      "machine_risk_ids": ["RISK-BIOMETRIC-001"],
+      "coverage": "partial",
+      "note": "repurposing exposure is the biometric-network family; scope doctrine is plan-side"
+    },
+    {
+      "prose_id": "RISK-028",
+      "prose_risk": "Children/interior spaces receive disproportionate collection",
+      "machine_risk_ids": ["RISK-PRIVACY-001"],
+      "coverage": "partial",
+      "note": "children/interior collection is the privacy minimization family; P3 defaults are plan-side"
+    },
+    {
+      "prose_id": "RISK-029",
+      "prose_risk": "Operator cannot maintain a complex system",
+      "machine_risk_ids": [],
+      "coverage": "uncovered",
+      "note": "operator maintainability has no machine risk row; doctor/CLI doctrine is plan-side"
+    },
+    {
+      "prose_id": "RISK-030",
+      "prose_risk": "Vendor account compromise propagates into trusted core",
+      "machine_risk_ids": ["RISK-SECRET-001"],
+      "coverage": "covered",
+      "note": "vendor account compromise is the secret/capability isolation risk"
+    }
+  ]
+}
