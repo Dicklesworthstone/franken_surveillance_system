@@ -11,6 +11,7 @@ mod continuity;
 mod error;
 mod h264;
 mod h265;
+mod h265_receiver;
 mod receiver;
 mod reorder;
 mod rtcp;
@@ -36,6 +37,9 @@ pub use h264::{
 pub use h265::{
     H265Depacketizer, H265Error, H265Failure, H265FragmentDiscard, H265Limits, H265NalUnit,
     H265Output, H265SourceSpan, H265Status,
+};
+pub use h265_receiver::{
+    H265ReceiveAdmission, H265ReceiveCancellation, H265ReceiveError, H265ReceivePoll, H265Receiver,
 };
 pub use receiver::{
     H264ReceiveAdmission, H264ReceiveCancellation, H264ReceiveError, H264ReceivePoll, H264Receiver,
