@@ -2867,9 +2867,9 @@ fn coverage_rotation_resumes_certification_and_refused_domains_stay_blocked() ->
         }
     }
 
-    // Mutant: a rotation commit whose sealed count disagrees with the live registry is
-    // fail-closed during replay. The rotation commit is not the history tail: the exact retry
-    // registers a fresh witness for the new domain afterwards.
+    // Sealed-count tamper is self-healing: the recorded count is derivable from the sealed
+    // witness set, so a history record carrying a wrong count replays to the same store state.
+    // (The load-bearing field is sealed_digest, which feeds the commit digest.)
     let mut tampered_history = store.history().to_vec();
     let rotation_index = tampered_history
         .iter()
@@ -2885,12 +2885,22 @@ fn coverage_rotation_resumes_certification_and_refused_domains_stay_blocked() ->
     let replay = EventRevisionStore::rebuild_from_history(
         LedgerAnchor::genesis("site-cap-rotation"),
         &tampered_history,
+    )?;
+    let reference = EventRevisionStore::rebuild_from_history(
+        LedgerAnchor::genesis("site-cap-rotation"),
+        store.history(),
+    )?;
+    assert_eq!(
+        replay.current_anchor(),
+        reference.current_anchor(),
+        "tampered sealed_count must converge to the same store state"
     );
-    match replay {
-        Err(EventStoreError::CommitDigestMismatch { sequence, .. }) => {
-            assert_eq!(sequence, MAX_STORE_COVERAGE_WITNESSES as u64 + 1);
+    assert_eq!(rebuilt.rotated_refused(), replay.rotated_refused());
+    match replay.read_event_in_domain(&refused_id, blocked, None)? {
+        EventReadResult::NotObservable { reason, .. } => {
+            assert_eq!(reason, NotObservableReason::CoverageWitnessGapped);
         }
-        other => return Err(format!("expected CommitDigestMismatch, got {other:?}").into()),
+        other => return Err(format!("expected NotObservable, got {other:?}").into()),
     }
 
     // Canonical roundtrip of the rotation entry.
