@@ -13,6 +13,8 @@ pub mod avc_client;
 pub mod framed;
 /// Owner-driven TCP framing, optional Digest authentication, and HEVC RTP reception.
 pub mod hevc_client;
+/// Continuous HEVC window collection with original boundary-packet retention.
+pub mod hevc_recording_collector;
 
 /// Capability-scoped, owner-driven RTSP/1.0 client session reference.
 pub mod client;
