@@ -1,5 +1,7 @@
 use super::*;
 
+const LABORATORY_CONTENT_TYPE: &str = "application/vnd.fss.h4-laboratory-expansion+canonical";
+
 /// One complete artifact published at an exact hydration level.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HydrationArtifact {
@@ -60,7 +62,7 @@ impl HydrationArtifact {
         ContentDigest::sha256(&encoder.finish())
     }
 
-    /// Verifies payload and artifact integrity.
+    /// Verifies payload and artifact integrity, including laboratory-origin quarantine.
     pub fn verify(&self) -> Result<(), HydrationError> {
         self.validate_body()?;
         let expected_payload = ContentDigest::sha256(&self.payload);
@@ -71,22 +73,44 @@ impl HydrationArtifact {
         Ok(())
     }
 
-    /// Returns whether this artifact is strictly quarantined from production (level H4).
+    /// Returns whether the declared level or recognized payload origin requires quarantine.
+    ///
+    /// Public envelope fields can be changed and resealed. Relabeling an H4 payload as a
+    /// production level, including changing its media type, must not remove quarantine.
     #[must_use]
-    pub const fn is_quarantined(&self) -> bool {
-        matches!(self.level, HydrationLevel::H4)
+    pub fn is_quarantined(&self) -> bool {
+        matches!(self.level, HydrationLevel::H4) || self.has_laboratory_origin()
     }
 
-    /// Constitutional rule: Laboratory material (H4) is excluded from production.
+    /// Checks artifact integrity and excludes recognized laboratory material from production.
+    ///
+    /// This is an artifact-local gate, not a substitute for request authorization or
+    /// descriptor-bound delivery validation.
     #[must_use]
-    pub const fn is_production_safe(&self) -> bool {
-        !self.is_quarantined()
+    pub fn is_production_safe(&self) -> bool {
+        !self.is_quarantined() && self.verify().is_ok()
     }
 
-    /// Constitutional hard gate: Laboratory material may NEVER authorize effects.
+    /// Rejects corrupt or laboratory artifacts as effect premises; does not grant authority.
     #[must_use]
-    pub const fn may_authorize_effects(&self) -> bool {
-        !self.is_quarantined()
+    pub fn may_authorize_effects(&self) -> bool {
+        self.is_production_safe()
+    }
+
+    fn has_laboratory_origin(&self) -> bool {
+        let media_type = self
+            .content_type
+            .split_once(';')
+            .map_or(self.content_type.as_str(), |(media_type, _)| media_type);
+        if media_type.trim().eq_ignore_ascii_case(LABORATORY_CONTENT_TYPE) {
+            return true;
+        }
+
+        // Inspect only the bounded canonical discriminator, without allocating or decoding
+        // laboratory contents. Unknown/old H4 versions remain quarantined as well.
+        CanonicalDecoder::new(&self.payload)
+            .text()
+            .is_ok_and(|schema| schema.starts_with("fss.h4_laboratory_expansion."))
     }
 
     fn validate_body(&self) -> Result<(), HydrationError> {
@@ -112,6 +136,9 @@ impl HydrationArtifact {
         {
             return Err(ContractError::EvidenceRequired.into());
         }
+        if self.level != HydrationLevel::H4 && self.has_laboratory_origin() {
+            return Err(ContractError::ProhibitedEvidencePromotion.into());
+        }
         Ok(())
     }
 
@@ -131,5 +158,130 @@ impl CanonicalEncode for HydrationArtifact {
     fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
         self.encode_body(encoder);
         encoder.digest(self.artifact_digest);
+    }
+}
+
+#[cfg(test)]
+mod quarantine_tests {
+    use super::*;
+
+    fn publish(
+        level: HydrationLevel,
+        content_type: &str,
+        payload: Vec<u8>,
+    ) -> Result<HydrationArtifact, HydrationError> {
+        HydrationArtifact::publish(
+            level,
+            content_type,
+            payload,
+            [ContentDigest::sha256(b"independent-subject-root")],
+            Completeness::Complete,
+            None,
+        )
+    }
+
+    fn laboratory_payload(schema: &str) -> Vec<u8> {
+        let mut encoder = CanonicalEncoder::new();
+        encoder.text(schema);
+        encoder.text("quarantined-body");
+        encoder.finish()
+    }
+
+    #[test]
+    fn laboratory_media_type_cannot_be_promoted_to_any_production_level() {
+        for level in HydrationLevel::ALL.into_iter().take(4) {
+            for content_type in [
+                LABORATORY_CONTENT_TYPE,
+                "APPLICATION/VND.FSS.H4-LABORATORY-EXPANSION+CANONICAL",
+                "application/vnd.fss.h4-laboratory-expansion+canonical; version=2",
+            ] {
+                assert_eq!(
+                    publish(level, content_type, b"opaque laboratory bytes".to_vec()),
+                    Err(HydrationError::Contract(
+                        ContractError::ProhibitedEvidencePromotion
+                    )),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn canonical_origin_is_checked_even_when_the_media_type_is_relabelled() {
+        for schema in [
+            H4_SCHEMA,
+            "fss.h4_laboratory_expansion.v1",
+            "fss.h4_laboratory_expansion.v999",
+        ] {
+            for level in HydrationLevel::ALL.into_iter().take(4) {
+                assert_eq!(
+                    publish(level, "application/octet-stream", laboratory_payload(schema)),
+                    Err(HydrationError::Contract(
+                        ContractError::ProhibitedEvidencePromotion
+                    )),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn resealing_both_outer_tags_does_not_remove_quarantine() -> Result<(), HydrationError> {
+        let mut artifact = publish(
+            HydrationLevel::H4,
+            LABORATORY_CONTENT_TYPE,
+            laboratory_payload(H4_SCHEMA),
+        )?;
+        artifact.level = HydrationLevel::H1;
+        artifact.content_type = "application/octet-stream".to_owned();
+        artifact.artifact_digest = artifact.computed_digest();
+        assert!(artifact.is_quarantined());
+        assert!(!artifact.is_production_safe());
+        assert!(!artifact.may_authorize_effects());
+        assert_eq!(
+            artifact.verify(),
+            Err(HydrationError::Contract(
+                ContractError::ProhibitedEvidencePromotion
+            )),
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn corrupt_production_artifact_cannot_be_an_effect_premise() -> Result<(), HydrationError> {
+        let mut artifact = publish(
+            HydrationLevel::H1,
+            "application/fss+json",
+            b"semantic synopsis".to_vec(),
+        )?;
+        assert!(artifact.is_production_safe());
+        artifact.payload.push(b'!');
+        assert!(!artifact.is_production_safe());
+        assert!(!artifact.may_authorize_effects());
+        Ok(())
+    }
+
+    #[test]
+    fn ordinary_production_artifacts_keep_their_existing_behavior() -> Result<(), HydrationError> {
+        for level in HydrationLevel::ALL.into_iter().take(4) {
+            let artifact = publish(level, "application/octet-stream", vec![0xff, 0, 1])?;
+            artifact.verify()?;
+            assert!(!artifact.is_quarantined());
+            assert!(artifact.is_production_safe());
+            assert!(artifact.may_authorize_effects());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn opaque_h4_artifacts_remain_quarantined() -> Result<(), HydrationError> {
+        let artifact = publish(
+            HydrationLevel::H4,
+            "application/octet-stream",
+            b"laboratory fixture".to_vec(),
+        )?;
+        artifact.verify()?;
+        assert!(artifact.is_quarantined());
+        assert!(!artifact.is_production_safe());
+        assert!(!artifact.may_authorize_effects());
+        Ok(())
     }
 }
