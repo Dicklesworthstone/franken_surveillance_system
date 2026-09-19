@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! Validated registration contracts: unique candidate selection with error bounds.
 mod common;
 
 use std::error::Error;

@@ -115,7 +115,7 @@ pub enum ObservedPredictions {
         /// Every generated path, including the explicit stopping branches.
         motion: MotionForecast,
         /// Per-route camera/region/capture/availability outcomes.
-        handoff: CameraHandoffForecast,
+        handoff: Box<CameraHandoffForecast>,
     },
 }
 
@@ -290,15 +290,14 @@ pub fn forecast_to_feature(twin: &PropertyTwin, network: &SupportNetwork,
             };
             let mut record = RouteAssessment { route: routes.len() as u64 + 1, source_mode: mode_index,
                 kind, nominal_speed: speed.filter(|s| s.is_finite()), initial_direction_cosine: None, path };
-            if let (Some(points), Some(velocity)) = (record.points(), mode.nominal_velocity) {
-                if points.len() > 1 {
-                    let delta: [f64; 3] = std::array::from_fn(|i| points[1][i] - points[0][i]);
-                    let length = delta[0].hypot(delta[1]).hypot(delta[2]);
-                    let norm = velocity[0].hypot(velocity[1]).hypot(velocity[2]);
-                    if length > 1e-12 && norm > 1e-12 {
-                        record.initial_direction_cosine = Some((0..3).map(|i| delta[i]/length * velocity[i]/norm)
-                            .sum::<f64>().clamp(-1.0, 1.0));
-                    }
+            if let (Some(points), Some(velocity)) = (record.points(), mode.nominal_velocity)
+                && points.len() > 1 {
+                let delta: [f64; 3] = std::array::from_fn(|i| points[1][i] - points[0][i]);
+                let length = delta[0].hypot(delta[1]).hypot(delta[2]);
+                let norm = velocity[0].hypot(velocity[1]).hypot(velocity[2]);
+                if length > 1e-12 && norm > 1e-12 {
+                    record.initial_direction_cosine = Some((0..3).map(|i| delta[i]/length * velocity[i]/norm)
+                        .sum::<f64>().clamp(-1.0, 1.0));
                 }
             }
             routes.push(record);
@@ -335,7 +334,7 @@ pub fn forecast_to_feature(twin: &PropertyTwin, network: &SupportNetwork,
         // Path preference selected geometry already; do not count it again as probability evidence.
         let forecast = forecast_routes(basis, reference, options.horizon_ns, RoutePriors::new(class, 1)?, &inputs, budget)?;
         let handoff = predict_camera_handoffs(basis, &forecast, twin.mesh(), &views, &bodies, options.handoff, budget)?;
-        ObservedPredictions::Modeled { motion: forecast, handoff }
+        ObservedPredictions::Modeled { motion: forecast, handoff: Box::new(handoff) }
     };
     budget.charge(0)?;
     Ok(ObservedHandoffForecast { source: snapshot.receipt(), observations: motion.observations(),

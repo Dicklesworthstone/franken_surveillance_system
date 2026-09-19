@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! Association gating contracts: exposure reuse, basis, and limit refusals.
 mod common;
 
 use std::error::Error;
@@ -141,9 +142,9 @@ fn consumed_exposures_and_reused_evidence_are_rejected() -> Test {
     let c = camera(&twin)?; let mut b = WorkBudget::new(100_000_000);
     let t = track(&twin,c,1,[0.5,1.0],0.8,&mut b)?;
     let d = detection(c,1,[1.5,0.8,0.0])?;
-    assert_eq!(gate_contact_batch(&twin,AssociationFrame{exposure:2,..frame(c)},&[t.snapshot(2)?],&[d],options(),&mut b).unwrap_err(),AssociationError::ReusedExposure);
+    assert!(matches!(gate_contact_batch(&twin,AssociationFrame{exposure:2,..frame(c)},&[t.snapshot(2)?],&[d],options(),&mut b), Err(AssociationError::ReusedExposure)));
     let d = UnassignedContact{evidence:[12;32],..d};
-    assert_eq!(gate_contact_batch(&twin,frame(c),&[t.snapshot(2)?],&[d],options(),&mut b).unwrap_err(),AssociationError::ReusedExposure);
+    assert!(matches!(gate_contact_batch(&twin,frame(c),&[t.snapshot(2)?],&[d],options(),&mut b), Err(AssociationError::ReusedExposure)));
     Ok(())
 }
 #[test]
@@ -152,10 +153,10 @@ fn malformed_suffix_and_duplicate_sources_refuse_the_whole_graph() -> Test {
     let c = camera(&twin)?; let mut b = WorkBudget::new(100_000_000);
     let t = track(&twin,c,1,[0.5,1.0],0.8,&mut b)?;
     let d = detection(c,1,[1.5,0.8,0.0])?;
-    assert_eq!(gate_contact_batch(&twin,frame(c),&[t.snapshot(2)?],&[d,d],options(),&mut b).unwrap_err(),AssociationError::InvalidInput);
-    assert_eq!(gate_contact_batch(&twin,frame(c),&[t.snapshot(2)?,t.snapshot(2)?],&[d],options(),&mut b).unwrap_err(),AssociationError::BasisMismatch);
+    assert!(matches!(gate_contact_batch(&twin,frame(c),&[t.snapshot(2)?],&[d,d],options(),&mut b), Err(AssociationError::InvalidInput)));
+    assert!(matches!(gate_contact_batch(&twin,frame(c),&[t.snapshot(2)?,t.snapshot(2)?],&[d],options(),&mut b), Err(AssociationError::BasisMismatch)));
     let bad = UnassignedContact{id:2,evidence:[105;32],pixel_max:[f64::NAN,0.0],..d};
-    assert_eq!(gate_contact_batch(&twin,frame(c),&[t.snapshot(2)?],&[d,bad],options(),&mut b).unwrap_err(),AssociationError::InvalidInput);
+    assert!(matches!(gate_contact_batch(&twin,frame(c),&[t.snapshot(2)?],&[d,bad],options(),&mut b), Err(AssociationError::InvalidInput)));
     Ok(())
 }
 #[test]
@@ -177,10 +178,8 @@ fn cancellation_and_complete_overlap_limits_leave_tracks_unchanged() -> Test {
     let detections = [detection(c,1,[1.5,0.8,0.0])?,detection(c,2,[1.5,0.8,0.0])?];
     let cancel = AtomicBool::new(true);
     let mut cancelled = WorkBudget::cancellable(100_000_000,&cancel);
-    assert_eq!(gate_contact_batch(&twin,frame(c),&[t.snapshot(2)?],&detections,options(),&mut cancelled).unwrap_err(),
-        AssociationError::Twin(fss_twin::TwinError::Geometry(GeometryError::Cancelled)));
-    assert_eq!(gate_contact_batch(&twin,frame(c),&[t.snapshot(2)?],&detections,
-        AssociationOptions{maximum_witnesses:1,..options()},&mut b).unwrap_err(),AssociationError::Limit);
+    assert!(matches!(gate_contact_batch(&twin,frame(c),&[t.snapshot(2)?],&detections,options(),&mut cancelled), Err(AssociationError::Twin(fss_twin::TwinError::Geometry(GeometryError::Cancelled)))));
+    assert!(matches!(gate_contact_batch(&twin,frame(c),&[t.snapshot(2)?],&detections, AssociationOptions{maximum_witnesses:1,..options()},&mut b), Err(AssociationError::Limit)));
     assert_eq!(t.revision(),2);
     Ok(())
 }

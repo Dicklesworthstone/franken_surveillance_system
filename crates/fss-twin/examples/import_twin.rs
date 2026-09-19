@@ -9,7 +9,7 @@ fn digest(text: &str) -> Result<[u8; 32], Box<dyn std::error::Error>> {
         return Err("digest must contain 64 lowercase hexadecimal characters".into());
     }
     let mut bytes=[0;32];
-    for (out, pair) in bytes.iter_mut().zip(text.as_bytes().chunks_exact(2)) {
+    for (out, pair) in bytes.iter_mut().zip(text.as_bytes().as_chunks::<2>().0) {
         let nibble=|b:u8| if b<=b'9' { b-b'0' } else { b-b'a'+10 };
         *out=nibble(pair[0])*16+nibble(pair[1]);
     }

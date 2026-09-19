@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! MJPEG screening contracts: sensor-health gating over decoded streams.
 use std::error::Error;
 use std::sync::atomic::AtomicBool;
 use fss_codec_mjpeg::{ComponentInterpretation as Color, DecodeBudget, DecodeLimits};

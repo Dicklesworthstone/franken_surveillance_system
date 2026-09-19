@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! Observed handoff contract contract tests.
 use std::error::Error;
 use std::sync::atomic::AtomicBool;
 use fss_core::ContentDigest;

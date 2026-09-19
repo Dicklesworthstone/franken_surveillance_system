@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! Focal localization contracts: atlas matching and focal-family scans.
 mod common;
 
 use std::error::Error;

@@ -9,9 +9,21 @@ use crate::calibration_monitor::FrozenCalibration;
 use crate::focal_localization::{FocalLocalization,FocalLocalizationOutcome};
 use crate::localization::{ImageIdentity,LocalizationAtlas,LocalizationCamera};
 
+/// Reasons a uniquely held-out-validated registration candidate cannot be derived or bound.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RegistrationCandidateError {
-    BasisMismatch, NoScan, ValidationMismatch, NotUnique, InvalidIndex, InvalidBinding,
+    /// Twin, atlas, and localization digests do not share one basis.
+    BasisMismatch,
+    /// The localization outcome carries no focal-pose scan.
+    NoScan,
+    /// The validation set does not belong to the localization's focal scan.
+    ValidationMismatch,
+    /// Held-out validation does not select exactly one focal-pose mode.
+    NotUnique,
+    /// The validated sample or candidate index is out of range.
+    InvalidIndex,
+    /// A supplied owner binding (camera, calibration, clock, or digest) is invalid.
+    InvalidBinding,
 }
 impl std::fmt::Display for RegistrationCandidateError {
     fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result{
@@ -27,23 +39,56 @@ impl std::fmt::Display for RegistrationCandidateError {
 }
 impl std::error::Error for RegistrationCandidateError{}
 
+/// Owner-resolved process-local handles supplied by the caller when binding validated
+/// geometry into a [`TrackingCamera`]. All identity fields are chosen by the owner; the
+/// solver never invents them.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TrackingCameraBinding {
+    /// Non-zero process-local camera identity.
     pub camera:u64,
+    /// Non-zero process-local calibration identity.
     pub calibration:u64,
+    /// Non-zero process-local image-domain identity.
     pub image_domain:u64,
+    /// Digest that must equal the registration query's image-domain digest.
     pub image_domain_digest:[u8;32],
+    /// Non-zero process-local clock identity (logical clock stamp).
     pub clock:u64,
+    /// Half-open `[start,end)` nanosecond validity window; `start <= end`.
     pub validity:[u64;2],
+    /// Optional projection-error model; if present it must be valid for the registration intrinsics.
     pub error:Option<crate::ProjectionError>,
 }
 
+/// A focal-pose registration candidate uniquely selected by held-out validation.
+/// Immutable: it records the digests it was derived from and the fit/holdout statistics
+/// of exactly one passing candidate.
 #[derive(Clone, Debug)]
 pub struct ValidatedCameraRegistration {
-    pub twin_digest:[u8;32], pub atlas_digest:[u8;32], pub query:ImageIdentity,
-    pub sample:usize, pub candidate:usize, pub intrinsics:PinholeIntrinsics,
-    pub pose:RigidPose, pub planar_support:Option<PlanarSupport>, pub fit_landmarks:Vec<u64>,
-    pub fit_rms_px:f64, pub fit_maximum_error_px:f64, pub holdout:PoseValidation,
+    /// Property-twin basis digest the registration was derived against.
+    pub twin_digest:[u8;32],
+    /// Localization-atlas digest the registration was derived against.
+    pub atlas_digest:[u8;32],
+    /// Image identity (domain, geometry) of the queried frame.
+    pub query:ImageIdentity,
+    /// Index of the passing sample within the focal scan.
+    pub sample:usize,
+    /// Index of the passing candidate within the sample's search.
+    pub candidate:usize,
+    /// Pinhole intrinsics estimated for this candidate.
+    pub intrinsics:PinholeIntrinsics,
+    /// Camera pose for this candidate in twin-basis coordinates.
+    pub pose:RigidPose,
+    /// Optional planar support detected during the candidate search.
+    pub planar_support:Option<PlanarSupport>,
+    /// Inlier landmark ids used for the fit.
+    pub fit_landmarks:Vec<u64>,
+    /// Root-mean-square reprojection error over fit landmarks, in pixels.
+    pub fit_rms_px:f64,
+    /// Maximum reprojection error over fit landmarks, in pixels.
+    pub fit_maximum_error_px:f64,
+    /// Held-out validation report that uniquely selected this candidate.
+    pub holdout:PoseValidation,
 }
 impl ValidatedCameraRegistration {
     /// Construct the digest-oriented frozen calibration consumed by the live monitor.
@@ -72,6 +117,8 @@ impl ValidatedCameraRegistration {
     }
 }
 
+/// Select the unique held-out-validated focal-pose registration candidate for a twin/atlas pair.
+/// Returns [`RegistrationCandidateError::NotUnique`] unless validation passes for exactly one mode.
 pub fn select_unique_focal_registration(twin:&PropertyTwin,atlas:&LocalizationAtlas,
     localization:&FocalLocalization,validation:&FocalValidationSet<'_>)
     ->Result<ValidatedCameraRegistration,RegistrationCandidateError>{

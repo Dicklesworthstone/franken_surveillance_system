@@ -9,19 +9,30 @@ use crate::PropertyTwin;
 use crate::localization::{FeatureFrame, LocalizationAtlas, LocalizationCamera, LocalizationError,
     MatchOptions, MatchReport};
 
+/// A frozen camera calibration snapshot under validity monitoring: its identifier plus the exact
+/// camera intrinsics/image domain and pose the monitor compares incoming matches against.
 #[derive(Clone, Copy, Debug)]
 pub struct FrozenCalibration {
+    /// Digest identifying this frozen calibration snapshot; must be nonzero.
     pub id: [u8; 32],
+    /// Camera intrinsics, clock, and image domain the query frame must match exactly.
     pub camera: LocalizationCamera,
+    /// World-to-image pose reprojected onto every matched landmark.
     pub pose: RigidPose,
 }
 
+/// Tunable thresholds controlling how live calibration residuals are judged.
 #[derive(Clone, Copy, Debug)]
 pub struct CalibrationMonitorPolicy {
+    /// Per-correspondence reprojection error under which a projected point counts as an inlier, in pixels; validated to `[0.001, 128]`.
     pub inlier_threshold_px: f64,
+    /// Maximum tolerated root-mean-square inlier reprojection error in pixels; validated to `[0.001, 128]`.
     pub maximum_rms_px: f64,
+    /// Minimum number of correspondences and of projected inliers required to reach any verdict; validated to `[4, 512]`.
     pub minimum_support: usize,
+    /// Minimum ratio of inliers to total correspondences required for `ValidUnderPolicy`; validated to `(0, 1]`.
     pub minimum_inlier_fraction: f64,
+    /// Minimum fraction of the image width and height spanned by matched pixels below which the evidence is `Indeterminate`; validated to `[0, 1]`.
     pub minimum_image_span: f64,
 }
 impl Default for CalibrationMonitorPolicy {
@@ -44,15 +55,25 @@ impl CalibrationMonitorPolicy {
     }
 }
 
+/// Verdict on the frozen calibration given the current monitor evidence.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CalibrationDisposition { ValidUnderPolicy, Invalidate, Indeterminate }
+pub enum CalibrationDisposition { /// Calibration still passes every policy threshold.
+ValidUnderPolicy, /// Evidence was sufficient and rejected the frozen calibration.
+Invalidate, /// Evidence was too sparse or unevenly distributed to judge.
+Indeterminate }
 
+/// Errors raised while monitoring a frozen calibration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CalibrationMonitorError {
+    /// Policy or frozen snapshot fields failed validation.
     InvalidInput,
+    /// Query frame dimensions or image domain disagree with the frozen camera.
     BasisMismatch,
+    /// A reference frame in the atlas shares the query frame's exposure.
     ReferenceExposure,
+    /// Atlas matching of the query frame failed.
     Localization(LocalizationError),
+    /// Reprojection geometry failed (other than points behind the camera or out of range).
     Geometry(GeometryError),
 }
 impl From<LocalizationError> for CalibrationMonitorError { fn from(value: LocalizationError) -> Self { Self::Localization(value) } }
@@ -70,29 +91,49 @@ impl std::fmt::Display for CalibrationMonitorError {
 }
 impl std::error::Error for CalibrationMonitorError {}
 
+/// Reprojection outcome for one matched landmark against the frozen pose.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CalibrationResidual {
+    /// Identifier of the matched landmark the residual was computed for.
     pub landmark: u64,
+    /// Reprojection error in pixels, or `None` when the landmark projects behind the camera or out of range.
     pub error_px: Option<f64>,
+    /// Whether the projected point falls inside the camera image.
     pub in_image: bool,
+    /// Whether the point is in-frame and its error is within `inlier_threshold_px`.
     pub inlier: bool,
 }
 
+/// Full monitor verdict for one comparison of current matches against a frozen calibration.
 #[derive(Debug)]
 pub struct CalibrationMonitorReport {
+    /// Identifier of the frozen calibration that was monitored.
     pub calibration: [u8; 32],
+    /// Digest of the property twin the matches were computed against.
     pub twin_digest: [u8; 32],
+    /// Digest of the localization atlas generation the matches came from.
     pub atlas_digest: [u8; 32],
+    /// Raw atlas match report for the query frame.
     pub matches: MatchReport,
+    /// Per-landmark residuals in match order.
     pub residuals: Vec<CalibrationResidual>,
+    /// Number of correspondences whose landmark projected inside the image.
     pub projected: usize,
+    /// Number of in-frame correspondences within the inlier threshold.
     pub inliers: usize,
+    /// Root-mean-square inlier error in pixels, or `None` when there are no inliers.
     pub rms_inlier_px: Option<f64>,
+    /// Largest inlier reprojection error in pixels, or `None` when there are no inliers.
     pub maximum_inlier_error_px: Option<f64>,
+    /// Fraction of the image width and height spanned by matched pixels, per axis in `[0, 1]`.
     pub image_span_fraction: [f64; 2],
+    /// Final verdict from applying the policy to the statistics above.
     pub disposition: CalibrationDisposition,
 }
 
+/// Matches the query frame against the atlas, reprojects each correspondence through the frozen
+/// pose, and returns a [`CalibrationMonitorReport`] with residuals, statistics, and the policy
+/// verdict. Fails fast on invalid policy or snapshot, basis mismatch, or a reused reference exposure.
 pub fn monitor_calibration(twin: &PropertyTwin, atlas: &LocalizationAtlas,
     query: &FeatureFrame, frozen: FrozenCalibration, matching: MatchOptions,
     policy: CalibrationMonitorPolicy, budget: &mut WorkBudget<'_>)

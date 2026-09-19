@@ -11,10 +11,13 @@ use crate::monitored_handoff::MonitoredHandoffCamera;
 use crate::route_frontier::{FrontierRouteKind,RouteFrontier,RouteFrontierError};
 use crate::stream::{TrackReceipt,TrackSnapshot};
 
+/// Heuristic route-mass table interpolating heading alignment into base masses.
+/// All values are arbitrary support weights, never calibrated probabilities.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HeadingMassPolicy {
     /// Mass at cosine -1 and +1 respectively; each in 1..=1_000_000.
     pub opposite: u32,
+    /// Mass at a perfectly aligned nominal heading; in 1..=1_000_000 and >= `opposite`.
     pub aligned: u32,
     /// Mass when no nominal heading is available.
     pub unknown: u32,
@@ -36,64 +39,113 @@ impl HeadingMassPolicy {
     }
 }
 
+/// Bounded inputs for the frontier handoff forecast; every value must come from
+/// the caller's policy, never from inferred motion.
 #[derive(Clone, Copy, Debug)]
 pub struct FrontierHandoffOptions {
+    /// Nominal projection horizon past the mid-source capture, in nanoseconds;
+    /// nonzero and at most one hour (3_600_000_000_000).
     pub horizon_ns:u64,
+    /// Forecast generation stamp; must be nonzero so stale receipts stay detectable.
     pub motion_generation:u64,
+    /// Initial pause before a moving route becomes capture-eligible, in nanoseconds;
+    /// must not exceed `horizon_ns` (single-point stop routes use zero).
     pub initial_pause_ns:u64,
+    /// Terminal behaviour attached to every route candidate.
     pub route_end:RouteEnd,
+    /// Heading-derived base-mass table applied to each route/motion pairing.
     pub masses:HeadingMassPolicy,
+    /// Per-camera projection policy forwarded to `predict_camera_handoffs`.
     pub handoff:HandoffOptions,
 }
 
+/// Whether a frontier binding is a navigated route or an explicit stop branch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FrontierMotionKind { Route, Stop }
+pub enum FrontierMotionKind {
+    /// Navigated route bound to one frontier route and one observed motion mode.
+    Route,
+    /// Explicit stopping alternative generated for one observed motion mode.
+    Stop,
+}
 
+/// Coupling between a generated motion route and its frontier/mode provenance.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FrontierMotionBinding {
+    /// 1-based handle of the generated route inside the motion forecast.
     pub motion_route:u64,
     /// Route-frontier local handle, absent for explicit stop branches.
     pub frontier_route:Option<u64>,
+    /// Index of the observed motion mode this binding was generated from.
     pub source_mode:usize,
+    /// Whether the generated route is navigated motion or an explicit stop.
     pub kind:FrontierMotionKind,
+    /// Heading-derived base mass for this binding, in 1..=1_000_000.
     pub base_mass:u32,
+    /// Cosine between initial path direction and nominal velocity, when available.
     pub heading_cosine:Option<f64>,
 }
 
+/// Why one frontier route or motion mode produced no nominal path.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FrontierHandoffUnmodeledReason {
+    /// The frontier route carried no observed motion-mode compatibility entries.
     NoObservedMotionMode,
+    /// Every candidate speed was absent or outside the usable finite range.
     NoUsableSpeed,
+    /// Navigation could not produce a route for this frontier route.
     NavigationDidNotProduceRoute,
+    /// The motion mode has no nominal position to anchor a stop branch.
     NoNominalStopPosition,
 }
+/// One retained frontier route or motion mode that yielded no nominal path.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FrontierHandoffUnmodeled {
+    /// Frontier route handle, when the limitation is scoped to one route.
     pub frontier_route:Option<u64>,
+    /// Observed motion-mode index, when the limitation is scoped to one mode.
     pub source_mode:Option<usize>,
+    /// Exact reason the branch was not modeled.
     pub reason:FrontierHandoffUnmodeledReason,
 }
 
+/// Complete lossless frontier handoff result: every usable pairing plus every
+/// explicit stop branch, with no alternative pruned.
 #[derive(Debug)]
 pub struct FrontierHandoffForecast {
+    /// Source snapshot receipt this forecast is pinned to.
     pub source:TrackReceipt,
+    /// Exact immutable twin package digest used for all geometry.
     pub twin_digest:[u8;32],
+    /// Route-frontier source receipt; must match `source` for the forecast to be usable.
     pub frontier_source:TrackReceipt,
+    /// Exact options supplied by the caller.
     pub options:FrontierHandoffOptions,
+    /// Provenance of every generated route, ordered by route id.
     pub bindings:Vec<FrontierMotionBinding>,
+    /// Retained branches that produced no nominal path.
     pub unmodeled:Vec<FrontierHandoffUnmodeled>,
+    /// Motion forecast over all generated routes.
     pub motion:MotionForecast,
+    /// Camera-level next-event predictions for all retained routes.
     pub handoff:CameraHandoffForecast,
 }
 
+/// Failure modes of the frontier handoff forecast.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FrontierHandoffError {
+    /// Snapshot, frontier or motion basis does not match the twin.
     Basis,
+    /// A caller-supplied option violates its documented range.
     Options,
+    /// Bounded output or staging capacity was exceeded.
     Limit,
+    /// The frontier produced no usable nominal motion paths.
     Empty,
+    /// The route frontier itself is invalid for this snapshot.
     Frontier(RouteFrontierError),
+    /// A candidate handoff camera has no current admitted calibration.
     Calibration(CalibrationGateError),
+    /// Twin geometry or resource accounting failed.
     Twin(TwinError),
 }
 impl From<fss_geometry::GeometryError> for FrontierHandoffError{fn from(v:fss_geometry::GeometryError)->Self{Self::Twin(v.into())}}
@@ -107,6 +159,9 @@ impl std::fmt::Display for FrontierHandoffError{
     })}
 }
 impl std::error::Error for FrontierHandoffError{}
+
+/// Staged route row: `(id, points, speed, surface, base mass, protected, frontier route, end)`.
+type FrontierRouteStorage=(u64,Vec<[f64;3]>,f64,RouteSurface,u32,bool,u64,RouteEnd);
 
 /// Convert every usable frontier route/motion pairing plus every explicit stop mode into
 /// one bounded motion forecast, then project all retained alternatives through every
@@ -128,7 +183,7 @@ pub fn forecast_frontier_handoffs(twin:&PropertyTwin,snapshot:TrackSnapshot<'_>,
     for candidate in cameras{
         budget.charge(8)?;candidate.monitor.check_handoff_camera(candidate.view,observation.capture)?;views.push(candidate.view);
     }
-    let mut route_storage:Vec<(u64,Vec<[f64;3]>,f64,RouteSurface,u32,bool,u64,RouteEnd)>=Vec::new();
+    let mut route_storage:Vec<FrontierRouteStorage>=Vec::new();
     let mut bindings=Vec::new();let mut unmodeled=Vec::new();
     route_storage.try_reserve_exact(64).map_err(|_|FrontierHandoffError::Limit)?;
     bindings.try_reserve_exact(64).map_err(|_|FrontierHandoffError::Limit)?;

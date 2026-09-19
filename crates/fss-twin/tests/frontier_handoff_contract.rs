@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! Frontier handoff contracts: route frontier construction and handoff selection.
 
 use std::error::Error;
 use fss_core::ContentDigest;

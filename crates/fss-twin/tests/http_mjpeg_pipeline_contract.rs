@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! HTTP MJPEG pipeline contracts: end-to-end screened stream composition.
 use fss_codec_mjpeg::{ComponentInterpretation as Color, DecodeBudget, DecodeLimits};
 use fss_core::ContentDigest;
 use fss_geometry::{PinholeIntrinsics, WorkBudget};

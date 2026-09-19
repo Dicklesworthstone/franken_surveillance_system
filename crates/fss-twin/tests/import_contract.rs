@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! Twin import contracts: neutral package admission, limits, and digest binding.
 use fss_core::ContentDigest;
 use fss_geometry::{GeometryBasis, Ray, WorkBudget};
 use fss_twin::{ImportExpectation, ImportLimits, ScaleEvidence, SurfaceKind, TwinError, import_twin};

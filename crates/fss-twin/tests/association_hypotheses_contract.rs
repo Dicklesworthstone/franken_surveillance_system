@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! Association factorization contracts: k-best joint assignments and policy refusals.
 mod common;
 use std::error::Error;
 use std::sync::atomic::AtomicBool;
@@ -12,7 +13,9 @@ type Test = Result<(),Box<dyn Error>>;
 fn policy() -> AssignmentPolicy {
     AssignmentPolicy { one_to_one_basis: [77;32], maximum_per_factor: 1024, maximum_materialized: 4096 }
 }
-fn setup(separated: bool) -> Result<(PropertyTwin,TrackingCamera,Vec<ContactTrack>,Vec<UnassignedContact>),Box<dyn Error>> {
+/// Fixture tuple returned by [`setup`]: twin, camera, tracks, and unassigned contacts.
+type SetupFixture=(PropertyTwin,TrackingCamera,Vec<ContactTrack>,Vec<UnassignedContact>);
+fn setup(separated: bool) -> Result<SetupFixture,Box<dyn Error>> {
     let twin = common::twin(&[0.0],Some(0.0))?;
     let c = TrackingCamera { geometry: twin.basis(), camera: 1, calibration: 1, image_domain: 1,
         clock: 1, validity: [0,100_000_000_000], error: Some(ProjectionError::EXACT),
@@ -46,7 +49,7 @@ fn crossing_has_two_permutations_four_single_links_and_all_unmatched() -> Test {
     let (twin,c,tracks,ds) = setup(false)?; let g = graph(&twin,c,&tracks,&ds)?;
     let h = factorize_associations(&g,policy(),&mut WorkBudget::new(100000))?;
     assert_eq!(h.joint_count(),Some(7)); assert_eq!(h.factors().len(),1);
-    let FactorAlternatives::Explicit(all) = h.factors()[0].alternatives() else {panic!("small factor must enumerate")};
+    let FactorAlternatives::Explicit(all) = h.factors()[0].alternatives() else { return Err("small factor must enumerate".into()); };
     assert_eq!(all.iter().filter(|a|a.links().len()==2).count(),2);
     assert_eq!(all.iter().filter(|a|a.links().len()==1).count(),4);
     assert_eq!(all.iter().filter(|a|a.links().is_empty()).count(),1);
@@ -99,7 +102,7 @@ fn one_to_one_membership_rejects_duplicate_track_or_detection_use() -> Test {
     let mut b = WorkBudget::new(100000); let h = factorize_associations(&g,policy(),&mut b)?;
     for links in [[AssignmentLink{track:1,detection:1},AssignmentLink{track:2,detection:1}],
         [AssignmentLink{track:1,detection:1},AssignmentLink{track:1,detection:2}]] {
-        assert_eq!(h.check_assignment(&links,&mut b).unwrap_err(),AssociationError::InvalidInput);
+        assert!(matches!(h.check_assignment(&links,&mut b), Err(AssociationError::InvalidInput)));
     }
     Ok(())
 }
@@ -109,6 +112,6 @@ fn actual_work_failure_and_missing_partition_assumption_are_not_success() -> Tes
     assert!(factorize_associations(&g,policy(),&mut WorkBudget::new(0)).is_err());
     let cancelled = AtomicBool::new(true);
     assert!(factorize_associations(&g,policy(),&mut WorkBudget::cancellable(100000,&cancelled)).is_err());
-    assert_eq!(factorize_associations(&g,AssignmentPolicy{one_to_one_basis:[0;32],..policy()},&mut WorkBudget::new(100000)).unwrap_err(),AssociationError::InvalidInput);
+    assert!(matches!(factorize_associations(&g,AssignmentPolicy{one_to_one_basis:[0;32],..policy()},&mut WorkBudget::new(100000)), Err(AssociationError::InvalidInput)));
     Ok(())
 }

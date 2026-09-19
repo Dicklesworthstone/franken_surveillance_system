@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! Native gray focal localization contracts through the composed extraction route.
 mod common;
 
 use std::error::Error;
@@ -42,8 +43,9 @@ fn raw_pixels_localize_without_query_correspondences_or_focal_length()->Test{
     }
     let atlas=LocalizationAtlas::new(&twin,landmarks,vec![AtlasReference{id:1,frame:reference}],bindings,&mut budget)?;
     let query=GrayImage::new(identity(2,&query_pixels),&query_pixels,&mask,&mut budget)?;
-    let result=localize_gray_focal_scan(&atlas,&twin,&query,[3;32],extraction,
-        MatchOptions{maximum_distance:0,..MatchOptions::default()},scan(),&mut budget)?;
+    let result=localize_gray_focal_scan(&atlas,&twin,&query,GrayFocalScanControls{
+        expected_image_domain:[3;32],extraction,
+        matching:MatchOptions{maximum_distance:0,..MatchOptions::default()},scan:scan()},&mut budget)?;
     assert!(result.extraction.frame.features().len()>=8);
     assert!(result.localization.matches.correspondences.len()>=8);
     let FocalLocalizationOutcome::Scan(scan)=result.localization.outcome else{return Err("no focal scan".into());};
@@ -75,7 +77,8 @@ fn masked_raw_query_cannot_manufacture_focal_evidence()->Test{
     let atlas=LocalizationAtlas::new(&twin,landmarks,vec![AtlasReference{id:1,frame:reference}],bindings,&mut budget)?;
     let denied=vec![0;query_pixels.len()];
     let query=GrayImage::new(identity(2,&query_pixels),&query_pixels,&denied,&mut budget)?;
-    let result=localize_gray_focal_scan(&atlas,&twin,&query,[3;32],extraction,MatchOptions::default(),scan(),&mut budget)?;
+    let result=localize_gray_focal_scan(&atlas,&twin,&query,GrayFocalScanControls{
+        expected_image_domain:[3;32],extraction,matching:MatchOptions::default(),scan:scan()},&mut budget)?;
     assert_eq!(result.extraction.frame.features().len(),0);
     assert!(matches!(result.localization.outcome,FocalLocalizationOutcome::InsufficientMatches{found:0,..}));
     Ok(())

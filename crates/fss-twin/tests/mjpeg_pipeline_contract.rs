@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! End-to-end MJPEG pipeline contracts: decode, screening, and tracking composition.
 use fss_codec_mjpeg::{ComponentInterpretation as Color, DecodeBudget, DecodeLimits};
 use fss_core::ContentDigest;
 use fss_geometry::{PinholeIntrinsics, WorkBudget};

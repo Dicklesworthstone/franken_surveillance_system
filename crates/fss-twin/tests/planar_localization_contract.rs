@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! Planar localization contracts under fixed intrinsics and map geometry.
 mod common;
 
 use std::error::Error;

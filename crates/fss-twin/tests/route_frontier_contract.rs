@@ -1,10 +1,11 @@
 #![forbid(unsafe_code)]
+//! Route frontier contract contract tests.
 
 use std::error::Error;
 use fss_core::ContentDigest;
 use fss_geometry::{GeometryBasis,PinholeIntrinsics,RigidPose,WorkBudget};
 use fss_twin::{ContactObservation,ImportExpectation,ImportLimits,MovementClass,NavigationProfile,
-    ProjectionOptions,PropertyTwin,SupportNetwork,TrackingCamera,import_twin};
+    PropertyTwin,SupportNetwork,TrackingCamera,import_twin};
 use fss_twin::route_frontier::*;
 use fss_twin::stream::{ContactTrack,TrackOptions,TrackScope};
 

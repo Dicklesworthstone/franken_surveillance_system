@@ -285,7 +285,7 @@ impl RectificationPlan {
         let [width,height] = id.dimensions.map(|x| x as usize);
         let mut visible = 0;
         let mut privacy_rejected = 0;
-        for (out, encoded) in self.map.chunks_exact(8).enumerate() {
+        for (out, encoded) in self.map.as_chunks::<8>().0.iter().enumerate() {
             budget.charge(32)?;
             let [xq,yq] = decode_pair(encoded);
             if xq == INVALID { continue; }

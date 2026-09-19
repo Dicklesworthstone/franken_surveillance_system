@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! Atlas archive contracts: packaged localization atlas staging and recovery.
 mod common;
 use fss_core::ContentDigest;
 use fss_geometry::{GeometryError, WorkBudget};

@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! Twin stream contracts: bounded frame streaming and admission behavior.
 mod common;
 
 use std::error::Error;

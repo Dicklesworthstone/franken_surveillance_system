@@ -356,13 +356,12 @@ impl ScreeningMonitor {
         }
         let frame = ForegroundFrame::new(source, pixels, allowed, budget)?;
         let mask = frame.mask_digest();
-        if let Some(prior) = self.last {
-            if prior.source.camera != source.camera || prior.source.clock != source.clock
+        if let Some(prior) = self.last
+            && (prior.source.camera != source.camera || prior.source.clock != source.clock
                 || prior.source.calibration != source.calibration
                 || prior.source.image.image_domain != source.image.image_domain
-                || prior.source.image.dimensions != source.image.dimensions {
-                return Err(ScreeningError::BasisMismatch);
-            }
+                || prior.source.image.dimensions != source.image.dimensions) {
+            return Err(ScreeningError::BasisMismatch);
         }
         if foreground.is_some_and(|r| r.source() != source || r.mask_digest() != mask) {
             return Err(ScreeningError::BasisMismatch);

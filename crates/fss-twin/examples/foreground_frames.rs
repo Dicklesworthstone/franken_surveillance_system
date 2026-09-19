@@ -84,7 +84,7 @@ fn run()->Result<()> {
         Ok(Loaded{source:ForegroundSource{image:ImageIdentity{exposure:r.exposure,pixels:r.pixels_hash,
             image_domain:domain,dimensions:[width,height]},camera,calibration,clock,capture:r.capture},pixels,allowed})
     };
-    let loaded:Vec<_>=rows[..refs].iter().map(|r| load(r)).collect::<Result<_>>()?;
+    let loaded:Vec<_>=rows[..refs].iter().map(load).collect::<Result<_>>()?;
     let mut frames=Vec::new();
     for f in &loaded {frames.push(ForegroundFrame::new(f.source,&f.pixels,&f.allowed,&mut budget)?);}
     let model=BackgroundModel::build(&frames,bp,&mut budget)?;

@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! Calibration gate contracts: disposition thresholds and basis anchoring.
 mod common;
 
 use std::error::Error;

@@ -364,13 +364,12 @@ fn validate_input(twin: &PropertyTwin, frame: AssociationFrame, detections: &[Un
         || p.far > 1e9 || !(1..=128).contains(&p.max_hypotheses) {
         return Err(AssociationError::InvalidInput);
     }
-    if let Some(e) = c.error {
-        if e.centre.iter().chain(e.focal.iter()).chain(e.principal.iter())
+    if let Some(e) = c.error
+        && (e.centre.iter().chain(e.focal.iter()).chain(e.principal.iter())
             .any(|x| !x.is_finite() || *x < 0.0 || *x > 1e12)
             || !e.rotation_entry.is_finite() || !(0.0..=2.0).contains(&e.rotation_entry)
-            || (0..2).any(|a| e.focal[a] >= c.intrinsics.focal_lengths()[a]) {
-            return Err(AssociationError::InvalidInput);
-        }
+            || (0..2).any(|a| e.focal[a] >= c.intrinsics.focal_lengths()[a])) {
+        return Err(AssociationError::InvalidInput);
     }
     for (index, d) in detections.iter().enumerate() {
         if d.id == 0 || d.evidence == [0; 32] || !c.intrinsics.contains(d.pixel_min)

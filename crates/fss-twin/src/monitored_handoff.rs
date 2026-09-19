@@ -10,14 +10,20 @@ use crate::stream::TrackSnapshot;
 
 /// One candidate view coupled to the exact currently monitored tracking snapshot.
 pub struct MonitoredHandoffCamera<'view,'monitor> {
+    /// Candidate view to project the track into.
     pub view: HandoffCamera<'view>,
+    /// Calibration monitor that must currently admit `view`.
     pub monitor: &'monitor MonitoredTrackingCamera,
 }
 
+/// Failure modes of the calibration-gated monitored forecast.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MonitoredForecastError {
+    /// A candidate view lacks a current admitted calibration receipt.
     Calibration(CalibrationGateError),
+    /// The underlying observed forecast failed.
     Forecast(ObservedForecastError),
+    /// The candidate camera list was empty or exceeded the 64-camera limit.
     Limit,
 }
 impl From<CalibrationGateError> for MonitoredForecastError {

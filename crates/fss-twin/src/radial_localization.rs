@@ -10,16 +10,34 @@ use crate::PropertyTwin;
 use crate::localization::{FeatureFrame,LocalizationAtlas,LocalizationError,MatchOptions,MatchReport};
 use crate::localization::native::{ExtractedFrame,ExtractionOptions,GrayImage,extract_gray};
 
+/// Tuning grid for the joint focal-length and radial-distortion scan, validated by [`RadialFocalScanOptions::validate`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RadialFocalScanOptions {
-    pub minimum_fx_px:f64,pub maximum_fx_px:f64,pub focal_samples:usize,pub y_over_x:f64,
-    pub principal_point:[f64;2],pub minimum_k1:f64,pub maximum_k1:f64,pub k1_samples:usize,
-    pub maximum_undistorted_radius:f64,pub pose:PoseSolverOptions,
+    /// Lowest horizontal focal length sampled, in pixels (log-spaced).
+    pub minimum_fx_px:f64,
+    /// Highest horizontal focal length sampled, in pixels (log-spaced).
+    pub maximum_fx_px:f64,
+    /// Number of focal-length samples on the logarithmic grid (3..=65).
+    pub focal_samples:usize,
+    /// Fixed vertical/horizontal focal-length ratio applied to every sample (0.05..=20.0).
+    pub y_over_x:f64,
+    /// Principal point shared by all sampled intrinsics, in pixels.
+    pub principal_point:[f64;2],
+    /// Lowest first-order radial-distortion coefficient sampled (|k1| <= 10).
+    pub minimum_k1:f64,
+    /// Highest first-order radial-distortion coefficient sampled (|k1| <= 10).
+    pub maximum_k1:f64,
+    /// Number of distortion coefficients sampled on a linear grid (1..=33).
+    pub k1_samples:usize,
+    /// Largest undistorted normalized radius admitted by the lens model, in pixels (1e-3..=64.0).
+    pub maximum_undistorted_radius:f64,
+    /// Adaptive solver configuration handed to [`estimate_camera_pose`].
+    pub pose:PoseSolverOptions,
 }
 impl RadialFocalScanOptions {
     fn validate(self,dimensions:[u32;2])->Result<(),LocalizationError>{
         let product=self.focal_samples.checked_mul(self.k1_samples).ok_or(LocalizationError::Limit)?;
-        if dimensions.iter().any(|n|*n==0) || !(3..=65).contains(&self.focal_samples)
+        if dimensions.contains(&0) || !(3..=65).contains(&self.focal_samples)
             || !(1..=33).contains(&self.k1_samples) || product>1024
             || !self.minimum_fx_px.is_finite() || !self.maximum_fx_px.is_finite()
             || self.minimum_fx_px<1e-6 || self.maximum_fx_px<=self.minimum_fx_px || self.maximum_fx_px>1e9
@@ -32,27 +50,87 @@ impl RadialFocalScanOptions {
     }
 }
 
+/// Failure modes specific to the radial lens model, independent of the geometric pose solver.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RadialLensFailure { NonInvertible, ObservationOutsideAdmittedDomain }
+pub enum RadialLensFailure {
+    /// The distortion polynomial is not invertible over the admitted radius (division collapses).
+    NonInvertible,
+    /// A raw observation undistorts outside the sensor or the admitted maximum radius.
+    ObservationOutsideAdmittedDomain,
+}
+/// Per-lens-candidate outcome retained from the scan; failures are kept instead of aborting.
 #[derive(Debug)]
-pub enum RadialSampleOutcome { Candidates(PoseSearch), LensFailure(RadialLensFailure), GeometricFailure(GeometryError) }
+pub enum RadialSampleOutcome {
+    /// The adaptive pose solver produced candidate poses for this lens sample.
+    Candidates(Box<PoseSearch>),
+    /// The lens model rejected this sample for the given [`RadialLensFailure`].
+    LensFailure(RadialLensFailure),
+    /// The pose solver failed with a non-fatal geometry error.
+    GeometricFailure(GeometryError),
+}
+/// One point on the (focal length, k1) grid with its undistorted pose result.
 #[derive(Debug)]
-pub struct RadialFocalSample { pub focal_index:usize,pub k1_index:usize,pub k1:f64,pub intrinsics:PinholeIntrinsics,pub outcome:RadialSampleOutcome }
+pub struct RadialFocalSample {
+    /// Index of this sample along the logarithmic focal-length axis.
+    pub focal_index:usize,
+    /// Index of this sample along the linear k1 axis.
+    pub k1_index:usize,
+    /// First-order radial-distortion coefficient at `k1_index`.
+    pub k1:f64,
+    /// Full intrinsics (focal lengths, principal point) at `focal_index`.
+    pub intrinsics:PinholeIntrinsics,
+    /// Solver outcome for this lens candidate.
+    pub outcome:RadialSampleOutcome,
+}
+/// Complete grid of lens samples over the matched correspondences.
 #[derive(Debug)]
-pub struct RadialFocalScan { pub basis:fss_geometry::GeometryBasis,pub dimensions:[u32;2],pub options:RadialFocalScanOptions,pub samples:Vec<RadialFocalSample>,pub work_units:u64 }
+pub struct RadialFocalScan {
+    /// Geometric basis (planar/nonplanar) shared by all pose searches.
+    pub basis:fss_geometry::GeometryBasis,
+    /// Image dimensions in pixels the intrinsics were built for.
+    pub dimensions:[u32;2],
+    /// The option grid that produced this scan.
+    pub options:RadialFocalScanOptions,
+    /// `focal_samples * k1_samples` retained samples, row-major by focal index.
+    pub samples:Vec<RadialFocalSample>,
+    /// Work units charged to the budget while producing this scan.
+    pub work_units:u64,
+}
 
+/// Holdout validation verdict for one lens candidate from [`RadialFocalScan::validate_all_candidates`].
 #[derive(Clone, Debug, PartialEq)]
-pub struct RadialCandidateValidation { pub sample:usize,pub candidate:usize,pub validation:PoseValidation }
+pub struct RadialCandidateValidation {
+    /// Index into [`RadialFocalScan::samples`].
+    pub sample:usize,
+    /// Pose-candidate index within that sample's [`PoseSearch`].
+    pub candidate:usize,
+    /// Reprojection verdict of the candidate on the holdout correspondences.
+    pub validation:PoseValidation,
+}
+/// Read-only holdout validation of every candidate pose from a completed scan.
 #[derive(Debug)]
-pub struct RadialValidationSet<'a> { scan:&'a RadialFocalScan,reports:Vec<RadialCandidateValidation>,passing:Vec<(usize,usize)> }
+pub struct RadialValidationSet<'a> {
+    /// The scan this validation was computed against.
+    scan:&'a RadialFocalScan,
+    /// One verdict per (sample, candidate) pair, in scan order.
+    reports:Vec<RadialCandidateValidation>,
+    /// Indices of candidates whose validation passed, in scan order.
+    passing:Vec<(usize,usize)>,
+}
 impl<'a> RadialValidationSet<'a> {
+    /// The scan these validation reports were computed against.
     pub fn scan(&self)->&'a RadialFocalScan{self.scan}
+    /// Verdicts for every validated candidate, in scan order.
     pub fn reports(&self)->&[RadialCandidateValidation]{&self.reports}
+    /// (sample, candidate) indices of every candidate that passed holdout validation.
     pub fn passing_candidates(&self)->&[(usize,usize)]{&self.passing}
+    /// The single passing candidate, or `None` if zero or multiple candidates passed.
     pub fn unique_passing_candidate(&self)->Option<(usize,usize)>{(self.passing.len()==1).then_some(self.passing[0])}
 }
 
 impl RadialFocalScan {
+    /// Re-undistorts holdout correspondences under every sampled lens and validates each
+    /// candidate pose against `maximum_error_px`; returns per-candidate verdicts.
     pub fn validate_all_candidates<'a>(&'a self,holdout_raw:&[Correspondence],maximum_error_px:f64,
         budget:&mut WorkBudget<'_>)->Result<RadialValidationSet<'a>,LocalizationError>{
         budget.charge(0)?;let mut reports=Vec::new();let mut passing=Vec::new();
@@ -73,13 +151,38 @@ impl RadialFocalScan {
     }
 }
 
+/// Terminal result of a radial scan request: either too few matches, or the full lens scan.
 #[derive(Debug)]
-pub enum RadialLocalizationOutcome { InsufficientMatches{found:usize,required:usize}, Scan(RadialFocalScan) }
+pub enum RadialLocalizationOutcome {
+    /// Only `found` matches were available where `required` were needed.
+    InsufficientMatches{
+        /// Correspondence count actually matched for the query image.
+        found:usize,
+        /// Minimum support count the joint scan demanded.
+        required:usize,
+    },
+    /// Enough matches existed; the complete joint focal/k1 scan.
+    Scan(RadialFocalScan),
+}
+/// Match statistics plus the radial-localization outcome.
 #[derive(Debug)]
-pub struct RadialLocalization { pub matches:MatchReport,pub outcome:RadialLocalizationOutcome }
+pub struct RadialLocalization {
+    /// Descriptor match report consumed for this localization.
+    pub matches:MatchReport,
+    /// Whether the scan ran, or matches were insufficient.
+    pub outcome:RadialLocalizationOutcome,
+}
+/// Radial localization over a luminance frame that was extracted in-process.
 #[derive(Debug)]
-pub struct GrayRadialLocalization { pub extraction:ExtractedFrame,pub localization:RadialLocalization }
+pub struct GrayRadialLocalization {
+    /// Grayscale extraction result (frame plus timing/work metadata).
+    pub extraction:ExtractedFrame,
+    /// Localization computed from the extracted frame.
+    pub localization:RadialLocalization,
+}
 
+/// Matches `query` against the atlas, then scans joint focal-length and k1 candidates
+/// over the matched raw-pixel correspondences; `required` = max(6, `options.pose.minimum_inliers`).
 pub fn localize_radial_focal_scan(atlas:&LocalizationAtlas,twin:&PropertyTwin,query:&FeatureFrame,
     matching:MatchOptions,options:RadialFocalScanOptions,budget:&mut WorkBudget<'_>)->Result<RadialLocalization,LocalizationError>{
     budget.charge(0)?;options.validate(query.identity().dimensions)?;
@@ -90,6 +193,7 @@ pub fn localize_radial_focal_scan(atlas:&LocalizationAtlas,twin:&PropertyTwin,qu
     budget.charge(0)?;Ok(RadialLocalization{matches,outcome})
 }
 
+/// Extracts the grayscale frame, then runs [`localize_radial_focal_scan`] on it.
 pub fn localize_gray_radial_focal_scan(atlas:&LocalizationAtlas,twin:&PropertyTwin,image:&GrayImage<'_>,
     extraction:ExtractionOptions,matching:MatchOptions,options:RadialFocalScanOptions,
     budget:&mut WorkBudget<'_>)->Result<GrayRadialLocalization,LocalizationError>{
@@ -98,6 +202,8 @@ pub fn localize_gray_radial_focal_scan(atlas:&LocalizationAtlas,twin:&PropertyTw
     budget.charge(0)?;Ok(GrayRadialLocalization{extraction:extracted,localization})
 }
 
+/// Builds the `focal_samples * k1_samples` grid: log-spaced focal lengths, linear k1,
+/// undistorting `raw` per candidate before invoking the adaptive pose solver.
 pub fn scan_radial_focal(basis:fss_geometry::GeometryBasis,dimensions:[u32;2],raw:&[Correspondence],
     options:RadialFocalScanOptions,budget:&mut WorkBudget<'_>)->Result<RadialFocalScan,LocalizationError>{
     budget.charge(0)?;options.validate(dimensions)?;let started=budget.used();
@@ -115,7 +221,7 @@ pub fn scan_radial_focal(basis:fss_geometry::GeometryBasis,dimensions:[u32;2],ra
                 Err(UndistortError::Geometry(e))=>return Err(e.into()),
                 Err(UndistortError::Limit)=>return Err(LocalizationError::Limit),
                 Ok(points)=>match estimate_camera_pose(basis,intrinsics,&points,options.pose,budget){
-                    Ok(search)=>RadialSampleOutcome::Candidates(search),
+                    Ok(search)=>RadialSampleOutcome::Candidates(Box::new(search)),
                     Err(e @ (GeometryError::Cancelled|GeometryError::BudgetExhausted|GeometryError::LimitExceeded))=>return Err(e.into()),
                     Err(e)=>RadialSampleOutcome::GeometricFailure(e),
                 }
@@ -126,7 +232,10 @@ pub fn scan_radial_focal(basis:fss_geometry::GeometryBasis,dimensions:[u32;2],ra
     budget.charge(0)?;Ok(RadialFocalScan{basis,dimensions,options,samples,work_units:budget.used()-started})
 }
 
+/// Errors from the per-point undistortion pass; `Limit` distinguishes allocation/budget exhaustion.
 enum UndistortError { Lens(RadialLensFailure), Geometry(GeometryError), Limit }
+/// Undistorts raw-pixel correspondences through the k1 lens model by binary search on the
+/// inverse radial polynomial; rejects points falling outside the admitted domain.
 fn undistort_correspondences(raw:&[Correspondence],intrinsics:PinholeIntrinsics,k1:f64,max_radius:f64,
     budget:&mut WorkBudget<'_>)->Result<Vec<Correspondence>,UndistortError>{
     if !k1.is_finite() || !max_radius.is_finite() || max_radius<=0.0{return Err(UndistortError::Lens(RadialLensFailure::NonInvertible));}

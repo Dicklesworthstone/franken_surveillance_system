@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! Radial localization contracts: joint focal and distortion candidate scans.
 mod common;
 
 use std::error::Error;

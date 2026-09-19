@@ -255,8 +255,8 @@ impl Topology {
                     }}
                 } else {
                     let d = node-n; domain.detections.push(d);
-                    for t in 0..n { if self.reverse[d] & (1_u32 << t) != 0 && !seen[t] {
-                        seen[t] = true; stack.push(t);
+                    for (t, s) in seen[..n].iter_mut().enumerate() { if self.reverse[d] & (1_u32 << t) != 0 && !*s {
+                        *s = true; stack.push(t);
                     }}
                 }
             }

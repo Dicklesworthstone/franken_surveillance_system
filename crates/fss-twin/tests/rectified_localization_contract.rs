@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! Rectified-image localization contracts through the twin localization pipeline.
 mod common;
 
 use std::{error::Error, sync::atomic::AtomicBool};

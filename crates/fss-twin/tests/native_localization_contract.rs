@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! Native localization contract contract tests.
 mod common;
 
 use std::error::Error;

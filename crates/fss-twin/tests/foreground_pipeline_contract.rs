@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! Foreground pipeline contract contract tests.
 use std::error::Error;
 use std::sync::atomic::AtomicBool;
 use fss_core::ContentDigest;
@@ -99,7 +100,7 @@ fn video_range_and_row_padding_are_normalized_before_comparison()->Test {
     let plan=RectificationPlan::compile(s,&mut WorkBudget::new(100000))?;
     let m=baseline(&plan,&[vec![1;30],vec![1;30],vec![1;30]])?;
     let mut pixels=vec![100;40];for y in 0..5 {pixels[y*8+6]=255;pixels[y*8+7]=0;}
-    pixels[1*8+1]=200;pixels[1*8+2]=200;
+    pixels[8+1]=200;pixels[8+2]=200;
     let mask=vec![1;30];let mut budget=WorkBudget::new(100000);
     let raw=RawGrayFrame::new(identity(4,&pixels,&mask,s,8),&pixels,&mask,&mut budget)?;
     let result=m.detect_luma(&plan,&raw,capture(4),policy(),&mut budget)?;

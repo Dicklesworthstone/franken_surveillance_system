@@ -180,13 +180,12 @@ impl ContactTrack {
                 || cameras[..i].iter().any(|other| other.camera == camera.camera) {
                 return Err(TrackError::BasisMismatch);
             }
-            if let Some(e) = camera.error {
-                if e.centre.iter().chain(e.focal.iter()).chain(e.principal.iter())
+            if let Some(e) = camera.error
+                && (e.centre.iter().chain(e.focal.iter()).chain(e.principal.iter())
                     .any(|v| !v.is_finite() || *v < 0.0 || *v > 1e12)
                     || !e.rotation_entry.is_finite() || !(0.0..=2.0).contains(&e.rotation_entry)
-                    || (0..2).any(|a| e.focal[a] >= camera.intrinsics.focal_lengths()[a]) {
-                    return Err(TrackError::InvalidInput);
-                }
+                    || (0..2).any(|a| e.focal[a] >= camera.intrinsics.focal_lengths()[a])) {
+                return Err(TrackError::InvalidInput);
             }
         }
         let mut owned = Vec::new();

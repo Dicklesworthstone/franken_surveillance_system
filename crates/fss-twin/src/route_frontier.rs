@@ -10,6 +10,7 @@ use crate::{MovementClass, NavigationError, NavigationProfile, PropertyTwin, Rou
     RouteQuery, RouteSearch, SupportLocation, SupportNetwork, TwinError};
 use crate::stream::{TrackReceipt, TrackSnapshot};
 
+/// Complete-enumeration bounds and profile for [`build_route_frontier`]; validated on entry.
 #[derive(Clone, Copy, Debug)]
 pub struct RouteFrontierOptions {
     /// Explicit class/slope/clearance/path-preference assumptions.
@@ -24,18 +25,25 @@ pub struct RouteFrontierOptions {
     pub retain_without_preference: bool,
 }
 
+/// Why a route was retained for a destination.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FrontierRouteKind {
+    /// Cheapest route under the configured path-preference profile.
     Preferred,
+    /// Additional neutral-cost route retained for path-preferring profiles.
     WithoutPathPreference,
 }
 
+/// Why a nominal current support could not contribute routes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FrontierSourceLimitation {
+    /// No nominal support exists for this source at the current revision.
     NoNominalSupport,
+    /// The nominal support triangle is in occlusion conflict at this revision.
     NominalOcclusionConflict,
 }
 
+/// One observed source-pair motion mode checked against a route's initial direction.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MotionCompatibility {
     /// Source-pair motion mode ordinal from this exact track revision.
@@ -46,6 +54,7 @@ pub struct MotionCompatibility {
     pub initial_direction_cosine: Option<f64>,
 }
 
+/// One admitted (support, destination, kind) route through the frontier.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FrontierRoute {
     /// Local ordinal in this result only.
@@ -56,6 +65,7 @@ pub struct FrontierRoute {
     pub source_triangle: u32,
     /// Zero-based semantic destination feature in the exact imported twin.
     pub destination_feature: u32,
+    /// Whether this is the preferred route or a retained neutral-cost alternative.
     pub kind: FrontierRouteKind,
     /// Full route/non-route result. A missing route is not physical impossibility.
     pub search: RouteSearch,
@@ -63,24 +73,36 @@ pub struct FrontierRoute {
     pub motion: Vec<MotionCompatibility>,
 }
 
+/// A nominal current support that could not contribute routes, with the reason.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FrontierUnresolvedSource {
+    /// Current support-hypothesis ordinal from the source projection.
     pub support: usize,
+    /// Current revision-bound support triangle, when one exists.
     pub triangle: u32,
+    /// Why this support produced no routes.
     pub reason: FrontierSourceLimitation,
 }
 
+/// Complete route frontier for one track snapshot against the imported twin.
 #[derive(Debug)]
 pub struct RouteFrontier {
+    /// Receipt of the track snapshot the frontier was built from.
     pub source: TrackReceipt,
+    /// Digest of the twin revision the routes were computed against.
     pub twin_digest: [u8;32],
+    /// Path-preference profile applied to every route assessment.
     pub profile: NavigationProfile,
+    /// Every admitted route; no top-k truncation occurs.
     pub routes: Vec<FrontierRoute>,
+    /// Nominal supports that contributed no routes, with reasons.
     pub unresolved_sources: Vec<FrontierUnresolvedSource>,
     /// Number of destination features evaluated per usable source support.
     pub destination_features: usize,
 }
 impl RouteFrontier {
+    /// Errors with [`RouteFrontierError::BasisMismatch`] unless `snapshot` is the exact
+    /// receipt and twin revision this frontier was built from.
     pub fn check_source_current(&self,snapshot:TrackSnapshot<'_>)->Result<(),RouteFrontierError>{
         if snapshot.receipt()!=self.source || snapshot.projection().twin_digest()!=self.twin_digest {
             return Err(RouteFrontierError::BasisMismatch);
@@ -89,12 +111,18 @@ impl RouteFrontier {
     }
 }
 
+/// Failure modes of route-frontier construction and staleness checks.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RouteFrontierError {
+    /// [`RouteFrontierOptions`] failed validation.
     InvalidOptions,
+    /// Snapshot receipt or twin digest no longer matches the frontier basis.
     BasisMismatch,
+    /// A complete-output bound (`maximum_features`/`maximum_routes`) was exceeded.
     Limit,
+    /// The underlying navigation query failed.
     Navigation(NavigationError),
+    /// The twin source computation failed.
     Twin(TwinError),
 }
 impl From<NavigationError> for RouteFrontierError { fn from(value:NavigationError)->Self{Self::Navigation(value)} }

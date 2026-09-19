@@ -198,10 +198,9 @@ fn validate(c:TrackingCamera,o:ContactObservation,basis:GeometryBasis,opt:Projec
         return Err(TwinError::Numeric);
     }
     if opt.max_hypotheses==0 || opt.max_hypotheses>128 {return Err(TwinError::Limit);}
-    if let Some(e)=c.error {
-        if !e.valid_for(c.intrinsics) {
-            return Err(TwinError::Numeric);
-        }
+    if let Some(e)=c.error
+        && !e.valid_for(c.intrinsics) {
+        return Err(TwinError::Numeric);
     }
     Ok(())
 }

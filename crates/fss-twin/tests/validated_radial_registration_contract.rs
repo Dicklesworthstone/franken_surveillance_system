@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! Validated radial registration contracts: unique radial candidate admission.
 mod common;
 
 use std::error::Error;

@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! Foreground detection contracts: connectivity labeling and policy bounds.
 use std::error::Error;
 use std::sync::atomic::AtomicBool;
 use fss_core::ContentDigest;
@@ -161,13 +162,16 @@ fn every_three_by_three_binary_mask_matches_an_independent_transitive_closure() 
         let p:Vec<_>=(0..9).map(|i|if bits&(1<<i)!=0 {200} else {100}).collect();
         let r=detect(&m,&p,&[1;9],3,3,ForegroundPolicy{minimum_area:1,..policy()})?;
         let mut connected=[[false;9];9];
-        for i in 0_usize..9 {for j in 0_usize..9 {
+        for (i, row) in connected.iter_mut().enumerate() {for (j, cell) in row.iter_mut().enumerate() {
             let adjacent=(i/3).abs_diff(j/3)+(i%3).abs_diff(j%3)<=1;
-            connected[i][j]=bits&(1<<i)!=0 && bits&(1<<j)!=0 && adjacent;
+            *cell=bits&(1<<i)!=0 && bits&(1<<j)!=0 && adjacent;
         }}
-        for k in 0..9 {for i in 0..9 {for j in 0..9 {connected[i][j]|=connected[i][k]&&connected[k][j];}}}
-        for i in 0..9 {
-            let expected=(0..9).find(|&j|connected[i][j]).map_or(0,|j|j as u32+1);
+        for k in 0..9 {
+            connected = std::array::from_fn(|i|
+                std::array::from_fn(|j| connected[i][j] || connected[i][k] && connected[k][j]));
+        }
+        for (i, row) in connected.iter().enumerate() {
+            let expected=row.iter().position(|&c|c).map_or(0,|j|j as u32+1);
             assert_eq!(r.component_labels()[i],expected,"bits={bits}, pixel={i}");
         }
     }Ok(())

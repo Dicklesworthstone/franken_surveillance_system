@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! Contact tracking contracts: projections, motion fits, and track revisions.
 mod common;
 use fss_geometry::{PinholeIntrinsics,RigidPose,WorkBudget};
 use fss_twin::{ContactObservation,MotionFitOptions,ProjectionError,ProjectionOptions,ProjectionQuality,

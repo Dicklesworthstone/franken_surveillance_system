@@ -356,7 +356,7 @@ impl LocalizationAtlas {
             LocalizationOutcome::InsufficientMatches
         } else {
             match estimate_camera_pose(self.basis, camera.intrinsics, &matches.correspondences, solving, budget) {
-                Ok(search) => LocalizationOutcome::Candidates(search),
+                Ok(search) => LocalizationOutcome::Candidates(Box::new(search)),
                 Err(e @ (GeometryError::Cancelled | GeometryError::BudgetExhausted | GeometryError::LimitExceeded)) => return Err(e.into()),
                 Err(error) => LocalizationOutcome::GeometricFailure(error),
             }
@@ -465,7 +465,7 @@ pub enum LocalizationOutcome {
     /// Matching completed but bounded geometry could not admit a pose.
     GeometricFailure(GeometryError),
     /// All distinct passing modes returned by the bounded existing solver.
-    Candidates(PoseSearch),
+    Candidates(Box<PoseSearch>),
 }
 /// Candidate result, never a calibration activation or physical accuracy certificate.
 #[derive(Debug)]

@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! Rectification contract contract tests.
 
 use fss_core::ContentDigest;
 use fss_geometry::{GeometryError, PinholeIntrinsics, WorkBudget};

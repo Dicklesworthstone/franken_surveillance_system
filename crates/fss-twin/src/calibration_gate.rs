@@ -6,22 +6,38 @@ use crate::{ContactObservation, ContactProjection, ProjectionOptions, PropertyTw
     TwinError, project_contact};
 use crate::calibration_monitor::{CalibrationDisposition, CalibrationMonitorReport};
 
+/// Exact twin and atlas generations a gate decision is anchored to.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CalibrationGateBasis {
     /// Exact imported property package and localization atlas generations used by the monitor.
     pub twin_digest: [u8;32],
+    /// Digest of the localization atlas generation the monitor evidence was computed against.
     pub atlas_digest: [u8;32],
+    /// Digest of the frozen calibration snapshot the monitor validated the camera against.
     pub calibration_digest: [u8; 32],
+    /// Identifier of the admitted tracking camera; nonzero.
     pub camera: u64,
+    /// Identifier of the admitted calibration generation; nonzero.
     pub calibration: u64,
+    /// Identifier of the admitted image-domain (feature extractor) generation; nonzero.
     pub image_domain: u64,
+    /// Digest of the image-domain generation matching the monitor's query features.
     pub image_domain_digest: [u8; 32],
+    /// Clock identifier shared by the camera and every capture inside `checked_capture`; nonzero.
     pub clock: u64,
+    /// Closed interval of capture timestamps (same clock units as the camera clock) the monitor
+    /// actually checked the frozen pose over; must be inside the camera's validity interval.
     pub checked_capture: [u64; 2],
 }
 
+/// Fail-closed reasons a camera or projection is refused by the calibration gate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CalibrationGateError { InvalidInput, BasisMismatch, Invalidated, Indeterminate, Twin(TwinError) }
+pub enum CalibrationGateError { /// Caller-supplied basis or capture interval is structurally invalid.
+InvalidInput, /// Basis digests/identifiers disagree between camera, monitor report, or query.
+BasisMismatch, /// Current monitor evidence invalidated the frozen calibration.
+Invalidated, /// Monitor evidence was too sparse or uneven to judge the calibration.
+Indeterminate, /// The guarded world projection itself failed.
+Twin(TwinError) }
 impl From<TwinError> for CalibrationGateError { fn from(value: TwinError) -> Self { Self::Twin(value) } }
 impl std::fmt::Display for CalibrationGateError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -36,6 +52,8 @@ impl std::fmt::Display for CalibrationGateError {
 }
 impl std::error::Error for CalibrationGateError {}
 
+/// A tracking camera admitted by [`admit_tracking_camera`] together with the exact
+/// [`CalibrationGateBasis`] it was validated against; projections are refused on any basis drift.
 pub struct MonitoredTrackingCamera { camera: TrackingCamera, basis: CalibrationGateBasis }
 impl std::fmt::Debug for MonitoredTrackingCamera {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -45,7 +63,10 @@ impl std::fmt::Debug for MonitoredTrackingCamera {
     }
 }
 impl MonitoredTrackingCamera {
+    /// The exact basis (digests, identifiers, and checked capture interval) this camera was admitted under.
     pub fn basis(&self) -> CalibrationGateBasis { self.basis }
+    /// Projects an observation into the world, refusing when the twin digest differs from the
+    /// admitted basis or the observation's capture timestamp falls outside `checked_capture`.
     pub fn project_contact(&self, twin: &PropertyTwin, observation: ContactObservation,
         options: ProjectionOptions, budget: &mut WorkBudget<'_>) -> Result<ContactProjection, CalibrationGateError> {
         if twin.digest()!=self.basis.twin_digest || !contains(self.basis.checked_capture, observation.capture) {
@@ -53,6 +74,9 @@ impl MonitoredTrackingCamera {
         }
         Ok(project_contact(twin, self.camera, observation, options, budget)?)
     }
+    /// Verifies a handoff camera view matches the admitted camera exactly (identifier, geometry,
+    /// clock, image domain, pose, intrinsics) and that its validity window covers the frozen
+    /// validity interval while `source_capture` lies inside `checked_capture`.
     pub fn check_handoff_camera(&self, view: HandoffCamera<'_>, source_capture: [u64;2])
         -> Result<(), CalibrationGateError> {
         if !contains(self.basis.checked_capture, source_capture)
@@ -67,6 +91,10 @@ impl MonitoredTrackingCamera {
     }
 }
 
+/// Admits a tracking camera for world projection only if the basis is structurally valid
+/// (nonzero identifiers, all-zero digests rejected, ordered capture interval), the basis
+/// exactly matches the monitor report and camera metadata, the checked capture interval lies
+/// within the camera's validity interval, and the report disposition is `ValidUnderPolicy`.
 pub fn admit_tracking_camera(camera: TrackingCamera, report: &CalibrationMonitorReport,
     basis: CalibrationGateBasis) -> Result<MonitoredTrackingCamera, CalibrationGateError> {
     if [basis.twin_digest,basis.atlas_digest,basis.calibration_digest,basis.image_domain_digest].contains(&[0;32])

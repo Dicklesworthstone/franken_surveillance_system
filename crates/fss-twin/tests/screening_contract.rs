@@ -125,7 +125,7 @@ fn privacy_excluded_pixels_never_change_statistics_or_the_repeat_run() -> TestRe
 #[test]
 fn all_masked_is_not_observable_not_dark_or_a_healthy_quiet_scene() -> TestResult {
     let mask=vec![0;16]; let model=baseline(&mask)?; let mut m=ScreeningMonitor::new(policy(),1,0)?;
-    let r=observe(&mut m,&model,&vec![0;16],&mask,1,10)?;
+    let r=observe(&mut m,&model,&[0; 16],&mask,1,10)?;
     assert_eq!(r.health(),S::NotObservable); assert_eq!(r.luma_range(),None);
     assert!(!r.flags().contains(H::Dark)); assert!(!r.flags().contains(H::SuspectedFreeze));
     assert!(r.analysis_due()); Ok(())
@@ -135,7 +135,7 @@ fn dark_saturated_and_flat_inputs_produce_distinct_diagnostics() -> TestResult {
     let mask=vec![1;16]; let model=baseline(&mask)?;
     for (value,expected) in [(0,H::Dark),(255,H::Saturated),(100,H::LowTexture)] {
         let mut m=ScreeningMonitor::new(policy(),1,0)?;
-        let r=observe(&mut m,&model,&vec![value;16],&mask,1,10)?;
+        let r=observe(&mut m,&model,&[value; 16],&mask,1,10)?;
         assert!(r.flags().contains(expected)); assert!(r.flags().contains(H::LowTexture));
         assert_eq!(r.health(),S::Degraded);
     }

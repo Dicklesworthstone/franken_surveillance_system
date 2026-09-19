@@ -5,12 +5,16 @@
 use fss_geometry::{GeometryError,ImageRect,NanosecondInterval,NextCameraOutcome};
 use crate::frontier_handoff::FrontierHandoffForecast;
 
+/// Lossless per-camera aggregate over all supported next-camera events.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CameraNextSummary {
+    /// Monitored camera the summary is normalized to.
     pub camera:u64,
     /// Nonexclusive support mass: simultaneous next-camera events credit every member.
     pub heuristic_support_mass:u64,
+    /// Subset of `heuristic_support_mass` contributed by protected routes.
     pub protected_support_mass:u64,
+    /// Number of distinct retained routes supporting this camera.
     pub supporting_routes:usize,
     /// Range of nominal first eligible captures among supporting routes.
     pub nominal_capture_range:NanosecondInterval,
@@ -18,11 +22,14 @@ pub struct CameraNextSummary {
     pub region_envelope:ImageRect,
 }
 impl CameraNextSummary {
+    /// Center of `region_envelope` in normalized camera coordinates, in 0..=1 per axis.
     pub fn normalized_center(&self)->[f64;2]{
         let a=self.region_envelope.min();let b=self.region_envelope.max();[(a[0]+b[0])*0.5,(a[1]+b[1])*0.5]
     }
 }
 
+/// Complete camera-centric summary of a frontier handoff forecast; no mass is
+/// dropped and the camera list is complete.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NextCameraSummary {
     /// Denominator retained from the complete motion forecast.
@@ -36,8 +43,16 @@ pub struct NextCameraSummary {
     pub cameras:Vec<CameraNextSummary>,
 }
 
+/// Failure modes of the lossless next-camera summary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum HandoffSummaryError { InconsistentForecast, Overflow, Geometry(GeometryError) }
+pub enum HandoffSummaryError {
+    /// The forecast is internally inconsistent (mass or observation mismatch).
+    InconsistentForecast,
+    /// An aggregate mass, count or time computation overflowed.
+    Overflow,
+    /// A region envelope or capture interval could not be constructed.
+    Geometry(GeometryError),
+}
 impl From<GeometryError> for HandoffSummaryError{fn from(v:GeometryError)->Self{Self::Geometry(v)}}
 impl std::fmt::Display for HandoffSummaryError{
     fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result{f.write_str(match self{
