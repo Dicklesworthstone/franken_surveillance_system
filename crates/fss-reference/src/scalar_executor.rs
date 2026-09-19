@@ -692,15 +692,19 @@ fn compute_node_macs(
             let out_elems = out_ports[0].shape().num_elements()? as u64;
             Ok(out_elems)
         }
+        OpCode::Transpose | OpCode::Slice => {
+            let port = &out_ports[0];
+            (port.shape().num_elements()? as u64)
+                .checked_mul(port.rank() as u64 + 1)
+                .ok_or(ExecError::ArithmeticOverflow { operation: "layout work bound" })
+        }
+        OpCode::Squeeze | OpCode::Unsqueeze | OpCode::Concat => {
+            Ok(out_ports[0].shape().num_elements()? as u64)
+        }
         OpCode::Reshape => Ok(0),
         OpCode::Gelu
         | OpCode::Silu
         | OpCode::Tanh
-        | OpCode::Transpose
-        | OpCode::Squeeze
-        | OpCode::Unsqueeze
-        | OpCode::Concat
-        | OpCode::Slice
         | OpCode::LayerNorm
         | OpCode::RMSNorm
         | OpCode::Embedding => Err(ExecError::UnsupportedOperator {
@@ -785,15 +789,15 @@ impl ScalarExecutor {
                 | OpCode::MaxPool2d
                 | OpCode::MatMul
                 | OpCode::Reshape
-                | OpCode::Softmax => {}
-                OpCode::Gelu
-                | OpCode::Silu
-                | OpCode::Tanh
+                | OpCode::Softmax
                 | OpCode::Transpose
                 | OpCode::Squeeze
                 | OpCode::Unsqueeze
                 | OpCode::Concat
-                | OpCode::Slice
+                | OpCode::Slice => {}
+                OpCode::Gelu
+                | OpCode::Silu
+                | OpCode::Tanh
                 | OpCode::LayerNorm
                 | OpCode::RMSNorm
                 | OpCode::Embedding => {
@@ -1032,14 +1036,13 @@ impl ScalarExecutor {
                     &out_ports[0],
                     graph.generation(),
                 )?,
+                OpCode::Transpose | OpCode::Squeeze | OpCode::Unsqueeze
+                | OpCode::Concat | OpCode::Slice => Self::execute_layout(
+                    node, &node_in_tensors, &out_ports[0], graph.generation(), cx,
+                )?,
                 OpCode::Gelu
                 | OpCode::Silu
                 | OpCode::Tanh
-                | OpCode::Transpose
-                | OpCode::Squeeze
-                | OpCode::Unsqueeze
-                | OpCode::Concat
-                | OpCode::Slice
                 | OpCode::LayerNorm
                 | OpCode::RMSNorm
                 | OpCode::Embedding => {
@@ -1050,6 +1053,7 @@ impl ScalarExecutor {
                 }
             };
 
+            cx.checkpoint("post-node-execution")?;
             env.insert(out_ports[0].name().to_string(), result_tensor);
             executed_count += 1;
         }
@@ -1070,6 +1074,7 @@ impl ScalarExecutor {
             final_outputs.insert(declared_out.name().to_string(), t.clone());
         }
 
+        cx.checkpoint("publish-outputs")?;
         Ok(ExecOutcome::new(
             final_outputs,
             total_macs,
@@ -1598,4 +1603,152 @@ impl ScalarExecutor {
         Tensor::from_values(out_port.shape().clone(), &out_vec, generation)
             .map_err(ExecError::Tensor)
     }
+}
+
+// Layout kernels consume the shape already checked by the frozen Model IR validator.
+// Empty outputs short-circuit before stride construction: zero-sized tensors can have
+// very large other dimensions without requiring data or overflowing a stride product.
+impl ScalarExecutor {
+    fn execute_layout(
+        node: &fss_model_ir::GraphNode,
+        inputs: &[&Tensor],
+        output: &TensorPort,
+        generation: Generation,
+        cx: &ScalarExecCx,
+    ) -> Result<Tensor, ExecError> {
+        cx.checkpoint("layout:begin")?;
+        let count = output.shape().num_elements()?;
+        if count == 0 {
+            return Tensor::from_values(output.shape().clone(), &[] as &[f32], generation)
+                .map_err(ExecError::Tensor);
+        }
+        let mut values = Vec::with_capacity(count);
+        match node.op() {
+            OpCode::Squeeze | OpCode::Unsqueeze => {
+                let input = inputs[0].to_vec::<f32>()?;
+                for chunk in input.chunks(1024) {
+                    cx.checkpoint("layout:copy")?;
+                    values.extend_from_slice(chunk);
+                }
+            }
+            OpCode::Transpose | OpCode::Slice => {
+                let input = inputs[0].to_vec::<f32>()?;
+                let dims = inputs[0].shape().dims();
+                let strides = layout_strides(dims)?;
+                let rank = dims.len();
+                let mut axes: Vec<usize> = (0..rank).collect();
+                let mut starts = vec![0_usize; rank];
+                let mut steps = vec![1_usize; rank];
+                if node.op() == OpCode::Transpose {
+                    axes = match node.attributes().get("permutation") {
+                        Some(value) => value.as_usize_list(node.id(), "permutation")?,
+                        None => (0..rank).rev().collect(),
+                    };
+                } else {
+                    let selected_starts = layout_attribute(node, "starts")?;
+                    let selected_axes = match node.attributes().get("axes") {
+                        Some(value) => value.as_usize_list(node.id(), "axes")?,
+                        None => (0..selected_starts.len()).collect(),
+                    };
+                    let selected_steps = match node.attributes().get("steps") {
+                        Some(value) => value.as_usize_list(node.id(), "steps")?,
+                        None => vec![1; selected_starts.len()],
+                    };
+                    for (index, &axis) in selected_axes.iter().enumerate() {
+                        starts[axis] = selected_starts[index];
+                        steps[axis] = selected_steps[index];
+                    }
+                }
+                let out_dims = output.shape().dims();
+                for flat in 0..count {
+                    if flat % 1024 == 0 { cx.checkpoint("layout:gather")?; }
+                    let mut remainder = flat;
+                    let mut offset = 0_usize;
+                    for axis in (0..out_dims.len()).rev() {
+                        let coordinate = remainder % out_dims[axis];
+                        remainder /= out_dims[axis];
+                        let source_axis = axes[axis];
+                        // Multiply coordinates, not whole strides, by slice steps. A huge
+                        // step is valid for a singleton output and must not overflow early.
+                        let position = coordinate.checked_mul(steps[source_axis])
+                            .and_then(|v| v.checked_add(starts[source_axis]))
+                            .and_then(|v| v.checked_mul(strides[source_axis]))
+                            .ok_or(ExecError::ArithmeticOverflow { operation: "layout source offset" })?;
+                        offset = offset.checked_add(position)
+                            .ok_or(ExecError::ArithmeticOverflow { operation: "layout offset sum" })?;
+                    }
+                    values.push(*input.get(offset).ok_or_else(|| layout_mismatch(node, "source offset outside tensor"))?);
+                }
+            }
+            OpCode::Concat => {
+                let rank = output.rank();
+                let raw = match node.attributes().get("axis") {
+                    Some(value) => value.as_int(node.id(), "axis")?,
+                    None => 0,
+                };
+                let axis = usize::try_from(if raw < 0 { rank as i64 + raw } else { raw })
+                    .map_err(|_| layout_mismatch(node, "invalid concatenation axis"))?;
+                let dims = output.shape().dims();
+                let outer = layout_product(&dims[..axis])?;
+                let inner = layout_product(&dims[axis + 1..])?;
+                let mut sources = Vec::with_capacity(inputs.len());
+                for input in inputs {
+                    cx.checkpoint("layout:concat-input")?;
+                    let block = input.shape().dims()[axis].checked_mul(inner)
+                        .ok_or(ExecError::ArithmeticOverflow { operation: "concat block size" })?;
+                    sources.push((input.to_vec::<f32>()?, block));
+                }
+                for row in 0..outer {
+                    cx.checkpoint("layout:concat-row")?;
+                    for (source, block) in &sources {
+                        let start = row.checked_mul(*block)
+                            .ok_or(ExecError::ArithmeticOverflow { operation: "concat block offset" })?;
+                        let end = start.checked_add(*block)
+                            .ok_or(ExecError::ArithmeticOverflow { operation: "concat block end" })?;
+                        let slice = source.get(start..end)
+                            .ok_or_else(|| layout_mismatch(node, "concat block outside tensor"))?;
+                        for chunk in slice.chunks(1024) {
+                            cx.checkpoint("layout:concat-copy")?;
+                            values.extend_from_slice(chunk);
+                        }
+                    }
+                }
+            }
+            OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div | OpCode::Relu
+            | OpCode::Gelu | OpCode::Silu | OpCode::Sigmoid | OpCode::Tanh | OpCode::MatMul
+            | OpCode::Reshape | OpCode::LayerNorm | OpCode::RMSNorm | OpCode::Softmax
+            | OpCode::Conv2d | OpCode::MaxPool2d | OpCode::Embedding => {
+                return Err(ExecError::UnsupportedOperator { node_id: node.id().to_owned(), op: node.op() });
+            }
+        }
+        if values.len() != count { return Err(layout_mismatch(node, "output element count mismatch")); }
+        cx.checkpoint("layout:publish")?;
+        Tensor::from_values(output.shape().clone(), &values, generation).map_err(ExecError::Tensor)
+    }
+}
+
+fn layout_attribute(node: &fss_model_ir::GraphNode, name: &str) -> Result<Vec<usize>, ExecError> {
+    node.attributes().get(name)
+        .ok_or_else(|| ExecError::Ir(ModelIrError::MissingAttribute {
+            node_id: node.id().to_owned(), attr_name: name.to_owned(),
+        }))?
+        .as_usize_list(node.id(), name).map_err(ExecError::Ir)
+}
+
+fn layout_mismatch(node: &fss_model_ir::GraphNode, reason: &str) -> ExecError {
+    ExecError::ShapeMismatch { node_id: node.id().to_owned(), op_id: node.op().stable_id(), reason: reason.to_owned() }
+}
+
+fn layout_product(dims: &[usize]) -> Result<usize, ExecError> {
+    dims.iter().try_fold(1_usize, |product, &dim| product.checked_mul(dim)
+        .ok_or(ExecError::ArithmeticOverflow { operation: "layout dimension product" }))
+}
+
+fn layout_strides(dims: &[usize]) -> Result<Vec<usize>, ExecError> {
+    let mut strides = vec![1_usize; dims.len()];
+    for axis in (0..dims.len().saturating_sub(1)).rev() {
+        strides[axis] = strides[axis + 1].checked_mul(dims[axis + 1])
+            .ok_or(ExecError::ArithmeticOverflow { operation: "layout stride product" })?;
+    }
+    Ok(strides)
 }
