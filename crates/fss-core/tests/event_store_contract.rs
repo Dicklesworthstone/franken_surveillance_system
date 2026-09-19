@@ -2746,3 +2746,165 @@ fn coverage_for_absence_multiple_certifying_witnesses_returns_lowest_digest() ->
     Ok(())
 }
 
+// ------------------------------------------------------------------------------------------
+// Criterion: coverage-registry rotation resumes certification, keeps refused domains blocked,
+// and rebuilds identically (fss-qlaao)
+// ------------------------------------------------------------------------------------------
+
+#[test]
+fn coverage_rotation_resumes_certification_and_refused_domains_stay_blocked() -> TestResult {
+    let mut store = EventRevisionStore::new(LedgerAnchor::genesis("site-cap-rotation"));
+    let blocked = "domain.rotation_refused";
+    let sealed = "domain.rotation_sealed";
+    let fresh = "domain.rotation_fresh";
+
+    // Fill the registry to capacity: 1023 certifying witnesses for `blocked`, one for `sealed`.
+    for i in 0..MAX_STORE_COVERAGE_WITNESSES {
+        let domain = if i == 0 { sealed } else { blocked };
+        let mut witness = sample_coverage_witness(domain, true, true, false)?;
+        witness.negative_predicate = format!("no_unauthorized_intrusion_{i:04}");
+        store.register_coverage_witness(
+            store.current_anchor().clone(),
+            witness,
+            TimestampNs(1_000 + i as i128),
+        )?;
+    }
+    assert!(store.coverage_registry_at_capacity());
+
+    // The 1025th witness (a gapped report for `blocked`) is refused at capacity.
+    let refused_witness = sample_coverage_witness(blocked, false, true, false)?;
+    assert!(store
+        .register_coverage_witness(
+            store.current_anchor().clone(),
+            refused_witness.clone(),
+            TimestampNs(100_000),
+        )
+        .is_err());
+    let anchor_at_capacity = store.current_anchor().clone();
+    let refused_id = EventId::parse("evt_rotation_refused")?;
+    match store.read_event_in_domain(&refused_id, blocked, None)? {
+        EventReadResult::NotObservable { reason, .. } => {
+            assert_eq!(reason, NotObservableReason::CoverageRegistryCapacityExceeded);
+        }
+        other => return Err(format!("expected NotObservable, got {other:?}").into()),
+    }
+
+    // Rotation: a canonical commit that seals the live registry and records the refused report.
+    let rotation_digest = store.rotate_coverage_registry(
+        store.current_anchor().clone(),
+        vec![refused_witness.clone()],
+        TimestampNs(200_000),
+    )?;
+    assert!(!store.coverage_registry_at_capacity());
+    assert_eq!(store.rotated_refused(), &[refused_witness.clone()]);
+    assert_ne!(store.current_anchor(), &anchor_at_capacity);
+
+    // Post-rotation admission works again.
+    let new_witness = sample_coverage_witness(fresh, true, true, false)?;
+    store.register_coverage_witness(
+        store.current_anchor().clone(),
+        new_witness,
+        TimestampNs(300_000),
+    )?;
+
+    // Absence is certifiable for a domain covered by a post-rotation witness.
+    let fresh_id = EventId::parse("evt_rotation_fresh")?;
+    match store.read_event_in_domain(&fresh_id, fresh, None)? {
+        EventReadResult::AbsentWithCoverage(_) => {}
+        other => return Err(format!("expected certified absence, got {other:?}").into()),
+    }
+
+    // The refused domain stays blocked even though the registry was rotated.
+    match store.read_event_in_domain(&refused_id, blocked, None)? {
+        EventReadResult::NotObservable { reason, .. } => {
+            assert_eq!(reason, NotObservableReason::CoverageWitnessGapped);
+        }
+        other => return Err(format!("expected NotObservable, got {other:?}").into()),
+    }
+
+    // A sealed domain with no post-rotation witness is honestly unknown, never absence.
+    let sealed_id = EventId::parse("evt_rotation_sealed")?;
+    match store.read_event_in_domain(&sealed_id, sealed, None)? {
+        EventReadResult::NotObservable { reason, .. } => {
+            assert_eq!(reason, NotObservableReason::NoCoverageWitness);
+        }
+        other => return Err(format!("expected NotObservable, got {other:?}").into()),
+    }
+
+    // Rebuild equality: the replayed store reaches the identical state and verdicts.
+    let rebuilt = EventRevisionStore::rebuild_from_history(
+        LedgerAnchor::genesis("site-cap-rotation"),
+        store.history(),
+    )?;
+    assert_eq!(rebuilt.commit_count(), store.commit_count());
+    assert_eq!(
+        rebuilt.coverage_registry_at_capacity(),
+        store.coverage_registry_at_capacity()
+    );
+    assert_eq!(rebuilt.rotated_refused(), store.rotated_refused());
+    assert_eq!(
+        rebuilt.current_anchor(),
+        store.current_anchor(),
+        "rebuild anchor must match"
+    );
+    for (domain, expected) in [
+        (blocked, NotObservableReason::CoverageWitnessGapped),
+        (fresh, NotObservableReason::NoCoverageWitness),
+    ] {
+        // `fresh` has a certifying witness: re-check via the absence read instead.
+        if domain == fresh {
+            match rebuilt.read_event_in_domain(&fresh_id, fresh, None)? {
+                EventReadResult::AbsentWithCoverage(_) => {}
+                other => return Err(format!("rebuild expected absence, got {other:?}").into()),
+            }
+        } else {
+            match rebuilt.read_event_in_domain(&refused_id, domain, None)? {
+                EventReadResult::NotObservable { reason, .. } => {
+                    assert_eq!(reason, expected);
+                }
+                other => return Err(format!("rebuild expected NotObservable, got {other:?}").into()),
+            }
+        }
+    }
+
+    // Mutant: a rotation commit whose sealed count disagrees with the live registry is
+    // fail-closed during replay.
+    let mut tampered_history = store.history().to_vec();
+    let last = tampered_history.len() - 1;
+    if let EventStoreEntry::RotateCoverageRegistry { sealed_count, .. } =
+        &mut tampered_history[last].entry
+    {
+        *sealed_count += 1;
+    } else {
+        return Err("expected rotation commit at history tail".into());
+    }
+    let replay = EventRevisionStore::rebuild_from_history(
+        LedgerAnchor::genesis("site-cap-rotation"),
+        &tampered_history,
+    );
+    assert_eq!(
+        replay.err(),
+        Some(EventStoreError::CoverageRotationMismatch {
+            sealed_count: MAX_STORE_COVERAGE_WITNESSES as u64 + 1,
+            live_count: MAX_STORE_COVERAGE_WITNESSES,
+        })
+    );
+
+    // Canonical roundtrip of the rotation entry.
+    let entry = EventStoreEntry::RotateCoverageRegistry {
+        sealed_digest: rotation_digest,
+        sealed_count: MAX_STORE_COVERAGE_WITNESSES as u64,
+        refused: vec![refused_witness],
+    };
+    let bytes = {
+        let mut encoder = CanonicalEncoder::new();
+        entry.encode_canonical(&mut encoder);
+        encoder.finish()
+    };
+    assert_eq!(
+        EventStoreEntry::decode_canonical(&mut CanonicalDecoder::new(&bytes))?,
+        entry
+    );
+
+    Ok(())
+}

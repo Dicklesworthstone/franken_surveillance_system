@@ -119,6 +119,14 @@ pub enum EventStoreError {
         /// Actual count.
         actual: usize,
     },
+    /// A RotateCoverageRegistry commit does not match the live witness registry it claims to
+    /// seal: canonical history and derived state disagree (fail-closed).
+    CoverageRotationMismatch {
+        /// Sealed witness count recorded by the rotation commit.
+        sealed_count: u64,
+        /// Live witness count observed at replay.
+        live_count: usize,
+    },
     /// Attempted revision number is not strictly monotonic.
     NonMonotonicRevision {
         /// Event identifier.
@@ -275,6 +283,15 @@ impl fmt::Display for EventStoreError {
                     "coverage witness capacity exceeded: {actual} > limit {limit}"
                 )
             }
+            Self::CoverageRotationMismatch {
+                sealed_count,
+                live_count,
+            } => {
+                write!(
+                    f,
+                    "coverage registry rotation mismatch: commit seals {sealed_count} witnesses but the live registry holds {live_count}"
+                )
+            }
             Self::NonMonotonicRevision {
                 event_id,
                 expected,
@@ -418,6 +435,17 @@ pub enum EventStoreEntry {
         /// Validated coverage witness.
         witness: CoverageWitness,
     },
+    /// Seals and supersedes the live coverage-witness registry (fss-qlaao). Records the digest
+    /// and count of the sealed witness set plus every witness refused while the registry was at
+    /// capacity: refused domains stay blocked for absence certification.
+    RotateCoverageRegistry {
+        /// Digest over the sorted sealed witness set.
+        sealed_digest: ContentDigest,
+        /// Number of live witnesses sealed.
+        sealed_count: u64,
+        /// Witnesses refused while the registry was at capacity.
+        refused: Vec<CoverageWitness>,
+    },
 }
 
 impl CanonicalEncode for EventStoreEntry {
@@ -450,6 +478,19 @@ impl CanonicalEncode for EventStoreEntry {
             Self::RegisterCoverageWitness { witness } => {
                 encoder.u8(5);
                 witness.encode_canonical(encoder);
+            }
+            Self::RotateCoverageRegistry {
+                sealed_digest,
+                sealed_count,
+                refused,
+            } => {
+                encoder.u8(6);
+                sealed_digest.encode_canonical(encoder);
+                encoder.u64(*sealed_count);
+                encoder.u64(refused.len() as u64);
+                for witness in refused {
+                    witness.encode_canonical(encoder);
+                }
             }
         }
     }
@@ -486,6 +527,20 @@ impl CanonicalDecode for EventStoreEntry {
             5 => {
                 let witness = CoverageWitness::decode_canonical(decoder)?;
                 Ok(Self::RegisterCoverageWitness { witness })
+            }
+            6 => {
+                let sealed_digest = ContentDigest::decode_canonical(decoder)?;
+                let sealed_count = decoder.u64()?;
+                let refused_len = decoder.u64()?;
+                let mut refused = Vec::with_capacity(refused_len.min(1024) as usize);
+                for _ in 0..refused_len {
+                    refused.push(CoverageWitness::decode_canonical(decoder)?);
+                }
+                Ok(Self::RotateCoverageRegistry {
+                    sealed_digest,
+                    sealed_count,
+                    refused,
+                })
             }
             other => Err(ContractError::UnknownEntryTag(other)),
         }
@@ -713,6 +768,9 @@ pub struct EventRevisionStore {
     contradictions: BTreeMap<EventId, Vec<Contradiction>>,
     unresolved_worlds: BTreeSet<String>,
     coverage_witnesses: Vec<CoverageWitness>,
+    // Derived from RotateCoverageRegistry commits: refused witnesses recorded by rotations.
+    // Their domains stay blocked for absence certification (fss-qlaao).
+    rotated_refused: Vec<CoverageWitness>,
 }
 
 impl EventRevisionStore {
@@ -729,6 +787,7 @@ impl EventRevisionStore {
             contradictions: BTreeMap::new(),
             unresolved_worlds: BTreeSet::new(),
             coverage_witnesses: Vec::new(),
+            rotated_refused: Vec::new(),
         }
     }
 
@@ -1186,6 +1245,91 @@ impl EventRevisionStore {
         Ok(digest)
     }
 
+    /// Seals and supersedes the live coverage-witness registry (fss-qlaao).
+    ///
+    /// The rotation is a canonical commit: it records the seal digest and count of the live
+    /// witness set plus every witness the caller reports as refused while the registry was at
+    /// capacity, so a store rebuilt with [`Self::rebuild_from_history`] reaches the identical
+    /// state. Afterwards the live registry is empty, new witnesses are admitted again, and
+    /// absence is certifiable only from witnesses registered after the rotation. Domains named
+    /// by a refused witness stay blocked: a refused report never entered canonical custody, so
+    /// absence can never be certified across it. The commit-history capacity bound still
+    /// applies and is unaffected by rotation.
+    pub fn rotate_coverage_registry(
+        &mut self,
+        basis_anchor: LedgerAnchor,
+        refused: Vec<CoverageWitness>,
+        commit_time: TimestampNs,
+    ) -> Result<ContentDigest, EventStoreError> {
+        self.check_basis_anchor(&basis_anchor)?;
+        if self.history.len() >= MAX_STORE_COMMITS {
+            return Err(EventStoreError::StoreCommitCapacityExceeded {
+                limit: MAX_STORE_COMMITS,
+                actual: self.history.len() + 1,
+            });
+        }
+        let sealed_digest = Self::sealed_witness_digest(&self.coverage_witnesses);
+        let sealed_count = self.coverage_witnesses.len() as u64;
+        let entry = EventStoreEntry::RotateCoverageRegistry {
+            sealed_digest,
+            sealed_count,
+            refused: refused.clone(),
+        };
+        let digest = self.commit_entry(entry, commit_time)?;
+        self.rotated_refused.extend(refused);
+        self.coverage_witnesses.clear();
+        Ok(digest)
+    }
+
+    /// Computes the seal digest over a witness set: per-witness canonical digests, sorted, then
+    /// digested with the count prefix. Independent of registration order.
+    fn sealed_witness_digest(witnesses: &[CoverageWitness]) -> ContentDigest {
+        let mut digests: Vec<ContentDigest> = witnesses
+            .iter()
+            .map(|w| {
+                let mut encoder = CanonicalEncoder::new();
+                w.encode_canonical(&mut encoder);
+                ContentDigest::sha256(&encoder.finish())
+            })
+            .collect();
+        digests.sort();
+        let mut encoder = CanonicalEncoder::new();
+        encoder.u64(digests.len() as u64);
+        for digest in &digests {
+            digest.encode_canonical(&mut encoder);
+        }
+        ContentDigest::sha256(&encoder.finish())
+    }
+
+    /// Applies a `RotateCoverageRegistry` commit during replay, verifying the recorded seal
+    /// against the live registry (fail-closed on any disagreement).
+    fn apply_coverage_rotation(
+        &mut self,
+        sealed_digest: ContentDigest,
+        sealed_count: u64,
+        refused: Vec<CoverageWitness>,
+    ) -> Result<ContentDigest, EventStoreError> {
+        let live_count = self.coverage_witnesses.len();
+        if sealed_count != live_count as u64
+            || sealed_digest != Self::sealed_witness_digest(&self.coverage_witnesses)
+        {
+            return Err(EventStoreError::CoverageRotationMismatch {
+                sealed_count,
+                live_count,
+            });
+        }
+        self.rotated_refused.extend(refused);
+        self.coverage_witnesses.clear();
+        Ok(sealed_digest)
+    }
+
+    /// Returns the witnesses recorded as refused by coverage-registry rotations. Their domains
+    /// can never certify absence.
+    #[must_use]
+    pub fn rotated_refused(&self) -> &[CoverageWitness] {
+        &self.rotated_refused
+    }
+
     /// Reads an event revision from the store.
     ///
     /// If `at_revision` is `None`, returns the latest revision.
@@ -1408,6 +1552,15 @@ impl EventRevisionStore {
                         witness.clone(),
                         commit.commit_time,
                     )?,
+                EventStoreEntry::RotateCoverageRegistry {
+                    sealed_digest,
+                    sealed_count,
+                    refused,
+                } => store.apply_coverage_rotation(
+                    *sealed_digest,
+                    *sealed_count,
+                    refused.clone(),
+                )?,
             };
 
             // Verify the rebuilt state anchor matches the recorded new_anchor
@@ -1537,28 +1690,44 @@ impl EventRevisionStore {
         // rebuilt store agree exactly.
         let at_capacity = self.coverage_registry_at_capacity();
 
+        // fss-qlaao: domains named by a witness refused while the registry was at capacity stay
+        // blocked even after a rotation sealed the registry. The refused report never entered
+        // canonical custody, so the observation record for the domain is incomplete by
+        // construction and absence can never be certified across it. Treated as a continuity
+        // gap: the refusal names a coverage report the store could not admit.
+        let refused_blocks = self
+            .rotated_refused
+            .iter()
+            .any(|w| w.observed_domain.iter().any(|d| d == domain));
+
         let matching: Vec<&CoverageWitness> = self
             .coverage_witnesses
             .iter()
             .filter(|w| w.observed_domain.iter().any(|d| d == domain))
             .collect();
 
-        // With no witness there is nothing to certify from; the reasons are fixed here, so the
-        // certifying branch below always has a non-empty witness set to choose from.
+        // With no live witness there is nothing to certify from; the reasons are fixed here, so
+        // the certifying branch below always has a non-empty witness set to choose from.
         let Some((first, rest)) = matching.split_first() else {
-            return if at_capacity {
-                CoverageOutcome::NotObservable {
-                    reason: NotObservableReason::CoverageRegistryCapacityExceeded,
-                    all_reasons: vec![
-                        NotObservableReason::CoverageRegistryCapacityExceeded,
-                        NotObservableReason::NoCoverageWitness,
-                    ],
-                }
+            let (reason, all_reasons) = if at_capacity {
+                (
+                    NotObservableReason::CoverageRegistryCapacityExceeded,
+                    NotObservableReason::CoverageRegistryCapacityExceeded,
+                )
+            } else if refused_blocks {
+                (
+                    NotObservableReason::CoverageWitnessGapped,
+                    NotObservableReason::CoverageWitnessGapped,
+                )
             } else {
-                CoverageOutcome::NotObservable {
-                    reason: NotObservableReason::NoCoverageWitness,
-                    all_reasons: vec![NotObservableReason::NoCoverageWitness],
-                }
+                (
+                    NotObservableReason::NoCoverageWitness,
+                    NotObservableReason::NoCoverageWitness,
+                )
+            };
+            return CoverageOutcome::NotObservable {
+                reason,
+                all_reasons: vec![all_reasons],
             };
         };
 
@@ -1566,6 +1735,10 @@ impl EventRevisionStore {
 
         if at_capacity {
             reasons.push(NotObservableReason::CoverageRegistryCapacityExceeded);
+        }
+
+        if refused_blocks {
+            reasons.push(NotObservableReason::CoverageWitnessGapped);
         }
 
         if matching
