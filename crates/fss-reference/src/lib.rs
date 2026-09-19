@@ -140,7 +140,10 @@ pub use extrinsics::{
     MAX_EXTRINSICS_REPROJECTION_TOLERANCE_UPX, MIN_EXTRINSICS_CORRESPONDENCES,
     ReferenceExtrinsicsSolver, RigidTransform3D, solve_extrinsics,
 };
-pub use hydration::{ReferenceHydrationCatalog, ReferenceHydrationLimits};
+pub use hydration::{
+    PublishedSourceReader, ReferenceHydrationCatalog, ReferenceHydrationLimits,
+    SOURCE_OBJECT_CONTENT_TYPE, SourceHydrationError, SourceObjectBinding,
+};
 pub use ingest::{
     ADP_FILE_GENERATION, ADP_FILE_ROW_ID, AnnexBAccessUnit, AnnexBError, AnnexBLimits, AnnexBNal,
     AnnexBScan, CEILING_MAX_NAL_BYTES, CaptureHint, DEFAULT_CHUNK_BYTES, DEFAULT_MAX_AUS,
