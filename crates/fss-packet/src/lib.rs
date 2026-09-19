@@ -10,6 +10,7 @@ pub mod avc;
 mod continuity;
 mod error;
 mod h264;
+mod h265;
 mod receiver;
 mod reorder;
 mod rtcp;
@@ -31,6 +32,10 @@ pub use timing::{JitterEstimator, SenderReportClock, SenderTimeEstimate, arrival
 pub use h264::{
     FragmentDiscard, H264Depacketizer, H264Error, H264Failure, H264Limits, H264Mode, H264Output,
     H264Status, NalSourceSpan, NalUnit,
+};
+pub use h265::{
+    H265Depacketizer, H265Error, H265Failure, H265FragmentDiscard, H265Limits, H265NalUnit,
+    H265Output, H265SourceSpan, H265Status,
 };
 pub use receiver::{
     H264ReceiveAdmission, H264ReceiveCancellation, H264ReceiveError, H264ReceivePoll, H264Receiver,
