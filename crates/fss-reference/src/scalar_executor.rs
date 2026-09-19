@@ -702,11 +702,9 @@ fn compute_node_macs(
             Ok(out_ports[0].shape().num_elements()? as u64)
         }
         OpCode::LayerNorm | OpCode::RMSNorm => normalization_work(node, in_ports, &out_ports[0]),
+        OpCode::Gelu | OpCode::Silu | OpCode::Tanh => activation_work(node, &out_ports[0]),
         OpCode::Reshape => Ok(0),
-        OpCode::Gelu
-        | OpCode::Silu
-        | OpCode::Tanh
-        | OpCode::Embedding => Err(ExecError::UnsupportedOperator {
+        OpCode::Embedding => Err(ExecError::UnsupportedOperator {
             node_id: node.id().to_string(),
             op: node.op(),
         }),
@@ -795,11 +793,11 @@ impl ScalarExecutor {
                 | OpCode::Concat
                 | OpCode::Slice
                 | OpCode::LayerNorm
-                | OpCode::RMSNorm => {}
-                OpCode::Gelu
+                | OpCode::RMSNorm
+                | OpCode::Gelu
                 | OpCode::Silu
-                | OpCode::Tanh
-                | OpCode::Embedding => {
+                | OpCode::Tanh => {}
+                OpCode::Embedding => {
                     return Err(ExecError::UnsupportedOperator {
                         node_id: node.id().to_string(),
                         op: node.op(),
@@ -1042,10 +1040,10 @@ impl ScalarExecutor {
                 OpCode::LayerNorm | OpCode::RMSNorm => Self::execute_normalization(
                     node, &node_in_tensors, &out_ports[0], graph.generation(), cx,
                 )?,
-                OpCode::Gelu
-                | OpCode::Silu
-                | OpCode::Tanh
-                | OpCode::Embedding => {
+                OpCode::Gelu | OpCode::Silu | OpCode::Tanh => Self::execute_activation(
+                    node, node_in_tensors[0], &out_ports[0], graph.generation(), cx,
+                )?,
+                OpCode::Embedding => {
                     return Err(ExecError::UnsupportedOperator {
                         node_id: node.id().to_string(),
                         op: node.op(),
@@ -1853,6 +1851,139 @@ impl ScalarExecutor {
             }
         }
         cx.checkpoint("normalization:publish")?;
+        Tensor::from_values(output.shape().clone(), &values, generation).map_err(ExecError::Tensor)
+    }
+}
+
+// Numeric policy for the three frozen nonlinear activation operators. Evaluate in
+// binary64 with bounded series/continued fractions and round once to binary32.
+// These are scalar reference algorithms, not calls into host exp/tanh/erf libraries.
+fn activation_exp_negative(x: f64) -> f64 {
+    // Callers supply x <= 0. Values below this cutoff cannot contribute to any
+    // representable binary32 activation, even after multiplication by a finite F32.
+    if x < -700.0 { return 0.0; }
+    let k = (x * std::f64::consts::LOG2_E - 0.5) as i32;
+    let r = x - f64::from(k) * std::f64::consts::LN_2;
+    let mut term = 1.0_f64;
+    let mut sum = 1.0_f64;
+    for n in 1..=16 {
+        term = term * r / f64::from(n);
+        sum += term;
+    }
+    sum * f64::from_bits(((k + 1023) as u64) << 52)
+}
+
+fn activation_normal_tail(a: f64) -> f64 {
+    const INV_SQRT_TWO_PI: f64 = 0.3989422804014327;
+    if a <= 1.0 {
+        // Integrate the normal density's power series about zero. This region
+        // avoids cancellation; Q(1) remains greater than 0.15.
+        let mut term = a;
+        let mut integral = a;
+        for n in 1..=20 {
+            term = term * (-a * a) / (2.0 * f64::from(n));
+            integral += term / f64::from(2 * n + 1);
+        }
+        0.5 - INV_SQRT_TWO_PI * integral
+    } else {
+        // Laplace continued fraction for Q(a)/phi(a); a > 1. Fixed depth
+        // bounds work, and direct tail evaluation preserves small negative GELU.
+        let mut remainder = 0.0_f64;
+        for n in (1..=256).rev() {
+            remainder = f64::from(n) / (a + remainder);
+        }
+        INV_SQRT_TWO_PI * activation_exp_negative(-0.5 * a * a) / (a + remainder)
+    }
+}
+
+fn activation_silu(x: f32) -> f32 {
+    if x.is_nan() || x == f32::NEG_INFINITY { return f32::from_bits(0x7fc0_0000); }
+    if x == f32::INFINITY { return x; }
+    let value = f64::from(x);
+    let tail = activation_exp_negative(-value.abs());
+    (if value >= 0.0 { value / (1.0 + tail) }
+        else { value * tail / (1.0 + tail) }) as f32
+}
+
+fn activation_tanh(x: f32) -> f32 {
+    if x.is_nan() { return f32::from_bits(0x7fc0_0000); }
+    let a = f64::from(x).abs();
+    // At this threshold |tanh(x)-x| is below half a binary32 ulp.
+    // Preserve signed zeros and subnormals without cancellation in 1-exp(-2a).
+    if a <= 0.0001220703125 { return x; }
+    if a >= 16.0 { return 1.0_f32.copysign(x); }
+    let tail = activation_exp_negative(-2.0 * a);
+    (((1.0 - tail) / (1.0 + tail)) as f32).copysign(x)
+}
+
+fn activation_gelu(x: f32, approximate_tanh: bool) -> f32 {
+    if x.is_nan() || x == f32::NEG_INFINITY { return f32::from_bits(0x7fc0_0000); }
+    if x == f32::INFINITY { return x; }
+    let value = f64::from(x);
+    let a = value.abs();
+    // Beyond this bound either mode rounds to x or signed zero in binary32.
+    // Branch before forming powers, avoiding overflow on arbitrary finite inputs.
+    if a >= 16.0 { return if x > 0.0 { x } else { -0.0 }; }
+    let tail = if approximate_tanh {
+        let argument = 0.7978845608028654 * (a + 0.044715 * a * a * a);
+        let exponential = activation_exp_negative(-2.0 * argument);
+        exponential / (1.0 + exponential)
+    } else {
+        activation_normal_tail(a)
+    };
+    (if x < 0.0 { value * tail } else { value * (1.0 - tail) }) as f32
+}
+
+fn activation_tanh_mode(node: &fss_model_ir::GraphNode) -> Result<bool, ExecError> {
+    match node.attributes().get("approximate") {
+        None => Ok(false),
+        Some(value) => match value.as_str(node.id(), "approximate")? {
+            "none" => Ok(false),
+            "tanh" => Ok(true),
+            _ => Err(ExecError::Ir(ModelIrError::InvalidAttribute {
+                node_id: node.id().to_owned(), attr_name: "approximate".to_owned(),
+                reason: "GELU mode must be none or tanh".to_owned(),
+            })),
+        },
+    }
+}
+
+fn activation_work(node: &fss_model_ir::GraphNode, output: &TensorPort) -> Result<u64, ExecError> {
+    // Conservatively bound the fixed scalar arithmetic, not hardware MACs or time.
+    let per_element = if node.op() == OpCode::Gelu {
+        if activation_tanh_mode(node)? { 96 } else { 896 }
+    } else { 80 };
+    (output.shape().num_elements()? as u64).checked_mul(per_element)
+        .ok_or(ExecError::ArithmeticOverflow { operation: "activation work bound" })
+}
+
+impl ScalarExecutor {
+    fn execute_activation(
+        node: &fss_model_ir::GraphNode, input: &Tensor, output: &TensorPort,
+        generation: Generation, cx: &ScalarExecCx,
+    ) -> Result<Tensor, ExecError> {
+        cx.checkpoint("activation:begin")?;
+        let source = input.to_vec::<f32>()?;
+        let approximate_tanh = node.op() == OpCode::Gelu && activation_tanh_mode(node)?;
+        let mut values = Vec::with_capacity(source.len());
+        for (index, value) in source.into_iter().enumerate() {
+            // GELU has a bounded inner continued fraction; poll between every 64
+            // elements to keep its worst-case cancellation work bounded as well.
+            if index % 64 == 0 { cx.checkpoint("activation:elements")?; }
+            values.push(match node.op() {
+                OpCode::Silu => activation_silu(value),
+                OpCode::Tanh => activation_tanh(value),
+                OpCode::Gelu => activation_gelu(value, approximate_tanh),
+                OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div | OpCode::Relu
+                | OpCode::Sigmoid | OpCode::MatMul | OpCode::Reshape | OpCode::Transpose
+                | OpCode::Squeeze | OpCode::Unsqueeze | OpCode::Concat | OpCode::Slice
+                | OpCode::LayerNorm | OpCode::RMSNorm | OpCode::Softmax | OpCode::Conv2d
+                | OpCode::MaxPool2d | OpCode::Embedding => {
+                    return Err(ExecError::UnsupportedOperator { node_id: node.id().to_owned(), op: node.op() });
+                }
+            });
+        }
+        cx.checkpoint("activation:publish")?;
         Tensor::from_values(output.shape().clone(), &values, generation).map_err(ExecError::Tensor)
     }
 }

@@ -1,9 +1,16 @@
 # Scalar executor operator support
 
-The existing `ScalarExecutor::run` now executes five additional operators already present in
-frozen Model IR v1: Transpose, Squeeze, Unsqueeze, Concat and Slice. No graph dialect,
-operator ID, attribute schema, model activation rule, foreign runtime or dependency is added.
-The recorded inference and recording-analysis paths use this same executor automatically.
+The existing `ScalarExecutor::run` executes 21 of the 22 frozen Model IR v1
+operators on its F32 path. The original convolution, pooling, matrix arithmetic,
+reshape, ReLU, sigmoid and softmax kernels are joined by Transpose, Squeeze,
+Unsqueeze, Concat, Slice, LayerNorm, RMSNorm, SiLU, Tanh and both GELU modes.
+Embedding remains unsupported; integer-index semantics are not guessed through
+F32 inputs. No graph dialect, operator ID, attribute schema, model activation rule,
+foreign runtime or dependency is added. Retained inference uses this same executor.
+
+The numeric contracts for the new kernels are in `SCALAR_NORMALIZATION.md` and
+`SCALAR_ACTIVATIONS.md`. Their tests exercise the public executor and composed
+model graphs, including restart and replay through retained JPEG inference.
 
 ## Layout semantics
 
@@ -32,19 +39,18 @@ These are deterministic reference-work units, not measured hardware MACs, time o
 Tensor-byte accounting is not a promise about total process peak memory: temporary vectors,
 serialized evidence and graph metadata are additional, as in the existing executor.
 
-Recorded inference fingerprints the complete scalar source file. Consequently this code
-change produces a different execution profile and new run identities. Old-profile runs are
-not silently relabeled as reproducible by this implementation; use their retained compatible
-implementation or explicitly rerun the frozen model under the new profile.
+Recorded inference fingerprints the complete scalar source file. Consequently changes to
+this implementation produce a different execution profile and new run identities. Old-profile
+runs are not silently relabeled as reproducible by this implementation; use their retained
+compatible implementation or explicitly rerun the frozen model under the new profile.
 
 ## Validation and remaining boundary
 
-`cargo test -p fss-reference --test scalar_layout_execution` covers exact values, every rank-3
-permutation, scalar and empty tensors, bit-preserving singleton-axis changes, repeated/empty
-Concat inputs, strided Slice, huge singleton steps, invalid metadata, exact work/byte boundaries,
-cancellation, dtype/generation refusals and a graph composing all five operators with MatMul.
-The independent Python layout reference matched NumPy on 9,000 generated comparisons.
-The Rust tests were added but not executed in the editing environment, which has no Rust
-compiler. Local pinned-toolchain qualification remains required; this is not model admission
-or a detector-quality claim. GELU, SiLU, Tanh, LayerNorm, RMSNorm and Embedding remain refused
-by this executor at this increment.
+Run the `scalar_layout_execution`, `scalar_normalization_execution` and
+`scalar_activation_execution` test targets in `fss-reference` on the pinned toolchain.
+They cover numerical and layout values, scalar/empty tensors, strict metadata,
+work/byte boundaries, cancellation, dtype/generation isolation and composed graphs.
+Independent Python algorithm checks are documented separately from Rust execution.
+The Rust tests were added but not executed in the editing environment, which has no
+Rust compiler. Local qualification remains required; operator coverage alone is not
+trained-model admission, a detector-quality claim or a production runtime certificate.
