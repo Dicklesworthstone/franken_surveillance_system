@@ -1100,6 +1100,15 @@ fn write_ledger_atomically(
                     .and_then(|metadata| link_count(&metadata))
                     .unwrap_or(u64::MAX);
                 if links > 0 {
+                    if let Ok(entries) = fs::read_dir(target.parent().unwrap_or(Path::new("."))) {
+                        for entry in entries.flatten() {
+                            let n = entry
+                                .metadata()
+                                .ok()
+                                .and_then(|m| link_count(&m))
+                                .unwrap_or(0);
+                        }
+                    }
                     return Err(PublishError::Failed(NegativeEvidenceError::LedgerForked {
                         path: given.to_owned(),
                         links,
@@ -1960,11 +1969,6 @@ mod tests {
         let mode = WriteMode::Replace {
             expected: ContentDigest::sha256(&original),
         };
-        eprintln!(
-            "DEBUG pre: checked nlink={:?} fork_exists={}",
-            checked.metadata().ok().and_then(|m| link_count(&m)),
-            Path::new(&fork).exists()
-        );
         let result = write_ledger_atomically(
             &path,
             &replacement,
@@ -1972,12 +1976,14 @@ mod tests {
             &inject,
             Some((&checked, &path)),
         );
-        eprintln!(
-            "DEBUG post: checked nlink={:?}",
-            checked.metadata().ok().and_then(|m| link_count(&m))
-        );
         match result {
             Err(PublishError::Failed(NegativeEvidenceError::LedgerForked { links, .. })) => {
+                eprintln!("DEBUG dir listing:");
+                for entry in fs::read_dir(dir.0.clone()).into_iter().flatten().flatten() {
+                    let n = entry.metadata().ok().and_then(|m| link_count(&m)).unwrap_or(0);
+                    eprintln!("DEBUG   {} links={n}", entry.path().display());
+                }
+                eprintln!("DEBUG old handle links={links}");
                 assert_eq!(links, 1, "the old inode must still hold exactly the fork name");
             }
             other => return Err(format!("expected LedgerForked, got {other:?}").into()),
