@@ -1,5 +1,8 @@
 # Bounded recording-to-analysis execution
 
+The `fss-infer analyze` [operator workflow](RECORDING_ANALYSIS_WORKFLOW.md) exposes
+this composition as one command, including exact retained-model recovery.
+
 `ingest::recording_pipeline::run_recording` connects an exact retained JPEG/MJPEG
 import to canonical decoding, frozen-model inference and the existing complete
 `AnalysisReport`. Operators no longer need to execute one frame at a time and
@@ -19,8 +22,8 @@ Model digest, output shape/port, row limits and tracker policy are preflighted.
 Each selected segment is decoded and its exact model invocation completed through
 the existing owners. Only one decoded frame/model result is held by the runner at
 a time. The ordered run IDs then feed `AnalysisPlan` and `AnalysisReport::read`.
-The resulting report uses the existing FSSARPT1 bytes and is directly consumable
-by the recorded-event workflow. There is no parallel report encoding or shadow
+The resulting report uses the existing FSSARPT1 bytes. Reports within the
+recorded-event workflow's separate 64-frame ceiling are directly consumable there. There is no parallel report encoding or shadow
 ledger. Postprocessing is reconstructed after the numeric prefix completes;
 an invalid numeric box can therefore refuse the final report after model runs
 have already been retained.
