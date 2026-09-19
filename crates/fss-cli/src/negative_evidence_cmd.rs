@@ -1963,7 +1963,7 @@ mod tests {
         eprintln!(
             "DEBUG pre: checked nlink={:?} fork_exists={}",
             checked.metadata().ok().and_then(|m| link_count(&m)),
-            fs::try_exists(&fork).unwrap_or(false)
+            Path::new(&fork).exists()
         );
         let result = write_ledger_atomically(
             &path,
