@@ -283,3 +283,5 @@ fn refreshed_anchor_never_silently_rebases_recovered_work() -> TestResult {
     store.verify_storage()?;
     Ok(())
 }
+
+mod recovery;

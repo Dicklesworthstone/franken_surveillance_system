@@ -94,3 +94,37 @@ cargo test -p fss-reference agent_session::checkpoint::journal
 Rust compilation, tests, rustfmt, and clippy were not executable in the editing environment.
 Lexical/delimiter and uploaded-blob identity checks are not substitutes for these gates.
 The feature remains an unqualified deterministic/durable reference slice of FSS-226.
+
+## Cold recovery after the writer process is lost
+
+Losing an in-memory pending append no longer requires deleting or replacing the journal.
+`recover_existing_with_coordination(path, expected_root, session_limits, claim_ceilings,
+tail_policy)` returns the recovered store and a `SessionRecoveryReceipt`. `recover_existing`
+provides the equivalent path for an unchanged session-only journal.
+
+The exact independently authorized root, complete journal checksums, all semantic command
+outcomes, and session-state witnesses are checked **before** any truncation. `Reject` leaves a
+torn suffix untouched. `Truncate` removes only an incomplete final append; it never drops a
+complete record to make an older root match. In particular, a fully written transfer with a
+lost acknowledgement must be recovered at its new committed root. The predecessor is refused,
+not treated as permission to restore the old fence.
+
+Recovery rechecks the complete prefix on the descriptor being trimmed, synchronizes the file
+(even when no truncation was needed), validates the resulting prefix again, and only then
+installs a writer. Missing files are not created. Complete corruption, semantic replay drift,
+foreign records, symlinks, reset attempts, incompatible bounds, and root mismatches produce no
+usable store. A failure after truncation or synchronization still requires inspection; the
+API does not claim the original suffix remains or that an unacknowledged operation failed.
+
+The receipt identifies the full pre-recovery bytes, the digest and length of any discarded
+incomplete suffix, and the exact synchronized root/session checkpoint/record count. It contains
+no raw private commands. Its digest is an audit identity, not authentication, an effect grant,
+or an instruction to retry. It does not claim to have observed whether the old process returned
+a response. Restore the independently authorized prefix, inspect the current owner/revision,
+and issue a fresh explicit mutation only when still valid.
+
+Fault tests exercise BodyWrite, BodySync, CommitWrite, and CommitSync failures in both live and
+cold recovery, with simultaneous session/claim fencing, owner closure versus reclaim, stale
+root refusal, hash-valid forged outcomes before torn tails, complete-record corruption, capacity
+exhaustion, legacy journals, missing/empty paths, and symlink refusal. These tests were added but
+not executed in the compiler-less editing environment.
