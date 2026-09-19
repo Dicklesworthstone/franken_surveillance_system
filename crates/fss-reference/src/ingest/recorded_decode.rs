@@ -360,17 +360,21 @@ impl RecordedFrame {
     /// it. `open` never calls an incomplete decode complete. Staged objects may remain on error.
     /// Parent cancellation is checked at composition boundaries; supply a cancellable codec
     /// budget for cancellation within a frame. A shared budget accumulates across frame calls.
+    /// Completed results are revalidated without codec work. Damaged completed custody fails
+    /// closed; recovery never regenerates it as an undocumented repair operation.
     pub fn decode_and_publish(
         deployment: &mut ReferenceDeployment, request: &RecordedDecodeRequest,
         budget: &mut DecodeBudget<'_>, cx: &ReplayCx,
     ) -> Result<Self, RecordedDecodeError> {
-        // Authority-idempotent fast path: a decode whose receipt batch is already committed
-        // reopens from retained custody and the ledger without codec work, new claims, or a
-        // new anchor. Any miss (no batch yet, including the post-root resume case) proceeds.
-        if let Ok(existing) = Self::open(deployment, request, cx) {
-            return Ok(existing);
-        }
         let (retained, capsule, capsule_digest, encoded) = source(deployment, request, cx)?;
+        let identity = key(retained.import_root(), request.segment_index as u64, request.interpretation);
+        let completion = batch_id(identity)?;
+        if deployment.ledger().batches().iter().any(|batch| batch.batch_id == completion) {
+            // A completed decode with missing/corrupt custody is not an unattempted decode.
+            // Propagate the precise recovery refusal without spending codec work or staging
+            // replacement bytes. Only absence of its final batch permits execution/resume.
+            return Self::open(deployment, request, cx);
+        }
         let used_before = budget.used();
         let image = decode_luma(&encoded, capsule.source_digest.bytes(), request.interpretation,
             request.decode_limits, budget)?;

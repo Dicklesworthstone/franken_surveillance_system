@@ -8,7 +8,8 @@ use std::error::Error;
 use fss_core::{
     BudgetVector, Completeness, ContentDigest, ContractBasis, ContractBasisRegistryBytes,
     ContractError, Generation, HandleAvailability, HydrationArtifact, HydrationError,
-    HydrationLevel, HydrationPurpose, HydrationRequest, HydrationRequestSpec, LaboratoryAccess,
+    HydrationLevel, HydrationPurpose, HydrationReceipt, HydrationReceiptSpec, HydrationRequest,
+    HydrationRequestSpec, HydrationResponse, LaboratoryAccess,
     LedgerAnchor, ObjectId, SemanticHandle, SemanticHandleSpec, SessionId, TimestampNs,
     TombstoneReason, TombstoneRecord,
 };
@@ -351,5 +352,156 @@ fn source_binding_cannot_be_retargeted_and_reader_cannot_exceed_quote() -> TestR
         Err(SourceHydrationError::Hydration(HydrationError::BudgetExceeded))));
     assert_eq!(f.catalog.source_binding(&f.handle.handle_id, f.handle.descriptor_digest)
         .ok_or("lost binding")?.publication_root(), f.root);
+    Ok(())
+}
+
+// A malicious producer can reseal internal hashes and copy genuine source proof roots.
+// These tests use the ordinary public receipt API, rather than invalid digest fixtures.
+fn forged_response(
+    req: &HydrationRequest,
+    handle: &SemanticHandle,
+    artifact: HydrationArtifact,
+) -> Result<HydrationResponse, Box<dyn Error>> {
+    let mut proof_roots = artifact.proof_roots.clone();
+    proof_roots.extend([
+        artifact.artifact_digest,
+        handle.subject_digest,
+        handle.descriptor_digest,
+        req.request_digest,
+    ]);
+    let receipt = HydrationReceipt::publish(HydrationReceiptSpec {
+        request_digest: req.request_digest,
+        handle_id: handle.handle_id.clone(),
+        descriptor_digest: handle.descriptor_digest,
+        subject_digest: handle.subject_digest,
+        anchor: handle.anchor.clone(),
+        requested_level: req.requested_level,
+        delivered_level: Some(artifact.level),
+        availability: HandleAvailability::Available,
+        cost: handle.estimated_cost(artifact.level).ok_or("missing quote")?,
+        completeness: artifact.completeness_for(req.requested_level),
+        artifact_digest: Some(artifact.artifact_digest),
+        proof_roots,
+        continuation: None,
+        invalidators: BTreeSet::from(["descriptor-and-source-custody".to_owned()]),
+        issued_at: TimestampNs(20),
+    })?;
+    Ok(HydrationResponse { artifact: Some(artifact), receipt })
+}
+
+#[test]
+fn consumer_verifies_exact_source_against_trusted_binding() -> TestResult {
+    let mut f = fixture()?;
+    bind(&mut f)?;
+    let binding = f.catalog.source_binding(&f.handle.handle_id, f.handle.descriptor_digest)
+        .cloned().ok_or("missing binding")?;
+    let req = request(&f.handle, HydrationLevel::H3)?;
+    let response = f.catalog.hydrate_from_source(&req, &f.store, TimestampNs(20))?;
+    binding.validate_response(&req, &f.handle, &response)?;
+    Ok(())
+}
+
+#[test]
+fn consumer_rejects_substituted_bytes_even_with_self_consistent_receipt_and_genuine_roots() -> TestResult {
+    let mut f = fixture()?;
+    bind(&mut f)?;
+    let binding = f.catalog.source_binding(&f.handle.handle_id, f.handle.descriptor_digest)
+        .cloned().ok_or("missing binding")?;
+    let req = request(&f.handle, HydrationLevel::H3)?;
+    let artifact = HydrationArtifact::publish(
+        HydrationLevel::H3,
+        SOURCE_OBJECT_CONTENT_TYPE,
+        b"substituted source with copied genuine proof roots".to_vec(),
+        [f.handle.subject_digest, f.handle.descriptor_digest, f.root],
+        Completeness::Complete,
+        None,
+    )?;
+    let response = forged_response(&req, &f.handle, artifact)?;
+    // Internal consistency is not source identity. This passes the legacy generic contract.
+    response.validate_for(&req, &f.handle)?;
+    assert!(matches!(binding.validate_response(&req, &f.handle, &response),
+        Err(SourceHydrationError::SourceMismatch)));
+    Ok(())
+}
+
+#[test]
+fn consumer_rejects_retargeted_or_missing_custody_roots() -> TestResult {
+    let mut f = fixture()?;
+    bind(&mut f)?;
+    let binding = f.catalog.source_binding(&f.handle.handle_id, f.handle.descriptor_digest)
+        .cloned().ok_or("missing binding")?;
+    let req = request(&f.handle, HydrationLevel::H3)?;
+    for extra_root in [None, Some(ContentDigest::sha256(b"forged custody root"))] {
+        let mut roots = BTreeSet::from([f.handle.subject_digest, f.handle.descriptor_digest]);
+        roots.extend(extra_root);
+        let artifact = HydrationArtifact::publish(HydrationLevel::H3, SOURCE_OBJECT_CONTENT_TYPE,
+            SOURCE.to_vec(), roots, Completeness::Complete, None)?;
+        let response = forged_response(&req, &f.handle, artifact)?;
+        response.validate_for(&req, &f.handle)?;
+        assert!(matches!(binding.validate_response(&req, &f.handle, &response),
+            Err(SourceHydrationError::SourceMismatch)));
+    }
+    Ok(())
+}
+
+#[test]
+fn consumer_does_not_confuse_a_preview_or_expired_receipt_with_source_evidence() -> TestResult {
+    let mut f = fixture()?;
+    bind(&mut f)?;
+    let binding = f.catalog.source_binding(&f.handle.handle_id, f.handle.descriptor_digest)
+        .cloned().ok_or("missing binding")?;
+    let mut req = request(&f.handle, HydrationLevel::H3)?;
+    req.available_capabilities.remove("capability:source");
+    req.allow_lower_level = true;
+    reseal(&mut req);
+    let preview = f.catalog.hydrate_from_source(&req, &f.store, TimestampNs(20))?;
+    assert_eq!(preview.receipt.delivered_level, Some(HydrationLevel::H2));
+    assert!(matches!(binding.validate_response(&req, &f.handle, &preview),
+        Err(SourceHydrationError::Hydration(HydrationError::LevelUnavailable))));
+    let expired = f.catalog.hydrate_from_source(&req, &f.store, TimestampNs(100))?;
+    assert!(matches!(binding.validate_response(&req, &f.handle, &expired),
+        Err(SourceHydrationError::Hydration(HydrationError::LevelUnavailable))));
+    Ok(())
+}
+
+#[test]
+fn consumer_rejects_source_rebinding_to_another_descriptor_revision() -> TestResult {
+    let mut f = fixture()?;
+    bind(&mut f)?;
+    let binding = f.catalog.source_binding(&f.handle.handle_id, f.handle.descriptor_digest)
+        .cloned().ok_or("missing binding")?;
+    let mut revised = f.handle.clone();
+    revised.anchor.commit_sequence += 1;
+    revised.published_at = TimestampNs(5);
+    revised.descriptor_digest = revised.computed_descriptor_digest();
+    revised.verify()?;
+    let req = request(&revised, HydrationLevel::H3)?;
+    let artifact = HydrationArtifact::publish(HydrationLevel::H3, SOURCE_OBJECT_CONTENT_TYPE,
+        SOURCE.to_vec(), [revised.subject_digest, revised.descriptor_digest, f.root],
+        Completeness::Complete, None)?;
+    let response = forged_response(&req, &revised, artifact)?;
+    response.validate_for(&req, &revised)?;
+    assert!(matches!(binding.validate_response(&req, &revised, &response),
+        Err(SourceHydrationError::SourceMismatch)));
+    Ok(())
+}
+
+#[test]
+fn consumer_rejects_privacy_transform_claims_on_original_source() -> TestResult {
+    let mut f = fixture()?;
+    bind(&mut f)?;
+    let binding = f.catalog.source_binding(&f.handle.handle_id, f.handle.descriptor_digest)
+        .cloned().ok_or("missing binding")?;
+    let mut transformed = f.handle.clone();
+    transformed.applied_transform = Some("privacy:masked".to_owned());
+    transformed.descriptor_digest = transformed.computed_descriptor_digest();
+    let req = request(&transformed, HydrationLevel::H3)?;
+    let artifact = HydrationArtifact::publish(HydrationLevel::H3, SOURCE_OBJECT_CONTENT_TYPE,
+        SOURCE.to_vec(), [transformed.subject_digest, transformed.descriptor_digest, f.root],
+        Completeness::Complete, transformed.applied_transform.clone())?;
+    let response = forged_response(&req, &transformed, artifact)?;
+    response.validate_for(&req, &transformed)?;
+    assert!(matches!(binding.validate_response(&req, &transformed, &response),
+        Err(SourceHydrationError::TransformedSource)));
     Ok(())
 }
