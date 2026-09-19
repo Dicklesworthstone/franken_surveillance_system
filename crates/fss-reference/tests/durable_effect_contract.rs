@@ -64,7 +64,10 @@ fn sample_intent(op_name: &str, key_name: &str) -> Result<EffectIntent, Box<dyn 
 fn setup_alert_plan(
     journal_path: &std::path::Path,
     ledger_path: &std::path::Path,
-) -> Result<(ReferenceAlertPlan, EffectJournal, DurableReferenceLedger), Box<dyn Error>> {
+) -> Result<
+    (ReferenceAlertPlan, EffectJournal, DurableReferenceLedger, InMemoryObjectStore),
+    Box<dyn Error>,
+> {
     let mut objects = InMemoryObjectStore::new(ObjectLimits::new(512, 8 * 1024 * 1024));
     let mut authority = DurableReferenceLedger::open(
         ledger_path,
@@ -175,7 +178,7 @@ fn setup_alert_plan(
     };
     assert_eq!(durable_plan, plan);
 
-    Ok((plan, journal, authority))
+    Ok((plan, journal, authority, objects))
 }
 
 struct AlertTestContext {
@@ -401,7 +404,7 @@ fn test_planted_negative_lose_ack_reopen_refuses_second_commit_before_provider_t
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, _init_journal, authority) = setup_alert_plan(&path, &ledger_path)?;
+    let (plan, _init_journal, authority, objects) = setup_alert_plan(&path, &ledger_path)?;
     let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:durable:lose_ack");
 
     // Session 1: Prepare and dispatch with LoseAckAfterDelivery
@@ -410,7 +413,7 @@ fn test_planted_negative_lose_ack_reopen_refuses_second_commit_before_provider_t
 
         let outcome = journal.dispatch_alert(
             &plan,
-            &authority,
+            &authority, &objects,
             ReferenceProviderBehavior::LoseAckAfterDelivery,
             TimestampNs(110),
             TimestampNs(120),
@@ -434,7 +437,7 @@ fn test_planted_negative_lose_ack_reopen_refuses_second_commit_before_provider_t
         // Must be REFUSED before provider is touched!
         let commit_res = journal.dispatch_alert(
             &plan,
-            &authority,
+            &authority, &objects,
             ReferenceProviderBehavior::Deliver,
             TimestampNs(200),
             TimestampNs(210),
@@ -465,7 +468,7 @@ fn test_planted_negative_reconciliation_after_reopen_closes_obligation_with_prov
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, _, authority) = setup_alert_plan(&path, &ledger_path)?;
+    let (plan, _, authority, objects) = setup_alert_plan(&path, &ledger_path)?;
     let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:durable:reopen");
 
     // Session 1: Prepare and dispatch with LoseAckAfterDelivery
@@ -473,7 +476,7 @@ fn test_planted_negative_reconciliation_after_reopen_closes_obligation_with_prov
         let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
         let outcome = journal.dispatch_alert(
             &plan,
-            &authority,
+            &authority, &objects,
             ReferenceProviderBehavior::LoseAckAfterDelivery,
             TimestampNs(110),
             TimestampNs(120),
@@ -614,7 +617,7 @@ fn test_crash_after_commit_recovery_via_reconcile_failed() -> Result<(), Box<dyn
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, _, _) = setup_alert_plan(&path, &ledger_path)?;
+    let (plan, _, _, objects) = setup_alert_plan(&path, &ledger_path)?;
     let mut provider =
         ReferenceAlertProvider::with_provider_id("provider:test:durable:crash_commit_fail");
 
@@ -668,7 +671,7 @@ fn test_reconcile_alert_accepts_adapter_accepted_after_restart() -> Result<(), B
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, _, authority) = setup_alert_plan(&path, &ledger_path)?;
+    let (plan, _, authority, objects) = setup_alert_plan(&path, &ledger_path)?;
     let mut provider =
         ReferenceAlertProvider::with_provider_id("provider:test:durable:reconcile_accepted");
 
@@ -677,7 +680,7 @@ fn test_reconcile_alert_accepts_adapter_accepted_after_restart() -> Result<(), B
         let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
         let outcome = journal.dispatch_alert(
             &plan,
-            &authority,
+            &authority, &objects,
             ReferenceProviderBehavior::Deliver,
             TimestampNs(110),
             TimestampNs(120),
@@ -749,7 +752,7 @@ fn test_inv_111_crash_with_open_indeterminate_obligation_reopens_with_reconcile_
 
         let outcome = journal.dispatch_alert(
             &plan,
-            &ctx.authority,
+            &ctx.authority, &ctx.objects,
             ReferenceProviderBehavior::LoseAckAfterDelivery,
             TimestampNs(31_000),
             TimestampNs(32_000),
@@ -1003,7 +1006,7 @@ fn test_inv_111_obligation_classification_states() -> Result<(), Box<dyn Error>>
     // 3. Dispatch and reconcile to Verified
     let _ = journal.dispatch_alert(
         &plan,
-        &ctx.authority,
+        &ctx.authority, &ctx.objects,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(31_000),
         TimestampNs(32_000),
@@ -1239,7 +1242,7 @@ fn test_finding_f4_reconcile_alert_must_not_drop_provider_failure() -> Result<()
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, _, _) = setup_alert_plan(&path, &ledger_path)?;
+    let (plan, _, _, objects) = setup_alert_plan(&path, &ledger_path)?;
     let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:finding:fail_drop");
 
     // Session 1: Indeterminate with terminal provider failure
@@ -1356,7 +1359,7 @@ fn test_finding_f6_delta_payload_mismatch_fails_closed_to_ledger_conflict()
     })?;
     let _ = journal.dispatch_alert(
         &plan,
-        &ctx.authority,
+        &ctx.authority, &ctx.objects,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(31_000),
         TimestampNs(32_000),
@@ -1507,12 +1510,13 @@ fn test_finding_f7_situation_guard_rejects_transient_and_mismatched_obligation()
 fn deliver_then_lose_process_journal(
     plan: &ReferenceAlertPlan,
     authority: &DurableReferenceLedger,
+    objects: &InMemoryObjectStore,
     crashed_process_journal: &mut EffectJournal,
     provider: &mut ReferenceAlertProvider,
 ) -> Result<(), Box<dyn Error>> {
     let lost_outcome = dispatch_reference_alert(
         plan,
-        authority,
+        authority, &objects,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(30_100),
         TimestampNs(30_200),
@@ -1531,7 +1535,7 @@ fn test_crash_after_commit_recovery_via_reconcile() -> Result<(), Box<dyn Error>
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, mut crashed_process_journal, authority) = setup_alert_plan(&path, &ledger_path)?;
+    let (plan, mut crashed_process_journal, authority, objects) = setup_alert_plan(&path, &ledger_path)?;
     let mut provider =
         ReferenceAlertProvider::with_provider_id("provider:test:durable:crash_commit_reconcile");
 
@@ -1539,6 +1543,7 @@ fn test_crash_after_commit_recovery_via_reconcile() -> Result<(), Box<dyn Error>
     deliver_then_lose_process_journal(
         &plan,
         &authority,
+        &objects,
         &mut crashed_process_journal,
         &mut provider,
     )?;
@@ -1588,7 +1593,7 @@ fn test_crash_after_commit_recovery_via_redispatch() -> Result<(), Box<dyn Error
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, mut crashed_process_journal, setup_authority) =
+    let (plan, mut crashed_process_journal, setup_authority, setup_objects) =
         setup_alert_plan(&path, &ledger_path)?;
     let mut provider =
         ReferenceAlertProvider::with_provider_id("provider:test:durable:crash_commit_redispatch");
@@ -1615,6 +1620,7 @@ fn test_crash_after_commit_recovery_via_redispatch() -> Result<(), Box<dyn Error
         deliver_then_lose_process_journal(
             &plan,
             &setup_authority,
+            &setup_objects,
             &mut crashed_process_journal,
             &mut provider,
         )?;
@@ -1636,7 +1642,7 @@ fn test_crash_after_commit_recovery_via_redispatch() -> Result<(), Box<dyn Error
         // Recovery: Re-dispatching MUST be refused with ReconciliationRequired to prevent duplicate external effect!
         let redispatch_res = journal.dispatch_alert(
             &plan,
-            &authority,
+            &authority, &setup_objects,
             ReferenceProviderBehavior::Deliver,
             TimestampNs(200),
             TimestampNs(210),
@@ -1691,7 +1697,7 @@ fn test_finding_f1_crash_after_commit_blind_duplicate_redispatch_fails()
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, mut crashed_process_journal, authority) = setup_alert_plan(&path, &ledger_path)?;
+    let (plan, mut crashed_process_journal, authority, objects) = setup_alert_plan(&path, &ledger_path)?;
     let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:finding:redispatch");
 
     // Session 1: Committed on disk; external dispatch occurred before crash
@@ -1707,6 +1713,7 @@ fn test_finding_f1_crash_after_commit_blind_duplicate_redispatch_fails()
         deliver_then_lose_process_journal(
             &plan,
             &authority,
+            &objects,
             &mut crashed_process_journal,
             &mut provider,
         )?;
@@ -1718,7 +1725,7 @@ fn test_finding_f1_crash_after_commit_blind_duplicate_redispatch_fails()
         let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
         let redispatch_res = journal.dispatch_alert(
             &plan,
-            &authority,
+            &authority, &objects,
             ReferenceProviderBehavior::Deliver,
             TimestampNs(200),
             TimestampNs(210),

@@ -1754,12 +1754,20 @@ impl ReferenceDeployment {
                 stage: STAGE_DISPATCH_ALERT,
             });
         }
-        let receipt = self.effects.dispatch_alert(
+        let receipt = crate::alert::execute_alert_dispatch(
             plan,
             &self.ledger,
+            |digest| {
+                self.publisher
+                    .spool()
+                    .read(digest)
+                    .map(|bytes| bytes.to_vec())
+                    .map_err(|error| ReferenceError::from(LocalPublicationError::Spool(error)))
+            },
             behavior,
             committed_at,
             outcome_at,
+            &mut self.effects,
             &mut self.alert_provider,
         )?;
         Ok(receipt)

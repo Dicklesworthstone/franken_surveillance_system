@@ -1062,7 +1062,14 @@ pub fn apply_revision_tamper_step(
     Ok(())
 }
 
-pub(crate) fn apply_evidence_batch(
+/// Folds one revision's evidence batch into the accumulating sensor-tamper status.
+///
+/// This is the one accumulation step shared by the single-lineage fold in
+/// [`apply_revision_tamper_step`], and the ledger-wide failure-domain consultation that alert
+/// dispatch runs (fss-ct73p): restorations retire earlier open tampers only with evidenced,
+/// capture-ordered, identity-matching edges, and repeated or already-seen digests never re-open
+/// or re-retire anything.
+pub fn apply_evidence_batch(
     status: &mut SensorTamperStatus,
     evidence: &[EventEvidence],
     batch_revision: u64,

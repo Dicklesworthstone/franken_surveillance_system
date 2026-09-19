@@ -845,6 +845,7 @@ impl DurableEffectJournal {
         &mut self,
         plan: &ReferenceAlertPlan,
         authority: &DurableReferenceLedger,
+        objects: &InMemoryObjectStore,
         behavior: ReferenceProviderBehavior,
         committed_at: TimestampNs,
         outcome_at: TimestampNs,
@@ -853,6 +854,7 @@ impl DurableEffectJournal {
         crate::alert::execute_alert_dispatch(
             plan,
             authority,
+            |digest| objects.read_verified(digest).map(|bytes| bytes.to_vec()),
             behavior,
             committed_at,
             outcome_at,

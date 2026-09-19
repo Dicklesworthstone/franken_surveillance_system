@@ -1,13 +1,15 @@
 //! Deterministic alert-effect oracle with lost-ACK reconciliation.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fss_core::{
     CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, ContentDigest,
     EffectIntent, EffectJournal, EffectState, EventHypothesis, EventState, IdempotencyKey,
-    LedgerAnchor, Obligation, ObligationId, OperationId, OperationReceipt, TimestampNs,
+    LedgerAnchor, Obligation, ObligationId, OperationId, OperationReceipt, SensorTamperStatus,
+    TimestampNs,
 };
 use fss_ledger::{DurableLedgerError, DurableReferenceLedger, JournalError};
+use fss_object::{InMemoryObjectStore, ObjectManifest};
 
 use crate::{
     ReferenceError, ReferenceEventReceipt, ReferencePolicyAction, ReferencePolicyDecision,
@@ -475,6 +477,78 @@ pub(crate) fn verify_alert_eligibility_in_lineage(
     Ok(status)
 }
 
+/// Consults the ledger-wide failure-domain tamper state before an alert is dispatched (fss-ct73p).
+///
+/// The event's own lineage check sees only the revisions of the alerting event, so a
+/// sensor-tamper observation published under a DIFFERENT event of the same failure domain never
+/// touches the alerting event's lineage, and a prepared alert would still deliver. This fold
+/// accumulates every ledger revision's evidence (any event object, in ledger order, with the one
+/// accumulation step the lineage replay uses) and refuses while any open, unretired tamper
+/// record cites a failure domain the alerting event's own evidence also cites. An evidenced
+/// sensor-integrity restoration retires the tamper and re-enables dispatch; a tamper in an
+/// unrelated domain never blocks.
+///
+/// Revision payloads are decoded through `read_payload`, the caller's authority handle on
+/// evidence bytes; an unreadable ledger revision fails closed.
+pub(crate) fn refuse_on_open_domain_tamper<E>(
+    authority: &DurableReferenceLedger,
+    mut read_payload: impl FnMut(ContentDigest) -> Result<Vec<u8>, E>,
+    event: &EventHypothesis,
+) -> Result<(), ReferenceError>
+where
+    E: Into<ReferenceError>,
+{
+    let domains: BTreeSet<String> = event
+        .evidence
+        .iter()
+        .map(|edge| edge.failure_domain.clone())
+        .collect();
+    if domains.is_empty() {
+        return Ok(());
+    }
+    let mut status = SensorTamperStatus::default();
+    for batch in authority.batches() {
+        for delta in &batch.deltas {
+            if delta.family != "event_revision" {
+                continue;
+            }
+            let revision = decode_ledger_revision(&mut read_payload, delta.payload_digest)?;
+            fss_core::event::apply_evidence_batch(
+                &mut status,
+                &revision.evidence,
+                revision.revision,
+                Some(revision.interval),
+            );
+        }
+    }
+    if status
+        .open_tamper_records
+        .iter()
+        .any(|record| domains.contains(&record.failure_domain))
+    {
+        return Err(fss_core::ContractError::SensorIntegrityRisk.into());
+    }
+    Ok(())
+}
+
+/// Decodes one event revision the ledger publishes, through the caller's payload reader.
+fn decode_ledger_revision<E>(
+    read_payload: &mut impl FnMut(ContentDigest) -> Result<Vec<u8>, E>,
+    event_root: ContentDigest,
+) -> Result<EventHypothesis, ReferenceError>
+where
+    E: Into<ReferenceError>,
+{
+    let manifest_bytes = read_payload(event_root).map_err(Into::into)?;
+    let manifest = ObjectManifest::from_canonical_bytes(&manifest_bytes)?;
+    let payload = manifest
+        .metadata_digest()
+        .or_else(|| manifest.children().first().copied())
+        .ok_or(fss_core::ContractError::EvidenceRequired)?;
+    let revision_bytes = read_payload(payload).map_err(Into::into)?;
+    EventHypothesis::from_canonical_bytes(&revision_bytes).map_err(ReferenceError::from)
+}
+
 /// Policy action an authority event revision commits to.
 ///
 /// The reference policy prepares an alert only on the decision path it fingerprints for
@@ -562,12 +636,16 @@ fn current_event_revision_batch(
 /// Nothing the caller wrote into the journal is trusted for eligibility: the obligation's terminal
 /// predicate is informational only. Eligibility is re-derived from the revision the authority
 /// ledger currently holds, with the same [`verify_event_alert_eligibility`] preparation uses.
-fn check_alert_dispatch_authority(
+fn check_alert_dispatch_authority<E>(
     plan: &ReferenceAlertPlan,
     authority: &DurableReferenceLedger,
+    read_payload: impl FnMut(ContentDigest) -> Result<Vec<u8>, E>,
     prepared_intent: &EffectIntent,
     obligation: Option<&Obligation>,
-) -> Result<(), ReferenceError> {
+) -> Result<(), ReferenceError>
+where
+    E: Into<ReferenceError>,
+{
     // 1. The plan is internally consistent (request digest binds root, revision, and channel).
     validate_reference_alert_plan(plan)?;
     // 2. The plan names an obligation the journal holds for this exact operation.
@@ -601,7 +679,12 @@ fn check_alert_dispatch_authority(
         committed_policy_action(&event),
         &prior,
     )?;
-    // 7. The prepare-time head lies in this ledger's history, at or after the publishing batch: a
+    // 7. Ledger-wide failure-domain consultation (fss-ct73p): a tamper observation published
+    // under a different event of the same failure domain never touches this event's lineage, so
+    // the lineage check above cannot see it. Refuse while an unretired tamper record cites a
+    // domain this event's evidence cites; an evidenced restoration re-enables dispatch.
+    refuse_on_open_domain_tamper(authority, read_payload, &event)?;
+    // 8. The prepare-time head lies in this ledger's history, at or after the publishing batch: a
     // ledger with a different history is refused, an unrelated later batch is not (P6).
     let head_in_history = usize::try_from(plan.prepared_head_sequence)
         .ok()
@@ -615,7 +698,7 @@ fn check_alert_dispatch_authority(
     if !head_in_history {
         return Err(ReferenceError::StaleEventAuthority);
     }
-    // 8. The journal-recorded precondition binds the revision, anchor, committed decision, and
+    // 9. The journal-recorded precondition binds the revision, anchor, committed decision, and
     // prepare-time head checked above.
     let precondition = alert_precondition_digest_parts(
         plan.event_revision_digest,
@@ -640,16 +723,23 @@ fn check_alert_dispatch_authority(
 /// 3. The durable authority ledger is readable and not moved under this handle (bounded check).
 /// 4. The plan's revision is the event's current revision in the ledger, under the planned anchor.
 /// 5. That current revision is alert-eligible, re-derived with [`verify_event_alert_eligibility`].
-/// 6. The prepare-time ledger head is in the ledger's history and bound by the recorded intent.
+/// 6. The ledger-wide failure-domain tamper state holds no unretired tamper for the event's
+///    domains (fss-ct73p), decoded through `objects`.
+/// 7. The prepare-time ledger head is in the ledger's history and bound by the recorded intent.
 ///
 /// Any refusal after step 1 transitions the operation and its obligation to
 /// [`EffectState::Cancelled`] with a bound cancel proof before the error is returned.
-pub(crate) fn revalidate_alert_event_authority<J: AlertEffectTransitioner>(
+pub(crate) fn revalidate_alert_event_authority<J, E>(
     plan: &ReferenceAlertPlan,
     authority: &DurableReferenceLedger,
+    read_payload: impl FnMut(ContentDigest) -> Result<Vec<u8>, E>,
     requested_at: TimestampNs,
     journal: &mut J,
-) -> Result<(), ReferenceError> {
+) -> Result<(), ReferenceError>
+where
+    J: AlertEffectTransitioner,
+    E: Into<ReferenceError>,
+{
     let operation_id = &plan.intent.operation_id;
     let operation = journal
         .operation(operation_id)
@@ -666,6 +756,7 @@ pub(crate) fn revalidate_alert_event_authority<J: AlertEffectTransitioner>(
     let verdict = check_alert_dispatch_authority(
         plan,
         authority,
+        read_payload,
         &prepared_intent,
         journal.obligation(&plan.obligation_id),
     );
@@ -1119,16 +1210,21 @@ pub fn prepare_reference_alert(
 ///
 /// Ensures event authority and plan integrity are revalidated atomically before committing
 /// and invoking provider dispatch.
-pub(crate) fn execute_alert_dispatch<J: AlertEffectTransitioner>(
+pub(crate) fn execute_alert_dispatch<J, E>(
     plan: &ReferenceAlertPlan,
     authority: &DurableReferenceLedger,
+    read_payload: impl FnMut(ContentDigest) -> Result<Vec<u8>, E>,
     behavior: ReferenceProviderBehavior,
     commit_at: TimestampNs,
     outcome_at: TimestampNs,
     journal: &mut J,
     provider: &mut ReferenceAlertProvider,
-) -> Result<OperationReceipt, ReferenceError> {
-    revalidate_alert_event_authority(plan, authority, commit_at, journal)?;
+) -> Result<OperationReceipt, ReferenceError>
+where
+    J: AlertEffectTransitioner,
+    E: Into<ReferenceError>,
+{
+    revalidate_alert_event_authority(plan, authority, read_payload, commit_at, journal)?;
 
     let operation_id = &plan.intent.operation_id;
     journal.transition_committed(operation_id, commit_at)?;
@@ -1181,7 +1277,7 @@ pub(crate) fn execute_alert_dispatch<J: AlertEffectTransitioner>(
 ///     provider: &mut ReferenceAlertProvider,
 /// ) {
 ///     let behavior = ReferenceProviderBehavior::Deliver;
-///     let _ = dispatch_reference_alert(plan, authority, behavior, TimestampNs(1), TimestampNs(2), journal, provider);
+///     let _ = dispatch_reference_alert(plan, authority, objects, behavior, TimestampNs(1), TimestampNs(2), journal, provider);
 /// }
 ///
 /// fn forbidden_dispatch(
@@ -1192,12 +1288,13 @@ pub(crate) fn execute_alert_dispatch<J: AlertEffectTransitioner>(
 /// ) {
 ///     // adr-0001/inv-4-reference: a belief is not a prepared alert plan.
 ///     let behavior = ReferenceProviderBehavior::Deliver;
-///     let _ = dispatch_reference_alert(belief, authority, behavior, TimestampNs(1), TimestampNs(2), journal, provider);
+///     let _ = dispatch_reference_alert(belief, authority, objects, behavior, TimestampNs(1), TimestampNs(2), journal, provider);
 /// }
 /// ```
 pub fn dispatch_reference_alert(
     plan: &ReferenceAlertPlan,
     authority: &DurableReferenceLedger,
+    objects: &InMemoryObjectStore,
     behavior: ReferenceProviderBehavior,
     commit_at: TimestampNs,
     outcome_at: TimestampNs,
@@ -1205,7 +1302,14 @@ pub fn dispatch_reference_alert(
     provider: &mut ReferenceAlertProvider,
 ) -> Result<OperationReceipt, ReferenceError> {
     execute_alert_dispatch(
-        plan, authority, behavior, commit_at, outcome_at, journal, provider,
+        plan,
+        authority,
+        |digest| objects.read_verified(digest).map(|bytes| bytes.to_vec()),
+        behavior,
+        commit_at,
+        outcome_at,
+        journal,
+        provider,
     )
 }
 
