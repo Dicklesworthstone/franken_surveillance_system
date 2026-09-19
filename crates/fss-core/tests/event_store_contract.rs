@@ -2766,7 +2766,7 @@ fn coverage_rotation_resumes_certification_and_refused_domains_stay_blocked() ->
         store.register_coverage_witness(
             store.current_anchor().clone(),
             witness,
-            TimestampNs(1_000 + i128::from(i)),
+            TimestampNs(1_000 + i as i128),
         )?;
     }
     assert!(store.coverage_registry_at_capacity());
