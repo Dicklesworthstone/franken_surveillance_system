@@ -230,7 +230,6 @@ pub fn generate_slice(
     }
     // pic_order_cnt_lsb: u(4)
     writer.write_bits((frame_num.wrapping_mul(2)) as u64 & 0x0f, 4);
-    writer.write_rbsp_trailing_bits();
     let mut rbsp = writer.finish();
 
     // Fill synthetic macroblock payload
@@ -253,6 +252,11 @@ pub fn generate_slice(
         extra.splice(pos..pos, ep_pattern);
     }
     rbsp.extend_from_slice(&extra);
+    // rbsp_trailing_bits close the slice RBSP only after the macroblock payload: a stop bit
+    // followed by byte alignment, so the final RBSP byte always contains the stop bit and is
+    // never 0x00. A trailing 0x00 would be stripped as trailing_zero_8bits by any Annex-B
+    // parser, breaking NAL equivalence with the RTP form.
+    rbsp.push(0x80);
 
     let nal_header = if is_idr {
         0x65 // NRI=3 (0b01100000), type=5

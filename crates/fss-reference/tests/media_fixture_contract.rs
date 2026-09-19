@@ -28,31 +28,31 @@ use fss_reference::media_fixture::{
 
 /// Pinned SHA-256 digest literal for clean.264.
 pub const PINNED_SHA256_H264_CLEAN: &str =
-    "f2c3a1c28f52194510f94cac342bb0b27cc933d04d09f7ff2431112134d25f8f";
+    "8c306a4717970585256481714c96b1e868206c83f7cfa964602878276a09eff8";
 
 /// Pinned SHA-256 digest literal for clean.rtp.
 pub const PINNED_SHA256_RTP_CLEAN: &str =
-    "d6ffdc3a6f1ffb7a4f7b14b919e711a15fe8485115fa80676091a097307bf1fc";
+    "273e5af560d81731b4d8c2bf8f98c5275f0162b44863fbf47e3174a30b2b8ea6";
 
 /// Pinned SHA-256 digest literal for loss.rtp.
 pub const PINNED_SHA256_RTP_LOSS: &str =
-    "173f2dfc63f5240e6ec66285ae959115785830aa24c1ebdb6ffb3953b33f06af";
+    "906d031f04e70369162c08d1f17096a6933eccba8e7f0744aebe489911548fa2";
 
 /// Pinned SHA-256 digest literal for reorder.rtp.
 pub const PINNED_SHA256_RTP_REORDER: &str =
-    "217b6937562a7945dbdd976a8ed74d22ebe5f6d7ab013c11c262ac305b85d183";
+    "737bf714b7e8c7530eb5e6f42edb8e6d581916f63c3cb9f6346a115315429ce1";
 
 /// Pinned SHA-256 digest literal for duplicate.rtp.
 pub const PINNED_SHA256_RTP_DUPLICATE: &str =
-    "133cdc8b65384fc1416de6b2d43ad5b04f4d5190f2400b62ca66d86103c59948";
+    "02be7735e662cfd3ca8092837bb3b0f35601d5ebc87d29131b2e2600e4cbb0ab";
 
 /// Pinned SHA-256 digest literal for ssrc_reset.rtp.
 pub const PINNED_SHA256_RTP_SSRC_RESET: &str =
-    "9f3b4d7ba3414a2d09cd3be7262d1f48c01e744da405b1c20cf2489b2a05e3d8";
+    "24b0cecc209a1fb46e4d99eb6f888d7fe1a928b9610ec409b0a662c5b0e4a0ed";
 
 /// Pinned SHA-256 digest literal for truncated_last_record.rtp.
 pub const PINNED_SHA256_RTP_TRUNCATED: &str =
-    "d7a35c3eee2b210966164aadd68f8c0f6a41099b1a451f8fca30f136ba1ba42c";
+    "a625bd71db64a2eb3d88aef1f8a27b1b0492b52cc9cfc3bbe80617677c585660";
 
 /// Pinned SHA-256 digest literal for large_gap.rtp.
 pub const PINNED_SHA256_RTP_LARGE_GAP: &str =
@@ -798,4 +798,45 @@ fn test_nal_wire_to_rbsp_escapes_only_when_next_byte_le_3() {
     let (hdr, rbsp) = nal_wire_to_rbsp(&wire_end);
     assert_eq!(hdr, 0x65);
     assert_eq!(rbsp, vec![0x00, 0x00]);
+}
+
+/// The ssrc_reset fixture must build even when generation 1 delivered the IDR as FU-A fragments
+/// (small MTU, two_slice_au=false): the reset generation re-emits the IDR whole as a single-NAL
+/// packet taken from the stream's own NAL list. Pins the fss-vnn0q defect where the builder
+/// only looked for a SingleNal slice packet and failed with "missing slice packet in proto".
+#[test]
+fn ssrc_reset_builds_when_idr_is_fragmented_as_fu_a() -> Result<(), Box<dyn Error>> {
+    let h264_params = H264FixtureParams {
+        seed: 99,
+        frame_count: 5,
+        gop_size: 7,
+        two_slice_au: false,
+        ..H264FixtureParams::default()
+    };
+    let annexb = generate_h264_annexb(&h264_params)?;
+    let rtp_params = RtpdumpParams {
+        mtu: 150,
+        ..RtpdumpParams::default()
+    };
+    let ssrc_reset = generate_rtpdump_ssrc_reset(&annexb, &rtp_params)?;
+
+    // Generation 2 closes with a whole single-NAL IDR slice under the new SSRC.
+    let last = ssrc_reset
+        .packets
+        .last()
+        .ok_or_else(|| -> Box<dyn Error> { "ssrc_reset fixture has no packets".into() })?;
+    assert_eq!(last.ssrc, 0x5566_7788);
+    assert_eq!(last.packetization, "SingleNal");
+    assert_eq!(last.nal_types, vec![5]);
+    assert!(last.marker);
+    assert!(last.expected_delivered);
+    let idr_wire = &annexb
+        .nals
+        .iter()
+        .find(|nal| nal.nal_unit_type == 5)
+        .ok_or_else(|| -> Box<dyn Error> { "stream has no IDR NAL".into() })?
+        .wire_bytes;
+    // RtpdumpPacketDesc carries lengths, not payload bytes: 12-byte RTP header + whole NAL.
+    assert_eq!(last.packet_len, 12 + idr_wire.len());
+    Ok(())
 }

@@ -26,19 +26,19 @@ use fss_reference::media_fixture::{
 };
 
 const PINNED_SHA256_H264_CLEAN: &str =
-    "f2c3a1c28f52194510f94cac342bb0b27cc933d04d09f7ff2431112134d25f8f";
+    "8c306a4717970585256481714c96b1e868206c83f7cfa964602878276a09eff8";
 const PINNED_SHA256_RTP_CLEAN: &str =
-    "d6ffdc3a6f1ffb7a4f7b14b919e711a15fe8485115fa80676091a097307bf1fc";
+    "273e5af560d81731b4d8c2bf8f98c5275f0162b44863fbf47e3174a30b2b8ea6";
 const PINNED_SHA256_RTP_LOSS: &str =
-    "173f2dfc63f5240e6ec66285ae959115785830aa24c1ebdb6ffb3953b33f06af";
+    "906d031f04e70369162c08d1f17096a6933eccba8e7f0744aebe489911548fa2";
 const PINNED_SHA256_RTP_REORDER: &str =
-    "217b6937562a7945dbdd976a8ed74d22ebe5f6d7ab013c11c262ac305b85d183";
+    "737bf714b7e8c7530eb5e6f42edb8e6d581916f63c3cb9f6346a115315429ce1";
 const PINNED_SHA256_RTP_DUPLICATE: &str =
-    "133cdc8b65384fc1416de6b2d43ad5b04f4d5190f2400b62ca66d86103c59948";
+    "02be7735e662cfd3ca8092837bb3b0f35601d5ebc87d29131b2e2600e4cbb0ab";
 const PINNED_SHA256_RTP_SSRC_RESET: &str =
-    "9f3b4d7ba3414a2d09cd3be7262d1f48c01e744da405b1c20cf2489b2a05e3d8";
+    "24b0cecc209a1fb46e4d99eb6f888d7fe1a928b9610ec409b0a662c5b0e4a0ed";
 const PINNED_SHA256_RTP_TRUNCATED: &str =
-    "d7a35c3eee2b210966164aadd68f8c0f6a41099b1a451f8fca30f136ba1ba42c";
+    "a625bd71db64a2eb3d88aef1f8a27b1b0492b52cc9cfc3bbe80617677c585660";
 const PINNED_SHA256_RTP_LARGE_GAP: &str =
     "13b695dd9b62bf66072ccb1508f32636e4f135d1b184a16f3caab8226f13c142";
 
@@ -392,5 +392,99 @@ fn test_media_fixture_h264_tamper_detection() -> Result<(), Box<dyn Error>> {
     );
 
     println!(r#"CAPLOG {{"step": "media_fixture_h264_tamper_detection", "verdict": "pass"}}"#);
+    Ok(())
+}
+
+/// Property over many generator configurations: every synthesized NAL ends in a nonzero byte
+/// (the rbsp_stop_one_bit plus alignment guarantee it), and an INDEPENDENT Annex-B start-code
+/// scan (the production splitter, not the generator's own NAL list) reproduces the generator's
+/// NAL sequence exactly: count, types, and emulation-prevention-retaining wire bytes.
+#[test]
+fn nal_list_matches_independent_start_code_scan_across_configs() -> Result<(), Box<dyn Error>> {
+    use fss_core::{BudgetVector, ContextAuthority, OperationId, RootAuthoritySpec};
+    use fss_reference::{AnnexBLimits, ReplayCx, ReplayIoAuthority, split_annexb};
+
+    fn test_cx(label: &str) -> Result<ReplayCx, Box<dyn Error>> {
+        let spec = RootAuthoritySpec {
+            trace_id: format!("trace:fixture-scan-{label}"),
+            operation_id: OperationId::parse(format!("operation:fixture-scan-{label}"))?,
+            principal: format!("operator:fixture-scan-{label}"),
+            capabilities: vec![fss_reference::ADP_REPLAY_ROW_ID.to_string()],
+            deadline: None,
+            priority: 10,
+            budgets: BudgetVector::default(),
+            privacy_scope: "privacy:internal".to_string(),
+            retention_scope: "retention:ephemeral".to_string(),
+            anchor_universe: ContentDigest::sha256(b"fixture-scan-anchor-universe"),
+            generation: 1,
+        };
+        let root_auth = ContextAuthority::new_root(spec)?;
+        let scratch_root = std::env::var_os("CARGO_TARGET_TMPDIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!("test-replay-cx-fixture-scan-{label}"));
+        let io = ReplayIoAuthority::from_context_authority(&root_auth, scratch_root)?;
+        Ok(ReplayCx::new(io))
+    }
+
+    // (seed, gop_size, frame_count, include_aud, include_sei, two_slice_au)
+    let configs = [
+        (42u64, 5usize, 5usize, true, true, true),
+        (42, 5, 5, true, true, false),
+        (0, 3, 4, false, false, false),
+        (1, 7, 9, true, false, true),
+        (7, 2, 6, false, true, false),
+        (99, 7, 8, true, true, false),
+        (99, 3, 5, false, false, true),
+        (1234, 7, 3, true, true, false),
+        (u64::MAX, 4, 7, true, true, true),
+    ];
+    for (idx, &(seed, gop_size, frame_count, aud, sei, two_slice)) in configs.iter().enumerate() {
+        let params = H264FixtureParams {
+            seed,
+            frame_count,
+            gop_size,
+            include_aud: aud,
+            include_sei: sei,
+            two_slice_au: two_slice,
+            force_emulation_prevention: true,
+            trailing_zeros: 1,
+        };
+        let stream = generate_h264_annexb(&params)?;
+
+        // The pinned defect (fss-vnn0q): a NAL whose last byte is 0x00 loses that byte to any
+        // Annex-B parser's trailing_zero_8bits handling, so the Annex-B form and the RTP form
+        // stop being NAL-equivalent. A real encoder's rbsp_stop_one_bit makes this impossible.
+        for nal in &stream.nals {
+            assert_ne!(
+                nal.wire_bytes.last(),
+                Some(&0x00),
+                "config {idx}: NAL type {} ends in 0x00",
+                nal.nal_unit_type
+            );
+        }
+
+        // Independent scan: the production splitter locates NAL boundaries from start codes
+        // alone and must agree with the generator's own bookkeeping everywhere.
+        let cx = test_cx(&format!("config-{idx}"))?;
+        let scan = split_annexb(&stream.bytes, AnnexBLimits::default(), &cx)?;
+        assert_eq!(
+            scan.nal_count(),
+            stream.nals.len(),
+            "config {idx}: independent scan NAL count"
+        );
+        for (i, (scanned, generated)) in scan.nals.iter().zip(stream.nals.iter()).enumerate() {
+            assert_eq!(
+                scanned.nal_unit_type, generated.nal_unit_type,
+                "config {idx} NAL {i}: type mismatch"
+            );
+            let scanned_bytes =
+                &stream.bytes[scanned.nal_span.offset..scanned.nal_span.offset + scanned.nal_span.len];
+            assert_eq!(
+                scanned_bytes, generated.wire_bytes,
+                "config {idx} NAL {i}: wire bytes diverge between scan and generator"
+            );
+        }
+    }
     Ok(())
 }

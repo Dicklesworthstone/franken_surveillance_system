@@ -667,10 +667,14 @@ pub fn generate_rtpdump_ssrc_reset(
     });
     seq2 = seq2.wrapping_add(1);
 
-    // Slice for generation 2 (SingleNal slice with marker = true)
-    let slice_pkt = proto
+    // Slice for generation 2 (marker = true). Generation 1 may have delivered the IDR as FU-A
+    // fragments (small MTU or two_slice_au=false), so no SingleNal slice packet may exist in
+    // `proto`; the new generation starts fresh and re-emits the IDR whole from the stream's own
+    // NAL list instead of reusing a fragment.
+    let idr_nal = annexb
+        .nals
         .iter()
-        .find(|p| p.packetization == "SingleNal" && p.nal_types == vec![5])
+        .find(|nal| nal.nal_unit_type == 5)
         .ok_or(MediaFixtureError::InvalidParam(
             "missing slice packet in proto",
         ))?;
@@ -681,7 +685,7 @@ pub fn generate_rtpdump_ssrc_reset(
         ssrc: ssrc2,
         marker: true,
         payload_type: params.payload_type,
-        payload: slice_pkt.payload.clone(),
+        payload: idr_nal.wire_bytes.clone(),
         expected_sequence_class: ExpectedSequenceClass::Advanced,
         is_sacrificial: false,
         expected_delivered: true,
