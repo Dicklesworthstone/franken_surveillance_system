@@ -1,4 +1,4 @@
-# HEVC RTSP negotiation
+# HEVC RTSP negotiation and reception
 
 `RtspClientSession::with_codec(config, ClientCodec::H265)` enables the RFC 7798
 transport subset on the existing RTSP/1.0 session. The ordinary `new(config)`
@@ -27,10 +27,67 @@ request rule, SHA-256 Digest policy, session-token binding, issue-time deadlines
 keepalive, TEARDOWN, and remote-session uncertainty apply unchanged to HEVC.
 No socket, DNS lookup, credential store, decoder, or external runtime is added.
 
-The focused public API tests are in `rtsp_hevc_session_contract.rs`:
+## Owner-driven TCP reception
+
+`rtsp::hevc_client::RtspHevcClient` connects this negotiation to the existing
+exact-frame `RtspWireIntake` and reorder-aware `H265Receiver`. Its `new` method
+binds the owner URL scope, expected ingress/generation/SSRC, RTP queue limits,
+and HEVC reconstruction limits before any request. `with_digest` additionally
+pins a credential realm and explicit authentication policy. It does not open a
+socket, select an interface, resolve a host, provide transport encryption, or
+authorize a camera. The transport owner still supplies those boundaries.
+
+Prepare OPTIONS/DESCRIBE/SETUP/PLAY/keepalive/TEARDOWN with `request`, or use
+`request_digest` on an authenticated connection. A prepared request must be
+written once or the connection closed; preparation does not prove dispatch.
+Feed at most `MAX_WIRE_CHUNK` bytes and drive `poll` to a waiting or terminal
+state. Always arrange `next_wake_ns`, including while the socket is silent.
+
+The public events preserve the existing distinctions:
+
+- `Control` returns the exact original accepted response and session progress.
+  `Rtp` returns its complete original TCP frame plus admission accounting;
+  `Media` subsequently returns ordered datagrams and reconstructed HEVC NALs.
+  SDP parameter sets are never injected as if observed in an RTP packet.
+- `Rtcp` validates the whole compound under the negotiated reduced-size policy
+  and retains malformed source bytes. RTCP failure does not invent a video gap
+  or an NTP-era/capture-time mapping.
+- `AuthenticationRequired` retains a matching Digest 401. `respond_digest`
+  returns BOTH its original challenge and the newly prepared signed request.
+  Credential waits do not reset original request or oldest-wire-byte deadlines.
+  Unsupported or unsolicited challenges never become credential prompts.
+- `Backpressure` retains exactly one unconsumed RTP frame and its original
+  residence deadline. No input retry is admitted twice. A datagram that cannot
+  fit an empty queue fails rather than waiting forever. Wire-blocked sessions
+  wake for hard expiry, not a busy loop over an unserviceable keepalive.
+- `Fault` and `Ended` retain local shutdown accounting and remote uncertainty.
+  Cancellation returns unprocessed wire, a held challenge/retry, and separate
+  queue/fragment retirement. EOF drains complete input; an incomplete suffix
+  remains a failure. TEARDOWN stops new admission and returns any lookahead.
+
+Outer `RtspWireFrame::received_ns` records final-byte intake time. The nested
+ordered RTP receipt records queue-admission time, which may be later under
+backpressure. HEVC reconstruction uses monotonic processing time after packet
+reordering. None of these times is silently presented as camera capture time.
+Raw returned frames may contain media or authentication material; their Debug
+implementations expose only sizes/metadata. The explicit owner must apply its
+custody, retention, encryption, and privacy policy when retaining or exporting
+those bytes. Returning original bytes is not itself durable source custody.
+
+The pump creates no worker or second runtime. Intake has one bounded partial
+buffer, at most one held retry/challenge, one bounded RTP queue and one bounded
+HEVC fragment chain. Each poll performs at most one frame/admission/media step.
+Parameter-set syntax, picture grouping, HEVC decode surfaces and HEVC archive
+publication are still outside this slice; reconstructed NALs are not frames.
+
+## Verification
+
+The focused public API tests are in `rtsp_hevc_session_contract.rs` and
+`rtsp_hevc_client_contract.rs`:
 
 ```sh
-cargo test -p fss-reference --test rtsp_hevc_session_contract --test rtsp_client_contract
+cargo test -p fss-reference --test rtsp_hevc_session_contract --test rtsp_hevc_client_contract
+cargo test -p fss-reference --test rtsp_client_contract
 ```
 
 This is an implemented reference transport slice of comprehensive-plan sections

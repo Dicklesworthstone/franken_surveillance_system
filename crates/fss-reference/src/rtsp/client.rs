@@ -298,6 +298,16 @@ impl RtspClientSession {
             (Some(a), Some(b)) => Some(a.min(b)), (a, b) => a.or(b),
         }
     }
+    /// Earliest hard request/session expiry, excluding advisory keepalive timing.
+    /// A transport owner that cannot issue requests while wire is backpressured
+    /// must still wake for these fail-closed deadlines rather than busy-polling
+    /// a past-due keepalive or silently extending the remote lifetime.
+    pub fn next_expiry_ns(&self) -> Option<u64> {
+        if matches!(self.state, ClientState::Closed | ClientState::Failed) { return None; }
+        match (self.pending.map(|p| p.deadline_ns), self.expires_ns) {
+            (Some(a), Some(b)) => Some(a.min(b)), (a, b) => a.or(b),
+        }
+    }
     /// Advance timers even without input. Expiry stops media admission immediately.
     pub fn tick(&mut self, now_ns: u64) -> Result<ClientProgress, ClientError> {
         if now_ns < self.last_ns { return Err(ClientError::ClockReversed); }

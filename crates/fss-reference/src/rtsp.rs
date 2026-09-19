@@ -11,6 +11,8 @@ pub mod authentication;
 pub mod avc_client;
 /// Exact bounded wire frames for explicit authentication and source-custody owners.
 pub mod framed;
+/// Owner-driven TCP framing, optional Digest authentication, and HEVC RTP reception.
+pub mod hevc_client;
 
 /// Capability-scoped, owner-driven RTSP/1.0 client session reference.
 pub mod client;
