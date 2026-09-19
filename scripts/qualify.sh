@@ -56,6 +56,34 @@ done < <(env)
 if ((${#SCRUB_FLAGS[@]} > 0)); then
   printf 'hermetic env scrub: unsetting %s\n' "$SCRUBBED_LIST" >&2
 fi
+# rustc flag-recording wrapper (fss-x4a.26.3, FSS-183): a PATH-prepended rustc shim
+# refuses -Z at the point of injection and records every invocation for audit.
+# The shim execs the real rustc (resolved before PATH modification). PATH-only:
+# RUSTC is not overridden, so the toolchain-identity check remains satisfied.
+REAL_RUSTC="$(command -v rustc 2>/dev/null || printf '')"
+if [[ -z "$REAL_RUSTC" ]]; then
+  printf 'rustc not found on PATH; cannot install the sealed rustc wrapper\n' >&2
+  exit 5
+fi
+RUSTC_WRAPPER_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fss-rustc-seal.XXXXXX")"
+FSS_RUSTC_LOG="$(mktemp "${TMPDIR:-/tmp}/fss-rustc-log.XXXXXX")"
+export FSS_RUSTC_LOG
+{
+  echo '#!/usr/bin/env bash'
+  echo 'set -Eu'
+  echo 'for arg in "$@"; do'
+  echo '  if [[ "$arg" == "-Z" || "$arg" == "-Z"* ]]; then'
+  echo '    printf "FSS-RUSTC-SEAL: refused -Z flag in sealed qualification: %s\n" "$arg" >&2'
+  echo '    exit 101'
+  echo '  fi'
+  echo 'done'
+  echo 'if [[ -n "${FSS_RUSTC_LOG:-}" ]]; then'
+  echo '  printf "rustc %s\n" "$*" >> "${FSS_RUSTC_LOG}"'
+  echo 'fi'
+  echo "exec '${REAL_RUSTC}' \"\$@\""
+} > "$RUSTC_WRAPPER_DIR/rustc"
+chmod +x "$RUSTC_WRAPPER_DIR/rustc"
+export PATH="$RUSTC_WRAPPER_DIR:$PATH"
 LANE="full"
 RECEIPT_DIR="${FSS_RECEIPT_DIR:-}"
 WRITE_RECEIPT=1
