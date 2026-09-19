@@ -38,7 +38,7 @@ pub struct CaptureRefusal {
     /// Reason for refusing to retain the event.
     pub reason: CaptureError,
     /// Unconsumed original receiver event; retry it before polling further upstream input.
-    pub event: AvcReceivePoll,
+    pub event: Box<AvcReceivePoll>,
 }
 
 impl std::fmt::Display for CaptureRefusal {
@@ -82,7 +82,7 @@ pub enum TimedCapture {
     /// The completed picture was not an admissible packet-disjoint IDR start.
     AwaitingIdr {
         /// Exact unselected picture and supplied timing.
-        picture: CollectedPicture,
+        picture: Box<CollectedPicture>,
         /// Exact unselected original prefix, not silently dropped source.
         unselected: Vec<CollectedSource>,
     },
@@ -124,7 +124,7 @@ pub enum CapturePoll {
         /// Local collection refusal, when the stop did not originate in a typed receiver event.
         error: Option<CollectorError>,
         /// Exact ready and pending ownership, including the original invalidating event.
-        retained: CaptureRetirement,
+        retained: Box<CaptureRetirement>,
     },
     /// All accepted work is drained; arrange this wake even without new input.
     Pending {
@@ -185,9 +185,9 @@ impl RecordingCapture {
             }
             self.collector.check_admission(now_ns).map_err(CaptureError::Collection)
         });
-        if let Err(reason) = result { return Err(CaptureRefusal { reason, event }); }
+        if let Err(reason) = result { return Err(CaptureRefusal { reason, event: Box::new(event) }); }
         let Some(deadline) = now_ns.checked_add(MAX_PENDING_EVENT_AGE_NS) else {
-            return Err(CaptureRefusal { reason: CaptureError::Collection(CollectorError::Deadline), event });
+            return Err(CaptureRefusal { reason: CaptureError::Collection(CollectorError::Deadline), event: Box::new(event) });
         };
         self.event = Some(event); self.event_deadline_ns = Some(deadline); self.last_now_ns = now_ns;
         Ok(())
@@ -209,7 +209,7 @@ impl RecordingCapture {
             }
             CollectorAdmission::AwaitingIdr { picture, unselected } => {
                 self.last_now_ns = now_ns; self.event_deadline_ns = None;
-                Ok(TimedCapture::AwaitingIdr { picture, unselected })
+                Ok(TimedCapture::AwaitingIdr { picture: Box::new(picture), unselected })
             }
             CollectorAdmission::Refused { reason, picture } => {
                 self.picture = Some(picture.picture);
@@ -240,7 +240,7 @@ impl RecordingCapture {
         if self.collector.next_wake_ns().is_some_and(|at| now_ns >= at)
             || self.event_deadline_ns.is_some_and(|at| now_ns >= at) {
             return Ok(CapturePoll::Stopped { reason: CollectionStop::Deadline, error: Some(CollectorError::Deadline),
-                retained: self.stop(CollectionStop::Deadline) });
+                retained: Box::new(self.stop(CollectionStop::Deadline)) });
         }
         if let Some(window) = self.collector.take_ready() { return Ok(CapturePoll::Window(window)); }
         if let Some(picture) = &self.picture { return Ok(CapturePoll::TimingRequired(PictureTimingRequest::for_picture(picture))); }
@@ -267,18 +267,17 @@ impl RecordingCapture {
         if discontinuity(&event) {
             self.event = Some(event);
             return Ok(CapturePoll::Stopped { reason: CollectionStop::InputDiscontinuity, error: None,
-                retained: self.stop(CollectionStop::InputDiscontinuity) });
+                retained: Box::new(self.stop(CollectionStop::InputDiscontinuity)) });
         }
-        if let AvcReceivePoll::Source { source, .. } = &event {
-            if let Err(reason) = self.collector.push_ordered(source, now_ns) {
+        if let AvcReceivePoll::Source { source, .. } = &event
+            && let Err(reason) = self.collector.push_ordered(source, now_ns) {
                 self.event = Some(event);
                 if matches!(reason, CollectorError::Capacity | CollectorError::Allocation | CollectorError::Backpressure) {
                     return Ok(CapturePoll::Backpressure(reason));
                 }
                 return Ok(CapturePoll::Stopped { reason: CollectionStop::InputDiscontinuity, error: Some(reason),
-                    retained: self.stop(CollectionStop::InputDiscontinuity) });
+                    retained: Box::new(self.stop(CollectionStop::InputDiscontinuity)) });
             }
-        }
         match event {
             AvcReceivePoll::Picture(picture)
             | AvcReceivePoll::Assembly(AvcAssemblyStep::Accepted(AvcAssemblyOutput { picture: Some(picture), retired: None })) => {

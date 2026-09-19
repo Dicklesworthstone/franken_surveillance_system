@@ -88,7 +88,7 @@ pub struct AvcClientFailure {
     /// No input contents occur in this typed category.
     pub reason: AvcClientError,
     /// Present only when this operation closed the connection and retired its state.
-    pub retirement: Option<AvcClientRetirement>,
+    pub retirement: Option<Box<AvcClientRetirement>>,
 }
 impl fmt::Display for AvcClientFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { fmt::Display::fmt(&self.reason, f) }
@@ -199,12 +199,12 @@ impl RtspAvcClient {
         if self.closed || self.input_ended { return Err(refusal(AvcClientError::Closed)); }
         self.last_ns = now;
         if self.partial_deadline_ns.is_some_and(|at| now >= at) {
-            return Err(AvcClientFailure { reason: AvcClientError::PartialTimeout, retirement: Some(self.cancel()) });
+            return Err(AvcClientFailure { reason: AvcClientError::PartialTimeout, retirement: Some(Box::new(self.cancel())) });
         }
         match self.session.request(command, now) {
             Ok(request) => Ok(request),
             Err(error) => {
-                let retirement = if self.session.state() == ClientState::Failed { Some(self.cancel()) } else { None };
+                let retirement = if self.session.state() == ClientState::Failed { Some(Box::new(self.cancel())) } else { None };
                 Err(AvcClientFailure { reason: AvcClientError::Session(error), retirement })
             }
         }
@@ -223,10 +223,10 @@ impl RtspAvcClient {
         // Check before feeding: otherwise a late final byte could empty the
         // parser buffer and erase the expired partial-frame deadline.
         if self.partial_deadline_ns.is_some_and(|at| now >= at) {
-            return Err(AvcClientFailure { reason: AvcClientError::PartialTimeout, retirement: Some(self.cancel()) });
+            return Err(AvcClientFailure { reason: AvcClientError::PartialTimeout, retirement: Some(Box::new(self.cancel())) });
         }
         if let Err(error) = self.session.tick(now) {
-            return Err(AvcClientFailure { reason: AvcClientError::Session(error), retirement: Some(self.cancel()) });
+            return Err(AvcClientFailure { reason: AvcClientError::Session(error), retirement: Some(Box::new(self.cancel())) });
         }
         match self.parser.feed(bytes) {
             Ok(events) => {
@@ -238,7 +238,7 @@ impl RtspAvcClient {
                     else { self.partial_deadline_ns.or(Some(deadline)) };
                 Ok(())
             }
-            Err(error) => Err(AvcClientFailure { reason: AvcClientError::Wire(error), retirement: Some(self.cancel()) }),
+            Err(error) => Err(AvcClientFailure { reason: AvcClientError::Wire(error), retirement: Some(Box::new(self.cancel())) }),
         }
     }
     /// Earliest session/media/framing wake; queued parsed input requests immediate polling.
@@ -277,9 +277,8 @@ impl RtspAvcClient {
                 RtspEvent::Response(response) | RtspEvent::AuthRequired { response, .. } => {
                     match self.session.accept(&response, now) {
                         Ok(progress) => {
-                            if self.session.state() == ClientState::Ready && self.video.is_none() {
-                                if let Err(error) = self.configure_video() { return Ok(self.fault(error, None)); }
-                            }
+                            if self.session.state() == ClientState::Ready && self.video.is_none()
+                                && let Err(error) = self.configure_video() { return Ok(self.fault(error, None)); }
                             if self.session.state() == ClientState::Closed { self.input_ended = true; self.draining = true; if let Some(v) = &mut self.video { v.finish(); } }
                             AvcClientPoll::Control(progress)
                         }

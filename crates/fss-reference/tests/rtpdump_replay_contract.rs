@@ -8,7 +8,7 @@ fn records<'a>(replay: &mut RtpDumpReplay<'a>, cx: &fss_reference::ReplayCx) -> 
     let mut out = Vec::new();
     for _ in 0..100 {
         match replay.step(cx)? {
-            RtpReplayStep::Record(record) => out.push(record),
+            RtpReplayStep::Record(record) => out.push(*record),
             RtpReplayStep::Ended { discarded: None, .. } => return Ok(out),
             other => return Err(format!("unexpected replay {other:?}").into()),
         }

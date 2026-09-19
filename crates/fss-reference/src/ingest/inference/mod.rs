@@ -55,7 +55,7 @@ pub enum ModelRunError {
     /// The existing scalar executor refused or could not finish the run.
     Execution(ExecError),
     /// Retained source or decoded-frame recovery failed.
-    Media(RecordedDecodeError),
+    Media(Box<RecordedDecodeError>),
     /// A shared semantic contract failed.
     Contract(ContractError),
     /// Deployment authority or custody failed.
@@ -97,7 +97,9 @@ conversion!(ModelIrDecodeError, GraphDecode);
 conversion!(ModelIrError, Graph);
 conversion!(TensorError, Tensor);
 conversion!(ExecError, Execution);
-conversion!(RecordedDecodeError, Media);
+impl From<RecordedDecodeError> for ModelRunError {
+    fn from(error: RecordedDecodeError) -> Self { Self::Media(Box::new(error)) }
+}
 conversion!(ContractError, Contract);
 conversion!(ReferenceError, Reference);
 conversion!(ObjectError, Object);
@@ -297,7 +299,10 @@ impl RecordedInference {
         let encoded = receipt.encoded()?;
         let manifest = receipt.manifest()?;
         let target = slot(receipt.identity())?;
-        if deployment.publisher().root(&target).is_some_and(|r| r.root != manifest.root()) {
+        let visible_root = deployment.publisher().root(&target).map(|r| r.root);
+        if let Some(existing) = &visible_root
+            && *existing != manifest.root()
+        {
             return Err(ModelRunError::Mismatch);
         }
         for bytes in [model.encoded(), input.as_slice(), output.as_slice(), encoded.as_slice()] {
@@ -305,7 +310,12 @@ impl RecordedInference {
             let digest = deployment.publisher_mut().stage_object(bytes)?;
             deployment.publisher_mut().verify_object(digest)?;
         }
-        deployment.publisher_mut().stage_manifest(&target, &manifest)?;
+        // `stage_manifest` refuses a visible slot by design; an exact retry or a resume after the
+        // root-to-receipt interruption finds the identical root already published and only owes
+        // the ledger batch (append_batch is idempotent by batch_id).
+        if visible_root.is_none() {
+            deployment.publisher_mut().stage_manifest(&target, &manifest)?;
+        }
         deployment.publish_and_commit(&target, &manifest, frame.receipt().capsule().capture, cx)?;
         checkpoint(cx, STAGE_INFERENCE_COMMIT)?;
         let delta = receipt.delta(&frame, manifest.root())?;

@@ -82,7 +82,14 @@ pub struct ArchiveReadReceipt {
 #[derive(Debug)]
 pub enum ArchiveReadProgress {
     /// Complete original window plus the requested overlap, not a cropped rendition.
-    Window { ordinal: usize, requested_interval: Range<u64>, recording: PreparedRecording },
+    Window {
+        /// Zero-based ordinal of the loaded window in the queried snapshot.
+        ordinal: usize,
+        /// Exactly the requested decode interval, including any requested overlap.
+        requested_interval: Range<u64>,
+        /// Fully verified original window bytes for that interval.
+        recording: PreparedRecording,
+    },
     /// Every selected window has been verified and transferred exactly once.
     Complete(ArchiveReadReceipt),
     /// Completion was already returned; no fresh verification took place.

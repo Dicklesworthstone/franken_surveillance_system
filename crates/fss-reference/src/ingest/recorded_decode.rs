@@ -59,7 +59,7 @@ pub enum RecordedDecodeError {
     /// Owner cancellation was observed at a composition boundary.
     Cancelled,
     /// Retained source recovery or reading failed.
-    Source(FileIngestError),
+    Source(Box<FileIngestError>),
     /// The canonical production codec refused the image.
     Codec(DecodeError),
     /// A shared semantic contract failed.
@@ -96,7 +96,7 @@ impl std::error::Error for RecordedDecodeError {}
 macro_rules! conversion {
     ($source:ty, $variant:ident) => {
         impl From<$source> for RecordedDecodeError {
-            fn from(error: $source) -> Self { Self::$variant(error) }
+            fn from(error: $source) -> Self { Self::$variant(error.into()) }
         }
     };
 }
@@ -390,10 +390,10 @@ impl RecordedFrame {
         let manifest = receipt.manifest()?;
         let slot = slot(receipt.identity())?;
         let visible_root = deployment.publisher().root(&slot).map(|root| root.root);
-        if let Some(existing) = &visible_root {
-            if *existing != manifest.root() {
-                return Err(RecordedDecodeError::InvalidReceipt);
-            }
+        if let Some(existing) = &visible_root
+            && *existing != manifest.root()
+        {
+            return Err(RecordedDecodeError::InvalidReceipt);
         }
         for bytes in [encoded.as_slice(), pixels.as_slice(), receipt_bytes.as_slice()] {
             checkpoint(cx, "recorded_decode:stage")?;

@@ -947,13 +947,13 @@ impl FileIngestAdapter {
             });
         }
 
-        if let Some(hint) = request.format_hint {
-            if hint != detected_format.into_hint() {
-                return Err(FileIngestError::FormatConflict {
-                    hint,
-                    detected: detected_format,
-                });
-            }
+        if let Some(hint) = request.format_hint
+            && hint != detected_format.into_hint()
+        {
+            return Err(FileIngestError::FormatConflict {
+                hint,
+                detected: detected_format,
+            });
         }
 
         // Step 4: Import identity calculation
@@ -1152,11 +1152,11 @@ impl FileIngestAdapter {
         let mut new_objects: usize = 0;
 
         for (digest, slice) in &candidate_objects {
-            if seen_digests.insert(*digest) {
-                if deployment.publisher().spool().state(*digest).is_none() {
-                    new_bytes = new_bytes.saturating_add(slice.len() as u64);
-                    new_objects = new_objects.saturating_add(1);
-                }
+            if seen_digests.insert(*digest)
+                && deployment.publisher().spool().state(*digest).is_none()
+            {
+                new_bytes = new_bytes.saturating_add(slice.len() as u64);
+                new_objects = new_objects.saturating_add(1);
             }
         }
 

@@ -21,22 +21,21 @@ const S: [u32; 64] = [
 
 pub(super) fn digest(input: &[u8]) -> [u8; 16] {
     let mut state = [0x67452301_u32, 0xefcdab89, 0x98badcfe, 0x10325476];
-    let mut chunks = input.chunks_exact(64);
-    for chunk in &mut chunks { compress(&mut state, chunk); }
-    let tail = chunks.remainder();
+    let (chunks, tail) = input.as_chunks::<64>();
+    for chunk in chunks { compress(&mut state, chunk); }
     let mut final_blocks = [0_u8; 128];
     final_blocks[..tail.len()].copy_from_slice(tail);
     final_blocks[tail.len()] = 0x80;
     let end = if tail.len() < 56 { 64 } else { 128 };
     final_blocks[end - 8..end].copy_from_slice(&(input.len() as u64).wrapping_mul(8).to_le_bytes());
-    for block in final_blocks[..end].chunks_exact(64) { compress(&mut state, block); }
+    for block in final_blocks[..end].as_chunks::<64>().0 { compress(&mut state, block); }
     let mut output = [0_u8; 16];
-    for (part, value) in output.chunks_exact_mut(4).zip(state) { part.copy_from_slice(&value.to_le_bytes()); }
+    for (part, value) in output.as_chunks_mut::<4>().0.iter_mut().zip(state) { part.copy_from_slice(&value.to_le_bytes()); }
     output
 }
 fn compress(state: &mut [u32; 4], block: &[u8]) {
     let mut m = [0_u32; 16];
-    for (word, bytes) in m.iter_mut().zip(block.chunks_exact(4)) {
+    for (word, bytes) in m.iter_mut().zip(block.as_chunks::<4>().0) {
         *word = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
     }
     let [mut a, mut b, mut c, mut d] = *state;

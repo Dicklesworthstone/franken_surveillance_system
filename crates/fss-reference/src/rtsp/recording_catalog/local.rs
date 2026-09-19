@@ -33,9 +33,21 @@ type IoResult<T> = std::result::Result<T, CatalogIoError>;
 #[derive(Debug)]
 pub enum CatalogProgress {
     /// One existing durable window was fully loaded and its source provenance checked.
-    WindowVerified { ordinal: usize, root: ContentDigest, bytes: usize },
+    WindowVerified {
+        /// Zero-based ordinal of the verified window within the catalog.
+        ordinal: usize,
+        /// Content digest checked against the original recording manifest.
+        root: ContentDigest,
+        /// Retained payload byte count of the verified window.
+        bytes: usize,
+    },
     /// Canonical catalog metadata was staged, without publishing the catalog root.
-    IndexStaged { digest: ContentDigest, bytes: usize },
+    IndexStaged {
+        /// Content digest of the staged canonical index object.
+        digest: ContentDigest,
+        /// Canonical index byte count staged into the owner.
+        bytes: usize,
+    },
     /// Actual root-last publisher receipt, with remote/protection rungs unclaimed.
     Published(LocalPublicationReceipt),
     /// The same request already returned its publication receipt; no fresh I/O occurred.

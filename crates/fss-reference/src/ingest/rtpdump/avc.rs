@@ -54,7 +54,10 @@ pub enum AvcDumpAdmission {
     /// Snaplen lost source bytes. All pending derivative layers are retired.
     CapturedPrefix(AvcReceiveCancellation),
     /// An admission error fenced this attempt; cancellation accounts for pending work.
-    Refused { error: AvcDumpError, cancelled: AvcReceiveCancellation },
+    Refused { /// The typed admission failure, framing or allocation.
+        error: AvcDumpError,
+        /// Receipt for all pending receiver work retired by the refusal.
+        cancelled: AvcReceiveCancellation },
     /// A prior source/configuration failure or codec end stopped derivative admission.
     /// Original recording records continue to be surfaced without reinterpretation.
     Fenced,
@@ -64,16 +67,33 @@ pub enum AvcDumpAdmission {
 #[derive(Debug)]
 pub enum AvcDumpStep<'a> {
     /// Exact original record, including RTCP, probation, duplicates and refused inputs.
-    Record { source: RtpDumpRecord<'a>, offset_reversed: bool, admission: AvcDumpAdmission },
+    Record {
+        /// The exact original-file record backing this admission.
+        source: RtpDumpRecord<'a>,
+        /// Recorded capture offset decreased relative to the previous record.
+        offset_reversed: bool,
+        /// Admission receipt for this record, including fencing and cancellations.
+        admission: AvcDumpAdmission,
+    },
     /// Existing receiver event unchanged, preserving picture boundaries and retirements.
     /// Picture source spans can be mapped with `RecordedAvcReplay::map_nal`.
     Progress(AvcReceivePoll),
     /// Container EOF was reached. Receiver drain/EOF pictures may follow; not quiescence yet.
     InputEnded,
     /// Malformed framing is not clean EOF; no unverified picture tail is manufactured.
-    FramingRefused { error: RtpDumpError, cancelled: AvcReceiveCancellation },
+    FramingRefused {
+        /// The exact framing failure that fences this attempt; not clean EOF.
+        error: RtpDumpError,
+        /// Receipt for all pending receiver work retired by the framing fault.
+        cancelled: AvcReceiveCancellation,
+    },
     /// Receiver failure is explicit and fences derivatives, not original-record inspection.
-    ReceiverRefused { error: AvcReceiveError, cancelled: AvcReceiveCancellation },
+    ReceiverRefused {
+        /// The real receiver's typed failure; it fences all derivative admission.
+        error: AvcReceiveError,
+        /// Receipt for all pending receiver work retired by the failure.
+        cancelled: AvcReceiveCancellation,
+    },
     /// Owner cancellation, including all queued packet/NAL/picture retirements.
     Cancelled(AvcReceiveCancellation),
     /// This attempt is terminal and has no further events.

@@ -56,7 +56,7 @@ pub struct DigestAvcFailure {
     /// Typed reason; no secret-bearing strings.
     pub reason: DigestAvcError,
     /// Present when every local layer was closed by this operation.
-    pub retirement: Option<DigestAvcRetirement>,
+    pub retirement: Option<Box<DigestAvcRetirement>>,
 }
 impl fmt::Display for DigestAvcFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { fmt::Display::fmt(&self.reason, f) }
@@ -70,7 +70,7 @@ pub enum DigestAvcPoll {
     /// retirement; the separate wire receipt accounts for this adapter's input.
     Client {
         /// Control, RTP/RTCP, reconstruction, backpressure, or terminal event.
-        event: AvcClientPoll,
+        event: Box<AvcClientPoll>,
         /// Present only on the first client-initiated terminal event/restart.
         wire_retirement: Option<DigestWireRetirement>,
     },
@@ -87,7 +87,7 @@ pub enum DigestAvcPoll {
         /// Typed reason.
         reason: DigestAvcError,
         /// All local layers retired, with retained challenge and wire ownership.
-        retirement: DigestAvcRetirement,
+        retirement: Box<DigestAvcRetirement>,
     },
 }
 
@@ -197,7 +197,7 @@ impl DigestAvcClient {
     pub fn poll(&mut self, now: u64) -> Result<DigestAvcPoll, DigestAvcError> {
         self.inner.check_time(now).map_err(DigestAvcError::Client)?;
         if self.closed { return Ok(DigestAvcPoll::Client {
-            event: AvcClientPoll::Ended { media: None, retirement: None }, wire_retirement: None }); }
+            event: Box::new(AvcClientPoll::Ended { media: None, retirement: None }), wire_retirement: None }); }
         self.inner.last_ns = now;
         if let Some(error) = self.deadline_error(now) { return Ok(self.fault(error)); }
         let event = match self.inner.poll(now) {
@@ -220,8 +220,8 @@ impl DigestAvcClient {
             Err(error) => return Ok(self.fault(DigestAvcError::Wire(error))),
             Ok(Some(frame)) => {
                 self.input_ready = false;
-                if let RtspEvent::Response(response) | RtspEvent::AuthRequired { response, .. } = frame.event() {
-                    if matches!(response.status_code, 401 | 407) {
+                if let RtspEvent::Response(response) | RtspEvent::AuthRequired { response, .. } = frame.event()
+                    && matches!(response.status_code, 401 | 407) {
                         let matching = response.headers.cseq().is_some_and(|c| c.ok() == self.pending_cseq) && self.pending_cseq.is_some();
                         let supported = response.status_code == 401 && response.auth_challenge == Some(AuthScheme::Digest);
                         self.challenge = Some(frame); self.challenge_deadline_ns = frame_deadline;
@@ -230,7 +230,6 @@ impl DigestAvcClient {
                         if self.input_ended { return Ok(self.fault(DigestAvcError::AuthenticationAtEof)); }
                         return Ok(DigestAvcPoll::AuthenticationRequired { cseq: self.pending_cseq.ok_or(DigestAvcError::NoChallenge)?,
                             wake_at_ns: self.next_wake_ns() });
-                    }
                 }
                 let (event, _original, received_ns) = frame.into_parts();
                 // No public event injection API: only this child module can hand
@@ -270,7 +269,7 @@ impl DigestAvcClient {
         if matches!(&event, AvcClientPoll::Control(ClientProgress::Accepted(_))) { self.pending_cseq = None; }
         if self.inner.draining { self.input_ended = true; }
         let wire_retirement = if self.inner.closed { Some(self.close_wire()) } else { None };
-        DigestAvcPoll::Client { event, wire_retirement }
+        DigestAvcPoll::Client { event: Box::new(event), wire_retirement }
     }
     fn deadline_error(&self, now: u64) -> Option<DigestAvcError> {
         [self.intake.deadline_ns(), self.challenge_deadline_ns].into_iter().flatten()
@@ -291,10 +290,10 @@ impl DigestAvcClient {
         if self.inner.session.state() == ClientState::Failed { self.fatal(reason) } else { safe(reason) }
     }
     fn fatal(&mut self, reason: DigestAvcError) -> DigestAvcFailure {
-        DigestAvcFailure { reason, retirement: Some(self.cancel()) }
+        DigestAvcFailure { reason, retirement: Some(Box::new(self.cancel())) }
     }
     fn fault(&mut self, reason: DigestAvcError) -> DigestAvcPoll {
-        DigestAvcPoll::Fault { reason, retirement: self.cancel() }
+        DigestAvcPoll::Fault { reason, retirement: Box::new(self.cancel()) }
     }
 }
 fn safe(reason: DigestAvcError) -> DigestAvcFailure { DigestAvcFailure { reason, retirement: None } }

@@ -11,9 +11,9 @@ use super::super::recording_catalog::CatalogBuilder;
 #[must_use]
 pub struct ArchiveWriteRefusal {
     /// Typed reason; no source bytes or filesystem paths are printed.
-    pub reason: ArchiveError,
+    pub reason: Box<ArchiveError>,
     /// Unconsumed immutable recording, safe to retry or retain separately.
-    pub recording: PreparedRecording,
+    pub recording: Box<PreparedRecording>,
 }
 impl std::fmt::Display for ArchiveWriteRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "{}", self.reason) }
@@ -35,22 +35,62 @@ pub struct ArchiveAdmission {
 pub enum ArchiveWriteProgress {
     /// One complete recording was published through the existing local owner.
     /// It remains unindexed until a later CatalogPublished acknowledgement.
-    WindowDurable { ordinal: usize, receipt: LocalPublicationReceipt },
-    /// Admission is paused while a fixed tail becomes one immutable catalog.
-    PageStarted { first_ordinal: usize, windows: usize },
-    /// One durable original window was reloaded and checked for this catalog.
-    PageWindowVerified { ordinal: usize, root: ContentDigest },
-    /// Immutable catalog bytes are prepared; nothing new is visible yet.
-    CatalogPrepared { root: ContentDigest },
-    /// Canonical catalog index is staged but the page root is not yet published.
-    CatalogIndexStaged { digest: ContentDigest },
-    /// Actual publisher receipt settles indexing for this exact ordinal range.
-    CatalogPublished { first_ordinal: usize, windows: usize, receipt: LocalPublicationReceipt },
-    /// No immediate write work; a partial durable tail awaits more input or flush.
-    Ready { durable_windows: usize, indexed_windows: usize },
-    /// Input ended and every accepted durable recording has a published page.
-    /// This accounts for earlier acknowledgements, not a fresh whole-archive media read.
-    Finished { snapshot_digest: ContentDigest, windows: usize, pages: usize },
+    /// Zero-based durable position and the publisher's exact storage receipt.
+    WindowDurable {
+        /// Ordinal assigned at admission; equals the prior snapshot window count.
+        ordinal: usize,
+        /// Durable publisher receipt for this window's exact root closure.
+        receipt: LocalPublicationReceipt,
+    },
+    /// Ordinal where the fixed tail page begins and how many windows it holds.
+    PageStarted {
+        /// Ordinal of the first window on the new page.
+        first_ordinal: usize,
+        /// Number of windows the new page holds.
+        windows: usize,
+    },
+    /// Reloaded window identity for one catalog page entry.
+    PageWindowVerified {
+        /// Zero-based ordinal of the verified window.
+        ordinal: usize,
+        /// Content digest checked against the original recording manifest.
+        root: ContentDigest,
+    },
+    /// Content digest of the prepared catalog page bytes.
+    CatalogPrepared {
+        /// Digest of the fully prepared catalog page.
+        root: ContentDigest,
+    },
+    /// Content digest of the staged canonical index object.
+    CatalogIndexStaged {
+        /// Digest of the staged canonical index object.
+        digest: ContentDigest,
+    },
+    /// Ordinal range covered by the page and its durable publisher receipt.
+    CatalogPublished {
+        /// First window ordinal settled by this page.
+        first_ordinal: usize,
+        /// Number of windows the published page indexes.
+        windows: usize,
+        /// Durable publisher receipt for the catalog root.
+        receipt: LocalPublicationReceipt,
+    },
+    /// Acknowledged durable and indexed window counts after this step.
+    Ready {
+        /// Windows durable in the publisher at this step.
+        durable_windows: usize,
+        /// Windows represented in the staged index at this step.
+        indexed_windows: usize,
+    },
+    /// Terminal snapshot identity and the totals it accounts for.
+    Finished {
+        /// Digest over the fully published archive snapshot.
+        snapshot_digest: ContentDigest,
+        /// Total durable windows in the finished archive.
+        windows: usize,
+        /// Total immutable catalog pages in the finished archive.
+        pages: usize,
+    },
     /// Finished was already returned; no new publication or verification occurred.
     Exhausted,
 }
@@ -122,7 +162,7 @@ impl<'a> RecordingArchiveWriter<'a> {
         let result = self.prepare_admission(&recording, reserved_bytes, now_ns);
         let entry = match result {
             Ok(entry) => entry,
-            Err(reason) => return Err(ArchiveWriteRefusal { reason, recording }),
+            Err(reason) => return Err(ArchiveWriteRefusal { reason: Box::new(reason), recording: Box::new(recording) }),
         };
         let admission = ArchiveAdmission { ordinal: self.snapshot.windows.len(), slot: entry.slot().clone(), root: entry.root() };
         self.pending = Some(PendingWindow { recording, entry, reservation: reserved_bytes });

@@ -79,7 +79,12 @@ pub enum RtpRecordOutcome {
     /// Sequence observation was not delivered (probation, duplicate, or restart requirement).
     SequenceOnly(SequenceObservation),
     /// H.264 syntax/reconstruction refused a sequence-validated packet.
-    CodecRefused { observation: SequenceObservation, failure: H264Failure },
+    CodecRefused {
+        /// Sequence accounting from the packet kernel for this refused packet.
+        observation: SequenceObservation,
+        /// The typed H.264 syntax or reconstruction refusal.
+        failure: H264Failure,
+    },
     /// Existing packet kernel's success, including explicit ignored out-of-order input.
     H264 {
         /// Original sequence accounting, not a camera-coverage claim.
@@ -112,13 +117,27 @@ pub struct ReplayedRecord<'a> {
 #[derive(Debug)]
 pub enum RtpReplayStep<'a> {
     /// One original source record and zero or more complete transport NALs.
-    Record(ReplayedRecord<'a>),
+    /// Boxed so the terminal and refusal variants stay small to construct and match.
+    Record(Box<ReplayedRecord<'a>>),
     /// Framing failed after any previous successful records; unparsed suffix remains source.
-    FramingRefused { error: RtpDumpError, discarded: Option<FragmentDiscard> },
+    FramingRefused {
+        /// The exact container framing failure; never coerced into a clean EOF.
+        error: RtpDumpError,
+        /// Fragment retired by the framing fault, if one was pending.
+        discarded: Option<FragmentDiscard>,
+    },
     /// Clean file EOF; an incomplete fragment is explicitly retired, never emitted as a NAL.
-    Ended { stats: SequenceStats, discarded: Option<FragmentDiscard> },
+    Ended {
+        /// Final sequence statistics over all admitted packets.
+        stats: SequenceStats,
+        /// Incomplete fragment retired at EOF, if one was pending.
+        discarded: Option<FragmentDiscard>,
+    },
     /// Owner cancellation. Caller still owns the entire source snapshot.
-    Cancelled { discarded: Option<FragmentDiscard> },
+    Cancelled {
+        /// Fragment retired by the cancellation, if one was pending.
+        discarded: Option<FragmentDiscard>,
+    },
     /// This attempt already returned a terminal state. It has not verified new input.
     Exhausted,
 }
@@ -261,7 +280,7 @@ impl<'a> RtpDumpReplay<'a> {
                 },
             },
         };
-        Ok(RtpReplayStep::Record(ReplayedRecord { source, offset_reversed, expired, discarded, outcome }))
+        Ok(RtpReplayStep::Record(Box::new(ReplayedRecord { source, offset_reversed, expired, discarded, outcome })))
     }
     fn map_nal(&self, nal: NalUnit) -> Result<ReplayedNal, RtpReplayError> {
         let mut sources = Vec::new();

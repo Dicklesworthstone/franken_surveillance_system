@@ -254,11 +254,11 @@ fn decode_rows(
 ) -> Result<(Vec<Detection>, usize, usize), DetectionError> {
     check()?;
     if dimensions.contains(&0) || dimensions.iter().any(|d| *d > 4096)
-        || values.len() % 6 != 0 || values.len() / 6 > contract.spec.maximum_rows
+        || !values.len().is_multiple_of(6) || values.len() / 6 > contract.spec.maximum_rows
     { return Err(DetectionError::Limit); }
     let mut candidates = Vec::new();
     let mut below_threshold = 0;
-    for (index, row) in values.chunks_exact(6).enumerate() {
+    for (index, row) in values.as_chunks::<6>().0.iter().enumerate() {
         check()?; budget.charge()?;
         // Validate even rows that would be below threshold: malformed output is not no detection.
         let mut detection = quantize(row, &contract.spec, dimensions)?;
