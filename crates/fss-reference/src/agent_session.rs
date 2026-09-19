@@ -25,6 +25,9 @@ pub mod checkpoint;
 /// Session-authorized delivery of exact published context expansions.
 pub mod context_hydration;
 
+/// Bounded, fenced coordination of exact multi-agent work scopes.
+pub mod work_claims;
+
 #[cfg(test)]
 mod tests;
 
