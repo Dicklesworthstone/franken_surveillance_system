@@ -8,6 +8,8 @@ pub mod file_adapter;
 pub mod mjpeg;
 /// Restart-safe recovery and verified reads of completed file imports.
 pub mod retained;
+/// Canonical JPEG decoding and durable source-linked luma publications.
+pub mod recorded_decode;
 /// Bounded recorded-RTP framing and source-preserving ingest.
 pub mod rtpdump;
 

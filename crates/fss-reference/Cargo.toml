@@ -21,6 +21,7 @@ path = "tests/doctor_deployment_contract.rs"
 workspace = true
 
 [dependencies]
+fss-codec-mjpeg = { path = "../fss-codec-mjpeg" }
 fss-container = { path = "../fss-container" }
 fss-core = { path = "../fss-core" }
 fss-ledger = { path = "../fss-ledger" }
