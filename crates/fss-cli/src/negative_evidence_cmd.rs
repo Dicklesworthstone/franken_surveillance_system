@@ -1914,11 +1914,6 @@ mod tests {
         let checked = fs::File::open(&path)?;
         let replacement = ledger_bytes_with(&path, &["NEG-004"])?;
         let fork = format!("{path}.fork");
-        eprintln!(
-            "DEBUG post-write nlink={:?} dir={:?}",
-            checked.metadata().ok().and_then(|m| link_count(&m)),
-            fs::read_dir(dir.0.clone()).map(|entries| entries.filter_map(|e| e.ok().map(|e| format!("{} n={}", e.file_name().to_string_lossy(), e.metadata().ok().and_then(|m| link_count(&m)).unwrap_or(0)))).collect::<Vec<_>>())
-        );
         let target_for_hook = path.clone();
         let fork_for_hook = fork.clone();
         let inject = move |_: &Path| fs::hard_link(&target_for_hook, &fork_for_hook);
@@ -1965,12 +1960,21 @@ mod tests {
         let mode = WriteMode::Replace {
             expected: ContentDigest::sha256(&original),
         };
+        eprintln!(
+            "DEBUG pre: checked nlink={:?} fork_exists={}",
+            checked.metadata().ok().and_then(|m| link_count(&m)),
+            fs::try_exists(&fork).unwrap_or(false)
+        );
         let result = write_ledger_atomically(
             &path,
             &replacement,
             mode,
             &inject,
             Some((&checked, &path)),
+        );
+        eprintln!(
+            "DEBUG post: checked nlink={:?}",
+            checked.metadata().ok().and_then(|m| link_count(&m))
         );
         match result {
             Err(PublishError::Failed(NegativeEvidenceError::LedgerForked { links, .. })) => {
