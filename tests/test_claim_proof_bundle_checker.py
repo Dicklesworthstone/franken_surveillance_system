@@ -6993,3 +6993,47 @@ class ClaimErrorCodeRegistrationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class FormalToolchainRegistryTests(unittest.TestCase):
+    """fss-spiyn stage 2: the formal-toolchain registry is load-only and fail-closed."""
+
+    def test_registry_loads_and_matches_derived_table(self) -> None:
+        import json
+
+        data = json.loads(
+            (ROOT / "architecture/formal_toolchains.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(data.get("schema"), "fss.formal_toolchains.v1")
+        toolchains = _load_formal_toolchains()
+        self.assertIn("lean4", toolchains)
+        self.assertIn("tlaps", toolchains)
+        for checker, suffixes in toolchains.items():
+            self.assertTrue(suffixes, f"{checker} must declare source suffixes")
+        # A model checker that cannot back a theorem claim must not be registered.
+        for entry in data.get("toolchains", []):
+            if entry.get("backs_theorem_claims"):
+                self.assertIn(entry["id"], toolchains)
+
+    def test_registry_tamper_is_refused(self) -> None:
+        import tempfile
+
+        import json as json_module
+
+        good = (
+            pathlib.Path(ROOT / "architecture/formal_toolchains.json")
+            .read_text(encoding="utf-8")
+        )
+        data = json_module.loads(good)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "architecture").mkdir()
+            for rel, text in (("architecture/formal_toolchains.json", good),):
+                (root / rel).write_text(text, encoding="utf-8")
+            # wrong schema is refused
+            bad = json_module.loads(good)
+            bad["schema"] = "fss.formal_toolchains.v9"
+            (root / "architecture/formal_toolchains.json").write_text(
+                json_module.dumps(bad), encoding="utf-8"
+            )
+            with self.assertRaises(SystemExit):
+                _load_formal_toolchains(root)

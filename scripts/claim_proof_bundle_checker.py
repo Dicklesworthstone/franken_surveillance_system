@@ -2708,13 +2708,40 @@ def _check_assumptions(
 # Row minimum_evidence: formal artifact, assumptions, toolchain identity, check receipt.
 FORMAL_MODEL_SCHEMA = "fss.formal_model.v1"
 PROOF_CHECK_RECEIPT_SCHEMA = "fss.proof_check_receipt.v1"
-# Closed vocabulary of theorem provers (the proofs/lean4 and proofs/tla targets) and the
-# formal-language source suffixes each one checks. TLC and Apalache are model checkers: they
-# check invariants of bounded models and do not check THEOREMs, so they cannot back a 'proof'.
-FORMAL_PROOF_CHECKERS: dict[str, tuple[str, ...]] = {
-    "lean4": (".lean",),
-    "tlaps": (".tla",),
-}
+# Closed vocabulary of theorem provers, loaded fail-closed from the registered
+# architecture/formal_toolchains.json (fss-spiyn stage 2): an unregistered checker id cannot
+# back a 'proof' claim, and model checkers are absent by design (they check invariants of
+# bounded models, not THEOREMs).
+FORMAL_TOOLCHAINS_REGISTRY = "architecture/formal_toolchains.json"
+
+
+def _load_formal_toolchains(root: Path = ROOT) -> dict[str, tuple[str, ...]]:
+    path = root / FORMAL_TOOLCHAINS_REGISTRY
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise SystemExit(
+            f"[FAIL] formal-toolchain registry '{FORMAL_TOOLCHAINS_REGISTRY}' is unreadable "
+            f"({exc}); refusing to check proof claims fail-open"
+        )
+    if data.get("schema") != "fss.formal_toolchains.v1":
+        raise SystemExit(
+            f"[FAIL] formal-toolchain registry schema mismatch: {data.get('schema')!r}"
+        )
+    toolchains: dict[str, tuple[str, ...]] = {}
+    for entry in data.get("toolchains") or []:
+        checker = str(entry.get("id", "")).strip()
+        suffixes = tuple(str(s) for s in entry.get("source_suffixes") or [])
+        if checker and entry.get("backs_theorem_claims") and suffixes:
+            toolchains[checker] = suffixes
+    if not toolchains:
+        raise SystemExit(
+            "[FAIL] formal-toolchain registry declares no theorem-capable toolchains"
+        )
+    return toolchains
+
+
+FORMAL_PROOF_CHECKERS: dict[str, tuple[str, ...]] = _load_formal_toolchains()
 PASSING_PROOF_CHECK_STATUSES: frozenset[str] = frozenset({"passed"})
 TEST_EVIDENCE_TOKENS: frozenset[str] = frozenset({
     "test", "tests", "pytest", "unittest", "nextest", "proptest", "quickcheck", "fuzz", "fuzzing",
