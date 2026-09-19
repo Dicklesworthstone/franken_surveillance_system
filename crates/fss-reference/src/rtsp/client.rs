@@ -4,6 +4,8 @@
 
 /// Bounded credential-owner integration preserving this session's request lifecycle.
 pub mod authenticated;
+/// Bounded RFC 7798 negotiation without a decoder or codec fallback.
+pub mod hevc;
 
 use std::fmt;
 use super::{AuthScheme, RtspHeaders, RtspResponse, parse_sdp_bytes};
@@ -40,7 +42,7 @@ impl fmt::Debug for ClientConfig {
 pub enum ClientState {
     /// No media negotiation yet.
     Idle,
-    /// A bounded H.264 description has been accepted.
+    /// A bounded description for the explicitly selected codec has been accepted.
     Described,
     /// SETUP accepted; PLAY has not yet succeeded.
     Ready,
@@ -88,7 +90,7 @@ pub enum ClientError {
     CseqMismatch,
     /// Malformed or duplicate decision-bearing fields.
     Response,
-    /// Only the explicitly supported SDP/H.264 subset is admitted.
+    /// Only the explicitly selected codec and its supported SDP subset are admitted.
     Description,
     /// SETUP changed the offered transport, channels, or supported parameters.
     Transport,
@@ -129,6 +131,21 @@ impl fmt::Debug for ClientRequest {
         f.debug_struct("ClientRequest").field("command", &self.command)
             .field("cseq", &self.cseq).field("byte_len", &self.bytes.len()).finish()
     }
+}
+
+/// Immutable owner codec selection. A server cannot switch codecs or choose a fallback.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClientCodec {
+    /// Existing RFC 6184 single-NAL/noninterleaved AVC contract.
+    H264,
+    /// RFC 7798 HEVC in single-stream transmission order with no DON fields.
+    H265,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum NegotiatedMedia {
+    H264(ClientMedia),
+    H265(hevc::HevcClientMedia),
 }
 
 /// Negotiated compressed-video parameters. Syntax/decodability remain the codec owner's job.
@@ -199,7 +216,8 @@ pub struct RtspClientSession {
     last_ns: u64,
     next_cseq: u32,
     pending: Option<Pending>,
-    media: Option<ClientMedia>,
+    codec: ClientCodec,
+    media: Option<NegotiatedMedia>,
     track_uri: String,
     aggregate_uri: String,
     session_id: Option<String>,
@@ -220,6 +238,11 @@ impl fmt::Debug for RtspClientSession {
 impl RtspClientSession {
     /// Open one locally scoped client; this neither authenticates nor opens a connection.
     pub fn new(config: ClientConfig) -> Result<Self, ClientError> {
+        Self::with_codec(config, ClientCodec::H264)
+    }
+    /// Pin a codec before any request. The original constructor remains H.264-only.
+    /// HEVC uses the same scope, CSeq, Digest, session, expiry, and teardown rules.
+    pub fn with_codec(config: ClientConfig, codec: ClientCodec) -> Result<Self, ClientError> {
         if config.channels.0.checked_add(1) != Some(config.channels.1)
             || config.media_index >= 64 || config.response_timeout_ns == 0
             || config.response_timeout_ns > 60 * SECOND
@@ -233,15 +256,24 @@ impl RtspClientSession {
         Ok(Self {
             timeout_ns: u64::from(config.default_session_timeout_seconds) * SECOND,
             config, state: ClientState::Idle, last_ns: 0, next_cseq: 1,
-            pending: None, media: None, track_uri: String::new(), aggregate_uri: String::new(),
+            pending: None, codec, media: None, track_uri: String::new(), aggregate_uri: String::new(),
             session_id: None, expires_ns: None, keepalive_ns: None,
             remote_may_exist: false, ssrc: None, digest: None,
         })
     }
     /// Local protocol state only, not a camera health certificate.
     pub fn state(&self) -> ClientState { self.state }
-    /// Immutable accepted media parameters, when DESCRIBE has succeeded.
-    pub fn media(&self) -> Option<&ClientMedia> { self.media.as_ref() }
+    /// Immutable H.264 parameters after DESCRIBE; always None for an HEVC session.
+    /// Existing AVC callers cannot accidentally consume HEVC parameter-set bytes.
+    pub fn media(&self) -> Option<&ClientMedia> {
+        match self.media.as_ref() { Some(NegotiatedMedia::H264(media)) => Some(media), _ => None }
+    }
+    /// Immutable HEVC transport parameters after DESCRIBE, not a decode-readiness claim.
+    pub fn hevc_media(&self) -> Option<&hevc::HevcClientMedia> {
+        match self.media.as_ref() { Some(NegotiatedMedia::H265(media)) => Some(media), _ => None }
+    }
+    /// Exact owner choice, including before DESCRIBE; never inferred from network data.
+    pub fn codec(&self) -> ClientCodec { self.codec }
     /// Negotiated channel pair from the owner offer.
     pub fn channels(&self) -> (u8, u8) { self.config.channels }
     /// Optional server-asserted SSRC; never sender authentication.
@@ -339,7 +371,7 @@ impl RtspClientSession {
         if matches!(response.status_code, 401 | 407) { return Err(ClientError::Authentication(response.auth_challenge)); }
         if response.status_code != 200 { return Err(ClientError::Rejected(response.status_code)); }
         if p.command == ClientCommand::Describe {
-            let (media, track, aggregate) = description(&self.config, response)?;
+            let (media, track, aggregate) = description(&self.config, response, self.codec)?;
             self.media = Some(media); self.track_uri = track; self.aggregate_uri = aggregate;
             self.state = ClientState::Described;
         } else if p.command == ClientCommand::Setup {
@@ -455,7 +487,9 @@ fn transport_binding(value: &str, offered: (u8, u8)) -> Result<Option<u32>, Clie
     Ok(ssrc)
 }
 
-fn description(config: &ClientConfig, r: &RtspResponse) -> Result<(ClientMedia, String, String), ClientError> {
+fn description(config: &ClientConfig, r: &RtspResponse, codec: ClientCodec)
+    -> Result<(NegotiatedMedia, String, String), ClientError>
+{
     let content_type = singleton(&r.headers, "Content-Type")?.ok_or(ClientError::Description)?;
     if !content_type.split(';').next().unwrap_or("").trim().eq_ignore_ascii_case("application/sdp") {
         return Err(ClientError::Description);
@@ -485,6 +519,25 @@ fn description(config: &ClientConfig, r: &RtspResponse) -> Result<(ClientMedia, 
     }
     let sdp = parse_sdp_bytes(&r.body).map_err(|_| ClientError::Description)?;
     let m = sdp.media.get(config.media_index).ok_or(ClientError::Description)?;
+    let media = match codec {
+        ClientCodec::H264 => NegotiatedMedia::H264(h264_media(m)?),
+        ClientCodec::H265 => NegotiatedMedia::H265(hevc::negotiate(text, config.media_index, m)?),
+    };
+    let content_base = singleton(&r.headers, "Content-Base")?;
+    let location = singleton(&r.headers, "Content-Location")?;
+    let base = if let Some(base) = content_base { scoped(config, base)?; base.to_string() }
+        else if let Some(location) = location { resolve(config, &config.presentation_uri, location)? }
+        else { config.presentation_uri.clone() };
+    let track = resolve(config, &base, m.control.as_deref().ok_or(ClientError::Description)?)?;
+    let aggregate = match sdp.session_control.as_deref() {
+        Some("*") => base,
+        Some(control) => resolve(config, &base, control)?,
+        None => track.clone(),
+    };
+    Ok((media, track, aggregate))
+}
+
+fn h264_media(m: &super::SdpMedia) -> Result<ClientMedia, ClientError> {
     if m.media_type != "video" || !matches!(m.proto.as_str(), "RTP/AVP" | "RTP/AVP/TCP")
         || m.encoding_name.as_deref() != Some("H264") || m.clock_rate != Some(90_000)
         || m.packetization_mode.unwrap_or(0) > 1 || m.sprop_parameter_sets.len() != 2
@@ -506,19 +559,8 @@ fn description(config: &ClientConfig, r: &RtspResponse) -> Result<(ClientMedia, 
             if value != sps[index + 1] { return Err(ClientError::Description); }
         }
     }
-    let content_base = singleton(&r.headers, "Content-Base")?;
-    let location = singleton(&r.headers, "Content-Location")?;
-    let base = if let Some(base) = content_base { scoped(config, base)?; base.to_string() }
-        else if let Some(location) = location { resolve(config, &config.presentation_uri, location)? }
-        else { config.presentation_uri.clone() };
-    let track = resolve(config, &base, m.control.as_deref().ok_or(ClientError::Description)?)?;
-    let aggregate = match sdp.session_control.as_deref() {
-        Some("*") => base,
-        Some(control) => resolve(config, &base, control)?,
-        None => track.clone(),
-    };
-    Ok((ClientMedia { payload_type: m.payload_type, packetization_mode: m.packetization_mode.unwrap_or(0),
-        sps: sps.clone(), pps: pps.clone(), reduced_rtcp: m.rtcp_reduced_size }, track, aggregate))
+    Ok(ClientMedia { payload_type: m.payload_type, packetization_mode: m.packetization_mode.unwrap_or(0),
+        sps: sps.clone(), pps: pps.clone(), reduced_rtcp: m.rtcp_reduced_size })
 }
 
 fn uri_parts(uri: &str) -> Result<(&str, &str), ClientError> {
