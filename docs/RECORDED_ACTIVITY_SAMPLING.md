@@ -42,3 +42,50 @@ measurement floors, and invalid policy rejection. These Rust tests have not been
 executed in the editing environment, which has no Rust toolchain. Hardware,
 held-out recall/quality, resource profiles, full qualification, and live-runtime
 integration remain open; this does not close the full FSS-078 acceptance contract.
+
+## Recording-to-report execution
+
+`recording_pipeline::sampling::SamplingPlan::new` freezes an exact import,
+interpretation and contiguous source range from a `RecordingRequest`, the activity
+policy, comparison allowance, and bounded required-frame constraints. Constraint
+order is normalized at construction; duplicate or out-of-range constraints are
+rejected. Loading a plan requires exact canonical ordering and a digest match.
+
+`run_sampled_recording` uses the same runner as `run_recording`. All requested
+frames reach retained-source decoding/revalidation. A selection happens before
+inference, and only selected frames consume model-work allowance. Required frames,
+sentinels and comparison-budget fallback must execute or produce an explicit
+failure; exhausted model work never changes them into skips. The existing
+cumulative model reservation/reuse and detector/tracker budgets are unchanged.
+
+The result contains a `SampledReport` and existing `RecordingProgress`. Its
+`analysis()` is the existing canonical sparse `AnalysisReport`, not a second
+tracking format. The enclosing `FSSASRP1` report records every decision and the
+self-contained `FSSASPL1` recipe. Source gaps remain tracker resets; this reference
+does not infer continued object presence across an intentionally omitted frame.
+An owner that requires an uninterrupted investigation must include those exact
+frames in `required_frames` or retain the unchanged all-frame mode.
+
+`SampledReport::verify` is read-only: it reopens all decoded publications,
+recomputes the full sampling trace (including skipped frames), and invokes the
+existing analysis replay verifier. It rejects a rehashed altered skip decision,
+missing/corrupt custody, changed source binding, unsupported versions, truncated
+or extended envelopes, and comparison/frame/output budgets it was not granted.
+It does not rerun JPEG or model kernels, but comparison and postprocessing work
+are real and remain separately accounted. The comparison allowance is frozen
+because conservative budget fallback can change selection; it is per attempt,
+not an automatically refilled mission-wide resource grant.
+
+On failure, `SampledRecordingFailure` retains decoded/inference progress, the
+complete decision prefix, and consumed comparison work. A selected final decision
+may have an unfinished inference: it is not a completion receipt. Retry the same
+original range and frozen plan; successful numeric work is revalidated and reused.
+The report bytes remain caller-owned until explicitly retained/exported. Returning
+a report does not create another ledger, publish an event or grant effect authority.
+
+Ten public-API fixture contracts cover quiet-frame inference reduction, mandatory
+inclusions, comparison-pressure fallback, unchanged all-frame analysis, restart
+reuse, read-only report verification, selected-model budget failure/retry,
+cancellation, malformed plans, rehashed skip tampering, and sampler idempotency.
+They use the repository's real retained JPEG and frozen-model fixtures. They were
+added but have not been executed in this environment.

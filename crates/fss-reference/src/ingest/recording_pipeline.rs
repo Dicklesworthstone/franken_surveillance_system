@@ -5,6 +5,10 @@
 //! alerts. Each successful frame/model invocation is independently durable. Retrying the same
 //! request revalidates those publications; tracker history is always rebuilt from the full range.
 
+/// Opt-in sampled execution and complete, replay-verifiable sampling reports.
+pub mod sampling;
+
+use super::activity::ActivityError;
 use std::error::Error;
 use std::fmt;
 
@@ -137,6 +141,8 @@ pub enum RecordingStage {
     Preflight,
     /// Exact retained-source decoding or recovery.
     Decode,
+    /// Explicit source-linked activity/sentinel decision before model execution.
+    Sampling,
     /// Frozen model execution or recovery.
     Inference,
     /// Complete deterministic detector/tracker reconstruction.
@@ -150,7 +156,7 @@ impl RecordingStage {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Preflight => "preflight", Self::Decode => "decode", Self::Inference => "inference",
-            Self::Analysis => "analysis", Self::Complete => "complete",
+            Self::Analysis => "analysis", Self::Complete => "complete", Self::Sampling => "sampling",
         }
     }
 }
@@ -223,6 +229,8 @@ pub enum RecordingError {
     Detection(DetectionError),
     /// Tracker policy invalid before execution.
     Tracking(TrackingError),
+    /// Opt-in sampling refused; no selected frame is silently skipped.
+    Sampling(ActivityError),
     /// Model execution context cancelled.
     Execution(ExecError),
 }
@@ -234,7 +242,7 @@ impl fmt::Display for RecordingError {
             Self::Source(e) => write!(f, "{e}"), Self::Decode(e) => write!(f, "{e}"),
             Self::Model(e) => write!(f, "{e}"), Self::Analysis(e) => write!(f, "{e}"),
             Self::Detection(e) => write!(f, "{e}"), Self::Tracking(e) => write!(f, "{e}"),
-            Self::Execution(e) => write!(f, "{e}"),
+            Self::Execution(e) => write!(f, "{e}"), Self::Sampling(e) => write!(f, "{e}"),
         }
     }
 }
@@ -253,6 +261,7 @@ conversion!(AnalysisError, Analysis);
 conversion!(DetectionError, Detection);
 conversion!(TrackingError, Tracking);
 conversion!(ExecError, Execution);
+conversion!(ActivityError, Sampling);
 
 fn checkpoint(cx: &ReplayCx, exec: &ScalarExecCx, stage: &'static str) -> Result<(), RecordingError> {
     cx.checkpoint(stage).map_err(|_| RecordingError::Cancelled)?;
@@ -284,6 +293,18 @@ pub fn run_recording(
     exec: &ScalarExecCx,
     cx: &ReplayCx,
 ) -> Result<RecordingOutcome, Box<RecordingFailure>> {
+    run_selected(deployment, request, model, budget, exec, cx, None)
+}
+
+type FrameSelector<'a> = dyn FnMut(&RecordedFrame, &ReplayCx) -> Result<bool, RecordingError> + 'a;
+
+// Selection is private and synchronous. Public entrypoints freeze and validate its policy.
+// The default path has no selector and therefore preserves all-frame execution exactly.
+fn run_selected(
+    deployment: &mut ReferenceDeployment, request: &RecordingRequest, model: &RecordedModel,
+    budget: &mut RecordingBudget<'_>, exec: &ScalarExecCx, cx: &ReplayCx,
+    mut selector: Option<&mut FrameSelector<'_>>,
+) -> Result<RecordingOutcome, Box<RecordingFailure>> {
     let mut progress = RecordingProgress {
         stage: RecordingStage::Preflight, next_segment: Some(request.first_segment),
         completed: Vec::new(), new_decodes: 0, reused_decodes: 0,
@@ -311,6 +332,11 @@ pub fn run_recording(
             let frame = RecordedFrame::decode_and_publish(deployment, &source, &mut budget.decode, cx)?;
             if frame.authority_anchor().commit_sequence > before { progress.new_decodes += 1; }
             else { progress.reused_decodes += 1; }
+            if let Some(select) = selector.as_deref_mut() {
+                progress.stage = RecordingStage::Sampling;
+                checkpoint(cx, exec, "recording_pipeline:sampling")?;
+                if !select(&frame, cx)? { continue; }
+            }
             let identity = RecordedInference::identity_for(&frame, model);
             drop(frame);
             progress.stage = RecordingStage::Inference;
