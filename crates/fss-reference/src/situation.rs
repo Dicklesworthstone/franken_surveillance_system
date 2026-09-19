@@ -30,6 +30,9 @@ const CAPABILITY_SESSION_WAIT: &str = "capability:session.wait";
 pub(crate) const EFFECT_CLAIM_PREFIX: &str = "claim:effect:";
 /// Claim-identity namespace of obligation propositions, which no compile path produces.
 pub(crate) const OBLIGATION_CLAIM_PREFIX: &str = "claim:obligation:";
+/// Claim-identity namespace of mission propositions, which never settle a mission by name
+/// (fss-ib9iy): mission terminalization comes only from the typed `mission_state`.
+pub(crate) const MISSION_CLAIM_PREFIX: &str = "claim:mission:";
 
 /// Exact inputs used to compile one bounded situation projection.
 #[derive(Clone, Debug)]

@@ -11,7 +11,9 @@ use fss_core::{
 
 use fss_core::ObligationId;
 
-use crate::situation::{EFFECT_CLAIM_PREFIX, EffectOutcome, OBLIGATION_CLAIM_PREFIX};
+use crate::situation::{
+    EFFECT_CLAIM_PREFIX, EffectOutcome, MISSION_CLAIM_PREFIX, OBLIGATION_CLAIM_PREFIX,
+};
 use fss_ledger::{DurableLedgerError, DurableReferenceLedger};
 
 use crate::situation_sections::{LineageStep, compiled_against, first_lineage_proof, lineage_step};
@@ -662,41 +664,19 @@ fn classify(
                         )
                     })
         });
-    // A mission terminal transition, like every other, needs both publications sealed: neither a
-    // hand-built `mission_state` nor a hand-built `claim:mission:` cell settles a mission
-    // (fss-6sph6).
+    // A mission terminal transition, like every other, needs both publications sealed, and it
+    // comes ONLY from the typed `mission_state` and its registry semantics: neither a hand-built
+    // `mission_state` nor a name-prefixed cell settles a mission (fss-6sph6, fss-ib9iy). A
+    // `claim:mission:` cell with a terminal hypothesis or `known` state is reported like any
+    // other cell change, never as a terminal transition.
     let mission_terminalized = terminal_allowed
-        && (match (basis_capsule.mission_state, result_capsule.mission_state) {
+        && match (basis_capsule.mission_state, result_capsule.mission_state) {
             (Some(basis_state), Some(result_state)) => {
                 !basis_state.is_terminal() && result_state.is_terminal()
             }
             (None, Some(result_state)) => result_state.is_terminal(),
             _ => false,
-        } || result_frame.knowledge_cells.iter().any(|cell| {
-            cell.claim_id().starts_with("claim:mission:")
-                && (matches!(
-                    cell.hypothesis(),
-                    Some(
-                        HypothesisDisposition::Refuted
-                            | HypothesisDisposition::Resolved
-                            | HypothesisDisposition::Superseded
-                    )
-                ) || cell.knowledge_state() == KnowledgeState::Known)
-                && basis_frame
-                    .knowledge_cells
-                    .iter()
-                    .find(|b| b.claim_id() == cell.claim_id())
-                    .is_none_or(|b| {
-                        !matches!(
-                            b.hypothesis(),
-                            Some(
-                                HypothesisDisposition::Refuted
-                                    | HypothesisDisposition::Resolved
-                                    | HypothesisDisposition::Superseded
-                            )
-                        ) && b.knowledge_state() != KnowledgeState::Known
-                    })
-        }));
+        };
 
     if obligation_terminalized || effect_terminalized || event_terminalized || mission_terminalized
     {
@@ -1035,7 +1015,12 @@ fn is_effect_claim(cell: &KnowledgeCell) -> bool {
 /// obligation-namespace cell; excluding it here too is a second guard, so an obligation cell drives
 /// no terminal transition even if that refusal were bypassed (fss-6sph6).
 pub(crate) fn event_rule_applies(cell: &KnowledgeCell) -> bool {
-    !is_effect_claim(cell) && !cell.claim_id().starts_with(OBLIGATION_CLAIM_PREFIX)
+    !is_effect_claim(cell)
+        && !cell.claim_id().starts_with(OBLIGATION_CLAIM_PREFIX)
+        // fss-ib9iy: a mission cell never settles a mission through the event rule; only the
+        // typed `mission_state` does. A name-prefixed cell carrying a terminal hypothesis is a
+        // name-based mission settlement smuggled through event semantics.
+        && !cell.claim_id().starts_with(MISSION_CLAIM_PREFIX)
 }
 
 /// Every operation an effect cell proves in `publication` at its own anchor: the operations

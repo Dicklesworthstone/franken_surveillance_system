@@ -2811,8 +2811,8 @@ fn resealed_copy(
     Ok(project_reference_situation(situation, &nominal_spec()?)?)
 }
 
-/// Round 5 R5-4: a mission terminal transition, through the typed `mission_state` or a
-/// `claim:mission:` cell, needs both publications sealed like every other terminal transition.
+/// Round 5 R5-4 (as tightened by fss-ib9iy): a mission terminal transition comes ONLY from the
+/// typed `mission_state` and needs both publications sealed like every other terminal transition.
 /// Between sealed publications where the result continues the basis it is a critical,
 /// non-coalescible terminal transition; with the result unsealed the change is reported but never
 /// as terminal.
@@ -2831,30 +2831,112 @@ fn mission_terminalization_needs_both_publications_sealed() -> Result<(), Box<dy
             .classes
             .contains(&MeaningfulDeltaClass::TerminalTransition)
     };
-    for (label, sealed, unsealed) in [
+    let sealed = resealed_copy(&template, predecessor, close)?;
+    let delta = bound_delta(&basis, &sealed)?;
+    assert!(
+        terminal(&delta),
+        "mission_state sealed: {:?}",
+        delta.classes
+    );
+    assert!(delta.is_non_coalescible(), "mission_state sealed");
+    assert_eq!(
+        delta.priority,
+        DeltaPriority::Critical,
+        "mission_state sealed"
+    );
+    delta.validate()?;
+    let store = recorded(&[&basis])?;
+    let unsealed = unsealed_copy(&template, close)?;
+    let delta = bound(&store, &basis, &unsealed)?;
+    store.cleanup();
+    assert!(
+        !terminal(&delta),
+        "mission_state unsealed: {:?}",
+        delta.classes
+    );
+    assert!(
+        delta.classes.contains(&MeaningfulDeltaClass::MaterialState),
+        "mission_state unsealed: {:?}",
+        delta.classes
+    );
+    delta.validate()?;
+    Ok(())
+}
+
+/// fss-ib9iy: a hand-built `claim:mission:` cell — `known`, or carrying a terminal hypothesis
+/// disposition, or both — never terminalizes a mission, however it is sealed or chained. Only the
+/// typed `mission_state` settles a mission, so a name-prefixed cell is reported as an ordinary
+/// cell change and can never mint a TerminalTransition.
+#[test]
+fn hand_built_mission_cell_never_terminalizes_fss_ib9iy() -> Result<(), Box<dyn Error>> {
+    let basis = publication(&Variant::baseline()?)?;
+    let predecessor = Some(basis.publication_digest);
+    let terminal = |delta: &fss_core::MeaningfulDelta| {
+        delta
+            .classes
+            .contains(&MeaningfulDeltaClass::TerminalTransition)
+    };
+    // `known` alone, a terminal hypothesis alone, and both together, over a sealed continuation.
+    for (label, hypothesis) in [
+        ("known_only", None),
+        ("terminal_hypothesis", Some(HypothesisDisposition::Resolved)),
         (
-            "mission_state",
-            resealed_copy(&template, predecessor, close)?,
-            unsealed_copy(&template, close)?,
-        ),
-        (
-            "claim:mission",
-            publication_with_cell("claim:mission:meaningful-delta", None, true, predecessor)?,
-            publication_with_cell("claim:mission:meaningful-delta", None, false, None)?,
+            "known_with_terminal_hypothesis",
+            Some(HypothesisDisposition::Resolved),
         ),
     ] {
+        let known = label != "terminal_hypothesis";
+        let mut variant = Variant::baseline()?;
+        variant.sequence = 2;
+        let template = publication(&variant)?;
+        let mut capsule = template.situation.capsule.clone();
+        let root = ContentDigest::sha256(b"self-asserted-mission");
+        capsule
+            .frame
+            .knowledge_cells
+            .push(KnowledgeCell::new(KnowledgeCellParams {
+                claim_id: "claim:mission:meaningful-delta".to_owned(),
+                statement: "The mission claims to be settled.".to_owned(),
+                knowledge_state: if known {
+                    KnowledgeState::Known
+                } else {
+                    KnowledgeState::Estimated
+                },
+                provenance: ProvenanceClass::Observed,
+                hypothesis,
+                evidence: vec![root],
+                contradictions: Vec::new(),
+                valid_until: None,
+                state_basis: None,
+            })?);
+        let mut roots = template.situation.proof_roots.clone();
+        roots.insert(root);
+        let mut situation = ReferenceSituation::new(capsule, roots);
+        situation.set_lineage(
+            fss_core::EventId::parse("event:meaningful-delta")?,
+            "objective:meaningful-delta".to_owned(),
+            predecessor,
+        );
+        situation.set_authority_anchor(fixture_authority_anchor()?);
+        situation.seal_effect_bindings()?;
+        let sealed = project_reference_situation(situation, &nominal_spec()?)?;
+        assert!(sealed.situation.is_sealed(), "{label}: fixture must seal");
+        assert_eq!(
+            sealed.situation.predecessor_publication(),
+            predecessor,
+            "{label}: fixture must continue the basis"
+        );
+
         let delta = bound_delta(&basis, &sealed)?;
-        assert!(terminal(&delta), "{label} sealed: {:?}", delta.classes);
-        assert!(delta.is_non_coalescible(), "{label}");
-        assert_eq!(delta.priority, DeltaPriority::Critical, "{label}");
-        delta.validate()?;
-        let store = recorded(&[&basis])?;
-        let delta = bound(&store, &basis, &unsealed)?;
-        store.cleanup();
-        assert!(!terminal(&delta), "{label} unsealed: {:?}", delta.classes);
+        assert!(
+            !terminal(&delta),
+            "{label}: a hand-built claim:mission: cell must never terminalize: {:?}",
+            delta.classes
+        );
+        // The cell change is still reported as ordinary material state, never silent.
         assert!(
             delta.classes.contains(&MeaningfulDeltaClass::MaterialState),
-            "{label} unsealed: {:?}",
+            "{label}: the cell change must still be reported: {:?}",
             delta.classes
         );
         delta.validate()?;
