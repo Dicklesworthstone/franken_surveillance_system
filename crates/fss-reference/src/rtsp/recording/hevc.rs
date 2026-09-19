@@ -7,6 +7,9 @@
 //! in the source child and counted separately, never fabricated into the media.
 //! This proves byte relationships, not decoding, live continuity or authorization.
 
+/// Exact-root durable readback through the shared bounded publication owner.
+pub mod local;
+
 mod replay;
 mod wire;
 
