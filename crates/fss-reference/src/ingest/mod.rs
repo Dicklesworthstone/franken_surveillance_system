@@ -10,6 +10,8 @@ pub mod mjpeg;
 pub mod retained;
 /// Canonical JPEG decoding and durable source-linked luma publications.
 pub mod recorded_decode;
+/// Bounded, source-gap-aware pixel-change measurements over recorded frames.
+pub mod pixel_change;
 /// Bounded recorded-RTP framing and source-preserving ingest.
 pub mod rtpdump;
 
@@ -26,7 +28,8 @@ pub use file_adapter::{
     fetch_segment_bytes, sniff_format,
 };
 pub use mjpeg::{
-    JpegFinding, JpegFrameSpan, JpegProcess, JpegScan, JpegSofInfo, JpegSplitError, MjpegLimits,
+    JpegFinding, JpegFrameSpan, JpegScan, JpegSofInfo, JpegSplitError, MjpegLimits,
     OmissionReason, OmissionSpan, split_jpeg_stream,
+    JpegProcess,
 };
 pub use retained::{RetainedFileImport, RetainedReadLimits};
