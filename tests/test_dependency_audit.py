@@ -82,10 +82,11 @@ edition = "2024"
 
 
 # Members whose crate_topology.json status is not a present status (skeleton/implemented/qualified).
-# This is the owner's pending topology decision on main (fss-packet, and fss-geometry added by the origin
-# merge); check-policy reports the same pair as "not marked present". Update this one line when the owner
-# registers them, never by bumping a member count.
-LIVE_MEMBERS_NOT_MARKED_PRESENT = {"fss-packet", "fss-geometry"}
+# fss-packet and fss-geometry are registered as implemented in architecture/crate_topology.json
+# (f541d72), so the owner's pending set is empty and every live member must be marked present.
+# Update this one line when a live member is added before its topology registration, never by
+# bumping a member count.
+LIVE_MEMBERS_NOT_MARKED_PRESENT: set[str] = set()
 PRESENT_TOPOLOGY_STATUSES = {"skeleton", "implemented", "qualified"}
 
 
