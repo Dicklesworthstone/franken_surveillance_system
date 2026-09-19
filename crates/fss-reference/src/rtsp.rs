@@ -11,6 +11,8 @@ pub mod authentication;
 pub mod avc_client;
 /// Exact bounded wire frames for explicit authentication and source-custody owners.
 pub mod framed;
+/// Owner-driven TCP framing, optional Digest authentication, and HEVC RTP reception.
+pub mod hevc_client;
 
 /// Capability-scoped, owner-driven RTSP/1.0 client session reference.
 pub mod client;
@@ -26,6 +28,8 @@ pub mod recording_catalog;
 /// Bounded local archive discovery, restart recovery, and cross-page retrieval.
 pub mod recording_archive;
 pub mod sdp;
+/// Exact bounded H.264 selection from multi-payload SDP descriptions.
+pub mod selection;
 
 pub use message::{
     AuthScheme, ContentLengthConflict, DEFAULT_MAX_BODY_BYTES, DEFAULT_MAX_HEADERS,

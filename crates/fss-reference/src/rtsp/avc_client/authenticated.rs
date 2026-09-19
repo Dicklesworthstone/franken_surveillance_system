@@ -6,6 +6,9 @@
 //! cnonce bytes only when preparing a request. All responses still enter through
 //! the real RTSP parser, and every media event comes from the existing AVC pump.
 
+#[path = "selection.rs"]
+mod selection;
+
 use super::*;
 use crate::rtsp::{AuthScheme, authentication::{AuthenticationError, DigestCredentials, DigestPolicy},
     client::authenticated::DigestClientError, framed::{RetainedRtspWire, RtspWireFrame,

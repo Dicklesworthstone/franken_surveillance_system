@@ -12,6 +12,8 @@ pub mod retained;
 pub mod recorded_decode;
 /// Bounded, source-gap-aware pixel-change measurements over recorded frames.
 pub mod pixel_change;
+/// Opt-in activity/sentinel sampling with exact source-linked inclusion and skip receipts.
+pub mod activity;
 /// Exact frozen-model execution on retained decoded frames and durable model outputs.
 pub mod inference;
 /// Offline source-preserving conversion of exact tensor weights into recorded models.
