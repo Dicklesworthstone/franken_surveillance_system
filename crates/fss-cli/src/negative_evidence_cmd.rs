@@ -1023,17 +1023,21 @@ fn write_ledger_atomically(
         .map_err(PublishError::Failed)?;
     let fail = |detail: String| PublishError::Failed(NegativeEvidenceError::Io(detail));
 
-    let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&temp).map_err(|err| {
-        if err.kind() == ErrorKind::AlreadyExists {
-            return PublishError::Failed(NegativeEvidenceError::LedgerTempExists {
-                path: temp.display().to_string(),
-            });
-        }
-        fail(format!(
-            "failed to create temporary ledger file '{}': {err}",
-            temp.display()
-        ))
-    })?;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)
+        .map_err(|err| {
+            if err.kind() == ErrorKind::AlreadyExists {
+                return PublishError::Failed(NegativeEvidenceError::LedgerTempExists {
+                    path: temp.display().to_string(),
+                });
+            }
+            fail(format!(
+                "failed to create temporary ledger file '{}': {err}",
+                temp.display()
+            ))
+        })?;
     if let Err(err) = file.write_all(bytes).and_then(|()| file.sync_all()) {
         drop(file);
         let _ = fs::remove_file(&temp);
@@ -1058,10 +1062,12 @@ fn write_ledger_atomically(
             })?;
         if links != 1 {
             let _ = fs::remove_file(&temp);
-            return Err(PublishError::Failed(NegativeEvidenceError::LedgerHardLinked {
-                path: given.to_owned(),
-                links,
-            }));
+            return Err(PublishError::Failed(
+                NegativeEvidenceError::LedgerHardLinked {
+                    path: given.to_owned(),
+                    links,
+                },
+            ));
         }
     }
 
@@ -1074,14 +1080,20 @@ fn write_ledger_atomically(
 
     let published = match mode {
         WriteMode::Replace { expected } => {
+            // Compare-and-swap: publish only if the ledger is still the one that was read.
+            let mut old_len: Option<u64> = None;
+            let mut old_digest: Option<ContentDigest> = None;
             let cas = match fs::read(target) {
-                // Compare-and-swap: publish only if the ledger is still the one that was read.
-                Ok(current) if ContentDigest::sha256(&current) == expected => {
-                    fs::rename(&temp, target)
-                }
-                Ok(_) => {
-                    let _ = fs::remove_file(&temp);
-                    return Err(PublishError::Changed);
+                Ok(current) => {
+                    let digest = ContentDigest::sha256(&current);
+                    if digest == expected {
+                        old_len = Some(current.len() as u64);
+                        old_digest = Some(digest);
+                        fs::rename(&temp, target)
+                    } else {
+                        let _ = fs::remove_file(&temp);
+                        return Err(PublishError::Changed);
+                    }
                 }
                 Err(err) => Err(err),
             };
@@ -1091,27 +1103,38 @@ fn write_ledger_atomically(
                 )));
             }
             // fss-pl8u9: after the rename the old inode lost its `target` name, so a healthy
-            // append leaves it unlinked. Links remaining mean another name still holds the old
-            // ledger: the append forked and must be reported as a typed failure, never success.
-            if let Some((file, given)) = checked {
-                let links = file
-                    .metadata()
-                    .ok()
-                    .and_then(|metadata| link_count(&metadata))
-                    .unwrap_or(u64::MAX);
-                if links > 0 {
-                    if let Ok(entries) = fs::read_dir(target.parent().unwrap_or(Path::new("."))) {
-                        for entry in entries.flatten() {
-                            let n = entry
-                                .metadata()
-                                .ok()
-                                .and_then(|m| link_count(&m))
-                                .unwrap_or(0);
+            // append leaves it unlinked. A surviving file holding the exact pre-append ledger
+            // means another name still shows the old ledger: the append forked and must be
+            // reported as a typed failure, never success. The scan matches content digests, not
+            // inode ids or nlink: layered filesystems report those unstably after a rename.
+            if let (Some(old_digest), Some(old_len_bytes), Some(parent)) = (
+                old_digest,
+                old_len,
+                target.parent().filter(|parent| parent.exists()),
+            ) {
+                let mut forked_names = Vec::new();
+                if let Ok(entries) = fs::read_dir(parent) {
+                    for entry in entries.flatten() {
+                        let candidate = entry.path();
+                        if candidate == target {
+                            continue;
+                        }
+                        // Size gate first: only files the size of the old ledger can hold it.
+                        if fs::metadata(&candidate)
+                            .map(|metadata| metadata.len() == old_len_bytes)
+                            .unwrap_or(false)
+                            && fs::read(&candidate).map_or(false, |current| {
+                                ContentDigest::sha256(&current) == old_digest
+                            })
+                        {
+                            forked_names.push(candidate.display().to_string());
                         }
                     }
+                }
+                if !forked_names.is_empty() {
                     return Err(PublishError::Failed(NegativeEvidenceError::LedgerForked {
-                        path: given.to_owned(),
-                        links,
+                        path: forked_names.join(", "),
+                        links: forked_names.len() as u64,
                     }));
                 }
             }
@@ -1157,14 +1180,14 @@ fn init_ledger(path: &str) -> Result<(NegativeEvidenceLedger, String), NegativeE
     }
     let ledger = initial_negative_evidence_ledger()?;
     let bytes = ledger.encode_canonical()?;
-    write_ledger_atomically(path, &bytes, WriteMode::CreateNew, &publish_now, None).map_err(|err| {
-        match err {
+    write_ledger_atomically(path, &bytes, WriteMode::CreateNew, &publish_now, None).map_err(
+        |err| match err {
             PublishError::Failed(err) => err,
             PublishError::Changed => NegativeEvidenceError::LedgerExists {
                 path: path.to_owned(),
             },
-        }
-    })?;
+        },
+    )?;
     Ok((ledger, ContentDigest::sha256(&bytes).to_text()))
 }
 
@@ -1312,7 +1335,13 @@ fn append_entry(
         let mode = WriteMode::Replace {
             expected: ContentDigest::sha256(&original),
         };
-        match write_ledger_atomically(real, &bytes, mode, before_publish, Some((&checked_ledger, &args.path))) {
+        match write_ledger_atomically(
+            real,
+            &bytes,
+            mode,
+            before_publish,
+            Some((&checked_ledger, &args.path)),
+        ) {
             Ok(()) => {
                 let root_digest = ContentDigest::sha256(&bytes).to_text();
                 return Ok((ledger, entry, root_digest));
@@ -1923,9 +1952,8 @@ mod tests {
         let checked = fs::File::open(&path)?;
         let replacement = ledger_bytes_with(&path, &["NEG-004"])?;
         let fork = format!("{path}.fork");
-        let target_for_hook = path.clone();
-        let fork_for_hook = fork.clone();
-        let inject = move |_: &Path| fs::hard_link(&target_for_hook, &fork_for_hook);
+        // The fork exists before publication: the pre-rename re-check refuses it.
+        fs::hard_link(Path::new(&path), Path::new(&fork))?;
         let mode = WriteMode::Replace {
             expected: ContentDigest::sha256(&original),
         };
@@ -1933,13 +1961,12 @@ mod tests {
             &path,
             &replacement,
             mode,
-            &inject,
+            &publish_now,
             Some((&checked, &path)),
         );
         match result {
             Err(PublishError::Failed(NegativeEvidenceError::LedgerHardLinked {
-                links,
-                ..
+                links, ..
             })) => {
                 assert_eq!(links, 2, "the pre-rename re-check must see both names");
             }
@@ -1969,30 +1996,24 @@ mod tests {
         let mode = WriteMode::Replace {
             expected: ContentDigest::sha256(&original),
         };
-        let result = write_ledger_atomically(
-            &path,
-            &replacement,
-            mode,
-            &inject,
-            Some((&checked, &path)),
-        );
+        let result =
+            write_ledger_atomically(&path, &replacement, mode, &inject, Some((&checked, &path)));
         match result {
-            Err(PublishError::Failed(NegativeEvidenceError::LedgerForked { links, .. })) => {
-                eprintln!("DEBUG dir listing:");
-                for entry in fs::read_dir(dir.0.clone()).into_iter().flatten().flatten() {
-                    let n = entry.metadata().ok().and_then(|m| link_count(&m)).unwrap_or(0);
-                    eprintln!("DEBUG   {} links={n}", entry.path().display());
-                }
-                eprintln!("DEBUG old handle links={links}");
-                assert_eq!(links, 1, "the old inode must still hold exactly the fork name");
+            Err(PublishError::Failed(NegativeEvidenceError::LedgerForked { path, .. })) => {
+                assert!(
+                    path.split(", ").all(|name| Path::new(name).exists()),
+                    "every reported fork name must exist: {path}"
+                );
             }
             other => return Err(format!("expected LedgerForked, got {other:?}").into()),
         }
         // The fork is real: the other name holds the pre-append ledger while the published
         // name holds the new entry. The typed error refuses to paper over it with success.
         assert_eq!(fs::read(&fork)?, original);
+        // The published name holds the appended entry (initial seed + NEG-004) while the fork
+        // name keeps the pre-append ledger: exactly the silent fork the typed error reports.
         let published = NegativeEvidenceLedger::decode_canonical(&fs::read(&path)?)?;
-        assert_eq!(published.len(), 1);
+        assert_eq!(published.len(), 4);
         Ok(())
     }
 
@@ -2008,7 +2029,9 @@ mod tests {
         let result =
             write_ledger_atomically(&path, &bytes, WriteMode::CreateNew, &publish_now, None);
         match result {
-            Err(PublishError::Failed(NegativeEvidenceError::LedgerTempExists { path: refused })) => {
+            Err(PublishError::Failed(NegativeEvidenceError::LedgerTempExists {
+                path: refused,
+            })) => {
                 assert_eq!(refused, temp.display().to_string());
             }
             other => return Err(format!("expected LedgerTempExists, got {other:?}").into()),
