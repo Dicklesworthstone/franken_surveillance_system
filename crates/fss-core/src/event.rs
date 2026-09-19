@@ -3365,9 +3365,9 @@ impl CanonicalDecode for AlertEffectRecord {
             observation_receipt,
             failure_reason,
         };
-        record.verify().map_err(|error| {
-            decode_error_to_contract(transition_error_as_decode(error))
-        })?;
+        record
+            .verify()
+            .map_err(|error| decode_error_to_contract(transition_error_as_decode(error)))?;
         Ok(record)
     }
 }
@@ -5588,8 +5588,7 @@ mod b8eoo_tests {
         let decoded = EventHypothesis::decode_canonical(&mut decoder)?;
         // Decode is structural: the permissive layer admits the bytes.
         assert_eq!(
-            decoded.evidence[0].supports,
-            true,
+            decoded.evidence[0].supports, true,
             "fixture sanity: the forged supports byte must decode through"
         );
         // The semantic layer refuses with the typed relation mismatch.
