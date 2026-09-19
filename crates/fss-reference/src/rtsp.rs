@@ -26,6 +26,8 @@ pub mod recording_catalog;
 /// Bounded local archive discovery, restart recovery, and cross-page retrieval.
 pub mod recording_archive;
 pub mod sdp;
+/// Exact bounded H.264 selection from multi-payload SDP descriptions.
+pub mod selection;
 
 pub use message::{
     AuthScheme, ContentLengthConflict, DEFAULT_MAX_BODY_BYTES, DEFAULT_MAX_HEADERS,

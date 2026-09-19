@@ -9,6 +9,7 @@ pub mod hevc;
 
 use std::fmt;
 use super::{AuthScheme, RtspHeaders, RtspResponse, parse_sdp_bytes};
+use super::selection::select_h264_description;
 
 const SECOND: u64 = 1_000_000_000;
 const MAX_URI: usize = 2_048;
@@ -218,6 +219,7 @@ pub struct RtspClientSession {
     pending: Option<Pending>,
     codec: ClientCodec,
     media: Option<NegotiatedMedia>,
+    selected_payload_type: Option<u8>,
     track_uri: String,
     aggregate_uri: String,
     session_id: Option<String>,
@@ -256,10 +258,21 @@ impl RtspClientSession {
         Ok(Self {
             timeout_ns: u64::from(config.default_session_timeout_seconds) * SECOND,
             config, state: ClientState::Idle, last_ns: 0, next_cseq: 1,
-            pending: None, codec, media: None, track_uri: String::new(), aggregate_uri: String::new(),
+            pending: None, codec, media: None, selected_payload_type: None, track_uri: String::new(), aggregate_uri: String::new(),
             session_id: None, expires_ns: None, keepalive_ns: None,
             remote_may_exist: false, ssrc: None, digest: None,
         })
+    }
+    /// Open a session pinned to one offered H.264 payload type.
+    ///
+    /// This owner choice is immutable for this connection. An absent, unsupported,
+    /// or malformed chosen mapping is refused; no fallback to another offer occurs.
+    /// The configured media index, URI scope, and transport constraints still apply.
+    pub fn new_with_payload_type(config: ClientConfig, payload_type: u8) -> Result<Self, ClientError> {
+        if payload_type > 127 { return Err(ClientError::Configuration); }
+        let mut session = Self::new(config)?;
+        session.selected_payload_type = Some(payload_type);
+        Ok(session)
     }
     /// Local protocol state only, not a camera health certificate.
     pub fn state(&self) -> ClientState { self.state }
@@ -371,7 +384,7 @@ impl RtspClientSession {
         if matches!(response.status_code, 401 | 407) { return Err(ClientError::Authentication(response.auth_challenge)); }
         if response.status_code != 200 { return Err(ClientError::Rejected(response.status_code)); }
         if p.command == ClientCommand::Describe {
-            let (media, track, aggregate) = description(&self.config, response, self.codec)?;
+            let (media, track, aggregate) = description(&self.config, response, self.codec, self.selected_payload_type)?;
             self.media = Some(media); self.track_uri = track; self.aggregate_uri = aggregate;
             self.state = ClientState::Described;
         } else if p.command == ClientCommand::Setup {
@@ -487,7 +500,7 @@ fn transport_binding(value: &str, offered: (u8, u8)) -> Result<Option<u32>, Clie
     Ok(ssrc)
 }
 
-fn description(config: &ClientConfig, r: &RtspResponse, codec: ClientCodec)
+fn description(config: &ClientConfig, r: &RtspResponse, codec: ClientCodec, payload_type: Option<u8>)
     -> Result<(NegotiatedMedia, String, String), ClientError>
 {
     let content_type = singleton(&r.headers, "Content-Type")?.ok_or(ClientError::Description)?;
@@ -495,29 +508,37 @@ fn description(config: &ClientConfig, r: &RtspResponse, codec: ClientCodec)
         return Err(ClientError::Description);
     }
     let text = std::str::from_utf8(&r.body).map_err(|_| ClientError::Description)?;
-    // Existing SDP parser intentionally keeps a broad observational subset. At a client
-    // decision boundary, reject ambiguous last-wins attributes and multi-format m-lines.
-    let (mut section, mut controls, mut maps, mut formats) = (None, 0, 0, 0);
-    for line in text.lines().map(str::trim) {
-        if line.starts_with("m=") {
-            section = Some(section.map_or(0, |n: usize| n + 1)); controls = 0; maps = 0; formats = 0;
-            if section == Some(config.media_index) && line.split_whitespace().count() != 4 { return Err(ClientError::Description); }
-        } else if line.starts_with("a=control:") {
-            controls += 1; if controls > 1 { return Err(ClientError::Description); }
-        } else if section == Some(config.media_index) && line.starts_with("a=rtpmap:") {
-            maps += 1; if maps > 1 { return Err(ClientError::Description); }
-        } else if section == Some(config.media_index) && line.starts_with("a=fmtp:") {
-            formats += 1; if formats > 1 { return Err(ClientError::Description); }
-            let mut seen = std::collections::BTreeSet::new();
-            let attrs = line.split_once(' ').ok_or(ClientError::Description)?.1;
-            for attr in attrs.split(';') {
-                let key = attr.trim().split('=').next().ok_or(ClientError::Description)?
-                    .trim().to_ascii_lowercase();
-                if key.is_empty() || !seen.insert(key) { return Err(ClientError::Description); }
+    // AVC can select an exact offered payload while HEVC retains its separately
+    // implemented single-payload admission contract. Neither path switches codecs.
+    let sdp = match codec {
+        ClientCodec::H264 => select_h264_description(&r.body, config.media_index, payload_type)
+            .map_err(|_| ClientError::Description)?,
+        ClientCodec::H265 => {
+            // Existing SDP parser intentionally keeps a broad observational subset. At a client
+            // decision boundary, reject ambiguous last-wins attributes and multi-format m-lines.
+            let (mut section, mut controls, mut maps, mut formats) = (None, 0, 0, 0);
+            for line in text.lines().map(str::trim) {
+                if line.starts_with("m=") {
+                    section = Some(section.map_or(0, |n: usize| n + 1)); controls = 0; maps = 0; formats = 0;
+                    if section == Some(config.media_index) && line.split_whitespace().count() != 4 { return Err(ClientError::Description); }
+                } else if line.starts_with("a=control:") {
+                    controls += 1; if controls > 1 { return Err(ClientError::Description); }
+                } else if section == Some(config.media_index) && line.starts_with("a=rtpmap:") {
+                    maps += 1; if maps > 1 { return Err(ClientError::Description); }
+                } else if section == Some(config.media_index) && line.starts_with("a=fmtp:") {
+                    formats += 1; if formats > 1 { return Err(ClientError::Description); }
+                    let mut seen = std::collections::BTreeSet::new();
+                    let attrs = line.split_once(' ').ok_or(ClientError::Description)?.1;
+                    for attr in attrs.split(';') {
+                        let key = attr.trim().split('=').next().ok_or(ClientError::Description)?
+                            .trim().to_ascii_lowercase();
+                        if key.is_empty() || !seen.insert(key) { return Err(ClientError::Description); }
+                    }
+                }
             }
+            parse_sdp_bytes(&r.body).map_err(|_| ClientError::Description)?
         }
-    }
-    let sdp = parse_sdp_bytes(&r.body).map_err(|_| ClientError::Description)?;
+    };
     let m = sdp.media.get(config.media_index).ok_or(ClientError::Description)?;
     let media = match codec {
         ClientCodec::H264 => NegotiatedMedia::H264(h264_media(m)?),
@@ -613,3 +634,7 @@ fn resolve(config: &ClientConfig, base: &str, control: &str) -> Result<String, C
     scoped(config, &result)?;
     Ok(result)
 }
+
+#[cfg(test)]
+#[path = "client/selection_tests.rs"]
+mod selection_tests;
