@@ -1037,6 +1037,11 @@
       "id": "ERR-NEG-LEDGER-EXISTS-001"
     },
     {
+      "description": "after the atomic rename the old negative-evidence ledger inode is still linked by another name holding the pre-append ledger",
+      "guidance": "reconcile the fork by hand: keep exactly one name and re-run the append",
+      "id": "ERR-NEG-LEDGER-FORKED-001"
+    },
+    {
       "description": "negative evidence ledger file has a link count other than one, so an atomic publish would update only one of its names",
       "guidance": "keep the ledger under a single name (use a symlink for aliases) before appending",
       "id": "ERR-NEG-LEDGER-HARD-LINKED-001"
@@ -1050,6 +1055,11 @@
       "description": "negative evidence ledger file does not exist",
       "guidance": "create the ledger with `fss negative-evidence init` before appending",
       "id": "ERR-NEG-LEDGER-NOT-FOUND-001"
+    },
+    {
+      "description": "temporary negative-evidence ledger file already exists before the append created it",
+      "guidance": "remove the stale temporary file or investigate before appending",
+      "id": "ERR-NEG-LEDGER-TEMP-EXISTS-001"
     },
     {
       "description": "negative evidence ledger entry bytes carry an unknown tag, an invalid value, or a count beyond its declared bound",

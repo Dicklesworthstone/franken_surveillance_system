@@ -592,9 +592,11 @@ All stable error identities and normative recovery guidance cataloged from `regi
 | `ERR-NEG-ENTRY-TOMBSTONED-001` | attempted operation on or with a permanently tombstoned negative entry | do not operate on tombstoned negative-evidence entries |
 | `ERR-NEG-INPUT-OVERSIZED-001` | negative evidence entry or field exceeds declared capacity limit | bound entry string length or shared failure domain count |
 | `ERR-NEG-LEDGER-EXISTS-001` | negative evidence ledger init target already exists | choose a new path; init never overwrites a ledger |
+| `ERR-NEG-LEDGER-FORKED-001` | after the atomic rename the old negative-evidence ledger inode is still linked by another name holding the pre-append ledger | reconcile the fork by hand: keep exactly one name and re-run the append |
 | `ERR-NEG-LEDGER-HARD-LINKED-001` | negative evidence ledger file has a link count other than one, so an atomic publish would update only one of its names | keep the ledger under a single name (use a symlink for aliases) before appending |
 | `ERR-NEG-LEDGER-LOCKED-001` | negative evidence ledger lock file is held by another writer or was left stale by a crashed writer | retry after the other writer finishes; remove a stale lock only after confirming no writer is running |
 | `ERR-NEG-LEDGER-NOT-FOUND-001` | negative evidence ledger file does not exist | create the ledger with 'fss negative-evidence init' before appending |
+| `ERR-NEG-LEDGER-TEMP-EXISTS-001` | temporary negative-evidence ledger file already exists before the append created it | remove the stale temporary file or investigate before appending |
 | `ERR-NEG-MALFORMED-ENTRY-001` | negative evidence ledger entry bytes carry an unknown tag, an invalid value, or a count beyond its declared bound | restore the ledger from a canonical backup; never guess field values |
 | `ERR-NEG-MISSING-COVERAGE-001` | negative evidence entry lacks a certifying coverage witness | provide a valid certifying coverage witness; absence without witness is never evidence |
 | `ERR-NEG-MISSING-PROOF-001` | locally certified negative evidence lacks a proof hash, a retained evidence reference, or the evidence its knowledge state requires | supply the proof hash and retained evidence reference, or record the entry as not locally certified |

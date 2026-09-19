@@ -146,7 +146,7 @@ fn invalid_json_numeric_nesting_and_metadata_forms_are_refused() {
         r#"{"w":{"dtype":"F32","shape":[[1]],"data_offsets":[0,4]}}"#,
         r#"{"w":{"dtype":"F32","shape":[1],"data_offsets":[0,4],"mystery":0}}"#,
         r#"{"w":{"dtype":"F32","shape":[1],"data_offsets":[0,4],}}"#,
-        r#"{"__metadata__":{"unsafe":{"x":0}}}"#,
+        r#"{"__metadata__":{"unsound":{"x":0}}}"#,
         r#"{"__metadata__":{"x":false}}"#,
         r#"{"__metadata__":{"x":"\ud800"}}"#,
         r#"{"__metadata__":{"x":"\udc00"}}"#,
