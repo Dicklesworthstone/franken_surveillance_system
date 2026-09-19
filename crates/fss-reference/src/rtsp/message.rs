@@ -1213,6 +1213,13 @@ impl RtspParser {
         }
     }
 
+    /// Scans for the end of the header block. Recognized terminators are the canonical
+    /// `\r\n\r\n` and the bare `\n\n`.
+    ///
+    /// The non-standard `\n\r\n` terminator (LF CR LF, seen from some devices) is deliberately
+    /// NOT recognized: the scanner keeps waiting for more bytes and the session eventually
+    /// poisons as unterminated (fss-0i0ue documents this on purpose — recognizing it would
+    /// require an owner decision backed by real device captures, file-ingest-first).
     fn find_header_boundary(&self) -> Option<HeaderBoundary> {
         let len = self.buffer.len();
         if len < 2 {

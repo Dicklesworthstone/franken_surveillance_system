@@ -2119,3 +2119,44 @@ fn test_folded_continuation_after_content_length_poisons_b15b() -> Result<(), Bo
     }
     Ok(())
 }
+
+/// fss-0i0ue: the non-standard `\n\r\n` header terminator is deliberately not recognized.
+/// The parser keeps waiting for a canonical `\r\n\r\n` or bare `\n\n`; once the buffered
+/// header block exceeds the configured line/headers budget the session poisons with the
+/// typed unterminated-header-block fault. This documents the refusal — recognizing `\n\r\n`
+/// needs an owner decision backed by real device captures (file-ingest-first).
+#[test]
+fn lf_crlf_terminator_is_not_recognized_and_poisons_unterminated_fss_0i0ue()
+-> Result<(), Box<dyn Error>> {
+    // Deliberately tiny header budget so the poison fires within a few bytes.
+    let limits = RtspLimits {
+        max_line_bytes: 32,
+        max_headers: 2,
+        max_body_bytes: 256,
+        max_interleaved_bytes: 256,
+    };
+    let mut parser = RtspParser::with_limits(limits);
+
+    // Below the header budget: the partial terminator must simply wait (no events, no error).
+    let waiting = b"RTSP/1.0 200 OK\r\nCSeq: 1\n\r\n";
+    let events = parser.feed(&waiting[..waiting.len() - 1])?;
+    assert!(events.is_empty(), "partial terminator must wait: {events:?}");
+
+    // Exceeding the header budget without a recognized terminator poisons the session.
+    let flooded = b"RTSP/1.0 200 OK\r\nCSeq: 1\n\r\n" // begins with the non-standard terminator
+        .iter()
+        .copied()
+        .chain(std::iter::repeat_n(b'x', 256))
+        .collect::<Vec<u8>>();
+    let poisoned = parser.feed(&flooded);
+    assert!(
+        poisoned.is_err(),
+        "the unterminated header block must poison: {poisoned:?}"
+    );
+    let err = poisoned.unwrap_err().to_string();
+    assert!(
+        err.contains("unterminated") || err.contains("header"),
+        "expected the unterminated-header fault, got: {err}"
+    );
+    Ok(())
+}
