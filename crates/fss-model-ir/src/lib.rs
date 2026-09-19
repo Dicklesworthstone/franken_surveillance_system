@@ -11,6 +11,7 @@ extern crate alloc;
 
 pub mod attribute;
 pub mod canonical;
+pub mod decode;
 pub mod error;
 pub mod graph;
 pub mod node;
@@ -23,6 +24,10 @@ pub use attribute::{AttrValue, AttributeMap};
 pub use canonical::{
     MODEL_IR_DIGEST_DOMAIN, compute_model_ir_digest, encode_canonical_attr_value,
     encode_canonical_model_ir,
+};
+pub use decode::{
+    MAX_MODEL_IR_BYTES, MAX_MODEL_IR_ITEMS, MAX_MODEL_IR_TEXT_BYTES,
+    ModelIrDecodeError, decode_canonical_model_ir,
 };
 pub use error::ModelIrError;
 pub use graph::{ModelIrGraph, ModelIrGraphBuilder, ModelIrVersion, UnsupportedVersion};

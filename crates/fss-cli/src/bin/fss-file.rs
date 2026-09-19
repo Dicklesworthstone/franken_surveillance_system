@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
-//! Operator utility for importing, reopening, verifying and extracting retained camera files.
-//! Uses existing canonical file-import manifests for machine interchange; it is not an
-//! alternate agent protocol or a production camera/model service.
+//! Operator utility for importing, verifying, decoding and analyzing retained camera files.
+//! Uses canonical source custody and the production JPEG codec; it is not an alternate agent
+//! protocol, a calibrated threat classifier, or a production camera/model service.
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -26,18 +26,30 @@ use fss_reference::ingest::{
 };
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
-const HELP: &str = "fss-file <import|inspect|verify|extract> [options]\n\
+#[path = "fss-file/media.rs"]
+mod media;
+
+const HELP: &str = "fss-file <import|inspect|verify|extract|decode|read-decoded|verify-decoded|motion> [options]\n\
   All commands: --root DIR --site SITE [--principal ID] [--manifest-out FILE]\n\
   import: --input FILE --sensor ID --stream ID --receive-time-ns N\n\
           [--media-format auto|mjpeg|annexb]\n\
           [--capture-start-ns N --capture-uncertainty-ns N --assumed-fps F]\n\
   inspect/verify: --import-id sha256:HEX\n\
   extract: --import-id sha256:HEX --segment N --output FILE\n\
-  Bounds: --max-source-bytes N --chunk-bytes N --max-segment-bytes N\n\
+  decode/read-decoded/verify-decoded: --import-id sha256:HEX --segment N\n\
+          --interpretation gray|ycbcr [--output IMAGE.pgm] [--receipt-out FILE]\n\
+  motion: --import-id sha256:HEX --start-segment N --frame-count N\n\
+          --interpretation gray|ycbcr --pixel-delta N --minimum-changed-pixels N\n\
+          --report-out FILE [--minimum-changed-ppm N] [--max-comparisons N]\n\
+  Codec bounds: --max-pixels N --max-dimension N --max-markers N\n\
+          --work-units N (decode, verify-decoded, motion; cumulative over a motion scan)\n\
+  Source bounds: --max-source-bytes N --chunk-bytes N --max-segment-bytes N\n\
   Options use separate values. Paths accept native OS strings. Outputs must be new files\n\
   outside the deployment. Import requires explicit receive time; no host clock is inferred.\n\
-  inspect verifies metadata/authority; verify checks every source byte; extract checks the\n\
-  selected segment. None certifies coverage, absence, capture precision or model quality.\n";
+  decode uses the canonical JPEG codec, retains source-linked luma and publishes a receipt.\n\
+  read-decoded reopens it; verify-decoded reproduces the decode without changing authority.\n\
+  motion measures pixel changes across at most 128 frames, resetting on source gaps.\n\
+  None certifies coverage, absence, capture precision, person identity or threat severity.\n";
 
 type Values = BTreeMap<String, OsString>;
 type ParseResult<T> = Result<T, (&'static str, String)>;
@@ -49,6 +61,7 @@ enum Action {
     Inspect(ContentDigest),
     Verify(ContentDigest),
     Extract { identity: ContentDigest, segment: usize, output: PathBuf },
+    Media(media::Action),
 }
 
 #[derive(Debug)]
@@ -90,8 +103,8 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
         if args.len() != 1 { return Err(malformed("help accepts no additional arguments")); }
         return Ok(None);
     }
-    if !matches!(command, "import" | "inspect" | "verify" | "extract") {
-        return Err((ERR_CLI_UNKNOWN_COMMAND, "expected import, inspect, verify or extract".to_owned()));
+    if !matches!(command, "import" | "inspect" | "verify" | "extract") && !media::is_command(command) {
+        return Err((ERR_CLI_UNKNOWN_COMMAND, "expected import, inspect, verify, extract or a decoded-media command".to_owned()));
     }
     let common = ["--root", "--site", "--principal", "--manifest-out", "--max-source-bytes", "--chunk-bytes", "--max-segment-bytes"];
     let import = ["--input", "--sensor", "--stream", "--receive-time-ns", "--media-format", "--capture-start-ns", "--capture-uncertainty-ns", "--assumed-fps"];
@@ -102,7 +115,8 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
         let allowed = common.contains(&key)
             || (command == "import" && import.contains(&key))
             || (command != "import" && key == "--import-id")
-            || (command == "extract" && matches!(key, "--segment" | "--output"));
+            || (command == "extract" && matches!(key, "--segment" | "--output"))
+            || media::accepts_option(command, key);
         if !allowed { return Err((ERR_CLI_UNKNOWN_OPTION, "unknown or inapplicable option".to_owned())); }
         if values.contains_key(key) { return Err((ERR_CLI_DUPLICATE_OPTION, format!("duplicate {key}"))); }
         let argument = args.get(index + 1).ok_or_else(|| (ERR_CLI_MISSING_VALUE, format!("missing value for {key}")))?;
@@ -166,10 +180,11 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
         match command {
             "inspect" => Action::Inspect(identity),
             "verify" => Action::Verify(identity),
-            _ => Action::Extract {
+            "extract" => Action::Extract {
                 identity, segment: number(&values, "--segment", None)?,
                 output: PathBuf::from(value(&values, "--output")?),
             },
+            _ => Action::Media(media::parse(command, identity, limits, &values)?),
         }
     };
     Ok(Some(Options {
@@ -211,8 +226,9 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
             return Err(io::Error::other("deployment root must be a directory, not a symlink").into());
         }
     }
-    // This operator process is the local trust boundary. The principal string is an audit
-    // label, not remote authentication; no network, model or external-effect grants are issued.
+    // The local operator process is the trust boundary. The principal is an audit label, not
+    // remote authentication. Codec work and pixel comparisons have separate explicit ceilings.
+    // No network, trained-model or external-effect grants are issued.
     let authority = ContextAuthority::new_root(RootAuthoritySpec {
         trace_id: "trace:file-cli".to_owned(), operation_id: OperationId::parse("operation:file-cli")?,
         principal: options.principal, capabilities: vec!["ADP-REPLAY-001".to_owned()],
@@ -235,6 +251,7 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
             Action::Inspect(id) => (*id, "inspect"),
             Action::Verify(id) => (*id, "verify"),
             Action::Extract { identity, .. } => (*identity, "extract"),
+            Action::Media(action) => (action.identity(), action.name()),
         };
         let retained = RetainedFileImport::open(&deployment, identity, options.limits, &cx)?;
         let manifest = retained.manifest();
@@ -262,6 +279,7 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
                 writeln!(out, "extracted_bytes={}", bytes.len())?;
                 writeln!(out, "extracted_sha256={}", ContentDigest::sha256(&bytes))?;
             }
+            Action::Media(action) => media::run(action, &retained, &mut deployment, &options.root, &cx, out)?,
             Action::Inspect(_) => {}
         }
         if let Some(path) = &options.manifest_output {
@@ -287,7 +305,7 @@ fn main() -> ExitCode {
             Ok(()) => ExitCode::from(ExitIdentity::SUCCESS.code),
             Err(error) => {
                 eprintln!("{ERR_CLI_RUNTIME_FAILURE}: {error}");
-                eprintln!("A completed import is not rolled back by a later verify/export failure. An incomplete export may remain.");
+                eprintln!("Completed imports and decoded frames are not rolled back by later analysis/export failure. An incomplete export may remain.");
                 ExitCode::from(ExitIdentity::RUNTIME_FAILURE.code)
             }
         },
@@ -331,5 +349,33 @@ mod tests {
         let mut argv = args(&[]);
         argv[6] = OsString::from_vec(b"camera-\xff.h264".to_vec());
         assert!(parse(&argv).is_ok());
+    }
+
+    fn media_args(command: &str, extra: &[&str]) -> Vec<OsString> {
+        let identity = ContentDigest::sha256(b"parser-only import").to_text();
+        [command, "--root", "/unused", "--site", "site:test", "--import-id", &identity]
+            .into_iter().chain(extra.iter().copied()).map(OsString::from).collect()
+    }
+    #[test]
+    fn decode_commands_require_explicit_interpretation_and_bound_every_axis() {
+        for command in ["decode", "read-decoded", "verify-decoded"] {
+            assert!(parse(&media_args(command, &["--segment", "0", "--interpretation", "gray"])).is_ok());
+            assert!(parse(&media_args(command, &["--segment", "0"])).is_err());
+            assert!(parse(&media_args(command, &["--segment", "0", "--interpretation", "guess"])).is_err());
+            assert!(parse(&media_args(command, &["--segment", "0", "--interpretation", "gray", "--max-pixels", "4194305"])).is_err());
+        }
+        assert!(parse(&media_args("read-decoded", &["--segment", "0", "--interpretation", "gray", "--work-units", "10"])).is_err());
+    }
+    #[test]
+    fn motion_requires_bounded_range_thresholds_and_explicit_report() {
+        let valid = ["--start-segment", "0", "--frame-count", "2", "--interpretation", "gray", "--pixel-delta", "16", "--minimum-changed-pixels", "4", "--report-out", "report.json"];
+        assert!(parse(&media_args("motion", &valid)).is_ok());
+        for (index, value) in [(3, "0"), (3, "129"), (7, "0"), (9, "0")] {
+            let mut invalid = valid; invalid[index] = value;
+            assert!(parse(&media_args("motion", &invalid)).is_err());
+        }
+        assert!(parse(&media_args("motion", &valid[..10])).is_err());
+        let mut bad = valid.to_vec(); bad.extend(["--minimum-changed-ppm", "1000001"]);
+        assert!(parse(&media_args("motion", &bad)).is_err());
     }
 }
