@@ -50,7 +50,11 @@ configuration, source interpretation and ordered run selections. `FSSARPT1` /
 All fields use `fss-core` canonical encoding. Counts are bounded before allocation, trailing data
 is rejected and plans must round-trip exactly. Unsupported versions are refused, not guessed.
 These are internal reference export/replay formats, not a new public agent operation vocabulary.
-No existing model, inference, detector or tracking encoding or executor fingerprint is changed.
+Model, inference, detector and tracking byte formats remain unchanged. The accompanying
+inference retry fix changes `executor_profile_digest` because that profile intentionally binds
+its orchestration source. Runs from an earlier source profile are not silently adopted: use the
+matching earlier binary to read/replay them, or explicitly execute retained inputs under this
+new profile. Earlier immutable roots and history are retained, never overwritten.
 
 An empty detection set is not observed absence. A confirmed track remains a local association
 hypothesis, not a person identity, corroborated event, threat probability or effect authorization.
@@ -59,6 +63,7 @@ Reports over selected frames do not prove coverage of the rest of the recording.
 ## Focused validation
 
 ```sh
+cargo test -p fss-reference ingest::inference::tests
 cargo test -p fss-reference ingest::analysis::tests
 cargo test -p fss-reference --test recorded_analysis_contract
 ```
@@ -67,3 +72,18 @@ The authored arithmetic fixture checks actual retained JPEG/MJPEG ingestion and 
 source-bound detections, multi-frame association, gap resets, restart, budget refusals,
 forged/rehashed report refusal and cancellation. Rust tests were added but were not executable
 in the editing environment, which lacked the pinned toolchain. No release qualification is claimed.
+
+## Inference retry and interrupted publication
+
+`RecordedInference::identity_for` computes the existing run key from a verified frame, frozen
+model and current executor source profile. It grants no completion or custody claim.
+`run_and_publish` first looks for the exact final completion record. A completed run is reopened
+and its custody revalidated, without another numeric execution or authority append. Its original
+receipt is returned unchanged. A failed revalidation is not treated as a cache miss, and cached
+reopening cannot bypass the caller's tensor ceiling or cancellation.
+
+A root published before an interrupted final receipt remains incomplete. An exact retry may
+re-execute its numeric work, verify that the resulting root is identical, revalidate root-last
+publication, and append the missing completion. It does not attempt to restage an already-visible
+slot. New tests cover zero-MAC completed retries, source-key separation, restrictive cache bounds,
+cancellation and restart after the root-to-receipt cut. These tests have not yet been run here.

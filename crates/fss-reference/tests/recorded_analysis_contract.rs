@@ -157,3 +157,79 @@ fn retained_sequence_rebuilds_after_restart_and_rejects_forged_reports() -> Test
     assert!(matches!(AnalysisReport::read(&reopened,&plan,&limits,&mut AnalysisBudget::new(100,10_000),&cx),Err(AnalysisError::Cancelled)));
     Ok(())
 }
+
+#[test]
+fn inference_retry_revalidates_completion_and_resumes_visible_root_after_restart() -> TestResult {
+    use fss_reference::ingest::inference::{ModelRunError, STAGE_INFERENCE_COMMIT};
+    let dir = Directory::new()?;
+    let root = dir.0.join("deployment");
+    let source = dir.0.join("retry.mjpeg");
+    fs::write(&source, [JPEG, JPEG].concat())?;
+    let context = || -> TestResult<ReplayCx> {
+        let authority = ContextAuthority::new_root(RootAuthoritySpec {
+            trace_id: "trace:analysis-retry".into(),
+            operation_id: OperationId::parse("operation:analysis-retry")?,
+            principal: "principal:analysis-retry".into(),
+            capabilities: vec!["ADP-REPLAY-001".into()], deadline: None, priority: 10,
+            budgets: BudgetVector::builder().bytes(64 * 1024 * 1024).build()?,
+            privacy_scope: "privacy:test".into(), retention_scope: "retention:test".into(),
+            anchor_universe: ContentDigest::sha256(b"site:analysis-retry"), generation: 1,
+        })?;
+        Ok(ReplayCx::from_context_authority(&authority, root.clone())?)
+    };
+    let cx = context()?;
+    let mut deployment = ReferenceDeployment::open(&root, "site:analysis-retry", &cx)?;
+    let imported = FileIngestAdapter::ingest(FileIngestRequest::new(&source,
+        SensorId::parse("sensor:retry")?, StreamId::parse("stream:retry")?)
+        .with_receive_time(TimestampNs(1_000_000_000)), &cx, &mut deployment)?;
+    let mut request = RecordedDecodeRequest { import_identity: imported.import_identity,
+        segment_index: 0, interpretation: ComponentInterpretation::Grayscale,
+        read_limits: RetainedReadLimits::default(), decode_limits: DecodeLimits::default() };
+    let frame = RecordedFrame::decode_and_publish(&mut deployment, &request,
+        &mut DecodeBudget::new(100_000_000), &cx)?;
+    let [w, h] = frame.receipt().dimensions();
+    let model = detector_model(w, h)?;
+    let budget = ExecBudget::new(100_000_000, 64 * 1024 * 1024);
+    let first = RecordedInference::run_and_publish(&mut deployment, &request, &model,
+        budget, &ScalarExecCx::new(), &cx)?;
+    assert_eq!(first.identity(), RecordedInference::identity_for(&frame, &model));
+    assert!(first.executed_macs() > 0);
+    let committed = deployment.current_anchor().clone();
+    // No MAC allowance: success proves the completed invocation was not executed again.
+    let repeated = RecordedInference::run_and_publish(&mut deployment, &request, &model,
+        ExecBudget::new(0, 64 * 1024 * 1024), &ScalarExecCx::new(), &cx)?;
+    assert_eq!(repeated.receipt_bytes()?, first.receipt_bytes()?);
+    assert_eq!(repeated.authority_anchor(), first.authority_anchor());
+    assert_eq!(*deployment.current_anchor(), committed);
+    assert!(matches!(RecordedInference::run_and_publish(&mut deployment, &request, &model,
+        ExecBudget::new(0, 1), &ScalarExecCx::new(), &cx), Err(ModelRunError::Limit)));
+    let cancelled = ScalarExecCx::new(); cancelled.request_cancellation();
+    assert!(RecordedInference::run_and_publish(&mut deployment, &request, &model,
+        budget, &cancelled, &cx).is_err());
+    assert_eq!(*deployment.current_anchor(), committed);
+
+    request.segment_index = 1;
+    let frame = RecordedFrame::decode_and_publish(&mut deployment, &request,
+        &mut DecodeBudget::new(100_000_000), &cx)?;
+    let identity = RecordedInference::identity_for(&frame, &model);
+    assert_ne!(identity, first.identity());
+    cx.set_cancel_at_checkpoint(STAGE_INFERENCE_COMMIT);
+    assert!(RecordedInference::run_and_publish(&mut deployment, &request, &model,
+        budget, &ScalarExecCx::new(), &cx).is_err());
+    let fresh = context()?;
+    assert!(matches!(RecordedInference::open(&deployment, identity, &request, &fresh),
+        Err(ModelRunError::Unavailable)));
+    drop(deployment);
+    let mut reopened = ReferenceDeployment::open(&root, "site:analysis-retry", &fresh)?;
+    let finished = RecordedInference::run_and_publish(&mut reopened, &request, &model,
+        budget, &ScalarExecCx::new(), &fresh)?;
+    assert_eq!(finished.identity(), identity);
+    finished.verify_by_replay(&reopened, &request, budget, &ScalarExecCx::new(), &fresh)?;
+    let final_anchor = reopened.current_anchor().clone();
+    RecordedInference::run_and_publish(&mut reopened, &request, &model,
+        ExecBudget::new(0, 64 * 1024 * 1024), &ScalarExecCx::new(), &fresh)?;
+    assert_eq!(*reopened.current_anchor(), final_anchor);
+    assert_eq!(reopened.ledger().batches().iter().flat_map(|b| &b.deltas)
+        .filter(|d| d.family == "model_invocation_receipt").count(), 2);
+    Ok(())
+}
