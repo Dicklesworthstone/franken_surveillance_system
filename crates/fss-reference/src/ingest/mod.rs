@@ -18,6 +18,8 @@ pub mod inference;
 pub mod detections;
 /// Bounded, history-linked, single-camera association of detector proposals.
 pub mod tracking;
+/// Complete, restart-reproducible detector/tracker reports over retained recordings.
+pub mod analysis;
 /// Bounded recorded-RTP framing and source-preserving ingest.
 pub mod rtpdump;
 
