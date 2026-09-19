@@ -26,6 +26,36 @@ if [[ "$SEAL_MODE" == "unavailable" && "${FSS_SEAL_NETWORK:-auto}" == "required"
   exit 5
 fi
 export QUALIFY_SEAL_MODE="$SEAL_MODE"
+# Hermetic environment (fss-n4xr9): strip toolchain-injection variables at run time so a caller
+# cannot smuggle -Z features, a different toolchain, or build-behavior flags into the lanes past
+# the static text checks. The scrub deny-list is prefix-aware (CARGO_UNSTABLE_*, RUSTDOC_*) and
+# keeps everything the lanes legitimately need (PATH, HOME, CARGO_HOME, RUSTUP_HOME,
+# CARGO_NET_OFFLINE, RUSTUP_AUTO_INSTALL, QUALIFY_SEAL_MODE, FSS_*).
+SCRUB_DENY_PREFIXES=("CARGO_UNSTABLE_" "RUSTDOC_")
+SCRUB_DENY_EXACT=(
+  RUSTUP_TOOLCHAIN RUSTFLAGS RUSTC RUSTC_WRAPPER RUSTC_WORKSPACE_WRAPPER
+  RUSTC_BOOTSTRAP RUST_MIN_STACK CARGO CARGO_ENCODED_RUSTFLAGS CARGO_TARGET_DIR
+)
+SCRUB_FLAGS=()
+SCRUBBED_LIST=""
+while IFS='=' read -r var _; do
+  scrub_it=0
+  for exact in "${SCRUB_DENY_EXACT[@]}"; do
+    [[ "$var" == "$exact" ]] && { scrub_it=1; break; }
+  done
+  if ((scrub_it == 0)); then
+    for prefix in "${SCRUB_DENY_PREFIXES[@]}"; do
+      [[ "$var" == "$prefix"* ]] && { scrub_it=1; break; }
+    done
+  fi
+  if ((scrub_it == 1)); then
+    SCRUB_FLAGS+=(-u "$var")
+    SCRUBBED_LIST+="$var "
+  fi
+done < <(env)
+if ((${#SCRUB_FLAGS[@]} > 0)); then
+  printf 'hermetic env scrub: unsetting %s\n' "$SCRUBBED_LIST" >&2
+fi
 LANE="full"
 RECEIPT_DIR="${FSS_RECEIPT_DIR:-}"
 WRITE_RECEIPT=1
@@ -100,9 +130,9 @@ run() {
   printf '\n' >&2
   set +e
   if [[ "$SEAL_MODE" == "namespace" ]]; then
-    unshare -n "$@" > >(tee "$log") 2> >(tee -a "$log" >&2)
+    env "${SCRUB_FLAGS[@]}" unshare -n "$@" > >(tee "$log") 2> >(tee -a "$log" >&2)
   else
-    "$@" > >(tee "$log") 2> >(tee -a "$log" >&2)
+    env "${SCRUB_FLAGS[@]}" "$@" > >(tee "$log") 2> >(tee -a "$log" >&2)
   fi
   local rc=$?
   set -e
