@@ -12,22 +12,30 @@ pub(crate) const MATRIX: [[i32; 8]; 8] = [
     [3196, -9102, 13623, -16069, 16069, -13623, 9102, -3196],
 ];
 pub(crate) const ZIGZAG: [usize; 64] = [
-    0,1,8,16,9,2,3,10,17,24,32,25,18,11,4,5,
-    12,19,26,33,40,48,41,34,27,20,13,6,7,14,21,28,
-    35,42,49,56,57,50,43,36,29,22,15,23,30,37,44,51,
-    58,59,52,45,38,31,39,46,53,60,61,54,47,55,62,63,
+    0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27, 20,
+    13, 6, 7, 14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58, 59,
+    52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63,
 ];
 
 pub(crate) fn inverse(coefficients: &[i32; 64]) -> [u8; 64] {
     let mut row = [[0_i64; 8]; 8];
-    for v in 0..8 { for x in 0..8 {
-        for u in 0..8 { row[v][x] += i64::from(coefficients[v*8+u])*i64::from(MATRIX[u][x]); }
-    }}
+    for v in 0..8 {
+        for x in 0..8 {
+            for u in 0..8 {
+                row[v][x] += i64::from(coefficients[v * 8 + u]) * i64::from(MATRIX[u][x]);
+            }
+        }
+    }
     let mut pixels = [0; 64];
-    for y in 0..8 { for x in 0..8 {
-        let mut sum = 0_i64;
-        for v in 0..8 { sum += row[v][x]*i64::from(MATRIX[v][y]); }
-        pixels[y*8+x] = ((sum+(1_i64<<29)).div_euclid(1_i64<<30)+128).clamp(0,255) as u8;
-    }}
+    for y in 0..8 {
+        for x in 0..8 {
+            let mut sum = 0_i64;
+            for v in 0..8 {
+                sum += row[v][x] * i64::from(MATRIX[v][y]);
+            }
+            pixels[y * 8 + x] =
+                ((sum + (1_i64 << 29)).div_euclid(1_i64 << 30) + 128).clamp(0, 255) as u8;
+        }
+    }
     pixels
 }
