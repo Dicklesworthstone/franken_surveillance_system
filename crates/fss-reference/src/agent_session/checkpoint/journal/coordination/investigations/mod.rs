@@ -16,6 +16,9 @@ use fss_core::{
 use crate::agent_session::{ReferenceSessionError, ReferenceSessionStore};
 
 mod validation;
+pub(super) mod journal;
+
+pub use journal::DurableInvestigationError;
 
 /// Registered cognition-write grant. It is never an effect grant.
 pub const CAPABILITY_INVESTIGATE: &str = "CAP-AGENT-INVESTIGATE-001";
@@ -436,7 +439,7 @@ fn apply_change(next: &mut InvestigationRevision, change: &InvestigationChange, 
         }
         InvestigationChange::Conclude { refuted, stop_rule, assessment, residual_unknowns } => {
             if next.record.state != L::Active { return Err(InvestigationError::InvalidTransition); }
-            let unknowns = next.record.unknowns.iter().map(|s| s.statement_id.clone()).collect();
+            let unknowns: BTreeSet<String> = next.record.unknowns.iter().map(|s| s.statement_id.clone()).collect();
             if !next.record.stop_rules.contains(stop_rule) || residual_unknowns != &unknowns {
                 return Err(InvestigationError::ResidualsRequired);
             }

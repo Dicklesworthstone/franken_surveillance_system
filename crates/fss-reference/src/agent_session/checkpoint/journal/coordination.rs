@@ -78,11 +78,12 @@ pub enum CoordinationCommand {
 pub(super) struct CoordinationState {
     pub(super) claims: ReferenceWorkClaimStore,
     pub(super) limits: WorkClaimLimits,
+    pub(super) cases: Option<investigations::ReferenceInvestigationStore>,
 }
 
 impl CoordinationState {
     fn fork(&self) -> Self {
-        Self { claims: self.claims.fork_for_transaction(), limits: self.limits }
+        Self { claims: self.claims.fork_for_transaction(), limits: self.limits, cases: self.cases.clone() }
     }
 }
 
@@ -102,7 +103,7 @@ impl DurableSessionStore {
         self.commit_candidate(PendingSession {
             memory: self.memory.clone(), checkpoint,
             coordination: Some(CoordinationState {
-                claims: ReferenceWorkClaimStore::with_limits(limits), limits,
+                claims: ReferenceWorkClaimStore::with_limits(limits), limits, cases: None,
             }),
             record: Some((COORDINATION_INIT_RECORD_KIND, payload)),
         })
@@ -192,13 +193,16 @@ pub(super) fn restore_initialization(
     payload: &[u8], session_digest: ContentDigest, ceilings: WorkClaimLimits,
 ) -> Result<CoordinationState, DurableSessionError> {
     let limits = codec::decode_initialization(payload, session_digest, ceilings)?;
-    Ok(CoordinationState { claims: ReferenceWorkClaimStore::with_limits(limits), limits })
+    Ok(CoordinationState { claims: ReferenceWorkClaimStore::with_limits(limits), limits, cases: None })
 }
 
 pub(super) fn replay_command(
     payload: &[u8], sessions: &mut ReferenceSessionStore, state: &mut CoordinationState,
     limits: DurableSessionLimits,
 ) -> Result<(), DurableSessionError> {
+    if investigations::journal::is_record(payload)? {
+        return investigations::journal::replay_record(payload, sessions, state, limits);
+    }
     let record = codec::decode_record(payload)?;
     if sessions.checkpoint(limits.max_checkpoint_bytes)?.digest() != record.before {
         return Err(DurableSessionError::InvalidHistory);

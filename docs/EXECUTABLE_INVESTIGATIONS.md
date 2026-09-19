@@ -52,9 +52,10 @@ cover every nested prediction, evidence, contradiction, statement, discriminator
 before retained-state allocation. Duplicate statement/discriminator identities and mismatched
 expected-outcome/separated-hypothesis counts are refused. No history is evicted to admit work.
 
-This initial slice is an in-memory reference. A failed operation can advance session/store clocks
-or expire a session even though no case revision was appended; durable owners must commit those
-changes before returning. Replacing an existing store with an empty one is not recovery.
+`ReferenceInvestigationStore` is the in-memory oracle. A failed operation can advance
+session/store clocks or expire a session even though no case revision was appended. The durable
+integration below commits those changes before returning. Replacing an existing store with an
+empty one is not recovery.
 
 The focused command is:
 
@@ -65,5 +66,65 @@ cargo test -p fss-reference coordination::investigations
 Tests were added for lifecycle, stale writes, authority narrowing, cross-domain non-disclosure,
 residual retention, final refutation, deadline boundaries, capacity and byte-exact deterministic
 execution. Rust compilation/tests/fmt/clippy were unavailable in the editing environment. Source
-checks and Git blob verification do not establish qualification. Persistent integration, public
-request/response envelope dispatch, source-custody admission and GATE-115 remain open.
+checks and Git blob verification do not establish qualification. Deployment-wide canonical
+publication, public request/response envelope dispatch, source-custody admission, full resource
+accounting and GATE-115 remain open.
+
+
+## Durable investigations in the session/work journal
+
+The existing `DurableSessionStore` now provides `enable_investigations(InvestigationLimits)` and
+`investigate(principal, session, command, now)`. The trusted owner first enables coordination;
+case initialization is a one-way, committed transition with immutable bounds. Exact retries
+preserve existing cases and different limits or repeated initialization records are rejected.
+
+The store stages sessions, work claims and cases as one candidate. The command and exact
+before/after session checkpoint witnesses are committed before returning a case revision or
+semantic refusal. An uncertain append fences all three APIs until the existing pending-append
+reconciliation resolves the exact write. Reconciliation does not redeliver the withheld response.
+A failed capacity preflight cannot acknowledge a case update, discard history, or clear a fence.
+Ordinary session checkpoint and work-claim records preserve the case state while interleaving
+through the same journal; their bytes and interpretation are unchanged.
+
+The private coordination-command record family (`0x5743`) now admits explicitly versioned case
+payloads in addition to its existing work payload. This is not a changed interpretation of old
+work bytes:
+
+| Payload domain | Contents |
+|---|---|
+| `fss.reference_investigation_init.v1` | Case/revision/retained-byte ceilings and current session checkpoint witness |
+| `fss.reference_investigation_record.v1` | Exact request bytes, before/after session witnesses, and outcome digest |
+| `fss.reference_investigation_request.v1` | Principal, session, runtime instant and the typed case command |
+
+The case request uses handwritten canonical bytes with explicit tags, lengths, big-endian
+integers and algorithm-qualified digests. Every nested count and string is bounded before its
+allocation; the complete request and record have a 1 MiB ceiling. Unknown versions/tags,
+noncanonical booleans, duplicate or unsorted residual acknowledgements, trailing bytes and
+truncation fail closed. The existing core case record remains the public payload; this private
+journal layout does not introduce a transport-local `fss/1` verb or public schema.
+
+Recovery re-executes the case engine under its historical session authority. It verifies the
+exact success-revision or refusal digest and both session checkpoint witnesses, instead of
+accepting a serialized lifecycle, hypothesis assessment, author or revision as authoritative.
+All fourteen refusal identities remain distinct without persisting unbounded error strings.
+Older readers reject the unrecognized payload version instead of silently dropping cases.
+
+Use the existing `open_existing_with_coordination`, `inspect_with_coordination`,
+`reconcile_pending`, and `recover_existing_with_coordination` methods. Recovery requires an
+independently trusted exact root. Cold recovery verifies semantic replay before any explicit
+incomplete-tail truncation; a complete case change with a lost acknowledgement cannot be
+removed merely to match an older root. Session revocation and expiry remain effective after
+restart, and a new authorized session can continue the exact case without replacing its history.
+
+Case limits are bounded by the reference's absolute ceilings, persisted at initialization and
+recovered unchanged. This extension does not introduce a per-open case-limit migration or
+compaction mechanism. The journal and containing directory still require a protected exclusive
+owner. Checksums alone do not authenticate a root, resist rollback, or establish multi-process
+mutual exclusion. Source roots remain citations, not custody proofs; no probe or effect executes.
+
+The twelve added journal tests cover interleaved session/work/case histories, new-session resume,
+expiry refusals, all four append cut points, hot/cold recovery, stale roots, rehashed false outcomes
+before a torn tail, reset attempts, capacity, every truncated request prefix, all lifecycle and
+knowledge-state tags, and malformed counts/acknowledgements. Together with the initial twelve
+engine tests this provides 24 focused regression tests. They are committed source, not executed
+qualification evidence: Rust build/test/fmt/clippy remain unrun in this editing environment.
