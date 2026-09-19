@@ -244,7 +244,11 @@ impl CanonicalEncode for MissionContract {
         encoder.text(&self.deployment_id);
         encoder.text(self.state.as_str());
         encoder.text(&self.objective);
-        for group in [&self.success_criteria, &self.failure_criteria, &self.stop_criteria] {
+        for group in [
+            &self.success_criteria,
+            &self.failure_criteria,
+            &self.stop_criteria,
+        ] {
             encoder.u32(group.len() as u32);
             for criterion in group {
                 encoder.text(criterion);
@@ -454,7 +458,11 @@ impl CanonicalEncode for ObjectiveContract {
             }
         }
         self.budgets.encode_canonical(encoder);
-        for group in [&self.allowed_actions, &self.required_approvals, &self.terminal_proof] {
+        for group in [
+            &self.allowed_actions,
+            &self.required_approvals,
+            &self.terminal_proof,
+        ] {
             encoder.u32(group.len() as u32);
             for entry in group {
                 encoder.text(entry);
@@ -725,8 +733,13 @@ impl SessionCapsule {
         validate_decision_digest(&decision_digest)?;
         if base_anchor.site_lineage != current_anchor.site_lineage
             || base_anchor.ledger_epoch != current_anchor.ledger_epoch
-            || (current_anchor.commit_sequence, current_anchor.adapter_registry_epoch)
-                < (base_anchor.commit_sequence, base_anchor.adapter_registry_epoch)
+            || (
+                current_anchor.commit_sequence,
+                current_anchor.adapter_registry_epoch,
+            ) < (
+                base_anchor.commit_sequence,
+                base_anchor.adapter_registry_epoch,
+            )
         {
             return Err(ContractError::InvalidAnchorSuccessor);
         }

@@ -33,7 +33,7 @@ use crate::agent::{
 use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder};
 use crate::continuation::{ContinuationCursor, ContinuationError, ContinuationScope};
 use crate::contract::ContractError;
-use crate::contract_basis::{registered_operation, ContractBasisError};
+use crate::contract_basis::{ContractBasisError, registered_operation};
 use crate::digest::ContentDigest;
 use crate::evidence::LedgerAnchor;
 use crate::{
@@ -1138,8 +1138,10 @@ pub fn classify_session_resume(
     }
     if recorded_anchor.site_lineage != current_anchor.site_lineage {
         invalidations.push(ResumeInvalidation::AnchorLineageDivergence);
-    } else if (recorded_anchor.ledger_epoch, recorded_anchor.commit_sequence)
-        > (current_anchor.ledger_epoch, current_anchor.commit_sequence)
+    } else if (
+        recorded_anchor.ledger_epoch,
+        recorded_anchor.commit_sequence,
+    ) > (current_anchor.ledger_epoch, current_anchor.commit_sequence)
     {
         invalidations.push(ResumeInvalidation::AnchorNotStrictlyOlder);
     }
@@ -1447,7 +1449,11 @@ impl FollowWakeContract {
     /// `max_entries` must be at least 1 and `deadline` must be strictly after
     /// `now`; otherwise the wake admits nothing and is refused with
     /// [`ContinuationError::UnboundedWake`].
-    pub fn new(max_entries: u32, deadline: TimestampNs, now: TimestampNs) -> Result<Self, ContinuationError> {
+    pub fn new(
+        max_entries: u32,
+        deadline: TimestampNs,
+        now: TimestampNs,
+    ) -> Result<Self, ContinuationError> {
         if max_entries == 0 || deadline <= now {
             return Err(ContinuationError::UnboundedWake);
         }
@@ -1746,18 +1752,30 @@ impl InvestigationCaseState {
             .ok_or(ContractError::NotFound)?;
         let legal = matches!(
             (current, to),
-            (HypothesisDisposition::Live, HypothesisDisposition::Supported)
-                | (HypothesisDisposition::Live, HypothesisDisposition::Disfavored)
-                | (HypothesisDisposition::Live, HypothesisDisposition::Refuted)
-                | (HypothesisDisposition::Supported, HypothesisDisposition::Disfavored)
-                | (HypothesisDisposition::Supported, HypothesisDisposition::Refuted)
-                | (HypothesisDisposition::Disfavored, HypothesisDisposition::Refuted)
+            (
+                HypothesisDisposition::Live,
+                HypothesisDisposition::Supported
+            ) | (
+                HypothesisDisposition::Live,
+                HypothesisDisposition::Disfavored
+            ) | (HypothesisDisposition::Live, HypothesisDisposition::Refuted)
+                | (
+                    HypothesisDisposition::Supported,
+                    HypothesisDisposition::Disfavored
+                )
+                | (
+                    HypothesisDisposition::Supported,
+                    HypothesisDisposition::Refuted
+                )
+                | (
+                    HypothesisDisposition::Disfavored,
+                    HypothesisDisposition::Refuted
+                )
         );
         if !legal {
             return Err(ContractError::HypothesisTransitionIllegal);
         }
-        self.hypotheses
-            .insert(hypothesis.to_owned(), to);
+        self.hypotheses.insert(hypothesis.to_owned(), to);
         Ok(())
     }
 
@@ -1830,16 +1848,16 @@ pub struct PreparedPlanStep {
 
 impl PreparedPlanStep {
     /// Validates one step: registered operation, stable target spelling.
-    pub fn new(operation: AgentOperation, target: impl Into<String>) -> Result<Self, ContractError> {
+    pub fn new(
+        operation: AgentOperation,
+        target: impl Into<String>,
+    ) -> Result<Self, ContractError> {
         let target = target.into();
         if !target.starts_with("fss://") {
             return Err(ContractError::InvalidIdentifier);
         }
         operation.validate_row()?;
-        Ok(Self {
-            operation,
-            target,
-        })
+        Ok(Self { operation, target })
     }
 }
 

@@ -102,7 +102,10 @@ impl HydrationArtifact {
             .content_type
             .split_once(';')
             .map_or(self.content_type.as_str(), |(media_type, _)| media_type);
-        if media_type.trim().eq_ignore_ascii_case(LABORATORY_CONTENT_TYPE) {
+        if media_type
+            .trim()
+            .eq_ignore_ascii_case(LABORATORY_CONTENT_TYPE)
+        {
             return true;
         }
 
@@ -214,7 +217,11 @@ mod quarantine_tests {
         ] {
             for level in HydrationLevel::ALL.into_iter().take(4) {
                 assert_eq!(
-                    publish(level, "application/octet-stream", laboratory_payload(schema)),
+                    publish(
+                        level,
+                        "application/octet-stream",
+                        laboratory_payload(schema)
+                    ),
                     Err(HydrationError::Contract(
                         ContractError::ProhibitedEvidencePromotion
                     )),

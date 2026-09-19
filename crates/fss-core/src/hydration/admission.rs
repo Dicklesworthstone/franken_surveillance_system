@@ -247,7 +247,9 @@ impl HydrationArtifact {
             .content_type
             .split_once(';')
             .map_or(self.content_type.as_str(), |(media_type, _)| media_type);
-        media_type.trim().eq_ignore_ascii_case(Self::H0_CONTENT_TYPE)
+        media_type
+            .trim()
+            .eq_ignore_ascii_case(Self::H0_CONTENT_TYPE)
             || CanonicalDecoder::new(&self.payload)
                 .text()
                 .is_ok_and(|schema| schema.starts_with("fss.h0_identity."))
@@ -406,7 +408,14 @@ mod identity_delivery_tests {
         let handle = SemanticHandle::publish(original_spec.clone())?;
         let request = HydrationRequest::publish(request_spec(&handle)?)?;
         for field in [
-            "subject", "source", "privacy", "scope", "anchor", "publication", "retention", "cost",
+            "subject",
+            "source",
+            "privacy",
+            "scope",
+            "anchor",
+            "publication",
+            "retention",
+            "cost",
         ] {
             let mut foreign_spec = original_spec.clone();
             match field {
@@ -586,8 +595,11 @@ mod identity_delivery_tests {
         let underquoted = SemanticHandle::publish(spec)?;
         let artifact = HydrationArtifact::publish_h0_identity(&underquoted)?;
         assert_eq!(
-            HydrationRequest::publish(request_spec(&underquoted)?)?
-                .validate_delivery(&underquoted, &artifact, TimestampNs(11)),
+            HydrationRequest::publish(request_spec(&underquoted)?)?.validate_delivery(
+                &underquoted,
+                &artifact,
+                TimestampNs(11)
+            ),
             Err(HydrationError::BudgetExceeded),
         );
         Ok(())

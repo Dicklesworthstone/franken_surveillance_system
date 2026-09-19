@@ -12,11 +12,11 @@
 //! refused.
 
 use crate::agent_operation::AgentOperation;
-use crate::contract_basis::registered_operation;
 use crate::agent_view::AgentView;
 use crate::canonical::{CanonicalEncode, CanonicalEncoder};
 use crate::contract::ContractError;
 use crate::contract_basis::ContractBasisError;
+use crate::contract_basis::registered_operation;
 use crate::digest::ContentDigest;
 use crate::evidence::LedgerAnchor;
 use crate::ids::validate_id;
@@ -75,10 +75,7 @@ impl QueryInterpretation {
         let interpretation_id = interpretation_id.into();
         let description = description.into();
         validate_id(&interpretation_id)?;
-        if interpretation_id.len() > 256
-            || description.is_empty()
-            || description.len() > 8192
-        {
+        if interpretation_id.len() > 256 || description.is_empty() || description.len() > 8192 {
             return Err(ContractError::InvalidIdentifier);
         }
         Ok(Self {
@@ -155,9 +152,8 @@ impl AgentQueryPlan {
         let operation = registered_operation(basis, &Self::serving_operation(operation_id)?)?;
         let _ = operation;
         let query_plan_id = query_plan_id.into();
-        validate_id(&query_plan_id).map_err(|_| {
-            ContractBasisError::Contract(ContractError::InvalidIdentifier)
-        })?;
+        validate_id(&query_plan_id)
+            .map_err(|_| ContractBasisError::Contract(ContractError::InvalidIdentifier))?;
         if query_plan_id.len() > 256 {
             return Err(ContractBasisError::Contract(
                 ContractError::InvalidIdentifier,
@@ -174,9 +170,8 @@ impl AgentQueryPlan {
             ));
         }
         for source in &taint_sources {
-            validate_id(source).map_err(|_| {
-                ContractBasisError::Contract(ContractError::InvalidIdentifier)
-            })?;
+            validate_id(source)
+                .map_err(|_| ContractBasisError::Contract(ContractError::InvalidIdentifier))?;
             if source.len() > 256 {
                 return Err(ContractBasisError::Contract(
                     ContractError::InvalidIdentifier,
@@ -199,9 +194,7 @@ impl AgentQueryPlan {
             .iter()
             .any(|interpretation| interpretation.interpretation_id == selected_interpretation)
         {
-            return Err(ContractBasisError::Contract(
-                ContractError::NotFound,
-            ));
+            return Err(ContractBasisError::Contract(ContractError::NotFound));
         }
         let output_view = AgentView::from_id(output_view_id)
             .map_err(|_| ContractBasisError::Contract(ContractError::InvalidIdentifier))?;
@@ -231,9 +224,8 @@ impl AgentQueryPlan {
     /// Resolves the plan-serving operation or refuses effect rows and rows
     /// whose payload is not this plan.
     fn serving_operation(operation_id: &str) -> Result<String, ContractBasisError> {
-        let operation = AgentOperation::from_id(operation_id).map_err(|_| {
-            ContractBasisError::Contract(ContractError::InvalidIdentifier)
-        })?;
+        let operation = AgentOperation::from_id(operation_id)
+            .map_err(|_| ContractBasisError::Contract(ContractError::InvalidIdentifier))?;
         if operation.effectful() || operation.request_payload_schema() != Self::SCHEMA {
             return Err(ContractBasisError::Contract(
                 ContractError::InvalidEffectTransition,

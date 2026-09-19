@@ -22,10 +22,10 @@
 //! are decision-bearing budget discipline: `target <= maximum` and both
 //! nonzero are enforced at construction and use boundaries.
 
+use crate::AgentOperation;
 use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder};
 use crate::contract::ContractError;
 use crate::digest::ContentDigest;
-use crate::AgentOperation;
 use core::fmt;
 
 /// Qualification gate shared by every registered view row.

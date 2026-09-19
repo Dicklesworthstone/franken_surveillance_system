@@ -4,11 +4,11 @@
 
 use crate::agent::ContractBasis;
 use crate::agent_operation::AgentOperation;
-use crate::contract_basis::registered_operation;
 use crate::agent_view::AgentView;
 use crate::canonical::{CanonicalEncode, CanonicalEncoder};
 use crate::contract::ContractError;
 use crate::contract_basis::ContractBasisError;
+use crate::contract_basis::registered_operation;
 use crate::digest::ContentDigest;
 use crate::evidence::LedgerAnchor;
 use crate::{Completeness, KnowledgeState};
@@ -325,7 +325,9 @@ impl AgentResponseEnvelope {
         check_str_public(&payload_schema, 256).map_err(ContractBasisError::Contract)?;
         let payload_json = payload_json.into();
         if payload_json.is_empty() {
-            return Err(ContractBasisError::Contract(ContractError::EvidenceRequired));
+            return Err(ContractBasisError::Contract(
+                ContractError::EvidenceRequired,
+            ));
         }
         for list in [
             &effective_capabilities,
@@ -349,7 +351,8 @@ impl AgentResponseEnvelope {
         let budgets_json = budgets_json.into();
         check_str_public(&budgets_json, 65_536).map_err(ContractBasisError::Contract)?;
         let effective_privacy_projection_json = effective_privacy_projection_json.into();
-        check_str_public(&effective_privacy_projection_json, 65_536).map_err(ContractBasisError::Contract)?;
+        check_str_public(&effective_privacy_projection_json, 65_536)
+            .map_err(ContractBasisError::Contract)?;
         Ok(Self {
             contract_basis,
             operation,
@@ -542,4 +545,3 @@ impl CanonicalEncode for AgentResponseEnvelope {
         encoder.i128(self.created_at_ns);
     }
 }
-

@@ -16,9 +16,9 @@ use crate::agent_view::AgentView;
 use crate::canonical::{CanonicalEncode, CanonicalEncoder};
 use crate::contract::{ContractError, KnowledgeState};
 use crate::contract_basis::ContractBasisError;
+use crate::contract_basis::registered_operation;
 use crate::digest::ContentDigest;
 use crate::evidence::LedgerAnchor;
-use crate::contract_basis::registered_operation;
 
 fn check_str(value: &str, max_len: usize) -> Result<(), ContractError> {
     if value.is_empty() || value.len() > max_len {

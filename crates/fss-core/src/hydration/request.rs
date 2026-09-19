@@ -257,12 +257,11 @@ impl CanonicalEncode for HydrationRequest {
 mod context_slot_tests {
     use super::*;
     use crate::{
-        CompressionCompleteness, CompressionLossClass, CompressionStopReason,
-        CompressionTransform, CompressionTransformKind, ContextBindingError,
-        ContextExpansionBinding, ContextExpansionBindingSet, ContextItem,
-        ContractBasisRegistryBytes, CriticalPreservation, ExpansionHandle, KnowledgeState,
-        MissionId, SemanticCompressionReceipt, SemanticContextPack,
-        SemanticContextPackPublishParams,
+        CompressionCompleteness, CompressionLossClass, CompressionStopReason, CompressionTransform,
+        CompressionTransformKind, ContextBindingError, ContextExpansionBinding,
+        ContextExpansionBindingSet, ContextItem, ContractBasisRegistryBytes, CriticalPreservation,
+        ExpansionHandle, KnowledgeState, MissionId, SemanticCompressionReceipt,
+        SemanticContextPack, SemanticContextPackPublishParams,
     };
     use std::error::Error;
 
@@ -277,7 +276,10 @@ mod context_slot_tests {
     }
 
     impl Fixture {
-        fn publish(&self, spec: HydrationRequestSpec) -> Result<HydrationRequest, ContextBindingError> {
+        fn publish(
+            &self,
+            spec: HydrationRequestSpec,
+        ) -> Result<HydrationRequest, ContextBindingError> {
             HydrationRequest::publish_for_context_slot(
                 spec,
                 &self.pack,
@@ -291,7 +293,12 @@ mod context_slot_tests {
 
     fn fixture() -> TestResult<Fixture> {
         let basis = ContractBasis::from_registry_bytes(ContractBasisRegistryBytes::new(
-            b"schemas", b"operations", b"views", b"capabilities", b"errors", b"costs",
+            b"schemas",
+            b"operations",
+            b"views",
+            b"capabilities",
+            b"errors",
+            b"costs",
             "fss-context-request:test",
         ));
         let anchor = LedgerAnchor::genesis("site:context-request");
@@ -383,7 +390,10 @@ mod context_slot_tests {
             &pack,
             &receipt,
             vec![ContextExpansionBinding::publish(
-                "slot:evidence", &handle, HydrationLevel::H1, "Hydrate exact evidence.",
+                "slot:evidence",
+                &handle,
+                HydrationLevel::H1,
+                "Hydrate exact evidence.",
             )?],
         )?;
         let spec = HydrationRequestSpec {
@@ -402,7 +412,13 @@ mod context_slot_tests {
             continuation: None,
             issued_at: TimestampNs(20),
         };
-        Ok(Fixture { pack, receipt, bindings, handle, spec })
+        Ok(Fixture {
+            pack,
+            receipt,
+            bindings,
+            handle,
+            spec,
+        })
     }
 
     #[test]
@@ -412,8 +428,12 @@ mod context_slot_tests {
         assert_eq!(request, HydrationRequest::publish(fixture.spec.clone())?);
         assert_eq!(request, fixture.publish(fixture.spec.clone())?);
         request.validate_for_context_slot(
-            &fixture.pack, &fixture.receipt, &fixture.bindings, "slot:evidence",
-            &fixture.handle, TimestampNs(21),
+            &fixture.pack,
+            &fixture.receipt,
+            &fixture.bindings,
+            "slot:evidence",
+            &fixture.handle,
+            TimestampNs(21),
         )?;
         Ok(())
     }
@@ -425,7 +445,9 @@ mod context_slot_tests {
         spec.session_id = SessionId::parse("session:other")?;
         assert_eq!(
             fixture.publish(spec),
-            Err(ContextBindingError::Hydration(HydrationError::ContinuationCrossSession)),
+            Err(ContextBindingError::Hydration(
+                HydrationError::ContinuationCrossSession
+            )),
         );
         Ok(())
     }
@@ -451,12 +473,18 @@ mod context_slot_tests {
         for field in 0..3 {
             let mut spec = fixture.spec.clone();
             match field {
-                0 => spec.contract_basis = ContractBasis::from_registry_bytes(
-                    ContractBasisRegistryBytes::new(
-                        b"other schemas", b"operations", b"views", b"capabilities",
-                        b"errors", b"costs", "fss-context-request:test",
-                    ),
-                ),
+                0 => {
+                    spec.contract_basis =
+                        ContractBasis::from_registry_bytes(ContractBasisRegistryBytes::new(
+                            b"other schemas",
+                            b"operations",
+                            b"views",
+                            b"capabilities",
+                            b"errors",
+                            b"costs",
+                            "fss-context-request:test",
+                        ))
+                }
                 1 => spec.requested_level = HydrationLevel::H0,
                 _ => spec.issued_at = TimestampNs(1),
             }
@@ -470,8 +498,12 @@ mod context_slot_tests {
         let mut fixture = fixture()?;
         assert_eq!(
             HydrationRequest::publish_for_context_slot(
-                fixture.spec.clone(), &fixture.pack, &fixture.receipt, &fixture.bindings,
-                "slot:missing", &fixture.handle,
+                fixture.spec.clone(),
+                &fixture.pack,
+                &fixture.receipt,
+                &fixture.bindings,
+                "slot:missing",
+                &fixture.handle,
             ),
             Err(ContextBindingError::MissingSlot("slot:missing".to_owned())),
         );
@@ -489,12 +521,19 @@ mod context_slot_tests {
         spec.allow_lower_level = true;
         let request = fixture.publish(spec.clone())?;
         assert_eq!(request.available_capabilities, spec.available_capabilities);
-        assert_eq!(request.authorized_privacy_classes, spec.authorized_privacy_classes);
+        assert_eq!(
+            request.authorized_privacy_classes,
+            spec.authorized_privacy_classes
+        );
         assert_eq!(request.budget, spec.budget);
         assert!(request.allow_lower_level);
         let artifact = HydrationArtifact::publish(
-            HydrationLevel::H1, "application/fss+json", b"synopsis".to_vec(),
-            [fixture.handle.subject_digest], Completeness::Complete, None,
+            HydrationLevel::H1,
+            "application/fss+json",
+            b"synopsis".to_vec(),
+            [fixture.handle.subject_digest],
+            Completeness::Complete,
+            None,
         )?;
         assert_eq!(
             request.validate_delivery(&fixture.handle, &artifact, TimestampNs(21)),
@@ -510,13 +549,23 @@ mod context_slot_tests {
         spec.authorized_privacy_classes.clear();
         assert_eq!(
             fixture.publish(spec),
-            Err(ContextBindingError::Hydration(HydrationError::PrivacyDenied)),
+            Err(ContextBindingError::Hydration(
+                HydrationError::PrivacyDenied
+            )),
         );
         let request = fixture.publish(fixture.spec.clone())?;
-        assert!(request.validate_for_context_slot(
-            &fixture.pack, &fixture.receipt, &fixture.bindings, "slot:evidence",
-            &fixture.handle, TimestampNs(19),
-        ).is_err());
+        assert!(
+            request
+                .validate_for_context_slot(
+                    &fixture.pack,
+                    &fixture.receipt,
+                    &fixture.bindings,
+                    "slot:evidence",
+                    &fixture.handle,
+                    TimestampNs(19),
+                )
+                .is_err()
+        );
         Ok(())
     }
 }

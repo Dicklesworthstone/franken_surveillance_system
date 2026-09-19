@@ -22,11 +22,11 @@
 
 use crate::agent::ContractBasis;
 use crate::agent_operation::AgentOperation;
-use crate::contract_basis::registered_operation;
 use crate::agent_view::AgentView;
 use crate::canonical::{CanonicalEncode, CanonicalEncoder};
 use crate::contract::ContractError;
 use crate::contract_basis::ContractBasisError;
+use crate::contract_basis::registered_operation;
 use crate::digest::ContentDigest;
 use crate::evidence::LedgerAnchor;
 use crate::ids::validate_id;
@@ -156,18 +156,21 @@ impl AgentRequestEnvelope {
         let view = AgentView::from_id(&params.view_id)
             .map_err(|_| ContractBasisError::Contract(ContractError::InvalidIdentifier))?;
         if params.payload_schema != operation.request_payload_schema() {
-            return Err(ContractBasisError::Contract(ContractError::InvalidIdentifier));
+            return Err(ContractBasisError::Contract(
+                ContractError::InvalidIdentifier,
+            ));
         }
-        validate_id(&params.request_id).map_err(|_| {
-            ContractBasisError::Contract(ContractError::InvalidIdentifier)
-        })?;
+        validate_id(&params.request_id)
+            .map_err(|_| ContractBasisError::Contract(ContractError::InvalidIdentifier))?;
         if params.request_id.len() > 256 {
             return Err(ContractBasisError::Contract(
                 ContractError::InvalidIdentifier,
             ));
         }
         if params.payload_json.is_empty() {
-            return Err(ContractBasisError::Contract(ContractError::EvidenceRequired));
+            return Err(ContractBasisError::Contract(
+                ContractError::EvidenceRequired,
+            ));
         }
         if params.target_uris.len() > 256
             || params.taint.sources.len() > 128
@@ -198,7 +201,9 @@ impl AgentRequestEnvelope {
             ));
         }
         if params.privacy.purpose.is_empty() || params.privacy.policy_generation_id.is_empty() {
-            return Err(ContractBasisError::Contract(ContractError::InvalidIdentifier));
+            return Err(ContractBasisError::Contract(
+                ContractError::InvalidIdentifier,
+            ));
         }
         Ok(Self {
             contract_basis: params.contract_basis,

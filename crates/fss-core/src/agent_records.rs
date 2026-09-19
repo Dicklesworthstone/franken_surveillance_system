@@ -1055,7 +1055,11 @@ impl ExecutionEpisode {
             check_str(&prediction.statement, 4096)?;
             check_str(&prediction.expected_state, 4096)?;
         }
-        for receipt in step_receipts.iter().chain(&effect_receipts).chain(&obligations) {
+        for receipt in step_receipts
+            .iter()
+            .chain(&effect_receipts)
+            .chain(&obligations)
+        {
             check_str(receipt, 4096)?;
         }
         for attribution in &attribution_hypotheses {

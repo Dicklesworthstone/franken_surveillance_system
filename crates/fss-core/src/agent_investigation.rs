@@ -11,13 +11,13 @@
 
 use std::collections::BTreeSet;
 
+use crate::MissionId;
 use crate::agent::ContractBasis;
 use crate::canonical::{CanonicalEncode, CanonicalEncoder};
 use crate::contract::{ContractError, KnowledgeState};
 use crate::digest::ContentDigest;
 use crate::evidence::LedgerAnchor;
 use crate::ids::validate_id;
-use crate::MissionId;
 
 /// Lifecycle state of an investigation (registered enum).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -232,8 +232,10 @@ impl InvestigationState {
         if hypotheses.len() < 2 || hypotheses.len() > 64 {
             return Err(ContractError::EvidenceRequired);
         }
-        let ids: BTreeSet<&str> =
-            hypotheses.iter().map(|h| h.hypothesis_id.as_str()).collect();
+        let ids: BTreeSet<&str> = hypotheses
+            .iter()
+            .map(|h| h.hypothesis_id.as_str())
+            .collect();
         if ids.len() != hypotheses.len() {
             return Err(ContractError::InvalidIdentifier);
         }
@@ -263,9 +265,7 @@ impl InvestigationState {
         }
         for discriminator in &discriminators {
             check_portable(&discriminator.discriminator_id, 256)?;
-            if discriminator.description.is_empty()
-                || discriminator.description.len() > 8192
-            {
+            if discriminator.description.is_empty() || discriminator.description.len() > 8192 {
                 return Err(ContractError::InvalidIdentifier);
             }
             if discriminator.separates.len() < 2 || discriminator.separates.len() > 64 {
