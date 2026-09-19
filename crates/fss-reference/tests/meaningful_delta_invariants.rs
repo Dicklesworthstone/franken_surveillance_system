@@ -1168,8 +1168,12 @@ fn test_f4_real_situation_f2_terminal_effect_transition_non_coalescible()
         .operation(&alert_plan.intent.operation_id)
         .cloned()
         .ok_or(ReferenceError::InvalidSpec("missing_op_receipt"))?;
-    let situation1 =
-        compile_reference_situation_with_operation_receipt(req1, &op_receipt, &harness.authority)?;
+    let situation1 = compile_reference_situation_with_operation_receipt(
+        req1,
+        &op_receipt,
+        &harness.authority,
+        &journal,
+    )?;
     let pub1 = project_reference_situation(situation1, &test_spec(10_000)?)?;
     // The authority ledger that compiles read also records the publication lineage (fss-mnlz1).
     record_reference_publication(&mut harness.authority, &pub1)?;

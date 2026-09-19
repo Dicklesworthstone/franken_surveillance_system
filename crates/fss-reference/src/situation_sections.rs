@@ -6,10 +6,10 @@ use fss_core::{
     AffordanceClass, BudgetVector, CanonicalEncode, CanonicalEncoder, Completeness,
     CompressionCompleteness, CompressionLossClass, CompressionStopReason, CompressionTransform,
     CompressionTransformKind, ContentDigest, ContextItem, ContractError, ControlEnvelope,
-    CriticalPreservation, ExpansionHandle, HandoffCapsule, HandoffId, HandoffPublishParams,
-    KnowledgeCell, KnowledgeState, OperationReceipt, ResourcePressure, ResourceState,
-    SemanticCompressionReceipt, SemanticContextPack, SemanticContextPackPublishParams, TimestampNs,
-    reference_token_count,
+    CriticalPreservation, EffectJournal, ExpansionHandle, HandoffCapsule, HandoffId,
+    HandoffPublishParams, KnowledgeCell, KnowledgeState, OperationReceipt, ResourcePressure,
+    ResourceState, SemanticCompressionReceipt, SemanticContextPack,
+    SemanticContextPackPublishParams, TimestampNs, reference_token_count,
 };
 
 use fss_core::{
@@ -243,12 +243,14 @@ pub fn compile_reference_situation_publication_with_operation_receipt(
     request: ReferenceSituationRequest<'_>,
     operation_receipt: &OperationReceipt,
     authority: &DurableReferenceLedger,
+    journal: &EffectJournal,
     spec: &ReferenceProjectionSpec,
 ) -> Result<ReferenceSituationPublication, ReferenceError> {
     let situation = situation_guard::compile_reference_situation_with_operation_receipt(
         request,
         operation_receipt,
         authority,
+        journal,
     )?;
     project_reference_situation(situation, spec)
 }

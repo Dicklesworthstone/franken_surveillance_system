@@ -2,10 +2,10 @@ use std::error::Error;
 use std::fs;
 
 use fss_core::{
-    CapsuleId, CaptureInterval, Completeness, ContractBasis, ContractBasisRegistryBytes,
-    EffectJournal, EffectState, EventId, IdempotencyKey, KnowledgeCell, KnowledgeCellParams,
-    KnowledgeState, MissionId, ObligationId, OperationId, PrincipalId, ProbabilityInterval,
-    ProvenanceClass, SensorId, SessionId, TimestampNs,
+    CapsuleId, CaptureInterval, Completeness, ContentDigest, ContractBasis,
+    ContractBasisRegistryBytes, EffectJournal, EffectState, EventId, IdempotencyKey, KnowledgeCell,
+    KnowledgeCellParams, KnowledgeState, MissionId, ObligationId, OperationId, PrincipalId,
+    ProbabilityInterval, ProvenanceClass, SensorId, SessionId, TimestampNs,
 };
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
 use fss_object::{InMemoryObjectStore, ObjectLimits};
@@ -230,6 +230,7 @@ fn exact_prepared_receipt_preserves_commit() -> Result<(), Box<dyn Error>> {
         projection_request,
         &operation_receipt,
         &harness.authority,
+        &journal,
     )?;
 
     assert_eq!(operation_receipt.state, EffectState::Prepared);
@@ -278,6 +279,7 @@ fn forged_prepared_receipt_is_rejected() -> Result<(), Box<dyn Error>> {
             projection_request,
             &forged,
             &harness.authority,
+            &journal,
         ),
         Err(ReferenceError::InvalidSpec(
             "situation_operation_receipt_integrity"
@@ -318,6 +320,7 @@ fn committed_receipt_exposes_status_instead_of_commit() -> Result<(), Box<dyn Er
         projection_request,
         &operation_receipt,
         &harness.authority,
+        &journal,
     )?;
 
     assert!(
@@ -473,6 +476,7 @@ where
             result_request,
             &operation_receipt,
             &harness.authority,
+            &journal,
         )?,
         &guard_projection_spec()?,
     )?;
@@ -658,6 +662,7 @@ fn cancelled_receipt_must_carry_the_journal_cancellation_proof() -> Result<(), B
         projection_request,
         &forged,
         &harness.authority,
+        &journal,
     );
     assert!(
         matches!(
@@ -722,6 +727,7 @@ fn indeterminate_without_a_reason_is_refused_by_journal_and_guard() -> Result<()
         forged_request,
         &forged,
         &harness.authority,
+        &journal,
     );
     assert!(
         matches!(
@@ -743,6 +749,7 @@ fn indeterminate_without_a_reason_is_refused_by_journal_and_guard() -> Result<()
         marked_request,
         &marked,
         &harness.authority,
+        &journal,
     )?;
     harness.cleanup();
     Ok(())
@@ -768,6 +775,7 @@ fn indeterminate_local_situation(
         compile_request,
         &operation_receipt,
         &harness.authority,
+        &journal,
     )?;
     let claim_id = format!("claim:effect:operation:situation-guard:{name}:local-state");
     let cell = situation
@@ -925,6 +933,7 @@ fn guarded_situation(
     plan: &ReferenceAlertPlan,
     operation_receipt: Option<&fss_core::OperationReceipt>,
     outcome: Option<&crate::ReferenceAlertOutcomeReceipt>,
+    journal: &EffectJournal,
 ) -> Result<crate::ReferenceSituation, Box<dyn Error>> {
     guarded_situation_after(
         harness,
@@ -933,6 +942,7 @@ fn guarded_situation(
         plan,
         operation_receipt,
         outcome,
+        journal,
         None,
     )
 }
@@ -945,6 +955,7 @@ fn guarded_situation_after(
     plan: &ReferenceAlertPlan,
     operation_receipt: Option<&fss_core::OperationReceipt>,
     outcome: Option<&crate::ReferenceAlertOutcomeReceipt>,
+    journal: &EffectJournal,
     continues: Option<&crate::ReferenceSituationPublication>,
 ) -> Result<crate::ReferenceSituation, Box<dyn Error>> {
     let mut compile_request = request(
@@ -961,6 +972,7 @@ fn guarded_situation_after(
             compile_request,
             operation_receipt,
             &harness.authority,
+            journal,
         )?,
         None => compile_reference_situation(compile_request, &harness.authority)?,
     })
@@ -974,9 +986,18 @@ fn guarded_publication(
     plan: &ReferenceAlertPlan,
     operation_receipt: Option<&fss_core::OperationReceipt>,
     outcome: Option<&crate::ReferenceAlertOutcomeReceipt>,
+    journal: &EffectJournal,
 ) -> Result<crate::ReferenceSituationPublication, Box<dyn Error>> {
     Ok(crate::project_reference_situation(
-        guarded_situation(harness, decision, receipt, plan, operation_receipt, outcome)?,
+        guarded_situation(
+            harness,
+            decision,
+            receipt,
+            plan,
+            operation_receipt,
+            outcome,
+            journal,
+        )?,
         &guard_projection_spec()?,
     )?)
 }
@@ -985,6 +1006,7 @@ fn guarded_publication(
 /// (compiled before the outcome exists), and the verified receipt with its published outcome.
 struct Lifecycle {
     harness: GuardHarness,
+    journal: EffectJournal,
     decision: ReferencePolicyDecision,
     receipt: ReferenceEventReceipt,
     plan: ReferenceAlertPlan,
@@ -1015,6 +1037,7 @@ impl Lifecycle {
             &plan,
             Some(&prepared_receipt),
             None,
+            &journal,
         )?;
         let mut provider = crate::ReferenceAlertProvider::with_provider_id(format!(
             "provider:test:situation-guard:{name}"
@@ -1037,6 +1060,7 @@ impl Lifecycle {
             &plan,
             Some(&dispatched_receipt),
             None,
+            &journal,
         )?;
         let dispatched = crate::project_reference_situation(
             dispatched_situation.clone(),
@@ -1063,6 +1087,7 @@ impl Lifecycle {
         )?;
         Ok(Self {
             harness,
+            journal,
             decision,
             receipt,
             plan,
@@ -1086,6 +1111,7 @@ impl Lifecycle {
             &self.plan,
             with_receipt.then_some(&self.verified_receipt),
             Some(&self.outcome),
+            &self.journal,
         )
     }
 
@@ -1104,6 +1130,7 @@ impl Lifecycle {
                 &self.plan,
                 with_receipt.then_some(&self.verified_receipt),
                 Some(&self.outcome),
+                &self.journal,
                 Some(predecessor),
             )?,
             &guard_projection_spec()?,
@@ -1122,6 +1149,7 @@ impl Lifecycle {
             &self.plan,
             with_receipt.then_some(&self.verified_receipt),
             Some(&self.outcome),
+            &self.journal,
         )
     }
 }
@@ -1286,7 +1314,15 @@ fn terminal_outcome_flip_of_one_operation_is_a_contradiction() -> Result<(), Box
     assert_eq!(plan, failed_plan);
     let verified = receipt_in_state(&mut verified_journal, &plan, EffectState::Verified)?;
     let failed = receipt_in_state(&mut failed_journal, &plan, EffectState::Failed)?;
-    let basis = guarded_publication(&harness, &decision, &receipt, &plan, Some(&verified), None)?;
+    let basis = guarded_publication(
+        &harness,
+        &decision,
+        &receipt,
+        &plan,
+        Some(&verified),
+        None,
+        &verified_journal,
+    )?;
     crate::record_reference_publication(&mut harness.authority, &basis)?;
     let result = crate::project_reference_situation(
         guarded_situation_after(
@@ -1296,6 +1332,7 @@ fn terminal_outcome_flip_of_one_operation_is_a_contradiction() -> Result<(), Box
             &plan,
             Some(&failed),
             None,
+            &failed_journal,
             Some(&basis),
         )?,
         &guard_projection_spec()?,
@@ -3235,6 +3272,7 @@ fn a_raw_record_never_makes_a_stale_sibling_a_terminal_basis() -> Result<(), Box
             &plan,
             Some(&current(&journal)?),
             None,
+            &journal,
             None,
         )?,
         &spec,
@@ -3263,6 +3301,7 @@ fn a_raw_record_never_makes_a_stale_sibling_a_terminal_basis() -> Result<(), Box
             &plan,
             Some(&current(&journal)?),
             None,
+            &journal,
             Some(&prepared),
         )?,
         &spec,
@@ -3296,6 +3335,7 @@ fn a_raw_record_never_makes_a_stale_sibling_a_terminal_basis() -> Result<(), Box
             &plan,
             Some(&current(&journal)?),
             Some(&outcome),
+            &journal,
             Some(&prepared),
         )?,
         &spec,
@@ -3333,6 +3373,7 @@ fn a_raw_record_never_makes_a_stale_sibling_a_terminal_basis() -> Result<(), Box
             &plan,
             Some(&current(&journal)?),
             Some(&outcome),
+            &journal,
             Some(&sibling),
         )?,
         &spec,
@@ -3480,6 +3521,7 @@ fn a_displaced_basis_is_refused_not_silently_downgraded() -> Result<(), Box<dyn 
             &plan,
             Some(&current(&journal)?),
             None,
+            &journal,
             None,
         )?,
         &spec,
@@ -3493,6 +3535,7 @@ fn a_displaced_basis_is_refused_not_silently_downgraded() -> Result<(), Box<dyn 
             &plan,
             Some(&current(&journal)?),
             None,
+            &journal,
             Some(&prepared),
         )?,
         &spec,
@@ -3518,6 +3561,7 @@ fn a_displaced_basis_is_refused_not_silently_downgraded() -> Result<(), Box<dyn 
             &plan,
             Some(&current(&journal)?),
             None,
+            &journal,
             Some(&prepared),
         )?,
         &spec,
@@ -3560,6 +3604,7 @@ fn a_displaced_basis_is_refused_not_silently_downgraded() -> Result<(), Box<dyn 
             &plan,
             Some(&current(&journal)?),
             Some(&outcome),
+            &journal,
             Some(&sibling),
         )?,
         &spec,
@@ -4183,6 +4228,7 @@ where
         projection_request,
         &operation_receipt,
         &harness.authority,
+        &journal,
     );
     harness.cleanup();
     Ok(situation)
@@ -4599,5 +4645,87 @@ fn effect_journal_receipt_is_observed_and_derived_receipt_cannot_resolve_indeter
     );
 
     lifecycle.harness.cleanup();
+    Ok(())
+}
+
+/// fss-gwwqe: a structurally valid but hand-built `Verified` receipt that the journal never
+/// recorded is refused with `situation_operation_receipt_integrity`, so no caller-supplied
+/// receipt can mint a terminal (`known`) local-state effect cell.
+#[test]
+fn hand_built_receipt_absent_from_journal_is_refused_fss_gwwqe() -> Result<(), Box<dyn Error>> {
+    let mut harness = GuardHarness::new("gwwqe")?;
+    let (decision, receipt) = harness.corroborated("gwwqe")?;
+    let mut journal = EffectJournal::new();
+    let plan = prepare(
+        &decision,
+        &receipt,
+        &harness.authority,
+        &mut journal,
+        "gwwqe",
+    )?;
+    let prepared_receipt = journal
+        .operation(&plan.intent.operation_id)
+        .ok_or(fss_core::ContractError::NotFound)?
+        .clone();
+
+    // Structurally valid `Verified` receipt, never recorded by this journal: a fabricated
+    // terminal outcome. Fields satisfy every `validate_operation_receipt` shape rule.
+    let mut forged = prepared_receipt.clone();
+    forged.state = EffectState::Verified;
+    forged.committed_at = Some(TimestampNs(150));
+    forged.updated_at = TimestampNs(160);
+    forged.result_digest = Some(ContentDigest::sha256(b"fabricated-outcome"));
+
+    let mut projection_request = request(
+        &decision,
+        &receipt,
+        &["capability:alert.commit", CAPABILITY_EFFECT_RECONCILE],
+    )?;
+    projection_request.alert_plan = Some(&plan);
+
+    let res = compile_reference_situation_with_operation_receipt(
+        projection_request,
+        &forged,
+        &harness.authority,
+        &journal,
+    );
+    assert!(
+        matches!(
+            res,
+            Err(ReferenceError::InvalidSpec(
+                "situation_operation_receipt_integrity"
+            ))
+        ),
+        "a hand-built receipt absent from the journal must be refused: {res:?}"
+    );
+
+    // Control: the journal's own receipt compiles and stays non-terminal at `Prepared`.
+    let mut control_request = request(
+        &decision,
+        &receipt,
+        &["capability:alert.commit", CAPABILITY_EFFECT_RECONCILE],
+    )?;
+    control_request.alert_plan = Some(&plan);
+    control_request.predecessor_publication = None;
+    let situation = compile_reference_situation_with_operation_receipt(
+        control_request,
+        &prepared_receipt,
+        &harness.authority,
+        &journal,
+    )?;
+    let local = situation
+        .capsule
+        .frame
+        .knowledge_cells
+        .iter()
+        .find(|cell| cell.claim_id().starts_with("claim:effect:"))
+        .ok_or(ReferenceError::InvalidSpec("missing_local_state_cell"))?;
+    assert_ne!(
+        local.knowledge_state(),
+        KnowledgeState::Known,
+        "a prepared operation must never compile to a known local-state cell"
+    );
+
+    harness.cleanup();
     Ok(())
 }

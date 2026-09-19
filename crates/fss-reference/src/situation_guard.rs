@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 
 use fss_core::{
-    ActionAffordance, AffordanceClass, BudgetVector, ContentDigest, ContractError,
+    ActionAffordance, AffordanceClass, BudgetVector, ContentDigest, ContractError, EffectJournal,
     EffectRecordVersion, EffectState, IndeterminateEffectReason, KnowledgeCell,
     KnowledgeCellParams, KnowledgeState, KnowledgeStateBasis, OperationReceipt, ProvenanceClass,
     ReconciliationBasis,
@@ -77,12 +77,25 @@ pub fn compile_reference_situation(
 /// of the durable journal's versioned replay, so it is admitted only through
 /// [`compile_reference_situation_with_durable_journal`]; handed in here, it is refused as
 /// `situation_operation_receipt_integrity` (fss-deir9).
+///
+/// The receipt is accepted only when the journal that owns the operation still holds it EXACTLY:
+/// `journal` must contain an operation receipt equal to `operation_receipt`, and the compilation
+/// binds that journal receipt (fss-gwwqe). A hand-built structurally valid receipt — for example a
+/// fabricated `Verified` receipt with no published outcome — is refused and can never yield a
+/// terminal local-state cell.
 pub fn compile_reference_situation_with_operation_receipt(
     request: ReferenceSituationRequest<'_>,
     operation_receipt: &OperationReceipt,
     authority: &DurableReferenceLedger,
+    journal: &EffectJournal,
 ) -> Result<ReferenceSituation, ReferenceError> {
-    compile_with_operation_receipt(request, operation_receipt, authority, ReceiptSource::Caller)
+    compile_with_operation_receipt(
+        request,
+        operation_receipt,
+        authority,
+        Some(journal),
+        ReceiptSource::Caller,
+    )
 }
 
 /// Where the operation receipt handed to the guard came from (fss-deir9).
@@ -98,12 +111,27 @@ fn compile_with_operation_receipt(
     request: ReferenceSituationRequest<'_>,
     operation_receipt: &OperationReceipt,
     authority: &DurableReferenceLedger,
+    journal: Option<&EffectJournal>,
     source: ReceiptSource,
 ) -> Result<ReferenceSituation, ReferenceError> {
     let plan = request
         .alert_plan
         .cloned()
         .ok_or(ReferenceError::InvalidSpec("situation_effect_basis"))?;
+    // fss-gwwqe: on the caller path the journal that owns the operation must still hold EXACTLY
+    // this receipt. A structurally valid but hand-built receipt (a fabricated `Verified` with no
+    // published outcome, for instance) never yields a terminal local-state cell, because the
+    // guard binds the journal's receipt, not the caller's.
+    if source == ReceiptSource::Caller {
+        let journal_matches = journal
+            .and_then(|journal| journal.operation(&plan.intent.operation_id))
+            .is_some_and(|held| held == operation_receipt);
+        if !journal_matches {
+            return Err(ReferenceError::InvalidSpec(
+                "situation_operation_receipt_integrity",
+            ));
+        }
+    }
     validate_operation_receipt(operation_receipt, &plan, source)?;
     if request
         .alert_outcome
@@ -182,6 +210,7 @@ fn compile_against_durable_journal(
             request,
             operation_receipt,
             authority,
+            None,
             ReceiptSource::DurableJournal,
         )
     } else if let Some(outcome) = request.alert_outcome {
@@ -198,6 +227,7 @@ fn compile_against_durable_journal(
             request,
             operation_receipt,
             authority,
+            None,
             ReceiptSource::DurableJournal,
         )
     } else {

@@ -696,6 +696,7 @@ fn test_f6_alert_prepare_and_commit_are_conditional_not_robust() -> Result<(), B
         req_commit,
         &op_receipt,
         &harness.authority,
+        &journal,
     )?;
     let commit = situation_commit
         .capsule
