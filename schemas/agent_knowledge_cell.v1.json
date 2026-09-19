@@ -246,6 +246,275 @@
         "null"
       ],
       "minimum": 0
+    },
+    "hypothesisDisposition": {
+      "description": "Hypothesis disposition, when applicable (KnowledgeCell.hypothesis).",
+      "enum": [
+        "live",
+        "supported",
+        "disfavored",
+        "refuted",
+        "resolved",
+        "superseded"
+      ]
+    },
+    "stateBasis": {
+      "description": "Typed basis required by `redacted` (redaction marker), `stale` (older anchor or generation), and `indeterminate` (reconciliation basis and branches); optional typed reason on `unknown`; refused on every other knowledge state (KnowledgeCell.state_basis).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "basisKind"
+      ],
+      "properties": {
+        "basisKind": {
+          "enum": [
+            "redaction",
+            "stale",
+            "reconciliation",
+            "unknown"
+          ]
+        },
+        "redaction": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "reason",
+            "privacyGeneration"
+          ],
+          "properties": {
+            "reason": {
+              "description": "Projection that withholds the proposition or its evidence (KSTATE-007).",
+              "enum": [
+                "privacy_projection",
+                "capability_projection"
+              ]
+            },
+            "privacyGeneration": {
+              "description": "Exact privacy projection generation that applied the redaction.",
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+            }
+          }
+        },
+        "stale": {
+          "description": "Older anchor or generation the proposition was last valid at; must be strictly older than the current side (KSTATE-005).",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "staleKind"
+          ],
+          "properties": {
+            "staleKind": {
+              "enum": [
+                "older_anchor",
+                "older_generation"
+              ]
+            },
+            "validAt": {
+              "description": "Anchor or generation at which the proposition was last valid.",
+              "type": [
+                "object",
+                "integer"
+              ],
+              "minimum": 0
+            },
+            "current": {
+              "description": "Current anchor or generation the proposition has not been revalidated against.",
+              "type": [
+                "object",
+                "integer"
+              ],
+              "minimum": 0
+            }
+          }
+        },
+        "reconciliation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "unresolvedOutcomeRoot",
+            "branches"
+          ],
+          "properties": {
+            "unresolvedOutcomeRoot": {
+              "description": "Root of the attempt receipt or event revision whose outcome is unresolved.",
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "branches": {
+              "description": "Branches kept open until the outcome is proved or safely negated; must include both occurred and not_occurred.",
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 3,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "occurred",
+                  "not_occurred",
+                  "partially_occurred"
+                ]
+              }
+            }
+          }
+        },
+        "unknown": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "reason"
+          ],
+          "properties": {
+            "reason": {
+              "description": "Typed reason the authorized evidence so far does not establish the proposition (KSTATE-003).",
+              "enum": [
+                "continuity_gap_before_capsule",
+                "stale_without_observed_basis",
+                "redaction_context_not_supplied"
+              ]
+            }
+          }
+        }
+      }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "knowledgeState": {
+            "const": "redacted"
+          }
+        },
+        "required": [
+          "knowledgeState"
+        ]
+      },
+      "then": {
+        "required": [
+          "stateBasis"
+        ],
+        "properties": {
+          "stateBasis": {
+            "properties": {
+              "basisKind": {
+                "const": "redaction"
+              }
+            },
+            "required": [
+              "basisKind",
+              "redaction"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "knowledgeState": {
+            "const": "stale"
+          }
+        },
+        "required": [
+          "knowledgeState"
+        ]
+      },
+      "then": {
+        "required": [
+          "stateBasis"
+        ],
+        "properties": {
+          "stateBasis": {
+            "properties": {
+              "basisKind": {
+                "const": "stale"
+              }
+            },
+            "required": [
+              "basisKind",
+              "stale"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "knowledgeState": {
+            "const": "indeterminate"
+          }
+        },
+        "required": [
+          "knowledgeState"
+        ]
+      },
+      "then": {
+        "required": [
+          "stateBasis"
+        ],
+        "properties": {
+          "stateBasis": {
+            "properties": {
+              "basisKind": {
+                "const": "reconciliation"
+              }
+            },
+            "required": [
+              "basisKind",
+              "reconciliation"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "knowledgeState": {
+            "enum": [
+              "known",
+              "estimated",
+              "conflicted",
+              "not_observable",
+              "not_applicable"
+            ]
+          }
+        },
+        "required": [
+          "knowledgeState"
+        ]
+      },
+      "then": {
+        "not": {
+          "required": [
+            "stateBasis"
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "knowledgeState": {
+            "const": "unknown"
+          }
+        },
+        "required": [
+          "knowledgeState"
+        ]
+      },
+      "then": {
+        "properties": {
+          "stateBasis": {
+            "properties": {
+              "basisKind": {
+                "const": "unknown"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
 }
