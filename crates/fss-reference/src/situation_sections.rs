@@ -650,6 +650,9 @@ pub(crate) fn compiled_against(
     authority: &DurableReferenceLedger,
     situation: &ReferenceSituation,
 ) -> bool {
+    // fss-1s6ac residual: this accepts the anchor at ANY position in the batch history, so a
+    // byte-copied ledger with a rival child appended still passes. Detection of that fork needs
+    // an externally pinned authority head (handoff or contract basis), tracked under fss-1s6ac.
     situation.authority_anchor().is_some_and(|anchor| {
         authority
             .batches()
