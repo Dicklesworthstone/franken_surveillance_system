@@ -973,6 +973,31 @@ impl SensorTamperStatus {
     }
 }
 
+/// Maps a decode failure onto the stable contract-error taxonomy (fss-b8eoo).
+///
+/// A supports flag contradicting its edge relation is a relation mismatch; every other
+/// structural cause (truncation, schema mismatch, bounds, non-canonical bytes, range
+/// violations) is a malformed revision. Underlying contract violations pass through unchanged.
+pub(crate) fn decode_error_to_contract(error: EventDecodeError) -> ContractError {
+    match error {
+        EventDecodeError::Contract(contract) => contract,
+        EventDecodeError::Contradiction {
+            field: "evidence.supports",
+            ..
+        } => ContractError::EvidenceRelationMismatch,
+        EventDecodeError::Truncated { .. }
+        | EventDecodeError::UnknownVersion { .. }
+        | EventDecodeError::TrailingBytes { .. }
+        | EventDecodeError::OverLimitLength { .. }
+        | EventDecodeError::NonCanonicalEncoding { .. }
+        | EventDecodeError::SchemaMismatch { .. }
+        | EventDecodeError::JsonError { .. }
+        | EventDecodeError::InvalidUnicodeEscape { .. }
+        | EventDecodeError::Contradiction { .. }
+        | EventDecodeError::OutOfRange { .. } => ContractError::EventRevisionMalformed,
+    }
+}
+
 /// Maps a lineage replay refusal onto the chain-verification error vocabulary.
 fn transition_error_as_decode(err: EventTransitionError) -> EventDecodeError {
     match err {
@@ -2098,26 +2123,7 @@ impl EventHypothesis {
 
     /// Legacy validator returning `ContractError`.
     pub fn validate(&self) -> Result<(), ContractError> {
-        self.verify().map_err(|error| match error {
-            EventDecodeError::Contract(contract) => contract,
-            // A supports flag that disagrees with its edge relation.
-            EventDecodeError::Contradiction {
-                field: "evidence.supports",
-                ..
-            } => ContractError::EvidenceRelationMismatch,
-            // Structural bounds and field invariants are neither missing evidence nor a relation
-            // mismatch. Exhaustive on purpose: a new decode error must choose its variant here.
-            EventDecodeError::Truncated { .. }
-            | EventDecodeError::UnknownVersion { .. }
-            | EventDecodeError::TrailingBytes { .. }
-            | EventDecodeError::OverLimitLength { .. }
-            | EventDecodeError::NonCanonicalEncoding { .. }
-            | EventDecodeError::SchemaMismatch { .. }
-            | EventDecodeError::JsonError { .. }
-            | EventDecodeError::InvalidUnicodeEscape { .. }
-            | EventDecodeError::Contradiction { .. }
-            | EventDecodeError::OutOfRange { .. } => ContractError::EventRevisionMalformed,
-        })
+        self.verify().map_err(decode_error_to_contract)
     }
 
     /// Returns true if this revision is explicitly labeled as single-domain/unconfirmed
@@ -3359,9 +3365,9 @@ impl CanonicalDecode for AlertEffectRecord {
             observation_receipt,
             failure_reason,
         };
-        record
-            .verify()
-            .map_err(|_| ContractError::InvalidIdentifier)?;
+        record.verify().map_err(|error| {
+            decode_error_to_contract(transition_error_as_decode(error))
+        })?;
         Ok(record)
     }
 }
@@ -4153,10 +4159,7 @@ impl CanonicalEncode for EventHypothesis {
 
 impl CanonicalDecode for EventHypothesis {
     fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
-        Self::decode_canonical_checked(decoder).map_err(|e| match e {
-            EventDecodeError::Contract(c) => c,
-            _ => ContractError::InvalidIdentifier,
-        })
+        Self::decode_canonical_checked(decoder).map_err(decode_error_to_contract)
     }
 }
 
@@ -4856,10 +4859,7 @@ impl CanonicalEncode for EvidenceGraph {
 
 impl CanonicalDecode for EvidenceGraph {
     fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
-        Self::decode_canonical_checked(decoder).map_err(|e| match e {
-            EventDecodeError::Contract(c) => c,
-            _ => ContractError::InvalidIdentifier,
-        })
+        Self::decode_canonical_checked(decoder).map_err(decode_error_to_contract)
     }
 }
 
@@ -5476,6 +5476,149 @@ mod tests {
         ])?;
         assert_eq!(event.validate(), Ok(()));
         assert!(event.verify().is_ok());
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod b8eoo_tests {
+    use super::*;
+
+    /// Builds a one-edge genesis hypothesis whose edge relation is `relation` (with the
+    /// required supports flag).
+    fn hypothesis_with_relation(
+        relation: EvidenceEdgeRelation,
+    ) -> Result<EventHypothesis, ContractError> {
+        let evidence = EventEvidence {
+            digest: ContentDigest::sha256(b"b8eoo-edge-digest"),
+            class: EvidenceClass::Derived,
+            failure_domain: "power:b8eoo".to_owned(),
+            supports: relation.required_supports_flag(),
+            relation,
+            capsule_digest: Some(ContentDigest::sha256(b"b8eoo-capsule")),
+            identity_digest: Some(ContentDigest::sha256(b"b8eoo-identity")),
+        };
+        let interval = CaptureInterval::new(TimestampNs(1_000), TimestampNs(2_000))?;
+        let probability =
+            ProbabilityInterval::with_calibration(0.8, 0.95, ContentDigest::sha256(b"cal"))?;
+        Ok(EventHypothesis {
+            schema: EventHypothesis::SCHEMA.to_string(),
+            event_id: EventId::parse("event:b8eoo")?,
+            revision: 1,
+            supersedes: None,
+            state: EventState::Hypothesized,
+            kind: EventKind::PerimeterBreach,
+            interval,
+            uncertainty_reason: None,
+            zone_ids: vec![],
+            track_ids: vec![],
+            probability,
+            evidence: vec![evidence],
+            model_receipts: vec![],
+            decision_path: DecisionPath {
+                policy_generation: ContentDigest::sha256(b"gen"),
+                fingerprint: ContentDigest::sha256(b"fp"),
+                abstained: false,
+                abstention_reason: None,
+            },
+        })
+    }
+
+    /// Locates the differing byte between two same-length encodings.
+    fn single_diff_position(left: &[u8], right: &[u8]) -> usize {
+        assert_eq!(left.len(), right.len(), "fixtures must encode identically");
+        let diffs: Vec<usize> = (0..left.len()).filter(|&i| left[i] != right[i]).collect();
+        assert_eq!(diffs.len(), 1, "fixtures must differ in exactly one byte");
+        diffs[0]
+    }
+
+    /// fss-b8eoo: a corrupted schema identity decodes to the typed
+    /// `event_revision_malformed`, not the catch-all `invalid_identifier`.
+    #[test]
+    fn corrupted_schema_decodes_to_malformed_fss_b8eoo() -> Result<(), ContractError> {
+        let honest = hypothesis_with_relation(EvidenceEdgeRelation::Contradicts)?;
+        let mut bytes = {
+            let mut encoder = CanonicalEncoder::new();
+            honest.encode_canonical(&mut encoder);
+            encoder.finish_checked()?
+        };
+        // Schema text layout: 8-byte big-endian length, then the UTF-8 identity. Byte 8 is the
+        // first schema character; flipping it cannot be anything but a schema mismatch.
+        assert_eq!(bytes[7], 23, "schema length prefix must name 23 bytes");
+        bytes[8] = b'x';
+
+        let mut decoder = CanonicalDecoder::new(&bytes);
+        let decoded = EventHypothesis::decode_canonical(&mut decoder);
+        assert_eq!(
+            decoded,
+            Err(ContractError::EventRevisionMalformed),
+            "a corrupted schema identity must surface as the typed malformed-revision error"
+        );
+        Ok(())
+    }
+
+    /// fss-b8eoo: decode is structural and admits bytes its semantic layer refuses. The layers
+    /// are pinned separately: decode succeeds on a forged supports/relation byte, and the typed
+    /// `evidence_relation_mismatch` refusal comes from the cell's own validation.
+    #[test]
+    fn forged_supports_relation_pair_decodes_to_relation_mismatch_fss_b8eoo()
+    -> Result<(), ContractError> {
+        let honest = hypothesis_with_relation(EvidenceEdgeRelation::Contradicts)?;
+        let probe = hypothesis_with_relation(EvidenceEdgeRelation::SensorTamper)?;
+        let honest_bytes = {
+            let mut encoder = CanonicalEncoder::new();
+            honest.encode_canonical(&mut encoder);
+            encoder.finish_checked()?
+        };
+        let probe_bytes = {
+            let mut encoder = CanonicalEncoder::new();
+            probe.encode_canonical(&mut encoder);
+            encoder.finish_checked()?
+        };
+        // Sanity: both fixtures are individually valid.
+        let mut decoder = CanonicalDecoder::new(&honest_bytes);
+        EventHypothesis::decode_canonical(&mut decoder)?;
+        let relation_byte = single_diff_position(&honest_bytes, &probe_bytes);
+        let supports_byte = relation_byte - 1;
+
+        // Forge supports=true under a Contradicts edge (requires supports=false).
+        let mut forged = honest_bytes.clone();
+        forged[supports_byte] = 1;
+        let mut decoder = CanonicalDecoder::new(&forged);
+        let decoded = EventHypothesis::decode_canonical(&mut decoder)?;
+        // Decode is structural: the permissive layer admits the bytes.
+        assert_eq!(
+            decoded.evidence[0].supports,
+            true,
+            "fixture sanity: the forged supports byte must decode through"
+        );
+        // The semantic layer refuses with the typed relation mismatch.
+        assert_eq!(
+            decoded.validate(),
+            Err(ContractError::EvidenceRelationMismatch),
+            "a forged supports/relation pair must surface as the typed relation mismatch"
+        );
+        Ok(())
+    }
+
+    /// fss-b8eoo: a truncated revision decodes to the typed `event_revision_malformed`, not
+    /// the catch-all `invalid_identifier`.
+    #[test]
+    fn truncated_revision_decodes_to_malformed_fss_b8eoo() -> Result<(), ContractError> {
+        let honest = hypothesis_with_relation(EvidenceEdgeRelation::Contradicts)?;
+        let bytes = {
+            let mut encoder = CanonicalEncoder::new();
+            honest.encode_canonical(&mut encoder);
+            encoder.finish_checked()?
+        };
+        let truncated = &bytes[..5];
+        let mut decoder = CanonicalDecoder::new(truncated);
+        let decoded = EventHypothesis::decode_canonical(&mut decoder);
+        assert_eq!(
+            decoded,
+            Err(ContractError::EventRevisionMalformed),
+            "a truncated revision must surface as the typed malformed-revision error"
+        );
         Ok(())
     }
 }
