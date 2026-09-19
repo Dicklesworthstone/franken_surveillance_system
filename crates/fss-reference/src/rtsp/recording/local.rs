@@ -165,6 +165,29 @@ pub fn load_recording(publisher: &LocalRootPublisher, slot: &SlotName,
     expected_root: ContentDigest, scope: &RecordingScope, cancel: &dyn PublishCancellation)
     -> IoResult<PreparedRecording>
 {
+    load_window(publisher, slot, expected_root, scope, cancel, WindowFormat {
+        kind: RECORDING_KIND, references: avc_references, verify: verify_recording,
+    })
+}
+
+// Only codec-owned entrypoints inside recording may choose a format. There is
+// no public verifier callback or mutable prepared-plan constructor bypass.
+pub(super) struct WindowFormat {
+    pub kind: &'static str,
+    pub references: fn(&[u8]) -> Result<(RecordingScope, [ContentDigest; 3])>,
+    pub verify: fn(&ObjectManifest, RecordingObjects<'_>, &RecordingScope) -> Result<RecordingSummary>,
+}
+fn avc_references(bytes: &[u8]) -> Result<(RecordingScope, [ContentDigest; 3])> {
+    let index = wire::decode_index(bytes)?;
+    Ok((index.scope, [index.source, index.initialization, index.media]))
+}
+
+// Shared storage admission/rehydration: every format still supplies its real
+// complete semantic verifier before any bytes can leave as a prepared recording.
+pub(super) fn load_window(publisher: &LocalRootPublisher, slot: &SlotName,
+    expected_root: ContentDigest, scope: &RecordingScope, cancel: &dyn PublishCancellation,
+    format: WindowFormat) -> IoResult<PreparedRecording>
+{
     if publisher.is_poisoned() { return Err(RecordingIoError::ReopenRequired); }
     let root = publisher.root(slot).ok_or(RecordingIoError::NotDurable)?;
     if root.root != expected_root { return Err(RecordingIoError::RootConflict); }
@@ -184,20 +207,24 @@ pub fn load_recording(publisher: &LocalRootPublisher, slot: &SlotName,
     let manifest_bytes = read(expected_root)?;
     let manifest = ObjectManifest::from_canonical_bytes(&manifest_bytes)
         .map_err(|_| RecordingIoError::Content(RecordingError::Malformed))?;
-    if manifest.root() != expected_root || manifest.kind() != RECORDING_KIND || manifest.children().len() != 4 {
+    if manifest.root() != expected_root || manifest.kind() != format.kind || manifest.children().len() != 4 {
         return Err(RecordingIoError::Content(RecordingError::Digest));
     }
     let index_digest = manifest.metadata_digest().ok_or(RecordingIoError::Content(RecordingError::Malformed))?;
     let index_bytes = read(index_digest)?;
-    let index = wire::decode_index(&index_bytes).map_err(RecordingIoError::Content)?;
-    if &index.scope != scope { return Err(RecordingIoError::Content(RecordingError::Scope)); }
-    let expected = ObjectManifest::new(RECORDING_KIND, [index.source, index.initialization, index.media], Some(index_digest))
+    let (indexed_scope, [source_digest, initialization_digest, media_digest]) =
+        (format.references)(&index_bytes).map_err(RecordingIoError::Content)?;
+    if &indexed_scope != scope { return Err(RecordingIoError::Content(RecordingError::Scope)); }
+    let expected = ObjectManifest::new(format.kind, [source_digest, initialization_digest, media_digest], Some(index_digest))
         .map_err(|_| RecordingIoError::Content(RecordingError::Digest))?;
     if expected != manifest { return Err(RecordingIoError::Content(RecordingError::Digest)); }
-    let source = read(index.source)?;
-    let initialization = read(index.initialization)?;
-    let media = read(index.media)?;
+    let source = read(source_digest)?;
+    let initialization = read(initialization_digest)?;
+    let media = read(media_digest)?;
     let objects = RecordingObjects { source: &source, initialization: &initialization, media: &media, index: &index_bytes };
-    let summary = verify_recording(&manifest, objects, scope).map_err(RecordingIoError::Content)?;
+    let summary = (format.verify)(&manifest, objects, scope).map_err(RecordingIoError::Content)?;
+    // A cancellation/revocation observed after bounded semantic replay still
+    // prevents disclosure. It never retracts or deletes the durable source root.
+    if cancel.cancel_requested(PublishCutPoint::AfterChildrenVerified) { return Err(RecordingIoError::Cancelled); }
     Ok(PreparedRecording { manifest, source, initialization, media, index: index_bytes, summary })
 }

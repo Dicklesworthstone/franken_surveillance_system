@@ -20,6 +20,9 @@ use super::{
 };
 
 mod codec;
+mod recovery;
+
+pub use recovery::SessionRecoveryReceipt;
 
 /// One-way initialization of bounded coordination within an existing session journal.
 pub const COORDINATION_INIT_RECORD_KIND: u16 = 0x5749;

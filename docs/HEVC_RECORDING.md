@@ -4,7 +4,7 @@
 recording from full original RTP datagrams and explicit sample timing. It
 connects the existing HEVC depacketizer, picture assembler and native fragmented
 MP4 writer to the existing source/initialization/media/index object model.
-It does not open sockets, run a decoder, infer a frame rate, or retain secrets.
+It does not open sockets, run a decoder, infer a frame rate, or acquire credentials.
 
 ## Preparation and source boundaries
 
@@ -60,6 +60,48 @@ root when retrieving an existing recording. Return of a verified summary does
 not prove decoded picture completeness, capture continuity, full parameter-set
 compatibility, physical coverage or authority-anchor custody.
 
+## Durable local publication and readback
+
+Publication uses the **unchanged** `recording::local::RecordingPublication`:
+pass `sealed.publication_plan()`, an already-open `LocalRootPublisher`, an
+explicit slot, byte reservation and entry deadline. Four bounded child stages
+precede the root commit. The existing publisher verifies and fsyncs the objects,
+commits the root last, and distinguishes staged, visible and durable outcomes.
+Its cancellation, crash, indeterminate-write and orphan-repair behavior is not
+reimplemented or weakened for HEVC. A lost final receipt is reconciled by retrying
+the exact plan/root, not by remuxing another recording or overwriting the slot.
+
+`recording::hevc::local::load_hevc_recording` requires that existing storage
+owner, the exact slot, the expected root, the expected scope and a cancellation
+probe. It uses the same bounded readback core as AVC: poisoned owners require
+reopen, non-durable slots fail, root conflicts and tombstones are refused, and
+all object bytes are rehashed under the combined window budget. Scope and exact
+manifest closure are checked before reading source/media children. Codec choice
+is fixed by the public entrypoint; untrusted metadata cannot choose a weaker
+verifier or make the AVC entrypoint accept HEVC.
+
+After reading, HEVC performs the complete packet/assembly/remux replay described
+above. Only then is a typed `PreparedHevcRecording` returned with immutable
+source bytes and replay-verified sample/mapping getters. A cancellation observed
+after semantic verification still prevents returning the recording; it never
+retracts an already durable root or deletes previously staged source. A bounded
+pure replay is not interruptible mid-NAL; the external runtime must budget this
+work separately and drive its cancellation policy at these operation boundaries.
+
+Reopening the existing publisher recovers and re-verifies durable roots. A
+crash before root rename cannot expose a partial recording; a lost receipt after
+rename requires reopen/reconciliation. Unresolved temporary/indeterminate state
+remains a repair obligation, never permission for this adapter to delete it.
+Even a structurally durable root with a consistently rehashed but false HEVC
+index is rejected by the codec-specific readback replay.
+
+This is local unencrypted reference storage. A prepared plan and filesystem
+root do not independently grant disclosure authority, activate retention policy,
+commit canonical ledger reachability, establish encryption or replication, or
+prove future retrievability. Existing privacy, authority and publication owners
+retain those responsibilities. Automatic live-window collection, cross-window
+catalog/search, and ledger-linked HEVC publication remain separate integrations.
+
 ## Versioned representation and compatibility
 
 The manifest kind is `hevc_recording_window_v1`, distinct from the unchanged
@@ -95,14 +137,19 @@ sealed payload budget, but remain bounded by these fixed limits.
 ## Regression entrypoint
 
 ```sh
-cargo test -p fss-reference --test hevc_recording_contract
+cargo test -p fss-reference --test hevc_recording_contract --test hevc_recording_publication_contract
+cargo test -p fss-reference --test recording_publication_contract
 ```
 
 Tests use retained synthetic Main-profile source NALs through the real packet,
 assembly and container owners. They exercise source preservation, exact replay,
 boundary lookahead, sequence wrap, AP/FU mapping, EOF refusal, malformed/foreign
 input, independent clocks, explicit timing, scope isolation, forged rehashed
-metadata/payloads, canonical framing, determinism and resource limits.
+metadata/payloads, canonical framing, determinism and resource limits. Local
+storage contracts additionally cover source-first/root-last staging, every
+child-stage interruption, root cut points, reopen, lost receipts, cancellation
+before disclosure, scope/root/codec isolation, corrupt disk objects, durable
+rehashed forgery, existing AVC compatibility and retry-safe resource limits.
 Rust execution is not available in the editing environment; these authored
 tests are not a passing build or qualification receipt. The normative
 qualification entrypoint remains `scripts/qualify.sh` on its admitted hosts.
