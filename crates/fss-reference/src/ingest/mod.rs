@@ -12,6 +12,8 @@ pub mod retained;
 pub mod recorded_decode;
 /// Bounded, source-gap-aware pixel-change measurements over recorded frames.
 pub mod pixel_change;
+/// Exact frozen-model execution on retained decoded frames and durable model outputs.
+pub mod inference;
 /// Bounded recorded-RTP framing and source-preserving ingest.
 pub mod rtpdump;
 
