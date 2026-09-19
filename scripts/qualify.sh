@@ -10,6 +10,22 @@ export CARGO_NET_OFFLINE=true
 # rustup must not fetch a missing pinned toolchain either (DEP-AUD-027); RUSTUP_AUTO_INSTALL=0 was
 # observed honoured by rustup 1.29.1. `rustup run` without --install does not install regardless.
 export RUSTUP_AUTO_INSTALL=0
+# OS-level network seal (fss-x4a.26.3, FSS-183): when `unshare -n` works, every lane step runs
+# inside a network namespace whose only interface is down loopback, so build scripts, tests, and
+# doc tooling cannot reach the network even by accident - stronger than the Cargo/rustup env
+# seals above, which remain in force as defense in depth. When the namespace primitive is
+# unavailable the run degrades to the env-only seal and the netseal step records that in the
+# receipt; FSS_SEAL_NETWORK=required upgrades the degraded path to a hard failure (controlled
+# DSR hosts must provide unshare).
+SEAL_MODE="namespace"
+if ! command -v unshare >/dev/null 2>&1 || ! unshare -n true 2>/dev/null; then
+  SEAL_MODE="unavailable"
+fi
+if [[ "$SEAL_MODE" == "unavailable" && "${FSS_SEAL_NETWORK:-auto}" == "required" ]]; then
+  printf 'FSS_SEAL_NETWORK=required but unshare -n is unavailable; refusing to run unsealed\n' >&2
+  exit 5
+fi
+export QUALIFY_SEAL_MODE="$SEAL_MODE"
 LANE="full"
 RECEIPT_DIR="${FSS_RECEIPT_DIR:-}"
 WRITE_RECEIPT=1
@@ -83,7 +99,11 @@ run() {
   printf ' %q' "$@" >&2
   printf '\n' >&2
   set +e
-  "$@" > >(tee "$log") 2> >(tee -a "$log" >&2)
+  if [[ "$SEAL_MODE" == "namespace" ]]; then
+    unshare -n "$@" > >(tee "$log") 2> >(tee -a "$log" >&2)
+  else
+    "$@" > >(tee "$log") 2> >(tee -a "$log" >&2)
+  fi
   local rc=$?
   set -e
   local digest
@@ -366,6 +386,8 @@ PY
   exit "$rc"
 }
 trap finalize EXIT
+
+run netseal python3 "$ROOT/scripts/netseal_selftest.py"
 
 case "$LANE" in
   policy) policy_lane ;;
