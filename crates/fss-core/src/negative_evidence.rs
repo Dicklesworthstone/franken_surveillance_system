@@ -1591,6 +1591,20 @@ pub enum NegativeEvidenceError {
         /// Observed link count.
         links: u64,
     },
+    /// After the atomic rename the OLD ledger inode is still linked by another name, so the
+    /// append forked: the published name has the new entry while the other name keeps the old
+    /// ledger. Never reported as success (fss-pl8u9).
+    LedgerForked {
+        /// Ledger path as given.
+        path: String,
+        /// Link count observed on the old inode after the rename.
+        links: u64,
+    },
+    /// The temporary ledger path already exists before the append created it.
+    LedgerTempExists {
+        /// Temporary file path.
+        path: String,
+    },
     /// Underlying contract or canonical serialization error.
     Contract(ContractError),
     /// I/O error during file read or write.
@@ -1627,6 +1641,8 @@ impl NegativeEvidenceError {
             Self::LedgerLocked { .. } => "ERR-NEG-LEDGER-LOCKED-001",
             Self::ConcurrentModification { .. } => "ERR-NEG-CONCURRENT-MODIFICATION-001",
             Self::LedgerHardLinked { .. } => "ERR-NEG-LEDGER-HARD-LINKED-001",
+            Self::LedgerForked { .. } => "ERR-NEG-LEDGER-FORKED-001",
+            Self::LedgerTempExists { .. } => "ERR-NEG-LEDGER-TEMP-EXISTS-001",
             Self::Contract(_) | Self::Io(_) => "ERR-OP-EXECUTION-FAILED-001",
         }
     }
@@ -1732,6 +1748,14 @@ impl fmt::Display for NegativeEvidenceError {
             Self::LedgerHardLinked { path, links } => write!(
                 f,
                 "ledger file '{path}' has {links} hard links; an append would update one name and leave the others with the old ledger, so it is refused (keep a single name and use a symlink for aliases)"
+            ),
+            Self::LedgerForked { path, links } => write!(
+                f,
+                "ledger '{path}' forked: after the atomic rename the old ledger inode is still linked by {links} other name(s) holding the pre-append ledger; the append is reported as failed and the fork must be reconciled by hand"
+            ),
+            Self::LedgerTempExists { path } => write!(
+                f,
+                "temporary ledger file '{path}' already exists; remove it or investigate before appending"
             ),
             Self::Contract(err) => write!(f, "contract error: {err}"),
             Self::Io(err) => write!(f, "io error: {err}"),
