@@ -364,6 +364,12 @@ impl RecordedFrame {
         deployment: &mut ReferenceDeployment, request: &RecordedDecodeRequest,
         budget: &mut DecodeBudget<'_>, cx: &ReplayCx,
     ) -> Result<Self, RecordedDecodeError> {
+        // Authority-idempotent fast path: a decode whose receipt batch is already committed
+        // reopens from retained custody and the ledger without codec work, new claims, or a
+        // new anchor. Any miss (no batch yet, including the post-root resume case) proceeds.
+        if let Ok(existing) = Self::open(deployment, request, cx) {
+            return Ok(existing);
+        }
         let (retained, capsule, capsule_digest, encoded) = source(deployment, request, cx)?;
         let used_before = budget.used();
         let image = decode_luma(&encoded, capsule.source_digest.bytes(), request.interpretation,
@@ -383,15 +389,22 @@ impl RecordedFrame {
         let receipt_bytes = receipt.encoded()?;
         let manifest = receipt.manifest()?;
         let slot = slot(receipt.identity())?;
-        if deployment.publisher().root(&slot).is_some_and(|root| root.root != manifest.root()) {
-            return Err(RecordedDecodeError::InvalidReceipt);
+        let visible_root = deployment.publisher().root(&slot).map(|root| root.root);
+        if let Some(existing) = &visible_root {
+            if *existing != manifest.root() {
+                return Err(RecordedDecodeError::InvalidReceipt);
+            }
         }
         for bytes in [encoded.as_slice(), pixels.as_slice(), receipt_bytes.as_slice()] {
             checkpoint(cx, "recorded_decode:stage")?;
             let digest = deployment.publisher_mut().stage_object(bytes)?;
             deployment.publisher_mut().verify_object(digest)?;
         }
-        deployment.publisher_mut().stage_manifest(&slot, &manifest)?;
+        // `stage_manifest` refuses a visible slot by design; a resume after the root-to-receipt
+        // interruption finds the identical root already published and only owes the ledger batch.
+        if visible_root.is_none() {
+            deployment.publisher_mut().stage_manifest(&slot, &manifest)?;
+        }
         deployment.publish_and_commit(&slot, &manifest, receipt.capsule.capture, cx)?;
         checkpoint(cx, STAGE_RECORDED_DECODE_COMMIT)?;
         let mut children = manifest.children().to_vec();
