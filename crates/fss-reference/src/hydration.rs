@@ -11,6 +11,10 @@ use fss_core::{
     ContinuationScope, ContractError, SessionId, TimestampNs,
 };
 
+mod source;
+
+pub use source::{PublishedSourceReader, SOURCE_OBJECT_CONTENT_TYPE, SourceHydrationError, SourceObjectBinding};
+
 /// Explicit storage ceilings for the in-memory reference catalog.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ReferenceHydrationLimits {
@@ -59,6 +63,7 @@ pub struct ReferenceHydrationCatalog {
     current: BTreeMap<String, ContentDigest>,
     artifacts: BTreeMap<(String, ContentDigest, HydrationLevel), HydrationArtifact>,
     issued_cursors: BTreeMap<ContentDigest, IssuedCursorRecord>,
+    source_bindings: BTreeMap<(String, ContentDigest), SourceObjectBinding>,
     limits: ReferenceHydrationLimits,
     stored_payload_bytes: usize,
 }
@@ -88,6 +93,7 @@ impl ReferenceHydrationCatalog {
             current: BTreeMap::new(),
             artifacts: BTreeMap::new(),
             issued_cursors: BTreeMap::new(),
+            source_bindings: BTreeMap::new(),
             limits,
             stored_payload_bytes: 0,
         }
@@ -200,6 +206,12 @@ impl ReferenceHydrationCatalog {
         {
             return Err(ContractError::EvidenceRequired.into());
         }
+        if artifact.level == HydrationLevel::H3
+            && self.source_bindings.contains_key(&(handle_id.to_owned(), descriptor_digest))
+        {
+            // Source custody cannot be bypassed by installing a separately retained payload.
+            return Err(ContractError::DigestMismatch.into());
+        }
         let key = (handle_id.to_owned(), descriptor_digest, artifact.level);
         match self.artifacts.get(&key) {
             Some(existing) if existing == &artifact => return Ok(()),
@@ -248,6 +260,15 @@ impl ReferenceHydrationCatalog {
         request: &HydrationRequest,
         now: TimestampNs,
     ) -> Result<HydrationResponse, HydrationError> {
+        self.hydrate_resolved(request, now, None)
+    }
+
+    fn hydrate_resolved(
+        &mut self,
+        request: &HydrationRequest,
+        now: TimestampNs,
+        mut source_artifact: Option<HydrationArtifact>,
+    ) -> Result<HydrationResponse, HydrationError> {
         request.verify()?;
         let descriptor = self
             .current_exact(&request.handle_id, request.expected_descriptor_digest)?
@@ -257,49 +278,7 @@ impl ReferenceHydrationCatalog {
         if availability != HandleAvailability::Available {
             return unavailable_response(request, &descriptor, availability, now);
         }
-        let prior_record = if let Some(cursor) = &request.continuation {
-            let record = self
-                .issued_cursors
-                .get(&cursor.cursor_digest)
-                .ok_or(HydrationError::ContinuationUnissued)?
-                .clone();
-            if record.consumed {
-                return Err(HydrationError::ContinuationAlreadyConsumed);
-            }
-            if record.session_id != request.session_id {
-                return Err(HydrationError::ContinuationCrossSession);
-            }
-            if record.handle_id != descriptor.handle_id {
-                return Err(HydrationError::WrongContinuation);
-            }
-            if now >= record.expires_at {
-                return Err(HydrationError::ContinuationExpired);
-            }
-            let ordinal =
-                u8::try_from(cursor.position).map_err(|_| HydrationError::WrongContinuation)?;
-            if ordinal != record.next_ordinal {
-                return Err(HydrationError::WrongContinuation);
-            }
-            let prior_level = ordinal
-                .checked_sub(1)
-                .and_then(HydrationLevel::from_ordinal)
-                .ok_or(HydrationError::WrongContinuation)?;
-            let prior = self
-                .artifacts
-                .get(&(
-                    descriptor.handle_id.clone(),
-                    descriptor.descriptor_digest,
-                    prior_level,
-                ))
-                .ok_or(HydrationError::WrongContinuation)?;
-            prior.verify()?;
-            if cursor.selection_witness != prior.artifact_digest {
-                return Err(HydrationError::WrongContinuation);
-            }
-            Some(record)
-        } else {
-            None
-        };
+        let prior_record = self.continuation_record(request, &descriptor, now)?;
         let minimum = if request.allow_lower_level {
             0
         } else {
@@ -314,7 +293,12 @@ impl ReferenceHydrationCatalog {
                 descriptor.descriptor_digest,
                 level,
             );
-            let Some(artifact) = self.artifacts.get(&key).cloned() else {
+            let resolved = if level == HydrationLevel::H3 {
+                source_artifact.take().or_else(|| self.artifacts.get(&key).cloned())
+            } else {
+                self.artifacts.get(&key).cloned()
+            };
+            let Some(artifact) = resolved else {
                 first_failure.get_or_insert(HydrationError::LevelUnavailable);
                 continue;
             };
@@ -416,6 +400,63 @@ impl ReferenceHydrationCatalog {
         Err(first_failure.unwrap_or(HydrationError::LevelUnavailable))
     }
 
+    fn continuation_record(
+        &self,
+        request: &HydrationRequest,
+        descriptor: &SemanticHandle,
+        now: TimestampNs,
+    ) -> Result<Option<IssuedCursorRecord>, HydrationError> {
+        if let Some(cursor) = &request.continuation {
+            let record = self
+                .issued_cursors
+                .get(&cursor.cursor_digest)
+                .ok_or(HydrationError::ContinuationUnissued)?
+                .clone();
+            if record.consumed {
+                return Err(HydrationError::ContinuationAlreadyConsumed);
+            }
+            if record.session_id != request.session_id {
+                return Err(HydrationError::ContinuationCrossSession);
+            }
+            if record.handle_id != descriptor.handle_id {
+                return Err(HydrationError::WrongContinuation);
+            }
+            if now >= record.expires_at {
+                return Err(HydrationError::ContinuationExpired);
+            }
+            let ordinal =
+                u8::try_from(cursor.position).map_err(|_| HydrationError::WrongContinuation)?;
+            if ordinal != record.next_ordinal {
+                return Err(HydrationError::WrongContinuation);
+            }
+            let prior_level = ordinal
+                .checked_sub(1)
+                .and_then(HydrationLevel::from_ordinal)
+                .ok_or(HydrationError::WrongContinuation)?;
+            let binding = self.source_binding(&descriptor.handle_id, descriptor.descriptor_digest);
+            let prior_digest = if prior_level == HydrationLevel::H3 && binding.is_some() {
+                binding.ok_or(HydrationError::WrongContinuation)?.artifact_digest()
+            } else {
+                let prior = self
+                    .artifacts
+                    .get(&(
+                        descriptor.handle_id.clone(),
+                        descriptor.descriptor_digest,
+                        prior_level,
+                    ))
+                    .ok_or(HydrationError::WrongContinuation)?;
+                prior.verify()?;
+                prior.artifact_digest
+            };
+            if cursor.selection_witness != prior_digest {
+                return Err(HydrationError::WrongContinuation);
+            }
+            Ok(Some(record))
+        } else {
+            Ok(None)
+        }
+    }
+
     fn current_exact(
         &self,
         handle_id: &str,
@@ -445,11 +486,12 @@ impl ReferenceHydrationCatalog {
             .maximum_level()
             .ok_or(HydrationError::LevelUnavailable)?;
         if next > maximum
-            || !self.artifacts.contains_key(&(
+            || !(self.artifacts.contains_key(&(
                 descriptor.handle_id.clone(),
                 descriptor.descriptor_digest,
                 next,
-            ))
+            )) || (next == HydrationLevel::H3
+                && self.source_binding(&descriptor.handle_id, descriptor.descriptor_digest).is_some()))
         {
             return Ok(None);
         }

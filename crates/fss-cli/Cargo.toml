@@ -23,6 +23,10 @@ path = "src/bin/fss-file.rs"
 name = "fss-infer"
 path = "src/bin/fss-infer.rs"
 
+[[bin]]
+name = "fss-event"
+path = "src/bin/fss-event.rs"
+
 [dependencies]
 fss-core = { path = "../fss-core" }
 fss-reference = { path = "../fss-reference" }

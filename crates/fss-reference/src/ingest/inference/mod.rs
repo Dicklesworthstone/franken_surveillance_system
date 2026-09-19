@@ -137,6 +137,12 @@ pub fn executor_profile_digest() -> ContentDigest {
     ContentDigest::sha256(&e.finish())
 }
 
+fn run_identity(model: ContentDigest, frame: ContentDigest, runtime: ContentDigest) -> ContentDigest {
+    let mut e = CanonicalEncoder::new(); e.text("fss.recorded_model_run_key.v1");
+    e.digest(model); e.digest(frame); e.digest(runtime);
+    ContentDigest::sha256(&e.finish())
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Receipt {
     model: ContentDigest,
@@ -152,9 +158,7 @@ struct Receipt {
 }
 impl Receipt {
     fn identity(&self) -> ContentDigest {
-        let mut e = CanonicalEncoder::new(); e.text("fss.recorded_model_run_key.v1");
-        e.digest(self.model); e.digest(self.frame); e.digest(self.runtime);
-        ContentDigest::sha256(&e.finish())
+        run_identity(self.model, self.frame, self.runtime)
     }
     fn encoded(&self) -> Result<Vec<u8>> {
         let mut e = CanonicalEncoder::new(); e.bytes(b"FSSMRUN1"); e.u32(1); e.text(RECORDED_INFERENCE_DOMAIN);
@@ -282,27 +286,51 @@ pub struct RecordedInference {
     authority_anchor: LedgerAnchor,
 }
 impl RecordedInference {
+    /// Computes the existing exact run key without executing or publishing a model.
+    /// The key binds the frozen model, verified frame root and current executor source profile.
+    /// It is a lookup identity, not proof that the run is complete or currently retrievable.
+    #[must_use]
+    pub fn identity_for(frame: &RecordedFrame, model: &RecordedModel) -> ContentDigest {
+        run_identity(model.digest(), frame.publication_root(), executor_profile_digest())
+    }
+
     /// Executes a frozen model on an already retained decoded frame and publishes its results.
     ///
     /// Uses only the existing scalar executor. Parent cancellation is checked at composition
     /// boundaries; `exec_cx` controls cancellation within execution. There are no detached workers.
     /// A cut between root publication and the final delta is incomplete, and an exact retry can
     /// finish it. Admission budgets are not model identity and do not duplicate successful runs.
+    /// Completed runs are revalidated from custody without another numeric execution; their
+    /// receipt accounting describes the original run. A corrupt completed run is refused, never
+    /// overwritten by a retry. Reopening remains subject to the caller's tensor ceiling.
     pub fn run_and_publish(
         deployment: &mut ReferenceDeployment, source: &RecordedDecodeRequest, model: &RecordedModel,
         budget: ExecBudget, exec_cx: &ScalarExecCx, cx: &ReplayCx,
     ) -> Result<Self> {
         checkpoint(cx, "recorded_inference:source")?;
+        if budget.max_bytes == 0 || budget.max_bytes > MAX_RUN_TENSOR_BYTES {
+            return Err(ModelRunError::Limit);
+        }
+        exec_cx.checkpoint("recorded-model:bind")?;
         let frame = RecordedFrame::open(deployment, source, cx)?;
+        let identity = Self::identity_for(&frame, model);
+        let completion = batch_id(identity)?;
+        if deployment.ledger().batches().iter().any(|batch| batch.batch_id == completion) {
+            // A completion record is not a cache miss when its custody is damaged. Propagate
+            // verification failure rather than restaging bytes or substituting another result.
+            let existing = Self::open(deployment, identity, source, cx)?;
+            if existing.allocated_tensor_bytes() > budget.max_bytes as u64 {
+                return Err(ModelRunError::Limit);
+            }
+            return Ok(existing);
+        }
         let (receipt, input, output) = execute(&frame, model, budget, exec_cx)?;
         let outputs = decode_outputs(&output, model)?;
         let encoded = receipt.encoded()?;
         let manifest = receipt.manifest()?;
         let target = slot(receipt.identity())?;
-        let visible_root = deployment.publisher().root(&target).map(|r| r.root);
-        if let Some(existing) = &visible_root
-            && *existing != manifest.root()
-        {
+        let existing_root = deployment.publisher().root(&target).map(|root| root.root);
+        if existing_root.is_some_and(|root| root != manifest.root()) {
             return Err(ModelRunError::Mismatch);
         }
         for bytes in [model.encoded(), input.as_slice(), output.as_slice(), encoded.as_slice()] {
@@ -313,7 +341,10 @@ impl RecordedInference {
         // `stage_manifest` refuses a visible slot by design; an exact retry or a resume after the
         // root-to-receipt interruption finds the identical root already published and only owes
         // the ledger batch (append_batch is idempotent by batch_id).
-        if visible_root.is_none() {
+        // A crash/cancellation can leave an identical visible root without its completion
+        // delta. Do not restage that slot: the publisher correctly refuses visible slots.
+        // publish_and_commit revalidates the existing closure and finishes any owed linkage.
+        if existing_root.is_none() {
             deployment.publisher_mut().stage_manifest(&target, &manifest)?;
         }
         deployment.publish_and_commit(&target, &manifest, frame.receipt().capsule().capture, cx)?;
