@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! Framed RTSP interleaving contracts: stream framing, event equivalence, and split invariance.
 use fss_reference::rtsp::{RtspEvent, framed::*};
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 fn response(cseq: u32, body: &[u8]) -> Vec<u8> {
