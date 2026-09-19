@@ -2868,15 +2868,19 @@ fn coverage_rotation_resumes_certification_and_refused_domains_stay_blocked() ->
     }
 
     // Mutant: a rotation commit whose sealed count disagrees with the live registry is
-    // fail-closed during replay.
+    // fail-closed during replay. The rotation commit is not the history tail: the exact retry
+    // registers a fresh witness for the new domain afterwards.
     let mut tampered_history = store.history().to_vec();
-    let last = tampered_history.len() - 1;
+    let rotation_index = tampered_history
+        .iter()
+        .rposition(|c| matches!(c.entry, EventStoreEntry::RotateCoverageRegistry { .. }))
+        .ok_or("expected a rotation commit in history")?;
     if let EventStoreEntry::RotateCoverageRegistry { sealed_count, .. } =
-        &mut tampered_history[last].entry
+        &mut tampered_history[rotation_index].entry
     {
         *sealed_count += 1;
     } else {
-        return Err("expected rotation commit at history tail".into());
+        unreachable!("rposition matched a rotation commit");
     }
     let replay = EventRevisionStore::rebuild_from_history(
         LedgerAnchor::genesis("site-cap-rotation"),
