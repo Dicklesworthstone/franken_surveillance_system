@@ -157,7 +157,16 @@ run() {
   printf ' %q' "$@" >&2
   printf '\n' >&2
   set +e
-  if [[ "$SEAL_MODE" == "namespace" ]]; then
+  if declare -f "$1" > /dev/null 2>&1; then
+    # Shell function: inherits the script's environment (exports at the top
+    # provide the seals). No env(1) scrub needed — the function's own
+    # external-command invocations go through run() and get scrubbed there.
+    if [[ "$SEAL_MODE" == "namespace" ]]; then
+      unshare -n "$@"
+    else
+      "$@"
+    fi
+  elif [[ "$SEAL_MODE" == "namespace" ]]; then
     env "${SCRUB_FLAGS[@]}" unshare -n "$@" > >(tee "$log") 2> >(tee -a "$log" >&2)
   else
     env "${SCRUB_FLAGS[@]}" "$@" > >(tee "$log") 2> >(tee -a "$log" >&2)
