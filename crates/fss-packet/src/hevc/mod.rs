@@ -6,6 +6,9 @@
 //! unverified. Source-linked NALs are never replaced by invented SDP packets.
 
 mod assembly;
+mod configuration;
+
+pub use configuration::{HevcConfiguration, HevcConfigurationError, HevcConfigurationLimits};
 
 pub use assembly::{
     HevcAssembler, HevcAssemblyError, HevcAssemblyLimits, HevcAssemblyOutput,
