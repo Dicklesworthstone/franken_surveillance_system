@@ -360,15 +360,15 @@ impl HevcAssembler {
             } else if !matches!(kind, Kind::Aud) && nal.timestamp() != p.timestamp {
                 return Err(HevcAssemblyError::TimestampMismatch);
             }
-            if let Kind::Slice(prefix) = kind {
-                if !prefix.first_slice {
-                    let old = p.prefix.ok_or(HevcAssemblyError::MissingFirstSlice)?;
-                    if p.suffix { return Err(HevcAssemblyError::Ordering); }
-                    if old.pps_id != prefix.pps_id || old.nal_type != prefix.nal_type
-                        || old.temporal_id_plus_one != prefix.temporal_id_plus_one
-                        || old.no_output_of_prior_pics != prefix.no_output_of_prior_pics
-                    { return Err(HevcAssemblyError::PictureMismatch); }
-                }
+            if let Kind::Slice(prefix) = kind
+                && !prefix.first_slice
+            {
+                let old = p.prefix.ok_or(HevcAssemblyError::MissingFirstSlice)?;
+                if p.suffix { return Err(HevcAssemblyError::Ordering); }
+                if old.pps_id != prefix.pps_id || old.nal_type != prefix.nal_type
+                    || old.temporal_id_plus_one != prefix.temporal_id_plus_one
+                    || old.no_output_of_prior_pics != prefix.no_output_of_prior_pics
+                { return Err(HevcAssemblyError::PictureMismatch); }
             }
         }
         if matches!(kind, Kind::Suffix | Kind::Slice(HevcSlicePrefix { first_slice: false, .. })) && !has_picture {
