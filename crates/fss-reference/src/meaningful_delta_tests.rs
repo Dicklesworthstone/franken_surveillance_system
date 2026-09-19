@@ -3365,6 +3365,107 @@ fn compute_meaningful_delta_draws_no_cross_frame_laundering_verdict_fss_gefi6()
     Ok(())
 }
 
+/// fss-2nwxm: when the result carries the claim's previous version, the producing cell is known,
+/// so the registered laundering pairs are refused on the production classification path. The
+/// basis Derived(D) version of a claim relabelled as Observed(D) in the result is refused with
+/// the exact typed refusal; the honest path is fresh evidence.
+#[test]
+fn same_claim_derived_to_observed_relabel_refused_fss_2nwxm() -> Result<(), Box<dyn Error>> {
+    let shared_evidence = ContentDigest::sha256(b"derived_model_output_reused_as_observation");
+    let derived = KnowledgeCell::new(KnowledgeCellParams {
+        claim_id: "claim:fire:spread".to_owned(),
+        statement: "Model-derived fire expansion estimate".to_owned(),
+        knowledge_state: KnowledgeState::Estimated,
+        provenance: ProvenanceClass::Derived,
+        hypothesis: None,
+        evidence: vec![shared_evidence],
+        contradictions: vec![],
+        valid_until: None,
+        state_basis: None,
+    })?;
+    let observed = KnowledgeCell::new(KnowledgeCellParams {
+        claim_id: "claim:fire:spread".to_owned(),
+        statement: "Physical observation of fire expansion".to_owned(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Observed,
+        hypothesis: None,
+        evidence: vec![shared_evidence],
+        contradictions: vec![],
+        valid_until: None,
+        state_basis: None,
+    })?;
+
+    let mut v1 = Variant::baseline()?;
+    v1.sequence = 1;
+    v1.extra_cells.push(derived);
+    let first = publication(&v1)?;
+
+    let mut v2 = Variant::baseline()?;
+    v2.sequence = 2;
+    v2.predecessor = Some(first.publication_digest);
+    v2.extra_cells.push(observed);
+    let second = publication(&v2)?;
+
+    let res = classify_reference_meaningful_delta(&first, &second);
+    assert!(
+        matches!(
+            res,
+            Err(crate::ReferenceError::Contract(
+                fss_core::ContractError::EvidenceLaunderingDetected
+            ))
+        ),
+        "same-claim Derived(D) to Observed(D) relabel must be refused: {res:?}"
+    );
+    Ok(())
+}
+
+/// The honest successor of a derived claim is fresh observation: the same claim relabelled onto
+/// an authorizing class with ONLY fresh evidence digests classifies, because the laundering
+/// check refuses reused evidence, not provenance transitions themselves.
+#[test]
+fn same_claim_relabel_with_fresh_evidence_classifies_fss_2nwxm() -> Result<(), Box<dyn Error>> {
+    let derived_basis = KnowledgeCell::new(KnowledgeCellParams {
+        claim_id: "claim:fire:spread".to_owned(),
+        statement: "Model-derived fire expansion estimate".to_owned(),
+        knowledge_state: KnowledgeState::Estimated,
+        provenance: ProvenanceClass::Derived,
+        hypothesis: None,
+        evidence: vec![ContentDigest::sha256(b"model_generation_output")],
+        contradictions: vec![],
+        valid_until: None,
+        state_basis: None,
+    })?;
+    let observed_fresh = KnowledgeCell::new(KnowledgeCellParams {
+        claim_id: "claim:fire:spread".to_owned(),
+        statement: "Physical observation of fire expansion".to_owned(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Observed,
+        hypothesis: None,
+        evidence: vec![ContentDigest::sha256(b"fresh_sensor_frame_digest")],
+        contradictions: vec![],
+        valid_until: None,
+        state_basis: None,
+    })?;
+
+    let mut v1 = Variant::baseline()?;
+    v1.sequence = 1;
+    v1.extra_cells.push(derived_basis);
+    let first = publication(&v1)?;
+
+    let mut v2 = Variant::baseline()?;
+    v2.sequence = 2;
+    v2.predecessor = Some(first.publication_digest);
+    v2.extra_cells.push(observed_fresh);
+    let second = publication(&v2)?;
+
+    let res = classify_reference_meaningful_delta(&first, &second);
+    assert!(
+        res.is_ok(),
+        "a same-claim successor citing only fresh evidence must classify: {res:?}"
+    );
+    Ok(())
+}
+
 /// Classifies two consecutive publications that carry the identical honest cell pair
 /// `[Observed(D), second(D)]`: nothing changed, so nothing may be refused as laundering.
 fn classify_unchanged_honest_pair(

@@ -10,6 +10,7 @@ Enforces the provenance registry contract:
 6. Registry digest diverged from pinned baseline freeze digest (ERR-PROV-FREEZE-DIVERGENCE-001)
 7. Registry generation diverged from baseline generation (ERR-PROV-GENERATION-MISMATCH-001)
 8. Provenance semantic invariant violation (ERR-PROV-SEMANTIC-INVARIANT-001)
+9. Evidence-laundering refusal has no non-test production caller (ERR-PROV-LAUUNDERING-UNWIRED-001, fss-2nwxm)
 """
 from __future__ import annotations
 
@@ -33,6 +34,7 @@ ERR_PROV_DIGEST_MISMATCH = "ERR-PROV-DIGEST-MISMATCH-001"
 ERR_PROV_FREEZE_DIVERGENCE = "ERR-PROV-FREEZE-DIVERGENCE-001"
 ERR_PROV_GENERATION_MISMATCH = "ERR-PROV-GENERATION-MISMATCH-001"
 ERR_PROV_SEMANTIC_INVARIANT = "ERR-PROV-SEMANTIC-INVARIANT-001"
+ERR_PROV_LAUUNDERING_UNWIRED = "ERR-PROV-LAUUNDERING-UNWIRED-001"
 
 AGENT_CONTRACTS_JSON_PATH = "architecture/agent_contracts.json"
 PROVENANCE_CLASSES_JSON_PATH = "architecture/provenance_classes.json"
@@ -1046,6 +1048,100 @@ def validate_provenance_registry(repo_root: Path = ROOT) -> ValidationResult:
     return result
 
 
+def production_source(text: str) -> str:
+    """Blank out inline ``#[cfg(test)]`` item blocks, preserving line structure.
+
+    After a ``#[cfg(test)]`` attribute the scanner suppresses lines until a brace-balanced
+    block opens and closes; a ``;`` that appears before any ``{`` ends a body-less item.
+    Attribute mentions inside ``//`` comments do not trigger suppression, so a comment that
+    merely documents the gate cannot hide or expose callers.
+    """
+    out: list[str] = []
+    suppress = False
+    depth = 0
+    for line in text.splitlines():
+        marker = "#[cfg(test)]"
+        if suppress:
+            depth += line.count("{") - line.count("}")
+            if "{" in line or depth > 0:
+                if depth <= 0:
+                    suppress = False
+            elif ";" in line:
+                suppress = False
+            out.append("")
+            continue
+        idx = line.find(marker)
+        if idx != -1 and not line[:idx].lstrip().startswith("//"):
+            before = line[:idx]
+            after = line[idx + len(marker):]
+            out.append(before)
+            depth = after.count("{") - after.count("}")
+            if "{" in after:
+                suppress = depth > 0
+            elif ";" not in after:
+                suppress = True
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
+LAUNDERING_METHOD = "verify_no_evidence_laundering"
+
+
+def production_laundering_call_sites(repo_root: Path) -> list[str]:
+    """Returns ``file:line`` for non-test call sites of the laundering refusal.
+
+    Unit-test modules live in ``*_tests.rs`` files or inline ``#[cfg(test)]`` blocks;
+    integration tests live under ``crates/<crate>/tests/``. Everything else under
+    ``crates/*/src`` is production code.
+    """
+    call_sites: list[str] = []
+    crates_src = repo_root / "crates"
+    if not crates_src.is_dir():
+        return call_sites
+    for path in sorted(crates_src.rglob("*.rs")):
+        rel = path.relative_to(repo_root).as_posix()
+        parts = rel.split("/")
+        if len(parts) >= 3 and parts[2] == "tests":
+            continue
+        if path.name.endswith("_tests.rs"):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for line_no, line in enumerate(production_source(text).splitlines(), start=1):
+            needle = f".{LAUNDERING_METHOD}("
+            at = line.find(needle)
+            if at == -1:
+                continue
+            # A match positioned behind a line comment is commented-out code, not a call.
+            comment = line.find("//")
+            if comment != -1 and comment < at:
+                continue
+            call_sites.append(f"{rel}:{line_no}")
+    return call_sites
+
+
+def validate_laundering_wiring(repo_root: Path = ROOT) -> ValidationResult:
+    """Fails when ``KnowledgeCell::verify_no_evidence_laundering`` has no production caller.
+
+    The PROV laundering refusal only protects evidence when a non-test code path actually
+    calls it: unit tests alone pass even if every production call is removed (fss-2nwxm).
+    A repo where the check is defined but never wired fails closed here.
+    """
+    result = ValidationResult()
+    if not production_laundering_call_sites(repo_root):
+        result.add_error(
+            ERR_PROV_LAUUNDERING_UNWIRED,
+            "crates/",
+            f"KnowledgeCell::{LAUNDERING_METHOD}",
+            "no non-test caller of KnowledgeCell::verify_no_evidence_laundering remains; "
+            "the PROV evidence-laundering refusal is unenforced on production paths (fss-2nwxm)",
+        )
+    return result
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate provenance-class registry against markdown mirror and invariants")
     parser.add_argument("--repo-root", type=Path, default=ROOT, help="Path to repository root")
@@ -1053,6 +1149,9 @@ def main() -> int:
     args = parser.parse_args()
 
     result = validate_provenance_registry(args.repo_root)
+    wiring = validate_laundering_wiring(args.repo_root)
+    result.passed = result.passed and wiring.passed
+    result.errors.extend(wiring.errors)
     if args.json:
         payload = {
             "schema": "fss.provenance_class_validation.v1",

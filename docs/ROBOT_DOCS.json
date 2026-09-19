@@ -1207,6 +1207,11 @@
       "id": "ERR-PROV-GENERATION-MISMATCH-001"
     },
     {
+      "description": "evidence-laundering refusal has no non-test caller on any production path",
+      "guidance": "call `KnowledgeCell::verify_no_evidence_laundering` from at least one non-test production path (fss-2nwxm)",
+      "id": "ERR-PROV-LAUUNDERING-UNWIRED-001"
+    },
+    {
       "description": "provenance class row lacks a mandatory field or is empty/corrupt",
       "guidance": "declare all mandatory fields in provenance class row",
       "id": "ERR-PROV-MISSING-FIELD-001"

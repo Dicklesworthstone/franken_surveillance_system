@@ -908,6 +908,11 @@ def main() -> int:
         for err in provenance_registry_result.errors:
             fail(f"[{err.code}] {err.file_path} ({err.target}): {err.message}")
 
+    provenance_wiring_result = provenance_registry_checker.validate_laundering_wiring(ROOT)
+    if not provenance_wiring_result.passed:
+        for err in provenance_wiring_result.errors:
+            fail(f"[{err.code}] {err.file_path} ({err.target}): {err.message}")
+
     device_adapter_registry_result = device_adapter_checker.validate_device_adapter_registry(ROOT)
     if not device_adapter_registry_result.passed:
         for err in device_adapter_registry_result.errors:

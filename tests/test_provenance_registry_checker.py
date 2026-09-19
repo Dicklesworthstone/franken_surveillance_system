@@ -34,6 +34,7 @@ from provenance_registry_checker import (
     ERR_PROV_DIGEST_MISMATCH,
     ERR_PROV_FREEZE_DIVERGENCE,
     ERR_PROV_GENERATION_MISMATCH,
+    ERR_PROV_LAUUNDERING_UNWIRED,
     ERR_PROV_MISSING_FIELD,
     ERR_PROV_REGISTRY_DRIFT,
     ERR_PROV_SEMANTIC_INVARIANT,
@@ -44,6 +45,7 @@ from provenance_registry_checker import (
     compute_canonical_provenance_digest,
     extract_rust_may_launder_matrix,
     validate_cell_provenance_invariants,
+    validate_laundering_wiring,
     validate_provenance_authorization,
     validate_provenance_registry,
     validate_state_aware_evidence,
@@ -685,6 +687,95 @@ class ProvenanceRegistryCheckerTests(unittest.TestCase):
         res = validate_provenance_registry(self.fake_root)
         self.assertFalse(res.passed)
         self.assertIn(ERR_PROV_REGISTRY_DRIFT, {e.code for e in res.errors})
+
+
+class LaunderingWiringTests(unittest.TestCase):
+    """Fail-closed enforcement of the production laundering-call guard (fss-2nwxm)."""
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.fake_root = Path(self.temp_dir.name)
+
+    def test_live_repository_has_non_test_caller(self) -> None:
+        """The live repository must wire the refusal into at least one production path."""
+        sites = provenance_registry_checker.production_laundering_call_sites(ROOT)
+        self.assertTrue(
+            sites,
+            "KnowledgeCell::verify_no_evidence_laundering must keep at least one non-test caller",
+        )
+        res = validate_laundering_wiring(ROOT)
+        self.assertTrue(res.passed, f"{res.errors}")
+
+    def _write_crate_source(self, rel: str, text: str) -> None:
+        path = self.fake_root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+    DEFINITION_ONLY = """
+pub struct Cell;
+impl Cell {
+    pub fn verify_no_evidence_laundering(&self, prior: &Cell) -> Result<(), ()> { Ok(()) }
+}
+"""
+
+    PRODUCTION_CALLER = DEFINITION_ONLY + """
+pub fn admit(current: &Cell, prior: &Cell) -> Result<(), ()> {
+    current.verify_no_evidence_laundering(prior)
+}
+"""
+
+    def test_repository_without_any_caller_fails(self) -> None:
+        """A definition without any call site must emit ERR-PROV-LAUUNDERING-UNWIRED-001."""
+        self._write_crate_source("crates/fss-core/src/agent.rs", self.DEFINITION_ONLY)
+        res = validate_laundering_wiring(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_PROV_LAUUNDERING_UNWIRED})
+
+    def test_test_only_callers_do_not_satisfy(self) -> None:
+        """Calls confined to test modules, *_tests.rs files, or tests/ dirs must not satisfy the guard."""
+        cfg_test = """
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn laundering_is_refused() {
+        let current = Cell;
+        let prior = Cell;
+        let _ = current.verify_no_evidence_laundering(&prior);
+    }
+}
+"""
+        self._write_crate_source("crates/fss-core/src/agent.rs", self.DEFINITION_ONLY + cfg_test)
+        self._write_crate_source(
+            "crates/fss-core/src/delta_tests.rs",
+            "use super::*;\n#[test]\nfn t() { let _ = Cell().verify_no_evidence_laundering(&Cell()); }\n",
+        )
+        self._write_crate_source(
+            "crates/fss-core/tests/integration.rs",
+            "#[test]\nfn t() { let _ = Cell().verify_no_evidence_laundering(&Cell()); }\n",
+        )
+        res = validate_laundering_wiring(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_PROV_LAUUNDERING_UNWIRED})
+
+    def test_production_caller_satisfies(self) -> None:
+        """One genuine non-test call site satisfies the guard."""
+        self._write_crate_source("crates/fss-reference/src/meaningful_delta.rs", self.PRODUCTION_CALLER)
+        res = validate_laundering_wiring(self.fake_root)
+        self.assertTrue(res.passed, f"{res.errors}")
+
+    def test_cfg_test_mention_in_comment_does_not_suppress_or_count(self) -> None:
+        """A comment mentioning the attribute must not hide production code; comments never count as callers."""
+        commented = """
+// The #[cfg(test)] module below (removed) once held the only call.
+pub fn admit(current: &Cell, prior: &Cell) -> Result<(), ()> {
+    current.verify_no_evidence_laundering(prior)
+}
+"""
+        self._write_crate_source("crates/fss-core/src/agent.rs", commented)
+        res = validate_laundering_wiring(self.fake_root)
+        self.assertTrue(res.passed, f"{res.errors}")
 
 
 if __name__ == "__main__":

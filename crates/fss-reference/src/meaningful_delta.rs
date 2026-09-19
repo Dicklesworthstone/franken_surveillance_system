@@ -238,10 +238,12 @@ fn classify(
     let result_proved = proved_operations(result, result_bar);
     // Evidence laundering is judged only where it can be attributed. An evidence reference is an
     // untyped digest that names no producing cell, so a digest shared by a basis cell and a
-    // result cell cannot say which cell produced it: an unchanged honest carry-over (the same
-    // Observed and Derived cells in both frames) looks exactly like a relabel. No cross-frame
-    // laundering verdict is drawn here; the limitation is recorded under fss-gefi6 (typed
-    // evidence references) in architecture/agent_contracts.json.
+    // result cell cannot say which cell produced it across DIFFERENT claims: an unchanged honest
+    // carry-over (the same Observed and Derived cells in both frames) looks exactly like a
+    // relabel. No cross-claim laundering verdict is drawn here; the limitation is recorded under
+    // fss-gefi6 (typed evidence references) in architecture/agent_contracts.json. When the result
+    // carries a claim's previous version (same claim id in the basis frame), the producing cell
+    // IS known, and the registered pairs are refused below (fss-2nwxm).
     let mut classes = BTreeSet::new();
     let changed_cells = changed_cells(&basis_frame.knowledge_cells, &result_frame.knowledge_cells);
     let removed_claim_ids =
@@ -349,6 +351,20 @@ fn classify(
         }
     }
     for prior in &basis_frame.knowledge_cells {
+        let current = result_frame
+            .knowledge_cells
+            .iter()
+            .find(|candidate| candidate.claim_id() == prior.claim_id());
+        // fss-2nwxm: when the result carries the claim's previous version, the producing cell is
+        // known, so the registered mayLaunderEvidenceInto pairs are enforced on this production
+        // classification path through the public KnowledgeCell::verify_no_evidence_laundering
+        // entry point. A same-claim relabel across publications (for example Derived(D) in the
+        // basis, Observed(D) in the result) is refused; the honest path is fresh evidence, so a
+        // successor citing only new digests classifies. Shared digests between different claims
+        // stay unattributable here (fss-gefi6), so no cross-claim verdict is drawn.
+        if let Some(current) = current {
+            current.verify_no_evidence_laundering(prior)?;
+        }
         if !matches!(
             prior.knowledge_state(),
             KnowledgeState::Known | KnowledgeState::Estimated
@@ -356,11 +372,7 @@ fn classify(
             continue;
         }
         let state_label = prior.knowledge_state().as_str();
-        match result_frame
-            .knowledge_cells
-            .iter()
-            .find(|candidate| candidate.claim_id() == prior.claim_id())
-        {
+        match current {
             Some(current)
                 if premise_state_invalidated(
                     prior.knowledge_state(),

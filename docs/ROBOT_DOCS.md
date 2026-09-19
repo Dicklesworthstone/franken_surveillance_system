@@ -626,6 +626,7 @@ All stable error identities and normative recovery guidance cataloged from `regi
 | `ERR-PROV-DIGEST-MISMATCH-001` | provenance registry digest does not match canonical encoding of metadata and rows | recompute canonical provenance registry digest |
 | `ERR-PROV-FREEZE-DIVERGENCE-001` | provenance registry digest diverged from pinned baseline freeze digest | restore frozen provenance registry or bump generation |
 | `ERR-PROV-GENERATION-MISMATCH-001` | provenance registry generation diverged from baseline generation | assign expected generation to provenance registry |
+| `ERR-PROV-LAUUNDERING-UNWIRED-001` | evidence-laundering refusal has no non-test caller on any production path | call 'KnowledgeCell::verify_no_evidence_laundering' from at least one non-test production path (fss-2nwxm) |
 | `ERR-PROV-MISSING-FIELD-001` | provenance class row lacks a mandatory field or is empty/corrupt | declare all mandatory fields in provenance class row |
 | `ERR-PROV-REGISTRY-DRIFT-001` | provenance registry row drift between machine registry and markdown | synchronize architecture/provenance_classes.json and registries/AGENT_CONTRACTS.md |
 | `ERR-PROV-SEMANTIC-INVARIANT-001` | provenance semantic invariant violation: non-permissible irreversible authorization, missing anchors, or score flattening | enforce provenance orthogonality and class-specific evidence/authorization gates |

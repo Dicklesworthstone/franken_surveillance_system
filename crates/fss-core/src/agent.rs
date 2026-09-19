@@ -725,6 +725,13 @@ impl KnowledgeCell {
 
     /// Verifies that evidence from `prior` is not being laundered into `self`
     /// across incompatible provenance classes without fresh live observation (AGENTS.md, Constitution §8.3).
+    ///
+    /// This is the public API point of the PROV refusal. It is enforced on the production
+    /// meaningful-delta classification path: `classify_reference_meaningful_delta` (shared by
+    /// `classify_reference_meaningful_delta_in_lineage`) calls it for every result cell whose
+    /// basis frame carries the claim's previous version, and
+    /// `scripts/provenance_registry_checker.py` (`ERR-PROV-LAUUNDERING-UNWIRED-001`) fails if
+    /// the refusal loses its non-test caller (fss-2nwxm).
     pub fn verify_no_evidence_laundering(
         &self,
         prior: &KnowledgeCell,

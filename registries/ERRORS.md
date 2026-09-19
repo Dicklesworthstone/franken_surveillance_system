@@ -165,6 +165,7 @@ operation states rather than generic errors.
 | `ERR-PROV-FREEZE-DIVERGENCE-001` | provenance registry digest diverged from pinned baseline freeze digest | restore frozen provenance registry or bump generation |
 | `ERR-PROV-GENERATION-MISMATCH-001` | provenance registry generation diverged from baseline generation | assign expected generation to provenance registry |
 | `ERR-PROV-SEMANTIC-INVARIANT-001` | provenance semantic invariant violation: non-permissible irreversible authorization, missing anchors, or score flattening | enforce provenance orthogonality and class-specific evidence/authorization gates |
+| `ERR-PROV-LAUUNDERING-UNWIRED-001` | evidence-laundering refusal has no non-test caller on any production path | call `KnowledgeCell::verify_no_evidence_laundering` from at least one non-test production path (fss-2nwxm) |
 | `ERR-OP-REGISTRY-DRIFT-001` | operation registry row drift between machine registry and markdown mirror | synchronize architecture/agent_operations.json and registries/AGENT_OPERATIONS.md |
 | `ERR-OP-STABLE-ID-REUSED-001` | operation stable identifier was reused, duplicated, or renumbered outside AOP-001..AOP-014 | allocate a new unique stable identifier; never reuse stable IDs |
 | `ERR-OP-MISSING-FIELD-001` | operation row or registry metadata lacks a mandatory field or is empty/corrupt | declare all mandatory fields in the operation row |
