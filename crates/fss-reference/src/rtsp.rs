@@ -15,6 +15,8 @@ pub mod framed;
 pub mod hevc_client;
 /// Continuous HEVC window collection with original boundary-packet retention.
 pub mod hevc_recording_collector;
+/// Ordered HEVC client-event capture with explicit timing and automatic failure fencing.
+pub mod hevc_recording_capture;
 
 /// Capability-scoped, owner-driven RTSP/1.0 client session reference.
 pub mod client;

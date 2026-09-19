@@ -57,10 +57,42 @@ prepared source object: release from this collector is never permission to
 delete independent source custody or assert durable retention. All output still
 requires the existing explicit publisher, privacy policy and recovery owner.
 
+## Ordered RTSP event capture
+
+`rtsp::hevc_recording_capture::HevcRecordingCapture` privately owns a configured
+collector and consumes the existing `RtspHevcPictureClient` events in order.
+Offer one event, then poll the capture to a waiting state before polling more
+upstream input. Its extra state is one held event/picture with a fixed five-second
+residence deadline. It does not create a second receiver, parser or authentication
+implementation and exposes no mutable collector escape hatch.
+
+Source events are copied transactionally into collection and returned intact.
+Completed picture events produce `TimingRequired`; `supply_timing` returns BOTH
+the selection result and the complete original picture event, including EOB or
+remote-session receipts. Incorrect timing/capacity retains that same event and
+its original deadline. Ready `Window` output must be taken before more input.
+Capacity pressure advertises the fixed wake rather than busy-polling.
+
+Transport gaps, source restarts, codec/assembly refusals, fragment/picture/queue
+expiry and incomplete-FU EOF automatically fence collection. A held invalidation
+cannot be bypassed with `seal`. Prepared earlier windows survive in retirement
+receipts; unsealed originals and the invalidating event are transferred intact.
+RTCP validation failure, ordinary control responses and Digest credential waits
+are not video loss. The caller still owns and must drive upstream authentication,
+I/O cancellation and timers; it must deliver their failures before attempting a
+seal. This bridge does not infer unobserved upstream success or authority.
+
+Clean EOF returns its original event/tail without selecting an unverified tail,
+then emits `Sealed`, any ready `Window`, and a final `Ended` transfer. An observed
+EOB picture follows the same drain only after explicit timing admission; its
+original terminal receipts remain in `TimedHevcCapture`. Repeated terminal polls
+never repeat owned source or publication output. Publish returned windows through
+the unchanged `RecordingPublication`; retrieve them with `load_hevc_recording`.
+
 ## Validation boundary
 
 ```sh
-cargo test -p fss-reference --test hevc_collection_contract
+cargo test -p fss-reference --test hevc_collection_contract --test hevc_capture_contract
 ```
 
 Contracts use the retained synthetic HEVC source fixture through the real RTP,
@@ -69,4 +101,9 @@ boundary reuse, unsafe-cut deferral, independent receive clocks, corrected
 retries, immutable ready-output backpressure, original-age expiry, startup IDR
 selection, source mismatch, fixed ceilings and unclosed EOF tails. Rust execution
 was unavailable in this editing environment; no passing build/test/qualification
-receipt is claimed. The normative qualification entrypoint is unchanged.
+receipt is claimed. The event-capture contracts additionally exercise plain and
+SHA-256 Digest RTSP negotiation, real supplied TCP frames, required timing and
+retry/expiry, gap-before-seal fencing, incomplete-FU EOF, RTCP isolation, source
+pressure, EOB receipts, chunk partition invariance, and two collected windows
+published/reopened by the existing local storage owner. These are authored tests,
+not executed qualification evidence. The normative qualification entrypoint is unchanged.

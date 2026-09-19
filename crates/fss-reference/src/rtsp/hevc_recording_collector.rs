@@ -289,7 +289,7 @@ impl HevcRecordingCollector {
     fn clear_pictures(&mut self) {
         self.pictures.clear(); self.picture_bytes = 0; self.nals = 0; self.spans = 0;
     }
-    fn retire(&mut self, reason: CollectionStop) -> HevcCollectionRetirement {
+    pub(crate) fn retire(&mut self, reason: CollectionStop) -> HevcCollectionRetirement {
         self.closed = true; self.stop_reason = Some(reason); self.source_bytes = 0; self.picture_bytes = 0; self.nals = 0; self.spans = 0;
         HevcCollectionRetirement { key: self.key, reason, ready: self.ready.take(),
             sources: std::mem::take(&mut self.sources), pictures: std::mem::take(&mut self.pictures) }
