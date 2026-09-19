@@ -21,13 +21,17 @@ use fss_reference::ingest::inference::{
     MAX_RECORDED_MODEL_BYTES, MAX_RUN_TENSOR_BYTES, RecordedInference, RecordedModel,
 };
 
-const HELP: &str = "fss-infer <run|read|replay> [options]\n\
-  All: --root DIR --site SITE --import-id sha256:HEX --segment N\n\
+#[path = "fss-infer/detection_cli.rs"]
+mod detection_cli;
+
+const HELP: &str = "fss-infer <run|read|replay|detect|track> [options]\n\
+  run/read/replay: --root DIR --site SITE --import-id sha256:HEX --segment N\n\
        --interpretation gray|ycbcr [--principal ID]\n\
   run: --model FILE --model-digest sha256:HEX [--decode-work-units N]\n\
   read/replay: --run-id sha256:HEX (the model is recovered from storage)\n\
   run/replay budgets: --max-macs N --max-tensor-bytes N\n\
   Exports: --output FILE --receipt-out FILE --model-out FILE\n\
+  detect/track: use fss-infer detect --help for explicit output contracts and run lists.\n\
   A run decodes the exact retained source and executes its frozen model. No models are\n\
   downloaded or activated. Outputs are uncalibrated tensors, not alerts or certified\n\
   absence. Exports must be new files outside the deployment. All paths accept native\n\
@@ -177,6 +181,7 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
 }
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if let Some(exit) = detection_cli::dispatch(&args, &mut io::stdout().lock()) { return exit; }
     match parse(&args) {
         Ok(None) => match io::stdout().lock().write_all(HELP.as_bytes()) {
             Ok(()) => ExitCode::from(0), Err(_) => ExitCode::from(1),
