@@ -20,6 +20,10 @@ use fss_core::{
 
 use super::{ReferenceSessionError, ReferenceSessionStore};
 
+mod recovery;
+
+pub use recovery::WorkClaimRecovery;
+
 #[cfg(test)]
 mod tests;
 

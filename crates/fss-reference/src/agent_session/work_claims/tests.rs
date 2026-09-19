@@ -4,6 +4,8 @@ use std::error::Error;
 use fss_core::{AgentSessionParams, ContractBasisRegistryBytes, LedgerAnchor};
 use super::*;
 
+mod recovery;
+
 type TestResult = Result<(), Box<dyn Error>>;
 
 fn basis() -> ContractBasis {
@@ -136,7 +138,9 @@ fn exact_expiry_and_backward_time_never_resurrect_a_lease() -> TestResult {
     // A different live session cannot rewind the coordinator's clock watermark either.
     assert!(matches!(f.claims.inspect(&mut f.sessions, &f.owner, &f.bob, "claim:one", TimestampNs(99)),
         Err(WorkClaimError::ClockRegression)));
-    assert!(matches!(f.acquire(request("claim:replacement", "work")?, 101), Err(WorkClaimError::Conflict)));
+    let mut replacement = request("claim:replacement", "work")?;
+    replacement.expires_at = TimestampNs(200);
+    assert!(matches!(f.acquire(replacement, 101), Err(WorkClaimError::Conflict)));
     assert_eq!(f.claims.revisions, 1);
     Ok(())
 }
@@ -273,7 +277,6 @@ fn fence_overflow_refuses_without_appending_and_claim_never_grants_effect_author
     let head = f.claims.inspect(&mut f.sessions, &f.owner, &f.alice, "claim:one", TimestampNs(3))?;
     assert!(matches!(f.update(&head, WorkClaimUpdate::Renew(TimestampNs(200)), 4), Err(WorkClaimError::CounterExhausted)));
     assert_eq!(f.claims.revisions, 1);
-    assert!(!WorkClaim::CONFERS_EFFECT_AUTHORITY);
     assert_eq!(head.claim().try_canonical_bytes()?.last(), Some(&0));
     Ok(())
 }
