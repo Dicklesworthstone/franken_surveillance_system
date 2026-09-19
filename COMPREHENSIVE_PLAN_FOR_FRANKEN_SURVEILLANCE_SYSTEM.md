@@ -3850,8 +3850,11 @@ production feature. Oracle-only code and fixtures are excluded from release clos
 ## 27.3 Closed dependency doctrine
 
 The machine policy is [`architecture/dependency_allowlist.toml`](architecture/dependency_allowlist.toml).
-The default external exception set is only Serde/Serde JSON/Thiserror, and only for their declared
-control/report/error roles. Even these are not canonical durable formats. Every first-party sibling
+The default external exception set is only `serde` and `serde_json`, and only for their declared
+bounded control/report data-shape roles. `thiserror` is not admitted: it remains an exception
+candidate requiring a DEP record, ADR, and release evidence before any admission
+(DRIFT-008 reconciled the older sentence that grouped it here). Even the admitted dependencies
+are not canonical durable formats. Every first-party sibling
 is pinned to an exact clean revision in a DSR release snapshot.
 
 ## 27.4 Canonical durable formats

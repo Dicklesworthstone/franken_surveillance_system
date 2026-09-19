@@ -12,6 +12,10 @@ set includes Serde, Serde JSON, and Thiserror. The canonical machine policy in
 `architecture/dependency_allowlist.toml` admits only `serde` and `serde_json` as fundamental
 exceptions. `thiserror` remains a non-admitted candidate. The machine allowlist wins.
 
+Resolved 2026-09-19 (DRIFT-008): §27.3 now names only `serde` and `serde_json`;
+`thiserror` is stated as a non-admitted exception candidate requiring a DEP record, ADR, and
+release evidence, matching `architecture/dependency_allowlist.toml` `[resolved_drifts]`.
+
 ### Collided stable definitions
 
 The following historical definitions collided. Canonical resolution is machine-owned by
