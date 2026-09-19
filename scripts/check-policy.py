@@ -566,7 +566,19 @@ def main() -> int:
         "docs/RESEARCH_LEDGER.md",
         "docs/LOCAL_QUALIFICATION_AND_RELEASE.md",
         "docs/LOCAL_QUALIFICATION_WITH_DSR.md",
-        "docs/adr/ADR-0011-agent-cognitive-operating-membrane.md",
+        'docs/adr/ADR-0001-three-semantic-planes.md',
+        'docs/adr/ADR-0002-boundary-processes.md',
+        'docs/adr/ADR-0003-manual-drone-flight.md',
+        'docs/adr/ADR-0004-model-generations.md',
+        'docs/adr/ADR-0005-pure-rust-production-universe.md',
+        'docs/adr/ADR-0006-one-version-universe.md',
+        'docs/adr/ADR-0007-atp-is-object-plane-not-effect-plane.md',
+        'docs/adr/ADR-0008-certified-graph-kernel.md',
+        'docs/adr/ADR-0009-local-dsr-release-authority.md',
+        'docs/adr/ADR-0010-foreign-runtimes-are-lab-oracles.md',
+        'docs/adr/ADR-0011-agent-cognitive-operating-membrane.md',
+        'docs/adr/ADR-0012-dependency-and-stable-id-authority.md',
+        'docs/adr/ADR-0013-layered-repository-integrity-manifest.md',
         "docs/FRANKEN_IMPORT_ADMISSION_GATES.md",
         "docs/deep-dives/INDEX.md",
         "architecture/dependency_allowlist.toml",
@@ -610,6 +622,32 @@ def main() -> int:
     for relative in required:
         if not (ROOT / relative).is_file():
             fail(f"missing required file: {relative}")
+
+    # fss-x4a.1.10..1.18: every ADR must exist and carry the normative skeleton (status,
+    # decision, rationale, consequences), so the assimilation beads' source snapshots stay
+    # byte-pinned by the manifest and structurally covered by this gate.
+    adr_files = sorted((ROOT / "docs" / "adr").glob("ADR-*.md")) if (ROOT / "docs" / "adr").is_dir() else []
+    if not adr_files:
+        fail("docs/adr declares no ADR files")
+    # Heading families, not exact spellings: the committed ADRs legitimately vary (Historical/
+    # Why/Replacement in ADR-0002, Context in ADR-0011/0012), but each must record a status,
+    # a decision, the reasoning behind it, and its consequences.
+    rationale_family = ("## Rationale", "## Context", "## Why")
+    consequences_family = ("## Consequences", "## Replacement")
+    for adr in adr_files:
+        text = adr.read_text(encoding="utf-8")
+        decision_family = ("## Decision", "## Historical decision")
+        for heading in ("# ADR-", "**Status:**"):
+            if heading not in text:
+                fail(f"ADR {adr.relative_to(ROOT)} is missing its '{heading}' section")
+        if not any(family in text for family in decision_family):
+            fail(f"ADR {adr.relative_to(ROOT)} is missing its decision section")
+            if heading not in text:
+                fail(f"ADR {adr.relative_to(ROOT)} is missing its '{heading}' section")
+        if not any(family in text for family in rationale_family):
+            fail(f"ADR {adr.relative_to(ROOT)} is missing its rationale/context section")
+        if not any(family in text for family in consequences_family):
+            fail(f"ADR {adr.relative_to(ROOT)} is missing its consequences section")
 
     repository_manifest = load_json("architecture/repository_manifest.json")
     normative_rows = repository_manifest.get("normative", [])
