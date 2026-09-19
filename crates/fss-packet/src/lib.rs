@@ -6,6 +6,7 @@
 //! The owning adapter retains the original datagram and its stream generation.
 
 pub mod avc;
+pub mod hevc;
 
 mod continuity;
 mod error;
