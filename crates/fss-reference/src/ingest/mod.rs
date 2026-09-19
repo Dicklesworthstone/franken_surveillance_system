@@ -16,6 +16,8 @@ pub mod pixel_change;
 pub mod inference;
 /// Explicit model-output decoding and source-linked detector proposals.
 pub mod detections;
+/// Bounded, history-linked, single-camera association of detector proposals.
+pub mod tracking;
 /// Bounded recorded-RTP framing and source-preserving ingest.
 pub mod rtpdump;
 
