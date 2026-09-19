@@ -14,6 +14,8 @@ pub mod recorded_decode;
 pub mod pixel_change;
 /// Exact frozen-model execution on retained decoded frames and durable model outputs.
 pub mod inference;
+/// Explicit model-output decoding and source-linked detector proposals.
+pub mod detections;
 /// Bounded recorded-RTP framing and source-preserving ingest.
 pub mod rtpdump;
 
