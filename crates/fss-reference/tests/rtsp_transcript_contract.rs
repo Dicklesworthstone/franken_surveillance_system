@@ -30,7 +30,7 @@ use fss_reference::rtsp::{AuthScheme, RtspError, RtspEvent, RtspParser, parse_sd
 
 /// Pinned SHA-256 literal for clean.transcript.
 pub const PINNED_SHA256_CLEAN: &str =
-    "f0640fca1a33fe43e8335cb01013e0f7d98589b86c45a8480ef75ced345d24aa";
+    "a265c7464216eb8f9998817b0a8afd1220fcf36c7e1a1a6f9de7e47a5146e494";
 
 /// Pinned SHA-256 literal for auth_required.transcript.
 pub const PINNED_SHA256_AUTH_REQUIRED: &str =
@@ -38,7 +38,7 @@ pub const PINNED_SHA256_AUTH_REQUIRED: &str =
 
 /// Pinned SHA-256 literal for interleave_split.transcript.
 pub const PINNED_SHA256_INTERLEAVE_SPLIT: &str =
-    "a0eccf64599579ee98d0b335b2b16d957a70605166dae3a559dbf665d49f8ae1";
+    "ae13c17254847e55544d93b9e946e1fbb00042b3ca12e79935d01d17ef54b6e2";
 
 /// Pinned SHA-256 literal for bad_content_length.transcript.
 pub const PINNED_SHA256_BAD_CONTENT_LENGTH: &str =
@@ -46,19 +46,19 @@ pub const PINNED_SHA256_BAD_CONTENT_LENGTH: &str =
 
 /// Pinned SHA-256 literal for session_timeout_header.transcript.
 pub const PINNED_SHA256_SESSION_TIMEOUT: &str =
-    "54557ffaaa43a00c205ab7a807186502784a19ddb13300e3b32b84fb29f5cacd";
+    "191ecaccf1c96839ef267f3a6b31d6b7d6b33e56df252dad8a809bdf5d9ef83a";
 
 /// Pinned SHA-256 literal for rtcp_rsize.transcript.
 pub const PINNED_SHA256_RTCP_RSIZE: &str =
-    "e503ecc51b1d34afbdb53e50f14ee31a494b92d1c142c74c96d23e83a208f88e";
+    "d6591ba199ea6c2c00deeb0105516b6097ee3048d412b1770397632b6a850609";
 
 /// Pinned SHA-256 literal for sr_absent.transcript.
 pub const PINNED_SHA256_SR_ABSENT: &str =
-    "e154d42cdf5d5a76d3304a6d13a13d98e56b922bf55ba783bb0e581d42d10e32";
+    "c3b8e0539f636a59ed38748cace11281ace7b4a91f7a2e228d73b800980adde8";
 
 /// Pinned SHA-256 literal for get_parameter_keepalive.transcript.
 pub const PINNED_SHA256_GET_PARAMETER: &str =
-    "60acc52f1e58877ea5aceb2b40eb0a3ecf313b9a7a13ac0f91383269b7b46675";
+    "3b227c656c2dd75b2f750aceef0319c4e3d97585ceae66be836a558c8f8fed3a";
 
 fn get_repo_root() -> Result<PathBuf, &'static str> {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
