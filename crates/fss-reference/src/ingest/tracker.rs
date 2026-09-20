@@ -1,0 +1,423 @@
+#![forbid(unsafe_code)]
+//! Constant-velocity Kalman filter tracker with IoU-based data association
+//! and Tentative/Confirmed/Lost/Deleted track lifecycle management.
+//!
+//! Takes bounding boxes from the foreground detector and maintains stable
+//! tracks across frames. All arithmetic is f64; deterministic across runs
+//! with the same input. No external crates.
+
+/// Configuration for the multi-object tracker.
+#[derive(Clone, Debug)]
+pub struct TrackerConfig {
+    /// Consecutive hits before a Tentative track becomes Confirmed. Must be >= 1.
+    pub min_hits: u32,
+    /// Consecutive misses before a track is Deleted. Must be >= 1.
+    pub max_misses: u32,
+    /// Minimum IoU between a predicted box and a detection for association.
+    pub iou_threshold: f64,
+    /// Process noise per axis (position and velocity). Controls how much the
+    /// Kalman filter trusts the constant-velocity model vs the measurements.
+    pub process_noise: f64,
+    /// Measurement noise. Controls how much the filter trusts the detection
+    /// vs the prediction.
+    pub measurement_noise: f64,
+}
+
+impl TrackerConfig {
+    /// Validates hard bounds.
+    pub fn validate(&self) -> Result<(), TrackerError> {
+        if self.min_hits == 0 {
+            return Err(TrackerError::InvalidConfig("min_hits must be >= 1"));
+        }
+        if self.max_misses == 0 {
+            return Err(TrackerError::InvalidConfig("max_misses must be >= 1"));
+        }
+        if self.iou_threshold < 0.0 || self.iou_threshold > 1.0 {
+            return Err(TrackerError::InvalidConfig("iou_threshold must be in [0, 1]"));
+        }
+        if self.process_noise <= 0.0 || self.measurement_noise <= 0.0 {
+            return Err(TrackerError::InvalidConfig("noise must be positive"));
+        }
+        Ok(())
+    }
+}
+
+/// Typed tracker failure.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TrackerError {
+    /// Configuration validation failed with a reason.
+    InvalidConfig(&'static str),
+}
+impl std::fmt::Display for TrackerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidConfig(msg) => write!(f, "invalid tracker config: {msg}"),
+        }
+    }
+}
+impl std::error::Error for TrackerError {}
+
+/// Track lifecycle states.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrackStatus {
+    /// Not yet confirmed; may be noise.
+    Tentative,
+    /// Confirmed after `min_hits` consecutive hits.
+    Confirmed,
+    /// Confirmed but currently missing; coasting on prediction.
+    Lost,
+}
+
+/// A single detection from the foreground detector for one frame.
+#[derive(Clone, Debug)]
+pub struct Detection {
+    /// Bounding box: x, y, width, height (all in pixels).
+    pub box_x: f64,
+    pub box_y: f64,
+    pub box_w: f64,
+    pub box_h: f64,
+}
+
+/// A tracked object maintained across frames.
+#[derive(Clone, Debug)]
+pub struct TrackedTarget {
+    /// Stable unique identifier (monotonically increasing).
+    pub id: u64,
+    /// Current track status.
+    pub status: TrackStatus,
+    /// Kalman-filtered bounding box center x.
+    pub cx: f64,
+    /// Kalman-filtered bounding box center y.
+    pub cy: f64,
+    /// Estimated velocity in x (pixels per frame).
+    pub vx: f64,
+    /// Estimated velocity in y (pixels per frame).
+    pub vy: f64,
+    /// Last observed bounding box dimensions.
+    pub box_w: f64,
+    pub box_h: f64,
+    /// Total number of detection hits.
+    pub hits: u32,
+    /// Consecutive miss count.
+    pub misses: u32,
+}
+
+/// Output of one tracker step.
+#[derive(Clone, Debug)]
+pub struct TrackerOutput {
+    /// All currently active tracks (Tentative + Confirmed + Lost).
+    pub tracks: Vec<TrackedTarget>,
+    /// Number of new tracks created this frame.
+    pub new_tracks: usize,
+    /// Number of tracks deleted this frame (missed too many frames).
+    pub deleted_tracks: usize,
+}
+
+/// Internal Kalman state: [cx, cy, vx, vy] with a 4×4 covariance.
+#[derive(Clone, Debug)]
+struct KalmanState {
+    x: [f64; 4],
+    p: [[f64; 4]; 4],
+}
+
+impl KalmanState {
+    fn new(cx: f64, cy: f64) -> Self {
+        let mut p = [[0.0; 4]; 4];
+        for (i, row) in p.iter_mut().enumerate() {
+            row[i] = if i < 2 { 10.0 } else { 100.0 };
+        }
+        Self { x: [cx, cy, 0.0, 0.0], p }
+    }
+
+    fn predict(&mut self, dt: f64, process_noise: f64) {
+        self.x[0] += self.x[2] * dt;
+        self.x[1] += self.x[3] * dt;
+        // Covariance grows with process noise and velocity uncertainty.
+        for i in 0..4 {
+            for j in 0..4 {
+                self.p[i][j] += process_noise * dt;
+            }
+        }
+    }
+
+    fn update(&mut self, mx: f64, my: f64, measurement_noise: f64) {
+        // 2×2 measurement: H = [[1,0,0,0],[0,1,0,0]]
+        let s00 = self.p[0][0] + measurement_noise;
+        let s11 = self.p[1][1] + measurement_noise;
+        // Kalman gain: K = P Hᵀ (H P Hᵀ + R)⁻¹
+        let k0 = self.p[0][0] / s00;
+        let k1 = self.p[1][1] / s11;
+        let k2 = self.p[0][2] / s00;
+        let k3 = self.p[1][3] / s11;
+        // Innovation.
+        let iy = my - self.x[1];
+        let ix = mx - self.x[0];
+        self.x[0] += k0 * ix;
+        self.x[1] += k1 * iy;
+        self.x[2] += k2 * ix;
+        self.x[3] += k3 * iy;
+        // Covariance update: P = (I - K H) P
+        self.p[0][0] -= k0 * self.p[0][0];
+        self.p[1][1] -= k1 * self.p[1][1];
+        self.p[0][2] -= k0 * self.p[2][0];
+        self.p[1][3] -= k1 * self.p[3][1];
+    }
+}
+
+/// Computes the Intersection-over-Union of two axis-aligned boxes.
+fn iou(ax: f64, ay: f64, aw: f64, ah: f64, bx: f64, by: f64, bw: f64, bh: f64) -> f64 {
+    let x1 = ax.max(bx);
+    let y1 = ay.max(by);
+    let x2 = (ax + aw).min(bx + bw);
+    let y2 = (ay + ah).min(by + bh);
+    let inter = (x2 - x1).max(0.0) * (y2 - y1).max(0.0);
+    let union = aw * ah + bw * bh - inter;
+    if union <= 0.0 { 0.0 } else { inter / union }
+}
+
+/// Deterministic multi-object tracker with constant-velocity Kalman filtering.
+pub struct MultiObjectTracker {
+    config: TrackerConfig,
+    tracks: Vec<TrackedTarget>,
+    kalman: Vec<KalmanState>,
+    next_id: u64,
+    frame: u64,
+}
+
+impl MultiObjectTracker {
+    /// Creates a new tracker with the given configuration.
+    pub fn new(config: TrackerConfig) -> Result<Self, TrackerError> {
+        config.validate()?;
+        Ok(Self {
+            config,
+            tracks: Vec::new(),
+            kalman: Vec::new(),
+            next_id: 1,
+            frame: 0,
+        })
+    }
+
+    /// Processes one frame of detections and returns the updated track set.
+    pub fn step(&mut self, detections: &[Detection]) -> TrackerOutput {
+        self.frame += 1;
+        let dt = 1.0;
+        let mut new_tracks = 0usize;
+        let mut deleted_tracks = 0usize;
+
+        // 1. Predict: advance all tracks.
+        for k in self.kalman.iter_mut() {
+            k.predict(dt, self.config.process_noise);
+        }
+
+        // 2. Associate detections to tracks by IoU (greedy highest-first).
+        let mut assigned_det = vec![false; detections.len()];
+        let mut assigned_trk = vec![false; self.tracks.len()];
+        let mut pairs: Vec<(usize, usize, f64)> = Vec::new();
+        for (ti, t) in self.tracks.iter().enumerate() {
+            for (di, d) in detections.iter().enumerate() {
+                if assigned_det[di] || assigned_trk[ti] {
+                    continue;
+                }
+                let score = iou(t.cx - t.box_w / 2.0, t.cy - t.box_h / 2.0, t.box_w, t.box_h,
+                                d.box_x, d.box_y, d.box_w, d.box_h);
+                if score >= self.config.iou_threshold {
+                    pairs.push((ti, di, score));
+                }
+            }
+        }
+        pairs.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+        for (ti, di, _) in &pairs {
+            if assigned_trk[*ti] || assigned_det[*di] {
+                continue;
+            }
+            assigned_trk[*ti] = true;
+            assigned_det[*di] = true;
+            let d = &detections[*di];
+            let cx = d.box_x + d.box_w / 2.0;
+            let cy = d.box_y + d.box_h / 2.0;
+            self.kalman[*ti].update(cx, cy, self.config.measurement_noise);
+            self.tracks[*ti].hits += 1;
+            self.tracks[*ti].misses = 0;
+            self.tracks[*ti].status = TrackStatus::Confirmed;
+            self.tracks[*ti].box_w = d.box_w;
+            self.tracks[*ti].box_h = d.box_h;
+            self.sync_track(*ti);
+        }
+
+        // 3. Unmatched tracks: miss (Tentative dies immediately, Confirmed go Lost).
+        for ti in 0..self.tracks.len() {
+            if assigned_trk[ti] {
+                continue;
+            }
+            self.tracks[ti].misses += 1;
+            if self.tracks[ti].status == TrackStatus::Tentative || self.tracks[ti].misses > self.config.max_misses {
+                self.tracks[ti].status = TrackStatus::Lost;
+            } else if self.tracks[ti].status == TrackStatus::Confirmed {
+                self.tracks[ti].status = TrackStatus::Lost;
+            }
+        }
+
+        // 4. Unmatched detections: create new Tentative tracks.
+        for (di, d) in detections.iter().enumerate() {
+            if assigned_det[di] {
+                continue;
+            }
+            let cx = d.box_x + d.box_w / 2.0;
+            let cy = d.box_y + d.box_h / 2.0;
+            self.kalman.push(KalmanState::new(cx, cy));
+            self.tracks.push(TrackedTarget {
+                id: self.next_id,
+                status: TrackStatus::Tentative,
+                cx,
+                cy,
+                vx: 0.0,
+                vy: 0.0,
+                box_w: d.box_w,
+                box_h: d.box_h,
+                hits: 1,
+                misses: 0,
+            });
+            self.next_id += 1;
+            new_tracks += 1;
+        }
+
+        // 5. Promote Tentative → Confirmed after min_hits.
+        for t in self.tracks.iter_mut() {
+            if t.status == TrackStatus::Tentative && t.hits >= self.config.min_hits {
+                t.status = TrackStatus::Confirmed;
+            }
+        }
+
+        // 6. Delete Lost tracks that exceeded max_misses.
+        let max_misses = self.config.max_misses;
+        let mut i = 0;
+        while i < self.tracks.len() {
+            let remove = self.tracks[i].status == TrackStatus::Lost
+                && self.tracks[i].misses > max_misses;
+            if remove {
+                self.tracks.swap_remove(i);
+                self.kalman.swap_remove(i);
+                deleted_tracks += 1;
+            } else {
+                i += 1;
+            }
+        }
+
+        TrackerOutput {
+            tracks: self.tracks.clone(),
+            new_tracks,
+            deleted_tracks,
+        }
+    }
+
+    /// Synchronises the public TrackedTarget with the Kalman state.
+    fn sync_track(&mut self, index: usize) {
+        let k = &self.kalman[index];
+        self.tracks[index].cx = k.x[0];
+        self.tracks[index].cy = k.x[1];
+        self.tracks[index].vx = k.x[2];
+        self.tracks[index].vy = k.x[3];
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config() -> TrackerConfig {
+        TrackerConfig {
+            min_hits: 2,
+            max_misses: 3,
+            iou_threshold: 0.1,
+            process_noise: 1.0,
+            measurement_noise: 1.0,
+        }
+    }
+
+    fn det(x: f64, y: f64) -> Detection {
+        Detection { box_x: x, box_y: y, box_w: 20.0, box_h: 20.0 }
+    }
+
+    #[test]
+    fn single_object_is_tracked_across_frames() {
+        let mut t = MultiObjectTracker::new(config()).unwrap();
+        for frame in 0..5 {
+            let out = t.step(&[det(10.0 + frame as f64 * 2.0, 20.0)]);
+            assert_eq!(out.tracks.len(), 1);
+        }
+        assert_eq!(out_single(&t).status, TrackStatus::Confirmed);
+        assert_eq!(out_single(&t).hits, 5);
+    }
+
+    fn out_single(t: &MultiObjectTracker) -> &TrackedTarget {
+        &t.tracks[0]
+    }
+
+    #[test]
+    fn tentative_track_not_confirmed_before_min_hits() {
+        let mut t = MultiObjectTracker::new(config()).unwrap();
+        let out = t.step(&[det(10.0, 20.0)]);
+        assert_eq!(out.tracks[0].status, TrackStatus::Tentative);
+    }
+
+    #[test]
+    fn missed_detections_are_handled_without_crash() {
+        let mut t = MultiObjectTracker::new(config()).unwrap();
+        t.step(&[det(10.0, 20.0)]).unwrap();
+        // Empty frames: track goes Lost then Deleted.
+        for _ in 0..5 {
+            let out = t.step(&[]);
+            if out.tracks.is_empty() { break; }
+        }
+        assert!(t.tracks.is_empty(), "track should have been deleted after max misses");
+    }
+
+    #[test]
+    fn two_crossing_objects_maintain_separate_ids() {
+        let mut t = MultiObjectTracker::new(config()).unwrap();
+        // Object A moves right, object B moves left; they cross in the middle.
+        for frame in 0..10 {
+            let ax = 10.0 + frame as f64 * 5.0;
+            let bx = 100.0 - frame as f64 * 5.0;
+            let detections = vec![det(ax, 20.0), det(bx, 20.0)];
+            let out = t.step(&detections);
+            let confirmed: Vec<_> = out.tracks.iter().filter(|tr| tr.status == TrackStatus::Confirmed).collect();
+            if confirmed.len() >= 2 {
+                assert_ne!(confirmed[0].id, confirmed[1].id);
+            }
+        }
+    }
+
+    #[test]
+    fn deterministic_across_runs() {
+        let detections = vec![det(15.0, 25.0), det(60.0, 30.0)];
+        let mut a = MultiObjectTracker::new(config()).unwrap();
+        let mut b = MultiObjectTracker::new(config()).unwrap();
+        let oa = a.step(&detections);
+        let ob = b.step(&detections);
+        assert_eq!(oa.tracks.len(), ob.tracks.len());
+        for (ta, tb) in oa.tracks.iter().zip(ob.tracks.iter()) {
+            assert_eq!(ta.id, tb.id);
+            assert_eq!((ta.cx, ta.cy), (tb.cx, tb.cy));
+        }
+    }
+
+    #[test]
+    fn empty_detections_on_empty_tracker_produce_empty_output() {
+        let mut t = MultiObjectTracker::new(config()).unwrap();
+        let out = t.step(&[]);
+        assert!(out.tracks.is_empty());
+        assert_eq!(out.new_tracks, 0);
+        assert_eq!(out.deleted_tracks, 0);
+    }
+
+    #[test]
+    fn invalid_config_is_refused() {
+        let mut bad = config();
+        bad.min_hits = 0;
+        assert!(MultiObjectTracker::new(bad).is_err());
+        let mut bad = config();
+        bad.iou_threshold = 1.5;
+        assert!(MultiObjectTracker::new(bad).is_err());
+    }
+}

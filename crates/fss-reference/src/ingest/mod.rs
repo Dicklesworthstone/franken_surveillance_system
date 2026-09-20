@@ -24,6 +24,8 @@ pub mod detections;
 pub mod foreground;
 /// Bounded, history-linked, single-camera association of detector proposals.
 pub mod tracking;
+/// Constant-velocity Kalman filter tracker with IoU-based data association.
+pub mod tracker;
 /// Complete, restart-reproducible detector/tracker reports over retained recordings.
 pub mod analysis;
 /// Durable unresolved event candidates from exact replayed analysis reports.
