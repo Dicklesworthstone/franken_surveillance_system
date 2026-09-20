@@ -3,7 +3,8 @@
 //!
 //! Records are cognition, not verified physical facts. Evidence digests are citations whose
 //! custody and disclosure must be checked by their semantic owner. No command executes a probe,
-//! removes an alternative, rewrites knowledge state, or grants an external effect capability.
+//! removes an alternative or grants an external effect capability. Explicit rebases invalidate
+//! old positive knowledge and citation applicability without discarding the prior revision.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -16,6 +17,9 @@ use fss_core::{
 use crate::agent_session::{ReferenceSessionError, ReferenceSessionStore};
 
 mod validation;
+
+/// Explicit world-drift invalidation and append-only expansion of a live investigation.
+pub mod evolution;
 pub(super) mod journal;
 
 pub use journal::DurableInvestigationError;
@@ -138,6 +142,7 @@ pub struct InvestigationRevision {
     predecessor: Option<ContentDigest>,
     changed_at: TimestampNs,
     assessment: Option<ContentDigest>,
+    validity: Option<evolution::InvestigationValidity>,
 }
 
 impl InvestigationRevision {
@@ -155,7 +160,16 @@ impl InvestigationRevision {
     pub const fn author_session(&self) -> &SessionId { &self.author_session }
     /// Exact optimistic concurrency and audit identity.
     #[must_use]
-    pub fn digest(&self) -> ContentDigest { self.canonical_digest(INVESTIGATION_REVISION_DOMAIN) }
+    pub fn digest(&self) -> ContentDigest {
+        let domain = if self.validity.is_some() { evolution::EVOLVED_REVISION_DOMAIN }
+            else { INVESTIGATION_REVISION_DOMAIN };
+        self.canonical_digest(domain)
+    }
+    /// Current-basis invalidation and readmission receipts, absent for never-rebased cases.
+    #[must_use]
+    pub const fn validity(&self) -> Option<&evolution::InvestigationValidity> {
+        self.validity.as_ref()
+    }
 }
 
 impl CanonicalEncode for InvestigationRevision {
@@ -170,6 +184,9 @@ impl CanonicalEncode for InvestigationRevision {
         e.i128(self.changed_at.0);
         e.bool(self.assessment.is_some());
         if let Some(root) = self.assessment { e.digest(root); }
+        // Legacy revisions remain byte-identical. Rebased revisions use a distinct digest domain
+        // and a self-identifying extension; this is not a reinterpretation of old journal bytes.
+        if let Some(validity) = &self.validity { validity.encode_canonical(e); }
     }
 }
 
@@ -306,7 +323,7 @@ impl ReferenceInvestigationStore {
                 let next = InvestigationRevision { record: record.as_ref().clone(), control,
                     principal: principal.clone(), author_session: session_id.clone(),
                     privacy_class: privacy_class.clone(), predecessor: None, changed_at: now,
-                    assessment: None };
+                    assessment: None, validity: None };
                 let bytes = self.reserve(&next)?;
                 self.entries.insert(record.investigation_id.clone(), Entry {
                     opening, head: next.clone(), history: Vec::new(),
@@ -425,7 +442,10 @@ fn apply_change(next: &mut InvestigationRevision, change: &InvestigationChange, 
                 HypothesisDisposition::Disfavored | HypothesisDisposition::Refuted => h.contradictions.contains(evidence),
                 _ => false,
             };
-            if !valid { return Err(InvestigationError::EvidenceRequired); }
+            if !valid || next.validity.as_ref().is_some_and(|validity| {
+                validity.needs_readmission(hypothesis, *evidence,
+                    *disposition != HypothesisDisposition::Supported)
+            }) { return Err(InvestigationError::EvidenceRequired); }
             next.control.advance_hypothesis(hypothesis, *disposition)
                 .map_err(|_| InvestigationError::InvalidTransition)?;
             next.assessment = Some(*evidence);
@@ -439,7 +459,13 @@ fn apply_change(next: &mut InvestigationRevision, change: &InvestigationChange, 
         }
         InvestigationChange::Conclude { refuted, stop_rule, assessment, residual_unknowns } => {
             if next.record.state != L::Active { return Err(InvestigationError::InvalidTransition); }
-            let unknowns: BTreeSet<String> = next.record.unknowns.iter().map(|s| s.statement_id.clone()).collect();
+            let mut unknowns: BTreeSet<String> = next.record.unknowns.iter()
+                .map(|s| s.statement_id.clone()).collect();
+            if next.validity.is_some() {
+                unknowns.extend(next.record.knowns.iter()
+                    .filter(|s| s.epistemic_state == fss_core::KnowledgeState::Stale)
+                    .map(|s| s.statement_id.clone()));
+            }
             if !next.record.stop_rules.contains(stop_rule) || residual_unknowns != &unknowns {
                 return Err(InvestigationError::ResidualsRequired);
             }

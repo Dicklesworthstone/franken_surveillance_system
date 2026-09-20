@@ -17,7 +17,8 @@ use fss_core::{
 
 use crate::ReferenceHydrationCatalog;
 
-mod hydration;
+/// Session-authorized cached and source-backed evidence delivery.
+pub mod hydration;
 
 /// Exact bounded recovery of session identities, grants, tombstones, aliases, and charges.
 pub mod checkpoint;

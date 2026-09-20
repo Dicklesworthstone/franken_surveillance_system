@@ -2,6 +2,154 @@
 //! Bounded, restartable local recording discovery over an explicitly supplied owner.
 //! Namespace slots are routing, not a grant or an authoritative camera-coverage ledger.
 
+/// Codec-pinned HEVC archive recovery and cross-page retrieval.
+pub mod hevc {
+#![forbid(unsafe_code)]
+//! Codec-pinned HEVC archive recovery and whole-window cross-page retrieval.
+//!
+//! These aliases use the same sealed archive engine as AVC. Only the existing
+//! HEVC recording/catalog loaders supply their typed media and metadata. No
+//! unchecked conversion, metadata-controlled fallback, or external codec exists.
+//! The namespace is distinct from AVC even for an identical logical clock scope.
+
+use super::*;
+
+/// Scope-derived HEVC routing namespace; not a published authority root.
+pub type HevcArchiveNamespace = CodecArchiveNamespace<HevcArchiveCodec>;
+/// Immutable HEVC catalog page with its exact storage slot and first ordinal.
+pub type HevcArchivePage = CodecArchivePage<HevcArchiveCodec>;
+/// Bounded source-replay-verified recovery, including the durable unindexed tail.
+pub type HevcArchiveSnapshot = CodecArchiveSnapshot<HevcArchiveCodec>;
+/// Incremental source-replay-verified cross-page HEVC read request.
+pub type HevcArchiveRead<'a> = CodecArchiveRead<'a, HevcArchiveCodec>;
+/// Typed whole HEVC windows, aggregate completion, or exhausted disposition.
+pub type HevcArchiveReadProgress = ArchiveReadProgress<HevcArchiveCodec>;
+/// One retained HEVC window, automatic catalog pages, and exact-slot recovery/retry.
+pub type HevcRecordingArchiveWriter<'a> = CodecRecordingArchiveWriter<'a, HevcArchiveCodec>;
+/// Ownership-preserving HEVC admission refusal; the original window is returned intact.
+pub type HevcArchiveWriteRefusal = ArchiveWriteRefusal<HevcArchiveCodec>;
+/// Last acknowledged snapshot, pending HEVC window and immutable prepared page.
+pub type HevcArchiveRetirement = ArchiveRetirement<HevcArchiveCodec>;
+}
+mod codec {
+#![forbid(unsafe_code)]
+//! Sealed, compile-time codec dispatch for one archive/recovery implementation.
+//! No metadata can select a verifier, and external code cannot supply a codec.
+
+use super::*;
+use fss_object::ObjectManifest;
+use crate::rtsp::recording::hevc::{PreparedHevcRecording, local::load_hevc_recording};
+use crate::rtsp::recording_catalog::{CatalogBuilder, hevc::{HevcCatalogBuilder, HevcRecordingCatalog}};
+use crate::rtsp::recording_catalog::hevc::local::load_hevc_catalog;
+
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// Internal closed family marker. Use the concrete AVC/HEVC archive aliases.
+///
+/// Sealing prevents public extension, including substituting a weaker verifier.
+/// The family exists only in types; it is never recovered from an untrusted tag.
+#[doc(hidden)]
+pub trait ArchiveCodec: sealed::Sealed + std::fmt::Debug {
+    /// Immutable output of this family's native recording verifier.
+    type Recording: std::fmt::Debug;
+    /// Immutable, codec-pinned catalog page.
+    type Catalog: std::fmt::Debug;
+    /// Metadata-only builder for this family.
+    type Builder;
+    /// Stable namespace encoding domain.
+    const NAMESPACE_DOMAIN: &'static str;
+    /// Stable inventory digest domain; this is not a published root.
+    const SNAPSHOT_DOMAIN: &'static str;
+    /// Disjoint codec routing prefix, without the full scope hash.
+    const SLOT_PREFIX: &'static str;
+
+    /// Borrow the unchanged root-last publication plan.
+    fn plan(recording: &Self::Recording) -> &PreparedRecording;
+    /// Load an exact slot/root/scope through the existing codec-specific verifier.
+    fn load_recording(p: &LocalRootPublisher, slot: &SlotName, root: ContentDigest,
+        scope: &super::super::recording::RecordingScope, cancel: &dyn PublishCancellation)
+        -> ArchiveResult<Self::Recording>;
+    /// Load an exact durable, codec-pinned catalog without inferring its family.
+    fn load_catalog(p: &LocalRootPublisher, slot: &SlotName, root: ContentDigest,
+        scope: &CatalogScope, cancel: &dyn PublishCancellation) -> ArchiveResult<Self::Catalog>;
+    /// Borrow the exact flat root/leaf closure.
+    fn manifest(catalog: &Self::Catalog) -> &ObjectManifest;
+    /// Borrow canonical metadata bytes without reserialization.
+    fn index(catalog: &Self::Catalog) -> &[u8];
+    /// Borrow chronologically ordered descriptors.
+    fn entries(catalog: &Self::Catalog) -> &[CatalogEntry];
+    /// Bind a metadata builder to the supplied scope and codec.
+    fn builder(scope: CatalogScope) -> ArchiveResult<Self::Builder>;
+    /// Transactionally append a typed recording to that builder.
+    fn push(builder: &mut Self::Builder, slot: &SlotName, recording: &Self::Recording)
+        -> ArchiveResult<()>;
+    /// Seal metadata using the existing codec-pinned catalog constructor.
+    fn prepare(builder: Self::Builder) -> ArchiveResult<Self::Catalog>;
+}
+
+/// Closed AVC family; existing public archive aliases select this marker.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AvcArchiveCodec {}
+impl sealed::Sealed for AvcArchiveCodec {}
+impl ArchiveCodec for AvcArchiveCodec {
+    type Recording = PreparedRecording;
+    type Catalog = RecordingCatalog;
+    type Builder = CatalogBuilder;
+    const NAMESPACE_DOMAIN: &'static str = "fss.local_recording_archive_namespace.v1";
+    const SNAPSHOT_DOMAIN: &'static str = "fss.local_recording_archive_snapshot.v1";
+    const SLOT_PREFIX: &'static str = "fssa1";
+    fn plan(recording: &Self::Recording) -> &PreparedRecording { recording }
+    fn load_recording(p: &LocalRootPublisher, slot: &SlotName, root: ContentDigest,
+        scope: &super::super::recording::RecordingScope, cancel: &dyn PublishCancellation)
+        -> ArchiveResult<Self::Recording>
+    { Ok(load_recording(p, slot, root, scope, cancel)?) }
+    fn load_catalog(p: &LocalRootPublisher, slot: &SlotName, root: ContentDigest,
+        scope: &CatalogScope, cancel: &dyn PublishCancellation) -> ArchiveResult<Self::Catalog>
+    { Ok(load_catalog(p, slot, root, scope, cancel)?) }
+    fn manifest(catalog: &Self::Catalog) -> &ObjectManifest { catalog.manifest() }
+    fn index(catalog: &Self::Catalog) -> &[u8] { catalog.index_bytes() }
+    fn entries(catalog: &Self::Catalog) -> &[CatalogEntry] { catalog.entries() }
+    fn builder(scope: CatalogScope) -> ArchiveResult<Self::Builder> { Ok(CatalogBuilder::new(scope)?) }
+    fn push(builder: &mut Self::Builder, slot: &SlotName, recording: &Self::Recording)
+        -> ArchiveResult<()> { Ok(builder.push(slot, recording)?) }
+    fn prepare(builder: Self::Builder) -> ArchiveResult<Self::Catalog> { Ok(builder.prepare()?) }
+}
+
+/// Closed HEVC family; typed APIs cannot receive or return AVC media as HEVC.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HevcArchiveCodec {}
+impl sealed::Sealed for HevcArchiveCodec {}
+impl ArchiveCodec for HevcArchiveCodec {
+    type Recording = PreparedHevcRecording;
+    type Catalog = HevcRecordingCatalog;
+    type Builder = HevcCatalogBuilder;
+    const NAMESPACE_DOMAIN: &'static str = "fss.local_hevc_recording_archive_namespace.v1";
+    const SNAPSHOT_DOMAIN: &'static str = "fss.local_hevc_recording_archive_snapshot.v1";
+    const SLOT_PREFIX: &'static str = "fssh1";
+    fn plan(recording: &Self::Recording) -> &PreparedRecording { recording.publication_plan() }
+    fn load_recording(p: &LocalRootPublisher, slot: &SlotName, root: ContentDigest,
+        scope: &super::super::recording::RecordingScope, cancel: &dyn PublishCancellation)
+        -> ArchiveResult<Self::Recording>
+    { Ok(load_hevc_recording(p, slot, root, scope, cancel)?) }
+    fn load_catalog(p: &LocalRootPublisher, slot: &SlotName, root: ContentDigest,
+        scope: &CatalogScope, cancel: &dyn PublishCancellation) -> ArchiveResult<Self::Catalog>
+    { Ok(load_hevc_catalog(p, slot, root, scope, cancel)?) }
+    fn manifest(catalog: &Self::Catalog) -> &ObjectManifest { catalog.manifest() }
+    fn index(catalog: &Self::Catalog) -> &[u8] { catalog.index_bytes() }
+    fn entries(catalog: &Self::Catalog) -> &[CatalogEntry] { catalog.entries() }
+    fn builder(scope: CatalogScope) -> ArchiveResult<Self::Builder> { Ok(HevcCatalogBuilder::new(scope)?) }
+    fn push(builder: &mut Self::Builder, slot: &SlotName, recording: &Self::Recording)
+        -> ArchiveResult<()> { Ok(builder.push(slot, recording)?) }
+    fn prepare(builder: Self::Builder) -> ArchiveResult<Self::Catalog> { Ok(builder.prepare()?) }
+}
+}
+#[doc(hidden)]
+pub use codec::{ArchiveCodec, AvcArchiveCodec, HevcArchiveCodec};
+
 mod read;
 mod write;
 pub use read::*;
@@ -12,8 +160,8 @@ use fss_publication::{LocalPublicationState, LocalRootPublisher, PublishCancella
     PublishCutPoint, SlotName};
 use super::recording::{PreparedRecording, MAX_RECORDING_BYTES};
 use super::recording::local::{RecordingIoError, load_recording};
-use super::recording_catalog::{CatalogEntry, CatalogError, CatalogScope, CatalogWindow,
-    RecordingCatalog, MAX_CATALOG_WINDOWS, prepare_catalog};
+use super::recording_catalog::{CatalogEntry, CatalogError, CatalogScope,
+    RecordingCatalog, MAX_CATALOG_WINDOWS};
 use super::recording_catalog::local::{CatalogIoError, load_catalog};
 
 /// Maximum recording descriptors in one bounded local archive session.
@@ -98,18 +246,23 @@ impl From<RecordingIoError> for ArchiveError { fn from(e: RecordingIoError) -> S
 pub type ArchiveResult<T> = Result<T, ArchiveError>;
 
 /// Full-hash scope-derived routing namespace inside an already authorized owner.
+pub type ArchiveNamespace = CodecArchiveNamespace<AvcArchiveCodec>;
+
+/// Shared namespace representation. Its sealed family fixes all durable identities.
+#[doc(hidden)]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ArchiveNamespace {
+pub struct CodecArchiveNamespace<C: ArchiveCodec> {
     scope: CatalogScope,
     digest: ContentDigest,
     prefix: String,
+    codec: std::marker::PhantomData<C>,
 }
-impl ArchiveNamespace {
+impl<C: ArchiveCodec> CodecArchiveNamespace<C> {
     /// Bind every recording scope field and the explicit decode clock/tick rate.
     pub fn new(scope: CatalogScope) -> ArchiveResult<Self> {
         if scope.recording.generation == 0 || scope.time_scale == 0 { return Err(ArchiveError::Scope); }
         let mut e = CanonicalEncoder::new();
-        e.text("fss.local_recording_archive_namespace.v1");
+        e.text(C::NAMESPACE_DOMAIN);
         e.text(scope.recording.sensor.as_str()); e.text(scope.recording.stream.as_str());
         e.u64(scope.recording.generation); e.digest(scope.recording.anchor);
         e.digest(scope.recording.receive_clock); e.digest(scope.decode_clock); e.u32(scope.time_scale);
@@ -117,7 +270,8 @@ impl ArchiveNamespace {
         let digest = ContentDigest::try_sha256(&bytes).map_err(|_| ArchiveError::Limit)?;
         let text = digest.to_text();
         let hex = text.strip_prefix("sha256:").ok_or(ArchiveError::Metadata)?;
-        Ok(Self { scope, digest, prefix: format!("fssa1-{hex}") })
+        Ok(Self { scope, digest, prefix: format!("{}-{hex}", C::SLOT_PREFIX),
+            codec: std::marker::PhantomData })
     }
     /// Exact declared stream/decode basis; not inferred capture time.
     pub fn scope(&self) -> &CatalogScope { &self.scope }
@@ -145,38 +299,46 @@ impl ArchiveNamespace {
 }
 
 /// A discovered immutable catalog page, not a mutable latest/head pointer.
+pub type ArchivePage = CodecArchivePage<AvcArchiveCodec>;
+
+/// Shared typed page representation; catalog bytes retain their codec's format.
+#[doc(hidden)]
 #[derive(Debug)]
-pub struct ArchivePage {
+pub struct CodecArchivePage<C: ArchiveCodec> {
     slot: SlotName,
     first: usize,
-    catalog: RecordingCatalog,
+    catalog: C::Catalog,
 }
-impl ArchivePage {
+impl<C: ArchiveCodec> CodecArchivePage<C> {
     /// Exact local root slot.
     pub fn slot(&self) -> &SlotName { &self.slot }
     /// First zero-based recording ordinal named by this page.
     pub fn first_ordinal(&self) -> usize { self.first }
     /// Immutable catalog; its root pins every source and derived object.
-    pub fn catalog(&self) -> &RecordingCatalog { &self.catalog }
+    pub fn catalog(&self) -> &C::Catalog { &self.catalog }
 }
 
 /// Bounded point-in-time inventory, recovered by rehashing original recordings.
 /// This is not an authoritative history, a retention lease, or a coverage/absence proof.
+pub type ArchiveSnapshot = CodecArchiveSnapshot<AvcArchiveCodec>;
+
+/// One bounded recovery implementation with a sealed, compile-time codec family.
+#[doc(hidden)]
 #[derive(Debug)]
-pub struct ArchiveSnapshot {
-    namespace: ArchiveNamespace,
+pub struct CodecArchiveSnapshot<C: ArchiveCodec> {
+    namespace: CodecArchiveNamespace<C>,
     limits: ArchiveLimits,
     windows: Vec<CatalogEntry>,
-    pages: Vec<ArchivePage>,
+    pages: Vec<CodecArchivePage<C>>,
     indexed: usize,
 }
-impl ArchiveSnapshot {
+impl<C: ArchiveCodec> CodecArchiveSnapshot<C> {
     /// Discover this exact scope from the supplied publisher's existing metadata only.
     /// No filesystem listing/path read occurs here. Every admitted original window is
     /// loaded and source-verified, one at a time; total recovery work is bounded by
     /// max_windows, with cancellation between reads. Partial recovery is never returned.
     /// Broken roots and unresolved root temporaries are refused, never skipped as absence.
-    pub fn load(p: &LocalRootPublisher, namespace: ArchiveNamespace, limits: ArchiveLimits,
+    pub fn load(p: &LocalRootPublisher, namespace: CodecArchiveNamespace<C>, limits: ArchiveLimits,
         cancel: &dyn PublishCancellation) -> ArchiveResult<Self>
     {
         limits.validate()?; owner_ready(p)?;
@@ -217,13 +379,13 @@ impl ArchiveSnapshot {
         for (first, slot, root) in page_roots {
             probe(cancel)?;
             if first != indexed { return Err(ArchiveError::Sequence); }
-            let catalog = load_catalog(p, &slot, root, &namespace.scope, cancel)?;
-            let end = first.checked_add(catalog.entries().len()).ok_or(ArchiveError::Limit)?;
+            let catalog = C::load_catalog(p, &slot, root, &namespace.scope, cancel)?;
+            let end = first.checked_add(C::entries(&catalog).len()).ok_or(ArchiveError::Limit)?;
             if end > roots.len() { return Err(ArchiveError::Sequence); }
-            for (entry, reference) in catalog.entries().iter().zip(&roots[first..end]) {
+            for (entry, reference) in C::entries(&catalog).iter().zip(&roots[first..end]) {
                 if entry.slot() != &reference.1 || entry.root() != reference.2 { return Err(ArchiveError::Metadata); }
             }
-            indexed = end; pages.push(ArchivePage { slot, first, catalog });
+            indexed = end; pages.push(CodecArchivePage::<C> { slot, first, catalog });
         }
         // The writer seals before admitting another page. A larger tail is not its
         // recoverable state; do not silently import an arbitrary foreign layout.
@@ -231,13 +393,13 @@ impl ArchiveSnapshot {
         let mut windows: Vec<CatalogEntry> = bounded_vec(roots.len())?;
         let mut page_at = 0;
         for (ordinal, slot, root) in roots {
-            let recording = load_recording(p, &slot, root, &namespace.scope.recording, cancel)?;
-            let entry = descriptor(&namespace.scope, &slot, &recording)?;
+            let recording = C::load_recording(p, &slot, root, &namespace.scope.recording, cancel)?;
+            let entry = descriptor_for::<C>(&namespace.scope, &slot, &recording)?;
             if windows.last().is_some_and(|last| last.decode_interval().end > entry.decode_interval().start)
                 || windows.iter().any(|old| old.root() == entry.root()) { return Err(ArchiveError::Sequence); }
             if ordinal < indexed {
-                while ordinal >= pages[page_at].first + pages[page_at].catalog.entries().len() { page_at += 1; }
-                if entry != pages[page_at].catalog.entries()[ordinal - pages[page_at].first] { return Err(ArchiveError::Metadata); }
+                while ordinal >= pages[page_at].first + C::entries(&pages[page_at].catalog).len() { page_at += 1; }
+                if entry != C::entries(&pages[page_at].catalog)[ordinal - pages[page_at].first] { return Err(ArchiveError::Metadata); }
             }
             windows.push(entry);
         }
@@ -247,33 +409,39 @@ impl ArchiveSnapshot {
     /// Bounds applied to this recovered inventory.
     pub fn limits(&self) -> ArchiveLimits { self.limits }
     /// Exact scope-derived namespace.
-    pub fn namespace(&self) -> &ArchiveNamespace { &self.namespace }
+    pub fn namespace(&self) -> &CodecArchiveNamespace<C> { &self.namespace }
     /// Fully source-verified descriptors at recovery time; not future retrieval guarantees.
     pub fn windows(&self) -> &[CatalogEntry] { &self.windows }
     /// Only durably published pages, in recording order.
-    pub fn pages(&self) -> &[ArchivePage] { &self.pages }
+    pub fn pages(&self) -> &[CodecArchivePage<C>] { &self.pages }
     /// Durable windows that also have published discovery metadata.
     pub fn indexed_windows(&self) -> usize { self.indexed }
     /// Durable original windows awaiting catalog publication after a flush/crash.
     pub fn unindexed_windows(&self) -> &[CatalogEntry] { &self.windows[self.indexed..] }
     /// Deterministic inventory identity. This digest is NOT a published ledger/head root.
     pub fn digest(&self) -> ArchiveResult<ContentDigest> {
-        let mut e = CanonicalEncoder::new(); e.text("fss.local_recording_archive_snapshot.v1");
+        let mut e = CanonicalEncoder::new(); e.text(C::SNAPSHOT_DOMAIN);
         e.digest(self.namespace.digest); e.u64(self.windows.len() as u64); e.u64(self.indexed as u64);
         for entry in &self.windows { e.digest(entry.root()); }
         e.u64(self.pages.len() as u64);
-        for page in &self.pages { e.u64(page.first as u64); e.digest(page.catalog.manifest().root()); }
+        for page in &self.pages { e.u64(page.first as u64); e.digest(C::manifest(&page.catalog).root()); }
         ContentDigest::try_sha256(&e.finish_checked().map_err(|_| ArchiveError::Limit)?)
             .map_err(|_| ArchiveError::Limit)
     }
 }
 
-fn descriptor(scope: &CatalogScope, slot: &SlotName, recording: &PreparedRecording) -> ArchiveResult<CatalogEntry> {
-    let c = prepare_catalog(scope.clone(), &[CatalogWindow { slot, recording }])?;
-    c.entries().first().cloned().ok_or(ArchiveError::Metadata)
+fn descriptor_for<C: ArchiveCodec>(scope: &CatalogScope, slot: &SlotName,
+    recording: &C::Recording) -> ArchiveResult<CatalogEntry>
+{
+    let mut builder = C::builder(scope.clone())?;
+    C::push(&mut builder, slot, recording)?;
+    let catalog = C::prepare(builder)?;
+    C::entries(&catalog).first().cloned().ok_or(ArchiveError::Metadata)
 }
-fn verify_descriptor(scope: &CatalogScope, entry: &CatalogEntry, recording: &PreparedRecording) -> ArchiveResult<()> {
-    if &descriptor(scope, entry.slot(), recording)? != entry { return Err(ArchiveError::Metadata); }
+fn verify_descriptor_for<C: ArchiveCodec>(scope: &CatalogScope, entry: &CatalogEntry,
+    recording: &C::Recording) -> ArchiveResult<()>
+{
+    if &descriptor_for::<C>(scope, entry.slot(), recording)? != entry { return Err(ArchiveError::Metadata); }
     Ok(())
 }
 fn owner_ready(p: &LocalRootPublisher) -> ArchiveResult<()> {

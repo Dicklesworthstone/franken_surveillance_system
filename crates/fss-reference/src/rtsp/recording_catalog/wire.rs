@@ -3,13 +3,12 @@
 use super::*;
 use fss_core::{CanonicalDecoder, CanonicalEncoder, ContractError, SensorId, StreamId};
 
-const DOMAIN: &str = "fss.recording_catalog.v1";
 const VERSION: u64 = 1;
 const CHECKSUM_BYTES: usize = 33;
 
-pub(super) fn encode(scope: &CatalogScope, entries: &[CatalogEntry]) -> Result<Vec<u8>> {
+pub(super) fn encode(scope: &CatalogScope, entries: &[CatalogEntry], family: CatalogFamily) -> Result<Vec<u8>> {
     let mut out = CanonicalEncoder::new();
-    out.text(DOMAIN); out.u64(VERSION);
+    out.text(family.domain()); out.u64(VERSION);
     out.text(scope.recording.sensor.as_str()); out.text(scope.recording.stream.as_str());
     out.u64(scope.recording.generation); out.digest(scope.recording.anchor);
     out.digest(scope.recording.receive_clock); out.digest(scope.decode_clock); out.u32(scope.time_scale);
@@ -28,14 +27,14 @@ pub(super) fn encode(scope: &CatalogScope, entries: &[CatalogEntry]) -> Result<V
     Ok(bytes)
 }
 
-pub(super) fn decode(bytes: &[u8]) -> Result<(CatalogScope, Vec<CatalogEntry>)> {
+pub(super) fn decode(bytes: &[u8], family: CatalogFamily) -> Result<(CatalogScope, Vec<CatalogEntry>)> {
     if bytes.len() > MAX_CATALOG_BYTES { return Err(CatalogError::Limit); }
     let body_end = bytes.len().checked_sub(CHECKSUM_BYTES).ok_or(CatalogError::Malformed)?;
     let mut trailer = CanonicalDecoder::new(&bytes[body_end..]);
     if trailer.digest().map_err(bad)? != digest(&bytes[..body_end])? { return Err(CatalogError::Digest); }
     trailer.ensure_finished().map_err(bad)?;
     let mut d = CanonicalDecoder::new(&bytes[..body_end]);
-    if d.text().map_err(bad)? != DOMAIN || d.u64().map_err(bad)? != VERSION { return Err(CatalogError::Malformed); }
+    if d.text().map_err(bad)? != family.domain() || d.u64().map_err(bad)? != VERSION { return Err(CatalogError::Malformed); }
     // text() borrows input. Parse only bounded identifiers, never allocate an
     // attacker-declared count/length before validating it against the page budget.
     let sensor = SensorId::parse(d.text().map_err(bad)?).map_err(bad)?;

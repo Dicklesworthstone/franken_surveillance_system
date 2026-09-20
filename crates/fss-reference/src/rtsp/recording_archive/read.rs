@@ -34,7 +34,7 @@ impl ArchiveSelection {
     /// Advertised whole-window output, rechecked before returning media.
     pub fn output_bytes(&self) -> u64 { self.bytes }
 }
-impl ArchiveSnapshot {
+impl<C: ArchiveCodec> CodecArchiveSnapshot<C> {
     /// Query every published page in one fixed bounded snapshot. Durable-but-unindexed
     /// tail windows remain explicitly unindexed until a catalog is actually published.
     pub fn select(&self, query: Range<u64>, limits: ArchiveQueryLimits) -> ArchiveResult<ArchiveSelection> {
@@ -80,7 +80,7 @@ pub struct ArchiveReadReceipt {
 }
 /// One incremental cross-page output; only Complete settles the whole query.
 #[derive(Debug)]
-pub enum ArchiveReadProgress {
+pub enum ArchiveReadProgress<C: ArchiveCodec = AvcArchiveCodec> {
     /// Complete original window plus the requested overlap, not a cropped rendition.
     Window {
         /// Zero-based ordinal of the loaded window in the queried snapshot.
@@ -88,7 +88,7 @@ pub enum ArchiveReadProgress {
         /// Exactly the requested decode interval, including any requested overlap.
         requested_interval: Range<u64>,
         /// Fully verified original window bytes for that interval.
-        recording: PreparedRecording,
+        recording: C::Recording,
     },
     /// Every selected window has been verified and transferred exactly once.
     Complete(ArchiveReadReceipt),
@@ -97,9 +97,13 @@ pub enum ArchiveReadProgress {
 }
 /// One source-verified window per step. Earlier outputs stay caller-owned after a
 /// later refusal; a cancelled or failed attempt never emits aggregate success.
-pub struct ArchiveRead<'a> {
+pub type ArchiveRead<'a> = CodecArchiveRead<'a, AvcArchiveCodec>;
+
+/// Shared request implementation; public aliases pin the verifier at compile time.
+#[doc(hidden)]
+pub struct CodecArchiveRead<'a, C: ArchiveCodec> {
     publisher: &'a LocalRootPublisher,
-    snapshot: &'a ArchiveSnapshot,
+    snapshot: &'a CodecArchiveSnapshot<C>,
     selection: ArchiveSelection,
     next: usize,
     bytes: u64,
@@ -108,10 +112,10 @@ pub struct ArchiveRead<'a> {
     blocked: bool,
     done: bool,
 }
-impl<'a> ArchiveRead<'a> {
+impl<'a, C: ArchiveCodec> CodecArchiveRead<'a, C> {
     /// The caller separately authorizes WHOLE selected windows. A time query is not
     /// a privacy filter. The supplied owner must be the one that holds these roots.
-    pub fn new(publisher: &'a LocalRootPublisher, snapshot: &'a ArchiveSnapshot,
+    pub fn new(publisher: &'a LocalRootPublisher, snapshot: &'a CodecArchiveSnapshot<C>,
         query: Range<u64>, limits: ArchiveQueryLimits, deadline_ns: u64) -> ArchiveResult<Self>
     {
         owner_ready(publisher)?;
@@ -126,7 +130,7 @@ impl<'a> ArchiveRead<'a> {
     pub fn returned_windows(&self) -> usize { self.next }
     /// Supplied time controls admission. The cancellation probe must also check live
     /// deadlines/revocation at read boundaries, not merely the entry timestamp.
-    pub fn step(&mut self, now_ns: u64, cancel: &dyn PublishCancellation) -> ArchiveResult<ArchiveReadProgress> {
+    pub fn step(&mut self, now_ns: u64, cancel: &dyn PublishCancellation) -> ArchiveResult<ArchiveReadProgress<C>> {
         if self.done { return Ok(ArchiveReadProgress::Exhausted); }
         if self.blocked { return Err(ArchiveError::Blocked); }
         if self.last_ns.is_some_and(|last| now_ns < last) { return Err(ArchiveError::ClockReversed); }
@@ -136,21 +140,21 @@ impl<'a> ArchiveRead<'a> {
         if result.is_err() { self.blocked = true; }
         result
     }
-    fn advance(&mut self, cancel: &dyn PublishCancellation) -> ArchiveResult<ArchiveReadProgress> {
+    fn advance(&mut self, cancel: &dyn PublishCancellation) -> ArchiveResult<ArchiveReadProgress<C>> {
         owner_ready(self.publisher)?;
         if let Some(&ordinal) = self.selection.ordinals.get(self.next) {
             let entry = &self.snapshot.windows[ordinal];
             let page = self.snapshot.pages.iter().find(|p| ordinal >= p.first
-                && ordinal < p.first + p.catalog.entries().len()).ok_or(ArchiveError::Metadata)?;
+                && ordinal < p.first + C::entries(&p.catalog).len()).ok_or(ArchiveError::Metadata)?;
             // Recheck the selected catalog before returning its original media.
-            let loaded = load_catalog(self.publisher, &page.slot, page.catalog.manifest().root(),
+            let loaded = C::load_catalog(self.publisher, &page.slot, C::manifest(&page.catalog).root(),
                 &self.snapshot.namespace.scope, cancel)?;
-            if loaded.index_bytes() != page.catalog.index_bytes() { return Err(ArchiveError::Metadata); }
-            let recording = load_recording(self.publisher, entry.slot(), entry.root(),
+            if C::index(&loaded) != C::index(&page.catalog) { return Err(ArchiveError::Metadata); }
+            let recording = C::load_recording(self.publisher, entry.slot(), entry.root(),
                 &self.snapshot.namespace.scope.recording, cancel)?;
-            verify_descriptor(&self.snapshot.namespace.scope, entry, &recording)?;
+            verify_descriptor_for::<C>(&self.snapshot.namespace.scope, entry, &recording)?;
             probe(cancel)?;
-            let bytes = self.bytes.checked_add(recording.byte_len() as u64).ok_or(ArchiveError::Limit)?;
+            let bytes = self.bytes.checked_add(C::plan(&recording).byte_len() as u64).ok_or(ArchiveError::Limit)?;
             if bytes > self.selection.bytes { return Err(ArchiveError::Limit); }
             let interval = entry.decode_interval();
             let requested_interval = self.selection.query.start.max(interval.start)..self.selection.query.end.min(interval.end);
@@ -160,9 +164,9 @@ impl<'a> ArchiveRead<'a> {
         if self.bytes != self.selection.bytes { return Err(ArchiveError::Metadata); }
         // Also fence empty answers and pages which only contributed an unindexed gap.
         for page in &self.snapshot.pages {
-            let loaded = load_catalog(self.publisher, &page.slot, page.catalog.manifest().root(),
+            let loaded = C::load_catalog(self.publisher, &page.slot, C::manifest(&page.catalog).root(),
                 &self.snapshot.namespace.scope, cancel)?;
-            if loaded.index_bytes() != page.catalog.index_bytes() { return Err(ArchiveError::Metadata); }
+            if C::index(&loaded) != C::index(&page.catalog) { return Err(ArchiveError::Metadata); }
         }
         probe(cancel)?;
         let mut unindexed = bounded_vec(self.selection.unindexed.len())?;
@@ -173,7 +177,7 @@ impl<'a> ArchiveRead<'a> {
             windows: self.next, output_bytes: self.bytes, unindexed }))
     }
 }
-impl std::fmt::Debug for ArchiveRead<'_> {
+impl<C: ArchiveCodec> std::fmt::Debug for CodecArchiveRead<'_, C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ArchiveRead").field("returned_windows", &self.next)
             .field("blocked", &self.blocked).field("done", &self.done).finish_non_exhaustive()

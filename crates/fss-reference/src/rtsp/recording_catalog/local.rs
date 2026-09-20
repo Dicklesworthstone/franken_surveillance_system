@@ -3,6 +3,7 @@
 
 use super::*;
 use super::super::recording::local::{RecordingIoError, load_recording};
+use super::super::recording::hevc::{PreparedHevcRecording, local::load_hevc_recording};
 use fss_publication::{LocalPublicationReceipt, LocalPublicationState, LocalRootPublisher,
     PublishCancellation, PublishCutPoint};
 
@@ -73,6 +74,12 @@ impl<'a> CatalogPublication<'a> {
     pub fn new(catalog: &'a RecordingCatalog, publisher: &'a mut LocalRootPublisher,
         slot: SlotName, reserved_catalog_bytes: usize, deadline_ns: u64) -> IoResult<Self>
     {
+        Self::new_for(catalog, publisher, slot, reserved_catalog_bytes, deadline_ns, CatalogFamily::Avc)
+    }
+    pub(super) fn new_for(catalog: &'a RecordingCatalog, publisher: &'a mut LocalRootPublisher,
+        slot: SlotName, reserved_catalog_bytes: usize, deadline_ns: u64, family: CatalogFamily) -> IoResult<Self>
+    {
+        if catalog.family != family { return Err(CatalogError::Digest.into()); }
         if catalog.byte_len() > reserved_catalog_bytes
             || publisher.limits().max_children < catalog.manifest.children().len()
             || catalog.index.len() > publisher.limits().spool.max_object_bytes
@@ -99,11 +106,11 @@ impl<'a> CatalogPublication<'a> {
     fn advance(&mut self, cancel: &dyn PublishCancellation) -> IoResult<CatalogProgress> {
         owner_ready(self.publisher)?;
         if let Some(entry) = self.catalog.entries.get(self.next) {
-            let window = load_recording(self.publisher, &entry.slot, entry.root, &self.catalog.scope.recording, cancel)?;
-            entry.verify_window(&self.catalog.scope, &window)?;
+            let window = load_window(self.publisher, self.catalog, entry, cancel)?;
+            entry.verify_window(&self.catalog.scope, window.plan())?;
             cancelled(cancel)?;
             let ordinal = self.next; self.next += 1;
-            return Ok(CatalogProgress::WindowVerified { ordinal, root: entry.root, bytes: window.byte_len() });
+            return Ok(CatalogProgress::WindowVerified { ordinal, root: entry.root, bytes: window.plan().byte_len() });
         }
         for entry in &self.catalog.entries { durable_root(self.publisher, &entry.slot, entry.root)?; }
         if !self.index_staged {
@@ -128,16 +135,22 @@ impl<'a> CatalogPublication<'a> {
 pub fn load_catalog(publisher: &LocalRootPublisher, slot: &SlotName, expected_root: ContentDigest,
     scope: &CatalogScope, cancel: &dyn PublishCancellation) -> IoResult<RecordingCatalog>
 {
+    load_catalog_for(publisher, slot, expected_root, scope, cancel, CatalogFamily::Avc)
+}
+
+pub(super) fn load_catalog_for(publisher: &LocalRootPublisher, slot: &SlotName, expected_root: ContentDigest,
+    scope: &CatalogScope, cancel: &dyn PublishCancellation, family: CatalogFamily) -> IoResult<RecordingCatalog>
+{
     owner_ready(publisher)?;
     durable_root(publisher, slot, expected_root)?;
     let root_bytes = read_object(publisher, expected_root, cancel)?;
     if root_bytes.len() > MAX_CATALOG_BYTES { return Err(CatalogError::Limit.into()); }
     let manifest = ObjectManifest::from_canonical_bytes(&root_bytes).map_err(|_| CatalogError::Malformed)?;
-    if manifest.root() != expected_root || manifest.kind() != CATALOG_KIND
+    if manifest.root() != expected_root || manifest.kind() != family.kind()
         || manifest.children().len() > MAX_CATALOG_WINDOWS * 5 + 1 { return Err(CatalogError::Digest.into()); }
     let index_digest = manifest.metadata_digest().ok_or(CatalogError::Malformed)?;
     let index = read_object(publisher, index_digest, cancel)?;
-    let catalog = verify_catalog(&manifest, &index, scope)?;
+    let catalog = verify_catalog_for(&manifest, &index, scope, family)?;
     live_catalog(publisher, slot, &catalog, cancel)?;
     Ok(catalog)
 }
@@ -197,6 +210,12 @@ impl<'a> RecordingRangeRead<'a> {
     pub fn new(publisher: &'a LocalRootPublisher, catalog: &'a RecordingCatalog, slot: &SlotName,
         query: Range<u64>, limits: CatalogQueryLimits, deadline_ns: u64) -> IoResult<Self>
     {
+        Self::new_for(publisher, catalog, slot, query, limits, deadline_ns, CatalogFamily::Avc)
+    }
+    pub(super) fn new_for(publisher: &'a LocalRootPublisher, catalog: &'a RecordingCatalog, slot: &SlotName,
+        query: Range<u64>, limits: CatalogQueryLimits, deadline_ns: u64, family: CatalogFamily) -> IoResult<Self>
+    {
+        if catalog.family != family { return Err(CatalogError::Digest.into()); }
         owner_ready(publisher)?;
         durable_root(publisher, slot, catalog.manifest.root())?;
         let selection = catalog.select(query, limits)?;
@@ -212,40 +231,86 @@ impl<'a> RecordingRangeRead<'a> {
     /// and the supplied spool. max_output_bytes is a RETURNED payload budget, not
     /// a syscall budget; a malicious descriptor cannot cause excess output.
     pub fn step(&mut self, now_ns: u64, cancel: &dyn PublishCancellation) -> IoResult<RangeProgress> {
-        if self.done { return Ok(RangeProgress::Exhausted); }
+        if self.catalog.family != CatalogFamily::Avc { return Err(CatalogError::Digest.into()); }
+        match self.step_window(now_ns, cancel)? {
+            WindowProgress::Window { ordinal, requested_interval, recording: LoadedWindow::Avc(recording) } =>
+                Ok(RangeProgress::Window { ordinal, requested_interval, recording }),
+            WindowProgress::Complete(receipt) => Ok(RangeProgress::Complete(receipt)),
+            WindowProgress::Exhausted => Ok(RangeProgress::Exhausted),
+            _ => { self.clock.stopped = true; Err(CatalogError::WindowMismatch.into()) }
+        }
+    }
+    pub(super) fn step_hevc(&mut self, now_ns: u64, cancel: &dyn PublishCancellation)
+        -> IoResult<super::hevc::local::HevcRangeProgress>
+    {
+        use super::hevc::local::HevcRangeProgress;
+        if self.catalog.family != CatalogFamily::Hevc { return Err(CatalogError::Digest.into()); }
+        match self.step_window(now_ns, cancel)? {
+            WindowProgress::Window { ordinal, requested_interval, recording: LoadedWindow::Hevc(recording) } =>
+                Ok(HevcRangeProgress::Window { ordinal, requested_interval, recording }),
+            WindowProgress::Complete(receipt) => Ok(HevcRangeProgress::Complete(receipt)),
+            WindowProgress::Exhausted => Ok(HevcRangeProgress::Exhausted),
+            _ => { self.clock.stopped = true; Err(CatalogError::WindowMismatch.into()) }
+        }
+    }
+    fn step_window(&mut self, now_ns: u64, cancel: &dyn PublishCancellation) -> IoResult<WindowProgress> {
+        if self.done { return Ok(WindowProgress::Exhausted); }
         self.clock.admit(now_ns, cancel)?;
         let result = self.advance(cancel);
         if result.is_err() { self.clock.stopped = true; }
         result
     }
-    fn advance(&mut self, cancel: &dyn PublishCancellation) -> IoResult<RangeProgress> {
+    fn advance(&mut self, cancel: &dyn PublishCancellation) -> IoResult<WindowProgress> {
         live_catalog(self.publisher, &self.slot, self.catalog, cancel)?;
         if let Some(selected) = self.selection.selected.get(self.next) {
             let entry = &self.catalog.entries[selected.ordinal];
-            let recording = load_recording(self.publisher, &entry.slot, entry.root,
-                &self.catalog.scope.recording, cancel)?;
-            entry.verify_window(&self.catalog.scope, &recording)?;
+            let recording = load_window(self.publisher, self.catalog, entry, cancel)?;
+            entry.verify_window(&self.catalog.scope, recording.plan())?;
             cancelled(cancel)?;
-            let bytes = self.returned_bytes.checked_add(recording.byte_len() as u64).ok_or(CatalogError::Limit)?;
+            let bytes = self.returned_bytes.checked_add(recording.plan().byte_len() as u64).ok_or(CatalogError::Limit)?;
             if bytes > self.selection.bytes { return Err(CatalogError::Limit.into()); }
             self.returned_bytes = bytes; self.next += 1;
-            return Ok(RangeProgress::Window { ordinal: selected.ordinal,
+            return Ok(WindowProgress::Window { ordinal: selected.ordinal,
                 requested_interval: selected.interval.clone(), recording });
         }
         if self.returned_bytes != self.selection.bytes { return Err(CatalogError::WindowMismatch.into()); }
         // Re-read the pinned catalog itself before the aggregate receipt: in-memory
         // discovery metadata alone is not a fresh successful local retrieval.
-        let reloaded = load_catalog(self.publisher, &self.slot, self.catalog.manifest.root(),
-            &self.catalog.scope, cancel)?;
+        let reloaded = load_catalog_for(self.publisher, &self.slot, self.catalog.manifest.root(),
+            &self.catalog.scope, cancel, self.catalog.family)?;
         if reloaded.index != self.catalog.index { return Err(CatalogError::Digest.into()); }
         cancelled(cancel)?;
         let mut unindexed = bounded_vec(self.selection.unindexed.len())?;
         unindexed.extend(self.selection.unindexed.iter().cloned());
         self.done = true;
-        Ok(RangeProgress::Complete(RangeReceipt { catalog_root: self.catalog.manifest.root(),
+        Ok(WindowProgress::Complete(RangeReceipt { catalog_root: self.catalog.manifest.root(),
             scope: self.catalog.scope.clone(), query: self.selection.query.clone(), windows: self.next,
             output_bytes: self.returned_bytes, unindexed }))
     }
+}
+
+// The private sum is never returned by a public API. Its variant is fixed by
+// the typed catalog constructor; network/disk metadata cannot select a verifier.
+enum LoadedWindow { Avc(PreparedRecording), Hevc(PreparedHevcRecording) }
+impl LoadedWindow {
+    fn plan(&self) -> &PreparedRecording {
+        match self { Self::Avc(plan) => plan, Self::Hevc(plan) => plan.publication_plan() }
+    }
+}
+enum WindowProgress {
+    Window { ordinal: usize, requested_interval: Range<u64>, recording: LoadedWindow },
+    Complete(RangeReceipt),
+    Exhausted,
+}
+fn load_window(publisher: &LocalRootPublisher, catalog: &RecordingCatalog,
+    entry: &CatalogEntry, cancel: &dyn PublishCancellation) -> IoResult<LoadedWindow>
+{
+    Ok(match catalog.family {
+        CatalogFamily::Avc => LoadedWindow::Avc(load_recording(
+            publisher, &entry.slot, entry.root, &catalog.scope.recording, cancel)?),
+        CatalogFamily::Hevc => LoadedWindow::Hevc(load_hevc_recording(
+            publisher, &entry.slot, entry.root, &catalog.scope.recording, cancel)?),
+    })
 }
 
 #[derive(Debug)]
