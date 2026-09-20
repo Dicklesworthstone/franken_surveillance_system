@@ -1754,10 +1754,10 @@ impl ReferenceDeployment {
                 stage: STAGE_DISPATCH_ALERT,
             });
         }
-        let receipt = crate::alert::execute_alert_dispatch(
+        let receipt = crate::alert::execute_alert_dispatch(crate::alert::AlertDispatchOptions {
             plan,
-            &self.ledger,
-            |digest| {
+            authority: &self.ledger,
+            read_payload: |digest| {
                 self.publisher
                     .spool()
                     .read(digest)
@@ -1765,11 +1765,11 @@ impl ReferenceDeployment {
                     .map_err(|error| ReferenceError::from(LocalPublicationError::Spool(error)))
             },
             behavior,
-            committed_at,
+            commit_at: committed_at,
             outcome_at,
-            &mut self.effects,
-            &mut self.alert_provider,
-        )?;
+            journal: &mut self.effects,
+            provider: &mut self.alert_provider,
+        })?;
         Ok(receipt)
     }
 

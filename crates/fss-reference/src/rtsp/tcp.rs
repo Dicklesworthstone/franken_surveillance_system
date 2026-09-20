@@ -169,7 +169,12 @@ pub enum TcpError {
     /// Peer address differs from the exact owner-approved route.
     PeerMismatch,
     /// A socket error, with no OS path, URL, challenge or payload string.
-    Io { operation: TcpOperation, kind: io::ErrorKind },
+    Io {
+        /// The transport operation that surfaced the socket error.
+        operation: TcpOperation,
+        /// The OS error class observed on that operation.
+        kind: io::ErrorKind,
+    },
     /// Eight consecutive interrupted attempts in one direction; no busy retry loop.
     Interrupted,
     /// A nonempty write returned zero; its already-sent prefix remains explicit.

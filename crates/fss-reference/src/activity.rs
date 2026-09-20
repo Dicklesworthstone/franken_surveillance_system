@@ -308,10 +308,9 @@ impl ActivityGate {
 
     fn check_sequence(&self, basis: &ActivityBasis, sequence: u64) -> Result<(), ExecError> {
         if sequence == 0 { return Err(invalid("source sequence must be positive")); }
-        if let Some(state) = &self.state {
-            if state.basis == *basis && sequence <= state.sequence {
-                return Err(invalid("source sequence must strictly increase within its basis"));
-            }
+        if let Some(state) = &self.state
+            && state.basis == *basis && sequence <= state.sequence {
+            return Err(invalid("source sequence must strictly increase within its basis"));
         }
         Ok(())
     }
@@ -377,7 +376,7 @@ impl ActivityGate {
         samples.try_reserve_exact(count).map_err(|_| invalid("activity sample allocation failed"))?;
         for y in 0..sh {
             for x in 0..sw {
-                if (y * sw + x) % 1024 == 0 { cx.checkpoint("activity:sample")?; }
+                if (y * sw + x).is_multiple_of(1024) { cx.checkpoint("activity:sample")?; }
                 let sy = ((y as u128) * (image.height as u128) / sh as u128) as usize;
                 let sx = ((x as u128) * (image.width as u128) / sw as u128) as usize;
                 let offset = (sy * image.width + sx) * image.channels;
