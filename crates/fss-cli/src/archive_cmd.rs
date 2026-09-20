@@ -22,21 +22,25 @@ use fss_reference::rtsp::recording_catalog::{CatalogEntry, CatalogScope};
 use crate::{escape_json_str, ERR_CLI_DUPLICATE_OPTION, ERR_CLI_INVALID_UNICODE,
     ERR_CLI_MALFORMED_VALUE, ERR_CLI_MISSING_VALUE, ERR_CLI_UNKNOWN_COMMAND, ERR_CLI_UNKNOWN_OPTION};
 
+mod export;
+
 const MAX_REPORT_BYTES: usize = 4 * 1024 * 1024;
 /// Explicitly versioned operator output; this is not an fss/1 agent response.
 pub const ARCHIVE_REPORT_SCHEMA: &str = "fss.local_archive_operator_report.v1";
 /// Help for the standalone archive utility. Paths accept native OS strings.
-pub const HELP: &str = "fss-archive <inspect|query|verify> [options]\n\
+pub const HELP: &str = "fss-archive <inspect|query|verify|export> [options]\n\
   Required: --root DIR --codec avc|hevc --sensor ID --stream ID --generation N\n\
             --anchor sha256:HEX --receive-clock sha256:HEX\n\
             --decode-clock sha256:HEX --time-scale N\n\
-  query/verify: --expected-snapshot sha256:HEX --start N --end N\n\
+  query/verify/export: --expected-snapshot sha256:HEX --start N --end N\n\
                [--max-output-windows N] [--max-output-bytes N]\n\
+  export: --output-dir NEW_DIR --allow-whole-windows yes [--max-export-bytes N]\n\
   Bounds: [--timeout-ms N] [--max-windows N] [--max-pages N]\n\
           [--max-scan-roots N] [--max-objects N] [--max-total-bytes N]\n\
   inspect recovers and source-verifies an existing archive; it does not create one.\n\
   query selects metadata from that exact snapshot; verify additionally reads every\n\
   selected whole window. All times are explicit decode ticks, not capture times.\n\
+  Export includes original packets and boundary lookahead beyond requested samples.\n\
   Unindexed ranges are not coverage or absence evidence. Output is bounded JSON.\n\
   Open takes the existing exclusive storage locks and performs normal recovery,\n\
   verification holds and directory sync; it is NOT a forensic read-only open.\n\
@@ -45,13 +49,23 @@ pub const HELP: &str = "fss-archive <inspect|query|verify> [options]\n\
 /// Error retains lower-level typed failures without echoing paths or source bytes.
 pub enum ArchiveCommandError {
     /// Strict, side-effect-free argument refusal with an existing CLI error identity.
-    Argument { code: &'static str, message: &'static str },
+    Argument {
+        /// Existing stable CLI error identity.
+        code: &'static str,
+        /// Payload-free explanation that never echoes an argument value.
+        message: &'static str,
+    },
     /// Existing source replay, catalog, clock, cancellation or recovery failure.
     Archive(ArchiveError),
     /// Existing root owner could not open or recover.
     Storage(LocalPublicationError),
     /// A bounded host operation failed; its private path is never printed.
-    Io { operation: &'static str, kind: std::io::ErrorKind },
+    Io {
+        /// Static host operation label, not a path.
+        operation: &'static str,
+        /// OS error category, without private source text.
+        kind: std::io::ErrorKind,
+    },
     /// Root/layout must already exist as real directories and regular lock files.
     NotArchive,
     /// Current recovered inventory differs from the caller's pinned snapshot.
@@ -60,6 +74,14 @@ pub enum ArchiveCommandError {
     Deadline,
     /// The fixed output allocation/size bound was exceeded.
     ReportLimit,
+    /// Export requires a new directory outside the source archive.
+    OutputScope,
+    /// Existing output is never overwritten, merged or implicitly resumed.
+    OutputExists,
+    /// Independent export-byte reservation is insufficient.
+    ExportBudget,
+    /// An export directory may contain partial output; no cleanup/rollback is claimed.
+    ExportIncomplete(Box<ArchiveCommandError>),
 }
 impl fmt::Debug for ArchiveCommandError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -72,6 +94,10 @@ impl fmt::Debug for ArchiveCommandError {
             Self::SnapshotMismatch => f.write_str("SnapshotMismatch"),
             Self::Deadline => f.write_str("Deadline"),
             Self::ReportLimit => f.write_str("ReportLimit"),
+            Self::OutputScope => f.write_str("OutputScope"),
+            Self::OutputExists => f.write_str("OutputExists"),
+            Self::ExportBudget => f.write_str("ExportBudget"),
+            Self::ExportIncomplete(e) => f.debug_tuple("ExportIncomplete").field(e).finish(),
         }
     }
 }
@@ -92,10 +118,10 @@ impl Codec {
     fn name(self) -> &'static str { match self { Self::Avc => "avc", Self::Hevc => "hevc" } }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Action { Inspect, Query, Verify }
+enum Action { Inspect, Query, Verify, Export }
 impl Action {
     fn name(self) -> &'static str {
-        match self { Self::Inspect => "inspect", Self::Query => "query", Self::Verify => "verify" }
+        match self { Self::Inspect => "inspect", Self::Query => "query", Self::Verify => "verify", Self::Export => "export" }
     }
 }
 
@@ -112,6 +138,8 @@ pub struct ArchiveOptions {
     archive_limits: ArchiveLimits,
     storage_limits: LocalPublicationLimits,
     timeout: Duration,
+    output: Option<PathBuf>,
+    export_budget: u64,
 }
 impl fmt::Debug for ArchiveOptions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -136,8 +164,8 @@ pub fn parse_archive_args(args: &[OsString]) -> Result<Option<ArchiveOptions>> {
         return Ok(None);
     }
     let action = match command {
-        "inspect" => Action::Inspect, "query" => Action::Query, "verify" => Action::Verify,
-        _ => return Err(argument(ERR_CLI_UNKNOWN_COMMAND, "expected inspect, query or verify")),
+        "inspect" => Action::Inspect, "query" => Action::Query, "verify" => Action::Verify, "export" => Action::Export,
+        _ => return Err(argument(ERR_CLI_UNKNOWN_COMMAND, "expected inspect, query, verify or export")),
     };
     let common = ["--root", "--codec", "--sensor", "--stream", "--generation", "--anchor",
         "--receive-clock", "--decode-clock", "--time-scale", "--timeout-ms", "--max-windows",
@@ -146,7 +174,8 @@ pub fn parse_archive_args(args: &[OsString]) -> Result<Option<ArchiveOptions>> {
     let mut values: BTreeMap<&str, &OsStr> = BTreeMap::new();
     for pair in args[1..].chunks(2) {
         let key = pair[0].to_str().ok_or_else(|| argument(ERR_CLI_INVALID_UNICODE, "option name must be UTF-8"))?;
-        if !common.contains(&key) && !(action != Action::Inspect && ranged.contains(&key)) {
+        if !common.contains(&key) && !(action != Action::Inspect && ranged.contains(&key))
+            && !(action == Action::Export && ["--output-dir", "--allow-whole-windows", "--max-export-bytes"].contains(&key)) {
             return Err(argument(ERR_CLI_UNKNOWN_OPTION, "unknown or inapplicable option"));
         }
         if values.contains_key(key) { return Err(argument(ERR_CLI_DUPLICATE_OPTION, "duplicate option")); }
@@ -200,9 +229,16 @@ pub fn parse_archive_args(args: &[OsString]) -> Result<Option<ArchiveOptions>> {
         if start >= end { return Err(malformed("query must be a nonempty half-open decode interval")); }
         (Some(digest("--expected-snapshot")?), Some(start..end))
     };
+    let output = if action == Action::Export {
+        if text("--allow-whole-windows")? != "yes" {
+            return Err(malformed("export requires explicit whole-window disclosure acknowledgement"));
+        }
+        Some(PathBuf::from(required("--output-dir")?))
+    } else { None };
     Ok(Some(ArchiveOptions {
         root: PathBuf::from(required("--root")?), codec, action, scope, expected, query,
-        archive_limits, storage_limits,
+        archive_limits, storage_limits, output,
+        export_budget: number("--max-export-bytes", Some(512 * 1024 * 1024), 1, export::MAX_EXPORT_BYTES)?,
         query_limits: ArchiveQueryLimits {
             max_windows: number("--max-output-windows", Some(64), 1, 4096)? as usize,
             max_output_bytes: number("--max-output-bytes", Some(256 * 1024 * 1024), 1, 4096 * MAX_RECORDING_BYTES as u64)?,
@@ -326,6 +362,10 @@ fn execute_for<C: ArchiveCodec>(options: &ArchiveOptions, publisher: &LocalRootP
             }
             append(&mut out, "],\"range_read_completed\":false,\"complete\":true}\n")?;
         } else {
+            let mut destination = if options.action == Action::Export {
+                Some(export::Destination::begin(options, identity, selection.output_bytes(), clock)?)
+            } else { None };
+            let result = (|| -> Result<String> {
             let mut reader = CodecArchiveRead::<C>::new(publisher, &snapshot, query, options.query_limits, clock.deadline_ns())?;
             append(&mut out, "\"verified\":[")?;
             let mut count = 0;
@@ -335,19 +375,35 @@ fn execute_for<C: ArchiveCodec>(options: &ArchiveOptions, publisher: &LocalRootP
                 match reader.step(clock.now_ns()?, clock)? {
                     ArchiveReadProgress::Window { ordinal, requested_interval, recording } => {
                         if count != 0 { append(&mut out, ",")?; }
-                        append(&mut out, &plan_json(ordinal, &requested_interval, C::plan(&recording)))?;
+                        let plan = C::plan(&recording);
+                        let mut row = plan_json(ordinal, &requested_interval, plan);
+                        if let Some(destination) = &mut destination {
+                            let files = destination.window(ordinal, plan, clock)?;
+                            let _ = row.pop();
+                            row.push_str(&format!(",\"exported_files\":[{files}]}}"));
+                        }
+                        append(&mut out, &row)?;
                         count += 1;
                     }
                     ArchiveReadProgress::Complete(receipt) => {
                         if receipt.windows != count { return Err(ArchiveError::Metadata.into()); }
-                        append(&mut out, &format!("],\"range_read_completed\":true,\"verified_windows\":{},\"verified_payload_bytes\":{},\"complete\":true}}\n", receipt.windows, receipt.output_bytes))?;
+                        append(&mut out, &format!("],\"range_read_completed\":true,\"verified_windows\":{},\"verified_payload_bytes\":{}", receipt.windows, receipt.output_bytes))?;
+                        if let Some(destination) = &destination {
+                            append(&mut out, &format!(",\"export_payload_bytes_excluding_completion\":{},\"whole_windows_authorized\":true,\"source_may_include_boundary_lookahead\":true,\"completion_file\":\"COMPLETE.json\"", destination.payload_bytes()))?;
+                        }
+                        append(&mut out, ",\"complete\":true}\n")?;
                         clock.check()?;
+                        if let Some(destination) = &mut destination { destination.complete(&out, clock)?; }
                         return Ok(out);
                     }
                     ArchiveReadProgress::Exhausted => return Err(ArchiveError::Metadata.into()),
                 }
             }
-            return Err(ArchiveError::Metadata.into());
+            Err(ArchiveError::Metadata.into())
+            })();
+            return result.map_err(|e| if destination.is_some() {
+                ArchiveCommandError::ExportIncomplete(Box::new(e))
+            } else { e });
         }
     }
     clock.check()?;

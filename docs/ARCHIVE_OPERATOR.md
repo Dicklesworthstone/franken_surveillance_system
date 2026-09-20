@@ -44,6 +44,70 @@ operator report, not a canonical ledger receipt, signature or authority grant.
 No report is returned on command failure. Stdout failures may leave truncated
 transport output, which must never be interpreted as a complete JSON report.
 
+## Verified whole-window export
+
+```sh
+fss-archive export "${COMMON[@]}" --expected-snapshot "$SNAPSHOT" \
+  --start 0 --end 90000 --output-dir ./case-001 --allow-whole-windows yes \
+  --max-output-windows 64 --max-output-bytes 268435456 --max-export-bytes 536870912
+```
+
+The destination must be a **new directory outside the archive**, under an existing
+operator-controlled parent. Export never overwrites, merges with, or implicitly
+resumes an existing destination. Canonicalized parent aliases into the archive
+are refused. On Unix, the new directory is mode 0700 and files are mode 0600
+(subject to further restriction by umask). Other platforms inherit parent ACLs;
+these permissions do not replace operator authorization or encryption.
+
+`--allow-whole-windows yes` acknowledges disclosure of the entire selected
+recordings, including original packets, configuration and **source-only boundary
+lookahead**. A requested subinterval is NOT a crop or a redaction. Source-only
+lookahead can reach past the last returned media sample. The report retains both
+the requested overlap and full media decode interval and flags this boundary.
+
+After scope/snapshot and complete-selection budget checks, each window passes
+the existing native source-replay reader before export. Six deterministic files
+are written per window, named by ordinal and full recording-root hash:
+
+- `source.bin`, `init.mp4`, `media.m4s`, `index.bin`: exact four recording objects.
+- `root.bin`: the exact canonical root manifest linking those objects.
+- `playback.mp4`: that window's **unchanged initialization followed by unchanged
+  media**, not a transcode or a concatenation of multiple independent windows.
+
+The playback file retains original timestamps, sample flags and codec bytes.
+It depends on a player's codec support; export is not a new decode qualification.
+The report includes hashes and sizes for every file, so original roots and
+RTP-to-media provenance remain independently auditable. Shared lookahead/source
+objects are copied per selected window; no export deduplication hides ownership.
+
+`--max-export-bytes` separately bounds written payload, including duplicate
+playback bytes and reports. Before creating the directory the utility reserves
+twice the catalog's whole-window payload sum plus 4 MiB for completion and 4 KiB
+for intent. This is deliberately conservative and may refuse a small reservation
+that would have fit the actual payload. Every individual write checks the actual
+remaining reservation too. Filesystem metadata/blocks are not included. Between
+windows only descriptors and the bounded report remain in memory; playback adds
+at most one bounded 32 MiB buffer. Short writes and reads are supported, with at
+most eight consecutive interrupted I/O attempts and clock checks between chunks.
+
+`REQUEST.json` records the original pinned intent. Every data file is created
+exclusively, written, fsynced, and compared byte-for-byte through its open handle.
+Only after the archive reader's aggregate completion, metadata revalidation and
+all payload checks does the utility write and verify `COMPLETE.json.pending`,
+sync the directory, and atomically create the `COMPLETE.json` hard link without
+replacing any existing name. The pending name remains the same file under a second
+link, not another success receipt. The directory is synced after linking.
+Filesystems without the required hard-link/directory-sync support fail explicitly.
+
+A partial directory, `REQUEST.json`, or even a fully written pending receipt is
+**not** successful export. No cancellation, corrupt later source, failed write,
+or budget refusal deletes earlier output or retracts archive custody. Errors
+explicitly classify a possibly partial export. A failure after the completion-link
+commit (for example directory-sync failure or lost stdout) may leave a valid
+completion file but does not establish acknowledged durability: reconcile the
+existing output instead of rerunning over it. External modifications after return
+invalidate the point-in-time hashes; no ongoing integrity/availability is claimed.
+
 ## I/O, work and privacy boundaries
 
 The root must already contain real `roots`, `tombstones`, `spool`, spool-object,
@@ -82,7 +146,8 @@ or any durable source root retracted after a later failure.
 ## Validation
 
 ```sh
-cargo test -p fss-cli --lib archive_cmd::tests
+cargo test -p fss-cli --lib archive_cmd::
+cargo test -p fss-cli --test archive_operator_process
 cargo run -p fss-cli --bin fss-archive -- help
 ```
 
@@ -91,4 +156,9 @@ publication/catalog APIs. They cover strict arguments, native paths, missing
 roots, exact pins, multi-page queries, unindexed tails, whole-window budgets,
 expired requests, corrupt source, reopening and bounded reporting. Rust execution
 was unavailable in the editing environment; these tests are not a passing
-compilation or qualification receipt. No release gate is changed.
+compilation or qualification receipt. Export contracts additionally cover exact
+MP4 and canonical-object bytes, create-only output/completion, symlink scope,
+whole-window approval, independent budgets, interrupted and short I/O, deadline
+retirement, corrupt later media with partial output, empty selections and Unix
+privacy modes. Executable contracts check help, strict diagnostics and refusal to
+create a misspelled archive. No release gate is changed.
