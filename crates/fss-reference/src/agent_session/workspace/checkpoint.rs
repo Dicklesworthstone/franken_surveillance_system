@@ -308,7 +308,7 @@ fn decode_capsule(decoder: &mut CanonicalDecoder<'_>) -> Result<SessionCapsule, 
     let not_observable_domains = strings(decoder, MAX_ITEMS, false)?;
     let epistemic_debt = strings(decoder, 1024, false)?;
     let open_obligations = strings(decoder, MAX_ITEMS, false)?;
-    let budget_ledger = BudgetVector::decode_canonical(decoder)?;
+    let budget_ledger = <BudgetVector as CanonicalDecode>::decode_canonical(decoder)?;
     let bookmark_count = usize::try_from(decoder.u32()?).map_err(|_| WorkspaceCheckpointError::CapacityExceeded)?;
     if bookmark_count > MAX_ITEMS { return Err(WorkspaceCheckpointError::CapacityExceeded); }
     let mut bookmarked_evidence = Vec::new();
