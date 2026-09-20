@@ -40,6 +40,8 @@ pub mod tcp;
 pub mod live_avc;
 /// Live capture backpressured by durable recording and immutable catalog publication.
 pub mod live_archive;
+/// Exact storage-only resumption of unacknowledged archive windows and catalog pages.
+pub mod archive_recovery;
 
 pub use message::{
     AuthScheme, ContentLengthConflict, DEFAULT_MAX_BODY_BYTES, DEFAULT_MAX_HEADERS,
