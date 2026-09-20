@@ -73,6 +73,40 @@ impl DeletionReceipt {
     }
 }
 
+impl DeletionReceipt {
+    pub(super) fn policy(&self) -> ContentDigest { self.policy }
+    pub(super) fn witness(&self) -> ContentDigest { self.witness }
+    pub(super) fn committed_at(&self) -> TimestampNs { self.committed_at }
+
+    pub(super) fn encode_checkpoint(&self, e: &mut CanonicalEncoder) {
+        for digest in [self.plan, self.policy, self.witness, self.before, self.after] { e.digest(digest); }
+        e.u64(self.deleted.len() as u64);
+        for digest in &self.deleted { e.digest(*digest); }
+        e.u64(self.released_bytes); e.i128(self.committed_at.0); e.digest(self.digest);
+    }
+
+    pub(super) fn decode_checkpoint(d: &mut fss_core::CanonicalDecoder<'_>, remaining: usize)
+        -> Result<Self, RetentionError>
+    {
+        let plan = d.digest()?; let policy = d.digest()?; let witness = d.digest()?;
+        let before = d.digest()?; let after = d.digest()?;
+        let count = usize::try_from(d.u64()?).map_err(|_| RetentionError::CapacityExceeded)?;
+        if count == 0 || count > remaining.min(MAX_RETENTION_ENTRIES) {
+            return Err(RetentionError::InvalidRecord);
+        }
+        let mut deleted = Vec::with_capacity(count); let mut seen = BTreeSet::new();
+        for _ in 0..count {
+            let digest = d.digest()?;
+            if !seen.insert(digest) { return Err(RetentionError::InvalidRecord); }
+            deleted.push(digest);
+        }
+        let receipt = Self { plan, policy, witness, before, after, deleted,
+            released_bytes: d.u64()?, committed_at: TimestampNs(d.i128()?), digest: d.digest()? };
+        if receipt.computed_digest()? != receipt.digest { return Err(RetentionError::InvalidRecord); }
+        Ok(receipt)
+    }
+}
+
 impl RetentionStore {
     /// Executes a still-current expiry plan atomically over the local reference graph.
     ///
