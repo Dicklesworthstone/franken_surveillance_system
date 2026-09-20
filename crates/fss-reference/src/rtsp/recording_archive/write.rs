@@ -4,21 +4,20 @@
 use super::*;
 use fss_publication::LocalPublicationReceipt;
 use super::super::recording::local::{RecordingProgress, RecordingPublication};
-use super::super::recording_catalog::CatalogBuilder;
 
 /// Exact rejected original recording remains caller-owned, including under pressure.
 #[derive(Debug)]
 #[must_use]
-pub struct ArchiveWriteRefusal {
+pub struct ArchiveWriteRefusal<C: ArchiveCodec = AvcArchiveCodec> {
     /// Typed reason; no source bytes or filesystem paths are printed.
     pub reason: Box<ArchiveError>,
     /// Unconsumed immutable recording, safe to retry or retain separately.
-    pub recording: Box<PreparedRecording>,
+    pub recording: Box<C::Recording>,
 }
-impl std::fmt::Display for ArchiveWriteRefusal {
+impl<C: ArchiveCodec> std::fmt::Display for ArchiveWriteRefusal<C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "{}", self.reason) }
 }
-impl std::error::Error for ArchiveWriteRefusal {}
+impl<C: ArchiveCodec> std::error::Error for ArchiveWriteRefusal<C> {}
 
 /// Admission is in-memory ownership transfer, NOT a durability acknowledgement.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -95,18 +94,18 @@ pub enum ArchiveWriteProgress {
     Exhausted,
 }
 
-struct PendingWindow { recording: PreparedRecording, entry: CatalogEntry, reservation: usize }
+struct PendingWindow<C: ArchiveCodec> { recording: C::Recording, entry: CatalogEntry, reservation: usize }
 
 /// Ownership returned on stop. No root or staged source is deleted or retracted.
 #[derive(Debug)]
 #[must_use]
-pub struct ArchiveRetirement {
+pub struct ArchiveRetirement<C: ArchiveCodec = AvcArchiveCodec> {
     /// Last acknowledged durable inventory. A failed publication may require owner reconciliation.
-    pub snapshot: ArchiveSnapshot,
+    pub snapshot: CodecArchiveSnapshot<C>,
     /// Exact accepted recording whose successful publication was not acknowledged by this driver.
-    pub pending: Option<PreparedRecording>,
+    pub pending: Option<C::Recording>,
     /// Prepared page retained unchanged after cancellation or ambiguous publication.
-    pub prepared_page: Option<RecordingCatalog>,
+    pub prepared_page: Option<C::Catalog>,
 }
 
 /// Request-owned archive writer over one exclusive, already-open local publisher.
@@ -114,15 +113,19 @@ pub struct ArchiveRetirement {
 /// Drive step until Ready before requesting more upstream capture output. Before
 /// abandoning this value, use retire to transfer any unacknowledged original bytes.
 /// No Drop publication, deletion, socket, background task, or retention authority.
+pub type RecordingArchiveWriter<'a> = CodecRecordingArchiveWriter<'a, AvcArchiveCodec>;
+
+/// Shared writer; the public aliases pin recording and catalog types before I/O.
+#[doc(hidden)]
 #[must_use]
-pub struct RecordingArchiveWriter<'a> {
+pub struct CodecRecordingArchiveWriter<'a, C: ArchiveCodec> {
     publisher: &'a mut LocalRootPublisher,
-    snapshot: ArchiveSnapshot,
-    pending: Option<PendingWindow>,
-    builder: Option<CatalogBuilder>,
+    snapshot: CodecArchiveSnapshot<C>,
+    pending: Option<PendingWindow<C>>,
+    builder: Option<C::Builder>,
     build_next: usize,
     flush_end: Option<usize>,
-    page: Option<RecordingCatalog>,
+    page: Option<C::Catalog>,
     index_staged: bool,
     flush_requested: bool,
     input_closed: bool,
@@ -131,16 +134,16 @@ pub struct RecordingArchiveWriter<'a> {
     blocked: bool,
     done: bool,
 }
-impl<'a> RecordingArchiveWriter<'a> {
+impl<'a, C: ArchiveCodec> CodecRecordingArchiveWriter<'a, C> {
     /// Recover exact published windows/pages. A recovered unindexed tail is flushed
     /// BEFORE accepting another window, even when smaller than the configured page.
     /// Open itself performs bounded reads only; step explicitly drives any new writes.
-    pub fn open(publisher: &'a mut LocalRootPublisher, namespace: ArchiveNamespace,
+    pub fn open(publisher: &'a mut LocalRootPublisher, namespace: CodecArchiveNamespace<C>,
         limits: ArchiveLimits, now_ns: u64, deadline_ns: u64, cancel: &dyn PublishCancellation)
         -> ArchiveResult<Self>
     {
         if now_ns >= deadline_ns { return Err(ArchiveError::Deadline); }
-        let snapshot = ArchiveSnapshot::load(publisher, namespace, limits, cancel)?;
+        let snapshot = CodecArchiveSnapshot::<C>::load(publisher, namespace, limits, cancel)?;
         let tail = snapshot.windows.len() - snapshot.indexed;
         // Reserve the worst-case flat closure, not a hopeful shared-leaf estimate.
         if publisher.limits().max_children < limits.windows_per_page.max(tail) * 5 + 1 {
@@ -151,13 +154,13 @@ impl<'a> RecordingArchiveWriter<'a> {
             input_closed: false, deadline_ns, last_ns: now_ns, blocked: false, done: false })
     }
     /// Read-only inventory of acknowledged durable roots and published pages.
-    pub fn snapshot(&self) -> &ArchiveSnapshot { &self.snapshot }
+    pub fn snapshot(&self) -> &CodecArchiveSnapshot<C> { &self.snapshot }
     /// Exact retained source after an unsuccessful write; no copying or ownership loss.
-    pub fn pending(&self) -> Option<&PreparedRecording> { self.pending.as_ref().map(|p| &p.recording) }
+    pub fn pending(&self) -> Option<&C::Recording> { self.pending.as_ref().map(|p| &p.recording) }
     /// Admit one immutable window with an explicit complete-payload reservation.
     /// Every refusal returns the same recording, and never advances the ordinal.
-    pub fn offer(&mut self, recording: PreparedRecording, reserved_bytes: usize, now_ns: u64)
-        -> Result<ArchiveAdmission, ArchiveWriteRefusal>
+    pub fn offer(&mut self, recording: C::Recording, reserved_bytes: usize, now_ns: u64)
+        -> Result<ArchiveAdmission, ArchiveWriteRefusal<C>>
     {
         let result = self.prepare_admission(&recording, reserved_bytes, now_ns);
         let entry = match result {
@@ -169,7 +172,7 @@ impl<'a> RecordingArchiveWriter<'a> {
         self.last_ns = now_ns;
         Ok(admission)
     }
-    fn prepare_admission(&mut self, recording: &PreparedRecording, reserved_bytes: usize, now_ns: u64)
+    fn prepare_admission(&mut self, recording: &C::Recording, reserved_bytes: usize, now_ns: u64)
         -> ArchiveResult<CatalogEntry>
     {
         self.check_time(now_ns)?;
@@ -182,12 +185,12 @@ impl<'a> RecordingArchiveWriter<'a> {
         }
         if self.snapshot.windows.len() == self.snapshot.limits.max_windows
             || self.snapshot.pages.len() == self.snapshot.limits.max_pages
-            || recording.byte_len() > reserved_bytes { return Err(ArchiveError::Limit); }
-        if recording.summary().scope != self.snapshot.namespace.scope.recording
-            || recording.summary().time_scale != self.snapshot.namespace.scope.time_scale { return Err(ArchiveError::Scope); }
-        if self.snapshot.windows.iter().any(|e| e.root() == recording.manifest().root()) { return Err(ArchiveError::Duplicate); }
+            || C::plan(recording).byte_len() > reserved_bytes { return Err(ArchiveError::Limit); }
+        if C::plan(recording).summary().scope != self.snapshot.namespace.scope.recording
+            || C::plan(recording).summary().time_scale != self.snapshot.namespace.scope.time_scale { return Err(ArchiveError::Scope); }
+        if self.snapshot.windows.iter().any(|e| e.root() == C::plan(recording).manifest().root()) { return Err(ArchiveError::Duplicate); }
         let slot = self.snapshot.namespace.window_slot(self.snapshot.windows.len())?;
-        let entry = descriptor(&self.snapshot.namespace.scope, &slot, recording)?;
+        let entry = descriptor_for::<C>(&self.snapshot.namespace.scope, &slot, recording)?;
         if self.snapshot.windows.last().is_some_and(|e| e.decode_interval().end > entry.decode_interval().start) {
             return Err(ArchiveError::Sequence);
         }
@@ -229,7 +232,7 @@ impl<'a> RecordingArchiveWriter<'a> {
         owner_ready(self.publisher)?;
         if let Some(pending) = &self.pending {
             let receipt = {
-                let mut job = RecordingPublication::new(&pending.recording, self.publisher,
+                let mut job = RecordingPublication::new(C::plan(&pending.recording), self.publisher,
                     pending.entry.slot().clone(), pending.reservation, self.deadline_ns)?;
                 let mut receipt = None;
                 for _ in 0..5 {
@@ -246,42 +249,42 @@ impl<'a> RecordingArchiveWriter<'a> {
         }
         if let Some(page) = &self.page {
             if !self.index_staged {
-                let digest = self.publisher.stage_object(page.index_bytes()).map_err(RecordingIoError::Publication)?;
-                if Some(digest) != page.manifest().metadata_digest() { return Err(ArchiveError::Metadata); }
+                let digest = self.publisher.stage_object(C::index(page)).map_err(RecordingIoError::Publication)?;
+                if Some(digest) != C::manifest(page).metadata_digest() { return Err(ArchiveError::Metadata); }
                 self.index_staged = true;
                 return Ok(ArchiveWriteProgress::CatalogIndexStaged { digest });
             }
             let first = self.snapshot.indexed;
             let slot = self.snapshot.namespace.page_slot(first)?;
-            let receipt = self.publisher.publish_cancellable(&slot, page.manifest(), cancel)
+            let receipt = self.publisher.publish_cancellable(&slot, C::manifest(page), cancel)
                 .map_err(RecordingIoError::Publication)?;
             if receipt.claims.local != LocalPublicationState::Durable { return Err(RecordingIoError::NotDurable.into()); }
             let catalog = self.page.take().ok_or(ArchiveError::Metadata)?;
-            let windows = catalog.entries().len();
-            self.snapshot.pages.push(ArchivePage { slot, first, catalog });
+            let windows = C::entries(&catalog).len();
+            self.snapshot.pages.push(CodecArchivePage::<C> { slot, first, catalog });
             self.snapshot.indexed += windows;
             self.flush_end = None; self.builder = None; self.index_staged = false;
             return Ok(ArchiveWriteProgress::CatalogPublished { first_ordinal: first, windows, receipt });
         }
         if let Some(end) = self.flush_end {
             if self.builder.is_none() {
-                self.builder = Some(CatalogBuilder::new(self.snapshot.namespace.scope.clone())?);
+                self.builder = Some(C::builder(self.snapshot.namespace.scope.clone())?);
                 self.build_next = self.snapshot.indexed;
             }
             if self.build_next < end {
                 let ordinal = self.build_next; let entry = &self.snapshot.windows[ordinal];
-                let recording = load_recording(self.publisher, entry.slot(), entry.root(),
+                let recording = C::load_recording(self.publisher, entry.slot(), entry.root(),
                     &self.snapshot.namespace.scope.recording, cancel)?;
-                verify_descriptor(&self.snapshot.namespace.scope, entry, &recording)?;
+                verify_descriptor_for::<C>(&self.snapshot.namespace.scope, entry, &recording)?;
                 probe(cancel)?;
-                self.builder.as_mut().ok_or(ArchiveError::Metadata)?.push(entry.slot(), &recording)?;
+                C::push(self.builder.as_mut().ok_or(ArchiveError::Metadata)?, entry.slot(), &recording)?;
                 self.build_next += 1;
                 return Ok(ArchiveWriteProgress::PageWindowVerified { ordinal, root: entry.root() });
             }
             // On allocation/encoding refusal, durable tail references are unchanged.
             // Explicit retry reconstructs metadata from those same verified objects.
-            let page = self.builder.take().ok_or(ArchiveError::Metadata)?.prepare()?;
-            let root = page.manifest().root(); self.page = Some(page);
+            let page = C::prepare(self.builder.take().ok_or(ArchiveError::Metadata)?)?;
+            let root = C::manifest(&page).root(); self.page = Some(page);
             return Ok(ArchiveWriteProgress::CatalogPrepared { root });
         }
         let tail = self.snapshot.windows.len() - self.snapshot.indexed;
@@ -306,11 +309,11 @@ impl<'a> RecordingArchiveWriter<'a> {
     }
     /// Transfer all unacknowledged originals and immutable page bytes; release only
     /// this driver's borrow of the owner. Staged/durable disk custody stays untouched.
-    pub fn retire(self) -> ArchiveRetirement {
+    pub fn retire(self) -> ArchiveRetirement<C> {
         ArchiveRetirement { snapshot: self.snapshot, pending: self.pending.map(|p| p.recording), prepared_page: self.page }
     }
 }
-impl std::fmt::Debug for RecordingArchiveWriter<'_> {
+impl<C: ArchiveCodec> std::fmt::Debug for CodecRecordingArchiveWriter<'_, C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RecordingArchiveWriter").field("durable_windows", &self.snapshot.windows.len())
             .field("indexed_windows", &self.snapshot.indexed).field("pending", &self.pending.is_some())

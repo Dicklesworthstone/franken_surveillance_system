@@ -24,6 +24,12 @@ pub type HevcArchiveSnapshot = CodecArchiveSnapshot<HevcArchiveCodec>;
 pub type HevcArchiveRead<'a> = CodecArchiveRead<'a, HevcArchiveCodec>;
 /// Typed whole HEVC windows, aggregate completion, or exhausted disposition.
 pub type HevcArchiveReadProgress = ArchiveReadProgress<HevcArchiveCodec>;
+/// One retained HEVC window, automatic catalog pages, and exact-slot recovery/retry.
+pub type HevcRecordingArchiveWriter<'a> = CodecRecordingArchiveWriter<'a, HevcArchiveCodec>;
+/// Ownership-preserving HEVC admission refusal; the original window is returned intact.
+pub type HevcArchiveWriteRefusal = ArchiveWriteRefusal<HevcArchiveCodec>;
+/// Last acknowledged snapshot, pending HEVC window and immutable prepared page.
+pub type HevcArchiveRetirement = ArchiveRetirement<HevcArchiveCodec>;
 }
 mod codec {
 #![forbid(unsafe_code)]
@@ -424,12 +430,6 @@ impl<C: ArchiveCodec> CodecArchiveSnapshot<C> {
     }
 }
 
-fn descriptor(scope: &CatalogScope, slot: &SlotName, recording: &PreparedRecording) -> ArchiveResult<CatalogEntry> {
-    descriptor_for::<AvcArchiveCodec>(scope, slot, recording)
-}
-fn verify_descriptor(scope: &CatalogScope, entry: &CatalogEntry, recording: &PreparedRecording) -> ArchiveResult<()> {
-    verify_descriptor_for::<AvcArchiveCodec>(scope, entry, recording)
-}
 fn descriptor_for<C: ArchiveCodec>(scope: &CatalogScope, slot: &SlotName,
     recording: &C::Recording) -> ArchiveResult<CatalogEntry>
 {
