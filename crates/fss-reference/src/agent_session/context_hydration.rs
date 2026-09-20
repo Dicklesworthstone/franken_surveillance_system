@@ -15,10 +15,13 @@ use fss_core::{
     ContextExpansionBinding, ContinuationCursor, ContractError, PrincipalId, SessionId,
     TimestampNs,
 };
+use fss_object::SpoolIo;
+use fss_publication::LocalRootPublisher;
 
 use super::{ReferenceSessionError, ReferenceSessionStore};
 use crate::{
-    BoundReferenceSituationPublication, ReferenceContextBindingError, ReferenceHydrationCatalog,
+    BoundReferenceSituationPublication, PublishedSourceReader, ReferenceContextBindingError,
+    ReferenceHydrationCatalog, SourceHydrationError,
 };
 
 /// A read names a published slot, never caller-supplied subject identity or capability grants.
@@ -53,6 +56,8 @@ pub enum ContextHydrationError {
     Session(ReferenceSessionError),
     /// The caller's publication or its binding proofs are invalid.
     Publication(ReferenceContextBindingError),
+    /// Live custody failed after admission; this is not evidence of physical absence.
+    Source(SourceHydrationError),
     /// No currently authorized exact slot target is available; no raw identity is returned.
     SlotUnavailable,
     /// A fresh read must request the slot's published level, not silently widen the read.
@@ -64,6 +69,7 @@ impl fmt::Display for ContextHydrationError {
         match self {
             Self::Session(error) => fmt::Display::fmt(error, formatter),
             Self::Publication(_) => formatter.write_str("invalid context publication"),
+            Self::Source(_) => formatter.write_str("context source custody unavailable"),
             Self::SlotUnavailable => formatter.write_str("context slot unavailable"),
             Self::WrongInitialLevel => formatter.write_str("request the published expansion level"),
         }
@@ -75,6 +81,7 @@ impl std::error::Error for ContextHydrationError {
         match self {
             Self::Session(error) => Some(error),
             Self::Publication(error) => Some(error),
+            Self::Source(error) => Some(error),
             Self::SlotUnavailable | Self::WrongInitialLevel => None,
         }
     }
@@ -101,6 +108,15 @@ impl From<ContextBindingError> for ContextHydrationError {
 impl From<HydrationError> for ContextHydrationError {
     fn from(error: HydrationError) -> Self {
         Self::Session(error.into())
+    }
+}
+
+impl From<SourceHydrationError> for ContextHydrationError {
+    fn from(error: SourceHydrationError) -> Self {
+        match error {
+            SourceHydrationError::Hydration(error) => error.into(),
+            error => Self::Source(error),
+        }
     }
 }
 
@@ -223,6 +239,67 @@ impl ReferenceSessionStore {
         catalog: &mut ReferenceHydrationCatalog,
         now: TimestampNs,
     ) -> Result<BoundContextHydration, ContextHydrationError> {
+        self.hydrate_context_slot_with(principal, publication, read, catalog, now, |catalog, request| {
+            Ok(catalog.hydrate(request, now)?)
+        })
+    }
+
+    /// Expands a published slot through live source custody under server-owned session grants.
+    ///
+    /// Principal, session, generation, publication identity, current descriptor, privacy, and
+    /// cumulative token admission all precede source I/O. The supplied reader is owned by the
+    /// runtime, never derived from a caller-provided digest. Source delivery rechecks custody
+    /// and never caches H3 bytes; failure spends no tokens and leaves continuations unconsumed.
+    /// This reuses the ordinary bound delivery proof and allocates no session alias.
+    pub fn hydrate_context_slot_from_source(
+        &mut self,
+        principal: &PrincipalId,
+        publication: &BoundReferenceSituationPublication,
+        read: &ContextSlotRead,
+        catalog: &mut ReferenceHydrationCatalog,
+        reader: &dyn PublishedSourceReader,
+        now: TimestampNs,
+    ) -> Result<BoundContextHydration, ContextHydrationError> {
+        self.hydrate_context_slot_with(principal, publication, read, catalog, now, |catalog, request| {
+            Ok(catalog.hydrate_from_source(request, reader, now)?)
+        })
+    }
+
+    /// Reads a bound slot from the lock-owning local publisher and its explicit I/O capability.
+    ///
+    /// The publisher is borrowed, not reopened or repaired. Session admission precedes disk
+    /// inspection; the existing local source reader verifies publication closure around I/O.
+    /// Neither token accounting nor cursor consumption is made crash-durable by this helper.
+    #[allow(clippy::too_many_arguments)] // explicit session and custody owners, no ambient authority
+    pub fn hydrate_context_slot_from_local_source(
+        &mut self,
+        principal: &PrincipalId,
+        publication: &BoundReferenceSituationPublication,
+        read: &ContextSlotRead,
+        catalog: &mut ReferenceHydrationCatalog,
+        publisher: &LocalRootPublisher,
+        io: &dyn SpoolIo,
+        now: TimestampNs,
+    ) -> Result<BoundContextHydration, ContextHydrationError> {
+        self.hydrate_context_slot_with(principal, publication, read, catalog, now, |catalog, request| {
+            Ok(catalog.hydrate_from_local_source(request, publisher, io, now)?)
+        })
+    }
+
+    // Private dispatch keeps all transports on one admission and accounting path. A caller
+    // cannot inject arbitrary receipts, bypass server grants, or mutate tokens before delivery.
+    fn hydrate_context_slot_with(
+        &mut self,
+        principal: &PrincipalId,
+        publication: &BoundReferenceSituationPublication,
+        read: &ContextSlotRead,
+        catalog: &mut ReferenceHydrationCatalog,
+        now: TimestampNs,
+        deliver: impl FnOnce(
+            &mut ReferenceHydrationCatalog,
+            &HydrationRequest,
+        ) -> Result<HydrationResponse, ContextHydrationError>,
+    ) -> Result<BoundContextHydration, ContextHydrationError> {
         let entry = self.live_entry(principal, &read.session_id, now)?;
         Self::check_generation(entry, read.generation)?;
         if read.slot_id.is_empty()
@@ -299,7 +376,7 @@ impl ReferenceSessionStore {
         if request.budget.tokens > remaining {
             return Err(ReferenceSessionError::BudgetExceeded.into());
         }
-        let response = catalog.hydrate(&request, now)?;
+        let response = deliver(catalog, &request)?;
         // The catalog validates cost <= request budget <= remaining before committing cursors.
         // No fallible step may follow that commit. This bounded addition therefore cannot wrap.
         entry.spent_tokens += response.receipt.cost.tokens;
