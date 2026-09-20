@@ -219,6 +219,8 @@
     "crates/fss-reference/src/rtsp/recording_archive/write.rs": "support",
     "crates/fss-reference/src/rtsp/recording_capture.rs": "support",
     "crates/fss-reference/src/rtsp/recording_catalog.rs": "support",
+    "crates/fss-reference/src/rtsp/recording_catalog/hevc.rs": "support",
+    "crates/fss-reference/src/rtsp/recording_catalog/hevc/local.rs": "support",
     "crates/fss-reference/src/rtsp/recording_catalog/local.rs": "support",
     "crates/fss-reference/src/rtsp/recording_catalog/wire.rs": "support",
     "crates/fss-reference/src/rtsp/recording_collector.rs": "support",

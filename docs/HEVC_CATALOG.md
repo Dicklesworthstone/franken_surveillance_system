@@ -48,6 +48,47 @@ disclose footage, activate retention policy or commit canonical ledger reachabil
 codec family, ordered descriptors and full reference closure. This is metadata
 verification, not fresh provenance/custody or successful playback of the windows.
 
+## Durable publication and verified retrieval
+
+`hevc::local::HevcCatalogPublication` borrows the typed catalog and an already
+open `LocalRootPublisher`. Each step fully loads and source-replays one existing
+HEVC window, then checks its descriptor. Only after all windows pass is the
+catalog index staged. The unchanged publisher commits the root last and rechecks
+the flat object closure. Prepared metadata and staged indices are not durable
+catalogs. Cancellation/crashes preserve the publisher's staged/visible/durable,
+indeterminate and orphan-repair distinctions; retries use the exact root.
+
+`load_hevc_catalog` pins the slot, expected root and externally supplied
+`CatalogScope`. It verifies the catalog and current durable window slot/root and
+tombstone bindings. It does not claim that a metadata-only read replays footage.
+
+`HevcRecordingRangeRead::new` atomically selects a query under the existing
+whole-window count/output-byte bounds. Each `step` rechecks live catalog bindings,
+loads a complete HEVC window with `load_hevc_recording`, and verifies its descriptor,
+actual size and cancellation before returning typed source/media/sample mappings.
+This invokes the existing native packet/assembly/remux replay, not only digest
+checks. A descriptor that understates the actual recording size fails before
+excess bytes are returned; transient read/replay work retains separate bounds.
+
+`HevcRangeProgress::Window` returns the full original window and the requested
+overlap. `Complete` follows only after every selected window was transferred and
+the pinned catalog itself was re-read. It records the explicit decode basis,
+returned window/byte totals and unindexed intervals. Subsequent calls are
+`Exhausted`, not fresh successful reads. Partial results remain caller-owned after
+a later error, but that stopped attempt cannot emit an aggregate success receipt.
+An empty selection still checks the live catalog before reporting the whole query
+unindexed. Completion is not future availability, decoded completeness or coverage.
+
+The two typed families use one private storage engine; only an entrypoint-pinned
+enum selects `load_recording` versus `load_hevc_recording`. No public callback,
+mutable inner catalog, codec auto-detection, new path resolver or additional
+publication implementation can bypass the selected verifier. Existing AVC APIs
+still return `PreparedRecording`; HEVC APIs return `PreparedHevcRecording`.
+
+This is local, unencrypted reference retrieval through an existing authority
+owner, not a retention/export grant or a canonical ledger commit. Cross-page
+HEVC archive discovery/rotation and CLI exposure remain separate integration work.
+
 ## Representation
 
 The immutable manifest kind is `hevc_recording_catalog_v1`; the index domain is
@@ -64,14 +105,20 @@ The AVC domain remains `fss.recording_catalog.v1` and its manifest kind remains
 ## Verification boundary
 
 ```sh
-cargo test -p fss-reference --test hevc_catalog_contract --test recording_catalog_golden_contract
+cargo test -p fss-reference --test hevc_catalog_contract --test hevc_catalog_local_contract
+cargo test -p fss-reference --test recording_catalog_golden_contract --test recording_catalog_local_contract
 ```
 
 The new tests build real replay-verified synthetic HEVC windows. They cover
 independent canonical encoding, flat source closure, exact half-open selection,
 whole-window budgets, scope/decode-clock isolation, transactional correction,
 codec relabeling, corruption, truncation, duplicate roots/slots and page capacity.
-The existing AVC canonical-byte regression remains applicable unchanged.
+Storage tests exercise actual publication/reopen, exact media/mapping transfer,
+source-replay-before-index admission, crash cut points, lost-receipt retries,
+every cancellation check before window disclosure, partial-read failure, corrupt
+later media or catalog metadata, underpriced descriptors and a false HEVC wrapper
+around AVC objects. The existing AVC canonical-byte regression remains applicable
+unchanged, with an additional AVC publication/read compatibility contract.
 
 Rust build/tests/formatting and qualification were not run in this editing
 environment because no Rust toolchain is available. Source-level checks do not

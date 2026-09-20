@@ -27,6 +27,12 @@ pub fn slot(n: usize) -> Result<SlotName, Error> { Ok(SlotName::parse(&format!("
 pub fn index(domain: &str, basis: &CatalogScope, windows: &[(&SlotName, &PreparedRecording)],
     reported_roots: Option<&[ContentDigest]>) -> Result<Vec<u8>, Error>
 {
+    index_with_bytes(domain, basis, windows, reported_roots, None)
+}
+pub fn index_with_bytes(domain: &str, basis: &CatalogScope,
+    windows: &[(&SlotName, &PreparedRecording)], reported_roots: Option<&[ContentDigest]>,
+    reported_bytes: Option<usize>) -> Result<Vec<u8>, Error>
+{
     let mut e = CanonicalEncoder::new();
     e.text(domain); e.u64(1);
     e.text(basis.recording.sensor.as_str()); e.text(basis.recording.stream.as_str());
@@ -38,7 +44,7 @@ pub fn index(domain: &str, basis: &CatalogScope, windows: &[(&SlotName, &Prepare
         e.text(slot.as_str());
         e.digest(reported_roots.map_or(s.root, |roots| roots[i]));
         e.u64(s.decode_interval.start); e.u64(s.decode_interval.end);
-        e.u64(s.packets as u64); e.u64(s.samples as u64); e.u64(s.nals as u64); e.u64(plan.byte_len() as u64);
+        e.u64(s.packets as u64); e.u64(s.samples as u64); e.u64(s.nals as u64); e.u64(reported_bytes.unwrap_or(plan.byte_len()) as u64);
         for (_, d, _) in plan.children() { e.digest(d); }
     }
     let mut bytes = e.finish_checked()?;

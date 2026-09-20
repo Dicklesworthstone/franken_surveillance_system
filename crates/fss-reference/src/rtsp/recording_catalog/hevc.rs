@@ -4,6 +4,9 @@
 //! The public type admits only replay-verified HEVC recordings. Untrusted
 //! metadata cannot choose the codec, the window verifier, or the decode clock.
 
+/// Root-last publication and source-replay-verified incremental HEVC retrieval.
+pub mod local;
+
 use super::*;
 use crate::rtsp::recording::hevc::PreparedHevcRecording;
 
