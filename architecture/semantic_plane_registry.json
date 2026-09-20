@@ -109,6 +109,8 @@
     "crates/fss-reference/src/agent_session/checkpoint/journal/coordination/investigations/journal/codec.rs": "support",
     "crates/fss-reference/src/agent_session/checkpoint/journal/coordination/investigations/journal/evolution.rs": "authority",
     "crates/fss-reference/src/agent_session/checkpoint/journal/coordination/investigations/journal/evolution/tests.rs": "support",
+    "crates/fss-reference/src/agent_session/checkpoint/journal/coordination/investigations/journal/source_citation.rs": "authority",
+    "crates/fss-reference/src/agent_session/checkpoint/journal/coordination/investigations/journal/source_citation/tests.rs": "support",
     "crates/fss-reference/src/agent_session/checkpoint/journal/coordination/investigations/journal_tests.rs": "support",
     "crates/fss-reference/src/agent_session/checkpoint/journal/coordination/investigations/mod.rs": "authority",
     "crates/fss-reference/src/agent_session/checkpoint/journal/coordination/investigations/tests.rs": "support",

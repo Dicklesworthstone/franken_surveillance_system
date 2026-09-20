@@ -460,6 +460,7 @@ fn replay(
     limits: DurableSessionLimits,
     claim_ceilings: Option<WorkClaimLimits>,
 ) -> Result<(ReferenceSessionStore, Option<CoordinationState>), DurableSessionError> {
+    DurableSessionStore::verify_source_charge_links(report)?;
     let mut memory: Option<ReferenceSessionStore> = None;
     let mut coordination: Option<CoordinationState> = None;
     for record in report.records() {

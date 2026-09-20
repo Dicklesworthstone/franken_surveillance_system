@@ -8,6 +8,7 @@ use fss_core::CanonicalDecoder;
 
 mod codec;
 mod evolution;
+pub(super) mod source_citation;
 
 const INIT: &str = "fss.reference_investigation_init.v1";
 const RECORD: &str = "fss.reference_investigation_record.v1";
@@ -106,7 +107,7 @@ impl DurableSessionStore {
 pub(in crate::agent_session::checkpoint::journal::coordination) fn is_record(payload: &[u8]) -> Result<bool, DurableSessionError> {
     if payload.len() > MAX_INVESTIGATION_BYTES { return Err(DurableSessionError::CapacityExceeded); }
     let mut d = CanonicalDecoder::new(payload);
-    Ok(matches!(d.text()?, INIT | RECORD | evolution::RECORD))
+    Ok(matches!(d.text()?, INIT | RECORD | evolution::RECORD | source_citation::RECORD))
 }
 
 pub(in crate::agent_session::checkpoint::journal::coordination) fn replay_record(
@@ -149,6 +150,7 @@ pub(in crate::agent_session::checkpoint::journal::coordination) fn replay_record
             }
         }
         evolution::RECORD => evolution::replay(payload, sessions, state, limits)?,
+        source_citation::RECORD => source_citation::replay(payload, sessions, state, limits)?,
         _ => return Err(DurableSessionError::InvalidHistory),
     }
     Ok(())
