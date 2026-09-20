@@ -29,6 +29,9 @@ pub mod context_hydration;
 /// Bounded, fenced coordination of exact multi-agent work scopes.
 pub mod work_claims;
 
+/// Immutable, session-authorized workspace history and explicit rebase.
+pub mod workspace;
+
 #[cfg(test)]
 mod tests;
 

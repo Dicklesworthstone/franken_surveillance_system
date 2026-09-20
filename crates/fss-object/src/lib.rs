@@ -12,6 +12,8 @@ mod memory;
 pub mod model_license_policy;
 pub mod model_manifest;
 pub mod model_package;
+/// Graph-aware local retention, evidence holds, and bounded expiry execution.
+pub mod retention;
 mod spool;
 
 #[cfg(test)]

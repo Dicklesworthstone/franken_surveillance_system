@@ -404,3 +404,34 @@ fn check_initial_level(
     }
     Ok(())
 }
+
+impl BoundContextHydration {
+    /// Verifies both context/session admission and exact original-source provenance.
+    ///
+    /// The publication, admitted session snapshot, and source binding must be retained from
+    /// trusted authority, not reconstructed from this delivery. Ordinary [`Self::verify_for`]
+    /// also admits valid previews and unavailable results; this stronger check requires a
+    /// complete, untransformed H3 payload from the exact bound publication root. It rejects a
+    /// different source publication even when that publication contains identical source bytes.
+    ///
+    /// This checks historical consistency, not current custody or authentication. A fresh live
+    /// read is still required after expiry, grant changes, deletion, or an authority transition.
+    pub fn verify_source_for(
+        &self,
+        publication: &BoundReferenceSituationPublication,
+        session: &AgentSession,
+        source: &crate::SourceObjectBinding,
+    ) -> Result<(), ContextHydrationError> {
+        self.verify_for(publication, session)?;
+        let descriptor = publication
+            .descriptors
+            .iter()
+            .find(|descriptor| {
+                descriptor.handle_id == self.request.handle_id
+                    && descriptor.descriptor_digest == self.request.expected_descriptor_digest
+            })
+            .ok_or(ContextHydrationError::SlotUnavailable)?;
+        source.validate_response(&self.request, descriptor, &self.response)?;
+        Ok(())
+    }
+}

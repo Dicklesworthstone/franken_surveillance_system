@@ -11,6 +11,7 @@ use fss_core::{
     ContinuationScope, ContractError, SessionId, TimestampNs,
 };
 
+pub(crate) mod cursor_checkpoint;
 mod source;
 
 pub use source::{PublishedSourceReader, SOURCE_OBJECT_CONTENT_TYPE, SourceHydrationError, SourceObjectBinding};
