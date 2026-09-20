@@ -201,3 +201,6 @@ mod foreground_tracking;
 
 /// Source-linked image-zone occupancy, transitions and sampled dwell without effect authority.
 pub mod image_zones;
+
+/// Native HOG features and immutable learned classification over permitted image pixels.
+pub mod hog;
