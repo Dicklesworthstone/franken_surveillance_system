@@ -92,6 +92,12 @@ clock persistence, journal capacity, repeated requests, session-scoped admission
 lookup, and resealed charge forgery. The checkpoint tests also cover every-byte
 truncation and mutation, trailing data, rollback, and expired retirement.
 
+`tests/durable_context_disclosure.rs` drives the public path from deterministic
+camera capture and event publication to descriptor-bound context, H2 preview,
+and original H3 packet. It reopens between stages with zero session-alias
+capacity, preserves the older source anchor, verifies original-source provenance,
+and confirms that restart does not undo grant revocation or source deletion.
+
 On the accepted repository toolchain, run:
 
 ```sh
@@ -99,6 +105,7 @@ cargo test -p fss-reference cursor_checkpoint
 cargo test -p fss-reference agent_session::checkpoint::journal::disclosure
 cargo test -p fss-reference agent_session::checkpoint::journal
 cargo test -p fss-reference --test context_source_hydration
+cargo test -p fss-reference --test durable_context_disclosure
 ```
 
 These tests were added but **not executed in the authoring environment**, which
