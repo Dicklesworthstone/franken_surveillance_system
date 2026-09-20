@@ -446,18 +446,17 @@ fn pair_cost(track: ImageTrack, frame: ImageTrackingFrame, detection: ImageDetec
     if !last.detection.partial && !detection.partial
         && (0..2).any(|axis| u128::from((incoming[axis] - center[axis]).unsigned_abs()) > reach) { return None; }
     let mut predicted = center;
-    if let Some(previous) = track.previous {
-        if !previous.detection.partial && !last.detection.partial
-            && [previous.frame.source.capture, last.frame.source.capture, frame.source.capture]
-                .iter().all(|capture| capture[0] == capture[1]) {
-            let dt = last.frame.source.capture[0] - previous.frame.source.capture[0];
-            let ahead = frame.source.capture[0] - last.frame.source.capture[0];
-            let old = previous.detection.center();
-            for (axis, predicted_axis) in predicted.iter_mut().enumerate() {
-                let shift = i128::from(center[axis] - old[axis]) * i128::from(ahead) / i128::from(dt);
-                // Clamp ranking only, not evidence or the complete speed-gated graph.
-                *predicted_axis += shift.clamp(-1_000_000_000, 1_000_000_000) as i64;
-            }
+    let previous = track.previous.filter(|previous| !previous.detection.partial && !last.detection.partial
+        && [previous.frame.source.capture, last.frame.source.capture, frame.source.capture]
+            .iter().all(|capture| capture[0] == capture[1]));
+    if let Some(previous) = previous {
+        let dt = last.frame.source.capture[0] - previous.frame.source.capture[0];
+        let ahead = frame.source.capture[0] - last.frame.source.capture[0];
+        let old = previous.detection.center();
+        for (axis, predicted_axis) in predicted.iter_mut().enumerate() {
+            let shift = i128::from(center[axis] - old[axis]) * i128::from(ahead) / i128::from(dt);
+            // Clamp ranking only, not evidence or the complete speed-gated graph.
+            *predicted_axis += shift.clamp(-1_000_000_000, 1_000_000_000) as i64;
         }
     }
     let distance = (incoming[0] - predicted[0]).unsigned_abs() + (incoming[1] - predicted[1]).unsigned_abs();

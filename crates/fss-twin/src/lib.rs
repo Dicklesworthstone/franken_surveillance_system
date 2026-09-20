@@ -196,3 +196,5 @@ pub mod image_tracking;
 
 /// Source-pair Kalman motion estimates over exact current anonymous tracking receipts.
 pub mod image_motion;
+
+mod foreground_tracking;

@@ -11,6 +11,9 @@ use fss_geometry::WorkBudget;
 use fss_twin::foreground::*;
 use fss_twin::localization::ImageIdentity;
 
+#[path = "foreground_frames/tracking.rs"]
+mod tracking;
+
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 struct Row { query: bool, exposure: [u8;32], capture: [u64;2], pixels: PathBuf,
     pixels_hash: [u8;32], mask: PathBuf, mask_hash: [u8;32] }
@@ -45,13 +48,18 @@ fn run()->Result<()> {
     let root=file.parent().ok_or("manifest has no parent")?;
     let config=String::from_utf8(bytes(&file,65536)?)?;
     let mut lines=config.lines().filter(|s|!s.trim().is_empty()&&!s.trim_start().starts_with('#'));
-    if lines.next()!=Some("FSS_FOREGROUND_FRAMES_1") {return Err("unsupported replay manifest".into());}
+    let tracking_enabled = match lines.next() {
+        Some("FSS_FOREGROUND_FRAMES_1") => false,
+        Some("FSS_FOREGROUND_TRACKING_1") => true,
+        _ => return Err("unsupported replay manifest".into()),
+    };
     let names=["width","height","camera","clock","calibration","image_domain","valid_from","valid_until",
         "selection_evidence","maximum_spread","minimum_change","minimum_area","maximum_regions","widespread_per_mille","work_units"];
     let mut settings=BTreeMap::new();let mut rows=Vec::new();let mut saw_query=false;
     for line in lines {
         if let Some((key,value))=line.split_once('=') {
-            if !names.contains(&key) || settings.insert(key,value).is_some() {return Err("unknown/duplicate setting".into());}
+            if !(names.contains(&key) || tracking_enabled && tracking::SETTINGS.contains(&key))
+                || settings.insert(key,value).is_some() {return Err("unknown/duplicate setting".into());}
         } else {
             let p:Vec<_>=line.split_whitespace().collect();
             if p.len()!=8 || !["reference","query"].contains(&p[0]) || rows.len()>=128 {return Err("invalid/too many frame rows".into());}
@@ -62,7 +70,7 @@ fn run()->Result<()> {
                 mask:confined(root,p[6])?,mask_hash:hash(p[7])?});
         }
     }
-    if settings.len()!=names.len() || !saw_query {return Err("missing settings or query frames".into());}
+    if settings.len()!=names.len()+(if tracking_enabled {tracking::SETTINGS.len()} else {0}) || !saw_query {return Err("missing settings or query frames".into());}
     let get=|k|settings.get(k).copied().ok_or("missing setting");
     let width:u32=get("width")?.parse()?;let height:u32=get("height")?.parse()?;
     if width==0||height==0||width>4096||height>4096 {return Err("invalid dimensions".into());}
@@ -75,6 +83,7 @@ fn run()->Result<()> {
     let fp=ForegroundPolicy{minimum_change:get("minimum_change")?.parse()?,minimum_area:get("minimum_area")?.parse()?,
         maximum_regions:get("maximum_regions")?.parse()?,widespread_per_mille:get("widespread_per_mille")?.parse()?};
     let mut budget=WorkBudget::new(get("work_units")?.parse()?);
+    let mut tracker = if tracking_enabled { Some(tracking::configure(&settings, &mut budget)?) } else { None };
     let refs=rows.iter().take_while(|r|!r.query).count();
     if !(3..=MAX_BACKGROUND_FRAMES).contains(&refs) {return Err("reference count outside 3..31".into());}
     let load=|r:&Row|->Result<Loaded> {
@@ -94,6 +103,7 @@ fn run()->Result<()> {
     for row in &rows[refs..] {
         let f=load(row)?;let query=ForegroundFrame::new(f.source,&f.pixels,&f.allowed,&mut budget)?;
         let r=model.detect(&query,fp,&mut budget)?;
+        let tracked = tracker.as_mut().map(|t| t.update_foreground(&r, &mut budget)).transpose()?;
         write!(out,"{{\"kind\":\"frame\",\"exposure\":\"{}\",\"report\":\"{}\",\"assessment\":\"{:?}\",\"comparable\":{},\"changed\":{},\"small_components\":{},\"small_pixels\":{},\"regions\":[",
             hex(row.exposure),hex(r.digest()),r.assessment(),r.comparable_pixels(),r.changed_pixels(),r.small_component_count(),r.small_component_pixels())?;
         for (i,region) in r.regions().iter().enumerate() {
@@ -101,7 +111,11 @@ fn run()->Result<()> {
             write!(out,"{{\"id\":{},\"area\":{},\"min\":{:?},\"max\":{:?},\"unknown_boundary\":{},\"image_edge\":{}}}",
                 region.id,region.area,region.min,region.max,region.touches_unknown,region.touches_edge)?;
         }
-        writeln!(out,"]}}")?;out.flush()?;completed+=1;
+        writeln!(out,"]}}")?;
+        if let (Some(tracker), Some(report)) = (&tracker, &tracked) {
+            tracking::write_report(&mut out, tracker, report)?;
+        }
+        out.flush()?;completed+=1;
     }
     writeln!(out,"{{\"kind\":\"complete\",\"frames\":{},\"work_units\":{}}}",completed,budget.used())?;out.flush()?;Ok(())
 }
