@@ -4,7 +4,7 @@
 //! This is a bounded cognition store, not an evidence authority or an effect executor. The
 //! runtime authenticates principals and supplies the session store and clock. Capsule references
 //! remain references: publishing them does not prove their contents or grant an effect. Revoking
-//! any captured privacy grant makes the old revision unavailable until an explicit projection is
+//! any captured capability or privacy grant makes the old revision unavailable until an explicit projection is
 //! implemented. Failed session checks may update clock/expiry state and must also be persisted.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -17,6 +17,9 @@ use fss_core::{
 
 use super::{ReferenceSessionError, ReferenceSessionStore, SessionEntry};
 
+/// Canonical recovery of the complete private workspace revision history.
+pub mod checkpoint;
+
 /// Hard ceiling on one serialized revision, including its private authorization projection.
 pub const MAX_WORKSPACE_REVISION_BYTES: usize = 1024 * 1024;
 /// Hard ceiling on the aggregate serialized revision history.
@@ -25,7 +28,7 @@ const MAX_WORKSPACES: usize = 1024;
 const MAX_REVISIONS: usize = 1024;
 const MAX_ITEMS: usize = 4096;
 const MAX_ITEM_BYTES: usize = 4096;
-const REVISION_DOMAIN: &str = "fss.reference_workspace_revision.v1";
+const REVISION_DOMAIN: &str = "fss.reference_workspace_revision.v2";
 
 /// Finite storage limits. Zero means no capacity, not unlimited storage.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -89,6 +92,7 @@ pub struct WorkspaceRevision {
     capsule: SessionCapsule,
     basis: ContractBasis,
     mission_id: MissionId,
+    capability_scope: BTreeSet<String>,
     privacy_scope: BTreeSet<String>,
     parent: Option<ContentDigest>,
     rebase_from: Option<LedgerAnchor>,
@@ -264,11 +268,13 @@ impl ReferenceWorkspaceStore {
         } else {
             Vec::new()
         };
-        if entry.session.privacy_scope.len() > MAX_ITEMS {
+        if entry.session.privacy_scope.len() > MAX_ITEMS
+            || entry.session.capabilities.len() > MAX_ITEMS
+        {
             return Err(WorkspaceError::CapacityExceeded);
         }
         let mut scope_bytes = 0_usize;
-        for scope in &entry.session.privacy_scope {
+        for scope in entry.session.capabilities.iter().chain(&entry.session.privacy_scope) {
             if scope.len() > MAX_ITEM_BYTES { return Err(WorkspaceError::CapacityExceeded); }
             scope_bytes = scope_bytes.checked_add(scope.len()).and_then(|n| n.checked_add(8))
                 .filter(|n| *n <= self.limits.max_revision_bytes)
@@ -278,6 +284,7 @@ impl ReferenceWorkspaceStore {
             capsule: request.capsule,
             basis: entry.basis.clone(),
             mission_id: entry.session.mission_id.clone(),
+            capability_scope: entry.session.capabilities.clone(),
             privacy_scope: entry.session.privacy_scope.clone(),
             parent: request.expected_head,
             rebase_from,
@@ -336,6 +343,7 @@ fn authorize_revision(entry: &SessionEntry, revision: &WorkspaceRevision) -> Res
     if revision.basis != entry.basis
         || revision.mission_id != entry.session.mission_id
         || revision.capsule.principal != entry.session.principal_id.as_str()
+        || !revision.capability_scope.is_subset(&entry.session.capabilities)
         || !revision.privacy_scope.is_subset(&entry.session.privacy_scope)
         || revision.capsule.capability_projection.iter().any(|cap| !entry.session.capabilities.contains(cap))
     {
@@ -387,6 +395,9 @@ fn validate_successor(previous: Option<&WorkspaceRevision>, request: &WorkspaceW
     match request.mode {
         WorkspaceWriteMode::Advance => {
             if old.current_anchor != new.current_anchor { return Err(WorkspaceError::RebaseRequired); }
+            if !contains_all(&new.next_actions, &old.next_actions) {
+                return Err(WorkspaceError::PreservationRequired);
+            }
             // Removing an assumption must preserve it explicitly as debt, not erase it.
             let retained: BTreeSet<_> = new.assumptions.iter().chain(&new.epistemic_debt).collect();
             if old.assumptions.iter().any(|item| !retained.contains(item)) {
@@ -437,7 +448,7 @@ fn validate_capsule(value: &SessionCapsule, byte_limit: usize) -> Result<(), Wor
     if value.epistemic_debt.len() > 1024 || value.bookmarked_evidence.len() > MAX_ITEMS {
         return Err(WorkspaceError::CapacityExceeded);
     }
-    let _ = bytes.checked_add(value.bookmarked_evidence.len() * 32)
+    let _ = bytes.checked_add(value.bookmarked_evidence.len() * 33)
         .filter(|n| *n <= byte_limit).ok_or(WorkspaceError::CapacityExceeded)?;
     // The core fields are public. Re-run construction rather than trusting a once-valid value.
     SessionCapsule::new(SessionCapsuleParams {
@@ -462,8 +473,12 @@ fn encode_revision(value: &WorkspaceRevision) -> Result<Vec<u8>, WorkspaceError>
     encoder.text(REVISION_DOMAIN);
     value.basis.encode_canonical(&mut encoder);
     value.mission_id.encode_canonical(&mut encoder);
-    encoder.u64(value.privacy_scope.len() as u64);
-    for scope in &value.privacy_scope { encoder.text(scope); }
+    // Capture actual authority, not just the caller-declared capability projection. Otherwise
+    // an empty declaration could make sensitive history readable after capability revocation.
+    for scopes in [&value.capability_scope, &value.privacy_scope] {
+        encoder.u64(scopes.len() as u64);
+        for scope in scopes { encoder.text(scope); }
+    }
     encoder.bool(value.parent.is_some());
     if let Some(parent) = value.parent { encoder.digest(parent); }
     encoder.bool(value.rebase_from.is_some());

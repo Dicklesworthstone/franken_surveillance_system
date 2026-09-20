@@ -151,7 +151,7 @@ fn every_protected_omission_is_refused_atomically() -> TestResult {
     let mut f = Fixture::new()?;
     let first = f.write(f.initial())?;
     let bytes = f.workspaces.retained_bytes();
-    for field in 0..7 {
+    for field in 0..8 {
         let mut request = f.append(&first);
         match field {
             0 => request.capsule.unknowns.clear(),
@@ -160,7 +160,8 @@ fn every_protected_omission_is_refused_atomically() -> TestResult {
             3 => request.capsule.open_obligations.clear(),
             4 => request.capsule.bookmarked_evidence.clear(),
             5 => request.capsule.assumptions.clear(),
-            _ => request.capsule.active_hypotheses.clear(),
+            6 => request.capsule.active_hypotheses.clear(),
+            _ => request.capsule.next_actions.clear(),
         }
         assert!(matches!(f.write(request), Err(WorkspaceError::PreservationRequired)));
         assert_eq!(f.workspaces.retained_bytes(), bytes);
@@ -276,3 +277,25 @@ fn deterministic_replay_produces_identical_revision_roots() -> TestResult {
     assert_eq!(a2, b2);
     Ok(())
 }
+
+#[test]
+fn underdeclared_projection_cannot_evade_capability_revocation() -> TestResult {
+    let mut f = Fixture::new()?;
+    let mut request = f.initial();
+    request.capsule.capability_projection.clear();
+    let first = f.write(request.clone())?;
+    let session = f.sessions.session(&f.principal, &f.capsule.session_id, TimestampNs(20))?;
+    f.sessions.refresh(&f.principal, &f.capsule.session_id, SessionRefresh {
+        expected_session_digest: session.session_digest(),
+        current_anchor: session.current_anchor.clone(),
+        capabilities: BTreeSet::new(),
+        privacy_scope: session.privacy_scope.clone(),
+    }, TimestampNs(20))?;
+    assert!(matches!(f.write(request), Err(WorkspaceError::Unavailable)));
+    assert!(matches!(f.workspaces.resume(
+        &mut f.sessions, &f.principal, &f.capsule.session_id, first.digest(), TimestampNs(20),
+    ), Err(WorkspaceError::Unavailable)));
+    Ok(())
+}
+
+mod checkpoint;
