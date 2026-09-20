@@ -42,8 +42,8 @@ receipt's quoted token cost. Exact non-continuation retries are additional deliv
 replays. A refused delivery consumes no tokens or source continuation, but may advance session
 clock watermarks or close an expired session. Quotes are not measured I/O, CPU or latency use.
 
-This first slice is the in-memory reference. It does not persist the session charge or catalog
-cursor ledger, execute a probe/model, admit an investigation citation, authenticate a transport,
+These ReferenceSessionStore methods are the in-memory reference. They do not persist the session
+charge or catalog cursor ledger (the durable source wrapper below commits session charges), execute a probe/model, admit an investigation citation, authenticate a transport,
 or promote source identity into a claim about physical reality. The local publisher's existing
 custody boundaries are unchanged. Production still needs Asupersync ownership and qualified
 budget/cancellation enforcement around the complete request.
@@ -62,3 +62,44 @@ cargo test -p fss-reference --test session_source_hydration_contract
 
 Rust compilation, tests, rustfmt and clippy were not available in the editing environment.
 Committed regression source and static checks are not executed qualification evidence.
+
+## Commit-before-disclosure delivery
+
+`DurableSessionStore::hydrate_from_source` stages the session and catalog privately, verifies
+fresh source custody, and commits the updated session checkpoint before returning source bytes
+or installing cursor changes. It works with session-only and joint session/work/case journals;
+no initialization, record kind, schema migration or reader-selected codec is introduced. Existing
+coordinator/case state is preserved across source-charge checkpoint records.
+
+`agent_session::checkpoint::journal::coordination::source_hydration::DurableSourceHydrationError`
+separates persistence failure from a committed semantic refusal. It reuses the published
+`SessionSourceHydrationError` rather than introducing a second session admission path.
+A custody failure can still advance the session clock; that mutation is committed before the
+refusal. Expired-session tombstones likewise survive restart. Checkpoint or append failures fence
+the shared owner and withhold all source output and catalog mutations. Capacity exhaustion does
+not implicitly make reads free, discard history, or refund a committed charge.
+
+Pending reconciliation and exact-root cold recovery use the existing journal methods. They never
+reread source or redeliver a withheld response. A completed write with a lost acknowledgement can
+leave a durable token charge without a delivered response; it cannot be rolled back using the old
+root. Explicit later retries recheck current custody and may charge again. An incomplete final
+write is removable only through the existing explicitly authorized recovery policy.
+
+Only normal session checkpoints are persisted: raw source bytes are absent from the journal and
+the catalog source cache. Catalog cursors remain separately owned, non-durable reference state,
+exactly as with the existing cached durable hydrator. The owner must persist/recover its cursor
+tombstones separately; this bridge does not claim replay-safe catalog restoration, authenticate
+recovery roots, provide cross-process locking, or establish future custody after disclosure.
+
+Seventeen additional tests retain the eight prepared session/source regressions and add nine
+durability regressions. The latter cover charge/restart continuity, all four append phases, shared fencing,
+withheld cursor mutations, hot/cold recovery and stale roots, refusal-side clock/tombstone
+persistence, capacity, interleaved case/work preservation and cached-path compatibility. These
+include denial before I/O after journal mutation. The existing twelve public session/source
+contracts and their production implementation are preserved unchanged. Compilation, Cargo tests, rustfmt, clippy and full qualification
+remain unrun because the editing environment has no Rust toolchain.
+
+```sh
+cargo test -p fss-reference source_hydration
+cargo test -p fss-reference agent_session::checkpoint::journal
+```
