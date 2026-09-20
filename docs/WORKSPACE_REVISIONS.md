@@ -2,8 +2,10 @@
 
 FSS-204 (`fss-x4a.24.4`) remains open. The executable reference slice is
 `fss_reference::agent_session::workspace`, with checkpoint support in its
-`checkpoint` module. It uses the existing Rust `SessionCapsule`; it is not a new
-public protocol or a claim of complete JSON-schema/surface parity.
+`checkpoint` module and journal integration in
+`agent_session::checkpoint::journal::workspace`. It uses the existing Rust
+`SessionCapsule`; it is not a new public protocol or a claim of complete
+JSON-schema/surface parity.
 
 ## Publication and resume
 
@@ -46,23 +48,59 @@ use `fss.reference_workspace_revision.v2` to bind the full capability scope. Ear
 private revision encodings are refused, not silently migrated. Checksums carried
 beside untrusted bytes do not establish authenticity or prevent rollback.
 
+## Shared durable journal
+
+The existing exclusive `DurableSessionStore` now provides:
+
+- `initialize_workspaces(WorkspaceLimits)` for one-way, bounded initialization;
+- `publish_workspace(principal, write, now)` for joint workspace/session publication;
+- `resume_workspace(principal, session, digest, now)` for exact authorized recovery.
+
+A successful write records one sealed revision plus the pre/post session and full
+workspace-history digests. Cold recovery executes the same workspace write against
+the preceding session and workspace state and checks exact output bytes. It cannot
+adopt a replacement snapshot, omit another workspace, reset limits, or substitute
+an unvalidated decision. Ordinary session, disclosure, and coordination records do
+not erase workspace history. Legacy readers reject the new record kinds rather
+than silently losing that history.
+
+Publication and its clock watermark are one synchronized journal record, not two
+independently acknowledged files. Refused reads/writes still durably preserve
+clock/expiry mutations before returning the refusal. An uncertain append withholds
+the result and fences the shared owner. `reconcile_pending` classifies committed
+versus not committed using the existing journal fault protocol; it neither invents
+a result nor refunds charges. Cold reopening and explicit torn-tail recovery use
+the existing exact-root APIs. After a lost acknowledgement, retrying the exact
+workspace request recovers its original immutable revision without rewinding the
+head. Same-clock exact retries append nothing.
+
+`JournaledWorkspace` binds the ordinary result to the committed joint journal root,
+session checkpoint, and workspace checkpoint. Those roots require independent
+trusted custody. The caller must exclusively own and protect the journal path;
+this is not a cross-process lock, authentication service, or distributed transaction.
+Full bounded replay is the reference implementation: journal and workspace limits
+are enforced, but no production throughput or native-storage qualification is claimed.
+
 ## Boundaries and validation
 
-These primitives perform no I/O. Atomic integration of session-clock/expiry changes
-and workspace publication into the existing durable session journal is still
-required before acknowledging crash-durable workspace operations. A caller must
-persist error-side session mutations too. Verified discharge/resolution, privacy
+The in-memory/checkpoint primitives perform no I/O. The journal adapter uses the
+existing session journal's synchronized append, fencing, inspection, and recovery.
+A separate session refresh followed by workspace rebase is still two operations;
+a combined anchor-refresh/rebase transaction and disclosure-owner convenience
+methods are subsequent integration work. Verified discharge/resolution, privacy
 reprojection, negotiated objective changes, complete plan/lease payloads, and
 CLI/MCP/handoff equivalence remain separate work. No gate or bead is closed here.
 
-The workspace test modules contain 24 deterministic and adversarial tests, including
-all truncated checkpoint prefixes, individual bit flips, stale writers, revoked
-grants, exact retries, rebase, omission, reordered/forged history, and storage bounds.
-They have been added but **not executed**: the editing environment has no Rust
-toolchain. Run the focused tests with the repository's accepted toolchain:
+The original workspace modules contain 24 tests. The journal module adds 11 tests
+covering restart, lost acknowledgement, stale writers, expiry, revoked grants,
+protected-content refusal, all four append phases, capacity, forged valid-checksum
+records, duplicate initialization, and every truncated write-record prefix.
+These tests are **added but not executed** in the editing environment, which has
+neither `cargo` nor `rustc`. Run them with the repository's accepted toolchain:
 
 ```sh
 cargo test -p fss-reference agent_session::workspace
+cargo test -p fss-reference agent_session::checkpoint::journal::workspace
 ```
 
 The repository-owned local qualification/DSR lanes remain the release authority.

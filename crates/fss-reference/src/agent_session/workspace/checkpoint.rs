@@ -238,7 +238,11 @@ fn strings(decoder: &mut CanonicalDecoder<'_>, maximum: usize, wide_count: bool)
     Ok(result)
 }
 
-fn decode_revision(bytes: &[u8], limits: WorkspaceLimits) -> Result<WorkspaceRevision, WorkspaceCheckpointError> {
+pub(in crate::agent_session) fn decode_revision(bytes: &[u8], limits: WorkspaceLimits) -> Result<WorkspaceRevision, WorkspaceCheckpointError> {
+    let limits = limits.bounded();
+    if bytes.len() > limits.max_revision_bytes {
+        return Err(WorkspaceCheckpointError::CapacityExceeded);
+    }
     let mut decoder = CanonicalDecoder::new(bytes);
     if decoder.text()? != REVISION_DOMAIN {
         return Err(WorkspaceCheckpointError::UnsupportedFormat);

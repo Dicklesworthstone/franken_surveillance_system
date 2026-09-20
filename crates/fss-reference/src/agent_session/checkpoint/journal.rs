@@ -24,6 +24,9 @@ pub mod coordination;
 /// Joint durable disclosure accounting and hydration replay protection.
 pub mod disclosure;
 
+/// Atomic workspace revision publication and exact recovery in the shared journal.
+pub mod workspace;
+
 use coordination::CoordinationState;
 use crate::agent_session::work_claims::{WorkClaimError, WorkClaimLimits};
 
@@ -463,10 +466,26 @@ fn replay(
     limits: DurableSessionLimits,
     claim_ceilings: Option<WorkClaimLimits>,
 ) -> Result<(ReferenceSessionStore, Option<CoordinationState>), DurableSessionError> {
+    let restored = replay_all(report, limits, claim_ceilings)?;
+    Ok((restored.memory, restored.coordination))
+}
+
+struct ReplayedSessionState {
+    memory: ReferenceSessionStore,
+    coordination: Option<CoordinationState>,
+    workspaces: Option<workspace::WorkspaceState>,
+}
+
+fn replay_all(
+    report: &RecoveryReport,
+    limits: DurableSessionLimits,
+    claim_ceilings: Option<WorkClaimLimits>,
+) -> Result<ReplayedSessionState, DurableSessionError> {
     DurableSessionStore::verify_source_charge_links(report)?;
     let mut memory: Option<ReferenceSessionStore> = None;
     let mut coordination: Option<CoordinationState> = None;
     let mut cursor_history = None;
+    let mut workspaces = None;
     for record in report.records() {
         match record.kind() {
             SESSION_CHECKPOINT_RECORD_KIND => {
@@ -492,10 +511,20 @@ fn replay(
                 let state = coordination.as_mut().ok_or(DurableSessionError::InvalidHistory)?;
                 coordination::replay_command(record.payload(), sessions, state, limits)?;
             }
+            workspace::WORKSPACE_INIT_RECORD_KIND => {
+                let sessions = memory.as_ref().ok_or(DurableSessionError::InvalidHistory)?;
+                workspace::replay_initialization(record.payload(), sessions, &mut workspaces, limits)?;
+            }
+            workspace::WORKSPACE_WRITE_RECORD_KIND => {
+                let sessions = memory.as_mut().ok_or(DurableSessionError::InvalidHistory)?;
+                workspace::replay_write(record.payload(), sessions, &mut workspaces, limits)?;
+            }
             _ => return Err(DurableSessionError::InvalidHistory),
         }
     }
-    Ok((memory.ok_or(DurableSessionError::InvalidHistory)?, coordination))
+    Ok(ReplayedSessionState {
+        memory: memory.ok_or(DurableSessionError::InvalidHistory)?, coordination, workspaces,
+    })
 }
 
 #[cfg(test)]
