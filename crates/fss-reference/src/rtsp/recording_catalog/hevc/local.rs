@@ -53,11 +53,11 @@ pub enum HevcRangeProgress {
         /// Requested overlap, without cropping or rewriting compressed media.
         requested_interval: Range<u64>,
         /// Fully loaded and replay-verified HEVC source, media and index.
-        recording: PreparedHevcRecording,
+        recording: Box<PreparedHevcRecording>,
     },
     /// All selected windows transferred, and the exact catalog was re-read.
     /// Explicit unindexed intervals remain distinct from coverage/absence claims.
-    Complete(RangeReceipt),
+    Complete(Box<RangeReceipt>),
     /// The aggregate receipt was already returned; no fresh verification occurred.
     Exhausted,
 }

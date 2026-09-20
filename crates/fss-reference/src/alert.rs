@@ -1206,24 +1206,47 @@ pub fn prepare_reference_alert(
     })
 }
 
+/// Grouped inputs for the shared alert-dispatch execution helper. `read_payload`
+/// re-reads event-revision payloads for authority revalidation.
+pub(crate) struct AlertDispatchOptions<'a, J, R, E>
+where
+    J: AlertEffectTransitioner,
+    R: FnMut(ContentDigest) -> Result<Vec<u8>, E>,
+    E: Into<ReferenceError>,
+{
+    pub plan: &'a ReferenceAlertPlan,
+    pub authority: &'a DurableReferenceLedger,
+    pub read_payload: R,
+    pub behavior: ReferenceProviderBehavior,
+    pub commit_at: TimestampNs,
+    pub outcome_at: TimestampNs,
+    pub journal: &'a mut J,
+    pub provider: &'a mut ReferenceAlertProvider,
+}
+
 /// Shared execution helper for alert dispatch through the deterministic provider oracle.
 ///
 /// Ensures event authority and plan integrity are revalidated atomically before committing
 /// and invoking provider dispatch.
-pub(crate) fn execute_alert_dispatch<J, E>(
-    plan: &ReferenceAlertPlan,
-    authority: &DurableReferenceLedger,
-    read_payload: impl FnMut(ContentDigest) -> Result<Vec<u8>, E>,
-    behavior: ReferenceProviderBehavior,
-    commit_at: TimestampNs,
-    outcome_at: TimestampNs,
-    journal: &mut J,
-    provider: &mut ReferenceAlertProvider,
+pub(crate) fn execute_alert_dispatch<J, R, E>(
+    options: AlertDispatchOptions<'_, J, R, E>,
 ) -> Result<OperationReceipt, ReferenceError>
 where
     J: AlertEffectTransitioner,
+    R: FnMut(ContentDigest) -> Result<Vec<u8>, E>,
     E: Into<ReferenceError>,
 {
+    let AlertDispatchOptions {
+        plan,
+        authority,
+        read_payload,
+        behavior,
+        commit_at,
+        outcome_at,
+        journal,
+        provider,
+    } = options;
+
     revalidate_alert_event_authority(plan, authority, read_payload, commit_at, journal)?;
 
     let operation_id = &plan.intent.operation_id;
@@ -1301,16 +1324,16 @@ pub fn dispatch_reference_alert(
     journal: &mut EffectJournal,
     provider: &mut ReferenceAlertProvider,
 ) -> Result<OperationReceipt, ReferenceError> {
-    execute_alert_dispatch(
+    execute_alert_dispatch(AlertDispatchOptions {
         plan,
         authority,
-        |digest| objects.read_verified(digest).map(|bytes| bytes.to_vec()),
+        read_payload: |digest| objects.read_verified(digest).map(|bytes| bytes.to_vec()),
         behavior,
         commit_at,
         outcome_at,
         journal,
         provider,
-    )
+    })
 }
 
 /// Records an independent observation of an adapter-accepted alert.

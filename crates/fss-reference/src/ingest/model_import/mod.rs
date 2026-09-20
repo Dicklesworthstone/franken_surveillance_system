@@ -137,7 +137,7 @@ pub enum ImportError {
     /// This bundle belongs to another importer implementation or has an invalid recipe.
     InvalidBundle,
     /// The existing recorded-model contract rejected the converted inputs.
-    Model(ModelRunError),
+    Model(Box<ModelRunError>),
     /// A canonical encoding failed.
     Contract(ContractError),
 }
@@ -160,7 +160,7 @@ impl Error for ImportError {
     }
 }
 impl From<ContractError> for ImportError { fn from(e: ContractError) -> Self { Self::Contract(e) } }
-impl From<ModelRunError> for ImportError { fn from(e: ModelRunError) -> Self { Self::Model(e) } }
+impl From<ModelRunError> for ImportError { fn from(e: ModelRunError) -> Self { Self::Model(Box::new(e)) } }
 fn checkpoint(cx: &ReplayCx) -> Result<(), ImportError> {
     cx.checkpoint("model_import:work").map_err(|_| ImportError::Cancelled)
 }

@@ -493,7 +493,7 @@ mod tests {
             let mut w = vec![vec![None;d];n];
             for row in &mut w { for cell in row {
                 seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
-                if seed % 3 != 0 { *cell = Some((seed % 1_000_001) as u32); }
+                if !seed.is_multiple_of(3) { *cell = Some((seed % 1_000_001) as u32); }
             } }
             let result = assign(&w,&mut AssociationBudget::new(10000),&mut || Ok(()))?;
             let mut objective = (0,0_u64); let mut used = std::collections::BTreeSet::new();

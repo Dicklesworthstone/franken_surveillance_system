@@ -851,16 +851,16 @@ impl DurableEffectJournal {
         outcome_at: TimestampNs,
         provider: &mut ReferenceAlertProvider,
     ) -> Result<OperationReceipt, DurableEffectError> {
-        crate::alert::execute_alert_dispatch(
+        crate::alert::execute_alert_dispatch(crate::alert::AlertDispatchOptions {
             plan,
             authority,
-            |digest| objects.read_verified(digest).map(|bytes| bytes.to_vec()),
+            read_payload: |digest| objects.read_verified(digest).map(|bytes| bytes.to_vec()),
             behavior,
-            committed_at,
+            commit_at: committed_at,
             outcome_at,
-            self,
+            journal: self,
             provider,
-        )
+        })
         .map_err(DurableEffectError::from)
     }
 

@@ -91,7 +91,7 @@ pub enum ArchiveReadProgress<C: ArchiveCodec = AvcArchiveCodec> {
         recording: C::Recording,
     },
     /// Every selected window has been verified and transferred exactly once.
-    Complete(ArchiveReadReceipt),
+    Complete(Box<ArchiveReadReceipt>),
     /// Completion was already returned; no fresh verification took place.
     Exhausted,
 }
@@ -172,9 +172,9 @@ impl<'a, C: ArchiveCodec> CodecArchiveRead<'a, C> {
         let mut unindexed = bounded_vec(self.selection.unindexed.len())?;
         unindexed.extend(self.selection.unindexed.iter().cloned());
         self.done = true;
-        Ok(ArchiveReadProgress::Complete(ArchiveReadReceipt { snapshot_digest: self.selection.snapshot,
+        Ok(ArchiveReadProgress::Complete(Box::new(ArchiveReadReceipt { snapshot_digest: self.selection.snapshot,
             scope: self.snapshot.namespace.scope.clone(), query: self.selection.query.clone(),
-            windows: self.next, output_bytes: self.bytes, unindexed }))
+            windows: self.next, output_bytes: self.bytes, unindexed })))
     }
 }
 impl<C: ArchiveCodec> std::fmt::Debug for CodecArchiveRead<'_, C> {

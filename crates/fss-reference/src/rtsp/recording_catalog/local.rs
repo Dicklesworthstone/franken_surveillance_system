@@ -233,11 +233,13 @@ impl<'a> RecordingRangeRead<'a> {
     pub fn step(&mut self, now_ns: u64, cancel: &dyn PublishCancellation) -> IoResult<RangeProgress> {
         if self.catalog.family != CatalogFamily::Avc { return Err(CatalogError::Digest.into()); }
         match self.step_window(now_ns, cancel)? {
-            WindowProgress::Window { ordinal, requested_interval, recording: LoadedWindow::Avc(recording) } =>
-                Ok(RangeProgress::Window { ordinal, requested_interval, recording }),
-            WindowProgress::Complete(receipt) => Ok(RangeProgress::Complete(receipt)),
+            WindowProgress::Window { ordinal, requested_interval, recording } => match *recording {
+                LoadedWindow::Avc(recording) =>
+                    Ok(RangeProgress::Window { ordinal, requested_interval, recording: *recording }),
+                _ => { self.clock.stopped = true; Err(CatalogError::WindowMismatch.into()) }
+            },
+            WindowProgress::Complete(receipt) => Ok(RangeProgress::Complete(*receipt)),
             WindowProgress::Exhausted => Ok(RangeProgress::Exhausted),
-            _ => { self.clock.stopped = true; Err(CatalogError::WindowMismatch.into()) }
         }
     }
     pub(super) fn step_hevc(&mut self, now_ns: u64, cancel: &dyn PublishCancellation)
@@ -246,11 +248,13 @@ impl<'a> RecordingRangeRead<'a> {
         use super::hevc::local::HevcRangeProgress;
         if self.catalog.family != CatalogFamily::Hevc { return Err(CatalogError::Digest.into()); }
         match self.step_window(now_ns, cancel)? {
-            WindowProgress::Window { ordinal, requested_interval, recording: LoadedWindow::Hevc(recording) } =>
-                Ok(HevcRangeProgress::Window { ordinal, requested_interval, recording }),
+            WindowProgress::Window { ordinal, requested_interval, recording } => match *recording {
+                LoadedWindow::Hevc(recording) =>
+                    Ok(HevcRangeProgress::Window { ordinal, requested_interval, recording }),
+                _ => { self.clock.stopped = true; Err(CatalogError::WindowMismatch.into()) }
+            },
             WindowProgress::Complete(receipt) => Ok(HevcRangeProgress::Complete(receipt)),
             WindowProgress::Exhausted => Ok(HevcRangeProgress::Exhausted),
-            _ => { self.clock.stopped = true; Err(CatalogError::WindowMismatch.into()) }
         }
     }
     fn step_window(&mut self, now_ns: u64, cancel: &dyn PublishCancellation) -> IoResult<WindowProgress> {
@@ -271,7 +275,7 @@ impl<'a> RecordingRangeRead<'a> {
             if bytes > self.selection.bytes { return Err(CatalogError::Limit.into()); }
             self.returned_bytes = bytes; self.next += 1;
             return Ok(WindowProgress::Window { ordinal: selected.ordinal,
-                requested_interval: selected.interval.clone(), recording });
+                requested_interval: selected.interval.clone(), recording: Box::new(recording) });
         }
         if self.returned_bytes != self.selection.bytes { return Err(CatalogError::WindowMismatch.into()); }
         // Re-read the pinned catalog itself before the aggregate receipt: in-memory
@@ -283,33 +287,33 @@ impl<'a> RecordingRangeRead<'a> {
         let mut unindexed = bounded_vec(self.selection.unindexed.len())?;
         unindexed.extend(self.selection.unindexed.iter().cloned());
         self.done = true;
-        Ok(WindowProgress::Complete(RangeReceipt { catalog_root: self.catalog.manifest.root(),
+        Ok(WindowProgress::Complete(Box::new(RangeReceipt { catalog_root: self.catalog.manifest.root(),
             scope: self.catalog.scope.clone(), query: self.selection.query.clone(), windows: self.next,
-            output_bytes: self.returned_bytes, unindexed }))
+            output_bytes: self.returned_bytes, unindexed })))
     }
 }
 
 // The private sum is never returned by a public API. Its variant is fixed by
 // the typed catalog constructor; network/disk metadata cannot select a verifier.
-enum LoadedWindow { Avc(PreparedRecording), Hevc(PreparedHevcRecording) }
+enum LoadedWindow { Avc(Box<PreparedRecording>), Hevc(Box<PreparedHevcRecording>) }
 impl LoadedWindow {
     fn plan(&self) -> &PreparedRecording {
         match self { Self::Avc(plan) => plan, Self::Hevc(plan) => plan.publication_plan() }
     }
 }
 enum WindowProgress {
-    Window { ordinal: usize, requested_interval: Range<u64>, recording: LoadedWindow },
-    Complete(RangeReceipt),
+    Window { ordinal: usize, requested_interval: Range<u64>, recording: Box<LoadedWindow> },
+    Complete(Box<RangeReceipt>),
     Exhausted,
 }
 fn load_window(publisher: &LocalRootPublisher, catalog: &RecordingCatalog,
     entry: &CatalogEntry, cancel: &dyn PublishCancellation) -> IoResult<LoadedWindow>
 {
     Ok(match catalog.family {
-        CatalogFamily::Avc => LoadedWindow::Avc(load_recording(
-            publisher, &entry.slot, entry.root, &catalog.scope.recording, cancel)?),
-        CatalogFamily::Hevc => LoadedWindow::Hevc(load_hevc_recording(
-            publisher, &entry.slot, entry.root, &catalog.scope.recording, cancel)?),
+        CatalogFamily::Avc => LoadedWindow::Avc(Box::new(load_recording(
+            publisher, &entry.slot, entry.root, &catalog.scope.recording, cancel)?)),
+        CatalogFamily::Hevc => LoadedWindow::Hevc(Box::new(load_hevc_recording(
+            publisher, &entry.slot, entry.root, &catalog.scope.recording, cancel)?)),
     })
 }
 

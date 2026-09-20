@@ -172,9 +172,12 @@ pub fn load_recording(publisher: &LocalRootPublisher, slot: &SlotName,
 
 // Only codec-owned entrypoints inside recording may choose a format. There is
 // no public verifier callback or mutable prepared-plan constructor bypass.
+/// Codec-supplied index decoder: canonical wire bytes into the recording scope
+/// plus its identity digests.
+pub(super) type ReferencesDecoder = fn(&[u8]) -> Result<(RecordingScope, [ContentDigest; 3])>;
 pub(super) struct WindowFormat {
     pub kind: &'static str,
-    pub references: fn(&[u8]) -> Result<(RecordingScope, [ContentDigest; 3])>,
+    pub references: ReferencesDecoder,
     pub verify: fn(&ObjectManifest, RecordingObjects<'_>, &RecordingScope) -> Result<RecordingSummary>,
 }
 fn avc_references(bytes: &[u8]) -> Result<(RecordingScope, [ContentDigest; 3])> {

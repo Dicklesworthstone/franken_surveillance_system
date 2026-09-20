@@ -4,7 +4,6 @@
 
 /// Codec-pinned HEVC archive recovery and cross-page retrieval.
 pub mod hevc {
-#![forbid(unsafe_code)]
 //! Codec-pinned HEVC archive recovery and whole-window cross-page retrieval.
 //!
 //! These aliases use the same sealed archive engine as AVC. Only the existing

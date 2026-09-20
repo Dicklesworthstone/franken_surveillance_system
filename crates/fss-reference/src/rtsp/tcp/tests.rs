@@ -38,14 +38,11 @@ struct Script {
 }
 impl Read for Script {
     fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
-        match self.reads.pop_front().unwrap_or_else(|| Err(io::ErrorKind::WouldBlock.into()))? {
-            bytes => {
-                let n = out.len().min(bytes.len());
-                out[..n].copy_from_slice(&bytes[..n]);
-                if n < bytes.len() { self.reads.push_front(Ok(bytes[n..].to_vec())); }
-                Ok(n)
-            }
-        }
+        let bytes = self.reads.pop_front().unwrap_or_else(|| Err(io::ErrorKind::WouldBlock.into()))?;
+        let n = out.len().min(bytes.len());
+        out[..n].copy_from_slice(&bytes[..n]);
+        if n < bytes.len() { self.reads.push_front(Ok(bytes[n..].to_vec())); }
+        Ok(n)
     }
 }
 impl Write for Script {
@@ -254,7 +251,7 @@ fn invalid_configuration_and_denied_connect_make_no_connection_attempt() -> Test
 
 #[test]
 fn actual_loopback_socket_uses_exact_route_and_transfers_native_bytes() -> TestResult {
-    let listener = std::net::TcpListener::bind(([127, 0, 0, 1], 0))?;
+    let listener = std::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))?;
     listener.set_nonblocking(true)?;
     let route = TcpBinding::new(KEY, listener.local_addr()?, "camera.local", TcpSecurityPolicy::OwnerApprovedPlaintext)?;
     let mut link = RtspTcpLink::connect(route, TcpLimits::default(), 0, 60_000_000_000, &Permit)?;

@@ -74,7 +74,7 @@ pub enum HevcCapturePoll {
     /// One picture is retained until explicit timing succeeds, cancellation, or expiry.
     TimingRequired(HevcPictureTimingRequest),
     /// Exact prepared window for the existing source-first/root-last publisher.
-    Window(PreparedHevcRecording),
+    Window(Box<PreparedHevcRecording>),
     /// EOF sealing released source bytes. A ready Window and final Ended follow.
     Sealed(HevcCollectionSeal),
     /// An accepted source event remains held while the owner seals or cancels.
@@ -194,7 +194,7 @@ impl HevcRecordingCapture {
             let collection = self.collector.invalidate();
             return Ok(self.stopped(CollectionStop::InputDiscontinuity, None, collection));
         }
-        if let Some(window) = self.collector.take_ready() { return Ok(HevcCapturePoll::Window(window)); }
+        if let Some(window) = self.collector.take_ready() { return Ok(HevcCapturePoll::Window(Box::new(window))); }
         if self.finished {
             self.closed = true;
             return Ok(HevcCapturePoll::Ended { retained: Some(Box::new(self.cancel())) });

@@ -182,7 +182,7 @@ fn schedule(policy: ActivityPolicy, ordinal: u64, hold: u32, signal: Signal, req
 {
     let mut reasons = BTreeSet::new();
     if ordinal == 0 { reasons.insert(SamplingReason::FirstFrame); }
-    if ordinal % u64::from(policy.sentinel_stride) == 0 { reasons.insert(SamplingReason::Sentinel); }
+    if ordinal.is_multiple_of(u64::from(policy.sentinel_stride)) { reasons.insert(SamplingReason::Sentinel); }
     if hold > 0 { reasons.insert(SamplingReason::ActivityHold); }
     if required { reasons.insert(SamplingReason::Required); }
     match signal {

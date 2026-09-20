@@ -310,7 +310,7 @@ impl AnalysisReport {
             checkpoint(cx)?;
             let source = RecordedDecodeRequest {
                 import_identity: plan.import_identity, segment_index: selected.segment_index,
-                interpretation: plan.interpretation, read_limits: limits.read_limits.clone(),
+                interpretation: plan.interpretation, read_limits: limits.read_limits,
                 decode_limits: limits.decode_limits,
             };
             let detection = DetectionFrame::read(deployment, selected.run_identity, &source,

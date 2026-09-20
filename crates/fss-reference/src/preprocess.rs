@@ -300,7 +300,7 @@ fn execute(
     for y in 0..g.target_height {
         for x in 0..g.target_width {
             let flat = y * g.target_width + x;
-            if flat % 1024 == 0 { cx.checkpoint("resize:sample")?; }
+            if flat.is_multiple_of(1024) { cx.checkpoint("resize:sample")?; }
             let mut channels = [0.0_f32; 3];
             for (channel, value) in channels.iter_mut().take(image.channels).enumerate() {
                 *value = if y < g.top || y - g.top >= g.image_height
