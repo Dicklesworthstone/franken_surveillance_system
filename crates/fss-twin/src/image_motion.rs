@@ -115,6 +115,8 @@ impl ImageMotionEstimate {
     pub fn covariance(&self) -> [[f64; 3]; 2] { self.axes.map(|a| [a.pp, a.pv, a.vv]) }
 }
 /// Complete per-track outcome; unsupported observations are retained as explicit unknowns.
+// Bounded inline source pairs avoid an unbudgeted allocation per trajectory.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ImageMotionOutcome {
     /// Conditional source-pair filter result.
@@ -240,6 +242,10 @@ impl Axis {
             vv: self.vv - 2.0 * kv * self.pv + kv * kv * self.pp + kv * kv * variance }.validate()
     }
 }
+
+
+/// Actual raw-luma and native-JPEG composition with explicit stage completion.
+pub mod pipeline;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
