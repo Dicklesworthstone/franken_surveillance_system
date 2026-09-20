@@ -36,6 +36,8 @@ pub mod sdp;
 pub mod selection;
 /// Native bounded TCP ownership under an exact route and explicit live authority.
 pub mod tcp;
+/// Exclusive native TCP-to-authenticated-AVC streaming with bounded owner-driven progress.
+pub mod live_avc;
 
 pub use message::{
     AuthScheme, ContentLengthConflict, DEFAULT_MAX_BODY_BYTES, DEFAULT_MAX_HEADERS,

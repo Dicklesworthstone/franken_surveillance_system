@@ -190,3 +190,11 @@ pub mod screening;
 
 /// Native JPEG/stream decoding composed with foreground, health and sentinel admission.
 pub mod screened_mjpeg;
+
+/// Anonymous, source-linked image trajectories without a metric twin or identity claim.
+pub mod image_tracking;
+
+/// Source-pair Kalman motion estimates over exact current anonymous tracking receipts.
+pub mod image_motion;
+
+mod foreground_tracking;
