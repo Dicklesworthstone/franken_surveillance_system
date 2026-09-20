@@ -198,3 +198,6 @@ pub mod image_tracking;
 pub mod image_motion;
 
 mod foreground_tracking;
+
+/// Source-linked image-zone occupancy, transitions and sampled dwell without effect authority.
+pub mod image_zones;
