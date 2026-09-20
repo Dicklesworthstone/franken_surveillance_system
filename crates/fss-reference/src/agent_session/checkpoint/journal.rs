@@ -21,6 +21,9 @@ use fss_ledger::{
 /// Work claims sharing this journal's exact session authority and durable root.
 pub mod coordination;
 
+/// Joint durable disclosure accounting and hydration replay protection.
+pub mod disclosure;
+
 use coordination::CoordinationState;
 use crate::agent_session::work_claims::{WorkClaimError, WorkClaimLimits};
 
@@ -463,11 +466,12 @@ fn replay(
     DurableSessionStore::verify_source_charge_links(report)?;
     let mut memory: Option<ReferenceSessionStore> = None;
     let mut coordination: Option<CoordinationState> = None;
+    let mut cursor_history = None;
     for record in report.records() {
         match record.kind() {
             SESSION_CHECKPOINT_RECORD_KIND => {
-                let candidate = ReferenceSessionStore::restore_checkpoint(
-                    record.payload(), record.payload_digest(), limits.sessions, limits.max_checkpoint_bytes,
+                let candidate = disclosure::restore_record(
+                    record.payload(), record.payload_digest(), memory.as_ref(), &mut cursor_history, limits,
                 )?;
                 if memory.as_ref().is_some_and(|previous| previous.limits != candidate.limits) {
                     return Err(DurableSessionError::InvalidHistory);

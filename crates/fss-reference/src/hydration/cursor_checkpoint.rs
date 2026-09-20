@@ -109,6 +109,38 @@ impl CursorCheckpoint {
         Ok(outer.finish_checked()?)
     }
 
+    pub(crate) fn record(&self, digest: &ContentDigest) -> Option<&IssuedCursorRecord> {
+        self.records.get(digest)
+    }
+
+    /// Only the recorded invocation may issue or consume a cursor. Expired retirement is explicit.
+    pub(crate) fn validate_disclosure(&self, prior: Option<&Self>, session: &SessionId,
+        consumed: Option<ContentDigest>, issued: Option<ContentDigest>) -> Result<(), HydrationError>
+    {
+        if let Some(prior) = prior { self.validate_successor(prior)?; }
+        if consumed.is_some() && consumed == issued { return Err(HydrationError::WrongContinuation); }
+        for (digest, record) in &self.records {
+            let old = prior.and_then(|p| p.record(digest));
+            if Some(*digest) == consumed {
+                let old = old.ok_or(HydrationError::ContinuationUnissued)?;
+                if old.consumed || !record.consumed || old.session_id != *session
+                    || self.captured_at >= old.expires_at
+                { return Err(HydrationError::WrongContinuation); }
+            } else if Some(*digest) == issued {
+                if record.consumed || record.session_id != *session
+                    || self.captured_at >= record.expires_at
+                    || old.is_some_and(|old| old != record)
+                { return Err(HydrationError::WrongContinuation); }
+            } else if old != Some(record) {
+                return Err(HydrationError::WrongContinuation);
+            }
+        }
+        if consumed.is_some_and(|d| !self.records.contains_key(&d))
+            || issued.is_some_and(|d| !self.records.contains_key(&d))
+        { return Err(HydrationError::WrongContinuation); }
+        Ok(())
+    }
+
     /// A later snapshot cannot forget live records, alter issuance, or undo consumption.
     pub(crate) fn validate_successor(&self, prior: &Self) -> Result<(), HydrationError> {
         if self.captured_at < prior.captured_at {
@@ -253,4 +285,41 @@ mod tests {
         assert_eq!(catalog.issued_cursor_count(), 0);
         Ok(())
     }
+
+
+    #[test]
+    fn disclosure_delta_requires_exact_named_session_owned_mutations() -> TestResult {
+        let active_bytes = catalog(false)?.checkpoint_cursors(TimestampNs(20), 4096)?;
+        let active = CursorCheckpoint::decode(&active_bytes, 4096, 10)?;
+        let used_bytes = catalog(true)?.checkpoint_cursors(TimestampNs(21), 4096)?;
+        let used = CursorCheckpoint::decode(&used_bytes, 4096, 10)?;
+        let digest = ContentDigest::sha256(b"issued cursor");
+        let session = SessionId::parse("session:checkpoint")?;
+        active.validate_disclosure(None, &session, None, Some(digest))?;
+        active.validate_disclosure(Some(&active), &session, None, Some(digest))?;
+        used.validate_disclosure(Some(&active), &session, Some(digest), None)?;
+        assert!(active.validate_disclosure(None, &session, None, None).is_err());
+        assert!(used.validate_disclosure(Some(&active), &session, None, None).is_err());
+        assert!(used.validate_disclosure(Some(&used), &session, Some(digest), None).is_err());
+        assert!(used.validate_disclosure(Some(&active), &SessionId::parse("session:other")?, Some(digest), None).is_err());
+        assert!(active.validate_disclosure(Some(&used), &session, None, Some(digest)).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn expired_records_may_retire_but_cannot_be_consumed_or_reissued() -> TestResult {
+        let bytes = catalog(false)?.checkpoint_cursors(TimestampNs(20), 4096)?;
+        let prior = CursorCheckpoint::decode(&bytes, 4096, 10)?;
+        let expired_bytes = catalog(true)?.checkpoint_cursors(TimestampNs(100), 4096)?;
+        let expired = CursorCheckpoint::decode(&expired_bytes, 4096, 10)?;
+        let digest = ContentDigest::sha256(b"issued cursor");
+        let session = SessionId::parse("session:checkpoint")?;
+        assert!(expired.validate_disclosure(Some(&prior), &session, Some(digest), None).is_err());
+        let empty = CursorCheckpoint::decode(
+            &ReferenceHydrationCatalog::new().checkpoint_cursors(TimestampNs(100), 4096)?, 4096, 10)?;
+        empty.validate_disclosure(Some(&prior), &session, None, None)?;
+        assert!(empty.validate_disclosure(Some(&prior), &session, Some(digest), None).is_err());
+        Ok(())
+    }
+
 }
