@@ -313,9 +313,9 @@ fn live_source_has_exact_binding_two_anchors_and_no_payload_cache() -> TestResul
     let mut direct = f.catalog.clone();
     let delivery = f.deliver(NOW)?;
     delivery.verify_for(&f.publication, &f.session)?;
-    f.catalog.source_binding(&f.descriptor.handle_id, f.descriptor.descriptor_digest)
-        .ok_or(ContractError::NotFound)?
-        .validate_response(&delivery.request, &f.descriptor, &delivery.response)?;
+    let source_binding = f.catalog.source_binding(&f.descriptor.handle_id, f.descriptor.descriptor_digest)
+        .ok_or(ContractError::NotFound)?;
+    delivery.verify_source_for(&f.publication, &f.session, source_binding)?;
     assert_eq!(delivery.response.artifact.as_ref().ok_or(ContractError::NotFound)?.payload, SOURCE);
     assert_eq!(delivery.request.anchor.commit_sequence + 1, f.session.current_anchor.commit_sequence);
     let response = direct.hydrate_context_slot_from_source(
@@ -339,6 +339,12 @@ fn preview_entrypoints_have_identical_proofs_without_source_io() -> TestResult {
     let live = f.deliver(NOW)?;
     assert_eq!(live, cached);
     live.verify_for(&f.publication, &f.session)?;
+    let source_binding = f.catalog.source_binding(&f.descriptor.handle_id, f.descriptor.descriptor_digest)
+        .ok_or(ContractError::NotFound)?;
+    assert!(matches!(live.verify_source_for(&f.publication, &f.session, source_binding),
+        Err(ContextHydrationError::Session(ReferenceSessionError::Hydration(
+            HydrationError::LevelUnavailable
+        )))));
     assert_eq!(f.custody.calls.get(), 0);
     assert_eq!(f.catalog.issued_cursor_count(), catalog.issued_cursor_count());
     Ok(())
@@ -487,5 +493,28 @@ fn retention_expiry_is_verified_zero_cost_unavailability_without_io() -> TestRes
     assert_eq!(delivery.response.receipt.cost, BudgetVector::ZERO);
     assert_eq!(f.custody.calls.get(), 0);
     assert_eq!(f.remaining(now)?, f.session.token_budget);
+    Ok(())
+}
+
+#[test]
+fn identical_bytes_from_another_publication_do_not_replace_trusted_source_provenance() -> TestResult {
+    let mut f = Fixture::new(HydrationLevel::H3)?;
+    let delivery = f.deliver(NOW)?;
+    let original = f.catalog.source_binding(&f.descriptor.handle_id, f.descriptor.descriptor_digest)
+        .ok_or(ContractError::NotFound)?.clone();
+    let metadata = f.custody.objects.put_verified(b"different publication provenance")?;
+    let root = f.custody.objects.publish_manifest(ObjectManifest::new(
+        "other-source-publication", [f.descriptor.subject_digest], Some(metadata),
+    )?)?.root;
+    assert_ne!(root, original.publication_root());
+    let mut other = ReferenceHydrationCatalog::new();
+    other.register_descriptor(f.descriptor.clone())?;
+    let other_binding = other.bind_source_object(
+        &f.descriptor.handle_id, f.descriptor.descriptor_digest, root, &f.custody,
+    )?;
+    assert_eq!(original.subject_digest(), other_binding.subject_digest());
+    assert!(matches!(delivery.verify_source_for(&f.publication, &f.session, &other_binding),
+        Err(ContextHydrationError::Source(SourceHydrationError::SourceMismatch))));
+    delivery.verify_source_for(&f.publication, &f.session, &original)?;
     Ok(())
 }
