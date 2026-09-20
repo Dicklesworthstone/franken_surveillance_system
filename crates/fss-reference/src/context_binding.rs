@@ -10,15 +10,17 @@ use fss_core::{
     TimestampNs,
 };
 
-use crate::{ReferenceError, ReferenceSituationPublication};
+use crate::{PublishedSourceReader, ReferenceError, ReferenceSituationPublication, SourceHydrationError};
 
-/// Failure while constructing or verifying a descriptor-bound reference publication.
+/// Failure while constructing, verifying, or expanding a descriptor-bound reference publication.
 #[derive(Debug)]
 pub enum ReferenceContextBindingError {
     /// Base reference-publication failure.
     Reference(ReferenceError),
     /// Exact slot/descriptor binding failure.
     Binding(ContextBindingError),
+    /// Live source custody failed after context and hydration admission.
+    Source(SourceHydrationError),
 }
 
 impl fmt::Display for ReferenceContextBindingError {
@@ -28,6 +30,7 @@ impl fmt::Display for ReferenceContextBindingError {
                 write!(formatter, "reference context publication error: {error}")
             }
             Self::Binding(error) => write!(formatter, "reference context binding error: {error}"),
+            Self::Source(error) => write!(formatter, "reference context source error: {error}"),
         }
     }
 }
@@ -37,6 +40,7 @@ impl std::error::Error for ReferenceContextBindingError {
         match self {
             Self::Reference(error) => Some(error),
             Self::Binding(error) => Some(error),
+            Self::Source(error) => Some(error),
         }
     }
 }
@@ -56,6 +60,16 @@ impl From<ContextBindingError> for ReferenceContextBindingError {
 impl From<HydrationError> for ReferenceContextBindingError {
     fn from(value: HydrationError) -> Self {
         Self::Binding(ContextBindingError::Hydration(value))
+    }
+}
+
+impl From<SourceHydrationError> for ReferenceContextBindingError {
+    fn from(value: SourceHydrationError) -> Self {
+        // Keep admission failures identical across cached and live-source entry points.
+        match value {
+            SourceHydrationError::Hydration(error) => error.into(),
+            error => Self::Source(error),
+        }
     }
 }
 
@@ -277,6 +291,43 @@ impl crate::ReferenceHydrationCatalog {
         request: &fss_core::HydrationRequest,
         now: TimestampNs,
     ) -> Result<fss_core::HydrationResponse, ReferenceContextBindingError> {
+        self.validate_context_slot(publication, slot_id, request, now)?;
+        Ok(self.hydrate(request, now)?)
+    }
+
+    /// Expands a context slot through live, root-scoped source custody.
+    ///
+    /// Unlike [`Self::hydrate_context_slot`], this entry point can deliver H3 source objects
+    /// registered with [`Self::bind_source_object`] without installing a second payload cache.
+    /// The same exact publication, slot, session, descriptor, level, and budget checks run
+    /// before the reader is invoked. The custody reader is an explicit authority capability,
+    /// never inferred from a descriptor or a caller-supplied source digest.
+    ///
+    /// [`Self::hydrate_from_source`] then rechecks current authority, privacy, retention,
+    /// per-level costs, and continuation admission before I/O, and verifies the returned bytes.
+    /// Custody failures remain errors rather than absence claims or silent preview fallbacks.
+    /// Routine lower-level requests and explicitly permitted downgrades retain normal hydration
+    /// semantics. No source bytes are retained in the catalog; retries reverify live custody.
+    pub fn hydrate_context_slot_from_source(
+        &mut self,
+        publication: &BoundReferenceSituationPublication,
+        slot_id: &str,
+        request: &fss_core::HydrationRequest,
+        reader: &dyn PublishedSourceReader,
+        now: TimestampNs,
+    ) -> Result<fss_core::HydrationResponse, ReferenceContextBindingError> {
+        self.validate_context_slot(publication, slot_id, request, now)?;
+        Ok(self.hydrate_from_source(request, reader, now)?)
+    }
+
+    /// Shared, read-only admission boundary for cached and live-custody expansion.
+    fn validate_context_slot(
+        &self,
+        publication: &BoundReferenceSituationPublication,
+        slot_id: &str,
+        request: &fss_core::HydrationRequest,
+        now: TimestampNs,
+    ) -> Result<(), ReferenceContextBindingError> {
         request.verify()?;
         publication.verify()?;
         let binding = publication
@@ -297,7 +348,7 @@ impl crate::ReferenceHydrationCatalog {
             descriptor,
             now,
         )?;
-        Ok(self.hydrate(request, now)?)
+        Ok(())
     }
 }
 
