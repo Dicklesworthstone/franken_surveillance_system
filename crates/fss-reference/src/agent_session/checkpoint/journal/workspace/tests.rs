@@ -56,14 +56,14 @@ fn fixture_with_limits(limits: DurableSessionLimits) -> Result<(DurableSessionSt
     })?;
     Ok((store, session, WorkspaceWrite { expected_head: None, capsule, mode: WorkspaceWriteMode::Advance }))
 }
-fn fixture() -> Result<(DurableSessionStore, AgentSession, WorkspaceWrite), Box<dyn Error>> {
+pub(super) fn fixture() -> Result<(DurableSessionStore, AgentSession, WorkspaceWrite), Box<dyn Error>> {
     fixture_with_limits(DurableSessionLimits::default())
 }
-fn successor(revision: &WorkspaceRevision) -> WorkspaceWrite {
+pub(super) fn successor(revision: &WorkspaceRevision) -> WorkspaceWrite {
     let mut capsule = revision.capsule().clone(); capsule.revision += 1;
     WorkspaceWrite { expected_head: Some(revision.digest()), capsule, mode: WorkspaceWriteMode::Advance }
 }
-fn reopen(store: DurableSessionStore) -> Result<DurableSessionStore, Box<dyn Error>> {
+pub(super) fn reopen(store: DurableSessionStore) -> Result<DurableSessionStore, Box<dyn Error>> {
     let path = store.path().to_path_buf(); let root = store.committed_root(); let limits = store.limits;
     drop(store);
     Ok(DurableSessionStore::open_existing(path, root, limits)?)

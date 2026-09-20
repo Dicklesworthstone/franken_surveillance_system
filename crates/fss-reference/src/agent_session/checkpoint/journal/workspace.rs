@@ -15,6 +15,9 @@ use crate::agent_session::workspace::{ReferenceWorkspaceStore, WorkspaceError, W
     WorkspaceRevision, WorkspaceResume, WorkspaceWrite, WorkspaceWriteMode, MAX_WORKSPACE_REVISION_BYTES};
 use crate::agent_session::workspace::checkpoint::{MAX_WORKSPACE_CHECKPOINT_BYTES, decode_revision};
 
+/// Atomic refresh/rebase commands on the same session journal.
+pub mod rebase;
+
 /// One-way workspace-store initialization; a second initialization is invalid history.
 pub const WORKSPACE_INIT_RECORD_KIND: u16 = 0x5753;
 /// A replayable workspace write, atomically advancing the session clock and workspace history.
@@ -247,6 +250,9 @@ fn encode_write(before_sessions: ContentDigest, before_workspaces: ContentDigest
 pub(super) fn replay_write(payload: &[u8], sessions: &mut ReferenceSessionStore,
     history: &mut Option<WorkspaceState>, limits: DurableSessionLimits) -> Result<(), DurableSessionError>
 {
+    if rebase::is_record(payload) {
+        return rebase::replay_rebase(payload, sessions, history, limits);
+    }
     if payload.len() > MAX_RECORD_BYTES { return Err(DurableSessionError::CapacityExceeded); }
     let state = history.as_mut().ok_or(DurableSessionError::InvalidHistory)?;
     let mut d = CanonicalDecoder::new(payload);

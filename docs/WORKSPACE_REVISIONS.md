@@ -81,13 +81,38 @@ this is not a cross-process lock, authentication service, or distributed transac
 Full bounded replay is the reference implementation: journal and workspace limits
 are enforced, but no production throughput or native-storage qualification is claimed.
 
+## Atomic authority rebase
+
+`DurableSessionStore::rebase_workspace(principal, refresh, write, now)` combines the
+existing `SessionRefresh` and a `WorkspaceWriteMode::Rebase` request. The runtime
+must still verify the new anchor. The ordinary session CAS, grant-narrowing,
+lineage/epoch checks, and workspace preservation rules run on staged state. One
+synchronized record publishes the new anchor, invalidated session symbols, and
+workspace revision together. A refused rebase keeps the prior anchor, grants,
+symbol generation, and workspace, while persisting clock or expiry observations.
+An uncertain append fences the same owner until reconciliation determines whether
+both halves committed. No individual half can be acknowledged as complete.
+
+Exact lost-acknowledgement retries match the entire retained refresh plus workspace
+request, then reauthorize the historical revision against today's live session.
+They never rerun the old refresh, rewind a newer anchor/head, restore revoked grants,
+or replenish tokens. Same-clock exact retries append nothing; a later read time
+records only its new clock watermark. A different refresh paired with the same
+capsule is refused rather than treated as an idempotency shortcut.
+
+The private `fss.reference_workspace_journal_rebase.v1` envelope uses the existing
+workspace-write record family. Recovery reruns both owners' state transitions and
+checks the before/after session and workspace identities. Readers predating this
+envelope refuse its unknown domain. It is not a second authority log or a public
+protocol/schema change.
+
 ## Boundaries and validation
 
 The in-memory/checkpoint primitives perform no I/O. The journal adapter uses the
 existing session journal's synchronized append, fencing, inspection, and recovery.
-A separate session refresh followed by workspace rebase is still two operations;
-a combined anchor-refresh/rebase transaction and disclosure-owner convenience
-methods are subsequent integration work. Verified discharge/resolution, privacy
+A separate session refresh followed by workspace rebase remains two operations;
+use `rebase_workspace` when both must commit together. Disclosure-owner convenience
+methods remain subsequent integration work. Verified discharge/resolution, privacy
 reprojection, negotiated objective changes, complete plan/lease payloads, and
 CLI/MCP/handoff equivalence remain separate work. No gate or bead is closed here.
 
@@ -95,6 +120,9 @@ The original workspace modules contain 24 tests. The journal module adds 11 test
 covering restart, lost acknowledgement, stale writers, expiry, revoked grants,
 protected-content refusal, all four append phases, capacity, forged valid-checksum
 records, duplicate initialization, and every truncated write-record prefix.
+The atomic-rebase module adds 11 further tests for one-record recovery, rollback
+of refused refreshes, exact retry after later work, current-grant revalidation,
+expiry, stale CAS/head/lineage, every append phase, malformed records, and grants.
 These tests are **added but not executed** in the editing environment, which has
 neither `cargo` nor `rustc`. Run them with the repository's accepted toolchain:
 
