@@ -5,6 +5,8 @@
 //! or unknown inputs with stable error and exit identities, structured diagnostic logging,
 //! and command execution for FSS binaries.
 
+/// Explicit operator access to existing local AVC/HEVC archives; not an agent operation.
+pub mod archive_cmd;
 pub mod crosswalk;
 pub mod diagnostic;
 pub mod error;

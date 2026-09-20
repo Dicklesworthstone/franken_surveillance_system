@@ -27,9 +27,18 @@ path = "src/bin/fss-infer.rs"
 name = "fss-event"
 path = "src/bin/fss-event.rs"
 
+[[bin]]
+name = "fss-archive"
+path = "src/bin/fss-archive.rs"
+
 [dependencies]
 fss-core = { path = "../fss-core" }
+fss-object = { path = "../fss-object" }
+fss-publication = { path = "../fss-publication" }
 fss-reference = { path = "../fss-reference" }
+
+[dev-dependencies]
+fss-packet = { path = "../fss-packet" }
 
 [lints]
 workspace = true
