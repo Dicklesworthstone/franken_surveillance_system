@@ -2,7 +2,6 @@
 //! Bounded, restartable local recording discovery over an explicitly supplied owner.
 //! Namespace slots are routing, not a grant or an authoritative camera-coverage ledger.
 
-/// Codec-pinned HEVC archive recovery and cross-page retrieval.
 pub mod hevc {
 //! Codec-pinned HEVC archive recovery and whole-window cross-page retrieval.
 //!
