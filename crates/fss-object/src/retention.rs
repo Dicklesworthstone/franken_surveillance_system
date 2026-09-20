@@ -12,6 +12,8 @@ use std::fmt;
 use fss_core::{CanonicalEncode, CanonicalEncoder, ContentDigest, ContractError, TimestampNs};
 use crate::{InMemoryObjectStore, ObjectError, ObjectLimits, ObjectManifest, ObjectState};
 
+/// Exact metadata recovery under an independently trusted checkpoint and current custody.
+pub mod checkpoint;
 mod execute;
 pub use execute::{DeletionReceipt, RetentionAuthorization};
 
@@ -209,6 +211,12 @@ impl RetentionStore {
     /// Creates a new, empty owner. Existing untracked custody is never silently adopted.
     #[must_use]
     pub fn new(policy: ContentDigest, objects: ObjectLimits, limits: RetentionLimits) -> Self {
+        let limits = RetentionLimits {
+            max_entries: limits.max_entries.min(MAX_RETENTION_ENTRIES),
+            max_edges: limits.max_edges.min(MAX_RETENTION_EDGES),
+            max_holds: limits.max_holds.min(MAX_RETENTION_HOLDS),
+            max_receipts: limits.max_receipts.min(MAX_RETENTION_RECEIPTS),
+        };
         Self { custody: InMemoryObjectStore::new(objects), policy, limits,
             entries: BTreeMap::new(), holds: BTreeMap::new(), receipts: BTreeMap::new(),
             revision: 0, last_commit_at: None }
@@ -320,6 +328,10 @@ impl RetentionStore {
 
     /// Exact policy/graph/hold/deletion state fingerprint; contains no source payload bytes.
     pub fn state_digest(&self) -> Result<ContentDigest, RetentionError> {
+        Ok(ContentDigest::sha256(&self.encode_state()?))
+    }
+
+    fn encode_state(&self) -> Result<Vec<u8>, RetentionError> {
         let mut e = CanonicalEncoder::new();
         e.text("fss.reference_retention_state.v1"); e.digest(self.policy); e.u64(self.revision);
         for limit in [self.limits.max_entries, self.limits.max_edges, self.limits.max_holds,
@@ -340,7 +352,7 @@ impl RetentionStore {
             e.bool(hold.released_by.is_some());
             if let Some(witness) = hold.released_by { e.digest(witness); }
         }
-        Ok(ContentDigest::sha256(&e.finish_checked()?))
+        Ok(e.finish_checked()?)
     }
 
     /// Prepares expiry without mutation. Retention propagates backwards through the full graph.
