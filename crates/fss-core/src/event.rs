@@ -5587,8 +5587,8 @@ mod b8eoo_tests {
         let mut decoder = CanonicalDecoder::new(&forged);
         let decoded = EventHypothesis::decode_canonical(&mut decoder)?;
         // Decode is structural: the permissive layer admits the bytes.
-        assert_eq!(
-            decoded.evidence[0].supports, true,
+        assert!(
+            decoded.evidence[0].supports,
             "fixture sanity: the forged supports byte must decode through"
         );
         // The semantic layer refuses with the typed relation mismatch.

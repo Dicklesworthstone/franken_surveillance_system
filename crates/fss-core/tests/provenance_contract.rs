@@ -3778,16 +3778,21 @@ fn with_evidence_origins_refuses_misaligned_slice_fss_gefi6() -> Result<(), Box<
         valid_until: None,
         state_basis: None,
     })?;
-    assert_eq!(
-        cell.clone()
-            .with_evidence_origins(&[EvidenceOrigin::Laboratory, EvidenceOrigin::Laboratory])
-            .map(|_| ())
-            .unwrap_err(),
-        ContractError::InvalidIdentifier
+    assert!(
+        matches!(
+            cell.clone()
+                .with_evidence_origins(&[EvidenceOrigin::Laboratory, EvidenceOrigin::Laboratory])
+                .map(|_| ()),
+            Err(ContractError::InvalidIdentifier)
+        ),
+        "expected InvalidIdentifier for non-matching origin classes"
     );
-    assert_eq!(
-        cell.with_evidence_origins(&[]).map(|_| ()).unwrap_err(),
-        ContractError::InvalidIdentifier
+    assert!(
+        matches!(
+            cell.with_evidence_origins(&[]).map(|_| ()),
+            Err(ContractError::InvalidIdentifier)
+        ),
+        "expected InvalidIdentifier for empty origins"
     );
     Ok(())
 }

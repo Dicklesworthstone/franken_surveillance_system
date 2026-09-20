@@ -2796,7 +2796,7 @@ fn coverage_rotation_resumes_certification_and_refused_domains_stay_blocked() ->
         TimestampNs(200_000),
     )?;
     assert!(!store.coverage_registry_at_capacity());
-    assert_eq!(store.rotated_refused(), &[refused_witness.clone()]);
+    assert_eq!(store.rotated_refused(), std::slice::from_ref(&refused_witness));
     assert_ne!(store.current_anchor(), &anchor_at_capacity);
 
     // Post-rotation admission works again.
