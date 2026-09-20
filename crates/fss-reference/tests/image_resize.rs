@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Public camera-to-model preprocessing regressions.
 use std::error::Error;
 

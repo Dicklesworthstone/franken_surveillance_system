@@ -6,6 +6,7 @@
 //! end-to-end helper publishes source/delivery object graphs root-last and then commits one
 //! canonical authority delta through `fss-publication`.
 
+pub mod activity;
 mod adapter_replay;
 pub mod agent_session;
 mod alert;
