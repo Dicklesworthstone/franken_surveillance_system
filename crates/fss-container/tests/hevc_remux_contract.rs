@@ -11,7 +11,7 @@ const FIXTURE: &str = include_str!("../../../tests/fixtures/media/hevc/remux_mai
 const INIT: &str = include_str!("../../../tests/fixtures/media/hevc/remux_main8.init.hex");
 fn hex(s: &str) -> Vec<u8> {
     let compact: Vec<_> = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
-    compact.chunks_exact(2).map(|p| {
+    compact.as_chunks::<2>().0.iter().map(|p| {
         let digit = |b| match b { b'0'..=b'9' => b - b'0', b'a'..=b'f' => b - b'a' + 10, _ => 0 };
         digit(p[0]) * 16 + digit(p[1])
     }).collect()
@@ -28,8 +28,8 @@ fn wire(seq: u16, timestamp: u32, payload: &[u8]) -> Vec<u8> {
     out.extend_from_slice(&seq.to_be_bytes()); out.extend_from_slice(&timestamp.to_be_bytes());
     out.extend_from_slice(&KEY.ssrc.to_be_bytes()); out.extend_from_slice(payload); out
 }
-fn assemble(payloads: &[(u32, Vec<u8>)], eof: bool, discontinuous: bool)
-    -> Result<(Vec<HevcPictureGroup>, Vec<Vec<u8>>), Box<dyn std::error::Error>>
+type AssembleResult = Result<(Vec<HevcPictureGroup>, Vec<Vec<u8>>), Box<dyn std::error::Error>>;
+fn assemble(payloads: &[(u32, Vec<u8>)], eof: bool, discontinuous: bool) -> AssembleResult
 {
     let mut dep = H265Depacketizer::new(KEY, 96, 0, H265Limits::default())?;
     let mut a = HevcAssembler::new(KEY, HevcAssemblyLimits::default())?;
@@ -50,10 +50,13 @@ fn assemble(payloads: &[(u32, Vec<u8>)], eof: bool, discontinuous: bool)
         }
         sources.push(raw);
     }
-    if eof { if let Some(tail) = a.finish(payloads.len() as u64)?.picture { groups.push(tail); } }
+    if eof {
+        let picture = a.finish(payloads.len() as u64)?.picture;
+        if let Some(tail) = picture { groups.push(tail); }
+    }
     Ok((groups, sources))
 }
-fn pictures() -> Result<(Vec<HevcPictureGroup>, Vec<Vec<u8>>), Box<dyn std::error::Error>> {
+fn pictures() -> AssembleResult {
     let timestamps = [0, 0, 0, 0, 18_000, 36_000, 36_000, 36_000, 36_000, 54_000];
     let mut payloads: Vec<_> = timestamps.into_iter().zip(fixture()).collect();
     payloads.push((54_000, vec![0x48, 1, 0x80])); // explicit synthetic EOS closes the final group.
