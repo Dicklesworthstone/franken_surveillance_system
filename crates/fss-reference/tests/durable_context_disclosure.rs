@@ -249,3 +249,7 @@ fn recovered_context_cannot_resurrect_deleted_source_or_charge_a_failed_read() -
     assert_eq!(owner.catalog().stored_payload_bytes(), f.blueprint.stored_payload_bytes());
     Ok(())
 }
+
+
+#[path = "durable_context_disclosure/workspace.rs"]
+mod workspace;

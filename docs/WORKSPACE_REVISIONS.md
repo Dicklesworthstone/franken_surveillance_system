@@ -111,10 +111,15 @@ protocol/schema change.
 The in-memory/checkpoint primitives perform no I/O. The journal adapter uses the
 existing session journal's synchronized append, fencing, inspection, and recovery.
 A separate session refresh followed by workspace rebase remains two operations;
-use `rebase_workspace` when both must commit together. Disclosure-owner convenience
-methods remain subsequent integration work. Verified discharge/resolution, privacy
-reprojection, negotiated objective changes, complete plan/lease payloads, and
-CLI/MCP/handoff equivalence remain separate work. No gate or bead is closed here.
+use `rebase_workspace` when both must commit together. The same four workspace
+methods are also available on `DurableDisclosureStore`: initialize, publish,
+resume, and rebase. They delegate to its existing exclusive session owner and
+never expose a mutable journal/session/catalog borrow or open a second writer.
+Workspace failures fence evidence disclosure, and disclosure charges/cursor
+tombstones survive workspace writes and recovery. Rebasing does not retarget old
+context slots or issue new evidence permissions. Verified discharge/resolution,
+privacy reprojection, negotiated objective changes, complete plan/lease payloads,
+and CLI/MCP/handoff equivalence remain separate work. No gate or bead is closed here.
 
 The original workspace modules contain 24 tests. The journal module adds 11 tests
 covering restart, lost acknowledgement, stale writers, expiry, revoked grants,
@@ -123,12 +128,21 @@ records, duplicate initialization, and every truncated write-record prefix.
 The atomic-rebase module adds 11 further tests for one-record recovery, rollback
 of refused refreshes, exact retry after later work, current-grant revalidation,
 expiry, stale CAS/head/lineage, every append phase, malformed records, and grants.
+The public `durable_context_disclosure` integration fixture adds four tests using
+its actual deterministic capture, event, compiled context, and retained source.
+They interleave workspace revisions with H2/H3 delivery and restart; preserve
+charges, consumed cursors, source provenance, and admission receipts; demonstrate
+that a refused rebase leaves the prior context usable; reject an old context after
+a committed rebase; and fence source reads after workspace persistence fails.
+They run with zero session-alias capacity and assert that source payloads are
+neither cached by the catalog nor written into the session/workspace journal.
 These tests are **added but not executed** in the editing environment, which has
 neither `cargo` nor `rustc`. Run them with the repository's accepted toolchain:
 
 ```sh
 cargo test -p fss-reference agent_session::workspace
 cargo test -p fss-reference agent_session::checkpoint::journal::workspace
+cargo test -p fss-reference --test durable_context_disclosure
 ```
 
 The repository-owned local qualification/DSR lanes remain the release authority.

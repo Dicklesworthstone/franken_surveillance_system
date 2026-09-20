@@ -22,6 +22,9 @@ use crate::agent_session::hydration::SessionSourceHydrationError;
 use crate::hydration::cursor_checkpoint::{CursorCheckpoint, MAX_RECORDS};
 use crate::{BoundReferenceSituationPublication, PublishedSourceReader, ReferenceHydrationCatalog};
 
+// Workspace operations share this exclusive session owner, never a second handle.
+mod workspace;
+
 const DOMAIN: &str = "fss.reference_session_disclosure.v1";
 const MAX_RECORD_BYTES: usize = 16 * 1024 * 1024;
 
