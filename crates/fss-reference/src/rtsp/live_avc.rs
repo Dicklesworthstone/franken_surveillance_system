@@ -6,6 +6,9 @@
 //! received TCP chunk is transferred to the caller, including control/authentication bytes;
 //! that transfer is NOT durable source custody. Do not log those bytes.
 
+/// Native connection and loss-aware recording collection under one exclusive owner.
+pub mod recording;
+
 use std::fmt;
 
 use fss_packet::avc::AvcReceiveLimits;

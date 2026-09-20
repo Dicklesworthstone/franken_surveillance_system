@@ -13,13 +13,13 @@ use crate::rtsp::tcp::{TcpDenial, TcpSecurityPolicy};
 use super::*;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
-const KEY: StreamKey = StreamKey { ingress: 71, generation: 1, ssrc: 7 };
+pub(super) const KEY: StreamKey = StreamKey { ingress: 71, generation: 1, ssrc: 7 };
 const LEASE: u64 = 100_000_000_000;
 const RESPONSE_TIMEOUT: u64 = 10_000_000_000;
 
-struct Authority {
+pub(super) struct Authority {
     binding: TcpBinding,
-    revoked: Cell<bool>,
+    pub(super) revoked: Cell<bool>,
     reject_queue: Cell<bool>,
     checks: Cell<u64>,
 }
@@ -33,7 +33,7 @@ impl TcpAuthority for Authority {
         Ok(())
     }
 }
-fn scope(peer: std::net::SocketAddr) -> TestResult<(LiveAvcConfig, Authority)> {
+pub(super) fn scope(peer: std::net::SocketAddr) -> TestResult<(LiveAvcConfig, Authority)> {
     let binding = TcpBinding::new(KEY, peer, "camera.local", TcpSecurityPolicy::OwnerApprovedPlaintext)?;
     let authority = Authority { binding: binding.clone(), revoked: Cell::new(false),
         reject_queue: Cell::new(false), checks: Cell::new(0) };
@@ -50,16 +50,16 @@ fn scope(peer: std::net::SocketAddr) -> TestResult<(LiveAvcConfig, Authority)> {
     };
     Ok((config, authority))
 }
-fn credentials() -> TestResult<DigestCredentials<'static>> {
+pub(super) fn credentials() -> TestResult<DigestCredentials<'static>> {
     Ok(DigestCredentials::new("camera-user", "camera-password")?)
 }
-fn response(cseq: u32, headers: &str, body: &str) -> Vec<u8> {
+pub(super) fn response(cseq: u32, headers: &str, body: &str) -> Vec<u8> {
     format!("RTSP/1.0 200 OK\r\nCSeq: {cseq}\r\nContent-Length: {}\r\n{headers}\r\n{body}", body.len()).into_bytes()
 }
 fn challenge(cseq: u32) -> Vec<u8> {
     format!("RTSP/1.0 401 Unauthorized\r\nCSeq: {cseq}\r\nWWW-Authenticate: Digest realm=\"fixture-camera\", nonce=\"server-nonce\", algorithm=SHA-256, qop=\"auth\"\r\nContent-Length: 0\r\n\r\n").into_bytes()
 }
-fn description() -> &'static str {
+pub(super) fn description() -> &'static str {
     "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=fixture\r\nt=0 0\r\na=control:*\r\nm=video 0 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\na=fmtp:96 packetization-mode=1;sprop-parameter-sets=Z0LAC9oKEbARAAADAAEAAAMAMg8UKqA=,aM4PLIA=\r\na=control:trackID=0\r\n"
 }
 struct Fixture {
@@ -95,7 +95,8 @@ impl Fixture {
         Err("bounded request send did not complete".into())
     }
     fn command(&mut self, command: ClientCommand, now: u64) -> TestResult<(QueuedAvcRequest, Vec<u8>)> {
-        let queued = self.connection.request(command, &credentials()?, [17; 16], now, &self.authority)?;
+        let nonce = now.to_le_bytes()[0].wrapping_add(30);
+        let queued = self.connection.request(command, &credentials()?, [nonce; 16], now, &self.authority)?;
         let bytes = self.flush(queued, now)?;
         Ok((queued, bytes))
     }
