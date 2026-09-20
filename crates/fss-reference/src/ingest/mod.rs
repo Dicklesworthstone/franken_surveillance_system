@@ -20,6 +20,8 @@ pub mod inference;
 pub mod model_import;
 /// Explicit model-output decoding and source-linked detector proposals.
 pub mod detections;
+/// Deterministic scene-model foreground detection on decoded luma planes.
+pub mod foreground;
 /// Bounded, history-linked, single-camera association of detector proposals.
 pub mod tracking;
 /// Complete, restart-reproducible detector/tracker reports over retained recordings.
