@@ -7,6 +7,11 @@
 use fss_core::{CaseDiscriminator, CaseHypothesis, KnowledgeState, LedgerAnchor};
 use super::*;
 
+/// Live-custody citation acquisition and its durable case-link receipts.
+pub use super::journal::source_citation::{
+    SourceAcquisition, SourceCitationError, SourceCitationReceipt, SourceCitationTarget,
+};
+
 /// Rebased revision identity. Never-rebased revisions retain their exact v1 bytes and digest.
 pub const EVOLVED_REVISION_DOMAIN: &str = "fss-reference:investigation-revision:v2";
 

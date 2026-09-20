@@ -11,7 +11,7 @@ use fss_reference::rtsp::recording_catalog::local::CatalogProgress;
 mod source;
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error>>;
-struct FixedClock { now: u64, end: u64 }
+pub(super) struct FixedClock { now: u64, end: u64 }
 impl PublishCancellation for FixedClock {
     fn cancel_requested(&self, _: PublishCutPoint) -> bool { self.now >= self.end }
 }
@@ -22,7 +22,7 @@ impl OperationClock for FixedClock {
 fn basis() -> std::result::Result<CatalogScope, Box<dyn std::error::Error>> {
     Ok(CatalogScope { recording: source::scope()?, decode_clock: ContentDigest::sha256(b"operator-dts"), time_scale: 90_000 })
 }
-fn argv(action: &str, extra: &[&str]) -> Vec<OsString> {
+pub(super) fn argv(action: &str, extra: &[&str]) -> Vec<OsString> {
     let digest = ContentDigest::sha256(b"explicit parser fixture").to_text();
     [action, "--root", "/unused/private-archive", "--codec", "hevc", "--sensor", "sensor-fixture",
         "--stream", "stream-fixture", "--generation", "1", "--anchor", &digest,
@@ -33,14 +33,14 @@ fn options() -> std::result::Result<ArchiveOptions, Box<dyn std::error::Error>> 
     let mut o = parse_archive_args(&argv("inspect", &[]))?.ok_or("options")?;
     o.scope = basis()?; Ok(o)
 }
-fn path(name: &str) -> std::result::Result<PathBuf, Box<dyn std::error::Error>> {
+pub(super) fn path(name: &str) -> std::result::Result<PathBuf, Box<dyn std::error::Error>> {
     let p = std::env::temp_dir().join(format!("fss-archive-operator-{}-{name}", std::process::id()));
     match fs::remove_dir_all(&p) {
         Ok(()) => {}, Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}, Err(e) => return Err(e.into()),
     }
     Ok(p)
 }
-fn window(base: u64) -> std::result::Result<PreparedHevcRecording, Box<dyn std::error::Error>> {
+pub(super) fn window(base: u64) -> std::result::Result<PreparedHevcRecording, Box<dyn std::error::Error>> {
     let mut timings = source::timings(4);
     for t in &mut timings { t.decode_time += base; }
     Ok(prepare_hevc_recording(basis()?.recording, &source::configuration()?, 90_000,
@@ -51,7 +51,7 @@ fn publish(p: &mut LocalRootPublisher, slot: &SlotName, w: &PreparedHevcRecordin
     for i in 0..4 { assert!(matches!(request.step(i, &NeverCancel)?, RecordingProgress::ChildStaged { .. })); }
     assert!(matches!(request.step(4, &NeverCancel)?, RecordingProgress::Published(_))); Ok(())
 }
-fn setup(name: &str) -> std::result::Result<(ArchiveOptions, LocalRootPublisher), Box<dyn std::error::Error>> {
+pub(super) fn setup(name: &str) -> std::result::Result<(ArchiveOptions, LocalRootPublisher), Box<dyn std::error::Error>> {
     let mut o = options()?; o.root = path(name)?;
     let mut p = LocalRootPublisher::open(&o.root, o.storage_limits)?;
     let ns = HevcArchiveNamespace::new(o.scope.clone())?;
@@ -71,7 +71,7 @@ fn setup(name: &str) -> std::result::Result<(ArchiveOptions, LocalRootPublisher)
     o.expected = Some(snapshot.digest()?);
     Ok((o, p))
 }
-fn clock() -> FixedClock { FixedClock { now: 1, end: 100 } }
+pub(super) fn clock() -> FixedClock { FixedClock { now: 1, end: 100 } }
 
 #[test]
 fn arguments_pin_codec_scope_clock_and_ranges_without_effects() -> TestResult {
