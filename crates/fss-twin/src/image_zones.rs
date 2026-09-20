@@ -236,6 +236,10 @@ impl ImageZoneMonitor {
     pub fn digest(&self) -> [u8; 32] { self.digest }
     /// Exact next report predecessor required for gap-free consumption.
     pub fn tracking_digest(&self) -> [u8; 32] { self.expected_tracking }
+    /// Frozen zone, basis and owner-selection identity.
+    pub fn config_digest(&self) -> [u8; 32] { self.config }
+    /// Explicit immutable gap and selection assumptions.
+    pub fn policy(&self) -> ImageZonePolicy { self.policy }
     /// Frozen canonicalized polygons, sorted by ID; no mutable policy activation.
     pub fn zones(&self) -> &[ImageZoneSpec] { &self.zones }
     /// Exact coordinate basis required from every tracking report.
@@ -376,3 +380,6 @@ mod geometry;
 mod encoding;
 #[cfg(test)]
 mod tests;
+
+/// Native image composition with retained, resumable zone-analysis completion.
+pub mod pipeline;

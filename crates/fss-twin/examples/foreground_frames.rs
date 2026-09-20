@@ -13,6 +13,8 @@ use fss_twin::localization::ImageIdentity;
 
 #[path = "foreground_frames/tracking.rs"]
 mod tracking;
+#[path = "foreground_frames/zones.rs"]
+mod zones;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 struct Row { query: bool, exposure: [u8;32], capture: [u64;2], pixels: PathBuf,
@@ -48,9 +50,10 @@ fn run()->Result<()> {
     let root=file.parent().ok_or("manifest has no parent")?;
     let config=String::from_utf8(bytes(&file,65536)?)?;
     let mut lines=config.lines().filter(|s|!s.trim().is_empty()&&!s.trim_start().starts_with('#'));
-    let tracking_enabled = match lines.next() {
-        Some("FSS_FOREGROUND_FRAMES_1") => false,
-        Some("FSS_FOREGROUND_TRACKING_1") => true,
+    let (tracking_enabled, zones_enabled) = match lines.next() {
+        Some("FSS_FOREGROUND_FRAMES_1") => (false, false),
+        Some("FSS_FOREGROUND_TRACKING_1") => (true, false),
+        Some("FSS_FOREGROUND_ZONES_1") => (true, true),
         _ => return Err("unsupported replay manifest".into()),
     };
     let names=["width","height","camera","clock","calibration","image_domain","valid_from","valid_until",
@@ -58,7 +61,8 @@ fn run()->Result<()> {
     let mut settings=BTreeMap::new();let mut rows=Vec::new();let mut saw_query=false;
     for line in lines {
         if let Some((key,value))=line.split_once('=') {
-            if !(names.contains(&key) || tracking_enabled && tracking::SETTINGS.contains(&key))
+            if !(names.contains(&key) || tracking_enabled && tracking::SETTINGS.contains(&key)
+                || zones_enabled && zones::SETTINGS.contains(&key))
                 || settings.insert(key,value).is_some() {return Err("unknown/duplicate setting".into());}
         } else {
             let p:Vec<_>=line.split_whitespace().collect();
@@ -70,7 +74,8 @@ fn run()->Result<()> {
                 mask:confined(root,p[6])?,mask_hash:hash(p[7])?});
         }
     }
-    if settings.len()!=names.len()+(if tracking_enabled {tracking::SETTINGS.len()} else {0}) || !saw_query {return Err("missing settings or query frames".into());}
+    if settings.len()!=names.len()+(if tracking_enabled {tracking::SETTINGS.len()} else {0})
+        +(if zones_enabled {zones::SETTINGS.len()} else {0}) || !saw_query {return Err("missing settings or query frames".into());}
     let get=|k|settings.get(k).copied().ok_or("missing setting");
     let width:u32=get("width")?.parse()?;let height:u32=get("height")?.parse()?;
     if width==0||height==0||width>4096||height>4096 {return Err("invalid dimensions".into());}
@@ -84,6 +89,11 @@ fn run()->Result<()> {
         maximum_regions:get("maximum_regions")?.parse()?,widespread_per_mille:get("widespread_per_mille")?.parse()?};
     let mut budget=WorkBudget::new(get("work_units")?.parse()?);
     let mut tracker = if tracking_enabled { Some(tracking::configure(&settings, &mut budget)?) } else { None };
+    let mut zone_monitor = if zones_enabled {
+        let basis = fss_twin::image_zones::ImageZoneBasis { camera, clock, calibration,
+            image_domain: domain, dimensions: [width, height] };
+        Some(zones::configure(&settings, tracker.as_ref().ok_or("zone mode requires tracking")?, basis, &mut budget)?)
+    } else { None };
     let refs=rows.iter().take_while(|r|!r.query).count();
     if !(3..=MAX_BACKGROUND_FRAMES).contains(&refs) {return Err("reference count outside 3..31".into());}
     let load=|r:&Row|->Result<Loaded> {
@@ -100,6 +110,7 @@ fn run()->Result<()> {
     drop(frames);drop(loaded);
     let stdout=std::io::stdout();
     let mut out=std::io::BufWriter::new(stdout.lock());let mut completed=0;
+    if let Some(monitor) = &zone_monitor { zones::write_configuration(&mut out, monitor)?; }
     for row in &rows[refs..] {
         let f=load(row)?;let query=ForegroundFrame::new(f.source,&f.pixels,&f.allowed,&mut budget)?;
         let r=model.detect(&query,fp,&mut budget)?;
@@ -114,6 +125,17 @@ fn run()->Result<()> {
         writeln!(out,"]}}")?;
         if let (Some(tracker), Some(report)) = (&tracker, &tracked) {
             tracking::write_report(&mut out, tracker, report)?;
+            if let Some(monitor) = &mut zone_monitor {
+                match monitor.observe(tracker, report, &mut budget) {
+                    Ok(zone_report) => zones::write_report(&mut out, zone_report)?,
+                    Err(error) => {
+                        writeln!(out, "{{\"kind\":\"zone_incomplete\",\"tracking\":\"{}\",\"error\":\"{:?}\"}}",
+                            hex(report.digest()), error)?;
+                        out.flush()?;
+                        return Err(error.into());
+                    }
+                }
+            }
         }
         out.flush()?;completed+=1;
     }
