@@ -38,6 +38,8 @@ pub mod selection;
 pub mod tcp;
 /// Exclusive native TCP-to-authenticated-AVC streaming with bounded owner-driven progress.
 pub mod live_avc;
+/// Live capture backpressured by durable recording and immutable catalog publication.
+pub mod live_archive;
 
 pub use message::{
     AuthScheme, ContentLengthConflict, DEFAULT_MAX_BODY_BYTES, DEFAULT_MAX_HEADERS,
