@@ -363,7 +363,7 @@ mod tests {
     #[test]
     fn missed_detections_are_handled_without_crash() {
         let mut t = MultiObjectTracker::new(config()).unwrap();
-        t.step(&[det(10.0, 20.0)]).unwrap();
+        t.step(&[det(10.0, 20.0)]);
         // Empty frames: track goes Lost then Deleted.
         for _ in 0..5 {
             let out = t.step(&[]);
