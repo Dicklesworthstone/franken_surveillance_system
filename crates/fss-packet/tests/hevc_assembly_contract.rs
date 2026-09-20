@@ -20,7 +20,7 @@ fn slice(kind: u8, first: bool, pps: u8, tid: u8, no_output: bool) -> Vec<u8> {
     bits.push(1); // Opaque fixture suffix, not a complete slice body.
     while bits.len() % 8 != 0 { bits.push(0); }
     let mut nal = vec![kind << 1, tid];
-    for byte in bits.chunks_exact(8) {
+    for byte in bits.as_chunks::<8>().0 {
         nal.push(byte.iter().fold(0, |v, bit| v * 2 + bit));
     }
     nal

@@ -9,7 +9,7 @@ const VPS10: &str = "40010c01ffff02200000030090000003000003001eba0240";
 const SPS10: &str = "42010102200000030090000003000003001ea020831365ba4a4c2f0168080000030008000003002840";
 const PPS: &str = "4401c073c089";
 fn hex(s: &str) -> Vec<u8> {
-    s.as_bytes().chunks_exact(2).map(|pair| {
+    s.as_bytes().as_chunks::<2>().0.iter().map(|pair| {
         let digit = |b| match b { b'0'..=b'9' => b - b'0', b'a'..=b'f' => b - b'a' + 10, _ => 0 };
         digit(pair[0]) * 16 + digit(pair[1])
     }).collect()
@@ -28,7 +28,7 @@ impl Bits {
         while !self.0.len().is_multiple_of(8) { self.0.push(false); }
         let mut output = vec![kind << 1, 1];
         let mut zeros = 0;
-        for chunk in self.0.chunks_exact(8) {
+        for chunk in self.0.as_chunks::<8>().0 {
             let value = chunk.iter().fold(0_u8, |v, b| v * 2 + u8::from(*b));
             if zeros == 2 && value <= 3 { output.push(3); zeros = 0; }
             output.push(value); zeros = if value == 0 { zeros + 1 } else { 0 };
