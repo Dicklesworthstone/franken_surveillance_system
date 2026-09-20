@@ -81,6 +81,36 @@ compiler. Rust tests, rustfmt, clippy and release qualification remain required.
 cargo test -p fss-reference coordination::investigations
 ```
 
-This engine commit adds in-memory reference evolution. Durable command publication is a separate
-integration step; callers must not acknowledge an evolved state from an independently persisted
-session or discard the authority state on restart.
+## Durable evolution and recovery
+
+`DurableSessionStore::evolve_investigation` uses the existing enabled joint session/work/case
+journal. The bounded request is encoded before copying stores. Execution stages cases and session
+watermarks together; success or semantic refusal is returned only after the record commits.
+Append uncertainty fences session, work, ordinary case and evolution operations together. No
+mutable reference to the staged authority escapes, and recovery never redelivers a lost response.
+
+The existing coordination record kind carries two explicitly new private domains:
+`fss.reference_investigation_evolution_request.v1` and
+`fss.reference_investigation_evolution_record.v1`. Old request and record bytes are unchanged.
+Evolution tags distinguish Rebase, ReadmitCitation and Expand; nested text/count/anchor bounds,
+canonical booleans, exact re-encoding and complete consumption are checked during recovery.
+An expansion's Unknown state and empty evidence lists are fixed by the operation, not fail-open
+defaults: attempted pre-attached evidence or any different state is rejected before encoding.
+
+Replay executes the same evolution engine under historical session authority and verifies both
+session checkpoint witnesses and the exact resulting revision/refusal identity. Reopening,
+pending reconciliation and cold recovery use the existing coordination APIs. A completed rebase
+with a lost acknowledgement cannot be removed to satisfy a predecessor root. Hash-valid but
+semantically forged evolution records are rejected before any incomplete-tail truncation.
+
+Ten additional journal tests cover mixed old/new command histories, readmission and expansion
+after restart, every append phase, shared fencing, hot/cold recovery, refusal-side watermarks,
+stale recovery roots, forged outcomes before torn tails, capacity, request truncation, nested
+count/tag rejection and exact legacy revision encoding. The 22 new tests across the engine and
+journal are source coverage, not executed qualification evidence. No Rust toolchain is available
+in this editing environment; compilation, tests, rustfmt and clippy remain unrun.
+
+The journal still requires an exclusive protected owner and an independently authorized recovery
+root. These changes do not implement source-custody verification, arbitrary contract migration,
+public envelope/transport dispatch, automatic probe execution, cross-process locking, Asupersync
+ownership or production qualification. No safety/privacy/deadline/authority gate is relaxed.
