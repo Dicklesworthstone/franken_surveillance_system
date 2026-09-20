@@ -440,7 +440,7 @@ fn same_basis(a: ImageTrackingFrame, b: ImageTrackingFrame) -> bool {
 fn pair_cost(track: ImageTrack, frame: ImageTrackingFrame, detection: ImageDetection,
     policy: ImageTrackingPolicy) -> Option<u32> {
     let last = track.latest; let center = last.detection.center(); let incoming = detection.center();
-    let elapsed = frame.source.capture[1] - last.frame.source.capture[0];
+    let elapsed = frame.source.capture[1].saturating_sub(last.frame.source.capture[0]);
     let reach = (u128::from(policy.maximum_speed) * u128::from(elapsed) * 2)
         .div_ceil(u128::from(SECOND)) + u128::from(policy.gate_padding) * 2;
     if !last.detection.partial && !detection.partial
@@ -450,8 +450,11 @@ fn pair_cost(track: ImageTrack, frame: ImageTrackingFrame, detection: ImageDetec
         && [previous.frame.source.capture, last.frame.source.capture, frame.source.capture]
             .iter().all(|capture| capture[0] == capture[1]));
     if let Some(previous) = previous {
-        let dt = last.frame.source.capture[0] - previous.frame.source.capture[0];
-        let ahead = frame.source.capture[0] - last.frame.source.capture[0];
+        let dt = last.frame.source.capture[0].saturating_sub(previous.frame.source.capture[0]);
+        let ahead = frame.source.capture[0].saturating_sub(last.frame.source.capture[0]);
+        if dt == 0 || ahead == 0 {
+            return None;
+        }
         let old = previous.detection.center();
         for (axis, predicted_axis) in predicted.iter_mut().enumerate() {
             let shift = i128::from(center[axis] - old[axis]) * i128::from(ahead) / i128::from(dt);
