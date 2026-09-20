@@ -30,6 +30,7 @@ mod model;
 mod outcome;
 mod packet_fault;
 mod policy;
+pub mod preprocess;
 pub mod reference_deployment;
 pub mod rtsp;
 pub mod scalar_executor;
