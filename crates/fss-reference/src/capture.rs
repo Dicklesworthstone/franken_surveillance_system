@@ -146,18 +146,35 @@ pub fn run_reference_capture_with_source(
     spec.validate()?;
     plan.validate_against(spec.packet_count)?;
     let source_packets = source.generate_packets()?;
+    publish_reference_packets(&spec, source_packets, source.clock().clone(), plan, objects, ledger)
+}
 
+/// Shared root-last publication for trusted, completely generated reference profiles.
+/// Callers validate the delivery plan before entering; this is not a public import API.
+pub(crate) fn publish_reference_packets(
+    spec: &VirtualCameraSpec,
+    source_packets: Vec<SourcePacket>,
+    clock: VirtualClock,
+    plan: &DeliveryPlan,
+    objects: &mut InMemoryObjectStore,
+    ledger: &mut DurableReferenceLedger,
+) -> Result<ReferenceCapture, ReferenceError> {
     for packet in &source_packets {
         let stored = objects.put_verified(&packet.bytes)?;
         if stored != packet.digest {
             return Err(ReferenceError::DigestMismatch);
         }
     }
-    let source_trace = SourceTrace::from_packets(&spec, &source_packets);
+    let source_trace = SourceTrace::from_packets(spec, &source_packets);
     let source_trace_digest = objects.put_verified(&source_trace.canonical_bytes())?;
+    // Identical encoded fragments share one content object. Their multiplicity,
+    // sequence and capture intervals remain fully retained in the ordered trace.
+    let mut unique_source_digests: Vec<_> = source_packets.iter().map(|packet| packet.digest).collect();
+    unique_source_digests.sort_unstable();
+    unique_source_digests.dedup();
     let source_manifest = ObjectManifest::new(
         "virtual-source-session",
-        source_packets.iter().map(|packet| packet.digest),
+        unique_source_digests,
         Some(source_trace_digest),
     )?;
     let source_root = objects.publish_manifest(source_manifest)?.root;
@@ -239,6 +256,6 @@ pub fn run_reference_capture_with_source(
         source_packets,
         delivery_packets,
         continuity,
-        clock: source.clock().clone(),
+        clock,
     })
 }

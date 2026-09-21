@@ -75,3 +75,6 @@ pub mod http_archive;
 
 /// Source-closed RGB perception evidence with actual native replay after restart.
 pub mod rgb_evidence;
+
+/// Opt-in decodable synthetic MJPEG sources with bounded fragmentation and custody.
+pub mod virtual_mjpeg;
