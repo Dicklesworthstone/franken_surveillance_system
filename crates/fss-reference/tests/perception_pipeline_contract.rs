@@ -66,6 +66,7 @@ fn event_generator() -> ZoneEventGenerator {
         policy_generation: ContentDigest::sha256(b"e2e-perception-policy-gen"),
         dedup_cooldown_ns: 500_000_000, // 500 ms
         min_probability: 0.3,
+        max_dedup_entries: 16,
     })
     .expect("generator config is valid");
     // Protected zone: right half of the scene.
