@@ -64,3 +64,6 @@ pub mod rgb_detections;
 
 /// Source-bound RGB class trajectories and observed image-zone events.
 pub mod rgb_tracking;
+
+/// Native, explicit-authority HTTP MJPEG with raw-read custody backpressure.
+pub mod http_camera;
