@@ -34,11 +34,14 @@ impl CrossCameraConfig {
         if self.max_time_delta_ns <= 0 {
             return Err(CrossCameraError::InvalidConfig("max_time_delta_ns must be positive"));
         }
-        if self.max_position_distance <= 0.0 {
-            return Err(CrossCameraError::InvalidConfig("max_position_distance must be positive"));
+        if !self.max_position_distance.is_finite() || self.max_position_distance <= 0.0 {
+            return Err(CrossCameraError::InvalidConfig(
+                "max_position_distance must be finite and positive"));
         }
-        if self.min_confidence < 0.0 || self.min_confidence > 1.0 {
-            return Err(CrossCameraError::InvalidConfig("min_confidence must be in [0, 1]"));
+        if !self.min_confidence.is_finite() || self.min_confidence < 0.0
+            || self.min_confidence > 1.0 {
+            return Err(CrossCameraError::InvalidConfig(
+                "min_confidence must be finite and in [0, 1]"));
         }
         Ok(())
     }
@@ -247,6 +250,18 @@ mod tests {
         let bad = CrossCameraConfig { max_time_delta_ns: 0, ..config() };
         assert!(bad.validate().is_err());
         let bad = CrossCameraConfig { min_confidence: 1.5, ..config() };
+        assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn non_finite_config_values_are_refused_not_silently_enabled() {
+        // NaN survives `<= 0.0` comparisons; without a finiteness check it would
+        // disable the geometry gate and emit NaN confidences.
+        let bad = CrossCameraConfig { max_position_distance: f64::NAN, ..config() };
+        assert!(bad.validate().is_err());
+        let bad = CrossCameraConfig { max_position_distance: f64::INFINITY, ..config() };
+        assert!(bad.validate().is_err());
+        let bad = CrossCameraConfig { min_confidence: f64::NAN, ..config() };
         assert!(bad.validate().is_err());
     }
 
