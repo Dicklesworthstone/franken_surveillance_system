@@ -69,3 +69,6 @@ pub mod rgb_tracking;
 
 /// Native, explicit-authority HTTP MJPEG with raw-read custody backpressure.
 pub mod http_camera;
+
+/// Durable original HTTP reads and exact, source-verified cold prefix recovery.
+pub mod http_archive;
