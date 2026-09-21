@@ -71,10 +71,13 @@ pub enum TrackStatus {
 /// A single detection from the foreground detector for one frame.
 #[derive(Clone, Debug)]
 pub struct Detection {
-    /// Bounding box: x, y, width, height (all in pixels).
+    /// Bounding box top-left corner x (pixels).
     pub box_x: f64,
+    /// Bounding box top-left corner y (pixels).
     pub box_y: f64,
+    /// Bounding box width (pixels).
     pub box_w: f64,
+    /// Bounding box height (pixels).
     pub box_h: f64,
 }
 
@@ -93,8 +96,9 @@ pub struct TrackedTarget {
     pub vx: f64,
     /// Estimated velocity in y (pixels per frame).
     pub vy: f64,
-    /// Last observed bounding box dimensions.
+    /// Last observed bounding box width (pixels).
     pub box_w: f64,
+    /// Last observed bounding box height (pixels).
     pub box_h: f64,
     /// Total number of detection hits.
     pub hits: u32,

@@ -121,7 +121,13 @@ impl Harness {
         Err("capture drain bound".into())
     }
     fn windows(&self) -> Vec<&PreparedHevcRecording> {
-        self.output.iter().filter_map(|p| match p { P::Window(w) => Some(w), _ => None }).collect()
+        self.output
+            .iter()
+            .filter_map(|p| match p {
+                P::Window(w) => Some(w.as_ref()),
+                _ => None,
+            })
+            .collect()
     }
 }
 

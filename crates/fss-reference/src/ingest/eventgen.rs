@@ -67,6 +67,11 @@ pub struct ZoneEventConfig {
     /// Conservative lower probability bound for generated hypotheses.
     /// Must lie in `[0, 1]`.
     pub min_probability: f64,
+    /// Maximum retained dedup keys. One physical episode stays one event
+    /// only while its (zone, track) cooldown entry is retained; the bound
+    /// keeps the generator's state bounded over long sessions. Must be
+    /// at least 1.
+    pub max_dedup_entries: usize,
 }
 
 /// Typed event-generation failure.
@@ -83,6 +88,12 @@ pub enum ZoneEventError {
     },
     /// Observation referenced a zone that was never registered.
     UnregisteredZone(String),
+    /// Observation time regressed below an already-accepted emission time.
+    ClockReversed,
+    /// The bounded dedup state is full of entries still inside their
+    /// cooldown; nothing may be silently forgotten (a forgotten entry could
+    /// let one physical episode emit again).
+    Limit,
     /// The assembled hypothesis violated an event-plane invariant.
     EventContract(Box<EventDecodeError>),
 }
@@ -96,6 +107,8 @@ impl std::fmt::Display for ZoneEventError {
                 write!(f, "authority grant lacks required capability {required}")
             }
             Self::UnregisteredZone(zone) => write!(f, "unregistered coverage zone '{zone}'"),
+            Self::ClockReversed => write!(f, "observation time regressed below a prior emission"),
+            Self::Limit => write!(f, "dedup state is bounded and full within the cooldown"),
             Self::EventContract(err) => write!(f, "generated event failed contract: {err}"),
         }
     }
@@ -109,6 +122,9 @@ pub struct ZoneEventGenerator {
     config: ZoneEventConfig,
     zones: Vec<ZoneSpec>,
     last_emitted: HashMap<(String, u64), TimestampNs>,
+    /// Highest accepted emission time; observations below it are refused
+    /// rather than silently absorbed into a cooldown window.
+    clock: Option<i64>,
     event_seq: u64,
 }
 
@@ -128,10 +144,15 @@ impl ZoneEventGenerator {
         if !(0.0..=1.0).contains(&config.min_probability) {
             return Err(ZoneEventError::InvalidConfig("min_probability must be in [0, 1]"));
         }
+        if config.max_dedup_entries == 0 {
+            return Err(ZoneEventError::InvalidConfig(
+                "max_dedup_entries must be at least 1"));
+        }
         Ok(Self {
             config,
             zones: Vec::new(),
             last_emitted: HashMap::new(),
+            clock: None,
             event_seq: 0,
         })
     }
@@ -225,13 +246,28 @@ impl ZoneEventGenerator {
             return Ok(None);
         }
 
-        // Dedup gate: one physical presence episode is one event.
+        // Dedup gate: one physical presence episode is one event. State is
+        // bounded: before inserting, entries that can no longer suppress
+        // anything (their cooldown elapsed against the monotonic clock) are
+        // dropped; if the bound is still full, the refusal is explicit
+        // instead of forgetting a still-live cooldown.
+        if self.clock.is_some_and(|accepted| ts.0 < accepted) {
+            return Err(ZoneEventError::ClockReversed);
+        }
         let key = (zone_id.to_string(), target.id);
         if let Some(last) = self.last_emitted.get(&key)
             && ts.0 - last.0 < i128::from(self.config.dedup_cooldown_ns)
         {
             return Ok(None);
         }
+        if self.last_emitted.len() >= self.config.max_dedup_entries {
+            let cooldown = i128::from(self.config.dedup_cooldown_ns);
+            self.last_emitted.retain(|_, last| ts.0 - last.0 < cooldown);
+            if self.last_emitted.len() >= self.config.max_dedup_entries {
+                return Err(ZoneEventError::Limit);
+            }
+        }
+        self.clock = Some(ts.0);
         self.last_emitted.insert(key, ts);
 
         self.event_seq += 1;
@@ -331,6 +367,7 @@ mod tests {
             policy_generation: policy_digest(),
             dedup_cooldown_ns: 1_000_000_000, // 1 s
             min_probability: 0.4,
+            max_dedup_entries: 64,
         }
     }
 
@@ -692,12 +729,21 @@ mod tests {
             policy_generation: policy_digest(),
             dedup_cooldown_ns: 0,
             min_probability: 0.4,
+            max_dedup_entries: 64,
         })
         .is_err());
         assert!(ZoneEventGenerator::new(ZoneEventConfig {
             policy_generation: policy_digest(),
             dedup_cooldown_ns: 1,
             min_probability: 1.5,
+            max_dedup_entries: 64,
+        })
+        .is_err());
+        assert!(ZoneEventGenerator::new(ZoneEventConfig {
+            policy_generation: policy_digest(),
+            dedup_cooldown_ns: 1,
+            min_probability: 0.4,
+            max_dedup_entries: 0,
         })
         .is_err());
     }
