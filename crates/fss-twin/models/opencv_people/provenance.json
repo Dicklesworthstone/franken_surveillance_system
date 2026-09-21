@@ -1,0 +1,24 @@
+{
+  "schema": "fss.pretrained_hog_candidate.provenance.v1",
+  "upstream_name": "OpenCV HOGDescriptor default people detector",
+  "upstream_reference_commit": "fe38fc608f6acb8b68953438a62305d8318f4fcd",
+  "upstream_reference_path": "modules/objdetect/src/hog.cpp",
+  "export_api": "cv2.HOGDescriptor_getDefaultPeopleDetector",
+  "exporter_distribution": "opencv-python 4.13.0.92",
+  "exporter_cv2_version": "4.13.0",
+  "observed_exporter_binary_sha256": "d408dfb5dd0c73570c8e02244dc3d5c8d77fffc774a9d3973713f986b24d56d3",
+  "source_attestation": "Exported from the named installed binary; reference commit is not a reproducible-build attestation.",
+  "parameters": 3781,
+  "format": "IEEE-754 binary32 little-endian; intercept last; coefficients unchanged",
+  "weights_sha256": "cb2198952eaa5bc7e43d950b9f2aa1966528063c7295c7262133e7fa0d3d564c",
+  "license": "Apache-2.0 (OpenCV binary distribution); preserve accompanying LICENSE.txt",
+  "license_sha256": "eb3c4147e0a4310c850d5cf01be0e789188994fda203b38ed8ee25afd68a7676",
+  "native_recipe_sha256": "cc63aa36801683f21da31523c71ac3e028a0ae0a00f5c08ce1a999e1d033bad6",
+  "intended_use": "Explicit replay/shadow candidate; no default model activation or alert authority.",
+  "limitations": [
+    "Native grayscale scalar arithmetic is not bit-identical to OpenCV.",
+    "Model margins are not probabilities, physical identity, event conclusions or evidence of absence.",
+    "No deployment recall, small/partial/dark/crouched-person quality, score calibration or training-data audit is claimed.",
+    "64 procedural-image numerical comparisons are supplementary Python checks, not compiled Rust or real-camera qualification."
+  ]
+}
