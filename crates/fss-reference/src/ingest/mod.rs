@@ -78,3 +78,6 @@ pub mod rgb_evidence;
 
 /// Opt-in decodable synthetic MJPEG sources with bounded fragmentation and custody.
 pub mod virtual_mjpeg;
+
+/// Durable original RGB evidence and exact native replay after a cold restart.
+pub mod rgb_archive;

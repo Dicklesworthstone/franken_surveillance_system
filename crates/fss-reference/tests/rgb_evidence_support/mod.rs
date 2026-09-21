@@ -75,7 +75,7 @@ pub fn capture(exposure: u8, availability: TrackingAvailability, cx: &ReplayCx) 
     let source = RgbSourceBinding { encoded_sha256:ContentDigest::sha256(&jpeg).bytes(), exposure:[exposure;32],camera:1,clock:2,
         capture:[u64::from(exposure)*1_000_000_000,u64::from(exposure)*1_000_000_000+1],image_domain:[3;32],calibration:[4;32],
         permission_mask:ContentDigest::sha256(&mask).bytes() };
-    let admission = RgbFrameAdmission::new(source,availability,[5;32])?;
+    let admission = RgbFrameAdmission::new(source,availability,ContentDigest::new(fss_core::DigestAlgorithm::Sha256,[5;32]))?;
     let mut detector = RgbDetector::new(imported.model(),&head)?;
     let RgbDetectionStep::Complete(run) = detector.run_jpeg(RgbDetectionInput { bytes:&jpeg,allowed:&mask,source,
         interpretation:ComponentInterpretation::YCbCr },limits().run,&mut DecodeBudget::new(WORK),
