@@ -33,6 +33,15 @@ pub struct ArchivePinRestoration {
 }
 
 impl ArchivePinJournal {
+    /// Open an existing journal without any incomplete-tail repair. This is the ordinary
+    /// operator recovery entrypoint; accepted scope, independent minimum and limits are
+    /// identical to open_existing. Missing storage is never initialized or adopted.
+    pub fn open_complete(directory: impl AsRef<Path>, scope: ArchivePinScope,
+        minimum: Option<ArchivePinAnchor>, limits: ArchivePinLimits,
+        cancel: &dyn PublishCancellation) -> PinResult<Self> {
+        Self::open_existing(directory, scope, minimum, limits, IncompleteTailPolicy::Reject, cancel)
+    }
+
     /// Reconcile and restore exactly the journal's active work. A candidate takes precedence;
     /// its missing/corrupt/deleted work is an error, never a reason to try the older confirmation.
     /// With no candidate, restore the last confirmation. Empty journals have no restoration.

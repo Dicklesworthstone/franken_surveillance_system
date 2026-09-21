@@ -7,11 +7,14 @@ use fss_cli::{ERR_CLI_RUNTIME_FAILURE, ExitIdentity};
 
 #[path = "fss-archive/work.rs"]
 mod work;
+#[path = "fss-archive/pins.rs"]
+mod pins;
 
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).take(66).collect();
+    if pins::handles(&args) { return pins::dispatch(&args); }
     let result = if work::handles(&args) { work::execute(&args) } else { match parse_archive_args(&args) {
-        Ok(None) => Ok(format!("{HELP}\n{}", work::HELP)),
+        Ok(None) => Ok(format!("{HELP}\n{}\n{}", work::HELP, pins::HELP)),
         Ok(Some(options)) => execute_archive(&options),
         Err(error) => Err(error),
     }};
