@@ -26,6 +26,8 @@ pub mod foreground;
 pub mod tracking;
 /// Constant-velocity Kalman filter tracker with IoU-based data association.
 pub mod tracker;
+/// Cross-camera association of tracked objects via time and geometry gates.
+pub mod cross_camera;
 /// Complete, restart-reproducible detector/tracker reports over retained recordings.
 pub mod analysis;
 /// Durable unresolved event candidates from exact replayed analysis reports.
