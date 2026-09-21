@@ -269,7 +269,7 @@ fn real_tcp_bytes_flow_to_pretrained_inference_before_a_second_source_read() -> 
         socket.write_all(&source)?;Ok(())
     });
     let r=HttpCameraRoute::new(StreamBasis {source:[7;32],generation:3},peer,"localhost","/video",HttpCameraSecurity::OwnerApprovedPlaintext)?;
-    let a=Authority::new(&r);let camera=HttpCamera::connect(r,HttpCameraLimits::default(),0,100_000,&a)?;
+    let a=Authority::new(&r);let camera=HttpCamera::connect(r,HttpCameraLimits::default(),0,10_000_000_000,&a)?;
     let mut c=HttpHogCapture::attach(camera,f.processor()?)?;let mut framing=budget();let until=Instant::now()+Duration::from_secs(6);
     let mut saved=Vec::new();let mut done=false;
     while Instant::now()<until {
@@ -291,4 +291,40 @@ fn real_tcp_bytes_flow_to_pretrained_inference_before_a_second_source_read() -> 
         &JPEG[map.jpeg_range[0] as usize..map.jpeg_range[1] as usize]);}
     assert_eq!(&saved[..],&original[..saved.len()]);assert_eq!(result.encoded_sha256(),hash(JPEG));
     handle.join().map_err(|_|"native server failed")??;Ok(())
+}
+
+#[test]
+fn pending_wire_owner_moves_between_tasks_without_reading_or_discarding_source() -> Test {
+    let input=response(false,false,1);let mut c=camera(&input,4096,HttpCameraLimits::default())?;
+    let a=Authority::new(c.route());let receipt=wire_ready(&mut c,&a)?;let totals=c.totals();
+    let handle=std::thread::spawn(move || -> Result<HttpCameraRetirement,HttpCameraError> {
+        let a=Authority::new(c.route());
+        if c.step(11,&a,&mut budget())?!=HttpCameraStep::WireReady(receipt) {
+            return Err(HttpCameraError::ReceiptMismatch);
+        }
+        Ok(c.retire())
+    });
+    let retired=handle.join().map_err(|_|"source owner task failed")??;
+    assert_eq!(retired.totals,totals);let wire=retired.wire.ok_or("wire handoff lost source")?;
+    assert_eq!(wire.receipt(),receipt);assert_eq!(wire.bytes(),input);assert!(!wire.acknowledged());Ok(())
+}
+#[test]
+fn accepted_model_work_moves_between_tasks_and_resumes_the_same_source() -> Test {
+    let f=Fixture::new()?;let mut c=f.owner(&response(false,false,2),4096)?;
+    let a=Authority::new(c.camera().route());ready(&mut c,&a,100)?;
+    assert_eq!(f.analyze(&mut c,1,&a,&mut WorkBudget::new(0),&mut work())?,
+        HttpHogStep::AnalysisPending(JpegHogStage::Inference));
+    let counts=c.camera().totals();let image=c.analysis().ok_or("analysis lost")?.image().ok_or("image lost")?.digest();
+    let handle=std::thread::spawn(move || -> Result<(HttpHogRetirement,HttpHogCompletion),HttpHogError> {
+        let a=Authority::new(c.camera().route());
+        let result=match c.resume(100,&a,&mut work(),&mut work(),&mut work())? {
+            HttpHogStep::ResultReady(result)=>result,_=>return Err(HttpHogError::NotReady),
+        };
+        Ok((c.retire(),result))
+    });
+    let (retired,result)=handle.join().map_err(|_|"learned owner task failed")??;
+    assert_eq!(retired.source.totals,counts);assert_eq!(result.analysis().image,image);
+    assert_eq!(retired.complete,Some(result));assert_eq!(retired.processor.stage(),JpegHogStage::Complete);
+    assert_eq!(retired.source.frame.ok_or("frame handoff lost source")?.part().bytes(),JPEG);
+    assert_eq!(retired.processor.zones().pipeline().tracker().exposure_count(),1);Ok(())
 }

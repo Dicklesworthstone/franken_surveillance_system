@@ -263,8 +263,9 @@ pub enum HttpCameraStep {
     /// Both HTTP and MIME terminated successfully. Inspect completion() for how.
     Complete,
 }
-trait CameraSocket: Read + Write {}
-impl<T: Read + Write> CameraSocket for T {}
+// The owner may move into a runtime-owned task; no borrowed I/O state is stored.
+trait CameraSocket: Read + Write + Send {}
+impl<T: Read + Write + Send> CameraSocket for T {}
 
 /// One native connection and one outstanding raw read/entity/frame. Drop closes only;
 /// it sends no further request. Call retire() to recover all unfinished source objects.

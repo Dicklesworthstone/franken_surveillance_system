@@ -102,7 +102,7 @@ cargo test -p fss-reference ingest::http_camera::tests
 cargo test -p fss-reference ingest::http_camera::tests::learned
 ```
 
-Eleven additional Rust contracts exercise actual pretrained coefficients, native
+Thirteen additional Rust contracts exercise actual pretrained coefficients, native
 JPEG/rectification/health, original tracking/zone reports, all downstream budget
 cut classes, source-context mismatch, image retry, post-analysis revocation,
 stale or denied result release, fragment-invariant lineage, live watchdog polling,
@@ -113,3 +113,11 @@ it is not a person, a detection-quality corpus or evidence of added source detai
 These Rust tests, compilation, rustfmt and Clippy were not runnable in the
 authoring sandbox because no Rust toolchain was available. Lexical and exact
 source/hash checks are supplementary. No acceptance gate or bead is closed.
+
+The live socket abstraction preserves `Send`, so the camera and compound learned
+owner can move into an owned runtime task without detaching the connection or
+reconstructing state. Two handoff contracts move an unacknowledged raw read and
+an accepted-but-pending learned image between joined threads, respectively. The
+moved owner keeps the same source bytes, counters and image receipt and resumes
+without another network read. This is a task-ownership/type contract, not a claim
+that an Asupersync service or a production scheduler has been implemented.
