@@ -16,6 +16,7 @@ use fss_core::abstraction::runtime_authority::RuntimeGrant;
 use fss_core::event::{EventHypothesis, EventKind, EventState};
 use fss_core::{ContentDigest, TimestampNs};
 
+use fss_reference::ingest::cross_camera::{associate, CameraObservation, CrossCameraConfig};
 use fss_reference::ingest::eventgen::{ZoneEventConfig, ZoneEventGenerator, ZoneSpec};
 use fss_reference::ingest::foreground::{ForegroundConfig, ForegroundDetector};
 use fss_reference::ingest::tracker::{Detection, MultiObjectTracker, TrackerConfig};
@@ -80,14 +81,15 @@ fn event_generator() -> ZoneEventGenerator {
     zonegen
 }
 
-/// Runs the full pipeline over one frame. Returns generated events, if any.
-fn step(
+/// Runs the full pipeline over one frame. Returns generated events (if any)
+/// together with the tracker output for callers that need track identities.
+fn step_with_tracks(
     detector: &mut ForegroundDetector,
     tracker: &mut MultiObjectTracker,
     zonegen: &mut ZoneEventGenerator,
     square_at: Option<(f64, f64)>,
     ts_ns: i128,
-) -> Result<Vec<EventHypothesis>, String> {
+) -> Result<(Vec<EventHypothesis>, fss_reference::ingest::tracker::TrackerOutput), String> {
     let pixels = frame(square_at);
     let frame_digest = ContentDigest::sha256(&pixels);
 
@@ -130,7 +132,18 @@ fn step(
             }
         }
     }
-    Ok(events)
+    Ok((events, output))
+}
+
+/// Runs the full pipeline over one frame. Returns generated events, if any.
+fn step(
+    detector: &mut ForegroundDetector,
+    tracker: &mut MultiObjectTracker,
+    zonegen: &mut ZoneEventGenerator,
+    square_at: Option<(f64, f64)>,
+    ts_ns: i128,
+) -> Result<Vec<EventHypothesis>, String> {
+    step_with_tracks(detector, tracker, zonegen, square_at, ts_ns).map(|(events, _)| events)
 }
 
 #[test]
@@ -279,4 +292,115 @@ fn pipeline_without_authority_generates_nothing() {
         }
     }
     assert_eq!(zonegen.generated_count(), 0);
+}
+
+/// Camera-A scene square top-left for a frame (mirrors `frame()` layout).
+fn breach_frame_digest() -> ContentDigest {
+    ContentDigest::sha256(&frame(Some((36.0, 28.0))))
+}
+
+#[test]
+fn two_camera_breach_associates_and_corroborates() {
+    // Camera A runs the full pipeline and publishes a corroborated-ready
+    // event; camera B independently tracks the same physical square.
+    let mut detector_a = foreground();
+    let mut tracker_a = tracker();
+    let mut zonegen = event_generator();
+
+    // --- Camera A: baseline, approach, breach, confirmation. ---
+    step(&mut detector_a, &mut tracker_a, &mut zonegen, None, 0).unwrap();
+    step(&mut detector_a, &mut tracker_a, &mut zonegen, Some((4.0, 28.0)), 33_000_000)
+        .unwrap();
+    step(&mut detector_a, &mut tracker_a, &mut zonegen, Some((10.0, 28.0)), 66_000_000)
+        .unwrap();
+    step(&mut detector_a, &mut tracker_a, &mut zonegen, Some((34.0, 28.0)), 99_000_000)
+        .unwrap();
+    let mut events =
+        step(&mut detector_a, &mut tracker_a, &mut zonegen, Some((36.0, 28.0)), 132_000_000)
+            .unwrap();
+    assert_eq!(events.len(), 1, "camera A must publish one zone-breach event");
+    let mut lineage = fss_core::event::EventLineage::new(events.remove(0))
+        .expect("genesis event starts a lineage");
+
+    // Camera A's own continued observation witnesses the event, using the
+    // confirmed track from a later frame with distinct bytes.
+    let (_, tracks_a) = step_with_tracks(
+        &mut detector_a,
+        &mut tracker_a,
+        &mut zonegen,
+        Some((38.0, 28.0)),
+        165_000_000,
+    )
+    .expect("camera A witness frame runs");
+    let track_a = tracks_a
+        .tracks
+        .iter()
+        .find(|t| t.status == fss_reference::ingest::tracker::TrackStatus::Confirmed)
+        .expect("camera A holds a confirmed track");
+    let witness_digest = ContentDigest::sha256(&frame(Some((38.0, 28.0))));
+    zonegen
+        .witness(
+            RuntimeGrant::ObserveEvent,
+            &mut lineage,
+            track_a,
+            "cam-e2e",
+            TimestampNs(165_000_000),
+            witness_digest,
+        )
+        .expect("camera-A witness advances to Witnessed");
+    assert_eq!(lineage.current_state(), fss_core::event::EventState::Witnessed);
+
+    // --- Camera B: same square, different viewpoint, own frames. ---
+    // B's rectified ground-plane positions land within association gates of
+    // A's observation of the same object.
+    let ground_truth = (12.5_f64, 7.0_f64);
+    let pair_obs = (CameraObservation {
+        camera_id: "cam-a-rectified".to_string(),
+        track_id: track_a.id,
+        timestamp_ns: 165_000_000,
+        ground_x: ground_truth.0,
+        ground_y: ground_truth.1,
+    }, CameraObservation {
+        camera_id: "cam-b-rectified".to_string(),
+        track_id: 11,
+        timestamp_ns: 171_000_000,
+        ground_x: ground_truth.0 + 0.4,
+        ground_y: ground_truth.1 + 0.1,
+    });
+    let config = CrossCameraConfig {
+        max_time_delta_ns: 50_000_000,
+        max_position_distance: 2.0,
+        min_confidence: 0.1,
+    };
+    let pairs = associate(&config, &[pair_obs.0], &[pair_obs.1]).expect("association gates valid");
+    assert_eq!(pairs.len(), 1, "the two cameras observe the same physical object");
+
+    // Corroborate with camera B's independent frame bytes and domain.
+    // Camera B's viewpoint: same scene, one pixel of parallax — distinct
+    // bytes, independent observation.
+    let cam_b_digest = ContentDigest::sha256(&frame(Some((35.0, 28.0))));
+    zonegen
+        .corroborate(
+            RuntimeGrant::ObserveEvent,
+            &mut lineage,
+            &pairs[0],
+            "cam-b-e2e",
+            TimestampNs(171_000_000),
+            cam_b_digest,
+            0.95,
+        )
+        .expect("independent-domain corroboration completes the episode");
+
+    assert_eq!(lineage.current_state(), fss_core::event::EventState::Corroborated);
+    assert_eq!(lineage.len(), 3, "genesis -> witnessed -> corroborated");
+    let final_event = lineage.current();
+    assert_eq!(final_event.evidence.len(), 3);
+    assert!(final_event.track_ids.contains(&"track:11".to_string()));
+    assert_ne!(
+        final_event.evidence[0].digest, final_event.evidence[2].digest,
+        "corroborating frame bytes must differ from the originating camera's"
+    );
+    for revision in lineage.history() {
+        revision.verify().expect("every revision passes the event contract");
+    }
 }

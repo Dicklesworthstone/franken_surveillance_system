@@ -23,10 +23,11 @@ use std::collections::HashMap;
 use fss_core::abstraction::runtime_authority::RuntimeGrant;
 use fss_core::event::{
     DecisionPath, EventDecodeError, EventEvidence, EventHypothesis, EventKind, EventState,
-    EvidenceEdgeRelation, ProbabilityInterval, MAX_ZONE_ID_LEN,
+    EventTransitionParams, EvidenceEdgeRelation, ProbabilityInterval, MAX_ZONE_ID_LEN,
 };
 use fss_core::{CaptureInterval, ContentDigest, EvidenceClass, EventId, TimestampNs};
 
+use crate::ingest::cross_camera::AssociatedPair;
 use crate::ingest::tracker::{TrackStatus, TrackedTarget};
 
 /// A registered coverage zone that maps contained tracks to an event kind.
@@ -96,6 +97,14 @@ pub enum ZoneEventError {
     Limit,
     /// The assembled hypothesis violated an event-plane invariant.
     EventContract(Box<EventDecodeError>),
+    /// Corroboration was attempted with the same failure domain that already
+    /// supports the event: one camera can never corroborate itself.
+    SameFailureDomain(String),
+    /// Corroborating evidence digest duplicates an existing evidence digest.
+    DuplicateEvidenceDigest,
+    /// The event lineage refused the transition (state machine, tamper,
+    /// duplicate evidence, or depth rules).
+    Lineage(Box<fss_core::event::EventTransitionError>),
 }
 
 impl std::fmt::Display for ZoneEventError {
@@ -110,6 +119,13 @@ impl std::fmt::Display for ZoneEventError {
             Self::ClockReversed => write!(f, "observation time regressed below a prior emission"),
             Self::Limit => write!(f, "dedup state is bounded and full within the cooldown"),
             Self::EventContract(err) => write!(f, "generated event failed contract: {err}"),
+            Self::SameFailureDomain(domain) => {
+                write!(f, "corroboration refused: failure domain '{domain}' already supports the event")
+            }
+            Self::DuplicateEvidenceDigest => {
+                write!(f, "corroborating evidence digest duplicates existing evidence")
+            }
+            Self::Lineage(err) => write!(f, "event lineage refused transition: {err}"),
         }
     }
 }
@@ -281,6 +297,182 @@ impl ZoneEventGenerator {
         self.event_seq
     }
 
+    /// Advances a lineage from [`EventState::Hypothesized`] to
+    /// [`EventState::Witnessed`] by attaching the originating camera's
+    /// continued observation of the tracked object.
+    ///
+    /// # Errors
+    /// Capability, contract, and lineage-transition failures are typed.
+    pub fn witness(
+        &self,
+        grant: RuntimeGrant,
+        lineage: &mut fss_core::event::EventLineage,
+        _target: &TrackedTarget,
+        failure_domain: &str,
+        ts: TimestampNs,
+        frame_digest: ContentDigest,
+    ) -> Result<(), ZoneEventError> {
+        if grant != RuntimeGrant::ObserveEvent {
+            return Err(ZoneEventError::CapabilityDenied {
+                required: RuntimeGrant::ObserveEvent.as_str(),
+            });
+        }
+        if failure_domain.is_empty() {
+            return Err(ZoneEventError::InvalidConfig("failure_domain must not be empty"));
+        }
+        let current = lineage.current().clone();
+        let edge = EventEvidence {
+            digest: frame_digest,
+            class: EvidenceClass::Observed,
+            failure_domain: failure_domain.to_string(),
+            supports: true,
+            relation: EvidenceEdgeRelation::Supports,
+            capsule_digest: None,
+            identity_digest: None,
+        };
+        let mut evidence = current.evidence.clone();
+        if evidence.iter().any(|e| e.digest == frame_digest) {
+            return Err(ZoneEventError::DuplicateEvidenceDigest);
+        }
+        evidence.push(edge);
+        let params = EventTransitionParams {
+            target_state: EventState::Witnessed,
+            kind: current.kind,
+            interval: expand_interval(current.interval, ts),
+            uncertainty_reason: None,
+            zone_ids: current.zone_ids.clone(),
+            track_ids: current.track_ids.clone(),
+            probability: current.probability,
+            evidence,
+            model_receipts: current.model_receipts.clone(),
+            decision_path: self.chain_fingerprint(&current, ts, frame_digest),
+            urgent_single_sensor: false,
+        };
+        lineage
+            .transition(params)
+            .map_err(|err| ZoneEventError::Lineage(Box::new(err)))?;
+        Ok(())
+    }
+
+    /// Advances a lineage to [`EventState::Corroborated`] using an
+    /// [`AssociatedPair`] from the cross-camera associator.
+    ///
+    /// The corroborating observation MUST originate from a failure domain
+    /// that does not yet support the event: one camera can never corroborate
+    /// itself. The second camera's track identifier is added to the event's
+    /// correlated-track list for full provenance.
+    ///
+    /// # Errors
+    /// - [`ZoneEventError::SameFailureDomain`] when the corroborating camera
+    ///   shares a failure domain with an existing supporting edge;
+    /// - [`ZoneEventError::DuplicateEvidenceDigest`] when the corroborating
+    ///   frame digest already appears in the lineage;
+    /// - plus capability and lineage-transition failures.
+    // 9 args carry the full corroboration record: authority, lineage, the
+    // cross-camera association, the corroborating camera's domain, time,
+    // frame digest, and confidence ceiling. A params struct would hide the
+    // authority argument.
+    #[allow(clippy::too_many_arguments)]
+    pub fn corroborate(
+        &self,
+        grant: RuntimeGrant,
+        lineage: &mut fss_core::event::EventLineage,
+        pair: &AssociatedPair,
+        corroborating_failure_domain: &str,
+        ts: TimestampNs,
+        corroborating_frame_digest: ContentDigest,
+        upper_probability: f64,
+    ) -> Result<(), ZoneEventError> {
+        if grant != RuntimeGrant::ObserveEvent {
+            return Err(ZoneEventError::CapabilityDenied {
+                required: RuntimeGrant::ObserveEvent.as_str(),
+            });
+        }
+        if corroborating_failure_domain.is_empty() {
+            return Err(ZoneEventError::InvalidConfig("failure_domain must not be empty"));
+        }
+        let current = lineage.current().clone();
+        // Fail fast on the prohibited shortcut: self-corroboration.
+        let existing_domains: Vec<&str> = current
+            .evidence
+            .iter()
+            .filter(|edge| edge.counts_as_support())
+            .map(|edge| edge.failure_domain.as_str())
+            .collect();
+        if existing_domains.contains(&corroborating_failure_domain) {
+            return Err(ZoneEventError::SameFailureDomain(
+                corroborating_failure_domain.to_string(),
+            ));
+        }
+        if current
+            .evidence
+            .iter()
+            .any(|e| e.digest == corroborating_frame_digest)
+        {
+            return Err(ZoneEventError::DuplicateEvidenceDigest);
+        }
+        let edge = EventEvidence {
+            digest: corroborating_frame_digest,
+            class: EvidenceClass::Observed,
+            failure_domain: corroborating_failure_domain.to_string(),
+            supports: true,
+            relation: EvidenceEdgeRelation::Supports,
+            capsule_digest: None,
+            identity_digest: None,
+        };
+        let mut evidence = current.evidence.clone();
+        evidence.push(edge);
+
+        // Correlated tracks gain the second camera's track label.
+        let mut track_ids = current.track_ids.clone();
+        let second_track = format!("track:{}", pair.second.track_id);
+        if !track_ids.contains(&second_track) {
+            track_ids.push(second_track);
+        }
+
+        let upper = upper_probability.clamp(current.probability.lower, 1.0);
+        let probability = ProbabilityInterval::new(current.probability.lower, upper)
+            .map_err(|err| {
+                ZoneEventError::EventContract(Box::new(EventDecodeError::Contract(err)))
+            })?;
+
+        let params = EventTransitionParams {
+            target_state: EventState::Corroborated,
+            kind: current.kind,
+            interval: expand_interval(current.interval, ts),
+            uncertainty_reason: None,
+            zone_ids: current.zone_ids.clone(),
+            track_ids,
+            probability,
+            evidence,
+            model_receipts: current.model_receipts.clone(),
+            decision_path: self.chain_fingerprint(&current, ts, corroborating_frame_digest),
+            urgent_single_sensor: false,
+        };
+        lineage
+            .transition(params)
+            .map_err(|err| ZoneEventError::Lineage(Box::new(err)))?;
+        Ok(())
+    }
+
+    fn chain_fingerprint(
+        &self,
+        current: &EventHypothesis,
+        ts: TimestampNs,
+        frame_digest: ContentDigest,
+    ) -> DecisionPath {
+        let mut fp_input = Vec::new();
+        fp_input.extend_from_slice(&current.decision_path.fingerprint.bytes());
+        fp_input.extend_from_slice(&ts.0.to_le_bytes());
+        fp_input.extend_from_slice(&frame_digest.bytes());
+        DecisionPath {
+            policy_generation: self.config.policy_generation,
+            fingerprint: ContentDigest::sha256(&fp_input),
+            abstained: false,
+            abstention_reason: None,
+        }
+    }
+
     fn assemble(
         &self,
         zone: &ZoneSpec,
@@ -354,8 +546,20 @@ impl ZoneEventGenerator {
     }
 }
 
+/// Widens `[earliest, latest]` to include `ts` (non-decreasing interval).
+fn expand_interval(interval: CaptureInterval, ts: TimestampNs) -> CaptureInterval {
+    CaptureInterval {
+        earliest: TimestampNs(interval.earliest.0.min(ts.0)),
+        latest: TimestampNs(interval.latest.0.max(ts.0)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    // Tests fail loudly by design: unwrap/expect are the idiomatic
+    // test-failure signals, not production error handling.
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
 
     fn policy_digest() -> ContentDigest {
@@ -746,5 +950,173 @@ mod tests {
             max_dedup_entries: 0,
         })
         .is_err());
+    }
+
+    // --- Corroboration tests -------------------------------------------------
+
+    use fss_core::event::EventLineage;
+
+    use crate::ingest::cross_camera::CameraObservation;
+
+    /// camera-A observation at (50, 60), camera-B at (51, 60): same object.
+    fn associated_pair() -> AssociatedPair {
+        AssociatedPair {
+            first: CameraObservation {
+                camera_id: "cam-a".to_string(),
+                track_id: 7,
+                timestamp_ns: 1_000_000_000,
+                ground_x: 50.0,
+                ground_y: 60.0,
+            },
+            second: CameraObservation {
+                camera_id: "cam-b".to_string(),
+                track_id: 3,
+                timestamp_ns: 1_010_000_000,
+                ground_x: 51.0,
+                ground_y: 60.0,
+            },
+            confidence: 0.94,
+        }
+    }
+
+    /// Emits a genesis event and attaches the originating camera's witness.
+    fn witnessed_lineage() -> (ZoneEventGenerator, EventLineage) {
+        let mut zonegen = generator();
+        let genesis = zonegen
+            .observe(
+                RuntimeGrant::ObserveEvent,
+                &confirmed_track(),
+                "driveway",
+                "cam-a",
+                ts(1),
+                frame_digest(),
+                0.9,
+            )
+            .unwrap()
+            .unwrap();
+        let mut lineage = EventLineage::new(genesis).unwrap();
+        zonegen
+            .witness(
+                RuntimeGrant::ObserveEvent,
+                &mut lineage,
+                &confirmed_track(),
+                "cam-a",
+                ts(2),
+                ContentDigest::sha256(b"frame-bytes-cam-a-later"),
+            )
+            .expect("same-camera witness must advance to Witnessed");
+        (zonegen, lineage)
+    }
+
+    #[test]
+    fn witness_advances_hypothesized_to_witnessed() {
+        let (_zonegen, lineage) = witnessed_lineage();
+        assert_eq!(lineage.current_state(), EventState::Witnessed);
+        assert_eq!(lineage.current_revision(), 2);
+        assert!(lineage.current().supersedes.is_some(), "revision 2 supersedes genesis");
+        assert_eq!(lineage.current().evidence.len(), 2);
+        assert_eq!(lineage.len(), 2, "lineage keeps immutable history");
+        assert_eq!(lineage.current().interval.earliest, TimestampNs(ts(1).0));
+    }
+
+    #[test]
+    fn corroborate_advances_witnessed_to_corroborated() {
+        let (zonegen, mut lineage) = witnessed_lineage();
+        zonegen
+            .corroborate(
+                RuntimeGrant::ObserveEvent,
+                &mut lineage,
+                &associated_pair(),
+                "cam-b",
+                ts(3),
+                ContentDigest::sha256(b"frame-bytes-cam-b"),
+                0.95,
+            )
+            .expect("independent-domain corroboration must succeed");
+        assert_eq!(lineage.current_state(), EventState::Corroborated);
+        assert_eq!(lineage.current_revision(), 3);
+        let current = lineage.current();
+        assert_eq!(current.evidence.len(), 3);
+        let domains: Vec<&str> =
+            current.evidence.iter().map(|e| e.failure_domain.as_str()).collect();
+        assert!(domains.contains(&"cam-a") && domains.contains(&"cam-b"));
+        assert!(
+            current.track_ids.contains(&"track:3".to_string()),
+            "second camera's track id must join the correlated tracks"
+        );
+        assert_eq!(current.probability.upper, 0.95, "corroboration may raise confidence");
+    }
+
+    #[test]
+    fn corroboration_refuses_same_failure_domain() {
+        let (zonegen, mut lineage) = witnessed_lineage();
+        let err = zonegen
+            .corroborate(
+                RuntimeGrant::ObserveEvent,
+                &mut lineage,
+                &associated_pair(),
+                "cam-a", // same domain as the supporting evidence
+                ts(3),
+                ContentDigest::sha256(b"different-bytes-same-camera"),
+                0.95,
+            )
+            .expect_err("one camera must never corroborate itself");
+        assert!(matches!(&err, ZoneEventError::SameFailureDomain(d) if d == "cam-a"));
+        assert_eq!(lineage.current_state(), EventState::Witnessed, "refusal leaves state");
+    }
+
+    #[test]
+    fn corroboration_refuses_duplicate_frame_digest() {
+        let (zonegen, mut lineage) = witnessed_lineage();
+        let err = zonegen
+            .corroborate(
+                RuntimeGrant::ObserveEvent,
+                &mut lineage,
+                &associated_pair(),
+                "cam-b",
+                ts(3),
+                frame_digest(), // already the genesis evidence digest
+                0.95,
+            )
+            .expect_err("duplicate evidence digest must be refused");
+        assert!(matches!(err, ZoneEventError::DuplicateEvidenceDigest));
+    }
+
+    #[test]
+    fn corroboration_requires_capability() {
+        let (zonegen, mut lineage) = witnessed_lineage();
+        let err = zonegen
+            .corroborate(
+                RuntimeGrant::ObserveStatus,
+                &mut lineage,
+                &associated_pair(),
+                "cam-b",
+                ts(3),
+                ContentDigest::sha256(b"frame-bytes-cam-b"),
+                0.95,
+            )
+            .expect_err("wrong grant must not authorize corroboration");
+        assert!(matches!(err, ZoneEventError::CapabilityDenied { .. }));
+        assert_eq!(lineage.current_state(), EventState::Witnessed);
+    }
+
+    #[test]
+    fn corroborated_lineage_survives_full_contract_verification() {
+        let (zonegen, mut lineage) = witnessed_lineage();
+        zonegen
+            .corroborate(
+                RuntimeGrant::ObserveEvent,
+                &mut lineage,
+                &associated_pair(),
+                "cam-b",
+                ts(3),
+                ContentDigest::sha256(b"frame-bytes-cam-b"),
+                0.95,
+            )
+            .unwrap();
+        for revision in lineage.history() {
+            revision.verify().expect("every lineage revision passes contract");
+        }
+        assert_eq!(lineage.highest_canonical_state(), Some(EventState::Corroborated));
     }
 }
