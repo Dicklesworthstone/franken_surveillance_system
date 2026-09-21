@@ -141,3 +141,6 @@ impl HogZonePipeline {
         Ok(progress)
     }
 }
+
+/// Native JPEG source ownership and resumable learned-event processing.
+pub mod jpeg;
