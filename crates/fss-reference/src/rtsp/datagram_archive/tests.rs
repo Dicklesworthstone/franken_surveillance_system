@@ -218,3 +218,6 @@ fn foreign_families_extra_children_and_noncanonical_source_metadata_are_refused(
     }
     Ok(())
 }
+
+#[path = "tests/live.rs"]
+mod live;

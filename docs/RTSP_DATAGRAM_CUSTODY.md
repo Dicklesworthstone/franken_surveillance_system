@@ -60,6 +60,65 @@ remote session, timing decisions, authority and privacy are not restored by this
 source-only prefix. Source bytes remain useful for explicit later reconstruction
 and diagnostics under separately verified configuration and authorization.
 
+## Native capture and recording integration
+
+`datagram_archive::live::RetainedAvcRecording` wraps the existing native
+`LiveAvcRecording`. Supply its normal live/recording configuration, exact datagram
+scope, independent source limits, an already-open publisher, live TCP authority,
+storage cancellation and cooperative work allowance. The route, channels and
+receive-clock interpretation must match before a connection is attempted. An
+occupied source namespace is refused rather than silently extending it with a
+new connection under an old epoch.
+
+Poll with explicit readiness, current time, authority and the same publisher.
+Every complete RTP/RTCP source event, including failed RTP admission and invalid
+RTCP, is published before returning that event or polling the subsequent media,
+picture-timing or recording-window result. The original protocol admission and
+validation results remain unchanged. Source storage is performed only on a
+protocol-output step, with no socket read/write during that publication. There
+is no additional source queue, mutable bare-capture escape or next-packet read
+ahead around a pending source write.
+
+`RetainedRecordingStep::datagram` contains the actual local root receipt only for
+an original interleaved datagram. `None` on a raw TCP chunk, control response,
+prepared window or terminal output does not claim source custody for that item.
+RTSP control messages and credentials are never copied into this datagram store;
+raw TCP chunks remain explicit caller-owned outputs with their separate
+retention/omission obligations. Original RTCP can contain private participant
+metadata and must be authorized by the supplied retention policy.
+
+The publisher is supplied per poll, not held through an exclusive lifetime borrow.
+A caller can therefore publish a returned `PreparedRecording` through the existing
+`RecordingPublication` using the same storage owner between polls. Normal source
+objects and window payloads retain their existing formats. The datagram roots do
+not substitute for recording publication or archive indexing. DTS, duration and
+composition offset still require explicit timing; a refused timing input leaves
+the same picture available for correction. Publication never guesses media time.
+
+Any source-capacity, work, cancellation or storage failure stops live capture and
+returns the exact withheld source event, unsealed/capture/network retirement,
+last acknowledged prefix and any prepared candidate pin. A root-write error can
+mean that the candidate already committed; reopen/reconcile the same storage and
+recover that exact prefix rather than recapturing or renumbering it. If storage
+commits and the post-I/O live-authority/cancellation check then fails, retirement
+also retains the actual successful publication receipt. Neither case is reported
+as a successfully delivered media event, complete recording, or synthetic EOF.
+
+Current authority is checked before progress, inside supported publication cut
+points and after storage. An admission timestamp is not the elapsed syscall time:
+the supplied live probe must enforce real deadline/revocation itself. Existing
+protocol, collector and connection deadlines are not renewed by storage. Repeated
+calls consume finite work; clock regression is a safe refusal. Cancellation does
+not publish, delete source, send a speculative TEARDOWN or reopen the connection.
+
+Eleven additional authored contracts exercise actual loopback TCP and existing
+encoded AVC, timing followed by same-owner recording publication, TCP chunk sizes
+1/7/4096, incomplete FU-A recovery without a completed picture, repeated RTP,
+invalid RTCP, terminal malformed RTP, source-capacity refusal, lost root replies,
+post-commit cancellation with a retained actual receipt, revocation, wrong owners,
+occupied epochs and replay deadlines. Together with the twelve source-store
+contracts, this increment contains 23 authored tests, not 23 executed passes.
+
 ## Bounds and verification
 
 Counts, cumulative payload, full publisher scans, object allocations and work are
@@ -78,6 +137,7 @@ bounds, corruption, wrong families, extra children and truncated metadata.
 
 ```sh
 cargo test -p fss-reference --lib rtsp::datagram_archive
+# The native-loopback subset is rtsp::datagram_archive::tests::live.
 ```
 
 Compilation, Rust tests, rustfmt and Clippy were not run in the authoring
