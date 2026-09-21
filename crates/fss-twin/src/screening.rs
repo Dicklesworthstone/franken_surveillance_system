@@ -471,3 +471,7 @@ impl ScreeningMonitor {
         Ok(())
     }
 }
+
+
+/// Health-gated foreground/JPEG trajectory continuity with source-linked receipts.
+pub mod tracking;

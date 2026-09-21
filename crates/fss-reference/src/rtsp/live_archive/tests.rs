@@ -354,3 +354,5 @@ fn finite_driver_allowance_cannot_be_bypassed_by_no_readiness_polls() -> Test {
     assert!(error.retirement.ok_or("retirement")?.archive.ok_or("archive")?.pending.is_some());
     assert!(f.driver.cancel().is_none()); Ok(())
 }
+
+mod recovery;
