@@ -111,7 +111,7 @@ fn unresolved_root_temp_is_not_deleted_or_mistaken_for_absence() -> Test {
         .err().ok_or("unresolved temporary adopted")?;
     assert_eq!(refusal.retired.pending.as_ref().ok_or("pending")?.manifest().root(), admission.root);
     assert_eq!(p.recovery_report().orphaned_temps, temps);
-    for path in temps { assert!(path.exists()); }
+    for temp in temps { assert!(path.join(&temp).exists()); }
     Ok(())
 }
 
