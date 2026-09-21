@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 use fss_codec_mjpeg::{ComponentInterpretation, DecodeBudget};
-use fss_core::{CanonicalDecoder, CanonicalEncoder, ContentDigest, ContractError};
+use fss_core::{CanonicalDecoder, CanonicalEncoder, ContentDigest, ContractError, DigestAlgorithm};
 use fss_twin::image_tracking::TrackingAvailability;
 use crate::{ChannelTransform, PreprocessProgram, ReplayCx, ScalarExecCx};
 use crate::preprocess::{ResizeAspect, ResizeFilter};
@@ -136,7 +136,7 @@ impl RgbEvidence {
             spec: imported.model().spec().clone(), float: imported.float_policy(), bindings: imported.bindings().clone(),
             head: head.spec().clone(), source: inference.source(),
             interpretation: inference.decode_receipt().interpretation,
-            availability: admission.availability(), admission: admission.evidence(),
+            availability: admission.availability(), admission: admission.evidence().bytes(),
             expected: [imported.identity(), head.digest(), inference.identity(), inference.masked_digest(),
                 inference.input_digest(), inference.output_digest(), run.report().digest()] };
         let bytes = wire::encode(&recipe)?;
@@ -241,7 +241,9 @@ impl RgbEvidence {
         let i = run.inference();
         if [i.identity(), i.masked_digest(), i.input_digest(), i.output_digest(), run.report().digest()]
             != r.expected[2..] { return Err(RgbEvidenceError::Mismatch); }
-        let admission = RgbFrameAdmission::new(r.source, r.availability, r.admission).map_err(computation)?;
+        let admission_digest = ContentDigest::new(DigestAlgorithm::Sha256, r.admission);
+        let admission = RgbFrameAdmission::new(r.source, r.availability, admission_digest)
+            .map_err(computation)?;
         checkpoint(cx)?; scalar.checkpoint("rgb-evidence:verified").map_err(computation)?;
         Ok(ReplayedRgbEvidence { evidence: self.identity, head, admission, run })
     }

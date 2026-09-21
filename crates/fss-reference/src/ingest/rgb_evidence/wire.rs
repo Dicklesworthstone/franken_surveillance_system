@@ -104,7 +104,12 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Recipe, RgbEvidenceError> {
     let admission = hash(&mut d)?;
     let expected = [d.digest()?, d.digest()?, d.digest()?, d.digest()?, d.digest()?, d.digest()?, d.digest()?];
     d.ensure_finished()?;
-    RgbFrameAdmission::new(source, availability, admission).map_err(computation)?;
+    RgbFrameAdmission::new(
+        source,
+        availability,
+        ContentDigest::new(DigestAlgorithm::Sha256, admission),
+    )
+    .map_err(computation)?;
     RgbDetectionContract::new(head.clone()).map_err(computation)?;
     let result = Recipe { graph, weights, spec, float, bindings, head, source, interpretation, availability, admission, expected };
     if encode(&result)? != bytes { return Err(RgbEvidenceError::Format); }

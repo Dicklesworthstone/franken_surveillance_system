@@ -124,7 +124,7 @@ pub struct ZoneEventGenerator {
     last_emitted: HashMap<(String, u64), TimestampNs>,
     /// Highest accepted emission time; observations below it are refused
     /// rather than silently absorbed into a cooldown window.
-    clock: Option<i64>,
+    clock: Option<i128>,
     event_seq: u64,
 }
 
