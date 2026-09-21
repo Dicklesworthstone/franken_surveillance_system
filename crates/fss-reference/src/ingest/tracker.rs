@@ -243,25 +243,46 @@ impl MultiObjectTracker {
             let cx = d.box_x + d.box_w / 2.0;
             let cy = d.box_y + d.box_h / 2.0;
             self.kalman[*ti].update(cx, cy, self.config.measurement_noise);
-            self.tracks[*ti].hits += 1;
-            self.tracks[*ti].misses = 0;
-            self.tracks[*ti].status = TrackStatus::Confirmed;
-            self.tracks[*ti].box_w = d.box_w;
-            self.tracks[*ti].box_h = d.box_h;
+            let track = &mut self.tracks[*ti];
+            track.hits += 1;
+            track.misses = 0;
+            // Promotion honours min_hits: a Tentative track needs the full
+            // run of consecutive hits before it may evidence events. A Lost
+            // track was already confirmed once, so one re-detection revives it.
+            track.status = match track.status {
+                TrackStatus::Tentative if track.hits >= self.config.min_hits => {
+                    TrackStatus::Confirmed
+                }
+                TrackStatus::Tentative => TrackStatus::Tentative,
+                _ => TrackStatus::Confirmed,
+            };
+            track.box_w = d.box_w;
+            track.box_h = d.box_h;
+            drop(track);
             self.sync_track(*ti);
         }
 
-        // 3. Unmatched tracks: miss (Tentative dies immediately, Confirmed go Lost).
+        // 3. Unmatched tracks: a Tentative track dies immediately (a
+        // single-frame uncorroborated proposal never coasts); confirmed
+        // tracks coast as Lost until step 6 deletes them past max_misses.
+        // Removal happens after the scan, descending, so swap moves never
+        // displace a track whose assigned flag is still pending.
+        let mut removed: Vec<usize> = Vec::new();
         for ti in 0..self.tracks.len() {
             if assigned_trk[ti] {
                 continue;
             }
             self.tracks[ti].misses += 1;
-            if self.tracks[ti].misses > self.config.max_misses
-                || matches!(self.tracks[ti].status, TrackStatus::Tentative | TrackStatus::Confirmed)
-            {
+            if self.tracks[ti].status == TrackStatus::Tentative {
+                removed.push(ti);
+            } else {
                 self.tracks[ti].status = TrackStatus::Lost;
             }
+        }
+        for ti in removed.into_iter().rev() {
+            self.tracks.swap_remove(ti);
+            self.kalman.swap_remove(ti);
+            deleted_tracks += 1;
         }
 
         // 4. Unmatched detections: create new Tentative tracks.
@@ -288,12 +309,7 @@ impl MultiObjectTracker {
             new_tracks += 1;
         }
 
-        // 5. Promote Tentative → Confirmed after min_hits.
-        for t in self.tracks.iter_mut() {
-            if t.status == TrackStatus::Tentative && t.hits >= self.config.min_hits {
-                t.status = TrackStatus::Confirmed;
-            }
-        }
+        // 5. (Promotion now happens at match time, honouring min_hits.)
 
         // 6. Delete Lost tracks that exceeded max_misses.
         let max_misses = self.config.max_misses;
@@ -416,6 +432,40 @@ mod tests {
         assert!(out.tracks.is_empty());
         assert_eq!(out.new_tracks, 0);
         assert_eq!(out.deleted_tracks, 0);
+    }
+
+    #[test]
+    fn min_hits_gates_confirmation_not_the_first_match() {
+        let mut cfg = config();
+        cfg.min_hits = 3;
+        let mut t = MultiObjectTracker::new(cfg).unwrap();
+        // Creation frame: Tentative with one hit.
+        assert_eq!(t.step(&[det(10.0, 20.0)]).tracks[0].status, TrackStatus::Tentative);
+        // First MATCH must not confirm: two hits < min_hits.
+        assert_eq!(t.step(&[det(10.0, 20.0)]).tracks[0].status, TrackStatus::Tentative);
+        // Third consecutive hit reaches min_hits: now Confirmed.
+        assert_eq!(t.step(&[det(10.0, 20.0)]).tracks[0].status, TrackStatus::Confirmed);
+    }
+
+    #[test]
+    fn unmatched_tentative_track_is_deleted_immediately_not_coasted() {
+        let mut t = MultiObjectTracker::new(config()).unwrap();
+        t.step(&[det(10.0, 20.0)]);
+        let out = t.step(&[]);
+        assert!(out.tracks.is_empty(), "one-hit proposal must not linger as Lost");
+        assert_eq!(out.deleted_tracks, 1);
+    }
+
+    #[test]
+    fn lost_confirmed_track_revives_on_redetection() {
+        let mut t = MultiObjectTracker::new(config()).unwrap();
+        t.step(&[det(10.0, 20.0)]);
+        t.step(&[det(10.0, 20.0)]); // Confirmed (2 hits >= min_hits).
+        let lost = t.step(&[]); // One miss: coasting.
+        assert_eq!(lost.tracks[0].status, TrackStatus::Lost);
+        let revived = t.step(&[det(10.0, 20.0)]);
+        assert_eq!(revived.tracks[0].status, TrackStatus::Confirmed);
+        assert_eq!(revived.tracks[0].id, lost.tracks[0].id);
     }
 
     #[test]
