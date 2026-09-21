@@ -219,7 +219,6 @@ pub(super) fn replay_command(
 #[cfg(test)]
 mod tests;
 
-/// Session-authorized live source hydration and durable disclosure boundaries.
 pub mod source_hydration {
     #![forbid(unsafe_code)]
     //! Live source reads through session authority, not caller-asserted hydration grants.

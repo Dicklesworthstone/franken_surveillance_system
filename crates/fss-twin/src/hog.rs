@@ -86,7 +86,7 @@ impl HogModel {
         budget.charge(bytes.len() as u64)?;
         if ContentDigest::sha256(bytes).bytes() != expected { return Err(HogError::DigestMismatch); }
         let mut weights = reserve(HOG_PARAMETERS)?;
-        for word in bytes.chunks_exact(4) {
+        for word in bytes.as_chunks::<4>().0 {
             budget.charge(1)?;
             let value = f32::from_le_bytes([word[0], word[1], word[2], word[3]]);
             if !value.is_finite() || value.abs() > 1e6 { return Err(HogError::InvalidWeight); }

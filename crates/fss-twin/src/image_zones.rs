@@ -341,13 +341,13 @@ fn advance(state: &mut ZoneState, zone: &ImageZoneSpec, latest: ImageTrackObserv
             }
             if state.inside.is_none() { state.inside = Some(latest); }
             state.samples = state.samples.checked_add(1).ok_or(ImageZoneError::Limit)?;
-            if let Some(first) = state.inside {
-                if !state.dwell_emitted && state.samples >= 2
-                    && zone.dwell_ns.is_some_and(|threshold| span(first, latest)[0] >= threshold) {
-                    push_event(events, state.track, state.zone, ImageZoneEventKind::SampledDwell,
-                        Some(first), latest, relation);
-                    state.dwell_emitted = true;
-                }
+            if let Some(first) = state.inside
+                && !state.dwell_emitted && state.samples >= 2
+                && zone.dwell_ns.is_some_and(|threshold| span(first, latest)[0] >= threshold)
+            {
+                push_event(events, state.track, state.zone, ImageZoneEventKind::SampledDwell,
+                    Some(first), latest, relation);
+                state.dwell_emitted = true;
             }
         } else {
             if let Some((ImageZoneRelation::Inside, first)) = previous {
