@@ -1,5 +1,8 @@
 //! Deterministic alert-effect oracle with lost-ACK reconciliation.
 
+/// Native, explicit-authority HTTP relay delivery over the durable alert gates.
+pub mod webhook;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use fss_core::{
