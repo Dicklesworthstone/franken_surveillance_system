@@ -1,1 +1,2 @@
-d5106f476ad4c18c62ef43930f38d26218be83f26462eab65fb640823f66ebb4  .beads/issues.jsonl
+751af0356e3f65c952e6c16bb3aebd355828de67bfa56ff0a47e6bc9008b8c63  crates/fss-reference/src/ingest/foreground.rs
+2d0399c37e090d4f7542abb1ffe356e6d9a85eb472a8d211e7f9a8434491a01d  crates/fss-reference/src/ingest/tracker.rs
