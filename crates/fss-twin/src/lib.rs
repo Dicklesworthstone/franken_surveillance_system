@@ -204,3 +204,6 @@ pub mod image_zones;
 
 /// Native HOG features and immutable learned classification over permitted image pixels.
 pub mod hog;
+
+/// Complete multiscale learned detection with source-linked scores and suppression.
+pub mod hog_scan;
