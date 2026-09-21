@@ -224,7 +224,7 @@ impl ZoneEventGenerator {
         // Dedup gate: one physical presence episode is one event.
         let key = (zone_id.to_string(), target.id);
         if let Some(last) = self.last_emitted.get(&key)
-            && ts.0 - last.0 < self.config.dedup_cooldown_ns
+            && ts.0 - last.0 < i128::from(self.config.dedup_cooldown_ns)
         {
             return Ok(None);
         }
@@ -255,7 +255,9 @@ impl ZoneEventGenerator {
             "event:zonegen-{}-t{}-{}",
             zone.zone_id, target.id, self.event_seq
         ))
-        .map_err(|err| ZoneEventError::EventContract(Box::new(err)))?;
+        .map_err(|err| {
+            ZoneEventError::EventContract(Box::new(EventDecodeError::Contract(err)))
+        })?;
 
         // Deterministic decision fingerprint over all decision inputs.
         let mut fp_input = Vec::new();
@@ -359,7 +361,7 @@ mod tests {
     }
 
     fn ts(secs: i64) -> TimestampNs {
-        TimestampNs(secs * 1_000_000_000)
+        TimestampNs(i128::from(secs) * 1_000_000_000)
     }
 
     #[test]
