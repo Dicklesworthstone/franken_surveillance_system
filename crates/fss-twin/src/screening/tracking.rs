@@ -215,3 +215,6 @@ fn complete(input: &ScreenedJpeg) -> Result<&ForegroundReport, ScreenedTrackingE
         ForegroundStage::NotConfigured => Err(ScreenedTrackingError::NotConfigured),
     }
 }
+
+/// Source-matched learned HOG proposals through the existing resumable zone owner.
+pub mod hog;

@@ -1,9 +1,9 @@
 #![forbid(unsafe_code)]
-//! Stateless baseline JPEG/MJPEG frame-to-luma decoding, with no foreign runtime.
+//! Stateless baseline JPEG/MJPEG frame-to-luma or RGB decoding, with no foreign runtime.
 //!
 //! Accepts exactly one complete, owner-framed JPEG image, not an HTTP/UVC/AVI stream.
-//! Decodes every entropy block but reconstructs only full-resolution Y. No colour,
-//! orientation, timestamp, source custody, or camera calibration is inferred.
+//! The luma API reconstructs Y; `color::decode_rgb` reconstructs all color components.
+//! Orientation, timestamp, source custody, and camera calibration are never inferred.
 
 mod entropy;
 mod image;
@@ -50,7 +50,7 @@ impl std::error::Error for DecodeError {}
 pub enum ComponentInterpretation {
     /// One full-resolution grayscale component.
     Grayscale,
-    /// Components 1/2/3 are full-range JPEG Y/Cb/Cr; reconstruct Y only.
+    /// Components 1/2/3 are full-range JPEG Y/Cb/Cr, not RGB or CMYK.
     YCbCr,
 }
 
@@ -251,3 +251,6 @@ pub mod http;
 
 /// HTTP-to-multipart composition and complete JPEG-to-wire source maps.
 pub mod http_mjpeg;
+
+/// Complete native RGB reconstruction with explicit chroma and color-matrix semantics.
+pub mod color;

@@ -333,3 +333,7 @@ impl ImportedModel {
 
 #[cfg(test)]
 mod tests;
+
+
+/// Exact Safetensors bindings for native RGB image inference, without changing the luma format.
+pub mod rgb;

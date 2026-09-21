@@ -320,3 +320,6 @@ impl<C: ArchiveCodec> std::fmt::Debug for CodecRecordingArchiveWriter<'_, C> {
             .field("blocked", &self.blocked).field("done", &self.done).finish_non_exhaustive()
     }
 }
+
+/// Root-last durable pending work and exact cold restart without camera recapture.
+pub mod checkpoint;

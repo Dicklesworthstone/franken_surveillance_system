@@ -30,10 +30,26 @@ struct Tables {
     ac: [Option<Huffman>; 2],
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum Reconstruction {
+    Luma,
+    Rgb { maximum_bytes: usize },
+}
+
 pub(crate) fn decode(
     bytes: &[u8],
     interpretation: ComponentInterpretation,
     limits: DecodeLimits,
+    budget: &mut DecodeBudget<'_>,
+) -> Result<([u32; 2], Vec<u8>, Stats), DecodeError> {
+    decode_with_output(bytes, interpretation, limits, Reconstruction::Luma, budget)
+}
+
+pub(crate) fn decode_with_output(
+    bytes: &[u8],
+    interpretation: ComponentInterpretation,
+    limits: DecodeLimits,
+    output: Reconstruction,
     budget: &mut DecodeBudget<'_>,
 ) -> Result<([u32; 2], Vec<u8>, Stats), DecodeError> {
     let mut input = Reader { bytes, pos: 0 };
@@ -106,6 +122,7 @@ pub(crate) fn decode(
                     &tables,
                     restart_interval,
                     &mut stats,
+                    output,
                     budget,
                 )?);
             }
@@ -251,6 +268,7 @@ fn scan(
     tables: &Tables,
     restart_interval: usize,
     stats: &mut Stats,
+    output: Reconstruction,
     budget: &mut DecodeBudget<'_>,
 ) -> Result<Vec<u8>, DecodeError> {
     if data.is_empty() {
@@ -294,12 +312,18 @@ fn scan(
     let columns = frame.width.div_ceil(8 * h);
     let rows = frame.height.div_ceil(8 * v);
     let mcus = columns * rows;
-    budget.charge((frame.width * frame.height) as u64)?;
+    let rgb = matches!(output, Reconstruction::Rgb { .. });
+    let length = frame.width.checked_mul(frame.height)
+        .and_then(|n| n.checked_mul(if rgb { 3 } else { 1 }))
+        .ok_or(DecodeError::Limit)?;
+    if let Reconstruction::Rgb { maximum_bytes } = output
+        && length > maximum_bytes {
+        return Err(DecodeError::Limit);
+    }
+    budget.charge(length as u64)?;
     let mut pixels = Vec::new();
-    pixels
-        .try_reserve_exact(frame.width * frame.height)
-        .map_err(|_| DecodeError::Limit)?;
-    pixels.resize(frame.width * frame.height, 0);
+    pixels.try_reserve_exact(length).map_err(|_| DecodeError::Limit)?;
+    pixels.resize(length, 0);
     let mut bits = Bits::new(input);
     let mut predictors = [0_i32; 3];
     let mut restart = 0;
@@ -311,6 +335,11 @@ fn scan(
             predictors = [0; 3];
             stats.restarts += 1;
         }
+        // Only one MCU of chroma is retained. Component order in SOS need not be Y first.
+        let mut tiles = if rgb {
+            budget.charge(3 * 256)?;
+            Some([[0_u8; 256]; 3])
+        } else { None };
         for &(index, dc, ac) in order.iter().take(frame.count) {
             let component = frame.components[index];
             let dc = tables.dc[dc].as_ref().ok_or(DecodeError::Malformed)?;
@@ -323,10 +352,20 @@ fn scan(
                     budget.charge(4096)?;
                     let coeff = block(&mut bits, dc, ac, quantizer, &mut predictors[index])?;
                     stats.blocks += 1;
-                    if index != 0 {
+                    if index != 0 && !rgb {
                         continue;
                     }
+                    // The luma lane retains its original numeric schedule and charges.
+                    if index != 0 { budget.charge(4096)?; }
                     let samples = inverse(&coeff);
+                    if let Some(tiles) = tiles.as_mut() {
+                        budget.charge(64)?;
+                        for y in 0..8 {
+                            let start = (by * 8 + y) * component.h * 8 + bx * 8;
+                            tiles[index][start..start + 8].copy_from_slice(&samples[y * 8..y * 8 + 8]);
+                        }
+                        continue;
+                    }
                     let ox = (mcu % columns) * h * 8 + bx * 8;
                     let oy = (mcu / columns) * v * 8 + by * 8;
                     for y in 0..8 {
@@ -336,6 +375,24 @@ fn scan(
                             }
                         }
                     }
+                }
+            }
+        }
+        if let Some(tiles) = tiles {
+            budget.charge((h * v * 64 * 24) as u64)?;
+            let ox = (mcu % columns) * h * 8;
+            let oy = (mcu / columns) * v * 8;
+            for y in 0..v * 8 {
+                for x in 0..h * 8 {
+                    if ox + x >= frame.width || oy + y >= frame.height { continue; }
+                    let luma = tiles[0][y * h * 8 + x];
+                    let color = if frame.count == 1 { [luma; 3] } else {
+                        // Explicit nearest-cell chroma reconstruction, not fancy upsampling.
+                        let chroma = (y / v) * 8 + x / h;
+                        crate::color::ycbcr_to_rgb(luma, tiles[1][chroma], tiles[2][chroma])
+                    };
+                    let to = ((oy + y) * frame.width + ox + x) * 3;
+                    pixels[to..to + 3].copy_from_slice(&color);
                 }
             }
         }

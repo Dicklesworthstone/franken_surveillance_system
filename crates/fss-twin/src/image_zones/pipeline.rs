@@ -178,3 +178,21 @@ impl JpegZoneAnalysis {
         (self.foreground,self.progress)
     }
 }
+
+impl ImageZonePipeline {
+    /// Internal complete learned-proposal entry; the screened caller owns admission.
+    /// Uses the same tracker, zone order and pending/resume state as native foreground.
+    pub(crate) fn observe_detections(&mut self, frame: crate::image_tracking::ImageTrackingFrame,
+        detections: &[crate::image_tracking::ImageDetection], budget: &mut WorkBudget<'_>)
+        -> Result<ZonePipelineProgress, ZonePipelineError> {
+        if self.pending { return Err(ZonePipelineError::PendingAnalysis); }
+        let s = frame.source; let basis = self.monitor.basis();
+        if s.camera != basis.camera || s.clock != basis.clock || s.calibration != basis.calibration
+            || s.image.image_domain != basis.image_domain || s.image.dimensions != basis.dimensions {
+            return Err(ZonePipelineError::Zones(ImageZoneError::BasisMismatch));
+        }
+        let report = self.tracker.update(frame, detections, budget).map_err(ZonePipelineError::Tracking)?;
+        self.tracking = Some(report); self.foreground = None; self.pending = true;
+        self.resume(budget)
+    }
+}

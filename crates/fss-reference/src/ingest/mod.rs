@@ -55,3 +55,6 @@ pub use mjpeg::{
     JpegProcess,
 };
 pub use retained::{RetainedFileImport, RetainedReadLimits};
+
+/// Native JPEG RGB through privacy projection, resize and frozen neural graph execution.
+pub mod rgb_inference;
