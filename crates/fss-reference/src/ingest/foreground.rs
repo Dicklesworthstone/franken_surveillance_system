@@ -306,8 +306,8 @@ impl ForegroundDetector {
                 boxes.push(ForegroundBox {
                     x: min_x as u32,
                     y: min_y as u32,
-                    width: box_w as u32,
-                    height: box_h as u32,
+                    width: u32::try_from(box_w).unwrap_or(u32::MAX),
+                    height: u32::try_from(box_h).unwrap_or(u32::MAX),
                     pixel_count: count,
                     density,
                 });

@@ -133,9 +133,9 @@ impl KalmanState {
         self.x[0] += self.x[2] * dt;
         self.x[1] += self.x[3] * dt;
         // Covariance grows with process noise and velocity uncertainty.
-        for i in 0..4 {
-            for j in 0..4 {
-                self.p[i][j] += process_noise * dt;
+        for row in &mut self.p {
+            for cell in row.iter_mut() {
+                *cell += process_noise * dt;
             }
         }
     }
@@ -165,6 +165,9 @@ impl KalmanState {
 }
 
 /// Computes the Intersection-over-Union of two axis-aligned boxes.
+// 8 args is the natural signature for an axis-aligned box overlap check;
+// grouping into a struct would obscure the geometry.
+#[allow(clippy::too_many_arguments)]
 fn iou(ax: f64, ay: f64, aw: f64, ah: f64, bx: f64, by: f64, bw: f64, bh: f64) -> f64 {
     let x1 = ax.max(bx);
     let y1 = ay.max(by);
@@ -250,9 +253,9 @@ impl MultiObjectTracker {
                 continue;
             }
             self.tracks[ti].misses += 1;
-            if self.tracks[ti].status == TrackStatus::Tentative || self.tracks[ti].misses > self.config.max_misses {
-                self.tracks[ti].status = TrackStatus::Lost;
-            } else if self.tracks[ti].status == TrackStatus::Confirmed {
+            if self.tracks[ti].misses > self.config.max_misses
+                || matches!(self.tracks[ti].status, TrackStatus::Tentative | TrackStatus::Confirmed)
+            {
                 self.tracks[ti].status = TrackStatus::Lost;
             }
         }
