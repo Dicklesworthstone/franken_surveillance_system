@@ -177,7 +177,7 @@ impl ZoneEventGenerator {
     ///
     /// Returns `Ok(None)` when the track is not confirmed, lies outside the
     /// zone's dwell interest, or is within the dedup cooldown. Returns the
-    /// freshly generated hypothesis otherwise.
+    /// fresh hypothesis otherwise.
     ///
     /// # Errors
     /// - [`ZoneEventError::CapabilityDenied`] when `grant` is not
@@ -186,6 +186,10 @@ impl ZoneEventGenerator {
     ///   registered;
     /// - [`ZoneEventError::EventContract`] when the assembled hypothesis
     ///   fails event-plane verification (a bug, never an input condition).
+    // 8 args carry the full publication record: authority, track, zone,
+    // failure domain, time, evidence digest, and probability ceiling. A
+    // params struct would hide which argument is the authority.
+    #[allow(clippy::too_many_arguments)]
     pub fn observe(
         &mut self,
         grant: RuntimeGrant,
@@ -251,7 +255,7 @@ impl ZoneEventGenerator {
         upper_probability: f64,
     ) -> Result<EventHypothesis, ZoneEventError> {
         // Deterministic event identity: zone, track, sequence.
-        let event_id = EventId::parse(&format!(
+        let event_id = EventId::parse(format!(
             "event:zonegen-{}-t{}-{}",
             zone.zone_id, target.id, self.event_seq
         ))
