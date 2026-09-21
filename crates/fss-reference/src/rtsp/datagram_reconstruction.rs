@@ -14,6 +14,8 @@ use fss_publication::{LocalRootPublisher, PublishCancellation, PublishCutPoint};
 use super::datagram_archive::{DatagramArchive, DatagramArchiveError, DatagramPin, RetainedDatagram};
 
 mod profile;
+/// Source-verified recording reconstruction with explicit per-picture media timing.
+pub mod recording;
 
 /// Exact out-of-band interpretation. Parameter bytes exclude Annex-B start codes.
 /// The caller retains their provenance independently; source packets do not supply missing SDP.
@@ -116,7 +118,8 @@ pub enum AvcReplayStep {
         /// Exact virtual wake chosen before the next retained arrival.
         replay_ns: u64,
     },
-    /// In-band codec termination is not transport EOF or proof that all source was consumed.
+    /// Native receiver termination is not transport EOF or proof that all source was consumed.
+    /// An earlier configuration refusal can also end the receiver; this is not a clean-end claim.
     CodecEnded {
         /// Time used by the existing receiver.
         replay_ns: u64,
