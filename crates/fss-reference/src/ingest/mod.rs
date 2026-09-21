@@ -61,3 +61,6 @@ pub mod rgb_inference;
 
 /// Actual RGB dense heads to complete source-space, privacy-screened detector proposals.
 pub mod rgb_detections;
+
+/// Source-bound RGB class trajectories and observed image-zone events.
+pub mod rgb_tracking;

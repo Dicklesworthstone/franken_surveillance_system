@@ -80,12 +80,14 @@ dependencies = [
  "fss-codec-mjpeg",
  "fss-container",
  "fss-core",
+ "fss-geometry",
  "fss-ledger",
  "fss-model-ir",
  "fss-object",
  "fss-packet",
  "fss-publication",
  "fss-tensor",
+ "fss-twin",
 ]
 
 [[package]]
