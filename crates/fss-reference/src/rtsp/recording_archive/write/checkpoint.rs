@@ -8,7 +8,6 @@
 
 use fss_core::{CanonicalDecoder, CanonicalEncode, SensorId, StreamId};
 use fss_object::{ObjectManifest, MAX_MANIFEST_CHILDREN};
-use crate::rtsp::archive_recovery::archive_retirement_digest;
 use crate::rtsp::recording::{RecordingScope, RECORDING_KIND};
 use crate::rtsp::recording_catalog::MAX_CATALOG_BYTES;
 use super::*;
@@ -41,7 +40,7 @@ impl Default for ArchiveWorkLimits {
     }
 }
 impl ArchiveWorkLimits {
-    fn validate(self, stored: ArchiveLimits) -> ArchiveResult<()> {
+    pub(crate) fn validate(self, stored: ArchiveLimits) -> ArchiveResult<()> {
         self.archive.validate()?;
         stored.validate()?;
         if self.max_pending_bytes > MAX_RECORDING_BYTES
@@ -56,11 +55,50 @@ impl ArchiveWorkLimits {
     }
 }
 
+/// Write-ahead protection for normal archive and live-capture publication.
+pub mod write_ahead;
+
+// A private borrowing view: retired and still-live work use the identical v1 graph/encoding.
+// This is not another owning media buffer or a public way to forge archive history.
+#[derive(Clone, Copy)]
+struct WorkView<'a> {
+    snapshot: &'a ArchiveSnapshot,
+    pending: Option<&'a PreparedRecording>,
+    prepared_page: Option<&'a RecordingCatalog>,
+}
+impl<'a> WorkView<'a> {
+    fn retired(work: &'a ArchiveRetirement) -> Self {
+        Self { snapshot: &work.snapshot, pending: work.pending.as_ref(),
+            prepared_page: work.prepared_page.as_ref() }
+    }
+    fn writer(writer: &'a RecordingArchiveWriter<'_>) -> Self {
+        Self { snapshot: &writer.snapshot, pending: writer.pending.as_ref().map(|p| &p.recording),
+            prepared_page: writer.page.as_ref() }
+    }
+    // Preserve archive_recovery::archive_retirement_digest exactly. Cross-entrypoint tests
+    // compare retired/live v1 commitments and reconstructed work, including real media bytes.
+    fn retirement_digest(self) -> ArchiveResult<ContentDigest> {
+        let mut e = CanonicalEncoder::new();
+        e.text("fss.reference_archive_retirement.v1");
+        e.digest(self.snapshot.digest()?);
+        let limits = self.snapshot.limits();
+        for value in [limits.max_windows, limits.max_pages, limits.max_scan_roots, limits.windows_per_page] {
+            e.u64(u64::try_from(value).map_err(|_| ArchiveError::Limit)?);
+        }
+        e.bool(self.pending.is_some());
+        if let Some(pending) = self.pending { e.digest(pending.manifest().root()); }
+        e.bool(self.prepared_page.is_some());
+        if let Some(page) = self.prepared_page { e.digest(page.manifest().root()); }
+        ContentDigest::try_sha256(&e.finish_checked().map_err(|_| ArchiveError::Limit)?)
+            .map_err(|_| ArchiveError::Limit)
+    }
+}
+
 /// Immutable, read-prepared work graph. The original pending objects stay caller-owned.
 /// Its three content-derived slots are outside the archive's window/catalog namespace.
 #[must_use]
 pub struct PreparedArchiveWork<'a> {
-    work: &'a ArchiveRetirement,
+    work: WorkView<'a>,
     stamp: Stamp,
     metadata: Vec<u8>,
     manifest: ObjectManifest,
@@ -82,6 +120,13 @@ impl<'a> PreparedArchiveWork<'a> {
     /// must authorize retention and reads of all referenced source, not just its metadata.
     pub fn prepare(work: &'a ArchiveRetirement, publisher: &LocalRootPublisher,
         limits: ArchiveWorkLimits, cancel: &dyn PublishCancellation) -> ArchiveResult<Self> {
+        Self::prepare_view(WorkView::retired(work), publisher, limits, cancel)
+    }
+
+    // Borrow only immutable work fields, never the publisher. This lets a live writer protect
+    // its own pending bytes without cloning media, moving out its state, or retiring itself.
+    fn prepare_view(work: WorkView<'a>, publisher: &LocalRootPublisher,
+        limits: ArchiveWorkLimits, cancel: &dyn PublishCancellation) -> ArchiveResult<Self> {
         limits.validate(work.snapshot.limits())?;
         owner_ready(publisher)?;
         validate_pending(work, limits)?;
@@ -93,14 +138,14 @@ impl<'a> PreparedArchiveWork<'a> {
         let manifest = graph(work, &metadata, publisher, limits, cancel)?;
         let bytes = metadata.len().checked_add(manifest.canonical_bytes().len())
             .and_then(|n| n.checked_add(stamp.pending.map_or(0, |(_, bytes)| bytes)))
-            .and_then(|n| n.checked_add(work.prepared_page.as_ref().map_or(0, RecordingCatalog::byte_len)))
+            .and_then(|n| n.checked_add(work.prepared_page.map_or(0, RecordingCatalog::byte_len)))
             .ok_or(ArchiveError::Limit)?;
         if bytes > limits.max_new_bytes || manifest.children().len() > publisher.limits().max_children {
             return Err(ArchiveError::Limit);
         }
         check_slot(publisher, &slot, manifest.root())?;
-        if let Some(window) = &work.pending { check_slot(publisher, &window_slot, window.manifest().root())?; }
-        if let Some(page) = &work.prepared_page { check_slot(publisher, &page_slot, page.manifest().root())?; }
+        if let Some(window) = work.pending { check_slot(publisher, &window_slot, window.manifest().root())?; }
+        if let Some(page) = work.prepared_page { check_slot(publisher, &page_slot, page.manifest().root())?; }
         probe(cancel)?;
         Ok(Self { work, stamp, metadata, manifest, slot, window_slot, page_slot, bytes, limits })
     }
@@ -132,7 +177,7 @@ impl<'a> PreparedArchiveWork<'a> {
             return durable(publisher.publish_cancellable(&self.slot, &self.manifest, cancel)
                 .map_err(RecordingIoError::Publication)?);
         }
-        if let Some(window) = &self.work.pending {
+        if let Some(window) = self.work.pending {
             let mut job = RecordingPublication::new(window, publisher, self.window_slot.clone(),
                 window.byte_len(), deadline)?;
             let mut published = false;
@@ -143,7 +188,7 @@ impl<'a> PreparedArchiveWork<'a> {
             }
             if !published { return Err(ArchiveError::Metadata); }
         }
-        if let Some(page) = &self.work.prepared_page {
+        if let Some(page) = self.work.prepared_page {
             probe(cancel)?;
             check_slot(publisher, &self.page_slot, page.manifest().root())?;
             let digest = publisher.stage_object(page.index_bytes()).map_err(RecordingIoError::Publication)?;
@@ -243,7 +288,7 @@ pub fn load_archive_work(publisher: &LocalRootPublisher, slot: &SlotName,
     Ok(work)
 }
 
-fn validate_pending(work: &ArchiveRetirement, limits: ArchiveWorkLimits) -> ArchiveResult<()> {
+fn validate_pending(work: WorkView<'_>, limits: ArchiveWorkLimits) -> ArchiveResult<()> {
     let old = &work.snapshot;
     if let Some(window) = &work.pending {
         if window.byte_len() > limits.max_pending_bytes || old.windows.len() >= old.limits.max_windows {
@@ -263,7 +308,7 @@ fn validate_pending(work: &ArchiveRetirement, limits: ArchiveWorkLimits) -> Arch
     Ok(())
 }
 
-fn graph(work: &ArchiveRetirement, metadata: &[u8], p: &LocalRootPublisher,
+fn graph(work: WorkView<'_>, metadata: &[u8], p: &LocalRootPublisher,
     limits: ArchiveWorkLimits, cancel: &dyn PublishCancellation) -> ArchiveResult<ObjectManifest> {
     // Conservative pre-deduplication scratch reservation. No optimistic sharing assumption.
     let bound = work.snapshot.windows.len().checked_mul(5)
@@ -344,11 +389,11 @@ struct Stamp {
     pending: Option<(ContentDigest, usize)>, page: Option<ContentDigest>,
 }
 impl Stamp {
-    fn from_work(work: &ArchiveRetirement) -> ArchiveResult<Self> {
+    fn from_work(work: WorkView<'_>) -> ArchiveResult<Self> {
         Ok(Self { scope: work.snapshot.namespace().scope().clone(), limits: work.snapshot.limits(),
             windows: work.snapshot.windows().len(), pages: work.snapshot.pages().len(),
             indexed: work.snapshot.indexed_windows(), snapshot: work.snapshot.digest()?,
-            retirement: archive_retirement_digest(work)?,
+            retirement: work.retirement_digest()?,
             pending: work.pending.as_ref().map(|w| (w.manifest().root(), w.byte_len())),
             page: work.prepared_page.as_ref().map(|p| p.manifest().root()) })
     }
