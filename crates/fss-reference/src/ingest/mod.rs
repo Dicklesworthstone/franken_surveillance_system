@@ -72,3 +72,6 @@ pub mod http_camera;
 
 /// Durable original HTTP reads and exact, source-verified cold prefix recovery.
 pub mod http_archive;
+
+/// Source-closed RGB perception evidence with actual native replay after restart.
+pub mod rgb_evidence;
