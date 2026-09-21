@@ -174,8 +174,14 @@ impl VirtualClock {
         let skew_offset = total_skew_units / 1_000_000;
         let new_residual = total_skew_units % 1_000_000;
 
+        // Sampling is speculative until time, residual and counter all validate.
+        let next_prng_state = if self.max_jitter_ns > 0 {
+            self.next_u64()
+        } else {
+            self.prng_state
+        };
         let jitter = if self.max_jitter_ns > 0 {
-            let sample = self.next_u64();
+            let sample = next_prng_state;
             let modulus = u128::from(self.max_jitter_ns) + 1;
             (u128::from(sample) % modulus) as i128
         } else {
@@ -202,12 +208,16 @@ impl VirtualClock {
             .checked_add(effective_delta)
             .ok_or(ReferenceError::ArithmeticOverflow)?;
 
-        self.current_ns = TimestampNs(new_time);
-        self.skew_residual = new_residual;
-        self.step_count = self
+        let next_step_count = self
             .step_count
             .checked_add(1)
             .ok_or(ReferenceError::ArithmeticOverflow)?;
+
+        // One commit point: an error must not consume jitter or part of a step.
+        self.current_ns = TimestampNs(new_time);
+        self.skew_residual = new_residual;
+        self.prng_state = next_prng_state;
+        self.step_count = next_step_count;
         Ok(self.current_ns)
     }
 
@@ -228,10 +238,14 @@ impl VirtualClock {
         Ok(interval)
     }
 
-    fn next_u64(&mut self) -> u64 {
-        self.prng_state ^= self.prng_state << 13;
-        self.prng_state ^= self.prng_state >> 7;
-        self.prng_state ^= self.prng_state << 17;
-        self.prng_state
+    fn next_u64(&self) -> u64 {
+        let mut state = self.prng_state;
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
     }
 }
+
+#[cfg(test)]
+mod atomic_tests;

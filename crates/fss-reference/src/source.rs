@@ -241,45 +241,63 @@ impl VirtualSource {
     /// Returns [`OperationOutcome::Success`] containing the conservative [`CaptureInterval`],
     /// or [`OperationOutcome::Indeterminate`], [`OperationOutcome::UnauthorizedOrNotObservable`],
     /// or [`OperationOutcome::Failed`] if a fault is triggered.
+    ///
+    /// An outer error leaves time, sequence and pending-read state unchanged. A
+    /// returned fault outcome still consumes its declared attempt, except that an
+    /// indeterminate read pins the same sequence for a later explicit retry.
     pub fn emit_interval(&mut self) -> Result<OperationOutcome<CaptureInterval>, ReferenceError> {
+        let mut next_clock = self.clock.clone();
         let sequence_to_attempt = if self.pending_indeterminate {
             self.current_sequence
         } else {
-            let next = self.current_sequence + 1;
+            let next = self
+                .current_sequence
+                .checked_add(1)
+                .ok_or(ReferenceError::ArithmeticOverflow)?;
             if next > u64::from(self.spec.packet_count) {
                 return Err(ReferenceError::UnknownSourceSequence(next));
             }
             if self.current_sequence > 0 {
-                self.clock.advance(self.spec.period_ns)?;
+                next_clock.advance(self.spec.period_ns)?;
             }
-            self.current_sequence = next;
             next
         };
 
-        if let Some(reason) = self.indeterminate_faults.get(&sequence_to_attempt) {
-            self.pending_indeterminate = true;
-            return Ok(OperationOutcome::indeterminate(IndeterminateDetail::new(
-                "virtual_source_capture",
-                reason.clone(),
-                "resnapshot sensor anchor and re-poll capture interval",
-            )));
-        }
+        let (outcome, pending_indeterminate) =
+            if let Some(reason) = self.indeterminate_faults.get(&sequence_to_attempt) {
+                (
+                    OperationOutcome::indeterminate(IndeterminateDetail::new(
+                        "virtual_source_capture",
+                        reason.clone(),
+                        "resnapshot sensor anchor and re-poll capture interval",
+                    )),
+                    true,
+                )
+            } else if let Some(reason) = self.unobservable_faults.get(&sequence_to_attempt) {
+                (
+                    OperationOutcome::unauthorized_or_not_observable(
+                        RefusalDetail::not_observable(reason.clone(), true),
+                    ),
+                    false,
+                )
+            } else if let Some(reason) = self.execution_failure_faults.get(&sequence_to_attempt) {
+                (
+                    OperationOutcome::failed(OperationError::execution_failed(reason.clone())?),
+                    false,
+                )
+            } else {
+                (
+                    OperationOutcome::success(next_clock.read_interval(self.spec.uncertainty_ns)?),
+                    false,
+                )
+            };
 
-        self.pending_indeterminate = false;
-
-        if let Some(reason) = self.unobservable_faults.get(&sequence_to_attempt) {
-            return Ok(OperationOutcome::unauthorized_or_not_observable(
-                RefusalDetail::not_observable(reason.clone(), true),
-            ));
-        }
-        if let Some(reason) = self.execution_failure_faults.get(&sequence_to_attempt) {
-            return Ok(OperationOutcome::failed(OperationError::execution_failed(
-                reason.clone(),
-            )?));
-        }
-
-        let interval = self.clock.read_interval(self.spec.uncertainty_ns)?;
-        Ok(OperationOutcome::success(interval))
+        // Interval construction and typed fault validation can fail after a valid
+        // clock advance. Publish the complete attempt only when either succeeds.
+        self.clock = next_clock;
+        self.current_sequence = sequence_to_attempt;
+        self.pending_indeterminate = pending_indeterminate;
+        Ok(outcome)
     }
 
     /// Emits the next source packet with payload bytes and content digest.
@@ -358,3 +376,6 @@ fn xorshift64(mut value: u64) -> u64 {
     value ^= value << 17;
     value
 }
+
+#[cfg(test)]
+mod atomic_tests;
