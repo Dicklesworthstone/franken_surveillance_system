@@ -73,6 +73,46 @@ identities bind the exact source inference, full tensor digest, contract, actual
 geometry, row decisions and candidate suppression. A local digest is not durable
 source custody, canonical event publication, coverage or alert authority.
 
+## One-frame resumable JPEG processor
+
+`rgb_detections::pipeline::RgbDetector::new(&model, &contract)` borrows a frozen
+model and matching head contract, including its implementation source fingerprint.
+Use `run_jpeg` with `RgbDetectionInput`, the existing `RgbRunLimits`, separate
+native decoder and detection work budgets, and the caller's `ScalarExecCx`.
+It performs actual color decoding, masking, resizing, graph execution and the
+projection described above. Original source bytes remain the caller's custody.
+
+The processor retains a bounded copy of the exact mask before inference. That
+copy's bytes/work are reserved from the preprocessing allowance in addition to
+the existing inference costs. A completed run exposes `mask_copy_work()` separately
+from `inference().preprocess_work()`. The mask copy prevents later mutations of
+the caller's input buffer from reinterpreting a pending result.
+
+`RgbDetectionStep::Complete` transfers the full inference, owned mask and complete
+detection report. `Pending(error)` means neural execution succeeded but head
+projection failed. Inspect `pending()` for the actual accepted tensors. New JPEGs
+are refused while pending; `resume` repeats **only** postprocessing on those same
+tensors and permissions, with no additional decode or graph execution. Resumption
+failure retains the pending state. Completion takes it only after the projection's
+final cancellation check and requires no post-commit allocation.
+
+Permanent shape/contract refusals and cancelled owners can be ended explicitly
+with `retire()`, which transfers unfinished inference and mask ownership. The
+caller can diagnose or reprocess under an explicitly revised contract; nothing
+automatically changes thresholds, drops a frame or silently swaps models. The
+processor is in-memory, not a durable restart checkpoint, capture-exposure dedup
+service, tracking owner or coverage witness. Retain the outputs before dropping
+this owner, and use the existing custody/publication plane for persistence.
+
+Ten integration tests exercise actual JPEG -> Conv2d -> Reshape -> dense-head
+execution, source-dependent classes and corners, denied-pixel noninterference,
+full-footprint refusal, mixed entry-point receipt equality, retained masks,
+pending backpressure, cancellation, explicit retirement, and every public
+postprocessing work cutoff. Their numeric graph weights are fixtures, not a
+trained detector or accuracy claim. A separate Pillow/PyTorch oracle checked
+512 generated JPEG/head cases and five targeted fixtures; this is still not
+execution of the Rust processor.
+
 ## Scope and validation
 
 This is detector-head postprocessing, not a pretrained model distribution, generic
@@ -81,7 +121,7 @@ camera/alert service. Existing luma detection and RGB model formats are unchange
 The RGB inference implementation is not edited by this feature, avoiding incidental
 changes to its source-pinned model identity.
 
-Fifteen Rust core tests were authored for tensor layouts, objectness/logits,
+Fifteen Rust core tests and ten integration tests were authored for tensor layouts, objectness/logits,
 letterbox reversal, subpixels, privacy, class/NMS ties, all core work cutoffs,
 8,400-row admission and refusal semantics. They are **not compiled or executed**
 in the authoring sandbox: no Rust toolchain is installed. Independent Python

@@ -111,6 +111,8 @@ impl RgbDetectionContract {
         }
         let mut e = CanonicalEncoder::new();
         e.text("fss.rgb-detection-contract.reference.v1:full-footprint:source-q256-nms");
+        // Pin this implementation too; a source fingerprint is not binary qualification.
+        e.digest(ContentDigest::sha256(include_bytes!("rgb_detections.rs")));
         e.digest(spec.model); e.text(&spec.output_port); e.u64(spec.labels.len() as u64);
         for label in &spec.labels { e.text(label); }
         e.u8(match spec.layout { HeadLayout::Rows => 0, HeadLayout::Channels => 1 });
@@ -449,6 +451,9 @@ fn suppresses(a: [u32; 4], b: [u32; 4], threshold: u32) -> bool {
     let union = area(a) + area(b) - intersection;
     u128::from(intersection) * 1_000_000 > u128::from(union) * u128::from(threshold)
 }
+
+/// Native JPEG inference ownership with exact postprocessing resume and retirement.
+pub mod pipeline;
 
 #[cfg(test)]
 mod tests;
