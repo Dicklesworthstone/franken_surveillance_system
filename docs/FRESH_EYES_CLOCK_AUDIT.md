@@ -50,42 +50,8 @@ release status has been upgraded.
 ## Review handoff
 
 Alert dispatch/response handling and convex image-zone geometry were also
-sampled; no change was made without a concrete reproduced finding. The separate
-clock-synchronization conversion review is recorded below. Source evidence and
-failed attempts are not coverage or absence certificates.
-
-## Clock synchronization interval repair
-
-Tracing `ClockSyncEstimate` from the fitted sensor-minus-reference residuals into
-both prediction methods found two additional errors:
-
-- Inverse conversion divided the nominal sensor time by the fitted rate, but then
-  added the sensor-domain error unchanged in reference nanoseconds. With a half-
-  rate sensor, reading 100 and error 10 produced [190, 210], excluding reference
-  times 180 and 220 that the same model admits. The complete sensor interval is
-  now inverted, with the lower endpoint rounded down and the upper endpoint up.
-- Both prediction methods saturated `sample_uncertainty + max_residual` at
-  `u64::MAX` before expanding i128 timestamps. This silently understated a larger
-  finite radius. The two u64 values are now summed exactly in i128.
-
-The forward model retains its existing integer truncation of the skew term. For
-nonzero skew its difference from the exact affine value is less than one sensor
-nanosecond. The inverse explicitly reserves one sensor tick for that rounding
-before scaling, rather than accidentally excluding times on either side of the
-anchor. The half-rate example therefore returns [178, 222], not a falsely tight
-[190, 210]. Zero skew needs no extra rounding tick and retains its previous exact
-intervals when the uncertainty sum already fit u64.
-
-Eight further Rust tests cover slow/fast rates, negative deltas, directed endpoint
-inequalities, a fitted half-rate clock, forward/inverse containment, exact wide
-uncertainty, preserved zero-skew behavior, and typed missing/stale/overflow
-refusals. The estimator fitting, inlier selection, evidence-root encoding,
-generation state and fit-variance code remain byte-identical. The existing
-nominal-reference-time validity check is unchanged. This is a correction to the
-model's numeric enclosure, not a new physical clock-certification claim.
-
-Independent Python checks compared 50,000 endpoint pairs with exact Fraction
-arithmetic and verified 32,361 integer forward/inverse enclosures. The old formula
-excluded 4,476 of those admitted reference times. Another 160 zero-skew checks
-retained exact intervals. Rust compilation, all 17 newly authored tests, rustfmt,
-Clippy and native qualification remain UNRUN. No registry/gate status is promoted.
+sampled; no change was made without a concrete reproduced finding. Clock
+synchronization interval conversion remains a separate review target: its
+uncertainty must stay conservative when converted between sensor and reference
+clock rates. Source evidence and failed attempts are not coverage or absence
+certificates.

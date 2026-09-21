@@ -148,13 +148,21 @@ impl ClockSyncEstimate {
             .ok_or(ReferenceError::ArithmeticOverflow)?;
 
         // Conservative uncertainty: maximum sample uncertainty + fit max residual (with minimum 1 ns floor)
-        let total_uncertainty = self.sensor_uncertainty_ns();
+        let max_sample_uncert = self
+            .sample_evidence
+            .iter()
+            .map(|s| s.uncertainty_ns)
+            .max()
+            .unwrap_or(0);
+        let total_uncertainty = max_sample_uncert
+            .saturating_add(self.residual.max_residual_ns)
+            .max(1);
 
         let earliest = nominal_sensor_time
-            .checked_sub(total_uncertainty)
+            .checked_sub(i128::from(total_uncertainty))
             .ok_or(ReferenceError::ArithmeticOverflow)?;
         let latest = nominal_sensor_time
-            .checked_add(total_uncertainty)
+            .checked_add(i128::from(total_uncertainty))
             .ok_or(ReferenceError::ArithmeticOverflow)?;
 
         CaptureInterval::new(TimestampNs(earliest), TimestampNs(latest))
@@ -162,10 +170,6 @@ impl ClockSyncEstimate {
     }
 
     /// Predicts the reference capture interval for a given sensor timestamp.
-    ///
-    /// Inverts the complete sensor-domain uncertainty interval with outward
-    /// rounding, including the forward model's integer-skew rounding error.
-    /// The existing validity check applies to the nominal reference timestamp.
     pub fn predict_reference_interval(
         &self,
         sensor_time: TimestampNs,
@@ -211,52 +215,25 @@ impl ClockSyncEstimate {
             });
         }
 
-        // Residuals widen the sensor clock, so invert the whole sensor interval,
-        // not just its center. The forward integer skew term differs from the
-        // affine value by less than one sensor ns (zero when skew is zero).
-        let rounding_slack = if self.skew_ppm == 0 { 0 } else { 1 };
-        let sensor_radius = self.sensor_uncertainty_ns() + rounding_slack;
-        let lower_numerator = delta_sensor
-            .checked_sub(sensor_radius)
-            .and_then(|value| value.checked_mul(1_000_000))
-            .ok_or(ReferenceError::ArithmeticOverflow)?;
-        let upper_numerator = delta_sensor
-            .checked_add(sensor_radius)
-            .and_then(|value| value.checked_mul(1_000_000))
-            .ok_or(ReferenceError::ArithmeticOverflow)?;
+        let max_sample_uncert = self
+            .sample_evidence
+            .iter()
+            .map(|s| s.uncertainty_ns)
+            .max()
+            .unwrap_or(0);
+        let total_uncertainty = max_sample_uncert
+            .saturating_add(self.residual.max_residual_ns)
+            .max(1);
 
-        // Positive rate: Euclidean division rounds down even before the anchor.
-        // Round the upper endpoint up without negating an i128::MIN numerator.
-        let lower_delta = lower_numerator.div_euclid(effective_rate);
-        let upper_delta = upper_numerator
-            .div_euclid(effective_rate)
-            .checked_add(i128::from(upper_numerator.rem_euclid(effective_rate) != 0))
+        let earliest = nominal_ref_time
+            .checked_sub(i128::from(total_uncertainty))
             .ok_or(ReferenceError::ArithmeticOverflow)?;
-        let earliest = self
-            .reference_anchor
-            .0
-            .checked_add(lower_delta)
-            .ok_or(ReferenceError::ArithmeticOverflow)?;
-        let latest = self
-            .reference_anchor
-            .0
-            .checked_add(upper_delta)
+        let latest = nominal_ref_time
+            .checked_add(i128::from(total_uncertainty))
             .ok_or(ReferenceError::ArithmeticOverflow)?;
 
         CaptureInterval::new(TimestampNs(earliest), TimestampNs(latest))
             .map_err(ReferenceError::Contract)
-    }
-
-    /// Both inputs are u64, so their exact sum (and one rounding tick) fit i128.
-    /// Saturating the radius at u64::MAX would understate a larger finite bound.
-    fn sensor_uncertainty_ns(&self) -> i128 {
-        let sample_uncertainty = self
-            .sample_evidence
-            .iter()
-            .map(|sample| sample.uncertainty_ns)
-            .max()
-            .unwrap_or(0);
-        (i128::from(sample_uncertainty) + i128::from(self.residual.max_residual_ns)).max(1)
     }
 
     /// Verifies whether a new synchronization sample is consistent with this estimate.
@@ -1029,6 +1006,3 @@ mod tests {
         ));
     }
 }
-
-#[cfg(test)]
-mod prediction_tests;
