@@ -4,7 +4,7 @@
 //!
 //! Evaluates frozen Model IR v1 graphs over typed `fss_tensor::Tensor` instances with
 //! bit-reproducible numerical accumulation, checked resource budgeting, cooperative cancellation,
-//! and strict F32-only data type validation.
+//! and F32 arithmetic. Exact integer inputs are admitted only as embedding indices.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -259,9 +259,9 @@ pub enum ExecError {
         /// Operator opcode.
         op: OpCode,
     },
-    /// Tensor data type is not admitted (scalar executor is strictly F32-only).
+    /// Tensor data type is not admitted for this port or operator.
     UnsupportedDType {
-        /// Expected data type (F32).
+        /// Expected data type (F32 except for exact embedding-index bindings).
         expected: DType,
         /// Actual data type encountered.
         actual: DType,
@@ -607,6 +607,29 @@ fn compute_row_major_strides(dims: &[usize]) -> Vec<usize> {
     strides
 }
 
+// Integer data is not an arithmetic widening policy. Every use of an admitted integer
+// input must be the indices port of Embedding; unused integers and integer outputs stay
+// unsupported. Intermediate outputs are still checked to be F32 during graph preflight.
+fn is_embedding_index_input(graph: &ModelIrGraph, input: &TensorPort) -> bool {
+    if !input.dtype().is_integer()
+        || graph.outputs().iter().any(|output| output.name() == input.name())
+    {
+        return false;
+    }
+    let mut used = false;
+    for node in graph.nodes() {
+        for (position, name) in node.inputs().iter().enumerate() {
+            if name == input.name() {
+                if node.op() != OpCode::Embedding || position != 0 {
+                    return false;
+                }
+                used = true;
+            }
+        }
+    }
+    used
+}
+
 /// Computes upper-bound multiply-accumulate operations for a single computational node.
 fn compute_node_macs(
     node: &fss_model_ir::GraphNode,
@@ -704,10 +727,15 @@ fn compute_node_macs(
         OpCode::LayerNorm | OpCode::RMSNorm => normalization_work(node, in_ports, &out_ports[0]),
         OpCode::Gelu | OpCode::Silu | OpCode::Tanh => activation_work(node, &out_ports[0]),
         OpCode::Reshape => Ok(0),
-        OpCode::Embedding => Err(ExecError::UnsupportedOperator {
-            node_id: node.id().to_string(),
-            op: node.op(),
-        }),
+        OpCode::Embedding => {
+            // Bound logical index traversal/validation and strided table reads/copies.
+            // A zero-width table still requires checking every supplied index.
+            let indices = in_ports[0].shape().num_elements()? as u64;
+            let elements = out_ports[0].shape().num_elements()? as u64;
+            indices.checked_mul(2 * in_ports[0].rank() as u64 + 2)
+                .and_then(|work| elements.checked_mul(4).and_then(|copy| work.checked_add(copy)))
+                .ok_or(ExecError::ArithmeticOverflow { operation: "embedding work bound" })
+        }
     }
 }
 
@@ -753,9 +781,9 @@ impl ScalarExecutor {
         let sorted_nodes =
             GraphValidator::topological_sort(graph, &producer_map).map_err(ExecError::Ir)?;
 
-        // 4. Pre-execution checks: strictly F32-only dtype gate on declared inputs and outputs
+        // 4. F32 arithmetic, with a narrow exact-integer exception for embedding indices.
         for input in graph.inputs() {
-            if input.dtype() != DType::F32 {
+            if input.dtype() != DType::F32 && !is_embedding_index_input(graph, input) {
                 return Err(ExecError::UnsupportedDType {
                     expected: DType::F32,
                     actual: input.dtype(),
@@ -773,38 +801,8 @@ impl ScalarExecutor {
             }
         }
 
-        // 5. Exhaustive operator support check before execution begins
-        for node in &sorted_nodes {
-            match node.op() {
-                OpCode::Conv2d
-                | OpCode::Relu
-                | OpCode::Sigmoid
-                | OpCode::Add
-                | OpCode::Sub
-                | OpCode::Mul
-                | OpCode::Div
-                | OpCode::MaxPool2d
-                | OpCode::MatMul
-                | OpCode::Reshape
-                | OpCode::Softmax
-                | OpCode::Transpose
-                | OpCode::Squeeze
-                | OpCode::Unsqueeze
-                | OpCode::Concat
-                | OpCode::Slice
-                | OpCode::LayerNorm
-                | OpCode::RMSNorm
-                | OpCode::Gelu
-                | OpCode::Silu
-                | OpCode::Tanh => {}
-                OpCode::Embedding => {
-                    return Err(ExecError::UnsupportedOperator {
-                        node_id: node.id().to_string(),
-                        op: node.op(),
-                    });
-                }
-            }
-        }
+        // 5. Every frozen opcode has an exhaustive work model and kernel dispatch below.
+        // Attribute and dtype support is still checked before any node executes.
 
         // 6. Bind inputs and verify shapes, dtypes, and generations
         let mut input_map: BTreeMap<&str, &Tensor> = BTreeMap::new();
@@ -816,7 +814,13 @@ impl ScalarExecutor {
                     reason: format!("unexpected input port '{}'", name.as_ref()),
                 });
             }
-            input_map.insert(name.as_ref(), tensor);
+            if input_map.insert(name.as_ref(), tensor).is_some() {
+                return Err(ExecError::ShapeMismatch {
+                    node_id: "input".to_string(),
+                    op_id: "graph_input",
+                    reason: format!("duplicate input port '{}'", name.as_ref()),
+                });
+            }
         }
 
         let mut total_input_bytes: usize = 0;
@@ -830,9 +834,9 @@ impl ScalarExecutor {
                         expected_port: declared_in.name().to_string(),
                     })?;
 
-            if provided.dtype() != DType::F32 {
+            if provided.dtype() != declared_in.dtype() {
                 return Err(ExecError::UnsupportedDType {
-                    expected: DType::F32,
+                    expected: declared_in.dtype(),
                     actual: provided.dtype(),
                     tensor_name: declared_in.name().to_string(),
                 });
@@ -859,7 +863,7 @@ impl ScalarExecutor {
                 });
             }
 
-            let tensor_bytes = provided.shape().size_bytes(DType::F32)?;
+            let tensor_bytes = provided.shape().size_bytes(declared_in.dtype())?;
             total_input_bytes = total_input_bytes.checked_add(tensor_bytes).ok_or(
                 ExecError::ArithmeticOverflow {
                     operation: "input tensor bytes accumulation",
@@ -1043,12 +1047,9 @@ impl ScalarExecutor {
                 OpCode::Gelu | OpCode::Silu | OpCode::Tanh => Self::execute_activation(
                     node, node_in_tensors[0], &out_ports[0], graph.generation(), cx,
                 )?,
-                OpCode::Embedding => {
-                    return Err(ExecError::UnsupportedOperator {
-                        node_id: node.id().to_string(),
-                        op: node.op(),
-                    });
-                }
+                OpCode::Embedding => Self::execute_embedding(
+                    node, node_in_tensors[0], node_in_tensors[1], &out_ports[0], graph.generation(), cx,
+                )?,
             };
 
             cx.checkpoint("post-node-execution")?;
@@ -1985,5 +1986,142 @@ impl ScalarExecutor {
         }
         cx.checkpoint("activation:publish")?;
         Tensor::from_values(output.shape().clone(), &values, generation).map_err(ExecError::Tensor)
+    }
+}
+
+// Frozen embedding inference is an exact table lookup, not a vector approximation,
+// identity assertion or training operation. padding_idx never overwrites an imported row.
+// Read through tensor views so offsets/strides remain authoritative; do not clone an
+// entire vocabulary table or coerce integer IDs through a floating-point representation.
+impl ScalarExecutor {
+    fn execute_embedding(
+        node: &fss_model_ir::GraphNode,
+        indices: &Tensor,
+        weights: &Tensor,
+        output: &TensorPort,
+        generation: Generation,
+        cx: &ScalarExecCx,
+    ) -> Result<Tensor, ExecError> {
+        match indices.dtype() {
+            DType::I8 => Self::execute_embedding_indices::<i8>(node, indices, weights, output, generation, cx),
+            DType::I16 => Self::execute_embedding_indices::<i16>(node, indices, weights, output, generation, cx),
+            DType::I32 => Self::execute_embedding_indices::<i32>(node, indices, weights, output, generation, cx),
+            DType::I64 => Self::execute_embedding_indices::<i64>(node, indices, weights, output, generation, cx),
+            DType::U8 => Self::execute_embedding_indices::<u8>(node, indices, weights, output, generation, cx),
+            DType::U16 => Self::execute_embedding_indices::<u16>(node, indices, weights, output, generation, cx),
+            DType::U32 => Self::execute_embedding_indices::<u32>(node, indices, weights, output, generation, cx),
+            DType::U64 => Self::execute_embedding_indices::<u64>(node, indices, weights, output, generation, cx),
+            DType::F32 | DType::F64 | DType::F16 | DType::BF16 | DType::Bool => {
+                Err(ExecError::UnsupportedDType {
+                    expected: DType::I64,
+                    actual: indices.dtype(),
+                    tensor_name: node.inputs()[0].clone(),
+                })
+            }
+        }
+    }
+
+    fn execute_embedding_indices<I: fss_tensor::TensorScalar + TryInto<usize>>(
+        node: &fss_model_ir::GraphNode,
+        indices: &Tensor,
+        weights: &Tensor,
+        output: &TensorPort,
+        generation: Generation,
+        cx: &ScalarExecCx,
+    ) -> Result<Tensor, ExecError> {
+        cx.checkpoint("embedding:begin")?;
+        let rows = weights.shape().dims()[0];
+        let width = weights.shape().dims()[1];
+        let count = indices.num_elements()?;
+        let output_bytes = output.shape().size_bytes(DType::F32)?;
+        let allocation_error = || ExecError::Tensor(TensorError::AllocationLimitExceeded {
+            requested_bytes: output_bytes,
+            max_bytes: fss_tensor::MAX_STORAGE_BYTES,
+        });
+        if output_bytes > fss_tensor::MAX_STORAGE_BYTES {
+            return Err(allocation_error());
+        }
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(output_bytes).map_err(|_| allocation_error())?;
+        let dims = indices.shape().dims();
+        let mut coordinates = vec![0_usize; dims.len()];
+        for position in 0..count {
+            if position % 1024 == 0 { cx.checkpoint("embedding:indices")?; }
+            let row: usize = indices.read_element::<I>(&coordinates)?.try_into()
+                .map_err(|_| layout_mismatch(node, "embedding index is negative or exceeds addressable range"))?;
+            if row >= rows {
+                return Err(layout_mismatch(node, "embedding index outside weight table"));
+            }
+            // Validate the row even when width is zero. Empty output is not permission
+            // to accept an invalid ID; no clamping, wrapping or zero-filled fallback.
+            for column in 0..width {
+                if column % 1024 == 0 { cx.checkpoint("embedding:row")?; }
+                let value = weights.read_element::<f32>(&[row, column])?;
+                bytes.extend_from_slice(&value.to_ne_bytes());
+            }
+            for axis in (0..dims.len()).rev() {
+                coordinates[axis] += 1;
+                if coordinates[axis] < dims[axis] { break; }
+                coordinates[axis] = 0;
+            }
+        }
+        if bytes.len() != output_bytes {
+            return Err(layout_mismatch(node, "embedding output byte count mismatch"));
+        }
+        cx.checkpoint("embedding:publish")?;
+        // Transfer the one bounded output buffer into immutable tensor storage. This
+        // avoids a second full output copy and retains F32 payload bits exactly.
+        let storage = std::sync::Arc::new(fss_tensor::TensorStorage::from_vec(bytes, generation)?);
+        let strides = fss_tensor::Strides::from_shape_row_major(output.shape())?;
+        let view = fss_tensor::TensorView::new(
+            storage, 0, DType::F32, output.shape().clone(), strides, generation,
+        )?;
+        Ok(Tensor::from_view(view))
+    }
+}
+
+#[cfg(test)]
+mod embedding_smoke_tests {
+    use super::*;
+    use fss_model_ir::{AttributeMap, GraphNode};
+
+    fn graph(dtype: DType, width: usize) -> Result<ModelIrGraph, Box<dyn std::error::Error>> {
+        let generation = Generation::from_u64(1);
+        Ok(ModelIrGraph::builder("embedding-smoke", generation)
+            .add_input(TensorPort::new("ids", dtype, Shape::new(vec![3])?, generation)?)
+            .add_input(TensorPort::new("table", DType::F32, Shape::new(vec![3, width])?, generation)?)
+            .add_output(TensorPort::new("out", DType::F32, Shape::new(vec![3, width])?, generation)?)
+            .add_node(GraphNode::new("lookup", OpCode::Embedding, "lookup",
+                vec!["ids".to_owned(), "table".to_owned()], vec!["out".to_owned()], AttributeMap::new())?)
+            .build_and_validate()?)
+    }
+
+    #[test]
+    fn embedding_executes_in_the_existing_scalar_entrypoint() -> Result<(), Box<dyn std::error::Error>> {
+        let graph = graph(DType::I64, 2)?;
+        let generation = graph.generation();
+        let ids = Tensor::from_values(Shape::new(vec![3])?, &[2_i64, 0, 2], generation)?;
+        let table = Tensor::from_values(Shape::new(vec![3, 2])?, &[1_f32, 2., 3., 4., 5., 6.], generation)?;
+        let result = ScalarExecutor::run(&graph, &[("ids", ids), ("table", table)],
+            ExecBudget::new(36, 72), &ScalarExecCx::new())?;
+        assert_eq!(result.get_output("out").ok_or("missing output")?.to_vec::<f32>()?,
+            vec![5., 6., 1., 2., 5., 6.]);
+        assert_eq!(result.executed_macs(), 36);
+        assert_eq!(result.allocated_bytes(), 72);
+        assert_eq!(result.nodes_executed(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn zero_width_embedding_still_refuses_invalid_indices() -> Result<(), Box<dyn std::error::Error>> {
+        let graph = graph(DType::I64, 0)?;
+        let generation = graph.generation();
+        let table = Tensor::from_values(Shape::new(vec![3, 0])?, &[] as &[f32], generation)?;
+        for ids in [[0_i64, 1, -1], [0, 1, 3]] {
+            let ids = Tensor::from_values(Shape::new(vec![3])?, &ids, generation)?;
+            assert!(matches!(ScalarExecutor::run(&graph, &[("ids", ids), ("table", table.clone())],
+                ExecBudget::unlimited(), &ScalarExecCx::new()), Err(ExecError::ShapeMismatch { .. })));
+        }
+        Ok(())
     }
 }
