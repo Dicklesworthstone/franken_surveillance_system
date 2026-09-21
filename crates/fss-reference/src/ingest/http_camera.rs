@@ -50,7 +50,7 @@ impl HttpCameraRoute {
     pub fn basis(&self) -> StreamBasis { self.basis }
     /// Exact authorized peer; never resolved or redirected here.
     pub fn peer(&self) -> SocketAddr { self.peer }
-    /// Exact Host mapping approved independently by the authority owner.
+    /// Exact owner-supplied Host mapping approved independently by the authority owner.
     pub fn authority(&self) -> &str { &self.authority }
     /// Explicit non-secret request path.
     pub fn target(&self) -> &str { &self.target }
@@ -76,6 +76,10 @@ pub enum HttpCameraOperation {
     Read,
     /// Parse previously acknowledged source bytes.
     Parse,
+    /// Run or resume bounded learned analysis of this exact retained frame.
+    Analyze,
+    /// Owner explicitly accepted responsibility for the complete derived result.
+    ReleaseResult,
     /// Owner explicitly accepted responsibility for these exact raw bytes.
     AcknowledgeWire,
     /// Transfer one complete source-mapped frame out of this owner.
@@ -537,3 +541,6 @@ fn io_error(operation: HttpCameraOperation, error: io::Error) -> HttpCameraError
 
 #[cfg(test)]
 mod tests;
+
+/// Source-preserving native camera to existing learned JPEG/trajectory/zone processing.
+pub mod learned;

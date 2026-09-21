@@ -346,3 +346,5 @@ fn returned_trailing_response_bytes_cannot_be_silently_discarded() -> Test {
     let r = c.retire(); let raw = r.wire.ok_or("trailing source was lost")?;
     assert!(raw.parsed_bytes()<raw.bytes().len()); Ok(())
 }
+
+mod learned;
