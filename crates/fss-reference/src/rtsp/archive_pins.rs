@@ -20,6 +20,12 @@ use super::recording_archive::checkpoint::{ArchiveWorkLimits, MAX_ARCHIVE_WORK_B
 use super::recording_archive::checkpoint::write_ahead::ArchiveCheckpoint;
 
 mod codec;
+mod restore;
+pub use restore::ArchivePinRestoration;
+mod writer;
+pub use writer::*;
+/// Live capture whose checkpoint acknowledgements follow independent disk synchronization.
+pub mod live;
 
 const RECORD_KIND: u16 = 0x4150;
 const RECORD_OVERHEAD: usize = 128;

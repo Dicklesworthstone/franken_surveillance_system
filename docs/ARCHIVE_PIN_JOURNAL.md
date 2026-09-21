@@ -60,6 +60,80 @@ all work named by the last confirmation must actually exist at its normal archiv
 slots. A durable auxiliary work root alone cannot make an unpublished recording
 safe to forget when a camera restarts.
 
+## Automatic archive and live integration
+
+`JournaledArchiveWriter` exclusively owns the existing checkpointed writer and
+borrows the independent pin journal. It exposes no mutable inner owner and no
+manual acknowledgement method. `JournaledLiveAvcArchive` applies the same ordering
+to the native TCP/Digest/AVC capture-to-archive owner. Its request, response, timing,
+seal, flush and finish operations preserve the existing scope and media contracts.
+The storage cancellation/deadline capability is explicit on each live call.
+
+Each announced candidate is actually appended and synchronized before the wrapper
+acknowledges it to the existing barrier. `PinPersisted` is metadata durability,
+not source/work durability. After the complete work root commits, its confirmation
+is appended before `WorkConfirmed` returns; the result carries both the original
+work-storage receipt and the independent metadata receipt. Only a later step may
+publish the recording or catalog at its normal archive slot.
+
+If candidate persistence fails, the wrapper does not acknowledge it. If recording
+confirmation fails after the source work commits, the actual work receipt is
+retained as `UnrecordedWorkConfirmation`. The standalone writer fences; the live
+wrapper closes capture and returns all original network, unsealed and pending
+archive work. There is no retry-through-error or unjournaled publication bypass.
+The last acknowledged journal prefix can be behind an uncertain append; after a
+cold reopen the candidate/confirmed records reveal what actually committed.
+
+No camera socket read/write accompanies a pin append or checkpoint publication.
+The live loop performs a bounded current-path/final-trailer check on the journal;
+new candidate and confirmation records additionally reverify its entire history.
+Readiness cannot bypass storage work. Fixed live leases, storage-pause deadlines,
+finite driver allowances, explicit timing, raw-source ownership and genuine EOF
+versus owner-stop semantics remain the existing owner's responsibility and are
+not reset. A work+confirmation step can perform multiple bounded filesystem calls
+across both owners; it is not a one-syscall or preemption guarantee.
+
+Both wrappers refuse a new writer/camera when the journal contains an unresolved
+candidate or when its confirmed work is still missing from normal archive slots.
+A confirmed work bundle must not become permission to forget a not-yet-archived
+recording. Older unprepared indexing can drain through a newly journaled page
+barrier after exact original work is restored. Independent directories do not
+themselves establish independent failure domains: deployment must protect their
+placement, permissions, backup and externally accepted minimum-prefix policy.
+
+## Restore directly from independently stored references
+
+`ArchivePinJournal::restore_work` selects the current candidate, or the last
+confirmation only when there is no candidate. It reconstructs and verifies that
+exact existing work graph, including original source, namespace, retirement
+identity and byte quote. A missing, corrupt, deleted or superseded candidate is
+an error; restoration never silently tries the older confirmation instead.
+
+Once candidate work actually verifies, confirmation is synchronized BEFORE any
+normal archive publication. Restoration then publishes the original prepared
+catalog first, followed by the original pending recording at its reserved ordinal.
+It does not contact a camera, remux source bytes, allocate another ordinal, or
+construct additional catalog pages. The existing root-last publisher re-verifies
+already durable roots on exact retry. `ArchivePinRestoration` returns the original
+checkpoint, journal anchor, any new confirmation, actual catalog/window receipts,
+and current source-verified snapshot and durable/indexed/page counts.
+
+This ordering preserves restartability when a write succeeds but its response is
+lost. The original selected work reference remains valid after either publication
+because no unnamed discovery page is added. `restore_work` checks settlement after
+writing. Any unprepared indexing remains explicit in its counts; a newly opened
+journaled writer can then prepare and protect the next page normally. Do not run
+an unjournaled full-drain resumer to create extra pages and expect the old reference
+to authorize that newer history.
+
+A restoration failure can follow a successful metadata confirmation or a committed
+archive root. Retain the same journal and media storage, reopen/reconcile uncertain
+owners, and retry the same selected work. No failure path deletes or resets either
+store. Entry time is an admission check, not an elapsed-syscall clock; cancellation
+must enforce the runtime's live deadline, retention and revocation at supported
+I/O boundaries. Work lost before its complete checkpoint commits is not recoverable
+from a reference alone and remains an explicit unresolved obligation.
+
 ## Boundaries and validation
 
 All operations are synchronous, owner-driven and bounded, not an Asupersync service
@@ -73,10 +147,20 @@ universe. There are no source format, retention, model or qualification changes.
 Native-journal tests cover cold reopen, candidate/predecessor retention, all four
 append cut points for both transition kinds, lost acknowledgements, exact retries,
 wrong prefixes, competing candidates, actual locking, corruption, replay grammar,
-limits, cancellation, missing layouts and Unix symlink refusal.
+limits, cancellation, missing layouts and Unix symlink refusal. Twelve additional
+pipeline tests use actual source-linked AVC, existing filesystem publication and
+native loopback sockets. They cover automatic window/page barriers, cold recovery
+of confirmed-but-unpublished work, confirmation capacity failure, retained original
+bytes, no socket read-ahead, authority revocation, namespace refusal and expiry.
+Eight additional restoration tests cover loss of every original in-memory object,
+missing candidate custody, exact lost-response retries, uncertain normal root
+publication, confirmation capacity, cancellation, deadline, original page identity
+and source corruption. The total is 33 authored Rust tests, including one Unix-only
+journal-layout test. These counts are not executed results.
 
 ```sh
 cargo test -p fss-reference --lib rtsp::archive_pins
+cargo test -p fss-reference --test archive_pin_pipeline
 ```
 
 The Rust tests, compilation, rustfmt and Clippy have not run in this authoring
