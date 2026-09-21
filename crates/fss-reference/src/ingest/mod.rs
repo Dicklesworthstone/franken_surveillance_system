@@ -28,6 +28,8 @@ pub mod tracking;
 pub mod tracker;
 /// Cross-camera association of tracked objects via time and geometry gates.
 pub mod cross_camera;
+/// Zone-gated event generation from confirmed tracks into the event plane.
+pub mod eventgen;
 /// Complete, restart-reproducible detector/tracker reports over retained recordings.
 pub mod analysis;
 /// Durable unresolved event candidates from exact replayed analysis reports.
