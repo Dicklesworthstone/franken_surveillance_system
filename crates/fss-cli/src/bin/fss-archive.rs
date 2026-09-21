@@ -5,13 +5,16 @@ use std::process::ExitCode;
 use fss_cli::archive_cmd::{ArchiveCommandError, HELP, execute_archive, parse_archive_args};
 use fss_cli::{ERR_CLI_RUNTIME_FAILURE, ExitIdentity};
 
+#[path = "fss-archive/work.rs"]
+mod work;
+
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).take(66).collect();
-    let result = match parse_archive_args(&args) {
-        Ok(None) => Ok(HELP.to_owned()),
+    let result = if work::handles(&args) { work::execute(&args) } else { match parse_archive_args(&args) {
+        Ok(None) => Ok(format!("{HELP}\n{}", work::HELP)),
         Ok(Some(options)) => execute_archive(&options),
         Err(error) => Err(error),
-    };
+    }};
     match result {
         Ok(report) => match emit(&mut io::stdout().lock(), report.as_bytes()) {
             Ok(()) => ExitCode::from(ExitIdentity::SUCCESS.code),
@@ -21,7 +24,11 @@ fn main() -> ExitCode {
             let usage = matches!(&error, ArchiveCommandError::Argument { .. });
             let code = match &error { ArchiveCommandError::Argument { code, .. } => *code, _ => ERR_CLI_RUNTIME_FAILURE };
             eprintln!("{code}: {error}");
-            eprintln!("No complete report was emitted. Existing roots are not repaired, deleted or replaced. An incomplete export may remain; reconcile COMPLETE.json before reuse. Use fss-archive help.");
+            if work::handles(&args) {
+                eprintln!("No complete report was emitted. Only exact checkpointed roots may have committed. Retain the original work pin, inspect storage and reconcile before retrying; no automatic cleanup occurred. Use fss-archive help.");
+            } else {
+                eprintln!("No complete report was emitted. Existing roots are not repaired, deleted or replaced. An incomplete export may remain; reconcile COMPLETE.json before reuse. Use fss-archive help.");
+            }
             ExitCode::from(if usage { ExitIdentity::MALFORMED_VALUE.code } else { ExitIdentity::RUNTIME_FAILURE.code })
         }
     }

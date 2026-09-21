@@ -67,6 +67,56 @@ loading this old work fails rather than silently following that newer history.
 Retain or explicitly delete work roots under the deployment's graph-aware policy;
 they contain source evidence, not just harmless operation metadata.
 
+## Separate-process operator recovery
+
+The existing `fss-archive` executable now has an AVC-only work path. Supply the
+saved work slot/root and independently accepted archive namespace; neither a
+mutable filename nor an implicit "latest" lookup selects the work:
+
+```sh
+fss-archive inspect-work --root "$ARCHIVE_DIR" \
+  --work-slot "$WORK_SLOT" --work-root "$WORK_ROOT" \
+  --expected-namespace "$ARCHIVE_NAMESPACE"
+
+fss-archive restore-work --root "$ARCHIVE_DIR" \
+  --work-slot "$WORK_SLOT" --work-root "$WORK_ROOT" \
+  --expected-namespace "$ARCHIVE_NAMESPACE" --commit yes
+```
+
+`inspect-work` reconstructs and verifies the whole work graph without new archive
+publication. `restore-work` requires explicit `--commit yes`, publishes the
+original prepared catalog first (when present), then restores the original
+pending window at its exact reserved ordinal. It never makes additional catalog
+pages. Thus a process interruption between those publications, or a successful
+write followed by lost stdout, leaves the same original work pin usable for
+another invocation. Existing exact roots return `already_durable`; they are not
+replaced or assigned another ordinal.
+
+The bounded JSON report uses the local operator vocabulary, not an `fss/1` agent
+response. It names the work, retirement, namespace and current snapshot roots,
+reports actual durable/indexed window counts, and explicitly marks remaining
+indexing. `operation_complete` means this exact restoration request finished,
+not that all footage is indexed, the camera completed capture, or coverage is
+established. An unprepared catalog remains `indexing_remaining: true`; additional
+indexing needs the normal archive writer/resumption API and its separately
+retained recovery work. No source pixels, raw packets or credentials are printed.
+
+All flags are checked before opening storage, including duplicate/inapplicable
+flags, SHA-256 pins, positive timeout, finite inventory/graph/output ceilings and
+explicit commit consent. Missing archives, symlink roots and legacy/missing
+layouts are refused rather than created or migrated. Opening uses the existing
+exclusive storage locks and normal recovery/verification I/O; inspection is not
+a forensic read-only open. The authorized local process and protected filesystem
+are the authority boundary, not the command's labels. No network request, secret
+lookup, privilege elevation, destructive repair or automatic deletion is added.
+
+Work commands have their own request-owned monotonic deadline and independently
+supplied storage/inventory limits. Cancellation is passed to every supported
+publication and recovery boundary. Existing owner open and individual syscalls
+are not preemptible; a timeout after a write can still mean that root committed.
+Such a failure emits no success JSON. Keep the original pins, inspect/reconcile
+storage, and retry only the same exact operation rather than changing its scope.
+
 ## Bounds and coverage
 
 `ArchiveWorkLimits` separately constrains stored archive policy ceilings, complete
@@ -81,10 +131,15 @@ The initial nine public-API tests use actual source-linked AVC fixtures and loca
 filesystem publication. They cover cold reconstruction and byte identities,
 prepared-page-plus-next-window recovery, exact retries, lost acknowledgements,
 all four root cut points, authorization/capacity refusal, unexpected later
-history, external ceilings and corrupt source.
+history, external ceilings and corrupt source. Eight additional executable tests
+(seven portable, one Unix-only) exercise separate-process inspection/restoration,
+lost stdout acknowledgements, an older page committed before its waiting window,
+commit consent, scope and byte refusal, strict argument handling, missing owners,
+secret-free errors and symlink refusal.
 
 ```sh
 cargo test -p fss-reference --test archive_work_checkpoint
+cargo test -p fss-cli --test archive_work_process
 ```
 
 These Rust tests were authored but not executed in the editing environment,
