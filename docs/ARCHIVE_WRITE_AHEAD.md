@@ -67,17 +67,62 @@ Raw TCP chunks, unsealed pictures, and work lost before a checkpoint root commit
 remain outside this guarantee. This is not continuous crash-safe raw ingress,
 a new runtime, TLS/reconnect integration, replicated custody or release qualification.
 
+## Native live capture
+
+`rtsp::live_archive::checkpointed::CheckpointedLiveAvcArchive` applies the same
+barrier to the actual TCP/Digest/AVC capture-to-archive owner. Supply the normal
+live, recording and archive configuration plus `ArchiveWorkLimits`. Incompatible
+work bounds are refused before archive recovery or a native connection attempt.
+There is no mutable escape to the legacy owner; its unprotected storage-poll
+branch is never invoked through this wrapper. Existing applications using the
+legacy constructor retain their existing behavior.
+
+Drive `poll(readiness, now, authority, cancellation)`. Ordinary wire, recording,
+archive and completion results are wrapped in `CheckpointedLiveArchiveStep::Live`.
+A `Checkpoint` result exposes the same `PinRequired` and `WorkDurable` states as
+the standalone writer. Independently retain each candidate, then use the live
+owner's `acknowledge_checkpoint` with the exact pin and current authority. Do not
+auto-acknowledge an unpersisted pin or treat an acknowledgement as proof of custody.
+
+While pin acknowledgement, work publication, or normal storage progress is
+pending, no camera socket read/write occurs, even when both readiness flags are
+true. Existing protocol requests and picture timing remain backpressured. The
+live grant, original absolute leases, fixed storage-pause ceiling and finite
+operation allowance continue to apply. An outstanding pin waits for the owner or
+its fixed hard deadline, not an artificial immediate wake. A failed or repeated
+command cannot restart the pause. Protocol and collector clocks are not reset;
+as in the existing live archive owner, their deadlines are evaluated on resumption.
+
+Revocation, cancellation, expiry and uncertain storage publication close capture
+and return all unsealed/pending source together with candidate and last-durable
+checkpoint references. An uncertain auxiliary root is never reported as a whole
+work checkpoint or a normal archived window. True receiver EOF still produces
+`InputEnded`; explicit `finish_capture` returns unsealed input immediately and
+produces `OwnerStopped` after protecting and draining only already accepted work.
+Checkpointing cannot convert a truncated picture or protocol failure into EOF.
+
+Normal recovery still uses `load_archive_work`, `RecordingArchiveResume`, or the
+existing separate-process work commands. The wrapper does not restore a socket,
+create a new camera generation, authenticate a new principal, or implement a
+persistent pin store. It connects protection to ordinary live publication, not
+to every raw network byte or every yet-unsealed picture.
+
 ## Validation
 
-The new public-API test target covers cold process-state loss, unchanged work
+Fourteen public-API tests cover cold process-state loss, unchanged work
 format/commitments, separate window and catalog barriers, lost checkpoint/window/
 page replies, recovered tails, source-buffer ownership, finite budgets, cancellation,
 wrong pins, and all four root-publication failure cuts using native AVC fixtures
-and the existing local filesystem publisher.
+and the existing local filesystem publisher. Eight additional live tests exercise
+actual loopback sockets and encoded AVC through both barriers, including source
+identity across TCP chunk sizes 1/7/4096, cold re-open, no read-ahead, revocation,
+fixed pin-wait deadlines, uncertain auxiliary publication, recovered tails, and
+true EOF versus explicit stop.
 
 ```sh
 cargo test -p fss-reference --test archive_write_ahead
 cargo test -p fss-reference --test archive_work_checkpoint
+cargo test -p fss-reference --lib rtsp::live_archive::checkpointed
 ```
 
 These Rust tests are authored, not executed in the editing environment (no cargo

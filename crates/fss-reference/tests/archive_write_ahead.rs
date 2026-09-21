@@ -85,6 +85,12 @@ fn drain(w: &mut CheckpointedArchiveWriter<'_>) -> Test<Vec<ArchiveCheckpoint>> 
     }
     Err("bounded archive did not yield".into())
 }
+fn prepare_page(w: &mut CheckpointedArchiveWriter<'_>) -> Test {
+    assert!(matches!(w.step(2, &NeverCancel)?, CheckpointedArchiveProgress::Archive(ArchiveWriteProgress::PageStarted { .. })));
+    assert!(matches!(w.step(2, &NeverCancel)?, CheckpointedArchiveProgress::Archive(ArchiveWriteProgress::PageWindowVerified { .. })));
+    assert!(matches!(w.step(2, &NeverCancel)?, CheckpointedArchiveProgress::Archive(ArchiveWriteProgress::CatalogPrepared { .. })));
+    Ok(())
+}
 struct Cancel;
 impl PublishCancellation for Cancel {
     fn cancel_requested(&self, _: PublishCutPoint) -> bool { true }
@@ -176,8 +182,9 @@ fn automatic_catalog_barrier_precedes_index_io_and_survives_lost_page_ack() -> T
     let page_pin = {
         let mut p = LocalRootPublisher::open(&path, storage_limits())?;
         let mut w = open(&mut p)?; offer(&mut w, 0)?; protect(&mut w)?;
-        w.step(2, &NeverCancel)?; w.finish(2)?;
-        for _ in 0..3 { w.step(2, &NeverCancel)?; } // start page, verify window, prepare page
+        assert!(matches!(w.step(2, &NeverCancel)?, CheckpointedArchiveProgress::Archive(ArchiveWriteProgress::WindowDurable { .. })));
+        w.finish(2)?;
+        prepare_page(&mut w)?; // start page, verify window, prepare page
         assert_eq!(w.snapshot().indexed_windows(), 0);
         let pin = protect(&mut w)?;
         assert_eq!(w.snapshot().indexed_windows(), 0);
@@ -204,7 +211,7 @@ fn recovered_unindexed_tail_is_protected_before_new_page_publication() -> Test {
         let mut p = LocalRootPublisher::open(&path, storage_limits())?;
         let mut w = RecordingArchiveWriter::open(&mut p, namespace()?, limits(), 0, 1000, &NeverCancel)?;
         let window = window(0)?; let bytes = window.byte_len(); w.offer(window, bytes, 0)?;
-        w.step(1, &NeverCancel)?;
+        assert!(matches!(w.step(1, &NeverCancel)?, ArchiveWriteProgress::WindowDurable { .. }));
     }
     let mut p = LocalRootPublisher::open(&path, storage_limits())?;
     let mut w = open(&mut p)?; assert_eq!(w.snapshot().unindexed_windows().len(), 1);
@@ -299,8 +306,9 @@ fn pin_waits_and_acknowledgements_cannot_renew_clock_or_step_budget() -> Test {
 fn stale_pin_acknowledgement_does_not_unlock_another_checkpoint() -> Test {
     let mut p = LocalRootPublisher::open(fresh("stale_pin")?, storage_limits())?;
     let mut w = open(&mut p)?; offer(&mut w, 0)?; let old = protect(&mut w)?;
-    w.step(2, &NeverCancel)?; w.finish(2)?;
-    for _ in 0..3 { w.step(2, &NeverCancel)?; }
+    assert!(matches!(w.step(2, &NeverCancel)?, CheckpointedArchiveProgress::Archive(ArchiveWriteProgress::WindowDurable { .. })));
+    w.finish(2)?;
+    prepare_page(&mut w)?;
     let current = pin(&mut w)?; assert_ne!(current.root(), old.root());
     assert!(matches!(w.acknowledge_checkpoint(&old, 2, &NeverCancel), Err(ArchiveError::Metadata)));
     assert!(matches!(w.step(2, &NeverCancel)?, CheckpointedArchiveProgress::PinRequired(p) if p == current));

@@ -427,3 +427,6 @@ fn safe(reason: LiveArchiveError) -> LiveArchiveFailure { LiveArchiveFailure { r
 
 #[cfg(test)]
 mod tests;
+
+/// Opt-in live capture with independently pinned write-ahead work barriers.
+pub mod checkpointed;
