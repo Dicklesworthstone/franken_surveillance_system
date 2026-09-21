@@ -58,3 +58,6 @@ pub use retained::{RetainedFileImport, RetainedReadLimits};
 
 /// Native JPEG RGB through privacy projection, resize and frozen neural graph execution.
 pub mod rgb_inference;
+
+/// Actual RGB dense heads to complete source-space, privacy-screened detector proposals.
+pub mod rgb_detections;
