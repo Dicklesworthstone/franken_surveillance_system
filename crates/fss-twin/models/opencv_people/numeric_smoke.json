@@ -1,0 +1,386 @@
+[
+  {
+    "fixture": 0,
+    "native_score": -6.6657915115356445,
+    "opencv_score": -6.6657915115356445,
+    "max_feature_delta": 0.0
+  },
+  {
+    "fixture": 1,
+    "native_score": -6.6657915115356445,
+    "opencv_score": -6.6657915115356445,
+    "max_feature_delta": 0.0
+  },
+  {
+    "fixture": 2,
+    "native_score": -3.8759877860091767,
+    "opencv_score": -3.8759877860091767,
+    "max_feature_delta": 0.0
+  },
+  {
+    "fixture": 3,
+    "native_score": -5.5279403317694005,
+    "opencv_score": -5.5279403317694005,
+    "max_feature_delta": 0.0
+  },
+  {
+    "fixture": 4,
+    "native_score": -4.45516621963684,
+    "opencv_score": -4.453545276177976,
+    "max_feature_delta": 6.518885493278503e-05
+  },
+  {
+    "fixture": 5,
+    "native_score": -4.579090416443567,
+    "opencv_score": -4.578850730765833,
+    "max_feature_delta": 0.00013461709022521973
+  },
+  {
+    "fixture": 6,
+    "native_score": -4.387786588320922,
+    "opencv_score": -4.387497959530209,
+    "max_feature_delta": 0.00014230608940124512
+  },
+  {
+    "fixture": 7,
+    "native_score": -4.392289084759522,
+    "opencv_score": -4.392013219118344,
+    "max_feature_delta": 0.00013682246208190918
+  },
+  {
+    "fixture": 8,
+    "native_score": -4.244129512657451,
+    "opencv_score": -4.243925858567829,
+    "max_feature_delta": 0.00015842914581298828
+  },
+  {
+    "fixture": 9,
+    "native_score": -3.9917389524622355,
+    "opencv_score": -3.991523228126974,
+    "max_feature_delta": 0.00015306472778320312
+  },
+  {
+    "fixture": 10,
+    "native_score": -3.7510157925450165,
+    "opencv_score": -3.750708605173883,
+    "max_feature_delta": 0.00015416741371154785
+  },
+  {
+    "fixture": 11,
+    "native_score": -3.6926165966404962,
+    "opencv_score": -3.6922227186807253,
+    "max_feature_delta": 0.00017556548118591309
+  },
+  {
+    "fixture": 12,
+    "native_score": -4.00103009550879,
+    "opencv_score": -4.000628569434806,
+    "max_feature_delta": 0.00016508996486663818
+  },
+  {
+    "fixture": 13,
+    "native_score": -3.5516186068126343,
+    "opencv_score": -3.5514148314232457,
+    "max_feature_delta": 0.00019784271717071533
+  },
+  {
+    "fixture": 14,
+    "native_score": -3.3177922737288155,
+    "opencv_score": -3.3176553301361587,
+    "max_feature_delta": 0.0001929551362991333
+  },
+  {
+    "fixture": 15,
+    "native_score": -3.1487227703403904,
+    "opencv_score": -3.1485241383192184,
+    "max_feature_delta": 0.00017663836479187012
+  },
+  {
+    "fixture": 16,
+    "native_score": -3.226132847611204,
+    "opencv_score": -3.2258980468557095,
+    "max_feature_delta": 0.000186920166015625
+  },
+  {
+    "fixture": 17,
+    "native_score": -2.9966295061916646,
+    "opencv_score": -2.996291029452486,
+    "max_feature_delta": 0.00020831823348999023
+  },
+  {
+    "fixture": 18,
+    "native_score": -2.9697126293738236,
+    "opencv_score": -2.9692535682183667,
+    "max_feature_delta": 0.00017790496349334717
+  },
+  {
+    "fixture": 19,
+    "native_score": -3.4137113705012734,
+    "opencv_score": -3.4134245413534767,
+    "max_feature_delta": 0.00019249320030212402
+  },
+  {
+    "fixture": 20,
+    "native_score": -3.1272705869807127,
+    "opencv_score": -3.1269546836952653,
+    "max_feature_delta": 0.0001897364854812622
+  },
+  {
+    "fixture": 21,
+    "native_score": -3.5839781046608534,
+    "opencv_score": -3.58379194582106,
+    "max_feature_delta": 0.00018821656703948975
+  },
+  {
+    "fixture": 22,
+    "native_score": -3.685857479260417,
+    "opencv_score": -3.685571886289064,
+    "max_feature_delta": 0.00017411261796951294
+  },
+  {
+    "fixture": 23,
+    "native_score": -3.4804367907764906,
+    "opencv_score": -3.4799908751440087,
+    "max_feature_delta": 0.00016583502292633057
+  },
+  {
+    "fixture": 24,
+    "native_score": -3.3579541740963585,
+    "opencv_score": -3.3575214151229886,
+    "max_feature_delta": 0.00018852949142456055
+  },
+  {
+    "fixture": 25,
+    "native_score": -2.9411489333556387,
+    "opencv_score": -2.940780787573296,
+    "max_feature_delta": 0.00015854835510253906
+  },
+  {
+    "fixture": 26,
+    "native_score": -2.668238077476101,
+    "opencv_score": -2.6677151322813346,
+    "max_feature_delta": 0.0001608431339263916
+  },
+  {
+    "fixture": 27,
+    "native_score": -2.849974615586215,
+    "opencv_score": -2.8494403325692303,
+    "max_feature_delta": 0.00018027424812316895
+  },
+  {
+    "fixture": 28,
+    "native_score": -2.6007231850097874,
+    "opencv_score": -2.600146860563397,
+    "max_feature_delta": 0.0001736283302307129
+  },
+  {
+    "fixture": 29,
+    "native_score": -2.2888518044810784,
+    "opencv_score": -2.2882348609974983,
+    "max_feature_delta": 0.00016263127326965332
+  },
+  {
+    "fixture": 30,
+    "native_score": -2.7001576304099655,
+    "opencv_score": -2.699669725723138,
+    "max_feature_delta": 0.00018227100372314453
+  },
+  {
+    "fixture": 31,
+    "native_score": -3.0105492407670673,
+    "opencv_score": -3.00989280663541,
+    "max_feature_delta": 0.00016686320304870605
+  },
+  {
+    "fixture": 32,
+    "native_score": -3.032334174721015,
+    "opencv_score": -3.031704234781037,
+    "max_feature_delta": 0.0001573413610458374
+  },
+  {
+    "fixture": 33,
+    "native_score": -3.264650906784423,
+    "opencv_score": -3.2643467724378086,
+    "max_feature_delta": 0.00015559792518615723
+  },
+  {
+    "fixture": 34,
+    "native_score": -3.369480381931306,
+    "opencv_score": -3.36917740760823,
+    "max_feature_delta": 0.0001722276210784912
+  },
+  {
+    "fixture": 35,
+    "native_score": -3.541979297960758,
+    "opencv_score": -3.5416555263473284,
+    "max_feature_delta": 0.00015203654766082764
+  },
+  {
+    "fixture": 36,
+    "native_score": -3.8588858337115424,
+    "opencv_score": -3.8584668180611357,
+    "max_feature_delta": 0.0001732558012008667
+  },
+  {
+    "fixture": 37,
+    "native_score": -4.215951038261404,
+    "opencv_score": -4.215574881440064,
+    "max_feature_delta": 0.00014984607696533203
+  },
+  {
+    "fixture": 38,
+    "native_score": -4.268452709712305,
+    "opencv_score": -4.268193335260483,
+    "max_feature_delta": 0.0001620650291442871
+  },
+  {
+    "fixture": 39,
+    "native_score": -4.554286535633297,
+    "opencv_score": -4.554035008352002,
+    "max_feature_delta": 0.0001677870750427246
+  },
+  {
+    "fixture": 40,
+    "native_score": -4.57423567210543,
+    "opencv_score": -4.573872002250943,
+    "max_feature_delta": 0.00015616416931152344
+  },
+  {
+    "fixture": 41,
+    "native_score": -4.560699424372447,
+    "opencv_score": -4.560314694294249,
+    "max_feature_delta": 0.000157281756401062
+  },
+  {
+    "fixture": 42,
+    "native_score": -4.7426151041341225,
+    "opencv_score": -4.742017088928042,
+    "max_feature_delta": 0.00016231834888458252
+  },
+  {
+    "fixture": 43,
+    "native_score": -4.441861098532037,
+    "opencv_score": -4.441360229449993,
+    "max_feature_delta": 0.0001614391803741455
+  },
+  {
+    "fixture": 44,
+    "native_score": -4.357521996577013,
+    "opencv_score": -4.356870414085351,
+    "max_feature_delta": 0.0001780092716217041
+  },
+  {
+    "fixture": 45,
+    "native_score": -3.97405717807053,
+    "opencv_score": -3.973528177018433,
+    "max_feature_delta": 0.00017384439706802368
+  },
+  {
+    "fixture": 46,
+    "native_score": -3.8984261182250806,
+    "opencv_score": -3.89774192914881,
+    "max_feature_delta": 0.0001932680606842041
+  },
+  {
+    "fixture": 47,
+    "native_score": -3.69924009404773,
+    "opencv_score": -3.6984569197690202,
+    "max_feature_delta": 0.00021825730800628662
+  },
+  {
+    "fixture": 48,
+    "native_score": -3.4919649440083558,
+    "opencv_score": -3.4910814889384327,
+    "max_feature_delta": 0.0002110600471496582
+  },
+  {
+    "fixture": 49,
+    "native_score": -3.4080501194651465,
+    "opencv_score": -3.4071745270801665,
+    "max_feature_delta": 0.00019763410091400146
+  },
+  {
+    "fixture": 50,
+    "native_score": -3.172569498461124,
+    "opencv_score": -3.171711352863018,
+    "max_feature_delta": 0.00020200014114379883
+  },
+  {
+    "fixture": 51,
+    "native_score": -2.9726076589338826,
+    "opencv_score": -2.9718367780178134,
+    "max_feature_delta": 0.00019372999668121338
+  },
+  {
+    "fixture": 52,
+    "native_score": -2.970786479399821,
+    "opencv_score": -2.970048906253507,
+    "max_feature_delta": 0.00019484758377075195
+  },
+  {
+    "fixture": 53,
+    "native_score": -2.626485025074338,
+    "opencv_score": -2.625741419830625,
+    "max_feature_delta": 0.0001875162124633789
+  },
+  {
+    "fixture": 54,
+    "native_score": -2.492921606787589,
+    "opencv_score": -2.492399032583813,
+    "max_feature_delta": 0.0001477450132369995
+  },
+  {
+    "fixture": 55,
+    "native_score": -2.2797414775270486,
+    "opencv_score": -2.2793366756794686,
+    "max_feature_delta": 0.0001434236764907837
+  },
+  {
+    "fixture": 56,
+    "native_score": -2.0090184740849937,
+    "opencv_score": -2.0085277526517444,
+    "max_feature_delta": 0.00021657347679138184
+  },
+  {
+    "fixture": 57,
+    "native_score": -1.9952356858820268,
+    "opencv_score": -1.994814238526664,
+    "max_feature_delta": 0.00015881657600402832
+  },
+  {
+    "fixture": 58,
+    "native_score": -2.2901479870970567,
+    "opencv_score": -2.289676584613728,
+    "max_feature_delta": 0.0001812279224395752
+  },
+  {
+    "fixture": 59,
+    "native_score": -2.31484135979127,
+    "opencv_score": -2.3143590016631963,
+    "max_feature_delta": 0.00016057491302490234
+  },
+  {
+    "fixture": 60,
+    "native_score": -2.702872890351524,
+    "opencv_score": -2.7025294061612217,
+    "max_feature_delta": 0.00013336539268493652
+  },
+  {
+    "fixture": 61,
+    "native_score": -2.892655116030887,
+    "opencv_score": -2.892097731046067,
+    "max_feature_delta": 0.00016643106937408447
+  },
+  {
+    "fixture": 62,
+    "native_score": -3.0750314322258325,
+    "opencv_score": -3.0745292529117343,
+    "max_feature_delta": 0.00017139315605163574
+  },
+  {
+    "fixture": 63,
+    "native_score": -3.7592735660505863,
+    "opencv_score": -3.7586846432210166,
+    "max_feature_delta": 0.00013230741024017334
+  }
+]
