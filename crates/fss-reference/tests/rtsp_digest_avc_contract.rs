@@ -36,21 +36,53 @@ fn authenticated_negotiation_preserves_real_rtp_and_all_four_avc_groups() -> Tes
         let mut out = Vec::new(); send(&mut c, &wire, chunk, 8, &mut out)?;
         c.finish(); drain(&mut c, 9, &mut out)?;
         let sources: Vec<_> = out.iter().filter_map(|e| match e {
-            DigestAvcPoll::Client { event: AvcClientPoll::Rtp { source, retirement: None, .. }, .. } => Some(source.payload()),
+            DigestAvcPoll::Client { event: inner, .. }
+                if matches!(&**inner, AvcClientPoll::Rtp { retirement: None, .. }) =>
+            {
+                if let AvcClientPoll::Rtp { source, retirement: None, .. } = &**inner {
+                    Some(source.payload())
+                } else {
+                    None
+                }
+            }
             _ => None,
         }).collect();
         assert_eq!(sources, original.iter().map(Vec::as_slice).collect::<Vec<_>>());
         let mut pictures = 0;
         for e in &out {
             match e {
-                DigestAvcPoll::Client { event: AvcClientPoll::Media(AvcReceivePoll::Assembly(AvcAssemblyStep::Accepted(o))), .. } => pictures += usize::from(o.picture.is_some()),
-                DigestAvcPoll::Client { event: AvcClientPoll::Media(AvcReceivePoll::Picture(_)), .. } => pictures += 1,
-                DigestAvcPoll::Client { event: AvcClientPoll::Ended { media: Some(AvcReceivePoll::Ended { tail: Some(o), .. }), .. }, wire_retirement: Some(w) } => {
-                    assert_eq!(o.picture.as_ref().ok_or("EOF picture")?.boundary(), AvcBoundary::EndOfInputUnverified);
-                    assert!(w.pending.is_empty()); assert!(w.challenge.is_none()); pictures += 1;
+                DigestAvcPoll::Client { event: inner, .. }
+                    if matches!(&**inner, AvcClientPoll::Media(AvcReceivePoll::Assembly(AvcAssemblyStep::Accepted(_)))) =>
+                {
+                    if let AvcClientPoll::Media(AvcReceivePoll::Assembly(AvcAssemblyStep::Accepted(o))) = &**inner {
+                        pictures += usize::from(o.picture.is_some());
+                    }
                 }
-                DigestAvcPoll::Fault { .. } | DigestAvcPoll::Client { event: AvcClientPoll::Fault { .. }, .. }
-                | DigestAvcPoll::Client { event: AvcClientPoll::Media(AvcReceivePoll::Assembly(AvcAssemblyStep::Refused(_))), .. } => return Err("clean fixture refused".into()),
+                DigestAvcPoll::Client { event: inner, .. }
+                    if matches!(&**inner, AvcClientPoll::Media(AvcReceivePoll::Picture(_))) =>
+                {
+                    pictures += 1;
+                }
+                DigestAvcPoll::Client { event: inner, wire_retirement: Some(w) }
+                    if matches!(&**inner, AvcClientPoll::Ended { media: Some(AvcReceivePoll::Ended { tail: Some(_), .. }), .. }) =>
+                {
+                    if let AvcClientPoll::Ended { media: Some(AvcReceivePoll::Ended { tail: Some(o), .. }), .. } = &**inner {
+                        assert_eq!(o.picture.as_ref().ok_or("EOF picture")?.boundary(), AvcBoundary::EndOfInputUnverified);
+                        assert!(w.pending.is_empty()); assert!(w.challenge.is_none()); pictures += 1;
+                    }
+                }
+                DigestAvcPoll::Fault { .. }
+                | DigestAvcPoll::Client { event: inner, .. }
+                    if matches!(
+                        &**inner,
+                        AvcClientPoll::Fault { .. }
+                            | AvcClientPoll::Media(AvcReceivePoll::Assembly(
+                                AvcAssemblyStep::Refused(_)
+                            ))
+                    ) =>
+                {
+                    return Err("clean fixture refused".into())
+                }
                 _ => {},
             }
         }
