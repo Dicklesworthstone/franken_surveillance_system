@@ -31,12 +31,28 @@ pub fn drain(c: &mut DigestAvcClient, now: u64, out: &mut Vec<DigestAvcPoll>) ->
     for _ in 0..2048 {
         let event = c.poll(now)?;
         match &event {
-            DigestAvcPoll::Client { event: AvcClientPoll::Pending { wake_at_ns }, .. } if wake_at_ns.is_none_or(|at| at > now) => return Ok(()),
-            DigestAvcPoll::Client { event: AvcClientPoll::Pending { .. }, .. } => {},
-            DigestAvcPoll::Client { event: AvcClientPoll::Backpressure { .. } | AvcClientPoll::Ended { .. }
-                | AvcClientPoll::Fault { .. } | AvcClientPoll::Control(ClientProgress::KeepAliveDue), .. }
-            | DigestAvcPoll::AuthenticationRequired { .. } | DigestAvcPoll::Fault { .. } => {
-                out.push(event); return Ok(());
+            DigestAvcPoll::Client { event: inner, .. }
+                if matches!(&**inner, AvcClientPoll::Pending { wake_at_ns } if wake_at_ns.is_none_or(|at| at > now)) =>
+            {
+                return Ok(());
+            }
+            DigestAvcPoll::Client { event: inner, .. }
+                if matches!(&**inner, AvcClientPoll::Pending { .. }) => {},
+            DigestAvcPoll::Client { event: inner, .. }
+                if matches!(
+                    &**inner,
+                    AvcClientPoll::Backpressure { .. }
+                        | AvcClientPoll::Ended { .. }
+                        | AvcClientPoll::Fault { .. }
+                        | AvcClientPoll::Control(ClientProgress::KeepAliveDue)
+                ) =>
+            {
+                out.push(event);
+                return Ok(());
+            }
+            DigestAvcPoll::AuthenticationRequired { .. } | DigestAvcPoll::Fault { .. } => {
+                out.push(event);
+                return Ok(());
             }
             _ => out.push(event),
         }

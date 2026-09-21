@@ -258,7 +258,6 @@ impl MultiObjectTracker {
             };
             track.box_w = d.box_w;
             track.box_h = d.box_h;
-            drop(track);
             self.sync_track(*ti);
         }
 

@@ -44,6 +44,8 @@ pub mod live_archive;
 pub mod archive_recovery;
 /// Independently persisted checkpoint references and exact cold pin recovery.
 pub mod archive_pins;
+/// Original RTP/RTCP custody and verified replay before recording windows seal.
+pub mod datagram_archive;
 
 pub use message::{
     AuthScheme, ContentLengthConflict, DEFAULT_MAX_BODY_BYTES, DEFAULT_MAX_HEADERS,

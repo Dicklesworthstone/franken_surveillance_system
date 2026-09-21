@@ -10,7 +10,6 @@ use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-#[cfg(test)]
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
@@ -268,10 +267,10 @@ const STATE_FINALIZED: u8 = 3;
 ///
 /// # Unforgeable Authority Invariants
 ///
-/// External crates cannot call internal test constructor `for_test`:
+/// Constructing a `ReplayCx` requires a valid [`ReplayIoAuthority`]; an
+/// external crate cannot fabricate one:
 ///
 /// ```rust,compile_fail
-/// // ReplayCx::for_test is crate-internal and cannot be called from an outside crate.
 /// use fss_reference::ReplayCx;
 /// let _ = ReplayCx::for_test();
 /// ```
@@ -280,7 +279,6 @@ pub struct ReplayCx {
     state: Arc<AtomicU8>,
     checkpoints: AtomicUsize,
     io: ReplayIoAuthority,
-    #[cfg(test)]
     cancel_at_stage: Mutex<Option<&'static str>>,
 }
 
@@ -296,7 +294,6 @@ impl ReplayCx {
             state,
             checkpoints: AtomicUsize::new(0),
             io,
-            #[cfg(test)]
             cancel_at_stage: Mutex::new(None),
         }
     }
@@ -315,9 +312,8 @@ impl ReplayCx {
     }
 
     /// Injects cooperative cancellation when the specified checkpoint stage is reached.
-    /// Internal test hook: crate-internal test use only.
-    #[cfg(test)]
-    pub(crate) fn set_cancel_at_checkpoint(&self, stage: &'static str) {
+    /// Driver/test support for cancellation-drain evidence.
+    pub fn set_cancel_at_checkpoint(&self, stage: &'static str) {
         if let Ok(mut guard) = self.cancel_at_stage.lock() {
             *guard = Some(stage);
         }
