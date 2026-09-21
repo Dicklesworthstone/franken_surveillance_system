@@ -46,6 +46,8 @@ pub mod archive_recovery;
 pub mod archive_pins;
 /// Original RTP/RTCP custody and verified replay before recording windows seal.
 pub mod datagram_archive;
+/// Cold source-verified AVC reconstruction with explicit configuration and clocks.
+pub mod datagram_reconstruction;
 
 pub use message::{
     AuthScheme, ContentLengthConflict, DEFAULT_MAX_BODY_BYTES, DEFAULT_MAX_HEADERS,
