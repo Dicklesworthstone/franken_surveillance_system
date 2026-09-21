@@ -396,7 +396,7 @@ fn recovered_tail_requires_its_page_checkpoint_before_any_new_camera_command() -
 }
 
 #[test]
-fn_real_eof_flushes_a_protected_final_page_without_becoming_owner_stop_or_repeated_completion() -> Test {
+fn real_eof_flushes_a_protected_final_page_without_becoming_owner_stop_or_repeated_completion() -> Test {
     let mut p = LocalRootPublisher::open(fresh()?, limits())?;
     let mut f = Fixture::playing(&mut p, 4096)?; f.window()?; let pin = f.pin(14)?; f.protect(&pin, 14)?;
     assert!(matches!(f.poll(14)?, CheckpointedLiveArchiveStep::Live(LiveArchiveStep::Archive(

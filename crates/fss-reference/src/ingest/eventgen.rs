@@ -350,14 +350,14 @@ mod tests {
     }
 
     fn generator() -> ZoneEventGenerator {
-        let mut gen = ZoneEventGenerator::new(config()).unwrap();
-        gen.register_zone(ZoneSpec {
+        let mut zonegen = ZoneEventGenerator::new(config()).unwrap();
+        zonegen.register_zone(ZoneSpec {
             zone_id: "driveway".to_string(),
             bounds: (0.0, 0.0, 100.0, 100.0),
             kind: EventKind::UnknownPresence,
         })
         .unwrap();
-        gen
+        zonegen
     }
 
     fn ts(secs: i64) -> TimestampNs {
@@ -366,8 +366,8 @@ mod tests {
 
     #[test]
     fn confirmed_track_in_registered_zone_generates_event() {
-        let mut gen = generator();
-        let event = gen
+        let mut zonegen = generator();
+        let event = zonegen
             .observe(
                 RuntimeGrant::ObserveEvent,
                 &confirmed_track(),
@@ -393,10 +393,10 @@ mod tests {
 
     #[test]
     fn tentative_track_does_not_generate() {
-        let mut gen = generator();
+        let mut zonegen = generator();
         let mut track = confirmed_track();
         track.status = TrackStatus::Tentative;
-        let event = gen
+        let event = zonegen
             .observe(
                 RuntimeGrant::ObserveEvent,
                 &track,
@@ -412,10 +412,10 @@ mod tests {
 
     #[test]
     fn track_outside_zone_does_not_generate() {
-        let mut gen = generator();
+        let mut zonegen = generator();
         let mut track = confirmed_track();
         track.cx = 150.0; // outside 0..100 bounds
-        let event = gen
+        let event = zonegen
             .observe(
                 RuntimeGrant::ObserveEvent,
                 &track,
@@ -431,8 +431,8 @@ mod tests {
 
     #[test]
     fn capability_gate_denies_wrong_grant() {
-        let mut gen = generator();
-        let err = gen
+        let mut zonegen = generator();
+        let err = zonegen
             .observe(
                 RuntimeGrant::ObserveStatus,
                 &confirmed_track(),
@@ -444,14 +444,14 @@ mod tests {
             )
             .unwrap_err();
         assert!(matches!(err, ZoneEventError::CapabilityDenied { .. }));
-        assert_eq!(gen.generated_count(), 0, "denied publication must not consume a sequence");
+        assert_eq!(zonegen.generated_count(), 0, "denied publication must not consume a sequence");
     }
 
     #[test]
     fn dedup_suppresses_repeat_within_cooldown() {
-        let mut gen = generator();
+        let mut zonegen = generator();
         let track = confirmed_track();
-        let first = gen
+        let first = zonegen
             .observe(
                 RuntimeGrant::ObserveEvent,
                 &track,
@@ -464,20 +464,20 @@ mod tests {
             .unwrap();
         assert!(first.is_some());
         // Same track, same zone, 100 ms later: suppressed.
-        let repeat = gen
+        let repeat = zonegen
             .observe(
                 RuntimeGrant::ObserveEvent,
                 &track,
                 "driveway",
                 "cam-a",
-                ts(10) + TimestampNs(100_000_000),
+                TimestampNs(ts(10).0 + 100_000_000),
                 frame_digest(),
                 0.9,
             )
             .unwrap();
         assert!(repeat.is_none(), "repeat within cooldown must dedup");
         // After the cooldown a new episode may publish.
-        let later = gen
+        let later = zonegen
             .observe(
                 RuntimeGrant::ObserveEvent,
                 &track,
@@ -493,15 +493,15 @@ mod tests {
 
     #[test]
     fn distinct_zones_track_pairs_do_not_cross_dedup() {
-        let mut gen = generator();
-        gen.register_zone(ZoneSpec {
+        let mut zonegen = generator();
+        zonegen.register_zone(ZoneSpec {
             zone_id: "porch".to_string(),
             bounds: (0.0, 0.0, 100.0, 100.0),
             kind: EventKind::PerimeterBreach,
         })
         .unwrap();
         let track = confirmed_track();
-        let a = gen
+        let a = zonegen
             .observe(
                 RuntimeGrant::ObserveEvent,
                 &track,
@@ -512,7 +512,7 @@ mod tests {
                 0.9,
             )
             .unwrap();
-        let b = gen
+        let b = zonegen
             .observe(
                 RuntimeGrant::ObserveEvent,
                 &track,
@@ -530,8 +530,8 @@ mod tests {
 
     #[test]
     fn unregistered_zone_is_error() {
-        let mut gen = generator();
-        let err = gen
+        let mut zonegen = generator();
+        let err = zonegen
             .observe(
                 RuntimeGrant::ObserveEvent,
                 &confirmed_track(),
@@ -596,8 +596,8 @@ mod tests {
 
     #[test]
     fn probability_interval_is_bounded_and_ordered() {
-        let mut gen = generator();
-        let event = gen
+        let mut zonegen = generator();
+        let event = zonegen
             .observe(
                 RuntimeGrant::ObserveEvent,
                 &confirmed_track(),
@@ -612,7 +612,7 @@ mod tests {
         assert_eq!(event.probability.lower, 0.4);
         assert_eq!(event.probability.upper, 0.9);
         // Upper clamped to [min, 1].
-        let clamped = gen
+        let clamped = zonegen
             .observe(
                 RuntimeGrant::ObserveEvent,
                 &confirmed_track(),
@@ -629,44 +629,51 @@ mod tests {
 
     #[test]
     fn zone_registration_validates_input() {
-        let mut gen = ZoneEventGenerator::new(config()).unwrap();
-        assert!(gen
+        let mut zonegen = ZoneEventGenerator::new(config()).unwrap();
+        assert!(zonegen
             .register_zone(ZoneSpec {
                 zone_id: String::new(),
                 bounds: (0.0, 0.0, 1.0, 1.0),
                 kind: EventKind::Unclassified,
             })
             .is_err());
-        assert!(gen
+        assert!(zonegen
             .register_zone(ZoneSpec {
                 zone_id: "bad:colon".to_string(),
                 bounds: (0.0, 0.0, 1.0, 1.0),
                 kind: EventKind::Unclassified,
             })
             .is_err());
-        assert!(gen
+        assert!(zonegen
             .register_zone(ZoneSpec {
                 zone_id: "flat".to_string(),
                 bounds: (0.0, 0.0, 0.0, 1.0),
                 kind: EventKind::Unclassified,
             })
             .is_err());
-        assert!(gen
+        assert!(zonegen
+            .register_zone(ZoneSpec {
+                zone_id: "dup".to_string(),
+                bounds: (0.0, 0.0, 1.0, 1.0),
+                kind: EventKind::Unclassified,
+            })
+            .is_ok());
+        // Second registration of the same id must be refused.
+        assert!(zonegen
             .register_zone(ZoneSpec {
                 zone_id: "dup".to_string(),
                 bounds: (0.0, 0.0, 1.0, 1.0),
                 kind: EventKind::Unclassified,
             })
             .is_err());
-        // First registration succeeded, duplicate must fail, so "dup" is free.
-        assert!(gen
+        assert!(zonegen
             .register_zone(ZoneSpec {
                 zone_id: "ok_zone-1".to_string(),
                 bounds: (0.0, 0.0, 1.0, 1.0),
                 kind: EventKind::Unclassified,
             })
             .is_ok());
-        assert!(gen
+        assert!(zonegen
             .register_zone(ZoneSpec {
                 zone_id: "ok_zone-1".to_string(),
                 bounds: (0.0, 0.0, 1.0, 1.0),
