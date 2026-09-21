@@ -72,12 +72,81 @@ entry/exit-between-observations, sampled dwell, interruption and expiry with
 original source endpoints. These remain derived observations, not continuous
 presence proofs, corroboration, canonical event publication or effect authority.
 
+## Complete JPEG processor and owned delivery
+
+`rgb_tracking::pipeline::RgbJpegZonePipeline::new(&model, &head, &mut temporal)`
+borrows the exact frozen model/head and exclusive `RgbZoneTracker`. It reuses the
+existing `RgbDetector` and temporal bridge; it introduces no new neural,
+association, or zone engine. An owner with pending zone work cannot be attached
+until that obligation is resolved. Another task cannot advance the borrowed
+tracker while the pipeline exists.
+
+Call `run_jpeg` with `RgbDetectionInput`, a matching `RgbFrameAdmission`, existing
+RGB inference limits, a native decoder budget, a head-projection budget, a
+geometry/work budget, and `ScalarExecCx`. Use the same owner cancellation request
+for the decoder, scalar context and cancellable geometry budget. No implicit
+thread or cancellation bridge is installed. The scalar context is checked again
+before the final ownership transfer.
+
+The public phases make partial completion inspectable:
+
+| Phase | Work already accepted | Next operation |
+|---|---|---|
+| Ready | No held input or output | Submit one JPEG and source-specific admission |
+| Projection | Complete neural tensors and owned permission mask | Resume only head decoding |
+| Tracking | Complete inference and detection report | Retry temporal preparation/assimilation |
+| Zones | Exact tracking receipt and preparation | Resume only zone derivation |
+| Snapshot | Complete tracking and zone results | Retry only the bounded owned-output copy |
+| Complete | Whole source-linked output held | Take the result before submitting another JPEG |
+
+`resume` accepts no JPEG, source, model, mask, or replacement admission. Completed
+stages therefore cannot be rerun or reinterpreted through that method. A failure
+keeps its input available. An outer cancellation error can occur after inference
+or temporal acceptance; inspect `phase()` and the retained records rather than
+assuming that an error means the exposure was not consumed. Old tracking/zone
+reports are hidden while an earlier stage of the current frame is pending.
+
+A completed `RgbZoneCompletion` owns the original neural/detection result, source
+permission mask and availability declaration, plus all selected/other-class
+outcomes, active tracks, candidate edges, detection decisions, retirements, zone
+cells and events. Prior/current tracking and zone digests, configuration and
+source endpoints are copied unchanged. `take_complete()` moves the entire result
+to the caller. It remains readable after later inputs advance the tracker or the
+processor is dropped. Untaken output blocks new JPEGs, so accepted transitions
+cannot be silently overwritten.
+
+Snapshot allocation is a separate explicit boundary after temporal commit. Its
+logical vector/record bytes are checked against a 4 MiB ceiling and reserved from
+the supplied work budget before fallible copies. Snapshot failure preserves the
+already committed zone results and never repeats zone/event generation. Byte
+accounting reflects Rust record layout on the host; it does not participate in
+result identities or claim whole-process peak memory. No allocation is required
+after the final cancellation check to hand off a successful result.
+
+`retire()` consumes the processor and transfers its phase, admission, unfinished
+neural or detector input, or untaken complete result. The separate temporal owner
+is released and retains any accepted tracking state and pending zone obligation.
+Retirement does not reset that history, accept another exposure, or certify the
+failed stage as complete. Pending source work must be diagnosed, resumed or ended
+explicitly by its owner.
+
+These owned records are in-memory evidence handles, not durable source custody.
+The original JPEG bytes, model package and head contract must remain retained by
+their existing owners. There is no automatic health classifier, pretrained neural
+model, camera acquisition, persistence, canonical event publication or alert
+transport in this processor.
+
 ## Validation status
 
-Nine Rust contracts cover actual JPEG/convolution-derived movement through
+Nine bridge contracts and ten complete-processor contracts were authored. The
+bridge contracts cover actual JPEG/convolution-derived movement through
 entry/dwell/exit, multi-label selection, outward subpixel bounds, unavailable
 frames, wrong sources/bases, replay, complete-input overflow, cancellation and
-every work-unit cutoff around the temporal commit boundary. Numeric coefficients
+every work-unit cutoff around the temporal commit boundary. Processor contracts
+cover JPEG-derived entry/dwell/exit, owned output across advancement, retained
+masks, every public pending stage, output-copy pressure, untaken-result
+backpressure, explicit retirement, cancellation and source/contract refusal.
+Numeric coefficients
 are test fixtures, not pretrained people-detection weights or quality evidence.
 Rust compilation, test execution, rustfmt, Clippy and controlled device
 qualification have not run in this authoring environment (no Rust toolchain).

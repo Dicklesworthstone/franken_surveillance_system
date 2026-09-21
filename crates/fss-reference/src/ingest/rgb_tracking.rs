@@ -295,3 +295,6 @@ impl RgbZoneTracker {
         }
     }
 }
+
+/// Resumable JPEG-to-owned-trajectory/zone processing over the same temporal engines.
+pub mod pipeline;
