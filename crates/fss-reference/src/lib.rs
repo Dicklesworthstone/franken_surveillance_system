@@ -129,7 +129,10 @@ pub use delivery::{
     DeliveryContinuity, DeliveryDirective, DeliveryMutation, DeliveryPacket, DeliveryPlan,
     MAX_DELIVERY_DIRECTIVES,
 };
-pub use doctor::{DoctorCheck, DoctorReport, DoctorValue, DoctorVerdict, inspect_deployment};
+pub use doctor::{
+    DoctorAffordance, DoctorCheck, DoctorFinding, DoctorIo, DoctorLimits, DoctorReport,
+    DoctorSeverity, DoctorValue, DoctorVerdict, inspect_deployment, inspect_deployment_with,
+};
 pub use durable_effect::{
     DurableEffectError, DurableEffectJournal, EFFECT_TRANSITION_RECORD_KIND,
     EFFECT_TRANSITION_V2_RECORD_KIND, EffectJournalInspection, EffectJournalStatus,

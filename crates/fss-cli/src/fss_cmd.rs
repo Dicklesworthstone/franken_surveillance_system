@@ -51,7 +51,7 @@ impl FssCommand {
 /// Returns the static help text for `fss`.
 #[must_use]
 pub const fn help_text() -> &'static str {
-    "Franken Surveillance System design skeleton\n\nUSAGE:\n  fss help\n  fss version\n  fss capabilities --json\n  fss doctor --json [--root <dir>]\n  fss status --json\n  fss negative-evidence <init|list|verify|append> [--path <file>] [--json]\n\nNo camera, drone, model, archive, or alert operation is implemented yet."
+    "Franken Surveillance System design skeleton\n\nUSAGE:\n  fss help\n  fss version\n  fss capabilities --json\n  fss doctor --json\n      [--root <dir>]  inspect a deployment root read-only (never writes, locks, or repairs)\n  fss status --json\n  fss negative-evidence <init|list|verify|append> [--path <file>] [--json]\n\nNo camera, drone, model, archive, or alert operation is implemented yet."
 }
 
 /// Parses OS-native arguments for `fss` with total validation and exact grammar exhaustion.
@@ -94,7 +94,7 @@ pub fn parse_fss_tokens(tokens: &[ArgToken]) -> Result<FssCommand, CliError> {
         "capabilities" => {
             parse_json_only_subcommand("capabilities", tokens, FssCommand::Capabilities)
         }
-        "doctor" => parse_doctor_tokens(tokens),
+        "doctor" => parse_doctor_tokens(tokens).map(FssCommand::Doctor),
         "status" => parse_json_only_subcommand("status", tokens, FssCommand::Status),
         "negative-evidence" | "neg" | "negative" => {
             let action = parse_negative_evidence_tokens(&tokens[1..])?;
@@ -119,7 +119,7 @@ pub fn parse_fss_tokens(tokens: &[ArgToken]) -> Result<FssCommand, CliError> {
 }
 
 /// Parses the `doctor` subcommand supporting `--json` and optional `--root <dir>`.
-fn parse_doctor_tokens(tokens: &[ArgToken]) -> Result<FssCommand, CliError> {
+fn parse_doctor_tokens(tokens: &[ArgToken]) -> Result<DoctorArgs, CliError> {
     if tokens.len() == 1 {
         return Err(CliError::MissingValue {
             option: "--json".to_owned(),
@@ -209,7 +209,7 @@ fn parse_doctor_tokens(tokens: &[ArgToken]) -> Result<FssCommand, CliError> {
         });
     }
 
-    Ok(FssCommand::Doctor(DoctorArgs { root }))
+    Ok(DoctorArgs { root })
 }
 
 /// Parses subcommands whose only permitted option is `--json` with exact exhaustion.
@@ -349,11 +349,11 @@ mod tests {
                 OsString::from("doctor"),
                 OsString::from("--json"),
                 OsString::from("--root"),
-                OsString::from("/tmp/dep"),
+                OsString::from("/deploy/root"),
             ])
             .ok(),
             Some(FssCommand::Doctor(DoctorArgs {
-                root: Some(PathBuf::from("/tmp/dep")),
+                root: Some(PathBuf::from("/deploy/root")),
             }))
         );
         assert_eq!(

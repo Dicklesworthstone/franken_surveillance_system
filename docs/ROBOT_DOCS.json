@@ -128,7 +128,7 @@
       "description": "Report capabilities in JSON format."
     },
     "doctor": {
-      "cli": "fss doctor --json [--root <dir>]",
+      "cli": "fss doctor --json",
       "description": "Report system diagnostic doctor results in JSON format."
     },
     "negative_evidence": {
