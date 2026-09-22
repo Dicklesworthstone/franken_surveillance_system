@@ -69,7 +69,7 @@ pub enum HttpReplayStep {
     Advanced,
     /// A complete source-mapped part is held; no more source is read until transfer.
     FrameReady,
-    /// Both self-delimited HTTP and MIME finished, with no unaccounted trailing bytes.
+    /// Both HTTP and MIME finished, with explicit framing or verified original EOF.
     Complete,
     /// All pinned bytes were consumed, but no source EOF or complete HTTP was proved.
     /// This includes valid close-delimited captures; it is NOT absence of detections.
@@ -197,7 +197,7 @@ impl<'a> HttpWireReplay<'a> {
     pub fn pending_frame(&self) -> Option<&HttpJpegFrame> { self.frame.as_ref() }
     /// Current original read and consumed prefix, including after terminal refusal.
     pub fn pending_wire(&self) -> Option<&HttpReplayWire> { self.wire.as_ref() }
-    /// Both framing receipts, only after actual self-delimited completion.
+    /// Both framing receipts after self-delimitation or verified original EOF.
     pub fn completion(&self) -> Option<&HttpMjpegEnd> { self.complete.as_ref() }
 
     /// At most one native parser operation OR bounded source read. A complete frame
@@ -345,3 +345,6 @@ fn probe(cancellation: &dyn PublishCancellation) -> Result<(), HttpReplayError> 
 
 /// Source-verified archived JPEGs through the existing neural RGB and zone owners.
 pub mod rgb;
+
+/// Durable native termination records and explicitly witnessed cold finalization.
+pub mod completion;
