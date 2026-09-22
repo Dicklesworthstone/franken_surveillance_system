@@ -32,10 +32,11 @@ impl TrackerConfig {
         if self.max_misses == 0 {
             return Err(TrackerError::InvalidConfig("max_misses must be >= 1"));
         }
-        if self.iou_threshold < 0.0 || self.iou_threshold > 1.0 {
+        if !self.iou_threshold.is_finite() || !(0.0..=1.0).contains(&self.iou_threshold) {
             return Err(TrackerError::InvalidConfig("iou_threshold must be in [0, 1]"));
         }
-        if self.process_noise <= 0.0 || self.measurement_noise <= 0.0 {
+        if !self.process_noise.is_finite() || !self.measurement_noise.is_finite()
+            || self.process_noise <= 0.0 || self.measurement_noise <= 0.0 {
             return Err(TrackerError::InvalidConfig("noise must be positive"));
         }
         Ok(())
@@ -136,35 +137,57 @@ impl KalmanState {
     fn predict(&mut self, dt: f64, process_noise: f64) {
         self.x[0] += self.x[2] * dt;
         self.x[1] += self.x[3] * dt;
-        // Covariance grows with process noise and velocity uncertainty.
-        for row in &mut self.p {
-            for cell in row.iter_mut() {
-                *cell += process_noise * dt;
+        // P' = F P F^T + Q, F = [[I, dt I], [0, I]]. The configured
+        // process noise is independent variance per position/velocity axis.
+        // Read the prior matrix throughout: in-place propagation double-counts terms.
+        let prior = self.p;
+        for (i, row) in self.p.iter_mut().enumerate() {
+            for (j, cell) in row.iter_mut().enumerate() {
+                let mut value = prior[i][j];
+                if i < 2 { value += dt * prior[i + 2][j]; }
+                if j < 2 { value += dt * prior[i][j + 2]; }
+                if i < 2 && j < 2 { value += dt * dt * prior[i + 2][j + 2]; }
+                if i == j { value += process_noise * dt; }
+                *cell = value;
             }
         }
     }
 
     fn update(&mut self, mx: f64, my: f64, measurement_noise: f64) {
-        // 2×2 measurement: H = [[1,0,0,0],[0,1,0,0]]
-        let s00 = self.p[0][0] + measurement_noise;
-        let s11 = self.p[1][1] + measurement_noise;
-        // Kalman gain: K = P Hᵀ (H P Hᵀ + R)⁻¹
-        let k0 = self.p[0][0] / s00;
-        let k1 = self.p[1][1] / s11;
-        let k2 = self.p[0][2] / s00;
-        let k3 = self.p[1][3] / s11;
-        // Innovation.
-        let iy = my - self.x[1];
-        let ix = mx - self.x[0];
-        self.x[0] += k0 * ix;
-        self.x[1] += k1 * iy;
-        self.x[2] += k2 * ix;
-        self.x[3] += k3 * iy;
-        // Covariance update: P = (I - K H) P
-        self.p[0][0] -= k0 * self.p[0][0];
-        self.p[1][1] -= k1 * self.p[1][1];
-        self.p[0][2] -= k0 * self.p[2][0];
-        self.p[1][3] -= k1 * self.p[3][1];
+        // Independent scalar x/y observations are equivalent to H = [I, 0],
+        // R = r I. Each update uses the complete prior covariance, including
+        // position/velocity cross terms needed to learn velocity from positions.
+        for (axis, measurement) in [mx, my].into_iter().enumerate() {
+            let prior = self.p;
+            let innovation_variance = prior[axis][axis] + measurement_noise;
+            let gain: [f64; 4] = std::array::from_fn(|i| prior[i][axis] / innovation_variance);
+            let innovation = measurement - self.x[axis];
+            for (state, k) in self.x.iter_mut().zip(gain) { *state += k * innovation; }
+
+            // Joseph form: (I-KH) P (I-KH)^T + K R K^T. Do not update only
+            // diagonal cells: that destroys symmetry and leaves stale uncertainty.
+            let mut residual = [[0.0; 4]; 4];
+            for (i, row) in residual.iter_mut().enumerate() {
+                row[i] = 1.0;
+                row[axis] -= gain[i];
+            }
+            let mut left = [[0.0; 4]; 4];
+            for (i, row) in left.iter_mut().enumerate() {
+                for (j, cell) in row.iter_mut().enumerate() {
+                    *cell = residual[i].iter().enumerate().map(|(k, a)| a * prior[k][j]).sum();
+                }
+            }
+            let mut posterior = [[0.0; 4]; 4];
+            for (i, row) in left.iter().enumerate() {
+                for (j, other) in residual.iter().enumerate().skip(i) {
+                    let value = row.iter().zip(other).map(|(a, b)| a * b).sum::<f64>()
+                        + measurement_noise * gain[i] * gain[j];
+                    posterior[i][j] = value;
+                    posterior[j][i] = value;
+                }
+            }
+            self.p = posterior;
+        }
     }
 }
 
@@ -212,8 +235,11 @@ impl MultiObjectTracker {
         let mut deleted_tracks = 0usize;
 
         // 1. Predict: advance all tracks.
-        for k in self.kalman.iter_mut() {
-            k.predict(dt, self.config.process_noise);
+        for index in 0..self.kalman.len() {
+            self.kalman[index].predict(dt, self.config.process_noise);
+            // Association and Lost output must use this frame's prediction, not
+            // the last observed position. A prediction remains Lost, not evidence.
+            self.sync_track(index);
         }
 
         // 2. Associate detections to tracks by IoU (greedy highest-first).
@@ -294,7 +320,11 @@ impl MultiObjectTracker {
             self.kalman.push(KalmanState::new(cx, cy));
             self.tracks.push(TrackedTarget {
                 id: self.next_id,
-                status: TrackStatus::Tentative,
+                status: if self.config.min_hits == 1 {
+                    TrackStatus::Confirmed
+                } else {
+                    TrackStatus::Tentative
+                },
                 cx,
                 cy,
                 vx: 0.0,
@@ -477,3 +507,6 @@ mod tests {
         assert!(MultiObjectTracker::new(bad).is_err());
     }
 }
+
+#[cfg(test)]
+mod motion_contract;
