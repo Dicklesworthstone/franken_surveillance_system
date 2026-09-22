@@ -14,6 +14,7 @@ pub mod canonical;
 pub mod decode;
 pub mod error;
 pub mod graph;
+pub mod memory;
 pub mod node;
 pub mod op;
 pub mod port;
@@ -31,6 +32,7 @@ pub use decode::{
 };
 pub use error::ModelIrError;
 pub use graph::{ModelIrGraph, ModelIrGraphBuilder, ModelIrVersion, UnsupportedVersion};
+pub use memory::{MemoryPlan, MemoryPlanError, MemoryPlanLimits, MemoryStep, TensorLifetime};
 pub use node::GraphNode;
 pub use op::{
     AttributeSpec, AttributeType, OPERATOR_BASELINE_IDS, OPERATOR_SPECS,
