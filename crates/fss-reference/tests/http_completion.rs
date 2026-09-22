@@ -82,7 +82,7 @@ fn response(mode: u8, final_crlf: bool) -> Vec<u8> {
 }
 fn capture(p: &mut LocalRootPublisher, wire: &[u8]) -> Test<(HttpCamera, HttpWireArchive, Vec<[u8; 32]>)> {
     assert!(wire.len() < 65536);
-    let listener = TcpListener::bind(([127, 0, 0, 1], 0))?; listener.set_nonblocking(true)?;
+    let listener = TcpListener::bind(std::net::SocketAddr::from(([127, 0, 0, 1], 0u16)))?; listener.set_nonblocking(true)?;
     let route = HttpCameraRoute::new(scope().stream, listener.local_addr()?, "camera.invalid", "/video",
         HttpCameraSecurity::OwnerApprovedPlaintext)?;
     let auth = Authority { route: route.clone(), clock: Instant::now() };

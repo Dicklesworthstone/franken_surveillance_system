@@ -94,7 +94,7 @@ pub fn camera(response: Vec<u8>, read_bytes: usize) -> Test<(HttpCamera, Authori
     // TCP handshakes complete into the listening backlog. No detached or even
     // scoped server thread is needed; both endpoints progress on this test thread.
     if response.len() > 65536 { return Err("loopback fixture wire bound".into()); }
-    let listener = TcpListener::bind(([127, 0, 0, 1], 0))?;
+    let listener = TcpListener::bind(std::net::SocketAddr::from(([127, 0, 0, 1], 0u16)))?;
     listener.set_nonblocking(true)?;
     let route = HttpCameraRoute::new(StreamBasis { source: [7; 32], generation: 3 },
         listener.local_addr()?, "camera.invalid", "/video", HttpCameraSecurity::OwnerApprovedPlaintext)?;
