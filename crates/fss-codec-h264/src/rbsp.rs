@@ -127,14 +127,12 @@ pub fn validate_trailing_bits(rbsp: &[u8]) -> Result<(), DecodeError> {
     let Some(&last) = rbsp.last() else {
         return Err(DecodeError::Malformed);
     };
-    // The stop bit is the highest set bit of the final byte; an all-zero
-    // final byte has no stop bit at all.
+    // The stop bit is the LAST one-bit of the final byte; every bit below
+    // it must be zero padding. An all-zero final byte has no stop bit.
     if last == 0 {
         return Err(DecodeError::Malformed);
     }
-    let stop_index = 7 - last.leading_zeros();
-    // All bits after the stop bit must be zero: `last` masked to its low
-    // `stop_index` bits must be zero, and no byte may follow it.
+    let stop_index = last.trailing_zeros();
     let low_mask = (1u16 << stop_index) - 1;
     if (u16::from(last) & low_mask) != 0 {
         return Err(DecodeError::Malformed);
@@ -242,11 +240,13 @@ mod tests {
 
     #[test]
     fn trailing_bits_validate_stop_bit_discipline() {
-        // Stop bit in the top position of the final byte, no padding bytes.
+        // Stop bit in the top position of the final byte, no padding bits.
         assert!(validate_trailing_bits(&[0x80]).is_ok());
-        // Stop bit lower down; low bits after it must be zero.
+        // Stop bit lower down; nothing is below it, so valid.
         assert!(validate_trailing_bits(&[0b0100_0000]).is_ok());
-        assert!(validate_trailing_bits(&[0b0100_0001]).is_err());
+        // Lowest set bit is BY DEFINITION the stop bit, so other set bits
+        // above it are syntax, not padding violations.
+        assert!(validate_trailing_bits(&[0b0100_0001]).is_ok());
         // All-zero final byte has no stop bit at all.
         assert!(validate_trailing_bits(&[0x00]).is_err());
         // Empty payload has no rbsp_trailing_bits.
