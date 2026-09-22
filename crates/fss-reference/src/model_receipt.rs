@@ -20,7 +20,7 @@
 use std::collections::BTreeMap;
 use std::fmt::{self, Write as _};
 
-use fss_core::canonical::CanonicalEncoder;
+use fss_core::CanonicalEncoder;
 use fss_core::{ContentDigest, ContractError, Generation};
 use fss_model_ir::{
     ModelIrError, ModelIrGraph, OPERATOR_TABLE_FREEZE_DIGEST, OpCode, compute_model_ir_digest,
