@@ -428,6 +428,14 @@
       "reconciledInvariant": "Single isolated KnowledgeCell with untyped evidence digest, as well as intra-set shared evidence between authorizing and non-authorizing classes in a single SituationFrame or MeaningfulDelta (P2, P2b, P3, Q2), cannot be attributed to an author vs consumer without origin tracking and validates as Ok; tracked in follow-up bead fss-gefi6 (typed evidence references).",
       "status": "tracked_limitation",
       "reason": "A lone relabelled cell cannot be detected from the digest alone because ContentDigest is an untyped hash. Furthermore, within a single SituationFrame or MeaningfulDelta, shared evidence between an authorizing and non-authorizing class cannot be attributed by list position or claim ID ordering without breaking honest derivations (P4, P4r, P5, P5r) or creating order-dependent verdicts (Q1, Q2). Full enforcement without guessing by position requires typed evidence references carrying origin provenance, tracked under follow-up bead fss-gefi6."
+    },
+    {
+      "target": "KnowledgeCell",
+      "field": "evidence",
+      "originalValue": "AGENT_COGNITION_AND_CONTROL.md §8.3 (derived beliefs cannot become observed) and the mayLaunderEvidenceInto table read as enforceable for any cell, any SituationFrame or MeaningfulDelta cell set, and any basis/result publication pair.",
+      "reconciledValue": "Laundering is refused only where the producing cell is known: KnowledgeCell::verify_no_evidence_laundering(prior) refuses exactly the registered pairs. A lone relabelled cell is accepted; SituationFrame::validate and MeaningfulDelta::validate judge the SET of cells (independent of order and claim-id naming) and accept shared evidence between classes; classify_reference_meaningful_delta draws no laundering verdict between different claims of the basis and result frames. A cell that supersedes a cell of the same claim has that cell as its known prior, and the pair is judged by verify_no_evidence_laundering on the production paths (fss-2nwxm): classify_reference_meaningful_delta checks each result cell against the basis cells of its claim, and MeaningfulDelta::coalesce checks each later changed cell against the earlier changed cell of its claim.",
+      "reason": "An evidence reference is an untyped ContentDigest that names no producing cell, so shared evidence cannot be attributed to its author: guessing by list position or claim id refused honest derivations (P4r, P5r) and made verdicts order-dependent (Q1, Q2), and the basis-versus-result check refused honest unchanged carry-overs (identical frames [Observed(D), Derived(D)] returned evidence_laundering_detected) and was removed. Full enforcement needs typed evidence references carrying origin provenance, tracked under fss-gefi6.",
+      "status": "open"
     }
   ]
 }
