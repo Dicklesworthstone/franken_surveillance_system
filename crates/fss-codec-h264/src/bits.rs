@@ -102,7 +102,7 @@ impl<'a> BitReader<'a> {
     pub fn se(&mut self, cap: u32) -> Result<i32, DecodeError> {
         let raw = self.ue(cap)?;
         // Spec mapping: k = 2|v| for v <= 0, k = 2v - 1 for v > 0.
-        let magnitude = (raw + 1) / 2;
+        let magnitude = raw.div_ceil(2);
         let signed: i32 = if raw & 1 == 1 {
             i32::try_from(magnitude).map_err(|_| DecodeError::Malformed)?
         } else {
