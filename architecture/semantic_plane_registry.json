@@ -244,7 +244,8 @@
     "crates/fss-reference/src/situation_tests.rs": "support",
     "crates/fss-reference/src/source.rs": "authority",
     "crates/fss-reference/src/tests.rs": "support",
-    "crates/fss-reference/src/time_tolerance.rs": "authority"
+    "crates/fss-reference/src/time_tolerance.rs": "authority",
+    "crates/fss-reference/src/media_fixture.rs": "support"
   },
   "types": {
     "EffectAuthority": {

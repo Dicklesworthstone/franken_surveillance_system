@@ -53,7 +53,37 @@
           "frames": {
             "type": "array",
             "items": {
-              "$ref": "#/$defs/frame"
+              "$ref": "#/$defs/frame",
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "index",
+                "source_fixture",
+                "width",
+                "height",
+                "source_pixel_sha256"
+              ],
+              "properties": {
+                "index": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "source_fixture": {
+                  "type": "string"
+                },
+                "width": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "height": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "source_pixel_sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                }
+              }
             }
           }
         }
