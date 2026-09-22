@@ -1725,6 +1725,16 @@
       "description": "retained source custody storage handle contains forbidden directory traversal sequence",
       "guidance": "remove path traversal components from storage handle",
       "id": "ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-TRAVERSAL-001"
+    },
+    {
+      "description": "dependency constitution drift between machine registry and markdown documentation",
+      "guidance": "synchronize architecture/dependency_constitution.json and docs/DEPENDENCY_CONSTITUTION.md",
+      "id": "ERR-DEP-CONST-DRIFT-001"
+    },
+    {
+      "description": "Cargo metadata violates constitutional language or stdlib requirements for DEP-CLASS-F0",
+      "guidance": "ensure all workspace crates compile under rust-2024 without foreign links",
+      "id": "ERR-DEP-CONST-METADATA-VIOLATION-001"
     }
   ],
   "freezeDigest": "sha256:9bbec4e6845ea702f676cd22472e5fb0d35ca3b3d97f66cbfccb452182413da8",
