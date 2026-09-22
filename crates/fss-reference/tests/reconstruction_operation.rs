@@ -176,3 +176,19 @@ fn complete_root_lost_ack_retries_without_reconstructing_a_duplicate_window() ->
     assert_eq!(result.completion.outcome, PublishOutcome::AlreadyPublished);
     assert_eq!(result.pin, *plan.pin()); Ok(())
 }
+
+#[test]
+fn originals_are_reverified_between_complete_preparation_and_output_publication() -> Test {
+    let f = seed("changed-original", 1, false, false)?; let mut p = open(&f.path)?; let loaded = load(&f, &p)?;
+    let plan = PreparedReconstruction::prepare(&loaded, &p, bounds(), ReconstructionLimits::default(),
+        &Clock(1000), &NeverCancel, &mut work())?;
+    let original = source::packet(1, 9000, loaded.recipe().avc_spec().sps);
+    let identity = ContentDigest::sha256(&original).to_text();
+    let hex = identity.strip_prefix("sha256:").ok_or("wrong fixture digest")?;
+    std::fs::write(f.path.join("spool/objects").join(hex), b"corrupted original envelope")?;
+    let error = plan.publish(&mut p, u64::MAX, &Clock(1000), &NeverCancel, &mut work())
+        .err().ok_or("published from vanished originals")?;
+    assert!(error.windows.is_empty()); assert!(p.root(&plan.pin().slot).is_none());
+    assert!(p.root(&plan.window_slot(0)?).is_none());
+    assert_eq!(plan.windows().len(), 1); Ok(())
+}

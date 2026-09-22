@@ -83,11 +83,12 @@ indexing, replication, retention closure or a canonical evidence-ledger publicat
 
 ## Verification
 
-Ten authored native/filesystem integration tests cover cold startup, byte-identical
+Eleven authored native/filesystem integration tests cover cold startup, byte-identical
 multi-window execution, complete-before-write behavior, late recipe mismatch,
 zero-window incomplete fragments, output bounds, scope/configuration refusal,
 cancellation/deadlines/work, unexpected slots, all four window-root crash cuts,
-and lost final-root acknowledgements with exact retry.
+lost final-root acknowledgements with exact retry, and original corruption between
+preparation and publication.
 
 ```sh
 cargo test -p fss-reference --test reconstruction_operation
@@ -99,3 +100,67 @@ which lacks a Rust toolchain. Source/hash and lexical checks are not compiled-Ru
 validation or a qualification promotion. Hardware throughput, raw unpersisted TCP,
 automatic live timing journaling and production service integration remain outside
 this reference operation.
+
+## Executable operator path
+
+The existing `fss-archive` executable exposes the same implementation, with no
+second reconstruction or publication algorithm:
+
+```sh
+fss-archive check-recipe \
+  --root "$ARCHIVE_DIRECTORY" \
+  --recipe-id "$RECIPE_ID" --recipe-root "$RECIPE_ROOT" \
+  --ingress "$INGRESS" --generation "$GENERATION" --ssrc "$SSRC" \
+  --peer "$ORIGINAL_IP_PORT" --authority "$ORIGINAL_RTSP_AUTHORITY" \
+  --rtp-channel "$RTP_CHANNEL" --rtcp-channel "$RTCP_CHANNEL" \
+  --receive-clock "$RECEIVE_CLOCK" --retention-evidence "$RETENTION_EVIDENCE"
+```
+
+Those source fields describe the original independently accepted source scope.
+They do not initiate DNS, RTSP, socket or camera activity. The recipe must match
+their exact interpretation. The command executes native replay and produces the
+same candidate result root as the Rust API, but publishes no output objects or
+roots. `result_status: "not_requested"` makes no claim about whether an earlier
+run published that candidate; it is not an absence assertion.
+
+Use the same arguments with `reconstruct-recipe --commit yes` to explicitly publish
+all reconstructed windows and the completion root. Commit consent is required;
+`check-recipe` rejects mutation flags. No output recording is published until the
+entire timing program succeeds. An error or lost stdout after publication does not
+prove that nothing committed: keep the original recipe selection, reopen/reconcile
+uncertain storage, then retry the same command. Successful retries distinguish
+`published` from `already_durable` and new windows from reused window roots.
+
+The existing root, roots/tombstones/spool subdirectories, verification holds and
+lock files must already exist as non-symlink entries. Missing owners are not created
+or migrated. The publisher's real process lock is acquired; normal open recovery
+verification and synchronization still occur. Thus checking is not forensic read-only
+access. Directory ancestors must be trusted: this is not a hostile-filesystem sandbox.
+
+Whole-operation timeout, step/work allowances, datagram/source limits, recipe
+size/timing counts, output window/byte ceilings, root scans, spool object/allocation
+limits and total storage capacity have explicit finite bounds. `--help` lists their
+flags. Stored receiver/collector settings must fit the current API's default
+component ceilings; the CLI does not silently change them or activate a new profile.
+The total retained-output bound does not replace native per-window workspace bounds.
+
+The bounded JSON report includes exact recipe, source, interpretation and candidate
+or durable result identities, every category in `ReconstructionSummary`, and actual
+publication counts. Capture completeness and archive indexing remain false. It emits
+no source bytes, endpoints, credentials, paths or per-window dumps. Unknown, duplicate,
+overflowing and incomplete options fail before storage access without echoing values.
+Errors emit no success JSON. An output-stream failure uses the existing bounded
+writer and is not reported as successful acknowledgement.
+
+Nine additional authored process tests (one Unix-only) cover API/CLI result identity,
+check-without-write, lost-stdout exact retry, multi-window publication, incomplete
+fragments, late mismatches, consent, execution limits, missing owners, secret-free
+errors, actual cross-process locking, argument rejection and symlink roots.
+
+```sh
+cargo test -p fss-cli --test reconstruction_recipe_process
+cargo test -p fss-reference --test reconstruction_operation
+```
+
+These executable tests, like the native tests above, have not been run in the editing
+environment. No production or qualification result is inferred from their existence.
