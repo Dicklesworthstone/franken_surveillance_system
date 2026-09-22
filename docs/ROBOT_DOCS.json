@@ -1710,6 +1710,21 @@
       "description": "view stable identifier was reused, duplicated, or renumbered outside AVIEW-001..008",
       "guidance": "allocate a new unique stable identifier; never reuse stable IDs",
       "id": "ERR-VW-STABLE-ID-REUSED-001"
+    },
+    {
+      "description": "retained source custody storage handle is empty, whitespace, or contains invalid characters",
+      "guidance": "provide non-empty sanitized storage handle",
+      "id": "ERR-SOURCE-EVIDENCE-EMPTY-STORAGE-HANDLE-001"
+    },
+    {
+      "description": "retained source custody storage handle is malformed, over-length, or contains invalid characters",
+      "guidance": "provide non-empty sanitized storage handle up to 4096 bytes without bidi or control characters",
+      "id": "ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-MALFORMED-001"
+    },
+    {
+      "description": "retained source custody storage handle contains forbidden directory traversal sequence",
+      "guidance": "remove path traversal components from storage handle",
+      "id": "ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-TRAVERSAL-001"
     }
   ],
   "freezeDigest": "sha256:9bbec4e6845ea702f676cd22472e5fb0d35ca3b3d97f66cbfccb452182413da8",

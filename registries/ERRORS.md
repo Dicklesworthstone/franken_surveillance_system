@@ -420,3 +420,7 @@ Canonical machine error codes returned by `ContractError::code()` (AGT-LAYER-002
 | `unknown_clock_basis_name` | Clock basis name is unrecognized | `ERR-CLOCK-BASIS-UNKNOWN-NAME-001` |
 | `ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-TRAVERSAL-001` | retained source custody storage handle contains forbidden directory traversal sequence | remove path traversal components from storage handle |
 | `ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-MALFORMED-001` | retained source custody storage handle is malformed, over-length, or contains invalid characters | provide non-empty sanitized storage handle up to 4096 bytes without bidi or control characters |
+| `source_evidence_storage_handle_traversal` | Storage handle for retained source evidence contains forbidden directory traversal sequence | `ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-TRAVERSAL-001` |
+| `source_evidence_storage_handle_absolute_path` | Storage handle for retained source evidence contains forbidden absolute path or url | `ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-ABSOLUTE-PATH-001` |
+| `source_evidence_storage_handle_malformed` | Storage handle for retained source evidence is malformed, over-length, or contains invalid characters | `ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-MALFORMED-001` |
+| `source_evidence_raw_wire_packets_with_capsule` | Raw wire packets classification cannot carry a sensor capsule payload | `ERR-SOURCE-EVIDENCE-RAW-WIRE-PACKETS-WITH-CAPSULE-001` |

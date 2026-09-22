@@ -735,3 +735,6 @@ All stable error identities and normative recovery guidance cataloged from `regi
 | `SCHEMA-AGENT-DELTA-001` | `fss.agent_meaningful_delta.v1` | `schemas/agent_meaningful_delta.v1.json` | `follow/continuity` | `terminal, contradiction, coverage, plan-invalidation, and effect-uncertainty deltas cannot be coalesced away` |
 | `SCHEMA-EVENT-HYPOTHESIS-001` | `fss.event_hypothesis.v1` | `schemas/event_hypothesis.v1.json` | `authority` | `immutable revisions; evidence required after hypothesis` |
 | `SCHEMA-EVIDENCE-GRAPH-001` | `fss.evidence_graph.v1` | `schemas/evidence_graph.v1.json` | `derived/evidence` | `causal evidence graph over capsules, identities, model receipts, and revisions` |
+| `ERR-SOURCE-EVIDENCE-EMPTY-STORAGE-HANDLE-001` | retained source custody storage handle is empty, whitespace, or contains invalid characters | provide non-empty sanitized storage handle |
+| `ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-MALFORMED-001` | retained source custody storage handle is malformed, over-length, or contains invalid characters | provide non-empty sanitized storage handle up to 4096 bytes without bidi or control characters |
+| `ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-TRAVERSAL-001` | retained source custody storage handle contains forbidden directory traversal sequence | remove path traversal components from storage handle |
