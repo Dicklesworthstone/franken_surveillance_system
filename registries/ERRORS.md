@@ -424,3 +424,5 @@ Canonical machine error codes returned by `ContractError::code()` (AGT-LAYER-002
 | `source_evidence_storage_handle_absolute_path` | Storage handle for retained source evidence contains forbidden absolute path or url | `ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-ABSOLUTE-PATH-001` |
 | `source_evidence_storage_handle_malformed` | Storage handle for retained source evidence is malformed, over-length, or contains invalid characters | `ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-MALFORMED-001` |
 | `source_evidence_raw_wire_packets_with_capsule` | Raw wire packets classification cannot carry a sensor capsule payload | `ERR-SOURCE-EVIDENCE-RAW-WIRE-PACKETS-WITH-CAPSULE-001` |
+| `ERR-DEP-CONST-METADATA-VIOLATION-001` | Cargo metadata violates constitutional language or stdlib requirements for DEP-CLASS-F0 | ensure all workspace crates compile under rust-2024 without foreign links |
+| `ERR-DEP-CONST-DRIFT-001` | dependency constitution drift between machine registry and markdown documentation | synchronize architecture/dependency_constitution.json and docs/DEPENDENCY_CONSTITUTION.md |
