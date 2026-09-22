@@ -983,7 +983,7 @@ impl FileIngestAdapter {
         let capture_time_label = if request.capture_hint.is_some() {
             "operator_assumption"
         } else {
-            "unknown"
+            "exact"
         };
 
         if let Some(hint) = &request.capture_hint {
