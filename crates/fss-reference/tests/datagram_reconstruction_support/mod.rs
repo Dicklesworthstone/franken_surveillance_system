@@ -12,7 +12,7 @@ use fss_packet::H264Mode;
 use fss_packet::avc::AvcReceiveLimits;
 use fss_publication::{LocalPublicationLimits, LocalRootPublisher, NeverCancel};
 use fss_reference::rtsp::avc_client::{AvcClientPoll, authenticated::DigestAvcPoll};
-use fss_reference::rtsp::datagram_archive::{DatagramArchive, DatagramLimits, DatagramPin, DatagramScope};
+use fss_reference::rtsp::datagram_archive::{DatagramArchive, DatagramArchiveLimits, DatagramPin, DatagramScope};
 use fss_reference::rtsp::datagram_reconstruction::{AvcReplayBounds, AvcReplaySpec};
 use fss_reference::rtsp::tcp::{TcpBinding, TcpSecurityPolicy};
 
@@ -28,8 +28,8 @@ pub fn scope() -> Test<DatagramScope> {
         receive_clock: ContentDigest::sha256(b"reconstruction receive epoch"),
         retention_evidence: ContentDigest::sha256(b"owner authorized source retention") })
 }
-pub fn limits() -> DatagramLimits {
-    DatagramLimits { max_datagrams: 128, max_payload_bytes: 1024 * 1024,
+pub fn limits() -> DatagramArchiveLimits {
+    DatagramArchiveLimits { max_datagrams: 128, max_payload_bytes: 1024 * 1024,
         max_scan_roots: 1024, max_spool_object_bytes: 65536 }
 }
 pub fn spec() -> Test<AvcReplaySpec<'static>> {
@@ -102,7 +102,7 @@ pub fn save(path: &Path, observations: &[(u8, u64, Vec<u8>)]) -> Test<DatagramPi
 }
 pub fn reopen(path: &Path, pin: DatagramPin) -> Test<(LocalRootPublisher, DatagramArchive)> {
     let publisher = LocalRootPublisher::open(path, storage())?;
-    let archive = DatagramArchive::recover(&publisher, scope()?, Some(pin), limits(), &NeverCancel, &mut work())?;
+    let archive = DatagramArchive::recover(&publisher, scope()?, limits(), Some(pin), &NeverCancel, &mut work())?;
     assert_eq!(archive.pin(), pin);
     Ok((publisher, archive))
 }

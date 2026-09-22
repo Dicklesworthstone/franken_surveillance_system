@@ -48,6 +48,8 @@ pub mod archive_pins;
 pub mod datagram_archive;
 /// Cold source-verified AVC reconstruction with explicit configuration and clocks.
 pub mod datagram_reconstruction;
+/// Portable codec/timing recipes and exact source-verified recording reconstruction.
+pub mod recording_recipe;
 
 pub use message::{
     AuthScheme, ContentLengthConflict, DEFAULT_MAX_BODY_BYTES, DEFAULT_MAX_HEADERS,
