@@ -16,6 +16,8 @@ use fss_packet::H264Mode;
 
 mod codec;
 mod driver;
+/// Source-closed local publication and exact cold recovery of retained recipes.
+pub mod storage;
 pub use driver::{PlannedRecordingReplay, RecipeReplayFailure, RecipeReplayRetirement, RecipeReplayStep};
 
 /// Hard bound on the whole portable recipe, including parameter sets and every timing decision.
