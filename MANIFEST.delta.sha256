@@ -421,3 +421,4 @@ b664a58c25008d1f8fa44ac8c1eb95a2f195ceb9cbc9b31f2c5deab1db2b1a2e  crates/fss-ten
 59aeaacc8ec619624c8c907d5c36ba35de911a44e0d6e783de129c7aee5b45d2  crates/fss-tensor/src/tensor.rs
 499526f273a36211a1f9473fa60079564261d60476e027dd1f8dd2d9d5d269ef  crates/fss-tensor/src/view.rs
 b3b3d0abb8f1aeb9562cb47036c7d5f74e7b99dfd1449702ade6c449e8ebcc8c  crates/fss-tensor/tests/tensor_core_contract.rs
+43420288d5788cc6210fe53ff165b0e5effd40504f097497dd123b5a240bcd68  crates/fss-core/src/digest.rs
