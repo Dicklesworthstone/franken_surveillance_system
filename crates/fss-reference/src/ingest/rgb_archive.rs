@@ -52,7 +52,7 @@ pub struct RgbArchiveLimits {
 }
 impl Default for RgbArchiveLimits {
     fn default() -> Self {
-        Self { evidence: RgbEvidenceLimits::default(), maximum_spool_object_bytes: 32 * 1024 * 1024,
+        Self { evidence: RgbEvidenceLimits::default(), maximum_spool_object_bytes: 64 * 1024 * 1024,
             maximum_ledger_deltas: 65_536 }
     }
 }
@@ -299,7 +299,7 @@ fn authorize(pin: RgbArchivePin, auth: &dyn RgbArchiveAuthority, operation: RgbA
 fn admit(d: &ReferenceDeployment, pin: RgbArchivePin, l: RgbArchiveLimits,
     work: &mut WorkBudget<'_>, cx: &ReplayCx) -> Result<()> {
     cx.checkpoint("rgb-archive:admit").map_err(|_| RgbArchiveError::Cancelled)?; pin.slot()?;
-    if !(1024..=32 * 1024 * 1024).contains(&l.maximum_spool_object_bytes)
+    if !(1024..=64 * 1024 * 1024).contains(&l.maximum_spool_object_bytes)
         || !(1..=262_144).contains(&l.maximum_ledger_deltas)
         || d.publisher().limits().spool.max_object_bytes > l.maximum_spool_object_bytes {
         return Err(RgbArchiveError::Limit);
