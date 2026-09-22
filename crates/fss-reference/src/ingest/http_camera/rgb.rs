@@ -385,3 +385,6 @@ pub fn http_rgb_exposure(frame: &HttpJpegFrame, budget: &mut WorkBudget<'_>) -> 
     }
     budget.charge(0)?; Ok(digest)
 }
+
+/// Durable original-wire publication before the native camera parse barrier is released.
+pub mod custody;

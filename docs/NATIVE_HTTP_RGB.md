@@ -73,13 +73,48 @@ UVC, ONVIF, RTSP video decoding, a pretrained neural detector, physical calibrat
 or canonical event/alert publication. No real operator camera is contacted by the
 authoring work. Numerical JPEG/convolution fixtures are not trained model weights.
 
+## Durable raw-read custody before parsing
+
+The optional `rgb::custody` integration turns the existing raw-read barrier into
+**publish-before-acknowledge**. Call `prepare_wire_custody` against the explicit
+`HttpWireArchive` and independently retain its `HttpRgbWirePlan::expected_pin()`
+before performing storage I/O. The plan binds the unchanged original read and
+exact archive scope/root; it is not a storage permission or a durability claim.
+
+`retain_wire` rehashes the same pending read and checks the same expected root,
+then invokes the existing archive and `LocalRootPublisher` under caller-owned
+storage authority/cancellation and work bounds. It acknowledges the camera only
+after the original archive returns a durable root-last publication. Until then,
+no bytes from that raw read are parsed and no next network read replaces them.
+No new disk format, alternate ledger, spool, background flush or repair exists.
+
+An outer refusal leaves the read unacknowledged. A storage failure may still have
+staged/visible work or an unknown outcome; use the original publisher's recovery
+contract and independently retained expected pin. In particular, loss after root
+rename is resolved by reopening and verifying that exact pin, then retrying the
+same pending read. Existing publication returns `AlreadyPublished`; neither a
+second source record nor another GET is manufactured. Earlier cuts containing
+unresolved temporary roots still require the existing explicit recovery path.
+
+Once storage succeeds, `HttpRgbWireCommit` always retains the publication and a
+**separate** camera acknowledgement result. Late camera revocation can therefore
+return durable publication plus denied acknowledgement without hiding the disk
+write or releasing the original bytes. Explicit camera retirement still returns
+the unacknowledged read. The caller may inspect the independently stored prefix
+through existing cold read/verification APIs. Completed neural output remains
+separately derived; durable source does not certify model accuracy or an event.
+
+Manual `acknowledge_wire` remains available for other explicit custody owners;
+using it alone makes no durability claim. Native RGB result publication and
+canonical event/alert delivery remain separate integrations.
+
 ## Verification and handoff
 
 Scope: the WP-090 perception/acquisition integration highlighted by the project
 brief. Source anchor: `ac9176e7ee94d0ba9083d3ca620b8f01621527c8`; the comprehensive
 plan and bead graph were read. No program bead or qualification gate is closed.
 
-Fourteen authored Rust tests exercise actual loopback sockets and the existing
+Fourteen authored RGB capture tests exercise actual loopback sockets and the existing
 JPEG/neural fixture, source reconstruction, entry/dwell/exit, masks and temporal
 uncertainty, original-read acknowledgement, backpressure, stale result keys,
 retry, late authority refusal, and lossless retirement. They require the native
@@ -88,3 +123,12 @@ cargo, rustc, rustfmt and rch are unavailable. Independent Python checks cover
 HTTP template/framing and a finite ownership model, not the compiled Rust path.
 Run `cargo test -p fss-reference --test http_rgb_capture`, existing HTTP/RGB test
 lanes, formatting, Clippy and native qualification before upgrading any claim.
+
+Eight further authored custody tests combine native loopback reads with real
+filesystem publication: cold source restoration and frame re-verification, every
+root-publication crash cut, exact lost-ack recovery, late acknowledgement revocation,
+cancellation/work refusal, changed scope, stale reads and pre-publication denial.
+All **22 Rust tests remain uncompiled and unexecuted here**. The updated helper
+still uses one bounded test thread, and all original 14 tests remain unchanged.
+Run `cargo test -p fss-reference --test http_rgb_custody` as well. No source/model/
+capability registry, bead, release or device-qualification claim is promoted.

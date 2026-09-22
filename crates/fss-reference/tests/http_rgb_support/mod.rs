@@ -126,8 +126,7 @@ pub fn save_wire(c: &mut HttpRgbCapture<'_, '_>, a: &Authority, receipt: HttpWir
 pub fn next_frame(c: &mut HttpRgbCapture<'_, '_>, a: &Authority, s: &mut Server, saved: &mut Vec<u8>) -> Test {
     let mut framing = DecodeBudget::new(WORK);
     for _ in 0..50000 {
-        s.poll()?;
-        match c.step(NOW, a, &mut framing)? {
+        match pump(c, a, s, &mut framing)? {
             HttpRgbStep::AwaitingContext => return Ok(()),
             HttpRgbStep::Source(HttpCameraStep::WireReady(r)) => save_wire(c, a, r, saved)?,
             HttpRgbStep::Source(HttpCameraStep::Pending | HttpCameraStep::Advanced) => std::thread::yield_now(),
@@ -139,8 +138,7 @@ pub fn next_frame(c: &mut HttpRgbCapture<'_, '_>, a: &Authority, s: &mut Server,
 pub fn finish(c: &mut HttpRgbCapture<'_, '_>, a: &Authority, s: &mut Server, saved: &mut Vec<u8>) -> Test {
     let mut framing = DecodeBudget::new(WORK);
     for _ in 0..50000 {
-        s.poll()?;
-        match c.step(NOW, a, &mut framing)? {
+        match pump(c, a, s, &mut framing)? {
             HttpRgbStep::Source(HttpCameraStep::Complete) => return Ok(()),
             HttpRgbStep::Source(HttpCameraStep::WireReady(r)) => save_wire(c, a, r, saved)?,
             HttpRgbStep::Source(HttpCameraStep::Pending | HttpCameraStep::Advanced) => std::thread::yield_now(),
@@ -169,4 +167,10 @@ pub fn complete(c: &mut HttpRgbCapture<'_, '_>, a: &Authority, n: u8) -> Test<Ht
     let step = analyze(c, context, a, &mut DecodeBudget::new(WORK), &mut fixture::post(),
         &mut WorkBudget::new(WORK), &mut WorkBudget::new(WORK))?;
     match step { HttpRgbStep::ResultReady(r) => Ok(r), _ => Err("RGB computation incomplete".into()) }
+}
+
+/// Drive the explicit loopback peer and one bounded native acquisition step.
+pub fn pump(c: &mut HttpRgbCapture<'_, '_>, a: &Authority, s: &mut Server,
+    framing: &mut DecodeBudget<'_>) -> Test<HttpRgbStep> {
+    s.poll()?; Ok(c.step(NOW, a, framing)?)
 }
