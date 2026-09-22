@@ -276,6 +276,37 @@
           "source_pixel_sha256": "5ac82eba950d3b33d8d4eeded0f1fa7e235bc5f7d4e2fd3fc8fa3c91fb4c12ec"
         }
       ]
+    },
+    {
+      "name": "mjpeg_truncated_last.mjpeg",
+      "variant": "truncated_last",
+      "frame_count": 3,
+      "file_sha256": "16214e1fb000aff7b3416858c0185665c1205fdae6148121e3b8fad72ff2caa1",
+      "source_pixel_sha256": "5ac82eba950d3b33d8d4eeded0f1fa7e235bc5f7d4e2fd3fc8fa3c91fb4c12ec",
+      "file_size": 2179,
+      "frames": [
+        {
+          "index": 0,
+          "source_fixture": "rgb_64x48_colorbars_420",
+          "width": 64,
+          "height": 48,
+          "source_pixel_sha256": "5ac82eba950d3b33d8d4eeded0f1fa7e235bc5f7d4e2fd3fc8fa3c91fb4c12ec"
+        },
+        {
+          "index": 1,
+          "source_fixture": "rgb_64x48_gradient_420",
+          "width": 64,
+          "height": 48,
+          "source_pixel_sha256": "e1df75b36cf6d9abb066776a93dd2ffedf3f1906f10a87ccf145fff035a3e4e7"
+        },
+        {
+          "index": 2,
+          "source_fixture": "rgb_64x48_flat_420_truncated",
+          "width": 64,
+          "height": 48,
+          "source_pixel_sha256": "e351f16f0312947d1c0b41f959bf3c1f27c96b96eedeca003fcabd30e4c65d40"
+        }
+      ]
     }
   ]
 }
