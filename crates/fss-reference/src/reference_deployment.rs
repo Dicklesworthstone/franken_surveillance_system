@@ -1776,6 +1776,11 @@ impl ReferenceDeployment {
             ReferenceError::Contract(contract_error) => ReferenceError::DurableEffect(Box::new(
                 crate::durable_effect::DurableEffectError::Contract(contract_error),
             )),
+            ReferenceError::StaleEventAuthority => ReferenceError::DurableEffect(Box::new(
+                crate::durable_effect::DurableEffectError::Reference(
+                    ReferenceError::StaleEventAuthority,
+                ),
+            )),
             other => other,
         })?;
         Ok(receipt)
