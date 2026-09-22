@@ -38,8 +38,8 @@ impl Directory {
         Err("fixture directory attempts exhausted".into())
     }
     fn open(&self) -> Test<LocalRootPublisher> {
-        Ok(LocalRootPublisher::open(&self.0, LocalPublicationLimits::new(1024, 16, 128, 1024,
-            SpoolLimits::new(4096, 16 * 1024 * 1024, 65536, 1024)))?)
+        Ok(LocalRootPublisher::open(&self.0, LocalPublicationLimits::new(1024, 16, 128, 4096,
+            SpoolLimits::new(4096, 16 * 1024 * 1024, 65536, 4096)))?)
     }
 }
 impl Drop for Directory { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
@@ -140,7 +140,7 @@ fn response(chunked: bool, close: bool) -> Vec<u8> {
 /// Parser errors deliberately keep the already published original prefix for replay.
 fn acquire(p: &mut LocalRootPublisher, wire: Vec<u8>, read_bytes: usize) -> Test<(HttpWirePin, Vec<FrameKey>)> {
     if wire.len() > 65536 { return Err("loopback response bound".into()); }
-    let listener = TcpListener::bind(([127, 0, 0, 1], 0))?;
+    let listener = TcpListener::bind(std::net::SocketAddr::from(([127, 0, 0, 1], 0u16)))?;
     listener.set_nonblocking(true)?;
     let route = HttpCameraRoute::new(scope().stream, listener.local_addr()?, "camera.invalid", "/video",
         HttpCameraSecurity::OwnerApprovedPlaintext)?;
