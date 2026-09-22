@@ -782,7 +782,8 @@ fn cooperative_cancellation_aborts_operations_and_drains() -> Result<(), Box<dyn
 
 #[test]
 fn exported_constants_and_tables_integrity() -> Result<(), Box<dyn Error>> {
-    assert_eq!(KNOWN_LEDGER_DELTA_FAMILIES.len(), 9);
+    // 10 = 9 + FAMILY_FILE_IMPORT (fss-2h5zq.23).
+    assert_eq!(KNOWN_LEDGER_DELTA_FAMILIES.len(), 10);
     for family in KNOWN_LEDGER_DELTA_FAMILIES {
         assert!(!family.is_empty());
     }

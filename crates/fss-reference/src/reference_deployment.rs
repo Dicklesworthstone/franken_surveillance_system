@@ -60,6 +60,9 @@ pub const FAMILY_EVENT_REVISION: &str = "event_revision";
 pub const FAMILY_ALERT_EFFECT_OUTCOME: &str = "alert_effect_outcome";
 /// Reserved ledger delta family: accumulated sensor-tamper witness of an event revision.
 pub const FAMILY_SENSOR_TAMPER_STATUS: &str = "sensor_tamper_status";
+/// Registered ledger delta family: file import lifecycle object (generation 1 = in progress,
+/// generation 2 = complete).
+pub const FAMILY_FILE_IMPORT: &str = "file_import";
 /// Registered ledger delta family: file import manifest.
 pub const FAMILY_FILE_IMPORT_MANIFEST: &str = "file_import_manifest";
 /// Registered ledger delta family: acquisition transition.
@@ -78,6 +81,7 @@ pub const KNOWN_LEDGER_DELTA_FAMILIES: &[&str] = &[
     FAMILY_SENSOR_CAPSULE,
     FAMILY_EVENT_REVISION,
     FAMILY_ALERT_EFFECT_OUTCOME,
+    FAMILY_FILE_IMPORT,
     FAMILY_FILE_IMPORT_MANIFEST,
     FAMILY_ACQUISITION_TRANSITION,
     FAMILY_DECODE_RECEIPT,
