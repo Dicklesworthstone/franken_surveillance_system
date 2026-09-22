@@ -398,7 +398,6 @@ impl ReplayCx {
     /// Returns [`ReplayAdapterError::CancellationRequested`] if cancellation was signaled.
     pub fn checkpoint(&self, _stage: &'static str) -> Result<(), ReplayAdapterError> {
         self.checkpoints.fetch_add(1, Ordering::SeqCst);
-        #[cfg(test)]
         if let Ok(guard) = self.cancel_at_stage.lock()
             && let Some(target) = *guard
             && target == _stage
@@ -435,7 +434,6 @@ impl ReplayCx {
     /// but never returns an error so already-committed work is not reported as cancelled.
     pub fn checkpoint_post_commit(&self, _stage: &'static str) {
         self.checkpoints.fetch_add(1, Ordering::SeqCst);
-        #[cfg(test)]
         if let Ok(guard) = self.cancel_at_stage.lock()
             && let Some(target) = *guard
             && target == _stage
@@ -453,7 +451,6 @@ impl ReplayCx {
     /// [`Self::is_cancelled`] and decides how to honor a pending cancellation at that stage.
     pub(crate) fn reach_stage(&self, _stage: &'static str) {
         self.checkpoints.fetch_add(1, Ordering::SeqCst);
-        #[cfg(test)]
         if let Ok(guard) = self.cancel_at_stage.lock()
             && let Some(target) = *guard
             && target == _stage

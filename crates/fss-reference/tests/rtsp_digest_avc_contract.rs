@@ -71,8 +71,10 @@ fn authenticated_negotiation_preserves_real_rtp_and_all_four_avc_groups() -> Tes
                         assert!(w.pending.is_empty()); assert!(w.challenge.is_none()); pictures += 1;
                     }
                 }
-                DigestAvcPoll::Fault { .. }
-                | DigestAvcPoll::Client { event: inner, .. }
+                DigestAvcPoll::Fault { .. } => {
+                    return Err("clean fixture refused".into())
+                }
+                DigestAvcPoll::Client { event: inner, .. }
                     if matches!(
                         &**inner,
                         AvcClientPoll::Fault { .. }
@@ -100,8 +102,8 @@ fn keepalive_challenge_does_not_suspend_media_fragment_deadlines() -> TestResult
     assert!(std::str::from_utf8(keepalive.bytes())?.contains("nc=00000004"));
     send(&mut c, &challenge(5, "server-nonce-2", true), 7, 11, &mut out)?;
     drain(&mut c, 2_000_000_009, &mut out)?;
-    assert!(out.iter().any(|e| matches!(e, DigestAvcPoll::Client {
-        event: AvcClientPoll::Media(AvcReceivePoll::FragmentRetired { .. }), .. })));
+    assert!(out.iter().any(|e| matches!(e, DigestAvcPoll::Client { event, .. }
+        if matches!(&**event, AvcClientPoll::Media(AvcReceivePoll::FragmentRetired { .. })))));
     assert!(matches!(out.last(), Some(DigestAvcPoll::AuthenticationRequired { cseq: 5, .. })));
     let retry = c.respond(&creds, [21;16], 2_000_000_010)?;
     assert_eq!(retry.cseq(), 6);
@@ -116,8 +118,9 @@ fn challenge_retry_cannot_extend_the_original_response_deadline() -> TestResult 
     send(&mut c, &challenge(1, "server-nonce-1", false), 4096, 10, &mut out)?;
     c.respond(&creds, [17;16], 90)?;
     assert_eq!(c.next_wake_ns(), Some(100));
-    assert!(matches!(c.poll(100)?, DigestAvcPoll::Client { event: AvcClientPoll::Fault {
-        reason: AvcClientError::Session(ClientError::ResponseTimeout), .. }, wire_retirement: Some(_) }));
+    assert!(matches!(c.poll(100)?, DigestAvcPoll::Client { event, wire_retirement: Some(_), .. }
+        if matches!(&*event, AvcClientPoll::Fault {
+            reason: AvcClientError::Session(ClientError::ResponseTimeout), .. })));
     Ok(())
 }
 #[test]
@@ -179,7 +182,10 @@ fn coalesced_media_waits_for_challenge_without_rewrite_or_double_admission() -> 
     assert_eq!(c.buffered_wire_bytes(), before);
     c.respond(&creds, [21;16], 10)?; drain(&mut c, 10, &mut out)?;
     let sources: Vec<_> = out.iter().filter_map(|e| match e {
-        DigestAvcPoll::Client { event: AvcClientPoll::Rtp { source, .. }, .. } => Some(source), _ => None,
+        DigestAvcPoll::Client { event, .. } if matches!(&**event,
+            AvcClientPoll::Rtp { .. }) => match &**event {
+            AvcClientPoll::Rtp { source, .. } => Some(source), _ => None,
+        }, _ => None,
     }).collect();
     assert_eq!(sources.len(), 1); assert_eq!(sources[0].payload(), packet); assert_eq!(sources[0].received_ns(), 9);
     Ok(())
@@ -191,8 +197,9 @@ fn stale_pre_retry_success_cannot_complete_the_authenticated_request() -> TestRe
     send(&mut c, &challenge(1, "server-nonce-1", false), 4096, 1, &mut out)?;
     c.respond(&creds, [17;16], 2)?; drain(&mut c, 2, &mut out)?;
     send(&mut c, &response(1, "Content-Type: application/sdp\r\n", &description()), 4096, 3, &mut out)?;
-    assert!(matches!(out.last(), Some(DigestAvcPoll::Client { event: AvcClientPoll::Fault {
-        reason: AvcClientError::Session(ClientError::CseqMismatch), .. }, wire_retirement: Some(_) })));
+    assert!(matches!(out.last(), Some(DigestAvcPoll::Client { event, wire_retirement: Some(_), .. })
+        if matches!(&**event, AvcClientPoll::Fault {
+            reason: AvcClientError::Session(ClientError::CseqMismatch), .. })));
     Ok(())
 }
 #[test]
@@ -225,9 +232,17 @@ fn authenticated_teardown_preserves_remote_and_local_retirement_receipts() -> Te
     let request = c.request(C::Teardown, &creds, [20;16], 8)?;
     assert!(std::str::from_utf8(request.bytes())?.contains("Authorization: Digest"));
     send(&mut c, &response(request.cseq(), "Session: fixture\r\n", ""), 4096, 9, &mut out)?;
-    assert!(out.iter().any(|e| matches!(e, DigestAvcPoll::Client { event: AvcClientPoll::Control(ClientProgress::Accepted(ClientState::Closed)), .. })));
-    assert!(matches!(out.last(), Some(DigestAvcPoll::Client { event: AvcClientPoll::Ended { retirement: Some(r), .. },
-        wire_retirement: Some(w) }) if !r.session.remote_session_may_exist && w.pending.is_empty()));
+    assert!(out.iter().any(|e| matches!(e, DigestAvcPoll::Client { event, .. }
+        if matches!(&**event, AvcClientPoll::Control(ClientProgress::Accepted(ClientState::Closed))))));
+    assert!(out.iter().any(|e| match e {
+        DigestAvcPoll::Client { event, wire_retirement: Some(w) } => match &**event {
+            AvcClientPoll::Ended { retirement: Some(r), .. } => {
+                !r.session.remote_session_may_exist && w.pending.is_empty()
+            }
+            _ => false,
+        },
+        _ => false,
+    }));
     assert_eq!(c.buffered_wire_bytes(), 0); assert_eq!(c.retained_nal_bytes(), 0);
     Ok(())
 }

@@ -1769,6 +1769,14 @@ impl ReferenceDeployment {
             outcome_at,
             journal: &mut self.effects,
             provider: &mut self.alert_provider,
+        })
+        .map_err(|error| match error {
+            // The composition layer owns the durable journal, so journal state-machine
+            // verdicts surface wrapped in this layer's effect error.
+            ReferenceError::Contract(contract_error) => ReferenceError::DurableEffect(Box::new(
+                crate::durable_effect::DurableEffectError::Contract(contract_error),
+            )),
+            other => other,
         })?;
         Ok(receipt)
     }

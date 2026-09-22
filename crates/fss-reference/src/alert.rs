@@ -751,6 +751,8 @@ where
         return Err(fss_core::ContractError::ReconciliationRequired.into());
     }
     if operation.state != EffectState::Prepared {
+        // Bare contract error at this layer; composition boundaries that own the
+        // durable journal wrap it as their layer's effect error.
         return Err(fss_core::ContractError::InvalidEffectTransition.into());
     }
     let updated_at = operation.updated_at;

@@ -89,7 +89,7 @@ fn held_picture_requires_explicit_timing_and_wrong_timing_is_retryable() -> Test
     assert_eq!(request.rtp_timestamp, 90_000); assert_eq!(c.collector().retained_samples(), 0);
     let rejected = c.offer(AvcReceivePoll::Pending { wake_at_ns: Some(99) }, 2).err().ok_or("must backpressure")?;
     assert_eq!(rejected.reason, CaptureError::Backpressure);
-    assert!(matches!(rejected.event, AvcReceivePoll::Pending { wake_at_ns: Some(99) }));
+    assert!(matches!(*rejected.event, AvcReceivePoll::Pending { wake_at_ns: Some(99) }));
     let mut invalid = timing(0); invalid.duration = 0;
     assert!(matches!(c.supply_timing(invalid, 2), Err(CaptureError::Collection(CollectorError::Timeline))));
     assert!(matches!(c.poll(2)?, CapturePoll::TimingRequired(p) if p == request));
