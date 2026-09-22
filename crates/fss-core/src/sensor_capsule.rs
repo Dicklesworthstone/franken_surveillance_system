@@ -444,6 +444,33 @@ impl CanonicalDecode for OmissionReason {
     }
 }
 
+impl CanonicalEncode for OmissionReason {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.text(self.as_str());
+    }
+}
+
+impl CanonicalDecode for OmissionReason {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        let text = decoder.text()?;
+        Self::parse(text).map_err(|_| ContractError::InvalidIdentifier)
+    }
+}
+
+impl fmt::Display for OmissionReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl core::str::FromStr for OmissionReason {
+    type Err = ContractError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s).map_err(|_| ContractError::InvalidIdentifier)
+    }
+}
+
 /// Source custody status binding exact source bytes to content-addressed storage.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SourceCustody {
