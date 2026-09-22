@@ -117,15 +117,17 @@ pub mod table_checks {
                 }
             }
         }
-        // Kraft equality in exact integer arithmetic: sum of 2^(max-len)
-        // over a common denominator 2^max must equal 2^max. A single
-        // missing or miscopied row changes the sum.
+        // Kraft inequality with exact integer arithmetic: a prefix code is
+        // decodable iff the sum is <= 2^max. (Some spec columns — e.g.
+        // coeff_token nC<2 — deliberately leave unused codeword space, so
+        // equality is NOT required.) A transcription gap that breaks
+        // decodability or a duplicated codeword trips this check.
         let max_len = entries.iter().map(|e| e.len).max().ok_or(DecodeError::Malformed)?;
         let mut numerator: u64 = 0;
         for entry in entries {
             numerator += 1u64 << (max_len - entry.len);
         }
-        if numerator != 1u64 << max_len {
+        if numerator > 1u64 << max_len {
             return Err(DecodeError::Malformed);
         }
         Ok(())
@@ -219,17 +221,26 @@ mod tests {
     }
 
     #[test]
-    fn validator_rejects_missing_rows_by_kraft_sum() {
-        // Lengths (1,2,3) over only two rows: Kraft sum 1/2 + 1/4 + ... < 1.
-        let incomplete = VlcTable::new(vec![
+    fn validator_rejects_overcomplete_kraft_sum() {
+        // Three length-1 codewords: Kraft sum 3/2 > 1 — undecodable, and the
+        // corrected inequality validator must refuse it.
+        let overcomplete = VlcTable::new(vec![
+            VlcEntry { code: 0b0, len: 1, value: 0 },
+            VlcEntry { code: 0b1, len: 1, value: 1 },
+            VlcEntry { code: 0b10, len: 1, value: 2 },
+        ])
+        .expect("values are unique");
+        assert_eq!(
+            table_checks::validate_canonical(&overcomplete).unwrap_err(),
+            DecodeError::Malformed
+        );
+        // A decodable 2-row (1,2) table passes the inequality.
+        let decodable = VlcTable::new(vec![
             VlcEntry { code: 0b0, len: 1, value: 0 },
             VlcEntry { code: 0b10, len: 2, value: 1 },
         ])
-        .unwrap();
-        assert_eq!(
-            table_checks::validate_canonical(&incomplete).unwrap_err(),
-            DecodeError::Malformed
-        );
+        .expect("values are unique");
+        assert!(table_checks::validate_canonical(&decodable).is_ok());
     }
 
     #[test]

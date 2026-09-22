@@ -25,6 +25,9 @@
 pub mod bits;
 pub mod cavlc;
 pub mod rbsp;
+mod tables;
+#[cfg(test)]
+mod tables_tests;
 
 use fss_packet::avc::AvcError;
 
