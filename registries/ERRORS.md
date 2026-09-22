@@ -418,3 +418,5 @@ Canonical machine error codes returned by `ContractError::code()` (AGT-LAYER-002
 | `unknown_omission_reason` | Unknown omission reason string token | `ERR-SOURCE-EVIDENCE-UNKNOWN-OMISSION-REASON-001` |
 | `unknown_source_custody_tag` | Unknown source custody binary wire tag | `ERR-SOURCE-EVIDENCE-UNKNOWN-CUSTODY-TAG-001` |
 | `unknown_clock_basis_name` | Clock basis name is unrecognized | `ERR-CLOCK-BASIS-UNKNOWN-NAME-001` |
+| `ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-TRAVERSAL-001` | retained source custody storage handle contains forbidden directory traversal sequence | remove path traversal components from storage handle |
+| `ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-MALFORMED-001` | retained source custody storage handle is malformed, over-length, or contains invalid characters | provide non-empty sanitized storage handle up to 4096 bytes without bidi or control characters |
