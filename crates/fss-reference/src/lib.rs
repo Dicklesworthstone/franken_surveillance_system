@@ -38,6 +38,8 @@ pub mod preprocess;
 pub mod reference_deployment;
 pub mod rtsp;
 pub mod scalar_executor;
+/// Exact-graph peak-memory execution over the unchanged scalar kernel backend.
+pub mod planned_scalar;
 mod situation;
 mod situation_guard;
 mod situation_sections;
