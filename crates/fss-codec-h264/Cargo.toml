@@ -1,0 +1,12 @@
+[package]
+name = "fss-codec-h264"
+version = "0.0.1"
+edition = "2024"
+publish = false
+
+[dependencies]
+fss-core = { path = "../fss-core" }
+fss-packet = { path = "../fss-packet" }
+
+[lints]
+workspace = true
