@@ -24,7 +24,7 @@ fn model(layout: HeadLayout) -> Test<RgbInferenceModel> {
         vec![TensorPort::new("image", DType::F32, image, generation)?,
             TensorPort::new("weight", DType::F32, Shape::new(vec![6, 3, 8, 8])?, generation)?,
             TensorPort::new("bias", DType::F32, Shape::new(vec![6])?, generation)?],
-        vec![TensorPort::new("head", DType::F32, Shape::new(head_shape.iter().map(|n| *n as usize).collect())?, generation)?,
+        vec![TensorPort::new("head", DType::F32, Shape::new(head_shape.iter().map(|n| *n as usize).collect::<Vec<_>>())?, generation)?,
             TensorPort::new("raw", DType::F32, raw, generation)?],
         vec![GraphNode::new("node:conv", OpCode::Conv2d, "numeric fixture: pixels affect corners and scores",
             vec!["image".into(), "weight".into(), "bias".into()], vec!["raw".into()], AttributeMap::new())?,

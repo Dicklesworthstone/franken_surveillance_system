@@ -465,7 +465,7 @@ fn publication(variant: &Variant) -> Result<ReferenceSituationPublication, Box<d
         proof_roots.insert(ContentDigest::sha256(b"effect-outcome"));
     }
     for cell in &variant.custom_cells {
-        proof_roots.extend(cell.evidence().iter().cloned());
+        proof_roots.extend(cell.evidence().iter().map(|reference| reference.digest));
         proof_roots.extend(cell.contradictions().iter().cloned());
     }
     let situation = ReferenceSituation::new(capsule, proof_roots);

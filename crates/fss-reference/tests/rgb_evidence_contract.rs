@@ -67,7 +67,7 @@ fn availability_and_uncertain_capture_intervals_survive_exactly() -> Test {
     let cx=context(&std::env::temp_dir())?;
     for availability in [TrackingAvailability::Available,TrackingAvailability::Disturbed,TrackingAvailability::Unobservable] {
         let e=capture(2,availability,&cx)?; let r=replay(&e,&cx)?;
-        assert_eq!(r.admission().availability(),availability); assert_eq!(r.admission().evidence(),[5;32]);
+        assert_eq!(r.admission().availability(),availability); assert_eq!(r.admission().evidence(), ContentDigest::new(fss_core::DigestAlgorithm::Sha256, [5; 32]));
         assert_eq!(r.admission().source().capture,[2_000_000_000,2_000_000_001]);
         assert_eq!(r.run().allowed(),&[1;128]);
     } Ok(())
