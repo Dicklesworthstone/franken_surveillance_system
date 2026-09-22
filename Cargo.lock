@@ -14,6 +14,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fss-codec-h264"
+version = "0.0.1"
+dependencies = [
+ "fss-core",
+ "fss-packet",
+]
+
+[[package]]
 name = "fss-codec-mjpeg"
 version = "0.0.1"
 dependencies = [
