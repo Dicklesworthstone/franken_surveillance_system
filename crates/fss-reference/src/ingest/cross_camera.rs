@@ -1,278 +1,275 @@
 #![forbid(unsafe_code)]
-//! Cross-camera association of tracked objects using time proximity and
-//! geometric consistency gates.
+//! Global cross-camera association of anonymous, already-rectified observations.
 //!
-//! Takes confirmed tracked objects from two or more cameras covering
-//! overlapping zones and associates detections of the same physical object
-//! across cameras. Association requires BOTH:
-//! - capture timestamps within a bounded window (time gate)
-//! - rectified ground-plane positions within a distance threshold (geometry gate)
-//!
-//! Output is a set of [`AssociatedPair`]s with confidence scores. Objects that
-//! cannot be associated remain unassociated — the system never forces a match.
-//!
-//! All arithmetic is f64; deterministic across runs with the same input.
+//! Time and geometry gates build the complete bipartite candidate graph. The
+//! shared image-tracking Hungarian solver maximizes total quantized confidence,
+//! including an explicit unmatched option for every left observation. Exclusion
+//! solves identify unstable pairs; deterministic tie-breaking never proves identity.
+//! This module does not establish calibration, clock alignment, corroboration,
+//! person identity, source custody, observability, or authority to publish effects.
 
-/// Configuration for the cross-camera associator.
-#[derive(Clone, Debug)]
+mod global;
+
+use fss_geometry::WorkBudget;
+use fss_twin::image_tracking::ImageTrackingError;
+
+pub use global::associate_detailed;
+
+/// Hard bound per camera; complete input is refused rather than truncated.
+pub const MAX_CROSS_CAMERA_OBSERVATIONS: usize = 64;
+/// Integer objective units per confidence point; not calibrated probabilities.
+pub const ASSOCIATION_SCORE_SCALE: u32 = 1_000_000;
+/// Bound on the UTF-8 bytes of each caller-supplied camera identity.
+pub const MAX_CAMERA_ID_BYTES: usize = 256;
+/// Finite work budget used by the compatibility API. Use `associate_detailed`
+/// for caller-owned work accounting and cooperative cancellation.
+pub const DEFAULT_ASSOCIATION_WORK: u64 = 100_000_000;
+
+/// Conditional gates for observations already resolved into one ground plane.
+#[derive(Clone, Debug, PartialEq)]
 pub struct CrossCameraConfig {
-    /// Maximum capture timestamp difference (in nanoseconds) for two
-    /// observations to be considered temporally coincident.
+    /// Maximum absolute capture timestamp separation in nanoseconds.
     pub max_time_delta_ns: i64,
-    /// Maximum Euclidean distance (in scene units, e.g. metres) between
-    /// rectified ground-plane positions for two observations to be
-    /// considered geometrically consistent.
+    /// Maximum Euclidean distance in the owner's shared ground-plane units.
     pub max_position_distance: f64,
-    /// Minimum association confidence for a pair to be reported.
-    /// Confidence = (1 - dist/max_dist) * (1 - |dt|/max_dt), must be >= this.
+    /// Minimum product of time proximity and geometric proximity, in [0, 1].
     pub min_confidence: f64,
 }
 
 impl CrossCameraConfig {
-    /// Validates hard bounds.
+    /// Validates hard bounds, including non-finite floating-point values.
     pub fn validate(&self) -> Result<(), CrossCameraError> {
         if self.max_time_delta_ns <= 0 {
             return Err(CrossCameraError::InvalidConfig("max_time_delta_ns must be positive"));
         }
         if !self.max_position_distance.is_finite() || self.max_position_distance <= 0.0 {
             return Err(CrossCameraError::InvalidConfig(
-                "max_position_distance must be finite and positive"));
+                "max_position_distance must be finite and positive",
+            ));
         }
-        if !self.min_confidence.is_finite() || self.min_confidence < 0.0
-            || self.min_confidence > 1.0 {
+        if !self.min_confidence.is_finite() || !(0.0..=1.0).contains(&self.min_confidence) {
             return Err(CrossCameraError::InvalidConfig(
-                "min_confidence must be finite and in [0, 1]"));
+                "min_confidence must be finite and in [0, 1]",
+            ));
         }
         Ok(())
     }
 }
 
-/// Typed cross-camera association failure.
+/// Typed failure; no error is returned as an empty or partially matched scene.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CrossCameraError {
-    /// Configuration validation failed with a reason.
+    /// Configuration or ambiguity margin is invalid.
     InvalidConfig(&'static str),
+    /// Invalid identity, non-finite position, or mixed cameras in one input slice.
+    InvalidObservation(&'static str),
+    /// The same camera-local track appears twice in one input slice.
+    DuplicateObservation,
+    /// Complete input, bounded identity storage, or allocation limit exceeded.
+    Limit,
+    /// The pair-only compatibility API cannot represent competing assignments.
+    AmbiguousAssignment,
+    /// Shared solver failure, including cooperative cancellation and work exhaustion.
+    Assignment(ImageTrackingError),
 }
+
+impl From<ImageTrackingError> for CrossCameraError {
+    fn from(error: ImageTrackingError) -> Self {
+        Self::Assignment(error)
+    }
+}
+
 impl std::fmt::Display for CrossCameraError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::InvalidConfig(msg) => write!(f, "invalid cross-camera config: {msg}"),
+            Self::InvalidConfig(reason) => write!(f, "invalid cross-camera config: {reason}"),
+            Self::InvalidObservation(reason) => write!(f, "invalid cross-camera observation: {reason}"),
+            Self::DuplicateObservation => f.write_str("duplicate camera-local observation"),
+            Self::Limit => f.write_str("cross-camera complete-input or allocation limit"),
+            Self::AmbiguousAssignment => f.write_str("cross-camera assignment is ambiguous; retain the detailed report"),
+            Self::Assignment(error) => write!(f, "cross-camera assignment: {error}"),
         }
     }
 }
 impl std::error::Error for CrossCameraError {}
 
-/// A single camera's observation of a tracked object, already rectified to
-/// the shared ground plane.
-#[derive(Clone, Debug)]
+/// One anonymous tracked-object observation already in the shared ground plane.
+#[derive(Clone, Debug, PartialEq)]
 pub struct CameraObservation {
-    /// Camera identity (must be unique within one association batch).
+    /// Camera identity; each input slice must contain just one camera.
     pub camera_id: String,
-    /// Track ID from the per-camera Kalman tracker.
+    /// Nonzero camera-local track ID, unique within its input slice.
     pub track_id: u64,
-    /// Capture timestamp in nanoseconds (ideally NTP/PTP-aligned).
+    /// Capture timestamp under the caller's explicitly resolved common clock.
     pub timestamp_ns: i64,
-    /// Rectified ground-plane x coordinate (scene units, e.g. metres).
+    /// Finite ground-plane x coordinate in the caller's shared scene units.
     pub ground_x: f64,
-    /// Rectified ground-plane y coordinate (scene units, e.g. metres).
+    /// Finite ground-plane y coordinate in the caller's shared scene units.
     pub ground_y: f64,
 }
 
-/// A confirmed cross-camera association between two observations.
-#[derive(Clone, Debug)]
+/// An unambiguous pair under the declared gates and assignment policy only.
+#[derive(Clone, Debug, PartialEq)]
 pub struct AssociatedPair {
-    /// Observation from the first camera.
+    /// Original observation from the left camera.
     pub first: CameraObservation,
-    /// Observation from the second camera.
+    /// Original observation from the right camera.
     pub second: CameraObservation,
-    /// Association confidence in [0, 1]: combines time proximity and
-    /// geometric consistency.
+    /// Unquantized time/geometry ranking score, not identity or corroboration proof.
     pub confidence: f64,
 }
 
-/// Computes association confidence from time delta and spatial distance.
-///
-/// Both components are normalised to [0, 1] (1 = perfect match) and
-/// multiplied together. Returns `None` if either gate fails.
-fn association_score(
-    dt_ns: i64,
-    max_dt: i64,
-    dist: f64,
-    max_dist: f64,
-    min_conf: f64,
-) -> Option<f64> {
-    let dt_abs = dt_ns.abs();
-    if dt_abs > max_dt {
-        return None;
+/// Why one Cartesian candidate failed the conditional gates.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AssociationExclusion {
+    /// Two observations from the same camera cannot cross-associate.
+    SameCamera,
+    /// Capture timestamp separation exceeded the configured window.
+    Time,
+    /// Ground-plane distance exceeded the configured limit.
+    Position,
+    /// The combined score fell below the owner's configured threshold.
+    Confidence,
+}
+
+/// Complete candidate score or explicit gate exclusion.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AssociationScore {
+    /// Excluded by a named conditional gate, not proof of physical absence.
+    Excluded(AssociationExclusion),
+    /// An admissible hypothesis with both numeric representations retained.
+    Admissible {
+        /// Original bounded f64 ranking score.
+        confidence: f64,
+        /// Score rounded to nearest integer at `ASSOCIATION_SCORE_SCALE` resolution.
+        units: u32,
+    },
+}
+
+/// Candidate indices refer to the report's canonically ordered input arrays.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CrossCameraCandidate {
+    /// Index into the report's left observations.
+    pub left: usize,
+    /// Index into the report's right observations.
+    pub right: usize,
+    /// Complete gate decision and score.
+    pub score: AssociationScore,
+    /// Selected by one deterministic globally minimum-cost assignment.
+    pub selected: bool,
+    /// Selected edge has a competing solution inside the effective margin.
+    pub ambiguous: bool,
+    /// Minimum total cost when this selected edge is forbidden; None if not selected.
+    pub exclusion_cost: Option<u64>,
+}
+
+/// Local association disposition; no outcome is evidence of scene absence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AssociationDisposition {
+    /// Stable selected edge; index into the opposite report input array.
+    Matched(usize),
+    /// Plausible candidates remain, but none is a stable selected edge.
+    Unresolved,
+    /// No candidate passed the conditional gates for this observation.
+    NoCandidate,
+}
+
+/// A retained competing global solution, not just a local second-best edge.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CrossCameraAlternative {
+    /// Selected edge whose exclusion produced this alternative.
+    pub excluded: (usize, usize),
+    /// One right index per left row; None is an explicit unmatched choice.
+    pub columns: Vec<Option<usize>>,
+    /// Total objective cost, including unmatched choices.
+    pub cost: u64,
+}
+
+/// Complete bounded association result. Read-only access prevents changing the
+/// report's pair dispositions independently of its retained candidate decisions.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CrossCameraReport {
+    config: CrossCameraConfig,
+    requested_margin: u32,
+    left: Vec<CameraObservation>,
+    right: Vec<CameraObservation>,
+    candidates: Vec<CrossCameraCandidate>,
+    left_dispositions: Vec<AssociationDisposition>,
+    right_dispositions: Vec<AssociationDisposition>,
+    alternatives: Vec<CrossCameraAlternative>,
+    assignment_cost: u64,
+    effective_margin: u64,
+}
+
+impl CrossCameraReport {
+    /// Exact caller-supplied time, geometry and score gates.
+    pub fn config(&self) -> &CrossCameraConfig {
+        &self.config
     }
-    if dist > max_dist || dist < 0.0 {
-        return None;
+    /// Requested global margin before the explicit quantization guard.
+    pub fn requested_margin(&self) -> u32 {
+        self.requested_margin
     }
-    let time_score = 1.0 - dt_abs as f64 / max_dt as f64;
-    let geom_score = 1.0 - dist / max_dist;
-    let confidence = time_score * geom_score;
-    if confidence < min_conf {
-        None
-    } else {
-        Some(confidence)
+    /// Complete left input, sorted by camera-local track ID.
+    pub fn left(&self) -> &[CameraObservation] {
+        &self.left
+    }
+    /// Complete right input, sorted by camera-local track ID.
+    pub fn right(&self) -> &[CameraObservation] {
+        &self.right
+    }
+    /// Complete Cartesian candidate table, including rejected edges.
+    pub fn candidates(&self) -> &[CrossCameraCandidate] {
+        &self.candidates
+    }
+    /// Outcome for every original left observation.
+    pub fn left_dispositions(&self) -> &[AssociationDisposition] {
+        &self.left_dispositions
+    }
+    /// Outcome for every original right observation.
+    pub fn right_dispositions(&self) -> &[AssociationDisposition] {
+        &self.right_dispositions
+    }
+    /// Competing solutions for every ambiguous selected edge.
+    pub fn alternatives(&self) -> &[CrossCameraAlternative] {
+        &self.alternatives
+    }
+    /// Global integer objective: left count * scale minus sum of selected score units.
+    pub fn assignment_cost(&self) -> u64 {
+        self.assignment_cost
+    }
+    /// Requested global margin plus one rounding-error guard unit per left row.
+    pub fn effective_margin(&self) -> u64 {
+        self.effective_margin
+    }
+    /// Copies only stable pairs, even when a different component is ambiguous.
+    /// These are conditional associations, not physical identity or effect authority.
+    pub fn stable_pairs(&self, budget: &mut WorkBudget<'_>) -> Result<Vec<AssociatedPair>, CrossCameraError> {
+        global::pairs(self, budget)
+    }
+    /// Whether at least one selected pair cannot be resolved inside this margin.
+    pub fn is_ambiguous(&self) -> bool {
+        !self.alternatives.is_empty()
     }
 }
 
-/// Associates tracked-object observations across cameras.
-///
-/// Uses a greedy best-first strategy: all candidate pairs are scored, sorted
-/// by confidence descending, and greedily assigned (each observation is used
-/// at most once). This is O(n*m) for n and m observations from two cameras;
-/// for >2 cameras the function is called pairwise.
-///
-/// Both input slices must be from different cameras (same-camera observations
-/// are not associated).
+/// Compatibility API using global assignment and a zero requested ambiguity margin.
+/// Ties (including quantization uncertainty) return `AmbiguousAssignment`, never
+/// arbitrary pairs or an empty success. Use `associate_detailed` to retain partial
+/// stable matches alongside alternatives and unresolved observations. Returned
+/// pairs are in stable left-track order; unmatched tracks do not prove absence.
 pub fn associate(
     config: &CrossCameraConfig,
     left: &[CameraObservation],
     right: &[CameraObservation],
 ) -> Result<Vec<AssociatedPair>, CrossCameraError> {
-    config.validate()?;
-    let mut candidates = Vec::new();
-    for l in left {
-        for r in right {
-            if l.camera_id == r.camera_id {
-                continue;
-            }
-            let dt = (l.timestamp_ns - r.timestamp_ns).abs();
-            let dx = l.ground_x - r.ground_x;
-            let dy = l.ground_y - r.ground_y;
-            let dist = (dx * dx + dy * dy).sqrt();
-            if let Some(conf) = association_score(dt, config.max_time_delta_ns, dist, config.max_position_distance, config.min_confidence) {
-                candidates.push((l.clone(), r.clone(), conf));
-            }
-        }
+    let mut budget = WorkBudget::new(DEFAULT_ASSOCIATION_WORK);
+    let report = associate_detailed(config, 0, left, right, &mut budget)?;
+    if report.is_ambiguous() {
+        return Err(CrossCameraError::AmbiguousAssignment);
     }
-    // Greedy: sort by confidence descending, assign each observation at most once.
-    candidates.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
-    let mut used_left = Vec::new();
-    let mut used_right = Vec::new();
-    let mut result = Vec::new();
-    for (l, r, conf) in candidates {
-        let l_key = format!("{}:{}", l.camera_id, l.track_id);
-        let r_key = format!("{}:{}", r.camera_id, r.track_id);
-        if used_left.contains(&l_key) || used_right.contains(&r_key) {
-            continue;
-        }
-        used_left.push(l_key);
-        used_right.push(r_key);
-        result.push(AssociatedPair { first: l, second: r, confidence: conf });
-    }
-    Ok(result)
+    report.stable_pairs(&mut budget)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn config() -> CrossCameraConfig {
-        CrossCameraConfig {
-            max_time_delta_ns: 50_000_000, // 50 ms
-            max_position_distance: 2.0,    // 2 metres
-            min_confidence: 0.1,
-        }
-    }
-
-    fn obs(cam: &str, tid: u64, ts: i64, x: f64, y: f64) -> CameraObservation {
-        CameraObservation {
-            camera_id: cam.to_string(),
-            track_id: tid,
-            timestamp_ns: ts,
-            ground_x: x,
-            ground_y: y,
-        }
-    }
-
-    #[test]
-    fn same_object_in_two_cameras_associates() {
-        let cfg = config();
-        let left = [obs("cam_a", 1, 1_000_000_000, 1.0, 2.0)];
-        let right = [obs("cam_b", 3, 1_010_000_000, 1.3, 2.1)];
-        let pairs = associate(&cfg, &left, &right).unwrap();
-        assert_eq!(pairs.len(), 1);
-        assert!(pairs[0].confidence > 0.5, "close pair should have moderate-to-high confidence: {}", pairs[0].confidence);
-    }
-
-    #[test]
-    fn different_objects_do_not_associate() {
-        let cfg = config();
-        let left = [obs("cam_a", 1, 1_000_000_000, 1.0, 2.0)];
-        let right = [obs("cam_b", 3, 1_000_000_000, 15.0, 20.0)];
-        let pairs = associate(&cfg, &left, &right).unwrap();
-        assert!(pairs.is_empty(), "distant objects must not associate");
-    }
-
-    #[test]
-    fn time_gap_beyond_max_delta_is_refused() {
-        let cfg = config();
-        let left = [obs("cam_a", 1, 1_000_000_000, 1.0, 2.0)];
-        let right = [obs("cam_b", 3, 2_000_000_000, 1.0, 2.0)];
-        let pairs = associate(&cfg, &left, &right).unwrap();
-        assert!(pairs.is_empty(), "1-second gap must exceed 50 ms window");
-    }
-
-    #[test]
-    fn greedy_best_first_prefers_closest_pair() {
-        let cfg = config();
-        let left = [
-            obs("cam_a", 1, 1_000_000_000, 1.0, 2.0),
-            obs("cam_a", 2, 1_000_000_000, 5.0, 6.0),
-        ];
-        let right = [
-            obs("cam_b", 10, 1_010_000_000, 1.1, 2.1),
-            obs("cam_b", 20, 1_010_000_000, 5.1, 6.1),
-        ];
-        let pairs = associate(&cfg, &left, &right).unwrap();
-        assert_eq!(pairs.len(), 2, "both pairs should associate");
-        // Closest matching should be preferred.
-        let conf_a = pairs.iter().find(|p| p.first.track_id == 1).unwrap().confidence;
-        let conf_b = pairs.iter().find(|p| p.first.track_id == 2).unwrap().confidence;
-        assert!(conf_a > 0.5, "close pair should have moderate confidence: {conf_a}");
-        assert!(conf_b > 0.5, "close pair should have moderate confidence: {conf_b}");
-    }
-
-    #[test]
-    fn same_camera_observations_are_skipped() {
-        let cfg = config();
-        let left = [obs("cam_a", 1, 1_000_000_000, 1.0, 2.0)];
-        let right = [obs("cam_a", 1, 1_000_000_000, 1.0, 2.0)];
-        let pairs = associate(&cfg, &left, &right).unwrap();
-        assert!(pairs.is_empty(), "same-camera observations must not cross-associate");
-    }
-
-    #[test]
-    fn invalid_config_is_refused() {
-        let bad = CrossCameraConfig { max_time_delta_ns: 0, ..config() };
-        assert!(bad.validate().is_err());
-        let bad = CrossCameraConfig { min_confidence: 1.5, ..config() };
-        assert!(bad.validate().is_err());
-    }
-
-    #[test]
-    fn non_finite_config_values_are_refused_not_silently_enabled() {
-        // NaN survives `<= 0.0` comparisons; without a finiteness check it would
-        // disable the geometry gate and emit NaN confidences.
-        let bad = CrossCameraConfig { max_position_distance: f64::NAN, ..config() };
-        assert!(bad.validate().is_err());
-        let bad = CrossCameraConfig { max_position_distance: f64::INFINITY, ..config() };
-        assert!(bad.validate().is_err());
-        let bad = CrossCameraConfig { min_confidence: f64::NAN, ..config() };
-        assert!(bad.validate().is_err());
-    }
-
-    #[test]
-    fn deterministic_across_runs() {
-        let cfg = config();
-        let left = [obs("cam_a", 1, 1_000_000_000, 1.0, 2.0)];
-        let right = [obs("cam_b", 3, 1_010_000_000, 1.1, 2.1)];
-        let p1 = associate(&cfg, &left, &right).unwrap();
-        let p2 = associate(&cfg, &left, &right).unwrap();
-        assert_eq!(p1.len(), p2.len());
-        assert_eq!(p1[0].confidence, p2[0].confidence);
-    }
-}
+mod tests;
