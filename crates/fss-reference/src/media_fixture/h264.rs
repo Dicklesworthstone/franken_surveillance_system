@@ -267,6 +267,16 @@ pub fn generate_slice(
         *last = 0x80;
     }
 
+    // In H.264, every NAL RBSP must terminate with rbsp_trailing_bits: an
+    // rbsp_stop_one_bit (1) followed by zero alignment bits. Consequently, the
+    // final byte of a synthesized slice RBSP can never be 0x00 (which would be
+    // stripped as trailing_zero_8bits by Annex-B parsers, desynchronizing from RTP).
+    if let Some(last) = rbsp.last_mut() {
+        if *last == 0x00 {
+            *last = 0x80; // rbsp_stop_one_bit (0b1000_0000: 1 stop bit + 7 alignment zeros)
+        }
+    }
+
     let nal_header = if is_idr {
         0x65 // NRI=3 (0b01100000), type=5
     } else {
