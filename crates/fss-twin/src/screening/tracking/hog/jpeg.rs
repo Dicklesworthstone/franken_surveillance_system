@@ -233,6 +233,3 @@ impl JpegHogPipeline {
         }
     }
 }
-
-/// Original MJPEG stream ranges preserved through resumable learned analysis.
-pub mod stream;
