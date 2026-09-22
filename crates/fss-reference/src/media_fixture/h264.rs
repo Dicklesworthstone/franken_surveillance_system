@@ -258,6 +258,15 @@ pub fn generate_slice(
     // parser, breaking NAL equivalence with the RTP form.
     rbsp.push(0x80);
 
+    // Slices are synthetic and not spec-complete. This guarantees a nonzero final byte
+    // so that trailing zero bytes are not stripped as trailing_zero_8bits by Annex-B
+    // parsers, which would desynchronize Annex-B from RTP.
+    if let Some(last) = rbsp.last_mut()
+        && *last == 0x00
+    {
+        *last = 0x80;
+    }
+
     let nal_header = if is_idr {
         0x65 // NRI=3 (0b01100000), type=5
     } else {
