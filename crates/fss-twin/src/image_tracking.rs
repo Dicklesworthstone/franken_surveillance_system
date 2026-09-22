@@ -577,5 +577,8 @@ fn receipt_digest(report: &ImageTrackingReport, tracks: &[ImageTrack], next_id: 
     let digest = ContentDigest::sha256(&bytes).bytes(); budget.charge(0)?; Ok(digest)
 }
 
+/// Shared bounded assignment over explicitly supplied candidate costs.
+pub mod assignment;
+
 #[cfg(test)]
 mod tests;
