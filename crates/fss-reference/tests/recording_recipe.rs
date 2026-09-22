@@ -256,3 +256,6 @@ fn current_cancellation_and_work_exhaustion_fence_instead_of_skipping_a_decision
     }
     Ok(())
 }
+
+#[path = "recording_recipe/storage.rs"]
+mod storage_contracts;

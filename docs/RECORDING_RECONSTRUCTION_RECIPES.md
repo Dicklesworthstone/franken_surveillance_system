@@ -58,11 +58,50 @@ budgets, not a claim that the original live CPU schedule was recovered. Source
 prefix exhaustion never calls codec finish or synthesizes an unmarked final frame.
 Configuration evidence and timing evidence are provenance identities, not grants.
 
-The first implementation provides portable memory encoding and execution. Persistent
-source-closed publication is a separate layer, not implied by `canonical_bytes()`.
-The source owner and independently accepted scope still have to be recovered. This
-is not a restored live camera, decoder qualification, capture-clock calibration,
-raw-TCP recovery, automatic policy activation or a replacement canonical ledger.
+## Source-closed local persistence
+
+`recording_recipe::storage::PreparedRecordingRecipe` connects the recipe to the
+existing exclusively owned `LocalRootPublisher`. Preparation re-reads and hashes
+every required datagram. The immutable graph directly references every source root
+and the exact recipe metadata; shared original bytes remain in the existing spool,
+not a duplicate media journal. Store its `RecordingRecipePin` independently before
+calling `publish` when lost replies or whole-store rollback are in scope.
+
+Publication re-verifies original custody, stages the recipe, then publishes its
+root last through the existing owner. The returned receipt distinguishes newly
+published from already-published roots. A failed attempt preserves the borrowed
+plan and the original typed storage error; a root may already have committed.
+Reopen/reconcile uncertain storage and use the same pin rather than changing the
+recipe, renumbering source observations or deleting temporary state. Successful
+publication returns its actual receipt without a later cancellation check hiding it.
+
+`load_recording_recipe` accepts that exact independent pin, a separately recovered
+source archive, external recipe/storage ceilings and current cancellation/work
+capabilities. It checks root family, metadata identity, exact complete source child
+set, canonical configuration, source prefix and every original payload. Missing,
+corrupt or tombstoned originals cannot be replaced by cached metadata or camera
+reacquisition. After a cold load, `PlannedRecordingReplay` uses the restored owned
+SPS/PPS and timing decisions without the old process's configuration objects.
+
+Recipe custody does not certify native execution. A structurally valid but wrongly
+matched timing program may be stored and loaded; execution still refuses it. No
+recording root, canonical lineage, archive index or coverage claim is fabricated by
+storing instructions. Ordinary returned windows can use the existing recording
+publisher and same storage owner; those are separate, explicit publications.
+
+`RecipeStorageLimits` bounds the complete direct source graph and the actual spool's
+maximum allocating read. Full verification is linear in this bounded prefix and
+performed again before publication/load success. A source prefix too large for one
+manifest refuses, never truncates. This correctness-first reference is not a
+constant-time or production-throughput claim. Individual filesystem calls are not
+preemptible; the runtime's cancellation probe must enforce live authorization and
+deadlines at supported boundaries.
+
+The source owner, exact prefix, route/retention scope and accepted pin still have
+to be recovered independently. This is opt-in Rust API integration, not automatic
+capture-time timing journaling or a new CLI command. It is not a restored live
+camera, decoder qualification, capture-clock calibration, raw-TCP recovery,
+automatic policy activation or a replacement canonical ledger.
 
 ## Validation
 
@@ -80,6 +119,13 @@ cargo test -p fss-reference --test recording_recipe
 cargo test -p fss-reference --test datagram_avc_reconstruction
 cargo test -p fss-reference --test datagram_recording_reconstruction
 ```
+
+Ten additional integration tests cover cold loss of every recipe/configuration
+object followed by byte-identical reconstruction and same-owner recording
+publication, exact root retries, every root-publication crash cut, post-prepare
+and post-commit source corruption, missing/extra source graphs, vanished originals,
+independent pins, budgets/cancellation, unproved timing programs and cancellation
+after timing admission. The combined count is 22 authored tests, not executed passes.
 
 Rust compilation, tests, rustfmt and Clippy have not run in this authoring environment:
 no Rust toolchain is installed. Static source/hash checks do not establish passing
