@@ -348,3 +348,6 @@ pub mod rgb;
 
 /// Durable native termination records and explicitly witnessed cold finalization.
 pub mod completion;
+
+/// Bounded original-source and optional full-JPEG checks for local operators.
+pub mod check;

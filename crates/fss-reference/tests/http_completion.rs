@@ -287,9 +287,39 @@ fn parser_cancellation_during_eof_finalization_latches_without_inventing_success
     let proof = VerifiedHttpCompletion::load(&p, &a, plan.pin(), &NeverCancel, &mut work())?;
     let mut r = HttpWireReplay::new(&a, a.pin(), HttpReplayLimits::default())?;
     assert_eq!(drain(&mut r, &p, &mut Vec::new())?, HttpReplayStep::PrefixExhausted);
-    assert!(matches!(r.finish_completed(&proof, access(&p, &NeverCancel, &mut work(), &mut DecodeBudget::new(0))),
+    let cancelled = std::sync::atomic::AtomicBool::new(true);
+    assert!(matches!(r.finish_completed(&proof, access(&p, &NeverCancel, &mut work(), &mut DecodeBudget::cancellable(WORK, &cancelled))),
         Err(HttpCompletionError::Replay(HttpReplayError::Http(_)))));
     assert!(r.failure().is_some()); assert!(r.completion().is_none());
     assert!(r.retire().multipart.is_some());
+    Ok(())
+}
+
+#[test]
+fn operator_checker_consumes_actual_terminal_witness_and_decodes_every_cold_frame() -> Test {
+    use fss_reference::ingest::http_replay::check::{check_http_recording, HttpCheckDecode,
+        HttpCheckLimits, HttpCheckRequest, HttpCheckSource, HttpCheckStatus};
+    use fss_core::{ContentDigest, DigestAlgorithm};
+    for mode in [0, 1, 2] {
+        let d = Directory::new()?; let mut p = d.open()?;
+        let (camera, archive, native) = capture(&mut p, &response(mode, false))?;
+        let plan = PreparedHttpCompletion::from_camera(&camera, &archive, &mut work())?;
+        plan.publish(&archive, &mut p, &NeverCancel, &mut work())?;
+        let pin = plan.pin(); drop(plan); drop(camera); drop(archive); drop(p);
+        let p = d.open()?;
+        let s = scope(); let digest = |b| ContentDigest::new(DigestAlgorithm::Sha256, b);
+        let request = HttpCheckRequest { source: HttpCheckSource { source: digest(s.stream.source),
+                generation: s.stream.generation, receive_clock: digest(s.receive_clock),
+                retention_evidence: digest(s.retention_evidence) },
+            head: pin.wire.head, reads: pin.wire.reads, bytes: pin.wire.bytes,
+            completion: Some(pin.root), decode: HttpCheckDecode::Grayscale };
+        let report = check_http_recording(&p, request, HttpCheckLimits::default(), &NeverCancel)?;
+        assert_eq!(report.status, HttpCheckStatus::Complete); assert!(report.error.is_none());
+        assert_eq!(report.completion_root, Some(pin.root)); assert_eq!(report.frames.len(), 2);
+        assert_eq!(report.termination_name(), Some(if mode == 2 { "close_delimited_eof" } else { "explicit_framing" }));
+        assert_eq!(report.frames.iter().map(|f| f.exposure.bytes()).collect::<Vec<_>>(), native);
+        assert!(report.frames.iter().all(|f| f.dimensions == Some([17, 13]) && f.luma.is_some()));
+        assert_eq!(report.position.transferred_frames, 2);
+    }
     Ok(())
 }
