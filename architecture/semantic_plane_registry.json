@@ -311,17 +311,12 @@
     "EffectCancellationRecord": {
       "file": "crates/fss-core/src/effect.rs",
       "plane": "authority",
-      "description": "Canonical cancellation proof binding the whole prepared record to the digest of the evidence that caused the cancel (fss-thzlz)"
+      "description": "Authoritative cancellation proof record binding operation identity, prepared plan digest, and time evidence"
     },
     "EffectReconciliationRecord": {
       "file": "crates/fss-core/src/effect.rs",
       "plane": "authority",
       "description": "Authoritative reconciliation record matching intent to terminal proof"
-    },
-    "EffectCancellationRecord": {
-      "file": "crates/fss-core/src/effect.rs",
-      "plane": "authority",
-      "description": "Authoritative cancellation proof record binding operation identity, prepared plan digest, and time evidence"
     },
     "ReconciliationOutcome": {
       "file": "crates/fss-core/src/effect.rs",
