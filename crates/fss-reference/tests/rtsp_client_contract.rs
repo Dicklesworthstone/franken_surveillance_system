@@ -198,10 +198,16 @@ fn session_token_and_timeout_grammar_are_strict() -> TestResult {
 #[test]
 fn media_selection_and_duplicate_sdp_attributes_are_refused() -> TestResult {
     let original = sdp();
+    // Since bounded multi-codec selection, a multi-payload offer (`RTP/AVP 96 97`)
+    // is structurally valid at DESCRIBE; the exact payload is chosen later by the
+    // bounded selection stage (SelectionError::Payload otherwise). Structural
+    // duplicate attributes and unmapped clock/payload claims still refuse here.
+    let mut c = RtspClientSession::new(config())?; c.request(C::Describe, 0)?;
+    assert!(c.accept(&response(1, 200, &[("Content-Type", "application/sdp")],
+        original.replace("RTP/AVP 96", "RTP/AVP 96 97").as_bytes()), 1).is_ok());
     for body in [
         original.replace("m=video", "m=audio"), original.replace("90000", "8000"),
         original.replace("packetization-mode=1", "packetization-mode=2"),
-        original.replace("RTP/AVP 96", "RTP/AVP 96 97"),
         original.replace("a=control:trackID=0", "a=control:trackID=0\r\na=control:trackID=1"),
         original.replace("packetization-mode=1", "packetization-mode=1;packetization-mode=0"),
         original.replace("a=rtpmap:96 H264/90000", "a=rtpmap:96 H264/90000\r\na=rtpmap:96 H264/90000"),
@@ -315,6 +321,26 @@ fn signaled_profile_must_match_exact_sps_profile_constraints_and_level() -> Test
         } else {
             assert_eq!(result, Err(E::Description));
         }
+    }
+    Ok(())
+}
+
+#[test]
+fn probe_each_sdp_mutation_tmp() -> TestResult {
+    let original = sdp();
+    let mutations = [
+        ("m=audio", original.replace("m=video", "m=audio")),
+        ("clock 8000", original.replace("90000", "8000")),
+        ("mode=2", original.replace("packetization-mode=1", "packetization-mode=2")),
+        ("two payloads", original.replace("RTP/AVP 96", "RTP/AVP 96 97")),
+        ("dup control", original.replace("a=control:trackID=0", "a=control:trackID=0\r\na=control:trackID=1")),
+        ("dup mode", original.replace("packetization-mode=1", "packetization-mode=1;packetization-mode=0")),
+        ("dup rtpmap", original.replace("a=rtpmap:96 H264/90000", "a=rtpmap:96 H264/90000\r\na=rtpmap:96 H264/90000")),
+    ];
+    for (label, body) in mutations {
+        let mut c = RtspClientSession::new(config())?; c.request(C::Describe, 0)?;
+        let verdict = c.accept(&response(1, 200, &[("Content-Type", "application/sdp")], body.as_bytes()), 1);
+        println!("mutation {label}: {verdict:?}");
     }
     Ok(())
 }
