@@ -970,7 +970,7 @@ impl CanonicalDecode for GraphNeighborhoodArtifact {
         let node_count = decoder.u32()?;
         let edge_count = decoder.u32()?;
         let subgraph_digest = decoder.digest()?;
-        let masked_attributes = decode_text_set(decoder)?;
+        let masked_attributes = decode_text_set(decoder).map_err(|_| ContractError::InvalidIdentifier)?;
         let artifact = Self {
             center_entity_id,
             radius_hops,

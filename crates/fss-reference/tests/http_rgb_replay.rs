@@ -44,8 +44,8 @@ impl Directory {
         Err("fixture directory attempts exhausted".into())
     }
     fn open(&self) -> Test<LocalRootPublisher> {
-        Ok(LocalRootPublisher::open(&self.0, LocalPublicationLimits::new(512, 16, 128, 1024,
-            SpoolLimits::new(4096, 16 * 1024 * 1024, 65536, 1024)))?)
+        Ok(LocalRootPublisher::open(&self.0, LocalPublicationLimits::new(512, 16, 128, 4096,
+            SpoolLimits::new(4096, 16 * 1024 * 1024, 65536, 4096)))?)
     }
 }
 impl Drop for Directory { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }

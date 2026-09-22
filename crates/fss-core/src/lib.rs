@@ -158,7 +158,7 @@ pub use durable::{
     DurableHeader, Endianness, LengthWidth, VersionWidth,
 };
 pub use effect::{
-    EFFECT_INTENT_SCHEMA, EFFECT_RECONCILIATION_SCHEMA, EffectCancellationRecord, EffectIntent,
+    EFFECT_INTENT_SCHEMA, EFFECT_RECONCILIATION_SCHEMA, EffectIntent,
     EffectJournal, EffectJournalTransition, EffectReconciliationRecord, EffectRecordVersion,
     EffectSchemaError, EffectState, IndeterminateEffectReason, MAX_DETAIL_LEN,
     MAX_EFFECT_CLASS_LEN, MAX_ERROR_CODE_LEN, MAX_TERMINAL_PREDICATE_LEN, Obligation,

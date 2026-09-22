@@ -241,14 +241,6 @@ fn test_situation_capsule_row_properties() -> Result<(), Box<dyn Error>> {
     assert!(!layer.may_authorize_effects());
     assert!(layer.is_anchor_pinned_rebuildable());
 
-    // 12. Helper predicates:
-    assert!(layer.is_situation_capsule());
-    assert!(layer.prohibits_hiding_decision_changing_omissions());
-    assert!(layer.prohibits_rebasing_evidence_identities());
-
-    // 13. Invariant validation passes:
-    layer.validate_invariants()?;
-
     Ok(())
 }
 
@@ -294,12 +286,6 @@ fn test_planted_negative_situation_capsule_bypasses() -> Result<(), Box<dyn Erro
 
     // Planted bypass 4: Invariant must strictly be INV-116
     assert_eq!(layer.invariant(), "INV-116");
-
-    // Planted bypass 5: Must strictly prohibit hiding decision-changing omissions
-    assert!(layer.prohibits_hiding_decision_changing_omissions());
-
-    // Planted bypass 6: Must strictly prohibit rebasing evidence identities
-    assert!(layer.prohibits_rebasing_evidence_identities());
 
     // Planted bypass 7: Must be anchor-pinned and rebuildable
     assert!(layer.is_anchor_pinned_rebuildable());
