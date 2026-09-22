@@ -198,8 +198,15 @@ fn session_token_and_timeout_grammar_are_strict() -> TestResult {
 #[test]
 fn media_selection_and_duplicate_sdp_attributes_are_refused() -> TestResult {
     let original = sdp();
+    // Since bounded multi-codec selection (fss rtsp 09-19), the media-kind verdict moved
+    // to the selection stage: an SDP offering no H.264 video parses and is accepted at
+    // DESCRIBE, then refused by bounded selection (SelectionError::Media, pinned in the
+    // selection unit tests). Structural duplicate attributes still refuse here.
+    let mut c = RtspClientSession::new(config())?; c.request(C::Describe, 0)?;
+    assert!(c.accept(&response(1, 200, &[("Content-Type", "application/sdp")],
+        original.replace("m=video", "m=audio").as_bytes()), 1).is_ok());
     for body in [
-        original.replace("m=video", "m=audio"), original.replace("90000", "8000"),
+        original.replace("90000", "8000"),
         original.replace("packetization-mode=1", "packetization-mode=2"),
         original.replace("RTP/AVP 96", "RTP/AVP 96 97"),
         original.replace("a=control:trackID=0", "a=control:trackID=0\r\na=control:trackID=1"),
