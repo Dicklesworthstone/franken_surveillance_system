@@ -85,3 +85,5 @@ witnessed plan before effect preparation. Two model-output types are proven:
   executor output, has no conversion into `EffectIntent` (`E0277`). This doctest is attached to
   `ReferenceAlertPlan` in `crates/fss-reference/src/alert.rs` because the model module is owned
   by concurrent work.
+boundary, compiled against the crate's actual public API. The doctests run in the normal cargo
+test wave (`cargo test --doc -p fss-core` and `cargo test --doc -p fss-reference`). This
