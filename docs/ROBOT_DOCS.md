@@ -740,3 +740,9 @@ All stable error identities and normative recovery guidance cataloged from `regi
 | `ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-TRAVERSAL-001` | retained source custody storage handle contains forbidden directory traversal sequence | remove path traversal components from storage handle |
 | `ERR-DEP-CONST-DRIFT-001` | dependency constitution drift between machine registry and markdown documentation | synchronize architecture/dependency_constitution.json and docs/DEPENDENCY_CONSTITUTION.md |
 | `ERR-DEP-CONST-METADATA-VIOLATION-001` | Cargo metadata violates constitutional language or stdlib requirements for DEP-CLASS-F0 | ensure all workspace crates compile under rust-2024 without foreign links |
+| `ERR-CLAIM-PROOF-BUNDLE-SCHEMA-INVALID-001` | a proof bundle's schema is missing or not exactly `fss.proof_bundle.v1`, or its bundle_id is present but not an exact token | declare the schema byte for byte and, when present, a bundle_id of printable ASCII with no whitespace |
+| `ERR-NEG-LEDGER-NOT-FOUND-001` | negative evidence ledger file does not exist | create the ledger with `fss negative-evidence init` before appending |
+| `ERR-OP-INDETERMINATE-001` | tombstone: superseded by `ERR-EFFECT-INDETERMINATE-001` | historical duplicate preserved for audit; indeterminate outcomes must use Indeterminate variant |
+| `ERR-OP-NOT-OBSERVABLE-001` | tombstone: superseded by `ERR-COVERAGE-UNKNOWN-001` | historical duplicate preserved for audit; canonical target is `ERR-COVERAGE-UNKNOWN-001` |
+| `ERR-OP-PRECONDITION-FAILED-001` | tombstone: superseded by `ERR-PRECONDITION-STALE-001` | historical duplicate preserved for audit; canonical target is `ERR-PRECONDITION-STALE-001` |
+| `ERR-OP-UNAUTHORIZED-001` | tombstone: superseded by `ERR-AUTH-DENIED-001` | historical duplicate preserved for audit; canonical target is `ERR-AUTH-DENIED-001` |
