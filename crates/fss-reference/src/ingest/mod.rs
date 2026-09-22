@@ -81,3 +81,6 @@ pub mod virtual_mjpeg;
 
 /// Durable original RGB evidence and exact native replay after a cold restart.
 pub mod rgb_archive;
+
+/// Exact retained HTTP prefixes through the native HTTP/MJPEG parsers, without invented EOF.
+pub mod http_replay;
