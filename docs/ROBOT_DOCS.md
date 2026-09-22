@@ -730,3 +730,8 @@ All stable error identities and normative recovery guidance cataloged from `regi
 
 ---
 *Robot documentation generated deterministically by `scripts/generate_robot_docs.py`.*
+| `doctor` | `fss doctor --json` | Report system diagnostic doctor results in JSON format. |
+- **Error Identities**: `ERR-CLI-RUNTIME-FAILURE-001`, `ERR-CLOCK-UNCERTAIN-001`, `ERR-STREAM-CONTINUITY-001`, `ERR-AUTH-DENIED-001`, `ERR-OP-EXECUTION-FAILED-001`
+| `SCHEMA-AGENT-DELTA-001` | `fss.agent_meaningful_delta.v1` | `schemas/agent_meaningful_delta.v1.json` | `follow/continuity` | `terminal, contradiction, coverage, plan-invalidation, and effect-uncertainty deltas cannot be coalesced away` |
+| `SCHEMA-EVENT-HYPOTHESIS-001` | `fss.event_hypothesis.v1` | `schemas/event_hypothesis.v1.json` | `authority` | `immutable revisions; evidence required after hypothesis` |
+| `SCHEMA-EVIDENCE-GRAPH-001` | `fss.evidence_graph.v1` | `schemas/evidence_graph.v1.json` | `derived/evidence` | `causal evidence graph over capsules, identities, model receipts, and revisions` |

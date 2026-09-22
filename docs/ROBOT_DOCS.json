@@ -2321,6 +2321,49 @@
         "resume_from_continuation"
       ],
       "status": "specified"
+    },
+    {
+      "cliCommand": "fss doctor",
+      "defaultView": "AVIEW-004",
+      "durable": true,
+      "effectful": false,
+      "errorIdentities": [
+        "ERR-CLI-RUNTIME-FAILURE-001",
+        "ERR-CLOCK-UNCERTAIN-001",
+        "ERR-STREAM-CONTINUITY-001",
+        "ERR-AUTH-DENIED-001",
+        "ERR-OP-EXECUTION-FAILED-001"
+      ],
+      "exitIdentities": [
+        "EXIT-OK-000",
+        "EXIT-CLI-RUNTIME-FAILURE-001"
+      ],
+      "gate": "QL-AGENT-001",
+      "id": "AOP-014",
+      "libraryEntryPoint": "fss_doctor::doctor",
+      "mcpToolName": "doctor",
+      "mode": "diagnostic_prepare",
+      "name": "doctor",
+      "owner": "fss-doctor",
+      "primaryErrorId": "ERR-CLI-RUNTIME-FAILURE-001",
+      "purpose": "diagnose deployment, evidence, cognition, workspace, cases, obligations, and protocol consistency and produce sealed repair affordances",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "requestPayloadSchema": "fss.agent_query_plan.v1",
+      "requiredCapabilities": [
+        "CAP-REPAIR-PREPARE-001"
+      ],
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "responsePayloadSchemas": [
+        "fss.agent_cognitive_envelope.v1",
+        "fss.evidence_bundle.v1"
+      ],
+      "retryClasses": [
+        "safe_read_retry",
+        "refresh_and_retry",
+        "backoff",
+        "resume_from_continuation"
+      ],
+      "status": "specified"
     }
   ],
   "registryGeneration": "gen:fss1:public-v1",
@@ -3045,6 +3088,27 @@
       "file": "schemas/transfer_receipt.v1.json",
       "id": "SCHEMA-TRANSFER-RECEIPT-001",
       "schema": "fss.transfer_receipt.v1"
+    },
+    {
+      "authority": "follow/continuity",
+      "compatibilityRule": "terminal, contradiction, coverage, plan-invalidation, and effect-uncertainty deltas cannot be coalesced away",
+      "file": "schemas/agent_meaningful_delta.v1.json",
+      "id": "SCHEMA-AGENT-DELTA-001",
+      "schema": "fss.agent_meaningful_delta.v1"
+    },
+    {
+      "authority": "authority",
+      "compatibilityRule": "immutable revisions; evidence required after hypothesis",
+      "file": "schemas/event_hypothesis.v1.json",
+      "id": "SCHEMA-EVENT-HYPOTHESIS-001",
+      "schema": "fss.event_hypothesis.v1"
+    },
+    {
+      "authority": "derived/evidence",
+      "compatibilityRule": "causal evidence graph over capsules, identities, model receipts, and revisions",
+      "file": "schemas/evidence_graph.v1.json",
+      "id": "SCHEMA-EVIDENCE-GRAPH-001",
+      "schema": "fss.evidence_graph.v1"
     }
   ],
   "semanticProtocol": "fss/1",
