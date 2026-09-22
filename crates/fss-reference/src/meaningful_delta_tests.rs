@@ -39,6 +39,9 @@ struct Variant {
     pressure: ResourcePressure,
     degraded_dimensions: BTreeSet<String>,
     extra_cells: Vec<KnowledgeCell>,
+    /// Provenance of the effect cell, when a test sets it rather than deriving it from
+    /// `effect_evidence` (fss-2nwxm).
+    effect_provenance: Option<ProvenanceClass>,
 }
 
 impl Variant {
@@ -69,6 +72,7 @@ impl Variant {
             pressure: ResourcePressure::Nominal,
             degraded_dimensions: BTreeSet::new(),
             extra_cells: Vec::new(),
+            effect_provenance: None,
         })
     }
 }
@@ -197,10 +201,10 @@ fn publication(variant: &Variant) -> Result<crate::ReferenceSituationPublication
             // (admissibility is tracked by fss-gefi6). An
             // evidence-less effect claim is therefore modeled as what it is: an unproved provider claim
             // (PROV-006) in Estimated state that no retained proof supports, valid but never a proved outcome.
-            provenance: if variant.effect_evidence {
-                ProvenanceClass::Observed
-            } else {
-                ProvenanceClass::VendorClaimed
+            provenance: match variant.effect_provenance {
+                Some(provenance) => provenance,
+                None if variant.effect_evidence => ProvenanceClass::Observed,
+                None => ProvenanceClass::VendorClaimed,
             },
             hypothesis: variant.effect_hypothesis,
             evidence: if variant.effect_evidence {
@@ -3602,4 +3606,175 @@ fn unchanged_observed_and_derived_frames_classify() -> Result<(), Box<dyn Error>
 #[test]
 fn unchanged_observed_and_predicted_frames_classify() -> Result<(), Box<dyn Error>> {
     classify_unchanged_honest_pair("unchanged observed+predicted", ProvenanceClass::Predicted)
+}
+
+/// A valid cell of `provenance` stating `claim_id` from `evidence`; a prediction is at most
+/// `estimated` (PROV-003).
+fn supersession_cell(
+    claim_id: &str,
+    provenance: ProvenanceClass,
+    evidence: Vec<ContentDigest>,
+) -> Result<KnowledgeCell, fss_core::ContractError> {
+    KnowledgeCell::new(KnowledgeCellParams {
+        claim_id: claim_id.to_owned(),
+        statement: format!("The supersession probe is {provenance}."),
+        knowledge_state: if provenance == ProvenanceClass::Predicted {
+            KnowledgeState::Estimated
+        } else {
+            KnowledgeState::Known
+        },
+        provenance,
+        hypothesis: None,
+        evidence,
+        contradictions: Vec::new(),
+        valid_until: None,
+        state_basis: None,
+    })
+}
+
+type Verdict = Result<fss_core::MeaningfulDelta, crate::ReferenceError>;
+
+/// Classifies `basis` to `result` through both public classifiers: the plain one, then the one
+/// bound to an authority that records `result` as the successor of `basis`.
+fn classify_both(
+    basis: &crate::ReferenceSituationPublication,
+    result: &crate::ReferenceSituationPublication,
+) -> Result<[Verdict; 2], Box<dyn Error>> {
+    let plain = classify_reference_meaningful_delta(basis, result);
+    let store = recorded(&[basis, result])?;
+    let lineage = bound(&store, basis, result);
+    store.cleanup();
+    Ok([plain, lineage])
+}
+
+/// Both public verdicts on a basis carrying `prior` and its successor carrying `current`, a cell
+/// of the same claim that supersedes it.
+fn classify_supersession(
+    prior: KnowledgeCell,
+    current: KnowledgeCell,
+) -> Result<[Verdict; 2], Box<dyn Error>> {
+    let mut basis_variant = Variant::baseline()?;
+    basis_variant.extra_cells = vec![prior];
+    let basis = publication(&basis_variant)?;
+    let mut result_variant = Variant::baseline()?;
+    result_variant.sequence = 2;
+    result_variant.extra_cells = vec![current];
+    let result = successor_of(&basis, &result_variant)?;
+    classify_both(&basis, &result)
+}
+
+/// Returns whether `verdict` is the exact typed PROV laundering refusal.
+fn is_laundering_refusal(verdict: &Verdict) -> bool {
+    matches!(
+        verdict,
+        Err(crate::ReferenceError::Contract(
+            fss_core::ContractError::EvidenceLaunderingDetected
+        ))
+    )
+}
+
+/// fss-2nwxm: a result cell of the same claim as a basis cell supersedes it, so the basis cell is
+/// the claim's previous version. Both public classifiers refuse a relabel that launders the prior's evidence
+/// (PROV-001, PROV-002) with the typed `evidence_laundering_detected` refusal, also when the
+/// relabelled cell cites fresh evidence beside the shared digest.
+#[test]
+fn classification_refuses_a_same_claim_relabel_that_launders_evidence_fss_2nwxm()
+-> Result<(), Box<dyn Error>> {
+    let shared = ContentDigest::sha256(b"fss-2nwxm-shared-evidence");
+    let fresh = ContentDigest::sha256(b"fss-2nwxm-fresh-evidence");
+    for (prior_class, current_class) in [
+        (ProvenanceClass::Predicted, ProvenanceClass::Observed),
+        (ProvenanceClass::Derived, ProvenanceClass::Observed),
+        (ProvenanceClass::VendorClaimed, ProvenanceClass::Observed),
+        (ProvenanceClass::Remembered, ProvenanceClass::Derived),
+    ] {
+        for evidence in [vec![shared], vec![shared, fresh]] {
+            let prior = supersession_cell("claim:supersede:probe", prior_class, vec![shared])?;
+            let current = supersession_cell("claim:supersede:probe", current_class, evidence)?;
+            for verdict in classify_supersession(prior, current)? {
+                assert!(
+                    is_laundering_refusal(&verdict),
+                    "{prior_class}->{current_class}: {verdict:?}"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// fss-2nwxm: honest supersession of one claim still classifies through both public
+/// classifiers: an observation superseded by a derivation citing it, a prediction superseded by
+/// an observation of fresh evidence, a re-derivation, and an unchanged prediction.
+#[test]
+fn classification_accepts_honest_supersession_of_the_same_claim_fss_2nwxm()
+-> Result<(), Box<dyn Error>> {
+    let shared = ContentDigest::sha256(b"fss-2nwxm-shared-evidence");
+    let fresh = ContentDigest::sha256(b"fss-2nwxm-fresh-evidence");
+    let cases = [
+        (
+            "observed, then derived from it",
+            ProvenanceClass::Observed,
+            ProvenanceClass::Derived,
+            vec![shared],
+        ),
+        (
+            "predicted, then observed from fresh evidence",
+            ProvenanceClass::Predicted,
+            ProvenanceClass::Observed,
+            vec![fresh],
+        ),
+        (
+            "derived, then re-derived",
+            ProvenanceClass::Derived,
+            ProvenanceClass::Derived,
+            vec![shared, fresh],
+        ),
+        (
+            "predicted, unchanged",
+            ProvenanceClass::Predicted,
+            ProvenanceClass::Predicted,
+            vec![shared],
+        ),
+    ];
+    for (label, prior_class, current_class, evidence) in cases {
+        let prior = supersession_cell("claim:supersede:probe", prior_class, vec![shared])?;
+        let current = supersession_cell("claim:supersede:probe", current_class, evidence)?;
+        for verdict in classify_supersession(prior, current)? {
+            assert!(verdict.is_ok(), "{label}: {verdict:?}");
+        }
+    }
+    Ok(())
+}
+
+/// fss-2nwxm: an irreversible-effect premise may not be laundered into place. A basis effect cell
+/// held as an indeterminate provider claim (PROV-006) citing the outcome digest is superseded by a
+/// `known` observed cell citing the same digest, which would clear the premise bar and resolve the
+/// effect; both public classifiers refuse it with `evidence_laundering_detected`. The same
+/// resolution from an observed indeterminate basis cell classifies.
+#[test]
+fn classification_refuses_a_laundered_effect_premise_fss_2nwxm() -> Result<(), Box<dyn Error>> {
+    for (basis_provenance, laundered) in [
+        (ProvenanceClass::VendorClaimed, true),
+        (ProvenanceClass::Observed, false),
+    ] {
+        let mut basis_variant = Variant::baseline()?;
+        basis_variant.effect_state = Some(KnowledgeState::Indeterminate);
+        basis_variant.effect_provenance = Some(basis_provenance);
+        let basis = publication(&basis_variant)?;
+        let mut result_variant = Variant::baseline()?;
+        result_variant.sequence = 2;
+        result_variant.effect_state = Some(KnowledgeState::Known);
+        let result = successor_of(&basis, &result_variant)?;
+        for verdict in classify_both(&basis, &result)? {
+            if laundered {
+                assert!(
+                    is_laundering_refusal(&verdict),
+                    "{basis_provenance}: {verdict:?}"
+                );
+            } else {
+                assert!(verdict.is_ok(), "{basis_provenance}: {verdict:?}");
+            }
+        }
+    }
+    Ok(())
 }
