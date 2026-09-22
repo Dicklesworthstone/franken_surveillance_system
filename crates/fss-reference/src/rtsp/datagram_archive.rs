@@ -7,6 +7,8 @@
 
 /// Native live capture with original-datagram publication before further media progress.
 pub mod live;
+/// Read-only, exact historical source selection without rewinding the capture owner.
+pub mod prefix;
 
 use fss_core::{CanonicalDecoder, CanonicalEncoder, ContentDigest, DigestAlgorithm};
 use fss_geometry::{GeometryError, WorkBudget};
