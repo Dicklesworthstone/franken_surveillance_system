@@ -424,3 +424,7 @@ b3b3d0abb8f1aeb9562cb47036c7d5f74e7b99dfd1449702ade6c449e8ebcc8c  crates/fss-ten
 43420288d5788cc6210fe53ff165b0e5effd40504f097497dd123b5a240bcd68  crates/fss-core/src/digest.rs
 
 0ea25fa5a7d001a0ff3c776dd526f8a6232c8262d79adb3c3690d609a3802b7c  crates/fss-reference/tests/probe9.rs
+44ca393915220a388f95c8fc8c3301d763353fefb7ef30b56cc69581fed71986  crates/fss-cli/src/bin/fss-lab/main.rs
+3a7b863e35777e87bd1b47a0d8933056c8b4f73a89b6bc93c9b81fa663695fc5  crates/fss-cli/src/bin/fss-lab/scenario.rs
+bbdb70dd0db66c50303e241561aa98f9ec8dd414a029fe905bf700924671616b  crates/fss-cli/src/lab_cmd.rs
+bb9507b0f1f8cf82568dbcfea76da8668a6441bd021a3e57e41bd92eda43b439  crates/fss-cli/tests/lab_cli.rs

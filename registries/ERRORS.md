@@ -389,3 +389,4 @@ Stable process exit identities map command-line interface outcomes to determinis
 | `EXIT-DOCTOR-ATTENTION-REQUIRED-003` | 3 | doctor inspection detected deployment conditions requiring attention | inspect doctor JSON output for failing checks and follow recommended next affordances |
 | `EXIT-DOCTOR-NOT-A-DEPLOYMENT-004` | 4 | target directory is not a recognized reference deployment root | verify root path points to a deployment directory initialized with fss reference layout |
 
+| `ERR-LAB-ROOT-NOT-EMPTY-001` | laboratory target root directory already contains files | choose an empty or new target root directory |

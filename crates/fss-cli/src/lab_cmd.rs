@@ -2,6 +2,7 @@
 //! Command specification and argument decoding for the `fss-lab` binary.
 
 use std::ffi::OsString;
+use std::path::PathBuf;
 
 use crate::error::CliError;
 use crate::token::{ArgToken, is_option_shaped, tokenize_os_args};
@@ -24,13 +25,21 @@ pub enum LabAction {
     /// List available scenarios in JSON format.
     List,
     /// Run the scenario matrix and report in JSON format.
-    Matrix,
+    Matrix {
+        /// Target root directory.
+        root: PathBuf,
+    },
     /// Run deterministic self-test and report in JSON format.
-    SelfTest,
+    SelfTest {
+        /// Target root directory.
+        root: PathBuf,
+    },
     /// Run a single scenario.
     Run {
         /// Selected scenario identifier.
         scenario: String,
+        /// Target root directory.
+        root: PathBuf,
     },
     /// Replay a scenario N times to prove determinism.
     Replay {
@@ -38,6 +47,8 @@ pub enum LabAction {
         scenario: String,
         /// Repeat count (bounds: 2 <= repeat <= 10_000).
         repeat: usize,
+        /// Target root directory.
+        root: PathBuf,
     },
 }
 
@@ -45,7 +56,7 @@ pub enum LabAction {
 #[must_use]
 pub const fn help_text() -> &'static str {
     "fss-lab — deterministic reference surveillance laboratory\n\n\
-USAGE\n  fss-lab list\n  fss-lab run <scenario>\n  fss-lab matrix\n  fss-lab replay <scenario> [--repeat N]\n  fss-lab self-test\n\n\
+USAGE\n  fss-lab list\n  fss-lab run <scenario> --root <dir>\n  fss-lab matrix --root <dir>\n  fss-lab replay <scenario> --root <dir> [--repeat N]\n  fss-lab self-test --root <dir>\n\n\
 SCENARIOS\n  quiet           complete coverage and a certified absence\n  raccoon         benign wildlife with no alert effect\n  intrusion       independently corroborated person and verified alert\n  sneaky          material person residual plus an observability gap\n  lost-ack        indeterminate alert dispatch resolved by reconciliation\n  corrupt-source  source corruption detected before evidence publication\n"
 }
 
@@ -86,26 +97,8 @@ pub fn parse_lab_tokens(tokens: &[ArgToken]) -> Result<LabAction, CliError> {
             }
             Ok(LabAction::List)
         }
-        "matrix" => {
-            if tokens.len() > 1 {
-                return Err(CliError::TrailingArgument {
-                    argument: tokens[1].raw.clone(),
-                    index: tokens[1].index,
-                    command: Some("matrix".to_owned()),
-                });
-            }
-            Ok(LabAction::Matrix)
-        }
-        "self-test" => {
-            if tokens.len() > 1 {
-                return Err(CliError::TrailingArgument {
-                    argument: tokens[1].raw.clone(),
-                    index: tokens[1].index,
-                    command: Some("self-test".to_owned()),
-                });
-            }
-            Ok(LabAction::SelfTest)
-        }
+        "matrix" => parse_matrix_command(tokens),
+        "self-test" => parse_self_test_command(tokens),
         "run" => parse_run_command(tokens),
         "replay" => parse_replay_command(tokens),
         unknown => {
@@ -126,6 +119,150 @@ pub fn parse_lab_tokens(tokens: &[ArgToken]) -> Result<LabAction, CliError> {
     }
 }
 
+fn parse_matrix_command(tokens: &[ArgToken]) -> Result<LabAction, CliError> {
+    let mut root: Option<PathBuf> = None;
+    let mut idx = 1;
+
+    while idx < tokens.len() {
+        let tok = &tokens[idx];
+        let s = tok.as_str();
+
+        if s == "--root" {
+            if root.is_some() {
+                return Err(CliError::DuplicateOption {
+                    option: "--root".to_owned(),
+                    command: Some("matrix".to_owned()),
+                    index: tok.index,
+                });
+            }
+            if idx + 1 >= tokens.len() {
+                return Err(CliError::MissingValue {
+                    option: "--root".to_owned(),
+                    command: Some("matrix".to_owned()),
+                    expected: "directory path".to_owned(),
+                });
+            }
+            let val_tok = &tokens[idx + 1];
+            if is_option_shaped(val_tok.as_str()) {
+                return Err(CliError::MissingValue {
+                    option: "--root".to_owned(),
+                    command: Some("matrix".to_owned()),
+                    expected: "directory path".to_owned(),
+                });
+            }
+            root = Some(parse_root_value(
+                &val_tok.raw,
+                val_tok.index,
+                Some("matrix"),
+            )?);
+            idx += 2;
+        } else if let Some(val_str) = s.strip_prefix("--root=") {
+            if root.is_some() {
+                return Err(CliError::DuplicateOption {
+                    option: "--root".to_owned(),
+                    command: Some("matrix".to_owned()),
+                    index: tok.index,
+                });
+            }
+            root = Some(parse_root_value(val_str, tok.index, Some("matrix"))?);
+            idx += 1;
+        } else if s.starts_with('-') {
+            return Err(CliError::UnknownOption {
+                option: s.to_owned(),
+                command: Some("matrix".to_owned()),
+                index: tok.index,
+            });
+        } else {
+            return Err(CliError::TrailingArgument {
+                argument: s.to_owned(),
+                index: tok.index,
+                command: Some("matrix".to_owned()),
+            });
+        }
+    }
+
+    match root {
+        Some(r) => Ok(LabAction::Matrix { root: r }),
+        None => Err(CliError::MissingValue {
+            option: "--root".to_owned(),
+            command: Some("matrix".to_owned()),
+            expected: "directory path".to_owned(),
+        }),
+    }
+}
+
+fn parse_self_test_command(tokens: &[ArgToken]) -> Result<LabAction, CliError> {
+    let mut root: Option<PathBuf> = None;
+    let mut idx = 1;
+
+    while idx < tokens.len() {
+        let tok = &tokens[idx];
+        let s = tok.as_str();
+
+        if s == "--root" {
+            if root.is_some() {
+                return Err(CliError::DuplicateOption {
+                    option: "--root".to_owned(),
+                    command: Some("self-test".to_owned()),
+                    index: tok.index,
+                });
+            }
+            if idx + 1 >= tokens.len() {
+                return Err(CliError::MissingValue {
+                    option: "--root".to_owned(),
+                    command: Some("self-test".to_owned()),
+                    expected: "directory path".to_owned(),
+                });
+            }
+            let val_tok = &tokens[idx + 1];
+            if is_option_shaped(val_tok.as_str()) {
+                return Err(CliError::MissingValue {
+                    option: "--root".to_owned(),
+                    command: Some("self-test".to_owned()),
+                    expected: "directory path".to_owned(),
+                });
+            }
+            root = Some(parse_root_value(
+                &val_tok.raw,
+                val_tok.index,
+                Some("self-test"),
+            )?);
+            idx += 2;
+        } else if let Some(val_str) = s.strip_prefix("--root=") {
+            if root.is_some() {
+                return Err(CliError::DuplicateOption {
+                    option: "--root".to_owned(),
+                    command: Some("self-test".to_owned()),
+                    index: tok.index,
+                });
+            }
+            root = Some(parse_root_value(val_str, tok.index, Some("self-test"))?);
+            idx += 1;
+        } else if s.starts_with('-') {
+            return Err(CliError::UnknownOption {
+                option: s.to_owned(),
+                command: Some("self-test".to_owned()),
+                index: tok.index,
+            });
+        } else {
+            return Err(CliError::TrailingArgument {
+                argument: s.to_owned(),
+                index: tok.index,
+                command: Some("self-test".to_owned()),
+            });
+        }
+    }
+
+    match root {
+        Some(r) => Ok(LabAction::SelfTest { root: r }),
+        None => Err(CliError::MissingValue {
+            option: "--root".to_owned(),
+            command: Some("self-test".to_owned()),
+            expected: "directory path".to_owned(),
+        }),
+    }
+}
+
 fn parse_run_command(tokens: &[ArgToken]) -> Result<LabAction, CliError> {
     if tokens.len() == 1 {
         return Err(CliError::MissingValue {
@@ -136,20 +273,93 @@ fn parse_run_command(tokens: &[ArgToken]) -> Result<LabAction, CliError> {
         });
     }
 
-    let scenario_tok = &tokens[1];
-    validate_scenario(&scenario_tok.raw, scenario_tok.index, "run")?;
+    let mut scenario: Option<String> = None;
+    let mut root: Option<PathBuf> = None;
+    let mut idx = 1;
 
-    if tokens.len() > 2 {
-        return Err(CliError::TrailingArgument {
-            argument: tokens[2].raw.clone(),
-            index: tokens[2].index,
-            command: Some("run".to_owned()),
-        });
+    while idx < tokens.len() {
+        let tok = &tokens[idx];
+        let s = tok.as_str();
+
+        if s == "--root" {
+            if root.is_some() {
+                return Err(CliError::DuplicateOption {
+                    option: "--root".to_owned(),
+                    command: Some("run".to_owned()),
+                    index: tok.index,
+                });
+            }
+            if idx + 1 >= tokens.len() {
+                return Err(CliError::MissingValue {
+                    option: "--root".to_owned(),
+                    command: Some("run".to_owned()),
+                    expected: "directory path".to_owned(),
+                });
+            }
+            let val_tok = &tokens[idx + 1];
+            if is_option_shaped(val_tok.as_str()) {
+                return Err(CliError::MissingValue {
+                    option: "--root".to_owned(),
+                    command: Some("run".to_owned()),
+                    expected: "directory path".to_owned(),
+                });
+            }
+            root = Some(parse_root_value(&val_tok.raw, val_tok.index, Some("run"))?);
+            idx += 2;
+        } else if let Some(val_str) = s.strip_prefix("--root=") {
+            if root.is_some() {
+                return Err(CliError::DuplicateOption {
+                    option: "--root".to_owned(),
+                    command: Some("run".to_owned()),
+                    index: tok.index,
+                });
+            }
+            root = Some(parse_root_value(val_str, tok.index, Some("run"))?);
+            idx += 1;
+        } else if s.starts_with('-') {
+            return Err(CliError::UnknownOption {
+                option: s.to_owned(),
+                command: Some("run".to_owned()),
+                index: tok.index,
+            });
+        } else {
+            if scenario.is_some() {
+                return Err(CliError::TrailingArgument {
+                    argument: s.to_owned(),
+                    index: tok.index,
+                    command: Some("run".to_owned()),
+                });
+            }
+            validate_scenario(&tok.raw, tok.index, "run")?;
+            scenario = Some(tok.raw.clone());
+            idx += 1;
+        }
     }
 
-    Ok(LabAction::Run {
-        scenario: scenario_tok.raw.clone(),
-    })
+    let scenario = match scenario {
+        Some(sc) => sc,
+        None => {
+            return Err(CliError::MissingValue {
+                option: "<scenario>".to_owned(),
+                command: Some("run".to_owned()),
+                expected: "one of: quiet, raccoon, intrusion, sneaky, lost-ack, corrupt-source"
+                    .to_owned(),
+            });
+        }
+    };
+
+    let root = match root {
+        Some(r) => r,
+        None => {
+            return Err(CliError::MissingValue {
+                option: "--root".to_owned(),
+                command: Some("run".to_owned()),
+                expected: "directory path".to_owned(),
+            });
+        }
+    };
+
+    Ok(LabAction::Run { scenario, root })
 }
 
 fn parse_replay_command(tokens: &[ArgToken]) -> Result<LabAction, CliError> {
@@ -163,6 +373,7 @@ fn parse_replay_command(tokens: &[ArgToken]) -> Result<LabAction, CliError> {
     }
 
     let mut scenario: Option<String> = None;
+    let mut root: Option<PathBuf> = None;
     let mut repeat: usize = 2;
     let mut seen_repeat = false;
     let mut idx = 1;
@@ -208,6 +419,45 @@ fn parse_replay_command(tokens: &[ArgToken]) -> Result<LabAction, CliError> {
             seen_repeat = true;
             repeat = parse_repeat_value(val_str, tok.index, Some("replay"))?;
             idx += 1;
+        } else if s == "--root" {
+            if root.is_some() {
+                return Err(CliError::DuplicateOption {
+                    option: "--root".to_owned(),
+                    command: Some("replay".to_owned()),
+                    index: tok.index,
+                });
+            }
+            if idx + 1 >= tokens.len() {
+                return Err(CliError::MissingValue {
+                    option: "--root".to_owned(),
+                    command: Some("replay".to_owned()),
+                    expected: "directory path".to_owned(),
+                });
+            }
+            let val_tok = &tokens[idx + 1];
+            if is_option_shaped(val_tok.as_str()) {
+                return Err(CliError::MissingValue {
+                    option: "--root".to_owned(),
+                    command: Some("replay".to_owned()),
+                    expected: "directory path".to_owned(),
+                });
+            }
+            root = Some(parse_root_value(
+                &val_tok.raw,
+                val_tok.index,
+                Some("replay"),
+            )?);
+            idx += 2;
+        } else if let Some(val_str) = s.strip_prefix("--root=") {
+            if root.is_some() {
+                return Err(CliError::DuplicateOption {
+                    option: "--root".to_owned(),
+                    command: Some("replay".to_owned()),
+                    index: tok.index,
+                });
+            }
+            root = Some(parse_root_value(val_str, tok.index, Some("replay"))?);
+            idx += 1;
         } else if s.starts_with('-') {
             return Err(CliError::UnknownOption {
                 option: s.to_owned(),
@@ -228,18 +478,47 @@ fn parse_replay_command(tokens: &[ArgToken]) -> Result<LabAction, CliError> {
         }
     }
 
-    match scenario {
-        Some(sc) => Ok(LabAction::Replay {
-            scenario: sc,
-            repeat,
-        }),
-        None => Err(CliError::MissingValue {
-            option: "<scenario>".to_owned(),
-            command: Some("replay".to_owned()),
-            expected: "one of: quiet, raccoon, intrusion, sneaky, lost-ack, corrupt-source"
-                .to_owned(),
-        }),
+    let scenario = match scenario {
+        Some(sc) => sc,
+        None => {
+            return Err(CliError::MissingValue {
+                option: "<scenario>".to_owned(),
+                command: Some("replay".to_owned()),
+                expected: "one of: quiet, raccoon, intrusion, sneaky, lost-ack, corrupt-source"
+                    .to_owned(),
+            });
+        }
+    };
+
+    let root = match root {
+        Some(r) => r,
+        None => {
+            return Err(CliError::MissingValue {
+                option: "--root".to_owned(),
+                command: Some("replay".to_owned()),
+                expected: "directory path".to_owned(),
+            });
+        }
+    };
+
+    Ok(LabAction::Replay {
+        scenario,
+        repeat,
+        root,
+    })
+}
+
+fn parse_root_value(val: &str, index: usize, command: Option<&str>) -> Result<PathBuf, CliError> {
+    if val.is_empty() {
+        return Err(CliError::MalformedValue {
+            option: "--root".to_owned(),
+            value: val.to_owned(),
+            reason: "--root requires a non-empty directory path".to_owned(),
+            command: command.map(ToOwned::to_owned),
+            index,
+        });
     }
+    Ok(PathBuf::from(val))
 }
 
 fn parse_repeat_value(val: &str, index: usize, command: Option<&str>) -> Result<usize, CliError> {
@@ -302,24 +581,52 @@ mod tests {
             Some(LabAction::List)
         );
         assert_eq!(
-            parse_lab_args([OsString::from("matrix")]).ok(),
-            Some(LabAction::Matrix)
-        );
-        assert_eq!(
-            parse_lab_args([OsString::from("self-test")]).ok(),
-            Some(LabAction::SelfTest)
-        );
-        assert_eq!(
-            parse_lab_args([OsString::from("run"), OsString::from("quiet")]).ok(),
-            Some(LabAction::Run {
-                scenario: "quiet".to_owned()
+            parse_lab_args([
+                OsString::from("matrix"),
+                OsString::from("--root"),
+                OsString::from("/tmp/matrix-root")
+            ])
+            .ok(),
+            Some(LabAction::Matrix {
+                root: PathBuf::from("/tmp/matrix-root")
             })
         );
         assert_eq!(
-            parse_lab_args([OsString::from("replay"), OsString::from("intrusion")]).ok(),
+            parse_lab_args([
+                OsString::from("self-test"),
+                OsString::from("--root"),
+                OsString::from("/tmp/st-root")
+            ])
+            .ok(),
+            Some(LabAction::SelfTest {
+                root: PathBuf::from("/tmp/st-root")
+            })
+        );
+        assert_eq!(
+            parse_lab_args([
+                OsString::from("run"),
+                OsString::from("quiet"),
+                OsString::from("--root"),
+                OsString::from("/tmp/run-root")
+            ])
+            .ok(),
+            Some(LabAction::Run {
+                scenario: "quiet".to_owned(),
+                root: PathBuf::from("/tmp/run-root")
+            })
+        );
+        assert_eq!(
+            parse_lab_args([
+                OsString::from("replay"),
+                OsString::from("intrusion"),
+                OsString::from("--root"),
+                OsString::from("/tmp/replay-root")
+            ])
+            .ok(),
             Some(LabAction::Replay {
                 scenario: "intrusion".to_owned(),
-                repeat: 2
+                repeat: 2,
+                root: PathBuf::from("/tmp/replay-root")
             })
         );
         assert_eq!(
@@ -327,12 +634,15 @@ mod tests {
                 OsString::from("replay"),
                 OsString::from("intrusion"),
                 OsString::from("--repeat"),
-                OsString::from("5")
+                OsString::from("5"),
+                OsString::from("--root"),
+                OsString::from("/tmp/replay-root")
             ])
             .ok(),
             Some(LabAction::Replay {
                 scenario: "intrusion".to_owned(),
-                repeat: 5
+                repeat: 5,
+                root: PathBuf::from("/tmp/replay-root")
             })
         );
     }
@@ -341,10 +651,12 @@ mod tests {
     fn trailing_arguments_are_rejected() {
         let cases = [
             vec!["list", "extra"],
-            vec!["matrix", "extra"],
-            vec!["self-test", "extra"],
-            vec!["run", "quiet", "extra"],
-            vec!["replay", "quiet", "--repeat", "2", "extra"],
+            vec!["matrix", "--root", "/tmp/r", "extra"],
+            vec!["self-test", "--root", "/tmp/r", "extra"],
+            vec!["run", "quiet", "--root", "/tmp/r", "extra"],
+            vec![
+                "replay", "quiet", "--repeat", "2", "--root", "/tmp/r", "extra",
+            ],
         ];
         for case in cases {
             let args: Vec<OsString> = case.into_iter().map(OsString::from).collect();
@@ -357,8 +669,34 @@ mod tests {
     }
 
     #[test]
+    fn missing_root_is_rejected() {
+        for cmd in ["matrix", "self-test"] {
+            let result = parse_lab_args([OsString::from(cmd)]);
+            assert!(result.is_err());
+            if let Err(err) = result {
+                assert_eq!(err.error_id(), crate::error::ERR_CLI_MISSING_VALUE);
+            }
+        }
+        let res_run = parse_lab_args([OsString::from("run"), OsString::from("quiet")]);
+        assert!(res_run.is_err());
+        if let Err(err) = res_run {
+            assert_eq!(err.error_id(), crate::error::ERR_CLI_MISSING_VALUE);
+        }
+        let res_replay = parse_lab_args([OsString::from("replay"), OsString::from("quiet")]);
+        assert!(res_replay.is_err());
+        if let Err(err) = res_replay {
+            assert_eq!(err.error_id(), crate::error::ERR_CLI_MISSING_VALUE);
+        }
+    }
+
+    #[test]
     fn malformed_scenarios_are_rejected() {
-        let result = parse_lab_args([OsString::from("run"), OsString::from("unknown")]);
+        let result = parse_lab_args([
+            OsString::from("run"),
+            OsString::from("unknown"),
+            OsString::from("--root"),
+            OsString::from("/tmp/r"),
+        ]);
         assert!(result.is_err());
         if let Err(err) = result {
             assert_eq!(err.error_id(), crate::error::ERR_CLI_MALFORMED_VALUE);
@@ -374,6 +712,8 @@ mod tests {
                 OsString::from("quiet"),
                 OsString::from("--repeat"),
                 OsString::from(rep),
+                OsString::from("--root"),
+                OsString::from("/tmp/r"),
             ]);
             assert!(result.is_err());
             if let Err(err) = result {
@@ -390,6 +730,8 @@ mod tests {
                 OsString::from("quiet"),
                 OsString::from("--repeat"),
                 OsString::from(opt),
+                OsString::from("--root"),
+                OsString::from("/tmp/r"),
             ]);
             assert!(result.is_err());
             if let Err(err) = result {
@@ -410,6 +752,8 @@ mod tests {
                 OsString::from("quiet"),
                 OsString::from("--repeat"),
                 OsString::from(val),
+                OsString::from("--root"),
+                OsString::from("/tmp/r"),
             ]);
             assert!(result.is_err());
             if let Err(err) = result {

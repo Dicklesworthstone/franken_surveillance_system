@@ -572,6 +572,7 @@ All stable error identities and normative recovery guidance cataloged from `regi
 | `ERR-KSTATE-MISSING-FIELD-001` | knowledge state row lacks a mandatory field or is empty/corrupt | declare all mandatory fields in knowledge state row |
 | `ERR-KSTATE-REGISTRY-DRIFT-001` | knowledge state registry row drift between machine registry and markdown | synchronize architecture/knowledge_states.json and registries/AGENT_CONTRACTS.md |
 | `ERR-KSTATE-STABLE-ID-REUSED-001` | knowledge state stable identifier was reused or renumbered for a different entity | allocate a new unique stable identifier; never reuse stable IDs |
+| `ERR-LAB-ROOT-NOT-EMPTY-001` | laboratory target root directory already contains files | choose an empty or new target root directory |
 | `ERR-LEASE-STALE-001` | effect lease fence is not current | re-prepare under fresh lease |
 | `ERR-LEDGER-DURABLE-BATCH-ID-CONFLICT-001` | durable ledger batch identity already committed with different content | reject input; stable batch IDs are never reused |
 | `ERR-LEDGER-LENGTH-OVERFLOW-001` | journal byte offset or file length exceeds addressable 64-bit bounds | archive or rotate journal; no in-place append possible |
