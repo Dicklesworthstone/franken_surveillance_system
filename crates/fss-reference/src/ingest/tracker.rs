@@ -1,10 +1,18 @@
 #![forbid(unsafe_code)]
-//! Constant-velocity Kalman filter tracker with IoU-based data association
+//! Constant-velocity Kalman filter tracker with global IoU-based data association
 //! and Tentative/Confirmed/Lost/Deleted track lifecycle management.
 //!
 //! Takes bounding boxes from the foreground detector and maintains stable
 //! tracks across frames. All arithmetic is f64; deterministic across runs
 //! with the same input. No external crates.
+
+mod assignment;
+mod checked;
+
+pub use checked::{MAX_ASSIGNMENT_WORK, MAX_CHECKED_TRACKS, TrackerLimits, TrackerStepError};
+
+/// Versioned numerical association policy; source revisions still pin full replay semantics.
+pub const TRACKER_ALGORITHM: &str = "fss.reference.kalman_global_iou.v1";
 
 /// Configuration for the multi-object tracker.
 #[derive(Clone, Debug)]
@@ -206,6 +214,7 @@ fn iou(ax: f64, ay: f64, aw: f64, ah: f64, bx: f64, by: f64, bw: f64, bh: f64) -
 }
 
 /// Deterministic multi-object tracker with constant-velocity Kalman filtering.
+#[derive(Clone)]
 pub struct MultiObjectTracker {
     config: TrackerConfig,
     tracks: Vec<TrackedTarget>,
@@ -227,7 +236,10 @@ impl MultiObjectTracker {
         })
     }
 
-    /// Processes one frame of detections and returns the updated track set.
+    /// Processes a trusted frame with global maximum-cardinality, then maximum-IoU
+    /// association. IoU is rounded to millionths after the exact overlap gate.
+    /// Compatibility entry point: callers own input, resource and counter bounds.
+    /// Prefer [`Self::try_step`] for untrusted input and atomic bounded admission.
     pub fn step(&mut self, detections: &[Detection]) -> TrackerOutput {
         self.frame += 1;
         let dt = 1.0;
@@ -242,34 +254,20 @@ impl MultiObjectTracker {
             self.sync_track(index);
         }
 
-        // 2. Associate detections to tracks by IoU (greedy highest-first).
+        // 2. Global association: a locally attractive pair must not strand a
+        // second track when a complete feasible matching exists.
+        let order = assignment::detection_order(detections);
+        let matches = assignment::associate(&self.tracks, detections, &order, self.config.iou_threshold);
         let mut assigned_det = vec![false; detections.len()];
-        let mut assigned_trk = vec![false; self.tracks.len()];
-        let mut pairs: Vec<(usize, usize, f64)> = Vec::new();
-        for (ti, t) in self.tracks.iter().enumerate() {
-            for (di, d) in detections.iter().enumerate() {
-                if assigned_det[di] || assigned_trk[ti] {
-                    continue;
-                }
-                let score = iou(t.cx - t.box_w / 2.0, t.cy - t.box_h / 2.0, t.box_w, t.box_h,
-                                d.box_x, d.box_y, d.box_w, d.box_h);
-                if score >= self.config.iou_threshold {
-                    pairs.push((ti, di, score));
-                }
-            }
-        }
-        pairs.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
-        for (ti, di, _) in &pairs {
-            if assigned_trk[*ti] || assigned_det[*di] {
-                continue;
-            }
-            assigned_trk[*ti] = true;
-            assigned_det[*di] = true;
-            let d = &detections[*di];
+        let assigned_trk: Vec<_> = matches.iter().map(Option::is_some).collect();
+        for (ti, matched) in matches.into_iter().enumerate() {
+            let Some(di) = matched else { continue; };
+            assigned_det[di] = true;
+            let d = &detections[di];
             let cx = d.box_x + d.box_w / 2.0;
             let cy = d.box_y + d.box_h / 2.0;
-            self.kalman[*ti].update(cx, cy, self.config.measurement_noise);
-            let track = &mut self.tracks[*ti];
+            self.kalman[ti].update(cx, cy, self.config.measurement_noise);
+            let track = &mut self.tracks[ti];
             track.hits += 1;
             track.misses = 0;
             // Promotion honours min_hits: a Tentative track needs the full
@@ -284,7 +282,7 @@ impl MultiObjectTracker {
             };
             track.box_w = d.box_w;
             track.box_h = d.box_h;
-            self.sync_track(*ti);
+            self.sync_track(ti);
         }
 
         // 3. Unmatched tracks: a Tentative track dies immediately (a
@@ -311,7 +309,8 @@ impl MultiObjectTracker {
         }
 
         // 4. Unmatched detections: create new Tentative tracks.
-        for (di, d) in detections.iter().enumerate() {
+        for di in order {
+            let d = &detections[di];
             if assigned_det[di] {
                 continue;
             }
@@ -510,3 +509,6 @@ mod tests {
 
 #[cfg(test)]
 mod motion_contract;
+
+#[cfg(test)]
+mod assignment_contract;

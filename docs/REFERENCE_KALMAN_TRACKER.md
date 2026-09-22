@@ -29,3 +29,37 @@ cargo clippy -p fss-reference --all-targets -- -D warnings
 Session validation limitation: no Rust compiler, Cargo, rustfmt, or Clippy was
 available. Authored Rust tests are not claimed executed. Independent numerical
 checks and source/diff/hash checks are supplementary, not release qualification.
+
+## Global matching and bounded admission
+
+Both `step` and `try_step` use global bipartite assignment, maximizing the number
+of supported matches before total IoU rounded to millionths. The overlap gate is
+applied before quantization. Even a zero threshold does not make disjoint boxes
+support an association. Ties use stable track-ID and detection-geometry traversal;
+identical duplicate boxes have no distinguishable physical identity. Unmatched
+birth IDs are assigned in geometry order rather than input order.
+
+The rectangular Hungarian implementation computes costs on demand, with linear
+auxiliary storage and O(T^2 * (T+D)) assignment work. `TRACKER_ALGORITHM` names the
+numerical policy. Matching is an image-trajectory hypothesis, not an identity or
+corroboration certificate. Ambiguous physical crossings still require evidence.
+
+`try_step(detections, TrackerLimits::default())` is the bounded entry point. It
+admits at most 128 active tracks, 128 detections per frame, and 4,194,304 Hungarian
+column relaxations; owners can narrow every ceiling. An empty frame needs no
+assignment work. Input is never truncated and active tracks are never silently
+evicted to satisfy capacity. Same-step retirement can free room for new tracks.
+
+Invalid input, work/capacity refusal, counter exhaustion or nonfinite Kalman
+arithmetic returns a typed `TrackerStepError` without changing the previous
+filter state, frame count or next identity. Candidate state is temporary and
+bounded by the admitted tracks plus detections. `step` retains its existing
+infallible signature for trusted compatibility callers; those callers still own
+input/resource/counter validity and should migrate to `try_step` at trust boundaries.
+
+`assignment_contract.rs` adds twelve tests, including a 4096-matrix exhaustive
+oracle, the greedy trap, identity continuity through crossings, input permutations,
+zero-overlap refusal, retry equivalence and atomic failure boundaries. Session
+checks additionally compared 1000 assignment matrices with an independent SciPy
+solver and exercised crossing/occlusion trajectories using a separate matrix
+Kalman implementation. These checks are not executions of the Rust tests.
