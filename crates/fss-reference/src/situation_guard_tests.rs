@@ -3980,47 +3980,56 @@ fn indeterminate_receipt_with_an_empty_reason_is_refused() -> Result<(), Box<dyn
 }
 
 #[test]
-fn journal_refuses_a_result_or_an_error_on_commit_and_acceptance() -> Result<(), Box<dyn Error>> {
+fn journal_refuses_a_result_or_an_error_on_commit_and_an_error_on_acceptance() -> Result<(), Box<dyn Error>> {
     let (harness, mut journal, plan) = prepared_journal("commit-payload")?;
     let operation_id = &plan.intent.operation_id;
     let digest = fss_core::ContentDigest::sha256(b"commit-payload");
-    let cases: [(&str, Option<fss_core::ContentDigest>, Option<&str>); 2] = [
+    // Commit carries neither a result nor an error; acceptance may bind the
+    // accepted wire-exchange digest as evidence linkage but never an error.
+    let committed_cases: [(&str, Option<fss_core::ContentDigest>, Option<&str>); 2] = [
         ("with an error", None, Some("x")),
         ("with a result", Some(digest), None),
     ];
-    for (next, now) in [
-        (EffectState::Committed, TimestampNs(101)),
-        (EffectState::AdapterAccepted, TimestampNs(102)),
-    ] {
-        for (label, result_digest, error_code) in cases {
-            let validated =
-                journal.validate_transition(operation_id, next, now, result_digest, error_code);
-            assert!(
-                matches!(
-                    validated,
-                    Err(fss_core::ContractError::InvalidEffectTransition)
-                ),
-                "validate {} {label}: {validated:?}",
-                next.as_str()
-            );
-            let refused = journal.transition(
-                operation_id,
-                next,
-                now,
-                result_digest,
-                error_code.map(str::to_owned),
-            );
-            assert!(
-                matches!(
-                    refused,
-                    Err(fss_core::ContractError::InvalidEffectTransition)
-                ),
-                "transition {} {label}: {refused:?}",
-                next.as_str()
-            );
-        }
-        let _ = journal.transition(operation_id, next, now, None, None)?;
+    for (label, result_digest, error_code) in committed_cases {
+        let validated = journal.validate_transition(
+            operation_id, EffectState::Committed, TimestampNs(101), result_digest, error_code);
+        assert!(
+            matches!(validated, Err(fss_core::ContractError::InvalidEffectTransition)),
+            "validate committed {label}: {validated:?}"
+        );
+        let refused = journal.transition(
+            operation_id, EffectState::Committed, TimestampNs(101), result_digest,
+            error_code.map(str::to_owned));
+        assert!(
+            matches!(refused, Err(fss_core::ContractError::InvalidEffectTransition)),
+            "transition committed {label}: {refused:?}"
+        );
     }
+    let _ = journal.transition(operation_id, EffectState::Committed, TimestampNs(101), None, None)?;
+    let accepted_cases: [(&str, Option<fss_core::ContentDigest>, Option<&str>); 2] = [
+        ("with an error", None, Some("x")),
+        ("with both", Some(digest), Some("x")),
+    ];
+    for (label, result_digest, error_code) in accepted_cases {
+        let validated = journal.validate_transition(
+            operation_id, EffectState::AdapterAccepted, TimestampNs(102), result_digest, error_code);
+        assert!(
+            matches!(validated, Err(fss_core::ContractError::InvalidEffectTransition)),
+            "validate accepted {label}: {validated:?}"
+        );
+        let refused = journal.transition(
+            operation_id, EffectState::AdapterAccepted, TimestampNs(102), result_digest,
+            error_code.map(str::to_owned));
+        assert!(
+            matches!(refused, Err(fss_core::ContractError::InvalidEffectTransition)),
+            "transition accepted {label}: {refused:?}"
+        );
+    }
+    // The acceptance evidence linkage itself is lawful and binds the digest.
+    let accepted = journal.transition(
+        operation_id, EffectState::AdapterAccepted, TimestampNs(102), Some(digest), None)?;
+    assert_eq!(accepted.state, EffectState::AdapterAccepted);
+    assert_eq!(accepted.result_digest, Some(digest));
     harness.cleanup();
     Ok(())
 }
