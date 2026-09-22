@@ -56,9 +56,7 @@ fn test_no_production_consumer_guard() -> Result<(), Box<dyn Error>> {
                             // surface (scene data, seed manifests, golden fixtures) is not.
                             let encoder_api = line.contains("media_fixture::jpeg::")
                                 && ["encode_jpeg", "JpegConfig", "CustomMarker", "Subsampling",
-                                    "JpegError"]
-                                .iter()
-                                .any(|symbol| line.contains(symbol));
+                                    "JpegError"].iter().any(|symbol| line.contains(symbol));
                             if !encoder_api
                                 && (line.contains("media_fixture::jpeg")
                                     || (line.contains("media_fixture")
