@@ -996,7 +996,15 @@ impl H4LaboratoryExpansion {
             contradictions: vec![],
             valid_until: Some(self.retention_until),
             state_basis: None,
-        })
+        })?
+        // The quarantine must travel with the digests, not just this cell's
+        // class: a Laboratory origin is refused as an irreversible-effect
+        // premise wherever the digest is re-cited, and any later relabel of
+        // these digests into a produced class is refused as laundering.
+        .with_evidence_origins(&[
+            crate::agent::EvidenceOrigin::Laboratory,
+            crate::agent::EvidenceOrigin::Laboratory,
+        ])
     }
 
     /// Decodes an H4 expansion from canonical versioned bytes and ensures no trailing unread bytes exist.

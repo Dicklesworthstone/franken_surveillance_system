@@ -1130,8 +1130,14 @@ fn every_effect_state_has_an_explicit_transition_payload_rule() -> Result<(), Bo
             };
             match next {
                 EffectState::Prepared => Err(ContractError::InvalidEffectTransition),
-                EffectState::Committed | EffectState::AdapterAccepted => accepted_unless(
+                // Commit carries neither a result nor an error; acceptance binds the
+                // accepted wire-exchange digest as evidence linkage, never an error.
+                EffectState::Committed => accepted_unless(
                     result || error.is_some(),
+                    ContractError::InvalidEffectTransition,
+                ),
+                EffectState::AdapterAccepted => accepted_unless(
+                    error.is_some(),
                     ContractError::InvalidEffectTransition,
                 ),
                 EffectState::Observed | EffectState::Verified => {
