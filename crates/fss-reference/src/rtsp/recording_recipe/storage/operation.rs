@@ -9,6 +9,7 @@ use super::super::{PlannedRecordingReplay, RecipeReplayFailure, RecipeReplayReti
     RecipeReplayStep, RecordingRecipe, RecordingRecipeError, RecordingRecipeLimits};
 use crate::rtsp::datagram_archive::{DatagramArchive, DatagramArchiveError, DatagramArchiveLimits,
     DatagramPin, DatagramScope};
+use crate::rtsp::datagram_archive::prefix::DatagramPrefix;
 use crate::rtsp::datagram_reconstruction::{AvcReplayBounds, AvcReplayStep};
 use crate::rtsp::datagram_reconstruction::recording::{RecordingReplayRetirement, RecordingReplayStep};
 use crate::rtsp::recording::PreparedRecording;
@@ -41,7 +42,7 @@ pub struct RecipeSelection {
 /// Current whole-input/allocation ceilings. None is adopted from a stored program.
 #[derive(Clone, Copy, Debug)]
 pub struct RecipeLoadLimits {
-    /// Original datagram inventory and per-read bounds.
+    /// Whole current datagram inventory, including descendants outside the selected recipe.
     pub source: DatagramArchiveLimits,
     /// Complete recipe and componentwise configuration ceilings.
     pub recipe: RecordingRecipeLimits,
@@ -52,7 +53,7 @@ pub struct RecipeLoadLimits {
 /// Fully verified source inventory and owned instructions, independent of the old process.
 #[derive(Debug)]
 pub struct LoadedRecordingRecipe {
-    archive: DatagramArchive,
+    archive: DatagramPrefix,
     recipe: RecordingRecipe,
     pin: RecordingRecipePin,
     limits: RecipeLoadLimits,
@@ -60,7 +61,8 @@ pub struct LoadedRecordingRecipe {
 impl LoadedRecordingRecipe {
     /// Read the exact pinned recipe header only to select a candidate source prefix, then use
     /// the ordinary complete source and recipe verifiers. The header never becomes authority.
-    /// Additional source descendants refuse this exact recipe instead of silently following them.
+    /// Valid descendants are verified but excluded from this recipe through a read-only prefix.
+    /// Neither the selected source nor the live append history is changed.
     pub fn load(p: &LocalRootPublisher, selected: RecipeSelection, limits: RecipeLoadLimits,
         cancel: &dyn PublishCancellation, budget: &mut WorkBudget<'_>)
         -> Result<Self, RecordingRecipeError> {
@@ -97,18 +99,24 @@ impl LoadedRecordingRecipe {
             return Err(RecordingRecipeError::Mismatch);
         }
         drop(bytes); drop(raw);
-        let archive = DatagramArchive::recover(p, selected.scope, limits.source, Some(source), cancel, budget)?;
+        let archive = DatagramPrefix::recover(p, selected.scope, limits.source, source, cancel, budget)?;
         let pin = RecordingRecipePin { slot, root: selected.root, recipe: selected.recipe, source };
-        let recipe = load_recording_recipe(p, &pin, &archive, limits.recipe, limits.storage, cancel, budget)?;
+        let recipe = load_recording_recipe(p, &pin, archive.archive(), limits.recipe, limits.storage, cancel, budget)?;
         Ok(Self { archive, recipe, pin, limits })
     }
     /// Independently selected identities, including the now fully verified source prefix.
     pub fn pin(&self) -> &RecordingRecipePin { &self.pin }
     /// The owned program; mutable timing overrides are not exposed.
     pub fn recipe(&self) -> &RecordingRecipe { &self.recipe }
+    /// Full source head verified when this input was loaded, distinct from the selected prefix.
+    /// This is historical observation metadata, not a latest-head query or recipe input.
+    pub fn observed_source_head(&self) -> DatagramPin { self.archive.observed_head() }
     fn verify(&self, p: &LocalRootPublisher, cancel: &dyn PublishCancellation,
         budget: &mut WorkBudget<'_>) -> Result<(), RecordingRecipeError> {
-        let verified = load_recording_recipe(p, &self.pin, &self.archive, self.limits.recipe,
+        // Keep the whole observed chain pinned within this attempt. In particular, a later
+        // corrupt or rolled-back append is not hidden by the valid older recipe prefix.
+        self.archive.revalidate(p, cancel, budget)?;
+        let verified = load_recording_recipe(p, &self.pin, self.archive.archive(), self.limits.recipe,
             self.limits.storage, cancel, budget)?;
         if verified.canonical_bytes() != self.recipe.canonical_bytes() {
             return Err(RecordingRecipeError::Mismatch);
@@ -286,7 +294,7 @@ impl<'a> PreparedReconstruction<'a> {
             limits.validate(bounds)?;
             let now = tick(clock, &mut last, bounds.deadline_ns)?;
             loaded.verify(p, cancel, budget)?;
-            replay = Some(PlannedRecordingReplay::new(&loaded.recipe, &loaded.archive,
+            replay = Some(PlannedRecordingReplay::new(&loaded.recipe, loaded.archive.archive(),
                 loaded.limits.recipe, bounds, now)?);
             let r = replay.as_mut().ok_or(ReconstructionError::Incomplete)?;
             let mut summary = ReconstructionSummary::default();

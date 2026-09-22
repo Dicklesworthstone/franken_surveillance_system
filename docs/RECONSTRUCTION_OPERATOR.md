@@ -16,12 +16,21 @@ runs `load_recording_recipe`, including the exact child set, canonical byte deco
 original source hashes and all current componentwise resource ceilings. A header is
 not permission to read, an authenticated latest pointer, or proof of complete input.
 
-This version requires the recovered source namespace to equal the recipe's exact
-prefix. Later source descendants are refused rather than included silently. Keep
-source epochs and recipe selection explicit; this operation neither truncates nor
-repairs a newer source history. Missing, broken, deleted, corrupt and wrong-scope
-inputs are errors. The caller supplies the authorized exclusive storage owner and
-live cancellation probe; a digest or stored retention claim does not grant access.
+The recipe now selects an immutable `DatagramPrefix` from the verified current
+source chain. Valid later observations do not invalidate older recipes and are
+never silently added to their input. The full current chain is verified first;
+only the exact selected metadata is exposed to native replay. No live writer or
+stored history is truncated. `observed_source_head()` reports the complete head
+verified at load, separately from `pin().source`, which remains the recipe input.
+
+Before preparation and publication, the full current chain is revalidated against
+that observed head. Growth is permitted; rollback, forks, missing or corrupt
+originals, tombstones and unresolved source writes are not hidden by selecting an
+older recipe. Current datagram/byte/work bounds cover the whole namespace, including
+verified descendants. Recipe graph limits still apply only to its selected source
+roots. The caller supplies the authorized exclusive storage owner and live probe;
+no checksum or stored retention field grants access. Independently retained anchors
+are still necessary to detect rollback after all later trusted state is lost.
 
 ## Complete native execution precedes every output write
 
@@ -68,6 +77,10 @@ The same immutable plan and exact independent pin can be retried after appropria
 publisher reopening/reconciliation. Existing output roots return the native
 `AlreadyPublished` receipt instead of being renumbered. The final root therefore
 resolves a lost complete-result acknowledgement without duplicating recordings.
+This exact retry remains valid when source capture grows between executions. The
+source snapshot, recipe bytes, media timing, output routes and result encoding all
+remain pinned to the original selection; later packets cannot alter its root or
+repair a fragment that was incomplete at that historical boundary.
 
 Writes are not an all-or-nothing filesystem transaction. Failure retains all window
 acknowledgements already observed and the original typed storage error. A failed
@@ -143,10 +156,18 @@ limits and total storage capacity have explicit finite bounds. `--help` lists th
 flags. Stored receiver/collector settings must fit the current API's default
 component ceilings; the CLI does not silently change them or activate a new profile.
 The total retained-output bound does not replace native per-window workspace bounds.
+`--max-datagrams` can bound the full current chain up to 65,536 observations. The
+selected recipe's direct source graph must independently fit the existing manifest
+child ceiling. Raising the namespace scan bound does not relax that graph limit.
 
 The bounded JSON report includes exact recipe, source, interpretation and candidate
 or durable result identities, every category in `ReconstructionSummary`, and actual
-publication counts. Capture completeness and archive indexing remain false. It emits
+publication counts. `source_head`, `source_datagrams` and `source_bytes` continue
+to describe only the selected historical input. The additional
+`observed_source_head_at_load` and `observed_source_datagrams_at_load` fields report
+the full chain verified at startup, not observations processed by this recipe or
+a fresh post-publication latest-head query. Capture completeness and archive
+indexing remain false. It emits
 no source bytes, endpoints, credentials, paths or per-window dumps. Unknown, duplicate,
 overflowing and incomplete options fail before storage access without echoing values.
 Errors emit no success JSON. An output-stream failure uses the existing bounded
@@ -164,3 +185,20 @@ cargo test -p fss-reference --test reconstruction_operation
 
 These executable tests, like the native tests above, have not been run in the editing
 environment. No production or qualification result is inferred from their existence.
+
+## Historical-growth regressions
+
+Eight additional native integration tests cover unchanged media/index/source and
+result identities after growth, lost acknowledgements followed by append and cold
+retry, growth between individual API stages, old incomplete fragments with later
+completion packets, independently executable old/new recipes on one source chain,
+post-prepare descendant corruption, observed-head rollback, full-chain bounds, and
+late timing mismatches. Three process tests exercise unchanged check output identity,
+separate selected/observed counts, no-write checks, resumed exact publication and
+independent namespace ceilings. All eleven are authored, not executed results.
+
+```sh
+cargo test -p fss-reference --test historical_reconstruction
+cargo test -p fss-cli --test historical_recipe_process
+cargo test -p fss-reference --lib rtsp::datagram_archive::prefix
+```

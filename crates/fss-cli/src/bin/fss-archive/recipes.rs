@@ -29,6 +29,8 @@ pub(super) const HELP: &str = "fss-archive <check-recipe|reconstruct-recipe> [op
           --max-roots --max-scan-roots --max-objects --max-object-bytes --max-total-bytes\n\
   Each bound takes one unsigned decimal value. Source fields describe the original\n\
   approved plaintext capture, NOT permission to contact a camera. No network occurs.\n\
+  Source bounds cover the full current chain, including verified later observations.\n\
+  Replay uses only the exact historical recipe prefix; no stored source is truncated.\n\
   check-recipe executes native reconstruction but publishes no output roots.\n\
   reconstruct-recipe validates the whole program, publishes exact windows, then its\n\
   derived completion root last. Capture completeness and archive indexing are NOT claimed.\n\
@@ -106,7 +108,8 @@ fn parse(args: &[OsString]) -> Result<Options> {
     let storage = LocalPublicationLimits::new(roots, MAX_MANIFEST_CHILDREN, roots, scan,
         SpoolLimits::new(objects, number("--max-total-bytes", 1024 * 1024 * 1024, 1, 1024 * 1024 * 1024 * 1024)?, object_bytes, objects));
     storage.validate().map_err(|_| malformed("inconsistent storage ceilings"))?;
-    let datagrams = number("--max-datagrams", 8192, 1, (MAX_MANIFEST_CHILDREN - 1) as u64)? as usize;
+    // Current namespace bounds include verified descendants outside the selected recipe.
+    let datagrams = number("--max-datagrams", 8192, 1, 65_536)? as usize;
     let load = RecipeLoadLimits {
         source: DatagramArchiveLimits { max_datagrams: datagrams,
             max_payload_bytes: number("--max-source-bytes", 256 * 1024 * 1024, 1, 1024 * 1024 * 1024)?,
@@ -115,7 +118,7 @@ fn parse(args: &[OsString]) -> Result<Options> {
             max_bytes: number("--max-recipe-bytes", MAX_RECORDING_RECIPE_BYTES as u64, 1, MAX_RECORDING_RECIPE_BYTES as u64)? as usize,
             max_timings: number("--max-timings", MAX_RECORDING_RECIPE_TIMINGS as u64, 0, MAX_RECORDING_RECIPE_TIMINGS as u64)? as usize,
             ..RecordingRecipeLimits::default() },
-        storage: RecipeStorageLimits { max_source_roots: datagrams, max_spool_object_bytes: object_bytes },
+        storage: RecipeStorageLimits { max_source_roots: datagrams.min(MAX_MANIFEST_CHILDREN - 1), max_spool_object_bytes: object_bytes },
     };
     Ok(Options { root: PathBuf::from(required("--root")?),
         selected: RecipeSelection { recipe: digest("--recipe-id")?, root: digest("--recipe-root")?, scope },
@@ -169,10 +172,12 @@ fn run(options: Options) -> Result<String> {
             new, outcome.windows.len() - new)
     } else { ("not_requested", 0, 0) };
     let s = plan.summary(); let source = loaded.pin().source;
+    let observed = loaded.observed_source_head();
     write!(&mut report,
-        "{{\"schema\":\"fss.local_reconstruction_operator.v1\",\"command\":\"{}\",\"recipe\":\"{}\",\"recipe_root\":\"{}\",\"source_scope\":\"{}\",\"source_head\":\"{}\",\"source_datagrams\":{},\"source_bytes\":{},\"interpretation\":\"{}\",\"result_slot\":\"{}\",\"result_root\":\"{}\",\"result_status\":\"{}\",\"publication_requested\":{},\"windows\":{},\"output_bytes\":{},\"new_windows\":{},\"reused_windows\":{},\"rtp_observations\":{},\"rtcp_observations\":{},\"invalid_rtcp\":{},\"timings_applied\":{},\"unselected_pictures\":{},\"unselected_packets\":{},\"unsealed_packets\":{},\"queued_packets\":{},\"fragment_bytes\":{},\"queued_nals\":{},\"incomplete_picture\":{},\"capture_complete\":false,\"archive_index_published\":false,\"source_bytes_emitted\":false,\"operation_complete\":true}}\n",
+        "{{\"schema\":\"fss.local_reconstruction_operator.v1\",\"command\":\"{}\",\"recipe\":\"{}\",\"recipe_root\":\"{}\",\"source_scope\":\"{}\",\"source_head\":\"{}\",\"source_datagrams\":{},\"source_bytes\":{},\"observed_source_head_at_load\":\"{}\",\"observed_source_datagrams_at_load\":{},\"interpretation\":\"{}\",\"result_slot\":\"{}\",\"result_root\":\"{}\",\"result_status\":\"{}\",\"publication_requested\":{},\"windows\":{},\"output_bytes\":{},\"new_windows\":{},\"reused_windows\":{},\"rtp_observations\":{},\"rtcp_observations\":{},\"invalid_rtcp\":{},\"timings_applied\":{},\"unselected_pictures\":{},\"unselected_packets\":{},\"unsealed_packets\":{},\"queued_packets\":{},\"fragment_bytes\":{},\"queued_nals\":{},\"incomplete_picture\":{},\"capture_complete\":false,\"archive_index_published\":false,\"source_bytes_emitted\":false,\"operation_complete\":true}}\n",
         if options.publish { "reconstruct-recipe" } else { "check-recipe" }, loaded.pin().recipe,
         loaded.pin().root, source.scope, source.head, source.datagrams, source.payload_bytes,
+        observed.head, observed.datagrams,
         loaded.recipe().interpretation(), plan.pin().slot, plan.pin().root, status, options.publish,
         s.windows, s.output_bytes, published, reused, s.rtp_observations, s.rtcp_observations, s.invalid_rtcp,
         s.timings_applied, s.unselected_pictures, s.unselected_packets, s.unsealed_packets, s.queued_packets,
