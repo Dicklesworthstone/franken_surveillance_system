@@ -198,3 +198,6 @@ fn object(p: &LocalRootPublisher, digest: ContentDigest, maximum: usize,
     if bytes.len() > maximum { return Err(RecordingRecipeError::Limit); }
     probe(cancel, budget)?; Ok(bytes)
 }
+
+/// Complete native reconstruction and root-last result publication for local operators.
+pub mod operation;
