@@ -436,6 +436,14 @@
       "reconciledValue": "Laundering is refused only where the producing cell is known: KnowledgeCell::verify_no_evidence_laundering(prior) refuses exactly the registered pairs. A lone relabelled cell is accepted; SituationFrame::validate and MeaningfulDelta::validate judge the SET of cells (independent of order and claim-id naming) and accept shared evidence between classes; classify_reference_meaningful_delta draws no laundering verdict between different claims of the basis and result frames. A cell that supersedes a cell of the same claim has that cell as its known prior, and the pair is judged by verify_no_evidence_laundering on the production paths (fss-2nwxm): classify_reference_meaningful_delta checks each result cell against the basis cells of its claim, and MeaningfulDelta::coalesce checks each later changed cell against the earlier changed cell of its claim.",
       "reason": "An evidence reference is an untyped ContentDigest that names no producing cell, so shared evidence cannot be attributed to its author: guessing by list position or claim id refused honest derivations (P4r, P5r) and made verdicts order-dependent (Q1, Q2), and the basis-versus-result check refused honest unchanged carry-overs (identical frames [Observed(D), Derived(D)] returned evidence_laundering_detected) and was removed. Full enforcement needs typed evidence references carrying origin provenance, tracked under fss-gefi6.",
       "status": "open"
+    },
+    {
+      "target": "KnowledgeCell",
+      "field": "evidence",
+      "originalValue": "AGENT_COGNITION_AND_CONTROL.md §8.3 (derived beliefs cannot become observed) and the mayLaunderEvidenceInto table read as enforceable for any cell, any SituationFrame or MeaningfulDelta cell set, and any basis/result publication pair.",
+      "reconciledValue": "Laundering is refused only where the producing cell is known: KnowledgeCell::verify_no_evidence_laundering(prior) refuses exactly the registered pairs. A lone relabelled cell is accepted; SituationFrame::validate and MeaningfulDelta::validate judge the SET of cells (independent of order and claim-id naming) and accept shared evidence between classes; classify_reference_meaningful_delta draws no laundering verdict across basis and result frames.",
+      "reason": "An evidence reference is an untyped ContentDigest that names no producing cell, so shared evidence cannot be attributed to its author: guessing by list position or claim id refused honest derivations (P4r, P5r) and made verdicts order-dependent (Q1, Q2), and the basis-versus-result check refused honest unchanged carry-overs (identical frames [Observed(D), Derived(D)] returned evidence_laundering_detected) and was removed. Full enforcement needs typed evidence references carrying origin provenance, tracked under fss-gefi6.",
+      "status": "open"
     }
   ]
 }
