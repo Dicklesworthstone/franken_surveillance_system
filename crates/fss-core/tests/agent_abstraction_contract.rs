@@ -193,6 +193,145 @@ fn test_derived_beliefs_parse_and_resolution() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn test_situation_capsule_row_properties() -> Result<(), Box<dyn Error>> {
+    let layer = AgentAbstractionLayer::SituationCapsule;
+
+    // 1. Exact normative stable ID
+    assert_eq!(layer.id(), "AGT-LAYER-005");
+
+    // 2. Exact normative schema name
+    assert_eq!(layer.name(), "situation_capsule");
+    assert_eq!(format!("{layer}"), "situation_capsule");
+
+    // 3. Exact normative owner
+    assert_eq!(layer.owner(), "fss-situation/fss-context-pack/fss-affordance");
+
+    // 4. Exact normative question
+    assert_eq!(
+        layer.agent_question(),
+        "What is the smallest sufficient mission-relative driver view now, what changed, and what can safely be done next?"
+    );
+
+    // 5. Exact normative output
+    assert_eq!(
+        layer.output(),
+        "SituationCapsule containing SituationFrame with WorldEnvelope, MeaningfulDelta, obligations, resource state, categorized control envelope, ContextPack, compression proof, and affordance frontier."
+    );
+
+    // 6. Exact normative prohibition
+    assert_eq!(
+        layer.prohibition(),
+        "Cannot hide decision-changing omissions or rebase evidence identities."
+    );
+
+    // 7. Exact normative invariant
+    assert_eq!(layer.invariant(), "INV-116");
+
+    // 8. Exact normative status
+    assert_eq!(layer.status(), "normative");
+
+    // 9. Semantic plane: Cognition (strictly non-authority, non-effect)
+    assert_eq!(layer.plane(), Plane::Cognition);
+
+    // 10. Tower level: L4 (0-indexed: 4)
+    assert_eq!(layer.tower_level(), 4);
+
+    // 11. Constitutional non-authority gates:
+    assert!(!layer.may_claim_authority());
+    assert!(!layer.may_authorize_effects());
+    assert!(layer.is_anchor_pinned_rebuildable());
+
+    // 12. Helper predicates:
+    assert!(layer.is_situation_capsule());
+    assert!(layer.prohibits_hiding_decision_changing_omissions());
+    assert!(layer.prohibits_rebasing_evidence_identities());
+
+    // 13. Invariant validation passes:
+    layer.validate_invariants()?;
+
+    Ok(())
+}
+
+#[test]
+fn test_situation_capsule_parse_and_resolution() -> Result<(), Box<dyn Error>> {
+    // Parse from stable ID
+    let from_id = AgentAbstractionLayer::from_id("AGT-LAYER-005")?;
+    assert_eq!(from_id, AgentAbstractionLayer::SituationCapsule);
+
+    // Parse from schema name
+    let from_name = AgentAbstractionLayer::from_name("situation_capsule")?;
+    assert_eq!(from_name, AgentAbstractionLayer::SituationCapsule);
+
+    // Parse via FromStr with stable ID
+    let from_str_id = AgentAbstractionLayer::from_str("AGT-LAYER-005")?;
+    assert_eq!(from_str_id, AgentAbstractionLayer::SituationCapsule);
+
+    // Parse via FromStr with schema name
+    let from_str_name = AgentAbstractionLayer::from_str("situation_capsule")?;
+    assert_eq!(from_str_name, AgentAbstractionLayer::SituationCapsule);
+
+    // Parse from tower level
+    let from_level = AgentAbstractionLayer::from_tower_level(4)?;
+    assert_eq!(from_level, AgentAbstractionLayer::SituationCapsule);
+
+    Ok(())
+}
+
+#[test]
+fn test_planted_negative_situation_capsule_bypasses() -> Result<(), Box<dyn Error>> {
+    let layer = AgentAbstractionLayer::SituationCapsule;
+
+    // Planted bypass 1: Cognition layer must NEVER claim authority
+    assert!(!layer.may_claim_authority());
+
+    // Planted bypass 2: Cognition layer must NEVER authorize effects
+    assert!(!layer.may_authorize_effects());
+
+    // Planted bypass 3: Plane must strictly be Cognition, never Authority or Effect
+    assert_ne!(layer.plane(), Plane::Authority);
+    assert_ne!(layer.plane(), Plane::Effect);
+    assert_eq!(layer.plane(), Plane::Cognition);
+
+    // Planted bypass 4: Invariant must strictly be INV-116
+    assert_eq!(layer.invariant(), "INV-116");
+
+    // Planted bypass 5: Must strictly prohibit hiding decision-changing omissions
+    assert!(layer.prohibits_hiding_decision_changing_omissions());
+
+    // Planted bypass 6: Must strictly prohibit rebasing evidence identities
+    assert!(layer.prohibits_rebasing_evidence_identities());
+
+    // Planted bypass 7: Must be anchor-pinned and rebuildable
+    assert!(layer.is_anchor_pinned_rebuildable());
+
+    // Planted bypass 8: Mutated ID fails closed with UnknownAbstractionLayer
+    let Err(err_id) = AgentAbstractionLayer::from_id("AGT-LAYER-005X") else {
+        return Err("expected mutated ID to fail".into());
+    };
+    assert_eq!(
+        err_id,
+        ContractError::UnknownAbstractionLayer("AGT-LAYER-005X".into())
+    );
+
+    // Planted bypass 9: Case-mismatched name fails closed with UnknownAbstractionLayer
+    let Err(err_name) = AgentAbstractionLayer::from_name("Situation_Capsule") else {
+        return Err("expected uppercase name to fail".into());
+    };
+    assert_eq!(
+        err_name,
+        ContractError::UnknownAbstractionLayer("Situation_Capsule".into())
+    );
+
+    // Planted bypass 10: Out-of-range tower level fails closed with UnknownEntryTag
+    let Err(err_level) = AgentAbstractionLayer::from_tower_level(250) else {
+        return Err("expected out-of-range tower level to fail".into());
+    };
+    assert_eq!(err_level, ContractError::UnknownEntryTag(250));
+
+    Ok(())
+}
+
+#[test]
 fn test_agent_abstraction_layer_canonical_roundtrip() -> Result<(), Box<dyn Error>> {
     for layer in AgentAbstractionLayer::ALL {
         let mut encoder = CanonicalEncoder::new();
