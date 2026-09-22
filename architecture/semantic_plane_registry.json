@@ -313,6 +313,11 @@
       "plane": "authority",
       "description": "Authoritative reconciliation record matching intent to terminal proof"
     },
+    "EffectCancellationRecord": {
+      "file": "crates/fss-core/src/effect.rs",
+      "plane": "authority",
+      "description": "Authoritative cancellation proof record binding operation identity, prepared plan digest, and time evidence"
+    },
     "ReconciliationOutcome": {
       "file": "crates/fss-core/src/effect.rs",
       "plane": "authority",

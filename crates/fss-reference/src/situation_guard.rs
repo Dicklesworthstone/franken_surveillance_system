@@ -292,7 +292,7 @@ fn validate_operation_receipt(
                     && carries_only_an_inherited_reason(receipt)
             }
             // The journal cancels only a prepared operation, strictly later than its preparation,
-            // and only with a cancellation proof digest; a reason is optional but never empty.
+            // and only with a bound cancellation proof digest; a reason is optional but never empty (fss-thzlz).
             EffectState::Cancelled => {
                 receipt.committed_at.is_none()
                     && receipt.updated_at > receipt.prepared_at
@@ -302,6 +302,10 @@ fn validate_operation_receipt(
                         .as_deref()
                         .is_none_or(|reason| !reason.is_empty())
                     && receipt.indeterminate_reason.is_none()
+                    && (receipt.record_version() == EffectRecordVersion::V1
+                        || receipt
+                            .expected_cancellation_proof()
+                            .is_ok_and(|expected| receipt.result_digest == Some(expected)))
             }
             // A failure names its own non-empty reason; an earlier indeterminate episode, if any,
             // keeps its recorded (never empty) or legacy unrecorded reason.

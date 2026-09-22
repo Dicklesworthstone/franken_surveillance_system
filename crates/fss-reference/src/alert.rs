@@ -773,11 +773,9 @@ where
     } else {
         TimestampNs(updated_at.0.saturating_add(1))
     };
-    let cancel_proof = alert_cancel_proof(
-        operation_id,
-        &plan.authority_anchor,
-        &authority.current().anchor,
-    );
+    let cancel_proof = prepared_intent
+        .cancellation_proof(operation.prepared_at, cancel_at)
+        .map_err(ReferenceError::Contract)?;
     journal.transition_cancelled(
         operation_id,
         cancel_at,
