@@ -169,7 +169,7 @@ fn current_clock_regression_is_safe_but_cancellation_and_budget_errors_fence() -
 fn source_corruption_is_not_reported_as_an_exhausted_prefix() -> Test {
     let path = fresh("corrupt")?; let pin = save(&path, &observations(false)?)?;
     let (p, a) = reopen(&path, pin)?;
-    let hex = a.records()[0].payload.to_text().strip_prefix("sha256:").ok_or("digest")?.to_owned();
+    let hex = a.records()[0].payload_digest.to_text().strip_prefix("sha256:").ok_or("digest")?.to_owned();
     std::fs::write(p.root_dir().join("spool/objects").join(hex), b"corrupted source")?;
     let mut replay = DatagramAvcReplay::new(&a, spec()?, bounds(), 0)?;
     assert!(replay.step(&p, 0, &NeverCancel, &mut work()).is_err());

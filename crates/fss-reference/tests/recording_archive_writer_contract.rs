@@ -64,9 +64,9 @@ fn backpressure_returns_exact_unconsumed_recording_without_advancing_ordinal() -
     let bytes = a.byte_len(); w.offer(a, bytes, now)?;
     let bytes = b.byte_len();
     let refusal = must_refuse(w.offer(b, bytes, now))?;
-    assert!(matches!(refusal.reason, ArchiveError::Backpressure)); assert_eq!(refusal.recording.manifest().root(), b_root);
+    assert!(matches!(*refusal.reason, ArchiveError::Backpressure)); assert_eq!(refusal.recording.manifest().root(), b_root);
     drive_ready(&mut w, &mut now)?;
-    assert_eq!(w.offer(refusal.recording, bytes, now)?.ordinal, 1);
+    assert_eq!(w.offer(*refusal.recording, bytes, now)?.ordinal, 1);
     drive_ready(&mut w, &mut now)?;
     w.finish(); drive_finished(&mut w, &mut now)?;
     assert!(w.retire().pending.is_none());
@@ -102,10 +102,10 @@ fn durable_tail_is_indexed_on_restart_before_new_capture_is_admitted() -> TestRe
     let mut w = RecordingArchiveWriter::open(&mut p, ns, ArchiveLimits::default(), 0, 1000, &NeverCancel)?;
     let b = window(3, 3600)?; let bytes = b.byte_len();
     let refused = must_refuse(w.offer(b, bytes, 0))?;
-    assert!(matches!(refused.reason, ArchiveError::Backpressure));
+    assert!(matches!(*refused.reason, ArchiveError::Backpressure));
     let mut now = 0; drive_ready(&mut w, &mut now)?;
     assert_eq!(w.snapshot().indexed_windows(), 1);
-    assert_eq!(w.offer(refused.recording, bytes, now)?.ordinal, 1);
+    assert_eq!(w.offer(*refused.recording, bytes, now)?.ordinal, 1);
     w.finish(); drive_finished(&mut w, &mut now)?;
     assert_eq!(w.retire().snapshot.indexed_windows(), 2);
     Ok(())
@@ -124,7 +124,7 @@ fn ambiguous_window_rename_keeps_originals_and_reopen_does_not_duplicate_them() 
     let mut now = 0; drive_ready(&mut w, &mut now)?;
     assert_eq!(w.snapshot().indexed_windows(), 1); assert_eq!(w.snapshot().windows()[0].root(), root);
     let refusal = must_refuse(w.offer(retained.pending.ok_or("pending")?, bytes, now))?;
-    assert!(matches!(refusal.reason, ArchiveError::Duplicate)); assert_eq!(refusal.recording.manifest().root(), root);
+    assert!(matches!(*refusal.reason, ArchiveError::Duplicate)); assert_eq!(refusal.recording.manifest().root(), root);
     assert_eq!(w.retire().snapshot.windows().len(), 1);
     Ok(())
 }
@@ -178,10 +178,10 @@ fn capacity_and_reservation_refusals_never_evict_old_evidence() -> TestResult {
     let mut w = RecordingArchiveWriter::open(&mut p, namespace()?, limits, 0, 1000, &NeverCancel)?;
     let a = window(1, 0)?; let bytes = a.byte_len();
     let refused = must_refuse(w.offer(a, bytes - 1, 0))?;
-    assert!(matches!(refused.reason, ArchiveError::Limit)); assert!(w.snapshot().windows().is_empty());
-    w.offer(refused.recording, bytes, 0)?; let mut now = 0; drive_ready(&mut w, &mut now)?;
+    assert!(matches!(*refused.reason, ArchiveError::Limit)); assert!(w.snapshot().windows().is_empty());
+    w.offer(*refused.recording, bytes, 0)?; let mut now = 0; drive_ready(&mut w, &mut now)?;
     let b = window(3, 3600)?; let bytes = b.byte_len();
-    assert!(matches!(must_refuse(w.offer(b, bytes, now))?.reason, ArchiveError::Limit));
+    assert!(matches!(*must_refuse(w.offer(b, bytes, now))?.reason, ArchiveError::Limit));
     w.finish(); drive_finished(&mut w, &mut now)?;
     assert_eq!(w.retire().snapshot.indexed_windows(), 1);
     Ok(())

@@ -51,9 +51,18 @@ fn test_no_production_consumer_guard() -> Result<(), Box<dyn Error>> {
                     if file_name != "media_fixture.rs" {
                         let content = fs::read_to_string(&path)?;
                         for (idx, line) in content.lines().enumerate() {
-                            if line.contains("media_fixture::jpeg")
-                                || (line.contains("media_fixture")
-                                    && !line.contains("pub mod media_fixture;"))
+                            // The first-party JPEG *encoder* is production media code (used by
+                            // the opt-in synthetic capture facility); the fixture *generator*
+                            // surface (scene data, seed manifests, golden fixtures) is not.
+                            let encoder_api = line.contains("media_fixture::jpeg::")
+                                && ["encode_jpeg", "JpegConfig", "CustomMarker", "Subsampling",
+                                    "JpegError"]
+                                .iter()
+                                .any(|symbol| line.contains(symbol));
+                            if !encoder_api
+                                && (line.contains("media_fixture::jpeg")
+                                    || (line.contains("media_fixture")
+                                        && !line.contains("pub mod media_fixture;")))
                             {
                                 violations.push(format!(
                                     "{}:{}: disallowed reference to fixture generator in production code",
