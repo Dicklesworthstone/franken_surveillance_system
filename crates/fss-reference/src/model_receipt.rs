@@ -463,7 +463,7 @@ impl ModelInvocationReceipt {
         encoder.text("fss.canonical.v1");
         encoder.text(MODEL_EXECUTION_RECEIPT_DOMAIN);
         encoder.text(&self.schema);
-        encoder.u64(self.generation.as_u64());
+        encoder.u64(self.generation.0);
         encoder.text(&self.job_id);
 
         encoder.u64(self.input_roots.len() as u64);
@@ -819,7 +819,7 @@ pub fn compute_execution_plan_digest(
     encoder.digest(ir_digest);
 
     // Topological node IDs
-    let nodes = graph.topological_sort()?;
+    let nodes = topological_nodes(graph)?;
     encoder.u64(nodes.len() as u64);
     for node in nodes {
         encoder.text(node.id());
@@ -848,6 +848,28 @@ pub fn compute_numeric_policy_digest() -> ContentDigest {
     ContentDigest::sha256(&encoder.finish())
 }
 
+
+/// Deterministic topological node ordering via the model IR validator, matching the
+/// canonical graph walk used by `fss_model_ir` digest computation.
+fn topological_nodes<'a>(
+    graph: &'a ModelIrGraph,
+) -> Result<Vec<&'a fss_model_ir::GraphNode>, ReceiptVerificationError> {
+    let mut producer_map = std::collections::BTreeMap::new();
+    for input in graph.inputs() {
+        producer_map.insert(input.name(), fss_model_ir::validator::ProducerId::GraphInput);
+    }
+    for node in graph.nodes() {
+        for out_name in node.outputs() {
+            producer_map.insert(
+                out_name.as_str(),
+                fss_model_ir::validator::ProducerId::Node(node.id()),
+            );
+        }
+    }
+    let nodes = fss_model_ir::validator::GraphValidator::topological_sort(graph, &producer_map)?;
+    Ok(nodes)
+}
+
 /// Computes the decision path digest from topological dispatch records.
 pub fn compute_decision_path_digest(
     graph: &ModelIrGraph,
@@ -856,7 +878,7 @@ pub fn compute_decision_path_digest(
     encoder.text("fss.canonical.v1");
     encoder.text("fss.model_execution_receipt.v1/decision_path");
 
-    if let Ok(nodes) = graph.topological_sort() {
+    if let Ok(nodes) = topological_nodes(graph) {
         encoder.u64(nodes.len() as u64);
         for node in nodes {
             encoder.text(node.id());
@@ -917,7 +939,7 @@ pub fn compute_operator_trace_chain(
     graph: &ModelIrGraph,
     outcome: &ExecOutcome,
 ) -> Result<ContentDigest, ReceiptVerificationError> {
-    let nodes = graph.topological_sort()?;
+    let nodes = topological_nodes(graph)?;
     let seed = b"fss.model_execution_receipt.v1/operator_trace";
     let mut current = ContentDigest::sha256(seed);
 
@@ -1069,7 +1091,7 @@ pub fn execute_and_record_receipt(
                     Err(_) => None,
                 };
                 let wall_ns = virtual_clock
-                    .map(|c| c.now().as_nanos().min(u64::MAX as u128) as u64)
+                    .map(|c| u64::try_from(c.now().0).unwrap_or(u64::MAX))
                     .unwrap_or(0);
                 let rec_usage = ReceiptUsage::new(
                     total_in_bytes,

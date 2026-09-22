@@ -24,6 +24,7 @@
 
 pub mod bits;
 pub mod cavlc;
+pub mod residual;
 pub mod rbsp;
 mod tables;
 #[cfg(test)]
