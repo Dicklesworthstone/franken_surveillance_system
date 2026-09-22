@@ -2550,3 +2550,48 @@ fn test_h4_intermediate_artifact_byte_count_less_than_shape_elements_rejected() 
     };
     assert_eq!(valid_intermediate.validate(), Ok(()));
 }
+
+/// The laboratory quarantine must travel with the digests, not only with the
+/// citing cell: the cell's references carry the Laboratory origin, and a later
+/// observed cell citing the same expansion digest is refused as laundering
+/// (Laboratory relabelled into any produced class) instead of silently
+/// inheriting the citing cell's authorizing class.
+#[test]
+fn test_h4_lab_quarantine_travels_with_the_evidence_digest() -> Result<(), Box<dyn Error>> {
+    let expansion = sample_valid_expansion()?;
+    let cell = expansion.to_knowledge_cell(&sample_anchor())?;
+
+    // Both references carry the Laboratory origin, not the citing cell's class.
+    assert!(!cell.evidence().is_empty());
+    for reference in cell.evidence() {
+        assert_eq!(
+            reference.origin,
+            fss_core::EvidenceOrigin::Laboratory,
+            "laboratory evidence must not inherit the citing cell's produced class"
+        );
+    }
+
+    // The cell itself can never be an irreversible-effect premise...
+    assert!(!cell.is_irreversible_effect_premise(TimestampNs(1)));
+
+    // ...and neither can any later cell that merely re-cites the lab digest
+    // under an authorizing class: the relabel is refused as laundering.
+    let relabelled = KnowledgeCell::new(KnowledgeCellParams {
+        claim_id: "claim:observed-lab-artifact".to_owned(),
+        statement: "observed the laboratory expansion artifact".to_owned(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Observed,
+        hypothesis: None,
+        evidence: vec![expansion.expansion_digest()],
+        contradictions: vec![],
+        valid_until: None,
+        state_basis: None,
+    })?;
+    assert!(relabelled.is_irreversible_effect_premise(TimestampNs(201)));
+    let verdict = relabelled.verify_no_evidence_laundering(&cell);
+    assert!(
+        matches!(verdict, Err(ContractError::EvidenceLaunderingDetected)),
+        "laboratory digest relabelled onto an authorizing cell must be refused: {verdict:?}"
+    );
+    Ok(())
+}
