@@ -84,3 +84,6 @@ pub mod rgb_archive;
 
 /// Exact retained HTTP prefixes through the native HTTP/MJPEG parsers, without invented EOF.
 pub mod http_replay;
+
+/// Explicit native recording with durable-before-parse custody and cold-replay completion.
+pub mod http_recording;
