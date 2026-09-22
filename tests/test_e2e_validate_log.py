@@ -9,35 +9,37 @@ Kills mutants for:
 - Duplicate JSON keys and duplicate step IDs
 - Type mismatch (bool-as-int, negative duration, NaN duration)
 - CRLF and invalid UTF-8 detection
-- Summary consistency (verdict vs failures list vs step count)
+- Summary consistency (verdict vs failures list vs step count; failures and skipped name known
+  steps; every failed step is listed)
+- Secret value shapes (including 12-character ghp_ tokens)
+- Directory mode skipping tmp_ dirs and .tmpdirs side files
+
+Scratch files live under the repo's target/ dir, never under /tmp.
 """
 
 import json
-import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-# Add repo root to import path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys_path_e2e = REPO_ROOT / "scripts" / "e2e"
-import sys
+SCRATCH_BASE = REPO_ROOT / "target" / "test_sandboxes" / "validate_log_unittest"
 
 if str(sys_path_e2e) not in sys.path:
     sys.path.insert(0, str(sys_path_e2e))
 
-import validate_log
-from validate_log import ValidationError, validate_file, find_log_files
-
-_TEST_SANDBOX = REPO_ROOT / "target" / "test_sandboxes"
-_TEST_SANDBOX.mkdir(parents=True, exist_ok=True)
-tempfile.tempdir = str(_TEST_SANDBOX)
+import validate_log  # noqa: E402
+from validate_log import ValidationError, validate_file, find_log_files  # noqa: E402
 
 
 class TestValidateLog(unittest.TestCase):
     def setUp(self):
-        self.tmp_dir = tempfile.mkdtemp(prefix="test_val_log_", dir=str(_TEST_SANDBOX))
+        SCRATCH_BASE.mkdir(parents=True, exist_ok=True)
+        self.tmp_dir = tempfile.mkdtemp(prefix="test_val_log_", dir=SCRATCH_BASE)
         self.log_path = Path(self.tmp_dir) / "run_0001.log"
 
     def tearDown(self):
@@ -107,6 +109,15 @@ class TestValidateLog(unittest.TestCase):
         with open(self.log_path, "w", encoding="utf-8") as f:
             f.write(content)
 
+    def _assert_code(self, code):
+        with self.assertRaises(ValidationError) as ctx:
+            validate_file(self.log_path)
+        self.assertEqual(ctx.exception.code, code)
+
+    def test_scratch_dir_is_not_under_tmp(self):
+        self.assertTrue(Path(self.tmp_dir).resolve().is_relative_to((REPO_ROOT / "target").resolve()))
+        self.assertNotEqual(Path(self.tmp_dir).resolve().parts[:2], ("/", "tmp"))
+
     def test_valid_log_passes(self):
         records = [
             self._valid_env_record(),
@@ -126,9 +137,7 @@ class TestValidateLog(unittest.TestCase):
             self._valid_summary_record("pass", steps=1)
         ]
         self._write_records(records)
-        with self.assertRaises(ValidationError) as ctx:
-            validate_file(self.log_path)
-        self.assertEqual(ctx.exception.code, "ERR_MISSING_REQUIRED_FIELD")
+        self._assert_code("ERR_MISSING_REQUIRED_FIELD")
 
     def test_missing_step_field_rejected(self):
         step = self._valid_step_record("s1", "pass")
@@ -139,9 +148,7 @@ class TestValidateLog(unittest.TestCase):
             self._valid_summary_record("pass", steps=1)
         ]
         self._write_records(records)
-        with self.assertRaises(ValidationError) as ctx:
-            validate_file(self.log_path)
-        self.assertEqual(ctx.exception.code, "ERR_MISSING_REQUIRED_FIELD")
+        self._assert_code("ERR_MISSING_REQUIRED_FIELD")
 
     def test_missing_summary_field_rejected(self):
         summ = self._valid_summary_record("pass", steps=1)
@@ -152,9 +159,7 @@ class TestValidateLog(unittest.TestCase):
             summ
         ]
         self._write_records(records)
-        with self.assertRaises(ValidationError) as ctx:
-            validate_file(self.log_path)
-        self.assertEqual(ctx.exception.code, "ERR_MISSING_REQUIRED_FIELD")
+        self._assert_code("ERR_MISSING_REQUIRED_FIELD")
 
     def test_non_json_rejected(self):
         raw = (
@@ -163,9 +168,7 @@ class TestValidateLog(unittest.TestCase):
             + json.dumps(self._valid_summary_record("pass", steps=1)) + "\n"
         ).encode("utf-8")
         self._write_records(None, raw_override=raw)
-        with self.assertRaises(ValidationError) as ctx:
-            validate_file(self.log_path)
-        self.assertEqual(ctx.exception.code, "ERR_INVALID_JSON")
+        self._assert_code("ERR_INVALID_JSON")
 
     def test_env_first_enforced(self):
         records = [
@@ -173,9 +176,7 @@ class TestValidateLog(unittest.TestCase):
             self._valid_summary_record("pass", steps=1)
         ]
         self._write_records(records)
-        with self.assertRaises(ValidationError) as ctx:
-            validate_file(self.log_path)
-        self.assertEqual(ctx.exception.code, "ERR_ENV_NOT_FIRST")
+        self._assert_code("ERR_ENV_NOT_FIRST")
 
     def test_summary_last_enforced(self):
         records = [
@@ -183,9 +184,7 @@ class TestValidateLog(unittest.TestCase):
             self._valid_step_record("s1", "pass")
         ]
         self._write_records(records)
-        with self.assertRaises(ValidationError) as ctx:
-            validate_file(self.log_path)
-        self.assertEqual(ctx.exception.code, "ERR_MISSING_SUMMARY")
+        self._assert_code("ERR_MISSING_SUMMARY")
 
     def test_multiple_summaries_rejected(self):
         records = [
@@ -195,9 +194,7 @@ class TestValidateLog(unittest.TestCase):
             self._valid_summary_record("pass", steps=1)
         ]
         self._write_records(records)
-        with self.assertRaises(ValidationError) as ctx:
-            validate_file(self.log_path)
-        self.assertEqual(ctx.exception.code, "ERR_MULTIPLE_SUMMARIES")
+        self._assert_code("ERR_MULTIPLE_SUMMARIES")
 
     def test_duplicate_step_id_rejected(self):
         records = [
@@ -207,16 +204,12 @@ class TestValidateLog(unittest.TestCase):
             self._valid_summary_record("pass", steps=2)
         ]
         self._write_records(records)
-        with self.assertRaises(ValidationError) as ctx:
-            validate_file(self.log_path)
-        self.assertEqual(ctx.exception.code, "ERR_DUPLICATE_STEP_ID")
+        self._assert_code("ERR_DUPLICATE_STEP_ID")
 
     def test_duplicate_json_key_rejected(self):
         raw = b'{"step": "env", "step": "env"}\n'
         self._write_records(None, raw_override=raw)
-        with self.assertRaises(ValidationError) as ctx:
-            validate_file(self.log_path)
-        self.assertEqual(ctx.exception.code, "ERR_DUPLICATE_KEY")
+        self._assert_code("ERR_DUPLICATE_KEY")
 
     def test_crlf_rejected(self):
         records = [
@@ -226,24 +219,18 @@ class TestValidateLog(unittest.TestCase):
         ]
         raw = ("\r\n".join(json.dumps(r) for r in records) + "\r\n").encode("utf-8")
         self._write_records(None, raw_override=raw)
-        with self.assertRaises(ValidationError) as ctx:
-            validate_file(self.log_path)
-        self.assertEqual(ctx.exception.code, "ERR_CRLF_LINE_ENDING")
+        self._assert_code("ERR_CRLF_LINE_ENDING")
 
     def test_invalid_utf8_rejected(self):
         raw = b'{"step": "env"}\n\xff\xfe\n{"step": "summary"}\n'
         self._write_records(None, raw_override=raw)
-        with self.assertRaises(ValidationError) as ctx:
-            validate_file(self.log_path)
-        self.assertEqual(ctx.exception.code, "ERR_INVALID_UTF8")
+        self._assert_code("ERR_INVALID_UTF8")
 
     def test_line_too_long_rejected(self):
         long_str = "x" * 70000
         raw = f'{{"step": "env", "note": "{long_str}"}}\n'.encode("utf-8")
         self._write_records(None, raw_override=raw)
-        with self.assertRaises(ValidationError) as ctx:
-            validate_file(self.log_path)
-        self.assertEqual(ctx.exception.code, "ERR_LINE_TOO_LONG")
+        self._assert_code("ERR_LINE_TOO_LONG")
 
     def test_bool_as_int_rejected(self):
         step = self._valid_step_record("s1", "pass")
@@ -254,9 +241,7 @@ class TestValidateLog(unittest.TestCase):
             self._valid_summary_record("pass", steps=1)
         ]
         self._write_records(records)
-        with self.assertRaises(ValidationError) as ctx:
-            validate_file(self.log_path)
-        self.assertEqual(ctx.exception.code, "ERR_TYPE_MISMATCH")
+        self._assert_code("ERR_TYPE_MISMATCH")
 
     def test_negative_duration_rejected(self):
         step = self._valid_step_record("s1", "pass")
@@ -267,9 +252,7 @@ class TestValidateLog(unittest.TestCase):
             self._valid_summary_record("pass", steps=1)
         ]
         self._write_records(records)
-        with self.assertRaises(ValidationError) as ctx:
-            validate_file(self.log_path)
-        self.assertEqual(ctx.exception.code, "ERR_INVALID_DURATION")
+        self._assert_code("ERR_INVALID_DURATION")
 
     def test_nan_duration_rejected(self):
         raw = (
@@ -291,9 +274,7 @@ class TestValidateLog(unittest.TestCase):
             self._valid_summary_record("pass", steps=1)
         ]
         self._write_records(records)
-        with self.assertRaises(ValidationError) as ctx:
-            validate_file(self.log_path)
-        self.assertEqual(ctx.exception.code, "ERR_EXCERPT_CAP_EXCEEDED")
+        self._assert_code("ERR_EXCERPT_CAP_EXCEEDED")
 
     def test_secret_key_rejected(self):
         step = self._valid_step_record("s1", "pass")
@@ -304,9 +285,42 @@ class TestValidateLog(unittest.TestCase):
             self._valid_summary_record("pass", steps=1)
         ]
         self._write_records(records)
-        with self.assertRaises(ValidationError) as ctx:
-            validate_file(self.log_path)
-        self.assertEqual(ctx.exception.code, "ERR_SECRET_KEY_FOUND")
+        self._assert_code("ERR_SECRET_KEY_FOUND")
+
+    def test_secret_value_rejected(self):
+        # N28: the value scan finds a token shape anywhere in a record.
+        step = self._valid_step_record("s1", "pass")
+        step["observed"] = {"nested": ["ok", "token ghp_" + "A" * 20]}
+        records = [
+            self._valid_env_record(),
+            step,
+            self._valid_summary_record("pass", steps=1)
+        ]
+        self._write_records(records)
+        self._assert_code("ERR_SECRET_VALUE_FOUND")
+
+    def test_short_ghp_token_rejected(self):
+        # ghp_ plus 12 characters is already a token shape.
+        step = self._valid_step_record("s1", "pass")
+        step["stdout_excerpt"] = "ghp_ABCDEFGHIJKL\n"
+        records = [
+            self._valid_env_record(),
+            step,
+            self._valid_summary_record("pass", steps=1)
+        ]
+        self._write_records(records)
+        self._assert_code("ERR_SECRET_VALUE_FOUND")
+
+    def test_ghp_prefix_below_twelve_characters_allowed(self):
+        step = self._valid_step_record("s1", "pass")
+        step["stdout_excerpt"] = "ghp_ABCDEFGHIJK\n"  # 11 characters: not a token shape
+        records = [
+            self._valid_env_record(),
+            step,
+            self._valid_summary_record("pass", steps=1)
+        ]
+        self._write_records(records)
+        validate_file(self.log_path)
 
     def test_summary_consistency_pass_with_failures(self):
         records = [
@@ -315,9 +329,7 @@ class TestValidateLog(unittest.TestCase):
             self._valid_summary_record("pass", steps=1, failures=[])
         ]
         self._write_records(records)
-        with self.assertRaises(ValidationError) as ctx:
-            validate_file(self.log_path)
-        self.assertEqual(ctx.exception.code, "ERR_SUMMARY_INCONSISTENCY")
+        self._assert_code("ERR_SUMMARY_INCONSISTENCY")
 
     def test_summary_consistency_fail_with_empty_failures(self):
         records = [
@@ -326,9 +338,7 @@ class TestValidateLog(unittest.TestCase):
             self._valid_summary_record("fail", steps=1, failures=[])
         ]
         self._write_records(records)
-        with self.assertRaises(ValidationError) as ctx:
-            validate_file(self.log_path)
-        self.assertEqual(ctx.exception.code, "ERR_SUMMARY_INCONSISTENCY")
+        self._assert_code("ERR_SUMMARY_INCONSISTENCY")
 
     def test_summary_consistency_steps_count_mismatch(self):
         records = [
@@ -338,9 +348,67 @@ class TestValidateLog(unittest.TestCase):
             self._valid_summary_record("pass", steps=1)  # says 1, but 2 records
         ]
         self._write_records(records)
+        self._assert_code("ERR_SUMMARY_INCONSISTENCY")
+
+    def test_failures_unknown_step_rejected(self):
+        # N25: every summary failure names a step record of the log.
+        records = [
+            self._valid_env_record(),
+            self._valid_step_record("s1", "pass"),
+            self._valid_summary_record("fail", steps=1, failures=["ghost"])
+        ]
+        self._write_records(records)
         with self.assertRaises(ValidationError) as ctx:
             validate_file(self.log_path)
         self.assertEqual(ctx.exception.code, "ERR_SUMMARY_INCONSISTENCY")
+        self.assertIn("unknown step id 'ghost'", ctx.exception.message)
+
+    def test_failed_step_missing_from_failures_rejected(self):
+        # N26: every failed step record is listed in summary failures.
+        records = [
+            self._valid_env_record(),
+            self._valid_step_record("s1", "fail", exit_code=1),
+            self._valid_step_record("s2", "fail", exit_code=1),
+            self._valid_summary_record("fail", steps=2, failures=["s1"])
+        ]
+        self._write_records(records)
+        with self.assertRaises(ValidationError) as ctx:
+            validate_file(self.log_path)
+        self.assertEqual(ctx.exception.code, "ERR_SUMMARY_INCONSISTENCY")
+        self.assertIn("'s2' failed", ctx.exception.message)
+
+    def test_skipped_unknown_step_rejected(self):
+        # N27: every summary skip names a step record of the log.
+        records = [
+            self._valid_env_record(),
+            self._valid_step_record("s1", "pass"),
+            self._valid_summary_record("pass", steps=1, skipped=[{"step": "ghost", "reason": "absent"}])
+        ]
+        self._write_records(records)
+        with self.assertRaises(ValidationError) as ctx:
+            validate_file(self.log_path)
+        self.assertEqual(ctx.exception.code, "ERR_SUMMARY_INCONSISTENCY")
+        self.assertIn("unknown step id 'ghost'", ctx.exception.message)
+
+    def test_skipped_step_missing_from_summary_rejected(self):
+        records = [
+            self._valid_env_record(),
+            self._valid_step_record("s1", "pass"),
+            self._valid_step_record("s2", "skip"),
+            self._valid_summary_record("pass", steps=2, skipped=[])
+        ]
+        self._write_records(records)
+        self._assert_code("ERR_SUMMARY_INCONSISTENCY")
+
+    def test_known_failures_and_skips_pass(self):
+        records = [
+            self._valid_env_record(),
+            self._valid_step_record("s1", "fail", exit_code=1),
+            self._valid_step_record("s2", "skip"),
+            self._valid_summary_record("fail", steps=2, failures=["s1"], skipped=[{"step": "s2", "reason": "r"}])
+        ]
+        self._write_records(records)
+        validate_file(self.log_path)
 
     def test_all_steps_skipped_rejected(self):
         step = self._valid_step_record("s1", "skip")
@@ -350,9 +418,7 @@ class TestValidateLog(unittest.TestCase):
             self._valid_summary_record("pass", steps=1, skipped=[{"step": "s1", "reason": "test"}])
         ]
         self._write_records(records)
-        with self.assertRaises(ValidationError) as ctx:
-            validate_file(self.log_path)
-        self.assertEqual(ctx.exception.code, "ERR_ALL_STEPS_SKIPPED")
+        self._assert_code("ERR_ALL_STEPS_SKIPPED")
 
     def test_all_steps_skipped_with_documented_run_failure_accepted(self):
         records = [
@@ -381,10 +447,7 @@ class TestValidateLog(unittest.TestCase):
             self._valid_summary_record("pass", steps=1)
         ]
         self._write_records(records)
-        with self.assertRaises(ValidationError) as ctx:
-            validate_file(self.log_path)
-        self.assertEqual(ctx.exception.code, "ERR_INVALID_HEX_DIGEST")
-
+        self._assert_code("ERR_INVALID_HEX_DIGEST")
 
     def test_invalid_bins_entry_rejected(self):
         env = self._valid_env_record()
@@ -395,9 +458,7 @@ class TestValidateLog(unittest.TestCase):
             self._valid_summary_record("pass", steps=1)
         ]
         self._write_records(records)
-        with self.assertRaises(ValidationError) as ctx:
-            validate_file(self.log_path)
-        self.assertEqual(ctx.exception.code, "ERR_INVALID_HEX_DIGEST")
+        self._assert_code("ERR_INVALID_HEX_DIGEST")
 
     def test_bins_missing_field_rejected(self):
         env = self._valid_env_record()
@@ -408,15 +469,11 @@ class TestValidateLog(unittest.TestCase):
             self._valid_summary_record("pass", steps=1)
         ]
         self._write_records(records)
-        with self.assertRaises(ValidationError) as ctx:
-            validate_file(self.log_path)
-        self.assertEqual(ctx.exception.code, "ERR_INVALID_BINS")
+        self._assert_code("ERR_INVALID_BINS")
 
     def test_empty_file_rejected(self):
         self._write_records(None, raw_override=b"")
-        with self.assertRaises(ValidationError) as ctx:
-            validate_file(self.log_path)
-        self.assertEqual(ctx.exception.code, "ERR_EMPTY_FILE")
+        self._assert_code("ERR_EMPTY_FILE")
 
     def test_whitespace_line_rejected(self):
         raw = (
@@ -425,9 +482,7 @@ class TestValidateLog(unittest.TestCase):
             + json.dumps(self._valid_summary_record("pass", steps=1)) + "\n"
         ).encode("utf-8")
         self._write_records(None, raw_override=raw)
-        with self.assertRaises(ValidationError) as ctx:
-            validate_file(self.log_path)
-        self.assertEqual(ctx.exception.code, "ERR_EMPTY_LINE")
+        self._assert_code("ERR_EMPTY_LINE")
 
     def test_find_log_files_skips_tmp_dirs_relative_to_target(self):
         target_dir = Path(self.tmp_dir) / "suite_target"
@@ -452,6 +507,130 @@ class TestValidateLog(unittest.TestCase):
         found = find_log_files(parent_dir)
         self.assertIn(good_log, found)
 
+    def test_dir_mode_skips_tmpdirs_side_file(self):
+        # N29: "<run log>.tmpdirs" starts with run_ but is not a log; directory mode must skip it.
+        suite = Path(self.tmp_dir) / "suite_tmpdirs"
+        suite.mkdir()
+        log = suite / "run_0001.log"
+        self.log_path = log
+        records = [
+            self._valid_env_record(),
+            self._valid_step_record("s1", "pass"),
+            self._valid_summary_record("pass", steps=1)
+        ]
+        self._write_records(records)
+        side = suite / "run_0001.log.tmpdirs"
+        side.write_text(str(suite / "tmp_abc123") + "\n")
+        found = find_log_files(suite)
+        self.assertEqual(found, [log])
+        proc = subprocess.run([sys.executable, str(sys_path_e2e / "validate_log.py"), str(suite)],
+                              capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_empty_repro_on_fail_summary_rejected(self):
+        # Item 6: a fail summary must carry a runnable repro.
+        summ = self._valid_summary_record("fail", steps=1, failures=["s1"])
+        summ["repro"] = ""
+        records = [
+            self._valid_env_record(),
+            self._valid_step_record("s1", "fail", exit_code=1),
+            summ
+        ]
+        self._write_records(records)
+        self._assert_code("ERR_EMPTY_REPRO")
+
+    def test_empty_repro_on_pass_summary_allowed(self):
+        summ = self._valid_summary_record("pass", steps=1)
+        summ["repro"] = ""
+        records = [
+            self._valid_env_record(),
+            self._valid_step_record("s1", "pass"),
+            summ
+        ]
+        self._write_records(records)
+        validate_file(self.log_path)
+
+    def test_secret_key_pwd_and_credentials_rejected(self):
+        # L4: pwd / private_key / credentials keys are in the same name set as the string rule.
+        for key in ("pwd", "private_key", "credentials", "passwd"):
+            step = self._valid_step_record("s1", "pass")
+            step["observed"] = {key: "value"}
+            records = [
+                self._valid_env_record(),
+                step,
+                self._valid_summary_record("pass", steps=1)
+            ]
+            self._write_records(records)
+            with self.assertRaises(ValidationError) as ctx:
+                validate_file(self.log_path)
+            self.assertEqual(ctx.exception.code, "ERR_SECRET_KEY_FOUND", key)
+
+    def test_unredacted_pem_value_rejected(self):
+        step = self._valid_step_record("s1", "pass")
+        step["stdout_excerpt"] = "-----BEGIN RSA PRIVATE KEY-----\nMIIB\n"
+        records = [
+            self._valid_env_record(),
+            step,
+            self._valid_summary_record("pass", steps=1)
+        ]
+        self._write_records(records)
+        self._assert_code("ERR_SECRET_VALUE_FOUND")
+
+    def test_unredacted_url_and_scp_credentials_rejected(self):
+        for leak in ("https://u:realpw@h.invalid/", "deploy:realpw@git.invalid", "curl -u admin:realpw"):
+            step = self._valid_step_record("s1", "pass")
+            step["observed"] = leak
+            records = [
+                self._valid_env_record(),
+                step,
+                self._valid_summary_record("pass", steps=1)
+            ]
+            self._write_records(records)
+            with self.assertRaises(ValidationError) as ctx:
+                validate_file(self.log_path)
+            self.assertEqual(ctx.exception.code, "ERR_SECRET_VALUE_FOUND", leak)
+
+    def test_redacted_credentials_accepted(self):
+        # A properly redacted field (<redacted>) must NOT trip the value scan.
+        step = self._valid_step_record("s1", "pass")
+        step["observed"] = "https://u:<redacted>@h.invalid/ deploy:<redacted>@git.invalid -u <redacted>"
+        records = [
+            self._valid_env_record(),
+            step,
+            self._valid_summary_record("pass", steps=1)
+        ]
+        self._write_records(records)
+        validate_file(self.log_path)
+
+    def test_dir_mode_validates_suite_named_tmp_evil(self):
+        # F3: a suite dir named tmp_evil (a broken log) must NOT be skipped as if it were a
+        # per-suite tmp_* scratch dir; only <suite>/tmp_* scratch dirs are skipped.
+        root = Path(self.tmp_dir) / "logroot"
+        good = root / "good"
+        good.mkdir(parents=True)
+        (good / "run_0001.log").write_text(
+            "\n".join(json.dumps(r) for r in [
+                self._valid_env_record(),
+                self._valid_step_record("s1", "pass"),
+                self._valid_summary_record("pass", steps=1),
+            ]) + "\n"
+        )
+        # A real scratch dir under the good suite must be skipped.
+        scratch = good / "tmp_abc123"
+        scratch.mkdir()
+        (scratch / "run_leftover.log").write_text("not json\n")
+        # A suite whose name starts with tmp_ holding a broken log must be found and rejected.
+        evil = root / "tmp_evil"
+        evil.mkdir()
+        (evil / "run_0001.log").write_text('{"step": "env"}\n')
+        found = find_log_files(root)
+        self.assertIn(good / "run_0001.log", found)
+        self.assertIn(evil / "run_0001.log", found)
+        self.assertNotIn(scratch / "run_leftover.log", found)
+        proc = subprocess.run([sys.executable, str(sys_path_e2e / "validate_log.py"), str(root)],
+                              capture_output=True, text=True)
+        self.assertNotEqual(proc.returncode, 0, "dir mode should reject tmp_evil's broken log")
+
     def test_summary_consistency_pass_with_nonempty_failures(self):
         records = [
             self._valid_env_record(),
@@ -459,69 +638,7 @@ class TestValidateLog(unittest.TestCase):
             self._valid_summary_record("pass", steps=1, failures=["s1"])
         ]
         self._write_records(records)
-        with self.assertRaises(ValidationError) as ctx:
-            validate_file(self.log_path)
-        self.assertEqual(ctx.exception.code, "ERR_SUMMARY_INCONSISTENCY")
-
-    def test_n25_summary_failures_contains_unknown_step_rejected(self):
-        records = [
-            self._valid_env_record(),
-            self._valid_step_record("s1", "pass"),
-            self._valid_summary_record("fail", steps=1, failures=["unknown_ghost_step"])
-        ]
-        self._write_records(records)
-        with self.assertRaises(ValidationError) as ctx:
-            validate_file(self.log_path)
-        self.assertEqual(ctx.exception.code, "ERR_SUMMARY_INCONSISTENCY")
-
-    def test_n26_failed_step_not_reported_in_summary_failures_rejected(self):
-        records = [
-            self._valid_env_record(),
-            self._valid_step_record("s1", "fail", exit_code=1),
-            self._valid_step_record("s2", "fail", exit_code=1),
-            self._valid_summary_record("fail", steps=2, failures=["s1"])
-        ]
-        self._write_records(records)
-        with self.assertRaises(ValidationError) as ctx:
-            validate_file(self.log_path)
-        self.assertEqual(ctx.exception.code, "ERR_SUMMARY_INCONSISTENCY")
-
-    def test_n27_summary_skipped_contains_unknown_step_rejected(self):
-        records = [
-            self._valid_env_record(),
-            self._valid_step_record("s1", "pass"),
-            self._valid_summary_record("pass", steps=1, failures=[], skipped=[{"step": "ghost_skip", "reason": "unseen"}])
-        ]
-        self._write_records(records)
-        with self.assertRaises(ValidationError) as ctx:
-            validate_file(self.log_path)
-        self.assertEqual(ctx.exception.code, "ERR_SUMMARY_INCONSISTENCY")
-
-    def test_n28_secret_value_scan_catches_short_ghp_token(self):
-        step = self._valid_step_record("s1", "pass")
-        step["stdout_excerpt"] = "leak: ghp_123456789012\n"
-        records = [
-            self._valid_env_record(),
-            step,
-            self._valid_summary_record("pass", steps=1)
-        ]
-        self._write_records(records)
-        with self.assertRaises(ValidationError) as ctx:
-            validate_file(self.log_path)
-        self.assertEqual(ctx.exception.code, "ERR_SECRET_VALUE_FOUND")
-
-    def test_n29_find_log_files_ignores_tmpdirs_extension(self):
-        target_dir = Path(self.tmp_dir) / "suite_tmpdirs"
-        target_dir.mkdir(parents=True)
-        good_log = target_dir / "run_0001.log"
-        good_log.write_text(json.dumps(self._valid_env_record()) + "\n")
-        tmpdirs_file = target_dir / "run_0001.log.tmpdirs"
-        tmpdirs_file.write_text("/path/to/some/tmpdir\n")
-
-        found = find_log_files(target_dir)
-        self.assertIn(good_log, found)
-        self.assertNotIn(tmpdirs_file, found)
-        self.assertEqual(found, [good_log])
+        self._assert_code("ERR_SUMMARY_INCONSISTENCY")
 
 
 if __name__ == "__main__":
