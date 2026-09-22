@@ -35,4 +35,5 @@ fss-twin = { path = "../fss-twin" }
 
 [dev-dependencies]
 fss-core = { path = "../fss-core", features = ["test-support"] }
+fss-packet = { path = "../fss-packet" }
 

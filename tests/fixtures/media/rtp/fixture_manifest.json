@@ -35,7 +35,9 @@
           "is_sacrificial": true,
           "expected_delivered": false,
           "packetization": "SingleNal",
-          "nal_types": [9]
+          "nal_types": [
+            9
+          ]
         },
         {
           "index": 1,
@@ -50,7 +52,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [9]
+          "nal_types": [
+            9
+          ]
         },
         {
           "index": 2,
@@ -65,7 +69,10 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "STAP-A",
-          "nal_types": [7, 8]
+          "nal_types": [
+            7,
+            8
+          ]
         },
         {
           "index": 3,
@@ -80,7 +87,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [6]
+          "nal_types": [
+            6
+          ]
         },
         {
           "index": 4,
@@ -95,7 +104,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "FU-A",
-          "nal_types": [5]
+          "nal_types": [
+            5
+          ]
         },
         {
           "index": 5,
@@ -110,7 +121,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "FU-A",
-          "nal_types": [5]
+          "nal_types": [
+            5
+          ]
         },
         {
           "index": 6,
@@ -125,7 +138,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [5]
+          "nal_types": [
+            5
+          ]
         },
         {
           "index": 7,
@@ -140,7 +155,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [9]
+          "nal_types": [
+            9
+          ]
         },
         {
           "index": 8,
@@ -155,7 +172,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [1]
+          "nal_types": [
+            1
+          ]
         },
         {
           "index": 9,
@@ -170,7 +189,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [9]
+          "nal_types": [
+            9
+          ]
         },
         {
           "index": 10,
@@ -185,7 +206,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [1]
+          "nal_types": [
+            1
+          ]
         },
         {
           "index": 11,
@@ -200,7 +223,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [9]
+          "nal_types": [
+            9
+          ]
         },
         {
           "index": 12,
@@ -215,7 +240,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [1]
+          "nal_types": [
+            1
+          ]
         },
         {
           "index": 13,
@@ -230,7 +257,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [9]
+          "nal_types": [
+            9
+          ]
         },
         {
           "index": 14,
@@ -245,7 +274,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [1]
+          "nal_types": [
+            1
+          ]
         }
       ]
     },
@@ -264,7 +295,9 @@
         "initial_sequence": 65534,
         "mtu": 1200
       },
-      "missing_sequences": [1],
+      "missing_sequences": [
+        1
+      ],
       "expected_packet_count": 14,
       "expected_packets": [
         {
@@ -280,7 +313,9 @@
           "is_sacrificial": true,
           "expected_delivered": false,
           "packetization": "SingleNal",
-          "nal_types": [9]
+          "nal_types": [
+            9
+          ]
         },
         {
           "index": 1,
@@ -295,7 +330,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [9]
+          "nal_types": [
+            9
+          ]
         },
         {
           "index": 2,
@@ -310,7 +347,10 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "STAP-A",
-          "nal_types": [7, 8]
+          "nal_types": [
+            7,
+            8
+          ]
         },
         {
           "index": 3,
@@ -325,7 +365,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "FU-A",
-          "nal_types": [5]
+          "nal_types": [
+            5
+          ]
         },
         {
           "index": 4,
@@ -340,7 +382,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "FU-A",
-          "nal_types": [5]
+          "nal_types": [
+            5
+          ]
         },
         {
           "index": 5,
@@ -355,7 +399,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [5]
+          "nal_types": [
+            5
+          ]
         },
         {
           "index": 6,
@@ -370,7 +416,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [9]
+          "nal_types": [
+            9
+          ]
         },
         {
           "index": 7,
@@ -385,7 +433,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [1]
+          "nal_types": [
+            1
+          ]
         },
         {
           "index": 8,
@@ -400,7 +450,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [9]
+          "nal_types": [
+            9
+          ]
         },
         {
           "index": 9,
@@ -415,7 +467,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [1]
+          "nal_types": [
+            1
+          ]
         },
         {
           "index": 10,
@@ -430,7 +484,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [9]
+          "nal_types": [
+            9
+          ]
         },
         {
           "index": 11,
@@ -445,7 +501,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [1]
+          "nal_types": [
+            1
+          ]
         },
         {
           "index": 12,
@@ -460,7 +518,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [9]
+          "nal_types": [
+            9
+          ]
         },
         {
           "index": 13,
@@ -475,7 +535,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [1]
+          "nal_types": [
+            1
+          ]
         }
       ]
     },
@@ -509,7 +571,9 @@
           "is_sacrificial": true,
           "expected_delivered": false,
           "packetization": "SingleNal",
-          "nal_types": [9]
+          "nal_types": [
+            9
+          ]
         },
         {
           "index": 1,
@@ -524,7 +588,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [9]
+          "nal_types": [
+            9
+          ]
         },
         {
           "index": 2,
@@ -539,7 +605,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [6]
+          "nal_types": [
+            6
+          ]
         },
         {
           "index": 3,
@@ -554,7 +622,10 @@
           "is_sacrificial": false,
           "expected_delivered": false,
           "packetization": "STAP-A",
-          "nal_types": [7, 8]
+          "nal_types": [
+            7,
+            8
+          ]
         },
         {
           "index": 4,
@@ -569,7 +640,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "FU-A",
-          "nal_types": [5]
+          "nal_types": [
+            5
+          ]
         },
         {
           "index": 5,
@@ -584,7 +657,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "FU-A",
-          "nal_types": [5]
+          "nal_types": [
+            5
+          ]
         },
         {
           "index": 6,
@@ -599,7 +674,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [5]
+          "nal_types": [
+            5
+          ]
         },
         {
           "index": 7,
@@ -614,7 +691,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [9]
+          "nal_types": [
+            9
+          ]
         },
         {
           "index": 8,
@@ -629,7 +708,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [1]
+          "nal_types": [
+            1
+          ]
         },
         {
           "index": 9,
@@ -644,7 +725,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [9]
+          "nal_types": [
+            9
+          ]
         },
         {
           "index": 10,
@@ -659,7 +742,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [1]
+          "nal_types": [
+            1
+          ]
         },
         {
           "index": 11,
@@ -674,7 +759,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [9]
+          "nal_types": [
+            9
+          ]
         },
         {
           "index": 12,
@@ -689,7 +776,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [1]
+          "nal_types": [
+            1
+          ]
         },
         {
           "index": 13,
@@ -704,7 +793,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [9]
+          "nal_types": [
+            9
+          ]
         },
         {
           "index": 14,
@@ -719,7 +810,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [1]
+          "nal_types": [
+            1
+          ]
         }
       ]
     },
@@ -753,7 +846,9 @@
           "is_sacrificial": true,
           "expected_delivered": false,
           "packetization": "SingleNal",
-          "nal_types": [9]
+          "nal_types": [
+            9
+          ]
         },
         {
           "index": 1,
@@ -768,7 +863,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [9]
+          "nal_types": [
+            9
+          ]
         },
         {
           "index": 2,
@@ -783,7 +880,10 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "STAP-A",
-          "nal_types": [7, 8]
+          "nal_types": [
+            7,
+            8
+          ]
         },
         {
           "index": 3,
@@ -798,7 +898,10 @@
           "is_sacrificial": false,
           "expected_delivered": false,
           "packetization": "STAP-A",
-          "nal_types": [7, 8]
+          "nal_types": [
+            7,
+            8
+          ]
         },
         {
           "index": 4,
@@ -813,7 +916,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [6]
+          "nal_types": [
+            6
+          ]
         },
         {
           "index": 5,
@@ -828,7 +933,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "FU-A",
-          "nal_types": [5]
+          "nal_types": [
+            5
+          ]
         },
         {
           "index": 6,
@@ -843,7 +950,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "FU-A",
-          "nal_types": [5]
+          "nal_types": [
+            5
+          ]
         },
         {
           "index": 7,
@@ -858,7 +967,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [5]
+          "nal_types": [
+            5
+          ]
         },
         {
           "index": 8,
@@ -873,7 +984,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [9]
+          "nal_types": [
+            9
+          ]
         },
         {
           "index": 9,
@@ -888,7 +1001,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [1]
+          "nal_types": [
+            1
+          ]
         },
         {
           "index": 10,
@@ -903,7 +1018,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [9]
+          "nal_types": [
+            9
+          ]
         },
         {
           "index": 11,
@@ -918,7 +1035,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [1]
+          "nal_types": [
+            1
+          ]
         },
         {
           "index": 12,
@@ -933,7 +1052,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [9]
+          "nal_types": [
+            9
+          ]
         },
         {
           "index": 13,
@@ -948,7 +1069,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [1]
+          "nal_types": [
+            1
+          ]
         },
         {
           "index": 14,
@@ -963,7 +1086,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [9]
+          "nal_types": [
+            9
+          ]
         },
         {
           "index": 15,
@@ -978,7 +1103,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [1]
+          "nal_types": [
+            1
+          ]
         }
       ]
     },
@@ -1012,7 +1139,9 @@
           "is_sacrificial": true,
           "expected_delivered": false,
           "packetization": "SingleNal",
-          "nal_types": [9]
+          "nal_types": [
+            9
+          ]
         },
         {
           "index": 1,
@@ -1027,7 +1156,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [9]
+          "nal_types": [
+            9
+          ]
         },
         {
           "index": 2,
@@ -1042,7 +1173,10 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "STAP-A",
-          "nal_types": [7, 8]
+          "nal_types": [
+            7,
+            8
+          ]
         },
         {
           "index": 3,
@@ -1057,7 +1191,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [6]
+          "nal_types": [
+            6
+          ]
         },
         {
           "index": 4,
@@ -1072,7 +1208,9 @@
           "is_sacrificial": true,
           "expected_delivered": false,
           "packetization": "SingleNal",
-          "nal_types": [9]
+          "nal_types": [
+            9
+          ]
         },
         {
           "index": 5,
@@ -1087,7 +1225,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [9]
+          "nal_types": [
+            9
+          ]
         },
         {
           "index": 6,
@@ -1102,7 +1242,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [5]
+          "nal_types": [
+            5
+          ]
         }
       ]
     },
@@ -1137,7 +1279,9 @@
           "is_sacrificial": true,
           "expected_delivered": false,
           "packetization": "SingleNal",
-          "nal_types": [9]
+          "nal_types": [
+            9
+          ]
         },
         {
           "index": 1,
@@ -1152,7 +1296,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [9]
+          "nal_types": [
+            9
+          ]
         },
         {
           "index": 2,
@@ -1167,7 +1313,10 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "STAP-A",
-          "nal_types": [7, 8]
+          "nal_types": [
+            7,
+            8
+          ]
         },
         {
           "index": 3,
@@ -1182,7 +1331,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [6]
+          "nal_types": [
+            6
+          ]
         },
         {
           "index": 4,
@@ -1197,7 +1348,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "FU-A",
-          "nal_types": [5]
+          "nal_types": [
+            5
+          ]
         },
         {
           "index": 5,
@@ -1212,7 +1365,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "FU-A",
-          "nal_types": [5]
+          "nal_types": [
+            5
+          ]
         },
         {
           "index": 6,
@@ -1227,7 +1382,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [5]
+          "nal_types": [
+            5
+          ]
         },
         {
           "index": 7,
@@ -1242,7 +1399,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [9]
+          "nal_types": [
+            9
+          ]
         },
         {
           "index": 8,
@@ -1257,7 +1416,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [1]
+          "nal_types": [
+            1
+          ]
         },
         {
           "index": 9,
@@ -1272,7 +1433,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [9]
+          "nal_types": [
+            9
+          ]
         },
         {
           "index": 10,
@@ -1287,7 +1450,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [1]
+          "nal_types": [
+            1
+          ]
         },
         {
           "index": 11,
@@ -1302,7 +1467,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [9]
+          "nal_types": [
+            9
+          ]
         },
         {
           "index": 12,
@@ -1317,7 +1484,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [1]
+          "nal_types": [
+            1
+          ]
         },
         {
           "index": 13,
@@ -1332,7 +1501,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [9]
+          "nal_types": [
+            9
+          ]
         }
       ]
     },
@@ -1366,7 +1537,9 @@
           "is_sacrificial": true,
           "expected_delivered": false,
           "packetization": "SingleNal",
-          "nal_types": [9]
+          "nal_types": [
+            9
+          ]
         },
         {
           "index": 1,
@@ -1381,7 +1554,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [9]
+          "nal_types": [
+            9
+          ]
         },
         {
           "index": 2,
@@ -1396,7 +1571,10 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "STAP-A",
-          "nal_types": [7, 8]
+          "nal_types": [
+            7,
+            8
+          ]
         },
         {
           "index": 3,
@@ -1411,7 +1589,9 @@
           "is_sacrificial": false,
           "expected_delivered": true,
           "packetization": "SingleNal",
-          "nal_types": [6]
+          "nal_types": [
+            6
+          ]
         },
         {
           "index": 4,
@@ -1426,7 +1606,9 @@
           "is_sacrificial": false,
           "expected_delivered": false,
           "packetization": "SingleNal",
-          "nal_types": [1]
+          "nal_types": [
+            1
+          ]
         },
         {
           "index": 5,
@@ -1441,7 +1623,9 @@
           "is_sacrificial": false,
           "expected_delivered": false,
           "packetization": "SingleNal",
-          "nal_types": [1]
+          "nal_types": [
+            1
+          ]
         },
         {
           "index": 6,
@@ -1456,7 +1640,1511 @@
           "is_sacrificial": false,
           "expected_delivered": false,
           "packetization": "SingleNal",
-          "nal_types": [1]
+          "nal_types": [
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "name": "clean.rtp",
+      "format": "rtpdump",
+      "variant": "clean",
+      "sha256": "d6ffdc3a6f1ffb7a4f7b14b919e711a15fe8485115fa80676091a097307bf1fc",
+      "byte_len": 3843,
+      "note": "structurally valid NAL syntax; pictures are not decodable",
+      "source_annexb_fixture": "clean.264",
+      "params": {
+        "ssrc": 287454020,
+        "payload_type": 96,
+        "clock_rate_hz": 90000,
+        "initial_sequence": 65534,
+        "mtu": 1200
+      },
+      "expected_packet_count": 15,
+      "expected_packets": [
+        {
+          "index": 0,
+          "offset_ms": 0,
+          "sequence": 65534,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 14,
+          "expected_sequence_class": "Probation",
+          "is_sacrificial": true,
+          "expected_delivered": false,
+          "packetization": "SingleNal",
+          "nal_types": [
+            9
+          ]
+        },
+        {
+          "index": 1,
+          "offset_ms": 0,
+          "sequence": 65535,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 14,
+          "expected_sequence_class": "Baseline",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            9
+          ]
+        },
+        {
+          "index": 2,
+          "offset_ms": 0,
+          "sequence": 0,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 29,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "STAP-A",
+          "nal_types": [
+            7,
+            8
+          ]
+        },
+        {
+          "index": 3,
+          "offset_ms": 0,
+          "sequence": 1,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 62,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            6
+          ]
+        },
+        {
+          "index": 4,
+          "offset_ms": 0,
+          "sequence": 2,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 1200,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "FU-A",
+          "nal_types": [
+            5
+          ]
+        },
+        {
+          "index": 5,
+          "offset_ms": 0,
+          "sequence": 3,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 244,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "FU-A",
+          "nal_types": [
+            5
+          ]
+        },
+        {
+          "index": 6,
+          "offset_ms": 0,
+          "sequence": 4,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": true,
+          "payload_type": 96,
+          "packet_len": 333,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            5
+          ]
+        },
+        {
+          "index": 7,
+          "offset_ms": 33,
+          "sequence": 5,
+          "timestamp": 93000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 14,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            9
+          ]
+        },
+        {
+          "index": 8,
+          "offset_ms": 33,
+          "sequence": 6,
+          "timestamp": 93000,
+          "ssrc": 287454020,
+          "marker": true,
+          "payload_type": 96,
+          "packet_len": 397,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            1
+          ]
+        },
+        {
+          "index": 9,
+          "offset_ms": 66,
+          "sequence": 7,
+          "timestamp": 96000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 14,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            9
+          ]
+        },
+        {
+          "index": 10,
+          "offset_ms": 66,
+          "sequence": 8,
+          "timestamp": 96000,
+          "ssrc": 287454020,
+          "marker": true,
+          "payload_type": 96,
+          "packet_len": 541,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            1
+          ]
+        },
+        {
+          "index": 11,
+          "offset_ms": 99,
+          "sequence": 9,
+          "timestamp": 99000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 14,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            9
+          ]
+        },
+        {
+          "index": 12,
+          "offset_ms": 99,
+          "sequence": 10,
+          "timestamp": 99000,
+          "ssrc": 287454020,
+          "marker": true,
+          "payload_type": 96,
+          "packet_len": 397,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            1
+          ]
+        },
+        {
+          "index": 13,
+          "offset_ms": 132,
+          "sequence": 11,
+          "timestamp": 102000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 14,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            9
+          ]
+        },
+        {
+          "index": 14,
+          "offset_ms": 132,
+          "sequence": 12,
+          "timestamp": 102000,
+          "ssrc": 287454020,
+          "marker": true,
+          "payload_type": 96,
+          "packet_len": 397,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "name": "loss.rtp",
+      "format": "rtpdump",
+      "variant": "loss",
+      "sha256": "173f2dfc63f5240e6ec66285ae959115785830aa24c1ebdb6ffb3953b33f06af",
+      "byte_len": 3773,
+      "note": "structurally valid NAL syntax; pictures are not decodable",
+      "source_annexb_fixture": "clean.264",
+      "params": {
+        "ssrc": 287454020,
+        "payload_type": 96,
+        "clock_rate_hz": 90000,
+        "initial_sequence": 65534,
+        "mtu": 1200
+      },
+      "missing_sequences": [
+        1
+      ],
+      "expected_packet_count": 14,
+      "expected_packets": [
+        {
+          "index": 0,
+          "offset_ms": 0,
+          "sequence": 65534,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 14,
+          "expected_sequence_class": "Probation",
+          "is_sacrificial": true,
+          "expected_delivered": false,
+          "packetization": "SingleNal",
+          "nal_types": [
+            9
+          ]
+        },
+        {
+          "index": 1,
+          "offset_ms": 0,
+          "sequence": 65535,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 14,
+          "expected_sequence_class": "Baseline",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            9
+          ]
+        },
+        {
+          "index": 2,
+          "offset_ms": 0,
+          "sequence": 0,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 29,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "STAP-A",
+          "nal_types": [
+            7,
+            8
+          ]
+        },
+        {
+          "index": 3,
+          "offset_ms": 0,
+          "sequence": 2,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 1200,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "FU-A",
+          "nal_types": [
+            5
+          ]
+        },
+        {
+          "index": 4,
+          "offset_ms": 0,
+          "sequence": 3,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 244,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "FU-A",
+          "nal_types": [
+            5
+          ]
+        },
+        {
+          "index": 5,
+          "offset_ms": 0,
+          "sequence": 4,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": true,
+          "payload_type": 96,
+          "packet_len": 333,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            5
+          ]
+        },
+        {
+          "index": 6,
+          "offset_ms": 33,
+          "sequence": 5,
+          "timestamp": 93000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 14,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            9
+          ]
+        },
+        {
+          "index": 7,
+          "offset_ms": 33,
+          "sequence": 6,
+          "timestamp": 93000,
+          "ssrc": 287454020,
+          "marker": true,
+          "payload_type": 96,
+          "packet_len": 397,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            1
+          ]
+        },
+        {
+          "index": 8,
+          "offset_ms": 66,
+          "sequence": 7,
+          "timestamp": 96000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 14,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            9
+          ]
+        },
+        {
+          "index": 9,
+          "offset_ms": 66,
+          "sequence": 8,
+          "timestamp": 96000,
+          "ssrc": 287454020,
+          "marker": true,
+          "payload_type": 96,
+          "packet_len": 541,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            1
+          ]
+        },
+        {
+          "index": 10,
+          "offset_ms": 99,
+          "sequence": 9,
+          "timestamp": 99000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 14,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            9
+          ]
+        },
+        {
+          "index": 11,
+          "offset_ms": 99,
+          "sequence": 10,
+          "timestamp": 99000,
+          "ssrc": 287454020,
+          "marker": true,
+          "payload_type": 96,
+          "packet_len": 397,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            1
+          ]
+        },
+        {
+          "index": 12,
+          "offset_ms": 132,
+          "sequence": 11,
+          "timestamp": 102000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 14,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            9
+          ]
+        },
+        {
+          "index": 13,
+          "offset_ms": 132,
+          "sequence": 12,
+          "timestamp": 102000,
+          "ssrc": 287454020,
+          "marker": true,
+          "payload_type": 96,
+          "packet_len": 397,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "name": "reorder.rtp",
+      "format": "rtpdump",
+      "variant": "reorder",
+      "sha256": "217b6937562a7945dbdd976a8ed74d22ebe5f6d7ab013c11c262ac305b85d183",
+      "byte_len": 3843,
+      "note": "structurally valid NAL syntax; pictures are not decodable",
+      "source_annexb_fixture": "clean.264",
+      "params": {
+        "ssrc": 287454020,
+        "payload_type": 96,
+        "clock_rate_hz": 90000,
+        "initial_sequence": 65534,
+        "mtu": 1200
+      },
+      "expected_packet_count": 15,
+      "expected_packets": [
+        {
+          "index": 0,
+          "offset_ms": 0,
+          "sequence": 65534,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 14,
+          "expected_sequence_class": "Probation",
+          "is_sacrificial": true,
+          "expected_delivered": false,
+          "packetization": "SingleNal",
+          "nal_types": [
+            9
+          ]
+        },
+        {
+          "index": 1,
+          "offset_ms": 0,
+          "sequence": 65535,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 14,
+          "expected_sequence_class": "Baseline",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            9
+          ]
+        },
+        {
+          "index": 2,
+          "offset_ms": 0,
+          "sequence": 1,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 62,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            6
+          ]
+        },
+        {
+          "index": 3,
+          "offset_ms": 0,
+          "sequence": 0,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 29,
+          "expected_sequence_class": "Reordered",
+          "is_sacrificial": false,
+          "expected_delivered": false,
+          "packetization": "STAP-A",
+          "nal_types": [
+            7,
+            8
+          ]
+        },
+        {
+          "index": 4,
+          "offset_ms": 0,
+          "sequence": 2,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 1200,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "FU-A",
+          "nal_types": [
+            5
+          ]
+        },
+        {
+          "index": 5,
+          "offset_ms": 0,
+          "sequence": 3,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 244,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "FU-A",
+          "nal_types": [
+            5
+          ]
+        },
+        {
+          "index": 6,
+          "offset_ms": 0,
+          "sequence": 4,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": true,
+          "payload_type": 96,
+          "packet_len": 333,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            5
+          ]
+        },
+        {
+          "index": 7,
+          "offset_ms": 33,
+          "sequence": 5,
+          "timestamp": 93000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 14,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            9
+          ]
+        },
+        {
+          "index": 8,
+          "offset_ms": 33,
+          "sequence": 6,
+          "timestamp": 93000,
+          "ssrc": 287454020,
+          "marker": true,
+          "payload_type": 96,
+          "packet_len": 397,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            1
+          ]
+        },
+        {
+          "index": 9,
+          "offset_ms": 66,
+          "sequence": 7,
+          "timestamp": 96000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 14,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            9
+          ]
+        },
+        {
+          "index": 10,
+          "offset_ms": 66,
+          "sequence": 8,
+          "timestamp": 96000,
+          "ssrc": 287454020,
+          "marker": true,
+          "payload_type": 96,
+          "packet_len": 541,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            1
+          ]
+        },
+        {
+          "index": 11,
+          "offset_ms": 99,
+          "sequence": 9,
+          "timestamp": 99000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 14,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            9
+          ]
+        },
+        {
+          "index": 12,
+          "offset_ms": 99,
+          "sequence": 10,
+          "timestamp": 99000,
+          "ssrc": 287454020,
+          "marker": true,
+          "payload_type": 96,
+          "packet_len": 397,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            1
+          ]
+        },
+        {
+          "index": 13,
+          "offset_ms": 132,
+          "sequence": 11,
+          "timestamp": 102000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 14,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            9
+          ]
+        },
+        {
+          "index": 14,
+          "offset_ms": 132,
+          "sequence": 12,
+          "timestamp": 102000,
+          "ssrc": 287454020,
+          "marker": true,
+          "payload_type": 96,
+          "packet_len": 397,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "name": "duplicate.rtp",
+      "format": "rtpdump",
+      "variant": "duplicate",
+      "sha256": "133cdc8b65384fc1416de6b2d43ad5b04f4d5190f2400b62ca66d86103c59948",
+      "byte_len": 3880,
+      "note": "structurally valid NAL syntax; pictures are not decodable",
+      "source_annexb_fixture": "clean.264",
+      "params": {
+        "ssrc": 287454020,
+        "payload_type": 96,
+        "clock_rate_hz": 90000,
+        "initial_sequence": 65534,
+        "mtu": 1200
+      },
+      "expected_packet_count": 16,
+      "expected_packets": [
+        {
+          "index": 0,
+          "offset_ms": 0,
+          "sequence": 65534,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 14,
+          "expected_sequence_class": "Probation",
+          "is_sacrificial": true,
+          "expected_delivered": false,
+          "packetization": "SingleNal",
+          "nal_types": [
+            9
+          ]
+        },
+        {
+          "index": 1,
+          "offset_ms": 0,
+          "sequence": 65535,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 14,
+          "expected_sequence_class": "Baseline",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            9
+          ]
+        },
+        {
+          "index": 2,
+          "offset_ms": 0,
+          "sequence": 0,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 29,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "STAP-A",
+          "nal_types": [
+            7,
+            8
+          ]
+        },
+        {
+          "index": 3,
+          "offset_ms": 1,
+          "sequence": 0,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 29,
+          "expected_sequence_class": "Duplicate",
+          "is_sacrificial": false,
+          "expected_delivered": false,
+          "packetization": "STAP-A",
+          "nal_types": [
+            7,
+            8
+          ]
+        },
+        {
+          "index": 4,
+          "offset_ms": 0,
+          "sequence": 1,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 62,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            6
+          ]
+        },
+        {
+          "index": 5,
+          "offset_ms": 0,
+          "sequence": 2,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 1200,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "FU-A",
+          "nal_types": [
+            5
+          ]
+        },
+        {
+          "index": 6,
+          "offset_ms": 0,
+          "sequence": 3,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 244,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "FU-A",
+          "nal_types": [
+            5
+          ]
+        },
+        {
+          "index": 7,
+          "offset_ms": 0,
+          "sequence": 4,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": true,
+          "payload_type": 96,
+          "packet_len": 333,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            5
+          ]
+        },
+        {
+          "index": 8,
+          "offset_ms": 33,
+          "sequence": 5,
+          "timestamp": 93000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 14,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            9
+          ]
+        },
+        {
+          "index": 9,
+          "offset_ms": 33,
+          "sequence": 6,
+          "timestamp": 93000,
+          "ssrc": 287454020,
+          "marker": true,
+          "payload_type": 96,
+          "packet_len": 397,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            1
+          ]
+        },
+        {
+          "index": 10,
+          "offset_ms": 66,
+          "sequence": 7,
+          "timestamp": 96000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 14,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            9
+          ]
+        },
+        {
+          "index": 11,
+          "offset_ms": 66,
+          "sequence": 8,
+          "timestamp": 96000,
+          "ssrc": 287454020,
+          "marker": true,
+          "payload_type": 96,
+          "packet_len": 541,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            1
+          ]
+        },
+        {
+          "index": 12,
+          "offset_ms": 99,
+          "sequence": 9,
+          "timestamp": 99000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 14,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            9
+          ]
+        },
+        {
+          "index": 13,
+          "offset_ms": 99,
+          "sequence": 10,
+          "timestamp": 99000,
+          "ssrc": 287454020,
+          "marker": true,
+          "payload_type": 96,
+          "packet_len": 397,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            1
+          ]
+        },
+        {
+          "index": 14,
+          "offset_ms": 132,
+          "sequence": 11,
+          "timestamp": 102000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 14,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            9
+          ]
+        },
+        {
+          "index": 15,
+          "offset_ms": 132,
+          "sequence": 12,
+          "timestamp": 102000,
+          "ssrc": 287454020,
+          "marker": true,
+          "payload_type": 96,
+          "packet_len": 397,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ssrc_reset.rtp",
+      "format": "rtpdump",
+      "variant": "ssrc_reset",
+      "sha256": "9f3b4d7ba3414a2d09cd3be7262d1f48c01e744da405b1c20cf2489b2a05e3d8",
+      "byte_len": 575,
+      "note": "structurally valid NAL syntax; pictures are not decodable",
+      "source_annexb_fixture": "clean.264",
+      "params": {
+        "ssrc": 287454020,
+        "payload_type": 96,
+        "clock_rate_hz": 90000,
+        "initial_sequence": 65534,
+        "mtu": 1200
+      },
+      "expected_packet_count": 7,
+      "expected_packets": [
+        {
+          "index": 0,
+          "offset_ms": 0,
+          "sequence": 65534,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 14,
+          "expected_sequence_class": "Probation",
+          "is_sacrificial": true,
+          "expected_delivered": false,
+          "packetization": "SingleNal",
+          "nal_types": [
+            9
+          ]
+        },
+        {
+          "index": 1,
+          "offset_ms": 0,
+          "sequence": 65535,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 14,
+          "expected_sequence_class": "Baseline",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            9
+          ]
+        },
+        {
+          "index": 2,
+          "offset_ms": 0,
+          "sequence": 0,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 29,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "STAP-A",
+          "nal_types": [
+            7,
+            8
+          ]
+        },
+        {
+          "index": 3,
+          "offset_ms": 0,
+          "sequence": 1,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 62,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            6
+          ]
+        },
+        {
+          "index": 4,
+          "offset_ms": 132,
+          "sequence": 1000,
+          "timestamp": 180000,
+          "ssrc": 1432778632,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 14,
+          "expected_sequence_class": "Probation",
+          "is_sacrificial": true,
+          "expected_delivered": false,
+          "packetization": "SingleNal",
+          "nal_types": [
+            9
+          ]
+        },
+        {
+          "index": 5,
+          "offset_ms": 132,
+          "sequence": 1001,
+          "timestamp": 180000,
+          "ssrc": 1432778632,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 14,
+          "expected_sequence_class": "Baseline",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            9
+          ]
+        },
+        {
+          "index": 6,
+          "offset_ms": 132,
+          "sequence": 1002,
+          "timestamp": 180000,
+          "ssrc": 1432778632,
+          "marker": true,
+          "payload_type": 96,
+          "packet_len": 333,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            5
+          ]
+        }
+      ]
+    },
+    {
+      "name": "truncated_last_record.rtp",
+      "format": "rtpdump",
+      "variant": "truncated_last_record",
+      "sha256": "d7a35c3eee2b210966164aadd68f8c0f6a41099b1a451f8fca30f136ba1ba42c",
+      "byte_len": 3442,
+      "note": "structurally valid NAL syntax; pictures are not decodable",
+      "source_annexb_fixture": "clean.264",
+      "params": {
+        "ssrc": 287454020,
+        "payload_type": 96,
+        "clock_rate_hz": 90000,
+        "initial_sequence": 65534,
+        "mtu": 1200
+      },
+      "is_truncated": true,
+      "expected_packet_count": 14,
+      "expected_packets": [
+        {
+          "index": 0,
+          "offset_ms": 0,
+          "sequence": 65534,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 14,
+          "expected_sequence_class": "Probation",
+          "is_sacrificial": true,
+          "expected_delivered": false,
+          "packetization": "SingleNal",
+          "nal_types": [
+            9
+          ]
+        },
+        {
+          "index": 1,
+          "offset_ms": 0,
+          "sequence": 65535,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 14,
+          "expected_sequence_class": "Baseline",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            9
+          ]
+        },
+        {
+          "index": 2,
+          "offset_ms": 0,
+          "sequence": 0,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 29,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "STAP-A",
+          "nal_types": [
+            7,
+            8
+          ]
+        },
+        {
+          "index": 3,
+          "offset_ms": 0,
+          "sequence": 1,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 62,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            6
+          ]
+        },
+        {
+          "index": 4,
+          "offset_ms": 0,
+          "sequence": 2,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 1200,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "FU-A",
+          "nal_types": [
+            5
+          ]
+        },
+        {
+          "index": 5,
+          "offset_ms": 0,
+          "sequence": 3,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 244,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "FU-A",
+          "nal_types": [
+            5
+          ]
+        },
+        {
+          "index": 6,
+          "offset_ms": 0,
+          "sequence": 4,
+          "timestamp": 90000,
+          "ssrc": 287454020,
+          "marker": true,
+          "payload_type": 96,
+          "packet_len": 333,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            5
+          ]
+        },
+        {
+          "index": 7,
+          "offset_ms": 33,
+          "sequence": 5,
+          "timestamp": 93000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 14,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            9
+          ]
+        },
+        {
+          "index": 8,
+          "offset_ms": 33,
+          "sequence": 6,
+          "timestamp": 93000,
+          "ssrc": 287454020,
+          "marker": true,
+          "payload_type": 96,
+          "packet_len": 397,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            1
+          ]
+        },
+        {
+          "index": 9,
+          "offset_ms": 66,
+          "sequence": 7,
+          "timestamp": 96000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 14,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            9
+          ]
+        },
+        {
+          "index": 10,
+          "offset_ms": 66,
+          "sequence": 8,
+          "timestamp": 96000,
+          "ssrc": 287454020,
+          "marker": true,
+          "payload_type": 96,
+          "packet_len": 541,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            1
+          ]
+        },
+        {
+          "index": 11,
+          "offset_ms": 99,
+          "sequence": 9,
+          "timestamp": 99000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 14,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            9
+          ]
+        },
+        {
+          "index": 12,
+          "offset_ms": 99,
+          "sequence": 10,
+          "timestamp": 99000,
+          "ssrc": 287454020,
+          "marker": true,
+          "payload_type": 96,
+          "packet_len": 397,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            1
+          ]
+        },
+        {
+          "index": 13,
+          "offset_ms": 132,
+          "sequence": 11,
+          "timestamp": 102000,
+          "ssrc": 287454020,
+          "marker": false,
+          "payload_type": 96,
+          "packet_len": 14,
+          "expected_sequence_class": "Advanced",
+          "is_sacrificial": false,
+          "expected_delivered": true,
+          "packetization": "SingleNal",
+          "nal_types": [
+            9
+          ]
         }
       ]
     }
