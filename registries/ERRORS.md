@@ -398,3 +398,23 @@ Stable process exit identities map command-line interface outcomes to determinis
 | `EXIT-DOCTOR-NOT-A-DEPLOYMENT-004` | 4 | target directory is not a recognized reference deployment root | verify root path points to a deployment directory initialized with fss reference layout |
 
 | `ERR-LAB-ROOT-NOT-EMPTY-001` | laboratory target root directory already contains files | choose an empty or new target root directory |
+| `ERR-SOURCE-EVIDENCE-EMPTY-STORAGE-HANDLE-001` | retained source custody storage handle is empty, whitespace, or contains invalid characters | provide non-empty sanitized storage handle |
+## Contract error codes (`fss-core`)
+Canonical machine error codes returned by `ContractError::code()` (AGT-LAYER-002, INV-003):
+| Error code | Meaning | Stable identity |
+| `source_evidence_missing_anchor` | Source evidence record missing authoritative anchor | `ERR-SOURCE-EVIDENCE-MISSING-ANCHOR-001` |
+| `source_evidence_omission_required` | Not-retained source evidence must declare an explicit omission reason | `ERR-SOURCE-EVIDENCE-OMISSION-REQUIRED-001` |
+| `source_evidence_retained_with_omission` | Retained source evidence cannot declare an omission reason | `ERR-SOURCE-EVIDENCE-RETAINED-WITH-OMISSION-001` |
+| `source_evidence_not_retained_with_capsule_bytes` | Not-retained source evidence capsule cannot claim non-zero source bytes, non-zero frame count, or non-zero source digest | `ERR-SOURCE-EVIDENCE-NOT-RETAINED-WITH-CAPSULE-BYTES-001` |
+| `source_evidence_byte_count_mismatch` | Capsule source bytes does not match custody source bytes | `ERR-SOURCE-EVIDENCE-BYTE-COUNT-MISMATCH-001` |
+| `source_evidence_empty_storage_handle` | Retained source custody storage handle is empty, whitespace, or contains invalid characters | `ERR-SOURCE-EVIDENCE-EMPTY-STORAGE-HANDLE-001` |
+| `source_evidence_statement_malformed` | Source evidence statement is empty or exceeds 512 bytes | `ERR-SOURCE-EVIDENCE-STATEMENT-MALFORMED-001` |
+| `source_evidence_capsule_required` | Sensor capsule classification requires a sensor capsule payload | `ERR-SOURCE-EVIDENCE-CAPSULE-REQUIRED-001` |
+| `source_evidence_witness_required` | Continuity witness classification requires a continuity witness digest | `ERR-SOURCE-EVIDENCE-WITNESS-REQUIRED-001` |
+| `source_evidence_witness_equals_source_digest` | Continuity witness cannot equal source digest | `ERR-SOURCE-EVIDENCE-WITNESS-EQUALS-SOURCE-DIGEST-001` |
+| `source_evidence_not_retained_with_witness` | Source evidence not retained cannot bind a continuity witness | `ERR-SOURCE-EVIDENCE-NOT-RETAINED-WITH-WITNESS-001` |
+| `source_evidence_unsupported_version` | Unsupported source evidence binary wire format version | `ERR-SOURCE-EVIDENCE-UNSUPPORTED-VERSION-001` |
+| `unknown_source_evidence_classification` | Unknown source evidence classification string token | `ERR-SOURCE-EVIDENCE-UNKNOWN-CLASSIFICATION-001` |
+| `unknown_omission_reason` | Unknown omission reason string token | `ERR-SOURCE-EVIDENCE-UNKNOWN-OMISSION-REASON-001` |
+| `unknown_source_custody_tag` | Unknown source custody binary wire tag | `ERR-SOURCE-EVIDENCE-UNKNOWN-CUSTODY-TAG-001` |
+| `unknown_clock_basis_name` | Clock basis name is unrecognized | `ERR-CLOCK-BASIS-UNKNOWN-NAME-001` |
