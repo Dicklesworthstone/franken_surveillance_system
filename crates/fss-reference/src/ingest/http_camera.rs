@@ -545,3 +545,6 @@ mod tests;
 
 /// Source-preserving native camera to existing learned JPEG/trajectory/zone processing.
 pub mod learned;
+
+/// Source-preserving native HTTP camera to neural RGB detection, tracking and zones.
+pub mod rgb;
