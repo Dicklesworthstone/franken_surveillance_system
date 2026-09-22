@@ -113,7 +113,7 @@ fn wire(mode: u8, count: usize, image: &[u8]) -> Vec<u8> {
 }
 fn connect(p: &LocalRootPublisher, bytes: Vec<u8>, limits: HttpRecordingLimits) -> Test<(HttpRecording, Authority, Server)> {
     assert!(bytes.len() < 65536);
-    let listener = TcpListener::bind(([127,0,0,1],0))?; listener.set_nonblocking(true)?;
+    let listener = TcpListener::bind(std::net::SocketAddr::from(([127,0,0,1],0u16)))?; listener.set_nonblocking(true)?;
     let request = HttpRecordingRequest::new(source(), listener.local_addr()?, "camera.invalid", "/video", limits, DEADLINE)?;
     let auth = Authority { route: request.route.clone(), start: Instant::now(), deny: Cell::new(None), seen: Cell::new(0) };
     let recording = HttpRecording::connect(request, p, auth.access(&NeverCancel))?;
@@ -295,7 +295,7 @@ fn stale_wire_and_frame_keys_cannot_release_later_input() -> Test {
 }
 #[test]
 fn preflight_capacity_and_authority_refusals_make_no_connection() -> Test {
-    let d=Directory::new()?; let p=d.open()?; let listener=TcpListener::bind(([127,0,0,1],0))?;
+    let d=Directory::new()?; let p=d.open()?; let listener=TcpListener::bind(std::net::SocketAddr::from(([127,0,0,1],0u16)))?;
     listener.set_nonblocking(true)?;
     for bad in [true,false] {
         let mut l=limits(); if bad {l.media.maximum_spool_object_bytes=1024;}
