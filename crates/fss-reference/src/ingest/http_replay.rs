@@ -342,3 +342,6 @@ fn probe(cancellation: &dyn PublishCancellation) -> Result<(), HttpReplayError> 
         Err(HttpReplayError::Cancelled)
     } else { Ok(()) }
 }
+
+/// Source-verified archived JPEGs through the existing neural RGB and zone owners.
+pub mod rgb;
