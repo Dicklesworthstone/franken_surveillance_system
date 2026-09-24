@@ -28,7 +28,7 @@ Standard machine introspection entrypoints available on every conforming node:
 
 | Endpoint | CLI Command | Description |
 |---|---|---|
-| `capabilities` | `fss capabilities --json' lists what is implemented.` | Report capabilities in JSON format. |
+| `capabilities` | `fss capabilities --json` | Report capabilities in JSON format. |
 | `doctor` | `fss doctor --json [--root &lt;dir&gt;]` | Report system diagnostic doctor results in JSON format. |
 | `negative_evidence` | `fss negative-evidence list --json` | Negative evidence ledger management. |
 | `status` | `fss status --json` | Report system status in JSON format. |

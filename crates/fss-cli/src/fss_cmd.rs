@@ -51,7 +51,7 @@ impl FssCommand {
 /// Returns the static help text for `fss`.
 #[must_use]
 pub const fn help_text() -> &'static str {
-    "Franken Surveillance System: unqualified reference implementation\n\nUSAGE:\n  fss help\n  fss version\n  fss capabilities --json\n  fss doctor --json [--root <dir>]\n      --root inspects a deployment root read-only (never writes, locks, or repairs)\n  fss status --json\n  fss negative-evidence <init|list|verify|append> [--path <file>] [--json]\n\nCompanion binaries: fss-file (import and decode recorded media), fss-infer (scalar model\nexecution, detection, tracking), fss-event (recorded event reports and publication),\nfss-archive (RTSP/HTTP capture archives), fss-lab (deterministic scenarios).\nNothing is release-qualified; `fss capabilities --json` lists what is implemented."
+    "Franken Surveillance System: unqualified reference implementation\n\nUSAGE:\n  fss help\n  fss version\n  fss capabilities --json\n  fss doctor --json [--root <dir>]\n      --root inspects a deployment root read-only (never writes, locks, or repairs)\n  fss status --json\n  fss negative-evidence <init|list|verify|append> [--path <file>] [--json]\n\nCompanion binaries: fss-file (import and decode recorded media), fss-infer (scalar model\nexecution, detection, tracking), fss-event (recorded event reports and publication),\nfss-archive (RTSP/HTTP capture archives), fss-lab (deterministic scenarios).\nNothing is release-qualified; the capabilities command lists what is implemented."
 }
 
 /// Parses OS-native arguments for `fss` with total validation and exact grammar exhaustion.
@@ -309,7 +309,7 @@ pub fn execute_fss_with_exit(command: FssCommand) -> (String, ExitIdentity) {
         }
         FssCommand::Status => (
             format!(
-                "{{\"schema\":\"fss.status.v1\",\"version\":\"{VERSION}\",\"phase\":\"reference_implementation_unqualified\",\"deployment\":\"not_specified\",\"sensors\":[],\"events\":[],\"degraded\":[\"no_deployment_root_inspected\",\"not_release_qualified\"],\"next\":\"fss doctor --json --root <dir>\"}}"
+                "{{\"schema\":\"fss.status.v1\",\"version\":\"{VERSION}\",\"phase\":\"reference_implementation_unqualified\",\"deployment\":\"not_specified\",\"sensors\":[],\"events\":[],\"degraded\":[\"no_deployment_root_inspected\",\"not_release_qualified\"]}}"
             ),
             ExitIdentity::SUCCESS,
         ),

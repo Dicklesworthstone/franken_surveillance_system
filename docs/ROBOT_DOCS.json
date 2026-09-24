@@ -124,7 +124,7 @@
   ],
   "discovery": {
     "capabilities": {
-      "cli": "fss capabilities --json` lists what is implemented.",
+      "cli": "fss capabilities --json",
       "description": "Report capabilities in JSON format."
     },
     "doctor": {

@@ -209,7 +209,7 @@ def validate_robot_docs(root: Path, docs_dir: Path | None = None) -> ValidationR
         )
 
     # 5. Check byte-level staleness on JSON
-    if on_disk_json != auth_model:
+    if on_disk_json != auth_model or json_path.read_text(encoding="utf-8") != expected_json:
         result.add_error(
             ERR_ROBOT_DOCS_STALE,
             format_rel(json_path),
