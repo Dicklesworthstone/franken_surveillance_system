@@ -1780,6 +1780,31 @@
       "description": "view stable identifier was reused, duplicated, or renumbered outside AVIEW-001..008",
       "guidance": "allocate a new unique stable identifier; never reuse stable IDs",
       "id": "ERR-VW-STABLE-ID-REUSED-001"
+    },
+    {
+      "description": "model-free watch refused by the foreground, tracker, zone gate, event contract or storage owner",
+      "guidance": "inspect the cause; retry only after repair",
+      "id": "ERR-WATCH-001"
+    },
+    {
+      "description": "an approval digest matches no candidate proposal of this exact analysis; nothing was published",
+      "guidance": "rerun without approval and review the current proposal digests",
+      "id": "ERR-WATCH-APPROVAL-STALE-001"
+    },
+    {
+      "description": "watch candidate, detection or active-track bound reached; nothing is silently dropped",
+      "guidance": "narrow the range or zones, or raise thresholds",
+      "id": "ERR-WATCH-LIMIT-001"
+    },
+    {
+      "description": "model-free watch plan is outside its bounds (range 1..128 frames, 1..16 zones, zone ids, detector/tracker thresholds)",
+      "guidance": "correct the plan; do not retry unchanged",
+      "id": "ERR-WATCH-PLAN-INVALID-001"
+    },
+    {
+      "description": "a retained source gap lies inside the watch range; background and track continuity cannot bridge omitted frames",
+      "guidance": "split the range at the gap",
+      "id": "ERR-WATCH-SOURCE-GAP-001"
     }
   ],
   "freezeDigest": "sha256:9bbec4e6845ea702f676cd22472e5fb0d35ca3b3d97f66cbfccb452182413da8",

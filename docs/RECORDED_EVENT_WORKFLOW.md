@@ -133,3 +133,40 @@ staging, interruption after provenance publication, exact retry, restart without
 files, report/approval tampering, budget refusals, CLI report reconstruction and export safety.
 They were added but not executed in this editing environment because no Rust toolchain was
 available. This is an unqualified implementation, not a release or model-quality claim.
+
+## Model-free candidates: `fss-event watch`
+
+For a recording with no trained model, `fss-event watch` (library:
+`fss_reference::ingest::recorded_watch`) runs retained decode (JPEG/MJPEG through the canonical
+JPEG codec, or an IDR-led H.264 range through `fss-codec-h264`), the running-variance
+foreground model (`ingest::foreground`), the constant-velocity Kalman tracker with global IoU
+association (`ingest::tracker`), and the zone gate (`ingest::eventgen`). A confirmed track whose
+filtered centre enters an operator-drawn zone yields one candidate per (zone, track) per run.
+
+```sh
+fss-event watch --root DIR --site SITE --import-id sha256:HEX --interpretation gray \
+  --zone door:64,0,32,32 [--zone ...] [--first-segment N --segment-count M]
+```
+
+The analysis is read-only and deterministic (equal retained source and plan give byte-identical
+JSON). It prints a bounded `fss.recorded_watch_report.v1` JSON report: plan, analysis and policy
+digests, decoded frame count and size, zones, foreground box and confirmed-track counts, and per
+candidate the zone, tracker-local track id, entry segment, frame range, per-frame evidence
+(segment, retained capsule digest, luma digest, observation-record digest, filtered box), event
+id, proposal digest, provenance root, status (`prepared`, `published`, `already_published`) and,
+for prepared candidates, the exact rerun command with `--approve`.
+
+Publication keeps this document's authority model: nothing is written without the exact
+proposal digest. `--approve sha256:P[,sha256:Q]` checks every digest against the fresh analysis
+before any write (`ERR-WATCH-APPROVAL-STALE-001` otherwise), retains the provenance graph
+(analysis record, policy, observation records, retained capsules, import root) root-last, then
+calls the deployment's guarded event publisher with a `Hold` decision. The event is
+`Unclassified`, `Indeterminate`, abstains, has probability [0, 1], and carries non-supporting
+derived evidence from one sensor failure domain: it is never corroborated and authorizes no
+alert or other effect. A rerun finds the exact revision and reports `already_published` without
+writing; a different event under the same candidate identity is `ERR-IDEMPOTENCY-CONFLICT-001`.
+`fss-event read` does not reopen watch events (their policy differs from model-backed reports).
+
+Thresholds, zones and Kalman noise are uncalibrated operator/policy choices. The committed tests
+use synthetic MJPEG scenes and an FFmpeg `testsrc2` H.264 fixture: they prove the wiring and the
+authority path, not detection quality, and a run with no candidate never certifies absence.

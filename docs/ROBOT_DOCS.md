@@ -741,6 +741,11 @@ All stable error identities and normative recovery guidance cataloged from `regi
 | `ERR-VW-RUST-DRIFT-001` | typed Rust view table drifted from or is missing versus the machine registry | regenerate crates/fss-core/src/agent_view.rs canonical rows from architecture/agent_views.json |
 | `ERR-VW-SEMANTIC-INVARIANT-001` | view semantic invariant violation: token bound contradiction, unregistered gate/status, or operation default view foreign-key miss | enforce the registered view row invariants and default-view foreign keys |
 | `ERR-VW-STABLE-ID-REUSED-001` | view stable identifier was reused, duplicated, or renumbered outside AVIEW-001..008 | allocate a new unique stable identifier; never reuse stable IDs |
+| `ERR-WATCH-001` | model-free watch refused by the foreground, tracker, zone gate, event contract or storage owner | inspect the cause; retry only after repair |
+| `ERR-WATCH-APPROVAL-STALE-001` | an approval digest matches no candidate proposal of this exact analysis; nothing was published | rerun without approval and review the current proposal digests |
+| `ERR-WATCH-LIMIT-001` | watch candidate, detection or active-track bound reached; nothing is silently dropped | narrow the range or zones, or raise thresholds |
+| `ERR-WATCH-PLAN-INVALID-001` | model-free watch plan is outside its bounds (range 1..128 frames, 1..16 zones, zone ids, detector/tracker thresholds) | correct the plan; do not retry unchanged |
+| `ERR-WATCH-SOURCE-GAP-001` | a retained source gap lies inside the watch range; background and track continuity cannot bridge omitted frames | split the range at the gap |
 
 ---
 *Robot documentation generated deterministically by `scripts/generate_robot_docs.py`.*

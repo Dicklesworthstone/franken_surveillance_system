@@ -160,7 +160,7 @@ fn checkpoint(cx: &ReplayCx, stage: &'static str) -> Result<(), RecordedDecodeEr
     cx.checkpoint(stage).map_err(|_| RecordedDecodeError::Cancelled)
 }
 
-fn validate_limits(limits: DecodeLimits) -> Result<(), RecordedDecodeError> {
+pub(crate) fn validate_limits(limits: DecodeLimits) -> Result<(), RecordedDecodeError> {
     if limits.maximum_bytes == 0 || limits.maximum_bytes > 16 * 1024 * 1024
         || limits.maximum_dimension == 0 || limits.maximum_dimension > 4096
         || limits.maximum_pixels == 0 || limits.maximum_pixels > 4_194_304
