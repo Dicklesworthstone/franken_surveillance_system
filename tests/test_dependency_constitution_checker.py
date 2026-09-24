@@ -154,10 +154,10 @@ def metadata(packages: list[dict[str, Any]], edges: dict[str, list[tuple[str, st
 
 
 # Members whose crate_topology.json status is not a present status (skeleton/implemented/qualified).
-# This is the owner's pending topology decision on main (fss-packet, and fss-geometry added by the origin
-# merge); check-policy reports the same pair as "not marked present". Update this one line when the owner
-# registers them, never by bumping a member count.
-LIVE_MEMBERS_NOT_MARKED_PRESENT = {"fss-packet", "fss-geometry"}
+# The owner registered the last pending pair (fss-packet, fss-geometry) as implemented in f541d72, so
+# every live member must now be marked present. If a new member is ever left unregistered, list it here
+# until the owner registers it, never by bumping a member count.
+LIVE_MEMBERS_NOT_MARKED_PRESENT: set[str] = set()
 PRESENT_TOPOLOGY_STATUSES = {"skeleton", "implemented", "qualified"}
 
 
