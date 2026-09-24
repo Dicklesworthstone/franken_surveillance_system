@@ -9,14 +9,15 @@ use std::path::{Path, PathBuf};
 use fss_core::effect::EffectAuthority;
 use fss_core::{
     BatchId, CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, CaptureInterval,
-    ContentDigest, ContractError, EffectIntent, EffectJournal, EffectJournalTransition,
-    EffectRecordVersion, EffectState, EvidenceDelta, IdempotencyKey, IndeterminateEffectReason,
-    ObjectId, ObligationId, OperationId, OperationReceipt, Plane, TimestampNs,
+    ContentDigest, ContractError, EffectCancellationRecord, EffectIntent, EffectJournal,
+    EffectJournalTransition, EffectRecordVersion, EffectState, EvidenceDelta, IdempotencyKey,
+    IndeterminateEffectReason, ObjectId, ObligationId, ObligationState, OperationId,
+    OperationReceipt, Plane, PreparedEffect, TimestampNs,
 };
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy, Journal, JournalRecord, inspect};
 use fss_reference::{
     ALERT_OUTCOME_FAMILY, DurableEffectError, DurableEffectJournal, EFFECT_TRANSITION_RECORD_KIND,
-    EFFECT_TRANSITION_V2_RECORD_KIND, ObligationLedgerState,
+    EFFECT_TRANSITION_V2_RECORD_KIND, EFFECT_TRANSITION_V3_RECORD_KIND, ObligationLedgerState,
 };
 
 /// A scratch directory removed on drop.
@@ -272,77 +273,9 @@ fn legacy_rules_are_reachable_only_through_versioned_v1_records() -> Result<(), 
     Ok(())
 }
 
-/// fss-thzlz: legacy (v1) records with an unbound cancellation digest still replay and open.
-#[test]
-fn legacy_v1_cancelled_records_still_replay_and_open() -> Result<(), Box<dyn Error>> {
-    let unbound_digest = ContentDigest::sha256(b"legacy-unbound-cancellation-proof");
-    let records = vec![
-        EffectJournalTransition::Prepare {
-            intent: intent("legacy-cancel")?,
-            obligation_id: obligation("legacy-cancel")?,
-            terminal_predicate: "cancelled".to_owned(),
-            now: TimestampNs(10),
-        },
-        EffectJournalTransition::Transition {
-            operation_id: operation("legacy-cancel")?,
-            next: EffectState::Cancelled,
-            now: TimestampNs(20),
-            result_digest: Some(unbound_digest),
-            error_code: Some("operator_aborted".to_owned()),
-        },
-    ];
-
-    // Public replay applies current rules and rejects unbound cancellation digest
-    let public = EffectJournal::replay(records.clone());
-    assert!(
-        matches!(public, Err(ContractError::InvalidDigest)),
-        "{:?}",
-        public.as_ref().err()
-    );
-
-    // v2 replay also rejects unbound cancellation digest
-    let as_v2 = EffectJournal::replay_versioned(
-        records
-            .iter()
-            .cloned()
-            .map(|record| (EffectRecordVersion::V2, record)),
-    );
-    assert!(
-        matches!(as_v2, Err(ContractError::InvalidDigest)),
-        "{:?}",
-        as_v2.as_ref().err()
-    );
-
-    // v1 versioned replay succeeds under legacy rules
-    let as_v1 = EffectJournal::replay_versioned(
-        records
-            .iter()
-            .cloned()
-            .map(|record| (EffectRecordVersion::V1, record)),
-    )?;
-    let op = as_v1
-        .operation(&operation("legacy-cancel")?)
-        .ok_or(ContractError::NotFound)?;
-    assert_eq!(op.record_version(), EffectRecordVersion::V1);
-    assert_eq!(op.state, EffectState::Cancelled);
-    assert_eq!(op.result_digest, Some(unbound_digest));
-
-    // Durable journal file with EFFECT_TRANSITION_RECORD_KIND (v1) opens
-    let dir = ScratchDir::new("v1-cancel")?;
-    write_records(&dir.journal_path(), &records)?;
-    let durable = DurableEffectJournal::open(dir.journal_path(), IncompleteTailPolicy::Reject)?;
-    let durable_op = durable
-        .operation(&operation("legacy-cancel")?)
-        .ok_or("missing legacy cancel operation")?;
-    assert_eq!(durable_op.record_version(), EffectRecordVersion::V1);
-    assert_eq!(durable_op.state, EffectState::Cancelled);
-    assert_eq!(durable_op.result_digest, Some(unbound_digest));
-    Ok(())
-}
-
 /// fss-deir9 (D1/D3): the durable journal names the version of every record. A legacy operation
-/// keeps the v1 receipt encoding after the upgrade, new records are v2, the legacy prefix is never
-/// rewritten, and a v1 record after a v2 record is refused on open.
+/// keeps the v1 receipt encoding after the upgrade, new records are v3 (fss-thzlz), the legacy
+/// prefix is never rewritten, and a v1 record after a newer record is refused on open.
 #[test]
 fn durable_records_name_their_version_and_never_go_backwards() -> Result<(), Box<dyn Error>> {
     let dir = ScratchDir::new("versions")?;
@@ -378,7 +311,7 @@ fn durable_records_name_their_version_and_never_go_backwards() -> Result<(), Box
                 TimestampNs(60),
             )?
             .clone();
-        assert_eq!(prepared.record_version(), EffectRecordVersion::V2);
+        assert_eq!(prepared.record_version(), EffectRecordVersion::V3);
         assert_eq!(prepared.digest_domain(), OperationReceipt::DIGEST_DOMAIN_V2);
         verified.receipt_digest()
     };
@@ -393,7 +326,7 @@ fn durable_records_name_their_version_and_never_go_backwards() -> Result<(), Box
         .map(JournalRecord::kind)
         .collect();
     let mut expected = vec![EFFECT_TRANSITION_RECORD_KIND; 4];
-    expected.extend([EFFECT_TRANSITION_V2_RECORD_KIND; 3]);
+    expected.extend([EFFECT_TRANSITION_V3_RECORD_KIND; 3]);
     assert_eq!(kinds, expected);
     {
         let reopened = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
@@ -685,7 +618,8 @@ fn v1_layout(receipt: &OperationReceipt) -> Vec<u8> {
 #[test]
 fn operation_receipt_versions_keep_v1_bytes_and_bind_the_v2_reason() -> Result<(), Box<dyn Error>> {
     let base = sample_operation_receipt()?;
-    assert_eq!(base.record_version(), EffectRecordVersion::V2);
+    // A fresh preparation is v3, which keeps the v2 bytes and digest domain (fss-thzlz).
+    assert_eq!(base.record_version(), EffectRecordVersion::V3);
     assert_eq!(base.digest_domain(), OperationReceipt::DIGEST_DOMAIN_V2);
     let v1_base = replayed_v1_receipt(&base)?;
     assert_eq!(v1_base.record_version(), EffectRecordVersion::V1);
@@ -777,5 +711,364 @@ fn operation_receipt_versions_keep_v1_bytes_and_bind_the_v2_reason() -> Result<(
         matches!(refused, Err(ContractError::LegacyReceiptRequiresJournal)),
         "{refused:?}"
     );
+    Ok(())
+}
+
+// fss-thzlz: the durable journal writes v3 (kind 4) records, under which a cancellation must be a
+// proof-bound `Cancel` record. A journal written between fss-deir9 and fss-thzlz (kind 3) still
+// opens with the unbound cancellation digests it holds.
+
+/// Appends `records`, each under its own record kind, exactly as a journal would hold them.
+fn write_kinded(
+    path: &Path,
+    records: &[(u16, EffectJournalTransition)],
+) -> Result<(), Box<dyn Error>> {
+    let mut journal = Journal::open(path, IncompleteTailPolicy::Reject)?;
+    for (kind, record) in records {
+        let _ = journal.append(*kind, &record.try_canonical_bytes()?)?;
+    }
+    Ok(())
+}
+
+fn prepare_record(name: &str, now: i128) -> Result<EffectJournalTransition, Box<dyn Error>> {
+    Ok(EffectJournalTransition::Prepare {
+        intent: intent(name)?,
+        obligation_id: obligation(name)?,
+        terminal_predicate: "delivery_proved".to_owned(),
+        now: TimestampNs(now),
+    })
+}
+
+/// The cancellation proof of the operation `prepare_record(name, now)` prepares, for `evidence`.
+fn bound_proof(
+    name: &str,
+    now: i128,
+    evidence: ContentDigest,
+) -> Result<ContentDigest, Box<dyn Error>> {
+    Ok(EffectCancellationRecord::for_prepared(
+        &PreparedEffect {
+            intent: intent(name)?,
+            obligation_id: obligation(name)?,
+            terminal_predicate: "delivery_proved".to_owned(),
+            prepared_at: TimestampNs(now),
+        },
+        evidence,
+    )
+    .proof_digest())
+}
+
+/// The cancellation as the alert dispatch wrote it before fss-thzlz: an unbound digest.
+fn unbound_cancel(
+    name: &str,
+    now: i128,
+    digest: ContentDigest,
+) -> Result<EffectJournalTransition, Box<dyn Error>> {
+    Ok(EffectJournalTransition::Transition {
+        operation_id: operation(name)?,
+        next: EffectState::Cancelled,
+        now: TimestampNs(now),
+        result_digest: Some(digest),
+        error_code: Some("stale_event_authority".to_owned()),
+    })
+}
+
+fn bound_cancel(
+    name: &str,
+    now: i128,
+    evidence: ContentDigest,
+    proof_digest: ContentDigest,
+) -> Result<EffectJournalTransition, Box<dyn Error>> {
+    Ok(EffectJournalTransition::Cancel {
+        operation_id: operation(name)?,
+        now: TimestampNs(now),
+        cancel_request_evidence: evidence,
+        proof_digest,
+        reason: None,
+    })
+}
+
+#[test]
+fn unbound_v2_cancellation_replays_and_opens() -> Result<(), Box<dyn Error>> {
+    let dir = ScratchDir::new("thzlz-v2-cancel")?;
+    let path = dir.journal_path();
+    let unbound = ContentDigest::sha256(b"alert-cancel-proof-as-dispatch-wrote-it");
+    write_kinded(
+        &path,
+        &[
+            (
+                EFFECT_TRANSITION_V2_RECORD_KIND,
+                prepare_record("bystander", 5)?,
+            ),
+            (
+                EFFECT_TRANSITION_V2_RECORD_KIND,
+                prepare_record("legacy", 10)?,
+            ),
+            (
+                EFFECT_TRANSITION_V2_RECORD_KIND,
+                unbound_cancel("legacy", 20, unbound)?,
+            ),
+        ],
+    )?;
+    let before = std::fs::read(&path)?;
+    let legacy = operation("legacy")?;
+    let bystander = operation("bystander")?;
+    let evidence = ContentDigest::sha256(b"bystander-cancel-request-evidence");
+    let root = {
+        let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+        let receipt = journal.operation(&legacy).ok_or(ContractError::NotFound)?;
+        assert_eq!(receipt.state, EffectState::Cancelled);
+        assert_eq!(receipt.record_version(), EffectRecordVersion::V2);
+        assert_eq!(receipt.result_digest, Some(unbound));
+        assert_eq!(receipt.error_code.as_deref(), Some("stale_event_authority"));
+        let held = journal
+            .obligation(&obligation("legacy")?)
+            .ok_or(ContractError::NotFound)?;
+        assert_eq!(held.state, ObligationState::Cancelled);
+        assert_eq!(held.proof_digest, Some(unbound));
+        assert_eq!(
+            journal
+                .effect_journal()
+                .cancellation_record_version(&legacy),
+            Some(EffectRecordVersion::V2)
+        );
+
+        // A new cancellation of the v2 bystander is written as a bound v3 record.
+        let cancelled = journal
+            .cancel(&bystander, TimestampNs(30), evidence, None)?
+            .clone();
+        assert_eq!(cancelled.record_version(), EffectRecordVersion::V2);
+        assert_eq!(
+            cancelled.result_digest,
+            Some(bound_proof("bystander", 5, evidence)?)
+        );
+        // Prepared by a v2 record, cancelled today: the cancellation is a v3 record.
+        assert_eq!(
+            journal
+                .effect_journal()
+                .cancellation_record_version(&bystander),
+            Some(EffectRecordVersion::V3)
+        );
+        journal.last_root()
+    };
+    assert!(std::fs::read(&path)?.starts_with(&before));
+    let kinds: Vec<u16> = inspect(&path)?
+        .records()
+        .iter()
+        .map(JournalRecord::kind)
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![
+            EFFECT_TRANSITION_V2_RECORD_KIND,
+            EFFECT_TRANSITION_V2_RECORD_KIND,
+            EFFECT_TRANSITION_V2_RECORD_KIND,
+            EFFECT_TRANSITION_V3_RECORD_KIND,
+        ]
+    );
+    let reopened = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+    assert_eq!(reopened.last_root(), root);
+    assert_eq!(
+        reopened
+            .operation(&legacy)
+            .and_then(|receipt| receipt.result_digest),
+        Some(unbound)
+    );
+    Ok(())
+}
+
+#[test]
+fn v3_cancellation_must_be_proof_bound_to_open() -> Result<(), Box<dyn Error>> {
+    let evidence = ContentDigest::sha256(b"cancel-request-evidence");
+    let honest = bound_proof("legacy", 10, evidence)?;
+    let v2 = EFFECT_TRANSITION_V2_RECORD_KIND;
+    let v3 = EFFECT_TRANSITION_V3_RECORD_KIND;
+    let cases = [
+        (
+            "unbound v3 cancellation",
+            vec![
+                (v3, prepare_record("legacy", 10)?),
+                (v3, unbound_cancel("legacy", 20, honest)?),
+            ],
+            ContractError::EvidenceRequired,
+        ),
+        (
+            "forged v3 cancellation proof",
+            vec![
+                (v3, prepare_record("legacy", 10)?),
+                (
+                    v3,
+                    bound_cancel(
+                        "legacy",
+                        20,
+                        evidence,
+                        ContentDigest::sha256(b"forged-cancellation-proof"),
+                    )?,
+                ),
+            ],
+            ContractError::InvalidDigest,
+        ),
+        (
+            "v2 operation, forged v3 cancellation proof",
+            vec![
+                (v2, prepare_record("legacy", 10)?),
+                (
+                    v3,
+                    bound_cancel(
+                        "legacy",
+                        20,
+                        evidence,
+                        ContentDigest::sha256(b"forged-cancellation-proof"),
+                    )?,
+                ),
+            ],
+            ContractError::InvalidDigest,
+        ),
+        (
+            "bound cancellation in a v2 record",
+            vec![
+                (v2, prepare_record("legacy", 10)?),
+                (v2, bound_cancel("legacy", 20, evidence, honest)?),
+            ],
+            ContractError::InvalidEffectTransition,
+        ),
+    ];
+    for (label, records, refusal) in cases {
+        let dir = ScratchDir::new(&format!("thzlz-{}", label.replace([' ', ','], "-")))?;
+        let path = dir.journal_path();
+        write_kinded(&path, &records)?;
+        let opened = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject);
+        assert!(
+            matches!(&opened, Err(DurableEffectError::Contract(error)) if *error == refusal),
+            "{label}: {:?}",
+            opened.as_ref().err()
+        );
+    }
+
+    // A v2 record after a v3 record is refused on open.
+    let dir = ScratchDir::new("thzlz-backwards")?;
+    let path = dir.journal_path();
+    write_kinded(
+        &path,
+        &[
+            (v3, prepare_record("legacy", 10)?),
+            (v2, unbound_cancel("legacy", 20, honest)?),
+        ],
+    )?;
+    let late_sequence = inspect(&path)?
+        .records()
+        .last()
+        .map(JournalRecord::sequence)
+        .ok_or(ContractError::NotFound)?;
+    let refused = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject);
+    assert!(
+        matches!(
+            refused,
+            Err(DurableEffectError::UnexpectedRecordKind { sequence, kind })
+                if sequence == late_sequence && kind == v2
+        ),
+        "{:?}",
+        refused.as_ref().err()
+    );
+
+    // The honest bound v3 cancellation opens.
+    let dir = ScratchDir::new("thzlz-bound")?;
+    let path = dir.journal_path();
+    write_kinded(
+        &path,
+        &[
+            (v3, prepare_record("legacy", 10)?),
+            (v3, bound_cancel("legacy", 20, evidence, honest)?),
+        ],
+    )?;
+    let journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+    let receipt = journal
+        .operation(&operation("legacy")?)
+        .ok_or(ContractError::NotFound)?;
+    assert_eq!(receipt.state, EffectState::Cancelled);
+    assert_eq!(receipt.record_version(), EffectRecordVersion::V3);
+    assert_eq!(receipt.result_digest, Some(honest));
+    Ok(())
+}
+
+#[test]
+fn durable_cancel_writes_one_bound_record_and_refuses_before_writing() -> Result<(), Box<dyn Error>>
+{
+    let dir = ScratchDir::new("thzlz-durable-cancel")?;
+    let path = dir.journal_path();
+    let legacy = operation("legacy")?;
+    let evidence = ContentDigest::sha256(b"cancel-request-evidence");
+    let (cancelled, root) = {
+        let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+        let _ = journal.prepare(
+            intent("legacy")?,
+            obligation("legacy")?,
+            "delivery_proved",
+            TimestampNs(10),
+        )?;
+        let before = std::fs::metadata(&path)?.len();
+        let honest = journal
+            .effect_journal()
+            .cancellation_proof(&legacy, evidence)?;
+        let unbound = journal.transition(
+            &legacy,
+            EffectState::Cancelled,
+            TimestampNs(20),
+            Some(honest),
+            Some("stale_event_authority".to_owned()),
+        );
+        assert!(
+            matches!(
+                unbound,
+                Err(DurableEffectError::Contract(
+                    ContractError::EvidenceRequired
+                ))
+            ),
+            "{unbound:?}"
+        );
+        let empty_reason = journal.cancel(&legacy, TimestampNs(20), evidence, Some(String::new()));
+        assert!(
+            matches!(
+                empty_reason,
+                Err(DurableEffectError::Contract(
+                    ContractError::EvidenceRequired
+                ))
+            ),
+            "{empty_reason:?}"
+        );
+        assert_eq!(
+            std::fs::metadata(&path)?.len(),
+            before,
+            "a refused cancellation writes no record"
+        );
+        let cancelled = journal
+            .cancel(
+                &legacy,
+                TimestampNs(20),
+                evidence,
+                Some("stale_event_authority".to_owned()),
+            )?
+            .clone();
+        assert_eq!(cancelled.result_digest, Some(honest));
+        assert_eq!(honest, bound_proof("legacy", 10, evidence)?);
+        (cancelled, journal.last_root())
+    };
+    let report = inspect(&path)?;
+    let records = report.records();
+    let kinds: Vec<u16> = records.iter().map(JournalRecord::kind).collect();
+    assert_eq!(kinds, vec![EFFECT_TRANSITION_V3_RECORD_KIND; 2]);
+    let last = records.last().ok_or(ContractError::NotFound)?;
+    assert_eq!(
+        EffectJournalTransition::from_canonical_bytes(last.payload())?,
+        EffectJournalTransition::Cancel {
+            operation_id: legacy.clone(),
+            now: TimestampNs(20),
+            cancel_request_evidence: evidence,
+            proof_digest: bound_proof("legacy", 10, evidence)?,
+            reason: Some("stale_event_authority".to_owned()),
+        }
+    );
+    let reopened = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+    assert_eq!(reopened.operation(&legacy), Some(&cancelled));
+    assert_eq!(reopened.last_root(), root);
     Ok(())
 }
