@@ -158,15 +158,14 @@ impl ReferenceWorkspaceStore {
                     return Err(WorkspaceCheckpointError::InvalidHistory);
                 }
                 let previous = history.last();
-                if let Some(old) = previous {
-                    if old.basis != revision.basis
+                if let Some(old) = previous
+                    && (old.basis != revision.basis
                         || old.mission_id != revision.mission_id
                         || old.capsule.principal != revision.capsule.principal
                         || old.capability_scope != revision.capability_scope
-                        || old.privacy_scope != revision.privacy_scope
-                    {
-                        return Err(WorkspaceCheckpointError::InvalidHistory);
-                    }
+                        || old.privacy_scope != revision.privacy_scope)
+                {
+                    return Err(WorkspaceCheckpointError::InvalidHistory);
                 }
                 let request = WorkspaceWrite {
                     expected_head: revision.parent,

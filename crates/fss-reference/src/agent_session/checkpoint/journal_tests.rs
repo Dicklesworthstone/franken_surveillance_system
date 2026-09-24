@@ -200,7 +200,10 @@ fn symlink_journals_are_refused() -> TestResult {
     Ok(())
 }
 
-fn hydration_fixture() -> Result<(DurableSessionStore, AgentSession, SessionAlias, HydrationRequest, ReferenceHydrationCatalog), Box<dyn Error>> {
+type HydrationFixture =
+    (DurableSessionStore, AgentSession, SessionAlias, HydrationRequest, ReferenceHydrationCatalog);
+
+fn hydration_fixture() -> Result<HydrationFixture, Box<dyn Error>> {
     let (mut store, session) = opened()?;
     let mut catalog = ReferenceHydrationCatalog::new();
     let descriptor = register(&mut catalog, "evidence:durable-hydration")?;
