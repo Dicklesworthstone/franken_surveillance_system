@@ -161,6 +161,8 @@
     "crates/fss-reference/src/durable_effect.rs": "effect",
     "crates/fss-reference/src/encoded_fixture.rs": "authority",
     "crates/fss-reference/src/error.rs": "support",
+    "crates/fss-reference/src/evaluation.rs": "cognition",
+    "crates/fss-reference/src/evaluation/tests.rs": "support",
     "crates/fss-reference/src/extrinsics.rs": "authority",
     "crates/fss-reference/src/hydration.rs": "support",
     "crates/fss-reference/src/hydration/cursor_checkpoint.rs": "support",
