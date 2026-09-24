@@ -1,0 +1,6 @@
+fss-evaluation-labels.v1
+# Synthetic scoring fixture; not real-camera quality evidence.
+clip	c	1000
+truth	e	c	person	-	100	200
+gap	c	500	599	sensor_down
+truth	hidden	c	person	-	510	550

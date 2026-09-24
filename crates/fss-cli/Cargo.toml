@@ -28,6 +28,10 @@ name = "fss-event"
 path = "src/bin/fss-event.rs"
 
 [[bin]]
+name = "fss-evaluate"
+path = "src/bin/fss-evaluate.rs"
+
+[[bin]]
 name = "fss-archive"
 path = "src/bin/fss-archive.rs"
 

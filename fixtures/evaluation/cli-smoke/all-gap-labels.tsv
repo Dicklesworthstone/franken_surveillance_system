@@ -1,0 +1,5 @@
+fss-evaluation-labels.v1
+# The entire closed interval [0,999] is explicitly unobservable.
+clip	c	1000
+gap	c	0	999	sensor_down
+truth	e	c	person	-	100	200

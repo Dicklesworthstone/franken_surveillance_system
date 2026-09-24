@@ -1,0 +1,5 @@
+fss-evaluation-candidates.v1
+# Synthetic candidates; these are not outputs of an admitted detector.
+candidate	d	c	person	-	110	900000
+candidate	fp	c	person	-	300	500000
+candidate	gap	c	person	-	520	990000
