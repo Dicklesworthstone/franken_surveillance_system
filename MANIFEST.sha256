@@ -85,7 +85,7 @@ c5c00751a94f91820cd70737b16df59cbed45df22e519bb938f6e08ee4656332  crates/fss-cli
 46ccc20e83050035c91db4b3d9fd32c5f2a80ab03450959ec461c3167d24a013  crates/fss-cli/src/bin/fss-archive/recipes.rs
 2c5591847c794b96f49ad0b9b93bf58763329f2ff55ba744e9049f3448706cad  crates/fss-cli/src/bin/fss-archive/work.rs
 d9276646d2a189a907b55c48ce932e719eef91f8291ecadcd71448f11f60e352  crates/fss-cli/src/bin/fss-archive.rs
-371a4d04b5543778254149f9ccfcc98f03ac5c74e44b758f1e653b2bd1632261  crates/fss-cli/src/bin/fss-evaluate.rs
+124cb803382168ba3d592a866ff3c19e0986dfe1e94781d734f69a977b0d2dd1  crates/fss-cli/src/bin/fss-evaluate.rs
 dac847e29d53ffedacfcc5ed486f7be4eb70536c0ad62fb609721429a9e039b4  crates/fss-cli/src/bin/fss-event/alert.rs
 49feeea526200ee87dee04bd13cf749e8f85d553dc579972661bbf71796ca902  crates/fss-cli/src/bin/fss-event/corroborate.rs
 ecdfd1b19dcfc1cf6c1245b6bcdc39194ff3070c5defb423dbfac801f23e32c0  crates/fss-cli/src/bin/fss-event/coverage.rs
