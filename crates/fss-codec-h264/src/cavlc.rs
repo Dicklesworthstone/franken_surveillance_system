@@ -10,13 +10,12 @@
 //! - **Kraft-complete**: the Kraft sum is exactly 1, so a table with a
 //!   missing, duplicated, or miscopied row almost always fails loudly.
 //!
-//! The full residual-block decode loop lands together with the validated
-//! transcriptions of the real tables and the FFmpeg differential oracle;
-//! shipping an unverified level-decoder from memory would be exactly the
-//! "unverified claim" the repository constitution forbids.
+//! The residual-block decode loop lives in [`crate::residual`]; its output
+//! is verified end to end by the bit-exact FFmpeg differential fixtures in
+//! `tests/decode_conformance.rs`.
 
-use crate::bits::BitReader;
 use crate::DecodeError;
+use crate::bits::BitReader;
 
 /// A variable-length table: maps a codeword (MSB-first packed) to a value
 /// within one context. Lookup is linear; tables are small (<= 70 rows) and
@@ -122,7 +121,11 @@ pub mod table_checks {
         // coeff_token nC<2 — deliberately leave unused codeword space, so
         // equality is NOT required.) A transcription gap that breaks
         // decodability or a duplicated codeword trips this check.
-        let max_len = entries.iter().map(|e| e.len).max().ok_or(DecodeError::Malformed)?;
+        let max_len = entries
+            .iter()
+            .map(|e| e.len)
+            .max()
+            .ok_or(DecodeError::Malformed)?;
         let mut numerator: u64 = 0;
         for entry in entries {
             numerator += 1u64 << (max_len - entry.len);
@@ -173,28 +176,22 @@ pub fn canonical_table(rows: &[(u16, u8)]) -> Result<VlcTable, DecodeError> {
     VlcTable::new(entries)
 }
 
-/// nC context from left/above neighbor TotalCoeff values (clause 9.2.1).
+/// `nC` for a luma or chroma-AC block from its left (A) and above (B)
+/// neighbours' TotalCoeff values (clause 9.2.1): both available ->
+/// `(nA + nB + 1) >> 1`; one available -> that count; neither -> 0.
+/// `None` marks an unavailable neighbour. ChromaDC blocks do not use this:
+/// their `nC` is always -1 (4:2:0).
 ///
-/// `None` marks an unavailable neighbor; both-unavailable selects the
-/// `nC < 0` table (used for ChromaDC). One-available reads that neighbor's
-/// count directly.
+/// The result is `nC` itself, not a table index; the coeff_token code is
+/// chosen from it by [`crate::residual::decode_residual_block_nc`].
 #[must_use]
 pub fn context_nc(left: Option<u8>, above: Option<u8>) -> i32 {
     match (left, above) {
         (Some(left_count), Some(above_count)) => {
-            let count = i32::from(left_count) + i32::from(above_count);
-            if count < 2 {
-                0
-            } else if count < 4 {
-                1
-            } else if count < 8 {
-                2
-            } else {
-                3
-            }
+            (i32::from(left_count) + i32::from(above_count) + 1) >> 1
         }
         (Some(count), None) | (None, Some(count)) => i32::from(count),
-        (None, None) => -1,
+        (None, None) => 0,
     }
 }
 
@@ -215,9 +212,30 @@ mod tests {
         let table = synthetic_table();
         table_checks::validate_canonical(&table).expect("synthetic table is canonical");
         assert_eq!(table.entries().len(), 5);
-        assert_eq!(table.entries()[0], VlcEntry { code: 0b00, len: 2, value: 0 });
-        assert_eq!(table.entries()[3], VlcEntry { code: 0b110, len: 3, value: 3 });
-        assert_eq!(table.entries()[4], VlcEntry { code: 0b111, len: 3, value: 4 });
+        assert_eq!(
+            table.entries()[0],
+            VlcEntry {
+                code: 0b00,
+                len: 2,
+                value: 0
+            }
+        );
+        assert_eq!(
+            table.entries()[3],
+            VlcEntry {
+                code: 0b110,
+                len: 3,
+                value: 3
+            }
+        );
+        assert_eq!(
+            table.entries()[4],
+            VlcEntry {
+                code: 0b111,
+                len: 3,
+                value: 4
+            }
+        );
     }
 
     #[test]
@@ -225,9 +243,21 @@ mod tests {
         // Three length-1 codewords: Kraft sum 3/2 > 1 — undecodable, and the
         // corrected inequality validator must refuse it.
         let overcomplete = VlcTable::new(vec![
-            VlcEntry { code: 0b0, len: 1, value: 0 },
-            VlcEntry { code: 0b1, len: 1, value: 1 },
-            VlcEntry { code: 0b10, len: 1, value: 2 },
+            VlcEntry {
+                code: 0b0,
+                len: 1,
+                value: 0,
+            },
+            VlcEntry {
+                code: 0b1,
+                len: 1,
+                value: 1,
+            },
+            VlcEntry {
+                code: 0b10,
+                len: 1,
+                value: 2,
+            },
         ])
         .expect("values are unique");
         assert_eq!(
@@ -236,8 +266,16 @@ mod tests {
         );
         // A decodable 2-row (1,2) table passes the inequality.
         let decodable = VlcTable::new(vec![
-            VlcEntry { code: 0b0, len: 1, value: 0 },
-            VlcEntry { code: 0b10, len: 2, value: 1 },
+            VlcEntry {
+                code: 0b0,
+                len: 1,
+                value: 0,
+            },
+            VlcEntry {
+                code: 0b10,
+                len: 2,
+                value: 1,
+            },
         ])
         .expect("values are unique");
         assert!(table_checks::validate_canonical(&decodable).is_ok());
@@ -247,10 +285,26 @@ mod tests {
     fn validator_rejects_prefix_conflicts() {
         // "0" and "01": the second is prefixed by the first.
         let conflicting = VlcTable::new(vec![
-            VlcEntry { code: 0b0, len: 1, value: 0 },
-            VlcEntry { code: 0b01, len: 2, value: 1 },
-            VlcEntry { code: 0b10, len: 2, value: 2 },
-            VlcEntry { code: 0b11, len: 2, value: 3 },
+            VlcEntry {
+                code: 0b0,
+                len: 1,
+                value: 0,
+            },
+            VlcEntry {
+                code: 0b01,
+                len: 2,
+                value: 1,
+            },
+            VlcEntry {
+                code: 0b10,
+                len: 2,
+                value: 2,
+            },
+            VlcEntry {
+                code: 0b11,
+                len: 2,
+                value: 3,
+            },
         ])
         .unwrap();
         assert_eq!(
@@ -261,11 +315,21 @@ mod tests {
 
     #[test]
     fn duplicate_values_are_refused_at_construction() {
-        assert!(VlcTable::new(vec![
-            VlcEntry { code: 0b0, len: 1, value: 7 },
-            VlcEntry { code: 0b10, len: 2, value: 7 },
-        ])
-        .is_err());
+        assert!(
+            VlcTable::new(vec![
+                VlcEntry {
+                    code: 0b0,
+                    len: 1,
+                    value: 7
+                },
+                VlcEntry {
+                    code: 0b10,
+                    len: 2,
+                    value: 7
+                },
+            ])
+            .is_err()
+        );
     }
 
     #[test]
@@ -276,7 +340,7 @@ mod tests {
         for value in 0..5u16 {
             table.encode(value, &mut packed).expect("value in table");
         }
-        while packed.len() % 8 != 0 {
+        while !packed.len().is_multiple_of(8) {
             packed.push(0);
         }
         let bytes: Vec<u8> = packed
@@ -294,12 +358,23 @@ mod tests {
         // Two of three length-2 codes: the all-ones run matches no row and
         // exhausts the 17-bit codeword search — typed Malformed, not Limit.
         let incomplete = VlcTable::new(vec![
-            VlcEntry { code: 0b00, len: 2, value: 0 },
-            VlcEntry { code: 0b01, len: 2, value: 1 },
+            VlcEntry {
+                code: 0b00,
+                len: 2,
+                value: 0,
+            },
+            VlcEntry {
+                code: 0b01,
+                len: 2,
+                value: 1,
+            },
         ])
         .unwrap();
         let mut reader = BitReader::new(&[0b1111_1111, 0b1111_1111, 0b1100_0000], 17);
-        assert_eq!(incomplete.decode(&mut reader).unwrap_err(), DecodeError::Malformed);
+        assert_eq!(
+            incomplete.decode(&mut reader).unwrap_err(),
+            DecodeError::Malformed
+        );
     }
 
     #[test]
@@ -312,16 +387,21 @@ mod tests {
 
     #[test]
     fn context_nc_follows_clause_9_2_1() {
-        // Both neighbors: sum thresholds 2/4/8 map to contexts 0/1/2/3.
-        assert_eq!(context_nc(Some(0), Some(1)), 0);
+        // Both neighbours: rounded mean (nA + nB + 1) >> 1 — nC itself,
+        // not a table index (the previous version returned table buckets,
+        // which contradicts 9.2.1 and would pick the wrong coeff_token code
+        // for e.g. nA=0, nB=3 -> nC=2).
+        assert_eq!(context_nc(Some(0), Some(1)), 1);
         assert_eq!(context_nc(Some(1), Some(1)), 1);
-        assert_eq!(context_nc(Some(2), Some(2)), 2);
-        assert_eq!(context_nc(Some(4), Some(4)), 3);
-        // One available neighbor: its count is the context directly.
+        assert_eq!(context_nc(Some(0), Some(3)), 2);
+        assert_eq!(context_nc(Some(2), Some(3)), 3);
+        assert_eq!(context_nc(Some(16), Some(16)), 16);
+        // One available neighbour: its count directly.
         assert_eq!(context_nc(Some(5), None), 5);
         assert_eq!(context_nc(None, Some(1)), 1);
-        // Neither: the nC < 0 table.
-        assert_eq!(context_nc(None, None), -1);
+        // Neither available: nC = 0. (-1 is the ChromaDC context, selected
+        // by block kind, never by neighbour availability.)
+        assert_eq!(context_nc(None, None), 0);
     }
 
     #[test]
