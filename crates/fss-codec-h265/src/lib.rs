@@ -23,21 +23,27 @@
 //!    candidates) and AMVP motion vectors with POC-distance scaling and
 //!    collocated temporal prediction; 8-tap luma / 4-tap chroma
 //!    interpolation; default and explicit weighted prediction.
-//! 8. [`decoder`] — the streaming [`Decoder`]: parameter-set store,
+//! 8. `deblock` / `sao` — the in-loop filters: boundary strengths on the
+//!    8x8 grid, strong/weak luma and chroma deblocking with slice offsets,
+//!    PCM / transquant-bypass protection and slice-boundary control, then
+//!    band and edge sample adaptive offsets.
+//! 9. [`decoder`] — the streaming [`Decoder`]: parameter-set store,
 //!    picture order count, reference picture set marking, reference list
 //!    construction (with list modification) and the decoded picture
 //!    buffer's output (bumping) process.
 //!
 //! Admitted tool set: Main (and Main Still Picture) profile, 8-bit 4:2:0,
 //! I, P and B slices (all partition modes incl. AMP), short-term
-//! reference pictures, one or more slices per picture in raster order, wavefront
+//! reference pictures, deblocking and SAO, one or more slices per picture
+//! in raster order, wavefront
 //! parallel processing (`entropy_coding_sync_enabled_flag`), scaling
 //! lists, transform skip, transquant bypass, PCM, sign data hiding and
 //! constrained intra prediction. Everything else is refused with
 //! [`DecodeError::Unsupported`] naming the feature: other profiles, chroma
 //! formats and bit depths, the range / multilayer / 3D / screen-content
 //! extensions, tiles, dependent slice segments, field-coded (SEI-based
-//! interlaced) sequences and layers above the base layer.
+//! interlaced) sequences, long-term reference pictures and layers above
+//! the base layer.
 //!
 //! Correctness is established differentially: tests compare every decoded
 //! frame bit-exactly, in output order, against digests produced offline by
@@ -51,6 +57,7 @@ pub mod cabac;
 #[rustfmt::skip]
 pub mod cabac_tables;
 mod ctu;
+mod deblock;
 pub mod decoder;
 mod inter;
 mod intra;
@@ -58,6 +65,7 @@ pub mod nal;
 pub mod params;
 pub mod picture;
 mod residual;
+mod sao;
 pub mod slice;
 mod tables;
 mod transform;
@@ -92,7 +100,8 @@ pub enum UnsupportedFeature {
     /// Historical: P and B slices. Admitted since inter prediction support;
     /// no longer produced, kept for API stability.
     InterPrediction,
-    /// Enabled in-loop filters (deblocking or sample adaptive offset).
+    /// Historical: enabled in-loop filters (deblocking, SAO). Admitted since
+    /// in-loop filter support; no longer produced, kept for API stability.
     LoopFilter,
     /// Long-term reference pictures.
     LongTermReference,

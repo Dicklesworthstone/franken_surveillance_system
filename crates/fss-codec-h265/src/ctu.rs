@@ -10,13 +10,16 @@ use crate::cabac_tables::{
     ABS_MVD_GREATER0_FLAG, ABS_MVD_GREATER1_FLAG, CBF_CB_CR, CBF_LUMA, CU_QP_DELTA,
     CU_TRANSQUANT_BYPASS_FLAG, INTER_PRED_IDC, INTRA_CHROMA_PRED_MODE, MERGE_FLAG, MERGE_IDX,
     MVP_LX_FLAG, NO_RESIDUAL_DATA_FLAG, PART_MODE, PRED_MODE_FLAG, PREV_INTRA_LUMA_PRED_FLAG,
-    REF_IDX_L0, SKIP_FLAG, SPLIT_CODING_UNIT_FLAG, SPLIT_TRANSFORM_FLAG,
+    REF_IDX_L0, SAO_MERGE_FLAG, SAO_TYPE_IDX, SKIP_FLAG, SPLIT_CODING_UNIT_FLAG,
+    SPLIT_TRANSFORM_FLAG,
 };
+use crate::deblock::{SliceFilter, edge_strength};
 use crate::inter::{self, Block, ColMv, ColPic, MvContext, MvField, PartMode, PbGeometry, RefList};
 use crate::intra;
 use crate::params::{Pps, ScalingList, Sps};
 use crate::picture::Frame;
 use crate::residual::{ResidualParams, Scans, residual_coding};
+use crate::sao::{SAO_BAND, SAO_EDGE, SAO_NONE, SaoParams};
 use crate::slice::{SliceHeader, SliceType};
 use crate::tables::chroma_qp;
 use crate::transform::{inverse_transform, scale, transform_skip};
@@ -42,6 +45,15 @@ pub(crate) struct BlockInfo {
     pub skip: bool,
     /// Motion of inter-coded blocks (`pred == 0` otherwise).
     pub mv: MvField,
+    /// In-loop filters leave the samples alone (PCM with
+    /// `pcm_loop_filter_disabled_flag`, or `cu_transquant_bypass_flag`).
+    pub no_filter: bool,
+    /// Inside a luma transform block with non-zero coefficients.
+    pub nonzero: bool,
+    /// Boundary strength of the vertical edge on this block's left side.
+    pub bs_v: u8,
+    /// Boundary strength of the horizontal edge on this block's top side.
+    pub bs_h: u8,
 }
 
 /// Decoding state of the picture being reconstructed.
@@ -61,6 +73,10 @@ pub(crate) struct PicState {
     /// Reference picture order counts and long-term flags of each slice
     /// (by slice tag - 1), for the motion stored with the picture.
     pub slice_refs: Vec<[Vec<(i32, bool)>; 2]>,
+    /// Deblocking / SAO slice parameters (by slice tag - 1).
+    pub slice_filters: Vec<SliceFilter>,
+    /// SAO parameters per CTB (raster order).
+    pub sao: Vec<SaoParams>,
 }
 
 impl PicState {
@@ -83,6 +99,8 @@ impl PicState {
             slice_count: 0,
             next_ctb: 0,
             slice_refs: Vec::new(),
+            slice_filters: Vec::new(),
+            sao: vec![SaoParams::default(); ctbs],
         })
     }
 
@@ -273,6 +291,12 @@ impl<'a, 'b> SliceDecoder<'a, 'b> {
         };
         pic.slice_count = pic.slice_count.checked_add(1).ok_or(DecodeError::Limit)?;
         let slice_tag = pic.slice_count;
+        pic.slice_filters.push(SliceFilter {
+            deblocking_disabled: header.deblocking_disabled,
+            beta_offset: header.beta_offset,
+            tc_offset: header.tc_offset,
+            loop_filter_across_slices: header.loop_filter_across_slices,
+        });
         pic.slice_refs.push(std::array::from_fn(|list| {
             let refs = &inputs.refs[list];
             refs.pocs
@@ -340,6 +364,9 @@ impl<'a, 'b> SliceDecoder<'a, 'b> {
                 self.last_qp = self.header.slice_qp;
             }
             self.pic.ctb_slice[addr] = self.slice_tag;
+            if self.header.sao_luma || self.header.sao_chroma {
+                self.pic.sao[addr] = self.sao_syntax(addr, ctb_w)?;
+            }
             self.coding_quadtree(cx << log2, cy << log2, log2, 0)?;
             let end_of_slice = self.cabac.terminate()? == 1;
             if wpp && cx == 1 {
@@ -364,6 +391,122 @@ impl<'a, 'b> SliceDecoder<'a, 'b> {
         }
         self.pic.next_ctb = u32::try_from(addr).map_err(|_| DecodeError::Limit)?;
         Ok(())
+    }
+
+    /// `sao()` (clause 7.3.8.3) for the CTB at raster address `addr`.
+    fn sao_syntax(&mut self, addr: usize, ctb_w: usize) -> Result<SaoParams, DecodeError> {
+        let tag = self.slice_tag;
+        if !addr.is_multiple_of(ctb_w)
+            && self.pic.ctb_slice[addr - 1] == tag
+            && self.cabac.flag(SAO_MERGE_FLAG)?
+        {
+            return Ok(self.pic.sao[addr - 1]);
+        }
+        if addr >= ctb_w
+            && self.pic.ctb_slice[addr - ctb_w] == tag
+            && self.cabac.flag(SAO_MERGE_FLAG)?
+        {
+            return Ok(self.pic.sao[addr - ctb_w]);
+        }
+        let mut params = SaoParams::default();
+        for c in 0..3 {
+            let enabled = if c == 0 {
+                self.header.sao_luma
+            } else {
+                self.header.sao_chroma
+            };
+            if !enabled {
+                continue;
+            }
+            if c == 2 {
+                params.type_idx[2] = params.type_idx[1];
+                params.eo_class[2] = params.eo_class[1];
+            } else {
+                params.type_idx[c] = if !self.cabac.flag(SAO_TYPE_IDX)? {
+                    SAO_NONE
+                } else if self.cabac.bypass()? == 0 {
+                    SAO_BAND
+                } else {
+                    SAO_EDGE
+                };
+            }
+            if params.type_idx[c] == SAO_NONE {
+                continue;
+            }
+            let mut magnitudes = [0i32; 4];
+            for magnitude in &mut magnitudes {
+                // TR binarisation, cMax = (1 << (Min(bitDepth, 10) - 5)) - 1.
+                while *magnitude < 7 && self.cabac.bypass()? == 1 {
+                    *magnitude += 1;
+                }
+            }
+            if params.type_idx[c] == SAO_BAND {
+                for (offset, &magnitude) in params.offsets[c].iter_mut().zip(&magnitudes) {
+                    let negative = magnitude != 0 && self.cabac.bypass()? == 1;
+                    *offset = if negative { -magnitude } else { magnitude };
+                }
+                params.band_position[c] = self.cabac.bypass_bits(5)? as u8;
+            } else {
+                params.offsets[c] = [magnitudes[0], magnitudes[1], -magnitudes[2], -magnitudes[3]];
+                if c != 2 {
+                    params.eo_class[c] = self.cabac.bypass_bits(2)? as u8;
+                }
+            }
+        }
+        Ok(params)
+    }
+
+    /// Boundary strengths of the left and top edges of the square block at
+    /// `(x0, y0)` (a transform unit, or a coding unit without residual),
+    /// and of the prediction block edges inside it (clause 8.7.2.3/8.7.2.4,
+    /// on the 8x8 luma grid).
+    fn edge_strengths(&mut self, x0: usize, y0: usize, size: usize) {
+        if self.header.deblocking_disabled {
+            return;
+        }
+        let (width, height) = (self.sps.width as usize, self.sps.height as usize);
+        let across = self.header.loop_filter_across_slices;
+        let tag = self.slice_tag;
+        let w4 = self.pic.w4;
+        if y0 > 0 && y0.is_multiple_of(8) && (across || self.pic.at(x0, y0 - 1).slice == tag) {
+            for x in (x0..(x0 + size).min(width)).step_by(4) {
+                let q = *self.pic.at(x, y0);
+                let p = *self.pic.at(x, y0 - 1);
+                let bs = edge_strength(self.pic, &q, &p, true);
+                self.pic.info[(y0 >> 2) * w4 + (x >> 2)].bs_h = bs;
+            }
+        }
+        if x0 > 0 && x0.is_multiple_of(8) && (across || self.pic.at(x0 - 1, y0).slice == tag) {
+            for y in (y0..(y0 + size).min(height)).step_by(4) {
+                let q = *self.pic.at(x0, y);
+                let p = *self.pic.at(x0 - 1, y);
+                let bs = edge_strength(self.pic, &q, &p, true);
+                self.pic.info[(y >> 2) * w4 + (x0 >> 2)].bs_v = bs;
+            }
+        }
+        if self.cu.intra || size <= 8 {
+            return;
+        }
+        // Prediction block edges inside the block (motion-only strength;
+        // lines inside one prediction block get 0).
+        for j in (8..size).step_by(8) {
+            for i in (0..size).step_by(4) {
+                let (x, y) = (x0 + i, y0 + j);
+                if x < width && y < height {
+                    let q = *self.pic.at(x, y);
+                    let p = *self.pic.at(x, y - 1);
+                    let bs = edge_strength(self.pic, &q, &p, false);
+                    self.pic.info[(y >> 2) * w4 + (x >> 2)].bs_h = bs;
+                }
+                let (x, y) = (x0 + j, y0 + i);
+                if x < width && y < height {
+                    let q = *self.pic.at(x, y);
+                    let p = *self.pic.at(x - 1, y);
+                    let bs = edge_strength(self.pic, &q, &p, false);
+                    self.pic.info[(y >> 2) * w4 + (x >> 2)].bs_v = bs;
+                }
+            }
+        }
     }
 
     /// Neighbour availability for context selection and mode prediction:
@@ -473,6 +616,9 @@ impl<'a, 'b> SliceDecoder<'a, 'b> {
         self.update_qp();
         if self.pps.transquant_bypass_enabled {
             self.cu.transquant_bypass = self.cabac.flag(CU_TRANSQUANT_BYPASS_FLAG)?;
+            if self.cu.transquant_bypass {
+                self.pic.fill(x0, y0, size, |b| b.no_filter = true);
+            }
         }
         let mut skip = false;
         if self.header.slice_type != SliceType::I {
@@ -490,6 +636,7 @@ impl<'a, 'b> SliceDecoder<'a, 'b> {
             self.cu.intra = false;
             self.cu.part_mode = Some(PartMode::Part2Nx2N);
             self.prediction_unit(x0, y0, size, size, 0, true)?;
+            self.edge_strengths(x0, y0, size);
         } else if self.header.slice_type == SliceType::I || self.cabac.flag(PRED_MODE_FLAG)? {
             self.intra_coding_unit(x0, y0, log2)?;
         } else {
@@ -507,6 +654,8 @@ impl<'a, 'b> SliceDecoder<'a, 'b> {
             if rqt_root_cbf {
                 self.cu.max_trafo_depth = self.sps.max_th_depth_inter;
                 self.transform_tree(TreeNode::root(x0, y0, log2), [false, false])?;
+            } else {
+                self.edge_strengths(x0, y0, size);
             }
         }
         let qp = self.qp_y as i8;
@@ -876,11 +1025,14 @@ impl<'a, 'b> SliceDecoder<'a, 'b> {
         }
         self.cabac.restart_engine()?;
         let tag = self.slice_tag;
+        let protect = pcm.loop_filter_disabled;
         self.pic.fill(x0, y0, size, |b| {
             b.slice = tag;
             b.intra = true;
             b.ipm = intra::DC;
+            b.no_filter |= protect;
         });
+        self.edge_strengths(x0, y0, size);
         Ok(())
     }
 
@@ -1002,7 +1154,11 @@ impl<'a, 'b> SliceDecoder<'a, 'b> {
             self.residual_block(0, x0, y0, log2, scan)?;
         }
         let tag = self.slice_tag;
-        self.pic.fill(x0, y0, 1 << log2, |b| b.slice = tag);
+        self.pic.fill(x0, y0, 1 << log2, |b| {
+            b.slice = tag;
+            b.nonzero = cbf_luma;
+        });
+        self.edge_strengths(x0, y0, 1 << log2);
         let chroma = if log2 > 2 {
             Some((x0 / 2, y0 / 2, log2 - 1))
         } else if blk_idx == 3 {

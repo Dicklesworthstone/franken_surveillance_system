@@ -15,7 +15,7 @@ const INTRA: &[u8] = include_bytes!("fixtures/decode/i_64x64_ctu32_qp30.h265");
 const SLICES: &[u8] = include_bytes!("fixtures/decode/i_qcif_slices4.h265");
 const PCM: &[u8] = include_bytes!("fixtures/decode/pcm_mixed_nodeblock.h265");
 const INTER: &[u8] = include_bytes!("fixtures/decode/b_qcif_nopyramid_ref1.h265");
-const P_CROP: &[u8] = include_bytes!("fixtures/decode/p_100x60_crop.h265");
+const FILTERED: &[u8] = include_bytes!("fixtures/decode/f_100x60_full.h265");
 
 fn nals(stream: &[u8]) -> Vec<&[u8]> {
     fss_codec_h265::annex_b_nal_units(stream).collect()
@@ -76,7 +76,7 @@ fn truncation_at_every_byte_is_typed() {
 /// never a panic.
 #[test]
 fn byte_corruption_never_panics() {
-    for stream in [INTRA, PCM, SLICES, P_CROP] {
+    for stream in [INTRA, PCM, SLICES, FILTERED] {
         let units = nals(stream);
         for (index, unit) in units.iter().enumerate() {
             // Roughly 60 positions per NAL unit keep the debug-build run

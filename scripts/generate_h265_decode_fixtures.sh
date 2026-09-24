@@ -120,6 +120,28 @@ encode b_qcif_opengop "testsrc2=size=176x144:rate=10" 12 \
 encode b_qcif_wpp_slices "testsrc2=size=176x144:rate=10" 8 \
   "no-deblock=1:no-sao=1:wpp=1:slices=2:keyint=8:bframes=2:b-adapt=0:ref=2:ctu=16:qp=30"
 
+
+# ----- Stage 3: in-loop filters (deblocking, SAO) -----
+encode f_qcif_deblock_ip "testsrc2=size=176x144:rate=10" 6 \
+  "no-sao=1:wpp=0:keyint=6:bframes=0:ref=2:ctu=32:qp=34"
+encode f_qcif_deblock_offsets "testsrc2=size=176x144:rate=10" 4 \
+  "no-sao=1:wpp=0:keyint=4:bframes=0:ctu=16:min-cu-size=8:deblock=-2,3:qp=37"
+encode f_mandel_sao_only "mandelbrot=size=128x96:rate=10" 4 \
+  "no-deblock=1:sao=1:wpp=0:keyint=4:bframes=0:ctu=32:qp=32"
+encode f_qcif_full_b "testsrc2=size=176x144:rate=10" 9 \
+  "wpp=1:keyint=9:bframes=3:b-adapt=0:ref=3:ctu=32:qp=32"
+encode f_100x60_full "testsrc2=size=100x60:rate=10" 5 \
+  "wpp=0:keyint=5:bframes=1:b-adapt=0:ref=2:ctu=16:qp=30"
+encode f_qcif_cuqp_chroma_offsets "smptebars=size=176x144:rate=10,noise=alls=20:allf=t" 4 \
+  "wpp=0:keyint=4:bframes=0:ref=1:ctu=32:aq-mode=2:qg-size=16:crf=30:cbqpoffs=-4:crqpoffs=3"
+encode f_64x64_lossless_filters "testsrc2=size=64x64:rate=10" 3 \
+  "wpp=0:keyint=3:bframes=0:ctu=32:lossless=1"
+encode f_qcif_slices_filters "testsrc2=size=176x144:rate=10" 4 \
+  "wpp=1:slices=2:keyint=4:bframes=0:ref=1:ctu=16:qp=36"
+encode f_qcif_constrained_intra_filters "testsrc2=size=176x144:rate=10,noise=alls=60:allf=t+u" 3 \
+  "wpp=0:keyint=3:bframes=0:ref=1:ctu=32:constrained-intra=1:qp=40"
+encode f_qcif_default "testsrc2=size=176x144:rate=10" 8 "keyint=8"
+
 # ----- Negative fixtures: must be refused, never decoded -----
 # Range-extensions "Main Intra" profile (libx265 with keyint=1).
 encode unsupported_rext_main_intra "testsrc2=size=64x64:rate=10" 1 \
