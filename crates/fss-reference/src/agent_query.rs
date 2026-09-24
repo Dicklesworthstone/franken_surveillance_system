@@ -55,7 +55,11 @@ pub struct EventQueryFilter {
 impl EventQueryFilter {
     /// Refuses inverted intervals and empty, oversized, or control-bearing zone names.
     pub fn validate(&self) -> Result<(), QueryError> {
-        if self.from_ns.zip(self.through_ns).is_some_and(|(a, b)| a > b) {
+        if self
+            .from_ns
+            .zip(self.through_ns)
+            .is_some_and(|(a, b)| a > b)
+        {
             return Err(QueryError::InvalidRequest("inverted query interval"));
         }
         if self.zone.as_ref().is_some_and(|zone| {
@@ -71,12 +75,21 @@ impl EventQueryFilter {
     /// Tests declared record metadata only; endpoints are compared without arithmetic.
     #[must_use]
     pub fn matches(&self, event: &EventHypothesis) -> bool {
-        self.event_id.as_ref().is_none_or(|id| id == &event.event_id)
+        self.event_id
+            .as_ref()
+            .is_none_or(|id| id == &event.event_id)
             && self.kind.is_none_or(|kind| kind == event.kind)
             && self.state.is_none_or(|state| state == event.state)
-            && self.zone.as_ref().is_none_or(|zone| event.zone_ids.contains(zone))
-            && self.from_ns.is_none_or(|from| event.interval.latest.0 >= from)
-            && self.through_ns.is_none_or(|through| event.interval.earliest.0 <= through)
+            && self
+                .zone
+                .as_ref()
+                .is_none_or(|zone| event.zone_ids.contains(zone))
+            && self
+                .from_ns
+                .is_none_or(|from| event.interval.latest.0 >= from)
+            && self
+                .through_ns
+                .is_none_or(|through| event.interval.earliest.0 <= through)
     }
 
     /// Human-inspectable, literal interpretation of the typed filters.
@@ -150,7 +163,9 @@ impl EventQueryRequest {
                         || matches!(b, b':' | b'+' | b'.' | b'_' | b'-')
                 })
         }) {
-            return Err(QueryError::InvalidRequest("invalid query continuation spelling"));
+            return Err(QueryError::InvalidRequest(
+                "invalid query continuation spelling",
+            ));
         }
         Ok(())
     }
@@ -230,7 +245,9 @@ impl From<&RetainedEvent> for QueryEvent {
             event_root: value.event_root,
             revision_digest: value.revision_digest,
             committed_sequence: value.committed_sequence,
-            tamper_digest: value.tamper.canonical_digest("fss.agent_query.sensor_integrity.v1"),
+            tamper_digest: value
+                .tamper
+                .canonical_digest("fss.agent_query.sensor_integrity.v1"),
             open_tamper_reports: value.tamper.open_tamper_reports.len(),
         }
     }
@@ -307,8 +324,11 @@ impl DeploymentQuery {
         ];
         for row in &self.events {
             let event = &row.event;
-            let contradictions = event.evidence.iter()
-                .filter(|edge| edge.counts_as_contradiction()).count();
+            let contradictions = event
+                .evidence
+                .iter()
+                .filter(|edge| edge.counts_as_contradiction())
+                .count();
             propositions.push(EnvelopeProposition {
                 id: event.event_id.as_str().to_owned(),
                 statement: format!(
@@ -342,7 +362,8 @@ impl DeploymentQuery {
             assumptions: vec![
                 self.filter.description(),
                 "This metadata read grants no effect authority, performs no source-media search, \
-                 and does not authenticate its principal audit label.".to_owned(),
+                 and does not authenticate its principal audit label."
+                    .to_owned(),
             ],
             invalidators: vec![
                 "Any authority or effect-journal advance requires a new query.".to_owned(),
@@ -367,21 +388,26 @@ impl DeploymentQuery {
             omission_reasons: if remaining == 0 {
                 Vec::new()
             } else {
-                vec!["remaining matched records are available through the exact continuation"
-                    .to_owned()]
+                vec![
+                    "remaining matched records are available through the exact continuation"
+                        .to_owned(),
+                ]
             },
             stop_reason: if remaining == 0 {
                 "committed_index_exhausted"
             } else {
                 "page_limit"
-            }.to_owned(),
+            }
+            .to_owned(),
         }
     }
 }
 
 fn hex(digest: ContentDigest) -> String {
     let text = digest.to_text();
-    text.split_once(':').map_or(text.as_str(), |(_, hex)| hex).to_owned()
+    text.split_once(':')
+        .map_or(text.as_str(), |(_, hex)| hex)
+        .to_owned()
 }
 
 fn find_cursor(
@@ -415,7 +441,11 @@ pub fn query_deployment(
         return Err(QueryError::TooManyEvents);
     }
     let anchor_token = snapshot_anchor_token(snapshot);
-    if request.expected_anchor.as_ref().is_some_and(|anchor| anchor.as_str() != anchor_token) {
+    if request
+        .expected_anchor
+        .as_ref()
+        .is_some_and(|anchor| anchor.as_str() != anchor_token)
+    {
         return Err(QueryError::AnchorChanged);
     }
     let mut ordered: Vec<&RetainedEvent> = snapshot.events.iter().collect();
@@ -426,8 +456,11 @@ pub fn query_deployment(
             return Err(QueryError::InvalidRecord);
         }
     }
-    let selected: Vec<&RetainedEvent> = ordered.iter().copied()
-        .filter(|row| request.filter.matches(&row.event)).collect();
+    let selected: Vec<&RetainedEvent> = ordered
+        .iter()
+        .copied()
+        .filter(|row| request.filter.matches(&row.event))
+        .collect();
     let basis = reference_contract_basis();
     let mut encoder = CanonicalEncoder::new();
     encoder.text("fss.agent_query.scope.v1");
@@ -449,7 +482,11 @@ pub fn query_deployment(
         ..BudgetQuantitiesSpec::ZERO
     });
     let admission = admit_query_read(
-        &basis, &snapshot.anchor, "query", request.max_entries, allowance,
+        &basis,
+        &snapshot.anchor,
+        "query",
+        request.max_entries,
+        allowance,
     )?;
     let interpretation = QueryInterpretation::new(
         "interpretation:committed-event-records",
@@ -457,7 +494,8 @@ pub fn query_deployment(
         true,
         true,
         None,
-    ).map_err(ContractBasisError::Contract)?;
+    )
+    .map_err(ContractBasisError::Contract)?;
     let plan = AgentQueryPlan::compile(
         format!("query-plan:{suffix}"),
         mission_id.clone(),
@@ -468,7 +506,10 @@ pub fn query_deployment(
         vec!["taint:structured-operator-input".to_owned()],
         snapshot.anchor.clone(),
         request.filter.description(),
-        selected.iter().map(|row| row.event.event_id.as_str().to_owned()).collect(),
+        selected
+            .iter()
+            .map(|row| row.event.event_id.as_str().to_owned())
+            .collect(),
         vec!["event_revision".to_owned()],
         vec![CAPABILITY_QUERY.to_owned()],
         vec!["metadata_only".to_owned()],
@@ -493,12 +534,17 @@ pub fn query_deployment(
         row.tamper.encode_canonical(&mut encoder);
     }
     let selection_witness = ContentDigest::sha256(&encoder.finish());
-    let entries = selected.iter().enumerate().map(|(index, row)| {
-        ContinuationEntry::new(index as u64, "event_revision", row.revision_digest, true)
-    }).collect::<Result<Vec<_>, _>>()?;
+    let entries = selected
+        .iter()
+        .enumerate()
+        .map(|(index, row)| {
+            ContinuationEntry::new(index as u64, "event_revision", row.revision_digest, true)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let issued_at = snapshot.latest_evidence_time;
-    let expires_at = TimestampNs(issued_at.0.checked_add(QUERY_CURSOR_LIFETIME_NS)
-        .ok_or(QueryError::InvalidRequest("query evidence clock cannot represent cursor expiry"))?);
+    let expires_at = TimestampNs(issued_at.0.checked_add(QUERY_CURSOR_LIFETIME_NS).ok_or(
+        QueryError::InvalidRequest("query evidence clock cannot represent cursor expiry"),
+    )?);
     let stream = ContinuationStream::publish(ContinuationStreamPublishParams {
         stream_id: format!("query:{suffix}"),
         scope: ContinuationScope::Investigation,
@@ -520,7 +566,9 @@ pub fn query_deployment(
     page.verify()?;
     let mut events = Vec::with_capacity(page.entries.len());
     for entry in &page.entries {
-        let row = usize::try_from(entry.sequence).ok().and_then(|index| selected.get(index))
+        let row = usize::try_from(entry.sequence)
+            .ok()
+            .and_then(|index| selected.get(index))
             .filter(|row| row.revision_digest == entry.payload_digest)
             .ok_or(ContinuationError::OutOfRange)?;
         events.push(QueryEvent::from(*row));

@@ -24,7 +24,8 @@ impl OwnedDirectory {
     fn new(tag: &str) -> TestResult<Self> {
         for attempt in 0..100 {
             let path = std::env::temp_dir().join(format!(
-                "fss-agent-query-{tag}-{}-{attempt}", std::process::id(),
+                "fss-agent-query-{tag}-{}-{attempt}",
+                std::process::id(),
             ));
             match fs::create_dir(&path) {
                 Ok(()) => return Ok(Self(path)),
@@ -58,7 +59,8 @@ fn fixture(tag: &str, count: usize) -> TestResult<(OwnedDirectory, DeploymentSna
         generation: 1,
     })?;
     let cx = ReplayCx::new(ReplayIoAuthority::from_context_authority(
-        &authority, directory.0.join("cx"),
+        &authority,
+        directory.0.join("cx"),
     )?);
     let root = directory.0.join("deployment");
     drop(ReferenceDeployment::open(&root, "site:query-unit", &cx)?);
@@ -116,7 +118,13 @@ fn request(size: u32) -> TestResult<EventQueryRequest> {
 }
 
 fn next(query: &DeploymentQuery) -> TestResult<String> {
-    Ok(query.page.next_cursor.as_ref().ok_or("expected next query page")?.token().to_owned())
+    Ok(query
+        .page
+        .next_cursor
+        .as_ref()
+        .ok_or("expected next query page")?
+        .token()
+        .to_owned())
 }
 
 #[test]
@@ -129,7 +137,10 @@ fn empty_query_distinguishes_index_exhaustion_from_physical_absence() -> TestRes
     assert!(query.page.next_cursor.is_none());
     assert_eq!(query.coverage().stop_reason, "committed_index_exhausted");
     assert!(!query.coverage().not_observable_domain.is_empty());
-    assert_eq!(query.epistemic().propositions[1].state, KnowledgeState::Unknown);
+    assert_eq!(
+        query.epistemic().propositions[1].state,
+        KnowledgeState::Unknown
+    );
     assert_eq!(query.admission.completeness(), Completeness::Bounded);
     assert_eq!(query.plan.operation(), AgentOperation::Query);
     Ok(())
@@ -152,7 +163,11 @@ fn exact_pages_deliver_each_record_once_and_replay_identically() -> TestResult {
         assert_eq!(page.plan.plan_digest(), first.plan.plan_digest());
         assert_eq!(page.selection_witness, first.selection_witness);
         assert_eq!(page.cursor.predecessor_digest, previous_cursor);
-        ids.extend(page.events.iter().map(|row| row.event.event_id.as_str().to_owned()));
+        ids.extend(
+            page.events
+                .iter()
+                .map(|row| row.event.event_id.as_str().to_owned()),
+        );
         previous_cursor = Some(page.cursor.cursor_digest);
         match &page.page.next_cursor {
             Some(next) => request.continuation = Some(next.token().to_owned()),
@@ -162,8 +177,14 @@ fn exact_pages_deliver_each_record_once_and_replay_identically() -> TestResult {
             }
         }
     }
-    assert_eq!(ids, snapshot.events.iter().map(|row| row.event.event_id.as_str().to_owned())
-        .collect::<Vec<_>>());
+    assert_eq!(
+        ids,
+        snapshot
+            .events
+            .iter()
+            .map(|row| row.event.event_id.as_str().to_owned())
+            .collect::<Vec<_>>()
+    );
     Ok(())
 }
 
@@ -180,7 +201,10 @@ fn filters_are_conjunctive_exact_and_closed_interval_overlap() -> TestResult {
     request.filter.through_ns = Some(20);
     let query = query_deployment(&snapshot, &request)?;
     assert_eq!(query.events.len(), 1);
-    assert_eq!(query.events[0].event.event_id, snapshot.events[0].event.event_id);
+    assert_eq!(
+        query.events[0].event.event_id,
+        snapshot.events[0].event.event_id
+    );
     request.filter.from_ns = Some(21);
     request.filter.through_ns = None;
     assert_eq!(query_deployment(&snapshot, &request)?.matched_events, 0);
@@ -238,8 +262,16 @@ fn only_latest_revision_is_filtered_and_hypothesis_state_is_not_promoted() -> Te
     let query = query_deployment(&snapshot, &request)?;
     assert_eq!(query.events[0].event, snapshot.events[0].event);
     assert_eq!(query.events[0].event.state, EventState::Indeterminate);
-    assert!(query.epistemic().propositions[2].statement.contains("contradictory_edges=1"));
-    assert!(query.epistemic().propositions[2].statement.contains("not the hypothesis's physical truth"));
+    assert!(
+        query.epistemic().propositions[2]
+            .statement
+            .contains("contradictory_edges=1")
+    );
+    assert!(
+        query.epistemic().propositions[2]
+            .statement
+            .contains("not the hypothesis's physical truth")
+    );
     Ok(())
 }
 
@@ -261,14 +293,18 @@ fn order_is_canonical_and_cursor_cannot_be_reused_for_a_different_query() -> Tes
             2 => changed.filter.zone = Some("door".to_owned()),
             _ => changed.filter.from_ns = Some(0),
         }
-        assert!(matches!(query_deployment(&snapshot, &changed),
-            Err(QueryError::Continuation(ContinuationError::WrongStream))));
+        assert!(matches!(
+            query_deployment(&snapshot, &changed),
+            Err(QueryError::Continuation(ContinuationError::WrongStream))
+        ));
     }
     let token = resumed.continuation.as_mut().ok_or("continuation")?;
     let last = token.pop().ok_or("token character")?;
     token.push(if last == 'a' { 'b' } else { 'a' });
-    assert!(matches!(query_deployment(&snapshot, &resumed),
-        Err(QueryError::Continuation(ContinuationError::WrongStream))));
+    assert!(matches!(
+        query_deployment(&snapshot, &resumed),
+        Err(QueryError::Continuation(ContinuationError::WrongStream))
+    ));
     Ok(())
 }
 
@@ -289,7 +325,10 @@ fn authority_and_effect_only_advances_invalidate_old_pages() -> TestResult {
     assert_eq!(changed.anchor, snapshot.anchor);
     assert!(query_deployment(&changed, &request).is_err());
     request.expected_anchor = AnchorToken::parse(&first.anchor_token);
-    assert!(matches!(query_deployment(&changed, &request), Err(QueryError::AnchorChanged)));
+    assert!(matches!(
+        query_deployment(&changed, &request),
+        Err(QueryError::AnchorChanged)
+    ));
     assert!(query_deployment(&snapshot, &request).is_ok());
     Ok(())
 }
@@ -303,8 +342,10 @@ fn complete_index_content_binds_cursors_even_when_a_changed_row_is_excluded() ->
     let first = query_deployment(&snapshot, &request)?;
     request.continuation = Some(next(&first)?);
     snapshot.events[2].event.kind = EventKind::CovertApproach;
-    assert!(matches!(query_deployment(&snapshot, &request),
-        Err(QueryError::Continuation(ContinuationError::WrongStream))));
+    assert!(matches!(
+        query_deployment(&snapshot, &request),
+        Err(QueryError::Continuation(ContinuationError::WrongStream))
+    ));
     Ok(())
 }
 
@@ -314,9 +355,15 @@ fn invalid_and_duplicate_rows_are_refused_even_outside_the_filter() -> TestResul
     let mut request = request(1)?;
     request.filter.zone = Some("not-present".to_owned());
     snapshot.events[1].event.revision = 0;
-    assert!(matches!(query_deployment(&snapshot, &request), Err(QueryError::InvalidRecord)));
+    assert!(matches!(
+        query_deployment(&snapshot, &request),
+        Err(QueryError::InvalidRecord)
+    ));
     snapshot.events[1] = snapshot.events[0].clone();
-    assert!(matches!(query_deployment(&snapshot, &request), Err(QueryError::InvalidRecord)));
+    assert!(matches!(
+        query_deployment(&snapshot, &request),
+        Err(QueryError::InvalidRecord)
+    ));
     Ok(())
 }
 
@@ -325,13 +372,18 @@ fn limits_are_checked_before_filtering_and_expiry_overflow_is_refused() -> TestR
     let (_directory, mut snapshot) = fixture("bounds", MAX_QUERY_EVENTS + 1)?;
     let mut request = request(1)?;
     request.filter.zone = Some("not-present".to_owned());
-    assert!(matches!(query_deployment(&snapshot, &request), Err(QueryError::TooManyEvents)));
+    assert!(matches!(
+        query_deployment(&snapshot, &request),
+        Err(QueryError::TooManyEvents)
+    ));
     snapshot.events.pop();
     assert!(query_deployment(&snapshot, &request).is_ok());
     for size in [0, MAX_QUERY_ENTRIES + 1, u32::MAX] {
         request.max_entries = size;
-        assert!(matches!(query_deployment(&snapshot, &request),
-            Err(QueryError::InvalidRequest(_))));
+        assert!(matches!(
+            query_deployment(&snapshot, &request),
+            Err(QueryError::InvalidRequest(_))
+        ));
     }
     request.max_entries = 1;
     request.filter.from_ns = Some(20);
@@ -342,6 +394,9 @@ fn limits_are_checked_before_filtering_and_expiry_overflow_is_refused() -> TestR
     assert!(request.validate().is_err());
     request.continuation = None;
     snapshot.latest_evidence_time = TimestampNs(i128::MAX);
-    assert!(matches!(query_deployment(&snapshot, &request), Err(QueryError::InvalidRequest(_))));
+    assert!(matches!(
+        query_deployment(&snapshot, &request),
+        Err(QueryError::InvalidRequest(_))
+    ));
     Ok(())
 }
