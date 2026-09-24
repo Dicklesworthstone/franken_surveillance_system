@@ -534,6 +534,12 @@ All stable error identities and normative recovery guidance cataloged from `regi
 | `ERR-COVERAGE-UNKNOWN-001` | effective observability cannot be established | abstain/escalate health alert |
 | `ERR-DECODE-001` | media decode failed | preserve source; alternate decoder only if registered |
 | `ERR-DECODE-BOUNDS-001` | media exceeds declared bounds | fail closed |
+| `ERR-DECODE-H264-RANGE-GAP-001` | a retained source gap lies inside the requested H.264 range; inter prediction cannot bridge omitted bytes | split the range at the gap and start after it at an IDR |
+| `ERR-DECODE-H264-RANGE-NOT-IDR-001` | requested H.264 decode range does not begin at an IDR access unit, so its first picture would predict from references outside the range | start the range at an IDR segment |
+| `ERR-DECODE-H264-UNSUPPORTED-001` | H.264 stream uses a profile or coding tool outside the admitted Constrained-Baseline set; no approximate pixels are produced | transcode in the laboratory or wait for a registered decoder; do not retry unchanged |
+| `ERR-DECODE-INTERPRETATION-001` | operator component interpretation contradicts the media (H.264 Constrained Baseline is always YCbCr 4:2:0) | resubmit with the correct explicit interpretation |
+| `ERR-DECODE-SOURCE-UNAVAILABLE-001` | requested import, segment or range is absent or its retained custody cannot be recovered | name an existing completed import and an in-range segment; repair custody before retry |
+| `ERR-DECODE-UNSUPPORTED-MEDIA-001` | retained import's media format is not admitted by the requested decode operation (single-frame JPEG decode/reopen of an Annex-B import, or H.264 range decode of a JPEG import) | use the format's decode operation; do not retry unchanged |
 | `ERR-DELETION-BLOCKED-001` | deletion closure blocked by hold/backend/offline copy | report exact blockers and obligation |
 | `ERR-DEP-ALLOWLIST-DIGEST-DIVERGED-001` | architecture/dependency_allowlist.toml bytes diverged from the checker's pinned allowlist digest | review the allowlist change and update the pinned digest in scripts/dependency_authority.py in the same commit |
 | `ERR-DEP-CONST-DRIFT-001` | dependency constitution drift between machine registry and markdown documentation, or between DEPENDENCY_CONSTITUTION.md and its docs/ copy | synchronize architecture/dependency_constitution.json and docs/DEPENDENCY_CONSTITUTION.md, and keep docs/DEPENDENCY_CONSTITUTION.md byte-identical to DEPENDENCY_CONSTITUTION.md |

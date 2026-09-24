@@ -24,6 +24,12 @@ operation states rather than generic errors.
 | `ERR-NON-MONOTONE-NARROWING-001` | attempted non-monotone uncertainty narrowing violating FORMAL-010 | preserve monotone widening; retain sync evidence |
 | `ERR-DECODE-001` | media decode failed | preserve source; alternate decoder only if registered |
 | `ERR-DECODE-BOUNDS-001` | media exceeds declared bounds | fail closed |
+| `ERR-DECODE-UNSUPPORTED-MEDIA-001` | retained import's media format is not admitted by the requested decode operation (single-frame JPEG decode/reopen of an Annex-B import, or H.264 range decode of a JPEG import) | use the format's decode operation; do not retry unchanged |
+| `ERR-DECODE-INTERPRETATION-001` | operator component interpretation contradicts the media (H.264 Constrained Baseline is always YCbCr 4:2:0) | resubmit with the correct explicit interpretation |
+| `ERR-DECODE-SOURCE-UNAVAILABLE-001` | requested import, segment or range is absent or its retained custody cannot be recovered | name an existing completed import and an in-range segment; repair custody before retry |
+| `ERR-DECODE-H264-RANGE-NOT-IDR-001` | requested H.264 decode range does not begin at an IDR access unit, so its first picture would predict from references outside the range | start the range at an IDR segment |
+| `ERR-DECODE-H264-RANGE-GAP-001` | a retained source gap lies inside the requested H.264 range; inter prediction cannot bridge omitted bytes | split the range at the gap and start after it at an IDR |
+| `ERR-DECODE-H264-UNSUPPORTED-001` | H.264 stream uses a profile or coding tool outside the admitted Constrained-Baseline set; no approximate pixels are produced | transcode in the laboratory or wait for a registered decoder; do not retry unchanged |
 | `ERR-CANONICAL-TRUNCATED-001` | canonical bytes declare more collection elements than the bytes that remain (truncated buffer) | re-fetch the complete canonical bytes; do not retry unchanged |
 | `ERR-MODEL-UNAVAILABLE-001` | model generation not runnable | route to registered fallback or degrade |
 | `ERR-MODEL-OUTPUT-001` | malformed/out-of-bounds model output | reject output; terminate/quarantine generation |

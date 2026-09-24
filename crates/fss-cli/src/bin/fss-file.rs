@@ -38,6 +38,9 @@ const HELP: &str = "fss-file <import|inspect|verify|extract|decode|read-decoded|
   extract: --import-id sha256:HEX --segment N --output FILE\n\
   decode/read-decoded/verify-decoded: --import-id sha256:HEX --segment N\n\
           --interpretation gray|ycbcr [--output IMAGE.pgm] [--receipt-out FILE]\n\
+  decode of an annexb import: --segment N must be an IDR access unit and\n\
+          [--segment-count M] (1..1024) decodes N..N+M in order; --interpretation ycbcr;\n\
+          --output writes one binary PGM luma image per frame; nothing is published\n\
   motion: --import-id sha256:HEX --start-segment N --frame-count N\n\
           --interpretation gray|ycbcr --pixel-delta N --minimum-changed-pixels N\n\
           --report-out FILE [--minimum-changed-ppm N] [--max-comparisons N]\n\
@@ -305,6 +308,9 @@ fn main() -> ExitCode {
             Ok(()) => ExitCode::from(ExitIdentity::SUCCESS.code),
             Err(error) => {
                 eprintln!("{ERR_CLI_RUNTIME_FAILURE}: {error}");
+                if let Some(refusal) = error.downcast_ref::<fss_reference::ingest::recorded_decode::RecordedDecodeError>() {
+                    eprintln!("refusal_id={}", refusal.stable_id());
+                }
                 eprintln!("Completed imports and decoded frames are not rolled back by later analysis/export failure. An incomplete export may remain.");
                 ExitCode::from(ExitIdentity::RUNTIME_FAILURE.code)
             }

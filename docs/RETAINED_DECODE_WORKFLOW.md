@@ -2,8 +2,9 @@
 
 This reference composition connects completed ADP-FILE imports to the canonical production
 `fss-codec-mjpeg` decoder. It does not call the separate reference colour decoder, invoke a
-foreign process, or pretend Annex-B H.264 is decoded. The output is complete, full-range Y
-(luma), with the original encoded bytes and source capsule retained as provenance.
+foreign process. The output is complete, full-range Y (luma), with the original encoded bytes
+and source capsule retained as provenance. Annex-B H.264 imports use the separate range path
+described in "Retained H.264 range decode" below.
 
 ## Library execution
 
@@ -74,3 +75,28 @@ separate byte digest, and does not change the underlying evidence.
 This implementation and its adversarial/restart/cancellation tests do not establish production
 qualification. Run the repository's pinned-nightly Rust and local qualification lanes before
 promoting a release claim.
+
+## Retained H.264 range decode
+
+`fss_reference::ingest::recorded_decode::h264::{RecordedH264Request, RecordedH264Range,
+decode_h264_range}` decode a retained Annex-B import with the pure-Rust `fss-codec-h264`
+Constrained-Baseline decoder. Each retained segment is one access unit. Because P pictures
+predict from earlier pictures, a request names a contiguous range `first_segment ..
+first_segment + segment_count` (1..=1024 segments) that must start at an IDR access unit and
+must not contain a retained source gap. The interpretation must be `ycbcr`: Constrained
+Baseline has no monochrome coding. `max_pictures` is narrowed to the range length; the other
+`DecoderLimits` (dimensions, macroblocks, NAL bytes, slices, references) stay explicit.
+
+Every picture carries a receipt binding import identity/root/manifest, range start, segment,
+source offset, source capsule and its digest, visible dimensions, IDR flag, decode index, the
+luma SHA-256 and the packed-I420 SHA-256 (the value FFmpeg's `yuv420p` framehash reports), and
+the decoder label identity. H.264 frames are a rebuildable derivation: nothing is staged,
+published or appended to the ledger, so `read-decoded`/`verify-decoded` refuse Annex-B imports.
+
+Refusals are typed and carry registered identities: `ERR-DECODE-H264-RANGE-NOT-IDR-001`,
+`ERR-DECODE-H264-RANGE-GAP-001`, `ERR-DECODE-INTERPRETATION-001`,
+`ERR-DECODE-H264-UNSUPPORTED-001` (a profile or tool outside the admitted set; never
+approximate pixels), `ERR-DECODE-BOUNDS-001`, `ERR-DECODE-SOURCE-UNAVAILABLE-001`, and
+`ERR-DECODE-001` for corrupt pictures. A refused access unit ends the range; frames returned
+before it remain valid. `fss-file decode --segment N [--segment-count M] --interpretation
+ycbcr [--output FILE.pgm]` exposes the same path and writes one binary PGM luma image per frame.

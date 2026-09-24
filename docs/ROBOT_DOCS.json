@@ -747,6 +747,36 @@
       "id": "ERR-DECODE-BOUNDS-001"
     },
     {
+      "description": "a retained source gap lies inside the requested H.264 range; inter prediction cannot bridge omitted bytes",
+      "guidance": "split the range at the gap and start after it at an IDR",
+      "id": "ERR-DECODE-H264-RANGE-GAP-001"
+    },
+    {
+      "description": "requested H.264 decode range does not begin at an IDR access unit, so its first picture would predict from references outside the range",
+      "guidance": "start the range at an IDR segment",
+      "id": "ERR-DECODE-H264-RANGE-NOT-IDR-001"
+    },
+    {
+      "description": "H.264 stream uses a profile or coding tool outside the admitted Constrained-Baseline set; no approximate pixels are produced",
+      "guidance": "transcode in the laboratory or wait for a registered decoder; do not retry unchanged",
+      "id": "ERR-DECODE-H264-UNSUPPORTED-001"
+    },
+    {
+      "description": "operator component interpretation contradicts the media (H.264 Constrained Baseline is always YCbCr 4:2:0)",
+      "guidance": "resubmit with the correct explicit interpretation",
+      "id": "ERR-DECODE-INTERPRETATION-001"
+    },
+    {
+      "description": "requested import, segment or range is absent or its retained custody cannot be recovered",
+      "guidance": "name an existing completed import and an in-range segment; repair custody before retry",
+      "id": "ERR-DECODE-SOURCE-UNAVAILABLE-001"
+    },
+    {
+      "description": "retained import's media format is not admitted by the requested decode operation (single-frame JPEG decode/reopen of an Annex-B import, or H.264 range decode of a JPEG import)",
+      "guidance": "use the format's decode operation; do not retry unchanged",
+      "id": "ERR-DECODE-UNSUPPORTED-MEDIA-001"
+    },
+    {
       "description": "deletion closure blocked by hold/backend/offline copy",
       "guidance": "report exact blockers and obligation",
       "id": "ERR-DELETION-BLOCKED-001"
