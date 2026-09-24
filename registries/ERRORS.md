@@ -327,6 +327,7 @@ operation states rather than generic errors.
 | `ERR-SOURCE-EVIDENCE-UNSUPPORTED-VERSION-001` | unsupported source evidence binary wire format version | encode with current supported format version |
 | `ERR-DOCTOR-ATTENTION-REQUIRED-001` | doctor inspection detected deployment conditions requiring attention | inspect doctor report and follow next affordance |
 | `ERR-DOCTOR-NOT-A-DEPLOYMENT-001` | target directory is not a recognized reference deployment root | provide a valid reference deployment root |
+| `ERR-LAB-ROOT-NOT-EMPTY-001` | laboratory target root directory already contains files | choose an empty or new target root directory |
 
 
 
@@ -397,11 +398,10 @@ Stable process exit identities map command-line interface outcomes to determinis
 | `EXIT-DOCTOR-ATTENTION-REQUIRED-003` | 3 | doctor inspection detected deployment conditions requiring attention | inspect doctor JSON output for failing checks and follow recommended next affordances |
 | `EXIT-DOCTOR-NOT-A-DEPLOYMENT-004` | 4 | target directory is not a recognized reference deployment root | verify root path points to a deployment directory initialized with fss reference layout |
 
-| `ERR-LAB-ROOT-NOT-EMPTY-001` | laboratory target root directory already contains files | choose an empty or new target root directory |
-| `ERR-SOURCE-EVIDENCE-EMPTY-STORAGE-HANDLE-001` | retained source custody storage handle is empty, whitespace, or contains invalid characters | provide non-empty sanitized storage handle |
 ## Contract error codes (`fss-core`)
 Canonical machine error codes returned by `ContractError::code()` (AGT-LAYER-002, INV-003):
 | Error code | Meaning | Stable identity |
+|---|---|---|
 | `source_evidence_missing_anchor` | Source evidence record missing authoritative anchor | `ERR-SOURCE-EVIDENCE-MISSING-ANCHOR-001` |
 | `source_evidence_omission_required` | Not-retained source evidence must declare an explicit omission reason | `ERR-SOURCE-EVIDENCE-OMISSION-REQUIRED-001` |
 | `source_evidence_retained_with_omission` | Retained source evidence cannot declare an omission reason | `ERR-SOURCE-EVIDENCE-RETAINED-WITH-OMISSION-001` |
@@ -418,17 +418,7 @@ Canonical machine error codes returned by `ContractError::code()` (AGT-LAYER-002
 | `unknown_omission_reason` | Unknown omission reason string token | `ERR-SOURCE-EVIDENCE-UNKNOWN-OMISSION-REASON-001` |
 | `unknown_source_custody_tag` | Unknown source custody binary wire tag | `ERR-SOURCE-EVIDENCE-UNKNOWN-CUSTODY-TAG-001` |
 | `unknown_clock_basis_name` | Clock basis name is unrecognized | `ERR-CLOCK-BASIS-UNKNOWN-NAME-001` |
-| `ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-TRAVERSAL-001` | retained source custody storage handle contains forbidden directory traversal sequence | remove path traversal components from storage handle |
-| `ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-MALFORMED-001` | retained source custody storage handle is malformed, over-length, or contains invalid characters | provide non-empty sanitized storage handle up to 4096 bytes without bidi or control characters |
 | `source_evidence_storage_handle_traversal` | Storage handle for retained source evidence contains forbidden directory traversal sequence | `ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-TRAVERSAL-001` |
 | `source_evidence_storage_handle_absolute_path` | Storage handle for retained source evidence contains forbidden absolute path or url | `ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-ABSOLUTE-PATH-001` |
 | `source_evidence_storage_handle_malformed` | Storage handle for retained source evidence is malformed, over-length, or contains invalid characters | `ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-MALFORMED-001` |
 | `source_evidence_raw_wire_packets_with_capsule` | Raw wire packets classification cannot carry a sensor capsule payload | `ERR-SOURCE-EVIDENCE-RAW-WIRE-PACKETS-WITH-CAPSULE-001` |
-| `ERR-DEP-CONST-METADATA-VIOLATION-001` | Cargo metadata violates constitutional language or stdlib requirements for DEP-CLASS-F0 | ensure all workspace crates compile under rust-2024 without foreign links |
-| `ERR-DEP-CONST-DRIFT-001` | dependency constitution drift between machine registry and markdown documentation | synchronize architecture/dependency_constitution.json and docs/DEPENDENCY_CONSTITUTION.md |
-| `ERR-CLAIM-SLO-TARGET-UNBOUND-001` | slo claim target cannot be resolved to exactly one numeric threshold of its registries/SLOS.md row, the measurement declares no or a different unit, or the measurement restates a target that differs from or is non-canonical to the authoritative row | claim only an SLO row with a registered numeric threshold; measure in its exact unit and never restate or relax the target |
-| `ERR-CLAIM-SLO-ACTUAL-INVALID-001` | slo measurement has no single canonical numeric 'actual': it is missing, non-numeric, boolean, negative, overflowing, rounded-only, or shadowed by another actual-like field | retain exactly one finite, non-negative numeric 'actual' in the SLO unit; never report only a rounded value |
-| `ERR-CLAIM-CLASS-UNRESOLVED-001` | a promoted proof bundle's claim class cannot be resolved from its citing claim row (Class column) or a registry, so only the bundle's own class declaration remains | declare the class in the citing claim row; a bundle never chooses the class its evidence is checked against |
-| `ERR-CLAIM-EVIDENCE-FIELD-UNKNOWN-001` | an evidence document the claim checker reads (proof bundle, artifact entry, assumption, theorem, toolchain identity, formal model reference or manifest, proof check receipt, bound, derivation, or slo measurement) declares a key outside its exact field set; keys are compared byte for byte (no case folding, stripping, or normalization) | remove the key or spell it exactly as the document's field set names it; unknown fields are never ignored |
-| `ERR-CLAIM-SLO-STATISTIC-MISMATCH-001` | slo measurement's declared statistic is not exactly the statistic its SLO target names (missing, different, not byte-exact, declared for a target naming none, or shadowed by a statistic-like field) | declare the single canonical 'statistic' exactly as the SLO target names it, or none when it names none |
-| `DEP-AUD-027` | error | the qualification entrypoint does not seal Cargo offline (missing top-level CARGO_NET_OFFLINE=true export, an override, or a cargo invocation without --offline) | export CARGO_NET_OFFLINE=true at top level and pass --offline to every cargo invocation in scripts/qualify.sh; this is Cargo sealing, not OS network isolation | `GATE-000`, `QL-POLICY-001` | seal scripts/qualify.sh offline before re-running qualification |

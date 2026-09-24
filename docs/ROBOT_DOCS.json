@@ -197,6 +197,46 @@
       "id": "ERR-AGENT-AMBIGUOUS-001"
     },
     {
+      "description": "ContractBasis registry digest specifies unsupported algorithm (Blake3 prohibited; Sha256 required)",
+      "guidance": "compute registry digest with canonical SHA-256 algorithm",
+      "id": "ERR-AGENT-BASIS-ALGORITHM-001"
+    },
+    {
+      "description": "ContractBasis binary envelope magic header does not match CONTRACT_BASIS_MAGIC",
+      "guidance": "verify binary envelope format or use canonical encoder",
+      "id": "ERR-AGENT-BASIS-BAD-MAGIC-001"
+    },
+    {
+      "description": "ContractBasis binary envelope trailing checksum verification failed",
+      "guidance": "recompute checksum or retransmit uncorrupted envelope",
+      "id": "ERR-AGENT-BASIS-CHECKSUM-MISMATCH-001"
+    },
+    {
+      "description": "ContractBasis identifier field failed pattern, length, or character set validation",
+      "guidance": "provide identifier matching ^[A-Za-z0-9][A-Za-z0-9:._+/-]*$ within length limit",
+      "id": "ERR-AGENT-BASIS-INVALID-ID-001"
+    },
+    {
+      "description": "ContractBasis binary payload or envelope exceeds maximum permitted byte limit",
+      "guidance": "reduce payload size within configured bound or check framing",
+      "id": "ERR-AGENT-BASIS-OVERSIZED-001"
+    },
+    {
+      "description": "ContractBasis binary envelope contains unexpected trailing bytes after declared payload",
+      "guidance": "strip extraneous trailing bytes and ensure canonical framing",
+      "id": "ERR-AGENT-BASIS-TRAILING-BYTES-001"
+    },
+    {
+      "description": "ContractBasis binary envelope ended prematurely before declared length or minimum envelope size",
+      "guidance": "retransmit complete binary envelope without truncation",
+      "id": "ERR-AGENT-BASIS-TRUNCATED-001"
+    },
+    {
+      "description": "ContractBasis binary envelope format version is unsupported",
+      "guidance": "upgrade client or server to matching format version",
+      "id": "ERR-AGENT-BASIS-VERSION-001"
+    },
+    {
       "description": "investigation cannot discriminate remaining hypotheses within declared budget",
       "guidance": "return residual uncertainty and explicit next probe/approval options",
       "id": "ERR-AGENT-CASE-BUDGET-001"
@@ -1710,31 +1750,6 @@
       "description": "view stable identifier was reused, duplicated, or renumbered outside AVIEW-001..008",
       "guidance": "allocate a new unique stable identifier; never reuse stable IDs",
       "id": "ERR-VW-STABLE-ID-REUSED-001"
-    },
-    {
-      "description": "retained source custody storage handle is empty, whitespace, or contains invalid characters",
-      "guidance": "provide non-empty sanitized storage handle",
-      "id": "ERR-SOURCE-EVIDENCE-EMPTY-STORAGE-HANDLE-001"
-    },
-    {
-      "description": "retained source custody storage handle is malformed, over-length, or contains invalid characters",
-      "guidance": "provide non-empty sanitized storage handle up to 4096 bytes without bidi or control characters",
-      "id": "ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-MALFORMED-001"
-    },
-    {
-      "description": "retained source custody storage handle contains forbidden directory traversal sequence",
-      "guidance": "remove path traversal components from storage handle",
-      "id": "ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-TRAVERSAL-001"
-    },
-    {
-      "description": "dependency constitution drift between machine registry and markdown documentation",
-      "guidance": "synchronize architecture/dependency_constitution.json and docs/DEPENDENCY_CONSTITUTION.md",
-      "id": "ERR-DEP-CONST-DRIFT-001"
-    },
-    {
-      "description": "Cargo metadata violates constitutional language or stdlib requirements for DEP-CLASS-F0",
-      "guidance": "ensure all workspace crates compile under rust-2024 without foreign links",
-      "id": "ERR-DEP-CONST-METADATA-VIOLATION-001"
     }
   ],
   "freezeDigest": "sha256:9bbec4e6845ea702f676cd22472e5fb0d35ca3b3d97f66cbfccb452182413da8",
@@ -2319,49 +2334,6 @@
         "EXIT-CLI-RUNTIME-FAILURE-001",
         "EXIT-DOCTOR-ATTENTION-REQUIRED-003",
         "EXIT-DOCTOR-NOT-A-DEPLOYMENT-004"
-      ],
-      "gate": "QL-AGENT-001",
-      "id": "AOP-014",
-      "libraryEntryPoint": "fss_doctor::doctor",
-      "mcpToolName": "doctor",
-      "mode": "diagnostic_prepare",
-      "name": "doctor",
-      "owner": "fss-doctor",
-      "primaryErrorId": "ERR-CLI-RUNTIME-FAILURE-001",
-      "purpose": "diagnose deployment, evidence, cognition, workspace, cases, obligations, and protocol consistency and produce sealed repair affordances",
-      "requestEnvelope": "fss.agent_request_envelope.v1",
-      "requestPayloadSchema": "fss.agent_query_plan.v1",
-      "requiredCapabilities": [
-        "CAP-REPAIR-PREPARE-001"
-      ],
-      "responseEnvelope": "fss.agent_response_envelope.v1",
-      "responsePayloadSchemas": [
-        "fss.agent_cognitive_envelope.v1",
-        "fss.evidence_bundle.v1"
-      ],
-      "retryClasses": [
-        "safe_read_retry",
-        "refresh_and_retry",
-        "backoff",
-        "resume_from_continuation"
-      ],
-      "status": "specified"
-    },
-    {
-      "cliCommand": "fss doctor",
-      "defaultView": "AVIEW-004",
-      "durable": true,
-      "effectful": false,
-      "errorIdentities": [
-        "ERR-CLI-RUNTIME-FAILURE-001",
-        "ERR-CLOCK-UNCERTAIN-001",
-        "ERR-STREAM-CONTINUITY-001",
-        "ERR-AUTH-DENIED-001",
-        "ERR-OP-EXECUTION-FAILED-001"
-      ],
-      "exitIdentities": [
-        "EXIT-OK-000",
-        "EXIT-CLI-RUNTIME-FAILURE-001"
       ],
       "gate": "QL-AGENT-001",
       "id": "AOP-014",
@@ -3113,27 +3085,6 @@
       "file": "schemas/transfer_receipt.v1.json",
       "id": "SCHEMA-TRANSFER-RECEIPT-001",
       "schema": "fss.transfer_receipt.v1"
-    },
-    {
-      "authority": "follow/continuity",
-      "compatibilityRule": "terminal, contradiction, coverage, plan-invalidation, and effect-uncertainty deltas cannot be coalesced away",
-      "file": "schemas/agent_meaningful_delta.v1.json",
-      "id": "SCHEMA-AGENT-DELTA-001",
-      "schema": "fss.agent_meaningful_delta.v1"
-    },
-    {
-      "authority": "authority",
-      "compatibilityRule": "immutable revisions; evidence required after hypothesis",
-      "file": "schemas/event_hypothesis.v1.json",
-      "id": "SCHEMA-EVENT-HYPOTHESIS-001",
-      "schema": "fss.event_hypothesis.v1"
-    },
-    {
-      "authority": "derived/evidence",
-      "compatibilityRule": "causal evidence graph over capsules, identities, model receipts, and revisions",
-      "file": "schemas/evidence_graph.v1.json",
-      "id": "SCHEMA-EVIDENCE-GRAPH-001",
-      "schema": "fss.evidence_graph.v1"
     }
   ],
   "semanticProtocol": "fss/1",

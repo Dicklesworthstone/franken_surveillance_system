@@ -424,6 +424,14 @@ All stable error identities and normative recovery guidance cataloged from `regi
 | `ERR-ADAPTER-STABLE-ID-REUSED-001` | adapter stable identifier was reused, renumbered, or resurrected | allocate a new unique stable identifier; never reuse stable IDs |
 | `ERR-AGENT-AFFORDANCE-INVALIDATED-001` | recommended next move lost a precondition, capability, lease, or validity interval | refresh/replan; never execute cached recommendation |
 | `ERR-AGENT-AMBIGUOUS-001` | natural-language request has multiple materially different interpretations | return interpretations; choose only a registered safe-read default or request clarification |
+| `ERR-AGENT-BASIS-ALGORITHM-001` | ContractBasis registry digest specifies unsupported algorithm (Blake3 prohibited; Sha256 required) | compute registry digest with canonical SHA-256 algorithm |
+| `ERR-AGENT-BASIS-BAD-MAGIC-001` | ContractBasis binary envelope magic header does not match CONTRACT_BASIS_MAGIC | verify binary envelope format or use canonical encoder |
+| `ERR-AGENT-BASIS-CHECKSUM-MISMATCH-001` | ContractBasis binary envelope trailing checksum verification failed | recompute checksum or retransmit uncorrupted envelope |
+| `ERR-AGENT-BASIS-INVALID-ID-001` | ContractBasis identifier field failed pattern, length, or character set validation | provide identifier matching ^[A-Za-z0-9][A-Za-z0-9:._+/-]*$ within length limit |
+| `ERR-AGENT-BASIS-OVERSIZED-001` | ContractBasis binary payload or envelope exceeds maximum permitted byte limit | reduce payload size within configured bound or check framing |
+| `ERR-AGENT-BASIS-TRAILING-BYTES-001` | ContractBasis binary envelope contains unexpected trailing bytes after declared payload | strip extraneous trailing bytes and ensure canonical framing |
+| `ERR-AGENT-BASIS-TRUNCATED-001` | ContractBasis binary envelope ended prematurely before declared length or minimum envelope size | retransmit complete binary envelope without truncation |
+| `ERR-AGENT-BASIS-VERSION-001` | ContractBasis binary envelope format version is unsupported | upgrade client or server to matching format version |
 | `ERR-AGENT-CASE-BUDGET-001` | investigation cannot discriminate remaining hypotheses within declared budget | return residual uncertainty and explicit next probe/approval options |
 | `ERR-AGENT-CONTEXT-INCOMPLETE-001` | requested decision-complete context cannot fit or lacks required evidence | return bounded partial with omissions/expansion handles; never imply completeness |
 | `ERR-AGENT-HANDOFF-INVALID-001` | handoff root is incomplete, expired, unauthorized, schema/generation-incompatible, or cannot be safely rebased | reject, migrate, or open a new session with an explicit invalidation report; never silently resume |
@@ -730,19 +738,3 @@ All stable error identities and normative recovery guidance cataloged from `regi
 
 ---
 *Robot documentation generated deterministically by `scripts/generate_robot_docs.py`.*
-| `doctor` | `fss doctor --json` | Report system diagnostic doctor results in JSON format. |
-- **Error Identities**: `ERR-CLI-RUNTIME-FAILURE-001`, `ERR-CLOCK-UNCERTAIN-001`, `ERR-STREAM-CONTINUITY-001`, `ERR-AUTH-DENIED-001`, `ERR-OP-EXECUTION-FAILED-001`
-| `SCHEMA-AGENT-DELTA-001` | `fss.agent_meaningful_delta.v1` | `schemas/agent_meaningful_delta.v1.json` | `follow/continuity` | `terminal, contradiction, coverage, plan-invalidation, and effect-uncertainty deltas cannot be coalesced away` |
-| `SCHEMA-EVENT-HYPOTHESIS-001` | `fss.event_hypothesis.v1` | `schemas/event_hypothesis.v1.json` | `authority` | `immutable revisions; evidence required after hypothesis` |
-| `SCHEMA-EVIDENCE-GRAPH-001` | `fss.evidence_graph.v1` | `schemas/evidence_graph.v1.json` | `derived/evidence` | `causal evidence graph over capsules, identities, model receipts, and revisions` |
-| `ERR-SOURCE-EVIDENCE-EMPTY-STORAGE-HANDLE-001` | retained source custody storage handle is empty, whitespace, or contains invalid characters | provide non-empty sanitized storage handle |
-| `ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-MALFORMED-001` | retained source custody storage handle is malformed, over-length, or contains invalid characters | provide non-empty sanitized storage handle up to 4096 bytes without bidi or control characters |
-| `ERR-SOURCE-EVIDENCE-STORAGE-HANDLE-TRAVERSAL-001` | retained source custody storage handle contains forbidden directory traversal sequence | remove path traversal components from storage handle |
-| `ERR-DEP-CONST-DRIFT-001` | dependency constitution drift between machine registry and markdown documentation | synchronize architecture/dependency_constitution.json and docs/DEPENDENCY_CONSTITUTION.md |
-| `ERR-DEP-CONST-METADATA-VIOLATION-001` | Cargo metadata violates constitutional language or stdlib requirements for DEP-CLASS-F0 | ensure all workspace crates compile under rust-2024 without foreign links |
-| `ERR-CLAIM-PROOF-BUNDLE-SCHEMA-INVALID-001` | a proof bundle's schema is missing or not exactly `fss.proof_bundle.v1`, or its bundle_id is present but not an exact token | declare the schema byte for byte and, when present, a bundle_id of printable ASCII with no whitespace |
-| `ERR-NEG-LEDGER-NOT-FOUND-001` | negative evidence ledger file does not exist | create the ledger with `fss negative-evidence init` before appending |
-| `ERR-OP-INDETERMINATE-001` | tombstone: superseded by `ERR-EFFECT-INDETERMINATE-001` | historical duplicate preserved for audit; indeterminate outcomes must use Indeterminate variant |
-| `ERR-OP-NOT-OBSERVABLE-001` | tombstone: superseded by `ERR-COVERAGE-UNKNOWN-001` | historical duplicate preserved for audit; canonical target is `ERR-COVERAGE-UNKNOWN-001` |
-| `ERR-OP-PRECONDITION-FAILED-001` | tombstone: superseded by `ERR-PRECONDITION-STALE-001` | historical duplicate preserved for audit; canonical target is `ERR-PRECONDITION-STALE-001` |
-| `ERR-OP-UNAUTHORIZED-001` | tombstone: superseded by `ERR-AUTH-DENIED-001` | historical duplicate preserved for audit; canonical target is `ERR-AUTH-DENIED-001` |

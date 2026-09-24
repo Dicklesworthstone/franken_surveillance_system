@@ -83,6 +83,3 @@
 | `SCHEMA-MJPEG-FIXTURE-MANIFEST-001` | `fss.mjpeg_fixture_manifest.v1` | `schemas/mjpeg_fixture_manifest.v1.json` | test evidence | MJPEG stream fixture suite manifest recording variant, frame count, file sha256, and per-frame source fixture bindings |
 
 Binary media, ledger, search-segment, graph-run, and release formats additionally require magic, version, bounded lengths, canonical encoding, migration fixtures, corruption tests, and a named format owner before implementation.
-| `SCHEMA-EVENT-HYPOTHESIS-001` | `fss.event_hypothesis.v1` | `schemas/event_hypothesis.v1.json` | authority | immutable revisions; evidence required after hypothesis |
-| `SCHEMA-EVIDENCE-GRAPH-001` | `fss.evidence_graph.v1` | `schemas/evidence_graph.v1.json` | derived/evidence | causal evidence graph over capsules, identities, model receipts, and revisions |
-| `SCHEMA-AGENT-DELTA-001` | `fss.agent_meaningful_delta.v1` | `schemas/agent_meaningful_delta.v1.json` | follow/continuity | terminal, contradiction, coverage, plan-invalidation, and effect-uncertainty deltas cannot be coalesced away |
