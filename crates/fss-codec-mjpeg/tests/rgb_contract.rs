@@ -15,7 +15,7 @@ fn grayscale_is_exact_luma_replication_with_distinct_receipt() -> Test {
     let rgb = decode(&bytes, Color::Grayscale)?;
     let luma = decode_luma(&bytes, ContentDigest::sha256(&bytes).bytes(), Color::Grayscale,
         DecodeLimits::default(), &mut DecodeBudget::new(100_000_000))?;
-    for (channels, &y) in rgb.pixels().chunks_exact(3).zip(luma.pixels()) { assert_eq!(channels, [y; 3]); }
+    for (channels, &y) in rgb.pixels().as_chunks::<3>().0.iter().zip(luma.pixels()) { assert_eq!(*channels, [y; 3]); }
     assert_eq!(rgb.dimensions(), luma.dimensions());
     assert_eq!(rgb.receipt().entropy_blocks, luma.receipt().entropy_blocks);
     assert_ne!(rgb.receipt().decoder, luma.receipt().decoder); Ok(())
@@ -27,7 +27,7 @@ fn every_sampling_mode_and_scan_order_reconstructs_color_at_odd_edges() -> Test 
             let bytes = rgb_support::jpeg(19, 17, sampling, false, false, reversed, &[[100, 150, 200]]);
             let image = decode(&bytes, Color::YCbCr)?;
             assert_eq!(image.dimensions(), [19, 17]); assert_eq!(image.pixels().len(), 19 * 17 * 3);
-            for pixel in image.pixels().chunks_exact(3) { assert_eq!(pixel, [201, 41, 139]); }
+            for pixel in image.pixels().as_chunks::<3>().0 { assert_eq!(*pixel, [201, 41, 139]); }
             assert_eq!(image.receipt().entropy_blocks, image.receipt().mcus * (sampling[0] * sampling[1] + 2));
         }
     }

@@ -57,7 +57,7 @@ fn margins_are_actual_native_kernel_outputs_not_a_constant_detector_stub() -> Te
     let frame = HogFrame::new(source, &pixels, &mask, &mut budget)?;
     let level = HogLevel::compute(&frame, &mut budget)?;
     let descriptor = level.descriptor([0, 0], &mut budget)?.ok_or("unexpected private fixture")?;
-    let parameters: Vec<_> = bytes.chunks_exact(4).map(|v| f32::from_le_bytes([v[0], v[1], v[2], v[3]])).collect();
+    let parameters: Vec<_> = bytes.as_chunks::<4>().0.iter().map(|v| f32::from_le_bytes(*v)).collect();
     let expected = descriptor.iter().zip(&parameters).fold(f64::from(parameters[HOG_PARAMETERS - 1]),
         |sum, (feature, weight)| sum + f64::from(*feature) * f64::from(*weight));
     let scan = scan_hog(source, &pixels, &mask, &model, &[ScanLevel { dimensions: [64, 128] }], policy(), &mut budget)?;
