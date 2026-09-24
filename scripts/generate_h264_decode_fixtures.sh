@@ -2,7 +2,8 @@
 # Regenerates the sealed-lab H.264 *pixel decode* fixtures for fss-codec-h264.
 #
 # FFmpeg/libx264 is the laboratory oracle only (DEPENDENCY_CONSTITUTION): it
-# encodes synthetic testsrc2 scenes and decodes them to raw I420 OFFLINE. The
+# encodes synthetic testsrc2/mandelbrot scenes (Baseline and Main
+# profile) and decodes them to raw I420 in output order OFFLINE. The
 # Rust tests read the committed bitstreams and the committed per-frame SHA-256
 # digests; they never invoke ffmpeg and never trust the Rust decoder's own
 # output as an expectation.
@@ -57,6 +58,35 @@ python3 scripts/rewrite_h264_headers.py --deblock-idc2 \
   "$OUT/ip_qcif_slices3.h264" "$OUT/ip_qcif_slices3_idc2.h264"
 python3 scripts/rewrite_h264_headers.py --poc-type0 \
   "$OUT/ip_100x60_crop.h264" "$OUT/ip_100x60_poc0.h264"
+
+# ----- Main profile (CABAC I and P slices) -----
+# encode_profile <name> <profile> <size> <frames> <x264 params> [lavfi source]
+# The x264 parameter string is complete here (no implicit bframes=0).
+X264_MH="threads=1:lookahead_threads=1:scenecut=0:aud=0"
+encode_profile() {
+  local name="$1" profile="$2" size="$3" frames="$4" params="$5"
+  local source="${6:-testsrc2=size=${size}:rate=10}"
+  ffmpeg "${COMMON[@]}" -f lavfi -i "$source" \
+    -frames:v "$frames" -an -c:v libx264 -profile:v "$profile" -pix_fmt yuv420p \
+    -x264-params "${X264_MH}:${params}" -f h264 "$OUT/${name}.h264"
+}
+
+# Stage 1: CABAC I and P slices (Main).
+encode_profile m_i_cabac_qp26 main 176x144 2 "keyint=1:bframes=0:qp=26"
+encode_profile m_ip_cabac_ref3 main 176x144 8 \
+  "keyint=8:bframes=0:ref=3:partitions=all:qp=30"
+encode_profile m_ip_cabac_slices3 main 176x144 4 "keyint=4:bframes=0:slices=3:qp=34"
+encode_profile m_ip_cabac_100x60_nodeblock main 100x60 6 \
+  "keyint=6:bframes=0:no-deblock=1:qp=22"
+encode_profile m_ip_cabac_qp40 main 128x96 5 "keyint=5:bframes=0:qp=40" \
+  "mandelbrot=size=128x96:rate=10"
+# Explicit weighted prediction in P slices (weightp=2 on a fade).
+encode_profile m_ip_cabac_weightp main 128x96 6 "keyint=6:bframes=0:weightp=2:qp=30" \
+  "testsrc2=size=128x96:rate=10,fade=in:0:6"
+# Constrained intra with CABAC (intra MBs in P slices; deterministic noise).
+encode_profile m_ip_cabac_constrained main 128x96 3 \
+  "keyint=3:bframes=0:constrained-intra=1:qp=36" \
+  "testsrc2=size=128x96:rate=10,noise=alls=70:allf=t+u"
 
 # Oracle decode: every frame to packed planar I420 via rawvideo; framehash
 # hashes each packet, i.e. exactly one frame (Y, then Cb, then Cr, no

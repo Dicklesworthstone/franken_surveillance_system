@@ -2,7 +2,7 @@
 //! whole picture in macroblock raster order after all slices are decoded,
 //! which is exactly the order the specification defines.
 
-use crate::macroblock::{MbInfo, SliceInfo};
+use crate::macroblock::{MbInfo, NO_PICTURE, SliceInfo, b8_of};
 use crate::picture::Frame;
 use crate::transform::chroma_qp;
 
@@ -75,25 +75,65 @@ const TC0: [[u8; 3]; 52] = [
     [13, 17, 25],
 ];
 
+/// The reference pictures and vectors used for a 4x4 block: up to two
+/// (picture identity, vector) pairs, list 0 first.
+fn motion_of(mb: &MbInfo, blk: usize) -> ([u64; 2], [[i32; 2]; 2], usize) {
+    let b8 = b8_of(blk);
+    let mut refs = [NO_PICTURE; 2];
+    let mut mvs = [[0i32; 2]; 2];
+    let mut count = 0;
+    for list in 0..2 {
+        if mb.ref_idx[list][b8] >= 0 {
+            refs[count] = mb.ref_pic[list][b8];
+            let mv = mb.mv[list][blk];
+            mvs[count] = [i32::from(mv[0]), i32::from(mv[1])];
+            count += 1;
+        }
+    }
+    (refs, mvs, count)
+}
+
+fn far(a: [i32; 2], b: [i32; 2]) -> bool {
+    (a[0] - b[0]).abs() >= 4 || (a[1] - b[1]).abs() >= 4
+}
+
 /// Boundary strength between two 4x4 luma blocks (clause 8.7.2.1, frame
 /// macroblocks, no MBAFF, no SP/SI).
 fn boundary_strength(p: &MbInfo, p_blk: usize, q: &MbInfo, q_blk: usize, mb_edge: bool) -> u8 {
     if p.is_intra() || q.is_intra() {
         return if mb_edge { 4 } else { 3 };
     }
-    if p.nz[p_blk] != 0 || q.nz[q_blk] != 0 {
+    if p.has_coefficients(p_blk) || q.has_coefficients(q_blk) {
         return 2;
     }
-    // Different reference pictures (by identity, not index) or a motion
-    // vector component difference of at least four quarter samples.
-    if p.ref_pic[p_blk] != q.ref_pic[q_blk] {
+    // Reference pictures are compared by identity, regardless of list or
+    // index; then vectors are compared per matching reference picture.
+    let (pr, pm, pn) = motion_of(p, p_blk);
+    let (qr, qm, qn) = motion_of(q, q_blk);
+    if pn != qn {
         return 1;
     }
-    let (mp, mq) = (p.mv[p_blk], q.mv[q_blk]);
-    if (mp[0] - mq[0]).abs() >= 4 || (mp[1] - mq[1]).abs() >= 4 {
+    if pn == 1 {
+        return u8::from(pr[0] != qr[0] || far(pm[0], qm[0]));
+    }
+    if pn == 0 {
+        return 0;
+    }
+    let same_set = (pr[0] == qr[0] && pr[1] == qr[1]) || (pr[0] == qr[1] && pr[1] == qr[0]);
+    if !same_set {
         return 1;
     }
-    0
+    if pr[0] != pr[1] {
+        // Two different pictures: compare the vectors that use each one.
+        let (q0, q1) = if pr[0] == qr[0] {
+            (qm[0], qm[1])
+        } else {
+            (qm[1], qm[0])
+        };
+        return u8::from(far(pm[0], q0) || far(pm[1], q1));
+    }
+    // Both vectors reference the same picture.
+    u8::from((far(pm[0], qm[0]) || far(pm[1], qm[1])) && (far(pm[0], qm[1]) || far(pm[1], qm[0])))
 }
 
 /// Edge filter thresholds for one edge.
@@ -261,6 +301,12 @@ fn deblock_mb(
     for vertical in [true, false] {
         let neighbour = if vertical { left } else { top };
         for edge in 0..4usize {
+            // With the 8x8 transform only the 8x8 block edges are luma
+            // transform edges (8.7: transform_size_8x8_flag); odd internal
+            // edges carry no chroma edge in 4:2:0 either.
+            if cur.transform_8x8 && edge % 2 == 1 {
+                continue;
+            }
             let p_mb = if edge == 0 {
                 match neighbour {
                     Some(mb) => mb,

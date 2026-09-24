@@ -29,6 +29,14 @@ impl<'a> BitReader<'a> {
         }
     }
 
+    /// The same reader (same position) with a different bound. CABAC slice
+    /// data consumes the `rbsp_stop_one_bit` inside its arithmetic decoder,
+    /// so its bound extends one bit past the syntax bound.
+    #[must_use]
+    pub const fn with_bit_limit(self, bit_limit: usize) -> Self {
+        Self { bit_limit, ..self }
+    }
+
     /// Bits consumed so far.
     #[must_use]
     pub const fn position(&self) -> usize {

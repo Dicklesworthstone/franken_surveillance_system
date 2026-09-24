@@ -193,6 +193,235 @@ pub fn predict_4x4(mode: u8, n: &Neighbors4x4) -> Result<[u8; 16], DecodeError> 
     Ok(out)
 }
 
+/// Neighbours of an 8x8 luma block. `top` holds `p[0..16, -1]`; when the
+/// above-right samples are unavailable but the above ones are, the caller
+/// substitutes `p[7, -1]` into positions 8..16 (clause 8.3.2.2).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct Neighbors8x8 {
+    /// `p[x, -1]`, x = 0..15.
+    pub top: Option<[u8; 16]>,
+    /// `p[-1, y]`, y = 0..7.
+    pub left: Option<[u8; 8]>,
+    /// `p[-1, -1]`.
+    pub top_left: Option<u8>,
+}
+
+/// Reference sample filtering for Intra_8x8 (clause 8.3.2.2.1).
+#[must_use]
+pub fn filter_8x8_neighbours(n: &Neighbors8x8) -> Neighbors8x8 {
+    let top = n.top.map(|t| {
+        let t = t.map(u32::from);
+        let mut out = [0u8; 16];
+        out[0] = narrow(match n.top_left {
+            Some(q) => (u32::from(q) + 2 * t[0] + t[1] + 2) >> 2,
+            None => (3 * t[0] + t[1] + 2) >> 2,
+        });
+        for x in 1..15 {
+            out[x] = narrow((t[x - 1] + 2 * t[x] + t[x + 1] + 2) >> 2);
+        }
+        out[15] = narrow((t[14] + 3 * t[15] + 2) >> 2);
+        out
+    });
+    let top_left = n.top_left.map(|q| {
+        let q = u32::from(q);
+        narrow(match (n.top, n.left) {
+            (Some(t), Some(l)) => (u32::from(t[0]) + 2 * q + u32::from(l[0]) + 2) >> 2,
+            (Some(t), None) => (3 * q + u32::from(t[0]) + 2) >> 2,
+            (None, Some(l)) => (3 * q + u32::from(l[0]) + 2) >> 2,
+            (None, None) => q,
+        })
+    });
+    let left = n.left.map(|l| {
+        let l = l.map(u32::from);
+        let mut out = [0u8; 8];
+        out[0] = narrow(match n.top_left {
+            Some(q) => (u32::from(q) + 2 * l[0] + l[1] + 2) >> 2,
+            None => (3 * l[0] + l[1] + 2) >> 2,
+        });
+        for y in 1..7 {
+            out[y] = narrow((l[y - 1] + 2 * l[y] + l[y + 1] + 2) >> 2);
+        }
+        out[7] = narrow((l[6] + 3 * l[7] + 2) >> 2);
+        out
+    });
+    Neighbors8x8 {
+        top,
+        left,
+        top_left,
+    }
+}
+
+/// Intra 8x8 prediction for `Intra8x8PredMode` 0..=8 (clauses
+/// 8.3.2.2.2..10) from UNFILTERED neighbours; the reference filtering of
+/// 8.3.2.2.1 is applied here. Output is raster 8x8.
+///
+/// # Errors
+/// [`DecodeError::Malformed`] when the mode is > 8 or needs a neighbour
+/// that is unavailable.
+pub fn predict_8x8(mode: u8, raw: &Neighbors8x8) -> Result<[u8; 64], DecodeError> {
+    let n = filter_8x8_neighbours(raw);
+    let mut out = [0u8; 64];
+    let need_top = || {
+        n.top
+            .map(|t| t.map(i32::from))
+            .ok_or(DecodeError::Malformed)
+    };
+    let need_left = || {
+        n.left
+            .map(|l| l.map(i32::from))
+            .ok_or(DecodeError::Malformed)
+    };
+    match mode {
+        0 => {
+            let t = n.top.ok_or(DecodeError::Malformed)?;
+            for y in 0..8 {
+                out[y * 8..y * 8 + 8].copy_from_slice(&t[..8]);
+            }
+        }
+        1 => {
+            let l = n.left.ok_or(DecodeError::Malformed)?;
+            for y in 0..8 {
+                out[y * 8..y * 8 + 8].fill(l[y]);
+            }
+        }
+        2 => {
+            let dc = match (n.top, n.left) {
+                (Some(t), Some(l)) => (sum(&t[..8]) + sum(&l) + 8) >> 4,
+                (None, Some(l)) => (sum(&l) + 4) >> 3,
+                (Some(t), None) => (sum(&t[..8]) + 4) >> 3,
+                (None, None) => 128,
+            };
+            out.fill(narrow(dc));
+        }
+        3 => {
+            let t = need_top()?;
+            for y in 0..8 {
+                for x in 0..8 {
+                    out[y * 8 + x] = clip(if x == 7 && y == 7 {
+                        (t[14] + 3 * t[15] + 2) >> 2
+                    } else {
+                        (t[x + y] + 2 * t[x + y + 1] + t[x + y + 2] + 2) >> 2
+                    });
+                }
+            }
+        }
+        4..=6 => {
+            let t = need_top()?;
+            let l = need_left()?;
+            let q = i32::from(n.top_left.ok_or(DecodeError::Malformed)?);
+            // p'(x, y) with x or y = -1 addressing the filtered arrays.
+            let p = |x: i32, y: i32| -> i32 {
+                if y < 0 {
+                    if x < 0 {
+                        q
+                    } else {
+                        usize::try_from(x)
+                            .ok()
+                            .and_then(|i| t.get(i))
+                            .copied()
+                            .unwrap_or(0)
+                    }
+                } else {
+                    usize::try_from(y)
+                        .ok()
+                        .and_then(|i| l.get(i))
+                        .copied()
+                        .unwrap_or(0)
+                }
+            };
+            for y in 0..8i32 {
+                for x in 0..8i32 {
+                    let value = match mode {
+                        4 => {
+                            if x > y {
+                                (p(x - y - 2, -1) + 2 * p(x - y - 1, -1) + p(x - y, -1) + 2) >> 2
+                            } else if x < y {
+                                (p(-1, y - x - 2) + 2 * p(-1, y - x - 1) + p(-1, y - x) + 2) >> 2
+                            } else {
+                                (p(0, -1) + 2 * p(-1, -1) + p(-1, 0) + 2) >> 2
+                            }
+                        }
+                        5 => {
+                            let z = 2 * x - y;
+                            if z >= 0 && z % 2 == 0 {
+                                (p(x - (y >> 1) - 1, -1) + p(x - (y >> 1), -1) + 1) >> 1
+                            } else if z >= 0 {
+                                (p(x - (y >> 1) - 2, -1)
+                                    + 2 * p(x - (y >> 1) - 1, -1)
+                                    + p(x - (y >> 1), -1)
+                                    + 2)
+                                    >> 2
+                            } else if z == -1 {
+                                (p(-1, 0) + 2 * p(-1, -1) + p(0, -1) + 2) >> 2
+                            } else {
+                                (p(-1, y - 2 * x - 1)
+                                    + 2 * p(-1, y - 2 * x - 2)
+                                    + p(-1, y - 2 * x - 3)
+                                    + 2)
+                                    >> 2
+                            }
+                        }
+                        _ => {
+                            let z = 2 * y - x;
+                            if z >= 0 && z % 2 == 0 {
+                                (p(-1, y - (x >> 1) - 1) + p(-1, y - (x >> 1)) + 1) >> 1
+                            } else if z >= 0 {
+                                (p(-1, y - (x >> 1) - 2)
+                                    + 2 * p(-1, y - (x >> 1) - 1)
+                                    + p(-1, y - (x >> 1))
+                                    + 2)
+                                    >> 2
+                            } else if z == -1 {
+                                (p(-1, 0) + 2 * p(-1, -1) + p(0, -1) + 2) >> 2
+                            } else {
+                                (p(x - 2 * y - 1, -1)
+                                    + 2 * p(x - 2 * y - 2, -1)
+                                    + p(x - 2 * y - 3, -1)
+                                    + 2)
+                                    >> 2
+                            }
+                        }
+                    };
+                    out[usize::try_from(y * 8 + x).unwrap_or(0)] = clip(value);
+                }
+            }
+        }
+        7 => {
+            let t = need_top()?;
+            for y in 0..8 {
+                for x in 0..8 {
+                    let i = x + (y >> 1);
+                    out[y * 8 + x] = clip(if y % 2 == 0 {
+                        (t[i] + t[i + 1] + 1) >> 1
+                    } else {
+                        (t[i] + 2 * t[i + 1] + t[i + 2] + 2) >> 2
+                    });
+                }
+            }
+        }
+        8 => {
+            let l = need_left()?;
+            for y in 0..8 {
+                for x in 0..8 {
+                    let z = x + 2 * y;
+                    let i = y + (x >> 1);
+                    out[y * 8 + x] = clip(if z > 13 {
+                        l[7]
+                    } else if z == 13 {
+                        (l[6] + 3 * l[7] + 2) >> 2
+                    } else if z % 2 == 0 {
+                        (l[i] + l[i + 1] + 1) >> 1
+                    } else {
+                        (l[i] + 2 * l[i + 1] + l[i + 2] + 2) >> 2
+                    });
+                }
+            }
+        }
+        _ => return Err(DecodeError::Malformed),
+    }
+    Ok(out)
+}
+
 /// Intra 16x16 prediction for `Intra16x16PredMode` 0..=3; output raster.
 ///
 /// # Errors
@@ -534,6 +763,65 @@ mod tests {
         let top_only = NeighborsChroma { left: None, ..n };
         let out = predict_chroma(0, &top_only).unwrap();
         assert_eq!([out[0], out[4], out[32], out[36]], [40, 80, 40, 80]);
+    }
+
+    /// Intra 8x8 reference filtering (8.3.2.2.1) and prediction, by hand.
+    /// Neighbours: top t[x] = 10(x+1), x = 0..15; left l[y] = 100 + 10y;
+    /// Q = 50. Filtered: p'[0,-1] = (Q + 2 t0 + t1 + 2) >> 2 = 92 >> 2 = 23;
+    /// interior of a ramp is unchanged (t[x]); p'[15,-1] = (t14 + 3 t15 +
+    /// 2) >> 2 = 632 >> 2 = 158; p'[-1,0] = (Q + 2 l0 + l1 + 2) >> 2 = 90;
+    /// p'[-1,7] = (l6 + 3 l7 + 2) >> 2 = 168; p'[-1,-1] = (t0 + 2Q + l0 +
+    /// 2) >> 2 = 53.
+    #[test]
+    fn intra8x8_filtering_and_modes_by_hand() {
+        let n = Neighbors8x8 {
+            top: Some(std::array::from_fn(|x| u8::try_from(10 * (x + 1)).unwrap())),
+            left: Some(std::array::from_fn(|y| u8::try_from(100 + 10 * y).unwrap())),
+            top_left: Some(50),
+        };
+        let f = filter_8x8_neighbours(&n);
+        let top = f.top.unwrap();
+        assert_eq!(top[0], 23);
+        assert_eq!(
+            &top[1..15],
+            &[20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150]
+        );
+        assert_eq!(top[15], 158);
+        assert_eq!(f.left.unwrap(), [90, 110, 120, 130, 140, 150, 160, 168]);
+        assert_eq!(f.top_left, Some(53));
+        // Vertical: every row is p'[0..8, -1].
+        let vertical = predict_8x8(0, &n).unwrap();
+        for y in 0..8 {
+            assert_eq!(
+                &vertical[y * 8..y * 8 + 8],
+                &[23, 20, 30, 40, 50, 60, 70, 80]
+            );
+        }
+        // Horizontal: row y is p'[-1, y].
+        let horizontal = predict_8x8(1, &n).unwrap();
+        assert_eq!(horizontal[7 * 8], 168);
+        assert_eq!(horizontal[8], 110);
+        // DC: (373 + 1068 + 8) >> 4 = 90.
+        assert_eq!(predict_8x8(2, &n).unwrap(), [90; 64]);
+        // Diagonal down-left: (0,0) = (23 + 40 + 30 + 2) >> 2 = 23;
+        // (7,7) = (p'14 + 3 p'15 + 2) >> 2 = (150 + 474 + 2) >> 2 = 156.
+        let ddl = predict_8x8(3, &n).unwrap();
+        assert_eq!((ddl[0], ddl[63]), (23, 156));
+        // Top-right unavailable: the caller substitutes p[7,-1] = 80, so
+        // p'[7,-1] = (70 + 160 + 80 + 2) >> 2 = 78 and p'[15,-1] = 80.
+        let mut substituted = n;
+        if let Some(t) = substituted.top.as_mut() {
+            for value in &mut t[8..] {
+                *value = 80;
+            }
+        }
+        let f = filter_8x8_neighbours(&substituted);
+        let top = f.top.unwrap();
+        assert_eq!((top[7], top[8], top[15]), (78, 80, 80));
+        // Missing neighbours for a directional mode are Malformed.
+        let no_top = Neighbors8x8 { top: None, ..n };
+        assert_eq!(predict_8x8(0, &no_top).unwrap_err(), DecodeError::Malformed);
+        assert_eq!(predict_8x8(9, &n).unwrap_err(), DecodeError::Malformed);
     }
 
     /// Chroma plane with flat neighbours 60 and Q = 60 yields 60 everywhere
