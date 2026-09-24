@@ -254,6 +254,7 @@ impl RecordedH264Range {
             ..request.decoder_limits
         };
         let decoder = Decoder::new(limits)?;
+        let seen = vec![false; request.segment_count];
         Ok(Self {
             request,
             retained,
@@ -262,7 +263,7 @@ impl RecordedH264Range {
             end,
             decoded: 0,
             ready: std::collections::VecDeque::new(),
-            seen: vec![false; request.segment_count],
+            seen,
             flushed: false,
         })
     }
