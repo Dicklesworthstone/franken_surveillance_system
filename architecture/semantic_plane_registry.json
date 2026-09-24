@@ -46,6 +46,7 @@
     "crates/fss-codec-h265/src/cabac_tables.rs": "support",
     "crates/fss-codec-h265/src/ctu.rs": "support",
     "crates/fss-codec-h265/src/decoder.rs": "support",
+    "crates/fss-codec-h265/src/inter.rs": "support",
     "crates/fss-codec-h265/src/intra.rs": "support",
     "crates/fss-codec-h265/src/lib.rs": "support",
     "crates/fss-codec-h265/src/nal.rs": "support",

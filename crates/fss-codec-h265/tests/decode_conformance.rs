@@ -101,6 +101,7 @@ fn locate_mismatch(name: &str, index: usize, picture: &Picture) -> String {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Order {
     Decode,
+    Reordered,
 }
 
 fn check(name: &str, stream: &[u8], oracle: &str, order: Order) -> TestResult {
@@ -121,6 +122,22 @@ fn check(name: &str, stream: &[u8], oracle: &str, order: Order) -> TestResult {
         );
         if order == Order::Decode {
             assert_eq!(picture.decode_index(), index as u64, "{name}: decode order");
+        }
+    }
+    if order == Order::Reordered {
+        assert!(
+            pictures
+                .iter()
+                .enumerate()
+                .any(|(index, p)| p.decode_index() != index as u64),
+            "{name}: expected output order to differ from decode order"
+        );
+    }
+    // Output order is display order: POC increases between IRAP pictures
+    // that start a new sequence (IDR / BLA reset POC to 0).
+    for pair in pictures.windows(2) {
+        if !pair[1].is_idr() {
+            assert!(pair[0].poc() < pair[1].poc(), "{name}: POC order {pair:?}");
         }
     }
     // Every decode index appears exactly once.
@@ -179,6 +196,31 @@ oracle_test!(intra_cra_pictures_bit_exact, "i_qcif_cra");
 // Hand-assembled PCM + intra coding units (scripts/generate_h265_pcm_fixture.py).
 oracle_test!(pcm_mixed_nodeblock_bit_exact, "pcm_mixed_nodeblock");
 
+// ----- Stage 2: P and B slices (in-loop filters off) -----
+oracle_test!(p_single_reference_bit_exact, "p_qcif_ref1");
+oracle_test!(p_three_refs_rect_amp_bit_exact, "p_qcif_ref3_amp");
+oracle_test!(p_cropped_edge_clamping_bit_exact, "p_100x60_crop");
+oracle_test!(p_inter_transform_depth_bit_exact, "p_mandel_tu_inter");
+oracle_test!(p_constrained_intra_bit_exact, "p_qcif_constrained_intra");
+oracle_test!(p_no_tmvp_single_merge_bit_exact, "p_qcif_notmvp_merge1");
+oracle_test!(b_pyramid_ref3_bit_exact, "b_qcif_pyramid", Order::Reordered);
+oracle_test!(
+    b_no_pyramid_ref1_bit_exact,
+    "b_qcif_nopyramid_ref1",
+    Order::Reordered
+);
+oracle_test!(
+    b_weighted_prediction_bit_exact,
+    "b_128x96_weighted",
+    Order::Reordered
+);
+oracle_test!(b_open_gop_cra_bit_exact, "b_qcif_opengop", Order::Reordered);
+oracle_test!(
+    b_wavefront_two_slices_bit_exact,
+    "b_qcif_wpp_slices",
+    Order::Reordered
+);
+
 /// Independent of any decoder: the PCM coding units must reproduce the
 /// generator's sample pattern exactly (scripts/generate_h265_pcm_fixture.py:
 /// luma ((7x + 13y + 50k) & 31) << 3, chroma ((11x + 5y + 30k + 17c) &
@@ -211,6 +253,25 @@ fn pcm_samples_match_generator_pattern() -> TestResult {
             }
         }
     }
+    Ok(())
+}
+
+/// B-pyramid output order: 12 pictures (IDR + 11 inter) in strictly
+/// increasing POC, released while decoding (not only at `finish`), with
+/// the display-order POCs 0..=11 of a closed GOP.
+#[test]
+fn b_pyramid_output_is_display_order() -> TestResult {
+    let stream = include_bytes!("fixtures/decode/b_qcif_pyramid.h265");
+    let mut decoder = Decoder::new(DecoderLimits::default())?;
+    let early = decoder.decode_annex_b(stream)?;
+    assert!(
+        !early.is_empty(),
+        "the reorder depth releases pictures early"
+    );
+    let mut pictures = early;
+    pictures.extend(decoder.finish()?);
+    let pocs: Vec<i32> = pictures.iter().map(Picture::poc).collect();
+    assert_eq!(pocs, (0..12).collect::<Vec<_>>());
     Ok(())
 }
 
@@ -272,7 +333,16 @@ fn cropped_dimensions_and_plane_sizes() -> TestResult {
 /// NAL-by-NAL feeding yields the same pictures as whole-buffer feeding.
 #[test]
 fn nal_by_nal_matches_annex_b() -> TestResult {
-    let stream = &include_bytes!("fixtures/decode/i_qcif_slices4.h265")[..];
+    for stream in [
+        &include_bytes!("fixtures/decode/i_qcif_slices4.h265")[..],
+        &include_bytes!("fixtures/decode/b_qcif_pyramid.h265")[..],
+    ] {
+        nal_by_nal_matches(stream)?;
+    }
+    Ok(())
+}
+
+fn nal_by_nal_matches(stream: &[u8]) -> TestResult {
     let whole = decode_stream(stream)?;
     let mut decoder = Decoder::new(DecoderLimits::default())?;
     let mut pieces = Vec::new();

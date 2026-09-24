@@ -6,6 +6,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use crate::ctu::{PicState, SliceDecoder, SliceInputs};
+use crate::inter::{ColMv, ColPic, RefList};
 use crate::nal::{NalHeader, rbsp_from_ebsp, stop_bit_position, unit_type};
 use crate::params::{MAX_DPB, Pps, Sps, parse_pps, parse_sps, parse_vps_id};
 use crate::picture::{Frame, Picture, PictureMeta};
@@ -75,6 +76,8 @@ enum Marking {
 /// One picture in the decoded picture buffer.
 struct DpbPicture {
     frame: Arc<Frame>,
+    /// Per-4x4 motion for temporal motion vector prediction.
+    motion: Arc<Vec<ColMv>>,
     poc: i32,
     marking: Marking,
     /// "Needed for output".
@@ -92,6 +95,8 @@ struct Pending {
     nal: NalHeader,
     output: bool,
     slices: u32,
+    /// `PocStCurrBefore` and `PocStCurrAfter` of the picture's RPS.
+    st_curr: [Vec<i32>; 2],
 }
 
 /// Streaming H.265 decoder (Main profile, 8-bit 4:2:0).
@@ -320,21 +325,21 @@ impl Decoder {
         if pending.slices > self.limits.max_slices_per_picture {
             return Err(DecodeError::Limit);
         }
-        if header.slice_type != SliceType::I {
-            return Err(DecodeError::Unsupported(
-                UnsupportedFeature::InterPrediction,
-            ));
-        }
         if !header.deblocking_disabled || header.sao_luma || header.sao_chroma {
             return Err(DecodeError::Unsupported(UnsupportedFeature::LoopFilter));
         }
         let (sps, pps) = (Arc::clone(&pending.sps), Arc::clone(&pending.pps));
+        let refs = self.reference_lists(&header, &pending)?;
+        let col = self.collocated(&header, &refs)?;
         let inputs = SliceInputs {
             sps: &sps,
             pps: &pps,
             header: &header,
             scans: &self.scans,
             matrix: &self.matrix,
+            poc: pending.poc,
+            refs: &refs,
+            col: col.as_ref(),
         };
         SliceDecoder::new(&inputs, &mut pending.state, &rbsp, stop + 1)?.decode()?;
         if pending.state.complete() {
@@ -384,6 +389,19 @@ impl Decoder {
             self.flush_output(header.no_output_of_prior_pics)?;
         }
         self.mark_references(nal, header, poc)?;
+        let mut st_curr = [Vec::new(), Vec::new()];
+        if let Some(rps) = &header.st_rps {
+            for (delta, used) in rps.delta_s0.iter().zip(&rps.used_s0) {
+                if *used {
+                    st_curr[0].push(poc + delta);
+                }
+            }
+            for (delta, used) in rps.delta_s1.iter().zip(&rps.used_s1) {
+                if *used {
+                    st_curr[1].push(poc + delta);
+                }
+            }
+        }
         let state = PicState::new(&sps)?;
         self.pending = Some(Pending {
             sps,
@@ -393,8 +411,83 @@ impl Decoder {
             nal,
             output: header.pic_output,
             slices: 0,
+            st_curr,
         });
         Ok(true)
+    }
+
+    /// The short-term reference picture with order count `poc`.
+    fn reference(&self, poc: i32) -> Result<(Arc<Frame>, Arc<Vec<ColMv>>), DecodeError> {
+        self.dpb
+            .iter()
+            .find(|p| p.marking == Marking::Short && p.poc == poc)
+            .map(|p| (Arc::clone(&p.frame), Arc::clone(&p.motion)))
+            .ok_or(DecodeError::MissingReference)
+    }
+
+    /// Reference picture list construction (clause 8.3.4), including
+    /// `ref_pic_lists_modification()`.
+    fn reference_lists(
+        &self,
+        header: &SliceHeader,
+        pending: &Pending,
+    ) -> Result<[RefList; 2], DecodeError> {
+        let mut lists = [RefList::default(), RefList::default()];
+        if header.slice_type == SliceType::I {
+            return Ok(lists);
+        }
+        let [before, after] = &pending.st_curr;
+        let total = before.len() + after.len();
+        if total == 0 {
+            return Err(DecodeError::MissingReference);
+        }
+        for (list, out) in lists.iter_mut().enumerate() {
+            let count = header.num_ref_idx[list] as usize;
+            if count == 0 {
+                continue;
+            }
+            let order: Vec<i32> = if list == 0 {
+                before.iter().chain(after).copied().collect()
+            } else {
+                after.iter().chain(before).copied().collect()
+            };
+            let temp_len = count.max(total);
+            let temp: Vec<i32> = order.iter().copied().cycle().take(temp_len).collect();
+            for i in 0..count {
+                let idx = match &header.list_entry[list] {
+                    Some(entries) => *entries.get(i).ok_or(DecodeError::Malformed)? as usize,
+                    None => i,
+                };
+                let poc = *temp.get(idx).ok_or(DecodeError::Malformed)?;
+                let (frame, _) = self.reference(poc)?;
+                out.pocs.push(poc);
+                out.long_term.push(false);
+                out.frames.push(frame);
+            }
+        }
+        Ok(lists)
+    }
+
+    /// The collocated picture of a slice with temporal MV prediction.
+    fn collocated(
+        &self,
+        header: &SliceHeader,
+        refs: &[RefList; 2],
+    ) -> Result<Option<ColPic>, DecodeError> {
+        if !header.temporal_mvp || header.slice_type == SliceType::I {
+            return Ok(None);
+        }
+        let list = if header.slice_type == SliceType::B && !header.collocated_from_l0 {
+            1
+        } else {
+            0
+        };
+        let poc = *refs[list]
+            .pocs
+            .get(header.collocated_ref_idx as usize)
+            .ok_or(DecodeError::Malformed)?;
+        let (_, motion) = self.reference(poc)?;
+        Ok(Some(ColPic { poc, motion }))
     }
 
     /// Clause 8.3.1.
@@ -471,7 +564,9 @@ impl Decoder {
             decode_index: self.pictures,
         };
         self.pictures += 1;
+        let motion = Arc::new(pending.state.col_motion());
         self.dpb.push(DpbPicture {
+            motion,
             frame: Arc::new(pending.state.frame),
             poc: pending.poc,
             marking: Marking::Short,

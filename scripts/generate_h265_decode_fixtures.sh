@@ -94,6 +94,32 @@ encode i_qcif_cra "testsrc2=size=176x144:rate=10" 3 "${INTRA}:ctu=32:qp=32" \
 # Hand-assembled PCM stream (libx265 never emits pcm_flag).
 python3 scripts/generate_h265_pcm_fixture.py "$OUT"
 
+
+# ----- Stage 2: P and B slices (inter prediction), in-loop filters off -----
+INTER="no-deblock=1:no-sao=1:wpp=0"
+encode p_qcif_ref1 "testsrc2=size=176x144:rate=10" 6 \
+  "${INTER}:keyint=6:bframes=0:ref=1:ctu=32:qp=30"
+encode p_qcif_ref3_amp "testsrc2=size=176x144:rate=10" 8 \
+  "${INTER}:keyint=8:bframes=0:ref=3:ctu=32:rect=1:amp=1:max-merge=5:qp=28"
+encode p_100x60_crop "testsrc2=size=100x60:rate=10" 6 \
+  "${INTER}:keyint=6:bframes=0:ref=2:ctu=16:min-cu-size=8:qp=32"
+encode p_mandel_tu_inter "mandelbrot=size=128x96:rate=10" 5 \
+  "${INTER}:keyint=5:bframes=0:ref=2:ctu=64:tu-inter-depth=3:max-merge=2:qp=26"
+encode p_qcif_constrained_intra "testsrc2=size=176x144:rate=10,noise=alls=60:allf=t+u" 4 \
+  "${INTER}:keyint=4:bframes=0:ref=1:ctu=32:constrained-intra=1:qp=34"
+encode p_qcif_notmvp_merge1 "testsrc2=size=176x144:rate=10" 6 \
+  "${INTER}:keyint=6:bframes=0:ref=2:ctu=32:temporal-mvp=0:max-merge=1:qp=30"
+encode b_qcif_pyramid "testsrc2=size=176x144:rate=10" 12 \
+  "${INTER}:keyint=12:bframes=3:b-adapt=0:b-pyramid=1:ref=3:ctu=32:rect=1:amp=1:qp=30"
+encode b_qcif_nopyramid_ref1 "testsrc2=size=176x144:rate=10" 9 \
+  "${INTER}:keyint=9:bframes=2:b-adapt=0:b-pyramid=0:ref=1:ctu=16:min-cu-size=8:qp=33"
+encode b_128x96_weighted "testsrc2=size=128x96:rate=10,fade=in:0:10" 10 \
+  "${INTER}:keyint=10:bframes=2:b-adapt=0:ref=2:ctu=32:weightp=1:weightb=1:qp=28"
+encode b_qcif_opengop "testsrc2=size=176x144:rate=10" 12 \
+  "${INTER}:keyint=6:min-keyint=6:open-gop=1:bframes=3:b-adapt=0:ref=2:ctu=32:qp=32"
+encode b_qcif_wpp_slices "testsrc2=size=176x144:rate=10" 8 \
+  "no-deblock=1:no-sao=1:wpp=1:slices=2:keyint=8:bframes=2:b-adapt=0:ref=2:ctu=16:qp=30"
+
 # ----- Negative fixtures: must be refused, never decoded -----
 # Range-extensions "Main Intra" profile (libx265 with keyint=1).
 encode unsupported_rext_main_intra "testsrc2=size=64x64:rate=10" 1 \

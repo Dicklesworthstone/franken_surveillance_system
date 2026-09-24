@@ -7,9 +7,12 @@ use crate::DecodeError;
 use crate::bits::BitReader;
 use crate::cabac::{Contexts, SliceCabac, init_contexts};
 use crate::cabac_tables::{
-    CBF_CB_CR, CBF_LUMA, CU_QP_DELTA, CU_TRANSQUANT_BYPASS_FLAG, INTRA_CHROMA_PRED_MODE, PART_MODE,
-    PREV_INTRA_LUMA_PRED_FLAG, SPLIT_CODING_UNIT_FLAG, SPLIT_TRANSFORM_FLAG,
+    ABS_MVD_GREATER0_FLAG, ABS_MVD_GREATER1_FLAG, CBF_CB_CR, CBF_LUMA, CU_QP_DELTA,
+    CU_TRANSQUANT_BYPASS_FLAG, INTER_PRED_IDC, INTRA_CHROMA_PRED_MODE, MERGE_FLAG, MERGE_IDX,
+    MVP_LX_FLAG, NO_RESIDUAL_DATA_FLAG, PART_MODE, PRED_MODE_FLAG, PREV_INTRA_LUMA_PRED_FLAG,
+    REF_IDX_L0, SKIP_FLAG, SPLIT_CODING_UNIT_FLAG, SPLIT_TRANSFORM_FLAG,
 };
+use crate::inter::{self, Block, ColMv, ColPic, MvContext, MvField, PartMode, PbGeometry, RefList};
 use crate::intra;
 use crate::params::{Pps, ScalingList, Sps};
 use crate::picture::Frame;
@@ -35,6 +38,10 @@ pub(crate) struct BlockInfo {
     pub ct_depth: u8,
     /// `QpY` of the covering coding unit.
     pub qp_y: i8,
+    /// `cu_skip_flag`.
+    pub skip: bool,
+    /// Motion of inter-coded blocks (`pred == 0` otherwise).
+    pub mv: MvField,
 }
 
 /// Decoding state of the picture being reconstructed.
@@ -51,6 +58,9 @@ pub(crate) struct PicState {
     pub slice_count: u16,
     /// Next CTB address (raster) a slice segment must start at.
     pub next_ctb: u32,
+    /// Reference picture order counts and long-term flags of each slice
+    /// (by slice tag - 1), for the motion stored with the picture.
+    pub slice_refs: Vec<[Vec<(i32, bool)>; 2]>,
 }
 
 impl PicState {
@@ -72,7 +82,38 @@ impl PicState {
             ctb_slice: vec![0; ctbs],
             slice_count: 0,
             next_ctb: 0,
+            slice_refs: Vec::new(),
         })
+    }
+
+    /// Per-4x4 motion with reference order counts, stored with the
+    /// decoded picture for temporal motion vector prediction.
+    pub fn col_motion(&self) -> Vec<ColMv> {
+        self.info
+            .iter()
+            .map(|b| {
+                let mut col = ColMv {
+                    pred: b.mv.pred,
+                    mv: b.mv.mv,
+                    ..ColMv::default()
+                };
+                if let Some(refs) = self.slice_refs.get(usize::from(b.slice).wrapping_sub(1)) {
+                    for list in 0..2 {
+                        if b.mv.uses(list) {
+                            let (poc, lt) = refs[list]
+                                .get(b.mv.ref_idx[list] as usize)
+                                .copied()
+                                .unwrap_or((0, false));
+                            col.ref_poc[list] = poc;
+                            col.ref_lt[list] = lt;
+                        }
+                    }
+                } else {
+                    col.pred = 0;
+                }
+                col
+            })
+            .collect()
     }
 
     /// Whether every CTB has been decoded.
@@ -84,10 +125,22 @@ impl PicState {
         &self.info[(y >> 2) * self.w4 + (x >> 2)]
     }
 
+    /// Applies `f` to every 4x4 unit of the square luma block.
+    fn fill(&mut self, x0: usize, y0: usize, size: usize, f: impl FnMut(&mut BlockInfo)) {
+        self.fill_rect(x0, y0, size, size, f);
+    }
+
     /// Applies `f` to every 4x4 unit of the luma rectangle.
-    fn fill(&mut self, x0: usize, y0: usize, size: usize, mut f: impl FnMut(&mut BlockInfo)) {
-        let x_end = (x0 + size).div_ceil(4).min(self.w4);
-        let y_end = (y0 + size).div_ceil(4).min(self.h4);
+    fn fill_rect(
+        &mut self,
+        x0: usize,
+        y0: usize,
+        w: usize,
+        h: usize,
+        mut f: impl FnMut(&mut BlockInfo),
+    ) {
+        let x_end = (x0 + w).div_ceil(4).min(self.w4);
+        let y_end = (y0 + h).div_ceil(4).min(self.h4);
         for y in y0 >> 2..y_end {
             for x in x0 >> 2..x_end {
                 f(&mut self.info[y * self.w4 + x]);
@@ -103,6 +156,13 @@ struct CuState {
     y0: usize,
     log2: u32,
     transquant_bypass: bool,
+    /// `CuPredMode == MODE_INTRA`.
+    intra: bool,
+    /// `CtDepth`.
+    depth: u32,
+    part_mode: Option<PartMode>,
+    /// `merge_flag` of the first prediction unit.
+    merge_first: bool,
     intra_split: bool,
     max_trafo_depth: u32,
     /// Luma intra modes of the (up to four) prediction blocks.
@@ -124,6 +184,20 @@ struct TreeNode {
     blk_idx: usize,
 }
 
+impl TreeNode {
+    const fn root(x0: usize, y0: usize, log2: u32) -> Self {
+        Self {
+            x0,
+            y0,
+            x_base: x0,
+            y_base: y0,
+            log2,
+            depth: 0,
+            blk_idx: 0,
+        }
+    }
+}
+
 /// Read-only inputs shared by every slice segment of a picture.
 pub(crate) struct SliceInputs<'a> {
     pub sps: &'a Sps,
@@ -131,6 +205,12 @@ pub(crate) struct SliceInputs<'a> {
     pub header: &'a SliceHeader,
     pub scans: &'a Scans,
     pub matrix: &'a [[i32; 32]; 32],
+    /// `PicOrderCntVal` of the current picture.
+    pub poc: i32,
+    /// `RefPicList0` / `RefPicList1` of the slice.
+    pub refs: &'a [RefList; 2],
+    /// The collocated picture when temporal MV prediction is enabled.
+    pub col: Option<&'a ColPic>,
 }
 
 /// Decodes one slice segment's CTUs into `pic`.
@@ -140,6 +220,9 @@ pub(crate) struct SliceDecoder<'a, 'b> {
     header: &'a SliceHeader,
     scans: &'a Scans,
     matrix: &'a [[i32; 32]; 32],
+    poc: i32,
+    refs: &'a [RefList; 2],
+    col: Option<&'a ColPic>,
     pic: &'b mut PicState,
     cabac: SliceCabac<'a>,
     init_type: usize,
@@ -190,12 +273,23 @@ impl<'a, 'b> SliceDecoder<'a, 'b> {
         };
         pic.slice_count = pic.slice_count.checked_add(1).ok_or(DecodeError::Limit)?;
         let slice_tag = pic.slice_count;
+        pic.slice_refs.push(std::array::from_fn(|list| {
+            let refs = &inputs.refs[list];
+            refs.pocs
+                .iter()
+                .copied()
+                .zip(refs.long_term.iter().copied())
+                .collect()
+        }));
         Ok(Self {
             sps: inputs.sps,
             pps: inputs.pps,
             header,
             scans: inputs.scans,
             matrix: inputs.matrix,
+            poc: inputs.poc,
+            refs: inputs.refs,
+            col: inputs.col,
             pic,
             cabac,
             init_type,
@@ -359,7 +453,7 @@ impl<'a, 'b> SliceDecoder<'a, 'b> {
         };
     }
 
-    /// `coding_unit()` (clause 7.3.8.5) for intra slices.
+    /// `coding_unit()` (clause 7.3.8.5).
     fn coding_unit(
         &mut self,
         x0: usize,
@@ -372,17 +466,63 @@ impl<'a, 'b> SliceDecoder<'a, 'b> {
             x0,
             y0,
             log2,
+            depth,
+            intra: true,
             ..CuState::default()
         };
         self.update_qp();
         if self.pps.transquant_bypass_enabled {
             self.cu.transquant_bypass = self.cabac.flag(CU_TRANSQUANT_BYPASS_FLAG)?;
         }
+        let mut skip = false;
         if self.header.slice_type != SliceType::I {
-            return Err(DecodeError::Unsupported(
-                crate::UnsupportedFeature::InterPrediction,
-            ));
+            let (xi, yi) = (x0 as isize, y0 as isize);
+            let mut ctx = 0;
+            if self.available(xi - 1, yi) && self.pic.at(x0 - 1, y0).skip {
+                ctx += 1;
+            }
+            if self.available(xi, yi - 1) && self.pic.at(x0, y0 - 1).skip {
+                ctx += 1;
+            }
+            skip = self.cabac.flag(SKIP_FLAG + ctx)?;
         }
+        if skip {
+            self.cu.intra = false;
+            self.cu.part_mode = Some(PartMode::Part2Nx2N);
+            self.prediction_unit(x0, y0, size, size, 0, true)?;
+        } else if self.header.slice_type == SliceType::I || self.cabac.flag(PRED_MODE_FLAG)? {
+            self.intra_coding_unit(x0, y0, log2)?;
+        } else {
+            self.cu.intra = false;
+            let part = self.inter_part_mode(log2)?;
+            self.cu.part_mode = Some(part);
+            for (i, (bx, by, bw, bh)) in part.blocks(size).into_iter().enumerate() {
+                self.prediction_unit(x0 + bx, y0 + by, bw, bh, i, false)?;
+            }
+            let rqt_root_cbf = if part == PartMode::Part2Nx2N && self.cu.merge_first {
+                true
+            } else {
+                self.cabac.flag(NO_RESIDUAL_DATA_FLAG)?
+            };
+            if rqt_root_cbf {
+                self.cu.max_trafo_depth = self.sps.max_th_depth_inter;
+                self.transform_tree(TreeNode::root(x0, y0, log2), [false, false])?;
+            }
+        }
+        let qp = self.qp_y as i8;
+        let depth = depth as u8;
+        self.pic.fill(x0, y0, size, |b| {
+            b.ct_depth = depth;
+            b.qp_y = qp;
+            b.skip = skip;
+        });
+        self.last_qp = self.qp_y;
+        Ok(())
+    }
+
+    /// The intra branch of `coding_unit()`: part mode, PCM or intra modes,
+    /// and the transform tree.
+    fn intra_coding_unit(&mut self, x0: usize, y0: usize, log2: u32) -> Result<(), DecodeError> {
         // part_mode for intra: "1" = PART_2Nx2N, "0" = PART_NxN, present
         // only at the minimum coding block size.
         let nxn = log2 == self.sps.min_cb_log2 && !self.cabac.flag(PART_MODE)?;
@@ -394,29 +534,227 @@ impl<'a, 'b> SliceDecoder<'a, 'b> {
             _ => false,
         };
         if pcm {
-            self.pcm_sample(x0, y0, log2)?;
+            self.pcm_sample(x0, y0, log2)
         } else {
             self.intra_modes(x0, y0, log2, nxn)?;
             self.cu.max_trafo_depth = self.sps.max_th_depth_intra + u32::from(nxn);
-            let root = TreeNode {
-                x0,
-                y0,
-                x_base: x0,
-                y_base: y0,
-                log2,
-                depth: 0,
-                blk_idx: 0,
-            };
-            self.transform_tree(root, [false, false])?;
+            self.transform_tree(TreeNode::root(x0, y0, log2), [false, false])
         }
-        let qp = self.qp_y as i8;
-        let depth = depth as u8;
-        self.pic.fill(x0, y0, size, |b| {
-            b.ct_depth = depth;
-            b.qp_y = qp;
+    }
+
+    /// `part_mode` of an inter coding unit (clause 9.3.3.7, Table 9-43).
+    fn inter_part_mode(&mut self, log2: u32) -> Result<PartMode, DecodeError> {
+        if self.cabac.flag(PART_MODE)? {
+            return Ok(PartMode::Part2Nx2N);
+        }
+        if log2 == self.sps.min_cb_log2 {
+            if self.cabac.flag(PART_MODE + 1)? {
+                return Ok(PartMode::Part2NxN);
+            }
+            if log2 == 3 || self.cabac.flag(PART_MODE + 2)? {
+                return Ok(PartMode::PartNx2N);
+            }
+            return Ok(PartMode::PartNxN);
+        }
+        if !self.sps.amp_enabled {
+            return Ok(if self.cabac.flag(PART_MODE + 1)? {
+                PartMode::Part2NxN
+            } else {
+                PartMode::PartNx2N
+            });
+        }
+        let horizontal = self.cabac.flag(PART_MODE + 1)?;
+        if self.cabac.flag(PART_MODE + 3)? {
+            return Ok(if horizontal {
+                PartMode::Part2NxN
+            } else {
+                PartMode::PartNx2N
+            });
+        }
+        let second = self.cabac.bypass()? == 1;
+        Ok(match (horizontal, second) {
+            (true, false) => PartMode::Part2NxnU,
+            (true, true) => PartMode::Part2NxnD,
+            (false, false) => PartMode::PartnLx2N,
+            (false, true) => PartMode::PartnRx2N,
+        })
+    }
+
+    /// Motion of a neighbouring prediction block, when it is available
+    /// (inside the picture, already decoded, in this slice) and inter coded.
+    fn pu_neighbour(&self, x: isize, y: isize) -> Option<MvField> {
+        if x < 0 || y < 0 || x >= self.sps.width as isize || y >= self.sps.height as isize {
+            return None;
+        }
+        let info = self.pic.at(x as usize, y as usize);
+        (info.slice == self.slice_tag && info.mv.pred != 0).then_some(info.mv)
+    }
+
+    /// `prediction_unit()` (clause 7.3.8.6) with motion derivation (clause
+    /// 8.5.3.2) and motion-compensated prediction (clause 8.5.3.3).
+    fn prediction_unit(
+        &mut self,
+        x: usize,
+        y: usize,
+        w: usize,
+        h: usize,
+        part_idx: usize,
+        skip: bool,
+    ) -> Result<(), DecodeError> {
+        let merge = skip || self.cabac.flag(MERGE_FLAG)?;
+        if part_idx == 0 {
+            self.cu.merge_first = merge;
+        }
+        let pb = PbGeometry {
+            x,
+            y,
+            w,
+            h,
+            part_idx,
+            cu_x: self.cu.x0,
+            cu_y: self.cu.y0,
+            cu_log2: self.cu.log2,
+            part_mode: self.cu.part_mode.unwrap_or(PartMode::Part2Nx2N),
+        };
+        let ctx = MvContext {
+            poc: self.poc,
+            slice_type: self.header.slice_type,
+            refs: self.refs,
+            col: self.col,
+            temporal_mvp: self.header.temporal_mvp,
+            collocated_from_l0: self.header.collocated_from_l0,
+            max_num_merge_cand: self.header.max_num_merge_cand,
+            num_ref_idx: self.header.num_ref_idx,
+            log2_parallel_merge_level: self.pps.log2_parallel_merge_level,
+            width: self.sps.width as usize,
+            height: self.sps.height as usize,
+            ctb_log2: self.sps.ctb_log2,
+            w4: self.pic.w4,
+        };
+        let field = if merge {
+            let max = self.header.max_num_merge_cand as usize;
+            let mut idx = 0usize;
+            if max > 1 && self.cabac.flag(MERGE_IDX)? {
+                idx = 1;
+                while idx < max - 1 && self.cabac.bypass()? == 1 {
+                    idx += 1;
+                }
+            }
+            ctx.merge(&pb, idx, |xn, yn| self.pu_neighbour(xn, yn))
+        } else {
+            let pred = if self.header.slice_type == SliceType::B {
+                if w + h != 12 && self.cabac.flag(INTER_PRED_IDC + self.cu.depth as usize)? {
+                    3
+                } else if self.cabac.flag(INTER_PRED_IDC + 4)? {
+                    2
+                } else {
+                    1
+                }
+            } else {
+                1
+            };
+            let mut syntax = [(0usize, [0i16; 2], 0usize); 2];
+            for (list, entry) in syntax.iter_mut().enumerate() {
+                if pred & (1 << list) == 0 {
+                    continue;
+                }
+                let count = self.header.num_ref_idx[list] as usize;
+                let ref_idx = if count > 1 { self.ref_idx(count)? } else { 0 };
+                let mvd = if list == 1 && self.header.mvd_l1_zero && pred == 3 {
+                    [0, 0]
+                } else {
+                    self.mvd_coding()?
+                };
+                let mvp_flag = usize::from(self.cabac.flag(MVP_LX_FLAG)?);
+                *entry = (ref_idx, mvd, mvp_flag);
+            }
+            let mut field = MvField {
+                pred,
+                mv: [[0; 2]; 2],
+                ref_idx: [-1, -1],
+            };
+            for (list, &(ref_idx, mvd, mvp_flag)) in syntax.iter().enumerate() {
+                if pred & (1 << list) == 0 {
+                    continue;
+                }
+                let mvp = ctx.amvp(&pb, list, ref_idx, mvp_flag, |xn, yn| {
+                    self.pu_neighbour(xn, yn)
+                });
+                field.mv[list] = [mvp[0].wrapping_add(mvd[0]), mvp[1].wrapping_add(mvd[1])];
+                field.ref_idx[list] = i8::try_from(ref_idx).map_err(|_| DecodeError::Malformed)?;
+            }
+            field
+        };
+        let tag = self.slice_tag;
+        self.pic.fill_rect(x, y, w, h, |b| {
+            b.slice = tag;
+            b.intra = false;
+            b.ipm = intra::DC;
+            b.mv = field;
         });
-        self.last_qp = self.qp_y;
-        Ok(())
+        let weights = self.header.weights.as_ref();
+        inter::predict(
+            &mut self.pic.frame,
+            self.refs,
+            &field,
+            Block { x, y, w, h },
+            weights,
+        )
+        .ok_or(DecodeError::MissingReference)
+    }
+
+    /// `ref_idx_lX` (truncated Rice, cMax = count - 1; two context-coded
+    /// bins, the rest bypass). Both lists share the contexts.
+    fn ref_idx(&mut self, count: usize) -> Result<usize, DecodeError> {
+        let max = count - 1;
+        let mut idx = 0;
+        while idx < max.min(2) && self.cabac.flag(REF_IDX_L0 + idx)? {
+            idx += 1;
+        }
+        if idx == 2 {
+            while idx < max && self.cabac.bypass()? == 1 {
+                idx += 1;
+            }
+        }
+        Ok(idx)
+    }
+
+    /// `mvd_coding()` (clause 7.3.8.9).
+    fn mvd_coding(&mut self) -> Result<[i16; 2], DecodeError> {
+        let greater0 = [
+            self.cabac.flag(ABS_MVD_GREATER0_FLAG)?,
+            self.cabac.flag(ABS_MVD_GREATER0_FLAG)?,
+        ];
+        let mut greater1 = [false; 2];
+        for (flag, &g0) in greater1.iter_mut().zip(&greater0) {
+            // The oracle's context layout keeps abs_mvd_greater1_flag at the
+            // second slot of its two-context block (Table 9-4: one context).
+            *flag = g0 && self.cabac.flag(ABS_MVD_GREATER1_FLAG + 1)?;
+        }
+        let mut mvd = [0i16; 2];
+        for (component, value) in mvd.iter_mut().enumerate() {
+            if !greater0[component] {
+                continue;
+            }
+            let mut magnitude: i64 = 1;
+            if greater1[component] {
+                // abs_mvd_minus2: first-order exp-Golomb (EG1).
+                let mut k = 1u32;
+                let mut base: i64 = 0;
+                while self.cabac.bypass()? == 1 {
+                    base += 1 << k;
+                    k += 1;
+                    if k > 16 {
+                        return Err(DecodeError::Malformed);
+                    }
+                }
+                magnitude = base + i64::from(self.cabac.bypass_bits(k)?) + 2;
+            }
+            let negative = self.cabac.bypass()? == 1;
+            let signed = if negative { -magnitude } else { magnitude };
+            *value = i16::try_from(signed).map_err(|_| DecodeError::Malformed)?;
+        }
+        Ok(mvd)
     }
 
     /// `prev_intra_luma_pred_flag` / `mpm_idx` / `rem_intra_luma_pred_mode`
@@ -573,7 +911,11 @@ impl<'a, 'b> SliceDecoder<'a, 'b> {
         {
             self.cabac.flag(SPLIT_TRANSFORM_FLAG + 5 - log2 as usize)?
         } else {
-            log2 > self.sps.max_tb_log2 || (self.cu.intra_split && depth == 0)
+            let inter_split = self.sps.max_th_depth_inter == 0
+                && !self.cu.intra
+                && self.cu.part_mode != Some(PartMode::Part2Nx2N)
+                && depth == 0;
+            log2 > self.sps.max_tb_log2 || (self.cu.intra_split && depth == 0) || inter_split
         };
         let mut cbf = parent_cbf;
         if log2 > 2 {
@@ -605,7 +947,11 @@ impl<'a, 'b> SliceDecoder<'a, 'b> {
             }
             return Ok(());
         }
-        let cbf_luma = self.cabac.flag(CBF_LUMA + usize::from(depth == 0))?;
+        let cbf_luma = if self.cu.intra || depth != 0 || cbf[0] || cbf[1] {
+            self.cabac.flag(CBF_LUMA + usize::from(depth == 0))?
+        } else {
+            true
+        };
         self.transform_unit(node, cbf_luma, cbf)
     }
 
@@ -625,8 +971,11 @@ impl<'a, 'b> SliceDecoder<'a, 'b> {
             blk_idx,
             ..
         } = node;
+        let intra = self.cu.intra;
         let luma_mode = self.luma_mode_at(x0, y0);
-        self.predict_intra(0, x0, y0, log2, luma_mode);
+        if intra {
+            self.predict_intra(0, x0, y0, log2, luma_mode);
+        }
         if (cbf_luma || cbf_chroma[0] || cbf_chroma[1])
             && self.pps.cu_qp_delta_enabled
             && !self.is_cu_qp_delta_coded
@@ -645,7 +994,12 @@ impl<'a, 'b> SliceDecoder<'a, 'b> {
             self.update_qp();
         }
         if cbf_luma {
-            self.residual_block(0, x0, y0, log2, scan_idx_for(luma_mode, log2, 3))?;
+            let scan = if intra {
+                scan_idx_for(luma_mode, log2, 3)
+            } else {
+                0
+            };
+            self.residual_block(0, x0, y0, log2, scan)?;
         }
         let tag = self.slice_tag;
         self.pic.fill(x0, y0, 1 << log2, |b| b.slice = tag);
@@ -659,9 +1013,16 @@ impl<'a, 'b> SliceDecoder<'a, 'b> {
         if let Some((xc, yc, log2c)) = chroma {
             let mode = self.cu.chroma_mode;
             for c in 1..=2usize {
-                self.predict_intra(c, xc, yc, log2c, mode);
+                if intra {
+                    self.predict_intra(c, xc, yc, log2c, mode);
+                }
                 if cbf_chroma[c - 1] {
-                    self.residual_block(c, xc, yc, log2c, scan_idx_for(mode, log2c, 2))?;
+                    let scan = if intra {
+                        scan_idx_for(mode, log2c, 2)
+                    } else {
+                        0
+                    };
+                    self.residual_block(c, xc, yc, log2c, scan)?;
                 }
             }
         }
@@ -731,15 +1092,17 @@ impl<'a, 'b> SliceDecoder<'a, 'b> {
                 };
                 chroma_qp((self.qp_y + offset).clamp(0, 57))
             };
+            let matrix_id = c + if self.cu.intra { 0 } else { 3 };
             let factors = match self.scaling {
-                Some(list) => list.factors(log2 as usize - 2, c),
+                Some(list) => list.factors(log2 as usize - 2, matrix_id),
                 None => &FLAT[..],
             };
             scale(&mut levels, log2, qp, factors);
             if skip {
                 transform_skip(&mut levels, log2);
             } else {
-                inverse_transform(&mut levels, log2, c == 0 && log2 == 2, self.matrix);
+                let dst = self.cu.intra && c == 0 && log2 == 2;
+                inverse_transform(&mut levels, log2, dst, self.matrix);
             }
         }
         let stride = self.pic.frame.plane_width(c);

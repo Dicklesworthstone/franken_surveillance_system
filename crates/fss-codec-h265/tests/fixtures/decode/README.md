@@ -59,6 +59,25 @@ slice data with a small CABAC encoder (libx265 never emits `pcm_flag`).
 Its pixels still come only from FFmpeg; the Rust test additionally checks
 the PCM samples against the generator's pattern.
 
+## Stage 2: P and B slices, in-loop filters off
+
+Common parameters: `no-deblock=1:no-sao=1:wpp=0` (libx265 enables
+`weightp` by default, so every P stream signals `weighted_pred_flag`).
+
+| Stream | Size | Frames | Exercises |
+| --- | --- | --- | --- |
+| `p_qcif_ref1` | 176x144 | 6 | P slices, one reference, merge / AMVP, TMVP |
+| `p_qcif_ref3_amp` | 176x144 | 8 | three references, rectangular + AMP partitions, 5 merge candidates |
+| `p_100x60_crop` | 100x60 | 6 | CTB 16, two references, motion vectors past the picture edge (reference sample clamping), cropping |
+| `p_mandel_tu_inter` | 128x96 | 5 | `mandelbrot`, CTB 64, `tu-inter-depth=3`, 2 merge candidates |
+| `p_qcif_constrained_intra` | 176x144 | 4 | `constrained-intra=1` with temporal noise: intra CUs in P slices ignore inter neighbours |
+| `p_qcif_notmvp_merge1` | 176x144 | 6 | `temporal-mvp=0`, `max-merge=1` (no merge_idx) |
+| `b_qcif_pyramid` | 176x144 | 12 | `bframes=3`, B pyramid, `ref=3`, rect + AMP, output reordering |
+| `b_qcif_nopyramid_ref1` | 176x144 | 9 | `bframes=2`, no pyramid, CTB 16 |
+| `b_128x96_weighted` | 128x96 | 10 | `weightp=1:weightb=1` on a fade: explicit uni- and bi-predictive weights |
+| `b_qcif_opengop` | 176x144 | 12 | `open-gop=1`, `keyint=6`: mid-stream CRA with decodable RASL pictures |
+| `b_qcif_wpp_slices` | 176x144 | 8 | B slices with wavefronts and two slices per picture |
+
 ## Negative fixtures (refused, never decoded)
 
 | Stream | Expected refusal |

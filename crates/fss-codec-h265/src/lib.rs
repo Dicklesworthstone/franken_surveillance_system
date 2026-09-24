@@ -15,15 +15,22 @@
 //! 4. [`cabac`] — the CABAC arithmetic decoder and context initialisation
 //!    (clause 9.3), with tables generated from the oracle's transcription.
 //! 5. `ctu` / `residual` — the coding quadtree (CTU, CU, PU and TU
-//!    splits), SAO syntax, residual coding with sign data hiding, PCM.
+//!    splits), residual coding with sign data hiding, PCM.
 //! 6. `intra` / `transform` — planar, DC and 33 angular predictions with
 //!    reference substitution and (strong) smoothing; scaling lists,
 //!    transform skip, the 4x4 DST and 4..32 DCTs.
-//! 7. [`decoder`] — the streaming [`Decoder`]: parameter-set store,
-//!    picture order count and the decoded picture buffer's output process.
+//! 7. `inter` — merge (spatial, temporal, combined bi-predictive, zero
+//!    candidates) and AMVP motion vectors with POC-distance scaling and
+//!    collocated temporal prediction; 8-tap luma / 4-tap chroma
+//!    interpolation; default and explicit weighted prediction.
+//! 8. [`decoder`] — the streaming [`Decoder`]: parameter-set store,
+//!    picture order count, reference picture set marking, reference list
+//!    construction (with list modification) and the decoded picture
+//!    buffer's output (bumping) process.
 //!
 //! Admitted tool set: Main (and Main Still Picture) profile, 8-bit 4:2:0,
-//! I slices, one or more slices per picture in raster order, wavefront
+//! I, P and B slices (all partition modes incl. AMP), short-term
+//! reference pictures, one or more slices per picture in raster order, wavefront
 //! parallel processing (`entropy_coding_sync_enabled_flag`), scaling
 //! lists, transform skip, transquant bypass, PCM, sign data hiding and
 //! constrained intra prediction. Everything else is refused with
@@ -45,6 +52,7 @@ pub mod cabac;
 pub mod cabac_tables;
 mod ctu;
 pub mod decoder;
+mod inter;
 mod intra;
 pub mod nal;
 pub mod params;
@@ -81,7 +89,8 @@ pub enum UnsupportedFeature {
     DependentSlices,
     /// Field-coded sequences (`field_seq_flag`, SEI-signalled interlace).
     Interlaced,
-    /// P and B slices (inter prediction).
+    /// Historical: P and B slices. Admitted since inter prediction support;
+    /// no longer produced, kept for API stability.
     InterPrediction,
     /// Enabled in-loop filters (deblocking or sample adaptive offset).
     LoopFilter,
