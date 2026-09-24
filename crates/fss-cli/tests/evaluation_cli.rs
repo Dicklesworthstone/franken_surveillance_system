@@ -78,7 +78,10 @@ fn executable_preserves_budget_coverage_and_event_outcomes() -> TestResult {
         "\"candidate_set_digest\":",
         "\"report_digest\":",
     ] {
-        assert!(report.contains(expected), "missing report field: {expected}");
+        assert!(
+            report.contains(expected),
+            "missing report field: {expected}"
+        );
     }
     Ok(())
 }
@@ -124,7 +127,11 @@ fn invalid_budget_and_numeric_inputs_do_not_emit_reports() -> TestResult {
     for (maximum, period, code) in [
         ("0", "0", "evaluation.invalid_budget"),
         ("-1", "1000", "evaluation.cli.invalid_integer"),
-        ("0", "18446744073709551616", "evaluation.cli.invalid_integer"),
+        (
+            "0",
+            "18446744073709551616",
+            "evaluation.cli.invalid_integer",
+        ),
         ("1.5", "1000", "evaluation.cli.invalid_integer"),
     ] {
         let output = command("labels.tsv", "candidates.tsv", maximum, period).output()?;
