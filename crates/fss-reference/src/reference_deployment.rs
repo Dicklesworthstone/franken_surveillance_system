@@ -1665,6 +1665,84 @@ impl ReferenceDeployment {
         })
     }
 
+    /// Reads the event's current authoritative revision and a receipt for it, without writing.
+    ///
+    /// The revision is the one the ledger's current event object names: its `event_revision`
+    /// delta at the current generation and payload, decoded from the spool and required to hash to
+    /// the delta's witness. The receipt's anchor is the anchor of the batch that published it, and
+    /// its lineage tamper status is recomputed from every revision the ledger published. A later
+    /// consumer (alert preparation) cross-checks all of it against the ledger again; the receipt
+    /// is never authority by itself.
+    pub fn current_event_authority(
+        &self,
+        event_id: &EventId,
+    ) -> Result<(EventHypothesis, ReferenceEventReceipt), ReferenceError> {
+        let object_id = ObjectId::parse(format!("object:event:{}", event_id.as_str()))?;
+        let current = self
+            .ledger
+            .current()
+            .objects
+            .get(&object_id)
+            .ok_or(ContractError::NotFound)?;
+        let (anchor, event_root, witness) = self
+            .ledger
+            .batches()
+            .iter()
+            .rev()
+            .find_map(|batch| {
+                batch
+                    .deltas
+                    .iter()
+                    .find(|delta| {
+                        delta.object_id == object_id
+                            && delta.family == "event_revision"
+                            && delta.new_generation == current.generation
+                            && delta.payload_digest == current.payload_digest
+                    })
+                    .map(|delta| {
+                        (
+                            batch.new_anchor.clone(),
+                            delta.payload_digest,
+                            delta.witness_digest,
+                        )
+                    })
+            })
+            .ok_or(ContractError::SupersessionMismatch)?;
+        let spool = self.publisher.spool();
+        let manifest_bytes = spool
+            .read(event_root)
+            .map_err(|error| ReferenceError::from(LocalPublicationError::Spool(error)))?;
+        let manifest = ObjectManifest::from_canonical_bytes(&manifest_bytes)?;
+        let event_object_digest = manifest
+            .metadata_digest()
+            .ok_or(ContractError::EvidenceRequired)?;
+        let event_bytes = spool
+            .read(event_object_digest)
+            .map_err(|error| ReferenceError::from(LocalPublicationError::Spool(error)))?;
+        let event = EventHypothesis::from_canonical_bytes(&event_bytes)?;
+        let event_revision_digest = event.revision_digest();
+        if witness != Some(event_revision_digest) || event.event_id != *event_id {
+            return Err(ContractError::SupersessionMismatch.into());
+        }
+        let prior = self.prior_event_revisions(&object_id, event.revision)?;
+        let lineage_tamper_status = fss_core::event::compute_sensor_tamper_status(
+            prior.iter().chain(std::iter::once(&event)),
+            None,
+        );
+        let receipt = ReferenceEventReceipt {
+            event_root,
+            event_object_digest,
+            event_revision_digest,
+            authority_anchor: anchor,
+            lineage_tamper_status,
+            prior_revision_encodings: prior
+                .iter()
+                .map(crate::alert::event_revision_encoding)
+                .collect(),
+        };
+        Ok((event, receipt))
+    }
+
     /// Every earlier revision of the event `object_id`, oldest first, read back from this
     /// deployment's spool through the `event_revision` deltas its ledger committed.
     fn prior_event_revisions(
@@ -1896,6 +1974,20 @@ impl ReferenceDeployment {
     /// example through [`DurableEffectJournal::prepare_alert`]).
     pub fn effects_and_ledger(&mut self) -> (&mut DurableEffectJournal, &DurableReferenceLedger) {
         (&mut self.effects, &self.ledger)
+    }
+
+    /// Returns the durable effect journal mutably with the authority ledger and the local root
+    /// publisher whose verified spool holds the event revisions, so an alert dispatch (for
+    /// example [`crate::webhook::WebhookAttempt`]) revalidates against this deployment's own
+    /// authority and reads payloads only through verified custody.
+    pub fn effect_dispatch_parts(
+        &mut self,
+    ) -> (
+        &mut DurableEffectJournal,
+        &DurableReferenceLedger,
+        &LocalRootPublisher,
+    ) {
+        (&mut self.effects, &self.ledger, &self.publisher)
     }
 
     /// Returns a reference to the deployment-owned simulated alert provider.

@@ -347,6 +347,36 @@
       "id": "ERR-AGT-STABLE-ID-REUSED-001"
     },
     {
+      "description": "an alert plan or dispatch approval digest does not match the current plan, route, principal, prepared record or deadline; nothing was prepared or sent",
+      "guidance": "rerun without the stale approval and review the reported digests",
+      "id": "ERR-ALERT-APPROVAL-STALE-001"
+    },
+    {
+      "description": "the event is absent, or its current authority, prepared plan or receipt cannot be read and verified against the ledger",
+      "guidance": "inspect or repair the deployment; never dispatch from unverified authority",
+      "id": "ERR-ALERT-AUTHORITY-001"
+    },
+    {
+      "description": "the admission clock is unavailable or behind the effect journal's last transition",
+      "guidance": "repair the host clock; nothing was committed",
+      "id": "ERR-ALERT-CLOCK-001"
+    },
+    {
+      "description": "the durable effect journal or live webhook authority refused before any network I/O, or the observation could not be recorded",
+      "guidance": "inspect the journal; a committed operation is never resent automatically",
+      "id": "ERR-ALERT-DISPATCH-001"
+    },
+    {
+      "description": "policy, corroboration or sensor-integrity gates refuse an alert for this event (not corroborated, held, or open tamper)",
+      "guidance": "do not retry; obtain independent corroboration or resolve the integrity risk",
+      "id": "ERR-ALERT-NOT-ELIGIBLE-001"
+    },
+    {
+      "description": "alert relay route is not admissible (exact IP:PORT, plain absolute path, nonzero plaintext-route approval)",
+      "guidance": "supply an admissible explicit route; no DNS, redirect or TLS downgrade is attempted",
+      "id": "ERR-ALERT-ROUTE-INVALID-001"
+    },
+    {
       "description": "remote archive unavailable",
       "guidance": "local spool obligation; bounded retry",
       "id": "ERR-ARCHIVE-UNREACHABLE-001"
@@ -735,6 +765,41 @@
       "description": "clock unsynchronised or drift bound exceeds tolerance",
       "guidance": "synchronise clock or bound monotonic drift",
       "id": "ERR-CLOCK-UNSYNCHRONISED-001"
+    },
+    {
+      "description": "two-sensor corroboration refused by association, the event/policy contract or the storage owner",
+      "guidance": "inspect the cause; retry only after repair",
+      "id": "ERR-CORROBORATE-001"
+    },
+    {
+      "description": "an approval digest matches no corroborated proposal of this exact analysis; nothing was published",
+      "guidance": "rerun without approval and review the current proposal digests",
+      "id": "ERR-CORROBORATE-APPROVAL-STALE-001"
+    },
+    {
+      "description": "an owner-supplied image-to-ground homography is non-finite, singular, or maps an observed foot point to or beyond the ground horizon; it is an owner assertion, never a calibration certificate",
+      "guidance": "supply a valid homography for that camera; do not retry unchanged",
+      "id": "ERR-CORROBORATE-HOMOGRAPHY-INVALID-001"
+    },
+    {
+      "description": "two-sensor corroboration plan is outside its bounds (camera names, 1..16 ground zones, time gate 1..60 s, finite positive distance gate, recordings of 1..128 frames)",
+      "guidance": "correct the plan; do not retry unchanged",
+      "id": "ERR-CORROBORATE-PLAN-INVALID-001"
+    },
+    {
+      "description": "both recordings come from one sensor (or are one import); one failure domain can never corroborate itself",
+      "guidance": "name recordings from two distinct sensors",
+      "id": "ERR-CORROBORATE-SAME-SENSOR-001"
+    },
+    {
+      "description": "the two recordings' conservative capture spans do not overlap: clocks are unaligned or the recordings cover different periods",
+      "guidance": "supply recordings of one period on an aligned time base or abstain",
+      "id": "ERR-CORROBORATE-TIME-UNALIGNED-001"
+    },
+    {
+      "description": "a recording has no operator capture-time hint, so its capture time is unknown and cannot be aligned by assumption",
+      "guidance": "re-import with explicit capture hints or abstain",
+      "id": "ERR-CORROBORATE-TIME-UNKNOWN-001"
     },
     {
       "description": "effective observability cannot be established",

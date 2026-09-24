@@ -650,21 +650,95 @@ where
 
 /// Policy action an authority event revision commits to.
 ///
-/// The reference policy prepares an alert only on the decision path it fingerprints for
-/// [`ReferencePolicyAction::PrepareAlert`] over this exact event identity, state, and evidence;
-/// every other decision path holds.
+/// A reference policy prepares an alert only on the decision path it fingerprints for
+/// [`ReferencePolicyAction::PrepareAlert`] over this exact event identity, state, and evidence:
+/// the unknown-presence policy or the zone-entry corroboration policy. Every other decision path
+/// holds. The result is an affordance input only; eligibility is still enforced separately.
 fn committed_policy_action(event: &EventHypothesis) -> ReferencePolicyAction {
-    let alert_path = crate::policy::policy_decision_path(
-        &event.event_id,
-        &event.evidence,
-        event.state,
-        ReferencePolicyAction::PrepareAlert,
-    );
-    if event.decision_path == alert_path {
+    let alert_paths = [
+        crate::policy::policy_decision_path(
+            &event.event_id,
+            &event.evidence,
+            event.state,
+            ReferencePolicyAction::PrepareAlert,
+        ),
+        crate::policy::zone_entry_decision_path(
+            &event.event_id,
+            &event.evidence,
+            event.state,
+            ReferencePolicyAction::PrepareAlert,
+        ),
+    ];
+    if alert_paths.contains(&event.decision_path) {
         ReferencePolicyAction::PrepareAlert
     } else {
         ReferencePolicyAction::Hold
     }
+}
+
+/// The policy action an event revision's own decision path commits to, re-derived exactly as
+/// alert preparation and dispatch re-derive it. It grants nothing: [`prepare_reference_alert`]
+/// still enforces corroboration, sensor integrity and current authority.
+#[must_use]
+pub fn committed_reference_policy_action(event: &EventHypothesis) -> ReferencePolicyAction {
+    committed_policy_action(event)
+}
+
+/// Rebuilds the prepared alert plan of an operation the durable effect journal already holds.
+///
+/// Used by a later process to dispatch a plan an earlier process prepared. Nothing supplied here
+/// is trusted: the request digest must bind the receipt's event root, revision and `channel`; the
+/// prepare-time ledger head is searched in the authority ledger for the one whose precondition
+/// digest equals the journal-recorded intent's; and dispatch (for example
+/// [`webhook::WebhookAttempt::begin`]) revalidates everything again against current authority.
+pub fn rehydrate_reference_alert_plan(
+    operation: &OperationReceipt,
+    obligation_id: ObligationId,
+    event: &EventHypothesis,
+    event_receipt: &ReferenceEventReceipt,
+    authority: &DurableReferenceLedger,
+    channel: &str,
+) -> Result<ReferenceAlertPlan, ReferenceError> {
+    let intent = &operation.intent;
+    if intent.effect_class != "alert.dispatch"
+        || event_receipt.event_revision_digest != event.revision_digest()
+        || intent.request_digest != alert_request_digest(event_receipt, channel)
+    {
+        return Err(ReferenceError::InvalidSpec("alert_plan_integrity"));
+    }
+    let batches = authority.batches();
+    let mut head = None;
+    for (index, batch) in batches.iter().enumerate() {
+        let sequence = u64::try_from(index + 1).map_err(|_| ReferenceError::ArithmeticOverflow)?;
+        let precondition = alert_precondition_digest_parts(
+            event_receipt.event_revision_digest,
+            &event_receipt.authority_anchor,
+            event.state,
+            event.decision_path.fingerprint,
+            sequence,
+            batch.batch_digest,
+        );
+        if precondition == intent.precondition_digest {
+            head = Some((sequence, batch.batch_digest));
+            break;
+        }
+    }
+    let (prepared_head_sequence, prepared_head_digest) =
+        head.ok_or(ReferenceError::StaleEventAuthority)?;
+    let plan = ReferenceAlertPlan {
+        intent: intent.clone(),
+        obligation_id,
+        event_root: event_receipt.event_root,
+        event_revision_digest: event_receipt.event_revision_digest,
+        authority_anchor: event_receipt.authority_anchor.clone(),
+        channel: channel.to_owned(),
+        event_revision_encoding: event_revision_encoding(event),
+        prior_revision_encodings: event_receipt.prior_revision_encodings.clone(),
+        prepared_head_sequence,
+        prepared_head_digest,
+    };
+    validate_reference_alert_plan(&plan)?;
+    Ok(plan)
 }
 
 /// Maps a failed bounded durable-head check to a typed dispatch refusal (fail closed).

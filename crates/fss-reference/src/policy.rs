@@ -483,3 +483,163 @@ pub(crate) fn policy_decision_path(
         abstention_reason: None,
     }
 }
+
+const ZONE_ENTRY_POLICY: &str = "fss.reference_zone_entry_corroboration_policy.v1";
+const MAX_ZONE_ENTRY_WITNESSES: usize = 8;
+
+/// One retained per-sensor zone-entry observation offered to the zone-entry policy.
+///
+/// The record is caller-retained evidence (for example a model-free foreground track projected
+/// through an owner-supplied ground homography); it carries no calibration, identity or class.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ZoneEntryWitness {
+    /// Digest of the retained observation record.
+    pub record_digest: ContentDigest,
+    /// Digest of the recording sensor identity.
+    pub sensor_digest: ContentDigest,
+    /// Retained source-capsule payload digest of the entry frame.
+    pub capsule_digest: ContentDigest,
+    /// Failure domain assigned from deployment truth (one recording sensor is one domain).
+    pub failure_domain: String,
+    /// Conservative capture interval of the entry observation.
+    pub interval: CaptureInterval,
+}
+
+/// Inputs to [`evaluate_zone_entry_corroboration`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ZoneEntryCorroboration {
+    /// Deterministic event identity.
+    pub event_id: EventId,
+    /// Owner-drawn zone entered.
+    pub zone_id: String,
+    /// Sensor-local track labels; never a physical identity.
+    pub track_ids: Vec<String>,
+    /// Per-sensor entry witnesses (1..=8; corroboration needs independent ones).
+    pub witnesses: Vec<ZoneEntryWitness>,
+    /// Retained association record binding the witnesses under explicit gates.
+    pub association_digest: ContentDigest,
+    /// Failure domain of the association computation itself (neutral lineage).
+    pub association_domain: String,
+    /// Bounded explanation of the interval and uncalibrated semantics.
+    pub uncertainty_reason: String,
+}
+
+/// Evaluates "did independent sensors observe the same zone entry?".
+///
+/// Every witness becomes a supporting edge in its own failure domain; the association record is a
+/// neutral derivation edge. The event is `Corroborated` (and the affordance `PrepareAlert`) only
+/// when the supporting edges come from at least two distinct sensors, two distinct capture roots
+/// and two distinct failure domains; otherwise it is `Witnessed` and held. The kind stays
+/// `Unclassified` and the probability the maximally conservative `[0, 1]`: corroborated means
+/// independently observed, not classified, calibrated or identified. `PrepareAlert` is only an
+/// affordance for a separately approved alert preparation, never an effect.
+pub fn evaluate_zone_entry_corroboration(
+    input: ZoneEntryCorroboration,
+) -> Result<ReferencePolicyDecision, ReferenceError> {
+    if input.witnesses.is_empty() || input.witnesses.len() > MAX_ZONE_ENTRY_WITNESSES {
+        return Err(ReferenceError::InvalidSpec("zone_entry_witnesses"));
+    }
+    if input.association_domain.is_empty()
+        || input.association_domain.len() > MAX_FAILURE_DOMAIN_BYTES
+    {
+        return Err(ReferenceError::InvalidSpec("failure_domain"));
+    }
+    let mut sensors = BTreeSet::new();
+    let mut captures = BTreeSet::new();
+    let mut domains = BTreeSet::new();
+    let mut records = BTreeSet::new();
+    let mut evidence = Vec::with_capacity(input.witnesses.len() + 1);
+    let mut earliest = input.witnesses[0].interval.earliest;
+    let mut latest = input.witnesses[0].interval.latest;
+    for witness in &input.witnesses {
+        if witness.failure_domain.is_empty()
+            || witness.failure_domain.len() > MAX_FAILURE_DOMAIN_BYTES
+        {
+            return Err(ReferenceError::InvalidSpec("failure_domain"));
+        }
+        if !records.insert(witness.record_digest) {
+            return Err(ReferenceError::InvalidSpec("duplicate_zone_entry_witness"));
+        }
+        sensors.insert(witness.sensor_digest);
+        captures.insert(witness.capsule_digest);
+        domains.insert(witness.failure_domain.as_str());
+        earliest = earliest.min(witness.interval.earliest);
+        latest = latest.max(witness.interval.latest);
+        evidence.push(EventEvidence {
+            digest: witness.record_digest,
+            class: EvidenceClass::Derived,
+            failure_domain: witness.failure_domain.clone(),
+            supports: true,
+            relation: EvidenceEdgeRelation::Supports,
+            capsule_digest: Some(witness.capsule_digest),
+            identity_digest: Some(witness.sensor_digest),
+        });
+    }
+    evidence.push(EventEvidence {
+        digest: input.association_digest,
+        class: EvidenceClass::Derived,
+        failure_domain: input.association_domain.clone(),
+        supports: false,
+        relation: EvidenceEdgeRelation::DerivedFrom,
+        capsule_digest: None,
+        identity_digest: None,
+    });
+    let state = if sensors.len() >= 2 && captures.len() >= 2 && domains.len() >= 2 {
+        EventState::Corroborated
+    } else {
+        EventState::Witnessed
+    };
+    let action = if state == EventState::Corroborated {
+        ReferencePolicyAction::PrepareAlert
+    } else {
+        ReferencePolicyAction::Hold
+    };
+    let decision_path = zone_entry_decision_path(&input.event_id, &evidence, state, action);
+    let event = EventHypothesis {
+        schema: EventHypothesis::SCHEMA.to_string(),
+        event_id: input.event_id,
+        revision: 1,
+        supersedes: None,
+        state,
+        kind: EventKind::Unclassified,
+        interval: CaptureInterval::new(earliest, latest)?,
+        uncertainty_reason: Some(input.uncertainty_reason),
+        zone_ids: vec![input.zone_id],
+        track_ids: input.track_ids,
+        probability: ProbabilityInterval::new(0.0, 1.0)?,
+        evidence,
+        model_receipts: Vec::new(),
+        decision_path,
+    };
+    event.validate()?;
+    Ok(ReferencePolicyDecision { event, action })
+}
+
+/// Decision path of the zone-entry corroboration policy over this exact event identity, state,
+/// action and evidence. Alert eligibility recognizes it exactly as it recognizes the
+/// unknown-presence policy path; any other path holds.
+pub(crate) fn zone_entry_decision_path(
+    event_id: &EventId,
+    evidence: &[EventEvidence],
+    state: EventState,
+    action: ReferencePolicyAction,
+) -> DecisionPath {
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text(ZONE_ENTRY_POLICY);
+    event_id.encode_canonical(&mut encoder);
+    encoder.text(state.as_str());
+    encoder.u8(match action {
+        ReferencePolicyAction::Hold => 1,
+        ReferencePolicyAction::PrepareAlert => 2,
+    });
+    encoder.u64(evidence.len() as u64);
+    for edge in evidence {
+        edge.encode_canonical(&mut encoder);
+    }
+    DecisionPath {
+        policy_generation: ContentDigest::sha256(ZONE_ENTRY_POLICY.as_bytes()),
+        fingerprint: ContentDigest::sha256(&encoder.finish()),
+        abstained: false,
+        abstention_reason: None,
+    }
+}
