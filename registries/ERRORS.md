@@ -25,11 +25,11 @@ operation states rather than generic errors.
 | `ERR-DECODE-001` | media decode failed | preserve source; alternate decoder only if registered |
 | `ERR-DECODE-BOUNDS-001` | media exceeds declared bounds | fail closed |
 | `ERR-DECODE-UNSUPPORTED-MEDIA-001` | retained import's media format is not admitted by the requested decode operation (single-frame JPEG decode/reopen of an Annex-B import, or H.264 range decode of a JPEG import) | use the format's decode operation; do not retry unchanged |
-| `ERR-DECODE-INTERPRETATION-001` | operator component interpretation contradicts the media (H.264 Constrained Baseline is always YCbCr 4:2:0) | resubmit with the correct explicit interpretation |
+| `ERR-DECODE-INTERPRETATION-001` | operator component interpretation contradicts the media (admitted H.264 is always YCbCr 4:2:0) | resubmit with the correct explicit interpretation |
 | `ERR-DECODE-SOURCE-UNAVAILABLE-001` | requested import, segment or range is absent or its retained custody cannot be recovered | name an existing completed import and an in-range segment; repair custody before retry |
 | `ERR-DECODE-H264-RANGE-NOT-IDR-001` | requested H.264 decode range does not begin at an IDR access unit, so its first picture would predict from references outside the range | start the range at an IDR segment |
 | `ERR-DECODE-H264-RANGE-GAP-001` | a retained source gap lies inside the requested H.264 range; inter prediction cannot bridge omitted bytes | split the range at the gap and start after it at an IDR |
-| `ERR-DECODE-H264-UNSUPPORTED-001` | H.264 stream uses a profile or coding tool outside the admitted Constrained-Baseline set; no approximate pixels are produced | transcode in the laboratory or wait for a registered decoder; do not retry unchanged |
+| `ERR-DECODE-H264-UNSUPPORTED-001` | H.264 stream uses a profile or coding tool outside the admitted set (progressive 8-bit 4:2:0 Baseline, Main and High); no approximate pixels are produced | transcode in the laboratory or wait for a registered decoder; do not retry unchanged |
 | `ERR-WATCH-PLAN-INVALID-001` | model-free watch plan is outside its bounds (range 1..128 frames, 1..16 zones, zone ids, detector/tracker thresholds) | correct the plan; do not retry unchanged |
 | `ERR-WATCH-SOURCE-GAP-001` | a retained source gap lies inside the watch range; background and track continuity cannot bridge omitted frames | split the range at the gap |
 | `ERR-WATCH-LIMIT-001` | watch candidate, detection or active-track bound reached; nothing is silently dropped | narrow the range or zones, or raise thresholds |

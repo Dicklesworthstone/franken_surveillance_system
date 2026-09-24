@@ -1,10 +1,14 @@
 #![forbid(unsafe_code)]
-//! Constrained-Baseline H.264 decoding of retained Annex-B imports.
+//! H.264 decoding (Constrained Baseline, Main and High, progressive 8-bit 4:2:0) of retained
+//! Annex-B imports.
 //!
 //! The file adapter retains one access unit per segment. H.264 pictures predict from earlier
 //! pictures, so a single P segment has no meaning on its own: this module decodes a contiguous
 //! segment range that must begin at an IDR access unit and must not cross a retained source
-//! gap. Every picture is bound to the same custody the JPEG path uses (import identity, root,
+//! gap. Pictures are returned in display (output) order, which differs from decode order when
+//! the stream uses B-frames; each picture is mapped back to the segment that coded it through
+//! the codec's decode index, and the range must yield exactly one picture per access unit.
+//! Every picture is bound to the same custody the JPEG path uses (import identity, root,
 //! manifest, source capsule) and to the exact codec output (luma and packed I420 digests).
 //!
 //! Unlike [`super::RecordedFrame`], these frames are a rebuildable derivation: nothing is staged,
@@ -23,7 +27,8 @@ use crate::{ReferenceDeployment, ReplayCx};
 /// Maximum access units decoded by one range request.
 pub const MAX_H264_RANGE_SEGMENTS: usize = 1024;
 /// Versioned label of the canonical decoder semantics bound into every frame receipt.
-pub const H264_DECODER_LABEL: &str = "fss-codec-h264:constrained-baseline:scalar-reference:v1";
+pub const H264_DECODER_LABEL: &str =
+    "fss-codec-h264:baseline-main-high-progressive-420:scalar-reference:output-order:v2";
 /// Canonical frame-receipt domain.
 pub const H264_FRAME_RECEIPT_DOMAIN: &str = "fss.recorded_h264_frame_receipt.v1";
 /// Boundary before each retained access unit is read and decoded.
@@ -46,7 +51,7 @@ pub struct RecordedH264Request {
     pub first_segment: usize,
     /// Number of contiguous segments, from one through [`MAX_H264_RANGE_SEGMENTS`].
     pub segment_count: usize,
-    /// Must be [`ComponentInterpretation::YCbCr`]; Constrained Baseline is always 4:2:0.
+    /// Must be [`ComponentInterpretation::YCbCr`]; every admitted H.264 profile is 4:2:0.
     pub interpretation: ComponentInterpretation,
     /// Custody-read ceilings for each retained access unit.
     pub read_limits: RetainedReadLimits,
@@ -199,6 +204,9 @@ pub struct RecordedH264Range {
     next: usize,
     end: usize,
     decoded: u64,
+    ready: std::collections::VecDeque<Picture>,
+    seen: Vec<bool>,
+    flushed: bool,
 }
 
 impl RecordedH264Range {
@@ -253,6 +261,9 @@ impl RecordedH264Range {
             next: first,
             end,
             decoded: 0,
+            ready: std::collections::VecDeque::new(),
+            seen: vec![false; request.segment_count],
+            flushed: false,
         })
     }
 
@@ -268,45 +279,85 @@ impl RecordedH264Range {
         self.decoded
     }
 
-    /// Decodes the next access unit. Returns `Ok(None)` after the last segment. Any refusal
-    /// ends the range (the codec then waits for an IDR); earlier frames stay valid.
+    /// Returns the next picture in display order, decoding further access units as needed.
+    /// Returns `Ok(None)` once every picture of the range has been returned. Any refusal ends
+    /// the range (the codec then waits for an IDR); frames already returned stay valid.
     pub fn next_frame(
         &mut self,
         deployment: &ReferenceDeployment,
         cx: &ReplayCx,
     ) -> Result<Option<RecordedH264Frame>, RecordedDecodeError> {
-        if self.next >= self.end {
-            return Ok(None);
-        }
-        let index = self.next;
-        checkpoint(cx, STAGE_RECORDED_H264_SEGMENT)?;
-        let (capsule, capsule_digest) = source_capsule(deployment, &self.retained, index)?;
-        let bytes = self
-            .retained
-            .read_segment(deployment, index, self.request.read_limits, cx)?;
-        let mut picture: Option<Picture> = None;
-        for nal in annex_b_nal_units(&bytes) {
-            if let Some(decoded) = self.decoder.decode_nal(nal)? {
-                if picture.is_some() {
-                    return Err(RecordedDecodeError::H264AccessUnit { segment: index });
+        loop {
+            if let Some(picture) = self.ready.pop_front() {
+                return self.frame(deployment, picture, cx).map(Some);
+            }
+            if self.flushed {
+                if let Some(missing) = self.seen.iter().position(|seen| !seen) {
+                    return Err(RecordedDecodeError::H264AccessUnit {
+                        segment: self.request.first_segment + missing,
+                    });
                 }
-                picture = Some(decoded);
+                return Ok(None);
+            }
+            if self.next < self.end {
+                let index = self.next;
+                checkpoint(cx, STAGE_RECORDED_H264_SEGMENT)?;
+                let bytes =
+                    self.retained
+                        .read_segment(deployment, index, self.request.read_limits, cx)?;
+                for nal in annex_b_nal_units(&bytes) {
+                    if let Some(picture) = self.decoder.decode_nal(nal)? {
+                        self.ready.push_back(picture);
+                    }
+                    while let Some(picture) = self.decoder.next_output() {
+                        self.ready.push_back(picture);
+                    }
+                }
+                self.next += 1;
+            } else {
+                self.ready.extend(self.decoder.finish()?);
+                self.flushed = true;
             }
         }
-        let picture = picture.ok_or(RecordedDecodeError::H264AccessUnit { segment: index })?;
-        if index == self.request.first_segment && !picture.is_idr() {
+    }
+
+    /// Binds one output picture to the retained segment that coded it.
+    fn frame(
+        &mut self,
+        deployment: &ReferenceDeployment,
+        picture: Picture,
+        cx: &ReplayCx,
+    ) -> Result<RecordedH264Frame, RecordedDecodeError> {
+        let first = self.request.first_segment;
+        let offset = usize::try_from(picture.decode_index()).map_err(|_| {
+            RecordedDecodeError::H264AccessUnit {
+                segment: self.end - 1,
+            }
+        })?;
+        let index = first
+            .checked_add(offset)
+            .filter(|index| *index < self.end)
+            .ok_or(RecordedDecodeError::H264AccessUnit {
+                segment: self.end - 1,
+            })?;
+        let seen = self
+            .seen
+            .get_mut(offset)
+            .ok_or(RecordedDecodeError::H264AccessUnit { segment: index })?;
+        if *seen {
+            return Err(RecordedDecodeError::H264AccessUnit { segment: index });
+        }
+        *seen = true;
+        if index == first && !picture.is_idr() {
             return Err(RecordedDecodeError::H264RangeNotIdr { segment: index });
         }
-        self.next += 1;
-        if self.next == self.end {
-            self.decoder.finish()?;
-        }
+        let (capsule, capsule_digest) = source_capsule(deployment, &self.retained, index)?;
         let span = &self.retained.manifest().segment_spans[index];
         let receipt = RecordedH264FrameReceipt {
             import_identity: self.retained.import_identity(),
             import_root: self.retained.import_root(),
             manifest_digest: self.retained.manifest_digest(),
-            range_start: self.request.first_segment as u64,
+            range_start: first as u64,
             segment_index: index as u64,
             source_offset: span.offset,
             capsule_digest,
@@ -314,20 +365,20 @@ impl RecordedH264Range {
             width: picture.width(),
             height: picture.height(),
             idr: picture.is_idr(),
-            decode_index: self.decoded,
+            decode_index: picture.decode_index(),
             luma_sha256: ContentDigest::sha256(picture.luma()),
             i420_sha256: ContentDigest::sha256(&picture.to_i420()),
         };
         self.decoded += 1;
         checkpoint(cx, "recorded_h264:decoded")?;
-        Ok(Some(RecordedH264Frame {
+        Ok(RecordedH264Frame {
             receipt,
             luma: picture.luma().to_vec(),
-        }))
+        })
     }
 }
 
-/// Decodes the whole range and returns every frame in decode order, or the first refusal.
+/// Decodes the whole range and returns every frame in display order, or the first refusal.
 pub fn decode_h264_range(
     deployment: &ReferenceDeployment,
     request: RecordedH264Request,

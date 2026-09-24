@@ -80,11 +80,14 @@ promoting a release claim.
 
 `fss_reference::ingest::recorded_decode::h264::{RecordedH264Request, RecordedH264Range,
 decode_h264_range}` decode a retained Annex-B import with the pure-Rust `fss-codec-h264`
-Constrained-Baseline decoder. Each retained segment is one access unit. Because P pictures
-predict from earlier pictures, a request names a contiguous range `first_segment ..
+decoder (Constrained Baseline, Main and High; progressive, 8-bit, 4:2:0). Each retained segment is
+one access unit. Pictures are returned in display order; with B frames this differs from decode
+order, and each picture is bound to the segment that coded it through its decode index (the
+range must yield exactly one picture per access unit). Because P and B pictures predict from
+other pictures, a request names a contiguous range `first_segment ..
 first_segment + segment_count` (1..=1024 segments) that must start at an IDR access unit and
-must not contain a retained source gap. The interpretation must be `ycbcr`: Constrained
-Baseline has no monochrome coding. `max_pictures` is narrowed to the range length; the other
+must not contain a retained source gap. The interpretation must be `ycbcr`: every admitted
+profile is decoded as 4:2:0 (monochrome and 4:2:2/4:4:4 streams are refused). `max_pictures` is narrowed to the range length; the other
 `DecoderLimits` (dimensions, macroblocks, NAL bytes, slices, references) stay explicit.
 
 Every picture carries a receipt binding import identity/root/manifest, range start, segment,

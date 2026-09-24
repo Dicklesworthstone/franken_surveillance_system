@@ -21,10 +21,11 @@ synthetic scenes). None of it has been measured on real camera footage.
   capture archives with checkpoints, recovery, pins and verify/export (`fss-archive`).
 - **Media:** RTP H.264/H.265 depacketization (`fss-packet`); baseline JPEG/MJPEG decode, gray and
   YCbCr 4:4:4/4:2:2/4:2:0 (`fss-codec-mjpeg`, `fss-file decode`); fragmented-MP4 remux for AVC/HEVC
-  (`fss-container`); Constrained Baseline H.264 I/P pixel decode, bit-exact against FFmpeg on 15
-  fixtures (`fss-codec-h264`), wired into retained decode (`fss-file decode` on Annex-B imports,
-  ranges starting at an IDR). H.265 and Main/High-profile H.264 (CABAC, B-frames) are not
-  implemented, so many consumer cameras' streams still cannot be analysed.
+  (`fss-container`); H.264 pixel decode for Baseline, Main and High profile (CABAC and CAVLC,
+  I/P/B slices in display order, 8x8 transform, scaling matrices, weighted prediction), bit-exact
+  against FFmpeg on 31 fixtures (`fss-codec-h264`), wired into retained decode (`fss-file decode`
+  on Annex-B imports, ranges starting at an IDR). H.265, interlaced and 4:2:2/4:4:4/10-bit H.264
+  are not implemented, so H.265 cameras still cannot be analysed.
 - **Pipeline and evaluation:** `fss-event watch` runs decode -> foreground -> Kalman -> zone
   eventgen over a retained import and publishes approval-gated, unclassified, single-sensor
   candidates. `evaluation` scores candidates against labels (AUPRC, recall at a false-alert

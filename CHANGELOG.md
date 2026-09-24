@@ -6,6 +6,7 @@ All notable changes to Franken Surveillance System are recorded here. The projec
 
 ### Added
 
+- Added H.264 Main and High profile decode (CABAC, B slices with display-order output, temporal/spatial direct, weighted prediction, MMCO/long-term references, 8x8 transform, scaling matrices), bit-exact against FFmpeg; retained decode now binds reordered pictures to their coding segments.
 - Added bit-exact H.264 Constrained Baseline pixel decode (I and P slices, CAVLC, intra/inter prediction, deblocking, cropping, multiple slices, I_PCM) to `fss-codec-h264`, checked frame by frame against FFmpeg-derived digests on 15 fixtures (`fss-wr7ai`). Not yet wired into ingest; H.265 and Main/High profiles are not implemented.
 - Added native media and capture paths (reference, unqualified; generated fixtures only): file import with custody for Annex-B/MJPEG/rtpplay (`fss-file import`), baseline JPEG/MJPEG decode (`fss-file decode`), RTP H.264/H.265 depacketization, RTSP negotiation with Digest authentication over interleaved TCP, HTTP MJPEG capture, local capture archives (`fss-archive`), and fragmented-MP4 remux for AVC/HEVC.
 - Added a scalar model executor over the FSS IR with Safetensors weights (`fss-infer`), foreground detection, the OpenCV HOG people SVM, Kalman/Hungarian tracking, global cross-camera assignment, zone-gated event candidates and recorded event publication (`fss-event`). Detection quality has not been measured on real footage.

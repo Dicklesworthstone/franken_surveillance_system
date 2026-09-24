@@ -15,8 +15,15 @@ const BASELINE: &[u8] = include_bytes!("../../../../../fss-packet/tests/fixtures
 /// FFmpeg `yuv420p` framehash of `BASELINE`, produced offline by the sealed oracle.
 const BASELINE_ORACLE: &str =
     include_str!("../../../../../fss-codec-h264/tests/fixtures/decode/fss_packet_baseline.sha256");
-/// High profile with B frames and the 8x8 transform: outside the admitted tool set.
+/// High profile with B frames and the 8x8 transform (display order differs from decode order).
 const HIGH: &[u8] = include_bytes!("../../../../../fss-packet/tests/fixtures/avc/high_cropped.264");
+/// FFmpeg `yuv420p` framehash of `HIGH` in output order, produced offline by the sealed oracle.
+const HIGH_ORACLE: &str = include_str!(
+    "../../../../../fss-codec-h264/tests/fixtures/decode/fss_packet_high_cropped.sha256"
+);
+/// High 4:2:2 (libx264 `-profile:v high422 -pix_fmt yuv422p`): chroma format outside the tool set.
+const HIGH_422: &[u8] =
+    include_bytes!("../../../../../fss-codec-h264/tests/fixtures/decode/unsupported_high422.h264");
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
@@ -123,8 +130,8 @@ fn oracle(text: &str) -> Vec<String> {
 /// Luma planes from the codec crate run directly over the whole original stream.
 fn direct_luma(stream: &[u8]) -> TestResult<Vec<Vec<u8>>> {
     let mut decoder = Decoder::new(DecoderLimits::default())?;
-    let pictures = decoder.decode_annex_b(stream)?;
-    decoder.finish()?;
+    let mut pictures = decoder.decode_annex_b(stream)?;
+    pictures.extend(decoder.finish()?);
     Ok(pictures.iter().map(|p| p.luma().to_vec()).collect())
 }
 
@@ -279,8 +286,44 @@ fn truncated_slice_is_a_typed_codec_refusal_after_earlier_frames() -> TestResult
 }
 
 #[test]
-fn unsupported_profile_is_refused_not_decoded() -> TestResult {
+fn high_profile_b_frames_come_out_in_display_order_bound_to_their_coding_segments() -> TestResult {
     let imported = import("high", HIGH)?;
+    let expected = oracle(HIGH_ORACLE);
+    let direct = direct_luma(HIGH)?;
+    assert_eq!(expected.len(), imported.segments);
+    let frames = decode_h264_range(
+        &imported.deployment,
+        request(imported.identity, 0, imported.segments),
+        &imported.cx,
+    )?;
+    assert_eq!(frames.len(), imported.segments);
+    let mut segments = Vec::new();
+    for (position, frame) in frames.iter().enumerate() {
+        let receipt = frame.receipt();
+        assert_eq!(receipt.i420_sha256().to_text(), expected[position]);
+        assert_eq!(frame.pixels(), direct[position].as_slice());
+        // Each picture is bound to the access unit that coded it: segment = decode index.
+        assert_eq!(receipt.segment_index(), receipt.decode_index());
+        segments.push(receipt.segment_index());
+    }
+    assert!(frames[0].receipt().is_idr());
+    // B frames: output order is not decode order, and every segment is used exactly once.
+    let mut sorted = segments.clone();
+    sorted.sort_unstable();
+    assert_ne!(segments, sorted, "fixture must exercise reordering");
+    assert_eq!(sorted, (0..imported.segments as u64).collect::<Vec<_>>());
+    let again = decode_h264_range(
+        &imported.deployment,
+        request(imported.identity, 0, imported.segments),
+        &imported.cx,
+    )?;
+    assert_eq!(again, frames);
+    Ok(())
+}
+
+#[test]
+fn unsupported_chroma_format_is_refused_not_decoded() -> TestResult {
+    let imported = import("high422", HIGH_422)?;
     let refused = decode_h264_range(
         &imported.deployment,
         request(imported.identity, 0, imported.segments),
