@@ -26,6 +26,8 @@ mod watch;
 mod corroborate;
 #[path = "fss-event/alert.rs"]
 mod alert;
+#[path = "fss-event/coverage.rs"]
+mod coverage;
 
 const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|alert> [options]\n\
   All: --root DIR --site SITE [--principal ID]\n\
@@ -54,20 +56,26 @@ const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|ale
            --learning-rate-den N --min-region-pixels N] [--confirmation-hits N\n\
            --maximum-missed-frames N --minimum-iou-ppm N] [--work-units N\n\
            --max-dimension N --max-pixels N --max-segment-bytes N]\n\
-          [--approve sha256:PROPOSAL[,sha256:PROPOSAL...]] [--report-out FILE]\n\
+          [--approve sha256:PROPOSAL[,sha256:PROPOSAL...]] [--retain-coverage sha256:APPROVAL]\n\
+          [--report-out FILE]\n\
     Retained decode -> running-variance foreground -> Kalman tracker -> zone gate. Prints a\n\
     JSON report of candidates (zone, track, frame range, evidence digests, proposal digest).\n\
     Without --approve nothing is written; each prepared candidate lists the exact rerun\n\
     command that publishes it. --approve publishes only those exact proposals as\n\
     unclassified, indeterminate, single-sensor candidates (never corroborated, no alert);\n\
     reruns never republish. Thresholds are uncalibrated; synthetic scenes prove wiring,\n\
-    not detection quality, and no candidate never means absence.\n\
+    not detection quality, and no candidate never means absence by itself.\n\
+    Coverage: every report proposes one CoverageWitness per (sensor, zone, contiguous interval)\n\
+    decoded without gap, past background warm-up and confirmation latency, zone inside the\n\
+    frame, capture time an operator hint; every other frame is an explicit uncovered interval.\n\
+    --retain-coverage APPROVAL retains exactly that proposal (authority; reruns never rewrite).\n\
   corroborate (two recordings, two sensors): --camera NAME:sha256:IMPORT (exactly twice)\n\
           --ground NAME:h11,h12,h13,h21,h22,h23,h31,h32,h33 (one per camera; image pixels ->\n\
           ground units; an owner assertion like a zone, NOT a calibration certificate)\n\
           --zone ID:X,Y,W,H [--zone ...] (1..16, ground units) --interpretation gray|ycbcr\n\
           --time-gate-ns N (1..60000000000) --distance-gate D (ground units)\n\
-          [watch thresholds and budgets] [--approve sha256:PROPOSAL[,...]] [--report-out FILE]\n\
+          [watch thresholds and budgets] [--approve sha256:PROPOSAL[,...]]\n\
+          [--retain-coverage sha256:APPROVAL] [--report-out FILE]\n\
     Each recording is tracked over the whole frame; each confirmed track's foot point is\n\
     projected to the ground; ground-zone entries of the two sensors are associated by global\n\
     assignment. A pair is corroborated only if the distance gate holds and the WORST CASE over\n\
@@ -76,6 +84,8 @@ const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|ale
     time and one sensor twice are typed refusals. --approve publishes exact proposals as\n\
     corroborated, unclassified events; policy may report prepare_alert, but nothing is\n\
     prepared or sent. Proves wiring, not detection quality; no event never means absence.\n\
+    Coverage: one record per camera (ground zones whose image preimage lies inside the frame);\n\
+    --retain-coverage APPROVAL retains both exactly as proposed.\n\
   alert (one webhook for a corroborated event): --event-id ID --relay IP:PORT --path /PATH\n\
           --plaintext-approval sha256:HEX --deadline-ms N (1..60000)\n\
           [--approve sha256:PLAN [--dispatch sha256:DISPATCH]] [--report-out FILE]\n\
@@ -378,6 +388,8 @@ fn main() -> ExitCode {
                 if let Some(refusal) = e.downcast_ref::<fss_reference::ingest::recorded_watch::WatchError>() {
                     eprintln!("refusal_id={}", refusal.stable_id());
                 } else if let Some(refusal) = e.downcast_ref::<fss_reference::ingest::recorded_corroboration::CorroborationError>() {
+                    eprintln!("refusal_id={}", refusal.stable_id());
+                } else if let Some(refusal) = e.downcast_ref::<fss_reference::ingest::recorded_coverage::CoverageError>() {
                     eprintln!("refusal_id={}", refusal.stable_id());
                 } else if let Some(refusal) = e.downcast_ref::<alert::AlertCliError>() {
                     eprintln!("refusal_id={}", refusal.stable_id());

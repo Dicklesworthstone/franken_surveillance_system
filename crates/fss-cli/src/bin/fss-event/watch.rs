@@ -7,6 +7,9 @@
 //! rerun command that would publish it. With `--approve DIGEST[,DIGEST...]` it publishes only
 //! those exact proposals as unclassified, indeterminate, single-sensor candidates through the
 //! deployment's guarded event publisher; already-published candidates are never republished.
+//! Every report also proposes the run's coverage record (one `CoverageWitness` per sensor, zone
+//! and contiguous observable interval, every other frame an explicit uncovered interval); only
+//! `--retain-coverage DIGEST` with its exact approval digest retains it as authority.
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -45,6 +48,7 @@ const OPTIONS: &[&str] = &[
     "--max-pixels",
     "--max-segment-bytes",
     "--approve",
+    "--retain-coverage",
     "--report-out",
 ];
 
@@ -63,6 +67,7 @@ pub(super) struct WatchAction {
     tracker: WatchTrackerConfig,
     limits: WatchLimits,
     approvals: BTreeSet<ContentDigest>,
+    retain_coverage: Option<ContentDigest>,
     report_out: Option<PathBuf>,
     rerun: String,
 }
@@ -161,7 +166,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
         } else {
             values.push((key.to_owned(), argument.to_owned()));
         }
-        if key != "--approve" && key != "--report-out" {
+        if key != "--approve" && key != "--retain-coverage" && key != "--report-out" {
             rerun.push(quote(key));
             rerun.push(quote(argument));
         }
@@ -254,6 +259,10 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
         tracker,
         limits,
         approvals,
+        retain_coverage: match text(&values, "--retain-coverage") {
+            Ok(value) => Some(digest(value, "--retain-coverage")?),
+            Err(_) => None,
+        },
         report_out: values
             .iter()
             .find(|(k, _)| k == "--report-out")
@@ -304,12 +313,36 @@ pub(super) fn run(
         tracker: action.tracker,
     };
     let mut report = WatchReport::analyze(deployment, &plan, &action.limits, cx)?;
-    if !action.approvals.is_empty() {
-        report.publish(deployment, &action.approvals, cx)?;
+    // Both approvals are checked against the fresh analysis before anything is written.
+    if let Some(approval) = action.retain_coverage {
+        report.check_coverage_approval(deployment, approval)?;
     }
-    let json = report.to_json(
+    let published = if action.approvals.is_empty() {
+        0
+    } else {
+        report.publish(deployment, &action.approvals, cx)?
+    };
+    if let Some(approval) = action.retain_coverage {
+        report.retain_coverage(deployment, approval, cx)?;
+    }
+    // A coverage proposal binds the authority anchor its analysis read; after this run published
+    // candidates, the proposal is recomputed against the new anchor so its approval is current.
+    let reproposed = if published > 0 && action.retain_coverage.is_none() {
+        Some(WatchReport::analyze(deployment, &plan, &action.limits, cx)?)
+    } else {
+        None
+    };
+    let proposal = reproposed.as_ref().unwrap_or(&report);
+    let coverage = super::coverage::render(
+        &[proposal.coverage()],
+        proposal.coverage_status(),
+        proposal.coverage_approval(),
+        &action.rerun,
+    );
+    let json = report.to_json_with_coverage(
         deployment.current_anchor().commit_sequence,
         Some(&action.rerun),
+        Some(&coverage),
     );
     let json = format!("{json}\n");
     if let Some(path) = &action.report_out {

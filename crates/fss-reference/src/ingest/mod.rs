@@ -38,6 +38,8 @@ pub mod analysis;
 pub mod recorded_event;
 /// Model-free decode→foreground→Kalman→zone candidates with exact-approval publication.
 pub mod recorded_watch;
+/// Retained per-(sensor, zone, interval) coverage witnesses of the recorded pipelines.
+pub mod recorded_coverage;
 /// Two-sensor ground-zone entries associated under explicit gates into corroborated events.
 pub mod recorded_corroboration;
 /// Bounded recording-to-model-to-analysis execution with verified restart reuse.

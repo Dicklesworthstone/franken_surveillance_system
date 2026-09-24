@@ -822,6 +822,16 @@
       "id": "ERR-CORROBORATE-TIME-UNKNOWN-001"
     },
     {
+      "description": "a coverage record could not be built, validated, staged or committed (witness domain/predicate/generation mismatch, unknown capture time with a witness, storage refusal)",
+      "guidance": "inspect the cause; retry only after repair; no absence is certified",
+      "id": "ERR-COVERAGE-001"
+    },
+    {
+      "description": "a `--retain-coverage` approval digest matches neither the fresh analysis's coverage proposal (which binds the authority anchor it read) nor the coverage already retained for that analysis; nothing was retained",
+      "guidance": "rerun without the approval and review the current coverage approval digest",
+      "id": "ERR-COVERAGE-APPROVAL-STALE-001"
+    },
+    {
       "description": "effective observability cannot be established",
       "guidance": "abstain/escalate health alert",
       "id": "ERR-COVERAGE-UNKNOWN-001"

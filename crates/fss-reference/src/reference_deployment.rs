@@ -75,6 +75,9 @@ pub const FAMILY_MODEL_INVOCATION_RECEIPT: &str = "model_invocation_receipt";
 pub const FAMILY_EXECUTOR_MODEL_RESULT: &str = "executor_model_result";
 /// Registered ledger delta family: twin localization receipt.
 pub const FAMILY_TWIN_LOCALIZATION_RECEIPT: &str = "twin_localization_receipt";
+/// Registered ledger delta family: retained coverage witnesses of one analysed recording
+/// (`ingest::recorded_coverage`), committed only after exact operator approval.
+pub const FAMILY_COVERAGE_WITNESS: &str = "coverage_witness";
 
 /// Known ledger delta families table.
 pub const KNOWN_LEDGER_DELTA_FAMILIES: &[&str] = &[
@@ -88,6 +91,7 @@ pub const KNOWN_LEDGER_DELTA_FAMILIES: &[&str] = &[
     FAMILY_MODEL_INVOCATION_RECEIPT,
     FAMILY_EXECUTOR_MODEL_RESULT,
     FAMILY_TWIN_LOCALIZATION_RECEIPT,
+    FAMILY_COVERAGE_WITNESS,
 ];
 
 /// Replay cancellation stage: open deployment.

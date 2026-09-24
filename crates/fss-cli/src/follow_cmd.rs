@@ -24,7 +24,7 @@ use fss_reference::agent_follow::{
     FollowItem, FollowRequest, MAX_FOLLOW_ENTRIES, follow_deployment,
 };
 use fss_reference::agent_orient::{
-    CAPABILITY_SITUATION_READ, DeploymentHistory, OrientError, OrientLimits,
+    CAPABILITY_SITUATION_READ, DeploymentHistory, OrientError, OrientLimits, ZoneCoverageState,
 };
 
 use crate::agent_json;
@@ -336,12 +336,31 @@ fn follow_response(
     if delta.silence_certificate.is_none()
         && delta.classes.contains(&MeaningfulDeltaClass::CoverageLoss)
     {
-        degradation.push(format!(
-            "No silence certificate: silence is certified only over complete coverage, and the \
-             head situation is {} with no retained CoverageWitness, so the persisting gap is \
-             reported as protected coverage_loss.",
-            completeness_text(capsule.completeness)
-        ));
+        degradation.push(match &result.coverage {
+            None => format!(
+                "No silence certificate: silence is certified only over complete coverage, and \
+                 the head situation is {} with no retained CoverageWitness, so the persisting \
+                 gap is reported as protected coverage_loss.",
+                completeness_text(capsule.completeness)
+            ),
+            Some(assessment) if !assessment.complete() => format!(
+                "No silence certificate: silence is certified only over complete coverage, and \
+                 the head situation is {}: {} of {} objective zone(s) are covered; the uncovered \
+                 zones stay not_observable or stale and are reported as protected coverage_loss.",
+                completeness_text(capsule.completeness),
+                assessment
+                    .zones
+                    .iter()
+                    .filter(|zone| zone.state == ZoneCoverageState::Covered)
+                    .count(),
+                assessment.zones.len()
+            ),
+            Some(_) => "No silence certificate: every objective zone is covered, but the head \
+                        situation carries knowledge cells that are not established (for example \
+                        an indeterminate event) or other protected changes, reported as \
+                        protected classes."
+                .to_owned(),
+        });
     }
     let mut proof_pointers = Vec::new();
     for pointer in [

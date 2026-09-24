@@ -33,6 +33,11 @@
 //!
 //! Every output is a pure function of the committed bytes: the capsule time is the latest
 //! committed evidence time, not the wall clock, so the same root yields identical output.
+//!
+//! Coverage comes only from retained `coverage_witness` records ([`coverage`]): each objective
+//! zone is `covered`, `not_observable`, or `stale`, and the capsule is `complete` only when every
+//! objective zone is covered over its declared window. Without any retained record the site stays
+//! `not_observable` and the capsule `partial`, exactly as before.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
@@ -44,20 +49,24 @@ use fss_core::{
     CanonicalEncoder, Completeness, CompressionLossClass, CompressionTransform,
     CompressionTransformKind, ContentDigest, ContractError, EffectState, EventHypothesis, EventId,
     EventState, EvidenceDeltaBatch, ExpansionHandle, ExplainQuestion, ExplainReceipt,
-    IndeterminateEffectReason, KnowledgeCell, KnowledgeCellParams, KnowledgeState, LedgerAnchor,
-    MissionId, ObjectiveContract, ObjectiveContractParams, ObjectiveScope, Obligation,
-    ObligationId, ObligationState, OperationId, OperationReceipt, OrientBudget, OrientProjection,
-    PossibleWorld, PrincipalId, ProvenanceClass, ResourcePressure, SensorTamperStatus, SessionId,
-    SituationCapsule, SituationFrame, TimestampNs, WorldEnvelope, orient_projection,
+    IndeterminateEffectReason, KnowledgeCell, KnowledgeCellParams, KnowledgeState,
+    KnowledgeStateBasis, LedgerAnchor, MissionId, ObjectiveContract, ObjectiveContractParams,
+    ObjectiveScope, Obligation, ObligationId, ObligationState, OperationId, OperationReceipt,
+    OrientBudget, OrientProjection, PossibleWorld, PrincipalId, ProvenanceClass, ResourcePressure,
+    SensorTamperStatus, SessionId, SituationCapsule, SituationFrame, StaleBasis, TimestampNs,
+    WorldEnvelope, orient_projection,
 };
 use fss_object::ObjectManifest;
 
 use crate::ReferenceError;
 use crate::doctor::{DoctorVerdict, inspect_deployment};
+use crate::ingest::recorded_coverage::CoverageRecord;
 use crate::reference_deployment::{
-    DEPLOYMENT_LAYOUT_FILENAME, DeploymentLayout, FAMILY_EVENT_REVISION,
-    FAMILY_FILE_IMPORT_MANIFEST,
+    DEPLOYMENT_LAYOUT_FILENAME, DeploymentLayout, FAMILY_COVERAGE_WITNESS, FAMILY_EVENT_REVISION,
+    FAMILY_FILE_IMPORT_MANIFEST, FAMILY_SENSOR_CAPSULE,
 };
+
+pub mod coverage;
 use crate::situation::EffectCellKind;
 use crate::situation::{
     physical_knowledge_state, physical_statement, policy_hypothesis, reconciliation_basis_for,
@@ -69,6 +78,10 @@ use crate::situation_guard::{
 use crate::situation_sections::{
     ReferenceProjectionSpec, ReferenceSituationPublication, SourceOmission, SourceOmissions,
     project_reference_situation_with_source_omissions,
+};
+pub use coverage::{
+    CoverageAssessment, MAX_COVERAGE_CAPSULE_READS, RetainedCoverage, ZoneAssessment,
+    ZoneCoverageState,
 };
 
 /// Capability registry row that admits a situation read (AOP-003, AOP-004, AOP-009).
@@ -280,6 +293,13 @@ pub struct DeploymentSnapshot {
     pub operations: Vec<OperationReceipt>,
     /// Published events in event-identity order.
     pub events: Vec<RetainedEvent>,
+    /// Retained coverage records in commit order.
+    pub coverage: Vec<RetainedCoverage>,
+    /// Newest capture instant of each sensor's retained evidence that could postdate a coverage
+    /// analysis (read only when coverage is retained).
+    pub sensor_newest_evidence: BTreeMap<String, TimestampNs>,
+    /// Whether newer evidence exceeded [`MAX_COVERAGE_CAPSULE_READS`] and was not attributed.
+    pub coverage_evidence_unattributed: bool,
     /// Latest committed evidence time; the capsule creation time (0 when nothing is committed).
     pub latest_evidence_time: TimestampNs,
     /// Files a read of this position opens (all reads are bounded; none is opened for writing):
@@ -683,8 +703,16 @@ impl DeploymentHistory {
         // object id -> (generation -> (payload root, witnessed revision digest, commit sequence))
         let mut event_deltas: BTreeMap<String, BTreeMap<u64, (ContentDigest, ContentDigest, u64)>> =
             BTreeMap::new();
+        let mut coverage_deltas: Vec<(ContentDigest, u64)> = Vec::new();
+        let mut capsule_deltas: Vec<(ContentDigest, TimestampNs)> = Vec::new();
         for batch in batches {
             for delta in &batch.deltas {
+                if delta.family == FAMILY_COVERAGE_WITNESS {
+                    coverage_deltas.push((delta.payload_digest, batch.new_anchor.commit_sequence));
+                }
+                if delta.family == FAMILY_SENSOR_CAPSULE {
+                    capsule_deltas.push((delta.payload_digest, delta.validity.latest));
+                }
                 *family_counts.entry(delta.family.clone()).or_default() += 1;
                 if delta.validity.latest > latest_evidence_time {
                     latest_evidence_time = delta.validity.latest;
@@ -774,6 +802,43 @@ impl DeploymentHistory {
         }
         events.sort_by(|left, right| left.event.event_id.cmp(&right.event.event_id));
 
+        let mut coverage = Vec::with_capacity(coverage_deltas.len());
+        for (digest, committed_sequence) in coverage_deltas {
+            let bytes = reader.read_object(objects, digest, limits.max_object_bytes)?;
+            let record = CoverageRecord::from_bytes(&bytes, digest)
+                .map_err(|error| corrupt(format!("coverage record {digest}: {error}")))?;
+            coverage.push(RetainedCoverage {
+                record,
+                payload_digest: digest,
+                committed_sequence,
+            });
+        }
+        // The newest evidence of each sensor, read only where it could postdate an analysis.
+        let mut sensor_newest_evidence: BTreeMap<String, TimestampNs> = BTreeMap::new();
+        let mut coverage_evidence_unattributed = false;
+        if let Some(earliest) = coverage.iter().map(|c| c.record.analysed.latest).min() {
+            let newer: Vec<ContentDigest> = capsule_deltas
+                .iter()
+                .filter(|(_, latest)| *latest > earliest)
+                .map(|(digest, _)| *digest)
+                .collect();
+            if newer.len() > MAX_COVERAGE_CAPSULE_READS {
+                coverage_evidence_unattributed = true;
+            } else {
+                for digest in newer {
+                    let bytes = reader.read_object(objects, digest, limits.max_object_bytes)?;
+                    let capsule = fss_core::SensorCapsule::from_canonical_bytes(&bytes)
+                        .map_err(|error| corrupt(format!("sensor capsule {digest}: {error}")))?;
+                    let entry = sensor_newest_evidence
+                        .entry(capsule.sensor_id.as_str().to_owned())
+                        .or_insert(capsule.capture.latest);
+                    if capsule.capture.latest > *entry {
+                        *entry = capsule.capture.latest;
+                    }
+                }
+            }
+        }
+
         Ok(DeploymentSnapshot {
             site_lineage: self.site_lineage.clone(),
             doctor_verdict: self.doctor_verdict,
@@ -791,6 +856,9 @@ impl DeploymentHistory {
             obligations,
             operations,
             events,
+            coverage,
+            sensor_newest_evidence,
+            coverage_evidence_unattributed,
             latest_evidence_time,
             files_read: reader.files_read,
             bytes_read: reader.bytes_read,
@@ -1046,6 +1114,8 @@ pub struct DeploymentOrientation {
     /// Reusable anchor token of the committed position this orientation is pinned to: the
     /// `--since` argument of `fss follow` (see [`crate::agent_follow::AnchorToken`]).
     pub anchor_token: String,
+    /// Per-zone coverage from retained witnesses; `None` when no coverage record is retained.
+    pub coverage: Option<CoverageAssessment>,
 }
 
 impl DeploymentOrientation {
@@ -1509,6 +1579,8 @@ struct CompiledSituation {
     effect_cells: Vec<(OperationId, EffectState, KnowledgeCell)>,
     /// Reusable anchor token of the snapshot's committed position.
     anchor_token: String,
+    /// Per-zone coverage.
+    coverage: Option<CoverageAssessment>,
 }
 
 fn compile_capsule(
@@ -1550,6 +1622,7 @@ fn compile_capsule(
 
     let planned = planned_events(snapshot, request.view)?;
     let headline = planned.first();
+    let coverage = assess_coverage(snapshot);
 
     // Deployment-state cells: exactly what the committed bytes establish.
     let families = if snapshot.family_counts.is_empty() {
@@ -1616,20 +1689,20 @@ fn compile_capsule(
             },
             vec![snapshot.effect_journal_digest],
         )?,
-        cell(KnowledgeCellParams {
-            claim_id: CLAIM_COVERAGE.to_owned(),
-            statement: "No CoverageWitness is retained: site activity is not observable, and a \
-                        missing event is not absence."
-                .to_owned(),
-            knowledge_state: KnowledgeState::NotObservable,
-            provenance: ProvenanceClass::Derived,
-            hypothesis: None,
-            evidence: Vec::new(),
-            contradictions: Vec::new(),
-            valid_until: None,
-            state_basis: None,
-        })?,
+        site_coverage_cell(coverage.as_ref())?,
     ];
+    if let Some(assessment) = &coverage {
+        for zone in &assessment.zones {
+            cells.push(zone_coverage_cell(zone, &anchor)?);
+            if zone.state != ZoneCoverageState::Covered {
+                unknown.push(format!(
+                    "Activity in {} is {}.",
+                    zone.label(),
+                    zone.state.as_str()
+                ));
+            }
+        }
+    }
     let mut nominal = BTreeSet::from([
         CLAIM_LEDGER_HEAD.to_owned(),
         CLAIM_IMPORTS.to_owned(),
@@ -1763,9 +1836,17 @@ fn compile_capsule(
     }
 
     let mut coverage_handles = BTreeSet::from([format!("{deployment_handle}/coverage")]);
+    if let Some(assessment) = &coverage {
+        coverage_handles.extend(
+            assessment
+                .witness_digests()
+                .into_iter()
+                .map(|digest| format!("fss://coverage/{digest}")),
+        );
+    }
     let mut inline_ids = Vec::new();
     let mut contradictions = Vec::new();
-    let mut epistemic_state = KnowledgeState::NotObservable;
+    let mut epistemic_state = KnowledgeState::Known;
     for event in &planned {
         if severity_rank(event.section.physical_state) > severity_rank(epistemic_state) {
             epistemic_state = event.section.physical_state;
@@ -2074,7 +2155,11 @@ fn compile_capsule(
         frame,
         obligations: obligation_ids,
         affordances,
-        completeness: Completeness::Partial,
+        completeness: if coverage.as_ref().is_some_and(CoverageAssessment::complete) {
+            Completeness::Complete
+        } else {
+            Completeness::Partial
+        },
         created_at: snapshot.latest_evidence_time,
         mission_state: None,
     };
@@ -2112,8 +2197,8 @@ fn compile_capsule(
         folded_worlds,
     );
     let candidate_world_count = aggregated_world_count + 1;
-    let attention = attention_frontier(snapshot, &planned, &deployment_handle);
-    let epistemic_debt = epistemic_debt(snapshot, &planned);
+    let attention = attention_frontier(snapshot, &planned, &deployment_handle, coverage.as_ref());
+    let epistemic_debt = epistemic_debt(snapshot, &planned, coverage.as_ref());
     Ok(CompiledSituation {
         capsule,
         proof_roots,
@@ -2130,6 +2215,137 @@ fn compile_capsule(
         epistemic_debt,
         effect_cells,
         anchor_token,
+        coverage,
+    })
+}
+
+/// The coverage assessment of `snapshot`'s retained records, if any.
+fn assess_coverage(snapshot: &DeploymentSnapshot) -> Option<CoverageAssessment> {
+    let event_zones: BTreeSet<String> = snapshot
+        .events
+        .iter()
+        .flat_map(|retained| retained.event.zone_ids.iter().cloned())
+        .collect();
+    let published: BTreeSet<String> = snapshot
+        .events
+        .iter()
+        .map(|retained| retained.event.event_id.as_str().to_owned())
+        .collect();
+    coverage::assess(
+        &snapshot.coverage,
+        &snapshot.sensor_newest_evidence,
+        snapshot.coverage_evidence_unattributed,
+        &event_zones,
+        &published,
+    )
+}
+
+/// The site coverage cell: `not_observable` without retained coverage or while any objective
+/// zone is not covered; `known` only when every objective zone is covered over its declared
+/// window (the declared domain; activity elsewhere stays unobserved and protected).
+fn site_coverage_cell(
+    coverage: Option<&CoverageAssessment>,
+) -> Result<KnowledgeCell, ContractError> {
+    let Some(assessment) = coverage else {
+        return cell(KnowledgeCellParams {
+            claim_id: CLAIM_COVERAGE.to_owned(),
+            statement: "No CoverageWitness is retained: site activity is not observable, and a \
+                        missing event is not absence."
+                .to_owned(),
+            knowledge_state: KnowledgeState::NotObservable,
+            provenance: ProvenanceClass::Derived,
+            hypothesis: None,
+            evidence: Vec::new(),
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: None,
+        });
+    };
+    let covered = assessment
+        .zones
+        .iter()
+        .filter(|zone| zone.state == ZoneCoverageState::Covered)
+        .count();
+    let total = assessment.zones.len();
+    let complete = assessment.complete();
+    cell(KnowledgeCellParams {
+        claim_id: CLAIM_COVERAGE.to_owned(),
+        statement: if complete {
+            format!(
+                "Retained CoverageWitness records cover all {total} objective zone(s) over their \
+                 declared windows ({}); absence of confirmed zone entries is certified only there, \
+                 and activity outside those zones and windows remains unobserved.",
+                assessment.declared_domains().join("; ")
+            )
+        } else {
+            format!(
+                "{covered} of {total} objective zone(s) are covered by retained CoverageWitness \
+                 records; the rest are not observable or stale, and a missing event there is not \
+                 absence."
+            )
+        },
+        knowledge_state: if complete {
+            KnowledgeState::Known
+        } else {
+            KnowledgeState::NotObservable
+        },
+        provenance: ProvenanceClass::Derived,
+        hypothesis: None,
+        evidence: assessment.witness_digests(),
+        contradictions: Vec::new(),
+        valid_until: None,
+        state_basis: None,
+    })
+}
+
+/// One zone's coverage cell: `known` (covered), `not_observable`, or `stale` against the
+/// anchor its most recent record was analysed at.
+fn zone_coverage_cell(
+    zone: &ZoneAssessment,
+    anchor: &LedgerAnchor,
+) -> Result<KnowledgeCell, ContractError> {
+    let (knowledge_state, state_basis) = match zone.state {
+        ZoneCoverageState::Covered => (KnowledgeState::Known, None),
+        ZoneCoverageState::NotObservable => (KnowledgeState::NotObservable, None),
+        ZoneCoverageState::Stale => match &zone.basis {
+            Some(basis) => (
+                KnowledgeState::Stale,
+                Some(KnowledgeStateBasis::Stale(StaleBasis::OlderAnchor {
+                    valid_at: Box::new(basis.clone()),
+                    current: Box::new(anchor.clone()),
+                })),
+            ),
+            None => (KnowledgeState::NotObservable, None),
+        },
+    };
+    let statement = match (zone.state, zone.window) {
+        (ZoneCoverageState::Covered, Some(window)) => format!(
+            "{} is covered over [{}, {}] ns by {} retained witness(es) of pipeline generation {}: \
+             no confirmed zone entry other than published candidates.",
+            zone.label(),
+            window.earliest.0,
+            window.latest.0,
+            zone.witnesses.len(),
+            zone.pipeline_generation
+                .map_or_else(|| "unknown".to_owned(), |generation| generation.to_text())
+        ),
+        (state, _) => format!(
+            "{} is {}: {}",
+            zone.label(),
+            state.as_str(),
+            zone.gaps.join(" ")
+        ),
+    };
+    cell(KnowledgeCellParams {
+        claim_id: zone.claim_id(),
+        statement,
+        knowledge_state,
+        provenance: ProvenanceClass::Derived,
+        hypothesis: None,
+        evidence: zone.witnesses.clone(),
+        contradictions: Vec::new(),
+        valid_until: None,
+        state_basis,
     })
 }
 
@@ -2286,6 +2502,7 @@ fn attention_frontier(
     snapshot: &DeploymentSnapshot,
     planned: &[PlannedEvent<'_>],
     deployment_handle: &str,
+    coverage: Option<&CoverageAssessment>,
 ) -> Vec<AttentionItem> {
     let mut items = Vec::new();
     for operation in snapshot.indeterminate_operations() {
@@ -2342,15 +2559,30 @@ fn attention_frontier(
             handle: format!("fss://event/{}", top.id()),
         });
     }
-    items.push(AttentionItem {
-        item_id: "attention:coverage:site".to_owned(),
-        kind: "coverage_gap",
-        priority_class: "high",
-        mission_relevance: 1.0,
-        decision_impact: 4.0,
-        reason: "No CoverageWitness is retained; absence cannot be certified.".to_owned(),
-        handle: format!("{deployment_handle}/coverage"),
-    });
+    let reason = match coverage {
+        None => Some("No CoverageWitness is retained; absence cannot be certified.".to_owned()),
+        Some(assessment) if !assessment.complete() => {
+            let gaps: Vec<String> = assessment
+                .zones
+                .iter()
+                .filter(|zone| zone.state != ZoneCoverageState::Covered)
+                .map(|zone| format!("{} is {}", zone.label(), zone.state.as_str()))
+                .collect();
+            Some(format!("Absence cannot be certified: {}.", gaps.join("; ")))
+        }
+        Some(_) => None,
+    };
+    if let Some(reason) = reason {
+        items.push(AttentionItem {
+            item_id: "attention:coverage:site".to_owned(),
+            kind: "coverage_gap",
+            priority_class: "high",
+            mission_relevance: 1.0,
+            decision_impact: 4.0,
+            reason,
+            handle: format!("{deployment_handle}/coverage"),
+        });
+    }
     // The schema bounds the frontier; everything past the head stays in obligations and
     // indeterminateEffects, which are never truncated.
     items.truncate(128);
@@ -2361,14 +2593,21 @@ fn attention_frontier(
 fn epistemic_debt(
     snapshot: &DeploymentSnapshot,
     planned: &[PlannedEvent<'_>],
+    coverage: Option<&CoverageAssessment>,
 ) -> Vec<EpistemicDebtItem> {
     let mut debt = vec![EpistemicDebtItem {
         debt_id: "debt:coverage:uncertified".to_owned(),
         assumption: "Absence is never inferred: every interval without a CoverageWitness is \
                      treated as unobserved."
             .to_owned(),
-        deferred_reason: "No producer in this deployment retains CoverageWitness records."
-            .to_owned(),
+        deferred_reason: match coverage {
+            None => "No producer in this deployment retains CoverageWitness records.".to_owned(),
+            Some(assessment) => format!(
+                "{} retained coverage record(s) certify only their declared zones, windows and \
+                 pipeline generations; everything else stays unobserved.",
+                assessment.record_count
+            ),
+        },
         dependent_decisions: vec!["any absence or all-clear conclusion".to_owned()],
         consequence_if_wrong: "Treating unobserved time as clear would hide real activity."
             .to_owned(),
@@ -2449,12 +2688,18 @@ fn orientation_objective(
     capsule: &SituationCapsule,
     request_digest: ContentDigest,
     requested: BudgetVector,
+    coverage: Option<&CoverageAssessment>,
 ) -> Result<ObjectiveContract, ContractError> {
     let anchor = &capsule.anchor;
     let mut zones: Vec<String> = snapshot
         .events
         .iter()
         .flat_map(|retained| retained.event.zone_ids.iter().cloned())
+        .chain(
+            coverage
+                .into_iter()
+                .flat_map(|assessment| assessment.zones.iter().map(|zone| zone.zone_id.clone())),
+        )
         .collect();
     zones.sort();
     zones.dedup();
@@ -2697,7 +2942,14 @@ pub fn orient_deployment(
         .collect();
     indeterminate_effects.sort();
     let request_digest = request.digest_at(&snapshot.anchor);
-    let objective = orientation_objective(snapshot, request, capsule, request_digest, requested)?;
+    let objective = orientation_objective(
+        snapshot,
+        request,
+        capsule,
+        request_digest,
+        requested,
+        compiled.coverage.as_ref(),
+    )?;
     Ok(DeploymentOrientation {
         view: request.view,
         projection,
@@ -2721,6 +2973,7 @@ pub fn orient_deployment(
         aggregated_world_count: compiled.aggregated_world_count,
         privacy_generation_id: format!("privacy-epoch:{}", snapshot.anchor.privacy_epoch),
         anchor_token: compiled.anchor_token,
+        coverage: compiled.coverage,
         publication,
     })
 }
