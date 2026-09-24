@@ -254,3 +254,25 @@ fn write_records_are_replayed_not_trusted_as_snapshots() -> TestResult {
     assert!(replay_write(&trailing, &mut store.memory.clone(), &mut Some(state), store.limits).is_err());
     Ok(())
 }
+
+#[test]
+fn head_names_the_exact_latest_revision_and_refuses_other_principals() -> TestResult {
+    let (mut store, session, request) = fixture()?;
+    assert!(matches!(
+        store.workspace_head(&session.principal_id, &session.session_id, TimestampNs(15)),
+        Err(DurableWorkspaceError::Refused(WorkspaceError::Unavailable))
+    ));
+    let first = store.publish_workspace(&session.principal_id, request, TimestampNs(20))?;
+    let second = store.publish_workspace(&session.principal_id, successor(&first.result), TimestampNs(21))?;
+    let mut store = reopen(store)?;
+    let head = store.workspace_head(&session.principal_id, &session.session_id, TimestampNs(22))?;
+    assert_eq!(head.result.head_digest, second.result.digest());
+    assert_eq!(head.result.revision, second.result);
+    assert!(!head.result.superseded && !head.result.rebase_required);
+    let stranger = PrincipalId::parse("principal:stranger")?;
+    assert!(matches!(
+        store.workspace_head(&stranger, &session.session_id, TimestampNs(23)),
+        Err(DurableWorkspaceError::Refused(WorkspaceError::Session(ReferenceSessionError::Unavailable)))
+    ));
+    Ok(())
+}

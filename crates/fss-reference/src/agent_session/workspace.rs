@@ -332,6 +332,28 @@ impl ReferenceWorkspaceStore {
         })
     }
 
+    /// Resumes the current head revision of `session_id`, after the same live-session and
+    /// projection checks as [`Self::resume`]. It names no implicit `latest` alias to a caller:
+    /// the returned revision carries its exact digest for every later write or resume.
+    pub fn head(
+        &self,
+        sessions: &mut ReferenceSessionStore,
+        principal: &PrincipalId,
+        session_id: &SessionId,
+        now: TimestampNs,
+    ) -> Result<WorkspaceResume, WorkspaceError> {
+        let entry = sessions.live_entry(principal, session_id, now)?;
+        let history = self.histories.get(session_id).ok_or(WorkspaceError::Unavailable)?;
+        let head = history.last().ok_or(WorkspaceError::Unavailable)?;
+        authorize_revision(entry, head)?;
+        Ok(WorkspaceResume {
+            revision: head.clone(),
+            head_digest: head.digest,
+            superseded: false,
+            rebase_required: head.capsule.current_anchor != entry.session.current_anchor,
+        })
+    }
+
     /// Exact retained canonical-byte charge. This is storage accounting, not an effect budget.
     #[must_use]
     pub const fn retained_bytes(&self) -> usize {

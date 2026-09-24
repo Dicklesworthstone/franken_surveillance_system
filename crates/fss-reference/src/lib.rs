@@ -25,6 +25,9 @@ mod clock_sync;
 mod context_binding;
 pub mod decode;
 mod delivery;
+/// Durable agent sessions and root-last handoffs over a deployment root (AOP-001, AOP-002,
+/// AOP-012); agent-plane writes only.
+pub mod deployment_session;
 pub mod doctor;
 pub mod evaluation;
 mod durable_effect;

@@ -150,6 +150,18 @@ impl DurableSessionStore {
         self.finish_workspace_read(memory, checkpoint, state.digest, result)
     }
 
+    /// Returns the current head revision of `session`, persisting clock/expiry changes even on
+    /// refusal, exactly as [`Self::resume_workspace`] does for a named revision.
+    pub fn workspace_head(&mut self, principal: &PrincipalId, session: &SessionId, now: TimestampNs)
+        -> Result<JournaledWorkspace<WorkspaceResume>, DurableWorkspaceError>
+    {
+        let state = self.read_workspace_state()?.ok_or(DurableWorkspaceError::NotInitialized)?;
+        let mut memory = self.memory.clone();
+        let result = state.store.head(&mut memory, principal, session, now);
+        let checkpoint = self.workspace_session_checkpoint(&memory)?;
+        self.finish_workspace_read(memory, checkpoint, state.digest, result)
+    }
+
     fn workspace_result<T>(&self, result: T, workspace_checkpoint_digest: ContentDigest) -> JournaledWorkspace<T> {
         JournaledWorkspace { result, committed_root: self.committed_root(),
             session_checkpoint_digest: self.checkpoint_digest, workspace_checkpoint_digest }

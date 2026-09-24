@@ -20,11 +20,11 @@ use std::fmt::Write as _;
 
 use fss_core::{
     ActionAffordance, AffordanceClass, AgentCognitiveEnvelope, AgentOperation,
-    AgentResponseEnvelope, BudgetVector, Completeness, ContentDigest, ContextItem, ContractBasis,
-    ControlEnvelope, CoverageContinuity, CoverageStopReason, CoverageWitness, KnowledgeCell,
-    KnowledgeState, KnowledgeStateBasis, LedgerAnchor, ObjectiveContract, OperationMode,
-    PossibleWorld, ResourceState, SemanticCompressionReceipt, SemanticContextPack, StaleBasis,
-    WorldEnvelope,
+    AgentResponseEnvelope, AgentSession, BudgetVector, Completeness, ContentDigest, ContextItem,
+    ContractBasis, ControlEnvelope, CoverageContinuity, CoverageStopReason, CoverageWitness,
+    KnowledgeCell, KnowledgeState, KnowledgeStateBasis, LedgerAnchor, ObjectiveContract,
+    OperationMode, PossibleWorld, ResourceState, SemanticCompressionReceipt, SemanticContextPack,
+    SessionCapsule, StaleBasis, WorldEnvelope,
 };
 
 use crate::diagnostic::escape_json_str;
@@ -1152,6 +1152,130 @@ pub fn objective_contract(value: &ObjectiveContract) -> Option<String> {
         ("terminalProof", strings(&value.terminal_proof)),
         ("decisionDigest", string(&value.decision_digest)),
     ]))
+}
+
+/// Reason every session whose acknowledged situation was cleared by a refresh gives for its
+/// `lastAcknowledgedSituationFingerprint` sentinel.
+pub const NO_ACKNOWLEDGED_SITUATION: &str = "no_acknowledged_situation_since_refresh";
+
+/// `AgentSession` as `fss.agent_session.v1` under `basis`.
+///
+/// The schema requires a digest for `lastAcknowledgedSituationFingerprint`; a session whose pin
+/// was cleared by an anchor refresh has none, so it carries the typed not-applicable sentinel.
+/// No symbols, continuations, subscriptions, or parent handoff exist, so those optional fields
+/// are omitted.
+#[must_use]
+pub fn agent_session(value: &AgentSession, basis: &ContractBasis) -> String {
+    let fingerprint = value.last_acknowledged_situation_fingerprint.map_or_else(
+        || {
+            not_applicable_sentinel(
+                AgentSession::SCHEMA,
+                "lastAcknowledgedSituationFingerprint",
+                NO_ACKNOWLEDGED_SITUATION,
+            )
+        },
+        |digest| digest.to_text(),
+    );
+    object(&[
+        ("schema", string(AgentSession::SCHEMA)),
+        ("contractBasis", contract_basis(basis)),
+        ("sessionId", string(value.session_id.as_str())),
+        ("missionId", string(value.mission_id.as_str())),
+        ("principalId", string(value.principal_id.as_str())),
+        ("capabilities", set(&value.capabilities)),
+        ("privacyScope", set(&value.privacy_scope)),
+        ("currentAnchor", evidence_anchor(&value.current_anchor)),
+        ("viewId", string(value.view.id())),
+        ("tokenBudget", value.token_budget.to_string()),
+        (
+            "symbolTableGeneration",
+            value.symbol_table_generation.to_string(),
+        ),
+        ("lastAcknowledgedSituationFingerprint", string(&fingerprint)),
+        ("createdAtNs", value.created_at_ns.max(0).to_string()),
+        ("expiresAtNs", value.expires_at_ns.max(0).to_string()),
+    ])
+}
+
+/// One workspace epistemic-debt entry (`<statement id>: <text>`) as the registered
+/// `epistemicDebtItem`. The workspace retains only the statement, so the other fields state what
+/// the retained record implies and never invent an estimate.
+#[must_use]
+pub fn workspace_debt_item(entry: &str, deferred_reason: &str) -> String {
+    let (debt_id, assumption) = entry.split_once(": ").unwrap_or((entry, entry));
+    object(&[
+        ("debtId", string(debt_id)),
+        ("assumption", string(assumption)),
+        ("deferredReason", string(deferred_reason)),
+        ("dependentDecisions", "[]".to_owned()),
+        (
+            "consequenceIfWrong",
+            string("Not recorded: the workspace retains the assumption statement only."),
+        ),
+        (
+            "cheapestTest",
+            string("Orient at the current head and restate or retire the assumption."),
+        ),
+        (
+            "reviewTrigger",
+            string("The next rebase or handoff of this session."),
+        ),
+    ])
+}
+
+/// `SessionCapsule` (one workspace revision) as `fss.agent_session_capsule.v1` under `basis`.
+///
+/// `invalidated_items` are the actions the revision's rebase invalidated. Epistemic debt is
+/// retained as statements only, rendered through [`workspace_debt_item`].
+#[must_use]
+pub fn session_capsule(
+    value: &SessionCapsule,
+    basis: &ContractBasis,
+    invalidated_items: &[String],
+) -> String {
+    let debt: Vec<String> = value
+        .epistemic_debt
+        .iter()
+        .map(|entry| {
+            workspace_debt_item(
+                entry,
+                "Carried as debt: the anchor it was bound to is no longer the workspace anchor, or \
+                 a newer orientation no longer restates it.",
+            )
+        })
+        .collect();
+    object(&[
+        ("schema", string(SessionCapsule::SCHEMA)),
+        ("contractBasis", contract_basis(basis)),
+        ("sessionId", string(value.session_id.as_str())),
+        ("revision", value.revision.to_string()),
+        ("principal", string(&value.principal)),
+        (
+            "capabilityProjection",
+            strings(&value.capability_projection),
+        ),
+        ("objectiveDigest", string(&value.objective_digest)),
+        ("baseAnchor", evidence_anchor(&value.base_anchor)),
+        ("currentAnchor", evidence_anchor(&value.current_anchor)),
+        (
+            "situationCapsuleDigest",
+            string(&value.situation_capsule_digest),
+        ),
+        ("activeHypotheses", strings(&value.active_hypotheses)),
+        ("assumptions", strings(&value.assumptions)),
+        ("unknowns", strings(&value.unknowns)),
+        (
+            "notObservableDomains",
+            strings(&value.not_observable_domains),
+        ),
+        ("epistemicDebt", array(&debt)),
+        ("openObligations", strings(&value.open_obligations)),
+        ("budgetLedger", budget(&value.budget_ledger)),
+        ("bookmarkedEvidence", digests(&value.bookmarked_evidence)),
+        ("invalidatedItems", strings(invalidated_items)),
+        ("nextActions", strings(&value.next_actions)),
+        ("decisionDigest", string(&value.decision_digest)),
+    ])
 }
 
 /// One `agent_cognitive_envelope.v1` evidence handle: an object the answer names, at the

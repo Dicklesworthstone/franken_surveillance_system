@@ -16,15 +16,16 @@ use std::path::PathBuf;
 
 use fss_core::{
     AgentView, BudgetVector, CanonicalEncode, Completeness, ContentDigest, ContinuationError,
-    KnowledgeState, LedgerAnchor, MeaningfulDeltaClass, PrincipalId, ResponseOutcome,
-    ResponseSafeRetry, TimestampNs,
+    KnowledgeState, LedgerAnchor, MeaningfulDelta, MeaningfulDeltaClass, PrincipalId,
+    ResponseOutcome, ResponseSafeRetry, TimestampNs,
 };
 use fss_reference::agent_follow::{
     AnchorRefusal, AnchorToken, DEFAULT_FOLLOW_MAX_ENTRIES, DeploymentFollow, FollowError,
     FollowItem, FollowRequest, MAX_FOLLOW_ENTRIES, follow_deployment,
 };
 use fss_reference::agent_orient::{
-    CAPABILITY_SITUATION_READ, DeploymentHistory, OrientError, OrientLimits, ZoneCoverageState,
+    CAPABILITY_SITUATION_READ, DeploymentHistory, DeploymentOrientation, OrientError, OrientLimits,
+    ZoneCoverageState,
 };
 
 use crate::agent_json;
@@ -202,15 +203,35 @@ fn classes_text(follow: &DeploymentFollow, protected_only: bool) -> Vec<&'static
 
 /// The page payload: the delta's header and complete class set with the items of this page.
 fn page_payload(follow: &DeploymentFollow) -> String {
-    let delta = &follow.delta;
-    let (cell_context, _) = contexts(&follow.result);
+    let continuation = follow
+        .page
+        .next_cursor
+        .as_ref()
+        .map_or(follow.delta.continuation.as_str(), |cursor| cursor.token());
+    meaningful_delta_json(
+        &follow.delta,
+        &follow.page_items,
+        continuation,
+        &follow.result,
+    )
+}
+
+/// `delta` as `fss.agent_meaningful_delta.v1` carrying `items` (all of them, or one page) and
+/// `continuation`; cells render in the context of the `result` orientation.
+pub(crate) fn meaningful_delta_json(
+    delta: &MeaningfulDelta,
+    items: &[FollowItem],
+    continuation: &str,
+    result: &DeploymentOrientation,
+) -> String {
+    let (cell_context, _) = contexts(result);
     let mut changed = Vec::new();
     let mut removed = Vec::new();
     let mut invalidated = Vec::new();
     let mut coverage = Vec::new();
     let mut obligations = Vec::new();
     let mut effects = Vec::new();
-    for item in &follow.page_items {
+    for item in items {
         match item {
             FollowItem::ChangedCell(cell) => {
                 changed.push(agent_json::knowledge_cell(cell, &cell_context));
@@ -222,11 +243,6 @@ fn page_payload(follow: &DeploymentFollow) -> String {
             FollowItem::EffectUncertainty(text) => effects.push(text.as_str()),
         }
     }
-    let continuation = follow
-        .page
-        .next_cursor
-        .as_ref()
-        .map_or(delta.continuation.as_str(), |cursor| cursor.token());
     let silence = delta.silence_certificate.as_ref().map_or_else(
         || "null".to_owned(),
         |certificate| {
@@ -277,7 +293,10 @@ fn page_payload(follow: &DeploymentFollow) -> String {
             "resultAnchor",
             agent_json::evidence_anchor(&delta.result_anchor),
         ),
-        ("classes", agent_json::strings(classes_text(follow, false))),
+        (
+            "classes",
+            agent_json::strings(delta.classes.iter().map(|class| class.as_str())),
+        ),
         ("changedCells", agent_json::array(&changed)),
         ("removedClaimIds", agent_json::strings(removed)),
         ("invalidatedAssumptions", agent_json::strings(invalidated)),
@@ -435,6 +454,8 @@ fn follow_response(
             total
         )),
         created_at_ns: capsule.created_at.0,
+        workspace_revision: None,
+        idempotency_key: None,
     })
 }
 
@@ -498,6 +519,8 @@ fn refusal_response(
             head.commit_sequence
         )),
         created_at_ns: created_at.0,
+        workspace_revision: None,
+        idempotency_key: None,
     })
 }
 

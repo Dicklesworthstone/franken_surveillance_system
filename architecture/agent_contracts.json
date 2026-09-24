@@ -458,6 +458,54 @@
       "reconciledValue": "fss-event watch/corroborate retain, only with an exact --retain-coverage approval, one fss-core CoverageWitness per (sensor, zone, maximal contiguous interval) in a coverage_witness ledger record (fss-fnrgr); orient assesses every objective zone as covered, not_observable or stale from those records and is complete only when every zone is covered over its declared window. The unchanged engine then certifies silence, bound to the witnesses through the coverage boundary handles, for a follow whose basis and result are the same committed position (for example since the anchor of an orientation of a complete deployment). Without retained coverage, or with any zone not_observable or stale, every orientation stays partial and the persisting gap is protected coverage_loss, as before.",
       "reason": "Silence over an uncertified domain would read as absence; the engine's clamp is kept. REMAINING: across a ledger advance silence is still unreachable even when nothing decision-relevant changed and coverage is complete, because the orientation frame binds commit-specific statements (the ledger-head cell, the now line, the re-orient rationale and the follow target), which the engine correctly reports as material_state changes; and the requested window is derived (first current witness through the newest analysed evidence), since no orient request carries an explicit window.",
       "status": "open"
+    },
+    {
+      "target": "AOP-001 session.open and AOP-002 session.resume response payloads (architecture/agent_operations.json responsePayloadSchemas) vs the durable AgentSession and SessionCapsule",
+      "field": "responsePayloadSchemas",
+      "originalValue": "session.open negotiates a durable AgentSession and session.resume returns the resumed SessionCapsule, but both operations register only fss.situation_capsule.v1 as their response payload.",
+      "reconciledValue": "fss session open and fss session resume answer fss.situation_capsule.v1 (the situation at the head, bound to the durable session and mission; resume sets previousAnchor to the handoff anchor, carries the engine's agent_meaningful_delta.v1, and appends every invalidated handoff assumption as epistemic debt). The session and its workspace revision are identified by the envelope sessionId, missionId, and workspaceRevision and by the revision digest and session-journal root in proofPointers; every invalidated assumption, action, and anchor-bound fact is listed in executionBoundary.invalidated. Their public renderings (fss.agent_session.v1 and fss.agent_session_capsule.v1) are published as children of every handoff root, so they are hydrated from a handoff rather than returned by open or resume.",
+      "reason": "The machine registry allowlists one response payload schema per operation and has no slot for the durable session or workspace revision; the registry is followed and the owner must decide whether AOP-001/AOP-002 gain agent_session.v1 or agent_session_capsule.v1 payloads.",
+      "status": "open"
+    },
+    {
+      "target": "schemas/agent_session.v1.json lastAcknowledgedSituationFingerprint vs AgentSession.last_acknowledged_situation_fingerprint (fss-core)",
+      "field": "lastAcknowledgedSituationFingerprint",
+      "originalValue": "The schema requires a digest; the Rust field is Option<ContentDigest>, and the reference session store clears it on every anchor refresh (a rebase).",
+      "reconciledValue": "fss session open pins the decision fingerprint of the situation it answered with. A session whose pin was cleared by a refresh renders the typed not-applicable sentinel fss-na:<sha256 of fss.agent_session.v1/sentinel/lastAcknowledgedSituationFingerprint/no_acknowledged_situation_since_refresh>, which never parses as a content address.",
+      "reason": "The schema has no null or unknown form for an unpinned session, and no acknowledgement operation exists to re-pin one after a rebase.",
+      "status": "open"
+    },
+    {
+      "target": "schemas/agent_session_capsule.v1.json epistemicDebt vs SessionCapsule.epistemic_debt (fss-core)",
+      "field": "epistemicDebt",
+      "originalValue": "The schema requires epistemicDebtItem objects (deferredReason, dependentDecisions, consequenceIfWrong, cheapestTest, reviewTrigger); the Rust workspace retains each debt as one statement string.",
+      "reconciledValue": "Each retained statement '<statement id>: <text>' renders as debtId and assumption; deferredReason states why it is debt (its anchor is no longer current, or a newer orientation no longer restates it), dependentDecisions is empty, and consequenceIfWrong says the workspace retains the statement only. No estimate is invented.",
+      "reason": "The workspace store's canonical revision format carries debt as text; widening it is a workspace-format change the owner must schedule.",
+      "status": "open"
+    },
+    {
+      "target": "schemas/agent_handoff_capsule.v1.json vs HandoffCapsule (fss-core) and the reference handoff record",
+      "field": "retentionClass, deletionClosureId, criteria, assumptions.epistemicState",
+      "originalValue": "The schema requires a retention class and a deletion-closure identity, success/failure/stop criteria, and a knowledge state per assumption; HandoffCapsule carries none of them.",
+      "reconciledValue": "retentionClass and deletionClosureId carry the typed not-applicable sentinels (no_retention_policy_retained, deletion_closure_not_implemented); criteria are empty because session open takes none; the anchor assumption (assumption:anchor-current, basis the anchor token) is known at the handoff anchor and every orientation debt assumption is unknown (an undischarged assumption, not an established fact). Everything else is rendered from the sealed HandoffCapsule (root, child roots, situation root, anchor, basis, times) and the published handoff record (anchor token, workspace revision, obligations, indeterminate effects, prepared operations, recommended affordances, invalidators).",
+      "reason": "No retention policy or deletion closure exists in a reference deployment and the schema offers no null form; inventing a class or closure would claim a retention guarantee that does not exist.",
+      "status": "open"
+    },
+    {
+      "target": "Agent session clock (fss session open/handoff/resume) vs 'All clock inputs must come from the runtime' (crates/fss-reference/src/agent_session.rs)",
+      "field": "createdAtNs, expiresAtNs",
+      "originalValue": "Session leases and handoff lifetimes were specified against a runtime clock; the reference CLI has no trusted runtime clock and every agent answer is a pure function of committed bytes.",
+      "reconciledValue": "The deployment evidence clock (the latest committed evidence time, the orientation capsule time) is the runtime clock: a session lease and a handoff lifetime are seven days of evidence time, and the store's monotone-clock checks run on it. Equal committed bytes therefore give equal sessions, handoffs, and answers.",
+      "reason": "A wall clock would make open/handoff/resume non-deterministic and could regress; the evidence clock is monotone because the ledger is append-only. The owner must decide whether a runtime clock capability replaces it.",
+      "status": "open"
+    },
+    {
+      "target": "architecture/operation_crosswalk.json AOP-012 cli_command",
+      "field": "cli_command",
+      "originalValue": "fss handoff",
+      "reconciledValue": "The implemented surface is fss session handoff, beside fss session open (AOP-001) and fss session resume (AOP-002), which match their crosswalk rows. The crosswalk row is unchanged.",
+      "reason": "The three continuity operations share one session subcommand family; the owner must choose one spelling for AOP-012 and update the crosswalk or the CLI.",
+      "status": "open"
     }
   ]
 }

@@ -21,6 +21,9 @@ pub mod negative_evidence_cmd;
 /// Read-only `orient` (AOP-003) and `explain` (AOP-011) over a deployment root.
 pub mod orient_cmd;
 pub mod redact;
+/// Durable agent sessions: `session open` (AOP-001), `session handoff` (AOP-012), and
+/// `session resume` (AOP-002); agent-plane writes only.
+pub mod session_cmd;
 pub mod token;
 
 pub use crosswalk::{
@@ -65,5 +68,10 @@ pub use orient_cmd::{
 pub use redact::{
     is_safe_to_echo, is_sensitive_standalone_flag, redact_argument, redact_sensitive_bytes,
     redact_value_or_digest, safe_os_repr, sanitize_and_truncate,
+};
+pub use session_cmd::{
+    ERR_AGENT_HANDOFF_INVALID, ERR_AGENT_HANDOFF_NOT_FOUND, ERR_AGENT_SESSION_NOT_FOUND,
+    ERR_AGENT_SESSION_STALE, ERR_AGENT_SESSION_STORE_INVALID, ERR_AGENT_SESSION_STORE_LOCKED,
+    SessionCommand, SessionHandoffArgs, SessionOpenArgs, SessionResumeArgs, execute_session,
 };
 pub use token::{ArgToken, MAX_ARG_TOKEN_BYTES, is_option_shaped, tokenize_os_args};

@@ -385,6 +385,10 @@ pub(crate) struct ResponseParts {
     pub(crate) safe_retry: ResponseSafeRetry,
     pub(crate) boundary: ExecutionBoundary,
     pub(crate) created_at_ns: i128,
+    /// Durable workspace revision the answer is bound to (agent-session commands only).
+    pub(crate) workspace_revision: Option<u64>,
+    /// Idempotency identity of a durable agent-plane write (agent-session commands only).
+    pub(crate) idempotency_key: Option<String>,
 }
 
 /// Why a typed answer could not be rendered (an internal failure, never a partial answer).
@@ -415,7 +419,7 @@ pub(crate) fn build_response(parts: ResponseParts) -> Result<String, Box<dyn std
         format!("trace:{}:{hex}", parts.operation),
         parts.anchor,
         None,
-        None,
+        parts.workspace_revision,
         parts.view,
         vec![parts.capability.to_owned()],
         privacy,
@@ -438,7 +442,7 @@ pub(crate) fn build_response(parts: ResponseParts) -> Result<String, Box<dyn std
         parts.compression_receipt_id,
         None,
         parts.continuation,
-        None,
+        parts.idempotency_key,
         parts.recovery_class,
         parts.safe_retry,
         false,
@@ -692,6 +696,27 @@ fn situation_frame(orientation: &DeploymentOrientation) -> Result<String, Render
 fn orient_payload(
     orientation: &DeploymentOrientation,
 ) -> Result<String, Box<dyn std::error::Error>> {
+    situation_capsule_payload(orientation, &CapsuleOverrides::default())
+}
+
+/// What a durable-session answer adds to an orientation's `fss.situation_capsule.v1` payload.
+#[derive(Default)]
+pub(crate) struct CapsuleOverrides<'a> {
+    /// The anchor a resumed session was handed off at.
+    pub(crate) previous_anchor: Option<&'a LedgerAnchor>,
+    /// The rendered `agent_meaningful_delta.v1` since that anchor.
+    pub(crate) meaningful_delta: Option<String>,
+    /// Rendered epistemic-debt items appended after the orientation's own.
+    pub(crate) extra_debt: Vec<String>,
+    /// The durable session's symbol-table generation.
+    pub(crate) symbol_table_generation: u64,
+}
+
+/// An orientation as `fss.situation_capsule.v1`, with a durable session's `overrides`.
+pub(crate) fn situation_capsule_payload(
+    orientation: &DeploymentOrientation,
+    overrides: &CapsuleOverrides<'_>,
+) -> Result<String, Box<dyn std::error::Error>> {
     let publication = &orientation.publication;
     let capsule = orientation.capsule();
     let (_, affordance_context) = contexts(orientation);
@@ -718,7 +743,7 @@ fn orient_payload(
             ])
         })
         .collect();
-    let debt: Vec<String> = orientation
+    let mut debt: Vec<String> = orientation
         .epistemic_debt
         .iter()
         .map(|item| {
@@ -739,6 +764,7 @@ fn orient_payload(
             ])
         })
         .collect();
+    debt.extend(overrides.extra_debt.iter().cloned());
     let validity = &orientation.validity;
     Ok(agent_json::object(&[
         ("schema", agent_json::string("fss.situation_capsule.v1")),
@@ -749,8 +775,8 @@ fn orient_payload(
         ("capsuleId", agent_json::string(&capsule.capsule_id)),
         ("revision", capsule.revision.to_string()),
         ("missionId", agent_json::string(capsule.mission_id.as_str())),
-        // No durable mission exists (session.open is not exposed): the orientation mission is
-        // never revised.
+        // Missions are never revised: an orientation's read-only mission has no revisions, and a
+        // durable session's mission record is published once, at `fss session open`.
         ("missionRevision", "0".to_owned()),
         ("sessionId", agent_json::string(capsule.session_id.as_str())),
         (
@@ -758,7 +784,12 @@ fn orient_payload(
             agent_json::string(capsule.principal_id.as_str()),
         ),
         ("anchor", agent_json::evidence_anchor(&capsule.anchor)),
-        ("previousAnchor", "null".to_owned()),
+        (
+            "previousAnchor",
+            overrides
+                .previous_anchor
+                .map_or_else(|| "null".to_owned(), agent_json::evidence_anchor),
+        ),
         ("objectiveContract", objective),
         (
             "effectiveCapabilities",
@@ -770,8 +801,14 @@ fn orient_payload(
         ),
         ("decisionDeadlineNs", "null".to_owned()),
         ("situationFrame", situation_frame(orientation)?),
-        // No previous anchor was supplied, so no change is claimed.
-        ("meaningfulDelta", "null".to_owned()),
+        // Without a previous anchor no change is claimed.
+        (
+            "meaningfulDelta",
+            overrides
+                .meaningful_delta
+                .clone()
+                .unwrap_or_else(|| "null".to_owned()),
+        ),
         ("attentionFrontier", agent_json::array(&attention)),
         ("activeInvestigations", "[]".to_owned()),
         ("activeHypotheses", "[]".to_owned()),
@@ -807,8 +844,12 @@ fn orient_payload(
             "compressionReceipt",
             agent_json::compression_receipt(&publication.compression_receipt),
         ),
-        // Context items carry no aliases, so no symbol table generation exists.
-        ("symbolTableGeneration", "0".to_owned()),
+        // Context items carry no aliases; the generation is the durable session's (0 for a
+        // read-only orientation, whose symbol table is never rotated).
+        (
+            "symbolTableGeneration",
+            overrides.symbol_table_generation.to_string(),
+        ),
         (
             "validity",
             agent_json::object(&[
@@ -892,6 +933,8 @@ fn orient_response(
             capsule.anchor.commit_sequence
         )),
         created_at_ns: capsule.created_at.0,
+        workspace_revision: None,
+        idempotency_key: None,
     })
 }
 
@@ -944,6 +987,8 @@ pub(crate) fn budget_refusal(
             snapshot.anchor.commit_sequence
         )),
         created_at_ns: snapshot.latest_evidence_time.0,
+        workspace_revision: None,
+        idempotency_key: None,
     })
 }
 
@@ -1299,6 +1344,8 @@ fn explanation_response(
             capsule.anchor.commit_sequence
         )),
         created_at_ns: capsule.created_at.0,
+        workspace_revision: None,
+        idempotency_key: None,
     })
 }
 
@@ -1394,6 +1441,8 @@ fn unknown_event_response(
             capsule.anchor.commit_sequence
         )),
         created_at_ns: capsule.created_at.0,
+        workspace_revision: None,
+        idempotency_key: None,
     })
 }
 

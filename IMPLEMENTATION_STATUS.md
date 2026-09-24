@@ -80,6 +80,22 @@ synthetic scenes). None of it has been measured on real camera footage.
   commit-specific statements; drift entry in `architecture/agent_contracts.json`), and without
   coverage the persisting gap stays protected `coverage_loss`. There is no long-lived
   subscription, wake, or MCP transport; follow is one bounded read per call.
+- **Agent sessions (fss/1, CLI only):** `fss session open` (AOP-001) opens a durable
+  mission-scoped session and its revision-zero workspace at the current orient anchor through the
+  existing `DurableSessionStore` (a session journal under `<root>/agent/sessions/` with an
+  atomically replaced pinned root; a rollback or foreign journal is refused, never repaired) and
+  publishes the mission statement root-last under `<root>/agent/publications/`; an identical open
+  is an exact retry. `fss session handoff` (AOP-012) seals the situation as of the session's
+  anchor with the existing handoff sealing code and publishes a root-last handoff record (plus the
+  session and workspace revision as `agent_session.v1`/`agent_session_capsule.v1`); a crash at
+  any publication cut point leaves the handoff absent or complete. `fss session resume` (AOP-002)
+  refuses unknown, tampered, expired, unauthorized, and foreign handoffs, compares the situation
+  as of the handoff anchor with the head through the reference `MeaningfulDelta` engine, lists
+  every invalidated assumption, action, and anchor-bound fact, and rebases the session and
+  workspace onto the head in one atomic journal command. Only agent-plane state is written; the
+  authority ledger, effect journal, and deployment spool stay byte-identical. Leases and handoff
+  lifetimes run on the deployment evidence clock; there is no authentication (principals are
+  audit labels) and no MCP transport. Open drifts: `architecture/agent_contracts.json`.
 
 Architectural deviations to resolve: device and alert I/O use blocking `std::net` rather than
 Asupersync (owner decision `fss-x4a.8.1` is open), and the workspace has zero third-party crates.
@@ -125,6 +141,7 @@ Asupersync (owner decision `fss-x4a.8.1` is open), and the workspace has zero th
 - Silence certificates proving no decision-relevant change, including across harmless successor commits.
 - Exact continuation streams with content-bound entries, page digests, monotone positions, expiry, stream identity, contract basis, anchor, view, and session checks.
 - Exposed read-only through `fss follow` (AOP-004) over real deployments, comparing an as-of-anchor orientation (committed prefix only) with the head's.
+- Used by `fss session resume` (AOP-002) to list what changed and what was invalidated between a handoff anchor and the head.
 
 ### Semantic handles and H0–H4 hydration
 

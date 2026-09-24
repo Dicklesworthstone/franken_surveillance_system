@@ -22,7 +22,7 @@
 > and publish event candidates (including a model-free `fss-event watch` pipeline), and keep a
 > crash-safe local ledger. It does **not** yet decode 10-bit or interlaced video, ship a
 > trained detector, measure detection quality on real footage, expose more of the agent protocol than
-> read-only `fss orient`/`fss explain`, archive to the cloud, or have any release-qualified capability. The boundary is
+> `fss orient`/`fss explain`/`fss follow` and durable `fss session open`/`handoff`/`resume`, archive to the cloud, or have any release-qualified capability. The boundary is
 > explicit in [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md) and `fss capabilities --json`.
 
 ## The thesis
@@ -568,9 +568,12 @@ Partial:
 
 - the agent operating layer: `fss orient`, `fss explain`, and `fss follow` (meaningful deltas
   since an orient anchor token, paged through exact continuations; one bounded read per call, no
-  subscription) are read-only CLI surfaces; the other fss/1 operations (session.open/resume,
-  query, investigate, plan, commit, wait, cancel, handoff, feedback) and any MCP transport are not
-  exposed;
+  subscription) are read-only CLI surfaces; `fss session open`, `fss session handoff`, and
+  `fss session resume` (session.open, handoff, session.resume) persist mission-scoped sessions,
+  immutable workspace revisions, and root-last handoffs under the deployment's `agent/` directory
+  (never authority or effect state), and resume lists every assumption invalidated since the
+  handoff anchor before rebasing onto the head; the other fss/1 operations (query, investigate,
+  plan, commit, wait, cancel, feedback) and any MCP transport are not exposed;
 - alert delivery: plaintext webhook relays only (no TLS, retries or provider adapters).
 
 Not implemented:

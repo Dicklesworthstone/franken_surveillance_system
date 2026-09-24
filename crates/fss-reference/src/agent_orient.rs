@@ -1603,11 +1603,7 @@ fn compile_capsule(
     let basis = fss_core::reference_contract_basis();
     let deployment_handle = format!("fss://deployment/{}", short_identity(site_digest));
 
-    let mut degradation = vec![
-        "No durable agent session exists (session.open is not exposed): this capsule is bound \
-         to a deterministic read-only session identity and persists nothing."
-            .to_owned(),
-    ];
+    let mut degradation = vec![UNBOUND_SESSION_DEGRADATION.to_owned()];
     let mut warnings = Vec::new();
     let mut unknown = Vec::new();
     let mut at_risk = Vec::new();
@@ -2839,6 +2835,31 @@ pub fn orient_deployment(
     request: &OrientRequest,
     limits: &OrientLimits,
 ) -> Result<DeploymentOrientation, OrientError> {
+    orient_deployment_for(snapshot, request, limits, None)
+}
+
+/// Degradation every orientation not bound to a durable session carries.
+pub const UNBOUND_SESSION_DEGRADATION: &str = "No durable agent session is bound: this capsule \
+    carries a deterministic read-only session identity and persists nothing (`fss session open` \
+    opens a durable one).";
+
+/// The durable agent session and mission an orientation is compiled for (`fss session`).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OrientSessionBinding {
+    /// Durable mission identity.
+    pub mission_id: MissionId,
+    /// Durable session identity.
+    pub session_id: SessionId,
+}
+
+/// [`orient_deployment`] with the capsule bound to a durable session and mission instead of the
+/// deterministic read-only identity; everything else is compiled identically.
+pub fn orient_deployment_for(
+    snapshot: &DeploymentSnapshot,
+    request: &OrientRequest,
+    limits: &OrientLimits,
+    session: Option<&OrientSessionBinding>,
+) -> Result<DeploymentOrientation, OrientError> {
     if !matches!(
         request.view,
         AgentView::Pulse | AgentView::Brief | AgentView::EpistemicMap
@@ -2851,7 +2872,14 @@ pub fn orient_deployment(
             maximum: limits.max_events,
         });
     }
-    let compiled = compile_capsule(snapshot, request)?;
+    let mut compiled = compile_capsule(snapshot, request)?;
+    if let Some(binding) = session {
+        compiled.capsule.mission_id = binding.mission_id.clone();
+        compiled.capsule.session_id = binding.session_id.clone();
+        compiled
+            .degradation
+            .retain(|line| line != UNBOUND_SESSION_DEGRADATION);
+    }
     let mut degradation = compiled.degradation;
     let mut situation = ReferenceSituation::new(compiled.capsule, compiled.proof_roots);
     if !compiled.effect_cells.is_empty() {
