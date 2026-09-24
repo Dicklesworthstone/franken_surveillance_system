@@ -22,7 +22,9 @@
 //! manifest, source capsule) and to the exact codec output (luma and packed I420 digests). Frames
 //! are a rebuildable derivation: nothing is staged, published or appended to the ledger. The
 //! pure-Rust codec is deterministic and bit-exact against the FFmpeg oracle fixtures, and it owns
-//! all H.265 semantics and refusals (Main 10, 4:2:2, range extensions, tiles, ...).
+//! all H.265 semantics and refusals (Main 10, 4:2:2, range extensions, tiles, ...). Frames also
+//! carry both chroma planes (`cb`, `cr`, per-plane digests on the receipt) and convert to RGB
+//! through the declared transform in [`super::video_rgb`].
 
 use std::collections::VecDeque;
 
@@ -85,6 +87,10 @@ pub struct RecordedH265FrameReceipt {
     decode_index: u64,
     luma_sha256: ContentDigest,
     i420_sha256: ContentDigest,
+    // Plane digests are exposed for audit but not encoded: the encoded I420 digest already
+    // binds both chroma planes, so receipt bytes stay identical to the luma-era receipts.
+    cb_sha256: ContentDigest,
+    cr_sha256: ContentDigest,
 }
 
 impl RecordedH265FrameReceipt {
@@ -159,6 +165,16 @@ impl RecordedH265FrameReceipt {
     pub fn i420_sha256(&self) -> ContentDigest {
         self.i420_sha256
     }
+    /// SHA-256 of the tight Cb plane (`ceil(w/2) x ceil(h/2)`); bound through the I420 digest.
+    #[must_use]
+    pub fn cb_sha256(&self) -> ContentDigest {
+        self.cb_sha256
+    }
+    /// SHA-256 of the tight Cr plane (`ceil(w/2) x ceil(h/2)`); bound through the I420 digest.
+    #[must_use]
+    pub fn cr_sha256(&self) -> ContentDigest {
+        self.cr_sha256
+    }
     /// Canonical receipt bytes.
     #[must_use]
     pub fn encoded(&self) -> Vec<u8> {
@@ -195,6 +211,8 @@ impl RecordedH265FrameReceipt {
 pub struct RecordedH265Frame {
     receipt: RecordedH265FrameReceipt,
     luma: Vec<u8>,
+    cb: Vec<u8>,
+    cr: Vec<u8>,
 }
 
 impl RecordedH265Frame {
@@ -215,6 +233,34 @@ impl RecordedH265Frame {
             format!("P5\n{} {}\n255\n", self.receipt.width, self.receipt.height).into_bytes();
         bytes.extend_from_slice(&self.luma);
         bytes
+    }
+    /// Tight Cb plane, row stride `ceil(width / 2)` (video range as coded).
+    #[must_use]
+    pub fn cb(&self) -> &[u8] {
+        &self.cb
+    }
+    /// Tight Cr plane, row stride `ceil(width / 2)` (video range as coded).
+    #[must_use]
+    pub fn cr(&self) -> &[u8] {
+        &self.cr
+    }
+    /// Chroma plane width and height (`ceil(w/2)`, `ceil(h/2)`).
+    #[must_use]
+    pub fn chroma_dimensions(&self) -> [u32; 2] {
+        [
+            self.receipt.width.div_ceil(2),
+            self.receipt.height.div_ceil(2),
+        ]
+    }
+    /// Packed RGB through the declared BT.601 limited-range transform
+    /// ([`super::video_rgb::VIDEO_RGB_TRANSFORM`]).
+    pub fn to_rgb(&self) -> Result<Vec<u8>, RecordedDecodeError> {
+        super::video_rgb::i420_to_rgb(
+            &self.luma,
+            &self.cb,
+            &self.cr,
+            [self.receipt.width, self.receipt.height],
+        )
     }
 }
 
@@ -448,12 +494,16 @@ impl RecordedH265Range {
             decode_index: picture.decode_index(),
             luma_sha256: ContentDigest::sha256(picture.luma()),
             i420_sha256: ContentDigest::sha256(&picture.to_i420()),
+            cb_sha256: ContentDigest::sha256(picture.cb()),
+            cr_sha256: ContentDigest::sha256(picture.cr()),
         };
         self.decoded += 1;
         checkpoint(cx, "recorded_h265:decoded")?;
         Ok(RecordedH265Frame {
             receipt,
             luma: picture.luma().to_vec(),
+            cb: picture.cb().to_vec(),
+            cr: picture.cr().to_vec(),
         })
     }
 }

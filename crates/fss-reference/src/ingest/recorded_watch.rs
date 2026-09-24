@@ -19,6 +19,15 @@
 //! Synthetic scenes prove the wiring, not detection quality: foreground thresholds and zones are
 //! uncalibrated operator choices, and a missing candidate never certifies absence by itself.
 //!
+//! Optionally ([`WatchReport::analyze_with_detector`]) a verified detector package runs as a
+//! cascade stage ([`super::detector_cascade`]) on the frames this cheap gate selected (each
+//! candidate track's zone-entry, confirmation and following frames, within an explicit inference
+//! budget). Its class evidence (label, uncalibrated score, package digest and generation, frame
+//! and capsule digests) is retained with the candidate as supporting cognition evidence in the
+//! sensor's own failure domain: the candidate stays `Unclassified`, `Indeterminate` and
+//! single-sensor, and the cascade identity is bound into the candidate identity, analysis and
+//! coverage pipeline generation. Without a detector every byte is unchanged.
+//!
 //! Every analysis also proposes a [`CoverageRecord`] (see [`super::recorded_coverage`]): one
 //! `CoverageWitness` per (sensor, zone, maximal contiguous interval) the pipeline could actually
 //! see, and every other frame as an explicit uncovered interval. Like a candidate, the record
@@ -38,6 +47,10 @@ use fss_core::{
 use fss_object::{ObjectError, ObjectManifest, SpoolError};
 use fss_publication::{LocalPublicationError, SlotName};
 
+use super::detector_cascade::{
+    CascadeError, CascadeOutcome, CascadeSource, CascadeTrack, ClassEvidence, DetectorCascade,
+    cascade_outcome_json, cascade_policy_json, class_evidence_json, select_frames,
+};
 use super::eventgen::{
     ZoneEventConfig, ZoneEventError, ZoneEventGenerator, ZoneObservation, ZoneSpec,
 };
@@ -133,6 +146,8 @@ pub enum WatchError {
     Spool(SpoolError),
     /// Coverage retention refusal (stale approval or storage).
     Coverage(CoverageError),
+    /// Detector cascade stage refusal (configuration, decode or cancellation).
+    Cascade(CascadeError),
 }
 
 impl WatchError {
@@ -147,6 +162,7 @@ impl WatchError {
             Self::Conflict => "ERR-IDEMPOTENCY-CONFLICT-001",
             Self::Decode(error) => error.stable_id(),
             Self::Coverage(error) => error.stable_id(),
+            Self::Cascade(error) => error.stable_id(),
             _ => "ERR-WATCH-001",
         }
     }
@@ -187,6 +203,7 @@ impl fmt::Display for WatchError {
             Self::Publication(e) => write!(f, "watch publication: {e}"),
             Self::Spool(e) => write!(f, "watch custody: {e}"),
             Self::Coverage(e) => write!(f, "watch coverage: {e}"),
+            Self::Cascade(e) => write!(f, "watch detector cascade: {e}"),
         }
     }
 }
@@ -213,6 +230,7 @@ conversion!(ObjectError, Object);
 conversion!(LocalPublicationError, Publication);
 conversion!(SpoolError, Spool);
 conversion!(CoverageError, Coverage);
+conversion!(CascadeError, Cascade);
 impl From<FileIngestError> for WatchError {
     fn from(error: FileIngestError) -> Self {
         Self::Decode(Box::new(error.into()))
@@ -516,6 +534,8 @@ pub struct WatchCandidate {
     pub entry_segment: usize,
     /// Frames in which the track was matched, in order.
     pub observations: Vec<WatchObservation>,
+    /// Detector-cascade class evidence (empty without a detector), in selection order.
+    pub class_evidence: Vec<ClassEvidence>,
     identity: ContentDigest,
     proof: Provenance,
     proposal: ContentDigest,
@@ -577,6 +597,15 @@ pub struct WatchReport {
     decode_work_units: u64,
     coverage: CoverageRecord,
     coverage_status: CoverageStatus,
+    cascade: Option<WatchCascade>,
+}
+
+/// Detector-cascade record of one analysis.
+#[derive(Clone, Debug)]
+struct WatchCascade {
+    digest: ContentDigest,
+    policy_json: String,
+    outcome: CascadeOutcome,
 }
 
 /// Decoder label of a retained media format, bound into coverage pipeline generations.
@@ -649,6 +678,18 @@ impl WatchReport {
         deployment: &ReferenceDeployment,
         plan: &WatchPlan,
         limits: &WatchLimits,
+        cx: &ReplayCx,
+    ) -> Result<Self> {
+        Self::analyze_with_detector(deployment, plan, limits, None, cx)
+    }
+
+    /// [`Self::analyze`] plus an optional detector cascade over the frames the cheap stage
+    /// selected. `None` is byte-for-byte [`Self::analyze`].
+    pub fn analyze_with_detector(
+        deployment: &ReferenceDeployment,
+        plan: &WatchPlan,
+        limits: &WatchLimits,
+        detector: Option<&mut DetectorCascade<'_>>,
         cx: &ReplayCx,
     ) -> Result<Self> {
         checkpoint(cx, "recorded_watch:analyze")?;
@@ -734,6 +775,7 @@ impl WatchReport {
         let mut frames = Vec::with_capacity(plan.segment_count);
         let mut histories: BTreeMap<u64, TrackHistory> = BTreeMap::new();
         let mut confirmed = BTreeSet::new();
+        let mut confirmed_at: BTreeMap<u64, usize> = BTreeMap::new();
         let mut entries: Vec<(String, u64, usize)> = Vec::new();
         let mut sensor = None;
         while let Some(frame) = source.next(deployment, plan, limits, &mut budget, cx)? {
@@ -787,6 +829,7 @@ impl WatchReport {
                     continue;
                 }
                 confirmed.insert(target.id);
+                confirmed_at.entry(target.id).or_insert(frame.segment);
                 for zone in &plan.zones {
                     let emitted = generator.observe_interval(
                         RuntimeGrant::ObserveEvent,
@@ -821,10 +864,58 @@ impl WatchReport {
             });
         }
         let decode_work_units = budget.used();
+        let cascade = match detector {
+            None => None,
+            Some(detector) => {
+                let tracks: Vec<CascadeTrack> = entries
+                    .iter()
+                    .map(|(_, track_id, entry_segment)| {
+                        let observations = histories
+                            .get(track_id)
+                            .map(|h| h.observations.as_slice())
+                            .unwrap_or_default();
+                        CascadeTrack {
+                            track_id: *track_id,
+                            selections: select_frames(
+                                *entry_segment,
+                                confirmed_at
+                                    .get(track_id)
+                                    .copied()
+                                    .unwrap_or(*entry_segment),
+                                observations,
+                                detector.config().frames_per_track,
+                            ),
+                        }
+                    })
+                    .collect();
+                let decoded: Vec<usize> = frames.iter().map(|f| f.segment).collect();
+                let mut allowance = detector.budget();
+                let outcome = detector.run(
+                    deployment,
+                    CascadeSource {
+                        import_identity: plan.import_identity,
+                        import_root,
+                        interpretation: plan.interpretation,
+                        media_format: &media_format,
+                        first_segment: plan.first_segment,
+                        decoded_segments: &decoded,
+                    },
+                    &tracks,
+                    &mut allowance,
+                    limits,
+                    cx,
+                )?;
+                Some(WatchCascade {
+                    digest: detector.digest(),
+                    policy_json: cascade_policy_json(detector),
+                    outcome,
+                })
+            }
+        };
         let by_segment: BTreeMap<usize, &WatchFrame> =
             frames.iter().map(|f| (f.segment, f)).collect();
         let mut candidates = Vec::with_capacity(entries.len());
-        for (zone_id, track_id, entry_segment) in entries {
+        for (position, (zone_id, track_id, entry_segment)) in entries.into_iter().enumerate() {
             let mut observations = Vec::new();
             for (segment, track_box) in histories
                 .get(&track_id)
@@ -861,16 +952,38 @@ impl WatchReport {
             e.text(&zone_id);
             e.u64(track_id);
             e.u64(entry_segment as u64);
+            let class_evidence = match &cascade {
+                Some(cascade) => {
+                    // A cascade analysis is a distinct candidate: its evidence differs.
+                    e.digest(cascade.digest);
+                    cascade
+                        .outcome
+                        .evidence
+                        .get(position)
+                        .cloned()
+                        .ok_or(WatchError::Limit)?
+                }
+                None => Vec::new(),
+            };
             let identity = ContentDigest::sha256(&e.finish());
             candidates.push(PendingCandidate {
                 zone_id,
                 track_id,
                 entry_segment,
                 observations,
+                class_evidence,
                 identity,
             });
         }
-        let analysis = analysis_bytes(plan_digest, import_root, &frames, &candidates);
+        let analysis = analysis_bytes(
+            plan_digest,
+            import_root,
+            &frames,
+            &candidates,
+            cascade
+                .as_ref()
+                .map(|c| (c.digest, c.outcome.digest(c.digest))),
+        );
         let sensor = sensor.ok_or(WatchError::Limit)?;
         let coverage = watch_coverage(&WatchCoverageContext {
             plan,
@@ -884,6 +997,7 @@ impl WatchReport {
             dimensions,
             frames: &frames,
             candidates: &candidates,
+            cascade: cascade.as_ref().map(|c| c.digest),
         })?;
         let coverage_status = coverage_status(deployment, &[&coverage])?;
         let mut prepared = Vec::with_capacity(candidates.len());
@@ -895,6 +1009,7 @@ impl WatchReport {
                 track_id,
                 entry_segment,
                 observations,
+                class_evidence,
                 identity,
             } = pending;
             let mut e = CanonicalEncoder::new();
@@ -908,6 +1023,7 @@ impl WatchReport {
                 track_id,
                 entry_segment,
                 observations,
+                class_evidence,
                 identity,
                 proof,
                 proposal,
@@ -927,7 +1043,20 @@ impl WatchReport {
             decode_work_units,
             coverage,
             coverage_status,
+            cascade,
         })
+    }
+
+    /// Detector-cascade outcome of this analysis, if a detector was supplied.
+    #[must_use]
+    pub fn detector_cascade(&self) -> Option<&CascadeOutcome> {
+        self.cascade.as_ref().map(|c| &c.outcome)
+    }
+
+    /// Cascade identity bound into this analysis, if a detector was supplied.
+    #[must_use]
+    pub fn cascade_digest(&self) -> Option<ContentDigest> {
+        self.cascade.as_ref().map(|c| c.digest)
     }
 
     /// Proposed (or retained) coverage of this analysis.
@@ -1129,8 +1258,12 @@ impl WatchReport {
                     }
                     _ => "null".to_owned(),
                 };
+                let class_evidence = match self.cascade {
+                    Some(_) => format!(",\"class_evidence\":{}", class_evidence_json(&c.class_evidence)),
+                    None => String::new(),
+                };
                 format!(
-                    "{{\"candidate_id\":\"{}\",\"zone_id\":\"{}\",\"track_id\":{},\"entry_segment\":{},\"frame_range\":[{first},{last}],\"event_id\":\"{}\",\"event_kind\":\"{}\",\"event_state\":\"{}\",\"proposal_digest\":\"{}\",\"provenance_root\":\"{}\",\"status\":\"{}\",\"publish_command\":{command},\"evidence\":[{}]}}",
+                    "{{\"candidate_id\":\"{}\",\"zone_id\":\"{}\",\"track_id\":{},\"entry_segment\":{},\"frame_range\":[{first},{last}],\"event_id\":\"{}\",\"event_kind\":\"{}\",\"event_state\":\"{}\",\"proposal_digest\":\"{}\",\"provenance_root\":\"{}\",\"status\":\"{}\",\"publish_command\":{command},\"evidence\":[{}]{class_evidence}}}",
                     c.identity,
                     c.zone_id,
                     c.track_id,
@@ -1164,7 +1297,7 @@ impl WatchReport {
                 "\"authority_sequence\":{},\"event_kind\":\"unclassified\",",
                 "\"event_state\":\"indeterminate\",\"calibrated\":false,\"corroborated\":false,",
                 "\"alert_authorized\":false,\"effects_authorized\":false,",
-                "\"absence_certifiable\":false,\"detection_quality_claim\":false{}}}"
+                "\"absence_certifiable\":false,\"detection_quality_claim\":false{}{}}}"
             ),
             self.plan.import_identity,
             self.import_root,
@@ -1187,6 +1320,11 @@ impl WatchReport {
             count(WatchStatus::Published),
             count(WatchStatus::AlreadyPublished),
             authority_sequence,
+            self.cascade.as_ref().map_or_else(String::new, |c| format!(
+                ",\"detector_cascade\":{{{},{}}}",
+                c.policy_json,
+                cascade_outcome_json(&c.outcome)
+            )),
             coverage_json.map_or_else(String::new, |json| format!(",\"coverage\":{json}")),
         )
     }
@@ -1294,11 +1432,25 @@ struct WatchCoverageContext<'a> {
     dimensions: [u32; 2],
     frames: &'a [WatchFrame],
     candidates: &'a [PendingCandidate],
+    cascade: Option<ContentDigest>,
+}
+
+/// Appends a detector-cascade identity (package, generation, policy) to coverage parameters.
+pub fn bind_cascade_parameters(parameters: &mut Vec<u64>, cascade: Option<ContentDigest>) {
+    if let Some(digest) = cascade {
+        let bytes = digest.bytes();
+        parameters.extend(bytes.chunks(8).map(|chunk| {
+            chunk
+                .iter()
+                .fold(0_u64, |value, byte| (value << 8) | u64::from(*byte))
+        }));
+    }
 }
 
 fn watch_coverage(context: &WatchCoverageContext<'_>) -> Result<CoverageRecord> {
     let plan = context.plan;
-    let parameters = pipeline_parameters(plan.interpretation, &plan.detector, &plan.tracker);
+    let mut parameters = pipeline_parameters(plan.interpretation, &plan.detector, &plan.tracker);
+    bind_cascade_parameters(&mut parameters, context.cascade);
     let frames: Vec<CoverageFrame> = context
         .frames
         .iter()
@@ -1360,6 +1512,7 @@ struct PendingCandidate {
     track_id: u64,
     entry_segment: usize,
     observations: Vec<WatchObservation>,
+    class_evidence: Vec<ClassEvidence>,
     identity: ContentDigest,
 }
 
@@ -1368,6 +1521,7 @@ fn analysis_bytes(
     import_root: ContentDigest,
     frames: &[WatchFrame],
     candidates: &[PendingCandidate],
+    cascade: Option<(ContentDigest, ContentDigest)>,
 ) -> Vec<u8> {
     let mut e = CanonicalEncoder::new();
     e.text(ANALYSIS_DOMAIN);
@@ -1395,6 +1549,11 @@ fn analysis_bytes(
         for observation in &candidate.observations {
             e.digest(observation.record_digest);
         }
+    }
+    if let Some((cascade, outcome)) = cascade {
+        e.text("detector_cascade");
+        e.digest(cascade);
+        e.digest(outcome);
     }
     e.finish()
 }
@@ -1443,6 +1602,29 @@ fn provenance(
             supports: false,
             relation: EvidenceEdgeRelation::DerivedFrom,
             capsule_digest: Some(observation.capsule_digest),
+            identity_digest: Some(sensor_digest),
+        });
+    }
+    for item in &candidate.class_evidence {
+        let digest = insert(&mut objects, item.record.clone());
+        let capsule = observations
+            .iter()
+            .find(|o| o.segment == item.segment)
+            .map(|o| o.capsule_digest)
+            .ok_or(WatchError::Limit)?;
+        // Same sensor, same failure domain: detector evidence can never corroborate.
+        let supports = item.supports();
+        evidence.push(EventEvidence {
+            digest,
+            class: EvidenceClass::Derived,
+            failure_domain: failure_domain.clone(),
+            supports,
+            relation: if supports {
+                EvidenceEdgeRelation::Supports
+            } else {
+                EvidenceEdgeRelation::DerivedFrom
+            },
+            capsule_digest: Some(capsule),
             identity_digest: Some(sensor_digest),
         });
     }

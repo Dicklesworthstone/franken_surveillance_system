@@ -997,6 +997,16 @@
       "id": "ERR-DEP-UNSTABLE-FEATURE-001"
     },
     {
+      "description": "a frame the cheap watch gate selected was not inferred because the explicit `--detector-max-inferences` budget was exhausted; a typed per-frame outcome in the report and a non-supporting evidence record, never a silent drop and never evidence of absence",
+      "guidance": "raise the budget or narrow the range if the frame matters",
+      "id": "ERR-DETECTOR-CASCADE-BUDGET-001"
+    },
+    {
+      "description": "detector-cascade policy outside its bounds (frames per track 1..8, max inferences 1..64, association IoU and score threshold at most 1000000 ppm) or a threshold the package refuses; refused before any source is read",
+      "guidance": "correct the cascade options; do not retry unchanged",
+      "id": "ERR-DETECTOR-CASCADE-PLAN-001"
+    },
+    {
       "description": "exact product/firmware/app tuple not certified",
       "guidance": "fail closed or explicit import-only mode",
       "id": "ERR-DEVICE-UNSUPPORTED-001"
@@ -1505,6 +1515,41 @@
       "description": "package detection range, frame count (1..64) or retained media format outside the operation contract; refused before decode",
       "guidance": "correct the request; do not retry unchanged",
       "id": "ERR-PACKAGE-DETECT-REQUEST-001"
+    },
+    {
+      "description": "package retention or event publication refused by the tracker, event contract or storage owner",
+      "guidance": "inspect the cause; retry only after repair",
+      "id": "ERR-PACKAGE-EVENT-001"
+    },
+    {
+      "description": "the approval digest is not the freshly prepared package-event proposal; nothing was published",
+      "guidance": "prepare again and review the current proposal digest",
+      "id": "ERR-PACKAGE-EVENT-APPROVAL-STALE-001"
+    },
+    {
+      "description": "package retention, report, preparation or publication cancelled by its owner; committed provenance may remain, no success is claimed",
+      "guidance": "rerun; exact reruns resume without duplicates",
+      "id": "ERR-PACKAGE-EVENT-CANCELLED-001"
+    },
+    {
+      "description": "retained package-detection custody, its canonical record, or an exported package analysis report disagrees with the rebuild from custody",
+      "guidance": "do not trust the bytes; investigate custody and re-export",
+      "id": "ERR-PACKAGE-EVENT-MISMATCH-001"
+    },
+    {
+      "description": "package report/event request outside its contract (label not in the package vocabulary, tracking policy out of bounds, or bytes that are not a package analysis report)",
+      "guidance": "correct the request; do not retry unchanged",
+      "id": "ERR-PACKAGE-EVENT-REQUEST-001"
+    },
+    {
+      "description": "the selected package-report track does not exist or was never confirmed",
+      "guidance": "choose a confirmed track from the report output",
+      "id": "ERR-PACKAGE-EVENT-TRACK-001"
+    },
+    {
+      "description": "the deployment retains no package detection with this report digest (only `fss-infer package-detect --retain yes` retains one)",
+      "guidance": "retain the detection first, then rerun",
+      "id": "ERR-PACKAGE-EVENT-UNAVAILABLE-001"
     },
     {
       "description": "plan anchor changed before commit",

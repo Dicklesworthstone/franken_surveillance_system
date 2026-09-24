@@ -24,6 +24,8 @@ use fss_reference::{ChannelTransform, ExecBudget, PreprocessProgram, ReplayCx, S
 
 #[path = "../tests/yolox_support/cases.rs"]
 mod cases;
+#[path = "../tests/yolox_support/person.rs"]
+mod person;
 
 fn write_new(path: &Path, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
     let mut f = OpenOptions::new().write(true).create_new(true).open(path)?;

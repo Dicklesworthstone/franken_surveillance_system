@@ -101,3 +101,9 @@ pub mod rgb_package;
 
 /// Retained recordings through a verified RGB detector package into source-space proposals.
 pub mod package_detect;
+
+/// Detection cascade: cheap-gate-selected frames through a verified detector package.
+pub mod detector_cascade;
+
+/// Retained package detections tracked into unresolved recorded events (report/prepare/publish).
+pub mod package_event;

@@ -3,28 +3,31 @@
 //!
 //! Reads completed retained imports only (JPEG/MJPEG, H.264 Annex-B, H.265/HEVC Annex-B)
 //! through the canonical codecs. JPEG frames are decoded to RGB with the native color decoder;
-//! H.264/H.265 retained decoding publishes luma only, so those frames are replicated into
-//! R=G=B and recorded as grayscale input. Nothing is published, activated or alerted: the
-//! result is a complete, deterministic JSON report of uncalibrated proposals with exact source,
-//! inference, contract and package identities. An empty frame is not evidence of absence.
+//! H.264/H.265 frames are converted from their decoded 4:2:0 planes (luma and chroma) through the
+//! declared BT.601 limited-range transform ([`super::recorded_decode::video_rgb`]). Nothing is
+//! published, activated or alerted: the result is a complete, deterministic JSON report of
+//! uncalibrated proposals with exact source, inference, contract and package identities. An
+//! empty frame is not evidence of absence. [`super::package_event`] can retain a report as
+//! cognition-plane evidence for the recorded-event workflow.
 
 use std::error::Error;
 use std::fmt;
 use std::fmt::Write as _;
 
-use fss_codec_mjpeg::color::{RgbDecodeLimits, decode_rgb};
+use fss_codec_mjpeg::color::{DecodedRgb, RgbDecodeLimits, RgbDecodeReceipt, decode_rgb};
 use fss_codec_mjpeg::{ComponentInterpretation, DecodeBudget};
-use fss_core::{ContentDigest, SensorCapsule};
+use fss_core::{ContentDigest, DigestAlgorithm, SensorCapsule};
 
 use super::recorded_decode::h264::{DecoderLimits, RecordedH264Range, RecordedH264Request};
 use super::recorded_decode::h265::{
     DecoderLimits as H265DecoderLimits, RecordedH265Range, RecordedH265Request,
 };
-use super::recorded_decode::source_capsule;
+use super::recorded_decode::video_rgb::{VIDEO_RGB_COLOR, video_rgb_receipt};
+use super::recorded_decode::{RecordedDecodeError, source_capsule};
 use super::rgb_detections::{
     RgbDetectionBudget, RgbDetectionContract, RgbDetectionReport, project_rgb_detections,
 };
-use super::rgb_inference::{ReplicatedLuma, RgbInference, RgbRunLimits, RgbSourceBinding};
+use super::rgb_inference::{RgbInference, RgbRunLimits, RgbSourceBinding};
 use super::rgb_package::RgbDetectorPackage;
 use super::{RetainedFileImport, RetainedReadLimits};
 use crate::{ExecBudget, ReferenceDeployment, ReplayCx, ScalarExecCx};
@@ -136,7 +139,10 @@ pub struct PackageDetectFrame {
     pub segment: usize,
     /// Retained source capsule.
     pub capsule: SensorCapsule,
-    /// `jpeg_rgb` (native color decode) or `luma_replicated` (explicit grayscale input).
+    /// Retained source-capsule payload digest.
+    pub capsule_digest: ContentDigest,
+    /// `jpeg_rgb` (native color decode) or `ycbcr420_bt601_limited_rgb` (declared video
+    /// transform over decoded luma and chroma).
     pub color: &'static str,
     /// Coded width and height.
     pub dimensions: [u32; 2],
@@ -149,8 +155,18 @@ pub struct PackageDetectFrame {
 /// Complete report over the requested range.
 #[derive(Debug)]
 pub struct PackageDetectReport {
+    /// Exact completed import.
+    pub import_identity: ContentDigest,
+    /// Published import root.
+    pub import_root: ContentDigest,
     /// Retained media format (`mjpeg`, `annexb` or `hevc`).
     pub media_format: String,
+    /// First requested segment.
+    pub first_segment: usize,
+    /// Requested segment count.
+    pub segment_count: usize,
+    /// Applied inclusive score threshold (package default or explicit override), ppm.
+    pub minimum_score_ppm: u32,
     /// Completed frames in decode/display order.
     pub frames: Vec<PackageDetectFrame>,
     /// Contract actually applied.
@@ -204,32 +220,83 @@ fn binding(
     })
 }
 
-enum Pixels {
-    Rgb(fss_codec_mjpeg::color::DecodedRgb),
-    Luma {
-        pixels: Vec<u8>,
-        codec_receipt: ContentDigest,
+/// Decoded RGB of one retained frame: native JPEG color or the declared video transform.
+pub(crate) enum FramePixels {
+    /// Native JPEG color decode.
+    Jpeg(DecodedRgb),
+    /// H.264/H.265 4:2:0 planes through the declared BT.601 limited-range transform.
+    Video {
+        rgb: Vec<u8>,
+        receipt: RgbDecodeReceipt,
     },
 }
-struct Decoded {
-    segment: usize,
-    capsule: SensorCapsule,
-    capsule_digest: ContentDigest,
-    dimensions: [u32; 2],
-    pixels: Pixels,
+
+/// One decoded retained frame ready for inference.
+pub(crate) struct DecodedFrame {
+    pub(crate) segment: usize,
+    pub(crate) capsule: SensorCapsule,
+    pub(crate) capsule_digest: ContentDigest,
+    pub(crate) dimensions: [u32; 2],
+    pub(crate) pixels: FramePixels,
 }
 
-struct FrameRun<'a> {
-    package: &'a RgbDetectorPackage,
-    contract: &'a RgbDetectionContract,
-    limits: &'a PackageDetectLimits,
-    import_root: ContentDigest,
-    budget: RgbDetectionBudget,
-    scalar: &'a ScalarExecCx,
-    cx: &'a ReplayCx,
+/// Retained video picture identities needed to convert and bind its RGB.
+pub(crate) struct VideoPicture<'a> {
+    pub(crate) segment: u64,
+    pub(crate) capsule: &'a SensorCapsule,
+    pub(crate) capsule_digest: ContentDigest,
+    pub(crate) dimensions: [u32; 2],
+    pub(crate) codec_receipt: ContentDigest,
+    pub(crate) i420: ContentDigest,
+    pub(crate) rgb: Result<Vec<u8>, RecordedDecodeError>,
+}
+
+impl DecodedFrame {
+    /// Binds converted video RGB to its retained frame receipt.
+    pub(crate) fn video(picture: VideoPicture<'_>) -> Result<Self, PackageDetectError> {
+        let segment =
+            usize::try_from(picture.segment).map_err(|_| PackageDetectError::InvalidRequest)?;
+        let rgb = picture.rgb.map_err(frame_error(segment))?;
+        let receipt = video_rgb_receipt(
+            picture.capsule.source_digest.bytes(),
+            picture.codec_receipt,
+            picture.i420,
+            picture.dimensions,
+            &rgb,
+        );
+        Ok(Self {
+            segment,
+            capsule: picture.capsule.clone(),
+            capsule_digest: picture.capsule_digest,
+            dimensions: picture.dimensions,
+            pixels: FramePixels::Video { rgb, receipt },
+        })
+    }
+    /// SHA-256 of the packed RGB the model sees before privacy projection and resize.
+    pub(crate) fn rgb_digest(&self) -> ContentDigest {
+        let bytes = match &self.pixels {
+            FramePixels::Jpeg(image) => image.receipt().rgb_sha256,
+            FramePixels::Video { receipt, .. } => receipt.rgb_sha256,
+        };
+        ContentDigest::new(DigestAlgorithm::Sha256, bytes)
+    }
+}
+
+/// Inference and head projection of decoded frames through one verified package.
+pub(crate) struct FrameRun<'a> {
+    pub(crate) package: &'a RgbDetectorPackage,
+    pub(crate) contract: &'a RgbDetectionContract,
+    pub(crate) run: RgbRunLimits,
+    pub(crate) import_root: ContentDigest,
+    pub(crate) budget: RgbDetectionBudget,
+    pub(crate) scalar: &'a ScalarExecCx,
+    pub(crate) cx: &'a ReplayCx,
 }
 impl FrameRun<'_> {
-    fn infer(&mut self, d: Decoded) -> Result<PackageDetectFrame, PackageDetectError> {
+    pub(crate) fn infer(
+        &mut self,
+        d: DecodedFrame,
+    ) -> Result<PackageDetectFrame, PackageDetectError> {
         self.cx
             .checkpoint("package_detect:frame")
             .map_err(|_| PackageDetectError::Cancelled)?;
@@ -246,26 +313,13 @@ impl FrameRun<'_> {
         )?;
         let model = self.package.model();
         let (inference, color) = match &d.pixels {
-            Pixels::Rgb(image) => (
-                model.run_decoded(image, source, &allowed, self.limits.run, self.scalar),
+            FramePixels::Jpeg(image) => (
+                model.run_decoded(image, source, &allowed, self.run, self.scalar),
                 "jpeg_rgb",
             ),
-            Pixels::Luma {
-                pixels,
-                codec_receipt,
-            } => (
-                model.run_luma_replicated(
-                    ReplicatedLuma {
-                        pixels,
-                        dimensions: d.dimensions,
-                        codec_receipt: *codec_receipt,
-                    },
-                    source,
-                    &allowed,
-                    self.limits.run,
-                    self.scalar,
-                ),
-                "luma_replicated",
+            FramePixels::Video { rgb, receipt } => (
+                model.run_rgb_pixels(rgb, *receipt, source, &allowed, self.run, self.scalar),
+                VIDEO_RGB_COLOR,
             ),
         };
         let inference = inference.map_err(frame_error(d.segment))?;
@@ -280,6 +334,7 @@ impl FrameRun<'_> {
         Ok(PackageDetectFrame {
             segment: d.segment,
             capsule: d.capsule,
+            capsule_digest: d.capsule_digest,
             color,
             dimensions: d.dimensions,
             inference,
@@ -327,11 +382,12 @@ pub fn run_package_detection(
         return Err(PackageDetectError::InvalidRequest);
     }
     let media_format = retained.manifest().format.clone();
+    let import_root = retained.import_root();
     let mut run = FrameRun {
         package,
         contract,
-        limits,
-        import_root: retained.import_root(),
+        run: limits.run,
+        import_root,
         budget: RgbDetectionBudget::new(
             limits.detection_work_units,
             limits.detection_scratch_bytes,
@@ -358,12 +414,12 @@ pub fn run_package_detection(
                 )
                 .map_err(frame_error(segment))?;
                 let dimensions = image.dimensions();
-                frames.push(run.infer(Decoded {
+                frames.push(run.infer(DecodedFrame {
                     segment,
                     capsule,
                     capsule_digest,
                     dimensions,
-                    pixels: Pixels::Rgb(image),
+                    pixels: FramePixels::Jpeg(image),
                 })?);
             }
         }
@@ -390,18 +446,15 @@ pub fn run_package_detection(
                 .map_err(frame_error(first))?
             {
                 let r = frame.receipt();
-                let segment = usize::try_from(r.segment_index())
-                    .map_err(|_| PackageDetectError::InvalidRequest)?;
-                frames.push(run.infer(Decoded {
-                    segment,
-                    capsule: r.capsule().clone(),
+                frames.push(run.infer(DecodedFrame::video(VideoPicture {
+                    segment: r.segment_index(),
+                    capsule: r.capsule(),
                     capsule_digest: r.capsule_digest(),
                     dimensions: r.dimensions(),
-                    pixels: Pixels::Luma {
-                        pixels: frame.pixels().to_vec(),
-                        codec_receipt: r.digest(),
-                    },
-                })?);
+                    codec_receipt: r.digest(),
+                    i420: r.i420_sha256(),
+                    rgb: frame.to_rgb(),
+                })?)?);
             }
         }
         "hevc" => {
@@ -427,18 +480,15 @@ pub fn run_package_detection(
                 .map_err(frame_error(first))?
             {
                 let r = frame.receipt();
-                let segment = usize::try_from(r.segment_index())
-                    .map_err(|_| PackageDetectError::InvalidRequest)?;
-                frames.push(run.infer(Decoded {
-                    segment,
-                    capsule: r.capsule().clone(),
+                frames.push(run.infer(DecodedFrame::video(VideoPicture {
+                    segment: r.segment_index(),
+                    capsule: r.capsule(),
                     capsule_digest: r.capsule_digest(),
                     dimensions: r.dimensions(),
-                    pixels: Pixels::Luma {
-                        pixels: frame.pixels().to_vec(),
-                        codec_receipt: r.digest(),
-                    },
-                })?);
+                    codec_receipt: r.digest(),
+                    i420: r.i420_sha256(),
+                    rgb: frame.to_rgb(),
+                })?)?);
             }
         }
         _ => return Err(PackageDetectError::InvalidRequest),
@@ -448,7 +498,12 @@ pub fn run_package_detection(
     cx.checkpoint("package_detect:complete")
         .map_err(|_| PackageDetectError::Cancelled)?;
     Ok(PackageDetectReport {
+        import_identity: request.import_identity,
+        import_root,
         media_format,
+        first_segment: request.first_segment,
+        segment_count: request.segment_count,
+        minimum_score_ppm: contract.spec().minimum_score_ppm,
         contract: contract.digest(),
         digest: ContentDigest::sha256(json.as_bytes()),
         json,
@@ -520,9 +575,10 @@ fn render(
             .count();
         write!(
             s,
-            "{{\"segment\":{},\"capsule_id\":{},\"sensor_id\":{},\"sequence\":{},\"capture\":{{\"earliest_ns\":\"{}\",\"latest_ns\":\"{}\",\"clock_basis\":{},\"gap_before\":{}}},\"color\":\"{}\",\"dimensions\":[{},{}],\"letterbox\":{{\"image\":[{},{}],\"left\":{},\"top\":{}}},\"inference_identity\":\"{}\",\"input_digest\":\"{}\",\"output_digest\":\"{}\",\"executed_macs\":{},\"detection_report_digest\":\"{}\",\"rows\":{},\"candidates\":{},\"suppressed\":{},\"detections\":[",
+            "{{\"segment\":{},\"capsule_id\":{},\"capsule_digest\":\"{}\",\"sensor_id\":{},\"sequence\":{},\"capture\":{{\"earliest_ns\":\"{}\",\"latest_ns\":\"{}\",\"clock_basis\":{},\"gap_before\":{}}},\"color\":\"{}\",\"dimensions\":[{},{}],\"letterbox\":{{\"image\":[{},{}],\"left\":{},\"top\":{}}},\"inference_identity\":\"{}\",\"input_digest\":\"{}\",\"output_digest\":\"{}\",\"executed_macs\":{},\"detection_report_digest\":\"{}\",\"rows\":{},\"candidates\":{},\"suppressed\":{},\"detections\":[",
             f.segment,
             json_string(c.capsule_id.as_str()),
+            f.capsule_digest,
             json_string(c.sensor_id.as_str()),
             c.sequence,
             c.capture.earliest.0,
