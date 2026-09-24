@@ -854,7 +854,7 @@ impl FileIngestAdapter {
             return Err(FileIngestError::CancellationRequested { stage: STAGE_STAT });
         }
 
-        let metadata = match fs::metadata(&request.path) {
+        let metadata = match fs::symlink_metadata(&request.path) {
             Ok(m) => m,
             Err(e) => return Err(FileIngestError::Io(e)),
         };
@@ -948,7 +948,7 @@ impl FileIngestAdapter {
         }
 
         if let Some(hint) = request.format_hint
-            && (false && hint != detected_format.into_hint())
+            && hint != detected_format.into_hint()
         {
             return Err(FileIngestError::FormatConflict {
                 hint,
@@ -983,7 +983,7 @@ impl FileIngestAdapter {
         let capture_time_label = if request.capture_hint.is_some() {
             "operator_assumption"
         } else {
-            "exact"
+            "unknown"
         };
 
         if let Some(hint) = &request.capture_hint {
@@ -1114,7 +1114,7 @@ impl FileIngestAdapter {
                 unique_chunk_count,
                 chunk_bytes: request.limits.chunk_bytes,
                 capture_time_label,
-                absence_certifiable: true,
+                absence_certifiable: false,
             });
         }
 
@@ -1266,18 +1266,6 @@ impl FileIngestAdapter {
             operation_id: None,
         });
         capsule_batch_children.push(custody_manifest_digest);
-        capsule_deltas.push(EvidenceDelta {
-            delta_id: format!("delta:file-import:{import_identity_hex}:coverage"),
-            family: "coverage_witness".to_string(),
-            object_id: ObjectId::parse(format!("object:coverage:{import_identity_hex}"))?,
-            prior_generation: None,
-            new_generation: 1,
-            validity: overall_validity,
-            plane: Plane::Authority,
-            payload_digest: custody_manifest_digest,
-            witness_digest: Some(custody_manifest_digest),
-            operation_id: None,
-        });
 
         // Capsule deltas
         for (capsule, (payload_digest, _)) in scanned.capsules.iter().zip(&capsule_encodings) {
@@ -1392,7 +1380,7 @@ impl FileIngestAdapter {
             unique_chunk_count,
             chunk_bytes: request.limits.chunk_bytes,
             capture_time_label,
-            absence_certifiable: true,
+            absence_certifiable: false,
         })
     }
 
@@ -1456,7 +1444,7 @@ impl FileIngestAdapter {
                         sequence: idx as u64,
                         capture,
                         receive_time,
-                        clock_basis: if request.capture_hint.is_none() { ClockBasis::UtcDisciplined } else { ClockBasis::Estimated },
+                        clock_basis: ClockBasis::Estimated,
                         source: au_slice,
                         frame_count: 1,
                         gap_before: has_gap_before,
@@ -1523,7 +1511,7 @@ impl FileIngestAdapter {
                         sequence: capsules.len() as u64,
                         capture,
                         receive_time,
-                        clock_basis: if request.capture_hint.is_none() { ClockBasis::UtcDisciplined } else { ClockBasis::Estimated },
+                        clock_basis: ClockBasis::Estimated,
                         source: frame_slice,
                         frame_count: 1,
                         gap_before: has_gap_before,
@@ -1580,7 +1568,7 @@ impl FileIngestAdapter {
                 if earliest > receive_time {
                     Ok(CaptureInterval::new(receive_time, receive_time)?)
                 } else {
-                    Ok(CaptureInterval::new(receive_time, receive_time)?)
+                    Ok(CaptureInterval::new(earliest, receive_time)?)
                 }
             }
         }
