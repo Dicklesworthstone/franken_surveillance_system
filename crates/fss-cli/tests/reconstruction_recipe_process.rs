@@ -40,8 +40,17 @@ fn replace(args: &mut [OsString], key: &str, value: OsString) -> Test {
     let at = args.iter().position(|v| v.as_os_str() == std::ffi::OsStr::new(key)).ok_or("missing test option")?;
     args[at + 1] = value; Ok(())
 }
+/// Serializes this binary's tests. Every test holds native flock owner locks in this process and
+/// spawns real CLI processes. A child spawned by a concurrent test thread inherits, until its exec
+/// closes it, every descriptor open at that instant, including another test's held owner lock; the
+/// flock then outlives its owner's drop, and that test's next open or child sees Locked/Busy.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 #[test]
 fn check_then_reconstruct_then_lost_stdout_retry_has_identical_api_result_root() -> Test {
+    let _serial = serial();
     let f = seed("cli-cold", 2, false, false)?;
     let (candidate, initial_count) = {
         let p = open(&f.path)?; let loaded = load(&f, &p)?;
@@ -66,6 +75,7 @@ fn check_then_reconstruct_then_lost_stdout_retry_has_identical_api_result_root()
 }
 #[test]
 fn incomplete_fragment_is_reported_without_a_fabricated_output_recording() -> Test {
+    let _serial = serial();
     let f = seed("cli-fragment", 0, false, true)?;
     let result = success(run(&args(&f, "reconstruct-recipe")?)?)?;
     assert!(result.contains("\"windows\":0"));
@@ -73,6 +83,7 @@ fn incomplete_fragment_is_reported_without_a_fabricated_output_recording() -> Te
 }
 #[test]
 fn wrong_late_recipe_never_publishes_earlier_valid_windows() -> Test {
+    let _serial = serial();
     let f = seed("cli-late-mismatch", 3, true, false)?;
     let count = open(&f.path)?.visible_roots().count();
     let out = run(&args(&f, "reconstruct-recipe")?)?;
@@ -81,6 +92,7 @@ fn wrong_late_recipe_never_publishes_earlier_valid_windows() -> Test {
 }
 #[test]
 fn explicit_commit_is_required_and_check_rejects_mutation_flags() -> Test {
+    let _serial = serial();
     let f = seed("cli-consent", 1, false, false)?;
     let mut command = args(&f, "reconstruct-recipe")?; command.truncate(command.len() - 2);
     let out = run(&command)?; assert!(out.stdout.is_empty());
@@ -91,6 +103,7 @@ fn explicit_commit_is_required_and_check_rejects_mutation_flags() -> Test {
 }
 #[test]
 fn changed_scope_and_tighter_execution_bounds_refuse_before_publication() -> Test {
+    let _serial = serial();
     let f = seed("cli-limits", 1, false, false)?;
     let count = open(&f.path)?.visible_roots().count();
     let mut wrong = args(&f, "reconstruct-recipe")?;
@@ -104,6 +117,7 @@ fn changed_scope_and_tighter_execution_bounds_refuse_before_publication() -> Tes
 }
 #[test]
 fn missing_archive_is_not_created_and_unknown_secret_values_are_not_echoed() -> Test {
+    let _serial = serial();
     let f = seed("cli-missing", 1, false, false)?;
     let missing = f.path.join("never-create-this-owner");
     let mut command = args(&f, "check-recipe")?;
@@ -114,6 +128,7 @@ fn missing_archive_is_not_created_and_unknown_secret_values_are_not_echoed() -> 
 }
 #[test]
 fn held_native_owner_lock_blocks_the_other_process_without_repair() -> Test {
+    let _serial = serial();
     let f = seed("cli-lock", 1, false, false)?; let p = open(&f.path)?;
     let before = p.visible_roots().count();
     let out = run(&args(&f, "reconstruct-recipe")?)?;
@@ -121,6 +136,7 @@ fn held_native_owner_lock_blocks_the_other_process_without_repair() -> Test {
 }
 #[test]
 fn duplicate_overflow_and_incomplete_options_fail_before_storage() -> Test {
+    let _serial = serial();
     let f = seed("cli-args", 1, false, false)?;
     for extra in [vec!["--recipe-id", "other"], vec!["--max-work", "18446744073709551616"],
         vec!["--max-windows", "0"], vec!["--timeout-ms"], vec!["--max-steps", "-1"]] {
@@ -135,6 +151,7 @@ fn duplicate_overflow_and_incomplete_options_fail_before_storage() -> Test {
 #[cfg(unix)]
 #[test]
 fn symlink_archive_root_is_not_followed() -> Test {
+    let _serial = serial();
     let f = seed("cli-symlink", 1, false, false)?; let alias = f.path.with_extension("alias");
     std::os::unix::fs::symlink(&f.path, &alias)?;
     let mut command = args(&f, "reconstruct-recipe")?;

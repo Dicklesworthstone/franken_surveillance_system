@@ -87,8 +87,17 @@ fn unchanged(f: &Fixture, original: &[u8]) -> Test {
     let p = LocalRootPublisher::open(f.path.join("media"), storage())?;
     assert!(p.root(&namespace()?.window_slot(0)?).is_none()); Ok(())
 }
+/// Serializes this binary's tests. Every test holds native flock owner locks in this process and
+/// spawns real CLI processes. A child spawned by a concurrent test thread inherits, until its exec
+/// closes it, every descriptor open at that instant, including another test's held owner lock; the
+/// flock then outlives its owner's drop, and that test's next open or child sees Locked/Busy.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 #[test]
 fn inspection_needs_no_media_owner_and_does_not_claim_current_custody() -> Test {
+    let _serial = serial();
     let f = fixture("inspect", true)?;
     std::fs::rename(f.path.join("media"), f.path.join("offline-media"))?;
     let before = std::fs::read(f.path.join("pins/pins.journal"))?;
@@ -100,6 +109,7 @@ fn inspection_needs_no_media_owner_and_does_not_claim_current_custody() -> Test 
 }
 #[test]
 fn new_process_restores_candidate_and_survives_lost_stdout_without_duplicate_roots() -> Test {
+    let _serial = serial();
     let f = fixture("restore", true)?;
     let first = success(run(args(&f, true))?)?;
     assert!(first.contains("\"confirmation_recorded\":true")); assert!(first.contains("\"outcome\":\"published\""));
@@ -118,12 +128,14 @@ fn new_process_restores_candidate_and_survives_lost_stdout_without_duplicate_roo
 }
 #[test]
 fn missing_candidate_source_is_never_discarded_or_replaced_by_a_success_report() -> Test {
+    let _serial = serial();
     let f = fixture("missing_work", false)?; let before = std::fs::read(f.path.join("pins/pins.journal"))?;
     refused(run(args(&f, true))?, false)?; unchanged(&f, &before)?;
     let text = success(run(args(&f, false))?)?; assert!(text.contains(&f.work.to_text())); Ok(())
 }
 #[test]
 fn commit_consent_is_required_and_inspection_rejects_mutating_options() -> Test {
+    let _serial = serial();
     let f = fixture("consent", true)?; let before = std::fs::read(f.path.join("pins/pins.journal"))?;
     let mut no_commit = args(&f, true); no_commit.truncate(no_commit.len() - 2);
     refused(run(no_commit)?, true)?;
@@ -132,6 +144,7 @@ fn commit_consent_is_required_and_inspection_rejects_mutating_options() -> Test 
 }
 #[test]
 fn minimum_prefix_and_external_limits_refuse_before_confirmation_or_publication() -> Test {
+    let _serial = serial();
     let f = fixture("prefix", true)?; let before = std::fs::read(f.path.join("pins/pins.journal"))?;
     let mut wrong = args(&f, true);
     wrong.extend(["--minimum-sequence".into(), f.anchor.sequence.to_string().into(),
@@ -147,6 +160,7 @@ fn minimum_prefix_and_external_limits_refuse_before_confirmation_or_publication(
 }
 #[test]
 fn torn_and_corrupt_journals_are_refused_without_implicit_repair() -> Test {
+    let _serial = serial();
     for corrupt in [false, true] {
         let f = fixture(if corrupt { "corrupt" } else { "torn" }, true)?;
         let file = f.path.join("pins/pins.journal"); let mut bytes = std::fs::read(&file)?;
@@ -159,6 +173,7 @@ fn torn_and_corrupt_journals_are_refused_without_implicit_repair() -> Test {
 }
 #[test]
 fn separate_process_cannot_bypass_an_existing_native_journal_lock() -> Test {
+    let _serial = serial();
     let f = fixture("locked", true)?;
     let guard = ArchivePinJournal::open_complete(f.path.join("pins"), f.scope, None, ArchivePinLimits::default(), &NeverCancel)?;
     refused(run(args(&f, false))?, false)?;
@@ -166,6 +181,7 @@ fn separate_process_cannot_bypass_an_existing_native_journal_lock() -> Test {
 }
 #[test]
 fn corrupt_original_source_cannot_create_a_confirmation_or_normal_archive_window() -> Test {
+    let _serial = serial();
     let f = fixture("corrupt_source", true)?;
     let before = std::fs::read(f.path.join("pins/pins.journal"))?;
     let text = f.source.to_text(); let source = f.path.join("media/spool/objects").join(text.strip_prefix("sha256:").ok_or("digest")?);
@@ -175,6 +191,7 @@ fn corrupt_original_source_cannot_create_a_confirmation_or_normal_archive_window
 }
 #[test]
 fn malformed_arguments_never_echo_values_or_create_storage() -> Test {
+    let _serial = serial();
     let f = fixture("arguments", true)?; let before = std::fs::read(f.path.join("pins/pins.journal"))?;
     for extra in [vec!["--pin-root", "OTHER"], vec!["--minimum-sequence", "2"], vec!["--minimum-root", "sha256:bad"],
         vec!["--timeout-ms", "-1"], vec!["--timeout-ms"], vec!["--max-pin-bytes", "99999999999999"]] {
@@ -188,6 +205,7 @@ fn malformed_arguments_never_echo_values_or_create_storage() -> Test {
 }
 #[test]
 fn help_exposes_explicit_reference_and_mutation_boundaries() -> Test {
+    let _serial = serial();
     for command in [vec!["help".into()], vec!["inspect-pins".into(), "--help".into()], vec!["restore-pins".into(), "--help".into()]] {
         let out = run(command)?; assert!(out.status.success()); assert!(out.stderr.is_empty());
         let text = String::from_utf8(out.stdout)?;
@@ -198,6 +216,7 @@ fn help_exposes_explicit_reference_and_mutation_boundaries() -> Test {
 #[cfg(unix)]
 #[test]
 fn symlinked_or_nested_pin_owners_are_refused_without_publication() -> Test {
+    let _serial = serial();
     let f = fixture("layout", true)?; let before = std::fs::read(f.path.join("pins/pins.journal"))?;
     let alias = f.path.join("pin-alias"); std::os::unix::fs::symlink(f.path.join("pins"), &alias)?;
     let mut command = args(&f, false); command[2] = alias.into_os_string();

@@ -15,8 +15,17 @@ fn invoke(root: &std::path::Path, f: &Fixture, extra: &[&str]) -> Test<Output> {
             "--read-originals", "yes", "--decode", "grayscale", "--timeout-ms", "10000"])
         .args(extra).output()?)
 }
+/// Serializes this binary's tests. Every test holds native flock owner locks in this process and
+/// spawns real CLI processes. A child spawned by a concurrent test thread inherits, until its exec
+/// closes it, every descriptor open at that instant, including another test's held owner lock; the
+/// flock then outlives its owner's drop, and that test's next open or child sees Locked/Busy.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 #[test]
 fn real_process_checks_cold_originals_and_emits_no_media_or_paths() -> Test {
+    let _serial = serial();
     let d = Directory::new()?; let f = fixture(&d.0, false, &[JPEG, JPEG])?;
     let output = invoke(&d.0, &f, &[])?;
     assert_eq!(output.status.code(), Some(i32::from(ExitIdentity::SUCCESS.code)));
@@ -32,6 +41,7 @@ fn real_process_checks_cold_originals_and_emits_no_media_or_paths() -> Test {
 }
 #[test]
 fn incomplete_prefix_is_a_nonzero_exit_with_a_preserved_report() -> Test {
+    let _serial = serial();
     let d = Directory::new()?; let f = fixture(&d.0, true, &[JPEG])?;
     let output = invoke(&d.0, &f, &[])?; assert!(!output.status.success());
     let text = String::from_utf8(output.stdout)?;
@@ -41,6 +51,7 @@ fn incomplete_prefix_is_a_nonzero_exit_with_a_preserved_report() -> Test {
 }
 #[test]
 fn bounded_refusal_preserves_error_class_and_never_claims_success() -> Test {
+    let _serial = serial();
     let d = Directory::new()?; let f = fixture(&d.0, false, &[JPEG])?;
     for extra in [["--max-steps", "1"], ["--max-decode-work", "0"]] {
         let output = invoke(&d.0, &f, &extra)?; assert!(!output.status.success());
@@ -52,6 +63,7 @@ fn bounded_refusal_preserves_error_class_and_never_claims_success() -> Test {
 }
 #[test]
 fn output_limit_never_truncates_an_apparently_successful_json_object() -> Test {
+    let _serial = serial();
     let d = Directory::new()?; let f = fixture(&d.0, false, &[JPEG, JPEG, JPEG])?;
     let output = invoke(&d.0, &f, &["--max-report-bytes", "1024"])?;
     assert!(!output.status.success()); assert!(output.stdout.is_empty());
@@ -60,6 +72,7 @@ fn output_limit_never_truncates_an_apparently_successful_json_object() -> Test {
 }
 #[test]
 fn malformed_options_never_echo_secrets_or_create_an_archive() -> Test {
+    let _serial = serial();
     let d = Directory::new()?; let missing = d.0.join("missing");
     let output = Command::new(env!("CARGO_BIN_EXE_fss-archive"))
         .arg("check-http").arg("--root").arg(&missing).args(["--unknown", "CANARY-SECRET-NEVER-ECHO"]).output()?;
@@ -69,6 +82,7 @@ fn malformed_options_never_echo_secrets_or_create_an_archive() -> Test {
 }
 #[test]
 fn corrupt_originals_are_not_repaired_by_the_operator_command() -> Test {
+    let _serial = serial();
     let d = Directory::new()?; let f = fixture(&d.0, false, &[JPEG])?;
     let text = f.wire_digest.to_text(); let path = d.0.join("spool/objects").join(text.strip_prefix("sha256:").ok_or("algorithm")?);
     std::fs::write(&path, b"corrupt-original")?;
