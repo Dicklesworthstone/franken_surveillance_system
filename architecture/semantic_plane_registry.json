@@ -32,6 +32,7 @@
     "crates/fss-core/src/event_store.rs",
     "crates/fss-core/src/region.rs",
     "crates/fss-reference/src/agent_orient.rs",
+    "crates/fss-reference/src/agent_query.rs",
     "crates/fss-reference/src/alert.rs",
     "crates/fss-reference/src/deployment_session.rs",
     "crates/fss-reference/src/durable_effect.rs",
