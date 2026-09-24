@@ -222,12 +222,48 @@ impl RgbInferenceModel {
     /// neighboring model inputs. Mask and source identities are retained independently.
     pub fn run_decoded(&self, image: &DecodedRgb, source: RgbSourceBinding, allowed: &[u8],
         limits: RgbRunLimits, cx: &ScalarExecCx) -> Result<RgbInference> {
+        self.run_rgb_pixels(image.pixels(), image.receipt(), source, allowed, limits, cx)
+    }
+
+    /// Run on retained decoded luma replicated into R=G=B. Retained H.264/H.265/JPEG decodes
+    /// publish luma only, so this is an explicit grayscale input, not a color decode: the
+    /// receipt records `Grayscale` interpretation and a replication identity bound to the
+    /// caller's exact codec receipt digest. A color-trained model sees no chroma here.
+    pub fn run_luma_replicated(&self, luma: ReplicatedLuma<'_>, source: RgbSourceBinding, allowed: &[u8],
+        limits: RgbRunLimits, cx: &ScalarExecCx) -> Result<RgbInference> {
+        cx.checkpoint("rgb-inference:replicate")?;
+        let ReplicatedLuma { pixels: luma, dimensions, codec_receipt } = luma;
+        let count = dimensions[0] as usize * dimensions[1] as usize;
+        if count == 0 || count > 4_194_304 || luma.len() != count { return Err(RgbInferenceError::InvalidInput); }
+        let mut rgb = Vec::new(); rgb.try_reserve_exact(count * 3).map_err(|_| RgbInferenceError::Limit)?;
+        for (i, value) in luma.iter().enumerate() {
+            if i % 4096 == 0 { cx.checkpoint("rgb-inference:replicate-copy")?; }
+            rgb.extend_from_slice(&[*value, *value, *value]);
+        }
+        let mut e = CanonicalEncoder::new();
+        e.text(LUMA_REPLICATION_DOMAIN); e.digest(codec_receipt); e.digest(ContentDigest::sha256(luma));
+        let receipt = RgbDecodeReceipt {
+            encoded_sha256: source.encoded_sha256, rgb_sha256: ContentDigest::sha256(&rgb).bytes(),
+            decoder: ContentDigest::sha256(&e.finish_checked()?).bytes(),
+            interpretation: ComponentInterpretation::Grayscale, dimensions,
+            mcus: 0, entropy_blocks: 0, restarts: 0, metadata_segments: 0, metadata_bytes: 0,
+        };
+        self.run_rgb_pixels(&rgb, receipt, source, allowed, limits, cx)
+    }
+
+    /// Run on caller-attested tightly packed RGB pixels described by `receipt`. The receipt's
+    /// pixel digest and dimensions are rechecked; its decoder identity is recorded, not trusted
+    /// as a proof that a particular codec produced the bytes.
+    pub fn run_rgb_pixels(&self, pixels: &[u8], receipt: RgbDecodeReceipt, source: RgbSourceBinding,
+        allowed: &[u8], limits: RgbRunLimits, cx: &ScalarExecCx) -> Result<RgbInference> {
         cx.checkpoint("rgb-inference:mask")?;
         self.admit(source, limits)?;
-        if image.receipt().encoded_sha256 != source.encoded_sha256 { return Err(RgbInferenceError::SourceMismatch); }
-        let [width, height] = image.dimensions();
+        if receipt.encoded_sha256 != source.encoded_sha256 { return Err(RgbInferenceError::SourceMismatch); }
+        let [width, height] = receipt.dimensions;
         let count = width as usize * height as usize;
-        let bytes = image.pixels().len();
+        if count == 0 || count > 4_194_304 || pixels.len() != count * 3 { return Err(RgbInferenceError::InvalidInput); }
+        if ContentDigest::sha256(pixels).bytes() != receipt.rgb_sha256 { return Err(RgbInferenceError::SourceMismatch); }
+        let bytes = pixels.len();
         let mask_work = count as u64 * 8 + bytes as u64;
         if allowed.len() != count { return Err(RgbInferenceError::InvalidInput); }
         if bytes > limits.preprocess.max_bytes || mask_work > limits.preprocess.max_macs {
@@ -242,7 +278,7 @@ impl RgbInferenceModel {
         for (i, permission) in allowed.iter().enumerate() {
             if i % 1024 == 0 { cx.checkpoint("rgb-inference:mask-copy")?; }
             if *permission == 0 { masked.extend_from_slice(&self.spec.masked_rgb); }
-            else { masked.extend_from_slice(&image.pixels()[i * 3..i * 3 + 3]); }
+            else { masked.extend_from_slice(&pixels[i * 3..i * 3 + 3]); }
         }
         let options = ResizeOptions { filter: self.spec.filter, aspect: self.spec.aspect,
             budget: ExecBudget::new(limits.preprocess.max_macs - mask_work, limits.preprocess.max_bytes - bytes) };
@@ -281,11 +317,11 @@ impl RgbInferenceModel {
         if output_bytes.len() > limits.maximum_output_bytes { return Err(RgbInferenceError::Limit); }
         let output_digest = ContentDigest::sha256(&output_bytes);
         let mut e = CanonicalEncoder::new(); e.text("fss.rgb-inference.reference.v1"); e.digest(self.digest);
-        encode_source(&mut e, source); e.bytes(&image.receipt().decoder); e.bytes(&image.receipt().rgb_sha256);
+        encode_source(&mut e, source); e.bytes(&receipt.decoder); e.bytes(&receipt.rgb_sha256);
         e.digest(masked_digest); e.digest(input_digest); e.digest(output_digest);
         let identity = ContentDigest::sha256(&e.finish_checked()?);
         cx.checkpoint("rgb-inference:complete")?;
-        Ok(RgbInference { identity, model: self.digest, source, decode: image.receipt(), geometry,
+        Ok(RgbInference { identity, model: self.digest, source, decode: receipt, geometry,
             input_digest, masked_digest, output_digest, outputs,
             preprocess_work: mask_work + resized.work_units, executed_macs: executed.executed_macs(),
             allocated_tensor_bytes: executed.allocated_bytes() })
@@ -305,6 +341,21 @@ impl RgbInferenceModel {
         Ok(())
     }
 }
+
+/// Digest domain of the explicit luma-to-RGB replication identity recorded as a decoder.
+pub const LUMA_REPLICATION_DOMAIN: &str = "fss.rgb_luma_replication.v1";
+
+/// Exact retained luma plane and the codec receipt digest that produced it.
+#[derive(Clone, Copy, Debug)]
+pub struct ReplicatedLuma<'a> {
+    /// Tight row-major luma, width*height bytes.
+    pub pixels: &'a [u8],
+    /// Width and height in coded pixels.
+    pub dimensions: [u32; 2],
+    /// Digest of the retained decode receipt (JPEG, H.264 or H.265) for these bytes.
+    pub codec_receipt: ContentDigest,
+}
+
 fn encode_source(e: &mut CanonicalEncoder, source: RgbSourceBinding) {
     for hash in [source.encoded_sha256, source.exposure, source.image_domain, source.calibration, source.permission_mask] {
         e.bytes(&hash);

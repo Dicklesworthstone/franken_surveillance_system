@@ -20,8 +20,9 @@
 > capture RTSP (interleaved TCP) and HTTP MJPEG streams into local archives, decode baseline
 > JPEG/MJPEG, H.264 (Baseline, Main and High; progressive 4:2:0) and H.265 (Main, 8-bit 4:2:0), run small models on a scalar executor, detect, track
 > and publish event candidates (including a model-free `fss-event watch` pipeline), and keep a
-> crash-safe local ledger. It does **not** yet decode 10-bit or interlaced video, ship a
-> trained detector, measure detection quality on real footage, expose more of the agent protocol than
+> crash-safe local ledger. It ships one trained detector package (YOLOX-Nano, COCO-80,
+> conformance-checked against its upstream ONNX graph; `fss-infer package-detect`), but does **not**
+> yet decode 10-bit or interlaced video, measure detection quality on real footage, expose more of the agent protocol than
 > read-only `fss orient`/`fss explain`, archive to the cloud, or have any release-qualified capability. The boundary is
 > explicit in [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md) and `fss capabilities --json`.
 
@@ -578,8 +579,9 @@ Not implemented:
 - HEVC Main 10/RExt/tiles/dependent slices/long-term references,
   interlaced or 4:2:2/4:4:4/10-bit H.264, progressive JPEG, RTP over UDP,
   UVC, ONVIF;
-- any trained detector package, and any event-quality evaluation (AUPRC, recall at a false-alert
-  budget) on real data;
+- any detection-quality or calibration result for the shipped YOLOX-Nano package (it is checked
+  only for conformance to its upstream ONNX graph), and any event-quality evaluation (AUPRC, recall
+  at a false-alert budget) on real data; `fss-event report` cannot yet consume its detections;
 - Asupersync (the workspace has zero third-party crates; I/O is blocking `std`);
 - cloud archive/ATP transport, property reconstruction, privacy masking, deletion closure,
   search/memory, live operator view, and the DSR release matrix.

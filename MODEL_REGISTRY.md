@@ -1,7 +1,7 @@
 # Model registry and admission doctrine
 
 **Evidence snapshot:** 2026-08-31; architecture revision 2026-08-31
-**Current production models:** none
+**Current production models:** none. **Admitted packages:** `MOD-YOLOXNANO-001` (conformance-qualified reference package; quality/calibration gates not passed)
 **Core rule:** model packages execute only through the qualified first-party Rust runtime; model outputs remain derived evidence and never authorize an effect
 
 ## 1. Why a registry instead of “the best model”
@@ -60,8 +60,19 @@ It does not acquire a hidden Python/ONNX fallback.
 | `MOD-MAST3RSLAM-001` | MASt3R-SLAM | dense real-time reconstruction prior | checkpoint/dependency licenses require review | research geometry oracle |
 | `MOD-CUT3R-001` | CUT3R | persistent online RGB 3D state | license/dependency review required | research geometry oracle |
 | `MOD-DAV2S-001` | Depth Anything V2 Small | monocular depth proposal | Small is Apache-2.0; larger weights differ | production candidate for proposal only |
+| `MOD-YOLOXNANO-001` | YOLOX-Nano (Megvii-BaseDetection, release 0.1.1rc0 ONNX, COCO-80, 416x416) | first trained detector: Stage C proposal source | Apache-2.0 (upstream LICENSE text retained; no upstream NOTICE) | **admitted package** (owner decision `fss-x4a.8.1`, `fss-q4ngj`); see section 2.1 |
 
 This table records candidates, not endorsements or measured FSS results.
+
+### 2.1 Admitted packages
+
+| Registry ID | Package | License | Digests | Gates passed | Receipt |
+|---|---|---|---|---|---|
+| `MOD-YOLOXNANO-001` | [`models/yolox-nano/yolox_nano.fmpk`](models/yolox-nano/README.md), generation `model:yolox-nano:coco80:416:onnx-0.1.1rc0:fss-ir-v1:f32:g1` | Apache-2.0; LICENSE `sha256:577c03d5…bd92` inside the package | package `sha256:5b656875…8c74`; source ONNX `sha256:c789161e…0b7d`; IR graph `sha256:7c33baab…1850`; weights `sha256:c49c68ef…82f9` | 1 identity, 2 license, 3 schema, 4 pure-Rust lowering (no new IR operator; exact Resize/exp compositions), 5 capability (no ambient authority), 7 determinism (identical output digests across runs; importer reruns byte-identical) | conformance vs onnxruntime 1.30.0 on three pinned inputs: max error 3.0e-5 normalized (tolerance 1e-3), identical detections at 0.30 and 0.05 (`crates/fss-reference/tests/yolox_nano_conformance.rs`, fixture `tests/fixtures/yolox_nano/conformance.txt`) |
+
+`MOD-YOLOXNANO-001` has **not** passed gates 6 (resource: ~3 s and ~108 MB per scalar inference, no
+memory plan), 8 (quality), 9 (calibration), 10 (adversarial), 11 (drift), 12 (upgrade) or 13
+(removal). Its outputs are uncalibrated COCO proposals; no alert, absence or threat claim follows.
 
 ## 3. Cognition cascade contracts
 

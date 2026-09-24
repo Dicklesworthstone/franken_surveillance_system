@@ -1,0 +1,15 @@
+YOLOX-Nano (COCO 80-class, 416x416) model weights
+Copyright 2021 Megvii, Base Detection
+Licensed under the Apache License, Version 2.0 (see LICENSE in this directory).
+Upstream: https://github.com/Megvii-BaseDetection/YOLOX
+Upstream artifact: release 0.1.1rc0, yolox_nano.onnx
+  sha256:c789161ed43c8269fcd4e67c67eeeb4e80c622da2eb296a20bc6007bd18a0b7d
+The upstream repository publishes no NOTICE file at that revision.
+
+Modifications by the Franken Surveillance System project (Apache-2.0 section 4(b)):
+the ONNX graph and its F32 initializers were converted offline, without numeric change,
+into FSS Model IR v1 and a Safetensors file. Structural changes: x*Sigmoid(x) pairs are
+expressed as the IR SiLU operator; nearest-neighbour Resize is expressed as an exact
+Reshape/Concat composition; an RGB-to-BGR channel reorder was prepended; and the YOLOX
+grid decode (grid offset, exp(wh) times stride) was appended as a second graph output.
+The unmodified upstream head remains available as the "raw_head" output.

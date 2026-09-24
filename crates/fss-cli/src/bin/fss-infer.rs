@@ -25,8 +25,10 @@ use fss_reference::ingest::inference::{
 mod detection_cli;
 #[path = "fss-infer/recording_cli.rs"]
 mod recording_cli;
+#[path = "fss-infer/package_cli.rs"]
+mod package_cli;
 
-const HELP: &str = "fss-infer <run|read|replay|detect|track|analyze> [options]\n\
+const HELP: &str = "fss-infer <run|read|replay|detect|track|analyze|package-detect> [options]\n\
   run/read/replay: --root DIR --site SITE --import-id sha256:HEX --segment N\n\
        --interpretation gray|ycbcr [--principal ID]\n\
   run: --model FILE --model-digest sha256:HEX [--decode-work-units N]\n\
@@ -35,6 +37,7 @@ const HELP: &str = "fss-infer <run|read|replay|detect|track|analyze> [options]\n
   Exports: --output FILE --receipt-out FILE --model-out FILE\n\
   detect/track: use fss-infer detect --help for explicit output contracts and run lists.\n\
   analyze: use fss-infer analyze --help for bounded recording-to-report execution.\n\
+  package-detect: use fss-infer package-detect --help (verified RGB detector package).\n\
   A run decodes the exact retained source and executes its frozen model. No models are\n\
   downloaded or activated. Outputs are uncalibrated tensors, not alerts or certified\n\
   absence. Exports must be new files outside the deployment. All paths accept native\n\
@@ -186,6 +189,7 @@ fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     if let Some(exit) = recording_cli::dispatch(&args, &mut io::stdout().lock()) { return exit; }
     if let Some(exit) = detection_cli::dispatch(&args, &mut io::stdout().lock()) { return exit; }
+    if let Some(exit) = package_cli::dispatch(&args, &mut io::stdout().lock()) { return exit; }
     match parse(&args) {
         Ok(None) => match io::stdout().lock().write_all(HELP.as_bytes()) {
             Ok(()) => ExitCode::from(0), Err(_) => ExitCode::from(1),

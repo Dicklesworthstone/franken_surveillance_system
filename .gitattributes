@@ -8,3 +8,4 @@
 *.bin binary
 *.onnx binary
 *.safetensors binary
+*.fmpk binary
