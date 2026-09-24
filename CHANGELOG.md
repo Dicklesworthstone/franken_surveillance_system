@@ -6,6 +6,12 @@ All notable changes to Franken Surveillance System are recorded here. The projec
 
 ### Added
 
+- Added bit-exact H.264 Constrained Baseline pixel decode (I and P slices, CAVLC, intra/inter prediction, deblocking, cropping, multiple slices, I_PCM) to `fss-codec-h264`, checked frame by frame against FFmpeg-derived digests on 15 fixtures (`fss-wr7ai`). Not yet wired into ingest; H.265 and Main/High profiles are not implemented.
+- Added native media and capture paths (reference, unqualified; generated fixtures only): file import with custody for Annex-B/MJPEG/rtpplay (`fss-file import`), baseline JPEG/MJPEG decode (`fss-file decode`), RTP H.264/H.265 depacketization, RTSP negotiation with Digest authentication over interleaved TCP, HTTP MJPEG capture, local capture archives (`fss-archive`), and fragmented-MP4 remux for AVC/HEVC.
+- Added a scalar model executor over the FSS IR with Safetensors weights (`fss-infer`), foreground detection, the OpenCV HOG people SVM, Kalman/Hungarian tracking, global cross-camera assignment, zone-gated event candidates and recorded event publication (`fss-event`). Detection quality has not been measured on real footage.
+- Added a native plaintext HTTP webhook alert transport behind durable authorization gates (library only; no command drives it).
+- Added `fss doctor --json --root <dir>`, a read-only deployment inspection.
+
 - Added dependency-free semantic-hydration contracts to `fss-core`:
   - immutable `SemanticHandle` identity over exact subject coordinates;
   - independently versioned descriptor digests for availability, retention, privacy, capability, and cost policy;
@@ -24,6 +30,12 @@ All notable changes to Franken Surveillance System are recorded here. The projec
 - Added guarded agent projections that require the exact local operation receipt before exposing alert commit. Missing, committed, acknowledged, failed, cancelled, or indeterminate state exposes status/reconciliation rather than blind dispatch.
 - Added root-closed reference handoffs and deterministic decision fingerprints for replay comparison.
 - Added the complete multidimensional `BudgetVector`, including accelerator time and energy, to canonical action, projection, compression, and continuation digests.
+
+### Fixed
+
+- Restored the fss-core half of the v3 cancellation-proof records (`fss-thzlz`), which a 2026-09-22 bulk merge had dropped while keeping its callers. That had left `fss-reference` uncompilable (`fss-pod9x`).
+- Removed duplicate registry rows and a stale duplicate of topology layers L3/L4 introduced by the same bulk merge, and restored the byte-exact staleness check in `scripts/robot_docs_checker.py`, which the merge had weakened.
+- `fss capabilities` and `fss status` now report the unqualified reference implementation instead of "design skeleton".
 
 ### Changed
 
