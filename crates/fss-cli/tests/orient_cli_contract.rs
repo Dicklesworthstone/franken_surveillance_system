@@ -735,8 +735,19 @@ fn cell<'a>(payload: &'a Json, claim: &str) -> TestResult<&'a Json> {
 // Tests.
 // ---------------------------------------------------------------------------------------------
 
+/// Serializes this binary's tests. Tests open a `ReferenceDeployment` in this process, which holds
+/// its native flock owner lock, and spawn real CLI processes. A child spawned by a concurrent test
+/// thread inherits, until its exec closes it, every descriptor open at that instant, including
+/// another test's held deployment lock; the flock then outlives its owner's drop, and that test's
+/// next child or read-only inspection sees the deployment as Locked or as having an active writer.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[test]
 fn empty_deployment_orients_to_a_valid_capsule_without_invented_facts() -> TestResult {
+    let _serial = serial();
     let (_directory, root) = empty_deployment("empty")?;
     let before = tree_digest(&root)?;
     let (code, stdout, stderr) = run_fss(&orient_args(&root, &[]))?;
@@ -864,6 +875,7 @@ fn empty_deployment_orients_to_a_valid_capsule_without_invented_facts() -> TestR
 
 #[test]
 fn published_watch_candidate_is_indeterminate_single_sensor_and_explainable() -> TestResult {
+    let _serial = serial();
     let (_directory, root, event_id) = published_deployment("published")?;
     let before = tree_digest(&root)?;
 
@@ -1061,6 +1073,7 @@ fn published_watch_candidate_is_indeterminate_single_sensor_and_explainable() ->
 
 #[test]
 fn every_orientation_view_binds_its_registered_view_and_budget() -> TestResult {
+    let _serial = serial();
     let (_directory, root) = empty_deployment("views")?;
     let before = tree_digest(&root)?;
     // An empty deployment's critical context exceeds the pulse target (120) and is admitted at
@@ -1133,6 +1146,7 @@ fn every_orientation_view_binds_its_registered_view_and_budget() -> TestResult {
 
 #[test]
 fn missing_foreign_and_malformed_requests_are_typed_refusals() -> TestResult {
+    let _serial = serial();
     let directory = OwnedDirectory::new("refusals")?;
     let missing = directory.0.join("missing");
     for args in [
@@ -1282,6 +1296,7 @@ fn inline_worlds(payload: &Json) -> TestResult<Vec<String>> {
 /// deterministic, and nothing under the root changes.
 #[test]
 fn views_scale_to_many_events_within_registered_budgets() -> TestResult {
+    let _serial = serial();
     for events in [1_usize, 5, 30] {
         let (directory, root, event_ids) =
             deployment_with_events(&format!("scale-{events}"), events)?;
@@ -1437,6 +1452,7 @@ fn views_scale_to_many_events_within_registered_budgets() -> TestResult {
 
 #[test]
 fn orient_and_explain_answers_conform_to_the_registered_schemas() -> TestResult {
+    let _serial = serial();
     let (directory, root, event_id) = published_deployment("schema")?;
     let (_empty_directory, empty_root) = empty_deployment("schema-empty")?;
     let before = tree_digest(&root)?;

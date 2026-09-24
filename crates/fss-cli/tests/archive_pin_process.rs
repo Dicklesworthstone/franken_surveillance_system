@@ -34,7 +34,7 @@ fn recording() -> Test<PreparedRecording> {
     Ok(collector.take_ready().ok_or("fixture failed to seal")?)
 }
 fn fresh(name: &str) -> Test<PathBuf> {
-    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("archive_pin_process").join(name);
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("archive_pin_process-{}", std::process::id())).join(name);
     match std::fs::remove_dir_all(&path) {
         Ok(()) => {}, Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}, Err(e) => return Err(e.into()),
     }

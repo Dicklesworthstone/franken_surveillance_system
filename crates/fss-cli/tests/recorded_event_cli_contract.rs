@@ -95,8 +95,19 @@ fn field(output: &Output, key: &str) -> TestResult<String> {
         .map(str::to_owned).ok_or_else(|| std::io::Error::other(format!("missing {key}")).into())
 }
 
+/// Serializes this binary's tests. Tests open a `ReferenceDeployment` in this process, which holds
+/// its native flock owner lock, and spawn real CLI processes. A child spawned by a concurrent test
+/// thread inherits, until its exec closes it, every descriptor open at that instant, including
+/// another test's held deployment lock; the flock then outlives its owner's drop, and that test's
+/// next child or read-only inspection sees the deployment as Locked or as having an active writer.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[test]
 fn prepare_publish_and_restart_recover_canonical_event_and_report() -> TestResult {
+    let _serial = serial();
     let f = fixture("restart")?;
     let prepared = command(&f, "prepare").output()?; success(&prepared);
     let id = field(&prepared, "event_id")?;
@@ -122,6 +133,7 @@ fn prepare_publish_and_restart_recover_canonical_event_and_report() -> TestResul
 
 #[test]
 fn wrong_approval_refuses_and_exact_publication_retry_reuses_authority() -> TestResult {
+    let _serial = serial();
     let f = fixture("approval")?;
     let prepared = command(&f, "prepare").output()?; success(&prepared);
     let bad = ContentDigest::sha256(b"unapproved").to_text();
@@ -141,6 +153,7 @@ fn wrong_approval_refuses_and_exact_publication_retry_reuses_authority() -> Test
 
 #[test]
 fn exports_never_overwrite_or_enter_the_deployment() -> TestResult {
+    let _serial = serial();
     let f = fixture("export")?;
     let existing = f.directory.0.join("existing.json"); fs::write(&existing, b"operator-owned")?;
     let refused = command(&f, "prepare").arg("--event-out").arg(&existing).output()?;
@@ -153,6 +166,7 @@ fn exports_never_overwrite_or_enter_the_deployment() -> TestResult {
 
 #[test]
 fn malformed_approval_and_missing_deployment_do_not_create_storage() -> TestResult {
+    let _serial = serial();
     let directory = Directory::new("absent")?; let root = directory.0.join("absent");
     let digest = ContentDigest::sha256(b"absent").to_text();
     let parsed = Command::new(env!("CARGO_BIN_EXE_fss-event")).arg("publish").arg("--root").arg(&root)
@@ -166,6 +180,7 @@ fn malformed_approval_and_missing_deployment_do_not_create_storage() -> TestResu
 
 #[test]
 fn report_command_reproduces_the_library_recipe_and_lists_event_candidates() -> TestResult {
+    let _serial = serial();
     let f = fixture("report")?;
     let path = f.directory.0.join("cli-analysis.bin");
     let result = command(&f, "report").args(["--import-id", &f.import, "--interpretation", "gray",
