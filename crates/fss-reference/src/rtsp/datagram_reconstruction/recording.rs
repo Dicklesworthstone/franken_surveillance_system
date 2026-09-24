@@ -54,12 +54,12 @@ pub enum RecordingReplayStop {
 #[must_use]
 pub enum RecordingReplayStep {
     /// Original datagram/RTCP/admission or deterministic virtual-clock advance.
-    Source(AvcReplayStep),
+    Source(Box<AvcReplayStep>),
     /// One existing receiver event entered capture; no source was read by this transfer.
     MediaQueued,
     /// Unchanged timing request, original receiver event, pressure or prepared recording.
     /// A Window is the ordinary PreparedRecording and can use the existing root-last publisher.
-    Capture(CapturePoll),
+    Capture(Box<CapturePoll>),
     /// No more source is read. Explicitly call finish_prefix to seal only completed groups,
     /// or cancel to retain them unsealed. Waiting does not renew the current deadline.
     PrefixReady {
@@ -235,10 +235,10 @@ impl<'a> DatagramRecordingReplay<'a> {
             }
             Ok(event @ (CapturePoll::Ended { .. } | CapturePoll::InputEnded)) => {
                 return Err(self.fatal(RecordingReplayError::Replay(AvcReplayError::Invariant), None,
-                    Some(RecordingReplayStep::Capture(event)), None));
+                    Some(RecordingReplayStep::Capture(Box::new(event))), None));
             }
             Ok(CapturePoll::Pending { .. }) => {},
-            Ok(event) => return Ok(RecordingReplayStep::Capture(event)),
+            Ok(event) => return Ok(RecordingReplayStep::Capture(Box::new(event))),
         }
         if self.prefix.is_some() {
             if self.finalizing {
@@ -270,7 +270,7 @@ impl<'a> DatagramRecordingReplay<'a> {
                 Ok(RecordingReplayStep::Stopped { trigger: RecordingReplayStop::Source(Box::new(step)),
                     retained: Box::new(retained) })
             }
-            step => Ok(RecordingReplayStep::Source(step)),
+            step => Ok(RecordingReplayStep::Source(Box::new(step))),
         }
     }
     /// Transfer every held input without sealing, storage I/O, camera contact or deletion.

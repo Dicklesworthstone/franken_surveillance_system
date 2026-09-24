@@ -94,7 +94,7 @@ fn nals() -> Vec<&'static [u8]> {
         }
         start = Some(at + prefix); at += prefix;
     }
-    if let Some(begin) = start { if begin < bytes.len() { out.push(&bytes[begin..]); } }
+    if let Some(begin) = start && begin < bytes.len() { out.push(&bytes[begin..]); }
     out
 }
 fn wire(sequence: u16, marker: bool, payload: &[u8]) -> Test<Vec<u8>> {
@@ -164,7 +164,7 @@ impl<'a> Fixture<'a> {
                     std::thread::yield_now();
                 }
                 other => {
-                    let stop = matches!(&other, LiveRecordingStep::Capture { event: CapturePoll::TimingRequired(_), .. });
+                    let stop = matches!(other.capture_event(), Some(CapturePoll::TimingRequired(_)));
                     outputs.push(other);
                     if stop { assert_eq!(originals, bytes); return Ok(outputs); }
                 }
@@ -187,8 +187,8 @@ impl<'a> Fixture<'a> {
         let idr = data.iter().find(|n| n[0] & 31 == 5).ok_or("missing IDR")?;
         self.receive(&wire(1, false, sps)?, 10)?;
         let outputs = self.receive(&wire(2, true, idr)?, 11)?;
-        assert!(outputs.iter().any(|s| matches!(s, LiveRecordingStep::Capture {
-            event: CapturePoll::TimingRequired(request), .. } if request.idr)));
+        assert!(outputs.iter().any(|s| matches!(s.capture_event(),
+            Some(CapturePoll::TimingRequired(request)) if request.idr)));
         Ok(())
     }
     fn window(&mut self) -> Test<ArchiveAdmission> {
@@ -265,7 +265,7 @@ fn eof_flushes_partial_page_then_reopens_with_identical_source_and_media() -> Te
         for _ in 0..128 {
             match f.driver.poll(SocketReadiness { readable: true, writable: false }, 15, &f.authority, &NeverCancel)? {
                 LiveArchiveStep::Recording(step) => {
-                    if matches!(*step, LiveRecordingStep::Capture { event: CapturePoll::Ended { .. }, .. }) { ended = true; }
+                    if matches!(step.capture_event(), Some(CapturePoll::Ended { .. })) { ended = true; }
                 }
                 LiveArchiveStep::Finished { archive: ArchiveWriteProgress::Finished { windows: 1, pages: 1, .. },
                     cause: LiveArchiveCompletion::InputEnded } => { complete = true; break; }

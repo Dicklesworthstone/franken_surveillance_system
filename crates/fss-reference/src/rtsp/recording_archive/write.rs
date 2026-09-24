@@ -249,7 +249,7 @@ impl<'a, C: ArchiveCodec> CodecRecordingArchiveWriter<'a, C> {
         }
         if let Some(page) = &self.page {
             if !self.index_staged {
-                let digest = self.publisher.stage_object(C::index(page)).map_err(RecordingIoError::Publication)?;
+                let digest = self.publisher.stage_object(C::index(page)).map_err(RecordingIoError::from)?;
                 if Some(digest) != C::manifest(page).metadata_digest() { return Err(ArchiveError::Metadata); }
                 self.index_staged = true;
                 return Ok(ArchiveWriteProgress::CatalogIndexStaged { digest });
@@ -257,7 +257,7 @@ impl<'a, C: ArchiveCodec> CodecRecordingArchiveWriter<'a, C> {
             let first = self.snapshot.indexed;
             let slot = self.snapshot.namespace.page_slot(first)?;
             let receipt = self.publisher.publish_cancellable(&slot, C::manifest(page), cancel)
-                .map_err(RecordingIoError::Publication)?;
+                .map_err(RecordingIoError::from)?;
             if receipt.claims.local != LocalPublicationState::Durable { return Err(RecordingIoError::NotDurable.into()); }
             let catalog = self.page.take().ok_or(ArchiveError::Metadata)?;
             let windows = C::entries(&catalog).len();

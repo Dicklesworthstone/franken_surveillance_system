@@ -105,11 +105,11 @@ impl fmt::Debug for ArchiveResumeRetirement {
 impl ArchiveResumeRetirement {
     /// Reassemble a retry input without losing competing objects. Different simultaneous page
     /// identities are refused intact; no one may resolve that conflict by silently picking one.
-    pub fn into_retry(self) -> Result<ArchiveRetirement, Self> {
-        if self.unoffered_window.is_some() && self.archive.pending.is_some() { return Err(self); }
+    pub fn into_retry(self) -> Result<ArchiveRetirement, Box<Self>> {
+        if self.unoffered_window.is_some() && self.archive.pending.is_some() { return Err(Box::new(self)); }
         if let (Some(old), Some(new)) = (&self.expected_page, &self.archive.prepared_page)
             && (old.manifest() != new.manifest() || old.index_bytes() != new.index_bytes()) {
-            return Err(self);
+            return Err(Box::new(self));
         }
         let Self { mut archive, unoffered_window, expected_page } = self;
         archive.pending = archive.pending.or(unoffered_window);

@@ -175,7 +175,7 @@ impl<'a> PreparedArchiveWork<'a> {
         check_slot(publisher, &self.slot, self.root())?;
         if publisher.root(&self.slot).is_some() {
             return durable(publisher.publish_cancellable(&self.slot, &self.manifest, cancel)
-                .map_err(RecordingIoError::Publication)?);
+                .map_err(RecordingIoError::from)?);
         }
         if let Some(window) = self.work.pending {
             let mut job = RecordingPublication::new(window, publisher, self.window_slot.clone(),
@@ -191,16 +191,16 @@ impl<'a> PreparedArchiveWork<'a> {
         if let Some(page) = self.work.prepared_page {
             probe(cancel)?;
             check_slot(publisher, &self.page_slot, page.manifest().root())?;
-            let digest = publisher.stage_object(page.index_bytes()).map_err(RecordingIoError::Publication)?;
+            let digest = publisher.stage_object(page.index_bytes()).map_err(RecordingIoError::from)?;
             if Some(digest) != page.manifest().metadata_digest() { return Err(ArchiveError::Metadata); }
             durable(publisher.publish_cancellable(&self.page_slot, page.manifest(), cancel)
-                .map_err(RecordingIoError::Publication)?)?;
+                .map_err(RecordingIoError::from)?)?;
         }
         probe(cancel)?;
-        let metadata = publisher.stage_object(&self.metadata).map_err(RecordingIoError::Publication)?;
+        let metadata = publisher.stage_object(&self.metadata).map_err(RecordingIoError::from)?;
         if Some(metadata) != self.manifest.metadata_digest() { return Err(ArchiveError::Metadata); }
         durable(publisher.publish_cancellable(&self.slot, &self.manifest, cancel)
-            .map_err(RecordingIoError::Publication)?)
+            .map_err(RecordingIoError::from)?)
     }
 }
 
@@ -235,11 +235,10 @@ pub fn load_archive_work(publisher: &LocalRootPublisher, slot: &SlotName,
         || snapshot.pages.len() > stamp.pages + usize::from(stamp.page.is_some()) {
         return Err(ArchiveError::Sequence);
     }
-    if snapshot.windows.len() > stamp.windows {
-        if Some(snapshot.windows[stamp.windows].root()) != stamp.pending.map(|(root, _)| root)
-            || stamp.page.is_some() && snapshot.pages.len() == stamp.pages {
-            return Err(ArchiveError::Metadata);
-        }
+    if snapshot.windows.len() > stamp.windows
+        && (Some(snapshot.windows[stamp.windows].root()) != stamp.pending.map(|(root, _)| root)
+            || stamp.page.is_some() && snapshot.pages.len() == stamp.pages) {
+        return Err(ArchiveError::Metadata);
     }
     if snapshot.pages.len() > stamp.pages {
         let page = &snapshot.pages[stamp.pages];
@@ -299,11 +298,10 @@ fn validate_pending(work: WorkView<'_>, limits: ArchiveWorkLimits) -> ArchiveRes
         if old.windows.last().is_some_and(|p| p.decode_interval().end > entry.decode_interval().start)
             || old.windows.iter().any(|p| p.root() == entry.root()) { return Err(ArchiveError::Sequence); }
     }
-    if let Some(page) = &work.prepared_page {
-        if page.scope() != old.namespace.scope() || page.entries() != old.unindexed_windows()
-            || page.entries().is_empty() || old.pages.len() >= old.limits.max_pages {
-            return Err(ArchiveError::Metadata);
-        }
+    if let Some(page) = &work.prepared_page
+        && (page.scope() != old.namespace.scope() || page.entries() != old.unindexed_windows()
+            || page.entries().is_empty() || old.pages.len() >= old.limits.max_pages) {
+        return Err(ArchiveError::Metadata);
     }
     Ok(())
 }

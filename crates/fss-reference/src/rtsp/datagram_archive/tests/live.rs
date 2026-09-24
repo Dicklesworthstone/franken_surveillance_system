@@ -69,7 +69,7 @@ fn nals() -> Vec<&'static [u8]> {
         }
         start = Some(at + prefix); at += prefix;
     }
-    if let Some(begin) = start { if begin < bytes.len() { out.push(&bytes[begin..]); } }
+    if let Some(begin) = start && begin < bytes.len() { out.push(&bytes[begin..]); }
     out
 }
 fn packet(sequence: u16, marker: bool, payload: &[u8]) -> Vec<u8> {
@@ -137,7 +137,9 @@ impl Fixture {
                     if raw == bytes.len() && wait.wake_at_ns.is_none_or(|at| at > now) { return Ok(outputs); }
                     std::thread::yield_now();
                 }
-                LiveRecordingStep::Capture { event: CapturePoll::TimingRequired(_), .. } => { outputs.push(step); return Ok(outputs); }
+                LiveRecordingStep::Capture { event, .. } if matches!(**event, CapturePoll::TimingRequired(_)) => {
+                    outputs.push(step); return Ok(outputs);
+                }
                 LiveRecordingStep::Stopped { .. } => { outputs.push(step); return Ok(outputs); }
                 _ => outputs.push(step),
             }
@@ -163,7 +165,7 @@ impl Fixture {
         self.probation(p)?;
         let data = nals(); let idr = data.iter().find(|n| n[0] & 31 == 5).ok_or("IDR")?;
         let bytes = packet(2, true, idr); let outputs = self.receive(p, &wire(0, &bytes)?, 11)?;
-        assert!(outputs.iter().any(|s| matches!(&s.event, LiveRecordingStep::Capture { event: CapturePoll::TimingRequired(_), .. })));
+        assert!(outputs.iter().any(|s| matches!(s.event.capture_event(), Some(CapturePoll::TimingRequired(_)))));
         assert_eq!(self.driver.pin().datagrams, 2); Ok(bytes)
     }
 }
@@ -180,8 +182,9 @@ fn native_datagrams_precede_timing_and_same_owner_recording_publication_for_all_
         let _ = f.driver.supply_timing(RecordingTiming { decode_time: 700, duration: 3600, composition_offset: 0 },
             12, &f.authority, &NeverCancel)?;
         assert!(f.driver.seal(13, &f.authority, &NeverCancel)?);
-        let RetainedRecordingStep { event: LiveRecordingStep::Capture { event: CapturePoll::Window(window), .. }, datagram: None } =
+        let RetainedRecordingStep { event: LiveRecordingStep::Capture { event, .. }, datagram: None } =
             f.poll(&mut p, 13)? else { return Err("sealed window missing".into()); };
+        let CapturePoll::Window(window) = *event else { return Err("sealed window missing".into()); };
         assert_eq!(window.summary().decode_interval, 700..4300);
         let root = window.manifest().root(); let slot = SlotName::parse("retained-window")?;
         let mut job = RecordingPublication::new(&window, &mut p, slot.clone(), window.byte_len(), LEASE)?;
@@ -202,7 +205,7 @@ fn unsealed_fragment_survives_process_state_loss_without_becoming_a_frame_or_eof
     f.probation(&mut p)?;
     let bytes = packet(2, false, &[0x7c, 0x85, 0x88, 0x80]);
     let output = f.receive(&mut p, &wire(0, &bytes)?, 11)?;
-    assert!(!output.iter().any(|s| matches!(&s.event, LiveRecordingStep::Capture { event: CapturePoll::Window(_) | CapturePoll::TimingRequired(_), .. })));
+    assert!(!output.iter().any(|s| matches!(s.event.capture_event(), Some(CapturePoll::Window(_) | CapturePoll::TimingRequired(_)))));
     let scope = f.driver.scope().clone(); let pin = f.driver.pin();
     assert_eq!(pin.datagrams, 2); let retired = f.driver.cancel().ok_or("retirement")?;
     assert!(retired.capture.is_some()); drop(retired); drop(f); drop(p);
@@ -242,7 +245,7 @@ fn source_capacity_failure_returns_the_exact_withheld_datagram_and_stops_capture
     let bytes = packet(2, true, idr); f.peer.write_all(&wire(0, &bytes)?)?;
     for _ in 0..32768 {
         match f.poll(&mut p, 11) {
-            Ok(step) => assert!(!matches!(step.event, LiveRecordingStep::Capture { event: CapturePoll::TimingRequired(_) | CapturePoll::Window(_), .. })),
+            Ok(step) => assert!(!matches!(step.event.capture_event(), Some(CapturePoll::TimingRequired(_) | CapturePoll::Window(_)))),
             Err(failure) => {
                 assert!(matches!(failure.reason, RetainedRecordingError::Custody(DatagramArchiveError::Limit)));
                 let r = failure.retirement.ok_or("retirement lost")?;
@@ -378,7 +381,7 @@ fn terminal_bad_rtp_retains_its_original_source_without_changing_the_failure_to_
             assert!(matches!(f.poll(&mut p, 11)?.event, LiveRecordingStep::Ended));
             return Ok(());
         }
-        assert!(!matches!(step.event, LiveRecordingStep::Capture { event: CapturePoll::Window(_) | CapturePoll::Ended { .. }, .. }));
+        assert!(!matches!(step.event.capture_event(), Some(CapturePoll::Window(_) | CapturePoll::Ended { .. })));
     }
     Err("malformed RTP did not produce its terminal source receipt".into())
 }

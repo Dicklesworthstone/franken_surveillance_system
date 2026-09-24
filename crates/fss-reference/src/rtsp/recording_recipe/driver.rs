@@ -107,18 +107,21 @@ impl<'a> PlannedRecordingReplay<'a> {
         }
         let step = self.inner.step(publisher, now_ns, cancel, budget).map_err(|e| self.native_failure(e))?;
         match &step {
-            RecordingReplayStep::Capture(CapturePoll::TimingRequired(picture)) => {
-                let Some(decision) = self.recipe.timings.get(self.timing_index) else {
-                    return Err(self.fail(RecordingRecipeError::MissingTiming, Some(step)));
-                };
-                if decision.picture != *picture || decision.observations_read != self.inner.observations_read() {
-                    return Err(self.fail(RecordingRecipeError::Mismatch, Some(step)));
+            RecordingReplayStep::Capture(event) => match &**event {
+                CapturePoll::TimingRequired(picture) => {
+                    let Some(decision) = self.recipe.timings.get(self.timing_index) else {
+                        return Err(self.fail(RecordingRecipeError::MissingTiming, Some(step)));
+                    };
+                    if decision.picture != *picture || decision.observations_read != self.inner.observations_read() {
+                        return Err(self.fail(RecordingRecipeError::Mismatch, Some(step)));
+                    }
+                    self.timing_pending = true;
                 }
-                self.timing_pending = true;
-            }
-            RecordingReplayStep::Capture(CapturePoll::Backpressure(_)) => {
-                return Err(self.fail(RecordingRecipeError::CollectionPressure, Some(step)));
-            }
+                CapturePoll::Backpressure(_) => {
+                    return Err(self.fail(RecordingRecipeError::CollectionPressure, Some(step)));
+                }
+                _ => {},
+            },
             RecordingReplayStep::PrefixReady { .. } => {
                 if self.timing_index != self.recipe.timings.len() {
                     return Err(self.fail(RecordingRecipeError::UnusedTiming, Some(step)));

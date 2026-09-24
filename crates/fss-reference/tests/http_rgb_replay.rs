@@ -132,7 +132,7 @@ fn analyze(r: &mut HttpRgbReplay<'_, '_, '_>, context: HttpRgbContext<'_>, p: &L
 fn complete(r: &mut HttpRgbReplay<'_, '_, '_>, p: &LocalRootPublisher, n: u8) -> Test<HttpRgbReplayReceipt> {
     let context = context(r, n)?;
     match analyze(r, context, p, &NeverCancel, &mut fixture::post())? {
-        HttpRgbReplayStep::ResultReady(receipt) => Ok(receipt), _ => Err("RGB replay incomplete".into()),
+        HttpRgbReplayStep::ResultReady(receipt) => Ok(*receipt), _ => Err("RGB replay incomplete".into()),
     }
 }
 fn same(replayed: HttpRgbReplayReceipt, original: HttpRgbReceipt) {
@@ -156,7 +156,7 @@ fn cold_originals_reproduce_actual_neural_tracking_and_zone_results() -> Test {
                 to_frame(&mut replay, &p)?; let before = replay.source().position();
                 let receipt = complete(&mut replay, &p, i as u8 + 1)?; same(receipt, *native);
                 assert_eq!(receipt.pin(), pin);
-                for _ in 0..3 { assert_eq!(next(&mut replay, &p)?, HttpRgbReplayStep::ResultReady(receipt)); }
+                for _ in 0..3 { assert_eq!(next(&mut replay, &p)?, HttpRgbReplayStep::ResultReady(Box::new(receipt))); }
                 assert_eq!(replay.source().position(), before);
                 let output = replay.take_result(receipt, access(&p, &NeverCancel, &mut work(), &mut framing()))?;
                 assert_eq!(output.receipt(), receipt);
@@ -212,7 +212,7 @@ fn accepted_projection_resumes_without_redecoding_or_replacing_context() -> Test
     let step = r.resume(access(&p, &NeverCancel, &mut work(), &mut DecodeBudget::new(0)),
         &mut fixture::post(), &mut work(), &ScalarExecCx::new())?;
     let HttpRgbReplayStep::ResultReady(receipt) = step else { return Err("projection resume incomplete".into()); };
-    same(receipt, native[0]); assert_eq!(r.source().position().transferred_frames, 0);
+    same(*receipt, native[0]); assert_eq!(r.source().position().transferred_frames, 0);
     Ok(())
 }
 struct Stop;
@@ -283,7 +283,7 @@ fn late_analysis_cancellation_preserves_success_without_reexecuting_it() -> Test
     assert!(r.processing_result().ok_or("native success lost")?.is_ok());
     assert_eq!(r.resume(access(&p, &NeverCancel, &mut work(), &mut framing()),
         &mut RgbDetectionBudget::new(0, 0), &mut WorkBudget::new(0), &ScalarExecCx::new())?,
-        HttpRgbReplayStep::ResultReady(receipt));
+        HttpRgbReplayStep::ResultReady(Box::new(receipt)));
     r.take_result(receipt, access(&p, &NeverCancel, &mut work(), &mut framing()))?;
     assert_eq!(r.source().position().transferred_frames, 1);
     Ok(())

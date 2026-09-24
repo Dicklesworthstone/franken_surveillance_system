@@ -115,13 +115,13 @@ impl<'a> CatalogPublication<'a> {
         for entry in &self.catalog.entries { durable_root(self.publisher, &entry.slot, entry.root)?; }
         if !self.index_staged {
             let observed = self.publisher.stage_object(&self.catalog.index)
-                .map_err(RecordingIoError::Publication)?;
+                .map_err(RecordingIoError::from)?;
             if Some(observed) != self.catalog.manifest.metadata_digest() { return Err(CatalogError::Digest.into()); }
             self.index_staged = true;
             return Ok(CatalogProgress::IndexStaged { digest: observed, bytes: self.catalog.index.len() });
         }
         let receipt = self.publisher.publish_cancellable(&self.slot, &self.catalog.manifest, cancel)
-            .map_err(RecordingIoError::Publication)?;
+            .map_err(RecordingIoError::from)?;
         self.done = true;
         Ok(CatalogProgress::Published(receipt))
     }

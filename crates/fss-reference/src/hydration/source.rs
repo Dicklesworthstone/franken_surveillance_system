@@ -25,7 +25,7 @@ pub enum SourceHydrationError {
     /// The custody owner refused an exact object or its publication closure.
     Object(ObjectError),
     /// The local publication or its on-disk source custody failed verification.
-    Publication(fss_publication::LocalPublicationError),
+    Publication(Box<fss_publication::LocalPublicationError>),
     /// A fresh disk inspection disagrees with the live lock-owning publication authority.
     SnapshotChanged,
     /// The source is not reachable from the explicitly authorized publication root.
@@ -66,7 +66,7 @@ impl std::error::Error for SourceHydrationError {
         match self {
             Self::Hydration(error) => Some(error),
             Self::Object(error) => Some(error),
-            Self::Publication(error) => Some(error),
+            Self::Publication(error) => Some(error.as_ref()),
             _ => None,
         }
     }
@@ -86,7 +86,7 @@ impl From<ObjectError> for SourceHydrationError {
 
 impl From<fss_publication::LocalPublicationError> for SourceHydrationError {
     fn from(error: fss_publication::LocalPublicationError) -> Self {
-        Self::Publication(error)
+        Self::Publication(Box::new(error))
     }
 }
 

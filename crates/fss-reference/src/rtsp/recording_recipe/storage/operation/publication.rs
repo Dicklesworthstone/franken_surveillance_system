@@ -67,14 +67,14 @@ impl PreparedReconstruction<'_> {
             budget.charge(self.metadata.len() as u64 * 8 + self.manifest.children().len() as u64 * 128 + 4096)
                 .map_err(|e| RecordingRecipeError::Source(DatagramArchiveError::Work(e)))?;
             let metadata = p.stage_object(&self.metadata)
-                .map_err(|e| RecordingRecipeError::Source(DatagramArchiveError::Publication(e)))?;
+                .map_err(|e| RecordingRecipeError::Source(DatagramArchiveError::from(e)))?;
             if self.manifest.metadata_digest() != Some(metadata) { return Err(ReconstructionError::Conflict); }
             tick(clock, &mut last, deadline_ns)?;
             super::super::probe(cancel, budget)?;
             // The existing publisher re-verifies the recipe and every output's source closure
             // immediately before the final root commit. A result root is never written first.
             let completion = p.publish_cancellable(&self.pin.slot, &self.manifest, cancel)
-                .map_err(|e| RecordingRecipeError::Source(DatagramArchiveError::Publication(e)))?;
+                .map_err(|e| RecordingRecipeError::Source(DatagramArchiveError::from(e)))?;
             // Return the actual completed receipt even if a new cancellation happens afterwards.
             Ok((pin, completion))
         })();

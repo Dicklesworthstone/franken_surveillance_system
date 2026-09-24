@@ -14,7 +14,7 @@ pub enum RecordingIoError {
     /// Byte/provenance/canonical validation failed.
     Content(RecordingError),
     /// The existing rooted publication owner refused or could not settle an I/O operation.
-    Publication(LocalPublicationError),
+    Publication(Box<LocalPublicationError>),
     /// Verified source/object retrieval failed.
     Spool(SpoolError),
     /// The sealed bytes exceed the supplied reservation or owner object bounds.
@@ -54,6 +54,9 @@ impl std::fmt::Display for RecordingIoError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "recording I/O refusal: {self:?}") }
 }
 impl std::error::Error for RecordingIoError {}
+impl From<LocalPublicationError> for RecordingIoError {
+    fn from(e: LocalPublicationError) -> Self { Self::Publication(Box::new(e)) }
+}
 
 /// One bounded visible publication step. A staged child is never an archived root.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -137,7 +140,7 @@ impl<'a> RecordingPublication<'a> {
             .is_some_and(|r| r.state == LocalPublicationState::Durable);
         if !already_durable && self.next_child < 4 {
             let (role, digest, bytes) = self.plan.children()[self.next_child];
-            let observed = self.publisher.stage_object(bytes).map_err(RecordingIoError::Publication)?;
+            let observed = self.publisher.stage_object(bytes).map_err(RecordingIoError::from)?;
             if observed != digest { return Err(RecordingIoError::Content(RecordingError::Digest)); }
             self.next_child += 1;
             return Ok(RecordingProgress::ChildStaged { role, digest, bytes: bytes.len(), remaining: 4 - self.next_child });
@@ -148,7 +151,7 @@ impl<'a> RecordingPublication<'a> {
             Ok(receipt) => receipt,
             Err(error) => {
                 self.stopped = true;
-                return Err(RecordingIoError::Publication(error));
+                return Err(error.into());
             }
         };
         self.done = true;

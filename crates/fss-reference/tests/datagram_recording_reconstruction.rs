@@ -27,9 +27,13 @@ fn timing() -> RecordingTiming { RecordingTiming { decode_time: 700, duration: 3
 fn await_timing(r: &mut DatagramRecordingReplay<'_>, p: &LocalRootPublisher, now: u64) -> Test<PictureTimingRequest> {
     for _ in 0..256 {
         match r.step(p, now, &NeverCancel, &mut work())? {
-            RecordingReplayStep::Capture(CapturePoll::TimingRequired(request)) => return Ok(request),
-            RecordingReplayStep::Source(_) | RecordingReplayStep::MediaQueued
-                | RecordingReplayStep::Capture(CapturePoll::Receiver(_)) => {},
+            RecordingReplayStep::Capture(event) => match *event {
+                CapturePoll::TimingRequired(request) => return Ok(request),
+                CapturePoll::Receiver(_) => {},
+                other => return Err(format!("unexpected pre-timing output: {:?}",
+                    RecordingReplayStep::Capture(Box::new(other))).into()),
+            },
+            RecordingReplayStep::Source(_) | RecordingReplayStep::MediaQueued => {},
             other => return Err(format!("unexpected pre-timing output: {other:?}").into()),
         }
     }
@@ -40,18 +44,22 @@ fn completed(p: &LocalRootPublisher, a: &DatagramArchive, now: u64) -> Test<Prep
     let mut output = None;
     for _ in 0..256 {
         match r.step(p, now, &NeverCancel, &mut work())? {
-            RecordingReplayStep::Capture(CapturePoll::TimingRequired(_)) => {
-                assert!(matches!(r.supply_timing(timing(), now, &NeverCancel, &mut work())?, TimedCapture::Collected { .. }));
-            }
+            RecordingReplayStep::Capture(event) => match *event {
+                CapturePoll::TimingRequired(_) => {
+                    assert!(matches!(r.supply_timing(timing(), now, &NeverCancel, &mut work())?, TimedCapture::Collected { .. }));
+                }
+                CapturePoll::Window(window) => { assert!(output.is_none()); output = Some(window); },
+                CapturePoll::Receiver(_) => {},
+                other => return Err(format!("unexpected reconstruction output: {:?}",
+                    RecordingReplayStep::Capture(Box::new(other))).into()),
+            },
             RecordingReplayStep::PrefixReady { .. } => r.finish_prefix(now, &NeverCancel, &mut work())?,
-            RecordingReplayStep::Capture(CapturePoll::Window(window)) => { assert!(output.is_none()); output = Some(window); },
             RecordingReplayStep::FinishedPrefix { retained } => {
                 assert!(matches!(retained.prefix.as_deref(), Some(AvcReplayStep::PrefixExhausted { .. })));
                 assert!(matches!(r.step(p, now, &NeverCancel, &mut work())?, RecordingReplayStep::Ended));
                 return output.ok_or_else(|| "completed picture was not prepared".into());
             }
-            RecordingReplayStep::Source(_) | RecordingReplayStep::MediaQueued
-                | RecordingReplayStep::Capture(CapturePoll::Receiver(_)) => {},
+            RecordingReplayStep::Source(_) | RecordingReplayStep::MediaQueued => {},
             other => return Err(format!("unexpected reconstruction output: {other:?}").into()),
         }
     }
@@ -137,7 +145,10 @@ fn missing_timing_blocks_the_next_original_read_and_preserves_the_same_request()
     assert_eq!(r.observations_read(), 2);
     for _ in 0..8 {
         match r.step(&p, 1000, &NeverCancel, &mut work())? {
-            RecordingReplayStep::Capture(CapturePoll::TimingRequired(same)) => assert_eq!(same, request),
+            RecordingReplayStep::Capture(event) if matches!(*event, CapturePoll::TimingRequired(_)) => {
+                let CapturePoll::TimingRequired(same) = *event else { return Err("timing request lost".into()); };
+                assert_eq!(same, request);
+            }
             other => return Err(format!("read-ahead while timing pending: {other:?}").into()),
         }
         assert_eq!(r.observations_read(), 2);
@@ -162,7 +173,8 @@ fn invalid_timing_is_correctable_without_losing_or_replacing_the_picture() -> Te
     let _ = r.supply_timing(timing(), 1000, &NeverCancel, &mut work())?;
     assert!(r.seal(1000, &NeverCancel, &mut work())?);
     match r.step(&p, 1000, &NeverCancel, &mut work())? {
-        RecordingReplayStep::Capture(CapturePoll::Window(window)) => {
+        RecordingReplayStep::Capture(event) if matches!(*event, CapturePoll::Window(_)) => {
+            let CapturePoll::Window(window) = *event else { return Err("corrected window unavailable".into()); };
             assert_eq!(window.manifest().root(), completed(&p, &a, 1000)?.manifest().root());
         }
         other => return Err(format!("corrected window unavailable: {other:?}").into()),
@@ -184,8 +196,8 @@ fn incomplete_fragment_finishes_only_the_selected_prefix_not_a_recording() -> Te
                 assert!(matches!(retained.prefix.as_deref(), Some(AvcReplayStep::PrefixExhausted { replay_ns: 11, .. })));
                 return Ok(());
             }
-            RecordingReplayStep::Source(_) | RecordingReplayStep::MediaQueued
-                | RecordingReplayStep::Capture(CapturePoll::Receiver(_)) => {},
+            RecordingReplayStep::Source(_) | RecordingReplayStep::MediaQueued => {},
+            RecordingReplayStep::Capture(event) if matches!(*event, CapturePoll::Receiver(_)) => {},
             other => return Err(format!("partial fragment became recording output: {other:?}").into()),
         }
     }
@@ -206,8 +218,8 @@ fn unmarked_final_picture_is_retired_not_finished_into_an_invented_window() -> T
                 }
                 assert!(retained.capture.ok_or("capture")?.collection.ready.is_none()); return Ok(());
             }
-            RecordingReplayStep::Source(_) | RecordingReplayStep::MediaQueued
-                | RecordingReplayStep::Capture(CapturePoll::Receiver(_)) => {},
+            RecordingReplayStep::Source(_) | RecordingReplayStep::MediaQueued => {},
+            RecordingReplayStep::Capture(event) if matches!(*event, CapturePoll::Receiver(_)) => {},
             other => return Err(format!("unmarked tail became completed picture: {other:?}").into()),
         }
     }
@@ -221,7 +233,9 @@ fn an_observed_gap_stops_collection_and_returns_prior_unsealed_work() -> Test {
     let mut r = DatagramRecordingReplay::new(&a, s, recording_spec()?, bounds(), 1000)?;
     for _ in 0..256 {
         match r.step(&p, 1000, &NeverCancel, &mut work())? {
-            RecordingReplayStep::Capture(CapturePoll::TimingRequired(_)) => { let _ = r.supply_timing(timing(), 1000, &NeverCancel, &mut work())?; },
+            RecordingReplayStep::Capture(event) if matches!(*event, CapturePoll::TimingRequired(_)) => {
+                let _ = r.supply_timing(timing(), 1000, &NeverCancel, &mut work())?;
+            },
             RecordingReplayStep::Stopped { trigger: RecordingReplayStop::Collection(event), retained } => {
                 assert!(retained.replay.is_some());
                 match *event {
@@ -232,8 +246,8 @@ fn an_observed_gap_stops_collection_and_returns_prior_unsealed_work() -> Test {
                     _ => return Err("missing original collection stop".into()),
                 }
             }
-            RecordingReplayStep::Source(_) | RecordingReplayStep::MediaQueued
-                | RecordingReplayStep::Capture(CapturePoll::Receiver(_)) => {},
+            RecordingReplayStep::Source(_) | RecordingReplayStep::MediaQueued => {},
+            RecordingReplayStep::Capture(event) if matches!(*event, CapturePoll::Receiver(_)) => {},
             other => return Err(format!("gap silently finalized a window: {other:?}").into()),
         }
     }
@@ -246,10 +260,10 @@ fn collection_pressure_retains_the_unconsumed_source_and_blocks_read_ahead() -> 
     let mut r = DatagramRecordingReplay::new(&a, spec()?, rs, bounds(), 1000)?;
     for _ in 0..128 {
         match r.step(&p, 1000, &NeverCancel, &mut work())? {
-            RecordingReplayStep::Capture(CapturePoll::Backpressure(_)) => {
+            RecordingReplayStep::Capture(event) if matches!(*event, CapturePoll::Backpressure(_)) => {
                 let read = r.observations_read();
                 assert!(matches!(r.step(&p, 1000, &NeverCancel, &mut work())?,
-                    RecordingReplayStep::Capture(CapturePoll::Backpressure(_))));
+                    RecordingReplayStep::Capture(event) if matches!(*event, CapturePoll::Backpressure(_))));
                 assert_eq!(r.observations_read(), read);
                 assert!(r.cancel().ok_or("retirement")?.capture.ok_or("capture")?.event.is_some()); return Ok(());
             }
@@ -277,7 +291,8 @@ fn cancellation_after_window_extraction_keeps_the_entire_prepared_recording() ->
         .err().ok_or("post-window cancellation ignored")?;
     let retired = failure.retirement.ok_or("retirement missing")?;
     match *retired.withheld.ok_or("prepared recording lost")? {
-        RecordingReplayStep::Capture(CapturePoll::Window(window)) => {
+        RecordingReplayStep::Capture(event) if matches!(*event, CapturePoll::Window(_)) => {
+            let CapturePoll::Window(window) = *event else { return Err("wrong withheld result".into()); };
             assert_eq!(window.manifest().root(), completed(&p, &a, 1000)?.manifest().root());
         }
         other => return Err(format!("wrong withheld result: {other:?}").into()),
