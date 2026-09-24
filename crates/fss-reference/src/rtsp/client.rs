@@ -7,9 +7,9 @@ pub mod authenticated;
 /// Bounded RFC 7798 negotiation without a decoder or codec fallback.
 pub mod hevc;
 
-use std::fmt;
-use super::{AuthScheme, RtspHeaders, RtspResponse, parse_sdp_bytes};
 use super::selection::select_h264_description;
+use super::{AuthScheme, RtspHeaders, RtspResponse, parse_sdp_bytes};
+use std::fmt;
 
 const SECOND: u64 = 1_000_000_000;
 const MAX_URI: usize = 2_048;
@@ -33,8 +33,10 @@ pub struct ClientConfig {
 
 impl fmt::Debug for ClientConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ClientConfig").field("media_index", &self.media_index)
-            .field("channels", &self.channels).finish_non_exhaustive()
+        f.debug_struct("ClientConfig")
+            .field("media_index", &self.media_index)
+            .field("channels", &self.channels)
+            .finish_non_exhaustive()
     }
 }
 
@@ -109,7 +111,9 @@ pub enum ClientError {
     MediaNotAdmitted,
 }
 impl fmt::Display for ClientError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { write!(f, "RTSP client refusal: {self:?}") }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "RTSP client refusal: {self:?}")
+    }
 }
 impl std::error::Error for ClientError {}
 
@@ -121,16 +125,25 @@ pub struct ClientRequest {
 }
 impl ClientRequest {
     /// Validated complete RTSP request bytes, available only to the transport owner.
-    pub fn bytes(&self) -> &[u8] { self.bytes.as_bytes() }
+    pub fn bytes(&self) -> &[u8] {
+        self.bytes.as_bytes()
+    }
     /// Exact correlation sequence; never reused by this instance.
-    pub fn cseq(&self) -> u32 { self.cseq }
+    pub fn cseq(&self) -> u32 {
+        self.cseq
+    }
     /// Typed intent, independent of its wire method.
-    pub fn command(&self) -> ClientCommand { self.command }
+    pub fn command(&self) -> ClientCommand {
+        self.command
+    }
 }
 impl fmt::Debug for ClientRequest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ClientRequest").field("command", &self.command)
-            .field("cseq", &self.cseq).field("byte_len", &self.bytes.len()).finish()
+        f.debug_struct("ClientRequest")
+            .field("command", &self.command)
+            .field("cseq", &self.cseq)
+            .field("byte_len", &self.bytes.len())
+            .finish()
     }
 }
 
@@ -160,19 +173,29 @@ pub struct ClientMedia {
 }
 impl ClientMedia {
     /// Selected payload mapping.
-    pub fn payload_type(&self) -> u8 { self.payload_type }
+    pub fn payload_type(&self) -> u8 {
+        self.payload_type
+    }
     /// RFC 6184 mode zero or one.
-    pub fn packetization_mode(&self) -> u8 { self.packetization_mode }
+    pub fn packetization_mode(&self) -> u8 {
+        self.packetization_mode
+    }
     /// Exact decoded SDP parameter-set bytes, including the NAL header.
-    pub fn parameter_sets(&self) -> (&[u8], &[u8]) { (&self.sps, &self.pps) }
+    pub fn parameter_sets(&self) -> (&[u8], &[u8]) {
+        (&self.sps, &self.pps)
+    }
     /// Explicit reduced-size RTCP negotiation; never inferred from malformed compounds.
-    pub fn reduced_rtcp(&self) -> bool { self.reduced_rtcp }
+    pub fn reduced_rtcp(&self) -> bool {
+        self.reduced_rtcp
+    }
 }
 impl fmt::Debug for ClientMedia {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ClientMedia").field("payload_type", &self.payload_type)
+        f.debug_struct("ClientMedia")
+            .field("payload_type", &self.payload_type)
             .field("packetization_mode", &self.packetization_mode)
-            .field("reduced_rtcp", &self.reduced_rtcp).finish_non_exhaustive()
+            .field("reduced_rtcp", &self.reduced_rtcp)
+            .finish_non_exhaustive()
     }
 }
 
@@ -191,9 +214,12 @@ pub enum ClientProgress {
 
 /// Classification of one authorized interleaved channel.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ClientChannel { /// RTP bytes, still untrusted codec input.
-    Rtp, /// RTCP bytes, still requiring complete packet validation.
-    Rtcp }
+pub enum ClientChannel {
+    /// RTP bytes, still untrusted codec input.
+    Rtp,
+    /// RTCP bytes, still requiring complete packet validation.
+    Rtcp,
+}
 
 /// Cancellation/connection-loss accounting; local closure is not remote TEARDOWN proof.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -205,7 +231,12 @@ pub struct ClientCloseReceipt {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct Pending { command: ClientCommand, cseq: u32, sent_ns: u64, deadline_ns: u64 }
+struct Pending {
+    command: ClientCommand,
+    cseq: u32,
+    sent_ns: u64,
+    deadline_ns: u64,
+}
 
 /// Deterministic, one-request-at-a-time session around the existing wire/SDP parsers.
 /// Retain raw input independently. All time comes from one owner monotonic clock.
@@ -232,9 +263,12 @@ pub struct RtspClientSession {
 }
 impl fmt::Debug for RtspClientSession {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RtspClientSession").field("state", &self.state)
-            .field("pending", &self.pending).field("media", &self.media)
-            .field("remote_may_exist", &self.remote_may_exist).finish_non_exhaustive()
+        f.debug_struct("RtspClientSession")
+            .field("state", &self.state)
+            .field("pending", &self.pending)
+            .field("media", &self.media)
+            .field("remote_may_exist", &self.remote_may_exist)
+            .finish_non_exhaustive()
     }
 }
 impl RtspClientSession {
@@ -246,21 +280,40 @@ impl RtspClientSession {
     /// HEVC uses the same scope, CSeq, Digest, session, expiry, and teardown rules.
     pub fn with_codec(config: ClientConfig, codec: ClientCodec) -> Result<Self, ClientError> {
         if config.channels.0.checked_add(1) != Some(config.channels.1)
-            || config.media_index >= 64 || config.response_timeout_ns == 0
+            || config.media_index >= 64
+            || config.response_timeout_ns == 0
             || config.response_timeout_ns > 60 * SECOND
             || !(1..=3_600).contains(&config.default_session_timeout_seconds)
-        { return Err(ClientError::Configuration); }
+        {
+            return Err(ClientError::Configuration);
+        }
         let (root_authority, root_path) = uri_parts(&config.control_root_uri)?;
-        if root_path.contains('?') { return Err(ClientError::UriScope); }
+        if root_path.contains('?') {
+            return Err(ClientError::UriScope);
+        }
         let (authority, _) = uri_parts(&config.presentation_uri)?;
-        if authority != root_authority { return Err(ClientError::UriScope); }
+        if authority != root_authority {
+            return Err(ClientError::UriScope);
+        }
         scoped(&config, &config.presentation_uri)?;
         Ok(Self {
             timeout_ns: u64::from(config.default_session_timeout_seconds) * SECOND,
-            config, state: ClientState::Idle, last_ns: 0, next_cseq: 1,
-            pending: None, codec, media: None, selected_payload_type: None, track_uri: String::new(), aggregate_uri: String::new(),
-            session_id: None, expires_ns: None, keepalive_ns: None,
-            remote_may_exist: false, ssrc: None, digest: None,
+            config,
+            state: ClientState::Idle,
+            last_ns: 0,
+            next_cseq: 1,
+            pending: None,
+            codec,
+            media: None,
+            selected_payload_type: None,
+            track_uri: String::new(),
+            aggregate_uri: String::new(),
+            session_id: None,
+            expires_ns: None,
+            keepalive_ns: None,
+            remote_may_exist: false,
+            ssrc: None,
+            digest: None,
         })
     }
     /// Open a session pinned to one offered H.264 payload type.
@@ -268,34 +321,59 @@ impl RtspClientSession {
     /// This owner choice is immutable for this connection. An absent, unsupported,
     /// or malformed chosen mapping is refused; no fallback to another offer occurs.
     /// The configured media index, URI scope, and transport constraints still apply.
-    pub fn new_with_payload_type(config: ClientConfig, payload_type: u8) -> Result<Self, ClientError> {
-        if payload_type > 127 { return Err(ClientError::Configuration); }
+    pub fn new_with_payload_type(
+        config: ClientConfig,
+        payload_type: u8,
+    ) -> Result<Self, ClientError> {
+        if payload_type > 127 {
+            return Err(ClientError::Configuration);
+        }
         let mut session = Self::new(config)?;
         session.selected_payload_type = Some(payload_type);
         Ok(session)
     }
     /// Local protocol state only, not a camera health certificate.
-    pub fn state(&self) -> ClientState { self.state }
+    pub fn state(&self) -> ClientState {
+        self.state
+    }
     /// Immutable H.264 parameters after DESCRIBE; always None for an HEVC session.
     /// Existing AVC callers cannot accidentally consume HEVC parameter-set bytes.
     pub fn media(&self) -> Option<&ClientMedia> {
-        match self.media.as_ref() { Some(NegotiatedMedia::H264(media)) => Some(media), _ => None }
+        match self.media.as_ref() {
+            Some(NegotiatedMedia::H264(media)) => Some(media),
+            _ => None,
+        }
     }
     /// Immutable HEVC transport parameters after DESCRIBE, not a decode-readiness claim.
     pub fn hevc_media(&self) -> Option<&hevc::HevcClientMedia> {
-        match self.media.as_ref() { Some(NegotiatedMedia::H265(media)) => Some(media), _ => None }
+        match self.media.as_ref() {
+            Some(NegotiatedMedia::H265(media)) => Some(media),
+            _ => None,
+        }
     }
     /// Exact owner choice, including before DESCRIBE; never inferred from network data.
-    pub fn codec(&self) -> ClientCodec { self.codec }
+    pub fn codec(&self) -> ClientCodec {
+        self.codec
+    }
     /// Negotiated channel pair from the owner offer.
-    pub fn channels(&self) -> (u8, u8) { self.config.channels }
+    pub fn channels(&self) -> (u8, u8) {
+        self.config.channels
+    }
     /// Optional server-asserted SSRC; never sender authentication.
-    pub fn server_ssrc(&self) -> Option<u32> { self.ssrc }
+    pub fn server_ssrc(&self) -> Option<u32> {
+        self.ssrc
+    }
     /// Earliest useful owner wake. Keepalives do not compete with an outstanding request.
     pub fn next_wake_ns(&self) -> Option<u64> {
-        if matches!(self.state, ClientState::Closed | ClientState::Failed) { return None; }
-        match (self.pending.map(|p| p.deadline_ns).or(self.keepalive_ns), self.expires_ns) {
-            (Some(a), Some(b)) => Some(a.min(b)), (a, b) => a.or(b),
+        if matches!(self.state, ClientState::Closed | ClientState::Failed) {
+            return None;
+        }
+        match (
+            self.pending.map(|p| p.deadline_ns).or(self.keepalive_ns),
+            self.expires_ns,
+        ) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
         }
     }
     /// Earliest hard request/session expiry, excluding advisory keepalive timing.
@@ -303,45 +381,79 @@ impl RtspClientSession {
     /// must still wake for these fail-closed deadlines rather than busy-polling
     /// a past-due keepalive or silently extending the remote lifetime.
     pub fn next_expiry_ns(&self) -> Option<u64> {
-        if matches!(self.state, ClientState::Closed | ClientState::Failed) { return None; }
+        if matches!(self.state, ClientState::Closed | ClientState::Failed) {
+            return None;
+        }
         match (self.pending.map(|p| p.deadline_ns), self.expires_ns) {
-            (Some(a), Some(b)) => Some(a.min(b)), (a, b) => a.or(b),
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
         }
     }
     /// Advance timers even without input. Expiry stops media admission immediately.
     pub fn tick(&mut self, now_ns: u64) -> Result<ClientProgress, ClientError> {
-        if now_ns < self.last_ns { return Err(ClientError::ClockReversed); }
+        if now_ns < self.last_ns {
+            return Err(ClientError::ClockReversed);
+        }
         self.last_ns = now_ns;
-        if matches!(self.state, ClientState::Closed | ClientState::Failed) { return Err(ClientError::State); }
+        if matches!(self.state, ClientState::Closed | ClientState::Failed) {
+            return Err(ClientError::State);
+        }
         let error = if self.expires_ns.is_some_and(|at| now_ns >= at) {
             Some(ClientError::SessionExpired)
         } else if self.pending.is_some_and(|p| now_ns >= p.deadline_ns) {
             Some(ClientError::ResponseTimeout)
-        } else { None };
-        if let Some(error) = error { self.state = ClientState::Failed; return Err(error); }
-        Ok(if self.pending.is_none() && self.keepalive_ns.is_some_and(|at| now_ns >= at) {
-            ClientProgress::KeepAliveDue
-        } else { ClientProgress::Pending })
+        } else {
+            None
+        };
+        if let Some(error) = error {
+            self.state = ClientState::Failed;
+            return Err(error);
+        }
+        Ok(
+            if self.pending.is_none() && self.keepalive_ns.is_some_and(|at| now_ns >= at) {
+                ClientProgress::KeepAliveDue
+            } else {
+                ClientProgress::Pending
+            },
+        )
     }
     /// Prepare a single request and reserve its CSeq/deadline. No unchanged retry is automatic.
     /// An explicitly Digest-enabled session requires request_digest, even for its first request.
-    pub fn request(&mut self, command: ClientCommand, now_ns: u64) -> Result<ClientRequest, ClientError> {
-        if self.digest.is_some() { return Err(ClientError::Authentication(Some(AuthScheme::Digest))); }
+    pub fn request(
+        &mut self,
+        command: ClientCommand,
+        now_ns: u64,
+    ) -> Result<ClientRequest, ClientError> {
+        if self.digest.is_some() {
+            return Err(ClientError::Authentication(Some(AuthScheme::Digest)));
+        }
         self.unsigned_request(command, now_ns)
     }
-    fn unsigned_request(&mut self, command: ClientCommand, now_ns: u64) -> Result<ClientRequest, ClientError> {
+    fn unsigned_request(
+        &mut self,
+        command: ClientCommand,
+        now_ns: u64,
+    ) -> Result<ClientRequest, ClientError> {
         self.tick(now_ns)?;
-        if self.pending.is_some() { return Err(ClientError::State); }
+        if self.pending.is_some() {
+            return Err(ClientError::State);
+        }
         let valid = match command {
             ClientCommand::Options | ClientCommand::Describe => self.state == ClientState::Idle,
             ClientCommand::Setup => self.state == ClientState::Described,
             ClientCommand::Play => self.state == ClientState::Ready,
-            ClientCommand::KeepAlive | ClientCommand::Teardown => matches!(self.state, ClientState::Ready | ClientState::Playing),
+            ClientCommand::KeepAlive | ClientCommand::Teardown => {
+                matches!(self.state, ClientState::Ready | ClientState::Playing)
+            }
         };
-        if !valid { return Err(ClientError::State); }
+        if !valid {
+            return Err(ClientError::State);
+        }
         let cseq = self.next_cseq;
         let next = cseq.checked_add(1).ok_or(ClientError::Exhausted)?;
-        let deadline = now_ns.checked_add(self.config.response_timeout_ns).ok_or(ClientError::Exhausted)?;
+        let deadline = now_ns
+            .checked_add(self.config.response_timeout_ns)
+            .ok_or(ClientError::Exhausted)?;
         let (method, uri) = match command {
             ClientCommand::Options => ("OPTIONS", self.config.presentation_uri.as_str()),
             ClientCommand::Describe => ("DESCRIBE", self.config.presentation_uri.as_str()),
@@ -352,73 +464,146 @@ impl RtspClientSession {
         };
         // Upper bounds include URI, session token, and every fixed header and number.
         let mut bytes = String::new();
-        bytes.try_reserve(MAX_URI + 512).map_err(|_| ClientError::Exhausted)?;
+        bytes
+            .try_reserve(MAX_URI + 512)
+            .map_err(|_| ClientError::Exhausted)?;
         use fmt::Write as _;
-        write!(&mut bytes, "{method} {uri} RTSP/1.0\r\nCSeq: {cseq}\r\n").map_err(|_| ClientError::Exhausted)?;
-        if let Some(id) = &self.session_id { write!(&mut bytes, "Session: {id}\r\n").map_err(|_| ClientError::Exhausted)?; }
-        if command == ClientCommand::Describe { bytes.push_str("Accept: application/sdp\r\n"); }
+        write!(&mut bytes, "{method} {uri} RTSP/1.0\r\nCSeq: {cseq}\r\n")
+            .map_err(|_| ClientError::Exhausted)?;
+        if let Some(id) = &self.session_id {
+            write!(&mut bytes, "Session: {id}\r\n").map_err(|_| ClientError::Exhausted)?;
+        }
+        if command == ClientCommand::Describe {
+            bytes.push_str("Accept: application/sdp\r\n");
+        }
         if command == ClientCommand::Setup {
-            write!(&mut bytes, "Transport: RTP/AVP/TCP;unicast;interleaved={}-{}\r\n", self.config.channels.0, self.config.channels.1).map_err(|_| ClientError::Exhausted)?;
+            write!(
+                &mut bytes,
+                "Transport: RTP/AVP/TCP;unicast;interleaved={}-{}\r\n",
+                self.config.channels.0, self.config.channels.1
+            )
+            .map_err(|_| ClientError::Exhausted)?;
         }
         bytes.push_str("\r\n");
-        self.pending = Some(Pending { command, cseq, sent_ns: now_ns, deadline_ns: deadline });
+        self.pending = Some(Pending {
+            command,
+            cseq,
+            sent_ns: now_ns,
+            deadline_ns: deadline,
+        });
         self.next_cseq = next;
-        if command == ClientCommand::Setup { self.remote_may_exist = true; }
-        if command == ClientCommand::Teardown { self.state = ClientState::Closing; }
-        Ok(ClientRequest { command, cseq, bytes })
+        if command == ClientCommand::Setup {
+            self.remote_may_exist = true;
+        }
+        if command == ClientCommand::Teardown {
+            self.state = ClientState::Closing;
+        }
+        Ok(ClientRequest {
+            command,
+            cseq,
+            bytes,
+        })
     }
     /// Accept a parsed response while retaining caller ownership of the original input.
     /// Unmatched CSeq is refused without consuming the pending request or renewing time.
-    pub fn accept(&mut self, response: &RtspResponse, now_ns: u64) -> Result<ClientProgress, ClientError> {
-        if now_ns < self.last_ns { return Err(ClientError::ClockReversed); }
+    pub fn accept(
+        &mut self,
+        response: &RtspResponse,
+        now_ns: u64,
+    ) -> Result<ClientProgress, ClientError> {
+        if now_ns < self.last_ns {
+            return Err(ClientError::ClockReversed);
+        }
         let pending = self.pending.ok_or(ClientError::State)?;
         bounded_response(response)?;
         let cseq = decimal(singleton(&response.headers, "CSeq")?.ok_or(ClientError::Response)?)?;
-        if cseq != u64::from(pending.cseq) { return Err(ClientError::CseqMismatch); }
+        if cseq != u64::from(pending.cseq) {
+            return Err(ClientError::CseqMismatch);
+        }
         self.tick(now_ns)?;
         let result = self.accept_matching(response, pending, now_ns);
         match result {
-            Ok(ClientProgress::Interim) => {},
+            Ok(ClientProgress::Interim) => {}
             Ok(_) => {
                 self.pending = None;
-                if let Some(auth) = &mut self.digest { auth.settled(); }
-                if self.state == ClientState::Closed { self.digest = None; }
-            },
+                if let Some(auth) = &mut self.digest {
+                    auth.settled();
+                }
+                if self.state == ClientState::Closed {
+                    self.digest = None;
+                }
+            }
             Err(_) => self.state = ClientState::Failed,
         }
         result
     }
-    fn accept_matching(&mut self, response: &RtspResponse, p: Pending, now: u64) -> Result<ClientProgress, ClientError> {
-        if response.version != "RTSP/1.0" { return Err(ClientError::Response); }
-        if (100..200).contains(&response.status_code) { return Ok(ClientProgress::Interim); }
-        if matches!(response.status_code, 401 | 407) { return Err(ClientError::Authentication(response.auth_challenge)); }
-        if response.status_code != 200 { return Err(ClientError::Rejected(response.status_code)); }
+    fn accept_matching(
+        &mut self,
+        response: &RtspResponse,
+        p: Pending,
+        now: u64,
+    ) -> Result<ClientProgress, ClientError> {
+        if response.version != "RTSP/1.0" {
+            return Err(ClientError::Response);
+        }
+        if (100..200).contains(&response.status_code) {
+            return Ok(ClientProgress::Interim);
+        }
+        if matches!(response.status_code, 401 | 407) {
+            return Err(ClientError::Authentication(response.auth_challenge));
+        }
+        if response.status_code != 200 {
+            return Err(ClientError::Rejected(response.status_code));
+        }
         if p.command == ClientCommand::Describe {
-            let (media, track, aggregate) = description(&self.config, response, self.codec, self.selected_payload_type)?;
-            self.media = Some(media); self.track_uri = track; self.aggregate_uri = aggregate;
+            let (media, track, aggregate) = description(
+                &self.config,
+                response,
+                self.codec,
+                self.selected_payload_type,
+            )?;
+            self.media = Some(media);
+            self.track_uri = track;
+            self.aggregate_uri = aggregate;
             self.state = ClientState::Described;
         } else if p.command == ClientCommand::Setup {
             let value = singleton(&response.headers, "Session")?.ok_or(ClientError::Session)?;
             let (id, timeout) = session(value, self.timeout_ns)?;
-            let transport = singleton(&response.headers, "Transport")?.ok_or(ClientError::Transport)?;
+            let transport =
+                singleton(&response.headers, "Transport")?.ok_or(ClientError::Transport)?;
             let ssrc = transport_binding(transport, self.config.channels)?;
             self.renew(p.sent_ns, now, timeout)?;
-            self.session_id = Some(id.to_string()); self.ssrc = ssrc;
+            self.session_id = Some(id.to_string());
+            self.ssrc = ssrc;
             self.state = ClientState::Ready;
-        } else if matches!(p.command, ClientCommand::Play | ClientCommand::KeepAlive | ClientCommand::Teardown) {
+        } else if matches!(
+            p.command,
+            ClientCommand::Play | ClientCommand::KeepAlive | ClientCommand::Teardown
+        ) {
             let value = singleton(&response.headers, "Session")?;
-            if value.is_none() && p.command != ClientCommand::KeepAlive { return Err(ClientError::Session); }
+            if value.is_none() && p.command != ClientCommand::KeepAlive {
+                return Err(ClientError::Session);
+            }
             let timeout = if let Some(value) = value {
                 let (id, timeout) = session(value, self.timeout_ns)?;
-                if self.session_id.as_deref() != Some(id) { return Err(ClientError::Session); }
+                if self.session_id.as_deref() != Some(id) {
+                    return Err(ClientError::Session);
+                }
                 timeout
-            } else { self.timeout_ns };
+            } else {
+                self.timeout_ns
+            };
             if p.command == ClientCommand::Teardown {
-                self.remote_may_exist = false; self.state = ClientState::Closed;
-                self.expires_ns = None; self.keepalive_ns = None; self.session_id = None;
+                self.remote_may_exist = false;
+                self.state = ClientState::Closed;
+                self.expires_ns = None;
+                self.keepalive_ns = None;
+                self.session_id = None;
             } else {
                 self.renew(p.sent_ns, now, timeout)?;
-                if p.command == ClientCommand::Play { self.state = ClientState::Playing; }
+                if p.command == ClientCommand::Play {
+                    self.state = ClientState::Playing;
+                }
             }
         }
         Ok(ClientProgress::Accepted(self.state))
@@ -426,24 +611,47 @@ impl RtspClientSession {
     fn renew(&mut self, sent: u64, now: u64, timeout: u64) -> Result<(), ClientError> {
         // Start at request issue, not ACK receipt: delayed responses cannot manufacture lifetime.
         let expires = sent.checked_add(timeout).ok_or(ClientError::Exhausted)?;
-        let keepalive = sent.checked_add(timeout / 2).ok_or(ClientError::Exhausted)?;
-        if now >= expires { return Err(ClientError::SessionExpired); }
-        self.timeout_ns = timeout; self.expires_ns = Some(expires); self.keepalive_ns = Some(keepalive);
+        let keepalive = sent
+            .checked_add(timeout / 2)
+            .ok_or(ClientError::Exhausted)?;
+        if now >= expires {
+            return Err(ClientError::SessionExpired);
+        }
+        self.timeout_ns = timeout;
+        self.expires_ns = Some(expires);
+        self.keepalive_ns = Some(keepalive);
         Ok(())
     }
     /// Classify a frame only after time/lifecycle checks; packet parsing is separate.
-    pub fn admit_channel(&mut self, channel: u8, now_ns: u64) -> Result<ClientChannel, ClientError> {
+    pub fn admit_channel(
+        &mut self,
+        channel: u8,
+        now_ns: u64,
+    ) -> Result<ClientChannel, ClientError> {
         self.tick(now_ns)?;
-        if self.state != ClientState::Playing { return Err(ClientError::MediaNotAdmitted); }
-        if channel == self.config.channels.0 { Ok(ClientChannel::Rtp) }
-        else if channel == self.config.channels.1 { Ok(ClientChannel::Rtcp) }
-        else { Err(ClientError::MediaNotAdmitted) }
+        if self.state != ClientState::Playing {
+            return Err(ClientError::MediaNotAdmitted);
+        }
+        if channel == self.config.channels.0 {
+            Ok(ClientChannel::Rtp)
+        } else if channel == self.config.channels.1 {
+            Ok(ClientChannel::Rtcp)
+        } else {
+            Err(ClientError::MediaNotAdmitted)
+        }
     }
     /// Stop admission immediately. Owner closes/drains I/O separately and retains this receipt.
     pub fn cancel(&mut self) -> ClientCloseReceipt {
-        let receipt = ClientCloseReceipt { remote_session_may_exist: self.remote_may_exist, pending_cseq: self.pending.map(|p| p.cseq) };
-        self.state = ClientState::Closed; self.pending = None; self.session_id = None;
-        self.expires_ns = None; self.keepalive_ns = None; self.digest = None;
+        let receipt = ClientCloseReceipt {
+            remote_session_may_exist: self.remote_may_exist,
+            pending_cseq: self.pending.map(|p| p.cseq),
+        };
+        self.state = ClientState::Closed;
+        self.pending = None;
+        self.session_id = None;
+        self.expires_ns = None;
+        self.keepalive_ns = None;
+        self.digest = None;
         receipt
     }
 }
@@ -451,70 +659,118 @@ impl RtspClientSession {
 fn singleton<'a>(headers: &'a RtspHeaders, name: &str) -> Result<Option<&'a str>, ClientError> {
     let mut values = headers.iter().filter(|h| h.name.eq_ignore_ascii_case(name));
     let value = values.next().map(|h| h.value.as_str());
-    if values.next().is_some() { return Err(ClientError::Response); }
+    if values.next().is_some() {
+        return Err(ClientError::Response);
+    }
     Ok(value)
 }
 fn bounded_response(response: &RtspResponse) -> Result<(), ClientError> {
-    if response.body.len() > 65_536 || response.headers.len() > 128 || response.reason.len() > 4_096
-        || response.headers.iter().any(|h| h.name.len() > 128 || h.value.len() > 4_096
-            || h.value.bytes().any(|b| b < 32 && b != b'\t' || b == 127))
-    { return Err(ClientError::Response); }
-    let length = singleton(&response.headers, "Content-Length")?.map(decimal).transpose()?.unwrap_or(0);
-    if length != response.body.len() as u64 { return Err(ClientError::Response); }
+    if response.body.len() > 65_536
+        || response.headers.len() > 128
+        || response.reason.len() > 4_096
+        || response.headers.iter().any(|h| {
+            h.name.len() > 128
+                || h.value.len() > 4_096
+                || h.value.bytes().any(|b| b < 32 && b != b'\t' || b == 127)
+        })
+    {
+        return Err(ClientError::Response);
+    }
+    let length = singleton(&response.headers, "Content-Length")?
+        .map(decimal)
+        .transpose()?
+        .unwrap_or(0);
+    if length != response.body.len() as u64 {
+        return Err(ClientError::Response);
+    }
     Ok(())
 }
 fn decimal(value: &str) -> Result<u64, ClientError> {
-    if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) { return Err(ClientError::Response); }
+    if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(ClientError::Response);
+    }
     value.parse().map_err(|_| ClientError::Response)
 }
 fn session(value: &str, default: u64) -> Result<(&str, u64), ClientError> {
     let mut parts = value.split(';');
     let id = parts.next().ok_or(ClientError::Session)?.trim();
-    if id.is_empty() || id.len() > 128 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.+".contains(&b)) {
+    if id.is_empty()
+        || id.len() > 128
+        || !id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_.+".contains(&b))
+    {
         return Err(ClientError::Session);
     }
     let mut timeout = None;
     for part in parts {
         let (name, val) = part.trim().split_once('=').ok_or(ClientError::Session)?;
-        if !name.eq_ignore_ascii_case("timeout") || timeout.is_some() { return Err(ClientError::Session); }
+        if !name.eq_ignore_ascii_case("timeout") || timeout.is_some() {
+            return Err(ClientError::Session);
+        }
         let seconds = decimal(val).map_err(|_| ClientError::Session)?;
-        if !(1..=3_600).contains(&seconds) { return Err(ClientError::Session); }
+        if !(1..=3_600).contains(&seconds) {
+            return Err(ClientError::Session);
+        }
         timeout = Some(seconds * SECOND);
     }
     Ok((id, timeout.unwrap_or(default)))
 }
 fn transport_binding(value: &str, offered: (u8, u8)) -> Result<Option<u32>, ClientError> {
     let mut parts = value.split(';');
-    if parts.next() != Some("RTP/AVP/TCP") || value.contains(',') { return Err(ClientError::Transport); }
+    if parts.next() != Some("RTP/AVP/TCP") || value.contains(',') {
+        return Err(ClientError::Transport);
+    }
     let (mut unicast, mut channels, mut mode, mut ssrc) = (false, false, false, None);
     for part in parts {
         let part = part.trim();
-        if part == "unicast" && !unicast { unicast = true; continue; }
+        if part == "unicast" && !unicast {
+            unicast = true;
+            continue;
+        }
         let (name, val) = part.split_once('=').ok_or(ClientError::Transport)?;
         match name {
             "interleaved" if !channels => {
                 let (a, b) = val.split_once('-').ok_or(ClientError::Transport)?;
-                if decimal(a).ok() != Some(u64::from(offered.0)) || decimal(b).ok() != Some(u64::from(offered.1)) {
+                if decimal(a).ok() != Some(u64::from(offered.0))
+                    || decimal(b).ok() != Some(u64::from(offered.1))
+                {
                     return Err(ClientError::Transport);
                 }
                 channels = true;
             }
             "mode" if !mode && matches!(val, "PLAY" | "\"PLAY\"") => mode = true,
-            "ssrc" if ssrc.is_none() && !val.is_empty() && val.len() <= 8 && val.bytes().all(|b| b.is_ascii_hexdigit()) => {
+            "ssrc"
+                if ssrc.is_none()
+                    && !val.is_empty()
+                    && val.len() <= 8
+                    && val.bytes().all(|b| b.is_ascii_hexdigit()) =>
+            {
                 ssrc = Some(u32::from_str_radix(val, 16).map_err(|_| ClientError::Transport)?);
             }
             _ => return Err(ClientError::Transport),
         }
     }
-    if !unicast || !channels { return Err(ClientError::Transport); }
+    if !unicast || !channels {
+        return Err(ClientError::Transport);
+    }
     Ok(ssrc)
 }
 
-fn description(config: &ClientConfig, r: &RtspResponse, codec: ClientCodec, payload_type: Option<u8>)
-    -> Result<(NegotiatedMedia, String, String), ClientError>
-{
+fn description(
+    config: &ClientConfig,
+    r: &RtspResponse,
+    codec: ClientCodec,
+    payload_type: Option<u8>,
+) -> Result<(NegotiatedMedia, String, String), ClientError> {
     let content_type = singleton(&r.headers, "Content-Type")?.ok_or(ClientError::Description)?;
-    if !content_type.split(';').next().unwrap_or("").trim().eq_ignore_ascii_case("application/sdp") {
+    if !content_type
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .eq_ignore_ascii_case("application/sdp")
+    {
         return Err(ClientError::Description);
     }
     let text = std::str::from_utf8(&r.body).map_err(|_| ClientError::Description)?;
@@ -529,37 +785,70 @@ fn description(config: &ClientConfig, r: &RtspResponse, codec: ClientCodec, payl
             let (mut section, mut controls, mut maps, mut formats) = (None, 0, 0, 0);
             for line in text.lines().map(str::trim) {
                 if line.starts_with("m=") {
-                    section = Some(section.map_or(0, |n: usize| n + 1)); controls = 0; maps = 0; formats = 0;
-                    if section == Some(config.media_index) && line.split_whitespace().count() != 4 { return Err(ClientError::Description); }
+                    section = Some(section.map_or(0, |n: usize| n + 1));
+                    controls = 0;
+                    maps = 0;
+                    formats = 0;
+                    if section == Some(config.media_index) && line.split_whitespace().count() != 4 {
+                        return Err(ClientError::Description);
+                    }
                 } else if line.starts_with("a=control:") {
-                    controls += 1; if controls > 1 { return Err(ClientError::Description); }
+                    controls += 1;
+                    if controls > 1 {
+                        return Err(ClientError::Description);
+                    }
                 } else if section == Some(config.media_index) && line.starts_with("a=rtpmap:") {
-                    maps += 1; if maps > 1 { return Err(ClientError::Description); }
+                    maps += 1;
+                    if maps > 1 {
+                        return Err(ClientError::Description);
+                    }
                 } else if section == Some(config.media_index) && line.starts_with("a=fmtp:") {
-                    formats += 1; if formats > 1 { return Err(ClientError::Description); }
+                    formats += 1;
+                    if formats > 1 {
+                        return Err(ClientError::Description);
+                    }
                     let mut seen = std::collections::BTreeSet::new();
                     let attrs = line.split_once(' ').ok_or(ClientError::Description)?.1;
                     for attr in attrs.split(';') {
-                        let key = attr.trim().split('=').next().ok_or(ClientError::Description)?
-                            .trim().to_ascii_lowercase();
-                        if key.is_empty() || !seen.insert(key) { return Err(ClientError::Description); }
+                        let key = attr
+                            .trim()
+                            .split('=')
+                            .next()
+                            .ok_or(ClientError::Description)?
+                            .trim()
+                            .to_ascii_lowercase();
+                        if key.is_empty() || !seen.insert(key) {
+                            return Err(ClientError::Description);
+                        }
                     }
                 }
             }
             parse_sdp_bytes(&r.body).map_err(|_| ClientError::Description)?
         }
     };
-    let m = sdp.media.get(config.media_index).ok_or(ClientError::Description)?;
+    let m = sdp
+        .media
+        .get(config.media_index)
+        .ok_or(ClientError::Description)?;
     let media = match codec {
         ClientCodec::H264 => NegotiatedMedia::H264(h264_media(m)?),
         ClientCodec::H265 => NegotiatedMedia::H265(hevc::negotiate(text, config.media_index, m)?),
     };
     let content_base = singleton(&r.headers, "Content-Base")?;
     let location = singleton(&r.headers, "Content-Location")?;
-    let base = if let Some(base) = content_base { scoped(config, base)?; base.to_string() }
-        else if let Some(location) = location { resolve(config, &config.presentation_uri, location)? }
-        else { config.presentation_uri.clone() };
-    let track = resolve(config, &base, m.control.as_deref().ok_or(ClientError::Description)?)?;
+    let base = if let Some(base) = content_base {
+        scoped(config, base)?;
+        base.to_string()
+    } else if let Some(location) = location {
+        resolve(config, &config.presentation_uri, location)?
+    } else {
+        config.presentation_uri.clone()
+    };
+    let track = resolve(
+        config,
+        &base,
+        m.control.as_deref().ok_or(ClientError::Description)?,
+    )?;
     let aggregate = match sdp.session_control.as_deref() {
         Some("*") => base,
         Some(control) => resolve(config, &base, control)?,
@@ -569,15 +858,26 @@ fn description(config: &ClientConfig, r: &RtspResponse, codec: ClientCodec, payl
 }
 
 fn h264_media(m: &super::SdpMedia) -> Result<ClientMedia, ClientError> {
-    if m.media_type != "video" || !matches!(m.proto.as_str(), "RTP/AVP" | "RTP/AVP/TCP")
-        || m.encoding_name.as_deref() != Some("H264") || m.clock_rate != Some(90_000)
-        || m.packetization_mode.unwrap_or(0) > 1 || m.sprop_parameter_sets.len() != 2
-    { return Err(ClientError::Description); }
+    if m.media_type != "video"
+        || !matches!(m.proto.as_str(), "RTP/AVP" | "RTP/AVP/TCP")
+        || m.encoding_name.as_deref() != Some("H264")
+        || m.clock_rate != Some(90_000)
+        || m.packetization_mode.unwrap_or(0) > 1
+        || m.sprop_parameter_sets.len() != 2
+    {
+        return Err(ClientError::Description);
+    }
     let sps = m.sps.as_ref().ok_or(ClientError::Description)?;
     let pps = m.pps.as_ref().ok_or(ClientError::Description)?;
-    if sps.len() < 4 || pps.len() < 2 || sps.len() > 16_384 || pps.len() > 16_384
-        || sps[0] & 0x9f != 7 || pps[0] & 0x9f != 8
-    { return Err(ClientError::Description); }
+    if sps.len() < 4
+        || pps.len() < 2
+        || sps.len() > 16_384
+        || pps.len() > 16_384
+        || sps[0] & 0x9f != 7
+        || pps[0] & 0x9f != 8
+    {
+        return Err(ClientError::Description);
+    }
     // The advertised profile/constraints/level must agree with the selected SPS.
     // Missing signaling stays missing; it is never replaced with an invented profile.
     if let Some(profile) = &m.profile_level_id {
@@ -587,25 +887,46 @@ fn h264_media(m: &super::SdpMedia) -> Result<ClientMedia, ClientError> {
         for index in 0..3 {
             let value = u8::from_str_radix(&profile[index * 2..index * 2 + 2], 16)
                 .map_err(|_| ClientError::Description)?;
-            if value != sps[index + 1] { return Err(ClientError::Description); }
+            if value != sps[index + 1] {
+                return Err(ClientError::Description);
+            }
         }
     }
-    Ok(ClientMedia { payload_type: m.payload_type, packetization_mode: m.packetization_mode.unwrap_or(0),
-        sps: sps.clone(), pps: pps.clone(), reduced_rtcp: m.rtcp_reduced_size })
+    Ok(ClientMedia {
+        payload_type: m.payload_type,
+        packetization_mode: m.packetization_mode.unwrap_or(0),
+        sps: sps.clone(),
+        pps: pps.clone(),
+        reduced_rtcp: m.rtcp_reduced_size,
+    })
 }
 
 fn uri_parts(uri: &str) -> Result<(&str, &str), ClientError> {
-    if uri.len() > MAX_URI || !uri.is_ascii() || uri.bytes().any(|b| b <= 32 || b >= 127 || b"\\#@".contains(&b)) {
+    if uri.len() > MAX_URI
+        || !uri.is_ascii()
+        || uri
+            .bytes()
+            .any(|b| b <= 32 || b >= 127 || b"\\#@".contains(&b))
+    {
         return Err(ClientError::UriScope);
     }
     let rest = uri.strip_prefix("rtsp://").ok_or(ClientError::UriScope)?;
     let split = rest.find('/').ok_or(ClientError::UriScope)?;
     let (authority, path) = rest.split_at(split);
-    if authority.is_empty() || (authority.contains('%') || authority.contains('?')) { return Err(ClientError::UriScope); }
+    if authority.is_empty() || (authority.contains('%') || authority.contains('?')) {
+        return Err(ClientError::UriScope);
+    }
     // Authority is matched exactly, not resolved. No DNS alias or alternate port broadening.
-    if !authority.bytes().all(|b| b.is_ascii_alphanumeric() || b".-:[]".contains(&b)) { return Err(ClientError::UriScope); }
+    if !authority
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b".-:[]".contains(&b))
+    {
+        return Err(ClientError::UriScope);
+    }
     for segment in path.split('?').next().unwrap_or("").split('/') {
-        if matches!(segment, "." | "..") { return Err(ClientError::UriScope); }
+        if matches!(segment, "." | "..") {
+            return Err(ClientError::UriScope);
+        }
     }
     let mut at = 0;
     let raw = path.as_bytes();
@@ -613,9 +934,13 @@ fn uri_parts(uri: &str) -> Result<(&str, &str), ClientError> {
         if raw[at] == b'%' {
             let hex = path.get(at + 1..at + 3).ok_or(ClientError::UriScope)?;
             let decoded = u8::from_str_radix(hex, 16).map_err(|_| ClientError::UriScope)?;
-            if decoded <= 32 || b"./\\@#%".contains(&decoded) || decoded == 127 { return Err(ClientError::UriScope); }
+            if decoded <= 32 || b"./\\@#%".contains(&decoded) || decoded == 127 {
+                return Err(ClientError::UriScope);
+            }
             at += 3;
-        } else { at += 1; }
+        } else {
+            at += 1;
+        }
     }
     Ok((authority, path))
 }
@@ -624,18 +949,30 @@ fn scoped(config: &ClientConfig, uri: &str) -> Result<(), ClientError> {
     let (authority, path) = uri_parts(uri)?;
     let root = root_path.trim_end_matches('/');
     let path = path.split('?').next().unwrap_or("");
-    if authority != root_authority || !(path == root || path.strip_prefix(root).is_some_and(|tail| tail.starts_with('/'))) {
+    if authority != root_authority
+        || !(path == root
+            || path
+                .strip_prefix(root)
+                .is_some_and(|tail| tail.starts_with('/')))
+    {
         return Err(ClientError::UriScope);
     }
     Ok(())
 }
 fn resolve(config: &ClientConfig, base: &str, control: &str) -> Result<String, ClientError> {
-    if control.is_empty() || control == "*" || control.len() > MAX_URI { return Err(ClientError::UriScope); }
-    let result = if control.starts_with("rtsp://") { control.to_string() } else {
-        if control.contains("://") || control.starts_with("//") { return Err(ClientError::UriScope); }
+    if control.is_empty() || control == "*" || control.len() > MAX_URI {
+        return Err(ClientError::UriScope);
+    }
+    let result = if control.starts_with("rtsp://") {
+        control.to_string()
+    } else {
+        if control.contains("://") || control.starts_with("//") {
+            return Err(ClientError::UriScope);
+        }
         let (authority, path) = uri_parts(base)?;
-        if control.starts_with('/') { format!("rtsp://{authority}{control}") }
-        else {
+        if control.starts_with('/') {
+            format!("rtsp://{authority}{control}")
+        } else {
             let path = path.split('?').next().unwrap_or("");
             let end = path.rfind('/').ok_or(ClientError::UriScope)? + 1;
             format!("rtsp://{authority}{}{control}", &path[..end])

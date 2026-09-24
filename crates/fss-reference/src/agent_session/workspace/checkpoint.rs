@@ -83,7 +83,10 @@ impl From<WorkspaceError> for WorkspaceCheckpointError {
 impl ReferenceWorkspaceStore {
     /// Seals every immutable revision, including superseded decisions and invalidated actions.
     /// Refuses insufficient storage instead of truncating history or dropping obligations.
-    pub fn checkpoint(&self, max_bytes: usize) -> Result<WorkspaceCheckpoint, WorkspaceCheckpointError> {
+    pub fn checkpoint(
+        &self,
+        max_bytes: usize,
+    ) -> Result<WorkspaceCheckpoint, WorkspaceCheckpointError> {
         let mut output = BoundedOutput {
             bytes: Vec::new(),
             limit: max_bytes.min(MAX_WORKSPACE_CHECKPOINT_BYTES),
@@ -137,7 +140,11 @@ impl ReferenceWorkspaceStore {
         let mut store = Self::with_limits(limits);
         for _ in 0..histories {
             let session = SessionId::parse(text(&mut decoder, 256)?)?;
-            if store.histories.last_key_value().is_some_and(|(id, _)| id >= &session) {
+            if store
+                .histories
+                .last_key_value()
+                .is_some_and(|(id, _)| id >= &session)
+            {
                 return Err(WorkspaceCheckpointError::InvalidHistory);
             }
             let revisions = count(&mut decoder, limits.max_revisions_per_workspace)?;
@@ -150,7 +157,9 @@ impl ReferenceWorkspaceStore {
                 if raw.len() > limits.max_revision_bytes {
                     return Err(WorkspaceCheckpointError::CapacityExceeded);
                 }
-                let total = store.retained_bytes.checked_add(raw.len())
+                let total = store
+                    .retained_bytes
+                    .checked_add(raw.len())
                     .filter(|total| *total <= limits.max_history_bytes)
                     .ok_or(WorkspaceCheckpointError::CapacityExceeded)?;
                 let revision = decode_revision(raw, limits)?;
@@ -202,19 +211,30 @@ impl ReferenceWorkspaceStore {
 }
 
 fn limit_values(limits: WorkspaceLimits) -> [usize; 4] {
-    [limits.max_workspaces, limits.max_revisions_per_workspace,
-        limits.max_revision_bytes, limits.max_history_bytes]
+    [
+        limits.max_workspaces,
+        limits.max_revisions_per_workspace,
+        limits.max_revision_bytes,
+        limits.max_history_bytes,
+    ]
 }
 
-fn count(decoder: &mut CanonicalDecoder<'_>, maximum: usize) -> Result<usize, WorkspaceCheckpointError> {
-    let result = usize::try_from(decoder.u64()?).map_err(|_| WorkspaceCheckpointError::CapacityExceeded)?;
+fn count(
+    decoder: &mut CanonicalDecoder<'_>,
+    maximum: usize,
+) -> Result<usize, WorkspaceCheckpointError> {
+    let result =
+        usize::try_from(decoder.u64()?).map_err(|_| WorkspaceCheckpointError::CapacityExceeded)?;
     if result > maximum {
         return Err(WorkspaceCheckpointError::CapacityExceeded);
     }
     Ok(result)
 }
 
-fn text<'a>(decoder: &mut CanonicalDecoder<'a>, maximum: usize) -> Result<&'a str, WorkspaceCheckpointError> {
+fn text<'a>(
+    decoder: &mut CanonicalDecoder<'a>,
+    maximum: usize,
+) -> Result<&'a str, WorkspaceCheckpointError> {
     let result = decoder.text()?;
     if result.len() > maximum {
         return Err(WorkspaceCheckpointError::CapacityExceeded);
@@ -222,12 +242,19 @@ fn text<'a>(decoder: &mut CanonicalDecoder<'a>, maximum: usize) -> Result<&'a st
     Ok(result)
 }
 
-fn strings(decoder: &mut CanonicalDecoder<'_>, maximum: usize, wide_count: bool) -> Result<Vec<String>, WorkspaceCheckpointError> {
+fn strings(
+    decoder: &mut CanonicalDecoder<'_>,
+    maximum: usize,
+    wide_count: bool,
+) -> Result<Vec<String>, WorkspaceCheckpointError> {
     let length = if wide_count {
         count(decoder, maximum)?
     } else {
-        let length = usize::try_from(decoder.u32()?).map_err(|_| WorkspaceCheckpointError::CapacityExceeded)?;
-        if length > maximum { return Err(WorkspaceCheckpointError::CapacityExceeded); }
+        let length = usize::try_from(decoder.u32()?)
+            .map_err(|_| WorkspaceCheckpointError::CapacityExceeded)?;
+        if length > maximum {
+            return Err(WorkspaceCheckpointError::CapacityExceeded);
+        }
         length
     };
     let mut result = Vec::new();
@@ -237,7 +264,10 @@ fn strings(decoder: &mut CanonicalDecoder<'_>, maximum: usize, wide_count: bool)
     Ok(result)
 }
 
-pub(in crate::agent_session) fn decode_revision(bytes: &[u8], limits: WorkspaceLimits) -> Result<WorkspaceRevision, WorkspaceCheckpointError> {
+pub(in crate::agent_session) fn decode_revision(
+    bytes: &[u8],
+    limits: WorkspaceLimits,
+) -> Result<WorkspaceRevision, WorkspaceCheckpointError> {
     let limits = limits.bounded();
     if bytes.len() > limits.max_revision_bytes {
         return Err(WorkspaceCheckpointError::CapacityExceeded);
@@ -253,7 +283,11 @@ pub(in crate::agent_session) fn decode_revision(bytes: &[u8], limits: WorkspaceL
     let mission_id = MissionId::parse(text(&mut decoder, 256)?)?;
     let capability_scope = decode_scopes(&mut decoder)?;
     let privacy_scope = decode_scopes(&mut decoder)?;
-    let parent = if decoder.bool()? { Some(decoder.digest()?) } else { None };
+    let parent = if decoder.bool()? {
+        Some(decoder.digest()?)
+    } else {
+        None
+    };
     let rebase_from = if decoder.bool()? {
         Some(LedgerAnchor::decode_canonical(&mut decoder)?)
     } else {
@@ -262,13 +296,25 @@ pub(in crate::agent_session) fn decode_revision(bytes: &[u8], limits: WorkspaceL
     let invalidated_actions = strings(&mut decoder, MAX_ITEMS, true)?;
     let capsule = decode_capsule(&mut decoder)?;
     validate_capsule(&capsule, limits.max_revision_bytes)?;
-    if capsule.capability_projection.iter().any(|cap| !capability_scope.contains(cap)) {
+    if capsule
+        .capability_projection
+        .iter()
+        .any(|cap| !capability_scope.contains(cap))
+    {
         return Err(WorkspaceCheckpointError::InvalidHistory);
     }
     decoder.ensure_finished()?;
     let revision = WorkspaceRevision {
-        capsule, basis, mission_id, capability_scope, privacy_scope, parent, rebase_from, invalidated_actions,
-        bytes: bytes.to_vec(), digest: ContentDigest::sha256(bytes),
+        capsule,
+        basis,
+        mission_id,
+        capability_scope,
+        privacy_scope,
+        parent,
+        rebase_from,
+        invalidated_actions,
+        bytes: bytes.to_vec(),
+        digest: ContentDigest::sha256(bytes),
     };
     if encode_revision(&revision)? != bytes {
         return Err(WorkspaceCheckpointError::InvalidHistory);
@@ -276,12 +322,17 @@ pub(in crate::agent_session) fn decode_revision(bytes: &[u8], limits: WorkspaceL
     Ok(revision)
 }
 
-fn decode_scopes(decoder: &mut CanonicalDecoder<'_>) -> Result<BTreeSet<String>, WorkspaceCheckpointError> {
+fn decode_scopes(
+    decoder: &mut CanonicalDecoder<'_>,
+) -> Result<BTreeSet<String>, WorkspaceCheckpointError> {
     let scopes = count(decoder, MAX_ITEMS)?;
     let mut result = BTreeSet::new();
     for _ in 0..scopes {
         let scope = text(decoder, MAX_ITEM_BYTES)?;
-        if result.last().is_some_and(|prior: &String| prior.as_str() >= scope) {
+        if result
+            .last()
+            .is_some_and(|prior: &String| prior.as_str() >= scope)
+        {
             return Err(WorkspaceCheckpointError::InvalidHistory);
         }
         result.insert(scope.to_owned());
@@ -289,7 +340,9 @@ fn decode_scopes(decoder: &mut CanonicalDecoder<'_>) -> Result<BTreeSet<String>,
     Ok(result)
 }
 
-fn decode_capsule(decoder: &mut CanonicalDecoder<'_>) -> Result<SessionCapsule, WorkspaceCheckpointError> {
+fn decode_capsule(
+    decoder: &mut CanonicalDecoder<'_>,
+) -> Result<SessionCapsule, WorkspaceCheckpointError> {
     if decoder.text()? != SessionCapsule::SCHEMA {
         return Err(WorkspaceCheckpointError::UnsupportedFormat);
     }
@@ -308,17 +361,36 @@ fn decode_capsule(decoder: &mut CanonicalDecoder<'_>) -> Result<SessionCapsule, 
     let epistemic_debt = strings(decoder, 1024, false)?;
     let open_obligations = strings(decoder, MAX_ITEMS, false)?;
     let budget_ledger = <BudgetVector as CanonicalDecode>::decode_canonical(decoder)?;
-    let bookmark_count = usize::try_from(decoder.u32()?).map_err(|_| WorkspaceCheckpointError::CapacityExceeded)?;
-    if bookmark_count > MAX_ITEMS { return Err(WorkspaceCheckpointError::CapacityExceeded); }
+    let bookmark_count =
+        usize::try_from(decoder.u32()?).map_err(|_| WorkspaceCheckpointError::CapacityExceeded)?;
+    if bookmark_count > MAX_ITEMS {
+        return Err(WorkspaceCheckpointError::CapacityExceeded);
+    }
     let mut bookmarked_evidence = Vec::new();
-    for _ in 0..bookmark_count { bookmarked_evidence.push(decoder.digest()?); }
+    for _ in 0..bookmark_count {
+        bookmarked_evidence.push(decoder.digest()?);
+    }
     let next_actions = strings(decoder, MAX_ITEMS, false)?;
     let decision_digest = text(decoder, 256)?.to_owned();
     Ok(SessionCapsule::new(SessionCapsuleParams {
-        session_id, revision, principal, capability_projection, objective_digest, base_anchor,
-        current_anchor, situation_capsule_digest, active_hypotheses, assumptions, unknowns,
-        not_observable_domains, epistemic_debt, open_obligations, budget_ledger,
-        bookmarked_evidence, next_actions, decision_digest,
+        session_id,
+        revision,
+        principal,
+        capability_projection,
+        objective_digest,
+        base_anchor,
+        current_anchor,
+        situation_capsule_digest,
+        active_hypotheses,
+        assumptions,
+        unknowns,
+        not_observable_domains,
+        epistemic_debt,
+        open_obligations,
+        budget_ledger,
+        bookmarked_evidence,
+        next_actions,
+        decision_digest,
     })?)
 }
 
@@ -329,14 +401,22 @@ struct BoundedOutput {
 
 impl BoundedOutput {
     fn append(&mut self, bytes: &[u8]) -> Result<(), WorkspaceCheckpointError> {
-        if self.bytes.len().checked_add(bytes.len()).is_none_or(|n| n > self.limit) {
+        if self
+            .bytes
+            .len()
+            .checked_add(bytes.len())
+            .is_none_or(|n| n > self.limit)
+        {
             return Err(WorkspaceCheckpointError::CapacityExceeded);
         }
         self.bytes.extend_from_slice(bytes);
         Ok(())
     }
 
-    fn field(&mut self, write: impl FnOnce(&mut CanonicalEncoder)) -> Result<(), WorkspaceCheckpointError> {
+    fn field(
+        &mut self,
+        write: impl FnOnce(&mut CanonicalEncoder),
+    ) -> Result<(), WorkspaceCheckpointError> {
         let mut encoder = CanonicalEncoder::new();
         write(&mut encoder);
         self.append(&encoder.finish_checked()?)

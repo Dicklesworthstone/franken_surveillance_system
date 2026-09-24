@@ -129,12 +129,17 @@ impl RecordedDecodeError {
             Self::InterpretationMismatch => "ERR-DECODE-INTERPRETATION-001",
             Self::H264RangeNotIdr { .. } => "ERR-DECODE-H264-RANGE-NOT-IDR-001",
             Self::H264SourceGap { .. } => "ERR-DECODE-H264-RANGE-GAP-001",
-            Self::H264(fss_codec_h264::DecodeError::Unsupported(_)) => "ERR-DECODE-H264-UNSUPPORTED-001",
+            Self::H264(fss_codec_h264::DecodeError::Unsupported(_)) => {
+                "ERR-DECODE-H264-UNSUPPORTED-001"
+            }
             Self::H265RangeNotIrap { .. } => "ERR-DECODE-H265-RANGE-NOT-IRAP-001",
             Self::H265SourceGap { .. } => "ERR-DECODE-H265-RANGE-GAP-001",
-            Self::H265(fss_codec_h265::DecodeError::Unsupported(_)) => "ERR-DECODE-H265-UNSUPPORTED-001",
-            Self::Limit | Self::H264(fss_codec_h264::DecodeError::Limit)
-                | Self::H265(fss_codec_h265::DecodeError::Limit) => "ERR-DECODE-BOUNDS-001",
+            Self::H265(fss_codec_h265::DecodeError::Unsupported(_)) => {
+                "ERR-DECODE-H265-UNSUPPORTED-001"
+            }
+            Self::Limit
+            | Self::H264(fss_codec_h264::DecodeError::Limit)
+            | Self::H265(fss_codec_h265::DecodeError::Limit) => "ERR-DECODE-BOUNDS-001",
             Self::Unavailable | Self::Source(_) => "ERR-DECODE-SOURCE-UNAVAILABLE-001",
             _ => "ERR-DECODE-001",
         }
@@ -172,7 +177,9 @@ impl std::error::Error for RecordedDecodeError {}
 macro_rules! conversion {
     ($source:ty, $variant:ident) => {
         impl From<$source> for RecordedDecodeError {
-            fn from(error: $source) -> Self { Self::$variant(error.into()) }
+            fn from(error: $source) -> Self {
+                Self::$variant(error.into())
+            }
         }
     };
 }
@@ -187,26 +194,46 @@ conversion!(fss_codec_h264::DecodeError, H264);
 conversion!(fss_codec_h265::DecodeError, H265);
 
 fn checkpoint(cx: &ReplayCx, stage: &'static str) -> Result<(), RecordedDecodeError> {
-    cx.checkpoint(stage).map_err(|_| RecordedDecodeError::Cancelled)
+    cx.checkpoint(stage)
+        .map_err(|_| RecordedDecodeError::Cancelled)
 }
 
 pub(crate) fn validate_limits(limits: DecodeLimits) -> Result<(), RecordedDecodeError> {
-    if limits.maximum_bytes == 0 || limits.maximum_bytes > 16 * 1024 * 1024
-        || limits.maximum_dimension == 0 || limits.maximum_dimension > 4096
-        || limits.maximum_pixels == 0 || limits.maximum_pixels > 4_194_304
-        || limits.maximum_markers == 0 || limits.maximum_markers > 4096
-    { return Err(RecordedDecodeError::Limit); }
+    if limits.maximum_bytes == 0
+        || limits.maximum_bytes > 16 * 1024 * 1024
+        || limits.maximum_dimension == 0
+        || limits.maximum_dimension > 4096
+        || limits.maximum_pixels == 0
+        || limits.maximum_pixels > 4_194_304
+        || limits.maximum_markers == 0
+        || limits.maximum_markers > 4096
+    {
+        return Err(RecordedDecodeError::Limit);
+    }
     Ok(())
 }
 
-fn sha(bytes: [u8; 32]) -> ContentDigest { ContentDigest::new(DigestAlgorithm::Sha256, bytes) }
+fn sha(bytes: [u8; 32]) -> ContentDigest {
+    ContentDigest::new(DigestAlgorithm::Sha256, bytes)
+}
 fn hex(digest: ContentDigest) -> String {
-    digest.bytes().iter().map(|byte| format!("{byte:02x}")).collect()
+    digest
+        .bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 fn interpretation_tag(value: ComponentInterpretation) -> u8 {
-    match value { ComponentInterpretation::Grayscale => 0, ComponentInterpretation::YCbCr => 1 }
+    match value {
+        ComponentInterpretation::Grayscale => 0,
+        ComponentInterpretation::YCbCr => 1,
+    }
 }
-fn key(import_root: ContentDigest, segment: u64, interpretation: ComponentInterpretation) -> ContentDigest {
+fn key(
+    import_root: ContentDigest,
+    segment: u64,
+    interpretation: ComponentInterpretation,
+) -> ContentDigest {
     let mut e = CanonicalEncoder::new();
     e.text("fss.recorded_luma_key.v1");
     e.digest(import_root);
@@ -216,10 +243,14 @@ fn key(import_root: ContentDigest, segment: u64, interpretation: ComponentInterp
     ContentDigest::sha256(&e.finish())
 }
 fn slot(identity: ContentDigest) -> Result<SlotName, RecordedDecodeError> {
-    SlotName::parse(&format!("fd-{}", hex(identity))).map_err(|_| RecordedDecodeError::InvalidReceipt)
+    SlotName::parse(&format!("fd-{}", hex(identity)))
+        .map_err(|_| RecordedDecodeError::InvalidReceipt)
 }
 fn batch_id(identity: ContentDigest) -> Result<BatchId, RecordedDecodeError> {
-    Ok(BatchId::parse(format!("batch:recorded-decode:{}", hex(identity)))?)
+    Ok(BatchId::parse(format!(
+        "batch:recorded-decode:{}",
+        hex(identity)
+    ))?)
 }
 
 /// Complete immutable source-to-luma provenance. A checksum alone is not publisher authority.
@@ -242,33 +273,55 @@ pub struct RecordedDecodeReceipt {
 impl RecordedDecodeReceipt {
     /// Exact derived identity; admission ceilings do not change successfully decoded pixels.
     #[must_use]
-    pub fn identity(&self) -> ContentDigest { key(self.import_root, self.segment_index, self.codec.interpretation) }
+    pub fn identity(&self) -> ContentDigest {
+        key(
+            self.import_root,
+            self.segment_index,
+            self.codec.interpretation,
+        )
+    }
     /// Original source capsule, including conservative capture interval and clock basis.
     #[must_use]
-    pub fn capsule(&self) -> &SensorCapsule { &self.capsule }
+    pub fn capsule(&self) -> &SensorCapsule {
+        &self.capsule
+    }
     /// Coded width and height; no orientation or geometric transform has been applied.
     #[must_use]
-    pub fn dimensions(&self) -> [u32; 2] { [self.width, self.height] }
+    pub fn dimensions(&self) -> [u32; 2] {
+        [self.width, self.height]
+    }
     /// Accounting and identities from the canonical codec.
     #[must_use]
-    pub fn codec(&self) -> DecodeReceipt { self.codec }
+    pub fn codec(&self) -> DecodeReceipt {
+        self.codec
+    }
     /// Successful codec work units, not elapsed time or CPU/energy measurements.
     #[must_use]
-    pub fn work_units(&self) -> u64 { self.work_units }
+    pub fn work_units(&self) -> u64 {
+        self.work_units
+    }
     /// Import completion anchor, not the later publication anchor of the decoded derivative.
     #[must_use]
-    pub fn source_anchor(&self) -> &LedgerAnchor { &self.source_anchor }
+    pub fn source_anchor(&self) -> &LedgerAnchor {
+        &self.source_anchor
+    }
     /// Exact import identity.
     #[must_use]
-    pub fn import_identity(&self) -> ContentDigest { self.import_identity }
+    pub fn import_identity(&self) -> ContentDigest {
+        self.import_identity
+    }
     /// Original immutable segment index.
     #[must_use]
-    pub fn segment_index(&self) -> u64 { self.segment_index }
+    pub fn segment_index(&self) -> u64 {
+        self.segment_index
+    }
     /// Canonical receipt bytes under a bounded, versioned format.
     pub fn encoded(&self) -> Result<Vec<u8>, RecordedDecodeError> {
         self.validate()?;
         let bytes = self.try_canonical_bytes()?;
-        if bytes.len() > MAX_RECORDED_DECODE_RECEIPT_BYTES { return Err(RecordedDecodeError::Limit); }
+        if bytes.len() > MAX_RECORDED_DECODE_RECEIPT_BYTES {
+            return Err(RecordedDecodeError::Limit);
+        }
         Ok(bytes)
     }
     /// Content address for the complete receipt, including source timing and codec accounting.
@@ -277,8 +330,12 @@ impl RecordedDecodeReceipt {
     }
     /// Decodes an authority-addressed v1 receipt; unknown versions, truncation and suffixes fail.
     pub fn decode(bytes: &[u8], expected: ContentDigest) -> Result<Self, RecordedDecodeError> {
-        if bytes.len() > MAX_RECORDED_DECODE_RECEIPT_BYTES { return Err(RecordedDecodeError::Limit); }
-        if ContentDigest::sha256(bytes) != expected { return Err(RecordedDecodeError::InvalidReceipt); }
+        if bytes.len() > MAX_RECORDED_DECODE_RECEIPT_BYTES {
+            return Err(RecordedDecodeError::Limit);
+        }
+        if ContentDigest::sha256(bytes) != expected {
+            return Err(RecordedDecodeError::InvalidReceipt);
+        }
         let mut d = CanonicalDecoder::new(bytes);
         if d.bytes()? != b"FSSYREC1" || d.u32()? != 1 || d.text()? != RECORDED_DECODE_DOMAIN {
             return Err(RecordedDecodeError::InvalidReceipt);
@@ -305,46 +362,87 @@ impl RecordedDecodeReceipt {
             usize::try_from(d.u64()?).map_err(|_| RecordedDecodeError::Limit)
         };
         let codec = DecodeReceipt {
-            encoded_sha256, luma_sha256, decoder, interpretation,
-            mcus: integer()?, entropy_blocks: integer()?, restarts: integer()?,
-            metadata_segments: integer()?, metadata_bytes: integer()?,
+            encoded_sha256,
+            luma_sha256,
+            decoder,
+            interpretation,
+            mcus: integer()?,
+            entropy_blocks: integer()?,
+            restarts: integer()?,
+            metadata_segments: integer()?,
+            metadata_bytes: integer()?,
         };
         let work_units = d.u64()?;
         d.ensure_finished()?;
         let receipt = Self {
-            import_identity, import_root, manifest_digest, source_anchor, segment_index,
-            source_offset, capsule_digest, capsule, width, height, codec, work_units,
+            import_identity,
+            import_root,
+            manifest_digest,
+            source_anchor,
+            segment_index,
+            source_offset,
+            capsule_digest,
+            capsule,
+            width,
+            height,
+            codec,
+            work_units,
         };
-        if receipt.encoded()? != bytes { return Err(RecordedDecodeError::InvalidReceipt); }
+        if receipt.encoded()? != bytes {
+            return Err(RecordedDecodeError::InvalidReceipt);
+        }
         Ok(receipt)
     }
     fn validate(&self) -> Result<(), RecordedDecodeError> {
         let pixels = u64::from(self.width) * u64::from(self.height);
-        if self.width == 0 || self.height == 0 || self.width > 4096 || self.height > 4096
-            || pixels > 4_194_304 || self.capsule.source_bytes == 0
-            || self.capsule.source_bytes > 16 * 1024 * 1024 || self.codec.mcus == 0
+        if self.width == 0
+            || self.height == 0
+            || self.width > 4096
+            || self.height > 4096
+            || pixels > 4_194_304
+            || self.capsule.source_bytes == 0
+            || self.capsule.source_bytes > 16 * 1024 * 1024
+            || self.codec.mcus == 0
             || self.codec.entropy_blocks < self.codec.mcus
-            || self.codec.restarts >= self.codec.mcus || self.codec.metadata_segments > 4096
+            || self.codec.restarts >= self.codec.mcus
+            || self.codec.metadata_segments > 4096
             || self.codec.metadata_bytes as u64 > self.capsule.source_bytes
-        { return Err(RecordedDecodeError::Limit); }
+        {
+            return Err(RecordedDecodeError::Limit);
+        }
         if self.codec.decoder != decoder_identity()
             || self.capsule.source_digest != sha(self.codec.encoded_sha256)
             || ContentDigest::sha256(&self.capsule.try_canonical_bytes()?) != self.capsule_digest
             || self.capsule.capture.earliest > self.capsule.capture.latest
             || self.capsule.receive_time < self.capsule.capture.earliest
-            || [self.import_identity, self.import_root, self.manifest_digest, self.capsule_digest]
-                .iter().any(|digest| digest.algorithm() != DigestAlgorithm::Sha256)
-        { return Err(RecordedDecodeError::InvalidReceipt); }
+            || [
+                self.import_identity,
+                self.import_root,
+                self.manifest_digest,
+                self.capsule_digest,
+            ]
+            .iter()
+            .any(|digest| digest.algorithm() != DigestAlgorithm::Sha256)
+        {
+            return Err(RecordedDecodeError::InvalidReceipt);
+        }
         Ok(())
     }
     fn manifest(&self) -> Result<ObjectManifest, RecordedDecodeError> {
         let metadata = self.digest()?;
         let mut children = BTreeSet::from([
-            self.import_root, self.manifest_digest, self.capsule_digest,
-            sha(self.codec.encoded_sha256), sha(self.codec.luma_sha256),
+            self.import_root,
+            self.manifest_digest,
+            self.capsule_digest,
+            sha(self.codec.encoded_sha256),
+            sha(self.codec.luma_sha256),
         ]);
         children.remove(&metadata);
-        Ok(ObjectManifest::new(slot(self.identity())?.as_str(), children, Some(metadata))?)
+        Ok(ObjectManifest::new(
+            slot(self.identity())?.as_str(),
+            children,
+            Some(metadata),
+        )?)
     }
     fn delta(&self, root: ContentDigest) -> Result<EvidenceDelta, RecordedDecodeError> {
         let name = hex(self.identity());
@@ -352,8 +450,12 @@ impl RecordedDecodeReceipt {
             delta_id: format!("delta:recorded-decode:{name}"),
             family: "decode_receipt".to_owned(),
             object_id: ObjectId::parse(format!("object:recorded-decode:{name}"))?,
-            prior_generation: None, new_generation: 1, validity: self.capsule.capture,
-            plane: Plane::Cognition, payload_digest: self.digest()?, witness_digest: Some(root),
+            prior_generation: None,
+            new_generation: 1,
+            validity: self.capsule.capture,
+            plane: Plane::Cognition,
+            payload_digest: self.digest()?,
+            witness_digest: Some(root),
             operation_id: None,
         })
     }
@@ -361,62 +463,120 @@ impl RecordedDecodeReceipt {
 
 fn decode_sha(d: &mut CanonicalDecoder<'_>) -> Result<[u8; 32], RecordedDecodeError> {
     let value = d.digest()?;
-    if value.algorithm() != DigestAlgorithm::Sha256 { return Err(RecordedDecodeError::InvalidReceipt); }
+    if value.algorithm() != DigestAlgorithm::Sha256 {
+        return Err(RecordedDecodeError::InvalidReceipt);
+    }
     Ok(value.bytes())
 }
 
 impl CanonicalEncode for RecordedDecodeReceipt {
     fn encode_canonical(&self, e: &mut CanonicalEncoder) {
-        e.bytes(b"FSSYREC1"); e.u32(1); e.text(RECORDED_DECODE_DOMAIN);
-        e.digest(self.import_identity); e.digest(self.import_root); e.digest(self.manifest_digest);
+        e.bytes(b"FSSYREC1");
+        e.u32(1);
+        e.text(RECORDED_DECODE_DOMAIN);
+        e.digest(self.import_identity);
+        e.digest(self.import_root);
+        e.digest(self.manifest_digest);
         self.source_anchor.encode_canonical(e);
-        e.u64(self.segment_index); e.u64(self.source_offset); e.digest(self.capsule_digest);
-        self.capsule.encode_canonical(e); e.u32(self.width); e.u32(self.height);
-        e.digest(sha(self.codec.encoded_sha256)); e.digest(sha(self.codec.luma_sha256));
-        e.digest(sha(self.codec.decoder)); e.u8(interpretation_tag(self.codec.interpretation));
-        for value in [self.codec.mcus, self.codec.entropy_blocks, self.codec.restarts,
-            self.codec.metadata_segments, self.codec.metadata_bytes] { e.u64(value as u64); }
+        e.u64(self.segment_index);
+        e.u64(self.source_offset);
+        e.digest(self.capsule_digest);
+        self.capsule.encode_canonical(e);
+        e.u32(self.width);
+        e.u32(self.height);
+        e.digest(sha(self.codec.encoded_sha256));
+        e.digest(sha(self.codec.luma_sha256));
+        e.digest(sha(self.codec.decoder));
+        e.u8(interpretation_tag(self.codec.interpretation));
+        for value in [
+            self.codec.mcus,
+            self.codec.entropy_blocks,
+            self.codec.restarts,
+            self.codec.metadata_segments,
+            self.codec.metadata_bytes,
+        ] {
+            e.u64(value as u64);
+        }
         e.u64(self.work_units);
     }
 }
 
 pub(crate) fn source_capsule(
-    deployment: &ReferenceDeployment, retained: &RetainedFileImport, index: usize,
+    deployment: &ReferenceDeployment,
+    retained: &RetainedFileImport,
+    index: usize,
 ) -> Result<(SensorCapsule, ContentDigest), RecordedDecodeError> {
-    let span = retained.manifest().segment_spans.get(index).ok_or(RecordedDecodeError::Unavailable)?;
-    let source_batch = BatchId::parse(format!("batch:file-import:{}:c0", hex(retained.import_identity())))?;
-    let batch = deployment.ledger().batches().iter().find(|b| b.batch_id == source_batch)
+    let span = retained
+        .manifest()
+        .segment_spans
+        .get(index)
+        .ok_or(RecordedDecodeError::Unavailable)?;
+    let source_batch = BatchId::parse(format!(
+        "batch:file-import:{}:c0",
+        hex(retained.import_identity())
+    ))?;
+    let batch = deployment
+        .ledger()
+        .batches()
+        .iter()
+        .find(|b| b.batch_id == source_batch)
         .ok_or(RecordedDecodeError::Unavailable)?;
     let object = format!("object:capsule:{}", span.capsule_id.as_str());
-    let delta = batch.deltas.iter().find(|d| d.object_id.as_str() == object
-        && d.family == "sensor_capsule" && d.plane == Plane::Authority
-        && d.prior_generation.is_none() && d.new_generation == 1)
+    let delta = batch
+        .deltas
+        .iter()
+        .find(|d| {
+            d.object_id.as_str() == object
+                && d.family == "sensor_capsule"
+                && d.plane == Plane::Authority
+                && d.prior_generation.is_none()
+                && d.new_generation == 1
+        })
         .ok_or(RecordedDecodeError::InvalidReceipt)?;
-    if !batch.children.contains(&delta.payload_digest) { return Err(RecordedDecodeError::InvalidReceipt); }
+    if !batch.children.contains(&delta.payload_digest) {
+        return Err(RecordedDecodeError::InvalidReceipt);
+    }
     let bytes = deployment.publisher().spool().read(delta.payload_digest)?;
     if bytes.len() > MAX_RECORDED_DECODE_RECEIPT_BYTES
         || ContentDigest::sha256(&bytes) != delta.payload_digest
-    { return Err(RecordedDecodeError::InvalidReceipt); }
+    {
+        return Err(RecordedDecodeError::InvalidReceipt);
+    }
     let capsule = SensorCapsule::from_canonical_bytes(&bytes)?;
-    if capsule.capsule_id != span.capsule_id || capsule.source_digest != span.segment_sha256
-        || capsule.source_bytes != span.len || capsule.capture != delta.validity
+    if capsule.capsule_id != span.capsule_id
+        || capsule.source_digest != span.segment_sha256
+        || capsule.source_bytes != span.len
+        || capsule.capture != delta.validity
         || capsule.gap_before != span.gap_before
-    { return Err(RecordedDecodeError::InvalidReceipt); }
+    {
+        return Err(RecordedDecodeError::InvalidReceipt);
+    }
     Ok((capsule, delta.payload_digest))
 }
 
 fn source(
-    deployment: &ReferenceDeployment, request: &RecordedDecodeRequest, cx: &ReplayCx,
+    deployment: &ReferenceDeployment,
+    request: &RecordedDecodeRequest,
+    cx: &ReplayCx,
 ) -> Result<(RetainedFileImport, SensorCapsule, ContentDigest, Vec<u8>), RecordedDecodeError> {
     checkpoint(cx, "recorded_decode:source")?;
     validate_limits(request.decode_limits)?;
-    let retained = RetainedFileImport::open(deployment, request.import_identity, request.read_limits, cx)?;
-    if retained.manifest().format != "mjpeg" { return Err(RecordedDecodeError::UnsupportedMedia); }
-    let span = retained.manifest().segment_spans.get(request.segment_index)
+    let retained =
+        RetainedFileImport::open(deployment, request.import_identity, request.read_limits, cx)?;
+    if retained.manifest().format != "mjpeg" {
+        return Err(RecordedDecodeError::UnsupportedMedia);
+    }
+    let span = retained
+        .manifest()
+        .segment_spans
+        .get(request.segment_index)
         .ok_or(RecordedDecodeError::Unavailable)?;
-    if span.len > request.decode_limits.maximum_bytes as u64 { return Err(RecordedDecodeError::Limit); }
+    if span.len > request.decode_limits.maximum_bytes as u64 {
+        return Err(RecordedDecodeError::Limit);
+    }
     let (capsule, digest) = source_capsule(deployment, &retained, request.segment_index)?;
-    let bytes = retained.read_segment(deployment, request.segment_index, request.read_limits, cx)?;
+    let bytes =
+        retained.read_segment(deployment, request.segment_index, request.read_limits, cx)?;
     Ok((retained, capsule, digest, bytes))
 }
 
@@ -441,30 +601,55 @@ impl RecordedFrame {
     /// Completed results are revalidated without codec work. Damaged completed custody fails
     /// closed; recovery never regenerates it as an undocumented repair operation.
     pub fn decode_and_publish(
-        deployment: &mut ReferenceDeployment, request: &RecordedDecodeRequest,
-        budget: &mut DecodeBudget<'_>, cx: &ReplayCx,
+        deployment: &mut ReferenceDeployment,
+        request: &RecordedDecodeRequest,
+        budget: &mut DecodeBudget<'_>,
+        cx: &ReplayCx,
     ) -> Result<Self, RecordedDecodeError> {
         let (retained, capsule, capsule_digest, encoded) = source(deployment, request, cx)?;
-        let identity = key(retained.import_root(), request.segment_index as u64, request.interpretation);
+        let identity = key(
+            retained.import_root(),
+            request.segment_index as u64,
+            request.interpretation,
+        );
         let completion = batch_id(identity)?;
-        if deployment.ledger().batches().iter().any(|batch| batch.batch_id == completion) {
+        if deployment
+            .ledger()
+            .batches()
+            .iter()
+            .any(|batch| batch.batch_id == completion)
+        {
             // A completed decode with missing/corrupt custody is not an unattempted decode.
             // Propagate the precise recovery refusal without spending codec work or staging
             // replacement bytes. Only absence of its final batch permits execution/resume.
             return Self::open(deployment, request, cx);
         }
         let used_before = budget.used();
-        let image = decode_luma(&encoded, capsule.source_digest.bytes(), request.interpretation,
-            request.decode_limits, budget)?;
+        let image = decode_luma(
+            &encoded,
+            capsule.source_digest.bytes(),
+            request.interpretation,
+            request.decode_limits,
+            budget,
+        )?;
         checkpoint(cx, STAGE_RECORDED_DECODE)?;
         let [width, height] = image.dimensions();
         let receipt = RecordedDecodeReceipt {
-            import_identity: retained.import_identity(), import_root: retained.import_root(),
-            manifest_digest: retained.manifest_digest(), source_anchor: retained.authority_anchor().clone(),
+            import_identity: retained.import_identity(),
+            import_root: retained.import_root(),
+            manifest_digest: retained.manifest_digest(),
+            source_anchor: retained.authority_anchor().clone(),
             segment_index: request.segment_index as u64,
             source_offset: retained.manifest().segment_spans[request.segment_index].offset,
-            capsule_digest, capsule, width, height, codec: image.receipt(),
-            work_units: budget.used().checked_sub(used_before).ok_or(RecordedDecodeError::InvalidReceipt)?,
+            capsule_digest,
+            capsule,
+            width,
+            height,
+            codec: image.receipt(),
+            work_units: budget
+                .used()
+                .checked_sub(used_before)
+                .ok_or(RecordedDecodeError::InvalidReceipt)?,
         };
         let pixels = image.pixels().to_vec();
         drop(image);
@@ -477,7 +662,11 @@ impl RecordedFrame {
         {
             return Err(RecordedDecodeError::InvalidReceipt);
         }
-        for bytes in [encoded.as_slice(), pixels.as_slice(), receipt_bytes.as_slice()] {
+        for bytes in [
+            encoded.as_slice(),
+            pixels.as_slice(),
+            receipt_bytes.as_slice(),
+        ] {
             checkpoint(cx, "recorded_decode:stage")?;
             let digest = deployment.publisher_mut().stage_object(bytes)?;
             deployment.publisher_mut().verify_object(digest)?;
@@ -485,94 +674,172 @@ impl RecordedFrame {
         // `stage_manifest` refuses a visible slot by design; a resume after the root-to-receipt
         // interruption finds the identical root already published and only owes the ledger batch.
         if visible_root.is_none() {
-            deployment.publisher_mut().stage_manifest(&slot, &manifest)?;
+            deployment
+                .publisher_mut()
+                .stage_manifest(&slot, &manifest)?;
         }
         deployment.publish_and_commit(&slot, &manifest, receipt.capsule.capture, cx)?;
         checkpoint(cx, STAGE_RECORDED_DECODE_COMMIT)?;
         let mut children = manifest.children().to_vec();
         children.push(manifest.root());
-        let anchor = deployment.append_batch(batch_id(receipt.identity())?,
-            vec![receipt.delta(manifest.root())?], children, cx)?;
+        let anchor = deployment.append_batch(
+            batch_id(receipt.identity())?,
+            vec![receipt.delta(manifest.root())?],
+            children,
+            cx,
+        )?;
         // No fallible work after the final authority commit: cancellation cannot erase success.
         cx.checkpoint_post_commit("recorded_decode:complete");
-        Ok(Self { receipt, pixels, publication_root: manifest.root(), authority_anchor: anchor })
+        Ok(Self {
+            receipt,
+            pixels,
+            publication_root: manifest.root(),
+            authority_anchor: anchor,
+        })
     }
 
     /// Reopen completed decoded pixels without the original input file or another codec run.
     /// Revalidates source custody, exact receipt/delta/manifest closure, and all pixel bytes.
     /// Checksums establish retained consistency; use `verify_by_replay` to reproduce the decode.
     pub fn open(
-        deployment: &ReferenceDeployment, request: &RecordedDecodeRequest, cx: &ReplayCx,
+        deployment: &ReferenceDeployment,
+        request: &RecordedDecodeRequest,
+        cx: &ReplayCx,
     ) -> Result<Self, RecordedDecodeError> {
         let (retained, capsule, capsule_digest, _encoded) = source(deployment, request, cx)?;
-        let identity = key(retained.import_root(), request.segment_index as u64, request.interpretation);
+        let identity = key(
+            retained.import_root(),
+            request.segment_index as u64,
+            request.interpretation,
+        );
         let target = batch_id(identity)?;
-        let batch = deployment.ledger().batches().iter().find(|b| b.batch_id == target)
+        let batch = deployment
+            .ledger()
+            .batches()
+            .iter()
+            .find(|b| b.batch_id == target)
             .ok_or(RecordedDecodeError::Unavailable)?;
-        if batch.deltas.len() != 1 { return Err(RecordedDecodeError::InvalidReceipt); }
+        if batch.deltas.len() != 1 {
+            return Err(RecordedDecodeError::InvalidReceipt);
+        }
         let delta = &batch.deltas[0];
         let bytes = deployment.publisher().spool().read(delta.payload_digest)?;
         let receipt = RecordedDecodeReceipt::decode(&bytes, delta.payload_digest)?;
-        if receipt.identity() != identity || receipt.import_identity != retained.import_identity()
-            || receipt.import_root != retained.import_root() || receipt.manifest_digest != retained.manifest_digest()
-            || receipt.source_anchor != *retained.authority_anchor() || receipt.capsule != capsule
-            || receipt.capsule_digest != capsule_digest || receipt.codec.interpretation != request.interpretation
-            || receipt.source_offset != retained.manifest().segment_spans[request.segment_index].offset
-        { return Err(RecordedDecodeError::InvalidReceipt); }
+        if receipt.identity() != identity
+            || receipt.import_identity != retained.import_identity()
+            || receipt.import_root != retained.import_root()
+            || receipt.manifest_digest != retained.manifest_digest()
+            || receipt.source_anchor != *retained.authority_anchor()
+            || receipt.capsule != capsule
+            || receipt.capsule_digest != capsule_digest
+            || receipt.codec.interpretation != request.interpretation
+            || receipt.source_offset
+                != retained.manifest().segment_spans[request.segment_index].offset
+        {
+            return Err(RecordedDecodeError::InvalidReceipt);
+        }
         let maximum = request.decode_limits;
-        if receipt.width > maximum.maximum_dimension || receipt.height > maximum.maximum_dimension
+        if receipt.width > maximum.maximum_dimension
+            || receipt.height > maximum.maximum_dimension
             || u64::from(receipt.width) * u64::from(receipt.height) > maximum.maximum_pixels as u64
             || receipt.codec.metadata_segments > maximum.maximum_markers
-        { return Err(RecordedDecodeError::Limit); }
+        {
+            return Err(RecordedDecodeError::Limit);
+        }
         let manifest = receipt.manifest()?;
-        if *delta != receipt.delta(manifest.root())? { return Err(RecordedDecodeError::InvalidReceipt); }
-        let mut children = manifest.children().to_vec(); children.push(manifest.root()); children.sort_unstable(); children.dedup();
-        if batch.children != children { return Err(RecordedDecodeError::InvalidReceipt); }
+        if *delta != receipt.delta(manifest.root())? {
+            return Err(RecordedDecodeError::InvalidReceipt);
+        }
+        let mut children = manifest.children().to_vec();
+        children.push(manifest.root());
+        children.sort_unstable();
+        children.dedup();
+        if batch.children != children {
+            return Err(RecordedDecodeError::InvalidReceipt);
+        }
         let slot = slot(identity)?;
-        let visible = deployment.publisher().root(&slot).ok_or(RecordedDecodeError::Unavailable)?;
+        let visible = deployment
+            .publisher()
+            .root(&slot)
+            .ok_or(RecordedDecodeError::Unavailable)?;
         if visible.root != manifest.root()
             || deployment.publisher().spool().read(manifest.root())? != manifest.canonical_bytes()
-        { return Err(RecordedDecodeError::InvalidReceipt); }
-        let pixels = deployment.publisher().spool().read(sha(receipt.codec.luma_sha256))?;
+        {
+            return Err(RecordedDecodeError::InvalidReceipt);
+        }
+        let pixels = deployment
+            .publisher()
+            .spool()
+            .read(sha(receipt.codec.luma_sha256))?;
         if pixels.len() as u64 != u64::from(receipt.width) * u64::from(receipt.height)
             || ContentDigest::sha256(&pixels) != sha(receipt.codec.luma_sha256)
-        { return Err(RecordedDecodeError::InvalidReceipt); }
+        {
+            return Err(RecordedDecodeError::InvalidReceipt);
+        }
         checkpoint(cx, "recorded_decode:read_complete")?;
-        Ok(Self { receipt, pixels, publication_root: manifest.root(), authority_anchor: batch.new_anchor.clone() })
+        Ok(Self {
+            receipt,
+            pixels,
+            publication_root: manifest.root(),
+            authority_anchor: batch.new_anchor.clone(),
+        })
     }
     /// Reproduce the complete canonical decoder output; never changes authority or storage.
     pub fn verify_by_replay(
-        &self, deployment: &ReferenceDeployment, request: &RecordedDecodeRequest,
-        budget: &mut DecodeBudget<'_>, cx: &ReplayCx,
+        &self,
+        deployment: &ReferenceDeployment,
+        request: &RecordedDecodeRequest,
+        budget: &mut DecodeBudget<'_>,
+        cx: &ReplayCx,
     ) -> Result<(), RecordedDecodeError> {
         let reopened = Self::open(deployment, request, cx)?;
-        if reopened != *self { return Err(RecordedDecodeError::InvalidReceipt); }
+        if reopened != *self {
+            return Err(RecordedDecodeError::InvalidReceipt);
+        }
         let (_, capsule, _, bytes) = source(deployment, request, cx)?;
         let before = budget.used();
-        let image = decode_luma(&bytes, capsule.source_digest.bytes(), request.interpretation,
-            request.decode_limits, budget)?;
-        if image.dimensions() != self.receipt.dimensions() || image.receipt() != self.receipt.codec
-            || image.pixels() != self.pixels || budget.used() - before != self.receipt.work_units
-        { return Err(RecordedDecodeError::InvalidReceipt); }
+        let image = decode_luma(
+            &bytes,
+            capsule.source_digest.bytes(),
+            request.interpretation,
+            request.decode_limits,
+            budget,
+        )?;
+        if image.dimensions() != self.receipt.dimensions()
+            || image.receipt() != self.receipt.codec
+            || image.pixels() != self.pixels
+            || budget.used() - before != self.receipt.work_units
+        {
+            return Err(RecordedDecodeError::InvalidReceipt);
+        }
         checkpoint(cx, "recorded_decode:replay_complete")?;
         Ok(())
     }
     /// Complete source and codec provenance.
     #[must_use]
-    pub fn receipt(&self) -> &RecordedDecodeReceipt { &self.receipt }
+    pub fn receipt(&self) -> &RecordedDecodeReceipt {
+        &self.receipt
+    }
     /// Tight row-major full-range Y, not RGB and not an oriented display rendering.
     #[must_use]
-    pub fn pixels(&self) -> &[u8] { &self.pixels }
+    pub fn pixels(&self) -> &[u8] {
+        &self.pixels
+    }
     /// Durable immutable graph root, also witnessed by the final decode delta.
     #[must_use]
-    pub fn publication_root(&self) -> ContentDigest { self.publication_root }
+    pub fn publication_root(&self) -> ContentDigest {
+        self.publication_root
+    }
     /// Exact final decode-receipt anchor; retries do not substitute the latest global anchor.
     #[must_use]
-    pub fn authority_anchor(&self) -> &LedgerAnchor { &self.authority_anchor }
+    pub fn authority_anchor(&self) -> &LedgerAnchor {
+        &self.authority_anchor
+    }
     /// Portable binary PGM rendering. The export digest differs from the raw luma digest.
     #[must_use]
     pub fn pgm_bytes(&self) -> Vec<u8> {
-        let mut bytes = format!("P5\n{} {}\n255\n", self.receipt.width, self.receipt.height).into_bytes();
+        let mut bytes =
+            format!("P5\n{} {}\n255\n", self.receipt.width, self.receipt.height).into_bytes();
         bytes.extend_from_slice(&self.pixels);
         bytes
     }

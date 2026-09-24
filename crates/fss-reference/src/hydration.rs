@@ -14,7 +14,9 @@ use fss_core::{
 pub(crate) mod cursor_checkpoint;
 mod source;
 
-pub use source::{PublishedSourceReader, SOURCE_OBJECT_CONTENT_TYPE, SourceHydrationError, SourceObjectBinding};
+pub use source::{
+    PublishedSourceReader, SOURCE_OBJECT_CONTENT_TYPE, SourceHydrationError, SourceObjectBinding,
+};
 
 /// Explicit storage ceilings for the in-memory reference catalog.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -208,7 +210,9 @@ impl ReferenceHydrationCatalog {
             return Err(ContractError::EvidenceRequired.into());
         }
         if artifact.level == HydrationLevel::H3
-            && self.source_bindings.contains_key(&(handle_id.to_owned(), descriptor_digest))
+            && self
+                .source_bindings
+                .contains_key(&(handle_id.to_owned(), descriptor_digest))
         {
             // Source custody cannot be bypassed by installing a separately retained payload.
             return Err(ContractError::DigestMismatch.into());
@@ -295,7 +299,9 @@ impl ReferenceHydrationCatalog {
                 level,
             );
             let resolved = if level == HydrationLevel::H3 {
-                source_artifact.take().or_else(|| self.artifacts.get(&key).cloned())
+                source_artifact
+                    .take()
+                    .or_else(|| self.artifacts.get(&key).cloned())
             } else {
                 self.artifacts.get(&key).cloned()
             };
@@ -436,7 +442,9 @@ impl ReferenceHydrationCatalog {
                 .ok_or(HydrationError::WrongContinuation)?;
             let binding = self.source_binding(&descriptor.handle_id, descriptor.descriptor_digest);
             let prior_digest = if prior_level == HydrationLevel::H3 && binding.is_some() {
-                binding.ok_or(HydrationError::WrongContinuation)?.artifact_digest()
+                binding
+                    .ok_or(HydrationError::WrongContinuation)?
+                    .artifact_digest()
             } else {
                 let prior = self
                     .artifacts
@@ -492,7 +500,9 @@ impl ReferenceHydrationCatalog {
                 descriptor.descriptor_digest,
                 next,
             )) || (next == HydrationLevel::H3
-                && self.source_binding(&descriptor.handle_id, descriptor.descriptor_digest).is_some()))
+                && self
+                    .source_binding(&descriptor.handle_id, descriptor.descriptor_digest)
+                    .is_some()))
         {
             return Ok(None);
         }

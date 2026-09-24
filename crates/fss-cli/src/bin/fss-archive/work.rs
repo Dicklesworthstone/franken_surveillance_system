@@ -12,17 +12,27 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use fss_cli::archive_cmd::ArchiveCommandError;
-use fss_cli::{ERR_CLI_DUPLICATE_OPTION, ERR_CLI_INVALID_UNICODE, ERR_CLI_MALFORMED_VALUE,
-    ERR_CLI_MISSING_VALUE, ERR_CLI_UNKNOWN_OPTION};
+use fss_cli::{
+    ERR_CLI_DUPLICATE_OPTION, ERR_CLI_INVALID_UNICODE, ERR_CLI_MALFORMED_VALUE,
+    ERR_CLI_MISSING_VALUE, ERR_CLI_UNKNOWN_OPTION,
+};
 use fss_core::{ContentDigest, DigestAlgorithm};
-use fss_object::{SpoolLimits, MAX_MANIFEST_CHILDREN};
-use fss_publication::{LocalPublicationLimits, LocalPublicationReceipt, LocalPublicationState,
-    LocalRootPublisher, PublishCancellation, PublishCutPoint, PublishOutcome, SlotName};
+use fss_object::{MAX_MANIFEST_CHILDREN, SpoolLimits};
+use fss_publication::{
+    LocalPublicationLimits, LocalPublicationReceipt, LocalPublicationState, LocalRootPublisher,
+    PublishCancellation, PublishCutPoint, PublishOutcome, SlotName,
+};
 use fss_reference::rtsp::archive_recovery::archive_retirement_digest;
 use fss_reference::rtsp::recording::MAX_RECORDING_BYTES;
-use fss_reference::rtsp::recording::local::{RecordingIoError, RecordingProgress, RecordingPublication};
-use fss_reference::rtsp::recording_archive::{ArchiveError, ArchiveLimits, ArchiveNamespace, ArchiveSnapshot};
-use fss_reference::rtsp::recording_archive::checkpoint::{ArchiveWorkLimits, MAX_ARCHIVE_WORK_BYTES, load_archive_work};
+use fss_reference::rtsp::recording::local::{
+    RecordingIoError, RecordingProgress, RecordingPublication,
+};
+use fss_reference::rtsp::recording_archive::checkpoint::{
+    ArchiveWorkLimits, MAX_ARCHIVE_WORK_BYTES, load_archive_work,
+};
+use fss_reference::rtsp::recording_archive::{
+    ArchiveError, ArchiveLimits, ArchiveNamespace, ArchiveSnapshot,
+};
 
 type Result<T> = std::result::Result<T, ArchiveCommandError>;
 pub(super) const HELP: &str = "fss-archive <inspect-work|restore-work> [options]\n\
@@ -39,83 +49,178 @@ pub(super) const HELP: &str = "fss-archive <inspect-work|restore-work> [options]
   Remaining indexing is reported, not silently fabricated or marked complete.\n";
 
 pub(super) fn handles(args: &[OsString]) -> bool {
-    args.first().and_then(|a| a.to_str()).is_some_and(|a| matches!(a, "inspect-work" | "restore-work"))
+    args.first()
+        .and_then(|a| a.to_str())
+        .is_some_and(|a| matches!(a, "inspect-work" | "restore-work"))
 }
 struct Options {
-    root: PathBuf, slot: SlotName, root_digest: ContentDigest, namespace: ContentDigest,
-    restore: bool, timeout: Duration, limits: ArchiveWorkLimits, storage: LocalPublicationLimits,
+    root: PathBuf,
+    slot: SlotName,
+    root_digest: ContentDigest,
+    namespace: ContentDigest,
+    restore: bool,
+    timeout: Duration,
+    limits: ArchiveWorkLimits,
+    storage: LocalPublicationLimits,
 }
 fn error(code: &'static str, message: &'static str) -> ArchiveCommandError {
     ArchiveCommandError::Argument { code, message }
 }
-fn malformed(message: &'static str) -> ArchiveCommandError { error(ERR_CLI_MALFORMED_VALUE, message) }
+fn malformed(message: &'static str) -> ArchiveCommandError {
+    error(ERR_CLI_MALFORMED_VALUE, message)
+}
 fn parse(args: &[OsString]) -> Result<Options> {
     if args.len() > 65 || args.iter().any(|a| a.as_encoded_bytes().len() > 4096) {
         return Err(malformed("argument count or length bound exceeded"));
     }
-    if !handles(args) { return Err(malformed("expected inspect-work or restore-work")); }
+    if !handles(args) {
+        return Err(malformed("expected inspect-work or restore-work"));
+    }
     let restore = args[0].as_os_str() == OsStr::new("restore-work");
-    let allowed = ["--root", "--work-slot", "--work-root", "--expected-namespace", "--timeout-ms",
-        "--max-windows", "--max-pages", "--max-scan-roots", "--max-page-windows", "--max-pending-bytes",
-        "--max-graph-objects", "--max-new-bytes", "--max-objects", "--max-total-bytes"];
+    let allowed = [
+        "--root",
+        "--work-slot",
+        "--work-root",
+        "--expected-namespace",
+        "--timeout-ms",
+        "--max-windows",
+        "--max-pages",
+        "--max-scan-roots",
+        "--max-page-windows",
+        "--max-pending-bytes",
+        "--max-graph-objects",
+        "--max-new-bytes",
+        "--max-objects",
+        "--max-total-bytes",
+    ];
     let mut values: BTreeMap<&str, &OsStr> = BTreeMap::new();
     for pair in args[1..].chunks(2) {
-        let key = pair[0].to_str().ok_or_else(|| error(ERR_CLI_INVALID_UNICODE, "option name must be UTF-8"))?;
+        let key = pair[0]
+            .to_str()
+            .ok_or_else(|| error(ERR_CLI_INVALID_UNICODE, "option name must be UTF-8"))?;
         if !allowed.contains(&key) && !(restore && key == "--commit") {
-            return Err(error(ERR_CLI_UNKNOWN_OPTION, "unknown or inapplicable option"));
+            return Err(error(
+                ERR_CLI_UNKNOWN_OPTION,
+                "unknown or inapplicable option",
+            ));
         }
-        if values.contains_key(key) { return Err(error(ERR_CLI_DUPLICATE_OPTION, "duplicate option")); }
-        let value = pair.get(1).filter(|v| !v.is_empty() && !v.to_str().is_some_and(|s| s.starts_with("--")))
+        if values.contains_key(key) {
+            return Err(error(ERR_CLI_DUPLICATE_OPTION, "duplicate option"));
+        }
+        let value = pair
+            .get(1)
+            .filter(|v| !v.is_empty() && !v.to_str().is_some_and(|s| s.starts_with("--")))
             .ok_or_else(|| error(ERR_CLI_MISSING_VALUE, "missing option value"))?;
         values.insert(key, value.as_os_str());
     }
-    let required = |key: &str| values.get(key).copied().ok_or_else(|| error(ERR_CLI_MISSING_VALUE, "required option missing"));
-    let text = |key: &str| required(key)?.to_str().ok_or_else(|| error(ERR_CLI_INVALID_UNICODE, "identity must be UTF-8"));
+    let required = |key: &str| {
+        values
+            .get(key)
+            .copied()
+            .ok_or_else(|| error(ERR_CLI_MISSING_VALUE, "required option missing"))
+    };
+    let text = |key: &str| {
+        required(key)?
+            .to_str()
+            .ok_or_else(|| error(ERR_CLI_INVALID_UNICODE, "identity must be UTF-8"))
+    };
     let number = |key: &str, default: u64, minimum: u64, maximum: u64| -> Result<u64> {
         let n = if values.contains_key(key) {
             let raw = text(key)?;
-            if !raw.bytes().all(|b| b.is_ascii_digit()) { return Err(malformed("expected unsigned decimal integer")); }
-            raw.parse::<u64>().map_err(|_| malformed("integer overflow"))?
-        } else { default };
-        if !(minimum..=maximum).contains(&n) { return Err(malformed("numeric value outside supported bounds")); }
+            if !raw.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(malformed("expected unsigned decimal integer"));
+            }
+            raw.parse::<u64>()
+                .map_err(|_| malformed("integer overflow"))?
+        } else {
+            default
+        };
+        if !(minimum..=maximum).contains(&n) {
+            return Err(malformed("numeric value outside supported bounds"));
+        }
         Ok(n)
     };
     let digest = |key: &str| -> Result<ContentDigest> {
         let value = ContentDigest::parse(text(key)?).map_err(|_| malformed("invalid digest"))?;
-        if value.algorithm() != DigestAlgorithm::Sha256 { return Err(malformed("SHA-256 required")); }
+        if value.algorithm() != DigestAlgorithm::Sha256 {
+            return Err(malformed("SHA-256 required"));
+        }
         Ok(value)
     };
-    if restore && text("--commit")? != "yes" { return Err(malformed("restoration requires explicit commit acknowledgement")); }
+    if restore && text("--commit")? != "yes" {
+        return Err(malformed(
+            "restoration requires explicit commit acknowledgement",
+        ));
+    }
     let scan = number("--max-scan-roots", 16_384, 1, 65_536)? as usize;
-    let graph = number("--max-graph-objects", MAX_MANIFEST_CHILDREN as u64, 1, MAX_MANIFEST_CHILDREN as u64)? as usize;
+    let graph = number(
+        "--max-graph-objects",
+        MAX_MANIFEST_CHILDREN as u64,
+        1,
+        MAX_MANIFEST_CHILDREN as u64,
+    )? as usize;
     let objects = number("--max-objects", 65_536, 1, 131_072)? as usize;
     let limits = ArchiveWorkLimits {
         archive: ArchiveLimits {
             max_windows: number("--max-windows", 4096, 1, 4096)? as usize,
             max_pages: number("--max-pages", 1024, 1, 4096)? as usize,
-            max_scan_roots: scan, windows_per_page: number("--max-page-windows", 64, 1, 64)? as usize,
+            max_scan_roots: scan,
+            windows_per_page: number("--max-page-windows", 64, 1, 64)? as usize,
         },
-        max_pending_bytes: number("--max-pending-bytes", MAX_RECORDING_BYTES as u64, 0, MAX_RECORDING_BYTES as u64)? as usize,
+        max_pending_bytes: number(
+            "--max-pending-bytes",
+            MAX_RECORDING_BYTES as u64,
+            0,
+            MAX_RECORDING_BYTES as u64,
+        )? as usize,
         max_graph_objects: graph,
-        max_new_bytes: number("--max-new-bytes", MAX_ARCHIVE_WORK_BYTES as u64, 0, MAX_ARCHIVE_WORK_BYTES as u64)? as usize,
+        max_new_bytes: number(
+            "--max-new-bytes",
+            MAX_ARCHIVE_WORK_BYTES as u64,
+            0,
+            MAX_ARCHIVE_WORK_BYTES as u64,
+        )? as usize,
     };
-    let storage = LocalPublicationLimits::new(scan, graph, scan, scan,
-        SpoolLimits::new(objects, number("--max-total-bytes", 1024 * 1024 * 1024, 1, 1024 * 1024 * 1024 * 1024)?,
-            MAX_RECORDING_BYTES, objects));
+    let storage = LocalPublicationLimits::new(
+        scan,
+        graph,
+        scan,
+        scan,
+        SpoolLimits::new(
+            objects,
+            number(
+                "--max-total-bytes",
+                1024 * 1024 * 1024,
+                1,
+                1024 * 1024 * 1024 * 1024,
+            )?,
+            MAX_RECORDING_BYTES,
+            objects,
+        ),
+    );
     storage.validate().map_err(ArchiveCommandError::Storage)?;
     Ok(Options {
         root: PathBuf::from(required("--root")?),
         slot: SlotName::parse(text("--work-slot")?).map_err(|_| malformed("invalid work slot"))?,
-        root_digest: digest("--work-root")?, namespace: digest("--expected-namespace")?, restore,
-        timeout: Duration::from_millis(number("--timeout-ms", 30_000, 1, 3_600_000)?), limits, storage,
+        root_digest: digest("--work-root")?,
+        namespace: digest("--expected-namespace")?,
+        restore,
+        timeout: Duration::from_millis(number("--timeout-ms", 30_000, 1, 3_600_000)?),
+        limits,
+        storage,
     })
 }
 
-struct Clock { start: Instant, duration: Duration }
+struct Clock {
+    start: Instant,
+    duration: Duration,
+}
 impl Clock {
     fn now(&self) -> Result<u64> {
         let nanos = self.start.elapsed().as_nanos();
-        if nanos >= self.duration.as_nanos() { return Err(ArchiveCommandError::Deadline); }
+        if nanos >= self.duration.as_nanos() {
+            return Err(ArchiveCommandError::Deadline);
+        }
         u64::try_from(nanos).map_err(|_| ArchiveCommandError::Deadline)
     }
     fn deadline(&self) -> Result<u64> {
@@ -123,20 +228,41 @@ impl Clock {
     }
 }
 impl PublishCancellation for Clock {
-    fn cancel_requested(&self, _: PublishCutPoint) -> bool { self.start.elapsed() >= self.duration }
+    fn cancel_requested(&self, _: PublishCutPoint) -> bool {
+        self.start.elapsed() >= self.duration
+    }
 }
 fn existing(path: &Path) -> Result<PathBuf> {
-    if !fs::symlink_metadata(path).map_err(|_| ArchiveCommandError::NotArchive)?.is_dir() {
+    if !fs::symlink_metadata(path)
+        .map_err(|_| ArchiveCommandError::NotArchive)?
+        .is_dir()
+    {
         return Err(ArchiveCommandError::NotArchive);
     }
-    let root = fs::canonicalize(path).map_err(|e| ArchiveCommandError::Io { operation: "canonicalize archive", kind: e.kind() })?;
-    for name in ["roots", "tombstones", "spool", "spool/objects", "spool/staging", "spool/verified"] {
-        if !fs::symlink_metadata(root.join(name)).map_err(|_| ArchiveCommandError::NotArchive)?.is_dir() {
+    let root = fs::canonicalize(path).map_err(|e| ArchiveCommandError::Io {
+        operation: "canonicalize archive",
+        kind: e.kind(),
+    })?;
+    for name in [
+        "roots",
+        "tombstones",
+        "spool",
+        "spool/objects",
+        "spool/staging",
+        "spool/verified",
+    ] {
+        if !fs::symlink_metadata(root.join(name))
+            .map_err(|_| ArchiveCommandError::NotArchive)?
+            .is_dir()
+        {
             return Err(ArchiveCommandError::NotArchive);
         }
     }
     for name in ["LOCK", "spool/LOCK"] {
-        if !fs::symlink_metadata(root.join(name)).map_err(|_| ArchiveCommandError::NotArchive)?.is_file() {
+        if !fs::symlink_metadata(root.join(name))
+            .map_err(|_| ArchiveCommandError::NotArchive)?
+            .is_file()
+        {
             return Err(ArchiveCommandError::NotArchive);
         }
     }
@@ -146,21 +272,39 @@ fn outcome(receipt: LocalPublicationReceipt) -> Result<&'static str> {
     if receipt.claims.local != LocalPublicationState::Durable {
         return Err(ArchiveError::Storage(RecordingIoError::NotDurable).into());
     }
-    Ok(if receipt.outcome == PublishOutcome::AlreadyPublished { "already_durable" } else { "published" })
+    Ok(if receipt.outcome == PublishOutcome::AlreadyPublished {
+        "already_durable"
+    } else {
+        "published"
+    })
 }
 fn run(options: Options) -> Result<String> {
-    let clock = Clock { start: Instant::now(), duration: options.timeout };
+    let clock = Clock {
+        start: Instant::now(),
+        duration: options.timeout,
+    };
     let root = existing(&options.root)?;
     clock.now()?;
-    let mut publisher = LocalRootPublisher::open(root, options.storage).map_err(ArchiveCommandError::Storage)?;
+    let mut publisher =
+        LocalRootPublisher::open(root, options.storage).map_err(ArchiveCommandError::Storage)?;
     clock.now()?; // Owner open is bounded but not preemptible by this command.
-    let work = load_archive_work(&publisher, &options.slot, options.root_digest, options.limits, &clock)?;
-    if work.snapshot.namespace().digest() != options.namespace { return Err(ArchiveCommandError::SnapshotMismatch); }
+    let work = load_archive_work(
+        &publisher,
+        &options.slot,
+        options.root_digest,
+        options.limits,
+        &clock,
+    )?;
+    if work.snapshot.namespace().digest() != options.namespace {
+        return Err(ArchiveCommandError::SnapshotMismatch);
+    }
     let retirement = archive_retirement_digest(&work)?;
     let mut report = String::new();
     // Fixed fields and at most two root results fit this reservation. Do not allocate a
     // potentially large world/source dump after committing a storage operation.
-    report.try_reserve_exact(4096).map_err(|_| ArchiveCommandError::ReportLimit)?;
+    report
+        .try_reserve_exact(4096)
+        .map_err(|_| ArchiveCommandError::ReportLimit)?;
     let (mut window_result, mut page_result) = ("not_requested", "not_requested");
     if options.restore {
         page_result = "not_pending";
@@ -168,22 +312,44 @@ fn run(options: Options) -> Result<String> {
         // page as an undocumented side effect: its root is not in this checkpoint's scope.
         if let Some(page) = &work.prepared_page {
             clock.now()?;
-            let slot = work.snapshot.namespace().page_slot(work.snapshot.indexed_windows())?;
-            let digest = publisher.stage_object(page.index_bytes())
+            let slot = work
+                .snapshot
+                .namespace()
+                .page_slot(work.snapshot.indexed_windows())?;
+            let digest = publisher
+                .stage_object(page.index_bytes())
                 .map_err(|e| ArchiveError::Storage(RecordingIoError::from(e)))?;
-            if Some(digest) != page.manifest().metadata_digest() { return Err(ArchiveError::Metadata.into()); }
-            page_result = outcome(publisher.publish_cancellable(&slot, page.manifest(), &clock)
-                .map_err(|e| ArchiveError::Storage(RecordingIoError::from(e)))?)?;
+            if Some(digest) != page.manifest().metadata_digest() {
+                return Err(ArchiveError::Metadata.into());
+            }
+            page_result = outcome(
+                publisher
+                    .publish_cancellable(&slot, page.manifest(), &clock)
+                    .map_err(|e| ArchiveError::Storage(RecordingIoError::from(e)))?,
+            )?;
         }
         window_result = "not_pending";
         if let Some(window) = &work.pending {
-            let slot = work.snapshot.namespace().window_slot(work.snapshot.windows().len())?;
-            let mut job = RecordingPublication::new(window, &mut publisher, slot,
-                options.limits.max_pending_bytes, clock.deadline()?).map_err(ArchiveError::Storage)?;
+            let slot = work
+                .snapshot
+                .namespace()
+                .window_slot(work.snapshot.windows().len())?;
+            let mut job = RecordingPublication::new(
+                window,
+                &mut publisher,
+                slot,
+                options.limits.max_pending_bytes,
+                clock.deadline()?,
+            )
+            .map_err(ArchiveError::Storage)?;
             let mut receipt = None;
             for _ in 0..5 {
-                if let RecordingProgress::Published(value) = job.step(clock.now()?, &clock).map_err(ArchiveError::Storage)? {
-                    receipt = Some(value); break;
+                if let RecordingProgress::Published(value) = job
+                    .step(clock.now()?, &clock)
+                    .map_err(ArchiveError::Storage)?
+                {
+                    receipt = Some(value);
+                    break;
                 }
             }
             window_result = outcome(receipt.ok_or(ArchiveError::Metadata)?)?;
@@ -200,11 +366,15 @@ fn run(options: Options) -> Result<String> {
         options.namespace, snapshot, work.snapshot.windows().len(), current.windows().len(),
         current.indexed_windows(), current.pages().len(), window_result, page_result,
         !current.unindexed_windows().is_empty(), options.restore).map_err(|_| ArchiveCommandError::ReportLimit)?;
-    if report.len() > 4096 { return Err(ArchiveCommandError::ReportLimit); }
+    if report.len() > 4096 {
+        return Err(ArchiveCommandError::ReportLimit);
+    }
     Ok(report)
 }
 
 pub(super) fn execute(args: &[OsString]) -> Result<String> {
-    if args.len() == 2 && args[1].as_os_str() == OsStr::new("--help") { return Ok(HELP.to_owned()); }
+    if args.len() == 2 && args[1].as_os_str() == OsStr::new("--help") {
+        return Ok(HELP.to_owned());
+    }
     run(parse(args)?)
 }

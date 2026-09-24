@@ -38,8 +38,7 @@ impl DatagramPrefix {
         budget: &mut WorkBudget<'_>,
     ) -> Result<Self> {
         limits.validate()?;
-        if selected.scope != scope.digest()?
-            || selected.head.algorithm() != DigestAlgorithm::Sha256
+        if selected.scope != scope.digest()? || selected.head.algorithm() != DigestAlgorithm::Sha256
         {
             return Err(DatagramArchiveError::Sequence);
         }
@@ -50,12 +49,10 @@ impl DatagramPrefix {
         }
         // Ordinary recovery proves all predecessor links, source bytes and the exact
         // selected position. It also rejects hidden holes and unresolved later writes.
-        let mut archive = DatagramArchive::recover(
-            publisher, scope, limits, Some(selected), cancel, budget,
-        )?;
+        let mut archive =
+            DatagramArchive::recover(publisher, scope, limits, Some(selected), cancel, budget)?;
         let observed_head = archive.pin();
-        let count = usize::try_from(selected.datagrams)
-            .map_err(|_| DatagramArchiveError::Limit)?;
+        let count = usize::try_from(selected.datagrams).map_err(|_| DatagramArchiveError::Limit)?;
         // This consumes a freshly recovered private index, NEVER the live append owner.
         // No original payloads or root records are changed; only this read view is cut.
         archive.records.truncate(count);
@@ -64,18 +61,27 @@ impl DatagramPrefix {
         }
         probe(cancel)?;
         budget.charge(0)?;
-        Ok(Self { archive, observed_head })
+        Ok(Self {
+            archive,
+            observed_head,
+        })
     }
 
     /// Exactly selected original input. This remains fixed if the camera keeps recording.
-    pub fn pin(&self) -> DatagramPin { self.archive.pin() }
+    pub fn pin(&self) -> DatagramPin {
+        self.archive.pin()
+    }
 
     /// Complete source head verified AT RECOVERY, not a live pointer or selected input.
     /// Later observations are not added to recipe hashes, outputs or source-count claims.
-    pub fn observed_head(&self) -> DatagramPin { self.observed_head }
+    pub fn observed_head(&self) -> DatagramPin {
+        self.observed_head
+    }
 
     /// Existing read-only source APIs and native replay integration. No mutation escape.
-    pub fn archive(&self) -> &DatagramArchive { &self.archive }
+    pub fn archive(&self) -> &DatagramArchive {
+        &self.archive
+    }
 
     /// Re-read and hash one selected observation. Access beyond this prefix is refused.
     pub fn read(
@@ -113,10 +119,14 @@ impl DatagramPrefix {
         let found = if selected.datagrams == 0 {
             Some(current.empty)
         } else {
-            usize::try_from(selected.datagrams - 1).ok()
-                .and_then(|index| current.records.get(index)).map(|record| record.pin)
+            usize::try_from(selected.datagrams - 1)
+                .ok()
+                .and_then(|index| current.records.get(index))
+                .map(|record| record.pin)
         };
-        if found != Some(selected) { return Err(DatagramArchiveError::Sequence); }
+        if found != Some(selected) {
+            return Err(DatagramArchiveError::Sequence);
+        }
         probe(cancel)?;
         budget.charge(0)?;
         Ok(current.pin())

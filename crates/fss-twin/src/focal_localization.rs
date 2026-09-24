@@ -1,10 +1,14 @@
 #![forbid(unsafe_code)]
 //! Raw/native image or feature-frame matching followed by an ambiguity-preserving focal scan.
 
-use fss_geometry::{FocalPoseScan,FocalScanOptions,GeometryError,WorkBudget,scan_camera_focal_length};
 use crate::PropertyTwin;
-use crate::localization::{FeatureFrame,LocalizationAtlas,LocalizationError,MatchOptions,MatchReport};
-use crate::localization::native::{ExtractedFrame,ExtractionOptions,GrayImage,extract_gray};
+use crate::localization::native::{ExtractedFrame, ExtractionOptions, GrayImage, extract_gray};
+use crate::localization::{
+    FeatureFrame, LocalizationAtlas, LocalizationError, MatchOptions, MatchReport,
+};
+use fss_geometry::{
+    FocalPoseScan, FocalScanOptions, GeometryError, WorkBudget, scan_camera_focal_length,
+};
 
 /// Result of the focal scan: either the ambiguity-preserving scan outcome or a shortfall reason.
 #[derive(Debug)]
@@ -39,29 +43,52 @@ pub struct GrayFocalLocalization {
 /// Matches the query frame against the atlas and, when at least `max(6, scan.pose.minimum_inliers)`
 /// correspondences exist, runs a focal-length pose scan. Refuses a zero or mismatched
 /// `expected_image_domain` and any query exposure shared with an atlas reference frame.
-pub fn localize_focal_scan(atlas:&LocalizationAtlas,twin:&PropertyTwin,query:&FeatureFrame,
-    expected_image_domain:[u8;32],matching:MatchOptions,scan:FocalScanOptions,
-    budget:&mut WorkBudget<'_>)->Result<FocalLocalization,LocalizationError>{
+pub fn localize_focal_scan(
+    atlas: &LocalizationAtlas,
+    twin: &PropertyTwin,
+    query: &FeatureFrame,
+    expected_image_domain: [u8; 32],
+    matching: MatchOptions,
+    scan: FocalScanOptions,
+    budget: &mut WorkBudget<'_>,
+) -> Result<FocalLocalization, LocalizationError> {
     budget.charge(0)?;
-    if expected_image_domain==[0;32] || query.identity().image_domain!=expected_image_domain {
+    if expected_image_domain == [0; 32] || query.identity().image_domain != expected_image_domain {
         return Err(LocalizationError::BasisMismatch);
     }
-    if atlas.references().iter().any(|r|r.frame.identity().exposure==query.identity().exposure){
+    if atlas
+        .references()
+        .iter()
+        .any(|r| r.frame.identity().exposure == query.identity().exposure)
+    {
         return Err(LocalizationError::ReferenceExposure);
     }
-    let matches=atlas.match_frame(twin,query,matching,budget)?;
-    let required=6.max(scan.pose.minimum_inliers);
-    let outcome=if matches.correspondences.len()<required {
-        FocalLocalizationOutcome::InsufficientMatches{found:matches.correspondences.len(),required}
+    let matches = atlas.match_frame(twin, query, matching, budget)?;
+    let required = 6.max(scan.pose.minimum_inliers);
+    let outcome = if matches.correspondences.len() < required {
+        FocalLocalizationOutcome::InsufficientMatches {
+            found: matches.correspondences.len(),
+            required,
+        }
     } else {
-        match scan_camera_focal_length(twin.basis(),query.identity().dimensions,&matches.correspondences,scan,budget){
-            Ok(result)=>FocalLocalizationOutcome::Scan(result),
-            Err(error @ (GeometryError::Cancelled|GeometryError::BudgetExhausted|GeometryError::LimitExceeded))=>return Err(error.into()),
-            Err(error)=>return Err(LocalizationError::Geometry(error)),
+        match scan_camera_focal_length(
+            twin.basis(),
+            query.identity().dimensions,
+            &matches.correspondences,
+            scan,
+            budget,
+        ) {
+            Ok(result) => FocalLocalizationOutcome::Scan(result),
+            Err(
+                error @ (GeometryError::Cancelled
+                | GeometryError::BudgetExhausted
+                | GeometryError::LimitExceeded),
+            ) => return Err(error.into()),
+            Err(error) => return Err(LocalizationError::Geometry(error)),
         }
     };
     budget.charge(0)?;
-    Ok(FocalLocalization{matches,outcome})
+    Ok(FocalLocalization { matches, outcome })
 }
 
 /// Caller-declared controls for the gray full-route focal localization: the authorized
@@ -69,25 +96,48 @@ pub fn localize_focal_scan(atlas:&LocalizationAtlas,twin:&PropertyTwin,query:&Fe
 #[derive(Clone, Copy, Debug)]
 pub struct GrayFocalScanControls {
     /// Authorized image-domain identity; `[0;32]` is refused as an unset value.
-    pub expected_image_domain:[u8;32],
+    pub expected_image_domain: [u8; 32],
     /// Feature-extraction tuning for the query image.
-    pub extraction:ExtractionOptions,
+    pub extraction: ExtractionOptions,
     /// Atlas-matching tuning applied to the extracted features.
-    pub matching:MatchOptions,
+    pub matching: MatchOptions,
     /// Caller-declared focal family to scan.
-    pub scan:FocalScanOptions,
+    pub scan: FocalScanOptions,
 }
 
 /// Full native-pixel route: extract authorized grayscale features, match them to the
 /// property atlas, then scan the caller-declared focal family. No correspondences,
 /// focal length, or pose are supplied by this query operation.
-pub fn localize_gray_focal_scan(atlas:&LocalizationAtlas,twin:&PropertyTwin,image:&GrayImage<'_>,
-    controls:GrayFocalScanControls,budget:&mut WorkBudget<'_>)->Result<GrayFocalLocalization,LocalizationError>{
-    let GrayFocalScanControls{expected_image_domain,extraction,matching,scan}=controls;
+pub fn localize_gray_focal_scan(
+    atlas: &LocalizationAtlas,
+    twin: &PropertyTwin,
+    image: &GrayImage<'_>,
+    controls: GrayFocalScanControls,
+    budget: &mut WorkBudget<'_>,
+) -> Result<GrayFocalLocalization, LocalizationError> {
+    let GrayFocalScanControls {
+        expected_image_domain,
+        extraction,
+        matching,
+        scan,
+    } = controls;
     budget.charge(0)?;
-    if image.identity().image_domain!=expected_image_domain{return Err(LocalizationError::BasisMismatch);}
-    let extracted=extract_gray(image,extraction,budget)?;
-    let localization=localize_focal_scan(atlas,twin,&extracted.frame,expected_image_domain,matching,scan,budget)?;
+    if image.identity().image_domain != expected_image_domain {
+        return Err(LocalizationError::BasisMismatch);
+    }
+    let extracted = extract_gray(image, extraction, budget)?;
+    let localization = localize_focal_scan(
+        atlas,
+        twin,
+        &extracted.frame,
+        expected_image_domain,
+        matching,
+        scan,
+        budget,
+    )?;
     budget.charge(0)?;
-    Ok(GrayFocalLocalization{extraction:extracted,localization})
+    Ok(GrayFocalLocalization {
+        extraction: extracted,
+        localization,
+    })
 }

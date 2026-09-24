@@ -105,7 +105,11 @@ fn add_subject(
             Completeness::Complete,
             None,
         )?;
-        catalog.register_artifact(&descriptor.handle_id, descriptor.descriptor_digest, artifact)?;
+        catalog.register_artifact(
+            &descriptor.handle_id,
+            descriptor.descriptor_digest,
+            artifact,
+        )?;
     }
     Ok(descriptor)
 }
@@ -244,7 +248,10 @@ fn capacity_refusal_does_not_consume_or_forget_the_predecessor() -> TestResult {
             catalog.hydrate(&next, TimestampNs(100)),
             Err(HydrationError::CapacityExceeded)
         );
-        assert_eq!(catalog.issued_cursor(&cursor.cursor_digest).cloned(), before);
+        assert_eq!(
+            catalog.issued_cursor(&cursor.cursor_digest).cloned(),
+            before
+        );
         assert_eq!(catalog.issued_cursor_count(), 1);
     }
     assert_eq!(catalog.hydrate(&first, TimestampNs(100))?, response);
@@ -286,25 +293,36 @@ fn terminal_delivery_can_consume_at_capacity_without_forgetting_history() -> Tes
 #[test]
 fn expiry_reclaims_capacity_but_pressure_does_not() -> TestResult {
     let (mut catalog, first_descriptor) = fixture(1, HydrationLevel::H1)?;
-    let second_descriptor = add_subject(
-        &mut catalog,
-        "second",
-        TimestampNs(300),
-        HydrationLevel::H1,
+    let second_descriptor =
+        add_subject(&mut catalog, "second", TimestampNs(300), HydrationLevel::H1)?;
+    let first = request(
+        &first_descriptor,
+        HydrationLevel::H0,
+        None,
+        TimestampNs(100),
     )?;
-    let first = request(&first_descriptor, HydrationLevel::H0, None, TimestampNs(100))?;
     let old = catalog
         .hydrate(&first, TimestampNs(100))?
         .receipt
         .continuation
         .ok_or(ContractError::NotFound)?;
-    let blocked = request(&second_descriptor, HydrationLevel::H0, None, TimestampNs(199))?;
+    let blocked = request(
+        &second_descriptor,
+        HydrationLevel::H0,
+        None,
+        TimestampNs(199),
+    )?;
     assert_eq!(
         catalog.hydrate(&blocked, TimestampNs(199)),
         Err(HydrationError::CapacityExceeded)
     );
     assert!(catalog.issued_cursor(&old.cursor_digest).is_some());
-    let fresh = request(&second_descriptor, HydrationLevel::H0, None, TimestampNs(200))?;
+    let fresh = request(
+        &second_descriptor,
+        HydrationLevel::H0,
+        None,
+        TimestampNs(200),
+    )?;
     let new = catalog
         .hydrate(&fresh, TimestampNs(200))?
         .receipt
@@ -326,7 +344,10 @@ fn zero_cursor_capacity_still_allows_terminal_artifacts() -> TestResult {
     );
     let terminal = request(&descriptor, HydrationLevel::H2, None, TimestampNs(100))?;
     assert_eq!(
-        catalog.hydrate(&terminal, TimestampNs(100))?.receipt.delivered_level,
+        catalog
+            .hydrate(&terminal, TimestampNs(100))?
+            .receipt
+            .delivered_level,
         Some(HydrationLevel::H2)
     );
     assert_eq!(catalog.issued_cursor_count(), 0);

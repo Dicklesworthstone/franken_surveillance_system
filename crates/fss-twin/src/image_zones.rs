@@ -6,8 +6,10 @@
 //! Entry/exit names describe different observed sides; dwell describes a sampled
 //! span, never proof of continuous occupancy, a person, intent or effect authority.
 
-use crate::image_tracking::{ImageDetection, ImageTrackObservation, ImageTrackState,
-    ImageTracker, ImageTrackingFrame, ImageTrackingReport, TrackingAvailability};
+use crate::image_tracking::{
+    ImageDetection, ImageTrackObservation, ImageTrackState, ImageTracker, ImageTrackingFrame,
+    ImageTrackingReport, TrackingAvailability,
+};
 use fss_core::ContentDigest;
 use fss_geometry::{GeometryError, WorkBudget};
 
@@ -31,7 +33,9 @@ pub enum ImageZoneError {
     Geometry(GeometryError),
 }
 impl From<GeometryError> for ImageZoneError {
-    fn from(error: GeometryError) -> Self { Self::Geometry(error) }
+    fn from(error: GeometryError) -> Self {
+        Self::Geometry(error)
+    }
 }
 impl std::fmt::Display for ImageZoneError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -63,8 +67,11 @@ pub struct ImageZoneBasis {
 impl ImageZoneBasis {
     fn matches(self, frame: ImageTrackingFrame) -> bool {
         let s = frame.source;
-        self.camera == s.camera && self.clock == s.clock && self.calibration == s.calibration
-            && self.image_domain == s.image.image_domain && self.dimensions == s.image.dimensions
+        self.camera == s.camera
+            && self.clock == s.clock
+            && self.calibration == s.calibration
+            && self.image_domain == s.image.image_domain
+            && self.dimensions == s.image.dimensions
     }
 }
 
@@ -166,100 +173,194 @@ pub struct ImageZoneEvent {
 /// Complete source-pinned read projection, not a canonical event revision or grant.
 #[derive(Debug)]
 pub struct ImageZoneReport {
-    digest: [u8; 32], prior: [u8; 32], config: [u8; 32], tracking: [u8; 32],
-    frame: ImageTrackingFrame, cells: Vec<ImageZoneCell>, events: Vec<ImageZoneEvent>,
+    digest: [u8; 32],
+    prior: [u8; 32],
+    config: [u8; 32],
+    tracking: [u8; 32],
+    frame: ImageTrackingFrame,
+    cells: Vec<ImageZoneCell>,
+    events: Vec<ImageZoneEvent>,
 }
 impl ImageZoneReport {
     /// Complete local result identity, stable across exact retries.
-    pub fn digest(&self) -> [u8; 32] { self.digest }
+    pub fn digest(&self) -> [u8; 32] {
+        self.digest
+    }
     /// Exact preceding monitor result or constructor identity.
-    pub fn prior_digest(&self) -> [u8; 32] { self.prior }
+    pub fn prior_digest(&self) -> [u8; 32] {
+        self.prior
+    }
     /// Frozen zone, basis, selection-evidence and temporal-policy identity.
-    pub fn config_digest(&self) -> [u8; 32] { self.config }
+    pub fn config_digest(&self) -> [u8; 32] {
+        self.config
+    }
     /// Accepted opaque ImageTrackingReport identity.
-    pub fn tracking_digest(&self) -> [u8; 32] { self.tracking }
+    pub fn tracking_digest(&self) -> [u8; 32] {
+        self.tracking
+    }
     /// Triggering source, including availability and clock uncertainty.
-    pub fn frame(&self) -> ImageTrackingFrame { self.frame }
+    pub fn frame(&self) -> ImageTrackingFrame {
+        self.frame
+    }
     /// Every active and explicitly expired track/zone pair, ordered by (track, zone).
-    pub fn cells(&self) -> &[ImageZoneCell] { &self.cells }
+    pub fn cells(&self) -> &[ImageZoneCell] {
+        &self.cells
+    }
     /// All resulting events in (track, zone, event-kind) order.
-    pub fn events(&self) -> &[ImageZoneEvent] { &self.events }
+    pub fn events(&self) -> &[ImageZoneEvent] {
+        &self.events
+    }
 }
 #[derive(Clone, Copy)]
 struct ZoneState {
-    track: u64, zone: u64, side: Option<(ImageZoneRelation, ImageTrackObservation)>,
-    inside: Option<ImageTrackObservation>, samples: u32, dwell_emitted: bool,
+    track: u64,
+    zone: u64,
+    side: Option<(ImageZoneRelation, ImageTrackObservation)>,
+    inside: Option<ImageTrackObservation>,
+    samples: u32,
+    dwell_emitted: bool,
     last: Option<ImageTrackObservation>,
 }
 impl ZoneState {
     fn new(track: u64, zone: u64) -> Self {
-        Self { track, zone, side: None, inside: None, samples: 0, dwell_emitted: false, last: None }
+        Self {
+            track,
+            zone,
+            side: None,
+            inside: None,
+            samples: 0,
+            dwell_emitted: false,
+            last: None,
+        }
     }
     fn clear(&mut self) {
-        self.side = None; self.inside = None; self.samples = 0;
-        self.dwell_emitted = false; self.last = None;
+        self.side = None;
+        self.inside = None;
+        self.samples = 0;
+        self.dwell_emitted = false;
+        self.last = None;
     }
 }
 
 /// Bounded synchronous observer. State is rebuilt from exact retained tracking inputs.
 /// Attaching midway starts new zone history, without retroactively inventing events.
 pub struct ImageZoneMonitor {
-    basis: ImageZoneBasis, policy: ImageZonePolicy, zones: Vec<ImageZoneSpec>,
-    config: [u8; 32], digest: [u8; 32], expected_tracking: [u8; 32],
-    states: Vec<ZoneState>, latest: Option<ImageZoneReport>,
+    basis: ImageZoneBasis,
+    policy: ImageZonePolicy,
+    zones: Vec<ImageZoneSpec>,
+    config: [u8; 32],
+    digest: [u8; 32],
+    expected_tracking: [u8; 32],
+    states: Vec<ZoneState>,
+    latest: Option<ImageZoneReport>,
 }
 impl ImageZoneMonitor {
     /// Freeze all zones and bind the exact tracker position before the next update.
-    pub fn new(tracker: &ImageTracker, basis: ImageZoneBasis, policy: ImageZonePolicy,
-        zones: &[ImageZoneSpec], budget: &mut WorkBudget<'_>) -> Result<Self, ImageZoneError> {
+    pub fn new(
+        tracker: &ImageTracker,
+        basis: ImageZoneBasis,
+        policy: ImageZonePolicy,
+        zones: &[ImageZoneSpec],
+        budget: &mut WorkBudget<'_>,
+    ) -> Result<Self, ImageZoneError> {
         budget.charge(1)?;
-        if zones.is_empty() || zones.len() > MAX_IMAGE_ZONES { return Err(ImageZoneError::Limit); }
-        if basis.camera == 0 || basis.clock == 0 || basis.calibration == [0;32]
-            || basis.image_domain == [0;32] || basis.dimensions.iter().any(|n| *n == 0 || *n > 65536)
-            || policy.selection_evidence == [0;32] || policy.maximum_sample_gap_ns == 0
-            || policy.maximum_sample_gap_ns > 3_600_000_000_000 { return Err(ImageZoneError::InvalidInput); }
+        if zones.is_empty() || zones.len() > MAX_IMAGE_ZONES {
+            return Err(ImageZoneError::Limit);
+        }
+        if basis.camera == 0
+            || basis.clock == 0
+            || basis.calibration == [0; 32]
+            || basis.image_domain == [0; 32]
+            || basis.dimensions.iter().any(|n| *n == 0 || *n > 65536)
+            || policy.selection_evidence == [0; 32]
+            || policy.maximum_sample_gap_ns == 0
+            || policy.maximum_sample_gap_ns > 3_600_000_000_000
+        {
+            return Err(ImageZoneError::InvalidInput);
+        }
         let mut frozen = reserve(zones.len())?;
-        for zone in zones { frozen.push(geometry::normalize(zone, basis.dimensions, budget)?); }
+        for zone in zones {
+            frozen.push(geometry::normalize(zone, basis.dimensions, budget)?);
+        }
         frozen.sort_unstable_by_key(|z| z.id);
-        if frozen.windows(2).any(|w| w[0].id == w[1].id) { return Err(ImageZoneError::InvalidInput); }
+        if frozen.windows(2).any(|w| w[0].id == w[1].id) {
+            return Err(ImageZoneError::InvalidInput);
+        }
         let config = encoding::configuration(basis, policy, &frozen, budget)?;
         let mut bytes = reserve(96)?;
         bytes.extend_from_slice(b"fss/image-zone-monitor/reference/1\0");
-        bytes.extend_from_slice(&config); bytes.extend_from_slice(&tracker.digest());
+        bytes.extend_from_slice(&config);
+        bytes.extend_from_slice(&tracker.digest());
         budget.charge(bytes.len() as u64)?;
         let digest = ContentDigest::sha256(&bytes).bytes();
         budget.charge(0)?;
-        Ok(Self { basis, policy, zones: frozen, config, digest, expected_tracking: tracker.digest(),
-            states: Vec::new(), latest: None })
+        Ok(Self {
+            basis,
+            policy,
+            zones: frozen,
+            config,
+            digest,
+            expected_tracking: tracker.digest(),
+            states: Vec::new(),
+            latest: None,
+        })
     }
     /// Current zone chain, unchanged after a refused update.
-    pub fn digest(&self) -> [u8; 32] { self.digest }
+    pub fn digest(&self) -> [u8; 32] {
+        self.digest
+    }
     /// Exact next report predecessor required for gap-free consumption.
-    pub fn tracking_digest(&self) -> [u8; 32] { self.expected_tracking }
+    pub fn tracking_digest(&self) -> [u8; 32] {
+        self.expected_tracking
+    }
     /// Frozen zone, basis and owner-selection identity.
-    pub fn config_digest(&self) -> [u8; 32] { self.config }
+    pub fn config_digest(&self) -> [u8; 32] {
+        self.config
+    }
     /// Explicit immutable gap and selection assumptions.
-    pub fn policy(&self) -> ImageZonePolicy { self.policy }
+    pub fn policy(&self) -> ImageZonePolicy {
+        self.policy
+    }
     /// Frozen canonicalized polygons, sorted by ID; no mutable policy activation.
-    pub fn zones(&self) -> &[ImageZoneSpec] { &self.zones }
+    pub fn zones(&self) -> &[ImageZoneSpec] {
+        &self.zones
+    }
     /// Exact coordinate basis required from every tracking report.
-    pub fn basis(&self) -> ImageZoneBasis { self.basis }
+    pub fn basis(&self) -> ImageZoneBasis {
+        self.basis
+    }
     /// Latest complete read projection, or None before the first accepted report.
-    pub fn latest(&self) -> Option<&ImageZoneReport> { self.latest.as_ref() }
+    pub fn latest(&self) -> Option<&ImageZoneReport> {
+        self.latest.as_ref()
+    }
 
     /// Consume the immediately succeeding opaque tracking report and current tracker.
     /// Exact repeats return the same borrowed result without duplicating dwell/events.
     /// A refused observation can be retried before advancing the upstream tracker.
-    pub fn observe(&mut self, tracker: &ImageTracker, report: &ImageTrackingReport,
-        budget: &mut WorkBudget<'_>) -> Result<&ImageZoneReport, ImageZoneError> {
+    pub fn observe(
+        &mut self,
+        tracker: &ImageTracker,
+        report: &ImageTrackingReport,
+        budget: &mut WorkBudget<'_>,
+    ) -> Result<&ImageZoneReport, ImageZoneError> {
         budget.charge(0)?;
-        if tracker.digest() != report.digest() { return Err(ImageZoneError::TrackingOrder); }
-        if self.latest.as_ref().is_some_and(|r| r.tracking == report.digest()) {
+        if tracker.digest() != report.digest() {
+            return Err(ImageZoneError::TrackingOrder);
+        }
+        if self
+            .latest
+            .as_ref()
+            .is_some_and(|r| r.tracking == report.digest())
+        {
             return self.latest.as_ref().ok_or(ImageZoneError::TrackingOrder);
         }
-        if report.prior_digest() != self.expected_tracking { return Err(ImageZoneError::TrackingOrder); }
+        if report.prior_digest() != self.expected_tracking {
+            return Err(ImageZoneError::TrackingOrder);
+        }
         let frame = report.frame();
-        if !self.basis.matches(frame) { return Err(ImageZoneError::BasisMismatch); }
+        if !self.basis.matches(frame) {
+            return Err(ImageZoneError::BasisMismatch);
+        }
         let capacity = (tracker.tracks().len() + report.expired().len()) * self.zones.len();
         let mut cells = reserve(capacity)?;
         let mut events = reserve(capacity * 2)?;
@@ -267,22 +368,37 @@ impl ImageZoneMonitor {
         for track in tracker.tracks() {
             for zone in &self.zones {
                 budget.charge(1 + self.states.len() as u64)?;
-                let mut state = self.states.iter().find(|s| s.track == track.id() && s.zone == zone.id)
-                    .copied().unwrap_or_else(|| ZoneState::new(track.id(), zone.id));
+                let mut state = self
+                    .states
+                    .iter()
+                    .find(|s| s.track == track.id() && s.zone == zone.id)
+                    .copied()
+                    .unwrap_or_else(|| ZoneState::new(track.id(), zone.id));
                 let latest = track.latest();
                 let relation = match frame.availability {
                     TrackingAvailability::Unobservable => ImageZoneRelation::Unobservable,
                     TrackingAvailability::Disturbed => ImageZoneRelation::Disturbed,
-                    TrackingAvailability::Available if track.state() == ImageTrackState::Coasting
-                        || latest.frame != frame => ImageZoneRelation::Unobserved,
-                    TrackingAvailability::Available => geometry::classify(zone, latest.detection, budget)?,
+                    TrackingAvailability::Available
+                        if track.state() == ImageTrackState::Coasting || latest.frame != frame =>
+                    {
+                        ImageZoneRelation::Unobserved
+                    }
+                    TrackingAvailability::Available => {
+                        geometry::classify(zone, latest.detection, budget)?
+                    }
                 };
                 budget.charge(8)?;
                 advance(&mut state, zone, latest, relation, self.policy, &mut events)?;
                 let span = state.inside.map(|first| span(first, latest));
-                cells.push(ImageZoneCell { track: track.id(), zone: zone.id, relation,
-                    last_observation: latest, dwell_start: state.inside,
-                    sampled_span_ns: span, inside_samples: state.samples });
+                cells.push(ImageZoneCell {
+                    track: track.id(),
+                    zone: zone.id,
+                    relation,
+                    last_observation: latest,
+                    dwell_start: state.inside,
+                    sampled_span_ns: span,
+                    inside_samples: state.samples,
+                });
                 next.push(state);
             }
         }
@@ -291,70 +407,144 @@ impl ImageZoneMonitor {
                 budget.charge(1)?;
                 let track = expired.track;
                 let latest = track.latest();
-                cells.push(ImageZoneCell { track: track.id(), zone: zone.id,
-                    relation: ImageZoneRelation::Expired, last_observation: latest,
-                    dwell_start: None, sampled_span_ns: None, inside_samples: 0 });
-                push_event(&mut events, track.id(), zone.id, ImageZoneEventKind::TrackExpired,
-                    None, latest, ImageZoneRelation::Expired);
+                cells.push(ImageZoneCell {
+                    track: track.id(),
+                    zone: zone.id,
+                    relation: ImageZoneRelation::Expired,
+                    last_observation: latest,
+                    dwell_start: None,
+                    sampled_span_ns: None,
+                    inside_samples: 0,
+                });
+                push_event(
+                    &mut events,
+                    track.id(),
+                    zone.id,
+                    ImageZoneEventKind::TrackExpired,
+                    None,
+                    latest,
+                    ImageZoneRelation::Expired,
+                );
             }
         }
         budget.charge((cells.len() * 16 + events.len() * 16) as u64)?;
         cells.sort_unstable_by_key(|c| (c.track, c.zone));
         events.sort_unstable_by_key(|e| (e.track, e.zone, e.kind as u8));
-        let mut output = ImageZoneReport { digest: [0;32], prior: self.digest, config: self.config,
-            tracking: report.digest(), frame, cells, events };
+        let mut output = ImageZoneReport {
+            digest: [0; 32],
+            prior: self.digest,
+            config: self.config,
+            tracking: report.digest(),
+            frame,
+            cells,
+            events,
+        };
         encoding::seal(&mut output, budget)?;
         budget.charge(0)?;
-        self.states = next; self.digest = output.digest; self.expected_tracking = report.digest();
+        self.states = next;
+        self.digest = output.digest;
+        self.expected_tracking = report.digest();
         Ok(self.latest.insert(output))
     }
 }
-fn advance(state: &mut ZoneState, zone: &ImageZoneSpec, latest: ImageTrackObservation,
-    relation: ImageZoneRelation, policy: ImageZonePolicy, events: &mut Vec<ImageZoneEvent>)
-    -> Result<(), ImageZoneError> {
-    let observable = matches!(relation, ImageZoneRelation::Inside | ImageZoneRelation::Outside | ImageZoneRelation::Boundary);
-    let gap = state.last.is_some_and(|last| latest.frame.source.capture[1]
-        .saturating_sub(last.frame.source.capture[0]) > policy.maximum_sample_gap_ns);
+fn advance(
+    state: &mut ZoneState,
+    zone: &ImageZoneSpec,
+    latest: ImageTrackObservation,
+    relation: ImageZoneRelation,
+    policy: ImageZonePolicy,
+    events: &mut Vec<ImageZoneEvent>,
+) -> Result<(), ImageZoneError> {
+    let observable = matches!(
+        relation,
+        ImageZoneRelation::Inside | ImageZoneRelation::Outside | ImageZoneRelation::Boundary
+    );
+    let gap = state.last.is_some_and(|last| {
+        latest.frame.source.capture[1].saturating_sub(last.frame.source.capture[0])
+            > policy.maximum_sample_gap_ns
+    });
     if !observable || gap {
         if let Some(last) = state.last {
-            push_event(events, state.track, state.zone, ImageZoneEventKind::ObservationInterrupted,
-                Some(last), latest, relation);
+            push_event(
+                events,
+                state.track,
+                state.zone,
+                ImageZoneEventKind::ObservationInterrupted,
+                Some(last),
+                latest,
+                relation,
+            );
         }
         state.clear();
-        if !observable { return Ok(()); }
+        if !observable {
+            return Ok(());
+        }
     }
     if relation == ImageZoneRelation::Boundary {
         // A witnessed boundary crossing may separate stable side endpoints; it never
         // accumulates inside dwell. Missing/partial evidence, unlike boundary evidence,
         // clears the side endpoint completely.
-        state.inside = None; state.samples = 0; state.dwell_emitted = false;
+        state.inside = None;
+        state.samples = 0;
+        state.dwell_emitted = false;
     } else {
         let previous = state.side;
         if relation == ImageZoneRelation::Inside {
             let kind = match previous {
                 None => Some(ImageZoneEventKind::ObservedInside),
-                Some((ImageZoneRelation::Outside, _)) => Some(ImageZoneEventKind::EnteredBetweenObservations),
+                Some((ImageZoneRelation::Outside, _)) => {
+                    Some(ImageZoneEventKind::EnteredBetweenObservations)
+                }
                 _ => None,
             };
             if let Some(kind) = kind {
-                push_event(events, state.track, state.zone, kind, previous.map(|p| p.1), latest, relation);
+                push_event(
+                    events,
+                    state.track,
+                    state.zone,
+                    kind,
+                    previous.map(|p| p.1),
+                    latest,
+                    relation,
+                );
             }
-            if state.inside.is_none() { state.inside = Some(latest); }
+            if state.inside.is_none() {
+                state.inside = Some(latest);
+            }
             state.samples = state.samples.checked_add(1).ok_or(ImageZoneError::Limit)?;
             if let Some(first) = state.inside
-                && !state.dwell_emitted && state.samples >= 2
-                && zone.dwell_ns.is_some_and(|threshold| span(first, latest)[0] >= threshold)
+                && !state.dwell_emitted
+                && state.samples >= 2
+                && zone
+                    .dwell_ns
+                    .is_some_and(|threshold| span(first, latest)[0] >= threshold)
             {
-                push_event(events, state.track, state.zone, ImageZoneEventKind::SampledDwell,
-                    Some(first), latest, relation);
+                push_event(
+                    events,
+                    state.track,
+                    state.zone,
+                    ImageZoneEventKind::SampledDwell,
+                    Some(first),
+                    latest,
+                    relation,
+                );
                 state.dwell_emitted = true;
             }
         } else {
             if let Some((ImageZoneRelation::Inside, first)) = previous {
-                push_event(events, state.track, state.zone, ImageZoneEventKind::LeftBetweenObservations,
-                    Some(first), latest, relation);
+                push_event(
+                    events,
+                    state.track,
+                    state.zone,
+                    ImageZoneEventKind::LeftBetweenObservations,
+                    Some(first),
+                    latest,
+                    relation,
+                );
             }
-            state.inside = None; state.samples = 0; state.dwell_emitted = false;
+            state.inside = None;
+            state.samples = 0;
+            state.dwell_emitted = false;
         }
         state.side = Some((relation, latest));
     }
@@ -362,22 +552,42 @@ fn advance(state: &mut ZoneState, zone: &ImageZoneSpec, latest: ImageTrackObserv
     Ok(())
 }
 fn span(first: ImageTrackObservation, last: ImageTrackObservation) -> [u64; 2] {
-    if first == last { return [0, 0]; }
-    [last.frame.source.capture[0].saturating_sub(first.frame.source.capture[1]),
-     last.frame.source.capture[1].saturating_sub(first.frame.source.capture[0])]
+    if first == last {
+        return [0, 0];
+    }
+    [
+        last.frame.source.capture[0].saturating_sub(first.frame.source.capture[1]),
+        last.frame.source.capture[1].saturating_sub(first.frame.source.capture[0]),
+    ]
 }
-fn push_event(events: &mut Vec<ImageZoneEvent>, track: u64, zone: u64,
-    kind: ImageZoneEventKind, from: Option<ImageTrackObservation>, to: ImageTrackObservation,
-    relation: ImageZoneRelation) {
-    events.push(ImageZoneEvent { digest: [0;32], track, zone, kind, from, to, relation });
+fn push_event(
+    events: &mut Vec<ImageZoneEvent>,
+    track: u64,
+    zone: u64,
+    kind: ImageZoneEventKind,
+    from: Option<ImageTrackObservation>,
+    to: ImageTrackObservation,
+    relation: ImageZoneRelation,
+) {
+    events.push(ImageZoneEvent {
+        digest: [0; 32],
+        track,
+        zone,
+        kind,
+        from,
+        to,
+        relation,
+    });
 }
 fn reserve<T>(count: usize) -> Result<Vec<T>, ImageZoneError> {
     let mut values = Vec::new();
-    values.try_reserve_exact(count).map_err(|_| ImageZoneError::Limit)?;
+    values
+        .try_reserve_exact(count)
+        .map_err(|_| ImageZoneError::Limit)?;
     Ok(values)
 }
-mod geometry;
 mod encoding;
+mod geometry;
 #[cfg(test)]
 mod tests;
 

@@ -3,9 +3,8 @@
 
 use fss_core::contract_basis::reference_contract_basis;
 use fss_core::{
-    AgentOperation, AgentQueryPlan, BudgetVector, ContentDigest, ContractBasisError,
-    ContractError, LedgerAnchor, MissionId, QueryCompletenessRequested, QueryInterpretation,
-    SessionId,
+    AgentOperation, AgentQueryPlan, BudgetVector, ContentDigest, ContractBasisError, ContractError,
+    LedgerAnchor, MissionId, QueryCompletenessRequested, QueryInterpretation, SessionId,
 };
 
 fn interpretation(id: &str) -> QueryInterpretation {
@@ -20,8 +19,8 @@ fn interpretation(id: &str) -> QueryInterpretation {
 }
 
 #[test]
-fn test_query_plan_compiles_with_selected_interpretation(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_query_plan_compiles_with_selected_interpretation() -> Result<(), Box<dyn std::error::Error>>
+{
     let plan = AgentQueryPlan::compile(
         "query-plan:gate:0001",
         MissionId::parse("mission:guard")?,
@@ -38,7 +37,10 @@ fn test_query_plan_compiles_with_selected_interpretation(
         vec!["privacy:face-redaction".to_owned()],
         QueryCompletenessRequested::Bounded,
         BudgetVector::builder().latency_ms(400).build()?,
-        vec![interpretation("interp:coverage"), interpretation("interp:health")],
+        vec![
+            interpretation("interp:coverage"),
+            interpretation("interp:health"),
+        ],
         "interp:coverage",
         BudgetVector::builder().latency_ms(350).build()?,
         "AVIEW-003",
@@ -65,7 +67,10 @@ fn test_query_plan_compiles_with_selected_interpretation(
         vec!["privacy:face-redaction".to_owned()],
         QueryCompletenessRequested::Bounded,
         BudgetVector::builder().latency_ms(400).build()?,
-        vec![interpretation("interp:coverage"), interpretation("interp:health")],
+        vec![
+            interpretation("interp:coverage"),
+            interpretation("interp:health"),
+        ],
         "interp:coverage",
         BudgetVector::builder().latency_ms(350).build()?,
         "AVIEW-003",
@@ -76,33 +81,35 @@ fn test_query_plan_compiles_with_selected_interpretation(
 }
 
 #[test]
-fn test_query_plan_refuses_effect_rows_and_outside_selections(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_query_plan_refuses_effect_rows_and_outside_selections()
+-> Result<(), Box<dyn std::error::Error>> {
     let basis = reference_contract_basis();
     // Effect rows never serve query plans, whatever their payload.
-    assert!(AgentQueryPlan::compile(
-        "query-plan:x",
-        MissionId::parse("mission:guard")?,
-        SessionId::parse("session:guard")?,
-        &basis,
-        "AOP-008",
-        ContentDigest::sha256(b"text"),
-        vec![],
-        LedgerAnchor::genesis("site:fss:guard"),
-        "objective".to_owned(),
-        vec![],
-        vec![],
-        vec![],
-        vec![],
-        QueryCompletenessRequested::BestEffort,
-        BudgetVector::builder().latency_ms(1).build()?,
-        vec![interpretation("interp:a")],
-        "interp:a",
-        BudgetVector::builder().latency_ms(1).build()?,
-        "AVIEW-005",
-        1_000,
-    )
-    .is_err());
+    assert!(
+        AgentQueryPlan::compile(
+            "query-plan:x",
+            MissionId::parse("mission:guard")?,
+            SessionId::parse("session:guard")?,
+            &basis,
+            "AOP-008",
+            ContentDigest::sha256(b"text"),
+            vec![],
+            LedgerAnchor::genesis("site:fss:guard"),
+            "objective".to_owned(),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            QueryCompletenessRequested::BestEffort,
+            BudgetVector::builder().latency_ms(1).build()?,
+            vec![interpretation("interp:a")],
+            "interp:a",
+            BudgetVector::builder().latency_ms(1).build()?,
+            "AVIEW-005",
+            1_000,
+        )
+        .is_err()
+    );
     // A selection outside the enumerated interpretations is opaque: refused.
     assert_eq!(
         AgentQueryPlan::compile(
@@ -130,28 +137,30 @@ fn test_query_plan_refuses_effect_rows_and_outside_selections(
         Err(ContractBasisError::Contract(ContractError::NotFound))
     );
     // Unregistered output views are refused.
-    assert!(AgentQueryPlan::compile(
-        "query-plan:x",
-        MissionId::parse("mission:guard")?,
-        SessionId::parse("session:guard")?,
-        &basis,
-        "AOP-005",
-        ContentDigest::sha256(b"text"),
-        vec![],
-        LedgerAnchor::genesis("site:fss:guard"),
-        "objective".to_owned(),
-        vec![],
-        vec![],
-        vec![],
-        vec![],
-        QueryCompletenessRequested::BestEffort,
-        BudgetVector::builder().latency_ms(1).build()?,
-        vec![interpretation("interp:a")],
-        "interp:a",
-        BudgetVector::builder().latency_ms(1).build()?,
-        "AVIEW-099",
-        1_000,
-    )
-    .is_err());
+    assert!(
+        AgentQueryPlan::compile(
+            "query-plan:x",
+            MissionId::parse("mission:guard")?,
+            SessionId::parse("session:guard")?,
+            &basis,
+            "AOP-005",
+            ContentDigest::sha256(b"text"),
+            vec![],
+            LedgerAnchor::genesis("site:fss:guard"),
+            "objective".to_owned(),
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            QueryCompletenessRequested::BestEffort,
+            BudgetVector::builder().latency_ms(1).build()?,
+            vec![interpretation("interp:a")],
+            "interp:a",
+            BudgetVector::builder().latency_ms(1).build()?,
+            "AVIEW-099",
+            1_000,
+        )
+        .is_err()
+    );
     Ok(())
 }

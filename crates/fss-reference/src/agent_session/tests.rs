@@ -342,7 +342,9 @@ fn refresh_cannot_escalate_or_renew_and_invalidates_old_symbols() -> TestResult 
     let mut fixture = Fixture::new()?;
     let alias = fixture.bind(TimestampNs(10))?;
     let mut refresh = fixture.refresh();
-    refresh.capabilities.insert("capability:hydrate:H3".to_owned());
+    refresh
+        .capabilities
+        .insert("capability:hydrate:H3".to_owned());
     assert!(matches!(
         fixture.store.refresh(
             &fixture.session.principal_id,
@@ -352,12 +354,17 @@ fn refresh_cannot_escalate_or_renew_and_invalidates_old_symbols() -> TestResult 
         ),
         Err(ReferenceSessionError::GrantEscalation)
     ));
-    assert!(fixture.store.resolve(
-        &fixture.session.principal_id,
-        &alias,
-        &fixture.catalog,
-        TimestampNs(10),
-    ).is_ok());
+    assert!(
+        fixture
+            .store
+            .resolve(
+                &fixture.session.principal_id,
+                &alias,
+                &fixture.catalog,
+                TimestampNs(10),
+            )
+            .is_ok()
+    );
     let mut refresh = fixture.refresh();
     refresh.capabilities.clear();
     let narrowed = fixture.store.refresh(
@@ -377,7 +384,13 @@ fn refresh_cannot_escalate_or_renew_and_invalidates_old_symbols() -> TestResult 
         ),
         Err(ReferenceSessionError::StaleGeneration)
     ));
-    assert!(fixture.store.open(params()?, basis(), TimestampNs(10))?.capabilities.is_empty());
+    assert!(
+        fixture
+            .store
+            .open(params()?, basis(), TimestampNs(10))?
+            .capabilities
+            .is_empty()
+    );
     Ok(())
 }
 
@@ -396,12 +409,17 @@ fn generation_overflow_is_atomic() -> TestResult {
         ),
         Err(ReferenceSessionError::GenerationExhausted)
     ));
-    assert!(fixture.store.resolve(
-        &fixture.session.principal_id,
-        &alias,
-        &fixture.catalog,
-        TimestampNs(10),
-    ).is_ok());
+    assert!(
+        fixture
+            .store
+            .resolve(
+                &fixture.session.principal_id,
+                &alias,
+                &fixture.catalog,
+                TimestampNs(10),
+            )
+            .is_ok()
+    );
     Ok(())
 }
 
@@ -558,9 +576,11 @@ fn hydration_cannot_self_grant_capabilities_or_privacy() -> TestResult {
     for widen_privacy in [false, true] {
         let mut spec = fixture.request(HydrationLevel::H0, 10)?;
         if widen_privacy {
-            spec.authorized_privacy_classes.insert("private:other-site".to_owned());
+            spec.authorized_privacy_classes
+                .insert("private:other-site".to_owned());
         } else {
-            spec.available_capabilities.insert("capability:hydrate:H3".to_owned());
+            spec.available_capabilities
+                .insert("capability:hydrate:H3".to_owned());
         }
         let request = HydrationRequest::publish(spec)?;
         assert!(matches!(
@@ -680,7 +700,9 @@ fn cumulative_budget_survives_rotation_and_lost_ack_open_retry() -> TestResult {
 #[test]
 fn progressive_hydration_uses_existing_exact_cursor_protocol() -> TestResult {
     let mut input = params()?;
-    input.capabilities.insert("capability:hydrate:H1".to_owned());
+    input
+        .capabilities
+        .insert("capability:hydrate:H1".to_owned());
     let mut fixture = Fixture::with_params(input, ReferenceSessionLimits::default())?;
     let alias = fixture.bind(TimestampNs(10))?;
     let first = HydrationRequest::publish(fixture.request(HydrationLevel::H0, 10)?)?;
@@ -703,13 +725,18 @@ fn progressive_hydration_uses_existing_exact_cursor_protocol() -> TestResult {
         TimestampNs(10),
     )?;
     assert_eq!(response.receipt.delivered_level, Some(HydrationLevel::H1));
-    assert!(fixture.store.hydrate(
-        &fixture.session.principal_id,
-        &alias,
-        &next,
-        &mut fixture.catalog,
-        TimestampNs(10),
-    ).is_err());
+    assert!(
+        fixture
+            .store
+            .hydrate(
+                &fixture.session.principal_id,
+                &alias,
+                &next,
+                &mut fixture.catalog,
+                TimestampNs(10),
+            )
+            .is_err()
+    );
     Ok(())
 }
 

@@ -184,7 +184,9 @@ impl fmt::Display for WorkspaceError {
             Self::InvalidRevision => "invalid workspace revision succession",
             Self::RebaseRequired => "workspace requires explicit rebase",
             Self::InvalidAnchor => "workspace anchor is not an admitted successor",
-            Self::PreservationRequired => "workspace must preserve protected material and invalidate stale actions",
+            Self::PreservationRequired => {
+                "workspace must preserve protected material and invalidate stale actions"
+            }
             Self::CapacityExceeded => "workspace storage capacity exceeded",
             Self::Contract(_) => "invalid workspace capsule",
             Self::Session(_) => "workspace session admission refused",
@@ -224,7 +226,11 @@ impl ReferenceWorkspaceStore {
     /// Creates a store with requested limits clamped to the format's hard ceilings.
     #[must_use]
     pub fn with_limits(limits: WorkspaceLimits) -> Self {
-        Self { histories: BTreeMap::new(), limits: limits.bounded(), retained_bytes: 0 }
+        Self {
+            histories: BTreeMap::new(),
+            limits: limits.bounded(),
+            retained_bytes: 0,
+        }
     }
 
     /// Appends atomically in memory. Exact lost-acknowledgement retries return the original
@@ -240,12 +246,20 @@ impl ReferenceWorkspaceStore {
         let entry = sessions.live_entry(principal, &request.capsule.session_id, now)?;
         validate_capsule(&request.capsule, self.limits.max_revision_bytes)?;
         if request.capsule.principal != principal.as_str()
-            || request.capsule.capability_projection.iter().any(|cap| !entry.session.capabilities.contains(cap))
+            || request
+                .capsule
+                .capability_projection
+                .iter()
+                .any(|cap| !entry.session.capabilities.contains(cap))
         {
             return Err(WorkspaceError::Unavailable);
         }
         let history = self.histories.get(&request.capsule.session_id);
-        if let Some(existing) = history.and_then(|items| items.iter().find(|item| item.capsule.revision == request.capsule.revision)) {
+        if let Some(existing) = history.and_then(|items| {
+            items
+                .iter()
+                .find(|item| item.capsule.revision == request.capsule.revision)
+        }) {
             authorize_revision(entry, existing)?;
             if existing.capsule == request.capsule
                 && existing.parent == request.expected_head
@@ -274,9 +288,18 @@ impl ReferenceWorkspaceStore {
             return Err(WorkspaceError::CapacityExceeded);
         }
         let mut scope_bytes = 0_usize;
-        for scope in entry.session.capabilities.iter().chain(&entry.session.privacy_scope) {
-            if scope.len() > MAX_ITEM_BYTES { return Err(WorkspaceError::CapacityExceeded); }
-            scope_bytes = scope_bytes.checked_add(scope.len()).and_then(|n| n.checked_add(8))
+        for scope in entry
+            .session
+            .capabilities
+            .iter()
+            .chain(&entry.session.privacy_scope)
+        {
+            if scope.len() > MAX_ITEM_BYTES {
+                return Err(WorkspaceError::CapacityExceeded);
+            }
+            scope_bytes = scope_bytes
+                .checked_add(scope.len())
+                .and_then(|n| n.checked_add(8))
                 .filter(|n| *n <= self.limits.max_revision_bytes)
                 .ok_or(WorkspaceError::CapacityExceeded)?;
         }
@@ -299,11 +322,16 @@ impl ReferenceWorkspaceStore {
         {
             return Err(WorkspaceError::CapacityExceeded);
         }
-        let total = self.retained_bytes.checked_add(revision.bytes.len())
+        let total = self
+            .retained_bytes
+            .checked_add(revision.bytes.len())
             .filter(|total| *total <= self.limits.max_history_bytes)
             .ok_or(WorkspaceError::CapacityExceeded)?;
         revision.digest = ContentDigest::sha256(&revision.bytes);
-        self.histories.entry(revision.capsule.session_id.clone()).or_default().push(revision.clone());
+        self.histories
+            .entry(revision.capsule.session_id.clone())
+            .or_default()
+            .push(revision.clone());
         self.retained_bytes = total;
         Ok(revision)
     }
@@ -318,8 +346,14 @@ impl ReferenceWorkspaceStore {
         now: TimestampNs,
     ) -> Result<WorkspaceResume, WorkspaceError> {
         let entry = sessions.live_entry(principal, session_id, now)?;
-        let history = self.histories.get(session_id).ok_or(WorkspaceError::Unavailable)?;
-        let revision = history.iter().find(|item| item.digest == digest).ok_or(WorkspaceError::Unavailable)?;
+        let history = self
+            .histories
+            .get(session_id)
+            .ok_or(WorkspaceError::Unavailable)?;
+        let revision = history
+            .iter()
+            .find(|item| item.digest == digest)
+            .ok_or(WorkspaceError::Unavailable)?;
         authorize_revision(entry, revision)?;
         let head = history.last().ok_or(WorkspaceError::Unavailable)?;
         // A narrowed projection must not disclose even the head identity of a wider revision.
@@ -343,7 +377,10 @@ impl ReferenceWorkspaceStore {
         now: TimestampNs,
     ) -> Result<WorkspaceResume, WorkspaceError> {
         let entry = sessions.live_entry(principal, session_id, now)?;
-        let history = self.histories.get(session_id).ok_or(WorkspaceError::Unavailable)?;
+        let history = self
+            .histories
+            .get(session_id)
+            .ok_or(WorkspaceError::Unavailable)?;
         let head = history.last().ok_or(WorkspaceError::Unavailable)?;
         authorize_revision(entry, head)?;
         Ok(WorkspaceResume {
@@ -361,13 +398,24 @@ impl ReferenceWorkspaceStore {
     }
 }
 
-fn authorize_revision(entry: &SessionEntry, revision: &WorkspaceRevision) -> Result<(), WorkspaceError> {
+fn authorize_revision(
+    entry: &SessionEntry,
+    revision: &WorkspaceRevision,
+) -> Result<(), WorkspaceError> {
     if revision.basis != entry.basis
         || revision.mission_id != entry.session.mission_id
         || revision.capsule.principal != entry.session.principal_id.as_str()
-        || !revision.capability_scope.is_subset(&entry.session.capabilities)
-        || !revision.privacy_scope.is_subset(&entry.session.privacy_scope)
-        || revision.capsule.capability_projection.iter().any(|cap| !entry.session.capabilities.contains(cap))
+        || !revision
+            .capability_scope
+            .is_subset(&entry.session.capabilities)
+        || !revision
+            .privacy_scope
+            .is_subset(&entry.session.privacy_scope)
+        || revision
+            .capsule
+            .capability_projection
+            .iter()
+            .any(|cap| !entry.session.capabilities.contains(cap))
     {
         return Err(WorkspaceError::Unavailable);
     }
@@ -375,10 +423,11 @@ fn authorize_revision(entry: &SessionEntry, revision: &WorkspaceRevision) -> Res
 }
 
 fn anchor_successor(old: &LedgerAnchor, new: &LedgerAnchor) -> bool {
-    old == new || (old.site_lineage == new.site_lineage
-        && old.ledger_epoch == new.ledger_epoch
-        && new.commit_sequence > old.commit_sequence
-        && new.adapter_registry_epoch >= old.adapter_registry_epoch)
+    old == new
+        || (old.site_lineage == new.site_lineage
+            && old.ledger_epoch == new.ledger_epoch
+            && new.commit_sequence > old.commit_sequence
+            && new.adapter_registry_epoch >= old.adapter_registry_epoch)
 }
 
 fn contains_all<T: Ord>(new: &[T], old: &[T]) -> bool {
@@ -386,19 +435,30 @@ fn contains_all<T: Ord>(new: &[T], old: &[T]) -> bool {
     old.iter().all(|item| retained.contains(item))
 }
 
-fn validate_successor(previous: Option<&WorkspaceRevision>, request: &WorkspaceWrite) -> Result<Option<LedgerAnchor>, WorkspaceError> {
+fn validate_successor(
+    previous: Option<&WorkspaceRevision>,
+    request: &WorkspaceWrite,
+) -> Result<Option<LedgerAnchor>, WorkspaceError> {
     let new = &request.capsule;
     let Some(previous) = previous else {
-        if request.expected_head.is_some() { return Err(WorkspaceError::StaleHead); }
-        if new.revision != 0 { return Err(WorkspaceError::InvalidRevision); }
+        if request.expected_head.is_some() {
+            return Err(WorkspaceError::StaleHead);
+        }
+        if new.revision != 0 {
+            return Err(WorkspaceError::InvalidRevision);
+        }
         if request.mode != WorkspaceWriteMode::Advance || new.base_anchor != new.current_anchor {
             return Err(WorkspaceError::InvalidAnchor);
         }
         return Ok(None);
     };
     let old = &previous.capsule;
-    if request.expected_head != Some(previous.digest) { return Err(WorkspaceError::StaleHead); }
-    if old.revision.checked_add(1) != Some(new.revision) { return Err(WorkspaceError::InvalidRevision); }
+    if request.expected_head != Some(previous.digest) {
+        return Err(WorkspaceError::StaleHead);
+    }
+    if old.revision.checked_add(1) != Some(new.revision) {
+        return Err(WorkspaceError::InvalidRevision);
+    }
     if old.objective_digest != new.objective_digest || old.base_anchor != new.base_anchor {
         return Err(WorkspaceError::InvalidAnchor);
     }
@@ -409,14 +469,18 @@ fn validate_successor(previous: Option<&WorkspaceRevision>, request: &WorkspaceW
         (&new.open_obligations, &old.open_obligations),
         (&new.active_hypotheses, &old.active_hypotheses),
     ] {
-        if !contains_all(new, old) { return Err(WorkspaceError::PreservationRequired); }
+        if !contains_all(new, old) {
+            return Err(WorkspaceError::PreservationRequired);
+        }
     }
     if !contains_all(&new.bookmarked_evidence, &old.bookmarked_evidence) {
         return Err(WorkspaceError::PreservationRequired);
     }
     match request.mode {
         WorkspaceWriteMode::Advance => {
-            if old.current_anchor != new.current_anchor { return Err(WorkspaceError::RebaseRequired); }
+            if old.current_anchor != new.current_anchor {
+                return Err(WorkspaceError::RebaseRequired);
+            }
             if !contains_all(&new.next_actions, &old.next_actions) {
                 return Err(WorkspaceError::PreservationRequired);
             }
@@ -428,7 +492,9 @@ fn validate_successor(previous: Option<&WorkspaceRevision>, request: &WorkspaceW
             Ok(None)
         }
         WorkspaceWriteMode::Rebase => {
-            if old.current_anchor == new.current_anchor || !anchor_successor(&old.current_anchor, &new.current_anchor) {
+            if old.current_anchor == new.current_anchor
+                || !anchor_successor(&old.current_anchor, &new.current_anchor)
+            {
                 return Err(WorkspaceError::InvalidAnchor);
             }
             if old.situation_capsule_digest == new.situation_capsule_digest
@@ -448,40 +514,68 @@ fn validate_capsule(value: &SessionCapsule, byte_limit: usize) -> Result<(), Wor
     // Bound input before cloning or invoking the core canonical encoder. No list count is cast
     // until it has been checked against the schema ceiling and the aggregate byte ceiling.
     for text in [
-        value.principal.as_str(), value.objective_digest.as_str(),
-        value.situation_capsule_digest.as_str(), value.decision_digest.as_str(),
-        value.base_anchor.site_lineage.as_str(), value.current_anchor.site_lineage.as_str(),
+        value.principal.as_str(),
+        value.objective_digest.as_str(),
+        value.situation_capsule_digest.as_str(),
+        value.decision_digest.as_str(),
+        value.base_anchor.site_lineage.as_str(),
+        value.current_anchor.site_lineage.as_str(),
     ] {
-        if text.len() > 256 { return Err(WorkspaceError::CapacityExceeded); }
+        if text.len() > 256 {
+            return Err(WorkspaceError::CapacityExceeded);
+        }
     }
     let mut bytes = 0_usize;
     for group in [
-        &value.capability_projection, &value.active_hypotheses, &value.assumptions,
-        &value.unknowns, &value.not_observable_domains, &value.epistemic_debt,
-        &value.open_obligations, &value.next_actions,
+        &value.capability_projection,
+        &value.active_hypotheses,
+        &value.assumptions,
+        &value.unknowns,
+        &value.not_observable_domains,
+        &value.epistemic_debt,
+        &value.open_obligations,
+        &value.next_actions,
     ] {
-        if group.len() > MAX_ITEMS { return Err(WorkspaceError::CapacityExceeded); }
+        if group.len() > MAX_ITEMS {
+            return Err(WorkspaceError::CapacityExceeded);
+        }
         for item in group {
-            if item.len() > MAX_ITEM_BYTES { return Err(WorkspaceError::CapacityExceeded); }
-            bytes = bytes.checked_add(item.len()).and_then(|n| n.checked_add(8))
-                .filter(|n| *n <= byte_limit).ok_or(WorkspaceError::CapacityExceeded)?;
+            if item.len() > MAX_ITEM_BYTES {
+                return Err(WorkspaceError::CapacityExceeded);
+            }
+            bytes = bytes
+                .checked_add(item.len())
+                .and_then(|n| n.checked_add(8))
+                .filter(|n| *n <= byte_limit)
+                .ok_or(WorkspaceError::CapacityExceeded)?;
         }
     }
     if value.epistemic_debt.len() > 1024 || value.bookmarked_evidence.len() > MAX_ITEMS {
         return Err(WorkspaceError::CapacityExceeded);
     }
-    let _ = bytes.checked_add(value.bookmarked_evidence.len() * 33)
-        .filter(|n| *n <= byte_limit).ok_or(WorkspaceError::CapacityExceeded)?;
+    let _ = bytes
+        .checked_add(value.bookmarked_evidence.len() * 33)
+        .filter(|n| *n <= byte_limit)
+        .ok_or(WorkspaceError::CapacityExceeded)?;
     // The core fields are public. Re-run construction rather than trusting a once-valid value.
     SessionCapsule::new(SessionCapsuleParams {
-        session_id: value.session_id.clone(), revision: value.revision, principal: value.principal.clone(),
-        capability_projection: value.capability_projection.clone(), objective_digest: value.objective_digest.clone(),
-        base_anchor: value.base_anchor.clone(), current_anchor: value.current_anchor.clone(),
-        situation_capsule_digest: value.situation_capsule_digest.clone(), active_hypotheses: value.active_hypotheses.clone(),
-        assumptions: value.assumptions.clone(), unknowns: value.unknowns.clone(),
-        not_observable_domains: value.not_observable_domains.clone(), epistemic_debt: value.epistemic_debt.clone(),
-        open_obligations: value.open_obligations.clone(), budget_ledger: value.budget_ledger,
-        bookmarked_evidence: value.bookmarked_evidence.clone(), next_actions: value.next_actions.clone(),
+        session_id: value.session_id.clone(),
+        revision: value.revision,
+        principal: value.principal.clone(),
+        capability_projection: value.capability_projection.clone(),
+        objective_digest: value.objective_digest.clone(),
+        base_anchor: value.base_anchor.clone(),
+        current_anchor: value.current_anchor.clone(),
+        situation_capsule_digest: value.situation_capsule_digest.clone(),
+        active_hypotheses: value.active_hypotheses.clone(),
+        assumptions: value.assumptions.clone(),
+        unknowns: value.unknowns.clone(),
+        not_observable_domains: value.not_observable_domains.clone(),
+        epistemic_debt: value.epistemic_debt.clone(),
+        open_obligations: value.open_obligations.clone(),
+        budget_ledger: value.budget_ledger,
+        bookmarked_evidence: value.bookmarked_evidence.clone(),
+        next_actions: value.next_actions.clone(),
         decision_digest: value.decision_digest.clone(),
     })?;
     if !anchor_successor(&value.base_anchor, &value.current_anchor) {
@@ -499,14 +593,22 @@ fn encode_revision(value: &WorkspaceRevision) -> Result<Vec<u8>, WorkspaceError>
     // an empty declaration could make sensitive history readable after capability revocation.
     for scopes in [&value.capability_scope, &value.privacy_scope] {
         encoder.u64(scopes.len() as u64);
-        for scope in scopes { encoder.text(scope); }
+        for scope in scopes {
+            encoder.text(scope);
+        }
     }
     encoder.bool(value.parent.is_some());
-    if let Some(parent) = value.parent { encoder.digest(parent); }
+    if let Some(parent) = value.parent {
+        encoder.digest(parent);
+    }
     encoder.bool(value.rebase_from.is_some());
-    if let Some(anchor) = &value.rebase_from { anchor.encode_canonical(&mut encoder); }
+    if let Some(anchor) = &value.rebase_from {
+        anchor.encode_canonical(&mut encoder);
+    }
     encoder.u64(value.invalidated_actions.len() as u64);
-    for action in &value.invalidated_actions { encoder.text(action); }
+    for action in &value.invalidated_actions {
+        encoder.text(action);
+    }
     value.capsule.encode_canonical(&mut encoder);
     Ok(encoder.finish_checked()?)
 }

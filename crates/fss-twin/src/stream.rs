@@ -6,11 +6,12 @@
 //! upstream identity. It does not associate people, activate calibration, or turn
 //! missed detections into negative evidence.
 
-use std::collections::VecDeque;
+use crate::{
+    ContactObservation, ContactProjection, MotionFitOptions, ProjectionOptions, ProjectionQuality,
+    PropertyTwin, TrackingCamera, TwinError, WorldMotion, fit_world_motion, project_contact,
+};
 use fss_geometry::{GeometryBasis, GeometryError, WorkBudget};
-use crate::{ContactObservation, ContactProjection, MotionFitOptions, ProjectionOptions,
-    ProjectionQuality, PropertyTwin, TrackingCamera, TwinError, WorldMotion,
-    fit_world_motion, project_contact};
+use std::collections::VecDeque;
 
 /// Nonzero owner-resolved identities. Epoch changes when the owning session rebases.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -37,8 +38,12 @@ pub struct TrackOptions {
 }
 impl Default for TrackOptions {
     fn default() -> Self {
-        Self { projection: ProjectionOptions::default(), max_gap_ns: 30_000_000_000,
-            max_modes: 64, receipt_capacity: 256 }
+        Self {
+            projection: ProjectionOptions::default(),
+            max_gap_ns: 30_000_000_000,
+            max_modes: 64,
+            receipt_capacity: 256,
+        }
     }
 }
 
@@ -108,10 +113,14 @@ pub enum TrackError {
     Twin(TwinError),
 }
 impl From<TwinError> for TrackError {
-    fn from(error: TwinError) -> Self { Self::Twin(error) }
+    fn from(error: TwinError) -> Self {
+        Self::Twin(error)
+    }
 }
 impl From<GeometryError> for TrackError {
-    fn from(error: GeometryError) -> Self { Self::Twin(error.into()) }
+    fn from(error: GeometryError) -> Self {
+        Self::Twin(error.into())
+    }
 }
 impl std::fmt::Display for TrackError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -154,67 +163,119 @@ pub struct ContactTrack {
 }
 impl std::fmt::Debug for ContactTrack {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ContactTrack").field("revision", &self.revision())
-            .field("invalidated", &self.invalidated).finish_non_exhaustive()
+        f.debug_struct("ContactTrack")
+            .field("revision", &self.revision())
+            .field("invalidated", &self.invalidated)
+            .finish_non_exhaustive()
     }
 }
 impl ContactTrack {
     /// Freeze an already authorized camera set; changed calibration requires a new epoch.
-    pub fn new(twin: &PropertyTwin, scope: TrackScope, cameras: &[TrackingCamera],
-        options: TrackOptions, budget: &mut WorkBudget<'_>) -> Result<Self, TrackError> {
+    pub fn new(
+        twin: &PropertyTwin,
+        scope: TrackScope,
+        cameras: &[TrackingCamera],
+        options: TrackOptions,
+        budget: &mut WorkBudget<'_>,
+    ) -> Result<Self, TrackError> {
         budget.charge(0)?;
         let p = options.projection;
-        if [scope.track, scope.clock, scope.epoch].contains(&0) || cameras.is_empty()
-            || cameras.len() > 64 || options.max_gap_ns == 0
-            || options.max_gap_ns > 3_600_000_000_000 || !(1..=256).contains(&options.max_modes)
+        if [scope.track, scope.clock, scope.epoch].contains(&0)
+            || cameras.is_empty()
+            || cameras.len() > 64
+            || options.max_gap_ns == 0
+            || options.max_gap_ns > 3_600_000_000_000
+            || !(1..=256).contains(&options.max_modes)
             || !(1..=4096).contains(&options.receipt_capacity)
-            || !(1..=128).contains(&p.max_hypotheses) || !p.near.is_finite()
-            || !p.far.is_finite() || p.near <= 0.0 || p.far <= p.near || p.far > 1e9 {
+            || !(1..=128).contains(&p.max_hypotheses)
+            || !p.near.is_finite()
+            || !p.far.is_finite()
+            || p.near <= 0.0
+            || p.far <= p.near
+            || p.far > 1e9
+        {
             return Err(TrackError::InvalidInput);
         }
         for (i, camera) in cameras.iter().enumerate() {
             budget.charge(32 + i as u64)?;
-            if camera.geometry != twin.basis() || camera.clock != scope.clock
+            if camera.geometry != twin.basis()
+                || camera.clock != scope.clock
                 || [camera.camera, camera.calibration, camera.image_domain].contains(&0)
                 || camera.validity[0] > camera.validity[1]
-                || cameras[..i].iter().any(|other| other.camera == camera.camera) {
+                || cameras[..i]
+                    .iter()
+                    .any(|other| other.camera == camera.camera)
+            {
                 return Err(TrackError::BasisMismatch);
             }
             if let Some(e) = camera.error
-                && (e.centre.iter().chain(e.focal.iter()).chain(e.principal.iter())
+                && (e
+                    .centre
+                    .iter()
+                    .chain(e.focal.iter())
+                    .chain(e.principal.iter())
                     .any(|v| !v.is_finite() || *v < 0.0 || *v > 1e12)
-                    || !e.rotation_entry.is_finite() || !(0.0..=2.0).contains(&e.rotation_entry)
-                    || (0..2).any(|a| e.focal[a] >= camera.intrinsics.focal_lengths()[a])) {
+                    || !e.rotation_entry.is_finite()
+                    || !(0.0..=2.0).contains(&e.rotation_entry)
+                    || (0..2).any(|a| e.focal[a] >= camera.intrinsics.focal_lengths()[a]))
+            {
                 return Err(TrackError::InvalidInput);
             }
         }
         let mut owned = Vec::new();
-        owned.try_reserve_exact(cameras.len()).map_err(|_| TwinError::Limit)?;
+        owned
+            .try_reserve_exact(cameras.len())
+            .map_err(|_| TwinError::Limit)?;
         owned.extend_from_slice(cameras);
         owned.sort_by_key(|camera| camera.camera);
         let mut receipts = VecDeque::new();
-        receipts.try_reserve_exact(options.receipt_capacity).map_err(|_| TwinError::Limit)?;
+        receipts
+            .try_reserve_exact(options.receipt_capacity)
+            .map_err(|_| TwinError::Limit)?;
         budget.charge(0)?;
-        Ok(Self { scope, geometry: twin.basis(), twin_digest: twin.digest(), cameras: owned,
-            options, receipts, last: None, motion: None, receipt: None, invalidated: false })
+        Ok(Self {
+            scope,
+            geometry: twin.basis(),
+            twin_digest: twin.digest(),
+            cameras: owned,
+            options,
+            receipts,
+            last: None,
+            motion: None,
+            receipt: None,
+            invalidated: false,
+        })
     }
     /// Session generation; globally preventing epoch reuse belongs to the owner.
-    pub fn scope(&self) -> TrackScope { self.scope }
+    pub fn scope(&self) -> TrackScope {
+        self.scope
+    }
     /// Zero before the first accepted input. Retries and failures do not increment it.
-    pub fn revision(&self) -> u64 { self.receipt.map_or(0, |r| r.revision) }
+    pub fn revision(&self) -> u64 {
+        self.receipt.map_or(0, |r| r.revision)
+    }
     /// Last acknowledgement, available for reconciliation even after invalidation.
-    pub fn last_receipt(&self) -> Option<TrackReceipt> { self.receipt }
+    pub fn last_receipt(&self) -> Option<TrackReceipt> {
+        self.receipt
+    }
     /// Stop all active reads and updates immediately; does not need spare work budget.
     /// Retained source references remain available to the owner for reconciliation.
-    pub fn invalidate(&mut self) { self.invalidated = true; }
+    pub fn invalidate(&mut self) {
+        self.invalidated = true;
+    }
 
     /// Accept one source observation atomically. Failed computations never consume it.
     ///
     /// Inputs must arrive in increasing lower-capture-bound order. Exact cached
     /// retries can arrive later without rolling the track back. Evicted retries
     /// fail the watermark instead of being silently accepted a second time.
-    pub fn ingest(&mut self, twin: &PropertyTwin, observation: ContactObservation,
-        association: Option<[u8; 32]>, budget: &mut WorkBudget<'_>) -> Result<TrackUpdate, TrackError> {
+    pub fn ingest(
+        &mut self,
+        twin: &PropertyTwin,
+        observation: ContactObservation,
+        association: Option<[u8; 32]>,
+        budget: &mut WorkBudget<'_>,
+    ) -> Result<TrackUpdate, TrackError> {
         let prepared = self.prepare_ingest(twin, observation, association, budget)?;
         budget.charge(0)?;
         Ok(self.apply_prepared(prepared))
@@ -222,33 +283,59 @@ impl ContactTrack {
 
     // Shared staging path: batch ownership prevents intervening writes. Preparation
     // performs every fallible operation without mutating the accepted track.
-    fn prepare_ingest(&self, twin: &PropertyTwin, observation: ContactObservation,
-        association: Option<[u8; 32]>, budget: &mut WorkBudget<'_>) -> Result<PreparedIngest, TrackError> {
+    fn prepare_ingest(
+        &self,
+        twin: &PropertyTwin,
+        observation: ContactObservation,
+        association: Option<[u8; 32]>,
+        budget: &mut WorkBudget<'_>,
+    ) -> Result<PreparedIngest, TrackError> {
         budget.charge(0)?;
-        if self.invalidated { return Err(TrackError::Invalidated); }
-        if twin.basis() != self.geometry || twin.digest() != self.twin_digest
-            || observation.track != self.scope.track || observation.clock != self.scope.clock
-            || association == Some([0; 32]) { return Err(TrackError::BasisMismatch); }
+        if self.invalidated {
+            return Err(TrackError::Invalidated);
+        }
+        if twin.basis() != self.geometry
+            || twin.digest() != self.twin_digest
+            || observation.track != self.scope.track
+            || observation.clock != self.scope.clock
+            || association == Some([0; 32])
+        {
+            return Err(TrackError::BasisMismatch);
+        }
         for prior in &self.receipts {
             budget.charge(1)?;
             if prior.observation.evidence == observation.evidence
                 || (prior.observation.camera == observation.camera
-                    && prior.observation.exposure == observation.exposure) {
+                    && prior.observation.exposure == observation.exposure)
+            {
                 if prior.observation != observation || prior.association != association {
                     return Err(TrackError::ConflictingReplay);
                 }
                 budget.charge(0)?;
-                return Ok(PreparedIngest { update: TrackUpdate { receipt: prior.receipt, replayed: true },
-                    replacement: None });
+                return Ok(PreparedIngest {
+                    update: TrackUpdate {
+                        receipt: prior.receipt,
+                        replayed: true,
+                    },
+                    replacement: None,
+                });
             }
         }
-        if self.last.as_ref().is_some_and(|p| observation.capture[0] <= p.observation().capture[0]) {
+        if self
+            .last
+            .as_ref()
+            .is_some_and(|p| observation.capture[0] <= p.observation().capture[0])
+        {
             return Err(TrackError::LateObservation);
         }
-        let camera = self.cameras.binary_search_by_key(&observation.camera, |c| c.camera)
-            .map(|i| self.cameras[i]).map_err(|_| TrackError::BasisMismatch)?;
+        let camera = self
+            .cameras
+            .binary_search_by_key(&observation.camera, |c| c.camera)
+            .map(|i| self.cameras[i])
+            .map_err(|_| TrackError::BasisMismatch)?;
         let revision = self.revision().checked_add(1).ok_or(TwinError::Limit)?;
-        let projected = project_contact(twin, camera, observation, self.options.projection, budget)?;
+        let projected =
+            project_contact(twin, camera, observation, self.options.projection, budget)?;
         let mut motion = None;
         let disposition = if projected.quality() == ProjectionQuality::ContactUnknown {
             TrackDisposition::ContactUnavailable
@@ -263,26 +350,55 @@ impl ContactTrack {
             } else if before.camera != observation.camera && association.is_none() {
                 TrackDisposition::AssociationRequired
             } else {
-                motion = Some(fit_world_motion(previous, &projected, MotionFitOptions {
-                    max_gap_ns: self.options.max_gap_ns, max_modes: self.options.max_modes,
-                    association }, budget)?);
+                motion = Some(fit_world_motion(
+                    previous,
+                    &projected,
+                    MotionFitOptions {
+                        max_gap_ns: self.options.max_gap_ns,
+                        max_modes: self.options.max_modes,
+                        association,
+                    },
+                    budget,
+                )?);
                 TrackDisposition::MotionUpdated
             }
-        } else { TrackDisposition::Seeded };
-        let receipt = TrackReceipt { scope: self.scope, revision, evidence: observation.evidence,
-            disposition, projection_quality: projected.quality(), supports: projected.hypotheses().len(),
-            motion_modes: motion.as_ref().map_or(0, |m| m.modes().len()) };
+        } else {
+            TrackDisposition::Seeded
+        };
+        let receipt = TrackReceipt {
+            scope: self.scope,
+            revision,
+            evidence: observation.evidence,
+            disposition,
+            projection_quality: projected.quality(),
+            supports: projected.hypotheses().len(),
+            motion_modes: motion.as_ref().map_or(0, |m| m.modes().len()),
+        };
         budget.charge(0)?;
-        Ok(PreparedIngest { update: TrackUpdate { receipt, replayed: false },
-            replacement: Some(PreparedState { projected, motion,
-                remembered: Remembered { observation, association, receipt } }) })
+        Ok(PreparedIngest {
+            update: TrackUpdate {
+                receipt,
+                replayed: false,
+            },
+            replacement: Some(PreparedState {
+                projected,
+                motion,
+                remembered: Remembered {
+                    observation,
+                    association,
+                    receipt,
+                },
+            }),
+        })
     }
 
     // Infallible publication only. Receipt capacity was reserved at construction;
     // no user callback, cancellation poll, allocation or I/O occurs here.
     fn apply_prepared(&mut self, prepared: PreparedIngest) -> TrackUpdate {
         if let Some(state) = prepared.replacement {
-            if self.receipts.len() == self.options.receipt_capacity { self.receipts.pop_front(); }
+            if self.receipts.len() == self.options.receipt_capacity {
+                self.receipts.pop_front();
+            }
             self.receipt = Some(state.remembered.receipt);
             self.receipts.push_back(state.remembered);
             self.last = Some(state.projected);
@@ -293,11 +409,19 @@ impl ContactTrack {
 
     /// Borrow an exact active revision. A later mutation cannot coexist with this borrow.
     pub fn snapshot(&self, expected_revision: u64) -> Result<TrackSnapshot<'_>, TrackError> {
-        if self.invalidated { return Err(TrackError::Invalidated); }
+        if self.invalidated {
+            return Err(TrackError::Invalidated);
+        }
         let receipt = self.receipt.ok_or(TrackError::Empty)?;
-        if expected_revision != receipt.revision { return Err(TrackError::BasisMismatch); }
-        Ok(TrackSnapshot { receipt, projection: self.last.as_ref().ok_or(TrackError::Empty)?,
-            motion: self.motion.as_ref(), cameras: &self.cameras })
+        if expected_revision != receipt.revision {
+            return Err(TrackError::BasisMismatch);
+        }
+        Ok(TrackSnapshot {
+            receipt,
+            projection: self.last.as_ref().ok_or(TrackError::Empty)?,
+            motion: self.motion.as_ref(),
+            cameras: &self.cameras,
+        })
     }
 }
 
@@ -311,13 +435,21 @@ pub struct TrackSnapshot<'a> {
 }
 impl<'a> TrackSnapshot<'a> {
     /// Exact source update and epoch to which derived outputs must bind.
-    pub fn receipt(self) -> TrackReceipt { self.receipt }
+    pub fn receipt(self) -> TrackReceipt {
+        self.receipt
+    }
     /// Latest source projection, including explicit unavailable-contact states.
-    pub fn projection(self) -> &'a ContactProjection { self.projection }
+    pub fn projection(self) -> &'a ContactProjection {
+        self.projection
+    }
     /// Source-pair motion only when the latest update established it.
-    pub fn motion(self) -> Option<&'a WorldMotion> { self.motion }
+    pub fn motion(self) -> Option<&'a WorldMotion> {
+        self.motion
+    }
     /// Frozen admitted camera set; no mutable calibration is read during prediction.
-    pub fn cameras(self) -> &'a [TrackingCamera] { self.cameras }
+    pub fn cameras(self) -> &'a [TrackingCamera] {
+        self.cameras
+    }
 }
 
 struct PreparedState {

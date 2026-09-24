@@ -33,10 +33,7 @@ fn repo_relative(path: &Path, repo_root: &Path) -> Result<String, Box<dyn Error>
 }
 
 /// Checks whether a given Rust file content has unauthorized calls/mentions of the guarded functions.
-fn check_file_for_unauthorized_replay(
-    rel_path: &str,
-    content: &str,
-) -> Result<(), String> {
+fn check_file_for_unauthorized_replay(rel_path: &str, content: &str) -> Result<(), String> {
     // This guard test itself is exempt from the literal string check.
     if rel_path.ends_with("effect_replay_guard_contract.rs") {
         return Ok(());
@@ -119,16 +116,13 @@ fn repository_guard_replay_versioned_and_durable_callers_are_strictly_bounded()
 }
 
 #[test]
-fn repository_guard_planted_negatives_detect_unauthorized_callers()
--> Result<(), Box<dyn Error>> {
+fn repository_guard_planted_negatives_detect_unauthorized_callers() -> Result<(), Box<dyn Error>> {
     // Planted negative 1: unauthorized call to replay_versioned in an integration test
     let bad_code1 = r#"
         let _ = EffectJournal::replay_versioned([]);
     "#;
-    let res1 = check_file_for_unauthorized_replay(
-        "crates/fss-reference/tests/some_test.rs",
-        bad_code1,
-    );
+    let res1 =
+        check_file_for_unauthorized_replay("crates/fss-reference/tests/some_test.rs", bad_code1);
     assert!(
         res1.is_err(),
         "Planted negative 1 failed: unauthorized replay_versioned was not detected"
@@ -138,10 +132,7 @@ fn repository_guard_planted_negatives_detect_unauthorized_callers()
     let bad_code2 = r#"
         let _ = EffectJournal::replay_durable([]);
     "#;
-    let res2 = check_file_for_unauthorized_replay(
-        "crates/fss-core/tests/some_test.rs",
-        bad_code2,
-    );
+    let res2 = check_file_for_unauthorized_replay("crates/fss-core/tests/some_test.rs", bad_code2);
     assert!(
         res2.is_err(),
         "Planted negative 2 failed: unauthorized replay_durable was not detected"
@@ -151,10 +142,7 @@ fn repository_guard_planted_negatives_detect_unauthorized_callers()
     let bad_code3 = r#"
         let journal = EffectJournal::replay_durable(transitions)?;
     "#;
-    let res3 = check_file_for_unauthorized_replay(
-        "crates/fss-cli/src/main.rs",
-        bad_code3,
-    );
+    let res3 = check_file_for_unauthorized_replay("crates/fss-cli/src/main.rs", bad_code3);
     assert!(
         res3.is_err(),
         "Planted negative 3 failed: unauthorized replay_durable in cli was not detected"

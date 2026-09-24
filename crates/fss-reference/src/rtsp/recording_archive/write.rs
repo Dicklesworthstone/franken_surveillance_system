@@ -1,9 +1,9 @@
 #![forbid(unsafe_code)]
 //! One retained recording, automatic immutable catalog pages, and explicit retry.
 
+use super::super::recording::local::{RecordingProgress, RecordingPublication};
 use super::*;
 use fss_publication::LocalPublicationReceipt;
-use super::super::recording::local::{RecordingProgress, RecordingPublication};
 
 /// Exact rejected original recording remains caller-owned, including under pressure.
 #[derive(Debug)]
@@ -15,7 +15,9 @@ pub struct ArchiveWriteRefusal<C: ArchiveCodec = AvcArchiveCodec> {
     pub recording: Box<C::Recording>,
 }
 impl<C: ArchiveCodec> std::fmt::Display for ArchiveWriteRefusal<C> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "{}", self.reason) }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.reason)
+    }
 }
 impl<C: ArchiveCodec> std::error::Error for ArchiveWriteRefusal<C> {}
 
@@ -94,7 +96,11 @@ pub enum ArchiveWriteProgress {
     Exhausted,
 }
 
-struct PendingWindow<C: ArchiveCodec> { recording: C::Recording, entry: CatalogEntry, reservation: usize }
+struct PendingWindow<C: ArchiveCodec> {
+    recording: C::Recording,
+    entry: CatalogEntry,
+    reservation: usize,
+}
 
 /// Ownership returned on stop. No root or staged source is deleted or retracted.
 #[derive(Debug)]
@@ -138,109 +144,233 @@ impl<'a, C: ArchiveCodec> CodecRecordingArchiveWriter<'a, C> {
     /// Recover exact published windows/pages. A recovered unindexed tail is flushed
     /// BEFORE accepting another window, even when smaller than the configured page.
     /// Open itself performs bounded reads only; step explicitly drives any new writes.
-    pub fn open(publisher: &'a mut LocalRootPublisher, namespace: CodecArchiveNamespace<C>,
-        limits: ArchiveLimits, now_ns: u64, deadline_ns: u64, cancel: &dyn PublishCancellation)
-        -> ArchiveResult<Self>
-    {
-        if now_ns >= deadline_ns { return Err(ArchiveError::Deadline); }
+    pub fn open(
+        publisher: &'a mut LocalRootPublisher,
+        namespace: CodecArchiveNamespace<C>,
+        limits: ArchiveLimits,
+        now_ns: u64,
+        deadline_ns: u64,
+        cancel: &dyn PublishCancellation,
+    ) -> ArchiveResult<Self> {
+        if now_ns >= deadline_ns {
+            return Err(ArchiveError::Deadline);
+        }
         let snapshot = CodecArchiveSnapshot::<C>::load(publisher, namespace, limits, cancel)?;
         let tail = snapshot.windows.len() - snapshot.indexed;
         // Reserve the worst-case flat closure, not a hopeful shared-leaf estimate.
         if publisher.limits().max_children < limits.windows_per_page.max(tail) * 5 + 1 {
             return Err(ArchiveError::Limit);
         }
-        Ok(Self { publisher, snapshot, pending: None, builder: None, build_next: 0,
-            flush_end: None, page: None, index_staged: false, flush_requested: tail != 0,
-            input_closed: false, deadline_ns, last_ns: now_ns, blocked: false, done: false })
+        Ok(Self {
+            publisher,
+            snapshot,
+            pending: None,
+            builder: None,
+            build_next: 0,
+            flush_end: None,
+            page: None,
+            index_staged: false,
+            flush_requested: tail != 0,
+            input_closed: false,
+            deadline_ns,
+            last_ns: now_ns,
+            blocked: false,
+            done: false,
+        })
     }
     /// Read-only inventory of acknowledged durable roots and published pages.
-    pub fn snapshot(&self) -> &CodecArchiveSnapshot<C> { &self.snapshot }
+    pub fn snapshot(&self) -> &CodecArchiveSnapshot<C> {
+        &self.snapshot
+    }
     /// Exact retained source after an unsuccessful write; no copying or ownership loss.
-    pub fn pending(&self) -> Option<&C::Recording> { self.pending.as_ref().map(|p| &p.recording) }
+    pub fn pending(&self) -> Option<&C::Recording> {
+        self.pending.as_ref().map(|p| &p.recording)
+    }
     /// Admit one immutable window with an explicit complete-payload reservation.
     /// Every refusal returns the same recording, and never advances the ordinal.
-    pub fn offer(&mut self, recording: C::Recording, reserved_bytes: usize, now_ns: u64)
-        -> Result<ArchiveAdmission, ArchiveWriteRefusal<C>>
-    {
+    pub fn offer(
+        &mut self,
+        recording: C::Recording,
+        reserved_bytes: usize,
+        now_ns: u64,
+    ) -> Result<ArchiveAdmission, ArchiveWriteRefusal<C>> {
         let result = self.prepare_admission(&recording, reserved_bytes, now_ns);
         let entry = match result {
             Ok(entry) => entry,
-            Err(reason) => return Err(ArchiveWriteRefusal { reason: Box::new(reason), recording: Box::new(recording) }),
+            Err(reason) => {
+                return Err(ArchiveWriteRefusal {
+                    reason: Box::new(reason),
+                    recording: Box::new(recording),
+                });
+            }
         };
-        let admission = ArchiveAdmission { ordinal: self.snapshot.windows.len(), slot: entry.slot().clone(), root: entry.root() };
-        self.pending = Some(PendingWindow { recording, entry, reservation: reserved_bytes });
+        let admission = ArchiveAdmission {
+            ordinal: self.snapshot.windows.len(),
+            slot: entry.slot().clone(),
+            root: entry.root(),
+        };
+        self.pending = Some(PendingWindow {
+            recording,
+            entry,
+            reservation: reserved_bytes,
+        });
         self.last_ns = now_ns;
         Ok(admission)
     }
-    fn prepare_admission(&mut self, recording: &C::Recording, reserved_bytes: usize, now_ns: u64)
-        -> ArchiveResult<CatalogEntry>
-    {
+    fn prepare_admission(
+        &mut self,
+        recording: &C::Recording,
+        reserved_bytes: usize,
+        now_ns: u64,
+    ) -> ArchiveResult<CatalogEntry> {
         self.check_time(now_ns)?;
-        if self.blocked { return Err(ArchiveError::Blocked); }
-        if self.input_closed { return Err(ArchiveError::Closed); }
+        if self.blocked {
+            return Err(ArchiveError::Blocked);
+        }
+        if self.input_closed {
+            return Err(ArchiveError::Closed);
+        }
         owner_ready(self.publisher)?;
-        if self.pending.is_some() || self.flush_requested || self.flush_end.is_some() || self.page.is_some()
-            || self.snapshot.windows.len() - self.snapshot.indexed >= self.snapshot.limits.windows_per_page {
+        if self.pending.is_some()
+            || self.flush_requested
+            || self.flush_end.is_some()
+            || self.page.is_some()
+            || self.snapshot.windows.len() - self.snapshot.indexed
+                >= self.snapshot.limits.windows_per_page
+        {
             return Err(ArchiveError::Backpressure);
         }
         if self.snapshot.windows.len() == self.snapshot.limits.max_windows
             || self.snapshot.pages.len() == self.snapshot.limits.max_pages
-            || C::plan(recording).byte_len() > reserved_bytes { return Err(ArchiveError::Limit); }
+            || C::plan(recording).byte_len() > reserved_bytes
+        {
+            return Err(ArchiveError::Limit);
+        }
         if C::plan(recording).summary().scope != self.snapshot.namespace.scope.recording
-            || C::plan(recording).summary().time_scale != self.snapshot.namespace.scope.time_scale { return Err(ArchiveError::Scope); }
-        if self.snapshot.windows.iter().any(|e| e.root() == C::plan(recording).manifest().root()) { return Err(ArchiveError::Duplicate); }
-        let slot = self.snapshot.namespace.window_slot(self.snapshot.windows.len())?;
+            || C::plan(recording).summary().time_scale != self.snapshot.namespace.scope.time_scale
+        {
+            return Err(ArchiveError::Scope);
+        }
+        if self
+            .snapshot
+            .windows
+            .iter()
+            .any(|e| e.root() == C::plan(recording).manifest().root())
+        {
+            return Err(ArchiveError::Duplicate);
+        }
+        let slot = self
+            .snapshot
+            .namespace
+            .window_slot(self.snapshot.windows.len())?;
         let entry = descriptor_for::<C>(&self.snapshot.namespace.scope, &slot, recording)?;
-        if self.snapshot.windows.last().is_some_and(|e| e.decode_interval().end > entry.decode_interval().start) {
+        if self
+            .snapshot
+            .windows
+            .last()
+            .is_some_and(|e| e.decode_interval().end > entry.decode_interval().start)
+        {
             return Err(ArchiveError::Sequence);
         }
         // Allocate acknowledgement metadata before any media publication side effect.
-        self.snapshot.windows.try_reserve_exact(1).map_err(|_| ArchiveError::Limit)?;
-        self.snapshot.pages.try_reserve_exact(1).map_err(|_| ArchiveError::Limit)?;
+        self.snapshot
+            .windows
+            .try_reserve_exact(1)
+            .map_err(|_| ArchiveError::Limit)?;
+        self.snapshot
+            .pages
+            .try_reserve_exact(1)
+            .map_err(|_| ArchiveError::Limit)?;
         Ok(entry)
     }
     /// Request a smaller immutable page without ending capture. No I/O here.
-    pub fn flush(&mut self) { if !self.done { self.flush_requested = true; } }
+    pub fn flush(&mut self) {
+        if !self.done {
+            self.flush_requested = true;
+        }
+    }
     /// Stop input admission, then drive step through the pending window and final partial page.
-    pub fn finish(&mut self) { self.input_closed = true; self.flush_requested = true; }
+    pub fn finish(&mut self) {
+        self.input_closed = true;
+        self.flush_requested = true;
+    }
     /// Explicit new attempt/lease over the SAME pending bytes and slots. A poisoned
     /// owner cannot be retried in place: retire this driver, reopen/reconcile the owner,
     /// then recover. No ambiguous root is reported as absent or automatically overwritten.
     pub fn retry(&mut self, now_ns: u64, deadline_ns: u64) -> ArchiveResult<()> {
-        if now_ns < self.last_ns { return Err(ArchiveError::ClockReversed); }
-        if now_ns >= deadline_ns { return Err(ArchiveError::Deadline); }
-        if self.done { return Err(ArchiveError::Closed); }
+        if now_ns < self.last_ns {
+            return Err(ArchiveError::ClockReversed);
+        }
+        if now_ns >= deadline_ns {
+            return Err(ArchiveError::Deadline);
+        }
+        if self.done {
+            return Err(ArchiveError::Closed);
+        }
         owner_ready(self.publisher)?;
-        if self.builder.is_none() && self.page.is_none() { self.build_next = self.snapshot.indexed; }
-        self.last_ns = now_ns; self.deadline_ns = deadline_ns; self.blocked = false;
+        if self.builder.is_none() && self.page.is_none() {
+            self.build_next = self.snapshot.indexed;
+        }
+        self.last_ns = now_ns;
+        self.deadline_ns = deadline_ns;
+        self.blocked = false;
         Ok(())
     }
     /// One full window publication, one catalog child verification, or one root/index
     /// operation. A full window uses at most five RecordingPublication driver steps;
     /// underlying root-last verification may perform multiple bounded filesystem calls.
     /// Live syscall-time deadline/revocation checks belong in the cancellation probe.
-    pub fn step(&mut self, now_ns: u64, cancel: &dyn PublishCancellation) -> ArchiveResult<ArchiveWriteProgress> {
-        if self.done { return Ok(ArchiveWriteProgress::Exhausted); }
-        if self.blocked { return Err(ArchiveError::Blocked); }
-        if now_ns < self.last_ns { return Err(ArchiveError::ClockReversed); }
+    pub fn step(
+        &mut self,
+        now_ns: u64,
+        cancel: &dyn PublishCancellation,
+    ) -> ArchiveResult<ArchiveWriteProgress> {
+        if self.done {
+            return Ok(ArchiveWriteProgress::Exhausted);
+        }
+        if self.blocked {
+            return Err(ArchiveError::Blocked);
+        }
+        if now_ns < self.last_ns {
+            return Err(ArchiveError::ClockReversed);
+        }
         self.last_ns = now_ns;
-        let result = self.check_time(now_ns).and_then(|()| probe(cancel)).and_then(|()| self.advance(now_ns, cancel));
-        if result.is_err() { self.blocked = true; }
+        let result = self
+            .check_time(now_ns)
+            .and_then(|()| probe(cancel))
+            .and_then(|()| self.advance(now_ns, cancel));
+        if result.is_err() {
+            self.blocked = true;
+        }
         result
     }
-    fn advance(&mut self, now_ns: u64, cancel: &dyn PublishCancellation) -> ArchiveResult<ArchiveWriteProgress> {
+    fn advance(
+        &mut self,
+        now_ns: u64,
+        cancel: &dyn PublishCancellation,
+    ) -> ArchiveResult<ArchiveWriteProgress> {
         owner_ready(self.publisher)?;
         if let Some(pending) = &self.pending {
             let receipt = {
-                let mut job = RecordingPublication::new(C::plan(&pending.recording), self.publisher,
-                    pending.entry.slot().clone(), pending.reservation, self.deadline_ns)?;
+                let mut job = RecordingPublication::new(
+                    C::plan(&pending.recording),
+                    self.publisher,
+                    pending.entry.slot().clone(),
+                    pending.reservation,
+                    self.deadline_ns,
+                )?;
                 let mut receipt = None;
                 for _ in 0..5 {
-                    if let RecordingProgress::Published(value) = job.step(now_ns, cancel)? { receipt = Some(value); break; }
+                    if let RecordingProgress::Published(value) = job.step(now_ns, cancel)? {
+                        receipt = Some(value);
+                        break;
+                    }
                 }
                 receipt.ok_or(ArchiveError::Metadata)?
             };
-            if receipt.claims.local != LocalPublicationState::Durable { return Err(RecordingIoError::NotDurable.into()); }
+            if receipt.claims.local != LocalPublicationState::Durable {
+                return Err(RecordingIoError::NotDurable.into());
+            }
             let pending = self.pending.take().ok_or(ArchiveError::Metadata)?;
             let ordinal = self.snapshot.windows.len();
             self.snapshot.windows.push(pending.entry);
@@ -249,22 +379,41 @@ impl<'a, C: ArchiveCodec> CodecRecordingArchiveWriter<'a, C> {
         }
         if let Some(page) = &self.page {
             if !self.index_staged {
-                let digest = self.publisher.stage_object(C::index(page)).map_err(RecordingIoError::from)?;
-                if Some(digest) != C::manifest(page).metadata_digest() { return Err(ArchiveError::Metadata); }
+                let digest = self
+                    .publisher
+                    .stage_object(C::index(page))
+                    .map_err(RecordingIoError::from)?;
+                if Some(digest) != C::manifest(page).metadata_digest() {
+                    return Err(ArchiveError::Metadata);
+                }
                 self.index_staged = true;
                 return Ok(ArchiveWriteProgress::CatalogIndexStaged { digest });
             }
             let first = self.snapshot.indexed;
             let slot = self.snapshot.namespace.page_slot(first)?;
-            let receipt = self.publisher.publish_cancellable(&slot, C::manifest(page), cancel)
+            let receipt = self
+                .publisher
+                .publish_cancellable(&slot, C::manifest(page), cancel)
                 .map_err(RecordingIoError::from)?;
-            if receipt.claims.local != LocalPublicationState::Durable { return Err(RecordingIoError::NotDurable.into()); }
+            if receipt.claims.local != LocalPublicationState::Durable {
+                return Err(RecordingIoError::NotDurable.into());
+            }
             let catalog = self.page.take().ok_or(ArchiveError::Metadata)?;
             let windows = C::entries(&catalog).len();
-            self.snapshot.pages.push(CodecArchivePage::<C> { slot, first, catalog });
+            self.snapshot.pages.push(CodecArchivePage::<C> {
+                slot,
+                first,
+                catalog,
+            });
             self.snapshot.indexed += windows;
-            self.flush_end = None; self.builder = None; self.index_staged = false;
-            return Ok(ArchiveWriteProgress::CatalogPublished { first_ordinal: first, windows, receipt });
+            self.flush_end = None;
+            self.builder = None;
+            self.index_staged = false;
+            return Ok(ArchiveWriteProgress::CatalogPublished {
+                first_ordinal: first,
+                windows,
+                receipt,
+            });
         }
         if let Some(end) = self.flush_end {
             if self.builder.is_none() {
@@ -272,52 +421,98 @@ impl<'a, C: ArchiveCodec> CodecRecordingArchiveWriter<'a, C> {
                 self.build_next = self.snapshot.indexed;
             }
             if self.build_next < end {
-                let ordinal = self.build_next; let entry = &self.snapshot.windows[ordinal];
-                let recording = C::load_recording(self.publisher, entry.slot(), entry.root(),
-                    &self.snapshot.namespace.scope.recording, cancel)?;
+                let ordinal = self.build_next;
+                let entry = &self.snapshot.windows[ordinal];
+                let recording = C::load_recording(
+                    self.publisher,
+                    entry.slot(),
+                    entry.root(),
+                    &self.snapshot.namespace.scope.recording,
+                    cancel,
+                )?;
                 verify_descriptor_for::<C>(&self.snapshot.namespace.scope, entry, &recording)?;
                 probe(cancel)?;
-                C::push(self.builder.as_mut().ok_or(ArchiveError::Metadata)?, entry.slot(), &recording)?;
+                C::push(
+                    self.builder.as_mut().ok_or(ArchiveError::Metadata)?,
+                    entry.slot(),
+                    &recording,
+                )?;
                 self.build_next += 1;
-                return Ok(ArchiveWriteProgress::PageWindowVerified { ordinal, root: entry.root() });
+                return Ok(ArchiveWriteProgress::PageWindowVerified {
+                    ordinal,
+                    root: entry.root(),
+                });
             }
             // On allocation/encoding refusal, durable tail references are unchanged.
             // Explicit retry reconstructs metadata from those same verified objects.
             let page = C::prepare(self.builder.take().ok_or(ArchiveError::Metadata)?)?;
-            let root = C::manifest(&page).root(); self.page = Some(page);
+            let root = C::manifest(&page).root();
+            self.page = Some(page);
             return Ok(ArchiveWriteProgress::CatalogPrepared { root });
         }
         let tail = self.snapshot.windows.len() - self.snapshot.indexed;
-        if tail != 0 && (self.flush_requested || self.input_closed || tail >= self.snapshot.limits.windows_per_page) {
-            if self.snapshot.pages.len() == self.snapshot.limits.max_pages { return Err(ArchiveError::Limit); }
-            self.snapshot.pages.try_reserve_exact(1).map_err(|_| ArchiveError::Limit)?;
-            self.flush_end = Some(self.snapshot.windows.len()); self.flush_requested = false;
-            return Ok(ArchiveWriteProgress::PageStarted { first_ordinal: self.snapshot.indexed, windows: tail });
+        if tail != 0
+            && (self.flush_requested
+                || self.input_closed
+                || tail >= self.snapshot.limits.windows_per_page)
+        {
+            if self.snapshot.pages.len() == self.snapshot.limits.max_pages {
+                return Err(ArchiveError::Limit);
+            }
+            self.snapshot
+                .pages
+                .try_reserve_exact(1)
+                .map_err(|_| ArchiveError::Limit)?;
+            self.flush_end = Some(self.snapshot.windows.len());
+            self.flush_requested = false;
+            return Ok(ArchiveWriteProgress::PageStarted {
+                first_ordinal: self.snapshot.indexed,
+                windows: tail,
+            });
         }
         self.flush_requested = false;
         if self.input_closed {
             let snapshot_digest = self.snapshot.digest()?;
             self.done = true;
-            return Ok(ArchiveWriteProgress::Finished { snapshot_digest, windows: self.snapshot.windows.len(), pages: self.snapshot.pages.len() });
+            return Ok(ArchiveWriteProgress::Finished {
+                snapshot_digest,
+                windows: self.snapshot.windows.len(),
+                pages: self.snapshot.pages.len(),
+            });
         }
-        Ok(ArchiveWriteProgress::Ready { durable_windows: self.snapshot.windows.len(), indexed_windows: self.snapshot.indexed })
+        Ok(ArchiveWriteProgress::Ready {
+            durable_windows: self.snapshot.windows.len(),
+            indexed_windows: self.snapshot.indexed,
+        })
     }
     fn check_time(&self, now_ns: u64) -> ArchiveResult<()> {
-        if now_ns < self.last_ns { return Err(ArchiveError::ClockReversed); }
-        if now_ns >= self.deadline_ns { return Err(ArchiveError::Deadline); }
+        if now_ns < self.last_ns {
+            return Err(ArchiveError::ClockReversed);
+        }
+        if now_ns >= self.deadline_ns {
+            return Err(ArchiveError::Deadline);
+        }
         Ok(())
     }
     /// Transfer all unacknowledged originals and immutable page bytes; release only
     /// this driver's borrow of the owner. Staged/durable disk custody stays untouched.
     pub fn retire(self) -> ArchiveRetirement<C> {
-        ArchiveRetirement { snapshot: self.snapshot, pending: self.pending.map(|p| p.recording), prepared_page: self.page }
+        ArchiveRetirement {
+            snapshot: self.snapshot,
+            pending: self.pending.map(|p| p.recording),
+            prepared_page: self.page,
+        }
     }
 }
 impl<C: ArchiveCodec> std::fmt::Debug for CodecRecordingArchiveWriter<'_, C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RecordingArchiveWriter").field("durable_windows", &self.snapshot.windows.len())
-            .field("indexed_windows", &self.snapshot.indexed).field("pending", &self.pending.is_some())
-            .field("blocked", &self.blocked).field("done", &self.done).finish_non_exhaustive()
+        f.debug_struct("RecordingArchiveWriter")
+            .field("durable_windows", &self.snapshot.windows.len())
+            .field("indexed_windows", &self.snapshot.indexed)
+            .field("pending", &self.pending.is_some())
+            .field("blocked", &self.blocked)
+            .field("done", &self.done)
+            .finish_non_exhaustive()
     }
 }
 

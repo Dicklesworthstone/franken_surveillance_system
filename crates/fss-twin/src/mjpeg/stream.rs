@@ -1,12 +1,12 @@
 #![forbid(unsafe_code)]
 //! Complete, source-range-bound stream frames entering the existing image pipeline.
-use fss_codec_mjpeg::{DecodeBudget, DecodeLimits};
-use fss_codec_mjpeg::stream::{FramedJpeg, StreamBasis};
-use fss_geometry::WorkBudget;
+use super::{JpegBackground, JpegForeground, JpegFrameBinding, JpegPipelineError};
 use crate::foreground::ForegroundPolicy;
 use crate::foreground::pipeline::FrameCapture;
 use crate::rectification::RectificationPlan;
-use super::{JpegBackground, JpegForeground, JpegFrameBinding, JpegPipelineError};
+use fss_codec_mjpeg::stream::{FramedJpeg, StreamBasis};
+use fss_codec_mjpeg::{DecodeBudget, DecodeLimits};
+use fss_geometry::WorkBudget;
 
 /// Explicit input scope. Frame ordinal and arrival order are never capture time.
 #[derive(Clone, Copy)]
@@ -41,28 +41,55 @@ pub struct StreamFrameReceipt {
 }
 
 /// Framing lineage and fully decoded/rectified foreground result published together.
-pub struct FramedForeground { source: StreamFrameReceipt, foreground: JpegForeground }
+pub struct FramedForeground {
+    source: StreamFrameReceipt,
+    foreground: JpegForeground,
+}
 impl FramedForeground {
     /// Exact original stream byte-range binding.
-    pub fn source(&self) -> StreamFrameReceipt { self.source }
+    pub fn source(&self) -> StreamFrameReceipt {
+        self.source
+    }
     /// Full codec/image/model receipts and existing masked crop/contact API.
-    pub fn foreground(&self) -> &JpegForeground { &self.foreground }
+    pub fn foreground(&self) -> &JpegForeground {
+        &self.foreground
+    }
 }
 
 /// Decode, rectify and analyze one independently scoped completed stream frame.
 /// No successful result escapes unless the complete JPEG and downstream masks pass.
-pub fn detect_framed(model: &JpegBackground, plan: &RectificationPlan, query: FramedQuery<'_>,
-    decode_budget: &mut DecodeBudget<'_>, geometry_budget: &mut WorkBudget<'_>)
-    -> Result<FramedForeground, JpegPipelineError> {
+pub fn detect_framed(
+    model: &JpegBackground,
+    plan: &RectificationPlan,
+    query: FramedQuery<'_>,
+    decode_budget: &mut DecodeBudget<'_>,
+    geometry_budget: &mut WorkBudget<'_>,
+) -> Result<FramedForeground, JpegPipelineError> {
     geometry_budget.charge(0)?;
     if query.expected_stream != query.frame.basis()
-        || query.binding.encoded_sha256 != query.frame.encoded_sha256() {
+        || query.binding.encoded_sha256 != query.frame.encoded_sha256()
+    {
         return Err(JpegPipelineError::BasisMismatch);
     }
-    let foreground = model.detect(plan, query.frame.bytes(), query.mask, query.binding,
-        query.capture, query.policy, query.limits, decode_budget, geometry_budget)?;
+    let foreground = model.detect(
+        plan,
+        query.frame.bytes(),
+        query.mask,
+        query.binding,
+        query.capture,
+        query.policy,
+        query.limits,
+        decode_budget,
+        geometry_budget,
+    )?;
     geometry_budget.charge(0)?;
-    Ok(FramedForeground { source: StreamFrameReceipt { basis: query.frame.basis(),
-        ordinal: query.frame.ordinal(), byte_range: query.frame.byte_range(),
-        encoded_sha256: query.frame.encoded_sha256() }, foreground })
+    Ok(FramedForeground {
+        source: StreamFrameReceipt {
+            basis: query.frame.basis(),
+            ordinal: query.frame.ordinal(),
+            byte_range: query.frame.byte_range(),
+            encoded_sha256: query.frame.encoded_sha256(),
+        },
+        foreground,
+    })
 }

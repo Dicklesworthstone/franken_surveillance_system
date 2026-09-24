@@ -67,7 +67,10 @@ pub fn solve(
     let mut selected = reserve(rows)?;
     selected.extend_from_slice(&solution.columns[..rows]);
     budget.charge(0)?;
-    Ok(AssignmentSolution { columns: selected, cost: solution.cost })
+    Ok(AssignmentSolution {
+        columns: selected,
+        cost: solution.cost,
+    })
 }
 
 #[cfg(test)]

@@ -9,11 +9,15 @@ use std::sync::atomic::AtomicBool;
 use fss_codec_mjpeg::{ComponentInterpretation, DecodeBudget, DecodeLimits, decode_luma};
 use fss_core::{CapsuleId, SensorId, TimestampNs};
 use fss_reference::VirtualClock;
-use fss_reference::ingest::virtual_mjpeg::{MjpegCameraSpec, MjpegSourceBudget, generate_mjpeg_source};
+use fss_reference::ingest::virtual_mjpeg::{
+    MjpegCameraSpec, MjpegSourceBudget, generate_mjpeg_source,
+};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut arguments = std::env::args_os().skip(1);
-    let output = arguments.next().ok_or("usage: virtual_mjpeg_capture OUTPUT.mjpeg")?;
+    let output = arguments
+        .next()
+        .ok_or("usage: virtual_mjpeg_capture OUTPUT.mjpeg")?;
     if arguments.next().is_some() {
         return Err("usage: virtual_mjpeg_capture OUTPUT.mjpeg".into());
     }
@@ -36,7 +40,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let source = generate_mjpeg_source(&spec, &mut clock, &mut budget)?;
     // Complete all native decode checks before touching the requested output path.
     for (index, span) in source.frames().iter().enumerate() {
-        let bytes = source.frame_bytes(index).ok_or("missing complete generated frame")?;
+        let bytes = source
+            .frame_bytes(index)
+            .ok_or("missing complete generated frame")?;
         decode_luma(
             &bytes,
             span.encoded_digest.bytes(),
@@ -47,7 +53,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     // Never overwrite an existing file. A write failure may leave a partial new file;
     // the caller must not interpret it as a complete capture or clean source end.
-    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(output)?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output)?;
     let mut bytes_written = 0;
     for packet in source.packets() {
         file.write_all(&packet.bytes)?;
@@ -56,7 +65,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     file.sync_all()?;
     println!(
         "synthetic MJPEG: {} decoded frames, {} source packets, {} bytes; no presence/effect claim",
-        source.frames().len(), source.packets().len(), bytes_written,
+        source.frames().len(),
+        source.packets().len(),
+        bytes_written,
     );
     Ok(())
 }

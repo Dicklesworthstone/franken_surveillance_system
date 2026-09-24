@@ -6,19 +6,19 @@
 //! and media are four root-linked objects. These are local unencrypted reference
 //! artifacts, not permission to disclose footage or an authentication certificate.
 
-/// Root-last local publication and verified retrieval through an existing I/O owner.
-pub mod local;
 /// Replay-verified HEVC recording windows, with a separate versioned index and codec contract.
 pub mod hevc;
+/// Root-last local publication and verified retrieval through an existing I/O owner.
+pub mod local;
 
 mod verify;
 mod wire;
 
-use std::ops::Range;
 use fss_container::{AvcMuxer, Mp4Limits, NalMapping, SampleMapping, TimedAvcPicture};
 use fss_core::{CanonicalEncode, ContentDigest, SensorId, StreamId};
 use fss_object::ObjectManifest;
 use fss_packet::StreamKey;
+use std::ops::Range;
 
 /// Maximum combined child payload bytes and root manifest bytes for one window.
 pub const MAX_RECORDING_BYTES: usize = 32 * 1024 * 1024;
@@ -59,8 +59,11 @@ pub struct RecordingPacket<'a> {
 }
 impl std::fmt::Debug for RecordingPacket<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RecordingPacket").field("sequence", &self.sequence)
-            .field("received_ns", &self.received_ns).field("bytes", &self.bytes.len()).finish()
+        f.debug_struct("RecordingPacket")
+            .field("sequence", &self.sequence)
+            .field("received_ns", &self.received_ns)
+            .field("bytes", &self.bytes.len())
+            .finish()
     }
 }
 
@@ -116,9 +119,12 @@ pub struct RecordingObjects<'a> {
 }
 impl std::fmt::Debug for RecordingObjects<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RecordingObjects").field("source_bytes", &self.source.len())
+        f.debug_struct("RecordingObjects")
+            .field("source_bytes", &self.source.len())
             .field("initialization_bytes", &self.initialization.len())
-            .field("media_bytes", &self.media.len()).field("index_bytes", &self.index.len()).finish()
+            .field("media_bytes", &self.media.len())
+            .field("index_bytes", &self.index.len())
+            .finish()
     }
 }
 
@@ -154,31 +160,63 @@ pub struct PreparedRecording {
 }
 impl std::fmt::Debug for PreparedRecording {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PreparedRecording").field("root", &self.manifest.root())
-            .field("packets", &self.summary.packets).field("samples", &self.summary.samples).finish()
+        f.debug_struct("PreparedRecording")
+            .field("root", &self.manifest.root())
+            .field("packets", &self.summary.packets)
+            .field("samples", &self.summary.samples)
+            .finish()
     }
 }
 impl PreparedRecording {
     /// Exact root-last manifest; this does not publish it.
-    pub fn manifest(&self) -> &ObjectManifest { &self.manifest }
+    pub fn manifest(&self) -> &ObjectManifest {
+        &self.manifest
+    }
     /// Exact immutable child bytes, in their typed roles.
     pub fn objects(&self) -> RecordingObjects<'_> {
-        RecordingObjects { source: &self.source, initialization: &self.initialization,
-            media: &self.media, index: &self.index }
+        RecordingObjects {
+            source: &self.source,
+            initialization: &self.initialization,
+            media: &self.media,
+            index: &self.index,
+        }
     }
     /// Verified content accounting from preparation.
-    pub fn summary(&self) -> &RecordingSummary { &self.summary }
+    pub fn summary(&self) -> &RecordingSummary {
+        &self.summary
+    }
     /// Combined retained payload bytes including the root manifest.
     pub fn byte_len(&self) -> usize {
-        self.source.len() + self.initialization.len() + self.media.len()
-            + self.index.len() + self.manifest.canonical_bytes().len()
+        self.source.len()
+            + self.initialization.len()
+            + self.media.len()
+            + self.index.len()
+            + self.manifest.canonical_bytes().len()
     }
     /// Stage in this order so source custody never waits for derivative publication.
     pub fn children(&self) -> [(RecordingRole, ContentDigest, &[u8]); 4] {
-        [(RecordingRole::Source, ContentDigest::sha256(&self.source), &self.source),
-         (RecordingRole::Initialization, ContentDigest::sha256(&self.initialization), &self.initialization),
-         (RecordingRole::Media, ContentDigest::sha256(&self.media), &self.media),
-         (RecordingRole::Index, ContentDigest::sha256(&self.index), &self.index)]
+        [
+            (
+                RecordingRole::Source,
+                ContentDigest::sha256(&self.source),
+                &self.source,
+            ),
+            (
+                RecordingRole::Initialization,
+                ContentDigest::sha256(&self.initialization),
+                &self.initialization,
+            ),
+            (
+                RecordingRole::Media,
+                ContentDigest::sha256(&self.media),
+                &self.media,
+            ),
+            (
+                RecordingRole::Index,
+                ContentDigest::sha256(&self.index),
+                &self.index,
+            ),
+        ]
     }
 }
 
@@ -208,33 +246,65 @@ pub fn prepare_recording(
     pictures: &[TimedAvcPicture<'_>],
     packets: &[RecordingPacket<'_>],
 ) -> Result<PreparedRecording> {
-    if pictures.is_empty() || pictures.len() > MAX_RECORDING_SAMPLES { return Err(RecordingError::Limit); }
+    if pictures.is_empty() || pictures.len() > MAX_RECORDING_SAMPLES {
+        return Err(RecordingError::Limit);
+    }
     let first = pictures[0].picture;
     let key = first.key();
-    if scope.generation == 0 || scope.generation != key.generation { return Err(RecordingError::Scope); }
+    if scope.generation == 0 || scope.generation != key.generation {
+        return Err(RecordingError::Scope);
+    }
     let source = wire::encode_packets(packets)?;
     let first_packet = packets.first().ok_or(RecordingError::Source)?;
-    let payload_type = fss_packet::RtpPacket::parse(first_packet.bytes, fss_packet::PacketLimits::default())
-        .map_err(|_| RecordingError::Source)?.payload_type();
-    let mut muxer = AvcMuxer::new(key, first.sps().clone(), first.pps().clone(), time_scale, Mp4Limits::default())
-        .map_err(RecordingError::Media)?;
+    let payload_type =
+        fss_packet::RtpPacket::parse(first_packet.bytes, fss_packet::PacketLimits::default())
+            .map_err(|_| RecordingError::Source)?
+            .payload_type();
+    let mut muxer = AvcMuxer::new(
+        key,
+        first.sps().clone(),
+        first.pps().clone(),
+        time_scale,
+        Mp4Limits::default(),
+    )
+    .map_err(RecordingError::Media)?;
     let fragment = muxer.fragment(pictures).map_err(RecordingError::Media)?;
     let init = muxer.initialization();
     let index = Index {
-        scope, ssrc: key.ssrc, payload_type, time_scale,
-        source: ContentDigest::sha256(&source), initialization: ContentDigest::sha256(init.bytes()),
-        media: ContentDigest::sha256(fragment.bytes()), sps: init.sps_range(), pps: init.pps_range(),
-        samples: fragment.samples().to_vec(), mappings: fragment.mappings().to_vec(),
+        scope,
+        ssrc: key.ssrc,
+        payload_type,
+        time_scale,
+        source: ContentDigest::sha256(&source),
+        initialization: ContentDigest::sha256(init.bytes()),
+        media: ContentDigest::sha256(fragment.bytes()),
+        sps: init.sps_range(),
+        pps: init.pps_range(),
+        samples: fragment.samples().to_vec(),
+        mappings: fragment.mappings().to_vec(),
     };
     let encoded = wire::encode_index(&index)?;
-    let manifest = ObjectManifest::new(RECORDING_KIND,
-        [index.source, index.initialization, index.media], Some(ContentDigest::sha256(&encoded)))
-        .map_err(|_| RecordingError::Digest)?;
-    let objects = RecordingObjects { source: &source, initialization: init.bytes(),
-        media: fragment.bytes(), index: &encoded };
+    let manifest = ObjectManifest::new(
+        RECORDING_KIND,
+        [index.source, index.initialization, index.media],
+        Some(ContentDigest::sha256(&encoded)),
+    )
+    .map_err(|_| RecordingError::Digest)?;
+    let objects = RecordingObjects {
+        source: &source,
+        initialization: init.bytes(),
+        media: fragment.bytes(),
+        index: &encoded,
+    };
     let summary = verify_recording(&manifest, objects, &index.scope)?;
-    Ok(PreparedRecording { manifest, source, initialization: init.bytes().to_vec(),
-        media: fragment.bytes().to_vec(), index: encoded, summary })
+    Ok(PreparedRecording {
+        manifest,
+        source,
+        initialization: init.bytes().to_vec(),
+        media: fragment.bytes().to_vec(),
+        index: encoded,
+        summary,
+    })
 }
 
 /// Verify every child digest, exact closure, canonical field and byte-provenance
@@ -246,37 +316,72 @@ pub fn verify_recording(
     objects: RecordingObjects<'_>,
     expected_scope: &RecordingScope,
 ) -> Result<RecordingSummary> {
-    let total = [objects.source.len(), objects.initialization.len(), objects.media.len(),
-        objects.index.len(), manifest.canonical_bytes().len()].into_iter()
-        .try_fold(0_usize, |sum, n| sum.checked_add(n)).ok_or(RecordingError::Limit)?;
-    if total > MAX_RECORDING_BYTES { return Err(RecordingError::Limit); }
+    let total = [
+        objects.source.len(),
+        objects.initialization.len(),
+        objects.media.len(),
+        objects.index.len(),
+        manifest.canonical_bytes().len(),
+    ]
+    .into_iter()
+    .try_fold(0_usize, |sum, n| sum.checked_add(n))
+    .ok_or(RecordingError::Limit)?;
+    if total > MAX_RECORDING_BYTES {
+        return Err(RecordingError::Limit);
+    }
     let index = wire::decode_index(objects.index)?;
-    if &index.scope != expected_scope || index.scope.generation == 0 { return Err(RecordingError::Scope); }
+    if &index.scope != expected_scope || index.scope.generation == 0 {
+        return Err(RecordingError::Scope);
+    }
     if ContentDigest::sha256(objects.source) != index.source
         || ContentDigest::sha256(objects.initialization) != index.initialization
-        || ContentDigest::sha256(objects.media) != index.media { return Err(RecordingError::Digest); }
-    let expected = ObjectManifest::new(RECORDING_KIND,
-        [index.source, index.initialization, index.media], Some(ContentDigest::sha256(objects.index)))
-        .map_err(|_| RecordingError::Digest)?;
-    if manifest != &expected { return Err(RecordingError::Digest); }
+        || ContentDigest::sha256(objects.media) != index.media
+    {
+        return Err(RecordingError::Digest);
+    }
+    let expected = ObjectManifest::new(
+        RECORDING_KIND,
+        [index.source, index.initialization, index.media],
+        Some(ContentDigest::sha256(objects.index)),
+    )
+    .map_err(|_| RecordingError::Digest)?;
+    if manifest != &expected {
+        return Err(RecordingError::Digest);
+    }
     let packets = wire::decode_packets(objects.source)?;
     verify::content(&index, objects, &packets)?;
     let first = index.samples.first().ok_or(RecordingError::Malformed)?;
     let last = index.samples.last().ok_or(RecordingError::Malformed)?;
-    Ok(RecordingSummary { root: manifest.root(), scope: index.scope,
-        packets: packets.len(), samples: index.samples.len(), nals: index.mappings.len(),
+    Ok(RecordingSummary {
+        root: manifest.root(),
+        scope: index.scope,
+        packets: packets.len(),
+        samples: index.samples.len(),
+        nals: index.mappings.len(),
         time_scale: index.time_scale,
-        decode_interval: first.decode_time..last.decode_time.checked_add(u64::from(last.duration))
-            .ok_or(RecordingError::Malformed)? })
+        decode_interval: first.decode_time
+            ..last
+                .decode_time
+                .checked_add(u64::from(last.duration))
+                .ok_or(RecordingError::Malformed)?,
+    })
 }
 
 fn key(index: &Index) -> StreamKey {
     // Verification uses a fresh process-local ingress, not a recovered durable handle.
-    StreamKey { ingress: 1, generation: index.scope.generation, ssrc: index.ssrc }
+    StreamKey {
+        ingress: 1,
+        generation: index.scope.generation,
+        ssrc: index.ssrc,
+    }
 }
 fn bounded_vec<T>(count: usize, maximum: usize) -> Result<Vec<T>> {
-    if count > maximum { return Err(RecordingError::Limit); }
+    if count > maximum {
+        return Err(RecordingError::Limit);
+    }
     let mut output = Vec::new();
-    output.try_reserve_exact(count).map_err(|_| RecordingError::Limit)?;
+    output
+        .try_reserve_exact(count)
+        .map_err(|_| RecordingError::Limit)?;
     Ok(output)
 }

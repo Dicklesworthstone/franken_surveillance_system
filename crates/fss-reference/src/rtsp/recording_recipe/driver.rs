@@ -1,7 +1,9 @@
 #![forbid(unsafe_code)]
 //! Execute retained timing decisions through the existing source-verified recording owner.
 use super::*;
-use crate::rtsp::datagram_reconstruction::recording::{RecordingReplayFailure, RecordingReplayRetirement, RecordingReplayStep};
+use crate::rtsp::datagram_reconstruction::recording::{
+    RecordingReplayFailure, RecordingReplayRetirement, RecordingReplayStep,
+};
 use crate::rtsp::recording_capture::{CapturePoll, TimedCapture};
 use fss_geometry::WorkBudget;
 use fss_publication::{LocalRootPublisher, PublishCancellation};
@@ -49,7 +51,9 @@ pub struct RecipeReplayFailure {
     pub retirement: Option<Box<RecipeReplayRetirement>>,
 }
 impl std::fmt::Display for RecipeReplayFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { std::fmt::Display::fmt(&self.reason, f) }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.reason, f)
+    }
 }
 impl std::error::Error for RecipeReplayFailure {}
 
@@ -68,51 +72,97 @@ pub struct PlannedRecordingReplay<'a> {
 impl<'a> PlannedRecordingReplay<'a> {
     /// Revalidate source and all external configuration ceilings. Operational step/deadline/byte
     /// budgets are caller-supplied, never restored from the portable recipe.
-    pub fn new(recipe: &'a RecordingRecipe, archive: &'a DatagramArchive, limits: RecordingRecipeLimits,
-        bounds: AvcReplayBounds, now_ns: u64) -> Result<Self, RecordingRecipeError> {
+    pub fn new(
+        recipe: &'a RecordingRecipe,
+        archive: &'a DatagramArchive,
+        limits: RecordingRecipeLimits,
+        bounds: AvcReplayBounds,
+        now_ns: u64,
+    ) -> Result<Self, RecordingRecipeError> {
         limits.validate()?;
-        if recipe.source != archive.pin() { return Err(RecordingRecipeError::Mismatch); }
+        if recipe.source != archive.pin() {
+            return Err(RecordingRecipeError::Mismatch);
+        }
         if recipe.bytes.len() > limits.max_bytes || recipe.timings.len() > limits.max_timings {
             return Err(RecordingRecipeError::Limit);
         }
         codec::check_limits(recipe.avc.limits, recipe.recording.limits, limits)?;
-        let inner = DatagramRecordingReplay::new(archive, recipe.avc.spec(), recipe.recording.clone(), bounds, now_ns)
-            .map_err(RecordingRecipeError::Replay)?;
-        if inner.interpretation() != recipe.interpretation { return Err(RecordingRecipeError::Mismatch); }
-        Ok(Self { recipe, inner, timing_index: 0, timing_pending: false, finalize_pending: false, closed: false })
+        let inner = DatagramRecordingReplay::new(
+            archive,
+            recipe.avc.spec(),
+            recipe.recording.clone(),
+            bounds,
+            now_ns,
+        )
+        .map_err(RecordingRecipeError::Replay)?;
+        if inner.interpretation() != recipe.interpretation {
+            return Err(RecordingRecipeError::Mismatch);
+        }
+        Ok(Self {
+            recipe,
+            inner,
+            timing_index: 0,
+            timing_pending: false,
+            finalize_pending: false,
+            closed: false,
+        })
     }
     /// Number of original observations read; remains fixed during timing application.
-    pub fn observations_read(&self) -> u64 { self.inner.observations_read() }
+    pub fn observations_read(&self) -> u64 {
+        self.inner.observations_read()
+    }
     /// Number of successfully returned timing applications.
-    pub fn timings_applied(&self) -> usize { self.timing_index }
+    pub fn timings_applied(&self) -> usize {
+        self.timing_index
+    }
     /// One bounded source/capture operation or exact timing/finalization command.
-    pub fn step(&mut self, publisher: &LocalRootPublisher, now_ns: u64,
-        cancel: &dyn PublishCancellation, budget: &mut WorkBudget<'_>)
-        -> Result<RecipeReplayStep, RecipeReplayFailure> {
-        if self.closed { return Ok(RecipeReplayStep::Ended); }
+    pub fn step(
+        &mut self,
+        publisher: &LocalRootPublisher,
+        now_ns: u64,
+        cancel: &dyn PublishCancellation,
+        budget: &mut WorkBudget<'_>,
+    ) -> Result<RecipeReplayStep, RecipeReplayFailure> {
+        if self.closed {
+            return Ok(RecipeReplayStep::Ended);
+        }
         if self.timing_pending {
             let Some(decision) = self.recipe.timings.get(self.timing_index).copied() else {
                 return Err(self.fail(RecordingRecipeError::MissingTiming, None));
             };
-            let outcome = self.inner.supply_timing(decision.timing, now_ns, cancel, budget)
+            let outcome = self
+                .inner
+                .supply_timing(decision.timing, now_ns, cancel, budget)
                 .map_err(|e| self.native_failure(e))?;
             let index = self.timing_index;
-            self.timing_index += 1; self.timing_pending = false;
-            return Ok(RecipeReplayStep::TimingApplied { index, decision, outcome });
+            self.timing_index += 1;
+            self.timing_pending = false;
+            return Ok(RecipeReplayStep::TimingApplied {
+                index,
+                decision,
+                outcome,
+            });
         }
         if self.finalize_pending {
-            self.inner.finish_prefix(now_ns, cancel, budget).map_err(|e| self.native_failure(e))?;
+            self.inner
+                .finish_prefix(now_ns, cancel, budget)
+                .map_err(|e| self.native_failure(e))?;
             self.finalize_pending = false;
             return Ok(RecipeReplayStep::PrefixFinalizing);
         }
-        let step = self.inner.step(publisher, now_ns, cancel, budget).map_err(|e| self.native_failure(e))?;
+        let step = self
+            .inner
+            .step(publisher, now_ns, cancel, budget)
+            .map_err(|e| self.native_failure(e))?;
         match &step {
             RecordingReplayStep::Capture(event) => match &**event {
                 CapturePoll::TimingRequired(picture) => {
                     let Some(decision) = self.recipe.timings.get(self.timing_index) else {
                         return Err(self.fail(RecordingRecipeError::MissingTiming, Some(step)));
                     };
-                    if decision.picture != *picture || decision.observations_read != self.inner.observations_read() {
+                    if decision.picture != *picture
+                        || decision.observations_read != self.inner.observations_read()
+                    {
                         return Err(self.fail(RecordingRecipeError::Mismatch, Some(step)));
                     }
                     self.timing_pending = true;
@@ -120,7 +170,7 @@ impl<'a> PlannedRecordingReplay<'a> {
                 CapturePoll::Backpressure(_) => {
                     return Err(self.fail(RecordingRecipeError::CollectionPressure, Some(step)));
                 }
-                _ => {},
+                _ => {}
             },
             RecordingReplayStep::PrefixReady { .. } => {
                 if self.timing_index != self.recipe.timings.len() {
@@ -128,36 +178,72 @@ impl<'a> PlannedRecordingReplay<'a> {
                 }
                 self.finalize_pending = true;
             }
-            RecordingReplayStep::FinishedPrefix { .. } | RecordingReplayStep::Stopped { .. } => self.closed = true,
-            RecordingReplayStep::Ended => return Err(self.fail(RecordingRecipeError::Closed, Some(step))),
-            _ => {},
+            RecordingReplayStep::FinishedPrefix { .. } | RecordingReplayStep::Stopped { .. } => {
+                self.closed = true
+            }
+            RecordingReplayStep::Ended => {
+                return Err(self.fail(RecordingRecipeError::Closed, Some(step)));
+            }
+            _ => {}
         }
         Ok(RecipeReplayStep::Replay(step))
     }
     /// Cancel without a seal, source read, publication, cleanup or invented terminal frame.
     pub fn cancel(&mut self) -> Option<RecipeReplayRetirement> {
-        if self.closed { return None; }
+        if self.closed {
+            return None;
+        }
         self.closed = true;
-        Some(RecipeReplayRetirement { recipe: self.recipe.identity, timings_applied: self.timing_index,
-            recording: self.inner.cancel().map(Box::new), withheld: None })
+        Some(RecipeReplayRetirement {
+            recipe: self.recipe.identity,
+            timings_applied: self.timing_index,
+            recording: self.inner.cancel().map(Box::new),
+            withheld: None,
+        })
     }
-    fn fail(&mut self, reason: RecordingRecipeError, withheld: Option<RecordingReplayStep>) -> RecipeReplayFailure {
+    fn fail(
+        &mut self,
+        reason: RecordingRecipeError,
+        withheld: Option<RecordingReplayStep>,
+    ) -> RecipeReplayFailure {
         self.closed = true;
-        RecipeReplayFailure { reason, retirement: Some(Box::new(RecipeReplayRetirement {
-            recipe: self.recipe.identity, timings_applied: self.timing_index,
-            recording: self.inner.cancel().map(Box::new), withheld: withheld.map(Box::new) })) }
+        RecipeReplayFailure {
+            reason,
+            retirement: Some(Box::new(RecipeReplayRetirement {
+                recipe: self.recipe.identity,
+                timings_applied: self.timing_index,
+                recording: self.inner.cancel().map(Box::new),
+                withheld: withheld.map(Box::new),
+            })),
+        }
     }
     fn native_failure(&mut self, failure: RecordingReplayFailure) -> RecipeReplayFailure {
         // A recipe cannot correct an invalid stored timing choice. Only clock regression is
         // retryable; every other native refusal fences this wrapper and preserves held work.
-        if failure.retirement.is_none() && matches!(&failure.reason,
-            RecordingReplayError::Replay(crate::rtsp::datagram_reconstruction::AvcReplayError::ClockReversed)) {
-            return RecipeReplayFailure { reason: RecordingRecipeError::Replay(failure.reason), retirement: None };
+        if failure.retirement.is_none()
+            && matches!(
+                &failure.reason,
+                RecordingReplayError::Replay(
+                    crate::rtsp::datagram_reconstruction::AvcReplayError::ClockReversed
+                )
+            )
+        {
+            return RecipeReplayFailure {
+                reason: RecordingRecipeError::Replay(failure.reason),
+                retirement: None,
+            };
         }
         self.closed = true;
-        RecipeReplayFailure { reason: RecordingRecipeError::Replay(failure.reason),
+        RecipeReplayFailure {
+            reason: RecordingRecipeError::Replay(failure.reason),
             retirement: Some(Box::new(RecipeReplayRetirement {
-                recipe: self.recipe.identity, timings_applied: self.timing_index,
-                recording: failure.retirement.or_else(|| self.inner.cancel().map(Box::new)), withheld: None })) }
+                recipe: self.recipe.identity,
+                timings_applied: self.timing_index,
+                recording: failure
+                    .retirement
+                    .or_else(|| self.inner.cancel().map(Box::new)),
+                withheld: None,
+            })),
+        }
     }
 }

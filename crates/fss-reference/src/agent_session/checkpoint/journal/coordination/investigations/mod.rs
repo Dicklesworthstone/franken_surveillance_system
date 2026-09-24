@@ -9,12 +9,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+use crate::agent_session::{ReferenceSessionError, ReferenceSessionStore};
 use fss_core::{
     AgentSession, CanonicalEncode, CanonicalEncoder, CaseId, ContentDigest, ContractBasis,
     HypothesisDisposition, InvestigationCaseState, InvestigationLifecycle, InvestigationState,
     InvestigationStateParams, PrincipalId, SessionId, TimestampNs,
 };
-use crate::agent_session::{ReferenceSessionError, ReferenceSessionStore};
 
 mod validation;
 
@@ -44,14 +44,19 @@ pub struct InvestigationLimits {
 
 impl Default for InvestigationLimits {
     fn default() -> Self {
-        Self { max_cases: 256, max_revisions: 4_096, max_retained_bytes: 32 * 1024 * 1024 }
+        Self {
+            max_cases: 256,
+            max_revisions: 4_096,
+            max_retained_bytes: 32 * 1024 * 1024,
+        }
     }
 }
 
 impl InvestigationLimits {
     /// Refuses ceilings beyond the deterministic reference's absolute allocation envelope.
     pub fn validate(self) -> Result<(), InvestigationError> {
-        if self.max_cases > 1_024 || self.max_revisions > 16_384
+        if self.max_cases > 1_024
+            || self.max_revisions > 16_384
             || self.max_retained_bytes > 64 * 1024 * 1024
         {
             return Err(InvestigationError::CapacityExceeded);
@@ -148,21 +153,32 @@ pub struct InvestigationRevision {
 impl InvestigationRevision {
     /// Existing AOP-006 record. It cannot be written back as authoritative store state.
     #[must_use]
-    pub const fn record(&self) -> &InvestigationState { &self.record }
+    pub const fn record(&self) -> &InvestigationState {
+        &self.record
+    }
     /// Core disposition state, separate from every statement's knowledge state.
     #[must_use]
-    pub const fn control(&self) -> &InvestigationCaseState { &self.control }
+    pub const fn control(&self) -> &InvestigationCaseState {
+        &self.control
+    }
     /// Previous exact revision, absent only at creation.
     #[must_use]
-    pub const fn predecessor(&self) -> Option<ContentDigest> { self.predecessor }
+    pub const fn predecessor(&self) -> Option<ContentDigest> {
+        self.predecessor
+    }
     /// Authenticated session that authored this revision.
     #[must_use]
-    pub const fn author_session(&self) -> &SessionId { &self.author_session }
+    pub const fn author_session(&self) -> &SessionId {
+        &self.author_session
+    }
     /// Exact optimistic concurrency and audit identity.
     #[must_use]
     pub fn digest(&self) -> ContentDigest {
-        let domain = if self.validity.is_some() { evolution::EVOLVED_REVISION_DOMAIN }
-            else { INVESTIGATION_REVISION_DOMAIN };
+        let domain = if self.validity.is_some() {
+            evolution::EVOLVED_REVISION_DOMAIN
+        } else {
+            INVESTIGATION_REVISION_DOMAIN
+        };
         self.canonical_digest(domain)
     }
     /// Current-basis invalidation and readmission receipts, absent for never-rebased cases.
@@ -180,13 +196,19 @@ impl CanonicalEncode for InvestigationRevision {
         self.author_session.encode_canonical(e);
         e.text(&self.privacy_class);
         e.bool(self.predecessor.is_some());
-        if let Some(root) = self.predecessor { e.digest(root); }
+        if let Some(root) = self.predecessor {
+            e.digest(root);
+        }
         e.i128(self.changed_at.0);
         e.bool(self.assessment.is_some());
-        if let Some(root) = self.assessment { e.digest(root); }
+        if let Some(root) = self.assessment {
+            e.digest(root);
+        }
         // Legacy revisions remain byte-identical. Rebased revisions use a distinct digest domain
         // and a self-identifying extension; this is not a reinterpretation of old journal bytes.
-        if let Some(validity) = &self.validity { validity.encode_canonical(e); }
+        if let Some(validity) = &self.validity {
+            validity.encode_canonical(e);
+        }
     }
 }
 
@@ -266,22 +288,34 @@ impl ReferenceInvestigationStore {
     /// Constructs a bounded store; zero limits mean no capacity.
     pub fn new(limits: InvestigationLimits) -> Result<Self, InvestigationError> {
         limits.validate()?;
-        Ok(Self { entries: BTreeMap::new(), limits, revisions: 0,
-            retained_bytes: 0, last_observed_at: None })
+        Ok(Self {
+            entries: BTreeMap::new(),
+            limits,
+            revisions: 0,
+            retained_bytes: 0,
+            last_observed_at: None,
+        })
     }
 
     /// Executes using live session authority and a runtime clock, not an agent's claimed grants.
     /// Failed operations may advance clocks or expire a session, but never append a case revision.
     /// All input media/text/citations must already be scoped by their source owner before entry.
     pub fn execute(
-        &mut self, sessions: &mut ReferenceSessionStore, principal: &PrincipalId,
-        session_id: &SessionId, command: &InvestigationCommand, now: TimestampNs,
+        &mut self,
+        sessions: &mut ReferenceSessionStore,
+        principal: &PrincipalId,
+        session_id: &SessionId,
+        command: &InvestigationCommand,
+        now: TimestampNs,
     ) -> Result<InvestigationRevision, InvestigationError> {
         validation::command(command)?;
-        let entry = sessions.live_entry(principal, session_id, now).map_err(|error| match error {
-            ReferenceSessionError::ClockRegression => InvestigationError::ClockRegression,
-            _ => InvestigationError::Unavailable,
-        })?;
+        let entry =
+            sessions
+                .live_entry(principal, session_id, now)
+                .map_err(|error| match error {
+                    ReferenceSessionError::ClockRegression => InvestigationError::ClockRegression,
+                    _ => InvestigationError::Unavailable,
+                })?;
         if !entry.session.capabilities.contains(CAPABILITY_INVESTIGATE) {
             return Err(InvestigationError::Denied);
         }
@@ -292,7 +326,10 @@ impl ReferenceInvestigationStore {
         let session = &entry.session;
         let basis = &entry.basis;
         match command {
-            InvestigationCommand::Open { record, privacy_class } => {
+            InvestigationCommand::Open {
+                record,
+                privacy_class,
+            } => {
                 if !session.privacy_scope.contains(privacy_class) {
                     return Err(InvestigationError::Unavailable);
                 }
@@ -300,11 +337,15 @@ impl ReferenceInvestigationStore {
                 let mut e = CanonicalEncoder::new();
                 record.encode_canonical(&mut e);
                 e.text(privacy_class);
-                let opening = ContentDigest::sha256(&e.finish_checked()
-                    .map_err(|_| InvestigationError::InvalidRecord)?);
+                let opening = ContentDigest::sha256(
+                    &e.finish_checked()
+                        .map_err(|_| InvestigationError::InvalidRecord)?,
+                );
                 if let Some(existing) = self.entries.get(&record.investigation_id) {
                     Self::visible(&existing.head, session)?;
-                    if existing.opening != opening { return Err(InvestigationError::Conflict); }
+                    if existing.opening != opening {
+                        return Err(InvestigationError::Conflict);
+                    }
                     return Ok(existing.head.clone());
                 }
                 if record.state != InvestigationLifecycle::Draft || record.revision != 1 {
@@ -316,46 +357,86 @@ impl ReferenceInvestigationStore {
                 if self.entries.len() >= self.limits.max_cases {
                     return Err(InvestigationError::CapacityExceeded);
                 }
-                let control = InvestigationCaseState::create(record.investigation_id.clone(),
-                    record.mission_id.clone(), &record.hypotheses.iter()
-                        .map(|h| h.hypothesis_id.clone()).collect())
-                    .map_err(|_| InvestigationError::InvalidRecord)?;
-                let next = InvestigationRevision { record: record.as_ref().clone(), control,
-                    principal: principal.clone(), author_session: session_id.clone(),
-                    privacy_class: privacy_class.clone(), predecessor: None, changed_at: now,
-                    assessment: None, validity: None };
+                let control = InvestigationCaseState::create(
+                    record.investigation_id.clone(),
+                    record.mission_id.clone(),
+                    &record
+                        .hypotheses
+                        .iter()
+                        .map(|h| h.hypothesis_id.clone())
+                        .collect(),
+                )
+                .map_err(|_| InvestigationError::InvalidRecord)?;
+                let next = InvestigationRevision {
+                    record: record.as_ref().clone(),
+                    control,
+                    principal: principal.clone(),
+                    author_session: session_id.clone(),
+                    privacy_class: privacy_class.clone(),
+                    predecessor: None,
+                    changed_at: now,
+                    assessment: None,
+                    validity: None,
+                };
                 let bytes = self.reserve(&next)?;
-                self.entries.insert(record.investigation_id.clone(), Entry {
-                    opening, head: next.clone(), history: Vec::new(),
-                });
+                self.entries.insert(
+                    record.investigation_id.clone(),
+                    Entry {
+                        opening,
+                        head: next.clone(),
+                        history: Vec::new(),
+                    },
+                );
                 self.revisions += 1;
                 self.retained_bytes += bytes;
                 Ok(next)
             }
             InvestigationCommand::Inspect { case_id, revision } => {
-                let current = self.entries.get(case_id).ok_or(InvestigationError::Unavailable)?;
+                let current = self
+                    .entries
+                    .get(case_id)
+                    .ok_or(InvestigationError::Unavailable)?;
                 Self::visible(&current.head, session)?;
                 match revision {
                     None => Ok(current.head.clone()),
                     Some(root) if current.head.digest() == *root => Ok(current.head.clone()),
-                    Some(root) => current.history.iter().find(|old| old.digest() == *root)
-                        .cloned().ok_or(InvestigationError::Unavailable),
+                    Some(root) => current
+                        .history
+                        .iter()
+                        .find(|old| old.digest() == *root)
+                        .cloned()
+                        .ok_or(InvestigationError::Unavailable),
                 }
             }
-            InvestigationCommand::Change { case_id, expected, change } => {
-                let current = self.entries.get(case_id).ok_or(InvestigationError::Unavailable)?;
+            InvestigationCommand::Change {
+                case_id,
+                expected,
+                change,
+            } => {
+                let current = self
+                    .entries
+                    .get(case_id)
+                    .ok_or(InvestigationError::Unavailable)?;
                 Self::visible(&current.head, session)?;
-                if current.head.digest() != *expected { return Err(InvestigationError::StaleRevision); }
+                if current.head.digest() != *expected {
+                    return Err(InvestigationError::StaleRevision);
+                }
                 Self::basis(&current.head.record, session, basis)?;
                 let mut next = current.head.clone();
                 apply_change(&mut next, change, now)?;
-                next.record.revision = next.record.revision.checked_add(1)
+                next.record.revision = next
+                    .record
+                    .revision
+                    .checked_add(1)
                     .ok_or(InvestigationError::CounterExhausted)?;
                 next.predecessor = Some(*expected);
                 next.author_session = session_id.clone();
                 next.changed_at = now;
                 let bytes = self.reserve(&next)?;
-                let current = self.entries.get_mut(case_id).ok_or(InvestigationError::Unavailable)?;
+                let current = self
+                    .entries
+                    .get_mut(case_id)
+                    .ok_or(InvestigationError::Unavailable)?;
                 current.history.push(current.head.clone());
                 current.head = next.clone();
                 self.revisions += 1;
@@ -365,17 +446,27 @@ impl ReferenceInvestigationStore {
         }
     }
 
-    fn visible(head: &InvestigationRevision, session: &AgentSession) -> Result<(), InvestigationError> {
-        if head.principal != session.principal_id || head.record.mission_id != session.mission_id
+    fn visible(
+        head: &InvestigationRevision,
+        session: &AgentSession,
+    ) -> Result<(), InvestigationError> {
+        if head.principal != session.principal_id
+            || head.record.mission_id != session.mission_id
             || !session.privacy_scope.contains(&head.privacy_class)
-        { return Err(InvestigationError::Unavailable); }
+        {
+            return Err(InvestigationError::Unavailable);
+        }
         Ok(())
     }
 
-    fn basis(record: &InvestigationState, session: &AgentSession, basis: &ContractBasis)
-        -> Result<(), InvestigationError>
-    {
-        if record.mission_id != session.mission_id { return Err(InvestigationError::Unavailable); }
+    fn basis(
+        record: &InvestigationState,
+        session: &AgentSession,
+        basis: &ContractBasis,
+    ) -> Result<(), InvestigationError> {
+        if record.mission_id != session.mission_id {
+            return Err(InvestigationError::Unavailable);
+        }
         if &record.contract_basis != basis || record.basis_anchor != session.current_anchor {
             return Err(InvestigationError::StaleBasis);
         }
@@ -383,35 +474,63 @@ impl ReferenceInvestigationStore {
     }
 
     fn reserve(&self, next: &InvestigationRevision) -> Result<usize, InvestigationError> {
-        let bytes = next.try_canonical_bytes().map_err(|_| InvestigationError::InvalidRecord)?.len();
-        if bytes > MAX_INVESTIGATION_BYTES || self.revisions >= self.limits.max_revisions
-            || self.retained_bytes.checked_add(bytes)
+        let bytes = next
+            .try_canonical_bytes()
+            .map_err(|_| InvestigationError::InvalidRecord)?
+            .len();
+        if bytes > MAX_INVESTIGATION_BYTES
+            || self.revisions >= self.limits.max_revisions
+            || self
+                .retained_bytes
+                .checked_add(bytes)
                 .is_none_or(|total| total > self.limits.max_retained_bytes)
-        { return Err(InvestigationError::CapacityExceeded); }
+        {
+            return Err(InvestigationError::CapacityExceeded);
+        }
         Ok(bytes)
     }
 }
 
 fn open_state(state: InvestigationLifecycle) -> bool {
-    matches!(state, InvestigationLifecycle::Draft | InvestigationLifecycle::Active
-        | InvestigationLifecycle::AwaitingEvidence | InvestigationLifecycle::AwaitingApproval
-        | InvestigationLifecycle::Blocked | InvestigationLifecycle::Indeterminate)
+    matches!(
+        state,
+        InvestigationLifecycle::Draft
+            | InvestigationLifecycle::Active
+            | InvestigationLifecycle::AwaitingEvidence
+            | InvestigationLifecycle::AwaitingApproval
+            | InvestigationLifecycle::Blocked
+            | InvestigationLifecycle::Indeterminate
+    )
 }
 
-fn apply_change(next: &mut InvestigationRevision, change: &InvestigationChange, now: TimestampNs)
-    -> Result<(), InvestigationError>
-{
+fn apply_change(
+    next: &mut InvestigationRevision,
+    change: &InvestigationChange,
+    now: TimestampNs,
+) -> Result<(), InvestigationError> {
     use InvestigationLifecycle as L;
-    if next.record.state == L::Closed { return Err(InvestigationError::InvalidTransition); }
-    let late_allowed = matches!(change, InvestigationChange::SetState {
-        state: L::Indeterminate | L::Cancelled | L::Closed, ..
-    });
+    if next.record.state == L::Closed {
+        return Err(InvestigationError::InvalidTransition);
+    }
+    let late_allowed = matches!(
+        change,
+        InvestigationChange::SetState {
+            state: L::Indeterminate | L::Cancelled | L::Closed,
+            ..
+        }
+    );
     if now.0 >= next.record.decision_deadline_ns && !late_allowed {
         return Err(InvestigationError::DeadlineElapsed);
     }
     match change {
-        InvestigationChange::SetState { state: L::Closed, reason } => {
-            if !matches!(next.record.state, L::Resolved | L::Refuted | L::Cancelled | L::Indeterminate) {
+        InvestigationChange::SetState {
+            state: L::Closed,
+            reason,
+        } => {
+            if !matches!(
+                next.record.state,
+                L::Resolved | L::Refuted | L::Cancelled | L::Indeterminate
+            ) {
                 return Err(InvestigationError::InvalidTransition);
             }
             next.record.state = L::Closed;
@@ -419,64 +538,129 @@ fn apply_change(next: &mut InvestigationRevision, change: &InvestigationChange, 
         }
         _ if !open_state(next.record.state) => return Err(InvestigationError::InvalidTransition),
         InvestigationChange::Activate => {
-            if next.record.state == L::Active { return Err(InvestigationError::InvalidTransition); }
+            if next.record.state == L::Active {
+                return Err(InvestigationError::InvalidTransition);
+            }
             next.record.state = L::Active;
         }
-        InvestigationChange::Cite { hypothesis, evidence, contradicts } => {
-            let h = next.record.hypotheses.iter_mut().find(|h| &h.hypothesis_id == hypothesis)
+        InvestigationChange::Cite {
+            hypothesis,
+            evidence,
+            contradicts,
+        } => {
+            let h = next
+                .record
+                .hypotheses
+                .iter_mut()
+                .find(|h| &h.hypothesis_id == hypothesis)
                 .ok_or(InvestigationError::InvalidRecord)?;
-            let (roots, limit) = if *contradicts { (&mut h.contradictions, 128) }
-                else { (&mut h.evidence, 256) };
+            let (roots, limit) = if *contradicts {
+                (&mut h.contradictions, 128)
+            } else {
+                (&mut h.evidence, 256)
+            };
             if !roots.contains(evidence) {
-                if roots.len() >= limit { return Err(InvestigationError::CapacityExceeded); }
+                if roots.len() >= limit {
+                    return Err(InvestigationError::CapacityExceeded);
+                }
                 roots.push(*evidence);
                 roots.sort();
             }
         }
-        InvestigationChange::Assess { hypothesis, disposition, evidence } => {
-            if next.record.state != L::Active { return Err(InvestigationError::InvalidTransition); }
-            let h = next.record.hypotheses.iter().find(|h| &h.hypothesis_id == hypothesis)
+        InvestigationChange::Assess {
+            hypothesis,
+            disposition,
+            evidence,
+        } => {
+            if next.record.state != L::Active {
+                return Err(InvestigationError::InvalidTransition);
+            }
+            let h = next
+                .record
+                .hypotheses
+                .iter()
+                .find(|h| &h.hypothesis_id == hypothesis)
                 .ok_or(InvestigationError::InvalidRecord)?;
             let valid = match disposition {
                 HypothesisDisposition::Supported => h.evidence.contains(evidence),
-                HypothesisDisposition::Disfavored | HypothesisDisposition::Refuted => h.contradictions.contains(evidence),
+                HypothesisDisposition::Disfavored | HypothesisDisposition::Refuted => {
+                    h.contradictions.contains(evidence)
+                }
                 _ => false,
             };
-            if !valid || next.validity.as_ref().is_some_and(|validity| {
-                validity.needs_readmission(hypothesis, *evidence,
-                    *disposition != HypothesisDisposition::Supported)
-            }) { return Err(InvestigationError::EvidenceRequired); }
-            next.control.advance_hypothesis(hypothesis, *disposition)
+            if !valid
+                || next.validity.as_ref().is_some_and(|validity| {
+                    validity.needs_readmission(
+                        hypothesis,
+                        *evidence,
+                        *disposition != HypothesisDisposition::Supported,
+                    )
+                })
+            {
+                return Err(InvestigationError::EvidenceRequired);
+            }
+            next.control
+                .advance_hypothesis(hypothesis, *disposition)
                 .map_err(|_| InvestigationError::InvalidTransition)?;
             next.assessment = Some(*evidence);
         }
         InvestigationChange::SetState { state, reason } => {
-            if !matches!(state, L::AwaitingEvidence | L::AwaitingApproval | L::Blocked
-                | L::Indeterminate | L::Cancelled) || *state == next.record.state
-            { return Err(InvestigationError::InvalidTransition); }
+            if !matches!(
+                state,
+                L::AwaitingEvidence
+                    | L::AwaitingApproval
+                    | L::Blocked
+                    | L::Indeterminate
+                    | L::Cancelled
+            ) || *state == next.record.state
+            {
+                return Err(InvestigationError::InvalidTransition);
+            }
             next.record.state = *state;
             next.assessment = Some(*reason);
         }
-        InvestigationChange::Conclude { refuted, stop_rule, assessment, residual_unknowns } => {
-            if next.record.state != L::Active { return Err(InvestigationError::InvalidTransition); }
-            let mut unknowns: BTreeSet<String> = next.record.unknowns.iter()
-                .map(|s| s.statement_id.clone()).collect();
+        InvestigationChange::Conclude {
+            refuted,
+            stop_rule,
+            assessment,
+            residual_unknowns,
+        } => {
+            if next.record.state != L::Active {
+                return Err(InvestigationError::InvalidTransition);
+            }
+            let mut unknowns: BTreeSet<String> = next
+                .record
+                .unknowns
+                .iter()
+                .map(|s| s.statement_id.clone())
+                .collect();
             if next.validity.is_some() {
-                unknowns.extend(next.record.knowns.iter()
-                    .filter(|s| s.epistemic_state == fss_core::KnowledgeState::Stale)
-                    .map(|s| s.statement_id.clone()));
+                unknowns.extend(
+                    next.record
+                        .knowns
+                        .iter()
+                        .filter(|s| s.epistemic_state == fss_core::KnowledgeState::Stale)
+                        .map(|s| s.statement_id.clone()),
+                );
             }
             if !next.record.stop_rules.contains(stop_rule) || residual_unknowns != &unknowns {
                 return Err(InvestigationError::ResidualsRequired);
             }
             let dispositions = next.control.hypotheses();
             let valid = if *refuted {
-                dispositions.values().all(|d| *d == HypothesisDisposition::Refuted)
+                dispositions
+                    .values()
+                    .all(|d| *d == HypothesisDisposition::Refuted)
             } else {
-                dispositions.values().any(|d| *d == HypothesisDisposition::Supported)
+                dispositions
+                    .values()
+                    .any(|d| *d == HypothesisDisposition::Supported)
             };
-            if !valid { return Err(InvestigationError::UnresolvedAlternatives); }
-            next.control.stop(HypothesisDisposition::Resolved)
+            if !valid {
+                return Err(InvestigationError::UnresolvedAlternatives);
+            }
+            next.control
+                .stop(HypothesisDisposition::Resolved)
                 .map_err(|_| InvestigationError::UnresolvedAlternatives)?;
             next.record.state = if *refuted { L::Refuted } else { L::Resolved };
             next.assessment = Some(*assessment);

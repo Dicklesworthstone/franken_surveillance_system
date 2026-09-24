@@ -142,17 +142,16 @@ fn test_01_h264_clean_file_import() -> Result<(), Box<dyn Error>> {
     for (i, seg) in receipt.manifest.segment_spans.iter().enumerate() {
         let capsule = &receipt.capsules[i];
         let object_id = format!("object:capsule:{}", capsule.capsule_id.as_str());
-        let payload_digest = deployment.effects_and_ledger().1
+        let payload_digest = deployment
+            .effects_and_ledger()
+            .1
             .batches()
             .iter()
             .flat_map(|batch| &batch.deltas)
             .find(|delta| delta.family == "sensor_capsule" && delta.object_id.as_str() == object_id)
             .ok_or("capsule must have a published ledger payload")?
             .payload_digest;
-        let capsule_bytes = deployment
-            .publisher()
-            .spool()
-            .read(payload_digest)?;
+        let capsule_bytes = deployment.publisher().spool().read(payload_digest)?;
         let mut decoder = CanonicalDecoder::new(&capsule_bytes);
         let decoded = SensorCapsule::decode_canonical(&mut decoder)?;
         assert_eq!(&decoded.capsule_id, &seg.capsule_id);
@@ -521,7 +520,10 @@ fn test_11_time_truth_unspecified_vs_specified() -> Result<(), Box<dyn Error>> {
     .with_capture_hint(negative_hint);
     match FileIngestAdapter::ingest(request_negative, &cx, &mut deployment) {
         Err(FileIngestError::InvalidCaptureHint { detail }) => {
-            assert!(detail.contains("non-negative"), "unexpected detail: {detail}");
+            assert!(
+                detail.contains("non-negative"),
+                "unexpected detail: {detail}"
+            );
         }
         other => return Err(format!("expected InvalidCaptureHint, got {other:?}").into()),
     }
@@ -671,7 +673,8 @@ fn test_m01_kill_sniffer_annexb_detection() -> Result<(), Box<dyn std::error::Er
 #[test]
 fn test_m02_kill_sniffer_jpeg_detection() -> Result<(), Box<dyn std::error::Error>> {
     let bytes = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
-    let (detected, _) = sniff_format(&bytes).map_err(|e| format!("must detect JpegStream: {e:?}"))?;
+    let (detected, _) =
+        sniff_format(&bytes).map_err(|e| format!("must detect JpegStream: {e:?}"))?;
     assert_eq!(detected, DetectedFileFormat::JpegStream);
     Ok(())
 }
@@ -768,7 +771,10 @@ fn test_15_zero_chunk_bytes_refused_typed() -> Result<(), Box<dyn Error>> {
 
     match FileIngestAdapter::ingest(request, &cx, &mut deployment) {
         Err(FileIngestError::InvalidLimits { detail }) => {
-            assert!(detail.contains("chunk_bytes"), "unexpected detail: {detail}");
+            assert!(
+                detail.contains("chunk_bytes"),
+                "unexpected detail: {detail}"
+            );
         }
         other => return Err(format!("expected InvalidLimits, got {other:?}").into()),
     }
@@ -784,8 +790,7 @@ fn test_16_file_too_large_for_limit_refused_typed() -> Result<(), Box<dyn Error>
 
     let dep_dir = temp_deployment_dir("bounded-read")?;
     let cx = test_cx("bounded-read")?;
-    let mut deployment =
-        ReferenceDeployment::open(&dep_dir, "site:deploy:bounded-read", &cx)?;
+    let mut deployment = ReferenceDeployment::open(&dep_dir, "site:deploy:bounded-read", &cx)?;
 
     // max_file_bytes below the fixture size: refusal must come from the stat check
     // (FileTooLarge) BEFORE any read; the read itself must be bounded by that limit.

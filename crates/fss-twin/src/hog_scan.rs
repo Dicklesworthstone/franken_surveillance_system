@@ -8,7 +8,9 @@
 mod resize;
 
 use crate::foreground::ForegroundSource;
-use crate::hog::{HogError, HogFrame, HogLevel, HogModel, HOG_WINDOW, MAX_HOG_PIXELS, hog_recipe_digest};
+use crate::hog::{
+    HOG_WINDOW, HogError, HogFrame, HogLevel, HogModel, MAX_HOG_PIXELS, hog_recipe_digest,
+};
 use fss_core::ContentDigest;
 use fss_geometry::WorkBudget;
 
@@ -41,11 +43,16 @@ pub struct ScanPolicy {
 }
 impl ScanPolicy {
     fn validate(self) -> Result<(), HogError> {
-        if self.stride.iter().any(|v| *v == 0 || *v > 4096 || *v % 8 != 0)
-            || !self.minimum_margin.is_finite() || self.minimum_margin.abs() > 1e10
+        if self
+            .stride
+            .iter()
+            .any(|v| *v == 0 || *v > 4096 || *v % 8 != 0)
+            || !self.minimum_margin.is_finite()
+            || self.minimum_margin.abs() > 1e10
             || !(1..=1_000_000).contains(&self.suppression_iou_ppm)
             || !(1..=MAX_SCAN_WINDOWS).contains(&self.maximum_windows)
-            || !(1..=MAX_SCAN_CANDIDATES).contains(&self.maximum_candidates) {
+            || !(1..=MAX_SCAN_CANDIDATES).contains(&self.maximum_candidates)
+        {
             return Err(HogError::InvalidInput);
         }
         Ok(())
@@ -110,25 +117,43 @@ pub struct HogScan {
 }
 impl HogScan {
     /// Exact original source and capture basis, not the resampled pixel identity.
-    pub fn source(&self) -> ForegroundSource { self.source }
+    pub fn source(&self) -> ForegroundSource {
+        self.source
+    }
     /// Original full-image permission identity.
-    pub fn mask_digest(&self) -> [u8; 32] { self.mask }
+    pub fn mask_digest(&self) -> [u8; 32] {
+        self.mask
+    }
     /// Actual learned coefficients, native recipe and owner-provided provenance identity.
-    pub fn model_digest(&self) -> [u8; 32] { self.model }
+    pub fn model_digest(&self) -> [u8; 32] {
+        self.model
+    }
     /// Complete model/scale/preprocessing/threshold/suppression generation.
-    pub fn generation(&self) -> [u8; 32] { self.generation }
+    pub fn generation(&self) -> [u8; 32] {
+        self.generation
+    }
     /// Exact normalized settings used for this scan.
-    pub fn policy(&self) -> ScanPolicy { self.policy }
+    pub fn policy(&self) -> ScanPolicy {
+        self.policy
+    }
     /// All declared grids in descending pixel-count/dimension order.
-    pub fn levels(&self) -> &[ScanLevelReceipt] { &self.levels }
+    pub fn levels(&self) -> &[ScanLevelReceipt] {
+        &self.levels
+    }
     /// Every window, not only positives or survivors.
-    pub fn windows(&self) -> &[ScoredWindow] { &self.windows }
+    pub fn windows(&self) -> &[ScoredWindow] {
+        &self.windows
+    }
     /// Selected proposals in stable report order. Alternatives remain in windows().
     pub fn selected(&self) -> impl Iterator<Item = &ScoredWindow> {
-        self.windows.iter().filter(|w| w.disposition == WindowDisposition::Selected)
+        self.windows
+            .iter()
+            .filter(|w| w.disposition == WindowDisposition::Selected)
     }
     /// Complete internal derivation fingerprint; not a durable ledger publication.
-    pub fn digest(&self) -> [u8; 32] { self.digest }
+    pub fn digest(&self) -> [u8; 32] {
+        self.digest
+    }
 }
 
 /// Scan actual luma with exact local learned weights. One grid/cache is live at a time.
@@ -137,25 +162,45 @@ impl HogScan {
 /// scales, negative margins and suppressed windows cannot supply negative evidence.
 /// Native HOG/OpenCV numerical differences still require independent model validation.
 #[allow(clippy::too_many_arguments)]
-pub fn scan_hog(source: ForegroundSource, pixels: &[u8], allowed: &[u8], model: &HogModel,
-    levels: &[ScanLevel], mut policy: ScanPolicy, budget: &mut WorkBudget<'_>) -> Result<HogScan, HogError> {
+pub fn scan_hog(
+    source: ForegroundSource,
+    pixels: &[u8],
+    allowed: &[u8],
+    model: &HogModel,
+    levels: &[ScanLevel],
+    mut policy: ScanPolicy,
+    budget: &mut WorkBudget<'_>,
+) -> Result<HogScan, HogError> {
     budget.charge(1)?;
     policy.validate()?;
-    if policy.minimum_margin == 0.0 { policy.minimum_margin = 0.0; }
-    if !(1..=MAX_SCAN_LEVELS).contains(&levels.len()) { return Err(HogError::Limit); }
+    if policy.minimum_margin == 0.0 {
+        policy.minimum_margin = 0.0;
+    }
+    if !(1..=MAX_SCAN_LEVELS).contains(&levels.len()) {
+        return Err(HogError::Limit);
+    }
     let original = HogFrame::new(source, pixels, allowed, budget)?;
     let mut ordered = reserve(levels.len())?;
     ordered.extend_from_slice(levels);
     budget.charge((levels.len() * levels.len()) as u64)?;
-    ordered.sort_unstable_by_key(|l| std::cmp::Reverse((u64::from(l.dimensions[0])
-        * u64::from(l.dimensions[1]), l.dimensions)));
+    ordered.sort_unstable_by_key(|l| {
+        std::cmp::Reverse((
+            u64::from(l.dimensions[0]) * u64::from(l.dimensions[1]),
+            l.dimensions,
+        ))
+    });
     let mut total = 0_usize;
     for (i, level) in ordered.iter().enumerate() {
         count(level.dimensions)?;
-        if i > 0 && ordered[i - 1] == *level { return Err(HogError::InvalidInput); }
-        total = total.checked_add(window_count(level.dimensions, policy.stride))
+        if i > 0 && ordered[i - 1] == *level {
+            return Err(HogError::InvalidInput);
+        }
+        total = total
+            .checked_add(window_count(level.dimensions, policy.stride))
             .ok_or(HogError::Limit)?;
-        if total > policy.maximum_windows { return Err(HogError::Limit); }
+        if total > policy.maximum_windows {
+            return Err(HogError::Limit);
+        }
     }
     let generation = generation(model, &ordered, policy, budget)?;
     let mut receipts = reserve(ordered.len())?;
@@ -163,72 +208,129 @@ pub fn scan_hog(source: ForegroundSource, pixels: &[u8], allowed: &[u8], model: 
     let mut positives = reserve(policy.maximum_candidates)?;
     for (index, level) in ordered.iter().enumerate() {
         budget.charge(1)?;
-        let resized = if level.dimensions == source.image.dimensions { None } else {
-            Some(resize::resample(source, pixels, allowed, level.dimensions, budget)?)
+        let resized = if level.dimensions == source.image.dimensions {
+            None
+        } else {
+            Some(resize::resample(
+                source,
+                pixels,
+                allowed,
+                level.dimensions,
+                budget,
+            )?)
         };
         // This verification also binds zeroed denied pixels and the new image domain.
-        let derived = resized.as_ref().map(|r|
-            HogFrame::new(r.source, &r.pixels, &r.allowed, budget)).transpose()?;
+        let derived = resized
+            .as_ref()
+            .map(|r| HogFrame::new(r.source, &r.pixels, &r.allowed, budget))
+            .transpose()?;
         let frame = derived.as_ref().unwrap_or(&original);
         let n = window_count(level.dimensions, policy.stride);
-        receipts.push(ScanLevelReceipt { dimensions: level.dimensions, source: frame.source(),
-            mask_digest: frame.mask_digest(), windows: n });
-        if n == 0 { continue; }
+        receipts.push(ScanLevelReceipt {
+            dimensions: level.dimensions,
+            source: frame.source(),
+            mask_digest: frame.mask_digest(),
+            windows: n,
+        });
+        if n == 0 {
+            continue;
+        }
         let cache = HogLevel::compute(frame, budget)?;
         for y in (0..=level.dimensions[1] - HOG_WINDOW[1]).step_by(policy.stride[1] as usize) {
             for x in (0..=level.dimensions[0] - HOG_WINDOW[0]).step_by(policy.stride[0] as usize) {
                 budget.charge(16)?;
                 let margin = cache.score(model, [x, y], budget)?;
-                if margin.is_some_and(|v| !v.is_finite()) { return Err(HogError::InvalidWeight); }
+                if margin.is_some_and(|v| !v.is_finite()) {
+                    return Err(HogError::InvalidWeight);
+                }
                 let disposition = match margin {
                     None => WindowDisposition::Unobservable,
-                    Some(value) if value < policy.minimum_margin => WindowDisposition::BelowThreshold,
+                    Some(value) if value < policy.minimum_margin => {
+                        WindowDisposition::BelowThreshold
+                    }
                     Some(_) => {
-                        if positives.len() == policy.maximum_candidates { return Err(HogError::Limit); }
+                        if positives.len() == policy.maximum_candidates {
+                            return Err(HogError::Limit);
+                        }
                         positives.push(windows.len());
                         WindowDisposition::Selected
                     }
                 };
-                let (source_min, source_max) = source_bounds([x, y], level.dimensions, source.image.dimensions);
-                windows.push(ScoredWindow { id: windows.len() as u64 + 1, level: index,
-                    origin: [x, y], source_min, source_max, margin, disposition });
+                let (source_min, source_max) =
+                    source_bounds([x, y], level.dimensions, source.image.dimensions);
+                windows.push(ScoredWindow {
+                    id: windows.len() as u64 + 1,
+                    level: index,
+                    origin: [x, y],
+                    source_min,
+                    source_max,
+                    margin,
+                    disposition,
+                });
             }
         }
     }
     budget.charge((positives.len() * positives.len()) as u64)?;
     // Stable source-grid order breaks equal margins, independent of supplied scale order.
-    positives.sort_unstable_by(|a, b| windows[*b].margin.unwrap_or(f64::NEG_INFINITY)
-        .total_cmp(&windows[*a].margin.unwrap_or(f64::NEG_INFINITY)).then_with(|| a.cmp(b)));
+    positives.sort_unstable_by(|a, b| {
+        windows[*b]
+            .margin
+            .unwrap_or(f64::NEG_INFINITY)
+            .total_cmp(&windows[*a].margin.unwrap_or(f64::NEG_INFINITY))
+            .then_with(|| a.cmp(b))
+    });
     for (position, &candidate) in positives.iter().enumerate() {
         for &kept in &positives[..position] {
             budget.charge(16)?;
             if windows[kept].disposition == WindowDisposition::Selected
-                && overlaps(windows[candidate], windows[kept], policy.suppression_iou_ppm) {
-                windows[candidate].disposition = WindowDisposition::Suppressed { by: windows[kept].id };
+                && overlaps(
+                    windows[candidate],
+                    windows[kept],
+                    policy.suppression_iou_ppm,
+                )
+            {
+                windows[candidate].disposition = WindowDisposition::Suppressed {
+                    by: windows[kept].id,
+                };
                 break;
             }
         }
     }
-    let mut report = HogScan { source, mask: original.mask_digest(), model: model.digest(),
-        generation, policy, levels: receipts, windows, digest: [0; 32] };
+    let mut report = HogScan {
+        source,
+        mask: original.mask_digest(),
+        model: model.digest(),
+        generation,
+        policy,
+        levels: receipts,
+        windows,
+        digest: [0; 32],
+    };
     report.digest = report_digest(&report, budget)?;
     budget.charge(0)?;
     Ok(report)
 }
 
 fn count(dimensions: [u32; 2]) -> Result<usize, HogError> {
-    if dimensions.iter().any(|n| *n == 0 || *n > 4096) { return Err(HogError::InvalidInput); }
+    if dimensions.iter().any(|n| *n == 0 || *n > 4096) {
+        return Err(HogError::InvalidInput);
+    }
     let n = dimensions[0] as usize * dimensions[1] as usize;
-    if n > MAX_HOG_PIXELS { return Err(HogError::Limit); }
+    if n > MAX_HOG_PIXELS {
+        return Err(HogError::Limit);
+    }
     Ok(n)
 }
 fn window_count(dimensions: [u32; 2], stride: [u32; 2]) -> usize {
-    if dimensions[0] < HOG_WINDOW[0] || dimensions[1] < HOG_WINDOW[1] { return 0; }
+    if dimensions[0] < HOG_WINDOW[0] || dimensions[1] < HOG_WINDOW[1] {
+        return 0;
+    }
     ((dimensions[0] - HOG_WINDOW[0]) / stride[0] + 1) as usize
         * ((dimensions[1] - HOG_WINDOW[1]) / stride[1] + 1) as usize
 }
 fn source_bounds(origin: [u32; 2], grid: [u32; 2], source: [u32; 2]) -> ([u32; 2], [u32; 2]) {
-    let mut min = [0; 2]; let mut max = [0; 2];
+    let mut min = [0; 2];
+    let mut max = [0; 2];
     for axis in 0..2 {
         let divisor = u64::from(grid[axis]);
         min[axis] = (u64::from(origin[axis]) * u64::from(source[axis]) / divisor) as u32;
@@ -238,32 +340,77 @@ fn source_bounds(origin: [u32; 2], grid: [u32; 2], source: [u32; 2]) -> ([u32; 2
     (min, max)
 }
 fn overlaps(a: ScoredWindow, b: ScoredWindow, threshold: u32) -> bool {
-    let intersection = (0..2).map(|i| u64::from(a.source_max[i].min(b.source_max[i])
-        .saturating_sub(a.source_min[i].max(b.source_min[i])))).product::<u64>();
-    let area = |w: ScoredWindow| (0..2).map(|i| u64::from(w.source_max[i] - w.source_min[i])).product::<u64>();
+    let intersection = (0..2)
+        .map(|i| {
+            u64::from(
+                a.source_max[i]
+                    .min(b.source_max[i])
+                    .saturating_sub(a.source_min[i].max(b.source_min[i])),
+            )
+        })
+        .product::<u64>();
+    let area = |w: ScoredWindow| {
+        (0..2)
+            .map(|i| u64::from(w.source_max[i] - w.source_min[i]))
+            .product::<u64>()
+    };
     let union = area(a) + area(b) - intersection;
     intersection * 1_000_000 >= union * u64::from(threshold)
 }
 fn reserve<T>(n: usize) -> Result<Vec<T>, HogError> {
-    let mut v = Vec::new(); v.try_reserve_exact(n).map_err(|_| HogError::Limit)?; Ok(v)
+    let mut v = Vec::new();
+    v.try_reserve_exact(n).map_err(|_| HogError::Limit)?;
+    Ok(v)
 }
-fn put(bytes: &mut Vec<u8>, n: u64) { bytes.extend_from_slice(&n.to_le_bytes()); }
+fn put(bytes: &mut Vec<u8>, n: u64) {
+    bytes.extend_from_slice(&n.to_le_bytes());
+}
 fn encode_source(bytes: &mut Vec<u8>, source: ForegroundSource) {
-    for id in [source.image.exposure, source.image.pixels, source.image.image_domain, source.calibration] {
+    for id in [
+        source.image.exposure,
+        source.image.pixels,
+        source.image.image_domain,
+        source.calibration,
+    ] {
         bytes.extend_from_slice(&id);
     }
-    for n in [source.camera, source.clock, source.capture[0], source.capture[1],
-        u64::from(source.image.dimensions[0]), u64::from(source.image.dimensions[1])] { put(bytes, n); }
+    for n in [
+        source.camera,
+        source.clock,
+        source.capture[0],
+        source.capture[1],
+        u64::from(source.image.dimensions[0]),
+        u64::from(source.image.dimensions[1]),
+    ] {
+        put(bytes, n);
+    }
 }
-fn generation(model: &HogModel, levels: &[ScanLevel], p: ScanPolicy,
-    budget: &mut WorkBudget<'_>) -> Result<[u8; 32], HogError> {
+fn generation(
+    model: &HogModel,
+    levels: &[ScanLevel],
+    p: ScanPolicy,
+    budget: &mut WorkBudget<'_>,
+) -> Result<[u8; 32], HogError> {
     let mut bytes = reserve(1024)?;
     bytes.extend_from_slice(b"fss/hog-scan/generation/1\0bilinear-centers-rational-half-up;nonzero-permission;floor-ceil-source-box;inclusive-iou;score-desc-id-ties\0");
-    bytes.extend_from_slice(&hog_recipe_digest()); bytes.extend_from_slice(&model.digest());
-    for n in [u64::from(p.stride[0]), u64::from(p.stride[1]), p.minimum_margin.to_bits(),
-        u64::from(p.suppression_iou_ppm), p.maximum_windows as u64, p.maximum_candidates as u64,
-        levels.len() as u64] { put(&mut bytes, n); }
-    for level in levels { for n in level.dimensions { put(&mut bytes, u64::from(n)); } }
+    bytes.extend_from_slice(&hog_recipe_digest());
+    bytes.extend_from_slice(&model.digest());
+    for n in [
+        u64::from(p.stride[0]),
+        u64::from(p.stride[1]),
+        p.minimum_margin.to_bits(),
+        u64::from(p.suppression_iou_ppm),
+        p.maximum_windows as u64,
+        p.maximum_candidates as u64,
+        levels.len() as u64,
+    ] {
+        put(&mut bytes, n);
+    }
+    for level in levels {
+        for n in level.dimensions {
+            put(&mut bytes, u64::from(n));
+        }
+    }
     budget.charge(bytes.len() as u64)?;
     Ok(ContentDigest::sha256(&bytes).bytes())
 }
@@ -272,25 +419,41 @@ fn report_digest(report: &HogScan, budget: &mut WorkBudget<'_>) -> Result<[u8; 3
     budget.charge(size as u64)?;
     let mut bytes = reserve(size)?;
     bytes.extend_from_slice(b"fss/hog-scan/report/1\0");
-    bytes.extend_from_slice(&report.generation); bytes.extend_from_slice(&report.mask);
-    encode_source(&mut bytes, report.source); put(&mut bytes, report.levels.len() as u64);
+    bytes.extend_from_slice(&report.generation);
+    bytes.extend_from_slice(&report.mask);
+    encode_source(&mut bytes, report.source);
+    put(&mut bytes, report.levels.len() as u64);
     for level in &report.levels {
         budget.charge(1)?;
-        encode_source(&mut bytes, level.source); bytes.extend_from_slice(&level.mask_digest);
+        encode_source(&mut bytes, level.source);
+        bytes.extend_from_slice(&level.mask_digest);
         put(&mut bytes, level.windows as u64);
     }
     put(&mut bytes, report.windows.len() as u64);
     for window in &report.windows {
         budget.charge(1)?;
-        put(&mut bytes, window.id); put(&mut bytes, window.level as u64);
-        for n in window.origin.into_iter().chain(window.source_min).chain(window.source_max) { put(&mut bytes, u64::from(n)); }
+        put(&mut bytes, window.id);
+        put(&mut bytes, window.level as u64);
+        for n in window
+            .origin
+            .into_iter()
+            .chain(window.source_min)
+            .chain(window.source_max)
+        {
+            put(&mut bytes, u64::from(n));
+        }
         bytes.push(u8::from(window.margin.is_some()));
-        if let Some(value) = window.margin { put(&mut bytes, value.to_bits()); }
+        if let Some(value) = window.margin {
+            put(&mut bytes, value.to_bits());
+        }
         match window.disposition {
             WindowDisposition::Unobservable => bytes.push(0),
             WindowDisposition::BelowThreshold => bytes.push(1),
             WindowDisposition::Selected => bytes.push(2),
-            WindowDisposition::Suppressed { by } => { bytes.push(3); put(&mut bytes, by); }
+            WindowDisposition::Suppressed { by } => {
+                bytes.push(3);
+                put(&mut bytes, by);
+            }
         }
     }
     budget.charge(bytes.len() as u64)?;

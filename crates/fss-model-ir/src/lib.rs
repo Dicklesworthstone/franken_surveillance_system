@@ -27,8 +27,8 @@ pub use canonical::{
     encode_canonical_model_ir,
 };
 pub use decode::{
-    MAX_MODEL_IR_BYTES, MAX_MODEL_IR_ITEMS, MAX_MODEL_IR_TEXT_BYTES,
-    ModelIrDecodeError, decode_canonical_model_ir,
+    MAX_MODEL_IR_BYTES, MAX_MODEL_IR_ITEMS, MAX_MODEL_IR_TEXT_BYTES, ModelIrDecodeError,
+    decode_canonical_model_ir,
 };
 pub use error::ModelIrError;
 pub use graph::{ModelIrGraph, ModelIrGraphBuilder, ModelIrVersion, UnsupportedVersion};

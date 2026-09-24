@@ -38,11 +38,15 @@ impl std::error::Error for SessionSourceHydrationError {
 }
 
 impl From<ReferenceSessionError> for SessionSourceHydrationError {
-    fn from(error: ReferenceSessionError) -> Self { Self::Session(error) }
+    fn from(error: ReferenceSessionError) -> Self {
+        Self::Session(error)
+    }
 }
 
 impl From<SourceHydrationError> for SessionSourceHydrationError {
-    fn from(error: SourceHydrationError) -> Self { Self::Source(error) }
+    fn from(error: SourceHydrationError) -> Self {
+        Self::Source(error)
+    }
 }
 
 impl ReferenceSessionStore {
@@ -65,7 +69,9 @@ impl ReferenceSessionStore {
         now: TimestampNs,
     ) -> Result<HydrationResponse, ReferenceSessionError> {
         self.hydrate_with(principal, alias, request, catalog, now, |catalog| {
-            catalog.hydrate(request, now).map_err(ReferenceSessionError::from)
+            catalog
+                .hydrate(request, now)
+                .map_err(ReferenceSessionError::from)
         })
     }
 
@@ -86,7 +92,9 @@ impl ReferenceSessionStore {
         now: TimestampNs,
     ) -> Result<HydrationResponse, SessionSourceHydrationError> {
         self.hydrate_with(principal, alias, request, catalog, now, |catalog| {
-            catalog.hydrate_from_source(request, reader, now).map_err(Into::into)
+            catalog
+                .hydrate_from_source(request, reader, now)
+                .map_err(Into::into)
         })
     }
 
@@ -107,7 +115,9 @@ impl ReferenceSessionStore {
         now: TimestampNs,
     ) -> Result<HydrationResponse, SessionSourceHydrationError> {
         self.hydrate_with(principal, alias, request, catalog, now, |catalog| {
-            catalog.hydrate_from_local_source(request, publisher, io, now).map_err(Into::into)
+            catalog
+                .hydrate_from_local_source(request, publisher, io, now)
+                .map_err(Into::into)
         })
     }
 

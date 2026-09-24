@@ -13,8 +13,8 @@ use fss_core::{
 };
 
 #[test]
-fn test_cognitive_envelope_binds_registered_operation_and_view(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_cognitive_envelope_binds_registered_operation_and_view()
+-> Result<(), Box<dyn std::error::Error>> {
     let envelope = AgentCognitiveEnvelope::new(
         reference_contract_basis(),
         "request:test:0001",
@@ -63,60 +63,59 @@ fn test_cognitive_envelope_binds_registered_operation_and_view(
     )?;
     assert_eq!(envelope.operation, AgentOperation::Query);
     assert_eq!(envelope.view, AgentView::Case);
-    assert_eq!(
-        envelope.answer_class,
-        CognitiveAnswerClass::BoundedSummary
-    );
+    assert_eq!(envelope.answer_class, CognitiveAnswerClass::BoundedSummary);
     let digest = envelope.envelope_digest();
     // Unregistered operations and views refuse before anything else.
-    assert!(AgentCognitiveEnvelope::new(
-        reference_contract_basis(),
-        "request:x",
-        "response:x",
-        "trace:x",
-        "AOP-999",
-        "answer".to_owned(),
-        "AVIEW-003",
-        CognitiveAnswerClass::DirectFact,
-        LedgerAnchor::genesis("site:fss:cognitive"),
-        EnvelopeEpistemic {
-            propositions: vec![],
-            assumptions: vec![],
-            invalidators: vec![],
-        },
-        EnvelopeCoverage {
-            authorized_domain: vec![],
-            observed_domain: vec![],
-            not_observable_domain: vec![],
-            omitted_count: 0,
-            omission_reasons: vec![],
-            stop_reason: "x".to_owned(),
-        },
-        EnvelopeBudget {
-            requested_json: "{}".to_owned(),
-            consumed_json: "{}".to_owned(),
-            remaining_json: "{}".to_owned(),
-            degraded_dimensions: vec![],
-            marginal_work_declined: vec![],
-        },
-        vec![],
-        vec![],
-        EnvelopeContinuity {
-            cursor: None,
-            reanchor_triggers: vec![],
-            session_capsule_digest: None,
-            unresolved_obligations: vec![],
-        },
-        "decision:x",
-    )
-    .is_err());
+    assert!(
+        AgentCognitiveEnvelope::new(
+            reference_contract_basis(),
+            "request:x",
+            "response:x",
+            "trace:x",
+            "AOP-999",
+            "answer".to_owned(),
+            "AVIEW-003",
+            CognitiveAnswerClass::DirectFact,
+            LedgerAnchor::genesis("site:fss:cognitive"),
+            EnvelopeEpistemic {
+                propositions: vec![],
+                assumptions: vec![],
+                invalidators: vec![],
+            },
+            EnvelopeCoverage {
+                authorized_domain: vec![],
+                observed_domain: vec![],
+                not_observable_domain: vec![],
+                omitted_count: 0,
+                omission_reasons: vec![],
+                stop_reason: "x".to_owned(),
+            },
+            EnvelopeBudget {
+                requested_json: "{}".to_owned(),
+                consumed_json: "{}".to_owned(),
+                remaining_json: "{}".to_owned(),
+                degraded_dimensions: vec![],
+                marginal_work_declined: vec![],
+            },
+            vec![],
+            vec![],
+            EnvelopeContinuity {
+                cursor: None,
+                reanchor_triggers: vec![],
+                session_capsule_digest: None,
+                unresolved_obligations: vec![],
+            },
+            "decision:x",
+        )
+        .is_err()
+    );
     let _ = digest;
     Ok(())
 }
 
 #[test]
-fn test_response_envelope_requires_error_identity_and_binds_operation(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_response_envelope_requires_error_identity_and_binds_operation()
+-> Result<(), Box<dyn std::error::Error>> {
     // An error response without a registered error identity is refused.
     let error = AgentResponseEnvelope::new(
         reference_contract_basis(),

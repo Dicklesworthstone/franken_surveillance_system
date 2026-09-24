@@ -612,7 +612,10 @@ fn compute_row_major_strides(dims: &[usize]) -> Vec<usize> {
 // unsupported. Intermediate outputs are still checked to be F32 during graph preflight.
 fn is_embedding_index_input(graph: &ModelIrGraph, input: &TensorPort) -> bool {
     if !input.dtype().is_integer()
-        || graph.outputs().iter().any(|output| output.name() == input.name())
+        || graph
+            .outputs()
+            .iter()
+            .any(|output| output.name() == input.name())
     {
         return false;
     }
@@ -719,7 +722,9 @@ fn compute_node_macs(
             let port = &out_ports[0];
             (port.shape().num_elements()? as u64)
                 .checked_mul(port.rank() as u64 + 1)
-                .ok_or(ExecError::ArithmeticOverflow { operation: "layout work bound" })
+                .ok_or(ExecError::ArithmeticOverflow {
+                    operation: "layout work bound",
+                })
         }
         OpCode::Squeeze | OpCode::Unsqueeze | OpCode::Concat => {
             Ok(out_ports[0].shape().num_elements()? as u64)
@@ -732,9 +737,16 @@ fn compute_node_macs(
             // A zero-width table still requires checking every supplied index.
             let indices = in_ports[0].shape().num_elements()? as u64;
             let elements = out_ports[0].shape().num_elements()? as u64;
-            indices.checked_mul(2 * in_ports[0].rank() as u64 + 2)
-                .and_then(|work| elements.checked_mul(4).and_then(|copy| work.checked_add(copy)))
-                .ok_or(ExecError::ArithmeticOverflow { operation: "embedding work bound" })
+            indices
+                .checked_mul(2 * in_ports[0].rank() as u64 + 2)
+                .and_then(|work| {
+                    elements
+                        .checked_mul(4)
+                        .and_then(|copy| work.checked_add(copy))
+                })
+                .ok_or(ExecError::ArithmeticOverflow {
+                    operation: "embedding work bound",
+                })
         }
     }
 }
@@ -1037,18 +1049,38 @@ impl ScalarExecutor {
                     &out_ports[0],
                     graph.generation(),
                 )?,
-                OpCode::Transpose | OpCode::Squeeze | OpCode::Unsqueeze
-                | OpCode::Concat | OpCode::Slice => Self::execute_layout(
-                    node, &node_in_tensors, &out_ports[0], graph.generation(), cx,
+                OpCode::Transpose
+                | OpCode::Squeeze
+                | OpCode::Unsqueeze
+                | OpCode::Concat
+                | OpCode::Slice => Self::execute_layout(
+                    node,
+                    &node_in_tensors,
+                    &out_ports[0],
+                    graph.generation(),
+                    cx,
                 )?,
                 OpCode::LayerNorm | OpCode::RMSNorm => Self::execute_normalization(
-                    node, &node_in_tensors, &out_ports[0], graph.generation(), cx,
+                    node,
+                    &node_in_tensors,
+                    &out_ports[0],
+                    graph.generation(),
+                    cx,
                 )?,
                 OpCode::Gelu | OpCode::Silu | OpCode::Tanh => Self::execute_activation(
-                    node, node_in_tensors[0], &out_ports[0], graph.generation(), cx,
+                    node,
+                    node_in_tensors[0],
+                    &out_ports[0],
+                    graph.generation(),
+                    cx,
                 )?,
                 OpCode::Embedding => Self::execute_embedding(
-                    node, node_in_tensors[0], node_in_tensors[1], &out_ports[0], graph.generation(), cx,
+                    node,
+                    node_in_tensors[0],
+                    node_in_tensors[1],
+                    &out_ports[0],
+                    graph.generation(),
+                    cx,
                 )?,
             };
 
@@ -1660,7 +1692,9 @@ impl ScalarExecutor {
                 }
                 let out_dims = output.shape().dims();
                 for flat in 0..count {
-                    if flat % 1024 == 0 { cx.checkpoint("layout:gather")?; }
+                    if flat % 1024 == 0 {
+                        cx.checkpoint("layout:gather")?;
+                    }
                     let mut remainder = flat;
                     let mut offset = 0_usize;
                     for axis in (0..out_dims.len()).rev() {
@@ -1669,14 +1703,25 @@ impl ScalarExecutor {
                         let source_axis = axes[axis];
                         // Multiply coordinates, not whole strides, by slice steps. A huge
                         // step is valid for a singleton output and must not overflow early.
-                        let position = coordinate.checked_mul(steps[source_axis])
+                        let position = coordinate
+                            .checked_mul(steps[source_axis])
                             .and_then(|v| v.checked_add(starts[source_axis]))
                             .and_then(|v| v.checked_mul(strides[source_axis]))
-                            .ok_or(ExecError::ArithmeticOverflow { operation: "layout source offset" })?;
-                        offset = offset.checked_add(position)
-                            .ok_or(ExecError::ArithmeticOverflow { operation: "layout offset sum" })?;
+                            .ok_or(ExecError::ArithmeticOverflow {
+                                operation: "layout source offset",
+                            })?;
+                        offset =
+                            offset
+                                .checked_add(position)
+                                .ok_or(ExecError::ArithmeticOverflow {
+                                    operation: "layout offset sum",
+                                })?;
                     }
-                    values.push(*input.get(offset).ok_or_else(|| layout_mismatch(node, "source offset outside tensor"))?);
+                    values.push(
+                        *input
+                            .get(offset)
+                            .ok_or_else(|| layout_mismatch(node, "source offset outside tensor"))?,
+                    );
                 }
             }
             OpCode::Concat => {
@@ -1693,18 +1738,29 @@ impl ScalarExecutor {
                 let mut sources = Vec::with_capacity(inputs.len());
                 for input in inputs {
                     cx.checkpoint("layout:concat-input")?;
-                    let block = input.shape().dims()[axis].checked_mul(inner)
-                        .ok_or(ExecError::ArithmeticOverflow { operation: "concat block size" })?;
+                    let block = input.shape().dims()[axis].checked_mul(inner).ok_or(
+                        ExecError::ArithmeticOverflow {
+                            operation: "concat block size",
+                        },
+                    )?;
                     sources.push((input.to_vec::<f32>()?, block));
                 }
                 for row in 0..outer {
                     cx.checkpoint("layout:concat-row")?;
                     for (source, block) in &sources {
-                        let start = row.checked_mul(*block)
-                            .ok_or(ExecError::ArithmeticOverflow { operation: "concat block offset" })?;
-                        let end = start.checked_add(*block)
-                            .ok_or(ExecError::ArithmeticOverflow { operation: "concat block end" })?;
-                        let slice = source.get(start..end)
+                        let start =
+                            row.checked_mul(*block)
+                                .ok_or(ExecError::ArithmeticOverflow {
+                                    operation: "concat block offset",
+                                })?;
+                        let end =
+                            start
+                                .checked_add(*block)
+                                .ok_or(ExecError::ArithmeticOverflow {
+                                    operation: "concat block end",
+                                })?;
+                        let slice = source
+                            .get(start..end)
                             .ok_or_else(|| layout_mismatch(node, "concat block outside tensor"))?;
                         for chunk in slice.chunks(1024) {
                             cx.checkpoint("layout:concat-copy")?;
@@ -1713,41 +1769,77 @@ impl ScalarExecutor {
                     }
                 }
             }
-            OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div | OpCode::Relu
-            | OpCode::Gelu | OpCode::Silu | OpCode::Sigmoid | OpCode::Tanh | OpCode::MatMul
-            | OpCode::Reshape | OpCode::LayerNorm | OpCode::RMSNorm | OpCode::Softmax
-            | OpCode::Conv2d | OpCode::MaxPool2d | OpCode::Embedding => {
-                return Err(ExecError::UnsupportedOperator { node_id: node.id().to_owned(), op: node.op() });
+            OpCode::Add
+            | OpCode::Sub
+            | OpCode::Mul
+            | OpCode::Div
+            | OpCode::Relu
+            | OpCode::Gelu
+            | OpCode::Silu
+            | OpCode::Sigmoid
+            | OpCode::Tanh
+            | OpCode::MatMul
+            | OpCode::Reshape
+            | OpCode::LayerNorm
+            | OpCode::RMSNorm
+            | OpCode::Softmax
+            | OpCode::Conv2d
+            | OpCode::MaxPool2d
+            | OpCode::Embedding => {
+                return Err(ExecError::UnsupportedOperator {
+                    node_id: node.id().to_owned(),
+                    op: node.op(),
+                });
             }
         }
-        if values.len() != count { return Err(layout_mismatch(node, "output element count mismatch")); }
+        if values.len() != count {
+            return Err(layout_mismatch(node, "output element count mismatch"));
+        }
         cx.checkpoint("layout:publish")?;
         Tensor::from_values(output.shape().clone(), &values, generation).map_err(ExecError::Tensor)
     }
 }
 
 fn layout_attribute(node: &fss_model_ir::GraphNode, name: &str) -> Result<Vec<usize>, ExecError> {
-    node.attributes().get(name)
-        .ok_or_else(|| ExecError::Ir(ModelIrError::MissingAttribute {
-            node_id: node.id().to_owned(), attr_name: name.to_owned(),
-        }))?
-        .as_usize_list(node.id(), name).map_err(ExecError::Ir)
+    node.attributes()
+        .get(name)
+        .ok_or_else(|| {
+            ExecError::Ir(ModelIrError::MissingAttribute {
+                node_id: node.id().to_owned(),
+                attr_name: name.to_owned(),
+            })
+        })?
+        .as_usize_list(node.id(), name)
+        .map_err(ExecError::Ir)
 }
 
 fn layout_mismatch(node: &fss_model_ir::GraphNode, reason: &str) -> ExecError {
-    ExecError::ShapeMismatch { node_id: node.id().to_owned(), op_id: node.op().stable_id(), reason: reason.to_owned() }
+    ExecError::ShapeMismatch {
+        node_id: node.id().to_owned(),
+        op_id: node.op().stable_id(),
+        reason: reason.to_owned(),
+    }
 }
 
 fn layout_product(dims: &[usize]) -> Result<usize, ExecError> {
-    dims.iter().try_fold(1_usize, |product, &dim| product.checked_mul(dim)
-        .ok_or(ExecError::ArithmeticOverflow { operation: "layout dimension product" }))
+    dims.iter().try_fold(1_usize, |product, &dim| {
+        product
+            .checked_mul(dim)
+            .ok_or(ExecError::ArithmeticOverflow {
+                operation: "layout dimension product",
+            })
+    })
 }
 
 fn layout_strides(dims: &[usize]) -> Result<Vec<usize>, ExecError> {
     let mut strides = vec![1_usize; dims.len()];
     for axis in (0..dims.len().saturating_sub(1)).rev() {
-        strides[axis] = strides[axis + 1].checked_mul(dims[axis + 1])
-            .ok_or(ExecError::ArithmeticOverflow { operation: "layout stride product" })?;
+        strides[axis] =
+            strides[axis + 1]
+                .checked_mul(dims[axis + 1])
+                .ok_or(ExecError::ArithmeticOverflow {
+                    operation: "layout stride product",
+                })?;
     }
     Ok(strides)
 }
@@ -1771,7 +1863,10 @@ fn normalization_width(
     };
     let width = layout_product(&dims)?;
     if dims.is_empty() || width == 0 || !input_dims.ends_with(&dims) {
-        return Err(layout_mismatch(node, "invalid trailing normalization dimensions"));
+        return Err(layout_mismatch(
+            node,
+            "invalid trailing normalization dimensions",
+        ));
     }
     Ok(width)
 }
@@ -1783,13 +1878,24 @@ fn normalization_work(
 ) -> Result<u64, ExecError> {
     let count = output.shape().num_elements()?;
     // Empty tensors do not construct products over their other, potentially huge axes.
-    if count == 0 { return Ok(0); }
-    let width = normalization_width(node, inputs[0].shape().dims(),
-        inputs.get(1).map(|port| port.shape().dims()))?;
-    (count as u64).checked_mul(8)
-        .and_then(|work| (count as u64 / width as u64).checked_mul(4)
-            .and_then(|rows| work.checked_add(rows)))
-        .ok_or(ExecError::ArithmeticOverflow { operation: "normalization work bound" })
+    if count == 0 {
+        return Ok(0);
+    }
+    let width = normalization_width(
+        node,
+        inputs[0].shape().dims(),
+        inputs.get(1).map(|port| port.shape().dims()),
+    )?;
+    (count as u64)
+        .checked_mul(8)
+        .and_then(|work| {
+            (count as u64 / width as u64)
+                .checked_mul(4)
+                .and_then(|rows| work.checked_add(rows))
+        })
+        .ok_or(ExecError::ArithmeticOverflow {
+            operation: "normalization work bound",
+        })
 }
 
 impl ScalarExecutor {
@@ -1806,22 +1912,33 @@ impl ScalarExecutor {
             return Tensor::from_values(output.shape().clone(), &[] as &[f32], generation)
                 .map_err(ExecError::Tensor);
         }
-        let width = normalization_width(node, inputs[0].shape().dims(),
-            inputs.get(1).map(|tensor| tensor.shape().dims()))?;
+        let width = normalization_width(
+            node,
+            inputs[0].shape().dims(),
+            inputs.get(1).map(|tensor| tensor.shape().dims()),
+        )?;
         let epsilon = match node.attributes().get("epsilon") {
             Some(value) => value.as_float(node.id(), "epsilon")?,
             None => 1e-5_f64,
         };
         let centered = node.op() == OpCode::LayerNorm;
         let source = inputs[0].to_vec::<f32>()?;
-        let weight = inputs.get(1).map(|tensor| tensor.to_vec::<f32>()).transpose()?;
-        let bias = inputs.get(2).map(|tensor| tensor.to_vec::<f32>()).transpose()?;
+        let weight = inputs
+            .get(1)
+            .map(|tensor| tensor.to_vec::<f32>())
+            .transpose()?;
+        let bias = inputs
+            .get(2)
+            .map(|tensor| tensor.to_vec::<f32>())
+            .transpose()?;
         let mut values = Vec::with_capacity(count);
         for row in source.chunks(width) {
             let mut sum = 0.0_f64;
             let mut finite = true;
             for (index, &value) in row.iter().enumerate() {
-                if index % 1024 == 0 { cx.checkpoint("normalization:mean")?; }
+                if index % 1024 == 0 {
+                    cx.checkpoint("normalization:mean")?;
+                }
                 finite &= value.is_finite();
                 sum += f64::from(value);
             }
@@ -1829,7 +1946,9 @@ impl ScalarExecutor {
             // NaN bits avoid platform-dependent payload propagation; other rows are independent.
             if !finite {
                 for index in 0..width {
-                    if index % 1024 == 0 { cx.checkpoint("normalization:nonfinite")?; }
+                    if index % 1024 == 0 {
+                        cx.checkpoint("normalization:nonfinite")?;
+                    }
                     values.push(f32::from_bits(0x7fc0_0000));
                 }
                 continue;
@@ -1837,18 +1956,29 @@ impl ScalarExecutor {
             let mean = if centered { sum / width as f64 } else { 0.0 };
             let mut squares = 0.0_f64;
             for (index, &value) in row.iter().enumerate() {
-                if index % 1024 == 0 { cx.checkpoint("normalization:variance")?; }
+                if index % 1024 == 0 {
+                    cx.checkpoint("normalization:variance")?;
+                }
                 let deviation = f64::from(value) - mean;
                 squares += deviation * deviation;
             }
             let divisor = (squares / width as f64 + epsilon).sqrt();
             for (index, &value) in row.iter().enumerate() {
-                if index % 1024 == 0 { cx.checkpoint("normalization:affine")?; }
+                if index % 1024 == 0 {
+                    cx.checkpoint("normalization:affine")?;
+                }
                 let mut normalized = (f64::from(value) - mean) / divisor;
-                if let Some(weight) = &weight { normalized *= f64::from(weight[index]); }
-                if let Some(bias) = &bias { normalized += f64::from(bias[index]); }
-                values.push(if normalized.is_nan() { f32::from_bits(0x7fc0_0000) }
-                    else { normalized as f32 });
+                if let Some(weight) = &weight {
+                    normalized *= f64::from(weight[index]);
+                }
+                if let Some(bias) = &bias {
+                    normalized += f64::from(bias[index]);
+                }
+                values.push(if normalized.is_nan() {
+                    f32::from_bits(0x7fc0_0000)
+                } else {
+                    normalized as f32
+                });
             }
         }
         cx.checkpoint("normalization:publish")?;
@@ -1862,7 +1992,9 @@ impl ScalarExecutor {
 fn activation_exp_negative(x: f64) -> f64 {
     // Callers supply x <= 0. Values below this cutoff cannot contribute to any
     // representable binary32 activation, even after multiplication by a finite F32.
-    if x < -700.0 { return 0.0; }
+    if x < -700.0 {
+        return 0.0;
+    }
     let k = (x * std::f64::consts::LOG2_E - 0.5) as i32;
     let r = x - f64::from(k) * std::f64::consts::LN_2;
     let mut term = 1.0_f64;
@@ -1898,33 +2030,52 @@ fn activation_normal_tail(a: f64) -> f64 {
 }
 
 fn activation_silu(x: f32) -> f32 {
-    if x.is_nan() || x == f32::NEG_INFINITY { return f32::from_bits(0x7fc0_0000); }
-    if x == f32::INFINITY { return x; }
+    if x.is_nan() || x == f32::NEG_INFINITY {
+        return f32::from_bits(0x7fc0_0000);
+    }
+    if x == f32::INFINITY {
+        return x;
+    }
     let value = f64::from(x);
     let tail = activation_exp_negative(-value.abs());
-    (if value >= 0.0 { value / (1.0 + tail) }
-        else { value * tail / (1.0 + tail) }) as f32
+    (if value >= 0.0 {
+        value / (1.0 + tail)
+    } else {
+        value * tail / (1.0 + tail)
+    }) as f32
 }
 
 fn activation_tanh(x: f32) -> f32 {
-    if x.is_nan() { return f32::from_bits(0x7fc0_0000); }
+    if x.is_nan() {
+        return f32::from_bits(0x7fc0_0000);
+    }
     let a = f64::from(x).abs();
     // At this threshold |tanh(x)-x| is below half a binary32 ulp.
     // Preserve signed zeros and subnormals without cancellation in 1-exp(-2a).
-    if a <= 0.0001220703125 { return x; }
-    if a >= 16.0 { return 1.0_f32.copysign(x); }
+    if a <= 0.0001220703125 {
+        return x;
+    }
+    if a >= 16.0 {
+        return 1.0_f32.copysign(x);
+    }
     let tail = activation_exp_negative(-2.0 * a);
     (((1.0 - tail) / (1.0 + tail)) as f32).copysign(x)
 }
 
 fn activation_gelu(x: f32, approximate_tanh: bool) -> f32 {
-    if x.is_nan() || x == f32::NEG_INFINITY { return f32::from_bits(0x7fc0_0000); }
-    if x == f32::INFINITY { return x; }
+    if x.is_nan() || x == f32::NEG_INFINITY {
+        return f32::from_bits(0x7fc0_0000);
+    }
+    if x == f32::INFINITY {
+        return x;
+    }
     let value = f64::from(x);
     let a = value.abs();
     // Beyond this bound either mode rounds to x or signed zero in binary32.
     // Branch before forming powers, avoiding overflow on arbitrary finite inputs.
-    if a >= 16.0 { return if x > 0.0 { x } else { -0.0 }; }
+    if a >= 16.0 {
+        return if x > 0.0 { x } else { -0.0 };
+    }
     let tail = if approximate_tanh {
         let argument = 0.7978845608028654 * (a + 0.044715 * a * a * a);
         let exponential = activation_exp_negative(-2.0 * argument);
@@ -1932,7 +2083,11 @@ fn activation_gelu(x: f32, approximate_tanh: bool) -> f32 {
     } else {
         activation_normal_tail(a)
     };
-    (if x < 0.0 { value * tail } else { value * (1.0 - tail) }) as f32
+    (if x < 0.0 {
+        value * tail
+    } else {
+        value * (1.0 - tail)
+    }) as f32
 }
 
 fn activation_tanh_mode(node: &fss_model_ir::GraphNode) -> Result<bool, ExecError> {
@@ -1942,7 +2097,8 @@ fn activation_tanh_mode(node: &fss_model_ir::GraphNode) -> Result<bool, ExecErro
             "none" => Ok(false),
             "tanh" => Ok(true),
             _ => Err(ExecError::Ir(ModelIrError::InvalidAttribute {
-                node_id: node.id().to_owned(), attr_name: "approximate".to_owned(),
+                node_id: node.id().to_owned(),
+                attr_name: "approximate".to_owned(),
                 reason: "GELU mode must be none or tanh".to_owned(),
             })),
         },
@@ -1953,15 +2109,23 @@ fn activation_work(node: &fss_model_ir::GraphNode, output: &TensorPort) -> Resul
     // Conservatively bound the fixed scalar arithmetic, not hardware MACs or time.
     let per_element = if node.op() == OpCode::Gelu {
         if activation_tanh_mode(node)? { 96 } else { 896 }
-    } else { 80 };
-    (output.shape().num_elements()? as u64).checked_mul(per_element)
-        .ok_or(ExecError::ArithmeticOverflow { operation: "activation work bound" })
+    } else {
+        80
+    };
+    (output.shape().num_elements()? as u64)
+        .checked_mul(per_element)
+        .ok_or(ExecError::ArithmeticOverflow {
+            operation: "activation work bound",
+        })
 }
 
 impl ScalarExecutor {
     fn execute_activation(
-        node: &fss_model_ir::GraphNode, input: &Tensor, output: &TensorPort,
-        generation: Generation, cx: &ScalarExecCx,
+        node: &fss_model_ir::GraphNode,
+        input: &Tensor,
+        output: &TensorPort,
+        generation: Generation,
+        cx: &ScalarExecCx,
     ) -> Result<Tensor, ExecError> {
         cx.checkpoint("activation:begin")?;
         let source = input.to_vec::<f32>()?;
@@ -1970,17 +2134,36 @@ impl ScalarExecutor {
         for (index, value) in source.into_iter().enumerate() {
             // GELU has a bounded inner continued fraction; poll between every 64
             // elements to keep its worst-case cancellation work bounded as well.
-            if index % 64 == 0 { cx.checkpoint("activation:elements")?; }
+            if index % 64 == 0 {
+                cx.checkpoint("activation:elements")?;
+            }
             values.push(match node.op() {
                 OpCode::Silu => activation_silu(value),
                 OpCode::Tanh => activation_tanh(value),
                 OpCode::Gelu => activation_gelu(value, approximate_tanh),
-                OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div | OpCode::Relu
-                | OpCode::Sigmoid | OpCode::MatMul | OpCode::Reshape | OpCode::Transpose
-                | OpCode::Squeeze | OpCode::Unsqueeze | OpCode::Concat | OpCode::Slice
-                | OpCode::LayerNorm | OpCode::RMSNorm | OpCode::Softmax | OpCode::Conv2d
-                | OpCode::MaxPool2d | OpCode::Embedding => {
-                    return Err(ExecError::UnsupportedOperator { node_id: node.id().to_owned(), op: node.op() });
+                OpCode::Add
+                | OpCode::Sub
+                | OpCode::Mul
+                | OpCode::Div
+                | OpCode::Relu
+                | OpCode::Sigmoid
+                | OpCode::MatMul
+                | OpCode::Reshape
+                | OpCode::Transpose
+                | OpCode::Squeeze
+                | OpCode::Unsqueeze
+                | OpCode::Concat
+                | OpCode::Slice
+                | OpCode::LayerNorm
+                | OpCode::RMSNorm
+                | OpCode::Softmax
+                | OpCode::Conv2d
+                | OpCode::MaxPool2d
+                | OpCode::Embedding => {
+                    return Err(ExecError::UnsupportedOperator {
+                        node_id: node.id().to_owned(),
+                        op: node.op(),
+                    });
                 }
             });
         }
@@ -2003,14 +2186,30 @@ impl ScalarExecutor {
         cx: &ScalarExecCx,
     ) -> Result<Tensor, ExecError> {
         match indices.dtype() {
-            DType::I8 => Self::execute_embedding_indices::<i8>(node, indices, weights, output, generation, cx),
-            DType::I16 => Self::execute_embedding_indices::<i16>(node, indices, weights, output, generation, cx),
-            DType::I32 => Self::execute_embedding_indices::<i32>(node, indices, weights, output, generation, cx),
-            DType::I64 => Self::execute_embedding_indices::<i64>(node, indices, weights, output, generation, cx),
-            DType::U8 => Self::execute_embedding_indices::<u8>(node, indices, weights, output, generation, cx),
-            DType::U16 => Self::execute_embedding_indices::<u16>(node, indices, weights, output, generation, cx),
-            DType::U32 => Self::execute_embedding_indices::<u32>(node, indices, weights, output, generation, cx),
-            DType::U64 => Self::execute_embedding_indices::<u64>(node, indices, weights, output, generation, cx),
+            DType::I8 => Self::execute_embedding_indices::<i8>(
+                node, indices, weights, output, generation, cx,
+            ),
+            DType::I16 => Self::execute_embedding_indices::<i16>(
+                node, indices, weights, output, generation, cx,
+            ),
+            DType::I32 => Self::execute_embedding_indices::<i32>(
+                node, indices, weights, output, generation, cx,
+            ),
+            DType::I64 => Self::execute_embedding_indices::<i64>(
+                node, indices, weights, output, generation, cx,
+            ),
+            DType::U8 => Self::execute_embedding_indices::<u8>(
+                node, indices, weights, output, generation, cx,
+            ),
+            DType::U16 => Self::execute_embedding_indices::<u16>(
+                node, indices, weights, output, generation, cx,
+            ),
+            DType::U32 => Self::execute_embedding_indices::<u32>(
+                node, indices, weights, output, generation, cx,
+            ),
+            DType::U64 => Self::execute_embedding_indices::<u64>(
+                node, indices, weights, output, generation, cx,
+            ),
             DType::F32 | DType::F64 | DType::F16 | DType::BF16 | DType::Bool => {
                 Err(ExecError::UnsupportedDType {
                     expected: DType::I64,
@@ -2034,39 +2233,62 @@ impl ScalarExecutor {
         let width = weights.shape().dims()[1];
         let count = indices.num_elements()?;
         let output_bytes = output.shape().size_bytes(DType::F32)?;
-        let allocation_error = || ExecError::Tensor(TensorError::AllocationLimitExceeded {
-            requested_bytes: output_bytes,
-            max_bytes: fss_tensor::MAX_STORAGE_BYTES,
-        });
+        let allocation_error = || {
+            ExecError::Tensor(TensorError::AllocationLimitExceeded {
+                requested_bytes: output_bytes,
+                max_bytes: fss_tensor::MAX_STORAGE_BYTES,
+            })
+        };
         if output_bytes > fss_tensor::MAX_STORAGE_BYTES {
             return Err(allocation_error());
         }
         let mut bytes = Vec::new();
-        bytes.try_reserve_exact(output_bytes).map_err(|_| allocation_error())?;
+        bytes
+            .try_reserve_exact(output_bytes)
+            .map_err(|_| allocation_error())?;
         let dims = indices.shape().dims();
         let mut coordinates = vec![0_usize; dims.len()];
         for position in 0..count {
-            if position % 1024 == 0 { cx.checkpoint("embedding:indices")?; }
-            let row: usize = indices.read_element::<I>(&coordinates)?.try_into()
-                .map_err(|_| layout_mismatch(node, "embedding index is negative or exceeds addressable range"))?;
+            if position % 1024 == 0 {
+                cx.checkpoint("embedding:indices")?;
+            }
+            let row: usize = indices
+                .read_element::<I>(&coordinates)?
+                .try_into()
+                .map_err(|_| {
+                    layout_mismatch(
+                        node,
+                        "embedding index is negative or exceeds addressable range",
+                    )
+                })?;
             if row >= rows {
-                return Err(layout_mismatch(node, "embedding index outside weight table"));
+                return Err(layout_mismatch(
+                    node,
+                    "embedding index outside weight table",
+                ));
             }
             // Validate the row even when width is zero. Empty output is not permission
             // to accept an invalid ID; no clamping, wrapping or zero-filled fallback.
             for column in 0..width {
-                if column % 1024 == 0 { cx.checkpoint("embedding:row")?; }
+                if column % 1024 == 0 {
+                    cx.checkpoint("embedding:row")?;
+                }
                 let value = weights.read_element::<f32>(&[row, column])?;
                 bytes.extend_from_slice(&value.to_ne_bytes());
             }
             for axis in (0..dims.len()).rev() {
                 coordinates[axis] += 1;
-                if coordinates[axis] < dims[axis] { break; }
+                if coordinates[axis] < dims[axis] {
+                    break;
+                }
                 coordinates[axis] = 0;
             }
         }
         if bytes.len() != output_bytes {
-            return Err(layout_mismatch(node, "embedding output byte count mismatch"));
+            return Err(layout_mismatch(
+                node,
+                "embedding output byte count mismatch",
+            ));
         }
         cx.checkpoint("embedding:publish")?;
         // Transfer the one bounded output buffer into immutable tensor storage. This
@@ -2074,7 +2296,12 @@ impl ScalarExecutor {
         let storage = std::sync::Arc::new(fss_tensor::TensorStorage::from_vec(bytes, generation)?);
         let strides = fss_tensor::Strides::from_shape_row_major(output.shape())?;
         let view = fss_tensor::TensorView::new(
-            storage, 0, DType::F32, output.shape().clone(), strides, generation,
+            storage,
+            0,
+            DType::F32,
+            output.shape().clone(),
+            strides,
+            generation,
         )?;
         Ok(Tensor::from_view(view))
     }
@@ -2088,24 +2315,59 @@ mod embedding_smoke_tests {
     fn graph(dtype: DType, width: usize) -> Result<ModelIrGraph, Box<dyn std::error::Error>> {
         let generation = Generation::from_u64(1);
         Ok(ModelIrGraph::builder("embedding-smoke", generation)
-            .add_input(TensorPort::new("ids", dtype, Shape::new(vec![3])?, generation)?)
-            .add_input(TensorPort::new("table", DType::F32, Shape::new(vec![3, width])?, generation)?)
-            .add_output(TensorPort::new("out", DType::F32, Shape::new(vec![3, width])?, generation)?)
-            .add_node(GraphNode::new("lookup", OpCode::Embedding, "lookup",
-                vec!["ids".to_owned(), "table".to_owned()], vec!["out".to_owned()], AttributeMap::new())?)
+            .add_input(TensorPort::new(
+                "ids",
+                dtype,
+                Shape::new(vec![3])?,
+                generation,
+            )?)
+            .add_input(TensorPort::new(
+                "table",
+                DType::F32,
+                Shape::new(vec![3, width])?,
+                generation,
+            )?)
+            .add_output(TensorPort::new(
+                "out",
+                DType::F32,
+                Shape::new(vec![3, width])?,
+                generation,
+            )?)
+            .add_node(GraphNode::new(
+                "lookup",
+                OpCode::Embedding,
+                "lookup",
+                vec!["ids".to_owned(), "table".to_owned()],
+                vec!["out".to_owned()],
+                AttributeMap::new(),
+            )?)
             .build_and_validate()?)
     }
 
     #[test]
-    fn embedding_executes_in_the_existing_scalar_entrypoint() -> Result<(), Box<dyn std::error::Error>> {
+    fn embedding_executes_in_the_existing_scalar_entrypoint()
+    -> Result<(), Box<dyn std::error::Error>> {
         let graph = graph(DType::I64, 2)?;
         let generation = graph.generation();
         let ids = Tensor::from_values(Shape::new(vec![3])?, &[2_i64, 0, 2], generation)?;
-        let table = Tensor::from_values(Shape::new(vec![3, 2])?, &[1_f32, 2., 3., 4., 5., 6.], generation)?;
-        let result = ScalarExecutor::run(&graph, &[("ids", ids), ("table", table)],
-            ExecBudget::new(36, 72), &ScalarExecCx::new())?;
-        assert_eq!(result.get_output("out").ok_or("missing output")?.to_vec::<f32>()?,
-            vec![5., 6., 1., 2., 5., 6.]);
+        let table = Tensor::from_values(
+            Shape::new(vec![3, 2])?,
+            &[1_f32, 2., 3., 4., 5., 6.],
+            generation,
+        )?;
+        let result = ScalarExecutor::run(
+            &graph,
+            &[("ids", ids), ("table", table)],
+            ExecBudget::new(36, 72),
+            &ScalarExecCx::new(),
+        )?;
+        assert_eq!(
+            result
+                .get_output("out")
+                .ok_or("missing output")?
+                .to_vec::<f32>()?,
+            vec![5., 6., 1., 2., 5., 6.]
+        );
         assert_eq!(result.executed_macs(), 36);
         assert_eq!(result.allocated_bytes(), 72);
         assert_eq!(result.nodes_executed(), 1);
@@ -2113,14 +2375,22 @@ mod embedding_smoke_tests {
     }
 
     #[test]
-    fn zero_width_embedding_still_refuses_invalid_indices() -> Result<(), Box<dyn std::error::Error>> {
+    fn zero_width_embedding_still_refuses_invalid_indices() -> Result<(), Box<dyn std::error::Error>>
+    {
         let graph = graph(DType::I64, 0)?;
         let generation = graph.generation();
         let table = Tensor::from_values(Shape::new(vec![3, 0])?, &[] as &[f32], generation)?;
         for ids in [[0_i64, 1, -1], [0, 1, 3]] {
             let ids = Tensor::from_values(Shape::new(vec![3])?, &ids, generation)?;
-            assert!(matches!(ScalarExecutor::run(&graph, &[("ids", ids), ("table", table.clone())],
-                ExecBudget::unlimited(), &ScalarExecCx::new()), Err(ExecError::ShapeMismatch { .. })));
+            assert!(matches!(
+                ScalarExecutor::run(
+                    &graph,
+                    &[("ids", ids), ("table", table.clone())],
+                    ExecBudget::unlimited(),
+                    &ScalarExecCx::new()
+                ),
+                Err(ExecError::ShapeMismatch { .. })
+            ));
         }
         Ok(())
     }

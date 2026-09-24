@@ -2773,18 +2773,23 @@ fn coverage_rotation_resumes_certification_and_refused_domains_stay_blocked() ->
 
     // The 1025th witness (a gapped report for `blocked`) is refused at capacity.
     let refused_witness = sample_coverage_witness(blocked, false, true, false)?;
-    assert!(store
-        .register_coverage_witness(
-            store.current_anchor().clone(),
-            refused_witness.clone(),
-            TimestampNs(100_000),
-        )
-        .is_err());
+    assert!(
+        store
+            .register_coverage_witness(
+                store.current_anchor().clone(),
+                refused_witness.clone(),
+                TimestampNs(100_000),
+            )
+            .is_err()
+    );
     let anchor_at_capacity = store.current_anchor().clone();
     let refused_id = EventId::parse("evt_rotation_refused")?;
     match store.read_event_in_domain(&refused_id, blocked, None)? {
         EventReadResult::NotObservable { reason, .. } => {
-            assert_eq!(reason, NotObservableReason::CoverageRegistryCapacityExceeded);
+            assert_eq!(
+                reason,
+                NotObservableReason::CoverageRegistryCapacityExceeded
+            );
         }
         other => return Err(format!("expected NotObservable, got {other:?}").into()),
     }
@@ -2796,7 +2801,10 @@ fn coverage_rotation_resumes_certification_and_refused_domains_stay_blocked() ->
         TimestampNs(200_000),
     )?;
     assert!(!store.coverage_registry_at_capacity());
-    assert_eq!(store.rotated_refused(), std::slice::from_ref(&refused_witness));
+    assert_eq!(
+        store.rotated_refused(),
+        std::slice::from_ref(&refused_witness)
+    );
     assert_ne!(store.current_anchor(), &anchor_at_capacity);
 
     // Post-rotation admission works again.
@@ -2862,7 +2870,9 @@ fn coverage_rotation_resumes_certification_and_refused_domains_stay_blocked() ->
                 EventReadResult::NotObservable { reason, .. } => {
                     assert_eq!(reason, expected);
                 }
-                other => return Err(format!("rebuild expected NotObservable, got {other:?}").into()),
+                other => {
+                    return Err(format!("rebuild expected NotObservable, got {other:?}").into());
+                }
             }
         }
     }

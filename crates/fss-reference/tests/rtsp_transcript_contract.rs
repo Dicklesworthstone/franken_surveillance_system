@@ -242,10 +242,7 @@ fn contains_dotted_quad(s: &str) -> bool {
 
 /// Security-boundary guard for committed RTSP transcripts: every violation found is returned as
 /// a human-readable reason. The fixture set must carry zero violations.
-fn credential_guard_violations(
-    name: &str,
-    records: &[TranscriptRecord],
-) -> Vec<String> {
+fn credential_guard_violations(name: &str, records: &[TranscriptRecord]) -> Vec<String> {
     let mut violations = Vec::new();
     let forbidden_headers = ["authorization:", "proxy-authorization:"];
     let forbidden_ip_prefixes = ["192.168.", "10.", "172.16.", "127.0.0.1", "0.0.0.0"];
@@ -253,10 +250,7 @@ fn credential_guard_violations(
     for r in records {
         let s = String::from_utf8_lossy(&r.bytes).to_lowercase();
         let mut at = |what: &str| {
-            violations.push(format!(
-                "{name} record at offset {}: {what}",
-                r.offset_ms
-            ));
+            violations.push(format!("{name} record at offset {}: {what}", r.offset_ms));
         };
 
         for f in forbidden_headers {
@@ -280,9 +274,7 @@ fn credential_guard_violations(
         while let Some(rel) = s[search..].find("rtsp://") {
             let uri_start = search + rel;
             let rest = &s[uri_start..];
-            let uri_len = rest
-                .find(['\r', '\n', ' '])
-                .unwrap_or(rest.len());
+            let uri_len = rest.find(['\r', '\n', ' ']).unwrap_or(rest.len());
             let uri = &rest[..uri_len];
             if uri.contains('@') {
                 at(&format!("rtsp URI with userinfo '@': {uri}"));
@@ -354,10 +346,7 @@ fn credential_guard_mutant_table() -> Result<(), Box<dyn Error>> {
     fn replace_all(bytes: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
         let mut out = Vec::with_capacity(bytes.len());
         let mut rest = bytes;
-        while let Some(pos) = rest
-            .windows(from.len())
-            .position(|w| w == from)
-        {
+        while let Some(pos) = rest.windows(from.len()).position(|w| w == from) {
             out.extend_from_slice(&rest[..pos]);
             out.extend_from_slice(to);
             rest = &rest[pos + from.len()..];
@@ -393,7 +382,8 @@ fn credential_guard_mutant_table() -> Result<(), Box<dyn Error>> {
         .collect();
     let v = violations_for(&m2_records);
     assert!(
-        v.iter().any(|x| x.contains("IPv4") || x.contains("IP address")),
+        v.iter()
+            .any(|x| x.contains("IPv4") || x.contains("IP address")),
         "M2 planted dotted-quad IP must be caught: {v:?}"
     );
 
@@ -746,11 +736,7 @@ fn test_auth_required_variant() -> Result<(), Box<dyn Error>> {
         }
     ));
     let RtspEvent::AuthRequired { ref response, .. } = events[0] else {
-        return Err(format!(
-            "expected AuthRequired event, got: {:?}",
-            events[0]
-        )
-        .into());
+        return Err(format!("expected AuthRequired event, got: {:?}", events[0]).into());
     };
     assert_eq!(response.status_code, 401);
     assert_eq!(response.auth_challenge, Some(AuthScheme::Digest));

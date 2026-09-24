@@ -10,7 +10,9 @@ use fss_core::{
     TimestampNs,
 };
 
-use crate::{PublishedSourceReader, ReferenceError, ReferenceSituationPublication, SourceHydrationError};
+use crate::{
+    PublishedSourceReader, ReferenceError, ReferenceSituationPublication, SourceHydrationError,
+};
 
 /// Failure while constructing, verifying, or expanding a descriptor-bound reference publication.
 #[derive(Debug)]

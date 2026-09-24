@@ -65,7 +65,11 @@ enum Action {
     Import(FileIngestRequest),
     Inspect(ContentDigest),
     Verify(ContentDigest),
-    Extract { identity: ContentDigest, segment: usize, output: PathBuf },
+    Extract {
+        identity: ContentDigest,
+        segment: usize,
+        output: PathBuf,
+    },
     Media(media::Action),
 }
 
@@ -80,12 +84,15 @@ struct Options {
 }
 
 fn value<'a>(values: &'a Values, key: &str) -> ParseResult<&'a OsStr> {
-    values.get(key).map(OsString::as_os_str)
+    values
+        .get(key)
+        .map(OsString::as_os_str)
         .ok_or_else(|| (ERR_CLI_MISSING_VALUE, format!("required option {key}")))
 }
 
 fn text<'a>(values: &'a Values, key: &str) -> ParseResult<&'a str> {
-    value(values, key)?.to_str()
+    value(values, key)?
+        .to_str()
         .ok_or_else(|| (ERR_CLI_INVALID_UNICODE, format!("{key} must be UTF-8")))
 }
 
@@ -93,8 +100,12 @@ fn number<T: FromStr>(values: &Values, key: &str, default: Option<T>) -> ParseRe
     if !values.contains_key(key) {
         return default.ok_or_else(|| (ERR_CLI_MISSING_VALUE, format!("required option {key}")));
     }
-    text(values, key)?.parse()
-        .map_err(|_| (ERR_CLI_MALFORMED_VALUE, format!("invalid numeric value for {key}")))
+    text(values, key)?.parse().map_err(|_| {
+        (
+            ERR_CLI_MALFORMED_VALUE,
+            format!("invalid numeric value for {key}"),
+        )
+    })
 }
 
 fn malformed(reason: &str) -> (&'static str, String) {
@@ -102,29 +113,71 @@ fn malformed(reason: &str) -> (&'static str, String) {
 }
 
 fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
-    if args.is_empty() { return Ok(None); }
-    let command = args[0].to_str().ok_or_else(|| (ERR_CLI_INVALID_UNICODE, "command must be UTF-8".to_owned()))?;
-    if matches!(command, "help" | "--help" | "-h") {
-        if args.len() != 1 { return Err(malformed("help accepts no additional arguments")); }
+    if args.is_empty() {
         return Ok(None);
     }
-    if !matches!(command, "import" | "inspect" | "verify" | "extract") && !media::is_command(command) {
-        return Err((ERR_CLI_UNKNOWN_COMMAND, "expected import, inspect, verify, extract or a decoded-media command".to_owned()));
+    let command = args[0]
+        .to_str()
+        .ok_or_else(|| (ERR_CLI_INVALID_UNICODE, "command must be UTF-8".to_owned()))?;
+    if matches!(command, "help" | "--help" | "-h") {
+        if args.len() != 1 {
+            return Err(malformed("help accepts no additional arguments"));
+        }
+        return Ok(None);
     }
-    let common = ["--root", "--site", "--principal", "--manifest-out", "--max-source-bytes", "--chunk-bytes", "--max-segment-bytes"];
-    let import = ["--input", "--sensor", "--stream", "--receive-time-ns", "--media-format", "--capture-start-ns", "--capture-uncertainty-ns", "--assumed-fps"];
+    if !matches!(command, "import" | "inspect" | "verify" | "extract")
+        && !media::is_command(command)
+    {
+        return Err((
+            ERR_CLI_UNKNOWN_COMMAND,
+            "expected import, inspect, verify, extract or a decoded-media command".to_owned(),
+        ));
+    }
+    let common = [
+        "--root",
+        "--site",
+        "--principal",
+        "--manifest-out",
+        "--max-source-bytes",
+        "--chunk-bytes",
+        "--max-segment-bytes",
+    ];
+    let import = [
+        "--input",
+        "--sensor",
+        "--stream",
+        "--receive-time-ns",
+        "--media-format",
+        "--capture-start-ns",
+        "--capture-uncertainty-ns",
+        "--assumed-fps",
+    ];
     let mut values = Values::new();
     let mut index = 1;
     while index < args.len() {
-        let key = args[index].to_str().ok_or_else(|| (ERR_CLI_INVALID_UNICODE, "option names must be UTF-8".to_owned()))?;
+        let key = args[index].to_str().ok_or_else(|| {
+            (
+                ERR_CLI_INVALID_UNICODE,
+                "option names must be UTF-8".to_owned(),
+            )
+        })?;
         let allowed = common.contains(&key)
             || (command == "import" && import.contains(&key))
             || (command != "import" && key == "--import-id")
             || (command == "extract" && matches!(key, "--segment" | "--output"))
             || media::accepts_option(command, key);
-        if !allowed { return Err((ERR_CLI_UNKNOWN_OPTION, "unknown or inapplicable option".to_owned())); }
-        if values.contains_key(key) { return Err((ERR_CLI_DUPLICATE_OPTION, format!("duplicate {key}"))); }
-        let argument = args.get(index + 1).ok_or_else(|| (ERR_CLI_MISSING_VALUE, format!("missing value for {key}")))?;
+        if !allowed {
+            return Err((
+                ERR_CLI_UNKNOWN_OPTION,
+                "unknown or inapplicable option".to_owned(),
+            ));
+        }
+        if values.contains_key(key) {
+            return Err((ERR_CLI_DUPLICATE_OPTION, format!("duplicate {key}")));
+        }
+        let argument = args
+            .get(index + 1)
+            .ok_or_else(|| (ERR_CLI_MISSING_VALUE, format!("missing value for {key}")))?;
         if argument.is_empty() || argument.to_str().is_some_and(|s| s.starts_with("--")) {
             return Err((ERR_CLI_MISSING_VALUE, format!("missing value for {key}")));
         }
@@ -137,71 +190,128 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
         .map_err(|_| malformed("invalid site lineage"))?;
     let principal = if values.contains_key("--principal") {
         text(&values, "--principal")?.to_owned()
-    } else { "principal:local-operator".to_owned() };
+    } else {
+        "principal:local-operator".to_owned()
+    };
     fss_core::PrincipalId::parse(&principal).map_err(|_| malformed("invalid principal ID"))?;
     let defaults = RetainedReadLimits::default();
     let limits = RetainedReadLimits {
-        max_source_bytes: number(&values, "--max-source-bytes", Some(defaults.max_source_bytes))?,
+        max_source_bytes: number(
+            &values,
+            "--max-source-bytes",
+            Some(defaults.max_source_bytes),
+        )?,
         max_chunk_bytes: number(&values, "--chunk-bytes", Some(defaults.max_chunk_bytes))?,
-        max_segment_bytes: number(&values, "--max-segment-bytes", Some(defaults.max_segment_bytes))?,
+        max_segment_bytes: number(
+            &values,
+            "--max-segment-bytes",
+            Some(defaults.max_segment_bytes),
+        )?,
     };
-    if limits.max_source_bytes == 0 || limits.max_chunk_bytes == 0 || limits.max_segment_bytes == 0
+    if limits.max_source_bytes == 0
+        || limits.max_chunk_bytes == 0
+        || limits.max_segment_bytes == 0
         || limits.max_chunk_bytes > MAX_RETAINED_PAYLOAD_BYTES
         || limits.max_segment_bytes > MAX_RETAINED_PAYLOAD_BYTES
-    { return Err(malformed("positive limits required; chunks and returned segments are capped at 64 MiB")); }
+    {
+        return Err(malformed(
+            "positive limits required; chunks and returned segments are capped at 64 MiB",
+        ));
+    }
     let action = if command == "import" {
-        let sensor = SensorId::parse(text(&values, "--sensor")?).map_err(|_| malformed("invalid sensor ID"))?;
-        let stream = StreamId::parse(text(&values, "--stream")?).map_err(|_| malformed("invalid stream ID"))?;
+        let sensor = SensorId::parse(text(&values, "--sensor")?)
+            .map_err(|_| malformed("invalid sensor ID"))?;
+        let stream = StreamId::parse(text(&values, "--stream")?)
+            .map_err(|_| malformed("invalid stream ID"))?;
         let receive: i128 = number(&values, "--receive-time-ns", None)?;
-        if receive < 0 { return Err(malformed("receive time must be nonnegative")); }
-        let mut request = FileIngestRequest::new(PathBuf::from(value(&values, "--input")?), sensor, stream)
-            .with_receive_time(TimestampNs(receive));
-        request.limits = FileIngestLimits { max_file_bytes: limits.max_source_bytes, chunk_bytes: limits.max_chunk_bytes, ..FileIngestLimits::standard() };
+        if receive < 0 {
+            return Err(malformed("receive time must be nonnegative"));
+        }
+        let mut request =
+            FileIngestRequest::new(PathBuf::from(value(&values, "--input")?), sensor, stream)
+                .with_receive_time(TimestampNs(receive));
+        request.limits = FileIngestLimits {
+            max_file_bytes: limits.max_source_bytes,
+            chunk_bytes: limits.max_chunk_bytes,
+            ..FileIngestLimits::standard()
+        };
         if values.contains_key("--media-format") {
             request.format_hint = match text(&values, "--media-format")? {
                 "auto" => None,
                 "mjpeg" => Some(FileFormatHint::JpegStream),
                 "annexb" => Some(FileFormatHint::AnnexB),
                 "hevc" => Some(FileFormatHint::Hevc),
-                _ => return Err(malformed("media format must be auto, mjpeg, annexb or hevc")),
+                _ => {
+                    return Err(malformed(
+                        "media format must be auto, mjpeg, annexb or hevc",
+                    ));
+                }
             };
         }
-        let hint_keys = ["--capture-start-ns", "--capture-uncertainty-ns", "--assumed-fps"];
-        let supplied = hint_keys.iter().filter(|k| values.contains_key(**k)).count();
+        let hint_keys = [
+            "--capture-start-ns",
+            "--capture-uncertainty-ns",
+            "--assumed-fps",
+        ];
+        let supplied = hint_keys
+            .iter()
+            .filter(|k| values.contains_key(**k))
+            .count();
         if supplied != 0 && supplied != hint_keys.len() {
-            return Err(malformed("capture start, uncertainty and assumed fps must be supplied together"));
+            return Err(malformed(
+                "capture start, uncertainty and assumed fps must be supplied together",
+            ));
         }
         if supplied != 0 {
             let start: i128 = number(&values, "--capture-start-ns", None)?;
-            if start < 0 || start > receive { return Err(malformed("capture start must lie between zero and receive time")); }
-            request.capture_hint = Some(CaptureHint::new(
-                TimestampNs(start), number(&values, "--capture-uncertainty-ns", None)?,
-                number(&values, "--assumed-fps", None)?,
-            ).map_err(|_| malformed("assumed fps must be finite and positive"))?);
+            if start < 0 || start > receive {
+                return Err(malformed(
+                    "capture start must lie between zero and receive time",
+                ));
+            }
+            request.capture_hint = Some(
+                CaptureHint::new(
+                    TimestampNs(start),
+                    number(&values, "--capture-uncertainty-ns", None)?,
+                    number(&values, "--assumed-fps", None)?,
+                )
+                .map_err(|_| malformed("assumed fps must be finite and positive"))?,
+            );
         }
         Action::Import(request)
     } else {
-        let identity = ContentDigest::parse(text(&values, "--import-id")?).map_err(|_| malformed("invalid import digest"))?;
-        if identity.algorithm() != fss_core::DigestAlgorithm::Sha256 { return Err(malformed("import ID must use SHA-256")); }
+        let identity = ContentDigest::parse(text(&values, "--import-id")?)
+            .map_err(|_| malformed("invalid import digest"))?;
+        if identity.algorithm() != fss_core::DigestAlgorithm::Sha256 {
+            return Err(malformed("import ID must use SHA-256"));
+        }
         match command {
             "inspect" => Action::Inspect(identity),
             "verify" => Action::Verify(identity),
             "extract" => Action::Extract {
-                identity, segment: number(&values, "--segment", None)?,
+                identity,
+                segment: number(&values, "--segment", None)?,
                 output: PathBuf::from(value(&values, "--output")?),
             },
             _ => Action::Media(media::parse(command, identity, limits, &values)?),
         }
     };
     Ok(Some(Options {
-        root, site, principal,
-        manifest_output: values.get("--manifest-out").map(PathBuf::from), limits, action,
+        root,
+        site,
+        principal,
+        manifest_output: values.get("--manifest-out").map(PathBuf::from),
+        limits,
+        action,
     }))
 }
 
 fn write_new(path: &Path, bytes: &[u8], deployment_root: &Path, cx: &ReplayCx) -> RunResult<()> {
     cx.checkpoint("file_cli:export")?;
-    let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
     if fs::canonicalize(parent)?.starts_with(fs::canonicalize(deployment_root)?) {
         return Err(io::Error::other("exports must be outside the deployment").into());
     }
@@ -225,7 +335,9 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
     let importing = matches!(&options.action, Action::Import(_));
     if !importing {
         let layout = fs::symlink_metadata(options.root.join("LAYOUT"))?;
-        if !layout.file_type().is_file() { return Err(io::Error::other("not an existing deployment layout").into()); }
+        if !layout.file_type().is_file() {
+            return Err(io::Error::other("not an existing deployment layout").into());
+        }
     }
     if let Ok(metadata) = fs::symlink_metadata(&options.root)
         && (metadata.file_type().is_symlink() || !metadata.file_type().is_dir())
@@ -236,14 +348,20 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
     // remote authentication. Codec work and pixel comparisons have separate explicit ceilings.
     // No network, trained-model or external-effect grants are issued.
     let authority = ContextAuthority::new_root(RootAuthoritySpec {
-        trace_id: "trace:file-cli".to_owned(), operation_id: OperationId::parse("operation:file-cli")?,
-        principal: options.principal, capabilities: vec!["ADP-REPLAY-001".to_owned()],
-        deadline: None, priority: 10,
-        budgets: BudgetVector::builder().bytes(options.limits.max_source_bytes)
-            .storage_operations(MAX_RETAINED_ENTRIES as u64).build()?,
+        trace_id: "trace:file-cli".to_owned(),
+        operation_id: OperationId::parse("operation:file-cli")?,
+        principal: options.principal,
+        capabilities: vec!["ADP-REPLAY-001".to_owned()],
+        deadline: None,
+        priority: 10,
+        budgets: BudgetVector::builder()
+            .bytes(options.limits.max_source_bytes)
+            .storage_operations(MAX_RETAINED_ENTRIES as u64)
+            .build()?,
         privacy_scope: "privacy:local-authorized-files".to_owned(),
         retention_scope: "retention:existing-deployment-policy".to_owned(),
-        anchor_universe: ContentDigest::sha256(options.site.as_bytes()), generation: 1,
+        anchor_universe: ContentDigest::sha256(options.site.as_bytes()),
+        generation: 1,
     })?;
     authority.validate()?;
     let cx = ReplayCx::from_context_authority(&authority, options.root.clone())?;
@@ -265,7 +383,11 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
         writeln!(out, "import_identity={}", retained.import_identity())?;
         writeln!(out, "import_root={}", retained.import_root())?;
         writeln!(out, "manifest_digest={}", retained.manifest_digest())?;
-        writeln!(out, "authority_sequence={}", retained.authority_anchor().commit_sequence)?;
+        writeln!(
+            out,
+            "authority_sequence={}",
+            retained.authority_anchor().commit_sequence
+        )?;
         writeln!(out, "input_sha256={}", manifest.input_sha256)?;
         writeln!(out, "input_bytes={}", manifest.input_bytes)?;
         writeln!(out, "media_format={}", manifest.format)?;
@@ -278,14 +400,18 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
                 let verified = retained.verify_source(&deployment, options.limits, &cx)?;
                 writeln!(out, "verified_source_sha256={verified}")?;
             }
-            Action::Extract { segment, output, .. } => {
+            Action::Extract {
+                segment, output, ..
+            } => {
                 let bytes = retained.read_segment(&deployment, *segment, options.limits, &cx)?;
                 write_new(output, &bytes, &options.root, &cx)?;
                 writeln!(out, "extracted_segment={segment}")?;
                 writeln!(out, "extracted_bytes={}", bytes.len())?;
                 writeln!(out, "extracted_sha256={}", ContentDigest::sha256(&bytes))?;
             }
-            Action::Media(action) => media::run(action, &retained, &mut deployment, &options.root, &cx, out)?,
+            Action::Media(action) => {
+                media::run(action, &retained, &mut deployment, &options.root, &cx, out)?
+            }
             Action::Inspect(_) => {}
         }
         if let Some(path) = &options.manifest_output {
@@ -301,26 +427,31 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
 fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     match parse(&args) {
-        Ok(None) => {
-            match io::stdout().lock().write_all(HELP.as_bytes()) {
-                Ok(()) => ExitCode::from(ExitIdentity::SUCCESS.code),
-                Err(_) => ExitCode::from(ExitIdentity::RUNTIME_FAILURE.code),
-            }
-        }
-        Ok(Some(options)) => match run(options, &mut io::stdout().lock()) {
+        Ok(None) => match io::stdout().lock().write_all(HELP.as_bytes()) {
             Ok(()) => ExitCode::from(ExitIdentity::SUCCESS.code),
-            Err(error) => {
-                eprintln!("{ERR_CLI_RUNTIME_FAILURE}: {error}");
-                if let Some(refusal) = error.downcast_ref::<fss_reference::ingest::recorded_decode::RecordedDecodeError>() {
+            Err(_) => ExitCode::from(ExitIdentity::RUNTIME_FAILURE.code),
+        },
+        Ok(Some(options)) => {
+            match run(options, &mut io::stdout().lock()) {
+                Ok(()) => ExitCode::from(ExitIdentity::SUCCESS.code),
+                Err(error) => {
+                    eprintln!("{ERR_CLI_RUNTIME_FAILURE}: {error}");
+                    if let Some(refusal) = error.downcast_ref::<fss_reference::ingest::recorded_decode::RecordedDecodeError>() {
                     eprintln!("refusal_id={}", refusal.stable_id());
                 }
-                if let Some(refusal) = error.downcast_ref::<fss_reference::ingest::FileIngestError>().and_then(|e| e.stable_id()) {
-                    eprintln!("refusal_id={refusal}");
+                    if let Some(refusal) = error
+                        .downcast_ref::<fss_reference::ingest::FileIngestError>()
+                        .and_then(|e| e.stable_id())
+                    {
+                        eprintln!("refusal_id={refusal}");
+                    }
+                    eprintln!(
+                        "Completed imports and decoded frames are not rolled back by later analysis/export failure. An incomplete export may remain."
+                    );
+                    ExitCode::from(ExitIdentity::RUNTIME_FAILURE.code)
                 }
-                eprintln!("Completed imports and decoded frames are not rolled back by later analysis/export failure. An incomplete export may remain.");
-                ExitCode::from(ExitIdentity::RUNTIME_FAILURE.code)
             }
-        },
+        }
         Err((code, reason)) => {
             eprintln!("{code}: {reason}; use fss-file help");
             ExitCode::from(ExitIdentity::MALFORMED_VALUE.code)
@@ -333,14 +464,38 @@ mod tests {
     use super::*;
 
     fn args(extra: &[&str]) -> Vec<OsString> {
-        ["import", "--root", "/unused", "--site", "site:test", "--input", "camera.h264", "--sensor", "sensor:test", "--stream", "stream:test", "--receive-time-ns", "1000000000"]
-            .into_iter().chain(extra.iter().copied()).map(OsString::from).collect()
+        [
+            "import",
+            "--root",
+            "/unused",
+            "--site",
+            "site:test",
+            "--input",
+            "camera.h264",
+            "--sensor",
+            "sensor:test",
+            "--stream",
+            "stream:test",
+            "--receive-time-ns",
+            "1000000000",
+        ]
+        .into_iter()
+        .chain(extra.iter().copied())
+        .map(OsString::from)
+        .collect()
     }
 
     #[test]
     fn strict_arguments_require_explicit_time_and_reject_silent_options() {
         assert!(parse(&args(&[])).is_ok());
-        for extra in [vec!["--unknown", "x"], vec!["--site", "site:other"], vec!["--chunk-bytes", "0"], vec!["--max-segment-bytes", "67108865"], vec!["--capture-start-ns", "0"], vec!["--media-format", "rtpplay"]] {
+        for extra in [
+            vec!["--unknown", "x"],
+            vec!["--site", "site:other"],
+            vec!["--chunk-bytes", "0"],
+            vec!["--max-segment-bytes", "67108865"],
+            vec!["--capture-start-ns", "0"],
+            vec!["--media-format", "rtpplay"],
+        ] {
             assert!(parse(&args(&extra)).is_err());
         }
         let mut missing_time = args(&[]);
@@ -350,8 +505,28 @@ mod tests {
 
     #[test]
     fn explicit_capture_assumptions_require_all_parameters() {
-        assert!(parse(&args(&["--capture-start-ns", "0", "--capture-uncertainty-ns", "1000", "--assumed-fps", "30"])).is_ok());
-        assert!(parse(&args(&["--capture-start-ns", "0", "--capture-uncertainty-ns", "1000", "--assumed-fps", "NaN"])).is_err());
+        assert!(
+            parse(&args(&[
+                "--capture-start-ns",
+                "0",
+                "--capture-uncertainty-ns",
+                "1000",
+                "--assumed-fps",
+                "30"
+            ]))
+            .is_ok()
+        );
+        assert!(
+            parse(&args(&[
+                "--capture-start-ns",
+                "0",
+                "--capture-uncertainty-ns",
+                "1000",
+                "--assumed-fps",
+                "NaN"
+            ]))
+            .is_err()
+        );
     }
 
     #[cfg(unix)]
@@ -365,29 +540,93 @@ mod tests {
 
     fn media_args(command: &str, extra: &[&str]) -> Vec<OsString> {
         let identity = ContentDigest::sha256(b"parser-only import").to_text();
-        [command, "--root", "/unused", "--site", "site:test", "--import-id", &identity]
-            .into_iter().chain(extra.iter().copied()).map(OsString::from).collect()
+        [
+            command,
+            "--root",
+            "/unused",
+            "--site",
+            "site:test",
+            "--import-id",
+            &identity,
+        ]
+        .into_iter()
+        .chain(extra.iter().copied())
+        .map(OsString::from)
+        .collect()
     }
     #[test]
     fn decode_commands_require_explicit_interpretation_and_bound_every_axis() {
         for command in ["decode", "read-decoded", "verify-decoded"] {
-            assert!(parse(&media_args(command, &["--segment", "0", "--interpretation", "gray"])).is_ok());
+            assert!(
+                parse(&media_args(
+                    command,
+                    &["--segment", "0", "--interpretation", "gray"]
+                ))
+                .is_ok()
+            );
             assert!(parse(&media_args(command, &["--segment", "0"])).is_err());
-            assert!(parse(&media_args(command, &["--segment", "0", "--interpretation", "guess"])).is_err());
-            assert!(parse(&media_args(command, &["--segment", "0", "--interpretation", "gray", "--max-pixels", "4194305"])).is_err());
+            assert!(
+                parse(&media_args(
+                    command,
+                    &["--segment", "0", "--interpretation", "guess"]
+                ))
+                .is_err()
+            );
+            assert!(
+                parse(&media_args(
+                    command,
+                    &[
+                        "--segment",
+                        "0",
+                        "--interpretation",
+                        "gray",
+                        "--max-pixels",
+                        "4194305"
+                    ]
+                ))
+                .is_err()
+            );
         }
-        assert!(parse(&media_args("read-decoded", &["--segment", "0", "--interpretation", "gray", "--work-units", "10"])).is_err());
+        assert!(
+            parse(&media_args(
+                "read-decoded",
+                &[
+                    "--segment",
+                    "0",
+                    "--interpretation",
+                    "gray",
+                    "--work-units",
+                    "10"
+                ]
+            ))
+            .is_err()
+        );
     }
     #[test]
     fn motion_requires_bounded_range_thresholds_and_explicit_report() {
-        let valid = ["--start-segment", "0", "--frame-count", "2", "--interpretation", "gray", "--pixel-delta", "16", "--minimum-changed-pixels", "4", "--report-out", "report.json"];
+        let valid = [
+            "--start-segment",
+            "0",
+            "--frame-count",
+            "2",
+            "--interpretation",
+            "gray",
+            "--pixel-delta",
+            "16",
+            "--minimum-changed-pixels",
+            "4",
+            "--report-out",
+            "report.json",
+        ];
         assert!(parse(&media_args("motion", &valid)).is_ok());
         for (index, value) in [(3, "0"), (3, "129"), (7, "0"), (9, "0")] {
-            let mut invalid = valid; invalid[index] = value;
+            let mut invalid = valid;
+            invalid[index] = value;
             assert!(parse(&media_args("motion", &invalid)).is_err());
         }
         assert!(parse(&media_args("motion", &valid[..10])).is_err());
-        let mut bad = valid.to_vec(); bad.extend(["--minimum-changed-ppm", "1000001"]);
+        let mut bad = valid.to_vec();
+        bad.extend(["--minimum-changed-ppm", "1000001"]);
         assert!(parse(&media_args("motion", &bad)).is_err());
     }
 }

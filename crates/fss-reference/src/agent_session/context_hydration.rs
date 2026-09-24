@@ -199,7 +199,11 @@ impl BoundContextHydration {
         if self.binding_digest != binding.binding_digest {
             return Err(ContractError::DigestMismatch.into());
         }
-        check_initial_level(binding, self.request.requested_level, &self.request.continuation)?;
+        check_initial_level(
+            binding,
+            self.request.requested_level,
+            &self.request.continuation,
+        )?;
         let descriptor = publication
             .descriptors
             .iter()
@@ -239,9 +243,14 @@ impl ReferenceSessionStore {
         catalog: &mut ReferenceHydrationCatalog,
         now: TimestampNs,
     ) -> Result<BoundContextHydration, ContextHydrationError> {
-        self.hydrate_context_slot_with(principal, publication, read, catalog, now, |catalog, request| {
-            Ok(catalog.hydrate(request, now)?)
-        })
+        self.hydrate_context_slot_with(
+            principal,
+            publication,
+            read,
+            catalog,
+            now,
+            |catalog, request| Ok(catalog.hydrate(request, now)?),
+        )
     }
 
     /// Expands a published slot through live source custody under server-owned session grants.
@@ -260,9 +269,14 @@ impl ReferenceSessionStore {
         reader: &dyn PublishedSourceReader,
         now: TimestampNs,
     ) -> Result<BoundContextHydration, ContextHydrationError> {
-        self.hydrate_context_slot_with(principal, publication, read, catalog, now, |catalog, request| {
-            Ok(catalog.hydrate_from_source(request, reader, now)?)
-        })
+        self.hydrate_context_slot_with(
+            principal,
+            publication,
+            read,
+            catalog,
+            now,
+            |catalog, request| Ok(catalog.hydrate_from_source(request, reader, now)?),
+        )
     }
 
     /// Reads a bound slot from the lock-owning local publisher and its explicit I/O capability.
@@ -281,9 +295,14 @@ impl ReferenceSessionStore {
         io: &dyn SpoolIo,
         now: TimestampNs,
     ) -> Result<BoundContextHydration, ContextHydrationError> {
-        self.hydrate_context_slot_with(principal, publication, read, catalog, now, |catalog, request| {
-            Ok(catalog.hydrate_from_local_source(request, publisher, io, now)?)
-        })
+        self.hydrate_context_slot_with(
+            principal,
+            publication,
+            read,
+            catalog,
+            now,
+            |catalog, request| Ok(catalog.hydrate_from_local_source(request, publisher, io, now)?),
+        )
     }
 
     // Private dispatch keeps all transports on one admission and accounting path. A caller
@@ -342,7 +361,10 @@ impl ReferenceSessionStore {
             .get(&HydrationLevel::H0)
             .ok_or(ContextHydrationError::SlotUnavailable)?;
         if !required.is_subset(&entry.session.capabilities)
-            || !entry.session.privacy_scope.contains(&descriptor.privacy_class)
+            || !entry
+                .session
+                .privacy_scope
+                .contains(&descriptor.privacy_class)
         {
             return Err(ContextHydrationError::SlotUnavailable);
         }

@@ -6,11 +6,11 @@
 //! No parallel RTSP grammar, authentication state, source spool or decoder exists.
 
 use super::*;
-use fss_packet::{H265FragmentDiscard, H265NalUnit, H265Status, OrderedRtpPacket, ReorderGap};
 use fss_packet::hevc::{
     HevcAssembler, HevcAssemblyError, HevcAssemblyLimits, HevcAssemblyOutput,
     HevcAssemblyRetirement, HevcAssemblyStep,
 };
+use fss_packet::{H265FragmentDiscard, H265NalUnit, H265Status, OrderedRtpPacket, ReorderGap};
 
 /// Payload-free refusal from either existing semantic owner or this bounded composition.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -201,76 +201,128 @@ pub struct RtspHevcPictureClient {
 }
 impl fmt::Debug for RtspHevcPictureClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RtspHevcPictureClient").field("client", &self.inner)
-            .field("assembler", &self.assembler).field("queued_nals", &self.pending.len())
-            .field("closed", &self.closed).finish_non_exhaustive()
+        f.debug_struct("RtspHevcPictureClient")
+            .field("client", &self.inner)
+            .field("assembler", &self.assembler)
+            .field("queued_nals", &self.pending.len())
+            .field("closed", &self.closed)
+            .finish_non_exhaustive()
     }
 }
 impl RtspHevcPictureClient {
     /// Pin the same owner/source/transport bounds, plus independent picture bounds.
-    pub fn new(config: ClientConfig, key: StreamKey, reorder: ReorderLimits,
-        reconstruction: H265Limits, assembly: HevcAssemblyLimits)
-        -> Result<Self, HevcPictureClientError>
-    {
-        let assembler = HevcAssembler::new(key, assembly).map_err(HevcPictureClientError::Assembly)?;
+    pub fn new(
+        config: ClientConfig,
+        key: StreamKey,
+        reorder: ReorderLimits,
+        reconstruction: H265Limits,
+        assembly: HevcAssemblyLimits,
+    ) -> Result<Self, HevcPictureClientError> {
+        let assembler =
+            HevcAssembler::new(key, assembly).map_err(HevcPictureClientError::Assembly)?;
         let inner = RtspHevcClient::new(config, key, reorder, reconstruction)
             .map_err(HevcPictureClientError::Client)?;
-        Ok(Self { inner, assembler, key, limits: assembly, pending: Vec::new().into_iter(),
-            pending_deadline_ns: None, last_ns: 0, closed: false })
+        Ok(Self {
+            inner,
+            assembler,
+            key,
+            limits: assembly,
+            pending: Vec::new().into_iter(),
+            pending_deadline_ns: None,
+            last_ns: 0,
+            closed: false,
+        })
     }
     /// Pin the existing Digest policy/realm before any request; credentials remain borrowed.
-    pub fn with_digest(config: ClientConfig, key: StreamKey, reorder: ReorderLimits,
-        reconstruction: H265Limits, assembly: HevcAssemblyLimits, realm: &str, policy: DigestPolicy)
-        -> Result<Self, HevcPictureClientError>
-    {
+    pub fn with_digest(
+        config: ClientConfig,
+        key: StreamKey,
+        reorder: ReorderLimits,
+        reconstruction: H265Limits,
+        assembly: HevcAssemblyLimits,
+        realm: &str,
+        policy: DigestPolicy,
+    ) -> Result<Self, HevcPictureClientError> {
         let mut client = Self::new(config, key, reorder, reconstruction, assembly)?;
-        client.inner.session.enable_digest(realm, policy).map_err(|e|
-            HevcPictureClientError::Client(HevcClientError::Authentication(e)))?;
+        client
+            .inner
+            .session
+            .enable_digest(realm, policy)
+            .map_err(|e| HevcPictureClientError::Client(HevcClientError::Authentication(e)))?;
         client.inner.digest_enabled = true;
         Ok(client)
     }
     /// Existing RTSP protocol state; not decoded-frame or coverage truth.
-    pub fn state(&self) -> ClientState { self.inner.state() }
+    pub fn state(&self) -> ClientState {
+        self.inner.state()
+    }
     /// Immutable accepted HEVC signaling; not parsed parameter-set compatibility.
-    pub fn media(&self) -> Option<&HevcClientMedia> { self.inner.media() }
+    pub fn media(&self) -> Option<&HevcClientMedia> {
+        self.inner.media()
+    }
     /// Exact TCP bytes retained by the existing client.
-    pub fn buffered_wire_bytes(&self) -> usize { self.inner.buffered_wire_bytes() }
+    pub fn buffered_wire_bytes(&self) -> usize {
+        self.inner.buffered_wire_bytes()
+    }
     /// Original RTP bytes still awaiting ordered delivery.
-    pub fn queued_rtp_bytes(&self) -> usize { self.inner.queued_rtp_bytes() }
+    pub fn queued_rtp_bytes(&self) -> usize {
+        self.inner.queued_rtp_bytes()
+    }
     /// Complete reconstructed NALs not yet admitted to a picture.
-    pub fn queued_nals(&self) -> usize { self.pending.len() }
+    pub fn queued_nals(&self) -> usize {
+        self.pending.len()
+    }
     /// Incomplete FU, complete queued NAL and picture bytes; source storage is independent.
     pub fn retained_nal_bytes(&self) -> usize {
-        self.inner.retained_nal_bytes() + self.assembler.pending_bytes()
-            + self.pending.as_slice().iter().map(|n| n.bytes().len()).sum::<usize>()
+        self.inner.retained_nal_bytes()
+            + self.assembler.pending_bytes()
+            + self
+                .pending
+                .as_slice()
+                .iter()
+                .map(|n| n.bytes().len())
+                .sum::<usize>()
     }
     /// Include picture and complete-NAL residence timers even during authentication waits.
     pub fn next_wake_ns(&self) -> Option<u64> {
-        if self.closed { return None; }
-        if self.pending.len() != 0 { return Some(self.last_ns); }
+        if self.closed {
+            return None;
+        }
+        if self.pending.len() != 0 {
+            return Some(self.last_ns);
+        }
         earlier(self.inner.next_wake_ns(), self.assembler.next_wake_ns())
             .map(|at| at.max(self.last_ns))
     }
     /// Prepare one request through the existing plain client. No send occurs here.
-    pub fn request(&mut self, command: ClientCommand, now: u64)
-        -> Result<ClientRequest, HevcPictureClientFailure>
-    {
+    pub fn request(
+        &mut self,
+        command: ClientCommand,
+        now: u64,
+    ) -> Result<ClientRequest, HevcPictureClientFailure> {
         self.admit_call(now)?;
         let result = self.inner.request(command, now);
         result.map_err(|e| self.map_failure(e))
     }
     /// Borrow credentials/cnonce for the shared Digest lifecycle; no new authentication logic.
-    pub fn request_digest(&mut self, command: ClientCommand, credentials: &DigestCredentials<'_>,
-        cnonce: [u8; 16], now: u64) -> Result<ClientRequest, HevcPictureClientFailure>
-    {
+    pub fn request_digest(
+        &mut self,
+        command: ClientCommand,
+        credentials: &DigestCredentials<'_>,
+        cnonce: [u8; 16],
+        now: u64,
+    ) -> Result<ClientRequest, HevcPictureClientFailure> {
         self.admit_call(now)?;
         let result = self.inner.request_digest(command, credentials, cnonce, now);
         result.map_err(|e| self.map_failure(e))
     }
     /// Answer the held exact challenge through the original client, preserving both outputs.
-    pub fn respond_digest(&mut self, credentials: &DigestCredentials<'_>, cnonce: [u8; 16], now: u64)
-        -> Result<HevcChallengeResponse, HevcPictureClientFailure>
-    {
+    pub fn respond_digest(
+        &mut self,
+        credentials: &DigestCredentials<'_>,
+        cnonce: [u8; 16],
+        now: u64,
+    ) -> Result<HevcChallengeResponse, HevcPictureClientFailure> {
         self.admit_call(now)?;
         let result = self.inner.respond_digest(credentials, cnonce, now);
         result.map_err(|e| self.map_failure(e))
@@ -286,23 +338,37 @@ impl RtspHevcPictureClient {
         self.check_time(now)?;
         self.last_ns = now;
         if self.closed {
-            return Ok(HevcPictureClientPoll::Ended { client: None, interrupted_picture: None, tail: None });
+            return Ok(HevcPictureClientPoll::Ended {
+                client: None,
+                interrupted_picture: None,
+                tail: None,
+            });
         }
         // Do not let queued derivatives postpone session/wire/challenge expiry.
         // This child module uses the SAME private deadline owner as the raw pump.
         self.inner.last_ns = now;
-        if !self.inner.draining && let Some(error) = self.inner.deadline_error(now) {
+        if !self.inner.draining
+            && let Some(error) = self.inner.deadline_error(now)
+        {
             let event = self.inner.fault(error, None);
             return Ok(self.client_event(event));
         }
         if self.pending_deadline_ns.is_some_and(|at| now >= at) {
             let queued = self.retire_queue();
             let picture = self.assembler.discard_gap();
-            return Ok(HevcPictureClientPoll::QueueRetired(HevcPictureWorkRetirement {
-                reason: HevcPictureWorkReason::QueueDeadline, queued, picture,
-            }));
+            return Ok(HevcPictureClientPoll::QueueRetired(
+                HevcPictureWorkRetirement {
+                    reason: HevcPictureWorkReason::QueueDeadline,
+                    queued,
+                    picture,
+                },
+            ));
         }
-        if let Some(retired) = self.assembler.expire(now).map_err(HevcPictureClientError::Assembly)? {
+        if let Some(retired) = self
+            .assembler
+            .expire(now)
+            .map_err(HevcPictureClientError::Assembly)?
+        {
             return Ok(HevcPictureClientPoll::PictureRetired(retired));
         }
         if let Some(nal) = self.pending.next() {
@@ -313,56 +379,108 @@ impl RtspHevcPictureClient {
             }
             let step = self.assembler.push(nal, now);
             let retirement = if eob && matches!(&step, HevcAssemblyStep::Accepted(_)) {
-                Some(Box::new(self.cancel_with_reason(HevcPictureWorkReason::EndOfBitstream)))
-            } else { None };
+                Some(Box::new(
+                    self.cancel_with_reason(HevcPictureWorkReason::EndOfBitstream),
+                ))
+            } else {
+                None
+            };
             return Ok(HevcPictureClientPoll::Assembly { step, retirement });
         }
-        let event = self.inner.poll(now).map_err(HevcPictureClientError::Client)?;
+        let event = self
+            .inner
+            .poll(now)
+            .map_err(HevcPictureClientError::Client)?;
         Ok(match event {
-            HevcClientPoll::Media(H265ReceivePoll::Packet { source, reconstruction }) => match reconstruction {
+            HevcClientPoll::Media(H265ReceivePoll::Packet {
+                source,
+                reconstruction,
+            }) => match reconstruction {
                 Ok(output) => {
                     let deadline = now.checked_add(self.limits.max_age_ns);
                     if !output.nals.is_empty() && deadline.is_none() {
-                        let source = HevcClientPoll::Media(H265ReceivePoll::Packet { source, reconstruction: Ok(output) });
+                        let source = HevcClientPoll::Media(H265ReceivePoll::Packet {
+                            source,
+                            reconstruction: Ok(output),
+                        });
                         return Ok(HevcPictureClientPoll::Fault {
                             reason: HevcPictureClientError::DeadlineExhausted,
-                            retirement: Box::new(self.cancel_with_reason(HevcPictureWorkReason::ClientTerminal)),
+                            retirement: Box::new(
+                                self.cancel_with_reason(HevcPictureWorkReason::ClientTerminal),
+                            ),
                             source: Box::new(source),
                         });
                     }
                     let picture = if output.gap_before || output.discarded.is_some() {
                         self.assembler.discard_gap()
-                    } else { None };
+                    } else {
+                        None
+                    };
                     let queued_nals = output.nals.len();
                     self.pending = output.nals.into_iter();
                     self.pending_deadline_ns = if queued_nals == 0 { None } else { deadline };
-                    HevcPictureClientPoll::Source { source, status: output.status, queued_nals,
-                        gap_before: output.gap_before, fragment: output.discarded, picture }
+                    HevcPictureClientPoll::Source {
+                        source,
+                        status: output.status,
+                        queued_nals,
+                        gap_before: output.gap_before,
+                        fragment: output.discarded,
+                        picture,
+                    }
                 }
                 Err(error) => HevcPictureClientPoll::CodecRefused {
-                    source, error, picture: self.assembler.discard_gap(),
+                    source,
+                    error,
+                    picture: self.assembler.discard_gap(),
                 },
             },
-            HevcClientPoll::Media(H265ReceivePoll::Gap { gap, discarded }) => HevcPictureClientPoll::Gap {
-                gap, fragment: discarded, picture: self.assembler.discard_gap(),
-            },
-            HevcClientPoll::Media(H265ReceivePoll::FragmentDiscarded(fragment)) => HevcPictureClientPoll::FragmentRetired {
-                fragment, picture: self.assembler.discard_gap(),
-            },
-            event @ HevcClientPoll::Ended { .. } => {
-                let interrupted = matches!(&event, HevcClientPoll::Ended {
-                    media: Some(H265ReceivePoll::Ended { discarded: Some(_) }), .. });
-                let interrupted_picture = if interrupted { self.assembler.discard_gap() } else { None };
-                let tail = self.assembler.finish(now).map_err(HevcPictureClientError::Assembly)?;
-                self.closed = true;
-                HevcPictureClientPoll::Ended { client: Some(Box::new(event)), interrupted_picture, tail: Some(tail) }
+            HevcClientPoll::Media(H265ReceivePoll::Gap { gap, discarded }) => {
+                HevcPictureClientPoll::Gap {
+                    gap,
+                    fragment: discarded,
+                    picture: self.assembler.discard_gap(),
+                }
             }
-            HevcClientPoll::Pending { .. } => HevcPictureClientPoll::Pending { wake_at_ns: self.next_wake_ns() },
+            HevcClientPoll::Media(H265ReceivePoll::FragmentDiscarded(fragment)) => {
+                HevcPictureClientPoll::FragmentRetired {
+                    fragment,
+                    picture: self.assembler.discard_gap(),
+                }
+            }
+            event @ HevcClientPoll::Ended { .. } => {
+                let interrupted = matches!(
+                    &event,
+                    HevcClientPoll::Ended {
+                        media: Some(H265ReceivePoll::Ended { discarded: Some(_) }),
+                        ..
+                    }
+                );
+                let interrupted_picture = if interrupted {
+                    self.assembler.discard_gap()
+                } else {
+                    None
+                };
+                let tail = self
+                    .assembler
+                    .finish(now)
+                    .map_err(HevcPictureClientError::Assembly)?;
+                self.closed = true;
+                HevcPictureClientPoll::Ended {
+                    client: Some(Box::new(event)),
+                    interrupted_picture,
+                    tail: Some(tail),
+                }
+            }
+            HevcClientPoll::Pending { .. } => HevcPictureClientPoll::Pending {
+                wake_at_ns: self.next_wake_ns(),
+            },
             event => self.client_event(event),
         })
     }
     /// Stop TCP admission and drain accepted work. Incomplete-FU EOF cannot flush a picture.
-    pub fn finish(&mut self) { self.inner.finish(); }
+    pub fn finish(&mut self) {
+        self.inner.finish();
+    }
     /// Cancel every local layer. Returned bytes/receipts never assert remote TEARDOWN success.
     pub fn cancel(&mut self) -> HevcPictureClientRetirement {
         self.cancel_with_reason(HevcPictureWorkReason::Cancelled)
@@ -373,51 +491,94 @@ impl RtspHevcPictureClient {
         HevcPictureClientRetirement { client, work }
     }
     fn client_event(&mut self, mut event: HevcClientPoll) -> HevcPictureClientPoll {
-        let terminal = matches!(&event, HevcClientPoll::Fault { .. }
-            | HevcClientPoll::Rtp { retirement: Some(_), .. });
-        let work = if terminal { Some(self.close_work(HevcPictureWorkReason::ClientTerminal)) } else { None };
+        let terminal = matches!(
+            &event,
+            HevcClientPoll::Fault { .. }
+                | HevcClientPoll::Rtp {
+                    retirement: Some(_),
+                    ..
+                }
+        );
+        let work = if terminal {
+            Some(self.close_work(HevcPictureWorkReason::ClientTerminal))
+        } else {
+            None
+        };
         // A raw client wait must not hide the picture assembler's earlier timer.
         match &mut event {
             HevcClientPoll::AuthenticationRequired { wake_at_ns, .. }
-                | HevcClientPoll::Backpressure { wake_at_ns } => *wake_at_ns = self.next_wake_ns(),
-            _ => {},
+            | HevcClientPoll::Backpressure { wake_at_ns } => *wake_at_ns = self.next_wake_ns(),
+            _ => {}
         }
-        HevcPictureClientPoll::Client { event: Box::new(event), work }
+        HevcPictureClientPoll::Client {
+            event: Box::new(event),
+            work,
+        }
     }
     fn close_work(&mut self, reason: HevcPictureWorkReason) -> HevcPictureWorkRetirement {
         self.closed = true;
-        HevcPictureWorkRetirement { reason, queued: self.retire_queue(), picture: self.assembler.cancel() }
+        HevcPictureWorkRetirement {
+            reason,
+            queued: self.retire_queue(),
+            picture: self.assembler.cancel(),
+        }
     }
     fn retire_queue(&mut self) -> HevcQueuedNalRetirement {
         let nals = self.pending.as_slice();
         let receipt = HevcQueuedNalRetirement {
-            key: self.key, nals: nals.len(), bytes: nals.iter().map(|n| n.bytes().len()).sum(),
-            first_sequence: nals.first().and_then(|n| n.sources().first()).map(|s| s.sequence),
-            last_sequence: nals.last().and_then(|n| n.sources().last()).map(|s| s.sequence),
+            key: self.key,
+            nals: nals.len(),
+            bytes: nals.iter().map(|n| n.bytes().len()).sum(),
+            first_sequence: nals
+                .first()
+                .and_then(|n| n.sources().first())
+                .map(|s| s.sequence),
+            last_sequence: nals
+                .last()
+                .and_then(|n| n.sources().last())
+                .map(|s| s.sequence),
         };
         self.pending = Vec::new().into_iter();
         self.pending_deadline_ns = None;
         receipt
     }
     fn check_time(&self, now: u64) -> Result<(), HevcPictureClientError> {
-        if now < self.last_ns { Err(HevcPictureClientError::Client(
-            HevcClientError::Session(ClientError::ClockReversed))) } else { Ok(()) }
+        if now < self.last_ns {
+            Err(HevcPictureClientError::Client(HevcClientError::Session(
+                ClientError::ClockReversed,
+            )))
+        } else {
+            Ok(())
+        }
     }
     fn admit_call(&mut self, now: u64) -> Result<(), HevcPictureClientFailure> {
         self.check_time(now).map_err(safe_picture)?;
-        if self.closed { return Err(safe_picture(HevcPictureClientError::Closed)); }
-        if self.pending.len() != 0 { return Err(safe_picture(HevcPictureClientError::Backpressure)); }
+        if self.closed {
+            return Err(safe_picture(HevcPictureClientError::Closed));
+        }
+        if self.pending.len() != 0 {
+            return Err(safe_picture(HevcPictureClientError::Backpressure));
+        }
         self.last_ns = now;
         Ok(())
     }
     fn map_failure(&mut self, failure: HevcClientFailure) -> HevcPictureClientFailure {
-        let retirement = failure.retirement.map(|client| Box::new(HevcPictureClientRetirement {
-            client: *client, work: self.close_work(HevcPictureWorkReason::ClientTerminal),
-        }));
-        HevcPictureClientFailure { reason: HevcPictureClientError::Client(failure.reason), retirement }
+        let retirement = failure.retirement.map(|client| {
+            Box::new(HevcPictureClientRetirement {
+                client: *client,
+                work: self.close_work(HevcPictureWorkReason::ClientTerminal),
+            })
+        });
+        HevcPictureClientFailure {
+            reason: HevcPictureClientError::Client(failure.reason),
+            retirement,
+        }
     }
 }
 
 fn safe_picture(reason: HevcPictureClientError) -> HevcPictureClientFailure {
-    HevcPictureClientFailure { reason, retirement: None }
+    HevcPictureClientFailure {
+        reason,
+        retirement: None,
+    }
 }

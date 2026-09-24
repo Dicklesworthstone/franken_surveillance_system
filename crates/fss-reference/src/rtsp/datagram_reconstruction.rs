@@ -5,13 +5,17 @@
 //! the original live poll schedule. Equal-time arrivals precede future timer wakes; immediate
 //! receiver output is drained between observations. Storage time never becomes media time.
 
+use super::datagram_archive::{
+    DatagramArchive, DatagramArchiveError, DatagramPin, RetainedDatagram,
+};
 use fss_core::{CanonicalEncoder, ContentDigest, DigestAlgorithm};
 use fss_geometry::WorkBudget;
+use fss_packet::avc::{
+    AvcError, AvcReceiveAdmission, AvcReceiveCancellation, AvcReceiveError, AvcReceiveLimits,
+    AvcReceivePoll, AvcReceiver, parse_pps, parse_sps,
+};
 use fss_packet::{H264Mode, PacketError, ReorderDisposition, RtcpCompound, RtcpMode};
-use fss_packet::avc::{AvcError, AvcReceiveAdmission, AvcReceiveCancellation, AvcReceiveError,
-    AvcReceiveLimits, AvcReceivePoll, AvcReceiver, parse_pps, parse_sps};
 use fss_publication::{LocalRootPublisher, PublishCancellation, PublishCutPoint};
-use super::datagram_archive::{DatagramArchive, DatagramArchiveError, DatagramPin, RetainedDatagram};
 
 mod profile;
 /// Source-verified recording reconstruction with explicit per-picture media timing.
@@ -73,7 +77,9 @@ impl std::fmt::Display for AvcReplayError {
 }
 impl std::error::Error for AvcReplayError {}
 impl From<DatagramArchiveError> for AvcReplayError {
-    fn from(e: DatagramArchiveError) -> Self { Self::Source(e) }
+    fn from(e: DatagramArchiveError) -> Self {
+        Self::Source(e)
+    }
 }
 type Result<T> = std::result::Result<T, AvcReplayError>;
 
@@ -170,7 +176,9 @@ pub struct AvcReplayFailure {
     pub retirement: Option<Box<AvcReplayRetirement>>,
 }
 impl std::fmt::Display for AvcReplayFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { std::fmt::Display::fmt(&self.reason, f) }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.reason, f)
+    }
 }
 impl std::error::Error for AvcReplayFailure {}
 
@@ -196,101 +204,208 @@ pub struct DatagramAvcReplay<'a> {
 impl<'a> DatagramAvcReplay<'a> {
     /// Parse and bind all parameters before reading source. The archive must be a recovered,
     /// owner-accepted inventory. Every later observation is reverified against current custody.
-    pub fn new(archive: &'a DatagramArchive, spec: AvcReplaySpec<'_>, bounds: AvcReplayBounds,
-        now_ns: u64) -> Result<Self> {
-        if bounds.max_steps == 0 || now_ns >= bounds.deadline_ns
+    pub fn new(
+        archive: &'a DatagramArchive,
+        spec: AvcReplaySpec<'_>,
+        bounds: AvcReplayBounds,
+        now_ns: u64,
+    ) -> Result<Self> {
+        if bounds.max_steps == 0
+            || now_ns >= bounds.deadline_ns
             || archive.pin().payload_bytes > bounds.max_source_bytes
             || spec.configuration_evidence.algorithm() != DigestAlgorithm::Sha256
-            || spec.configuration_evidence.bytes() == [0; 32] || spec.payload_type > 127 {
+            || spec.configuration_evidence.bytes() == [0; 32]
+            || spec.payload_type > 127
+        {
             return Err(AvcReplayError::Configuration);
         }
         let sps = parse_sps(spec.sps, spec.limits.syntax).map_err(AvcReplayError::Parameters)?;
-        let pps = parse_pps(spec.pps, &sps, spec.limits.syntax).map_err(AvcReplayError::Parameters)?;
-        let receiver = AvcReceiver::new(archive.scope().binding.key(), spec.payload_type, spec.mode,
-            spec.limits, (sps, pps)).map_err(AvcReplayError::Receiver)?;
+        let pps =
+            parse_pps(spec.pps, &sps, spec.limits.syntax).map_err(AvcReplayError::Parameters)?;
+        let receiver = AvcReceiver::new(
+            archive.scope().binding.key(),
+            spec.payload_type,
+            spec.mode,
+            spec.limits,
+            (sps, pps),
+        )
+        .map_err(AvcReplayError::Receiver)?;
         let interpretation = profile::digest(archive.pin(), spec)?;
         // Conservative traversal/copy reservation, not a calibrated performance receipt.
-        let poll_cost = [spec.limits.reorder.max_bytes, spec.limits.reconstruction.max_nal_bytes,
-            spec.limits.assembly.max_bytes].into_iter().try_fold(1024_u64, |sum, n| {
-                sum.checked_add(u64::try_from(n).map_err(|_| AvcReplayError::Configuration)?)
-                    .ok_or(AvcReplayError::Configuration)
-            })?;
-        Ok(Self { archive, receiver: Some(receiver), interpretation, packet_limits: spec.limits.reorder.packet,
-            reduced_rtcp: spec.reduced_rtcp, next: 0, replay_ns: 0, storage_ns: now_ns,
-            bounds, steps: 0, poll_cost, closed: false })
+        let poll_cost = [
+            spec.limits.reorder.max_bytes,
+            spec.limits.reconstruction.max_nal_bytes,
+            spec.limits.assembly.max_bytes,
+        ]
+        .into_iter()
+        .try_fold(1024_u64, |sum, n| {
+            sum.checked_add(u64::try_from(n).map_err(|_| AvcReplayError::Configuration)?)
+                .ok_or(AvcReplayError::Configuration)
+        })?;
+        Ok(Self {
+            archive,
+            receiver: Some(receiver),
+            interpretation,
+            packet_limits: spec.limits.reorder.packet,
+            reduced_rtcp: spec.reduced_rtcp,
+            next: 0,
+            replay_ns: 0,
+            storage_ns: now_ns,
+            bounds,
+            steps: 0,
+            poll_cost,
+            closed: false,
+        })
     }
     /// Full source/configuration/scheduler commitment, not proof of the original live schedule.
-    pub fn interpretation(&self) -> ContentDigest { self.interpretation }
+    pub fn interpretation(&self) -> ContentDigest {
+        self.interpretation
+    }
     /// Complete pinned input. Later source publications are not silently included.
-    pub fn source(&self) -> DatagramPin { self.archive.pin() }
+    pub fn source(&self) -> DatagramPin {
+        self.archive.pin()
+    }
     /// Current virtual receive-clock time, independent of real-time storage admission.
-    pub fn replay_ns(&self) -> u64 { self.replay_ns }
+    pub fn replay_ns(&self) -> u64 {
+        self.replay_ns
+    }
     /// Original observations read, including invalid and duplicate datagrams.
-    pub fn observations_read(&self) -> u64 { self.next as u64 }
+    pub fn observations_read(&self) -> u64 {
+        self.next as u64
+    }
 
     /// Drain one receiver event, read/admit one original, or advance one timer. Never loop on
     /// Pending. Storage and work refusal stop the attempt without losing a produced output.
-    pub fn step(&mut self, publisher: &LocalRootPublisher, now_ns: u64,
-        cancel: &dyn PublishCancellation, budget: &mut WorkBudget<'_>)
-        -> std::result::Result<AvcReplayStep, AvcReplayFailure> {
-        if self.closed { return Ok(AvcReplayStep::Ended); }
+    pub fn step(
+        &mut self,
+        publisher: &LocalRootPublisher,
+        now_ns: u64,
+        cancel: &dyn PublishCancellation,
+        budget: &mut WorkBudget<'_>,
+    ) -> std::result::Result<AvcReplayStep, AvcReplayFailure> {
+        if self.closed {
+            return Ok(AvcReplayStep::Ended);
+        }
         self.guard(now_ns, cancel, budget)?;
-        let step = self.advance(publisher, cancel, budget).map_err(|e| self.fail(e, None))?;
-        if let Err(error) = current(cancel, budget) { return Err(self.fail(error, Some(step))); }
+        let step = self
+            .advance(publisher, cancel, budget)
+            .map_err(|e| self.fail(e, None))?;
+        if let Err(error) = current(cancel, budget) {
+            return Err(self.fail(error, Some(step)));
+        }
         Ok(step)
     }
-    fn advance(&mut self, publisher: &LocalRootPublisher, cancel: &dyn PublishCancellation,
-        budget: &mut WorkBudget<'_>) -> Result<AvcReplayStep> {
-        budget.charge(self.poll_cost).map_err(DatagramArchiveError::Work)?;
-        let event = self.receiver.as_mut().ok_or(AvcReplayError::Invariant)?
-            .poll(self.replay_ns).map_err(AvcReplayError::Receiver)?;
+    fn advance(
+        &mut self,
+        publisher: &LocalRootPublisher,
+        cancel: &dyn PublishCancellation,
+        budget: &mut WorkBudget<'_>,
+    ) -> Result<AvcReplayStep> {
+        budget
+            .charge(self.poll_cost)
+            .map_err(DatagramArchiveError::Work)?;
+        let event = self
+            .receiver
+            .as_mut()
+            .ok_or(AvcReplayError::Invariant)?
+            .poll(self.replay_ns)
+            .map_err(AvcReplayError::Receiver)?;
         let wake = match event {
             AvcReceivePoll::Pending { wake_at_ns } => wake_at_ns,
             event @ AvcReceivePoll::Ended { .. } => {
                 self.closed = true;
                 let retired = self.take_receiver().ok_or(AvcReplayError::Invariant)?;
-                return Ok(AvcReplayStep::CodecEnded { replay_ns: self.replay_ns, event,
-                    remaining_datagrams: self.source().datagrams - self.next as u64, retired });
+                return Ok(AvcReplayStep::CodecEnded {
+                    replay_ns: self.replay_ns,
+                    event,
+                    remaining_datagrams: self.source().datagrams - self.next as u64,
+                    retired,
+                });
             }
-            event => return Ok(AvcReplayStep::Media { replay_ns: self.replay_ns, event }),
+            event => {
+                return Ok(AvcReplayStep::Media {
+                    replay_ns: self.replay_ns,
+                    event,
+                });
+            }
         };
         let Some(next) = self.archive.records().get(self.next) else {
             self.closed = true;
             let retired = self.take_receiver().ok_or(AvcReplayError::Invariant)?;
-            return Ok(AvcReplayStep::PrefixExhausted { source: self.source(), replay_ns: self.replay_ns, retired });
+            return Ok(AvcReplayStep::PrefixExhausted {
+                source: self.source(),
+                replay_ns: self.replay_ns,
+                retired,
+            });
         };
-        if next.received_ns < self.replay_ns { return Err(AvcReplayError::Invariant); }
-        if let Some(at) = wake && at < next.received_ns {
-            if at <= self.replay_ns { return Err(AvcReplayError::Invariant); }
+        if next.received_ns < self.replay_ns {
+            return Err(AvcReplayError::Invariant);
+        }
+        if let Some(at) = wake
+            && at < next.received_ns
+        {
+            if at <= self.replay_ns {
+                return Err(AvcReplayError::Invariant);
+            }
             self.replay_ns = at;
             return Ok(AvcReplayStep::ClockAdvanced { replay_ns: at });
         }
-        let source = self.archive.read(self.next as u64 + 1, publisher, cancel, budget)?;
+        let source = self
+            .archive
+            .read(self.next as u64 + 1, publisher, cancel, budget)?;
         self.replay_ns = source.record().received_ns;
         self.next += 1;
         if source.record().channel == self.archive.scope().channels.1 {
-            let mode = if self.reduced_rtcp { RtcpMode::ReducedSize } else { RtcpMode::Compound };
-            let validation = RtcpCompound::parse(source.payload(), self.packet_limits, mode).map(|v| v.packet_count());
+            let mode = if self.reduced_rtcp {
+                RtcpMode::ReducedSize
+            } else {
+                RtcpMode::Compound
+            };
+            let validation = RtcpCompound::parse(source.payload(), self.packet_limits, mode)
+                .map(|v| v.packet_count());
             return Ok(AvcReplayStep::Rtcp { source, validation });
         }
-        let result = self.receiver.as_mut().ok_or(AvcReplayError::Invariant)?
-            .ingest(self.archive.scope().binding.key(), source.payload(), self.replay_ns);
+        let result = self
+            .receiver
+            .as_mut()
+            .ok_or(AvcReplayError::Invariant)?
+            .ingest(
+                self.archive.scope().binding.key(),
+                source.payload(),
+                self.replay_ns,
+            );
         match result {
             Ok(admission) => {
-                let restart = admission.transport.transport.disposition == ReorderDisposition::RestartRequired;
-                let retired = if restart { self.closed = true; self.take_receiver() } else { None };
-                Ok(AvcReplayStep::Rtp { source, admission, retired })
+                let restart = admission.transport.transport.disposition
+                    == ReorderDisposition::RestartRequired;
+                let retired = if restart {
+                    self.closed = true;
+                    self.take_receiver()
+                } else {
+                    None
+                };
+                Ok(AvcReplayStep::Rtp {
+                    source,
+                    admission,
+                    retired,
+                })
             }
             Err(error) => {
                 self.closed = true;
                 let retired = self.take_receiver().ok_or(AvcReplayError::Invariant)?;
-                Ok(AvcReplayStep::InputRefused { source, error, retired })
+                Ok(AvcReplayStep::InputRefused {
+                    source,
+                    error,
+                    retired,
+                })
             }
         }
     }
     /// Stop without flushing a picture, reading more source or deleting any stored object.
     pub fn cancel(&mut self) -> Option<AvcReplayRetirement> {
-        if self.closed && self.receiver.is_none() { return None; }
+        if self.closed && self.receiver.is_none() {
+            return None;
+        }
         Some(self.retire(None))
     }
     fn take_receiver(&mut self) -> Option<AvcReceiveCancellation> {
@@ -298,27 +413,60 @@ impl<'a> DatagramAvcReplay<'a> {
     }
     fn retire(&mut self, withheld: Option<AvcReplayStep>) -> AvcReplayRetirement {
         self.closed = true;
-        AvcReplayRetirement { source: self.source(), interpretation: self.interpretation,
-            observations_read: self.next as u64, replay_ns: self.replay_ns,
-            receiver: self.take_receiver(), withheld: withheld.map(Box::new) }
+        AvcReplayRetirement {
+            source: self.source(),
+            interpretation: self.interpretation,
+            observations_read: self.next as u64,
+            replay_ns: self.replay_ns,
+            receiver: self.take_receiver(),
+            withheld: withheld.map(Box::new),
+        }
     }
-    fn fail(&mut self, reason: AvcReplayError, withheld: Option<AvcReplayStep>) -> AvcReplayFailure {
-        AvcReplayFailure { reason, retirement: Some(Box::new(self.retire(withheld))) }
+    fn fail(
+        &mut self,
+        reason: AvcReplayError,
+        withheld: Option<AvcReplayStep>,
+    ) -> AvcReplayFailure {
+        AvcReplayFailure {
+            reason,
+            retirement: Some(Box::new(self.retire(withheld))),
+        }
     }
-    fn guard(&mut self, now_ns: u64, cancel: &dyn PublishCancellation, budget: &mut WorkBudget<'_>)
-        -> std::result::Result<(), AvcReplayFailure> {
-        if self.closed { return Err(AvcReplayFailure { reason: AvcReplayError::Closed, retirement: None }); }
-        if now_ns < self.storage_ns { return Err(AvcReplayFailure { reason: AvcReplayError::ClockReversed, retirement: None }); }
-        let result = if now_ns >= self.bounds.deadline_ns { Err(DatagramArchiveError::Deadline.into()) }
-            else if self.steps >= self.bounds.max_steps { Err(DatagramArchiveError::Limit.into()) }
-            else { current(cancel, budget) };
+    fn guard(
+        &mut self,
+        now_ns: u64,
+        cancel: &dyn PublishCancellation,
+        budget: &mut WorkBudget<'_>,
+    ) -> std::result::Result<(), AvcReplayFailure> {
+        if self.closed {
+            return Err(AvcReplayFailure {
+                reason: AvcReplayError::Closed,
+                retirement: None,
+            });
+        }
+        if now_ns < self.storage_ns {
+            return Err(AvcReplayFailure {
+                reason: AvcReplayError::ClockReversed,
+                retirement: None,
+            });
+        }
+        let result = if now_ns >= self.bounds.deadline_ns {
+            Err(DatagramArchiveError::Deadline.into())
+        } else if self.steps >= self.bounds.max_steps {
+            Err(DatagramArchiveError::Limit.into())
+        } else {
+            current(cancel, budget)
+        };
         result.map_err(|e| self.fail(e, None))?;
-        self.storage_ns = now_ns; self.steps += 1;
+        self.storage_ns = now_ns;
+        self.steps += 1;
         Ok(())
     }
 }
 fn current(cancel: &dyn PublishCancellation, budget: &mut WorkBudget<'_>) -> Result<()> {
-    if cancel.cancel_requested(PublishCutPoint::AfterChildrenVerified) { return Err(DatagramArchiveError::Cancelled.into()); }
+    if cancel.cancel_requested(PublishCutPoint::AfterChildrenVerified) {
+        return Err(DatagramArchiveError::Cancelled.into());
+    }
     budget.charge(1).map_err(DatagramArchiveError::Work)?;
     Ok(())
 }

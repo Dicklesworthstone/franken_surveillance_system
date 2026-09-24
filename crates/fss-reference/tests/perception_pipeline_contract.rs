@@ -16,7 +16,7 @@ use fss_core::abstraction::runtime_authority::RuntimeGrant;
 use fss_core::event::{EventHypothesis, EventKind, EventState};
 use fss_core::{ContentDigest, TimestampNs};
 
-use fss_reference::ingest::cross_camera::{associate, CameraObservation, CrossCameraConfig};
+use fss_reference::ingest::cross_camera::{CameraObservation, CrossCameraConfig, associate};
 use fss_reference::ingest::eventgen::{ZoneEventConfig, ZoneEventGenerator, ZoneSpec};
 use fss_reference::ingest::foreground::{ForegroundConfig, ForegroundDetector};
 use fss_reference::ingest::tracker::{Detection, MultiObjectTracker, TrackerConfig};
@@ -86,7 +86,13 @@ fn step_with_tracks(
     zonegen: &mut ZoneEventGenerator,
     square_at: Option<(f64, f64)>,
     ts_ns: i128,
-) -> Result<(Vec<EventHypothesis>, fss_reference::ingest::tracker::TrackerOutput), String> {
+) -> Result<
+    (
+        Vec<EventHypothesis>,
+        fss_reference::ingest::tracker::TrackerOutput,
+    ),
+    String,
+> {
     let pixels = frame(square_at);
     let frame_digest = ContentDigest::sha256(&pixels);
 
@@ -218,13 +224,30 @@ fn pipeline_event_evidence_digest_matches_input_frame() -> TestResult {
     // Baseline.
     step(&mut detector, &mut tracker, &mut zonegen, None, 0)?;
     // Approach (unprotected half): 4 -> 10 keeps IoU association alive.
-    step(&mut detector, &mut tracker, &mut zonegen, Some((4.0, 28.0)), 33_000_000)?;
-    step(&mut detector, &mut tracker, &mut zonegen, Some((10.0, 28.0)), 66_000_000)?;
+    step(
+        &mut detector,
+        &mut tracker,
+        &mut zonegen,
+        Some((4.0, 28.0)),
+        33_000_000,
+    )?;
+    step(
+        &mut detector,
+        &mut tracker,
+        &mut zonegen,
+        Some((10.0, 28.0)),
+        66_000_000,
+    )?;
     // Breach entry: the 10 -> 34 jump exceeds IoU overlap, so the tracker
     // starts a fresh Tentative track here (by design: unconfirmed until a
     // second consecutive hit). No event yet.
-    let no_events =
-        step(&mut detector, &mut tracker, &mut zonegen, Some((34.0, 28.0)), 99_000_000)?;
+    let no_events = step(
+        &mut detector,
+        &mut tracker,
+        &mut zonegen,
+        Some((34.0, 28.0)),
+        99_000_000,
+    )?;
     assert!(
         no_events.is_empty(),
         "tentative track inside the zone must not evidence events yet"
@@ -233,9 +256,18 @@ fn pipeline_event_evidence_digest_matches_input_frame() -> TestResult {
     // passes — the event must bind THIS frame's digest.
     let confirm_pixels = frame(Some((36.0, 28.0)));
     let confirm_digest = ContentDigest::sha256(&confirm_pixels);
-    let events =
-        step(&mut detector, &mut tracker, &mut zonegen, Some((36.0, 28.0)), 132_000_000)?;
-    assert_eq!(events.len(), 1, "confirmation inside the zone must generate exactly one event");
+    let events = step(
+        &mut detector,
+        &mut tracker,
+        &mut zonegen,
+        Some((36.0, 28.0)),
+        132_000_000,
+    )?;
+    assert_eq!(
+        events.len(),
+        1,
+        "confirmation inside the zone must generate exactly one event"
+    );
     assert_eq!(
         events[0].evidence[0].digest, confirm_digest,
         "event evidence must bind the digest of the frame that confirmed the breach"
@@ -300,12 +332,39 @@ fn two_camera_breach_associates_and_corroborates() -> TestResult {
 
     // --- Camera A: baseline, approach, breach, confirmation. ---
     step(&mut detector_a, &mut tracker_a, &mut zonegen, None, 0)?;
-    step(&mut detector_a, &mut tracker_a, &mut zonegen, Some((4.0, 28.0)), 33_000_000)?;
-    step(&mut detector_a, &mut tracker_a, &mut zonegen, Some((10.0, 28.0)), 66_000_000)?;
-    step(&mut detector_a, &mut tracker_a, &mut zonegen, Some((34.0, 28.0)), 99_000_000)?;
-    let mut events =
-        step(&mut detector_a, &mut tracker_a, &mut zonegen, Some((36.0, 28.0)), 132_000_000)?;
-    assert_eq!(events.len(), 1, "camera A must publish one zone-breach event");
+    step(
+        &mut detector_a,
+        &mut tracker_a,
+        &mut zonegen,
+        Some((4.0, 28.0)),
+        33_000_000,
+    )?;
+    step(
+        &mut detector_a,
+        &mut tracker_a,
+        &mut zonegen,
+        Some((10.0, 28.0)),
+        66_000_000,
+    )?;
+    step(
+        &mut detector_a,
+        &mut tracker_a,
+        &mut zonegen,
+        Some((34.0, 28.0)),
+        99_000_000,
+    )?;
+    let mut events = step(
+        &mut detector_a,
+        &mut tracker_a,
+        &mut zonegen,
+        Some((36.0, 28.0)),
+        132_000_000,
+    )?;
+    assert_eq!(
+        events.len(),
+        1,
+        "camera A must publish one zone-breach event"
+    );
     let mut lineage = fss_core::event::EventLineage::new(events.remove(0))?;
 
     // Camera A's own continued observation witnesses the event, using the
@@ -324,58 +383,69 @@ fn two_camera_breach_associates_and_corroborates() -> TestResult {
         .find(|t| t.status == fss_reference::ingest::tracker::TrackStatus::Confirmed)
         .ok_or("camera A holds a confirmed track")?;
     let witness_digest = ContentDigest::sha256(&frame(Some((38.0, 28.0))));
-    zonegen
-        .witness(
-            RuntimeGrant::ObserveEvent,
-            &mut lineage,
-            track_a,
-            "cam-e2e",
-            TimestampNs(165_000_000),
-            witness_digest,
-        )?;
-    assert_eq!(lineage.current_state(), fss_core::event::EventState::Witnessed);
+    zonegen.witness(
+        RuntimeGrant::ObserveEvent,
+        &mut lineage,
+        track_a,
+        "cam-e2e",
+        TimestampNs(165_000_000),
+        witness_digest,
+    )?;
+    assert_eq!(
+        lineage.current_state(),
+        fss_core::event::EventState::Witnessed
+    );
 
     // --- Camera B: same square, different viewpoint, own frames. ---
     // B's rectified ground-plane positions land within association gates of
     // A's observation of the same object.
     let ground_truth = (12.5_f64, 7.0_f64);
-    let pair_obs = (CameraObservation {
-        camera_id: "cam-a-rectified".to_string(),
-        track_id: track_a.id,
-        timestamp_ns: 165_000_000,
-        ground_x: ground_truth.0,
-        ground_y: ground_truth.1,
-    }, CameraObservation {
-        camera_id: "cam-b-rectified".to_string(),
-        track_id: 11,
-        timestamp_ns: 171_000_000,
-        ground_x: ground_truth.0 + 0.4,
-        ground_y: ground_truth.1 + 0.1,
-    });
+    let pair_obs = (
+        CameraObservation {
+            camera_id: "cam-a-rectified".to_string(),
+            track_id: track_a.id,
+            timestamp_ns: 165_000_000,
+            ground_x: ground_truth.0,
+            ground_y: ground_truth.1,
+        },
+        CameraObservation {
+            camera_id: "cam-b-rectified".to_string(),
+            track_id: 11,
+            timestamp_ns: 171_000_000,
+            ground_x: ground_truth.0 + 0.4,
+            ground_y: ground_truth.1 + 0.1,
+        },
+    );
     let config = CrossCameraConfig {
         max_time_delta_ns: 50_000_000,
         max_position_distance: 2.0,
         min_confidence: 0.1,
     };
     let pairs = associate(&config, &[pair_obs.0], &[pair_obs.1])?;
-    assert_eq!(pairs.len(), 1, "the two cameras observe the same physical object");
+    assert_eq!(
+        pairs.len(),
+        1,
+        "the two cameras observe the same physical object"
+    );
 
     // Corroborate with camera B's independent frame bytes and domain.
     // Camera B's viewpoint: same scene, one pixel of parallax — distinct
     // bytes, independent observation.
     let cam_b_digest = ContentDigest::sha256(&frame(Some((35.0, 28.0))));
-    zonegen
-        .corroborate(
-            RuntimeGrant::ObserveEvent,
-            &mut lineage,
-            &pairs[0],
-            "cam-b-e2e",
-            TimestampNs(171_000_000),
-            cam_b_digest,
-            0.95,
-        )?;
+    zonegen.corroborate(
+        RuntimeGrant::ObserveEvent,
+        &mut lineage,
+        &pairs[0],
+        "cam-b-e2e",
+        TimestampNs(171_000_000),
+        cam_b_digest,
+        0.95,
+    )?;
 
-    assert_eq!(lineage.current_state(), fss_core::event::EventState::Corroborated);
+    assert_eq!(
+        lineage.current_state(),
+        fss_core::event::EventState::Corroborated
+    );
     assert_eq!(lineage.len(), 3, "genesis -> witnessed -> corroborated");
     let final_event = lineage.current();
     assert_eq!(final_event.evidence.len(), 3);

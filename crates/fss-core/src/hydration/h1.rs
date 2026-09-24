@@ -1047,7 +1047,8 @@ impl H1SemanticSynopsis {
         let anchor = LedgerAnchor::decode_canonical(decoder)?;
         let contract_basis = ContractBasis::decode_canonical(decoder)?;
         let estimated_cost = <BudgetVector as CanonicalDecode>::decode_canonical(decoder)?;
-        let required_capabilities = decode_text_set(decoder).map_err(|_| ContractError::InvalidIdentifier)?;
+        let required_capabilities =
+            decode_text_set(decoder).map_err(|_| ContractError::InvalidIdentifier)?;
         let privacy_class = decoder.text()?.to_string();
         let published_at = TimestampNs::decode_canonical(decoder)?;
         let retention_until = TimestampNs::decode_canonical(decoder)?;

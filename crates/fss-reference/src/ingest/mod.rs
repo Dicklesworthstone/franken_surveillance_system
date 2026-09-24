@@ -3,68 +3,66 @@
 //! Provides deterministic stream framing, marker validation, and source custody accounting
 //! for incoming media streams before decode or cognition processing.
 
-pub mod annexb;
-pub mod file_adapter;
-/// Bounded H.265/HEVC Annex-B access-unit splitting with exact source spans.
-pub mod hevc_annexb;
-pub mod mjpeg;
-/// Restart-safe recovery and verified reads of completed file imports.
-pub mod retained;
-/// Canonical JPEG decoding and durable source-linked luma publications.
-pub mod recorded_decode;
-/// Bounded, source-gap-aware pixel-change measurements over recorded frames.
-pub mod pixel_change;
 /// Opt-in activity/sentinel sampling with exact source-linked inclusion and skip receipts.
 pub mod activity;
-/// Exact frozen-model execution on retained decoded frames and durable model outputs.
-pub mod inference;
-/// Offline source-preserving conversion of exact tensor weights into recorded models.
-pub mod model_import;
-/// Explicit model-output decoding and source-linked detector proposals.
-pub mod detections;
-/// Deterministic scene-model foreground detection on decoded luma planes.
-pub mod foreground;
-/// Bounded, history-linked, single-camera association of detector proposals.
-pub mod tracking;
-/// Constant-velocity Kalman filter tracker with IoU-based data association.
-pub mod tracker;
-/// Cross-camera association of tracked objects via time and geometry gates.
-pub mod cross_camera;
-/// Zone-gated event generation from confirmed tracks into the event plane.
-pub mod eventgen;
 /// Complete, restart-reproducible detector/tracker reports over retained recordings.
 pub mod analysis;
+pub mod annexb;
+/// Cross-camera association of tracked objects via time and geometry gates.
+pub mod cross_camera;
+/// Explicit model-output decoding and source-linked detector proposals.
+pub mod detections;
+/// Zone-gated event generation from confirmed tracks into the event plane.
+pub mod eventgen;
+pub mod file_adapter;
+/// Deterministic scene-model foreground detection on decoded luma planes.
+pub mod foreground;
+/// Bounded H.265/HEVC Annex-B access-unit splitting with exact source spans.
+pub mod hevc_annexb;
+/// Exact frozen-model execution on retained decoded frames and durable model outputs.
+pub mod inference;
+pub mod mjpeg;
+/// Offline source-preserving conversion of exact tensor weights into recorded models.
+pub mod model_import;
+/// Bounded, source-gap-aware pixel-change measurements over recorded frames.
+pub mod pixel_change;
+/// Two-sensor ground-zone entries associated under explicit gates into corroborated events.
+pub mod recorded_corroboration;
+/// Retained per-(sensor, zone, interval) coverage witnesses of the recorded pipelines.
+pub mod recorded_coverage;
+/// Canonical JPEG decoding and durable source-linked luma publications.
+pub mod recorded_decode;
 /// Durable unresolved event candidates from exact replayed analysis reports.
 pub mod recorded_event;
 /// Model-free decode→foreground→Kalman→zone candidates with exact-approval publication.
 pub mod recorded_watch;
-/// Retained per-(sensor, zone, interval) coverage witnesses of the recorded pipelines.
-pub mod recorded_coverage;
-/// Two-sensor ground-zone entries associated under explicit gates into corroborated events.
-pub mod recorded_corroboration;
 /// Bounded recording-to-model-to-analysis execution with verified restart reuse.
 pub mod recording_pipeline;
+/// Restart-safe recovery and verified reads of completed file imports.
+pub mod retained;
 /// Bounded recorded-RTP framing and source-preserving ingest.
 pub mod rtpdump;
+/// Constant-velocity Kalman filter tracker with IoU-based data association.
+pub mod tracker;
+/// Bounded, history-linked, single-camera association of detector proposals.
+pub mod tracking;
 
 pub use annexb::{
     AnnexBAccessUnit, AnnexBError, AnnexBLimits, AnnexBNal, AnnexBScan, CEILING_MAX_NAL_BYTES,
     DEFAULT_MAX_AUS, DEFAULT_MAX_INPUT_BYTES, DEFAULT_MAX_NAL_BYTES, DEFAULT_MAX_NALS, SourceSpan,
     split_annexb,
 };
-pub use hevc_annexb::{HEVC_AU_GROUPING, HevcAccessUnit, HevcNal, HevcScan, split_hevc_annexb};
 pub use file_adapter::{
     ADP_FILE_GENERATION, ADP_FILE_ROW_ID, CaptureHint, DEFAULT_CHUNK_BYTES, DetectedFileFormat,
     FILE_IMPORT_MANIFEST_SCHEMA, FileFormatHint, FileImportManifest, FileIngestAdapter,
     FileIngestError, FileIngestLimits, FileIngestOutcome, FileIngestReceipt, FileIngestRequest,
     FileOmissionSpan, MAX_BATCH_DELTAS, SegmentSpan, compute_import_identity,
-    default_adapter_identity, fetch_segment_bytes, sniff_format,
-    sniff_format_with_hint,
+    default_adapter_identity, fetch_segment_bytes, sniff_format, sniff_format_with_hint,
 };
+pub use hevc_annexb::{HEVC_AU_GROUPING, HevcAccessUnit, HevcNal, HevcScan, split_hevc_annexb};
 pub use mjpeg::{
-    JpegFinding, JpegFrameSpan, JpegScan, JpegSofInfo, JpegSplitError, MjpegLimits,
+    JpegFinding, JpegFrameSpan, JpegProcess, JpegScan, JpegSofInfo, JpegSplitError, MjpegLimits,
     OmissionReason, OmissionSpan, split_jpeg_stream,
-    JpegProcess,
 };
 pub use retained::{RetainedFileImport, RetainedReadLimits};
 

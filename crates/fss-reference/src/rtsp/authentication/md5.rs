@@ -13,24 +13,29 @@ const K: [u32; 64] = [
     0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391,
 ];
 const S: [u32; 64] = [
-    7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
-    5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
-    4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
-    6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+    7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9,
+    14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10, 15,
+    21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
 ];
 
 pub(super) fn digest(input: &[u8]) -> [u8; 16] {
     let mut state = [0x67452301_u32, 0xefcdab89, 0x98badcfe, 0x10325476];
     let (chunks, tail) = input.as_chunks::<64>();
-    for chunk in chunks { compress(&mut state, chunk); }
+    for chunk in chunks {
+        compress(&mut state, chunk);
+    }
     let mut final_blocks = [0_u8; 128];
     final_blocks[..tail.len()].copy_from_slice(tail);
     final_blocks[tail.len()] = 0x80;
     let end = if tail.len() < 56 { 64 } else { 128 };
     final_blocks[end - 8..end].copy_from_slice(&(input.len() as u64).wrapping_mul(8).to_le_bytes());
-    for block in final_blocks[..end].as_chunks::<64>().0 { compress(&mut state, block); }
+    for block in final_blocks[..end].as_chunks::<64>().0 {
+        compress(&mut state, block);
+    }
     let mut output = [0_u8; 16];
-    for (part, value) in output.as_chunks_mut::<4>().0.iter_mut().zip(state) { part.copy_from_slice(&value.to_le_bytes()); }
+    for (part, value) in output.as_chunks_mut::<4>().0.iter_mut().zip(state) {
+        part.copy_from_slice(&value.to_le_bytes());
+    }
     output
 }
 fn compress(state: &mut [u32; 4], block: &[u8]) {
@@ -46,10 +51,20 @@ fn compress(state: &mut [u32; 4], block: &[u8]) {
             32..=47 => (b ^ c ^ d, (3 * i + 5) % 16),
             _ => (c ^ (b | !d), (7 * i) % 16),
         };
-        let next = b.wrapping_add(a.wrapping_add(f).wrapping_add(K[i]).wrapping_add(m[g]).rotate_left(S[i]));
-        a = d; d = c; c = b; b = next;
+        let next = b.wrapping_add(
+            a.wrapping_add(f)
+                .wrapping_add(K[i])
+                .wrapping_add(m[g])
+                .rotate_left(S[i]),
+        );
+        a = d;
+        d = c;
+        c = b;
+        b = next;
     }
-    for (word, value) in state.iter_mut().zip([a, b, c, d]) { *word = word.wrapping_add(value); }
+    for (word, value) in state.iter_mut().zip([a, b, c, d]) {
+        *word = word.wrapping_add(value);
+    }
 }
 
 #[cfg(test)]
@@ -61,10 +76,24 @@ mod tests {
             ("a", "0cc175b9c0f1b6a831c399e269772661"),
             ("abc", "900150983cd24fb0d6963f7d28e17f72"),
             ("message digest", "f96b697d7cb7938d525a2f31aaf161d0"),
-            ("abcdefghijklmnopqrstuvwxyz", "c3fcd3d76192e4007dfb496cca67e13b"),
-            ("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789", "d174ab98d277d9f5a5611c2c9f419d9f"),
-            ("12345678901234567890123456789012345678901234567890123456789012345678901234567890", "57edf4a22be3c955ac49da2e2107b67a"),
-        ] { assert_eq!(super::super::hex(&super::digest(input.as_bytes()))?, expected); }
+            (
+                "abcdefghijklmnopqrstuvwxyz",
+                "c3fcd3d76192e4007dfb496cca67e13b",
+            ),
+            (
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
+                "d174ab98d277d9f5a5611c2c9f419d9f",
+            ),
+            (
+                "12345678901234567890123456789012345678901234567890123456789012345678901234567890",
+                "57edf4a22be3c955ac49da2e2107b67a",
+            ),
+        ] {
+            assert_eq!(
+                super::super::hex(&super::digest(input.as_bytes()))?,
+                expected
+            );
+        }
         Ok(())
     }
 }

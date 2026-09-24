@@ -5,12 +5,11 @@
 use std::collections::BTreeSet;
 
 use fss_core::{
-    CanonicalEncode,
-    AgentFeedbackProposal, AgentOperation, CompetitionPolicy, ContentDigest,
-    FeedbackProposalKind, FeedbackPrivacyClass, HypothesisWorkspace, LedgerAnchor,
-    PrincipalId, RequestedDisposition, SessionId, WorkspaceHypothesis,
-    WorkspaceHypothesisStatus, ControlEdge, ControlPlan, ControlStep, ControlStepKind,
-    StepReversibility, StepRisk, StepRobustness, BudgetVector,
+    AgentFeedbackProposal, AgentOperation, BudgetVector, CanonicalEncode, CompetitionPolicy,
+    ContentDigest, ControlEdge, ControlPlan, ControlStep, ControlStepKind, FeedbackPrivacyClass,
+    FeedbackProposalKind, HypothesisWorkspace, LedgerAnchor, PrincipalId, RequestedDisposition,
+    SessionId, StepReversibility, StepRisk, StepRobustness, WorkspaceHypothesis,
+    WorkspaceHypothesisStatus,
 };
 
 fn hypothesis(id: &str, status: WorkspaceHypothesisStatus) -> WorkspaceHypothesis {
@@ -32,8 +31,7 @@ fn hypothesis(id: &str, status: WorkspaceHypothesisStatus) -> WorkspaceHypothesi
 }
 
 #[test]
-fn test_hypothesis_workspace_pins_competition_policy(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_hypothesis_workspace_pins_competition_policy() -> Result<(), Box<dyn std::error::Error>> {
     let workspace = HypothesisWorkspace::new(
         "workspace:gate",
         "objective:gate",
@@ -58,20 +56,22 @@ fn test_hypothesis_workspace_pins_competition_policy(
         hypothesis("hypothesis:intruder", WorkspaceHypothesisStatus::Leading),
         hypothesis("hypothesis:intruder", WorkspaceHypothesisStatus::Weakened),
     ];
-    assert!(HypothesisWorkspace::new(
-        "workspace:gate",
-        "objective:gate",
-        LedgerAnchor::genesis("site:fss:workspace"),
-        2,
-        duplicated,
-        CompetitionPolicy {
-            loss_model_id: "loss:protected-world".to_owned(),
-            tie_break_policy: "tie".to_owned(),
-            retain_high_loss_alternatives: true,
-        },
-        "decision:workspace:gate",
-    )
-    .is_err());
+    assert!(
+        HypothesisWorkspace::new(
+            "workspace:gate",
+            "objective:gate",
+            LedgerAnchor::genesis("site:fss:workspace"),
+            2,
+            duplicated,
+            CompetitionPolicy {
+                loss_model_id: "loss:protected-world".to_owned(),
+                tie_break_policy: "tie".to_owned(),
+                retain_high_loss_alternatives: true,
+            },
+            "decision:workspace:gate",
+        )
+        .is_err()
+    );
     let _ = digest;
     Ok(())
 }
@@ -133,34 +133,35 @@ fn test_control_plan_validates_graph() -> Result<(), Box<dyn std::error::Error>>
     assert_eq!(plan.edges.len(), 1);
     let digest = plan.plan_digest();
     // Dangling edges are refused.
-    assert!(ControlPlan::compile(
-        "plan:gate-watch",
-        "objective:gate-watch",
-        LedgerAnchor::genesis("site:fss:plan"),
-        "frame:gate:digest0001",
-        ContentDigest::sha256(b"world-envelope"),
-        None,
-        vec!["capability:situation.read".to_owned()],
-        BudgetVector::builder().latency_ms(500).build()?,
-        vec![plan_step("step:orient", ControlStepKind::Observe)],
-        vec![ControlEdge {
-            from: "step:orient".to_owned(),
-            to: "step:ghost".to_owned(),
-            condition: "c".to_owned(),
-            priority: 1,
-        }],
-        vec!["step:orient".to_owned()],
-        vec!["t".to_owned()],
-        "decision:plan:gate-watch",
-    )
-    .is_err());
+    assert!(
+        ControlPlan::compile(
+            "plan:gate-watch",
+            "objective:gate-watch",
+            LedgerAnchor::genesis("site:fss:plan"),
+            "frame:gate:digest0001",
+            ContentDigest::sha256(b"world-envelope"),
+            None,
+            vec!["capability:situation.read".to_owned()],
+            BudgetVector::builder().latency_ms(500).build()?,
+            vec![plan_step("step:orient", ControlStepKind::Observe)],
+            vec![ControlEdge {
+                from: "step:orient".to_owned(),
+                to: "step:ghost".to_owned(),
+                condition: "c".to_owned(),
+                priority: 1,
+            }],
+            vec!["step:orient".to_owned()],
+            vec!["t".to_owned()],
+            "decision:plan:gate-watch",
+        )
+        .is_err()
+    );
     let _ = digest;
     Ok(())
 }
 
 #[test]
-fn test_feedback_proposal_never_mutates_active_policy(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_feedback_proposal_never_mutates_active_policy() -> Result<(), Box<dyn std::error::Error>> {
     let proposal = AgentFeedbackProposal::new(
         "feedback:gate-summary",
         PrincipalId::parse("principal:operator")?,
@@ -181,7 +182,11 @@ fn test_feedback_proposal_never_mutates_active_policy(
         let mut encoder = fss_core::CanonicalEncoder::new();
         proposal.encode_canonical(&mut encoder);
         let bytes = encoder.finish();
-        assert_eq!(bytes[bytes.len() - 1], 0, "policy mutation flag must encode false");
+        assert_eq!(
+            bytes[bytes.len() - 1],
+            0,
+            "policy mutation flag must encode false"
+        );
     }
     assert_eq!(
         proposal.requested_disposition,
@@ -189,21 +194,23 @@ fn test_feedback_proposal_never_mutates_active_policy(
     );
     assert_eq!(proposal.kind, FeedbackProposalKind::BadSummary);
     // Evidence handles carry the lowercase digest spelling.
-    assert!(AgentFeedbackProposal::new(
-        "feedback:x",
-        PrincipalId::parse("principal:operator")?,
-        SessionId::parse("session:operator")?,
-        LedgerAnchor::genesis("site:fss:feedback"),
-        "{}".to_owned(),
-        FeedbackProposalKind::Correction,
-        "statement".to_owned(),
-        vec!["UPPER:not-digest".to_owned()],
-        vec![],
-        RequestedDisposition::RecordOnly,
-        FeedbackPrivacyClass::Public,
-        1_000,
-    )
-    .is_err());
+    assert!(
+        AgentFeedbackProposal::new(
+            "feedback:x",
+            PrincipalId::parse("principal:operator")?,
+            SessionId::parse("session:operator")?,
+            LedgerAnchor::genesis("site:fss:feedback"),
+            "{}".to_owned(),
+            FeedbackProposalKind::Correction,
+            "statement".to_owned(),
+            vec!["UPPER:not-digest".to_owned()],
+            vec![],
+            RequestedDisposition::RecordOnly,
+            FeedbackPrivacyClass::Public,
+            1_000,
+        )
+        .is_err()
+    );
     let _ = BTreeSet::<String>::new();
     let _ = AgentOperation::Feedback;
     Ok(())

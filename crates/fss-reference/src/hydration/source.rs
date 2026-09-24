@@ -233,7 +233,8 @@ impl ReferenceHydrationCatalog {
         handle_id: &str,
         descriptor_digest: ContentDigest,
     ) -> Option<&SourceObjectBinding> {
-        self.source_bindings.get(&(handle_id.to_owned(), descriptor_digest))
+        self.source_bindings
+            .get(&(handle_id.to_owned(), descriptor_digest))
     }
 
     /// Binds a current descriptor to exact source bytes in a root-last publication.
@@ -259,14 +260,23 @@ impl ReferenceHydrationCatalog {
             return Err(SourceHydrationError::TransformedSource);
         }
         let key = (handle_id.to_owned(), descriptor_digest);
-        if self.artifacts.contains_key(&(handle_id.to_owned(), descriptor_digest, HydrationLevel::H3))
-            || self.source_bindings.get(&key).is_some_and(|prior| prior.publication_root != publication_root)
+        if self.artifacts.contains_key(&(
+            handle_id.to_owned(),
+            descriptor_digest,
+            HydrationLevel::H3,
+        )) || self
+            .source_bindings
+            .get(&key)
+            .is_some_and(|prior| prior.publication_root != publication_root)
         {
             return Err(SourceHydrationError::BindingConflict);
         }
-        let quote = descriptor.estimated_cost(HydrationLevel::H3).ok_or(HydrationError::LevelUnavailable)?;
+        let quote = descriptor
+            .estimated_cost(HydrationLevel::H3)
+            .ok_or(HydrationError::LevelUnavailable)?;
         let ceiling = quote.bytes.min(self.source_payload_ceiling());
-        let payload = reader.read_published_source(publication_root, descriptor.subject_digest, ceiling)?;
+        let payload =
+            reader.read_published_source(publication_root, descriptor.subject_digest, ceiling)?;
         let artifact = source_artifact(descriptor, publication_root, payload, ceiling)?;
         let binding = SourceObjectBinding {
             publication_root,
@@ -274,7 +284,11 @@ impl ReferenceHydrationCatalog {
             payload_bytes: artifact.payload.len() as u64,
             artifact_digest: artifact.artifact_digest,
         };
-        if self.source_bindings.get(&key).is_some_and(|prior| prior != &binding) {
+        if self
+            .source_bindings
+            .get(&key)
+            .is_some_and(|prior| prior != &binding)
+        {
             return Err(SourceHydrationError::SourceMismatch);
         }
         self.source_bindings.insert(key, binding.clone());
@@ -295,7 +309,9 @@ impl ReferenceHydrationCatalog {
         now: TimestampNs,
     ) -> Result<HydrationResponse, SourceHydrationError> {
         request.verify()?;
-        let descriptor = self.current_exact(&request.handle_id, request.expected_descriptor_digest)?.clone();
+        let descriptor = self
+            .current_exact(&request.handle_id, request.expected_descriptor_digest)?
+            .clone();
         request.validate_for(&descriptor, now)?;
         if descriptor.availability_at(now) != HandleAvailability::Available
             || request.requested_level < HydrationLevel::H3
@@ -303,16 +319,26 @@ impl ReferenceHydrationCatalog {
             return self.hydrate(request, now).map_err(Into::into);
         }
         let _ = self.continuation_record(request, &descriptor, now)?;
-        let binding = self.source_binding(&descriptor.handle_id, descriptor.descriptor_digest)
-            .cloned().ok_or(HydrationError::LevelUnavailable)?;
+        let binding = self
+            .source_binding(&descriptor.handle_id, descriptor.descriptor_digest)
+            .cloned()
+            .ok_or(HydrationError::LevelUnavailable)?;
         // Do not read H3 merely because H4 was requested. Prefer a valid H4, and never
         // downgrade an exact continuation or conceal a malformed laboratory artifact.
         if request.requested_level == HydrationLevel::H4 {
-            if let Some(artifact) = self.artifacts.get(&(descriptor.handle_id.clone(), descriptor.descriptor_digest, HydrationLevel::H4)) {
+            if let Some(artifact) = self.artifacts.get(&(
+                descriptor.handle_id.clone(),
+                descriptor.descriptor_digest,
+                HydrationLevel::H4,
+            )) {
                 match request.validate_delivery(&descriptor, artifact, now) {
                     Ok(_) => return self.hydrate(request, now).map_err(Into::into),
-                    Err(HydrationError::LevelUnavailable | HydrationError::CapabilityDenied
-                        | HydrationError::LaboratoryGrantRequired | HydrationError::BudgetExceeded) => {}
+                    Err(
+                        HydrationError::LevelUnavailable
+                        | HydrationError::CapabilityDenied
+                        | HydrationError::LaboratoryGrantRequired
+                        | HydrationError::BudgetExceeded,
+                    ) => {}
                     Err(error) => return Err(error.into()),
                 }
             }
@@ -320,8 +346,12 @@ impl ReferenceHydrationCatalog {
                 return self.hydrate(request, now).map_err(Into::into);
             }
         }
-        let quote = descriptor.estimated_cost(HydrationLevel::H3).ok_or(HydrationError::LevelUnavailable)?;
-        let required = descriptor.capabilities_for(HydrationLevel::H3).ok_or(HydrationError::LevelUnavailable)?;
+        let quote = descriptor
+            .estimated_cost(HydrationLevel::H3)
+            .ok_or(HydrationError::LevelUnavailable)?;
+        let required = descriptor
+            .capabilities_for(HydrationLevel::H3)
+            .ok_or(HydrationError::LevelUnavailable)?;
         let ceiling = quote.bytes.min(self.source_payload_ceiling());
         let refusal = if !required.is_subset(&request.available_capabilities) {
             Some(HydrationError::CapabilityDenied)
@@ -336,16 +366,26 @@ impl ReferenceHydrationCatalog {
             }
             return Err(error.into());
         }
-        let payload = reader.read_published_source(binding.publication_root, binding.subject_digest, ceiling)?;
+        let payload = reader.read_published_source(
+            binding.publication_root,
+            binding.subject_digest,
+            ceiling,
+        )?;
         let artifact = source_artifact(&descriptor, binding.publication_root, payload, ceiling)?;
-        if artifact.artifact_digest != binding.artifact_digest || artifact.payload.len() as u64 != binding.payload_bytes {
+        if artifact.artifact_digest != binding.artifact_digest
+            || artifact.payload.len() as u64 != binding.payload_bytes
+        {
             return Err(SourceHydrationError::SourceMismatch);
         }
-        self.hydrate_resolved(request, now, Some(artifact)).map_err(Into::into)
+        self.hydrate_resolved(request, now, Some(artifact))
+            .map_err(Into::into)
     }
 
     fn source_payload_ceiling(&self) -> u64 {
-        self.limits.max_payload_bytes.saturating_sub(self.stored_payload_bytes).min(MAX_OBJECT_BYTES) as u64
+        self.limits
+            .max_payload_bytes
+            .saturating_sub(self.stored_payload_bytes)
+            .min(MAX_OBJECT_BYTES) as u64
     }
 }
 
@@ -368,7 +408,11 @@ fn source_artifact(
         HydrationLevel::H3,
         SOURCE_OBJECT_CONTENT_TYPE,
         payload,
-        [descriptor.subject_digest, descriptor.descriptor_digest, publication_root],
+        [
+            descriptor.subject_digest,
+            descriptor.descriptor_digest,
+            publication_root,
+        ],
         Completeness::Complete,
         None,
     )?)

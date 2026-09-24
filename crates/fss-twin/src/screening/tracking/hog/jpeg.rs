@@ -7,8 +7,8 @@ use super::{HogZoneError, HogZonePipeline};
 use crate::hog::{HogError, HogModel};
 use crate::hog_scan::{HogScan, MAX_SCAN_LEVELS, ScanLevel, ScanPolicy, scan_hog};
 use crate::image_tracking::ImageTrackingReport;
-use crate::image_zones::{ImageZoneError, ImageZoneReport};
 use crate::image_zones::pipeline::{ImageZonePipeline, ZonePipelineProgress};
+use crate::image_zones::{ImageZoneError, ImageZoneReport};
 use crate::mjpeg::JpegBackground;
 use crate::rectification::RectificationPlan;
 use crate::screened_mjpeg::{JpegScreeningError, JpegScreeningQuery, ScreenedJpeg, screen_jpeg};
@@ -129,41 +129,80 @@ pub struct JpegHogPipeline {
 impl JpegHogPipeline {
     /// Take a fresh existing zone pipeline and a verified local model. Scale/scanner
     /// semantics remain owned by scan_hog; invalid settings cannot consume tracking.
-    pub fn new(zones: ImageZonePipeline, model: HogModel, config: JpegHogConfig<'_>,
-        budget: &mut WorkBudget<'_>) -> Result<Self, JpegHogError> {
-        budget.charge(1).map_err(HogError::from).map_err(JpegHogError::Configuration)?;
+    pub fn new(
+        zones: ImageZonePipeline,
+        model: HogModel,
+        config: JpegHogConfig<'_>,
+        budget: &mut WorkBudget<'_>,
+    ) -> Result<Self, JpegHogError> {
+        budget
+            .charge(1)
+            .map_err(HogError::from)
+            .map_err(JpegHogError::Configuration)?;
         if !(1..=MAX_SCAN_LEVELS).contains(&config.levels.len()) {
             return Err(JpegHogError::Configuration(HogError::Limit));
         }
         let mut levels = Vec::new();
-        levels.try_reserve_exact(config.levels.len()).map_err(|_| JpegHogError::Configuration(HogError::Limit))?;
+        levels
+            .try_reserve_exact(config.levels.len())
+            .map_err(|_| JpegHogError::Configuration(HogError::Limit))?;
         levels.extend_from_slice(config.levels);
-        let monitor = ScreeningMonitor::new(config.screening, config.stream_generation, config.started_at_ns)
-            .map_err(JpegHogError::Screening)?;
-        let zones = HogZonePipeline::new(zones, config.stream_generation, budget).map_err(JpegHogError::Zones)?;
-        Ok(Self { monitor, zones, model, levels, policy: config.scan, image: None, scan: None,
-            stage: JpegHogStage::AwaitingImage, completed: None })
+        let monitor = ScreeningMonitor::new(
+            config.screening,
+            config.stream_generation,
+            config.started_at_ns,
+        )
+        .map_err(JpegHogError::Screening)?;
+        let zones = HogZonePipeline::new(zones, config.stream_generation, budget)
+            .map_err(JpegHogError::Zones)?;
+        Ok(Self {
+            monitor,
+            zones,
+            model,
+            levels,
+            policy: config.scan,
+            image: None,
+            scan: None,
+            stage: JpegHogStage::AwaitingImage,
+            completed: None,
+        })
     }
     /// Current exact stage, including an accepted but incomplete source.
-    pub fn stage(&self) -> JpegHogStage { self.stage }
+    pub fn stage(&self) -> JpegHogStage {
+        self.stage
+    }
     /// Actual current JPEG/rectification/health evidence, including while inference fails.
-    pub fn image(&self) -> Option<&ScreenedJpeg> { self.image.as_ref() }
+    pub fn image(&self) -> Option<&ScreenedJpeg> {
+        self.image.as_ref()
+    }
     /// Complete scan for the current image only; never the preceding image's result.
-    pub fn scan(&self) -> Option<&HogScan> { self.scan.as_ref() }
+    pub fn scan(&self) -> Option<&HogScan> {
+        self.scan.as_ref()
+    }
     /// Exact immutable model, for checking weight and provenance identities.
-    pub fn model(&self) -> &HogModel { &self.model }
+    pub fn model(&self) -> &HogModel {
+        &self.model
+    }
     /// Existing current tracking receipt only after THIS source was consumed.
     pub fn tracking_report(&self) -> Option<&ImageTrackingReport> {
         if matches!(self.stage, JpegHogStage::Zones | JpegHogStage::Complete) {
             self.zones.pipeline().tracking_report()
-        } else { None }
+        } else {
+            None
+        }
     }
     /// Current complete zone result only; pending work never exposes a stale predecessor.
     pub fn zone_report(&self) -> Option<&ImageZoneReport> {
-        if self.stage == JpegHogStage::Complete { self.zones.pipeline().zone_report() } else { None }
+        if self.stage == JpegHogStage::Complete {
+            self.zones.pipeline().zone_report()
+        } else {
+            None
+        }
     }
     /// Read-only history/trajectory owner; its latest track may predate a pending image.
-    pub fn zones(&self) -> &HogZonePipeline { &self.zones }
+    pub fn zones(&self) -> &HogZonePipeline {
+        &self.zones
+    }
     /// Health watchdog remains usable during model/zone pressure. This records only
     /// source-input silence on an owner-supplied clock; it invents no image or absence.
     pub fn poll(&mut self, now_ns: u64) -> Result<StallObservation, JpegHogError> {
@@ -175,59 +214,120 @@ impl JpegHogPipeline {
     /// Once screening succeeds, downstream refusal is Pending, never a source-retry error.
     /// The requested learned scan runs even when the foreground comparison finds no change.
     #[allow(clippy::too_many_arguments)]
-    pub fn observe(&mut self, background: Option<&JpegBackground>, plan: &RectificationPlan,
-        mut query: JpegScreeningQuery<'_>, decode: &mut DecodeBudget<'_>,
-        rectification: &mut WorkBudget<'_>, foreground: &mut WorkBudget<'_>,
-        health: &mut WorkBudget<'_>, inference: &mut WorkBudget<'_>,
-        downstream: &mut WorkBudget<'_>) -> Result<JpegHogProgress, JpegHogError> {
-        if !matches!(self.stage, JpegHogStage::AwaitingImage | JpegHogStage::Complete) {
+    pub fn observe(
+        &mut self,
+        background: Option<&JpegBackground>,
+        plan: &RectificationPlan,
+        mut query: JpegScreeningQuery<'_>,
+        decode: &mut DecodeBudget<'_>,
+        rectification: &mut WorkBudget<'_>,
+        foreground: &mut WorkBudget<'_>,
+        health: &mut WorkBudget<'_>,
+        inference: &mut WorkBudget<'_>,
+        downstream: &mut WorkBudget<'_>,
+    ) -> Result<JpegHogProgress, JpegHogError> {
+        if !matches!(
+            self.stage,
+            JpegHogStage::AwaitingImage | JpegHogStage::Complete
+        ) {
             return Err(JpegHogError::PendingAnalysis);
         }
         query.stamp.owner_requests_analysis |= self.zones.requires_analysis();
-        let image = screen_jpeg(&mut self.monitor, background, plan, query, decode,
-            rectification, foreground, health).map_err(JpegHogError::Image)?;
+        let image = screen_jpeg(
+            &mut self.monitor,
+            background,
+            plan,
+            query,
+            decode,
+            rectification,
+            foreground,
+            health,
+        )
+        .map_err(JpegHogError::Image)?;
         // Screening owns the first commit. All following errors retain the accepted image.
-        self.image = Some(image); self.scan = None; self.completed = None; self.stage = JpegHogStage::Inference;
+        self.image = Some(image);
+        self.scan = None;
+        self.completed = None;
+        self.stage = JpegHogStage::Inference;
         self.resume(inference, downstream)
     }
     /// Resume only the unfinished stage. Complete retries return the same roots with
     /// no new work, source consumption, health ACK or trajectory aging.
-    pub fn resume(&mut self, inference: &mut WorkBudget<'_>, downstream: &mut WorkBudget<'_>)
-        -> Result<JpegHogProgress, JpegHogError> {
-        if let Some(completed) = self.completed { return Ok(JpegHogProgress::Complete(completed)); }
+    pub fn resume(
+        &mut self,
+        inference: &mut WorkBudget<'_>,
+        downstream: &mut WorkBudget<'_>,
+    ) -> Result<JpegHogProgress, JpegHogError> {
+        if let Some(completed) = self.completed {
+            return Ok(JpegHogProgress::Complete(completed));
+        }
         let image = self.image.as_ref().ok_or(JpegHogError::NoObservation)?;
         if self.stage == JpegHogStage::Inference {
             let frame = image.image().frame();
-            match scan_hog(image.screening().source(), frame.pixels(), frame.allowed(), &self.model,
-                &self.levels, self.policy, inference) {
-                Err(error) => return Ok(JpegHogProgress::Pending { image: image.digest(),
-                    stage: self.stage, error: JpegHogRefusal::Inference(error) }),
-                Ok(scan) => { self.scan = Some(scan); self.stage = JpegHogStage::Tracking; }
+            match scan_hog(
+                image.screening().source(),
+                frame.pixels(),
+                frame.allowed(),
+                &self.model,
+                &self.levels,
+                self.policy,
+                inference,
+            ) {
+                Err(error) => {
+                    return Ok(JpegHogProgress::Pending {
+                        image: image.digest(),
+                        stage: self.stage,
+                        error: JpegHogRefusal::Inference(error),
+                    });
+                }
+                Ok(scan) => {
+                    self.scan = Some(scan);
+                    self.stage = JpegHogStage::Tracking;
+                }
             }
         }
         let scan = self.scan.as_ref().ok_or(JpegHogError::NoObservation)?;
         let progress = if self.stage == JpegHogStage::Tracking {
             match self.zones.observe(scan, image.screening(), downstream) {
                 Ok(progress) => progress,
-                Err(error) => return Ok(JpegHogProgress::Pending { image: image.digest(),
-                    stage: self.stage, error: JpegHogRefusal::Tracking(error) }),
+                Err(error) => {
+                    return Ok(JpegHogProgress::Pending {
+                        image: image.digest(),
+                        stage: self.stage,
+                        error: JpegHogRefusal::Tracking(error),
+                    });
+                }
             }
         } else {
             match self.zones.resume(downstream) {
                 Ok(progress) => progress,
-                Err(error) => return Ok(JpegHogProgress::Pending { image: image.digest(),
-                    stage: self.stage, error: JpegHogRefusal::Resume(error) }),
+                Err(error) => {
+                    return Ok(JpegHogProgress::Pending {
+                        image: image.digest(),
+                        stage: self.stage,
+                        error: JpegHogRefusal::Resume(error),
+                    });
+                }
             }
         };
         match progress {
             ZonePipelineProgress::Pending { error, .. } => {
                 self.stage = JpegHogStage::Zones;
-                Ok(JpegHogProgress::Pending { image: image.digest(), stage: self.stage,
-                    error: JpegHogRefusal::Zones(error) })
+                Ok(JpegHogProgress::Pending {
+                    image: image.digest(),
+                    stage: self.stage,
+                    error: JpegHogRefusal::Zones(error),
+                })
             }
             ZonePipelineProgress::Complete { tracking, zones } => {
-                let completed = JpegHogCompletion { image: image.digest(), scan: scan.digest(), tracking, zones };
-                self.stage = JpegHogStage::Complete; self.completed = Some(completed);
+                let completed = JpegHogCompletion {
+                    image: image.digest(),
+                    scan: scan.digest(),
+                    tracking,
+                    zones,
+                };
+                self.stage = JpegHogStage::Complete;
+                self.completed = Some(completed);
                 Ok(JpegHogProgress::Complete(completed))
             }
         }

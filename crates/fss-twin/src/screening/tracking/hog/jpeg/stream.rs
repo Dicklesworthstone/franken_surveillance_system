@@ -37,7 +37,9 @@ impl std::fmt::Display for FramedHogError {
 }
 impl std::error::Error for FramedHogError {}
 impl From<JpegHogError> for FramedHogError {
-    fn from(error: JpegHogError) -> Self { Self::Analysis(error) }
+    fn from(error: JpegHogError) -> Self {
+        Self::Analysis(error)
+    }
 }
 
 /// Full stream-to-computation linkage, not an archive publication or coverage witness.
@@ -66,24 +68,42 @@ pub struct FramedJpegHogPipeline {
 impl FramedJpegHogPipeline {
     /// Bind a fresh learned owner to exactly one independently admitted stream.
     /// A started owner or different screening generation cannot be relabelled.
-    pub fn new(pipeline: JpegHogPipeline, basis: StreamBasis, budget: &mut WorkBudget<'_>)
-        -> Result<Self, FramedHogError> {
+    pub fn new(
+        pipeline: JpegHogPipeline,
+        basis: StreamBasis,
+        budget: &mut WorkBudget<'_>,
+    ) -> Result<Self, FramedHogError> {
         budget.charge(1).map_err(FramedHogError::Work)?;
-        if basis.source == [0; 32] || basis.generation == 0
+        if basis.source == [0; 32]
+            || basis.generation == 0
             || pipeline.stage() != JpegHogStage::AwaitingImage
-            || pipeline.zones.generation != basis.generation {
+            || pipeline.zones.generation != basis.generation
+        {
             return Err(FramedHogError::BasisMismatch);
         }
-        Ok(Self { pipeline, basis, source: None, completed: None })
+        Ok(Self {
+            pipeline,
+            basis,
+            source: None,
+            completed: None,
+        })
     }
     /// Frozen source basis. No mutable escape can swap the inner owner or generation.
-    pub fn basis(&self) -> StreamBasis { self.basis }
+    pub fn basis(&self) -> StreamBasis {
+        self.basis
+    }
     /// Existing stage, image, scan, tracking and zone accessors, without mutation.
-    pub fn pipeline(&self) -> &JpegHogPipeline { &self.pipeline }
+    pub fn pipeline(&self) -> &JpegHogPipeline {
+        &self.pipeline
+    }
     /// Last accepted frame's original range, including during inference/zone pressure.
-    pub fn source_receipt(&self) -> Option<StreamFrameReceipt> { self.source }
+    pub fn source_receipt(&self) -> Option<StreamFrameReceipt> {
+        self.source
+    }
     /// Present only when the CURRENT accepted frame completed every requested stage.
-    pub fn completion(&self) -> Option<FramedHogCompletion> { self.completed }
+    pub fn completion(&self) -> Option<FramedHogCompletion> {
+        self.completed
+    }
     /// Keep the existing independent health watchdog available during model pressure.
     pub fn poll(&mut self, now_ns: u64) -> Result<StallObservation, FramedHogError> {
         Ok(self.pipeline.poll(now_ns)?)
@@ -98,31 +118,65 @@ impl FramedJpegHogPipeline {
     /// No fallible work follows successful inner acceptance. The fixed boundary charge
     /// prepays the bounded completion fingerprint, even when completion is deferred.
     #[allow(clippy::too_many_arguments)]
-    pub fn observe(&mut self, background: Option<&JpegBackground>, plan: &RectificationPlan,
-        query: FramedQuery<'_>, stamp: ScreeningStamp, decode: &mut DecodeBudget<'_>,
-        rectification: &mut WorkBudget<'_>, foreground: &mut WorkBudget<'_>,
-        health: &mut WorkBudget<'_>, inference: &mut WorkBudget<'_>, downstream: &mut WorkBudget<'_>)
-        -> Result<JpegHogProgress, FramedHogError> {
-        if !matches!(self.pipeline.stage(), JpegHogStage::AwaitingImage | JpegHogStage::Complete) {
+    pub fn observe(
+        &mut self,
+        background: Option<&JpegBackground>,
+        plan: &RectificationPlan,
+        query: FramedQuery<'_>,
+        stamp: ScreeningStamp,
+        decode: &mut DecodeBudget<'_>,
+        rectification: &mut WorkBudget<'_>,
+        foreground: &mut WorkBudget<'_>,
+        health: &mut WorkBudget<'_>,
+        inference: &mut WorkBudget<'_>,
+        downstream: &mut WorkBudget<'_>,
+    ) -> Result<JpegHogProgress, FramedHogError> {
+        if !matches!(
+            self.pipeline.stage(),
+            JpegHogStage::AwaitingImage | JpegHogStage::Complete
+        ) {
             return Err(JpegHogError::PendingAnalysis.into());
         }
         health.charge(1024).map_err(FramedHogError::Work)?;
         let frame = query.frame;
-        if query.expected_stream != self.basis || frame.basis() != self.basis
-            || stamp.stream_generation != self.basis.generation || stamp.sequence != frame.ordinal()
-            || query.binding.encoded_sha256 != frame.encoded_sha256() {
+        if query.expected_stream != self.basis
+            || frame.basis() != self.basis
+            || stamp.stream_generation != self.basis.generation
+            || stamp.sequence != frame.ordinal()
+            || query.binding.encoded_sha256 != frame.encoded_sha256()
+        {
             return Err(FramedHogError::BasisMismatch);
         }
-        let source = StreamFrameReceipt { basis: frame.basis(), ordinal: frame.ordinal(),
-            byte_range: frame.byte_range(), encoded_sha256: frame.encoded_sha256() };
-        if self.source.is_some_and(|old| source.ordinal <= old.ordinal
-            || source.byte_range[0] < old.byte_range[1]) {
+        let source = StreamFrameReceipt {
+            basis: frame.basis(),
+            ordinal: frame.ordinal(),
+            byte_range: frame.byte_range(),
+            encoded_sha256: frame.encoded_sha256(),
+        };
+        if self.source.is_some_and(|old| {
+            source.ordinal <= old.ordinal || source.byte_range[0] < old.byte_range[1]
+        }) {
             return Err(FramedHogError::OutOfOrder);
         }
-        let progress = self.pipeline.observe(background, plan, JpegScreeningQuery {
-            bytes: frame.bytes(), mask: query.mask, binding: query.binding, capture: query.capture,
-            foreground_policy: query.policy, decode_limits: query.limits, stamp },
-            decode, rectification, foreground, health, inference, downstream)?;
+        let progress = self.pipeline.observe(
+            background,
+            plan,
+            JpegScreeningQuery {
+                bytes: frame.bytes(),
+                mask: query.mask,
+                binding: query.binding,
+                capture: query.capture,
+                foreground_policy: query.policy,
+                decode_limits: query.limits,
+                stamp,
+            },
+            decode,
+            rectification,
+            foreground,
+            health,
+            inference,
+            downstream,
+        )?;
         self.source = Some(source);
         self.completed = match progress {
             JpegHogProgress::Complete(analysis) => Some(completion(source, analysis)),
@@ -132,10 +186,17 @@ impl FramedJpegHogPipeline {
     }
     /// Resume the accepted source only. Complete retries are allocation/work-free and
     /// preserve the same stream-linked root, without rescanning or consuming an ordinal.
-    pub fn resume(&mut self, inference: &mut WorkBudget<'_>, downstream: &mut WorkBudget<'_>)
-        -> Result<JpegHogProgress, FramedHogError> {
-        if let Some(done) = self.completed { return Ok(JpegHogProgress::Complete(done.analysis)); }
-        let source = self.source.ok_or(FramedHogError::Analysis(JpegHogError::NoObservation))?;
+    pub fn resume(
+        &mut self,
+        inference: &mut WorkBudget<'_>,
+        downstream: &mut WorkBudget<'_>,
+    ) -> Result<JpegHogProgress, FramedHogError> {
+        if let Some(done) = self.completed {
+            return Ok(JpegHogProgress::Complete(done.analysis));
+        }
+        let source = self
+            .source
+            .ok_or(FramedHogError::Analysis(JpegHogError::NoObservation))?;
         let progress = self.pipeline.resume(inference, downstream)?;
         if let JpegHogProgress::Complete(analysis) = progress {
             self.completed = Some(completion(source, analysis));
@@ -159,34 +220,63 @@ fn completion(source: StreamFrameReceipt, analysis: JpegHogCompletion) -> Framed
     bytes[192..224].copy_from_slice(&analysis.zones);
     let tag = b"fss/framed-jpeg-hog/complete/1\0";
     bytes[224..224 + tag.len()].copy_from_slice(tag);
-    FramedHogCompletion { source, analysis, digest: ContentDigest::sha256(&bytes).bytes() }
+    FramedHogCompletion {
+        source,
+        analysis,
+        digest: ContentDigest::sha256(&bytes).bytes(),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     fn values() -> (StreamFrameReceipt, JpegHogCompletion) {
-        (StreamFrameReceipt { basis: StreamBasis { source: [1; 32], generation: 2 },
-            ordinal: 3, byte_range: [10, 20], encoded_sha256: [4; 32] },
-            JpegHogCompletion { image: [5; 32], scan: [6; 32], tracking: [7; 32], zones: [8; 32] })
+        (
+            StreamFrameReceipt {
+                basis: StreamBasis {
+                    source: [1; 32],
+                    generation: 2,
+                },
+                ordinal: 3,
+                byte_range: [10, 20],
+                encoded_sha256: [4; 32],
+            },
+            JpegHogCompletion {
+                image: [5; 32],
+                scan: [6; 32],
+                tracking: [7; 32],
+                zones: [8; 32],
+            },
+        )
     }
     #[test]
     fn complete_receipt_has_an_independent_fixed_width_golden() {
         let (source, analysis) = values();
-        assert_eq!(completion(source, analysis).digest,
-            [53, 243, 122, 198, 60, 24, 228, 182, 249, 70, 85, 41, 162, 220, 171, 69,
-             228, 6, 192, 231, 109, 231, 178, 93, 116, 37, 28, 45, 247, 31, 249, 47]);
+        assert_eq!(
+            completion(source, analysis).digest,
+            [
+                53, 243, 122, 198, 60, 24, 228, 182, 249, 70, 85, 41, 162, 220, 171, 69, 228, 6,
+                192, 231, 109, 231, 178, 93, 116, 37, 28, 45, 247, 31, 249, 47
+            ]
+        );
     }
     #[test]
     fn every_source_field_and_analysis_root_changes_the_fingerprint() {
-        let (source, analysis) = values(); let expected = completion(source, analysis).digest;
+        let (source, analysis) = values();
+        let expected = completion(source, analysis).digest;
         for field in 0..10 {
             let (mut s, mut a) = values();
             match field {
-                0 => s.basis.source[0] ^= 1, 1 => s.basis.generation += 1,
-                2 => s.ordinal += 1, 3 => s.byte_range[0] += 1, 4 => s.byte_range[1] += 1,
-                5 => s.encoded_sha256[0] ^= 1, 6 => a.image[0] ^= 1,
-                7 => a.scan[0] ^= 1, 8 => a.tracking[0] ^= 1, _ => a.zones[0] ^= 1,
+                0 => s.basis.source[0] ^= 1,
+                1 => s.basis.generation += 1,
+                2 => s.ordinal += 1,
+                3 => s.byte_range[0] += 1,
+                4 => s.byte_range[1] += 1,
+                5 => s.encoded_sha256[0] ^= 1,
+                6 => a.image[0] ^= 1,
+                7 => a.scan[0] ^= 1,
+                8 => a.tracking[0] ^= 1,
+                _ => a.zones[0] ^= 1,
             }
             assert_ne!(completion(s, a).digest, expected);
         }

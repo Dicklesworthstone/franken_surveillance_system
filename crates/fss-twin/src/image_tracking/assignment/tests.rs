@@ -30,14 +30,22 @@ fn exhaustive_rectangular_assignments_and_exclusions_match_enumeration() -> Test
         let mut remaining = encoded;
         let mut costs = [None; 8];
         for cost in &mut costs {
-            *cost = match remaining % 3 { 0 => None, 1 => Some(0), _ => Some(7) };
+            *cost = match remaining % 3 {
+                0 => None,
+                1 => Some(0),
+                _ => Some(7),
+            };
             remaining /= 3;
         }
         for excluded in [None, Some((0, 0)), Some((1, 3))] {
             let result = solve(&costs, 2, 4, excluded, &mut WorkBudget::new(10_000));
             if let Some(expected) = oracle(&costs, excluded) {
                 let result = result?;
-                assert_eq!(result.cost(), expected, "matrix={encoded}, excluded={excluded:?}");
+                assert_eq!(
+                    result.cost(),
+                    expected,
+                    "matrix={encoded}, excluded={excluded:?}"
+                );
                 assert_ne!(result.columns()[0], result.columns()[1]);
                 for (row, &column) in result.columns().iter().enumerate() {
                     assert!(costs[row * 4 + column].is_some());
@@ -61,7 +69,13 @@ fn zero_rows_and_maximum_dimensions_are_supported() -> Test {
         costs[row * 128 + row] = Some(0);
         costs[row * 128 + 64 + row] = Some(MAX_ASSIGNMENT_COST);
     }
-    let result = solve(&costs, 64, 128, Some((31, 31)), &mut WorkBudget::new(10_000_000))?;
+    let result = solve(
+        &costs,
+        64,
+        128,
+        Some((31, 31)),
+        &mut WorkBudget::new(10_000_000),
+    )?;
     assert_eq!(result.cost(), u64::from(MAX_ASSIGNMENT_COST));
     assert_eq!(result.columns()[31], 95);
     Ok(())
@@ -79,17 +93,34 @@ fn malformed_costs_shapes_exclusions_and_infeasible_graphs_are_refused() {
         (vec![Some(1)], 1, 1, Some((0, 0))),
         (vec![], usize::MAX, usize::MAX, None),
     ] {
-        assert!(matches!(solve(&costs, rows, columns, excluded, &mut WorkBudget::new(100_000)),
-            Err(ImageTrackingError::InvalidInput)));
+        assert!(matches!(
+            solve(
+                &costs,
+                rows,
+                columns,
+                excluded,
+                &mut WorkBudget::new(100_000)
+            ),
+            Err(ImageTrackingError::InvalidInput)
+        ));
     }
 }
 
 #[test]
 fn cancellation_and_work_exhaustion_never_return_a_partial_assignment() {
     let cancelled = AtomicBool::new(true);
-    assert!(matches!(solve(&[Some(1)], 1, 1, None,
-        &mut WorkBudget::cancellable(100_000, &cancelled)),
-        Err(ImageTrackingError::Geometry(GeometryError::Cancelled))));
-    assert!(matches!(solve(&[Some(1)], 1, 1, None, &mut WorkBudget::new(1)),
-        Err(ImageTrackingError::Geometry(GeometryError::BudgetExhausted))));
+    assert!(matches!(
+        solve(
+            &[Some(1)],
+            1,
+            1,
+            None,
+            &mut WorkBudget::cancellable(100_000, &cancelled)
+        ),
+        Err(ImageTrackingError::Geometry(GeometryError::Cancelled))
+    ));
+    assert!(matches!(
+        solve(&[Some(1)], 1, 1, None, &mut WorkBudget::new(1)),
+        Err(ImageTrackingError::Geometry(GeometryError::BudgetExhausted))
+    ));
 }

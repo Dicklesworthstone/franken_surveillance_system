@@ -10,27 +10,25 @@
 //! - the `registered_operation` ContractBasis boundary (fail closed, typed refusal).
 
 use fss_core::contract_basis::{
-    check_basis_freshness, registered_operation, reference_contract_basis, ContractBasisError,
-    ContractBasisRefusal, CANONICAL_SEMANTIC_PROTOCOL,
+    CANONICAL_SEMANTIC_PROTOCOL, ContractBasisError, ContractBasisRefusal, check_basis_freshness,
+    reference_contract_basis, registered_operation,
 };
 use fss_core::{
-    ActionAffordance, AffordanceClass, AgentOperation, CancellationRecord, CancelStage,
-    ContractBasis, DiagnosisDomain, DoctorReport, ExplainQuestion, ExplainReceipt,
-    FeedbackKind, FeedbackProposal, HandoffId, HandoffPublishParams,
-    RepairAffordance, ReconciliationBasis, RuntimeOutcome, WaitWakeContract,
+    ActionAffordance, AffordanceClass, AgentOperation, CancelStage, CancellationRecord,
+    ContractBasis, DiagnosisDomain, DoctorReport, ExplainQuestion, ExplainReceipt, FeedbackKind,
+    FeedbackProposal, HandoffId, HandoffPublishParams, ReconciliationBasis, RepairAffordance,
+    RuntimeOutcome, WaitWakeContract,
 };
 use fss_core::{
-    admit_commit, admit_follow_read, admit_handoff, admit_query_read, advance_follow_cursor,
-    classify_session_resume, require_reconciliation_before_retry,
-    orient_projection, BasisRegistryKind, CanonicalDecode, CanonicalEncode, CanonicalEncoder,
+    BasisRegistryKind, BudgetVector, CanonicalDecode, CanonicalEncode, CanonicalEncoder,
     Completeness, ContentDigest, ContinuationCursor, ContinuationCursorPublishParams,
-    ContinuationError, ContinuationScope, ContractError, FollowWakeContract,
-    HypothesisDisposition, InvestigationCaseState, LedgerAnchor, MissionId, OperationMode,
-    PreparedPlan, PreparedPlanStep,
-    OperationRetryClass, OrientBudget, OrientOmissionTarget, OrientSection, PossibleWorld,
-    PrincipalId, REGISTERED_OPERATION_COUNT, ResumeInvalidation, BudgetVector,
-    SessionId, SituationCapsule, SituationFrame, TimestampNs,
-    WorldEnvelope,
+    ContinuationError, ContinuationScope, ContractError, FollowWakeContract, HypothesisDisposition,
+    InvestigationCaseState, LedgerAnchor, MissionId, OperationMode, OperationRetryClass,
+    OrientBudget, OrientOmissionTarget, OrientSection, PossibleWorld, PreparedPlan,
+    PreparedPlanStep, PrincipalId, REGISTERED_OPERATION_COUNT, ResumeInvalidation, SessionId,
+    SituationCapsule, SituationFrame, TimestampNs, WorldEnvelope, admit_commit, admit_follow_read,
+    admit_handoff, admit_query_read, advance_follow_cursor, classify_session_resume,
+    orient_projection, require_reconciliation_before_retry,
 };
 use std::collections::BTreeSet;
 
@@ -55,7 +53,6 @@ const EXPECTED_NAMES: [&str; 14] = [
     "feedback",
     "doctor",
 ];
-
 
 fn test_query_cost(latency_ms: u64) -> Result<BudgetVector, fss_core::BudgetError> {
     BudgetVector::builder().latency_ms(latency_ms).build()
@@ -136,8 +133,7 @@ fn test_canonical_row_encoding_matches_accessors() -> Result<(), Box<dyn std::er
         let retries: Vec<String> = fields[13]
             .split(';')
             .map(|spelled| {
-                OperationRetryClass::from_name(spelled)
-                    .map(|parsed| parsed.as_str().to_string())
+                OperationRetryClass::from_name(spelled).map(|parsed| parsed.as_str().to_string())
             })
             .collect::<Result<Vec<_>, _>>()?;
         let expected_retries: Vec<String> = row
@@ -197,7 +193,8 @@ fn test_decode_refuses_bit_flips() {
             tampered_any = true;
             if let Ok(decoded) = AgentOperation::from_canonical_bytes(&bad) {
                 assert_ne!(
-                    decoded, row,
+                    decoded,
+                    row,
                     "tampered byte {index} of {} must not decode to the same row",
                     row.id()
                 );
@@ -362,7 +359,13 @@ fn test_registered_operation_boundary() -> Result<(), Box<dyn std::error::Error>
 #[test]
 fn test_registered_operation_refuses_unknown_names() -> Result<(), Box<dyn std::error::Error>> {
     let basis = reference_contract_basis();
-    for bogus in ["AOP-001", "session_open", "", "session.open.extra", "COMMIT"] {
+    for bogus in [
+        "AOP-001",
+        "session_open",
+        "",
+        "session.open.extra",
+        "COMMIT",
+    ] {
         let err = registered_operation(&basis, bogus)
             .err()
             .ok_or("expected refusal for unregistered operation name")?;
@@ -378,15 +381,23 @@ fn test_registered_operation_refuses_unknown_names() -> Result<(), Box<dyn std::
             refusal,
             ContractBasisRefusal::UnregisteredOperation { .. }
         ));
-        assert!(refusal.remediation_guidance().contains("fss1_public_registry"));
-        assert!(refusal.to_string().starts_with("unregistered operation name"));
+        assert!(
+            refusal
+                .remediation_guidance()
+                .contains("fss1_public_registry")
+        );
+        assert!(
+            refusal
+                .to_string()
+                .starts_with("unregistered operation name")
+        );
     }
     Ok(())
 }
 
 #[test]
-fn test_registered_operation_refuses_incompatible_protocol(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_registered_operation_refuses_incompatible_protocol()
+-> Result<(), Box<dyn std::error::Error>> {
     let mut basis = reference_contract_basis();
     basis.semantic_protocol = "fss/2".to_owned();
     let err = registered_operation(&basis, "session.open")
@@ -486,12 +497,30 @@ fn test_resume_enumerates_anchor_invalidations() -> Result<(), Box<dyn std::erro
 fn test_resume_enumerates_each_registry_drift() -> Result<(), Box<dyn std::error::Error>> {
     let reference = reference_contract_basis();
     let drifted: [(BasisRegistryKind, ContentDigest); 6] = [
-        (BasisRegistryKind::SchemaCatalog, ContentDigest::sha256(b"other-schema")),
-        (BasisRegistryKind::Operations, ContentDigest::sha256(b"other-ops")),
-        (BasisRegistryKind::Views, ContentDigest::sha256(b"other-views")),
-        (BasisRegistryKind::Capabilities, ContentDigest::sha256(b"other-caps")),
-        (BasisRegistryKind::Errors, ContentDigest::sha256(b"other-errors")),
-        (BasisRegistryKind::Costs, ContentDigest::sha256(b"other-costs")),
+        (
+            BasisRegistryKind::SchemaCatalog,
+            ContentDigest::sha256(b"other-schema"),
+        ),
+        (
+            BasisRegistryKind::Operations,
+            ContentDigest::sha256(b"other-ops"),
+        ),
+        (
+            BasisRegistryKind::Views,
+            ContentDigest::sha256(b"other-views"),
+        ),
+        (
+            BasisRegistryKind::Capabilities,
+            ContentDigest::sha256(b"other-caps"),
+        ),
+        (
+            BasisRegistryKind::Errors,
+            ContentDigest::sha256(b"other-errors"),
+        ),
+        (
+            BasisRegistryKind::Costs,
+            ContentDigest::sha256(b"other-costs"),
+        ),
     ];
     for (kind, replacement) in drifted {
         let mut current = reference.clone();
@@ -515,8 +544,8 @@ fn test_resume_enumerates_each_registry_drift() -> Result<(), Box<dyn std::error
 }
 
 #[test]
-fn test_resume_classifies_tombstoned_digest_as_tombstone(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_resume_classifies_tombstoned_digest_as_tombstone() -> Result<(), Box<dyn std::error::Error>>
+{
     let reference = reference_contract_basis();
     let mut current = reference.clone();
     // The current deployment moved to a new operations registry generation; the
@@ -553,7 +582,8 @@ fn test_resume_enumerates_identity_drift() -> Result<(), Box<dyn std::error::Err
     current.ontology_generation_id = "ontology:next:v9".to_owned();
     current.producer_release_id = "fss:release:v9".to_owned();
     let anchor = LedgerAnchor::genesis("site:fss:test");
-    let assessment = classify_session_resume(&reference_contract_basis(), &current, &anchor, &anchor, &[]);
+    let assessment =
+        classify_session_resume(&reference_contract_basis(), &current, &anchor, &anchor, &[]);
     assert_eq!(
         assessment.invalidations(),
         &[
@@ -665,8 +695,8 @@ fn orient_test_capsule(
 }
 
 #[test]
-fn test_orient_projection_clips_sections_with_typed_omissions(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_orient_projection_clips_sections_with_typed_omissions()
+-> Result<(), Box<dyn std::error::Error>> {
     let capsule = orient_test_capsule(5, 4)?;
     let budget = OrientBudget::new(3, 4)?;
     let projection = orient_projection(&capsule, budget)?;
@@ -693,8 +723,7 @@ fn test_orient_projection_clips_sections_with_typed_omissions(
 }
 
 #[test]
-fn test_orient_projection_bounds_evidence_handles(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_orient_projection_bounds_evidence_handles() -> Result<(), Box<dyn std::error::Error>> {
     let capsule = orient_test_capsule(1, 6)?;
     let budget = OrientBudget::new(1, 4)?;
     let projection = orient_projection(&capsule, budget)?;
@@ -786,8 +815,7 @@ fn test_follow_admission_is_bounded() -> Result<(), Box<dyn std::error::Error>> 
 }
 
 #[test]
-fn test_follow_refuses_unbounded_and_outlived_wakes(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_follow_refuses_unbounded_and_outlived_wakes() -> Result<(), Box<dyn std::error::Error>> {
     let cursor = follow_cursor()?;
     // Zero-entry wake: unbounded follow is refused, never silently truncated.
     let wake = FollowWakeContract::new(0, TimestampNs(1_500), TimestampNs(1_200));
@@ -808,8 +836,7 @@ fn test_follow_refuses_unbounded_and_outlived_wakes(
 }
 
 #[test]
-fn test_follow_refuses_non_follow_stream_cursors(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_follow_refuses_non_follow_stream_cursors() -> Result<(), Box<dyn std::error::Error>> {
     let anchor = LedgerAnchor::genesis("site:fss:follow");
     let cursor = ContinuationCursor::publish(ContinuationCursorPublishParams {
         scope: ContinuationScope::MeaningfulDelta,
@@ -857,13 +884,7 @@ fn test_follow_advance_links_predecessor_cursor() -> Result<(), Box<dyn std::err
     assert_eq!(plan.resume_position, 20);
     // A zero-entry advance is refused as non-monotone.
     assert!(matches!(
-        advance_follow_cursor(
-            &cursor,
-            0,
-            anchor,
-            TimestampNs(1_300),
-            TimestampNs(2_000)
-        ),
+        advance_follow_cursor(&cursor, 0, anchor, TimestampNs(1_300), TimestampNs(2_000)),
         Err(ContinuationError::NonMonotone)
     ));
     // The follow read is durable (AOP-004 durable = yes) and never effectful.
@@ -873,8 +894,7 @@ fn test_follow_advance_links_predecessor_cursor() -> Result<(), Box<dyn std::err
 }
 
 #[test]
-fn test_query_read_admission_compiles_bounded_receipt(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_query_read_admission_compiles_bounded_receipt() -> Result<(), Box<dyn std::error::Error>> {
     let basis = reference_contract_basis();
     let anchor = LedgerAnchor::genesis("site:fss:query");
     let cost = test_query_cost(250)?;
@@ -886,28 +906,16 @@ fn test_query_read_admission_compiles_bounded_receipt(
     assert_eq!(receipt.cost().latency_ms, 250);
     assert_eq!(receipt.anchor().site_lineage, "site:fss:query");
     // Deterministic identity; different bounds yield different receipts.
-    let again = admit_query_read(
-        &basis,
-        &anchor,
-        "query",
-        25,
-        test_query_cost(250)?,
-    )?;
+    let again = admit_query_read(&basis, &anchor, "query", 25, test_query_cost(250)?)?;
     assert_eq!(receipt.receipt_digest(), again.receipt_digest());
-    let other = admit_query_read(
-        &basis,
-        &anchor,
-        "query",
-        26,
-        test_query_cost(250)?,
-    )?;
+    let other = admit_query_read(&basis, &anchor, "query", 26, test_query_cost(250)?)?;
     assert_ne!(receipt.receipt_digest(), other.receipt_digest());
     Ok(())
 }
 
 #[test]
-fn test_query_read_refuses_other_operations_and_empty_budgets(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_query_read_refuses_other_operations_and_empty_budgets()
+-> Result<(), Box<dyn std::error::Error>> {
     let basis = reference_contract_basis();
     let anchor = LedgerAnchor::genesis("site:fss:query");
     let cost = test_query_cost(100)?;
@@ -915,26 +923,19 @@ fn test_query_read_refuses_other_operations_and_empty_budgets(
     let err = admit_query_read(&basis, &anchor, "explain", 10, cost)
         .err()
         .ok_or("expected refusal for non-query operation")?;
-    assert_eq!(
-        err,
-        ContractBasisError::Contract(ContractError::NotFound)
-    );
+    assert_eq!(err, ContractBasisError::Contract(ContractError::NotFound));
     // Unregistered names refuse before any budget work.
     assert!(admit_query_read(&basis, &anchor, "queryx", 10, cost).is_err());
     // A zero entry bound admits nothing.
     assert_eq!(
         admit_query_read(&basis, &anchor, "query", 0, cost),
-        Err(ContractBasisError::Contract(
-            ContractError::BudgetExhausted
-        ))
+        Err(ContractBasisError::Contract(ContractError::BudgetExhausted))
     );
     // A zero latency bound is unbounded work.
     let free = test_query_cost(0)?;
     assert_eq!(
         admit_query_read(&basis, &anchor, "query", 10, free),
-        Err(ContractBasisError::Contract(
-            ContractError::BudgetExhausted
-        ))
+        Err(ContractBasisError::Contract(ContractError::BudgetExhausted))
     );
     // The query row itself stays a non-durable, non-effectful read.
     assert!(!AgentOperation::Query.durable());
@@ -943,8 +944,8 @@ fn test_query_read_refuses_other_operations_and_empty_budgets(
 }
 
 #[test]
-fn test_investigation_case_requires_competing_alternatives(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_investigation_case_requires_competing_alternatives()
+-> Result<(), Box<dyn std::error::Error>> {
     let mission = MissionId::parse("mission:investigate")?;
     let single = BTreeSet::from(["hypothesis:intruder".to_owned()]);
     assert_eq!(
@@ -965,8 +966,7 @@ fn test_investigation_case_requires_competing_alternatives(
 }
 
 #[test]
-fn test_investigation_case_transitions_are_monotone(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_investigation_case_transitions_are_monotone() -> Result<(), Box<dyn std::error::Error>> {
     let mission = MissionId::parse("mission:investigate")?;
     let hypotheses = BTreeSet::from([
         "hypothesis:intruder".to_owned(),
@@ -996,8 +996,8 @@ fn test_investigation_case_transitions_are_monotone(
 }
 
 #[test]
-fn test_investigation_case_stop_requires_no_live_hypotheses(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_investigation_case_stop_requires_no_live_hypotheses()
+-> Result<(), Box<dyn std::error::Error>> {
     let mission = MissionId::parse("mission:investigate")?;
     let hypotheses = BTreeSet::from([
         "hypothesis:intruder".to_owned(),
@@ -1028,8 +1028,7 @@ fn test_investigation_case_stop_requires_no_live_hypotheses(
 }
 
 #[test]
-fn test_investigation_case_supersession_and_digest(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_investigation_case_supersession_and_digest() -> Result<(), Box<dyn std::error::Error>> {
     let mission = MissionId::parse("mission:investigate")?;
     let hypotheses = BTreeSet::from([
         "hypothesis:intruder".to_owned(),
@@ -1057,8 +1056,8 @@ fn test_investigation_case_supersession_and_digest(
 }
 
 #[test]
-fn test_plan_preparation_is_immutable_and_authority_free(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_plan_preparation_is_immutable_and_authority_free() -> Result<(), Box<dyn std::error::Error>>
+{
     let step_probe = PreparedPlanStep::new(AgentOperation::SessionOrient, "fss://situation/gate")?;
     let step_wait = PreparedPlanStep::new(AgentOperation::Wait, "fss://obligation/gate")?;
     let step_commit = PreparedPlanStep::new(AgentOperation::Commit, "fss://effect/gate")?;
@@ -1148,8 +1147,8 @@ fn commit_plan() -> Result<PreparedPlan, Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn test_commit_admission_binds_exact_plan_and_affordance(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_commit_admission_binds_exact_plan_and_affordance() -> Result<(), Box<dyn std::error::Error>>
+{
     let basis = reference_contract_basis();
     let plan = commit_plan()?;
     let affordance = commit_affordance(&plan)?;
@@ -1243,8 +1242,7 @@ fn test_wait_retry_requires_effect_reconciliation() -> Result<(), Box<dyn std::e
 }
 
 #[test]
-fn test_cancellation_lifecycle_is_strictly_ordered(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_cancellation_lifecycle_is_strictly_ordered() -> Result<(), Box<dyn std::error::Error>> {
     let intent = ContentDigest::sha256(b"effect-intent");
     let mut record = CancellationRecord::request(intent, TimestampNs(1_000));
     assert_eq!(record.intent_digest(), intent);
@@ -1270,8 +1268,7 @@ fn test_cancellation_lifecycle_is_strictly_ordered(
 }
 
 #[test]
-fn test_explain_receipt_is_bounded_and_deterministic(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_explain_receipt_is_bounded_and_deterministic() -> Result<(), Box<dyn std::error::Error>> {
     let subject = ContentDigest::sha256(b"event-under-explanation");
     let evidence = vec![
         ContentDigest::sha256(b"evidence-c"),
@@ -1322,8 +1319,7 @@ fn test_explain_receipt_is_bounded_and_deterministic(
 }
 
 #[test]
-fn test_handoff_admission_publishes_root_last(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_handoff_admission_publishes_root_last() -> Result<(), Box<dyn std::error::Error>> {
     let basis = reference_contract_basis();
     let anchor = LedgerAnchor::genesis("site:fss:handoff");
     let situation_root = ContentDigest::sha256(b"situation-capsule-root");
@@ -1362,8 +1358,8 @@ fn test_handoff_admission_publishes_root_last(
 }
 
 #[test]
-fn test_feedback_proposal_is_advisory_and_evidence_linked(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_feedback_proposal_is_advisory_and_evidence_linked() -> Result<(), Box<dyn std::error::Error>>
+{
     let evidence = vec![
         ContentDigest::sha256(b"feedback-evidence-b"),
         ContentDigest::sha256(b"feedback-evidence-a"),
@@ -1396,11 +1392,24 @@ fn test_feedback_proposal_is_advisory_and_evidence_linked(
     let _ = proposal;
     // Evidence-free proposals are refused: every proposal is evidence-linked.
     assert_eq!(
-        FeedbackProposal::record(FeedbackKind::Adjudication, "no evidence".to_owned(), vec![], 8),
+        FeedbackProposal::record(
+            FeedbackKind::Adjudication,
+            "no evidence".to_owned(),
+            vec![],
+            8
+        ),
         Err(ContractError::EvidenceRequired)
     );
     // Empty statements are refused.
-    assert!(FeedbackProposal::record(FeedbackKind::Correction, "", vec![ContentDigest::sha256(b"e")], 8).is_err());
+    assert!(
+        FeedbackProposal::record(
+            FeedbackKind::Correction,
+            "",
+            vec![ContentDigest::sha256(b"e")],
+            8
+        )
+        .is_err()
+    );
     // The feedback row is a durable advisory write that is never effectful.
     assert!(AgentOperation::Feedback.durable());
     assert!(!AgentOperation::Feedback.effectful());
@@ -1453,14 +1462,16 @@ fn test_doctor_report_is_diagnose_only() -> Result<(), Box<dyn std::error::Error
         Err(ContractError::EvidenceRequired)
     );
     // Repair identities are stable semantic URIs; duplicates refused.
-    assert!(DoctorReport::diagnose(
-        vec![(DiagnosisDomain::Evidence, false)],
-        vec![RepairAffordance {
-            repair_id: "repair:unsealed".to_owned(),
-            domain: DiagnosisDomain::Evidence,
-        }],
-    )
-    .is_err());
+    assert!(
+        DoctorReport::diagnose(
+            vec![(DiagnosisDomain::Evidence, false)],
+            vec![RepairAffordance {
+                repair_id: "repair:unsealed".to_owned(),
+                domain: DiagnosisDomain::Evidence,
+            }],
+        )
+        .is_err()
+    );
     // The doctor row is a durable diagnostic prepare that is never effectful.
     assert!(AgentOperation::Doctor.durable());
     assert!(!AgentOperation::Doctor.effectful());

@@ -198,7 +198,8 @@ fn test_reopening_after_more_batches_gives_new_head_and_old_authority_refused_as
 }
 
 #[test]
-fn test_probe_p1_stale_anchor_refused_after_append_with_fresh_handles() -> Result<(), Box<dyn Error>> {
+fn test_probe_p1_stale_anchor_refused_after_append_with_fresh_handles() -> Result<(), Box<dyn Error>>
+{
     let path = temp_journal("probe-p1-fresh-handles");
     let _ = fs::remove_file(&path);
 
@@ -225,7 +226,10 @@ fn test_probe_p1_stale_anchor_refused_after_append_with_fresh_handles() -> Resul
 
     let new_claim = claim_at(&new_head, witness_at(&new_head));
     let res_new = evaluate_negative_read(&new_claim, &fresh_authority);
-    assert!(res_new.is_ok(), "claim at current sequence 2 must be accepted");
+    assert!(
+        res_new.is_ok(),
+        "claim at current sequence 2 must be accepted"
+    );
 
     let _ = fs::remove_file(&path);
     Ok(())

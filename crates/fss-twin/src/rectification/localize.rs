@@ -3,8 +3,10 @@
 
 use super::{RawGrayFrame, RectificationError, RectificationPlan, RectificationReceipt};
 use crate::PropertyTwin;
+use crate::localization::native::{
+    ImageLocalization, ImageLocalizationOptions, localize_gray_frame,
+};
 use crate::localization::{LocalizationAtlas, LocalizationCamera, LocalizationError};
-use crate::localization::native::{ImageLocalization, ImageLocalizationOptions, localize_gray_frame};
 use fss_geometry::{GeometryError, WorkBudget};
 
 /// Which existing stage refused the composed operation. Neither stage may publish
@@ -17,13 +19,19 @@ pub enum RawLocalizationError {
     Localization(LocalizationError),
 }
 impl From<RectificationError> for RawLocalizationError {
-    fn from(error: RectificationError) -> Self { Self::Rectification(error) }
+    fn from(error: RectificationError) -> Self {
+        Self::Rectification(error)
+    }
 }
 impl From<LocalizationError> for RawLocalizationError {
-    fn from(error: LocalizationError) -> Self { Self::Localization(error) }
+    fn from(error: LocalizationError) -> Self {
+        Self::Localization(error)
+    }
 }
 impl From<GeometryError> for RawLocalizationError {
-    fn from(error: GeometryError) -> Self { Self::Rectification(error.into()) }
+    fn from(error: GeometryError) -> Self {
+        Self::Rectification(error.into())
+    }
 }
 impl std::fmt::Display for RawLocalizationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -52,9 +60,14 @@ pub struct RectifiedLocalization {
 /// Source exposure reuse is refused before resampling, even if crop, mask, range
 /// or pixel bytes differ from the atlas derivative. No query-to-map matches,
 /// calibration defaults, reference images or camera activations are manufactured.
-pub fn localize_raw_frame(atlas: &LocalizationAtlas, twin: &PropertyTwin,
-    plan: &RectificationPlan, source: &RawGrayFrame<'_>, options: ImageLocalizationOptions,
-    budget: &mut WorkBudget<'_>) -> Result<RectifiedLocalization, RawLocalizationError> {
+pub fn localize_raw_frame(
+    atlas: &LocalizationAtlas,
+    twin: &PropertyTwin,
+    plan: &RectificationPlan,
+    source: &RawGrayFrame<'_>,
+    options: ImageLocalizationOptions,
+    budget: &mut WorkBudget<'_>,
+) -> Result<RectifiedLocalization, RawLocalizationError> {
     budget.charge(0)?;
     if atlas.twin_digest() != twin.digest() {
         return Err(LocalizationError::BasisMismatch.into());
@@ -66,9 +79,15 @@ pub fn localize_raw_frame(atlas: &LocalizationAtlas, twin: &PropertyTwin,
         }
     }
     let frame = plan.apply(source, budget)?;
-    let camera = LocalizationCamera { intrinsics: plan.spec().target, image_domain: plan.output_domain() };
+    let camera = LocalizationCamera {
+        intrinsics: plan.spec().target,
+        image_domain: plan.output_domain(),
+    };
     let image = frame.as_gray_image(budget)?;
     let result = localize_gray_frame(atlas, twin, &image, camera, options, budget)?;
     budget.charge(0)?;
-    Ok(RectifiedLocalization { rectification: frame.receipt(), result })
+    Ok(RectifiedLocalization {
+        rectification: frame.receipt(),
+        result,
+    })
 }

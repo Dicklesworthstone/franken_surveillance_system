@@ -204,7 +204,10 @@ fn test_situation_capsule_row_properties() -> Result<(), Box<dyn Error>> {
     assert_eq!(format!("{layer}"), "situation_capsule");
 
     // 3. Exact normative owner
-    assert_eq!(layer.owner(), "fss-situation/fss-context-pack/fss-affordance");
+    assert_eq!(
+        layer.owner(),
+        "fss-situation/fss-context-pack/fss-affordance"
+    );
 
     // 4. Exact normative question
     assert_eq!(

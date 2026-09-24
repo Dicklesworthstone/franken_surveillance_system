@@ -5,19 +5,25 @@
 //! certificate or authority to publish a world revision. Coordinates are local
 //! right-handed Z-up source units. Scale evidence never silently rescales them.
 
-mod wire;
 mod interval;
-mod tracking;
-mod track_motion;
 mod navigation;
+mod track_motion;
+mod tracking;
+mod wire;
 
-pub use navigation::{MAX_NAVIGATION_TRIANGLES, MovementClass, NavigationError, NavigationProfile,
-    RouteOutcome, RouteQuery, RouteSearch, SupportLocation, SupportNetwork, SurfaceRoute};
 pub use interval::{Bounds3, Interval};
-pub use tracking::{ContactHypothesis, ContactObservation, ContactProjection, ProjectionError,
-    ProjectionOptions, ProjectionQuality, TrackingCamera, project_contact};
-pub use track_motion::{MotionFitOptions, PropagatedPosition, WorldMotion, WorldMotionMode,
-    fit_world_motion, propagate_motion};
+pub use navigation::{
+    MAX_NAVIGATION_TRIANGLES, MovementClass, NavigationError, NavigationProfile, RouteOutcome,
+    RouteQuery, RouteSearch, SupportLocation, SupportNetwork, SurfaceRoute,
+};
+pub use track_motion::{
+    MotionFitOptions, PropagatedPosition, WorldMotion, WorldMotionMode, fit_world_motion,
+    propagate_motion,
+};
+pub use tracking::{
+    ContactHypothesis, ContactObservation, ContactProjection, ProjectionError, ProjectionOptions,
+    ProjectionQuality, TrackingCamera, project_contact,
+};
 
 use fss_geometry::{GeometryBasis, GeometryError, IndexedTriangle, TriangleMesh};
 pub use wire::{ImportExpectation, ImportLimits, import_twin};
@@ -42,13 +48,20 @@ pub enum TwinError {
     /// An underlying geometry operation failed; the cause is preserved.
     Geometry(GeometryError),
 }
-impl From<GeometryError> for TwinError { fn from(error: GeometryError) -> Self { Self::Geometry(error) } }
+impl From<GeometryError> for TwinError {
+    fn from(error: GeometryError) -> Self {
+        Self::Geometry(error)
+    }
+}
 impl std::fmt::Display for TwinError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::Limit => "twin limit exceeded", Self::Format => "invalid twin interchange",
-            Self::Digest => "twin digest mismatch", Self::Basis => "twin basis mismatch",
-            Self::Reference => "invalid twin reference", Self::Numeric => "invalid twin numeric input",
+            Self::Limit => "twin limit exceeded",
+            Self::Format => "invalid twin interchange",
+            Self::Digest => "twin digest mismatch",
+            Self::Basis => "twin basis mismatch",
+            Self::Reference => "invalid twin reference",
+            Self::Numeric => "invalid twin numeric input",
             Self::Unobservable => "twin observation does not determine this result",
             Self::Geometry(_) => "twin geometry operation failed",
         })
@@ -130,60 +143,89 @@ pub struct PropertyTwin {
 }
 impl std::fmt::Debug for PropertyTwin {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PropertyTwin").field("features", &self.features.len()).field("triangles", &self.triangles.len()).finish_non_exhaustive()
+        f.debug_struct("PropertyTwin")
+            .field("features", &self.features.len())
+            .field("triangles", &self.triangles.len())
+            .finish_non_exhaustive()
     }
 }
 impl PropertyTwin {
     /// Returns the evaluated triangle mesh in local source units.
-    pub fn mesh(&self) -> &TriangleMesh { &self.mesh }
+    pub fn mesh(&self) -> &TriangleMesh {
+        &self.mesh
+    }
     /// Returns the geometry basis revision the mesh was evaluated against.
-    pub fn basis(&self) -> GeometryBasis { self.mesh.basis() }
+    pub fn basis(&self) -> GeometryBasis {
+        self.mesh.basis()
+    }
     /// Returns the package digest that pins this twin's exact content.
-    pub fn digest(&self) -> [u8; 32] { self.digest }
+    pub fn digest(&self) -> [u8; 32] {
+        self.digest
+    }
     /// Returns the digest of the source scene the package was exported from.
-    pub fn source_scene_digest(&self) -> [u8; 32] { self.source }
+    pub fn source_scene_digest(&self) -> [u8; 32] {
+        self.source
+    }
     /// Returns the evaluation scope declaration from the package.
-    pub fn evaluation_scope(&self) -> &str { &self.scope }
+    pub fn evaluation_scope(&self) -> &str {
+        &self.scope
+    }
     /// Returns the observation epoch the evaluation was taken in.
-    pub fn observation_epoch(&self) -> &str { &self.epoch }
+    pub fn observation_epoch(&self) -> &str {
+        &self.epoch
+    }
     /// Returns the scale evidence associated with the source units.
-    pub fn scale(&self) -> ScaleEvidence { self.scale }
+    pub fn scale(&self) -> ScaleEvidence {
+        self.scale
+    }
     /// Returns the declared geometry error metric, when quantified.
-    pub fn geometry_error(&self) -> Option<f64> { self.geometry_error }
+    pub fn geometry_error(&self) -> Option<f64> {
+        self.geometry_error
+    }
     /// Returns the semantic features attached to twin surfaces.
-    pub fn features(&self) -> &[TwinFeature] { &self.features }
+    pub fn features(&self) -> &[TwinFeature] {
+        &self.features
+    }
     /// Returns the semantic objects bound to mesh regions.
-    pub fn objects(&self) -> &[TwinObject] { &self.objects }
+    pub fn objects(&self) -> &[TwinObject] {
+        &self.objects
+    }
     /// Returns the mesh vertex positions in local source units.
-    pub fn vertices(&self) -> &[[f64; 3]] { &self.vertices }
+    pub fn vertices(&self) -> &[[f64; 3]] {
+        &self.vertices
+    }
     /// Returns the mesh triangle index list.
-    pub fn triangles(&self) -> &[IndexedTriangle] { &self.triangles }
+    pub fn triangles(&self) -> &[IndexedTriangle] {
+        &self.triangles
+    }
     /// Resolves a triangle to its bound object and feature, if fully linked.
     pub fn triangle_identity(&self, triangle: usize) -> Option<(&TwinObject, &TwinFeature)> {
-        let object = self.objects.get(*self.triangle_objects.get(triangle)? as usize)?;
+        let object = self
+            .objects
+            .get(*self.triangle_objects.get(triangle)? as usize)?;
         Some((object, self.features.get(object.feature as usize)?))
     }
 }
 
-pub mod localization;
-pub mod focal_localization;
-pub mod radial_localization;
-pub mod validated_registration;
-pub mod validated_radial_registration;
-pub mod atlas_archive;
-pub mod stream;
-pub mod route_frontier;
-pub mod frontier_handoff;
-pub mod handoff_summary;
-pub mod observed_handoff;
-pub mod monitored_handoff;
-pub mod rectification;
 pub mod association;
 pub mod association_hypotheses;
-pub mod foreground;
-pub mod mjpeg;
-pub mod calibration_monitor;
+pub mod atlas_archive;
 pub mod calibration_gate;
+pub mod calibration_monitor;
+pub mod focal_localization;
+pub mod foreground;
+pub mod frontier_handoff;
+pub mod handoff_summary;
+pub mod localization;
+pub mod mjpeg;
+pub mod monitored_handoff;
+pub mod observed_handoff;
+pub mod radial_localization;
+pub mod rectification;
+pub mod route_frontier;
+pub mod stream;
+pub mod validated_radial_registration;
+pub mod validated_registration;
 
 /// Source-linked sensor-health screening and bounded semantic-analysis admission.
 pub mod screening;

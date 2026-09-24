@@ -40,7 +40,9 @@ impl CrossCameraConfig {
     /// Validates hard bounds, including non-finite floating-point values.
     pub fn validate(&self) -> Result<(), CrossCameraError> {
         if self.max_time_delta_ns <= 0 {
-            return Err(CrossCameraError::InvalidConfig("max_time_delta_ns must be positive"));
+            return Err(CrossCameraError::InvalidConfig(
+                "max_time_delta_ns must be positive",
+            ));
         }
         if !self.max_position_distance.is_finite() || self.max_position_distance <= 0.0 {
             return Err(CrossCameraError::InvalidConfig(
@@ -83,10 +85,14 @@ impl std::fmt::Display for CrossCameraError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidConfig(reason) => write!(f, "invalid cross-camera config: {reason}"),
-            Self::InvalidObservation(reason) => write!(f, "invalid cross-camera observation: {reason}"),
+            Self::InvalidObservation(reason) => {
+                write!(f, "invalid cross-camera observation: {reason}")
+            }
             Self::DuplicateObservation => f.write_str("duplicate camera-local observation"),
             Self::Limit => f.write_str("cross-camera complete-input or allocation limit"),
-            Self::AmbiguousAssignment => f.write_str("cross-camera assignment is ambiguous; retain the detailed report"),
+            Self::AmbiguousAssignment => {
+                f.write_str("cross-camera assignment is ambiguous; retain the detailed report")
+            }
             Self::Assignment(error) => write!(f, "cross-camera assignment: {error}"),
         }
     }
@@ -244,7 +250,10 @@ impl CrossCameraReport {
     }
     /// Copies only stable pairs, even when a different component is ambiguous.
     /// These are conditional associations, not physical identity or effect authority.
-    pub fn stable_pairs(&self, budget: &mut WorkBudget<'_>) -> Result<Vec<AssociatedPair>, CrossCameraError> {
+    pub fn stable_pairs(
+        &self,
+        budget: &mut WorkBudget<'_>,
+    ) -> Result<Vec<AssociatedPair>, CrossCameraError> {
         global::pairs(self, budget)
     }
     /// Whether at least one selected pair cannot be resolved inside this margin.

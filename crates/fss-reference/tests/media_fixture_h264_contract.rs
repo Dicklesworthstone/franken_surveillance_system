@@ -478,8 +478,8 @@ fn nal_list_matches_independent_start_code_scan_across_configs() -> Result<(), B
                 scanned.nal_unit_type, generated.nal_unit_type,
                 "config {idx} NAL {i}: type mismatch"
             );
-            let scanned_bytes =
-                &stream.bytes[scanned.nal_span.offset..scanned.nal_span.offset + scanned.nal_span.len];
+            let scanned_bytes = &stream.bytes
+                [scanned.nal_span.offset..scanned.nal_span.offset + scanned.nal_span.len];
             assert_eq!(
                 scanned_bytes, generated.wire_bytes,
                 "config {idx} NAL {i}: wire bytes diverge between scan and generator"

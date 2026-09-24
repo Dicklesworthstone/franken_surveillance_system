@@ -1,8 +1,8 @@
 #![forbid(unsafe_code)]
 //! Atomic local reference deletion, with explicit projected authority and exact retry receipts.
 
-use fss_core::{Generation, ObjectId, TombstoneReason, TombstoneRecord};
 use super::*;
+use fss_core::{Generation, ObjectId, TombstoneReason, TombstoneRecord};
 
 /// Authenticated runtime projection for ONE exact plan, never inferred from a plan or checksum.
 ///
@@ -45,64 +45,123 @@ pub struct DeletionReceipt {
 impl DeletionReceipt {
     /// Exact operation identity for retry/inspection.
     #[must_use]
-    pub const fn plan_digest(&self) -> ContentDigest { self.plan }
+    pub const fn plan_digest(&self) -> ContentDigest {
+        self.plan
+    }
     /// Exact local objects now permanently tombstoned.
     #[must_use]
-    pub fn deleted(&self) -> &[ContentDigest] { &self.deleted }
+    pub fn deleted(&self) -> &[ContentDigest] {
+        &self.deleted
+    }
     /// Locally released payload quota, not storage-provider billing or physical erasure.
     #[must_use]
-    pub const fn released_bytes(&self) -> u64 { self.released_bytes }
+    pub const fn released_bytes(&self) -> u64 {
+        self.released_bytes
+    }
     /// Metadata root before the atomic local reference mutation.
     #[must_use]
-    pub const fn before_state(&self) -> ContentDigest { self.before }
+    pub const fn before_state(&self) -> ContentDigest {
+        self.before
+    }
     /// Metadata root after the atomic local reference mutation.
     #[must_use]
-    pub const fn after_state(&self) -> ContentDigest { self.after }
+    pub const fn after_state(&self) -> ContentDigest {
+        self.after
+    }
     /// Historical receipt identity to retain in authorized audit custody.
     #[must_use]
-    pub const fn digest(&self) -> ContentDigest { self.digest }
+    pub const fn digest(&self) -> ContentDigest {
+        self.digest
+    }
 
     fn computed_digest(&self) -> Result<ContentDigest, RetentionError> {
         let mut e = CanonicalEncoder::new();
         e.text("fss.reference_local_retention_deletion.v1");
-        for digest in [self.plan, self.policy, self.witness, self.before, self.after] { e.digest(digest); }
+        for digest in [
+            self.plan,
+            self.policy,
+            self.witness,
+            self.before,
+            self.after,
+        ] {
+            e.digest(digest);
+        }
         e.u64(self.deleted.len() as u64);
-        for digest in &self.deleted { e.digest(*digest); }
-        e.u64(self.released_bytes); e.i128(self.committed_at.0);
+        for digest in &self.deleted {
+            e.digest(*digest);
+        }
+        e.u64(self.released_bytes);
+        e.i128(self.committed_at.0);
         Ok(ContentDigest::sha256(&e.finish_checked()?))
     }
 }
 
 impl DeletionReceipt {
-    pub(super) fn policy(&self) -> ContentDigest { self.policy }
-    pub(super) fn witness(&self) -> ContentDigest { self.witness }
-    pub(super) fn committed_at(&self) -> TimestampNs { self.committed_at }
-
-    pub(super) fn encode_checkpoint(&self, e: &mut CanonicalEncoder) {
-        for digest in [self.plan, self.policy, self.witness, self.before, self.after] { e.digest(digest); }
-        e.u64(self.deleted.len() as u64);
-        for digest in &self.deleted { e.digest(*digest); }
-        e.u64(self.released_bytes); e.i128(self.committed_at.0); e.digest(self.digest);
+    pub(super) fn policy(&self) -> ContentDigest {
+        self.policy
+    }
+    pub(super) fn witness(&self) -> ContentDigest {
+        self.witness
+    }
+    pub(super) fn committed_at(&self) -> TimestampNs {
+        self.committed_at
     }
 
-    pub(super) fn decode_checkpoint(d: &mut fss_core::CanonicalDecoder<'_>, remaining: usize)
-        -> Result<Self, RetentionError>
-    {
-        let plan = d.digest()?; let policy = d.digest()?; let witness = d.digest()?;
-        let before = d.digest()?; let after = d.digest()?;
+    pub(super) fn encode_checkpoint(&self, e: &mut CanonicalEncoder) {
+        for digest in [
+            self.plan,
+            self.policy,
+            self.witness,
+            self.before,
+            self.after,
+        ] {
+            e.digest(digest);
+        }
+        e.u64(self.deleted.len() as u64);
+        for digest in &self.deleted {
+            e.digest(*digest);
+        }
+        e.u64(self.released_bytes);
+        e.i128(self.committed_at.0);
+        e.digest(self.digest);
+    }
+
+    pub(super) fn decode_checkpoint(
+        d: &mut fss_core::CanonicalDecoder<'_>,
+        remaining: usize,
+    ) -> Result<Self, RetentionError> {
+        let plan = d.digest()?;
+        let policy = d.digest()?;
+        let witness = d.digest()?;
+        let before = d.digest()?;
+        let after = d.digest()?;
         let count = usize::try_from(d.u64()?).map_err(|_| RetentionError::CapacityExceeded)?;
         if count == 0 || count > remaining.min(MAX_RETENTION_ENTRIES) {
             return Err(RetentionError::InvalidRecord);
         }
-        let mut deleted = Vec::with_capacity(count); let mut seen = BTreeSet::new();
+        let mut deleted = Vec::with_capacity(count);
+        let mut seen = BTreeSet::new();
         for _ in 0..count {
             let digest = d.digest()?;
-            if !seen.insert(digest) { return Err(RetentionError::InvalidRecord); }
+            if !seen.insert(digest) {
+                return Err(RetentionError::InvalidRecord);
+            }
             deleted.push(digest);
         }
-        let receipt = Self { plan, policy, witness, before, after, deleted,
-            released_bytes: d.u64()?, committed_at: TimestampNs(d.i128()?), digest: d.digest()? };
-        if receipt.computed_digest()? != receipt.digest { return Err(RetentionError::InvalidRecord); }
+        let receipt = Self {
+            plan,
+            policy,
+            witness,
+            before,
+            after,
+            deleted,
+            released_bytes: d.u64()?,
+            committed_at: TimestampNs(d.i128()?),
+            digest: d.digest()?,
+        };
+        if receipt.computed_digest()? != receipt.digest {
+            return Err(RetentionError::InvalidRecord);
+        }
         Ok(receipt)
     }
 }
@@ -115,61 +174,113 @@ impl RetentionStore {
     /// bounded temporary store. Any failure drops that candidate, returning no success receipt
     /// and leaving the original store, graph, holds and quota untouched. This is in-process
     /// atomicity, NOT a crash-durable transaction or proof about other custody owners.
-    pub fn execute_expiry(&mut self, plan: &RetentionPlan, authority: &RetentionAuthorization,
-        now: TimestampNs) -> Result<DeletionReceipt, RetentionError>
-    {
-        if plan.digest != plan.computed_digest()? { return Err(RetentionError::StalePlan); }
-        if authority.policy_digest != self.policy || authority.policy_digest != plan.policy
-            || authority.plan_digest != plan.digest || authority.issued_at > now
-            || now >= authority.expires_at || authority.issued_at >= authority.expires_at
-            || plan.selected.iter().any(|digest| !authority.permitted_objects.contains(digest))
+    pub fn execute_expiry(
+        &mut self,
+        plan: &RetentionPlan,
+        authority: &RetentionAuthorization,
+        now: TimestampNs,
+    ) -> Result<DeletionReceipt, RetentionError> {
+        if plan.digest != plan.computed_digest()? {
+            return Err(RetentionError::StalePlan);
+        }
+        if authority.policy_digest != self.policy
+            || authority.policy_digest != plan.policy
+            || authority.plan_digest != plan.digest
+            || authority.issued_at > now
+            || now >= authority.expires_at
+            || authority.issued_at >= authority.expires_at
+            || plan
+                .selected
+                .iter()
+                .any(|digest| !authority.permitted_objects.contains(digest))
             || plan.selected.contains(&authority.witness)
-        { return Err(RetentionError::Unauthorized); }
+        {
+            return Err(RetentionError::Unauthorized);
+        }
         if now < plan.prepared_at || self.last_commit_at.is_some_and(|last| now < last) {
             return Err(RetentionError::ClockRegression);
         }
         self.live_entry(authority.witness)?;
         self.custody.read_verified(authority.witness)?;
         if let Some(receipt) = self.receipts.get(&plan.digest) {
-            if receipt.witness != authority.witness { return Err(RetentionError::Unauthorized); }
+            if receipt.witness != authority.witness {
+                return Err(RetentionError::Unauthorized);
+            }
             return Ok(receipt.clone());
         }
         if plan.state != self.state_digest()?
             || self.prepare_expiry(plan.prepared_at, plan.budget)? != *plan
-        { return Err(RetentionError::StalePlan); }
-        if plan.selected.is_empty() { return Err(RetentionError::NoWork); }
+        {
+            return Err(RetentionError::StalePlan);
+        }
+        if plan.selected.is_empty() {
+            return Err(RetentionError::NoWork);
+        }
         if self.receipts.len() >= self.limits.max_receipts.min(MAX_RETENTION_RECEIPTS) {
             return Err(RetentionError::CapacityExceeded);
         }
         if self.custody.total_bytes() > plan.budget.max_staging_bytes {
             return Err(RetentionError::StagingBudgetExceeded);
         }
-        let next = self.revision.checked_add(1).ok_or(RetentionError::CapacityExceeded)?;
+        let next = self
+            .revision
+            .checked_add(1)
+            .ok_or(RetentionError::CapacityExceeded)?;
         let prior_generation = Generation::parse_positive(1)?;
         let mut tombstones = Vec::with_capacity(plan.selected.len());
         for digest in &plan.selected {
-            self.live_entry(*digest)?; self.custody.read_verified(*digest)?;
-            tombstones.push((*digest, TombstoneRecord::new(
-                ObjectId::parse(format!("object:retention:{digest}"))?,
-                prior_generation.next()?, prior_generation, TombstoneReason::Deleted,
-                Some(authority.witness), *digest,
-            )?));
+            self.live_entry(*digest)?;
+            self.custody.read_verified(*digest)?;
+            tombstones.push((
+                *digest,
+                TombstoneRecord::new(
+                    ObjectId::parse(format!("object:retention:{digest}"))?,
+                    prior_generation.next()?,
+                    prior_generation,
+                    TombstoneReason::Deleted,
+                    Some(authority.witness),
+                    *digest,
+                )?,
+            ));
         }
-        let mut staged = Self { custody: self.custody.clone(), policy: self.policy,
-            limits: self.limits, entries: self.entries.clone(), holds: self.holds.clone(),
-            receipts: self.receipts.clone(), revision: next, last_commit_at: Some(now) };
+        let mut staged = Self {
+            custody: self.custody.clone(),
+            policy: self.policy,
+            limits: self.limits,
+            entries: self.entries.clone(),
+            holds: self.holds.clone(),
+            receipts: self.receipts.clone(),
+            revision: next,
+            last_commit_at: Some(now),
+        };
         for (digest, tombstone) in tombstones {
             staged.custody.tombstone(digest, tombstone)?;
-            staged.entries.get_mut(&digest).ok_or(RetentionError::InvalidRecord)?.deleted_by = Some(plan.digest);
+            staged
+                .entries
+                .get_mut(&digest)
+                .ok_or(RetentionError::InvalidRecord)?
+                .deleted_by = Some(plan.digest);
         }
         staged.verify_live_graph()?;
-        let released_bytes = self.custody.total_bytes().checked_sub(staged.custody.total_bytes())
+        let released_bytes = self
+            .custody
+            .total_bytes()
+            .checked_sub(staged.custody.total_bytes())
             .ok_or(RetentionError::InvalidRecord)?;
-        if released_bytes != plan.selected_bytes { return Err(RetentionError::InvalidRecord); }
-        let mut receipt = DeletionReceipt { plan: plan.digest, policy: self.policy,
-            witness: authority.witness, before: plan.state, after: staged.state_digest()?,
-            deleted: plan.selected.clone(), released_bytes, committed_at: now,
-            digest: ContentDigest::sha256(b"unpublished-retention-deletion") };
+        if released_bytes != plan.selected_bytes {
+            return Err(RetentionError::InvalidRecord);
+        }
+        let mut receipt = DeletionReceipt {
+            plan: plan.digest,
+            policy: self.policy,
+            witness: authority.witness,
+            before: plan.state,
+            after: staged.state_digest()?,
+            deleted: plan.selected.clone(),
+            released_bytes,
+            committed_at: now,
+            digest: ContentDigest::sha256(b"unpublished-retention-deletion"),
+        };
         receipt.digest = receipt.computed_digest()?;
         staged.receipts.insert(plan.digest, receipt.clone());
         *self = staged;

@@ -383,7 +383,9 @@ impl ReferenceSessionStore {
             return Err(ReferenceSessionError::StaleBasis);
         }
         if !refresh.capabilities.is_subset(&entry.session.capabilities)
-            || !refresh.privacy_scope.is_subset(&entry.session.privacy_scope)
+            || !refresh
+                .privacy_scope
+                .is_subset(&entry.session.privacy_scope)
         {
             return Err(ReferenceSessionError::GrantEscalation);
         }
@@ -456,7 +458,10 @@ impl ReferenceSessionStore {
         Ok(entry)
     }
 
-    fn check_generation(entry: &SessionEntry, generation: u64) -> Result<(), ReferenceSessionError> {
+    fn check_generation(
+        entry: &SessionEntry,
+        generation: u64,
+    ) -> Result<(), ReferenceSessionError> {
         if entry.session.symbol_table_generation != generation {
             return Err(ReferenceSessionError::StaleGeneration);
         }
@@ -488,7 +493,10 @@ impl ReferenceSessionStore {
             .get(&HydrationLevel::H0)
             .ok_or(ReferenceSessionError::StaleAlias)?;
         if !required.is_subset(&entry.session.capabilities)
-            || !entry.session.privacy_scope.contains(&descriptor.privacy_class)
+            || !entry
+                .session
+                .privacy_scope
+                .contains(&descriptor.privacy_class)
         {
             return Err(ReferenceSessionError::StaleAlias);
         }

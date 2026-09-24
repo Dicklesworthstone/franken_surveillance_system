@@ -146,7 +146,14 @@ pub fn run_reference_capture_with_source(
     spec.validate()?;
     plan.validate_against(spec.packet_count)?;
     let source_packets = source.generate_packets()?;
-    publish_reference_packets(&spec, source_packets, source.clock().clone(), plan, objects, ledger)
+    publish_reference_packets(
+        &spec,
+        source_packets,
+        source.clock().clone(),
+        plan,
+        objects,
+        ledger,
+    )
 }
 
 /// Shared root-last publication for trusted, completely generated reference profiles.
@@ -169,7 +176,8 @@ pub(crate) fn publish_reference_packets(
     let source_trace_digest = objects.put_verified(&source_trace.canonical_bytes())?;
     // Identical encoded fragments share one content object. Their multiplicity,
     // sequence and capture intervals remain fully retained in the ordered trace.
-    let mut unique_source_digests: Vec<_> = source_packets.iter().map(|packet| packet.digest).collect();
+    let mut unique_source_digests: Vec<_> =
+        source_packets.iter().map(|packet| packet.digest).collect();
     unique_source_digests.sort_unstable();
     unique_source_digests.dedup();
     let source_manifest = ObjectManifest::new(

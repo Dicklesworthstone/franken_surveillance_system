@@ -29,10 +29,10 @@ mod delivery;
 /// AOP-012); agent-plane writes only.
 pub mod deployment_session;
 pub mod doctor;
-pub mod evaluation;
 mod durable_effect;
 mod encoded_fixture;
 mod error;
+pub mod evaluation;
 mod extrinsics;
 mod hydration;
 pub mod ingest;
@@ -42,13 +42,13 @@ mod model;
 pub mod model_receipt;
 mod outcome;
 mod packet_fault;
+/// Exact-graph peak-memory execution over the unchanged scalar kernel backend.
+pub mod planned_scalar;
 mod policy;
 pub mod preprocess;
 pub mod reference_deployment;
 pub mod rtsp;
 pub mod scalar_executor;
-/// Exact-graph peak-memory execution over the unchanged scalar kernel backend.
-pub mod planned_scalar;
 mod situation;
 mod situation_guard;
 mod situation_sections;
@@ -102,12 +102,12 @@ pub use agent_session::{
     SessionAlias, SessionBindingRequest, SessionRefresh,
 };
 pub use alert::{
-    AlertDispatchTimes, PrepareAlertParams, ProviderDispatch, ProviderFailureReceipt, ProviderObservationReceipt,
-    REFERENCE_ALERT_TERMINAL_PREDICATE, ReferenceAlertPlan, ReferenceAlertProvider,
-    ReferenceProviderBehavior, alert_cancel_proof, committed_reference_policy_action,
-    dispatch_reference_alert, observe_reference_alert, prepare_reference_alert,
-    reconcile_failed_reference_alert, reconcile_reference_alert, rehydrate_reference_alert_plan,
-    verify_reference_alert,
+    AlertDispatchTimes, PrepareAlertParams, ProviderDispatch, ProviderFailureReceipt,
+    ProviderObservationReceipt, REFERENCE_ALERT_TERMINAL_PREDICATE, ReferenceAlertPlan,
+    ReferenceAlertProvider, ReferenceProviderBehavior, alert_cancel_proof,
+    committed_reference_policy_action, dispatch_reference_alert, observe_reference_alert,
+    prepare_reference_alert, reconcile_failed_reference_alert, reconcile_reference_alert,
+    rehydrate_reference_alert_plan, verify_reference_alert,
 };
 pub use bundle::{ReplayBundle, ReplayBundleError, ReplayCursor};
 pub use calibration::{

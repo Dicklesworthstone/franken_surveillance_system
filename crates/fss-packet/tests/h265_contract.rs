@@ -2,8 +2,8 @@
 //! RFC 7798 wire reconstruction, provenance, and explicit failure contracts.
 
 use fss_packet::{
-    H265Depacketizer, H265Error, H265Failure, H265Limits, H265Output, H265Status,
-    PacketLimits, RtpPacket, StreamKey,
+    H265Depacketizer, H265Error, H265Failure, H265Limits, H265Output, H265Status, PacketLimits,
+    RtpPacket, StreamKey,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -99,13 +99,22 @@ fn aggregate_header_uses_independent_minimum_layer_and_temporal_fields() -> Test
     let nals = vec![header(32, 2, 7).to_vec(), header(33, 33, 2).to_vec()];
     let mut receiver = receiver(H265Limits::default())?;
     assert_eq!(
-        feed(&mut receiver, 1, 0, false, &aggregate(&nals, 2, 2), 0)??.nals.len(),
+        feed(&mut receiver, 1, 0, false, &aggregate(&nals, 2, 2), 0)??
+            .nals
+            .len(),
         2
     );
     for (seq, layer, tid) in [(2, 33, 2), (3, 2, 7), (4, 0, 1)] {
-        let error = feed(&mut receiver, seq, 0, false, &aggregate(&nals, layer, tid), seq)?
-            .err()
-            .ok_or("invalid AP identity was accepted")?;
+        let error = feed(
+            &mut receiver,
+            seq,
+            0,
+            false,
+            &aggregate(&nals, layer, tid),
+            seq,
+        )?
+        .err()
+        .ok_or("invalid AP identity was accepted")?;
         assert_eq!(error.reason, H265Error::Malformed);
     }
     Ok(())
@@ -146,7 +155,10 @@ fn forbidden_bit_zero_temporal_id_and_unsupported_packet_types_are_explicit() ->
         (vec![0xa6, 1], H265Error::Corrupt),
         (vec![0x64, 1], H265Error::Unsupported),
         (vec![0x7e, 1], H265Error::Unsupported),
-        (aggregate(&[vec![0x40, 1], vec![0xc2, 1]], 0, 1), H265Error::Corrupt),
+        (
+            aggregate(&[vec![0x40, 1], vec![0xc2, 1]], 0, 1),
+            H265Error::Corrupt,
+        ),
     ] {
         let mut receiver = receiver(H265Limits::default())?;
         let error = feed(&mut receiver, 1, 0, false, &payload, 0)?
@@ -160,11 +172,32 @@ fn forbidden_bit_zero_temporal_id_and_unsupported_packet_types_are_explicit() ->
 #[test]
 fn fragmented_nal_wraps_sequence_and_preserves_two_byte_header_provenance() -> TestResult {
     let mut receiver = receiver(H265Limits::default())?;
-    let start = feed(&mut receiver, 65_535, 90_000, false, &[0x63, 0x2b, 0x93, 1, 2], 0)??;
+    let start = feed(
+        &mut receiver,
+        65_535,
+        90_000,
+        false,
+        &[0x63, 0x2b, 0x93, 1, 2],
+        0,
+    )??;
     assert_eq!(start.status, H265Status::FragmentPending);
     assert!(start.nals.is_empty());
-    feed(&mut receiver, 65_536, 90_000, false, &[0x63, 0x2b, 0x13, 3], 1)??;
-    let output = feed(&mut receiver, 65_537, 90_000, true, &[0x63, 0x2b, 0x53, 4, 5], 2)??;
+    feed(
+        &mut receiver,
+        65_536,
+        90_000,
+        false,
+        &[0x63, 0x2b, 0x13, 3],
+        1,
+    )??;
+    let output = feed(
+        &mut receiver,
+        65_537,
+        90_000,
+        true,
+        &[0x63, 0x2b, 0x53, 4, 5],
+        2,
+    )??;
     let nal = &output.nals[0];
     assert_eq!(nal.bytes(), [0x27, 0x2b, 1, 2, 3, 4, 5]);
     assert_eq!(nal.layer_id(), 37);
@@ -254,11 +287,13 @@ fn timestamp_layer_temporal_type_and_marker_changes_retire_pending_chain() -> Te
 fn missing_start_and_loss_never_publish_or_resurrect_partial_media() -> TestResult {
     let mut receiver = receiver(H265Limits::default())?;
     let error = feed(&mut receiver, 1, 0, true, &[0x62, 1, 0x53, 1], 0)?
-        .err().ok_or("missing start accepted")?;
+        .err()
+        .ok_or("missing start accepted")?;
     assert_eq!(error.reason, H265Error::MissingStart);
     feed(&mut receiver, 2, 0, false, &[0x62, 1, 0x93, 2], 1)??;
     let error = feed(&mut receiver, 4, 0, true, &[0x62, 1, 0x53, 4], 2)?
-        .err().ok_or("gap was accepted")?;
+        .err()
+        .ok_or("gap was accepted")?;
     assert_eq!(error.reason, H265Error::MissingStart);
     let discarded = error.discarded.ok_or("missing gap receipt")?;
     assert_eq!(discarded.reason, H265Error::Gap);
@@ -280,29 +315,48 @@ fn interrupted_and_owner_declared_gap_receipts_are_reported_once() -> TestResult
     let mut receiver = receiver(H265Limits::default())?;
     feed(&mut receiver, 1, 0, false, &[0x62, 1, 0x93, 1], 0)??;
     let fresh = feed(&mut receiver, 2, 1, false, &[0x62, 1, 0x94, 2], 1)??;
-    assert_eq!(fresh.discarded.ok_or("missing interruption")?.reason, H265Error::Interrupted);
+    assert_eq!(
+        fresh.discarded.ok_or("missing interruption")?.reason,
+        H265Error::Interrupted
+    );
     let single = feed(&mut receiver, 3, 2, true, &[0x26, 1, 3], 2)??;
-    assert_eq!(single.discarded.ok_or("missing single interruption")?.first_sequence, 2);
+    assert_eq!(
+        single
+            .discarded
+            .ok_or("missing single interruption")?
+            .first_sequence,
+        2
+    );
     feed(&mut receiver, 4, 3, false, &[0x62, 1, 0x93, 4], 3)??;
-    assert_eq!(receiver.discard_gap().ok_or("missing declared gap")?.reason, H265Error::Gap);
+    assert_eq!(
+        receiver.discard_gap().ok_or("missing declared gap")?.reason,
+        H265Error::Gap
+    );
     assert!(receiver.discard_gap().is_none());
     Ok(())
 }
 
 #[test]
 fn deadlines_fire_without_network_and_duplicate_traffic_cannot_extend_them() -> TestResult {
-    let limits = H265Limits { max_pending_age_ns: 10, ..H265Limits::default() };
+    let limits = H265Limits {
+        max_pending_age_ns: 10,
+        ..H265Limits::default()
+    };
     let mut receiver = receiver(limits)?;
     feed(&mut receiver, 1, 0, false, &[0x62, 1, 0x93, 1], 2)??;
     assert_eq!(receiver.next_deadline_ns(), Some(12));
     let duplicate = feed(&mut receiver, 1, 0, false, &[0x62, 1, 0x93, 1], 11)??;
     assert_eq!(duplicate.status, H265Status::IgnoredNonIncreasing);
     assert_eq!(receiver.next_deadline_ns(), Some(12));
-    assert_eq!(receiver.expire(12)?.ok_or("expiry missing")?.reason, H265Error::Deadline);
+    assert_eq!(
+        receiver.expire(12)?.ok_or("expiry missing")?.reason,
+        H265Error::Deadline
+    );
     assert!(receiver.expire(13)?.is_none());
     assert_eq!(receiver.next_deadline_ns(), None);
     let error = feed(&mut receiver, 2, 0, true, &[0x62, 1, 0x53, 2], 14)?
-        .err().ok_or("expired chain resurrected")?;
+        .err()
+        .ok_or("expired chain resurrected")?;
     assert_eq!(error.reason, H265Error::MissingStart);
     Ok(())
 }
@@ -313,47 +367,107 @@ fn wrong_epoch_ssrc_payload_sequence_and_reversed_clock_do_not_mutate_state() ->
     feed(&mut receiver, 1, 0, false, &[0x62, 1, 0x93, 1], 10)??;
     let end = packet(2, 0, true, &[0x62, 1, 0x53, 2]);
     let parsed = RtpPacket::parse(&end, PacketLimits::default())?;
-    for key in [StreamKey { generation: 2, ..KEY }, StreamKey { ssrc: 9, ..KEY }] {
-        let error = receiver.push(key, 2, parsed, 20).err().ok_or("wrong key accepted")?;
+    for key in [
+        StreamKey {
+            generation: 2,
+            ..KEY
+        },
+        StreamKey { ssrc: 9, ..KEY },
+    ] {
+        let error = receiver
+            .push(key, 2, parsed, 20)
+            .err()
+            .ok_or("wrong key accepted")?;
         assert_eq!(error.reason, H265Error::StreamMismatch);
         assert!(error.discarded.is_none());
     }
-    let error = receiver.push(KEY, 3, parsed, 20).err().ok_or("sequence alias accepted")?;
+    let error = receiver
+        .push(KEY, 3, parsed, 20)
+        .err()
+        .ok_or("sequence alias accepted")?;
     assert_eq!(error.reason, H265Error::StreamMismatch);
     let mut wrong_payload_type = end.clone();
     wrong_payload_type[1] = 97 | 128;
     let parsed_wrong = RtpPacket::parse(&wrong_payload_type, PacketLimits::default())?;
-    assert_eq!(receiver.push(KEY, 2, parsed_wrong, 20).err().ok_or("wrong PT accepted")?.reason,
-        H265Error::StreamMismatch);
-    assert_eq!(receiver.push(KEY, 2, parsed, 9).err().ok_or("clock reversal accepted")?.reason,
-        H265Error::ClockReversed);
+    assert_eq!(
+        receiver
+            .push(KEY, 2, parsed_wrong, 20)
+            .err()
+            .ok_or("wrong PT accepted")?
+            .reason,
+        H265Error::StreamMismatch
+    );
+    assert_eq!(
+        receiver
+            .push(KEY, 2, parsed, 9)
+            .err()
+            .ok_or("clock reversal accepted")?
+            .reason,
+        H265Error::ClockReversed
+    );
     assert_eq!(receiver.pending_bytes(), 3);
     // Refusals at time 20 did not advance the valid owner's clock or sequence.
-    assert_eq!(receiver.push(KEY, 2, parsed, 11)?.nals[0].bytes(), [0x26, 1, 1, 2]);
+    assert_eq!(
+        receiver.push(KEY, 2, parsed, 11)?.nals[0].bytes(),
+        [0x26, 1, 1, 2]
+    );
     Ok(())
 }
 
 #[test]
 fn nal_aggregate_and_fragment_count_budgets_fail_closed() -> TestResult {
-    let mut small = receiver(H265Limits { max_nal_bytes: 4, ..H265Limits::default() })?;
+    let mut small = receiver(H265Limits {
+        max_nal_bytes: 4,
+        ..H265Limits::default()
+    })?;
     let aggregate = aggregate(&[vec![0x40, 1, 1], vec![0x42, 1, 2]], 0, 1);
-    assert_eq!(feed(&mut small, 1, 0, true, &aggregate, 0)?.err().ok_or("AP budget bypass")?.reason,
-        H265Error::Limit);
-    assert_eq!(feed(&mut small, 2, 0, true, &[0x26, 1, 1, 2, 3], 1)?.err()
-        .ok_or("single budget bypass")?.reason, H265Error::Limit);
+    assert_eq!(
+        feed(&mut small, 1, 0, true, &aggregate, 0)?
+            .err()
+            .ok_or("AP budget bypass")?
+            .reason,
+        H265Error::Limit
+    );
+    assert_eq!(
+        feed(&mut small, 2, 0, true, &[0x26, 1, 1, 2, 3], 1)?
+            .err()
+            .ok_or("single budget bypass")?
+            .reason,
+        H265Error::Limit
+    );
     feed(&mut small, 3, 0, false, &[0x62, 1, 0x93, 1, 2], 2)??;
-    let error = feed(&mut small, 4, 0, true, &[0x62, 1, 0x53, 3], 3)?.err()
+    let error = feed(&mut small, 4, 0, true, &[0x62, 1, 0x53, 3], 3)?
+        .err()
         .ok_or("FU byte budget bypass")?;
     assert_eq!(error.reason, H265Error::Limit);
-    assert_eq!(error.discarded.ok_or("budget retirement missing")?.byte_len, 4);
-    let mut count = receiver(H265Limits { max_fragment_packets: 2, ..H265Limits::default() })?;
+    assert_eq!(
+        error.discarded.ok_or("budget retirement missing")?.byte_len,
+        4
+    );
+    let mut count = receiver(H265Limits {
+        max_fragment_packets: 2,
+        ..H265Limits::default()
+    })?;
     feed(&mut count, 1, 0, false, &[0x62, 1, 0x93, 1], 0)??;
     feed(&mut count, 2, 0, false, &[0x62, 1, 0x13, 2], 1)??;
-    assert_eq!(feed(&mut count, 3, 0, true, &[0x62, 1, 0x53, 3], 2)?.err()
-        .ok_or("FU count bypass")?.reason, H265Error::Limit);
-    let mut ap_count = receiver(H265Limits { max_packet_nals: 1, ..H265Limits::default() })?;
-    assert_eq!(feed(&mut ap_count, 1, 0, true, &aggregate, 0)?.err()
-        .ok_or("AP count bypass")?.reason, H265Error::Limit);
+    assert_eq!(
+        feed(&mut count, 3, 0, true, &[0x62, 1, 0x53, 3], 2)?
+            .err()
+            .ok_or("FU count bypass")?
+            .reason,
+        H265Error::Limit
+    );
+    let mut ap_count = receiver(H265Limits {
+        max_packet_nals: 1,
+        ..H265Limits::default()
+    })?;
+    assert_eq!(
+        feed(&mut ap_count, 1, 0, true, &aggregate, 0)?
+            .err()
+            .ok_or("AP count bypass")?
+            .reason,
+        H265Error::Limit
+    );
     Ok(())
 }
 
@@ -361,7 +475,8 @@ fn nal_aggregate_and_fragment_count_budgets_fail_closed() -> TestResult {
 fn unrepresentable_deadline_is_not_retained_forever() -> TestResult {
     let mut receiver = receiver(H265Limits::default())?;
     let error = feed(&mut receiver, 1, 0, false, &[0x62, 1, 0x93, 1], u64::MAX)?
-        .err().ok_or("overflowing deadline accepted")?;
+        .err()
+        .ok_or("overflowing deadline accepted")?;
     assert_eq!(error.reason, H265Error::Limit);
     assert_eq!(receiver.pending_bytes(), 0);
     assert_eq!(receiver.next_deadline_ns(), None);
@@ -373,14 +488,30 @@ fn cancellation_and_eof_never_flush_incomplete_nals() -> TestResult {
     for cancelled in [false, true] {
         let mut receiver = receiver(H265Limits::default())?;
         feed(&mut receiver, 1, 0, false, &[0x62, 1, 0x93, 1], 0)??;
-        let discarded = if cancelled { receiver.cancel() } else { receiver.finish() }
-            .ok_or("terminal receipt missing")?;
-        assert_eq!(discarded.reason, if cancelled { H265Error::Cancelled } else { H265Error::EndOfInput });
+        let discarded = if cancelled {
+            receiver.cancel()
+        } else {
+            receiver.finish()
+        }
+        .ok_or("terminal receipt missing")?;
+        assert_eq!(
+            discarded.reason,
+            if cancelled {
+                H265Error::Cancelled
+            } else {
+                H265Error::EndOfInput
+            }
+        );
         assert!(receiver.cancel().is_none());
         assert!(receiver.finish().is_none());
         assert_eq!(receiver.pending_bytes(), 0);
-        assert_eq!(feed(&mut receiver, 2, 0, true, &[0x26, 1, 2], 1)?.err()
-            .ok_or("closed receiver admitted media")?.reason, H265Error::Closed);
+        assert_eq!(
+            feed(&mut receiver, 2, 0, true, &[0x26, 1, 2], 1)?
+                .err()
+                .ok_or("closed receiver admitted media")?
+                .reason,
+            H265Error::Closed
+        );
     }
     Ok(())
 }
@@ -403,24 +534,72 @@ fn source_ranges_exclude_csrc_extension_and_rtp_padding() -> TestResult {
 #[test]
 fn explicit_negotiation_and_configuration_cannot_be_silently_widened() -> TestResult {
     for don in [1, 32_767] {
-        assert_eq!(H265Depacketizer::new(KEY, 96, don, H265Limits::default()).err()
-            .ok_or("DON negotiation ignored")?.reason, H265Error::Unsupported);
+        assert_eq!(
+            H265Depacketizer::new(KEY, 96, don, H265Limits::default())
+                .err()
+                .ok_or("DON negotiation ignored")?
+                .reason,
+            H265Error::Unsupported
+        );
     }
-    assert_eq!(H265Depacketizer::new(KEY, 96, 32_768, H265Limits::default()).err()
-        .ok_or("invalid SDP integer accepted")?.reason, H265Error::Configuration);
+    assert_eq!(
+        H265Depacketizer::new(KEY, 96, 32_768, H265Limits::default())
+            .err()
+            .ok_or("invalid SDP integer accepted")?
+            .reason,
+        H265Error::Configuration
+    );
     for limits in [
-        H265Limits { max_nal_bytes: 1, ..H265Limits::default() },
-        H265Limits { max_nal_bytes: 16 * 1_024 * 1_024 + 1, ..H265Limits::default() },
-        H265Limits { max_packet_nals: 0, ..H265Limits::default() },
-        H265Limits { max_packet_nals: 257, ..H265Limits::default() },
-        H265Limits { max_fragment_packets: 1, ..H265Limits::default() },
-        H265Limits { max_fragment_packets: 4_097, ..H265Limits::default() },
-        H265Limits { max_pending_age_ns: 0, ..H265Limits::default() },
-        H265Limits { max_pending_age_ns: 60_000_000_001, ..H265Limits::default() },
+        H265Limits {
+            max_nal_bytes: 1,
+            ..H265Limits::default()
+        },
+        H265Limits {
+            max_nal_bytes: 16 * 1_024 * 1_024 + 1,
+            ..H265Limits::default()
+        },
+        H265Limits {
+            max_packet_nals: 0,
+            ..H265Limits::default()
+        },
+        H265Limits {
+            max_packet_nals: 257,
+            ..H265Limits::default()
+        },
+        H265Limits {
+            max_fragment_packets: 1,
+            ..H265Limits::default()
+        },
+        H265Limits {
+            max_fragment_packets: 4_097,
+            ..H265Limits::default()
+        },
+        H265Limits {
+            max_pending_age_ns: 0,
+            ..H265Limits::default()
+        },
+        H265Limits {
+            max_pending_age_ns: 60_000_000_001,
+            ..H265Limits::default()
+        },
     ] {
-        assert_eq!(receiver(limits).err().ok_or("bad limits accepted")?.reason, H265Error::Configuration);
+        assert_eq!(
+            receiver(limits).err().ok_or("bad limits accepted")?.reason,
+            H265Error::Configuration
+        );
     }
-    assert!(H265Depacketizer::new(StreamKey { generation: 0, ..KEY }, 96, 0, H265Limits::default()).is_err());
+    assert!(
+        H265Depacketizer::new(
+            StreamKey {
+                generation: 0,
+                ..KEY
+            },
+            96,
+            0,
+            H265Limits::default()
+        )
+        .is_err()
+    );
     assert!(H265Depacketizer::new(KEY, 128, 0, H265Limits::default()).is_err());
     Ok(())
 }

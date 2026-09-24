@@ -1,10 +1,8 @@
 #![forbid(unsafe_code)]
 //! Small, deterministic integration-test helpers; no device or network access.
 
+use fss_packet::StreamKey;
 use fss_packet::avc::{AvcPps, AvcSps, AvcSyntaxLimits, parse_pps, parse_sps};
-use fss_packet::{
-    StreamKey,
-};
 
 pub type Error = Box<dyn std::error::Error>;
 pub const KEY: StreamKey = StreamKey {

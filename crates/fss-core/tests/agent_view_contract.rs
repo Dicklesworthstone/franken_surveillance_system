@@ -94,8 +94,7 @@ fn test_view_token_budget_discipline() -> Result<(), Box<dyn std::error::Error>>
 }
 
 #[test]
-fn test_operation_default_views_bind_registered_views(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_operation_default_views_bind_registered_views() -> Result<(), Box<dyn std::error::Error>> {
     for operation in AgentOperation::ALL_OPERATIONS {
         let default_id = operation.default_view();
         let view = AgentView::from_id(default_id)?;
@@ -115,7 +114,10 @@ fn test_operation_default_views_bind_registered_views(
 fn test_view_digest_stability() {
     for view in AgentView::ALL_VIEWS {
         let digest = view.row_digest();
-        assert_eq!(AgentView::from_name(view.name()).map(|v| v.row_digest()), Ok(digest));
+        assert_eq!(
+            AgentView::from_name(view.name()).map(|v| v.row_digest()),
+            Ok(digest)
+        );
         assert_ne!(view.canonical_digest("fss.other.domain.v1"), digest);
         let encoding = view.canonical_row_encoding();
         assert!(!encoding.contains('\n'));

@@ -38,7 +38,9 @@ pub enum ImageTrackingError {
     Geometry(GeometryError),
 }
 impl From<GeometryError> for ImageTrackingError {
-    fn from(error: GeometryError) -> Self { Self::Geometry(error) }
+    fn from(error: GeometryError) -> Self {
+        Self::Geometry(error)
+    }
 }
 impl std::fmt::Display for ImageTrackingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -85,10 +87,15 @@ impl ImageTrackingPolicy {
             || !(1..=MAX_TRACKING_EXPOSURES).contains(&self.maximum_exposures)
             || !(1..=4096).contains(&self.minimum_observations)
             || self.maximum_misses > 4096
-            || self.maximum_gap_ns == 0 || self.maximum_gap_ns > 3600 * SECOND
-            || self.maximum_speed == 0 || self.maximum_speed > 1_000_000
-            || self.gate_padding > 65536 || self.miss_cost == 0
-            || self.miss_cost > 1_000_000_000 || self.ambiguity_margin > 1_000_000_000 {
+            || self.maximum_gap_ns == 0
+            || self.maximum_gap_ns > 3600 * SECOND
+            || self.maximum_speed == 0
+            || self.maximum_speed > 1_000_000
+            || self.gate_padding > 65536
+            || self.miss_cost == 0
+            || self.miss_cost > 1_000_000_000
+            || self.ambiguity_margin > 1_000_000_000
+        {
             return Err(ImageTrackingError::InvalidInput);
         }
         Ok(())
@@ -138,8 +145,10 @@ pub struct ImageDetection {
 }
 impl ImageDetection {
     fn center(self) -> [i64; 2] {
-        [i64::from(self.min[0]) + i64::from(self.max[0]),
-         i64::from(self.min[1]) + i64::from(self.max[1])]
+        [
+            i64::from(self.min[0]) + i64::from(self.max[0]),
+            i64::from(self.min[1]) + i64::from(self.max[1]),
+        ]
     }
 }
 
@@ -173,17 +182,29 @@ pub struct ImageTrack {
 }
 impl ImageTrack {
     /// Anonymous ID scoped to the tracker's explicit episode identity.
-    pub fn id(&self) -> u64 { self.id }
+    pub fn id(&self) -> u64 {
+        self.id
+    }
     /// Most recent actual observation, even while coasting.
-    pub fn latest(&self) -> ImageTrackObservation { self.latest }
+    pub fn latest(&self) -> ImageTrackObservation {
+        self.latest
+    }
     /// Previous actual observation when present.
-    pub fn previous(&self) -> Option<ImageTrackObservation> { self.previous }
+    pub fn previous(&self) -> Option<ImageTrackObservation> {
+        self.previous
+    }
     /// Number of accepted actual observations, never including predictions.
-    pub fn observations(&self) -> u32 { self.observations }
+    pub fn observations(&self) -> u32 {
+        self.observations
+    }
     /// Consecutive inputs without an accepted measurement.
-    pub fn misses(&self) -> u32 { self.misses }
+    pub fn misses(&self) -> u32 {
+        self.misses
+    }
     /// Explicit measurement/continuation state.
-    pub fn state(&self) -> ImageTrackState { self.state }
+    pub fn state(&self) -> ImageTrackState {
+        self.state
+    }
 }
 
 /// Every pair survives, including conditional exclusions and unresolved alternatives.
@@ -251,19 +272,33 @@ pub struct ImageTrackingReport {
 }
 impl ImageTrackingReport {
     /// Prior local state/receipt chain, not a ledger anchor.
-    pub fn prior_digest(&self) -> [u8; 32] { self.prior }
+    pub fn prior_digest(&self) -> [u8; 32] {
+        self.prior
+    }
     /// Versioned local receipt chain, binding source, decisions and resulting state.
-    pub fn digest(&self) -> [u8; 32] { self.digest }
+    pub fn digest(&self) -> [u8; 32] {
+        self.digest
+    }
     /// Complete unchanged input frame and availability.
-    pub fn frame(&self) -> ImageTrackingFrame { self.frame }
+    pub fn frame(&self) -> ImageTrackingFrame {
+        self.frame
+    }
     /// Full Cartesian candidate table, ordered by (track ID, detection ID).
-    pub fn candidates(&self) -> &[ImageAssociationCandidate] { &self.candidates }
+    pub fn candidates(&self) -> &[ImageAssociationCandidate] {
+        &self.candidates
+    }
     /// Every proposal, including unresolved and unavailable outcomes.
-    pub fn decisions(&self) -> &[ImageDetectionDecision] { &self.decisions }
+    pub fn decisions(&self) -> &[ImageDetectionDecision] {
+        &self.decisions
+    }
     /// Explicit horizon/miss terminal transitions.
-    pub fn expired(&self) -> &[ExpiredImageTrack] { &self.expired }
+    pub fn expired(&self) -> &[ExpiredImageTrack] {
+        &self.expired
+    }
     /// Minimum global objective including miss costs, not a calibrated probability.
-    pub fn assignment_cost(&self) -> u64 { self.assignment_cost }
+    pub fn assignment_cost(&self) -> u64 {
+        self.assignment_cost
+    }
 }
 
 /// Synchronous, owner-held state. No threads, I/O, auto-activation, or effect authority.
@@ -279,56 +314,112 @@ pub struct ImageTracker {
 }
 impl ImageTracker {
     /// Begin an explicitly new episode. Its identity must be retained by the owner.
-    pub fn new(episode: [u8; 32], policy: ImageTrackingPolicy,
-        budget: &mut WorkBudget<'_>) -> Result<Self, ImageTrackingError> {
+    pub fn new(
+        episode: [u8; 32],
+        policy: ImageTrackingPolicy,
+        budget: &mut WorkBudget<'_>,
+    ) -> Result<Self, ImageTrackingError> {
         budget.charge(32)?;
         policy.validate()?;
-        if episode == [0; 32] { return Err(ImageTrackingError::InvalidInput); }
+        if episode == [0; 32] {
+            return Err(ImageTrackingError::InvalidInput);
+        }
         let mut bytes = reserve(256)?;
         bytes.extend_from_slice(b"fss/image-tracking/reference/1\0");
         bytes.extend_from_slice(&episode);
-        for n in [policy.maximum_tracks as u64, policy.maximum_detections as u64,
-            policy.maximum_exposures as u64, u64::from(policy.minimum_observations),
-            u64::from(policy.maximum_misses), policy.maximum_gap_ns, u64::from(policy.maximum_speed),
-            u64::from(policy.gate_padding), u64::from(policy.miss_cost), u64::from(policy.ambiguity_margin)] {
+        for n in [
+            policy.maximum_tracks as u64,
+            policy.maximum_detections as u64,
+            policy.maximum_exposures as u64,
+            u64::from(policy.minimum_observations),
+            u64::from(policy.maximum_misses),
+            policy.maximum_gap_ns,
+            u64::from(policy.maximum_speed),
+            u64::from(policy.gate_padding),
+            u64::from(policy.miss_cost),
+            u64::from(policy.ambiguity_margin),
+        ] {
             integer(&mut bytes, n);
         }
         let digest = ContentDigest::sha256(&bytes).bytes();
         budget.charge(0)?;
-        Ok(Self { policy, digest, basis: None, last_capture: None,
-            exposures: reserve(policy.maximum_exposures)?, tracks: reserve(policy.maximum_tracks)?, next_id: 1 })
+        Ok(Self {
+            policy,
+            digest,
+            basis: None,
+            last_capture: None,
+            exposures: reserve(policy.maximum_exposures)?,
+            tracks: reserve(policy.maximum_tracks)?,
+            next_id: 1,
+        })
     }
     /// Active anonymous trajectory hypotheses in ID order.
-    pub fn tracks(&self) -> &[ImageTrack] { &self.tracks }
+    pub fn tracks(&self) -> &[ImageTrack] {
+        &self.tracks
+    }
     /// Local receipt chain head; unchanged by all failed updates.
-    pub fn digest(&self) -> [u8; 32] { self.digest }
+    pub fn digest(&self) -> [u8; 32] {
+        self.digest
+    }
     /// Exact immutable limits and conditional assumptions.
-    pub fn policy(&self) -> ImageTrackingPolicy { self.policy }
+    pub fn policy(&self) -> ImageTrackingPolicy {
+        self.policy
+    }
     /// Number of accepted distinct source exposures in this bounded episode.
-    pub fn exposure_count(&self) -> usize { self.exposures.len() }
+    pub fn exposure_count(&self) -> usize {
+        self.exposures.len()
+    }
 
     /// Consume a complete exposure transactionally. Even empty/degraded frames need
     /// their source identity and capture interval. Errors publish no partial state.
-    pub fn update(&mut self, frame: ImageTrackingFrame, detections: &[ImageDetection],
-        budget: &mut WorkBudget<'_>) -> Result<ImageTrackingReport, ImageTrackingError> {
+    pub fn update(
+        &mut self,
+        frame: ImageTrackingFrame,
+        detections: &[ImageDetection],
+        budget: &mut WorkBudget<'_>,
+    ) -> Result<ImageTrackingReport, ImageTrackingError> {
         budget.charge(1)?;
         if detections.len() > self.policy.maximum_detections
-            || self.exposures.len() >= self.policy.maximum_exposures { return Err(ImageTrackingError::Limit); }
+            || self.exposures.len() >= self.policy.maximum_exposures
+        {
+            return Err(ImageTrackingError::Limit);
+        }
         validate_frame(frame)?;
-        if self.basis.is_some_and(|basis| !same_basis(basis, frame)) { return Err(ImageTrackingError::BasisMismatch); }
+        if self.basis.is_some_and(|basis| !same_basis(basis, frame)) {
+            return Err(ImageTrackingError::BasisMismatch);
+        }
         budget.charge(self.exposures.len() as u64)?;
-        if self.exposures.contains(&frame.source.image.exposure) { return Err(ImageTrackingError::ReusedExposure); }
-        if self.last_capture.is_some_and(|last| last[1] >= frame.source.capture[0]) { return Err(ImageTrackingError::CaptureOrder); }
+        if self.exposures.contains(&frame.source.image.exposure) {
+            return Err(ImageTrackingError::ReusedExposure);
+        }
+        if self
+            .last_capture
+            .is_some_and(|last| last[1] >= frame.source.capture[0])
+        {
+            return Err(ImageTrackingError::CaptureOrder);
+        }
         let mut ordered = reserve(detections.len())?;
         ordered.extend_from_slice(detections);
         budget.charge((detections.len() * detections.len() + 1) as u64)?;
         ordered.sort_unstable_by_key(|d| d.id);
         for (i, detection) in ordered.iter().enumerate() {
-            if detection.id == 0 || [frame.evidence, frame.source.image.exposure,
-                frame.source.image.pixels, frame.detector, [0; 32]].contains(&detection.evidence)
-                || (0..2).any(|axis| detection.min[axis] >= detection.max[axis]
-                    || detection.max[axis] > frame.source.image.dimensions[axis])
-                || ordered[..i].iter().any(|other| other.id == detection.id || other.evidence == detection.evidence) {
+            if detection.id == 0
+                || [
+                    frame.evidence,
+                    frame.source.image.exposure,
+                    frame.source.image.pixels,
+                    frame.detector,
+                    [0; 32],
+                ]
+                .contains(&detection.evidence)
+                || (0..2).any(|axis| {
+                    detection.min[axis] >= detection.max[axis]
+                        || detection.max[axis] > frame.source.image.dimensions[axis]
+                })
+                || ordered[..i]
+                    .iter()
+                    .any(|other| other.id == detection.id || other.evidence == detection.evidence)
+            {
                 return Err(ImageTrackingError::InvalidInput);
             }
         }
@@ -336,11 +427,19 @@ impl ImageTracker {
         let mut expired = reserve(self.policy.maximum_tracks)?;
         for track in &self.tracks {
             budget.charge(1)?;
-            if frame.source.capture[1] - track.latest.frame.source.capture[0] > self.policy.maximum_gap_ns {
-                expired.push(ExpiredImageTrack { track: *track, reason: ImageTrackExpiry::CaptureHorizon });
-            } else { live.push(*track); }
+            if frame.source.capture[1] - track.latest.frame.source.capture[0]
+                > self.policy.maximum_gap_ns
+            {
+                expired.push(ExpiredImageTrack {
+                    track: *track,
+                    reason: ImageTrackExpiry::CaptureHorizon,
+                });
+            } else {
+                live.push(*track);
+            }
         }
-        let rows = live.len(); let columns = ordered.len() + rows;
+        let rows = live.len();
+        let columns = ordered.len() + rows;
         let mut costs = reserve(rows * columns)?;
         let mut candidates = reserve(rows * ordered.len())?;
         for track in &live {
@@ -348,20 +447,33 @@ impl ImageTracker {
                 budget.charge(32)?;
                 let cost = if frame.availability == TrackingAvailability::Available {
                     pair_cost(*track, frame, *detection, self.policy)
-                } else { None };
-                candidates.push(ImageAssociationCandidate { track: track.id, detection: detection.id,
-                    cost, selected: false, ambiguous: false });
+                } else {
+                    None
+                };
+                candidates.push(ImageAssociationCandidate {
+                    track: track.id,
+                    detection: detection.id,
+                    cost,
+                    selected: false,
+                    ambiguous: false,
+                });
                 costs.push(cost.map_or(FORBIDDEN, i64::from));
             }
-            for _ in 0..rows { costs.push(i64::from(self.policy.miss_cost)); }
+            for _ in 0..rows {
+                costs.push(i64::from(self.policy.miss_cost));
+            }
         }
         let best = assign(&costs, rows, columns, None, budget)?;
         let mut decisions = reserve(ordered.len())?;
         for detection in &ordered {
-            decisions.push(ImageDetectionDecision { detection: *detection,
+            decisions.push(ImageDetectionDecision {
+                detection: *detection,
                 disposition: if frame.availability == TrackingAvailability::Available {
                     ImageDetectionDisposition::Unresolved
-                } else { ImageDetectionDisposition::Unavailable } });
+                } else {
+                    ImageDetectionDisposition::Unavailable
+                },
+            });
         }
         for (row, track) in live.iter_mut().enumerate() {
             budget.charge(1)?;
@@ -369,26 +481,40 @@ impl ImageTracker {
             let mut accepted = false;
             if column < ordered.len() {
                 let alternate = assign(&costs, rows, columns, Some((row, column)), budget)?;
-                let ambiguous = alternate.cost <= best.cost + u64::from(self.policy.ambiguity_margin);
+                let ambiguous =
+                    alternate.cost <= best.cost + u64::from(self.policy.ambiguity_margin);
                 let candidate = &mut candidates[row * ordered.len() + column];
-                candidate.selected = true; candidate.ambiguous = ambiguous;
+                candidate.selected = true;
+                candidate.ambiguous = ambiguous;
                 if !ambiguous {
                     track.previous = Some(track.latest);
-                    track.latest = ImageTrackObservation { frame, detection: ordered[column] };
-                    track.observations += 1; track.misses = 0;
+                    track.latest = ImageTrackObservation {
+                        frame,
+                        detection: ordered[column],
+                    };
+                    track.observations += 1;
+                    track.misses = 0;
                     track.state = observed_state(track.observations, self.policy);
                     decisions[column].disposition = ImageDetectionDisposition::Continued(track.id);
                     accepted = true;
                 }
             }
-            if !accepted { track.misses += 1; track.state = ImageTrackState::Coasting; }
+            if !accepted {
+                track.misses += 1;
+                track.state = ImageTrackState::Coasting;
+            }
         }
         let mut next = reserve(self.policy.maximum_tracks)?;
         for track in live {
             budget.charge(1)?;
             if track.misses > self.policy.maximum_misses {
-                expired.push(ExpiredImageTrack { track, reason: ImageTrackExpiry::MissLimit });
-            } else { next.push(track); }
+                expired.push(ExpiredImageTrack {
+                    track,
+                    reason: ImageTrackExpiry::MissLimit,
+                });
+            } else {
+                next.push(track);
+            }
         }
         let mut next_id = self.next_id;
         if frame.availability == TrackingAvailability::Available {
@@ -396,59 +522,124 @@ impl ImageTracker {
                 budget.charge(candidates.len() as u64 + 1)?;
                 // A plausible old path prevents a forced birth, even if cost prefers a miss.
                 if decision.disposition == ImageDetectionDisposition::Unresolved
-                    && !candidates.iter().any(|c| c.detection == decision.detection.id && c.cost.is_some()) {
-                    if next.len() == self.policy.maximum_tracks { return Err(ImageTrackingError::Limit); }
-                    next.push(ImageTrack { id: next_id, latest: ImageTrackObservation { frame, detection: decision.detection },
-                        previous: None, observations: 1, misses: 0, state: observed_state(1, self.policy) });
+                    && !candidates
+                        .iter()
+                        .any(|c| c.detection == decision.detection.id && c.cost.is_some())
+                {
+                    if next.len() == self.policy.maximum_tracks {
+                        return Err(ImageTrackingError::Limit);
+                    }
+                    next.push(ImageTrack {
+                        id: next_id,
+                        latest: ImageTrackObservation {
+                            frame,
+                            detection: decision.detection,
+                        },
+                        previous: None,
+                        observations: 1,
+                        misses: 0,
+                        state: observed_state(1, self.policy),
+                    });
                     decision.disposition = ImageDetectionDisposition::Started(next_id);
                     next_id = next_id.checked_add(1).ok_or(ImageTrackingError::Limit)?;
                 }
             }
         }
         expired.sort_unstable_by_key(|expired| expired.track.id);
-        let mut report = ImageTrackingReport { prior: self.digest, digest: [0; 32], frame,
-            candidates, decisions, expired, assignment_cost: best.cost };
+        let mut report = ImageTrackingReport {
+            prior: self.digest,
+            digest: [0; 32],
+            frame,
+            candidates,
+            decisions,
+            expired,
+            assignment_cost: best.cost,
+        };
         report.digest = receipt_digest(&report, &next, next_id, self.exposures.len() + 1, budget)?;
         // Everything fallible, including the final cancellation poll, precedes mutation.
         budget.charge(0)?;
-        self.basis = Some(self.basis.unwrap_or(frame)); self.last_capture = Some(frame.source.capture);
-        self.exposures.push(frame.source.image.exposure); self.tracks = next;
-        self.next_id = next_id; self.digest = report.digest;
+        self.basis = Some(self.basis.unwrap_or(frame));
+        self.last_capture = Some(frame.source.capture);
+        self.exposures.push(frame.source.image.exposure);
+        self.tracks = next;
+        self.next_id = next_id;
+        self.digest = report.digest;
         Ok(report)
     }
 }
 
 fn observed_state(count: u32, policy: ImageTrackingPolicy) -> ImageTrackState {
-    if count >= policy.minimum_observations { ImageTrackState::Established } else { ImageTrackState::Tentative }
+    if count >= policy.minimum_observations {
+        ImageTrackState::Established
+    } else {
+        ImageTrackState::Tentative
+    }
 }
 fn validate_frame(frame: ImageTrackingFrame) -> Result<(), ImageTrackingError> {
     let source = frame.source;
-    if source.camera == 0 || source.clock == 0 || source.capture[0] > source.capture[1]
-        || source.image.dimensions.iter().any(|n| *n == 0 || *n > 65536)
-        || [source.calibration, source.image.exposure, source.image.pixels, source.image.image_domain,
-            frame.detector, frame.permission_mask, frame.evidence].contains(&[0; 32]) {
+    if source.camera == 0
+        || source.clock == 0
+        || source.capture[0] > source.capture[1]
+        || source
+            .image
+            .dimensions
+            .iter()
+            .any(|n| *n == 0 || *n > 65536)
+        || [
+            source.calibration,
+            source.image.exposure,
+            source.image.pixels,
+            source.image.image_domain,
+            frame.detector,
+            frame.permission_mask,
+            frame.evidence,
+        ]
+        .contains(&[0; 32])
+    {
         return Err(ImageTrackingError::InvalidInput);
     }
     Ok(())
 }
 fn same_basis(a: ImageTrackingFrame, b: ImageTrackingFrame) -> bool {
-    a.source.camera == b.source.camera && a.source.clock == b.source.clock
-        && a.source.calibration == b.source.calibration && a.source.image.dimensions == b.source.image.dimensions
+    a.source.camera == b.source.camera
+        && a.source.clock == b.source.clock
+        && a.source.calibration == b.source.calibration
+        && a.source.image.dimensions == b.source.image.dimensions
         && a.source.image.image_domain == b.source.image.image_domain
-        && a.detector == b.detector && a.permission_mask == b.permission_mask
+        && a.detector == b.detector
+        && a.permission_mask == b.permission_mask
 }
-fn pair_cost(track: ImageTrack, frame: ImageTrackingFrame, detection: ImageDetection,
-    policy: ImageTrackingPolicy) -> Option<u32> {
-    let last = track.latest; let center = last.detection.center(); let incoming = detection.center();
+fn pair_cost(
+    track: ImageTrack,
+    frame: ImageTrackingFrame,
+    detection: ImageDetection,
+    policy: ImageTrackingPolicy,
+) -> Option<u32> {
+    let last = track.latest;
+    let center = last.detection.center();
+    let incoming = detection.center();
     let elapsed = frame.source.capture[1].saturating_sub(last.frame.source.capture[0]);
     let reach = (u128::from(policy.maximum_speed) * u128::from(elapsed) * 2)
-        .div_ceil(u128::from(SECOND)) + u128::from(policy.gate_padding) * 2;
-    if !last.detection.partial && !detection.partial
-        && (0..2).any(|axis| u128::from((incoming[axis] - center[axis]).unsigned_abs()) > reach) { return None; }
+        .div_ceil(u128::from(SECOND))
+        + u128::from(policy.gate_padding) * 2;
+    if !last.detection.partial
+        && !detection.partial
+        && (0..2).any(|axis| u128::from((incoming[axis] - center[axis]).unsigned_abs()) > reach)
+    {
+        return None;
+    }
     let mut predicted = center;
-    let previous = track.previous.filter(|previous| !previous.detection.partial && !last.detection.partial
-        && [previous.frame.source.capture, last.frame.source.capture, frame.source.capture]
-            .iter().all(|capture| capture[0] == capture[1]));
+    let previous = track.previous.filter(|previous| {
+        !previous.detection.partial
+            && !last.detection.partial
+            && [
+                previous.frame.source.capture,
+                last.frame.source.capture,
+                frame.source.capture,
+            ]
+            .iter()
+            .all(|capture| capture[0] == capture[1])
+    });
     if let Some(previous) = previous {
         let dt = last.frame.source.capture[0].saturating_sub(previous.frame.source.capture[0]);
         let ahead = frame.source.capture[0].saturating_sub(last.frame.source.capture[0]);
@@ -462,57 +653,106 @@ fn pair_cost(track: ImageTrack, frame: ImageTrackingFrame, detection: ImageDetec
             *predicted_axis += shift.clamp(-1_000_000_000, 1_000_000_000) as i64;
         }
     }
-    let distance = (incoming[0] - predicted[0]).unsigned_abs() + (incoming[1] - predicted[1]).unsigned_abs();
+    let distance =
+        (incoming[0] - predicted[0]).unsigned_abs() + (incoming[1] - predicted[1]).unsigned_abs();
     Some(distance.min(1_000_000_000) as u32)
 }
 
-struct Assignment { columns: [usize; MAX_IMAGE_TRACKS], cost: u64 }
+struct Assignment {
+    columns: [usize; MAX_IMAGE_TRACKS],
+    cost: u64,
+}
 // Rectangular shortest augmenting path Hungarian solver. Every row has its own
 // available miss column; FORBIDDEN cannot win against a finite full assignment.
-fn assign(costs: &[i64], rows: usize, columns: usize, excluded: Option<(usize, usize)>,
-    budget: &mut WorkBudget<'_>) -> Result<Assignment, ImageTrackingError> {
+fn assign(
+    costs: &[i64],
+    rows: usize,
+    columns: usize,
+    excluded: Option<(usize, usize)>,
+    budget: &mut WorkBudget<'_>,
+) -> Result<Assignment, ImageTrackingError> {
     budget.charge(1)?;
-    if rows > MAX_IMAGE_TRACKS || columns > MAX_COLUMNS || columns < rows
-        || costs.len() != rows * columns { return Err(ImageTrackingError::InvalidInput); }
-    let mut u = [0_i64; MAX_IMAGE_TRACKS + 1]; let mut v = [0_i64; MAX_COLUMNS + 1];
-    let mut p = [0_usize; MAX_COLUMNS + 1]; let mut way = [0_usize; MAX_COLUMNS + 1];
+    if rows > MAX_IMAGE_TRACKS
+        || columns > MAX_COLUMNS
+        || columns < rows
+        || costs.len() != rows * columns
+    {
+        return Err(ImageTrackingError::InvalidInput);
+    }
+    let mut u = [0_i64; MAX_IMAGE_TRACKS + 1];
+    let mut v = [0_i64; MAX_COLUMNS + 1];
+    let mut p = [0_usize; MAX_COLUMNS + 1];
+    let mut way = [0_usize; MAX_COLUMNS + 1];
     for i in 1..=rows {
-        p[0] = i; let mut j0 = 0;
-        let mut minimum = [FORBIDDEN; MAX_COLUMNS + 1]; let mut used = [false; MAX_COLUMNS + 1];
+        p[0] = i;
+        let mut j0 = 0;
+        let mut minimum = [FORBIDDEN; MAX_COLUMNS + 1];
+        let mut used = [false; MAX_COLUMNS + 1];
         loop {
             budget.charge(columns as u64 * 2 + 1)?;
-            used[j0] = true; let i0 = p[j0]; let mut delta = FORBIDDEN; let mut j1 = 0;
+            used[j0] = true;
+            let i0 = p[j0];
+            let mut delta = FORBIDDEN;
+            let mut j1 = 0;
             for j in 1..=columns {
-                if used[j] { continue; }
-                let cost = if excluded == Some((i0 - 1, j - 1)) { FORBIDDEN }
-                    else { costs[(i0 - 1) * columns + j - 1] };
+                if used[j] {
+                    continue;
+                }
+                let cost = if excluded == Some((i0 - 1, j - 1)) {
+                    FORBIDDEN
+                } else {
+                    costs[(i0 - 1) * columns + j - 1]
+                };
                 let current = cost - u[i0] - v[j];
-                if current < minimum[j] { minimum[j] = current; way[j] = j0; }
-                if minimum[j] < delta { delta = minimum[j]; j1 = j; }
+                if current < minimum[j] {
+                    minimum[j] = current;
+                    way[j] = j0;
+                }
+                if minimum[j] < delta {
+                    delta = minimum[j];
+                    j1 = j;
+                }
             }
-            if j1 == 0 || delta >= FORBIDDEN { return Err(ImageTrackingError::InvalidInput); }
+            if j1 == 0 || delta >= FORBIDDEN {
+                return Err(ImageTrackingError::InvalidInput);
+            }
             for j in 0..=columns {
-                if used[j] { u[p[j]] += delta; v[j] -= delta; }
-                else { minimum[j] -= delta; }
+                if used[j] {
+                    u[p[j]] += delta;
+                    v[j] -= delta;
+                } else {
+                    minimum[j] -= delta;
+                }
             }
             j0 = j1;
-            if p[j0] == 0 { break; }
+            if p[j0] == 0 {
+                break;
+            }
         }
         loop {
             budget.charge(1)?;
-            let j1 = way[j0]; p[j0] = p[j1]; j0 = j1;
-            if j0 == 0 { break; }
+            let j1 = way[j0];
+            p[j0] = p[j1];
+            j0 = j1;
+            if j0 == 0 {
+                break;
+            }
         }
     }
-    let mut result = Assignment { columns: [usize::MAX; MAX_IMAGE_TRACKS], cost: 0 };
+    let mut result = Assignment {
+        columns: [usize::MAX; MAX_IMAGE_TRACKS],
+        cost: 0,
+    };
     for (j, &assigned_row) in p.iter().enumerate().take(columns + 1).skip(1) {
         if assigned_row != 0 {
-            let row = assigned_row - 1; let column = j - 1;
+            let row = assigned_row - 1;
+            let column = j - 1;
             let cost = costs[row * columns + column];
             if !(0..FORBIDDEN).contains(&cost) || excluded == Some((row, column)) {
                 return Err(ImageTrackingError::InvalidInput);
             }
-            result.columns[row] = column; result.cost += cost as u64;
+            result.columns[row] = column;
+            result.cost += cost as u64;
         }
     }
     budget.charge(0)?;
@@ -520,61 +760,121 @@ fn assign(costs: &[i64], rows: usize, columns: usize, excluded: Option<(usize, u
 }
 
 fn reserve<T>(count: usize) -> Result<Vec<T>, ImageTrackingError> {
-    let mut values = Vec::new(); values.try_reserve_exact(count).map_err(|_| ImageTrackingError::Limit)?; Ok(values)
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(count)
+        .map_err(|_| ImageTrackingError::Limit)?;
+    Ok(values)
 }
-fn integer(bytes: &mut Vec<u8>, n: u64) { bytes.extend_from_slice(&n.to_le_bytes()); }
+fn integer(bytes: &mut Vec<u8>, n: u64) {
+    bytes.extend_from_slice(&n.to_le_bytes());
+}
 fn frame_bytes(bytes: &mut Vec<u8>, frame: ImageTrackingFrame) {
     let source = frame.source;
-    for digest in [source.image.exposure, source.image.pixels, source.image.image_domain,
-        source.calibration, frame.detector, frame.permission_mask, frame.evidence] { bytes.extend_from_slice(&digest); }
-    for n in [source.camera, source.clock, source.capture[0], source.capture[1],
-        u64::from(source.image.dimensions[0]), u64::from(source.image.dimensions[1])] { integer(bytes, n); }
+    for digest in [
+        source.image.exposure,
+        source.image.pixels,
+        source.image.image_domain,
+        source.calibration,
+        frame.detector,
+        frame.permission_mask,
+        frame.evidence,
+    ] {
+        bytes.extend_from_slice(&digest);
+    }
+    for n in [
+        source.camera,
+        source.clock,
+        source.capture[0],
+        source.capture[1],
+        u64::from(source.image.dimensions[0]),
+        u64::from(source.image.dimensions[1]),
+    ] {
+        integer(bytes, n);
+    }
     bytes.push(frame.availability as u8);
 }
 fn detection_bytes(bytes: &mut Vec<u8>, detection: ImageDetection) {
-    integer(bytes, detection.id); bytes.extend_from_slice(&detection.evidence);
-    for n in detection.min.into_iter().chain(detection.max) { integer(bytes, u64::from(n)); }
+    integer(bytes, detection.id);
+    bytes.extend_from_slice(&detection.evidence);
+    for n in detection.min.into_iter().chain(detection.max) {
+        integer(bytes, u64::from(n));
+    }
     bytes.push(u8::from(detection.partial));
 }
 fn track_bytes(bytes: &mut Vec<u8>, track: ImageTrack) {
-    integer(bytes, track.id); integer(bytes, u64::from(track.observations)); integer(bytes, u64::from(track.misses));
-    bytes.push(match track.state { ImageTrackState::Tentative => 0, ImageTrackState::Established => 1, ImageTrackState::Coasting => 2 });
-    frame_bytes(bytes, track.latest.frame); detection_bytes(bytes, track.latest.detection);
+    integer(bytes, track.id);
+    integer(bytes, u64::from(track.observations));
+    integer(bytes, u64::from(track.misses));
+    bytes.push(match track.state {
+        ImageTrackState::Tentative => 0,
+        ImageTrackState::Established => 1,
+        ImageTrackState::Coasting => 2,
+    });
+    frame_bytes(bytes, track.latest.frame);
+    detection_bytes(bytes, track.latest.detection);
     bytes.push(u8::from(track.previous.is_some()));
-    if let Some(previous) = track.previous { frame_bytes(bytes, previous.frame); detection_bytes(bytes, previous.detection); }
+    if let Some(previous) = track.previous {
+        frame_bytes(bytes, previous.frame);
+        detection_bytes(bytes, previous.detection);
+    }
 }
-fn receipt_digest(report: &ImageTrackingReport, tracks: &[ImageTrack], next_id: u64,
-    exposure_count: usize, budget: &mut WorkBudget<'_>) -> Result<[u8; 32], ImageTrackingError> {
+fn receipt_digest(
+    report: &ImageTrackingReport,
+    tracks: &[ImageTrack],
+    next_id: u64,
+    exposure_count: usize,
+    budget: &mut WorkBudget<'_>,
+) -> Result<[u8; 32], ImageTrackingError> {
     // Upper bound covers every encoded record, avoiding hidden vector growth.
-    let capacity = 512 + report.candidates.len() * 32 + report.decisions.len() * 96
+    let capacity = 512
+        + report.candidates.len() * 32
+        + report.decisions.len() * 96
         + (report.expired.len() + tracks.len()) * 768;
     budget.charge(capacity as u64)?;
     let mut bytes = reserve(capacity)?;
-    bytes.extend_from_slice(b"fss/image-tracking/update/1\0"); bytes.extend_from_slice(&report.prior);
-    frame_bytes(&mut bytes, report.frame); integer(&mut bytes, next_id);
-    integer(&mut bytes, exposure_count as u64); integer(&mut bytes, report.assignment_cost);
+    bytes.extend_from_slice(b"fss/image-tracking/update/1\0");
+    bytes.extend_from_slice(&report.prior);
+    frame_bytes(&mut bytes, report.frame);
+    integer(&mut bytes, next_id);
+    integer(&mut bytes, exposure_count as u64);
+    integer(&mut bytes, report.assignment_cost);
     integer(&mut bytes, report.candidates.len() as u64);
     for candidate in &report.candidates {
-        integer(&mut bytes, candidate.track); integer(&mut bytes, candidate.detection);
-        bytes.push(u8::from(candidate.cost.is_some())); integer(&mut bytes, u64::from(candidate.cost.unwrap_or(0)));
-        bytes.push(u8::from(candidate.selected)); bytes.push(u8::from(candidate.ambiguous));
+        integer(&mut bytes, candidate.track);
+        integer(&mut bytes, candidate.detection);
+        bytes.push(u8::from(candidate.cost.is_some()));
+        integer(&mut bytes, u64::from(candidate.cost.unwrap_or(0)));
+        bytes.push(u8::from(candidate.selected));
+        bytes.push(u8::from(candidate.ambiguous));
     }
     integer(&mut bytes, report.decisions.len() as u64);
     for decision in &report.decisions {
         detection_bytes(&mut bytes, decision.detection);
-        let (tag, id) = match decision.disposition { ImageDetectionDisposition::Started(id) => (0, id),
-            ImageDetectionDisposition::Continued(id) => (1, id), ImageDetectionDisposition::Unresolved => (2, 0),
-            ImageDetectionDisposition::Unavailable => (3, 0) };
-        bytes.push(tag); integer(&mut bytes, id);
+        let (tag, id) = match decision.disposition {
+            ImageDetectionDisposition::Started(id) => (0, id),
+            ImageDetectionDisposition::Continued(id) => (1, id),
+            ImageDetectionDisposition::Unresolved => (2, 0),
+            ImageDetectionDisposition::Unavailable => (3, 0),
+        };
+        bytes.push(tag);
+        integer(&mut bytes, id);
     }
     integer(&mut bytes, report.expired.len() as u64);
     for expired in &report.expired {
         track_bytes(&mut bytes, expired.track);
-        bytes.push(match expired.reason { ImageTrackExpiry::CaptureHorizon => 0, ImageTrackExpiry::MissLimit => 1 });
+        bytes.push(match expired.reason {
+            ImageTrackExpiry::CaptureHorizon => 0,
+            ImageTrackExpiry::MissLimit => 1,
+        });
     }
     integer(&mut bytes, tracks.len() as u64);
-    for track in tracks { track_bytes(&mut bytes, *track); }
-    let digest = ContentDigest::sha256(&bytes).bytes(); budget.charge(0)?; Ok(digest)
+    for track in tracks {
+        track_bytes(&mut bytes, *track);
+    }
+    let digest = ContentDigest::sha256(&bytes).bytes();
+    budget.charge(0)?;
+    Ok(digest)
 }
 
 /// Shared bounded assignment over explicitly supplied candidate costs.

@@ -87,7 +87,13 @@ fn fixture(name: &str, plan: SpoolFaultPlan) -> Result<Fixture, Box<dyn Error>> 
     let quote = BudgetVector::builder().bytes(1024).tokens(512).build()?;
     let handle = SemanticHandle::publish(SemanticHandleSpec {
         contract_basis: ContractBasis::from_registry_bytes(ContractBasisRegistryBytes::new(
-            b"s", b"o", b"v", b"c", b"e", b"cost", "source-local:test",
+            b"s",
+            b"o",
+            b"v",
+            b"c",
+            b"e",
+            b"cost",
+            "source-local:test",
         )),
         anchor: LedgerAnchor::genesis("site:source-local"),
         subject_id: "subject:source".to_owned(),
@@ -139,10 +145,22 @@ fn fixture(name: &str, plan: SpoolFaultPlan) -> Result<Fixture, Box<dyn Error>> 
         &publisher,
         io.as_ref(),
     )?;
-    Ok(Fixture { publisher, directory, io, catalog, handle, manifest, slot, metadata })
+    Ok(Fixture {
+        publisher,
+        directory,
+        io,
+        catalog,
+        handle,
+        manifest,
+        slot,
+        metadata,
+    })
 }
 
-fn request(handle: &SemanticHandle, level: HydrationLevel) -> Result<HydrationRequest, Box<dyn Error>> {
+fn request(
+    handle: &SemanticHandle,
+    level: HydrationLevel,
+) -> Result<HydrationRequest, Box<dyn Error>> {
     Ok(HydrationRequest::publish(HydrationRequestSpec {
         contract_basis: handle.contract_basis.clone(),
         session_id: SessionId::parse("session:local-source")?,
@@ -167,7 +185,10 @@ fn reseal(request: &mut HydrationRequest) {
 }
 
 fn call_counts(io: &FaultInjectingSpoolIo) -> Vec<u64> {
-    SpoolIoCall::ALL.iter().map(|call| io.calls(*call)).collect()
+    SpoolIoCall::ALL
+        .iter()
+        .map(|call| io.calls(*call))
+        .collect()
 }
 
 fn corrupt(path: &Path) -> TestResult {
@@ -188,13 +209,16 @@ fn disk_and_memory_custody_produce_identical_receipts_without_writes() -> TestRe
     let req = request(&f.handle, HydrationLevel::H3)?;
     let cached = f.catalog.stored_payload_bytes();
     let before = call_counts(f.io.as_ref());
-    let disk = f.catalog.hydrate_from_local_source(
-        &req, &f.publisher, f.io.as_ref(), TimestampNs(20),
-    )?;
+    let disk =
+        f.catalog
+            .hydrate_from_local_source(&req, &f.publisher, f.io.as_ref(), TimestampNs(20))?;
     let reference = oracle.hydrate_from_source(&req, &memory, TimestampNs(20))?;
     assert_eq!(disk, reference);
     disk.validate_for(&req, &f.handle)?;
-    assert_eq!(disk.artifact.as_ref().ok_or("missing artifact")?.payload, SOURCE);
+    assert_eq!(
+        disk.artifact.as_ref().ok_or("missing artifact")?.payload,
+        SOURCE
+    );
     assert_eq!(f.catalog.stored_payload_bytes(), cached);
     for (index, call) in SpoolIoCall::ALL.iter().enumerate() {
         if call.is_mutating() {
@@ -207,19 +231,40 @@ fn disk_and_memory_custody_produce_identical_receipts_without_writes() -> TestRe
 #[test]
 fn reopening_disk_custody_preserves_binding_and_exact_source_bytes() -> TestResult {
     let f = fixture("reopen", SpoolFaultPlan::new())?;
-    let Fixture { publisher, directory, io, mut catalog, handle, manifest, slot, .. } = f;
-    let binding = catalog.source_binding(&handle.handle_id, handle.descriptor_digest)
-        .cloned().ok_or("missing binding")?;
+    let Fixture {
+        publisher,
+        directory,
+        io,
+        mut catalog,
+        handle,
+        manifest,
+        slot,
+        ..
+    } = f;
+    let binding = catalog
+        .source_binding(&handle.handle_id, handle.descriptor_digest)
+        .cloned()
+        .ok_or("missing binding")?;
     drop(publisher);
     let capability: Arc<dyn SpoolIo> = io.clone();
     let reopened = LocalRootPublisher::open_with_io(&directory.0, limits(), capability)?;
-    assert_eq!(reopened.root(&slot).ok_or("missing recovered root")?.state,
-        LocalPublicationState::Durable);
-    assert_eq!(binding, catalog.bind_local_source_object(
-        &handle.handle_id, handle.descriptor_digest, manifest.root(), &reopened, io.as_ref(),
-    )?);
+    assert_eq!(
+        reopened.root(&slot).ok_or("missing recovered root")?.state,
+        LocalPublicationState::Durable
+    );
+    assert_eq!(
+        binding,
+        catalog.bind_local_source_object(
+            &handle.handle_id,
+            handle.descriptor_digest,
+            manifest.root(),
+            &reopened,
+            io.as_ref(),
+        )?
+    );
     let req = request(&handle, HydrationLevel::H3)?;
-    let result = catalog.hydrate_from_local_source(&req, &reopened, io.as_ref(), TimestampNs(20))?;
+    let result =
+        catalog.hydrate_from_local_source(&req, &reopened, io.as_ref(), TimestampNs(20))?;
     assert_eq!(result.artifact.ok_or("missing source")?.payload, SOURCE);
     drop(reopened);
     Ok(())
@@ -237,14 +282,16 @@ fn denials_and_expiry_perform_zero_local_io() -> TestResult {
             _ => req.budget = BudgetVector::builder().bytes(1024).tokens(511).build()?,
         }
         reseal(&mut req);
-        assert!(f.catalog.hydrate_from_local_source(
-            &req, &f.publisher, f.io.as_ref(), TimestampNs(20),
-        ).is_err());
+        assert!(
+            f.catalog
+                .hydrate_from_local_source(&req, &f.publisher, f.io.as_ref(), TimestampNs(20),)
+                .is_err()
+        );
     }
     let req = request(&f.handle, HydrationLevel::H3)?;
-    let expired = f.catalog.hydrate_from_local_source(
-        &req, &f.publisher, f.io.as_ref(), TimestampNs(100),
-    )?;
+    let expired =
+        f.catalog
+            .hydrate_from_local_source(&req, &f.publisher, f.io.as_ref(), TimestampNs(100))?;
     assert_eq!(expired.receipt.availability, HandleAvailability::Expired);
     assert!(expired.artifact.is_none());
     assert_eq!(before, call_counts(f.io.as_ref()));
@@ -256,18 +303,27 @@ fn corrupt_root_source_or_metadata_blocks_a_previously_successful_read() -> Test
     for case in 0..3 {
         let mut f = fixture(&format!("corrupt-{case}"), SpoolFaultPlan::new())?;
         let req = request(&f.handle, HydrationLevel::H3)?;
-        f.catalog.hydrate_from_local_source(&req, &f.publisher, f.io.as_ref(), TimestampNs(20))?;
+        f.catalog
+            .hydrate_from_local_source(&req, &f.publisher, f.io.as_ref(), TimestampNs(20))?;
         let target = match case {
-            0 => f.directory.0.join(LOCAL_ROOTS_DIR).join(format!("{}{ROOT_RECORD_SUFFIX}", f.slot)),
+            0 => f
+                .directory
+                .0
+                .join(LOCAL_ROOTS_DIR)
+                .join(format!("{}{ROOT_RECORD_SUFFIX}", f.slot)),
             1 => f.publisher.spool().object_path(f.handle.subject_digest),
             _ => f.publisher.spool().object_path(f.metadata),
         };
         corrupt(&target)?;
-        assert!(f.catalog.hydrate_from_local_source(
-            &req, &f.publisher, f.io.as_ref(), TimestampNs(21),
-        ).is_err());
-        assert!(matches!(f.catalog.hydrate(&req, TimestampNs(21)),
-            Err(HydrationError::LevelUnavailable)));
+        assert!(
+            f.catalog
+                .hydrate_from_local_source(&req, &f.publisher, f.io.as_ref(), TimestampNs(21),)
+                .is_err()
+        );
+        assert!(matches!(
+            f.catalog.hydrate(&req, TimestampNs(21)),
+            Err(HydrationError::LevelUnavailable)
+        ));
     }
     Ok(())
 }
@@ -276,17 +332,30 @@ fn corrupt_root_source_or_metadata_blocks_a_previously_successful_read() -> Test
 fn staged_root_and_out_of_scope_source_are_not_disclosable() -> TestResult {
     let mut f = fixture("scope", SpoolFaultPlan::new())?;
     let staged = ObjectManifest::new("staged", [f.handle.subject_digest], None)?;
-    f.publisher.stage_manifest(&SlotName::parse("staged")?, &staged)?;
+    f.publisher
+        .stage_manifest(&SlotName::parse("staged")?, &staged)?;
     let other = f.publisher.stage_object(b"unrelated bytes")?;
     let unrelated = ObjectManifest::new("unrelated", [other], None)?;
-    f.publisher.publish(&SlotName::parse("other")?, &unrelated)?;
+    f.publisher
+        .publish(&SlotName::parse("other")?, &unrelated)?;
     for root in [staged.root(), unrelated.root()] {
         let mut catalog = ReferenceHydrationCatalog::new();
         catalog.register_descriptor(f.handle.clone())?;
-        assert!(matches!(catalog.bind_local_source_object(
-            &f.handle.handle_id, f.handle.descriptor_digest, root, &f.publisher, f.io.as_ref(),
-        ), Err(SourceHydrationError::NotReachable)));
-        assert!(catalog.source_binding(&f.handle.handle_id, f.handle.descriptor_digest).is_none());
+        assert!(matches!(
+            catalog.bind_local_source_object(
+                &f.handle.handle_id,
+                f.handle.descriptor_digest,
+                root,
+                &f.publisher,
+                f.io.as_ref(),
+            ),
+            Err(SourceHydrationError::NotReachable)
+        ));
+        assert!(
+            catalog
+                .source_binding(&f.handle.handle_id, f.handle.descriptor_digest)
+                .is_none()
+        );
     }
     Ok(())
 }
@@ -298,27 +367,44 @@ fn disappearing_nested_publication_cannot_shrink_the_source_closure() -> TestRes
     f.publisher.publish(&SlotName::parse("parent")?, &parent)?;
     let mut catalog = ReferenceHydrationCatalog::new();
     catalog.register_descriptor(f.handle.clone())?;
-    catalog.bind_local_source_object(&f.handle.handle_id, f.handle.descriptor_digest,
-        parent.root(), &f.publisher, f.io.as_ref())?;
+    catalog.bind_local_source_object(
+        &f.handle.handle_id,
+        f.handle.descriptor_digest,
+        parent.root(),
+        &f.publisher,
+        f.io.as_ref(),
+    )?;
     let req = request(&f.handle, HydrationLevel::H3)?;
     catalog.hydrate_from_local_source(&req, &f.publisher, f.io.as_ref(), TimestampNs(20))?;
-    fs::remove_file(f.directory.0.join(LOCAL_ROOTS_DIR)
-        .join(format!("{}{ROOT_RECORD_SUFFIX}", f.slot)))?;
-    assert!(matches!(catalog.hydrate_from_local_source(
-        &req, &f.publisher, f.io.as_ref(), TimestampNs(21),
-    ), Err(SourceHydrationError::SnapshotChanged)));
+    fs::remove_file(
+        f.directory
+            .0
+            .join(LOCAL_ROOTS_DIR)
+            .join(format!("{}{ROOT_RECORD_SUFFIX}", f.slot)),
+    )?;
+    assert!(matches!(
+        catalog.hydrate_from_local_source(&req, &f.publisher, f.io.as_ref(), TimestampNs(21),),
+        Err(SourceHydrationError::SnapshotChanged)
+    ));
     Ok(())
 }
 
 #[test]
 fn an_indeterminate_publication_marker_blocks_source_disclosure() -> TestResult {
     let mut f = fixture("marker", SpoolFaultPlan::new())?;
-    fs::write(f.directory.0.join(LOCAL_ROOTS_DIR)
-        .join(format!("{}{ROOT_RECORD_SUFFIX}.indeterminate", f.slot)), b"uncertain root")?;
+    fs::write(
+        f.directory
+            .0
+            .join(LOCAL_ROOTS_DIR)
+            .join(format!("{}{ROOT_RECORD_SUFFIX}.indeterminate", f.slot)),
+        b"uncertain root",
+    )?;
     let req = request(&f.handle, HydrationLevel::H3)?;
-    assert!(matches!(f.catalog.hydrate_from_local_source(
-        &req, &f.publisher, f.io.as_ref(), TimestampNs(20),
-    ), Err(SourceHydrationError::SnapshotChanged)));
+    assert!(matches!(
+        f.catalog
+            .hydrate_from_local_source(&req, &f.publisher, f.io.as_ref(), TimestampNs(20),),
+        Err(SourceHydrationError::SnapshotChanged)
+    ));
     Ok(())
 }
 
@@ -326,22 +412,33 @@ fn an_indeterminate_publication_marker_blocks_source_disclosure() -> TestResult 
 fn poisoned_owner_cannot_lend_source_authority() -> TestResult {
     let mut f = fixture("poison", SpoolFaultPlan::new())?;
     let pending = ObjectManifest::new("pending", [f.handle.subject_digest], None)?;
-    f.publisher.inject_crash_at(PublishCutPoint::AfterRootRename);
-    assert!(f.publisher.publish(&SlotName::parse("pending")?, &pending).is_err());
+    f.publisher
+        .inject_crash_at(PublishCutPoint::AfterRootRename);
+    assert!(
+        f.publisher
+            .publish(&SlotName::parse("pending")?, &pending)
+            .is_err()
+    );
     assert!(f.publisher.is_poisoned());
     let before = call_counts(f.io.as_ref());
     let req = request(&f.handle, HydrationLevel::H3)?;
-    assert!(matches!(f.catalog.hydrate_from_local_source(
-        &req, &f.publisher, f.io.as_ref(), TimestampNs(20),
-    ), Err(SourceHydrationError::Publication(_))));
+    assert!(matches!(
+        f.catalog
+            .hydrate_from_local_source(&req, &f.publisher, f.io.as_ref(), TimestampNs(20),),
+        Err(SourceHydrationError::Publication(_))
+    ));
     assert_eq!(before, call_counts(f.io.as_ref()));
     Ok(())
 }
 
 fn continued_request(f: &mut Fixture) -> Result<HydrationRequest, Box<dyn Error>> {
     let preview = request(&f.handle, HydrationLevel::H2)?;
-    let cursor = f.catalog.hydrate(&preview, TimestampNs(20))?
-        .receipt.continuation.ok_or("missing H3 continuation")?;
+    let cursor = f
+        .catalog
+        .hydrate(&preview, TimestampNs(20))?
+        .receipt
+        .continuation
+        .ok_or("missing H3 continuation")?;
     let mut req = request(&f.handle, HydrationLevel::H3)?;
     req.issued_at = TimestampNs(21);
     req.continuation = Some(cursor);
@@ -355,7 +452,10 @@ fn faults_before_and_after_payload_read_preserve_the_input_continuation() -> Tes
     let req = continued_request(&mut baseline)?;
     let before = baseline.io.calls(SpoolIoCall::Read);
     baseline.catalog.hydrate_from_local_source(
-        &req, &baseline.publisher, baseline.io.as_ref(), TimestampNs(22),
+        &req,
+        &baseline.publisher,
+        baseline.io.as_ref(),
+        TimestampNs(22),
     )?;
     let after = baseline.io.calls(SpoolIoCall::Read);
     assert!(after > before + 1);
@@ -365,17 +465,36 @@ fn faults_before_and_after_payload_read_preserve_the_input_continuation() -> Tes
         let mut f = fixture(&format!("fault-{index}"), plan)?;
         assert_eq!(f.io.calls(SpoolIoCall::Read), before);
         let req = continued_request(&mut f)?;
-        let cursor = req.continuation.as_ref().ok_or("missing cursor")?.cursor_digest;
-        assert!(f.catalog.hydrate_from_local_source(
-            &req, &f.publisher, f.io.as_ref(), TimestampNs(22),
-        ).is_err());
+        let cursor = req
+            .continuation
+            .as_ref()
+            .ok_or("missing cursor")?
+            .cursor_digest;
+        assert!(
+            f.catalog
+                .hydrate_from_local_source(&req, &f.publisher, f.io.as_ref(), TimestampNs(22),)
+                .is_err()
+        );
         assert!(f.io.all_fired());
-        assert!(!f.catalog.issued_cursor(&cursor).ok_or("lost cursor")?.consumed);
+        assert!(
+            !f.catalog
+                .issued_cursor(&cursor)
+                .ok_or("lost cursor")?
+                .consumed
+        );
         let result = f.catalog.hydrate_from_local_source(
-            &req, &f.publisher, f.io.as_ref(), TimestampNs(23),
+            &req,
+            &f.publisher,
+            f.io.as_ref(),
+            TimestampNs(23),
         )?;
         assert_eq!(result.artifact.ok_or("missing source")?.payload, SOURCE);
-        assert!(f.catalog.issued_cursor(&cursor).ok_or("lost cursor")?.consumed);
+        assert!(
+            f.catalog
+                .issued_cursor(&cursor)
+                .ok_or("lost cursor")?
+                .consumed
+        );
     }
     Ok(())
 }

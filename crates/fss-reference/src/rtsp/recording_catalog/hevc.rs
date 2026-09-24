@@ -26,25 +26,41 @@ pub struct HevcCatalogWindow<'a> {
 pub struct HevcRecordingCatalog(pub(super) RecordingCatalog);
 impl std::fmt::Debug for HevcRecordingCatalog {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HevcRecordingCatalog").field("root", &self.manifest().root())
-            .field("windows", &self.entries().len()).finish_non_exhaustive()
+        f.debug_struct("HevcRecordingCatalog")
+            .field("root", &self.manifest().root())
+            .field("windows", &self.entries().len())
+            .finish_non_exhaustive()
     }
 }
 impl HevcRecordingCatalog {
     /// Exact root with every window root and all its source/derivative leaves.
-    pub fn manifest(&self) -> &ObjectManifest { self.0.manifest() }
+    pub fn manifest(&self) -> &ObjectManifest {
+        self.0.manifest()
+    }
     /// Versioned, checksummed canonical HEVC metadata, without media bytes.
-    pub fn index_bytes(&self) -> &[u8] { self.0.index_bytes() }
+    pub fn index_bytes(&self) -> &[u8] {
+        self.0.index_bytes()
+    }
     /// Owner-declared recording and decode-clock basis; no RTP time inference.
-    pub fn scope(&self) -> &CatalogScope { self.0.scope() }
+    pub fn scope(&self) -> &CatalogScope {
+        self.0.scope()
+    }
     /// Chronological nonoverlapping window descriptors, not fresh read receipts.
-    pub fn entries(&self) -> &[CatalogEntry] { self.0.entries() }
+    pub fn entries(&self) -> &[CatalogEntry] {
+        self.0.entries()
+    }
     /// Newly retained catalog payload only; window bytes are not copied here.
-    pub fn byte_len(&self) -> usize { self.0.byte_len() }
+    pub fn byte_len(&self) -> usize {
+        self.0.byte_len()
+    }
     /// Select complete IDR-led windows under the shared count/byte ceilings.
     /// Requested overlaps are metadata only; encoded windows are never cropped.
     /// Unindexed intervals are not evidence of physical/event absence.
-    pub fn select(&self, query: Range<u64>, limits: CatalogQueryLimits) -> Result<CatalogSelection> {
+    pub fn select(
+        &self,
+        query: Range<u64>,
+        limits: CatalogQueryLimits,
+    ) -> Result<CatalogSelection> {
         self.0.select(query, limits)
     }
 }
@@ -58,9 +74,13 @@ impl HevcCatalogBuilder {
         CatalogBuilder::new_for(scope, CatalogFamily::Hevc).map(Self)
     }
     /// Number of retained metadata descriptors.
-    pub fn len(&self) -> usize { self.0.len() }
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
     /// Whether no window has been selected.
-    pub fn is_empty(&self) -> bool { self.0.is_empty() }
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
     /// Add an immutable replay-verified HEVC window, without consuming it.
     /// Wrong scope, overlapping time, duplicate root/slot or limits leave state intact.
     pub fn push(&mut self, slot: &SlotName, recording: &PreparedHevcRecording) -> Result<()> {
@@ -73,20 +93,27 @@ impl HevcCatalogBuilder {
 }
 
 /// Build one bounded HEVC page from already verified recordings, without I/O.
-pub fn prepare_hevc_catalog(scope: CatalogScope, windows: &[HevcCatalogWindow<'_>])
-    -> Result<HevcRecordingCatalog>
-{
-    if windows.is_empty() || windows.len() > MAX_CATALOG_WINDOWS { return Err(CatalogError::Limit); }
+pub fn prepare_hevc_catalog(
+    scope: CatalogScope,
+    windows: &[HevcCatalogWindow<'_>],
+) -> Result<HevcRecordingCatalog> {
+    if windows.is_empty() || windows.len() > MAX_CATALOG_WINDOWS {
+        return Err(CatalogError::Limit);
+    }
     let mut builder = HevcCatalogBuilder::new(scope)?;
-    for window in windows { builder.push(window.slot, window.recording)?; }
+    for window in windows {
+        builder.push(window.slot, window.recording)?;
+    }
     builder.prepare()
 }
 
 /// Check canonical encoding, checksum, exact flat object closure, codec family
 /// and externally supplied time/scope basis before returning a discovery page.
 /// Window provenance is verified separately on retrieval; this is not a read receipt.
-pub fn verify_hevc_catalog(manifest: &ObjectManifest, index: &[u8], expected: &CatalogScope)
-    -> Result<HevcRecordingCatalog>
-{
+pub fn verify_hevc_catalog(
+    manifest: &ObjectManifest,
+    index: &[u8],
+    expected: &CatalogScope,
+) -> Result<HevcRecordingCatalog> {
     verify_catalog_for(manifest, index, expected, CatalogFamily::Hevc).map(HevcRecordingCatalog)
 }

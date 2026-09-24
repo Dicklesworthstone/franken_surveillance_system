@@ -9,14 +9,14 @@ use std::path::Path;
 
 use fss_core::{ContentDigest, PrincipalId, SessionId, TimestampNs};
 
+use super::{
+    DurableSessionError, DurableSessionLimits, DurableSessionStore, PendingSession,
+    SessionJournalInspection,
+};
 use crate::agent_session::ReferenceSessionStore;
 use crate::agent_session::work_claims::{
     ReferenceWorkClaimStore, WorkClaimError, WorkClaimLimits, WorkClaimRecovery, WorkClaimRequest,
     WorkClaimRevision, WorkClaimUpdate,
-};
-use super::{
-    DurableSessionError, DurableSessionLimits, DurableSessionStore, PendingSession,
-    SessionJournalInspection,
 };
 
 mod codec;
@@ -83,7 +83,11 @@ pub(super) struct CoordinationState {
 
 impl CoordinationState {
     fn fork(&self) -> Self {
-        Self { claims: self.claims.fork_for_transaction(), limits: self.limits, cases: self.cases.clone() }
+        Self {
+            claims: self.claims.fork_for_transaction(),
+            limits: self.limits,
+            cases: self.cases.clone(),
+        }
     }
 }
 
@@ -93,17 +97,27 @@ impl DurableSessionStore {
     /// An identical retry is a no-op; a different limit set or reset is refused. Existing session
     /// checkpoints remain readable, but old session-only readers MUST reject the new record kinds.
     /// Call only through the trusted, exclusive journal owner, not a raw agent transport.
-    pub fn enable_coordination(&mut self, limits: WorkClaimLimits) -> Result<(), DurableSessionError> {
+    pub fn enable_coordination(
+        &mut self,
+        limits: WorkClaimLimits,
+    ) -> Result<(), DurableSessionError> {
         self.preflight()?;
         if let Some(existing) = &self.coordination {
-            return if existing.limits == limits { Ok(()) } else { Err(DurableSessionError::InvalidHistory) };
+            return if existing.limits == limits {
+                Ok(())
+            } else {
+                Err(DurableSessionError::InvalidHistory)
+            };
         }
         let checkpoint = self.memory.checkpoint(self.limits.max_checkpoint_bytes)?;
         let payload = codec::encode_initialization(limits, checkpoint.digest())?;
         self.commit_candidate(PendingSession {
-            memory: self.memory.clone(), checkpoint,
+            memory: self.memory.clone(),
+            checkpoint,
             coordination: Some(CoordinationState {
-                claims: ReferenceWorkClaimStore::with_limits(limits), limits, cases: None,
+                claims: ReferenceWorkClaimStore::with_limits(limits),
+                limits,
+                cases: None,
             }),
             record: Some((COORDINATION_INIT_RECORD_KIND, payload)),
         })
@@ -114,15 +128,24 @@ impl DurableSessionStore {
     /// Never initializes missing coordination state, repairs a tail, changes stored limits, or
     /// trusts a root found in the same file. The runtime must protect and independently pin roots.
     pub fn open_existing_with_coordination(
-        path: impl AsRef<Path>, expected_root: ContentDigest, limits: DurableSessionLimits,
+        path: impl AsRef<Path>,
+        expected_root: ContentDigest,
+        limits: DurableSessionLimits,
         claim_ceilings: WorkClaimLimits,
     ) -> Result<Self, DurableSessionError> {
-        Self::open_with_coordination_ceiling(path.as_ref(), expected_root, limits, Some(claim_ceilings))
+        Self::open_with_coordination_ceiling(
+            path.as_ref(),
+            expected_root,
+            limits,
+            Some(claim_ceilings),
+        )
     }
 
     /// Replays the complete bounded prefix without modifying its bytes or adopting a new root.
     pub fn inspect_with_coordination(
-        path: impl AsRef<Path>, limits: DurableSessionLimits, claim_ceilings: WorkClaimLimits,
+        path: impl AsRef<Path>,
+        limits: DurableSessionLimits,
+        claim_ceilings: WorkClaimLimits,
     ) -> Result<SessionJournalInspection, DurableSessionError> {
         Self::inspect_with_coordination_ceiling(path.as_ref(), limits, Some(claim_ceilings))
     }
@@ -134,32 +157,49 @@ impl DurableSessionStore {
     /// Reads are journaled too because they can advance clocks or create expiry tombstones.
     /// Journal capacity is consumed even by a no-op, and exhaustion never discards lease history.
     pub fn coordinate(
-        &mut self, principal: &PrincipalId, session_id: &SessionId,
-        command: CoordinationCommand, now: TimestampNs,
+        &mut self,
+        principal: &PrincipalId,
+        session_id: &SessionId,
+        command: CoordinationCommand,
+        now: TimestampNs,
     ) -> Result<WorkClaimRevision, DurableSessionError> {
         self.preflight()?;
         let request = codec::Request {
-            principal: principal.clone(), session: session_id.clone(), command, now,
+            principal: principal.clone(),
+            session: session_id.clone(),
+            command,
+            now,
         };
         // Hard bounds before copying any stores or executing session admission.
         let request_bytes = codec::encode_request(&request)?;
-        let mut state = self.coordination.as_ref()
-            .ok_or(DurableSessionError::InvalidHistory)?.fork();
+        let mut state = self
+            .coordination
+            .as_ref()
+            .ok_or(DurableSessionError::InvalidHistory)?
+            .fork();
         let mut memory = self.memory.clone();
         let result = apply(&request, &mut memory, &mut state.claims);
         let staged = (|| -> Result<PendingSession, DurableSessionError> {
             let checkpoint = memory.checkpoint(self.limits.max_checkpoint_bytes)?;
             let payload = codec::encode_record(
-                &request_bytes, self.checkpoint_digest, checkpoint.digest(), codec::outcome_digest(&result)?,
+                &request_bytes,
+                self.checkpoint_digest,
+                checkpoint.digest(),
+                codec::outcome_digest(&result)?,
             )?;
             Ok(PendingSession {
-                memory, checkpoint, coordination: Some(state),
+                memory,
+                checkpoint,
+                coordination: Some(state),
                 record: Some((COORDINATION_COMMAND_RECORD_KIND, payload)),
             })
         })();
         let pending = match staged {
             Ok(pending) => pending,
-            Err(error) => { self.fenced = true; return Err(error); }
+            Err(error) => {
+                self.fenced = true;
+                return Err(error);
+            }
         };
         self.commit_candidate(pending)?;
         result.map_err(DurableSessionError::WorkClaim)
@@ -167,37 +207,75 @@ impl DurableSessionStore {
 }
 
 fn apply(
-    request: &codec::Request, sessions: &mut ReferenceSessionStore, claims: &mut ReferenceWorkClaimStore,
+    request: &codec::Request,
+    sessions: &mut ReferenceSessionStore,
+    claims: &mut ReferenceWorkClaimStore,
 ) -> Result<WorkClaimRevision, WorkClaimError> {
-    let codec::Request { principal, session, command, now } = request;
+    let codec::Request {
+        principal,
+        session,
+        command,
+        now,
+    } = request;
     match command {
-        CoordinationCommand::Acquire(input) => claims.acquire(sessions, principal, session, input.clone(), *now),
-        CoordinationCommand::Inspect { claim_id } => claims.inspect(sessions, principal, session, claim_id, *now),
+        CoordinationCommand::Acquire(input) => {
+            claims.acquire(sessions, principal, session, input.clone(), *now)
+        }
+        CoordinationCommand::Inspect { claim_id } => {
+            claims.inspect(sessions, principal, session, claim_id, *now)
+        }
         CoordinationCommand::InspectRevision { claim_id, revision } => {
             claims.inspect_revision(sessions, principal, session, claim_id, *revision, *now)
         }
-        CoordinationCommand::Update { claim_id, expected, change } => {
+        CoordinationCommand::Update {
+            claim_id,
+            expected,
+            change,
+        } => {
             let current = claims.inspect(sessions, principal, session, claim_id, *now)?;
-            if current.digest() != *expected { return Err(WorkClaimError::StaleRevision); }
+            if current.digest() != *expected {
+                return Err(WorkClaimError::StaleRevision);
+            }
             claims.update(sessions, principal, session, &current, *change, *now)
         }
-        CoordinationCommand::Recover { claim_id, expected, recovery } => {
+        CoordinationCommand::Recover {
+            claim_id,
+            expected,
+            recovery,
+        } => {
             let current = claims.inspect(sessions, principal, session, claim_id, *now)?;
-            if current.digest() != *expected { return Err(WorkClaimError::StaleRevision); }
-            claims.recover(sessions, principal, session, &current, recovery.clone(), *now)
+            if current.digest() != *expected {
+                return Err(WorkClaimError::StaleRevision);
+            }
+            claims.recover(
+                sessions,
+                principal,
+                session,
+                &current,
+                recovery.clone(),
+                *now,
+            )
         }
     }
 }
 
 pub(super) fn restore_initialization(
-    payload: &[u8], session_digest: ContentDigest, ceilings: WorkClaimLimits,
+    payload: &[u8],
+    session_digest: ContentDigest,
+    ceilings: WorkClaimLimits,
 ) -> Result<CoordinationState, DurableSessionError> {
     let limits = codec::decode_initialization(payload, session_digest, ceilings)?;
-    Ok(CoordinationState { claims: ReferenceWorkClaimStore::with_limits(limits), limits, cases: None })
+    Ok(CoordinationState {
+        claims: ReferenceWorkClaimStore::with_limits(limits),
+        limits,
+        cases: None,
+    })
 }
 
 pub(super) fn replay_command(
-    payload: &[u8], sessions: &mut ReferenceSessionStore, state: &mut CoordinationState,
+    payload: &[u8],
+    sessions: &mut ReferenceSessionStore,
+    state: &mut CoordinationState,
     limits: DurableSessionLimits,
 ) -> Result<(), DurableSessionError> {
     if investigations::journal::is_record(payload)? {
@@ -264,7 +342,9 @@ pub mod source_hydration {
     }
 
     impl From<super::super::DurableSessionError> for DurableSourceHydrationError {
-        fn from(error: super::super::DurableSessionError) -> Self { Self::Durability(error) }
+        fn from(error: super::super::DurableSessionError) -> Self {
+            Self::Durability(error)
+        }
     }
 
     impl super::super::DurableSessionStore {
@@ -298,7 +378,12 @@ pub mod source_hydration {
             let mut candidate = self.memory.clone();
             let mut staged_catalog = catalog.clone();
             let result = candidate.hydrate_from_source(
-                principal, alias, request, &mut staged_catalog, reader, now,
+                principal,
+                alias,
+                request,
+                &mut staged_catalog,
+                reader,
+                now,
             );
             // Even a failed read may have advanced a clock or closed an expired session.
             let checkpoint = match candidate.checkpoint(self.limits.max_checkpoint_bytes) {
@@ -310,7 +395,10 @@ pub mod source_hydration {
             };
             if checkpoint.digest() != self.checkpoint_digest {
                 self.commit_candidate(PendingSession {
-                    memory: candidate, checkpoint, coordination: None, record: None,
+                    memory: candidate,
+                    checkpoint,
+                    coordination: None,
+                    record: None,
                 })?;
             }
             // The response, its source bytes, and cursor mutations escape only after durable commit.
@@ -329,18 +417,18 @@ pub mod source_hydration {
 
         use fss_core::{
             AgentSessionParams, BudgetVector, Completeness, ContentDigest, ContractBasis,
-            ContractBasisRegistryBytes, Generation, HandleAvailability, HydrationArtifact, HydrationError,
-            HydrationLevel, HydrationPurpose, HydrationRequestSpec, LaboratoryAccess, LedgerAnchor,
-            MissionId, ObjectId, SemanticHandle, SemanticHandleSpec, SessionId, TombstoneReason,
-            TombstoneRecord,
+            ContractBasisRegistryBytes, Generation, HandleAvailability, HydrationArtifact,
+            HydrationError, HydrationLevel, HydrationPurpose, HydrationRequestSpec,
+            LaboratoryAccess, LedgerAnchor, MissionId, ObjectId, SemanticHandle,
+            SemanticHandleSpec, SessionId, TombstoneReason, TombstoneRecord,
         };
         use fss_object::{InMemoryObjectStore, ObjectLimits, ObjectManifest};
 
         use super::*;
+        use crate::SourceHydrationError;
         use crate::agent_session::{
             ReferenceSessionError, ReferenceSessionStore, SessionBindingRequest, SessionRefresh,
         };
-        use crate::SourceHydrationError;
 
         type TestResult = Result<(), Box<dyn Error>>;
         const SOURCE: &[u8] = b"source bytes retained only by the publication owner";
@@ -359,67 +447,150 @@ pub mod source_hydration {
 
         fn fixture() -> Result<Fixture, Box<dyn Error>> {
             let basis = ContractBasis::from_registry_bytes(ContractBasisRegistryBytes::new(
-                b"s", b"o", b"v", b"c", b"e", b"cost", "session-source:test",
+                b"s",
+                b"o",
+                b"v",
+                b"c",
+                b"e",
+                b"cost",
+                "session-source:test",
             ));
             let anchor = LedgerAnchor::genesis("site:session-source");
             let params = AgentSessionParams {
                 session_id: SessionId::parse("session:source")?,
                 mission_id: MissionId::parse("mission:source")?,
                 principal_id: PrincipalId::parse("principal:owner")?,
-                capabilities: BTreeSet::from(["capability:preview".to_owned(), "capability:source".to_owned()]),
+                capabilities: BTreeSet::from([
+                    "capability:preview".to_owned(),
+                    "capability:source".to_owned(),
+                ]),
                 privacy_scope: BTreeSet::from(["private:property".to_owned()]),
-                current_anchor: anchor.clone(), view_id: "AVIEW-001".to_owned(),
-                token_budget: 3 * TOKENS, symbol_table_generation: 0,
-                last_acknowledged_situation_fingerprint: None, created_at_ns: 0, expires_at_ns: 1_000,
+                current_anchor: anchor.clone(),
+                view_id: "AVIEW-001".to_owned(),
+                token_budget: 3 * TOKENS,
+                symbol_table_generation: 0,
+                last_acknowledged_situation_fingerprint: None,
+                created_at_ns: 0,
+                expires_at_ns: 1_000,
             };
             let mut store = InMemoryObjectStore::new(ObjectLimits::new(32, 65_536));
             let subject = store.put_verified(SOURCE)?;
             let metadata = store.put_verified(b"capture provenance")?;
-            let root = store.publish_manifest(ObjectManifest::new("source", [subject], Some(metadata))?)?.root;
-            let levels = BTreeSet::from([HydrationLevel::H0, HydrationLevel::H1, HydrationLevel::H2, HydrationLevel::H3]);
-            let quote = BudgetVector::builder().bytes(1_024).tokens(TOKENS).build()?;
+            let root = store
+                .publish_manifest(ObjectManifest::new("source", [subject], Some(metadata))?)?
+                .root;
+            let levels = BTreeSet::from([
+                HydrationLevel::H0,
+                HydrationLevel::H1,
+                HydrationLevel::H2,
+                HydrationLevel::H3,
+            ]);
+            let quote = BudgetVector::builder()
+                .bytes(1_024)
+                .tokens(TOKENS)
+                .build()?;
             let handle = SemanticHandle::publish(SemanticHandleSpec {
-                contract_basis: basis.clone(), anchor,
-                subject_id: "subject:source".to_owned(), subject_digest: subject,
-                semantic_type: "source_object".to_owned(), source_id: "sensor:source".to_owned(),
-                capture_interval: None, spatial_scope: None, privacy_class: "private:property".to_owned(),
-                applied_transform: None, availability: HandleAvailability::Available,
+                contract_basis: basis.clone(),
+                anchor,
+                subject_id: "subject:source".to_owned(),
+                subject_digest: subject,
+                semantic_type: "source_object".to_owned(),
+                source_id: "sensor:source".to_owned(),
+                capture_interval: None,
+                spatial_scope: None,
+                privacy_class: "private:property".to_owned(),
+                applied_transform: None,
+                availability: HandleAvailability::Available,
                 retention_until: TimestampNs(100),
-                required_capabilities: levels.iter().map(|level| {
-                    let grant = if *level == HydrationLevel::H3 { "capability:source" } else { "capability:preview" };
-                    (*level, BTreeSet::from([grant.to_owned()]))
-                }).collect(),
-                estimated_costs: levels.iter().map(|level| (*level, quote)).collect(), levels,
-                laboratory_access: LaboratoryAccess::Unavailable, debug_capability: None,
-                derivative_handles: BTreeSet::new(), published_at: TimestampNs(1),
+                required_capabilities: levels
+                    .iter()
+                    .map(|level| {
+                        let grant = if *level == HydrationLevel::H3 {
+                            "capability:source"
+                        } else {
+                            "capability:preview"
+                        };
+                        (*level, BTreeSet::from([grant.to_owned()]))
+                    })
+                    .collect(),
+                estimated_costs: levels.iter().map(|level| (*level, quote)).collect(),
+                levels,
+                laboratory_access: LaboratoryAccess::Unavailable,
+                debug_capability: None,
+                derivative_handles: BTreeSet::new(),
+                published_at: TimestampNs(1),
             })?;
             let mut catalog = ReferenceHydrationCatalog::new();
             catalog.register_descriptor(handle.clone())?;
-            catalog.register_artifact(&handle.handle_id, handle.descriptor_digest,
-                HydrationArtifact::publish(HydrationLevel::H2, "text/plain", b"decision preview".to_vec(),
-                    [handle.subject_digest], Completeness::Complete, None)?)?;
-            catalog.bind_source_object(&handle.handle_id, handle.descriptor_digest, root, &store)?;
+            catalog.register_artifact(
+                &handle.handle_id,
+                handle.descriptor_digest,
+                HydrationArtifact::publish(
+                    HydrationLevel::H2,
+                    "text/plain",
+                    b"decision preview".to_vec(),
+                    [handle.subject_digest],
+                    Completeness::Complete,
+                    None,
+                )?,
+            )?;
+            catalog.bind_source_object(
+                &handle.handle_id,
+                handle.descriptor_digest,
+                root,
+                &store,
+            )?;
             let mut sessions = ReferenceSessionStore::default();
             sessions.open(params.clone(), basis, TimestampNs(10))?;
-            let alias = sessions.bind(&params.principal_id, &binding_request(&params, &handle), &catalog, TimestampNs(10))?;
-            Ok(Fixture { sessions, params, alias, catalog, store, handle, root, metadata })
+            let alias = sessions.bind(
+                &params.principal_id,
+                &binding_request(&params, &handle),
+                &catalog,
+                TimestampNs(10),
+            )?;
+            Ok(Fixture {
+                sessions,
+                params,
+                alias,
+                catalog,
+                store,
+                handle,
+                root,
+                metadata,
+            })
         }
 
-        fn binding_request(params: &AgentSessionParams, handle: &SemanticHandle) -> SessionBindingRequest {
-            SessionBindingRequest { session_id: params.session_id.clone(), generation: 0,
-                handle_id: handle.handle_id.clone(), descriptor_digest: handle.descriptor_digest }
+        fn binding_request(
+            params: &AgentSessionParams,
+            handle: &SemanticHandle,
+        ) -> SessionBindingRequest {
+            SessionBindingRequest {
+                session_id: params.session_id.clone(),
+                generation: 0,
+                handle_id: handle.handle_id.clone(),
+                descriptor_digest: handle.descriptor_digest,
+            }
         }
 
         fn request(f: &Fixture, level: HydrationLevel) -> Result<HydrationRequest, Box<dyn Error>> {
             Ok(HydrationRequest::publish(HydrationRequestSpec {
-                contract_basis: f.handle.contract_basis.clone(), session_id: f.params.session_id.clone(),
-                handle_id: f.handle.handle_id.clone(), expected_descriptor_digest: f.handle.descriptor_digest,
-                expected_subject_digest: f.handle.subject_digest, anchor: f.handle.anchor.clone(),
-                requested_level: level, allow_lower_level: false,
+                contract_basis: f.handle.contract_basis.clone(),
+                session_id: f.params.session_id.clone(),
+                handle_id: f.handle.handle_id.clone(),
+                expected_descriptor_digest: f.handle.descriptor_digest,
+                expected_subject_digest: f.handle.subject_digest,
+                anchor: f.handle.anchor.clone(),
+                requested_level: level,
+                allow_lower_level: false,
                 available_capabilities: f.params.capabilities.clone(),
                 authorized_privacy_classes: f.params.privacy_scope.clone(),
-                budget: BudgetVector::builder().bytes(1_024).tokens(TOKENS).build()?,
-                purpose: HydrationPurpose::Routine, continuation: None, issued_at: TimestampNs(10),
+                budget: BudgetVector::builder()
+                    .bytes(1_024)
+                    .tokens(TOKENS)
+                    .build()?,
+                purpose: HydrationPurpose::Routine,
+                continuation: None,
+                issued_at: TimestampNs(10),
             })?)
         }
 
@@ -428,21 +599,36 @@ pub mod source_hydration {
             request.request_id = format!("hydration-request:{}", request.request_digest);
         }
 
-        struct ReaderProbe { calls: Cell<usize>, bytes: Vec<u8> }
+        struct ReaderProbe {
+            calls: Cell<usize>,
+            bytes: Vec<u8>,
+        }
         impl ReaderProbe {
-            fn new(bytes: &[u8]) -> Self { Self { calls: Cell::new(0), bytes: bytes.to_vec() } }
+            fn new(bytes: &[u8]) -> Self {
+                Self {
+                    calls: Cell::new(0),
+                    bytes: bytes.to_vec(),
+                }
+            }
         }
         impl PublishedSourceReader for ReaderProbe {
-            fn read_published_source(&self, _: ContentDigest, _: ContentDigest, _: u64)
-                -> Result<Vec<u8>, SourceHydrationError>
-            {
+            fn read_published_source(
+                &self,
+                _: ContentDigest,
+                _: ContentDigest,
+                _: u64,
+            ) -> Result<Vec<u8>, SourceHydrationError> {
                 self.calls.set(self.calls.get() + 1);
                 Ok(self.bytes.clone())
             }
         }
 
         fn remaining(f: &mut Fixture, now: i128) -> Result<u64, ReferenceSessionError> {
-            f.sessions.remaining_token_budget(&f.params.principal_id, &f.params.session_id, TimestampNs(now))
+            f.sessions.remaining_token_budget(
+                &f.params.principal_id,
+                &f.params.session_id,
+                TimestampNs(now),
+            )
         }
 
         #[test]
@@ -451,20 +637,44 @@ pub mod source_hydration {
             let req = request(&f, HydrationLevel::H3)?;
             let cached = f.catalog.stored_payload_bytes();
             for expected in [2 * TOKENS, TOKENS, 0] {
-                let result = f.sessions.hydrate_from_source(&f.params.principal_id, &f.alias, &req,
-                    &mut f.catalog, &f.store, TimestampNs(20))?;
-                f.catalog.source_binding(&f.handle.handle_id, f.handle.descriptor_digest)
-                    .ok_or("missing source binding")?.validate_response(&req, &f.handle, &result)?;
-                assert_eq!(result.artifact.as_ref().ok_or("missing source")?.payload, SOURCE);
+                let result = f.sessions.hydrate_from_source(
+                    &f.params.principal_id,
+                    &f.alias,
+                    &req,
+                    &mut f.catalog,
+                    &f.store,
+                    TimestampNs(20),
+                )?;
+                f.catalog
+                    .source_binding(&f.handle.handle_id, f.handle.descriptor_digest)
+                    .ok_or("missing source binding")?
+                    .validate_response(&req, &f.handle, &result)?;
+                assert_eq!(
+                    result.artifact.as_ref().ok_or("missing source")?.payload,
+                    SOURCE
+                );
                 assert_eq!(remaining(&mut f, 20)?, expected);
                 assert_eq!(f.catalog.stored_payload_bytes(), cached);
             }
             let probe = ReaderProbe::new(SOURCE);
-            assert!(matches!(f.sessions.hydrate_from_source(&f.params.principal_id, &f.alias, &req,
-                &mut f.catalog, &probe, TimestampNs(20)),
-                Err(SessionSourceHydrationError::Session(ReferenceSessionError::BudgetExceeded))));
+            assert!(matches!(
+                f.sessions.hydrate_from_source(
+                    &f.params.principal_id,
+                    &f.alias,
+                    &req,
+                    &mut f.catalog,
+                    &probe,
+                    TimestampNs(20)
+                ),
+                Err(SessionSourceHydrationError::Session(
+                    ReferenceSessionError::BudgetExceeded
+                ))
+            ));
             assert_eq!(probe.calls.get(), 0);
-            assert!(matches!(f.catalog.hydrate(&req, TimestampNs(20)), Err(HydrationError::LevelUnavailable)));
+            assert!(matches!(
+                f.catalog.hydrate(&req, TimestampNs(20)),
+                Err(HydrationError::LevelUnavailable)
+            ));
             Ok(())
         }
 
@@ -482,18 +692,47 @@ pub mod source_hydration {
                     3 => req.session_id = SessionId::parse("session:other")?,
                     4 => req.expected_subject_digest = ContentDigest::sha256(b"wrong subject"),
                     5 => req.anchor.commit_sequence += 1,
-                    6 => { req.available_capabilities.insert("capability:ungranted".to_owned()); }
-                    7 => { req.authorized_privacy_classes.insert("private:other".to_owned()); }
+                    6 => {
+                        req.available_capabilities
+                            .insert("capability:ungranted".to_owned());
+                    }
+                    7 => {
+                        req.authorized_privacy_classes
+                            .insert("private:other".to_owned());
+                    }
                     8 => req.issued_at = TimestampNs(21),
-                    9 => req.budget = BudgetVector::builder().tokens(4 * TOKENS).bytes(1_024).build()?,
-                    10 => { req.available_capabilities.remove("capability:source"); }
-                    _ => req.budget = BudgetVector::builder().tokens(TOKENS).bytes(1_023).build()?,
+                    9 => {
+                        req.budget = BudgetVector::builder()
+                            .tokens(4 * TOKENS)
+                            .bytes(1_024)
+                            .build()?
+                    }
+                    10 => {
+                        req.available_capabilities.remove("capability:source");
+                    }
+                    _ => {
+                        req.budget = BudgetVector::builder()
+                            .tokens(TOKENS)
+                            .bytes(1_023)
+                            .build()?
+                    }
                 }
                 reseal(&mut req);
                 let probe = ReaderProbe::new(SOURCE);
                 let cursors = f.catalog.issued_cursor_count();
-                assert!(f.sessions.hydrate_from_source(&principal, &alias, &req, &mut f.catalog,
-                    &probe, TimestampNs(20)).is_err(), "case {case}");
+                assert!(
+                    f.sessions
+                        .hydrate_from_source(
+                            &principal,
+                            &alias,
+                            &req,
+                            &mut f.catalog,
+                            &probe,
+                            TimestampNs(20)
+                        )
+                        .is_err(),
+                    "case {case}"
+                );
                 assert_eq!(probe.calls.get(), 0, "case {case}");
                 assert_eq!(f.catalog.issued_cursor_count(), cursors);
                 assert_eq!(remaining(&mut f, 20)?, 3 * TOKENS);
@@ -505,22 +744,61 @@ pub mod source_hydration {
         fn revoked_grants_and_stale_aliases_cannot_reach_source() -> TestResult {
             let mut f = fixture()?;
             let req = request(&f, HydrationLevel::H3)?;
-            let current = f.sessions.session(&f.params.principal_id, &f.params.session_id, TimestampNs(20))?;
-            f.sessions.refresh(&f.params.principal_id, &f.params.session_id, SessionRefresh {
-                expected_session_digest: current.session_digest(), current_anchor: current.current_anchor,
-                capabilities: BTreeSet::from(["capability:preview".to_owned()]),
-                privacy_scope: current.privacy_scope,
-            }, TimestampNs(20))?;
+            let current = f.sessions.session(
+                &f.params.principal_id,
+                &f.params.session_id,
+                TimestampNs(20),
+            )?;
+            f.sessions.refresh(
+                &f.params.principal_id,
+                &f.params.session_id,
+                SessionRefresh {
+                    expected_session_digest: current.session_digest(),
+                    current_anchor: current.current_anchor,
+                    capabilities: BTreeSet::from(["capability:preview".to_owned()]),
+                    privacy_scope: current.privacy_scope,
+                },
+                TimestampNs(20),
+            )?;
             let probe = ReaderProbe::new(SOURCE);
-            assert!(f.sessions.hydrate_from_source(&f.params.principal_id, &f.alias, &req,
-                &mut f.catalog, &probe, TimestampNs(20)).is_err());
-            let current = f.sessions.session(&f.params.principal_id, &f.params.session_id, TimestampNs(20))?;
+            assert!(
+                f.sessions
+                    .hydrate_from_source(
+                        &f.params.principal_id,
+                        &f.alias,
+                        &req,
+                        &mut f.catalog,
+                        &probe,
+                        TimestampNs(20)
+                    )
+                    .is_err()
+            );
+            let current = f.sessions.session(
+                &f.params.principal_id,
+                &f.params.session_id,
+                TimestampNs(20),
+            )?;
             let mut binding = binding_request(&f.params, &f.handle);
             binding.generation = current.symbol_table_generation;
-            let alias = f.sessions.bind(&f.params.principal_id, &binding, &f.catalog, TimestampNs(20))?;
-            assert!(matches!(f.sessions.hydrate_from_source(&f.params.principal_id, &alias, &req,
-                &mut f.catalog, &probe, TimestampNs(20)),
-                Err(SessionSourceHydrationError::Session(ReferenceSessionError::GrantEscalation))));
+            let alias = f.sessions.bind(
+                &f.params.principal_id,
+                &binding,
+                &f.catalog,
+                TimestampNs(20),
+            )?;
+            assert!(matches!(
+                f.sessions.hydrate_from_source(
+                    &f.params.principal_id,
+                    &alias,
+                    &req,
+                    &mut f.catalog,
+                    &probe,
+                    TimestampNs(20)
+                ),
+                Err(SessionSourceHydrationError::Session(
+                    ReferenceSessionError::GrantEscalation
+                ))
+            ));
             assert_eq!(probe.calls.get(), 0);
             Ok(())
         }
@@ -529,27 +807,72 @@ pub mod source_hydration {
         fn source_continuation_shares_cached_cursor_ledger_and_spend() -> TestResult {
             let mut f = fixture()?;
             let preview = request(&f, HydrationLevel::H2)?;
-            let cursor = f.sessions.hydrate(&f.params.principal_id, &f.alias, &preview,
-                &mut f.catalog, TimestampNs(20))?.receipt.continuation.ok_or("missing H3 cursor")?;
+            let cursor = f
+                .sessions
+                .hydrate(
+                    &f.params.principal_id,
+                    &f.alias,
+                    &preview,
+                    &mut f.catalog,
+                    TimestampNs(20),
+                )?
+                .receipt
+                .continuation
+                .ok_or("missing H3 cursor")?;
             let mut req = request(&f, HydrationLevel::H3)?;
             req.continuation = Some(cursor.clone());
             req.issued_at = TimestampNs(21);
             reseal(&mut req);
             let wrong = ReaderProbe::new(b"substituted bytes");
-            assert!(matches!(f.sessions.hydrate_from_source(&f.params.principal_id, &f.alias, &req,
-                &mut f.catalog, &wrong, TimestampNs(22)),
-                Err(SessionSourceHydrationError::Source(SourceHydrationError::SourceMismatch))));
-            assert!(!f.catalog.issued_cursor(&cursor.cursor_digest).ok_or("missing cursor")?.consumed);
+            assert!(matches!(
+                f.sessions.hydrate_from_source(
+                    &f.params.principal_id,
+                    &f.alias,
+                    &req,
+                    &mut f.catalog,
+                    &wrong,
+                    TimestampNs(22)
+                ),
+                Err(SessionSourceHydrationError::Source(
+                    SourceHydrationError::SourceMismatch
+                ))
+            ));
+            assert!(
+                !f.catalog
+                    .issued_cursor(&cursor.cursor_digest)
+                    .ok_or("missing cursor")?
+                    .consumed
+            );
             assert_eq!(remaining(&mut f, 22)?, 2 * TOKENS);
-            f.sessions.hydrate_from_source(&f.params.principal_id, &f.alias, &req,
-                &mut f.catalog, &f.store, TimestampNs(22))?;
+            f.sessions.hydrate_from_source(
+                &f.params.principal_id,
+                &f.alias,
+                &req,
+                &mut f.catalog,
+                &f.store,
+                TimestampNs(22),
+            )?;
             assert_eq!(remaining(&mut f, 22)?, TOKENS);
-            assert!(f.catalog.issued_cursor(&cursor.cursor_digest).ok_or("missing cursor")?.consumed);
+            assert!(
+                f.catalog
+                    .issued_cursor(&cursor.cursor_digest)
+                    .ok_or("missing cursor")?
+                    .consumed
+            );
             let probe = ReaderProbe::new(SOURCE);
-            assert!(matches!(f.sessions.hydrate_from_source(&f.params.principal_id, &f.alias, &req,
-                &mut f.catalog, &probe, TimestampNs(23)),
-                Err(SessionSourceHydrationError::Source(SourceHydrationError::Hydration(
-                    HydrationError::ContinuationAlreadyConsumed)))));
+            assert!(matches!(
+                f.sessions.hydrate_from_source(
+                    &f.params.principal_id,
+                    &f.alias,
+                    &req,
+                    &mut f.catalog,
+                    &probe,
+                    TimestampNs(23)
+                ),
+                Err(SessionSourceHydrationError::Source(
+                    SourceHydrationError::Hydration(HydrationError::ContinuationAlreadyConsumed)
+                ))
+            ));
             assert_eq!(probe.calls.get(), 0);
             Ok(())
         }
@@ -562,13 +885,27 @@ pub mod source_hydration {
             req.allow_lower_level = true;
             reseal(&mut req);
             let probe = ReaderProbe::new(SOURCE);
-            let result = f.sessions.hydrate_from_source(&f.params.principal_id, &f.alias, &req,
-                &mut f.catalog, &probe, TimestampNs(20))?;
-            assert_eq!(result.artifact.as_ref().ok_or("missing preview")?.level, HydrationLevel::H2);
+            let result = f.sessions.hydrate_from_source(
+                &f.params.principal_id,
+                &f.alias,
+                &req,
+                &mut f.catalog,
+                &probe,
+                TimestampNs(20),
+            )?;
+            assert_eq!(
+                result.artifact.as_ref().ok_or("missing preview")?.level,
+                HydrationLevel::H2
+            );
             assert_eq!(probe.calls.get(), 0);
             assert_eq!(remaining(&mut f, 20)?, 2 * TOKENS);
-            assert!(f.catalog.source_binding(&f.handle.handle_id, f.handle.descriptor_digest)
-                .ok_or("missing binding")?.validate_response(&req, &f.handle, &result).is_err());
+            assert!(
+                f.catalog
+                    .source_binding(&f.handle.handle_id, f.handle.descriptor_digest)
+                    .ok_or("missing binding")?
+                    .validate_response(&req, &f.handle, &result)
+                    .is_err()
+            );
             Ok(())
         }
 
@@ -577,17 +914,49 @@ pub mod source_hydration {
             for which in 0..3 {
                 let mut f = fixture()?;
                 let req = request(&f, HydrationLevel::H3)?;
-                f.sessions.hydrate_from_source(&f.params.principal_id, &f.alias, &req,
-                    &mut f.catalog, &f.store, TimestampNs(20))?;
-                let target = match which { 0 => f.handle.subject_digest, 1 => f.root, _ => f.metadata };
+                f.sessions.hydrate_from_source(
+                    &f.params.principal_id,
+                    &f.alias,
+                    &req,
+                    &mut f.catalog,
+                    &f.store,
+                    TimestampNs(20),
+                )?;
+                let target = match which {
+                    0 => f.handle.subject_digest,
+                    1 => f.root,
+                    _ => f.metadata,
+                };
                 let witness = f.store.put_verified(b"authorized deletion witness")?;
                 let prior = Generation::parse_positive(1)?;
-                f.store.tombstone(target, TombstoneRecord::new(ObjectId::parse("obj-source")?,
-                    prior.next()?, prior, TombstoneReason::Deleted, Some(witness), target)?)?;
-                assert!(f.sessions.hydrate_from_source(&f.params.principal_id, &f.alias, &req,
-                    &mut f.catalog, &f.store, TimestampNs(21)).is_err());
+                f.store.tombstone(
+                    target,
+                    TombstoneRecord::new(
+                        ObjectId::parse("obj-source")?,
+                        prior.next()?,
+                        prior,
+                        TombstoneReason::Deleted,
+                        Some(witness),
+                        target,
+                    )?,
+                )?;
+                assert!(
+                    f.sessions
+                        .hydrate_from_source(
+                            &f.params.principal_id,
+                            &f.alias,
+                            &req,
+                            &mut f.catalog,
+                            &f.store,
+                            TimestampNs(21)
+                        )
+                        .is_err()
+                );
                 assert_eq!(remaining(&mut f, 21)?, 2 * TOKENS);
-                assert!(matches!(f.catalog.hydrate(&req, TimestampNs(21)), Err(HydrationError::LevelUnavailable)));
+                assert!(matches!(
+                    f.catalog.hydrate(&req, TimestampNs(21)),
+                    Err(HydrationError::LevelUnavailable)
+                ));
             }
             Ok(())
         }
@@ -598,16 +967,40 @@ pub mod source_hydration {
                 let mut f = fixture()?;
                 let req = request(&f, HydrationLevel::H3)?;
                 let probe = ReaderProbe::new(SOURCE);
-                assert!(f.sessions.hydrate_from_source(&f.params.principal_id, &f.alias, &req,
-                    &mut f.catalog, &probe, TimestampNs(now)).is_err());
+                assert!(
+                    f.sessions
+                        .hydrate_from_source(
+                            &f.params.principal_id,
+                            &f.alias,
+                            &req,
+                            &mut f.catalog,
+                            &probe,
+                            TimestampNs(now)
+                        )
+                        .is_err()
+                );
                 assert_eq!(probe.calls.get(), 0);
             }
             let mut f = fixture()?;
             let req = request(&f, HydrationLevel::H3)?;
-            f.sessions.close(&f.params.principal_id, &f.params.session_id, TimestampNs(20))?;
+            f.sessions.close(
+                &f.params.principal_id,
+                &f.params.session_id,
+                TimestampNs(20),
+            )?;
             let probe = ReaderProbe::new(SOURCE);
-            assert!(f.sessions.hydrate_from_source(&f.params.principal_id, &f.alias, &req,
-                &mut f.catalog, &probe, TimestampNs(21)).is_err());
+            assert!(
+                f.sessions
+                    .hydrate_from_source(
+                        &f.params.principal_id,
+                        &f.alias,
+                        &req,
+                        &mut f.catalog,
+                        &probe,
+                        TimestampNs(21)
+                    )
+                    .is_err()
+            );
             assert_eq!(probe.calls.get(), 0);
             Ok(())
         }
@@ -616,9 +1009,18 @@ pub mod source_hydration {
         fn old_cached_path_keeps_its_error_and_does_not_charge_missing_h3() -> TestResult {
             let mut f = fixture()?;
             let req = request(&f, HydrationLevel::H3)?;
-            assert!(matches!(f.sessions.hydrate(&f.params.principal_id, &f.alias, &req,
-                &mut f.catalog, TimestampNs(20)),
-                Err(ReferenceSessionError::Hydration(HydrationError::LevelUnavailable))));
+            assert!(matches!(
+                f.sessions.hydrate(
+                    &f.params.principal_id,
+                    &f.alias,
+                    &req,
+                    &mut f.catalog,
+                    TimestampNs(20)
+                ),
+                Err(ReferenceSessionError::Hydration(
+                    HydrationError::LevelUnavailable
+                ))
+            ));
             assert_eq!(remaining(&mut f, 20)?, 3 * TOKENS);
             Ok(())
         }
@@ -627,17 +1029,20 @@ pub mod source_hydration {
             use std::path::PathBuf;
             use std::sync::atomic::{AtomicU64, Ordering};
 
-            use fss_core::{CaseHypothesis, CaseId, InvestigationLifecycle, InvestigationState,
-                InvestigationStateParams, KnowledgeState};
-            use fss_ledger::{AppendPhase, IncompleteTailPolicy};
-            use crate::agent_session::checkpoint::journal::{
-                DurableSessionError, DurableSessionLimits, DurableSessionStore, SessionAppendRecovery,
-            };
             use crate::agent_session::checkpoint::journal::coordination::CoordinationCommand;
             use crate::agent_session::checkpoint::journal::coordination::investigations::{
                 InvestigationCommand, InvestigationLimits,
             };
+            use crate::agent_session::checkpoint::journal::{
+                DurableSessionError, DurableSessionLimits, DurableSessionStore,
+                SessionAppendRecovery,
+            };
             use crate::agent_session::work_claims::{WorkClaimLimits, WorkClaimRequest};
+            use fss_core::{
+                CaseHypothesis, CaseId, InvestigationLifecycle, InvestigationState,
+                InvestigationStateParams, KnowledgeState,
+            };
+            use fss_ledger::{AppendPhase, IncompleteTailPolicy};
 
             static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
 
@@ -646,30 +1051,50 @@ pub mod source_hydration {
                 for _ in 0..128 {
                     let serial = NEXT_PATH.fetch_add(1, Ordering::Relaxed);
                     let path = std::env::temp_dir().join(format!(
-                        "fss-source-session-{}-{serial}.journal", std::process::id(),
+                        "fss-source-session-{}-{serial}.journal",
+                        std::process::id(),
                     ));
-                    if !path.exists() { return Ok(path); }
+                    if !path.exists() {
+                        return Ok(path);
+                    }
                 }
                 Err("test journal path capacity exhausted".into())
             }
 
-            fn opened(limits: DurableSessionLimits) -> Result<(Fixture, DurableSessionStore), Box<dyn Error>> {
+            fn opened(
+                limits: DurableSessionLimits,
+            ) -> Result<(Fixture, DurableSessionStore), Box<dyn Error>> {
                 let mut f = fixture()?;
                 f.params.capabilities.extend([
-                    "CAP-AGENT-WORK-CLAIM-001".to_owned(), "CAP-AGENT-INVESTIGATE-001".to_owned(),
+                    "CAP-AGENT-WORK-CLAIM-001".to_owned(),
+                    "CAP-AGENT-INVESTIGATE-001".to_owned(),
                 ]);
                 let mut durable = DurableSessionStore::create(unused_path()?, limits)?;
-                durable.open(f.params.clone(), f.handle.contract_basis.clone(), TimestampNs(10))?;
-                let alias = durable.bind(&f.params.principal_id, &binding_request(&f.params, &f.handle),
-                    &f.catalog, TimestampNs(10))?;
+                durable.open(
+                    f.params.clone(),
+                    f.handle.contract_basis.clone(),
+                    TimestampNs(10),
+                )?;
+                let alias = durable.bind(
+                    &f.params.principal_id,
+                    &binding_request(&f.params, &f.handle),
+                    &f.catalog,
+                    TimestampNs(10),
+                )?;
                 assert_eq!(alias, f.alias);
                 Ok((f, durable))
             }
 
-            fn budget(store: &mut DurableSessionStore, f: &Fixture, now: i128)
-                -> Result<u64, DurableSessionError>
-            {
-                store.remaining_token_budget(&f.params.principal_id, &f.params.session_id, TimestampNs(now))
+            fn budget(
+                store: &mut DurableSessionStore,
+                f: &Fixture,
+                now: i128,
+            ) -> Result<u64, DurableSessionError> {
+                store.remaining_token_budget(
+                    &f.params.principal_id,
+                    &f.params.session_id,
+                    TimestampNs(now),
+                )
             }
 
             fn assert_no_source_in_journal(store: &DurableSessionStore) -> TestResult {
@@ -682,19 +1107,37 @@ pub mod source_hydration {
             fn committed_source_charge_reopens_without_persisting_source_payload() -> TestResult {
                 let (mut f, mut store) = opened(DurableSessionLimits::default())?;
                 let req = request(&f, HydrationLevel::H3)?;
-                let result = store.hydrate_from_source(&f.params.principal_id, &f.alias, &req,
-                    &mut f.catalog, &f.store, TimestampNs(20))?;
-                f.catalog.source_binding(&f.handle.handle_id, f.handle.descriptor_digest)
-                    .ok_or("missing binding")?.validate_response(&req, &f.handle, &result)?;
+                let result = store.hydrate_from_source(
+                    &f.params.principal_id,
+                    &f.alias,
+                    &req,
+                    &mut f.catalog,
+                    &f.store,
+                    TimestampNs(20),
+                )?;
+                f.catalog
+                    .source_binding(&f.handle.handle_id, f.handle.descriptor_digest)
+                    .ok_or("missing binding")?
+                    .validate_response(&req, &f.handle, &result)?;
                 assert_eq!(budget(&mut store, &f, 20)?, 2 * TOKENS);
                 assert_no_source_in_journal(&store)?;
                 let path = store.path().to_path_buf();
                 let root = store.committed_root();
                 drop(store);
-                let mut store = DurableSessionStore::open_existing(path, root, DurableSessionLimits::default())?;
+                let mut store = DurableSessionStore::open_existing(
+                    path,
+                    root,
+                    DurableSessionLimits::default(),
+                )?;
                 assert_eq!(budget(&mut store, &f, 20)?, 2 * TOKENS);
-                store.hydrate_from_source(&f.params.principal_id, &f.alias, &req,
-                    &mut f.catalog, &f.store, TimestampNs(21))?;
+                store.hydrate_from_source(
+                    &f.params.principal_id,
+                    &f.alias,
+                    &req,
+                    &mut f.catalog,
+                    &f.store,
+                    TimestampNs(21),
+                )?;
                 assert_eq!(budget(&mut store, &f, 21)?, TOKENS);
                 store.verify_storage()?;
                 assert_no_source_in_journal(&store)?;
@@ -702,17 +1145,29 @@ pub mod source_hydration {
             }
 
             #[test]
-            fn uncertain_source_delivery_fences_owner_and_preserves_catalog_until_reconciliation() -> TestResult {
+            fn uncertain_source_delivery_fences_owner_and_preserves_catalog_until_reconciliation()
+            -> TestResult {
                 for (phase, committed) in [
-                    (AppendPhase::BodyWrite, false), (AppendPhase::BodySync, false),
-                    (AppendPhase::CommitWrite, true), (AppendPhase::CommitSync, true),
+                    (AppendPhase::BodyWrite, false),
+                    (AppendPhase::BodySync, false),
+                    (AppendPhase::CommitWrite, true),
+                    (AppendPhase::CommitSync, true),
                 ] {
                     let (mut f, mut store) = opened(DurableSessionLimits::default())?;
                     store.enable_coordination(WorkClaimLimits::default())?;
                     store.enable_investigations(InvestigationLimits::default())?;
                     let preview = request(&f, HydrationLevel::H2)?;
-                    let cursor = store.hydrate(&f.params.principal_id, &f.alias, &preview,
-                        &mut f.catalog, TimestampNs(20))?.receipt.continuation.ok_or("missing H3 cursor")?;
+                    let cursor = store
+                        .hydrate(
+                            &f.params.principal_id,
+                            &f.alias,
+                            &preview,
+                            &mut f.catalog,
+                            TimestampNs(20),
+                        )?
+                        .receipt
+                        .continuation
+                        .ok_or("missing H3 cursor")?;
                     let mut req = request(&f, HydrationLevel::H3)?;
                     req.continuation = Some(cursor.clone());
                     req.issued_at = TimestampNs(21);
@@ -721,42 +1176,127 @@ pub mod source_hydration {
                     let cursors = f.catalog.issued_cursor_count();
                     let cached = f.catalog.stored_payload_bytes();
                     store.journal.fail_after_phase(phase);
-                    assert!(matches!(store.hydrate_from_source(&f.params.principal_id, &f.alias, &req,
-                        &mut f.catalog, &probe, TimestampNs(22)),
-                        Err(DurableSourceHydrationError::Durability(DurableSessionError::Journal(_)))));
+                    assert!(matches!(
+                        store.hydrate_from_source(
+                            &f.params.principal_id,
+                            &f.alias,
+                            &req,
+                            &mut f.catalog,
+                            &probe,
+                            TimestampNs(22)
+                        ),
+                        Err(DurableSourceHydrationError::Durability(
+                            DurableSessionError::Journal(_)
+                        ))
+                    ));
                     assert!(store.needs_reconciliation());
                     assert_eq!(probe.calls.get(), 1);
                     assert_eq!(f.catalog.issued_cursor_count(), cursors);
                     assert_eq!(f.catalog.stored_payload_bytes(), cached);
-                    assert!(!f.catalog.issued_cursor(&cursor.cursor_digest).ok_or("missing cursor")?.consumed);
-                    assert!(matches!(store.hydrate_from_source(&f.params.principal_id, &f.alias, &req,
-                        &mut f.catalog, &probe, TimestampNs(23)),
-                        Err(DurableSourceHydrationError::Durability(DurableSessionError::ReconciliationRequired))));
-                    assert!(matches!(store.session(&f.params.principal_id, &f.params.session_id, TimestampNs(23)),
-                        Err(DurableSessionError::ReconciliationRequired)));
-                    assert!(matches!(store.coordinate(&f.params.principal_id, &f.params.session_id,
-                        CoordinationCommand::Inspect { claim_id: "claim:absent".to_owned() }, TimestampNs(23)),
-                        Err(DurableSessionError::ReconciliationRequired)));
-                    assert!(store.investigate(&f.params.principal_id, &f.params.session_id,
-                        InvestigationCommand::Inspect { case_id: "case:absent".to_owned(), revision: None },
-                        TimestampNs(23)).is_err());
+                    assert!(
+                        !f.catalog
+                            .issued_cursor(&cursor.cursor_digest)
+                            .ok_or("missing cursor")?
+                            .consumed
+                    );
+                    assert!(matches!(
+                        store.hydrate_from_source(
+                            &f.params.principal_id,
+                            &f.alias,
+                            &req,
+                            &mut f.catalog,
+                            &probe,
+                            TimestampNs(23)
+                        ),
+                        Err(DurableSourceHydrationError::Durability(
+                            DurableSessionError::ReconciliationRequired
+                        ))
+                    ));
+                    assert!(matches!(
+                        store.session(
+                            &f.params.principal_id,
+                            &f.params.session_id,
+                            TimestampNs(23)
+                        ),
+                        Err(DurableSessionError::ReconciliationRequired)
+                    ));
+                    assert!(matches!(
+                        store.coordinate(
+                            &f.params.principal_id,
+                            &f.params.session_id,
+                            CoordinationCommand::Inspect {
+                                claim_id: "claim:absent".to_owned()
+                            },
+                            TimestampNs(23)
+                        ),
+                        Err(DurableSessionError::ReconciliationRequired)
+                    ));
+                    assert!(
+                        store
+                            .investigate(
+                                &f.params.principal_id,
+                                &f.params.session_id,
+                                InvestigationCommand::Inspect {
+                                    case_id: "case:absent".to_owned(),
+                                    revision: None
+                                },
+                                TimestampNs(23)
+                            )
+                            .is_err()
+                    );
                     assert_eq!(probe.calls.get(), 1);
                     if !committed {
                         let before = std::fs::read(store.path())?;
-                        assert!(store.reconcile_pending(IncompleteTailPolicy::Reject).is_err());
+                        assert!(
+                            store
+                                .reconcile_pending(IncompleteTailPolicy::Reject)
+                                .is_err()
+                        );
                         assert_eq!(std::fs::read(store.path())?, before);
                     }
-                    assert_eq!(store.reconcile_pending(IncompleteTailPolicy::Truncate)?,
-                        if committed { SessionAppendRecovery::Committed } else { SessionAppendRecovery::NotCommitted });
-                    assert_eq!(probe.calls.get(), 1, "recovery must never reread or redeliver source");
-                    assert_eq!(budget(&mut store, &f, 23)?, if committed { TOKENS } else { 2 * TOKENS });
-                    assert!(!f.catalog.issued_cursor(&cursor.cursor_digest).ok_or("missing cursor")?.consumed);
+                    assert_eq!(
+                        store.reconcile_pending(IncompleteTailPolicy::Truncate)?,
+                        if committed {
+                            SessionAppendRecovery::Committed
+                        } else {
+                            SessionAppendRecovery::NotCommitted
+                        }
+                    );
+                    assert_eq!(
+                        probe.calls.get(),
+                        1,
+                        "recovery must never reread or redeliver source"
+                    );
+                    assert_eq!(
+                        budget(&mut store, &f, 23)?,
+                        if committed { TOKENS } else { 2 * TOKENS }
+                    );
+                    assert!(
+                        !f.catalog
+                            .issued_cursor(&cursor.cursor_digest)
+                            .ok_or("missing cursor")?
+                            .consumed
+                    );
                     // This is an explicit retry, not a recovery side effect; it checks custody and charges again.
-                    store.hydrate_from_source(&f.params.principal_id, &f.alias, &req,
-                        &mut f.catalog, &probe, TimestampNs(23))?;
+                    store.hydrate_from_source(
+                        &f.params.principal_id,
+                        &f.alias,
+                        &req,
+                        &mut f.catalog,
+                        &probe,
+                        TimestampNs(23),
+                    )?;
                     assert_eq!(probe.calls.get(), 2);
-                    assert!(f.catalog.issued_cursor(&cursor.cursor_digest).ok_or("missing cursor")?.consumed);
-                    assert_eq!(budget(&mut store, &f, 23)?, if committed { 0 } else { TOKENS });
+                    assert!(
+                        f.catalog
+                            .issued_cursor(&cursor.cursor_digest)
+                            .ok_or("missing cursor")?
+                            .consumed
+                    );
+                    assert_eq!(
+                        budget(&mut store, &f, 23)?,
+                        if committed { 0 } else { TOKENS }
+                    );
                     store.verify_storage()?;
                     assert_no_source_in_journal(&store)?;
                 }
@@ -764,37 +1304,71 @@ pub mod source_hydration {
             }
 
             #[test]
-            fn cold_recovery_preserves_complete_lost_ack_charge_and_never_adopts_old_root() -> TestResult {
+            fn cold_recovery_preserves_complete_lost_ack_charge_and_never_adopts_old_root()
+            -> TestResult {
                 for (phase, committed) in [
-                    (AppendPhase::BodyWrite, false), (AppendPhase::BodySync, false),
-                    (AppendPhase::CommitWrite, true), (AppendPhase::CommitSync, true),
+                    (AppendPhase::BodyWrite, false),
+                    (AppendPhase::BodySync, false),
+                    (AppendPhase::CommitWrite, true),
+                    (AppendPhase::CommitSync, true),
                 ] {
                     let (mut f, mut store) = opened(DurableSessionLimits::default())?;
                     let req = request(&f, HydrationLevel::H3)?;
                     let old = store.committed_root();
                     store.journal.fail_after_phase(phase);
-                    assert!(store.hydrate_from_source(&f.params.principal_id, &f.alias, &req,
-                        &mut f.catalog, &f.store, TimestampNs(20)).is_err());
+                    assert!(
+                        store
+                            .hydrate_from_source(
+                                &f.params.principal_id,
+                                &f.alias,
+                                &req,
+                                &mut f.catalog,
+                                &f.store,
+                                TimestampNs(20)
+                            )
+                            .is_err()
+                    );
                     let path = store.path().to_path_buf();
                     drop(store);
-                    let inspection = DurableSessionStore::inspect(&path, DurableSessionLimits::default())?;
+                    let inspection =
+                        DurableSessionStore::inspect(&path, DurableSessionLimits::default())?;
                     let before = std::fs::read(&path)?;
                     if committed {
                         assert_ne!(inspection.root, old);
-                        assert!(matches!(DurableSessionStore::recover_existing(&path, old,
-                            DurableSessionLimits::default(), IncompleteTailPolicy::Truncate),
-                            Err(DurableSessionError::RootMismatch)));
+                        assert!(matches!(
+                            DurableSessionStore::recover_existing(
+                                &path,
+                                old,
+                                DurableSessionLimits::default(),
+                                IncompleteTailPolicy::Truncate
+                            ),
+                            Err(DurableSessionError::RootMismatch)
+                        ));
                     } else {
                         assert_eq!(inspection.root, old);
-                        assert!(DurableSessionStore::recover_existing(&path, old,
-                            DurableSessionLimits::default(), IncompleteTailPolicy::Reject).is_err());
+                        assert!(
+                            DurableSessionStore::recover_existing(
+                                &path,
+                                old,
+                                DurableSessionLimits::default(),
+                                IncompleteTailPolicy::Reject
+                            )
+                            .is_err()
+                        );
                     }
                     assert_eq!(std::fs::read(&path)?, before);
                     // Test fixture independently knows which exact record reached the commit marker.
-                    let (mut recovered, receipt) = DurableSessionStore::recover_existing(&path, inspection.root,
-                        DurableSessionLimits::default(), IncompleteTailPolicy::Truncate)?;
+                    let (mut recovered, receipt) = DurableSessionStore::recover_existing(
+                        &path,
+                        inspection.root,
+                        DurableSessionLimits::default(),
+                        IncompleteTailPolicy::Truncate,
+                    )?;
                     assert_eq!(receipt.discarded_bytes() > 0, !committed);
-                    assert_eq!(budget(&mut recovered, &f, 21)?, if committed { 2 * TOKENS } else { 3 * TOKENS });
+                    assert_eq!(
+                        budget(&mut recovered, &f, 21)?,
+                        if committed { 2 * TOKENS } else { 3 * TOKENS }
+                    );
                     assert_no_source_in_journal(&recovered)?;
                 }
                 Ok(())
@@ -806,20 +1380,44 @@ pub mod source_hydration {
                 let req = request(&f, HydrationLevel::H3)?;
                 let old = store.committed_root();
                 let wrong = ReaderProbe::new(b"substituted source");
-                assert!(matches!(store.hydrate_from_source(&f.params.principal_id, &f.alias, &req,
-                    &mut f.catalog, &wrong, TimestampNs(20)),
-                    Err(DurableSourceHydrationError::Refused(SessionSourceHydrationError::Source(
-                        SourceHydrationError::SourceMismatch)))));
+                assert!(matches!(
+                    store.hydrate_from_source(
+                        &f.params.principal_id,
+                        &f.alias,
+                        &req,
+                        &mut f.catalog,
+                        &wrong,
+                        TimestampNs(20)
+                    ),
+                    Err(DurableSourceHydrationError::Refused(
+                        SessionSourceHydrationError::Source(SourceHydrationError::SourceMismatch)
+                    ))
+                ));
                 assert_ne!(store.committed_root(), old);
                 let path = store.path().to_path_buf();
                 let root = store.committed_root();
                 drop(store);
-                let mut store = DurableSessionStore::open_existing(path, root, DurableSessionLimits::default())?;
+                let mut store = DurableSessionStore::open_existing(
+                    path,
+                    root,
+                    DurableSessionLimits::default(),
+                )?;
                 let probe = ReaderProbe::new(SOURCE);
-                assert!(matches!(store.hydrate_from_source(&f.params.principal_id, &f.alias, &req,
-                    &mut f.catalog, &probe, TimestampNs(19)),
-                    Err(DurableSourceHydrationError::Refused(SessionSourceHydrationError::Session(
-                        ReferenceSessionError::ClockRegression)))));
+                assert!(matches!(
+                    store.hydrate_from_source(
+                        &f.params.principal_id,
+                        &f.alias,
+                        &req,
+                        &mut f.catalog,
+                        &probe,
+                        TimestampNs(19)
+                    ),
+                    Err(DurableSourceHydrationError::Refused(
+                        SessionSourceHydrationError::Session(
+                            ReferenceSessionError::ClockRegression
+                        )
+                    ))
+                ));
                 assert_eq!(probe.calls.get(), 0);
                 assert_eq!(budget(&mut store, &f, 20)?, 3 * TOKENS);
                 Ok(())
@@ -831,99 +1429,228 @@ pub mod source_hydration {
                 let req = request(&f, HydrationLevel::H3)?;
                 let old = store.committed_root();
                 let probe = ReaderProbe::new(SOURCE);
-                assert!(matches!(store.hydrate_from_source(&f.params.principal_id, &f.alias, &req,
-                    &mut f.catalog, &probe, TimestampNs(1_000)),
-                    Err(DurableSourceHydrationError::Refused(SessionSourceHydrationError::Session(
-                        ReferenceSessionError::Unavailable)))));
+                assert!(matches!(
+                    store.hydrate_from_source(
+                        &f.params.principal_id,
+                        &f.alias,
+                        &req,
+                        &mut f.catalog,
+                        &probe,
+                        TimestampNs(1_000)
+                    ),
+                    Err(DurableSourceHydrationError::Refused(
+                        SessionSourceHydrationError::Session(ReferenceSessionError::Unavailable)
+                    ))
+                ));
                 assert_eq!(probe.calls.get(), 0);
                 assert_ne!(store.committed_root(), old);
                 let path = store.path().to_path_buf();
                 let root = store.committed_root();
                 drop(store);
-                let mut store = DurableSessionStore::open_existing(path, root, DurableSessionLimits::default())?;
-                assert!(store.open(f.params, f.handle.contract_basis, TimestampNs(10)).is_err());
+                let mut store = DurableSessionStore::open_existing(
+                    path,
+                    root,
+                    DurableSessionLimits::default(),
+                )?;
+                assert!(
+                    store
+                        .open(f.params, f.handle.contract_basis, TimestampNs(10))
+                        .is_err()
+                );
                 Ok(())
             }
 
             #[test]
-            fn journal_capacity_withholds_payload_and_does_not_publish_cursor_consumption() -> TestResult {
-                let limits = DurableSessionLimits { max_records: 4, ..DurableSessionLimits::default() };
+            fn journal_capacity_withholds_payload_and_does_not_publish_cursor_consumption()
+            -> TestResult {
+                let limits = DurableSessionLimits {
+                    max_records: 4,
+                    ..DurableSessionLimits::default()
+                };
                 let (mut f, mut store) = opened(limits)?;
                 let preview = request(&f, HydrationLevel::H2)?;
-                let cursor = store.hydrate(&f.params.principal_id, &f.alias, &preview,
-                    &mut f.catalog, TimestampNs(20))?.receipt.continuation.ok_or("missing H3 cursor")?;
+                let cursor = store
+                    .hydrate(
+                        &f.params.principal_id,
+                        &f.alias,
+                        &preview,
+                        &mut f.catalog,
+                        TimestampNs(20),
+                    )?
+                    .receipt
+                    .continuation
+                    .ok_or("missing H3 cursor")?;
                 let mut req = request(&f, HydrationLevel::H3)?;
                 req.continuation = Some(cursor.clone());
                 req.issued_at = TimestampNs(21);
                 reseal(&mut req);
                 let before = std::fs::read(store.path())?;
-                assert!(matches!(store.hydrate_from_source(&f.params.principal_id, &f.alias, &req,
-                    &mut f.catalog, &f.store, TimestampNs(22)),
-                    Err(DurableSourceHydrationError::Durability(DurableSessionError::CapacityExceeded))));
+                assert!(matches!(
+                    store.hydrate_from_source(
+                        &f.params.principal_id,
+                        &f.alias,
+                        &req,
+                        &mut f.catalog,
+                        &f.store,
+                        TimestampNs(22)
+                    ),
+                    Err(DurableSourceHydrationError::Durability(
+                        DurableSessionError::CapacityExceeded
+                    ))
+                ));
                 assert!(store.needs_reconciliation());
                 assert_eq!(std::fs::read(store.path())?, before);
-                assert!(!f.catalog.issued_cursor(&cursor.cursor_digest).ok_or("missing cursor")?.consumed);
+                assert!(
+                    !f.catalog
+                        .issued_cursor(&cursor.cursor_digest)
+                        .ok_or("missing cursor")?
+                        .consumed
+                );
                 let probe = ReaderProbe::new(SOURCE);
-                assert!(store.hydrate_from_source(&f.params.principal_id, &f.alias, &req,
-                    &mut f.catalog, &probe, TimestampNs(23)).is_err());
+                assert!(
+                    store
+                        .hydrate_from_source(
+                            &f.params.principal_id,
+                            &f.alias,
+                            &req,
+                            &mut f.catalog,
+                            &probe,
+                            TimestampNs(23)
+                        )
+                        .is_err()
+                );
                 assert_eq!(probe.calls.get(), 0);
                 Ok(())
             }
 
             #[test]
-            fn source_checkpoint_preserves_interleaved_work_and_investigation_history() -> TestResult {
+            fn source_checkpoint_preserves_interleaved_work_and_investigation_history() -> TestResult
+            {
                 let (mut f, mut store) = opened(DurableSessionLimits::default())?;
                 store.enable_coordination(WorkClaimLimits::default())?;
                 store.enable_investigations(InvestigationLimits::default())?;
                 let record = InvestigationState::new(InvestigationStateParams {
-                    investigation_id: "case:source".to_owned(), contract_basis: f.handle.contract_basis.clone(),
-                    mission_id: f.params.mission_id.clone(), revision: 1, state: InvestigationLifecycle::Draft,
+                    investigation_id: "case:source".to_owned(),
+                    contract_basis: f.handle.contract_basis.clone(),
+                    mission_id: f.params.mission_id.clone(),
+                    revision: 1,
+                    state: InvestigationLifecycle::Draft,
                     question: "Which original source should be examined?".to_owned(),
-                    decision_informed: "Inspect evidence without claiming an observation".to_owned(),
+                    decision_informed: "Inspect evidence without claiming an observation"
+                        .to_owned(),
                     basis_anchor: f.handle.anchor.clone(),
-                    hypotheses: ["hypothesis:a", "hypothesis:b"].into_iter().map(|id| CaseHypothesis {
-                        hypothesis_id: id.to_owned(), description: id.to_owned(), epistemic_state: KnowledgeState::Unknown,
-                        predictions: vec![], evidence: vec![], contradictions: vec![],
-                    }).collect(), knowns: vec![], unknowns: vec![], discriminators: vec![], probes: vec![],
-                    stop_rules: vec!["bounded examination".to_owned()], decision_deadline_ns: 90,
+                    hypotheses: ["hypothesis:a", "hypothesis:b"]
+                        .into_iter()
+                        .map(|id| CaseHypothesis {
+                            hypothesis_id: id.to_owned(),
+                            description: id.to_owned(),
+                            epistemic_state: KnowledgeState::Unknown,
+                            predictions: vec![],
+                            evidence: vec![],
+                            contradictions: vec![],
+                        })
+                        .collect(),
+                    knowns: vec![],
+                    unknowns: vec![],
+                    discriminators: vec![],
+                    probes: vec![],
+                    stop_rules: vec!["bounded examination".to_owned()],
+                    decision_deadline_ns: 90,
                 })?;
-                let case = store.investigate(&f.params.principal_id, &f.params.session_id,
-                    InvestigationCommand::Open { record: Box::new(record), privacy_class: f.handle.privacy_class.clone() },
-                    TimestampNs(10))?;
-                let claim = store.coordinate(&f.params.principal_id, &f.params.session_id,
+                let case = store.investigate(
+                    &f.params.principal_id,
+                    &f.params.session_id,
+                    InvestigationCommand::Open {
+                        record: Box::new(record),
+                        privacy_class: f.handle.privacy_class.clone(),
+                    },
+                    TimestampNs(10),
+                )?;
+                let claim = store.coordinate(
+                    &f.params.principal_id,
+                    &f.params.session_id,
                     CoordinationCommand::Acquire(WorkClaimRequest {
-                        claim_id: "claim:source".to_owned(), case_id: CaseId::parse("case:source")?,
-                        work_root: ContentDigest::sha256(b"examine source"), privacy_class: f.handle.privacy_class.clone(),
-                        expires_at: TimestampNs(80), dependencies: BTreeSet::new(),
-                    }), TimestampNs(10))?;
+                        claim_id: "claim:source".to_owned(),
+                        case_id: CaseId::parse("case:source")?,
+                        work_root: ContentDigest::sha256(b"examine source"),
+                        privacy_class: f.handle.privacy_class.clone(),
+                        expires_at: TimestampNs(80),
+                        dependencies: BTreeSet::new(),
+                    }),
+                    TimestampNs(10),
+                )?;
                 let req = request(&f, HydrationLevel::H3)?;
-                store.hydrate_from_source(&f.params.principal_id, &f.alias, &req,
-                    &mut f.catalog, &f.store, TimestampNs(20))?;
+                store.hydrate_from_source(
+                    &f.params.principal_id,
+                    &f.alias,
+                    &req,
+                    &mut f.catalog,
+                    &f.store,
+                    TimestampNs(20),
+                )?;
                 let path = store.path().to_path_buf();
                 let root = store.committed_root();
                 drop(store);
-                let mut store = DurableSessionStore::open_existing_with_coordination(path, root,
-                    DurableSessionLimits::default(), WorkClaimLimits::default())?;
+                let mut store = DurableSessionStore::open_existing_with_coordination(
+                    path,
+                    root,
+                    DurableSessionLimits::default(),
+                    WorkClaimLimits::default(),
+                )?;
                 assert_eq!(budget(&mut store, &f, 20)?, 2 * TOKENS);
-                assert_eq!(store.investigate(&f.params.principal_id, &f.params.session_id,
-                    InvestigationCommand::Inspect { case_id: "case:source".to_owned(), revision: None },
-                    TimestampNs(20))?, case);
-                assert_eq!(store.coordinate(&f.params.principal_id, &f.params.session_id,
-                    CoordinationCommand::Inspect { claim_id: "claim:source".to_owned() }, TimestampNs(20))?, claim);
+                assert_eq!(
+                    store.investigate(
+                        &f.params.principal_id,
+                        &f.params.session_id,
+                        InvestigationCommand::Inspect {
+                            case_id: "case:source".to_owned(),
+                            revision: None
+                        },
+                        TimestampNs(20)
+                    )?,
+                    case
+                );
+                assert_eq!(
+                    store.coordinate(
+                        &f.params.principal_id,
+                        &f.params.session_id,
+                        CoordinationCommand::Inspect {
+                            claim_id: "claim:source".to_owned()
+                        },
+                        TimestampNs(20)
+                    )?,
+                    claim
+                );
                 store.verify_storage()?;
                 Ok(())
             }
 
             #[test]
-            fn source_disclosure_does_not_turn_existing_cached_hydration_into_a_source_cache() -> TestResult {
+            fn source_disclosure_does_not_turn_existing_cached_hydration_into_a_source_cache()
+            -> TestResult {
                 let (mut f, mut store) = opened(DurableSessionLimits::default())?;
                 let req = request(&f, HydrationLevel::H3)?;
-                store.hydrate_from_source(&f.params.principal_id, &f.alias, &req,
-                    &mut f.catalog, &f.store, TimestampNs(20))?;
+                store.hydrate_from_source(
+                    &f.params.principal_id,
+                    &f.alias,
+                    &req,
+                    &mut f.catalog,
+                    &f.store,
+                    TimestampNs(20),
+                )?;
                 let old = store.committed_root();
-                assert!(matches!(store.hydrate(&f.params.principal_id, &f.alias, &req,
-                    &mut f.catalog, TimestampNs(20)),
-                    Err(DurableSessionError::Session(ReferenceSessionError::Hydration(HydrationError::LevelUnavailable)))));
+                assert!(matches!(
+                    store.hydrate(
+                        &f.params.principal_id,
+                        &f.alias,
+                        &req,
+                        &mut f.catalog,
+                        TimestampNs(20)
+                    ),
+                    Err(DurableSessionError::Session(
+                        ReferenceSessionError::Hydration(HydrationError::LevelUnavailable)
+                    ))
+                ));
                 assert_eq!(store.committed_root(), old);
                 assert_eq!(budget(&mut store, &f, 20)?, 2 * TOKENS);
                 Ok(())
@@ -935,19 +1662,30 @@ pub mod source_hydration {
                 let (mut f, mut store) = opened(DurableSessionLimits::default())?;
                 let req = request(&f, HydrationLevel::H3)?;
                 let probe = ReaderProbe::new(SOURCE);
-                let mut file = std::fs::OpenOptions::new().append(true).open(store.path())?;
+                let mut file = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(store.path())?;
                 file.write_all(b"unexpected foreign tail")?;
                 file.sync_all()?;
                 let cursors = f.catalog.issued_cursor_count();
-                assert!(matches!(store.hydrate_from_source(&f.params.principal_id, &f.alias, &req,
-                    &mut f.catalog, &probe, TimestampNs(20)),
-                    Err(DurableSourceHydrationError::Durability(DurableSessionError::Journal(_)))));
+                assert!(matches!(
+                    store.hydrate_from_source(
+                        &f.params.principal_id,
+                        &f.alias,
+                        &req,
+                        &mut f.catalog,
+                        &probe,
+                        TimestampNs(20)
+                    ),
+                    Err(DurableSourceHydrationError::Durability(
+                        DurableSessionError::Journal(_)
+                    ))
+                ));
                 assert!(store.needs_reconciliation());
                 assert_eq!(probe.calls.get(), 0);
                 assert_eq!(f.catalog.issued_cursor_count(), cursors);
                 Ok(())
             }
-
         }
     }
 }

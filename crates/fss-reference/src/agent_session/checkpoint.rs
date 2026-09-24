@@ -85,7 +85,10 @@ impl ReferenceSessionStore {
     ///
     /// Failed reads can advance clock watermarks or close expired sessions, so owners must
     /// checkpoint those mutations too. This method performs no I/O and grants no authority.
-    pub fn checkpoint(&self, max_bytes: usize) -> Result<SessionCheckpoint, SessionCheckpointError> {
+    pub fn checkpoint(
+        &self,
+        max_bytes: usize,
+    ) -> Result<SessionCheckpoint, SessionCheckpointError> {
         let mut output = BoundedCheckpoint {
             bytes: Vec::new(),
             limit: max_bytes.min(MAX_SESSION_CHECKPOINT_BYTES),
@@ -105,7 +108,9 @@ impl ReferenceSessionStore {
             validate_entry(entry, self.limits)?;
             // Bound variable-sized session fields before asking the core encoder to allocate.
             let (count, bytes) = grant_size(&entry.session)?;
-            let overhead = count.checked_mul(8).and_then(|value| value.checked_add(bytes));
+            let overhead = count
+                .checked_mul(8)
+                .and_then(|value| value.checked_add(bytes));
             if overhead.is_none_or(|value| value > output.limit) {
                 return Err(SessionCheckpointError::CapacityExceeded);
             }
@@ -172,7 +177,10 @@ impl ReferenceSessionStore {
         let mut sessions = BTreeMap::new();
         for _ in 0..count {
             let session = decode_session(decoder.bytes()?, limits)?;
-            if sessions.last_key_value().is_some_and(|(id, _)| id >= &session.session_id) {
+            if sessions
+                .last_key_value()
+                .is_some_and(|(id, _)| id >= &session.session_id)
+            {
                 return Err(SessionCheckpointError::InvalidState);
             }
             let opening_digest = decoder.digest()?;
@@ -189,7 +197,10 @@ impl ReferenceSessionStore {
             let mut symbols = BTreeMap::new();
             for _ in 0..symbol_count {
                 let slot = decoder.u64()?;
-                if symbols.last_key_value().is_some_and(|(previous, _)| previous >= &slot) {
+                if symbols
+                    .last_key_value()
+                    .is_some_and(|(previous, _)| previous >= &slot)
+                {
                     return Err(SessionCheckpointError::InvalidState);
                 }
                 symbols.insert(
@@ -229,8 +240,14 @@ fn limit_values(limits: ReferenceSessionLimits) -> [usize; 4] {
 }
 
 fn grant_size(session: &AgentSession) -> Result<(usize, usize), SessionCheckpointError> {
-    let count = session.capabilities.len().checked_add(session.privacy_scope.len());
-    let bytes = session.capabilities.iter().chain(&session.privacy_scope)
+    let count = session
+        .capabilities
+        .len()
+        .checked_add(session.privacy_scope.len());
+    let bytes = session
+        .capabilities
+        .iter()
+        .chain(&session.privacy_scope)
         .try_fold(0_usize, |sum, value| sum.checked_add(value.len()));
     match (count, bytes) {
         (Some(count), Some(bytes)) => Ok((count, bytes)),
@@ -267,7 +284,9 @@ fn validate_entry(
         }
     }
     for (index, (slot, symbol)) in entry.symbols.iter().enumerate() {
-        let expected = u64::try_from(index).ok().and_then(|value| value.checked_add(1));
+        let expected = u64::try_from(index)
+            .ok()
+            .and_then(|value| value.checked_add(1));
         if expected != Some(*slot) || *slot > entry.next_slot || symbol.handle_id.is_empty() {
             return Err(SessionCheckpointError::InvalidState);
         }
@@ -279,8 +298,8 @@ fn bounded_count(
     decoder: &mut CanonicalDecoder<'_>,
     ceiling: usize,
 ) -> Result<usize, SessionCheckpointError> {
-    let value = usize::try_from(decoder.u64()?)
-        .map_err(|_| SessionCheckpointError::CapacityExceeded)?;
+    let value =
+        usize::try_from(decoder.u64()?).map_err(|_| SessionCheckpointError::CapacityExceeded)?;
     if value > ceiling {
         return Err(SessionCheckpointError::CapacityExceeded);
     }
@@ -292,16 +311,21 @@ fn decode_grants(
     remaining_count: &mut usize,
     remaining_bytes: &mut usize,
 ) -> Result<BTreeSet<String>, SessionCheckpointError> {
-    let count = usize::try_from(decoder.u32()?)
-        .map_err(|_| SessionCheckpointError::CapacityExceeded)?;
-    *remaining_count = remaining_count.checked_sub(count)
+    let count =
+        usize::try_from(decoder.u32()?).map_err(|_| SessionCheckpointError::CapacityExceeded)?;
+    *remaining_count = remaining_count
+        .checked_sub(count)
         .ok_or(SessionCheckpointError::CapacityExceeded)?;
     let mut grants = BTreeSet::new();
     for _ in 0..count {
         let value = decoder.text()?;
-        *remaining_bytes = remaining_bytes.checked_sub(value.len())
+        *remaining_bytes = remaining_bytes
+            .checked_sub(value.len())
             .ok_or(SessionCheckpointError::CapacityExceeded)?;
-        if grants.last().is_some_and(|previous: &String| previous.as_str() >= value) {
+        if grants
+            .last()
+            .is_some_and(|previous: &String| previous.as_str() >= value)
+        {
             return Err(SessionCheckpointError::InvalidState);
         }
         grants.insert(value.to_owned());
@@ -328,7 +352,11 @@ fn decode_session(
     let view_id = decoder.text()?.to_owned();
     let token_budget = decoder.u64()?;
     let symbol_table_generation = decoder.u64()?;
-    let fingerprint = if decoder.bool()? { Some(decoder.digest()?) } else { None };
+    let fingerprint = if decoder.bool()? {
+        Some(decoder.digest()?)
+    } else {
+        None
+    };
     let session = AgentSession::new(AgentSessionParams {
         session_id,
         mission_id,
@@ -358,7 +386,12 @@ struct BoundedCheckpoint {
 
 impl BoundedCheckpoint {
     fn append(&mut self, bytes: &[u8]) -> Result<(), SessionCheckpointError> {
-        if self.bytes.len().checked_add(bytes.len()).is_none_or(|size| size > self.limit) {
+        if self
+            .bytes
+            .len()
+            .checked_add(bytes.len())
+            .is_none_or(|size| size > self.limit)
+        {
             return Err(SessionCheckpointError::CapacityExceeded);
         }
         self.bytes.extend_from_slice(bytes);

@@ -555,7 +555,9 @@ mod hydration_delivery {
                 &request,
                 TimestampNs(2_000),
             ),
-            Err(ReferenceContextBindingError::Binding(ContextBindingError::MissingSlot(_)))
+            Err(ReferenceContextBindingError::Binding(
+                ContextBindingError::MissingSlot(_)
+            ))
         ));
         let binding = fixture
             .bound
@@ -586,12 +588,16 @@ mod hydration_delivery {
         fixture.catalog.register_descriptor(newer.clone())?;
         assert!(matches!(
             fixture.hydrate(TimestampNs(2_000)),
-            Err(ReferenceContextBindingError::Binding(ContextBindingError::Hydration(
-                HydrationError::Contract(ContractError::StaleAnchor)
-            )))
+            Err(ReferenceContextBindingError::Binding(
+                ContextBindingError::Hydration(HydrationError::Contract(
+                    ContractError::StaleAnchor
+                ))
+            ))
         ));
         assert_eq!(
-            fixture.catalog.current_descriptor(&fixture.descriptor.handle_id),
+            fixture
+                .catalog
+                .current_descriptor(&fixture.descriptor.handle_id),
             Some(&newer),
         );
         assert_eq!(fixture.catalog.issued_cursor_count(), 0);
@@ -680,25 +686,29 @@ mod hydration_delivery {
         fixture.spec.continuation = Some(cursor.clone());
         fixture.spec.session_id = SessionId::parse("session:context-intruder")?;
         assert!(fixture.hydrate(TimestampNs(2_001)).is_err());
-        assert!(!fixture
-            .catalog
-            .issued_cursor(&cursor.cursor_digest)
-            .ok_or(HydrationError::ContinuationUnissued)?
-            .consumed);
+        assert!(
+            !fixture
+                .catalog
+                .issued_cursor(&cursor.cursor_digest)
+                .ok_or(HydrationError::ContinuationUnissued)?
+                .consumed
+        );
         fixture.spec.session_id = fixture.bound.publication.context_pack.session_id.clone();
         let response = fixture.hydrate(TimestampNs(2_001))?;
         assert_eq!(response.receipt.delivered_level, Some(HydrationLevel::H1));
         response.validate_for(&fixture.request()?, &fixture.descriptor)?;
-        assert!(fixture
-            .catalog
-            .issued_cursor(&cursor.cursor_digest)
-            .ok_or(HydrationError::ContinuationUnissued)?
-            .consumed);
+        assert!(
+            fixture
+                .catalog
+                .issued_cursor(&cursor.cursor_digest)
+                .ok_or(HydrationError::ContinuationUnissued)?
+                .consumed
+        );
         assert!(matches!(
             fixture.hydrate(TimestampNs(2_001)),
-            Err(ReferenceContextBindingError::Binding(ContextBindingError::Hydration(
-                HydrationError::ContinuationAlreadyConsumed
-            )))
+            Err(ReferenceContextBindingError::Binding(
+                ContextBindingError::Hydration(HydrationError::ContinuationAlreadyConsumed)
+            ))
         ));
         Ok(())
     }

@@ -3,10 +3,10 @@
 use std::fmt;
 
 use crate::{
-    ContinuityError, H265Depacketizer, H265Failure, H265FragmentDiscard, H265Limits,
-    H265Output, OrderedRtpPacket, PacketError, QueueDiscard, ReorderAdmission,
-    ReorderDisposition, ReorderError, ReorderGap, ReorderLimits, ReorderPoll,
-    RtpReorderBuffer, SequenceStats, StreamKey,
+    ContinuityError, H265Depacketizer, H265Failure, H265FragmentDiscard, H265Limits, H265Output,
+    OrderedRtpPacket, PacketError, QueueDiscard, ReorderAdmission, ReorderDisposition,
+    ReorderError, ReorderGap, ReorderLimits, ReorderPoll, RtpReorderBuffer, SequenceStats,
+    StreamKey,
 };
 
 /// Payload-free receiver refusal; codec failures are returned with their source datagram.
@@ -111,8 +111,9 @@ impl H265Receiver {
         reorder_limits: ReorderLimits,
         h265_limits: H265Limits,
     ) -> Result<Self, H265ReceiveError> {
-        let depacketizer = H265Depacketizer::new(key, payload_type, sprop_max_don_diff, h265_limits)
-            .map_err(H265ReceiveError::Codec)?;
+        let depacketizer =
+            H265Depacketizer::new(key, payload_type, sprop_max_don_diff, h265_limits)
+                .map_err(H265ReceiveError::Codec)?;
         let reorder = RtpReorderBuffer::new(key, payload_type, reorder_limits)
             .map_err(H265ReceiveError::Transport)?;
         Ok(Self {
@@ -260,8 +261,9 @@ impl H265Receiver {
         reorder_limits: ReorderLimits,
         h265_limits: H265Limits,
     ) -> Result<Self, H265ReceiveError> {
-        let depacketizer = H265Depacketizer::new(key, payload_type, sprop_max_don_diff, h265_limits)
-            .map_err(H265ReceiveError::Codec)?;
+        let depacketizer =
+            H265Depacketizer::new(key, payload_type, sprop_max_don_diff, h265_limits)
+                .map_err(H265ReceiveError::Codec)?;
         let reorder = self
             .reorder
             .restart(key, payload_type, reorder_limits)

@@ -38,7 +38,9 @@ pub fn associate_detailed(
     charge(budget, 1)?;
     config.validate()?;
     if ambiguity_margin_units > MAX_CROSS_CAMERA_OBSERVATIONS as u32 * ASSOCIATION_SCORE_SCALE {
-        return Err(CrossCameraError::InvalidConfig("global ambiguity margin exceeds 64 confidence points"));
+        return Err(CrossCameraError::InvalidConfig(
+            "global ambiguity margin exceeds 64 confidence points",
+        ));
     }
     if left.len() > MAX_CROSS_CAMERA_OBSERVATIONS || right.len() > MAX_CROSS_CAMERA_OBSERVATIONS {
         return Err(CrossCameraError::Limit);
@@ -67,8 +69,12 @@ pub fn associate_detailed(
                 AssociationScore::Excluded(_) => None,
             });
             candidates.push(CrossCameraCandidate {
-                left: row, right: column, score, selected: false,
-                ambiguous: false, exclusion_cost: None,
+                left: row,
+                right: column,
+                score,
+                selected: false,
+                ambiguous: false,
+                exclusion_cost: None,
             });
         }
         for dummy in 0..rows {
@@ -96,7 +102,9 @@ pub fn associate_detailed(
                 selected.push((assigned < right.len()).then_some(assigned));
             }
             alternatives.push(CrossCameraAlternative {
-                excluded: (row, column), columns: selected, cost: alternate.cost(),
+                excluded: (row, column),
+                columns: selected,
+                cost: alternate.cost(),
             });
         } else {
             left_dispositions[row] = AssociationDisposition::Matched(column);
@@ -105,9 +113,16 @@ pub fn associate_detailed(
     }
     charge(budget, 0)?;
     Ok(CrossCameraReport {
-        config: config.clone(), requested_margin: ambiguity_margin_units,
-        left, right, candidates, left_dispositions, right_dispositions, alternatives,
-        assignment_cost: best.cost(), effective_margin,
+        config: config.clone(),
+        requested_margin: ambiguity_margin_units,
+        left,
+        right,
+        candidates,
+        left_dispositions,
+        right_dispositions,
+        alternatives,
+        assignment_cost: best.cost(),
+        effective_margin,
     })
 }
 
@@ -115,7 +130,10 @@ fn ordered(
     input: &[CameraObservation],
     budget: &mut WorkBudget<'_>,
 ) -> Result<Vec<CameraObservation>, CrossCameraError> {
-    charge(budget, (input.len() * (MAX_CAMERA_ID_BYTES + input.len() + 1)) as u64)?;
+    charge(
+        budget,
+        (input.len() * (MAX_CAMERA_ID_BYTES + input.len() + 1)) as u64,
+    )?;
     let mut result = reserve(input.len())?;
     for observation in input {
         if observation.camera_id.len() > MAX_CAMERA_ID_BYTES {
@@ -129,19 +147,31 @@ fn ordered(
         {
             return Err(CrossCameraError::InvalidObservation("identity or position"));
         }
-        if input.first().is_some_and(|first| first.camera_id != observation.camera_id) {
-            return Err(CrossCameraError::InvalidObservation("one camera is required per input slice"));
+        if input
+            .first()
+            .is_some_and(|first| first.camera_id != observation.camera_id)
+        {
+            return Err(CrossCameraError::InvalidObservation(
+                "one camera is required per input slice",
+            ));
         }
         result.push(copy_observation(observation)?);
     }
     result.sort_unstable_by_key(|observation| observation.track_id);
-    if result.windows(2).any(|pair| pair[0].track_id == pair[1].track_id) {
+    if result
+        .windows(2)
+        .any(|pair| pair[0].track_id == pair[1].track_id)
+    {
         return Err(CrossCameraError::DuplicateObservation);
     }
     Ok(result)
 }
 
-fn score(config: &CrossCameraConfig, l: &CameraObservation, r: &CameraObservation) -> AssociationScore {
+fn score(
+    config: &CrossCameraConfig,
+    l: &CameraObservation,
+    r: &CameraObservation,
+) -> AssociationScore {
     if l.camera_id == r.camera_id {
         return AssociationScore::Excluded(AssociationExclusion::SameCamera);
     }
@@ -171,14 +201,19 @@ pub(super) fn pairs(
     report: &CrossCameraReport,
     budget: &mut WorkBudget<'_>,
 ) -> Result<Vec<AssociatedPair>, CrossCameraError> {
-    charge(budget, (report.left.len() * (2 * MAX_CAMERA_ID_BYTES + 1)) as u64)?;
+    charge(
+        budget,
+        (report.left.len() * (2 * MAX_CAMERA_ID_BYTES + 1)) as u64,
+    )?;
     let mut pairs = reserve(report.left.len())?;
     for (row, disposition) in report.left_dispositions.iter().enumerate() {
         if let AssociationDisposition::Matched(column) = *disposition {
             let AssociationScore::Admissible { confidence, .. } =
                 report.candidates[row * report.right.len() + column].score
             else {
-                return Err(CrossCameraError::InvalidObservation("inconsistent association report"));
+                return Err(CrossCameraError::InvalidObservation(
+                    "inconsistent association report",
+                ));
             };
             pairs.push(AssociatedPair {
                 first: copy_observation(&report.left[row])?,
@@ -193,20 +228,29 @@ pub(super) fn pairs(
 
 fn copy_observation(source: &CameraObservation) -> Result<CameraObservation, CrossCameraError> {
     let mut camera_id = String::new();
-    camera_id.try_reserve_exact(source.camera_id.len()).map_err(|_| CrossCameraError::Limit)?;
+    camera_id
+        .try_reserve_exact(source.camera_id.len())
+        .map_err(|_| CrossCameraError::Limit)?;
     camera_id.push_str(&source.camera_id);
     Ok(CameraObservation {
-        camera_id, track_id: source.track_id, timestamp_ns: source.timestamp_ns,
-        ground_x: source.ground_x, ground_y: source.ground_y,
+        camera_id,
+        track_id: source.track_id,
+        timestamp_ns: source.timestamp_ns,
+        ground_x: source.ground_x,
+        ground_y: source.ground_y,
     })
 }
 
 fn reserve<T>(count: usize) -> Result<Vec<T>, CrossCameraError> {
     let mut values = Vec::new();
-    values.try_reserve_exact(count).map_err(|_| CrossCameraError::Limit)?;
+    values
+        .try_reserve_exact(count)
+        .map_err(|_| CrossCameraError::Limit)?;
     Ok(values)
 }
 
 fn charge(budget: &mut WorkBudget<'_>, units: u64) -> Result<(), CrossCameraError> {
-    budget.charge(units).map_err(|error| CrossCameraError::Assignment(ImageTrackingError::Geometry(error)))
+    budget
+        .charge(units)
+        .map_err(|error| CrossCameraError::Assignment(ImageTrackingError::Geometry(error)))
 }

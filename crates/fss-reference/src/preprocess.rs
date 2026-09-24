@@ -4,10 +4,14 @@
 //! Inputs must already be admitted and privacy-projected by the caller. Digests below
 //! identify a computation, not camera custody, continuity, or permission to observe.
 
-use fss_core::{CanonicalEncode, CanonicalEncoder, ContentDigest, DigestAlgorithm, Generation, Sha256Hasher};
+use fss_core::{
+    CanonicalEncode, CanonicalEncoder, ContentDigest, DigestAlgorithm, Generation, Sha256Hasher,
+};
 use fss_tensor::{DType, MAX_STORAGE_BYTES, Shape, Tensor};
 
-use crate::scalar_executor::{ChannelTransform, ExecBudget, ExecError, PreprocessProgram, ScalarExecCx};
+use crate::scalar_executor::{
+    ChannelTransform, ExecBudget, ExecError, PreprocessProgram, ScalarExecCx,
+};
 
 /// Versioned domain for resize programs; deliberately distinct from strict-size v1.
 pub const RESIZE_PROGRAM_DOMAIN: &str = "fss.reference.image_resize.v1";
@@ -84,17 +88,24 @@ impl ResizeGeometry {
     /// This maps geometry only; it does not assert a detection or visibility.
     #[must_use]
     pub fn source_box(&self, xyxy: [f64; 4]) -> Option<[f64; 4]> {
-        if self.image_height == 0 || self.image_width == 0
-            || self.source_height == 0 || self.source_width == 0
+        if self.image_height == 0
+            || self.image_width == 0
+            || self.source_height == 0
+            || self.source_width == 0
             || !xyxy.iter().all(|v| v.is_finite())
-            || xyxy[0] >= xyxy[2] || xyxy[1] >= xyxy[3]
+            || xyxy[0] >= xyxy[2]
+            || xyxy[1] >= xyxy[3]
         {
             return None;
         }
-        let x = |v: f64| (v - self.left as f64).clamp(0.0, self.image_width as f64)
-            * self.source_width as f64 / self.image_width as f64;
-        let y = |v: f64| (v - self.top as f64).clamp(0.0, self.image_height as f64)
-            * self.source_height as f64 / self.image_height as f64;
+        let x = |v: f64| {
+            (v - self.left as f64).clamp(0.0, self.image_width as f64) * self.source_width as f64
+                / self.image_width as f64
+        };
+        let y = |v: f64| {
+            (v - self.top as f64).clamp(0.0, self.image_height as f64) * self.source_height as f64
+                / self.image_height as f64
+        };
         let result = [x(xyxy[0]), y(xyxy[1]), x(xyxy[2]), y(xyxy[3])];
         (result[0] < result[2] && result[1] < result[3]).then_some(result)
     }
@@ -156,9 +167,15 @@ fn admit(
     let out_c = match (program.channel_transform, c) {
         (ChannelTransform::Rgb, 3) => 3,
         (ChannelTransform::LumaOnly, 1 | 3) => 1,
-        _ => return Err(invalid("expected RGB input or explicitly selected luminance input")),
+        _ => {
+            return Err(invalid(
+                "expected RGB input or explicitly selected luminance input",
+            ));
+        }
     };
-    let input_bytes = h.checked_mul(w).and_then(|v| v.checked_mul(c))
+    let input_bytes = h
+        .checked_mul(w)
+        .and_then(|v| v.checked_mul(c))
         .ok_or_else(|| overflow("resize input bytes"))?;
     if input_bytes > MAX_STORAGE_BYTES {
         return Err(invalid("resize input exceeds the tensor storage ceiling"));
@@ -169,19 +186,28 @@ fn admit(
     if output_bytes > MAX_STORAGE_BYTES {
         return Err(invalid("resize output exceeds the tensor storage ceiling"));
     }
-    let bytes = input_bytes.checked_mul(if tensor_copy { 2 } else { 1 })
-        .and_then(|v| output_bytes.checked_mul(2).and_then(|out| v.checked_add(out)))
+    let bytes = input_bytes
+        .checked_mul(if tensor_copy { 2 } else { 1 })
+        .and_then(|v| {
+            output_bytes
+                .checked_mul(2)
+                .and_then(|out| v.checked_add(out))
+        })
         .ok_or_else(|| overflow("resize pixel-buffer bound"))?;
-    let work = (count as u64).checked_mul(match options.filter {
-        ResizeFilter::Nearest => 32,
-        ResizeFilter::Bilinear => 96,
-    }).and_then(|v| v.checked_add(input_bytes as u64))
+    let work = (count as u64)
+        .checked_mul(match options.filter {
+            ResizeFilter::Nearest => 32,
+            ResizeFilter::Bilinear => 96,
+        })
+        .and_then(|v| v.checked_add(input_bytes as u64))
         .and_then(|v| v.checked_add(output_bytes as u64))
         .ok_or_else(|| overflow("resize work bound"))?;
     if work > options.budget.max_macs || bytes > options.budget.max_bytes {
         return Err(ExecError::BudgetExceeded {
-            macs: work, max_macs: options.budget.max_macs,
-            bytes, max_bytes: options.budget.max_bytes,
+            macs: work,
+            max_macs: options.budget.max_macs,
+            bytes,
+            max_bytes: options.budget.max_bytes,
         });
     }
     let (ih, iw) = match options.aspect {
@@ -189,18 +215,34 @@ fn admit(
         ResizeAspect::Letterbox(_) => {
             // Products of two usize values fit u128 on supported 32/64-bit hosts.
             if (tw as u128) * (h as u128) <= (th as u128) * (w as u128) {
-                ((((h as u128) * (tw as u128) / w as u128) as usize).max(1), tw)
+                (
+                    (((h as u128) * (tw as u128) / w as u128) as usize).max(1),
+                    tw,
+                )
             } else {
-                (th, (((w as u128) * (th as u128) / h as u128) as usize).max(1))
+                (
+                    th,
+                    (((w as u128) * (th as u128) / h as u128) as usize).max(1),
+                )
             }
         }
     };
     Ok(ResizePlan {
         geometry: ResizeGeometry {
-            source_height: h, source_width: w, target_height: th, target_width: tw,
-            image_height: ih, image_width: iw, top: (th - ih) / 2, left: (tw - iw) / 2,
+            source_height: h,
+            source_width: w,
+            target_height: th,
+            target_width: tw,
+            image_height: ih,
+            image_width: iw,
+            top: (th - ih) / 2,
+            left: (tw - iw) / 2,
         },
-        shape, count, input_bytes, work, bytes,
+        shape,
+        count,
+        input_bytes,
+        work,
+        bytes,
     })
 }
 
@@ -211,10 +253,16 @@ impl PreprocessProgram {
         let mut encoder = CanonicalEncoder::new();
         encoder.text(RESIZE_PROGRAM_DOMAIN);
         encoder.bytes(&self.canonical_bytes());
-        encoder.u8(match filter { ResizeFilter::Nearest => 1, ResizeFilter::Bilinear => 2 });
+        encoder.u8(match filter {
+            ResizeFilter::Nearest => 1,
+            ResizeFilter::Bilinear => 2,
+        });
         match aspect {
             ResizeAspect::Stretch => encoder.u8(1),
-            ResizeAspect::Letterbox(value) => { encoder.u8(2); encoder.u8(value); }
+            ResizeAspect::Letterbox(value) => {
+                encoder.u8(2);
+                encoder.u8(value);
+            }
         }
         ContentDigest::sha256(&encoder.finish())
     }
@@ -229,7 +277,14 @@ impl PreprocessProgram {
         cx: &ScalarExecCx,
     ) -> Result<ResizeOutcome, ExecError> {
         cx.checkpoint("resize:admit")?;
-        let plan = admit(self, image.height, image.width, image.channels, options, false)?;
+        let plan = admit(
+            self,
+            image.height,
+            image.width,
+            image.channels,
+            options,
+            false,
+        )?;
         execute(self, image, options, cx, plan)
     }
 
@@ -244,18 +299,31 @@ impl PreprocessProgram {
         cx.checkpoint("resize:admit")?;
         if input.dtype() != DType::U8 {
             return Err(ExecError::UnsupportedDType {
-                expected: DType::U8, actual: input.dtype(), tensor_name: "resize_input".to_owned(),
+                expected: DType::U8,
+                actual: input.dtype(),
+                tensor_name: "resize_input".to_owned(),
             });
         }
         let dims = input.shape().dims();
-        if dims.len() != 3 { return Err(invalid("expected an HWC rank-three input tensor")); }
+        if dims.len() != 3 {
+            return Err(invalid("expected an HWC rank-three input tensor"));
+        }
         let plan = admit(self, dims[0], dims[1], dims[2], options, true)?;
         let bytes = input.to_vec::<u8>()?;
         cx.checkpoint("resize:input-copy")?;
-        execute(self, ImageBytes {
-            bytes: &bytes, height: dims[0], width: dims[1], channels: dims[2],
-            generation: input.generation(),
-        }, options, cx, plan)
+        execute(
+            self,
+            ImageBytes {
+                bytes: &bytes,
+                height: dims[0],
+                width: dims[1],
+                channels: dims[2],
+                generation: input.generation(),
+            },
+            options,
+            cx,
+            plan,
+        )
     }
 }
 
@@ -265,12 +333,16 @@ fn pixel_header(dims: &[usize], generation: Generation, layout: &str) -> Vec<u8>
     encoder.text(layout);
     generation.encode_canonical(&mut encoder);
     encoder.u64(dims.len() as u64);
-    for &dim in dims { encoder.u64(dim as u64); }
+    for &dim in dims {
+        encoder.u64(dim as u64);
+    }
     encoder.finish()
 }
 
 fn finish_hash(hasher: Sha256Hasher) -> Result<ContentDigest, ExecError> {
-    hasher.finalize().map(|bytes| ContentDigest::new(DigestAlgorithm::Sha256, bytes))
+    hasher
+        .finalize()
+        .map(|bytes| ContentDigest::new(DigestAlgorithm::Sha256, bytes))
         .map_err(|_| overflow("resize content digest"))
 }
 
@@ -285,26 +357,40 @@ fn execute(
         return Err(invalid("input pixel length does not match HWC dimensions"));
     }
     let mut input_hash = Sha256Hasher::new();
-    input_hash.update(&pixel_header(&[image.height, image.width, image.channels], image.generation, "hwc-u8"));
+    input_hash.update(&pixel_header(
+        &[image.height, image.width, image.channels],
+        image.generation,
+        "hwc-u8",
+    ));
     for chunk in image.bytes.chunks(4096) {
         cx.checkpoint("resize:input-hash")?;
         input_hash.update(chunk);
     }
     let input_digest = finish_hash(input_hash)?;
     let mut values = Vec::new();
-    values.try_reserve_exact(plan.count).map_err(|_| invalid("resize pixel allocation failed"))?;
+    values
+        .try_reserve_exact(plan.count)
+        .map_err(|_| invalid("resize pixel allocation failed"))?;
     values.resize(plan.count, 0.0_f32);
     let g = plan.geometry;
     let plane = g.target_height * g.target_width;
-    let scale = if program.scale_to_unit { 1.0_f32 / 255.0_f32 } else { 1.0_f32 };
+    let scale = if program.scale_to_unit {
+        1.0_f32 / 255.0_f32
+    } else {
+        1.0_f32
+    };
     for y in 0..g.target_height {
         for x in 0..g.target_width {
             let flat = y * g.target_width + x;
-            if flat.is_multiple_of(1024) { cx.checkpoint("resize:sample")?; }
+            if flat.is_multiple_of(1024) {
+                cx.checkpoint("resize:sample")?;
+            }
             let mut channels = [0.0_f32; 3];
             for (channel, value) in channels.iter_mut().take(image.channels).enumerate() {
-                *value = if y < g.top || y - g.top >= g.image_height
-                    || x < g.left || x - g.left >= g.image_width
+                *value = if y < g.top
+                    || y - g.top >= g.image_height
+                    || x < g.left
+                    || x - g.left >= g.image_width
                 {
                     match options.aspect {
                         ResizeAspect::Letterbox(pad) => f32::from(pad),
@@ -316,21 +402,34 @@ fn execute(
             }
             match program.channel_transform {
                 ChannelTransform::Rgb => {
-                    for channel in 0..3 { values[channel * plane + flat] = channels[channel] * scale; }
+                    for channel in 0..3 {
+                        values[channel * plane + flat] = channels[channel] * scale;
+                    }
                 }
                 ChannelTransform::LumaOnly => {
                     // Keep the strict-size v1 operation order for bit-identical identity resize.
-                    values[flat] = if image.channels == 1 { channels[0] * scale } else {
-                        (0.299_f32 * channels[0] + 0.587_f32 * channels[1] + 0.114_f32 * channels[2]) * scale
+                    values[flat] = if image.channels == 1 {
+                        channels[0] * scale
+                    } else {
+                        (0.299_f32 * channels[0]
+                            + 0.587_f32 * channels[1]
+                            + 0.114_f32 * channels[2])
+                            * scale
                     };
                 }
             }
         }
     }
     let mut output_hash = Sha256Hasher::new();
-    output_hash.update(&pixel_header(plan.shape.dims(), image.generation, "nchw-f32-be"));
+    output_hash.update(&pixel_header(
+        plan.shape.dims(),
+        image.generation,
+        "nchw-f32-be",
+    ));
     for (index, value) in values.iter().enumerate() {
-        if index % 1024 == 0 { cx.checkpoint("resize:output-hash")?; }
+        if index % 1024 == 0 {
+            cx.checkpoint("resize:output-hash")?;
+        }
         output_hash.update(&value.to_bits().to_be_bytes());
     }
     let output_digest = finish_hash(output_hash)?;
@@ -338,13 +437,27 @@ fn execute(
     let tensor = Tensor::from_values(plan.shape, &values, image.generation)?;
     cx.checkpoint("resize:publish")?;
     Ok(ResizeOutcome {
-        tensor, geometry: g, program_digest: program.resize_digest(options.filter, options.aspect),
-        input_digest, output_digest, work_units: plan.work, buffer_bytes: plan.bytes,
+        tensor,
+        geometry: g,
+        program_digest: program.resize_digest(options.filter, options.aspect),
+        input_digest,
+        output_digest,
+        work_units: plan.work,
+        buffer_bytes: plan.bytes,
     })
 }
 
-fn sample(image: ImageBytes<'_>, y: usize, x: usize, channel: usize, g: ResizeGeometry, filter: ResizeFilter) -> f32 {
-    let at = |sy: usize, sx: usize| f64::from(image.bytes[(sy * image.width + sx) * image.channels + channel]);
+fn sample(
+    image: ImageBytes<'_>,
+    y: usize,
+    x: usize,
+    channel: usize,
+    g: ResizeGeometry,
+    filter: ResizeFilter,
+) -> f32 {
+    let at = |sy: usize, sx: usize| {
+        f64::from(image.bytes[(sy * image.width + sx) * image.channels + channel])
+    };
     match filter {
         ResizeFilter::Nearest => {
             let sy = ((y as u128) * (image.height as u128) / g.image_height as u128) as usize;

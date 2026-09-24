@@ -11,10 +11,13 @@
 //! `PrefixExhausted`, with all parser remainders available through `retire`.
 
 use fss_codec_mjpeg::DecodeBudget;
-use fss_codec_mjpeg::http::{EntityData, HttpEnd, HttpError, HttpEvent, HttpLimits,
-    HttpRemainder, HttpResponseStream, ResponseHead};
-use fss_codec_mjpeg::http_mjpeg::{HttpJpegFrame, HttpMjpegEnd, HttpMjpegError,
-    HttpMjpegRemainder, HttpMultipartStream};
+use fss_codec_mjpeg::http::{
+    EntityData, HttpEnd, HttpError, HttpEvent, HttpLimits, HttpRemainder, HttpResponseStream,
+    ResponseHead,
+};
+use fss_codec_mjpeg::http_mjpeg::{
+    HttpJpegFrame, HttpMjpegEnd, HttpMjpegError, HttpMjpegRemainder, HttpMultipartStream,
+};
 use fss_codec_mjpeg::multipart::MultipartLimits;
 use fss_geometry::{GeometryError, WorkBudget};
 use fss_publication::{LocalRootPublisher, PublishCancellation, PublishCutPoint};
@@ -38,8 +41,13 @@ pub struct HttpReplayLimits {
 }
 impl Default for HttpReplayLimits {
     fn default() -> Self {
-        Self { http: HttpLimits::default(), multipart: MultipartLimits::default(),
-            read_bytes: 16384, frames: 100_000, source_runs: 65536 }
+        Self {
+            http: HttpLimits::default(),
+            multipart: MultipartLimits::default(),
+            read_bytes: 16384,
+            frames: 100_000,
+            source_runs: 65536,
+        }
     }
 }
 
@@ -63,8 +71,10 @@ pub enum HttpReplayStep {
     /// Every required original root/metadata/byte was verified for the exact pin.
     PrefixVerified,
     /// A bounded original wire range was re-read; no parsing happened in this step.
-    WireLoaded { /// Half-open offsets in the ORIGINAL HTTP response.
-        range: [u64; 2] },
+    WireLoaded {
+        /// Half-open offsets in the ORIGINAL HTTP response.
+        range: [u64; 2],
+    },
     /// One existing HTTP/MIME parser operation advanced.
     Advanced,
     /// A complete source-mapped part is held; no more source is read until transfer.
@@ -102,10 +112,14 @@ pub enum HttpReplayError {
     State,
 }
 impl From<GeometryError> for HttpReplayError {
-    fn from(error: GeometryError) -> Self { Self::Work(error) }
+    fn from(error: GeometryError) -> Self {
+        Self::Work(error)
+    }
 }
 impl From<HttpArchiveError> for HttpReplayError {
-    fn from(error: HttpArchiveError) -> Self { Self::Archive(error) }
+    fn from(error: HttpArchiveError) -> Self {
+        Self::Archive(error)
+    }
 }
 impl std::fmt::Display for HttpReplayError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -138,8 +152,11 @@ pub struct HttpReplayWire {
 }
 impl std::fmt::Debug for HttpReplayWire {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HttpReplayWire").field("start", &self.start)
-            .field("bytes", &self.bytes.len()).field("parsed", &self.parsed).finish()
+        f.debug_struct("HttpReplayWire")
+            .field("start", &self.start)
+            .field("bytes", &self.bytes.len())
+            .field("parsed", &self.parsed)
+            .finish()
     }
 }
 
@@ -167,49 +184,99 @@ pub struct HttpWireReplay<'a> {
 impl<'a> HttpWireReplay<'a> {
     /// Pure construction. The first step verifies the EXACT independently retained
     /// pin against storage before any parsing. An empty inventory is not trusted.
-    pub fn new(archive: &'a HttpWireArchive, expected: HttpWirePin, limits: HttpReplayLimits)
-        -> Result<Self, HttpReplayError> {
-        if archive.pin() != expected || !(1..=65536).contains(&limits.read_bytes)
+    pub fn new(
+        archive: &'a HttpWireArchive,
+        expected: HttpWirePin,
+        limits: HttpReplayLimits,
+    ) -> Result<Self, HttpReplayError> {
+        if archive.pin() != expected
+            || !(1..=65536).contains(&limits.read_bytes)
             || !(1..=1_000_000).contains(&limits.frames)
             || !(1..=65536).contains(&limits.source_runs)
             || !(4..=16 * 1024 * 1024).contains(&limits.multipart.frame_bytes)
             || !(4..=16384).contains(&limits.multipart.header_bytes)
-            || limits.multipart.wrapper_bytes > 65536 || expected.bytes > limits.http.wire_bytes {
+            || limits.multipart.wrapper_bytes > 65536
+            || expected.bytes > limits.http.wire_bytes
+        {
             return Err(HttpReplayError::Configuration);
         }
-        let http = HttpResponseStream::new(archive.scope().stream, limits.http).map_err(HttpReplayError::Http)?;
-        Ok(Self { archive, pin: expected, limits, verified: false, exhausted: false,
-            loaded: 0, frames: 0, transferred: 0, http, multipart: None, head: None,
-            wire: None, entity: None, frame: None, end: None, complete: None, failure: None })
+        let http = HttpResponseStream::new(archive.scope().stream, limits.http)
+            .map_err(HttpReplayError::Http)?;
+        Ok(Self {
+            archive,
+            pin: expected,
+            limits,
+            verified: false,
+            exhausted: false,
+            loaded: 0,
+            frames: 0,
+            transferred: 0,
+            http,
+            multipart: None,
+            head: None,
+            wire: None,
+            entity: None,
+            frame: None,
+            end: None,
+            complete: None,
+            failure: None,
+        })
     }
     /// Exact historical prefix; never implicitly advanced to a newer archive head.
-    pub fn pin(&self) -> HttpWirePin { self.pin }
+    pub fn pin(&self) -> HttpWirePin {
+        self.pin
+    }
     /// Accepted replay progress, including after a late cancellation or parser error.
     pub fn position(&self) -> HttpReplayPosition {
-        HttpReplayPosition { loaded_bytes: self.loaded, parsed_bytes: self.http.next_offset(),
-            frames: self.frames, transferred_frames: self.transferred }
+        HttpReplayPosition {
+            loaded_bytes: self.loaded,
+            parsed_bytes: self.http.next_offset(),
+            frames: self.frames,
+            transferred_frames: self.transferred,
+        }
     }
     /// First terminal parser/limit failure. Storage/cancellation refusal is not EOF.
-    pub fn failure(&self) -> Option<HttpReplayError> { self.failure }
+    pub fn failure(&self) -> Option<HttpReplayError> {
+        self.failure
+    }
     /// Original complete response header, when observed; not safe for default logs.
-    pub fn response_head(&self) -> Option<&ResponseHead> { self.head.as_ref() }
+    pub fn response_head(&self) -> Option<&ResponseHead> {
+        self.head.as_ref()
+    }
     /// Original complete mapped JPEG. No capture time is inferred from its ordinal.
-    pub fn pending_frame(&self) -> Option<&HttpJpegFrame> { self.frame.as_ref() }
+    pub fn pending_frame(&self) -> Option<&HttpJpegFrame> {
+        self.frame.as_ref()
+    }
     /// Current original read and consumed prefix, including after terminal refusal.
-    pub fn pending_wire(&self) -> Option<&HttpReplayWire> { self.wire.as_ref() }
+    pub fn pending_wire(&self) -> Option<&HttpReplayWire> {
+        self.wire.as_ref()
+    }
     /// Both framing receipts after self-delimitation or verified original EOF.
-    pub fn completion(&self) -> Option<&HttpMjpegEnd> { self.complete.as_ref() }
+    pub fn completion(&self) -> Option<&HttpMjpegEnd> {
+        self.complete.as_ref()
+    }
 
     /// At most one native parser operation OR bounded source read. A complete frame
     /// backpressures all reads. Every call, including waiting/terminal polling, checks
     /// current original-byte authority; no internal loop, sleep or budget refill.
-    pub fn step(&mut self, mut access: HttpReplayAccess<'_, '_>) -> Result<HttpReplayStep, HttpReplayError> {
+    pub fn step(
+        &mut self,
+        mut access: HttpReplayAccess<'_, '_>,
+    ) -> Result<HttpReplayStep, HttpReplayError> {
         probe(access.cancellation)?;
         access.work.charge(1)?;
-        if let Some(error) = self.failure { return Err(error); }
+        if let Some(error) = self.failure {
+            return Err(error);
+        }
         let result = self.advance(&mut access);
-        if let Err(error @ (HttpReplayError::Http(_) | HttpReplayError::Multipart(_)
-            | HttpReplayError::TrailingResponse | HttpReplayError::FrameLimit | HttpReplayError::State)) = result {
+        if let Err(
+            error @ (HttpReplayError::Http(_)
+            | HttpReplayError::Multipart(_)
+            | HttpReplayError::TrailingResponse
+            | HttpReplayError::FrameLimit
+            | HttpReplayError::State),
+        ) = result
+        {
             self.failure = Some(error);
         }
         // Accepted input/output is already retained before this late refusal.
@@ -217,57 +284,122 @@ impl<'a> HttpWireReplay<'a> {
         access.work.charge(0)?;
         result
     }
-    fn advance(&mut self, access: &mut HttpReplayAccess<'_, '_>) -> Result<HttpReplayStep, HttpReplayError> {
+    fn advance(
+        &mut self,
+        access: &mut HttpReplayAccess<'_, '_>,
+    ) -> Result<HttpReplayStep, HttpReplayError> {
         if !self.verified {
-            HttpWireArchive::load(access.publisher, self.archive.scope(), self.pin, self.archive.limits(),
-                access.cancellation, access.work)?;
+            HttpWireArchive::load(
+                access.publisher,
+                self.archive.scope(),
+                self.pin,
+                self.archive.limits(),
+                access.cancellation,
+                access.work,
+            )?;
             self.verified = true;
             return Ok(HttpReplayStep::PrefixVerified);
         }
-        if self.frame.is_some() { return Ok(HttpReplayStep::FrameReady); }
-        if self.complete.is_some() { return Ok(HttpReplayStep::Complete); }
-        if self.exhausted { return Ok(HttpReplayStep::PrefixExhausted); }
-        if self.frames == self.limits.frames { return Err(HttpReplayError::FrameLimit); }
+        if self.frame.is_some() {
+            return Ok(HttpReplayStep::FrameReady);
+        }
+        if self.complete.is_some() {
+            return Ok(HttpReplayStep::Complete);
+        }
+        if self.exhausted {
+            return Ok(HttpReplayStep::PrefixExhausted);
+        }
+        if self.frames == self.limits.frames {
+            return Err(HttpReplayError::FrameLimit);
+        }
         if let Some((data, cursor)) = &mut self.entity {
             let parser = self.multipart.as_mut().ok_or(HttpReplayError::State)?;
             match parser.push(data, *cursor, access.framing) {
-                Err(error) => { *cursor += error.consumed; return Err(HttpReplayError::Multipart(error.error)); }
+                Err(error) => {
+                    *cursor += error.consumed;
+                    return Err(HttpReplayError::Multipart(error.error));
+                }
                 Ok(step) => {
                     *cursor += step.consumed;
-                    if let Some(frame) = step.frame { self.frame = Some(frame); self.frames += 1; }
-                    if *cursor == data.bytes().len() { self.entity = None; }
+                    if let Some(frame) = step.frame {
+                        self.frame = Some(frame);
+                        self.frames += 1;
+                    }
+                    if *cursor == data.bytes().len() {
+                        self.entity = None;
+                    }
                 }
             }
-            return Ok(if self.frame.is_some() { HttpReplayStep::FrameReady } else { HttpReplayStep::Advanced });
+            return Ok(if self.frame.is_some() {
+                HttpReplayStep::FrameReady
+            } else {
+                HttpReplayStep::Advanced
+            });
         }
-        if let Some(wire) = &mut self.wire && wire.parsed < wire.bytes.len() {
-            if self.http.body_complete() { return Err(HttpReplayError::TrailingResponse); }
-            let event = match self.http.push(wire.start + wire.parsed as u64, &wire.bytes[wire.parsed..], access.framing) {
-                Err(error) => { wire.parsed += error.consumed; return Err(HttpReplayError::Http(error.error)); }
-                Ok(step) => { wire.parsed += step.consumed; step.event }
+        if let Some(wire) = &mut self.wire
+            && wire.parsed < wire.bytes.len()
+        {
+            if self.http.body_complete() {
+                return Err(HttpReplayError::TrailingResponse);
+            }
+            let event = match self.http.push(
+                wire.start + wire.parsed as u64,
+                &wire.bytes[wire.parsed..],
+                access.framing,
+            ) {
+                Err(error) => {
+                    wire.parsed += error.consumed;
+                    return Err(HttpReplayError::Http(error.error));
+                }
+                Ok(step) => {
+                    wire.parsed += step.consumed;
+                    step.event
+                }
             };
             match event {
                 Some(HttpEvent::Head(head)) => {
                     self.head = Some(head);
-                    self.multipart = Some(HttpMultipartStream::new(self.head.as_ref().ok_or(HttpReplayError::State)?,
-                        self.limits.multipart, self.limits.source_runs, access.framing).map_err(HttpReplayError::Multipart)?);
+                    self.multipart = Some(
+                        HttpMultipartStream::new(
+                            self.head.as_ref().ok_or(HttpReplayError::State)?,
+                            self.limits.multipart,
+                            self.limits.source_runs,
+                            access.framing,
+                        )
+                        .map_err(HttpReplayError::Multipart)?,
+                    );
                 }
                 Some(HttpEvent::Data(data)) => self.entity = Some((data, 0)),
-                Some(HttpEvent::Control(_)) | None => {},
+                Some(HttpEvent::Control(_)) | None => {}
             }
             return Ok(HttpReplayStep::Advanced);
         }
         self.wire = None;
         if self.http.body_complete() {
-            if self.loaded != self.pin.bytes { return Err(HttpReplayError::TrailingResponse); }
-            let end = self.http.finish(access.framing).map_err(HttpReplayError::Http)?;
+            if self.loaded != self.pin.bytes {
+                return Err(HttpReplayError::TrailingResponse);
+            }
+            let end = self
+                .http
+                .finish(access.framing)
+                .map_err(HttpReplayError::Http)?;
             self.end = Some(end);
-            let mut complete = self.multipart.as_mut().ok_or(HttpReplayError::State)?
-                .finish(end, access.framing).map_err(HttpReplayError::Multipart)?;
+            let mut complete = self
+                .multipart
+                .as_mut()
+                .ok_or(HttpReplayError::State)?
+                .finish(end, access.framing)
+                .map_err(HttpReplayError::Multipart)?;
             self.frame = complete.final_frame.take();
-            if self.frame.is_some() { self.frames += 1; }
+            if self.frame.is_some() {
+                self.frames += 1;
+            }
             self.complete = Some(complete);
-            return Ok(if self.frame.is_some() { HttpReplayStep::FrameReady } else { HttpReplayStep::Complete });
+            return Ok(if self.frame.is_some() {
+                HttpReplayStep::FrameReady
+            } else {
+                HttpReplayStep::Complete
+            });
         }
         if self.loaded == self.pin.bytes {
             // Never call finish() here: an archive prefix is not an observed EOF.
@@ -276,23 +408,41 @@ impl<'a> HttpWireReplay<'a> {
         }
         let start = self.loaded;
         let end = start + (self.pin.bytes - start).min(self.limits.read_bytes as u64);
-        let bytes = self.archive.read_range(access.publisher, [start, end], access.cancellation, access.work)?;
-        self.wire = Some(HttpReplayWire { start, bytes, parsed: 0 });
+        let bytes = self.archive.read_range(
+            access.publisher,
+            [start, end],
+            access.cancellation,
+            access.work,
+        )?;
+        self.wire = Some(HttpReplayWire {
+            start,
+            bytes,
+            parsed: 0,
+        });
         self.loaded = end;
-        Ok(HttpReplayStep::WireLoaded { range: [start, end] })
+        Ok(HttpReplayStep::WireLoaded {
+            range: [start, end],
+        })
     }
 
     /// Re-read and compare EVERY mapped JPEG byte before transfer. Mismatch,
     /// tombstones, corruption, insufficient work, or revoked disclosure leave the
     /// complete frame held; no alternate bytes or empty-scene result are returned.
-    pub fn take_frame(&mut self, ordinal: u64, encoded_sha256: [u8; 32],
-        access: HttpReplayAccess<'_, '_>) -> Result<HttpJpegFrame, HttpReplayError> {
+    pub fn take_frame(
+        &mut self,
+        ordinal: u64,
+        encoded_sha256: [u8; 32],
+        access: HttpReplayAccess<'_, '_>,
+    ) -> Result<HttpJpegFrame, HttpReplayError> {
         probe(access.cancellation)?;
         let frame = self.frame.as_ref().ok_or(HttpReplayError::FrameMismatch)?;
-        if frame.part().receipt().ordinal != ordinal || frame.part().receipt().encoded_sha256 != encoded_sha256 {
+        if frame.part().receipt().ordinal != ordinal
+            || frame.part().receipt().encoded_sha256 != encoded_sha256
+        {
             return Err(HttpReplayError::FrameMismatch);
         }
-        self.archive.verify_frame(access.publisher, frame, access.cancellation, access.work)?;
+        self.archive
+            .verify_frame(access.publisher, frame, access.cancellation, access.work)?;
         probe(access.cancellation)?;
         let frame = self.frame.take().ok_or(HttpReplayError::State)?;
         self.transferred += 1;
@@ -302,10 +452,20 @@ impl<'a> HttpWireReplay<'a> {
     /// A partial prefix or failure never turns into successful completion on retirement.
     pub fn retire(self) -> HttpReplayRetirement {
         let position = self.position();
-        HttpReplayRetirement { pin: self.pin, position, reason: self.failure, prefix_exhausted: self.exhausted,
-            head: self.head, wire: self.wire, entity: self.entity, frame: self.frame,
-            http: self.http.abort(), multipart: self.multipart.map(HttpMultipartStream::abort),
-            end: self.end, complete: self.complete }
+        HttpReplayRetirement {
+            pin: self.pin,
+            position,
+            reason: self.failure,
+            prefix_exhausted: self.exhausted,
+            head: self.head,
+            wire: self.wire,
+            entity: self.entity,
+            frame: self.frame,
+            http: self.http.abort(),
+            multipart: self.multipart.map(HttpMultipartStream::abort),
+            end: self.end,
+            complete: self.complete,
+        }
     }
 }
 
@@ -340,7 +500,9 @@ pub struct HttpReplayRetirement {
 fn probe(cancellation: &dyn PublishCancellation) -> Result<(), HttpReplayError> {
     if cancellation.cancel_requested(PublishCutPoint::AfterChildrenVerified) {
         Err(HttpReplayError::Cancelled)
-    } else { Ok(()) }
+    } else {
+        Ok(())
+    }
 }
 
 /// Source-verified archived JPEGs through the existing neural RGB and zone owners.

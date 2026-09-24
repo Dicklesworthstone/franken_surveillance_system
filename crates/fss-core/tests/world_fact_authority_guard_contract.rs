@@ -119,9 +119,8 @@ fn test_durable_ledger_constructor_isolated_to_durable_rs() -> Result<(), Box<dy
 
     // Must NOT appear in any other file across the workspace
     if !unauthorized_findings.is_empty() {
-        let mut msg = format!(
-            "Repository violation: {CONSTRUCTOR_NAME} found in unauthorized files:\n"
-        );
+        let mut msg =
+            format!("Repository violation: {CONSTRUCTOR_NAME} found in unauthorized files:\n");
         for f in &unauthorized_findings {
             msg.push_str(&format!("  {}:{}: {}\n", f.path, f.line, f.content));
         }

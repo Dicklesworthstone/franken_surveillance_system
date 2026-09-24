@@ -267,13 +267,15 @@ fn source_omissions(class: &str, handles: &[&str]) -> Result<SourceOmissions, Bo
         }],
         handles: handles
             .iter()
-            .map(|handle| -> Result<fss_core::ExpansionHandle, Box<dyn Error>> {
-                Ok(fss_core::ExpansionHandle {
-                    handle: (*handle).to_owned(),
-                    purpose: format!("Hydrate {handle}."),
-                    estimated_cost: BudgetVector::builder().bytes(64).build()?,
-                })
-            })
+            .map(
+                |handle| -> Result<fss_core::ExpansionHandle, Box<dyn Error>> {
+                    Ok(fss_core::ExpansionHandle {
+                        handle: (*handle).to_owned(),
+                        purpose: format!("Hydrate {handle}."),
+                        estimated_cost: BudgetVector::builder().bytes(64).build()?,
+                    })
+                },
+            )
             .collect::<Result<_, _>>()?,
     })
 }
@@ -313,7 +315,10 @@ fn source_omissions_are_receipted_with_every_member_handle() -> Result<(), Box<d
     for handle in &source.handles {
         assert!(receipt.expansion_handles.contains(handle));
     }
-    assert_eq!(receipt.transforms.last(), Some(&source.omissions[0].transform));
+    assert_eq!(
+        receipt.transforms.last(),
+        Some(&source.omissions[0].transform)
+    );
     assert_eq!(
         receipt.stop_reason,
         fss_core::CompressionStopReason::TargetBudget

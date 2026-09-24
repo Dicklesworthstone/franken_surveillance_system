@@ -3,14 +3,27 @@
 use super::*;
 
 fn config() -> TrackerConfig {
-    TrackerConfig { min_hits: 2, max_misses: 3, iou_threshold: 0.1,
-        process_noise: 1.0, measurement_noise: 1.0 }
+    TrackerConfig {
+        min_hits: 2,
+        max_misses: 3,
+        iou_threshold: 0.1,
+        process_noise: 1.0,
+        measurement_noise: 1.0,
+    }
 }
 fn detection(x: f64) -> Detection {
-    Detection { box_x: x, box_y: 0.0, box_w: 20.0, box_h: 20.0 }
+    Detection {
+        box_x: x,
+        box_y: 0.0,
+        box_w: 20.0,
+        box_h: 20.0,
+    }
 }
 fn snapshot(t: &MultiObjectTracker) -> String {
-    format!("{:?}|{:?}|{:?}|{}|{}", t.config, t.tracks, t.kalman, t.next_id, t.frame)
+    format!(
+        "{:?}|{:?}|{:?}|{}|{}",
+        t.config, t.tracks, t.kalman, t.next_id, t.frame
+    )
 }
 
 #[test]
@@ -25,7 +38,12 @@ fn complete_matching_prevents_greedy_track_loss() -> Result<(), TrackerError> {
     assert_eq!(output.tracks[1].id, 2);
     assert!(output.tracks[0].cx < 3.0);
     assert!(output.tracks[1].cx > 13.0 && output.tracks[1].cx < 15.0);
-    assert!(output.tracks.iter().all(|track| track.status == TrackStatus::Confirmed));
+    assert!(
+        output
+            .tracks
+            .iter()
+            .all(|track| track.status == TrackStatus::Confirmed)
+    );
     Ok(())
 }
 
@@ -40,10 +58,13 @@ fn exhaustive_rectangular_assignments_match_a_brute_force_oracle() {
         let mut costs = [[unmatched; 5]; 2];
         for row in &mut costs {
             for cell in row.iter_mut().take(3) {
-                let digit = code % 4; code /= 4;
+                let digit = code % 4;
+                code /= 4;
                 *cell = match digit {
-                    0 => unmatched + IOU_SCALE, 1 => 3 * IOU_SCALE / 4,
-                    2 => IOU_SCALE / 2, _ => 0,
+                    0 => unmatched + IOU_SCALE,
+                    1 => 3 * IOU_SCALE / 4,
+                    2 => IOU_SCALE / 2,
+                    _ => 0,
                 };
             }
         }
@@ -54,7 +75,9 @@ fn exhaustive_rectangular_assignments_match_a_brute_force_oracle() {
         let mut best = i128::MAX;
         for a in 0..5 {
             for b in 0..5 {
-                if a != b { best = best.min(costs[0][a] + costs[1][b]); }
+                if a != b {
+                    best = best.min(costs[0][a] + costs[1][b]);
+                }
             }
         }
         assert_eq!(observed, best, "matrix {encoded}");
@@ -84,20 +107,26 @@ fn detection_permutations_do_not_reassign_birth_ids_or_matches() -> Result<(), T
 fn crossing_trajectories_preserve_directional_ids() -> Result<(), TrackerError> {
     let mut t = MultiObjectTracker::new(config())?;
     for frame in 0..30 {
-        let out = t.step(&[detection(f64::from(frame) * 4.0),
-            detection(100.0 - f64::from(frame) * 4.0)]);
+        let out = t.step(&[
+            detection(f64::from(frame) * 4.0),
+            detection(100.0 - f64::from(frame) * 4.0),
+        ]);
         assert_eq!(out.tracks.len(), 2);
         assert_eq!(out.new_tracks, if frame == 0 { 2 } else { 0 });
     }
-    assert_eq!(t.tracks[0].id, 1); assert_eq!(t.tracks[1].id, 2);
+    assert_eq!(t.tracks[0].id, 1);
+    assert_eq!(t.tracks[1].id, 2);
     assert!(t.tracks[0].cx > t.tracks[1].cx);
-    assert!(t.tracks[0].vx > 3.9); assert!(t.tracks[1].vx < -3.9);
+    assert!(t.tracks[0].vx > 3.9);
+    assert!(t.tracks[1].vx < -3.9);
     Ok(())
 }
 
 #[test]
 fn zero_threshold_does_not_invent_overlap_support() -> Result<(), TrackerError> {
-    let mut cfg = config(); cfg.iou_threshold = 0.0; cfg.min_hits = 1;
+    let mut cfg = config();
+    cfg.iou_threshold = 0.0;
+    cfg.min_hits = 1;
     let mut t = MultiObjectTracker::new(cfg)?;
     t.step(&[detection(0.0)]);
     let out = t.step(&[detection(100.0)]);
@@ -109,15 +138,20 @@ fn zero_threshold_does_not_invent_overlap_support() -> Result<(), TrackerError> 
 }
 
 #[test]
-fn invalid_frame_is_rejected_atomically_then_valid_retry_matches_control() -> Result<(), Box<dyn std::error::Error>> {
+fn invalid_frame_is_rejected_atomically_then_valid_retry_matches_control()
+-> Result<(), Box<dyn std::error::Error>> {
     let mut t = MultiObjectTracker::new(config())?;
     t.try_step(&[detection(0.0)], TrackerLimits::default())?;
     let mut control = t.clone();
     for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0, -1.0] {
         let before = snapshot(&t);
-        let mut bad = detection(3.0); bad.box_w = value;
-        assert_eq!(t.try_step(&[detection(2.0), bad], TrackerLimits::default()).err(),
-            Some(TrackerStepError::Detection));
+        let mut bad = detection(3.0);
+        bad.box_w = value;
+        assert_eq!(
+            t.try_step(&[detection(2.0), bad], TrackerLimits::default())
+                .err(),
+            Some(TrackerStepError::Detection)
+        );
         assert_eq!(snapshot(&t), before);
     }
     t.try_step(&[detection(2.0)], TrackerLimits::default())?;
@@ -131,8 +165,14 @@ fn assignment_budget_has_an_exact_admission_boundary() -> Result<(), Box<dyn std
     let mut t = MultiObjectTracker::new(config())?;
     t.try_step(&[detection(0.0), detection(80.0)], TrackerLimits::default())?;
     let before = snapshot(&t);
-    let mut limits = TrackerLimits { max_assignment_work: 15, ..TrackerLimits::default() };
-    assert_eq!(t.try_step(&[detection(2.0), detection(78.0)], limits).err(), Some(TrackerStepError::Limit));
+    let mut limits = TrackerLimits {
+        max_assignment_work: 15,
+        ..TrackerLimits::default()
+    };
+    assert_eq!(
+        t.try_step(&[detection(2.0), detection(78.0)], limits).err(),
+        Some(TrackerStepError::Limit)
+    );
     assert_eq!(snapshot(&t), before);
     limits.max_assignment_work = 16;
     let out = t.try_step(&[detection(2.0), detection(78.0)], limits)?;
@@ -141,11 +181,19 @@ fn assignment_budget_has_an_exact_admission_boundary() -> Result<(), Box<dyn std
 }
 
 #[test]
-fn active_track_limit_refuses_the_whole_frame_without_consuming_ids() -> Result<(), Box<dyn std::error::Error>> {
+fn active_track_limit_refuses_the_whole_frame_without_consuming_ids()
+-> Result<(), Box<dyn std::error::Error>> {
     let mut t = MultiObjectTracker::new(config())?;
-    let limits = TrackerLimits { max_tracks: 1, ..TrackerLimits::default() };
+    let limits = TrackerLimits {
+        max_tracks: 1,
+        ..TrackerLimits::default()
+    };
     let before = snapshot(&t);
-    assert_eq!(t.try_step(&[detection(0.0), detection(100.0)], limits).err(), Some(TrackerStepError::Limit));
+    assert_eq!(
+        t.try_step(&[detection(0.0), detection(100.0)], limits)
+            .err(),
+        Some(TrackerStepError::Limit)
+    );
     assert_eq!(snapshot(&t), before);
     let output = t.try_step(&[detection(0.0)], limits)?;
     assert_eq!(output.tracks[0].id, 1);
@@ -153,10 +201,16 @@ fn active_track_limit_refuses_the_whole_frame_without_consuming_ids() -> Result<
 }
 
 #[test]
-fn retirement_can_release_capacity_in_the_same_transaction() -> Result<(), Box<dyn std::error::Error>> {
-    let mut cfg = config(); cfg.min_hits = 1; cfg.max_misses = 1;
+fn retirement_can_release_capacity_in_the_same_transaction()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut cfg = config();
+    cfg.min_hits = 1;
+    cfg.max_misses = 1;
     let mut t = MultiObjectTracker::new(cfg)?;
-    let limits = TrackerLimits { max_tracks: 1, ..TrackerLimits::default() };
+    let limits = TrackerLimits {
+        max_tracks: 1,
+        ..TrackerLimits::default()
+    };
     t.try_step(&[detection(0.0)], limits)?;
     t.try_step(&[], limits)?;
     let out = t.try_step(&[detection(100.0)], limits)?;
@@ -168,13 +222,20 @@ fn retirement_can_release_capacity_in_the_same_transaction() -> Result<(), Box<d
 }
 
 #[test]
-fn numerical_overflow_rolls_back_filter_and_lifecycle_state() -> Result<(), Box<dyn std::error::Error>> {
-    let mut cfg = config(); cfg.process_noise = f64::MAX; cfg.measurement_noise = f64::MAX;
+fn numerical_overflow_rolls_back_filter_and_lifecycle_state()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut cfg = config();
+    cfg.process_noise = f64::MAX;
+    cfg.measurement_noise = f64::MAX;
     let mut t = MultiObjectTracker::new(cfg)?;
     t.try_step(&[detection(0.0)], TrackerLimits::default())?;
     t.try_step(&[detection(0.0)], TrackerLimits::default())?;
     let before = snapshot(&t);
-    assert_eq!(t.try_step(&[detection(0.0)], TrackerLimits::default()).err(), Some(TrackerStepError::Numeric));
+    assert_eq!(
+        t.try_step(&[detection(0.0)], TrackerLimits::default())
+            .err(),
+        Some(TrackerStepError::Numeric)
+    );
     assert_eq!(snapshot(&t), before);
     Ok(())
 }
@@ -184,9 +245,16 @@ fn exhausted_ids_and_invalid_limits_do_not_advance_state() -> Result<(), Tracker
     let mut t = MultiObjectTracker::new(config())?;
     t.next_id = u64::MAX;
     let before = snapshot(&t);
-    assert_eq!(t.try_step(&[detection(0.0)], TrackerLimits::default()).err(), Some(TrackerStepError::CounterExhausted));
+    assert_eq!(
+        t.try_step(&[detection(0.0)], TrackerLimits::default())
+            .err(),
+        Some(TrackerStepError::CounterExhausted)
+    );
     assert_eq!(snapshot(&t), before);
-    let limits = TrackerLimits { max_tracks: MAX_CHECKED_TRACKS + 1, ..TrackerLimits::default() };
+    let limits = TrackerLimits {
+        max_tracks: MAX_CHECKED_TRACKS + 1,
+        ..TrackerLimits::default()
+    };
     assert_eq!(t.try_step(&[], limits).err(), Some(TrackerStepError::Limit));
     assert_eq!(snapshot(&t), before);
     Ok(())

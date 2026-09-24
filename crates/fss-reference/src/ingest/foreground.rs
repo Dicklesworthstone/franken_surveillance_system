@@ -92,11 +92,21 @@ pub enum ForegroundError {
 impl std::fmt::Display for ForegroundError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::DimensionMismatch { expected_width, expected_height, actual_width, actual_height } => {
-                write!(f, "dimension mismatch: expected {expected_width}x{expected_height}, got {actual_width}x{actual_height}")
+            Self::DimensionMismatch {
+                expected_width,
+                expected_height,
+                actual_width,
+                actual_height,
+            } => {
+                write!(
+                    f,
+                    "dimension mismatch: expected {expected_width}x{expected_height}, got {actual_width}x{actual_height}"
+                )
             }
             Self::ZeroDimensions => write!(f, "dimensions must be nonzero"),
-            Self::ZeroBaseThreshold | Self::ZeroThresholdSigma => write!(f, "threshold must be nonzero"),
+            Self::ZeroBaseThreshold | Self::ZeroThresholdSigma => {
+                write!(f, "threshold must be nonzero")
+            }
             Self::InvalidLearningRate => write!(f, "learning rate must satisfy 0 < num <= den"),
             Self::ZeroMinimumRegion => write!(f, "minimum region pixels must be nonzero"),
             Self::PixelCountMismatch { expected, actual } => {
@@ -156,12 +166,17 @@ impl ForegroundDetector {
     /// Creates a new detector with the given configuration.
     pub fn new(config: ForegroundConfig) -> Result<Self, ForegroundError> {
         config.validate()?;
-        Ok(Self { config, model: None })
+        Ok(Self {
+            config,
+            model: None,
+        })
     }
 
     /// Returns the configuration.
     #[must_use]
-    pub fn config(&self) -> &ForegroundConfig { &self.config }
+    pub fn config(&self) -> &ForegroundConfig {
+        &self.config
+    }
 
     /// Processes one 8-bit grayscale frame and returns the foreground result.
     ///
@@ -198,7 +213,11 @@ impl ForegroundDetector {
                 // First frame: absorb as baseline, zero foreground.
                 let mean: Vec<f64> = pixels.iter().map(|&p| f64::from(p)).collect();
                 let variance = vec![0.0; expected_pixels];
-                self.model = Some(BackgroundModel { mean, variance, frame_count: 1 });
+                self.model = Some(BackgroundModel {
+                    mean,
+                    variance,
+                    frame_count: 1,
+                });
                 return Ok(ForegroundFrame {
                     mask: vec![false; expected_pixels],
                     boxes: Vec::new(),
@@ -241,7 +260,12 @@ impl ForegroundDetector {
         //    box extraction.
         let boxes = Self::extract_boxes(&mask, width, height, self.config.minimum_region_pixels);
 
-        Ok(ForegroundFrame { mask, boxes, foreground_pixels, baseline_initialized: false })
+        Ok(ForegroundFrame {
+            mask,
+            boxes,
+            foreground_pixels,
+            baseline_initialized: false,
+        })
     }
 
     /// Extracts bounding boxes from 4-connected foreground regions using an
@@ -274,10 +298,18 @@ impl ForegroundDetector {
                 count += 1;
                 let px = pixel % w;
                 let py = pixel / w;
-                if px < min_x { min_x = px; }
-                if px > max_x { max_x = px; }
-                if py < min_y { min_y = py; }
-                if py > max_y { max_y = py; }
+                if px < min_x {
+                    min_x = px;
+                }
+                if px > max_x {
+                    max_x = px;
+                }
+                if py < min_y {
+                    min_y = py;
+                }
+                if py > max_y {
+                    max_y = py;
+                }
 
                 // 4-connected neighbours.
                 if px > 0 && mask[pixel - 1] && !visited[pixel - 1] {
@@ -343,7 +375,8 @@ mod tests {
     }
 
     #[test]
-    fn bright_object_on_dark_background_produces_bounding_box() -> Result<(), Box<dyn std::error::Error>> {
+    fn bright_object_on_dark_background_produces_bounding_box()
+    -> Result<(), Box<dyn std::error::Error>> {
         let mut det = ForegroundDetector::new(config(8, 8))?;
         let background = [20u8; 64];
         det.observe(&background, 8, 8)?;
@@ -368,7 +401,10 @@ mod tests {
     fn dimension_mismatch_is_refused() -> Result<(), Box<dyn std::error::Error>> {
         let mut det = ForegroundDetector::new(config(4, 4))?;
         let result = det.observe(&[128; 16], 8, 2);
-        assert!(matches!(result, Err(ForegroundError::DimensionMismatch { .. })));
+        assert!(matches!(
+            result,
+            Err(ForegroundError::DimensionMismatch { .. })
+        ));
         Ok(())
     }
 
@@ -376,7 +412,10 @@ mod tests {
     fn pixel_count_mismatch_is_refused() -> Result<(), Box<dyn std::error::Error>> {
         let mut det = ForegroundDetector::new(config(4, 4))?;
         let result = det.observe(&[128; 15], 4, 4);
-        assert!(matches!(result, Err(ForegroundError::PixelCountMismatch { .. })));
+        assert!(matches!(
+            result,
+            Err(ForegroundError::PixelCountMismatch { .. })
+        ));
         Ok(())
     }
 
@@ -401,15 +440,26 @@ mod tests {
         // Bright object for many frames: the model adapts on non-foreground
         // pixels, but the object pixels remain foreground.
         let mut object_frame = background;
-        for y in 2..5 { for x in 2..5 { object_frame[y * 8 + x] = 200; } }
-        for _ in 0..20 { det.observe(&object_frame, 8, 8)?; }
+        for y in 2..5 {
+            for x in 2..5 {
+                object_frame[y * 8 + x] = 200;
+            }
+        }
+        for _ in 0..20 {
+            det.observe(&object_frame, 8, 8)?;
+        }
 
         // Remove the object: the model has adapted enough that the restored
         // background produces a (weaker) foreground response that decays over
         // subsequent observations.
-        for _ in 0..30 { det.observe(&background, 8, 8)?; }
+        for _ in 0..30 {
+            det.observe(&background, 8, 8)?;
+        }
         let frame = det.observe(&background, 8, 8)?;
-        assert_eq!(frame.foreground_pixels, 0, "background should have re-adapted");
+        assert_eq!(
+            frame.foreground_pixels, 0,
+            "background should have re-adapted"
+        );
         Ok(())
     }
 
@@ -421,7 +471,10 @@ mod tests {
         let mut frame_pixels = [50u8; 64];
         frame_pixels[27] = 250;
         let frame = det.observe(&frame_pixels, 8, 8)?;
-        assert!(frame.boxes.is_empty(), "single-pixel region must be filtered");
+        assert!(
+            frame.boxes.is_empty(),
+            "single-pixel region must be filtered"
+        );
         Ok(())
     }
 
@@ -430,10 +483,22 @@ mod tests {
         let mut det = ForegroundDetector::new(config(16, 8))?;
         let _ = det.observe(&[50u8; 128], 16, 8)?;
         let mut frame_pixels = [50u8; 128];
-        for y in 1..4 { for x in 1..4 { frame_pixels[y * 16 + x] = 200; } }
-        for y in 1..4 { for x in 10..13 { frame_pixels[y * 16 + x] = 200; } }
+        for y in 1..4 {
+            for x in 1..4 {
+                frame_pixels[y * 16 + x] = 200;
+            }
+        }
+        for y in 1..4 {
+            for x in 10..13 {
+                frame_pixels[y * 16 + x] = 200;
+            }
+        }
         let frame = det.observe(&frame_pixels, 16, 8)?;
-        assert_eq!(frame.boxes.len(), 2, "two separated regions must yield two boxes");
+        assert_eq!(
+            frame.boxes.len(),
+            2,
+            "two separated regions must yield two boxes"
+        );
         Ok(())
     }
 

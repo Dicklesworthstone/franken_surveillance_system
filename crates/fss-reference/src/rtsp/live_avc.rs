@@ -20,8 +20,8 @@ use super::avc_client::authenticated::{
 };
 use super::client::{ClientCommand, ClientConfig, ClientRequest, ClientState};
 use super::tcp::{
-    RtspTcpLink, TcpAuthority, TcpBinding, TcpError, TcpLimits, TcpOperation,
-    TcpReadChunk, TcpReadStep, TcpRetirement, TcpTotals, TcpWriteStep,
+    RtspTcpLink, TcpAuthority, TcpBinding, TcpError, TcpLimits, TcpOperation, TcpReadChunk,
+    TcpReadStep, TcpRetirement, TcpTotals, TcpWriteStep,
 };
 
 /// Immutable caller-owned route, protocol selection, resource limits, and lease.
@@ -46,8 +46,10 @@ pub struct LiveAvcConfig {
 }
 impl fmt::Debug for LiveAvcConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("LiveAvcConfig").field("binding", &self.binding)
-            .field("deadline_ns", &self.deadline_ns).field("max_steps", &self.max_steps)
+        f.debug_struct("LiveAvcConfig")
+            .field("binding", &self.binding)
+            .field("deadline_ns", &self.deadline_ns)
+            .field("max_steps", &self.max_steps)
             .finish_non_exhaustive()
     }
 }
@@ -118,7 +120,9 @@ pub struct LiveAvcConnectFailure {
     pub connection_attempted: bool,
 }
 impl fmt::Display for LiveAvcConnectFailure {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { fmt::Display::fmt(&self.reason, f) }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.reason, f)
+    }
 }
 impl std::error::Error for LiveAvcConnectFailure {}
 
@@ -134,7 +138,8 @@ pub struct LiveAvcRetirement {
 }
 impl fmt::Debug for LiveAvcRetirement {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("LiveAvcRetirement").field("totals", &self.transport.totals)
+        f.debug_struct("LiveAvcRetirement")
+            .field("totals", &self.transport.totals)
             .field("request_sent_bytes", &self.transport.request_sent_bytes)
             .field("unqueued_request", &self.unqueued_request.is_some())
             .finish_non_exhaustive()
@@ -151,7 +156,9 @@ pub struct LiveAvcFailure {
     pub retirement: Option<Box<LiveAvcRetirement>>,
 }
 impl fmt::Display for LiveAvcFailure {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { fmt::Display::fmt(&self.reason, f) }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.reason, f)
+    }
 }
 impl std::error::Error for LiveAvcFailure {}
 
@@ -183,8 +190,10 @@ impl fmt::Debug for LiveAvcStep {
         match self {
             Self::Wire(chunk) => f.debug_tuple("Wire").field(chunk).finish(),
             Self::Write(step) => f.debug_tuple("Write").field(step).finish(),
-            Self::Protocol { transport, .. } => f.debug_struct("Protocol")
-                .field("terminal", &transport.is_some()).finish_non_exhaustive(),
+            Self::Protocol { transport, .. } => f
+                .debug_struct("Protocol")
+                .field("terminal", &transport.is_some())
+                .finish_non_exhaustive(),
             Self::Pending(wait) => f.debug_tuple("Pending").field(wait).finish(),
             Self::InputEnded => f.write_str("InputEnded"),
             Self::Ended => f.write_str("Ended"),
@@ -214,16 +223,23 @@ pub struct LiveAvcConnection {
 }
 impl fmt::Debug for LiveAvcConnection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("LiveAvcConnection").field("state", &self.state())
-            .field("remaining_steps", &self.remaining_steps).finish_non_exhaustive()
+        f.debug_struct("LiveAvcConnection")
+            .field("state", &self.state())
+            .field("remaining_steps", &self.remaining_steps)
+            .finish_non_exhaustive()
     }
 }
 impl LiveAvcConnection {
     /// Validate both owners and their exact authority mapping before the single connect attempt.
-    pub fn connect(config: LiveAvcConfig, now: u64, authority: &dyn TcpAuthority)
-        -> Result<Self, LiveAvcConnectFailure>
-    {
-        let refused = |reason| LiveAvcConnectFailure { reason, connection_attempted: false };
+    pub fn connect(
+        config: LiveAvcConfig,
+        now: u64,
+        authority: &dyn TcpAuthority,
+    ) -> Result<Self, LiveAvcConnectFailure> {
+        let refused = |reason| LiveAvcConnectFailure {
+            reason,
+            connection_attempted: false,
+        };
         if config.max_steps == 0 || now >= config.deadline_ns {
             return Err(refused(LiveAvcError::Configuration));
         }
@@ -234,24 +250,51 @@ impl LiveAvcConnection {
         if presentation != Some(config.binding.authority()) || control != presentation {
             return Err(refused(LiveAvcError::Configuration));
         }
-        let protocol = DigestAvcClient::new(config.protocol, config.binding.key(), config.media,
-            &config.realm, config.digest_policy).map_err(|e| refused(LiveAvcError::Protocol(e)))?;
-        let transport = RtspTcpLink::connect(config.binding, config.transport, now, config.deadline_ns, authority)
-            .map_err(|e| LiveAvcConnectFailure {
-                reason: LiveAvcError::Transport(e.reason), connection_attempted: e.connection_attempted,
-            })?;
-        Ok(Self { active: Some(ActiveConnection { transport, protocol, eof: false }),
-            deadline_ns: config.deadline_ns, last_ns: now, remaining_steps: config.max_steps })
+        let protocol = DigestAvcClient::new(
+            config.protocol,
+            config.binding.key(),
+            config.media,
+            &config.realm,
+            config.digest_policy,
+        )
+        .map_err(|e| refused(LiveAvcError::Protocol(e)))?;
+        let transport = RtspTcpLink::connect(
+            config.binding,
+            config.transport,
+            now,
+            config.deadline_ns,
+            authority,
+        )
+        .map_err(|e| LiveAvcConnectFailure {
+            reason: LiveAvcError::Transport(e.reason),
+            connection_attempted: e.connection_attempted,
+        })?;
+        Ok(Self {
+            active: Some(ActiveConnection {
+                transport,
+                protocol,
+                eof: false,
+            }),
+            deadline_ns: config.deadline_ns,
+            last_ns: now,
+            remaining_steps: config.max_steps,
+        })
     }
 
     /// Local protocol state. Closed after terminal ownership has been transferred.
     pub fn state(&self) -> ClientState {
-        self.active.as_ref().map_or(ClientState::Closed, |a| a.protocol.state())
+        self.active
+            .as_ref()
+            .map_or(ClientState::Closed, |a| a.protocol.state())
     }
     /// Remaining bounded driver calls, independent of transport I/O and byte ceilings.
-    pub fn remaining_steps(&self) -> u64 { self.remaining_steps }
+    pub fn remaining_steps(&self) -> u64 {
+        self.remaining_steps
+    }
     /// Live transport observations, or None after retirement (which owns the final totals).
-    pub fn totals(&self) -> Option<TcpTotals> { self.active.as_ref().map(|a| a.transport.totals()) }
+    pub fn totals(&self) -> Option<TcpTotals> {
+        self.active.as_ref().map(|a| a.transport.totals())
+    }
     /// Earliest hard/useful wake. Pending writes require writability, not an invented busy timer.
     pub fn next_wake_ns(&self) -> Option<u64> {
         let active = self.active.as_ref()?;
@@ -262,30 +305,54 @@ impl LiveAvcConnection {
     /// Prepare and queue one exact command after live authority admission. Credentials are
     /// borrowed only for preparation and never retained. A queue failure retires the prepared
     /// request rather than pretending protocol state can be rolled back safely.
-    pub fn request(&mut self, command: ClientCommand, credentials: &DigestCredentials<'_>,
-        cnonce: [u8; 16], now: u64, authority: &dyn TcpAuthority)
-        -> Result<QueuedAvcRequest, LiveAvcFailure>
-    {
+    pub fn request(
+        &mut self,
+        command: ClientCommand,
+        credentials: &DigestCredentials<'_>,
+        cnonce: [u8; 16],
+        now: u64,
+        authority: &dyn TcpAuthority,
+    ) -> Result<QueuedAvcRequest, LiveAvcFailure> {
         self.admit(now, authority)?;
-        if self.active.as_ref().is_some_and(|a| a.transport.has_pending_request()) {
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|a| a.transport.has_pending_request())
+        {
             return Err(safe(LiveAvcError::Backpressure));
         }
-        let result = self.active.as_mut().ok_or_else(|| safe(LiveAvcError::Closed))?
-            .protocol.request(command, credentials, cnonce, now);
+        let result = self
+            .active
+            .as_mut()
+            .ok_or_else(|| safe(LiveAvcError::Closed))?
+            .protocol
+            .request(command, credentials, cnonce, now);
         self.queue_prepared(result, now, authority)
     }
 
     /// Answer only the protocol owner's held matching Digest challenge. No implicit credential
     /// lookup, cnonce generation, retry deadline extension, or fallback algorithm occurs.
-    pub fn respond(&mut self, credentials: &DigestCredentials<'_>, cnonce: [u8; 16],
-        now: u64, authority: &dyn TcpAuthority) -> Result<QueuedAvcRequest, LiveAvcFailure>
-    {
+    pub fn respond(
+        &mut self,
+        credentials: &DigestCredentials<'_>,
+        cnonce: [u8; 16],
+        now: u64,
+        authority: &dyn TcpAuthority,
+    ) -> Result<QueuedAvcRequest, LiveAvcFailure> {
         self.admit(now, authority)?;
-        if self.active.as_ref().is_some_and(|a| a.transport.has_pending_request()) {
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|a| a.transport.has_pending_request())
+        {
             return Err(safe(LiveAvcError::Backpressure));
         }
-        let result = self.active.as_mut().ok_or_else(|| safe(LiveAvcError::Closed))?
-            .protocol.respond(credentials, cnonce, now);
+        let result = self
+            .active
+            .as_mut()
+            .ok_or_else(|| safe(LiveAvcError::Closed))?
+            .protocol
+            .respond(credentials, cnonce, now);
         self.queue_prepared(result, now, authority)
     }
 
@@ -293,12 +360,23 @@ impl LiveAvcConnection {
     /// Exact read bytes are fed at their original admission time within this same call, then
     /// transferred to the caller before any resulting parsed event is returned. Failed ingest
     /// retains the unread original in terminal transport ownership; it is never retried.
-    pub fn poll(&mut self, readiness: SocketReadiness, now: u64, authority: &dyn TcpAuthority)
-        -> Result<LiveAvcStep, LiveAvcFailure>
-    {
-        if self.active.is_none() { return Ok(LiveAvcStep::Ended); }
+    pub fn poll(
+        &mut self,
+        readiness: SocketReadiness,
+        now: u64,
+        authority: &dyn TcpAuthority,
+    ) -> Result<LiveAvcStep, LiveAvcFailure> {
+        if self.active.is_none() {
+            return Ok(LiveAvcStep::Ended);
+        }
         self.admit(now, authority)?;
-        let event = match self.active.as_mut().ok_or_else(|| safe(LiveAvcError::Closed))?.protocol.poll(now) {
+        let event = match self
+            .active
+            .as_mut()
+            .ok_or_else(|| safe(LiveAvcError::Closed))?
+            .protocol
+            .poll(now)
+        {
             Ok(event) => event,
             Err(error) => return Err(self.fail(LiveAvcError::Protocol(error), None, None)),
         };
@@ -307,43 +385,80 @@ impl LiveAvcConnection {
         let idle = matches!(&event, DigestAvcPoll::Client { event, wire_retirement: None }
             if matches!(event.as_ref(), AvcClientPoll::Pending { wake_at_ns }
                 if wake_at_ns.is_none_or(|at| at > now)));
-        if !idle { return Ok(self.protocol_step(event)); }
-        let active = self.active.as_ref().ok_or_else(|| safe(LiveAvcError::Closed))?;
+        if !idle {
+            return Ok(self.protocol_step(event));
+        }
+        let active = self
+            .active
+            .as_ref()
+            .ok_or_else(|| safe(LiveAvcError::Closed))?;
         if active.eof {
-            return Ok(LiveAvcStep::Pending(LiveAvcWait { readable: false, writable: false,
-                wake_at_ns: earlier(self.next_wake_ns(), Some(now)) }));
+            return Ok(LiveAvcStep::Pending(LiveAvcWait {
+                readable: false,
+                writable: false,
+                wake_at_ns: earlier(self.next_wake_ns(), Some(now)),
+            }));
         }
         if active.transport.has_pending_request() {
-            if !readiness.writable { return Ok(self.pending(false, true)); }
-            let step = self.active.as_mut().ok_or_else(|| safe(LiveAvcError::Closed))?
-                .transport.write_step(now, authority);
+            if !readiness.writable {
+                return Ok(self.pending(false, true));
+            }
+            let step = self
+                .active
+                .as_mut()
+                .ok_or_else(|| safe(LiveAvcError::Closed))?
+                .transport
+                .write_step(now, authority);
             return match step {
                 Ok(TcpWriteStep::Pending) => Ok(self.pending(false, true)),
                 Ok(step) => Ok(LiveAvcStep::Write(step)),
                 Err(error) => Err(self.fail(LiveAvcError::Transport(error), None, None)),
             };
         }
-        if !readiness.readable { return Ok(self.pending(true, false)); }
-        let step = self.active.as_mut().ok_or_else(|| safe(LiveAvcError::Closed))?
-            .transport.read_step(now, authority);
+        if !readiness.readable {
+            return Ok(self.pending(true, false));
+        }
+        let step = self
+            .active
+            .as_mut()
+            .ok_or_else(|| safe(LiveAvcError::Closed))?
+            .transport
+            .read_step(now, authority);
         match step {
             Ok(TcpReadStep::Pending) => Ok(self.pending(true, false)),
             Ok(TcpReadStep::Eof) => {
-                let active = self.active.as_mut().ok_or_else(|| safe(LiveAvcError::Closed))?;
+                let active = self
+                    .active
+                    .as_mut()
+                    .ok_or_else(|| safe(LiveAvcError::Closed))?;
                 active.eof = true;
                 active.protocol.finish();
                 Ok(LiveAvcStep::InputEnded)
             }
             Ok(TcpReadStep::Buffered) => {
-                let active = self.active.as_mut().ok_or_else(|| safe(LiveAvcError::Closed))?;
-                let chunk = active.transport.pending_read().ok_or_else(|| safe(LiveAvcError::Closed))?;
+                let active = self
+                    .active
+                    .as_mut()
+                    .ok_or_else(|| safe(LiveAvcError::Closed))?;
+                let chunk = active
+                    .transport
+                    .pending_read()
+                    .ok_or_else(|| safe(LiveAvcError::Closed))?;
                 let result = active.protocol.ingest(chunk.expose(), chunk.admitted_ns());
                 if let Err(failure) = result {
-                    return Err(self.fail(LiveAvcError::Protocol(failure.reason),
-                        failure.retirement.map(|r| *r), None));
+                    return Err(self.fail(
+                        LiveAvcError::Protocol(failure.reason),
+                        failure.retirement.map(|r| *r),
+                        None,
+                    ));
                 }
-                let chunk = self.active.as_mut().ok_or_else(|| safe(LiveAvcError::Closed))?
-                    .transport.acknowledge_read().ok_or_else(|| safe(LiveAvcError::Closed))?;
+                let chunk = self
+                    .active
+                    .as_mut()
+                    .ok_or_else(|| safe(LiveAvcError::Closed))?
+                    .transport
+                    .acknowledge_read()
+                    .ok_or_else(|| safe(LiveAvcError::Closed))?;
                 Ok(LiveAvcStep::Wire(chunk))
             }
             Err(error) => Err(self.fail(LiveAvcError::Transport(error), None, None)),
@@ -352,77 +467,161 @@ impl LiveAvcConnection {
 
     /// Release the socket and transfer every retained layer, even after authority revocation.
     /// Repeated cancellation returns None. No network operation or implicit TEARDOWN is issued.
-    pub fn cancel(&mut self) -> Option<LiveAvcRetirement> { self.retire(None, None) }
+    pub fn cancel(&mut self) -> Option<LiveAvcRetirement> {
+        self.retire(None, None)
+    }
 
     fn admit(&mut self, now: u64, authority: &dyn TcpAuthority) -> Result<(), LiveAvcFailure> {
-        if self.active.is_none() { return Err(safe(LiveAvcError::Closed)); }
-        if now < self.last_ns { return Err(safe(LiveAvcError::ClockReversed)); }
-        if self.remaining_steps == 0 { return Err(self.fail(LiveAvcError::WorkBudget, None, None)); }
+        if self.active.is_none() {
+            return Err(safe(LiveAvcError::Closed));
+        }
+        if now < self.last_ns {
+            return Err(safe(LiveAvcError::ClockReversed));
+        }
+        if self.remaining_steps == 0 {
+            return Err(self.fail(LiveAvcError::WorkBudget, None, None));
+        }
         self.remaining_steps -= 1;
         self.last_ns = now;
-        let active = self.active.as_mut().ok_or_else(|| safe(LiveAvcError::Closed))?;
+        let active = self
+            .active
+            .as_mut()
+            .ok_or_else(|| safe(LiveAvcError::Closed))?;
         let result = if active.eof {
             // The TCP owner has already closed its socket. EOF is not permission to bypass
             // live revocation, work, or lease checks while draining accepted protocol input.
-            if now >= self.deadline_ns { Err(TcpError::Deadline) }
-            else { authority.checkpoint(active.transport.binding(), TcpOperation::Poll, now, self.deadline_ns)
-                .map_err(TcpError::Denied) }
-        } else { active.transport.check(now, authority) };
+            if now >= self.deadline_ns {
+                Err(TcpError::Deadline)
+            } else {
+                authority
+                    .checkpoint(
+                        active.transport.binding(),
+                        TcpOperation::Poll,
+                        now,
+                        self.deadline_ns,
+                    )
+                    .map_err(TcpError::Denied)
+            }
+        } else {
+            active.transport.check(now, authority)
+        };
         result.map_err(|error| self.fail(LiveAvcError::Transport(error), None, None))
     }
 
-    fn queue_prepared(&mut self, result: Result<ClientRequest, DigestAvcFailure>, now: u64,
-        authority: &dyn TcpAuthority) -> Result<QueuedAvcRequest, LiveAvcFailure>
-    {
+    fn queue_prepared(
+        &mut self,
+        result: Result<ClientRequest, DigestAvcFailure>,
+        now: u64,
+        authority: &dyn TcpAuthority,
+    ) -> Result<QueuedAvcRequest, LiveAvcFailure> {
         let request = match result {
             Ok(request) => request,
-            Err(failure) => return match failure.retirement {
-                Some(retirement) => Err(self.fail(LiveAvcError::Protocol(failure.reason), Some(*retirement), None)),
-                None => Err(safe(LiveAvcError::Protocol(failure.reason))),
-            },
+            Err(failure) => {
+                return match failure.retirement {
+                    Some(retirement) => Err(self.fail(
+                        LiveAvcError::Protocol(failure.reason),
+                        Some(*retirement),
+                        None,
+                    )),
+                    None => Err(safe(LiveAvcError::Protocol(failure.reason))),
+                };
+            }
         };
-        let receipt = QueuedAvcRequest { command: request.command(), cseq: request.cseq(), bytes: request.bytes().len() };
-        let result = self.active.as_mut().ok_or_else(|| safe(LiveAvcError::Closed))?
-            .transport.queue_request(request, now, authority);
+        let receipt = QueuedAvcRequest {
+            command: request.command(),
+            cseq: request.cseq(),
+            bytes: request.bytes().len(),
+        };
+        let result = self
+            .active
+            .as_mut()
+            .ok_or_else(|| safe(LiveAvcError::Closed))?
+            .transport
+            .queue_request(request, now, authority);
         match result {
             Ok(()) => Ok(receipt),
-            Err(refusal) => Err(self.fail(LiveAvcError::Transport(refusal.reason), None, Some(refusal.request))),
+            Err(refusal) => Err(self.fail(
+                LiveAvcError::Transport(refusal.reason),
+                None,
+                Some(refusal.request),
+            )),
         }
     }
 
     fn protocol_step(&mut self, event: DigestAvcPoll) -> LiveAvcStep {
         let terminal = match &event {
             DigestAvcPoll::Fault { .. } => true,
-            DigestAvcPoll::Client { event, wire_retirement } => wire_retirement.is_some()
-                || matches!(event.as_ref(), AvcClientPoll::Ended { .. } | AvcClientPoll::Fault { .. }
-                    | AvcClientPoll::Rtp { retirement: Some(_), .. }),
+            DigestAvcPoll::Client {
+                event,
+                wire_retirement,
+            } => {
+                wire_retirement.is_some()
+                    || matches!(
+                        event.as_ref(),
+                        AvcClientPoll::Ended { .. }
+                            | AvcClientPoll::Fault { .. }
+                            | AvcClientPoll::Rtp {
+                                retirement: Some(_),
+                                ..
+                            }
+                    )
+            }
             DigestAvcPoll::AuthenticationRequired { .. } => false,
         };
-        let transport = if terminal { self.active.take().map(|a| Box::new(a.transport.retire())) } else { None };
+        let transport = if terminal {
+            self.active.take().map(|a| Box::new(a.transport.retire()))
+        } else {
+            None
+        };
         LiveAvcStep::Protocol { event, transport }
     }
     fn pending(&self, readable: bool, writable: bool) -> LiveAvcStep {
-        LiveAvcStep::Pending(LiveAvcWait { readable, writable, wake_at_ns: self.next_wake_ns() })
+        LiveAvcStep::Pending(LiveAvcWait {
+            readable,
+            writable,
+            wake_at_ns: self.next_wake_ns(),
+        })
     }
-    fn fail(&mut self, reason: LiveAvcError, protocol: Option<DigestAvcRetirement>,
-        request: Option<ClientRequest>) -> LiveAvcFailure
-    {
-        LiveAvcFailure { reason, retirement: self.retire(protocol, request).map(Box::new) }
+    fn fail(
+        &mut self,
+        reason: LiveAvcError,
+        protocol: Option<DigestAvcRetirement>,
+        request: Option<ClientRequest>,
+    ) -> LiveAvcFailure {
+        LiveAvcFailure {
+            reason,
+            retirement: self.retire(protocol, request).map(Box::new),
+        }
     }
-    fn retire(&mut self, protocol: Option<DigestAvcRetirement>, request: Option<ClientRequest>)
-        -> Option<LiveAvcRetirement>
-    {
+    fn retire(
+        &mut self,
+        protocol: Option<DigestAvcRetirement>,
+        request: Option<ClientRequest>,
+    ) -> Option<LiveAvcRetirement> {
         let mut active = self.active.take()?;
-        Some(LiveAvcRetirement { transport: active.transport.retire(),
-            protocol: protocol.unwrap_or_else(|| active.protocol.cancel()), unqueued_request: request })
+        Some(LiveAvcRetirement {
+            transport: active.transport.retire(),
+            protocol: protocol.unwrap_or_else(|| active.protocol.cancel()),
+            unqueued_request: request,
+        })
     }
 }
 
-fn safe(reason: LiveAvcError) -> LiveAvcFailure { LiveAvcFailure { reason, retirement: None } }
-fn earlier(a: Option<u64>, b: Option<u64>) -> Option<u64> {
-    match (a, b) { (Some(a), Some(b)) => Some(a.min(b)), (a, b) => a.or(b) }
+fn safe(reason: LiveAvcError) -> LiveAvcFailure {
+    LiveAvcFailure {
+        reason,
+        retirement: None,
+    }
 }
-fn uri_authority(uri: &str) -> Option<&str> { uri.strip_prefix("rtsp://")?.split('/').next() }
+fn earlier(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+fn uri_authority(uri: &str) -> Option<&str> {
+    uri.strip_prefix("rtsp://")?.split('/').next()
+}
 
 #[cfg(test)]
 mod tests;

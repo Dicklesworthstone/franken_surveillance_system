@@ -24,7 +24,14 @@ fn exact_offsets_and_kind_do_not_guess_packet_validity() -> TestResult {
     record(&mut bytes, &[0x80; 12], 12);
     let mut reader = RtpDumpReader::new(&bytes, RtpDumpLimits::default())?;
     assert_eq!(reader.header_span(), 0..header().len());
-    for (index, kind) in [RtpDumpKind::CapturedPrefix, RtpDumpKind::Rtcp, RtpDumpKind::Rtp].into_iter().enumerate() {
+    for (index, kind) in [
+        RtpDumpKind::CapturedPrefix,
+        RtpDumpKind::Rtcp,
+        RtpDumpKind::Rtp,
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let item = reader.next_record()?.ok_or("record missing")?;
         assert_eq!(item.index(), index);
         assert_eq!(item.kind(), kind);
@@ -54,7 +61,10 @@ fn every_cut_is_exact_prefix_or_explicit_failure() {
                     }
                     Err(error) => {
                         assert_eq!(error.span.end, cut);
-                        assert_eq!(reader.next_record().err().map(|e| e.fault), Some(RtpDumpFault::Stopped));
+                        assert_eq!(
+                            reader.next_record().err().map(|e| e.fault),
+                            Some(RtpDumpFault::Stopped)
+                        );
                         break;
                     }
                 }
@@ -69,10 +79,16 @@ fn malformed_record_never_resynchronizes() -> TestResult {
     bytes.extend_from_slice(&[0, 7, 0, 12, 0, 0, 0, 0]);
     record(&mut bytes, &[0x80; 12], 12);
     let mut reader = RtpDumpReader::new(&bytes, RtpDumpLimits::default())?;
-    assert_eq!(reader.next_record().err().map(|e| e.fault), Some(RtpDumpFault::RecordLength));
+    assert_eq!(
+        reader.next_record().err().map(|e| e.fault),
+        Some(RtpDumpFault::RecordLength)
+    );
     assert_eq!(reader.records_read(), 0);
     assert_eq!(reader.consumed_bytes(), header().len());
-    assert_eq!(reader.next_record().err().map(|e| e.fault), Some(RtpDumpFault::Stopped));
+    assert_eq!(
+        reader.next_record().err().map(|e| e.fault),
+        Some(RtpDumpFault::Stopped)
+    );
     Ok(())
 }
 
@@ -84,8 +100,26 @@ fn independent_limits_and_redaction() -> TestResult {
     let mut reader = RtpDumpReader::new(&bytes, RtpDumpLimits::default())?;
     let item = reader.next_record()?;
     assert!(!format!("{reader:?} {item:?}").contains("PRIVATE"));
-    assert!(RtpDumpReader::new(&bytes, RtpDumpLimits { max_input_bytes: bytes.len() - 1, ..RtpDumpLimits::default() }).is_err());
-    let mut reader = RtpDumpReader::new(&bytes, RtpDumpLimits { max_packet_bytes: 13, ..RtpDumpLimits::default() })?;
-    assert_eq!(reader.next_record().err().map(|e| e.fault), Some(RtpDumpFault::Limit));
+    assert!(
+        RtpDumpReader::new(
+            &bytes,
+            RtpDumpLimits {
+                max_input_bytes: bytes.len() - 1,
+                ..RtpDumpLimits::default()
+            }
+        )
+        .is_err()
+    );
+    let mut reader = RtpDumpReader::new(
+        &bytes,
+        RtpDumpLimits {
+            max_packet_bytes: 13,
+            ..RtpDumpLimits::default()
+        },
+    )?;
+    assert_eq!(
+        reader.next_record().err().map(|e| e.fault),
+        Some(RtpDumpFault::Limit)
+    );
     Ok(())
 }

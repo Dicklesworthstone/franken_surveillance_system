@@ -2,20 +2,22 @@
 //! Contract tests for the durable agent record types (fss-x4a.30.83.57-62).
 
 use fss_core::{
-    CanonicalEncode, CanonicalEncoder,
-    AgentFinding, AttributionCauseClass, AttributionHypothesis, BudgetVector,
-    ContractError, EpisodeOutcome, EpisodeOutcomeState, EpisodePrediction, EvidenceStrength,
-    ExecutionEpisode, ExperienceCapsule, KnownStatement, LedgerAnchor, LearningClass,
-    LearningProposal, MissionId, PromotionState, SessionId, WorkClaim, WorkClaimState,
+    AgentFinding, AttributionCauseClass, AttributionHypothesis, BudgetVector, CanonicalEncode,
+    CanonicalEncoder, ContractError, EpisodeOutcome, EpisodeOutcomeState, EpisodePrediction,
+    EvidenceStrength, ExecutionEpisode, ExperienceCapsule, KnownStatement, LearningClass,
+    LearningProposal, LedgerAnchor, MissionId, PromotionState, SessionId, WorkClaim,
+    WorkClaimState,
 };
 
 fn cost() -> BudgetVector {
-    BudgetVector::builder().latency_ms(50).build().unwrap_or_else(|_| unreachable!())
+    BudgetVector::builder()
+        .latency_ms(50)
+        .build()
+        .unwrap_or_else(|_| unreachable!())
 }
 
 #[test]
-fn test_work_claim_never_confers_effect_authority(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_work_claim_never_confers_effect_authority() -> Result<(), Box<dyn std::error::Error>> {
     let claim = WorkClaim::new(
         "claim:gate-review",
         Some("case:gate".to_owned()),
@@ -39,40 +41,48 @@ fn test_work_claim_never_confers_effect_authority(
         let mut encoder = CanonicalEncoder::new();
         claim.encode_canonical(&mut encoder);
         let bytes = encoder.finish();
-        assert_eq!(bytes[bytes.len() - 1], 0, "effect authority flag must encode false");
+        assert_eq!(
+            bytes[bytes.len() - 1],
+            0,
+            "effect authority flag must encode false"
+        );
     }
     // Fencing: lease incarnation must be at least 1.
-    assert!(WorkClaim::new(
-        "claim:x",
-        None,
-        "session:guard",
-        "{}",
-        LedgerAnchor::genesis("site:fss:claims"),
-        0,
-        1_000,
-        9_000,
-        WorkClaimState::Offered,
-        vec![],
-        "{}",
-        None,
-    )
-    .is_err());
+    assert!(
+        WorkClaim::new(
+            "claim:x",
+            None,
+            "session:guard",
+            "{}",
+            LedgerAnchor::genesis("site:fss:claims"),
+            0,
+            1_000,
+            9_000,
+            WorkClaimState::Offered,
+            vec![],
+            "{}",
+            None,
+        )
+        .is_err()
+    );
     // Expiry must be after creation.
-    assert!(WorkClaim::new(
-        "claim:x",
-        None,
-        "session:guard",
-        "{}",
-        LedgerAnchor::genesis("site:fss:claims"),
-        1,
-        1_000,
-        1_000,
-        WorkClaimState::Offered,
-        vec![],
-        "{}",
-        None,
-    )
-    .is_err());
+    assert!(
+        WorkClaim::new(
+            "claim:x",
+            None,
+            "session:guard",
+            "{}",
+            LedgerAnchor::genesis("site:fss:claims"),
+            1,
+            1_000,
+            1_000,
+            WorkClaimState::Offered,
+            vec![],
+            "{}",
+            None,
+        )
+        .is_err()
+    );
     Ok(())
 }
 
@@ -95,10 +105,7 @@ fn test_finding_requires_evidence_and_states() -> Result<(), Box<dyn std::error:
         vec!["follow-up:compare-previous-nights".to_owned()],
         1_000,
     )?;
-    assert_eq!(
-        finding.epistemic_state,
-        fss_core::KnowledgeState::Estimated
-    );
+    assert_eq!(finding.epistemic_state, fss_core::KnowledgeState::Estimated);
     let digest = finding.finding_digest();
     // A finding without supporting evidence is an unanchored claim.
     assert_eq!(
@@ -126,8 +133,7 @@ fn test_finding_requires_evidence_and_states() -> Result<(), Box<dyn std::error:
 }
 
 #[test]
-fn test_learning_proposal_starts_captured_and_bounded(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_learning_proposal_starts_captured_and_bounded() -> Result<(), Box<dyn std::error::Error>> {
     let proposal = LearningProposal::record(
         "learning:gate-night-001",
         LearningClass::CoverageGeometryLesson,
@@ -169,31 +175,32 @@ fn test_learning_proposal_starts_captured_and_bounded(
     )?;
     assert_eq!(proposal.proposal_digest(), again.proposal_digest());
     // Micro-confidence bound.
-    assert!(LearningProposal::record(
-        "learning:x",
-        LearningClass::FactCandidate,
-        "episode:x",
-        "statement".to_owned(),
-        "{}",
-        vec!["evidence:x".to_owned()],
-        vec![],
-        vec![],
-        1_000_001,
-        0,
-        0,
-        vec![],
-        None,
-        None,
-        vec![],
-        "decision:learning:x",
-    )
-    .is_err());
+    assert!(
+        LearningProposal::record(
+            "learning:x",
+            LearningClass::FactCandidate,
+            "episode:x",
+            "statement".to_owned(),
+            "{}",
+            vec!["evidence:x".to_owned()],
+            vec![],
+            vec![],
+            1_000_001,
+            0,
+            0,
+            vec![],
+            None,
+            None,
+            vec![],
+            "decision:learning:x",
+        )
+        .is_err()
+    );
     Ok(())
 }
 
 #[test]
-fn test_experience_capsule_carries_signals_and_bounds(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_experience_capsule_carries_signals_and_bounds() -> Result<(), Box<dyn std::error::Error>> {
     let capsule = ExperienceCapsule::new(
         "experience:gate-night",
         MissionId::parse("mission:guard")?,
@@ -254,8 +261,8 @@ fn test_experience_capsule_carries_signals_and_bounds(
 }
 
 #[test]
-fn test_execution_episode_records_predictions_and_outcome(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_execution_episode_records_predictions_and_outcome() -> Result<(), Box<dyn std::error::Error>>
+{
     let episode = ExecutionEpisode::new(
         "episode:gate-0042",
         SessionId::parse("session:guard")?,

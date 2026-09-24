@@ -33,19 +33,27 @@ pub struct SessionRecoveryReceipt {
 impl SessionRecoveryReceipt {
     /// Identity of all bytes observed immediately before recovery, including any torn suffix.
     #[must_use]
-    pub const fn observed_file_digest(&self) -> ContentDigest { self.observed_file_digest }
+    pub const fn observed_file_digest(&self) -> ContentDigest {
+        self.observed_file_digest
+    }
 
     /// Exact bytes removed, absent when no incomplete suffix existed.
     #[must_use]
-    pub const fn discarded_tail_digest(&self) -> Option<ContentDigest> { self.discarded_tail_digest }
+    pub const fn discarded_tail_digest(&self) -> Option<ContentDigest> {
+        self.discarded_tail_digest
+    }
 
     /// Number of incomplete bytes removed, never bytes from a complete record.
     #[must_use]
-    pub const fn discarded_bytes(&self) -> u64 { self.discarded_bytes }
+    pub const fn discarded_bytes(&self) -> u64 {
+        self.discarded_bytes
+    }
 
     /// Exact verified and synchronized committed prefix installed by recovery.
     #[must_use]
-    pub const fn restored(&self) -> &SessionJournalInspection { &self.restored }
+    pub const fn restored(&self) -> &SessionJournalInspection {
+        &self.restored
+    }
 
     /// Stable identity for the diagnostic receipt; a checksum is not an authority grant.
     #[must_use]
@@ -58,7 +66,9 @@ impl CanonicalEncode for SessionRecoveryReceipt {
     fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
         encoder.digest(self.observed_file_digest);
         encoder.bool(self.discarded_tail_digest.is_some());
-        if let Some(digest) = self.discarded_tail_digest { encoder.digest(digest); }
+        if let Some(digest) = self.discarded_tail_digest {
+            encoder.digest(digest);
+        }
         encoder.u64(self.discarded_bytes);
         encoder.digest(self.restored.root);
         encoder.digest(self.restored.checkpoint_digest);
@@ -74,7 +84,9 @@ impl DurableSessionStore {
     /// expected root is checked BEFORE any write. Missing paths are never created. Sync/open
     /// failures return no usable store and require inspection, not a guessed rollback or retry.
     pub fn recover_existing(
-        path: impl AsRef<Path>, expected_root: ContentDigest, limits: DurableSessionLimits,
+        path: impl AsRef<Path>,
+        expected_root: ContentDigest,
+        limits: DurableSessionLimits,
         tail_policy: IncompleteTailPolicy,
     ) -> Result<(Self, SessionRecoveryReceipt), DurableSessionError> {
         recover(path.as_ref(), expected_root, limits, None, tail_policy)
@@ -87,20 +99,34 @@ impl DurableSessionStore {
     /// with `Truncate`. No response is redelivered and no domain effect is retried. An inspected
     /// root is diagnostic only: the trusted owner must authorize it independently of this file.
     pub fn recover_existing_with_coordination(
-        path: impl AsRef<Path>, expected_root: ContentDigest, limits: DurableSessionLimits,
-        claim_ceilings: WorkClaimLimits, tail_policy: IncompleteTailPolicy,
+        path: impl AsRef<Path>,
+        expected_root: ContentDigest,
+        limits: DurableSessionLimits,
+        claim_ceilings: WorkClaimLimits,
+        tail_policy: IncompleteTailPolicy,
     ) -> Result<(Self, SessionRecoveryReceipt), DurableSessionError> {
-        recover(path.as_ref(), expected_root, limits, Some(claim_ceilings), tail_policy)
+        recover(
+            path.as_ref(),
+            expected_root,
+            limits,
+            Some(claim_ceilings),
+            tail_policy,
+        )
     }
 }
 
 fn recover(
-    path: &Path, expected_root: ContentDigest, limits: DurableSessionLimits,
-    claim_ceilings: Option<WorkClaimLimits>, tail_policy: IncompleteTailPolicy,
+    path: &Path,
+    expected_root: ContentDigest,
+    limits: DurableSessionLimits,
+    claim_ceilings: Option<WorkClaimLimits>,
+    tail_policy: IncompleteTailPolicy,
 ) -> Result<(DurableSessionStore, SessionRecoveryReceipt), DurableSessionError> {
     // read_report enforces a regular non-symlink path and hard byte/record ceilings.
     let report = read_report(path, limits)?;
-    if report.last_root() != expected_root { return Err(DurableSessionError::RootMismatch); }
+    if report.last_root() != expected_root {
+        return Err(DurableSessionError::RootMismatch);
+    }
     let (memory, coordination) = replay(&report, limits, claim_ceilings)?;
     let checkpoint_digest = memory.checkpoint(limits.max_checkpoint_bytes)?.digest();
     if tail_policy == IncompleteTailPolicy::Reject
@@ -113,48 +139,74 @@ fn recover(
     // SAME descriptor that will be trimmed; reject committed-state changes since semantic preflight. The path
     // and directory still require the existing exclusive/protected-owner contract.
     let mut file = OpenOptions::new().read(true).write(true).open(path)?;
-    if !file.metadata()?.is_file() { return Err(DurableSessionError::InvalidLayout); }
+    if !file.metadata()?.is_file() {
+        return Err(DurableSessionError::InvalidLayout);
+    }
     let limit = limits.max_journal_bytes.min(MAX_SESSION_JOURNAL_BYTES);
     let read_limit = u64::try_from(limit.saturating_add(1))
         .map_err(|_| DurableSessionError::CapacityExceeded)?;
     let mut bytes = Vec::new();
     file.by_ref().take(read_limit).read_to_end(&mut bytes)?;
-    if bytes.len() > limit { return Err(DurableSessionError::CapacityExceeded); }
+    if bytes.len() > limit {
+        return Err(DurableSessionError::CapacityExceeded);
+    }
     if fss_ledger::recover_bytes(&bytes)? != report {
         return Err(DurableSessionError::RootMismatch);
     }
     let committed_len = usize::try_from(report.committed_len())
         .map_err(|_| DurableSessionError::CapacityExceeded)?;
-    let tail = bytes.get(committed_len..).ok_or(DurableSessionError::InvalidHistory)?;
+    let tail = bytes
+        .get(committed_len..)
+        .ok_or(DurableSessionError::InvalidHistory)?;
     if tail.is_empty() != report.incomplete_tail().is_none() {
         return Err(DurableSessionError::InvalidHistory);
     }
     let receipt = SessionRecoveryReceipt {
         observed_file_digest: ContentDigest::sha256(&bytes),
-        discarded_tail_digest: if tail.is_empty() { None } else { Some(ContentDigest::sha256(tail)) },
-        discarded_bytes: u64::try_from(tail.len()).map_err(|_| DurableSessionError::CapacityExceeded)?,
+        discarded_tail_digest: if tail.is_empty() {
+            None
+        } else {
+            Some(ContentDigest::sha256(tail))
+        },
+        discarded_bytes: u64::try_from(tail.len())
+            .map_err(|_| DurableSessionError::CapacityExceeded)?,
         restored: SessionJournalInspection {
-            root: report.last_root(), checkpoint_digest, records: report.records().len(),
-            committed_bytes: report.committed_len(), incomplete_tail: None,
+            root: report.last_root(),
+            checkpoint_digest,
+            records: report.records().len(),
+            committed_bytes: report.committed_len(),
+            incomplete_tail: None,
         },
     };
-    if !tail.is_empty() { file.set_len(report.committed_len())?; }
+    if !tail.is_empty() {
+        file.set_len(report.committed_len())?;
+    }
     // Also synchronize a complete CommitWrite record after losing its original unsynced handle.
     file.sync_all()?;
     drop(file);
     // Revalidate the exact bounded prefix before installing a new writer. No partial semantic
     // state or receipt escapes on an I/O error, layout mutation, or root/length mismatch.
     let after = read_report(path, limits)?;
-    if after.last_root() != expected_root || after.committed_len() != report.committed_len()
-        || after.incomplete_tail().is_some() || after.records() != report.records()
-    { return Err(DurableSessionError::RootMismatch); }
+    if after.last_root() != expected_root
+        || after.committed_len() != report.committed_len()
+        || after.incomplete_tail().is_some()
+        || after.records() != report.records()
+    {
+        return Err(DurableSessionError::RootMismatch);
+    }
     let journal = Journal::open(path, IncompleteTailPolicy::Reject)?;
     if journal.last_root() != expected_root || journal.committed_len() != report.committed_len() {
         return Err(DurableSessionError::RootMismatch);
     }
     let store = DurableSessionStore {
-        journal, memory, checkpoint_digest, limits, records: report.records().len(),
-        fenced: false, pending: None, coordination,
+        journal,
+        memory,
+        checkpoint_digest,
+        limits,
+        records: report.records().len(),
+        fenced: false,
+        pending: None,
+        coordination,
     };
     Ok((store, receipt))
 }

@@ -5,18 +5,20 @@
 //! disclose footage. Its index is structurally verified independently of the
 //! original-packet verification performed for each retrieved recording window.
 
-/// Publication, reopening, and incremental verified retrieval through an existing owner.
-pub mod local;
 /// Codec-pinned HEVC catalogs over the same bounded discovery and selection core.
 pub mod hevc;
+/// Publication, reopening, and incremental verified retrieval through an existing owner.
+pub mod local;
 mod wire;
 
-use std::ops::Range;
+use super::recording::{
+    MAX_RECORDING_BYTES, MAX_RECORDING_MAPPINGS, MAX_RECORDING_PACKETS, MAX_RECORDING_SAMPLES,
+    PreparedRecording, RecordingScope,
+};
 use fss_core::{CanonicalEncode, ContentDigest};
 use fss_object::ObjectManifest;
 use fss_publication::SlotName;
-use super::recording::{PreparedRecording, RecordingScope, MAX_RECORDING_BYTES,
-    MAX_RECORDING_MAPPINGS, MAX_RECORDING_PACKETS, MAX_RECORDING_SAMPLES};
+use std::ops::Range;
 
 /// A page never scans or returns more than this many independently sealed windows.
 pub const MAX_CATALOG_WINDOWS: usize = 64;
@@ -28,7 +30,10 @@ pub const CATALOG_KIND: &str = "avc_recording_catalog_v1";
 // Chosen by the typed public entrypoint, NEVER inferred from an untrusted root.
 // No public callback can substitute a weaker window verifier.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum CatalogFamily { Avc, Hevc }
+enum CatalogFamily {
+    Avc,
+    Hevc,
+}
 impl CatalogFamily {
     fn domain(self) -> &'static str {
         match self {
@@ -37,7 +42,10 @@ impl CatalogFamily {
         }
     }
     fn kind(self) -> &'static str {
-        match self { Self::Avc => CATALOG_KIND, Self::Hevc => hevc::HEVC_CATALOG_KIND }
+        match self {
+            Self::Avc => CATALOG_KIND,
+            Self::Hevc => hevc::HEVC_CATALOG_KIND,
+        }
     }
     fn window_kind(self) -> &'static str {
         match self {
@@ -108,27 +116,48 @@ pub struct CatalogEntry {
 }
 impl CatalogEntry {
     /// Exact local slot that must still bind the expected root on retrieval.
-    pub fn slot(&self) -> &SlotName { &self.slot }
+    pub fn slot(&self) -> &SlotName {
+        &self.slot
+    }
     /// Immutable recording root, not a directory/name-based content guess.
-    pub fn root(&self) -> ContentDigest { self.root }
+    pub fn root(&self) -> ContentDigest {
+        self.root
+    }
     /// Half-open decode interval in the page's explicitly declared time basis.
-    pub fn decode_interval(&self) -> Range<u64> { self.interval.clone() }
+    pub fn decode_interval(&self) -> Range<u64> {
+        self.interval.clone()
+    }
     /// Advertised complete recording payload including its root, rechecked on read.
-    pub fn byte_len(&self) -> usize { self.bytes }
+    pub fn byte_len(&self) -> usize {
+        self.bytes
+    }
     /// Advertised primary-picture groups; these are not decoded-completeness certificates.
-    pub fn samples(&self) -> usize { self.samples }
+    pub fn samples(&self) -> usize {
+        self.samples
+    }
 
     fn from_window(slot: &SlotName, recording: &PreparedRecording) -> Self {
         let s = recording.summary();
-        Self { slot: slot.clone(), root: s.root, interval: s.decode_interval.clone(),
-            packets: s.packets, samples: s.samples, nals: s.nals, bytes: recording.byte_len(),
-            objects: recording.children().map(|(_, digest, _)| digest) }
+        Self {
+            slot: slot.clone(),
+            root: s.root,
+            interval: s.decode_interval.clone(),
+            packets: s.packets,
+            samples: s.samples,
+            nals: s.nals,
+            bytes: recording.byte_len(),
+            objects: recording.children().map(|(_, digest, _)| digest),
+        }
     }
     fn verify_window(&self, scope: &CatalogScope, recording: &PreparedRecording) -> Result<()> {
-        if recording.summary().scope != scope.recording || recording.summary().time_scale != scope.time_scale {
+        if recording.summary().scope != scope.recording
+            || recording.summary().time_scale != scope.time_scale
+        {
             return Err(CatalogError::Scope);
         }
-        if self != &Self::from_window(&self.slot, recording) { return Err(CatalogError::WindowMismatch); }
+        if self != &Self::from_window(&self.slot, recording) {
+            return Err(CatalogError::WindowMismatch);
+        }
         Ok(())
     }
 }
@@ -145,28 +174,47 @@ pub struct RecordingCatalog {
 }
 impl std::fmt::Debug for RecordingCatalog {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RecordingCatalog").field("root", &self.manifest.root())
-            .field("windows", &self.entries.len()).field("family", &self.family).finish_non_exhaustive()
+        f.debug_struct("RecordingCatalog")
+            .field("root", &self.manifest.root())
+            .field("windows", &self.entries.len())
+            .field("family", &self.family)
+            .finish_non_exhaustive()
     }
 }
 impl RecordingCatalog {
     /// Root-last manifest, including every window root AND every referenced leaf.
-    pub fn manifest(&self) -> &ObjectManifest { &self.manifest }
+    pub fn manifest(&self) -> &ObjectManifest {
+        &self.manifest
+    }
     /// Exact canonical metadata bytes, without source/media payload.
-    pub fn index_bytes(&self) -> &[u8] { &self.index }
+    pub fn index_bytes(&self) -> &[u8] {
+        &self.index
+    }
     /// Exact owner-supplied scope and decode clock.
-    pub fn scope(&self) -> &CatalogScope { &self.scope }
+    pub fn scope(&self) -> &CatalogScope {
+        &self.scope
+    }
     /// Chronologically ordered nonoverlapping recording descriptors.
-    pub fn entries(&self) -> &[CatalogEntry] { &self.entries }
+    pub fn entries(&self) -> &[CatalogEntry] {
+        &self.entries
+    }
     /// New catalog payload only; already archived recording objects are not recopied.
-    pub fn byte_len(&self) -> usize { self.index.len() + self.manifest.canonical_bytes().len() }
+    pub fn byte_len(&self) -> usize {
+        self.index.len() + self.manifest.canonical_bytes().len()
+    }
 
     /// Select complete IDR-led windows that overlap the query. Never crop encoded
     /// bytes or silently truncate a response to meet a budget. Unindexed intervals
     /// are explicit, including outside this page; none is evidence of physical absence.
-    pub fn select(&self, query: Range<u64>, limits: CatalogQueryLimits) -> Result<CatalogSelection> {
+    pub fn select(
+        &self,
+        query: Range<u64>,
+        limits: CatalogQueryLimits,
+    ) -> Result<CatalogSelection> {
         limits.validate()?;
-        if query.start >= query.end { return Err(CatalogError::Interval); }
+        if query.start >= query.end {
+            return Err(CatalogError::Interval);
+        }
         let mut selected = bounded_vec(self.entries.len())?;
         let mut unindexed = bounded_vec(self.entries.len() + 1)?;
         let mut cursor = query.start;
@@ -174,16 +222,37 @@ impl RecordingCatalog {
         for (ordinal, entry) in self.entries.iter().enumerate() {
             let start = query.start.max(entry.interval.start);
             let end = query.end.min(entry.interval.end);
-            if start >= end { continue; }
-            if selected.len() == limits.max_windows { return Err(CatalogError::Limit); }
-            bytes = bytes.checked_add(entry.bytes as u64).ok_or(CatalogError::Limit)?;
-            if bytes > limits.max_output_bytes { return Err(CatalogError::Limit); }
-            if cursor < start { unindexed.push(cursor..start); }
-            selected.push(SelectedWindow { ordinal, interval: start..end });
+            if start >= end {
+                continue;
+            }
+            if selected.len() == limits.max_windows {
+                return Err(CatalogError::Limit);
+            }
+            bytes = bytes
+                .checked_add(entry.bytes as u64)
+                .ok_or(CatalogError::Limit)?;
+            if bytes > limits.max_output_bytes {
+                return Err(CatalogError::Limit);
+            }
+            if cursor < start {
+                unindexed.push(cursor..start);
+            }
+            selected.push(SelectedWindow {
+                ordinal,
+                interval: start..end,
+            });
             cursor = end;
         }
-        if cursor < query.end { unindexed.push(cursor..query.end); }
-        Ok(CatalogSelection { root: self.manifest.root(), query, selected, unindexed, bytes })
+        if cursor < query.end {
+            unindexed.push(cursor..query.end);
+        }
+        Ok(CatalogSelection {
+            root: self.manifest.root(),
+            query,
+            selected,
+            unindexed,
+            bytes,
+        })
     }
 }
 
@@ -198,13 +267,18 @@ pub struct CatalogQueryLimits {
 }
 impl Default for CatalogQueryLimits {
     fn default() -> Self {
-        Self { max_windows: MAX_CATALOG_WINDOWS, max_output_bytes: 256 * 1024 * 1024 }
+        Self {
+            max_windows: MAX_CATALOG_WINDOWS,
+            max_output_bytes: 256 * 1024 * 1024,
+        }
     }
 }
 impl CatalogQueryLimits {
     fn validate(self) -> Result<()> {
-        if !(1..=MAX_CATALOG_WINDOWS).contains(&self.max_windows) || self.max_output_bytes == 0
-            || self.max_output_bytes > (MAX_CATALOG_WINDOWS * MAX_RECORDING_BYTES) as u64 {
+        if !(1..=MAX_CATALOG_WINDOWS).contains(&self.max_windows)
+            || self.max_output_bytes == 0
+            || self.max_output_bytes > (MAX_CATALOG_WINDOWS * MAX_RECORDING_BYTES) as u64
+        {
             return Err(CatalogError::Limit);
         }
         Ok(())
@@ -219,9 +293,13 @@ pub struct SelectedWindow {
 }
 impl SelectedWindow {
     /// Index into this exact catalog's entries, not another page's cursor.
-    pub fn ordinal(&self) -> usize { self.ordinal }
+    pub fn ordinal(&self) -> usize {
+        self.ordinal
+    }
     /// Requested overlap; the retriever still returns the complete original window.
-    pub fn requested_interval(&self) -> Range<u64> { self.interval.clone() }
+    pub fn requested_interval(&self) -> Range<u64> {
+        self.interval.clone()
+    }
 }
 
 /// Pure index answer, not a successful media-read receipt or a coverage witness.
@@ -235,24 +313,41 @@ pub struct CatalogSelection {
 }
 impl CatalogSelection {
     /// Exact immutable catalog against which the query was evaluated.
-    pub fn catalog_root(&self) -> ContentDigest { self.root }
+    pub fn catalog_root(&self) -> ContentDigest {
+        self.root
+    }
     /// Original half-open query in the declared decode clock.
-    pub fn query(&self) -> Range<u64> { self.query.clone() }
+    pub fn query(&self) -> Range<u64> {
+        self.query.clone()
+    }
     /// Ordered complete windows selected for subsequent verification.
-    pub fn windows(&self) -> &[SelectedWindow] { &self.selected }
+    pub fn windows(&self) -> &[SelectedWindow] {
+        &self.selected
+    }
     /// Parts of the query not indexed by this page; never camera-coverage evidence.
-    pub fn unindexed(&self) -> &[Range<u64>] { &self.unindexed }
+    pub fn unindexed(&self) -> &[Range<u64>] {
+        &self.unindexed
+    }
     /// Advertised complete-window output bytes, rechecked by the reader.
-    pub fn output_bytes(&self) -> u64 { self.bytes }
+    pub fn output_bytes(&self) -> u64 {
+        self.bytes
+    }
 }
 
 /// Prepare a bounded chronological page from already verified recording values.
 /// The caller owns the decode-clock assertion and separately authorizes catalog
 /// retention. Preparation performs no I/O and asserts no publication success.
-pub fn prepare_catalog(scope: CatalogScope, windows: &[CatalogWindow<'_>]) -> Result<RecordingCatalog> {
-    if windows.is_empty() || windows.len() > MAX_CATALOG_WINDOWS { return Err(CatalogError::Limit); }
+pub fn prepare_catalog(
+    scope: CatalogScope,
+    windows: &[CatalogWindow<'_>],
+) -> Result<RecordingCatalog> {
+    if windows.is_empty() || windows.len() > MAX_CATALOG_WINDOWS {
+        return Err(CatalogError::Limit);
+    }
     let mut builder = CatalogBuilder::new(scope)?;
-    for window in windows { builder.push(window.slot, window.recording)?; }
+    for window in windows {
+        builder.push(window.slot, window.recording)?;
+    }
     builder.prepare()
 }
 
@@ -270,26 +365,53 @@ impl CatalogBuilder {
         Self::new_for(scope, CatalogFamily::Avc)
     }
     fn new_for(scope: CatalogScope, family: CatalogFamily) -> Result<Self> {
-        if scope.recording.generation == 0 || scope.time_scale == 0 { return Err(CatalogError::Scope); }
-        Ok(Self { family, scope, entries: Vec::new() })
+        if scope.recording.generation == 0 || scope.time_scale == 0 {
+            return Err(CatalogError::Scope);
+        }
+        Ok(Self {
+            family,
+            scope,
+            entries: Vec::new(),
+        })
     }
     /// Number of descriptors retained; no original/media payload is owned here.
-    pub fn len(&self) -> usize { self.entries.len() }
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
     /// Whether no recording has been selected for this page.
-    pub fn is_empty(&self) -> bool { self.entries.is_empty() }
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
     /// Admit one already verified recording, transactionally. Refusal leaves all
     /// prior descriptors and the caller's original recording untouched.
     pub fn push(&mut self, slot: &SlotName, recording: &PreparedRecording) -> Result<()> {
-        if self.entries.len() == MAX_CATALOG_WINDOWS { return Err(CatalogError::Limit); }
-        if recording.summary().scope != self.scope.recording || recording.summary().time_scale != self.scope.time_scale {
+        if self.entries.len() == MAX_CATALOG_WINDOWS {
+            return Err(CatalogError::Limit);
+        }
+        if recording.summary().scope != self.scope.recording
+            || recording.summary().time_scale != self.scope.time_scale
+        {
             return Err(CatalogError::Scope);
         }
-        if recording.manifest().kind() != self.family.window_kind() { return Err(CatalogError::Digest); }
+        if recording.manifest().kind() != self.family.window_kind() {
+            return Err(CatalogError::Digest);
+        }
         let entry = CatalogEntry::from_window(slot, recording);
         validate(&self.scope, std::slice::from_ref(&entry), self.family)?;
-        if self.entries.last().is_some_and(|last| last.interval.end > entry.interval.start)
-            || self.entries.iter().any(|p| p.root == entry.root || p.slot == entry.slot) { return Err(CatalogError::Order); }
-        self.entries.try_reserve_exact(1).map_err(|_| CatalogError::Limit)?;
+        if self
+            .entries
+            .last()
+            .is_some_and(|last| last.interval.end > entry.interval.start)
+            || self
+                .entries
+                .iter()
+                .any(|p| p.root == entry.root || p.slot == entry.slot)
+        {
+            return Err(CatalogError::Order);
+        }
+        self.entries
+            .try_reserve_exact(1)
+            .map_err(|_| CatalogError::Limit)?;
         self.entries.push(entry);
         Ok(())
     }
@@ -298,62 +420,126 @@ impl CatalogBuilder {
         validate(&self.scope, &self.entries, self.family)?;
         let index = wire::encode(&self.scope, &self.entries, self.family)?;
         let manifest = manifest(&self.entries, digest(&index)?, self.family)?;
-        if index.len() + manifest.canonical_bytes().len() > MAX_CATALOG_BYTES { return Err(CatalogError::Limit); }
-        Ok(RecordingCatalog { family: self.family, scope: self.scope, entries: self.entries, index, manifest })
+        if index.len() + manifest.canonical_bytes().len() > MAX_CATALOG_BYTES {
+            return Err(CatalogError::Limit);
+        }
+        Ok(RecordingCatalog {
+            family: self.family,
+            scope: self.scope,
+            entries: self.entries,
+            index,
+            manifest,
+        })
     }
 }
 
 /// Verify checksum, canonical fields, expected owner time basis, and exact flat
 /// reference closure. This deliberately does not claim to read the named windows.
-pub fn verify_catalog(manifest_value: &ObjectManifest, index: &[u8], expected: &CatalogScope)
-    -> Result<RecordingCatalog>
-{
+pub fn verify_catalog(
+    manifest_value: &ObjectManifest,
+    index: &[u8],
+    expected: &CatalogScope,
+) -> Result<RecordingCatalog> {
     verify_catalog_for(manifest_value, index, expected, CatalogFamily::Avc)
 }
 
-fn verify_catalog_for(manifest_value: &ObjectManifest, index: &[u8], expected: &CatalogScope,
-    family: CatalogFamily) -> Result<RecordingCatalog>
-{
-    if index.len().checked_add(manifest_value.canonical_bytes().len())
-        .is_none_or(|n| n > MAX_CATALOG_BYTES) { return Err(CatalogError::Limit); }
+fn verify_catalog_for(
+    manifest_value: &ObjectManifest,
+    index: &[u8],
+    expected: &CatalogScope,
+    family: CatalogFamily,
+) -> Result<RecordingCatalog> {
+    if index
+        .len()
+        .checked_add(manifest_value.canonical_bytes().len())
+        .is_none_or(|n| n > MAX_CATALOG_BYTES)
+    {
+        return Err(CatalogError::Limit);
+    }
     let (scope, entries) = wire::decode(index, family)?;
-    if &scope != expected { return Err(CatalogError::Scope); }
+    if &scope != expected {
+        return Err(CatalogError::Scope);
+    }
     validate(&scope, &entries, family)?;
-    if manifest(&entries, digest(index)?, family)? != *manifest_value { return Err(CatalogError::Digest); }
-    if wire::encode(&scope, &entries, family)? != index { return Err(CatalogError::Malformed); }
+    if manifest(&entries, digest(index)?, family)? != *manifest_value {
+        return Err(CatalogError::Digest);
+    }
+    if wire::encode(&scope, &entries, family)? != index {
+        return Err(CatalogError::Malformed);
+    }
     let mut owned = bounded_vec(index.len())?;
     owned.extend_from_slice(index);
-    Ok(RecordingCatalog { family, scope, entries, index: owned, manifest: manifest_value.clone() })
+    Ok(RecordingCatalog {
+        family,
+        scope,
+        entries,
+        index: owned,
+        manifest: manifest_value.clone(),
+    })
 }
 
 fn validate(scope: &CatalogScope, entries: &[CatalogEntry], family: CatalogFamily) -> Result<()> {
-    if scope.recording.generation == 0 || scope.time_scale == 0 { return Err(CatalogError::Scope); }
-    if entries.is_empty() || entries.len() > MAX_CATALOG_WINDOWS { return Err(CatalogError::Limit); }
+    if scope.recording.generation == 0 || scope.time_scale == 0 {
+        return Err(CatalogError::Scope);
+    }
+    if entries.is_empty() || entries.len() > MAX_CATALOG_WINDOWS {
+        return Err(CatalogError::Limit);
+    }
     for (i, e) in entries.iter().enumerate() {
-        if e.interval.start >= e.interval.end { return Err(CatalogError::Interval); }
-        if e.packets == 0 || e.packets > MAX_RECORDING_PACKETS || e.samples == 0 || e.samples > MAX_RECORDING_SAMPLES
-            || e.nals == 0 || e.nals > MAX_RECORDING_MAPPINGS || e.bytes == 0 || e.bytes > MAX_RECORDING_BYTES {
+        if e.interval.start >= e.interval.end {
+            return Err(CatalogError::Interval);
+        }
+        if e.packets == 0
+            || e.packets > MAX_RECORDING_PACKETS
+            || e.samples == 0
+            || e.samples > MAX_RECORDING_SAMPLES
+            || e.nals == 0
+            || e.nals > MAX_RECORDING_MAPPINGS
+            || e.bytes == 0
+            || e.bytes > MAX_RECORDING_BYTES
+        {
             return Err(CatalogError::Limit);
         }
         if e.root.algorithm() != fss_core::DigestAlgorithm::Sha256
-            || e.objects.iter().any(|d| d.algorithm() != fss_core::DigestAlgorithm::Sha256) {
+            || e.objects
+                .iter()
+                .any(|d| d.algorithm() != fss_core::DigestAlgorithm::Sha256)
+        {
             return Err(CatalogError::Digest);
         }
         // A descriptor must name the exact standard recording manifest, not an
         // arbitrary object that merely happens to have plausible time/count fields.
-        let window = ObjectManifest::new(family.window_kind(),
-            [e.objects[0], e.objects[1], e.objects[2]], Some(e.objects[3]))
-            .map_err(|_| CatalogError::Digest)?;
-        if window.root() != e.root { return Err(CatalogError::Digest); }
+        let window = ObjectManifest::new(
+            family.window_kind(),
+            [e.objects[0], e.objects[1], e.objects[2]],
+            Some(e.objects[3]),
+        )
+        .map_err(|_| CatalogError::Digest)?;
+        if window.root() != e.root {
+            return Err(CatalogError::Digest);
+        }
         if i > 0 && entries[i - 1].interval.end > e.interval.start
-            || entries[..i].iter().any(|p| p.root == e.root || p.slot == e.slot) { return Err(CatalogError::Order); }
+            || entries[..i]
+                .iter()
+                .any(|p| p.root == e.root || p.slot == e.slot)
+        {
+            return Err(CatalogError::Order);
+        }
     }
     Ok(())
 }
-fn manifest(entries: &[CatalogEntry], index: ContentDigest, family: CatalogFamily) -> Result<ObjectManifest> {
+fn manifest(
+    entries: &[CatalogEntry],
+    index: ContentDigest,
+    family: CatalogFamily,
+) -> Result<ObjectManifest> {
     let mut closure = bounded_vec(entries.len() * 5)?;
-    for e in entries { closure.push(e.root); closure.extend_from_slice(&e.objects); }
-    closure.sort_unstable(); closure.dedup();
+    for e in entries {
+        closure.push(e.root);
+        closure.extend_from_slice(&e.objects);
+    }
+    closure.sort_unstable();
+    closure.dedup();
     // Flatten leaf references so tombstoning any source/derivative invalidates this
     // catalog even when a child root is unavailable to the publisher's descent.
     ObjectManifest::new(family.kind(), closure, Some(index)).map_err(|_| CatalogError::Digest)
@@ -363,6 +549,7 @@ fn digest(bytes: &[u8]) -> Result<ContentDigest> {
 }
 fn bounded_vec<T>(capacity: usize) -> Result<Vec<T>> {
     let mut v = Vec::new();
-    v.try_reserve_exact(capacity).map_err(|_| CatalogError::Limit)?;
+    v.try_reserve_exact(capacity)
+        .map_err(|_| CatalogError::Limit)?;
     Ok(v)
 }

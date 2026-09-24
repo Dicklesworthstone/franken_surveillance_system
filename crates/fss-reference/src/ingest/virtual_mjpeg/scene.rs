@@ -4,16 +4,25 @@ use super::*;
 use fss_core::{CanonicalEncode, CanonicalEncoder};
 
 pub(super) fn rectangle(spec: &MjpegCameraSpec, index: u32) -> Option<SyntheticRectangle> {
-    if index < spec.warmup_frames { return None; }
+    if index < spec.warmup_frames {
+        return None;
+    }
     let columns = u64::from(spec.width / 8 - 1);
     let rows = u64::from(spec.height / 8 - 1);
     let phase = (spec.seed % columns + u64::from(index - spec.warmup_frames)) % columns;
-    Some(SyntheticRectangle { x: phase as u16 * 8, y: ((spec.seed >> 32) % rows) as u16 * 8,
-        width: 16, height: 16 })
+    Some(SyntheticRectangle {
+        x: phase as u16 * 8,
+        y: ((spec.seed >> 32) % rows) as u16 * 8,
+        width: 16,
+        height: 16,
+    })
 }
 
-pub(super) fn render(spec: &MjpegCameraSpec, rectangle: Option<SyntheticRectangle>,
-    budget: &mut MjpegSourceBudget<'_>) -> Result<Vec<u8>, MjpegSourceError> {
+pub(super) fn render(
+    spec: &MjpegCameraSpec,
+    rectangle: Option<SyntheticRectangle>,
+    budget: &mut MjpegSourceBudget<'_>,
+) -> Result<Vec<u8>, MjpegSourceError> {
     budget.reserve(u64::from(spec.width) * u64::from(spec.height))?;
     let width = usize::from(spec.width);
     let mut pixels = vec![32_u8; width * usize::from(spec.height)];
@@ -29,9 +38,19 @@ pub(super) fn render(spec: &MjpegCameraSpec, rectangle: Option<SyntheticRectangl
     Ok(pixels)
 }
 
-pub(super) fn recipe(spec: &MjpegCameraSpec, index: u32, capture: CaptureInterval,
-    rectangle: Option<SyntheticRectangle>) -> Vec<u8> {
-    FrameRecipe { spec, index, capture, rectangle }.canonical_bytes()
+pub(super) fn recipe(
+    spec: &MjpegCameraSpec,
+    index: u32,
+    capture: CaptureInterval,
+    rectangle: Option<SyntheticRectangle>,
+) -> Vec<u8> {
+    FrameRecipe {
+        spec,
+        index,
+        capture,
+        rectangle,
+    }
+    .canonical_bytes()
 }
 struct FrameRecipe<'a> {
     spec: &'a MjpegCameraSpec,
@@ -62,7 +81,9 @@ impl CanonicalEncode for FrameRecipe<'_> {
             None => encoder.u64(0),
             Some(rect) => {
                 encoder.u64(1);
-                for value in [rect.x, rect.y, rect.width, rect.height] { encoder.u64(u64::from(value)); }
+                for value in [rect.x, rect.y, rect.width, rect.height] {
+                    encoder.u64(u64::from(value));
+                }
             }
         }
     }

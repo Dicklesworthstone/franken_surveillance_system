@@ -41,10 +41,15 @@ impl TrackerConfig {
             return Err(TrackerError::InvalidConfig("max_misses must be >= 1"));
         }
         if !self.iou_threshold.is_finite() || !(0.0..=1.0).contains(&self.iou_threshold) {
-            return Err(TrackerError::InvalidConfig("iou_threshold must be in [0, 1]"));
+            return Err(TrackerError::InvalidConfig(
+                "iou_threshold must be in [0, 1]",
+            ));
         }
-        if !self.process_noise.is_finite() || !self.measurement_noise.is_finite()
-            || self.process_noise <= 0.0 || self.measurement_noise <= 0.0 {
+        if !self.process_noise.is_finite()
+            || !self.measurement_noise.is_finite()
+            || self.process_noise <= 0.0
+            || self.measurement_noise <= 0.0
+        {
             return Err(TrackerError::InvalidConfig("noise must be positive"));
         }
         Ok(())
@@ -139,7 +144,10 @@ impl KalmanState {
         for (i, row) in p.iter_mut().enumerate() {
             row[i] = if i < 2 { 10.0 } else { 100.0 };
         }
-        Self { x: [cx, cy, 0.0, 0.0], p }
+        Self {
+            x: [cx, cy, 0.0, 0.0],
+            p,
+        }
     }
 
     fn predict(&mut self, dt: f64, process_noise: f64) {
@@ -152,10 +160,18 @@ impl KalmanState {
         for (i, row) in self.p.iter_mut().enumerate() {
             for (j, cell) in row.iter_mut().enumerate() {
                 let mut value = prior[i][j];
-                if i < 2 { value += dt * prior[i + 2][j]; }
-                if j < 2 { value += dt * prior[i][j + 2]; }
-                if i < 2 && j < 2 { value += dt * dt * prior[i + 2][j + 2]; }
-                if i == j { value += process_noise * dt; }
+                if i < 2 {
+                    value += dt * prior[i + 2][j];
+                }
+                if j < 2 {
+                    value += dt * prior[i][j + 2];
+                }
+                if i < 2 && j < 2 {
+                    value += dt * dt * prior[i + 2][j + 2];
+                }
+                if i == j {
+                    value += process_noise * dt;
+                }
                 *cell = value;
             }
         }
@@ -170,7 +186,9 @@ impl KalmanState {
             let innovation_variance = prior[axis][axis] + measurement_noise;
             let gain: [f64; 4] = std::array::from_fn(|i| prior[i][axis] / innovation_variance);
             let innovation = measurement - self.x[axis];
-            for (state, k) in self.x.iter_mut().zip(gain) { *state += k * innovation; }
+            for (state, k) in self.x.iter_mut().zip(gain) {
+                *state += k * innovation;
+            }
 
             // Joseph form: (I-KH) P (I-KH)^T + K R K^T. Do not update only
             // diagonal cells: that destroys symmetry and leaves stale uncertainty.
@@ -182,7 +200,11 @@ impl KalmanState {
             let mut left = [[0.0; 4]; 4];
             for (i, row) in left.iter_mut().enumerate() {
                 for (j, cell) in row.iter_mut().enumerate() {
-                    *cell = residual[i].iter().enumerate().map(|(k, a)| a * prior[k][j]).sum();
+                    *cell = residual[i]
+                        .iter()
+                        .enumerate()
+                        .map(|(k, a)| a * prior[k][j])
+                        .sum();
                 }
             }
             let mut posterior = [[0.0; 4]; 4];
@@ -257,11 +279,14 @@ impl MultiObjectTracker {
         // 2. Global association: a locally attractive pair must not strand a
         // second track when a complete feasible matching exists.
         let order = assignment::detection_order(detections);
-        let matches = assignment::associate(&self.tracks, detections, &order, self.config.iou_threshold);
+        let matches =
+            assignment::associate(&self.tracks, detections, &order, self.config.iou_threshold);
         let mut assigned_det = vec![false; detections.len()];
         let assigned_trk: Vec<_> = matches.iter().map(Option::is_some).collect();
         for (ti, matched) in matches.into_iter().enumerate() {
-            let Some(di) = matched else { continue; };
+            let Some(di) = matched else {
+                continue;
+            };
             assigned_det[di] = true;
             let d = &detections[di];
             let cx = d.box_x + d.box_w / 2.0;
@@ -343,8 +368,8 @@ impl MultiObjectTracker {
         let max_misses = self.config.max_misses;
         let mut i = 0;
         while i < self.tracks.len() {
-            let remove = self.tracks[i].status == TrackStatus::Lost
-                && self.tracks[i].misses > max_misses;
+            let remove =
+                self.tracks[i].status == TrackStatus::Lost && self.tracks[i].misses > max_misses;
             if remove {
                 self.tracks.swap_remove(i);
                 self.kalman.swap_remove(i);
@@ -386,7 +411,12 @@ mod tests {
     }
 
     fn det(x: f64, y: f64) -> Detection {
-        Detection { box_x: x, box_y: y, box_w: 20.0, box_h: 20.0 }
+        Detection {
+            box_x: x,
+            box_y: y,
+            box_w: 20.0,
+            box_h: 20.0,
+        }
     }
 
     #[test]
@@ -420,9 +450,14 @@ mod tests {
         // Empty frames: track goes Lost then Deleted.
         for _ in 0..5 {
             let out = t.step(&[]);
-            if out.tracks.is_empty() { break; }
+            if out.tracks.is_empty() {
+                break;
+            }
         }
-        assert!(t.tracks.is_empty(), "track should have been deleted after max misses");
+        assert!(
+            t.tracks.is_empty(),
+            "track should have been deleted after max misses"
+        );
         Ok(())
     }
 
@@ -435,7 +470,11 @@ mod tests {
             let bx = 100.0 - frame as f64 * 5.0;
             let detections = vec![det(ax, 20.0), det(bx, 20.0)];
             let out = t.step(&detections);
-            let confirmed: Vec<_> = out.tracks.iter().filter(|tr| tr.status == TrackStatus::Confirmed).collect();
+            let confirmed: Vec<_> = out
+                .tracks
+                .iter()
+                .filter(|tr| tr.status == TrackStatus::Confirmed)
+                .collect();
             if confirmed.len() >= 2 {
                 assert_ne!(confirmed[0].id, confirmed[1].id);
             }
@@ -459,7 +498,8 @@ mod tests {
     }
 
     #[test]
-    fn empty_detections_on_empty_tracker_produce_empty_output() -> Result<(), Box<dyn std::error::Error>> {
+    fn empty_detections_on_empty_tracker_produce_empty_output()
+    -> Result<(), Box<dyn std::error::Error>> {
         let mut t = MultiObjectTracker::new(config())?;
         let out = t.step(&[]);
         assert!(out.tracks.is_empty());
@@ -474,20 +514,33 @@ mod tests {
         cfg.min_hits = 3;
         let mut t = MultiObjectTracker::new(cfg)?;
         // Creation frame: Tentative with one hit.
-        assert_eq!(t.step(&[det(10.0, 20.0)]).tracks[0].status, TrackStatus::Tentative);
+        assert_eq!(
+            t.step(&[det(10.0, 20.0)]).tracks[0].status,
+            TrackStatus::Tentative
+        );
         // First MATCH must not confirm: two hits < min_hits.
-        assert_eq!(t.step(&[det(10.0, 20.0)]).tracks[0].status, TrackStatus::Tentative);
+        assert_eq!(
+            t.step(&[det(10.0, 20.0)]).tracks[0].status,
+            TrackStatus::Tentative
+        );
         // Third consecutive hit reaches min_hits: now Confirmed.
-        assert_eq!(t.step(&[det(10.0, 20.0)]).tracks[0].status, TrackStatus::Confirmed);
+        assert_eq!(
+            t.step(&[det(10.0, 20.0)]).tracks[0].status,
+            TrackStatus::Confirmed
+        );
         Ok(())
     }
 
     #[test]
-    fn unmatched_tentative_track_is_deleted_immediately_not_coasted() -> Result<(), Box<dyn std::error::Error>> {
+    fn unmatched_tentative_track_is_deleted_immediately_not_coasted()
+    -> Result<(), Box<dyn std::error::Error>> {
         let mut t = MultiObjectTracker::new(config())?;
         t.step(&[det(10.0, 20.0)]);
         let out = t.step(&[]);
-        assert!(out.tracks.is_empty(), "one-hit proposal must not linger as Lost");
+        assert!(
+            out.tracks.is_empty(),
+            "one-hit proposal must not linger as Lost"
+        );
         assert_eq!(out.deleted_tracks, 1);
         Ok(())
     }

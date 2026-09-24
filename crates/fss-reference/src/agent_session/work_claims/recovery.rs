@@ -131,7 +131,10 @@ fn owner_still_live(
     let owner_id = SessionId::parse(head.claim.owner_session_id.as_str())?;
     // A lost session store must not look like a certified owner closure. Retained tombstones,
     // expiry, or narrowed grants can establish an orphan; a missing record cannot.
-    let owner = sessions.sessions.get(&owner_id).ok_or(WorkClaimError::Unavailable)?;
+    let owner = sessions
+        .sessions
+        .get(&owner_id)
+        .ok_or(WorkClaimError::Unavailable)?;
     if owner.session.principal_id != head.principal || owner.session.mission_id != head.mission {
         return Err(WorkClaimError::Unavailable);
     }

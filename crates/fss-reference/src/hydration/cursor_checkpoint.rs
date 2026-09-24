@@ -2,8 +2,10 @@
 
 use fss_core::{CanonicalDecoder, CanonicalEncoder};
 
-use super::{ContentDigest, ContractError, HydrationError, IssuedCursorRecord,
-    ReferenceHydrationCatalog, SessionId, TimestampNs};
+use super::{
+    ContentDigest, ContractError, HydrationError, IssuedCursorRecord, ReferenceHydrationCatalog,
+    SessionId, TimestampNs,
+};
 use std::collections::BTreeMap;
 
 const DOMAIN: &str = "fss.hydration_cursor_checkpoint.v1";
@@ -19,9 +21,11 @@ pub(crate) struct CursorCheckpoint {
 }
 
 impl CursorCheckpoint {
-    pub(crate) fn decode(bytes: &[u8], max_bytes: usize, max_records: usize)
-        -> Result<Self, HydrationError>
-    {
+    pub(crate) fn decode(
+        bytes: &[u8],
+        max_bytes: usize,
+        max_records: usize,
+    ) -> Result<Self, HydrationError> {
         if bytes.len() > max_bytes.min(MAX_BYTES) {
             return Err(HydrationError::CapacityExceeded);
         }
@@ -36,8 +40,8 @@ impl CursorCheckpoint {
             return Err(ContractError::GenerationConflict.into());
         }
         let captured_at = TimestampNs(decoder.i128()?);
-        let count = usize::try_from(decoder.u64()?)
-            .map_err(|_| HydrationError::CapacityExceeded)?;
+        let count =
+            usize::try_from(decoder.u64()?).map_err(|_| HydrationError::CapacityExceeded)?;
         if count > max_records.min(MAX_RECORDS) || count > decoder.remaining() / 67 {
             return Err(HydrationError::CapacityExceeded);
         }
@@ -68,7 +72,10 @@ impl CursorCheckpoint {
             records.insert(cursor_digest, record);
         }
         decoder.ensure_finished()?;
-        Ok(Self { captured_at, records })
+        Ok(Self {
+            captured_at,
+            records,
+        })
     }
 
     fn encode(&self, max_bytes: usize) -> Result<Vec<u8>, HydrationError> {
@@ -79,12 +86,14 @@ impl CursorCheckpoint {
             return Err(HydrationError::CapacityExceeded);
         }
         for record in self.records.values() {
-            if !valid_text(record.session_id.as_str()) || !valid_text(&record.handle_id)
+            if !valid_text(record.session_id.as_str())
+                || !valid_text(&record.handle_id)
                 || !(1..=4).contains(&record.next_ordinal)
             {
                 return Err(HydrationError::WrongContinuation);
             }
-            length = length.checked_add(67 + record.session_id.as_str().len() + record.handle_id.len())
+            length = length
+                .checked_add(67 + record.session_id.as_str().len() + record.handle_id.len())
                 .ok_or(HydrationError::CapacityExceeded)?;
         }
         if length > ceiling {
@@ -114,30 +123,47 @@ impl CursorCheckpoint {
     }
 
     /// Only the recorded invocation may issue or consume a cursor. Expired retirement is explicit.
-    pub(crate) fn validate_disclosure(&self, prior: Option<&Self>, session: &SessionId,
-        consumed: Option<ContentDigest>, issued: Option<ContentDigest>) -> Result<(), HydrationError>
-    {
-        if let Some(prior) = prior { self.validate_successor(prior)?; }
-        if consumed.is_some() && consumed == issued { return Err(HydrationError::WrongContinuation); }
+    pub(crate) fn validate_disclosure(
+        &self,
+        prior: Option<&Self>,
+        session: &SessionId,
+        consumed: Option<ContentDigest>,
+        issued: Option<ContentDigest>,
+    ) -> Result<(), HydrationError> {
+        if let Some(prior) = prior {
+            self.validate_successor(prior)?;
+        }
+        if consumed.is_some() && consumed == issued {
+            return Err(HydrationError::WrongContinuation);
+        }
         for (digest, record) in &self.records {
             let old = prior.and_then(|p| p.record(digest));
             if Some(*digest) == consumed {
                 let old = old.ok_or(HydrationError::ContinuationUnissued)?;
-                if old.consumed || !record.consumed || old.session_id != *session
+                if old.consumed
+                    || !record.consumed
+                    || old.session_id != *session
                     || self.captured_at >= old.expires_at
-                { return Err(HydrationError::WrongContinuation); }
+                {
+                    return Err(HydrationError::WrongContinuation);
+                }
             } else if Some(*digest) == issued {
-                if record.consumed || record.session_id != *session
+                if record.consumed
+                    || record.session_id != *session
                     || self.captured_at >= record.expires_at
                     || old.is_some_and(|old| old != record)
-                { return Err(HydrationError::WrongContinuation); }
+                {
+                    return Err(HydrationError::WrongContinuation);
+                }
             } else if old != Some(record) {
                 return Err(HydrationError::WrongContinuation);
             }
         }
         if consumed.is_some_and(|d| !self.records.contains_key(&d))
             || issued.is_some_and(|d| !self.records.contains_key(&d))
-        { return Err(HydrationError::WrongContinuation); }
+        {
+            return Err(HydrationError::WrongContinuation);
+        }
         Ok(())
     }
 
@@ -149,9 +175,10 @@ impl CursorCheckpoint {
         self.validate_resident(&prior.records)
     }
 
-    fn validate_resident(&self, resident: &BTreeMap<ContentDigest, IssuedCursorRecord>)
-        -> Result<(), HydrationError>
-    {
+    fn validate_resident(
+        &self,
+        resident: &BTreeMap<ContentDigest, IssuedCursorRecord>,
+    ) -> Result<(), HydrationError> {
         for (digest, old) in resident {
             match self.records.get(digest) {
                 Some(new) if same_issuance(old, new) && (!old.consumed || new.consumed) => {}
@@ -169,10 +196,16 @@ impl ReferenceHydrationCatalog {
     /// `now` is the authority owner's trusted nondecreasing clock. This does not persist data.
     /// A durable owner must commit this snapshot atomically with disclosure charges before
     /// releasing a response, and retain the exact latest checkpoint identity across recovery.
-    pub fn checkpoint_cursors(&self, now: TimestampNs, max_bytes: usize)
-        -> Result<Vec<u8>, HydrationError>
-    {
-        CursorCheckpoint { captured_at: now, records: self.issued_cursors.clone() }.encode(max_bytes)
+    pub fn checkpoint_cursors(
+        &self,
+        now: TimestampNs,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, HydrationError> {
+        CursorCheckpoint {
+            captured_at: now,
+            records: self.issued_cursors.clone(),
+        }
+        .encode(max_bytes)
     }
 
     /// Restores replay protection from a trusted latest checkpoint, without restoring grants.
@@ -183,10 +216,14 @@ impl ReferenceHydrationCatalog {
     /// be rebuilt and revalidated by their existing owners. No source payload is restored.
     /// Resident consumed records cannot become active; unjournaled live records cause refusal.
     /// All validation and allocation precede mutation. `now` cannot precede capture time.
-    pub fn restore_cursor_checkpoint(&mut self, bytes: &[u8], max_bytes: usize, now: TimestampNs)
-        -> Result<(), HydrationError>
-    {
-        let checkpoint = CursorCheckpoint::decode(bytes, max_bytes, self.limits.max_issued_cursors)?;
+    pub fn restore_cursor_checkpoint(
+        &mut self,
+        bytes: &[u8],
+        max_bytes: usize,
+        now: TimestampNs,
+    ) -> Result<(), HydrationError> {
+        let checkpoint =
+            CursorCheckpoint::decode(bytes, max_bytes, self.limits.max_issued_cursors)?;
         if now < checkpoint.captured_at {
             return Err(ContractError::StaleAnchor.into());
         }
@@ -201,8 +238,10 @@ fn valid_text(text: &str) -> bool {
 }
 
 fn same_issuance(a: &IssuedCursorRecord, b: &IssuedCursorRecord) -> bool {
-    a.cursor_digest == b.cursor_digest && a.session_id == b.session_id
-        && a.handle_id == b.handle_id && a.expires_at == b.expires_at
+    a.cursor_digest == b.cursor_digest
+        && a.session_id == b.session_id
+        && a.handle_id == b.handle_id
+        && a.expires_at == b.expires_at
         && a.next_ordinal == b.next_ordinal
 }
 
@@ -214,11 +253,17 @@ mod tests {
     fn catalog(consumed: bool) -> Result<ReferenceHydrationCatalog, HydrationError> {
         let mut catalog = ReferenceHydrationCatalog::new();
         let digest = ContentDigest::sha256(b"issued cursor");
-        catalog.issued_cursors.insert(digest, IssuedCursorRecord {
-            cursor_digest: digest, session_id: SessionId::parse("session:checkpoint")?,
-            handle_id: "handle:checkpoint".to_owned(), expires_at: TimestampNs(100),
-            next_ordinal: 3, consumed,
-        });
+        catalog.issued_cursors.insert(
+            digest,
+            IssuedCursorRecord {
+                cursor_digest: digest,
+                session_id: SessionId::parse("session:checkpoint")?,
+                handle_id: "handle:checkpoint".to_owned(),
+                expires_at: TimestampNs(100),
+                next_ordinal: 3,
+                consumed,
+            },
+        );
         Ok(catalog)
     }
 
@@ -245,10 +290,12 @@ mod tests {
             assert!(CursorCheckpoint::decode(&bytes[..end], 4096, 10).is_err());
         }
         for index in 0..bytes.len() {
-            let mut corrupt = bytes.clone(); corrupt[index] ^= 1;
+            let mut corrupt = bytes.clone();
+            corrupt[index] ^= 1;
             assert!(CursorCheckpoint::decode(&corrupt, 4096, 10).is_err());
         }
-        let mut trailing = bytes; trailing.push(0);
+        let mut trailing = bytes;
+        trailing.push(0);
         assert!(CursorCheckpoint::decode(&trailing, 4096, 10).is_err());
         Ok(())
     }
@@ -258,13 +305,27 @@ mod tests {
         let mut resident = catalog(true)?;
         let before = resident.issued_cursors.clone();
         let active = catalog(false)?.checkpoint_cursors(TimestampNs(20), 4096)?;
-        assert!(resident.restore_cursor_checkpoint(&active, 4096, TimestampNs(21)).is_err());
+        assert!(
+            resident
+                .restore_cursor_checkpoint(&active, 4096, TimestampNs(21))
+                .is_err()
+        );
         let empty = ReferenceHydrationCatalog::new().checkpoint_cursors(TimestampNs(20), 4096)?;
-        assert!(resident.restore_cursor_checkpoint(&empty, 4096, TimestampNs(21)).is_err());
+        assert!(
+            resident
+                .restore_cursor_checkpoint(&empty, 4096, TimestampNs(21))
+                .is_err()
+        );
         let mut rebound = catalog(true)?;
-        for record in rebound.issued_cursors.values_mut() { record.handle_id.push_str(":other"); }
+        for record in rebound.issued_cursors.values_mut() {
+            record.handle_id.push_str(":other");
+        }
         let changed = rebound.checkpoint_cursors(TimestampNs(20), 4096)?;
-        assert!(resident.restore_cursor_checkpoint(&changed, 4096, TimestampNs(21)).is_err());
+        assert!(
+            resident
+                .restore_cursor_checkpoint(&changed, 4096, TimestampNs(21))
+                .is_err()
+        );
         assert_eq!(resident.issued_cursors, before);
         Ok(())
     }
@@ -273,8 +334,16 @@ mod tests {
     fn capture_clock_capacity_and_expired_retirement_are_explicit() -> TestResult {
         let mut catalog = catalog(true)?;
         let bytes = catalog.checkpoint_cursors(TimestampNs(20), 4096)?;
-        assert!(catalog.checkpoint_cursors(TimestampNs(20), bytes.len() - 1).is_err());
-        assert!(catalog.restore_cursor_checkpoint(&bytes, 4096, TimestampNs(19)).is_err());
+        assert!(
+            catalog
+                .checkpoint_cursors(TimestampNs(20), bytes.len() - 1)
+                .is_err()
+        );
+        assert!(
+            catalog
+                .restore_cursor_checkpoint(&bytes, 4096, TimestampNs(19))
+                .is_err()
+        );
         assert!(CursorCheckpoint::decode(&bytes, 4096, 0).is_err());
         let prior = CursorCheckpoint::decode(&bytes, 4096, 10)?;
         let empty = ReferenceHydrationCatalog::new().checkpoint_cursors(TimestampNs(100), 4096)?;
@@ -285,7 +354,6 @@ mod tests {
         assert_eq!(catalog.issued_cursor_count(), 0);
         Ok(())
     }
-
 
     #[test]
     fn disclosure_delta_requires_exact_named_session_owned_mutations() -> TestResult {
@@ -298,11 +366,33 @@ mod tests {
         active.validate_disclosure(None, &session, None, Some(digest))?;
         active.validate_disclosure(Some(&active), &session, None, Some(digest))?;
         used.validate_disclosure(Some(&active), &session, Some(digest), None)?;
-        assert!(active.validate_disclosure(None, &session, None, None).is_err());
-        assert!(used.validate_disclosure(Some(&active), &session, None, None).is_err());
-        assert!(used.validate_disclosure(Some(&used), &session, Some(digest), None).is_err());
-        assert!(used.validate_disclosure(Some(&active), &SessionId::parse("session:other")?, Some(digest), None).is_err());
-        assert!(active.validate_disclosure(Some(&used), &session, None, Some(digest)).is_err());
+        assert!(
+            active
+                .validate_disclosure(None, &session, None, None)
+                .is_err()
+        );
+        assert!(
+            used.validate_disclosure(Some(&active), &session, None, None)
+                .is_err()
+        );
+        assert!(
+            used.validate_disclosure(Some(&used), &session, Some(digest), None)
+                .is_err()
+        );
+        assert!(
+            used.validate_disclosure(
+                Some(&active),
+                &SessionId::parse("session:other")?,
+                Some(digest),
+                None
+            )
+            .is_err()
+        );
+        assert!(
+            active
+                .validate_disclosure(Some(&used), &session, None, Some(digest))
+                .is_err()
+        );
         Ok(())
     }
 
@@ -314,12 +404,22 @@ mod tests {
         let expired = CursorCheckpoint::decode(&expired_bytes, 4096, 10)?;
         let digest = ContentDigest::sha256(b"issued cursor");
         let session = SessionId::parse("session:checkpoint")?;
-        assert!(expired.validate_disclosure(Some(&prior), &session, Some(digest), None).is_err());
+        assert!(
+            expired
+                .validate_disclosure(Some(&prior), &session, Some(digest), None)
+                .is_err()
+        );
         let empty = CursorCheckpoint::decode(
-            &ReferenceHydrationCatalog::new().checkpoint_cursors(TimestampNs(100), 4096)?, 4096, 10)?;
+            &ReferenceHydrationCatalog::new().checkpoint_cursors(TimestampNs(100), 4096)?,
+            4096,
+            10,
+        )?;
         empty.validate_disclosure(Some(&prior), &session, None, None)?;
-        assert!(empty.validate_disclosure(Some(&prior), &session, Some(digest), None).is_err());
+        assert!(
+            empty
+                .validate_disclosure(Some(&prior), &session, Some(digest), None)
+                .is_err()
+        );
         Ok(())
     }
-
 }

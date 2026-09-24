@@ -40,15 +40,14 @@ pub use local::{
     LocalLimitViolation, LocalPublicationError, LocalPublicationGuidance, LocalPublicationLimits,
     LocalPublicationReceipt, LocalPublicationState, LocalRecoveryReport, LocalRootPublisher,
     LockTableSource, MAX_LOCAL_ROOTS, MAX_LOCAL_TOMBSTONES, MAX_LOCK_TABLE_BYTES,
-    MAX_ROOT_RECORD_BYTES, MAX_SLOT_NAME_BYTES, MAX_TOMBSTONE_RECORD_BYTES, PublicationClaims,
-    PublicationTransition, PublishCancellation, PublishCutPoint, PublishOutcome,
+    MAX_ROOT_RECORD_BYTES, MAX_SLOT_NAME_BYTES, MAX_TOMBSTONE_RECORD_BYTES, NeverCancel,
+    PublicationClaims, PublicationTransition, PublishCancellation, PublishCutPoint, PublishOutcome,
     ROOT_INDETERMINATE_SUFFIX, ROOT_RECORD_SUFFIX, ROOT_TEMP_SUFFIX, ReferenceRole, SlotName,
     SlotViolation, StringLockTableSource, TOMBSTONE_RECORD_SUFFIX, TombstoneOutcome,
     UnknownLockReason, VisibleRoot, WriterDetectionOptions, WriterLockBasis, WriterState,
     decode_st_dev, detect_writers, inspect, inspect_with_io, inspect_with_ledger_journal,
     inspect_with_options, probe_shared_lock, read_verified, read_verified_with_io,
     root_record_bytes, tombstone_record_bytes,
-    NeverCancel,
 };
 pub use publisher::AuthorityPublisher;
 pub use replay::{

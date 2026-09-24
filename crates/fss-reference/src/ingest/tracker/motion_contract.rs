@@ -3,11 +3,21 @@
 use super::*;
 
 fn config() -> TrackerConfig {
-    TrackerConfig { min_hits: 2, max_misses: 5, iou_threshold: 0.1,
-        process_noise: 1.0, measurement_noise: 1.0 }
+    TrackerConfig {
+        min_hits: 2,
+        max_misses: 5,
+        iou_threshold: 0.1,
+        process_noise: 1.0,
+        measurement_noise: 1.0,
+    }
 }
 fn detection(x: f64, y: f64) -> Detection {
-    Detection { box_x: x, box_y: y, box_w: 20.0, box_h: 20.0 }
+    Detection {
+        box_x: x,
+        box_y: y,
+        box_w: 20.0,
+        box_h: 20.0,
+    }
 }
 
 #[test]
@@ -17,8 +27,15 @@ fn prediction_transports_velocity_covariance_without_coupling_axes() {
     state.x[3] = -2.0;
     state.predict(2.0, 3.0);
     assert_eq!(state.x, [11.0, 1.0, 4.0, -2.0]);
-    assert_eq!(state.p, [[416.0, 0.0, 200.0, 0.0], [0.0, 416.0, 0.0, 200.0],
-        [200.0, 0.0, 106.0, 0.0], [0.0, 200.0, 0.0, 106.0]]);
+    assert_eq!(
+        state.p,
+        [
+            [416.0, 0.0, 200.0, 0.0],
+            [0.0, 416.0, 0.0, 200.0],
+            [200.0, 0.0, 106.0, 0.0],
+            [0.0, 200.0, 0.0, 106.0]
+        ]
+    );
 }
 
 #[test]
@@ -34,7 +51,9 @@ fn measurement_learns_velocity_and_preserves_covariance() {
     assert!((state.p[0][2] - 100.0 / 112.0).abs() < 1e-12);
     assert!((state.p[2][2] - (101.0 - 10000.0 / 112.0)).abs() < 1e-12);
     for (i, row) in state.p.iter().enumerate() {
-        for (j, value) in row.iter().enumerate() { assert_eq!(*value, state.p[j][i]); }
+        for (j, value) in row.iter().enumerate() {
+            assert_eq!(*value, state.p[j][i]);
+        }
     }
 }
 
@@ -63,7 +82,9 @@ fn long_run_covariance_remains_positive_and_velocity_converges() {
 #[test]
 fn coasting_advances_public_position_and_reacquires_the_same_track() -> Result<(), TrackerError> {
     let mut tracker = MultiObjectTracker::new(config())?;
-    for frame in 0..10 { tracker.step(&[detection(f64::from(frame) * 8.0, 20.0)]); }
+    for frame in 0..10 {
+        tracker.step(&[detection(f64::from(frame) * 8.0, 20.0)]);
+    }
     assert_eq!(tracker.tracks.len(), 1);
     let before = tracker.tracks[0].clone();
     assert!((before.vx - 8.0).abs() < 0.1);
@@ -101,11 +122,14 @@ fn one_required_hit_confirms_on_creation() -> Result<(), TrackerError> {
 #[test]
 fn nonfinite_parameters_are_rejected_before_state_creation() {
     for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-        let mut cfg = config(); cfg.iou_threshold = value;
+        let mut cfg = config();
+        cfg.iou_threshold = value;
         assert!(MultiObjectTracker::new(cfg).is_err());
-        let mut cfg = config(); cfg.process_noise = value;
+        let mut cfg = config();
+        cfg.process_noise = value;
         assert!(MultiObjectTracker::new(cfg).is_err());
-        let mut cfg = config(); cfg.measurement_noise = value;
+        let mut cfg = config();
+        cfg.measurement_noise = value;
         assert!(MultiObjectTracker::new(cfg).is_err());
     }
 }

@@ -805,7 +805,9 @@ const LISTS: [&str; 5] = [
 /// next child or read-only inspection sees the deployment as Locked or as having an active writer.
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 fn serial() -> std::sync::MutexGuard<'static, ()> {
-    SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 #[test]

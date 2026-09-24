@@ -9,17 +9,17 @@
 use std::fmt;
 
 use fss_packet::{
-    H265Limits, H265ReceiveAdmission, H265ReceiveCancellation, H265ReceiveError,
-    H265ReceivePoll, H265Receiver, PacketError, ReorderDisposition, ReorderError,
-    ReorderLimits, RtcpCompound, RtcpMode, StreamKey,
+    H265Limits, H265ReceiveAdmission, H265ReceiveCancellation, H265ReceiveError, H265ReceivePoll,
+    H265Receiver, PacketError, ReorderDisposition, ReorderError, ReorderLimits, RtcpCompound,
+    RtcpMode, StreamKey,
 };
 
 use super::authentication::{AuthenticationError, DigestCredentials, DigestPolicy};
 use super::client::authenticated::DigestClientError;
 use super::client::hevc::HevcClientMedia;
 use super::client::{
-    ClientChannel, ClientCloseReceipt, ClientCodec, ClientCommand, ClientConfig,
-    ClientError, ClientProgress, ClientRequest, ClientState, RtspClientSession,
+    ClientChannel, ClientCloseReceipt, ClientCodec, ClientCommand, ClientConfig, ClientError,
+    ClientProgress, ClientRequest, ClientState, RtspClientSession,
 };
 use super::framed::{
     MAX_WIRE_BUFFER, MAX_WIRE_CHUNK, RetainedRtspWire, RtspWireFrame, RtspWireIntake,
@@ -231,10 +231,21 @@ impl RtspHevcClient {
         let _ = H265Receiver::new(key, 0, 0, reorder_limits, h265_limits)
             .map_err(HevcClientError::Video)?;
         Ok(Self {
-            session, intake: RtspWireIntake::new(), key, reorder_limits, h265_limits,
-            video: None, challenge: None, retry: None, pending_cseq: None,
-            last_ns: 0, digest_enabled: false, input_ready: true,
-            input_ended: false, draining: false, closed: false,
+            session,
+            intake: RtspWireIntake::new(),
+            key,
+            reorder_limits,
+            h265_limits,
+            video: None,
+            challenge: None,
+            retry: None,
+            pending_cseq: None,
+            last_ns: 0,
+            digest_enabled: false,
+            input_ready: true,
+            input_ended: false,
+            draining: false,
+            closed: false,
         })
     }
 
@@ -249,25 +260,39 @@ impl RtspHevcClient {
         policy: DigestPolicy,
     ) -> Result<Self, HevcClientError> {
         let mut client = Self::new(config, key, reorder_limits, h265_limits)?;
-        client.session.enable_digest(realm, policy)
+        client
+            .session
+            .enable_digest(realm, policy)
             .map_err(HevcClientError::Authentication)?;
         client.digest_enabled = true;
         Ok(client)
     }
 
     /// Shared protocol state only, not frame, source-custody or camera health truth.
-    pub fn state(&self) -> ClientState { self.session.state() }
+    pub fn state(&self) -> ClientState {
+        self.session.state()
+    }
     /// Exact accepted HEVC signaling; missing parameter sets remain missing.
-    pub fn media(&self) -> Option<&HevcClientMedia> { self.session.hevc_media() }
+    pub fn media(&self) -> Option<&HevcClientMedia> {
+        self.session.hevc_media()
+    }
     /// All retained TCP bytes, including any complete held challenge/retry frame.
     pub fn buffered_wire_bytes(&self) -> usize {
         self.intake.buffered_bytes()
-            + self.challenge.as_ref().map_or(0, |h| h.frame.expose_wire().len())
-            + self.retry.as_ref().map_or(0, |h| h.frame.expose_wire().len())
+            + self
+                .challenge
+                .as_ref()
+                .map_or(0, |h| h.frame.expose_wire().len())
+            + self
+                .retry
+                .as_ref()
+                .map_or(0, |h| h.frame.expose_wire().len())
     }
     /// Retained incomplete NAL bytes, not the independent source-custody size.
     pub fn retained_nal_bytes(&self) -> usize {
-        self.video.as_ref().map_or(0, H265Receiver::pending_nal_bytes)
+        self.video
+            .as_ref()
+            .map_or(0, H265Receiver::pending_nal_bytes)
     }
     /// Original RTP bytes queued for ordered delivery, not a persistence receipt.
     pub fn queued_rtp_bytes(&self) -> usize {
@@ -276,10 +301,18 @@ impl RtspHevcClient {
 
     /// Earliest useful owner wake. A held frame never busy-polls queued lookahead.
     pub fn next_wake_ns(&self) -> Option<u64> {
-        if self.closed { return None; }
-        if self.draining { return Some(self.last_ns); }
+        if self.closed {
+            return None;
+        }
+        if self.draining {
+            return Some(self.last_ns);
+        }
         let held = self.challenge.is_some() || self.retry.is_some();
-        let intake = if held { self.intake.deadline_ns() } else { self.intake.next_wake_ns() };
+        let intake = if held {
+            self.intake.deadline_ns()
+        } else {
+            self.intake.next_wake_ns()
+        };
         let mut wake = if self.buffered_wire_bytes() == 0 {
             self.session.next_wake_ns()
         } else {
@@ -292,16 +325,22 @@ impl RtspHevcClient {
             self.video.as_ref().and_then(H265Receiver::next_wake_ns),
             self.challenge.as_ref().map(|h| h.deadline_ns),
             self.retry.as_ref().map(|h| h.deadline_ns),
-        ] { wake = earlier(wake, at); }
-        if self.input_ended && !held { wake = earlier(wake, Some(self.last_ns)); }
+        ] {
+            wake = earlier(wake, at);
+        }
+        if self.input_ended && !held {
+            wake = earlier(wake, Some(self.last_ns));
+        }
         wake.map(|at| at.max(self.last_ns))
     }
 
     /// Prepare a plain request. A Digest-enabled client cannot bypass its secret owner.
     /// Write the prepared request once or close; preparation is not a send receipt.
-    pub fn request(&mut self, command: ClientCommand, now: u64)
-        -> Result<ClientRequest, HevcClientFailure>
-    {
+    pub fn request(
+        &mut self,
+        command: ClientCommand,
+        now: u64,
+    ) -> Result<ClientRequest, HevcClientFailure> {
         self.admit_request(now)?;
         match self.session.request(command, now) {
             Ok(request) => {
@@ -322,7 +361,10 @@ impl RtspHevcClient {
         now: u64,
     ) -> Result<ClientRequest, HevcClientFailure> {
         self.admit_request(now)?;
-        match self.session.request_digest(command, credentials, cnonce, now) {
+        match self
+            .session
+            .request_digest(command, credentials, cnonce, now)
+        {
             Ok(request) => {
                 self.pending_cseq = Some(request.cseq());
                 Ok(request)
@@ -341,11 +383,20 @@ impl RtspHevcClient {
         now: u64,
     ) -> Result<HevcChallengeResponse, HevcClientFailure> {
         self.admit_operation(now)?;
-        let held = self.challenge.take().ok_or_else(|| safe(HevcClientError::NoChallenge))?;
-        match self.session.retry_digest_response(held.frame.expose_wire(), credentials, cnonce, now) {
+        let held = self
+            .challenge
+            .take()
+            .ok_or_else(|| safe(HevcClientError::NoChallenge))?;
+        match self
+            .session
+            .retry_digest_response(held.frame.expose_wire(), credentials, cnonce, now)
+        {
             Ok(request) => {
                 self.pending_cseq = Some(request.cseq());
-                Ok(HevcChallengeResponse { request, source: held.frame })
+                Ok(HevcChallengeResponse {
+                    request,
+                    source: held.frame,
+                })
             }
             Err(error) => {
                 self.challenge = Some(held);
@@ -359,19 +410,28 @@ impl RtspHevcClient {
     /// the new, refused chunk still belongs to the caller.
     pub fn ingest(&mut self, bytes: &[u8], now: u64) -> Result<(), HevcClientFailure> {
         self.check_time(now).map_err(safe)?;
-        if self.closed || self.input_ended { return Err(safe(HevcClientError::Closed)); }
+        if self.closed || self.input_ended {
+            return Err(safe(HevcClientError::Closed));
+        }
         if !self.input_ready || self.challenge.is_some() || self.retry.is_some() {
             return Err(safe(HevcClientError::Backpressure));
         }
         if bytes.len() > MAX_WIRE_CHUNK
             || bytes.len() > MAX_WIRE_BUFFER.saturating_sub(self.intake.buffered_bytes())
-        { return Err(safe(HevcClientError::InputLimit)); }
+        {
+            return Err(safe(HevcClientError::InputLimit));
+        }
         self.admit_operation(now)?;
         match self.intake.ingest(bytes, now) {
-            Ok(()) => { self.input_ready = false; Ok(()) }
-            Err(error @ (WireIntakeError::Backpressure | WireIntakeError::Limit | WireIntakeError::Allocation)) => {
-                Err(safe(HevcClientError::Wire(error)))
+            Ok(()) => {
+                self.input_ready = false;
+                Ok(())
             }
+            Err(
+                error @ (WireIntakeError::Backpressure
+                | WireIntakeError::Limit
+                | WireIntakeError::Allocation),
+            ) => Err(safe(HevcClientError::Wire(error))),
             Err(error) => Err(self.fatal(HevcClientError::Wire(error))),
         }
     }
@@ -382,17 +442,25 @@ impl RtspHevcClient {
         self.check_time(now)?;
         self.last_ns = now;
         if self.closed {
-            return Ok(HevcClientPoll::Ended { media: None, retirement: None });
+            return Ok(HevcClientPoll::Ended {
+                media: None,
+                retirement: None,
+            });
         }
-        if !self.draining && let Some(error) = self.deadline_error(now) {
+        if !self.draining
+            && let Some(error) = self.deadline_error(now)
+        {
             return Ok(self.fault(error, None));
         }
         if let Some(video) = &mut self.video {
             match video.poll(now) {
-                Ok(H265ReceivePoll::Pending { .. }) => {},
+                Ok(H265ReceivePoll::Pending { .. }) => {}
                 Ok(event @ H265ReceivePoll::Ended { .. }) => {
                     let retirement = Some(Box::new(self.cancel()));
-                    return Ok(HevcClientPoll::Ended { media: Some(event), retirement });
+                    return Ok(HevcClientPoll::Ended {
+                        media: Some(event),
+                        retirement,
+                    });
                 }
                 Ok(event) => return Ok(HevcClientPoll::Media(event)),
                 Err(error) => return Ok(self.fault(HevcClientError::Video(error), None)),
@@ -400,23 +468,35 @@ impl RtspHevcClient {
         }
         if self.draining {
             let retirement = Some(Box::new(self.cancel()));
-            return Ok(HevcClientPoll::Ended { media: None, retirement });
+            return Ok(HevcClientPoll::Ended {
+                media: None,
+                retirement,
+            });
         }
         if self.challenge.is_some() {
-            if self.input_ended { return Ok(self.fault(HevcClientError::AuthenticationAtEof, None)); }
+            if self.input_ended {
+                return Ok(self.fault(HevcClientError::AuthenticationAtEof, None));
+            }
             let Some(cseq) = self.pending_cseq else {
                 return Ok(self.fault(HevcClientError::NoChallenge, None));
             };
-            return Ok(HevcClientPoll::AuthenticationRequired { cseq, wake_at_ns: self.next_wake_ns() });
+            return Ok(HevcClientPoll::AuthenticationRequired {
+                cseq,
+                wake_at_ns: self.next_wake_ns(),
+            });
         }
-        if let Some(held) = self.retry.take() { return Ok(self.frame(held, now)); }
+        if let Some(held) = self.retry.take() {
+            return Ok(self.frame(held, now));
+        }
         // Capture the ORIGINAL oldest-byte deadline before intake transfers the
         // frame. Holding a challenge or a full-queue retry never resets its age.
         let deadline = self.intake.deadline_ns();
         match self.intake.poll(now) {
             Ok(Some(frame)) => {
                 let Some(deadline_ns) = deadline else {
-                    return Ok(self.fault(HevcClientError::Wire(WireIntakeError::Framing), Some(frame)));
+                    return Ok(
+                        self.fault(HevcClientError::Wire(WireIntakeError::Framing), Some(frame))
+                    );
                 };
                 return Ok(self.frame(HeldFrame { frame, deadline_ns }, now));
             }
@@ -427,17 +507,25 @@ impl RtspHevcClient {
             self.draining = true;
             if let Some(video) = &mut self.video {
                 video.finish();
-                return Ok(HevcClientPoll::Pending { wake_at_ns: Some(now) });
+                return Ok(HevcClientPoll::Pending {
+                    wake_at_ns: Some(now),
+                });
             }
             let retirement = Some(Box::new(self.cancel()));
-            return Ok(HevcClientPoll::Ended { media: None, retirement });
+            return Ok(HevcClientPoll::Ended {
+                media: None,
+                retirement,
+            });
         }
         if self.buffered_wire_bytes() == 0
-            && self.session.tick(now).map_err(HevcClientError::Session)? == ClientProgress::KeepAliveDue
+            && self.session.tick(now).map_err(HevcClientError::Session)?
+                == ClientProgress::KeepAliveDue
         {
             return Ok(HevcClientPoll::KeepAliveDue);
         }
-        Ok(HevcClientPoll::Pending { wake_at_ns: self.next_wake_ns() })
+        Ok(HevcClientPoll::Pending {
+            wake_at_ns: self.next_wake_ns(),
+        })
     }
 
     fn frame(&mut self, held: HeldFrame, now: u64) -> HevcClientPoll {
@@ -445,37 +533,61 @@ impl RtspHevcClient {
             RtspEvent::Response(response) | RtspEvent::AuthRequired { response, .. } => {
                 if matches!(response.status_code, 401 | 407) && self.digest_enabled {
                     let matching = self.pending_cseq.is_some()
-                        && response.headers.cseq().is_some_and(|c| c.ok() == self.pending_cseq);
-                    let supported = response.status_code == 401 && response.auth_challenge == Some(AuthScheme::Digest);
+                        && response
+                            .headers
+                            .cseq()
+                            .is_some_and(|c| c.ok() == self.pending_cseq);
+                    let supported = response.status_code == 401
+                        && response.auth_challenge == Some(AuthScheme::Digest);
                     self.challenge = Some(held);
                     if !matching {
-                        return self.fault(HevcClientError::Session(ClientError::CseqMismatch), None);
+                        return self
+                            .fault(HevcClientError::Session(ClientError::CseqMismatch), None);
                     }
                     if !supported {
-                        return self.fault(HevcClientError::Authentication(
-                            DigestClientError::Authentication(AuthenticationError::Unsupported)), None);
+                        return self.fault(
+                            HevcClientError::Authentication(DigestClientError::Authentication(
+                                AuthenticationError::Unsupported,
+                            )),
+                            None,
+                        );
                     }
-                    if self.input_ended { return self.fault(HevcClientError::AuthenticationAtEof, None); }
+                    if self.input_ended {
+                        return self.fault(HevcClientError::AuthenticationAtEof, None);
+                    }
                     let Some(cseq) = self.pending_cseq else {
                         return self.fault(HevcClientError::NoChallenge, None);
                     };
-                    return HevcClientPoll::AuthenticationRequired { cseq, wake_at_ns: self.next_wake_ns() };
+                    return HevcClientPoll::AuthenticationRequired {
+                        cseq,
+                        wake_at_ns: self.next_wake_ns(),
+                    };
                 }
                 match self.session.accept(response, now) {
                     Ok(progress) => {
-                        if progress != ClientProgress::Interim { self.pending_cseq = None; }
-                        if self.session.state() == ClientState::Ready && self.video.is_none()
+                        if progress != ClientProgress::Interim {
+                            self.pending_cseq = None;
+                        }
+                        if self.session.state() == ClientState::Ready
+                            && self.video.is_none()
                             && let Err(error) = self.configure_video()
-                        { return self.fault(error, Some(held.frame)); }
+                        {
+                            return self.fault(error, Some(held.frame));
+                        }
                         if self.session.state() == ClientState::Closed {
                             // Input after a confirmed TEARDOWN is not admitted.
                             // Return its exact lookahead as part of terminal retirement.
                             self.input_ended = true;
                             self.draining = true;
                             self.intake.finish();
-                            if let Some(video) = &mut self.video { video.finish(); }
+                            if let Some(video) = &mut self.video {
+                                video.finish();
+                            }
                         }
-                        HevcClientPoll::Control { progress, source: held.frame }
+                        HevcClientPoll::Control {
+                            progress,
+                            source: held.frame,
+                        }
                     }
                     Err(error) => self.fault(HevcClientError::Session(error), Some(held.frame)),
                 }
@@ -483,14 +595,23 @@ impl RtspHevcClient {
             RtspEvent::Interleaved { channel, span } => {
                 let channel = match self.session.admit_channel(*channel, now) {
                     Ok(channel) => channel,
-                    Err(error) => return self.fault(HevcClientError::Session(error), Some(held.frame)),
+                    Err(error) => {
+                        return self.fault(HevcClientError::Session(error), Some(held.frame));
+                    }
                 };
                 if channel == ClientChannel::Rtcp {
                     let reduced = self.session.hevc_media().is_some_and(|m| m.reduced_rtcp());
-                    let mode = if reduced { RtcpMode::ReducedSize } else { RtcpMode::Compound };
+                    let mode = if reduced {
+                        RtcpMode::ReducedSize
+                    } else {
+                        RtcpMode::Compound
+                    };
                     let validation = RtcpCompound::parse(span, self.reorder_limits.packet, mode)
                         .map(|compound| compound.packet_count());
-                    return HevcClientPoll::Rtcp { source: held.frame, validation };
+                    return HevcClientPoll::Rtcp {
+                        source: held.frame,
+                        validation,
+                    };
                 }
                 let result = match &mut self.video {
                     Some(video) => video.ingest(self.key, span, now),
@@ -498,16 +619,29 @@ impl RtspHevcClient {
                 };
                 match result {
                     Ok(admission) => {
-                        let restart = admission.transport.disposition == ReorderDisposition::RestartRequired;
-                        let retirement = if restart { Some(Box::new(self.cancel())) } else { None };
-                        HevcClientPoll::Rtp { source: held.frame, admission, retirement }
+                        let restart =
+                            admission.transport.disposition == ReorderDisposition::RestartRequired;
+                        let retirement = if restart {
+                            Some(Box::new(self.cancel()))
+                        } else {
+                            None
+                        };
+                        HevcClientPoll::Rtp {
+                            source: held.frame,
+                            admission,
+                            retirement,
+                        }
                     }
-                    Err(H265ReceiveError::Transport(ReorderError::PacketCapacity | ReorderError::ByteCapacity)) => {
+                    Err(H265ReceiveError::Transport(
+                        ReorderError::PacketCapacity | ReorderError::ByteCapacity,
+                    )) => {
                         if span.len() > self.reorder_limits.max_bytes {
                             return self.fault(HevcClientError::InputLimit, Some(held.frame));
                         }
                         self.retry = Some(held);
-                        HevcClientPoll::Backpressure { wake_at_ns: self.next_wake_ns() }
+                        HevcClientPoll::Backpressure {
+                            wake_at_ns: self.next_wake_ns(),
+                        }
                     }
                     Err(error) => self.fault(HevcClientError::Video(error), Some(held.frame)),
                 }
@@ -517,20 +651,36 @@ impl RtspHevcClient {
     }
 
     fn configure_video(&mut self) -> Result<(), HevcClientError> {
-        if self.session.server_ssrc().is_some_and(|ssrc| ssrc != self.key.ssrc) {
+        if self
+            .session
+            .server_ssrc()
+            .is_some_and(|ssrc| ssrc != self.key.ssrc)
+        {
             return Err(HevcClientError::StreamBinding);
         }
-        let media = self.session.hevc_media().ok_or(HevcClientError::StreamBinding)?;
-        self.video = Some(H265Receiver::new(
-            self.key, media.payload_type(), media.sprop_max_don_diff(),
-            self.reorder_limits, self.h265_limits,
-        ).map_err(HevcClientError::Video)?);
+        let media = self
+            .session
+            .hevc_media()
+            .ok_or(HevcClientError::StreamBinding)?;
+        self.video = Some(
+            H265Receiver::new(
+                self.key,
+                media.payload_type(),
+                media.sprop_max_don_diff(),
+                self.reorder_limits,
+                self.h265_limits,
+            )
+            .map_err(HevcClientError::Video)?,
+        );
         Ok(())
     }
 
     /// Mark EOF. Complete frames drain before codec EOF; truncated wire becomes
     /// a fault with original retained bytes, never successful media finalization.
-    pub fn finish(&mut self) { self.input_ended = true; self.intake.finish(); }
+    pub fn finish(&mut self) {
+        self.input_ended = true;
+        self.intake.finish();
+    }
 
     /// Stop every local layer and transfer exact unprocessed wire ownership.
     /// No automatic TEARDOWN is sent and no source-custody data is deleted.
@@ -548,23 +698,35 @@ impl RtspHevcClient {
     }
 
     fn check_time(&self, now: u64) -> Result<(), HevcClientError> {
-        if now < self.last_ns { Err(HevcClientError::Session(ClientError::ClockReversed)) }
-        else { Ok(()) }
+        if now < self.last_ns {
+            Err(HevcClientError::Session(ClientError::ClockReversed))
+        } else {
+            Ok(())
+        }
     }
     fn deadline_error(&mut self, now: u64) -> Option<HevcClientError> {
-        if let Err(error) = self.session.tick(now) { return Some(HevcClientError::Session(error)); }
+        if let Err(error) = self.session.tick(now) {
+            return Some(HevcClientError::Session(error));
+        }
         let expired = [
             self.intake.deadline_ns(),
             self.challenge.as_ref().map(|h| h.deadline_ns),
             self.retry.as_ref().map(|h| h.deadline_ns),
-        ].into_iter().flatten().any(|at| now >= at);
+        ]
+        .into_iter()
+        .flatten()
+        .any(|at| now >= at);
         expired.then_some(HevcClientError::Wire(WireIntakeError::Deadline))
     }
     fn admit_operation(&mut self, now: u64) -> Result<(), HevcClientFailure> {
         self.check_time(now).map_err(safe)?;
-        if self.closed || self.input_ended { return Err(safe(HevcClientError::Closed)); }
+        if self.closed || self.input_ended {
+            return Err(safe(HevcClientError::Closed));
+        }
         self.last_ns = now;
-        if let Some(error) = self.deadline_error(now) { return Err(self.fatal(error)); }
+        if let Some(error) = self.deadline_error(now) {
+            return Err(self.fatal(error));
+        }
         Ok(())
     }
     fn admit_request(&mut self, now: u64) -> Result<(), HevcClientFailure> {
@@ -575,21 +737,38 @@ impl RtspHevcClient {
         Ok(())
     }
     fn request_failure(&mut self, reason: HevcClientError) -> HevcClientFailure {
-        if self.session.state() == ClientState::Failed { self.fatal(reason) } else { safe(reason) }
+        if self.session.state() == ClientState::Failed {
+            self.fatal(reason)
+        } else {
+            safe(reason)
+        }
     }
     fn fatal(&mut self, reason: HevcClientError) -> HevcClientFailure {
-        HevcClientFailure { reason, retirement: Some(Box::new(self.cancel())) }
+        HevcClientFailure {
+            reason,
+            retirement: Some(Box::new(self.cancel())),
+        }
     }
     fn fault(&mut self, reason: HevcClientError, source: Option<RtspWireFrame>) -> HevcClientPoll {
-        HevcClientPoll::Fault { reason, retirement: Box::new(self.cancel()), source }
+        HevcClientPoll::Fault {
+            reason,
+            retirement: Box::new(self.cancel()),
+            source,
+        }
     }
 }
 
 fn earlier(a: Option<u64>, b: Option<u64>) -> Option<u64> {
-    match (a, b) { (Some(a), Some(b)) => Some(a.min(b)), (a, b) => a.or(b) }
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
 }
 fn safe(reason: HevcClientError) -> HevcClientFailure {
-    HevcClientFailure { reason, retirement: None }
+    HevcClientFailure {
+        reason,
+        retirement: None,
+    }
 }
 
 /// Loss-aware picture assembly on the same plain or authenticated HEVC client.

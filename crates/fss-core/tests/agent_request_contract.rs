@@ -5,9 +5,9 @@ use std::collections::BTreeSet;
 
 use fss_core::contract_basis::reference_contract_basis;
 use fss_core::{
-    admit_query_read, AgentOperation, AgentRequestEnvelopeParams, AgentView, BudgetVector,
-    ContentDigest, ContractBasisError, ContractError, HydrationLevel, LedgerAnchor, MissionId,
-    PrincipalId, PrivacyProjection, RequestTaint, SessionId, TimestampNs,
+    AgentOperation, AgentRequestEnvelopeParams, AgentView, BudgetVector, ContentDigest,
+    ContractBasisError, ContractError, HydrationLevel, LedgerAnchor, MissionId, PrincipalId,
+    PrivacyProjection, RequestTaint, SessionId, TimestampNs, admit_query_read,
 };
 
 fn envelope_params(operation_name: &str) -> AgentRequestEnvelopeParams {
@@ -24,7 +24,10 @@ fn envelope_params(operation_name: &str) -> AgentRequestEnvelopeParams {
         target_uris: vec!["fss://mission/test".to_owned()],
         payload_schema: "fss.agent_mission.v1".to_owned(),
         payload_json: "{\"revision\":1}".to_owned(),
-        budget: BudgetVector::builder().latency_ms(500).build().unwrap_or_else(|_| unreachable!()),
+        budget: BudgetVector::builder()
+            .latency_ms(500)
+            .build()
+            .unwrap_or_else(|_| unreachable!()),
         deadline_ns: Some(9_000),
         privacy: PrivacyProjection {
             purpose: "orient the mission".to_owned(),
@@ -46,10 +49,8 @@ fn envelope_params(operation_name: &str) -> AgentRequestEnvelopeParams {
 }
 
 #[test]
-fn test_request_envelope_resolves_registered_operation(
-) -> Result<(), Box<dyn std::error::Error>> {
-    let envelope =
-        fss_core::AgentRequestEnvelope::new(envelope_params("session.open"))?;
+fn test_request_envelope_resolves_registered_operation() -> Result<(), Box<dyn std::error::Error>> {
+    let envelope = fss_core::AgentRequestEnvelope::new(envelope_params("session.open"))?;
     assert_eq!(envelope.operation(), AgentOperation::SessionOpen);
     assert_eq!(envelope.view(), AgentView::Brief);
     assert_eq!(envelope.payload_schema(), "fss.agent_mission.v1");
@@ -61,8 +62,8 @@ fn test_request_envelope_resolves_registered_operation(
 }
 
 #[test]
-fn test_request_envelope_payload_schema_must_match_operation_row(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_request_envelope_payload_schema_must_match_operation_row()
+-> Result<(), Box<dyn std::error::Error>> {
     let mut params = envelope_params("session.open");
     // AOP-001 registers fss.agent_mission.v1; anything else is refused.
     params.payload_schema = "fss.agent_query_plan.v1".to_owned();
@@ -76,8 +77,8 @@ fn test_request_envelope_payload_schema_must_match_operation_row(
 }
 
 #[test]
-fn test_request_envelope_refuses_unregistered_and_misbound_inputs(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_request_envelope_refuses_unregistered_and_misbound_inputs()
+-> Result<(), Box<dyn std::error::Error>> {
     // Unregistered operation names fail closed through the basis boundary.
     let mut params = envelope_params("session.superopen");
     assert!(fss_core::AgentRequestEnvelope::new(params.clone()).is_err());
@@ -118,7 +119,9 @@ fn test_request_envelope_refuses_unregistered_and_misbound_inputs(
     params.payload_json = String::new();
     assert_eq!(
         fss_core::AgentRequestEnvelope::new(params),
-        Err(ContractBasisError::Contract(ContractError::EvidenceRequired))
+        Err(ContractBasisError::Contract(
+            ContractError::EvidenceRequired
+        ))
     );
     Ok(())
 }
@@ -162,7 +165,10 @@ fn test_request_envelope_digest_sensitivity() -> Result<(), Box<dyn std::error::
     let second = fss_core::AgentRequestEnvelope::new(params)?;
     assert_ne!(first.request_digest(), second.request_digest());
     // Digest domain separation is pinned by the schema identity.
-    assert_eq!(fss_core::AgentRequestEnvelope::SCHEMA, "fss.agent_request_envelope.v1");
+    assert_eq!(
+        fss_core::AgentRequestEnvelope::SCHEMA,
+        "fss.agent_request_envelope.v1"
+    );
     let _ = ContentDigest::sha256(b"anchor");
     Ok(())
 }

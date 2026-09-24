@@ -261,7 +261,12 @@ impl ReferenceWorkClaimStore {
     /// Creates a single-owner in-memory reference with explicit storage and duration bounds.
     #[must_use]
     pub fn with_limits(limits: WorkClaimLimits) -> Self {
-        Self { claims: BTreeMap::new(), limits, revisions: 0, last_observed_at: None }
+        Self {
+            claims: BTreeMap::new(),
+            limits,
+            revisions: 0,
+            last_observed_at: None,
+        }
     }
 
     /// Reserves exact work once. An identical live opening retry returns the CURRENT revision,
@@ -279,9 +284,11 @@ impl ReferenceWorkClaimStore {
         if !session.privacy_scope.contains(&request.privacy_class) {
             return Err(WorkClaimError::Unavailable);
         }
-        if request.claim_id.is_empty() || request.claim_id.len() > 128
+        if request.claim_id.is_empty()
+            || request.claim_id.len() > 128
             || request.dependencies.len() > self.limits.max_dependencies.min(4_096)
-            || request.privacy_class.is_empty() || request.privacy_class.len() > 256
+            || request.privacy_class.is_empty()
+            || request.privacy_class.len() > 256
             || request.dependencies.iter().any(|id| id.len() > 128)
         {
             return Err(WorkClaimError::CapacityExceeded);
@@ -297,9 +304,11 @@ impl ReferenceWorkClaimStore {
         self.check_lease(&session, request.expires_at, now)?;
         if self.claims.values().any(|entry| {
             let head = &entry.head;
-            head.principal == session.principal_id && head.mission == session.mission_id
+            head.principal == session.principal_id
+                && head.mission == session.mission_id
                 && head.claim.case_id.as_deref() == Some(request.case_id.as_str())
-                && head.privacy_class == request.privacy_class && head.work_root == request.work_root
+                && head.privacy_class == request.privacy_class
+                && head.work_root == request.work_root
         }) {
             return Err(WorkClaimError::Conflict);
         }
@@ -307,7 +316,10 @@ impl ReferenceWorkClaimStore {
             if dependency == &request.claim_id {
                 return Err(WorkClaimError::InvalidTransition);
             }
-            let prior = self.claims.get(dependency).ok_or(WorkClaimError::Unavailable)?;
+            let prior = self
+                .claims
+                .get(dependency)
+                .ok_or(WorkClaimError::Unavailable)?;
             Self::visible(&prior.head, &session)?;
         }
         if self.claims.len() >= self.limits.max_claims {
@@ -315,19 +327,39 @@ impl ReferenceWorkClaimStore {
         }
         self.reserve_revision()?;
         let claim = WorkClaim::new(
-            request.claim_id.clone(), Some(request.case_id.to_string()), session_id.to_string(),
-            format!("{{\"workRoot\":\"{}\"}}", request.work_root), session.current_anchor.clone(),
-            1, now.0, request.expires_at.0, WorkClaimState::Claimed,
-            request.dependencies.iter().cloned().collect(), "{}", None,
+            request.claim_id.clone(),
+            Some(request.case_id.to_string()),
+            session_id.to_string(),
+            format!("{{\"workRoot\":\"{}\"}}", request.work_root),
+            session.current_anchor.clone(),
+            1,
+            now.0,
+            request.expires_at.0,
+            WorkClaimState::Claimed,
+            request.dependencies.iter().cloned().collect(),
+            "{}",
+            None,
         )?;
         let head = WorkClaimRevision {
-            claim, principal: session.principal_id, mission: session.mission_id, basis,
-            privacy_class: request.privacy_class.clone(), work_root: request.work_root,
-            revision: 1, predecessor: None, changed_at: now,
+            claim,
+            principal: session.principal_id,
+            mission: session.mission_id,
+            basis,
+            privacy_class: request.privacy_class.clone(),
+            work_root: request.work_root,
+            revision: 1,
+            predecessor: None,
+            changed_at: now,
         };
-        self.claims.insert(request.claim_id.clone(), ClaimEntry {
-            opening: request, creator: session.session_id, head: head.clone(), history: Vec::new(),
-        });
+        self.claims.insert(
+            request.claim_id.clone(),
+            ClaimEntry {
+                opening: request,
+                creator: session.session_id,
+                head: head.clone(),
+                history: Vec::new(),
+            },
+        );
         self.revisions += 1;
         Ok(head)
     }
@@ -343,7 +375,10 @@ impl ReferenceWorkClaimStore {
         now: TimestampNs,
     ) -> Result<WorkClaimRevision, WorkClaimError> {
         let (session, _) = self.admit(sessions, principal, session_id, now)?;
-        let entry = self.claims.get(claim_id).ok_or(WorkClaimError::Unavailable)?;
+        let entry = self
+            .claims
+            .get(claim_id)
+            .ok_or(WorkClaimError::Unavailable)?;
         Self::visible(&entry.head, &session)?;
         Ok(entry.head.clone())
     }
@@ -363,9 +398,16 @@ impl ReferenceWorkClaimStore {
         if head.digest() == digest {
             return Ok(head);
         }
-        self.claims.get(claim_id).and_then(|entry| {
-            entry.history.iter().find(|revision| revision.digest() == digest)
-        }).cloned().ok_or(WorkClaimError::Unavailable)
+        self.claims
+            .get(claim_id)
+            .and_then(|entry| {
+                entry
+                    .history
+                    .iter()
+                    .find(|revision| revision.digest() == digest)
+            })
+            .cloned()
+            .ok_or(WorkClaimError::Unavailable)
     }
 
     /// Changes only the current owner's live, exact revision. Failed transitions append nothing.
@@ -381,7 +423,10 @@ impl ReferenceWorkClaimStore {
         now: TimestampNs,
     ) -> Result<WorkClaimRevision, WorkClaimError> {
         let (session, basis) = self.admit(sessions, principal, session_id, now)?;
-        let entry = self.claims.get(&expected.claim.claim_id).ok_or(WorkClaimError::Unavailable)?;
+        let entry = self
+            .claims
+            .get(&expected.claim.claim_id)
+            .ok_or(WorkClaimError::Unavailable)?;
         Self::visible(&entry.head, &session)?;
         if entry.head.digest() != expected.digest() {
             return Err(WorkClaimError::StaleRevision);
@@ -390,7 +435,10 @@ impl ReferenceWorkClaimStore {
         let mut next = entry.head.clone();
         match change {
             WorkClaimUpdate::Activate => {
-                if !matches!(next.claim.state, WorkClaimState::Claimed | WorkClaimState::Blocked) {
+                if !matches!(
+                    next.claim.state,
+                    WorkClaimState::Claimed | WorkClaimState::Blocked
+                ) {
                     return Err(WorkClaimError::InvalidTransition);
                 }
                 self.dependencies_ready(&next, &session, &basis)?;
@@ -420,7 +468,10 @@ impl ReferenceWorkClaimStore {
                 if expires.0 <= next.claim.expires_at_ns {
                     return Err(WorkClaimError::InvalidLease);
                 }
-                next.claim.lease_incarnation = next.claim.lease_incarnation.checked_add(1)
+                next.claim.lease_incarnation = next
+                    .claim
+                    .lease_incarnation
+                    .checked_add(1)
                     .ok_or(WorkClaimError::CounterExhausted)?;
                 next.claim.expires_at_ns = expires.0;
             }
@@ -429,8 +480,11 @@ impl ReferenceWorkClaimStore {
     }
 
     fn admit(
-        &mut self, sessions: &mut ReferenceSessionStore, principal: &PrincipalId,
-        session_id: &SessionId, now: TimestampNs,
+        &mut self,
+        sessions: &mut ReferenceSessionStore,
+        principal: &PrincipalId,
+        session_id: &SessionId,
+        now: TimestampNs,
     ) -> Result<(AgentSession, ContractBasis), WorkClaimError> {
         let entry = sessions.live_entry(principal, session_id, now)?;
         if !entry.session.capabilities.contains(CAPABILITY_WORK_CLAIM) {
@@ -444,7 +498,8 @@ impl ReferenceWorkClaimStore {
     }
 
     fn visible(head: &WorkClaimRevision, session: &AgentSession) -> Result<(), WorkClaimError> {
-        if head.principal != session.principal_id || head.mission != session.mission_id
+        if head.principal != session.principal_id
+            || head.mission != session.mission_id
             || !session.privacy_scope.contains(&head.privacy_class)
         {
             return Err(WorkClaimError::Unavailable);
@@ -453,7 +508,10 @@ impl ReferenceWorkClaimStore {
     }
 
     fn owned(
-        head: &WorkClaimRevision, session: &AgentSession, basis: &ContractBasis, now: TimestampNs,
+        head: &WorkClaimRevision,
+        session: &AgentSession,
+        basis: &ContractBasis,
+        now: TimestampNs,
     ) -> Result<(), WorkClaimError> {
         if head.claim.owner_session_id != session.session_id.as_str() {
             return Err(WorkClaimError::StaleRevision);
@@ -468,10 +526,17 @@ impl ReferenceWorkClaimStore {
     }
 
     fn check_lease(
-        &self, session: &AgentSession, expires: TimestampNs, now: TimestampNs,
+        &self,
+        session: &AgentSession,
+        expires: TimestampNs,
+        now: TimestampNs,
     ) -> Result<(), WorkClaimError> {
-        let duration = expires.0.checked_sub(now.0).ok_or(WorkClaimError::InvalidLease)?;
-        if duration <= 0 || duration > i128::from(self.limits.max_lease_ns)
+        let duration = expires
+            .0
+            .checked_sub(now.0)
+            .ok_or(WorkClaimError::InvalidLease)?;
+        if duration <= 0
+            || duration > i128::from(self.limits.max_lease_ns)
             || expires.0 > session.expires_at_ns
         {
             return Err(WorkClaimError::InvalidLease);
@@ -480,7 +545,10 @@ impl ReferenceWorkClaimStore {
     }
 
     fn dependencies_ready(
-        &self, head: &WorkClaimRevision, session: &AgentSession, basis: &ContractBasis,
+        &self,
+        head: &WorkClaimRevision,
+        session: &AgentSession,
+        basis: &ContractBasis,
     ) -> Result<(), WorkClaimError> {
         for id in &head.claim.dependencies {
             let dependency = self.claims.get(id).ok_or(WorkClaimError::Unavailable)?;
@@ -505,13 +573,22 @@ impl ReferenceWorkClaimStore {
     }
 
     fn append(
-        &mut self, mut next: WorkClaimRevision, now: TimestampNs,
+        &mut self,
+        mut next: WorkClaimRevision,
+        now: TimestampNs,
     ) -> Result<WorkClaimRevision, WorkClaimError> {
         self.reserve_revision()?;
         // Link to the retained predecessor, not to the unpublished candidate.
-        let entry = self.claims.get_mut(&next.claim.claim_id).ok_or(WorkClaimError::Unavailable)?;
+        let entry = self
+            .claims
+            .get_mut(&next.claim.claim_id)
+            .ok_or(WorkClaimError::Unavailable)?;
         next.predecessor = Some(entry.head.digest());
-        next.revision = entry.head.revision.checked_add(1).ok_or(WorkClaimError::CounterExhausted)?;
+        next.revision = entry
+            .head
+            .revision
+            .checked_add(1)
+            .ok_or(WorkClaimError::CounterExhausted)?;
         next.changed_at = now;
         entry.history.push(entry.head.clone());
         entry.head = next.clone();

@@ -267,7 +267,10 @@ fn validate_format(value: &str) -> Result<(), SelectionError> {
         if key.is_empty() || value.is_empty() {
             return Err(SelectionError::Malformed);
         }
-        if keys[..index].iter().any(|other| other.eq_ignore_ascii_case(key)) {
+        if keys[..index]
+            .iter()
+            .any(|other| other.eq_ignore_ascii_case(key))
+        {
             return Err(SelectionError::Duplicate);
         }
         keys[index] = key;
@@ -324,7 +327,11 @@ mod tests {
         assert_eq!(select(&offer, Some(96))?.media[0].payload_type, 96);
         assert_eq!(select(&offer, Some(98))?.media[0].payload_type, 98);
         // The second offer has no SPS/PPS. It cannot inherit them from PT 96.
-        assert!(select(&offer, Some(98))?.media[0].sprop_parameter_sets.is_empty());
+        assert!(
+            select(&offer, Some(98))?.media[0]
+                .sprop_parameter_sets
+                .is_empty()
+        );
         Ok(())
     }
 
@@ -342,31 +349,59 @@ mod tests {
         assert_eq!(sdp.media.len(), 2);
         assert_eq!(sdp.media[0].media_type, "audio");
         assert_eq!(sdp.media[1].payload_type, 96);
-        assert_eq!(select_h264_description(body.as_bytes(), 0, None), Err(SelectionError::Media));
-        assert_eq!(select_h264_description(body.as_bytes(), 2, None), Err(SelectionError::Media));
+        assert_eq!(
+            select_h264_description(body.as_bytes(), 0, None),
+            Err(SelectionError::Media)
+        );
+        assert_eq!(
+            select_h264_description(body.as_bytes(), 2, None),
+            Err(SelectionError::Media)
+        );
         Ok(())
     }
 
     #[test]
     fn rejects_duplicate_and_unoffered_bindings() {
-        for extra in ["a=rtpmap:96 H264/90000\r\n", "a=fmtp:96 packetization-mode=1\r\n", "a=control:trackID=1\r\n"] {
-            assert_eq!(select(&format!("{OFFER}{extra}"), None), Err(SelectionError::Duplicate));
+        for extra in [
+            "a=rtpmap:96 H264/90000\r\n",
+            "a=fmtp:96 packetization-mode=1\r\n",
+            "a=control:trackID=1\r\n",
+        ] {
+            assert_eq!(
+                select(&format!("{OFFER}{extra}"), None),
+                Err(SelectionError::Duplicate)
+            );
         }
-        assert_eq!(select(&OFFER.replace("98 96", "98 96 096"), None), Err(SelectionError::Duplicate));
-        assert_eq!(select(&format!("{OFFER}a=rtpmap:97 H264/90000\r\n"), None), Err(SelectionError::Payload));
-        assert_eq!(select(&format!("{OFFER}a=fmtp:97 packetization-mode=1\r\n"), None), Err(SelectionError::Payload));
+        assert_eq!(
+            select(&OFFER.replace("98 96", "98 96 096"), None),
+            Err(SelectionError::Duplicate)
+        );
+        assert_eq!(
+            select(&format!("{OFFER}a=rtpmap:97 H264/90000\r\n"), None),
+            Err(SelectionError::Payload)
+        );
+        assert_eq!(
+            select(&format!("{OFFER}a=fmtp:97 packetization-mode=1\r\n"), None),
+            Err(SelectionError::Payload)
+        );
     }
 
     #[test]
     fn rejects_duplicate_format_keys_even_with_different_case() {
-        let offer = OFFER.replace("packetization-mode=1;", "packetization-mode=1;Packetization-Mode=0;");
+        let offer = OFFER.replace(
+            "packetization-mode=1;",
+            "packetization-mode=1;Packetization-Mode=0;",
+        );
         assert_eq!(select(&offer, None), Err(SelectionError::Duplicate));
     }
 
     #[test]
     fn rejects_wrong_clock_parameters_and_trailing_mapping_tokens() {
         for mapping in ["H264/8000", "H264/90000/2", "H264/90000 junk", "H264"] {
-            assert_eq!(select(&OFFER.replace("H264/90000", mapping), None), Err(SelectionError::Unsupported));
+            assert_eq!(
+                select(&OFFER.replace("H264/90000", mapping), None),
+                Err(SelectionError::Unsupported)
+            );
         }
     }
 
@@ -380,27 +415,64 @@ mod tests {
     #[test]
     fn rejects_malformed_numbers_controls_and_missing_parameters() {
         for replacement in ["+96", "128", "-1", "nine"] {
-            assert!(select(&OFFER.replacen("98 96", &format!("98 {replacement}"), 1), None).is_err());
+            assert!(
+                select(
+                    &OFFER.replacen("98 96", &format!("98 {replacement}"), 1),
+                    None
+                )
+                .is_err()
+            );
         }
-        for suffix in ["a=x:hidden\0value\n", "a=x:hidden\rvalue\n", "a=x:hidden\u{7f}value\n"] {
-            assert_eq!(select(&format!("{OFFER}{suffix}"), None), Err(SelectionError::Malformed));
+        for suffix in [
+            "a=x:hidden\0value\n",
+            "a=x:hidden\rvalue\n",
+            "a=x:hidden\u{7f}value\n",
+        ] {
+            assert_eq!(
+                select(&format!("{OFFER}{suffix}"), None),
+                Err(SelectionError::Malformed)
+            );
         }
-        assert_eq!(select(&OFFER.replace("Z0IAHw==,aAA=", "Z0IAHw==,,aAA="), None), Err(SelectionError::Malformed));
-        assert_eq!(select(&OFFER.replace("packetization-mode=1", "packetization-mode=+1"), None), Err(SelectionError::Malformed));
+        assert_eq!(
+            select(&OFFER.replace("Z0IAHw==,aAA=", "Z0IAHw==,,aAA="), None),
+            Err(SelectionError::Malformed)
+        );
+        assert_eq!(
+            select(
+                &OFFER.replace("packetization-mode=1", "packetization-mode=+1"),
+                None
+            ),
+            Err(SelectionError::Malformed)
+        );
     }
 
     #[test]
     fn retains_existing_credential_and_sdp_validation() {
-        assert_eq!(select(&OFFER.replace("trackID=1", "rtsp://user:secret@camera/track"), None), Err(SelectionError::Description));
-        assert_eq!(select_h264_description(OFFER.as_bytes(), 0, None), Err(SelectionError::Description));
+        assert_eq!(
+            select(
+                &OFFER.replace("trackID=1", "rtsp://user:secret@camera/track"),
+                None
+            ),
+            Err(SelectionError::Description)
+        );
+        assert_eq!(
+            select_h264_description(OFFER.as_bytes(), 0, None),
+            Err(SelectionError::Description)
+        );
     }
 
     #[test]
     fn limits_apply_before_filtering_unselected_lines() {
         let overlong = format!("{OFFER}a=x:{}\n", "x".repeat(MAX_SDP_LINE_BYTES));
         assert_eq!(select(&overlong, None), Err(SelectionError::Limit));
-        assert_eq!(select_h264_description(&vec![b'x'; MAX_SELECTION_BYTES + 1], 0, None), Err(SelectionError::Limit));
-        assert_eq!(select_h264_description(b"", MAX_SELECTION_MEDIA, None), Err(SelectionError::Limit));
+        assert_eq!(
+            select_h264_description(&vec![b'x'; MAX_SELECTION_BYTES + 1], 0, None),
+            Err(SelectionError::Limit)
+        );
+        assert_eq!(
+            select_h264_description(b"", MAX_SELECTION_MEDIA, None),
+            Err(SelectionError::Limit)
+        );
         let many_lines = format!("{OFFER}{}", "\n".repeat(MAX_SDP_LINES));
         assert_eq!(select(&many_lines, None), Err(SelectionError::Limit));
     }

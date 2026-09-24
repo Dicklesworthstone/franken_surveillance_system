@@ -2748,11 +2748,19 @@ mod reviewer_probes {
         let xs = [0.98_f32, -0.98, 1.75, -1.75, 0.33, 1.0, -1.0];
         let y = out(&run(&gr, vec![("x", t(&[7], &xs)?)])?, "y")?;
         let expected: [u32; 7] = [
-            0x3F3A_23C3, 0x3E8B_B878, 0x3F5A_1993, 0x3E17_99AF, 0x3F14_EE2E, 0x3F3B_26A8,
+            0x3F3A_23C3,
+            0x3E8B_B878,
+            0x3F5A_1993,
+            0x3E17_99AF,
+            0x3F14_EE2E,
+            0x3F3B_26A8,
             0x3E89_B2B1,
         ];
         let actual: Vec<u32> = y.iter().map(|v| v.to_bits()).collect();
-        assert_eq!(actual, expected, "sigmoid bits drifted for xs {xs:?}: {actual:?}");
+        assert_eq!(
+            actual, expected,
+            "sigmoid bits drifted for xs {xs:?}: {actual:?}"
+        );
         Ok(())
     }
 

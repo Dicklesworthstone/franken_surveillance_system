@@ -47,7 +47,10 @@ impl DigestAvcClient {
     ) -> Result<Self, DigestAvcError> {
         let mut inner = RtspAvcClient::new_with_payload_type(config, key, limits, payload_type)
             .map_err(DigestAvcError::Client)?;
-        inner.session.enable_digest(realm, policy).map_err(DigestAvcError::Authentication)?;
+        inner
+            .session
+            .enable_digest(realm, policy)
+            .map_err(DigestAvcError::Authentication)?;
         Ok(Self {
             inner,
             intake: RtspWireIntake::new(),

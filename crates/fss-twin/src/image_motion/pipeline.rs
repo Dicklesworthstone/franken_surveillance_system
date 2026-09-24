@@ -6,15 +6,16 @@
 //! not roll back an accepted observation or ask the caller to ingest it twice.
 //! No model labels, physical identity, ground contact, or absence are inferred.
 
-use fss_codec_mjpeg::{DecodeBudget, DecodeLimits};
-use fss_geometry::WorkBudget;
+use super::{ImageMotionError, ImageMotionPolicy, ImageMotionReport, estimate_image_motion};
+use crate::foreground::pipeline::{
+    ForegroundPipelineError, FrameCapture, RectifiedBackground, RectifiedForeground,
+};
 use crate::foreground::{ForegroundPolicy, ForegroundReport};
-use crate::foreground::pipeline::{FrameCapture, ForegroundPipelineError, RectifiedBackground,
-    RectifiedForeground};
 use crate::image_tracking::{ImageTracker, ImageTrackingError, ImageTrackingReport};
 use crate::mjpeg::{JpegBackground, JpegForeground, JpegFrameBinding, JpegPipelineError};
 use crate::rectification::{RawGrayFrame, RectificationPlan};
-use super::{ImageMotionError, ImageMotionPolicy, ImageMotionReport, estimate_image_motion};
+use fss_codec_mjpeg::{DecodeBudget, DecodeLimits};
+use fss_geometry::WorkBudget;
 
 /// Exact stage boundary. A Tracked result has consumed the exposure even when
 /// its optional motion result is an error. Do not retry that exposure's tracking.
@@ -41,11 +42,17 @@ pub struct ForegroundMotionAnalysis {
 }
 impl ForegroundMotionAnalysis {
     /// Exact complete foreground report, including small components and availability.
-    pub fn foreground_digest(&self) -> [u8; 32] { self.foreground }
+    pub fn foreground_digest(&self) -> [u8; 32] {
+        self.foreground
+    }
     /// Inspect whether tracking committed before deciding which stage can be retried.
-    pub fn outcome(&self) -> &MotionPipelineOutcome { &self.outcome }
+    pub fn outcome(&self) -> &MotionPipelineOutcome {
+        &self.outcome
+    }
     /// Transfer the complete stage results without discarding an accepted receipt.
-    pub fn into_outcome(self) -> MotionPipelineOutcome { self.outcome }
+    pub fn into_outcome(self) -> MotionPipelineOutcome {
+        self.outcome
+    }
 }
 
 /// Convert a real, opaque ForegroundReport and advance the existing tracker.
@@ -60,8 +67,12 @@ impl ForegroundMotionAnalysis {
 /// Retry only estimate_image_motion with that receipt, the unchanged tracker and
 /// a fresh budget. Advancing the tracker makes that old motion request stale.
 #[must_use]
-pub fn track_foreground_motion(tracker: &mut ImageTracker, foreground: &ForegroundReport,
-    policy: ImageMotionPolicy, budget: &mut WorkBudget<'_>) -> ForegroundMotionAnalysis {
+pub fn track_foreground_motion(
+    tracker: &mut ImageTracker,
+    foreground: &ForegroundReport,
+    policy: ImageMotionPolicy,
+    budget: &mut WorkBudget<'_>,
+) -> ForegroundMotionAnalysis {
     let tracked = tracker.update_foreground(foreground, budget);
     let outcome = match tracked {
         Ok(tracking) => {
@@ -70,7 +81,10 @@ pub fn track_foreground_motion(tracker: &mut ImageTracker, foreground: &Foregrou
         }
         Err(error) => MotionPipelineOutcome::TrackingFailed(error),
     };
-    ForegroundMotionAnalysis { foreground: foreground.digest(), outcome }
+    ForegroundMotionAnalysis {
+        foreground: foreground.digest(),
+        outcome,
+    }
 }
 
 /// Owner-framed encoded JPEG and original source/capture/permission declarations.
@@ -92,9 +106,13 @@ pub struct JpegMotionReport {
 }
 impl JpegMotionReport {
     /// Original encoded/decoded receipts, actual pixels, masks and complete regions.
-    pub fn foreground(&self) -> &JpegForeground { &self.foreground }
+    pub fn foreground(&self) -> &JpegForeground {
+        &self.foreground
+    }
     /// Tracking completion and optional motion, including refusals after decode.
-    pub fn analysis(&self) -> &ForegroundMotionAnalysis { &self.analysis }
+    pub fn analysis(&self) -> &ForegroundMotionAnalysis {
+        &self.analysis
+    }
     /// Transfer all source and stage ownership without losing a refused analysis input.
     pub fn into_parts(self) -> (JpegForeground, ForegroundMotionAnalysis) {
         (self.foreground, self.analysis)
@@ -105,14 +123,38 @@ impl JpegMotionReport {
 /// An outer error means decoding/foreground failed before any tracker mutation.
 /// An outer success retains the image even when tracking or motion was refused.
 #[allow(clippy::too_many_arguments)]
-pub fn analyze_jpeg_motion(tracker: &mut ImageTracker, background: &JpegBackground,
-    plan: &RectificationPlan, input: JpegMotionInput<'_>, foreground_policy: ForegroundPolicy,
-    motion_policy: ImageMotionPolicy, limits: DecodeLimits, decoder: &mut DecodeBudget<'_>,
-    geometry: &mut WorkBudget<'_>) -> Result<JpegMotionReport, JpegPipelineError> {
-    let foreground = background.detect(plan, input.bytes, input.allowed, input.source,
-        input.capture, foreground_policy, limits, decoder, geometry)?;
-    let analysis = track_foreground_motion(tracker, foreground.analysis().report(), motion_policy, geometry);
-    Ok(JpegMotionReport { foreground, analysis })
+pub fn analyze_jpeg_motion(
+    tracker: &mut ImageTracker,
+    background: &JpegBackground,
+    plan: &RectificationPlan,
+    input: JpegMotionInput<'_>,
+    foreground_policy: ForegroundPolicy,
+    motion_policy: ImageMotionPolicy,
+    limits: DecodeLimits,
+    decoder: &mut DecodeBudget<'_>,
+    geometry: &mut WorkBudget<'_>,
+) -> Result<JpegMotionReport, JpegPipelineError> {
+    let foreground = background.detect(
+        plan,
+        input.bytes,
+        input.allowed,
+        input.source,
+        input.capture,
+        foreground_policy,
+        limits,
+        decoder,
+        geometry,
+    )?;
+    let analysis = track_foreground_motion(
+        tracker,
+        foreground.analysis().report(),
+        motion_policy,
+        geometry,
+    );
+    Ok(JpegMotionReport {
+        foreground,
+        analysis,
+    })
 }
 
 /// Actual raw-plane/rectification/foreground output plus all downstream outcomes.
@@ -122,9 +164,13 @@ pub struct LumaMotionReport {
 }
 impl LumaMotionReport {
     /// Unmodified source-linked pixels, masks, rectification receipt and foreground.
-    pub fn foreground(&self) -> &RectifiedForeground { &self.foreground }
+    pub fn foreground(&self) -> &RectifiedForeground {
+        &self.foreground
+    }
     /// Explicit tracking completion and optional motion outcome.
-    pub fn analysis(&self) -> &ForegroundMotionAnalysis { &self.analysis }
+    pub fn analysis(&self) -> &ForegroundMotionAnalysis {
+        &self.analysis
+    }
     /// Transfer the actual image and every stage result together.
     pub fn into_parts(self) -> (RectifiedForeground, ForegroundMotionAnalysis) {
         (self.foreground, self.analysis)
@@ -133,12 +179,20 @@ impl LumaMotionReport {
 /// Execute the same chain for an already validated raw luma plane.
 /// Outer errors precede tracking; successful results retain downstream refusals.
 #[allow(clippy::too_many_arguments)]
-pub fn analyze_luma_motion(tracker: &mut ImageTracker, background: &RectifiedBackground,
-    plan: &RectificationPlan, raw: &RawGrayFrame<'_>, capture: FrameCapture,
-    foreground_policy: ForegroundPolicy, motion_policy: ImageMotionPolicy,
-    budget: &mut WorkBudget<'_>) -> Result<LumaMotionReport, ForegroundPipelineError> {
+pub fn analyze_luma_motion(
+    tracker: &mut ImageTracker,
+    background: &RectifiedBackground,
+    plan: &RectificationPlan,
+    raw: &RawGrayFrame<'_>,
+    capture: FrameCapture,
+    foreground_policy: ForegroundPolicy,
+    motion_policy: ImageMotionPolicy,
+    budget: &mut WorkBudget<'_>,
+) -> Result<LumaMotionReport, ForegroundPipelineError> {
     let foreground = background.detect_luma(plan, raw, capture, foreground_policy, budget)?;
     let analysis = track_foreground_motion(tracker, foreground.report(), motion_policy, budget);
-    Ok(LumaMotionReport { foreground, analysis })
+    Ok(LumaMotionReport {
+        foreground,
+        analysis,
+    })
 }
-

@@ -1,13 +1,14 @@
 #![forbid(unsafe_code)]
 //! Recorded original packets through the real sequence and H.264 kernels.
 
-use std::ops::Range;
-use fss_packet::{ContinuityError, FragmentDiscard, H264Depacketizer, H264Failure,
-    H264Limits, H264Mode, H264Status, NalUnit, PacketError, PacketLimits,
-    RtcpCompound, RtcpMode, RtpPacket, SequenceClass, SequenceObservation,
-    SequenceStats, SequenceTracker, StreamKey};
-use crate::adapter_replay::ReplayCx;
 use super::{RtpDumpError, RtpDumpKind, RtpDumpLimits, RtpDumpReader, RtpDumpRecord};
+use crate::adapter_replay::ReplayCx;
+use fss_packet::{
+    ContinuityError, FragmentDiscard, H264Depacketizer, H264Failure, H264Limits, H264Mode,
+    H264Status, NalUnit, PacketError, PacketLimits, RtcpCompound, RtcpMode, RtpPacket,
+    SequenceClass, SequenceObservation, SequenceStats, SequenceTracker, StreamKey,
+};
+use std::ops::Range;
 
 /// Explicit binding supplied by the import owner. No payload/SSRC is guessed
 /// from untrusted capture headers; source changes require a newly authorized scan.
@@ -159,11 +160,17 @@ pub enum RtpReplayError {
     SourceMap,
 }
 impl std::fmt::Display for RtpReplayError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f, "rtpdump replay refusal: {self:?}") }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "rtpdump replay refusal: {self:?}")
+    }
 }
 impl std::error::Error for RtpReplayError {}
 
-struct AdmittedSource { sequence: u64, record: usize, packet: Range<usize> }
+struct AdmittedSource {
+    sequence: u64,
+    record: usize,
+    packet: Range<usize>,
+}
 
 /// Incremental, bounded file replay. One call consumes at most one record.
 ///
@@ -187,25 +194,46 @@ impl<'a> RtpDumpReplay<'a> {
     pub fn new(input: &'a [u8], config: RtpReplayConfig) -> Result<Self, RtpReplayError> {
         let reader = RtpDumpReader::new(input, config.dump).map_err(RtpReplayError::Dump)?;
         config.packet.validate().map_err(RtpReplayError::Packet)?;
-        let sequence = SequenceTracker::new(config.key, config.payload_type).map_err(RtpReplayError::Continuity)?;
-        let codec = H264Depacketizer::new(config.key, config.payload_type, config.mode, config.codec)
-            .map_err(RtpReplayError::Codec)?;
+        let sequence = SequenceTracker::new(config.key, config.payload_type)
+            .map_err(RtpReplayError::Continuity)?;
+        let codec =
+            H264Depacketizer::new(config.key, config.payload_type, config.mode, config.codec)
+                .map_err(RtpReplayError::Codec)?;
         // Reserve mapping metadata BEFORE consuming any input. Each admitted source
         // consumes exactly one entry, independent of NAL count or fragment length.
         let mut admitted = Vec::new();
-        admitted.try_reserve_exact(config.dump.max_records).map_err(|_| RtpReplayError::Allocation)?;
-        Ok(Self { input, reader, config, sequence, codec, admitted,
-            now_ns: 0, previous_offset: None, stopped: false })
+        admitted
+            .try_reserve_exact(config.dump.max_records)
+            .map_err(|_| RtpReplayError::Allocation)?;
+        Ok(Self {
+            input,
+            reader,
+            config,
+            sequence,
+            codec,
+            admitted,
+            now_ns: 0,
+            previous_offset: None,
+            stopped: false,
+        })
     }
     /// Current packet accounting. Missing positions remain provisional, never physical absence.
-    pub fn stats(&self) -> SequenceStats { self.sequence.stats() }
+    pub fn stats(&self) -> SequenceStats {
+        self.sequence.stats()
+    }
     /// Retained incomplete derivative bytes, separate from caller-owned original custody.
-    pub fn pending_bytes(&self) -> usize { self.codec.pending_bytes() }
+    pub fn pending_bytes(&self) -> usize {
+        self.codec.pending_bytes()
+    }
     /// Complete source records consumed so far, including refused media.
-    pub fn records_read(&self) -> usize { self.reader.records_read() }
+    pub fn records_read(&self) -> usize {
+        self.reader.records_read()
+    }
     /// Process at most one recorded input with a real reference cancellation checkpoint.
     pub fn step(&mut self, cx: &ReplayCx) -> Result<RtpReplayStep<'a>, RtpReplayError> {
-        if self.stopped { return Ok(RtpReplayStep::Exhausted); }
+        if self.stopped {
+            return Ok(RtpReplayStep::Exhausted);
+        }
         cx.reach_stage("rtpdump:record");
         if cx.is_cancelled() {
             let discarded = self.cancel();
@@ -214,7 +242,9 @@ impl<'a> RtpDumpReplay<'a> {
         }
         let result = self.advance();
         // Caller can still explicitly cancel to retrieve a pending fragment receipt.
-        if result.is_err() { self.stopped = true; }
+        if result.is_err() {
+            self.stopped = true;
+        }
         result
     }
     /// Stop only this adapter and return the pending derivative receipt. No source is deleted.
@@ -227,96 +257,175 @@ impl<'a> RtpDumpReplay<'a> {
             Ok(Some(source)) => source,
             Ok(None) => {
                 self.stopped = true;
-                return Ok(RtpReplayStep::Ended { stats: self.sequence.stats(), discarded: self.codec.finish() });
+                return Ok(RtpReplayStep::Ended {
+                    stats: self.sequence.stats(),
+                    discarded: self.codec.finish(),
+                });
             }
             Err(error) => {
                 self.stopped = true;
-                return Ok(RtpReplayStep::FramingRefused { error, discarded: self.codec.finish() });
+                return Ok(RtpReplayStep::FramingRefused {
+                    error,
+                    discarded: self.codec.finish(),
+                });
             }
         };
-        let offset_reversed = self.previous_offset.is_some_and(|prev| source.offset_ms() < prev);
+        let offset_reversed = self
+            .previous_offset
+            .is_some_and(|prev| source.offset_ms() < prev);
         self.previous_offset = Some(source.offset_ms());
         self.now_ns = self.now_ns.max(u64::from(source.offset_ms()) * 1_000_000);
-        let expired = self.codec.expire(self.now_ns).map_err(RtpReplayError::Codec)?;
+        let expired = self
+            .codec
+            .expire(self.now_ns)
+            .map_err(RtpReplayError::Codec)?;
         let mut discarded = None;
         let outcome = match source.kind() {
             RtpDumpKind::CapturedPrefix => {
                 discarded = self.codec.discard_gap();
                 RtpRecordOutcome::CapturedPrefix
             }
-            RtpDumpKind::Rtcp => match RtcpCompound::parse(source.packet(), self.config.packet, self.config.rtcp) {
-                Ok(_) => RtpRecordOutcome::Rtcp,
-                Err(error) => RtpRecordOutcome::PacketRefused(error),
-            },
+            RtpDumpKind::Rtcp => {
+                match RtcpCompound::parse(source.packet(), self.config.packet, self.config.rtcp) {
+                    Ok(_) => RtpRecordOutcome::Rtcp,
+                    Err(error) => RtpRecordOutcome::PacketRefused(error),
+                }
+            }
             RtpDumpKind::Rtp => match RtpPacket::parse(source.packet(), self.config.packet) {
-                Err(error) => { discarded = self.codec.discard_gap(); RtpRecordOutcome::PacketRefused(error) }
+                Err(error) => {
+                    discarded = self.codec.discard_gap();
+                    RtpRecordOutcome::PacketRefused(error)
+                }
                 Ok(packet) => match self.sequence.observe(self.config.key, packet) {
-                    Err(error) => { discarded = self.codec.discard_gap(); RtpRecordOutcome::StreamRefused(error) }
+                    Err(error) => {
+                        discarded = self.codec.discard_gap();
+                        RtpRecordOutcome::StreamRefused(error)
+                    }
                     Ok(observation) if !observation.is_unique() => {
-                        if matches!(observation.class, SequenceClass::DiscontinuitySuspected | SequenceClass::RestartRequired) {
+                        if matches!(
+                            observation.class,
+                            SequenceClass::DiscontinuitySuspected | SequenceClass::RestartRequired
+                        ) {
                             discarded = self.codec.discard_gap();
                         }
                         RtpRecordOutcome::SequenceOnly(observation)
                     }
                     Ok(observation) => {
-                        let sequence = observation.extended_sequence.ok_or(RtpReplayError::SourceMap)?;
-                        if matches!(observation.class, SequenceClass::Baseline | SequenceClass::Advanced) {
-                            self.admitted.push(AdmittedSource { sequence, record: source.index(), packet: source.packet_span() });
+                        let sequence = observation
+                            .extended_sequence
+                            .ok_or(RtpReplayError::SourceMap)?;
+                        if matches!(
+                            observation.class,
+                            SequenceClass::Baseline | SequenceClass::Advanced
+                        ) {
+                            self.admitted.push(AdmittedSource {
+                                sequence,
+                                record: source.index(),
+                                packet: source.packet_span(),
+                            });
                         }
-                        match self.codec.push(self.config.key, sequence, packet, self.now_ns) {
+                        match self
+                            .codec
+                            .push(self.config.key, sequence, packet, self.now_ns)
+                        {
                             Err(mut failure) => {
                                 discarded = failure.discarded.take();
-                                RtpRecordOutcome::CodecRefused { observation, failure }
+                                RtpRecordOutcome::CodecRefused {
+                                    observation,
+                                    failure,
+                                }
                             }
                             Ok(output) => {
                                 discarded = output.discarded;
                                 let mut nals = Vec::new();
-                                nals.try_reserve_exact(output.nals.len()).map_err(|_| RtpReplayError::Allocation)?;
-                                for nal in output.nals { nals.push(self.map_nal(nal)?); }
-                                RtpRecordOutcome::H264 { observation, status: output.status, nals, gap_before: output.gap_before }
+                                nals.try_reserve_exact(output.nals.len())
+                                    .map_err(|_| RtpReplayError::Allocation)?;
+                                for nal in output.nals {
+                                    nals.push(self.map_nal(nal)?);
+                                }
+                                RtpRecordOutcome::H264 {
+                                    observation,
+                                    status: output.status,
+                                    nals,
+                                    gap_before: output.gap_before,
+                                }
                             }
                         }
                     }
                 },
             },
         };
-        Ok(RtpReplayStep::Record(Box::new(ReplayedRecord { source, offset_reversed, expired, discarded, outcome })))
+        Ok(RtpReplayStep::Record(Box::new(ReplayedRecord {
+            source,
+            offset_reversed,
+            expired,
+            discarded,
+            outcome,
+        })))
     }
     fn map_nal(&self, nal: NalUnit) -> Result<ReplayedNal, RtpReplayError> {
         let mut sources = Vec::new();
-        sources.try_reserve_exact(nal.sources().len()).map_err(|_| RtpReplayError::Allocation)?;
+        sources
+            .try_reserve_exact(nal.sources().len())
+            .map_err(|_| RtpReplayError::Allocation)?;
         for span in nal.sources() {
-            let index = self.admitted.binary_search_by_key(&span.sequence, |s| s.sequence)
+            let index = self
+                .admitted
+                .binary_search_by_key(&span.sequence, |s| s.sequence)
                 .map_err(|_| RtpReplayError::SourceMap)?;
             let source = &self.admitted[index];
             let translate = |range: &Range<usize>| -> Result<Range<usize>, RtpReplayError> {
-                if range.start > range.end || range.end > source.packet.len() { return Err(RtpReplayError::SourceMap); }
+                if range.start > range.end || range.end > source.packet.len() {
+                    return Err(RtpReplayError::SourceMap);
+                }
                 Ok(source.packet.start + range.start..source.packet.start + range.end)
             };
             let wire = translate(&span.wire_range)?;
-            let original = self.input.get(wire.clone()).ok_or(RtpReplayError::SourceMap)?;
-            let reconstructed = nal.bytes().get(span.nal_range.clone()).ok_or(RtpReplayError::SourceMap)?;
-            if original != reconstructed { return Err(RtpReplayError::SourceMap); }
+            let original = self
+                .input
+                .get(wire.clone())
+                .ok_or(RtpReplayError::SourceMap)?;
+            let reconstructed = nal
+                .bytes()
+                .get(span.nal_range.clone())
+                .ok_or(RtpReplayError::SourceMap)?;
+            if original != reconstructed {
+                return Err(RtpReplayError::SourceMap);
+            }
             let fragment_header = match &span.fragment_header_range {
                 Some(range) => {
                     let range = translate(range)?;
-                    let header = self.input.get(range.clone()).ok_or(RtpReplayError::SourceMap)?;
-                    if header.len() != 2 || nal.bytes().first().copied() != Some((header[0] & 0xe0) | (header[1] & 31)) {
+                    let header = self
+                        .input
+                        .get(range.clone())
+                        .ok_or(RtpReplayError::SourceMap)?;
+                    if header.len() != 2
+                        || nal.bytes().first().copied()
+                            != Some((header[0] & 0xe0) | (header[1] & 31))
+                    {
                         return Err(RtpReplayError::SourceMap);
                     }
                     Some(range)
                 }
                 None => None,
             };
-            sources.push(FileNalSource { record: source.record, wire, nal: span.nal_range.clone(), fragment_header });
+            sources.push(FileNalSource {
+                record: source.record,
+                wire,
+                nal: span.nal_range.clone(),
+                fragment_header,
+            });
         }
         Ok(ReplayedNal { nal, sources })
     }
 }
 impl std::fmt::Debug for RtpDumpReplay<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RtpDumpReplay").field("reader", &self.reader)
-            .field("stats", &self.stats()).field("pending_bytes", &self.pending_bytes())
-            .field("stopped", &self.stopped).finish_non_exhaustive()
+        f.debug_struct("RtpDumpReplay")
+            .field("reader", &self.reader)
+            .field("stats", &self.stats())
+            .field("pending_bytes", &self.pending_bytes())
+            .field("stopped", &self.stopped)
+            .finish_non_exhaustive()
     }
 }

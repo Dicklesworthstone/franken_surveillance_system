@@ -100,8 +100,7 @@ impl LocalSourceReader<'_> {
             })
             .collect();
         let tombstones: BTreeSet<_> = self.publisher.tombstones().copied().collect();
-        let observed_tombstones: BTreeSet<_> =
-            snapshot.report.tombstones.iter().copied().collect();
+        let observed_tombstones: BTreeSet<_> = snapshot.report.tombstones.iter().copied().collect();
         if observed != *expected || tombstones != observed_tombstones {
             return Err(SourceHydrationError::SnapshotChanged);
         }
@@ -119,12 +118,8 @@ impl PublishedSourceReader for LocalSourceReader<'_> {
         self.verify_snapshot(publication_root, subject_digest)?;
         let ceiling = usize::try_from(max_payload_bytes.min(MAX_OBJECT_BYTES as u64))
             .map_err(|_| SourceHydrationError::SourceMismatch)?;
-        let payload = read_verified_with_io(
-            self.publisher.root_dir(),
-            subject_digest,
-            ceiling,
-            self.io,
-        )?;
+        let payload =
+            read_verified_with_io(self.publisher.root_dir(), subject_digest, ceiling, self.io)?;
         // A read can race hardware faults or out-of-contract filesystem writes even while
         // the legitimate writer lock is held. Do not return bytes after observed drift.
         self.verify_snapshot(publication_root, subject_digest)?;

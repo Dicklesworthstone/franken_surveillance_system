@@ -19,8 +19,11 @@ pub struct TrackerLimits {
 }
 impl Default for TrackerLimits {
     fn default() -> Self {
-        Self { max_tracks: MAX_CHECKED_TRACKS, max_detections: MAX_CHECKED_TRACKS,
-            max_assignment_work: MAX_ASSIGNMENT_WORK }
+        Self {
+            max_tracks: MAX_CHECKED_TRACKS,
+            max_detections: MAX_CHECKED_TRACKS,
+            max_assignment_work: MAX_ASSIGNMENT_WORK,
+        }
     }
 }
 
@@ -49,10 +52,22 @@ impl std::fmt::Display for TrackerStepError {
 impl std::error::Error for TrackerStepError {}
 
 fn valid_detection(d: &Detection) -> bool {
-    [d.box_x, d.box_y, d.box_w, d.box_h, d.box_x + d.box_w,
-        d.box_y + d.box_h, d.box_w * d.box_h].iter().all(|v| v.is_finite())
-        && d.box_w > 0.0 && d.box_h > 0.0 && d.box_w * d.box_h > 0.0
-        && d.box_x + d.box_w > d.box_x && d.box_y + d.box_h > d.box_y
+    [
+        d.box_x,
+        d.box_y,
+        d.box_w,
+        d.box_h,
+        d.box_x + d.box_w,
+        d.box_y + d.box_h,
+        d.box_w * d.box_h,
+    ]
+    .iter()
+    .all(|v| v.is_finite())
+        && d.box_w > 0.0
+        && d.box_h > 0.0
+        && d.box_w * d.box_h > 0.0
+        && d.box_x + d.box_w > d.box_x
+        && d.box_y + d.box_h > d.box_y
 }
 
 impl MultiObjectTracker {
@@ -61,35 +76,58 @@ impl MultiObjectTracker {
     /// Bounds and boxes are validated before copying state or evaluating pairs.
     /// This is computation admission, not source continuity, custody or effect authority.
     pub fn try_step(
-        &mut self, detections: &[Detection], limits: TrackerLimits,
+        &mut self,
+        detections: &[Detection],
+        limits: TrackerLimits,
     ) -> Result<TrackerOutput, TrackerStepError> {
-        if limits.max_tracks == 0 || limits.max_tracks > MAX_CHECKED_TRACKS
-            || limits.max_detections == 0 || limits.max_detections > MAX_CHECKED_TRACKS
+        if limits.max_tracks == 0
+            || limits.max_tracks > MAX_CHECKED_TRACKS
+            || limits.max_detections == 0
+            || limits.max_detections > MAX_CHECKED_TRACKS
             || limits.max_assignment_work > MAX_ASSIGNMENT_WORK
-            || detections.len() > limits.max_detections || self.tracks.len() > limits.max_tracks {
+            || detections.len() > limits.max_detections
+            || self.tracks.len() > limits.max_tracks
+        {
             return Err(TrackerStepError::Limit);
         }
         let rows = self.tracks.len() as u64;
-        let work = if detections.is_empty() { 0 } else {
+        let work = if detections.is_empty() {
+            0
+        } else {
             rows * rows * (rows + detections.len() as u64)
         };
-        if work > limits.max_assignment_work { return Err(TrackerStepError::Limit); }
-        if detections.iter().any(|d| !valid_detection(d)) { return Err(TrackerStepError::Detection); }
+        if work > limits.max_assignment_work {
+            return Err(TrackerStepError::Limit);
+        }
+        if detections.iter().any(|d| !valid_detection(d)) {
+            return Err(TrackerStepError::Detection);
+        }
         if self.frame.checked_add(1).is_none()
             || self.next_id.checked_add(detections.len() as u64).is_none()
-            || self.tracks.iter().any(|t| t.hits == u32::MAX || t.misses == u32::MAX) {
+            || self
+                .tracks
+                .iter()
+                .any(|t| t.hits == u32::MAX || t.misses == u32::MAX)
+        {
             return Err(TrackerStepError::CounterExhausted);
         }
         let mut candidate = self.clone();
         let output = candidate.step(detections);
-        if output.tracks.len() > limits.max_tracks { return Err(TrackerStepError::Limit); }
-        if candidate.kalman.iter().any(|k| k.x.iter().any(|v| !v.is_finite())
-            || k.p.iter().flatten().any(|v| !v.is_finite())
-            || k.p.iter().enumerate().any(|(i, row)| row[i] < 0.0))
-            || output.tracks.iter().any(|t| !valid_detection(&Detection {
-                box_x: t.cx - t.box_w / 2.0, box_y: t.cy - t.box_h / 2.0,
-                box_w: t.box_w, box_h: t.box_h,
-            })) {
+        if output.tracks.len() > limits.max_tracks {
+            return Err(TrackerStepError::Limit);
+        }
+        if candidate.kalman.iter().any(|k| {
+            k.x.iter().any(|v| !v.is_finite())
+                || k.p.iter().flatten().any(|v| !v.is_finite())
+                || k.p.iter().enumerate().any(|(i, row)| row[i] < 0.0)
+        }) || output.tracks.iter().any(|t| {
+            !valid_detection(&Detection {
+                box_x: t.cx - t.box_w / 2.0,
+                box_y: t.cy - t.box_h / 2.0,
+                box_w: t.box_w,
+                box_h: t.box_h,
+            })
+        }) {
             return Err(TrackerStepError::Numeric);
         }
         *self = candidate;

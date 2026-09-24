@@ -36,10 +36,21 @@ impl ArchivePinJournal {
     /// Open an existing journal without any incomplete-tail repair. This is the ordinary
     /// operator recovery entrypoint; accepted scope, independent minimum and limits are
     /// identical to open_existing. Missing storage is never initialized or adopted.
-    pub fn open_complete(directory: impl AsRef<Path>, scope: ArchivePinScope,
-        minimum: Option<ArchivePinAnchor>, limits: ArchivePinLimits,
-        cancel: &dyn PublishCancellation) -> PinResult<Self> {
-        Self::open_existing(directory, scope, minimum, limits, IncompleteTailPolicy::Reject, cancel)
+    pub fn open_complete(
+        directory: impl AsRef<Path>,
+        scope: ArchivePinScope,
+        minimum: Option<ArchivePinAnchor>,
+        limits: ArchivePinLimits,
+        cancel: &dyn PublishCancellation,
+    ) -> PinResult<Self> {
+        Self::open_existing(
+            directory,
+            scope,
+            minimum,
+            limits,
+            IncompleteTailPolicy::Reject,
+            cancel,
+        )
     }
 
     /// Reconcile and restore exactly the journal's active work. A candidate takes precedence;
@@ -56,9 +67,17 @@ impl ArchivePinJournal {
     /// synchronous operation; cancellation must also enforce live deadline/revocation at I/O
     /// boundaries. A failure may follow committed metadata or archive roots. Keep both stores,
     /// reopen/reconcile uncertain storage, and retry the same journal work, never another ordinal.
-    pub fn restore_work(&mut self, publisher: &mut LocalRootPublisher, bounds: ArchiveWorkLimits,
-        now: u64, deadline: u64, cancel: &dyn PublishCancellation) -> PinResult<ArchivePinRestoration> {
-        if now >= deadline { return Err(ArchiveError::Deadline.into()); }
+    pub fn restore_work(
+        &mut self,
+        publisher: &mut LocalRootPublisher,
+        bounds: ArchiveWorkLimits,
+        now: u64,
+        deadline: u64,
+        cancel: &dyn PublishCancellation,
+    ) -> PinResult<ArchivePinRestoration> {
+        if now >= deadline {
+            return Err(ArchiveError::Deadline.into());
+        }
         check(cancel)?;
         self.verify(cancel)?;
         let (which, pin) = match (&self.replay.pins.candidate, &self.replay.pins.confirmed) {
@@ -71,28 +90,52 @@ impl ArchivePinJournal {
         let result_pin = pin.clone();
         let confirmation = if which == ArchivePinPhase::Candidate {
             Some(self.persist(pin, ArchivePinPhase::Confirmed, cancel)?)
-        } else { None };
+        } else {
+            None
+        };
         let catalog = match &work.prepared_page {
             None => None,
             Some(page) => {
                 check(cancel)?;
-                let slot = work.snapshot.namespace().page_slot(work.snapshot.indexed_windows())?;
-                let digest = publisher.stage_object(page.index_bytes()).map_err(publication_error)?;
-                if Some(digest) != page.manifest().metadata_digest() { return Err(ArchiveError::Metadata.into()); }
-                Some(require_durable(publisher.publish_cancellable(&slot, page.manifest(), cancel)
-                    .map_err(publication_error)?, page.manifest().root())?)
+                let slot = work
+                    .snapshot
+                    .namespace()
+                    .page_slot(work.snapshot.indexed_windows())?;
+                let digest = publisher
+                    .stage_object(page.index_bytes())
+                    .map_err(publication_error)?;
+                if Some(digest) != page.manifest().metadata_digest() {
+                    return Err(ArchiveError::Metadata.into());
+                }
+                Some(require_durable(
+                    publisher
+                        .publish_cancellable(&slot, page.manifest(), cancel)
+                        .map_err(publication_error)?,
+                    page.manifest().root(),
+                )?)
             }
         };
         let window = match &work.pending {
             None => None,
             Some(window) => {
                 check(cancel)?;
-                let slot = work.snapshot.namespace().window_slot(work.snapshot.windows().len())?;
-                let mut job = RecordingPublication::new(window, publisher, slot,
-                    bounds.max_pending_bytes, deadline).map_err(ArchiveError::from)?;
+                let slot = work
+                    .snapshot
+                    .namespace()
+                    .window_slot(work.snapshot.windows().len())?;
+                let mut job = RecordingPublication::new(
+                    window,
+                    publisher,
+                    slot,
+                    bounds.max_pending_bytes,
+                    deadline,
+                )
+                .map_err(ArchiveError::from)?;
                 let mut receipt = None;
                 for _ in 0..5 {
-                    if let RecordingProgress::Published(value) = job.step(now, cancel).map_err(ArchiveError::from)? {
+                    if let RecordingProgress::Published(value) =
+                        job.step(now, cancel).map_err(ArchiveError::from)?
+                    {
                         receipt = Some(require_durable(value, window.manifest().root())?);
                         break;
                     }
@@ -106,16 +149,27 @@ impl ArchivePinJournal {
         let snapshot = ArchiveSnapshot::load(publisher, namespace, work.snapshot.limits(), cancel)?;
         let snapshot_digest = snapshot.digest()?;
         self.verify(cancel)?;
-        Ok(ArchivePinRestoration { pin: result_pin, journal_anchor: self.anchor(), confirmation,
-            catalog, window, snapshot_digest, durable_windows: snapshot.windows().len(),
-            indexed_windows: snapshot.indexed_windows(), pages: snapshot.pages().len() })
+        Ok(ArchivePinRestoration {
+            pin: result_pin,
+            journal_anchor: self.anchor(),
+            confirmation,
+            catalog,
+            window,
+            snapshot_digest,
+            durable_windows: snapshot.windows().len(),
+            indexed_windows: snapshot.indexed_windows(),
+            pages: snapshot.pages().len(),
+        })
     }
 }
 
 fn publication_error(error: fss_publication::LocalPublicationError) -> ArchivePinError {
     ArchiveError::Storage(RecordingIoError::from(error)).into()
 }
-fn require_durable(receipt: LocalPublicationReceipt, expected: ContentDigest) -> PinResult<LocalPublicationReceipt> {
+fn require_durable(
+    receipt: LocalPublicationReceipt,
+    expected: ContentDigest,
+) -> PinResult<LocalPublicationReceipt> {
     if receipt.root != expected || receipt.claims.local != LocalPublicationState::Durable {
         return Err(ArchiveError::Storage(RecordingIoError::NotDurable).into());
     }

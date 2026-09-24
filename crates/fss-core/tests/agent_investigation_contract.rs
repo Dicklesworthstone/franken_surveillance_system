@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use fss_core::contract_basis::reference_contract_basis;
 use fss_core::{
     CaseDiscriminator, CaseHypothesis, ContentDigest, ContractError, InvestigationLifecycle,
-    InvestigationState, InvestigationStateParams, KnownStatement, KnowledgeState, LedgerAnchor,
+    InvestigationState, InvestigationStateParams, KnowledgeState, KnownStatement, LedgerAnchor,
     MissionId,
 };
 
@@ -56,8 +56,8 @@ fn params(
 }
 
 #[test]
-fn test_investigation_requires_competition_and_carries_epistemics(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_investigation_requires_competition_and_carries_epistemics()
+-> Result<(), Box<dyn std::error::Error>> {
     // A single-hypothesis case preserves no alternative: refused.
     let single = vec![hypothesis("hypothesis:intruder")];
     assert_eq!(
@@ -93,7 +93,10 @@ fn test_investigation_requires_competition_and_carries_epistemics(
     assert_eq!(record.state, InvestigationLifecycle::Active);
     // Knowns and unknowns carry their epistemic states explicitly.
     assert_eq!(record.knowns[0].epistemic_state, KnowledgeState::Estimated);
-    assert_eq!(record.unknowns[0].epistemic_state, KnowledgeState::NotObservable);
+    assert_eq!(
+        record.unknowns[0].epistemic_state,
+        KnowledgeState::NotObservable
+    );
     // Determinism.
     let rebuilt = InvestigationState::new(params(
         competing,
@@ -114,13 +117,16 @@ fn test_investigation_requires_competition_and_carries_epistemics(
             "stop if coverage uncertified".to_owned(),
         ],
     ))?;
-    assert_eq!(rebuilt.investigation_digest(), record.investigation_digest());
+    assert_eq!(
+        rebuilt.investigation_digest(),
+        record.investigation_digest()
+    );
     Ok(())
 }
 
 #[test]
-fn test_investigation_discriminators_must_separate_existing_hypotheses(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn test_investigation_discriminators_must_separate_existing_hypotheses()
+-> Result<(), Box<dyn std::error::Error>> {
     let competing = vec![
         hypothesis("hypothesis:intruder"),
         hypothesis("hypothesis:wildlife"),
