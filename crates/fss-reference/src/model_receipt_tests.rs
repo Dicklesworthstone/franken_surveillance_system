@@ -3,7 +3,7 @@
 use std::error::Error;
 
 use fss_core::{ContentDigest, Generation, TimestampNs};
-use fss_model_ir::{AttributeMap, GraphNode, ModelIrGraph, OpCode, TensorPort};
+use fss_model_ir::{AttrValue, AttributeMap, GraphNode, ModelIrGraph, OpCode, TensorPort};
 use fss_tensor::{DType, Shape, Tensor};
 
 use crate::clock::VirtualClock;
@@ -83,25 +83,33 @@ fn test_receipt_ok_outcome() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn test_receipt_unsupported_operator_outcome() -> Result<(), Box<dyn Error>> {
+fn test_receipt_refused_graph_outcome() -> Result<(), Box<dyn Error>> {
+    // RMSNorm, the op this test first used as "unsupported", executes since 35b07e0, and every
+    // frozen opcode now has a scalar kernel, so no valid graph yields UnsupportedOperator. The
+    // still-reachable pre-execution refusal is graph validation: a GELU mode outside none/tanh.
     let g = test_gen();
     let in_port = TensorPort::new("x", DType::F32, Shape::new(vec![1, 4])?, g)?;
     let out_port = TensorPort::new("y", DType::F32, Shape::new(vec![1, 4])?, g)?;
-    // RMSNorm is in ModelIr OpCode table but unsupported by ScalarExecutor
+    let mut attrs = AttributeMap::new();
+    attrs.insert(
+        "approximate".to_string(),
+        AttrValue::String("erf".to_string()),
+    );
     let node = GraphNode::new(
-        "rmsnorm_1",
-        OpCode::RMSNorm,
-        "rmsnorm",
+        "gelu_1",
+        OpCode::Gelu,
+        "gelu",
         vec!["x".to_string()],
         vec!["y".to_string()],
-        AttributeMap::new(),
+        attrs,
     )?;
 
-    let graph = ModelIrGraph::builder("test_unsupported_op", g)
+    // Deliberately unvalidated: the executor behind the receipt must refuse it.
+    let graph = ModelIrGraph::builder("test_refused_graph", g)
         .add_input(in_port)
         .add_output(out_port)
         .add_node(node)
-        .build_and_validate()?;
+        .build()?;
 
     let x_vals = [1.0_f32, 2.0, 3.0, 4.0];
     let x_tensor = Tensor::from_values(Shape::new(vec![1, 4])?, &x_vals, g)?;
@@ -113,7 +121,7 @@ fn test_receipt_unsupported_operator_outcome() -> Result<(), Box<dyn Error>> {
         &inputs,
         ExecBudget::unlimited(),
         &cx,
-        "job:test-unsupported-op",
+        "job:test-refused-graph",
         None,
         None,
         None,
@@ -123,7 +131,7 @@ fn test_receipt_unsupported_operator_outcome() -> Result<(), Box<dyn Error>> {
     assert_eq!(receipt.outcome, ReceiptOutcome::Error);
     assert_eq!(
         receipt.error_id.as_deref(),
-        Some("ERR-EXEC-UNSUPPORTED-OPERATOR-001")
+        Some("ERR-EXEC-IR-VALIDATION-001")
     );
     assert!(receipt.output_root.is_none());
     assert!(receipt.operator_trace_digest.is_none());
@@ -134,7 +142,7 @@ fn test_receipt_unsupported_operator_outcome() -> Result<(), Box<dyn Error>> {
 
     let json = receipt.to_json_canonical();
     assert!(json.contains(r#""outcome":"error""#));
-    assert!(json.contains(r#""errorId":"ERR-EXEC-UNSUPPORTED-OPERATOR-001""#));
+    assert!(json.contains(r#""errorId":"ERR-EXEC-IR-VALIDATION-001""#));
     assert!(json.contains(r#""outputRoot":null"#));
 
     Ok(())
@@ -143,11 +151,12 @@ fn test_receipt_unsupported_operator_outcome() -> Result<(), Box<dyn Error>> {
 #[test]
 fn test_receipt_unsupported_dtype_outcome() -> Result<(), Box<dyn Error>> {
     let g = test_gen();
-    // Declare U8 input in graph
-    let in_port = TensorPort::new("x", DType::U8, Shape::new(vec![1, 2])?, g)?;
-    let out_port = TensorPort::new("y", DType::U8, Shape::new(vec![1, 2])?, g)?;
+    // Declare an F16 graph: it passes IR validation (U8 Relu does not: DTypeMismatch), but the
+    // scalar executor only admits F32 arithmetic and refuses it before execution.
+    let in_port = TensorPort::new("x", DType::F16, Shape::new(vec![1, 2])?, g)?;
+    let out_port = TensorPort::new("y", DType::F16, Shape::new(vec![1, 2])?, g)?;
     let node = GraphNode::new(
-        "relu_u8",
+        "relu_f16",
         OpCode::Relu,
         "relu",
         vec!["x".to_string()],
