@@ -14,6 +14,8 @@ type TestResult = Result<(), Box<dyn Error>>;
 const INTRA: &[u8] = include_bytes!("fixtures/decode/i_64x64_ctu32_qp30.h265");
 const SLICES: &[u8] = include_bytes!("fixtures/decode/i_qcif_slices4.h265");
 const PCM: &[u8] = include_bytes!("fixtures/decode/pcm_mixed_nodeblock.h265");
+const INTER: &[u8] = include_bytes!("fixtures/decode/b_qcif_nopyramid_ref1.h265");
+const P_CROP: &[u8] = include_bytes!("fixtures/decode/p_100x60_crop.h265");
 
 fn nals(stream: &[u8]) -> Vec<&[u8]> {
     fss_codec_h265::annex_b_nal_units(stream).collect()
@@ -74,7 +76,7 @@ fn truncation_at_every_byte_is_typed() {
 /// never a panic.
 #[test]
 fn byte_corruption_never_panics() {
-    for stream in [INTRA, PCM, SLICES] {
+    for stream in [INTRA, PCM, SLICES, P_CROP] {
         let units = nals(stream);
         for (index, unit) in units.iter().enumerate() {
             // Roughly 60 positions per NAL unit keep the debug-build run
@@ -212,6 +214,31 @@ fn missing_parameter_sets_are_typed() -> TestResult {
         decoder.decode_nal(sps),
         Err(DecodeError::MissingParameterSet)
     );
+    Ok(())
+}
+
+/// A lost reference picture: later P/B pictures that name it in their
+/// reference picture set are refused (typed MissingReference) until the
+/// next IRAP picture; nothing panics and no damaged picture is output.
+#[test]
+fn lost_reference_picture_is_typed() -> TestResult {
+    let units = nals(INTER);
+    let slices: Vec<usize> = units
+        .iter()
+        .enumerate()
+        .filter(|(_, u)| (u[0] >> 1) < 32)
+        .map(|(i, _)| i)
+        .collect();
+    // Drop the second picture in decode order (a P picture every later
+    // picture of this closed GOP depends on).
+    let mut damaged = units.clone();
+    damaged.remove(slices[1]);
+    let (pictures, errors) = feed(&damaged);
+    assert!(
+        errors.contains(&DecodeError::MissingReference),
+        "{errors:?}"
+    );
+    assert_eq!(pictures.len(), 1, "only the IDR picture survives");
     Ok(())
 }
 
