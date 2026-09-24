@@ -107,7 +107,7 @@ cdc8aab60a9bca9289722391a41719cec0f612fb81703327ac4614c5c814d146  crates/fss-cli
 000323f6052d4c8173a024d5f0d4ae3b6ffaa7c94d522bda9fa2bc627dc708cc  crates/fss-cli/src/diagnostic.rs
 a22b18627d735b0c9eda01f5be2553971dce904182a7a1d8f81e937a1bdefe9d  crates/fss-cli/src/error.rs
 1a642fc2840d2b6ff218c094524480aaf2349f7764874f562cacf82bb2d970a6  crates/fss-cli/src/follow_cmd.rs
-26e04a65bd5cb35452fd6b49c22a4520a248a7fd6bcfa7a4db72aac54007191d  crates/fss-cli/src/fss_cmd.rs
+97b2f0066efcff047837f365eb11bbafe8e64e096f40f87a768f574850ee5a3c  crates/fss-cli/src/fss_cmd.rs
 2a25ee41e40847125b19a532509f0ea60464faf4a597ee3c5d9ac7798a8a968c  crates/fss-cli/src/hydration_cmd.rs
 bbdb70dd0db66c50303e241561aa98f9ec8dd414a029fe905bf700924671616b  crates/fss-cli/src/lab_cmd.rs
 238f12139490e6c20dcd4459c7a26e031d802add8f53ee2646919f3eeaa96770  crates/fss-cli/src/lib.rs
