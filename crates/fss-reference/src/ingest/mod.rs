@@ -5,6 +5,8 @@
 
 pub mod annexb;
 pub mod file_adapter;
+/// Bounded H.265/HEVC Annex-B access-unit splitting with exact source spans.
+pub mod hevc_annexb;
 pub mod mjpeg;
 /// Restart-safe recovery and verified reads of completed file imports.
 pub mod retained;
@@ -48,12 +50,14 @@ pub use annexb::{
     DEFAULT_MAX_AUS, DEFAULT_MAX_INPUT_BYTES, DEFAULT_MAX_NAL_BYTES, DEFAULT_MAX_NALS, SourceSpan,
     split_annexb,
 };
+pub use hevc_annexb::{HEVC_AU_GROUPING, HevcAccessUnit, HevcNal, HevcScan, split_hevc_annexb};
 pub use file_adapter::{
     ADP_FILE_GENERATION, ADP_FILE_ROW_ID, CaptureHint, DEFAULT_CHUNK_BYTES, DetectedFileFormat,
     FILE_IMPORT_MANIFEST_SCHEMA, FileFormatHint, FileImportManifest, FileIngestAdapter,
     FileIngestError, FileIngestLimits, FileIngestOutcome, FileIngestReceipt, FileIngestRequest,
     FileOmissionSpan, MAX_BATCH_DELTAS, SegmentSpan, compute_import_identity,
     default_adapter_identity, fetch_segment_bytes, sniff_format,
+    sniff_format_with_hint,
 };
 pub use mjpeg::{
     JpegFinding, JpegFrameSpan, JpegScan, JpegSofInfo, JpegSplitError, MjpegLimits,

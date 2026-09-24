@@ -18,10 +18,9 @@
 > [!IMPORTANT]
 > FSS is an **unqualified reference implementation**. It can import recorded media with custody,
 > capture RTSP (interleaved TCP) and HTTP MJPEG streams into local archives, decode baseline
-> JPEG/MJPEG and H.264 (Baseline, Main and High; progressive 4:2:0), run small models on a scalar executor, detect, track
+> JPEG/MJPEG, H.264 (Baseline, Main and High; progressive 4:2:0) and H.265 (Main, 8-bit 4:2:0), run small models on a scalar executor, detect, track
 > and publish event candidates (including a model-free `fss-event watch` pipeline), and keep a
-> crash-safe local ledger. It does **not** yet analyse H.265 imports (the HEVC decoder exists but is not wired into
-> ingest), decode 10-bit or interlaced video, ship a
+> crash-safe local ledger. It does **not** yet decode 10-bit or interlaced video, ship a
 > trained detector, measure detection quality on real footage, expose more of the agent protocol than
 > read-only `fss orient`/`fss explain`, archive to the cloud, or have any release-qualified capability. The boundary is
 > explicit in [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md) and `fss capabilities --json`.
@@ -576,7 +575,7 @@ Partial:
 
 Not implemented:
 
-- H.265 in the ingest/analysis path (the Main-profile decoder exists), HEVC Main 10/RExt/tiles,
+- HEVC Main 10/RExt/tiles/dependent slices/long-term references,
   interlaced or 4:2:2/4:4:4/10-bit H.264, progressive JPEG, RTP over UDP,
   UVC, ONVIF;
 - any trained detector package, and any event-quality evaluation (AUPRC, recall at a false-alert

@@ -852,7 +852,22 @@
       "id": "ERR-DECODE-H264-UNSUPPORTED-001"
     },
     {
-      "description": "operator component interpretation contradicts the media (admitted H.264 is always YCbCr 4:2:0)",
+      "description": "a retained source gap lies inside the requested H.265 range; inter prediction cannot bridge omitted bytes",
+      "guidance": "split the range at the gap and start after it at an IRAP segment",
+      "id": "ERR-DECODE-H265-RANGE-GAP-001"
+    },
+    {
+      "description": "requested H.265 decode range does not begin at an IRAP (IDR, CRA or BLA) access unit, so its first picture would predict from references outside the range",
+      "guidance": "start the range at an IRAP segment",
+      "id": "ERR-DECODE-H265-RANGE-NOT-IRAP-001"
+    },
+    {
+      "description": "H.265 stream uses a profile, sample format or coding tool outside the admitted set (Main and Main Still Picture, 8-bit 4:2:0; no range extensions, tiles, dependent slices or long-term references); no approximate pixels are produced",
+      "guidance": "transcode in the laboratory or wait for a registered decoder; do not retry unchanged",
+      "id": "ERR-DECODE-H265-UNSUPPORTED-001"
+    },
+    {
+      "description": "operator component interpretation contradicts the media (admitted H.264 and H.265 are always YCbCr 4:2:0)",
       "guidance": "resubmit with the correct explicit interpretation",
       "id": "ERR-DECODE-INTERPRETATION-001"
     },
@@ -862,7 +877,7 @@
       "id": "ERR-DECODE-SOURCE-UNAVAILABLE-001"
     },
     {
-      "description": "retained import's media format is not admitted by the requested decode operation (single-frame JPEG decode/reopen of an Annex-B import, or H.264 range decode of a JPEG import)",
+      "description": "retained import's media format is not admitted by the requested decode operation (single-frame JPEG decode/reopen of an Annex-B or HEVC import, H.264 range decode of a JPEG or HEVC import, or H.265 range decode of a JPEG or H.264 import)",
       "guidance": "use the format's decode operation; do not retry unchanged",
       "id": "ERR-DECODE-UNSUPPORTED-MEDIA-001"
     },
@@ -1050,6 +1065,16 @@
       "description": "same key used with different request digest",
       "guidance": "reject permanently",
       "id": "ERR-IDEMPOTENCY-CONFLICT-001"
+    },
+    {
+      "description": "an Annex-B file's first NAL unit header is valid as both H.264 and H.265 and no media format was declared; the importer never guesses the codec",
+      "guidance": "re-import with the explicit media format (`annexb` for H.264, `hevc` for H.265)",
+      "id": "ERR-INGEST-FORMAT-AMBIGUOUS-001"
+    },
+    {
+      "description": "the declared media format contradicts the file's signature (e.g. `hevc` declared for a stream whose first header is only valid H.264)",
+      "guidance": "declare the format the file actually holds; do not retry unchanged",
+      "id": "ERR-INGEST-FORMAT-CONFLICT-001"
     },
     {
       "description": "boundary converted an internal panic to structured crash receipt",

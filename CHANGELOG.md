@@ -6,6 +6,7 @@ All notable changes to Franken Surveillance System are recorded here. The projec
 
 ### Added
 
+- Wired H.265 into ingest and analysis: `fss-file import` retains HEVC Annex-B as media format `hevc` (`--media-format hevc`; auto-detected only when the first NAL header cannot be H.264, otherwise `ERR-INGEST-FORMAT-AMBIGUOUS-001`) with H.265 7.4.2.4.4 access-unit splitting and exact source spans; `RecordedH265Range` decodes IRAP-led ranges in display order (a CRA/BLA-led range skips and lists its RASL pictures), bit-exact against FFmpeg; `fss-file decode`, `fss-event watch` and `fss-event corroborate` accept `hevc` imports. H.264 import behaviour is unchanged.
 - Added `fss-codec-h265`: pure-Rust HEVC Main-profile decode (CABAC, intra, P/B inter with AMVP/merge/TMVP, weighted prediction, deblocking, SAO, WPP, slices, scaling lists, PCM, lossless), bit-exact against FFmpeg on 39 fixtures; not yet wired into ingest.
 - Added `fss-event corroborate` and `fss-event alert`: two-sensor corroborated zone entries and one approval-gated plaintext webhook per corroborated event (lost acknowledgement stays indeterminate; never resent).
 - Added read-only `fss orient` and `fss explain` (fss/1 session.orient and explain) over a deployment root, schema-validated, with scalable pulse/brief/epistemic_map views.

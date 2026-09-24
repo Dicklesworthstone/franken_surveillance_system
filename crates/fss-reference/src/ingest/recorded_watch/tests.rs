@@ -259,3 +259,41 @@ fn invalid_plans_are_typed_refusals() -> TestResult {
     );
     Ok(())
 }
+
+/// The same moving-square scene encoded offline by libx265 (IDR then P pictures, QP 12); its
+/// generation command is in `tests/fixtures/hevc_ingest/README.md`.
+const HEVC_SCENE: &[u8] =
+    include_bytes!("../../../tests/fixtures/hevc_ingest/watch_96x48_moving.h265");
+
+#[test]
+fn hevc_recording_with_motion_yields_one_candidate_deterministically() -> TestResult {
+    let f = fixture("hevc", HEVC_SCENE)?;
+    let mut hevc_plan = plan(f.identity, door());
+    // Admitted H.265 is YCbCr 4:2:0; the watch reads its luma plane.
+    hevc_plan.interpretation = ComponentInterpretation::YCbCr;
+    let limits = WatchLimits::default();
+    let before = f.deployment.current_anchor().clone();
+    let report = WatchReport::analyze(&f.deployment, &hevc_plan, &limits, &f.cx)?;
+    assert_eq!(*f.deployment.current_anchor(), before);
+    assert_eq!(report.media_format(), "hevc");
+    assert_eq!(report.frames().len(), FRAMES);
+    assert_eq!(report.candidates().len(), 1);
+    let candidate = &report.candidates()[0];
+    assert_eq!(candidate.zone_id, "door");
+    assert_eq!(candidate.status(), WatchStatus::Prepared);
+    // Same scene geometry as the MJPEG test, so the same entry frame and track span.
+    assert_eq!(candidate.entry_segment, 11);
+    assert_eq!(candidate.frame_range(), [3, FRAMES - 1]);
+    assert_eq!(candidate.event().state, EventState::Indeterminate);
+    assert!(!candidate.event().analyze_corroboration().is_corroborated);
+    let again = WatchReport::analyze(&f.deployment, &hevc_plan, &limits, &f.cx)?;
+    assert_eq!(again.to_json(0, None), report.to_json(0, None));
+    // Gray contradicts H.265 (always YCbCr 4:2:0) and is refused before any analysis.
+    let gray = plan(f.identity, door());
+    let refused = WatchReport::analyze(&f.deployment, &gray, &limits, &f.cx);
+    assert!(
+        matches!(&refused, Err(WatchError::Decode(error)) if matches!(**error, RecordedDecodeError::InterpretationMismatch)),
+        "{refused:?}"
+    );
+    Ok(())
+}

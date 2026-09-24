@@ -7,6 +7,7 @@
 //! Binary format ownership and recovery rules are in docs/RETAINED_DECODE_WORKFLOW.md.
 //! Retained H.264 Annex-B imports decode through [`h264`], which binds each reconstructed
 //! picture to the same custody but, being inter-predicted, decodes contiguous IDR-led ranges.
+//! Retained H.265 (`hevc`) imports decode the same way through [`h265`], from IRAP-led ranges.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -74,8 +75,8 @@ pub enum RecordedDecodeError {
     Publication(LocalPublicationError),
     /// A stored object could not be verified or read.
     Spool(SpoolError),
-    /// The operator's component interpretation contradicts the media (H.264 Constrained
-    /// Baseline is always YCbCr 4:2:0; there is no monochrome coding to call `gray`).
+    /// The operator's component interpretation contradicts the media (admitted H.264 and H.265
+    /// are always YCbCr 4:2:0; there is no monochrome coding to call `gray`).
     InterpretationMismatch,
     /// The requested H.264 range does not begin with an IDR access unit, so its first picture
     /// would predict from references the range does not contain.
@@ -96,6 +97,26 @@ pub enum RecordedDecodeError {
     },
     /// The canonical H.264 decoder refused the stream (including unsupported profiles/tools).
     H264(fss_codec_h264::DecodeError),
+    /// The requested H.265 range does not begin with an IRAP (IDR, CRA or BLA) access unit, so
+    /// its first picture would predict from references the range does not contain.
+    H265RangeNotIrap {
+        /// Zero-based segment that was requested as the range start.
+        segment: usize,
+    },
+    /// A retained source gap lies inside the requested H.265 range; inter prediction cannot
+    /// bridge omitted bytes, so the range is refused instead of concealed.
+    H265SourceGap {
+        /// First segment inside the range whose predecessor bytes are missing.
+        segment: usize,
+    },
+    /// A retained H.265 access unit completed zero or several pictures (other than a RASL
+    /// picture the codec skips after a leading CRA/BLA), or a decoded picture was never output.
+    H265AccessUnit {
+        /// Offending zero-based segment.
+        segment: usize,
+    },
+    /// The canonical H.265 decoder refused the stream (including unsupported profiles/tools).
+    H265(fss_codec_h265::DecodeError),
 }
 
 /// Registered stable error identities (registries/ERRORS.md) for decode refusals.
@@ -109,7 +130,11 @@ impl RecordedDecodeError {
             Self::H264RangeNotIdr { .. } => "ERR-DECODE-H264-RANGE-NOT-IDR-001",
             Self::H264SourceGap { .. } => "ERR-DECODE-H264-RANGE-GAP-001",
             Self::H264(fss_codec_h264::DecodeError::Unsupported(_)) => "ERR-DECODE-H264-UNSUPPORTED-001",
-            Self::Limit | Self::H264(fss_codec_h264::DecodeError::Limit) => "ERR-DECODE-BOUNDS-001",
+            Self::H265RangeNotIrap { .. } => "ERR-DECODE-H265-RANGE-NOT-IRAP-001",
+            Self::H265SourceGap { .. } => "ERR-DECODE-H265-RANGE-GAP-001",
+            Self::H265(fss_codec_h265::DecodeError::Unsupported(_)) => "ERR-DECODE-H265-UNSUPPORTED-001",
+            Self::Limit | Self::H264(fss_codec_h264::DecodeError::Limit)
+                | Self::H265(fss_codec_h265::DecodeError::Limit) => "ERR-DECODE-BOUNDS-001",
             Self::Unavailable | Self::Source(_) => "ERR-DECODE-SOURCE-UNAVAILABLE-001",
             _ => "ERR-DECODE-001",
         }
@@ -119,7 +144,7 @@ impl RecordedDecodeError {
 impl fmt::Display for RecordedDecodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnsupportedMedia => f.write_str("recorded decode operation does not admit this media format (single-frame decode is JPEG/MJPEG; annexb uses H.264 range decode)"),
+            Self::UnsupportedMedia => f.write_str("recorded decode operation does not admit this media format (single-frame decode is JPEG/MJPEG; annexb uses H.264 and hevc uses H.265 range decode)"),
             Self::Unavailable => f.write_str("completed recorded decode unavailable"),
             Self::InvalidReceipt => f.write_str("recorded decode provenance or receipt mismatch"),
             Self::Limit => f.write_str("recorded decode bound exceeded"),
@@ -136,6 +161,10 @@ impl fmt::Display for RecordedDecodeError {
             Self::H264SourceGap { segment } => write!(f, "recorded H.264 range crosses a source gap before segment {segment}"),
             Self::H264AccessUnit { segment } => write!(f, "recorded H.264 segment {segment} did not complete exactly one picture"),
             Self::H264(e) => write!(f, "recorded H.264: {e}"),
+            Self::H265RangeNotIrap { segment } => write!(f, "recorded H.265 range must start at an IRAP (IDR, CRA or BLA) access unit; segment {segment} is not one"),
+            Self::H265SourceGap { segment } => write!(f, "recorded H.265 range crosses a source gap before segment {segment}"),
+            Self::H265AccessUnit { segment } => write!(f, "recorded H.265 segment {segment} did not complete exactly one output picture"),
+            Self::H265(e) => write!(f, "recorded H.265: {e}"),
         }
     }
 }
@@ -155,6 +184,7 @@ conversion!(ObjectError, Object);
 conversion!(LocalPublicationError, Publication);
 conversion!(SpoolError, Spool);
 conversion!(fss_codec_h264::DecodeError, H264);
+conversion!(fss_codec_h265::DecodeError, H265);
 
 fn checkpoint(cx: &ReplayCx, stage: &'static str) -> Result<(), RecordedDecodeError> {
     cx.checkpoint(stage).map_err(|_| RecordedDecodeError::Cancelled)
@@ -550,6 +580,8 @@ impl RecordedFrame {
 
 /// Retained H.264 Annex-B range decoding bound to the same source custody.
 pub mod h264;
+/// Retained H.265/HEVC Annex-B range decoding bound to the same source custody.
+pub mod h265;
 
 #[cfg(test)]
 mod tests;

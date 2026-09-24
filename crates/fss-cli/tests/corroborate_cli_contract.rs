@@ -345,6 +345,74 @@ fn two_sensors_entering_one_zone_yield_one_corroborated_event_and_policy_prepare
     Ok(())
 }
 
+/// Imports the libx265 moving-square recording (the MJPEG `Right` geometry) as `hevc`.
+fn import_hevc(directory: &OwnedDirectory, sensor: &str) -> TestResult<String> {
+    let input = directory.0.join(format!("{sensor}.h265").replace(':', "-"));
+    fs::write(
+        &input,
+        include_bytes!("../../fss-reference/tests/fixtures/hevc_ingest/watch_96x48_moving.h265"),
+    )?;
+    let output = Command::new(env!("CARGO_BIN_EXE_fss-file"))
+        .arg("import")
+        .arg("--root")
+        .arg(directory.root())
+        .args(["--site", SITE, "--input"])
+        .arg(&input)
+        .args(["--sensor", sensor, "--stream", &format!("stream:{sensor}")])
+        .args(["--receive-time-ns", RECEIVE_NS, "--media-format", "hevc"])
+        .args(["--capture-start-ns", &ON_TIME.start_ns.to_string()])
+        .args([
+            "--capture-uncertainty-ns",
+            &ON_TIME.uncertainty_ns.to_string(),
+        ])
+        .args(["--assumed-fps", "10"])
+        .output()?;
+    success(&output);
+    fs::remove_file(input)?;
+    Ok(String::from_utf8(output.stdout)?
+        .lines()
+        .find_map(|l| l.strip_prefix("import_identity=").map(str::to_owned))
+        .ok_or("import identity missing")?)
+}
+
+#[test]
+fn two_hevc_sensors_entering_one_zone_are_corroborated() -> TestResult {
+    let directory = OwnedDirectory::new("hevc")?;
+    // Both sensors see the same ground from the same side: identity homographies.
+    let east = format!("east:{}", import_hevc(&directory, "sensor:east")?);
+    let west = format!("west:{}", import_hevc(&directory, "sensor:west")?);
+    let root = directory.root();
+    let east_ground = format!("east:{IDENTITY}");
+    let west_ground = format!("west:{IDENTITY}");
+    let args = [
+        "--camera",
+        &east,
+        "--camera",
+        &west,
+        "--ground",
+        &east_ground,
+        "--ground",
+        &west_ground,
+        "--zone",
+        DOOR,
+        // Admitted H.265 is YCbCr 4:2:0.
+        "--interpretation",
+        "ycbcr",
+        "--time-gate-ns",
+        "250000000",
+        "--distance-gate",
+        "16",
+    ];
+    let output = event(&root, "corroborate", &args)?;
+    success(&output);
+    assert_eq!(json_field(&output, "candidate_count")?, "1");
+    assert_eq!(json_field(&output, "status")?, "prepared");
+    let again = event(&root, "corroborate", &args)?;
+    success(&again);
+    assert_eq!(again.stdout, output.stdout);
+    Ok(())
+}
+
 #[test]
 fn an_object_seen_by_only_one_sensor_is_never_corroborated() -> TestResult {
     let directory = OwnedDirectory::new("single")?;

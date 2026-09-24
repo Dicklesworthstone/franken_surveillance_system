@@ -155,7 +155,7 @@ impl FileImportManifest {
             || self.chunk_bytes == 0 || self.chunk_bytes > limits.max_chunk_bytes
         { return Err(invalid("source or chunk length outside admitted bounds")); }
         if self.adapter_id != ADP_FILE_ROW_ID || self.adapter_generation != ADP_FILE_GENERATION
-            || !matches!(self.format.as_str(), "annexb" | "mjpeg")
+            || !matches!(self.format.as_str(), "annexb" | "hevc" | "mjpeg")
             || !matches!(self.capture_time_label.as_str(), "unknown" | "operator_assumption")
             || self.detector_evidence.is_empty()
         { return Err(invalid("unsupported adapter, format or time classification")); }

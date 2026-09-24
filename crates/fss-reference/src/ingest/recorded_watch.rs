@@ -2,7 +2,8 @@
 //! Model-free single-camera candidates from a retained recording.
 //!
 //! One composition, no trained model: retained decode (JPEG/MJPEG through the canonical JPEG
-//! codec, or H.264 through [`super::recorded_decode::h264`]) → [`super::foreground`] running
+//! codec, H.264 through [`super::recorded_decode::h264`], or H.265 through
+//! [`super::recorded_decode::h265`]) → [`super::foreground`] running
 //! background model → [`super::tracker`] constant-velocity Kalman tracker → [`super::eventgen`]
 //! zone gate. Each confirmed track entering an owner-drawn zone yields one candidate.
 //!
@@ -37,6 +38,9 @@ use super::eventgen::{
 };
 use super::foreground::{ForegroundConfig, ForegroundDetector, ForegroundError};
 use super::recorded_decode::h264::{DecoderLimits, RecordedH264Range, RecordedH264Request};
+use super::recorded_decode::h265::{
+    DecoderLimits as H265DecoderLimits, RecordedH265Range, RecordedH265Request,
+};
 use super::recorded_decode::{
     ComponentInterpretation, DecodeLimits, RecordedDecodeError, source_capsule, validate_limits,
 };
@@ -409,6 +413,8 @@ pub struct WatchLimits {
     pub jpeg_work_units: u64,
     /// H.264 codec ceilings (`max_pictures` is narrowed to the range).
     pub h264_limits: DecoderLimits,
+    /// H.265 codec ceilings (`max_pictures` is narrowed to the range).
+    pub h265_limits: H265DecoderLimits,
 }
 impl Default for WatchLimits {
     fn default() -> Self {
@@ -417,6 +423,7 @@ impl Default for WatchLimits {
             jpeg_limits: DecodeLimits::default(),
             jpeg_work_units: 100_000_000,
             h264_limits: DecoderLimits::default(),
+            h265_limits: H265DecoderLimits::default(),
         }
     }
 }
@@ -562,6 +569,7 @@ enum FrameSource {
         end: usize,
     },
     H264(Box<RecordedH264Range>),
+    H265(Box<RecordedH265Range>),
 }
 
 struct DecodedFrame {
@@ -626,6 +634,18 @@ impl WatchReport {
                     interpretation: plan.interpretation,
                     read_limits: limits.read_limits,
                     decoder_limits: limits.h264_limits,
+                },
+                cx,
+            )?)),
+            "hevc" => FrameSource::H265(Box::new(RecordedH265Range::open(
+                deployment,
+                RecordedH265Request {
+                    import_identity: plan.import_identity,
+                    first_segment: plan.first_segment,
+                    segment_count: plan.segment_count,
+                    interpretation: plan.interpretation,
+                    read_limits: limits.read_limits,
+                    decoder_limits: limits.h265_limits,
                 },
                 cx,
             )?)),
@@ -859,7 +879,7 @@ impl WatchReport {
     pub fn candidates(&self) -> &[WatchCandidate] {
         &self.candidates
     }
-    /// Retained media format (`mjpeg` or `annexb`).
+    /// Retained media format (`mjpeg`, `annexb` or `hevc`).
     #[must_use]
     pub fn media_format(&self) -> &str {
         &self.media_format
@@ -1096,6 +1116,21 @@ impl FrameSource {
                 }))
             }
             Self::H264(range) => {
+                let Some(frame) = range.next_frame(deployment, cx)? else {
+                    return Ok(None);
+                };
+                let receipt = frame.receipt();
+                Ok(Some(DecodedFrame {
+                    segment: usize::try_from(receipt.segment_index())
+                        .map_err(|_| WatchError::Limit)?,
+                    capsule: receipt.capsule().clone(),
+                    capsule_digest: receipt.capsule_digest(),
+                    dimensions: receipt.dimensions(),
+                    pixels: frame.pixels().to_vec(),
+                }))
+            }
+            // RASL pictures skipped after a leading CRA/BLA yield no frame (and no observation).
+            Self::H265(range) => {
                 let Some(frame) = range.next_frame(deployment, cx)? else {
                     return Ok(None);
                 };

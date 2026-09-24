@@ -36,7 +36,8 @@ use fss_publication::{LocalPublicationError, SlotName};
 
 use crate::adapter_replay::ReplayCx;
 use crate::error::ReferenceError;
-use crate::ingest::annexb::{AnnexBError, AnnexBLimits, split_annexb};
+use crate::ingest::annexb::{AnnexBError, AnnexBLimits, SourceSpan, split_annexb};
+use crate::ingest::hevc_annexb::split_hevc_annexb;
 use crate::ingest::mjpeg::{JpegSplitError, MjpegLimits, split_jpeg_stream};
 use crate::reference_deployment::ReferenceDeployment;
 
@@ -76,6 +77,8 @@ pub const MAX_BATCH_DELTAS: usize = 16_384;
 pub enum DetectedFileFormat {
     /// H.264 Annex-B byte elementary stream with 3-byte or 4-byte start codes.
     AnnexB,
+    /// H.265/HEVC Annex-B byte elementary stream (same framing, two-byte NAL headers).
+    Hevc,
     /// Single JPEG image or concatenated MJPEG frame stream starting with SOI (`0xFFD8`).
     JpegStream,
     /// Recorded RTP session (`#!rtpplay1.0` header).
@@ -88,6 +91,7 @@ impl DetectedFileFormat {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::AnnexB => "annexb",
+            Self::Hevc => "hevc",
             Self::JpegStream => "mjpeg",
             Self::RtpPlay => "rtpplay",
         }
@@ -98,6 +102,7 @@ impl DetectedFileFormat {
     pub const fn into_hint(self) -> FileFormatHint {
         match self {
             Self::AnnexB => FileFormatHint::AnnexB,
+            Self::Hevc => FileFormatHint::Hevc,
             Self::JpegStream => FileFormatHint::JpegStream,
             Self::RtpPlay => FileFormatHint::RtpPlay,
         }
@@ -109,6 +114,9 @@ impl DetectedFileFormat {
 pub enum FileFormatHint {
     /// Expected format is H.264 Annex-B.
     AnnexB,
+    /// Expected format is H.265/HEVC Annex-B. Required when the stream's first NAL unit header
+    /// is a valid header of both codecs.
+    Hevc,
     /// Expected format is JPEG or MJPEG.
     JpegStream,
     /// Expected format is rtpplay packet capture.
@@ -121,6 +129,7 @@ impl FileFormatHint {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::AnnexB => "annexb",
+            Self::Hevc => "hevc",
             Self::JpegStream => "mjpeg",
             Self::RtpPlay => "rtpplay",
         }
@@ -518,6 +527,12 @@ pub enum FileIngestError {
         /// Path to unrecognized file.
         path: PathBuf,
     },
+    /// An Annex-B stream whose first NAL unit header is a valid header of both H.264 and H.265
+    /// was imported without an explicit codec; the adapter never guesses between them.
+    AmbiguousAnnexBCodec {
+        /// The first two bytes after the first start code.
+        first_nal_header: [u8; 2],
+    },
     /// Detected format is not currently supported for splitting.
     UnsupportedFormat {
         /// Detected unsupported format.
@@ -635,6 +650,13 @@ impl std::fmt::Display for FileIngestError {
             Self::UnknownFormat { path } => {
                 write!(f, "unknown file format: {}", path.display())
             }
+            Self::AmbiguousAnnexBCodec { first_nal_header } => {
+                write!(
+                    f,
+                    "Annex-B stream is ambiguous between H.264 and H.265 (first NAL header {:02x}{:02x}); declare the media format explicitly: annexb (H.264) or hevc (H.265)",
+                    first_nal_header[0], first_nal_header[1]
+                )
+            }
             Self::UnsupportedFormat { format } => {
                 write!(f, "unsupported format for splitting: {:?}", format)
             }
@@ -702,6 +724,19 @@ impl std::fmt::Display for FileIngestError {
 
 impl std::error::Error for FileIngestError {}
 
+impl FileIngestError {
+    /// Registered stable identity (registries/ERRORS.md) of media-format refusals; other import
+    /// failures carry no registered identity yet.
+    #[must_use]
+    pub fn stable_id(&self) -> Option<&'static str> {
+        match self {
+            Self::AmbiguousAnnexBCodec { .. } => Some("ERR-INGEST-FORMAT-AMBIGUOUS-001"),
+            Self::FormatConflict { .. } => Some("ERR-INGEST-FORMAT-CONFLICT-001"),
+            _ => None,
+        }
+    }
+}
+
 impl From<std::io::Error> for FileIngestError {
     fn from(e: std::io::Error) -> Self {
         Self::Io(e)
@@ -751,7 +786,72 @@ impl From<ObjectError> for FileIngestError {
 }
 
 /// Sniffs the format from file bytes.
+///
+/// An Annex-B stream is H.264 (`annexb`) unless its first NAL unit header is only plausible as
+/// H.265 (`hevc`); see [`sniff_format_with_hint`] for the exact rule. A header plausible as both
+/// is [`FileIngestError::AmbiguousAnnexBCodec`]: the codec must then be declared explicitly.
 pub fn sniff_format(bytes: &[u8]) -> Result<(DetectedFileFormat, &'static str), FileIngestError> {
+    sniff_format_with_hint(bytes, None)
+}
+
+/// Codec plausibility of an Annex-B stream's first NAL unit header.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AnnexBCodecEvidence {
+    H264,
+    Hevc,
+    Both,
+    Neither,
+}
+
+/// Classifies the first NAL unit header. H.264: `forbidden_zero_bit` 0 and a type that opens
+/// real streams, with the `nal_ref_idc` the standard requires (non-IDR slice: any; IDR slice,
+/// SPS, PPS: non-zero; SEI, access unit delimiter: zero). H.265: `forbidden_zero_bit` 0,
+/// `nuh_layer_id` 0, `nuh_temporal_id_plus1` non-zero and a VPS, SPS, PPS, access unit
+/// delimiter, prefix SEI or IRAP slice type. Every usual H.264 first byte (`0x09`, `0x06`,
+/// `0x67`, `0x27`, `0x47`, `0x68`, `0x65`, `0x25`, `0x41`, `0x21`, `0x01`) fails the H.265
+/// test, so existing H.264 imports are unaffected; an IDR_N_LP-first H.265 stream (`0x28 0x01`,
+/// also an H.264 PPS header) is `Both`.
+fn annexb_codec_evidence(header: &[u8]) -> AnnexBCodecEvidence {
+    let h264 = header.first().is_some_and(|&byte| {
+        let reference = (byte >> 5) & 0x03;
+        byte & 0x80 == 0
+            && match byte & 0x1f {
+                1 => true,
+                5 | 7 | 8 => reference != 0,
+                6 | 9 => reference == 0,
+                _ => false,
+            }
+    });
+    let hevc = match header {
+        [first, second, ..] => {
+            let nal_unit_type = (first >> 1) & 0x3f;
+            first & 0x80 == 0
+                && first & 0x01 == 0
+                && second >> 3 == 0
+                && second & 0x07 != 0
+                && matches!(nal_unit_type, 16..=21 | 32..=35 | 39)
+        }
+        _ => false,
+    };
+    match (h264, hevc) {
+        (true, false) => AnnexBCodecEvidence::H264,
+        (false, true) => AnnexBCodecEvidence::Hevc,
+        (true, true) => AnnexBCodecEvidence::Both,
+        (false, false) => AnnexBCodecEvidence::Neither,
+    }
+}
+
+/// Sniffs the format, resolving the Annex-B codec against an operator hint.
+///
+/// Without a hint an Annex-B stream is `hevc` only when its first header is plausible solely as
+/// H.265, and `annexb` (H.264, unchanged behaviour) otherwise; a header plausible as both is
+/// [`FileIngestError::AmbiguousAnnexBCodec`]. An explicit `annexb` or `hevc` hint decides an
+/// ambiguous or uninformative header, but contradicting a header plausible only as the other
+/// codec is [`FileIngestError::FormatConflict`].
+pub fn sniff_format_with_hint(
+    bytes: &[u8],
+    hint: Option<FileFormatHint>,
+) -> Result<(DetectedFileFormat, &'static str), FileIngestError> {
     if bytes.is_empty() {
         return Err(FileIngestError::EmptyFile {
             path: PathBuf::new(),
@@ -776,17 +876,47 @@ pub fn sniff_format(bytes: &[u8]) -> Result<(DetectedFileFormat, &'static str), 
         leading_zeros += 1;
     }
     if leading_zeros >= 2 && leading_zeros < bytes.len() && bytes[leading_zeros] == 0x01 {
-        return Ok((DetectedFileFormat::AnnexB, "annexb_start_code"));
-    }
-
-    // Direct check for 3-byte or 4-byte start code at offset 0
-    if bytes.starts_with(&[0x00, 0x00, 0x01]) || bytes.starts_with(&[0x00, 0x00, 0x00, 0x01]) {
-        return Ok((DetectedFileFormat::AnnexB, "annexb_start_code"));
+        let header = bytes.get(leading_zeros + 1..).unwrap_or_default();
+        return resolve_annexb_codec(annexb_codec_evidence(header), header, hint);
     }
 
     Err(FileIngestError::UnknownFormat {
         path: PathBuf::new(),
     })
+}
+
+fn resolve_annexb_codec(
+    evidence: AnnexBCodecEvidence,
+    header: &[u8],
+    hint: Option<FileFormatHint>,
+) -> Result<(DetectedFileFormat, &'static str), FileIngestError> {
+    use AnnexBCodecEvidence::{Both, H264, Hevc, Neither};
+    const H264_EVIDENCE: &str = "annexb_start_code";
+    const HEVC_EVIDENCE: &str = "hevc_nal_header";
+    const DECLARED_HEVC_EVIDENCE: &str = "annexb_start_code:operator_declared_hevc";
+    match (hint, evidence) {
+        (None, H264 | Neither) | (Some(FileFormatHint::AnnexB), H264 | Neither | Both) => {
+            Ok((DetectedFileFormat::AnnexB, H264_EVIDENCE))
+        }
+        (None | Some(FileFormatHint::Hevc), Hevc) => Ok((DetectedFileFormat::Hevc, HEVC_EVIDENCE)),
+        (Some(FileFormatHint::Hevc), Both | Neither) => {
+            Ok((DetectedFileFormat::Hevc, DECLARED_HEVC_EVIDENCE))
+        }
+        (None, Both) => Err(FileIngestError::AmbiguousAnnexBCodec {
+            first_nal_header: [
+                header.first().copied().unwrap_or_default(),
+                header.get(1).copied().unwrap_or_default(),
+            ],
+        }),
+        (Some(hint), Hevc) => Err(FileIngestError::FormatConflict {
+            hint,
+            detected: DetectedFileFormat::Hevc,
+        }),
+        (Some(hint), H264 | Neither | Both) => Err(FileIngestError::FormatConflict {
+            hint,
+            detected: DetectedFileFormat::AnnexB,
+        }),
+    }
 }
 
 /// Computes the deterministic import identity for a file import.
@@ -931,15 +1061,16 @@ impl FileIngestAdapter {
         let input_sha256 = ContentDigest::sha256(&file_bytes);
 
         // Step 3: Format sniffing
-        let (detected_format, detector_evidence) = match sniff_format(&file_bytes) {
-            Ok(res) => res,
-            Err(FileIngestError::UnknownFormat { .. }) => {
-                return Err(FileIngestError::UnknownFormat {
-                    path: request.path.clone(),
-                });
-            }
-            Err(e) => return Err(e),
-        };
+        let (detected_format, detector_evidence) =
+            match sniff_format_with_hint(&file_bytes, request.format_hint) {
+                Ok(res) => res,
+                Err(FileIngestError::UnknownFormat { .. }) => {
+                    return Err(FileIngestError::UnknownFormat {
+                        path: request.path.clone(),
+                    });
+                }
+                Err(e) => return Err(e),
+            };
 
         if detected_format == DetectedFileFormat::RtpPlay {
             return Err(FileIngestError::UnsupportedFormat {
@@ -979,7 +1110,9 @@ impl FileIngestAdapter {
             BatchId::parse(format!("batch:file-import:{import_identity_hex}:manifest"))?;
 
         // Step 5: Time truth configuration
-        let receive_time = request.receive_time.ok_or(FileIngestError::MissingReceiveTime {})?;
+        let receive_time = request
+            .receive_time
+            .ok_or(FileIngestError::MissingReceiveTime {})?;
         let capture_time_label = if request.capture_hint.is_some() {
             "operator_assumption"
         } else {
@@ -1400,67 +1533,31 @@ impl FileIngestAdapter {
         match format {
             DetectedFileFormat::AnnexB => {
                 let scan = split_annexb(file_bytes, request.limits.annexb_limits, cx)?;
-                for o in &scan.omission_spans {
-                    omission_spans.push(FileOmissionSpan {
-                        offset: o.offset as u64,
-                        len: o.len as u64,
-                        reason: "annexb_omission".to_string(),
-                    });
-                }
-                for p in &scan.padding_spans {
-                    omission_spans.push(FileOmissionSpan {
-                        offset: p.offset as u64,
-                        len: p.len as u64,
-                        reason: "annexb_padding".to_string(),
-                    });
-                }
-
-                let mut last_segment_end: usize = 0;
-                for (idx, au) in scan.access_units.iter().enumerate() {
-                    let au_slice =
-                        file_bytes
-                            .get(au.span.offset..au.span.end())
-                            .ok_or_else(|| FileIngestError::CorruptSegment {
-                                detail: "AU span out of bounds".to_string(),
-                            })?;
-                    let au_sha256 = ContentDigest::sha256(au_slice);
-                    let capsule_id =
-                        CapsuleId::parse(format!("capsule:{}:{:06}", import_identity_hex, idx))?;
-
-                    let has_gap_before = (au.span.offset > last_segment_end)
-                        || au.undecodable_without_parameter_sets;
-                    last_segment_end = au.span.end();
-
-                    let capture = Self::compute_capture_interval(
-                        idx,
-                        request.capture_hint.as_ref(),
-                        receive_time,
-                    )?;
-
-                    let spec = SensorSourceBytesSpec {
-                        capsule_id: capsule_id.clone(),
-                        sensor_id: request.sensor_id.clone(),
-                        stream_id: request.stream_id.clone(),
-                        sequence: idx as u64,
-                        capture,
-                        receive_time,
-                        clock_basis: ClockBasis::Estimated,
-                        source: au_slice,
-                        frame_count: 1,
-                        gap_before: has_gap_before,
-                    };
-                    let capsule = SensorCapsule::from_source_bytes(spec)?;
-
-                    segment_spans.push(SegmentSpan {
-                        segment_index: idx,
-                        offset: au.span.offset as u64,
-                        len: au.span.len as u64,
-                        segment_sha256: au_sha256,
-                        capsule_id,
-                        gap_before: has_gap_before,
-                    });
-                    capsules.push(capsule);
-                }
+                return Self::annexb_segments(
+                    file_bytes,
+                    &scan.omission_spans,
+                    &scan.padding_spans,
+                    scan.access_units
+                        .iter()
+                        .map(|au| (au.span, au.undecodable_without_parameter_sets)),
+                    request,
+                    import_identity_hex,
+                    receive_time,
+                );
+            }
+            DetectedFileFormat::Hevc => {
+                let scan = split_hevc_annexb(file_bytes, request.limits.annexb_limits, cx)?;
+                return Self::annexb_segments(
+                    file_bytes,
+                    &scan.omission_spans,
+                    &scan.padding_spans,
+                    scan.access_units
+                        .iter()
+                        .map(|au| (au.span, au.undecodable_without_parameter_sets)),
+                    request,
+                    import_identity_hex,
+                    receive_time,
+                );
             }
             DetectedFileFormat::JpegStream => {
                 let scan = split_jpeg_stream(file_bytes, &request.limits.mjpeg_limits, Some(cx))?;
@@ -1536,6 +1633,83 @@ impl FileIngestAdapter {
             }
         }
 
+        Ok(ScannedSegments {
+            segment_spans,
+            omission_spans,
+            capsules,
+        })
+    }
+
+    /// One segment per Annex-B access unit (H.264 or H.265): exact spans, capsules, and a gap
+    /// before any access unit that follows omitted bytes or precedes the stream's parameter sets.
+    fn annexb_segments(
+        file_bytes: &[u8],
+        omissions: &[SourceSpan],
+        padding: &[SourceSpan],
+        access_units: impl Iterator<Item = (SourceSpan, bool)>,
+        request: &FileIngestRequest,
+        import_identity_hex: &str,
+        receive_time: TimestampNs,
+    ) -> Result<ScannedSegments, FileIngestError> {
+        let mut segment_spans = Vec::new();
+        let mut omission_spans = Vec::new();
+        let mut capsules = Vec::new();
+        for o in omissions {
+            omission_spans.push(FileOmissionSpan {
+                offset: o.offset as u64,
+                len: o.len as u64,
+                reason: "annexb_omission".to_string(),
+            });
+        }
+        for p in padding {
+            omission_spans.push(FileOmissionSpan {
+                offset: p.offset as u64,
+                len: p.len as u64,
+                reason: "annexb_padding".to_string(),
+            });
+        }
+
+        let mut last_segment_end: usize = 0;
+        for (idx, (span, undecodable)) in access_units.enumerate() {
+            let au_slice = file_bytes.get(span.offset..span.end()).ok_or_else(|| {
+                FileIngestError::CorruptSegment {
+                    detail: "AU span out of bounds".to_string(),
+                }
+            })?;
+            let au_sha256 = ContentDigest::sha256(au_slice);
+            let capsule_id =
+                CapsuleId::parse(format!("capsule:{}:{:06}", import_identity_hex, idx))?;
+
+            let has_gap_before = (span.offset > last_segment_end) || undecodable;
+            last_segment_end = span.end();
+
+            let capture =
+                Self::compute_capture_interval(idx, request.capture_hint.as_ref(), receive_time)?;
+
+            let spec = SensorSourceBytesSpec {
+                capsule_id: capsule_id.clone(),
+                sensor_id: request.sensor_id.clone(),
+                stream_id: request.stream_id.clone(),
+                sequence: idx as u64,
+                capture,
+                receive_time,
+                clock_basis: ClockBasis::Estimated,
+                source: au_slice,
+                frame_count: 1,
+                gap_before: has_gap_before,
+            };
+            let capsule = SensorCapsule::from_source_bytes(spec)?;
+
+            segment_spans.push(SegmentSpan {
+                segment_index: idx,
+                offset: span.offset as u64,
+                len: span.len as u64,
+                segment_sha256: au_sha256,
+                capsule_id,
+                gap_before: has_gap_before,
+            });
+            capsules.push(capsule);
+        }
         Ok(ScannedSegments {
             segment_spans,
             omission_spans,

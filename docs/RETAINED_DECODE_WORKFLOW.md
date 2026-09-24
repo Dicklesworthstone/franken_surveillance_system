@@ -3,8 +3,9 @@
 This reference composition connects completed ADP-FILE imports to the canonical production
 `fss-codec-mjpeg` decoder. It does not call the separate reference colour decoder, invoke a
 foreign process. The output is complete, full-range Y (luma), with the original encoded bytes
-and source capsule retained as provenance. Annex-B H.264 imports use the separate range path
-described in "Retained H.264 range decode" below.
+and source capsule retained as provenance. Annex-B H.264 (`annexb`) and H.265 (`hevc`) imports
+use the separate range paths described in "Retained H.264 range decode" and "Retained H.265
+import and range decode" below.
 
 ## Library execution
 
@@ -103,3 +104,62 @@ approximate pixels), `ERR-DECODE-BOUNDS-001`, `ERR-DECODE-SOURCE-UNAVAILABLE-001
 `ERR-DECODE-001` for corrupt pictures. A refused access unit ends the range; frames returned
 before it remain valid. `fss-file decode --segment N [--segment-count M] --interpretation
 ycbcr [--output FILE.pgm]` exposes the same path and writes one binary PGM luma image per frame.
+
+## Retained H.265 import and range decode
+
+**Import.** `FileIngestAdapter` retains an H.265/HEVC Annex-B elementary stream as media format
+`hevc` (`--media-format hevc`, `FileFormatHint::Hevc`); `annexb` stays H.264. The two codecs
+share Annex-B framing, so the choice is never guessed from framing alone. Auto-detection looks at
+the first NAL unit header: it selects `hevc` only when that header is a plausible H.265 opener
+(`forbidden_zero_bit` 0, `nuh_layer_id` 0, `nuh_temporal_id_plus1` non-zero, and a VPS, SPS,
+PPS, access unit delimiter, prefix SEI or IRAP slice type) and not a plausible H.264 opener
+(non-IDR slice; IDR slice, SPS or PPS with non-zero `nal_ref_idc`; SEI or delimiter with zero
+`nal_ref_idc`). Every usual H.264 first byte fails the H.265 test, so H.264 detection is
+unchanged. A header plausible as both (for example `28 01`, an H.265 IDR_N_LP slice and an H.264
+PPS) is refused with `ERR-INGEST-FORMAT-AMBIGUOUS-001` until the format is declared; a declared
+format that contradicts a header plausible only as the other codec is
+`ERR-INGEST-FORMAT-CONFLICT-001`. The manifest records `format: hevc` and the detector evidence
+(`hevc_nal_header`, or `annexb_start_code:operator_declared_hevc` when the operator decided).
+
+Access units follow H.265 7.4.2.4.4 (`ingest::hevc_annexb::split_hevc_annexb`), with the same
+start-code, padding, emulation-prevention and size bounds as the H.264 splitter. After a slice
+segment, a new access unit starts at an access unit delimiter, a VPS, SPS, PPS, prefix SEI or
+reserved type 41..44/48..55, or a slice segment whose `first_slice_segment_in_pic_flag` is 1;
+end-of-sequence/bitstream closes the current one. Parameter sets and prefix SEI therefore travel
+with the picture they precede, so one retained segment is one coded picture with exact source
+spans. A NAL unit shorter than its two-byte header or with `nuh_temporal_id_plus1` 0, a slice
+segment without payload, and a stream without any slice segment are typed refusals. A picture
+before the stream's first VPS/SPS/PPS is marked as a gap, like the H.264 path.
+
+**Decode.** `fss_reference::ingest::recorded_decode::h265::{RecordedH265Request,
+RecordedH265Range, decode_h265_range}` decode a contiguous `hevc` range (1..=1024 segments)
+with the pure-Rust `fss-codec-h265` decoder (Main and Main Still Picture, 8-bit 4:2:0). The
+range must start at an IRAP access unit (IDR, CRA or BLA) and must not contain a retained source
+gap; the interpretation must be `ycbcr`. Pictures come out in display order and are bound to
+their coding segment through the codec's decode index.
+
+The one-picture-per-access-unit rule has one exception, made explicit. When the range starts at a
+CRA or BLA picture, that picture starts a new coded video sequence, and its RASL pictures
+(types 8 and 9) reference pictures before the range. The codec skips them, as H.265 8.1.3 and
+FFmpeg do. The range observes this through the codec's decoded-picture count, checks that every
+slice segment of such an access unit is RASL, and lists the segment in
+`RecordedH265Range::skipped_rasl_segments()`. It never fabricates a frame for it. Any other access
+unit completing zero or several pictures, or a decoded picture that is never output, is
+`RecordedDecodeError::H265AccessUnit` (`ERR-DECODE-001`). A range that starts at an IDR decodes
+the RASL pictures of a later CRA normally. The CRA-led case is tested against a separate FFmpeg
+oracle that decodes the same stream from the CRA access unit
+(`crates/fss-reference/tests/fixtures/hevc_ingest/`).
+
+Frame receipts bind the same custody as H.264, plus the picture's NAL unit type (IDR/IRAP),
+picture order count and the `fss-codec-h265` decoder label identity. Frames are a rebuildable
+derivation: nothing is published, so `read-decoded`/`verify-decoded` refuse `hevc` imports.
+Refusals: `ERR-DECODE-H265-RANGE-NOT-IRAP-001`, `ERR-DECODE-H265-RANGE-GAP-001`,
+`ERR-DECODE-H265-UNSUPPORTED-001` (Main 10, 4:2:2, range extensions, tiles, dependent slices,
+long-term references, layers above the base layer; never approximate pixels),
+`ERR-DECODE-INTERPRETATION-001`, `ERR-DECODE-BOUNDS-001`, `ERR-DECODE-SOURCE-UNAVAILABLE-001`,
+and `ERR-DECODE-001` for corrupt pictures.
+
+`fss-file decode --segment N [--segment-count M] --interpretation ycbcr [--output FILE.pgm]` on
+an `hevc` import writes one binary PGM luma image per frame and prints `skipped_rasl_segment=`
+lines for skipped pictures. `fss-event watch` and `fss-event corroborate` accept `hevc` imports
+through the same range reader; a RASL picture skipped after a leading CRA contributes no frame.

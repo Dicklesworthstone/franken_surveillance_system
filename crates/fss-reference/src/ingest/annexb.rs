@@ -351,6 +351,16 @@ pub enum AnnexBError {
         /// Detail explanation.
         detail: &'static str,
     },
+    /// H.265 only: a NAL unit shorter than the two-byte header, or with
+    /// `nuh_temporal_id_plus1 == 0` (forbidden by H.265 7.4.2.2).
+    InvalidHevcNalHeader {
+        /// NAL index in stream.
+        nal: usize,
+        /// Byte offset of the NAL header.
+        offset: usize,
+    },
+    /// H.265 only: the stream holds no VCL NAL unit, so it codes no picture.
+    NoHevcPicture,
 }
 
 impl fmt::Display for AnnexBError {
@@ -406,11 +416,33 @@ impl fmt::Display for AnnexBError {
             Self::MalformedSliceHeader { offset, detail } => {
                 write!(f, "malformed slice header at offset {offset}: {detail}")
             }
+            Self::InvalidHevcNalHeader { nal, offset } => {
+                write!(
+                    f,
+                    "NAL unit {nal} at byte offset {offset} is not a valid H.265 NAL unit header"
+                )
+            }
+            Self::NoHevcPicture => {
+                write!(
+                    f,
+                    "H.265 stream contains no VCL NAL unit (no coded picture)"
+                )
+            }
         }
     }
 }
 
 impl std::error::Error for AnnexBError {}
+
+/// Codec-neutral Annex-B framing: NAL units with exact spans, padding and tolerated omissions.
+/// The first header byte's high bit is `forbidden_zero_bit` in both H.264 and H.265, and the
+/// start-code and emulation-prevention rules are identical, so both splitters share this pass.
+/// The H.264 header fields of [`AnnexBNal`] are meaningless for an H.265 stream.
+pub(crate) struct NalUnitScan {
+    pub(crate) nals: Vec<AnnexBNal>,
+    pub(crate) padding_spans: Vec<SourceSpan>,
+    pub(crate) omission_spans: Vec<SourceSpan>,
+}
 
 /// Scans an Annex-B elementary stream, enforcing operational bounds, cancellation checkpoints,
 /// and exact byte coverage.
@@ -419,6 +451,52 @@ pub fn split_annexb(
     limits: AnnexBLimits,
     cx: &ReplayCx,
 ) -> Result<AnnexBScan, AnnexBError> {
+    let NalUnitScan {
+        nals,
+        padding_spans,
+        omission_spans,
+    } = scan_nal_units(bytes, limits, cx)?;
+
+    if cx.checkpoint("pre_au_grouping").is_err() {
+        return Err(AnnexBError::Cancelled);
+    }
+
+    // Step 3: Access unit grouping per H.264 7.4.1.2.3.
+    let access_units = group_access_units(bytes, &nals, limits.max_aus, cx)?;
+
+    // Step 4: Catalog SPS, PPS, and unsupported extension spans.
+    let mut sps_spans = Vec::new();
+    let mut pps_spans = Vec::new();
+    let mut unsupported_extension_spans = Vec::new();
+    for nal in &nals {
+        if nal.is_sps() {
+            sps_spans.push(nal.nal_span);
+        } else if nal.is_pps() {
+            pps_spans.push(nal.nal_span);
+        } else if nal.nal_unit_type == 15 || nal.nal_unit_type == 20 {
+            unsupported_extension_spans.push(nal.nal_span);
+        }
+    }
+
+    Ok(AnnexBScan {
+        nals,
+        access_units,
+        padding_spans,
+        omission_spans,
+        sps_spans,
+        pps_spans,
+        unsupported_extension_spans,
+        au_grouping: "first_mb_in_slice_heuristic",
+        total_bytes: bytes.len(),
+    })
+}
+
+/// Steps 1 and 2 of [`split_annexb`]: input bounds, start codes, NAL delineation and validation.
+pub(crate) fn scan_nal_units(
+    bytes: &[u8],
+    limits: AnnexBLimits,
+    cx: &ReplayCx,
+) -> Result<NalUnitScan, AnnexBError> {
     if bytes.is_empty() {
         return Err(AnnexBError::EmptyInput);
     }
@@ -594,37 +672,10 @@ pub fn split_annexb(
         }
     }
 
-    if cx.checkpoint("pre_au_grouping").is_err() {
-        return Err(AnnexBError::Cancelled);
-    }
-
-    // Step 3: Access unit grouping per H.264 7.4.1.2.3.
-    let access_units = group_access_units(bytes, &nals, limits.max_aus, cx)?;
-
-    // Step 4: Catalog SPS, PPS, and unsupported extension spans.
-    let mut sps_spans = Vec::new();
-    let mut pps_spans = Vec::new();
-    let mut unsupported_extension_spans = Vec::new();
-    for nal in &nals {
-        if nal.is_sps() {
-            sps_spans.push(nal.nal_span);
-        } else if nal.is_pps() {
-            pps_spans.push(nal.nal_span);
-        } else if nal.nal_unit_type == 15 || nal.nal_unit_type == 20 {
-            unsupported_extension_spans.push(nal.nal_span);
-        }
-    }
-
-    Ok(AnnexBScan {
+    Ok(NalUnitScan {
         nals,
-        access_units,
         padding_spans,
         omission_spans,
-        sps_spans,
-        pps_spans,
-        unsupported_extension_spans,
-        au_grouping: "first_mb_in_slice_heuristic",
-        total_bytes: bytes.len(),
     })
 }
 

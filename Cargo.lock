@@ -93,6 +93,7 @@ name = "fss-reference"
 version = "0.0.1"
 dependencies = [
  "fss-codec-h264",
+ "fss-codec-h265",
  "fss-codec-mjpeg",
  "fss-container",
  "fss-core",

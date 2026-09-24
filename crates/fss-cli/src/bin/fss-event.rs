@@ -48,7 +48,8 @@ const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|ale
   files outside the deployment; options take separate values and paths preserve OS bytes.\n\
   watch (model-free, no trained model): --import-id sha256:HEX --interpretation gray|ycbcr\n\
           --zone ID:X,Y,W,H [--zone ...] (1..16, decoded pixels, UTF-8 arguments)\n\
-          [--first-segment N] [--segment-count M (1..128; H.264 must start at an IDR)]\n\
+          [--first-segment N] [--segment-count M (1..128; H.264 must start at an IDR,\n\
+           H.265 at an IDR, CRA or BLA)]\n\
           [--pixel-threshold N --threshold-sigma N --learning-rate-num N\n\
            --learning-rate-den N --min-region-pixels N] [--confirmation-hits N\n\
            --maximum-missed-frames N --minimum-iou-ppm N] [--work-units N\n\
