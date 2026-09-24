@@ -12,10 +12,13 @@ use super::json::{self, MAX_FRAME_BYTES, Value};
 const PROTOCOL_VERSION: &str = "2025-06-18";
 const MAX_TOOL_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_BUDGET_TOKENS: u64 = 4096;
+const MAX_PAGE_ENTRIES: u64 = 4096;
 
 const TOOLS: &str = r#"{"tools":[
 {"name":"session_orient","description":"Read-only AOP-003: inspect an existing deployment through its anchor-pinned SituationCapsule. Returns the existing fss/1 AgentResponseEnvelope unchanged, including coverage gaps, uncertainty, obligations and affordances. No affordance is executed.","inputSchema":{"type":"object","properties":{"view":{"type":"string","enum":["pulse","brief","epistemic_map"]},"budget_tokens":{"type":"integer","minimum":1,"maximum":4096}},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
-{"name":"explain","description":"Read-only AOP-011: explain one published event, including provenance, contradictions and evidence that would change the conclusion. Returns the existing fss/1 AgentResponseEnvelope unchanged.","inputSchema":{"type":"object","properties":{"event_id":{"type":"string","minLength":1,"maxLength":128}},"required":["event_id"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}
+{"name":"explain","description":"Read-only AOP-011: explain one published event, including provenance, contradictions and evidence that would change the conclusion. Returns the existing fss/1 AgentResponseEnvelope unchanged.","inputSchema":{"type":"object","properties":{"event_id":{"type":"string","minLength":1,"maxLength":128}},"required":["event_id"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
+{"name":"session_follow","description":"Read-only AOP-004: return one exact page of meaningful changes since an orientation anchor. Protected coverage, obligation and effect-uncertainty classes and exact continuations remain in the unchanged fss/1 envelope. A bounded read, not a live subscription.","inputSchema":{"type":"object","properties":{"since":{"type":"string","minLength":1,"maxLength":256},"view":{"type":"string","enum":["pulse","brief"]},"max_entries":{"type":"integer","minimum":1,"maximum":4096},"continuation":{"type":"string","minLength":1,"maxLength":256}},"required":["since"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
+{"name":"doctor","description":"Read-only AOP-014 reference diagnosis of the fixed deployment. Returns the existing fss.doctor.v1 report, not an AgentResponseEnvelope. Does not repair, create directories, acquire locks or execute affordances.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}
 ]}"#;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -145,12 +148,45 @@ impl Server {
                 argv.push(format!("--event-id={event}").into());
                 argv
             }
+            "session_follow" => {
+                if !only(args, &["since", "view", "max_entries", "continuation"]) {
+                    return Err((-32602, "Unexpected follow argument"));
+                }
+                let since = bounded_text(args.get("since"), 256)?;
+                let mut argv = self.base_args("follow");
+                argv.push(format!("--since={since}").into());
+                if let Some(view) = args.get("view") {
+                    let view = view.text().ok_or((-32602, "Expected view string"))?;
+                    if !matches!(view, "pulse" | "brief") {
+                        return Err((-32602, "Unsupported follow view"));
+                    }
+                    argv.push(format!("--view={view}").into());
+                }
+                if let Some(value) = args.get("max_entries") {
+                    let n = positive_integer(value, MAX_PAGE_ENTRIES)?;
+                    argv.push(format!("--max-entries={n}").into());
+                }
+                if let Some(value) = args.get("continuation") {
+                    let token = bounded_text(Some(value), 256)?;
+                    argv.push(format!("--continuation={token}").into());
+                }
+                // The canonical parser and follow engine validate spelling, lineage, binding,
+                // freshness and stream identity. The transport never manufactures an anchor.
+                argv
+            }
+            "doctor" => {
+                if !args.is_empty() { return Err((-32602, "Doctor accepts no scope overrides")); }
+                self.base_args("doctor")
+            }
             _ => return Err((-32602, "Unknown or unavailable tool")),
         };
-        argv.push(format!("--principal={}", self.principal).into());
+        if name != "doctor" {
+            argv.push(format!("--principal={}", self.principal).into());
+        }
         let command = parse_fss_args(argv).map_err(|_| (-32602, "Arguments refused by the canonical CLI parser"))?;
         // A final typed clamp remains even if command parsing gains new operations.
-        if !matches!(command, FssCommand::Orient(_) | FssCommand::Explain(_)) {
+        if !matches!(command, FssCommand::Orient(_) | FssCommand::Explain(_)
+            | FssCommand::Follow(_) | FssCommand::Doctor(_)) {
             return Err((-32603, "Read-only command boundary refused dispatch"));
         }
         let (output, exit) = execute(command);
@@ -183,6 +219,11 @@ fn positive_integer(value: &Value, maximum: u64) -> Result<u64, (i32, &'static s
     if !text.bytes().all(|byte| byte.is_ascii_digit()) { return Err((-32602, "Expected positive integer")); }
     text.parse::<u64>().ok().filter(|n| *n > 0 && *n <= maximum)
         .ok_or((-32602, "Integer is outside the admitted budget"))
+}
+
+fn bounded_text(value: Option<&Value>, maximum: usize) -> Result<&str, (i32, &'static str)> {
+    value.and_then(Value::text).filter(|s| !s.is_empty() && s.len() <= maximum)
+        .ok_or((-32602, "Expected a non-empty bounded token string"))
 }
 
 fn integer_id(text: &str) -> bool {
@@ -272,7 +313,7 @@ mod tests {
         assert_eq!(server.handle(READY), None);
         assert!(server.handle(list).is_some_and(|r| r.contains("session_orient")));
         assert!(server.handle(INIT).is_some_and(|r| r.contains("Already initialized")));
-        for name in ["session_orient", "explain"] {
+        for name in ["session_orient", "session_follow", "explain", "doctor"] {
             assert!(fss_cli::lookup_by_mcp_tool_name(name).is_some());
         }
         assert!(json::parse(TOOLS).is_ok());
@@ -363,4 +404,78 @@ mod tests {
         assert!(serve(&mut server(), io::Cursor::new(input), &mut output).is_ok());
         assert_eq!(output.iter().filter(|byte| **byte == b'\n').count(), 2);
     }
+
+    #[test]
+    fn follow_preserves_exact_anchor_cursor_page_and_protected_payload() {
+        let mut server = ready();
+        let anchor = format!("anchor:{}:0:none:{}", "a".repeat(16), "b".repeat(64));
+        let cursor = "continuation:exact-page-2";
+        let request = format!(r#"{{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{{"name":"session_follow","arguments":{{"since":{},"view":"brief","max_entries":1,"continuation":{}}}}}}}"#,
+            quote(&anchor), quote(cursor));
+        let envelope = r#"{"classes":["coverage_loss","external_effect_uncertainty"],"continuation":"continuation:exact-page-3","completeness":"partial"}"#;
+        let mut called = false;
+        let response = server.handle_with(&request, |command| {
+            called = true;
+            assert!(matches!(&command, FssCommand::Follow(_)));
+            if let FssCommand::Follow(args) = command {
+                assert_eq!(args.since.as_str(), anchor);
+                assert_eq!(args.continuation.as_deref(), Some(cursor));
+                assert_eq!(args.max_entries, 1);
+                assert_eq!(args.view, fss_core::AgentView::Brief);
+            }
+            (envelope.to_owned(), ExitIdentity::SUCCESS)
+        });
+        assert!(called);
+        assert!(response.is_some_and(|r| r.contains(&quote(envelope))));
+        assert_eq!(MAX_PAGE_ENTRIES, u64::from(fss_reference::agent_follow::MAX_FOLLOW_ENTRIES));
+    }
+
+    #[test]
+    fn follow_never_invents_a_basis_or_accepts_malformed_cursor() {
+        let mut server = ready();
+        let anchor = format!("anchor:{}:0:none:{}", "a".repeat(16), "b".repeat(64));
+        let mut calls = 0;
+        for arguments in ["{}".to_owned(), r#"{"since":"latest"}"#.to_owned(),
+            format!(r#"{{"since":{},"continuation":"--root=/other"}}"#, quote(&anchor)),
+            format!(r#"{{"since":{},"max_entries":4097}}"#, quote(&anchor)),
+            format!(r#"{{"since":{},"view":"epistemic_map"}}"#, quote(&anchor))] {
+            let request = format!(r#"{{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{{"name":"session_follow","arguments":{arguments}}}}}"#);
+            let response = server.handle_with(&request, |_| {
+                calls += 1;
+                ("{}".to_owned(), ExitIdentity::SUCCESS)
+            });
+            assert!(response.is_some_and(|r| r.contains("-32602")));
+        }
+        assert_eq!(calls, 0);
+    }
+
+    #[test]
+    fn doctor_is_pinned_and_attention_required_is_not_hidden() {
+        let mut server = ready();
+        let response = server.handle_with(
+            r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"doctor"}}"#,
+            |command| {
+                assert!(matches!(&command, FssCommand::Doctor(_)));
+                if let FssCommand::Doctor(args) = command {
+                    assert_eq!(args.root, Some(std::path::PathBuf::from("/owner/deployment")));
+                }
+                (r#"{"verdict":"attention_required"}"#.to_owned(), ExitIdentity::DOCTOR_ATTENTION_REQUIRED)
+            },
+        );
+        assert!(response.is_some_and(|r| r.contains("attention_required") && r.contains("\"isError\":true")));
+    }
+
+    #[test]
+    fn negotiation_and_bad_initialization_do_not_grant_dispatch() {
+        let mut server = server();
+        assert!(server.handle(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#)
+            .is_some_and(|r| r.contains("-32602")));
+        assert_eq!(server.handle(READY), None);
+        assert!(server.handle(&INIT.replace(PROTOCOL_VERSION, "2099-01-01"))
+            .is_some_and(|r| r.contains(PROTOCOL_VERSION) && !r.contains("2099-01-01")));
+        assert_eq!(server.handle(READY), None);
+        assert!(server.handle(r#"{"jsonrpc":"2.0","id":8,"method":"resources/list"}"#)
+            .is_some_and(|r| r.contains("-32601")));
+    }
+
 }
