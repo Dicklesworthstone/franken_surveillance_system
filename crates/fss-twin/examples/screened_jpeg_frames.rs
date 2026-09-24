@@ -18,6 +18,8 @@ use fss_twin::screening::{ScreeningMonitor, ScreeningPolicy, ScreeningStamp};
 use fss_twin::screening::tracking::{ScreenedImageTracker, ScreenedTrackingReport};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
+/// Settings groups keyed by their manifest name, each holding its whitespace-separated fields.
+type Settings<'a> = BTreeMap<&'a str, Vec<&'a str>>;
 const GROUPS: [(&str, usize); 7] = [("sensor", 8), ("image", 9), ("background", 5),
     ("foreground", 5), ("health", 14), ("tracking", 11), ("budgets", 7)];
 struct Row { query: bool, exposure: [u8; 32], capture: [u64; 2], sequence: u64,
@@ -47,7 +49,7 @@ fn confined(root: &Path, name: &str) -> Result<PathBuf> {
     if !resolved.starts_with(root) || !resolved.is_file() { return Err("input is outside the manifest directory".into()); }
     Ok(resolved)
 }
-fn parse<'a>(text: &'a str, root: &Path) -> Result<(BTreeMap<&'a str, Vec<&'a str>>, Vec<Row>)> {
+fn parse<'a>(text: &'a str, root: &Path) -> Result<(Settings<'a>, Vec<Row>)> {
     let mut lines = text.lines().filter(|s| !s.trim().is_empty() && !s.trim_start().starts_with('#'));
     if lines.next() != Some("FSS_SCREENED_JPEG_REPLAY_1") { return Err("unsupported replay manifest".into()); }
     let mut settings = BTreeMap::new(); let mut rows = Vec::new(); rows.try_reserve_exact(128)?;

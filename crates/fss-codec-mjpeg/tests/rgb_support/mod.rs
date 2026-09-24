@@ -12,7 +12,7 @@ fn bits(output: &mut Vec<bool>, value: u32, count: u32) {
 }
 fn flush(output: &mut Vec<u8>, pending: &mut Vec<bool>) {
     while !pending.len().is_multiple_of(8) { pending.push(true); }
-    for chunk in pending.chunks_exact(8) {
+    for chunk in pending.as_chunks::<8>().0 {
         let byte = chunk.iter().fold(0_u8, |value, bit| (value << 1) | u8::from(*bit));
         output.push(byte); if byte == 255 { output.push(0); }
     }
