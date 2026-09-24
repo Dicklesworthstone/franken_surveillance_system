@@ -12,6 +12,7 @@ use crate::negative_evidence_cmd::{
 use crate::orient_cmd::{
     ExplainArgs, OrientArgs, execute_explain, execute_orient, parse_explain_args, parse_orient_args,
 };
+use crate::session_cmd::{SessionCommand, execute_session, parse_session_args};
 use crate::token::{ArgToken, tokenize_os_args};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -44,6 +45,8 @@ pub enum FssCommand {
     Explain(ExplainArgs),
     /// Read-only AOP-004 session.follow since an earlier anchor token: an AgentResponseEnvelope carrying one exact page of the MeaningfulDelta between the situation as of that anchor and the head (protected classes never coalesced; the rest through an exact continuation).
     Follow(FollowArgs),
+    /// Durable mission-scoped agent sessions (agent-plane writes only; authority and effect state are never written): AOP-001 session.open opens a session and its first workspace revision at the current orient anchor, AOP-012 handoff publishes a root-last HandoffCapsule, and AOP-002 session.resume accepts a handoff and rebases it onto the head, listing every invalidated assumption.
+    Session(SessionCommand),
 }
 
 impl FssCommand {
@@ -56,7 +59,8 @@ impl FssCommand {
             | Self::Status
             | Self::Orient(_)
             | Self::Explain(_)
-            | Self::Follow(_) => true,
+            | Self::Follow(_)
+            | Self::Session(_) => true,
             Self::NegativeEvidence(action) => action.is_json(),
             Self::Help | Self::Version => false,
         }
@@ -66,7 +70,7 @@ impl FssCommand {
 /// Returns the static help text for `fss`.
 #[must_use]
 pub const fn help_text() -> &'static str {
-    "Franken Surveillance System: unqualified reference implementation\n\nUSAGE:\n  fss help\n  fss version\n  fss capabilities --json\n  fss doctor --json [--root <dir>]\n      --root inspects a deployment root read-only (never writes, locks, or repairs)\n  fss status --json\n  fss orient --json --root <dir> [--view pulse|brief|epistemic_map] [--principal <id>] [--budget-tokens <n>]\n      read-only AOP-003 session.orient: AgentResponseEnvelope with the SituationCapsule; lists affordances, never executes them\n  fss explain --json --root <dir> --event-id <id> [--principal <id>]\n      read-only AOP-011 explain of one published event\n  fss follow --json --root <dir> --since <anchor> [--view pulse|brief] [--principal <id>] [--max-entries <n>] [--continuation <token>]\n      read-only AOP-004 session.follow: the MeaningfulDelta since an orient anchor token, paged through exact continuations\n  fss negative-evidence <init|list|verify|append> [--path <file>] [--json]\n\nCompanion binaries: fss-file (import and decode recorded media), fss-infer (scalar model\nexecution, detection, tracking), fss-event (recorded event reports and publication),\nfss-archive (RTSP/HTTP capture archives), fss-lab (deterministic scenarios).\nNothing is release-qualified; the capabilities command lists what is implemented."
+    "Franken Surveillance System: unqualified reference implementation\n\nUSAGE:\n  fss help\n  fss version\n  fss capabilities --json\n  fss doctor --json [--root <dir>]\n      --root inspects a deployment root read-only (never writes, locks, or repairs)\n  fss status --json\n  fss orient --json --root <dir> [--view pulse|brief|epistemic_map] [--principal <id>] [--budget-tokens <n>]\n      read-only AOP-003 session.orient: AgentResponseEnvelope with the SituationCapsule; lists affordances, never executes them\n  fss explain --json --root <dir> --event-id <id> [--principal <id>]\n      read-only AOP-011 explain of one published event\n  fss follow --json --root <dir> --since <anchor> [--view pulse|brief] [--principal <id>] [--max-entries <n>] [--continuation <token>]\n      read-only AOP-004 session.follow: the MeaningfulDelta since an orient anchor token, paged through exact continuations\n  fss session open --json --root <dir> --mission <text-or-file> --objective <text> [--principal <id>] [--view pulse|brief|epistemic_map] [--budget-tokens <n>]\n      AOP-001 session.open: a durable mission-scoped session and its first workspace revision at the current orient anchor (writes agent/ only)\n  fss session handoff --json --root <dir> --session <id> [--principal <id>] [--note <text>]\n      AOP-012 handoff: publishes a root-last HandoffCapsule sealed as of the session's anchor\n  fss session resume --json --root <dir> --handoff <id> [--principal <id>]\n      AOP-002 session.resume: accepts the handoff, lists every invalidated assumption, and rebases the session onto the head\n  fss negative-evidence <init|list|verify|append> [--path <file>] [--json]\n\nCompanion binaries: fss-file (import and decode recorded media), fss-infer (scalar model\nexecution, detection, tracking), fss-event (recorded event reports and publication),\nfss-archive (RTSP/HTTP capture archives), fss-lab (deterministic scenarios).\nNothing is release-qualified; the capabilities command lists what is implemented."
 }
 
 /// Parses OS-native arguments for `fss` with total validation and exact grammar exhaustion.
@@ -114,6 +118,7 @@ pub fn parse_fss_tokens(tokens: &[ArgToken]) -> Result<FssCommand, CliError> {
         "orient" => parse_orient_tokens(tokens),
         "explain" => parse_explain_tokens(tokens),
         "follow" => parse_follow_tokens(tokens),
+        "session" => parse_session_tokens(tokens),
         "negative-evidence" | "neg" | "negative" => {
             let action = parse_negative_evidence_tokens(&tokens[1..])?;
             Ok(FssCommand::NegativeEvidence(Box::new(action)))
@@ -248,6 +253,12 @@ fn parse_follow_tokens(tokens: &[ArgToken]) -> Result<FssCommand, CliError> {
     Ok(FssCommand::Follow(parse_follow_args(tokens)?))
 }
 
+/// Parses the `session` subcommands: `open`, `handoff`, and `resume`, each with `--json`,
+/// `--root <dir>`, and its own options, each at most once.
+fn parse_session_tokens(tokens: &[ArgToken]) -> Result<FssCommand, CliError> {
+    Ok(FssCommand::Session(parse_session_args(tokens)?))
+}
+
 /// Parses subcommands whose only permitted option is `--json` with exact exhaustion.
 fn parse_json_only_subcommand(
     cmd_name: &str,
@@ -317,7 +328,7 @@ pub fn execute_fss_with_exit(command: FssCommand) -> (String, ExitIdentity) {
         FssCommand::Version => (format!("fss {VERSION}"), ExitIdentity::SUCCESS),
         FssCommand::Capabilities => (
             format!(
-                "{{\"schema\":\"fss.capabilities.v1\",\"version\":\"{VERSION}\",\"status\":\"reference_implementation_unqualified\",\"qualified\":[],\"implemented\":[\"file_import_custody:annexb,hevc,mjpeg,rtpplay\",\"jpeg_baseline_decode\",\"h264_baseline_main_high_decode\",\"h265_main_profile_decode_library\",\"h265_ingest_wiring\",\"model_free_watch_pipeline\",\"event_evaluation_harness\",\"two_sensor_corroborated_webhook_alert\",\"rtp_h264_h265_depacketize\",\"rtsp_interleaved_tcp_capture\",\"http_mjpeg_capture\",\"fmp4_remux_avc_hevc\",\"local_capture_archive_verify_export\",\"scalar_model_execution_safetensors\",\"foreground_and_learned_detection_reference\",\"kalman_iou_tracking_reference\",\"recorded_event_publication\",\"durable_ledger_root_last_publication\",\"deployment_doctor\",\"negative_evidence_ledger\",\"agent_orient_explain_follow_cli\"],\"partial\":[\"cross_camera_association:caller_supplied_ground_plane\",\"camera_pose_and_localization\",\"agent_operations_cli:orient_explain_follow\"],\"not_implemented\":[\"h265_main10_rext_tiles\",\"h264_interlaced_or_non_420\",\"progressive_jpeg_decode\",\"rtp_over_udp\",\"uvc_acquisition\",\"onvif\",\"trained_detector_package\",\"real_footage_quality_evaluation\",\"agent_protocol_transport\",\"mcp\",\"cloud_archive\",\"property_reconstruction\",\"privacy_masking\",\"deletion_closure\",\"asupersync_runtime\",\"live_operator_view\"]}}"
+                "{{\"schema\":\"fss.capabilities.v1\",\"version\":\"{VERSION}\",\"status\":\"reference_implementation_unqualified\",\"qualified\":[],\"implemented\":[\"file_import_custody:annexb,hevc,mjpeg,rtpplay\",\"jpeg_baseline_decode\",\"h264_baseline_main_high_decode\",\"h265_main_profile_decode_library\",\"h265_ingest_wiring\",\"model_free_watch_pipeline\",\"event_evaluation_harness\",\"two_sensor_corroborated_webhook_alert\",\"rtp_h264_h265_depacketize\",\"rtsp_interleaved_tcp_capture\",\"http_mjpeg_capture\",\"fmp4_remux_avc_hevc\",\"local_capture_archive_verify_export\",\"scalar_model_execution_safetensors\",\"foreground_and_learned_detection_reference\",\"kalman_iou_tracking_reference\",\"recorded_event_publication\",\"durable_ledger_root_last_publication\",\"deployment_doctor\",\"negative_evidence_ledger\",\"agent_orient_explain_follow_cli\",\"agent_session_cli:open_handoff_resume\"],\"partial\":[\"cross_camera_association:caller_supplied_ground_plane\",\"camera_pose_and_localization\",\"agent_operations_cli:orient_explain_follow\"],\"not_implemented\":[\"h265_main10_rext_tiles\",\"h264_interlaced_or_non_420\",\"progressive_jpeg_decode\",\"rtp_over_udp\",\"uvc_acquisition\",\"onvif\",\"trained_detector_package\",\"real_footage_quality_evaluation\",\"agent_protocol_transport\",\"mcp\",\"cloud_archive\",\"property_reconstruction\",\"privacy_masking\",\"deletion_closure\",\"asupersync_runtime\",\"live_operator_view\"]}}"
             ),
             ExitIdentity::SUCCESS,
         ),
@@ -353,6 +364,7 @@ pub fn execute_fss_with_exit(command: FssCommand) -> (String, ExitIdentity) {
         FssCommand::Orient(ref args) => execute_orient(args),
         FssCommand::Explain(ref args) => execute_explain(args),
         FssCommand::Follow(ref args) => execute_follow(args),
+        FssCommand::Session(ref command) => execute_session(command),
     }
 }
 
@@ -426,6 +438,16 @@ mod tests {
                 "/deploy",
                 "--since",
                 FOLLOW_ANCHOR,
+                "extra",
+            ],
+            vec![
+                "session",
+                "resume",
+                "--json",
+                "--root",
+                "/deploy",
+                "--handoff",
+                "handoff:x",
                 "extra",
             ],
         ];
@@ -587,6 +609,118 @@ mod tests {
             args.extend_from_slice(&extra);
             assert_eq!(refused(&args), malformed, "{extra:?}");
         }
+    }
+
+    #[test]
+    fn session_subcommands_parse_and_refuse_malformed_input() {
+        let parse = |args: &[&str]| parse_fss_args(args.iter().map(OsString::from));
+        let Ok(FssCommand::Session(SessionCommand::Open(open))) = parse(&[
+            "session",
+            "open",
+            "--json",
+            "--root",
+            "/deploy",
+            "--mission",
+            "watch the east door",
+            "--objective",
+            "know who entered",
+        ]) else {
+            unreachable!("session open with its required options parses");
+        };
+        assert_eq!(open.root, PathBuf::from("/deploy"));
+        assert_eq!(open.mission, "watch the east door");
+        assert_eq!(open.objective, "know who entered");
+        assert_eq!(open.view, fss_core::AgentView::Brief);
+        assert_eq!(open.budget_tokens, 1_600);
+        assert_eq!(open.principal.as_str(), "principal:local-operator");
+        let Ok(FssCommand::Session(SessionCommand::Handoff(handoff))) = parse(&[
+            "session",
+            "handoff",
+            "--root=/deploy",
+            "--session",
+            "session:abc",
+            "--note",
+            "shift change",
+            "--json",
+        ]) else {
+            unreachable!("session handoff parses");
+        };
+        assert_eq!(handoff.session.as_str(), "session:abc");
+        assert_eq!(handoff.note.as_deref(), Some("shift change"));
+        let Ok(command @ FssCommand::Session(SessionCommand::Resume(_))) = parse(&[
+            "session",
+            "resume",
+            "--json",
+            "--root",
+            "/deploy",
+            "--handoff",
+            "handoff:abc",
+            "--principal",
+            "principal:agent-7",
+        ]) else {
+            unreachable!("session resume parses");
+        };
+        assert!(command.is_json());
+        let refused = |args: &[&str]| parse(args).err().map(|error| error.error_id());
+        assert_eq!(
+            refused(&["session"]),
+            Some(crate::error::ERR_CLI_MISSING_VALUE)
+        );
+        assert_eq!(
+            refused(&["session", "close", "--json"]),
+            Some(crate::error::ERR_CLI_UNKNOWN_COMMAND)
+        );
+        assert_eq!(
+            refused(&[
+                "session",
+                "open",
+                "--json",
+                "--root",
+                "/d",
+                "--objective",
+                "o"
+            ]),
+            Some(crate::error::ERR_CLI_MISSING_VALUE)
+        );
+        assert_eq!(
+            refused(&[
+                "session",
+                "open",
+                "--json",
+                "--root",
+                "/d",
+                "--mission",
+                "m",
+                "--objective",
+                "o",
+                "--budget-tokens",
+                "0",
+            ]),
+            Some(crate::error::ERR_CLI_MALFORMED_VALUE)
+        );
+        assert_eq!(
+            refused(&[
+                "session",
+                "handoff",
+                "--json",
+                "--root",
+                "/d",
+                "--session",
+                "bad id"
+            ]),
+            Some(crate::error::ERR_CLI_MALFORMED_VALUE)
+        );
+        assert_eq!(
+            refused(&[
+                "session",
+                "resume",
+                "--root",
+                "/d",
+                "--handoff",
+                "handoff:x"
+            ]),
+            Some(crate::error::ERR_CLI_MISSING_VALUE)
+        );
     }
 
     #[test]
