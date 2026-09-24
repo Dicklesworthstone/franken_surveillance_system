@@ -20,7 +20,10 @@ use fss_reference::ingest::recorded_decode::ComponentInterpretation;
 use fss_reference::ingest::tracking::TrackingConfig;
 use fss_reference::ingest::recorded_event::{RecordedEvent, RecordedEventProposal};
 
-const HELP: &str = "fss-event <report|prepare|publish|read> [options]\n\
+#[path = "fss-event/watch.rs"]
+mod watch;
+
+const HELP: &str = "fss-event <report|prepare|publish|read|watch> [options]\n\
   All: --root DIR --site SITE [--principal ID]\n\
   report: --import-id sha256:HEX --runs FILE --interpretation gray|ycbcr\n\
           --model-digest sha256:HEX --output-port NAME --labels ORDERED,CLASS,NAMES\n\
@@ -38,7 +41,22 @@ const HELP: &str = "fss-event <report|prepare|publish|read> [options]\n\
   indeterminate candidate after exact approval and source revalidation. No alert,\n\
   calibrated presence, identity, arrival, departure, or absence claim is authorized.\n\
   Limits: at most 64 report frames and 16 MiB of report bytes. Exports must be new\n\
-  files outside the deployment; options take separate values and paths preserve OS bytes.\n";
+  files outside the deployment; options take separate values and paths preserve OS bytes.\n\
+  watch (model-free, no trained model): --import-id sha256:HEX --interpretation gray|ycbcr\n\
+          --zone ID:X,Y,W,H [--zone ...] (1..16, decoded pixels, UTF-8 arguments)\n\
+          [--first-segment N] [--segment-count M (1..128; H.264 must start at an IDR)]\n\
+          [--pixel-threshold N --threshold-sigma N --learning-rate-num N\n\
+           --learning-rate-den N --min-region-pixels N] [--confirmation-hits N\n\
+           --maximum-missed-frames N --minimum-iou-ppm N] [--work-units N\n\
+           --max-dimension N --max-pixels N --max-segment-bytes N]\n\
+          [--approve sha256:PROPOSAL[,sha256:PROPOSAL...]] [--report-out FILE]\n\
+    Retained decode -> running-variance foreground -> Kalman tracker -> zone gate. Prints a\n\
+    JSON report of candidates (zone, track, frame range, evidence digests, proposal digest).\n\
+    Without --approve nothing is written; each prepared candidate lists the exact rerun\n\
+    command that publishes it. --approve publishes only those exact proposals as\n\
+    unclassified, indeterminate, single-sensor candidates (never corroborated, no alert);\n\
+    reruns never republish. Thresholds are uncalibrated; synthetic scenes prove wiring,\n\
+    not detection quality, and no candidate never means absence.\n";
 type RunResult<T> = Result<T, Box<dyn Error>>;
 type Values = BTreeMap<String, OsString>;
 #[derive(Debug)]
@@ -48,6 +66,7 @@ enum Action {
     Prepare { report: PathBuf, digest: ContentDigest, track: ContentDigest },
     Publish { report: PathBuf, digest: ContentDigest, track: ContentDigest, approved: ContentDigest },
     Read(EventId),
+    Watch(Box<watch::WatchAction>),
 }
 #[derive(Debug)]
 struct Options {
@@ -82,7 +101,14 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
     if matches!(action, "help" | "--help" | "-h") {
         return if args.len() == 1 { Ok(None) } else { Err("help takes no additional arguments".into()) };
     }
-    if !matches!(action, "report" | "prepare" | "publish" | "read") { return Err("expected report, prepare, publish or read".into()); }
+    if action == "watch" {
+        let watch = watch::parse(&args[1..])?;
+        return Ok(Some(Options { root: watch.root.clone(), site: watch.site.clone(),
+            principal: watch.principal.clone(), limits: AnalysisLimits::default(),
+            detection_units: 0, association_units: 0, event_out: None, report_out: None,
+            action: Action::Watch(Box::new(watch)) }));
+    }
+    if !matches!(action, "report" | "prepare" | "publish" | "read") { return Err("expected report, prepare, publish, read or watch".into()); }
     let common = ["--root", "--site", "--principal", "--detection-work-units", "--association-work-units", "--max-report-bytes", "--event-out"];
     let report_options = ["--import-id", "--runs", "--interpretation", "--model-digest", "--output-port", "--labels",
         "--box-format", "--coordinates", "--minimum-score-ppm", "--nms-iou-ppm", "--minimum-iou-ppm",
@@ -110,9 +136,9 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
     let principal = if v.contains_key("--principal") { text(&v, "--principal")?.to_owned() }
         else { "principal:local-operator".to_owned() };
     PrincipalId::parse(&principal).map_err(|_| "invalid principal ID")?;
-    let mut limits = AnalysisLimits::default();
-    limits.maximum_frames = 64;
-    limits.maximum_report_bytes = number(&v, "--max-report-bytes", MAX_ANALYSIS_REPORT_BYTES)?;
+    let limits = AnalysisLimits { maximum_frames: 64,
+        maximum_report_bytes: number(&v, "--max-report-bytes", MAX_ANALYSIS_REPORT_BYTES)?,
+        ..AnalysisLimits::default() };
     if limits.maximum_report_bytes == 0 || limits.maximum_report_bytes > MAX_ANALYSIS_REPORT_BYTES {
         return Err("report ceiling must be 1..16777216 bytes".into());
     }
@@ -225,6 +251,10 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
         let mut deployment = ReferenceDeployment::open(&options.root, &options.site, &cx)?;
         let mut budget = AnalysisBudget::new(options.detection_units, options.association_units);
         let (event, receipt, operation) = match &options.action {
+            Action::Watch(action) => {
+                watch::run(action, &mut deployment, &options.root, &cx, out)?;
+                return Ok(());
+            }
             Action::Report { import, interpretation, detector, tracking, runs, output } => {
                 let plan = AnalysisPlan::new(*import, *interpretation, detector.clone(), *tracking, read_runs(runs, &cx)?)?;
                 let report = AnalysisReport::read(&deployment, &plan, &options.limits, &mut budget, &cx)?;
@@ -286,6 +316,9 @@ fn main() -> ExitCode {
             Ok(()) => ExitCode::from(0),
             Err(e) => {
                 eprintln!("{ERR_CLI_RUNTIME_FAILURE}: {e}");
+                if let Some(refusal) = e.downcast_ref::<fss_reference::ingest::recorded_watch::WatchError>() {
+                    eprintln!("refusal_id={}", refusal.stable_id());
+                }
                 eprintln!("Durable provenance/events are not rolled back by later failures; incomplete exports may remain.");
                 ExitCode::from(ExitIdentity::RUNTIME_FAILURE.code)
             }

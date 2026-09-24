@@ -224,10 +224,10 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
         let layout = fs::symlink_metadata(options.root.join("LAYOUT"))?;
         if !layout.file_type().is_file() { return Err(io::Error::other("not an existing deployment layout").into()); }
     }
-    if let Ok(metadata) = fs::symlink_metadata(&options.root) {
-        if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
-            return Err(io::Error::other("deployment root must be a directory, not a symlink").into());
-        }
+    if let Ok(metadata) = fs::symlink_metadata(&options.root)
+        && (metadata.file_type().is_symlink() || !metadata.file_type().is_dir())
+    {
+        return Err(io::Error::other("deployment root must be a directory, not a symlink").into());
     }
     // The local operator process is the trust boundary. The principal is an audit label, not
     // remote authentication. Codec work and pixel comparisons have separate explicit ceilings.

@@ -212,6 +212,8 @@
     "crates/fss-reference/src/ingest/recorded_decode/tests.rs": "support",
     "crates/fss-reference/src/ingest/recorded_event/mod.rs": "support",
     "crates/fss-reference/src/ingest/recorded_event/tests.rs": "support",
+    "crates/fss-reference/src/ingest/recorded_watch.rs": "support",
+    "crates/fss-reference/src/ingest/recorded_watch/tests.rs": "support",
     "crates/fss-reference/src/ingest/recording_pipeline.rs": "support",
     "crates/fss-reference/src/ingest/recording_pipeline/sampling.rs": "support",
     "crates/fss-reference/src/ingest/recording_pipeline/sampling/report.rs": "support",

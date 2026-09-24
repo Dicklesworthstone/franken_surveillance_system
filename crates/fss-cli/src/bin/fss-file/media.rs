@@ -293,7 +293,7 @@ fn run_motion(
     writeln!(out, "motion_decode_work_units={}", budget.used())?;
     writeln!(out, "motion_pixel_comparisons={}", detector.comparisons_used())?;
     if export.is_ok() { writeln!(out, "motion_report_sha256={}", ContentDigest::sha256(report.as_bytes()))?; }
-    if let Err(error) = result { return Err(error); }
+    result?;
     export?;
     Ok(())
 }
