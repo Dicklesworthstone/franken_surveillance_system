@@ -864,9 +864,9 @@ pub fn compute_numeric_policy_digest() -> ContentDigest {
 
 /// Deterministic topological node ordering via the model IR validator, matching the
 /// canonical graph walk used by `fss_model_ir` digest computation.
-fn topological_nodes<'a>(
-    graph: &'a ModelIrGraph,
-) -> Result<Vec<&'a fss_model_ir::GraphNode>, ReceiptVerificationError> {
+fn topological_nodes(
+    graph: &ModelIrGraph,
+) -> Result<Vec<&fss_model_ir::GraphNode>, ReceiptVerificationError> {
     let mut producer_map = std::collections::BTreeMap::new();
     for input in graph.inputs() {
         producer_map.insert(
@@ -966,12 +966,11 @@ pub fn compute_operator_trace_chain(
         encoder.text(node.op().stable_id());
 
         // Bind first output tensor content digest if present in outcome
-        if let Some(first_out) = node.outputs().first() {
-            if let Some(tensor) = outcome.get_output(first_out) {
-                if let Ok(t_digest) = tensor.content_digest() {
-                    encoder.digest(t_digest);
-                }
-            }
+        if let Some(first_out) = node.outputs().first()
+            && let Some(tensor) = outcome.get_output(first_out)
+            && let Ok(t_digest) = tensor.content_digest()
+        {
+            encoder.digest(t_digest);
         }
         current = ContentDigest::sha256(&encoder.finish());
     }

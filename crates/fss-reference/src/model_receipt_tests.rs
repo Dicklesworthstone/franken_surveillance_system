@@ -427,7 +427,7 @@ fn test_sentinel_refusal_by_content_digest_parse() -> Result<(), Box<dyn Error>>
 
     // Authentic sha256 must parse successfully
     let authentic = ContentDigest::sha256(b"authentic payload");
-    let parsed_auth = ContentDigest::parse(&authentic.to_text());
+    let parsed_auth = ContentDigest::parse(authentic.to_text());
     assert!(parsed_auth.is_ok());
 
     Ok(())
