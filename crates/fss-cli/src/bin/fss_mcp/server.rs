@@ -22,7 +22,11 @@ const TOOLS: &str = r#"{"tools":[
 ]}"#;
 
 #[derive(Clone, Copy, PartialEq)]
-enum Phase { New, AwaitingInitialized, Ready }
+enum Phase {
+    New,
+    AwaitingInitialized,
+    Ready,
+}
 
 pub(super) struct Server {
     root: OsString,
@@ -32,7 +36,11 @@ pub(super) struct Server {
 
 impl Server {
     pub(super) fn new(root: OsString, principal: String) -> Self {
-        Self { root, principal, phase: Phase::New }
+        Self {
+            root,
+            principal,
+            phase: Phase::New,
+        }
     }
 
     pub(super) fn handle(&mut self, text: &str) -> Option<String> {
@@ -49,7 +57,11 @@ impl Server {
             Err(()) => return Some(error("null", -32700, "Invalid or over-budget JSON")),
         };
         let Some(request) = value.object() else {
-            return Some(error("null", -32600, "A single JSON-RPC object is required"));
+            return Some(error(
+                "null",
+                -32600,
+                "A single JSON-RPC object is required",
+            ));
         };
         if request.get("jsonrpc").and_then(Value::text) != Some("2.0") {
             return Some(error("null", -32600, "Invalid JSON-RPC version"));
@@ -60,8 +72,10 @@ impl Server {
         let id = match request.get("id") {
             None => {
                 // Notifications never invoke a tool, including malformed tools/call notifications.
-                if method == "notifications/initialized" && self.phase == Phase::AwaitingInitialized
-                    && params(request).is_ok_and(|p| only(p, &["_meta"])) {
+                if method == "notifications/initialized"
+                    && self.phase == Phase::AwaitingInitialized
+                    && params(request).is_ok_and(|p| only(p, &["_meta"]))
+                {
                     self.phase = Phase::Ready;
                 }
                 return None;
@@ -91,16 +105,36 @@ impl Server {
     }
 
     fn initialize(&mut self, p: &BTreeMap<String, Value>) -> RpcResult {
-        if self.phase != Phase::New { return Err((-32600, "Already initialized")); }
-        if !only(p, &["protocolVersion", "capabilities", "clientInfo", "_meta"])
-            || p.get("protocolVersion").and_then(Value::text).is_none_or(str::is_empty)
-            || p.get("capabilities").and_then(Value::object).is_none() {
-            return Err((-32602, "Expected protocolVersion, capabilities and clientInfo"));
+        if self.phase != Phase::New {
+            return Err((-32600, "Already initialized"));
         }
-        let info = p.get("clientInfo").and_then(Value::object)
+        if !only(
+            p,
+            &["protocolVersion", "capabilities", "clientInfo", "_meta"],
+        ) || p
+            .get("protocolVersion")
+            .and_then(Value::text)
+            .is_none_or(str::is_empty)
+            || p.get("capabilities").and_then(Value::object).is_none()
+        {
+            return Err((
+                -32602,
+                "Expected protocolVersion, capabilities and clientInfo",
+            ));
+        }
+        let info = p
+            .get("clientInfo")
+            .and_then(Value::object)
             .ok_or((-32602, "Expected clientInfo object"))?;
-        if info.get("name").and_then(Value::text).is_none_or(str::is_empty)
-            || info.get("version").and_then(Value::text).is_none_or(str::is_empty) {
+        if info
+            .get("name")
+            .and_then(Value::text)
+            .is_none_or(str::is_empty)
+            || info
+                .get("version")
+                .and_then(Value::text)
+                .is_none_or(str::is_empty)
+        {
             return Err((-32602, "Expected clientInfo name and version"));
         }
         self.phase = Phase::AwaitingInitialized;
@@ -115,8 +149,13 @@ impl Server {
         p: &BTreeMap<String, Value>,
         execute: &mut impl FnMut(FssCommand) -> (String, ExitIdentity),
     ) -> RpcResult {
-        if !only(p, &["name", "arguments", "_meta"]) { return Err((-32602, "Unexpected tool call field")); }
-        let name = p.get("name").and_then(Value::text).ok_or((-32602, "Expected tool name"))?;
+        if !only(p, &["name", "arguments", "_meta"]) {
+            return Err((-32602, "Unexpected tool call field"));
+        }
+        let name = p
+            .get("name")
+            .and_then(Value::text)
+            .ok_or((-32602, "Expected tool name"))?;
         let empty = BTreeMap::new();
         let args = match p.get("arguments") {
             None => &empty,
@@ -125,11 +164,15 @@ impl Server {
         };
         let mut argv = match name {
             "session_orient" => {
-                if !only(args, &["view", "budget_tokens"]) { return Err((-32602, "Unexpected orientation argument")); }
+                if !only(args, &["view", "budget_tokens"]) {
+                    return Err((-32602, "Unexpected orientation argument"));
+                }
                 let mut argv = self.base_args("orient");
                 if let Some(view) = args.get("view") {
                     let view = view.text().ok_or((-32602, "Expected view string"))?;
-                    if !matches!(view, "pulse" | "brief" | "epistemic_map") { return Err((-32602, "Unsupported orientation view")); }
+                    if !matches!(view, "pulse" | "brief" | "epistemic_map") {
+                        return Err((-32602, "Unsupported orientation view"));
+                    }
                     argv.push(format!("--view={view}").into());
                 }
                 if let Some(value) = args.get("budget_tokens") {
@@ -139,8 +182,12 @@ impl Server {
                 argv
             }
             "explain" => {
-                if !only(args, &["event_id"]) { return Err((-32602, "Unexpected explanation argument")); }
-                let event = args.get("event_id").and_then(Value::text)
+                if !only(args, &["event_id"]) {
+                    return Err((-32602, "Unexpected explanation argument"));
+                }
+                let event = args
+                    .get("event_id")
+                    .and_then(Value::text)
                     .filter(|s| !s.is_empty() && s.len() <= 128)
                     .ok_or((-32602, "Expected event_id string of 1..128 bytes"))?;
                 let mut argv = self.base_args("explain");
@@ -175,7 +222,9 @@ impl Server {
                 argv
             }
             "doctor" => {
-                if !args.is_empty() { return Err((-32602, "Doctor accepts no scope overrides")); }
+                if !args.is_empty() {
+                    return Err((-32602, "Doctor accepts no scope overrides"));
+                }
                 self.base_args("doctor")
             }
             _ => return Err((-32602, "Unknown or unavailable tool")),
@@ -183,10 +232,16 @@ impl Server {
         if name != "doctor" {
             argv.push(format!("--principal={}", self.principal).into());
         }
-        let command = parse_fss_args(argv).map_err(|_| (-32602, "Arguments refused by the canonical CLI parser"))?;
+        let command = parse_fss_args(argv)
+            .map_err(|_| (-32602, "Arguments refused by the canonical CLI parser"))?;
         // A final typed clamp remains even if command parsing gains new operations.
-        if !matches!(command, FssCommand::Orient(_) | FssCommand::Explain(_)
-            | FssCommand::Follow(_) | FssCommand::Doctor(_)) {
+        if !matches!(
+            command,
+            FssCommand::Orient(_)
+                | FssCommand::Explain(_)
+                | FssCommand::Follow(_)
+                | FssCommand::Doctor(_)
+        ) {
             return Err((-32603, "Read-only command boundary refused dispatch"));
         }
         let (output, exit) = execute(command);
@@ -194,7 +249,12 @@ impl Server {
     }
 
     fn base_args(&self, command: &str) -> Vec<OsString> {
-        vec![command.into(), "--json".into(), "--root".into(), self.root.clone()]
+        vec![
+            command.into(),
+            "--json".into(),
+            "--root".into(),
+            self.root.clone(),
+        ]
     }
 }
 
@@ -215,14 +275,22 @@ fn only(fields: &BTreeMap<String, Value>, names: &[&str]) -> bool {
 }
 
 fn positive_integer(value: &Value, maximum: u64) -> Result<u64, (i32, &'static str)> {
-    let Value::Number(text) = value else { return Err((-32602, "Expected positive integer")); };
-    if !text.bytes().all(|byte| byte.is_ascii_digit()) { return Err((-32602, "Expected positive integer")); }
-    text.parse::<u64>().ok().filter(|n| *n > 0 && *n <= maximum)
+    let Value::Number(text) = value else {
+        return Err((-32602, "Expected positive integer"));
+    };
+    if !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err((-32602, "Expected positive integer"));
+    }
+    text.parse::<u64>()
+        .ok()
+        .filter(|n| *n > 0 && *n <= maximum)
         .ok_or((-32602, "Integer is outside the admitted budget"))
 }
 
 fn bounded_text(value: Option<&Value>, maximum: usize) -> Result<&str, (i32, &'static str)> {
-    value.and_then(Value::text).filter(|s| !s.is_empty() && s.len() <= maximum)
+    value
+        .and_then(Value::text)
+        .filter(|s| !s.is_empty() && s.len() <= maximum)
         .ok_or((-32602, "Expected a non-empty bounded token string"))
 }
 
@@ -231,17 +299,30 @@ fn integer_id(text: &str) -> bool {
     text.parse::<i64>().is_ok() && !text.contains(['.', 'e', 'E'])
 }
 
-fn quote(text: &str) -> String { format!("\"{}\"", escape_json_str(text)) }
+fn quote(text: &str) -> String {
+    format!("\"{}\"", escape_json_str(text))
+}
 
 fn error(id: &str, code: i32, message: &str) -> String {
-    format!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"error\":{{\"code\":{code},\"message\":{}}}}}", quote(message))
+    format!(
+        "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"error\":{{\"code\":{code},\"message\":{}}}}}",
+        quote(message)
+    )
 }
 
 fn tool_result(output: &str, failed: bool) -> String {
     let (output, failed) = if output.len() > MAX_TOOL_OUTPUT_BYTES {
-        ("FSS response exceeded the MCP byte ceiling. No response was truncated and no effect was started. Request a smaller view or page.", true)
-    } else { (output, failed) };
-    format!("{{\"content\":[{{\"type\":\"text\",\"text\":{}}}],\"isError\":{failed}}}", quote(output))
+        (
+            "FSS response exceeded the MCP byte ceiling. No response was truncated and no effect was started. Request a smaller view or page.",
+            true,
+        )
+    } else {
+        (output, failed)
+    };
+    format!(
+        "{{\"content\":[{{\"type\":\"text\",\"text\":{}}}],\"isError\":{failed}}}",
+        quote(output)
+    )
 }
 
 fn read_frame(reader: &mut impl BufRead) -> io::Result<Option<Vec<u8>>> {
@@ -249,20 +330,31 @@ fn read_frame(reader: &mut impl BufRead) -> io::Result<Option<Vec<u8>>> {
     loop {
         let available = reader.fill_buf()?;
         if available.is_empty() {
-            return if bytes.is_empty() { Ok(None) }
-                else { Err(io::Error::new(io::ErrorKind::InvalidData, "unterminated MCP frame")) };
+            return if bytes.is_empty() {
+                Ok(None)
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "unterminated MCP frame",
+                ))
+            };
         }
         let newline = available.iter().position(|byte| *byte == b'\n');
         let take = newline.map_or(available.len(), |at| at + 1);
         if take > MAX_FRAME_BYTES - bytes.len() {
             // Terminate rather than allocate or drain an unbounded attacker-controlled line.
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "MCP frame exceeds byte ceiling"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "MCP frame exceeds byte ceiling",
+            ));
         }
         bytes.extend_from_slice(&available[..take]);
         reader.consume(take);
         if newline.is_some() {
             bytes.pop();
-            if bytes.last() == Some(&b'\r') { bytes.pop(); }
+            if bytes.last() == Some(&b'\r') {
+                bytes.pop();
+            }
             return Ok(Some(bytes));
         }
     }
@@ -294,11 +386,20 @@ mod tests {
     const INIT: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#;
     const READY: &str = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
 
-    fn server() -> Server { Server::new("/owner/deployment".into(), "principal:local-operator".to_owned()) }
+    fn server() -> Server {
+        Server::new(
+            "/owner/deployment".into(),
+            "principal:local-operator".to_owned(),
+        )
+    }
 
     fn ready() -> Server {
         let mut server = server();
-        assert!(server.handle(INIT).is_some_and(|r| r.contains(PROTOCOL_VERSION)));
+        assert!(
+            server
+                .handle(INIT)
+                .is_some_and(|r| r.contains(PROTOCOL_VERSION))
+        );
         assert_eq!(server.handle(READY), None);
         server
     }
@@ -308,11 +409,23 @@ mod tests {
         let mut server = server();
         let list = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
         assert!(server.handle(list).is_some_and(|r| r.contains("-32002")));
-        assert!(server.handle(INIT).is_some_and(|r| r.contains("capabilities")));
+        assert!(
+            server
+                .handle(INIT)
+                .is_some_and(|r| r.contains("capabilities"))
+        );
         assert!(server.handle(list).is_some_and(|r| r.contains("-32002")));
         assert_eq!(server.handle(READY), None);
-        assert!(server.handle(list).is_some_and(|r| r.contains("session_orient")));
-        assert!(server.handle(INIT).is_some_and(|r| r.contains("Already initialized")));
+        assert!(
+            server
+                .handle(list)
+                .is_some_and(|r| r.contains("session_orient"))
+        );
+        assert!(
+            server
+                .handle(INIT)
+                .is_some_and(|r| r.contains("Already initialized"))
+        );
         for name in ["session_orient", "session_follow", "explain", "doctor"] {
             assert!(fss_cli::lookup_by_mcp_tool_name(name).is_some());
         }
@@ -330,7 +443,10 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"session_orient","arguments":{"root":"/elsewhere"}}}"#,
             r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"session_orient","arguments":{"principal":"principal:other"}}}"#,
         ] {
-            let _ = server.handle_with(text, |_| { calls += 1; ("{}".to_owned(), ExitIdentity::SUCCESS) });
+            let _ = server.handle_with(text, |_| {
+                calls += 1;
+                ("{}".to_owned(), ExitIdentity::SUCCESS)
+            });
         }
         assert_eq!(calls, 0);
     }
@@ -349,7 +465,10 @@ mod tests {
                 (envelope.to_owned(), ExitIdentity::SUCCESS)
             },
         );
-        assert!(response.is_some_and(|r| r.contains(&quote(envelope)) && r.contains("\"isError\":false")));
+        assert!(
+            response
+                .is_some_and(|r| r.contains(&quote(envelope)) && r.contains("\"isError\":false"))
+        );
     }
 
     #[test]
@@ -360,23 +479,48 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":1.5,"method":"ping"}"#,
             r#"{"jsonrpc":"2.0","id":true,"method":"ping"}"#,
             r#"[]"#,
-        ] { assert!(server.handle(text).is_some_and(|r| r.contains("-32600"))); }
-        assert!(server.handle(r#"{"jsonrpc":"2.0","id":9007199254740993,"method":"ping"}"#)
-            .is_some_and(|r| r.contains("\"id\":9007199254740993")));
-        assert!(server.handle(r#"{"jsonrpc":"2.0","id":"a\"b","method":"ping"}"#)
-            .is_some_and(|r| r.contains(r#""id":"a\"b""#)));
-        assert!(server.handle(r#"{"id":1,"id":2}"#).is_some_and(|r| r.contains("-32700")));
+        ] {
+            assert!(server.handle(text).is_some_and(|r| r.contains("-32600")));
+        }
+        assert!(
+            server
+                .handle(r#"{"jsonrpc":"2.0","id":9007199254740993,"method":"ping"}"#)
+                .is_some_and(|r| r.contains("\"id\":9007199254740993"))
+        );
+        assert!(
+            server
+                .handle(r#"{"jsonrpc":"2.0","id":"a\"b","method":"ping"}"#)
+                .is_some_and(|r| r.contains(r#""id":"a\"b""#))
+        );
+        assert!(
+            server
+                .handle(r#"{"id":1,"id":2}"#)
+                .is_some_and(|r| r.contains("-32700"))
+        );
     }
 
     #[test]
     fn invalid_budget_or_flag_injection_never_reaches_backend() {
         let mut server = ready();
         let mut calls = 0;
-        for args in [r#"{"budget_tokens":0}"#, r#"{"budget_tokens":4097}"#,
-            r#"{"budget_tokens":1e2}"#, r#"{"budget_tokens":"128"}"#, r#"{"view":"--root=/other"}"#] {
-            let text = format!(r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"session_orient","arguments":{args}}}}}"#);
-            assert!(server.handle_with(&text, |_| { calls += 1; ("{}".to_owned(), ExitIdentity::SUCCESS) })
-                .is_some_and(|r| r.contains("-32602")));
+        for args in [
+            r#"{"budget_tokens":0}"#,
+            r#"{"budget_tokens":4097}"#,
+            r#"{"budget_tokens":1e2}"#,
+            r#"{"budget_tokens":"128"}"#,
+            r#"{"view":"--root=/other"}"#,
+        ] {
+            let text = format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"session_orient","arguments":{args}}}}}"#
+            );
+            assert!(
+                server
+                    .handle_with(&text, |_| {
+                        calls += 1;
+                        ("{}".to_owned(), ExitIdentity::SUCCESS)
+                    })
+                    .is_some_and(|r| r.contains("-32602"))
+            );
         }
         assert_eq!(calls, 0);
     }
@@ -388,7 +532,9 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"explain","arguments":{"event_id":"event:missing"}}}"#,
             |_| (r#"{"error_id":"ERR-AGENT-EVENT-NOT-FOUND-001"}"#.to_owned(), ExitIdentity::RUNTIME_FAILURE),
         );
-        assert!(response.is_some_and(|r| r.contains("ERR-AGENT-EVENT-NOT-FOUND-001") && r.contains("\"isError\":true")));
+        assert!(response.is_some_and(
+            |r| r.contains("ERR-AGENT-EVENT-NOT-FOUND-001") && r.contains("\"isError\":true")
+        ));
         let bounded = tool_result(&"x".repeat(MAX_TOOL_OUTPUT_BYTES + 1), false);
         assert!(bounded.len() < 1024 && bounded.contains("\"isError\":true"));
     }
@@ -397,9 +543,16 @@ mod tests {
     fn framing_is_bounded_and_never_accepts_partial_requests() {
         assert!(read_frame(&mut io::Cursor::new(b"{}".to_vec())).is_err());
         assert!(read_frame(&mut io::Cursor::new(vec![b'x'; MAX_FRAME_BYTES + 1])).is_err());
-        assert_eq!(read_frame(&mut io::Cursor::new(b"{}\r\n".to_vec())).ok(), Some(Some(b"{}".to_vec())));
-        assert_eq!(read_frame(&mut io::Cursor::new(Vec::<u8>::new())).ok(), Some(None));
-        let input = format!("{INIT}\n{READY}\n{{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}}\n");
+        assert_eq!(
+            read_frame(&mut io::Cursor::new(b"{}\r\n".to_vec())).ok(),
+            Some(Some(b"{}".to_vec()))
+        );
+        assert_eq!(
+            read_frame(&mut io::Cursor::new(Vec::<u8>::new())).ok(),
+            Some(None)
+        );
+        let input =
+            format!("{INIT}\n{READY}\n{{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}}\n");
         let mut output = Vec::new();
         assert!(serve(&mut server(), io::Cursor::new(input), &mut output).is_ok());
         assert_eq!(output.iter().filter(|byte| **byte == b'\n').count(), 2);
@@ -410,8 +563,11 @@ mod tests {
         let mut server = ready();
         let anchor = format!("anchor:{}:0:none:{}", "a".repeat(16), "b".repeat(64));
         let cursor = "continuation:exact-page-2";
-        let request = format!(r#"{{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{{"name":"session_follow","arguments":{{"since":{},"view":"brief","max_entries":1,"continuation":{}}}}}}}"#,
-            quote(&anchor), quote(cursor));
+        let request = format!(
+            r#"{{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{{"name":"session_follow","arguments":{{"since":{},"view":"brief","max_entries":1,"continuation":{}}}}}}}"#,
+            quote(&anchor),
+            quote(cursor)
+        );
         let envelope = r#"{"classes":["coverage_loss","external_effect_uncertainty"],"continuation":"continuation:exact-page-3","completeness":"partial"}"#;
         let mut called = false;
         let response = server.handle_with(&request, |command| {
@@ -427,7 +583,10 @@ mod tests {
         });
         assert!(called);
         assert!(response.is_some_and(|r| r.contains(&quote(envelope))));
-        assert_eq!(MAX_PAGE_ENTRIES, u64::from(fss_reference::agent_follow::MAX_FOLLOW_ENTRIES));
+        assert_eq!(
+            MAX_PAGE_ENTRIES,
+            u64::from(fss_reference::agent_follow::MAX_FOLLOW_ENTRIES)
+        );
     }
 
     #[test]
@@ -435,11 +594,19 @@ mod tests {
         let mut server = ready();
         let anchor = format!("anchor:{}:0:none:{}", "a".repeat(16), "b".repeat(64));
         let mut calls = 0;
-        for arguments in ["{}".to_owned(), r#"{"since":"latest"}"#.to_owned(),
-            format!(r#"{{"since":{},"continuation":"--root=/other"}}"#, quote(&anchor)),
+        for arguments in [
+            "{}".to_owned(),
+            r#"{"since":"latest"}"#.to_owned(),
+            format!(
+                r#"{{"since":{},"continuation":"--root=/other"}}"#,
+                quote(&anchor)
+            ),
             format!(r#"{{"since":{},"max_entries":4097}}"#, quote(&anchor)),
-            format!(r#"{{"since":{},"view":"epistemic_map"}}"#, quote(&anchor))] {
-            let request = format!(r#"{{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{{"name":"session_follow","arguments":{arguments}}}}}"#);
+            format!(r#"{{"since":{},"view":"epistemic_map"}}"#, quote(&anchor)),
+        ] {
+            let request = format!(
+                r#"{{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{{"name":"session_follow","arguments":{arguments}}}}}"#
+            );
             let response = server.handle_with(&request, |_| {
                 calls += 1;
                 ("{}".to_owned(), ExitIdentity::SUCCESS)
@@ -457,9 +624,15 @@ mod tests {
             |command| {
                 assert!(matches!(&command, FssCommand::Doctor(_)));
                 if let FssCommand::Doctor(args) = command {
-                    assert_eq!(args.root, Some(std::path::PathBuf::from("/owner/deployment")));
+                    assert_eq!(
+                        args.root,
+                        Some(std::path::PathBuf::from("/owner/deployment"))
+                    );
                 }
-                (r#"{"verdict":"attention_required"}"#.to_owned(), ExitIdentity::DOCTOR_ATTENTION_REQUIRED)
+                (
+                    r#"{"verdict":"attention_required"}"#.to_owned(),
+                    ExitIdentity::DOCTOR_ATTENTION_REQUIRED,
+                )
             },
         );
         assert!(response.is_some_and(|r| r.contains("attention_required") && r.contains("\"isError\":true")));
@@ -468,14 +641,22 @@ mod tests {
     #[test]
     fn negotiation_and_bad_initialization_do_not_grant_dispatch() {
         let mut server = server();
-        assert!(server.handle(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#)
-            .is_some_and(|r| r.contains("-32602")));
+        assert!(
+            server
+                .handle(r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#)
+                .is_some_and(|r| r.contains("-32602"))
+        );
         assert_eq!(server.handle(READY), None);
-        assert!(server.handle(&INIT.replace(PROTOCOL_VERSION, "2099-01-01"))
-            .is_some_and(|r| r.contains(PROTOCOL_VERSION) && !r.contains("2099-01-01")));
+        assert!(
+            server
+                .handle(&INIT.replace(PROTOCOL_VERSION, "2099-01-01"))
+                .is_some_and(|r| r.contains(PROTOCOL_VERSION) && !r.contains("2099-01-01"))
+        );
         assert_eq!(server.handle(READY), None);
-        assert!(server.handle(r#"{"jsonrpc":"2.0","id":8,"method":"resources/list"}"#)
-            .is_some_and(|r| r.contains("-32601")));
+        assert!(
+            server
+                .handle(r#"{"jsonrpc":"2.0","id":8,"method":"resources/list"}"#)
+                .is_some_and(|r| r.contains("-32601"))
+        );
     }
-
 }

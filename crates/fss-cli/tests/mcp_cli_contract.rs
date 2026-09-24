@@ -24,7 +24,8 @@ struct Directory(PathBuf);
 impl Directory {
     fn new(name: &str) -> TestResult<Self> {
         for attempt in 0..100 {
-            let path = std::env::temp_dir().join(format!("fss-mcp-{name}-{}-{attempt}", std::process::id()));
+            let path = std::env::temp_dir()
+                .join(format!("fss-mcp-{name}-{}-{attempt}", std::process::id()));
             match fs::create_dir(&path) {
                 Ok(()) => return Ok(Self(path)),
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -49,32 +50,50 @@ impl Directory {
             anchor_universe: ContentDigest::sha256(b"mcp-contract"),
             generation: 1,
         })?;
-        let cx = ReplayCx::new(ReplayIoAuthority::from_context_authority(&authority, self.0.join("cx"))?);
+        let cx = ReplayCx::new(ReplayIoAuthority::from_context_authority(
+            &authority,
+            self.0.join("cx"),
+        )?);
         drop(ReferenceDeployment::open(&root, "site:mcp-contract", &cx)?);
         Ok(root.canonicalize()?)
     }
 }
 
 impl Drop for Directory {
-    fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
 }
 
-fn quote(text: &str) -> String { format!("\"{}\"", escape_json_str(text)) }
+fn quote(text: &str) -> String {
+    format!("\"{}\"", escape_json_str(text))
+}
 
 fn call(id: u64, name: &str, arguments: &str) -> String {
-    format!(r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":{},"arguments":{arguments}}}}}"#, quote(name))
+    format!(
+        r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":{},"arguments":{arguments}}}}}"#,
+        quote(name)
+    )
 }
 
 fn cli(root: &Path, command: &str, extra: &[&str]) -> TestResult<(String, ExitIdentity)> {
-    let mut args: Vec<OsString> = vec![command.into(), "--json".into(), "--root".into(), root.as_os_str().to_owned()];
+    let mut args: Vec<OsString> = vec![
+        command.into(),
+        "--json".into(),
+        "--root".into(),
+        root.as_os_str().to_owned(),
+    ];
     args.extend(extra.iter().map(OsString::from));
     Ok(execute_fss_with_exit(parse_fss_args(args)?))
 }
 
 fn exchange(root: &Path, requests: &str) -> TestResult<Output> {
     let mut process = Command::new(env!("CARGO_BIN_EXE_fss-mcp"))
-        .arg("--root").arg(root)
-        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+        .arg("--root")
+        .arg(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .spawn()?;
     let mut input = process.stdin.take().ok_or("missing stdin")?;
     input.write_all(requests.as_bytes())?;
@@ -91,7 +110,9 @@ fn snapshot(root: &Path) -> TestResult<BTreeMap<PathBuf, (bool, Vec<u8>)>> {
         let relative = path.strip_prefix(root)?.to_path_buf();
         if metadata.is_dir() {
             result.insert(relative, (true, Vec::new()));
-            for entry in fs::read_dir(&path)? { pending.push(entry?.path()); }
+            for entry in fs::read_dir(&path)? {
+                pending.push(entry?.path());
+            }
         } else if metadata.is_file() {
             result.insert(relative, (false, fs::read(path)?));
         } else {
@@ -103,7 +124,10 @@ fn snapshot(root: &Path) -> TestResult<BTreeMap<PathBuf, (bool, Vec<u8>)>> {
 
 /// Tokens have no JSON escapes. Validate the extracted token with the actual semantic parser.
 fn orientation_anchor(envelope: &str) -> TestResult<&str> {
-    let start = envelope.find("\"anchor:").ok_or("orientation emitted no anchor token")? + 1;
+    let start = envelope
+        .find("\"anchor:")
+        .ok_or("orientation emitted no anchor token")?
+        + 1;
     let tail = &envelope[start..];
     let end = tail.find('"').ok_or("unterminated anchor token")?;
     let token = &tail[..end];
@@ -123,20 +147,37 @@ fn actual_stdio_reads_match_cli_and_leave_all_deployment_bytes_unchanged() -> Te
     let follow = cli(&root, "follow", &["--since", anchor, "--max-entries", "1"])?;
     let explain = cli(&root, "explain", &["--event-id", "event:missing"])?;
     let doctor = cli(&root, "doctor", &[])?;
-    let requests = format!("{INIT}\n{READY}\n{}\n{}\n{}\n{}\n",
+    let requests = format!(
+        "{INIT}\n{READY}\n{}\n{}\n{}\n{}\n",
         call(2, "session_orient", r#"{"view":"pulse"}"#),
-        call(3, "session_follow", &format!(r#"{{"since":{},"max_entries":1}}"#, quote(anchor))),
+        call(
+            3,
+            "session_follow",
+            &format!(r#"{{"since":{},"max_entries":1}}"#, quote(anchor))
+        ),
         call(4, "explain", r#"{"event_id":"event:missing"}"#),
-        call(5, "doctor", "{}"));
+        call(5, "doctor", "{}")
+    );
     let output = exchange(&root, &requests)?;
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(output.stderr.is_empty());
     let text = String::from_utf8(output.stdout)?;
     let lines: Vec<_> = text.lines().collect();
-    assert_eq!(lines.len(), 5, "one initialize response and four tool responses; no notification reply");
+    assert_eq!(
+        lines.len(),
+        5,
+        "one initialize response and four tool responses; no notification reply"
+    );
     for (line, (semantic, exit)) in lines.iter().skip(1).zip([orient, follow, explain, doctor]) {
         // Exact text equality after MCP string encoding, not an approximation of selected fields.
-        assert!(line.contains(&format!("\"text\":{}", quote(&semantic))), "{line}");
+        assert!(
+            line.contains(&format!("\"text\":{}", quote(&semantic))),
+            "{line}"
+        );
         assert!(line.contains(&format!("\"isError\":{}", exit.code != 0)));
     }
     assert_eq!(snapshot(&root)?, before);
@@ -151,11 +192,22 @@ fn a_wrong_stream_cursor_is_the_same_typed_refusal_over_mcp() -> TestResult {
     let (orientation, _) = cli(&root, "orient", &[])?;
     let anchor = orientation_anchor(&orientation)?;
     let cursor = "continuation:unknown-stream";
-    let (expected, exit) = cli(&root, "follow", &["--since", anchor, "--continuation", cursor])?;
+    let (expected, exit) = cli(
+        &root,
+        "follow",
+        &["--since", anchor, "--continuation", cursor],
+    )?;
     assert_ne!(exit.code, 0);
     assert!(expected.contains("ERR-AGENT-FOLLOW-CONTINUATION-001"));
-    let args = format!(r#"{{"since":{},"continuation":{}}}"#, quote(anchor), quote(cursor));
-    let output = exchange(&root, &format!("{INIT}\n{READY}\n{}\n", call(2, "session_follow", &args)))?;
+    let args = format!(
+        r#"{{"since":{},"continuation":{}}}"#,
+        quote(anchor),
+        quote(cursor)
+    );
+    let output = exchange(
+        &root,
+        &format!("{INIT}\n{READY}\n{}\n", call(2, "session_follow", &args)),
+    )?;
     assert!(output.status.success());
     let text = String::from_utf8(output.stdout)?;
     assert!(text.contains(&format!("\"text\":{}", quote(&expected))));
@@ -169,11 +221,13 @@ fn notifications_scope_overrides_and_mutations_do_not_modify_the_root() -> TestR
     let directory = Directory::new("authority")?;
     let root = directory.deployment()?;
     let before = snapshot(&root)?;
-    let requests = format!("{INIT}\n{READY}\n{}\n{}\n{}\n{}\n",
+    let requests = format!(
+        "{INIT}\n{READY}\n{}\n{}\n{}\n{}\n",
         r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"session_orient"}}"#,
         call(2, "commit", "{}"),
         call(3, "session_open", r#"{"mission":"mutate"}"#),
-        call(4, "doctor", r#"{"root":"/other"}"#));
+        call(4, "doctor", r#"{"root":"/other"}"#)
+    );
     let output = exchange(&root, &requests)?;
     assert!(output.status.success());
     let text = String::from_utf8(output.stdout)?;
