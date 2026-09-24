@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! rtpdump import publishes source capsules and preserves malformed or wrongly bound originals.
 mod rtpdump_support;
 use rtpdump_support::*;
 use fss_core::{ContentDigest,SensorId,StreamId,TimestampNs};

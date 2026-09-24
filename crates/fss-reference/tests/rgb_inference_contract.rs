@@ -279,7 +279,7 @@ fn import_limit_budget_and_cancellation_refusals_leave_sources_retryable() -> Te
     let data: Vec<u8> = parameters()["weights"].iter().flat_map(|value| value.to_le_bytes()).collect();
     let weights = source_weights("F32", "weights", &data); let cx = import_context()?;
     let request = weight_request(&graph, &weights, WeightFloatPolicy::F32Only);
-    let mut small = ImportLimits::default(); small.maximum_expanded_bytes = 23;
+    let small = ImportLimits { maximum_expanded_bytes: 23, ..ImportLimits::default() };
     assert!(ImportedRgbModel::build(&request, small, &mut ImportBudget::new(100_000_000), &cx, &ScalarExecCx::new()).is_err());
     assert!(matches!(ImportedRgbModel::build(&request, ImportLimits::default(), &mut ImportBudget::new(0),
         &cx, &ScalarExecCx::new()), Err(RgbImportError::Import(ImportError::BudgetExceeded))));

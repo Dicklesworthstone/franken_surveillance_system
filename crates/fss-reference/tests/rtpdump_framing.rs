@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
+//! rtpdump framing: exact offsets, exact-prefix cuts, no resynchronization, and independent limits.
 use fss_reference::ingest::rtpdump::*;
+
+type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 fn header() -> Vec<u8> {
     let mut bytes = b"#!rtpplay1.0 0.0.0.0/0\n".to_vec();
@@ -14,22 +17,23 @@ fn record(bytes: &mut Vec<u8>, payload: &[u8], original: u16) {
 }
 
 #[test]
-fn exact_offsets_and_kind_do_not_guess_packet_validity() {
+fn exact_offsets_and_kind_do_not_guess_packet_validity() -> TestResult {
     let mut bytes = header();
     record(&mut bytes, &[0x80, 96, 0], 50);
     record(&mut bytes, &[0x80, 201, 0, 1, 0, 0, 0, 7], 0);
     record(&mut bytes, &[0x80; 12], 12);
-    let mut reader = RtpDumpReader::new(&bytes, RtpDumpLimits::default()).unwrap();
+    let mut reader = RtpDumpReader::new(&bytes, RtpDumpLimits::default())?;
     assert_eq!(reader.header_span(), 0..header().len());
     for (index, kind) in [RtpDumpKind::CapturedPrefix, RtpDumpKind::Rtcp, RtpDumpKind::Rtp].into_iter().enumerate() {
-        let item = reader.next_record().unwrap().unwrap();
+        let item = reader.next_record()?.ok_or("record missing")?;
         assert_eq!(item.index(), index);
         assert_eq!(item.kind(), kind);
         assert_eq!(item.packet(), &bytes[item.packet_span()]);
         assert_eq!(item.offset_ms(), 7);
     }
-    assert!(reader.next_record().unwrap().is_none());
+    assert!(reader.next_record()?.is_none());
     assert_eq!(reader.consumed_bytes(), bytes.len());
+    Ok(())
 }
 
 #[test]
@@ -50,7 +54,7 @@ fn every_cut_is_exact_prefix_or_explicit_failure() {
                     }
                     Err(error) => {
                         assert_eq!(error.span.end, cut);
-                        assert_eq!(reader.next_record().unwrap_err().fault, RtpDumpFault::Stopped);
+                        assert_eq!(reader.next_record().err().map(|e| e.fault), Some(RtpDumpFault::Stopped));
                         break;
                     }
                 }
@@ -60,26 +64,28 @@ fn every_cut_is_exact_prefix_or_explicit_failure() {
 }
 
 #[test]
-fn malformed_record_never_resynchronizes() {
+fn malformed_record_never_resynchronizes() -> TestResult {
     let mut bytes = header();
     bytes.extend_from_slice(&[0, 7, 0, 12, 0, 0, 0, 0]);
     record(&mut bytes, &[0x80; 12], 12);
-    let mut reader = RtpDumpReader::new(&bytes, RtpDumpLimits::default()).unwrap();
-    assert_eq!(reader.next_record().unwrap_err().fault, RtpDumpFault::RecordLength);
+    let mut reader = RtpDumpReader::new(&bytes, RtpDumpLimits::default())?;
+    assert_eq!(reader.next_record().err().map(|e| e.fault), Some(RtpDumpFault::RecordLength));
     assert_eq!(reader.records_read(), 0);
     assert_eq!(reader.consumed_bytes(), header().len());
-    assert_eq!(reader.next_record().unwrap_err().fault, RtpDumpFault::Stopped);
+    assert_eq!(reader.next_record().err().map(|e| e.fault), Some(RtpDumpFault::Stopped));
+    Ok(())
 }
 
 #[test]
-fn independent_limits_and_redaction() {
+fn independent_limits_and_redaction() -> TestResult {
     let mut bytes = b"#!rtpplay1.0 PRIVATE-ENDPOINT/55\n".to_vec();
     bytes.extend_from_slice(&[0; 16]);
     record(&mut bytes, b"PRIVATE-PAYLOAD", 15);
-    let mut reader = RtpDumpReader::new(&bytes, RtpDumpLimits::default()).unwrap();
-    let item = reader.next_record().unwrap();
+    let mut reader = RtpDumpReader::new(&bytes, RtpDumpLimits::default())?;
+    let item = reader.next_record()?;
     assert!(!format!("{reader:?} {item:?}").contains("PRIVATE"));
     assert!(RtpDumpReader::new(&bytes, RtpDumpLimits { max_input_bytes: bytes.len() - 1, ..RtpDumpLimits::default() }).is_err());
-    let mut reader = RtpDumpReader::new(&bytes, RtpDumpLimits { max_packet_bytes: 13, ..RtpDumpLimits::default() }).unwrap();
-    assert_eq!(reader.next_record().unwrap_err().fault, RtpDumpFault::Limit);
+    let mut reader = RtpDumpReader::new(&bytes, RtpDumpLimits { max_packet_bytes: 13, ..RtpDumpLimits::default() })?;
+    assert_eq!(reader.next_record().err().map(|e| e.fault), Some(RtpDumpFault::Limit));
+    Ok(())
 }

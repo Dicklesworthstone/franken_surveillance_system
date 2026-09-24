@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! RTSP Digest client challenge retries, CSeq/nonce advancement and bounded, non-extending expiry.
 use fss_reference::rtsp::{RtspEvent, RtspParser, RtspResponse};
 use fss_reference::rtsp::authentication::*;
 use fss_reference::rtsp::client::*;

@@ -268,7 +268,9 @@ fn parser_budget_failure_keeps_consumed_state_and_cannot_be_retried_as_fresh_inp
     let mut r = HttpWireReplay::new(&a, pin, HttpReplayLimits::default())?;
     assert_eq!(next(&mut r, &p)?, HttpReplayStep::PrefixVerified);
     assert!(matches!(next(&mut r, &p)?, HttpReplayStep::WireLoaded { .. }));
-    let error = r.step(access(&p, &NeverCancel, &mut work(), &mut DecodeBudget::new(0))).expect_err("parse budget should fail");
+    let Err(error) = r.step(access(&p, &NeverCancel, &mut work(), &mut DecodeBudget::new(0))) else {
+        return Err("parse budget should fail".into());
+    };
     assert!(matches!(error, HttpReplayError::Http(_)));
     let position = r.position(); assert_eq!(r.failure(), Some(error));
     assert_eq!(next(&mut r, &p), Err(error)); assert_eq!(r.position(), position);

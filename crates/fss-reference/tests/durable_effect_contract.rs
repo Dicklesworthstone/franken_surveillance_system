@@ -623,7 +623,7 @@ fn test_crash_after_commit_recovery_via_reconcile_failed() -> Result<(), Box<dyn
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, _, _, objects) = setup_alert_plan(&path, &ledger_path)?;
+    let (plan, _, _, _objects) = setup_alert_plan(&path, &ledger_path)?;
     let mut provider =
         ReferenceAlertProvider::with_provider_id("provider:test:durable:crash_commit_fail");
 
@@ -1248,7 +1248,7 @@ fn test_finding_f4_reconcile_alert_must_not_drop_provider_failure() -> Result<()
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, _, _, objects) = setup_alert_plan(&path, &ledger_path)?;
+    let (plan, _, _, _objects) = setup_alert_plan(&path, &ledger_path)?;
     let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:finding:fail_drop");
 
     // Session 1: Indeterminate with terminal provider failure
@@ -1523,7 +1523,7 @@ fn deliver_then_lose_process_journal(
     let lost_outcome = dispatch_reference_alert(
         plan,
         authority,
-        &objects,
+        objects,
         ReferenceProviderBehavior::Deliver,
         AlertDispatchTimes::new(TimestampNs(30_100), TimestampNs(30_200)),
         crashed_process_journal,

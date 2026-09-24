@@ -2156,7 +2156,10 @@ fn lf_crlf_terminator_is_not_recognized_and_poisons_unterminated_fss_0i0ue()
         poisoned.is_err(),
         "the unterminated header block must poison: {poisoned:?}"
     );
-    let err = poisoned.unwrap_err().to_string();
+    let Err(err) = poisoned else {
+        return Err("the unterminated header block must poison".into());
+    };
+    let err = err.to_string();
     assert!(
         err.contains("unterminated") || err.contains("header"),
         "expected the unterminated-header fault, got: {err}"

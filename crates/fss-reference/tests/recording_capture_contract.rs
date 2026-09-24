@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! Receiver-to-recording capture: byte-identical originals, explicit timing, and owned expiry.
 
 mod collector_support;
 use collector_support::*;

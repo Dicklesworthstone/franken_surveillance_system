@@ -112,6 +112,6 @@ pub fn nals() -> Vec<&'static [u8]> {
             start = Some(at + prefix); at += prefix;
         } else { at += 1; }
     }
-    if let Some(begin) = start { if begin < bytes.len() { out.push(&bytes[begin..]); } }
+    if let Some(begin) = start && begin < bytes.len() { out.push(&bytes[begin..]); }
     out
 }

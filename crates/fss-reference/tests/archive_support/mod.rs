@@ -31,7 +31,7 @@ pub fn owner(name: &str) -> Result<(std::path::PathBuf, LocalRootPublisher), Err
 }
 pub fn window(seq: u64, dts: u64) -> Result<PreparedRecording, Error> {
     let mut c = fixture::collector(CollectorLimits::default())?;
-    let sample = fixture::sample(seq, 90_000 + seq as u32 * 3600, true, seq % 2 == 0)?;
+    let sample = fixture::sample(seq, 90_000 + seq as u32 * 3600, true, seq.is_multiple_of(2))?;
     sample.source(&mut c, 1)?; fixture::accepted(c.push_picture(sample.timed(dts), 1))?;
     c.seal(2)?; c.take_ready().ok_or_else(|| "fixture produced no recording".into())
 }

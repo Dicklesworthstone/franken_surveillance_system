@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! rtpdump RTP replay into exact NAL units across probation, reordering, wrap and missing fragments.
 mod rtpdump_support;
 use rtpdump_support::*;
 use fss_packet::{H264Error, H264Status, RtcpMode, SequenceClass};

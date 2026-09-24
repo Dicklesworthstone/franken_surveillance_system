@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! Archive namespace, catalog paging and restart discovery; an unindexed range is never evidence of absence.
 mod archive_support;
 use archive_support::*;
 use fss_core::ContentDigest;
@@ -78,7 +79,7 @@ fn durable_unindexed_tail_is_recovered_without_pretending_it_has_a_catalog() -> 
     assert_eq!(s.windows().len(), 1); assert_eq!(s.indexed_windows(), 0);
     assert_eq!(s.unindexed_windows()[0].root(), a.manifest().root());
     let selected = s.select(3600..7200, ArchiveQueryLimits::default())?;
-    assert!(selected.ordinals().is_empty()); assert_eq!(selected.unindexed(), &[3600..7200]);
+    assert!(selected.ordinals().is_empty()); assert_eq!(selected.unindexed(), std::slice::from_ref(&(3600..7200)));
     Ok(())
 }
 #[test]

@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! Authenticated RTSP AVC negotiation and media under challenges without deadline extension.
 mod digest_media_support;
 use digest_media_support::*;
 use fss_packet::avc::{AvcAssemblyStep, AvcBoundary, AvcReceiveLimits, AvcReceivePoll};

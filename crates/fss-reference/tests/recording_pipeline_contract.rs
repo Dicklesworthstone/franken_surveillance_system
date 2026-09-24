@@ -138,8 +138,9 @@ fn cumulative_model_budget_stops_at_exact_prefix_and_retry_reuses_it() -> TestRe
     assert!(cost > 0);
     let mut f = fixture("partial")?;
     let mut limited = RecordingBudget::new(DecodeBudget::new(1_000_000_000), cost, AnalysisBudget::new(1_000_000, 1_000_000));
-    let error = run_recording(&mut f.deployment, &f.request, &f.model, &mut limited, &ScalarExecCx::new(), &f.cx)
-        .expect_err("second invocation cannot get a fresh work allowance");
+    let Err(error) = run_recording(&mut f.deployment, &f.request, &f.model, &mut limited, &ScalarExecCx::new(), &f.cx) else {
+        return Err("second invocation cannot get a fresh work allowance".into());
+    };
     assert_eq!(error.progress.stage, RecordingStage::Inference);
     assert_eq!(error.progress.next_segment, Some(1));
     assert_eq!(error.progress.completed.len(), 1);
@@ -164,8 +165,9 @@ fn cumulative_model_budget_stops_at_exact_prefix_and_retry_reuses_it() -> TestRe
 fn failed_execution_reservation_is_not_refunded_as_zero_work() -> TestResult {
     let mut f = fixture("reservation")?;
     let mut limited = RecordingBudget::new(DecodeBudget::new(1_000_000_000), 1, AnalysisBudget::new(1_000_000, 1_000_000));
-    let error = run_recording(&mut f.deployment, &f.request, &f.model, &mut limited, &ScalarExecCx::new(), &f.cx)
-        .expect_err("graph needs more than one work unit");
+    let Err(error) = run_recording(&mut f.deployment, &f.request, &f.model, &mut limited, &ScalarExecCx::new(), &f.cx) else {
+        return Err("graph needs more than one work unit".into());
+    };
     assert_eq!(error.progress.completed.len(), 0);
     assert_eq!(error.progress.new_decodes, 1);
     assert_eq!(limited.model_charged(), 1);
@@ -191,8 +193,9 @@ fn malformed_contracts_and_out_of_range_source_publish_nothing() -> TestResult {
             _ => request.maximum_tensor_bytes = 1,
         }
         let mut work = budget();
-        let error = run_recording(&mut f.deployment, &request, &f.model, &mut work, &ScalarExecCx::new(), &f.cx)
-            .expect_err("invalid request");
+        let Err(error) = run_recording(&mut f.deployment, &request, &f.model, &mut work, &ScalarExecCx::new(), &f.cx) else {
+            return Err("invalid request".into());
+        };
         assert_eq!(error.progress.stage, RecordingStage::Preflight);
         assert!(error.progress.completed.is_empty());
         assert_eq!(work.model_charged(), 0);
@@ -206,8 +209,9 @@ fn malformed_contracts_and_out_of_range_source_publish_nothing() -> TestResult {
 fn detector_budget_failure_keeps_all_runs_but_never_returns_a_partial_report() -> TestResult {
     let mut f = fixture("analysis-budget")?;
     let mut work = RecordingBudget::new(DecodeBudget::new(1_000_000_000), 1_000_000_000, AnalysisBudget::new(0, 0));
-    let error = run_recording(&mut f.deployment, &f.request, &f.model, &mut work, &ScalarExecCx::new(), &f.cx)
-        .expect_err("postprocessing needs explicit work");
+    let Err(error) = run_recording(&mut f.deployment, &f.request, &f.model, &mut work, &ScalarExecCx::new(), &f.cx) else {
+        return Err("postprocessing needs explicit work".into());
+    };
     assert_eq!(error.progress.stage, RecordingStage::Analysis);
     assert_eq!(error.progress.next_segment, None);
     assert_eq!(error.progress.completed.len(), 3);
@@ -228,8 +232,9 @@ fn cancelled_owner_or_executor_cannot_start_or_reuse_work() -> TestResult {
     assert!(run_recording(&mut f.deployment, &f.request, &f.model, &mut budget(), &exec, &f.cx).is_err());
     assert_eq!(*f.deployment.current_anchor(), before);
     f.cx.set_cancel_at_checkpoint("recording_pipeline:preflight");
-    let error = run_recording(&mut f.deployment, &f.request, &f.model, &mut budget(), &ScalarExecCx::new(), &f.cx)
-        .expect_err("cancelled owner");
+    let Err(error) = run_recording(&mut f.deployment, &f.request, &f.model, &mut budget(), &ScalarExecCx::new(), &f.cx) else {
+        return Err("cancelled owner".into());
+    };
     assert!(matches!(error.cause, RecordingError::Cancelled));
     assert_eq!(*f.deployment.current_anchor(), before);
     Ok(())
@@ -239,8 +244,9 @@ fn cancelled_owner_or_executor_cannot_start_or_reuse_work() -> TestResult {
 fn cancellation_after_inference_recovers_without_repeating_numeric_work() -> TestResult {
     let mut f = fixture("cancel-analysis")?;
     f.cx.set_cancel_at_checkpoint("recording_pipeline:analysis");
-    let error = run_recording(&mut f.deployment, &f.request, &f.model, &mut budget(), &ScalarExecCx::new(), &f.cx)
-        .expect_err("analysis boundary cancelled");
+    let Err(error) = run_recording(&mut f.deployment, &f.request, &f.model, &mut budget(), &ScalarExecCx::new(), &f.cx) else {
+        return Err("analysis boundary cancelled".into());
+    };
     assert_eq!(error.progress.stage, RecordingStage::Analysis);
     assert_eq!(error.progress.completed.len(), 3);
     let fresh = context(&f.dir.0.join("deployment"))?;
@@ -255,8 +261,9 @@ fn cancellation_after_inference_recovers_without_repeating_numeric_work() -> Tes
 fn interrupted_decode_root_resumes_then_completes_the_same_pipeline() -> TestResult {
     let mut f = fixture("decode-cut")?;
     f.cx.set_cancel_at_checkpoint(STAGE_RECORDED_DECODE_COMMIT);
-    let error = run_recording(&mut f.deployment, &f.request, &f.model, &mut budget(), &ScalarExecCx::new(), &f.cx)
-        .expect_err("cut between root and final receipt");
+    let Err(error) = run_recording(&mut f.deployment, &f.request, &f.model, &mut budget(), &ScalarExecCx::new(), &f.cx) else {
+        return Err("cut between root and final receipt".into());
+    };
     assert_eq!(error.progress.stage, RecordingStage::Decode);
     assert!(error.progress.completed.is_empty());
     drop(f.deployment);
@@ -277,8 +284,9 @@ fn missing_completed_pixels_are_not_silently_regenerated_by_retry() -> TestResul
     fs::remove_file(&path)?;
     let before = f.deployment.current_anchor().clone();
     let mut work = budget();
-    let error = run_recording(&mut f.deployment, &f.request, &f.model, &mut work, &ScalarExecCx::new(), &f.cx)
-        .expect_err("completion is not a cache miss when custody is missing");
+    let Err(error) = run_recording(&mut f.deployment, &f.request, &f.model, &mut work, &ScalarExecCx::new(), &f.cx) else {
+        return Err("completion is not a cache miss when custody is missing".into());
+    };
     assert_eq!(error.progress.stage, RecordingStage::Decode);
     assert_eq!(work.decode.used(), 0);
     assert_eq!(work.model_charged(), 0);
@@ -317,8 +325,9 @@ fn cached_runs_still_enforce_tensor_and_decoded_frame_bounds() -> TestResult {
     f.request.maximum_tensor_bytes = f.model.graph().inputs().iter().try_fold(0_usize, |sum, port| {
         Ok::<usize, fss_tensor::TensorError>(sum + port.shape().size_bytes(port.dtype())?)
     })?;
-    let refused = run_recording(&mut f.deployment, &f.request, &f.model, &mut budget(), &ScalarExecCx::new(), &f.cx)
-        .expect_err("cached intermediate/output accounting exceeds the input-only ceiling");
+    let Err(refused) = run_recording(&mut f.deployment, &f.request, &f.model, &mut budget(), &ScalarExecCx::new(), &f.cx) else {
+        return Err("cached intermediate/output accounting exceeds the input-only ceiling".into());
+    };
     assert_eq!(refused.progress.stage, RecordingStage::Inference);
     assert_eq!(*f.deployment.current_anchor(), before);
     Ok(())

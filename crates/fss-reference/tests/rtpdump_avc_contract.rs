@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! Recorded rtpdump AVC streams into source-mapped picture groups under reordering, duplicates and EOF.
 mod rtpdump_support;
 use rtpdump_support::*;
 use fss_packet::avc::{AvcAssemblyStep, AvcBoundary, AvcPictureGroup, AvcPps, AvcSps,

@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! Archive writer paging, backpressure, cancellation and restart indexing of the durable tail.
 mod archive_support;
 use archive_support::*;
 use fss_publication::{LocalRootPublisher, NeverCancel, PublishCancellation, PublishCutPoint};
