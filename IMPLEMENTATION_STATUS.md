@@ -24,8 +24,10 @@ synthetic scenes). None of it has been measured on real camera footage.
   (`fss-container`); H.264 pixel decode for Baseline, Main and High profile (CABAC and CAVLC,
   I/P/B slices in display order, 8x8 transform, scaling matrices, weighted prediction), bit-exact
   against FFmpeg on 31 fixtures (`fss-codec-h264`), wired into retained decode (`fss-file decode`
-  on Annex-B imports, ranges starting at an IDR). H.265, interlaced and 4:2:2/4:4:4/10-bit H.264
-  are not implemented, so H.265 cameras still cannot be analysed.
+  on Annex-B imports, ranges starting at an IDR). H.265/HEVC Main-profile pixel decode
+  (intra, P/B inter, deblocking, SAO, WPP, slices, scaling lists) is bit-exact against FFmpeg on 39
+  fixtures (`fss-codec-h265`) but NOT yet wired into ingest. Not implemented: HEVC Main 10/RExt,
+  tiles, dependent slices, long-term refs; interlaced and 4:2:2/4:4:4/10-bit H.264.
 - **Pipeline and evaluation:** `fss-event watch` runs decode -> foreground -> Kalman -> zone
   eventgen over a retained import and publishes approval-gated, unclassified, single-sensor
   candidates. `fss-event corroborate` associates two sensors' ground-zone entries (owner
