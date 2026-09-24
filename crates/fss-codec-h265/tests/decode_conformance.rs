@@ -221,6 +221,62 @@ oracle_test!(
     Order::Reordered
 );
 
+// ----- Stage 3: in-loop filters (deblocking, SAO) -----
+oracle_test!(filters_deblocking_ip_bit_exact, "f_qcif_deblock_ip");
+oracle_test!(
+    filters_deblocking_offsets_bit_exact,
+    "f_qcif_deblock_offsets"
+);
+oracle_test!(filters_sao_only_bit_exact, "f_mandel_sao_only");
+oracle_test!(
+    filters_full_b_pyramid_bit_exact,
+    "f_qcif_full_b",
+    Order::Reordered
+);
+oracle_test!(filters_cropped_bit_exact, "f_100x60_full", Order::Reordered);
+oracle_test!(
+    filters_cu_qp_chroma_offsets_bit_exact,
+    "f_qcif_cuqp_chroma_offsets"
+);
+oracle_test!(
+    filters_skip_transquant_bypass_bit_exact,
+    "f_64x64_lossless_filters"
+);
+oracle_test!(filters_slices_wavefront_bit_exact, "f_qcif_slices_filters");
+oracle_test!(
+    filters_constrained_intra_bit_exact,
+    "f_qcif_constrained_intra_filters"
+);
+oracle_test!(
+    filters_libx265_defaults_bit_exact,
+    "f_qcif_default",
+    Order::Reordered
+);
+oracle_test!(pcm_deblock_protected_bit_exact, "pcm_mixed_deblock");
+oracle_test!(pcm_deblock_filtered_bit_exact, "pcm_mixed_deblock_lf");
+
+/// With pcm_loop_filter_disabled_flag the deblocking filter must leave
+/// every PCM sample exactly as coded (generator pattern), while the
+/// neighbouring intra coding units may change.
+#[test]
+fn pcm_loop_filter_disabled_protects_samples() -> TestResult {
+    let pictures = decode_stream(include_bytes!("fixtures/decode/pcm_mixed_deblock.h265"))?;
+    let picture = &pictures[0];
+    for (k, x0, size) in [(0usize, 0usize, 16usize), (1, 16, 8)] {
+        for y in 0..size {
+            for x in 0..size {
+                let expected = (((x * 7 + y * 13 + k * 50) & 31) << 3) as u8;
+                assert_eq!(
+                    picture.luma()[y * 32 + x0 + x],
+                    expected,
+                    "luma k {k} ({x},{y})"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Independent of any decoder: the PCM coding units must reproduce the
 /// generator's sample pattern exactly (scripts/generate_h265_pcm_fixture.py:
 /// luma ((7x + 13y + 50k) & 31) << 3, chroma ((11x + 5y + 30k + 17c) &

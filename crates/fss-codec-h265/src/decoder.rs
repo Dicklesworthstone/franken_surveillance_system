@@ -6,11 +6,13 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use crate::ctu::{PicState, SliceDecoder, SliceInputs};
+use crate::deblock::{FilterParams, deblock};
 use crate::inter::{ColMv, ColPic, RefList};
 use crate::nal::{NalHeader, rbsp_from_ebsp, stop_bit_position, unit_type};
 use crate::params::{MAX_DPB, Pps, Sps, parse_pps, parse_sps, parse_vps_id};
 use crate::picture::{Frame, Picture, PictureMeta};
 use crate::residual::Scans;
+use crate::sao::apply as apply_sao;
 use crate::slice::{SliceHeader, SliceType, parse_slice_header};
 use crate::tables::transform_matrix;
 use crate::{DecodeError, UnsupportedFeature};
@@ -325,9 +327,6 @@ impl Decoder {
         if pending.slices > self.limits.max_slices_per_picture {
             return Err(DecodeError::Limit);
         }
-        if !header.deblocking_disabled || header.sao_luma || header.sao_chroma {
-            return Err(DecodeError::Unsupported(UnsupportedFeature::LoopFilter));
-        }
         let (sps, pps) = (Arc::clone(&pending.sps), Arc::clone(&pending.pps));
         let refs = self.reference_lists(&header, &pending)?;
         let col = self.collocated(&header, &refs)?;
@@ -557,7 +556,25 @@ impl Decoder {
         self.finish_picture(pending)
     }
 
-    fn finish_picture(&mut self, pending: Pending) -> Result<(), DecodeError> {
+    fn finish_picture(&mut self, mut pending: Pending) -> Result<(), DecodeError> {
+        // In-loop filters (clause 8.7): deblocking, then SAO on the
+        // deblocked picture; the filtered picture is both the output and
+        // the reference.
+        let state = &mut pending.state;
+        if state.slice_filters.iter().any(|f| !f.deblocking_disabled) {
+            let params = FilterParams {
+                cb_qp_offset: pending.pps.cb_qp_offset,
+                cr_qp_offset: pending.pps.cr_qp_offset,
+            };
+            let slices = state.slice_filters.clone();
+            deblock(state, &slices, params);
+        }
+        if pending.sps.sao_enabled {
+            let sao = std::mem::take(&mut state.sao);
+            let slices = state.slice_filters.clone();
+            let ctb_width = pending.sps.ctb_width() as usize;
+            apply_sao(state, &sao, pending.sps.ctb_log2, ctb_width, &slices);
+        }
         let meta = PictureMeta {
             poc: pending.poc,
             nal_type: pending.nal.unit_type,

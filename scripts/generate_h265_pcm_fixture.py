@@ -23,7 +23,10 @@ cabac_tables.rs (itself generated from FFmpeg's transcription); a wrong
 table would make the oracle decode disagree with the PCM pattern test.
 
 Usage: generate_h265_pcm_fixture.py <output-dir>
-Writes pcm_mixed_nodeblock.h265 (deblocking disabled in the PPS).
+Writes pcm_mixed_nodeblock.h265 (deblocking disabled in the PPS),
+pcm_mixed_deblock.h265 (deblocking on, pcm_loop_filter_disabled_flag 1:
+PCM samples are never filtered) and pcm_mixed_deblock_lf.h265 (deblocking
+on, pcm_loop_filter_disabled_flag 0: PCM edges are filtered).
 """
 import os
 import re
@@ -228,7 +231,7 @@ def vps():
     return nal(32, b.bytes())
 
 
-def sps():
+def sps(pcm_loop_filter_disabled):
     b = Bits()
     b.u(4, 0)        # sps_video_parameter_set_id
     b.u(3, 0)        # sps_max_sub_layers_minus1
@@ -260,7 +263,7 @@ def sps():
     b.u(4, PCM_BITS_C - 1)
     b.ue(0)          # log2_min_pcm_luma_coding_block_size_minus3 (8)
     b.ue(1)          # log2_diff_max_min_pcm_luma_coding_block_size (16)
-    b.u(1, 1)        # pcm_loop_filter_disabled_flag
+    b.u(1, 1 if pcm_loop_filter_disabled else 0)  # pcm_loop_filter_disabled_flag
     b.ue(0)          # num_short_term_ref_pic_sets
     b.u(1, 0)        # long_term_ref_pics_present_flag
     b.u(1, 0)        # sps_temporal_mvp_enabled_flag
@@ -372,8 +375,13 @@ def slice_nal():
 
 def main():
     out = sys.argv[1]
-    for name, disabled in (("pcm_mixed_nodeblock", True),):
-        stream = vps() + sps() + pps(disabled) + slice_nal()
+    variants = (
+        ("pcm_mixed_nodeblock", True, True),
+        ("pcm_mixed_deblock", False, True),
+        ("pcm_mixed_deblock_lf", False, False),
+    )
+    for name, deblocking_disabled, pcm_lf_disabled in variants:
+        stream = vps() + sps(pcm_lf_disabled) + pps(deblocking_disabled) + slice_nal()
         with open(os.path.join(out, name + ".h265"), "wb") as f:
             f.write(stream)
         print(f"wrote {name}.h265 ({len(stream)} bytes)")

@@ -78,6 +78,23 @@ Common parameters: `no-deblock=1:no-sao=1:wpp=0` (libx265 enables
 | `b_qcif_opengop` | 176x144 | 12 | `open-gop=1`, `keyint=6`: mid-stream CRA with decodable RASL pictures |
 | `b_qcif_wpp_slices` | 176x144 | 8 | B slices with wavefronts and two slices per picture |
 
+## Stage 3: in-loop filters (deblocking, SAO)
+
+| Stream | Size | Frames | Exercises |
+| --- | --- | --- | --- |
+| `f_qcif_deblock_ip` | 176x144 | 6 | deblocking only (I + P), QP 34 |
+| `f_qcif_deblock_offsets` | 176x144 | 4 | `deblock=-2,3`: PPS tc/beta offsets, CTB 16 |
+| `f_mandel_sao_only` | 128x96 | 4 | SAO only (`no-deblock=1`), `mandelbrot` |
+| `f_qcif_full_b` | 176x144 | 9 | deblocking + SAO, B pyramid, WPP |
+| `f_100x60_full` | 100x60 | 5 | deblocking + SAO at cropped picture edges, B frames |
+| `f_qcif_cuqp_chroma_offsets` | 176x144 | 4 | per-CU QP (tc/beta QP averaging), `cbqpoffs=-4:crqpoffs=3` |
+| `f_64x64_lossless_filters` | 64x64 | 3 | transquant bypass: filters must not touch bypass CUs |
+| `f_qcif_slices_filters` | 176x144 | 4 | two slices, `pps_loop_filter_across_slices_enabled_flag` 0, WPP |
+| `f_qcif_constrained_intra_filters` | 176x144 | 3 | CIP + filters, intra CUs in P slices |
+| `f_qcif_default` | 176x144 | 8 | libx265 defaults (preset medium: B frames, WPP, AMP off, SAO, deblocking) |
+| `pcm_mixed_deblock` | 32x16 | 1 | hand-assembled PCM, deblocking on, `pcm_loop_filter_disabled_flag` 1 |
+| `pcm_mixed_deblock_lf` | 32x16 | 1 | same with `pcm_loop_filter_disabled_flag` 0 (PCM edges filtered) |
+
 ## Negative fixtures (refused, never decoded)
 
 | Stream | Expected refusal |
