@@ -5,6 +5,8 @@
 //! semantics. This module only binds its complete output to retained source custody and the
 //! original capsule; it does not infer colour interpretation, orientation, timestamps or coverage.
 //! Binary format ownership and recovery rules are in docs/RETAINED_DECODE_WORKFLOW.md.
+//! Retained H.264 Annex-B imports decode through [`h264`], which binds each reconstructed
+//! picture to the same custody but, being inter-predicted, decodes contiguous IDR-led ranges.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -48,7 +50,7 @@ pub struct RecordedDecodeRequest {
 /// Typed refusal; unsuccessful decoding never returns partial pixels.
 #[derive(Debug)]
 pub enum RecordedDecodeError {
-    /// Source is not in the JPEG/MJPEG admitted subset.
+    /// Source media format is not admitted by the requested decode operation.
     UnsupportedMedia,
     /// A completed, currently published decode does not exist for this exact request.
     Unavailable,
@@ -72,12 +74,52 @@ pub enum RecordedDecodeError {
     Publication(LocalPublicationError),
     /// A stored object could not be verified or read.
     Spool(SpoolError),
+    /// The operator's component interpretation contradicts the media (H.264 Constrained
+    /// Baseline is always YCbCr 4:2:0; there is no monochrome coding to call `gray`).
+    InterpretationMismatch,
+    /// The requested H.264 range does not begin with an IDR access unit, so its first picture
+    /// would predict from references the range does not contain.
+    H264RangeNotIdr {
+        /// Zero-based segment that was requested as the range start.
+        segment: usize,
+    },
+    /// A retained source gap lies inside the requested H.264 range; inter prediction cannot
+    /// bridge omitted bytes, so the range is refused instead of concealed.
+    H264SourceGap {
+        /// First segment inside the range whose predecessor bytes are missing.
+        segment: usize,
+    },
+    /// A retained access unit completed zero or several pictures.
+    H264AccessUnit {
+        /// Offending zero-based segment.
+        segment: usize,
+    },
+    /// The canonical H.264 decoder refused the stream (including unsupported profiles/tools).
+    H264(fss_codec_h264::DecodeError),
+}
+
+/// Registered stable error identities (registries/ERRORS.md) for decode refusals.
+impl RecordedDecodeError {
+    /// Machine identity of this refusal; human text may change without changing it.
+    #[must_use]
+    pub fn stable_id(&self) -> &'static str {
+        match self {
+            Self::UnsupportedMedia => "ERR-DECODE-UNSUPPORTED-MEDIA-001",
+            Self::InterpretationMismatch => "ERR-DECODE-INTERPRETATION-001",
+            Self::H264RangeNotIdr { .. } => "ERR-DECODE-H264-RANGE-NOT-IDR-001",
+            Self::H264SourceGap { .. } => "ERR-DECODE-H264-RANGE-GAP-001",
+            Self::H264(fss_codec_h264::DecodeError::Unsupported(_)) => "ERR-DECODE-H264-UNSUPPORTED-001",
+            Self::Limit | Self::H264(fss_codec_h264::DecodeError::Limit) => "ERR-DECODE-BOUNDS-001",
+            Self::Unavailable | Self::Source(_) => "ERR-DECODE-SOURCE-UNAVAILABLE-001",
+            _ => "ERR-DECODE-001",
+        }
+    }
 }
 
 impl fmt::Display for RecordedDecodeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnsupportedMedia => f.write_str("recorded decode requires JPEG/MJPEG source"),
+            Self::UnsupportedMedia => f.write_str("recorded decode operation does not admit this media format (single-frame decode is JPEG/MJPEG; annexb uses H.264 range decode)"),
             Self::Unavailable => f.write_str("completed recorded decode unavailable"),
             Self::InvalidReceipt => f.write_str("recorded decode provenance or receipt mismatch"),
             Self::Limit => f.write_str("recorded decode bound exceeded"),
@@ -89,6 +131,11 @@ impl fmt::Display for RecordedDecodeError {
             Self::Object(e) => write!(f, "recorded decode manifest: {e}"),
             Self::Publication(e) => write!(f, "recorded decode publication: {e}"),
             Self::Spool(e) => write!(f, "recorded decode custody: {e}"),
+            Self::InterpretationMismatch => f.write_str("component interpretation contradicts the media"),
+            Self::H264RangeNotIdr { segment } => write!(f, "recorded H.264 range must start at an IDR access unit; segment {segment} is not one"),
+            Self::H264SourceGap { segment } => write!(f, "recorded H.264 range crosses a source gap before segment {segment}"),
+            Self::H264AccessUnit { segment } => write!(f, "recorded H.264 segment {segment} did not complete exactly one picture"),
+            Self::H264(e) => write!(f, "recorded H.264: {e}"),
         }
     }
 }
@@ -107,6 +154,7 @@ conversion!(ReferenceError, Reference);
 conversion!(ObjectError, Object);
 conversion!(LocalPublicationError, Publication);
 conversion!(SpoolError, Spool);
+conversion!(fss_codec_h264::DecodeError, H264);
 
 fn checkpoint(cx: &ReplayCx, stage: &'static str) -> Result<(), RecordedDecodeError> {
     cx.checkpoint(stage).map_err(|_| RecordedDecodeError::Cancelled)
@@ -302,7 +350,7 @@ impl CanonicalEncode for RecordedDecodeReceipt {
     }
 }
 
-fn source_capsule(
+pub(crate) fn source_capsule(
     deployment: &ReferenceDeployment, retained: &RetainedFileImport, index: usize,
 ) -> Result<(SensorCapsule, ContentDigest), RecordedDecodeError> {
     let span = retained.manifest().segment_spans.get(index).ok_or(RecordedDecodeError::Unavailable)?;
@@ -499,6 +547,9 @@ impl RecordedFrame {
         bytes
     }
 }
+
+/// Retained H.264 Annex-B range decoding bound to the same source custody.
+pub mod h264;
 
 #[cfg(test)]
 mod tests;

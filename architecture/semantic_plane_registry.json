@@ -207,6 +207,8 @@
     "crates/fss-reference/src/ingest/model_import/tests.rs": "support",
     "crates/fss-reference/src/ingest/pixel_change.rs": "support",
     "crates/fss-reference/src/ingest/recorded_decode.rs": "support",
+    "crates/fss-reference/src/ingest/recorded_decode/h264.rs": "support",
+    "crates/fss-reference/src/ingest/recorded_decode/h264/tests.rs": "support",
     "crates/fss-reference/src/ingest/recorded_decode/tests.rs": "support",
     "crates/fss-reference/src/ingest/recorded_event/mod.rs": "support",
     "crates/fss-reference/src/ingest/recorded_event/tests.rs": "support",

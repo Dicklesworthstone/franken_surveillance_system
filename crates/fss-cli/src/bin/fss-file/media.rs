@@ -8,6 +8,9 @@ use fss_reference::ingest::{RetainedFileImport, RetainedReadLimits};
 use fss_reference::ingest::recorded_decode::{
     ComponentInterpretation, DecodeBudget, DecodeLimits, RecordedDecodeRequest, RecordedFrame,
 };
+use fss_reference::ingest::recorded_decode::h264::{
+    DecoderLimits, MAX_H264_RANGE_SEGMENTS, RecordedH264Range, RecordedH264Request,
+};
 use fss_reference::ingest::pixel_change::{
     PixelChangeConfig, PixelChangeDetector, PixelChangeObservation,
 };
@@ -23,6 +26,8 @@ enum FrameMode { Decode, Read, Verify }
 pub(super) struct FrameAction {
     mode: FrameMode,
     request: RecordedDecodeRequest,
+    /// Annex-B only: contiguous access units decoded from the IDR at `request.segment_index`.
+    segment_count: usize,
     work_units: u64,
     output: Option<PathBuf>,
     receipt_output: Option<PathBuf>,
@@ -61,6 +66,7 @@ pub(super) fn accepts_option(command: &str, option: &str) -> bool {
     matches!(option, "--interpretation" | "--max-pixels" | "--max-dimension" | "--max-markers")
         || (command != "read-decoded" && option == "--work-units")
         || (command != "motion" && matches!(option, "--segment" | "--output" | "--receipt-out"))
+        || (command == "decode" && option == "--segment-count")
         || (command == "motion" && matches!(option, "--start-segment" | "--frame-count" | "--pixel-delta"
             | "--minimum-changed-pixels" | "--minimum-changed-ppm" | "--max-comparisons" | "--report-out"))
 }
@@ -114,8 +120,12 @@ pub(super) fn parse(
             "verify-decoded" => FrameMode::Verify,
             _ => return Err(malformed("unsupported decoded-frame operation")),
         };
+        let segment_count: usize = number(values, "--segment-count", Some(1))?;
+        if segment_count == 0 || segment_count > MAX_H264_RANGE_SEGMENTS
+            || request.segment_index.checked_add(segment_count).is_none()
+        { return Err(malformed("segment count must be 1..1024 and its source range must not overflow")); }
         Ok(Action::Frame(FrameAction {
-            mode, request, work_units,
+            mode, request, segment_count, work_units,
             output: values.get("--output").map(PathBuf::from),
             receipt_output: values.get("--receipt-out").map(PathBuf::from),
         }))
@@ -127,6 +137,7 @@ pub(super) fn run(
     root: &Path, cx: &ReplayCx, out: &mut impl Write,
 ) -> RunResult<()> {
     match action {
+        Action::Frame(action) if retained.manifest().format == "annexb" => run_h264(action, deployment, root, cx, out),
         Action::Frame(action) => run_frame(action, deployment, root, cx, out),
         Action::Motion(action) => run_motion(action, retained, deployment, root, cx, out),
     }
@@ -136,6 +147,9 @@ fn run_frame(
     action: &FrameAction, deployment: &mut ReferenceDeployment, root: &Path,
     cx: &ReplayCx, out: &mut impl Write,
 ) -> RunResult<()> {
+    if action.segment_count != 1 {
+        return Err(std::io::Error::other("--segment-count applies only to annexb imports; JPEG frames decode one segment").into());
+    }
     let mut budget = DecodeBudget::new(action.work_units);
     let frame = match action.mode {
         FrameMode::Decode => RecordedFrame::decode_and_publish(deployment, &action.request, &mut budget, cx)?,
@@ -166,6 +180,53 @@ fn run_frame(
     writeln!(out, "this_request_decode_work_units={}", budget.used())?;
     writeln!(out, "replay_verified={}", matches!(action.mode, FrameMode::Verify))?;
     writeln!(out, "decode_complete=true")?;
+    Ok(())
+}
+
+/// H.264 pictures predict from earlier pictures: decode the IDR-led range and export every
+/// requested frame. The result is a deterministic derivation of retained custody; unlike JPEG
+/// decode it is not published, so read-decoded/verify-decoded refuse Annex-B imports.
+fn run_h264(
+    action: &FrameAction, deployment: &mut ReferenceDeployment, root: &Path,
+    cx: &ReplayCx, out: &mut impl Write,
+) -> RunResult<()> {
+    if !matches!(action.mode, FrameMode::Decode) {
+        return Err(fss_reference::ingest::recorded_decode::RecordedDecodeError::UnsupportedMedia.into());
+    }
+    if action.receipt_output.is_some() {
+        return Err(std::io::Error::other("--receipt-out applies to published JPEG decode receipts only").into());
+    }
+    let limits = action.request.decode_limits;
+    let dimension = limits.maximum_dimension.max(16);
+    let decoder_limits = DecoderLimits {
+        max_width: dimension, max_height: dimension,
+        max_macroblocks: u32::try_from(limits.maximum_pixels.div_ceil(256)).map_err(|_| std::io::Error::other("pixel ceiling"))?,
+        max_pictures: action.segment_count as u64,
+        max_nal_bytes: limits.maximum_bytes.clamp(2, 16 * 1024 * 1024),
+        ..DecoderLimits::default()
+    };
+    let request = RecordedH264Request {
+        import_identity: action.request.import_identity, first_segment: action.request.segment_index,
+        segment_count: action.segment_count, interpretation: action.request.interpretation,
+        read_limits: action.request.read_limits, decoder_limits,
+    };
+    let mut range = RecordedH264Range::open(deployment, request, cx)?;
+    let mut pgm = Vec::new();
+    writeln!(out, "h264_range_first_segment={}\nh264_range_segment_count={}", action.request.segment_index, action.segment_count)?;
+    while let Some(frame) = range.next_frame(deployment, cx)? {
+        let receipt = frame.receipt(); let [width, height] = receipt.dimensions();
+        writeln!(out, "frame_segment={}\nframe_idr={}\nframe_width={width}\nframe_height={height}", receipt.segment_index(), receipt.is_idr())?;
+        writeln!(out, "frame_luma_sha256={}\nframe_i420_sha256={}\nframe_receipt_digest={}", receipt.luma_sha256(), receipt.i420_sha256(), receipt.digest())?;
+        writeln!(out, "frame_capture_earliest_ns={}\nframe_capture_latest_ns={}", receipt.capsule().capture.earliest.0, receipt.capsule().capture.latest.0)?;
+        pgm.extend_from_slice(&frame.pgm_bytes());
+    }
+    if let Some(path) = &action.output {
+        // Multi-image binary PGM: one complete P5 image per decoded frame, in decode order.
+        write_new(path, &pgm, root, cx)?;
+        writeln!(out, "pgm_sha256={}", ContentDigest::sha256(&pgm))?;
+    }
+    writeln!(out, "pixel_format=h264_yuv420p_luma\ndecoder_identity={}", fss_reference::ingest::recorded_decode::h264::h264_decoder_identity())?;
+    writeln!(out, "h264_frames_decoded={}\ndecode_published=false\ndecode_complete=true", range.decoded())?;
     Ok(())
 }
 
