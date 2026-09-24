@@ -5,9 +5,14 @@
 //! [`read_deployment`] never writes, creates, locks, truncates, renames, fsyncs, or repairs
 //! anything under the root. It classifies the root with the read-only [`crate::doctor`], parses
 //! `LAYOUT` with a bound, replays the committed authority ledger prefix through
-//! [`fss_ledger::inspect_durable`], replays the durable effect journal through
-//! [`DurableEffectJournal::inspect`], and reads each published event revision back from the
-//! object spool through [`fss_publication::read_verified`], which rehashes every payload.
+//! [`fss_ledger::inspect_durable`], reads the durable effect journal once with a bound and replays
+//! its committed records, and reads each published event revision back from the object spool
+//! through [`fss_publication::read_verified`], which rehashes every payload.
+//!
+//! Both journals are append-only, so [`DeploymentHistory::snapshot_at`] also compiles the snapshot
+//! of any earlier committed [`HistoryPosition`] (an "as of anchor" read) from the records inside
+//! that position alone; [`read_deployment`] is the snapshot at the head. `session.follow`
+//! ([`crate::agent_follow`]) compares the orientation at an earlier position with the head's.
 //!
 //! [`orient_deployment`] compiles one anchor-pinned [`SituationCapsule`] from that snapshot and
 //! projects it through the same [`project_reference_situation`] selector every reference
@@ -38,27 +43,29 @@ use fss_core::{
     ActionAffordance, AffordanceClass, AgentView, BudgetVector, CanonicalDecode, CanonicalEncode,
     CanonicalEncoder, Completeness, CompressionLossClass, CompressionTransform,
     CompressionTransformKind, ContentDigest, ContractError, EffectState, EventHypothesis, EventId,
-    EventState, ExpansionHandle, ExplainQuestion, ExplainReceipt, KnowledgeCell,
-    KnowledgeCellParams, KnowledgeState, LedgerAnchor, MissionId, ObjectiveContract,
-    ObjectiveContractParams, ObjectiveScope, Obligation, ObligationId, ObligationState,
-    OperationId, OperationReceipt, OrientBudget, OrientProjection, PossibleWorld, PrincipalId,
-    ProvenanceClass, ResourcePressure, SensorTamperStatus, SessionId, SituationCapsule,
-    SituationFrame, TimestampNs, WorldEnvelope, orient_projection,
+    EventState, EvidenceDeltaBatch, ExpansionHandle, ExplainQuestion, ExplainReceipt,
+    IndeterminateEffectReason, KnowledgeCell, KnowledgeCellParams, KnowledgeState, LedgerAnchor,
+    MissionId, ObjectiveContract, ObjectiveContractParams, ObjectiveScope, Obligation,
+    ObligationId, ObligationState, OperationId, OperationReceipt, OrientBudget, OrientProjection,
+    PossibleWorld, PrincipalId, ProvenanceClass, ResourcePressure, SensorTamperStatus, SessionId,
+    SituationCapsule, SituationFrame, TimestampNs, WorldEnvelope, orient_projection,
 };
 use fss_object::ObjectManifest;
 
 use crate::ReferenceError;
 use crate::doctor::{DoctorVerdict, inspect_deployment};
-use crate::durable_effect::DurableEffectJournal;
 use crate::reference_deployment::{
     DEPLOYMENT_LAYOUT_FILENAME, DeploymentLayout, FAMILY_EVENT_REVISION,
     FAMILY_FILE_IMPORT_MANIFEST,
 };
+use crate::situation::EffectCellKind;
 use crate::situation::{
     physical_knowledge_state, physical_statement, policy_hypothesis, reconciliation_basis_for,
     sensor_integrity_cell,
 };
-use crate::situation_guard::ReferenceSituation;
+use crate::situation_guard::{
+    INDETERMINATE_REASON_UNRECORDED_CLAIM_PREFIX, ReferenceSituation, local_state_effect_cell,
+};
 use crate::situation_sections::{
     ReferenceProjectionSpec, ReferenceSituationPublication, SourceOmission, SourceOmissions,
     project_reference_situation_with_source_omissions,
@@ -89,7 +96,7 @@ pub const WORLD_UNOBSERVED_ACTIVITY: &str = "world:site:unobserved-activity";
 pub const AFFORDANCE_REORIENT: &str = "affordance:orient:reorient";
 /// Affordance identity of the read-only deployment diagnosis.
 pub const AFFORDANCE_DOCTOR: &str = "affordance:orient:doctor";
-/// Affordance identity of the unexposed follow stream.
+/// Affordance identity of the follow stream since this orientation's anchor (`fss follow`).
 pub const AFFORDANCE_FOLLOW: &str = "affordance:orient:follow";
 /// Affordance identity of the unexposed plan/commit path.
 pub const AFFORDANCE_PLAN: &str = "affordance:orient:plan";
@@ -153,6 +160,11 @@ pub enum DeploymentReadError {
         /// Deterministic, secret-free reason.
         reason: String,
     },
+    /// The requested position is not a committed prefix of the root's history.
+    NotCommitted {
+        /// Deterministic, secret-free reason.
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for DeploymentReadError {
@@ -170,7 +182,8 @@ impl DeploymentReadError {
         match self {
             Self::NotADeployment { reason }
             | Self::Unreadable { reason }
-            | Self::Corrupt { reason } => reason,
+            | Self::Corrupt { reason }
+            | Self::NotCommitted { reason } => reason,
         }
     }
 }
@@ -216,30 +229,50 @@ impl RetainedEvent {
     }
 }
 
-/// Complete read-only snapshot of one deployment root at its committed ledger head.
+/// One committed authority position of a deployment: the authority-ledger prefix through a commit
+/// sequence and the durable effect-journal prefix through a record count.
+///
+/// Both journals are append-only, so a position names exactly one earlier state of the root; a
+/// snapshot at a position reads only the committed records inside it.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct HistoryPosition {
+    /// Commit sequence of the last ledger batch in the prefix (0 before any commit).
+    pub commit_sequence: u64,
+    /// Committed effect-journal records in the prefix, or `None` when no effect journal existed.
+    pub effect_records: Option<u64>,
+}
+
+/// Complete read-only snapshot of one deployment root at one committed position (by default its
+/// head).
 #[derive(Clone, Debug, PartialEq)]
 pub struct DeploymentSnapshot {
     /// Site lineage from `LAYOUT`.
     pub site_lineage: String,
-    /// Read-only doctor verdict for the root.
+    /// Read-only doctor verdict for the root, as read now (it classifies the current files).
     pub doctor_verdict: DoctorVerdict,
-    /// Committed authority anchor (ledger head).
+    /// Committed authority position this snapshot was compiled at.
+    pub position: HistoryPosition,
+    /// Committed authority anchor at [`Self::position`].
     pub anchor: LedgerAnchor,
-    /// Root of the last committed ledger record (zero when nothing is committed).
+    /// Root of the last committed ledger record in the prefix (zero when nothing is committed).
     pub ledger_root: ContentDigest,
-    /// Committed evidence batches.
+    /// Committed evidence batches in the prefix.
     pub batch_count: usize,
-    /// Whether the ledger ends with an incomplete or foreign tail beyond its committed prefix.
+    /// Whether the ledger file ends with an incomplete or foreign tail beyond its committed
+    /// records, as read now.
     pub ledger_tail_uncommitted: bool,
     /// Committed evidence deltas by family.
     pub family_counts: BTreeMap<String, usize>,
     /// Payload roots of completed file imports (`file_import_manifest` deltas).
     pub completed_imports: Vec<ContentDigest>,
-    /// Whether the durable effect journal file exists.
+    /// Whether the durable effect journal existed at [`Self::position`].
     pub effect_journal_present: bool,
-    /// Digest of the effect journal bytes that were inspected (the empty digest when absent).
+    /// Digest of the committed effect-journal prefix at [`Self::position`] (the empty digest when
+    /// absent).
     pub effect_journal_digest: ContentDigest,
-    /// Whether the effect journal ends with an incomplete or foreign tail.
+    /// Root of the last committed effect-journal record in the prefix (zero when none).
+    pub effect_journal_root: ContentDigest,
+    /// Whether the effect journal file ends with an incomplete or foreign tail, as read now.
     pub effect_tail_uncommitted: bool,
     /// Durable obligations in journal order.
     pub obligations: Vec<Obligation>,
@@ -249,9 +282,11 @@ pub struct DeploymentSnapshot {
     pub events: Vec<RetainedEvent>,
     /// Latest committed evidence time; the capsule creation time (0 when nothing is committed).
     pub latest_evidence_time: TimestampNs,
-    /// Files opened for reading (all reads are bounded; none is opened for writing).
+    /// Files a read of this position opens (all reads are bounded; none is opened for writing):
+    /// `LAYOUT`, the ledger, the effect journal when present, and every spool object read back.
     pub files_read: u64,
-    /// Bytes read from those files.
+    /// Bytes of those files inside the position: `LAYOUT`, the committed ledger and effect-journal
+    /// prefixes, and the rehashed spool objects.
     pub bytes_read: u64,
 }
 
@@ -354,199 +389,429 @@ fn corrupt(reason: impl Into<String>) -> DeploymentReadError {
     }
 }
 
-/// Reads one deployment root without writing anything under it.
+/// Every committed prefix of one deployment root, read once without writing anything under it.
+///
+/// [`Self::read`] classifies the root with the read-only doctor, parses `LAYOUT` with a bound,
+/// replays the committed authority ledger through [`fss_ledger::inspect_durable`] (and recomputes
+/// the committed position of every batch with [`fss_ledger::committed_batch_positions`], refusing
+/// a ledger whose records do not reproduce), and reads the durable effect journal once with a
+/// bound, replaying its committed records. [`Self::snapshot_at`] then compiles the snapshot of any
+/// committed position from those records alone: the ledger batches through its commit sequence,
+/// the effect records through its record count, and the spool objects those batches name. Both
+/// journals are append-only, so the snapshot of an earlier position is the state the root held
+/// when that position was its head (the doctor verdict and tail flags describe the files as read
+/// now).
+#[derive(Clone, Debug)]
+pub struct DeploymentHistory {
+    site_lineage: String,
+    objects: std::path::PathBuf,
+    doctor_verdict: DoctorVerdict,
+    layout_bytes: u64,
+    genesis_anchor: LedgerAnchor,
+    batches: Vec<EvidenceDeltaBatch>,
+    ledger_positions: Vec<fss_ledger::CommittedBatchPosition>,
+    ledger_tail_uncommitted: bool,
+    /// Committed effect-journal bytes (tail excluded), or `None` when the journal is absent.
+    effect_bytes: Option<Vec<u8>>,
+    effect_records: Vec<fss_ledger::JournalRecord>,
+    effect_tail_uncommitted: bool,
+    limits: OrientLimits,
+}
+
+impl DeploymentHistory {
+    /// Reads the committed history of one deployment root without writing anything under it.
+    ///
+    /// A missing root, a non-directory, or a root without a parseable `LAYOUT` is
+    /// [`DeploymentReadError::NotADeployment`]; an access failure is
+    /// [`DeploymentReadError::Unreadable`]; history that fails replay or rehash is
+    /// [`DeploymentReadError::Corrupt`]. An incomplete journal tail is not an error: only the
+    /// committed prefix is read, and the history records that the tail exists.
+    pub fn read(root: &Path, limits: &OrientLimits) -> Result<Self, DeploymentReadError> {
+        let doctor_verdict = inspect_deployment(root).verdict;
+        match doctor_verdict {
+            DoctorVerdict::NotADeployment => {
+                return Err(DeploymentReadError::NotADeployment {
+                    reason: "the root is missing, is not a directory, or has no valid LAYOUT \
+                             (see `fss doctor --json --root <dir>`)"
+                        .to_owned(),
+                });
+            }
+            DoctorVerdict::Unreadable => {
+                return Err(DeploymentReadError::Unreadable {
+                    reason: "the deployment root or its LAYOUT cannot be read".to_owned(),
+                });
+            }
+            DoctorVerdict::Healthy | DoctorVerdict::AttentionRequired => {}
+        }
+        let mut reader = Reader {
+            files_read: 0,
+            bytes_read: 0,
+        };
+        let layout_bytes = reader
+            .read_file(
+                &root.join(DEPLOYMENT_LAYOUT_FILENAME),
+                limits.max_layout_bytes,
+            )
+            .map_err(|error| DeploymentReadError::Unreadable {
+                reason: format!("LAYOUT: {error}"),
+            })?
+            .ok_or_else(|| DeploymentReadError::NotADeployment {
+                reason: "missing LAYOUT".to_owned(),
+            })?;
+        let layout_len = layout_bytes.len() as u64;
+        let layout_text =
+            String::from_utf8(layout_bytes).map_err(|_| DeploymentReadError::NotADeployment {
+                reason: "LAYOUT is not UTF-8".to_owned(),
+            })?;
+        let layout = DeploymentLayout::parse_canonical_text(&layout_text).map_err(|error| {
+            DeploymentReadError::NotADeployment {
+                reason: format!("LAYOUT does not parse: {error}"),
+            }
+        })?;
+        let site = layout.site_lineage.clone();
+
+        let ledger = fss_ledger::inspect_durable(
+            root.join(&layout.ledger_relpath),
+            site.clone(),
+            limits.max_journal_bytes,
+        )
+        .map_err(|error| corrupt(format!("authority ledger replay failed: {error}")))?;
+        let ledger_positions = fss_ledger::committed_batch_positions(&ledger).ok_or_else(|| {
+            corrupt("authority ledger records do not reproduce their committed positions")
+        })?;
+        let genesis_anchor = ledger.batches.first().map_or_else(
+            || ledger.snapshot.anchor.clone(),
+            |batch| batch.basis_anchor.clone(),
+        );
+
+        let effects_path = root.join(&layout.effects_relpath);
+        let effect_file = reader
+            .read_file(&effects_path, limits.max_journal_bytes)
+            .map_err(|error| DeploymentReadError::Unreadable {
+                reason: format!("effect journal: {error}"),
+            })?;
+        let (effect_bytes, effect_records, effect_tail_uncommitted) = match effect_file {
+            None => (None, Vec::new(), false),
+            Some(mut bytes) => {
+                let report = fss_ledger::doctor(&bytes).map_err(|error| {
+                    corrupt(format!("durable effect journal replay failed: {error}"))
+                })?;
+                let committed = usize::try_from(report.committed_len())
+                    .ok()
+                    .filter(|len| *len <= bytes.len())
+                    .ok_or_else(|| corrupt("durable effect journal committed length overflows"))?;
+                bytes.truncate(committed);
+                let recovery = fss_ledger::recover_bytes(&bytes).map_err(|error| {
+                    corrupt(format!("durable effect journal replay failed: {error}"))
+                })?;
+                // Replaying the complete committed history once validates every record, so every
+                // prefix replayed later is a prefix of a valid history.
+                crate::durable_effect::replay_records(recovery.records()).map_err(|error| {
+                    corrupt(format!("durable effect journal replay failed: {error}"))
+                })?;
+                let tail = report.incomplete_tail().is_some() || report.foreign_range().is_some();
+                (Some(bytes), recovery.records().to_vec(), tail)
+            }
+        };
+        Ok(Self {
+            site_lineage: site,
+            objects: root.join(&layout.objects_relpath),
+            doctor_verdict,
+            layout_bytes: layout_len,
+            genesis_anchor,
+            batches: ledger.batches.clone(),
+            ledger_positions,
+            ledger_tail_uncommitted: !ledger.is_clean(),
+            effect_bytes,
+            effect_records,
+            effect_tail_uncommitted,
+            limits: *limits,
+        })
+    }
+
+    /// Site lineage from `LAYOUT`.
+    #[must_use]
+    pub fn site_lineage(&self) -> &str {
+        &self.site_lineage
+    }
+
+    /// Bounds the history was read under; every snapshot applies them too.
+    #[must_use]
+    pub const fn limits(&self) -> &OrientLimits {
+        &self.limits
+    }
+
+    /// The committed head: the last ledger batch and every committed effect record.
+    #[must_use]
+    pub fn head(&self) -> HistoryPosition {
+        HistoryPosition {
+            commit_sequence: self
+                .batches
+                .last()
+                .map_or(self.genesis_anchor.commit_sequence, |batch| {
+                    batch.new_anchor.commit_sequence
+                }),
+            effect_records: self
+                .effect_bytes
+                .as_ref()
+                .map(|_| self.effect_records.len() as u64),
+        }
+    }
+
+    /// Ledger batches committed through `commit_sequence`, or `None` when no committed prefix ends
+    /// there.
+    fn ledger_prefix(&self, commit_sequence: u64) -> Option<usize> {
+        if commit_sequence == self.genesis_anchor.commit_sequence {
+            return Some(0);
+        }
+        self.batches
+            .iter()
+            .position(|batch| batch.new_anchor.commit_sequence == commit_sequence)
+            .map(|index| index + 1)
+    }
+
+    /// Effect records committed in `position`, or `None` when the position names more records
+    /// than the journal holds (or a journal that no longer exists).
+    fn effect_prefix(&self, effect_records: Option<u64>) -> Option<Option<usize>> {
+        match effect_records {
+            None => Some(None),
+            Some(count) => {
+                let count = usize::try_from(count).ok()?;
+                (self.effect_bytes.is_some() && count <= self.effect_records.len())
+                    .then_some(Some(count))
+            }
+        }
+    }
+
+    /// Whether `position` is a committed prefix of this history.
+    #[must_use]
+    pub fn contains(&self, position: HistoryPosition) -> bool {
+        self.ledger_prefix(position.commit_sequence).is_some()
+            && self.effect_prefix(position.effect_records).is_some()
+    }
+
+    /// The authority anchor, ledger record root, and effect-journal record root at `position`;
+    /// `None` when the position is not a committed prefix. Reads nothing.
+    #[must_use]
+    pub fn roots_at(
+        &self,
+        position: HistoryPosition,
+    ) -> Option<(LedgerAnchor, ContentDigest, ContentDigest)> {
+        let batches = self.ledger_prefix(position.commit_sequence)?;
+        let effects = self.effect_prefix(position.effect_records)?;
+        let zero = ContentDigest::new(fss_core::DigestAlgorithm::Sha256, [0_u8; 32]);
+        let anchor = match batches.checked_sub(1) {
+            None => self.genesis_anchor.clone(),
+            Some(last) => self.batches.get(last)?.new_anchor.clone(),
+        };
+        let ledger_root = match batches.checked_sub(1) {
+            None => zero,
+            Some(last) => self.ledger_positions.get(last)?.record_root,
+        };
+        let effect_root = match effects.and_then(|count| count.checked_sub(1)) {
+            None => zero,
+            Some(last) => self.effect_records.get(last)?.root(),
+        };
+        Some((anchor, ledger_root, effect_root))
+    }
+
+    /// Compiles the snapshot of one committed `position` from the records inside it.
+    ///
+    /// Only the ledger batches through the position's commit sequence, the effect records through
+    /// its record count, and the spool objects those batches publish are read back (each object
+    /// rehashed). A position that is not a committed prefix is
+    /// [`DeploymentReadError::NotCommitted`].
+    pub fn snapshot_at(
+        &self,
+        position: HistoryPosition,
+    ) -> Result<DeploymentSnapshot, DeploymentReadError> {
+        let not_committed = || DeploymentReadError::NotCommitted {
+            reason: format!(
+                "commit {} with {} effect record(s) is not a committed prefix of this deployment",
+                position.commit_sequence,
+                position
+                    .effect_records
+                    .map_or_else(|| "no".to_owned(), |count| count.to_string())
+            ),
+        };
+        let batch_count = self
+            .ledger_prefix(position.commit_sequence)
+            .ok_or_else(not_committed)?;
+        let effect_count = self
+            .effect_prefix(position.effect_records)
+            .ok_or_else(not_committed)?;
+        let (anchor, ledger_root, effect_journal_root) =
+            self.roots_at(position).ok_or_else(not_committed)?;
+        let batches = self.batches.get(..batch_count).ok_or_else(not_committed)?;
+        let ledger_len = batch_count
+            .checked_sub(1)
+            .and_then(|last| self.ledger_positions.get(last))
+            .map_or(0, |committed| committed.prefix_len);
+
+        let mut reader = Reader {
+            files_read: 2,
+            bytes_read: self.layout_bytes + ledger_len,
+        };
+        let (effect_journal_digest, obligations, operations) = match effect_count {
+            None => (ContentDigest::sha256(&[]), Vec::new(), Vec::new()),
+            Some(count) => {
+                let records = self.effect_records.get(..count).ok_or_else(not_committed)?;
+                let prefix_len: u64 = records
+                    .iter()
+                    .map(fss_ledger::JournalRecord::framed_len)
+                    .sum();
+                let prefix = usize::try_from(prefix_len)
+                    .ok()
+                    .and_then(|len| self.effect_bytes.as_ref()?.get(..len))
+                    .ok_or_else(not_committed)?;
+                let journal = crate::durable_effect::replay_records(records).map_err(|error| {
+                    corrupt(format!("durable effect journal replay failed: {error}"))
+                })?;
+                reader.files_read += 1;
+                reader.bytes_read += prefix_len;
+                (
+                    ContentDigest::sha256(prefix),
+                    journal.obligations().cloned().collect(),
+                    journal.operations().cloned().collect(),
+                )
+            }
+        };
+
+        let mut family_counts: BTreeMap<String, usize> = BTreeMap::new();
+        let mut completed_imports = Vec::new();
+        let mut latest_evidence_time = TimestampNs::ZERO;
+        // object id -> (generation -> (payload root, witnessed revision digest, commit sequence))
+        let mut event_deltas: BTreeMap<String, BTreeMap<u64, (ContentDigest, ContentDigest, u64)>> =
+            BTreeMap::new();
+        for batch in batches {
+            for delta in &batch.deltas {
+                *family_counts.entry(delta.family.clone()).or_default() += 1;
+                if delta.validity.latest > latest_evidence_time {
+                    latest_evidence_time = delta.validity.latest;
+                }
+                if delta.family == FAMILY_FILE_IMPORT_MANIFEST {
+                    completed_imports.push(delta.payload_digest);
+                }
+                if delta.family == FAMILY_EVENT_REVISION {
+                    let witness = delta.witness_digest.ok_or_else(|| {
+                        corrupt(format!(
+                            "event_revision delta {} carries no revision witness",
+                            delta.delta_id
+                        ))
+                    })?;
+                    event_deltas
+                        .entry(delta.object_id.as_str().to_owned())
+                        .or_default()
+                        .insert(
+                            delta.new_generation,
+                            (
+                                delta.payload_digest,
+                                witness,
+                                batch.new_anchor.commit_sequence,
+                            ),
+                        );
+                }
+            }
+        }
+
+        let limits = &self.limits;
+        let objects = &self.objects;
+        let mut events = Vec::new();
+        for (object_id, generations) in &event_deltas {
+            if generations.len() > limits.max_revisions_per_event {
+                return Err(corrupt(format!(
+                    "{object_id} has {} committed revisions, above the read bound {}",
+                    generations.len(),
+                    limits.max_revisions_per_event
+                )));
+            }
+            let mut revisions = Vec::new();
+            let mut latest = None;
+            let (bytes_before, reads_before) = (reader.bytes_read, reader.files_read);
+            for (generation, (root_digest, witness, sequence)) in generations {
+                let manifest = ObjectManifest::from_canonical_bytes(&reader.read_object(
+                    objects,
+                    *root_digest,
+                    limits.max_object_bytes,
+                )?)
+                .map_err(|error| corrupt(format!("{object_id}: manifest: {error}")))?;
+                let payload = manifest
+                    .metadata_digest()
+                    .or_else(|| manifest.children().first().copied())
+                    .ok_or_else(|| {
+                        corrupt(format!("{object_id}: event manifest names no payload"))
+                    })?;
+                let revision = EventHypothesis::from_canonical_bytes(&reader.read_object(
+                    objects,
+                    payload,
+                    limits.max_object_bytes,
+                )?)
+                .map_err(|error| corrupt(format!("{object_id}: event revision: {error}")))?;
+                if revision.revision != *generation || revision.revision_digest() != *witness {
+                    return Err(corrupt(format!(
+                        "{object_id}: revision {generation} does not match its committed witness"
+                    )));
+                }
+                latest = Some((*root_digest, *witness, *sequence));
+                revisions.push(revision);
+            }
+            let (Some(event), Some((event_root, revision_digest, committed_sequence))) =
+                (revisions.last().cloned(), latest)
+            else {
+                continue;
+            };
+            let tamper = fss_core::event::compute_sensor_tamper_status(revisions.iter(), None);
+            events.push(RetainedEvent {
+                event,
+                revisions,
+                event_root,
+                revision_digest,
+                committed_sequence,
+                tamper,
+                object_bytes: reader.bytes_read - bytes_before,
+                object_reads: reader.files_read - reads_before,
+            });
+        }
+        events.sort_by(|left, right| left.event.event_id.cmp(&right.event.event_id));
+
+        Ok(DeploymentSnapshot {
+            site_lineage: self.site_lineage.clone(),
+            doctor_verdict: self.doctor_verdict,
+            position,
+            anchor,
+            ledger_root,
+            batch_count,
+            ledger_tail_uncommitted: self.ledger_tail_uncommitted,
+            family_counts,
+            completed_imports,
+            effect_journal_present: effect_count.is_some(),
+            effect_journal_digest,
+            effect_journal_root,
+            effect_tail_uncommitted: effect_count.is_some() && self.effect_tail_uncommitted,
+            obligations,
+            operations,
+            events,
+            latest_evidence_time,
+            files_read: reader.files_read,
+            bytes_read: reader.bytes_read,
+        })
+    }
+}
+
+/// Reads one deployment root at its committed head without writing anything under it.
 ///
 /// A missing root, a non-directory, or a root without a parseable `LAYOUT` is
 /// [`DeploymentReadError::NotADeployment`]; an access failure is
 /// [`DeploymentReadError::Unreadable`]; history that fails replay or rehash is
 /// [`DeploymentReadError::Corrupt`]. An incomplete journal tail is not an error: only the
-/// committed prefix is read, and the snapshot records that the tail exists.
+/// committed prefix is read, and the snapshot records that the tail exists. This is exactly
+/// [`DeploymentHistory::snapshot_at`] of [`DeploymentHistory::head`].
 pub fn read_deployment(
     root: &Path,
     limits: &OrientLimits,
 ) -> Result<DeploymentSnapshot, DeploymentReadError> {
-    let doctor_verdict = inspect_deployment(root).verdict;
-    match doctor_verdict {
-        DoctorVerdict::NotADeployment => {
-            return Err(DeploymentReadError::NotADeployment {
-                reason: "the root is missing, is not a directory, or has no valid LAYOUT \
-                         (see `fss doctor --json --root <dir>`)"
-                    .to_owned(),
-            });
-        }
-        DoctorVerdict::Unreadable => {
-            return Err(DeploymentReadError::Unreadable {
-                reason: "the deployment root or its LAYOUT cannot be read".to_owned(),
-            });
-        }
-        DoctorVerdict::Healthy | DoctorVerdict::AttentionRequired => {}
-    }
-    let mut reader = Reader {
-        files_read: 0,
-        bytes_read: 0,
-    };
-    let layout_bytes = reader
-        .read_file(
-            &root.join(DEPLOYMENT_LAYOUT_FILENAME),
-            limits.max_layout_bytes,
-        )
-        .map_err(|error| DeploymentReadError::Unreadable {
-            reason: format!("LAYOUT: {error}"),
-        })?
-        .ok_or_else(|| DeploymentReadError::NotADeployment {
-            reason: "missing LAYOUT".to_owned(),
-        })?;
-    let layout_text =
-        String::from_utf8(layout_bytes).map_err(|_| DeploymentReadError::NotADeployment {
-            reason: "LAYOUT is not UTF-8".to_owned(),
-        })?;
-    let layout = DeploymentLayout::parse_canonical_text(&layout_text).map_err(|error| {
-        DeploymentReadError::NotADeployment {
-            reason: format!("LAYOUT does not parse: {error}"),
-        }
-    })?;
-    let site = layout.site_lineage.clone();
-    let objects = root.join(&layout.objects_relpath);
-
-    let ledger = fss_ledger::inspect_durable(
-        root.join(&layout.ledger_relpath),
-        site.clone(),
-        limits.max_journal_bytes,
-    )
-    .map_err(|error| corrupt(format!("authority ledger replay failed: {error}")))?;
-    reader.files_read += 1;
-    reader.bytes_read += ledger.committed_len;
-
-    let effects_path = root.join(&layout.effects_relpath);
-    let effects = DurableEffectJournal::inspect(&effects_path, limits.max_journal_bytes)
-        .map_err(|error| corrupt(format!("durable effect journal replay failed: {error}")))?;
-    let effect_bytes = reader
-        .read_file(&effects_path, limits.max_journal_bytes)
-        .map_err(|error| DeploymentReadError::Unreadable {
-            reason: format!("effect journal: {error}"),
-        })?;
-    let effect_journal_present = !effects.is_absent();
-    let effect_journal_digest = ContentDigest::sha256(effect_bytes.as_deref().unwrap_or_default());
-    let (obligations, operations) = match &effects.journal {
-        Some(journal) => (
-            journal.obligations().cloned().collect(),
-            journal.operations().cloned().collect(),
-        ),
-        None => (Vec::new(), Vec::new()),
-    };
-
-    let mut family_counts: BTreeMap<String, usize> = BTreeMap::new();
-    let mut completed_imports = Vec::new();
-    let mut latest_evidence_time = TimestampNs::ZERO;
-    // object id -> (generation -> (payload root, witnessed revision digest, commit sequence))
-    let mut event_deltas: BTreeMap<String, BTreeMap<u64, (ContentDigest, ContentDigest, u64)>> =
-        BTreeMap::new();
-    for batch in &ledger.batches {
-        for delta in &batch.deltas {
-            *family_counts.entry(delta.family.clone()).or_default() += 1;
-            if delta.validity.latest > latest_evidence_time {
-                latest_evidence_time = delta.validity.latest;
-            }
-            if delta.family == FAMILY_FILE_IMPORT_MANIFEST {
-                completed_imports.push(delta.payload_digest);
-            }
-            if delta.family == FAMILY_EVENT_REVISION {
-                let witness = delta.witness_digest.ok_or_else(|| {
-                    corrupt(format!(
-                        "event_revision delta {} carries no revision witness",
-                        delta.delta_id
-                    ))
-                })?;
-                event_deltas
-                    .entry(delta.object_id.as_str().to_owned())
-                    .or_default()
-                    .insert(
-                        delta.new_generation,
-                        (
-                            delta.payload_digest,
-                            witness,
-                            batch.new_anchor.commit_sequence,
-                        ),
-                    );
-            }
-        }
-    }
-
-    let mut events = Vec::new();
-    for (object_id, generations) in &event_deltas {
-        if generations.len() > limits.max_revisions_per_event {
-            return Err(corrupt(format!(
-                "{object_id} has {} committed revisions, above the read bound {}",
-                generations.len(),
-                limits.max_revisions_per_event
-            )));
-        }
-        let mut revisions = Vec::new();
-        let mut latest = None;
-        let (bytes_before, reads_before) = (reader.bytes_read, reader.files_read);
-        for (generation, (root_digest, witness, sequence)) in generations {
-            let manifest = ObjectManifest::from_canonical_bytes(&reader.read_object(
-                &objects,
-                *root_digest,
-                limits.max_object_bytes,
-            )?)
-            .map_err(|error| corrupt(format!("{object_id}: manifest: {error}")))?;
-            let payload = manifest
-                .metadata_digest()
-                .or_else(|| manifest.children().first().copied())
-                .ok_or_else(|| corrupt(format!("{object_id}: event manifest names no payload")))?;
-            let revision = EventHypothesis::from_canonical_bytes(&reader.read_object(
-                &objects,
-                payload,
-                limits.max_object_bytes,
-            )?)
-            .map_err(|error| corrupt(format!("{object_id}: event revision: {error}")))?;
-            if revision.revision != *generation || revision.revision_digest() != *witness {
-                return Err(corrupt(format!(
-                    "{object_id}: revision {generation} does not match its committed witness"
-                )));
-            }
-            latest = Some((*root_digest, *witness, *sequence));
-            revisions.push(revision);
-        }
-        let (Some(event), Some((event_root, revision_digest, committed_sequence))) =
-            (revisions.last().cloned(), latest)
-        else {
-            continue;
-        };
-        let tamper = fss_core::event::compute_sensor_tamper_status(revisions.iter(), None);
-        events.push(RetainedEvent {
-            event,
-            revisions,
-            event_root,
-            revision_digest,
-            committed_sequence,
-            tamper,
-            object_bytes: reader.bytes_read - bytes_before,
-            object_reads: reader.files_read - reads_before,
-        });
-    }
-    events.sort_by(|left, right| left.event.event_id.cmp(&right.event.event_id));
-
-    Ok(DeploymentSnapshot {
-        site_lineage: site,
-        doctor_verdict,
-        anchor: ledger.snapshot.anchor.clone(),
-        ledger_root: ledger.last_root,
-        batch_count: ledger.batches.len(),
-        ledger_tail_uncommitted: !ledger.is_clean(),
-        family_counts,
-        completed_imports,
-        effect_journal_present,
-        effect_journal_digest,
-        effect_tail_uncommitted: effect_journal_present && !effects.is_clean(),
-        obligations,
-        operations,
-        events,
-        latest_evidence_time,
-        files_read: reader.files_read,
-        bytes_read: reader.bytes_read,
-    })
+    let history = DeploymentHistory::read(root, limits)?;
+    history.snapshot_at(history.head())
 }
 
 /// One read-only orient request.
@@ -778,6 +1043,9 @@ pub struct DeploymentOrientation {
     pub aggregated_world_count: usize,
     /// Privacy policy generation the answer is projected under (the anchor's privacy epoch).
     pub privacy_generation_id: String,
+    /// Reusable anchor token of the committed position this orientation is pinned to: the
+    /// `--since` argument of `fss follow` (see [`crate::agent_follow::AnchorToken`]).
+    pub anchor_token: String,
 }
 
 impl DeploymentOrientation {
@@ -1237,6 +1505,10 @@ struct CompiledSituation {
     contradictions: Vec<String>,
     attention: Vec<AttentionItem>,
     epistemic_debt: Vec<EpistemicDebtItem>,
+    /// Local-state effect cells of every durable operation, bound before projection.
+    effect_cells: Vec<(OperationId, EffectState, KnowledgeCell)>,
+    /// Reusable anchor token of the snapshot's committed position.
+    anchor_token: String,
 }
 
 fn compile_capsule(
@@ -1529,6 +1801,43 @@ fn compile_capsule(
     contradictions.sort();
     contradictions.dedup();
 
+    // Every durable operation, in journal order, as the exact local-state effect cell the guarded
+    // reference situation compiles from a receipt (fss-deir9): a prepared operation has not crossed
+    // the boundary (`unknown`), a dispatched non-terminal one may already have produced its effect
+    // (`indeterminate`), and only a terminal local state is `known`. `orient_deployment` binds each
+    // cell to its receipt and seals the situation, so no cell can be dropped or relabeled.
+    let mut effect_cells = Vec::with_capacity(snapshot.operations.len());
+    for operation in &snapshot.operations {
+        let digest = operation.receipt_digest();
+        let effect = local_state_effect_cell(operation)?;
+        proof_roots.insert(digest);
+        cells.push(effect.clone());
+        effect_cells.push((
+            operation.intent.operation_id.clone(),
+            operation.state,
+            effect,
+        ));
+        // A legacy (v1) operation that entered `indeterminate` without a reason keeps the typed
+        // `unknown` marker the guarded path projects, never silently dropped (fss-deir9).
+        if operation.indeterminate_reason == Some(IndeterminateEffectReason::Unrecorded) {
+            let operation_id = operation.intent.operation_id.as_str();
+            cells.push(cell(KnowledgeCellParams {
+                claim_id: format!("{INDETERMINATE_REASON_UNRECORDED_CLAIM_PREFIX}{operation_id}"),
+                statement: format!(
+                    "The legacy effect journal recorded no reason when operation {operation_id} \
+                     entered indeterminate."
+                ),
+                knowledge_state: KnowledgeState::Unknown,
+                provenance: ProvenanceClass::Derived,
+                hypothesis: None,
+                evidence: vec![digest],
+                contradictions: Vec::new(),
+                valid_until: None,
+                state_basis: None,
+            })?);
+        }
+    }
+
     let open_obligations = snapshot.open_obligations();
     let indeterminate = snapshot.indeterminate_operations();
     for obligation in &open_obligations {
@@ -1563,6 +1872,7 @@ fn compile_capsule(
         .map(|world| world.world_id.clone())
         .collect();
     let deployment_read = read_cost(snapshot.bytes_read, snapshot.files_read)?;
+    let anchor_token = crate::agent_follow::snapshot_anchor_token(snapshot);
     let mut affordances = vec![
         ListedAffordance {
             affordance_id: AFFORDANCE_REORIENT.to_owned(),
@@ -1570,7 +1880,7 @@ fn compile_capsule(
             target: deployment_handle.clone(),
             rationale: format!("Re-orient after commit {}.", anchor.commit_sequence),
             class: AffordanceClass::Wait,
-            supported_worlds: all_worlds,
+            supported_worlds: all_worlds.clone(),
             required_capability: CAPABILITY_SITUATION_READ,
             cost: deployment_read,
         }
@@ -1610,12 +1920,13 @@ fn compile_capsule(
             ListedAffordance {
                 affordance_id: AFFORDANCE_FOLLOW.to_owned(),
                 operation: "session.follow",
-                target: deployment_handle.clone(),
-                rationale: "Not exposed by this build.".to_owned(),
-                class: AffordanceClass::Unavailable,
-                supported_worlds: BTreeSet::new(),
+                // The target ends with the anchor token `fss follow --since` resumes from.
+                target: format!("{deployment_handle}/follow/{anchor_token}"),
+                rationale: "Follow deltas since this anchor.".to_owned(),
+                class: AffordanceClass::Wait,
+                supported_worlds: all_worlds,
                 required_capability: CAPABILITY_SITUATION_READ,
-                cost: read_cost(0, 0)?,
+                cost: deployment_read,
             }
             .build(),
         );
@@ -1817,6 +2128,8 @@ fn compile_capsule(
         contradictions,
         attention,
         epistemic_debt,
+        effect_cells,
+        anchor_token,
     })
 }
 
@@ -2295,7 +2608,15 @@ pub fn orient_deployment(
     }
     let compiled = compile_capsule(snapshot, request)?;
     let mut degradation = compiled.degradation;
-    let situation = ReferenceSituation::new(compiled.capsule, compiled.proof_roots);
+    let mut situation = ReferenceSituation::new(compiled.capsule, compiled.proof_roots);
+    if !compiled.effect_cells.is_empty() {
+        // Each effect cell was compiled from its exact journal receipt; binding it and sealing the
+        // finished capsule keeps it from being dropped, duplicated, or relabeled (fss-6sph6).
+        for (operation_id, state, cell) in &compiled.effect_cells {
+            situation.bind_effect_cell(EffectCellKind::LocalState, operation_id, *state, cell)?;
+        }
+        situation.seal_effect_bindings()?;
+    }
     let target = u64::from(request.view.target_tokens());
     let maximum = u64::from(request.view.maximum_tokens());
     let project = |situation: ReferenceSituation, tokens: u64, degraded: bool| {
@@ -2399,6 +2720,7 @@ pub fn orient_deployment(
         candidate_world_count: compiled.candidate_world_count,
         aggregated_world_count: compiled.aggregated_world_count,
         privacy_generation_id: format!("privacy-epoch:{}", snapshot.anchor.privacy_epoch),
+        anchor_token: compiled.anchor_token,
         publication,
     })
 }

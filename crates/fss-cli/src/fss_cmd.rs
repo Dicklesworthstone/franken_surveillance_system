@@ -5,6 +5,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 
 use crate::error::{CliError, ExitIdentity};
+use crate::follow_cmd::{FollowArgs, execute_follow, parse_follow_args};
 use crate::negative_evidence_cmd::{
     NegativeEvidenceAction, execute_negative_evidence, parse_negative_evidence_tokens,
 };
@@ -41,6 +42,8 @@ pub enum FssCommand {
     Orient(OrientArgs),
     /// Read-only AOP-011 explain of one published event: evidence handles, knowledge states, contradictions, and what would change them.
     Explain(ExplainArgs),
+    /// Read-only AOP-004 session.follow since an earlier anchor token: an AgentResponseEnvelope carrying one exact page of the MeaningfulDelta between the situation as of that anchor and the head (protected classes never coalesced; the rest through an exact continuation).
+    Follow(FollowArgs),
 }
 
 impl FssCommand {
@@ -52,7 +55,8 @@ impl FssCommand {
             | Self::Doctor(_)
             | Self::Status
             | Self::Orient(_)
-            | Self::Explain(_) => true,
+            | Self::Explain(_)
+            | Self::Follow(_) => true,
             Self::NegativeEvidence(action) => action.is_json(),
             Self::Help | Self::Version => false,
         }
@@ -62,7 +66,7 @@ impl FssCommand {
 /// Returns the static help text for `fss`.
 #[must_use]
 pub const fn help_text() -> &'static str {
-    "Franken Surveillance System: unqualified reference implementation\n\nUSAGE:\n  fss help\n  fss version\n  fss capabilities --json\n  fss doctor --json [--root <dir>]\n      --root inspects a deployment root read-only (never writes, locks, or repairs)\n  fss status --json\n  fss orient --json --root <dir> [--view pulse|brief|epistemic_map] [--principal <id>] [--budget-tokens <n>]\n      read-only AOP-003 session.orient: AgentResponseEnvelope with the SituationCapsule; lists affordances, never executes them\n  fss explain --json --root <dir> --event-id <id> [--principal <id>]\n      read-only AOP-011 explain of one published event\n  fss negative-evidence <init|list|verify|append> [--path <file>] [--json]\n\nCompanion binaries: fss-file (import and decode recorded media), fss-infer (scalar model\nexecution, detection, tracking), fss-event (recorded event reports and publication),\nfss-archive (RTSP/HTTP capture archives), fss-lab (deterministic scenarios).\nNothing is release-qualified; the capabilities command lists what is implemented."
+    "Franken Surveillance System: unqualified reference implementation\n\nUSAGE:\n  fss help\n  fss version\n  fss capabilities --json\n  fss doctor --json [--root <dir>]\n      --root inspects a deployment root read-only (never writes, locks, or repairs)\n  fss status --json\n  fss orient --json --root <dir> [--view pulse|brief|epistemic_map] [--principal <id>] [--budget-tokens <n>]\n      read-only AOP-003 session.orient: AgentResponseEnvelope with the SituationCapsule; lists affordances, never executes them\n  fss explain --json --root <dir> --event-id <id> [--principal <id>]\n      read-only AOP-011 explain of one published event\n  fss follow --json --root <dir> --since <anchor> [--view pulse|brief] [--principal <id>] [--max-entries <n>] [--continuation <token>]\n      read-only AOP-004 session.follow: the MeaningfulDelta since an orient anchor token, paged through exact continuations\n  fss negative-evidence <init|list|verify|append> [--path <file>] [--json]\n\nCompanion binaries: fss-file (import and decode recorded media), fss-infer (scalar model\nexecution, detection, tracking), fss-event (recorded event reports and publication),\nfss-archive (RTSP/HTTP capture archives), fss-lab (deterministic scenarios).\nNothing is release-qualified; the capabilities command lists what is implemented."
 }
 
 /// Parses OS-native arguments for `fss` with total validation and exact grammar exhaustion.
@@ -109,6 +113,7 @@ pub fn parse_fss_tokens(tokens: &[ArgToken]) -> Result<FssCommand, CliError> {
         "status" => parse_json_only_subcommand("status", tokens, FssCommand::Status),
         "orient" => parse_orient_tokens(tokens),
         "explain" => parse_explain_tokens(tokens),
+        "follow" => parse_follow_tokens(tokens),
         "negative-evidence" | "neg" | "negative" => {
             let action = parse_negative_evidence_tokens(&tokens[1..])?;
             Ok(FssCommand::NegativeEvidence(Box::new(action)))
@@ -237,6 +242,12 @@ fn parse_explain_tokens(tokens: &[ArgToken]) -> Result<FssCommand, CliError> {
     Ok(FssCommand::Explain(parse_explain_args(tokens)?))
 }
 
+/// Parses the `follow` subcommand: `--json`, `--root <dir>`, `--since <anchor>`, and optional
+/// `--view`, `--principal`, `--max-entries`, and `--continuation`, each at most once.
+fn parse_follow_tokens(tokens: &[ArgToken]) -> Result<FssCommand, CliError> {
+    Ok(FssCommand::Follow(parse_follow_args(tokens)?))
+}
+
 /// Parses subcommands whose only permitted option is `--json` with exact exhaustion.
 fn parse_json_only_subcommand(
     cmd_name: &str,
@@ -306,7 +317,7 @@ pub fn execute_fss_with_exit(command: FssCommand) -> (String, ExitIdentity) {
         FssCommand::Version => (format!("fss {VERSION}"), ExitIdentity::SUCCESS),
         FssCommand::Capabilities => (
             format!(
-                "{{\"schema\":\"fss.capabilities.v1\",\"version\":\"{VERSION}\",\"status\":\"reference_implementation_unqualified\",\"qualified\":[],\"implemented\":[\"file_import_custody:annexb,mjpeg,rtpplay\",\"jpeg_baseline_decode\",\"h264_baseline_main_high_decode\",\"h265_main_profile_decode_library\",\"model_free_watch_pipeline\",\"event_evaluation_harness\",\"two_sensor_corroborated_webhook_alert\",\"rtp_h264_h265_depacketize\",\"rtsp_interleaved_tcp_capture\",\"http_mjpeg_capture\",\"fmp4_remux_avc_hevc\",\"local_capture_archive_verify_export\",\"scalar_model_execution_safetensors\",\"foreground_and_learned_detection_reference\",\"kalman_iou_tracking_reference\",\"recorded_event_publication\",\"durable_ledger_root_last_publication\",\"deployment_doctor\",\"negative_evidence_ledger\",\"agent_orient_explain_cli\"],\"partial\":[\"cross_camera_association:caller_supplied_ground_plane\",\"camera_pose_and_localization\",\"agent_operations_cli:orient_explain_only\"],\"not_implemented\":[\"h265_ingest_wiring\",\"h265_main10_rext_tiles\",\"h264_interlaced_or_non_420\",\"progressive_jpeg_decode\",\"rtp_over_udp\",\"uvc_acquisition\",\"onvif\",\"trained_detector_package\",\"real_footage_quality_evaluation\",\"agent_protocol_transport\",\"mcp\",\"cloud_archive\",\"property_reconstruction\",\"privacy_masking\",\"deletion_closure\",\"asupersync_runtime\",\"live_operator_view\"]}}"
+                "{{\"schema\":\"fss.capabilities.v1\",\"version\":\"{VERSION}\",\"status\":\"reference_implementation_unqualified\",\"qualified\":[],\"implemented\":[\"file_import_custody:annexb,mjpeg,rtpplay\",\"jpeg_baseline_decode\",\"h264_baseline_main_high_decode\",\"h265_main_profile_decode_library\",\"model_free_watch_pipeline\",\"event_evaluation_harness\",\"two_sensor_corroborated_webhook_alert\",\"rtp_h264_h265_depacketize\",\"rtsp_interleaved_tcp_capture\",\"http_mjpeg_capture\",\"fmp4_remux_avc_hevc\",\"local_capture_archive_verify_export\",\"scalar_model_execution_safetensors\",\"foreground_and_learned_detection_reference\",\"kalman_iou_tracking_reference\",\"recorded_event_publication\",\"durable_ledger_root_last_publication\",\"deployment_doctor\",\"negative_evidence_ledger\",\"agent_orient_explain_follow_cli\"],\"partial\":[\"cross_camera_association:caller_supplied_ground_plane\",\"camera_pose_and_localization\",\"agent_operations_cli:orient_explain_follow\"],\"not_implemented\":[\"h265_ingest_wiring\",\"h265_main10_rext_tiles\",\"h264_interlaced_or_non_420\",\"progressive_jpeg_decode\",\"rtp_over_udp\",\"uvc_acquisition\",\"onvif\",\"trained_detector_package\",\"real_footage_quality_evaluation\",\"agent_protocol_transport\",\"mcp\",\"cloud_archive\",\"property_reconstruction\",\"privacy_masking\",\"deletion_closure\",\"asupersync_runtime\",\"live_operator_view\"]}}"
             ),
             ExitIdentity::SUCCESS,
         ),
@@ -341,6 +352,7 @@ pub fn execute_fss_with_exit(command: FssCommand) -> (String, ExitIdentity) {
         FssCommand::NegativeEvidence(ref action) => execute_negative_evidence(action),
         FssCommand::Orient(ref args) => execute_orient(args),
         FssCommand::Explain(ref args) => execute_explain(args),
+        FssCommand::Follow(ref args) => execute_follow(args),
     }
 }
 
@@ -407,6 +419,15 @@ mod tests {
                 "event:x",
                 "extra",
             ],
+            vec![
+                "follow",
+                "--json",
+                "--root",
+                "/deploy",
+                "--since",
+                FOLLOW_ANCHOR,
+                "extra",
+            ],
         ];
         for case in cases {
             let args: Vec<OsString> = case.into_iter().map(OsString::from).collect();
@@ -424,7 +445,14 @@ mod tests {
 
     #[test]
     fn missing_json_flag_is_rejected() {
-        for cmd in ["capabilities", "doctor", "status", "orient", "explain"] {
+        for cmd in [
+            "capabilities",
+            "doctor",
+            "status",
+            "orient",
+            "explain",
+            "follow",
+        ] {
             let result = parse_fss_args([OsString::from(cmd)]);
             assert!(result.is_err());
             if let Err(err) = result {
@@ -485,6 +513,80 @@ mod tests {
         assert_eq!(explain.event_id.as_str(), "event:watch:1");
         assert!(FssCommand::Explain(explain).is_json());
         assert!(parse(&["explain", "--json", "--root", "/deploy"]).is_err());
+    }
+
+    /// A syntactically canonical anchor token (it resolves against no deployment).
+    const FOLLOW_ANCHOR: &str = "anchor:0123456789abcdef:3:e2:\
+        abababababababababababababababababababababababababababababababab";
+
+    #[test]
+    fn follow_parses_with_defaults_and_refuses_malformed_tokens() {
+        let parse = |args: &[&str]| parse_fss_args(args.iter().map(OsString::from));
+        let Ok(FssCommand::Follow(follow)) = parse(&[
+            "follow",
+            "--json",
+            "--root",
+            "/deploy",
+            "--since",
+            FOLLOW_ANCHOR,
+        ]) else {
+            unreachable!("follow with --json, --root, and --since parses");
+        };
+        assert_eq!(follow.root, PathBuf::from("/deploy"));
+        assert_eq!(follow.since.as_str(), FOLLOW_ANCHOR);
+        assert_eq!(follow.view, fss_core::AgentView::Pulse);
+        assert_eq!(follow.principal.as_str(), "principal:local-operator");
+        assert_eq!(follow.max_entries, 64);
+        assert_eq!(follow.continuation, None);
+        assert!(FssCommand::Follow(follow).is_json());
+        let since = format!("--since={FOLLOW_ANCHOR}");
+        let Ok(FssCommand::Follow(paged)) = parse(&[
+            "follow",
+            "--root=/deploy",
+            &since,
+            "--view=brief",
+            "--max-entries",
+            "2",
+            "--continuation",
+            "continuation:sha256:00ff",
+            "--principal",
+            "principal:agent-7",
+            "--json",
+        ]) else {
+            unreachable!("follow with every option parses");
+        };
+        assert_eq!(paged.view, fss_core::AgentView::Brief);
+        assert_eq!(paged.max_entries, 2);
+        assert_eq!(
+            paged.continuation.as_deref(),
+            Some("continuation:sha256:00ff")
+        );
+        let refused = |extra: &[&str]| {
+            let mut args = vec!["follow", "--json", "--root", "/deploy"];
+            args.extend_from_slice(extra);
+            parse(&args).err().map(|error| error.error_id())
+        };
+        let malformed = Some(crate::error::ERR_CLI_MALFORMED_VALUE);
+        assert_eq!(refused(&[]), Some(crate::error::ERR_CLI_MISSING_VALUE));
+        for bad in [
+            "anchor:0123456789abcdef:03:e2:abab",
+            "anchor:0123456789ABCDEF:3:e2:\
+             abababababababababababababababababababababababababababababababab",
+            "commit:3",
+        ] {
+            assert_eq!(refused(&["--since", bad]), malformed, "{bad}");
+        }
+        for extra in [
+            ["--view", "epistemic_map"],
+            ["--max-entries", "0"],
+            ["--max-entries", "4097"],
+            ["--continuation", "cursor:1"],
+            ["--continuation", "continuation:UPPER"],
+        ] {
+            let mut args = vec!["--since", FOLLOW_ANCHOR];
+            args.extend_from_slice(&extra);
+            assert_eq!(refused(&args), malformed, "{extra:?}");
+        }
     }
 
     #[test]

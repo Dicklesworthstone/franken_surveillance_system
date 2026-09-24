@@ -117,6 +117,8 @@
     "crates/fss-reference/src/activity.rs": "cognition",
     "crates/fss-reference/src/adapter_replay.rs": "authority",
     "crates/fss-reference/src/adapter_replay_tests.rs": "support",
+    "crates/fss-reference/src/agent_follow.rs": "cognition",
+    "crates/fss-reference/src/agent_follow/tests.rs": "support",
     "crates/fss-reference/src/agent_orient.rs": "cognition",
     "crates/fss-reference/src/agent_orient/tests.rs": "support",
     "crates/fss-reference/src/agent_session.rs": "authority",

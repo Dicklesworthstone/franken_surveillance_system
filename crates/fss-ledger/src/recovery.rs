@@ -53,6 +53,12 @@ impl JournalRecord {
     pub const fn root(&self) -> ContentDigest {
         self.root
     }
+
+    /// Committed byte length of this record on disk: header, payload, and commit trailer.
+    #[must_use]
+    pub fn framed_len(&self) -> u64 {
+        (HEADER_LEN + self.payload.len() + TRAILER_LEN) as u64
+    }
 }
 
 /// Non-mutating recovery result.

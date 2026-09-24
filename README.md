@@ -567,9 +567,11 @@ Implemented (reference, unqualified):
 
 Partial:
 
-- the agent operating layer: `fss orient` and `fss explain` are read-only CLI surfaces; the other
-  fss/1 operations (session.open/resume/follow, query, investigate, plan, commit, wait, cancel,
-  handoff, feedback) and any MCP transport are not exposed;
+- the agent operating layer: `fss orient`, `fss explain`, and `fss follow` (meaningful deltas
+  since an orient anchor token, paged through exact continuations; one bounded read per call, no
+  subscription) are read-only CLI surfaces; the other fss/1 operations (session.open/resume,
+  query, investigate, plan, commit, wait, cancel, handoff, feedback) and any MCP transport are not
+  exposed;
 - alert delivery: plaintext webhook relays only (no TLS, retries or provider adapters).
 
 Not implemented:

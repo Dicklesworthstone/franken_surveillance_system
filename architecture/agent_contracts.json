@@ -442,6 +442,22 @@
       "reconciledValue": "Every view aggregates per-event worlds into one world per kind (pulse folds them into world:site:protected-worlds) keeping maximum severity and protection, summarizes events outside the view's inline set, and lists one stable expansion slot per event (fss://event/<id>/revision/<n>) naming every world it hydrates, priced by the measured read-only deployment read under the decision_diff maximum; `fss explain` is the H1 hydration. No SemanticHandle descriptor or ContextExpansionBindingSet is published for these slots.",
       "reason": "semantic_hydration.json treats v1 expansionHandles as expansion-slot identities; a SemanticHandle descriptor requires a retention horizon (retention_until > published_at) and a deployment retains no retention policy, so publishing one would invent it.",
       "status": "open"
+    },
+    {
+      "target": "schemas/agent_meaningful_delta.v1.json as the AOP-004 fss follow page payload",
+      "field": "changedCells, removedClaimIds, invalidatedAssumptions, coverageChanges, obligationChanges, effectUncertaintyChanges, coalescedCount, omittedCount, continuation",
+      "originalValue": "The engine's MeaningfulDelta is one complete object; the schema has no page, offset, or total fields.",
+      "reconciledValue": "fss follow flattens the delta's items into one follow_stream ContinuationStream (protected items first) and renders each page as agent_meaningful_delta.v1 with the complete header and class set and only that page's items in the item lists. coalescedCount and omittedCount stay the engine's values (0): pagination is not omission, every item is delivered through the exact continuation, which the page's continuation field and the envelope continuation both carry (the last page carries the engine's own continuation). The page range is stated in the envelope degradation.",
+      "reason": "MeaningfulDelta::validate forbids omission counts on non-coalescible deltas and requires each protected class's list to be non-empty, so a page cannot be a standalone typed MeaningfulDelta; the owner must decide whether the delta schema gains explicit page fields.",
+      "status": "open"
+    },
+    {
+      "target": "AOP-004 session.follow 'qualified silence' (README, registries/AGENT_OPERATIONS.md) vs the reference MeaningfulDelta engine over orientations",
+      "field": "silenceCertificate",
+      "originalValue": "session.follow is described as streaming meaningful deltas and qualified silence.",
+      "reconciledValue": "fss follow never returns a silence certificate: every orientation is partial with a not_observable coverage cell (no CoverageWitness is retained), and the engine certifies silence only over complete coverage, so even a follow since the current anchor reports the persisting gap as protected coverage_loss (no changed cells, no obligation or effect change) and the envelope degradation says why.",
+      "reason": "Silence over an uncertified domain would read as absence; the engine's clamp is kept. Qualified silence becomes reachable only once a producer retains CoverageWitness records for the orientation's domain.",
+      "status": "open"
     }
   ]
 }

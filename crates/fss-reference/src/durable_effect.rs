@@ -1223,7 +1223,9 @@ fn replay_report(report: &RecoveryReport) -> Result<EffectJournal, DurableEffect
 /// A record of an older version after a newer one (v1 after v2 or v3, v2 after v3) is refused as
 /// an unexpected record kind: earlier rules are reachable only for history written before any
 /// newer record.
-fn replay_records(records: &[JournalRecord]) -> Result<EffectJournal, DurableEffectError> {
+pub(crate) fn replay_records(
+    records: &[JournalRecord],
+) -> Result<EffectJournal, DurableEffectError> {
     let mut transitions = Vec::with_capacity(records.len());
     let mut newest = EffectRecordVersion::V1;
     for record in records {

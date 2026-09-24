@@ -252,6 +252,26 @@
       "id": "ERR-AGENT-EVENT-NOT-FOUND-001"
     },
     {
+      "description": "follow named an anchor token past the deployment's committed ledger head or effect-journal records",
+      "guidance": "orient again and follow from the current anchor token; never follow from a position the history has not committed",
+      "id": "ERR-AGENT-FOLLOW-ANCHOR-AHEAD-001"
+    },
+    {
+      "description": "follow named an anchor token whose site lineage is another deployment's",
+      "guidance": "orient this deployment and follow from the anchor token it emits",
+      "id": "ERR-AGENT-FOLLOW-ANCHOR-FOREIGN-001"
+    },
+    {
+      "description": "follow named an anchor token whose binding does not match the deployment's committed history at its position (altered token or divergent history)",
+      "guidance": "orient again and follow from the anchor token it emits; never rebase silently onto another history",
+      "id": "ERR-AGENT-FOLLOW-ANCHOR-UNKNOWN-001"
+    },
+    {
+      "description": "follow continuation is not a cursor of the exact stream (altered, issued for another anchor, view, or page size, or issued before the head advanced)",
+      "guidance": "follow again without the continuation to receive the first page of the current delta",
+      "id": "ERR-AGENT-FOLLOW-CONTINUATION-001"
+    },
+    {
       "description": "handoff root is incomplete, expired, unauthorized, schema/generation-incompatible, or cannot be safely rebased",
       "guidance": "reject, migrate, or open a new session with an explicit invalidation report; never silently resume",
       "id": "ERR-AGENT-HANDOFF-INVALID-001"

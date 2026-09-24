@@ -12,6 +12,8 @@ pub mod archive_cmd;
 pub mod crosswalk;
 pub mod diagnostic;
 pub mod error;
+/// Read-only `follow` (AOP-004 `session.follow`) since an earlier committed anchor.
+pub mod follow_cmd;
 pub mod fss_cmd;
 pub mod hydration_cmd;
 pub mod lab_cmd;
@@ -35,6 +37,10 @@ pub use error::{
     ERR_CLI_MISSING_VALUE, ERR_CLI_RUNTIME_FAILURE, ERR_CLI_TRAILING_ARGUMENT,
     ERR_CLI_UNEXPECTED_POSITIONAL, ERR_CLI_UNKNOWN_COMMAND, ERR_CLI_UNKNOWN_OPTION,
     ERR_DOCTOR_ATTENTION_REQUIRED, ERR_DOCTOR_NOT_A_DEPLOYMENT, ExitIdentity,
+};
+pub use follow_cmd::{
+    ERR_AGENT_FOLLOW_ANCHOR_AHEAD, ERR_AGENT_FOLLOW_ANCHOR_FOREIGN,
+    ERR_AGENT_FOLLOW_ANCHOR_UNKNOWN, ERR_AGENT_FOLLOW_CONTINUATION, FollowArgs, execute_follow,
 };
 pub use fss_cmd::{
     DoctorArgs, FssCommand, execute_fss, execute_fss_with_exit, help_text as fss_help_text,

@@ -50,6 +50,19 @@ synthetic scenes). None of it has been measured on real camera footage.
   acceptance only. Sensor independence rests on operator-declared sensor identities.
 - **Operations:** `fss doctor --json --root <dir>` inspects a deployment read-only; `fss-lab` runs
   its six scenarios on `ReferenceDeployment` (mock model and simulated alert provider).
+- **Agent reads (fss/1, CLI only):** `fss orient` (AOP-003), `fss explain` (AOP-011), and
+  `fss follow` (AOP-004) answer read-only in the registered `AgentResponseEnvelope`. Every
+  orientation emits a content-bound anchor token (site, commit, effect-journal records, and a
+  binding over the anchor, ledger root, and effect-journal root); `fss follow --since <token>`
+  compiles the situation as of that anchor from the committed ledger and effect-journal prefix
+  alone and returns the reference `MeaningfulDelta` engine's delta to the head, paged through an
+  exact `follow_stream` continuation (every page carries the full class set; protected items
+  first; unknown, foreign, and ahead anchors and altered or wrong-stream continuations are typed
+  refusals). Orientations now carry one local-state effect cell per durable operation, so a
+  prepared alert surfaces as protected obligation and effect-uncertainty classes. No silence
+  certificate is ever issued over an orientation: no CoverageWitness is retained, so the
+  persisting coverage gap stays protected `coverage_loss`. There is no long-lived subscription,
+  wake, or MCP transport; follow is one bounded read per call.
 
 Architectural deviations to resolve: device and alert I/O use blocking `std::net` rather than
 Asupersync (owner decision `fss-x4a.8.1` is open), and the workspace has zero third-party crates.
@@ -94,6 +107,7 @@ Asupersync (owner decision `fss-x4a.8.1` is open), and the workspace has zero th
 - Separation of resource pressure from material world change.
 - Silence certificates proving no decision-relevant change, including across harmless successor commits.
 - Exact continuation streams with content-bound entries, page digests, monotone positions, expiry, stream identity, contract basis, anchor, view, and session checks.
+- Exposed read-only through `fss follow` (AOP-004) over real deployments, comparing an as-of-anchor orientation (committed prefix only) with the head's.
 
 ### Semantic handles and H0–H4 hydration
 

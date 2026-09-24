@@ -767,3 +767,53 @@ pub fn inspect_durable(
 ) -> Result<LedgerInspection, DurableLedgerError> {
     inspect_durable_with_io(&HostJournalReadIo, path, site_lineage, limits)
 }
+
+/// Journal position of one committed evidence batch in a durable reference ledger.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CommittedBatchPosition {
+    /// Commit sequence of the batch, which is also its journal record sequence.
+    pub commit_sequence: u64,
+    /// Root of the batch's journal record, chaining it to every prior committed record.
+    pub record_root: ContentDigest,
+    /// Byte length of the committed journal prefix through this record.
+    pub prefix_len: u64,
+}
+
+/// Recomputes the committed journal position of every batch `inspection` replayed.
+///
+/// Each batch is re-encoded exactly as [`DurableReferenceLedger::append`] frames it, and record
+/// roots are chained exactly as the journal chains them. Returns `None` unless the recomputed
+/// chain ends at the inspected committed length and last root, so every returned position is one
+/// the inspected committed bytes actually hold; an absent or empty ledger has no positions. Nothing
+/// is read or written: this is a pure function of the inspection.
+#[must_use]
+pub fn committed_batch_positions(
+    inspection: &LedgerInspection,
+) -> Option<Vec<CommittedBatchPosition>> {
+    let mut previous = [0_u8; 32];
+    let mut offset = 0_u64;
+    let mut positions = Vec::with_capacity(inspection.batches.len());
+    for batch in &inspection.batches {
+        let payload = encode_batch(batch).ok()?;
+        let payload_len = u32::try_from(payload.len()).ok()?;
+        let sequence = batch.new_anchor.commit_sequence;
+        previous = crate::format::record_root(
+            sequence,
+            EVIDENCE_BATCH_RECORD_KIND,
+            payload_len,
+            previous,
+            fss_core::sha256(&payload),
+        );
+        let framed = crate::format::HEADER_LEN
+            .checked_add(payload.len())?
+            .checked_add(crate::format::TRAILER_LEN)?;
+        offset = offset.checked_add(u64::try_from(framed).ok()?)?;
+        positions.push(CommittedBatchPosition {
+            commit_sequence: sequence,
+            record_root: ContentDigest::new(DigestAlgorithm::Sha256, previous),
+            prefix_len: offset,
+        });
+    }
+    let last_root = ContentDigest::new(DigestAlgorithm::Sha256, previous);
+    (offset == inspection.committed_len && last_root == inspection.last_root).then_some(positions)
+}
