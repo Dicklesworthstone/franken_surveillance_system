@@ -122,19 +122,24 @@ fn snapshot(root: &Path) -> TestResult<BTreeMap<PathBuf, (bool, Vec<u8>)>> {
     Ok(result)
 }
 
-/// Tokens have no JSON escapes. Validate the extracted token with the actual semantic parser.
+/// Tokens have no JSON escapes. Returns the first `"anchor:` string that the actual semantic
+/// parser accepts: other orient fields (the registered anchor projection) also begin with
+/// `anchor:`, so the first textual match is not necessarily the follow token.
 fn orientation_anchor(envelope: &str) -> TestResult<&str> {
-    let start = envelope
-        .find("\"anchor:")
-        .ok_or("orientation emitted no anchor token")?
-        + 1;
-    let tail = &envelope[start..];
-    let end = tail.find('"').ok_or("unterminated anchor token")?;
-    let token = &tail[..end];
-    if fss_reference::agent_follow::AnchorToken::parse(token).is_none() {
-        return Err("orientation emitted malformed anchor token".into());
+    let mut rest = envelope;
+    let mut offset = 0;
+    while let Some(found) = rest.find("\"anchor:") {
+        let start = offset + found + 1;
+        let tail = &envelope[start..];
+        let end = tail.find('"').ok_or("unterminated anchor token")?;
+        let token = &tail[..end];
+        if fss_reference::agent_follow::AnchorToken::parse(token).is_some() {
+            return Ok(token);
+        }
+        offset = start + end;
+        rest = &envelope[offset..];
     }
-    Ok(token)
+    Err("orientation emitted no well-formed anchor token".into())
 }
 
 #[test]
