@@ -198,7 +198,7 @@ fn source_corruption_stops_warm_replay_and_cold_recovery() -> Test {
     let mut replay = DatagramReplay::new(&a, &p, 8, 0, 100)?;
     assert!(replay.step(1, &NeverCancel, &mut work()).is_err());
     assert!(replay.step(2, &NeverCancel, &mut work()).is_err());
-    drop(replay); drop(p);
+    drop(p);
     let p = dir.open()?;
     assert!(DatagramArchive::recover(&p, scope()?, limits(), None, &NeverCancel, &mut work()).is_err()); Ok(())
 }

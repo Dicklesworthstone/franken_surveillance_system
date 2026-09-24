@@ -19,10 +19,11 @@ pub(super) fn render(spec: &MjpegCameraSpec, rectangle: Option<SyntheticRectangl
     let mut pixels = vec![32_u8; width * usize::from(spec.height)];
     for (y, row) in pixels.chunks_exact_mut(width).enumerate() {
         budget.check()?;
-        if let Some(rect) = rectangle {
-            if y >= usize::from(rect.y) && y < usize::from(rect.y + rect.height) {
-                row[usize::from(rect.x)..usize::from(rect.x + rect.width)].fill(224);
-            }
+        if let Some(rect) = rectangle
+            && y >= usize::from(rect.y)
+            && y < usize::from(rect.y + rect.height)
+        {
+            row[usize::from(rect.x)..usize::from(rect.x + rect.width)].fill(224);
         }
     }
     Ok(pixels)

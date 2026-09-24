@@ -186,7 +186,7 @@ fn caller_bounds_and_exact_work_allowance_are_enforced() -> TestResult {
         }
         assert!(ImportedModel::build(&req,limits,&mut ImportBudget::new(1_000_000),&cx).is_err());
     }
-    let mut limits=ImportLimits::default();limits.maximum_expanded_bytes=16;limits.maximum_bundle_bytes=original.encoded().len();
+    let limits=ImportLimits{maximum_expanded_bytes:16,maximum_bundle_bytes:original.encoded().len(),..ImportLimits::default()};
     ImportedModel::build(&req,limits,&mut ImportBudget::new(1_000_000),&cx)?;Ok(())
 }
 #[test]

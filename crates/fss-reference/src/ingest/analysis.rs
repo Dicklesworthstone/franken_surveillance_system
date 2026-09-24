@@ -408,8 +408,8 @@ mod tests {
     }
     #[test]
     fn unbounded_or_empty_report_limits_are_refused() {
-        let mut limits = AnalysisLimits::default();
-        limits.maximum_frames = MAX_ANALYSIS_FRAMES + 1;
+        let mut limits =
+            AnalysisLimits { maximum_frames: MAX_ANALYSIS_FRAMES + 1, ..AnalysisLimits::default() };
         assert!(limits.validate().is_err());
         limits.maximum_frames = 1; limits.maximum_report_bytes = 0;
         assert!(limits.validate().is_err());

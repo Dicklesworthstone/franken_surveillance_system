@@ -189,7 +189,7 @@ fn unknown_tracks_and_exhausted_budgets_create_no_empty_absence_events() -> Test
         Err(RecordedEventError::TrackUnavailable)));
     assert!(RecordedEventProposal::prepare(&f.deployment, f.report.encoded(), f.report.digest(), f.track,
         &AnalysisLimits::default(), &mut AnalysisBudget::new(0, 0), &f.cx).is_err());
-    let mut limits = AnalysisLimits::default(); limits.maximum_frames = 1;
+    let limits = AnalysisLimits { maximum_frames: 1, ..AnalysisLimits::default() };
     assert!(RecordedEventProposal::prepare(&f.deployment, f.report.encoded(), f.report.digest(), f.track,
         &limits, &mut budget(), &f.cx).is_err());
     assert_eq!(f.deployment.current_anchor(), &anchor);

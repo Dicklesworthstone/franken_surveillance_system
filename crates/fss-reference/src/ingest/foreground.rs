@@ -306,8 +306,8 @@ impl ForegroundDetector {
                 boxes.push(ForegroundBox {
                     x: min_x as u32,
                     y: min_y as u32,
-                    width: u32::try_from(box_w).unwrap_or(u32::MAX),
-                    height: u32::try_from(box_h).unwrap_or(u32::MAX),
+                    width: box_w,
+                    height: box_h,
                     pixel_count: count,
                     density,
                 });
@@ -333,19 +333,20 @@ mod tests {
     }
 
     #[test]
-    fn first_frame_is_baseline_with_zero_foreground() {
-        let mut det = ForegroundDetector::new(config(4, 4)).unwrap();
-        let frame = det.observe(&[128; 16], 4, 4).unwrap();
+    fn first_frame_is_baseline_with_zero_foreground() -> Result<(), Box<dyn std::error::Error>> {
+        let mut det = ForegroundDetector::new(config(4, 4))?;
+        let frame = det.observe(&[128; 16], 4, 4)?;
         assert!(frame.baseline_initialized);
         assert_eq!(frame.foreground_pixels, 0);
         assert!(frame.boxes.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn bright_object_on_dark_background_produces_bounding_box() {
-        let mut det = ForegroundDetector::new(config(8, 8)).unwrap();
+    fn bright_object_on_dark_background_produces_bounding_box() -> Result<(), Box<dyn std::error::Error>> {
+        let mut det = ForegroundDetector::new(config(8, 8))?;
         let background = [20u8; 64];
-        det.observe(&background, 8, 8).unwrap();
+        det.observe(&background, 8, 8)?;
 
         // Place a bright 3x3 block centred at (3,3).
         let mut frame_pixels = background;
@@ -354,79 +355,86 @@ mod tests {
                 frame_pixels[y * 8 + x] = 220;
             }
         }
-        let frame = det.observe(&frame_pixels, 8, 8).unwrap();
+        let frame = det.observe(&frame_pixels, 8, 8)?;
         assert!(frame.foreground_pixels >= 9);
         assert_eq!(frame.boxes.len(), 1);
         let b = &frame.boxes[0];
         assert_eq!((b.x, b.y), (2, 2));
         assert_eq!((b.width, b.height), (3, 3));
+        Ok(())
     }
 
     #[test]
-    fn dimension_mismatch_is_refused() {
-        let mut det = ForegroundDetector::new(config(4, 4)).unwrap();
-        let err = det.observe(&[128; 16], 8, 2).unwrap_err();
-        assert!(matches!(err, ForegroundError::DimensionMismatch { .. }));
+    fn dimension_mismatch_is_refused() -> Result<(), Box<dyn std::error::Error>> {
+        let mut det = ForegroundDetector::new(config(4, 4))?;
+        let result = det.observe(&[128; 16], 8, 2);
+        assert!(matches!(result, Err(ForegroundError::DimensionMismatch { .. })));
+        Ok(())
     }
 
     #[test]
-    fn pixel_count_mismatch_is_refused() {
-        let mut det = ForegroundDetector::new(config(4, 4)).unwrap();
-        let err = det.observe(&[128; 15], 4, 4).unwrap_err();
-        assert!(matches!(err, ForegroundError::PixelCountMismatch { .. }));
+    fn pixel_count_mismatch_is_refused() -> Result<(), Box<dyn std::error::Error>> {
+        let mut det = ForegroundDetector::new(config(4, 4))?;
+        let result = det.observe(&[128; 15], 4, 4);
+        assert!(matches!(result, Err(ForegroundError::PixelCountMismatch { .. })));
+        Ok(())
     }
 
     #[test]
-    fn empty_scene_produces_zero_detections() {
-        let mut det = ForegroundDetector::new(config(8, 8)).unwrap();
+    fn empty_scene_produces_zero_detections() -> Result<(), Box<dyn std::error::Error>> {
+        let mut det = ForegroundDetector::new(config(8, 8))?;
         let background = [100u8; 64];
-        det.observe(&background, 8, 8).unwrap();
+        det.observe(&background, 8, 8)?;
         // Same background again: no deviation → no foreground.
-        let frame = det.observe(&background, 8, 8).unwrap();
+        let frame = det.observe(&background, 8, 8)?;
         assert_eq!(frame.foreground_pixels, 0);
         assert!(frame.boxes.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn background_adapts_after_object_is_removed() {
-        let mut det = ForegroundDetector::new(config(8, 8)).unwrap();
+    fn background_adapts_after_object_is_removed() -> Result<(), Box<dyn std::error::Error>> {
+        let mut det = ForegroundDetector::new(config(8, 8))?;
         let background = [100u8; 64];
-        det.observe(&background, 8, 8).unwrap();
+        det.observe(&background, 8, 8)?;
 
         // Bright object for many frames: the model adapts on non-foreground
         // pixels, but the object pixels remain foreground.
         let mut object_frame = background;
         for y in 2..5 { for x in 2..5 { object_frame[y * 8 + x] = 200; } }
-        for _ in 0..20 { det.observe(&object_frame, 8, 8).unwrap(); }
+        for _ in 0..20 { det.observe(&object_frame, 8, 8)?; }
 
         // Remove the object: the model has adapted enough that the restored
         // background produces a (weaker) foreground response that decays over
         // subsequent observations.
-        for _ in 0..30 { det.observe(&background, 8, 8).unwrap(); }
-        let frame = det.observe(&background, 8, 8).unwrap();
+        for _ in 0..30 { det.observe(&background, 8, 8)?; }
+        let frame = det.observe(&background, 8, 8)?;
         assert_eq!(frame.foreground_pixels, 0, "background should have re-adapted");
+        Ok(())
     }
 
     #[test]
-    fn minimum_region_filters_tiny_artifacts() {
-        let mut det = ForegroundDetector::new(config(8, 8)).unwrap();
-        let _ = det.observe(&[50u8; 64], 8, 8).unwrap();
+    fn minimum_region_filters_tiny_artifacts() -> Result<(), Box<dyn std::error::Error>> {
+        let mut det = ForegroundDetector::new(config(8, 8))?;
+        let _ = det.observe(&[50u8; 64], 8, 8)?;
         // Single bright pixel: below minimum_region_pixels (4).
         let mut frame_pixels = [50u8; 64];
         frame_pixels[27] = 250;
-        let frame = det.observe(&frame_pixels, 8, 8).unwrap();
+        let frame = det.observe(&frame_pixels, 8, 8)?;
         assert!(frame.boxes.is_empty(), "single-pixel region must be filtered");
+        Ok(())
     }
 
     #[test]
-    fn two_separate_regions_produce_two_boxes() {
-        let mut det = ForegroundDetector::new(config(16, 8)).unwrap();
-        let _ = det.observe(&[50u8; 128], 16, 8).unwrap();
+    fn two_separate_regions_produce_two_boxes() -> Result<(), Box<dyn std::error::Error>> {
+        let mut det = ForegroundDetector::new(config(16, 8))?;
+        let _ = det.observe(&[50u8; 128], 16, 8)?;
         let mut frame_pixels = [50u8; 128];
         for y in 1..4 { for x in 1..4 { frame_pixels[y * 16 + x] = 200; } }
         for y in 1..4 { for x in 10..13 { frame_pixels[y * 16 + x] = 200; } }
-        let frame = det.observe(&frame_pixels, 16, 8).unwrap();
+        let frame = det.observe(&frame_pixels, 16, 8)?;
         assert_eq!(frame.boxes.len(), 2, "two separated regions must yield two boxes");
+        Ok(())
     }
 
     #[test]
@@ -443,13 +451,14 @@ mod tests {
     }
 
     #[test]
-    fn deterministic_across_runs() {
+    fn deterministic_across_runs() -> Result<(), Box<dyn std::error::Error>> {
         let pixels: Vec<u8> = (0..64).map(|i| if i % 7 == 0 { 200 } else { 50 }).collect();
-        let mut a = ForegroundDetector::new(config(8, 8)).unwrap();
-        let mut b = ForegroundDetector::new(config(8, 8)).unwrap();
-        let fa = a.observe(&pixels, 8, 8).unwrap();
-        let fb = b.observe(&pixels, 8, 8).unwrap();
+        let mut a = ForegroundDetector::new(config(8, 8))?;
+        let mut b = ForegroundDetector::new(config(8, 8))?;
+        let fa = a.observe(&pixels, 8, 8)?;
+        let fb = b.observe(&pixels, 8, 8)?;
         assert_eq!(fa.foreground_pixels, fb.foreground_pixels);
         assert_eq!(fa.boxes, fb.boxes);
+        Ok(())
     }
 }

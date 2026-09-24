@@ -390,14 +390,15 @@ mod tests {
     }
 
     #[test]
-    fn single_object_is_tracked_across_frames() {
-        let mut t = MultiObjectTracker::new(config()).unwrap();
+    fn single_object_is_tracked_across_frames() -> Result<(), Box<dyn std::error::Error>> {
+        let mut t = MultiObjectTracker::new(config())?;
         for frame in 0..5 {
             let out = t.step(&[det(10.0 + frame as f64 * 2.0, 20.0)]);
             assert_eq!(out.tracks.len(), 1);
         }
         assert_eq!(out_single(&t).status, TrackStatus::Confirmed);
         assert_eq!(out_single(&t).hits, 5);
+        Ok(())
     }
 
     fn out_single(t: &MultiObjectTracker) -> &TrackedTarget {
@@ -405,15 +406,16 @@ mod tests {
     }
 
     #[test]
-    fn tentative_track_not_confirmed_before_min_hits() {
-        let mut t = MultiObjectTracker::new(config()).unwrap();
+    fn tentative_track_not_confirmed_before_min_hits() -> Result<(), Box<dyn std::error::Error>> {
+        let mut t = MultiObjectTracker::new(config())?;
         let out = t.step(&[det(10.0, 20.0)]);
         assert_eq!(out.tracks[0].status, TrackStatus::Tentative);
+        Ok(())
     }
 
     #[test]
-    fn missed_detections_are_handled_without_crash() {
-        let mut t = MultiObjectTracker::new(config()).unwrap();
+    fn missed_detections_are_handled_without_crash() -> Result<(), Box<dyn std::error::Error>> {
+        let mut t = MultiObjectTracker::new(config())?;
         t.step(&[det(10.0, 20.0)]);
         // Empty frames: track goes Lost then Deleted.
         for _ in 0..5 {
@@ -421,11 +423,12 @@ mod tests {
             if out.tracks.is_empty() { break; }
         }
         assert!(t.tracks.is_empty(), "track should have been deleted after max misses");
+        Ok(())
     }
 
     #[test]
-    fn two_crossing_objects_maintain_separate_ids() {
-        let mut t = MultiObjectTracker::new(config()).unwrap();
+    fn two_crossing_objects_maintain_separate_ids() -> Result<(), Box<dyn std::error::Error>> {
+        let mut t = MultiObjectTracker::new(config())?;
         // Object A moves right, object B moves left; they cross in the middle.
         for frame in 0..10 {
             let ax = 10.0 + frame as f64 * 5.0;
@@ -437,13 +440,14 @@ mod tests {
                 assert_ne!(confirmed[0].id, confirmed[1].id);
             }
         }
+        Ok(())
     }
 
     #[test]
-    fn deterministic_across_runs() {
+    fn deterministic_across_runs() -> Result<(), Box<dyn std::error::Error>> {
         let detections = vec![det(15.0, 25.0), det(60.0, 30.0)];
-        let mut a = MultiObjectTracker::new(config()).unwrap();
-        let mut b = MultiObjectTracker::new(config()).unwrap();
+        let mut a = MultiObjectTracker::new(config())?;
+        let mut b = MultiObjectTracker::new(config())?;
         let oa = a.step(&detections);
         let ob = b.step(&detections);
         assert_eq!(oa.tracks.len(), ob.tracks.len());
@@ -451,42 +455,46 @@ mod tests {
             assert_eq!(ta.id, tb.id);
             assert_eq!((ta.cx, ta.cy), (tb.cx, tb.cy));
         }
+        Ok(())
     }
 
     #[test]
-    fn empty_detections_on_empty_tracker_produce_empty_output() {
-        let mut t = MultiObjectTracker::new(config()).unwrap();
+    fn empty_detections_on_empty_tracker_produce_empty_output() -> Result<(), Box<dyn std::error::Error>> {
+        let mut t = MultiObjectTracker::new(config())?;
         let out = t.step(&[]);
         assert!(out.tracks.is_empty());
         assert_eq!(out.new_tracks, 0);
         assert_eq!(out.deleted_tracks, 0);
+        Ok(())
     }
 
     #[test]
-    fn min_hits_gates_confirmation_not_the_first_match() {
+    fn min_hits_gates_confirmation_not_the_first_match() -> Result<(), Box<dyn std::error::Error>> {
         let mut cfg = config();
         cfg.min_hits = 3;
-        let mut t = MultiObjectTracker::new(cfg).unwrap();
+        let mut t = MultiObjectTracker::new(cfg)?;
         // Creation frame: Tentative with one hit.
         assert_eq!(t.step(&[det(10.0, 20.0)]).tracks[0].status, TrackStatus::Tentative);
         // First MATCH must not confirm: two hits < min_hits.
         assert_eq!(t.step(&[det(10.0, 20.0)]).tracks[0].status, TrackStatus::Tentative);
         // Third consecutive hit reaches min_hits: now Confirmed.
         assert_eq!(t.step(&[det(10.0, 20.0)]).tracks[0].status, TrackStatus::Confirmed);
+        Ok(())
     }
 
     #[test]
-    fn unmatched_tentative_track_is_deleted_immediately_not_coasted() {
-        let mut t = MultiObjectTracker::new(config()).unwrap();
+    fn unmatched_tentative_track_is_deleted_immediately_not_coasted() -> Result<(), Box<dyn std::error::Error>> {
+        let mut t = MultiObjectTracker::new(config())?;
         t.step(&[det(10.0, 20.0)]);
         let out = t.step(&[]);
         assert!(out.tracks.is_empty(), "one-hit proposal must not linger as Lost");
         assert_eq!(out.deleted_tracks, 1);
+        Ok(())
     }
 
     #[test]
-    fn lost_confirmed_track_revives_on_redetection() {
-        let mut t = MultiObjectTracker::new(config()).unwrap();
+    fn lost_confirmed_track_revives_on_redetection() -> Result<(), Box<dyn std::error::Error>> {
+        let mut t = MultiObjectTracker::new(config())?;
         t.step(&[det(10.0, 20.0)]);
         t.step(&[det(10.0, 20.0)]); // Confirmed (2 hits >= min_hits).
         let lost = t.step(&[]); // One miss: coasting.
@@ -494,6 +502,7 @@ mod tests {
         let revived = t.step(&[det(10.0, 20.0)]);
         assert_eq!(revived.tracks[0].status, TrackStatus::Confirmed);
         assert_eq!(revived.tracks[0].id, lost.tracks[0].id);
+        Ok(())
     }
 
     #[test]
