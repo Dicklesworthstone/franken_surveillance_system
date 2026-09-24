@@ -22,6 +22,7 @@ mod context_binding;
 pub mod decode;
 mod delivery;
 pub mod doctor;
+pub mod evaluation;
 mod durable_effect;
 mod encoded_fixture;
 mod error;
