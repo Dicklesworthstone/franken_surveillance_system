@@ -791,8 +791,19 @@ const LISTS: [&str; 5] = [
 // Tests.
 // ---------------------------------------------------------------------------------------------
 
+/// Serializes this binary's tests. Tests open a `ReferenceDeployment` in this process, which holds
+/// its native flock owner lock, and spawn real CLI processes. A child spawned by a concurrent test
+/// thread inherits, until its exec closes it, every descriptor open at that instant, including
+/// another test's held deployment lock; the flock then outlives its owner's drop, and that test's
+/// next child or read-only inspection sees the deployment as Locked or as having an active writer.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[test]
 fn follow_since_an_empty_orientation_names_the_new_unresolved_event() -> TestResult {
+    let _serial = serial();
     let directory = OwnedDirectory::new("new-event")?;
     let root = empty_deployment(&directory, SITE)?;
     let (empty_orientation, since) = orient(&root, "brief")?;
@@ -893,6 +904,7 @@ fn follow_since_an_empty_orientation_names_the_new_unresolved_event() -> TestRes
 #[test]
 fn follow_since_the_current_anchor_changes_nothing_but_keeps_the_coverage_gap_protected()
 -> TestResult {
+    let _serial = serial();
     let directory = OwnedDirectory::new("current")?;
     let root = empty_deployment(&directory, SITE)?;
     let import_id = import(&directory, Motion::Right, "sensor:follow-cli", false)?;
@@ -950,6 +962,7 @@ fn follow_since_the_current_anchor_changes_nothing_but_keeps_the_coverage_gap_pr
 
 #[test]
 fn a_prepared_alert_is_a_protected_obligation_and_effect_uncertainty_delta() -> TestResult {
+    let _serial = serial();
     let directory = OwnedDirectory::new("alert")?;
     let event_id = publish_corroborated_event(&directory)?;
     let root = directory.root();
@@ -1024,6 +1037,7 @@ fn a_prepared_alert_is_a_protected_obligation_and_effect_uncertainty_delta() -> 
 
 #[test]
 fn small_budgets_page_every_item_through_bound_continuations() -> TestResult {
+    let _serial = serial();
     let directory = OwnedDirectory::new("pages")?;
     let root = directory.root();
     let (_, empty_token) = {
@@ -1196,6 +1210,7 @@ fn small_budgets_page_every_item_through_bound_continuations() -> TestResult {
 
 #[test]
 fn unknown_foreign_ahead_and_malformed_anchors_are_typed_refusals() -> TestResult {
+    let _serial = serial();
     let directory = OwnedDirectory::new("refusals")?;
     let root = empty_deployment(&directory, SITE)?;
     let import_id = import(&directory, Motion::Right, "sensor:follow-cli", false)?;

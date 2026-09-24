@@ -27,9 +27,12 @@ type TestResult = Result<(), Box<dyn Error>>;
 
 const LINEAGE: &str = "site:doctor-cli-contract";
 
+/// Scopes fixture paths to this test process: concurrent `cargo test` runs that share a target
+/// directory share `CARGO_TARGET_TMPDIR`, and a fixed path would let one run remove or lock another
+/// run's live deployment.
 fn fresh(name: &str) -> Result<PathBuf, Box<dyn Error>> {
     let base = Path::new(env!("CARGO_TARGET_TMPDIR"))
-        .join("doctor_cli_contract")
+        .join(format!("doctor_cli_contract-{}", std::process::id()))
         .join(name);
     match fs::remove_dir_all(&base) {
         Ok(()) => {}
@@ -56,7 +59,7 @@ fn test_cx(label: &str) -> Result<ReplayCx, Box<dyn Error>> {
     };
     let root_auth = fss_core::ContextAuthority::new_root(spec)?;
     let scratch_root = Path::new(env!("CARGO_TARGET_TMPDIR"))
-        .join("doctor_cli_contract_cx")
+        .join(format!("doctor_cli_contract_cx-{}", std::process::id()))
         .join(label);
     let io = ReplayIoAuthority::from_context_authority(&root_auth, scratch_root)?;
     Ok(ReplayCx::new(io))
@@ -104,8 +107,19 @@ fn root_args(root: &Path) -> Vec<OsString> {
     ]
 }
 
+/// Serializes this binary's tests. Tests open a `ReferenceDeployment` in this process, which holds
+/// its native flock owner lock, and spawn real CLI processes. A child spawned by a concurrent test
+/// thread inherits, until its exec closes it, every descriptor open at that instant, including
+/// another test's held deployment lock; the flock then outlives its owner's drop, and that test's
+/// next child or read-only inspection sees the deployment as Locked or as having an active writer.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[test]
 fn test_doctor_without_root_retains_design_only_byte_for_byte() -> TestResult {
+    let _serial = serial();
     let (stdout, exit_id) = execute_fss_with_exit(FssCommand::Doctor(DoctorArgs { root: None }));
     assert_eq!(exit_id, ExitIdentity::SUCCESS);
     let expected = format!(
@@ -123,6 +137,7 @@ fn test_doctor_without_root_retains_design_only_byte_for_byte() -> TestResult {
 
 #[test]
 fn test_doctor_in_process_exit_codes_match_the_library_report() -> TestResult {
+    let _serial = serial();
     let clean = init_clean_deployment("clean")?;
     let (stdout, exit_id) = doctor(&clean);
     assert_eq!(stdout, inspect_deployment(&clean).to_json());
@@ -150,6 +165,7 @@ fn test_doctor_in_process_exit_codes_match_the_library_report() -> TestResult {
 
 #[test]
 fn test_real_fss_binary_with_root_prints_the_report_and_exit_code() -> TestResult {
+    let _serial = serial();
     let clean = init_clean_deployment("binary_clean")?;
     let (code, out, err) = run_fss(&root_args(&clean))?;
     assert_eq!(code, Some(0));
@@ -212,6 +228,7 @@ fn test_real_fss_binary_with_root_prints_the_report_and_exit_code() -> TestResul
 
 #[test]
 fn test_doctor_cli_parsing_coverage() -> TestResult {
+    let _serial = serial();
     let parse = |args: &[&str]| parse_fss_args(args.iter().map(OsString::from));
     assert_eq!(
         parse(&["doctor", "--json"]).ok(),

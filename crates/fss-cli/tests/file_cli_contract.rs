@@ -17,10 +17,18 @@ struct OwnedTestDir(PathBuf);
 
 impl OwnedTestDir {
     fn new(label: &str) -> io::Result<Self> {
-        let path = std::env::temp_dir().join(format!("fss-file-cli-{label}-{}", std::process::id()));
-        // Never claim or remove a directory we did not create.
-        fs::create_dir(&path)?;
-        Ok(Self(path))
+        // Never claim or remove a directory we did not create: a directory left by an earlier
+        // process with a reused pid is skipped, not failed on or adopted.
+        for attempt in 0..100_u32 {
+            let path = std::env::temp_dir()
+                .join(format!("fss-file-cli-{label}-{}-{attempt}", std::process::id()));
+            match fs::create_dir(&path) {
+                Ok(()) => return Ok(Self(path)),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Err(io::Error::other("test directory capacity"))
     }
 }
 

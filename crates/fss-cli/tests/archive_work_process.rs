@@ -35,7 +35,7 @@ fn recording(at: u64) -> Result<fss_reference::rtsp::recording::PreparedRecordin
 }
 fn fixture(name: &str) -> Result<Fixture, Box<dyn std::error::Error>> { fixture_kind(name, false) }
 fn fixture_kind(name: &str, older_page: bool) -> Result<Fixture, Box<dyn std::error::Error>> {
-    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("archive_work_process").join(name);
+    let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("archive_work_process-{}", std::process::id())).join(name);
     match std::fs::remove_dir_all(&path) {
         Ok(()) => {}, Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}, Err(e) => return Err(e.into()),
     }
