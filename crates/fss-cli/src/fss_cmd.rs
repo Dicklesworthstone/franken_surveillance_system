@@ -12,7 +12,7 @@ use crate::negative_evidence_cmd::{
 use crate::orient_cmd::{
     ExplainArgs, OrientArgs, execute_explain, execute_orient, parse_explain_args, parse_orient_args,
 };
-use crate::session_cmd::{SessionCommand, execute_session, parse_session_args};
+use crate::session_cmd::{SessionCommand, execute_session, parse_handoff, parse_session_args};
 use crate::token::{ArgToken, tokenize_os_args};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -70,7 +70,7 @@ impl FssCommand {
 /// Returns the static help text for `fss`.
 #[must_use]
 pub const fn help_text() -> &'static str {
-    "Franken Surveillance System: unqualified reference implementation\n\nUSAGE:\n  fss help\n  fss version\n  fss capabilities --json\n  fss doctor --json [--root <dir>]\n      --root inspects a deployment root read-only (never writes, locks, or repairs)\n  fss status --json\n  fss orient --json --root <dir> [--view pulse|brief|epistemic_map] [--principal <id>] [--budget-tokens <n>]\n      read-only AOP-003 session.orient: AgentResponseEnvelope with the SituationCapsule; lists affordances, never executes them\n  fss explain --json --root <dir> --event-id <id> [--principal <id>]\n      read-only AOP-011 explain of one published event\n  fss follow --json --root <dir> --since <anchor> [--view pulse|brief] [--principal <id>] [--max-entries <n>] [--continuation <token>]\n      read-only AOP-004 session.follow: the MeaningfulDelta since an orient anchor token, paged through exact continuations\n  fss session open --json --root <dir> --mission <text-or-file> --objective <text> [--principal <id>] [--view pulse|brief|epistemic_map] [--budget-tokens <n>]\n      AOP-001 session.open: a durable mission-scoped session and its first workspace revision at the current orient anchor (writes agent/ only)\n  fss session handoff --json --root <dir> --session <id> [--principal <id>] [--note <text>]\n      AOP-012 handoff: publishes a root-last HandoffCapsule sealed as of the session's anchor\n  fss session resume --json --root <dir> --handoff <id> [--principal <id>]\n      AOP-002 session.resume: accepts the handoff, lists every invalidated assumption, and rebases the session onto the head\n  fss negative-evidence <init|list|verify|append> [--path <file>] [--json]\n\nCompanion binaries: fss-file (import and decode recorded media), fss-infer (scalar model\nexecution, detection, tracking), fss-event (recorded event reports and publication),\nfss-archive (RTSP/HTTP capture archives), fss-lab (deterministic scenarios).\nNothing is release-qualified; the capabilities command lists what is implemented."
+    "Franken Surveillance System: unqualified reference implementation\n\nUSAGE:\n  fss help\n  fss version\n  fss capabilities --json\n  fss doctor --json [--root <dir>]\n      --root inspects a deployment root read-only (never writes, locks, or repairs)\n  fss status --json\n  fss session orient --json --root <dir> [--view pulse|brief|epistemic_map] [--principal <id>] [--budget-tokens <n>]\n      (alias: fss orient) read-only AOP-003 session.orient: AgentResponseEnvelope with the SituationCapsule; lists affordances, never executes them\n  fss explain --json --root <dir> --event-id <id> [--principal <id>]\n      read-only AOP-011 explain of one published event\n  fss session follow --json --root <dir> --since <anchor> [--view pulse|brief] [--principal <id>] [--max-entries <n>] [--continuation <token>]\n      (alias: fss follow) read-only AOP-004 session.follow: the MeaningfulDelta since an orient anchor token, paged through exact continuations\n  fss session open --json --root <dir> --mission <text-or-file> --objective <text> [--principal <id>] [--view pulse|brief|epistemic_map] [--budget-tokens <n>]\n      AOP-001 session.open: a durable mission-scoped session and its first workspace revision at the current orient anchor (writes agent/ only)\n  fss handoff --json --root <dir> --session <id> [--principal <id>] [--note <text>]\n      (alias: fss session handoff) AOP-012 handoff: publishes a root-last HandoffCapsule sealed as of the session's anchor\n  fss session resume --json --root <dir> --handoff <id> [--principal <id>]\n      AOP-002 session.resume: accepts the handoff, lists every invalidated assumption, and rebases the session onto the head\n  fss negative-evidence <init|list|verify|append> [--path <file>] [--json]\n\nCompanion binaries: fss-file (import and decode recorded media), fss-infer (scalar model\nexecution, detection, tracking), fss-event (recorded event reports and publication),\nfss-archive (RTSP/HTTP capture archives), fss-lab (deterministic scenarios).\nNothing is release-qualified; the capabilities command lists what is implemented."
 }
 
 /// Parses OS-native arguments for `fss` with total validation and exact grammar exhaustion.
@@ -115,10 +115,22 @@ pub fn parse_fss_tokens(tokens: &[ArgToken]) -> Result<FssCommand, CliError> {
         }
         "doctor" => parse_doctor_tokens(tokens),
         "status" => parse_json_only_subcommand("status", tokens, FssCommand::Status),
+        // The registered spellings (AGENT_OPERATING_MODEL.md section 24.1, the frozen public
+        // registry `gen:fss1:public-v1`, and architecture/operation_crosswalk.json) are
+        // `fss session orient` (AOP-003), `fss session follow` (AOP-004), and `fss handoff`
+        // (AOP-012); `fss orient`, `fss follow`, and `fss session handoff` are their recorded
+        // aliases and parse to the same command.
         "orient" => parse_orient_tokens(tokens),
         "explain" => parse_explain_tokens(tokens),
         "follow" => parse_follow_tokens(tokens),
-        "session" => parse_session_tokens(tokens),
+        "handoff" => Ok(FssCommand::Session(SessionCommand::Handoff(parse_handoff(
+            tokens,
+        )?))),
+        "session" => match tokens.get(1).map(ArgToken::as_str) {
+            Some("orient") => parse_orient_tokens(&tokens[1..]),
+            Some("follow") => parse_follow_tokens(&tokens[1..]),
+            _ => parse_session_tokens(tokens),
+        },
         "negative-evidence" | "neg" | "negative" => {
             let action = parse_negative_evidence_tokens(&tokens[1..])?;
             Ok(FssCommand::NegativeEvidence(Box::new(action)))
@@ -608,6 +620,84 @@ mod tests {
             let mut args = vec!["--since", FOLLOW_ANCHOR];
             args.extend_from_slice(&extra);
             assert_eq!(refused(&args), malformed, "{extra:?}");
+        }
+    }
+
+    #[test]
+    fn registered_crosswalk_spellings_parse_to_their_operations() {
+        // Every implemented continuity and read operation parses under the exact cli_command of
+        // its crosswalk row (the frozen public registry spelling), and each recorded alias
+        // parses to the identical command.
+        let parse = |args: &[&str]| parse_fss_args(args.iter().map(OsString::from)).ok();
+        let registered = |operation: &str| {
+            crate::crosswalk::lookup_by_operation_id(operation)
+                .map(|entry| entry.cli_command.split_whitespace().skip(1).collect())
+                .unwrap_or_default()
+        };
+        let orient_tail = ["--json", "--root", "/deploy", "--view", "pulse"];
+        let follow_tail = ["--json", "--root", "/deploy", "--since", FOLLOW_ANCHOR];
+        let handoff_tail = ["--json", "--root", "/deploy", "--session", "session:abc"];
+        let resume_tail = ["--json", "--root", "/deploy", "--handoff", "handoff:abc"];
+        let open_tail = [
+            "--json",
+            "--root",
+            "/deploy",
+            "--mission",
+            "m",
+            "--objective",
+            "o",
+        ];
+        let cases: [(&str, &[&str], Vec<&str>); 5] = [
+            ("AOP-003", &orient_tail, vec!["orient"]),
+            ("AOP-004", &follow_tail, vec!["follow"]),
+            ("AOP-012", &handoff_tail, vec!["session", "handoff"]),
+            ("AOP-001", &open_tail, vec!["session", "open"]),
+            ("AOP-002", &resume_tail, vec!["session", "resume"]),
+        ];
+        for (operation, tail, alias) in cases {
+            let mut spelled: Vec<&str> = registered(operation);
+            assert!(!spelled.is_empty(), "{operation} has a crosswalk row");
+            spelled.extend_from_slice(tail);
+            let parsed = parse(&spelled);
+            assert!(parsed.is_some(), "{operation}: {spelled:?} parses");
+            let mut aliased = alias;
+            aliased.extend_from_slice(tail);
+            assert_eq!(parse(&aliased), parsed, "{operation}: {aliased:?}");
+        }
+        assert!(matches!(
+            parse(&["session", "orient", "--json", "--root", "/deploy"]),
+            Some(FssCommand::Orient(_))
+        ));
+        assert!(matches!(
+            parse(&[
+                "session",
+                "follow",
+                "--json",
+                "--root",
+                "/deploy",
+                "--since",
+                FOLLOW_ANCHOR
+            ]),
+            Some(FssCommand::Follow(_))
+        ));
+        assert!(matches!(
+            parse(&[
+                "handoff",
+                "--json",
+                "--root",
+                "/deploy",
+                "--session",
+                "session:abc"
+            ]),
+            Some(FssCommand::Session(SessionCommand::Handoff(_)))
+        ));
+        // The help lists the registered spellings.
+        for spelling in [
+            "fss session orient",
+            "fss session follow",
+            "fss handoff --json",
+        ] {
+            assert!(help_text().contains(spelling), "{spelling}");
         }
     }
 

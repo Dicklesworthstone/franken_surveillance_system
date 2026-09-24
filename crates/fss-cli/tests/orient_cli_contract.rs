@@ -900,6 +900,22 @@ fn published_watch_candidate_is_indeterminate_single_sensor_and_explainable() ->
             > 0
     );
     let payload = envelope.get("payload")?;
+    // viewSectionCarriers (AVIEW-002, architecture/agent_contracts.json): `now` is the critical
+    // frame summary item and names no commit (the anchor carries the position), and `next` is
+    // one critical next_affordance item per listed next move.
+    let context = payload.path(&["contextPack", "items"])?;
+    let summary = context.find("itemId", "context:frame:summary")?;
+    assert_eq!(summary.get("kind")?.text()?, "frame");
+    let now = summary.get("content")?.text()?;
+    assert!(now.starts_with("1 event (1 indeterminate)"), "{now}");
+    assert!(!now.contains("Commit"), "{now}");
+    let next_items = context
+        .items()?
+        .iter()
+        .filter(|item| item.get("kind").and_then(Json::text).ok() == Some("next_affordance"))
+        .count();
+    assert!(next_items > 0);
+    assert_eq!(next_items, envelope.get("affordances")?.items()?.len());
     // brief summarizes the event; epistemic_map carries its knowledge cells inline.
     let (code, map_stdout, stderr) = run_fss(&orient_args(&root, &["--view", "epistemic_map"]))?;
     assert_eq!(code, Some(0), "stderr: {stderr}");

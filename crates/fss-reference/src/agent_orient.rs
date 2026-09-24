@@ -95,7 +95,9 @@ pub const CAPABILITY_PLAN_PREPARE: &str = "CAP-AGENT-PLAN-PREPARE-001";
 /// Capability registry row that admits an effect commit (AOP-008).
 pub const CAPABILITY_PLAN_COMMIT: &str = "CAP-AGENT-PLAN-COMMIT-001";
 
-/// Stable claim identity of the ledger-head cell.
+/// Stable claim identity of the ledger-head cell: the registered anchor-position claim
+/// (`anchor_position_restatement` of `meaningfulDeltaComparison`, architecture/agent_contracts.json)
+/// whose statement and evidence restate the committed position and are not compared by follow.
 pub const CLAIM_LEDGER_HEAD: &str = "claim:deployment:ledger-head";
 /// Stable claim identity of the retained-import cell.
 pub const CLAIM_IMPORTS: &str = "claim:deployment:imports";
@@ -271,6 +273,17 @@ pub struct DeploymentSnapshot {
     pub ledger_root: ContentDigest,
     /// Committed evidence batches in the prefix.
     pub batch_count: usize,
+    /// Record root of the last committed batch in the prefix that published an event revision
+    /// (`None` when no event was published). The ledger record chain makes it cover every
+    /// earlier event revision, and it does not move when an unrelated batch commits.
+    pub event_ledger_root: Option<ContentDigest>,
+    /// Record root of the last committed batch in the prefix that retained source evidence
+    /// (`sensor_capsule`) or coverage (`coverage_witness`) (`None` when none did); like
+    /// [`Self::event_ledger_root`] it does not move when an unrelated batch commits.
+    pub evidence_ledger_root: Option<ContentDigest>,
+    /// Record root of the last committed batch in the prefix that completed a file import
+    /// (`file_import_manifest`) (`None` when none did).
+    pub import_ledger_root: Option<ContentDigest>,
     /// Whether the ledger file ends with an incomplete or foreign tail beyond its committed
     /// records, as read now.
     pub ledger_tail_uncommitted: bool,
@@ -705,7 +718,34 @@ impl DeploymentHistory {
             BTreeMap::new();
         let mut coverage_deltas: Vec<(ContentDigest, u64)> = Vec::new();
         let mut capsule_deltas: Vec<(ContentDigest, TimestampNs)> = Vec::new();
-        for batch in batches {
+        let mut event_ledger_root = None;
+        let mut evidence_ledger_root = None;
+        let mut import_ledger_root = None;
+        for (index, batch) in batches.iter().enumerate() {
+            let record_root = self
+                .ledger_positions
+                .get(index)
+                .map(|committed| committed.record_root)
+                .ok_or_else(not_committed)?;
+            if batch
+                .deltas
+                .iter()
+                .any(|delta| delta.family == FAMILY_EVENT_REVISION)
+            {
+                event_ledger_root = Some(record_root);
+            }
+            if batch.deltas.iter().any(|delta| {
+                delta.family == FAMILY_SENSOR_CAPSULE || delta.family == FAMILY_COVERAGE_WITNESS
+            }) {
+                evidence_ledger_root = Some(record_root);
+            }
+            if batch
+                .deltas
+                .iter()
+                .any(|delta| delta.family == FAMILY_FILE_IMPORT_MANIFEST)
+            {
+                import_ledger_root = Some(record_root);
+            }
             for delta in &batch.deltas {
                 if delta.family == FAMILY_COVERAGE_WITNESS {
                     coverage_deltas.push((delta.payload_digest, batch.new_anchor.commit_sequence));
@@ -846,6 +886,9 @@ impl DeploymentHistory {
             anchor,
             ledger_root,
             batch_count,
+            event_ledger_root,
+            evidence_ledger_root,
+            import_ledger_root,
             ledger_tail_uncommitted: self.ledger_tail_uncommitted,
             family_counts,
             completed_imports,
@@ -1615,6 +1658,15 @@ fn compile_capsule(
         proof_roots.insert(snapshot.ledger_root);
         snapshot.ledger_root
     };
+    // Facts derived from published events cite the record root of the last event-bearing batch,
+    // and the unobserved-activity residual cites the last batch that retained source evidence or
+    // coverage: each root chains every earlier record it rests on and stays put when an unrelated
+    // batch commits, so a harmless successor commit re-derives identical facts (only the
+    // registered anchor-position cell restates the head; `anchor_position_restatement`).
+    let event_evidence = snapshot.event_ledger_root.unwrap_or(ledger_evidence);
+    proof_roots.insert(event_evidence);
+    let residual_evidence = snapshot.evidence_ledger_root.unwrap_or(anchor.state_root);
+    proof_roots.insert(residual_evidence);
 
     let planned = planned_events(snapshot, request.view)?;
     let headline = planned.first();
@@ -1724,7 +1776,7 @@ fn compile_capsule(
                 state_counts(&planned),
                 top.id()
             ),
-            vec![ledger_evidence],
+            vec![event_evidence],
         )?);
     }
 
@@ -1740,7 +1792,7 @@ fn compile_capsule(
         world_id: WORLD_UNOBSERVED_ACTIVITY.to_owned(),
         description: "Activity outside retained evidence remains possible.".to_owned(),
         claim_ids: BTreeSet::from([CLAIM_COVERAGE.to_owned()]),
-        evidence: vec![anchor.state_root],
+        evidence: vec![residual_evidence],
         consequence_severity: 4,
         protected: true,
     }];
@@ -1754,7 +1806,7 @@ fn compile_capsule(
                 class.description
             ),
             claim_ids: BTreeSet::from([CLAIM_EVENTS.to_owned()]),
-            evidence: vec![ledger_evidence],
+            evidence: vec![event_evidence],
             consequence_severity: class.severity,
             protected: class.protected,
         };
@@ -1787,7 +1839,9 @@ fn compile_capsule(
                  {aggregated_world_count} event worlds."
             ),
             claim_ids: BTreeSet::from([CLAIM_COVERAGE.to_owned(), CLAIM_EVENTS.to_owned()]),
-            evidence: vec![ledger_evidence],
+            evidence: BTreeSet::from([residual_evidence, event_evidence])
+                .into_iter()
+                .collect(),
             consequence_severity: severity,
             protected: true,
         }];
@@ -1955,7 +2009,8 @@ fn compile_capsule(
             affordance_id: AFFORDANCE_REORIENT.to_owned(),
             operation: "session.orient",
             target: deployment_handle.clone(),
-            rationale: format!("Re-orient after commit {}.", anchor.commit_sequence),
+            rationale: "Re-orient once the ledger head advances past this capsule's anchor."
+                .to_owned(),
             class: AffordanceClass::Wait,
             supported_worlds: all_worlds.clone(),
             required_capability: CAPABILITY_SITUATION_READ,
@@ -1997,9 +2052,12 @@ fn compile_capsule(
             ListedAffordance {
                 affordance_id: AFFORDANCE_FOLLOW.to_owned(),
                 operation: "session.follow",
-                // The target ends with the anchor token `fss follow --since` resumes from.
-                target: format!("{deployment_handle}/follow/{anchor_token}"),
-                rationale: "Follow deltas since this anchor.".to_owned(),
+                // Anchor-invariant (`affordance_cost_repricing` compares targets): the anchor followed from is
+                // this capsule's own, named by its anchor token in the answer's proof pointers
+                // and by the affordance's basis anchor.
+                target: format!("{deployment_handle}/follow"),
+                rationale: "Follow deltas since this capsule's anchor (its anchor token is the                             answer's `anchor:` proof pointer)."
+                    .to_owned(),
                 class: AffordanceClass::Wait,
                 supported_worlds: all_worlds,
                 required_capability: CAPABILITY_SITUATION_READ,
@@ -2062,16 +2120,14 @@ fn compile_capsule(
 
     let now = vec![match headline {
         Some(top) => format!(
-            "Commit {}: {} ({}), {corroborated} corroborated, {} open; top: {}.",
-            anchor.commit_sequence,
+            "{} ({}), {corroborated} corroborated, {} open; top: {}.",
             plural(planned.len(), "event", "events"),
             state_counts(&planned),
             plural(obligation_ids.len(), "obligation", "obligations"),
             top.id()
         ),
         None => format!(
-            "Commit {}: 0 events, {}, {} open.",
-            anchor.commit_sequence,
+            "0 events, {}, {} open.",
             plural(snapshot.completed_imports.len(), "import", "imports"),
             plural(obligation_ids.len(), "obligation", "obligations"),
         ),

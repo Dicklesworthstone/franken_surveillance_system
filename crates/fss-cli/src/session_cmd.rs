@@ -257,7 +257,9 @@ fn parse_open(tokens: &[ArgToken]) -> Result<SessionOpenArgs, CliError> {
     })
 }
 
-fn parse_handoff(tokens: &[ArgToken]) -> Result<SessionHandoffArgs, CliError> {
+/// Parses `handoff --json --root <dir> --session <id> ...`; `tokens[0]` is the command word
+/// (`handoff` of the registered `fss handoff`, or of its `fss session handoff` alias).
+pub fn parse_handoff(tokens: &[ArgToken]) -> Result<SessionHandoffArgs, CliError> {
     const COMMAND: &str = "session handoff";
     let values = collect_options(
         COMMAND,
@@ -963,7 +965,7 @@ fn classify(error: DeploymentSessionError) -> Result<Refusal, DeploymentSessionE
         DeploymentSessionError::HandoffUnknown => Refusal {
             error_id: ERR_AGENT_HANDOFF_NOT_FOUND,
             reason: error.to_string(),
-            guidance: "Resume only a handoff identity that `fss session handoff` returned for \
+            guidance: "Resume only a handoff identity that `fss handoff` returned for \
                        this deployment.",
             recovery_class: "never_unchanged",
             safe_retry: ResponseSafeRetry::No,

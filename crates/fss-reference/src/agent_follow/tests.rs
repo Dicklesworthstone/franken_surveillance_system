@@ -99,6 +99,43 @@ impl Fixture {
         Ok(())
     }
 
+    /// Commits one batch of a derived `decode_receipt` delta whose validity lies inside the
+    /// evidence already committed: it retains no source evidence, coverage, event, or effect.
+    fn commit_derived(&mut self) -> TestResult {
+        self.commit_family("decode_receipt")
+    }
+
+    /// Commits one `file_import_manifest` batch (a completed import) inside the committed
+    /// evidence interval.
+    fn commit_import(&mut self) -> TestResult {
+        self.commit_family("file_import_manifest")
+    }
+
+    fn commit_family(&mut self, family: &str) -> TestResult {
+        self.batches += 1;
+        let index = self.batches;
+        let mut deployment = ReferenceDeployment::open(&self.root, SITE, &self.cx)?;
+        let payload = deployment.stage_payload(format!("{family}-{index}").as_bytes())?;
+        deployment.append_batch(
+            BatchId::parse(format!("batch:follow-unit:{index}"))?,
+            vec![EvidenceDelta {
+                delta_id: format!("delta:follow-unit:{index}"),
+                family: family.to_owned(),
+                object_id: ObjectId::parse(format!("object:follow-unit:{index}"))?,
+                prior_generation: None,
+                new_generation: 1,
+                validity: CaptureInterval::new(TimestampNs(1_000), TimestampNs(1_500))?,
+                plane: Plane::Authority,
+                payload_digest: payload,
+                witness_digest: None,
+                operation_id: None,
+            }],
+            vec![payload],
+            &self.cx,
+        )?;
+        Ok(())
+    }
+
     fn history(&self) -> Result<DeploymentHistory, DeploymentReadError> {
         DeploymentHistory::read(&self.root, &OrientLimits::default())
     }
@@ -312,12 +349,29 @@ fn follow_since_an_earlier_anchor_reports_the_committed_change() -> TestResult {
             .contains(&MeaningfulDeltaClass::CoverageLoss)
     );
     assert!(follow.delta.silence_certificate.is_none());
+    // anchor_position_restatement: the ledger-head cell restates the anchor, which the delta carries typed as its
+    // result anchor, so the restatement alone is never a changed cell; the result still states it.
     assert!(
-        follow
+        !follow
             .delta
             .changed_cells
             .iter()
             .any(|cell| cell.claim_id() == CLAIM_LEDGER_HEAD)
+    );
+    let head_cell = follow
+        .result
+        .publication
+        .situation
+        .capsule
+        .frame
+        .knowledge_cells
+        .iter()
+        .find(|cell| cell.claim_id() == CLAIM_LEDGER_HEAD)
+        .ok_or("the result states the ledger head")?;
+    assert!(
+        head_cell.statement().contains("at commit 1"),
+        "{}",
+        head_cell.statement()
     );
     // One page carries every item, protected ones first.
     assert_eq!(follow.page_items, follow.items);
@@ -449,5 +503,46 @@ fn pages_deliver_every_item_once_through_bound_continuations() -> TestResult {
         follow_deployment(&advanced, &since, &stale),
         Err(FollowError::Continuation(ContinuationError::WrongStream))
     ));
+    Ok(())
+}
+
+#[test]
+fn a_harmless_successor_commit_changes_no_decision_semantics() -> TestResult {
+    let mut fixture = Fixture::new("harmless")?;
+    fixture.commit()?;
+    fixture.commit_import()?;
+    let since = fixture.head_token()?;
+    // A derived receipt over already-committed evidence advances the ledger head only.
+    fixture.commit_derived()?;
+    let history = fixture.history()?;
+    let follow = follow_deployment(&history, &since, &request(AgentView::Brief, 4096)?)?;
+    assert_eq!(follow.delta.basis_anchor.commit_sequence, 2);
+    assert_eq!(follow.delta.result_anchor.commit_sequence, 3);
+    assert_ne!(
+        follow.basis.publication.publication_digest, follow.result.publication.publication_digest,
+        "the head advanced"
+    );
+    // Nothing decision-relevant changed: no changed cell (the ledger-head restatement is
+    // anchor_position_restatement), no material state (the re-priced affordances are affordance_cost_repricing), no removal. Without a
+    // retained CoverageWitness the persisting gap stays protected coverage loss, exactly as it is
+    // when basis and result are one anchor.
+    assert_eq!(
+        follow.delta.classes,
+        BTreeSet::from([MeaningfulDeltaClass::CoverageLoss])
+    );
+    assert!(follow.delta.changed_cells.is_empty());
+    assert!(follow.delta.removed_claim_ids.is_empty());
+    assert!(follow.delta.invalidated_assumptions.is_empty());
+    assert!(follow.delta.silence_certificate.is_none());
+    // A source-evidence commit, by contrast, is material.
+    fixture.commit()?;
+    let history = fixture.history()?;
+    let material = follow_deployment(&history, &since, &request(AgentView::Brief, 4096)?)?;
+    assert!(
+        material
+            .delta
+            .classes
+            .contains(&MeaningfulDeltaClass::MaterialState)
+    );
     Ok(())
 }

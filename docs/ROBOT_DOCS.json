@@ -278,7 +278,7 @@
     },
     {
       "description": "session resume named a handoff identity that no root in the deployment's agent publications holds (never published, or its publication was interrupted before the root became visible)",
-      "guidance": "resume only a handoff identity `fss session handoff` returned for this deployment, or hand off again",
+      "guidance": "resume only a handoff identity `fss handoff` returned for this deployment, or hand off again",
       "id": "ERR-AGENT-HANDOFF-NOT-FOUND-001"
     },
     {

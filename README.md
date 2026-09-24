@@ -23,8 +23,8 @@
 > crash-safe local ledger. It ships one trained detector package (YOLOX-Nano, COCO-80,
 > conformance-checked against its upstream ONNX graph; `fss-infer package-detect`), but does **not**
 > yet decode 10-bit or interlaced video, measure detection quality on real footage, expose more of
-> the agent protocol than `fss orient`/`fss explain`/`fss follow` and durable
-> `fss session open`/`handoff`/`resume`, archive to the cloud, or have any release-qualified capability. The boundary is
+> the agent protocol than `fss session orient`/`fss explain`/`fss session follow` and durable
+> `fss session open`/`fss handoff`/`fss session resume`, archive to the cloud, or have any release-qualified capability. The boundary is
 > explicit in [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md) and `fss capabilities --json`.
 
 ## The thesis
@@ -568,9 +568,11 @@ Implemented (reference, unqualified):
 
 Partial:
 
-- the agent operating layer: `fss orient`, `fss explain`, and `fss follow` (meaningful deltas
-  since an orient anchor token, paged through exact continuations; one bounded read per call, no
-  subscription) are read-only CLI surfaces; `fss session open`, `fss session handoff`, and
+- the agent operating layer: `fss session orient`, `fss explain`, and `fss session follow`
+  (meaningful deltas since an orient anchor token, paged through exact continuations, with
+  certified silence across harmless successor commits; one bounded read per call, no
+  subscription; `fss orient` and `fss follow` are aliases) are read-only CLI surfaces;
+  `fss session open`, `fss handoff` (alias `fss session handoff`), and
   `fss session resume` (session.open, handoff, session.resume) persist mission-scoped sessions,
   immutable workspace revisions, and root-last handoffs under the deployment's `agent/` directory
   (never authority or effect state), and resume lists every assumption invalidated since the

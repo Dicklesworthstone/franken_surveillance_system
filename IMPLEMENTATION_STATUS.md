@@ -71,8 +71,8 @@ synthetic scenes). None of it has been measured on real camera footage.
   acceptance only. Sensor independence rests on operator-declared sensor identities.
 - **Operations:** `fss doctor --json --root <dir>` inspects a deployment read-only; `fss-lab` runs
   its six scenarios on `ReferenceDeployment` (mock model and simulated alert provider).
-- **Agent reads (fss/1, CLI only):** `fss orient` (AOP-003), `fss explain` (AOP-011), and
-  `fss follow` (AOP-004) answer read-only in the registered `AgentResponseEnvelope`. Every
+- **Agent reads (fss/1, CLI only):** `fss session orient` (AOP-003, alias `fss orient`),
+  `fss explain` (AOP-011), and `fss session follow` (AOP-004, alias `fss follow`) answer read-only in the registered `AgentResponseEnvelope`. Every
   orientation emits a content-bound anchor token (site, commit, effect-journal records, and a
   binding over the anchor, ledger root, and effect-journal root); `fss follow --since <token>`
   compiles the situation as of that anchor from the committed ledger and effect-journal prefix
@@ -93,7 +93,7 @@ synthetic scenes). None of it has been measured on real camera footage.
   existing `DurableSessionStore` (a session journal under `<root>/agent/sessions/` with an
   atomically replaced pinned root; a rollback or foreign journal is refused, never repaired) and
   publishes the mission statement root-last under `<root>/agent/publications/`; an identical open
-  is an exact retry. `fss session handoff` (AOP-012) seals the situation as of the session's
+  is an exact retry. `fss handoff` (AOP-012, alias `fss session handoff`) seals the situation as of the session's
   anchor with the existing handoff sealing code and publishes a root-last handoff record (plus the
   session and workspace revision as `agent_session.v1`/`agent_session_capsule.v1`); a crash at
   any publication cut point leaves the handoff absent or complete. `fss session resume` (AOP-002)
@@ -148,7 +148,7 @@ Asupersync (owner decision `fss-x4a.8.1` is open), and the workspace has zero th
 - Separation of resource pressure from material world change.
 - Silence certificates proving no decision-relevant change, including across harmless successor commits.
 - Exact continuation streams with content-bound entries, page digests, monotone positions, expiry, stream identity, contract basis, anchor, view, and session checks.
-- Exposed read-only through `fss follow` (AOP-004) over real deployments, comparing an as-of-anchor orientation (committed prefix only) with the head's.
+- Exposed read-only through `fss session follow` (AOP-004) over real deployments, comparing an as-of-anchor orientation (committed prefix only) with the head's under the registered `meaningfulDeltaComparison` rules, so a harmless successor commit over complete coverage yields a certified silence (`coverage_cli_contract.rs`).
 - Used by `fss session resume` (AOP-002) to list what changed and what was invalidated between a handoff anchor and the head.
 
 ### Semantic handles and H0–H4 hydration

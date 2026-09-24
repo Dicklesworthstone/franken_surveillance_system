@@ -93,7 +93,9 @@ ERR_GRAPH_STABLE_ID_DRIFT = "ERR-GRAPH-STABLE-ID-DRIFT-001"
 
 # Required fields and admitted statuses for architecture/agent_contracts.json drift records.
 AGENT_CONTRACT_DRIFT_FIELDS = ("target", "field", "originalValue", "reconciledValue", "reason", "status")
-AGENT_CONTRACT_DRIFT_STATUSES = frozenset({"open", "reconciled", "reconciled_pending_owner_decision"})
+# `resolved` closes an entry: the owning contract was repaired and the entry must carry a non-empty
+# `resolution` naming the repair (fss-x4a.30.84).
+AGENT_CONTRACT_DRIFT_STATUSES = frozenset({"open", "reconciled", "reconciled_pending_owner_decision", "resolved"})
 
 REGISTERED_GRAPH_PROJECTIONS = frozenset({
     "SensorCoverageGraph",
@@ -1061,6 +1063,15 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
                         f"#/drifts/{d_idx}/status",
                         f"drift entry status '{status}' is not one of {sorted(AGENT_CONTRACT_DRIFT_STATUSES)}",
                     )
+                if status == "resolved":
+                    resolution = drift.get("resolution")
+                    if not isinstance(resolution, str) or not resolution.strip():
+                        emit(
+                            ERR_CORRUPT_FILE,
+                            "architecture/agent_contracts.json",
+                            f"#/drifts/{d_idx}/resolution",
+                            "a resolved drift entry must carry a non-empty 'resolution'",
+                        )
                 key = (str(drift.get("target")), str(drift.get("field")))
                 if key in seen_targets:
                     emit(
@@ -1070,6 +1081,153 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
                         f"duplicate drift entry for target '{key[0]}' field '{key[1]}'",
                     )
                 seen_targets.add(key)
+
+    # 2.9b Registered comparison rules, projections, scales, and carriers (fss-x4a.30.84). Each
+    # block is cross-checked against the schema or registry it projects onto and against the
+    # Rust source that implements it, so the registration can never drift from either.
+    ac_file = "architecture/agent_contracts.json"
+
+    def read_repo_text(relative: str) -> str | None:
+        try:
+            return (repo_root / relative).read_text(encoding="utf-8")
+        except OSError:
+            emit(ERR_MISSING_FILE, relative, "#", f"file required by {ac_file} cross-checks is missing")
+            return None
+
+    def load_schema(relative: str) -> dict[str, Any] | None:
+        text = read_repo_text(relative)
+        if text is None:
+            return None
+        try:
+            value = json.loads(text)
+        except json.JSONDecodeError as exc:
+            emit(ERR_CORRUPT_FILE, relative, "#", f"invalid JSON: {exc}")
+            return None
+        return value if isinstance(value, dict) else None
+
+    comparison = ac_doc.get("meaningfulDeltaComparison")
+    if comparison is not None:
+        rules = comparison.get("rules") if isinstance(comparison, dict) else None
+        if not isinstance(rules, list) or not rules:
+            emit(ERR_CORRUPT_FILE, ac_file, "#/meaningfulDeltaComparison/rules", "rules must be a non-empty array")
+        else:
+            delta_rs = read_repo_text("crates/fss-reference/src/meaningful_delta.rs") or ""
+            orient_rs = read_repo_text("crates/fss-reference/src/agent_orient.rs") or ""
+            seen_rules: set[str] = set()
+            for r_idx, rule in enumerate(rules):
+                loc = f"#/meaningfulDeltaComparison/rules/{r_idx}"
+                if not isinstance(rule, dict):
+                    emit(ERR_CORRUPT_FILE, ac_file, loc, "rule must be an object")
+                    continue
+                rule_id = rule.get("id")
+                if not isinstance(rule_id, str) or not re.fullmatch(r"[a-z][a-z_]*", rule_id) or rule_id in seen_rules:
+                    emit(ERR_CONTRADICTED_METADATA, ac_file, f"{loc}/id", f"rule id '{rule_id}' must be a unique snake_case rule identity")
+                    continue
+                seen_rules.add(rule_id)
+                for list_field in ("comparedFields", "excludedFields"):
+                    values = rule.get(list_field)
+                    if not isinstance(values, list) or not values or not all(isinstance(v, str) and v for v in values):
+                        emit(ERR_CORRUPT_FILE, ac_file, f"{loc}/{list_field}", f"{list_field} must be a non-empty string array")
+                if isinstance(rule.get("comparedFields"), list) and isinstance(rule.get("excludedFields"), list):
+                    overlap = set(rule["comparedFields"]) & set(rule["excludedFields"])
+                    if overlap:
+                        emit(ERR_CONTRADICTED_METADATA, ac_file, loc, f"fields both compared and excluded: {sorted(overlap)}")
+                if rule_id == "anchor_position_restatement":
+                    claims = rule.get("claims")
+                    if not isinstance(claims, list) or not claims:
+                        emit(ERR_CORRUPT_FILE, ac_file, f"{loc}/claims", "anchor_position_restatement must name its anchor-position claims")
+                    else:
+                        if "pub const ANCHOR_POSITION_CLAIMS" not in delta_rs:
+                            emit(ERR_CONTRADICTED_METADATA, ac_file, loc, "meaningful_delta.rs defines no ANCHOR_POSITION_CLAIMS")
+                        for claim in claims:
+                            if f'"{claim}"' not in orient_rs:
+                                emit(ERR_CONTRADICTED_METADATA, ac_file, f"{loc}/claims", f"anchor-position claim '{claim}' is not a claim the orient compiler emits")
+                if rule_id == "affordance_cost_repricing" and "fss.reference_affordance_frontier.v2" not in delta_rs:
+                    emit(ERR_CONTRADICTED_METADATA, ac_file, loc, "meaningful_delta.rs does not implement the v2 affordance frontier comparison")
+
+    projection = ac_doc.get("evidenceAnchorProjection")
+    if projection is not None:
+        anchor_schema = load_schema("schemas/evidence_anchor.v1.json")
+        fields = projection.get("fields") if isinstance(projection, dict) else None
+        if not isinstance(fields, list):
+            emit(ERR_CORRUPT_FILE, ac_file, "#/evidenceAnchorProjection/fields", "fields must be an array")
+        elif anchor_schema is not None:
+            required = set(anchor_schema.get("required", [])) - {"schema"}
+            named = [f.get("schemaField") for f in fields if isinstance(f, dict)]
+            if sorted(named) != sorted(required) or len(set(named)) != len(named):
+                emit(ERR_CONTRADICTED_METADATA, ac_file, "#/evidenceAnchorProjection/fields", f"projection names {sorted(named)}, schema requires {sorted(required)}")
+            renderer = read_repo_text("crates/fss-cli/src/agent_json.rs") or ""
+            start = renderer.find("pub fn evidence_anchor(")
+            body = renderer[start : renderer.find("\n}\n", start)] if start >= 0 else ""
+            for f_idx, field in enumerate(fields):
+                if not isinstance(field, dict):
+                    continue
+                schema_field, source = field.get("schemaField"), field.get("source")
+                if f'"{schema_field}"' not in body:
+                    emit(ERR_CONTRADICTED_METADATA, ac_file, f"#/evidenceAnchorProjection/fields/{f_idx}", f"renderer does not emit '{schema_field}'")
+                elif source == "not_applicable_sentinel":
+                    if "not_applicable_sentinel(" not in body:
+                        emit(ERR_CONTRADICTED_METADATA, ac_file, f"#/evidenceAnchorProjection/fields/{f_idx}", f"renderer emits no sentinel for '{schema_field}'")
+                elif source == "null":
+                    if f'("{schema_field}", "null"' not in body:
+                        emit(ERR_CONTRADICTED_METADATA, ac_file, f"#/evidenceAnchorProjection/fields/{f_idx}", f"renderer does not emit null for '{schema_field}'")
+                elif not isinstance(source, str) or f"value.{source}" not in body:
+                    emit(ERR_CONTRADICTED_METADATA, ac_file, f"#/evidenceAnchorProjection/fields/{f_idx}", f"renderer does not project '{schema_field}' from LedgerAnchor.{source}")
+
+    scale = ac_doc.get("consequenceSeverityScale")
+    if scale is not None:
+        world_schema = load_schema("schemas/agent_world_envelope.v1.json")
+        levels = scale.get("levels") if isinstance(scale, dict) else None
+        if not isinstance(levels, list) or not levels:
+            emit(ERR_CORRUPT_FILE, ac_file, "#/consequenceSeverityScale/levels", "levels must be a non-empty array")
+        elif world_schema is not None:
+            props = world_schema.get("properties", {})
+            consequence_enum = set(props.get("materialAlternativeWorlds", {}).get("items", {}).get("properties", {}).get("consequenceClass", {}).get("enum", []))
+            loss_enum = set(props.get("adversarialResiduals", {}).get("items", {}).get("properties", {}).get("protectedLossClass", {}).get("enum", []))
+            renderer = read_repo_text("crates/fss-cli/src/agent_json.rs") or ""
+
+            def match_arms(function: str) -> dict[str, str]:
+                start = renderer.find(f"pub const fn {function}(")
+                body = renderer[start : renderer.find("\n}\n", start)] if start >= 0 else ""
+                arms: dict[str, str] = {}
+                for pattern, label in re.findall(r'^\s*([0-9_| ]+?)\s*=>\s*"([a-z_]+)"', body, re.M):
+                    for value in pattern.split("|"):
+                        arms[value.strip()] = label
+                return arms
+
+            consequence_arms = match_arms("consequence_class")
+            loss_arms = match_arms("protected_loss_class")
+            for l_idx, level in enumerate(levels):
+                loc = f"#/consequenceSeverityScale/levels/{l_idx}"
+                if not isinstance(level, dict):
+                    emit(ERR_CORRUPT_FILE, ac_file, loc, "level must be an object")
+                    continue
+                severity = str(level.get("severity"))
+                key = "_" if severity.startswith(">=") else severity
+                if level.get("consequenceClass") not in consequence_enum:
+                    emit(ERR_CONTRADICTED_METADATA, ac_file, f"{loc}/consequenceClass", f"'{level.get('consequenceClass')}' is not a schema consequenceClass")
+                if level.get("protectedLossClass") not in loss_enum:
+                    emit(ERR_CONTRADICTED_METADATA, ac_file, f"{loc}/protectedLossClass", f"'{level.get('protectedLossClass')}' is not a schema protectedLossClass")
+                if consequence_arms.get(key) != level.get("consequenceClass") or loss_arms.get(key) != level.get("protectedLossClass"):
+                    emit(ERR_CONTRADICTED_METADATA, ac_file, loc, f"severity {severity} renders {consequence_arms.get(key)}/{loss_arms.get(key)}, registry says {level.get('consequenceClass')}/{level.get('protectedLossClass')}")
+
+    carriers = ac_doc.get("viewSectionCarriers")
+    if carriers is not None:
+        views_doc = load_schema("architecture/agent_views.json")
+        view_rows = {v.get("id"): v for v in (views_doc or {}).get("views", []) if isinstance(v, dict)}
+        for view_id, sections in (carriers.items() if isinstance(carriers, dict) else []):
+            if view_id == "rule":
+                continue
+            row = view_rows.get(view_id)
+            if row is None or not isinstance(sections, dict):
+                emit(ERR_CONTRADICTED_METADATA, ac_file, f"#/viewSectionCarriers/{view_id}", f"'{view_id}' is not a registered view with a section map")
+                continue
+            required_sections = row.get("requiredSections", [])
+            if sorted(sections) != sorted(required_sections):
+                emit(ERR_CONTRADICTED_METADATA, ac_file, f"#/viewSectionCarriers/{view_id}", f"carriers {sorted(sections)} != required sections {sorted(required_sections)}")
+            for section, carrier in sections.items():
+                if not isinstance(carrier, str) or not carrier.strip():
+                    emit(ERR_CORRUPT_FILE, ac_file, f"#/viewSectionCarriers/{view_id}/{section}", "carrier must be a non-empty string")
 
     kstate_arch = ac_doc.get("knowledgeStates", [])
     kstate_arch_map = build_arch_map("architecture/agent_contracts.json", kstate_arch)

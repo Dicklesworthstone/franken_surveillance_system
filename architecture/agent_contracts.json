@@ -1,6 +1,6 @@
 {
   "schema": "fss.agent_contracts.v1",
-  "asOf": "2026-09-13",
+  "asOf": "2026-09-24",
   "semanticProtocol": "fss/1",
   "constitutionalDocument": "AGENT_COGNITION_AND_CONTROL.md",
   "controlPlaneDocument": "AGENT_COGNITIVE_CONTROL_PLANE.md",
@@ -393,7 +393,8 @@
       "originalValue": "fss orient/explain rendered the Rust LedgerAnchor shape (siteLineage, ledgerEpoch, commitSequence, adapterRegistryEpoch, schemaEpoch, policyEpoch, privacyEpoch, stateRoot), which evidence_anchor.v1 rejects.",
       "reconciledValue": "Answers render evidence_anchor.v1 (fss-iqg1k): deploymentId=site_lineage, observationEpoch=ledger_epoch, capsuleSequence=commit_sequence, authorityRoot=state_root, adapterEpoch=adapter_registry_epoch, schemaEpoch, policyEpoch. deviceGeneration and streamGeneration carry the repository's typed not-applicable sentinel fss-na:<sha256 of fss.evidence_anchor.v1/sentinel/<field>/deployment_scope_anchor> because a deployment-scope anchor pins every device and stream generation through its commit but names no single one; model/calibration/graph/search generations are null because an orientation consumes none. privacy_epoch has no anchor slot and is carried as the answer's privacy policyGenerationId privacy-epoch:<n>.",
       "reason": "Schemas outrank the normative documents in the truth hierarchy, so the answers follow evidence_anchor.v1; but ONE_VERSION_UNIVERSE.md section 2 names exactly the LedgerAnchor fields, and the schema has no slot for ledger or privacy epoch and no explicit not-applicable form for device/stream generations. The owner must reconcile the schema and the document.",
-      "status": "open"
+      "status": "resolved",
+      "resolution": "Truth hierarchy: the schema (tier 1) governs the public shape and docs/ONE_VERSION_UNIVERSE.md (tier 2) names the internal authority anchor. The document now distinguishes the committed LedgerAnchor from its public EvidenceAnchor projection, and the field-by-field projection, the fss-na not-applicable sentinel for device/stream generations, the null rule, and the privacy-epoch carrier are registered in evidenceAnchorProjection (architecture/agent_contracts.json, mirrored in registries/AGENT_CONTRACTS.md). scripts/architecture_registry_consistency.py checks that the projection names exactly the schema's fields and that the renderer emits each registered source (fss-x4a.30.84)."
     },
     {
       "target": "SituationFrame (fss-core) and AVIEW-002 requiredSections vs schemas/agent_situation_frame.v1.json",
@@ -401,14 +402,15 @@
       "originalValue": "The frame was rendered with the Rust now/changed/why/unknown/atRisk/next/frameDigest fields, which agent_situation_frame.v1 rejects.",
       "reconciledValue": "The frame renders the schema fields (unknowns, changes, contradictions, salientEntities, notObservableDomains, coverage, obligations, evidenceHandles, selectionWitness); the frame digest is selectionWitness.outputDigest. The now/why/atRisk/next statements are carried as the capsule's contextPack items (at_risk and next_affordance items are critical and never dropped; now and why are optional and receipted when omitted).",
       "reason": "The brief view registers now, why, atRisk, and next as required sections, but the frame schema has no slot for them; the context pack is the only registered carrier.",
-      "status": "open"
+      "status": "resolved",
+      "resolution": "AVIEW-002's requiredSections are sections of the brief answer (the SituationCapsule), not fields of agent_situation_frame.v1; each section's registered carrier is now listed in viewSectionCarriers (architecture/agent_contracts.json, mirrored in registries/AGENT_CONTRACTS.md), the consistency checker requires a carrier for exactly the view's required sections, and crates/fss-cli/tests/orient_cli_contract.rs asserts that a brief answer carries the now/at_risk/next context items (fss-x4a.30.84)."
     },
     {
       "target": "schemas/situation_capsule.v1.json validity.validUntilNs and schemas/agent_affordance.v1.json expiresAtNs",
       "field": "validUntilNs, expiresAtNs",
       "originalValue": "validity was not emitted; affordances were identity strings without an expiry.",
-      "reconciledValue": "Both carry the anchor's latest committed evidence time (the capsule createdAtNs): an anchor-pinned read claims no validity past its anchor. The real validity is the listed invalidators and reanchorRequiredOn triggers (ledger_head_advance, effect_journal_change, epoch_change).",
-      "reason": "Both fields are required non-null integers, but a read pinned to a committed ledger prefix has no wall-clock horizon; the schemas offer no anchor-bound or unknown form.",
+      "reconciledValue": "Both carry the anchor's latest committed evidence time (the capsule createdAtNs): an anchor-pinned read claims no validity past its anchor; its real validity is the listed invalidators and reanchorRequiredOn triggers (ledger_head_advance, effect_journal_change, epoch_change).",
+      "reason": "Both v1 fields are required non-null integers with no anchor-bound or unknown form, and a read pinned to a committed ledger prefix has no clock horizon. Registering createdAtNs as their meaning would silently define a frozen v1 field. TO CLOSE: a situation_capsule.v2 / agent_affordance.v2 with an explicit anchor-bound validity form (for example validUntilNs null plus a required validityBasis of anchor_pinned), adopted by AOP-001/002/003/004 through a public-registry generation bump (gen:fss1:public-v2, since responsePayloadSchemas are frozen), or a runtime clock capability that yields a real horizon.",
       "status": "open"
     },
     {
@@ -416,7 +418,7 @@
       "field": "decisionLossReduction, informationGain, coverageGain, obligationReduction, safety, privacy, duplication, irreversibility",
       "originalValue": "Affordances were rendered without value or risk vectors.",
       "reconciledValue": "The reference frontier does not estimate value or risk: the numeric components are 0 and every affordance's sensitivity reads 'value and risk are not estimated by the reference frontier'. A listed affordance is never executed.",
-      "reason": "The schema requires numbers with no unknown form; no registered estimator exists.",
+      "reason": "The schema requires numbers with no not-estimated form, and no registered estimator exists; a 0 component can be misread as an estimate of no value or no risk. TO CLOSE: a registered value/risk estimator (with its calibration generation) that fills the vectors from evidence, or agent_affordance.v2 with an explicit not_estimated form adopted by the capsule schema and AOP-003 through a public-registry generation bump.",
       "status": "open"
     },
     {
@@ -425,7 +427,8 @@
       "originalValue": "attentionFrontier and salientEntities were not emitted.",
       "reconciledValue": "missionRelevance is 1 for every item (membership in the orientation scope, the whole deployment); decisionImpact and relevance are the registered consequence severity (0..5) of the item's highest protected world. Neither is a calibrated score.",
       "reason": "The schemas require numbers but register no scale for them.",
-      "status": "open"
+      "status": "resolved",
+      "resolution": "The scales are registered in attentionScales and consequenceSeverityScale (architecture/agent_contracts.json, mirrored in registries/AGENT_CONTRACTS.md): missionRelevance is orientation-scope membership (only 1 is emitted), decisionImpact and salientEntities.relevance are consequence severities with the per-kind rule stated. The consistency checker validates the blocks (fss-x4a.30.84)."
     },
     {
       "target": "PossibleWorld (fss-core) vs schemas/agent_world_envelope.v1.json",
@@ -433,14 +436,15 @@
       "originalValue": "Worlds were rendered with the Rust worldId/description/claimIds/evidence/consequenceSeverity/protected fields.",
       "reconciledValue": "consequence_severity maps 0 negligible, 1 low, 2-3 moderate, 4 high, 5 critical (protectedLossClass floors at low); every material alternative is plausibility 'possible' (PossibleWorld carries no plausibility); whyNotRuledOut names the evidence roots that keep a residual live.",
       "reason": "No registry maps the 0..5 severity to the schema's classes, and the Rust world has no plausibility field.",
-      "status": "open"
+      "status": "resolved",
+      "resolution": "The severity-to-class mapping is registered in consequenceSeverityScale and the plausibility rule in worldPlausibilityRule (architecture/agent_contracts.json, mirrored in registries/AGENT_CONTRACTS.md). scripts/architecture_registry_consistency.py checks the classes against the world-envelope schema enums and the renderer's match arms (agent_json::consequence_class and protected_loss_class) against the registered levels (fss-x4a.30.84)."
     },
     {
       "target": "Orientation hydration handles (fss orient compression receipt)",
       "field": "expansionHandles",
       "originalValue": "Per-event worlds and cells were inline in every view, so one published event exhausted the pulse budget and brief needed its maximum.",
       "reconciledValue": "Every view aggregates per-event worlds into one world per kind (pulse folds them into world:site:protected-worlds) keeping maximum severity and protection, summarizes events outside the view's inline set, and lists one stable expansion slot per event (fss://event/<id>/revision/<n>) naming every world it hydrates, priced by the measured read-only deployment read under the decision_diff maximum; `fss explain` is the H1 hydration. No SemanticHandle descriptor or ContextExpansionBindingSet is published for these slots.",
-      "reason": "semantic_hydration.json treats v1 expansionHandles as expansion-slot identities; a SemanticHandle descriptor requires a retention horizon (retention_until > published_at) and a deployment retains no retention policy, so publishing one would invent it.",
+      "reason": "semantic_hydration.json treats v1 expansionHandles as expansion-slot identities; a SemanticHandle descriptor requires a retention horizon (retention_until > published_at) and a deployment retains no retention policy, so publishing one would invent it. TO CLOSE: a deployment retention policy (retention class and horizon per evidence family) so orient can publish SemanticHandle descriptors and a ContextExpansionBindingSet for every slot.",
       "status": "open"
     },
     {
@@ -449,15 +453,17 @@
       "originalValue": "The engine's MeaningfulDelta is one complete object; the schema has no page, offset, or total fields.",
       "reconciledValue": "fss follow flattens the delta's items into one follow_stream ContinuationStream (protected items first) and renders each page as agent_meaningful_delta.v1 with the complete header and class set and only that page's items in the item lists. coalescedCount and omittedCount stay the engine's values (0): pagination is not omission, every item is delivered through the exact continuation, which the page's continuation field and the envelope continuation both carry (the last page carries the engine's own continuation). The page range is stated in the envelope degradation.",
       "reason": "MeaningfulDelta::validate forbids omission counts on non-coalescible deltas and requires each protected class's list to be non-empty, so a page cannot be a standalone typed MeaningfulDelta; the owner must decide whether the delta schema gains explicit page fields.",
-      "status": "open"
+      "status": "resolved",
+      "resolution": "The page projection is registered in followPageProjection (architecture/agent_contracts.json, mirrored in registries/AGENT_CONTRACTS.md): v1's continuation field is the exact next page, coalescedCount/omittedCount count coalescing and optional omission only, and pagination is delivery. The v1 schema already carries every field a page needs, so no page fields are added; crates/fss-cli/tests/follow_cli_contract.rs pins that every item is delivered exactly once across pages with the counts unchanged (fss-x4a.30.84)."
     },
     {
       "target": "AOP-004 session.follow 'qualified silence' (README, registries/AGENT_OPERATIONS.md) vs the reference MeaningfulDelta engine over orientations",
       "field": "silenceCertificate",
       "originalValue": "session.follow is described as streaming meaningful deltas and qualified silence.",
-      "reconciledValue": "fss-event watch/corroborate retain, only with an exact --retain-coverage approval, one fss-core CoverageWitness per (sensor, zone, maximal contiguous interval) in a coverage_witness ledger record (fss-fnrgr); orient assesses every objective zone as covered, not_observable or stale from those records and is complete only when every zone is covered over its declared window. The unchanged engine then certifies silence, bound to the witnesses through the coverage boundary handles, for a follow whose basis and result are the same committed position (for example since the anchor of an orientation of a complete deployment). Without retained coverage, or with any zone not_observable or stale, every orientation stays partial and the persisting gap is protected coverage_loss, as before.",
+      "reconciledValue": "Coverage witnesses are retained only with an exact --retain-coverage approval (fss-fnrgr) and orient is complete only when every objective zone is covered. The delta engine compares decision semantics under the registered meaningfulDeltaComparison rules: anchor_position_restatement (the ledger-head cell restates the anchor; its statement and evidence are not compared) and affordance_cost_repricing (affordance cost re-pricing is not a frontier change). fss session orient cites the ledger record root of the last event-bearing batch for event facts and of the last evidence- or coverage-bearing batch for the unobserved-activity residual (never the head), its now line and re-orient rationale name no commit, and the follow affordance target is anchor-invariant (the anchor token stays the answer's anchor: proof pointer). A follow across a harmless successor commit (for example an fss-file decode receipt) now returns the engine's silence certificate; a material successor (newer unanalysed evidence) still returns protected coverage_loss.",
       "reason": "Silence over an uncertified domain would read as absence; the engine's clamp is kept. REMAINING: across a ledger advance silence is still unreachable even when nothing decision-relevant changed and coverage is complete, because the orientation frame binds commit-specific statements (the ledger-head cell, the now line, the re-orient rationale and the follow target), which the engine correctly reports as material_state changes; and the requested window is derived (first current witness through the newest analysed evidence), since no orient request carries an explicit window.",
-      "status": "open"
+      "status": "resolved",
+      "resolution": "Root cause: the orientation frame bound commit-specific statements (the ledger-head cell, the 'Commit N' now line, the 're-orient after commit N' rationale, the anchor token in the follow target, head-root evidence on event and residual facts, and head-priced affordance costs), which the engine correctly reported as material_state. Fixed by the registered anchor_position_restatement/affordance_cost_repricing rules and anchor-invariant orient facts; tests: fss-reference agent_follow::tests::a_harmless_successor_commit_changes_no_decision_semantics and crates/fss-cli/tests/coverage_cli_contract.rs a_harmless_successor_commit_keeps_certified_silence_and_a_material_one_does_not (fss-x4a.30.84). The derived requested window is split into its own open entry."
     },
     {
       "target": "AOP-001 session.open and AOP-002 session.resume response payloads (architecture/agent_operations.json responsePayloadSchemas) vs the durable AgentSession and SessionCapsule",
@@ -465,14 +471,15 @@
       "originalValue": "session.open negotiates a durable AgentSession and session.resume returns the resumed SessionCapsule, but both operations register only fss.situation_capsule.v1 as their response payload.",
       "reconciledValue": "fss session open and fss session resume answer fss.situation_capsule.v1 (the situation at the head, bound to the durable session and mission; resume sets previousAnchor to the handoff anchor, carries the engine's agent_meaningful_delta.v1, and appends every invalidated handoff assumption as epistemic debt). The session and its workspace revision are identified by the envelope sessionId, missionId, and workspaceRevision and by the revision digest and session-journal root in proofPointers; every invalidated assumption, action, and anchor-bound fact is listed in executionBoundary.invalidated. Their public renderings (fss.agent_session.v1 and fss.agent_session_capsule.v1) are published as children of every handoff root, so they are hydrated from a handoff rather than returned by open or resume.",
       "reason": "The machine registry allowlists one response payload schema per operation and has no slot for the durable session or workspace revision; the registry is followed and the owner must decide whether AOP-001/AOP-002 gain agent_session.v1 or agent_session_capsule.v1 payloads.",
-      "status": "open"
+      "status": "resolved",
+      "resolution": "The constitution agrees with the registry: AGENT_COGNITION_AND_CONTROL.md section 4.1 and AGENT_COGNITIVE_CONTROL_PLANE.md section 9 define session.open as negotiating mission, authority, budgets, views, and the initial frame, and session.resume as restoring a handoff/workspace root and enumerating invalidated state; both are answered by fss.situation_capsule.v1, with the durable session and workspace revision identified by the registered response envelope (sessionId, missionId, workspaceRevision, proofPointers) and every invalidation in executionBoundary.invalidated. No registry change is needed; crates/fss-cli/tests/session_cli_contract.rs pins the envelope identities (fss-x4a.30.84)."
     },
     {
       "target": "schemas/agent_session.v1.json lastAcknowledgedSituationFingerprint vs AgentSession.last_acknowledged_situation_fingerprint (fss-core)",
       "field": "lastAcknowledgedSituationFingerprint",
       "originalValue": "The schema requires a digest; the Rust field is Option<ContentDigest>, and the reference session store clears it on every anchor refresh (a rebase).",
       "reconciledValue": "fss session open pins the decision fingerprint of the situation it answered with. A session whose pin was cleared by a refresh renders the typed not-applicable sentinel fss-na:<sha256 of fss.agent_session.v1/sentinel/lastAcknowledgedSituationFingerprint/no_acknowledged_situation_since_refresh>, which never parses as a content address.",
-      "reason": "The schema has no null or unknown form for an unpinned session, and no acknowledgement operation exists to re-pin one after a rebase.",
+      "reason": "The schema has no null or unknown form for an unpinned session, and no acknowledgement operation exists to re-pin one after a rebase (resume answers with a situation but its session-journal refresh record carries no acknowledgement). TO CLOSE: an acknowledgement record in the agent-session journal (resume or a later acknowledge step pins the fingerprint of the situation it answered with), or agent_session.v2 with an explicit unpinned form.",
       "status": "open"
     },
     {
@@ -480,7 +487,7 @@
       "field": "epistemicDebt",
       "originalValue": "The schema requires epistemicDebtItem objects (deferredReason, dependentDecisions, consequenceIfWrong, cheapestTest, reviewTrigger); the Rust workspace retains each debt as one statement string.",
       "reconciledValue": "Each retained statement '<statement id>: <text>' renders as debtId and assumption; deferredReason states why it is debt (its anchor is no longer current, or a newer orientation no longer restates it), dependentDecisions is empty, and consequenceIfWrong says the workspace retains the statement only. No estimate is invented.",
-      "reason": "The workspace store's canonical revision format carries debt as text; widening it is a workspace-format change the owner must schedule.",
+      "reason": "The workspace store's canonical revision format carries debt as one statement string, so dependentDecisions, consequenceIfWrong, cheapestTest, and reviewTrigger cannot be reproduced from retained bytes. TO CLOSE: a workspace revision format generation that retains the orientation's typed EpistemicDebtItem fields (the orient compiler already produces them), with a migration that renders legacy text-only revisions exactly as now.",
       "status": "open"
     },
     {
@@ -488,7 +495,7 @@
       "field": "retentionClass, deletionClosureId, criteria, assumptions.epistemicState",
       "originalValue": "The schema requires a retention class and a deletion-closure identity, success/failure/stop criteria, and a knowledge state per assumption; HandoffCapsule carries none of them.",
       "reconciledValue": "retentionClass and deletionClosureId carry the typed not-applicable sentinels (no_retention_policy_retained, deletion_closure_not_implemented); criteria are empty because session open takes none; the anchor assumption (assumption:anchor-current, basis the anchor token) is known at the handoff anchor and every orientation debt assumption is unknown (an undischarged assumption, not an established fact). Everything else is rendered from the sealed HandoffCapsule (root, child roots, situation root, anchor, basis, times) and the published handoff record (anchor token, workspace revision, obligations, indeterminate effects, prepared operations, recommended affordances, invalidators).",
-      "reason": "No retention policy or deletion closure exists in a reference deployment and the schema offers no null form; inventing a class or closure would claim a retention guarantee that does not exist.",
+      "reason": "No retention policy or deletion closure exists in a reference deployment and the schema offers no null form; inventing a class or closure would claim a retention guarantee that does not exist. TO CLOSE: a deployment retention policy registry and a deletion-closure publication (PRIVACY.md) so a handoff names a real class and closure, and session open accepting success/failure/stop criteria.",
       "status": "open"
     },
     {
@@ -496,16 +503,230 @@
       "field": "createdAtNs, expiresAtNs",
       "originalValue": "Session leases and handoff lifetimes were specified against a runtime clock; the reference CLI has no trusted runtime clock and every agent answer is a pure function of committed bytes.",
       "reconciledValue": "The deployment evidence clock (the latest committed evidence time, the orientation capsule time) is the runtime clock: a session lease and a handoff lifetime are seven days of evidence time, and the store's monotone-clock checks run on it. Equal committed bytes therefore give equal sessions, handoffs, and answers.",
-      "reason": "A wall clock would make open/handoff/resume non-deterministic and could regress; the evidence clock is monotone because the ledger is append-only. The owner must decide whether a runtime clock capability replaces it.",
+      "reason": "A wall clock would make open/handoff/resume non-deterministic and could regress; the evidence clock is monotone because the ledger is append-only, but it advances only when evidence is committed, so a lease never expires on an idle deployment. TO CLOSE: a runtime clock capability reached through Cx (a trusted, monotone, recorded clock reading bound into the session journal) with a clock horizon for leases and handoff lifetimes.",
       "status": "open"
     },
     {
       "target": "architecture/operation_crosswalk.json AOP-012 cli_command",
       "field": "cli_command",
       "originalValue": "fss handoff",
-      "reconciledValue": "The implemented surface is fss session handoff, beside fss session open (AOP-001) and fss session resume (AOP-002), which match their crosswalk rows. The crosswalk row is unchanged.",
+      "reconciledValue": "The shipped fss binary parses the registered spellings: fss handoff (AOP-012), fss session orient (AOP-003), and fss session follow (AOP-004), beside fss session open (AOP-001), fss session resume (AOP-002), and fss explain (AOP-011); help lists the registered spellings. The earlier shipped spellings fss session handoff, fss orient, and fss follow remain recorded aliases that parse to the identical command. The crosswalk rows are unchanged.",
       "reason": "The three continuity operations share one session subcommand family; the owner must choose one spelling for AOP-012 and update the crosswalk or the CLI.",
+      "status": "resolved",
+      "resolution": "The spelling is fixed by the constitution and the frozen registry: AGENT_OPERATING_MODEL.md section 24.1 lists fss session orient, fss session follow, and fss handoff, and gen:fss1:public-v1 freezes the same cliCommand values, so the CLI was changed rather than the registry. Rename record: fss orient -> fss session orient, fss follow -> fss session follow, fss session handoff -> fss handoff (old spellings kept as aliases). crates/fss-cli/src/fss_cmd.rs registered_crosswalk_spellings_parse_to_their_operations parses every implemented row's exact cli_command and its alias to the same command (fss-x4a.30.84)."
+    },
+    {
+      "target": "OrientRequest (fss session orient) coverage window vs AGENT_COGNITION_AND_CONTROL.md section 9.2 silence certificate",
+      "field": "requestedWindow",
+      "originalValue": "A silence certificate identifies the observed domain, cursor interval, continuity, coverage certificate, freshness, and excluded classes.",
+      "reconciledValue": "The certified domain is each covered zone's declared window, derived from the retained witnesses (first current witness through the newest analysed evidence); the cursor interval is the delta's basis and result anchors.",
+      "reason": "No orient or follow request carries an explicit observation window, so the certified window is derived rather than requested. TO CLOSE: an agent_query_plan.v1 window (or a request field of a later generation) that orient and follow honor, with the certificate's authorized domain clipped to it and a not_observable result for any requested interval the witnesses do not cover.",
       "status": "open"
     }
-  ]
+  ],
+  "meaningfulDeltaComparison": {
+    "owner": "fss-reference meaningful_delta (classify_reference_meaningful_delta)",
+    "principle": "AGENT_COGNITION_AND_CONTROL.md section 9: raw ledger changes are too low-level for an agent; a meaningful delta compares the decision semantics of two exact publications, and a silence certificate spans the typed basis-to-result anchor interval. The anchor advance itself is always carried typed by the delta's basisAnchor/resultAnchor (a validated successor pair) and epoch changes are policy_or_authority, so a statement that only restates the anchor position is not a decision-relevant change.",
+    "rules": [
+      {
+        "id": "anchor_position_restatement",
+        "claims": [
+          "claim:deployment:ledger-head"
+        ],
+        "comparedFields": [
+          "claimId",
+          "knowledgeState",
+          "provenance",
+          "hypothesisDisposition",
+          "contradictions",
+          "validUntil",
+          "stateBasis",
+          "presence"
+        ],
+        "excludedFields": [
+          "statement",
+          "evidence"
+        ],
+        "rustConstant": "crates/fss-reference/src/meaningful_delta.rs ANCHOR_POSITION_CLAIMS",
+        "meaning": "A registered anchor-position cell states the committed ledger position itself (commit sequence, batch count, committed families) and cites the ledger record root at that position. A change confined to its statement and evidence is not a changed cell; any change of its knowledge state, provenance, hypothesis, contradictions, validity, or state basis, and its addition or removal, is reported like any other cell."
+      },
+      {
+        "id": "affordance_cost_repricing",
+        "comparedFields": [
+          "affordanceId",
+          "operation",
+          "target",
+          "rationale",
+          "class",
+          "supportedWorlds",
+          "unsafeWorlds",
+          "requiredCapabilities",
+          "reversible",
+          "branchPredicate"
+        ],
+        "excludedFields": [
+          "cost"
+        ],
+        "rustConstant": "crates/fss-reference/src/meaningful_delta.rs affordance_frontier_digest (fss.reference_affordance_frontier.v2)",
+        "meaning": "A listed affordance's estimated cost is re-priced from the measured read at every anchor, and resource consequences are typed separately by the publication's resource state (budget_pressure). Re-pricing alone is not a frontier change; adding, removing, re-classifying, re-targeting, or re-scoping an affordance is."
+      }
+    ],
+    "producerObligation": "Every other decision-relevant field (knowledge cells, now, atRisk, unknown, world semantics, affordance frontier, obligations, completeness, coverage handles, resource state) must be anchor-invariant for an unchanged situation: a producer cites the ledger record root of the last batch that changed the inputs a fact derives from (never the head), and names the capsule's own anchor only through the anchor, the anchor token proof pointer, and anchor_position_restatement cells. fss session orient does so (event facts cite the last event-bearing batch, the unobserved-activity residual the last evidence- or coverage-bearing batch)."
+  },
+  "evidenceAnchorProjection": {
+    "internalAnchor": "LedgerAnchor (fss-core; docs/ONE_VERSION_UNIVERSE.md section 2, the authority anchor every EvidenceDeltaBatch commits)",
+    "publicSchema": "fss.evidence_anchor.v1",
+    "renderer": "crates/fss-cli/src/agent_json.rs evidence_anchor",
+    "fields": [
+      {
+        "schemaField": "deploymentId",
+        "source": "site_lineage"
+      },
+      {
+        "schemaField": "observationEpoch",
+        "source": "ledger_epoch"
+      },
+      {
+        "schemaField": "capsuleSequence",
+        "source": "commit_sequence"
+      },
+      {
+        "schemaField": "authorityRoot",
+        "source": "state_root"
+      },
+      {
+        "schemaField": "adapterEpoch",
+        "source": "adapter_registry_epoch"
+      },
+      {
+        "schemaField": "schemaEpoch",
+        "source": "schema_epoch"
+      },
+      {
+        "schemaField": "policyEpoch",
+        "source": "policy_epoch"
+      },
+      {
+        "schemaField": "deviceGeneration",
+        "source": "not_applicable_sentinel",
+        "reason": "deployment_scope_anchor"
+      },
+      {
+        "schemaField": "streamGeneration",
+        "source": "not_applicable_sentinel",
+        "reason": "deployment_scope_anchor"
+      },
+      {
+        "schemaField": "modelGeneration",
+        "source": "null"
+      },
+      {
+        "schemaField": "calibrationGeneration",
+        "source": "null"
+      },
+      {
+        "schemaField": "graphGeneration",
+        "source": "null"
+      },
+      {
+        "schemaField": "searchGeneration",
+        "source": "null"
+      }
+    ],
+    "notApplicableSentinel": "fss-na:<lowercase hex sha256 of '<schema>/sentinel/<field>/<reason>'>; it matches the schema's generation grammar, never parses as a content digest, and states that a deployment-scope anchor pins every device and stream generation through its commit but names no single one.",
+    "carriedOutsideTheAnchor": [
+      {
+        "source": "privacy_epoch",
+        "carrier": "the answer's privacy projection policyGenerationId privacy-epoch:<n>"
+      }
+    ],
+    "nullRule": "model, calibration, graph, and search generations are null when the answer consumed none (the schema's explicit null form)."
+  },
+  "consequenceSeverityScale": {
+    "owner": "fss-core PossibleWorld.consequence_severity",
+    "type": "non-negative integer ordinal (u8); larger is worse; not a calibrated probability or loss",
+    "renderer": "crates/fss-cli/src/agent_json.rs consequence_class, protected_loss_class",
+    "levels": [
+      {
+        "severity": "0",
+        "consequenceClass": "negligible",
+        "protectedLossClass": "low"
+      },
+      {
+        "severity": "1",
+        "consequenceClass": "low",
+        "protectedLossClass": "low"
+      },
+      {
+        "severity": "2",
+        "consequenceClass": "moderate",
+        "protectedLossClass": "moderate"
+      },
+      {
+        "severity": "3",
+        "consequenceClass": "moderate",
+        "protectedLossClass": "moderate"
+      },
+      {
+        "severity": "4",
+        "consequenceClass": "high",
+        "protectedLossClass": "high"
+      },
+      {
+        "severity": ">=5",
+        "consequenceClass": "critical",
+        "protectedLossClass": "critical"
+      }
+    ],
+    "contextRule": "A world that is protected or has severity >= 4 is critical context and is never dropped by a context pack (situation_sections INV-092).",
+    "protectedLossFloor": "agent_world_envelope.v1 protectedLossClass has no negligible member, so a protected residual of severity 0 renders low."
+  },
+  "attentionScales": {
+    "missionRelevance": {
+      "schemaFields": [
+        "situation_capsule.v1 attentionFrontier[].missionRelevance"
+      ],
+      "scale": "membership in the orientation scope",
+      "values": [
+        {
+          "value": 1,
+          "meaning": "the item lies inside the orientation scope (a reference orientation's scope is the whole deployment)"
+        }
+      ],
+      "rule": "The reference orientation emits only 1; it does not estimate graded mission relevance."
+    },
+    "decisionImpact": {
+      "schemaFields": [
+        "situation_capsule.v1 attentionFrontier[].decisionImpact",
+        "agent_situation_frame.v1 salientEntities[].relevance"
+      ],
+      "scale": "consequenceSeverityScale",
+      "rule": "An event item takes its highest protected world's consequence severity; the coverage-gap item takes the unobserved-activity residual's severity (4); an indeterminate effect or open obligation takes 5 (critical), because AGENT_COGNITION_AND_CONTROL.md section 9.1 makes effect uncertainty and obligations non-coalescible. Neither value is a calibrated score."
+    }
+  },
+  "worldPlausibilityRule": {
+    "schemaField": "agent_world_envelope.v1 materialAlternativeWorlds[].plausibility",
+    "rule": "possible means a material alternative the anchor's evidence does not rule out and for which no support grade was estimated; supported and weakly_possible are emitted only from a registered estimator, and adversarial_residual only for residual worlds. fss-core PossibleWorld carries no plausibility grade, so every rendered material alternative is possible.",
+    "whyNotRuledOut": "An adversarial residual names the evidence roots that keep it live."
+  },
+  "viewSectionCarriers": {
+    "rule": "A view's requiredSections are sections of the answer the view renders (AVIEW-002 brief renders the SituationCapsule), not fields of one nested schema. Each section is carried by the registered capsule field below; a section carried by context-pack items that are not critical may be omitted only with a SemanticCompressionReceipt.",
+    "AVIEW-002": {
+      "now": "contextPack item context:frame:summary (kind frame, critical, the frame's first now statement) and items of kind now",
+      "certified": "situationFrame.worldEnvelope certified core and situationFrame.knowledgeCells",
+      "possible": "situationFrame.worldEnvelope materialAlternativeWorlds and adversarialResiduals",
+      "changed": "meaningfulDelta (null, with a degradation line, when no previous anchor was supplied) and situationFrame.changes",
+      "why": "contextPack items of kind why (optional; receipted when omitted)",
+      "unknown": "situationFrame.unknowns and contextPack items of kind unknown (critical)",
+      "atRisk": "contextPack items of kind at_risk (critical, never dropped)",
+      "controlEnvelope": "controlEnvelope",
+      "next": "affordances and contextPack items of kind next_affordance (critical, never dropped)"
+    }
+  },
+  "followPageProjection": {
+    "operation": "AOP-004",
+    "payloadSchema": "fss.agent_meaningful_delta.v1",
+    "rule": "The engine's MeaningfulDelta is one complete object. Its items are flattened into one immutable follow_stream ContinuationStream, protected items first (effect uncertainty, obligation changes, invalidated assumptions, coverage changes, removed claims, then changed cells). Each page is rendered as agent_meaningful_delta.v1 with the complete delta header and the complete class set, and the item lists restricted to that exact page. Pagination is delivery, not omission or coalescing: coalescedCount and omittedCount remain the engine's own counts, every item is delivered exactly once through the exact continuation that both the page's continuation field and the response envelope carry (the last page carries the engine's own continuation), and the page range is stated in the envelope degradation.",
+    "renderer": "crates/fss-cli/src/follow_cmd.rs"
+  }
 }

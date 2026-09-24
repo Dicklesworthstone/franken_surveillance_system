@@ -865,14 +865,67 @@ fn validate_comparison_basis(
     Ok(())
 }
 
+/// Registered anchor-position claims (`anchor_position_restatement` of `meaningfulDeltaComparison` in
+/// architecture/agent_contracts.json): cells whose proposition is the committed ledger position
+/// itself (the commit sequence, batch count, and committed families the anchor names, cited by
+/// the ledger record root at that position).
+///
+/// Their statement and evidence restate the anchor, which every delta already carries typed as
+/// its validated `basisAnchor`/`resultAnchor` successor pair (epoch changes are
+/// `policy_or_authority`), so a change confined to that restatement is not a decision-semantic
+/// change of the cell. Everything else about such a cell (knowledge state, provenance,
+/// hypothesis, contradictions, validity, state basis, presence) is compared as for any other
+/// cell, so the rule never hides an epistemic change, a contradiction, or a removal.
+pub const ANCHOR_POSITION_CLAIMS: &[&str] = &[crate::agent_orient::CLAIM_LEDGER_HEAD];
+
+/// The decision semantics of `cell` for the comparison: its full canonical cell digest, except
+/// that a registered anchor-position cell (`anchor_position_restatement`) is compared without the statement and
+/// evidence that restate the anchor.
+fn cell_decision_digest(cell: &KnowledgeCell) -> ContentDigest {
+    if !ANCHOR_POSITION_CLAIMS.contains(&cell.claim_id()) {
+        return cell.cell_digest();
+    }
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text("fss.reference_anchor_position_cell_semantics.v1");
+    encoder.text(cell.claim_id());
+    encoder.text(cell.knowledge_state().as_str());
+    encoder.text(cell.provenance().as_str());
+    match cell.hypothesis() {
+        Some(disposition) => {
+            encoder.bool(true);
+            encoder.text(disposition.as_str());
+        }
+        None => encoder.bool(false),
+    }
+    encoder.u64(cell.contradictions().len() as u64);
+    for contradiction in cell.contradictions() {
+        encoder.digest(*contradiction);
+    }
+    match cell.valid_until() {
+        Some(until) => {
+            encoder.bool(true);
+            encoder.i128(until.0);
+        }
+        None => encoder.bool(false),
+    }
+    match cell.state_basis() {
+        Some(basis) => {
+            encoder.bool(true);
+            basis.encode_canonical(&mut encoder);
+        }
+        None => encoder.bool(false),
+    }
+    ContentDigest::sha256(&encoder.finish())
+}
+
 fn changed_cells(basis: &[KnowledgeCell], result: &[KnowledgeCell]) -> Vec<KnowledgeCell> {
     let prior: BTreeMap<_, _> = basis
         .iter()
-        .map(|cell| (cell.claim_id(), cell.cell_digest()))
+        .map(|cell| (cell.claim_id(), cell_decision_digest(cell)))
         .collect();
     let mut changed: Vec<_> = result
         .iter()
-        .filter(|cell| prior.get(cell.claim_id()) != Some(&cell.cell_digest()))
+        .filter(|cell| prior.get(cell.claim_id()) != Some(&cell_decision_digest(cell)))
         .cloned()
         .collect();
     changed.sort_by(|left, right| left.claim_id().cmp(right.claim_id()));
@@ -1177,14 +1230,38 @@ fn world_semantic_digest(envelope: &WorldEnvelope) -> ContentDigest {
     ContentDigest::sha256(&encoder.finish())
 }
 
+/// Decision semantics of the affordance frontier (`affordance_cost_repricing` of `meaningfulDeltaComparison` in
+/// architecture/agent_contracts.json): every affordance's identity, operation, target, rationale,
+/// class, supported and unsafe worlds, required capabilities, reversibility, and branch predicate.
+///
+/// The estimated `cost` is excluded: a listed affordance is re-priced from the measured read at
+/// every anchor (a longer committed ledger costs more bytes to re-read), and resource consequences
+/// are typed separately by the publication's resource state (`budget_pressure`). Re-pricing alone
+/// therefore never changes what an agent may do next; adding, removing, re-classifying,
+/// re-targeting, or re-scoping an affordance still does.
 fn affordance_frontier_digest(affordances: &[ActionAffordance]) -> ContentDigest {
     let mut encoder = CanonicalEncoder::new();
-    encoder.text("fss.reference_affordance_frontier.v1");
+    encoder.text("fss.reference_affordance_frontier.v2");
     let mut affordances = affordances.to_vec();
     affordances.sort_by(|left, right| left.affordance_id.cmp(&right.affordance_id));
     encoder.u64(affordances.len() as u64);
     for affordance in &affordances {
-        affordance.encode_canonical(&mut encoder);
+        encoder.text(&affordance.affordance_id);
+        encoder.text(&affordance.operation);
+        encoder.text(&affordance.target);
+        encoder.text(&affordance.rationale);
+        encoder.text(affordance.class.as_str());
+        encode_text_set(&affordance.supported_worlds, &mut encoder);
+        encode_text_set(&affordance.unsafe_worlds, &mut encoder);
+        encode_text_set(&affordance.required_capabilities, &mut encoder);
+        encoder.bool(affordance.reversible);
+        match &affordance.branch_predicate {
+            Some(predicate) => {
+                encoder.bool(true);
+                encoder.text(predicate);
+            }
+            None => encoder.bool(false),
+        }
     }
     ContentDigest::sha256(&encoder.finish())
 }
@@ -1286,4 +1363,132 @@ fn encode_text(values: &[String], encoder: &mut CanonicalEncoder) {
 fn sort_dedup(values: &mut Vec<String>) {
     values.sort();
     values.dedup();
+}
+
+#[cfg(test)]
+mod comparison_rule_tests {
+    //! The registered `meaningfulDeltaComparison` rules hide only what they register.
+
+    use std::error::Error;
+
+    use fss_core::{BudgetVector, KnowledgeCellParams, ProvenanceClass};
+
+    use super::*;
+
+    type TestResult = Result<(), Box<dyn Error>>;
+
+    fn cell(
+        claim: &str,
+        statement: &str,
+        state: KnowledgeState,
+        evidence: &[u8],
+    ) -> Result<KnowledgeCell, ContractError> {
+        KnowledgeCell::new(KnowledgeCellParams {
+            claim_id: claim.to_owned(),
+            statement: statement.to_owned(),
+            knowledge_state: state,
+            provenance: ProvenanceClass::Derived,
+            hypothesis: None,
+            evidence: vec![ContentDigest::sha256(evidence)],
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: None,
+        })
+    }
+
+    #[test]
+    fn anchor_position_restatement_hides_only_the_restated_anchor() -> TestResult {
+        let head = crate::agent_orient::CLAIM_LEDGER_HEAD;
+        let at_one = cell(
+            head,
+            "2 batches at commit 1.",
+            KnowledgeState::Known,
+            b"root-1",
+        )?;
+        let at_two = cell(
+            head,
+            "3 batches at commit 2.",
+            KnowledgeState::Known,
+            b"root-2",
+        )?;
+        // Only the statement and evidence differ: not a decision-semantic change.
+        assert_eq!(cell_decision_digest(&at_one), cell_decision_digest(&at_two));
+        assert_ne!(at_one.cell_digest(), at_two.cell_digest());
+        assert!(
+            changed_cells(std::slice::from_ref(&at_one), std::slice::from_ref(&at_two)).is_empty()
+        );
+        // A knowledge-state change of the same cell is still reported.
+        let unknown = cell(
+            head,
+            "3 batches at commit 2.",
+            KnowledgeState::Unknown,
+            b"root-2",
+        )?;
+        assert_eq!(
+            changed_cells(
+                std::slice::from_ref(&at_one),
+                std::slice::from_ref(&unknown)
+            )
+            .len(),
+            1
+        );
+        // So are its removal and its addition.
+        assert_eq!(
+            removed_claim_ids(std::slice::from_ref(&at_one), &[]),
+            vec![head.to_owned()]
+        );
+        assert_eq!(changed_cells(&[], std::slice::from_ref(&at_two)).len(), 1);
+        // Every unregistered claim compares its full canonical digest.
+        let before = cell(
+            "claim:deployment:imports",
+            "1 import.",
+            KnowledgeState::Known,
+            b"a",
+        )?;
+        let after = cell(
+            "claim:deployment:imports",
+            "1 import.",
+            KnowledgeState::Known,
+            b"b",
+        )?;
+        assert_eq!(changed_cells(&[before], &[after]).len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn affordance_cost_repricing_hides_only_the_cost() -> TestResult {
+        let priced = |bytes: u64| -> Result<ActionAffordance, Box<dyn Error>> {
+            Ok(ActionAffordance {
+                affordance_id: "affordance:orient:reorient".to_owned(),
+                operation: "session.orient".to_owned(),
+                target: "fss://deployment/x".to_owned(),
+                rationale: "Re-orient.".to_owned(),
+                class: AffordanceClass::Wait,
+                supported_worlds: BTreeSet::from(["world:a".to_owned()]),
+                unsafe_worlds: BTreeSet::new(),
+                required_capabilities: BTreeSet::from(["CAP-AGENT-SITUATION-READ-001".to_owned()]),
+                cost: BudgetVector::builder().bytes(bytes).build()?,
+                reversible: true,
+                branch_predicate: None,
+            })
+        };
+        let cheap = priced(100)?;
+        let dear = priced(200)?;
+        assert_eq!(
+            affordance_frontier_digest(std::slice::from_ref(&cheap)),
+            affordance_frontier_digest(std::slice::from_ref(&dear))
+        );
+        // Re-targeting, re-classifying, or dropping the affordance is still a frontier change.
+        let mut retargeted = cheap.clone();
+        retargeted.target = "fss://deployment/y".to_owned();
+        let mut blocked = cheap.clone();
+        blocked.class = AffordanceClass::Blocked;
+        for changed in [vec![retargeted], vec![blocked], Vec::new()] {
+            assert_ne!(
+                affordance_frontier_digest(std::slice::from_ref(&cheap)),
+                affordance_frontier_digest(&changed)
+            );
+        }
+        Ok(())
+    }
 }

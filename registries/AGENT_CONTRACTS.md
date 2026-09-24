@@ -176,6 +176,68 @@ fss://experience/{capsule}
 fss://doctor/{bundle}
 ```
 
+## Meaningful-delta comparison rules
+
+Mirrors `meaningfulDeltaComparison` in `architecture/agent_contracts.json`. A delta compares the
+decision semantics of two exact publications; the anchor advance itself is always carried typed by
+the delta's `basisAnchor`/`resultAnchor` (AGENT_COGNITION_AND_CONTROL.md section 9).
+
+| Rule | Compared | Excluded | Meaning |
+|---|---|---|---|
+| `anchor_position_restatement` | claim, knowledge state, provenance, hypothesis, contradictions, validity, state basis, presence | statement, evidence | a registered anchor-position cell (`claim:deployment:ledger-head`) restates the committed position; a change confined to that restatement is not a changed cell |
+| `affordance_cost_repricing` | identity, operation, target, rationale, class, supported/unsafe worlds, capabilities, reversibility, branch predicate | cost | re-pricing a listed affordance at a new anchor is not a frontier change; resource effects are typed by the resource state |
+
+Producers keep every other decision-relevant field anchor-invariant for an unchanged situation:
+facts cite the ledger record root of the last batch that changed their inputs, never the head.
+
+## Evidence anchor projection
+
+Mirrors `evidenceAnchorProjection`: the committed `LedgerAnchor` (docs/ONE_VERSION_UNIVERSE.md
+section 2) renders as `fss.evidence_anchor.v1` with `deploymentId`=`site_lineage`,
+`observationEpoch`=`ledger_epoch`, `capsuleSequence`=`commit_sequence`,
+`authorityRoot`=`state_root`, `adapterEpoch`=`adapter_registry_epoch`, `schemaEpoch`, and
+`policyEpoch`; `deviceGeneration`/`streamGeneration` carry the typed not-applicable sentinel
+`fss-na:<sha256 of '<schema>/sentinel/<field>/deployment_scope_anchor'>`; model, calibration,
+graph, and search generations are `null` unless consumed; `privacy_epoch` is carried as the
+privacy projection's `policyGenerationId` (`privacy-epoch:<n>`).
+
+## Consequence severity and attention scales
+
+Mirrors `consequenceSeverityScale`, `attentionScales`, and `worldPlausibilityRule`.
+
+| Severity | `consequenceClass` | `protectedLossClass` |
+|---|---|---|
+| 0 | `negligible` | `low` |
+| 1 | `low` | `low` |
+| 2 | `moderate` | `moderate` |
+| 3 | `moderate` | `moderate` |
+| 4 | `high` | `high` |
+| >=5 | `critical` | `critical` |
+
+Severity is an integer ordinal, not a calibrated loss. `missionRelevance` is orientation-scope
+membership (only 1 is emitted). `decisionImpact` and `salientEntities.relevance` are consequence
+severities: an event takes its highest protected world's severity, the coverage gap the
+unobserved-activity residual's (4), and an indeterminate effect or open obligation 5.
+`plausibility` `possible` means a material alternative the evidence does not rule out, with no
+estimated support grade.
+
+## View section carriers
+
+Mirrors `viewSectionCarriers`: a view's required sections are sections of the answer it renders.
+For `AVIEW-002` brief (the SituationCapsule): `now` is the critical `context:frame:summary` item
+and `now` items; `certified` and `possible` are the world envelope and knowledge cells; `changed`
+is `meaningfulDelta` and `situationFrame.changes`; `why` is optional `why` items (receipted when
+omitted); `unknown` is `situationFrame.unknowns` and critical `unknown` items; `atRisk` is critical
+`at_risk` items; `controlEnvelope` is `controlEnvelope`; `next` is `affordances` and critical
+`next_affordance` items.
+
+## Follow page projection
+
+Mirrors `followPageProjection`: an AOP-004 page is `fss.agent_meaningful_delta.v1` with the
+complete delta header and class set and only that page's items; pagination is delivery, so
+`coalescedCount` and `omittedCount` stay the engine's own counts and every item is delivered
+exactly once through the exact continuation.
+
 ## Registry drifts
 
 Mirrors the provenance entries of `drifts` in `architecture/agent_contracts.json`.
