@@ -950,13 +950,16 @@ struct CognitiveParts {
     decision_digest: ContentDigest,
 }
 
+/// Rendered explain payload, next-action identities, and next-action objects.
+type CognitivePayload = (String, Vec<String>, Vec<String>);
+
 /// The explain payload (`fss.agent_cognitive_envelope.v1`) and its next-action identities and
 /// objects.
 fn cognitive(
     orientation: &DeploymentOrientation,
     request_digest: ContentDigest,
     parts: CognitiveParts,
-) -> Result<(String, Vec<String>, Vec<String>), Box<dyn std::error::Error>> {
+) -> Result<CognitivePayload, Box<dyn std::error::Error>> {
     let CognitiveParts {
         answer_class,
         epistemic,
