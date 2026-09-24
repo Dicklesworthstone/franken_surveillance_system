@@ -73,7 +73,7 @@ pub enum JournaledLiveArchiveStep {
     /// Existing wire/timing/archive/completion output; raw source custody is still explicit.
     Live(LiveArchiveStep),
     /// Candidate synchronization or work+confirmation synchronization, never PinRequired.
-    Checkpoint(JournaledArchiveProgress),
+    Checkpoint(Box<JournaledArchiveProgress>),
     /// Original source failure without fabricated EOF or successful finalization.
     Stopped {
         /// Existing exact source/protocol/capture trigger.
@@ -188,12 +188,12 @@ impl<'a, 'p> JournaledLiveAvcArchive<'a, 'p> {
                 let receipt = self.pins.persist_candidate(&checkpoint, cancel).map_err(|e| self.pin_failure(e, None))?;
                 self.inner.as_mut().ok_or_else(closed)?.acknowledge_checkpoint(&checkpoint, now, authority, cancel)
                     .map_err(|e| self.live_failure(e))?;
-                Ok(JournaledLiveArchiveStep::Checkpoint(JournaledArchiveProgress::PinPersisted { checkpoint, receipt }))
+                Ok(JournaledLiveArchiveStep::Checkpoint(Box::new(JournaledArchiveProgress::PinPersisted { checkpoint, receipt })))
             }
             CheckpointedLiveArchiveStep::Checkpoint(CheckpointedArchiveProgress::WorkDurable { checkpoint, receipt }) => {
                 match self.pins.confirm_receipt(&checkpoint, &receipt, cancel) {
-                    Ok(pin_receipt) => Ok(JournaledLiveArchiveStep::Checkpoint(JournaledArchiveProgress::WorkConfirmed {
-                        checkpoint, work_receipt: receipt, pin_receipt })),
+                    Ok(pin_receipt) => Ok(JournaledLiveArchiveStep::Checkpoint(Box::new(JournaledArchiveProgress::WorkConfirmed {
+                        checkpoint, work_receipt: receipt, pin_receipt }))),
                     Err(e) => Err(self.pin_failure(e, Some(UnrecordedWorkConfirmation { checkpoint, receipt }))),
                 }
             }

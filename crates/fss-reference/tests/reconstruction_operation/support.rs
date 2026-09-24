@@ -98,17 +98,21 @@ pub fn seed(name: &str, pictures: usize, bad_last: bool, fragment_only: bool) ->
     let mut decisions = Vec::new(); let mut expected = Vec::new(); let mut finished = false;
     for _ in 0..1024 {
         match replay.step(&p, 1000, &NeverCancel, &mut work())? {
-            RecordingReplayStep::Capture(CapturePoll::TimingRequired(picture)) => {
-                let timing = RecordingTiming { decode_time: 700 + decisions.len() as u64 * 3600,
-                    duration: 3600, composition_offset: -25 };
-                decisions.push(RecordingTimingDecision { observations_read: replay.observations_read(), picture, timing });
-                let _ = replay.supply_timing(timing, 1000, &NeverCancel, &mut work())?;
-            }
-            RecordingReplayStep::Capture(CapturePoll::Window(w)) => expected.push(w.manifest().root()),
+            RecordingReplayStep::Capture(event) => match *event {
+                CapturePoll::TimingRequired(picture) => {
+                    let timing = RecordingTiming { decode_time: 700 + decisions.len() as u64 * 3600,
+                        duration: 3600, composition_offset: -25 };
+                    decisions.push(RecordingTimingDecision { observations_read: replay.observations_read(), picture, timing });
+                    let _ = replay.supply_timing(timing, 1000, &NeverCancel, &mut work())?;
+                }
+                CapturePoll::Window(w) => expected.push(w.manifest().root()),
+                CapturePoll::Receiver(_) => {},
+                other => return Err(format!("unexpected fixture output: {:?}",
+                    RecordingReplayStep::Capture(Box::new(other))).into()),
+            },
             RecordingReplayStep::PrefixReady { .. } => replay.finish_prefix(1000, &NeverCancel, &mut work())?,
             RecordingReplayStep::FinishedPrefix { .. } => { finished = true; break; },
-            RecordingReplayStep::Source(_) | RecordingReplayStep::MediaQueued
-                | RecordingReplayStep::Capture(CapturePoll::Receiver(_)) => {},
+            RecordingReplayStep::Source(_) | RecordingReplayStep::MediaQueued => {},
             other => return Err(format!("unexpected fixture output: {other:?}").into()),
         }
     }

@@ -40,7 +40,7 @@ fn nals() -> Vec<&'static [u8]> {
             start = Some(at + prefix); at += prefix;
         } else { at += 1; }
     }
-    if let Some(begin) = start { if begin < bytes.len() { out.push(&bytes[begin..]); } }
+    if let Some(begin) = start && begin < bytes.len() { out.push(&bytes[begin..]); }
     out
 }
 fn rtp(sequence: u16, timestamp: u32, marker: bool, payload: &[u8]) -> Vec<u8> {
@@ -97,9 +97,13 @@ impl Fixture {
                     std::thread::yield_now();
                 }
                 other => {
-                    let stop = matches!(&other, LiveRecordingStep::Stopped { .. }
-                        | LiveRecordingStep::Capture { event: CapturePoll::TimingRequired(_) | CapturePoll::Backpressure(_)
-                            | CapturePoll::Stopped { .. } | CapturePoll::Ended { .. }, .. });
+                    let stop = match &other {
+                        LiveRecordingStep::Stopped { .. } => true,
+                        LiveRecordingStep::Capture { event, .. } => matches!(**event,
+                            CapturePoll::TimingRequired(_) | CapturePoll::Backpressure(_)
+                            | CapturePoll::Stopped { .. } | CapturePoll::Ended { .. }),
+                        _ => false,
+                    };
                     outputs.push(other);
                     if stop { assert_eq!(originals, bytes); return Ok(outputs); }
                 }
@@ -126,7 +130,10 @@ impl Fixture {
         let original = rtp(2, 9_000, true, idr);
         let outputs = self.receive(&wire(&original)?, 11)?;
         let request = outputs.iter().find_map(|step| match step {
-            LiveRecordingStep::Capture { event: CapturePoll::TimingRequired(request), .. } => Some(*request), _ => None,
+            LiveRecordingStep::Capture { event, .. } => match **event {
+                CapturePoll::TimingRequired(request) => Some(request), _ => None,
+            },
+            _ => None,
         }).ok_or("real IDR did not request independent timing")?;
         Ok((original, request))
     }
@@ -136,7 +143,10 @@ impl Fixture {
         assert!(matches!(self.driver.supply_timing(timing(700), 12, &self.authority)?, TimedCapture::Collected { .. }));
         assert!(self.driver.seal(13, &self.authority)?);
         match self.driver.poll(SocketReadiness::default(), 13, &self.authority)? {
-            LiveRecordingStep::Capture { event: CapturePoll::Window(window), connection: None } => Ok(window),
+            LiveRecordingStep::Capture { event, connection: None } => match *event {
+                CapturePoll::Window(window) => Ok(window),
+                _ => Err("prepared recording not returned before further network input".into()),
+            },
             _ => Err("prepared recording not returned before further network input".into()),
         }
     }
@@ -162,7 +172,8 @@ fn actual_socket_picture_requests_timing_and_backpressures_further_reads() -> Te
     f.peer.write_all(b"must not be read while timing is pending")?;
     for now in 12..16 {
         assert!(matches!(f.driver.poll(SocketReadiness { readable: true, writable: true }, now, &f.authority)?,
-            LiveRecordingStep::Capture { event: CapturePoll::TimingRequired(request), connection: None } if request == picture));
+            LiveRecordingStep::Capture { event, connection: None }
+                if matches!(*event, CapturePoll::TimingRequired(request) if request == picture)));
     }
     assert_eq!(f.driver.totals().ok_or("missing totals")?.read_calls, reads);
     let retired = f.driver.cancel().ok_or("missing cancellation")?;
@@ -181,11 +192,13 @@ fn timing_refusal_preserves_picture_and_does_not_substitute_rtp_or_arrival_time(
     let error = f.driver.supply_timing(bad, 12, &f.authority).err().ok_or("zero duration accepted")?;
     assert!(error.retirement.is_none());
     assert!(matches!(f.driver.poll(SocketReadiness::default(), 12, &f.authority)?,
-        LiveRecordingStep::Capture { event: CapturePoll::TimingRequired(request), .. } if request == picture));
+        LiveRecordingStep::Capture { event, .. }
+            if matches!(*event, CapturePoll::TimingRequired(request) if request == picture)));
     let _ = f.driver.supply_timing(timing(700), 13, &f.authority)?;
     assert!(f.driver.seal(14, &f.authority)?);
-    let LiveRecordingStep::Capture { event: CapturePoll::Window(window), .. } =
+    let LiveRecordingStep::Capture { event, .. } =
         f.driver.poll(SocketReadiness::default(), 14, &f.authority)? else { return Err("window missing".into()); };
+    let CapturePoll::Window(window) = *event else { return Err("window missing".into()); };
     assert_eq!(window.summary().decode_interval, 700..4300);
     assert_eq!(window.summary().time_scale, 90_000);
     Ok(())
@@ -197,8 +210,10 @@ fn timing_deadline_stops_the_socket_and_retains_unsealed_source() -> TestResult 
     let (original, _) = f.idr()?;
     let deadline = 11 + crate::rtsp::recording_capture::MAX_PENDING_EVENT_AGE_NS;
     let step = f.driver.poll(SocketReadiness::default(), deadline, &f.authority)?;
-    let LiveRecordingStep::Capture { event: CapturePoll::Stopped { reason: CollectionStop::Deadline, retained, .. },
-        connection: Some(connection) } = step else { return Err("timing expiry did not close both layers".into()); };
+    let LiveRecordingStep::Capture { event, connection: Some(connection) } = step
+        else { return Err("timing expiry did not close both layers".into()); };
+    let CapturePoll::Stopped { reason: CollectionStop::Deadline, retained, .. } = *event
+        else { return Err("timing expiry did not close both layers".into()); };
     assert!(retained.picture.is_some());
     assert!(retained.collection.pending.sources.iter().any(|source| source.bytes() == original));
     assert!(connection.protocol.client.session.remote_session_may_exist);
@@ -228,17 +243,18 @@ fn collection_pressure_never_reads_ahead_and_sealing_releases_the_bounded_prefix
     let data = nals(); let predicted = data.iter().find(|n| n[0] & 31 == 1).ok_or("missing P slice")?;
     let outputs = f.receive(&wire(&rtp(3, 12_600, true, predicted))?, 13)?;
     assert!(outputs.iter().any(|step| matches!(step,
-        LiveRecordingStep::Capture { event: CapturePoll::Backpressure(CollectorError::Capacity), .. })));
+        LiveRecordingStep::Capture { event, .. }
+            if matches!(**event, CapturePoll::Backpressure(CollectorError::Capacity)))));
     let reads = f.driver.totals().ok_or("missing totals")?.read_calls;
     assert!(matches!(f.driver.poll(SocketReadiness { readable: true, writable: true }, 13, &f.authority)?,
-        LiveRecordingStep::Capture { event: CapturePoll::Backpressure(_), .. }));
+        LiveRecordingStep::Capture { event, .. } if matches!(*event, CapturePoll::Backpressure(_))));
     assert_eq!(f.driver.totals().ok_or("missing totals")?.read_calls, reads);
     assert!(f.driver.seal(14, &f.authority)?);
     assert!(matches!(f.driver.poll(SocketReadiness::default(), 14, &f.authority)?,
-        LiveRecordingStep::Capture { event: CapturePoll::Window(_), .. }));
+        LiveRecordingStep::Capture { event, .. } if matches!(*event, CapturePoll::Window(_))));
     // The unconsumed next source event is still owned and can now enter the empty collector.
     assert!(matches!(f.driver.poll(SocketReadiness::default(), 14, &f.authority)?,
-        LiveRecordingStep::Capture { event: CapturePoll::Receiver(_), .. }));
+        LiveRecordingStep::Capture { event, .. } if matches!(*event, CapturePoll::Receiver(_))));
     assert_eq!(f.driver.collector().retained_packets(), 1);
     Ok(())
 }
@@ -312,10 +328,13 @@ fn actual_eof_drains_completed_window_without_fabricating_another_picture() -> T
     for _ in 0..2048 {
         match f.driver.poll(SocketReadiness { readable: true, writable: false }, 13, &f.authority)? {
             LiveRecordingStep::Network(LiveAvcStep::InputEnded) => saw_eof = true,
-            LiveRecordingStep::Capture { event: CapturePoll::Window(window), .. } => {
-                assert!(saw_eof); windows += 1; assert_eq!(window.summary().samples, 1);
-            }
-            LiveRecordingStep::Capture { event: CapturePoll::Ended { .. }, .. } => { closed = true; break; }
+            LiveRecordingStep::Capture { event, .. } => match *event {
+                CapturePoll::Window(window) => {
+                    assert!(saw_eof); windows += 1; assert_eq!(window.summary().samples, 1);
+                }
+                CapturePoll::Ended { .. } => { closed = true; break; }
+                _ => std::thread::yield_now(),
+            },
             LiveRecordingStep::Stopped { .. } => return Err("clean EOF incorrectly became a source failure".into()),
             _ => std::thread::yield_now(),
         }
@@ -360,18 +379,21 @@ fn eof_mid_fragment_never_becomes_a_completed_recording() -> TestResult {
     let mut terminal = false;
     for _ in 0..2048 {
         match f.driver.poll(SocketReadiness { readable: true, writable: false }, 12, &f.authority)? {
-            LiveRecordingStep::Capture { event: CapturePoll::Window(_) | CapturePoll::TimingRequired(_), .. } => {
-                return Err("incomplete FU-A acquired invented picture or recording boundary".into());
-            }
-            LiveRecordingStep::Capture { event: CapturePoll::Stopped { retained, .. }, .. } => {
-                assert!(retained.collection.ready.is_none());
-                assert!(retained.collection.pending.sources.iter().any(|s| s.bytes() == incomplete));
-                terminal = true; break;
-            }
+            LiveRecordingStep::Capture { event, .. } => match *event {
+                CapturePoll::Window(_) | CapturePoll::TimingRequired(_) => {
+                    return Err("incomplete FU-A acquired invented picture or recording boundary".into());
+                }
+                CapturePoll::Stopped { retained, .. } => {
+                    assert!(retained.collection.ready.is_none());
+                    assert!(retained.collection.pending.sources.iter().any(|s| s.bytes() == incomplete));
+                    terminal = true; break;
+                }
+                CapturePoll::Ended { .. } => { terminal = true; break; }
+                _ => std::thread::yield_now(),
+            },
             LiveRecordingStep::Stopped { retained, .. } => {
                 assert!(retained.collection.ready.is_none()); terminal = true; break;
             }
-            LiveRecordingStep::Capture { event: CapturePoll::Ended { .. }, .. } => { terminal = true; break; }
             _ => std::thread::yield_now(),
         }
     }

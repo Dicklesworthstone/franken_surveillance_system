@@ -109,7 +109,8 @@ fn old_and_new_recipes_over_one_growing_camera_chain_remain_independently_replay
     let mut decisions = Vec::new(); let mut finished = false;
     for _ in 0..256 {
         match replay.step(&p, 1000, &NeverCancel, &mut work())? {
-            RecordingReplayStep::Capture(CapturePoll::TimingRequired(picture)) => {
+            RecordingReplayStep::Capture(event) if matches!(*event, CapturePoll::TimingRequired(_)) => {
+                let CapturePoll::TimingRequired(picture) = *event else { return Err("timing request lost".into()); };
                 let timing = RecordingTiming { decode_time: 700 + decisions.len() as u64 * 3600,
                     duration: 3600, composition_offset: -25 };
                 decisions.push(RecordingTimingDecision { observations_read: replay.observations_read(), picture, timing });

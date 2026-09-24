@@ -95,7 +95,7 @@ impl<'a,'p> Fixture<'a,'p> {
                         if count == bytes.len() && wait.wake_at_ns.is_none_or(|t| t > now) { return Ok(false); }
                         std::thread::yield_now();
                     }
-                    LiveRecordingStep::Capture { event: CapturePoll::TimingRequired(_), .. } => {
+                    LiveRecordingStep::Capture { event, .. } if matches!(*event, CapturePoll::TimingRequired(_)) => {
                         assert_eq!(count,bytes.len()); return Ok(true);
                     }
                     LiveRecordingStep::Stopped { .. } | LiveRecordingStep::Ended => return Err("source stopped".into()),
@@ -135,8 +135,10 @@ fn live_camera_source_crosses_both_journal_barriers_without_socket_read_ahead() 
     let mut candidates = 0; let mut confirmed = 0; let mut ready = false;
     for _ in 0..64 {
         match f.driver.poll(SocketReadiness { readable: true, writable: true }, 101, &f.authority, &NeverCancel)? {
-            JournaledLiveArchiveStep::Checkpoint(JournaledArchiveProgress::PinPersisted { .. }) => candidates += 1,
-            JournaledLiveArchiveStep::Checkpoint(JournaledArchiveProgress::WorkConfirmed { .. }) => confirmed += 1,
+            JournaledLiveArchiveStep::Checkpoint(progress)
+                if matches!(*progress, JournaledArchiveProgress::PinPersisted { .. }) => candidates += 1,
+            JournaledLiveArchiveStep::Checkpoint(progress)
+                if matches!(*progress, JournaledArchiveProgress::WorkConfirmed { .. }) => confirmed += 1,
             JournaledLiveArchiveStep::Live(LiveArchiveStep::Archive(ArchiveWriteProgress::Ready { .. })) => { ready = true; break; }
             JournaledLiveArchiveStep::Live(LiveArchiveStep::Archive(_)) => {},
             other => return Err(format!("unexpected storage output {other:?}").into()),

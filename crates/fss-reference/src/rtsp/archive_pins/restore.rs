@@ -113,7 +113,7 @@ impl ArchivePinJournal {
 }
 
 fn publication_error(error: fss_publication::LocalPublicationError) -> ArchivePinError {
-    ArchiveError::Storage(RecordingIoError::Publication(error)).into()
+    ArchiveError::Storage(RecordingIoError::from(error)).into()
 }
 fn require_durable(receipt: LocalPublicationReceipt, expected: ContentDigest) -> PinResult<LocalPublicationReceipt> {
     if receipt.root != expected || receipt.claims.local != LocalPublicationState::Durable {

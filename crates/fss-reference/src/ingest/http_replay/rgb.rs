@@ -45,7 +45,7 @@ impl HttpRgbReplayReceipt {
     pub fn zones(self) -> [u8; 32] { self.zones }
 }
 /// Replay framing, required independent context and actual computation are distinct.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HttpRgbReplayStep {
     /// Exact archive/framing progress, including incomplete-prefix termination.
     Source(HttpReplayStep),
@@ -56,7 +56,7 @@ pub enum HttpRgbReplayStep {
     /// The precise native processing error remains in processing_result().
     AnalysisRefused(RgbZonePhase),
     /// Original frame and complete neural/temporal output remain held together.
-    ResultReady(HttpRgbReplayReceipt),
+    ResultReady(Box<HttpRgbReplayReceipt>),
 }
 /// Refusals never replace a complete observation with an empty-scene result.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -220,7 +220,7 @@ impl<'archive, 'model, 'temporal> HttpRgbReplay<'archive, 'model, 'temporal> {
         self.processing = Some(result);
     }
     fn current(&self) -> HttpRgbReplayStep {
-        if let Some(receipt) = self.complete { HttpRgbReplayStep::ResultReady(receipt) }
+        if let Some(receipt) = self.complete { HttpRgbReplayStep::ResultReady(Box::new(receipt)) }
         else if self.processing.as_ref().is_some_and(Result::is_err) {
             HttpRgbReplayStep::AnalysisRefused(self.phase())
         } else if self.exposure.is_some() { HttpRgbReplayStep::AnalysisPending(self.phase()) }

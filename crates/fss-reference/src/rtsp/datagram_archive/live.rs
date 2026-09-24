@@ -208,8 +208,8 @@ impl RetainedAvcRecording {
         if let Err(reason) = self.check_live(now, authority, cancel) {
             return Err(self.fail(reason, Some(step), candidate, datagram));
         }
-        if matches!(&step, LiveRecordingStep::Stopped { .. } | LiveRecordingStep::Ended
-            | LiveRecordingStep::Capture { event: CapturePoll::Stopped { .. } | CapturePoll::Ended { .. }, .. }) {
+        if matches!(&step, LiveRecordingStep::Stopped { .. } | LiveRecordingStep::Ended)
+            || matches!(step.capture_event(), Some(CapturePoll::Stopped { .. } | CapturePoll::Ended { .. })) {
             self.closed = true;
         }
         Ok(RetainedRecordingStep { event: step, datagram })

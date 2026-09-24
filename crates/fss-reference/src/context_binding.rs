@@ -16,7 +16,7 @@ use crate::{PublishedSourceReader, ReferenceError, ReferenceSituationPublication
 #[derive(Debug)]
 pub enum ReferenceContextBindingError {
     /// Base reference-publication failure.
-    Reference(ReferenceError),
+    Reference(Box<ReferenceError>),
     /// Exact slot/descriptor binding failure.
     Binding(ContextBindingError),
     /// Live source custody failed after context and hydration admission.
@@ -38,7 +38,7 @@ impl fmt::Display for ReferenceContextBindingError {
 impl std::error::Error for ReferenceContextBindingError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Reference(error) => Some(error),
+            Self::Reference(error) => Some(error.as_ref()),
             Self::Binding(error) => Some(error),
             Self::Source(error) => Some(error),
         }
@@ -47,7 +47,7 @@ impl std::error::Error for ReferenceContextBindingError {
 
 impl From<ReferenceError> for ReferenceContextBindingError {
     fn from(value: ReferenceError) -> Self {
-        Self::Reference(value)
+        Self::Reference(Box::new(value))
     }
 }
 

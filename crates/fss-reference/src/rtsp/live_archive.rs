@@ -50,7 +50,7 @@ pub enum LiveArchiveError {
     /// Inconsistent recording/archive scope, invalid limits, or an invalid initial lease.
     Configuration,
     /// Live capture refused. Any terminal state is retained separately, not inside this reason.
-    Recording(LiveRecordingError),
+    Recording(Box<LiveRecordingError>),
     /// Publication/verification failed; it may have crossed a durable boundary.
     Archive(ArchiveError),
     /// The exact live network grant was withdrawn while storage was backpressuring capture.
@@ -238,7 +238,7 @@ impl<'a> LiveAvcArchive<'a> {
             .map_err(|e| refused(LiveArchiveError::Archive(e)))?;
         let recording = LiveAvcRecording::connect(live, recording, now, authority)
             .map_err(|e| LiveArchiveConnectFailure {
-                reason: LiveArchiveError::Recording(e.reason), connection_attempted: e.connection_attempted,
+                reason: LiveArchiveError::Recording(Box::new(e.reason)), connection_attempted: e.connection_attempted,
             })?;
         Ok(Self { recording: Some(recording), writer: Some(writer), binding, live_deadline_ns,
             publication_deadline_ns: archive.publication_deadline_ns,
@@ -349,7 +349,10 @@ impl<'a> LiveAvcArchive<'a> {
             Ok(step) => step, Err(error) => return Err(self.capture_failure(error)),
         };
         match step {
-            LiveRecordingStep::Capture { event: CapturePoll::Window(window), connection: None } => {
+            LiveRecordingStep::Capture { event, connection: None } if matches!(*event, CapturePoll::Window(_)) => {
+                let CapturePoll::Window(window) = *event else {
+                    return Err(self.fatal(LiveArchiveError::Invariant, None, None));
+                };
                 let result = self.writer.as_mut().ok_or_else(|| safe(LiveArchiveError::Closed))?
                     .offer(window, self.max_window_bytes, now);
                 match result {
@@ -358,14 +361,15 @@ impl<'a> LiveAvcArchive<'a> {
                         None, Some(*refusal.recording))),
                 }
             }
-            step @ LiveRecordingStep::Capture { event: CapturePoll::Ended { .. }, .. } => {
+            step @ LiveRecordingStep::Capture { .. }
+                if matches!(step.capture_event(), Some(CapturePoll::Ended { .. })) => {
                 self.completion = Some(LiveArchiveCompletion::InputEnded);
                 self.recording = None; // terminal step already owns all recording retirement
                 self.writer.as_mut().ok_or_else(|| safe(LiveArchiveError::Closed))?.finish();
                 self.pause(now); Ok(LiveArchiveStep::Recording(Box::new(step)))
             }
-            step @ (LiveRecordingStep::Stopped { .. } | LiveRecordingStep::Ended
-                | LiveRecordingStep::Capture { event: CapturePoll::Stopped { .. }, .. }) => {
+            step if matches!(step, LiveRecordingStep::Stopped { .. } | LiveRecordingStep::Ended)
+                || matches!(step.capture_event(), Some(CapturePoll::Stopped { .. })) => {
                 let retained = self.retire(None, None);
                 Ok(LiveArchiveStep::Stopped { trigger: Box::new(step), retained: Box::new(retained) })
             }
@@ -407,8 +411,8 @@ impl<'a> LiveAvcArchive<'a> {
     }
     fn capture_failure(&mut self, error: LiveRecordingFailure) -> LiveArchiveFailure {
         match error.retirement {
-            Some(retired) => self.fatal(LiveArchiveError::Recording(error.reason), Some(*retired), None),
-            None => safe(LiveArchiveError::Recording(error.reason)),
+            Some(retired) => self.fatal(LiveArchiveError::Recording(Box::new(error.reason)), Some(*retired), None),
+            None => safe(LiveArchiveError::Recording(Box::new(error.reason))),
         }
     }
     fn fatal(&mut self, reason: LiveArchiveError, recording: Option<LiveRecordingRetirement>,

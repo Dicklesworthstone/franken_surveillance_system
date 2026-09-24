@@ -111,11 +111,11 @@ impl<'a> PreparedRecordingRecipe<'a> {
         // Allocate the returned metadata BEFORE any possibly committing storage operation.
         let pin = self.pin.clone();
         probe(cancel, budget)?;
-        let digest = p.stage_object(self.recipe.canonical_bytes()).map_err(DatagramArchiveError::Publication)?;
+        let digest = p.stage_object(self.recipe.canonical_bytes()).map_err(DatagramArchiveError::from)?;
         if digest != self.recipe.identity() { return Err(RecordingRecipeError::Mismatch); }
         probe(cancel, budget)?;
         let local = p.publish_cancellable(&self.pin.slot, &self.manifest, cancel)
-            .map_err(DatagramArchiveError::Publication)?;
+            .map_err(DatagramArchiveError::from)?;
         if local.root != self.pin.root || local.claims.local != LocalPublicationState::Durable {
             return Err(DatagramArchiveError::NotDurable.into());
         }

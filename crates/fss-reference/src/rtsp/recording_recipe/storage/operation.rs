@@ -160,11 +160,11 @@ impl ReconstructionLimits {
 /// Payload/path-free operator error with original typed failures retained for API callers.
 pub enum ReconstructionError {
     /// Source/recipe verification failed before or after computation.
-    Recipe(RecordingRecipeError),
+    Recipe(Box<RecordingRecipeError>),
     /// Original native replay failure, including all its withheld ownership.
     Replay(Box<RecipeReplayFailure>),
     /// Original recording-publication error, including uncertain storage outcomes.
-    Recording(RecordingIoError),
+    Recording(Box<RecordingIoError>),
     /// Independent whole-output or step/scan capacity exhausted.
     Limit,
     /// The independently supplied current clock regressed.
@@ -188,10 +188,10 @@ impl std::fmt::Display for ReconstructionError {
 }
 impl std::error::Error for ReconstructionError {}
 impl From<RecordingRecipeError> for ReconstructionError {
-    fn from(e: RecordingRecipeError) -> Self { Self::Recipe(e) }
+    fn from(e: RecordingRecipeError) -> Self { Self::Recipe(Box::new(e)) }
 }
 impl From<RecordingIoError> for ReconstructionError {
-    fn from(e: RecordingIoError) -> Self { Self::Recording(e) }
+    fn from(e: RecordingIoError) -> Self { Self::Recording(Box::new(e)) }
 }
 
 /// Orthogonal observations; these counts are not a coverage or successful-decoding claim.
@@ -307,15 +307,18 @@ impl<'a> PreparedReconstruction<'a> {
                 super::probe(cancel, budget)?;
                 let step = *withheld.take().ok_or(ReconstructionError::Incomplete)?;
                 match step {
-                    RecipeReplayStep::Replay(RecordingReplayStep::Capture(CapturePoll::Window(window))) => {
-                        let total = summary.output_bytes.checked_add(window.byte_len() as u64);
-                        if windows.len() >= limits.max_windows || total.is_none_or(|n| n > limits.max_output_bytes)
-                            || windows.try_reserve(1).is_err() {
-                            withheld = Some(Box::new(RecipeReplayStep::Replay(RecordingReplayStep::Capture(CapturePoll::Window(window)))));
-                            return Err(ReconstructionError::Limit);
+                    RecipeReplayStep::Replay(RecordingReplayStep::Capture(event)) => {
+                        if let CapturePoll::Window(window) = *event {
+                            let total = summary.output_bytes.checked_add(window.byte_len() as u64);
+                            if windows.len() >= limits.max_windows || total.is_none_or(|n| n > limits.max_output_bytes)
+                                || windows.try_reserve(1).is_err() {
+                                withheld = Some(Box::new(RecipeReplayStep::Replay(RecordingReplayStep::Capture(
+                                    Box::new(CapturePoll::Window(window))))));
+                                return Err(ReconstructionError::Limit);
+                            }
+                            summary.output_bytes = total.ok_or(ReconstructionError::Limit)?;
+                            windows.push(window); summary.windows += 1;
                         }
-                        summary.output_bytes = total.ok_or(ReconstructionError::Limit)?;
-                        windows.push(window); summary.windows += 1;
                     }
                     RecipeReplayStep::TimingApplied { outcome, .. } => {
                         summary.timings_applied += 1;
@@ -326,10 +329,13 @@ impl<'a> PreparedReconstruction<'a> {
                             }
                         }
                     }
-                    RecipeReplayStep::Replay(RecordingReplayStep::Source(AvcReplayStep::Rtp { .. })) => summary.rtp_observations += 1,
-                    RecipeReplayStep::Replay(RecordingReplayStep::Source(AvcReplayStep::Rtcp { validation, .. })) => {
-                        summary.rtcp_observations += 1; summary.invalid_rtcp += u64::from(validation.is_err());
-                    }
+                    RecipeReplayStep::Replay(RecordingReplayStep::Source(source)) => match *source {
+                        AvcReplayStep::Rtp { .. } => summary.rtp_observations += 1,
+                        AvcReplayStep::Rtcp { validation, .. } => {
+                            summary.rtcp_observations += 1; summary.invalid_rtcp += u64::from(validation.is_err());
+                        }
+                        _ => {},
+                    },
                     RecipeReplayStep::Replay(RecordingReplayStep::FinishedPrefix { retained: tail }) => {
                         retained = Some(tail);
                         break;

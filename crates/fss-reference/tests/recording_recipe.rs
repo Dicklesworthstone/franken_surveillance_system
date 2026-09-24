@@ -25,19 +25,23 @@ fn record_decisions(p: &LocalRootPublisher, a: &DatagramArchive)
     let mut timings = Vec::new(); let mut windows = Vec::new();
     for _ in 0..512 {
         match replay.step(p, 1000, &NeverCancel, &mut work())? {
-            RecordingReplayStep::Capture(CapturePoll::TimingRequired(picture)) => {
-                let timing = RecordingTiming { decode_time: 700 + timings.len() as u64 * 3600,
-                    duration: 3600, composition_offset: -25 };
-                timings.push(RecordingTimingDecision { observations_read: replay.observations_read(), picture, timing });
-                let _ = replay.supply_timing(timing, 1000, &NeverCancel, &mut work())?;
-            }
+            RecordingReplayStep::Capture(event) => match *event {
+                CapturePoll::TimingRequired(picture) => {
+                    let timing = RecordingTiming { decode_time: 700 + timings.len() as u64 * 3600,
+                        duration: 3600, composition_offset: -25 };
+                    timings.push(RecordingTimingDecision { observations_read: replay.observations_read(), picture, timing });
+                    let _ = replay.supply_timing(timing, 1000, &NeverCancel, &mut work())?;
+                }
+                CapturePoll::Window(window) => windows.push(window),
+                CapturePoll::Receiver(_) => {},
+                other => return Err(format!("unexpected reference result: {:?}",
+                    RecordingReplayStep::Capture(Box::new(other))).into()),
+            },
             RecordingReplayStep::PrefixReady { .. } => replay.finish_prefix(1000, &NeverCancel, &mut work())?,
-            RecordingReplayStep::Capture(CapturePoll::Window(window)) => windows.push(window),
             RecordingReplayStep::FinishedPrefix { .. } => {
                 return Ok((RecordingRecipe::new(a, spec()?, recording()?, timings, recipe_limits())?, windows));
             }
-            RecordingReplayStep::Source(_) | RecordingReplayStep::MediaQueued
-                | RecordingReplayStep::Capture(CapturePoll::Receiver(_)) => {},
+            RecordingReplayStep::Source(_) | RecordingReplayStep::MediaQueued => {},
             other => return Err(format!("unexpected reference result: {other:?}").into()),
         }
     }
@@ -55,7 +59,10 @@ fn run(recipe: &RecordingRecipe, a: &DatagramArchive, p: &LocalRootPublisher, no
     let mut windows = Vec::new();
     for _ in 0..512 {
         match replay.step(p, now, &NeverCancel, &mut work())? {
-            RecipeReplayStep::Replay(RecordingReplayStep::Capture(CapturePoll::Window(window))) => windows.push(window),
+            RecipeReplayStep::Replay(RecordingReplayStep::Capture(event)) if matches!(*event, CapturePoll::Window(_)) => {
+                let CapturePoll::Window(window) = *event else { return Err("prepared window lost".into()); };
+                windows.push(window);
+            }
             RecipeReplayStep::Replay(RecordingReplayStep::FinishedPrefix { retained }) => {
                 assert_eq!(replay.timings_applied(), recipe.timings().len());
                 assert!(retained.prefix.is_some());
@@ -154,7 +161,8 @@ fn changed_request_is_rejected_with_the_exact_untimed_picture_retained() -> Test
             assert!(matches!(failure.reason, RecordingRecipeError::Mismatch));
             let retired = failure.retirement.ok_or("lost recipe retirement")?;
             assert!(retired.recording.as_ref().and_then(|r| r.capture.as_ref()).and_then(|c| c.picture.as_ref()).is_some());
-            assert!(matches!(retired.withheld.as_deref(), Some(RecordingReplayStep::Capture(CapturePoll::TimingRequired(_)))));
+            assert!(matches!(retired.withheld.as_deref(),
+                Some(RecordingReplayStep::Capture(event)) if matches!(**event, CapturePoll::TimingRequired(_))));
             assert_eq!(replay.timings_applied(), 0);
             assert!(matches!(replay.step(&p, 1000, &NeverCancel, &mut work())?, RecipeReplayStep::Ended));
             return Ok(());
@@ -181,7 +189,8 @@ fn missing_and_unused_decisions_are_not_defaulted_or_ignored() -> Test {
                         | (RecordingRecipeError::UnusedTiming, true)));
                     assert!(failure.retirement.is_some()); refused = true; break;
                 }
-                Ok(RecipeReplayStep::Replay(RecordingReplayStep::Capture(CapturePoll::Window(_)))) =>
+                Ok(RecipeReplayStep::Replay(RecordingReplayStep::Capture(event)))
+                    if matches!(*event, CapturePoll::Window(_)) =>
                     return Err("mismatched plan emitted a terminal window".into()),
                 _ => {},
             }
@@ -195,8 +204,8 @@ fn matched_timing_waits_one_step_without_read_ahead_and_clock_refusal_is_retryab
     let (p, a, recipe, _) = fixture("recipe_clock")?;
     let mut replay = PlannedRecordingReplay::new(&recipe, &a, recipe_limits(), bounds(), 1000)?;
     for _ in 0..128 {
-        if let RecipeReplayStep::Replay(RecordingReplayStep::Capture(CapturePoll::TimingRequired(_))) =
-            replay.step(&p, 1000, &NeverCancel, &mut work())? {
+        if let RecipeReplayStep::Replay(RecordingReplayStep::Capture(event)) =
+            replay.step(&p, 1000, &NeverCancel, &mut work())? && matches!(*event, CapturePoll::TimingRequired(_)) {
             let observed = replay.observations_read();
             let failure = replay.step(&p, 999, &NeverCancel, &mut work()).err().ok_or("accepted reverse clock")?;
             assert!(failure.retirement.is_none()); assert_eq!(replay.timings_applied(), 0);
@@ -232,8 +241,8 @@ fn explicit_cancellation_transfers_a_pending_picture_once() -> Test {
     let (p, a, recipe, _) = fixture("recipe_cancel")?;
     let mut replay = PlannedRecordingReplay::new(&recipe, &a, recipe_limits(), bounds(), 1000)?;
     for _ in 0..128 {
-        if let RecipeReplayStep::Replay(RecordingReplayStep::Capture(CapturePoll::TimingRequired(_))) =
-            replay.step(&p, 1000, &NeverCancel, &mut work())? {
+        if let RecipeReplayStep::Replay(RecordingReplayStep::Capture(event)) =
+            replay.step(&p, 1000, &NeverCancel, &mut work())? && matches!(*event, CapturePoll::TimingRequired(_)) {
             let retired = replay.cancel().ok_or("retirement missing")?;
             assert!(retired.recording.as_ref().and_then(|r| r.capture.as_ref()).and_then(|c| c.picture.as_ref()).is_some());
             assert!(replay.cancel().is_none()); return Ok(());

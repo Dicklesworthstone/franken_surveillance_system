@@ -98,7 +98,7 @@ pub enum LiveRecordingStep {
     /// event, tail, backpressure, or end. On capture stop the socket is closed in the same call.
     Capture {
         /// Existing typed capture result, never a new recording or boundary dialect.
-        event: CapturePoll,
+        event: Box<CapturePoll>,
         /// Transferred only when collection stopped before the network retired independently.
         connection: Option<Box<LiveAvcRetirement>>,
     },
@@ -112,6 +112,12 @@ pub enum LiveRecordingStep {
     },
     /// All terminal ownership already transferred.
     Ended,
+}
+impl LiveRecordingStep {
+    /// The capture event carried by a `Capture` step, if this is one.
+    pub(crate) fn capture_event(&self) -> Option<&CapturePoll> {
+        match self { Self::Capture { event, .. } => Some(event), _ => None }
+    }
 }
 impl fmt::Debug for LiveRecordingStep {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -220,7 +226,7 @@ impl LiveAvcRecording {
             Ok(event) => {
                 let terminal = matches!(&event, CapturePoll::Stopped { .. } | CapturePoll::Ended { .. });
                 let connection = if terminal { self.closed = true; self.connection.cancel().map(Box::new) } else { None };
-                return Ok(LiveRecordingStep::Capture { event, connection });
+                return Ok(LiveRecordingStep::Capture { event: Box::new(event), connection });
             }
             Err(error) => return Err(self.fatal(LiveRecordingError::Capture(error), None, None)),
         }

@@ -128,7 +128,7 @@ pub enum DatagramArchiveError {
     /// A prior replay error stopped this attempt.
     Stopped,
     /// Existing publisher error, including its original indeterminate outcome.
-    Publication(LocalPublicationError),
+    Publication(Box<LocalPublicationError>),
     /// Original source read/verification error.
     Spool(SpoolError),
     /// Cooperative work/cancellation refusal.
@@ -154,6 +154,9 @@ impl std::fmt::Display for DatagramArchiveError {
     }
 }
 impl std::error::Error for DatagramArchiveError {}
+impl From<LocalPublicationError> for DatagramArchiveError {
+    fn from(e: LocalPublicationError) -> Self { Self::Publication(Box::new(e)) }
+}
 impl From<GeometryError> for DatagramArchiveError {
     fn from(e: GeometryError) -> Self { Self::Work(e) }
 }
@@ -330,15 +333,15 @@ impl DatagramArchive {
             return Err(DatagramArchiveError::Tombstoned);
         }
         probe(cancel)?;
-        if p.stage_object(plan.bytes).map_err(DatagramArchiveError::Publication)? != plan.record.payload_digest {
+        if p.stage_object(plan.bytes).map_err(DatagramArchiveError::from)? != plan.record.payload_digest {
             return Err(DatagramArchiveError::Metadata);
         }
         probe(cancel)?;
-        if p.stage_object(&plan.metadata).map_err(DatagramArchiveError::Publication)? != ContentDigest::sha256(&plan.metadata) {
+        if p.stage_object(&plan.metadata).map_err(DatagramArchiveError::from)? != ContentDigest::sha256(&plan.metadata) {
             return Err(DatagramArchiveError::Metadata);
         }
         probe(cancel)?; budget.charge(0)?;
-        let local = p.publish_cancellable(&plan.slot, &plan.manifest, cancel).map_err(DatagramArchiveError::Publication)?;
+        let local = p.publish_cancellable(&plan.slot, &plan.manifest, cancel).map_err(DatagramArchiveError::from)?;
         if local.root != plan.pin().head || local.claims.local != LocalPublicationState::Durable {
             return Err(DatagramArchiveError::NotDurable);
         }

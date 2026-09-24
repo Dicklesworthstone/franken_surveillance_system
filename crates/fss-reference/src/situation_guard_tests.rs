@@ -1668,8 +1668,8 @@ fn assert_bound_routes_refuse(
     genuine_bound: &crate::BoundReferenceSituationPublication,
     publication: crate::ReferenceSituationPublication,
 ) -> Result<(), Box<dyn Error>> {
-    let expected = crate::ReferenceContextBindingError::Reference(ReferenceError::InvalidSpec(
-        "situation_bound_publication_unsealed",
+    let expected = crate::ReferenceContextBindingError::Reference(Box::new(
+        ReferenceError::InvalidSpec("situation_bound_publication_unsealed"),
     ))
     .to_string();
     let specs = crate::context_binding_tests::binding_specs(&publication)?;

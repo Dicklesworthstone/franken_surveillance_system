@@ -170,10 +170,10 @@ fn run(options: Options) -> Result<String> {
             clock.now()?;
             let slot = work.snapshot.namespace().page_slot(work.snapshot.indexed_windows())?;
             let digest = publisher.stage_object(page.index_bytes())
-                .map_err(|e| ArchiveError::Storage(RecordingIoError::Publication(e)))?;
+                .map_err(|e| ArchiveError::Storage(RecordingIoError::from(e)))?;
             if Some(digest) != page.manifest().metadata_digest() { return Err(ArchiveError::Metadata.into()); }
             page_result = outcome(publisher.publish_cancellable(&slot, page.manifest(), &clock)
-                .map_err(|e| ArchiveError::Storage(RecordingIoError::Publication(e)))?)?;
+                .map_err(|e| ArchiveError::Storage(RecordingIoError::from(e)))?)?;
         }
         window_result = "not_pending";
         if let Some(window) = &work.pending {

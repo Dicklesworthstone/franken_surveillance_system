@@ -176,8 +176,9 @@ fn cancellation_after_timing_admission_preserves_the_withheld_native_result() ->
         let mut replay = PlannedRecordingReplay::new(&recipe, &a, recipe_limits(), bounds(), 1000)?;
         let mut ready = false;
         for _ in 0..128 {
-            if let RecipeReplayStep::Replay(RecordingReplayStep::Capture(CapturePoll::TimingRequired(_))) =
-                replay.step(&p, 1000, &NeverCancel, &mut work())? { ready = true; break; }
+            if let RecipeReplayStep::Replay(RecordingReplayStep::Capture(event)) =
+                replay.step(&p, 1000, &NeverCancel, &mut work())?
+                && matches!(*event, CapturePoll::TimingRequired(_)) { ready = true; break; }
         }
         assert!(ready);
         if let Err(failure) = replay.step(&p, 1000, &Cut { calls: Cell::new(0), at }, &mut work()) {
