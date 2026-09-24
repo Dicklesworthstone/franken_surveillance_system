@@ -20,12 +20,13 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use fss_codec_h264::bits::BitReader;
-use fss_codec_h264::rbsp::{ebsp_from_rbsp, rbsp_from_ebsp, validate_trailing_bits, NalPayload};
-use fss_packet::avc::{parse_pps, parse_sps, AvcSyntaxLimits};
+use fss_codec_h264::rbsp::{NalPayload, ebsp_from_rbsp, rbsp_from_ebsp, validate_trailing_bits};
+use fss_packet::avc::{AvcSyntaxLimits, parse_pps, parse_sps};
 
 const STREAM: &[u8] = include_bytes!("fixtures/baseline_i64.h264");
 /// sha256 of the fixture bytes; the oracle provenance anchor.
-pub const STREAM_SHA256_HEX: &str = "e2aab0bbf0bca60507c964d782ea50918de7471f5a06ddf2ef34e07f15704589";
+pub const STREAM_SHA256_HEX: &str =
+    "e2aab0bbf0bca60507c964d782ea50918de7471f5a06ddf2ef34e07f15704589";
 
 /// One Annex-B unit: NAL bytes including the header byte, without the
 /// start code.
@@ -41,7 +42,11 @@ fn scan_start_codes(stream: &[u8]) -> Vec<(usize, usize)> {
     let mut index = 0;
     while index + 2 < stream.len() {
         if stream[index] == 0 && stream[index + 1] == 0 && stream[index + 2] == 1 {
-            let begin = if index > 0 && stream[index - 1] == 0 { index - 1 } else { index };
+            let begin = if index > 0 && stream[index - 1] == 0 {
+                index - 1
+            } else {
+                index
+            };
             codes.push((begin, index + 3));
             index += 3;
         } else {
@@ -64,7 +69,9 @@ fn scan_annex_b(stream: &[u8]) -> Vec<AnnexBNal<'_>> {
             .get(position + 1)
             .map(|&(next_begin, _)| next_begin)
             .unwrap_or(total);
-        units.push(AnnexBNal { bytes: &stream[nal_start..end] });
+        units.push(AnnexBNal {
+            bytes: &stream[nal_start..end],
+        });
     }
     units
 }
@@ -96,7 +103,13 @@ fn real_stream_has_expected_nal_sequence() {
     let units = scan_annex_b(STREAM);
     let types: Vec<u8> = units
         .iter()
-        .map(|unit| NalPayload::new(unit.bytes).split_header().expect("header").0.unit_type)
+        .map(|unit| {
+            NalPayload::new(unit.bytes)
+                .split_header()
+                .expect("header")
+                .0
+                .unit_type
+        })
         .collect();
     assert_eq!(types, vec![7, 8, 6, 5, 1], "SPS, PPS, SEI, IDR, P");
 }
@@ -147,7 +160,10 @@ fn real_stream_carries_emulation_runs_and_slices_round_trip() {
             rbsp_from_ebsp(payload, 1 << 20).expect("NAL RBSP").len()
         })
         .sum();
-    assert!(escaped && rbsp_total < ebsp_total, "real stream carries emulation bytes");
+    assert!(
+        escaped && rbsp_total < ebsp_total,
+        "real stream carries emulation bytes"
+    );
 }
 
 #[test]
@@ -168,7 +184,8 @@ fn slice_headers_decode_first_fields() {
         assert_eq!(first_mb, 0, "one slice per frame in the fixture");
         let slice_type_raw = reader.ue(9).expect("slice_type");
         assert_eq!(
-            slice_type_raw % 5, family,
+            slice_type_raw % 5,
+            family,
             "slice family for NAL type {}",
             if index == 3 { 5 } else { 1 }
         );
@@ -193,5 +210,7 @@ fn scan_handles_short_and_long_start_codes() {
         STREAM.len(),
         "start-code accounting exact"
     );
-    assert!(codes.iter().any(|&(begin, _)| begin == 0 || STREAM[begin] == 0 && begin + 3 < STREAM.len() && begin > 0));
+    assert!(codes.iter().any(
+        |&(begin, _)| begin == 0 || STREAM[begin] == 0 && begin + 3 < STREAM.len() && begin > 0
+    ));
 }

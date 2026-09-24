@@ -37,10 +37,7 @@ impl<'a> NalPayload<'a> {
     /// [`DecodeError::Malformed`] on a forbidden-zero bit set or type 0;
     /// [`DecodeError::UnexpectedNal`] when the NAL is header-only.
     pub fn split_header(&self) -> Result<(NalHeader, &'a [u8]), DecodeError> {
-        let (first, rest) = self
-            .bytes
-            .split_first()
-            .ok_or(DecodeError::UnexpectedNal)?;
+        let (first, rest) = self.bytes.split_first().ok_or(DecodeError::UnexpectedNal)?;
         if first & 0x80 != 0 {
             return Err(DecodeError::Malformed);
         }
@@ -48,7 +45,13 @@ impl<'a> NalPayload<'a> {
         if unit_type == 0 {
             return Err(DecodeError::Malformed);
         }
-        Ok((NalHeader { ref_idc: (first >> 5) & 0x03, unit_type }, rest))
+        Ok((
+            NalHeader {
+                ref_idc: (first >> 5) & 0x03,
+                unit_type,
+            },
+            rest,
+        ))
     }
 }
 
@@ -61,10 +64,7 @@ impl<'a> NalPayload<'a> {
 /// # Errors
 /// [`DecodeError::Limit`] when the output would exceed `max_rbsp_bytes`;
 /// [`DecodeError::Malformed`] on an impossible `00 00 00` remainder.
-pub fn rbsp_from_ebsp(
-    ebsp: &[u8],
-    max_rbsp_bytes: usize,
-) -> Result<Vec<u8>, DecodeError> {
+pub fn rbsp_from_ebsp(ebsp: &[u8], max_rbsp_bytes: usize) -> Result<Vec<u8>, DecodeError> {
     // RBSP is never larger than EBSP: removal only deletes bytes.
     if ebsp.len() > max_rbsp_bytes {
         return Err(DecodeError::Limit);
@@ -140,6 +140,24 @@ pub fn validate_trailing_bits(rbsp: &[u8]) -> Result<(), DecodeError> {
     Ok(())
 }
 
+/// Bit index of the `rbsp_stop_one_bit`: the last one-bit of the payload,
+/// ignoring trailing zero bytes (Annex-B `trailing_zero_8bits`). Syntax
+/// readers bound themselves to this index, so `more_rbsp_data()` is simply
+/// "bits remain before the bound".
+///
+/// # Errors
+/// [`DecodeError::Malformed`] when the payload contains no one-bit at all.
+pub fn stop_bit_position(rbsp: &[u8]) -> Result<usize, DecodeError> {
+    let (index, &last) = rbsp
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, byte)| **byte != 0)
+        .ok_or(DecodeError::Malformed)?;
+    let trailing = usize::try_from(last.trailing_zeros()).map_err(|_| DecodeError::Malformed)?;
+    Ok(index * 8 + 7 - trailing)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -165,7 +183,11 @@ mod tests {
             (&[0x00, 0x00, 0x03, 0x04], &[0x00, 0x00, 0x04]),
         ];
         for (ebsp, expected) in cases {
-            assert_eq!(&rbsp_from_ebsp(ebsp, 64).unwrap(), expected, "ebsp {ebsp:?}");
+            assert_eq!(
+                &rbsp_from_ebsp(ebsp, 64).unwrap(),
+                expected,
+                "ebsp {ebsp:?}"
+            );
         }
     }
 
@@ -202,7 +224,7 @@ mod tests {
     #[test]
     fn ebsp_round_trip_is_lossless() {
         let rbsp: Vec<Vec<u8>> = vec![
-            vec![0x90, 0x00, 0x00, 0x01],          // becomes 00 00 03 01
+            vec![0x90, 0x00, 0x00, 0x01], // becomes 00 00 03 01
             vec![0x00, 0x00, 0x02, 0x00, 0x00, 0x03],
             vec![0xFF, 0xFF, 0x00, 0x00, 0x00, 0x01], // 3 zeros split by escape
             vec![0x00],

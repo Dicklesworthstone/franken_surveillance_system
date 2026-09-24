@@ -22,7 +22,11 @@ impl<'a> BitReader<'a> {
     /// `bytes.len() * 8` unless a narrower bound is known).
     #[must_use]
     pub const fn new(bytes: &'a [u8], bit_limit: usize) -> Self {
-        Self { bytes, bit_limit, position: 0 }
+        Self {
+            bytes,
+            bit_limit,
+            position: 0,
+        }
     }
 
     /// Bits consumed so far.
@@ -37,6 +41,40 @@ impl<'a> BitReader<'a> {
         self.position >= self.bit_limit
     }
 
+    /// True when the position is on a byte boundary.
+    #[must_use]
+    pub const fn byte_aligned(&self) -> bool {
+        self.position & 7 == 0
+    }
+
+    /// Bits left before the bound.
+    #[must_use]
+    pub const fn remaining(&self) -> usize {
+        self.bit_limit.saturating_sub(self.position)
+    }
+
+    /// Reads one flag bit as a boolean.
+    ///
+    /// # Errors
+    /// [`DecodeError::Limit`] when the bound is exhausted.
+    pub fn flag(&mut self) -> Result<bool, DecodeError> {
+        Ok(self.bit()? == 1)
+    }
+
+    /// Reads a truncated exp-Golomb `te(v)` symbol whose range is
+    /// `0..=range` (clause 9.1.1): one inverted bit when `range == 1`,
+    /// otherwise `ue(v)` capped at `range`.
+    ///
+    /// # Errors
+    /// Same as [`Self::ue`]; `range == 0` is a caller error (Malformed).
+    pub fn te(&mut self, range: u32) -> Result<u32, DecodeError> {
+        match range {
+            0 => Err(DecodeError::Malformed),
+            1 => Ok(u32::from(self.bit()? ^ 1)),
+            _ => self.ue(range),
+        }
+    }
+
     /// Reads one bit.
     ///
     /// # Errors
@@ -45,7 +83,12 @@ impl<'a> BitReader<'a> {
         if self.position >= self.bit_limit {
             return Err(DecodeError::Limit);
         }
-        let byte = self.bytes[self.position >> 3];
+        // A bound larger than the slice is a caller error; refuse it as a
+        // limit rather than indexing out of range.
+        let byte = *self
+            .bytes
+            .get(self.position >> 3)
+            .ok_or(DecodeError::Limit)?;
         let shift = 7 - (self.position & 7);
         self.position += 1;
         Ok((byte >> shift) & 1)
@@ -76,8 +119,9 @@ impl<'a> BitReader<'a> {
         let mut leading_zeros: u32 = 0;
         while self.bit()? == 0 {
             leading_zeros += 1;
-            // A code with more than 32 leading zeros cannot fit any u32 value.
-            if leading_zeros > 32 {
+            // 32 or more leading zeros cannot encode a value below 2^32 - 1
+            // (and `1 << 32` would overflow the codeNum arithmetic).
+            if leading_zeros >= 32 {
                 return Err(DecodeError::Malformed);
             }
         }
@@ -109,6 +153,20 @@ impl<'a> BitReader<'a> {
             -i32::try_from(magnitude).map_err(|_| DecodeError::Malformed)?
         };
         Ok(signed)
+    }
+
+    /// Reads one signed exp-Golomb symbol that must lie in `min..=max`.
+    ///
+    /// # Errors
+    /// [`DecodeError::Malformed`] when the value is outside the range;
+    /// [`DecodeError::Limit`] on bound exhaustion.
+    pub fn se_range(&mut self, min: i32, max: i32) -> Result<i32, DecodeError> {
+        let magnitude = min.unsigned_abs().max(max.unsigned_abs());
+        let value = self.se(magnitude.saturating_mul(2))?;
+        if value < min || value > max {
+            return Err(DecodeError::Malformed);
+        }
+        Ok(value)
     }
 }
 
@@ -147,7 +205,7 @@ mod tests {
         push("011"); // ue 2 -> -1
         push("00100"); // ue 3 -> +2
         push("00101"); // ue 4 -> -2
-        while bits.len() % 8 != 0 {
+        while !bits.len().is_multiple_of(8) {
             bits.push(0);
         }
         let data: Vec<u8> = bits
