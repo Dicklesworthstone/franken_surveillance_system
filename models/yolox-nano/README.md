@@ -162,4 +162,6 @@ fss-infer package-detect --root DEPLOYMENT --site SITE --import-id sha256:IMPORT
   `fss-event read` does not reopen package events. The video colour matrix is fixed (BT.601 limited
   range); content coded with BT.709 or full range is converted with a declared-wrong matrix.
 - The scalar executor retains every intermediate tensor (~108 MB accounting) and takes seconds per
-  frame; no optimized kernels, memory planning or accelerator exist for this package yet.
+  frame. The package now loads onto the optimized CPU executor by default (bit-identical to the
+  scalar reference, ~0.2 s per frame on one shared worker, single-threaded; docs/PERF_LEDGER.md
+  PERF-001). No accelerator or multi-threaded path exists.

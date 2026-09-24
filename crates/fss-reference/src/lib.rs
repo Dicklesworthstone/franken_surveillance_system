@@ -42,6 +42,7 @@ mod meaningful_delta;
 pub mod media_fixture;
 mod model;
 pub mod model_receipt;
+pub mod optimized_executor;
 mod outcome;
 mod packet_fault;
 /// Exact-graph peak-memory execution over the unchanged scalar kernel backend.
@@ -200,6 +201,7 @@ pub use model_receipt::{
     compute_operator_trace_chain, compute_output_root, compute_postprocess_program_digest,
     compute_preprocess_program_digest, execute_and_record_receipt,
 };
+pub use optimized_executor::{KernelBackend, OptimizedGraph, OptimizedRunReport};
 pub use outcome::{
     ALERT_OUTCOME_FAMILY, ReferenceAlertOutcome, ReferenceAlertOutcomeReceipt,
     publish_reference_alert_outcome,

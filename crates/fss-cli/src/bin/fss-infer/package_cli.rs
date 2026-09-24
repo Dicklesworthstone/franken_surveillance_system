@@ -14,7 +14,7 @@ use fss_reference::ingest::package_detect::{
 };
 use fss_reference::ingest::recorded_decode::ComponentInterpretation;
 use fss_reference::ingest::rgb_package::{MAX_RGB_PACKAGE_BYTES, RgbDetectorPackage};
-use fss_reference::{ExecBudget, ReferenceDeployment, ReplayCx, ScalarExecCx};
+use fss_reference::{ExecBudget, KernelBackend, ReferenceDeployment, ReplayCx, ScalarExecCx};
 
 use super::{RunResult, Values, digest, export, number, text, value};
 
@@ -23,6 +23,7 @@ const HELP: &str = "fss-infer package-detect [options]\n\
   --package FILE --package-digest sha256:HEX --interpretation gray|ycbcr\n\
   [--minimum-score-ppm N] [--max-macs N] [--max-tensor-bytes N] [--report-out FILE] [--principal ID]\n\
   [--retain yes]\n\
+  [--kernels optimized-cpu|scalar-reference]\n\
   Runs a digest-pinned, verified RGB detector package (for example models/yolox-nano/\n\
   yolox_nano.fmpk) over a retained MJPEG, H.264 or H.265 import. JPEG frames are decoded to\n\
   RGB; H.264/H.265 frames are converted from decoded luma and chroma with the declared BT.601\n\
@@ -35,7 +36,9 @@ const HELP: &str = "fss-infer package-detect [options]\n\
   report --package-report sha256:REPORT` can consume it; stdout stays the exact report bytes and\n\
   the retention receipt goes to stderr (package_detection_retained=, status=, root=).\n\
   The default threshold is the package's own; --minimum-score-ppm is an explicit override.\n\
-  The scalar reference executor is slow (seconds per 416x416 frame in release builds).\n";
+  --kernels selects the executor: optimized-cpu (default; certified bit-identical to the\n\
+  scalar reference) or scalar-reference (the slow oracle, seconds per 416x416 frame). The\n\
+  choice is bound into the model digest recorded in the report.\n";
 
 #[derive(Debug)]
 struct Options {
@@ -44,6 +47,7 @@ struct Options {
     principal: String,
     package: PathBuf,
     package_digest: ContentDigest,
+    kernels: KernelBackend,
     request: PackageDetectRequest,
     limits: PackageDetectLimits,
     report: Option<PathBuf>,
@@ -76,6 +80,7 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
         "--max-tensor-bytes",
         "--report-out",
         "--retain",
+        "--kernels",
     ];
     let mut values = Values::new();
     for pair in args.chunks(2) {
@@ -125,6 +130,15 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
     {
         return Err("frames must be 1..64 within the addressable range".into());
     }
+    let kernels = if values.contains_key("--kernels") {
+        match text(&values, "--kernels")? {
+            "optimized-cpu" => KernelBackend::OptimizedCpuV1,
+            "scalar-reference" => KernelBackend::ScalarReference,
+            _ => return Err("kernels must be optimized-cpu or scalar-reference".into()),
+        }
+    } else {
+        KernelBackend::OptimizedCpuV1
+    };
     let mut limits = PackageDetectLimits::default();
     let max_bytes: usize = number(
         &values,
@@ -144,6 +158,7 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
         principal,
         package: PathBuf::from(value(&values, "--package")?),
         package_digest: digest(&values, "--package-digest")?,
+        kernels,
         request: PackageDetectRequest {
             import_identity: digest(&values, "--import-id")?,
             first_segment,
@@ -201,8 +216,14 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
     let scalar = ScalarExecCx::new();
     let result = (|| -> RunResult<()> {
         let bytes = read_package(&options.package)?;
-        let package =
-            RgbDetectorPackage::load(&bytes, options.package_digest, 1 << 36, &cx, &scalar)?;
+        let package = RgbDetectorPackage::load_with_backend(
+            &bytes,
+            options.package_digest,
+            1 << 36,
+            options.kernels,
+            &cx,
+            &scalar,
+        )?;
         let mut deployment = ReferenceDeployment::open(&options.root, &options.site, &cx)?;
         let report = run_package_detection(
             &deployment,

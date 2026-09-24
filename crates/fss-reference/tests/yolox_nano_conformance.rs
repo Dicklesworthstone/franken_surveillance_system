@@ -5,6 +5,12 @@
 //! post-processing yields the same detections. Expected values come only from the oracle file
 //! `tests/fixtures/yolox_nano/conformance.txt` (exact F32 bits). This is conformance to upstream,
 //! not a detection-quality claim on any deployment data. Timing is not asserted.
+//!
+//! Both executors are qualified here (fss-bd99t): the scalar reference and the optimized CPU
+//! executor that `RgbDetectorPackage::load` selects by default. The optimized outputs must be
+//! bit-identical to the scalar outputs on every case (so the oracle tolerance below is unchanged
+//! and applies to both), post-NMS detections must be identical, and each inference must record
+//! which kernel generation produced it.
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -20,10 +26,13 @@ use fss_reference::ingest::rgb_detections::{
     RgbDetectionBudget, RgbDetectionContract, project_rgb_detections,
 };
 use fss_reference::ingest::rgb_inference::{RgbInference, RgbRunLimits, RgbSourceBinding};
-use fss_reference::ingest::rgb_package::{RgbDetectorPackage, RgbPackageError};
+use fss_reference::ingest::rgb_package::{
+    DEFAULT_PACKAGE_BACKEND, RgbDetectorPackage, RgbPackageError,
+};
 use fss_reference::preprocess::{ImageBytes, ResizeAspect, ResizeFilter, ResizeOptions};
 use fss_reference::{
-    ChannelTransform, ExecBudget, PreprocessProgram, ReplayCx, ScalarExecCx, ScalarExecutor,
+    ChannelTransform, ExecBudget, KernelBackend, PreprocessProgram, ReplayCx, ScalarExecCx,
+    ScalarExecutor,
 };
 use fss_tensor::{DType, Shape, Tensor};
 
@@ -74,6 +83,58 @@ fn load() -> TestResult<RgbDetectorPackage> {
         &context()?,
         &ScalarExecCx::new(),
     )?)
+}
+
+fn load_scalar() -> TestResult<RgbDetectorPackage> {
+    Ok(RgbDetectorPackage::load_with_backend(
+        PACKAGE,
+        ContentDigest::parse(PACKAGE_SHA256)?,
+        1 << 40,
+        KernelBackend::ScalarReference,
+        &context()?,
+        &ScalarExecCx::new(),
+    )?)
+}
+
+/// Exact output bits of an inference, NaN-free by the inference contract.
+fn bits(inference: &RgbInference) -> Vec<(String, Vec<u32>)> {
+    inference
+        .outputs()
+        .iter()
+        .map(|(name, t)| {
+            (
+                name.clone(),
+                t.values().iter().map(|v| v.to_bits()).collect(),
+            )
+        })
+        .collect()
+}
+
+/// (row, class, source bounds, score bits) of every post-NMS detection.
+type DetectionKey = (usize, usize, [u32; 4], u32);
+
+fn detection_keys(
+    package: &RgbDetectorPackage,
+    inference: &RgbInference,
+    ppm: u32,
+    allowed: &[u8],
+    cx: &ScalarExecCx,
+) -> TestResult<(usize, Vec<DetectionKey>)> {
+    let report = project_rgb_detections(
+        inference,
+        &package.contract_with_threshold(ppm)?,
+        allowed,
+        &mut RgbDetectionBudget::new(1 << 40, 1 << 30),
+        cx,
+    )?;
+    Ok((
+        report.candidates().len(),
+        report
+            .detections()
+            .iter()
+            .map(|d| (d.row(), d.class_index(), d.bounds(), d.score().to_bits()))
+            .collect(),
+    ))
 }
 
 /// (row, class, score, source bounds in 1/256 px) of one oracle detection.
@@ -303,7 +364,13 @@ fn package_is_loaded_only_through_the_verified_path() -> TestResult {
 #[test]
 fn scalar_reference_reproduces_the_onnxruntime_oracle() -> TestResult {
     let (expected, oracle) = fixture()?;
-    let package = load()?;
+    let package = load_scalar()?;
+    let optimized = load()?;
+    assert_eq!(DEFAULT_PACKAGE_BACKEND, KernelBackend::OptimizedCpuV1);
+    assert_eq!(package.model().backend(), KernelBackend::ScalarReference);
+    assert_eq!(optimized.model().backend(), KernelBackend::OptimizedCpuV1);
+    // The kernel generation is part of the model identity: evidence never mixes silently.
+    assert_ne!(package.model().digest(), optimized.model().digest());
     let cx = ScalarExecCx::new();
     let program = PreprocessProgram::new(416, 416, ChannelTransform::Rgb, false);
     let (mut worst_raw, mut worst_decoded, mut worst_normalized) = (0.0_f64, 0.0_f64, 0.0_f64);
@@ -357,6 +424,34 @@ fn scalar_reference_reproduces_the_onnxruntime_oracle() -> TestResult {
             resized.output_digest,
             "{name}: package preprocessing differs"
         );
+        // Optimized executor: bit-identical outputs, its own recorded kernel generation.
+        let fast = infer(&optimized, &image, &cx)?;
+        assert_eq!(
+            bits(&fast),
+            bits(&inference),
+            "{name}: optimized output bits differ"
+        );
+        assert_eq!(fast.output_digest(), inference.output_digest());
+        assert_eq!(fast.input_digest(), inference.input_digest());
+        assert_eq!(inference.backend(), KernelBackend::ScalarReference);
+        assert_eq!(fast.backend(), KernelBackend::OptimizedCpuV1);
+        assert_eq!(
+            fast.kernel_generation(),
+            KernelBackend::OptimizedCpuV1.generation()
+        );
+        assert_eq!(
+            inference.kernel_generation(),
+            KernelBackend::ScalarReference.generation()
+        );
+        assert_ne!(fast.identity(), inference.identity());
+        assert_ne!(fast.backend_descriptor(), inference.backend_descriptor());
+        assert_eq!(
+            (fast.executed_macs(), fast.allocated_tensor_bytes()),
+            (
+                inference.executed_macs(),
+                inference.allocated_tensor_bytes()
+            )
+        );
         let raw = inference.outputs().get("raw_head").ok_or("raw_head")?;
         let decoded = inference
             .outputs()
@@ -394,6 +489,16 @@ fn scalar_reference_reproduces_the_onnxruntime_oracle() -> TestResult {
             }
         }
         let allowed = allowed_all(&image);
+        for &ppm in e.detections.keys() {
+            // Identical post-NMS detections from both executors, each under its own contract.
+            assert_eq!(
+                detection_keys(&optimized, &fast, ppm, &allowed, &cx)?,
+                detection_keys(&package, &inference, ppm, &allowed, &cx)?,
+                "{name} @{ppm}: optimized detections differ"
+            );
+            // A contract bound to one kernel generation refuses the other's outputs.
+            assert!(detection_keys(&package, &fast, ppm, &allowed, &cx).is_err());
+        }
         for (&ppm, dets) in &e.detections {
             let contract = package.contract_with_threshold(ppm)?;
             let report = project_rgb_detections(

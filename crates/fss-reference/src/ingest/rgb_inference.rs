@@ -8,7 +8,8 @@
 
 use crate::preprocess::{ImageBytes, ResizeAspect, ResizeFilter, ResizeGeometry, ResizeOptions};
 use crate::{
-    ChannelTransform, ExecBudget, ExecError, PreprocessProgram, ScalarExecCx, ScalarExecutor,
+    ChannelTransform, ExecBudget, ExecError, KernelBackend, OptimizedGraph, PreprocessProgram,
+    ScalarExecCx, ScalarExecutor,
 };
 use fss_codec_mjpeg::color::{
     DecodedRgb, RgbDecodeLimits, RgbDecodeReceipt, decode_rgb, rgb_decoder_identity,
@@ -127,13 +128,50 @@ convert!(TensorError, Tensor);
 convert!(ContractError, Contract);
 type Result<T> = std::result::Result<T, RgbInferenceError>;
 
+/// Digest domain binding a frozen RGB model to the kernel generation that executes it.
+pub const RGB_MODEL_EXECUTION_DOMAIN: &str = "fss.rgb_inference_model_execution.v1";
+
+/// Selected executor: the scalar reference, or a prepared optimized graph certified
+/// bit-identical to it. Chosen explicitly; never switched implicitly at run time.
+#[derive(Debug)]
+enum RgbExecution {
+    Scalar,
+    Optimized(Box<OptimizedGraph>),
+}
+impl RgbExecution {
+    fn backend(&self) -> KernelBackend {
+        match self {
+            Self::Scalar => KernelBackend::ScalarReference,
+            Self::Optimized(g) => g.backend(),
+        }
+    }
+    /// Kernel generation (scalar) or complete prepared-plan identity (optimized).
+    fn identity(&self) -> ContentDigest {
+        match self {
+            Self::Scalar => KernelBackend::ScalarReference.generation(),
+            Self::Optimized(g) => g.digest(),
+        }
+    }
+    fn model_digest(&self, base: ContentDigest) -> ContentDigest {
+        let mut e = CanonicalEncoder::new();
+        e.text(RGB_MODEL_EXECUTION_DOMAIN);
+        e.digest(base);
+        e.text(self.backend().stable_id());
+        e.digest(self.backend().generation());
+        e.digest(self.identity());
+        ContentDigest::sha256(&e.finish())
+    }
+}
+
 /// Frozen image program, graph and complete owned parameter values. No mutable tensor aliases.
 #[derive(Debug)]
 pub struct RgbInferenceModel {
     graph: ModelIrGraph,
     spec: RgbModelSpec,
     parameters: BTreeMap<String, Vec<f32>>,
+    base_digest: ContentDigest,
     digest: ContentDigest,
+    execution: RgbExecution,
     input_bytes: usize,
     output_bytes: usize,
 }
@@ -240,7 +278,9 @@ impl RgbInferenceModel {
                 }
             }
         }
-        let digest = ContentDigest::sha256(&e.finish_checked()?);
+        let base_digest = ContentDigest::sha256(&e.finish_checked()?);
+        let execution = RgbExecution::Scalar;
+        let digest = execution.model_digest(base_digest);
         let input_bytes = image
             .shape()
             .size_bytes(DType::F32)?
@@ -261,18 +301,59 @@ impl RgbInferenceModel {
             graph: graph.clone(),
             spec,
             parameters,
+            base_digest,
             digest,
+            execution,
             input_bytes,
             output_bytes,
         })
     }
-    /// Graph, weights, preprocessing and source implementation identity; no activation authority.
+
+    /// Select the executor explicitly. `OptimizedCpuV1` prepares (validates, packs weights) the
+    /// optimized graph now and fails closed if preparation refuses; `ScalarReference` restores
+    /// the reference. The model digest changes with the selection, so every inference identity
+    /// and detection contract names the kernel generation that produced it.
+    pub fn with_backend(mut self, backend: KernelBackend, cx: &ScalarExecCx) -> Result<Self> {
+        self.execution = match backend {
+            KernelBackend::ScalarReference => RgbExecution::Scalar,
+            KernelBackend::OptimizedCpuV1 => RgbExecution::Optimized(Box::new(
+                OptimizedGraph::prepare(&self.graph, &self.parameters, cx)?,
+            )),
+        };
+        self.digest = self.execution.model_digest(self.base_digest);
+        Ok(self)
+    }
+    /// Kernel family executing this model.
+    pub fn backend(&self) -> KernelBackend {
+        self.execution.backend()
+    }
+    /// Kernel-generation digest of the selected executor.
+    pub fn kernel_generation(&self) -> ContentDigest {
+        self.execution.backend().generation()
+    }
+    /// Prepared optimized graph, when that executor is selected.
+    pub fn optimized_graph(&self) -> Option<&OptimizedGraph> {
+        match &self.execution {
+            RgbExecution::Scalar => None,
+            RgbExecution::Optimized(g) => Some(g),
+        }
+    }
+    /// Graph, weights, preprocessing, source implementation and selected kernel-generation
+    /// identity; no activation authority.
     pub fn digest(&self) -> ContentDigest {
         self.digest
     }
     /// Exact immutable model/preprocessing choices.
     pub fn spec(&self) -> &RgbModelSpec {
         &self.spec
+    }
+    /// Frozen validated graph executed by this model.
+    pub fn graph(&self) -> &ModelIrGraph {
+        &self.graph
+    }
+    /// Frozen finite F32 parameter values bound to every non-image graph input.
+    pub fn parameters(&self) -> &BTreeMap<String, Vec<f32>> {
+        &self.parameters
     }
 
     /// Decode a real JPEG then execute the frozen RGB graph. Both contexts belong to the caller;
@@ -447,19 +528,29 @@ impl RgbInferenceModel {
         let geometry = resized.geometry;
         let input_digest = resized.output_digest;
         let masked_digest = resized.input_digest;
-        let mut inputs = vec![(self.spec.image_input.clone(), resized.tensor)];
-        for (name, values) in &self.parameters {
-            cx.checkpoint("rgb-inference:bind")?;
-            let port = self
-                .graph
-                .find_input(name)
-                .ok_or(RgbInferenceError::InvalidInput)?;
-            inputs.push((
-                name.clone(),
-                Tensor::from_values(port.shape().clone(), values, self.graph.generation())?,
-            ));
-        }
-        let executed = ScalarExecutor::run(&self.graph, &inputs, limits.execution, cx)?;
+        let executed = match &self.execution {
+            RgbExecution::Scalar => {
+                let mut inputs = vec![(self.spec.image_input.clone(), resized.tensor)];
+                for (name, values) in &self.parameters {
+                    cx.checkpoint("rgb-inference:bind")?;
+                    let port = self
+                        .graph
+                        .find_input(name)
+                        .ok_or(RgbInferenceError::InvalidInput)?;
+                    inputs.push((
+                        name.clone(),
+                        Tensor::from_values(port.shape().clone(), values, self.graph.generation())?,
+                    ));
+                }
+                ScalarExecutor::run(&self.graph, &inputs, limits.execution, cx)?
+            }
+            // Weights are bound (packed) inside the prepared graph; only the image is supplied.
+            RgbExecution::Optimized(graph) => graph.run(
+                &[(self.spec.image_input.as_str(), resized.tensor)],
+                limits.execution,
+                cx,
+            )?,
+        };
         let mut outputs = BTreeMap::new();
         let mut encoded = CanonicalEncoder::new();
         encoded.text("fss.rgb-tensor-result.reference.v1");
@@ -515,6 +606,7 @@ impl RgbInferenceModel {
             masked_digest,
             output_digest,
             outputs,
+            backend: self.execution.backend(),
             preprocess_work: mask_work + resized.work_units,
             executed_macs: executed.executed_macs(),
             allocated_tensor_bytes: executed.allocated_bytes(),
@@ -611,6 +703,7 @@ pub struct RgbInference {
     masked_digest: ContentDigest,
     output_digest: ContentDigest,
     outputs: BTreeMap<String, RgbTensorOutput>,
+    backend: KernelBackend,
     preprocess_work: u64,
     executed_macs: u64,
     allocated_tensor_bytes: usize,
@@ -651,6 +744,18 @@ impl RgbInference {
     /// All declared outputs. A tensor is not automatically a detection or a threat score.
     pub fn outputs(&self) -> &BTreeMap<String, RgbTensorOutput> {
         &self.outputs
+    }
+    /// Kernel family that produced these outputs (also bound through the model digest).
+    pub fn backend(&self) -> KernelBackend {
+        self.backend
+    }
+    /// Kernel-generation digest of the executor that produced these outputs.
+    pub fn kernel_generation(&self) -> ContentDigest {
+        self.backend.generation()
+    }
+    /// Model-receipt backend descriptor naming the executor and its kernel generation.
+    pub fn backend_descriptor(&self) -> crate::model_receipt::BackendDescriptor {
+        crate::model_receipt::BackendDescriptor::for_kernel_backend(self.backend)
     }
     /// Logical mask and resizing work, separately bounded from neural operations.
     pub fn preprocess_work(&self) -> u64 {
