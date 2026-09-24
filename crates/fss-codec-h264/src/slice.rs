@@ -282,8 +282,7 @@ pub fn parse_slice_header(
     let idr = nal.unit_type == 5;
     let kind = match slice_type % 5 {
         0 => SliceKind::P,
-        // B slices are admitted by the next stage.
-        1 => return Err(DecodeError::Unsupported(UnsupportedFeature::BSlice)),
+        1 => SliceKind::B,
         2 => SliceKind::I,
         _ => return Err(DecodeError::Unsupported(UnsupportedFeature::SwitchingSlice)),
     };

@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! H.264 pixel decode (Constrained Baseline and Main-profile I/P,
+//! H.264 pixel decode (Constrained Baseline and Main profile,
 //! progressive 8-bit 4:2:0), scalar reference implementation.
 //!
 //! NAL units enter, reconstructed 8-bit 4:2:0 pictures leave in output
@@ -30,13 +30,13 @@
 //!    sliding-window and MMCO marking with long-term references, and the
 //!    decoded picture buffer's output process.
 //!
-//! Admitted tool set: CAVLC and CABAC, I and P slices, frame pictures,
+//! Admitted tool set: CAVLC and CABAC, I, P and B slices, frame pictures,
 //! 8-bit 4:2:0, flat scaling, weighted prediction, one slice group,
-//! slices in raster order, POC types 0 and 2. Everything else (B slices,
-//! the 8x8 transform, scaling matrices, interlaced/PAFF/MBAFF, other
-//! chroma formats and bit depths, lossless, SP/SI, FMO/ASO, data
-//! partitioning, POC type 1, MVC and SVC) is refused with
-//! [`DecodeError::Unsupported`] naming the feature.
+//! slices in raster order, POC types 0 and 2. Everything else (the 8x8
+//! transform, scaling matrices, interlaced/PAFF/MBAFF, other chroma formats
+//! and bit depths, lossless, SP/SI, FMO/ASO, data partitioning, POC type 1,
+//! MVC and SVC) is refused with [`DecodeError::Unsupported`] naming the
+//! feature.
 //!
 //! Correctness is established differentially: tests compare every decoded
 //! frame bit-exactly, in output order, against digests produced offline by
@@ -101,7 +101,8 @@ pub enum UnsupportedFeature {
     /// Slices not contiguous in raster order within a picture (ASO, or a
     /// missing slice: the decoder does not conceal either).
     ArbitrarySliceOrder,
-    /// B slices.
+    /// Historical: B slices. Admitted since Main profile support; no
+    /// longer produced, kept for API stability.
     BSlice,
     /// SP or SI slices.
     SwitchingSlice,
