@@ -216,7 +216,7 @@
         {
           "name": "fss-codec-h265",
           "unsafe": "forbid",
-          "status": "planned"
+          "status": "skeleton"
         },
         {
           "name": "fss-codec-av1",
