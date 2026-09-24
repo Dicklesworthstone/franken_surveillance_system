@@ -671,68 +671,6 @@ impl JournalReadIo for HostJournalReadIo {
     }
 }
 
-/// Recording [`JournalReadIo`] that captures all calls to verify read-only inspection.
-#[derive(Clone, Debug)]
-pub struct RecordingJournalReadIo<T: JournalReadIo = HostJournalReadIo> {
-    inner: T,
-    calls: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-}
-
-impl<T: JournalReadIo> RecordingJournalReadIo<T> {
-    /// Wraps `inner` with an empty call log.
-    pub fn new(inner: T) -> Self {
-        Self {
-            inner,
-            calls: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
-        }
-    }
-
-    /// Snapshot of recorded call signatures in arrival order.
-    pub fn calls(&self) -> Vec<String> {
-        match self.calls.lock() {
-            Ok(guard) => guard.clone(),
-            Err(_) => Vec::new(),
-        }
-    }
-
-    /// True if all recorded calls are read operations (always true for [`JournalReadIo`]).
-    #[must_use]
-    pub fn is_read_only(&self) -> bool {
-        true
-    }
-
-    /// Mutating calls recorded so far (always empty for [`JournalReadIo`]).
-    pub fn mutating_calls(&self) -> Vec<String> {
-        Vec::new()
-    }
-}
-
-impl<T: JournalReadIo + Default> Default for RecordingJournalReadIo<T> {
-    fn default() -> Self {
-        Self::new(T::default())
-    }
-}
-
-impl<T: JournalReadIo> JournalReadIo for RecordingJournalReadIo<T> {
-    fn symlink_metadata(&self, path: &Path) -> std::io::Result<JournalFileMetadata> {
-        if let Ok(mut guard) = self.calls.lock() {
-            guard.push(format!("symlink_metadata({})", path.display()));
-        }
-        self.inner.symlink_metadata(path)
-    }
-
-    fn read_bounded(&self, path: &Path, max_bytes: usize) -> std::io::Result<Vec<u8>> {
-        if let Ok(mut guard) = self.calls.lock() {
-            guard.push(format!(
-                "read_bounded({}, max={})",
-                path.display(),
-                max_bytes
-            ));
-        }
-        self.inner.read_bounded(path, max_bytes)
-    }
-}
-
 /// Inspects a durable reference ledger through an injected [`JournalReadIo`].
 pub fn inspect_durable_with_io(
     io: &dyn JournalReadIo,
