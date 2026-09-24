@@ -315,6 +315,9 @@ fn transformed_descriptors_and_conflicting_cache_registration_fail_closed() -> T
         Err(SourceHydrationError::BindingConflict)));
     let mut transformed = f.handle.clone();
     transformed.applied_transform = Some("privacy:masked".to_owned());
+    // The applied transform is part of the stable identity core, so a transformed descriptor
+    // is a distinct handle: re-derive its id exactly as SemanticHandle::new does.
+    transformed.handle_id = format!("semantic-handle:{}", transformed.identity_digest());
     transformed.descriptor_digest = transformed.computed_descriptor_digest();
     let mut catalog = ReferenceHydrationCatalog::new();
     catalog.register_descriptor(transformed.clone())?;
@@ -494,6 +497,9 @@ fn consumer_rejects_privacy_transform_claims_on_original_source() -> TestResult 
         .cloned().ok_or("missing binding")?;
     let mut transformed = f.handle.clone();
     transformed.applied_transform = Some("privacy:masked".to_owned());
+    // The applied transform is part of the stable identity core, so a transformed descriptor
+    // is a distinct handle: re-derive its id exactly as SemanticHandle::new does.
+    transformed.handle_id = format!("semantic-handle:{}", transformed.identity_digest());
     transformed.descriptor_digest = transformed.computed_descriptor_digest();
     let req = request(&transformed, HydrationLevel::H3)?;
     let artifact = HydrationArtifact::publish(HydrationLevel::H3, SOURCE_OBJECT_CONTENT_TYPE,
