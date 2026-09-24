@@ -248,6 +248,17 @@ oracle_test!(
     Order::Reordered
 );
 
+// ----- High profile, stage 3: 8x8 transform, 8x8 intra, scaling -----
+oracle_test!(high_8x8_intra_bit_exact, "h_8x8dct_i");
+oracle_test!(high_8x8_b_pyramid_bit_exact, "h_8x8dct_b", Order::Reordered);
+oracle_test!(high_cqm_jvt_bit_exact, "h_cqm_jvt", Order::Reordered);
+oracle_test!(high_cavlc_8x8_bit_exact, "h_cavlc_8x8", Order::Reordered);
+oracle_test!(
+    high_custom_cqm_cropped_bit_exact,
+    "h_cqm_custom_100x60",
+    Order::Reordered
+);
+
 /// The POC-type-0 rewrite writes pic_order_cnt_lsb = 2 * (pictures since
 /// IDR); with no MSB wrap the decoded POC is exactly that.
 #[test]
@@ -272,6 +283,18 @@ fn reused_fss_packet_baseline_bit_exact() {
         "fss_packet_baseline",
         include_bytes!("../../fss-packet/tests/fixtures/avc/baseline.264"),
         include_str!("fixtures/decode/fss_packet_baseline.sha256"),
+    );
+}
+
+/// The `fss-packet` High-profile custody fixture (64x36 coded 64x48, B
+/// frames, 8x8 transform), previously the canonical "refused" stream.
+#[test]
+fn reused_fss_packet_high_cropped_bit_exact() {
+    check_order(
+        "fss_packet_high_cropped",
+        include_bytes!("../../fss-packet/tests/fixtures/avc/high_cropped.264"),
+        include_str!("fixtures/decode/fss_packet_high_cropped.sha256"),
+        Order::Reordered,
     );
 }
 

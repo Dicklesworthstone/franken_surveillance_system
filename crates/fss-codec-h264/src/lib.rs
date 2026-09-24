@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! H.264 pixel decode (Constrained Baseline and Main profile,
+//! H.264 pixel decode (Constrained Baseline, Main and High profile,
 //! progressive 8-bit 4:2:0), scalar reference implementation.
 //!
 //! NAL units enter, reconstructed 8-bit 4:2:0 pictures leave in output
@@ -31,11 +31,11 @@
 //!    decoded picture buffer's output process.
 //!
 //! Admitted tool set: CAVLC and CABAC, I, P and B slices, frame pictures,
-//! 8-bit 4:2:0, flat scaling, weighted prediction, one slice group,
-//! slices in raster order, POC types 0 and 2. Everything else (the 8x8
-//! transform, scaling matrices, interlaced/PAFF/MBAFF, other chroma formats
-//! and bit depths, lossless, SP/SI, FMO/ASO, data partitioning, POC type 1,
-//! MVC and SVC) is refused with [`DecodeError::Unsupported`] naming the
+//! 8-bit 4:2:0, the 8x8 transform and scaling matrices, weighted
+//! prediction, one slice group, slices in raster order, POC types 0 and 2.
+//! Everything else (interlaced/PAFF/MBAFF, other chroma formats and bit
+//! depths, lossless, SP/SI, FMO/ASO, data partitioning, POC type 1, MVC
+//! and SVC) is refused with [`DecodeError::Unsupported`] naming the
 //! feature.
 //!
 //! Correctness is established differentially: tests compare every decoded
@@ -87,9 +87,11 @@ pub enum UnsupportedFeature {
     SampleFormat,
     /// `qpprime_y_zero_transform_bypass_flag` (lossless macroblocks).
     TransformBypass,
-    /// SPS or PPS scaling matrices (only flat scaling is admitted).
+    /// Historical: SPS or PPS scaling matrices. Admitted since High
+    /// profile support; no longer produced, kept for API stability.
     ScalingMatrix,
-    /// The 8x8 transform (High profile `transform_8x8_mode_flag`).
+    /// Historical: the 8x8 transform. Admitted since High profile support;
+    /// no longer produced, kept for API stability.
     Transform8x8,
     /// Historical: CABAC entropy coding. Admitted since Main profile
     /// support; no longer produced, kept for API stability.
