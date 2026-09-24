@@ -1175,30 +1175,6 @@ pub fn prepare_reference_alert(
     if params.event_receipt.lineage_tamper_status.has_open_tamper() {
         return Err(fss_core::ContractError::SensorIntegrityRisk.into());
     }
-    // Defence in depth: a sensor-integrity risk never becomes effect authority, even when a
-    // revision carrying a tamper report reached a corroborated state without being verified. The
-    // situation's integrity risk is compiled from exactly these edges.
-    if params
-        .decision
-        .event
-        .evidence
-        .iter()
-        .any(fss_core::EventEvidence::reports_sensor_tamper)
-    {
-        return Err(fss_core::ContractError::SensorIntegrityRisk.into());
-    }
-    // Defence in depth: a sensor-integrity risk never becomes effect authority, even when a
-    // revision carrying a tamper report reached a corroborated state without being verified. The
-    // situation's integrity risk is compiled from exactly these edges.
-    if params
-        .decision
-        .event
-        .evidence
-        .iter()
-        .any(fss_core::EventEvidence::reports_sensor_tamper)
-    {
-        return Err(fss_core::ContractError::SensorIntegrityRisk.into());
-    }
     if params.event_receipt.event_revision_digest != params.decision.event.revision_digest() {
         return Err(ReferenceError::InvalidSpec("event_receipt_mismatch"));
     }
