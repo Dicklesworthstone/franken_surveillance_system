@@ -34,6 +34,8 @@ use fss_tensor::Tensor;
 
 #[path = "../tests/yolox_support/cases.rs"]
 mod cases;
+#[path = "../tests/yolox_support/person.rs"]
+mod person;
 
 type Res<T = ()> = Result<T, Box<dyn Error>>;
 
