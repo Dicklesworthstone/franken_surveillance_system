@@ -8,7 +8,8 @@ use fss_tensor::{DType, Shape, Tensor};
 
 use crate::clock::VirtualClock;
 use crate::model_receipt::{
-    ReceiptDigest, ReceiptOutcome, ReceiptVerificationError, execute_and_record_receipt,
+    ReceiptDigest, ReceiptOutcome, ReceiptRecordContext, ReceiptVerificationError,
+    execute_and_record_receipt,
 };
 use crate::scalar_executor::{ExecBudget, ScalarExecCx};
 
@@ -53,10 +54,12 @@ fn test_receipt_ok_outcome() -> Result<(), Box<dyn Error>> {
         &inputs,
         ExecBudget::unlimited(),
         &cx,
-        "job:test-ok-1",
-        None,
-        None,
-        Some(&clock),
+        ReceiptRecordContext {
+            job_id: "job:test-ok-1",
+            preprocess_program: None,
+            model_package_root: None,
+            virtual_clock: Some(&clock),
+        },
     );
 
     assert!(res.is_ok());
@@ -121,10 +124,12 @@ fn test_receipt_refused_graph_outcome() -> Result<(), Box<dyn Error>> {
         &inputs,
         ExecBudget::unlimited(),
         &cx,
-        "job:test-refused-graph",
-        None,
-        None,
-        None,
+        ReceiptRecordContext {
+            job_id: "job:test-refused-graph",
+            preprocess_program: None,
+            model_package_root: None,
+            virtual_clock: None,
+        },
     );
 
     assert!(res.is_err());
@@ -180,10 +185,12 @@ fn test_receipt_unsupported_dtype_outcome() -> Result<(), Box<dyn Error>> {
         &inputs,
         ExecBudget::unlimited(),
         &cx,
-        "job:test-unsupported-dtype",
-        None,
-        None,
-        None,
+        ReceiptRecordContext {
+            job_id: "job:test-unsupported-dtype",
+            preprocess_program: None,
+            model_package_root: None,
+            virtual_clock: None,
+        },
     );
 
     assert!(res.is_err());
@@ -220,10 +227,12 @@ fn test_receipt_shape_mismatch_outcome() -> Result<(), Box<dyn Error>> {
         &inputs,
         ExecBudget::unlimited(),
         &cx,
-        "job:test-shape-mismatch",
-        None,
-        None,
-        None,
+        ReceiptRecordContext {
+            job_id: "job:test-shape-mismatch",
+            preprocess_program: None,
+            model_package_root: None,
+            virtual_clock: None,
+        },
     );
 
     assert!(res.is_err());
@@ -275,10 +284,12 @@ fn test_receipt_budget_exhausted_outcome() -> Result<(), Box<dyn Error>> {
         &inputs,
         budget,
         &cx,
-        "job:test-budget-exceeded",
-        None,
-        None,
-        None,
+        ReceiptRecordContext {
+            job_id: "job:test-budget-exceeded",
+            preprocess_program: None,
+            model_package_root: None,
+            virtual_clock: None,
+        },
     );
 
     assert!(res.is_err());
@@ -313,10 +324,12 @@ fn test_receipt_cancelled_outcome() -> Result<(), Box<dyn Error>> {
         &inputs,
         ExecBudget::unlimited(),
         &cx,
-        "job:test-cancelled",
-        None,
-        None,
-        None,
+        ReceiptRecordContext {
+            job_id: "job:test-cancelled",
+            preprocess_program: None,
+            model_package_root: None,
+            virtual_clock: None,
+        },
     );
 
     assert!(res.is_err());
@@ -354,10 +367,12 @@ fn test_bit_exact_reproducibility() -> Result<(), Box<dyn Error>> {
         &[("x", x_tensor1)],
         ExecBudget::unlimited(),
         &cx1,
-        "job:reproducible-1",
-        None,
-        None,
-        Some(&clock1),
+        ReceiptRecordContext {
+            job_id: "job:reproducible-1",
+            preprocess_program: None,
+            model_package_root: None,
+            virtual_clock: Some(&clock1),
+        },
     );
 
     let (_, receipt2) = execute_and_record_receipt(
@@ -365,10 +380,12 @@ fn test_bit_exact_reproducibility() -> Result<(), Box<dyn Error>> {
         &[("x", x_tensor2)],
         ExecBudget::unlimited(),
         &cx2,
-        "job:reproducible-1",
-        None,
-        None,
-        Some(&clock2),
+        ReceiptRecordContext {
+            job_id: "job:reproducible-1",
+            preprocess_program: None,
+            model_package_root: None,
+            virtual_clock: Some(&clock2),
+        },
     );
 
     assert_eq!(
@@ -394,10 +411,12 @@ fn test_tamper_detection() -> Result<(), Box<dyn Error>> {
         &[("x", x_tensor)],
         ExecBudget::unlimited(),
         &cx,
-        "job:tamper-test",
-        None,
-        None,
-        None,
+        ReceiptRecordContext {
+            job_id: "job:tamper-test",
+            preprocess_program: None,
+            model_package_root: None,
+            virtual_clock: None,
+        },
     );
 
     let original_digest = receipt.compute_canonical_digest();
@@ -456,10 +475,12 @@ fn test_virtual_clock_determinism() -> Result<(), Box<dyn Error>> {
         &[("x", x_tensor)],
         ExecBudget::unlimited(),
         &cx,
-        "job:clock-test",
-        None,
-        None,
-        Some(&clock),
+        ReceiptRecordContext {
+            job_id: "job:clock-test",
+            preprocess_program: None,
+            model_package_root: None,
+            virtual_clock: Some(&clock),
+        },
     );
 
     assert_eq!(receipt.usage.wall_ns, 987_654_321);

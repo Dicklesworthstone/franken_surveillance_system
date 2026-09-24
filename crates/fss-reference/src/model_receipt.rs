@@ -1005,17 +1005,33 @@ pub fn compute_output_root(
     Ok(ContentDigest::sha256(&encoder.finish()))
 }
 
+/// Caller-supplied job identity and provenance recorded by [`execute_and_record_receipt`].
+#[derive(Clone, Copy, Debug)]
+pub struct ReceiptRecordContext<'a> {
+    /// Job identifier recorded verbatim in the receipt.
+    pub job_id: &'a str,
+    /// Exact preprocess program bound into the receipt, if one was applied.
+    pub preprocess_program: Option<&'a PreprocessProgram>,
+    /// Model package root; `None` records the explicit inline-test-graph sentinel.
+    pub model_package_root: Option<ContentDigest>,
+    /// Virtual clock used for the recorded wall time; `None` records zero.
+    pub virtual_clock: Option<&'a VirtualClock>,
+}
+
 /// Executes a model graph and emits an authoritative, verified [`ModelInvocationReceipt`].
 pub fn execute_and_record_receipt(
     graph: &ModelIrGraph,
     inputs: &[(&str, Tensor)],
     budget: ExecBudget,
     cx: &ScalarExecCx,
-    job_id: &str,
-    preprocess_program: Option<&PreprocessProgram>,
-    model_package_root: Option<ContentDigest>,
-    virtual_clock: Option<&VirtualClock>,
+    context: ReceiptRecordContext<'_>,
 ) -> (Result<ExecOutcome, ExecError>, ModelInvocationReceipt) {
+    let ReceiptRecordContext {
+        job_id,
+        preprocess_program,
+        model_package_root,
+        virtual_clock,
+    } = context;
     // 1. Operator table freeze verification
     let op_registry_gen = match verify_operator_table_frozen() {
         Ok(()) => match ContentDigest::parse(OPERATOR_TABLE_FREEZE_DIGEST) {

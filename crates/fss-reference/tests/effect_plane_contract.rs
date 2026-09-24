@@ -13,14 +13,15 @@ use fss_core::{
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
 use fss_object::{InMemoryObjectStore, ObjectLimits};
 use fss_reference::{
-    DeliveryPlan, MockModelScript, MockModelSpec, MockSemanticLabel, PrepareAlertParams,
-    ProviderObservationReceipt, REFERENCE_ALERT_TERMINAL_PREDICATE, ReferenceAlertPlan,
-    ReferenceAlertProvider, ReferenceError, ReferenceEventReceipt, ReferenceModelObservation,
-    ReferencePolicyAction, ReferencePolicyDecision, ReferenceProviderBehavior, VirtualCameraSpec,
-    dispatch_reference_alert, evaluate_unknown_presence, execute_mock_model,
-    observe_reference_alert, prepare_reference_alert, publish_reference_alert_outcome,
-    publish_reference_event, reconcile_failed_reference_alert, reconcile_reference_alert,
-    run_reference_capture, verify_reference_alert,
+    AlertDispatchTimes, DeliveryPlan, MockModelScript, MockModelSpec, MockSemanticLabel,
+    PrepareAlertParams, ProviderObservationReceipt, REFERENCE_ALERT_TERMINAL_PREDICATE,
+    ReferenceAlertPlan, ReferenceAlertProvider, ReferenceError, ReferenceEventReceipt,
+    ReferenceModelObservation, ReferencePolicyAction, ReferencePolicyDecision,
+    ReferenceProviderBehavior, VirtualCameraSpec, dispatch_reference_alert,
+    evaluate_unknown_presence, execute_mock_model, observe_reference_alert,
+    prepare_reference_alert, publish_reference_alert_outcome, publish_reference_event,
+    reconcile_failed_reference_alert, reconcile_reference_alert, run_reference_capture,
+    verify_reference_alert,
 };
 
 fn temp_journal(name: &str) -> std::path::PathBuf {
@@ -215,8 +216,7 @@ fn test_f2_idempotency_key_shared_by_different_intents_is_typed_conflict()
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut journal,
         &mut provider,
     )?;
@@ -228,8 +228,7 @@ fn test_f2_idempotency_key_shared_by_different_intents_is_typed_conflict()
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(103),
-        TimestampNs(104),
+        AlertDispatchTimes::new(TimestampNs(103), TimestampNs(104)),
         &mut journal_b,
         &mut provider,
     );
@@ -390,8 +389,7 @@ fn test_f4_adapter_acceptance_does_not_promote_to_verified_without_observation()
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut journal,
         &mut provider,
     )?;
@@ -684,8 +682,7 @@ fn test_f6_reconciliation_preserves_indeterminate_provenance_and_publishes_succe
         &authority,
         &objects,
         ReferenceProviderBehavior::LoseAckAfterDelivery,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut alert_journal,
         &mut provider,
     )?;
@@ -852,8 +849,7 @@ fn test_finding_1_failure_proof_cross_operation_replay() -> Result<(), Box<dyn E
         &authority,
         &objects,
         ReferenceProviderBehavior::LoseAckAfterDelivery,
-        TimestampNs(150),
-        TimestampNs(200),
+        AlertDispatchTimes::new(TimestampNs(150), TimestampNs(200)),
         &mut journal,
         &mut provider,
     )?;
@@ -862,8 +858,7 @@ fn test_finding_1_failure_proof_cross_operation_replay() -> Result<(), Box<dyn E
         &authority,
         &objects,
         ReferenceProviderBehavior::LoseAckAfterDelivery,
-        TimestampNs(150),
-        TimestampNs(200),
+        AlertDispatchTimes::new(TimestampNs(150), TimestampNs(200)),
         &mut journal,
         &mut provider,
     )?;
@@ -1054,8 +1049,7 @@ fn test_finding_5_delivered_effect_marked_failed() -> Result<(), Box<dyn Error>>
         &authority,
         &objects,
         ReferenceProviderBehavior::LoseAckAfterDelivery,
-        t1,
-        t2,
+        AlertDispatchTimes::new(t1, t2),
         &mut journal,
         &mut provider,
     )?;
@@ -1104,8 +1098,7 @@ fn test_finding_6_reconciliation_not_idempotent() -> Result<(), Box<dyn Error>> 
         &authority,
         &objects,
         ReferenceProviderBehavior::LoseAckAfterDelivery,
-        t1,
-        t2,
+        AlertDispatchTimes::new(t1, t2),
         &mut journal,
         &mut provider,
     )?;
@@ -1221,8 +1214,7 @@ fn test_f2_independent_providers_mint_distinct_nonces() -> Result<(), Box<dyn Er
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut journal_a,
         &mut provider_a,
     )?;
@@ -1231,8 +1223,7 @@ fn test_f2_independent_providers_mint_distinct_nonces() -> Result<(), Box<dyn Er
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut journal_b,
         &mut provider_b,
     )?;
@@ -1274,8 +1265,7 @@ fn test_deterministic_provider_mints_bit_identical_receipts_for_same_id()
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut journal,
         &mut provider_1,
     )?;
@@ -1284,8 +1274,7 @@ fn test_deterministic_provider_mints_bit_identical_receipts_for_same_id()
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut journal_2,
         &mut provider_2,
     )?;

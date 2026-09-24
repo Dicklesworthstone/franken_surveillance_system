@@ -15,14 +15,15 @@ use fss_core::{
 use fss_ledger::{AppendPhase, DurableReferenceLedger, IncompleteTailPolicy, JournalError};
 use fss_object::{InMemoryObjectStore, ObjectLimits};
 use fss_reference::{
-    CAPABILITY_EFFECT_RECONCILE, DeliveryPlan, DurableEffectError, DurableEffectJournal,
-    EFFECT_RECONCILE_AFFORDANCE, MockModelScript, MockModelSpec, MockSemanticLabel,
-    ObligationLedgerState, PrepareAlertParams, ReferenceAlertPlan, ReferenceAlertProvider,
-    ReferenceError, ReferenceEventReceipt, ReferenceModelObservation, ReferencePolicyAction,
-    ReferencePolicyDecision, ReferenceProviderBehavior, ReferenceSituationRequest,
-    VirtualCameraSpec, compile_reference_situation_with_durable_journal, dispatch_reference_alert,
-    evaluate_unknown_presence, execute_mock_model, prepare_reference_alert,
-    publish_reference_event, run_reference_capture, seal_reference_handoff,
+    AlertDispatchTimes, CAPABILITY_EFFECT_RECONCILE, DeliveryPlan, DurableEffectError,
+    DurableEffectJournal, EFFECT_RECONCILE_AFFORDANCE, MockModelScript, MockModelSpec,
+    MockSemanticLabel, ObligationLedgerState, PrepareAlertParams, ReferenceAlertPlan,
+    ReferenceAlertProvider, ReferenceError, ReferenceEventReceipt, ReferenceModelObservation,
+    ReferencePolicyAction, ReferencePolicyDecision, ReferenceProviderBehavior,
+    ReferenceSituationRequest, VirtualCameraSpec, compile_reference_situation_with_durable_journal,
+    dispatch_reference_alert, evaluate_unknown_presence, execute_mock_model,
+    prepare_reference_alert, publish_reference_event, run_reference_capture,
+    seal_reference_handoff,
 };
 
 fn temp_journal(name: &str) -> std::path::PathBuf {
@@ -421,8 +422,7 @@ fn test_planted_negative_lose_ack_reopen_refuses_second_commit_before_provider_t
             &authority,
             &objects,
             ReferenceProviderBehavior::LoseAckAfterDelivery,
-            TimestampNs(110),
-            TimestampNs(120),
+            AlertDispatchTimes::new(TimestampNs(110), TimestampNs(120)),
             &mut provider,
         )?;
         assert_eq!(outcome.state, EffectState::Indeterminate);
@@ -446,8 +446,7 @@ fn test_planted_negative_lose_ack_reopen_refuses_second_commit_before_provider_t
             &authority,
             &objects,
             ReferenceProviderBehavior::Deliver,
-            TimestampNs(200),
-            TimestampNs(210),
+            AlertDispatchTimes::new(TimestampNs(200), TimestampNs(210)),
             &mut provider,
         );
 
@@ -486,8 +485,7 @@ fn test_planted_negative_reconciliation_after_reopen_closes_obligation_with_prov
             &authority,
             &objects,
             ReferenceProviderBehavior::LoseAckAfterDelivery,
-            TimestampNs(110),
-            TimestampNs(120),
+            AlertDispatchTimes::new(TimestampNs(110), TimestampNs(120)),
             &mut provider,
         )?;
         assert_eq!(outcome.state, EffectState::Indeterminate);
@@ -691,8 +689,7 @@ fn test_reconcile_alert_accepts_adapter_accepted_after_restart() -> Result<(), B
             &authority,
             &objects,
             ReferenceProviderBehavior::Deliver,
-            TimestampNs(110),
-            TimestampNs(120),
+            AlertDispatchTimes::new(TimestampNs(110), TimestampNs(120)),
             &mut provider,
         )?;
         assert_eq!(outcome.state, EffectState::AdapterAccepted);
@@ -764,8 +761,7 @@ fn test_inv_111_crash_with_open_indeterminate_obligation_reopens_with_reconcile_
             &ctx.authority,
             &ctx.objects,
             ReferenceProviderBehavior::LoseAckAfterDelivery,
-            TimestampNs(31_000),
-            TimestampNs(32_000),
+            AlertDispatchTimes::new(TimestampNs(31_000), TimestampNs(32_000)),
             &mut provider,
         )?;
         assert_eq!(outcome.state, EffectState::Indeterminate);
@@ -1019,8 +1015,7 @@ fn test_inv_111_obligation_classification_states() -> Result<(), Box<dyn Error>>
         &ctx.authority,
         &ctx.objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(31_000),
-        TimestampNs(32_000),
+        AlertDispatchTimes::new(TimestampNs(31_000), TimestampNs(32_000)),
         &mut provider,
     )?;
     let _ = journal.reconcile_alert(&plan, TimestampNs(33_000), &provider)?;
@@ -1373,8 +1368,7 @@ fn test_finding_f6_delta_payload_mismatch_fails_closed_to_ledger_conflict()
         &ctx.authority,
         &ctx.objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(31_000),
-        TimestampNs(32_000),
+        AlertDispatchTimes::new(TimestampNs(31_000), TimestampNs(32_000)),
         &mut provider,
     )?;
     let _ = journal.reconcile_alert(&plan, TimestampNs(33_000), &provider)?;
@@ -1531,8 +1525,7 @@ fn deliver_then_lose_process_journal(
         authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(30_100),
-        TimestampNs(30_200),
+        AlertDispatchTimes::new(TimestampNs(30_100), TimestampNs(30_200)),
         crashed_process_journal,
         provider,
     )?;
@@ -1659,8 +1652,7 @@ fn test_crash_after_commit_recovery_via_redispatch() -> Result<(), Box<dyn Error
             &authority,
             &setup_objects,
             ReferenceProviderBehavior::Deliver,
-            TimestampNs(200),
-            TimestampNs(210),
+            AlertDispatchTimes::new(TimestampNs(200), TimestampNs(210)),
             &mut provider,
         );
         assert!(matches!(
@@ -1744,8 +1736,7 @@ fn test_finding_f1_crash_after_commit_blind_duplicate_redispatch_fails()
             &authority,
             &objects,
             ReferenceProviderBehavior::Deliver,
-            TimestampNs(200),
-            TimestampNs(210),
+            AlertDispatchTimes::new(TimestampNs(200), TimestampNs(210)),
             &mut provider,
         );
 

@@ -9,8 +9,8 @@ use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
 use fss_object::{InMemoryObjectStore, ObjectLimits};
 
 use crate::{
-    DeliveryPlan, DurableEffectError, DurableEffectJournal, MockModelScript, MockModelSpec,
-    MockSemanticLabel, ObligationLedgerState, PrepareAlertParams,
+    AlertDispatchTimes, DeliveryPlan, DurableEffectError, DurableEffectJournal, MockModelScript,
+    MockModelSpec, MockSemanticLabel, ObligationLedgerState, PrepareAlertParams,
     REFERENCE_ALERT_TERMINAL_PREDICATE, ReferenceAlertProvider, ReferenceError,
     ReferenceModelObservation, ReferencePolicyDecision, ReferenceProviderBehavior,
     VirtualCameraSpec, dispatch_reference_alert, evaluate_unknown_presence, execute_mock_model,
@@ -165,8 +165,7 @@ fn delivered_alert_closes_verified_obligation() -> Result<(), Box<dyn Error>> {
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut journal,
         &mut provider,
     )?;
@@ -220,8 +219,7 @@ fn lost_ack_blocks_resend_until_provider_reconciliation() -> Result<(), Box<dyn 
         &authority,
         &objects,
         ReferenceProviderBehavior::LoseAckAfterDelivery,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut journal,
         &mut provider,
     )?;
@@ -234,8 +232,7 @@ fn lost_ack_blocks_resend_until_provider_reconciliation() -> Result<(), Box<dyn 
             &authority,
             &objects,
             ReferenceProviderBehavior::Deliver,
-            TimestampNs(103),
-            TimestampNs(104),
+            AlertDispatchTimes::new(TimestampNs(103), TimestampNs(104)),
             &mut journal,
             &mut provider,
         ),
@@ -271,8 +268,7 @@ fn known_pre_delivery_failure_never_creates_provider_message() -> Result<(), Box
         &authority,
         &objects,
         ReferenceProviderBehavior::FailBeforeDelivery,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut journal,
         &mut provider,
     )?;
@@ -875,8 +871,7 @@ fn stale_event_authority_cannot_dispatch_alert() -> Result<(), Box<dyn Error>> {
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut journal,
         &mut provider,
     );
@@ -907,8 +902,7 @@ fn stale_event_authority_cannot_dispatch_alert() -> Result<(), Box<dyn Error>> {
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(103),
-        TimestampNs(104),
+        AlertDispatchTimes::new(TimestampNs(103), TimestampNs(104)),
         &mut journal,
         &mut provider,
     );
@@ -1005,8 +999,7 @@ fn later_tamper_revision_vetoes_in_flight_alert_dispatch_p5b() -> Result<(), Box
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut journal,
         &mut provider,
     );
@@ -1038,8 +1031,7 @@ fn later_tamper_revision_vetoes_in_flight_alert_dispatch_p5b() -> Result<(), Box
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(103),
-        TimestampNs(104),
+        AlertDispatchTimes::new(TimestampNs(103), TimestampNs(104)),
         &mut journal,
         &mut provider,
     );
@@ -1086,8 +1078,7 @@ fn unrelated_observation_batch_still_delivers_alert_p6() -> Result<(), Box<dyn E
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut journal,
         &mut provider,
     )?;
@@ -1152,8 +1143,7 @@ fn refusal_at_or_before_prepare_time_cancels_op_and_obligation_p7() -> Result<()
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(50),
-        TimestampNs(60),
+        AlertDispatchTimes::new(TimestampNs(50), TimestampNs(60)),
         &mut journal,
         &mut provider,
     );
@@ -1273,8 +1263,7 @@ fn durable_dispatch_refuses_on_tamper_and_persists_cancelled_record_p8()
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(110),
-        TimestampNs(120),
+        AlertDispatchTimes::new(TimestampNs(110), TimestampNs(120)),
         &mut provider,
     );
     assert!(
@@ -1330,8 +1319,7 @@ fn durable_dispatch_refuses_on_tamper_and_persists_cancelled_record_p8()
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(200),
-        TimestampNs(210),
+        AlertDispatchTimes::new(TimestampNs(200), TimestampNs(210)),
         &mut provider,
     );
     assert!(
@@ -1383,8 +1371,7 @@ fn cancel_proof_binds_operation_id_and_both_anchors_p10() -> Result<(), Box<dyn 
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut journal,
         &mut provider,
     );
@@ -1553,8 +1540,7 @@ fn test_rewritten_plan_refused_on_in_memory_dispatch_x6() -> Result<(), Box<dyn 
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut journal,
         &mut provider,
     );
@@ -1629,8 +1615,7 @@ fn test_rewritten_plan_refused_on_durable_dispatch_x6() -> Result<(), Box<dyn Er
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut provider,
     );
 
@@ -1702,8 +1687,7 @@ fn test_tamper_before_dispatch_refused_and_cancels_x1() -> Result<(), Box<dyn Er
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut journal,
         &mut provider,
     );
@@ -1748,8 +1732,7 @@ fn test_cross_ledger_authority_refused_and_cancels_x2() -> Result<(), Box<dyn Er
         &authority_a,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut journal_b,
         &mut provider,
     );
@@ -1818,8 +1801,7 @@ fn test_crash_after_commit_recovery_requires_reconcile() -> Result<(), Box<dyn E
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(200),
-        TimestampNs(210),
+        AlertDispatchTimes::new(TimestampNs(200), TimestampNs(210)),
         &mut provider,
     );
     assert!(matches!(
@@ -1955,8 +1937,7 @@ fn test_crash_after_commit_blind_redispatch_refused_on_reboot() -> Result<(), Bo
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(200),
-        TimestampNs(210),
+        AlertDispatchTimes::new(TimestampNs(200), TimestampNs(210)),
         &mut provider,
     );
 
@@ -2025,8 +2006,7 @@ fn test_x7_mem_self_prepared_intent_on_tamper_revision() -> Result<(), Box<dyn E
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut journal,
         &mut provider,
     );
@@ -2106,8 +2086,7 @@ fn test_x7_dur_self_prepared_intent_on_tamper_revision() -> Result<(), Box<dyn E
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut provider,
     );
 
@@ -2188,8 +2167,7 @@ fn test_x7b_mem_self_prepared_on_uncorroborated_revision() -> Result<(), Box<dyn
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut journal,
         &mut provider,
     );
@@ -2264,8 +2242,7 @@ fn test_x7b_dur_self_prepared_on_uncorroborated_revision() -> Result<(), Box<dyn
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut provider,
     );
 
@@ -2319,8 +2296,7 @@ fn test_x2_stale_ledger_handle_after_tamper() -> Result<(), Box<dyn Error>> {
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut journal,
         &mut provider,
     );
@@ -2374,8 +2350,7 @@ fn test_x6b_mem_root_rewrite_without_request_digest_cancels_prepared_op()
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut journal,
         &mut provider,
     );
@@ -2394,8 +2369,7 @@ fn test_x6b_mem_root_rewrite_without_request_digest_cancels_prepared_op()
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(103),
-        TimestampNs(104),
+        AlertDispatchTimes::new(TimestampNs(103), TimestampNs(104)),
         &mut journal,
         &mut provider,
     );
@@ -2444,8 +2418,7 @@ fn test_m8_mismatched_obligation_id_refused_and_cancels() -> Result<(), Box<dyn 
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut journal,
         &mut provider,
     );
@@ -2514,8 +2487,7 @@ fn test_divergent_ledger_head_refused_and_cancels() -> Result<(), Box<dyn Error>
         &ledger_b,
         &objects_b,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut journal,
         &mut provider,
     );
@@ -2711,8 +2683,7 @@ fn forged_predicate_on_ineligible_revision(
             &authority,
             &objects,
             ReferenceProviderBehavior::Deliver,
-            TimestampNs(101),
-            TimestampNs(102),
+            AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
             &mut provider,
         );
         assert!(
@@ -2741,8 +2712,7 @@ fn forged_predicate_on_ineligible_revision(
             &authority,
             &objects,
             ReferenceProviderBehavior::Deliver,
-            TimestampNs(101),
-            TimestampNs(102),
+            AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
             &mut journal,
             &mut provider,
         );
@@ -2862,8 +2832,7 @@ fn authority_fault_case(
             &authority,
             &objects,
             ReferenceProviderBehavior::Deliver,
-            TimestampNs(101),
-            TimestampNs(102),
+            AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
             &mut provider,
         ) {
             Ok(receipt) => return Err(format!("{tag}: dispatch accepted: {receipt:?}").into()),
@@ -2876,8 +2845,7 @@ fn authority_fault_case(
             &authority,
             &objects,
             ReferenceProviderBehavior::Deliver,
-            TimestampNs(101),
-            TimestampNs(102),
+            AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
             &mut journal,
             &mut provider,
         ) {
@@ -2980,8 +2948,7 @@ fn test_m1_plan_intent_must_equal_prepared_intent() -> Result<(), Box<dyn Error>
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut journal,
         &mut provider,
     );
@@ -3021,8 +2988,7 @@ fn test_m1_rerouted_channel_plan_is_not_the_prepared_intent() -> Result<(), Box<
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut journal,
         &mut provider,
     );
@@ -3085,8 +3051,7 @@ fn test_m4_foreign_authority_anchor_refused() -> Result<(), Box<dyn Error>> {
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut journal,
         &mut provider,
     );
@@ -3131,10 +3096,9 @@ fn dispatch_self_prepared(
         let refusal = match journal.dispatch_alert(
             plan,
             authority,
-            &objects,
+            objects,
             ReferenceProviderBehavior::Deliver,
-            TimestampNs(101),
-            TimestampNs(102),
+            AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
             &mut provider,
         ) {
             Ok(receipt) => {
@@ -3164,10 +3128,9 @@ fn dispatch_self_prepared(
         match dispatch_reference_alert(
             plan,
             authority,
-            &objects,
+            objects,
             ReferenceProviderBehavior::Deliver,
-            TimestampNs(101),
-            TimestampNs(102),
+            AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
             &mut journal,
             &mut provider,
         ) {
@@ -3435,8 +3398,7 @@ fn head_rebinding_case(tag: &str, durable: bool) -> Result<(), Box<dyn Error>> {
             &authority,
             &objects,
             ReferenceProviderBehavior::Deliver,
-            TimestampNs(101),
-            TimestampNs(102),
+            AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
             &mut provider,
         );
         assert!(
@@ -3459,8 +3421,7 @@ fn head_rebinding_case(tag: &str, durable: bool) -> Result<(), Box<dyn Error>> {
             &authority,
             &objects,
             ReferenceProviderBehavior::Deliver,
-            TimestampNs(101),
-            TimestampNs(102),
+            AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
             &mut journal,
             &mut provider,
         );
@@ -4194,8 +4155,7 @@ fn cross_event_domain_tamper_refuses_dispatch_p6c() -> Result<(), Box<dyn Error>
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut journal,
         &mut provider,
     );
@@ -4279,8 +4239,7 @@ fn evidenced_restoration_reenables_dispatch_p6c() -> Result<(), Box<dyn Error>> 
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(201),
-        TimestampNs(202),
+        AlertDispatchTimes::new(TimestampNs(201), TimestampNs(202)),
         &mut journal,
         &mut provider,
     )?;
@@ -4343,8 +4302,7 @@ fn unrelated_domain_tamper_and_durable_path_p6c() -> Result<(), Box<dyn Error>> 
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut journal,
         &mut provider,
     )?;
@@ -4372,8 +4330,7 @@ fn unrelated_domain_tamper_and_durable_path_p6c() -> Result<(), Box<dyn Error>> 
         &authority,
         &objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(301),
-        TimestampNs(302),
+        AlertDispatchTimes::new(TimestampNs(301), TimestampNs(302)),
         &mut provider,
     );
     // The durable journal maps the revalidation refusal onto its contract error identity.
