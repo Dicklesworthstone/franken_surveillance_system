@@ -41,6 +41,15 @@ synthetic scenes). None of it has been measured on real camera footage.
   only; lost ack = indeterminate; no resend). Proven on synthetic scenes and a loopback relay
   only, not on real cameras or detection quality. `evaluation` scores candidates against labels (AUPRC, recall at a false-alert
   budget, time to detect, not_observable). No real labelled corpus exists yet.
+- **Coverage witnesses (fss-fnrgr):** every `fss-event watch` / `fss-event corroborate` report
+  proposes a coverage record: one fss-core `CoverageWitness` per (sensor, zone, maximal contiguous
+  interval) decoded without gap or skipped segment, past background warm-up (4 frames) and
+  confirmation latency, zone inside the frame (ground zones: every corner's image preimage),
+  capture time an operator hint and no source gap earlier in the import, bound to the exact
+  pipeline generation; every other frame is a typed uncovered interval (zone entries name their
+  event). Only `--retain-coverage <approval>` retains it (`coverage_witness` ledger family);
+  unknown capture time never yields a witness. Proven on synthetic MJPEG scenes only; the
+  witness certifies what the uncalibrated pipeline would have emitted, not detection quality.
 - **Models:** scalar executor over the FSS IR (Conv2d, MatMul, pooling, norms, activations) with
   Safetensors weights (`scalar_executor`, `fss-infer`). No trained detector package ships; the only
   trained weights are the OpenCV HOG people SVM (`fss-twin`), with no claimed recall.
@@ -63,10 +72,14 @@ synthetic scenes). None of it has been measured on real camera footage.
   exact `follow_stream` continuation (every page carries the full class set; protected items
   first; unknown, foreign, and ahead anchors and altered or wrong-stream continuations are typed
   refusals). Orientations now carry one local-state effect cell per durable operation, so a
-  prepared alert surfaces as protected obligation and effect-uncertainty classes. No silence
-  certificate is ever issued over an orientation: no CoverageWitness is retained, so the
-  persisting coverage gap stays protected `coverage_loss`. There is no long-lived subscription,
-  wake, or MCP transport; follow is one bounded read per call.
+  prepared alert surfaces as protected obligation and effect-uncertainty classes. Orient assesses
+  every objective zone as `covered`, `not_observable` or `stale` from retained coverage records
+  and is `complete` only when every zone is covered over its declared window; then a follow whose
+  basis and head are the same committed position returns the engine's silence certificate bound
+  to the witnesses. Across a ledger advance no silence is certified yet (the frame binds
+  commit-specific statements; drift entry in `architecture/agent_contracts.json`), and without
+  coverage the persisting gap stays protected `coverage_loss`. There is no long-lived
+  subscription, wake, or MCP transport; follow is one bounded read per call.
 
 Architectural deviations to resolve: device and alert I/O use blocking `std::net` rather than
 Asupersync (owner decision `fss-x4a.8.1` is open), and the workspace has zero third-party crates.

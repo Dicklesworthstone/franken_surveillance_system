@@ -17,7 +17,12 @@
 //! published candidate is reported, never republished.
 //!
 //! Synthetic scenes prove the wiring, not detection quality: foreground thresholds and zones are
-//! uncalibrated operator choices, and a missing candidate never certifies absence.
+//! uncalibrated operator choices, and a missing candidate never certifies absence by itself.
+//!
+//! Every analysis also proposes a [`CoverageRecord`] (see [`super::recorded_coverage`]): one
+//! `CoverageWitness` per (sensor, zone, maximal contiguous interval) the pipeline could actually
+//! see, and every other frame as an explicit uncovered interval. Like a candidate, the record
+//! becomes authority only through [`WatchReport::retain_coverage`] with its exact approval digest.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -37,6 +42,11 @@ use super::eventgen::{
     ZoneEventConfig, ZoneEventError, ZoneEventGenerator, ZoneObservation, ZoneSpec,
 };
 use super::foreground::{ForegroundConfig, ForegroundDetector, ForegroundError};
+use super::recorded_coverage::{
+    CoverageEntry, CoverageError, CoverageFrame, CoverageInput, CoverageRecord, CoverageSource,
+    CoverageStatus, CoverageZoneInput, approval_digest, build_coverage, check_approval,
+    coverage_status, pipeline_generation, retain_coverage,
+};
 use super::recorded_decode::h264::{DecoderLimits, RecordedH264Range, RecordedH264Request};
 use super::recorded_decode::h265::{
     DecoderLimits as H265DecoderLimits, RecordedH265Range, RecordedH265Request,
@@ -121,6 +131,8 @@ pub enum WatchError {
     Publication(Box<LocalPublicationError>),
     /// Retained custody could not be read or verified.
     Spool(SpoolError),
+    /// Coverage retention refusal (stale approval or storage).
+    Coverage(CoverageError),
 }
 
 impl WatchError {
@@ -134,6 +146,7 @@ impl WatchError {
             Self::StaleApproval(_) => "ERR-WATCH-APPROVAL-STALE-001",
             Self::Conflict => "ERR-IDEMPOTENCY-CONFLICT-001",
             Self::Decode(error) => error.stable_id(),
+            Self::Coverage(error) => error.stable_id(),
             _ => "ERR-WATCH-001",
         }
     }
@@ -173,6 +186,7 @@ impl fmt::Display for WatchError {
             Self::Object(e) => write!(f, "watch manifest: {e}"),
             Self::Publication(e) => write!(f, "watch publication: {e}"),
             Self::Spool(e) => write!(f, "watch custody: {e}"),
+            Self::Coverage(e) => write!(f, "watch coverage: {e}"),
         }
     }
 }
@@ -198,6 +212,7 @@ conversion!(ReferenceError, Reference);
 conversion!(ObjectError, Object);
 conversion!(LocalPublicationError, Publication);
 conversion!(SpoolError, Spool);
+conversion!(CoverageError, Coverage);
 impl From<FileIngestError> for WatchError {
     fn from(error: FileIngestError) -> Self {
         Self::Decode(Box::new(error.into()))
@@ -560,6 +575,43 @@ pub struct WatchReport {
     candidates: Vec<WatchCandidate>,
     analysis: Vec<u8>,
     decode_work_units: u64,
+    coverage: CoverageRecord,
+    coverage_status: CoverageStatus,
+}
+
+/// Decoder label of a retained media format, bound into coverage pipeline generations.
+#[must_use]
+pub fn media_decoder_label(media_format: &str) -> &'static str {
+    match media_format {
+        "mjpeg" => "mjpeg:fss-codec-mjpeg:luma",
+        "annexb" => "annexb:fss-codec-h264:idr-led-range:luma",
+        _ => "hevc:fss-codec-h265:irap-led-range:rasl-skipped:luma",
+    }
+}
+
+/// Detector and tracker parameters bound into a coverage pipeline generation, in fixed order.
+#[must_use]
+pub fn pipeline_parameters(
+    interpretation: ComponentInterpretation,
+    detector: &WatchDetectorConfig,
+    tracker: &WatchTrackerConfig,
+) -> Vec<u64> {
+    vec![
+        match interpretation {
+            ComponentInterpretation::Grayscale => 0,
+            ComponentInterpretation::YCbCr => 1,
+        },
+        u64::from(detector.base_threshold),
+        u64::from(detector.threshold_sigma),
+        u64::from(detector.learning_rate_num),
+        u64::from(detector.learning_rate_den),
+        detector.minimum_region_pixels as u64,
+        u64::from(tracker.confirmation_hits),
+        u64::from(tracker.maximum_missed_frames),
+        u64::from(tracker.minimum_iou_ppm),
+        PROCESS_NOISE.to_bits(),
+        MEASUREMENT_NOISE.to_bits(),
+    ]
 }
 
 enum FrameSource {
@@ -619,6 +671,9 @@ impl WatchReport {
         }
         let media_format = retained.manifest().format.clone();
         let import_root = retained.import_root();
+        let capture_time_label = retained.manifest().capture_time_label.clone();
+        let segment_gaps: Vec<bool> = spans.iter().map(|s| s.gap_before).collect();
+        let basis = deployment.current_anchor().clone();
         let mut source = match media_format.as_str() {
             "mjpeg" => FrameSource::Jpeg {
                 retained: Box::new(retained),
@@ -817,6 +872,20 @@ impl WatchReport {
         }
         let analysis = analysis_bytes(plan_digest, import_root, &frames, &candidates);
         let sensor = sensor.ok_or(WatchError::Limit)?;
+        let coverage = watch_coverage(&WatchCoverageContext {
+            plan,
+            import_root,
+            sensor: sensor.as_str(),
+            analysis_digest: ContentDigest::sha256(&analysis),
+            basis,
+            capture_time_label: &capture_time_label,
+            segment_gaps: &segment_gaps,
+            media_format: &media_format,
+            dimensions,
+            frames: &frames,
+            candidates: &candidates,
+        })?;
+        let coverage_status = coverage_status(deployment, &[&coverage])?;
         let mut prepared = Vec::with_capacity(candidates.len());
         for pending in candidates {
             checkpoint(cx, "recorded_watch:prepare")?;
@@ -856,7 +925,59 @@ impl WatchReport {
             candidates: prepared,
             analysis,
             decode_work_units,
+            coverage,
+            coverage_status,
         })
+    }
+
+    /// Proposed (or retained) coverage of this analysis.
+    #[must_use]
+    pub fn coverage(&self) -> &CoverageRecord {
+        &self.coverage
+    }
+
+    /// Retention state of [`Self::coverage`].
+    #[must_use]
+    pub fn coverage_status(&self) -> CoverageStatus {
+        self.coverage_status
+    }
+
+    /// Exact approval digest that retains [`Self::coverage`].
+    #[must_use]
+    pub fn coverage_approval(&self) -> ContentDigest {
+        approval_digest(&[&self.coverage])
+    }
+
+    /// Decoded frame size.
+    #[must_use]
+    pub fn dimensions(&self) -> [u32; 2] {
+        self.dimensions
+    }
+
+    /// Fails closed, before any write, when `approval` is neither this analysis's coverage
+    /// proposal nor the approval of its already retained coverage.
+    pub fn check_coverage_approval(
+        &self,
+        deployment: &ReferenceDeployment,
+        approval: ContentDigest,
+    ) -> Result<()> {
+        check_approval(deployment, &[&self.coverage], approval)?;
+        Ok(())
+    }
+
+    /// Retains this analysis's coverage record with its exact approval digest (or reports it as
+    /// already retained). Coverage is authority-plane evidence: nothing is written without the
+    /// approval, and an already retained analysis is never rewritten.
+    pub fn retain_coverage(
+        &mut self,
+        deployment: &mut ReferenceDeployment,
+        approval: ContentDigest,
+        cx: &ReplayCx,
+    ) -> Result<CoverageStatus> {
+        checkpoint(cx, "recorded_watch:coverage")?;
+        let status = retain_coverage(deployment, &[&self.coverage], approval, cx)?;
+        self.coverage_status = status;
+        Ok(status)
     }
 
     /// Plan identity.
@@ -957,6 +1078,18 @@ impl WatchReport {
     /// prefix) is echoed for prepared candidates; it grants nothing.
     #[must_use]
     pub fn to_json(&self, authority_sequence: u64, approve_hint: Option<&str>) -> String {
+        self.to_json_with_coverage(authority_sequence, approve_hint, None)
+    }
+
+    /// [`Self::to_json`] with an optional pre-rendered `coverage` JSON value appended as the
+    /// report's last member.
+    #[must_use]
+    pub fn to_json_with_coverage(
+        &self,
+        authority_sequence: u64,
+        approve_hint: Option<&str>,
+        coverage_json: Option<&str>,
+    ) -> String {
         let zones: Vec<String> = self
             .plan
             .zones
@@ -1031,7 +1164,7 @@ impl WatchReport {
                 "\"authority_sequence\":{},\"event_kind\":\"unclassified\",",
                 "\"event_state\":\"indeterminate\",\"calibrated\":false,\"corroborated\":false,",
                 "\"alert_authorized\":false,\"effects_authorized\":false,",
-                "\"absence_certifiable\":false,\"detection_quality_claim\":false}}"
+                "\"absence_certifiable\":false,\"detection_quality_claim\":false{}}}"
             ),
             self.plan.import_identity,
             self.import_root,
@@ -1054,6 +1187,7 @@ impl WatchReport {
             count(WatchStatus::Published),
             count(WatchStatus::AlreadyPublished),
             authority_sequence,
+            coverage_json.map_or_else(String::new, |json| format!(",\"coverage\":{json}")),
         )
     }
 }
@@ -1146,6 +1280,79 @@ impl FrameSource {
             }
         }
     }
+}
+
+struct WatchCoverageContext<'a> {
+    plan: &'a WatchPlan,
+    import_root: ContentDigest,
+    sensor: &'a str,
+    analysis_digest: ContentDigest,
+    basis: fss_core::LedgerAnchor,
+    capture_time_label: &'a str,
+    segment_gaps: &'a [bool],
+    media_format: &'a str,
+    dimensions: [u32; 2],
+    frames: &'a [WatchFrame],
+    candidates: &'a [PendingCandidate],
+}
+
+fn watch_coverage(context: &WatchCoverageContext<'_>) -> Result<CoverageRecord> {
+    let plan = context.plan;
+    let parameters = pipeline_parameters(plan.interpretation, &plan.detector, &plan.tracker);
+    let frames: Vec<CoverageFrame> = context
+        .frames
+        .iter()
+        .map(|frame| CoverageFrame {
+            segment: frame.segment,
+            capture: frame.capture,
+        })
+        .collect();
+    let mut zones = Vec::with_capacity(plan.zones.len());
+    for zone in &plan.zones {
+        let geometry = format!("{},{},{},{}", zone.x, zone.y, zone.width, zone.height);
+        let inside_frame = u64::from(zone.x) + u64::from(zone.width)
+            <= u64::from(context.dimensions[0])
+            && u64::from(zone.y) + u64::from(zone.height) <= u64::from(context.dimensions[1]);
+        let entries = context
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.zone_id == zone.zone_id)
+            .map(|candidate| CoverageEntry {
+                segment: candidate.entry_segment,
+                candidate: candidate.identity,
+                event_id: Some(format!("event:watch:{}", hex(candidate.identity))),
+            })
+            .collect();
+        zones.push(CoverageZoneInput {
+            zone_id: zone.zone_id.clone(),
+            pipeline_generation: pipeline_generation(
+                CoverageSource::Watch,
+                ContentDigest::sha256(POLICY),
+                media_decoder_label(context.media_format),
+                &parameters,
+                &zone.zone_id,
+                &geometry,
+            ),
+            geometry,
+            inside_frame,
+            entries,
+        });
+    }
+    Ok(build_coverage(&CoverageInput {
+        source: CoverageSource::Watch,
+        import_identity: plan.import_identity,
+        import_root: context.import_root,
+        sensor_id: context.sensor,
+        analysis_digest: context.analysis_digest,
+        basis: context.basis.clone(),
+        capture_time_label: context.capture_time_label,
+        segment_gaps: context.segment_gaps,
+        first_segment: plan.first_segment,
+        last_segment: plan.first_segment + plan.segment_count - 1,
+        frames: &frames,
+        confirmation_hits: plan.tracker.confirmation_hits,
+        zones,
+    })?)
 }
 
 struct PendingCandidate {

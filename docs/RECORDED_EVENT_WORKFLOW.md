@@ -4,7 +4,9 @@
 It builds complete replayable analysis reports, prepares an exact candidate, publishes only
 that approved candidate, and reopens the event and its provenance after a process restart.
 No pretrained model, calibrated detection quality, physical identity, threat classification,
-coverage certificate, notification transport, or effect authority is introduced.
+notification transport, or effect authority is introduced. Coverage witnesses exist only for
+`watch` and `corroborate`, and only when retained with their exact approval (see the last
+section).
 
 ## Build the complete report
 
@@ -169,7 +171,8 @@ writing; a different event under the same candidate identity is `ERR-IDEMPOTENCY
 
 Thresholds, zones and Kalman noise are uncalibrated operator/policy choices. The committed tests
 use synthetic MJPEG scenes and an FFmpeg `testsrc2` H.264 fixture: they prove the wiring and the
-authority path, not detection quality, and a run with no candidate never certifies absence.
+authority path, not detection quality, and a run with no candidate never certifies absence by
+itself (only a retained coverage witness does, over its exact domain).
 
 ## Two-sensor corroboration: `fss-event corroborate`
 
@@ -273,3 +276,60 @@ The committed tests (`crates/fss-cli/tests/corroborate_cli_contract.rs`) run the
 on generated MJPEG scenes (two mirrored views of one moving square) and a loopback relay owned
 by the test. They prove the wiring, the gates and the effect authority path, not detection
 quality or real-camera geometry; no corroborated event never certifies absence.
+
+## Coverage witnesses: `--retain-coverage`
+
+A missing candidate is not absence. What `watch` and `corroborate` can certify is narrower:
+over which interval each zone was actually observable by this exact pipeline. Every report
+carries a `coverage` member (`fss.recorded_watch_coverage.v1`; library
+`fss_reference::ingest::recorded_coverage`) proposing one record per analysed recording:
+
+- one fss-core `CoverageWitness` (rendered as `fss.coverage_witness.v1`) per (sensor, zone,
+  maximal contiguous interval) in which frames decoded continuously (no source gap, missing or
+  skipped RASL segment; a decode refusal refuses the whole run and retains nothing), the zone
+  lies inside the decoded frame (for a ground zone, every corner's image preimage through the
+  owner homography, in front of the camera), the background model is past its warm-up
+  (`BACKGROUND_WARMUP_FRAMES` = 4: the first frame initializes the mean, the next three the
+  variance), the tracker could still confirm a track before the run ends (the last
+  `confirmation_hits - 1` frames are confirmation latency), no zone entry was emitted, capture
+  time is an operator hint (`operator_assumption`), and no source gap precedes the frame in the
+  import (after a gap the frame index no longer predicts capture time). Unknown capture time
+  means no witness, never an assumed clock.
+- the witness's certain bounds run from the latest possible capture of its first frame to the
+  earliest possible capture of its last frame; a run whose bounds invert is `interval_too_short`.
+- the witness binds the basis authority anchor the analysis read, its domain
+  (`<source>:<sensor digest>:<scope>:<start>..<end>`), and a predicate naming the sensor, zone and
+  pipeline generation (`fss.recorded_watch_pipeline_generation.v1`: policy, decoder label,
+  detector and tracker parameters, owner homography for ground zones, warm-up, zone geometry).
+- every other frame is an explicit uncovered interval with its reason: `background_warmup`,
+  `confirmation_latency`, `zone_entry` (naming the candidate and the event it publishes),
+  `segment_not_decoded`, `capture_time_unknown`, `capture_time_unreliable_after_gap`,
+  `zone_outside_frame`, `interval_too_short`.
+
+```sh
+fss-event watch ... --zone door:64,0,32,32                                   # proposes
+fss-event watch ... --zone door:64,0,32,32 --retain-coverage sha256:APPROVAL # retains
+```
+
+Retained coverage is authority-plane evidence and follows the candidates' approval discipline:
+the analysis writes nothing; `--retain-coverage` must equal the report's `approval_digest`
+(which binds the record digests and so the basis anchor), checked before any write
+(`ERR-COVERAGE-APPROVAL-STALE-001` otherwise), and commits the record in one
+`coverage_witness` ledger batch. `--approve` alone never retains coverage; a run that publishes
+candidates re-proposes coverage against the new anchor. A rerun of a retained analysis reports
+`already_retained` and writes nothing. `corroborate` proposes one record per camera over its
+ground zones and retains both under one approval.
+
+`fss orient` then assesses every objective zone (every zone of a retained record and every zone
+a published event names): `stale` when the sensor has newer retained evidence than any analysis
+of the zone's current pipeline generation (older generations are never reused), `not_observable`
+when the freshest analysis has no witness or the current witnesses leave a hole that is not
+exactly a published event's entry frame, `covered` otherwise, with its declared window and the
+named gaps outside it. The capsule is `complete` only when every objective zone is covered; then
+`fss follow` since the anchor of such an orientation returns the engine's silence certificate,
+whose authorized domain names the witnesses (`fss://coverage/<witness digest>`). Across a ledger
+advance the engine still reports the commit-specific frame changes, so no silence is certified
+there yet. The committed tests
+(`crates/fss-cli/tests/coverage_cli_contract.rs`) cover the quiet scene, unknown capture time,
+a source gap, staleness after new evidence, a motion scene with its event, corroboration, and
+approval gating on synthetic MJPEG scenes; they prove the contract, not detection quality.

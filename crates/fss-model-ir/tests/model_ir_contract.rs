@@ -438,9 +438,11 @@ fn test_schema_domain_and_pinned_counts() -> Result<(), Box<dyn Error>> {
     // 86 = 78 + SCHEMA-DOMAIN-RECORDED-CORROBORATION-{PLAN,OBSERVATION,ASSOCIATION,PROPOSAL}-001,
     // SCHEMA-DOMAIN-REFERENCE-ZONE-ENTRY-POLICY-001 and
     // SCHEMA-DOMAIN-CLI-ALERT-{OPERATION,PLAN-APPROVAL,DISPATCH-APPROVAL}-001 (fss-2h5zq.61).
+    // 90 = 86 + SCHEMA-DOMAIN-RECORDED-WATCH-{COVERAGE,PIPELINE-GENERATION,COVERAGE-IDENTITY,
+    // COVERAGE-APPROVAL}-001 (fss-fnrgr).
     assert_eq!(
-        domain_count, 86,
-        "registries/DIGEST_DOMAINS.md count must remain pinned at 86"
+        domain_count, 90,
+        "registries/DIGEST_DOMAINS.md count must remain pinned at 90"
     );
 
     let schemas_path = Path::new(env!("CARGO_MANIFEST_DIR"))

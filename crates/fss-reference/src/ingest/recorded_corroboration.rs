@@ -22,7 +22,13 @@
 //! provenance is retained root-last and the deployment's guarded event publisher records the
 //! policy decision. A `PrepareAlert` affordance is reported, never acted on: preparing or
 //! dispatching an alert is a separate, separately approved effect. Synthetic scenes prove wiring,
-//! not detection quality; no candidate never certifies absence.
+//! not detection quality; no candidate never certifies absence by itself.
+//!
+//! Each camera also proposes a coverage record ([`super::recorded_coverage`]) over the ground
+//! zones whose every corner's image preimage lies inside its decoded frame: one witness per
+//! contiguous observable interval of that sensor, every ground-zone entry of that sensor an
+//! explicit interval naming its corroborated event when one exists. Both records are retained
+//! together only with their exact approval digest ([`CorroborationReport::retain_coverage`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -39,10 +45,15 @@ use super::cross_camera::{
     AssociationDisposition, AssociationScore, CameraObservation, CrossCameraConfig,
     CrossCameraError, associate_detailed,
 };
+use super::recorded_coverage::{
+    CoverageEntry, CoverageError, CoverageFrame, CoverageInput, CoverageRecord, CoverageSource,
+    CoverageStatus, CoverageZoneInput, approval_digest, build_coverage, check_approval,
+    coverage_status, pipeline_generation, retain_coverage,
+};
 use super::recorded_decode::{ComponentInterpretation, RecordedDecodeError, source_capsule};
 use super::recorded_watch::{
     MAX_WATCH_FRAMES, WatchDetectorConfig, WatchError, WatchLimits, WatchPlan, WatchReport,
-    WatchTrackerConfig, WatchZone,
+    WatchTrackerConfig, WatchZone, media_decoder_label, pipeline_parameters,
 };
 use super::{FileIngestError, RetainedFileImport};
 use crate::{
@@ -117,6 +128,8 @@ pub enum CorroborationError {
     Object(ObjectError),
     /// Root-last publication failed.
     Publication(Box<LocalPublicationError>),
+    /// Coverage retention refusal (stale approval or storage).
+    Coverage(CoverageError),
 }
 
 impl CorroborationError {
@@ -133,6 +146,7 @@ impl CorroborationError {
             Self::Conflict => "ERR-IDEMPOTENCY-CONFLICT-001",
             Self::Watch(error) => error.stable_id(),
             Self::Decode(error) => error.stable_id(),
+            Self::Coverage(error) => error.stable_id(),
             _ => "ERR-CORROBORATE-001",
         }
     }
@@ -169,6 +183,7 @@ impl fmt::Display for CorroborationError {
             Self::Contract(e) => write!(f, "corroboration contract: {e}"),
             Self::Object(e) => write!(f, "corroboration manifest: {e}"),
             Self::Publication(e) => write!(f, "corroboration publication: {e}"),
+            Self::Coverage(e) => write!(f, "corroboration coverage: {e}"),
         }
     }
 }
@@ -202,6 +217,11 @@ impl From<ReferenceError> for CorroborationError {
 impl From<ContractError> for CorroborationError {
     fn from(error: ContractError) -> Self {
         Self::Contract(error)
+    }
+}
+impl From<CoverageError> for CorroborationError {
+    fn from(error: CoverageError) -> Self {
+        Self::Coverage(error)
     }
 }
 impl From<ObjectError> for CorroborationError {
@@ -503,6 +523,10 @@ pub struct CameraSummary {
     /// Owner homography digest.
     pub homography_digest: ContentDigest,
     sensor_digest: ContentDigest,
+    coverage_frames: Vec<CoverageFrame>,
+    segment_gaps: Vec<bool>,
+    dimensions: [u32; 2],
+    media_format: String,
 }
 
 /// How one ground-zone entry fared in association.
@@ -648,6 +672,8 @@ pub struct CorroborationReport {
     cameras: Vec<CameraSummary>,
     entries: Vec<GroundEntry>,
     candidates: Vec<CorroborationCandidate>,
+    coverage: Vec<CoverageRecord>,
+    coverage_status: CoverageStatus,
 }
 
 struct CameraRun {
@@ -700,6 +726,20 @@ fn analyze_camera(
         });
     }
     let capture_span = span.ok_or(CorroborationError::Limit)?;
+    let segment_gaps: Vec<bool> = retained
+        .manifest()
+        .segment_spans
+        .iter()
+        .map(|s| s.gap_before)
+        .collect();
+    let coverage_frames: Vec<CoverageFrame> = report
+        .frames()
+        .iter()
+        .map(|frame| CoverageFrame {
+            segment: frame.segment,
+            capture: frame.capture,
+        })
+        .collect();
     let homography_digest = camera.homography.digest();
     let mut entries = Vec::new();
     let mut confirmed = BTreeSet::new();
@@ -784,6 +824,10 @@ fn analyze_camera(
             capture_span,
             homography_digest,
             sensor_digest,
+            coverage_frames,
+            segment_gaps,
+            dimensions: report.dimensions(),
+            media_format: report.media_format().to_owned(),
         },
         entries,
     })
@@ -952,13 +996,79 @@ impl CorroborationReport {
                 score,
             })?);
         }
+        let basis = deployment.current_anchor().clone();
+        let mut coverage = Vec::with_capacity(cameras.len());
+        for (index, camera) in cameras.iter().enumerate() {
+            coverage.push(camera_coverage(
+                &CameraCoverageContext {
+                    plan,
+                    plan_digest,
+                    entries: &entries,
+                    candidates: &candidates,
+                    basis: &basis,
+                },
+                index,
+                camera,
+            )?);
+        }
+        let status = coverage_status(deployment, &coverage.iter().collect::<Vec<_>>())?;
         Ok(Self {
             plan: plan.clone(),
             plan_digest,
             cameras,
             entries,
             candidates,
+            coverage,
+            coverage_status: status,
         })
+    }
+
+    /// Proposed (or retained) coverage, one record per camera in plan order.
+    #[must_use]
+    pub fn coverage(&self) -> &[CoverageRecord] {
+        &self.coverage
+    }
+
+    /// Retention state of [`Self::coverage`].
+    #[must_use]
+    pub fn coverage_status(&self) -> CoverageStatus {
+        self.coverage_status
+    }
+
+    /// Exact approval digest that retains both cameras' coverage records.
+    #[must_use]
+    pub fn coverage_approval(&self) -> ContentDigest {
+        approval_digest(&self.coverage.iter().collect::<Vec<_>>())
+    }
+
+    /// Fails closed, before any write, when `approval` is neither this analysis's coverage
+    /// proposal nor the approval of its already retained coverage.
+    pub fn check_coverage_approval(
+        &self,
+        deployment: &ReferenceDeployment,
+        approval: ContentDigest,
+    ) -> Result<()> {
+        check_approval(
+            deployment,
+            &self.coverage.iter().collect::<Vec<_>>(),
+            approval,
+        )?;
+        Ok(())
+    }
+
+    /// Retains both cameras' coverage records in one batch with their exact approval digest
+    /// (or reports them as already retained). Nothing is written without the approval.
+    pub fn retain_coverage(
+        &mut self,
+        deployment: &mut ReferenceDeployment,
+        approval: ContentDigest,
+        cx: &ReplayCx,
+    ) -> Result<CoverageStatus> {
+        checkpoint(cx, "recorded_corroboration:coverage")?;
+        let records: Vec<&CoverageRecord> = self.coverage.iter().collect();
+        let status = retain_coverage(deployment, &records, approval, cx)?;
+        self.coverage_status = status;
+        Ok(status)
     }
 
     /// Plan identity.
@@ -1052,6 +1162,19 @@ impl CorroborationReport {
         authority_sequence: u64,
         publish_hint: Option<&str>,
         alert_hint: Option<&str>,
+    ) -> String {
+        self.to_json_with_coverage(authority_sequence, publish_hint, alert_hint, None)
+    }
+
+    /// [`Self::to_json`] with an optional pre-rendered `coverage` JSON value appended as the
+    /// report's last member.
+    #[must_use]
+    pub fn to_json_with_coverage(
+        &self,
+        authority_sequence: u64,
+        publish_hint: Option<&str>,
+        alert_hint: Option<&str>,
+        coverage_json: Option<&str>,
     ) -> String {
         let cameras: Vec<String> = self
             .cameras
@@ -1199,7 +1322,7 @@ impl CorroborationReport {
                 "\"prepared_count\":{},\"published_count\":{},\"already_published_count\":{},",
                 "\"authority_sequence\":{},\"alert_prepared\":false,\"effects_authorized\":false,",
                 "\"calibrated\":false,\"absence_certifiable\":false,",
-                "\"detection_quality_claim\":false}}"
+                "\"detection_quality_claim\":false{}}}"
             ),
             self.plan_digest,
             ContentDigest::sha256(POLICY),
@@ -1214,8 +1337,142 @@ impl CorroborationReport {
             count(CorroborationStatus::Published),
             count(CorroborationStatus::AlreadyPublished),
             authority_sequence,
+            coverage_json.map_or_else(String::new, |json| format!(",\"coverage\":{json}")),
         )
     }
+}
+
+/// Whether every corner of `zone` has an image preimage in front of the camera and inside the
+/// decoded frame, so the whole zone is visible (the preimage quad is convex and does not cross
+/// the horizon). A non-invertible or horizon-crossing homography is not visible.
+fn ground_zone_visible(
+    homography: &GroundHomography,
+    zone: &GroundZone,
+    dimensions: [u32; 2],
+) -> bool {
+    let [a, b, c, d, e, f, g, h, i] = homography.matrix;
+    let det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+    if !det.is_finite() || det == 0.0 {
+        return false;
+    }
+    let inverse = [
+        (e * i - f * h) / det,
+        (c * h - b * i) / det,
+        (b * f - c * e) / det,
+        (f * g - d * i) / det,
+        (a * i - c * g) / det,
+        (c * d - a * f) / det,
+        (d * h - e * g) / det,
+        (b * g - a * h) / det,
+        (a * e - b * d) / det,
+    ];
+    let corners = [
+        (zone.x, zone.y),
+        (zone.x + zone.width, zone.y),
+        (zone.x, zone.y + zone.height),
+        (zone.x + zone.width, zone.y + zone.height),
+    ];
+    let [m11, m12, m13, m21, m22, m23, m31, m32, m33] = inverse;
+    corners.iter().all(|&(x, y)| {
+        let weight = m31 * x + m32 * y + m33;
+        if !weight.is_finite() || weight == 0.0 {
+            return false;
+        }
+        let column = (m11 * x + m12 * y + m13) / weight;
+        let row = (m21 * x + m22 * y + m23) / weight;
+        let inside = column.is_finite()
+            && row.is_finite()
+            && column >= 0.0
+            && row >= 0.0
+            && column <= f64::from(dimensions[0])
+            && row <= f64::from(dimensions[1]);
+        // The image point must project back, in front of the camera, onto the same ground point.
+        inside
+            && homography.project(column, row).is_some_and(|(gx, gy)| {
+                let tolerance = 1e-6 * (1.0 + x.abs().max(y.abs()));
+                (gx - x).abs() <= tolerance && (gy - y).abs() <= tolerance
+            })
+    })
+}
+
+struct CameraCoverageContext<'a> {
+    plan: &'a CorroborationPlan,
+    plan_digest: ContentDigest,
+    entries: &'a [GroundEntry],
+    candidates: &'a [CorroborationCandidate],
+    basis: &'a fss_core::LedgerAnchor,
+}
+
+fn camera_coverage(
+    context: &CameraCoverageContext<'_>,
+    index: usize,
+    camera: &CameraSummary,
+) -> Result<CoverageRecord> {
+    let plan = context.plan;
+    let homography = &plan.cameras[index].homography;
+    let mut parameters = pipeline_parameters(plan.interpretation, &plan.detector, &plan.tracker);
+    parameters.extend(homography.matrix.iter().map(|value| value.to_bits()));
+    let policy = ContentDigest::sha256(POLICY);
+    let mut zones = Vec::with_capacity(plan.zones.len());
+    for zone in &plan.zones {
+        let geometry = format!("{},{},{},{}", zone.x, zone.y, zone.width, zone.height);
+        let zone_entries = context
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.camera == index && entry.zone_id == zone.zone_id)
+            .map(|(position, entry)| CoverageEntry {
+                segment: entry.segment,
+                candidate: entry.record_digest,
+                event_id: context
+                    .candidates
+                    .iter()
+                    .find(|candidate| candidate.entries.contains(&position))
+                    .map(|candidate| candidate.event().event_id.as_str().to_owned()),
+            })
+            .collect();
+        zones.push(CoverageZoneInput {
+            zone_id: zone.zone_id.clone(),
+            pipeline_generation: pipeline_generation(
+                CoverageSource::Corroborate,
+                policy,
+                media_decoder_label(&camera.media_format),
+                &parameters,
+                &zone.zone_id,
+                &geometry,
+            ),
+            geometry,
+            inside_frame: ground_zone_visible(homography, zone, camera.dimensions),
+            entries: zone_entries,
+        });
+    }
+    let mut e = CanonicalEncoder::new();
+    e.text(PLAN_DOMAIN);
+    e.text("camera-coverage-analysis");
+    e.digest(context.plan_digest);
+    e.u64(index as u64);
+    e.digest(camera.watch_analysis_digest);
+    let analysis_digest = ContentDigest::sha256(&e.finish());
+    let last_segment = camera
+        .segment_gaps
+        .len()
+        .checked_sub(1)
+        .ok_or(CorroborationError::Limit)?;
+    Ok(build_coverage(&CoverageInput {
+        source: CoverageSource::Corroborate,
+        import_identity: camera.import_identity,
+        import_root: camera.import_root,
+        sensor_id: &camera.sensor_id,
+        analysis_digest,
+        basis: context.basis.clone(),
+        capture_time_label: OPERATOR_TIME_LABEL,
+        segment_gaps: &camera.segment_gaps,
+        first_segment: 0,
+        last_segment,
+        frames: &camera.coverage_frames,
+        confirmation_hits: plan.tracker.confirmation_hits,
+        zones,
+    })?)
 }
 
 struct CandidateContext<'a> {

@@ -6,7 +6,8 @@
 //! certificates), global cross-camera association under explicit time and distance gates, and the
 //! zone-entry policy. Without `--approve` nothing is written and each prepared candidate lists the
 //! exact rerun command that publishes it. With exact proposal digests it publishes those events;
-//! policy may report the `prepare_alert` affordance, but no alert is prepared here.
+//! policy may report the `prepare_alert` affordance, but no alert is prepared here. Each report
+//! also proposes one coverage record per camera; `--retain-coverage DIGEST` retains both exactly.
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -44,6 +45,7 @@ const OPTIONS: &[&str] = &[
     "--max-pixels",
     "--max-segment-bytes",
     "--approve",
+    "--retain-coverage",
     "--report-out",
 ];
 
@@ -56,6 +58,7 @@ pub(super) struct CorroborateAction {
     plan: CorroborationPlan,
     limits: WatchLimits,
     approvals: BTreeSet<ContentDigest>,
+    retain_coverage: Option<ContentDigest>,
     report_out: Option<PathBuf>,
     rerun: String,
 }
@@ -192,7 +195,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
             _ if values.iter().any(|(k, _)| k == key) => return Err(format!("duplicate {key}")),
             _ => values.push((key.to_owned(), argument.to_owned())),
         }
-        if key != "--approve" && key != "--report-out" {
+        if key != "--approve" && key != "--retain-coverage" && key != "--report-out" {
             rerun.push(quote(key));
             rerun.push(quote(argument));
         }
@@ -312,6 +315,10 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
         },
         limits,
         approvals,
+        retain_coverage: match find(&values, "--retain-coverage") {
+            Some(value) => Some(digest(value, "--retain-coverage")?),
+            None => None,
+        },
         report_out: find(&values, "--report-out").map(PathBuf::from),
         rerun: rerun.join(" "),
     })
@@ -326,18 +333,48 @@ pub(super) fn run(
     out: &mut impl Write,
 ) -> RunResult<()> {
     let mut report = CorroborationReport::analyze(deployment, &action.plan, &action.limits, cx)?;
-    if !action.approvals.is_empty() {
-        report.publish(deployment, &action.approvals, cx)?;
+    // Both approvals are checked against the fresh analysis before anything is written.
+    if let Some(approval) = action.retain_coverage {
+        report.check_coverage_approval(deployment, approval)?;
     }
+    let published = if action.approvals.is_empty() {
+        0
+    } else {
+        report.publish(deployment, &action.approvals, cx)?
+    };
+    if let Some(approval) = action.retain_coverage {
+        report.retain_coverage(deployment, approval, cx)?;
+    }
+    // A coverage proposal binds the authority anchor its analysis read; after this run published
+    // candidates, the proposal is recomputed against the new anchor so its approval is current.
+    let reproposed = if published > 0 && action.retain_coverage.is_none() {
+        Some(CorroborationReport::analyze(
+            deployment,
+            &action.plan,
+            &action.limits,
+            cx,
+        )?)
+    } else {
+        None
+    };
+    let proposal = reproposed.as_ref().unwrap_or(&report);
+    let records: Vec<_> = proposal.coverage().iter().collect();
+    let coverage = super::coverage::render(
+        &records,
+        proposal.coverage_status(),
+        proposal.coverage_approval(),
+        &action.rerun,
+    );
     let alert_hint = format!(
         "fss-event alert --root {} --site {}",
         quote(&action.root.to_string_lossy()),
         quote(&action.site)
     );
-    let json = report.to_json(
+    let json = report.to_json_with_coverage(
         deployment.current_anchor().commit_sequence,
         Some(&action.rerun),
         Some(&alert_hint),
+        Some(&coverage),
     );
     let json = format!("{json}\n");
     if let Some(path) = &action.report_out {

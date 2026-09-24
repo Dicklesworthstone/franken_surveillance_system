@@ -549,6 +549,8 @@ All stable error identities and normative recovery guidance cataloged from `regi
 | `ERR-CORROBORATE-SAME-SENSOR-001` | both recordings come from one sensor (or are one import); one failure domain can never corroborate itself | name recordings from two distinct sensors |
 | `ERR-CORROBORATE-TIME-UNALIGNED-001` | the two recordings' conservative capture spans do not overlap: clocks are unaligned or the recordings cover different periods | supply recordings of one period on an aligned time base or abstain |
 | `ERR-CORROBORATE-TIME-UNKNOWN-001` | a recording has no operator capture-time hint, so its capture time is unknown and cannot be aligned by assumption | re-import with explicit capture hints or abstain |
+| `ERR-COVERAGE-001` | a coverage record could not be built, validated, staged or committed (witness domain/predicate/generation mismatch, unknown capture time with a witness, storage refusal) | inspect the cause; retry only after repair; no absence is certified |
+| `ERR-COVERAGE-APPROVAL-STALE-001` | a '--retain-coverage' approval digest matches neither the fresh analysis's coverage proposal (which binds the authority anchor it read) nor the coverage already retained for that analysis; nothing was retained | rerun without the approval and review the current coverage approval digest |
 | `ERR-COVERAGE-UNKNOWN-001` | effective observability cannot be established | abstain/escalate health alert |
 | `ERR-DECODE-001` | media decode failed | preserve source; alternate decoder only if registered |
 | `ERR-DECODE-BOUNDS-001` | media exceeds declared bounds | fail closed |

@@ -20,10 +20,11 @@ use std::fmt::Write as _;
 
 use fss_core::{
     ActionAffordance, AffordanceClass, AgentCognitiveEnvelope, AgentOperation,
-    AgentResponseEnvelope, BudgetVector, ContentDigest, ContextItem, ContractBasis,
-    ControlEnvelope, KnowledgeCell, KnowledgeState, KnowledgeStateBasis, LedgerAnchor,
-    ObjectiveContract, OperationMode, PossibleWorld, ResourceState, SemanticCompressionReceipt,
-    SemanticContextPack, StaleBasis, WorldEnvelope,
+    AgentResponseEnvelope, BudgetVector, Completeness, ContentDigest, ContextItem, ContractBasis,
+    ControlEnvelope, CoverageContinuity, CoverageStopReason, CoverageWitness, KnowledgeCell,
+    KnowledgeState, KnowledgeStateBasis, LedgerAnchor, ObjectiveContract, OperationMode,
+    PossibleWorld, ResourceState, SemanticCompressionReceipt, SemanticContextPack, StaleBasis,
+    WorldEnvelope,
 };
 
 use crate::diagnostic::escape_json_str;
@@ -164,6 +165,50 @@ pub fn evidence_anchor(value: &LedgerAnchor) -> String {
         ("calibrationGeneration", "null".to_owned()),
         ("graphGeneration", "null".to_owned()),
         ("searchGeneration", "null".to_owned()),
+    ])
+}
+
+/// `CoverageWitness` as `fss.coverage_witness.v1`. Completeness maps `complete` to
+/// `complete_for_declared_domain`, `bounded`/`partial` to `partial`, and every other state to
+/// `uncertified`; the digest is the witness's own canonical digest.
+#[must_use]
+pub fn coverage_witness(value: &CoverageWitness) -> String {
+    object(&[
+        ("schema", string("fss.coverage_witness.v1")),
+        ("anchor", evidence_anchor(&value.anchor)),
+        ("authorizedDomain", set(&value.authorized_domain)),
+        ("observedDomain", set(&value.observed_domain)),
+        ("excludedDomain", set(&value.excluded_domain)),
+        (
+            "continuity",
+            string(match value.continuity {
+                CoverageContinuity::Continuous => "continuous",
+                CoverageContinuity::Gapped => "gapped",
+                CoverageContinuity::Unknown => "unknown",
+            }),
+        ),
+        (
+            "completeness",
+            string(match value.completeness {
+                Completeness::Complete => "complete_for_declared_domain",
+                Completeness::Bounded | Completeness::Partial => "partial",
+                _ => "uncertified",
+            }),
+        ),
+        ("negativePredicate", string(&value.negative_predicate)),
+        (
+            "stopReason",
+            string(match value.stop_reason {
+                CoverageStopReason::Complete => "complete",
+                CoverageStopReason::BudgetExhausted => "budget_exhausted",
+                CoverageStopReason::Cancelled => "cancelled",
+                CoverageStopReason::SourceGap => "source_gap",
+                CoverageStopReason::AuthorizationFiltered => "authorization_filtered",
+                CoverageStopReason::Unsupported => "unsupported",
+                CoverageStopReason::Error => "error",
+            }),
+        ),
+        ("witnessDigest", digest(value.witness_digest())),
     ])
 }
 

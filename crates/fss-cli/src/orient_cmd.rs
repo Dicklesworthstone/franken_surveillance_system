@@ -20,7 +20,8 @@ use fss_core::{
 use fss_reference::agent_orient::{
     AFFORDANCE_REORIENT, CAPABILITY_EXPLAIN, CAPABILITY_SITUATION_READ, DeploymentOrientation,
     DeploymentReadError, DeploymentSnapshot, EventExplanation, ORIENT_DATA_CLASSES, OrientError,
-    OrientLimits, OrientRequest, explain_event, orient_deployment, read_deployment,
+    OrientLimits, OrientRequest, ZoneCoverageState, explain_event, orient_deployment,
+    read_deployment,
 };
 
 use crate::agent_json;
@@ -486,6 +487,90 @@ pub(crate) fn contexts(
     )
 }
 
+/// Domains the frame cannot observe: the site outside retained evidence, and every objective zone
+/// that is not covered.
+fn not_observable_domains(orientation: &DeploymentOrientation) -> String {
+    let mut domains = vec!["site activity outside retained evidence".to_owned()];
+    if let Some(assessment) = &orientation.coverage {
+        domains.extend(
+            assessment
+                .zones
+                .iter()
+                .filter(|zone| zone.state != ZoneCoverageState::Covered)
+                .map(|zone| format!("{} ({})", zone.label(), zone.state.as_str())),
+        );
+    }
+    agent_json::strings(domains)
+}
+
+/// Registered bound of the frame's `coverage.gaps`.
+const MAX_FRAME_GAPS: usize = 512;
+
+/// Every gap when they fit the registered bound; otherwise the first 511 and one explicit
+/// statement of how many more exist and where they hydrate (never a silent drop).
+fn bounded_gaps(mut gaps: Vec<String>) -> Vec<String> {
+    if gaps.len() > MAX_FRAME_GAPS {
+        let more = gaps.len() - (MAX_FRAME_GAPS - 1);
+        gaps.truncate(MAX_FRAME_GAPS - 1);
+        gaps.push(format!(
+            "{more} further coverage gap(s) are named by the per-zone coverage knowledge cells."
+        ));
+    }
+    gaps
+}
+
+/// The frame's `coverage` block: `uncertified` without retained coverage, otherwise the declared
+/// domains of the covered zones, their witness digests, and every named gap.
+fn frame_coverage(orientation: &DeploymentOrientation) -> String {
+    let capsule = orientation.capsule();
+    let Some(assessment) = &orientation.coverage else {
+        return agent_json::object(&[
+            ("status", agent_json::string("uncertified")),
+            (
+                "domains",
+                agent_json::strings([capsule.anchor.site_lineage.as_str()]),
+            ),
+            ("witnessIds", "[]".to_owned()),
+            (
+                "gaps",
+                agent_json::strings(["No CoverageWitness is retained for the site."]),
+            ),
+            ("absenceClaimsCertified", "false".to_owned()),
+        ]);
+    };
+    let complete = assessment.complete();
+    let any_covered = assessment
+        .zones
+        .iter()
+        .any(|zone| zone.state == ZoneCoverageState::Covered);
+    let status = if complete {
+        "complete_for_declared_domain"
+    } else if any_covered {
+        "bounded_partial"
+    } else {
+        "not_observable"
+    };
+    let mut domains = assessment.declared_domains();
+    if domains.is_empty() {
+        domains.push(capsule.anchor.site_lineage.clone());
+    }
+    agent_json::object(&[
+        ("status", agent_json::string(status)),
+        ("domains", agent_json::strings(domains)),
+        (
+            "witnessIds",
+            agent_json::strings(
+                assessment
+                    .witness_digests()
+                    .into_iter()
+                    .map(ContentDigest::to_text),
+            ),
+        ),
+        ("gaps", agent_json::strings(bounded_gaps(assessment.gaps()))),
+        ("absenceClaimsCertified", complete.to_string()),
+    ])
+}
+
 /// The capsule's `situationFrame` as `fss.agent_situation_frame.v1`.
 fn situation_frame(orientation: &DeploymentOrientation) -> Result<String, RenderError> {
     let capsule = orientation.capsule();
@@ -569,26 +654,8 @@ fn situation_frame(orientation: &DeploymentOrientation) -> Result<String, Render
             agent_json::strings(&orientation.contradictions),
         ),
         ("unknowns", agent_json::strings(&frame.unknown)),
-        (
-            "notObservableDomains",
-            agent_json::strings(["site activity outside retained evidence"]),
-        ),
-        (
-            "coverage",
-            agent_json::object(&[
-                ("status", agent_json::string("uncertified")),
-                (
-                    "domains",
-                    agent_json::strings([capsule.anchor.site_lineage.as_str()]),
-                ),
-                ("witnessIds", "[]".to_owned()),
-                (
-                    "gaps",
-                    agent_json::strings(["No CoverageWitness is retained for the site."]),
-                ),
-                ("absenceClaimsCertified", "false".to_owned()),
-            ]),
-        ),
+        ("notObservableDomains", not_observable_domains(orientation)),
+        ("coverage", frame_coverage(orientation)),
         (
             "obligations",
             agent_json::strings(capsule.obligations.iter().map(|id| id.as_str())),
