@@ -873,11 +873,19 @@ fn resume_after_a_watch_event_lists_the_change_and_every_invalidated_assumption(
             .any(|line| line.starts_with("assumption assumption:anchor-current invalidated")),
         "{invalidated:?}"
     );
+    // The published event is an invalidated anchor-bound fact; the ledger-head restatement of
+    // the anchor is not (anchor_position_restatement), because the anchor assumption above already names the move.
     assert!(
         invalidated
             .iter()
+            .any(|line| line.starts_with("claim claim:deployment:events changed")),
+        "the new event is an invalidated anchor-bound fact: {invalidated:?}"
+    );
+    assert!(
+        !invalidated
+            .iter()
             .any(|line| line.starts_with("claim claim:deployment:ledger-head changed")),
-        "the ledger head is an invalidated anchor-bound fact: {invalidated:?}"
+        "{invalidated:?}"
     );
     assert!(
         stdout.contains(&event_id),

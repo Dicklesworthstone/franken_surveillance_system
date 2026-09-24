@@ -719,10 +719,10 @@ fn orient(root: &Path, view: &str) -> TestResult<(Json, String)> {
         assert_eq!(follow.get("robustnessClass")?.text()?, "wait_and_watch");
         let targets = follow.get("targets")?.texts()?;
         assert_eq!(targets.len(), 1);
-        assert!(
-            targets[0].ends_with(&format!("/follow/{token}")),
-            "{targets:?}"
-        );
+        // affordance_cost_repricing compares targets, so the target is anchor-invariant: the anchor followed from
+        // is this capsule's own, named by the single `anchor:` proof pointer above.
+        assert!(targets[0].ends_with("/follow"), "{targets:?}");
+        assert!(!targets[0].contains(&token), "{targets:?}");
     }
     Ok((envelope, token))
 }
@@ -883,7 +883,9 @@ fn follow_since_an_empty_orientation_names_the_new_unresolved_event() -> TestRes
         "{statement}"
     );
     assert!(statement.contains(&event_id), "{statement}");
-    assert!(cell_ids(delta)?.contains(&"claim:deployment:ledger-head"));
+    // anchor_position_restatement: the ledger-head restatement of the anchor is never a changed cell; the delta
+    // carries the advance as its typed result anchor.
+    assert!(!cell_ids(delta)?.contains(&"claim:deployment:ledger-head"));
     // A single page: nothing continues, nothing is coalesced or omitted.
     assert_eq!(envelope.get("continuation")?, &Json::Null);
     assert_eq!(envelope.get("recoveryClass")?.text()?, "safe_read_retry");
@@ -1104,6 +1106,10 @@ fn small_budgets_page_every_item_through_bound_continuations() -> TestResult {
         assert_eq!(page.get("deltaId")?, full.get("deltaId")?);
         assert_eq!(page.get("classes")?.texts()?, classes);
         assert_eq!(page.get("priority")?, full.get("priority")?);
+        // followPageProjection: pagination is delivery, never coalescing or omission, so every
+        // page keeps the engine's own counts.
+        assert_eq!(page.get("coalescedCount")?, full.get("coalescedCount")?);
+        assert_eq!(page.get("omittedCount")?, full.get("omittedCount")?);
         let mut items = 0;
         for list in LISTS {
             for text in page.get(list)?.texts()? {

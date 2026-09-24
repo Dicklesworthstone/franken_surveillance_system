@@ -18,7 +18,10 @@
 //! 6. corroborate retains one record per camera over the visible ground zone;
 //! 7. every answer validates against its registered schema (`scripts/json_instance_validate.py`),
 //!    every witness against `coverage_witness.v1`, output is deterministic, and orient/follow
-//!    leave the deployment tree byte-identical.
+//!    leave the deployment tree byte-identical;
+//! 8. across a harmless successor commit (an `fss-file decode` receipt) follow still returns the
+//!    engine's silence certificate (the registered `meaningfulDeltaComparison` rules), while a
+//!    material successor (newer unanalysed evidence) returns protected coverage loss.
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -1231,5 +1234,116 @@ fn corroborate_retains_one_record_per_camera_over_the_visible_ground_zone() -> T
     );
     let (_, oriented, _) = orient(&root, &directory.0, "corroborate coverage")?;
     assert_eq!(zone_cells(&oriented, ":ground-zone:door")?.len(), 2);
+    Ok(())
+}
+
+/// Decodes one retained segment with `fss-file decode`: the derived decode receipt commits one
+/// authority batch that retains no source evidence, coverage, event, or effect. Returns the
+/// authority sequence it committed at.
+fn decode_segment(root: &Path, import_id: &str) -> TestResult<u64> {
+    let output = Command::new(env!("CARGO_BIN_EXE_fss-file"))
+        .arg("decode")
+        .arg("--root")
+        .arg(root)
+        .args(["--site", SITE])
+        .args([
+            "--import-id",
+            import_id,
+            "--segment",
+            "5",
+            "--interpretation",
+            "gray",
+        ])
+        .output()?;
+    success(&output);
+    Ok(String::from_utf8(output.stdout)?
+        .lines()
+        .find_map(|line| line.strip_prefix("decode_authority_sequence="))
+        .ok_or("decode authority sequence missing")?
+        .parse()?)
+}
+
+#[test]
+fn a_harmless_successor_commit_keeps_certified_silence_and_a_material_one_does_not() -> TestResult {
+    let directory = OwnedDirectory::new("harmless")?;
+    let root = directory.root();
+    let id = import(
+        &directory,
+        "harmless",
+        &scene(Scene::Quiet(40), None)?,
+        "sensor:harmless",
+        Some("1000000000"),
+    )?;
+    let preview = report(&watch(&root, &id, &[])?)?;
+    let coverage = preview.get("coverage")?;
+    let digests = assert_witnesses_conform(coverage, &directory.0, "harmless witness")?;
+    assert_eq!(digests.len(), 1);
+    let approval = coverage.get("approval_digest")?.text()?.to_owned();
+    report(&watch(&root, &id, &["--retain-coverage", &approval])?)?;
+    let (_, oriented, token) = orient(&root, &directory.0, "harmless covered")?;
+    assert_eq!(oriented.get("completeness")?.text()?, "complete");
+    let covered_at = oriented
+        .path(&["inputAnchor", "capsuleSequence"])?
+        .number()?;
+
+    // A harmless successor commit: the ledger head advances, nothing decision-relevant changes.
+    let decoded_at = decode_segment(&root, &id)?;
+    assert!(decoded_at > covered_at, "{decoded_at} > {covered_at}");
+    let (_, head, head_token) = orient(&root, &directory.0, "harmless head")?;
+    assert_ne!(head_token, token, "the anchor advanced");
+    assert_eq!(head.get("completeness")?.text()?, "complete");
+    assert_eq!(
+        head.path(&["inputAnchor", "capsuleSequence"])?.number()?,
+        decoded_at
+    );
+
+    // Follow across the advance: the engine certifies silence, bound to the retained witness.
+    let (followed, delta) = follow(&root, &token, &directory.0, "harmless silence")?;
+    let payload = delta.get("payload")?;
+    assert_eq!(
+        payload
+            .path(&["basisAnchor", "capsuleSequence"])?
+            .number()?,
+        covered_at
+    );
+    assert_eq!(
+        payload
+            .path(&["resultAnchor", "capsuleSequence"])?
+            .number()?,
+        decoded_at
+    );
+    assert_eq!(
+        payload.get("classes")?.texts()?,
+        vec!["no_meaningful_change"]
+    );
+    assert_eq!(payload.get("priority")?.text()?, "low");
+    assert!(payload.get("changedCells")?.items()?.is_empty());
+    let certificate = payload.get("silenceCertificate")?;
+    assert_ne!(certificate, &Json::Null);
+    let domain = certificate.get("authorizedDomain")?.texts()?;
+    assert!(
+        domain.contains(&format!("fss://coverage/{}", digests[0]).as_str()),
+        "{domain:?}"
+    );
+    let (again, _) = follow(&root, &token, &directory.0, "harmless silence again")?;
+    assert_eq!(again, followed, "byte-identical follow");
+
+    // A material successor: newer evidence of the same sensor, not analysed, makes the witness
+    // stale, and the same follow now reports protected coverage loss instead of silence.
+    import(
+        &directory,
+        "harmless-later",
+        &scene(Scene::Quiet(60), None)?,
+        "sensor:harmless",
+        Some("3000000000"),
+    )?;
+    let (_, material) = follow(&root, &token, &directory.0, "material")?;
+    let payload = material.get("payload")?;
+    assert_eq!(payload.get("silenceCertificate")?, &Json::Null);
+    let classes = payload.get("classes")?.texts()?;
+    assert!(classes.contains(&"coverage_loss"), "{classes:?}");
+    assert!(!classes.contains(&"no_meaningful_change"), "{classes:?}");
+    let (_, stale, _) = orient(&root, &directory.0, "material head")?;
+    assert_eq!(state(zone_cell(&stale, ":zone:door")?)?, "stale");
     Ok(())
 }

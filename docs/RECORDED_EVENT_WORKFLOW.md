@@ -320,16 +320,21 @@ candidates re-proposes coverage against the new anchor. A rerun of a retained an
 `already_retained` and writes nothing. `corroborate` proposes one record per camera over its
 ground zones and retains both under one approval.
 
-`fss orient` then assesses every objective zone (every zone of a retained record and every zone
+`fss session orient` (alias `fss orient`) then assesses every objective zone (every zone of a retained record and every zone
 a published event names): `stale` when the sensor has newer retained evidence than any analysis
 of the zone's current pipeline generation (older generations are never reused), `not_observable`
 when the freshest analysis has no witness or the current witnesses leave a hole that is not
 exactly a published event's entry frame, `covered` otherwise, with its declared window and the
 named gaps outside it. The capsule is `complete` only when every objective zone is covered; then
-`fss follow` since the anchor of such an orientation returns the engine's silence certificate,
-whose authorized domain names the witnesses (`fss://coverage/<witness digest>`). Across a ledger
-advance the engine still reports the commit-specific frame changes, so no silence is certified
-there yet. The committed tests
+`fss session follow` (alias `fss follow`) since the anchor of such an orientation returns the
+engine's silence certificate, whose authorized domain names the witnesses
+(`fss://coverage/<witness digest>`). That holds across a harmless ledger advance too (for example
+an `fss-file decode` receipt): the engine compares decision semantics under the registered
+`meaningfulDeltaComparison` rules (`architecture/agent_contracts.json`), so the ledger-head
+restatement and re-priced affordance costs are not changes, and orient cites the last batch that
+changed each fact's inputs rather than the head. Newer unanalysed evidence still ends the silence
+as protected coverage loss. The committed tests
 (`crates/fss-cli/tests/coverage_cli_contract.rs`) cover the quiet scene, unknown capture time,
-a source gap, staleness after new evidence, a motion scene with its event, corroboration, and
-approval gating on synthetic MJPEG scenes; they prove the contract, not detection quality.
+a source gap, staleness after new evidence, a motion scene with its event, corroboration,
+approval gating, and silence across a harmless successor commit on synthetic MJPEG scenes; they
+prove the contract, not detection quality.

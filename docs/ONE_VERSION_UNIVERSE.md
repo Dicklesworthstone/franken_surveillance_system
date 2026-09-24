@@ -1,8 +1,8 @@
 # One version universe and the `EvidenceDeltaBatch`
 
 **Document class:** normative state architecture
-**Revision:** 1
-**Date:** 2026-08-31
+**Revision:** 2
+**Date:** 2026-09-24
 **Schema:** [`../schemas/evidence_delta_batch.v1.json`](../schemas/evidence_delta_batch.v1.json)
 
 ## 1. Thesis
@@ -27,6 +27,28 @@ state_root
 ```
 
 Optional cognition roots—graph, search, model-result, calibration, twin—name the exact anchor high-water mark they consumed. A derived generation cannot masquerade as current beyond that mark.
+
+The fields above are the committed **authority anchor** (`LedgerAnchor` in `fss-core`): what every
+`EvidenceDeltaBatch` commits and what the ledger replays. Agent answers publish its public
+projection, [`../schemas/evidence_anchor.v1.json`](../schemas/evidence_anchor.v1.json). By the
+truth hierarchy the schema governs the public shape; the projection is registered field by field
+in `evidenceAnchorProjection` (`architecture/agent_contracts.json`, mirrored in
+`registries/AGENT_CONTRACTS.md`) and checked by `scripts/architecture_registry_consistency.py`:
+
+| `evidence_anchor.v1` field | Authority-anchor source |
+|---|---|
+| `deploymentId` | `site_lineage` |
+| `observationEpoch` | `ledger_epoch` |
+| `capsuleSequence` | `commit_sequence` |
+| `authorityRoot` | `state_root` |
+| `adapterEpoch` | `adapter_registry_epoch` |
+| `schemaEpoch` | `schema_epoch` |
+| `policyEpoch` | `policy_epoch` |
+| `deviceGeneration`, `streamGeneration` | typed not-applicable sentinel `fss-na:…` (a deployment-scope anchor pins every device and stream generation through its commit but names no single one) |
+| `modelGeneration`, `calibrationGeneration`, `graphGeneration`, `searchGeneration` | `null` unless the answer consumed that generation |
+
+`privacy_epoch` has no slot in the public anchor; an answer carries it as its privacy projection's
+`policyGenerationId` (`privacy-epoch:<n>`).
 
 ## 3. Delta batch
 

@@ -889,5 +889,86 @@ class TestAgentContractDriftRecords(unittest.TestCase):
             self.assertFalse(is_valid)
             self.assertTrue(any(f.code == ERR_CONTRADICTED_METADATA and "duplicate drift" in f.message for f in findings))
 
+    def test_live_resolved_drifts_carry_resolutions(self) -> None:
+        raw = json.loads((ROOT / "architecture/agent_contracts.json").read_text(encoding="utf-8"))
+        resolved = [d for d in raw["drifts"] if d["status"] == "resolved"]
+        self.assertGreater(len(resolved), 0)
+        for drift in resolved:
+            self.assertTrue(drift.get("resolution", "").strip(), drift["target"])
+        for key in ("meaningfulDeltaComparison", "evidenceAnchorProjection", "consequenceSeverityScale", "attentionScales", "worldPlausibilityRule", "viewSectionCarriers", "followPageProjection"):
+            self.assertIn(key, raw)
+
+    def test_resolved_drift_without_resolution_fails_closed(self) -> None:
+        def mutate(raw) -> None:
+            drift = next(d for d in raw["drifts"] if d["status"] == "resolved")
+            drift["resolution"] = " "
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = create_mock_repo(Path(td))
+            self._write_agent_contracts(repo, mutate)
+            is_valid, findings, _ = validate_consistency(repo)
+            self.assertFalse(is_valid)
+            self.assertTrue(any(f.code == ERR_CORRUPT_FILE and f.location.endswith("/resolution") for f in findings))
+
+    def test_consequence_scale_diverging_from_renderer_fails_closed(self) -> None:
+        def mutate(raw) -> None:
+            raw["consequenceSeverityScale"]["levels"][3]["consequenceClass"] = "high"
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = create_mock_repo(Path(td))
+            self._write_agent_contracts(repo, mutate)
+            is_valid, findings, _ = validate_consistency(repo)
+            self.assertFalse(is_valid)
+            self.assertTrue(any(f.code == ERR_CONTRADICTED_METADATA and f.location == "#/consequenceSeverityScale/levels/3" for f in findings))
+
+    def test_anchor_projection_missing_a_schema_field_fails_closed(self) -> None:
+        def mutate(raw) -> None:
+            raw["evidenceAnchorProjection"]["fields"] = [
+                f for f in raw["evidenceAnchorProjection"]["fields"] if f["schemaField"] != "policyEpoch"
+            ]
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = create_mock_repo(Path(td))
+            self._write_agent_contracts(repo, mutate)
+            is_valid, findings, _ = validate_consistency(repo)
+            self.assertFalse(is_valid)
+            self.assertTrue(any(f.code == ERR_CONTRADICTED_METADATA and f.location == "#/evidenceAnchorProjection/fields" for f in findings))
+
+    def test_anchor_projection_wrong_source_fails_closed(self) -> None:
+        def mutate(raw) -> None:
+            for field in raw["evidenceAnchorProjection"]["fields"]:
+                if field["schemaField"] == "observationEpoch":
+                    field["source"] = "privacy_epoch"
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = create_mock_repo(Path(td))
+            self._write_agent_contracts(repo, mutate)
+            is_valid, findings, _ = validate_consistency(repo)
+            self.assertFalse(is_valid)
+            self.assertTrue(any(f.code == ERR_CONTRADICTED_METADATA and f.location.startswith("#/evidenceAnchorProjection/fields/") for f in findings))
+
+    def test_view_carriers_missing_a_required_section_fails_closed(self) -> None:
+        def mutate(raw) -> None:
+            raw["viewSectionCarriers"]["AVIEW-002"].pop("atRisk")
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = create_mock_repo(Path(td))
+            self._write_agent_contracts(repo, mutate)
+            is_valid, findings, _ = validate_consistency(repo)
+            self.assertFalse(is_valid)
+            self.assertTrue(any(f.code == ERR_CONTRADICTED_METADATA and f.location == "#/viewSectionCarriers/AVIEW-002" for f in findings))
+
+    def test_unknown_anchor_position_claim_fails_closed(self) -> None:
+        def mutate(raw) -> None:
+            raw["meaningfulDeltaComparison"]["rules"][0]["claims"] = ["claim:deployment:not-emitted"]
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = create_mock_repo(Path(td))
+            self._write_agent_contracts(repo, mutate)
+            is_valid, findings, _ = validate_consistency(repo)
+            self.assertFalse(is_valid)
+            self.assertTrue(any(f.code == ERR_CONTRADICTED_METADATA and f.location == "#/meaningfulDeltaComparison/rules/0/claims" for f in findings))
+
+
 if __name__ == "__main__":
     unittest.main()

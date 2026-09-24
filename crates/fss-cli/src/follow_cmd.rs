@@ -116,7 +116,7 @@ pub fn parse_follow_args(tokens: &[ArgToken]) -> Result<FollowArgs, CliError> {
             "--since",
             raw,
             "anchor token must be `anchor:<site>:<commit>:<e<records>|none>:<binding>` exactly as \
-             `fss orient` emits it",
+             `fss session orient` emits it",
             *index,
         )
     })?;
@@ -550,7 +550,7 @@ fn anchor_refusal(refusal: AnchorRefusal, since: &AnchorToken) -> Refusal {
     Refusal {
         error_id,
         reason,
-        guidance: "Orient this root (`fss orient --json --root <dir>`) and follow from the anchor \
+        guidance: "Orient this root (`fss session orient --json --root <dir>`) and follow from the anchor \
                    token it emits.",
         recovery_class: "rebase_required",
         safe_retry: ResponseSafeRetry::YesAfterRefresh,
