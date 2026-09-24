@@ -5,8 +5,9 @@ per decoded frame, computed by the sealed laboratory oracle: FFmpeg decodes
 the stream to packed planar I420 (`yuv420p` rawvideo: Y, then Cb, then Cr,
 no padding) and hashes each frame in FFmpeg's OUTPUT (display) order.
 `tests/decode_conformance.rs` requires the Rust decoder to reproduce every
-digest in the same order, the frame count and the frame size exactly, and
-checks that POC increases in output order. The Rust tests never run FFmpeg, and no expected
+digest in the same order, the frame count and the frame size exactly; for
+B-frame streams it also checks that output order differs from decode order
+and that POC increases. The Rust tests never run FFmpeg, and no expected
 value is derived from this crate's output.
 
 Only synthetic `testsrc2` / `mandelbrot` scenes (optionally with FFmpeg's
@@ -50,17 +51,23 @@ parameters are given in full, `threads=1:lookahead_threads=1:scenecut=0`):
 | `m_ip_cabac_qp40` | Main | 128x96 | 5 | CABAC at QP 40, `mandelbrot` source |
 | `m_ip_cabac_weightp` | Main | 128x96 | 6 | explicit weighted P prediction (`weightp=2` on a fade) |
 | `m_ip_cabac_constrained` | Main | 128x96 | 3 | CABAC + constrained intra, intra MBs in P slices |
+| `m_b_spatial` | Main | 176x144 | 10 | B slices, spatial direct, default bi-averaging (`weightb=0`) |
+| `m_b_temporal` | Main | 176x144 | 10 | temporal direct, implicit bi-prediction weights |
+| `m_b_pyramid_ref3` | Main | 176x144 | 12 | `bframes=3`, B pyramid (reference B pictures), MMCO 1, `ref=3` |
+| `m_b_implicit_weight` | Main | 128x96 | 9 | temporal direct + implicit weights on a fade, MMCO 1 |
+| `m_b_cavlc` | Main | 176x144 | 9 | B slices with CAVLC (`cabac=0`), B pyramid |
+| `m_b_pocwrap_64x48` | Main | 64x48 | 24 | `pic_order_cnt_lsb` wraparound (32-value range), non-reference B |
 
 Coverage gaps the encoder cannot produce, and how they are covered instead:
 
 - `cabac_init_idc` 1 and 2: libx264 always writes 0. The context
   initialisation tables for all three values are checked against
   hand-typed rows of Tables 9-12/9-13 in `src/cabac.rs` unit tests.
-- Long-term reference pictures and MMCO: libx264 (through FFmpeg) emits
-  no long-term references, and MMCO only with B pyramids (next stage).
-  `tests/hostile_input.rs` decodes a hand-assembled stream with an IDR
-  marked long-term, a `modification_of_pic_nums_idc == 2` selection and
-  MMCO 2, with hand-computed pixels.
+- Long-term reference pictures and MMCO 2..6: libx264 (through FFmpeg)
+  never emits them. `tests/hostile_input.rs` decodes a hand-assembled stream
+  with an IDR marked long-term, a `modification_of_pic_nums_idc == 2`
+  selection and MMCO 2, with hand-computed pixels. MMCO 1 is exercised by
+  the B-pyramid fixtures above.
 - CABAC I_PCM: libx264 does not emit I_PCM (the CAVLC path is covered by
   `pcm_mixed`).
 

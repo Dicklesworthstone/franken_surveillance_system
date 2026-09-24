@@ -100,7 +100,19 @@ fn locate_mismatch(name: &str, index: usize, picture: &Picture) -> String {
     }
 }
 
+/// Output order of a decode: identical to decode order, or reordered
+/// (B pictures), which the digest sequence then pins down.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Order {
+    Decode,
+    Reordered,
+}
+
 fn check(name: &str, stream: &[u8], oracle: &str) {
+    check_order(name, stream, oracle, Order::Decode);
+}
+
+fn check_order(name: &str, stream: &[u8], oracle: &str, order: Order) {
     let expected = parse_oracle(oracle);
     assert!(!expected.is_empty(), "{name}: empty oracle");
     let pictures = decode_stream(stream);
@@ -117,7 +129,9 @@ fn check(name: &str, stream: &[u8], oracle: &str) {
             frame.sha256,
             locate_mismatch(name, index, picture)
         );
-        assert_eq!(picture.decode_index(), index as u64);
+        if order == Order::Decode {
+            assert_eq!(picture.decode_index(), index as u64);
+        }
     }
     // Output order is display order: every decode index appears exactly
     // once, and POC increases within each IDR period.
@@ -133,16 +147,29 @@ fn check(name: &str, stream: &[u8], oracle: &str) {
             assert!(pair[0].poc() < pair[1].poc(), "{name}: POC order {pair:?}");
         }
     }
+    if order == Order::Reordered {
+        assert!(
+            pictures
+                .iter()
+                .enumerate()
+                .any(|(index, p)| p.decode_index() != index as u64),
+            "{name}: expected a stream whose output order differs from decode order"
+        );
+    }
 }
 
 macro_rules! oracle_test {
     ($test:ident, $name:literal) => {
+        oracle_test!($test, $name, Order::Decode);
+    };
+    ($test:ident, $name:literal, $order:expr) => {
         #[test]
         fn $test() {
-            check(
+            check_order(
                 $name,
                 include_bytes!(concat!("fixtures/decode/", $name, ".h264")),
                 include_str!(concat!("fixtures/decode/", $name, ".sha256")),
+                $order,
             );
         }
     };
@@ -191,6 +218,34 @@ oracle_test!(
 oracle_test!(
     main_cabac_constrained_intra_bit_exact,
     "m_ip_cabac_constrained"
+);
+
+// ----- Main profile, stage 2: B slices, display-order output -----
+oracle_test!(
+    main_b_spatial_direct_bit_exact,
+    "m_b_spatial",
+    Order::Reordered
+);
+oracle_test!(
+    main_b_temporal_direct_implicit_weights_bit_exact,
+    "m_b_temporal",
+    Order::Reordered
+);
+oracle_test!(
+    main_b_pyramid_mmco_ref3_bit_exact,
+    "m_b_pyramid_ref3",
+    Order::Reordered
+);
+oracle_test!(
+    main_b_implicit_weight_fade_bit_exact,
+    "m_b_implicit_weight",
+    Order::Reordered
+);
+oracle_test!(main_b_cavlc_bit_exact, "m_b_cavlc", Order::Reordered);
+oracle_test!(
+    main_b_poc_lsb_wraparound_bit_exact,
+    "m_b_pocwrap_64x48",
+    Order::Reordered
 );
 
 /// The POC-type-0 rewrite writes pic_order_cnt_lsb = 2 * (pictures since
@@ -264,21 +319,42 @@ fn cropped_dimensions_and_plane_sizes() {
     assert!(pictures[1..].iter().all(|p| !p.is_idr()));
 }
 
-/// NAL-by-NAL feeding yields the same pictures as whole-buffer feeding.
+/// NAL-by-NAL feeding yields the same pictures as whole-buffer feeding,
+/// for a decode-order stream and for a reordering B-pyramid stream.
 #[test]
 fn nal_by_nal_matches_annex_b() {
-    let stream = include_bytes!("fixtures/decode/ip_qcif_slices3.h264");
-    let whole = decode_stream(stream);
-    let mut decoder = Decoder::new(DecoderLimits::default()).unwrap();
-    let mut pieces = Vec::new();
-    for nal in fss_codec_h264::annex_b_nal_units(stream) {
-        if let Some(picture) = decoder.decode_nal(nal).unwrap() {
-            pieces.push(picture);
+    for stream in [
+        &include_bytes!("fixtures/decode/ip_qcif_slices3.h264")[..],
+        &include_bytes!("fixtures/decode/m_b_pyramid_ref3.h264")[..],
+    ] {
+        let whole = decode_stream(stream);
+        let mut decoder = Decoder::new(DecoderLimits::default()).unwrap();
+        let mut pieces = Vec::new();
+        for nal in fss_codec_h264::annex_b_nal_units(stream) {
+            if let Some(picture) = decoder.decode_nal(nal).unwrap() {
+                pieces.push(picture);
+            }
+            while let Some(picture) = decoder.next_output() {
+                pieces.push(picture);
+            }
         }
-        while let Some(picture) = decoder.next_output() {
-            pieces.push(picture);
-        }
+        pieces.extend(decoder.finish().unwrap());
+        assert_eq!(whole, pieces);
     }
-    pieces.extend(decoder.finish().unwrap());
-    assert_eq!(whole, pieces);
+}
+
+/// B-pyramid output order: the oracle's display order corresponds to
+/// strictly increasing POC, and for this closed GOP of 12 frames the
+/// decoder holds pictures (decode index != output index) exactly where B
+/// pictures were coded after their forward references.
+#[test]
+fn b_pyramid_output_is_display_order() {
+    let pictures = decode_stream(include_bytes!("fixtures/decode/m_b_pyramid_ref3.h264"));
+    assert_eq!(pictures.len(), 12);
+    assert!(pictures[0].is_idr());
+    let pocs: Vec<i32> = pictures.iter().map(Picture::poc).collect();
+    assert!(pocs.windows(2).all(|w| w[0] < w[1]), "{pocs:?}");
+    // Non-reference B pictures are output, so not every picture is a
+    // reference.
+    assert!(pictures.iter().any(|p| !p.is_reference()));
 }

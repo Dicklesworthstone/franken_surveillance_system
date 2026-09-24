@@ -128,7 +128,7 @@ struct Pending {
     frame_num_offset: i64,
 }
 
-/// Streaming H.264 decoder (Constrained Baseline and Main-profile I/P,
+/// Streaming H.264 decoder (Constrained Baseline and Main profile,
 /// progressive 8-bit 4:2:0).
 ///
 /// Feed NAL units (without start codes) with [`Decoder::decode_nal`], or

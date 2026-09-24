@@ -377,12 +377,13 @@ fn unsupported_slice_features_are_typed() {
         setup(PpsSpec::default()).decode_nal(&sp_slice).unwrap_err(),
         unsupported(UnsupportedFeature::SwitchingSlice)
     );
-    // slice_type 6 = B.
+    // A B slice (slice_type 6) is admitted syntax now: its header is read,
+    // and this one, truncated right after frame_num, is a typed Limit.
     let mut b = W::default();
     let b_slice = b.ue(0).ue(6).ue(0).u(4, 0).nal(0x21);
     assert_eq!(
         setup(PpsSpec::default()).decode_nal(&b_slice).unwrap_err(),
-        unsupported(UnsupportedFeature::BSlice)
+        DecodeError::Limit
     );
     // Data partition A (NAL type 2).
     assert_eq!(
@@ -841,20 +842,62 @@ fn truncated_streams_yield_exact_picture_prefixes() {
     }
 }
 
+/// Truncated reordering streams (CABAC B with POC wrap, temporal direct
+/// with implicit weights): every published picture is bit-identical to the
+/// full decode's picture with the same decode index, and pictures still
+/// come out in increasing POC order. (Output is not a prefix: a truncated
+/// stream flushes pictures the full decode would interleave with later B
+/// pictures.)
+#[test]
+fn truncated_reordering_streams_publish_only_exact_pictures() {
+    let fixtures: [&[u8]; 2] = [
+        include_bytes!("fixtures/decode/m_b_pocwrap_64x48.h264"),
+        include_bytes!("fixtures/decode/m_b_implicit_weight.h264"),
+    ];
+    for stream in fixtures {
+        let (full, errors) = decode_lossy(stream);
+        assert_eq!(errors, 0);
+        let mut saw_error = false;
+        for cut in (1..stream.len()).step_by(29) {
+            let (pictures, errors) = decode_lossy(&stream[..cut]);
+            saw_error |= errors > 0;
+            for picture in &pictures {
+                let reference = full
+                    .iter()
+                    .find(|p| p.decode_index() == picture.decode_index())
+                    .unwrap_or_else(|| panic!("cut {cut}: unknown picture"));
+                assert!(
+                    picture == reference,
+                    "cut {cut}: picture differs from full decode"
+                );
+            }
+            for pair in pictures.windows(2) {
+                if !pair[1].is_idr() {
+                    assert!(pair[0].poc() < pair[1].poc(), "cut {cut}: output order");
+                }
+            }
+        }
+        assert!(saw_error, "truncation must surface errors");
+    }
+}
+
 /// Deterministic bit-flip fuzzing over fixture bytes. Any outcome is
 /// acceptable except a panic (the test harness would report it); every
 /// published picture must still have self-consistent plane sizes.
 #[test]
 fn bit_flip_mutations_never_panic() {
-    // Baseline CAVLC and CABAC I/P with explicit weights: every new syntax
-    // path is exposed to flips.
-    let fixtures: [&[u8]; 6] = [
+    // Baseline CAVLC, CABAC I/P with weights, CABAC B (implicit weights,
+    // temporal direct, MMCO, POC wrap): every new syntax path is exposed
+    // to flips.
+    let fixtures: [&[u8]; 8] = [
         include_bytes!("fixtures/decode/ip_100x60_crop.h264"),
         include_bytes!("fixtures/decode/pcm_mixed.h264"),
         include_bytes!("fixtures/decode/i_qcif_qp44.h264"),
         include_bytes!("fixtures/baseline_i64.h264"),
         include_bytes!("fixtures/decode/m_ip_cabac_qp40.h264"),
         include_bytes!("fixtures/decode/m_ip_cabac_weightp.h264"),
+        include_bytes!("fixtures/decode/m_b_pocwrap_64x48.h264"),
+        include_bytes!("fixtures/decode/m_b_implicit_weight.h264"),
     ];
     let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
     let mut next = move || {

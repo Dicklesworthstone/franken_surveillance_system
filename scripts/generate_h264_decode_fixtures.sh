@@ -59,7 +59,7 @@ python3 scripts/rewrite_h264_headers.py --deblock-idc2 \
 python3 scripts/rewrite_h264_headers.py --poc-type0 \
   "$OUT/ip_100x60_crop.h264" "$OUT/ip_100x60_poc0.h264"
 
-# ----- Main profile (CABAC I and P slices) -----
+# ----- Main profile (CABAC, B slices) -----
 # encode_profile <name> <profile> <size> <frames> <x264 params> [lavfi source]
 # The x264 parameter string is complete here (no implicit bframes=0).
 X264_MH="threads=1:lookahead_threads=1:scenecut=0:aud=0"
@@ -87,6 +87,23 @@ encode_profile m_ip_cabac_weightp main 128x96 6 "keyint=6:bframes=0:weightp=2:qp
 encode_profile m_ip_cabac_constrained main 128x96 3 \
   "keyint=3:bframes=0:constrained-intra=1:qp=36" \
   "testsrc2=size=128x96:rate=10,noise=alls=70:allf=t+u"
+
+# Stage 2: B slices (Main), display-order output.
+encode_profile m_b_spatial main 176x144 10 \
+  "keyint=10:bframes=2:b-pyramid=none:direct=spatial:weightb=0:ref=2:qp=30"
+encode_profile m_b_temporal main 176x144 10 \
+  "keyint=10:bframes=2:b-pyramid=none:direct=temporal:ref=2:qp=30"
+encode_profile m_b_pyramid_ref3 main 176x144 12 \
+  "keyint=12:bframes=3:b-pyramid=normal:direct=spatial:ref=3:partitions=all:qp=28"
+encode_profile m_b_implicit_weight main 128x96 9 \
+  "keyint=9:bframes=3:b-pyramid=normal:direct=temporal:weightb=1:ref=2:qp=30" \
+  "testsrc2=size=128x96:rate=10,fade=in:0:9"
+encode_profile m_b_cavlc main 176x144 9 \
+  "keyint=9:cabac=0:bframes=2:b-pyramid=normal:direct=spatial:ref=2:qp=30"
+# pic_order_cnt_lsb wraparound (log2_max_poc_lsb = 5 -> 32) over 24 frames
+# at 64x48, with non-reference B pictures.
+encode_profile m_b_pocwrap_64x48 main 64x48 24 \
+  "keyint=24:bframes=2:b-pyramid=none:ref=2:qp=30"
 
 # Oracle decode: every frame to packed planar I420 via rawvideo; framehash
 # hashes each packet, i.e. exactly one frame (Y, then Cb, then Cr, no
