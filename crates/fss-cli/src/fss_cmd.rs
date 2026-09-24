@@ -446,7 +446,10 @@ mod tests {
         let output = execute_fss(FssCommand::Capabilities);
         assert!(output.contains("\"status\":\"reference_implementation_unqualified\""));
         assert!(!output.contains("design_skeleton"));
-        assert!(output.contains("\"qualified\":[]"), "nothing is release-qualified");
+        assert!(
+            output.contains("\"qualified\":[]"),
+            "nothing is release-qualified"
+        );
         let implemented = json_string_array(&output, "implemented");
         let partial = json_string_array(&output, "partial");
         let missing = json_string_array(&output, "not_implemented");
@@ -455,16 +458,29 @@ mod tests {
         let total = all.len();
         all.sort();
         all.dedup();
-        assert_eq!(all.len(), total, "a capability may appear in exactly one list");
+        assert_eq!(
+            all.len(),
+            total,
+            "a capability may appear in exactly one list"
+        );
 
         let manifest = include_str!("../Cargo.toml");
-        for binary in ["fss-file", "fss-infer", "fss-event", "fss-archive", "fss-lab"] {
+        for binary in [
+            "fss-file",
+            "fss-infer",
+            "fss-event",
+            "fss-archive",
+            "fss-lab",
+        ] {
             assert!(help_text().contains(binary), "help names {binary}");
             let declared = manifest.contains(&format!("name = \"{binary}\""))
                 || std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                     .join(format!("src/bin/{binary}"))
                     .is_dir();
-            assert!(declared, "{binary} named in help must be a real binary target");
+            assert!(
+                declared,
+                "{binary} named in help must be a real binary target"
+            );
         }
     }
 }
