@@ -97,3 +97,9 @@ pub mod http_replay;
 
 /// Explicit native recording with durable-before-parse custody and cold-replay completion.
 pub mod http_recording;
+
+/// Digest-pinned offline RGB detector packages loaded only through verification.
+pub mod rgb_package;
+
+/// Retained recordings through a verified RGB detector package into source-space proposals.
+pub mod package_detect;

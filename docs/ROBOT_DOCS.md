@@ -641,6 +641,10 @@ All stable error identities and normative recovery guidance cataloged from `regi
 | `ERR-LEDGER-ORACLE-SUCCESSOR-CONFLICT-001` | another batch already committed on the same basis (first committer wins) | rebase onto the current head and prepare a new batch |
 | `ERR-MODEL-GENERATION-001` | mixed or stale model/index generation | rebuild/retry at coherent generation |
 | `ERR-MODEL-OUTPUT-001` | malformed/out-of-bounds model output | reject output; terminate/quarantine generation |
+| `ERR-MODEL-PACKAGE-CANCELLED-001` | model package load cancelled by its owner before a complete verified package existed | retry when the owner permits; nothing was loaded |
+| `ERR-MODEL-PACKAGE-DIGEST-001` | model package bytes differ from the independently pinned whole-archive SHA-256 (tampered, truncated or wrong file); refused before parsing | obtain the exact package; never re-pin to accept unknown bytes |
+| `ERR-MODEL-PACKAGE-INVALID-001` | model package archive, manifest, artifact set, package spec, IR graph, weights or head contract is malformed, inconsistent or outside its bounds | rebuild the package with the offline importer; do not retry unchanged |
+| `ERR-MODEL-PACKAGE-LICENSE-001` | model package license record refused by the license policy (surveillance-monitoring profile, license-text digest required) | review the license; do not load the package |
 | `ERR-MODEL-UNAVAILABLE-001` | model generation not runnable | route to registered fallback or degrade |
 | `ERR-NEG-CHECKSUM-MISMATCH-001` | negative evidence binary ledger corrupt magic, checksum, or truncated data | repair corrupt ledger binary or restore from canonical backup |
 | `ERR-NEG-CONCURRENT-MODIFICATION-001` | negative evidence ledger changed between read and publish on every bounded attempt | identify the concurrent writer, then retry the append explicitly |
@@ -679,6 +683,9 @@ All stable error identities and normative recovery guidance cataloged from `regi
 | `ERR-OP-TIMEOUT-001` | operation budget or deadline expired before completion | retry with higher budget or backoff |
 | `ERR-OP-UNAUTHORIZED-001` | tombstone: superseded by 'ERR-AUTH-DENIED-001' | historical duplicate preserved for audit; canonical target is 'ERR-AUTH-DENIED-001' |
 | `ERR-OPERATION-UNREGISTERED-001` | surveillance operation not registered in time uncertainty budget catalog | register operation tolerance before evaluation |
+| `ERR-PACKAGE-DETECT-001` | package detection refused at a named segment by retained custody, decode, preprocessing, model execution or head projection; no partial report | inspect the cause; retry only after repair or with adequate bounds |
+| `ERR-PACKAGE-DETECT-CANCELLED-001` | package detection cancelled by its owner; no partial report | rerun the same range |
+| `ERR-PACKAGE-DETECT-REQUEST-001` | package detection range, frame count (1..64) or retained media format outside the operation contract; refused before decode | correct the request; do not retry unchanged |
 | `ERR-PRECONDITION-STALE-001` | plan anchor changed before commit | re-plan; never auto-commit changed intent |
 | `ERR-PRIVACY-MASK-001` | required redaction could not be applied | fail closed at restricted boundary |
 | `ERR-PROV-CORRUPT-FILE-001` | provenance registry or markdown documentation file is missing or corrupt | repair or restore provenance registry file |

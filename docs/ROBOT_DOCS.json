@@ -1282,6 +1282,26 @@
       "id": "ERR-MODEL-OUTPUT-001"
     },
     {
+      "description": "model package load cancelled by its owner before a complete verified package existed",
+      "guidance": "retry when the owner permits; nothing was loaded",
+      "id": "ERR-MODEL-PACKAGE-CANCELLED-001"
+    },
+    {
+      "description": "model package bytes differ from the independently pinned whole-archive SHA-256 (tampered, truncated or wrong file); refused before parsing",
+      "guidance": "obtain the exact package; never re-pin to accept unknown bytes",
+      "id": "ERR-MODEL-PACKAGE-DIGEST-001"
+    },
+    {
+      "description": "model package archive, manifest, artifact set, package spec, IR graph, weights or head contract is malformed, inconsistent or outside its bounds",
+      "guidance": "rebuild the package with the offline importer; do not retry unchanged",
+      "id": "ERR-MODEL-PACKAGE-INVALID-001"
+    },
+    {
+      "description": "model package license record refused by the license policy (surveillance-monitoring profile, license-text digest required)",
+      "guidance": "review the license; do not load the package",
+      "id": "ERR-MODEL-PACKAGE-LICENSE-001"
+    },
+    {
       "description": "model generation not runnable",
       "guidance": "route to registered fallback or degrade",
       "id": "ERR-MODEL-UNAVAILABLE-001"
@@ -1470,6 +1490,21 @@
       "description": "surveillance operation not registered in time uncertainty budget catalog",
       "guidance": "register operation tolerance before evaluation",
       "id": "ERR-OPERATION-UNREGISTERED-001"
+    },
+    {
+      "description": "package detection refused at a named segment by retained custody, decode, preprocessing, model execution or head projection; no partial report",
+      "guidance": "inspect the cause; retry only after repair or with adequate bounds",
+      "id": "ERR-PACKAGE-DETECT-001"
+    },
+    {
+      "description": "package detection cancelled by its owner; no partial report",
+      "guidance": "rerun the same range",
+      "id": "ERR-PACKAGE-DETECT-CANCELLED-001"
+    },
+    {
+      "description": "package detection range, frame count (1..64) or retained media format outside the operation contract; refused before decode",
+      "guidance": "correct the request; do not retry unchanged",
+      "id": "ERR-PACKAGE-DETECT-REQUEST-001"
     },
     {
       "description": "plan anchor changed before commit",

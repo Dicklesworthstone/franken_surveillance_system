@@ -174,6 +174,9 @@ impl<'a> ImportedRgbModel<'a> {
     }
     /// Frozen, immediately executable RGB model; original source provenance remains here.
     pub fn model(&self) -> &RgbInferenceModel { &self.model }
+    /// Release the frozen model when its owner retains the original sources elsewhere
+    /// (for example a digest-pinned model package). Provenance accessors are consumed.
+    pub fn into_model(self) -> RgbInferenceModel { self.model }
     /// Complete original canonical graph bytes, borrowed rather than rewritten.
     pub fn graph_source(&self) -> &'a [u8] { self.graph }
     /// Complete original Safetensors file, including all metadata/header bytes.
