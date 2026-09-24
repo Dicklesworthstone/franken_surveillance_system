@@ -801,7 +801,11 @@ mod tests {
         ] {
             assert!(help_text().contains(binary), "help names {binary}");
             let declared = manifest.contains(&format!("name = \"{binary}\""))
-                || std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                || std::env::var_os("CARGO_MANIFEST_DIR")
+                    .map_or_else(
+                        || std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+                        std::path::PathBuf::from,
+                    )
                     .join(format!("src/bin/{binary}"))
                     .is_dir();
             assert!(
