@@ -71,6 +71,29 @@ pub struct ReferenceAlertPlan {
     pub prepared_head_digest: ContentDigest,
 }
 
+/// Commit and outcome times for one reference alert dispatch attempt.
+///
+/// The commitment is journaled at `commit_at` before the provider is touched; the provider's
+/// acceptance, loss, or failure is recorded at `outcome_at`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AlertDispatchTimes {
+    /// Time at which the commitment is journaled, before provider dispatch.
+    pub commit_at: TimestampNs,
+    /// Time at which the provider outcome is recorded.
+    pub outcome_at: TimestampNs,
+}
+
+impl AlertDispatchTimes {
+    /// Pairs the commit time with the outcome time for one dispatch attempt.
+    #[must_use]
+    pub const fn new(commit_at: TimestampNs, outcome_at: TimestampNs) -> Self {
+        Self {
+            commit_at,
+            outcome_at,
+        }
+    }
+}
+
 /// Deterministic provider fault choice for one dispatch attempt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReferenceProviderBehavior {
@@ -1375,7 +1398,7 @@ where
 /// use fss_core::belief::BeliefInterval;
 /// use fss_core::{EffectJournal, TimestampNs};
 /// use fss_ledger::DurableReferenceLedger;
-/// use fss_reference::{ReferenceAlertPlan, ReferenceAlertProvider, ReferenceProviderBehavior, dispatch_reference_alert};
+/// use fss_reference::{AlertDispatchTimes, ReferenceAlertPlan, ReferenceAlertProvider, ReferenceProviderBehavior, dispatch_reference_alert};
 ///
 /// fn legal_dispatch(
 ///     plan: &ReferenceAlertPlan,
@@ -1384,7 +1407,8 @@ where
 ///     provider: &mut ReferenceAlertProvider,
 /// ) {
 ///     let behavior = ReferenceProviderBehavior::Deliver;
-///     let _ = dispatch_reference_alert(plan, authority, objects, behavior, TimestampNs(1), TimestampNs(2), journal, provider);
+///     let times = AlertDispatchTimes::new(TimestampNs(1), TimestampNs(2));
+///     let _ = dispatch_reference_alert(plan, authority, objects, behavior, times, journal, provider);
 /// }
 ///
 /// fn forbidden_dispatch(
@@ -1395,7 +1419,8 @@ where
 /// ) {
 ///     // adr-0001/inv-4-reference: a belief is not a prepared alert plan.
 ///     let behavior = ReferenceProviderBehavior::Deliver;
-///     let _ = dispatch_reference_alert(belief, authority, objects, behavior, TimestampNs(1), TimestampNs(2), journal, provider);
+///     let times = AlertDispatchTimes::new(TimestampNs(1), TimestampNs(2));
+///     let _ = dispatch_reference_alert(belief, authority, objects, behavior, times, journal, provider);
 /// }
 /// ```
 pub fn dispatch_reference_alert(
@@ -1403,8 +1428,7 @@ pub fn dispatch_reference_alert(
     authority: &DurableReferenceLedger,
     objects: &InMemoryObjectStore,
     behavior: ReferenceProviderBehavior,
-    commit_at: TimestampNs,
-    outcome_at: TimestampNs,
+    times: AlertDispatchTimes,
     journal: &mut EffectJournal,
     provider: &mut ReferenceAlertProvider,
 ) -> Result<OperationReceipt, ReferenceError> {
@@ -1413,8 +1437,8 @@ pub fn dispatch_reference_alert(
         authority,
         read_payload: |digest| objects.read_verified(digest).map(|bytes| bytes.to_vec()),
         behavior,
-        commit_at,
-        outcome_at,
+        commit_at: times.commit_at,
+        outcome_at: times.outcome_at,
         journal,
         provider,
     })

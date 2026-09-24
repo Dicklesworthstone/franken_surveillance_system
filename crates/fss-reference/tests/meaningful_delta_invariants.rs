@@ -20,17 +20,17 @@ use fss_core::{
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
 use fss_object::{InMemoryObjectStore, ObjectLimits};
 use fss_reference::{
-    DeliveryPlan, MockModelScript, MockModelSpec, MockSemanticLabel, PrepareAlertParams,
-    ReferenceAlertPlan, ReferenceAlertProvider, ReferenceError, ReferenceEventReceipt,
-    ReferenceModelObservation, ReferencePolicyDecision, ReferenceProjectionSpec,
-    ReferenceProviderBehavior, ReferenceSituation, ReferenceSituationPublication,
-    ReferenceSituationRequest, VirtualCameraSpec, classify_reference_meaningful_delta,
-    classify_reference_meaningful_delta_in_lineage, compile_reference_situation,
-    compile_reference_situation_with_operation_receipt, dispatch_reference_alert,
-    evaluate_unknown_presence, execute_mock_model, observe_reference_alert,
-    prepare_reference_alert, project_reference_situation, publish_reference_alert_outcome,
-    publish_reference_event, record_reference_publication, run_reference_capture,
-    verify_reference_alert,
+    AlertDispatchTimes, DeliveryPlan, MockModelScript, MockModelSpec, MockSemanticLabel,
+    PrepareAlertParams, ReferenceAlertPlan, ReferenceAlertProvider, ReferenceError,
+    ReferenceEventReceipt, ReferenceModelObservation, ReferencePolicyDecision,
+    ReferenceProjectionSpec, ReferenceProviderBehavior, ReferenceSituation,
+    ReferenceSituationPublication, ReferenceSituationRequest, VirtualCameraSpec,
+    classify_reference_meaningful_delta, classify_reference_meaningful_delta_in_lineage,
+    compile_reference_situation, compile_reference_situation_with_operation_receipt,
+    dispatch_reference_alert, evaluate_unknown_presence, execute_mock_model,
+    observe_reference_alert, prepare_reference_alert, project_reference_situation,
+    publish_reference_alert_outcome, publish_reference_event, record_reference_publication,
+    run_reference_capture, verify_reference_alert,
 };
 
 #[derive(Clone, Debug)]
@@ -1186,8 +1186,7 @@ fn test_f4_real_situation_f2_terminal_effect_transition_non_coalescible()
         &harness.authority,
         &harness.objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(1_001),
-        TimestampNs(1_002),
+        AlertDispatchTimes::new(TimestampNs(1_001), TimestampNs(1_002)),
         &mut journal,
         &mut provider,
     )?;

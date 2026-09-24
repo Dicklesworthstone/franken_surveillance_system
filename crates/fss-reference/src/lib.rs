@@ -97,7 +97,7 @@ pub use agent_session::{
     SessionAlias, SessionBindingRequest, SessionRefresh,
 };
 pub use alert::{
-    PrepareAlertParams, ProviderDispatch, ProviderFailureReceipt, ProviderObservationReceipt,
+    AlertDispatchTimes, PrepareAlertParams, ProviderDispatch, ProviderFailureReceipt, ProviderObservationReceipt,
     REFERENCE_ALERT_TERMINAL_PREDICATE, ReferenceAlertPlan, ReferenceAlertProvider,
     ReferenceProviderBehavior, alert_cancel_proof, dispatch_reference_alert,
     observe_reference_alert, prepare_reference_alert, reconcile_failed_reference_alert,
@@ -187,7 +187,7 @@ pub use model::{
 };
 pub use model_receipt::{
     BackendDescriptor, MODEL_EXECUTION_RECEIPT_DOMAIN, ModelInvocationReceipt, ReceiptBudget,
-    ReceiptDigest, ReceiptOutcome, ReceiptUsage, ReceiptVerificationError,
+    ReceiptDigest, ReceiptOutcome, ReceiptRecordContext, ReceiptUsage, ReceiptVerificationError,
     compute_decision_path_digest, compute_execution_plan_digest, compute_numeric_policy_digest,
     compute_operator_trace_chain, compute_output_root, compute_postprocess_program_digest,
     compute_preprocess_program_digest, execute_and_record_receipt,

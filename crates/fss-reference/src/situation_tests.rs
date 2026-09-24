@@ -18,13 +18,13 @@ use crate::situation::{
     reconciliation_basis_for,
 };
 use crate::{
-    DeliveryPlan, MockModelScript, MockModelSpec, MockSemanticLabel, PrepareAlertParams,
-    ReferenceAlertProvider, ReferenceError, ReferenceEventReceipt, ReferenceModelObservation,
-    ReferencePolicyDecision, ReferenceProviderBehavior, ReferenceSituationRequest,
-    VirtualCameraSpec, compile_reference_situation, dispatch_reference_alert,
-    evaluate_unknown_presence, execute_mock_model, observe_reference_alert,
-    prepare_reference_alert, publish_reference_alert_outcome, publish_reference_event,
-    run_reference_capture, seal_reference_handoff, verify_reference_alert,
+    AlertDispatchTimes, DeliveryPlan, MockModelScript, MockModelSpec, MockSemanticLabel,
+    PrepareAlertParams, ReferenceAlertProvider, ReferenceError, ReferenceEventReceipt,
+    ReferenceModelObservation, ReferencePolicyDecision, ReferenceProviderBehavior,
+    ReferenceSituationRequest, VirtualCameraSpec, compile_reference_situation,
+    dispatch_reference_alert, evaluate_unknown_presence, execute_mock_model,
+    observe_reference_alert, prepare_reference_alert, publish_reference_alert_outcome,
+    publish_reference_event, run_reference_capture, seal_reference_handoff, verify_reference_alert,
 };
 
 struct SituationHarness {
@@ -312,8 +312,7 @@ fn lost_ack_projects_only_reconciliation_and_seals_root_closed_handoff()
         &harness.authority,
         &harness.objects,
         ReferenceProviderBehavior::LoseAckAfterDelivery,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut journal,
         &mut provider,
     )?;
@@ -406,8 +405,7 @@ fn canonical_effect_outcome_cannot_be_omitted_from_projection() -> Result<(), Bo
         &harness.authority,
         &harness.objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut journal,
         &mut provider,
     )?;
@@ -856,8 +854,7 @@ fn verified_outcome_fixture(name: &str) -> Result<VerifiedFixture, Box<dyn Error
         &harness.authority,
         &harness.objects,
         ReferenceProviderBehavior::Deliver,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut journal,
         &mut provider,
     )?;

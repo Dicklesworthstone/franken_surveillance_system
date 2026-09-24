@@ -11,12 +11,12 @@ use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
 use fss_object::{InMemoryObjectStore, ObjectLimits};
 
 use crate::{
-    DeliveryPlan, MockModelScript, MockModelSpec, MockSemanticLabel, PrepareAlertParams,
-    ReferenceAlertPlan, ReferenceError, ReferenceEventReceipt, ReferenceModelObservation,
-    ReferencePolicyDecision, ReferenceSituationRequest, VirtualCameraSpec,
-    compile_reference_situation, compile_reference_situation_with_operation_receipt,
-    evaluate_unknown_presence, execute_mock_model, prepare_reference_alert,
-    publish_reference_event, run_reference_capture,
+    AlertDispatchTimes, DeliveryPlan, MockModelScript, MockModelSpec, MockSemanticLabel,
+    PrepareAlertParams, ReferenceAlertPlan, ReferenceError, ReferenceEventReceipt,
+    ReferenceModelObservation, ReferencePolicyDecision, ReferenceSituationRequest,
+    VirtualCameraSpec, compile_reference_situation,
+    compile_reference_situation_with_operation_receipt, evaluate_unknown_presence,
+    execute_mock_model, prepare_reference_alert, publish_reference_event, run_reference_capture,
 };
 
 const CAPABILITY_EFFECT_RECONCILE: &str = "capability:effect.reconcile";
@@ -958,11 +958,21 @@ fn guarded_situation(
         decision,
         receipt,
         plan,
-        operation_receipt,
-        outcome,
-        journal,
+        GuardedEffects {
+            operation_receipt,
+            outcome,
+            journal,
+        },
         None,
     )
+}
+
+/// The alert effect state a guarded situation is compiled against.
+#[derive(Clone, Copy)]
+struct GuardedEffects<'a> {
+    operation_receipt: Option<&'a fss_core::OperationReceipt>,
+    outcome: Option<&'a crate::ReferenceAlertOutcomeReceipt>,
+    journal: &'a EffectJournal,
 }
 
 /// Like [`guarded_situation`], continuing the publication `predecessor` when one is given.
@@ -971,11 +981,14 @@ fn guarded_situation_after(
     decision: &ReferencePolicyDecision,
     receipt: &ReferenceEventReceipt,
     plan: &ReferenceAlertPlan,
-    operation_receipt: Option<&fss_core::OperationReceipt>,
-    outcome: Option<&crate::ReferenceAlertOutcomeReceipt>,
-    journal: &EffectJournal,
+    effects: GuardedEffects<'_>,
     continues: Option<&crate::ReferenceSituationPublication>,
 ) -> Result<crate::ReferenceSituation, Box<dyn Error>> {
+    let GuardedEffects {
+        operation_receipt,
+        outcome,
+        journal,
+    } = effects;
     let mut compile_request = request(
         decision,
         receipt,
@@ -1065,8 +1078,7 @@ impl Lifecycle {
             &harness.authority,
             &harness.objects,
             crate::ReferenceProviderBehavior::Deliver,
-            TimestampNs(101),
-            TimestampNs(102),
+            AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
             &mut journal,
             &mut provider,
         )?;
@@ -1146,9 +1158,11 @@ impl Lifecycle {
                 &self.decision,
                 &self.receipt,
                 &self.plan,
-                with_receipt.then_some(&self.verified_receipt),
-                Some(&self.outcome),
-                &self.journal,
+                GuardedEffects {
+                    operation_receipt: with_receipt.then_some(&self.verified_receipt),
+                    outcome: Some(&self.outcome),
+                    journal: &self.journal,
+                },
                 Some(predecessor),
             )?,
             &guard_projection_spec()?,
@@ -1348,9 +1362,11 @@ fn terminal_outcome_flip_of_one_operation_is_a_contradiction() -> Result<(), Box
             &decision,
             &receipt,
             &plan,
-            Some(&failed),
-            None,
-            &failed_journal,
+            GuardedEffects {
+                operation_receipt: Some(&failed),
+                outcome: None,
+                journal: &failed_journal,
+            },
             Some(&basis),
         )?,
         &guard_projection_spec()?,
@@ -2483,8 +2499,7 @@ fn durable_discharge_is_terminal_once_the_journal_closes_it() -> Result<(), Box<
         &harness.authority,
         &harness.objects,
         crate::ReferenceProviderBehavior::Deliver,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut provider,
     )?;
     let provider_receipt = provider
@@ -3195,8 +3210,7 @@ fn journal_bytes_swapped_under_the_handle_are_refused() -> Result<(), Box<dyn Er
         &harness.authority,
         &harness.objects,
         crate::ReferenceProviderBehavior::Deliver,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut provider,
     )?;
     let provider_receipt = provider
@@ -3294,9 +3308,11 @@ fn a_raw_record_never_makes_a_stale_sibling_a_terminal_basis() -> Result<(), Box
             &decision,
             &receipt,
             &plan,
-            Some(&current(&journal)?),
-            None,
-            &journal,
+            GuardedEffects {
+                operation_receipt: Some(&current(&journal)?),
+                outcome: None,
+                journal: &journal,
+            },
             None,
         )?,
         &spec,
@@ -3312,8 +3328,7 @@ fn a_raw_record_never_makes_a_stale_sibling_a_terminal_basis() -> Result<(), Box
         &harness.authority,
         &harness.objects,
         crate::ReferenceProviderBehavior::Deliver,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut journal,
         &mut provider,
     )?;
@@ -3323,9 +3338,11 @@ fn a_raw_record_never_makes_a_stale_sibling_a_terminal_basis() -> Result<(), Box
             &decision,
             &receipt,
             &plan,
-            Some(&current(&journal)?),
-            None,
-            &journal,
+            GuardedEffects {
+                operation_receipt: Some(&current(&journal)?),
+                outcome: None,
+                journal: &journal,
+            },
             Some(&prepared),
         )?,
         &spec,
@@ -3357,9 +3374,11 @@ fn a_raw_record_never_makes_a_stale_sibling_a_terminal_basis() -> Result<(), Box
             &decision,
             &receipt,
             &plan,
-            Some(&current(&journal)?),
-            Some(&outcome),
-            &journal,
+            GuardedEffects {
+                operation_receipt: Some(&current(&journal)?),
+                outcome: Some(&outcome),
+                journal: &journal,
+            },
             Some(&prepared),
         )?,
         &spec,
@@ -3395,9 +3414,11 @@ fn a_raw_record_never_makes_a_stale_sibling_a_terminal_basis() -> Result<(), Box
             &decision,
             &receipt,
             &plan,
-            Some(&current(&journal)?),
-            Some(&outcome),
-            &journal,
+            GuardedEffects {
+                operation_receipt: Some(&current(&journal)?),
+                outcome: Some(&outcome),
+                journal: &journal,
+            },
             Some(&sibling),
         )?,
         &spec,
@@ -3543,9 +3564,11 @@ fn a_displaced_basis_is_refused_not_silently_downgraded() -> Result<(), Box<dyn 
             &decision,
             &receipt,
             &plan,
-            Some(&current(&journal)?),
-            None,
-            &journal,
+            GuardedEffects {
+                operation_receipt: Some(&current(&journal)?),
+                outcome: None,
+                journal: &journal,
+            },
             None,
         )?,
         &spec,
@@ -3557,9 +3580,11 @@ fn a_displaced_basis_is_refused_not_silently_downgraded() -> Result<(), Box<dyn 
             &decision,
             &receipt,
             &plan,
-            Some(&current(&journal)?),
-            None,
-            &journal,
+            GuardedEffects {
+                operation_receipt: Some(&current(&journal)?),
+                outcome: None,
+                journal: &journal,
+            },
             Some(&prepared),
         )?,
         &spec,
@@ -3572,8 +3597,7 @@ fn a_displaced_basis_is_refused_not_silently_downgraded() -> Result<(), Box<dyn 
         &harness.authority,
         &harness.objects,
         crate::ReferenceProviderBehavior::Deliver,
-        TimestampNs(101),
-        TimestampNs(102),
+        AlertDispatchTimes::new(TimestampNs(101), TimestampNs(102)),
         &mut journal,
         &mut provider,
     )?;
@@ -3583,9 +3607,11 @@ fn a_displaced_basis_is_refused_not_silently_downgraded() -> Result<(), Box<dyn 
             &decision,
             &receipt,
             &plan,
-            Some(&current(&journal)?),
-            None,
-            &journal,
+            GuardedEffects {
+                operation_receipt: Some(&current(&journal)?),
+                outcome: None,
+                journal: &journal,
+            },
             Some(&prepared),
         )?,
         &spec,
@@ -3626,9 +3652,11 @@ fn a_displaced_basis_is_refused_not_silently_downgraded() -> Result<(), Box<dyn 
             &decision,
             &receipt,
             &plan,
-            Some(&current(&journal)?),
-            Some(&outcome),
-            &journal,
+            GuardedEffects {
+                operation_receipt: Some(&current(&journal)?),
+                outcome: Some(&outcome),
+                journal: &journal,
+            },
             Some(&sibling),
         )?,
         &spec,
@@ -5785,8 +5813,7 @@ fn revalidation_refusal_before_the_anchor_moved_is_refused_typed_by_the_guard()
         &harness.authority,
         &harness.objects,
         crate::ReferenceProviderBehavior::Deliver,
-        TimestampNs(50),
-        TimestampNs(60),
+        AlertDispatchTimes::new(TimestampNs(50), TimestampNs(60)),
         &mut journal,
         &mut provider,
     );

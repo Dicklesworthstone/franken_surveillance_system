@@ -21,7 +21,9 @@ use fss_ledger::{
 };
 use fss_object::InMemoryObjectStore;
 
-use crate::alert::{ReferenceAlertPlan, ReferenceAlertProvider, ReferenceProviderBehavior};
+use crate::alert::{
+    AlertDispatchTimes, ReferenceAlertPlan, ReferenceAlertProvider, ReferenceProviderBehavior,
+};
 use crate::error::ReferenceError;
 use crate::outcome::{ALERT_OUTCOME_FAMILY, ReferenceAlertOutcomeReceipt};
 
@@ -895,8 +897,7 @@ impl DurableEffectJournal {
         authority: &DurableReferenceLedger,
         objects: &InMemoryObjectStore,
         behavior: ReferenceProviderBehavior,
-        committed_at: TimestampNs,
-        outcome_at: TimestampNs,
+        times: AlertDispatchTimes,
         provider: &mut ReferenceAlertProvider,
     ) -> Result<OperationReceipt, DurableEffectError> {
         crate::alert::execute_alert_dispatch(crate::alert::AlertDispatchOptions {
@@ -904,8 +905,8 @@ impl DurableEffectJournal {
             authority,
             read_payload: |digest| objects.read_verified(digest).map(|bytes| bytes.to_vec()),
             behavior,
-            commit_at: committed_at,
-            outcome_at,
+            commit_at: times.commit_at,
+            outcome_at: times.outcome_at,
             journal: self,
             provider,
         })
