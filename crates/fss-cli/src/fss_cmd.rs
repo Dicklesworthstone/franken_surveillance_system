@@ -51,7 +51,7 @@ impl FssCommand {
 /// Returns the static help text for `fss`.
 #[must_use]
 pub const fn help_text() -> &'static str {
-    "Franken Surveillance System design skeleton\n\nUSAGE:\n  fss help\n  fss version\n  fss capabilities --json\n  fss doctor --json\n      [--root <dir>]  inspect a deployment root read-only (never writes, locks, or repairs)\n  fss status --json\n  fss negative-evidence <init|list|verify|append> [--path <file>] [--json]\n\nNo camera, drone, model, archive, or alert operation is implemented yet."
+    "Franken Surveillance System: unqualified reference implementation\n\nUSAGE:\n  fss help\n  fss version\n  fss capabilities --json\n  fss doctor --json [--root <dir>]\n      --root inspects a deployment root read-only (never writes, locks, or repairs)\n  fss status --json\n  fss negative-evidence <init|list|verify|append> [--path <file>] [--json]\n\nCompanion binaries: fss-file (import and decode recorded media), fss-infer (scalar model\nexecution, detection, tracking), fss-event (recorded event reports and publication),\nfss-archive (RTSP/HTTP capture archives), fss-lab (deterministic scenarios).\nNothing is release-qualified; `fss capabilities --json` lists what is implemented."
 }
 
 /// Parses OS-native arguments for `fss` with total validation and exact grammar exhaustion.
@@ -281,7 +281,7 @@ pub fn execute_fss_with_exit(command: FssCommand) -> (String, ExitIdentity) {
         FssCommand::Version => (format!("fss {VERSION}"), ExitIdentity::SUCCESS),
         FssCommand::Capabilities => (
             format!(
-                "{{\"schema\":\"fss.capabilities.v1\",\"version\":\"{VERSION}\",\"status\":\"design_skeleton\",\"implemented\":[\"semantic_contracts\",\"machine_readable_registries\"],\"not_implemented\":[\"device_acquisition\",\"media_decode\",\"inference\",\"archive_upload\",\"alerts\"]}}"
+                "{{\"schema\":\"fss.capabilities.v1\",\"version\":\"{VERSION}\",\"status\":\"reference_implementation_unqualified\",\"qualified\":[],\"implemented\":[\"file_import_custody:annexb,mjpeg,rtpplay\",\"jpeg_baseline_decode\",\"rtp_h264_h265_depacketize\",\"rtsp_interleaved_tcp_capture\",\"http_mjpeg_capture\",\"fmp4_remux_avc_hevc\",\"local_capture_archive_verify_export\",\"scalar_model_execution_safetensors\",\"foreground_and_learned_detection_reference\",\"kalman_iou_tracking_reference\",\"recorded_event_publication\",\"durable_ledger_root_last_publication\",\"deployment_doctor\",\"negative_evidence_ledger\"],\"partial\":[\"h264_pixel_decode\",\"alert_delivery:webhook_library_unwired\",\"cross_camera_association:caller_supplied_ground_plane\",\"camera_pose_and_localization\",\"agent_semantic_contracts:no_public_transport\"],\"not_implemented\":[\"h265_pixel_decode\",\"progressive_jpeg_decode\",\"rtp_over_udp\",\"uvc_acquisition\",\"onvif\",\"trained_detector_package\",\"event_quality_evaluation\",\"agent_protocol_transport\",\"mcp\",\"cloud_archive\",\"property_reconstruction\",\"privacy_masking\",\"deletion_closure\",\"asupersync_runtime\",\"live_operator_view\"]}}"
             ),
             ExitIdentity::SUCCESS,
         ),
@@ -309,7 +309,7 @@ pub fn execute_fss_with_exit(command: FssCommand) -> (String, ExitIdentity) {
         }
         FssCommand::Status => (
             format!(
-                "{{\"schema\":\"fss.status.v1\",\"version\":\"{VERSION}\",\"phase\":\"architecture_constitution\",\"sensors\":[],\"events\":[],\"degraded\":[\"no_runtime_implementation\"]}}"
+                "{{\"schema\":\"fss.status.v1\",\"version\":\"{VERSION}\",\"phase\":\"reference_implementation_unqualified\",\"deployment\":\"not_specified\",\"sensors\":[],\"events\":[],\"degraded\":[\"no_deployment_root_inspected\",\"not_release_qualified\"],\"next\":\"fss doctor --json --root <dir>\"}}"
             ),
             ExitIdentity::SUCCESS,
         ),
@@ -424,6 +424,47 @@ mod tests {
         assert!(result.is_err());
         if let Err(err) = result {
             assert_eq!(err.error_id(), crate::error::ERR_CLI_UNKNOWN_OPTION);
+        }
+    }
+
+    /// Extracts the quoted items of one JSON string array named `key` from flat output.
+    fn json_string_array(output: &str, key: &str) -> Vec<String> {
+        let marker = format!("\"{key}\":[");
+        let Some(start) = output.find(&marker) else {
+            return Vec::new();
+        };
+        let rest = &output[start + marker.len()..];
+        let body = &rest[..rest.find(']').unwrap_or(0)];
+        body.split(',')
+            .map(|item| item.trim_matches('"').to_owned())
+            .filter(|item| !item.is_empty())
+            .collect()
+    }
+
+    #[test]
+    fn capabilities_are_disjoint_unqualified_and_name_real_binaries() {
+        let output = execute_fss(FssCommand::Capabilities);
+        assert!(output.contains("\"status\":\"reference_implementation_unqualified\""));
+        assert!(!output.contains("design_skeleton"));
+        assert!(output.contains("\"qualified\":[]"), "nothing is release-qualified");
+        let implemented = json_string_array(&output, "implemented");
+        let partial = json_string_array(&output, "partial");
+        let missing = json_string_array(&output, "not_implemented");
+        assert!(!implemented.is_empty() && !partial.is_empty() && !missing.is_empty());
+        let mut all: Vec<&String> = implemented.iter().chain(&partial).chain(&missing).collect();
+        let total = all.len();
+        all.sort();
+        all.dedup();
+        assert_eq!(all.len(), total, "a capability may appear in exactly one list");
+
+        let manifest = include_str!("../Cargo.toml");
+        for binary in ["fss-file", "fss-infer", "fss-event", "fss-archive", "fss-lab"] {
+            assert!(help_text().contains(binary), "help names {binary}");
+            let declared = manifest.contains(&format!("name = \"{binary}\""))
+                || std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join(format!("src/bin/{binary}"))
+                    .is_dir();
+            assert!(declared, "{binary} named in help must be a real binary target");
         }
     }
 }

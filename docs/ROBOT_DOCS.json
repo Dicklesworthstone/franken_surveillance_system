@@ -124,11 +124,11 @@
   ],
   "discovery": {
     "capabilities": {
-      "cli": "fss capabilities --json",
+      "cli": "fss capabilities --json` lists what is implemented.",
       "description": "Report capabilities in JSON format."
     },
     "doctor": {
-      "cli": "fss doctor --json",
+      "cli": "fss doctor --json [--root <dir>]",
       "description": "Report system diagnostic doctor results in JSON format."
     },
     "negative_evidence": {
