@@ -5,7 +5,8 @@ Validates JSON instances against repository JSON schemas adhering to the
 CAP- EXEC model execution receipt specification (fss-2h5zq.47):
 - Supported validation keywords: type (including type arrays), const, enum,
   required, properties, additionalProperties (bool or schema), pattern,
-  minLength, maxLength, minimum, minItems, maxItems, items, anyOf, $ref.
+  minLength, maxLength, minimum, maximum, minItems, maxItems, uniqueItems,
+  maxProperties, items, anyOf, allOf, not, if/then/else, $ref.
 - Supported container/annotation keywords: $schema, $id, title, description,
   $comment, $defs.
 - Refuses any unknown keyword in statically reachable subschemas.
@@ -56,10 +57,18 @@ SUPPORTED_VALIDATION_KEYWORDS = frozenset({
     "minLength",
     "maxLength",
     "minimum",
+    "maximum",
     "minItems",
     "maxItems",
+    "uniqueItems",
+    "maxProperties",
     "items",
     "anyOf",
+    "allOf",
+    "not",
+    "if",
+    "then",
+    "else",
     "$ref",
 })
 
@@ -112,6 +121,21 @@ def parse_strict_json(text: str) -> Any:
         )
     except json.JSONDecodeError as exc:
         raise JsonInstanceValidationError("#", f"malformed JSON: {exc}")
+
+
+def _type_tagged(value: Any) -> Any:
+    """Tags every scalar with its JSON type so uniqueness is type-strict (1, 1.0, True differ)."""
+    if isinstance(value, bool):
+        return ["boolean", value]
+    if isinstance(value, int):
+        return ["integer", value]
+    if isinstance(value, float):
+        return ["number", value]
+    if isinstance(value, list):
+        return ["array", [_type_tagged(item) for item in value]]
+    if isinstance(value, dict):
+        return ["object", {key: _type_tagged(item) for key, item in value.items()}]
+    return [type(value).__name__, value]
 
 
 def check_type_strict(val: Any, expected: str) -> bool:
@@ -265,11 +289,34 @@ class InstanceValidator:
                 schema["items"], current_doc, origin_rel, f"{schema_loc}/items", visited
             )
 
-        if "anyOf" in schema and isinstance(schema["anyOf"], list):
-            for idx, alt in enumerate(schema["anyOf"]):
+        for combinator in ("anyOf", "allOf"):
+            if combinator in schema and isinstance(schema[combinator], list):
+                for idx, alt in enumerate(schema[combinator]):
+                    self.check_reachable_schema_keywords(
+                        alt, current_doc, origin_rel, f"{schema_loc}/{combinator}/{idx}", visited
+                    )
+
+        for applicator in ("not", "if", "then", "else"):
+            if applicator in schema and isinstance(schema[applicator], dict):
                 self.check_reachable_schema_keywords(
-                    alt, current_doc, origin_rel, f"{schema_loc}/anyOf/{idx}", visited
+                    schema[applicator], current_doc, origin_rel, f"{schema_loc}/{applicator}", visited
                 )
+
+    def _conforms(
+        self,
+        schema: Any,
+        instance: Any,
+        data_path: str,
+        current_doc: dict[str, Any],
+        origin_rel: str,
+        schema_loc: str,
+    ) -> bool:
+        """Returns whether the instance validates against a subschema (for not/if)."""
+        try:
+            self.validate_node(schema, instance, data_path, current_doc, origin_rel, schema_loc)
+        except JsonInstanceValidationError:
+            return False
+        return True
 
     def validate_node(
         self,
@@ -387,8 +434,16 @@ class InstanceValidator:
                         f"numeric value {instance} is less than minimum {min_val}",
                         "minimum",
                     )
+            if "maximum" in schema:
+                max_val = schema["maximum"]
+                if instance > max_val:
+                    raise JsonInstanceValidationError(
+                        data_path,
+                        f"numeric value {instance} is greater than maximum {max_val}",
+                        "maximum",
+                    )
 
-        # 7. Array-specific keywords: minItems, maxItems, items
+        # 7. Array-specific keywords: minItems, maxItems, uniqueItems, items
         if isinstance(instance, list):
             if "minItems" in schema:
                 mi = schema["minItems"]
@@ -406,6 +461,18 @@ class InstanceValidator:
                         f"array length {len(instance)} is greater than maxItems {mi}",
                         "maxItems",
                     )
+            if schema.get("uniqueItems") is True:
+                # Type-strict equality (1, 1.0, and True are distinct), matching const/enum.
+                seen_items: list[str] = []
+                for i, item in enumerate(instance):
+                    key = json.dumps(_type_tagged(item), sort_keys=True)
+                    if key in seen_items:
+                        raise JsonInstanceValidationError(
+                            f"{data_path}[{i}]",
+                            "array items are not unique",
+                            "uniqueItems",
+                        )
+                    seen_items.append(key)
             if "items" in schema:
                 item_schema = schema["items"]
                 for i, item in enumerate(instance):
@@ -419,8 +486,16 @@ class InstanceValidator:
                         f"{schema_loc}/items",
                     )
 
-        # 8. Object-specific keywords: required, properties, additionalProperties
+        # 8. Object-specific keywords: maxProperties, required, properties, additionalProperties
         if isinstance(instance, dict):
+            if "maxProperties" in schema:
+                mp = schema["maxProperties"]
+                if len(instance) > mp:
+                    raise JsonInstanceValidationError(
+                        data_path,
+                        f"object has {len(instance)} properties, more than maxProperties {mp}",
+                        "maxProperties",
+                    )
             if "required" in schema:
                 req_props = schema["required"]
                 for prop_name in req_props:
@@ -487,6 +562,53 @@ class InstanceValidator:
                     data_path,
                     f"value failed all anyOf branches (last branch error: {last_err})",
                     "anyOf",
+                )
+
+        # 10. allOf: every branch must hold (the first failure is reported).
+        if "allOf" in schema:
+            for idx, branch in enumerate(schema["allOf"]):
+                self.validate_node(
+                    branch,
+                    instance,
+                    data_path,
+                    current_doc,
+                    origin_rel,
+                    f"{schema_loc}/allOf/{idx}",
+                )
+
+        # 11. not
+        if "not" in schema:
+            if self._conforms(
+                schema["not"], instance, data_path, current_doc, origin_rel, f"{schema_loc}/not"
+            ):
+                raise JsonInstanceValidationError(
+                    data_path,
+                    "value matches a schema it must not match",
+                    "not",
+                )
+
+        # 12. if/then/else: `then` applies when `if` holds, `else` when it does not.
+        if "if" in schema:
+            if self._conforms(
+                schema["if"], instance, data_path, current_doc, origin_rel, f"{schema_loc}/if"
+            ):
+                if "then" in schema:
+                    self.validate_node(
+                        schema["then"],
+                        instance,
+                        data_path,
+                        current_doc,
+                        origin_rel,
+                        f"{schema_loc}/then",
+                    )
+            elif "else" in schema:
+                self.validate_node(
+                    schema["else"],
+                    instance,
+                    data_path,
+                    current_doc,
+                    origin_rel,
+                    f"{schema_loc}/else",
                 )
 
     def validate(self, schema_doc: dict[str, Any], instance: Any, schema_name: str = "root") -> None:

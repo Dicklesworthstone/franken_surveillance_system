@@ -12,7 +12,8 @@ use fss_core::{
 
 use crate::{
     ReferenceError, ReferenceProjectionSpec, ReferenceSituation, ReferenceSituationPublication,
-    project_reference_situation, seal_reference_publication_handoff,
+    SourceOmission, SourceOmissions, project_reference_situation,
+    project_reference_situation_with_source_omissions, seal_reference_publication_handoff,
 };
 
 fn basis() -> ContractBasis {
@@ -249,6 +250,111 @@ fn optional_omission_is_receipted_and_hydratable() -> Result<(), Box<dyn Error>>
             .any(|item| item.kind == "protected_world")
     );
     publication.verify()?;
+    Ok(())
+}
+
+fn source_omissions(class: &str, handles: &[&str]) -> Result<SourceOmissions, Box<dyn Error>> {
+    Ok(SourceOmissions {
+        omissions: vec![SourceOmission {
+            class: class.to_owned(),
+            omitted_count: handles.len() as u64,
+            transform: fss_core::CompressionTransform {
+                kind: fss_core::CompressionTransformKind::Aggregate,
+                scope: "per-subject worlds".to_owned(),
+                loss_class: fss_core::CompressionLossClass::DecisionPreserving,
+                details: Some("aggregated at the source".to_owned()),
+            },
+        }],
+        handles: handles
+            .iter()
+            .map(|handle| -> Result<fss_core::ExpansionHandle, Box<dyn Error>> {
+                Ok(fss_core::ExpansionHandle {
+                    handle: (*handle).to_owned(),
+                    purpose: format!("Hydrate {handle}."),
+                    estimated_cost: BudgetVector::builder().bytes(64).build()?,
+                })
+            })
+            .collect::<Result<_, _>>()?,
+    })
+}
+
+#[test]
+fn empty_source_omissions_project_exactly_the_reference_publication() -> Result<(), Box<dyn Error>>
+{
+    assert_eq!(
+        project_reference_situation_with_source_omissions(
+            situation(false)?,
+            &spec(10_000),
+            &SourceOmissions::default()
+        )?,
+        project_reference_situation(situation(false)?, &spec(10_000))?
+    );
+    Ok(())
+}
+
+#[test]
+fn source_omissions_are_receipted_with_every_member_handle() -> Result<(), Box<dyn Error>> {
+    let source = source_omissions("world_detail", &["fss://subject/a", "fss://subject/b"])?;
+    let publication = project_reference_situation_with_source_omissions(
+        situation(false)?,
+        &spec(10_000),
+        &source,
+    )?;
+    let receipt = &publication.compression_receipt;
+    assert!(receipt.omitted_classes.contains("world_detail"));
+    assert!(
+        receipt
+            .completeness
+            .iter()
+            .any(|row| row.domain == "world_detail"
+                && row.state == Completeness::Bounded
+                && row.omitted_count == 2)
+    );
+    for handle in &source.handles {
+        assert!(receipt.expansion_handles.contains(handle));
+    }
+    assert_eq!(receipt.transforms.last(), Some(&source.omissions[0].transform));
+    assert_eq!(
+        receipt.stop_reason,
+        fss_core::CompressionStopReason::TargetBudget
+    );
+    assert!(receipt.critical_preservation.is_lossless());
+    assert!(publication.context_pack.continuation.is_some());
+    publication.verify()?;
+    // The source omissions are bound into the projection identity.
+    assert_ne!(
+        publication.compression_receipt.receipt_id,
+        project_reference_situation(situation(false)?, &spec(10_000))?
+            .compression_receipt
+            .receipt_id
+    );
+    Ok(())
+}
+
+#[test]
+fn source_omissions_without_handles_or_hiding_in_an_item_kind_are_refused()
+-> Result<(), Box<dyn Error>> {
+    let mut unhydratable = source_omissions("world_detail", &["fss://subject/a"])?;
+    unhydratable.handles.clear();
+    assert!(matches!(
+        project_reference_situation_with_source_omissions(
+            situation(false)?,
+            &spec(10_000),
+            &unhydratable
+        ),
+        Err(ReferenceError::Contract(ContractError::EvidenceRequired))
+    ));
+    // A source class named like a selected context-item kind would merge into (and hide inside)
+    // that kind's completeness row.
+    let colliding = source_omissions("protected_world", &["fss://subject/a"])?;
+    assert!(matches!(
+        project_reference_situation_with_source_omissions(
+            situation(false)?,
+            &spec(10_000),
+            &colliding
+        ),
+        Err(ReferenceError::Contract(ContractError::IdempotencyConflict))
+    ));
     Ok(())
 }
 

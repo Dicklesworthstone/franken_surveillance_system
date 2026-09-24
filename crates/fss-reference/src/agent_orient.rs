@@ -18,6 +18,14 @@
 //! committed revision says. Affordances are listed with their operation, class, capability, and
 //! cost; none is ever executed here.
 //!
+//! Views scale by compact encoding, never by truncation: events are ranked by consequence, a view
+//! carries the per-event cells of its top-ranked events (and of every contradicted or tampered
+//! event) inline and summarizes the rest in [`CLAIM_EVENTS`], and every per-event world is
+//! aggregated into one world per kind that keeps the kind's maximum severity and protection
+//! (pulse folds them further into [`WORLD_PROTECTED_SUMMARY`]). Each published event keeps one
+//! stable, priced expansion slot in the compression receipt naming every world it hydrates, and
+//! [`explain_event`] is its H1 hydration.
+//!
 //! Every output is a pure function of the committed bytes: the capsule time is the latest
 //! committed evidence time, not the wall clock, so the same root yields identical output.
 
@@ -28,9 +36,11 @@ use std::path::Path;
 
 use fss_core::{
     ActionAffordance, AffordanceClass, AgentView, BudgetVector, CanonicalDecode, CanonicalEncode,
-    CanonicalEncoder, Completeness, ContentDigest, ContractError, EffectState, EventHypothesis,
-    EventId, EventState, ExplainQuestion, ExplainReceipt, KnowledgeCell, KnowledgeCellParams,
-    KnowledgeState, LedgerAnchor, MissionId, Obligation, ObligationId, ObligationState,
+    CanonicalEncoder, Completeness, CompressionLossClass, CompressionTransform,
+    CompressionTransformKind, ContentDigest, ContractError, EffectState, EventHypothesis, EventId,
+    EventState, ExpansionHandle, ExplainQuestion, ExplainReceipt, KnowledgeCell,
+    KnowledgeCellParams, KnowledgeState, LedgerAnchor, MissionId, ObjectiveContract,
+    ObjectiveContractParams, ObjectiveScope, Obligation, ObligationId, ObligationState,
     OperationId, OperationReceipt, OrientBudget, OrientProjection, PossibleWorld, PrincipalId,
     ProvenanceClass, ResourcePressure, SensorTamperStatus, SessionId, SituationCapsule,
     SituationFrame, TimestampNs, WorldEnvelope, orient_projection,
@@ -50,7 +60,8 @@ use crate::situation::{
 };
 use crate::situation_guard::ReferenceSituation;
 use crate::situation_sections::{
-    ReferenceProjectionSpec, ReferenceSituationPublication, project_reference_situation,
+    ReferenceProjectionSpec, ReferenceSituationPublication, SourceOmission, SourceOmissions,
+    project_reference_situation_with_source_omissions,
 };
 
 /// Capability registry row that admits a situation read (AOP-003, AOP-004, AOP-009).
@@ -86,6 +97,16 @@ pub const AFFORDANCE_PLAN: &str = "affordance:orient:plan";
 pub const AFFORDANCE_EXPLAIN_PREFIX: &str = "affordance:explain:";
 /// Affordance-identity prefix of one unexposed effect reconciliation.
 pub const AFFORDANCE_RECONCILE_PREFIX: &str = "affordance:reconcile:";
+/// Stable claim identity of the published-event summary cell.
+pub const CLAIM_EVENTS: &str = "claim:deployment:events";
+/// World-identity prefix of one per-kind aggregate of per-event worlds.
+pub const WORLD_EVENTS_PREFIX: &str = "world:events:";
+/// The single protected world the pulse heartbeat folds every protected world into.
+pub const WORLD_PROTECTED_SUMMARY: &str = "world:site:protected-worlds";
+/// Source-omission class of per-event knowledge cells summarized out of a view.
+pub const SOURCE_CLASS_EVENT_DETAIL: &str = "event_detail";
+/// Source-omission class of per-event worlds represented by per-kind aggregates.
+pub const SOURCE_CLASS_WORLD_DETAIL: &str = "protected_world_detail";
 
 /// Bounds applied while reading one deployment root.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -108,7 +129,7 @@ impl Default for OrientLimits {
             max_layout_bytes: crate::doctor::MAX_LAYOUT_BYTES,
             max_journal_bytes: 64 * 1024 * 1024,
             max_object_bytes: 16 * 1024 * 1024,
-            max_events: 16,
+            max_events: 128,
             max_revisions_per_event: 64,
         }
     }
@@ -169,6 +190,11 @@ pub struct RetainedEvent {
     pub committed_sequence: u64,
     /// Lineage sensor-tamper status recomputed from every committed revision.
     pub tamper: SensorTamperStatus,
+    /// Spool bytes read (and rehashed) for this lineage's manifests and revisions: the exact
+    /// source-evidence (H3) size of the event.
+    pub object_bytes: u64,
+    /// Spool objects read for this lineage.
+    pub object_reads: u64,
 }
 
 impl RetainedEvent {
@@ -457,6 +483,7 @@ pub fn read_deployment(
         }
         let mut revisions = Vec::new();
         let mut latest = None;
+        let (bytes_before, reads_before) = (reader.bytes_read, reader.files_read);
         for (generation, (root_digest, witness, sequence)) in generations {
             let manifest = ObjectManifest::from_canonical_bytes(&reader.read_object(
                 &objects,
@@ -495,6 +522,8 @@ pub fn read_deployment(
             revision_digest,
             committed_sequence,
             tamper,
+            object_bytes: reader.bytes_read - bytes_before,
+            object_reads: reader.files_read - reads_before,
         });
     }
     events.sort_by(|left, right| left.event.event_id.cmp(&right.event.event_id));
@@ -530,6 +559,114 @@ pub struct OrientRequest {
     /// Explicit context-token budget; `None` admits at the view's registered target, falling back
     /// to the registered maximum with an explicit degradation.
     pub budget_tokens: Option<u64>,
+}
+
+impl OrientRequest {
+    /// Canonical digest of this request at `anchor`: the response's request identity and the
+    /// objective contract's source digest.
+    #[must_use]
+    pub fn digest_at(&self, anchor: &LedgerAnchor) -> ContentDigest {
+        digest_of("fss.reference_orient_request.v1", |encoder| {
+            encoder.text(self.view.id());
+            self.principal.encode_canonical(encoder);
+            encoder.u64(self.budget_tokens.unwrap_or(0));
+            anchor.encode_canonical(encoder);
+        })
+    }
+}
+
+/// Views that carry the per-event knowledge cells of their top-ranked events inline; every other
+/// event is summarized by [`CLAIM_EVENTS`] and the per-state boundaries (and stays hydratable).
+/// Events carrying contradicting evidence or open sensor tamper are always inline. `brief` and
+/// `epistemic_map` also list the explanation of the highest-consequence event.
+#[must_use]
+pub const fn inline_event_budget(view: AgentView) -> usize {
+    match view {
+        AgentView::EpistemicMap => 2,
+        _ => 0,
+    }
+}
+
+/// One ranked item of the orientation's attention frontier.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AttentionItem {
+    /// Stable item identity.
+    pub item_id: String,
+    /// Item kind (`event`, `coverage_gap`, `obligation`, `indeterminate_effect`).
+    pub kind: &'static str,
+    /// Registered priority class.
+    pub priority_class: &'static str,
+    /// Mission-scope membership: 1.0 for every item inside the orientation scope (the whole
+    /// deployment). It is not a learned relevance score.
+    pub mission_relevance: f64,
+    /// Registered consequence severity (0..=5) of the highest protected world the item keeps
+    /// live, as a number; not a calibrated probability.
+    pub decision_impact: f64,
+    /// Why the item needs attention.
+    pub reason: String,
+    /// Handle that hydrates the item.
+    pub handle: String,
+}
+
+/// One assumption the orientation rests on, with the cheapest way to retire it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EpistemicDebtItem {
+    /// Stable debt identity.
+    pub debt_id: String,
+    /// The assumption.
+    pub assumption: String,
+    /// Why it is not yet discharged.
+    pub deferred_reason: String,
+    /// Decisions that depend on it.
+    pub dependent_decisions: Vec<String>,
+    /// Consequence if it is wrong.
+    pub consequence_if_wrong: String,
+    /// Cheapest discriminating test.
+    pub cheapest_test: String,
+    /// What should trigger a review.
+    pub review_trigger: String,
+}
+
+/// Validity of an anchor-pinned orientation: it claims nothing beyond its anchor.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OrientValidity {
+    /// The anchor's evidence time: no validity is claimed past the anchor (the read is pinned to
+    /// the committed prefix, not to a wall-clock horizon).
+    pub valid_until: TimestampNs,
+    /// Observable changes that invalidate the orientation.
+    pub invalidators: Vec<String>,
+    /// Stable triggers that require a re-anchor.
+    pub reanchor_required_on: Vec<String>,
+}
+
+/// Hydration slot of one published event: what it hydrates and its price.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EventHydration {
+    /// The event.
+    pub event_id: EventId,
+    /// Stable expansion slot (`fss://event/<id>/revision/<n>`).
+    pub handle: String,
+    /// Latest committed revision digest (the handle's subject).
+    pub revision_digest: ContentDigest,
+    /// Every per-event world the slot hydrates.
+    pub world_ids: Vec<String>,
+    /// The protected ones among them.
+    pub protected_world_ids: Vec<String>,
+    /// Whether the event's knowledge cells are inline in this view.
+    pub cells_inline: bool,
+    /// Knowledge cells the event contributes when inline.
+    pub cell_count: usize,
+    /// Knowledge state of the event's physical-presence claim.
+    pub physical_state: KnowledgeState,
+    /// Highest consequence severity among the event's protected worlds.
+    pub consequence_severity: u8,
+    /// One-line H0 synopsis (revision, lifecycle state, corroboration).
+    pub summary: String,
+    /// Conservative price of the H1 synopsis (`fss explain`): one full read-only deployment read
+    /// answered under the `decision_diff` view maximum.
+    pub synopsis_cost: BudgetVector,
+    /// Exact H3 size: the event's retained, rehashed spool objects.
+    pub source_cost: BudgetVector,
 }
 
 /// Why an orientation could not be compiled for a readable deployment.
@@ -620,6 +757,27 @@ pub struct DeploymentOrientation {
     pub requested: BudgetVector,
     /// Resources consumed by the answer (reads and context tokens; time is not metered).
     pub consumed: BudgetVector,
+    /// Canonical request digest ([`OrientRequest::digest_at`]).
+    pub request_digest: ContentDigest,
+    /// The read-only orientation objective this answer serves.
+    pub objective: ObjectiveContract,
+    /// Ranked attention frontier.
+    pub attention: Vec<AttentionItem>,
+    /// Assumptions the orientation rests on.
+    pub epistemic_debt: Vec<EpistemicDebtItem>,
+    /// Anchor-bound validity.
+    pub validity: OrientValidity,
+    /// Hydration slot of every published event, in consequence-rank order.
+    pub hydration: Vec<EventHydration>,
+    /// Highest-consequence unresolved event, when any is published.
+    pub headline_event: Option<EventId>,
+    /// Every world the deployment keeps live (per-event worlds plus deployment worlds), before
+    /// class aggregation.
+    pub candidate_world_count: usize,
+    /// Per-event worlds represented by class aggregates in this capsule.
+    pub aggregated_world_count: usize,
+    /// Privacy policy generation the answer is projected under (the anchor's privacy epoch).
+    pub privacy_generation_id: String,
 }
 
 impl DeploymentOrientation {
@@ -648,6 +806,16 @@ const fn severity_rank(state: KnowledgeState) -> u8 {
         KnowledgeState::Known => 1,
         KnowledgeState::NotApplicable => 0,
     }
+}
+
+/// A compact identity label: the first 128 bits (32 hex digits) of a digest. Every context item
+/// repeats the frame, envelope, and deployment identities in its basis, so their length is paid
+/// once per item under the view budget; the full digests stay published (frame digest, envelope
+/// digest, decision fingerprint), and a 128-bit label keeps collisions out of reach.
+fn short_identity(value: ContentDigest) -> String {
+    let text = value.to_text();
+    let hex = text.split_once(':').map_or(text.as_str(), |(_, hex)| hex);
+    hex.chars().take(32).collect()
 }
 
 fn digest_of(domain: &str, parts: impl FnOnce(&mut CanonicalEncoder)) -> ContentDigest {
@@ -687,6 +855,25 @@ struct EventSection {
     at_risk: Vec<String>,
     warnings: Vec<String>,
     proof_roots: Vec<ContentDigest>,
+    /// Knowledge state of the event's physical-presence claim.
+    physical_state: KnowledgeState,
+    /// Whether any of the event's cells carries contradicting evidence.
+    contradicted: bool,
+}
+
+impl EventSection {
+    fn worlds(&self) -> impl Iterator<Item = &PossibleWorld> {
+        self.alternatives.iter().chain(&self.residuals)
+    }
+
+    /// Highest consequence severity among the event's protected worlds.
+    fn protected_severity(&self) -> u8 {
+        self.worlds()
+            .filter(|world| world.protected)
+            .map(|world| world.consequence_severity)
+            .max()
+            .unwrap_or(0)
+    }
 }
 
 fn event_section(retained: &RetainedEvent) -> Result<EventSection, ReferenceError> {
@@ -892,6 +1079,7 @@ fn event_section(retained: &RetainedEvent) -> Result<EventSection, ReferenceErro
     proof_roots.extend(event.evidence.iter().map(|edge| edge.digest));
     proof_roots.extend(event.model_receipts.iter().copied());
     proof_roots.extend(tamper_roots.iter().copied());
+    let contradicted = cells.iter().any(|cell| !cell.contradictions().is_empty());
     Ok(EventSection {
         cells,
         alternatives,
@@ -901,37 +1089,137 @@ fn event_section(retained: &RetainedEvent) -> Result<EventSection, ReferenceErro
         at_risk,
         warnings,
         proof_roots,
+        physical_state,
+        contradicted,
     })
 }
 
-/// One listed (never executed) affordance of the orientation frontier.
-struct ListedAffordance<'a> {
-    affordance_id: String,
-    operation: &'a str,
-    target: String,
-    rationale: String,
-    class: AffordanceClass,
-    supported_worlds: BTreeSet<String>,
-    required_capability: &'a str,
-    cost: BudgetVector,
+/// One published event, compiled and ranked for a view.
+struct PlannedEvent<'a> {
+    retained: &'a RetainedEvent,
+    section: EventSection,
+    /// Whether the event's knowledge cells are inline in the view's capsule.
+    inline: bool,
 }
 
-impl ListedAffordance<'_> {
-    fn build(self) -> ActionAffordance {
-        ActionAffordance {
-            affordance_id: self.affordance_id,
-            operation: self.operation.to_owned(),
-            target: self.target,
-            rationale: self.rationale,
-            class: self.class,
-            supported_worlds: self.supported_worlds,
-            unsafe_worlds: BTreeSet::new(),
-            required_capabilities: BTreeSet::from([self.required_capability.to_owned()]),
-            cost: self.cost,
-            reversible: true,
-            branch_predicate: None,
+impl PlannedEvent<'_> {
+    fn id(&self) -> &str {
+        self.retained.event.event_id.as_str()
+    }
+}
+
+/// Consequence order: highest protected severity, open tamper, unresolved, most recently
+/// committed, then event identity (deterministic).
+fn consequence_order(left: &PlannedEvent<'_>, right: &PlannedEvent<'_>) -> std::cmp::Ordering {
+    let key = |event: &PlannedEvent<'_>| {
+        (
+            std::cmp::Reverse(event.section.protected_severity()),
+            std::cmp::Reverse(event.retained.tamper.has_open_tamper()),
+            std::cmp::Reverse(!matches!(
+                event.retained.event.state,
+                EventState::Resolved | EventState::Rejected
+            )),
+            std::cmp::Reverse(event.retained.committed_sequence),
+        )
+    };
+    key(left)
+        .cmp(&key(right))
+        .then_with(|| left.id().cmp(right.id()))
+}
+
+fn planned_events<'a>(
+    snapshot: &'a DeploymentSnapshot,
+    view: AgentView,
+) -> Result<Vec<PlannedEvent<'a>>, ReferenceError> {
+    let mut planned = Vec::with_capacity(snapshot.events.len());
+    for retained in &snapshot.events {
+        planned.push(PlannedEvent {
+            section: event_section(retained)?,
+            retained,
+            inline: false,
+        });
+    }
+    planned.sort_by(consequence_order);
+    let budget = inline_event_budget(view);
+    for (rank, event) in planned.iter_mut().enumerate() {
+        // Contradictions and open tamper are non-droppable: those events are always inline.
+        event.inline =
+            rank < budget || event.section.contradicted || event.retained.tamper.has_open_tamper();
+    }
+    Ok(planned)
+}
+
+/// Class key of one per-event world: `world:event:<id>:<kind>` → `<kind>`.
+fn world_kind<'w>(world: &'w PossibleWorld, event: &str) -> &'w str {
+    world
+        .world_id
+        .strip_prefix(&format!("world:event:{event}:"))
+        .unwrap_or(world.world_id.as_str())
+}
+
+/// Aggregate of one world kind across events.
+struct WorldClass {
+    residual: bool,
+    description: String,
+    members: Vec<String>,
+    severity: u8,
+    protected: bool,
+}
+
+/// Aggregates every per-event world into one world per kind, preserving the maximum severity and
+/// protection of its members.
+fn aggregate_worlds(
+    planned: &[PlannedEvent<'_>],
+) -> (
+    BTreeMap<String, WorldClass>,
+    BTreeMap<String, BTreeSet<String>>,
+) {
+    let mut classes: BTreeMap<String, WorldClass> = BTreeMap::new();
+    let mut memberships: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for event in planned {
+        let lists = [
+            (false, &event.section.alternatives),
+            (true, &event.section.residuals),
+        ];
+        for (residual, worlds) in lists {
+            for world in worlds {
+                let kind = world_kind(world, event.id()).to_owned();
+                let class_id = format!("{WORLD_EVENTS_PREFIX}{kind}");
+                let class = classes
+                    .entry(class_id.clone())
+                    .or_insert_with(|| WorldClass {
+                        residual,
+                        description: world.description.clone(),
+                        members: Vec::new(),
+                        severity: 0,
+                        protected: false,
+                    });
+                class.members.push(world.world_id.clone());
+                class.severity = class.severity.max(world.consequence_severity);
+                class.protected |= world.protected;
+                memberships
+                    .entry(event.id().to_owned())
+                    .or_default()
+                    .insert(class_id);
+            }
         }
     }
+    (classes, memberships)
+}
+
+/// `1 indeterminate, 2 rejected` over the latest committed revisions.
+fn state_counts(planned: &[PlannedEvent<'_>]) -> String {
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for event in planned {
+        *counts
+            .entry(event.retained.event.state.as_str())
+            .or_default() += 1;
+    }
+    counts
+        .iter()
+        .map(|(state, count)| format!("{count} {state}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// The capsule, its proof roots, and the answer metadata compiled before projection.
@@ -940,6 +1228,15 @@ struct CompiledSituation {
     proof_roots: BTreeSet<ContentDigest>,
     degradation: Vec<String>,
     warnings: Vec<String>,
+    source: SourceOmissions,
+    hydration: Vec<EventHydration>,
+    headline_event: Option<EventId>,
+    candidate_world_count: usize,
+    aggregated_world_count: usize,
+    epistemic_state: KnowledgeState,
+    contradictions: Vec<String>,
+    attention: Vec<AttentionItem>,
+    epistemic_debt: Vec<EpistemicDebtItem>,
 }
 
 fn compile_capsule(
@@ -960,16 +1257,11 @@ fn compile_capsule(
         })
     ))?;
     let basis = fss_core::reference_contract_basis();
-    let deployment_handle = format!("fss://deployment/{site_digest}");
+    let deployment_handle = format!("fss://deployment/{}", short_identity(site_digest));
 
     let mut degradation = vec![
         "No durable agent session exists (session.open is not exposed): this capsule is bound \
          to a deterministic read-only session identity and persists nothing."
-            .to_owned(),
-        "The payload renders the fss-core SituationCapsule and reference publication sections; \
-         situation_capsule.v1 fields without a Rust counterpart (objectiveContract, \
-         attentionFrontier, meaningfulDelta, epistemicDebt, validity) are not emitted, and the \
-         anchor keeps the LedgerAnchor shape."
             .to_owned(),
     ];
     let mut warnings = Vec::new();
@@ -984,6 +1276,9 @@ fn compile_capsule(
         snapshot.ledger_root
     };
 
+    let planned = planned_events(snapshot, request.view)?;
+    let headline = planned.first();
+
     // Deployment-state cells: exactly what the committed bytes establish.
     let families = if snapshot.family_counts.is_empty() {
         "none".to_owned()
@@ -995,26 +1290,33 @@ fn compile_capsule(
             .collect::<Vec<_>>()
             .join(", ")
     };
-    let mut cells = vec![
+    let known_cell = |claim: &str, statement: String, evidence: Vec<ContentDigest>| {
         cell(KnowledgeCellParams {
-            claim_id: CLAIM_LEDGER_HEAD.to_owned(),
-            statement: format!(
+            claim_id: claim.to_owned(),
+            statement,
+            knowledge_state: KnowledgeState::Known,
+            provenance: ProvenanceClass::Derived,
+            hypothesis: None,
+            evidence,
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: None,
+        })
+    };
+    let mut cells = vec![
+        known_cell(
+            CLAIM_LEDGER_HEAD,
+            format!(
                 "The authority ledger holds {} at commit {} (ledger epoch {}); committed deltas: {families}.",
                 plural(snapshot.batch_count, "committed batch", "committed batches"),
                 anchor.commit_sequence,
                 anchor.ledger_epoch
             ),
-            knowledge_state: KnowledgeState::Known,
-            provenance: ProvenanceClass::Derived,
-            hypothesis: None,
-            evidence: vec![ledger_evidence],
-            contradictions: Vec::new(),
-            valid_until: None,
-            state_basis: None,
-        })?,
-        cell(KnowledgeCellParams {
-            claim_id: CLAIM_IMPORTS.to_owned(),
-            statement: format!(
+            vec![ledger_evidence],
+        )?,
+        known_cell(
+            CLAIM_IMPORTS,
+            format!(
                 "{} retained at this anchor.",
                 plural(
                     snapshot.completed_imports.len(),
@@ -1022,21 +1324,15 @@ fn compile_capsule(
                     "completed file imports are"
                 )
             ),
-            knowledge_state: KnowledgeState::Known,
-            provenance: ProvenanceClass::Derived,
-            hypothesis: None,
-            evidence: if snapshot.completed_imports.is_empty() {
+            if snapshot.completed_imports.is_empty() {
                 vec![ledger_evidence]
             } else {
                 snapshot.completed_imports.clone()
             },
-            contradictions: Vec::new(),
-            valid_until: None,
-            state_basis: None,
-        })?,
-        cell(KnowledgeCellParams {
-            claim_id: CLAIM_EFFECT_JOURNAL.to_owned(),
-            statement: if snapshot.effect_journal_present {
+        )?,
+        known_cell(
+            CLAIM_EFFECT_JOURNAL,
+            if snapshot.effect_journal_present {
                 format!(
                     "The durable effect journal holds {} and {} ({} open).",
                     plural(snapshot.operations.len(), "operation", "operations"),
@@ -1046,18 +1342,12 @@ fn compile_capsule(
             } else {
                 "No durable effect journal exists, so no effect was ever prepared.".to_owned()
             },
-            knowledge_state: KnowledgeState::Known,
-            provenance: ProvenanceClass::Derived,
-            hypothesis: None,
-            evidence: vec![snapshot.effect_journal_digest],
-            contradictions: Vec::new(),
-            valid_until: None,
-            state_basis: None,
-        })?,
+            vec![snapshot.effect_journal_digest],
+        )?,
         cell(KnowledgeCellParams {
             claim_id: CLAIM_COVERAGE.to_owned(),
-            statement: "No CoverageWitness is retained: current site activity is not observable \
-                        and absence is not certified."
+            statement: "No CoverageWitness is retained: site activity is not observable, and a \
+                        missing event is not absence."
                 .to_owned(),
             knowledge_state: KnowledgeState::NotObservable,
             provenance: ProvenanceClass::Derived,
@@ -1073,10 +1363,37 @@ fn compile_capsule(
         CLAIM_IMPORTS.to_owned(),
         CLAIM_EFFECT_JOURNAL.to_owned(),
     ]);
-    unknown.push(
-        "Current site activity is not observable; a missing event is not absence.".to_owned(),
-    );
 
+    let corroborated = planned
+        .iter()
+        .filter(|event| event.retained.corroborated())
+        .count();
+    let tampered = planned
+        .iter()
+        .filter(|event| event.retained.tamper.has_open_tamper())
+        .count();
+    if let Some(top) = headline {
+        nominal.insert(CLAIM_EVENTS.to_owned());
+        cells.push(known_cell(
+            CLAIM_EVENTS,
+            format!(
+                "{}: {}; {corroborated} corroborated; {tampered} with open sensor tamper; highest \
+                 consequence: {}.",
+                plural(planned.len(), "published event", "published events"),
+                state_counts(&planned),
+                top.id()
+            ),
+            vec![ledger_evidence],
+        )?);
+    }
+
+    // Worlds: one aggregate per world kind across every published event, keeping the maximum
+    // severity and protection of its members; the per-event worlds hydrate through the handles.
+    let (world_classes, memberships) = aggregate_worlds(&planned);
+    let aggregated_world_count: usize = world_classes
+        .values()
+        .map(|class| class.members.len())
+        .sum();
     let mut alternatives = Vec::new();
     let mut residuals = vec![PossibleWorld {
         world_id: WORLD_UNOBSERVED_ACTIVITY.to_owned(),
@@ -1086,30 +1403,131 @@ fn compile_capsule(
         consequence_severity: 4,
         protected: true,
     }];
-    let mut coverage_handles = BTreeSet::from([format!("{deployment_handle}/coverage")]);
-    let mut event_worlds: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for retained in &snapshot.events {
-        let section = event_section(retained)?;
-        let worlds: BTreeSet<String> = section
-            .alternatives
+    for (class_id, class) in &world_classes {
+        let world = PossibleWorld {
+            world_id: class_id.clone(),
+            description: format!(
+                "{} of {}: {}",
+                class.members.len(),
+                plural(planned.len(), "event", "events"),
+                class.description
+            ),
+            claim_ids: BTreeSet::from([CLAIM_EVENTS.to_owned()]),
+            evidence: vec![ledger_evidence],
+            consequence_severity: class.severity,
+            protected: class.protected,
+        };
+        if class.residual {
+            residuals.push(world);
+        } else {
+            alternatives.push(world);
+        }
+    }
+
+    if heartbeat && !planned.is_empty() {
+        // The heartbeat folds every protected world into one summary world; the per-kind worlds
+        // are inline in brief, and every per-event world hydrates through its event's handle.
+        let severity = alternatives
             .iter()
-            .chain(&section.residuals)
-            .map(|world| world.world_id.clone())
-            .collect();
-        event_worlds.insert(retained.event.event_id.as_str().to_owned(), worlds);
-        nominal.insert(section.lifecycle_claim.clone());
-        cells.extend(section.cells);
-        alternatives.extend(section.alternatives);
-        residuals.extend(section.residuals);
-        unknown.extend(section.unknown);
-        at_risk.extend(section.at_risk);
-        warnings.extend(section.warnings);
-        proof_roots.extend(section.proof_roots);
-        coverage_handles.insert(format!(
-            "fss://event/{}/coverage",
-            retained.event.event_id.as_str()
+            .chain(&residuals)
+            .filter(|world| world.protected)
+            .map(|world| world.consequence_severity)
+            .max()
+            .unwrap_or(0);
+        let folded = alternatives
+            .iter()
+            .chain(&residuals)
+            .filter(|world| world.protected)
+            .count();
+        residuals = vec![PossibleWorld {
+            world_id: WORLD_PROTECTED_SUMMARY.to_owned(),
+            description: format!(
+                "{folded} protected world kinds (max severity {severity}): unobserved activity, \
+                 {aggregated_world_count} event worlds."
+            ),
+            claim_ids: BTreeSet::from([CLAIM_COVERAGE.to_owned(), CLAIM_EVENTS.to_owned()]),
+            evidence: vec![ledger_evidence],
+            consequence_severity: severity,
+            protected: true,
+        }];
+        alternatives = Vec::new();
+    }
+
+    // Aggregated epistemic boundaries: one statement per physical knowledge state.
+    let mut by_state: BTreeMap<&str, usize> = BTreeMap::new();
+    for event in &planned {
+        if event.section.physical_state != KnowledgeState::Known {
+            *by_state
+                .entry(event.section.physical_state.as_str())
+                .or_default() += 1;
+        }
+    }
+    for (state, count) in by_state.iter().filter(|_| !heartbeat) {
+        unknown.push(format!(
+            "Whether {} real activity is {state}.",
+            plural(
+                *count,
+                "published event reflects",
+                "published events reflect"
+            )
         ));
     }
+    let rejected = planned
+        .iter()
+        .filter(|event| event.retained.event.state == EventState::Rejected)
+        .count();
+    if rejected > 0 {
+        unknown.push(format!(
+            "{} not a certified negative read.",
+            plural(rejected, "rejection is", "rejections are")
+        ));
+    }
+    let uncorroborated = planned.len() - corroborated;
+    if uncorroborated > 0 {
+        warnings.push(format!(
+            "{} single-sensor and not corroborated; none grants alert or effect authority.",
+            plural(uncorroborated, "published event is", "published events are")
+        ));
+    }
+
+    let mut coverage_handles = BTreeSet::from([format!("{deployment_handle}/coverage")]);
+    let mut inline_ids = Vec::new();
+    let mut contradictions = Vec::new();
+    let mut epistemic_state = KnowledgeState::NotObservable;
+    for event in &planned {
+        if severity_rank(event.section.physical_state) > severity_rank(epistemic_state) {
+            epistemic_state = event.section.physical_state;
+        }
+        contradictions.extend(
+            event
+                .section
+                .cells
+                .iter()
+                .filter(|cell| {
+                    !cell.contradictions().is_empty()
+                        || cell.knowledge_state() == KnowledgeState::Conflicted
+                })
+                .map(|cell| cell.claim_id().to_owned()),
+        );
+        // Every event's committed roots stay proof pointers; per-edge evidence joins only for
+        // inline events (the rest hydrates through the event's handle).
+        proof_roots.insert(event.retained.event_root);
+        proof_roots.insert(event.retained.revision_digest);
+        if !event.inline {
+            continue;
+        }
+        inline_ids.push(event.id().to_owned());
+        nominal.insert(event.section.lifecycle_claim.clone());
+        cells.extend(event.section.cells.iter().cloned());
+        proof_roots.extend(event.section.proof_roots.iter().copied());
+        if event.section.contradicted || event.retained.tamper.has_open_tamper() {
+            unknown.extend(event.section.unknown.iter().cloned());
+            at_risk.extend(event.section.at_risk.iter().cloned());
+        }
+        coverage_handles.insert(format!("fss://event/{}/coverage", event.id()));
+    }
+    contradictions.sort();
+    contradictions.dedup();
 
     let open_obligations = snapshot.open_obligations();
     let indeterminate = snapshot.indeterminate_operations();
@@ -1128,7 +1546,7 @@ fn compile_capsule(
         ));
     }
     if snapshot.doctor_verdict == DoctorVerdict::AttentionRequired {
-        at_risk.push("fss doctor reports attention_required for this root.".to_owned());
+        at_risk.push("fss doctor: attention_required.".to_owned());
         degradation.push(
             "The deployment doctor reports attention_required; only the committed prefix was read."
                 .to_owned(),
@@ -1144,19 +1562,17 @@ fn compile_capsule(
         .chain(&residuals)
         .map(|world| world.world_id.clone())
         .collect();
+    let deployment_read = read_cost(snapshot.bytes_read, snapshot.files_read)?;
     let mut affordances = vec![
         ListedAffordance {
             affordance_id: AFFORDANCE_REORIENT.to_owned(),
             operation: "session.orient",
             target: deployment_handle.clone(),
-            rationale: format!(
-                "Re-run `fss orient` after the ledger head advances past commit {}.",
-                anchor.commit_sequence
-            ),
+            rationale: format!("Re-orient after commit {}.", anchor.commit_sequence),
             class: AffordanceClass::Wait,
             supported_worlds: all_worlds,
             required_capability: CAPABILITY_SITUATION_READ,
-            cost: read_cost(snapshot.bytes_read, snapshot.files_read)?,
+            cost: deployment_read,
         }
         .build(),
     ];
@@ -1167,34 +1583,26 @@ fn compile_capsule(
                 .to_owned(),
         );
     } else {
-        for (event, worlds) in &event_worlds {
-            affordances.push(
-                ListedAffordance {
-                    affordance_id: format!("{AFFORDANCE_EXPLAIN_PREFIX}{event}"),
-                    operation: "explain",
-                    target: format!("fss://event/{event}"),
-                    rationale: format!(
-                        "Explain evidence and knowledge state: `fss explain --event-id {event}`."
-                    ),
-                    class: AffordanceClass::Probe,
-                    supported_worlds: worlds.clone(),
-                    required_capability: CAPABILITY_EXPLAIN,
-                    cost: read_cost(snapshot.bytes_read, snapshot.files_read)?,
-                }
-                .build(),
-            );
+        for (rank, event) in planned.iter().enumerate() {
+            if !event.inline && rank > 0 {
+                continue;
+            }
+            affordances.push(explain_affordance(
+                event.retained,
+                memberships.get(event.id()).cloned().unwrap_or_default(),
+                deployment_read,
+            ));
         }
         affordances.push(
             ListedAffordance {
                 affordance_id: AFFORDANCE_DOCTOR.to_owned(),
                 operation: "doctor",
                 target: format!("{deployment_handle}/doctor"),
-                rationale: "Diagnose the root read-only: `fss doctor --json --root <dir>`."
-                    .to_owned(),
+                rationale: "Diagnose the root read-only (`fss doctor`).".to_owned(),
                 class: AffordanceClass::Probe,
                 supported_worlds: BTreeSet::new(),
                 required_capability: CAPABILITY_DOCTOR,
-                cost: read_cost(snapshot.bytes_read, snapshot.files_read)?,
+                cost: deployment_read,
             }
             .build(),
         );
@@ -1203,7 +1611,7 @@ fn compile_capsule(
                 affordance_id: AFFORDANCE_FOLLOW.to_owned(),
                 operation: "session.follow",
                 target: deployment_handle.clone(),
-                rationale: "session.follow is not exposed by this build.".to_owned(),
+                rationale: "Not exposed by this build.".to_owned(),
                 class: AffordanceClass::Unavailable,
                 supported_worlds: BTreeSet::new(),
                 required_capability: CAPABILITY_SITUATION_READ,
@@ -1216,9 +1624,7 @@ fn compile_capsule(
                 affordance_id: AFFORDANCE_PLAN.to_owned(),
                 operation: "plan",
                 target: deployment_handle.clone(),
-                rationale:
-                    "plan and commit are not exposed; no policy grants effect authority here."
-                        .to_owned(),
+                rationale: "Not exposed; no policy grants effect authority.".to_owned(),
                 class: AffordanceClass::Unavailable,
                 supported_worlds: BTreeSet::new(),
                 required_capability: CAPABILITY_PLAN_PREPARE,
@@ -1266,25 +1672,28 @@ fn compile_capsule(
     obligation_ids.sort();
     obligation_ids.dedup();
 
-    let corroborated = snapshot
-        .events
-        .iter()
-        .filter(|retained| retained.corroborated())
-        .count();
-    let now = vec![format!(
-        "Commit {}: {}, {} corroborated, {}, {} open.",
-        anchor.commit_sequence,
-        plural(snapshot.events.len(), "published event", "published events"),
-        corroborated,
-        plural(snapshot.completed_imports.len(), "import", "imports"),
-        plural(obligation_ids.len(), "obligation", "obligations"),
-    )];
+    let now = vec![match headline {
+        Some(top) => format!(
+            "Commit {}: {} ({}), {corroborated} corroborated, {} open; top: {}.",
+            anchor.commit_sequence,
+            plural(planned.len(), "event", "events"),
+            state_counts(&planned),
+            plural(obligation_ids.len(), "obligation", "obligations"),
+            top.id()
+        ),
+        None => format!(
+            "Commit {}: 0 events, {}, {} open.",
+            anchor.commit_sequence,
+            plural(snapshot.completed_imports.len(), "import", "imports"),
+            plural(obligation_ids.len(), "obligation", "obligations"),
+        ),
+    }];
     why.push(format!(
         "Compiled read-only from the committed ledger prefix (root {}) and effect journal.",
         snapshot.ledger_root
     ));
 
-    let envelope_identity = digest_of("fss.reference_orient_worlds.v1", |encoder| {
+    let envelope_identity = digest_of("fss.reference_orient_worlds.v2", |encoder| {
         encoder.text(&objective_id);
         anchor.encode_canonical(encoder);
         encoder.u64(alternatives.len() as u64);
@@ -1293,7 +1702,7 @@ fn compile_capsule(
         }
     });
     let world_envelope = WorldEnvelope {
-        envelope_id: format!("world-envelope:{envelope_identity}"),
+        envelope_id: format!("worlds:{}", short_identity(envelope_identity)),
         objective_id: objective_id.clone(),
         anchor: anchor.clone(),
         certified_core_claim_ids: nominal.clone(),
@@ -1311,7 +1720,7 @@ fn compile_capsule(
         .iter()
         .map(|digest| format!("fss://proof/{digest}"))
         .collect();
-    let identity = digest_of("fss.reference_orient_capsule.v1", |encoder| {
+    let identity = digest_of("fss.reference_orient_capsule.v2", |encoder| {
         encoder.digest(basis.basis_digest());
         encoder.text(request.view.id());
         encoder.text(&objective_id);
@@ -1329,7 +1738,7 @@ fn compile_capsule(
         }
     });
     let frame = SituationFrame {
-        frame_id: format!("frame:{identity}"),
+        frame_id: format!("frame:{}", short_identity(identity)),
         objective_id,
         anchor: anchor.clone(),
         world_envelope,
@@ -1359,12 +1768,461 @@ fn compile_capsule(
         mission_state: None,
     };
     capsule.validate()?;
+    for cell in &capsule.frame.knowledge_cells {
+        if severity_rank(cell.knowledge_state()) > severity_rank(epistemic_state) {
+            epistemic_state = cell.knowledge_state();
+        }
+    }
+
+    let hydration = event_hydration(snapshot, &planned)?;
+    let folded_worlds = if heartbeat && !planned.is_empty() {
+        let cost = BudgetVector::builder()
+            .tokens(u64::from(AgentView::Brief.maximum_tokens()))
+            .bytes(snapshot.bytes_read)
+            .storage_operations(snapshot.files_read)
+            .build()
+            .map_err(|_| ContractError::BudgetExhausted)?;
+        Some(ExpansionHandle {
+            handle: format!("{deployment_handle}/worlds"),
+            purpose: format!(
+                "Per-kind protected worlds ({WORLD_UNOBSERVED_ACTIVITY} and {WORLD_EVENTS_PREFIX}*) \
+                 via `fss orient --view brief`."
+            ),
+            estimated_cost: cost,
+        })
+    } else {
+        None
+    };
+    let source = source_omissions(
+        &planned,
+        &hydration,
+        aggregated_world_count,
+        world_classes.len(),
+        folded_worlds,
+    );
+    let candidate_world_count = aggregated_world_count + 1;
+    let attention = attention_frontier(snapshot, &planned, &deployment_handle);
+    let epistemic_debt = epistemic_debt(snapshot, &planned);
     Ok(CompiledSituation {
         capsule,
         proof_roots,
         degradation,
         warnings,
+        source,
+        hydration,
+        headline_event: headline.map(|top| top.retained.event.event_id.clone()),
+        candidate_world_count,
+        aggregated_world_count,
+        epistemic_state,
+        contradictions,
+        attention,
+        epistemic_debt,
     })
+}
+
+/// Listed (never executed) explanation of one event.
+fn explain_affordance(
+    retained: &RetainedEvent,
+    supported_worlds: BTreeSet<String>,
+    cost: BudgetVector,
+) -> ActionAffordance {
+    let event = retained.event.event_id.as_str();
+    ListedAffordance {
+        affordance_id: format!("{AFFORDANCE_EXPLAIN_PREFIX}{event}"),
+        operation: "explain",
+        target: format!("fss://event/{event}"),
+        rationale: "Explain this event (`fss explain`).".to_owned(),
+        class: AffordanceClass::Probe,
+        supported_worlds,
+        required_capability: CAPABILITY_EXPLAIN,
+        cost,
+    }
+    .build()
+}
+
+/// The hydration slot of every published event, in consequence-rank order.
+fn event_hydration(
+    snapshot: &DeploymentSnapshot,
+    planned: &[PlannedEvent<'_>],
+) -> Result<Vec<EventHydration>, ContractError> {
+    let synopsis_cost = BudgetVector::builder()
+        .tokens(u64::from(AgentView::DecisionDiff.maximum_tokens()))
+        .bytes(snapshot.bytes_read)
+        .storage_operations(snapshot.files_read)
+        .build()
+        .map_err(|_| ContractError::BudgetExhausted)?;
+    planned
+        .iter()
+        .map(|event| {
+            let retained = event.retained;
+            Ok(EventHydration {
+                event_id: retained.event.event_id.clone(),
+                handle: format!(
+                    "fss://event/{}/revision/{}",
+                    event.id(),
+                    retained.event.revision
+                ),
+                revision_digest: retained.revision_digest,
+                world_ids: event
+                    .section
+                    .worlds()
+                    .map(|world| world.world_id.clone())
+                    .collect(),
+                protected_world_ids: event
+                    .section
+                    .worlds()
+                    .filter(|world| world.protected)
+                    .map(|world| world.world_id.clone())
+                    .collect(),
+                cells_inline: event.inline,
+                cell_count: event.section.cells.len(),
+                physical_state: event.section.physical_state,
+                consequence_severity: event.section.protected_severity(),
+                summary: format!(
+                    "Revision {} in state {}; physical presence {}; {}.",
+                    retained.event.revision,
+                    retained.event.state.as_str(),
+                    event.section.physical_state.as_str(),
+                    if retained.corroborated() {
+                        "corroborated"
+                    } else {
+                        "not corroborated"
+                    }
+                ),
+                synopsis_cost,
+                source_cost: read_cost(retained.object_bytes, retained.object_reads)?,
+            })
+        })
+        .collect()
+}
+
+/// What this view compiled out at the source, and the priced handle of every event.
+fn source_omissions(
+    planned: &[PlannedEvent<'_>],
+    hydration: &[EventHydration],
+    aggregated_worlds: usize,
+    world_classes: usize,
+    folded_worlds: Option<ExpansionHandle>,
+) -> SourceOmissions {
+    if planned.is_empty() {
+        return SourceOmissions::default();
+    }
+    let mut omissions = Vec::new();
+    let summarized = planned.iter().filter(|event| !event.inline).count();
+    if summarized > 0 {
+        omissions.push(SourceOmission {
+            class: SOURCE_CLASS_EVENT_DETAIL.to_owned(),
+            omitted_count: summarized as u64,
+            transform: CompressionTransform {
+                kind: CompressionTransformKind::Summarize,
+                scope: "published events".to_owned(),
+                loss_class: CompressionLossClass::DecisionPreserving,
+                details: Some(format!(
+                    "{summarized} of {} events are summarized by {CLAIM_EVENTS} and the \
+                     per-state epistemic boundaries; each event's cells hydrate through its \
+                     handle.",
+                    planned.len()
+                )),
+            },
+        });
+    }
+    let folded = folded_worlds.is_some();
+    omissions.push(SourceOmission {
+        class: SOURCE_CLASS_WORLD_DETAIL.to_owned(),
+        // Folding also represents the deployment's unobserved-activity world.
+        omitted_count: aggregated_worlds as u64 + u64::from(folded),
+        transform: CompressionTransform {
+            kind: CompressionTransformKind::Aggregate,
+            scope: "per-event possible worlds".to_owned(),
+            loss_class: CompressionLossClass::DecisionPreserving,
+            details: Some(if folded {
+                format!(
+                    "{aggregated_worlds} per-event worlds and {WORLD_UNOBSERVED_ACTIVITY} are \
+                     folded into {WORLD_PROTECTED_SUMMARY}, keeping the maximum severity and \
+                     protection; every member hydrates through its handle."
+                )
+            } else {
+                format!(
+                    "{aggregated_worlds} per-event worlds are aggregated into {world_classes} \
+                     class worlds keeping each class's maximum severity and protection; every \
+                     member hydrates through its event's handle."
+                )
+            }),
+        },
+    });
+    let mut handles: Vec<ExpansionHandle> = hydration
+        .iter()
+        .map(|slot| ExpansionHandle {
+            handle: slot.handle.clone(),
+            purpose: format!(
+                "H1 synopsis of {} (`fss explain --event-id {}`): knowledge cells and worlds {}.",
+                slot.event_id.as_str(),
+                slot.event_id.as_str(),
+                slot.world_ids.join(", ")
+            ),
+            estimated_cost: slot.synopsis_cost,
+        })
+        .collect();
+    handles.extend(folded_worlds);
+    SourceOmissions { omissions, handles }
+}
+
+/// Ranked attention frontier: open obligations and indeterminate effects, the coverage gap, and
+/// the highest-consequence unresolved event.
+fn attention_frontier(
+    snapshot: &DeploymentSnapshot,
+    planned: &[PlannedEvent<'_>],
+    deployment_handle: &str,
+) -> Vec<AttentionItem> {
+    let mut items = Vec::new();
+    for operation in snapshot.indeterminate_operations() {
+        let id = operation.intent.operation_id.as_str();
+        items.push(AttentionItem {
+            item_id: format!("attention:effect:{id}"),
+            kind: "indeterminate_effect",
+            priority_class: "critical",
+            mission_relevance: 1.0,
+            decision_impact: 5.0,
+            reason: format!("Operation {id} may have occurred; reconcile before any resend."),
+            handle: format!("fss://operation/{id}"),
+        });
+    }
+    for obligation in snapshot.open_obligations() {
+        let id = obligation.obligation_id.as_str();
+        items.push(AttentionItem {
+            item_id: format!("attention:obligation:{id}"),
+            kind: "obligation",
+            priority_class: "critical",
+            mission_relevance: 1.0,
+            decision_impact: 5.0,
+            reason: format!(
+                "Obligation {id} is {}.",
+                obligation_state_str(obligation.state)
+            ),
+            handle: format!("fss://obligation/{id}"),
+        });
+    }
+    if let Some(top) = planned.first() {
+        let severity = top.section.protected_severity();
+        items.push(AttentionItem {
+            item_id: format!("attention:event:{}", top.id()),
+            kind: "event",
+            priority_class: if top.retained.tamper.has_open_tamper() {
+                "critical"
+            } else if severity >= 4 {
+                "high"
+            } else {
+                "normal"
+            },
+            mission_relevance: 1.0,
+            decision_impact: f64::from(severity),
+            reason: format!(
+                "Highest-consequence published event: state {}, physical presence {}, {}.",
+                top.retained.event.state.as_str(),
+                top.section.physical_state.as_str(),
+                if top.retained.corroborated() {
+                    "corroborated"
+                } else {
+                    "not corroborated"
+                }
+            ),
+            handle: format!("fss://event/{}", top.id()),
+        });
+    }
+    items.push(AttentionItem {
+        item_id: "attention:coverage:site".to_owned(),
+        kind: "coverage_gap",
+        priority_class: "high",
+        mission_relevance: 1.0,
+        decision_impact: 4.0,
+        reason: "No CoverageWitness is retained; absence cannot be certified.".to_owned(),
+        handle: format!("{deployment_handle}/coverage"),
+    });
+    // The schema bounds the frontier; everything past the head stays in obligations and
+    // indeterminateEffects, which are never truncated.
+    items.truncate(128);
+    items
+}
+
+/// Assumptions this orientation rests on.
+fn epistemic_debt(
+    snapshot: &DeploymentSnapshot,
+    planned: &[PlannedEvent<'_>],
+) -> Vec<EpistemicDebtItem> {
+    let mut debt = vec![EpistemicDebtItem {
+        debt_id: "debt:coverage:uncertified".to_owned(),
+        assumption: "Absence is never inferred: every interval without a CoverageWitness is \
+                     treated as unobserved."
+            .to_owned(),
+        deferred_reason: "No producer in this deployment retains CoverageWitness records."
+            .to_owned(),
+        dependent_decisions: vec!["any absence or all-clear conclusion".to_owned()],
+        consequence_if_wrong: "Treating unobserved time as clear would hide real activity."
+            .to_owned(),
+        cheapest_test: "Retain a continuous CoverageWitness over the zone and re-orient."
+            .to_owned(),
+        review_trigger: "A coverage witness is committed to the ledger.".to_owned(),
+    }];
+    let uncorroborated = planned
+        .iter()
+        .filter(|event| !event.retained.corroborated())
+        .count();
+    if uncorroborated > 0 {
+        debt.push(EpistemicDebtItem {
+            debt_id: "debt:events:failure-domain-independence".to_owned(),
+            assumption: "Failure domains are independent only when their names differ.".to_owned(),
+            deferred_reason: "No shared-failure-domain registry is retained.".to_owned(),
+            dependent_decisions: vec![format!(
+                "corroboration of {}",
+                plural(uncorroborated, "published event", "published events")
+            )],
+            consequence_if_wrong:
+                "Two sources sharing an unnamed failure could be miscounted as corroboration."
+                    .to_owned(),
+            cheapest_test: "Register each contributing sensor's failure domains.".to_owned(),
+            review_trigger: "Supporting evidence from a second failure domain is committed."
+                .to_owned(),
+        });
+    }
+    if snapshot.ledger_tail_uncommitted || snapshot.effect_tail_uncommitted {
+        debt.push(EpistemicDebtItem {
+            debt_id: "debt:journal:uncommitted-tail".to_owned(),
+            assumption: "Only the committed journal prefix is authority; tail bytes are ignored."
+                .to_owned(),
+            deferred_reason: "orient is read-only and never repairs a journal.".to_owned(),
+            dependent_decisions: vec!["every conclusion of this orientation".to_owned()],
+            consequence_if_wrong: "A torn tail could hide a committed record.".to_owned(),
+            cheapest_test: "Run `fss doctor --json --root <dir>`.".to_owned(),
+            review_trigger: "The doctor verdict changes.".to_owned(),
+        });
+    }
+    debt
+}
+
+/// One listed (never executed) affordance of the orientation frontier.
+struct ListedAffordance<'a> {
+    affordance_id: String,
+    operation: &'a str,
+    target: String,
+    rationale: String,
+    class: AffordanceClass,
+    supported_worlds: BTreeSet<String>,
+    required_capability: &'a str,
+    cost: BudgetVector,
+}
+
+impl ListedAffordance<'_> {
+    fn build(self) -> ActionAffordance {
+        ActionAffordance {
+            affordance_id: self.affordance_id,
+            operation: self.operation.to_owned(),
+            target: self.target,
+            rationale: self.rationale,
+            class: self.class,
+            supported_worlds: self.supported_worlds,
+            unsafe_worlds: BTreeSet::new(),
+            required_capabilities: BTreeSet::from([self.required_capability.to_owned()]),
+            cost: self.cost,
+            reversible: true,
+            branch_predicate: None,
+        }
+    }
+}
+
+/// The read-only objective every orientation answers.
+fn orientation_objective(
+    snapshot: &DeploymentSnapshot,
+    request: &OrientRequest,
+    capsule: &SituationCapsule,
+    request_digest: ContentDigest,
+    requested: BudgetVector,
+) -> Result<ObjectiveContract, ContractError> {
+    let anchor = &capsule.anchor;
+    let mut zones: Vec<String> = snapshot
+        .events
+        .iter()
+        .flat_map(|retained| retained.event.zone_ids.iter().cloned())
+        .collect();
+    zones.sort();
+    zones.dedup();
+    let decision = digest_of("fss.reference_orient_objective.v1", |encoder| {
+        encoder.digest(request_digest);
+        anchor.encode_canonical(encoder);
+        encoder.text(request.view.id());
+    });
+    ObjectiveContract::new(ObjectiveContractParams {
+        objective_id: capsule.frame.objective_id.clone(),
+        source_principal: request.principal.as_str().to_owned(),
+        source_request_digest: request_digest.to_text(),
+        desired_outcome: format!(
+            "A read-only {} orientation of deployment {} pinned to commit {}.",
+            request.view.name(),
+            snapshot.site_lineage,
+            anchor.commit_sequence
+        ),
+        success_predicates: vec![
+            "Every protected world is inline or hydratable through a receipted handle.".to_owned(),
+            "The context pack is admitted within the view's registered token budget.".to_owned(),
+        ],
+        failure_predicates: vec![
+            "The critical context does not fit the admitted budget \
+             (ERR-AGENT-CONTEXT-INCOMPLETE-001)."
+                .to_owned(),
+        ],
+        stop_conditions: vec!["The committed ledger prefix has been read once.".to_owned()],
+        hard_constraints: vec![
+            "Read-only: nothing under the root is created, written, locked, or repaired."
+                .to_owned(),
+            "No listed affordance is executed.".to_owned(),
+        ],
+        soft_preferences: Vec::new(),
+        scope: ObjectiveScope {
+            deployments: vec![snapshot.site_lineage.clone()],
+            zones,
+            subjects: Vec::new(),
+            devices: Vec::new(),
+            time_intervals: Vec::new(),
+            data_classes: ORIENT_DATA_CLASSES
+                .iter()
+                .map(|&class| class.to_owned())
+                .collect(),
+        },
+        budgets: requested,
+        allowed_actions: vec!["session.orient".to_owned()],
+        required_approvals: Vec::new(),
+        terminal_proof: vec![format!("fss://proof/{}", snapshot.ledger_root)],
+        decision_digest: decision.to_text(),
+    })
+}
+
+/// Data classes an orientation reads (every other class is outside its projection).
+pub const ORIENT_DATA_CLASSES: [&str; 4] = [
+    "authority-ledger",
+    "effect-journal",
+    "event-revisions",
+    "deployment-layout",
+];
+
+fn orientation_validity(snapshot: &DeploymentSnapshot) -> OrientValidity {
+    OrientValidity {
+        valid_until: snapshot.latest_evidence_time,
+        invalidators: vec![
+            format!(
+                "The authority ledger commits past sequence {}.",
+                snapshot.anchor.commit_sequence
+            ),
+            format!(
+                "The durable effect journal changes from {}.",
+                snapshot.effect_journal_digest
+            ),
+            "A schema, policy, privacy, or adapter-registry epoch changes.".to_owned(),
+        ],
+        reanchor_required_on: vec![
+            "ledger_head_advance".to_owned(),
+            "effect_journal_change".to_owned(),
+            "epoch_change".to_owned(),
+        ],
+    }
 }
 
 /// Section entry budget of the AOP-003 projection for one view.
@@ -1410,9 +2268,13 @@ fn is_budget_refusal(error: &ReferenceError) -> bool {
 
 /// Compiles one read-only orientation of `snapshot` for `request`.
 ///
-/// Supported views are `pulse`, `brief`, and `epistemic_map`. The critical context (protected
-/// worlds, epistemic boundaries, risks, obligations, next and blocked affordances) is never
-/// truncated: if it does not fit the admitted budget the orientation is refused with
+/// Supported views are `pulse`, `brief`, and `epistemic_map`. Every published event is ranked by
+/// consequence; the view carries the per-event cells of its top-ranked events (and of every event
+/// with contradicting evidence or open tamper) inline, summarizes the rest, and aggregates every
+/// per-event world into one world per kind that keeps the kind's maximum severity and protection.
+/// Each event keeps a priced hydration handle in the compression receipt. The critical context
+/// (protected worlds, epistemic boundaries, risks, obligations, next and blocked affordances) is
+/// never truncated: if it does not fit the admitted budget the orientation is refused with
 /// [`OrientError::ContextBudgetExceeded`].
 pub fn orient_deployment(
     snapshot: &DeploymentSnapshot,
@@ -1436,11 +2298,15 @@ pub fn orient_deployment(
     let situation = ReferenceSituation::new(compiled.capsule, compiled.proof_roots);
     let target = u64::from(request.view.target_tokens());
     let maximum = u64::from(request.view.maximum_tokens());
-    let (publication, target_tokens) = match request.budget_tokens {
-        Some(tokens) => match project_reference_situation(
+    let project = |situation: ReferenceSituation, tokens: u64, degraded: bool| {
+        project_reference_situation_with_source_omissions(
             situation,
-            &projection_spec(request.view, tokens, false)?,
-        ) {
+            &projection_spec(request.view, tokens, degraded)?,
+            &compiled.source,
+        )
+    };
+    let (publication, target_tokens) = match request.budget_tokens {
+        Some(tokens) => match project(situation, tokens, false) {
             Ok(publication) => (publication, tokens),
             Err(error) if is_budget_refusal(&error) => {
                 return Err(OrientError::ContextBudgetExceeded {
@@ -1450,55 +2316,30 @@ pub fn orient_deployment(
             }
             Err(error) => return Err(error.into()),
         },
-        None => match project_reference_situation(
-            situation.clone(),
-            &projection_spec(request.view, target, false)?,
-        ) {
+        None => match project(situation.clone(), target, false) {
             Ok(publication) => (publication, target),
-            Err(error) if is_budget_refusal(&error) => {
-                match project_reference_situation(
-                    situation,
-                    &projection_spec(request.view, maximum, true)?,
-                ) {
-                    Ok(publication) => {
-                        degradation.push(format!(
-                            "The critical context exceeds the {} target of {target} tokens; it \
-                             was admitted at the registered maximum of {maximum} tokens.",
-                            request.view.name()
-                        ));
-                        (publication, maximum)
-                    }
-                    Err(error) if is_budget_refusal(&error) => {
-                        return Err(OrientError::ContextBudgetExceeded {
-                            view: request.view,
-                            budget_tokens: maximum,
-                        });
-                    }
-                    Err(error) => return Err(error.into()),
+            Err(error) if is_budget_refusal(&error) => match project(situation, maximum, true) {
+                Ok(publication) => {
+                    degradation.push(format!(
+                        "The critical context exceeds the {} target of {target} tokens; it \
+                         was admitted at the registered maximum of {maximum} tokens.",
+                        request.view.name()
+                    ));
+                    (publication, maximum)
                 }
-            }
+                Err(error) if is_budget_refusal(&error) => {
+                    return Err(OrientError::ContextBudgetExceeded {
+                        view: request.view,
+                        budget_tokens: maximum,
+                    });
+                }
+                Err(error) => return Err(error.into()),
+            },
             Err(error) => return Err(error.into()),
         },
     };
     let capsule = &publication.situation.capsule;
     let projection = orient_projection(capsule, orient_budget(request.view)?)?;
-    let epistemic_state = capsule
-        .frame
-        .knowledge_cells
-        .iter()
-        .map(KnowledgeCell::knowledge_state)
-        .max_by_key(|state| severity_rank(*state))
-        .unwrap_or(KnowledgeState::Unknown);
-    let contradictions = capsule
-        .frame
-        .knowledge_cells
-        .iter()
-        .filter(|cell| {
-            !cell.contradictions().is_empty()
-                || cell.knowledge_state() == KnowledgeState::Conflicted
-        })
-        .map(|cell| cell.claim_id().to_owned())
-        .collect();
     let requested = BudgetVector::builder()
         .tokens(target_tokens)
         .build()
@@ -1514,6 +2355,19 @@ pub fn orient_deployment(
          context tokens only."
             .to_owned(),
     );
+    let summarized = compiled
+        .hydration
+        .iter()
+        .filter(|slot| !slot.cells_inline)
+        .count();
+    if !compiled.hydration.is_empty() {
+        degradation.push(format!(
+            "{} per-event worlds are aggregated into class worlds and {summarized} of {} events \
+             are summarized; each event hydrates through its receipted handle.",
+            compiled.aggregated_world_count,
+            compiled.hydration.len()
+        ));
+    }
     let open_obligations = capsule.obligations.clone();
     let mut indeterminate_effects: Vec<OperationId> = snapshot
         .indeterminate_operations()
@@ -1521,6 +2375,8 @@ pub fn orient_deployment(
         .map(|operation| operation.intent.operation_id.clone())
         .collect();
     indeterminate_effects.sort();
+    let request_digest = request.digest_at(&snapshot.anchor);
+    let objective = orientation_objective(snapshot, request, capsule, request_digest, requested)?;
     Ok(DeploymentOrientation {
         view: request.view,
         projection,
@@ -1529,36 +2385,58 @@ pub fn orient_deployment(
         indeterminate_effects,
         degradation,
         warnings: compiled.warnings,
-        contradictions,
-        epistemic_state,
+        contradictions: compiled.contradictions,
+        epistemic_state: compiled.epistemic_state,
         requested,
         consumed,
+        request_digest,
+        objective,
+        attention: compiled.attention,
+        epistemic_debt: compiled.epistemic_debt,
+        validity: orientation_validity(snapshot),
+        hydration: compiled.hydration,
+        headline_event: compiled.headline_event,
+        candidate_world_count: compiled.candidate_world_count,
+        aggregated_world_count: compiled.aggregated_world_count,
+        privacy_generation_id: format!("privacy-epoch:{}", snapshot.anchor.privacy_epoch),
         publication,
     })
 }
 
-/// One read-only explanation of a published event (AOP-011).
+/// One read-only explanation of a published event (AOP-011): the H1 synopsis behind the event's
+/// hydration handle.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EventExplanation {
     /// The retained event lineage explained.
     pub event: RetainedEvent,
     /// Bounded explain receipt binding the question, the event revision, and its evidence.
     pub receipt: ExplainReceipt,
-    /// The event's knowledge cells, exactly as compiled into the capsule.
+    /// The event's knowledge cells, compiled exactly as an inline capsule carries them.
     pub cells: Vec<KnowledgeCell>,
-    /// Retained worlds that name the event.
+    /// Every per-event world (the members its orientation aggregates).
     pub worlds: Vec<PossibleWorld>,
-    /// Affordance identities that target the event, plus the re-orient heartbeat.
+    /// Identities of the worlds that are adversarial residuals (the rest are material
+    /// alternatives).
+    pub residual_ids: BTreeSet<String>,
+    /// Listed (never executed) next moves: this event's explanation and the re-orient heartbeat.
+    pub affordances: Vec<ActionAffordance>,
+    /// Identities of [`Self::affordances`], sorted.
     pub next_actions: Vec<String>,
     /// Observations that would change the event's knowledge state.
     pub would_change: Vec<String>,
     /// Assumptions the explanation rests on.
     pub assumptions: Vec<String>,
+    /// Warnings that must accompany the answer.
+    pub warnings: Vec<String>,
+    /// The event's hydration slot (handle and prices).
+    pub hydration: EventHydration,
 }
 
-/// Explains one published event from a compiled `brief` orientation.
+/// Explains one published event against a compiled orientation of the same snapshot.
 ///
-/// Returns `Ok(None)` when no committed `event_revision` delta names `event_id`.
+/// The event's cells and worlds are compiled from its committed revision directly, so every
+/// published event is explainable whether or not the orientation carried it inline. Returns
+/// `Ok(None)` when no committed `event_revision` delta names `event_id`.
 pub fn explain_event(
     snapshot: &DeploymentSnapshot,
     orientation: &DeploymentOrientation,
@@ -1567,34 +2445,40 @@ pub fn explain_event(
     let Some(retained) = snapshot.event(event_id) else {
         return Ok(None);
     };
-    let prefix = format!("claim:event:{}:", event_id.as_str());
+    let Some(hydration) = orientation
+        .hydration
+        .iter()
+        .find(|slot| slot.event_id == *event_id)
+        .cloned()
+    else {
+        return Ok(None);
+    };
+    let section = event_section(retained)?;
     let capsule = orientation.capsule();
-    let cells: Vec<KnowledgeCell> = capsule
-        .frame
-        .knowledge_cells
+    let worlds: Vec<PossibleWorld> = section.worlds().cloned().collect();
+    let residual_ids = section
+        .residuals
         .iter()
-        .filter(|cell| cell.claim_id().starts_with(&prefix))
-        .cloned()
+        .map(|world| world.world_id.clone())
         .collect();
-    let world_prefix = format!("world:event:{}:", event_id.as_str());
-    let envelope = &capsule.frame.world_envelope;
-    let worlds: Vec<PossibleWorld> = envelope
-        .alternatives
+    let explain_cost = read_cost(snapshot.bytes_read, snapshot.files_read)?;
+    let mut affordances = vec![explain_affordance(
+        retained,
+        worlds.iter().map(|world| world.world_id.clone()).collect(),
+        explain_cost,
+    )];
+    affordances.extend(
+        capsule
+            .affordances
+            .iter()
+            .filter(|candidate| candidate.affordance_id == AFFORDANCE_REORIENT)
+            .cloned(),
+    );
+    affordances.sort_by(|left, right| left.affordance_id.cmp(&right.affordance_id));
+    let next_actions: Vec<String> = affordances
         .iter()
-        .chain(&envelope.adversarial_residuals)
-        .filter(|world| world.world_id.starts_with(&world_prefix))
-        .cloned()
-        .collect();
-    let target = format!("fss://event/{}", event_id.as_str());
-    let mut next_actions: Vec<String> = capsule
-        .affordances
-        .iter()
-        .filter(|candidate| {
-            candidate.target == target || candidate.affordance_id == AFFORDANCE_REORIENT
-        })
         .map(|candidate| candidate.affordance_id.clone())
         .collect();
-    next_actions.sort();
 
     let event = &retained.event;
     let domains = retained.failure_domains();
@@ -1637,11 +2521,7 @@ pub fn explain_event(
     subgraph.extend(event.evidence.iter().map(|edge| edge.digest));
     subgraph.extend(event.model_receipts.iter().copied());
     let handles = vec![
-        format!(
-            "fss://event/{}/revision/{}",
-            event_id.as_str(),
-            event.revision
-        ),
+        hydration.handle.clone(),
         format!("fss://event/{}/coverage", event_id.as_str()),
     ];
     let receipt = ExplainReceipt::compile(
@@ -1654,11 +2534,15 @@ pub fn explain_event(
     Ok(Some(EventExplanation {
         event: retained.clone(),
         receipt,
-        cells,
+        cells: section.cells,
         worlds,
+        residual_ids,
+        affordances,
         next_actions,
         would_change,
         assumptions,
+        warnings: section.warnings,
+        hydration,
     }))
 }
 

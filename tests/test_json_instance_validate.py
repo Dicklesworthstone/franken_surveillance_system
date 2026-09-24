@@ -88,12 +88,84 @@ class TestJsonInstanceValidate(unittest.TestCase):
             "properties": {
                 "field": {
                     "type": "string",
-                    "not": {"type": "number"},  # 'not' is unsupported in reachable subschema
+                    "dependentRequired": {"a": ["b"]},  # unsupported in reachable subschema
                 }
             },
         }
         with self.assertRaises(SchemaSyntaxError):
             self.validator.validate(schema, {"field": "hello"})
+
+    def test_maximum_and_max_properties(self):
+        self.validator.validate({"type": "number", "maximum": 1}, 1)
+        with self.assertRaises(JsonInstanceValidationError):
+            self.validator.validate({"type": "number", "maximum": 1}, 1.5)
+        schema = {"type": "object", "maxProperties": 1}
+        self.validator.validate(schema, {"a": 1})
+        with self.assertRaises(JsonInstanceValidationError):
+            self.validator.validate(schema, {"a": 1, "b": 2})
+
+    def test_unique_items_is_type_strict(self):
+        schema = {"type": "array", "uniqueItems": True}
+        self.validator.validate(schema, [1, 1.0, True, "1", [1], {"a": 1}])
+        with self.assertRaises(JsonInstanceValidationError):
+            self.validator.validate(schema, ["x", "y", "x"])
+        with self.assertRaises(JsonInstanceValidationError):
+            self.validator.validate(schema, [{"a": [1]}, {"a": [1]}])
+        # uniqueItems: false imposes nothing.
+        self.validator.validate({"type": "array", "uniqueItems": False}, [1, 1])
+
+    def test_all_of_not_and_conditionals(self):
+        schema = {
+            "type": "object",
+            "properties": {"state": {"enum": ["a", "b", "c"]}, "basis": {"type": "string"}},
+            "allOf": [
+                {
+                    "if": {"properties": {"state": {"const": "a"}}, "required": ["state"]},
+                    "then": {"required": ["basis"]},
+                },
+                {
+                    "if": {"properties": {"state": {"const": "b"}}, "required": ["state"]},
+                    "then": {"not": {"required": ["basis"]}},
+                    "else": {"properties": {"basis": {"minLength": 2}}},
+                },
+            ],
+        }
+        self.validator.validate(schema, {"state": "a", "basis": "xy"})
+        self.validator.validate(schema, {"state": "b"})
+        self.validator.validate(schema, {"state": "c"})
+        # then: `a` requires basis
+        with self.assertRaises(JsonInstanceValidationError):
+            self.validator.validate(schema, {"state": "a"})
+        # then/not: `b` forbids basis
+        with self.assertRaises(JsonInstanceValidationError):
+            self.validator.validate(schema, {"state": "b", "basis": "xy"})
+        # else: non-`b` basis must be at least two characters
+        with self.assertRaises(JsonInstanceValidationError):
+            self.validator.validate(schema, {"state": "c", "basis": "x"})
+
+    def test_unsupported_keyword_inside_conditional_is_refused(self):
+        schema = {"if": {"type": "string"}, "then": {"dependentSchemas": {}}}
+        with self.assertRaises(SchemaSyntaxError):
+            self.validator.validate(schema, "x")
+
+    def test_agent_contract_schemas_are_statically_supported(self):
+        # Every keyword reachable from the orient/explain answer schemas is in the subset, so a
+        # conforming instance can be validated end to end (fss-iqg1k).
+        for name in (
+            "agent_response_envelope.v1.json",
+            "situation_capsule.v1.json",
+            "agent_cognitive_envelope.v1.json",
+        ):
+            path = REPO_ROOT / "schemas" / name
+            schema = parse_strict_json(path.read_text(encoding="utf-8"))
+            self.validator.check_reachable_schema_keywords(schema, schema, name, name)
+        with self.assertRaises(JsonInstanceValidationError):
+            self.validator.validate(
+                parse_strict_json(
+                    (REPO_ROOT / "schemas" / "situation_capsule.v1.json").read_text(encoding="utf-8")
+                ),
+                {},
+            )
 
     def test_cross_file_ref(self):
         schema = {
