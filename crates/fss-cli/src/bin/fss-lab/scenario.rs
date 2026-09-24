@@ -23,12 +23,14 @@ use fss_core::{
     ObligationId, ObligationState, OperationId, PrincipalId, ProbabilityInterval, SensorCapsule,
     SensorId, SensorSourceBytesSpec, SessionId, StreamId, TimestampNs,
 };
+use fss_object::{ObjectManifest, SpoolLimits, StagingSpool};
+use fss_publication::SlotName;
 use fss_reference::{
     DurableEffectError, MockModelOutcome, MockModelResult, MockModelScript, MockModelSpec,
-    MockSemanticLabel, ObjectManifest, PrepareAlertParams, ReferenceAlertPlan, ReferenceDeployment,
+    MockSemanticLabel, PrepareAlertParams, ReferenceAlertPlan, ReferenceDeployment,
     ReferenceModelObservation, ReferencePolicyAction, ReferencePolicyDecision,
-    ReferenceProviderBehavior, ReferenceSituationRequest, ReplayCx, ReplayIoAuthority, SlotName,
-    SpoolLimits, StagingSpool, evaluate_unknown_presence,
+    ReferenceProviderBehavior, ReferenceSituationRequest, ReplayCx, ReplayIoAuthority,
+    evaluate_unknown_presence,
 };
 
 const SCENARIO_START: u64 = 0;
