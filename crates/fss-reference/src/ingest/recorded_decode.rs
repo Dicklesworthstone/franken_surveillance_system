@@ -849,6 +849,8 @@ impl RecordedFrame {
 pub mod h264;
 /// Retained H.265/HEVC Annex-B range decoding bound to the same source custody.
 pub mod h265;
+/// Declared BT.601 limited-range conversion of retained H.264/H.265 4:2:0 pictures to RGB.
+pub mod video_rgb;
 
 #[cfg(test)]
 mod tests;

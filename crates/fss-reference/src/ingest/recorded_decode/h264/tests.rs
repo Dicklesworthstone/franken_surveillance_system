@@ -337,3 +337,70 @@ fn unsupported_chroma_format_is_refused_not_decoded() -> TestResult {
     }
     Ok(())
 }
+
+/// The exposed Y, Cb and Cr planes reassemble FFmpeg's `yuv420p` frame (the committed oracle
+/// digest), the receipt's per-plane digests match them, and RGB follows the declared transform
+/// with nearest-cell chroma at every sampled pixel.
+fn assert_chroma(
+    [luma, cb, cr]: [&[u8]; 3],
+    dimensions: [u32; 2],
+    chroma: [u32; 2],
+    digests: [ContentDigest; 2],
+    rgb: &[u8],
+    oracle: &str,
+) {
+    let [width, height] = dimensions.map(|v| v as usize);
+    assert_eq!(
+        chroma,
+        [width.div_ceil(2) as u32, height.div_ceil(2) as u32]
+    );
+    let plane = (chroma[0] * chroma[1]) as usize;
+    assert_eq!((cb.len(), cr.len()), (plane, plane));
+    let mut i420 = luma.to_vec();
+    i420.extend_from_slice(cb);
+    i420.extend_from_slice(cr);
+    assert_eq!(ContentDigest::sha256(&i420).to_text(), oracle);
+    assert_eq!(
+        digests,
+        [ContentDigest::sha256(cb), ContentDigest::sha256(cr)]
+    );
+    assert_eq!(rgb.len(), width * height * 3);
+    for index in (0..width * height).step_by(37) {
+        let (x, y) = (index % width, index / width);
+        let c = (y / 2) * chroma[0] as usize + x / 2;
+        assert_eq!(
+            &rgb[index * 3..index * 3 + 3],
+            &super::super::video_rgb::ycbcr_limited_to_rgb(luma[index], cb[c], cr[c]),
+            "pixel ({x}, {y})"
+        );
+    }
+}
+
+#[test]
+fn chroma_planes_reassemble_the_ffmpeg_yuv420p_oracle_and_convert_to_rgb() -> TestResult {
+    for (name, stream, oracle_text) in [
+        ("chroma-baseline", BASELINE, BASELINE_ORACLE),
+        ("chroma-high", HIGH, HIGH_ORACLE),
+    ] {
+        let imported = import(name, stream)?;
+        let expected = oracle(oracle_text);
+        let frames = decode_h264_range(
+            &imported.deployment,
+            request(imported.identity, 0, imported.segments),
+            &imported.cx,
+        )?;
+        assert_eq!(frames.len(), expected.len(), "{name}");
+        for (position, frame) in frames.iter().enumerate() {
+            let receipt = frame.receipt();
+            assert_chroma(
+                [frame.pixels(), frame.cb(), frame.cr()],
+                receipt.dimensions(),
+                frame.chroma_dimensions(),
+                [receipt.cb_sha256(), receipt.cr_sha256()],
+                &frame.to_rgb()?,
+                &expected[position],
+            );
+        }
+    }
+    Ok(())
+}

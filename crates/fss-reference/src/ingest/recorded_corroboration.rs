@@ -24,6 +24,14 @@
 //! dispatching an alert is a separate, separately approved effect. Synthetic scenes prove wiring,
 //! not detection quality; no candidate never certifies absence by itself.
 //!
+//! With [`CorroborationReport::analyze_with_detector`] a verified detector package runs as a
+//! cascade stage ([`super::detector_cascade`]) on each ground entry's selected frames, within one
+//! explicit inference budget shared by both recordings. Its class evidence is retained in the
+//! candidate's provenance (bound into the association identity and proposal digest) but is NOT an
+//! edge of the policy's event: the zone-entry policy decision, the `Corroborated` state (which
+//! rests only on the two sensors' own witnesses) and the `PrepareAlert` affordance are provably
+//! independent of any detector score. Scores are uncalibrated; the kind stays `Unclassified`.
+//!
 //! Each camera also proposes a coverage record ([`super::recorded_coverage`]) over the ground
 //! zones whose every corner's image preimage lies inside its decoded frame: one witness per
 //! contiguous observable interval of that sensor, every ground-zone entry of that sensor an
@@ -45,6 +53,10 @@ use super::cross_camera::{
     AssociationDisposition, AssociationScore, CameraObservation, CrossCameraConfig,
     CrossCameraError, associate_detailed,
 };
+use super::detector_cascade::{
+    CascadeBudget, CascadeOutcome, CascadeSource, CascadeTrack, ClassEvidence, DetectorCascade,
+    cascade_outcome_json, cascade_policy_json, class_evidence_json, select_frames,
+};
 use super::recorded_coverage::{
     CoverageEntry, CoverageError, CoverageFrame, CoverageInput, CoverageRecord, CoverageSource,
     CoverageStatus, CoverageZoneInput, approval_digest, build_coverage, check_approval,
@@ -53,7 +65,8 @@ use super::recorded_coverage::{
 use super::recorded_decode::{ComponentInterpretation, RecordedDecodeError, source_capsule};
 use super::recorded_watch::{
     MAX_WATCH_FRAMES, WatchDetectorConfig, WatchError, WatchLimits, WatchPlan, WatchReport,
-    WatchTrackerConfig, WatchZone, media_decoder_label, pipeline_parameters,
+    WatchTrackerConfig, WatchZone, bind_cascade_parameters, media_decoder_label,
+    pipeline_parameters,
 };
 use super::{FileIngestError, RetainedFileImport};
 use crate::{
@@ -580,6 +593,8 @@ pub struct GroundEntry {
     pub record_digest: ContentDigest,
     /// Association outcome.
     pub disposition: EntryDisposition,
+    /// Detector-cascade class evidence of this entry's track (empty without a detector).
+    pub class_evidence: Vec<ClassEvidence>,
     record: Vec<u8>,
 }
 
@@ -674,11 +689,20 @@ pub struct CorroborationReport {
     candidates: Vec<CorroborationCandidate>,
     coverage: Vec<CoverageRecord>,
     coverage_status: CoverageStatus,
+    cascade: Option<CorroborationCascade>,
+}
+
+#[derive(Clone, Debug)]
+struct CorroborationCascade {
+    digest: ContentDigest,
+    policy_json: String,
+    outcomes: Vec<CascadeOutcome>,
 }
 
 struct CameraRun {
     summary: CameraSummary,
     entries: Vec<GroundEntry>,
+    cascade: Option<CascadeOutcome>,
 }
 
 fn union(a: CaptureInterval, b: CaptureInterval) -> Result<CaptureInterval> {
@@ -694,6 +718,7 @@ fn analyze_camera(
     plan_digest: ContentDigest,
     index: usize,
     limits: &WatchLimits,
+    cascade: Option<(&mut DetectorCascade<'_>, &mut CascadeBudget)>,
     cx: &ReplayCx,
 ) -> Result<CameraRun> {
     let camera = &plan.cameras[index];
@@ -742,8 +767,9 @@ fn analyze_camera(
         .collect();
     let homography_digest = camera.homography.digest();
     let mut entries = Vec::new();
+    let mut sources = Vec::new();
     let mut confirmed = BTreeSet::new();
-    for candidate in report.candidates() {
+    for (candidate_index, candidate) in report.candidates().iter().enumerate() {
         checkpoint(cx, "recorded_corroboration:project")?;
         confirmed.insert(candidate.track_id);
         for zone in &plan.zones {
@@ -804,13 +830,65 @@ fn analyze_camera(
                     ground,
                     record_digest: ContentDigest::sha256(&record),
                     disposition: EntryDisposition::NoCounterpartEntry,
+                    class_evidence: Vec::new(),
                     record,
                 });
+                sources.push(candidate_index);
                 break;
             }
         }
     }
+    let cascade = match cascade {
+        None => None,
+        Some((detector, budget)) => {
+            let tracks: Vec<CascadeTrack> = entries
+                .iter()
+                .zip(&sources)
+                .map(|(entry, source)| {
+                    let candidate = &report.candidates()[*source];
+                    let observations: Vec<(usize, [i64; 4])> = candidate
+                        .observations
+                        .iter()
+                        .map(|o| (o.segment, o.track_box))
+                        .collect();
+                    CascadeTrack {
+                        track_id: entry.track_id,
+                        // The whole-frame watch candidate's entry is the confirmation frame.
+                        selections: select_frames(
+                            entry.segment,
+                            candidate.entry_segment,
+                            &observations,
+                            detector.config().frames_per_track,
+                        ),
+                    }
+                })
+                .collect();
+            let decoded: Vec<usize> = report.frames().iter().map(|f| f.segment).collect();
+            let outcome = detector
+                .run(
+                    deployment,
+                    CascadeSource {
+                        import_identity: camera.import_identity,
+                        import_root,
+                        interpretation: plan.interpretation,
+                        media_format: report.media_format(),
+                        first_segment: 0,
+                        decoded_segments: &decoded,
+                    },
+                    &tracks,
+                    budget,
+                    limits,
+                    cx,
+                )
+                .map_err(WatchError::from)?;
+            for (entry, evidence) in entries.iter_mut().zip(&outcome.evidence) {
+                entry.class_evidence = evidence.clone();
+            }
+            Some(outcome)
+        }
+    };
     Ok(CameraRun {
+        cascade,
         summary: CameraSummary {
             name: camera.name.clone(),
             import_identity: camera.import_identity,
@@ -854,11 +932,49 @@ impl CorroborationReport {
         limits: &WatchLimits,
         cx: &ReplayCx,
     ) -> Result<Self> {
+        Self::analyze_with_detector(deployment, plan, limits, None, cx)
+    }
+
+    /// [`Self::analyze`] plus an optional detector cascade over each ground entry's selected
+    /// frames, with one inference budget shared by both recordings. `None` is byte-for-byte
+    /// [`Self::analyze`].
+    pub fn analyze_with_detector(
+        deployment: &ReferenceDeployment,
+        plan: &CorroborationPlan,
+        limits: &WatchLimits,
+        mut detector: Option<&mut DetectorCascade<'_>>,
+        cx: &ReplayCx,
+    ) -> Result<Self> {
         checkpoint(cx, "recorded_corroboration:analyze")?;
         plan.validate()?;
         let plan_digest = plan.digest();
-        let first = analyze_camera(deployment, plan, plan_digest, 0, limits, cx)?;
-        let second = analyze_camera(deployment, plan, plan_digest, 1, limits, cx)?;
+        let mut allowance = detector.as_ref().map(|d| d.budget());
+        let first = analyze_camera(
+            deployment,
+            plan,
+            plan_digest,
+            0,
+            limits,
+            detector.as_deref_mut().zip(allowance.as_mut()),
+            cx,
+        )?;
+        let second = analyze_camera(
+            deployment,
+            plan,
+            plan_digest,
+            1,
+            limits,
+            detector.as_deref_mut().zip(allowance.as_mut()),
+            cx,
+        )?;
+        let cascade = match (&detector, first.cascade, second.cascade) {
+            (Some(detector), Some(a), Some(b)) => Some(CorroborationCascade {
+                digest: detector.digest(),
+                policy_json: cascade_policy_json(detector),
+                outcomes: vec![a, b],
+            }),
+            _ => None,
+        };
         if first.summary.sensor_id == second.summary.sensor_id {
             return Err(CorroborationError::SameSensor);
         }
@@ -986,6 +1102,7 @@ impl CorroborationReport {
             plan_digest,
             cameras: &cameras,
             entries: &entries,
+            cascade: cascade.as_ref().map(|c| c.digest),
         };
         for (zone_id, left, right, separation, score) in pairs {
             checkpoint(cx, "recorded_corroboration:prepare")?;
@@ -1006,6 +1123,7 @@ impl CorroborationReport {
                     entries: &entries,
                     candidates: &candidates,
                     basis: &basis,
+                    cascade: cascade.as_ref().map(|c| c.digest),
                 },
                 index,
                 camera,
@@ -1020,7 +1138,14 @@ impl CorroborationReport {
             candidates,
             coverage,
             coverage_status: status,
+            cascade,
         })
+    }
+
+    /// Detector-cascade outcomes (one per camera, plan order), if a detector was supplied.
+    #[must_use]
+    pub fn detector_cascade(&self) -> Option<&[CascadeOutcome]> {
+        self.cascade.as_ref().map(|c| c.outcomes.as_slice())
     }
 
     /// Proposed (or retained) coverage, one record per camera in plan order.
@@ -1229,7 +1354,7 @@ impl CorroborationReport {
                         "{{\"camera\":{},\"zone_id\":\"{}\",\"track_id\":{},\"segment\":{},",
                         "\"capture_ns\":[{},{}],\"capsule_digest\":\"{}\",",
                         "\"track_box_cxcywh\":[{},{},{},{}],\"ground\":[{},{}],",
-                        "\"observation_digest\":\"{}\",\"disposition\":\"{}\"}}"
+                        "\"observation_digest\":\"{}\",\"disposition\":\"{}\"{}}}"
                     ),
                     json_string(&self.plan.cameras[e.camera].name),
                     e.zone_id,
@@ -1246,6 +1371,13 @@ impl CorroborationReport {
                     json_number(e.ground.1),
                     e.record_digest,
                     e.disposition.as_str(),
+                    match self.cascade {
+                        Some(_) => format!(
+                            ",\"class_evidence\":{}",
+                            class_evidence_json(&e.class_evidence)
+                        ),
+                        None => String::new(),
+                    },
                 )
             })
             .collect();
@@ -1322,7 +1454,7 @@ impl CorroborationReport {
                 "\"prepared_count\":{},\"published_count\":{},\"already_published_count\":{},",
                 "\"authority_sequence\":{},\"alert_prepared\":false,\"effects_authorized\":false,",
                 "\"calibrated\":false,\"absence_certifiable\":false,",
-                "\"detection_quality_claim\":false{}}}"
+                "\"detection_quality_claim\":false{}{}}}"
             ),
             self.plan_digest,
             ContentDigest::sha256(POLICY),
@@ -1337,6 +1469,30 @@ impl CorroborationReport {
             count(CorroborationStatus::Published),
             count(CorroborationStatus::AlreadyPublished),
             authority_sequence,
+            self.cascade.as_ref().map_or_else(String::new, |c| {
+                let cameras: Vec<String> = c
+                    .outcomes
+                    .iter()
+                    .zip(&self.plan.cameras)
+                    .map(|(outcome, camera)| {
+                        format!(
+                            "{{\"camera\":{},{}}}",
+                            json_string(&camera.name),
+                            cascade_outcome_json(outcome)
+                        )
+                    })
+                    .collect();
+                let total: usize = c
+                    .outcomes
+                    .iter()
+                    .map(|o| o.inferred_segments().len())
+                    .sum();
+                format!(
+                    ",\"detector_cascade\":{{{},\"inference_count\":{total},\"budget_scope\":\"both_recordings\",\"cameras\":[{}]}}",
+                    c.policy_json,
+                    cameras.join(",")
+                )
+            }),
             coverage_json.map_or_else(String::new, |json| format!(",\"coverage\":{json}")),
         )
     }
@@ -1401,6 +1557,7 @@ struct CameraCoverageContext<'a> {
     entries: &'a [GroundEntry],
     candidates: &'a [CorroborationCandidate],
     basis: &'a fss_core::LedgerAnchor,
+    cascade: Option<ContentDigest>,
 }
 
 fn camera_coverage(
@@ -1412,6 +1569,7 @@ fn camera_coverage(
     let homography = &plan.cameras[index].homography;
     let mut parameters = pipeline_parameters(plan.interpretation, &plan.detector, &plan.tracker);
     parameters.extend(homography.matrix.iter().map(|value| value.to_bits()));
+    bind_cascade_parameters(&mut parameters, context.cascade);
     let policy = ContentDigest::sha256(POLICY);
     let mut zones = Vec::with_capacity(plan.zones.len());
     for zone in &plan.zones {
@@ -1481,6 +1639,7 @@ struct CandidateContext<'a> {
     plan_digest: ContentDigest,
     cameras: &'a [CameraSummary],
     entries: &'a [GroundEntry],
+    cascade: Option<ContentDigest>,
 }
 
 struct AssociatedEntries {
@@ -1506,6 +1665,7 @@ fn prepare_candidate(
         plan_digest,
         cameras,
         entries,
+        cascade,
     } = *context;
     let AssociatedEntries {
         zone_id,
@@ -1526,6 +1686,16 @@ fn prepare_candidate(
     e.i128(i128::try_from(separation).map_err(|_| CorroborationError::Limit)?);
     e.u64(distance.to_bits());
     e.u64(score.to_bits());
+    if let Some(cascade) = cascade {
+        // Class evidence is bound into the candidate identity, never into the policy event.
+        e.digest(cascade);
+        for entry in [left, right] {
+            e.u64(entry.class_evidence.len() as u64);
+            for item in &entry.class_evidence {
+                e.digest(item.digest);
+            }
+        }
+    }
     let association = e.finish();
     let identity = ContentDigest::sha256(&association);
     let mut objects = BTreeMap::new();
@@ -1546,6 +1716,9 @@ fn prepare_candidate(
             return Err(CorroborationError::Limit);
         }
         insert(entry.record.clone());
+        for item in &entry.class_evidence {
+            insert(item.record.clone());
+        }
         children.insert(camera.import_root);
         children.insert(entry.capsule_digest);
         track_ids.push(format!("track:{}:{}", camera.name, entry.track_id));

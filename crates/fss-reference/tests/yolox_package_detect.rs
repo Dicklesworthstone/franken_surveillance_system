@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 //! Retained recordings (MJPEG, H.264, H.265) through the verified YOLOX-Nano package into the
-//! package detection report (fss-q4ngj). Proves wiring and source binding; the JPEG frame is
+//! package detection report (fss-q4ngj; video in real color since fss-704tz). Proves wiring and source binding; the JPEG frame is
 //! also cross-checked against the laboratory-oracle detections. No quality claim.
 
 use std::error::Error;
@@ -206,10 +206,12 @@ fn retained_jpeg_frames_reproduce_the_oracle_detections() -> TestResult {
 }
 
 #[test]
-fn retained_h264_and_h265_frames_run_as_explicit_grayscale() -> TestResult {
+fn retained_h264_and_h265_frames_run_as_real_color_through_the_declared_transform() -> TestResult {
+    // Luma and chroma of the decoded 4:2:0 picture, BT.601 limited range (fss-704tz); no longer
+    // grayscale replicated into R=G=B.
     let (kind, _) = detect("h264", "camera.h264", H264, Some(FileFormatHint::AnnexB), 0)?;
-    assert_eq!(kind, "annexb:luma_replicated");
+    assert_eq!(kind, "annexb:ycbcr420_bt601_limited_rgb");
     let (kind, _) = detect("h265", "camera.h265", H265, Some(FileFormatHint::Hevc), 0)?;
-    assert_eq!(kind, "hevc:luma_replicated");
+    assert_eq!(kind, "hevc:ycbcr420_bt601_limited_rgb");
     Ok(())
 }

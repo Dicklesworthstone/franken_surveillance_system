@@ -443,9 +443,13 @@ fn test_schema_domain_and_pinned_counts() -> Result<(), Box<dyn Error>> {
     // 90 = 86 + SCHEMA-DOMAIN-RGB-DETECTOR-PACKAGE-SPEC-001, SCHEMA-DOMAIN-YOLOX-IMPORTER-001,
     // SCHEMA-DOMAIN-RGB-LUMA-REPLICATION-001 and SCHEMA-DOMAIN-PACKAGE-DETECTION-REPORT-001 (fss-q4ngj).
     // 94 = both sets above (fss-fnrgr and fss-q4ngj landed together).
+    // 103 = 94 + SCHEMA-DOMAIN-VIDEO-RGB-RECEIPT-001, SCHEMA-DOMAIN-DETECTOR-CASCADE-001,
+    // SCHEMA-DOMAIN-DETECTOR-CLASS-EVIDENCE-001, SCHEMA-DOMAIN-PACKAGE-DETECTION-RECORD-001,
+    // SCHEMA-DOMAIN-PACKAGE-ANALYSIS-REPORT-001 and
+    // SCHEMA-DOMAIN-PACKAGE-EVENT-{TRACK,OBSERVATION,PROVENANCE,PROPOSAL}-001 (fss-704tz).
     assert_eq!(
-        domain_count, 94,
-        "registries/DIGEST_DOMAINS.md count must remain pinned at 94"
+        domain_count, 103,
+        "registries/DIGEST_DOMAINS.md count must remain pinned at 103"
     );
 
     let schemas_path = Path::new(env!("CARGO_MANIFEST_DIR"))

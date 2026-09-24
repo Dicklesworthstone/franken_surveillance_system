@@ -587,7 +587,7 @@ Not implemented:
   UVC, ONVIF;
 - any detection-quality or calibration result for the shipped YOLOX-Nano package (it is checked
   only for conformance to its upstream ONNX graph), and any event-quality evaluation (AUPRC, recall
-  at a false-alert budget) on real data; `fss-event report` cannot yet consume its detections;
+  at a false-alert budget) on real data (its cascade and package-report evidence is uncalibrated);
 - Asupersync (the workspace has zero third-party crates; I/O is blocking `std`);
 - cloud archive/ATP transport, property reconstruction, privacy masking, deletion closure,
   search/memory, live operator view, and the DSR release matrix.

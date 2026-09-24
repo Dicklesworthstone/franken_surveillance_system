@@ -18,6 +18,9 @@ use fss_reference::ingest::analysis::{
     MAX_ANALYSIS_REPORT_BYTES,
 };
 use fss_reference::ingest::detections::{BoxEncoding, CoordinateSpace, DetectionSpec};
+use fss_reference::ingest::package_event::{
+    PackageAnalysisReport, PackageEventProposal, PackageEventStatus, PackageTrackingConfig,
+};
 use fss_reference::ingest::recorded_decode::ComponentInterpretation;
 use fss_reference::ingest::recorded_event::{RecordedEvent, RecordedEventProposal};
 use fss_reference::ingest::tracking::TrackingConfig;
@@ -29,6 +32,8 @@ mod alert;
 mod corroborate;
 #[path = "fss-event/coverage.rs"]
 mod coverage;
+#[path = "fss-event/detector.rs"]
+mod detector;
 #[path = "fss-event/watch.rs"]
 mod watch;
 
@@ -39,6 +44,13 @@ const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|ale
           --box-format xyxy|cxcywh --coordinates pixels|normalized --report-out FILE\n\
   Report policies: --minimum-score-ppm N --nms-iou-ppm N --minimum-iou-ppm N\n\
                    --confirmation-hits N --maximum-missed-frames N --maximum-tracks N\n\
+  report (trained detector package): --package-report sha256:REPORT --label NAME\n\
+          --report-out FILE [--minimum-iou-ppm N --confirmation-hits N --maximum-missed-frames N]\n\
+    Consumes a fss.package_detection_report.v1 that `fss-infer package-detect --retain yes`\n\
+    retained (by its report digest; no model runs here), tracks the chosen label with the\n\
+    Kalman tracker and exports a canonical fss.package_analysis_report.v1. prepare/publish\n\
+    accept that report exactly like a luma report and record an unclassified, indeterminate,\n\
+    single-sensor event; detector scores are uncalibrated supporting evidence only.\n\
   prepare/publish: --report FILE --report-digest sha256:HEX --track sha256:HEX\n\
   publish additionally requires: --proposal-digest sha256:HEX\n\
   read: --event-id ID (report and original source/model files are not required)\n\
@@ -61,6 +73,17 @@ const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|ale
            --max-dimension N --max-pixels N --max-segment-bytes N]\n\
           [--approve sha256:PROPOSAL[,sha256:PROPOSAL...]] [--retain-coverage sha256:APPROVAL]\n\
           [--report-out FILE]\n\
+          [--detector-package FILE --detector-digest sha256:HEX --detector-max-inferences N\n\
+           (1..64) [--detector-frames-per-track K (1..8, default 1) --detector-min-iou-ppm N\n\
+           (default 300000) --detector-minimum-score-ppm N]]\n\
+    Detection cascade (optional): the verified package runs only on frames the cheap stage\n\
+    selected (each candidate's zone-entry frame, then its confirmation and following frames,\n\
+    up to K per track), full frame letterboxed per the package spec, within the explicit\n\
+    inference budget; budget exhaustion and detector refusals are typed per frame. Class\n\
+    evidence (label, uncalibrated score, package digest/generation, frame/capsule digests) is\n\
+    attached by IoU to each candidate; the kind stays unclassified and one sensor never\n\
+    corroborates. The report lists inferred, budget-skipped and cascade-skipped frames; the\n\
+    coverage pipeline generation binds the detector generation. Without it, output is unchanged.\n\
     Retained decode -> running-variance foreground -> Kalman tracker -> zone gate. Prints a\n\
     JSON report of candidates (zone, track, frame range, evidence digests, proposal digest).\n\
     Without --approve nothing is written; each prepared candidate lists the exact rerun\n\
@@ -77,7 +100,7 @@ const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|ale
           ground units; an owner assertion like a zone, NOT a calibration certificate)\n\
           --zone ID:X,Y,W,H [--zone ...] (1..16, ground units) --interpretation gray|ycbcr\n\
           --time-gate-ns N (1..60000000000) --distance-gate D (ground units)\n\
-          [watch thresholds and budgets] [--approve sha256:PROPOSAL[,...]]\n\
+          [watch thresholds and budgets] [watch detector-cascade options] [--approve sha256:PROPOSAL[,...]]\n\
           [--retain-coverage sha256:APPROVAL] [--report-out FILE]\n\
     Each recording is tracked over the whole frame; each confirmed track's foot point is\n\
     projected to the ground; ground-zone entries of the two sensors are associated by global\n\
@@ -109,6 +132,12 @@ enum Action {
         detector: DetectionSpec,
         tracking: TrackingConfig,
         runs: PathBuf,
+        output: PathBuf,
+    },
+    PackageReport {
+        report: ContentDigest,
+        label: String,
+        tracking: PackageTrackingConfig,
         output: PathBuf,
     },
     Prepare {
@@ -245,6 +274,8 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
         "--confirmation-hits",
         "--maximum-missed-frames",
         "--maximum-tracks",
+        "--package-report",
+        "--label",
     ];
     let mut v = Values::new();
     let mut index = 1;
@@ -293,6 +324,43 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
         return Err("report has no canonical event to export".into());
     }
     let action = match action {
+        "report" if v.contains_key("--package-report") => {
+            for luma_only in [
+                "--runs",
+                "--interpretation",
+                "--model-digest",
+                "--output-port",
+                "--labels",
+                "--box-format",
+                "--coordinates",
+                "--minimum-score-ppm",
+                "--nms-iou-ppm",
+                "--maximum-tracks",
+            ] {
+                if v.contains_key(luma_only) {
+                    return Err(format!(
+                        "{luma_only} does not apply to --package-report (the retained package fixes the detector)"
+                    ));
+                }
+            }
+            let label = text(&v, "--label")?.to_owned();
+            if label.is_empty() || label.len() > 128 {
+                return Err("label must be 1..128 bytes".into());
+            }
+            Action::PackageReport {
+                report: digest(&v, "--package-report")?,
+                label,
+                tracking: PackageTrackingConfig {
+                    minimum_iou_ppm: number(&v, "--minimum-iou-ppm", 100_000)?,
+                    confirmation_hits: number(&v, "--confirmation-hits", 2)?,
+                    maximum_missed_frames: number(&v, "--maximum-missed-frames", 1)?,
+                },
+                output: PathBuf::from(value(&v, "--report-out")?),
+            }
+        }
+        "report" if v.contains_key("--label") => {
+            return Err("--label applies only with --package-report".into());
+        }
         "report" => {
             let interpretation = match text(&v, "--interpretation")? {
                 "gray" => ComponentInterpretation::Grayscale,
@@ -548,6 +616,40 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
                 )?;
                 return Ok(());
             }
+            Action::PackageReport {
+                report,
+                label,
+                tracking,
+                output,
+            } => {
+                let analysis =
+                    PackageAnalysisReport::read(&deployment, *report, label, *tracking, &cx)?;
+                export(output, analysis.encoded(), &options.root, &cx)?;
+                let retained = analysis.retained();
+                let record = retained.record();
+                let confirmed: Vec<_> = analysis.tracks().iter().filter(|t| t.confirmed).collect();
+                writeln!(
+                    out,
+                    "operation=package_report_verified\nreport_digest={}\npackage_report={}\npackage_detection_root={}\npackage_digest={}\nmodel_id={}\ngeneration={}\nlabel={}\nframes={}\ntrack_count={}",
+                    analysis.digest(),
+                    record.report_digest,
+                    retained.root(),
+                    record.package_digest,
+                    record.model_id,
+                    record.generation,
+                    analysis.label(),
+                    record.frames.len(),
+                    confirmed.len()
+                )?;
+                for track in confirmed {
+                    writeln!(out, "track={}", track.identity)?;
+                }
+                writeln!(
+                    out,
+                    "scores=uncalibrated\nabsence_certifiable=false\neffects_authorized=false"
+                )?;
+                return Ok(());
+            }
             Action::Read(id) => {
                 let record =
                     RecordedEvent::open(&deployment, id, &options.limits, &mut budget, &cx)?;
@@ -565,6 +667,17 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
                 ..
             } => {
                 let bytes = load(report, options.limits.maximum_report_bytes, *digest, &cx)?;
+                if PackageAnalysisReport::is_package_report(&bytes) {
+                    return package_event(
+                        &options.action,
+                        &mut deployment,
+                        &bytes,
+                        &options.root,
+                        options.event_out.as_deref(),
+                        &cx,
+                        out,
+                    );
+                }
                 let proposal = RecordedEventProposal::prepare(
                     &deployment,
                     &bytes,
@@ -637,6 +750,78 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
     cx.drain_and_finalize();
     result
 }
+/// `prepare`/`publish` of a package analysis report (see `ingest::package_event`).
+fn package_event(
+    action: &Action,
+    deployment: &mut ReferenceDeployment,
+    bytes: &[u8],
+    root: &Path,
+    event_out: Option<&Path>,
+    cx: &ReplayCx,
+    out: &mut impl Write,
+) -> RunResult<()> {
+    let (Action::Prepare { digest, track, .. } | Action::Publish { digest, track, .. }) = action
+    else {
+        return Err(io::Error::other("package reports are consumed by prepare and publish").into());
+    };
+    let proposal = PackageEventProposal::prepare(deployment, bytes, *digest, *track, cx)?;
+    let (event, operation) = match action {
+        Action::Publish { approved, .. } => {
+            let receipt = proposal.publish(deployment, *approved, cx)?;
+            writeln!(
+                out,
+                "event_root={}\nauthority_sequence={}\nreport_digest={}\ntrack={}",
+                receipt.event_root,
+                receipt.authority_anchor.commit_sequence,
+                receipt.report_digest,
+                receipt.track
+            )?;
+            let operation = if proposal.status() == PackageEventStatus::AlreadyPublished {
+                "already_published"
+            } else {
+                "published"
+            };
+            (receipt.event, operation)
+        }
+        _ => {
+            writeln!(out, "proposal_digest={}", proposal.digest())?;
+            let operation = if proposal.status() == PackageEventStatus::AlreadyPublished {
+                "already_published"
+            } else {
+                "prepared"
+            };
+            (proposal.event().clone(), operation)
+        }
+    };
+    if let Some(path) = event_out {
+        export(path, event.to_canonical_json().as_bytes(), root, cx)?;
+    }
+    let supporting = event.evidence.iter().filter(|e| e.supports).count();
+    writeln!(
+        out,
+        "operation={operation}\nevent_id={}\nrevision={}\nevent_revision_digest={}\nprovenance_root={}",
+        event.event_id,
+        event.revision,
+        event.revision_digest(),
+        event.decision_path.fingerprint
+    )?;
+    writeln!(
+        out,
+        "event_state={}\nevent_kind={}\nmodel_receipts={}\nevidence_items={}\nsupporting_detector_evidence={}\nfailure_domains={}",
+        event.state.as_str(),
+        event.kind.as_str(),
+        event.model_receipts.len(),
+        event.evidence.len(),
+        supporting,
+        event.analyze_corroboration().distinct_failure_domains.len()
+    )?;
+    writeln!(
+        out,
+        "scores=uncalibrated\ncorroborated=false\nabsence_certifiable=false\neffects_authorized=false"
+    )?;
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     match parse(&args) {
@@ -655,6 +840,12 @@ fn main() -> ExitCode {
                 } else if let Some(refusal) = e.downcast_ref::<fss_reference::ingest::recorded_coverage::CoverageError>() {
                     eprintln!("refusal_id={}", refusal.stable_id());
                 } else if let Some(refusal) = e.downcast_ref::<alert::AlertCliError>() {
+                    eprintln!("refusal_id={}", refusal.stable_id());
+                } else if let Some(refusal) = e.downcast_ref::<fss_reference::ingest::package_event::PackageEventError>() {
+                    eprintln!("refusal_id={}", refusal.stable_id());
+                } else if let Some(refusal) = e.downcast_ref::<fss_reference::ingest::rgb_package::RgbPackageError>() {
+                    eprintln!("refusal_id={}", refusal.stable_id());
+                } else if let Some(refusal) = e.downcast_ref::<fss_reference::ingest::detector_cascade::CascadeError>() {
                     eprintln!("refusal_id={}", refusal.stable_id());
                 }
                 eprintln!(

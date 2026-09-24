@@ -10,6 +10,9 @@
 //! Every report also proposes the run's coverage record (one `CoverageWitness` per sensor, zone
 //! and contiguous observable interval, every other frame an explicit uncovered interval); only
 //! `--retain-coverage DIGEST` with its exact approval digest retains it as authority.
+//! `--detector-package PATH --detector-digest sha256:HEX --detector-max-inferences N` adds the
+//! detection cascade: the verified package runs only on frames the cheap stage selected, and its
+//! uncalibrated class evidence is attached to each candidate without changing its kind or state.
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -18,12 +21,14 @@ use std::path::{Path, PathBuf};
 
 use fss_core::{ContentDigest, DigestAlgorithm, PrincipalId};
 use fss_reference::ingest::RetainedFileImport;
+use fss_reference::ingest::detector_cascade::DetectorCascade;
+use fss_reference::ingest::package_detect::PackageDetectLimits;
 use fss_reference::ingest::recorded_decode::ComponentInterpretation;
 use fss_reference::ingest::recorded_watch::{
     MAX_WATCH_FRAMES, MAX_WATCH_ZONES, WatchDetectorConfig, WatchError, WatchLimits, WatchPlan,
     WatchReport, WatchTrackerConfig, WatchZone,
 };
-use fss_reference::{ReferenceDeployment, ReplayCx};
+use fss_reference::{ReferenceDeployment, ReplayCx, ScalarExecCx};
 
 use super::{RunResult, export};
 
@@ -69,6 +74,7 @@ pub(super) struct WatchAction {
     approvals: BTreeSet<ContentDigest>,
     retain_coverage: Option<ContentDigest>,
     report_out: Option<PathBuf>,
+    cascade: Option<super::detector::DetectorOptions>,
     rerun: String,
 }
 
@@ -159,7 +165,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
                 return Err("at most sixteen zones".to_owned());
             }
             zones.push(zone(argument)?);
-        } else if !OPTIONS.contains(&key) {
+        } else if !OPTIONS.contains(&key) && !super::detector::OPTIONS.contains(&key) {
             return Err("unknown or inapplicable option".to_owned());
         } else if values.iter().any(|(k, _)| k == key) {
             return Err(format!("duplicate {key}"));
@@ -267,6 +273,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
             .iter()
             .find(|(k, _)| k == "--report-out")
             .map(|(_, v)| PathBuf::from(v)),
+        cascade: super::detector::parse(&values)?,
         rerun: rerun.join(" "),
     })
 }
@@ -279,6 +286,34 @@ pub(super) fn run(
     cx: &ReplayCx,
     out: &mut impl Write,
 ) -> RunResult<()> {
+    let scalar = ScalarExecCx::new();
+    let result = run_with(action, deployment, root, cx, &scalar, out);
+    scalar.drain_and_finalize();
+    result
+}
+
+fn run_with(
+    action: &WatchAction,
+    deployment: &mut ReferenceDeployment,
+    root: &Path,
+    cx: &ReplayCx,
+    scalar: &ScalarExecCx,
+    out: &mut impl Write,
+) -> RunResult<()> {
+    // The package is verified (digest before parsing) before any source is read.
+    let package = match &action.cascade {
+        Some(options) => Some(super::detector::load(options, cx, scalar)?),
+        None => None,
+    };
+    let mut cascade = match (&action.cascade, &package) {
+        (Some(options), Some(package)) => Some(DetectorCascade::new(
+            package,
+            options.config,
+            PackageDetectLimits::default(),
+            scalar,
+        )?),
+        _ => None,
+    };
     let segment_count = match action.segment_count {
         Some(count) => count,
         None => {
@@ -312,7 +347,13 @@ pub(super) fn run(
         detector: action.detector,
         tracker: action.tracker,
     };
-    let mut report = WatchReport::analyze(deployment, &plan, &action.limits, cx)?;
+    let mut report = WatchReport::analyze_with_detector(
+        deployment,
+        &plan,
+        &action.limits,
+        cascade.as_mut(),
+        cx,
+    )?;
     // Both approvals are checked against the fresh analysis before anything is written.
     if let Some(approval) = action.retain_coverage {
         report.check_coverage_approval(deployment, approval)?;
@@ -328,7 +369,14 @@ pub(super) fn run(
     // A coverage proposal binds the authority anchor its analysis read; after this run published
     // candidates, the proposal is recomputed against the new anchor so its approval is current.
     let reproposed = if published > 0 && action.retain_coverage.is_none() {
-        Some(WatchReport::analyze(deployment, &plan, &action.limits, cx)?)
+        // Same cascade instance: completed inferences are reused, never re-run.
+        Some(WatchReport::analyze_with_detector(
+            deployment,
+            &plan,
+            &action.limits,
+            cascade.as_mut(),
+            cx,
+        )?)
     } else {
         None
     };

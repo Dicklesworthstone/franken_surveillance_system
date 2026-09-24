@@ -78,8 +78,10 @@ Hand-computed tests pin each composition (`tests/yolox_nano_conformance.rs`).
   suppressing when IoU > 0.45 on outward-rounded 1/256-pixel **source** boxes (upstream uses a
   `+1`-pixel area convention in model space); rows limited to 3549, candidates 4096, survivors 256
   (exceeding a limit refuses rather than truncates).
-- Retained H.264/H.265 frames are luma-only in FSS, so `fss-infer package-detect` runs them as R=G=B
-  grayscale (recorded as `luma_replicated`); JPEG/MJPEG frames are decoded to color.
+- Retained H.264/H.265 frames are converted from their decoded luma and chroma through the declared
+  BT.601 limited-range transform (recorded as `ycbcr420_bt601_limited_rgb`; the codecs do not expose
+  the VUI colour description, so the matrix is a declared choice); JPEG/MJPEG frames are decoded to
+  color by the native JPEG color decoder (full-range JFIF).
 
 ## Conformance receipt
 
@@ -155,9 +157,9 @@ fss-infer package-detect --root DEPLOYMENT --site SITE --import-id sha256:IMPORT
 
 - No quality, recall, calibration, subgroup, adversarial or drift evaluation on FSS data (registry
   gates 8–11 not passed); COCO scores are not threat probabilities.
-- `fss-infer package-detect` emits its own `fss.package_detection_report.v1` JSON; it is not yet an
-  `AnalysisReport`, so `fss-event report` cannot consume it (that path is built on luma
-  `RecordedInference` publications). Retained H.264/H.265 frames lack chroma (grayscale input), and
-  their luma is used as coded (video range is not expanded to full range).
+- `fss-event report` consumes package detections only after `fss-infer package-detect --retain yes`
+  (`--package-report`, a separate `fss.package_analysis_report.v1`, not an `AnalysisReport`), and
+  `fss-event read` does not reopen package events. The video colour matrix is fixed (BT.601 limited
+  range); content coded with BT.709 or full range is converted with a declared-wrong matrix.
 - The scalar executor retains every intermediate tensor (~108 MB accounting) and takes seconds per
   frame; no optimized kernels, memory planning or accelerator exist for this package yet.

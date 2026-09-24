@@ -8,6 +8,8 @@
 //! exact rerun command that publishes it. With exact proposal digests it publishes those events;
 //! policy may report the `prepare_alert` affordance, but no alert is prepared here. Each report
 //! also proposes one coverage record per camera; `--retain-coverage DIGEST` retains both exactly.
+//! The detector-cascade options of `watch` add uncalibrated class evidence to each ground entry
+//! (one inference budget for both recordings); it never changes the policy's event or alert.
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -15,13 +17,15 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use fss_core::{ContentDigest, DigestAlgorithm, PrincipalId};
+use fss_reference::ingest::detector_cascade::DetectorCascade;
+use fss_reference::ingest::package_detect::PackageDetectLimits;
 use fss_reference::ingest::recorded_corroboration::{
     CorroborationCamera, CorroborationGates, CorroborationPlan, CorroborationReport,
     GroundHomography, GroundZone, MAX_CORROBORATION_ZONES,
 };
 use fss_reference::ingest::recorded_decode::ComponentInterpretation;
 use fss_reference::ingest::recorded_watch::{WatchDetectorConfig, WatchLimits, WatchTrackerConfig};
-use fss_reference::{ReferenceDeployment, ReplayCx};
+use fss_reference::{ReferenceDeployment, ReplayCx, ScalarExecCx};
 
 use super::{RunResult, export};
 
@@ -60,6 +64,7 @@ pub(super) struct CorroborateAction {
     approvals: BTreeSet<ContentDigest>,
     retain_coverage: Option<ContentDigest>,
     report_out: Option<PathBuf>,
+    cascade: Option<super::detector::DetectorOptions>,
     rerun: String,
 }
 
@@ -189,7 +194,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
                 }
                 zones.push(zone(argument)?);
             }
-            _ if !OPTIONS.contains(&key) => {
+            _ if !OPTIONS.contains(&key) && !super::detector::OPTIONS.contains(&key) => {
                 return Err("unknown or inapplicable option".to_owned());
             }
             _ if values.iter().any(|(k, _)| k == key) => return Err(format!("duplicate {key}")),
@@ -320,6 +325,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
             None => None,
         },
         report_out: find(&values, "--report-out").map(PathBuf::from),
+        cascade: super::detector::parse(&values)?,
         rerun: rerun.join(" "),
     })
 }
@@ -332,7 +338,40 @@ pub(super) fn run(
     cx: &ReplayCx,
     out: &mut impl Write,
 ) -> RunResult<()> {
-    let mut report = CorroborationReport::analyze(deployment, &action.plan, &action.limits, cx)?;
+    let scalar = ScalarExecCx::new();
+    let result = run_with(action, deployment, root, cx, &scalar, out);
+    scalar.drain_and_finalize();
+    result
+}
+
+fn run_with(
+    action: &CorroborateAction,
+    deployment: &mut ReferenceDeployment,
+    root: &Path,
+    cx: &ReplayCx,
+    scalar: &ScalarExecCx,
+    out: &mut impl Write,
+) -> RunResult<()> {
+    let package = match &action.cascade {
+        Some(options) => Some(super::detector::load(options, cx, scalar)?),
+        None => None,
+    };
+    let mut cascade = match (&action.cascade, &package) {
+        (Some(options), Some(package)) => Some(DetectorCascade::new(
+            package,
+            options.config,
+            PackageDetectLimits::default(),
+            scalar,
+        )?),
+        _ => None,
+    };
+    let mut report = CorroborationReport::analyze_with_detector(
+        deployment,
+        &action.plan,
+        &action.limits,
+        cascade.as_mut(),
+        cx,
+    )?;
     // Both approvals are checked against the fresh analysis before anything is written.
     if let Some(approval) = action.retain_coverage {
         report.check_coverage_approval(deployment, approval)?;
@@ -348,10 +387,11 @@ pub(super) fn run(
     // A coverage proposal binds the authority anchor its analysis read; after this run published
     // candidates, the proposal is recomputed against the new anchor so its approval is current.
     let reproposed = if published > 0 && action.retain_coverage.is_none() {
-        Some(CorroborationReport::analyze(
+        Some(CorroborationReport::analyze_with_detector(
             deployment,
             &action.plan,
             &action.limits,
+            cascade.as_mut(),
             cx,
         )?)
     } else {

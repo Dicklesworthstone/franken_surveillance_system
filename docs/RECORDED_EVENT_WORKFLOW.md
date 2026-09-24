@@ -3,10 +3,12 @@
 `fss-event` connects retained inference and local association to the existing event owner.
 It builds complete replayable analysis reports, prepares an exact candidate, publishes only
 that approved candidate, and reopens the event and its provenance after a process restart.
-No pretrained model, calibrated detection quality, physical identity, threat classification,
-notification transport, or effect authority is introduced. Coverage witnesses exist only for
-`watch` and `corroborate`, and only when retained with their exact approval (see the last
-section).
+The only trained model is the verified YOLOX-Nano package (`models/yolox-nano`), reachable
+through the watch/corroborate detection cascade and through retained package reports (the last
+two sections); its scores are uncalibrated. No calibrated detection quality, physical identity,
+threat classification, notification transport, or effect authority is introduced. Coverage
+witnesses exist only for `watch` and `corroborate`, and only when retained with their exact
+approval (see the coverage section).
 
 ## Build the complete report
 
@@ -338,3 +340,98 @@ as protected coverage loss. The committed tests
 a source gap, staleness after new evidence, a motion scene with its event, corroboration,
 approval gating, and silence across a harmless successor commit on synthetic MJPEG scenes; they
 prove the contract, not detection quality.
+
+## Detection cascade: `--detector-package` on `watch` and `corroborate`
+
+Detection is a cascade, not a monolith (README): the model-free watch stage decodes every frame,
+finds foreground, tracks it and gates zone entries; a trained detector then runs only where the
+cheap stage says it matters (library `fss_reference::ingest::detector_cascade`).
+
+```sh
+fss-event watch ... --zone door:200,0,160,640 \
+  --detector-package models/yolox-nano/yolox_nano.fmpk \
+  --detector-digest sha256:5b6568750faa375de3742e5eb310fbd4e22ff26e1ba727f193b79ab984a68c74 \
+  --detector-max-inferences 4 [--detector-frames-per-track 2] [--detector-min-iou-ppm 300000] \
+  [--detector-minimum-score-ppm N]
+```
+
+- Loading: the package is read (bounded regular file) and verified by `RgbDetectorPackage::load`
+  before any source is read: a whole-archive digest other than `--detector-digest` is
+  `ERR-MODEL-PACKAGE-DIGEST-001` before parsing. `--detector-max-inferences` (1..64) is mandatory;
+  cascade bounds are `ERR-DETECTOR-CASCADE-PLAN-001`. Without any `--detector-*` option the watch
+  and corroborate outputs are byte-for-byte unchanged (pinned by
+  `crates/fss-reference/tests/watch_report_golden.rs` against the pre-cascade tree).
+- Frame selection: for each candidate (a confirmed track entering a zone) the zone-entry frame,
+  then the track's first confirmed frame, then its following matched frames, up to
+  `--detector-frames-per-track` K (1..8, default 1). Unique frames are admitted in candidate
+  order against the budget; the rest are `budget_exhausted` (`ERR-DETECTOR-CASCADE-BUDGET-001`)
+  per frame, never dropped. A per-frame detector refusal is `detector_refused`
+  (`ERR-PACKAGE-DETECT-001`). `corroborate` uses one budget for both recordings.
+- Inference: the full decoded frame, letterboxed exactly as the package spec declares (the same
+  path as `fss-infer package-detect`). JPEG frames use the native colour decode; H.264/H.265
+  frames use their decoded luma and chroma through the declared BT.601 limited-range transform
+  (`ycbcr420_bt601_limited_rgb`, `recorded_decode::video_rgb`).
+- Association: each surviving detection against the track's filtered box at that frame by
+  integer IoU on the 1/256-pixel grid; the best IoU (then score, then row) at or above
+  `--detector-min-iou-ppm` is associated, otherwise `no_association`.
+- Evidence: one canonical `fss.detector_class_evidence.v1` record per selected frame (label,
+  uncalibrated score bits, bounds, IoU, package digest and generation, import, segment, frame
+  RGB, inference, output and head-report digests). In `watch` each record is an event evidence
+  edge in the sensor's own failure domain: `supports` for an associated detection, derived-from
+  otherwise. The event stays `Unclassified`, `Indeterminate` and abstaining; one sensor can
+  never corroborate (fss-core refuses a corroborated revision with one failure domain). In
+  `corroborate` the records are retained in the candidate's provenance and bound into its
+  association identity and proposal digest, but they are **not** edges of the zone-entry policy
+  event, so the `Corroborated` state and the `prepare_alert` affordance rest only on the two
+  sensors' own witnesses. No reviewed policy path for class-conditioned event kinds exists, so
+  no kind is ever derived from a detector score.
+- Identity and coverage: the cascade identity (`fss.detector_cascade.v1`: policy, package
+  archive/manifest/model/graph/contract digests, model id, generation, K, budget, IoU, colour
+  transforms) is bound into the candidate identity, the analysis record and every coverage
+  pipeline generation, so a cascade analysis never reuses model-free witnesses or events.
+- Report: a `detector_cascade` member lists the policy and package identities, the selected,
+  inferred, budget-skipped, refused and cascade-skipped frames, `inference_count`, per inferred
+  frame its digests and detections, and `scores: uncalibrated`; each candidate (or ground entry)
+  carries `class_evidence`.
+
+Release scalar inference costs about 3 s per 416x416 frame; debug builds about a minute. The
+committed tests (`crates/fss-reference/tests/detector_cascade_contract.rs`,
+`crates/fss-cli/tests/detector_cascade_cli_contract.rs`) use a synthetic person-shaped
+silhouette (the YOLOX conformance generator) walking into a zone and run exactly one inference
+each; they prove selection, budget, association and evidence wiring, not detection quality.
+
+## Trained-detector reports: `package-detect --retain` -> `report` -> `prepare` -> `publish`
+
+`fss-event report` consumes a `fss.package_detection_report.v1` through retained custody
+(library `fss_reference::ingest::package_event`), so the report/prepare/publish flow works with
+the trained detector:
+
+```sh
+fss-infer package-detect --root DIR --site SITE --import-id sha256:IMPORT --first-segment 0 \
+  --frames 8 --interpretation ycbcr --package models/yolox-nano/yolox_nano.fmpk \
+  --package-digest sha256:5b65...8c74 --retain yes > report.json   # receipt on stderr
+fss-event report --root DIR --site SITE --package-report sha256:$(sha256sum < report.json) \
+  --label person [--confirmation-hits N --maximum-missed-frames N --minimum-iou-ppm N] \
+  --report-out ./package-analysis.bin
+fss-event prepare --root DIR --site SITE --report ./package-analysis.bin \
+  --report-digest sha256:ANALYSIS --track sha256:TRACK
+fss-event publish ... --proposal-digest sha256:PROPOSAL
+```
+
+1. `--retain yes` retains the exact report JSON and a canonical `FSSPDET1` record
+   (`fss.package_detection_record.v1`) root-last with one cognition-plane
+   `package_detection_record` delta. Only the deployment's own computation is retained, never an
+   operator-supplied file; an exact rerun is `already_retained`. stdout stays the exact report.
+2. `report --package-report DIGEST --label NAME` reopens the retained record from custody (no
+   model execution), tracks the label's detections with the watch pipeline's Kalman tracker (fixed
+   noise; tracking policy explicit) and exports a canonical `FSSPANR1`
+   `fss.package_analysis_report.v1`. An unretained digest is
+   `ERR-PACKAGE-EVENT-UNAVAILABLE-001`; an unknown label is `ERR-PACKAGE-EVENT-REQUEST-001`.
+3. `prepare`/`publish` recognise the package report by its magic and rebuild it from custody on
+   every call. The event (`event:package:<track>`) is `Unclassified`, `Indeterminate`,
+   abstaining, probability [0, 1]; each matched frame is an observation record, a supporting
+   derived edge when a label detection overlaps the track, all in one sensor failure domain.
+   Publication needs the exact proposal digest (`ERR-PACKAGE-EVENT-APPROVAL-STALE-001`), retains
+   provenance root-last and uses the guarded event publisher with `Hold`; an exact rerun reports
+   `already_published` without writing. `fss-event read` does not reopen package events (their
+   policy differs), and a package event is never extended by a longer report.

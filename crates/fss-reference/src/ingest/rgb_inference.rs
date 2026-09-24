@@ -318,8 +318,9 @@ impl RgbInferenceModel {
         self.run_rgb_pixels(image.pixels(), image.receipt(), source, allowed, limits, cx)
     }
 
-    /// Run on retained decoded luma replicated into R=G=B. Retained H.264/H.265/JPEG decodes
-    /// publish luma only, so this is an explicit grayscale input, not a color decode: the
+    /// Run on retained decoded luma replicated into R=G=B: an explicit grayscale input, not a
+    /// color decode (retained JPEG decode publications are luma only; retained H.264/H.265
+    /// frames also carry chroma and run in color through [`Self::run_rgb_pixels`]). The
     /// receipt records `Grayscale` interpretation and a replication identity bound to the
     /// caller's exact codec receipt digest. A color-trained model sees no chroma here.
     pub fn run_luma_replicated(

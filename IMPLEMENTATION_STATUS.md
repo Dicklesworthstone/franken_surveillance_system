@@ -55,12 +55,21 @@ synthetic scenes). None of it has been measured on real camera footage.
   YOLOX-Nano COCO-80 (`models/yolox-nano/`, `MOD-YOLOXNANO-001`, Apache-2.0), imported offline
   from the pinned upstream ONNX by a first-party importer, loaded only through the digest-verified
   package path (`ingest::rgb_package`), and run over retained MJPEG/H.264/H.265 imports by
-  `fss-infer package-detect` (H.264/H.265 as grayscale: retained decode is luma-only). The scalar
-  executor matches the onnxruntime lab oracle within 3e-5 (tolerance 1e-3) with identical detections
-  on three pinned inputs; it takes ~3 s per 416x416 frame in release. No quality, recall or
-  calibration is claimed on any deployment data, and `fss-event report` cannot yet consume these
-  detections. The other trained weights are the OpenCV HOG people SVM (`fss-twin`), with no claimed
-  recall.
+  `fss-infer package-detect` (H.264/H.265 in real colour: decoded luma and chroma through a
+  declared BT.601 limited-range transform whose Y/Cb/Cr planes reassemble FFmpeg's `yuv420p`
+  oracle frames). The scalar executor matches the onnxruntime lab oracle within 3e-5 (tolerance
+  1e-3) with identical detections on three pinned inputs; it takes ~3 s per 416x416 frame in
+  release. **Detection cascade (fss-704tz):** `fss-event watch`/`corroborate`
+  `--detector-package ... --detector-max-inferences N` run the package only on frames the
+  foreground/Kalman/zone gate selected (entry, confirmation, following frames; explicit budget,
+  typed budget exhaustion), associate detections to tracks by IoU and attach uncalibrated class
+  evidence (label, score, package digest/generation, frame and capsule digests); candidates stay
+  `Unclassified` and single-sensor, the corroboration policy event is unchanged, and coverage
+  binds the detector generation. `fss-infer package-detect --retain yes` -> `fss-event report
+  --package-report` -> `prepare`/`publish` records unclassified, indeterminate package-track
+  events. Proven on a synthetic silhouette scene (one inference per test), not on real footage;
+  no quality, recall or calibration is claimed on any deployment data. The other trained weights
+  are the OpenCV HOG people SVM (`fss-twin`), with no claimed recall.
 - **Perception:** running-variance foreground detection, HOG multiscale scan, Kalman
   constant-velocity tracking with Hungarian assignment, global cross-camera assignment over
   caller-supplied ground-plane points, zone-gated event candidates (`ingest::{foreground, tracker,

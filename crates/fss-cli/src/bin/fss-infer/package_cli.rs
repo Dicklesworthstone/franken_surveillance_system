@@ -22,13 +22,18 @@ const HELP: &str = "fss-infer package-detect [options]\n\
   --root DIR --site SITE --import-id sha256:HEX --first-segment N --frames N (1..64)\n\
   --package FILE --package-digest sha256:HEX --interpretation gray|ycbcr\n\
   [--minimum-score-ppm N] [--max-macs N] [--max-tensor-bytes N] [--report-out FILE] [--principal ID]\n\
+  [--retain yes]\n\
   Runs a digest-pinned, verified RGB detector package (for example models/yolox-nano/\n\
   yolox_nano.fmpk) over a retained MJPEG, H.264 or H.265 import. JPEG frames are decoded to\n\
-  RGB; H.264/H.265 retained decoding is luma-only, so those frames run as explicit grayscale\n\
-  (R=G=B) input. H.264 ranges must start at an IDR and H.265 at an IRAP; interpretation must\n\
-  be ycbcr for both. Prints a fss.package_detection_report.v1 JSON document: uncalibrated\n\
-  proposals with source, inference, contract and package identities. Nothing is published,\n\
-  downloaded, activated or alerted; a frame without detections is not evidence of absence.\n\
+  RGB; H.264/H.265 frames are converted from decoded luma and chroma with the declared BT.601\n\
+  limited-range transform (color ycbcr420_bt601_limited_rgb). H.264 ranges must start at an IDR\n\
+  and H.265 at an IRAP; interpretation must be ycbcr for both. Prints a\n\
+  fss.package_detection_report.v1 JSON document: uncalibrated proposals with source, inference,\n\
+  contract and package identities. Nothing is downloaded, activated or alerted; a frame without\n\
+  detections is not evidence of absence. --retain yes additionally retains this exact report as\n\
+  cognition-plane evidence (root-last plus one package_detection_record delta) so `fss-event\n\
+  report --package-report sha256:REPORT` can consume it; stdout stays the exact report bytes and\n\
+  the retention receipt goes to stderr (package_detection_retained=, status=, root=).\n\
   The default threshold is the package's own; --minimum-score-ppm is an explicit override.\n\
   The scalar reference executor is slow (seconds per 416x416 frame in release builds).\n";
 
@@ -42,6 +47,7 @@ struct Options {
     request: PackageDetectRequest,
     limits: PackageDetectLimits,
     report: Option<PathBuf>,
+    retain: bool,
 }
 
 fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
@@ -69,6 +75,7 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
         "--max-macs",
         "--max-tensor-bytes",
         "--report-out",
+        "--retain",
     ];
     let mut values = Values::new();
     for pair in args.chunks(2) {
@@ -146,6 +153,11 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
         },
         limits,
         report: values.get("--report-out").map(PathBuf::from),
+        retain: match values.get("--retain").map(|v| v.to_str()) {
+            None => false,
+            Some(Some("yes")) => true,
+            Some(_) => return Err("--retain accepts only yes".into()),
+        },
     }))
 }
 
@@ -191,7 +203,7 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
         let bytes = read_package(&options.package)?;
         let package =
             RgbDetectorPackage::load(&bytes, options.package_digest, 1 << 36, &cx, &scalar)?;
-        let deployment = ReferenceDeployment::open(&options.root, &options.site, &cx)?;
+        let mut deployment = ReferenceDeployment::open(&options.root, &options.site, &cx)?;
         let report = run_package_detection(
             &deployment,
             &package,
@@ -204,6 +216,22 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
             export(path, report.json.as_bytes(), &options.root, &cx)?;
         }
         out.write_all(report.json.as_bytes())?;
+        if options.retain {
+            let retained = fss_reference::ingest::package_event::retain_package_detection(
+                &mut deployment,
+                &package,
+                &report,
+                &cx,
+            )?;
+            eprintln!(
+                "package_detection_retained={}\nstatus={}\nroot={}\nrecord={}\nauthority_sequence={}",
+                report.digest,
+                retained.status().as_str(),
+                retained.root(),
+                retained.record_digest(),
+                retained.authority_anchor().commit_sequence
+            );
+        }
         Ok(())
     })();
     scalar.drain_and_finalize();
@@ -227,6 +255,7 @@ pub(super) fn dispatch(args: &[OsString], out: &mut impl Write) -> Option<ExitCo
             Err(error) => {
                 let id = error.downcast_ref::<fss_reference::ingest::rgb_package::RgbPackageError>().map(|e| e.stable_id())
                     .or_else(|| error.downcast_ref::<fss_reference::ingest::package_detect::PackageDetectError>().map(|e| e.stable_id()))
+                    .or_else(|| error.downcast_ref::<fss_reference::ingest::package_event::PackageEventError>().map(|e| e.stable_id()))
                     .unwrap_or(fss_cli::ERR_CLI_RUNTIME_FAILURE);
                 eprintln!("{id}: {error}");
                 ExitCode::from(fss_cli::ExitIdentity::RUNTIME_FAILURE.code)
@@ -294,6 +323,7 @@ mod tests {
             ["--max-tensor-bytes", "0"],
             ["--max-tensor-bytes", "268435457"],
             ["--model", "x"],
+            ["--retain", "true"],
         ] {
             let mut a = args();
             a.extend(extra.map(OsString::from));

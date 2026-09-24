@@ -29,6 +29,8 @@ use fss_tensor::{DType, Shape, Tensor};
 
 #[path = "yolox_support/cases.rs"]
 mod cases;
+#[path = "yolox_support/person.rs"]
+mod person;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
