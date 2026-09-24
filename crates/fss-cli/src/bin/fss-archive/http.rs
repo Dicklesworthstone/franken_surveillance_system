@@ -167,7 +167,7 @@ fn render(r: &HttpCheckReport, maximum: usize) -> Result<String> {
             match frame.luma { Some(d) => write!(out, "\"{d}\"")?, None => write!(out, "null")? }
             write!(out, "}}")?;
         }
-        write!(out, "]}}\n")
+        writeln!(out, "]}}")
     };
     encode(&mut out).map_err(|_| runtime("complete report exceeds selected output bound; no report emitted"))?;
     Ok(out.text)
@@ -207,20 +207,22 @@ mod tests {
             "--read-originals", "yes", "--decode", "none"].into_iter().map(OsString::from).collect()
     }
     #[test]
-    fn parses_exact_source_without_accessing_the_path() {
-        let o = parse(&args()).expect("pure parse"); assert_eq!(o.request.reads, 1); assert_eq!(o.request.bytes, 100);
+    fn parses_exact_source_without_accessing_the_path() -> Result<()> {
+        let o = parse(&args())?; assert_eq!(o.request.reads, 1); assert_eq!(o.request.bytes, 100);
         assert_eq!(o.request.decode, HttpCheckDecode::None); assert!(o.request.completion.is_none());
+        Ok(())
     }
     #[test]
-    fn original_access_and_component_interpretation_are_explicit() {
+    fn original_access_and_component_interpretation_are_explicit() -> Result<()> {
         for key in ["--read-originals", "--decode"] {
-            let mut a = args(); let i = a.iter().position(|v| v.as_os_str() == OsStr::new(key)).expect("flag");
+            let mut a = args(); let i = a.iter().position(|v| v.as_os_str() == OsStr::new(key)).ok_or(malformed("flag"))?;
             a.remove(i); a.remove(i); assert!(parse(&a).is_err());
         }
         for (key, value) in [("--read-originals", "no"), ("--decode", "auto"), ("--generation", "0"), ("--bytes", "-1")] {
-            let mut a = args(); let i = a.iter().position(|v| v.as_os_str() == OsStr::new(key)).expect("flag");
+            let mut a = args(); let i = a.iter().position(|v| v.as_os_str() == OsStr::new(key)).ok_or(malformed("flag"))?;
             a[i + 1] = value.into(); assert!(parse(&a).is_err());
         }
+        Ok(())
     }
     #[test]
     fn duplicate_unknown_overflow_and_out_of_range_options_are_refused() {

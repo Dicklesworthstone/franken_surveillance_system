@@ -175,10 +175,10 @@ fn run(mut options: Options, out: &mut impl Write) -> RunResult<()> {
     let result = (|| -> RunResult<()> {
         cx.checkpoint("recording_cli:preflight")?;
         let report_destination = destination(&options.report, &options.root)?;
-        if let Some(path) = &options.runs {
-            if destination(path, &options.root)? == report_destination {
-                return Err(io::Error::other("report and run-list exports must differ").into());
-            }
+        if let Some(path) = &options.runs
+            && destination(path, &options.root)? == report_destination
+        {
+            return Err(io::Error::other("report and run-list exports must differ").into());
         }
         let mut deployment = ReferenceDeployment::open(&options.root, &options.site, &cx)?;
         let expected = options.request.detector.model_digest;
@@ -246,28 +246,32 @@ mod tests {
             "--coordinates", "normalized", "--report-out", "report.bin"]
             .into_iter().map(OsString::from).collect()
     }
-    fn replace(args: &mut [OsString], key: &str, replacement: OsString) {
-        let index = args.iter().position(|arg| arg == key).expect("test option present");
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+    fn replace(args: &mut [OsString], key: &str, replacement: OsString) -> TestResult {
+        let index = args.iter().position(|arg| arg == key).ok_or("test option present")?;
         args[index + 1] = replacement;
+        Ok(())
     }
     #[test]
-    fn exact_selection_contract_and_report_are_required() {
+    fn exact_selection_contract_and_report_are_required() -> TestResult {
         assert!(parse(&args()).is_ok());
         for key in ["--frames", "--first-segment", "--model-digest", "--report-out", "--labels"] {
-            let mut a = args(); let index = a.iter().position(|arg| arg == key).expect("test option present");
+            let mut a = args(); let index = a.iter().position(|arg| arg == key).ok_or("test option present")?;
             a.drain(index..index + 2); assert!(parse(&a).is_err());
         }
+        Ok(())
     }
     #[test]
-    fn duplicates_unknown_options_and_invalid_bounds_fail_before_io() {
+    fn duplicates_unknown_options_and_invalid_bounds_fail_before_io() -> TestResult {
         for extra in [["--site", "site:other"], ["--latest", "yes"], ["--run-id", "x"],
             ["--max-macs", "-1"], ["--max-tensor-bytes", "0"], ["--max-report-bytes", "16777217"]] {
             let mut a = args(); a.extend(extra.map(OsString::from)); assert!(parse(&a).is_err());
         }
         for (key, bad) in [("--frames", "0"), ("--frames", "257"), ("--interpretation", "auto"),
             ("--box-format", "guess"), ("--coordinates", "auto"), ("--labels", "vehicle,vehicle")] {
-            let mut a = args(); replace(&mut a, key, bad.into()); assert!(parse(&a).is_err());
+            let mut a = args(); replace(&mut a, key, bad.into())?; assert!(parse(&a).is_err());
         }
+        Ok(())
     }
     #[test]
     fn cached_numeric_zero_budgets_are_admitted_and_help_is_storage_free() {
@@ -278,11 +282,12 @@ mod tests {
     }
     #[cfg(unix)]
     #[test]
-    fn export_and_model_paths_preserve_native_bytes() {
+    fn export_and_model_paths_preserve_native_bytes() -> TestResult {
         use std::os::unix::ffi::OsStringExt;
         let mut a = args();
-        replace(&mut a, "--report-out", OsString::from_vec(b"report-\xff.bin".to_vec()));
+        replace(&mut a, "--report-out", OsString::from_vec(b"report-\xff.bin".to_vec()))?;
         a.extend([OsString::from("--model"), OsString::from_vec(b"model-\xff.bin".to_vec())]);
         assert!(parse(&a).is_ok());
+        Ok(())
     }
 }

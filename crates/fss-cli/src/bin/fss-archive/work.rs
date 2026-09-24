@@ -194,8 +194,8 @@ fn run(options: Options) -> Result<String> {
     let current = ArchiveSnapshot::load(&publisher, namespace, work.snapshot.limits(), &clock)?;
     let snapshot = current.digest()?;
     clock.now()?;
-    write!(&mut report,
-        "{{\"schema\":\"fss.local_archive_work_operator_report.v1\",\"command\":\"{}\",\"codec\":\"avc\",\"work_root\":\"{}\",\"retirement_root\":\"{}\",\"namespace\":\"{}\",\"snapshot\":\"{}\",\"prior_acknowledged_windows\":{},\"durable_windows\":{},\"indexed_windows\":{},\"pages\":{},\"window_result\":\"{}\",\"catalog_result\":\"{}\",\"indexing_remaining\":{},\"publication_requested\":{},\"storage_only\":true,\"source_bytes_emitted\":false,\"capture_complete\":false,\"operation_complete\":true}}\n",
+    writeln!(&mut report,
+        "{{\"schema\":\"fss.local_archive_work_operator_report.v1\",\"command\":\"{}\",\"codec\":\"avc\",\"work_root\":\"{}\",\"retirement_root\":\"{}\",\"namespace\":\"{}\",\"snapshot\":\"{}\",\"prior_acknowledged_windows\":{},\"durable_windows\":{},\"indexed_windows\":{},\"pages\":{},\"window_result\":\"{}\",\"catalog_result\":\"{}\",\"indexing_remaining\":{},\"publication_requested\":{},\"storage_only\":true,\"source_bytes_emitted\":false,\"capture_complete\":false,\"operation_complete\":true}}",
         if options.restore { "restore-work" } else { "inspect-work" }, options.root_digest, retirement,
         options.namespace, snapshot, work.snapshot.windows().len(), current.windows().len(),
         current.indexed_windows(), current.pages().len(), window_result, page_result,
