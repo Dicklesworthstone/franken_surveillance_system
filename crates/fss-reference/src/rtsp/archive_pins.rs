@@ -246,11 +246,10 @@ impl ArchivePinJournal {
         let path = dir.join(JOURNAL_FILE);
         let report = read_report(&path, limits, cancel)?;
         let replay = codec::replay(&report, scope, limits)?;
-        if let Some(minimum) = minimum {
-            if minimum.sequence == 0 || !report.records().iter().any(|r|
-                r.sequence() == minimum.sequence && r.root() == minimum.root) {
-                return Err(ArchivePinError::RootMismatch);
-            }
+        if let Some(minimum) = minimum
+            && (minimum.sequence == 0 || !report.records().iter().any(|r|
+                r.sequence() == minimum.sequence && r.root() == minimum.root)) {
+            return Err(ArchivePinError::RootMismatch);
         }
         check(cancel)?;
         let journal = Journal::open(&path, tail)?;

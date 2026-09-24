@@ -187,7 +187,7 @@ fn real_jpeg_capture_preserves_custody_through_delivery_faults() -> TestResult {
     let plan = DeliveryPlan::new(vec![DeliveryDirective::exact(2), DeliveryDirective::corrupt(1),
         DeliveryDirective::exact(2), DeliveryDirective::exact(expected.len() as u64)])?;
     let journal = JournalDirectory::new()?;
-    let mut ledger = DurableReferenceLedger::open(&journal.0.join("capture.journal"), "site:mjpeg", IncompleteTailPolicy::Reject)?;
+    let mut ledger = DurableReferenceLedger::open(journal.0.join("capture.journal"), "site:mjpeg", IncompleteTailPolicy::Reject)?;
     let mut objects = InMemoryObjectStore::new(ObjectLimits::new(4096, 4 * 1024 * 1024));
     let capture = generated.publish(&plan, &mut objects, &mut ledger)?;
     assert_eq!(capture.source_packets, expected);
@@ -205,7 +205,7 @@ fn invalid_delivery_plan_cannot_mutate_objects_or_authority() -> TestResult {
     let generated = generate(&spec()?)?;
     let plan = DeliveryPlan::new(vec![DeliveryDirective::exact(generated.packets().len() as u64 + 1)])?;
     let journal = JournalDirectory::new()?;
-    let mut ledger = DurableReferenceLedger::open(&journal.0.join("capture.journal"), "site:mjpeg", IncompleteTailPolicy::Reject)?;
+    let mut ledger = DurableReferenceLedger::open(journal.0.join("capture.journal"), "site:mjpeg", IncompleteTailPolicy::Reject)?;
     let mut objects = InMemoryObjectStore::new(ObjectLimits::new(4096, 4 * 1024 * 1024));
     assert!(generated.publish(&plan, &mut objects, &mut ledger).is_err());
     assert_eq!(objects.object_count(), 0);
@@ -251,10 +251,10 @@ fn repeated_source_bytes_share_objects_without_erasing_packet_multiplicity() -> 
     assert!(generated.packets().len() > 256);
     let plan = DeliveryPlan::identity(generated.packets().len() as u32)?;
     let journal = JournalDirectory::new()?;
-    let mut ledger = DurableReferenceLedger::open(&journal.0.join("capture.journal"), "site:mjpeg", IncompleteTailPolicy::Reject)?;
+    let mut ledger = DurableReferenceLedger::open(journal.0.join("capture.journal"), "site:mjpeg", IncompleteTailPolicy::Reject)?;
     let mut objects = InMemoryObjectStore::new(ObjectLimits::new(4096, 4 * 1024 * 1024));
     let capture = generated.publish(&plan, &mut objects, &mut ledger)?;
-    let manifest = fss_object::ObjectManifest::from_canonical_bytes(&objects.read_verified(capture.receipt.source_root)?)?;
+    let manifest = fss_object::ObjectManifest::from_canonical_bytes(objects.read_verified(capture.receipt.source_root)?)?;
     assert!(manifest.children().len() <= 257, "at most 256 distinct single bytes and the complete trace");
     assert_eq!(capture.receipt.source_packet_count, capture.source_packets.len());
     assert_eq!(capture.delivery_packets.len(), capture.source_packets.len());
