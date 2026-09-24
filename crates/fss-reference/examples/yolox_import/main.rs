@@ -157,7 +157,7 @@ fn safetensors(
     let mut data = Vec::new();
     for (name, (dims, values)) in params {
         if name.contains(['"', '\\']) || name.chars().any(char::is_control) {
-            return Err(format!("unsafe tensor name {name}").into());
+            return Err(format!("disallowed tensor name {name}").into());
         }
         let start = data.len();
         for v in values {
