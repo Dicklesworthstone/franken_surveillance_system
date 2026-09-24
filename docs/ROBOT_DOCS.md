@@ -434,6 +434,7 @@ All stable error identities and normative recovery guidance cataloged from `regi
 | `ERR-AGENT-BASIS-VERSION-001` | ContractBasis binary envelope format version is unsupported | upgrade client or server to matching format version |
 | `ERR-AGENT-CASE-BUDGET-001` | investigation cannot discriminate remaining hypotheses within declared budget | return residual uncertainty and explicit next probe/approval options |
 | `ERR-AGENT-CONTEXT-INCOMPLETE-001` | requested decision-complete context cannot fit or lacks required evidence | return bounded partial with omissions/expansion handles; never imply completeness |
+| `ERR-AGENT-EVENT-NOT-FOUND-001` | explain named an event identity that no committed 'event_revision' delta publishes at the evaluated anchor | orient to list published events; retry only after the ledger head advances |
 | `ERR-AGENT-HANDOFF-INVALID-001` | handoff root is incomplete, expired, unauthorized, schema/generation-incompatible, or cannot be safely rebased | reject, migrate, or open a new session with an explicit invalidation report; never silently resume |
 | `ERR-AGENT-HIDDEN-STATE-001` | required mission state exists only in conversation or caller memory | persist typed mission/workspace/case/plan/finding/handoff state before proceeding |
 | `ERR-AGENT-LEARNING-UNSUPPORTED-001` | learning proposal lacks evidence, applicability, counterexamples, or validation path | retain as rejected/advisory; do not activate |

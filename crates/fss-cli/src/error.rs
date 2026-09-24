@@ -111,6 +111,12 @@ impl ExitIdentity {
         code: 4,
         identifier: "EXIT-DOCTOR-NOT-A-DEPLOYMENT-004",
     };
+
+    /// An agent read was refused; the response envelope carries the registered error identity.
+    pub const AGENT_REFUSED: Self = Self {
+        code: 5,
+        identifier: "EXIT-AGENT-REFUSED-005",
+    };
 }
 
 /// Typed errors produced during CLI argument decoding and validation.

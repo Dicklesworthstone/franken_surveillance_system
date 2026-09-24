@@ -8,6 +8,9 @@ use crate::error::{CliError, ExitIdentity};
 use crate::negative_evidence_cmd::{
     NegativeEvidenceAction, execute_negative_evidence, parse_negative_evidence_tokens,
 };
+use crate::orient_cmd::{
+    ExplainArgs, OrientArgs, execute_explain, execute_orient, parse_explain_args, parse_orient_args,
+};
 use crate::token::{ArgToken, tokenize_os_args};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -34,6 +37,10 @@ pub enum FssCommand {
     Status,
     /// Negative evidence ledger management.
     NegativeEvidence(Box<NegativeEvidenceAction>),
+    /// Read-only AOP-003 session.orient over a deployment root: an AgentResponseEnvelope carrying the anchor-pinned SituationCapsule, listing (never executing) its affordances.
+    Orient(OrientArgs),
+    /// Read-only AOP-011 explain of one published event: evidence handles, knowledge states, contradictions, and what would change them.
+    Explain(ExplainArgs),
 }
 
 impl FssCommand {
@@ -41,7 +48,11 @@ impl FssCommand {
     #[must_use]
     pub fn is_json(&self) -> bool {
         match self {
-            Self::Capabilities | Self::Doctor(_) | Self::Status => true,
+            Self::Capabilities
+            | Self::Doctor(_)
+            | Self::Status
+            | Self::Orient(_)
+            | Self::Explain(_) => true,
             Self::NegativeEvidence(action) => action.is_json(),
             Self::Help | Self::Version => false,
         }
@@ -51,7 +62,7 @@ impl FssCommand {
 /// Returns the static help text for `fss`.
 #[must_use]
 pub const fn help_text() -> &'static str {
-    "Franken Surveillance System: unqualified reference implementation\n\nUSAGE:\n  fss help\n  fss version\n  fss capabilities --json\n  fss doctor --json [--root <dir>]\n      --root inspects a deployment root read-only (never writes, locks, or repairs)\n  fss status --json\n  fss negative-evidence <init|list|verify|append> [--path <file>] [--json]\n\nCompanion binaries: fss-file (import and decode recorded media), fss-infer (scalar model\nexecution, detection, tracking), fss-event (recorded event reports and publication),\nfss-archive (RTSP/HTTP capture archives), fss-lab (deterministic scenarios).\nNothing is release-qualified; the capabilities command lists what is implemented."
+    "Franken Surveillance System: unqualified reference implementation\n\nUSAGE:\n  fss help\n  fss version\n  fss capabilities --json\n  fss doctor --json [--root <dir>]\n      --root inspects a deployment root read-only (never writes, locks, or repairs)\n  fss status --json\n  fss orient --json --root <dir> [--view pulse|brief|epistemic_map] [--principal <id>] [--budget-tokens <n>]\n      read-only AOP-003 session.orient: AgentResponseEnvelope with the SituationCapsule; lists affordances, never executes them\n  fss explain --json --root <dir> --event-id <id> [--principal <id>]\n      read-only AOP-011 explain of one published event\n  fss negative-evidence <init|list|verify|append> [--path <file>] [--json]\n\nCompanion binaries: fss-file (import and decode recorded media), fss-infer (scalar model\nexecution, detection, tracking), fss-event (recorded event reports and publication),\nfss-archive (RTSP/HTTP capture archives), fss-lab (deterministic scenarios).\nNothing is release-qualified; the capabilities command lists what is implemented."
 }
 
 /// Parses OS-native arguments for `fss` with total validation and exact grammar exhaustion.
@@ -96,6 +107,8 @@ pub fn parse_fss_tokens(tokens: &[ArgToken]) -> Result<FssCommand, CliError> {
         }
         "doctor" => parse_doctor_tokens(tokens),
         "status" => parse_json_only_subcommand("status", tokens, FssCommand::Status),
+        "orient" => parse_orient_tokens(tokens),
+        "explain" => parse_explain_tokens(tokens),
         "negative-evidence" | "neg" | "negative" => {
             let action = parse_negative_evidence_tokens(&tokens[1..])?;
             Ok(FssCommand::NegativeEvidence(Box::new(action)))
@@ -212,6 +225,18 @@ fn parse_doctor_tokens(tokens: &[ArgToken]) -> Result<FssCommand, CliError> {
     Ok(FssCommand::Doctor(DoctorArgs { root }))
 }
 
+/// Parses the `orient` subcommand: `--json`, `--root <dir>`, optional `--view`, `--principal`,
+/// and `--budget-tokens`, each at most once, in either `--name value` or `--name=value` form.
+fn parse_orient_tokens(tokens: &[ArgToken]) -> Result<FssCommand, CliError> {
+    Ok(FssCommand::Orient(parse_orient_args(tokens)?))
+}
+
+/// Parses the `explain` subcommand: `--json`, `--root <dir>`, `--event-id <id>`, and an optional
+/// `--principal`, each at most once.
+fn parse_explain_tokens(tokens: &[ArgToken]) -> Result<FssCommand, CliError> {
+    Ok(FssCommand::Explain(parse_explain_args(tokens)?))
+}
+
 /// Parses subcommands whose only permitted option is `--json` with exact exhaustion.
 fn parse_json_only_subcommand(
     cmd_name: &str,
@@ -281,7 +306,7 @@ pub fn execute_fss_with_exit(command: FssCommand) -> (String, ExitIdentity) {
         FssCommand::Version => (format!("fss {VERSION}"), ExitIdentity::SUCCESS),
         FssCommand::Capabilities => (
             format!(
-                "{{\"schema\":\"fss.capabilities.v1\",\"version\":\"{VERSION}\",\"status\":\"reference_implementation_unqualified\",\"qualified\":[],\"implemented\":[\"file_import_custody:annexb,mjpeg,rtpplay\",\"jpeg_baseline_decode\",\"h264_constrained_baseline_decode\",\"model_free_watch_pipeline\",\"event_evaluation_harness\",\"rtp_h264_h265_depacketize\",\"rtsp_interleaved_tcp_capture\",\"http_mjpeg_capture\",\"fmp4_remux_avc_hevc\",\"local_capture_archive_verify_export\",\"scalar_model_execution_safetensors\",\"foreground_and_learned_detection_reference\",\"kalman_iou_tracking_reference\",\"recorded_event_publication\",\"durable_ledger_root_last_publication\",\"deployment_doctor\",\"negative_evidence_ledger\"],\"partial\":[\"alert_delivery:webhook_library_unwired\",\"cross_camera_association:caller_supplied_ground_plane\",\"camera_pose_and_localization\",\"agent_semantic_contracts:no_public_transport\"],\"not_implemented\":[\"h265_pixel_decode\",\"h264_main_high_profiles\",\"progressive_jpeg_decode\",\"rtp_over_udp\",\"uvc_acquisition\",\"onvif\",\"trained_detector_package\",\"real_footage_quality_evaluation\",\"agent_protocol_transport\",\"mcp\",\"cloud_archive\",\"property_reconstruction\",\"privacy_masking\",\"deletion_closure\",\"asupersync_runtime\",\"live_operator_view\"]}}"
+                "{{\"schema\":\"fss.capabilities.v1\",\"version\":\"{VERSION}\",\"status\":\"reference_implementation_unqualified\",\"qualified\":[],\"implemented\":[\"file_import_custody:annexb,mjpeg,rtpplay\",\"jpeg_baseline_decode\",\"h264_constrained_baseline_decode\",\"model_free_watch_pipeline\",\"event_evaluation_harness\",\"rtp_h264_h265_depacketize\",\"rtsp_interleaved_tcp_capture\",\"http_mjpeg_capture\",\"fmp4_remux_avc_hevc\",\"local_capture_archive_verify_export\",\"scalar_model_execution_safetensors\",\"foreground_and_learned_detection_reference\",\"kalman_iou_tracking_reference\",\"recorded_event_publication\",\"durable_ledger_root_last_publication\",\"deployment_doctor\",\"negative_evidence_ledger\",\"agent_orient_explain_cli\"],\"partial\":[\"alert_delivery:webhook_library_unwired\",\"cross_camera_association:caller_supplied_ground_plane\",\"camera_pose_and_localization\",\"agent_operations_cli:orient_explain_only\"],\"not_implemented\":[\"h265_pixel_decode\",\"h264_main_high_profiles\",\"progressive_jpeg_decode\",\"rtp_over_udp\",\"uvc_acquisition\",\"onvif\",\"trained_detector_package\",\"real_footage_quality_evaluation\",\"agent_protocol_transport\",\"mcp\",\"cloud_archive\",\"property_reconstruction\",\"privacy_masking\",\"deletion_closure\",\"asupersync_runtime\",\"live_operator_view\"]}}"
             ),
             ExitIdentity::SUCCESS,
         ),
@@ -314,6 +339,8 @@ pub fn execute_fss_with_exit(command: FssCommand) -> (String, ExitIdentity) {
             ExitIdentity::SUCCESS,
         ),
         FssCommand::NegativeEvidence(ref action) => execute_negative_evidence(action),
+        FssCommand::Orient(ref args) => execute_orient(args),
+        FssCommand::Explain(ref args) => execute_explain(args),
     }
 }
 
@@ -370,6 +397,16 @@ mod tests {
             vec!["capabilities", "--json", "extra"],
             vec!["doctor", "--json", "extra"],
             vec!["status", "--json", "extra"],
+            vec!["orient", "--json", "--root", "/deploy", "extra"],
+            vec![
+                "explain",
+                "--json",
+                "--root",
+                "/deploy",
+                "--event-id",
+                "event:x",
+                "extra",
+            ],
         ];
         for case in cases {
             let args: Vec<OsString> = case.into_iter().map(OsString::from).collect();
@@ -387,13 +424,67 @@ mod tests {
 
     #[test]
     fn missing_json_flag_is_rejected() {
-        for cmd in ["capabilities", "doctor", "status"] {
+        for cmd in ["capabilities", "doctor", "status", "orient", "explain"] {
             let result = parse_fss_args([OsString::from(cmd)]);
             assert!(result.is_err());
             if let Err(err) = result {
                 assert_eq!(err.error_id(), crate::error::ERR_CLI_MISSING_VALUE);
             }
         }
+    }
+
+    #[test]
+    fn orient_and_explain_parse_with_defaults_and_both_value_forms() {
+        let parse = |args: &[&str]| parse_fss_args(args.iter().map(OsString::from));
+        let Ok(FssCommand::Orient(orient)) = parse(&["orient", "--json", "--root", "/deploy"])
+        else {
+            unreachable!("orient with --json and --root parses");
+        };
+        assert_eq!(orient.root, PathBuf::from("/deploy"));
+        assert_eq!(orient.view, fss_core::AgentView::Brief);
+        assert_eq!(orient.principal.as_str(), "principal:local-operator");
+        assert_eq!(orient.budget_tokens, None);
+        let Ok(FssCommand::Orient(pulse)) = parse(&[
+            "orient",
+            "--root=/deploy",
+            "--view=pulse",
+            "--budget-tokens",
+            "300",
+            "--principal",
+            "principal:agent-7",
+            "--json",
+        ]) else {
+            unreachable!("orient with every option parses");
+        };
+        assert_eq!(pulse.view, fss_core::AgentView::Pulse);
+        assert_eq!(pulse.budget_tokens, Some(300));
+        assert_eq!(pulse.principal.as_str(), "principal:agent-7");
+        assert!(
+            parse(&[
+                "orient",
+                "--json",
+                "--root",
+                "/d",
+                "--view",
+                "pulse",
+                "--budget-tokens",
+                "301"
+            ])
+            .is_err()
+        );
+        let Ok(FssCommand::Explain(explain)) = parse(&[
+            "explain",
+            "--json",
+            "--root",
+            "/deploy",
+            "--event-id",
+            "event:watch:1",
+        ]) else {
+            unreachable!("explain with --event-id parses");
+        };
+        assert_eq!(explain.event_id.as_str(), "event:watch:1");
+        assert!(FssCommand::Explain(explain).is_json());
+        assert!(parse(&["explain", "--json", "--root", "/deploy"]).is_err());
     }
 
     #[test]

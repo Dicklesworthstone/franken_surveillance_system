@@ -8,6 +8,8 @@
 
 pub mod activity;
 mod adapter_replay;
+/// Read-only deployment orientation (AOP-003) and event explanation (AOP-011).
+pub mod agent_orient;
 pub mod agent_session;
 mod alert;
 /// Native HTTP alert relay with durable-before-send commitment and explicit outcomes.
