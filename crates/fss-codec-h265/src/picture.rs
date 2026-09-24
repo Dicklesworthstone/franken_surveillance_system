@@ -1,0 +1,228 @@
+//! Decoded picture types: the internal coded-size frame buffer and the
+//! public cropped [`Picture`].
+
+use crate::DecodeError;
+
+/// Coded-size 8-bit 4:2:0 sample planes (`pic_width_in_luma_samples` by
+/// `pic_height_in_luma_samples`, uncropped).
+#[derive(Clone, Debug)]
+pub(crate) struct Frame {
+    pub width: usize,
+    pub height: usize,
+    pub planes: [Vec<u8>; 3],
+}
+
+impl Frame {
+    /// Allocates a frame after the caller has enforced its budgets; the
+    /// allocation itself is fallible rather than aborting.
+    pub fn new(width: usize, height: usize) -> Result<Self, DecodeError> {
+        let luma = width.checked_mul(height).ok_or(DecodeError::Limit)?;
+        let chroma = (width / 2) * (height / 2);
+        Ok(Self {
+            width,
+            height,
+            planes: [zeroed(luma)?, zeroed(chroma)?, zeroed(chroma)?],
+        })
+    }
+
+    /// Width of plane `c` (0 = luma).
+    pub const fn plane_width(&self, c: usize) -> usize {
+        if c == 0 { self.width } else { self.width / 2 }
+    }
+
+    /// Height of plane `c` (0 = luma).
+    pub const fn plane_height(&self, c: usize) -> usize {
+        if c == 0 { self.height } else { self.height / 2 }
+    }
+}
+
+fn zeroed(len: usize) -> Result<Vec<u8>, DecodeError> {
+    let mut plane = Vec::new();
+    plane
+        .try_reserve_exact(len)
+        .map_err(|_| DecodeError::Limit)?;
+    plane.resize(len, 0);
+    Ok(plane)
+}
+
+/// Picture metadata carried alongside the planes.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PictureMeta {
+    pub poc: i32,
+    pub nal_type: u8,
+    pub decode_index: u64,
+}
+
+/// One decoded picture: tightly packed 8-bit 4:2:0 planes after the SPS
+/// conformance window, delivered in output (display) order. Chroma planes
+/// are `ceil(width/2) x ceil(height/2)`; 4:2:0 crop units are two samples,
+/// so the visible size is always even.
+#[derive(Clone, Eq, PartialEq)]
+pub struct Picture {
+    width: u32,
+    height: u32,
+    y: Vec<u8>,
+    cb: Vec<u8>,
+    cr: Vec<u8>,
+    poc: i32,
+    nal_type: u8,
+    decode_index: u64,
+}
+
+impl std::fmt::Debug for Picture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Picture")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("poc", &self.poc)
+            .field("nal_type", &self.nal_type)
+            .field("decode_index", &self.decode_index)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Picture {
+    /// Crops a coded frame to the conformance window
+    /// `[left, right, top, bottom]` (luma samples).
+    pub(crate) fn from_frame(
+        frame: &Frame,
+        crop: [u32; 4],
+        meta: PictureMeta,
+    ) -> Result<Self, DecodeError> {
+        let [left, right, top, bottom] = crop.map(|v| v as usize);
+        let width = frame
+            .width
+            .checked_sub(left + right)
+            .ok_or(DecodeError::Malformed)?;
+        let height = frame
+            .height
+            .checked_sub(top + bottom)
+            .ok_or(DecodeError::Malformed)?;
+        let y = crop_plane(&frame.planes[0], frame.width, left, top, width, height)?;
+        let (cw, ch) = (width.div_ceil(2), height.div_ceil(2));
+        let stride = frame.plane_width(1);
+        let cb = crop_plane(&frame.planes[1], stride, left / 2, top / 2, cw, ch)?;
+        let cr = crop_plane(&frame.planes[2], stride, left / 2, top / 2, cw, ch)?;
+        Ok(Self {
+            width: u32::try_from(width).map_err(|_| DecodeError::Limit)?,
+            height: u32::try_from(height).map_err(|_| DecodeError::Limit)?,
+            y,
+            cb,
+            cr,
+            poc: meta.poc,
+            nal_type: meta.nal_type,
+            decode_index: meta.decode_index,
+        })
+    }
+
+    /// Visible luma width.
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Visible luma height.
+    #[must_use]
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Chroma plane width (`ceil(width / 2)`).
+    #[must_use]
+    pub const fn chroma_width(&self) -> u32 {
+        self.width.div_ceil(2)
+    }
+
+    /// Chroma plane height (`ceil(height / 2)`).
+    #[must_use]
+    pub const fn chroma_height(&self) -> u32 {
+        self.height.div_ceil(2)
+    }
+
+    /// Luma samples, row stride = `width`.
+    #[must_use]
+    pub fn luma(&self) -> &[u8] {
+        &self.y
+    }
+
+    /// Cb samples, row stride = `chroma_width`.
+    #[must_use]
+    pub fn cb(&self) -> &[u8] {
+        &self.cb
+    }
+
+    /// Cr samples, row stride = `chroma_width`.
+    #[must_use]
+    pub fn cr(&self) -> &[u8] {
+        &self.cr
+    }
+
+    /// `PicOrderCntVal`.
+    #[must_use]
+    pub const fn poc(&self) -> i32 {
+        self.poc
+    }
+
+    /// `nal_unit_type` of the picture's slices.
+    #[must_use]
+    pub const fn nal_unit_type(&self) -> u8 {
+        self.nal_type
+    }
+
+    /// Whether the picture is an IDR picture.
+    #[must_use]
+    pub const fn is_idr(&self) -> bool {
+        self.nal_type == 19 || self.nal_type == 20
+    }
+
+    /// Whether the picture is an intra random access point (BLA/IDR/CRA).
+    #[must_use]
+    pub const fn is_irap(&self) -> bool {
+        self.nal_type >= 16 && self.nal_type <= 23
+    }
+
+    /// Zero-based index of this picture in decode order since the decoder
+    /// was created.
+    #[must_use]
+    pub const fn decode_index(&self) -> u64 {
+        self.decode_index
+    }
+
+    /// Packed planar I420 bytes: Y, then Cb, then Cr (FFmpeg `yuv420p`
+    /// rawvideo layout).
+    #[must_use]
+    pub fn to_i420(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.y.len() + self.cb.len() + self.cr.len());
+        out.extend_from_slice(&self.y);
+        out.extend_from_slice(&self.cb);
+        out.extend_from_slice(&self.cr);
+        out
+    }
+
+    /// SHA-256 over [`Self::to_i420`].
+    #[must_use]
+    pub fn i420_sha256(&self) -> [u8; 32] {
+        fss_core::ContentDigest::sha256(&self.to_i420()).bytes()
+    }
+}
+
+fn crop_plane(
+    plane: &[u8],
+    stride: usize,
+    left: usize,
+    top: usize,
+    width: usize,
+    height: usize,
+) -> Result<Vec<u8>, DecodeError> {
+    let mut out = Vec::new();
+    out.try_reserve_exact(width * height)
+        .map_err(|_| DecodeError::Limit)?;
+    for row in 0..height {
+        let start = (top + row) * stride + left;
+        let line = plane
+            .get(start..start + width)
+            .ok_or(DecodeError::Malformed)?;
+        out.extend_from_slice(line);
+    }
+    Ok(out)
+}
