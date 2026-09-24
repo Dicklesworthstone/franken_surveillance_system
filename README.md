@@ -18,9 +18,10 @@
 > [!IMPORTANT]
 > FSS is an **unqualified reference implementation**. It can import recorded media with custody,
 > capture RTSP (interleaved TCP) and HTTP MJPEG streams into local archives, decode baseline
-> JPEG/MJPEG, run small models on a scalar executor, detect, track and publish event candidates,
-> and keep a crash-safe local ledger. It does **not** yet decode H.264/H.265 pixels, ship a trained
-> detector, measure detection quality on real footage, expose the agent protocol over any
+> JPEG/MJPEG and Constrained Baseline H.264, run small models on a scalar executor, detect, track
+> and publish event candidates (including a model-free `fss-event watch` pipeline), and keep a
+> crash-safe local ledger. It does **not** yet decode H.265 or Main/High-profile H.264, ship a
+> trained detector, measure detection quality on real footage, expose the agent protocol over any
 > transport, archive to the cloud, or have any release-qualified capability. The boundary is
 > explicit in [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md) and `fss capabilities --json`.
 
@@ -541,7 +542,12 @@ Implemented (reference, unqualified):
 - RTP depacketization for H.264/H.265, RTSP negotiation with Digest authentication over interleaved
   TCP, native HTTP MJPEG capture, local capture archives with verify/export (`fss-archive`), and
   fragmented-MP4 remux for AVC/HEVC;
-- baseline JPEG/MJPEG decode (`fss-file decode`);
+- baseline JPEG/MJPEG decode and bit-exact (vs FFmpeg) Constrained Baseline H.264 I/P decode
+  (`fss-file decode`);
+- a model-free single-camera pipeline, decode -> foreground -> Kalman tracking -> zone candidates
+  -> approval-gated publication (`fss-event watch`);
+- a deterministic event-level evaluation harness (AUPRC, recall at a false-alert budget,
+  not_observable accounting) with no real labelled corpus yet;
 - a scalar model executor over the frozen FSS IR with Safetensors weights (`fss-infer`);
 - background-model foreground detection, the OpenCV HOG people SVM, Kalman/Hungarian tracking,
   cross-camera assignment over caller-supplied ground-plane points, and zone-gated event candidates;
@@ -555,14 +561,14 @@ Implemented (reference, unqualified):
 
 Partial:
 
-- H.264 pixel decode (entropy tables only; the decoder is in progress);
 - alert delivery: a native webhook transport exists as a library, but alerts require a corroborated
   multi-sensor event and no command drives it yet;
 - the agent operating layer exists as contracts without a CLI/MCP transport.
 
 Not implemented:
 
-- H.265 pixel decode, progressive JPEG, RTP over UDP, UVC, ONVIF;
+- H.265 pixel decode, Main/High-profile H.264 (CABAC, B-frames), progressive JPEG, RTP over UDP,
+  UVC, ONVIF;
 - any trained detector package, and any event-quality evaluation (AUPRC, recall at a false-alert
   budget) on real data;
 - Asupersync (the workspace has zero third-party crates; I/O is blocking `std`);
