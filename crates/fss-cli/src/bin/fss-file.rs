@@ -32,14 +32,16 @@ mod media;
 const HELP: &str = "fss-file <import|inspect|verify|extract|decode|read-decoded|verify-decoded|motion> [options]\n\
   All commands: --root DIR --site SITE [--principal ID] [--manifest-out FILE]\n\
   import: --input FILE --sensor ID --stream ID --receive-time-ns N\n\
-          [--media-format auto|mjpeg|annexb]\n\
+          [--media-format auto|mjpeg|annexb|hevc] (annexb is H.264, hevc is H.265;\n\
+          auto refuses an Annex-B stream whose first NAL header fits both codecs)\n\
           [--capture-start-ns N --capture-uncertainty-ns N --assumed-fps F]\n\
   inspect/verify: --import-id sha256:HEX\n\
   extract: --import-id sha256:HEX --segment N --output FILE\n\
   decode/read-decoded/verify-decoded: --import-id sha256:HEX --segment N\n\
           --interpretation gray|ycbcr [--output IMAGE.pgm] [--receipt-out FILE]\n\
-  decode of an annexb import: --segment N must be an IDR access unit and\n\
-          [--segment-count M] (1..1024) decodes N..N+M in order; --interpretation ycbcr;\n\
+  decode of an annexb/hevc import: --segment N must be an IDR access unit (hevc: IDR,\n\
+          CRA or BLA) and [--segment-count M] (1..1024) decodes N..N+M in display order;\n\
+          RASL pictures of a leading CRA/BLA are skipped and listed; --interpretation ycbcr;\n\
           --output writes one binary PGM luma image per frame; nothing is published\n\
   motion: --import-id sha256:HEX --start-segment N --frame-count N\n\
           --interpretation gray|ycbcr --pixel-delta N --minimum-changed-pixels N\n\
@@ -160,7 +162,8 @@ fn parse(args: &[OsString]) -> ParseResult<Option<Options>> {
                 "auto" => None,
                 "mjpeg" => Some(FileFormatHint::JpegStream),
                 "annexb" => Some(FileFormatHint::AnnexB),
-                _ => return Err(malformed("media format must be auto, mjpeg or annexb")),
+                "hevc" => Some(FileFormatHint::Hevc),
+                _ => return Err(malformed("media format must be auto, mjpeg, annexb or hevc")),
             };
         }
         let hint_keys = ["--capture-start-ns", "--capture-uncertainty-ns", "--assumed-fps"];
@@ -310,6 +313,9 @@ fn main() -> ExitCode {
                 eprintln!("{ERR_CLI_RUNTIME_FAILURE}: {error}");
                 if let Some(refusal) = error.downcast_ref::<fss_reference::ingest::recorded_decode::RecordedDecodeError>() {
                     eprintln!("refusal_id={}", refusal.stable_id());
+                }
+                if let Some(refusal) = error.downcast_ref::<fss_reference::ingest::FileIngestError>().and_then(|e| e.stable_id()) {
+                    eprintln!("refusal_id={refusal}");
                 }
                 eprintln!("Completed imports and decoded frames are not rolled back by later analysis/export failure. An incomplete export may remain.");
                 ExitCode::from(ExitIdentity::RUNTIME_FAILURE.code)

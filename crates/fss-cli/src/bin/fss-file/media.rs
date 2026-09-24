@@ -11,6 +11,9 @@ use fss_reference::ingest::recorded_decode::{
 use fss_reference::ingest::recorded_decode::h264::{
     DecoderLimits, MAX_H264_RANGE_SEGMENTS, RecordedH264Range, RecordedH264Request,
 };
+use fss_reference::ingest::recorded_decode::h265::{
+    DecoderLimits as H265DecoderLimits, RecordedH265Range, RecordedH265Request,
+};
 use fss_reference::ingest::pixel_change::{
     PixelChangeConfig, PixelChangeDetector, PixelChangeObservation,
 };
@@ -138,6 +141,7 @@ pub(super) fn run(
 ) -> RunResult<()> {
     match action {
         Action::Frame(action) if retained.manifest().format == "annexb" => run_h264(action, deployment, root, cx, out),
+        Action::Frame(action) if retained.manifest().format == "hevc" => run_h265(action, deployment, root, cx, out),
         Action::Frame(action) => run_frame(action, deployment, root, cx, out),
         Action::Motion(action) => run_motion(action, retained, deployment, root, cx, out),
     }
@@ -148,7 +152,7 @@ fn run_frame(
     cx: &ReplayCx, out: &mut impl Write,
 ) -> RunResult<()> {
     if action.segment_count != 1 {
-        return Err(std::io::Error::other("--segment-count applies only to annexb imports; JPEG frames decode one segment").into());
+        return Err(std::io::Error::other("--segment-count applies only to annexb and hevc imports; JPEG frames decode one segment").into());
     }
     let mut budget = DecodeBudget::new(action.work_units);
     let frame = match action.mode {
@@ -227,6 +231,57 @@ fn run_h264(
     }
     writeln!(out, "pixel_format=h264_yuv420p_luma\ndecoder_identity={}", fss_reference::ingest::recorded_decode::h264::h264_decoder_identity())?;
     writeln!(out, "h264_frames_decoded={}\ndecode_published=false\ndecode_complete=true", range.decoded())?;
+    Ok(())
+}
+
+/// H.265 ranges start at an IRAP picture. When that is a CRA/BLA, its RASL pictures predict from
+/// pictures before the range: the codec skips them, and each skipped segment is listed instead of
+/// a frame. Like H.264, the frames are a deterministic, unpublished derivation of custody.
+fn run_h265(
+    action: &FrameAction, deployment: &mut ReferenceDeployment, root: &Path,
+    cx: &ReplayCx, out: &mut impl Write,
+) -> RunResult<()> {
+    if !matches!(action.mode, FrameMode::Decode) {
+        return Err(fss_reference::ingest::recorded_decode::RecordedDecodeError::UnsupportedMedia.into());
+    }
+    if action.receipt_output.is_some() {
+        return Err(std::io::Error::other("--receipt-out applies to published JPEG decode receipts only").into());
+    }
+    let limits = action.request.decode_limits;
+    let dimension = limits.maximum_dimension.max(16);
+    let decoder_limits = H265DecoderLimits {
+        max_width: dimension, max_height: dimension,
+        max_luma_samples: (limits.maximum_pixels as u64).max(64),
+        max_pictures: action.segment_count as u64,
+        max_nal_bytes: limits.maximum_bytes.clamp(3, 16 * 1024 * 1024),
+        ..H265DecoderLimits::default()
+    };
+    let request = RecordedH265Request {
+        import_identity: action.request.import_identity, first_segment: action.request.segment_index,
+        segment_count: action.segment_count, interpretation: action.request.interpretation,
+        read_limits: action.request.read_limits, decoder_limits,
+    };
+    let mut range = RecordedH265Range::open(deployment, request, cx)?;
+    let mut pgm = Vec::new();
+    writeln!(out, "h265_range_first_segment={}\nh265_range_segment_count={}", action.request.segment_index, action.segment_count)?;
+    while let Some(frame) = range.next_frame(deployment, cx)? {
+        let receipt = frame.receipt(); let [width, height] = receipt.dimensions();
+        writeln!(out, "frame_segment={}\nframe_nal_unit_type={}\nframe_irap={}\nframe_idr={}\nframe_width={width}\nframe_height={height}",
+            receipt.segment_index(), receipt.nal_unit_type(), receipt.is_irap(), receipt.is_idr())?;
+        writeln!(out, "frame_luma_sha256={}\nframe_i420_sha256={}\nframe_receipt_digest={}", receipt.luma_sha256(), receipt.i420_sha256(), receipt.digest())?;
+        writeln!(out, "frame_capture_earliest_ns={}\nframe_capture_latest_ns={}", receipt.capsule().capture.earliest.0, receipt.capsule().capture.latest.0)?;
+        pgm.extend_from_slice(&frame.pgm_bytes());
+    }
+    for segment in range.skipped_rasl_segments() {
+        writeln!(out, "skipped_rasl_segment={segment}")?;
+    }
+    if let Some(path) = &action.output {
+        // Multi-image binary PGM: one complete P5 image per decoded frame, in display order.
+        write_new(path, &pgm, root, cx)?;
+        writeln!(out, "pgm_sha256={}", ContentDigest::sha256(&pgm))?;
+    }
+    writeln!(out, "pixel_format=h265_yuv420p_luma\ndecoder_identity={}", fss_reference::ingest::recorded_decode::h265::h265_decoder_identity())?;
+    writeln!(out, "h265_frames_decoded={}\nh265_rasl_skipped={}\ndecode_published=false\ndecode_complete=true", range.decoded(), range.skipped_rasl_segments().len())?;
     Ok(())
 }
 

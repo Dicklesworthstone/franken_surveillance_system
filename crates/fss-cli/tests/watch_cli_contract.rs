@@ -15,6 +15,9 @@ use fss_reference::media_fixture::jpeg::{JpegConfig, Subsampling, encode_jpeg};
 /// 176x144 `testsrc2` scene, one IDR then eleven P pictures.
 const H264: &[u8] =
     include_bytes!("../../fss-codec-h264/tests/fixtures/decode/p_qcif_ref3_p4x4.h264");
+/// 96x48 libx265 encode of the moving-square scene (see the fixture README).
+const HEVC: &[u8] =
+    include_bytes!("../../fss-reference/tests/fixtures/hevc_ingest/watch_96x48_moving.h265");
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
@@ -257,6 +260,27 @@ fn h264_recording_runs_through_the_same_pipeline_deterministically() -> TestResu
     )?;
     assert!(!predicted.status.success());
     assert_eq!(refusal(&predicted), "ERR-DECODE-H264-RANGE-NOT-IDR-001");
+    Ok(())
+}
+
+#[test]
+fn hevc_recording_with_motion_yields_one_candidate_through_the_binaries() -> TestResult {
+    let (_directory, root, id) = import("hevc", HEVC, "hevc")?;
+    let door = "door:64,0,32,32";
+    let first = watch(&root, &id, "ycbcr", door, &[])?;
+    success(&first);
+    assert_eq!(json_field(&first, "media_format")?, "hevc");
+    assert_eq!(json_field(&first, "frames_decoded")?, "14");
+    assert_eq!(json_field(&first, "candidate_count")?, "1");
+    assert_eq!(json_field(&first, "zone_id")?, "door");
+    assert_eq!(json_field(&first, "status")?, "prepared");
+    let second = watch(&root, &id, "ycbcr", door, &[])?;
+    success(&second);
+    assert_eq!(second.stdout, first.stdout);
+    // H.265 ranges must start at an IRAP access unit.
+    let predicted = watch(&root, &id, "ycbcr", door, &["--first-segment", "1"])?;
+    assert!(!predicted.status.success());
+    assert_eq!(refusal(&predicted), "ERR-DECODE-H265-RANGE-NOT-IRAP-001");
     Ok(())
 }
 

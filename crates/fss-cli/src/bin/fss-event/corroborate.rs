@@ -284,6 +284,9 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
     limits.h264_limits.max_height = dimension;
     limits.h264_limits.max_macroblocks =
         u32::try_from(pixels.div_ceil(256)).map_err(|_| "pixel ceiling")?;
+    limits.h265_limits.max_width = dimension;
+    limits.h265_limits.max_height = dimension;
+    limits.h265_limits.max_luma_samples = pixels as u64;
     let mut approvals = BTreeSet::new();
     if let Some(list) = find(&values, "--approve") {
         for item in list.split(',') {

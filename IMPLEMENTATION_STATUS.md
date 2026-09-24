@@ -26,7 +26,11 @@ synthetic scenes). None of it has been measured on real camera footage.
   against FFmpeg on 31 fixtures (`fss-codec-h264`), wired into retained decode (`fss-file decode`
   on Annex-B imports, ranges starting at an IDR). H.265/HEVC Main-profile pixel decode
   (intra, P/B inter, deblocking, SAO, WPP, slices, scaling lists) is bit-exact against FFmpeg on 39
-  fixtures (`fss-codec-h265`) but NOT yet wired into ingest. Not implemented: HEVC Main 10/RExt,
+  fixtures (`fss-codec-h265`), wired into ingest: `fss-file import` retains HEVC Annex-B as
+  `hevc` (explicit `--media-format hevc`; auto-detection only for an unambiguous first NAL header,
+  otherwise a typed refusal) with H.265 access-unit splitting, and `fss-file decode`,
+  `fss-event watch` and `fss-event corroborate` decode IRAP-led ranges (a CRA-led range skips its
+  RASL pictures and lists them). Not implemented: HEVC Main 10/RExt,
   tiles, dependent slices, long-term refs; interlaced and 4:2:2/4:4:4/10-bit H.264.
 - **Pipeline and evaluation:** `fss-event watch` runs decode -> foreground -> Kalman -> zone
   eventgen over a retained import and publishes approval-gated, unclassified, single-sensor

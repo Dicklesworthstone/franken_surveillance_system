@@ -22,6 +22,7 @@ workspace = true
 
 [dependencies]
 fss-codec-h264 = { path = "../fss-codec-h264" }
+fss-codec-h265 = { path = "../fss-codec-h265" }
 fss-codec-mjpeg = { path = "../fss-codec-mjpeg" }
 fss-container = { path = "../fss-container" }
 fss-core = { path = "../fss-core" }
