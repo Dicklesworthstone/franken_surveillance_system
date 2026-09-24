@@ -94,7 +94,7 @@ pub fn parse_fss_tokens(tokens: &[ArgToken]) -> Result<FssCommand, CliError> {
         "capabilities" => {
             parse_json_only_subcommand("capabilities", tokens, FssCommand::Capabilities)
         }
-        "doctor" => parse_doctor_tokens(tokens).map(FssCommand::Doctor),
+        "doctor" => parse_doctor_tokens(tokens),
         "status" => parse_json_only_subcommand("status", tokens, FssCommand::Status),
         "negative-evidence" | "neg" | "negative" => {
             let action = parse_negative_evidence_tokens(&tokens[1..])?;
@@ -119,7 +119,7 @@ pub fn parse_fss_tokens(tokens: &[ArgToken]) -> Result<FssCommand, CliError> {
 }
 
 /// Parses the `doctor` subcommand supporting `--json` and optional `--root <dir>`.
-fn parse_doctor_tokens(tokens: &[ArgToken]) -> Result<DoctorArgs, CliError> {
+fn parse_doctor_tokens(tokens: &[ArgToken]) -> Result<FssCommand, CliError> {
     if tokens.len() == 1 {
         return Err(CliError::MissingValue {
             option: "--json".to_owned(),
@@ -209,7 +209,7 @@ fn parse_doctor_tokens(tokens: &[ArgToken]) -> Result<DoctorArgs, CliError> {
         });
     }
 
-    Ok(DoctorArgs { root })
+    Ok(FssCommand::Doctor(DoctorArgs { root }))
 }
 
 /// Parses subcommands whose only permitted option is `--json` with exact exhaustion.
