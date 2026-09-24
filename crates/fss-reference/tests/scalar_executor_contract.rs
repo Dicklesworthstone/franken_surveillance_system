@@ -1273,44 +1273,74 @@ fn test_exp_vector_against_f64_reference_and_pinned_bits() -> Result<(), Box<dyn
 }
 
 #[test]
-fn test_unsupported_opcodes_refused_before_execution() -> Result<(), Box<dyn Error>> {
+fn test_formerly_unsupported_opcodes_execute_and_unknown_gelu_mode_is_refused()
+-> Result<(), Box<dyn Error>> {
+    // Every frozen Model IR v1 opcode now has a scalar kernel: layout (cf0b306), LayerNorm and
+    // RMSNorm (35b07e0), SiLU, Tanh and both GELU modes (c8dac61) and Embedding (6f65e8f).
+    // No opcode is refused as UnsupportedOperator any more; what is still refused before any
+    // node executes is a GELU mode outside the frozen none/tanh vocabulary.
     let start = Instant::now();
     let g = gen1();
 
-    // Gelu explicitly: must give UnsupportedOperator and 0 executed nodes
-    {
+    let gelu_graph = |mode: Option<&str>| -> Result<ModelIrGraph, Box<dyn Error>> {
         let p_in = TensorPort::new("x", DType::F32, Shape::new(vec![1, 4])?, g)?;
         let p_out = TensorPort::new("y", DType::F32, Shape::new(vec![1, 4])?, g)?;
+        let mut attrs = AttributeMap::new();
+        if let Some(mode) = mode {
+            attrs.insert(
+                "approximate".to_string(),
+                AttrValue::String(mode.to_string()),
+            );
+        }
         let node = GraphNode::new(
             "gelu",
             OpCode::Gelu,
             "gelu",
             vec!["x".to_string()],
             vec!["y".to_string()],
-            AttributeMap::new(),
+            attrs,
         )?;
-        let graph = ModelIrGraph::builder("g_gelu", g)
+        // Deliberately unvalidated: the executor itself must refuse an unknown mode.
+        Ok(ModelIrGraph::builder("g_gelu", g)
             .add_input(p_in)
             .add_output(p_out)
             .add_node(node)
-            .build_and_validate()?;
+            .build()?)
+    };
 
+    // GELU (default, explicit none, tanh) executes one node with finite outputs.
+    for mode in [None, Some("none"), Some("tanh")] {
+        let graph = gelu_graph(mode)?;
         let in_t = Tensor::from_values(Shape::new(vec![1, 4])?, &[1.0_f32; 4], g)?;
         let cx = ScalarExecCx::new();
-        let res = ScalarExecutor::run(&graph, &[("x", in_t)], ExecBudget::unlimited(), &cx);
-        match res {
-            Err(ExecError::UnsupportedOperator { op, .. }) => {
-                assert_eq!(op, OpCode::Gelu);
+        let out = ScalarExecutor::run(&graph, &[("x", in_t)], ExecBudget::unlimited(), &cx)
+            .map_err(|e| format!("GELU mode {mode:?} must execute, got {e:?}"))?;
+        let y = out.outputs().get("y").ok_or("GELU output y missing")?;
+        let values = y.to_vec::<f32>()?;
+        assert_eq!(values.len(), 4);
+        assert!(values.iter().all(|v| v.is_finite() && *v > 0.8 && *v < 0.9));
+    }
+
+    // An unknown GELU mode is a typed refusal before execution, never a guessed formula.
+    {
+        let graph = gelu_graph(Some("erf"))?;
+        let in_t = Tensor::from_values(Shape::new(vec![1, 4])?, &[1.0_f32; 4], g)?;
+        let cx = ScalarExecCx::new();
+        match ScalarExecutor::run(&graph, &[("x", in_t)], ExecBudget::unlimited(), &cx) {
+            Err(ExecError::Ir(ModelIrError::InvalidAttribute { attr_name, .. })) => {
+                assert_eq!(attr_name, "approximate");
             }
-            Ok(_) => return Err("Expected UnsupportedOperator for Gelu, got Ok".into()),
-            Err(other) => {
-                return Err(format!("Expected UnsupportedOperator for Gelu, got {other:?}").into());
+            other => {
+                return Err(format!(
+                    "Expected InvalidAttribute(approximate) for GELU mode erf, got {other:?}"
+                )
+                .into());
             }
         }
     }
 
-    // Exhaustively test all other unsupported opcodes
-    let other_unsupported = [
+    // The ops this test used to list as unsupported are never refused as UnsupportedOperator.
+    let formerly_unsupported = [
         OpCode::Silu,
         OpCode::Tanh,
         OpCode::Transpose,
@@ -1322,8 +1352,8 @@ fn test_unsupported_opcodes_refused_before_execution() -> Result<(), Box<dyn Err
         OpCode::RMSNorm,
         OpCode::Embedding,
     ];
-
-    for op in other_unsupported {
+    let mut executed = Vec::new();
+    for op in formerly_unsupported {
         let (in_shape, in_dtype) = if op == OpCode::Embedding {
             (Shape::new(vec![2, 4])?, DType::I32)
         } else {
@@ -1354,7 +1384,7 @@ fn test_unsupported_opcodes_refused_before_execution() -> Result<(), Box<dyn Err
         }
 
         let node = GraphNode::new(
-            "n_unsupported",
+            "n_formerly_unsupported",
             op,
             "op",
             vec!["in0".to_string()],
@@ -1375,31 +1405,29 @@ fn test_unsupported_opcodes_refused_before_execution() -> Result<(), Box<dyn Err
             };
             let res = ScalarExecutor::run(&graph, &[("in0", dummy)], ExecBudget::unlimited(), &cx);
             match res {
-                Err(ExecError::UnsupportedOperator { op: err_op, .. }) => {
-                    assert_eq!(err_op, op);
+                Ok(out) => {
+                    assert!(out.outputs().contains_key("out0"), "{op:?} output missing");
+                    executed.push(op);
                 }
-                Err(ExecError::UnsupportedDType { .. }) => {
-                    assert_eq!(op, OpCode::Embedding);
-                }
-                Ok(_) => {
-                    return Err(
-                        format!("Expected failure for unsupported op {op:?}, got Ok").into(),
-                    );
-                }
-                Err(other) => {
-                    return Err(
-                        format!("Expected UnsupportedOperator for {op:?}, got {other:?}").into(),
-                    );
+                Err(err) => {
+                    return Err(format!("validated {op:?} graph must execute, got {err:?}").into());
                 }
             }
         }
     }
+    assert!(
+        executed.contains(&OpCode::Silu) && executed.contains(&OpCode::Tanh),
+        "SiLU and Tanh graphs must validate and execute: {executed:?}"
+    );
 
     let dur = start.elapsed().as_millis();
-    let exp_json = r#"{"gelu_unsupported":true,"total_ops":11}"#.to_string();
-    let obs_json = r#"{"status":"ok"}"#.to_string();
+    let exp_json = r#"{"gelu_modes_executed":3,"unknown_mode_refused":true}"#.to_string();
+    let obs_json = format!(
+        r#"{{"status":"ok","formerly_unsupported_executed":{}}}"#,
+        executed.len()
+    );
     emit_caplog(
-        "unsupported_opcodes_refusal",
+        "formerly_unsupported_opcodes_execute",
         "pass",
         0,
         &exp_json,
@@ -2281,14 +2309,29 @@ fn test_m7_kill_no_wildcard_arms_in_scalar_executor_opcode_matches() -> Result<(
         "scalar_executor.rs must contain #![deny(clippy::wildcard_enum_match_arm)]"
     );
 
-    // Verify there is no wildcard arm matching on OpCode
-    let has_wildcard = src.lines().any(|line| {
+    // Verify there is no wildcard arm matching on OpCode. The only admitted wildcard arms are
+    // the catch-all of a match on a string attribute value (`.as_str(`), which has no finite
+    // variant list to enumerate: the GELU `approximate` mode match added by c8dac61. Every
+    // wildcard arm is attributed to the closest preceding `match` line.
+    let mut last_match_line = "";
+    let mut offending = Vec::new();
+    for (number, line) in src.lines().enumerate() {
         let trimmed = line.trim();
-        trimmed == "_ =>" || trimmed.starts_with("_ =>") || trimmed.starts_with("_ |")
-    });
+        if trimmed.contains("match ") {
+            last_match_line = trimmed;
+        }
+        let is_wildcard =
+            trimmed == "_ =>" || trimmed.starts_with("_ =>") || trimmed.starts_with("_ |");
+        if is_wildcard && !last_match_line.contains(".as_str(") {
+            offending.push(format!(
+                "{}: {trimmed} (match: {last_match_line})",
+                number + 1
+            ));
+        }
+    }
     assert!(
-        !has_wildcard,
-        "scalar_executor.rs must not contain wildcard arms"
+        offending.is_empty(),
+        "scalar_executor.rs must not contain wildcard arms outside string matches: {offending:?}"
     );
 
     // Source guard: scalar_executor.rs must never call native f32::exp at any call site,
@@ -2300,12 +2343,32 @@ fn test_m7_kill_no_wildcard_arms_in_scalar_executor_opcode_matches() -> Result<(
         );
     }
 
-    // Verify all 3 match blocks explicitly name the unsupported variants (Gelu | Silu | ...)
-    let unsupported_count = src.matches("OpCode::Gelu").count();
+    // Every opcode now executes (cf0b306, 35b07e0, c8dac61, 6f65e8f), so the former three
+    // "unsupported" lists are gone. UnsupportedOperator survives only as the fallback of the two
+    // per-family kernels (layout, activation), and each fallback arm must name the opcodes it
+    // refuses explicitly rather than bind a catch-all.
+    let lines: Vec<&str> = src.lines().map(str::trim).collect();
+    let fallback_sites: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.contains("Err(ExecError::UnsupportedOperator {"))
+        .map(|(index, _)| index)
+        .collect();
     assert_eq!(
-        unsupported_count, 3,
-        "scalar_executor.rs must have exactly 3 explicit unsupported OpCode match lists"
+        fallback_sites.len(),
+        2,
+        "scalar_executor.rs must have exactly 2 explicit UnsupportedOperator fallbacks"
     );
+    for index in fallback_sites {
+        let arm = index
+            .checked_sub(1)
+            .and_then(|previous| lines.get(previous))
+            .ok_or("UnsupportedOperator fallback has no arm line")?;
+        assert!(
+            arm.contains("OpCode::") && arm.ends_with("=> {"),
+            "UnsupportedOperator fallback must follow an explicit OpCode list, got {arm:?}"
+        );
+    }
 
     Ok(())
 }
@@ -2844,7 +2907,15 @@ mod reviewer_probes {
     }
 
     #[test]
-    fn p13_unsupported_op_after_supported_op_refused_before_execution() -> R {
+    fn p13_refused_op_after_supported_op_refused_before_execution() -> R {
+        // Tanh, the op this probe first used, executes since c8dac61; no opcode is refused as
+        // UnsupportedOperator any more. A later node with an unknown GELU mode is still refused,
+        // and the refusal must come from whole-graph validation before the leading Relu runs.
+        let mut mode = AttributeMap::new();
+        mode.insert(
+            "approximate".to_string(),
+            AttrValue::String("erf".to_string()),
+        );
         let gr = ModelIrGraph::builder("p13", g())
             .add_input(f("x", &[4])?)
             .add_output(f("y", &[4])?)
@@ -2855,17 +2926,18 @@ mod reviewer_probes {
                 &["m"],
                 AttributeMap::new(),
             )?)
-            .add_node(node(
-                "b_tanh",
-                OpCode::Tanh,
-                &["m"],
-                &["y"],
-                AttributeMap::new(),
-            )?)
-            .build_and_validate()?;
+            .add_node(node("b_gelu", OpCode::Gelu, &["m"], &["y"], mode)?)
+            .build()?;
         match run(&gr, vec![("x", t(&[4], &[1.0; 4])?)]) {
-            Err(ExecError::UnsupportedOperator { op, .. }) => assert_eq!(op, OpCode::Tanh),
-            other => return Err(format!("expected UnsupportedOperator, got {other:?}").into()),
+            Err(ExecError::Ir(fss_model_ir::ModelIrError::InvalidAttribute {
+                node_id,
+                attr_name,
+                ..
+            })) => {
+                assert_eq!(node_id, "b_gelu");
+                assert_eq!(attr_name, "approximate");
+            }
+            other => return Err(format!("expected InvalidAttribute, got {other:?}").into()),
         }
         Ok(())
     }
