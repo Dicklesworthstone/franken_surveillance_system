@@ -99,7 +99,154 @@ fn luma_sample(p: &Plane<'_>, x: i32, y: i32, fx: i32, fy: i32) -> i32 {
     }
 }
 
+/// Prediction samples of one 4x4 luma block and its two 2x2 chroma blocks
+/// (4:2:0), raster order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct BlockPrediction {
+    pub luma: [u8; 16],
+    pub cb: [u8; 4],
+    pub cr: [u8; 4],
+}
+
+fn chroma_sample(plane: &Plane<'_>, x: i32, y: i32, fx: i32, fy: i32) -> u8 {
+    let value = ((8 - fx) * (8 - fy) * plane.at(x, y)
+        + fx * (8 - fy) * plane.at(x + 1, y)
+        + (8 - fx) * fy * plane.at(x, y + 1)
+        + fx * fy * plane.at(x + 1, y + 1)
+        + 32)
+        >> 6;
+    u8::try_from(value.clamp(0, 255)).unwrap_or(u8::MAX)
+}
+
+/// Fractional sample interpolation (clause 8.4.2.2) of the 4x4 luma block
+/// at picture position (x, y) and its co-sited 2x2 chroma blocks, from
+/// `reference` displaced by `mv` (quarter luma samples).
+pub(crate) fn predict_4x4(reference: &Frame, x: usize, y: usize, mv: [i32; 2]) -> BlockPrediction {
+    let luma = Plane {
+        samples: &reference.y,
+        width: to_i32(reference.width),
+        height: to_i32(reference.height),
+    };
+    let (fx, fy) = (mv[0] & 3, mv[1] & 3);
+    let (ox, oy) = (to_i32(x) + (mv[0] >> 2), to_i32(y) + (mv[1] >> 2));
+    let mut out = BlockPrediction {
+        luma: [0; 16],
+        cb: [0; 4],
+        cr: [0; 4],
+    };
+    for j in 0..4 {
+        for i in 0..4 {
+            let value = luma_sample(&luma, ox + i, oy + j, fx, fy);
+            out.luma[usize::try_from(j * 4 + i).unwrap_or(0)] =
+                u8::try_from(value).unwrap_or(u8::MAX);
+        }
+    }
+    let (cw, ch) = (
+        to_i32(reference.chroma_width()),
+        to_i32(reference.chroma_height()),
+    );
+    let (fx, fy) = (mv[0] & 7, mv[1] & 7);
+    let (ox, oy) = (to_i32(x / 2) + (mv[0] >> 3), to_i32(y / 2) + (mv[1] >> 3));
+    for (source, destination) in [(&reference.cb, &mut out.cb), (&reference.cr, &mut out.cr)] {
+        let plane = Plane {
+            samples: source,
+            width: cw,
+            height: ch,
+        };
+        for j in 0..2 {
+            for i in 0..2 {
+                destination[usize::try_from(j * 2 + i).unwrap_or(0)] =
+                    chroma_sample(&plane, ox + i, oy + j, fx, fy);
+            }
+        }
+    }
+    out
+}
+
+/// Stores a block prediction into the picture at luma position (x, y).
+pub(crate) fn write_prediction(target: &mut Frame, x: usize, y: usize, p: &BlockPrediction) {
+    let stride = target.width;
+    for j in 0..4 {
+        let start = (y + j) * stride + x;
+        if let Some(row) = target.y.get_mut(start..start + 4) {
+            row.copy_from_slice(&p.luma[j * 4..j * 4 + 4]);
+        }
+    }
+    let cstride = target.chroma_width();
+    let (cx, cy) = (x / 2, y / 2);
+    for (plane, samples) in [(&mut target.cb, &p.cb), (&mut target.cr, &p.cr)] {
+        for j in 0..2 {
+            let start = (cy + j) * cstride + cx;
+            if let Some(row) = plane.get_mut(start..start + 2) {
+                row.copy_from_slice(&samples[j * 2..j * 2 + 2]);
+            }
+        }
+    }
+}
+
+fn map3(
+    p0: &BlockPrediction,
+    p1: &BlockPrediction,
+    mut f: impl FnMut(usize, u8, u8) -> u8,
+) -> BlockPrediction {
+    BlockPrediction {
+        luma: std::array::from_fn(|i| f(0, p0.luma[i], p1.luma[i])),
+        cb: std::array::from_fn(|i| f(1, p0.cb[i], p1.cb[i])),
+        cr: std::array::from_fn(|i| f(2, p0.cr[i], p1.cr[i])),
+    }
+}
+
+fn clip_sample(value: i32) -> u8 {
+    u8::try_from(value.clamp(0, 255)).unwrap_or(u8::MAX)
+}
+
+/// Default bi-prediction average (equation 8-273).
+pub(crate) fn average(p0: &BlockPrediction, p1: &BlockPrediction) -> BlockPrediction {
+    map3(p0, p1, |_, a, b| {
+        clip_sample((i32::from(a) + i32::from(b) + 1) >> 1)
+    })
+}
+
+/// Explicit weighted single-list prediction (equations 8-270/8-271).
+/// `params` holds (weight, offset) for Y, Cb, Cr; `denoms` the luma and
+/// chroma `log2_weight_denom`.
+pub(crate) fn weight_single(
+    p: &BlockPrediction,
+    params: [(i32, i32); 3],
+    denoms: [u32; 2],
+) -> BlockPrediction {
+    map3(p, p, |component, a, _| {
+        let (w, o) = params[component];
+        let log_wd = denoms[usize::from(component > 0)];
+        let x = i32::from(a);
+        clip_sample(if log_wd >= 1 {
+            ((x * w + (1 << (log_wd - 1))) >> log_wd) + o
+        } else {
+            x * w + o
+        })
+    })
+}
+
+/// Weighted bi-prediction (equation 8-272): explicit or implicit (offsets
+/// 0, `logWD` 5). `params` holds ((w0, o0), (w1, o1)) for Y, Cb, Cr.
+pub(crate) fn weight_bi(
+    p0: &BlockPrediction,
+    p1: &BlockPrediction,
+    params: [((i32, i32), (i32, i32)); 3],
+    denoms: [u32; 2],
+) -> BlockPrediction {
+    map3(p0, p1, |component, a, b| {
+        let ((w0, o0), (w1, o1)) = params[component];
+        let log_wd = denoms[usize::from(component > 0)];
+        clip_sample(
+            ((i32::from(a) * w0 + i32::from(b) * w1 + (1 << log_wd)) >> (log_wd + 1))
+                + ((o0 + o1 + 1) >> 1),
+        )
+    })
+}
+
 /// A rectangular inter partition in luma sample units within the picture.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Block {
     pub x: usize,
@@ -114,6 +261,7 @@ fn to_i32(value: usize) -> i32 {
 
 /// Writes the luma and chroma prediction of `block` from `reference` with
 /// motion vector `mv` (quarter luma samples) into `target`.
+#[cfg(test)]
 pub(crate) fn predict_block(reference: &Frame, target: &mut Frame, block: Block, mv: [i32; 2]) {
     let luma = Plane {
         samples: &reference.y,
@@ -261,5 +409,69 @@ mod tests {
         predict_block(&reference, &mut target, block, [1, 3]);
         assert_eq!(target.cb[2 * 8 + 2], 17);
         assert_eq!(target.cr[2 * 8 + 2], 100);
+    }
+
+    fn flat(luma: u8, chroma: u8) -> BlockPrediction {
+        BlockPrediction {
+            luma: [luma; 16],
+            cb: [chroma; 4],
+            cr: [chroma; 4],
+        }
+    }
+
+    /// Weighted sample prediction by hand (8-270..8-273).
+    /// Single list, logWD 5, w 40, o -3: ((100 * 40 + 16) >> 5) - 3 =
+    /// 125 - 3 = 122. logWD 0: x * w + o, clipped: 255 * 127 + 127 -> 255.
+    /// Explicit bi, logWD 5, (w0, o0) = (20, 2), (w1, o1) = (44, 5):
+    /// ((100 * 20 + 200 * 44 + 32) >> 6) + ((2 + 5 + 1) >> 1) = 169 + 4 =
+    /// 173. Implicit 32/32 equals the default average (100 + 200 + 1) >> 1
+    /// = 150.
+    #[test]
+    fn weighted_prediction_by_hand() {
+        let a = flat(100, 100);
+        let b = flat(200, 200);
+        let single = weight_single(&a, [(40, -3); 3], [5, 5]);
+        assert_eq!(single, flat(122, 122));
+        let clipped = weight_single(&flat(255, 0), [(127, 127); 3], [0, 0]);
+        assert_eq!(clipped, flat(255, 127));
+        let bi = weight_bi(&a, &b, [((20, 2), (44, 5)); 3], [5, 5]);
+        assert_eq!(bi, flat(173, 173));
+        let implicit = weight_bi(&a, &b, [((32, 0), (32, 0)); 3], [5, 5]);
+        assert_eq!(implicit, average(&a, &b));
+        assert_eq!(implicit, flat(150, 150));
+        // Luma and chroma use their own denominators: luma logWD 1 with
+        // w 2 is the identity ((x * 2 + 1) >> 1 = x), chroma logWD 0 with
+        // w 2 doubles.
+        let split = weight_single(&flat(60, 60), [(2, 0), (2, 0), (2, 0)], [1, 0]);
+        assert_eq!(split, flat(60, 120));
+    }
+
+    /// predict_4x4 agrees with the rectangle predictor it replaced.
+    #[test]
+    fn block_prediction_matches_rectangle_prediction() {
+        let reference = ramp_frame();
+        for mv in [[0, 0], [5, -3], [-7, 9], [13, 2]] {
+            let mut target = Frame::new(16, 16).unwrap();
+            let block = Block {
+                x: 4,
+                y: 8,
+                width: 4,
+                height: 4,
+            };
+            predict_block(&reference, &mut target, block, mv);
+            let p = predict_4x4(&reference, 4, 8, mv);
+            for j in 0..4 {
+                assert_eq!(
+                    &target.y[(8 + j) * 16 + 4..(8 + j) * 16 + 8],
+                    &p.luma[j * 4..j * 4 + 4]
+                );
+            }
+            for j in 0..2 {
+                assert_eq!(
+                    &target.cb[(4 + j) * 8 + 2..(4 + j) * 8 + 4],
+                    &p.cb[j * 2..j * 2 + 2]
+                );
+            }
+        }
     }
 }

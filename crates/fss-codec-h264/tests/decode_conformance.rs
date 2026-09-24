@@ -3,10 +3,11 @@
 //! Every fixture stream in `tests/fixtures/decode/` (plus the two reused
 //! committed streams) has a sibling `.sha256` file produced OFFLINE by
 //! `scripts/generate_h264_decode_fixtures.sh`: FFmpeg decodes the stream to
-//! packed I420 and records one SHA-256 per frame. These tests decode the
-//! same bytes with the pure-Rust decoder and require every frame digest,
-//! the frame count and the frame size to match exactly. No expected value
-//! here is derived from this crate's own output.
+//! packed I420 and records one SHA-256 per frame in FFmpeg's OUTPUT
+//! (display) order. These tests decode the same bytes with the pure-Rust
+//! decoder and require every frame digest, in the same order, the frame
+//! count and the frame size to match exactly. No expected value here is
+//! derived from this crate's own output.
 
 #![forbid(unsafe_code)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -50,10 +51,10 @@ fn hex(bytes: &[u8]) -> String {
 
 fn decode_stream(stream: &[u8]) -> Vec<Picture> {
     let mut decoder = Decoder::new(DecoderLimits::default()).unwrap();
-    let pictures = decoder
+    let mut pictures = decoder
         .decode_annex_b(stream)
         .unwrap_or_else(|err| panic!("decode failed: {err}"));
-    decoder.finish().unwrap();
+    pictures.extend(decoder.finish().unwrap());
     pictures
 }
 
@@ -118,6 +119,20 @@ fn check(name: &str, stream: &[u8], oracle: &str) {
         );
         assert_eq!(picture.decode_index(), index as u64);
     }
+    // Output order is display order: every decode index appears exactly
+    // once, and POC increases within each IDR period.
+    let mut seen: Vec<u64> = pictures.iter().map(Picture::decode_index).collect();
+    seen.sort_unstable();
+    assert_eq!(
+        seen,
+        (0..pictures.len() as u64).collect::<Vec<_>>(),
+        "{name}"
+    );
+    for pair in pictures.windows(2) {
+        if !pair[1].is_idr() {
+            assert!(pair[0].poc() < pair[1].poc(), "{name}: POC order {pair:?}");
+        }
+    }
 }
 
 macro_rules! oracle_test {
@@ -156,6 +171,27 @@ oracle_test!(
     "ip_qcif_slices3_idc2"
 );
 oracle_test!(poc_type0_bit_exact, "ip_100x60_poc0");
+
+// ----- Main profile, stage 1: CABAC I and P slices -----
+oracle_test!(main_cabac_intra_bit_exact, "m_i_cabac_qp26");
+oracle_test!(
+    main_cabac_p_ref3_all_partitions_bit_exact,
+    "m_ip_cabac_ref3"
+);
+oracle_test!(main_cabac_three_slices_bit_exact, "m_ip_cabac_slices3");
+oracle_test!(
+    main_cabac_cropped_nodeblock_bit_exact,
+    "m_ip_cabac_100x60_nodeblock"
+);
+oracle_test!(main_cabac_qp40_mandelbrot_bit_exact, "m_ip_cabac_qp40");
+oracle_test!(
+    main_cabac_explicit_weighted_p_bit_exact,
+    "m_ip_cabac_weightp"
+);
+oracle_test!(
+    main_cabac_constrained_intra_bit_exact,
+    "m_ip_cabac_constrained"
+);
 
 /// The POC-type-0 rewrite writes pic_order_cnt_lsb = 2 * (pictures since
 /// IDR); with no MSB wrap the decoded POC is exactly that.
@@ -239,6 +275,10 @@ fn nal_by_nal_matches_annex_b() {
         if let Some(picture) = decoder.decode_nal(nal).unwrap() {
             pieces.push(picture);
         }
+        while let Some(picture) = decoder.next_output() {
+            pieces.push(picture);
+        }
     }
+    pieces.extend(decoder.finish().unwrap());
     assert_eq!(whole, pieces);
 }
