@@ -573,13 +573,9 @@ fn drive(
             )?;
         }
         Fate::Cancelled => {
-            let _ = journal.transition(
-                &op,
-                EffectState::Cancelled,
-                TimestampNs(105),
-                Some(digest),
-                None,
-            )?;
+            // A cancellation is a proof-bound v3 `Cancel` record carrying the cancel-request
+            // evidence; the generic transition cannot cancel (fss-thzlz).
+            let _ = journal.cancel(&op, TimestampNs(105), digest, None)?;
         }
         Fate::Indeterminate => {
             let _ =
