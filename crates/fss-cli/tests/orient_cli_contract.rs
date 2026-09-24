@@ -10,7 +10,11 @@
 //! 3. every orientation view binds its registered view identity and token budget;
 //! 4. neither command writes anything: the deployment tree digest is identical before and after;
 //! 5. missing, foreign, and argument-invalid invocations are typed refusals with nonzero exits;
-//! 6. the same root yields byte-identical output.
+//! 6. the same root yields byte-identical output;
+//! 7. every orient view and every explain answer validates against its registered schemas
+//!    (`scripts/json_instance_validate.py`), the envelope and its verbatim payload both;
+//! 8. with 1, 5, and 30 published events every view answers within its registered budget, and
+//!    every protected per-event world is inline or named by a receipted, priced hydration handle.
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -416,6 +420,99 @@ fn published_deployment(name: &str) -> TestResult<(OwnedDirectory, PathBuf, Stri
     Ok((directory, root, event_id))
 }
 
+/// Every quoted value of `"key":"..."` in a report line, in order.
+fn report_values(text: &str, key: &str) -> Vec<String> {
+    let pattern = format!("\"{key}\":\"");
+    text.match_indices(&pattern)
+        .filter_map(|(start, _)| {
+            text[start + pattern.len()..]
+                .split('"')
+                .next()
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+/// Imports the moving scene once and publishes `events` candidates through the real
+/// `fss-event watch --approve` flow: each watch run draws up to fifteen owner zones over the
+/// square's path (one candidate per zone and track), and each run approves every proposal it
+/// prepared. Returns the root and the published event identities.
+fn deployment_with_events(
+    name: &str,
+    events: usize,
+) -> TestResult<(OwnedDirectory, PathBuf, Vec<String>)> {
+    const ZONES_PER_RUN: usize = 15;
+    let directory = OwnedDirectory::new(name)?;
+    let root = directory.0.join("deployment");
+    let input = directory.0.join("recording.bin");
+    fs::write(&input, moving_scene()?)?;
+    let imported = Command::new(env!("CARGO_BIN_EXE_fss-file"))
+        .arg("import")
+        .arg("--root")
+        .arg(&root)
+        .args(["--site", SITE, "--input"])
+        .arg(&input)
+        .args([
+            "--sensor",
+            "sensor:orient-cli",
+            "--stream",
+            "stream:orient-cli",
+            "--receive-time-ns",
+            "1000000000",
+            "--media-format",
+            "mjpeg",
+        ])
+        .output()?;
+    success(&imported);
+    let import_id = String::from_utf8(imported.stdout)?
+        .lines()
+        .find_map(|line| line.strip_prefix("import_identity=").map(str::to_owned))
+        .ok_or("import identity missing")?;
+    fs::remove_file(input)?;
+    let mut published = Vec::new();
+    let mut first_zone = 0;
+    while first_zone < events {
+        let zones: Vec<String> = (first_zone..events.min(first_zone + ZONES_PER_RUN))
+            .map(|index| format!("z{index:03}:64,0,32,32"))
+            .collect();
+        let watch = |extra: &[&str]| -> TestResult<Output> {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_fss-event"));
+            command.arg("watch").arg("--root").arg(&root).args([
+                "--site",
+                SITE,
+                "--import-id",
+                &import_id,
+                "--interpretation",
+                "gray",
+            ]);
+            for zone in &zones {
+                command.args(["--zone", zone]);
+            }
+            Ok(command.args(extra).output()?)
+        };
+        let prepared = watch(&[])?;
+        success(&prepared);
+        let proposals = report_values(&String::from_utf8(prepared.stdout)?, "proposal_digest");
+        assert_eq!(proposals.len(), zones.len(), "one candidate per zone");
+        let approved = watch(&["--approve", &proposals.join(",")])?;
+        success(&approved);
+        let report = String::from_utf8(approved.stdout)?;
+        assert_eq!(
+            report_values(&report, "status")
+                .iter()
+                .filter(|status| *status == "published")
+                .count(),
+            zones.len()
+        );
+        published.extend(report_values(&report, "event_id"));
+        first_zone += zones.len();
+    }
+    published.sort();
+    published.dedup();
+    assert_eq!(published.len(), events, "distinct published events");
+    Ok((directory, root, published))
+}
+
 fn run_fss(args: &[OsString]) -> TestResult<(Option<i32>, String, String)> {
     let output = Command::new(env!("CARGO_BIN_EXE_fss"))
         .args(args)
@@ -579,6 +676,55 @@ fn assert_envelope(stdout: &str, operation_id: &str, view_id: &str) -> TestResul
     Ok(envelope)
 }
 
+/// Repository root (the workspace two levels above this crate).
+fn repository_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// Validates `instance` against `schemas/<schema>` with the repository's strict Draft 2020-12
+/// validator (`scripts/json_instance_validate.py`), writing the instance under `scratch` (never
+/// under a deployment root, whose tree digest must not change).
+fn assert_conforms(schema: &str, instance: &str, scratch: &Path, label: &str) -> TestResult {
+    let root = repository_root();
+    let file = scratch.join(format!(
+        "instance-{}.json",
+        ContentDigest::sha256(format!("{schema}\n{label}\n{instance}").as_bytes())
+            .to_text()
+            .replace(':', "-")
+    ));
+    fs::write(&file, instance)?;
+    let output = Command::new("python3")
+        .arg("-B")
+        .arg(root.join("scripts/json_instance_validate.py"))
+        .arg(root.join("schemas").join(schema))
+        .arg(&file)
+        .output()?;
+    fs::remove_file(&file)?;
+    assert!(
+        output.status.success(),
+        "{label}: output does not conform to schemas/{schema}: {}{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    Ok(())
+}
+
+/// Validates one rendered envelope and its verbatim payload against their registered schemas.
+fn assert_answer_conforms(
+    stdout: &str,
+    payload_schema: &str,
+    scratch: &Path,
+    label: &str,
+) -> TestResult {
+    assert_conforms(
+        "agent_response_envelope.v1.json",
+        stdout.trim_end(),
+        scratch,
+        label,
+    )?;
+    assert_conforms(payload_schema, raw_payload(stdout)?, scratch, label)
+}
+
 fn cell<'a>(payload: &'a Json, claim: &str) -> TestResult<&'a Json> {
     payload
         .path(&["situationFrame", "knowledgeCells"])?
@@ -609,13 +755,27 @@ fn empty_deployment_orients_to_a_valid_capsule_without_invented_facts() -> TestR
     assert_eq!(envelope.get("completeness")?.text()?, "partial");
     assert_eq!(
         envelope
-            .path(&["inputAnchor", "commitSequence"])?
+            .path(&["inputAnchor", "capsuleSequence"])?
             .number()?,
         0
     );
     assert_eq!(
-        envelope.path(&["inputAnchor", "siteLineage"])?.text()?,
+        envelope.path(&["inputAnchor", "deploymentId"])?.text()?,
         SITE
+    );
+    // A deployment-scope anchor names no single device or stream generation: the typed
+    // not-applicable sentinel, never a fabricated generation.
+    for field in ["deviceGeneration", "streamGeneration"] {
+        assert!(
+            envelope
+                .path(&["inputAnchor", field])?
+                .text()?
+                .starts_with("fss-na:")
+        );
+    }
+    assert_eq!(
+        envelope.path(&["inputAnchor", "modelGeneration"])?,
+        &Json::Null
     );
     assert_eq!(
         envelope.get("effectiveCapabilities")?.texts()?,
@@ -640,7 +800,7 @@ fn empty_deployment_orients_to_a_valid_capsule_without_invented_facts() -> TestR
     assert_eq!(ledger.get("knowledgeState")?.text()?, "known");
     assert!(
         ledger
-            .get("statement")?
+            .get("value")?
             .text()?
             .contains("0 committed batches at commit 0")
     );
@@ -648,15 +808,32 @@ fn empty_deployment_orients_to_a_valid_capsule_without_invented_facts() -> TestR
     assert!(payload.get("indeterminateEffects")?.items()?.is_empty());
     let residual = payload
         .path(&["situationFrame", "worldEnvelope", "adversarialResiduals"])?
-        .find("worldId", "world:site:unobserved-activity")?;
-    assert_eq!(residual.get("protected")?, &Json::Bool(true));
+        .find("residualId", "world:site:unobserved-activity")?;
+    assert_eq!(residual.get("protectedLossClass")?.text()?, "high");
+    // No prior anchor was supplied: no delta is claimed, and nothing is certified absent.
+    assert_eq!(payload.get("meaningfulDelta")?, &Json::Null);
+    assert!(
+        payload
+            .path(&["situationFrame", "worldEnvelope", "certifiedAbsences"])?
+            .items()?
+            .is_empty()
+    );
+    assert_eq!(
+        payload.path(&["situationFrame", "coverage", "absenceClaimsCertified"])?,
+        &Json::Bool(false)
+    );
 
     // The frontier is listed, classified, and never executed.
     let affordances = payload.get("affordances")?;
     let plan = affordances.find("affordanceId", "affordance:orient:plan")?;
     assert_eq!(plan.get("robustnessClass")?.text()?, "unavailable");
     assert_eq!(plan.get("operationId")?.text()?, "AOP-007");
-    let next = envelope.get("affordances")?.texts()?;
+    let next: Vec<&str> = envelope
+        .get("affordances")?
+        .items()?
+        .iter()
+        .map(|item| item.get("affordanceId").and_then(Json::text))
+        .collect::<TestResult<_>>()?;
     assert!(next.contains(&"affordance:orient:reorient"));
     assert!(!next.contains(&"affordance:orient:plan"));
     assert!(
@@ -673,10 +850,7 @@ fn empty_deployment_orients_to_a_valid_capsule_without_invented_facts() -> TestR
         payload.path(&["compressionReceipt", "viewId"])?.text()?,
         "AVIEW-002"
     );
-    assert_eq!(
-        payload.path(&["orientProjection", "capsuleId"])?.text()?,
-        payload.get("capsuleId")?.text()?
-    );
+    assert_eq!(payload.get("schema")?.text()?, "fss.situation_capsule.v1");
     assert_eq!(
         envelope.get("decisionFingerprint")?.text()?,
         payload.get("decisionFingerprint")?.text()?
@@ -700,51 +874,73 @@ fn published_watch_candidate_is_indeterminate_single_sensor_and_explainable() ->
     assert_eq!(envelope.get("epistemicState")?.text()?, "indeterminate");
     assert!(
         envelope
-            .path(&["inputAnchor", "commitSequence"])?
+            .path(&["inputAnchor", "capsuleSequence"])?
             .number()?
             > 0
     );
     let payload = envelope.get("payload")?;
+    // brief summarizes the event; epistemic_map carries its knowledge cells inline.
+    let (code, map_stdout, stderr) = run_fss(&orient_args(&root, &["--view", "epistemic_map"]))?;
+    assert_eq!(code, Some(0), "stderr: {stderr}");
+    let map_envelope = assert_envelope(&map_stdout, "AOP-003", "AVIEW-008")?;
+    let map_payload = map_envelope.get("payload")?;
+    let events_cell = cell(payload, "claim:deployment:events")?;
+    assert!(
+        events_cell
+            .get("value")?
+            .text()?
+            .starts_with("1 published event: 1 indeterminate; 0 corroborated")
+    );
 
-    let lifecycle = cell(payload, &format!("claim:event:{event_id}:lifecycle"))?;
+    let lifecycle = cell(map_payload, &format!("claim:event:{event_id}:lifecycle"))?;
     assert_eq!(lifecycle.get("knowledgeState")?.text()?, "known");
     assert!(
         lifecycle
-            .get("statement")?
+            .get("value")?
             .text()?
             .contains("as kind unclassified in state indeterminate")
     );
-    let presence = cell(payload, &format!("claim:event:{event_id}:unknown-presence"))?;
+    let presence = cell(
+        map_payload,
+        &format!("claim:event:{event_id}:unknown-presence"),
+    )?;
     assert_eq!(presence.get("knowledgeState")?.text()?, "indeterminate");
     assert_eq!(presence.get("hypothesisDisposition")?.text()?, "live");
     assert_eq!(
         presence.path(&["stateBasis", "basisKind"])?.text()?,
         "reconciliation"
     );
-    let corroboration = cell(payload, &format!("claim:event:{event_id}:corroboration"))?;
+    let corroboration = cell(
+        map_payload,
+        &format!("claim:event:{event_id}:corroboration"),
+    )?;
     assert!(
         corroboration
-            .get("statement")?
+            .get("value")?
             .text()?
             .starts_with("Not corroborated: evidence names 1 failure domain")
     );
-    assert!(
-        envelope
-            .get("warnings")?
-            .texts()?
-            .contains(&format!(
-                "{event_id} is single-sensor and not corroborated; it grants no alert or effect authority."
-            )
-            .as_str())
-    );
+    assert!(envelope.get("warnings")?.texts()?.contains(
+        &"1 published event is single-sensor and not corroborated; none grants alert or \
+              effect authority."
+    ));
+    // The event's worlds are aggregated per kind, keeping severity and protection, and each
+    // member hydrates through the event's receipted handle.
     let worlds = payload.path(&["situationFrame", "worldEnvelope"])?;
     let live = worlds
         .get("materialAlternativeWorlds")?
-        .find("worldId", &format!("world:event:{event_id}:activity-live"))?;
-    assert_eq!(live.get("protected")?, &Json::Bool(true));
-    worlds
+        .find("worldId", "world:events:activity-live")?;
+    assert_eq!(live.get("consequenceClass")?.text()?, "critical");
+    let artifact = worlds
         .get("adversarialResiduals")?
-        .find("worldId", &format!("world:event:{event_id}:artifact-live"))?;
+        .find("residualId", "world:events:artifact-live")?;
+    assert_eq!(artifact.get("protectedLossClass")?.text()?, "high");
+    let handle = payload
+        .path(&["compressionReceipt", "expansionHandles"])?
+        .find("handle", &format!("fss://event/{event_id}/revision/1"))?;
+    let purpose = handle.get("purpose")?.text()?;
+    assert!(purpose.contains(&format!("world:event:{event_id}:activity-live")));
+    assert!(purpose.contains(&format!("world:event:{event_id}:artifact-live")));
     // The watch pipeline publishes no effect: nothing is owed, nothing is indeterminate.
     assert!(payload.get("obligations")?.items()?.is_empty());
     assert!(payload.get("indeterminateEffects")?.items()?.is_empty());
@@ -759,39 +955,47 @@ fn published_watch_candidate_is_indeterminate_single_sensor_and_explainable() ->
 
     let (_, again, _) = run_fss(&orient_args(&root, &[]))?;
     assert_eq!(again, stdout, "byte-identical orientation");
-    // One event's protected worlds and evidence exceed the brief target (800): admitted at the
-    // registered maximum (1600) with a degradation; pulse (maximum 300) cannot hold them and is
-    // refused rather than truncated.
+    // The compact encoding admits brief at its registered target (800) and pulse at its
+    // registered maximum (300) with an explicit degradation; nothing is truncated.
     assert_eq!(
         payload
             .path(&["compressionReceipt", "targetTokens"])?
             .number()?,
-        1600
-    );
-    assert!(
-        envelope
-            .get("degradation")?
-            .texts()?
-            .contains(&"The critical context exceeds the brief target of 800 tokens; it was admitted at the registered maximum of 1600 tokens.")
+        800
     );
     let (code, pulse, _) = run_fss(&orient_args(&root, &["--view", "pulse"]))?;
-    assert_eq!(code, Some(5));
-    let pulse = assert_envelope(&pulse, "AOP-003", "AVIEW-001")?;
-    assert_eq!(pulse.get("outcome")?.text()?, "refused");
-    assert_eq!(
-        pulse.get("errorId")?.text()?,
-        "ERR-AGENT-CONTEXT-INCOMPLETE-001"
-    );
-    let (code, map, _) = run_fss(&orient_args(&root, &["--view", "epistemic_map"]))?;
     assert_eq!(code, Some(0));
-    let map = assert_envelope(&map, "AOP-003", "AVIEW-008")?;
+    let pulse = assert_envelope(&pulse, "AOP-003", "AVIEW-001")?;
+    assert_eq!(pulse.get("outcome")?.text()?, "ok");
     assert_eq!(
-        map.path(&["payload", "compressionReceipt", "targetTokens"])?
+        pulse
+            .path(&["payload", "compressionReceipt", "targetTokens"])?
+            .number()?,
+        300
+    );
+    let folded = pulse
+        .path(&[
+            "payload",
+            "situationFrame",
+            "worldEnvelope",
+            "adversarialResiduals",
+        ])?
+        .find("residualId", "world:site:protected-worlds")?;
+    assert_eq!(folded.get("protectedLossClass")?.text()?, "critical");
+    assert!(
+        pulse
+            .get("degradation")?
+            .texts()?
+            .contains(&"The critical context exceeds the pulse target of 120 tokens; it was admitted at the registered maximum of 300 tokens.")
+    );
+    assert_eq!(
+        map_payload
+            .path(&["compressionReceipt", "targetTokens"])?
             .number()?,
         1500
     );
     assert_ne!(
-        map.path(&["payload", "capsuleId"])?.text()?,
+        map_payload.get("capsuleId")?.text()?,
         payload.get("capsuleId")?.text()?,
         "the view is bound into the capsule identity"
     );
@@ -1046,5 +1250,224 @@ fn missing_foreign_and_malformed_requests_are_typed_refusals() -> TestResult {
     assert_eq!(code, Some(0));
     let (_, via_space, _) = run_fss(&orient_args(&root, &["--view", "pulse"]))?;
     assert_eq!(via_equals, via_space);
+    Ok(())
+}
+
+const ORIENT_VIEWS: [&str; 3] = ["pulse", "brief", "epistemic_map"];
+
+/// Registered (view name, view id, target tokens, maximum tokens) rows of `agent_views.json`.
+const VIEW_BUDGETS: [(&str, &str, u64, u64); 3] = [
+    ("pulse", "AVIEW-001", 120, 300),
+    ("brief", "AVIEW-002", 800, 1600),
+    ("epistemic_map", "AVIEW-008", 1500, 3000),
+];
+
+/// World identities a capsule carries inline.
+fn inline_worlds(payload: &Json) -> TestResult<Vec<String>> {
+    let envelope = payload.path(&["situationFrame", "worldEnvelope"])?;
+    let mut worlds = Vec::new();
+    for world in envelope.get("materialAlternativeWorlds")?.items()? {
+        worlds.push(world.get("worldId")?.text()?.to_owned());
+    }
+    for world in envelope.get("adversarialResiduals")?.items()? {
+        worlds.push(world.get("residualId")?.text()?.to_owned());
+    }
+    Ok(worlds)
+}
+
+/// Orients every view over deployments with 1, 5, and 30 events published by the real watch
+/// flow: every view answers within its registered budget and validates against the schemas,
+/// pulse carries the headline state, every protected per-event world is inline or named by a
+/// receipted, priced hydration handle (proved against `explain` for every event), output is
+/// deterministic, and nothing under the root changes.
+#[test]
+fn views_scale_to_many_events_within_registered_budgets() -> TestResult {
+    for events in [1_usize, 5, 30] {
+        let (directory, root, event_ids) =
+            deployment_with_events(&format!("scale-{events}"), events)?;
+        let before = tree_digest(&root)?;
+        let mut brief_handles: Vec<(String, String)> = Vec::new();
+        let mut brief_inline: Vec<String> = Vec::new();
+        for (view, view_id, target, maximum) in VIEW_BUDGETS {
+            let (code, stdout, stderr) = run_fss(&orient_args(&root, &["--view", view]))?;
+            assert_eq!(code, Some(0), "{events} events, {view}: {stderr}{stdout}");
+            assert_answer_conforms(
+                &stdout,
+                "situation_capsule.v1.json",
+                &directory.0,
+                &format!("{events} events {view}"),
+            )?;
+            let envelope = assert_envelope(&stdout, "AOP-003", view_id)?;
+            let payload = envelope.get("payload")?;
+            let receipt = payload.get("compressionReceipt")?;
+            let admitted = receipt.get("targetTokens")?.number()?;
+            let actual = receipt.get("actualTokens")?.number()?;
+            eprintln!(
+                "fss-iqg1k budget: {events} events, {view}: {actual} tokens admitted at {admitted} \
+                 (target {target}, maximum {maximum})"
+            );
+            assert!(
+                admitted == target || admitted == maximum,
+                "{view}: {admitted}"
+            );
+            assert!(actual <= admitted, "{view}: {actual} > {admitted}");
+            assert_eq!(
+                receipt
+                    .path(&["criticalPreservation", "omittedCriticalItems"])?
+                    .number()?,
+                0
+            );
+            // Every event keeps one priced hydration handle naming its worlds.
+            let handles: Vec<(String, String)> = receipt
+                .get("expansionHandles")?
+                .items()?
+                .iter()
+                .map(|handle| -> TestResult<(String, String)> {
+                    assert!(handle.path(&["estimatedCost", "bytes"])?.number()? > 0);
+                    Ok((
+                        handle.get("handle")?.text()?.to_owned(),
+                        handle.get("purpose")?.text()?.to_owned(),
+                    ))
+                })
+                .collect::<TestResult<_>>()?;
+            for event_id in &event_ids {
+                assert!(
+                    handles.iter().any(|(handle, _)| handle
+                        .starts_with(&format!("fss://event/{event_id}/revision/"))),
+                    "{view}: {event_id} has no hydration handle"
+                );
+            }
+            let omitted = receipt.get("omittedClasses")?.texts()?;
+            assert!(omitted.contains(&"protected_world_detail"), "{view}");
+            // The headline state: counts, the highest-consequence event, and the next move.
+            let headline = payload
+                .path(&["situationFrame", "salientEntities"])?
+                .items()?
+                .first()
+                .ok_or("no salient event")?
+                .get("entityId")?
+                .text()?
+                .to_owned();
+            assert!(event_ids.contains(&headline));
+            let summary = payload
+                .path(&["contextPack", "items"])?
+                .find("itemId", "context:frame:summary")?
+                .get("content")?
+                .text()?;
+            assert!(
+                summary.contains(&format!("{events} event")) && summary.contains(&headline),
+                "{view}: {summary}"
+            );
+            assert!(
+                payload
+                    .get("attentionFrontier")?
+                    .items()?
+                    .iter()
+                    .any(|item| item.get("kind").and_then(Json::text).ok() == Some("event"))
+            );
+            let next: Vec<&str> = envelope
+                .get("affordances")?
+                .items()?
+                .iter()
+                .map(|item| item.get("affordanceId").and_then(Json::text))
+                .collect::<TestResult<_>>()?;
+            assert!(next.contains(&"affordance:orient:reorient"), "{view}");
+            assert!(
+                envelope
+                    .get("degradation")?
+                    .texts()?
+                    .iter()
+                    .any(|line| line.contains("hydrates through its receipted handle"))
+            );
+            if view == "brief" {
+                brief_handles = handles;
+                brief_inline = inline_worlds(payload)?;
+                let (_, again, _) = run_fss(&orient_args(&root, &["--view", view]))?;
+                assert_eq!(again, stdout, "{events} events: byte-identical brief");
+            }
+        }
+        // Every protected per-event world is inline or named by its event's receipted handle,
+        // proved against the explanation (the H1 hydration) of every published event.
+        for event_id in &event_ids {
+            let (code, explained, stderr) = run_fss(&explain_args(&root, event_id))?;
+            assert_eq!(code, Some(0), "{event_id}: {stderr}");
+            assert_answer_conforms(
+                &explained,
+                "agent_cognitive_envelope.v1.json",
+                &directory.0,
+                &format!("{events} events explain {event_id}"),
+            )?;
+            let answer = Json::parse(explained.trim_end())?;
+            let prefix = format!("world:event:{event_id}:");
+            let protected: Vec<&str> = answer
+                .path(&["payload", "epistemic", "propositions"])?
+                .items()?
+                .iter()
+                .filter(|proposition| {
+                    proposition
+                        .get("id")
+                        .and_then(Json::text)
+                        .is_ok_and(|id| id.starts_with(&prefix))
+                        && proposition
+                            .get("statement")
+                            .and_then(Json::text)
+                            .is_ok_and(|statement| statement.contains("protected"))
+                })
+                .map(|proposition| proposition.get("id").and_then(Json::text))
+                .collect::<TestResult<_>>()?;
+            assert!(!protected.is_empty(), "{event_id}: no protected world");
+            for world in protected {
+                assert!(
+                    brief_inline.iter().any(|inline| inline == world)
+                        || brief_handles.iter().any(|(handle, purpose)| handle
+                            .starts_with(&format!("fss://event/{event_id}/revision/"))
+                            && purpose.contains(world)),
+                    "{world} is neither inline nor named by a receipted handle"
+                );
+            }
+        }
+        assert_eq!(
+            tree_digest(&root)?,
+            before,
+            "{events} events: orient and explain must not write"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn orient_and_explain_answers_conform_to_the_registered_schemas() -> TestResult {
+    let (directory, root, event_id) = published_deployment("schema")?;
+    let (_empty_directory, empty_root) = empty_deployment("schema-empty")?;
+    let before = tree_digest(&root)?;
+    for (deployment, label) in [(&root, "published"), (&empty_root, "empty")] {
+        for view in ORIENT_VIEWS {
+            let (code, stdout, stderr) = run_fss(&orient_args(deployment, &["--view", view]))?;
+            assert_answer_conforms(
+                &stdout,
+                "situation_capsule.v1.json",
+                &directory.0,
+                &format!("orient {label} {view}"),
+            )?;
+            assert_eq!(code, Some(0), "orient {label} {view}: {stderr}");
+        }
+    }
+    let (code, explained, stderr) = run_fss(&explain_args(&root, &event_id))?;
+    assert_answer_conforms(
+        &explained,
+        "agent_cognitive_envelope.v1.json",
+        &directory.0,
+        "explain",
+    )?;
+    assert_eq!(code, Some(0), "explain: {stderr}");
+    let (code, unknown, _) = run_fss(&explain_args(&root, "event:watch:never-published"))?;
+    assert_eq!(code, Some(5));
+    assert_answer_conforms(
+        &unknown,
+        "agent_cognitive_envelope.v1.json",
+        &directory.0,
+        "explain unknown event",
+    )?;
+    assert_eq!(tree_digest(&root)?, before, "validation reads only stdout");
     Ok(())
 }

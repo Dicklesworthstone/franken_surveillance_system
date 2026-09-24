@@ -174,6 +174,51 @@ fn empty_deployment_orients_to_not_observable_without_invented_facts() -> TestRe
 }
 
 #[test]
+fn inline_budgets_and_request_digests_are_view_bound() -> TestResult {
+    assert_eq!(super::inline_event_budget(AgentView::Pulse), 0);
+    assert_eq!(super::inline_event_budget(AgentView::Brief), 0);
+    assert_eq!(super::inline_event_budget(AgentView::EpistemicMap), 2);
+    let root = empty_deployment("digest")?;
+    let snapshot = read_deployment(&root, &OrientLimits::default())?;
+    let brief = request(AgentView::Brief)?;
+    assert_eq!(
+        brief.digest_at(&snapshot.anchor),
+        brief.digest_at(&snapshot.anchor)
+    );
+    assert_ne!(
+        brief.digest_at(&snapshot.anchor),
+        request(AgentView::Pulse)?.digest_at(&snapshot.anchor)
+    );
+    // An empty deployment compiles nothing out at the source and hydrates nothing.
+    let orientation = orient_deployment(&snapshot, &brief, &OrientLimits::default())?;
+    assert!(orientation.hydration.is_empty());
+    assert!(orientation.headline_event.is_none());
+    assert_eq!(orientation.aggregated_world_count, 0);
+    assert!(
+        orientation
+            .publication
+            .compression_receipt
+            .omitted_classes
+            .iter()
+            .all(|class| class != super::SOURCE_CLASS_WORLD_DETAIL)
+    );
+    assert_eq!(
+        orientation.request_digest,
+        brief.digest_at(&snapshot.anchor)
+    );
+    assert_eq!(
+        orientation.objective.source_request_digest,
+        orientation.request_digest.to_text()
+    );
+    assert_eq!(
+        orientation.validity.valid_until,
+        snapshot.latest_evidence_time
+    );
+    fs::remove_dir_all(&root)?;
+    Ok(())
+}
+
+#[test]
 fn too_small_budget_is_refused_not_truncated() -> TestResult {
     let root = empty_deployment("budget")?;
     let limits = OrientLimits::default();

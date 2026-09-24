@@ -386,6 +386,62 @@
       "reconciledValue": "Laundering is refused wherever the producing cell is known, and evidence now carries its origin: KnowledgeCell.evidence stores typed EvidenceReference values (digest plus EvidenceOrigin = Produced(ProvenanceClass) | Laboratory) encoded in the canonical cell digest domain fss.agent_knowledge_cell.v2 (fss-gefi6 stage A). KnowledgeCell::new stamps the citing cell's provenance as each digest's origin; producers record true origins via with_evidence_origins. Verify_no_evidence_laundering is origin-aware: the same digest re-classified across a registered pair is refused even when both cells claim the same provenance, and is_irreversible_effect_premise refuses Predicted-, Remembered-, VendorClaimed-, and Laboratory-origin references (Derived-origin stays admissible per the deir9 receipt pattern). A lone relabelled cell with no attributable producer is still accepted at stage A; SituationFrame::validate and MeaningfulDelta::validate judge the SET of cells; no cross-claim verdict is drawn within one frame.",
       "reason": "An evidence reference used to be an untyped ContentDigest that named no producing cell, so shared evidence could not be attributed: guessing by list position or claim id refused honest derivations (P4r, P5r) and made verdicts order-dependent (Q1, Q2), and the basis-versus-result check refused honest unchanged carry-overs and was removed. Stage A of fss-gefi6 records the origin ON the reference: the prior-versus-result pairwise check is now origin-aware (same digest, origins differing across a registered pair, refused), the irreversible-effect premise gate consults reference origins (H4 laboratory digests are refused however the digest is re-parsed or rebuilt), and the canonical cell digest binds the origins (v2 domain; publication goldens re-pinned). REMAINING for stage B: a producer-side origin registry (ledger batches, derived belief receipts, model receipts) so origins are never self-declared by the consumer and re-stamping via with_evidence_origins cannot forge authorization.",
       "status": "open"
+    },
+    {
+      "target": "EvidenceAnchor (schemas/evidence_anchor.v1.json) vs LedgerAnchor (fss-core; docs/ONE_VERSION_UNIVERSE.md section 2)",
+      "field": "anchor",
+      "originalValue": "fss orient/explain rendered the Rust LedgerAnchor shape (siteLineage, ledgerEpoch, commitSequence, adapterRegistryEpoch, schemaEpoch, policyEpoch, privacyEpoch, stateRoot), which evidence_anchor.v1 rejects.",
+      "reconciledValue": "Answers render evidence_anchor.v1 (fss-iqg1k): deploymentId=site_lineage, observationEpoch=ledger_epoch, capsuleSequence=commit_sequence, authorityRoot=state_root, adapterEpoch=adapter_registry_epoch, schemaEpoch, policyEpoch. deviceGeneration and streamGeneration carry the repository's typed not-applicable sentinel fss-na:<sha256 of fss.evidence_anchor.v1/sentinel/<field>/deployment_scope_anchor> because a deployment-scope anchor pins every device and stream generation through its commit but names no single one; model/calibration/graph/search generations are null because an orientation consumes none. privacy_epoch has no anchor slot and is carried as the answer's privacy policyGenerationId privacy-epoch:<n>.",
+      "reason": "Schemas outrank the normative documents in the truth hierarchy, so the answers follow evidence_anchor.v1; but ONE_VERSION_UNIVERSE.md section 2 names exactly the LedgerAnchor fields, and the schema has no slot for ledger or privacy epoch and no explicit not-applicable form for device/stream generations. The owner must reconcile the schema and the document.",
+      "status": "open"
+    },
+    {
+      "target": "SituationFrame (fss-core) and AVIEW-002 requiredSections vs schemas/agent_situation_frame.v1.json",
+      "field": "now, why, atRisk, next",
+      "originalValue": "The frame was rendered with the Rust now/changed/why/unknown/atRisk/next/frameDigest fields, which agent_situation_frame.v1 rejects.",
+      "reconciledValue": "The frame renders the schema fields (unknowns, changes, contradictions, salientEntities, notObservableDomains, coverage, obligations, evidenceHandles, selectionWitness); the frame digest is selectionWitness.outputDigest. The now/why/atRisk/next statements are carried as the capsule's contextPack items (at_risk and next_affordance items are critical and never dropped; now and why are optional and receipted when omitted).",
+      "reason": "The brief view registers now, why, atRisk, and next as required sections, but the frame schema has no slot for them; the context pack is the only registered carrier.",
+      "status": "open"
+    },
+    {
+      "target": "schemas/situation_capsule.v1.json validity.validUntilNs and schemas/agent_affordance.v1.json expiresAtNs",
+      "field": "validUntilNs, expiresAtNs",
+      "originalValue": "validity was not emitted; affordances were identity strings without an expiry.",
+      "reconciledValue": "Both carry the anchor's latest committed evidence time (the capsule createdAtNs): an anchor-pinned read claims no validity past its anchor. The real validity is the listed invalidators and reanchorRequiredOn triggers (ledger_head_advance, effect_journal_change, epoch_change).",
+      "reason": "Both fields are required non-null integers, but a read pinned to a committed ledger prefix has no wall-clock horizon; the schemas offer no anchor-bound or unknown form.",
+      "status": "open"
+    },
+    {
+      "target": "schemas/agent_affordance.v1.json valueVector and riskVector",
+      "field": "decisionLossReduction, informationGain, coverageGain, obligationReduction, safety, privacy, duplication, irreversibility",
+      "originalValue": "Affordances were rendered without value or risk vectors.",
+      "reconciledValue": "The reference frontier does not estimate value or risk: the numeric components are 0 and every affordance's sensitivity reads 'value and risk are not estimated by the reference frontier'. A listed affordance is never executed.",
+      "reason": "The schema requires numbers with no unknown form; no registered estimator exists.",
+      "status": "open"
+    },
+    {
+      "target": "schemas/situation_capsule.v1.json attentionFrontier and schemas/agent_situation_frame.v1.json salientEntities",
+      "field": "missionRelevance, decisionImpact, relevance",
+      "originalValue": "attentionFrontier and salientEntities were not emitted.",
+      "reconciledValue": "missionRelevance is 1 for every item (membership in the orientation scope, the whole deployment); decisionImpact and relevance are the registered consequence severity (0..5) of the item's highest protected world. Neither is a calibrated score.",
+      "reason": "The schemas require numbers but register no scale for them.",
+      "status": "open"
+    },
+    {
+      "target": "PossibleWorld (fss-core) vs schemas/agent_world_envelope.v1.json",
+      "field": "consequenceClass, protectedLossClass, plausibility",
+      "originalValue": "Worlds were rendered with the Rust worldId/description/claimIds/evidence/consequenceSeverity/protected fields.",
+      "reconciledValue": "consequence_severity maps 0 negligible, 1 low, 2-3 moderate, 4 high, 5 critical (protectedLossClass floors at low); every material alternative is plausibility 'possible' (PossibleWorld carries no plausibility); whyNotRuledOut names the evidence roots that keep a residual live.",
+      "reason": "No registry maps the 0..5 severity to the schema's classes, and the Rust world has no plausibility field.",
+      "status": "open"
+    },
+    {
+      "target": "Orientation hydration handles (fss orient compression receipt)",
+      "field": "expansionHandles",
+      "originalValue": "Per-event worlds and cells were inline in every view, so one published event exhausted the pulse budget and brief needed its maximum.",
+      "reconciledValue": "Every view aggregates per-event worlds into one world per kind (pulse folds them into world:site:protected-worlds) keeping maximum severity and protection, summarizes events outside the view's inline set, and lists one stable expansion slot per event (fss://event/<id>/revision/<n>) naming every world it hydrates, priced by the measured read-only deployment read under the decision_diff maximum; `fss explain` is the H1 hydration. No SemanticHandle descriptor or ContextExpansionBindingSet is published for these slots.",
+      "reason": "semantic_hydration.json treats v1 expansionHandles as expansion-slot identities; a SemanticHandle descriptor requires a retention horizon (retention_until > published_at) and a deployment retains no retention policy, so publishing one would invent it.",
+      "status": "open"
     }
   ]
 }

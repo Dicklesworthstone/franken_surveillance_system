@@ -231,10 +231,11 @@ pub use situation_guard::{
     compile_reference_situation_with_operation_receipt, seal_reference_handoff,
 };
 pub use situation_sections::{
-    RedundancyRecord, ReferenceProjectionSpec, ReferenceSituationPublication,
-    compile_reference_situation_publication,
+    RedundancyRecord, ReferenceProjectionSpec, ReferenceSituationPublication, SourceOmission,
+    SourceOmissions, compile_reference_situation_publication,
     compile_reference_situation_publication_with_operation_receipt, latest_reference_publication,
-    project_reference_situation, record_reference_publication, seal_reference_publication_handoff,
+    project_reference_situation, project_reference_situation_with_source_omissions,
+    record_reference_publication, seal_reference_publication_handoff,
 };
 pub use source::{
     MAX_VIRTUAL_PACKET_BYTES, MAX_VIRTUAL_PACKETS, SourcePacket, VirtualCameraSpec, VirtualSource,

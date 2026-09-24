@@ -257,10 +257,87 @@ pub fn compile_reference_situation_publication_with_operation_receipt(
 
 /// Adds deterministic resource/control/context/compression sections to a guarded situation.
 pub fn project_reference_situation(
-    mut situation: ReferenceSituation,
+    situation: ReferenceSituation,
     spec: &ReferenceProjectionSpec,
 ) -> Result<ReferenceSituationPublication, ReferenceError> {
+    project_reference_situation_with_source_omissions(situation, spec, &SourceOmissions::default())
+}
+
+/// One class of detail a producer compiled out of the situation before projection: the capsule
+/// carries an aggregate or summary in its place, and every omitted member stays hydratable
+/// through a priced expansion handle.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SourceOmission {
+    /// Omitted semantic class (a completeness domain distinct from every context-item kind).
+    pub class: String,
+    /// Members of the class compiled out of the capsule (at least one).
+    pub omitted_count: u64,
+    /// The source-side transform (for example an aggregate or a per-subject summary).
+    pub transform: CompressionTransform,
+}
+
+/// Source-side omissions and the priced handles that hydrate every omitted member.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SourceOmissions {
+    /// Omitted classes, each with a distinct class name.
+    pub omissions: Vec<SourceOmission>,
+    /// Priced expansion handles; every omitted member is reachable through one of them.
+    pub handles: Vec<ExpansionHandle>,
+}
+
+impl SourceOmissions {
+    /// Whether nothing was compiled out at the source.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.omissions.is_empty() && self.handles.is_empty()
+    }
+
+    fn validate(&self) -> Result<(), ContractError> {
+        if self.omissions.is_empty() != self.handles.is_empty() {
+            return Err(ContractError::EvidenceRequired);
+        }
+        let mut classes = BTreeSet::new();
+        for omission in &self.omissions {
+            if omission.class.is_empty()
+                || omission.omitted_count == 0
+                || !classes.insert(omission.class.as_str())
+            {
+                return Err(ContractError::EvidenceRequired);
+            }
+        }
+        Ok(())
+    }
+
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.u64(self.omissions.len() as u64);
+        for omission in &self.omissions {
+            encoder.text(&omission.class);
+            encoder.u64(omission.omitted_count);
+            omission.transform.encode_canonical(encoder);
+        }
+        let mut handles = self.handles.clone();
+        handles.sort_by(|left, right| left.handle.cmp(&right.handle));
+        encoder.u64(handles.len() as u64);
+        for handle in &handles {
+            handle.encode_canonical(encoder);
+        }
+    }
+}
+
+/// [`project_reference_situation`] for a situation whose producer already compiled detail out
+/// at the source (INV-092 still holds for everything the capsule carries).
+///
+/// Every source omission joins the compression receipt as an omitted class with a bounded
+/// completeness row, its transform, and the priced handles of its members, so an aggregate never
+/// hides what it stands for. With no source omissions the publication is exactly the one
+/// [`project_reference_situation`] has always produced.
+pub fn project_reference_situation_with_source_omissions(
+    mut situation: ReferenceSituation,
+    spec: &ReferenceProjectionSpec,
+    source: &SourceOmissions,
+) -> Result<ReferenceSituationPublication, ReferenceError> {
     spec.validate()?;
+    source.validate()?;
     let base_digest = situation.verify()?;
     situation.proof_roots.insert(base_digest);
 
@@ -275,9 +352,21 @@ pub fn project_reference_situation(
         &situation.capsule.affordances,
     )?;
     let selection = select_context(&situation, spec.target_tokens)?;
-    let identity = projection_identity(base_digest, spec, selection.frontier_digest);
+    let identity = if source.is_empty() {
+        projection_identity(base_digest, spec, selection.frontier_digest)
+    } else {
+        let mut encoder = CanonicalEncoder::new();
+        encoder.text("fss.reference_projection_identity.source_omissions.v1");
+        encoder.digest(projection_identity(
+            base_digest,
+            spec,
+            selection.frontier_digest,
+        ));
+        source.encode_canonical(&mut encoder);
+        ContentDigest::sha256(&encoder.finish())
+    };
     let receipt_id = format!("compression:{identity}");
-    let continuation = if selection.omitted.is_empty() {
+    let continuation = if selection.omitted.is_empty() && source.is_empty() {
         None
     } else {
         Some(format!("continuation:context:{identity}"))
@@ -304,12 +393,25 @@ pub fn project_reference_situation(
         .iter()
         .map(|item| item.kind.clone())
         .collect();
-    let omitted_classes: BTreeSet<_> = selection
+    let selection_omitted_classes: BTreeSet<_> = selection
         .omitted
         .iter()
         .map(|item| item.kind.clone())
         .collect();
-    let completeness = compression_completeness(&selection.selected, &selection.omitted);
+    let mut omitted_classes = selection_omitted_classes.clone();
+    let mut completeness = compression_completeness(&selection.selected, &selection.omitted);
+    for omission in &source.omissions {
+        if completeness.iter().any(|row| row.domain == omission.class) {
+            // A source class must never merge with (and so hide inside) a context-item kind.
+            return Err(ContractError::IdempotencyConflict.into());
+        }
+        omitted_classes.insert(omission.class.clone());
+        completeness.push(CompressionCompleteness {
+            domain: omission.class.clone(),
+            state: Completeness::Bounded,
+            omitted_count: omission.omitted_count,
+        });
+    }
     let mut transforms = vec![CompressionTransform {
         kind: CompressionTransformKind::Select,
         scope: "mission-relative situation context".to_owned(),
@@ -337,7 +439,20 @@ pub fn project_reference_situation(
             ),
         });
     }
-    let expansion_handles = expansion_handles(&context_pack.pack_id, &omitted_classes)?;
+    transforms.extend(
+        source
+            .omissions
+            .iter()
+            .map(|omission| omission.transform.clone()),
+    );
+    let mut expansion_handles =
+        expansion_handles(&context_pack.pack_id, &selection_omitted_classes)?;
+    expansion_handles.extend(source.handles.iter().cloned());
+    let stop_reason = if omitted_classes.is_empty() {
+        CompressionStopReason::Complete
+    } else {
+        CompressionStopReason::TargetBudget
+    };
     let compression_receipt = SemanticCompressionReceipt {
         receipt_id,
         source_anchor: situation.capsule.anchor.clone(),
@@ -357,11 +472,7 @@ pub fn project_reference_situation(
         actual_bytes: context_pack.encoded_bytes(),
         expansion_handles,
         selection_frontier_digest: Some(selection.frontier_digest),
-        stop_reason: if selection.omitted.is_empty() {
-            CompressionStopReason::Complete
-        } else {
-            CompressionStopReason::TargetBudget
-        },
+        stop_reason,
         output_digest: context_pack.pack_digest,
     };
     compression_receipt.validate_for(&context_pack)?;
