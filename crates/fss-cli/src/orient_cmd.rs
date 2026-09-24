@@ -63,7 +63,7 @@ pub struct ExplainArgs {
 }
 
 /// Collects `--json` and `--name value` / `--name=value` options with exact exhaustion.
-fn collect_options(
+pub(crate) fn collect_options(
     command: &str,
     tokens: &[ArgToken],
     valued: &[&str],
@@ -146,14 +146,17 @@ fn collect_options(
     Ok(values)
 }
 
-fn take<'a>(
+pub(crate) fn take<'a>(
     values: &'a [(String, String, usize)],
     name: &str,
 ) -> Option<&'a (String, String, usize)> {
     values.iter().find(|(seen, _, _)| seen == name)
 }
 
-fn required_root(command: &str, values: &[(String, String, usize)]) -> Result<PathBuf, CliError> {
+pub(crate) fn required_root(
+    command: &str,
+    values: &[(String, String, usize)],
+) -> Result<PathBuf, CliError> {
     take(values, "--root")
         .map(|(_, value, _)| PathBuf::from(value))
         .ok_or_else(|| CliError::MissingValue {
@@ -163,7 +166,10 @@ fn required_root(command: &str, values: &[(String, String, usize)]) -> Result<Pa
         })
 }
 
-fn principal(command: &str, values: &[(String, String, usize)]) -> Result<PrincipalId, CliError> {
+pub(crate) fn principal(
+    command: &str,
+    values: &[(String, String, usize)],
+) -> Result<PrincipalId, CliError> {
     match take(values, "--principal") {
         None => PrincipalId::parse(DEFAULT_PRINCIPAL).map_err(|_| CliError::MalformedValue {
             option: "--principal".to_owned(),
@@ -281,7 +287,7 @@ fn execution_diagnostic(
     )
 }
 
-fn read_refusal(
+pub(crate) fn read_refusal(
     command: &str,
     root: &std::path::Path,
     error: &DeploymentReadError,
@@ -296,7 +302,9 @@ fn read_refusal(
             ),
             ExitIdentity::DOCTOR_NOT_A_DEPLOYMENT,
         ),
-        DeploymentReadError::Unreadable { .. } | DeploymentReadError::Corrupt { .. } => (
+        DeploymentReadError::Unreadable { .. }
+        | DeploymentReadError::Corrupt { .. }
+        | DeploymentReadError::NotCommitted { .. } => (
             execution_diagnostic(
                 command,
                 root,
@@ -308,7 +316,7 @@ fn read_refusal(
     }
 }
 
-fn internal_failure(command: &str, root: &std::path::Path) -> (String, ExitIdentity) {
+pub(crate) fn internal_failure(command: &str, root: &std::path::Path) -> (String, ExitIdentity) {
     (
         execution_diagnostic(
             command,
@@ -320,7 +328,10 @@ fn internal_failure(command: &str, root: &std::path::Path) -> (String, ExitIdent
     )
 }
 
-fn request_identity(domain: &str, parts: impl FnOnce(&mut CanonicalEncoder)) -> ContentDigest {
+pub(crate) fn request_identity(
+    domain: &str,
+    parts: impl FnOnce(&mut CanonicalEncoder),
+) -> ContentDigest {
     let mut encoder = CanonicalEncoder::new();
     encoder.text(domain);
     parts(&mut encoder);
@@ -342,42 +353,42 @@ fn privacy_projection(anchor: &LedgerAnchor) -> agent_json::PrivacyProjection {
 }
 
 /// Everything that differs between one response and another; the rest is fixed per command.
-struct ResponseParts {
-    operation: &'static str,
-    request_digest: ContentDigest,
-    principal: PrincipalId,
-    session_id: Option<String>,
-    mission_id: Option<String>,
-    anchor: LedgerAnchor,
-    view: AgentView,
-    capability: &'static str,
-    outcome: ResponseOutcome,
-    error_id: Option<&'static str>,
-    payload_schema: &'static str,
-    payload_json: String,
-    epistemic_state: KnowledgeState,
-    completeness: Completeness,
-    warnings: Vec<String>,
-    contradictions: Vec<String>,
-    degradation: Vec<String>,
-    budgets_json: String,
-    proof_pointers: Vec<String>,
+pub(crate) struct ResponseParts {
+    pub(crate) operation: &'static str,
+    pub(crate) request_digest: ContentDigest,
+    pub(crate) principal: PrincipalId,
+    pub(crate) session_id: Option<String>,
+    pub(crate) mission_id: Option<String>,
+    pub(crate) anchor: LedgerAnchor,
+    pub(crate) view: AgentView,
+    pub(crate) capability: &'static str,
+    pub(crate) outcome: ResponseOutcome,
+    pub(crate) error_id: Option<&'static str>,
+    pub(crate) payload_schema: &'static str,
+    pub(crate) payload_json: String,
+    pub(crate) epistemic_state: KnowledgeState,
+    pub(crate) completeness: Completeness,
+    pub(crate) warnings: Vec<String>,
+    pub(crate) contradictions: Vec<String>,
+    pub(crate) degradation: Vec<String>,
+    pub(crate) budgets_json: String,
+    pub(crate) proof_pointers: Vec<String>,
     /// Affordance identities, in order.
-    affordances: Vec<String>,
+    pub(crate) affordances: Vec<String>,
     /// Their registered `agent_affordance.v1` objects, in the same order.
-    affordance_objects: Vec<String>,
-    decision_fingerprint: ContentDigest,
-    compression_receipt_id: Option<String>,
-    continuation: Option<String>,
-    recovery_class: &'static str,
-    safe_retry: ResponseSafeRetry,
-    boundary: ExecutionBoundary,
-    created_at_ns: i128,
+    pub(crate) affordance_objects: Vec<String>,
+    pub(crate) decision_fingerprint: ContentDigest,
+    pub(crate) compression_receipt_id: Option<String>,
+    pub(crate) continuation: Option<String>,
+    pub(crate) recovery_class: &'static str,
+    pub(crate) safe_retry: ResponseSafeRetry,
+    pub(crate) boundary: ExecutionBoundary,
+    pub(crate) created_at_ns: i128,
 }
 
 /// Why a typed answer could not be rendered (an internal failure, never a partial answer).
 #[derive(Debug)]
-struct RenderError(&'static str);
+pub(crate) struct RenderError(pub(crate) &'static str);
 
 impl std::fmt::Display for RenderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -387,7 +398,7 @@ impl std::fmt::Display for RenderError {
 
 impl std::error::Error for RenderError {}
 
-fn build_response(parts: ResponseParts) -> Result<String, Box<dyn std::error::Error>> {
+pub(crate) fn build_response(parts: ResponseParts) -> Result<String, Box<dyn std::error::Error>> {
     let payload_digest = ContentDigest::sha256(parts.payload_json.as_bytes());
     let short = parts.request_digest.to_text();
     let hex = short.split_once(':').map_or(short.as_str(), |(_, hex)| hex);
@@ -438,7 +449,7 @@ fn build_response(parts: ResponseParts) -> Result<String, Box<dyn std::error::Er
         .ok_or_else(|| RenderError("affordance objects do not match the envelope").into())
 }
 
-fn read_only_boundary(completed: String) -> ExecutionBoundary {
+pub(crate) fn read_only_boundary(completed: String) -> ExecutionBoundary {
     ExecutionBoundary {
         completed: vec![completed],
         not_started: vec!["Every listed affordance: this read executes none of them.".to_owned()],
@@ -453,7 +464,7 @@ fn read_only_boundary(completed: String) -> ExecutionBoundary {
 }
 
 /// Rendering context of one orientation's cells and affordances.
-fn contexts(
+pub(crate) fn contexts(
     orientation: &DeploymentOrientation,
 ) -> (
     agent_json::CellContext<'_>,
@@ -766,6 +777,9 @@ fn orient_response(
         .collect();
     proof_pointers.push(publication.publication_digest.to_text());
     proof_pointers.push(orientation.projection.projection_digest().to_text());
+    // The reusable anchor token of the committed position this answer is pinned to: the
+    // `--since` argument of `fss follow`.
+    proof_pointers.push(orientation.anchor_token.clone());
     let (_, affordance_context) = contexts(orientation);
     let affordance_objects = agent_json::affordance_objects(
         &capsule.frame.next,
@@ -814,7 +828,7 @@ fn orient_response(
     })
 }
 
-fn budget_refusal(
+pub(crate) fn budget_refusal(
     snapshot: &DeploymentSnapshot,
     request_digest: ContentDigest,
     view: AgentView,
@@ -866,7 +880,7 @@ fn budget_refusal(
     })
 }
 
-fn rendered(
+pub(crate) fn rendered(
     result: Result<String, Box<dyn std::error::Error>>,
     exit: ExitIdentity,
     command: &str,

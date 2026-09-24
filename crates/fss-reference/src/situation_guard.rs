@@ -460,35 +460,13 @@ fn annotate_operation_receipt(
 ) -> Result<(), ReferenceError> {
     let digest: ContentDigest = operation_receipt.receipt_digest();
     let operation_id = operation_receipt.intent.operation_id.as_str();
-    let knowledge_state = local_effect_knowledge_state(operation_receipt.state);
     situation.proof_roots.insert(digest);
     situation
         .capsule
         .frame
         .evidence_handles
         .insert(format!("fss://proof/{digest}"));
-    let cell = KnowledgeCell::new(KnowledgeCellParams {
-        claim_id: format!(
-            "{EFFECT_CLAIM_PREFIX}{operation_id}{}",
-            EffectCellKind::LocalState.claim_suffix()
-        ),
-        statement: format!(
-            "The exact local effect journal receipt records state {}.",
-            operation_receipt.state.as_str()
-        ),
-        knowledge_state,
-        // Local effect journal receipts are classified as Observed under PROV-001 because
-        // they constitute direct canonical effect evidence of local runtime state, distinguishing
-        // them from cognitive derivations and allowing effect reconciliation.
-        provenance: ProvenanceClass::Observed,
-        hypothesis: None,
-        evidence: vec![digest],
-        contradictions: Vec::new(),
-        valid_until: None,
-        state_basis: (knowledge_state == KnowledgeState::Indeterminate).then(|| {
-            KnowledgeStateBasis::Reconciliation(ReconciliationBasis::occurred_or_not(digest))
-        }),
-    })?;
+    let cell = local_state_effect_cell(operation_receipt)?;
     // The caller validated the receipt against the plan (and against the published outcome, when
     // there is one), so the cell is compiled from verified material in every state. Binding it
     // also keeps an indeterminate local state from being dropped or relabeled later (fss-6sph6).
@@ -523,6 +501,39 @@ fn annotate_operation_receipt(
         operation_receipt.state.as_str()
     ));
     Ok(())
+}
+
+/// The `claim:effect:{operation}:local-state` cell of one exact local journal receipt, citing the
+/// receipt digest as its only evidence. Callers bind it as [`EffectCellKind::LocalState`] and keep
+/// the receipt digest among their proof roots.
+pub(crate) fn local_state_effect_cell(
+    operation_receipt: &OperationReceipt,
+) -> Result<KnowledgeCell, ReferenceError> {
+    let digest: ContentDigest = operation_receipt.receipt_digest();
+    let knowledge_state = local_effect_knowledge_state(operation_receipt.state);
+    Ok(KnowledgeCell::new(KnowledgeCellParams {
+        claim_id: format!(
+            "{EFFECT_CLAIM_PREFIX}{}{}",
+            operation_receipt.intent.operation_id.as_str(),
+            EffectCellKind::LocalState.claim_suffix()
+        ),
+        statement: format!(
+            "The exact local effect journal receipt records state {}.",
+            operation_receipt.state.as_str()
+        ),
+        knowledge_state,
+        // Local effect journal receipts are classified as Observed under PROV-001 because
+        // they constitute direct canonical effect evidence of local runtime state, distinguishing
+        // them from cognitive derivations and allowing effect reconciliation.
+        provenance: ProvenanceClass::Observed,
+        hypothesis: None,
+        evidence: vec![digest],
+        contradictions: Vec::new(),
+        valid_until: None,
+        state_basis: (knowledge_state == KnowledgeState::Indeterminate).then(|| {
+            KnowledgeStateBasis::Reconciliation(ReconciliationBasis::occurred_or_not(digest))
+        }),
+    })?)
 }
 
 /// Knowledge state of the `claim:effect:*:local-state` cell for a local receipt in `state`.

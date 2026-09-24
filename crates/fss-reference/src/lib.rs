@@ -8,6 +8,8 @@
 
 pub mod activity;
 mod adapter_replay;
+/// Read-only `session.follow` (AOP-004): meaningful deltas since an earlier committed anchor.
+pub mod agent_follow;
 /// Read-only deployment orientation (AOP-003) and event explanation (AOP-011).
 pub mod agent_orient;
 pub mod agent_session;

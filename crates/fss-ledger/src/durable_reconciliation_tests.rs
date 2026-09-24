@@ -37,6 +37,69 @@ fn temp_journal(name: &str) -> std::path::PathBuf {
 }
 
 #[test]
+fn committed_batch_positions_match_the_bytes_on_disk() -> Result<(), Box<dyn Error>> {
+    let path = temp_journal("durable-positions");
+    let _ = fs::remove_file(&path);
+    let absent = crate::inspect_durable(&path, "test-site", 1 << 20)?;
+    assert_eq!(crate::committed_batch_positions(&absent), Some(Vec::new()));
+
+    let mut durable =
+        DurableReferenceLedger::open(&path, "test-site", IncompleteTailPolicy::Reject)?;
+    let first = sample_batch()?;
+    let mut replica = ReferenceLedger::new("test-site");
+    replica.append(first.clone())?;
+    durable.append(first)?;
+    let second = replica.prepare_batch(
+        BatchId::parse("batch:2")?,
+        vec![EvidenceDelta {
+            delta_id: "delta:2".to_owned(),
+            family: "sensor_capsule".to_owned(),
+            object_id: ObjectId::parse("object:camera:2")?,
+            prior_generation: None,
+            new_generation: 1,
+            validity: CaptureInterval::new(TimestampNs(30), TimestampNs(40))?,
+            plane: Plane::Authority,
+            payload_digest: ContentDigest::sha256(b"payload-2"),
+            witness_digest: None,
+            operation_id: None,
+        }],
+        [ContentDigest::sha256(b"child-2")],
+    )?;
+    durable.append(second)?;
+    drop(durable);
+
+    let inspection = crate::inspect_durable(&path, "test-site", 1 << 20)?;
+    let positions =
+        crate::committed_batch_positions(&inspection).ok_or("positions must reproduce")?;
+    let bytes = fs::read(&path)?;
+    let report = crate::recover_bytes(&bytes)?;
+    assert_eq!(positions.len(), 2);
+    let mut end = 0_u64;
+    for (position, record) in positions.iter().zip(report.records()) {
+        end += record.framed_len();
+        assert_eq!(position.commit_sequence, record.sequence());
+        assert_eq!(position.record_root, record.root());
+        assert_eq!(position.prefix_len, end);
+        let prefix = usize::try_from(position.prefix_len)?;
+        let prefix_report = crate::recover_bytes(bytes.get(..prefix).ok_or("prefix")?)?;
+        assert_eq!(prefix_report.last_root(), position.record_root);
+        assert_eq!(prefix_report.incomplete_tail(), None);
+    }
+    assert_eq!(end, bytes.len() as u64);
+
+    // An inspection whose committed length or last root no longer matches its batches has no
+    // reproducible positions.
+    let mut shortened = inspection.clone();
+    shortened.committed_len -= 1;
+    assert_eq!(crate::committed_batch_positions(&shortened), None);
+    let mut rerooted = inspection;
+    rerooted.last_root = ContentDigest::sha256(b"another history");
+    assert_eq!(crate::committed_batch_positions(&rerooted), None);
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
 fn lost_ack_installs_prevalidated_candidate_once() -> Result<(), Box<dyn Error>> {
     let path = temp_journal("durable-lost-ack");
     let _ = fs::remove_file(&path);
