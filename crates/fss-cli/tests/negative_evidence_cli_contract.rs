@@ -33,12 +33,27 @@ static TEMP_COUNTER: AtomicU64 = AtomicU64::new(1);
 const CLI_DOMAIN: &str = "domain:negative-evidence:cli-test";
 const LEGACY_V1: &str = "../../tests/fixtures/negative_evidence_ledger_v1.bin";
 
-fn temp_file_path(prefix: &str) -> PathBuf {
+/// A fresh, not yet created directory path under the system temp directory, unique per
+/// process and call.
+fn unique_temp_base(prefix: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
     let counter = TEMP_COUNTER.fetch_add(1, Ordering::SeqCst);
-    std::env::temp_dir().join(format!("{prefix}_{nanos}_{counter}.bin"))
+    let pid = std::process::id();
+    std::env::temp_dir().join(format!("{prefix}_{pid}_{nanos}_{counter}.d"))
+}
+
+/// A ledger path alone in its own freshly created directory.
+///
+/// An append scans the ledger's directory for any file that still holds the exact pre-append
+/// ledger and reports it as a fork (fss-pl8u9). Every seeded ledger has the same seed bytes, so
+/// ledgers of concurrently running tests must never share a directory: a sibling test's seed
+/// ledger is, by content, indistinguishable from a forked name.
+fn temp_file_path(prefix: &str) -> Result<PathBuf, Box<dyn Error>> {
+    let dir = unique_temp_base(prefix);
+    fs::create_dir(&dir)?;
+    Ok(dir.join("ledger.bin"))
 }
 
 struct TempFileGuard(PathBuf);
@@ -48,6 +63,10 @@ impl Drop for TempFileGuard {
         let _ = fs::remove_file(&self.0);
         if let Ok(lock) = sidecar(&self.0, ".lock") {
             let _ = fs::remove_file(lock);
+        }
+        // Non-recursive: the private directory is removed only once it is empty.
+        if let Some(parent) = self.0.parent() {
+            let _ = fs::remove_dir(parent);
         }
     }
 }
@@ -169,7 +188,7 @@ fn full_append_argv(path: &str, id: &str) -> Vec<OsString> {
 }
 
 fn seeded_ledger_file(prefix: &str) -> Result<(TempFileGuard, String), Box<dyn Error>> {
-    let path = temp_file_path(prefix);
+    let path = temp_file_path(prefix)?;
     fs::write(
         &path,
         initial_negative_evidence_ledger()?.encode_canonical()?,
@@ -354,7 +373,7 @@ fn test_cli_verify_default_and_json() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn test_cli_verify_corrupted_file_refusal() -> Result<(), Box<dyn Error>> {
-    let path = temp_file_path("corrupt_ledger");
+    let path = temp_file_path("corrupt_ledger")?;
     let _guard = TempFileGuard(path.clone());
 
     // Write corrupted bytes
@@ -399,7 +418,7 @@ fn test_cli_verify_corrupted_file_refusal() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn test_cli_append_with_witness_and_verify() -> Result<(), Box<dyn Error>> {
-    let path = temp_file_path("append_ledger");
+    let path = temp_file_path("append_ledger")?;
     let _guard = TempFileGuard(path.clone());
 
     // Initialize with normative seed ledger
@@ -612,7 +631,7 @@ fn test_cli_value_errors_are_usage_errors() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn test_cli_append_refuses_missing_ledger_file() -> Result<(), Box<dyn Error>> {
-    let path = temp_file_path("missing_ledger");
+    let path = temp_file_path("missing_ledger")?;
     let _guard = TempFileGuard(path.clone());
     let path_str = path.to_str().ok_or("non-unicode path")?;
     let (output, code) = run(full_append_argv(path_str, "NEG-009"))?;
@@ -626,7 +645,7 @@ fn test_cli_append_refuses_missing_ledger_file() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn test_cli_init_creates_seed_ledger_and_never_overwrites() -> Result<(), Box<dyn Error>> {
-    let path = temp_file_path("init_ledger");
+    let path = temp_file_path("init_ledger")?;
     let _guard = TempFileGuard(path.clone());
     let path_str = path.to_str().ok_or("non-unicode path")?;
 
@@ -753,7 +772,7 @@ fn test_cli_concurrent_appends_never_lose_entries() -> Result<(), Box<dyn Error>
 
 #[test]
 fn test_cli_append_refuses_duplicate_id() -> Result<(), Box<dyn Error>> {
-    let path = temp_file_path("duplicate_ledger");
+    let path = temp_file_path("duplicate_ledger")?;
     let _guard = TempFileGuard(path.clone());
 
     let initial_ledger = initial_negative_evidence_ledger()?;
@@ -808,7 +827,7 @@ impl Drop for TempDirGuard {
 /// in a different directory so lock and temp placement must follow the real file.
 #[cfg(unix)]
 fn symlinked_ledger(prefix: &str) -> Result<(TempDirGuard, PathBuf, PathBuf), Box<dyn Error>> {
-    let base = temp_file_path(prefix).with_extension("d");
+    let base = unique_temp_base(prefix);
     let real_dir = base.join("real");
     let link_dir = base.join("links");
     fs::create_dir_all(&real_dir)?;
@@ -926,7 +945,7 @@ fn test_cli_concurrent_appends_via_symlink_and_real_path_share_one_ledger()
 /// A seeded ledger `a.bin` hard-linked as `b.bin` in the same directory.
 #[cfg(unix)]
 fn hard_linked_ledger(prefix: &str) -> Result<(TempDirGuard, PathBuf, PathBuf), Box<dyn Error>> {
-    let base = temp_file_path(prefix).with_extension("d");
+    let base = unique_temp_base(prefix);
     fs::create_dir_all(&base)?;
     let guard = TempDirGuard(base.clone());
     let a = base.join("a.bin");
