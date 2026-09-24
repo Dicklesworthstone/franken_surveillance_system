@@ -677,8 +677,15 @@ fn assert_envelope(stdout: &str, operation_id: &str, view_id: &str) -> TestResul
 }
 
 /// Repository root (the workspace two levels above this crate).
+///
+/// Prefers the `CARGO_MANIFEST_DIR` that `cargo test` sets when it runs this binary over the one
+/// compiled in: a test binary reused from a shared target directory can outlive the source tree it
+/// was compiled from (a per-job checkout on a build worker), and the compiled-in path then names a
+/// directory that no longer exists.
 fn repository_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    std::env::var_os("CARGO_MANIFEST_DIR")
+        .map_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")), PathBuf::from)
+        .join("../..")
 }
 
 /// Validates `instance` against `schemas/<schema>` with the repository's strict Draft 2020-12
