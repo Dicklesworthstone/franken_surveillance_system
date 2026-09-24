@@ -12,6 +12,8 @@ mod adapter_replay;
 pub mod agent_follow;
 /// Read-only deployment orientation (AOP-003) and event explanation (AOP-011).
 pub mod agent_orient;
+/// Bounded AOP-005 queries of committed event records, with exact continuations.
+pub mod agent_query;
 pub mod agent_session;
 mod alert;
 /// Native HTTP alert relay with durable-before-send commitment and explicit outcomes.
