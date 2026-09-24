@@ -41,8 +41,17 @@ fn field<'a>(text: &'a str, name: &str) -> Test<&'a str> {
         .ok_or_else(|| "required report string missing".into())
 }
 
+/// Serializes this binary's tests. Every test holds native flock owner locks in this process and
+/// spawns real CLI processes. A child spawned by a concurrent test thread inherits, until its exec
+/// closes it, every descriptor open at that instant, including another test's held owner lock; the
+/// flock then outlives its owner's drop, and that test's next open or child sees Locked/Busy.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 #[test]
 fn checking_old_recipe_reports_selected_and_observed_sources_without_publishing() -> Test {
+    let _serial = serial();
     let f = seed("cli-historical-check", 2, false, false)?;
     let baseline = success(run(args(&f, false)?)?)?;
     let (head, roots) = {
@@ -63,6 +72,7 @@ fn checking_old_recipe_reports_selected_and_observed_sources_without_publishing(
 
 #[test]
 fn lost_stdout_followed_by_capture_growth_and_new_process_retry_reuses_all_outputs() -> Test {
+    let _serial = serial();
     let f = seed("cli-historical-retry", 2, false, false)?;
     let first = success(run(args(&f, true)?)?)?;
     let root = field(&first, "result_root")?.to_owned(); drop(first);
@@ -82,6 +92,7 @@ fn lost_stdout_followed_by_capture_growth_and_new_process_retry_reuses_all_outpu
 
 #[test]
 fn namespace_limits_admit_full_chain_ceiling_but_never_ignore_real_limit_exhaustion() -> Test {
+    let _serial = serial();
     let f = seed("cli-historical-bounds", 1, false, false)?;
     { let mut p = open(&f.path)?; append_tail(&mut p)?; }
     let mut expanded = args(&f, false)?;

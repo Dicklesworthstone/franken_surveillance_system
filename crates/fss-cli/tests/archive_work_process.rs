@@ -80,8 +80,17 @@ fn success(output: Output) -> Result<String, Box<dyn std::error::Error>> {
     Ok(text)
 }
 
+/// Serializes this binary's tests. Every test holds native flock owner locks in this process and
+/// spawns real CLI processes. A child spawned by a concurrent test thread inherits, until its exec
+/// closes it, every descriptor open at that instant, including another test's held owner lock; the
+/// flock then outlives its owner's drop, and that test's next open or child sees Locked/Busy.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 #[test]
 fn new_process_inspection_verifies_work_without_publishing_an_archive_window() -> Test {
+    let _serial = serial();
     let f = fixture("inspect")?;
     let text = success(run(args(&f, "inspect-work"))?)?;
     assert!(text.contains("\"publication_requested\":false"));
@@ -93,6 +102,7 @@ fn new_process_inspection_verifies_work_without_publishing_an_archive_window() -
 
 #[test]
 fn restore_survives_lost_stdout_ack_and_repeated_process_invocation() -> Test {
+    let _serial = serial();
     let f = fixture("restore")?;
     let mut command = args(&f, "restore-work"); command.extend(["--commit".into(), "yes".into()]);
     let first = success(run(command.clone())?)?;
@@ -114,6 +124,7 @@ fn restore_survives_lost_stdout_ack_and_repeated_process_invocation() -> Test {
 
 #[test]
 fn mutation_requires_explicit_commit_and_read_command_refuses_mutation_flags() -> Test {
+    let _serial = serial();
     let f = fixture("commit")?;
     let missing = run(args(&f, "restore-work"))?;
     assert_eq!(missing.status.code(), Some(i32::from(ExitIdentity::MALFORMED_VALUE.code)));
@@ -129,6 +140,7 @@ fn mutation_requires_explicit_commit_and_read_command_refuses_mutation_flags() -
 
 #[test]
 fn wrong_namespace_and_tighter_bounds_fail_before_any_normal_publication() -> Test {
+    let _serial = serial();
     let f = fixture("scope")?;
     let mut command = args(&f, "restore-work");
     *command.last_mut().ok_or("namespace missing")? = ContentDigest::sha256(b"other archive").to_text().into();
@@ -144,6 +156,7 @@ fn wrong_namespace_and_tighter_bounds_fail_before_any_normal_publication() -> Te
 
 #[test]
 fn missing_archive_is_not_created_and_unknown_values_are_not_echoed() -> Test {
+    let _serial = serial();
     let missing = Path::new(env!("CARGO_TARGET_TMPDIR")).join("archive_work_process-missing-owner");
     assert!(!missing.exists());
     let digest = ContentDigest::sha256(b"nonsecret pin");
@@ -159,6 +172,7 @@ fn missing_archive_is_not_created_and_unknown_values_are_not_echoed() -> Test {
 
 #[test]
 fn help_and_duplicate_or_malformed_values_have_no_storage_side_effects() -> Test {
+    let _serial = serial();
     let output = run(vec!["help".into()])?;
     assert!(output.status.success());
     let text = String::from_utf8(output.stdout)?;
@@ -178,6 +192,7 @@ fn help_and_duplicate_or_malformed_values_have_no_storage_side_effects() -> Test
 #[cfg(unix)]
 #[test]
 fn symlink_root_is_not_followed_by_recovery_commands() -> Test {
+    let _serial = serial();
     let f = fixture("symlink")?;
     let alias = f.path.with_extension("alias");
     if alias.exists() { std::fs::remove_file(&alias)?; }
@@ -191,6 +206,7 @@ fn symlink_root_is_not_followed_by_recovery_commands() -> Test {
 
 #[test]
 fn interrupted_page_then_window_restore_keeps_original_pin_and_does_not_reindex() -> Test {
+    let _serial = serial();
     let f = fixture_kind("older_page", true)?;
     let page_root = {
         let mut p = LocalRootPublisher::open(&f.path, storage())?;
