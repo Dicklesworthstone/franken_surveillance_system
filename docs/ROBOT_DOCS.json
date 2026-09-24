@@ -247,6 +247,11 @@
       "id": "ERR-AGENT-CONTEXT-INCOMPLETE-001"
     },
     {
+      "description": "explain named an event identity that no committed `event_revision` delta publishes at the evaluated anchor",
+      "guidance": "orient to list published events; retry only after the ledger head advances",
+      "id": "ERR-AGENT-EVENT-NOT-FOUND-001"
+    },
+    {
       "description": "handoff root is incomplete, expired, unauthorized, schema/generation-incompatible, or cannot be safely rebased",
       "guidance": "reject, migrate, or open a new session with an explicit invalidation report; never silently resume",
       "id": "ERR-AGENT-HANDOFF-INVALID-001"

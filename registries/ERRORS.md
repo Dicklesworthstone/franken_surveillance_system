@@ -72,6 +72,7 @@ operation states rather than generic errors.
 | `ERR-AGENT-CASE-BUDGET-001` | investigation cannot discriminate remaining hypotheses within declared budget | return residual uncertainty and explicit next probe/approval options |
 | `ERR-AGENT-PROTOCOL-001` | presentation attempted an unregistered verb/view or changed semantic meaning | reject and repair registry/transport drift |
 | `ERR-AGENT-HIDDEN-STATE-001` | required mission state exists only in conversation or caller memory | persist typed mission/workspace/case/plan/finding/handoff state before proceeding |
+| `ERR-AGENT-EVENT-NOT-FOUND-001` | explain named an event identity that no committed `event_revision` delta publishes at the evaluated anchor | orient to list published events; retry only after the ledger head advances |
 | `ERR-AGENT-BASIS-BAD-MAGIC-001` | ContractBasis binary envelope magic header does not match CONTRACT_BASIS_MAGIC | verify binary envelope format or use canonical encoder |
 | `ERR-AGENT-BASIS-VERSION-001` | ContractBasis binary envelope format version is unsupported | upgrade client or server to matching format version |
 | `ERR-AGENT-BASIS-TRUNCATED-001` | ContractBasis binary envelope ended prematurely before declared length or minimum envelope size | retransmit complete binary envelope without truncation |
@@ -408,6 +409,7 @@ Stable process exit identities map command-line interface outcomes to determinis
 | `EXIT-CLI-TRAILING-ARGUMENT-002` | 2 | trailing argument after grammar exhaustion | remove trailing arguments |
 | `EXIT-DOCTOR-ATTENTION-REQUIRED-003` | 3 | doctor inspection detected deployment conditions requiring attention | inspect doctor JSON output for failing checks and follow recommended next affordances |
 | `EXIT-DOCTOR-NOT-A-DEPLOYMENT-004` | 4 | target directory is not a recognized reference deployment root | verify root path points to a deployment directory initialized with fss reference layout |
+| `EXIT-AGENT-REFUSED-005` | 5 | an agent read (orient, explain) was refused; the response envelope carries the registered error identity | read `errorId` and `degradation` in the envelope and follow the refused operation's recovery class |
 
 ## Contract error codes (`fss-core`)
 Canonical machine error codes returned by `ContractError::code()` (AGT-LAYER-002, INV-003):

@@ -5,6 +5,8 @@
 //! or unknown inputs with stable error and exit identities, structured diagnostic logging,
 //! and command execution for FSS binaries.
 
+/// Deterministic JSON rendering of the fss-core agent contract types.
+pub mod agent_json;
 /// Explicit operator access to existing local AVC/HEVC archives; not an agent operation.
 pub mod archive_cmd;
 pub mod crosswalk;
@@ -14,6 +16,8 @@ pub mod fss_cmd;
 pub mod hydration_cmd;
 pub mod lab_cmd;
 pub mod negative_evidence_cmd;
+/// Read-only `orient` (AOP-003) and `explain` (AOP-011) over a deployment root.
+pub mod orient_cmd;
 pub mod redact;
 pub mod token;
 
@@ -47,6 +51,10 @@ pub use lab_cmd::{
 pub use negative_evidence_cmd::{
     NEGATIVE_EVIDENCE_REPORT_SCHEMA, NegativeEvidenceAction, execute_negative_evidence,
     help_text as negative_evidence_help_text, parse_negative_evidence_tokens,
+};
+pub use orient_cmd::{
+    ERR_AGENT_CONTEXT_INCOMPLETE, ERR_AGENT_EVENT_NOT_FOUND, ExplainArgs, OrientArgs,
+    execute_explain, execute_orient,
 };
 pub use redact::{
     is_safe_to_echo, is_sensitive_standalone_flag, redact_argument, redact_sensitive_bytes,

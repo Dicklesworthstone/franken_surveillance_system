@@ -674,6 +674,7 @@ pub static REGISTERED_EXIT_IDENTITIES: &[&str] = &[
     "EXIT-CLI-TRAILING-ARGUMENT-002",
     "EXIT-DOCTOR-ATTENTION-REQUIRED-003",
     "EXIT-DOCTOR-NOT-A-DEPLOYMENT-004",
+    "EXIT-AGENT-REFUSED-005",
 ];
 
 fn normalize_identifier(s: &str) -> String {
