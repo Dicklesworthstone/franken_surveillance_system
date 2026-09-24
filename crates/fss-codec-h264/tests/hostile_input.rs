@@ -293,14 +293,6 @@ fn unsupported_sps_features_are_typed() {
         (
             SpsSpec {
                 profile: 100,
-                high: Some((1, 0, true)),
-                ..TINY
-            },
-            UnsupportedFeature::ScalingMatrix,
-        ),
-        (
-            SpsSpec {
-                profile: 100,
                 high: Some((2, 0, false)),
                 ..TINY
             },
@@ -330,6 +322,14 @@ fn unsupported_sps_features_are_typed() {
             "{feature:?}"
         );
     }
+    // High-profile SPS scaling matrices (all eight lists falling back to
+    // the defaults) are admitted now.
+    let scaling = SpsSpec {
+        profile: 100,
+        high: Some((1, 0, true)),
+        ..TINY
+    };
+    assert_eq!(fresh().decode_nal(&sps(&scaling)), Ok(None));
 }
 
 #[test]
@@ -342,14 +342,13 @@ fn unsupported_pps_features_are_typed() {
             ..TINY
         }))
         .unwrap();
+    // transform_8x8_mode_flag is admitted for High profile now.
     assert_eq!(
-        decoder
-            .decode_nal(&pps(PpsSpec {
-                transform_8x8: true,
-                ..PpsSpec::default()
-            }))
-            .unwrap_err(),
-        unsupported(UnsupportedFeature::Transform8x8)
+        decoder.decode_nal(&pps(PpsSpec {
+            transform_8x8: true,
+            ..PpsSpec::default()
+        })),
+        Ok(None)
     );
     assert_eq!(
         decoder
@@ -842,16 +841,17 @@ fn truncated_streams_yield_exact_picture_prefixes() {
     }
 }
 
-/// Truncated reordering streams (CABAC B with POC wrap, temporal direct
-/// with implicit weights): every published picture is bit-identical to the
+/// Truncated reordering streams (CABAC B pyramid, CAVLC B, High 8x8 with
+/// scaling matrices): every published picture is bit-identical to the
 /// full decode's picture with the same decode index, and pictures still
 /// come out in increasing POC order. (Output is not a prefix: a truncated
 /// stream flushes pictures the full decode would interleave with later B
 /// pictures.)
 #[test]
 fn truncated_reordering_streams_publish_only_exact_pictures() {
-    let fixtures: [&[u8]; 2] = [
+    let fixtures: [&[u8]; 3] = [
         include_bytes!("fixtures/decode/m_b_pocwrap_64x48.h264"),
+        include_bytes!("fixtures/decode/h_cqm_custom_100x60.h264"),
         include_bytes!("fixtures/decode/m_b_implicit_weight.h264"),
     ];
     for stream in fixtures {
@@ -887,9 +887,9 @@ fn truncated_reordering_streams_publish_only_exact_pictures() {
 #[test]
 fn bit_flip_mutations_never_panic() {
     // Baseline CAVLC, CABAC I/P with weights, CABAC B (implicit weights,
-    // temporal direct, MMCO, POC wrap): every new syntax path is exposed
-    // to flips.
-    let fixtures: [&[u8]; 8] = [
+    // temporal direct, MMCO, POC wrap), High 8x8 + scaling matrices, and a
+    // CAVLC High 8x8 B stream: every new syntax path is exposed to flips.
+    let fixtures: [&[u8]; 9] = [
         include_bytes!("fixtures/decode/ip_100x60_crop.h264"),
         include_bytes!("fixtures/decode/pcm_mixed.h264"),
         include_bytes!("fixtures/decode/i_qcif_qp44.h264"),
@@ -897,6 +897,7 @@ fn bit_flip_mutations_never_panic() {
         include_bytes!("fixtures/decode/m_ip_cabac_qp40.h264"),
         include_bytes!("fixtures/decode/m_ip_cabac_weightp.h264"),
         include_bytes!("fixtures/decode/m_b_pocwrap_64x48.h264"),
+        include_bytes!("fixtures/decode/h_cqm_custom_100x60.h264"),
         include_bytes!("fixtures/decode/m_b_implicit_weight.h264"),
     ];
     let mut state: u64 = 0x9E37_79B9_7F4A_7C15;

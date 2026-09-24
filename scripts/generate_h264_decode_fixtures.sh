@@ -2,7 +2,7 @@
 # Regenerates the sealed-lab H.264 *pixel decode* fixtures for fss-codec-h264.
 #
 # FFmpeg/libx264 is the laboratory oracle only (DEPENDENCY_CONSTITUTION): it
-# encodes synthetic testsrc2/mandelbrot scenes (Baseline and Main
+# encodes synthetic testsrc2/mandelbrot scenes (Baseline, Main and High
 # profile) and decodes them to raw I420 in output order OFFLINE. The
 # Rust tests read the committed bitstreams and the committed per-frame SHA-256
 # digests; they never invoke ffmpeg and never trust the Rust decoder's own
@@ -59,7 +59,7 @@ python3 scripts/rewrite_h264_headers.py --deblock-idc2 \
 python3 scripts/rewrite_h264_headers.py --poc-type0 \
   "$OUT/ip_100x60_crop.h264" "$OUT/ip_100x60_poc0.h264"
 
-# ----- Main profile (CABAC, B slices) -----
+# ----- Main and High profile (CABAC, B slices, 8x8 transform, scaling) -----
 # encode_profile <name> <profile> <size> <frames> <x264 params> [lavfi source]
 # The x264 parameter string is complete here (no implicit bframes=0).
 X264_MH="threads=1:lookahead_threads=1:scenecut=0:aud=0"
@@ -105,6 +105,15 @@ encode_profile m_b_cavlc main 176x144 9 \
 encode_profile m_b_pocwrap_64x48 main 64x48 24 \
   "keyint=24:bframes=2:b-pyramid=none:ref=2:qp=30"
 
+# Stage 3: High profile (8x8 transform, 8x8 intra, scaling matrices).
+encode_profile h_8x8dct_i high 176x144 2 "keyint=1:bframes=0:8x8dct=1:qp=24"
+encode_profile h_8x8dct_b high 176x144 9 \
+  "keyint=9:bframes=2:b-pyramid=normal:8x8dct=1:partitions=all:ref=2:qp=28"
+encode_profile h_cqm_jvt high 176x144 6 "keyint=6:bframes=2:8x8dct=1:cqm=jvt:qp=28"
+encode_profile h_cavlc_8x8 high 176x144 6 "keyint=6:cabac=0:bframes=2:8x8dct=1:qp=26"
+encode_profile h_cqm_custom_100x60 high 100x60 5 \
+  "keyint=5:bframes=1:8x8dct=1:qp=24:cqm4i=6,12,19,26,12,19,26,33,19,26,33,40,26,33,40,47:cqm4p=9,14,18,22,14,18,22,26,18,22,26,30,22,26,30,34:cqm8=6,10,13,16,18,23,25,27,10,11,16,18,23,25,27,29,13,16,18,23,25,27,29,31,16,18,23,25,27,29,31,33,18,23,25,27,29,31,33,36,23,25,27,29,31,33,36,38,25,27,29,31,33,36,38,40,27,29,31,33,36,38,40,42"
+
 # Oracle decode: every frame to packed planar I420 via rawvideo; framehash
 # hashes each packet, i.e. exactly one frame (Y, then Cb, then Cr, no
 # padding). Output columns: frame index, byte count, sha256.
@@ -123,4 +132,5 @@ done
 # Existing committed streams, reused in place (not regenerated here).
 oracle_digests crates/fss-codec-h264/tests/fixtures/baseline_i64.h264 baseline_i64
 oracle_digests crates/fss-packet/tests/fixtures/avc/baseline.264 fss_packet_baseline
+oracle_digests crates/fss-packet/tests/fixtures/avc/high_cropped.264 fss_packet_high_cropped
 echo "fixtures and oracle digests written to $OUT"

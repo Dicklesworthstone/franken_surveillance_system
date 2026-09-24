@@ -431,10 +431,6 @@ pub fn parse_sps(rbsp: &[u8]) -> Result<SeqParams, DecodeError> {
                 [&DEFAULT_8X8_INTRA, &DEFAULT_8X8_INTER],
             ));
         }
-        // Scaling matrices are admitted by the High-profile stage.
-        if scaling.is_some() {
-            return Err(refuse(UnsupportedFeature::ScalingMatrix));
-        }
     }
     let log2_max_frame_num = u8::try_from(r.ue(12)? + 4).map_err(|_| DecodeError::Malformed)?;
     let poc_type = u8::try_from(r.ue(2)?).map_err(|_| DecodeError::Malformed)?;
@@ -496,8 +492,7 @@ pub fn parse_sps(rbsp: &[u8]) -> Result<SeqParams, DecodeError> {
 ///
 /// # Errors
 /// [`DecodeError::Malformed`] on out-of-range syntax;
-/// [`DecodeError::Unsupported`] for slice groups, the 8x8 transform or
-/// scaling matrices.
+/// [`DecodeError::Unsupported`] for slice groups.
 pub fn parse_pps(rbsp: &[u8]) -> Result<PicParams, DecodeError> {
     let stop = crate::rbsp::stop_bit_position(rbsp)?;
     let mut r = BitReader::new(rbsp, stop);
@@ -532,14 +527,6 @@ pub fn parse_pps(rbsp: &[u8]) -> Result<PicParams, DecodeError> {
             scaling = Some(scaling_lists(&mut r, count)?);
         }
         second_chroma_qp_index_offset = r.se_range(-12, 12)?;
-        // The 8x8 transform and scaling matrices are admitted by the
-        // High-profile stage.
-        if transform_8x8_mode {
-            return Err(refuse(UnsupportedFeature::Transform8x8));
-        }
-        if scaling.is_some() {
-            return Err(refuse(UnsupportedFeature::ScalingMatrix));
-        }
     }
     if !r.exhausted() {
         return Err(DecodeError::Malformed);
