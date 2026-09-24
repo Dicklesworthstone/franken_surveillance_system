@@ -2,17 +2,15 @@
 
 use std::error::Error;
 
-use fss_core::{ContentDigest, Generation};
+use fss_core::{ContentDigest, Generation, TimestampNs};
 use fss_model_ir::{AttributeMap, GraphNode, ModelIrGraph, OpCode, TensorPort};
 use fss_tensor::{DType, Shape, Tensor};
 
 use crate::clock::VirtualClock;
 use crate::model_receipt::{
-    BackendDescriptor, MODEL_EXECUTION_RECEIPT_DOMAIN, ModelInvocationReceipt, ReceiptBudget,
-    ReceiptDigest, ReceiptOutcome, ReceiptUsage, ReceiptVerificationError,
-    execute_and_record_receipt,
+    ReceiptDigest, ReceiptOutcome, ReceiptVerificationError, execute_and_record_receipt,
 };
-use crate::scalar_executor::{ExecBudget, PreprocessProgram, ScalarExecCx};
+use crate::scalar_executor::{ExecBudget, ScalarExecCx};
 
 fn test_gen() -> Generation {
     Generation::from_u64(1)
@@ -48,7 +46,7 @@ fn test_receipt_ok_outcome() -> Result<(), Box<dyn Error>> {
     let inputs = vec![("x", x_tensor)];
 
     let cx = ScalarExecCx::new();
-    let clock = VirtualClock::new(50_000);
+    let clock = VirtualClock::new(0, TimestampNs(50_000));
 
     let (res, receipt) = execute_and_record_receipt(
         &graph,
@@ -339,8 +337,8 @@ fn test_bit_exact_reproducibility() -> Result<(), Box<dyn Error>> {
 
     let cx1 = ScalarExecCx::new();
     let cx2 = ScalarExecCx::new();
-    let clock1 = VirtualClock::new(12345);
-    let clock2 = VirtualClock::new(12345);
+    let clock1 = VirtualClock::new(0, TimestampNs(12345));
+    let clock2 = VirtualClock::new(0, TimestampNs(12345));
 
     let (_, receipt1) = execute_and_record_receipt(
         &graph,
@@ -442,7 +440,7 @@ fn test_virtual_clock_determinism() -> Result<(), Box<dyn Error>> {
     let x_tensor = Tensor::from_values(Shape::new(vec![1, 3])?, &[1.0_f32, 2.0, 3.0], g)?;
 
     let cx = ScalarExecCx::new();
-    let clock = VirtualClock::new(987_654_321);
+    let clock = VirtualClock::new(0, TimestampNs(987_654_321));
 
     let (_, receipt) = execute_and_record_receipt(
         &graph,

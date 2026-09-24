@@ -17,16 +17,15 @@
 //! Every receipt carrying any `fss-na:` sentinel is marked `is_reference_only() == true`,
 //! precluding it from granting effect authority or acting as activation-backed evidence.
 
-use std::collections::BTreeMap;
 use std::fmt::{self, Write as _};
 
 use fss_core::CanonicalEncoder;
 use fss_core::{ContentDigest, ContractError, Generation};
 use fss_model_ir::{
-    ModelIrError, ModelIrGraph, OPERATOR_TABLE_FREEZE_DIGEST, OpCode, compute_model_ir_digest,
+    ModelIrError, ModelIrGraph, OPERATOR_TABLE_FREEZE_DIGEST, compute_model_ir_digest,
     verify_operator_table_frozen,
 };
-use fss_tensor::{DType, Tensor};
+use fss_tensor::Tensor;
 
 use crate::clock::VirtualClock;
 use crate::scalar_executor::{
@@ -41,21 +40,36 @@ pub const MODEL_EXECUTION_RECEIPT_DOMAIN: &str = "fss.model_execution_receipt.re
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReceiptVerificationError {
     /// Schema const string mismatch.
-    SchemaConstMismatch { expected: String, actual: String },
+    SchemaConstMismatch {
+        /// The schema const the receipt must carry.
+        expected: String,
+        /// The schema const the receipt carried.
+        actual: String,
+    },
     /// Model IR graph generation mismatch.
     GenerationMismatch {
+        /// Generation the verifier expected.
         expected: Generation,
+        /// Generation the receipt's graph carries.
         actual: Generation,
     },
     /// Recomputed canonical receipt digest does not match expected digest.
     DigestMismatch {
+        /// Digest the verifier expected.
         expected: ContentDigest,
+        /// Digest recomputed from the receipt.
         actual: ContentDigest,
     },
     /// Inconsistent outcome fields.
-    InconsistentOutcome { reason: String },
+    InconsistentOutcome {
+        /// Which outcome fields disagree.
+        reason: String,
+    },
     /// Invalid digest syntax or missing hex.
-    InvalidDigestFormat { text: String },
+    InvalidDigestFormat {
+        /// The rejected digest text.
+        text: String,
+    },
     /// Model IR error.
     Ir(ModelIrError),
     /// Contract error.
@@ -848,7 +862,6 @@ pub fn compute_numeric_policy_digest() -> ContentDigest {
     ContentDigest::sha256(&encoder.finish())
 }
 
-
 /// Deterministic topological node ordering via the model IR validator, matching the
 /// canonical graph walk used by `fss_model_ir` digest computation.
 fn topological_nodes<'a>(
@@ -856,7 +869,10 @@ fn topological_nodes<'a>(
 ) -> Result<Vec<&'a fss_model_ir::GraphNode>, ReceiptVerificationError> {
     let mut producer_map = std::collections::BTreeMap::new();
     for input in graph.inputs() {
-        producer_map.insert(input.name(), fss_model_ir::validator::ProducerId::GraphInput);
+        producer_map.insert(
+            input.name(),
+            fss_model_ir::validator::ProducerId::GraphInput,
+        );
     }
     for node in graph.nodes() {
         for out_name in node.outputs() {
