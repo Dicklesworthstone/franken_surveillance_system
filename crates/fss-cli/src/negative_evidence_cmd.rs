@@ -1123,9 +1123,8 @@ fn write_ledger_atomically(
                         if fs::metadata(&candidate)
                             .map(|metadata| metadata.len() == old_len_bytes)
                             .unwrap_or(false)
-                            && fs::read(&candidate).map_or(false, |current| {
-                                ContentDigest::sha256(&current) == old_digest
-                            })
+                            && fs::read(&candidate)
+                                .is_ok_and(|current| ContentDigest::sha256(&current) == old_digest)
                         {
                             forked_names.push(candidate.display().to_string());
                         }

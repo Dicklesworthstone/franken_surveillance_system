@@ -1,7 +1,6 @@
 #![forbid(unsafe_code)]
 //! Read-only detector and tracking operations for fss-infer.
 
-use std::error::Error;
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::fs;
@@ -217,7 +216,7 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<bool> {
         report.push_str(",\"model_outputs\":\"uncalibrated\",\"absence_certifiable\":false,\"effects_authorized\":false,\"frames\":[");
         let mut completed=0; let mut failure:Option<String>=None;
         for (segment,id) in &entries {
-            let mut source=options.source.clone(); source.segment_index=*segment;
+            let mut source=options.source.clone(); source.segment_index = *segment;
             let frame=match DetectionFrame::read(&deployment,*id,&source,&options.contract,&mut detection_budget,&cx) {
                 Ok(frame)=>frame,Err(error)=>{failure=Some(error.to_string());break;}
             };
@@ -233,7 +232,7 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<bool> {
         let complete=failure.is_none();
         let next=entries.get(completed).map_or("null".to_owned(),|(s,_)|s.to_string());
         let next_entry=if complete {"null".into()}else{completed.to_string()};
-        write!(report,"],\"complete\":{},\"completed_entries\":{},\"requested_entries\":{},\"next_entry\":{},\"next_segment\":{},\"error\":{},\"detector_units_used\":{},\"association_units_used\":{},\"tracking_resume_requires_full_history\":true}}\n",
+        writeln!(report,"],\"complete\":{},\"completed_entries\":{},\"requested_entries\":{},\"next_entry\":{},\"next_segment\":{},\"error\":{},\"detector_units_used\":{},\"association_units_used\":{},\"tracking_resume_requires_full_history\":true}}",
             complete,completed,entries.len(),next_entry,next,failure.as_deref().map_or("null".into(),json_string),detection_budget.used(),association_budget.used())?;
         cx.checkpoint("detector_cli:report")?;
         if let Some(path)=&options.report {export(path,report.as_bytes(),&options.root,&cx)?;}
@@ -277,7 +276,7 @@ mod tests {
         let mut a=args("track");a.extend(["--confirmation-hits","0"].into_iter().map(OsString::from));assert!(parse(&a).is_err());
     }
     #[test]
-    fn run_manifest_is_exact_bounded_and_ordered() -> Result<(),Box<dyn Error>> {
+    fn run_manifest_is_exact_bounded_and_ordered() -> Result<(),Box<dyn std::error::Error>> {
         let id=ContentDigest::sha256(b"run");
         assert_eq!(run_list(&format!("0 {id}\n2 {id}\n"))?.len(),2);
         for bad in [String::new(),format!("0 {id} extra"),format!("2 {id}\n1 {id}"),format!("0 {id}\n0 {id}"),format!("0 {id}\n\n"),"0 latest".into()] {
