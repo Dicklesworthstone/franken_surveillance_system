@@ -1,6 +1,6 @@
 # Implementation status
 
-**As of:** 2026-09-03  
+**As of:** 2026-09-23 (reality check; earlier sections written 2026-09-03)  
 **Project state:** pre-release deterministic reference implementation; not production-qualified  
 **Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
@@ -9,6 +9,35 @@
 Franken Surveillance System now has a coherent, dependency-light Rust reference spine from immutable source evidence through canonical authority state, guarded external effects, agent situation projection, meaningful deltas, exact continuation, and progressive semantic hydration. The repository is no longer merely an architecture corpus or crate skeleton.
 
 It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
+
+## Media, perception and I/O added since 2026-09-03 (reference, unqualified)
+
+All of this is tested only on generated fixtures (FFmpeg `testsrc` encodes, procedural JPEGs,
+synthetic scenes). None of it has been measured on real camera footage.
+
+- **Ingest and capture:** file import with custody for Annex-B/MJPEG/rtpplay (`ingest::file_adapter`,
+  `fss-file import`); RTSP negotiation, Digest authentication and interleaved-TCP capture
+  (`rtsp::*`, `std::net::TcpStream`); native HTTP MJPEG capture (`ingest::http_camera`); local
+  capture archives with checkpoints, recovery, pins and verify/export (`fss-archive`).
+- **Media:** RTP H.264/H.265 depacketization (`fss-packet`); baseline JPEG/MJPEG decode, gray and
+  YCbCr 4:4:4/4:2:2/4:2:0 (`fss-codec-mjpeg`, `fss-file decode`); fragmented-MP4 remux for AVC/HEVC
+  (`fss-container`). **H.264 pixel decode is not implemented** (`fss-codec-h264` has bitstream and
+  entropy-table code only), so RTSP/H.264 cameras can be archived but not analysed.
+- **Models:** scalar executor over the FSS IR (Conv2d, MatMul, pooling, norms, activations) with
+  Safetensors weights (`scalar_executor`, `fss-infer`). No trained detector package ships; the only
+  trained weights are the OpenCV HOG people SVM (`fss-twin`), with no claimed recall.
+- **Perception:** running-variance foreground detection, HOG multiscale scan, Kalman
+  constant-velocity tracking with Hungarian assignment, global cross-camera assignment over
+  caller-supplied ground-plane points, zone-gated event candidates (`ingest::{foreground, tracker,
+  cross_camera, eventgen}`). Event quality (AUPRC, recall at a false-alert budget) is not measured.
+- **Effects:** a native plaintext HTTP webhook transport behind durable authorization gates
+  (`alert::webhook`). No binary uses it yet, and alert preparation requires a corroborated
+  multi-sensor event.
+- **Operations:** `fss doctor --json --root <dir>` inspects a deployment read-only; `fss-lab` runs
+  its six scenarios on `ReferenceDeployment` (mock model and simulated alert provider).
+
+Architectural deviations to resolve: device and alert I/O use blocking `std::net` rather than
+Asupersync (owner decision `fss-x4a.8.1` is open), and the workspace has zero third-party crates.
 
 ## Implemented deterministic reference spine
 

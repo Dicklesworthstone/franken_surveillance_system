@@ -6,7 +6,7 @@
 
 *Cheap consumer hardware. One version universe. Certified graph intelligence. Pure-Rust media and models. Crash-safe evidence. No ambient authority.*
 
-![Status](https://img.shields.io/badge/status-architecture%20constitution-yellow)
+![Status](https://img.shields.io/badge/status-unqualified%20reference%20implementation-yellow)
 ![Rust](https://img.shields.io/badge/Rust-accepted%20nightly-orange)
 ![Unsafe](https://img.shields.io/badge/FSS%20unsafe-forbidden-brightgreen)
 ![Runtime](https://img.shields.io/badge/runtime-Asupersync-blueviolet)
@@ -16,10 +16,13 @@
 </div>
 
 > [!IMPORTANT]
-> This repository currently contains the **normative architecture, deep Franken-suite audits,
-> registries, schemas, and a dependency-free Rust contract skeleton**. It does not yet acquire
-> camera feeds, decode video, run models, reconstruct a property, upload archives, or deliver
-> alerts. The boundary is explicit in [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md).
+> FSS is an **unqualified reference implementation**. It can import recorded media with custody,
+> capture RTSP (interleaved TCP) and HTTP MJPEG streams into local archives, decode baseline
+> JPEG/MJPEG, run small models on a scalar executor, detect, track and publish event candidates,
+> and keep a crash-safe local ledger. It does **not** yet decode H.264/H.265 pixels, ship a trained
+> detector, measure detection quality on real footage, expose the agent protocol over any
+> transport, archive to the cloud, or have any release-qualified capability. The boundary is
+> explicit in [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md) and `fss capabilities --json`.
 
 ## The thesis
 
@@ -527,33 +530,46 @@ FSS is not:
 
 ## Current status
 
-The project remains at **`GATE-000`: architecture constitution**.
+Reality-checked on 2026-09-23. Everything below is a deterministic reference implementation
+tested on generated fixtures; **nothing is release-qualified**, and no capability has been measured
+on real camera footage.
 
-Implemented now:
+Implemented (reference, unqualified):
 
-- the comprehensive plan and second-pass Franken-stack constitution;
-- twelve project-specific deep dives plus an adjacent-project census;
-- the three-document agent operating hierarchy, public `fss/1` operation/view registries, linked
-  abstraction tower, epistemic/provenance/possible-world vocabulary, and 27 agent semantic schemas;
-- machine-readable hard invariants and mechanism-level import, dependency, algorithm, publication,
-  decision, cost, claim, readiness, schema, and local qualification registries;
-- a dependency-free safe-Rust semantic skeleton;
-- policy/manifest validation and local qualification wrapper;
-- ADRs for pure Rust, one version universe, ATP separation, graph witnesses, local DSR authority,
-  oracle-only foreign runtimes, and the agent cognitive operating membrane.
+- file import with SHA-256 source custody for H.264 Annex-B, MJPEG and rtpplay recordings
+  (`fss-file import`);
+- RTP depacketization for H.264/H.265, RTSP negotiation with Digest authentication over interleaved
+  TCP, native HTTP MJPEG capture, local capture archives with verify/export (`fss-archive`), and
+  fragmented-MP4 remux for AVC/HEVC;
+- baseline JPEG/MJPEG decode (`fss-file decode`);
+- a scalar model executor over the frozen FSS IR with Safetensors weights (`fss-infer`);
+- background-model foreground detection, the OpenCV HOG people SVM, Kalman/Hungarian tracking,
+  cross-camera assignment over caller-supplied ground-plane points, and zone-gated event candidates;
+- durable journal/ledger with torn-tail recovery, root-last local publication, a durable effect
+  journal with prepare/commit/observe/reconcile, and a read-only deployment doctor
+  (`fss doctor --json --root <dir>`);
+- camera pose (Horn, RANSAC PnP, planar homography) and image-to-atlas localization;
+- the agent semantic contracts (`SituationCapsule`, `WorldEnvelope`, affordances, meaningful deltas,
+  hydration, handoff) as typed, tested Rust;
+- the plan, registries, schemas, policy checkers and local qualification wrapper.
 
-Not implemented now:
+Partial:
 
-- real camera/drone acquisition;
-- RTSP/RTP/ONVIF/UVC protocol stacks;
-- codecs, containers, live proxy, or UI;
-- canonical persistence and ATP cloud transport;
-- tensor kernels or model inference;
-- calibration, reconstruction, coverage, graph/search engines;
-- detection, tracking, association, event fusion, alerts, or the agent/CLI/MCP operating layer;
-- full DSR release matrix.
+- H.264 pixel decode (entropy tables only; the decoder is in progress);
+- alert delivery: a native webhook transport exists as a library, but alerts require a corroborated
+  multi-sensor event and no command drives it yet;
+- the agent operating layer exists as contracts without a CLI/MCP transport.
 
-That gap is the ordered work—not hidden capability—described by the plan.
+Not implemented:
+
+- H.265 pixel decode, progressive JPEG, RTP over UDP, UVC, ONVIF;
+- any trained detector package, and any event-quality evaluation (AUPRC, recall at a false-alert
+  budget) on real data;
+- Asupersync (the workspace has zero third-party crates; I/O is blocking `std`);
+- cloud archive/ATP transport, property reconstruction, privacy masking, deletion closure,
+  search/memory, live operator view, and the DSR release matrix.
+
+That gap is tracked in `.beads/` (see the `reality-check-2026-09-23` label).
 
 ## License
 
