@@ -43,8 +43,9 @@ synthetic scenes). None of it has been measured on real camera footage.
   caller-supplied ground-plane points, zone-gated event candidates (`ingest::{foreground, tracker,
   cross_camera, eventgen}`). Event quality (AUPRC, recall at a false-alert budget) is not measured.
 - **Effects:** a native plaintext HTTP webhook transport behind durable authorization gates
-  (`alert::webhook`). No binary uses it yet, and alert preparation requires a corroborated
-  multi-sensor event.
+  (`alert::webhook`), driven by `fss-event alert` for events corroborated by two independent
+  sensors (`fss-event corroborate`). Only plaintext relays, no TLS, no retries; a 2xx proves relay
+  acceptance only. Sensor independence rests on operator-declared sensor identities.
 - **Operations:** `fss doctor --json --root <dir>` inspects a deployment read-only; `fss-lab` runs
   its six scenarios on `ReferenceDeployment` (mock model and simulated alert provider).
 

@@ -566,9 +566,10 @@ Implemented (reference, unqualified):
 
 Partial:
 
-- alert delivery: a native webhook transport exists as a library, but alerts require a corroborated
-  multi-sensor event and no command drives it yet;
-- the agent operating layer exists as contracts without a CLI/MCP transport.
+- the agent operating layer: `fss orient` and `fss explain` are read-only CLI surfaces; the other
+  fss/1 operations (session.open/resume/follow, query, investigate, plan, commit, wait, cancel,
+  handoff, feedback) and any MCP transport are not exposed;
+- alert delivery: plaintext webhook relays only (no TLS, retries or provider adapters).
 
 Not implemented:
 
