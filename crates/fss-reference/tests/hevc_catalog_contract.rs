@@ -75,7 +75,7 @@ fn half_open_edges_and_empty_matches_never_become_coverage_claims() -> TestResul
         assert_eq!(s.unindexed(), &[query]);
     }
     assert_eq!(c.select(73_000..100_001, CatalogQueryLimits::default())?.windows()[0].ordinal(), 1);
-    for query in [0..0, 2..1, u64::MAX..u64::MAX] {
+    for query in [0..0, std::ops::Range { start: 2, end: 1 }, u64::MAX..u64::MAX] {
         assert_eq!(c.select(query, CatalogQueryLimits::default()).err(), Some(E::Interval));
     }
     Ok(())

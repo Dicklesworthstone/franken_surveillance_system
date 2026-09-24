@@ -106,7 +106,7 @@ fn selection_prices_whole_windows_and_refuses_all_on_any_limit_overflow() -> Tes
         ..ArchiveQueryLimits::default() }), Err(ArchiveError::Limit)));
     assert!(matches!(s.select(5..5, ArchiveQueryLimits::default()), Err(ArchiveError::Catalog(CatalogError::Interval))));
     assert!(s.select(u64::MAX - 1..u64::MAX, ArchiveQueryLimits::default())?.ordinals().is_empty());
-    assert_eq!(s.select(72_000..90_000, ArchiveQueryLimits::default())?.unindexed(), &[72_000..90_000]);
+    assert_eq!(s.select(72_000..90_000, ArchiveQueryLimits::default())?.unindexed(), std::slice::from_ref(&(72_000..90_000)));
     Ok(())
 }
 

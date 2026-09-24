@@ -188,6 +188,6 @@ fn split_fixture(bytes: &[u8]) -> Vec<&[u8]> {
         }
         start = Some(at + prefix); at += prefix;
     }
-    if let Some(begin) = start { if begin < bytes.len() { output.push(&bytes[begin..]); } }
+    if let Some(begin) = start && begin < bytes.len() { output.push(&bytes[begin..]); }
     output
 }

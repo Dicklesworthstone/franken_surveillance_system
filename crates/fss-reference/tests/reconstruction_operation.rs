@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! Whole-recipe reconstruction: prepare without writes, publish once, reuse roots, and retain refusals.
 #[path = "reconstruction_operation/support.rs"]
 mod fixture;
 use fixture::*;

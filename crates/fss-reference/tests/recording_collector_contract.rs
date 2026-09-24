@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! Recording collector window sealing, backpressure and mid-GOP joins that preserve originals.
 
 mod collector_support;
 use collector_support::*;

@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! RGB evidence envelopes rebuilt from original sources; forged or truncated envelopes are refused.
 use fss_core::ContentDigest;
 use fss_reference::ScalarExecCx;
 use fss_reference::ingest::model_import::ImportBudget;

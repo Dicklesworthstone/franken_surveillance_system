@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! rtpdump import recovery after receipt loss, root-only publication and malformed tails.
 mod rtpdump_support;
 use rtpdump_support::*;
 use fss_core::{CanonicalEncode, CaptureInterval, ContentDigest, SensorId, StreamId, TimestampNs};

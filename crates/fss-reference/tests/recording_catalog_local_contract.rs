@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! Local catalog publication, reopen and whole-window retrieval with explicit gaps and cancellation.
 
 mod collector_support;
 use collector_support::*;
@@ -76,7 +77,7 @@ fn publish_reopen_and_retrieve_two_whole_windows_with_explicit_gaps() -> TestRes
         RangeProgress::Complete(r) => {
             assert_eq!(r.windows, 2); assert_eq!(r.unindexed, vec![7200..10800]);
             assert_eq!(r.output_bytes, read.selection().output_bytes());
-            assert_eq!(read.selection().unindexed(), &[7200..10800]);
+            assert_eq!(read.selection().unindexed(), std::slice::from_ref(&(7200..10800)));
         }
         other => return Err(format!("unexpected {other:?}").into()),
     }
@@ -171,7 +172,7 @@ fn lie_about_window_size(c: &RecordingCatalog) -> Result<RecordingCatalog, Error
     d.digest()?; d.digest()?; d.digest()?; d.u32()?; d.u64()?;
     d.text()?; d.digest()?;
     for _ in 0..5 { d.u64()?; } // start, end, packet/sample/NAL counts
-    let at = d.offset(); drop(d);
+    let at = d.offset();
     bytes[at..at + 8].copy_from_slice(&1_u64.to_be_bytes());
     let body = bytes.len() - 33;
     let checksum = ContentDigest::try_sha256(&bytes[..body])?;

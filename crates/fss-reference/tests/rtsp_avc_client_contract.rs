@@ -59,7 +59,7 @@ fn nals(bytes: &[u8]) -> Vec<&[u8]> {
         }
         start = Some(at + prefix); at += prefix;
     }
-    if let Some(begin) = start { if begin < bytes.len() { output.push(&bytes[begin..]); } }
+    if let Some(begin) = start && begin < bytes.len() { output.push(&bytes[begin..]); }
     output
 }
 fn drain(c: &mut RtspAvcClient, now: u64, output: &mut Vec<P>) -> TestResult {
@@ -193,7 +193,7 @@ fn eof_inside_framing_retires_partial_input_without_fabricating_a_tail() -> Test
 #[test]
 fn slow_partial_frame_and_session_deadlines_fire_without_more_input() -> TestResult {
     let mut c = playing(AvcReceiveLimits::default(), false)?;
-    c.ingest(&[b'$'], 6)?;
+    c.ingest(b"$", 6)?;
     assert_eq!(c.next_wake_ns(), Some(5_000_000_006));
     assert!(matches!(c.poll(5_000_000_006)?, P::Fault { reason: E::PartialTimeout, .. }));
     let mut c = playing(AvcReceiveLimits::default(), false)?;

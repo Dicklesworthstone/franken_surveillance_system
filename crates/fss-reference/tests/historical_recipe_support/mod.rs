@@ -2,8 +2,8 @@
 #![allow(dead_code)]
 //! Existing encoded-source fixture plus actual opaque source observations appended later.
 #[path = "../reconstruction_operation/support.rs"]
-mod fixture;
-pub use fixture::*;
+mod operation_support;
+pub use operation_support::*;
 use fss_publication::{LocalRootPublisher, NeverCancel};
 use fss_reference::rtsp::avc_client::{AvcClientPoll, authenticated::DigestAvcPoll};
 use fss_reference::rtsp::datagram_archive::{DatagramArchive, DatagramPin};

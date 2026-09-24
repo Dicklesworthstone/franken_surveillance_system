@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! RTSP Digest authentication: full-target binding, no silent downgrade, pinned realm, strict fields.
 use fss_reference::rtsp::authentication::*;
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 const LEGACY: DigestPolicy = DigestPolicy { allow_legacy_md5: true, allow_legacy_no_qop: true };

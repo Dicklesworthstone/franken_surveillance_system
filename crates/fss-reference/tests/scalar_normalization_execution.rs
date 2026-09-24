@@ -9,9 +9,12 @@ use fss_tensor::{DType, Shape, Tensor};
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 const GEN: Generation = Generation(7);
 
+/// Affine parameter dimensions, scale, and optional bias.
+type Affine<'a> = (&'a [usize], &'a [f32], Option<&'a [f32]>);
+
 fn run(
     op: OpCode, dims: &[usize], data: &[f32],
-    affine: Option<(&[usize], &[f32], Option<&[f32]>)>,
+    affine: Option<Affine<'_>>,
     attrs: AttributeMap, budget: ExecBudget, cx: &ScalarExecCx,
 ) -> Result<ExecOutcome, ExecError> {
     let shape = Shape::new(dims.to_vec())?;

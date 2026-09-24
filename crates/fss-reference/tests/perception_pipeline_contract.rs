@@ -21,6 +21,8 @@ use fss_reference::ingest::eventgen::{ZoneEventConfig, ZoneEventGenerator, ZoneS
 use fss_reference::ingest::foreground::{ForegroundConfig, ForegroundDetector};
 use fss_reference::ingest::tracker::{Detection, MultiObjectTracker, TrackerConfig};
 
+type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
 const WIDTH: u32 = 64;
 const HEIGHT: u32 = 64;
 
@@ -39,46 +41,41 @@ fn frame(baseline_square_at: Option<(f64, f64)>) -> Vec<u8> {
     pixels
 }
 
-fn foreground() -> ForegroundDetector {
-    ForegroundDetector::new(ForegroundConfig {
+fn foreground() -> TestResult<ForegroundDetector> {
+    Ok(ForegroundDetector::new(ForegroundConfig {
         base_threshold: 30,
         threshold_sigma: 2,
         learning_rate_num: 1,
         learning_rate_den: 256,
         minimum_region_pixels: 16,
         dimensions: [WIDTH, HEIGHT],
-    })
-    .expect("foreground config is valid")
+    })?)
 }
 
-fn tracker() -> MultiObjectTracker {
-    MultiObjectTracker::new(TrackerConfig {
+fn tracker() -> TestResult<MultiObjectTracker> {
+    Ok(MultiObjectTracker::new(TrackerConfig {
         min_hits: 2,
         max_misses: 3,
         iou_threshold: 0.05,
         process_noise: 1.0,
         measurement_noise: 1.0,
-    })
-    .expect("tracker config is valid")
+    })?)
 }
 
-fn event_generator() -> ZoneEventGenerator {
+fn event_generator() -> TestResult<ZoneEventGenerator> {
     let mut zonegen = ZoneEventGenerator::new(ZoneEventConfig {
         policy_generation: ContentDigest::sha256(b"e2e-perception-policy-gen"),
         dedup_cooldown_ns: 500_000_000, // 500 ms
         min_probability: 0.3,
         max_dedup_entries: 16,
-    })
-    .expect("generator config is valid");
+    })?;
     // Protected zone: right half of the scene.
-    zonegen
-        .register_zone(ZoneSpec {
-            zone_id: "protected_yard".to_string(),
-            bounds: (32.0, 0.0, 32.0, 64.0),
-            kind: EventKind::PerimeterBreach,
-        })
-        .expect("zone spec is valid");
-    zonegen
+    zonegen.register_zone(ZoneSpec {
+        zone_id: "protected_yard".to_string(),
+        bounds: (32.0, 0.0, 32.0, 64.0),
+        kind: EventKind::PerimeterBreach,
+    })?;
+    Ok(zonegen)
 }
 
 /// Runs the full pipeline over one frame. Returns generated events (if any)
@@ -147,16 +144,16 @@ fn step(
 }
 
 #[test]
-fn pipeline_generates_one_deduplicated_event_for_zone_breach() {
-    let mut detector = foreground();
-    let mut tracker = tracker();
-    let mut zonegen = event_generator();
+fn pipeline_generates_one_deduplicated_event_for_zone_breach() -> TestResult {
+    let mut detector = foreground()?;
+    let mut tracker = tracker()?;
+    let mut zonegen = event_generator()?;
 
     let mut all_events = Vec::new();
 
     // Frame 0: baseline, no square. Detector absorbs background; no detections.
     let events = step(&mut detector, &mut tracker, &mut zonegen, None, 0)
-        .expect("frame 0 runs");
+        .map_err(|err| format!("frame 0 runs: {err}"))?;
     assert!(events.is_empty());
     all_events.extend(events);
 
@@ -170,7 +167,7 @@ fn pipeline_generates_one_deduplicated_event_for_zone_breach() {
             Some((x, 28.0)),
             i128::from(i as i64 + 1) * 33_000_000,
         )
-        .unwrap_or_else(|err| panic!("approach frame {i} runs: {err}"));
+        .map_err(|err| format!("approach frame {i} runs: {err}"))?;
         assert!(
             events.is_empty(),
             "movement outside the protected zone must not generate events"
@@ -188,7 +185,7 @@ fn pipeline_generates_one_deduplicated_event_for_zone_breach() {
             Some((x, 28.0)),
             i128::from(i) * 33_000_000,
         )
-        .unwrap_or_else(|err| panic!("breach frame {i} runs: {err}"));
+        .map_err(|err| format!("breach frame {i} runs: {err}"))?;
         all_events.extend(events);
     }
 
@@ -205,31 +202,29 @@ fn pipeline_generates_one_deduplicated_event_for_zone_breach() {
     assert_eq!(event.zone_ids, vec!["protected_yard"]);
     assert_eq!(event.evidence.len(), 1);
     assert_eq!(event.evidence[0].failure_domain, "cam-e2e");
-    event.verify().expect("generated event passes contract");
+    event.verify()?;
 
     // Generator sequencing is sane: one publication consumed.
     assert_eq!(zonegen.generated_count(), 1);
+    Ok(())
 }
 
 #[test]
-fn pipeline_event_evidence_digest_matches_input_frame() {
-    let mut detector = foreground();
-    let mut tracker = tracker();
-    let mut zonegen = event_generator();
+fn pipeline_event_evidence_digest_matches_input_frame() -> TestResult {
+    let mut detector = foreground()?;
+    let mut tracker = tracker()?;
+    let mut zonegen = event_generator()?;
 
     // Baseline.
-    step(&mut detector, &mut tracker, &mut zonegen, None, 0).unwrap();
+    step(&mut detector, &mut tracker, &mut zonegen, None, 0)?;
     // Approach (unprotected half): 4 -> 10 keeps IoU association alive.
-    step(&mut detector, &mut tracker, &mut zonegen, Some((4.0, 28.0)), 33_000_000)
-        .unwrap();
-    step(&mut detector, &mut tracker, &mut zonegen, Some((10.0, 28.0)), 66_000_000)
-        .unwrap();
+    step(&mut detector, &mut tracker, &mut zonegen, Some((4.0, 28.0)), 33_000_000)?;
+    step(&mut detector, &mut tracker, &mut zonegen, Some((10.0, 28.0)), 66_000_000)?;
     // Breach entry: the 10 -> 34 jump exceeds IoU overlap, so the tracker
     // starts a fresh Tentative track here (by design: unconfirmed until a
     // second consecutive hit). No event yet.
     let no_events =
-        step(&mut detector, &mut tracker, &mut zonegen, Some((34.0, 28.0)), 99_000_000)
-            .unwrap();
+        step(&mut detector, &mut tracker, &mut zonegen, Some((34.0, 28.0)), 99_000_000)?;
     assert!(
         no_events.is_empty(),
         "tentative track inside the zone must not evidence events yet"
@@ -239,23 +234,23 @@ fn pipeline_event_evidence_digest_matches_input_frame() {
     let confirm_pixels = frame(Some((36.0, 28.0)));
     let confirm_digest = ContentDigest::sha256(&confirm_pixels);
     let events =
-        step(&mut detector, &mut tracker, &mut zonegen, Some((36.0, 28.0)), 132_000_000)
-            .unwrap();
+        step(&mut detector, &mut tracker, &mut zonegen, Some((36.0, 28.0)), 132_000_000)?;
     assert_eq!(events.len(), 1, "confirmation inside the zone must generate exactly one event");
     assert_eq!(
         events[0].evidence[0].digest, confirm_digest,
         "event evidence must bind the digest of the frame that confirmed the breach"
     );
+    Ok(())
 }
 
 #[test]
-fn pipeline_without_authority_generates_nothing() {
-    let mut detector = foreground();
-    let mut tracker = tracker();
-    let mut zonegen = event_generator();
+fn pipeline_without_authority_generates_nothing() -> TestResult {
+    let mut detector = foreground()?;
+    let mut tracker = tracker()?;
+    let mut zonegen = event_generator()?;
 
     let pixels = frame(Some((34.0, 28.0)));
-    let fg = detector.observe(&pixels, WIDTH, HEIGHT).unwrap();
+    let fg = detector.observe(&pixels, WIDTH, HEIGHT)?;
     let detections: Vec<Detection> = fg
         .boxes
         .iter()
@@ -271,17 +266,17 @@ fn pipeline_without_authority_generates_nothing() {
         if let Some(zone) = zonegen.zone_for_target(target) {
             let zone_id = zone.zone_id.clone();
             // Wrong grant: publication must be refused with a typed error.
-            let err = zonegen
-                .observe(
-                    RuntimeGrant::ObserveStatus,
-                    target,
-                    &zone_id,
-                    "cam-e2e",
-                    TimestampNs(0),
-                    ContentDigest::sha256(&pixels),
-                    0.9,
-                )
-                .expect_err("ObserveStatus must not authorize event publication");
+            let Err(err) = zonegen.observe(
+                RuntimeGrant::ObserveStatus,
+                target,
+                &zone_id,
+                "cam-e2e",
+                TimestampNs(0),
+                ContentDigest::sha256(&pixels),
+                0.9,
+            ) else {
+                return Err("ObserveStatus must not authorize event publication".into());
+            };
             assert!(
                 matches!(
                     err,
@@ -292,35 +287,26 @@ fn pipeline_without_authority_generates_nothing() {
         }
     }
     assert_eq!(zonegen.generated_count(), 0);
-}
-
-/// Camera-A scene square top-left for a frame (mirrors `frame()` layout).
-fn breach_frame_digest() -> ContentDigest {
-    ContentDigest::sha256(&frame(Some((36.0, 28.0))))
+    Ok(())
 }
 
 #[test]
-fn two_camera_breach_associates_and_corroborates() {
+fn two_camera_breach_associates_and_corroborates() -> TestResult {
     // Camera A runs the full pipeline and publishes a corroborated-ready
     // event; camera B independently tracks the same physical square.
-    let mut detector_a = foreground();
-    let mut tracker_a = tracker();
-    let mut zonegen = event_generator();
+    let mut detector_a = foreground()?;
+    let mut tracker_a = tracker()?;
+    let mut zonegen = event_generator()?;
 
     // --- Camera A: baseline, approach, breach, confirmation. ---
-    step(&mut detector_a, &mut tracker_a, &mut zonegen, None, 0).unwrap();
-    step(&mut detector_a, &mut tracker_a, &mut zonegen, Some((4.0, 28.0)), 33_000_000)
-        .unwrap();
-    step(&mut detector_a, &mut tracker_a, &mut zonegen, Some((10.0, 28.0)), 66_000_000)
-        .unwrap();
-    step(&mut detector_a, &mut tracker_a, &mut zonegen, Some((34.0, 28.0)), 99_000_000)
-        .unwrap();
+    step(&mut detector_a, &mut tracker_a, &mut zonegen, None, 0)?;
+    step(&mut detector_a, &mut tracker_a, &mut zonegen, Some((4.0, 28.0)), 33_000_000)?;
+    step(&mut detector_a, &mut tracker_a, &mut zonegen, Some((10.0, 28.0)), 66_000_000)?;
+    step(&mut detector_a, &mut tracker_a, &mut zonegen, Some((34.0, 28.0)), 99_000_000)?;
     let mut events =
-        step(&mut detector_a, &mut tracker_a, &mut zonegen, Some((36.0, 28.0)), 132_000_000)
-            .unwrap();
+        step(&mut detector_a, &mut tracker_a, &mut zonegen, Some((36.0, 28.0)), 132_000_000)?;
     assert_eq!(events.len(), 1, "camera A must publish one zone-breach event");
-    let mut lineage = fss_core::event::EventLineage::new(events.remove(0))
-        .expect("genesis event starts a lineage");
+    let mut lineage = fss_core::event::EventLineage::new(events.remove(0))?;
 
     // Camera A's own continued observation witnesses the event, using the
     // confirmed track from a later frame with distinct bytes.
@@ -331,12 +317,12 @@ fn two_camera_breach_associates_and_corroborates() {
         Some((38.0, 28.0)),
         165_000_000,
     )
-    .expect("camera A witness frame runs");
+    .map_err(|err| format!("camera A witness frame runs: {err}"))?;
     let track_a = tracks_a
         .tracks
         .iter()
         .find(|t| t.status == fss_reference::ingest::tracker::TrackStatus::Confirmed)
-        .expect("camera A holds a confirmed track");
+        .ok_or("camera A holds a confirmed track")?;
     let witness_digest = ContentDigest::sha256(&frame(Some((38.0, 28.0))));
     zonegen
         .witness(
@@ -346,8 +332,7 @@ fn two_camera_breach_associates_and_corroborates() {
             "cam-e2e",
             TimestampNs(165_000_000),
             witness_digest,
-        )
-        .expect("camera-A witness advances to Witnessed");
+        )?;
     assert_eq!(lineage.current_state(), fss_core::event::EventState::Witnessed);
 
     // --- Camera B: same square, different viewpoint, own frames. ---
@@ -372,7 +357,7 @@ fn two_camera_breach_associates_and_corroborates() {
         max_position_distance: 2.0,
         min_confidence: 0.1,
     };
-    let pairs = associate(&config, &[pair_obs.0], &[pair_obs.1]).expect("association gates valid");
+    let pairs = associate(&config, &[pair_obs.0], &[pair_obs.1])?;
     assert_eq!(pairs.len(), 1, "the two cameras observe the same physical object");
 
     // Corroborate with camera B's independent frame bytes and domain.
@@ -388,8 +373,7 @@ fn two_camera_breach_associates_and_corroborates() {
             TimestampNs(171_000_000),
             cam_b_digest,
             0.95,
-        )
-        .expect("independent-domain corroboration completes the episode");
+        )?;
 
     assert_eq!(lineage.current_state(), fss_core::event::EventState::Corroborated);
     assert_eq!(lineage.len(), 3, "genesis -> witnessed -> corroborated");
@@ -401,6 +385,7 @@ fn two_camera_breach_associates_and_corroborates() {
         "corroborating frame bytes must differ from the originating camera's"
     );
     for revision in lineage.history() {
-        revision.verify().expect("every revision passes the event contract");
+        revision.verify()?;
     }
+    Ok(())
 }

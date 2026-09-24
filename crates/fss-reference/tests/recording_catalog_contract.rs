@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! Canonical recording catalogs: exact time basis, half-open range selection and budget refusals.
 
 mod collector_support;
 use collector_support::*;
@@ -11,7 +12,7 @@ use fss_reference::rtsp::recording_catalog::*;
 
 fn window(seq: u64, dts: u64) -> Result<PreparedRecording, Error> {
     let mut c = collector(CollectorLimits::default())?;
-    let a = sample(seq, 90_000 + seq as u32 * 3600, true, seq % 2 == 0)?;
+    let a = sample(seq, 90_000 + seq as u32 * 3600, true, seq.is_multiple_of(2))?;
     a.source(&mut c, 1)?; accepted(c.push_picture(a.timed(dts), 1))?;
     c.seal(2)?; c.take_ready().ok_or_else(|| "missing window".into())
 }
@@ -53,7 +54,7 @@ fn half_open_boundaries_do_not_double_select_neighbors() -> TestResult {
     let s = c.select(5000..11000, CatalogQueryLimits::default())?;
     assert_eq!(s.windows()[0].requested_interval(), 5000..7200);
     assert_eq!(s.windows()[1].requested_interval(), 10800..11000);
-    assert_eq!(s.unindexed(), &[7200..10800]);
+    assert_eq!(s.unindexed(), std::slice::from_ref(&(7200..10800)));
     Ok(())
 }
 #[test]
@@ -69,9 +70,9 @@ fn budget_failure_never_becomes_a_truncated_success() -> TestResult {
 fn empty_index_answer_is_unknown_not_absence() -> TestResult {
     let c = pair()?; let s = c.select(20_000..u64::MAX, CatalogQueryLimits::default())?;
     assert!(s.windows().is_empty()); assert_eq!(s.output_bytes(), 0);
-    assert_eq!(s.unindexed(), &[20_000..u64::MAX]);
+    assert_eq!(s.unindexed(), std::slice::from_ref(&(20_000..u64::MAX)));
     assert_eq!(c.select(5..5, CatalogQueryLimits::default()), Err(CatalogError::Interval));
-    assert_eq!(c.select(6..5, CatalogQueryLimits::default()), Err(CatalogError::Interval));
+    assert_eq!(c.select(std::ops::Range { start: 6, end: 5 }, CatalogQueryLimits::default()), Err(CatalogError::Interval));
     Ok(())
 }
 #[test]

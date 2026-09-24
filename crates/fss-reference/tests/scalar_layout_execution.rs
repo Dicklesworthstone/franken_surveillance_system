@@ -28,7 +28,7 @@ fn run(op: OpCode, shapes: &[&[usize]], values: &[&[f32]], output: &[usize], att
     assert_eq!(shapes.len(), values.len());
     let graph = graph(op, shapes, output, attributes)?;
     let inputs = shapes.iter().zip(values).enumerate().map(|(i, (shape, values))| {
-        Ok((format!("x{i}"), Tensor::from_values(Shape::new(*shape)?, *values, GEN)?))
+        Ok((format!("x{i}"), Tensor::from_values(Shape::new(*shape)?, values, GEN)?))
     }).collect::<TestResult<Vec<_>>>()?;
     Ok(ScalarExecutor::run(&graph, &inputs, budget, &ScalarExecCx::new())?)
 }

@@ -77,11 +77,10 @@ pub fn seed(name: &str, pictures: usize, bad_last: bool, fragment_only: bool) ->
         source::send(&mut parser, &source::interleaved(0, packet), 4096, *now, &mut events)?;
         let mut seen = 0;
         for event in events {
-            if let DigestAvcPoll::Client { event, .. } = event {
-                if let AvcClientPoll::Rtp { source, .. } = *event {
-                    let plan = archive.prepare(&source, &mut work())?;
-                    let _ = archive.publish(&plan, &mut p, &NeverCancel, &mut work())?; seen += 1;
-                }
+            if let DigestAvcPoll::Client { event, .. } = event
+                && let AvcClientPoll::Rtp { source, .. } = *event {
+                let plan = archive.prepare(&source, &mut work())?;
+                let _ = archive.publish(&plan, &mut p, &NeverCancel, &mut work())?; seen += 1;
             }
         }
         assert_eq!(seen, 1);

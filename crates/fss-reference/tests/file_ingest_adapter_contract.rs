@@ -661,24 +661,27 @@ fn test_14_capacity_rejection_leaves_state_clean() -> Result<(), Box<dyn Error>>
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_m01_kill_sniffer_annexb_detection() {
+fn test_m01_kill_sniffer_annexb_detection() -> Result<(), Box<dyn std::error::Error>> {
     let bytes = [0x00, 0x00, 0x01, 0x67, 0x42, 0x00];
-    let (detected, _) = sniff_format(&bytes).expect("must detect AnnexB");
+    let (detected, _) = sniff_format(&bytes).map_err(|e| format!("must detect AnnexB: {e:?}"))?;
     assert_eq!(detected, DetectedFileFormat::AnnexB);
+    Ok(())
 }
 
 #[test]
-fn test_m02_kill_sniffer_jpeg_detection() {
+fn test_m02_kill_sniffer_jpeg_detection() -> Result<(), Box<dyn std::error::Error>> {
     let bytes = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
-    let (detected, _) = sniff_format(&bytes).expect("must detect JpegStream");
+    let (detected, _) = sniff_format(&bytes).map_err(|e| format!("must detect JpegStream: {e:?}"))?;
     assert_eq!(detected, DetectedFileFormat::JpegStream);
+    Ok(())
 }
 
 #[test]
-fn test_m03_kill_sniffer_rtpplay_detection() {
+fn test_m03_kill_sniffer_rtpplay_detection() -> Result<(), Box<dyn std::error::Error>> {
     let bytes = b"#!rtpplay1.0 127.0.0.1/5004\n";
-    let (detected, _) = sniff_format(bytes).expect("must detect RtpPlay");
+    let (detected, _) = sniff_format(bytes).map_err(|e| format!("must detect RtpPlay: {e:?}"))?;
     assert_eq!(detected, DetectedFileFormat::RtpPlay);
+    Ok(())
 }
 
 #[test]

@@ -254,7 +254,7 @@ fn release_result_revocation_does_not_transfer_either_owner() -> Test {
 fn retirement_while_projection_is_pending_retains_tensors_mask_and_mapped_jpeg() -> Test {
     let model = model(1)?; let head = head(&model)?; let mut owner = tracker(&head, tracking_policy())?;
     let image = jpeg(240);
-    let (mut c, a, mut s) = session(&model, &head, &mut owner, response(&[image.clone()], true), 4096)?;
+    let (mut c, a, mut s) = session(&model, &head, &mut owner, response(std::slice::from_ref(&image), true), 4096)?;
     next_frame(&mut c, &a, &mut s, &mut Vec::new())?;
     let ctx = context(&c, &[1; 512], 1, TrackingAvailability::Available)?;
     assert_eq!(analyze(&mut c, ctx, &a, &mut DecodeBudget::new(WORK), &mut zero_post(), &mut WorkBudget::new(WORK),
