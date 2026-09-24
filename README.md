@@ -547,6 +547,10 @@ Implemented (reference, unqualified):
   (`fss-file decode`);
 - a model-free single-camera pipeline, decode -> foreground -> Kalman tracking -> zone candidates
   -> approval-gated publication (`fss-event watch`);
+- two-sensor corroboration of recorded ground-zone entries through owner-supplied (uncalibrated)
+  homographies and gated global association (`fss-event corroborate`), and one approval-gated
+  plaintext webhook alert per corroborated event with a durable prepare/commit/observe record
+  (`fss-event alert`; wiring proven on synthetic scenes, not detection quality);
 - a deterministic event-level evaluation harness (AUPRC, recall at a false-alert budget,
   not_observable accounting) with no real labelled corpus yet;
 - a scalar model executor over the frozen FSS IR with Safetensors weights (`fss-infer`);

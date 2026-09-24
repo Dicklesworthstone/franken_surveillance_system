@@ -35,6 +35,19 @@ operation states rather than generic errors.
 | `ERR-WATCH-LIMIT-001` | watch candidate, detection or active-track bound reached; nothing is silently dropped | narrow the range or zones, or raise thresholds |
 | `ERR-WATCH-APPROVAL-STALE-001` | an approval digest matches no candidate proposal of this exact analysis; nothing was published | rerun without approval and review the current proposal digests |
 | `ERR-WATCH-001` | model-free watch refused by the foreground, tracker, zone gate, event contract or storage owner | inspect the cause; retry only after repair |
+| `ERR-CORROBORATE-PLAN-INVALID-001` | two-sensor corroboration plan is outside its bounds (camera names, 1..16 ground zones, time gate 1..60 s, finite positive distance gate, recordings of 1..128 frames) | correct the plan; do not retry unchanged |
+| `ERR-CORROBORATE-HOMOGRAPHY-INVALID-001` | an owner-supplied image-to-ground homography is non-finite, singular, or maps an observed foot point to or beyond the ground horizon; it is an owner assertion, never a calibration certificate | supply a valid homography for that camera; do not retry unchanged |
+| `ERR-CORROBORATE-SAME-SENSOR-001` | both recordings come from one sensor (or are one import); one failure domain can never corroborate itself | name recordings from two distinct sensors |
+| `ERR-CORROBORATE-TIME-UNKNOWN-001` | a recording has no operator capture-time hint, so its capture time is unknown and cannot be aligned by assumption | re-import with explicit capture hints or abstain |
+| `ERR-CORROBORATE-TIME-UNALIGNED-001` | the two recordings' conservative capture spans do not overlap: clocks are unaligned or the recordings cover different periods | supply recordings of one period on an aligned time base or abstain |
+| `ERR-CORROBORATE-APPROVAL-STALE-001` | an approval digest matches no corroborated proposal of this exact analysis; nothing was published | rerun without approval and review the current proposal digests |
+| `ERR-CORROBORATE-001` | two-sensor corroboration refused by association, the event/policy contract or the storage owner | inspect the cause; retry only after repair |
+| `ERR-ALERT-ROUTE-INVALID-001` | alert relay route is not admissible (exact IP:PORT, plain absolute path, nonzero plaintext-route approval) | supply an admissible explicit route; no DNS, redirect or TLS downgrade is attempted |
+| `ERR-ALERT-AUTHORITY-001` | the event is absent, or its current authority, prepared plan or receipt cannot be read and verified against the ledger | inspect or repair the deployment; never dispatch from unverified authority |
+| `ERR-ALERT-NOT-ELIGIBLE-001` | policy, corroboration or sensor-integrity gates refuse an alert for this event (not corroborated, held, or open tamper) | do not retry; obtain independent corroboration or resolve the integrity risk |
+| `ERR-ALERT-APPROVAL-STALE-001` | an alert plan or dispatch approval digest does not match the current plan, route, principal, prepared record or deadline; nothing was prepared or sent | rerun without the stale approval and review the reported digests |
+| `ERR-ALERT-CLOCK-001` | the admission clock is unavailable or behind the effect journal's last transition | repair the host clock; nothing was committed |
+| `ERR-ALERT-DISPATCH-001` | the durable effect journal or live webhook authority refused before any network I/O, or the observation could not be recorded | inspect the journal; a committed operation is never resent automatically |
 | `ERR-CANONICAL-TRUNCATED-001` | canonical bytes declare more collection elements than the bytes that remain (truncated buffer) | re-fetch the complete canonical bytes; do not retry unchanged |
 | `ERR-MODEL-UNAVAILABLE-001` | model generation not runnable | route to registered fallback or degrade |
 | `ERR-MODEL-OUTPUT-001` | malformed/out-of-bounds model output | reject output; terminate/quarantine generation |

@@ -99,9 +99,10 @@ pub use agent_session::{
 pub use alert::{
     AlertDispatchTimes, PrepareAlertParams, ProviderDispatch, ProviderFailureReceipt, ProviderObservationReceipt,
     REFERENCE_ALERT_TERMINAL_PREDICATE, ReferenceAlertPlan, ReferenceAlertProvider,
-    ReferenceProviderBehavior, alert_cancel_proof, dispatch_reference_alert,
-    observe_reference_alert, prepare_reference_alert, reconcile_failed_reference_alert,
-    reconcile_reference_alert, verify_reference_alert,
+    ReferenceProviderBehavior, alert_cancel_proof, committed_reference_policy_action,
+    dispatch_reference_alert, observe_reference_alert, prepare_reference_alert,
+    reconcile_failed_reference_alert, reconcile_reference_alert, rehydrate_reference_alert_plan,
+    verify_reference_alert,
 };
 pub use bundle::{ReplayBundle, ReplayBundleError, ReplayCursor};
 pub use calibration::{
@@ -205,7 +206,8 @@ pub use packet_fault::{
 };
 pub use policy::{
     ReferenceEventReceipt, ReferenceModelObservation, ReferencePolicyAction,
-    ReferencePolicyDecision, evaluate_unknown_presence, publish_reference_event,
+    ReferencePolicyDecision, ZoneEntryCorroboration, ZoneEntryWitness, evaluate_unknown_presence,
+    evaluate_zone_entry_corroboration, publish_reference_event,
 };
 pub use reference_deployment::{
     DEPLOYMENT_CANCEL_STAGES, DEPLOYMENT_LAYOUT_FILENAME, DEPLOYMENT_LAYOUT_FORMAT_VERSION,

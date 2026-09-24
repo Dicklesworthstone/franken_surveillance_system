@@ -454,6 +454,12 @@ All stable error identities and normative recovery guidance cataloged from `regi
 | `ERR-AGT-MISSING-FIELD-001` | agent abstraction layer row or root metadata lacks a mandatory field or is empty/corrupt | declare all mandatory fields in agent abstraction layer row |
 | `ERR-AGT-REGISTRY-DRIFT-001` | agent abstraction registry row drift between machine registry and markdown mirror | synchronize architecture/agent_abstraction_stack.json and registries/AGENT_ABSTRACTIONS.md |
 | `ERR-AGT-STABLE-ID-REUSED-001` | agent abstraction layer stable identifier was reused, duplicated, renumbered, or tombstoned | allocate a new unique stable identifier; never reuse stable IDs |
+| `ERR-ALERT-APPROVAL-STALE-001` | an alert plan or dispatch approval digest does not match the current plan, route, principal, prepared record or deadline; nothing was prepared or sent | rerun without the stale approval and review the reported digests |
+| `ERR-ALERT-AUTHORITY-001` | the event is absent, or its current authority, prepared plan or receipt cannot be read and verified against the ledger | inspect or repair the deployment; never dispatch from unverified authority |
+| `ERR-ALERT-CLOCK-001` | the admission clock is unavailable or behind the effect journal's last transition | repair the host clock; nothing was committed |
+| `ERR-ALERT-DISPATCH-001` | the durable effect journal or live webhook authority refused before any network I/O, or the observation could not be recorded | inspect the journal; a committed operation is never resent automatically |
+| `ERR-ALERT-NOT-ELIGIBLE-001` | policy, corroboration or sensor-integrity gates refuse an alert for this event (not corroborated, held, or open tamper) | do not retry; obtain independent corroboration or resolve the integrity risk |
+| `ERR-ALERT-ROUTE-INVALID-001` | alert relay route is not admissible (exact IP:PORT, plain absolute path, nonzero plaintext-route approval) | supply an admissible explicit route; no DNS, redirect or TLS downgrade is attempted |
 | `ERR-ARCHIVE-UNREACHABLE-001` | remote archive unavailable | local spool obligation; bounded retry |
 | `ERR-ARCHIVE-VERIFY-001` | published object failed retrieval/integrity check | quarantine/repair/escalate |
 | `ERR-ARITHMETIC-OVERFLOW-001` | arithmetic overflow in timestamp or uncertainty calculation | bound timestamp values within addressable range |
@@ -532,6 +538,13 @@ All stable error identities and normative recovery guidance cataloged from `regi
 | `ERR-CLOCK-STATE-UNKNOWN-001` | clock synchronization state unknown when synchronised evidence required | obtain synchronisation certificate or abstain |
 | `ERR-CLOCK-UNCERTAIN-001` | capture interval too wide for requested operation | degrade/abstain/recalibrate |
 | `ERR-CLOCK-UNSYNCHRONISED-001` | clock unsynchronised or drift bound exceeds tolerance | synchronise clock or bound monotonic drift |
+| `ERR-CORROBORATE-001` | two-sensor corroboration refused by association, the event/policy contract or the storage owner | inspect the cause; retry only after repair |
+| `ERR-CORROBORATE-APPROVAL-STALE-001` | an approval digest matches no corroborated proposal of this exact analysis; nothing was published | rerun without approval and review the current proposal digests |
+| `ERR-CORROBORATE-HOMOGRAPHY-INVALID-001` | an owner-supplied image-to-ground homography is non-finite, singular, or maps an observed foot point to or beyond the ground horizon; it is an owner assertion, never a calibration certificate | supply a valid homography for that camera; do not retry unchanged |
+| `ERR-CORROBORATE-PLAN-INVALID-001` | two-sensor corroboration plan is outside its bounds (camera names, 1..16 ground zones, time gate 1..60 s, finite positive distance gate, recordings of 1..128 frames) | correct the plan; do not retry unchanged |
+| `ERR-CORROBORATE-SAME-SENSOR-001` | both recordings come from one sensor (or are one import); one failure domain can never corroborate itself | name recordings from two distinct sensors |
+| `ERR-CORROBORATE-TIME-UNALIGNED-001` | the two recordings' conservative capture spans do not overlap: clocks are unaligned or the recordings cover different periods | supply recordings of one period on an aligned time base or abstain |
+| `ERR-CORROBORATE-TIME-UNKNOWN-001` | a recording has no operator capture-time hint, so its capture time is unknown and cannot be aligned by assumption | re-import with explicit capture hints or abstain |
 | `ERR-COVERAGE-UNKNOWN-001` | effective observability cannot be established | abstain/escalate health alert |
 | `ERR-DECODE-001` | media decode failed | preserve source; alternate decoder only if registered |
 | `ERR-DECODE-BOUNDS-001` | media exceeds declared bounds | fail closed |

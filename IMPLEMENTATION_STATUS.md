@@ -28,7 +28,12 @@ synthetic scenes). None of it has been measured on real camera footage.
   are not implemented, so H.265 cameras still cannot be analysed.
 - **Pipeline and evaluation:** `fss-event watch` runs decode -> foreground -> Kalman -> zone
   eventgen over a retained import and publishes approval-gated, unclassified, single-sensor
-  candidates. `evaluation` scores candidates against labels (AUPRC, recall at a false-alert
+  candidates. `fss-event corroborate` associates two sensors' ground-zone entries (owner
+  homographies, not calibration; operator capture hints; worst-case interval time gate) into
+  approval-gated corroborated events, and `fss-event alert` prepares, then commits and sends one
+  plaintext webhook per corroborated event under separate exact approvals (2xx = relay acceptance
+  only; lost ack = indeterminate; no resend). Proven on synthetic scenes and a loopback relay
+  only, not on real cameras or detection quality. `evaluation` scores candidates against labels (AUPRC, recall at a false-alert
   budget, time to detect, not_observable). No real labelled corpus exists yet.
 - **Models:** scalar executor over the FSS IR (Conv2d, MatMul, pooling, norms, activations) with
   Safetensors weights (`scalar_executor`, `fss-infer`). No trained detector package ships; the only

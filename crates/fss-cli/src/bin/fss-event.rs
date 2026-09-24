@@ -22,8 +22,12 @@ use fss_reference::ingest::recorded_event::{RecordedEvent, RecordedEventProposal
 
 #[path = "fss-event/watch.rs"]
 mod watch;
+#[path = "fss-event/corroborate.rs"]
+mod corroborate;
+#[path = "fss-event/alert.rs"]
+mod alert;
 
-const HELP: &str = "fss-event <report|prepare|publish|read|watch> [options]\n\
+const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|alert> [options]\n\
   All: --root DIR --site SITE [--principal ID]\n\
   report: --import-id sha256:HEX --runs FILE --interpretation gray|ycbcr\n\
           --model-digest sha256:HEX --output-port NAME --labels ORDERED,CLASS,NAMES\n\
@@ -56,7 +60,31 @@ const HELP: &str = "fss-event <report|prepare|publish|read|watch> [options]\n\
     command that publishes it. --approve publishes only those exact proposals as\n\
     unclassified, indeterminate, single-sensor candidates (never corroborated, no alert);\n\
     reruns never republish. Thresholds are uncalibrated; synthetic scenes prove wiring,\n\
-    not detection quality, and no candidate never means absence.\n";
+    not detection quality, and no candidate never means absence.\n\
+  corroborate (two recordings, two sensors): --camera NAME:sha256:IMPORT (exactly twice)\n\
+          --ground NAME:h11,h12,h13,h21,h22,h23,h31,h32,h33 (one per camera; image pixels ->\n\
+          ground units; an owner assertion like a zone, NOT a calibration certificate)\n\
+          --zone ID:X,Y,W,H [--zone ...] (1..16, ground units) --interpretation gray|ycbcr\n\
+          --time-gate-ns N (1..60000000000) --distance-gate D (ground units)\n\
+          [watch thresholds and budgets] [--approve sha256:PROPOSAL[,...]] [--report-out FILE]\n\
+    Each recording is tracked over the whole frame; each confirmed track's foot point is\n\
+    projected to the ground; ground-zone entries of the two sensors are associated by global\n\
+    assignment. A pair is corroborated only if the distance gate holds and the WORST CASE over\n\
+    both capture intervals is within the time gate. Both imports need operator capture hints\n\
+    (fss-file import --capture-start-ns ...) with overlapping spans: unknown or unaligned\n\
+    time and one sensor twice are typed refusals. --approve publishes exact proposals as\n\
+    corroborated, unclassified events; policy may report prepare_alert, but nothing is\n\
+    prepared or sent. Proves wiring, not detection quality; no event never means absence.\n\
+  alert (one webhook for a corroborated event): --event-id ID --relay IP:PORT --path /PATH\n\
+          --plaintext-approval sha256:HEX --deadline-ms N (1..60000)\n\
+          [--approve sha256:PLAN [--dispatch sha256:DISPATCH]] [--report-out FILE]\n\
+    Without --approve: reports the plan digest (nothing written). --approve PLAN: durably\n\
+    prepares the intent (operation, idempotency key, obligation) and reports the dispatch\n\
+    digest. --approve PLAN --dispatch DISPATCH: commits durably, then sends exactly one\n\
+    plaintext HTTP POST to the explicitly approved relay (no DNS, redirects or retries)\n\
+    within the deadline and records the observation. A 2xx proves relay acceptance only\n\
+    (adapter_accepted), never human delivery; a lost ack, timeout or refusal stays\n\
+    indeterminate (exit 1, ERR-EFFECT-INDETERMINATE-001). Reruns never resend.\n";
 type RunResult<T> = Result<T, Box<dyn Error>>;
 type Values = BTreeMap<String, OsString>;
 #[derive(Debug)]
@@ -67,6 +95,8 @@ enum Action {
     Publish { report: PathBuf, digest: ContentDigest, track: ContentDigest, approved: ContentDigest },
     Read(EventId),
     Watch(Box<watch::WatchAction>),
+    Corroborate(Box<corroborate::CorroborateAction>),
+    Alert(Box<alert::AlertAction>),
 }
 #[derive(Debug)]
 struct Options {
@@ -108,7 +138,21 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
             detection_units: 0, association_units: 0, event_out: None, report_out: None,
             action: Action::Watch(Box::new(watch)) }));
     }
-    if !matches!(action, "report" | "prepare" | "publish" | "read") { return Err("expected report, prepare, publish, read or watch".into()); }
+    if action == "corroborate" {
+        let request = corroborate::parse(&args[1..])?;
+        return Ok(Some(Options { root: request.root.clone(), site: request.site.clone(),
+            principal: request.principal.clone(), limits: AnalysisLimits::default(),
+            detection_units: 0, association_units: 0, event_out: None, report_out: None,
+            action: Action::Corroborate(Box::new(request)) }));
+    }
+    if action == "alert" {
+        let request = alert::parse(&args[1..])?;
+        return Ok(Some(Options { root: request.root.clone(), site: request.site.clone(),
+            principal: request.principal.clone(), limits: AnalysisLimits::default(),
+            detection_units: 0, association_units: 0, event_out: None, report_out: None,
+            action: Action::Alert(Box::new(request)) }));
+    }
+    if !matches!(action, "report" | "prepare" | "publish" | "read") { return Err("expected report, prepare, publish, read, watch, corroborate or alert".into()); }
     let common = ["--root", "--site", "--principal", "--detection-work-units", "--association-work-units", "--max-report-bytes", "--event-out"];
     let report_options = ["--import-id", "--runs", "--interpretation", "--model-digest", "--output-port", "--labels",
         "--box-format", "--coordinates", "--minimum-score-ppm", "--nms-iou-ppm", "--minimum-iou-ppm",
@@ -237,10 +281,16 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
         || !fs::symlink_metadata(options.root.join("LAYOUT"))?.file_type().is_file()
     { return Err(io::Error::other("existing non-symlink deployment required").into()); }
     // The authenticated local process and filesystem are the boundary. The principal is an
-    // audit label, not remote authentication; no model, device-control or notification grant.
+    // audit label, not remote authentication; no model or device-control grant. Only `alert`
+    // receives alert capabilities: prepare always, commit only with an explicit --dispatch.
+    let mut capabilities = vec!["ADP-REPLAY-001".to_owned()];
+    if let Action::Alert(request) = &options.action {
+        capabilities.push(alert::CAP_ALERT_PREPARE.to_owned());
+        if request.dispatch.is_some() { capabilities.push(alert::CAP_ALERT_COMMIT.to_owned()); }
+    }
     let authority = ContextAuthority::new_root(RootAuthoritySpec {
         trace_id: "trace:event-cli".into(), operation_id: OperationId::parse("operation:event-cli")?,
-        principal: options.principal, capabilities: vec!["ADP-REPLAY-001".into()], deadline: None, priority: 10,
+        principal: options.principal, capabilities, deadline: None, priority: 10,
         budgets: BudgetVector::builder().bytes(options.limits.maximum_report_bytes as u64).build()?,
         privacy_scope: "privacy:local-authorized-files".into(), retention_scope: "retention:existing-deployment-policy".into(),
         anchor_universe: ContentDigest::sha256(options.site.as_bytes()), generation: 1,
@@ -253,6 +303,14 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
         let (event, receipt, operation) = match &options.action {
             Action::Watch(action) => {
                 watch::run(action, &mut deployment, &options.root, &cx, out)?;
+                return Ok(());
+            }
+            Action::Corroborate(action) => {
+                corroborate::run(action, &mut deployment, &options.root, &cx, out)?;
+                return Ok(());
+            }
+            Action::Alert(action) => {
+                alert::run(action, &mut deployment, &options.root, &authority, &cx, out)?;
                 return Ok(());
             }
             Action::Report { import, interpretation, detector, tracking, runs, output } => {
@@ -317,6 +375,10 @@ fn main() -> ExitCode {
             Err(e) => {
                 eprintln!("{ERR_CLI_RUNTIME_FAILURE}: {e}");
                 if let Some(refusal) = e.downcast_ref::<fss_reference::ingest::recorded_watch::WatchError>() {
+                    eprintln!("refusal_id={}", refusal.stable_id());
+                } else if let Some(refusal) = e.downcast_ref::<fss_reference::ingest::recorded_corroboration::CorroborationError>() {
+                    eprintln!("refusal_id={}", refusal.stable_id());
+                } else if let Some(refusal) = e.downcast_ref::<alert::AlertCliError>() {
                     eprintln!("refusal_id={}", refusal.stable_id());
                 }
                 eprintln!("Durable provenance/events are not rolled back by later failures; incomplete exports may remain.");

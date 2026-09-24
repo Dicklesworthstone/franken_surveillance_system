@@ -170,3 +170,106 @@ writing; a different event under the same candidate identity is `ERR-IDEMPOTENCY
 Thresholds, zones and Kalman noise are uncalibrated operator/policy choices. The committed tests
 use synthetic MJPEG scenes and an FFmpeg `testsrc2` H.264 fixture: they prove the wiring and the
 authority path, not detection quality, and a run with no candidate never certifies absence.
+
+## Two-sensor corroboration: `fss-event corroborate`
+
+`fss-event corroborate` (library: `fss_reference::ingest::recorded_corroboration`) is the first
+path that can produce a `Corroborated` event from real retained bytes. It takes two completed
+imports from two different sensors that cover the same period:
+
+```sh
+fss-file import ... --sensor sensor:east --receive-time-ns N \
+  --capture-start-ns S --capture-uncertainty-ns U --assumed-fps F   # and likewise for west
+fss-event corroborate --root DIR --site SITE \
+  --camera east:sha256:IMPORT_A --camera west:sha256:IMPORT_B \
+  --ground east:1,0,0,0,1,0,0,0,1 --ground west:-1,0,96,0,1,0,0,0,1 \
+  --zone door:56,0,40,48 --interpretation gray --time-gate-ns 250000000 --distance-gate 16 \
+  [watch thresholds and budgets] [--approve sha256:P[,sha256:Q]] [--report-out FILE]
+```
+
+Each recording (1..128 frames) runs the watch pipeline over the whole decoded frame. The foot
+point (bottom centre of each confirmed track's filtered box) is projected through the camera's
+`--ground` homography (row-major `h11..h33`, image pixels to owner ground units). The homography
+is an owner assertion like a zone and **not** a calibration certificate: non-finite or singular
+matrices, and foot points that map to or beyond the horizon, are refused
+(`ERR-CORROBORATE-HOMOGRAPHY-INVALID-001`), but nothing about lens, pose or residuals is
+verified. The first confirmed observation whose ground point lies in a ground zone is that
+track's entry. Entries of the two sensors into the same zone are associated by the existing
+global assignment (`ingest::cross_camera::associate_detailed`, zero ambiguity margin, minimum
+score 0) with the time gate applied to interval midpoints and the distance gate to ground points.
+
+Corroboration rule:
+
+- Failure domains: one recording sensor is one failure domain (`recorded-sensor:<sha256 of the
+  sensor id>`). The two sensor ids must differ (`ERR-CORROBORATE-SAME-SENSOR-001`; the same
+  import twice is refused the same way). The zone-entry policy
+  (`evaluate_zone_entry_corroboration`) marks an event `Corroborated` only when its supporting
+  edges come from two distinct sensors, two distinct capture roots and two distinct failure
+  domains; `fss_core` independently refuses a corroborated revision without two domains.
+- Time: both imports must carry operator capture hints (`capture_time_label ==
+  operator_assumption`), else `ERR-CORROBORATE-TIME-UNKNOWN-001`; their conservative capture
+  spans must overlap, else `ERR-CORROBORATE-TIME-UNALIGNED-001`. Nothing aligns clocks by
+  assumption, and the hints remain operator claims (no synchronisation certificate). A stably
+  matched pair is corroborated only when the **worst case** separation over both entry frames'
+  capture intervals is within `--time-gate-ns`; otherwise both entries are reported
+  `time_gate_uncertain`.
+- Geometry: the ground distance between the two entry points must be within `--distance-gate`.
+
+The analysis is read-only and deterministic and prints `fss.recorded_corroboration_report.v1`:
+per camera (import, root, sensor id, failure domain, frames, confirmed tracks, capture span,
+watch plan/analysis digests, homography digest), every ground entry with its disposition
+(`corroborated`, `no_counterpart_entry`, `no_admissible_counterpart`, `ambiguous`,
+`time_gate_uncertain`), and per corroborated candidate the worst-case separation, ground
+distance, event id, state, revision digest, `policy_action`, proposal digest, provenance root,
+status and exact publish command. `--approve` checks every digest against the fresh analysis
+before any write (`ERR-CORROBORATE-APPROVAL-STALE-001`), retains the provenance graph (policy,
+association record, both entry records, both sensor labels, both import roots and entry
+capsules) root-last and publishes the policy decision through the deployment's guarded event
+publisher. The event is `Corroborated` and `Unclassified` with probability [0, 1]: independently
+observed, not classified, identified or calibrated. The policy reports `prepare_alert` as an
+affordance; **nothing is prepared or sent** by this command (`alert_prepared: false`).
+
+## One alert per corroborated event: `fss-event alert`
+
+```sh
+fss-event alert --root DIR --site SITE --event-id ID --relay 127.0.0.1:8080 --path /hook \
+  --plaintext-approval sha256:HEX --deadline-ms 5000                      # 1. proposes
+  ... --approve sha256:PLAN                                               # 2. prepares
+  ... --approve sha256:PLAN --dispatch sha256:DISPATCH                    # 3. commits + sends
+```
+
+1. Without `--approve`, the plan is computed against current authority in a scratch journal with
+   the existing `prepare_reference_alert` gates (corroborated state, committed `PrepareAlert`
+   decision path, current receipt, no open sensor tamper in the lineage); nothing durable is
+   written. The report carries the plan digest (intent, obligation, channel, event root and
+   revision, route digest, principal) and the exact next command.
+2. `--approve PLAN` durably prepares the intent through `DurableEffectJournal::prepare_alert`:
+   operation, idempotency key and terminal-proof obligation are journaled. The operation,
+   idempotency and obligation identities are derived from the event revision and the route, so
+   the same request cannot be prepared twice. The report carries the dispatch digest (plan
+   digest, the durable prepared record, the deadline and the principal).
+3. `--approve PLAN --dispatch DISPATCH` rehydrates the prepared plan from the journal and ledger
+   (`rehydrate_reference_alert_plan`, which trusts nothing supplied), then `WebhookAttempt::begin`
+   revalidates all event authority and commits durably before any network I/O. One plaintext
+   HTTP/1.1 POST goes to the exact relay (no DNS, redirects, credentials or retries) and the
+   observation is recorded. The CLI-owned `WebhookAuthority` admits only the approved route,
+   journal file, intent and recorded effect authority; commit only while the operation is still
+   prepared; network boundaries only while it is committed and before the deadline measured on a
+   monotonic clock from `--deadline-ms`; and recording only for that committed operation; the
+   owning Cx cancellation denies. The command only receives `CAP-ALERT-COMMIT-001` when
+   `--dispatch` is given.
+
+A complete 2xx head is recorded as `adapter_accepted` with `delivery_claim:
+relay_acceptance_only`: it proves relay acceptance, never human delivery, and the obligation stays
+pending. A lost acknowledgement, timeout, refusal, malformed or non-2xx response is recorded as
+`indeterminate` and exits 1 with `ERR-EFFECT-INDETERMINATE-001`. Any rerun after commit reports
+the journaled state (`already_dispatched`) and never resends. Wrong or stale approvals, a
+changed route, principal or deadline are `ERR-ALERT-APPROVAL-STALE-001`; an event that is not
+corroborated or holds an open tamper is `ERR-ALERT-NOT-ELIGIBLE-001`; unreadable or tampered
+authority fails before any commit or send. Journal times come from the host clock at the CLI
+boundary; the deadline is measured independently.
+
+The committed tests (`crates/fss-cli/tests/corroborate_cli_contract.rs`) run the real binaries
+on generated MJPEG scenes (two mirrored views of one moving square) and a loopback relay owned
+by the test. They prove the wiring, the gates and the effect authority path, not detection
+quality or real-camera geometry; no corroborated event never certifies absence.

@@ -435,9 +435,12 @@ fn test_schema_domain_and_pinned_counts() -> Result<(), Box<dyn Error>> {
     // SCHEMA-DOMAIN-MEDIA-FIXTURE-MANIFEST-001 (fss-2h5zq.3) and
     // SCHEMA-DOMAIN-MODEL-EXECUTION-RECEIPT-001 (model_receipt.rs); pin repair by fss-pod9x.
     // 78 = 77 + SCHEMA-DOMAIN-EVALUATION-REPORT-001 (fss-zta8j).
+    // 86 = 78 + SCHEMA-DOMAIN-RECORDED-CORROBORATION-{PLAN,OBSERVATION,ASSOCIATION,PROPOSAL}-001,
+    // SCHEMA-DOMAIN-REFERENCE-ZONE-ENTRY-POLICY-001 and
+    // SCHEMA-DOMAIN-CLI-ALERT-{OPERATION,PLAN-APPROVAL,DISPATCH-APPROVAL}-001 (fss-2h5zq.61).
     assert_eq!(
-        domain_count, 78,
-        "registries/DIGEST_DOMAINS.md count must remain pinned at 78"
+        domain_count, 86,
+        "registries/DIGEST_DOMAINS.md count must remain pinned at 86"
     );
 
     let schemas_path = Path::new(env!("CARGO_MANIFEST_DIR"))
