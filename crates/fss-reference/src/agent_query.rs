@@ -245,12 +245,19 @@ impl From<&RetainedEvent> for QueryEvent {
             event_root: value.event_root,
             revision_digest: value.revision_digest,
             committed_sequence: value.committed_sequence,
-            tamper_digest: value
-                .tamper
-                .canonical_digest("fss.agent_query.sensor_integrity.v1"),
+            tamper_digest: sensor_integrity_digest(&value.tamper),
             open_tamper_reports: value.tamper.open_tamper_reports.len(),
         }
     }
+}
+
+/// Domain-separated canonical digest of a sensor tamper status for query results
+/// (`fss.agent_query.sensor_integrity.v1` prefix, then the status canonical encoding).
+fn sensor_integrity_digest(status: &fss_core::SensorTamperStatus) -> ContentDigest {
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text("fss.agent_query.sensor_integrity.v1");
+    status.encode_canonical(&mut encoder);
+    ContentDigest::sha256(&encoder.finish())
 }
 
 /// One exact page and its native query plan, bounded-read receipt, and proof witnesses.
