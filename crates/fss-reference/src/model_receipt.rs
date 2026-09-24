@@ -297,6 +297,30 @@ impl BackendDescriptor {
         }
     }
 
+    /// Descriptor of a selected kernel backend, naming its exact kernel generation so receipts
+    /// never mix scalar-reference and optimized evidence. Both are fixed-order, FMA-free F32;
+    /// the optimized generation is certified bit-identical to the scalar reference.
+    #[must_use]
+    pub fn for_kernel_backend(backend: crate::KernelBackend) -> Self {
+        match backend {
+            crate::KernelBackend::ScalarReference => Self::scalar_reference(&[]),
+            crate::KernelBackend::OptimizedCpuV1 => Self {
+                id: "optimized-cpu".to_string(),
+                implementation: format!(
+                    "fss-reference optimized_executor@1 generation={}",
+                    backend.generation()
+                ),
+                hardware: "host-independent-ieee754".to_string(),
+                feature_set: vec![
+                    "f32".to_string(),
+                    "fixed-order".to_string(),
+                    "no-fma".to_string(),
+                    "bit-identical-to:scalar-reference".to_string(),
+                ],
+            },
+        }
+    }
+
     /// Canonical binary encoding for deterministic digest inclusion.
     pub fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
         encoder.text(&self.id);

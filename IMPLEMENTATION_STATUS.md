@@ -57,7 +57,13 @@ synthetic scenes). None of it has been measured on real camera footage.
   package path (`ingest::rgb_package`), and run over retained MJPEG/H.264/H.265 imports by
   `fss-infer package-detect` (H.264/H.265 as grayscale: retained decode is luma-only). The scalar
   executor matches the onnxruntime lab oracle within 3e-5 (tolerance 1e-3) with identical detections
-  on three pinned inputs; it takes ~3 s per 416x416 frame in release. No quality, recall or
+  on three pinned inputs. `RgbDetectorPackage::load` now defaults to the optimized CPU executor
+  (`optimized_executor`, fss-bd99t), certified bit-identical to the scalar reference by in-tree
+  differential tests and the conformance test; measured median 193 ms vs 3085 ms scalar per
+  416x416 frame on one shared worker (docs/PERF_LEDGER.md PERF-001). The scalar reference stays
+  selectable (`load_with_backend`, `fss-infer package-detect --kernels scalar-reference`), and the
+  selected kernel generation is bound into the model digest. Single-threaded, x86-64 SSE2
+  baseline only; not measured on arm64. No quality, recall or
   calibration is claimed on any deployment data, and `fss-event report` cannot yet consume these
   detections. The other trained weights are the OpenCV HOG people SVM (`fss-twin`), with no claimed
   recall.

@@ -80,6 +80,16 @@ fn import(directory: &OwnedDirectory) -> TestResult<(PathBuf, String)> {
 }
 
 fn detect(root: &Path, id: &str, package: &Path, report: Option<&Path>) -> TestResult<Output> {
+    detect_with(root, id, package, report, &[])
+}
+
+fn detect_with(
+    root: &Path,
+    id: &str,
+    package: &Path,
+    report: Option<&Path>,
+    extra: &[&str],
+) -> TestResult<Output> {
     let mut command = Command::new(env!("CARGO_BIN_EXE_fss-infer"));
     command
         .arg("package-detect")
@@ -104,7 +114,73 @@ fn detect(root: &Path, id: &str, package: &Path, report: Option<&Path>) -> TestR
     if let Some(report) = report {
         command.arg("--report-out").arg(report);
     }
+    command.args(extra);
     Ok(command.output()?)
+}
+
+/// Text of the first JSON string value following `"key":"`.
+fn field(json: &str, key: &str) -> Option<String> {
+    let rest = json.split(&format!("\"{key}\":\"")).nth(1)?;
+    rest.split('"').next().map(str::to_owned)
+}
+
+/// Every frame's complete detection array text.
+fn detections(json: &str) -> Vec<String> {
+    json.split("\"detections\":[")
+        .skip(1)
+        .map(|rest| rest.split("]}").next().unwrap_or_default().to_owned())
+        .collect()
+}
+
+#[test]
+fn kernel_selection_is_explicit_and_bound_into_the_report() -> TestResult {
+    let directory = OwnedDirectory::new("kernels")?;
+    let (root, id) = import(&directory)?;
+    let optimized = detect_with(
+        &root,
+        &id,
+        &package_path(),
+        None,
+        &["--kernels", "optimized-cpu"],
+    )?;
+    success(&optimized);
+    let default = detect(&root, &id, &package_path(), None)?;
+    success(&default);
+    let scalar = detect_with(
+        &root,
+        &id,
+        &package_path(),
+        None,
+        &["--kernels", "scalar-reference"],
+    )?;
+    success(&scalar);
+    let (optimized, default, scalar) = (
+        String::from_utf8(optimized.stdout)?,
+        String::from_utf8(default.stdout)?,
+        String::from_utf8(scalar.stdout)?,
+    );
+    // The optimized executor is the default; the selection is part of the model identity.
+    assert_eq!(optimized, default);
+    assert!(field(&scalar, "model_digest").is_some());
+    assert_ne!(
+        field(&optimized, "model_digest"),
+        field(&scalar, "model_digest")
+    );
+    assert_ne!(
+        field(&optimized, "inference_identity"),
+        field(&scalar, "inference_identity")
+    );
+    // Bit-identical outputs, identical post-NMS detections.
+    assert_eq!(
+        field(&optimized, "output_digest"),
+        field(&scalar, "output_digest")
+    );
+    assert_eq!(detections(&optimized), detections(&scalar));
+    assert_eq!(scalar.matches("\"label\":\"tie\"").count(), 3, "{scalar}");
+    let refused = detect_with(&root, &id, &package_path(), None, &["--kernels", "fastest"])?;
+    assert!(!refused.status.success());
+    assert!(refused.stdout.is_empty());
+    Ok(())
 }
 
 #[test]

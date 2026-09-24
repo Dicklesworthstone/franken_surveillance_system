@@ -160,4 +160,6 @@ fss-infer package-detect --root DEPLOYMENT --site SITE --import-id sha256:IMPORT
   `RecordedInference` publications). Retained H.264/H.265 frames lack chroma (grayscale input), and
   their luma is used as coded (video range is not expanded to full range).
 - The scalar executor retains every intermediate tensor (~108 MB accounting) and takes seconds per
-  frame; no optimized kernels, memory planning or accelerator exist for this package yet.
+  frame. The package now loads onto the optimized CPU executor by default (bit-identical to the
+  scalar reference, ~0.2 s per frame on one shared worker, single-threaded; docs/PERF_LEDGER.md
+  PERF-001). No accelerator or multi-threaded path exists.

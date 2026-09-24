@@ -634,7 +634,7 @@ fn is_embedding_index_input(graph: &ModelIrGraph, input: &TensorPort) -> bool {
 }
 
 /// Computes upper-bound multiply-accumulate operations for a single computational node.
-fn compute_node_macs(
+pub(crate) fn compute_node_macs(
     node: &fss_model_ir::GraphNode,
     in_ports: &[TensorPort],
     out_ports: &[TensorPort],
@@ -2029,7 +2029,7 @@ fn activation_normal_tail(a: f64) -> f64 {
     }
 }
 
-fn activation_silu(x: f32) -> f32 {
+pub(crate) fn activation_silu(x: f32) -> f32 {
     if x.is_nan() || x == f32::NEG_INFINITY {
         return f32::from_bits(0x7fc0_0000);
     }

@@ -26,7 +26,7 @@ use super::rgb_detections::{
 };
 use super::rgb_inference::{RgbInferenceModel, RgbModelSpec};
 use crate::preprocess::{ResizeAspect, ResizeFilter};
-use crate::{ChannelTransform, PreprocessProgram, ReplayCx, ScalarExecCx};
+use crate::{ChannelTransform, KernelBackend, PreprocessProgram, ReplayCx, ScalarExecCx};
 
 /// Canonical digest domain of the package spec artifact.
 pub const RGB_PACKAGE_SPEC_DOMAIN: &str = "fss.rgb_detector_package_spec.v1";
@@ -443,13 +443,41 @@ fn artifact<'p>(
     Ok(&first.payload)
 }
 
+/// Executor selected by [`RgbDetectorPackage::load`]: the optimized CPU kernels, which the
+/// in-tree differential and whole-network certification tests prove bit-identical to the scalar
+/// reference (`optimized_executor/tests.rs`, `tests/yolox_nano_conformance.rs`). Use
+/// [`RgbDetectorPackage::load_with_backend`] with [`KernelBackend::ScalarReference`] to force the
+/// reference path.
+pub const DEFAULT_PACKAGE_BACKEND: KernelBackend = KernelBackend::OptimizedCpuV1;
+
 impl RgbDetectorPackage {
-    /// Verify and load. `expected` is the independently pinned whole-archive SHA-256; any
-    /// byte change is refused before parsing. Import work uses `import_work` units.
+    /// Verify and load with [`DEFAULT_PACKAGE_BACKEND`]. `expected` is the independently pinned
+    /// whole-archive SHA-256; any byte change is refused before parsing. Import work uses
+    /// `import_work` units.
     pub fn load(
         bytes: &[u8],
         expected: ContentDigest,
         import_work: u64,
+        cx: &ReplayCx,
+        scalar: &ScalarExecCx,
+    ) -> Result<Self, RgbPackageError> {
+        Self::load_with_backend(
+            bytes,
+            expected,
+            import_work,
+            DEFAULT_PACKAGE_BACKEND,
+            cx,
+            scalar,
+        )
+    }
+
+    /// Verify and load with an explicitly selected executor. The selection is bound into the
+    /// model digest, so contracts and inference identities name the kernel generation.
+    pub fn load_with_backend(
+        bytes: &[u8],
+        expected: ContentDigest,
+        import_work: u64,
+        backend: KernelBackend,
         cx: &ReplayCx,
         scalar: &ScalarExecCx,
     ) -> Result<Self, RgbPackageError> {
@@ -499,7 +527,9 @@ impl RgbDetectorPackage {
             scalar,
         )
         .map_err(RgbPackageError::Import)?
-        .into_model();
+        .into_model()
+        .with_backend(backend, scalar)
+        .map_err(|e| RgbPackageError::Import(e.into()))?;
         let contract = RgbDetectionContract::new(
             spec.detection_spec(model.digest(), spec.head.minimum_score_ppm),
         )
