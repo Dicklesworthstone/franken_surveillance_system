@@ -77,8 +77,14 @@ synthetic scenes). None of it has been measured on real camera footage.
   differential tests and the conformance test; measured median 193 ms vs 3085 ms scalar per
   416x416 frame on one shared worker (docs/PERF_LEDGER.md PERF-001). The scalar reference stays
   selectable (`load_with_backend`, `fss-infer package-detect --kernels scalar-reference`), and the
-  selected kernel generation is bound into the model digest. Single-threaded, x86-64 SSE2
-  baseline only; not measured on arm64. No quality, recall or
+  selected kernel generation is bound into the model digest. Optional deterministic
+  multi-threaded Conv2d (fss-zczw0): `ExecThreads` / `--threads N|auto` (default 1) splits
+  convolution outputs into contiguous per-thread chunks on `std::thread::scope` workers. It is
+  certified bit-identical for 1, 2, 3, 4, 7 and 8 threads (random geometries and the YOLOX
+  conformance inputs), and the count reaches no identity. On the shared, oversubscribed hosts
+  measured it gave no wall-time gain (PERF-002, e.g. 233.8 vs 231.0 ms median at 1 vs 8 threads
+  under load 70-84 on 16 CPUs), so no speedup is claimed. x86-64 SSE2 baseline only; not measured
+  on arm64. No quality, recall or
   calibration is claimed on any deployment data, and `fss-event report` cannot yet consume these
   detections. The other trained weights are the OpenCV HOG people SVM (`fss-twin`), with no claimed
   recall.
