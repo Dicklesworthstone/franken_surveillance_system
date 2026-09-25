@@ -15,13 +15,18 @@
 //!   over the reference's `(cin_g, kh, kw)` order and skipping padded taps exactly;
 //! * fused bias + SiLU when a convolution's only consumer is a SiLU node;
 //! * SiLU's binary64 series evaluated for several independent elements at once;
-//! * liveness-planned activation release and one reused scratch buffer.
+//! * liveness-planned activation release and one reused scratch buffer;
+//! * optional structured multi-threading ([`ExecThreads`], fss-zczw0): a convolution's output
+//!   is split into contiguous channel ranges, each computed by exactly one scoped thread with the
+//!   unchanged per-element operation order, so outputs are bit-identical for every thread count.
 //!
 //! Operators or geometries outside these kernels run the scalar reference kernel for that node,
 //! and that choice is recorded per node in the prepared plan identity (never silent).
 //! Differential tests against the scalar kernels live in `optimized_executor/tests.rs`.
 
 use std::collections::BTreeMap;
+use std::fmt;
+use std::num::NonZeroUsize;
 
 use fss_core::{CanonicalEncoder, ContentDigest, Generation};
 use fss_model_ir::{
@@ -38,6 +43,128 @@ mod layout;
 mod pointwise;
 #[cfg(test)]
 mod tests;
+
+/// Largest admitted [`ExecThreads`] request. Execution never spawns more scoped threads than
+/// this per kernel, whatever the host reports.
+pub const MAX_EXEC_THREADS: usize = 64;
+
+/// Minimum work per thread, in multiply-accumulate equivalents, before a convolution is split
+/// further (under a millisecond of kernel time, so a thread's spawn and join stay a small
+/// fraction of its work). A pure scheduling heuristic: it depends only on the prepared geometry
+/// and the requested count, never on the host, and it cannot change any output bit (every
+/// partition is bit-identical).
+const MIN_MACS_PER_THREAD: u64 = 1 << 21;
+
+/// Explicit worker-thread count for one optimized execution (1..=[`MAX_EXEC_THREADS`]).
+///
+/// Library code never infers it from the environment; callers pass it. Because every output
+/// element is computed by exactly one thread with the same IEEE-754 operation sequence as the
+/// single-threaded kernel, the count changes wall time only: outputs, accounting, the prepared
+/// plan digest, the kernel generation and every model or receipt identity are independent of it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Ord, PartialOrd)]
+pub struct ExecThreads(NonZeroUsize);
+
+impl ExecThreads {
+    /// Exactly one thread: the caller's own; no thread is spawned.
+    pub const SINGLE: Self = Self(NonZeroUsize::MIN);
+
+    /// Admit an explicit count. Zero and counts above [`MAX_EXEC_THREADS`] are typed refusals.
+    pub fn new(threads: usize) -> Result<Self, ExecThreadsError> {
+        match NonZeroUsize::new(threads) {
+            None => Err(ExecThreadsError::Zero),
+            Some(_) if threads > MAX_EXEC_THREADS => Err(ExecThreadsError::AboveMaximum {
+                requested: threads,
+                maximum: MAX_EXEC_THREADS,
+            }),
+            Some(n) => Ok(Self(n)),
+        }
+    }
+
+    /// The admitted count.
+    #[must_use]
+    pub const fn get(self) -> usize {
+        self.0.get()
+    }
+}
+
+impl Default for ExecThreads {
+    fn default() -> Self {
+        Self::SINGLE
+    }
+}
+
+/// Refusal of an [`ExecThreads`] request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExecThreadsError {
+    /// Zero threads cannot execute anything.
+    Zero,
+    /// More threads than [`MAX_EXEC_THREADS`] were requested.
+    AboveMaximum {
+        /// Requested count.
+        requested: usize,
+        /// Admitted maximum.
+        maximum: usize,
+    },
+}
+
+impl ExecThreadsError {
+    /// Stable identifier of this refusal.
+    #[must_use]
+    pub const fn stable_id(self) -> &'static str {
+        match self {
+            Self::Zero => "exec-threads.zero",
+            Self::AboveMaximum { .. } => "exec-threads.above-maximum",
+        }
+    }
+}
+
+impl fmt::Display for ExecThreadsError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Zero => write!(f, "execution thread count must be at least 1"),
+            Self::AboveMaximum { requested, maximum } => write!(
+                f,
+                "execution thread count {requested} exceeds the maximum {maximum}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ExecThreadsError {}
+
+/// Crate-internal partition policy: requested threads plus the per-thread work floor (tests
+/// lower the floor to zero to force splitting of tiny geometries).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct Parallelism {
+    threads: usize,
+    min_work: u64,
+}
+
+impl Parallelism {
+    pub(crate) const fn new(threads: ExecThreads) -> Self {
+        Self {
+            threads: threads.get(),
+            min_work: MIN_MACS_PER_THREAD,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn unthrottled(threads: ExecThreads) -> Self {
+        Self {
+            threads: threads.get(),
+            min_work: 0,
+        }
+    }
+
+    /// Threads used for `units` independent output ranges carrying `work` MACs in total.
+    pub(crate) fn threads_for(self, units: usize, work: u64) -> usize {
+        let by_work = match work.checked_div(self.min_work) {
+            Some(n) => usize::try_from(n).unwrap_or(usize::MAX),
+            None => usize::MAX,
+        };
+        self.threads.min(units).min(by_work).max(1)
+    }
+}
 
 /// Digest domain of the optimized executor's kernel generation and prepared plans.
 pub const OPTIMIZED_EXECUTOR_DOMAIN: &str = "fss.reference.optimized_executor.v1";
@@ -165,14 +292,19 @@ struct Step {
 }
 
 /// Measured resource witness of one optimized run (tensor payload, not process RSS).
+/// Execution telemetry only: it is never bound into outputs, plan digests or receipts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OptimizedRunReport {
     /// Highest live activation payload plus kernel scratch observed at any step.
     pub peak_live_bytes: usize,
-    /// Largest kernel scratch buffer used.
+    /// Largest kernel scratch used by one step, summed over that step's threads.
     pub scratch_bytes: usize,
     /// Constants and packed weights resident in the prepared plan (not per-run).
     pub resident_bytes: usize,
+    /// Admitted thread count of this run.
+    pub threads_requested: usize,
+    /// Most threads any single step actually used (1 when nothing was split).
+    pub threads_used: usize,
 }
 
 /// Immutable prepared graph: validated schedule, per-node kernel choices, packed weights.
@@ -597,6 +729,30 @@ impl OptimizedGraph {
         budget: ExecBudget,
         cx: &ScalarExecCx,
     ) -> Result<(ExecOutcome, OptimizedRunReport), ExecError> {
+        self.run_inner(inputs, budget, Parallelism::new(ExecThreads::SINGLE), cx)
+    }
+
+    /// Execute once with an explicit thread count. Outputs, accounting and refusals are
+    /// bit-identical to [`OptimizedGraph::run`] for every count; only wall time and the report's
+    /// telemetry differ. All threads are scoped and joined before this returns (also on error or
+    /// cancellation); cancellation is observed by every thread at each output row.
+    pub fn run_threaded<S: AsRef<str>>(
+        &self,
+        inputs: &[(S, Tensor)],
+        budget: ExecBudget,
+        threads: ExecThreads,
+        cx: &ScalarExecCx,
+    ) -> Result<(ExecOutcome, OptimizedRunReport), ExecError> {
+        self.run_inner(inputs, budget, Parallelism::new(threads), cx)
+    }
+
+    pub(crate) fn run_inner<S: AsRef<str>>(
+        &self,
+        inputs: &[(S, Tensor)],
+        budget: ExecBudget,
+        parallelism: Parallelism,
+        cx: &ScalarExecCx,
+    ) -> Result<(ExecOutcome, OptimizedRunReport), ExecError> {
         cx.checkpoint("pre-execution")?;
         let mut bound: BTreeMap<&str, &Tensor> = BTreeMap::new();
         for (name, tensor) in inputs {
@@ -668,10 +824,13 @@ impl OptimizedGraph {
         }
         let mut scratch: Vec<f32> = Vec::new();
         let mut scratch_peak = 0_usize;
+        let mut threads_used = 1_usize;
         for step in &self.steps {
             cx.checkpoint("node-execution")?;
             let mut out = Vec::new();
-            self.execute(step, &mut env, &mut out, &mut scratch, cx)?;
+            let (used, worker_scratch) =
+                self.execute(step, &mut env, &mut out, &mut scratch, parallelism, cx)?;
+            threads_used = threads_used.max(used);
             if out.len() != step.output_len {
                 return Err(mismatch(
                     &step.node_id,
@@ -682,8 +841,10 @@ impl OptimizedGraph {
             // Everything resident at this instant: live activations, the new output, scratch.
             let live: usize =
                 env.iter().flatten().map(|v| v.len() * 4).sum::<usize>() + out.len() * 4;
-            scratch_peak = scratch_peak.max(scratch.capacity() * 4);
-            peak = peak.max(live + scratch.capacity() * 4);
+            // Worker threads' panels are freed when they join; they count at this step only.
+            let step_scratch = (scratch.capacity() + worker_scratch) * 4;
+            scratch_peak = scratch_peak.max(step_scratch);
+            peak = peak.max(live + step_scratch);
             env[step.output] = Some(out);
             for slot in &step.release {
                 env[*slot] = None;
@@ -704,6 +865,8 @@ impl OptimizedGraph {
                 peak_live_bytes: peak,
                 scratch_bytes: scratch_peak,
                 resident_bytes: self.resident_bytes,
+                threads_requested: parallelism.threads,
+                threads_used,
             },
         ))
     }
@@ -716,21 +879,29 @@ impl OptimizedGraph {
         .ok_or_else(|| mismatch("optimized", "optimized_value", "value not live"))
     }
 
+    /// Execute one step; returns (threads used, worker-thread scratch floats).
     fn execute(
         &self,
         step: &Step,
         env: &mut [Option<Vec<f32>>],
         out: &mut Vec<f32>,
         scratch: &mut Vec<f32>,
+        parallelism: Parallelism,
         cx: &ScalarExecCx,
-    ) -> Result<(), ExecError> {
+    ) -> Result<(usize, usize), ExecError> {
         let first = |env: &[Option<Vec<f32>>]| -> Result<Vec<f32>, ExecError> {
             Ok(self.value(env, step.sources[0])?.to_vec())
         };
         match &step.kernel {
             Kernel::Conv(conv) => {
                 out.resize(conv.output_len(), 0.0);
-                conv.run(self.value(env, step.sources[0])?, out, scratch, cx)?;
+                return conv.run(
+                    self.value(env, step.sources[0])?,
+                    out,
+                    scratch,
+                    parallelism,
+                    cx,
+                );
             }
             Kernel::Silu => {
                 *out = first(env)?;
@@ -792,7 +963,7 @@ impl OptimizedGraph {
                     .to_vec::<f32>()?;
             }
         }
-        Ok(())
+        Ok((1, 0))
     }
 }
 

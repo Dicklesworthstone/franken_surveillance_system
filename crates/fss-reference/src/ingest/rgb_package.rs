@@ -549,6 +549,13 @@ impl RgbDetectorPackage {
             contract,
         })
     }
+    /// Run the optimized executor with an explicit thread count (see
+    /// [`RgbInferenceModel::with_execution_threads`]). Model digest, contract, detections and
+    /// every identity are unchanged: outputs are bit-identical for every count.
+    pub fn with_execution_threads(mut self, threads: crate::ExecThreads) -> Self {
+        self.model = self.model.with_execution_threads(threads);
+        self
+    }
     /// Whole-archive identity the caller pinned.
     pub fn archive_digest(&self) -> ContentDigest {
         self.archive_digest

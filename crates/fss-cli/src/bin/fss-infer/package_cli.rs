@@ -14,7 +14,10 @@ use fss_reference::ingest::package_detect::{
 };
 use fss_reference::ingest::recorded_decode::ComponentInterpretation;
 use fss_reference::ingest::rgb_package::{MAX_RGB_PACKAGE_BYTES, RgbDetectorPackage};
-use fss_reference::{ExecBudget, KernelBackend, ReferenceDeployment, ReplayCx, ScalarExecCx};
+use fss_reference::{
+    ExecBudget, ExecThreads, KernelBackend, MAX_EXEC_THREADS, ReferenceDeployment, ReplayCx,
+    ScalarExecCx,
+};
 
 use super::{RunResult, Values, digest, export, number, text, value};
 
@@ -23,7 +26,7 @@ const HELP: &str = "fss-infer package-detect [options]\n\
   --package FILE --package-digest sha256:HEX --interpretation gray|ycbcr\n\
   [--minimum-score-ppm N] [--max-macs N] [--max-tensor-bytes N] [--report-out FILE] [--principal ID]\n\
   [--retain yes]\n\
-  [--kernels optimized-cpu|scalar-reference]\n\
+  [--kernels optimized-cpu|scalar-reference] [--threads N|auto]\n\
   Runs a digest-pinned, verified RGB detector package (for example models/yolox-nano/\n\
   yolox_nano.fmpk) over a retained MJPEG, H.264 or H.265 import. JPEG frames are decoded to\n\
   RGB; H.264/H.265 frames are converted from decoded luma and chroma with the declared BT.601\n\
@@ -38,7 +41,10 @@ const HELP: &str = "fss-infer package-detect [options]\n\
   The default threshold is the package's own; --minimum-score-ppm is an explicit override.\n\
   --kernels selects the executor: optimized-cpu (default; certified bit-identical to the\n\
   scalar reference) or scalar-reference (the slow oracle, seconds per 416x416 frame). The\n\
-  choice is bound into the model digest recorded in the report.\n";
+  choice is bound into the model digest recorded in the report.\n\
+  --threads N (1..64) sets the optimized executor's scoped worker threads (default 1: the\n\
+  calling thread only); auto uses the host's available parallelism capped at 64. Outputs are\n\
+  bit-identical for every N, so the report bytes do not depend on it.\n";
 
 #[derive(Debug)]
 struct Options {
@@ -48,6 +54,7 @@ struct Options {
     package: PathBuf,
     package_digest: ContentDigest,
     kernels: KernelBackend,
+    threads: ExecThreads,
     request: PackageDetectRequest,
     limits: PackageDetectLimits,
     report: Option<PathBuf>,
@@ -81,6 +88,7 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
         "--report-out",
         "--retain",
         "--kernels",
+        "--threads",
     ];
     let mut values = Values::new();
     for pair in args.chunks(2) {
@@ -139,6 +147,18 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
     } else {
         KernelBackend::OptimizedCpuV1
     };
+    let threads = match values.get("--threads").map(|v| v.to_str()) {
+        None => ExecThreads::SINGLE,
+        Some(Some("auto")) => {
+            // The CLI (not the library) may consult the host; the count never affects outputs.
+            let host = std::thread::available_parallelism().map_or(1, |n| n.get());
+            ExecThreads::new(host.min(MAX_EXEC_THREADS)).unwrap_or(ExecThreads::SINGLE)
+        }
+        Some(_) => {
+            let n: usize = number(&values, "--threads", None)?;
+            ExecThreads::new(n).map_err(|e| format!("--threads: {e}"))?
+        }
+    };
     let mut limits = PackageDetectLimits::default();
     let max_bytes: usize = number(
         &values,
@@ -159,6 +179,7 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
         package: PathBuf::from(value(&values, "--package")?),
         package_digest: digest(&values, "--package-digest")?,
         kernels,
+        threads,
         request: PackageDetectRequest {
             import_identity: digest(&values, "--import-id")?,
             first_segment,
@@ -223,7 +244,8 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
             options.kernels,
             &cx,
             &scalar,
-        )?;
+        )?
+        .with_execution_threads(options.threads);
         let mut deployment = ReferenceDeployment::open(&options.root, &options.site, &cx)?;
         let report = run_package_detection(
             &deployment,

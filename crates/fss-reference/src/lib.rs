@@ -201,7 +201,10 @@ pub use model_receipt::{
     compute_operator_trace_chain, compute_output_root, compute_postprocess_program_digest,
     compute_preprocess_program_digest, execute_and_record_receipt,
 };
-pub use optimized_executor::{KernelBackend, OptimizedGraph, OptimizedRunReport};
+pub use optimized_executor::{
+    ExecThreads, ExecThreadsError, KernelBackend, MAX_EXEC_THREADS, OptimizedGraph,
+    OptimizedRunReport,
+};
 pub use outcome::{
     ALERT_OUTCOME_FAMILY, ReferenceAlertOutcome, ReferenceAlertOutcomeReceipt,
     publish_reference_alert_outcome,
