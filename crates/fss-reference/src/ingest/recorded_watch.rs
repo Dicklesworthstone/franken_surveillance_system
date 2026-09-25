@@ -39,6 +39,14 @@
 //! the next IDR/IRAP ([`super::tolerant_decode`]), and the tracker restarts after every gap with
 //! fresh track identities, so no track is bridged across it. A run without any refusal or gap
 //! is byte-identical to the default analysis.
+//!
+//! The sensor's current retained privacy mask ([`super::privacy_mask`]) is applied to every
+//! decoded plane before foreground detection, tracking, the zone gate or the cascade sees it. A
+//! policy is folded into the plan identity (so candidates, analyses and coverage of different
+//! mask generations never share an identity), bound into every coverage pipeline generation,
+//! named on every candidate and retained as a `required_by` evidence edge of its event; zones
+//! with any masked pixel carry no witness (`privacy_masked`). Without a policy every report byte
+//! is unchanged; the binding is then the explicit no-policy marker ([`WatchReport::privacy_mask`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -62,6 +70,8 @@ use super::eventgen::{
     ZoneEventConfig, ZoneEventError, ZoneEventGenerator, ZoneObservation, ZoneSpec,
 };
 use super::foreground::{ForegroundConfig, ForegroundDetector, ForegroundError};
+use super::privacy_mask::coverage::mask_coverage_zones;
+use super::privacy_mask::{MaskBinding, current_mask, lineage_digest};
 use super::recorded_coverage::{
     CoverageEntry, CoverageError, CoverageExtras, CoverageFrame, CoverageInput, CoverageRecord,
     CoverageSource, CoverageStatus, CoverageZoneInput, approval_digest, build_coverage_with,
@@ -618,6 +628,7 @@ pub struct WatchReport {
     coverage_status: CoverageStatus,
     cascade: Option<WatchCascade>,
     decode_refusals: Vec<DecodeRefusal>,
+    privacy: MaskBinding,
 }
 
 /// Detector-cascade record of one analysis.
@@ -668,6 +679,7 @@ enum FrameSource {
         retained: Box<RetainedFileImport>,
         next: usize,
         end: usize,
+        mask: Box<MaskBinding>,
     },
     H264(Box<RecordedH264Range>),
     H265(Box<RecordedH265Range>),
@@ -757,6 +769,10 @@ impl WatchReport {
         let capture_time_label = retained.manifest().capture_time_label.clone();
         let segment_gaps: Vec<bool> = spans.iter().map(|s| s.gap_before).collect();
         let basis = deployment.current_anchor().clone();
+        // The sensor's current privacy mask, resolved once; every decode path applies it.
+        let (first_capsule, _) = source_capsule(deployment, &retained, plan.first_segment)?;
+        let privacy = current_mask(deployment, &first_capsule.sensor_id)
+            .map_err(RecordedDecodeError::from)?;
         let mut tolerant = if options.tolerate_decode_refusals {
             Some(Box::new(TolerantSource::open(
                 deployment,
@@ -781,6 +797,7 @@ impl WatchReport {
                 retained: Box::new(retained),
                 next: plan.first_segment,
                 end,
+                mask: Box::new(privacy.clone()),
             }),
             "annexb" => Some(FrameSource::H264(Box::new(RecordedH264Range::open(
                 deployment,
@@ -808,7 +825,7 @@ impl WatchReport {
             )?))),
             _ => return Err(RecordedDecodeError::UnsupportedMedia.into()),
         };
-        let plan_digest = plan.digest();
+        let plan_digest = masked_plan_digest(plan.digest(), &privacy);
         let source_generation = format!("import:{}", hex(plan.import_identity));
         let mut budget = DecodeBudget::new(limits.jpeg_work_units);
         let mut generator = ZoneEventGenerator::new(ZoneEventConfig {
@@ -932,6 +949,9 @@ impl WatchReport {
                 .collect();
             if sensor.is_none() {
                 sensor = Some(frame.capsule.sensor_id.clone());
+            }
+            if frame.capsule.sensor_id != first_capsule.sensor_id {
+                return Err(RecordedDecodeError::InvalidReceipt.into());
             }
             let failure_domain = format!(
                 "recorded-sensor:{}",
@@ -1135,12 +1155,13 @@ impl WatchReport {
             cascade: cascade.as_ref().map(|c| c.digest),
             refusals: &decode_refusals,
             restarts: &restarts,
+            privacy: &privacy,
         })?;
         let coverage_status = coverage_status(deployment, &[&coverage])?;
         let mut prepared = Vec::with_capacity(candidates.len());
         for pending in candidates {
             checkpoint(cx, "recorded_watch:prepare")?;
-            let proof = provenance(&pending, &analysis, import_root, sensor.as_str())?;
+            let proof = provenance(&pending, &analysis, import_root, sensor.as_str(), &privacy)?;
             let PendingCandidate {
                 zone_id,
                 track_id,
@@ -1182,6 +1203,7 @@ impl WatchReport {
             coverage_status,
             cascade,
             decode_refusals,
+            privacy,
         })
     }
 
@@ -1189,6 +1211,12 @@ impl WatchReport {
     #[must_use]
     pub fn decode_refusals(&self) -> &[DecodeRefusal] {
         &self.decode_refusals
+    }
+
+    /// Privacy mask binding applied to every decoded frame of this analysis.
+    #[must_use]
+    pub fn privacy_mask(&self) -> &MaskBinding {
+        &self.privacy
     }
 
     /// Detector-cascade outcome of this analysis, if a detector was supplied.
@@ -1406,8 +1434,15 @@ impl WatchReport {
                     Some(_) => format!(",\"class_evidence\":{}", class_evidence_json(&c.class_evidence)),
                     None => String::new(),
                 };
+                let privacy = match self.privacy.policy_digest() {
+                    Some(digest) => format!(
+                        ",\"privacy_transform\":{{\"applied_redaction_transform\":\"{}\",\"policy_digest\":\"{digest}\"}}",
+                        self.privacy.applied_transform().unwrap_or_default()
+                    ),
+                    None => String::new(),
+                };
                 format!(
-                    "{{\"candidate_id\":\"{}\",\"zone_id\":\"{}\",\"track_id\":{},\"entry_segment\":{},\"frame_range\":[{first},{last}],\"event_id\":\"{}\",\"event_kind\":\"{}\",\"event_state\":\"{}\",\"proposal_digest\":\"{}\",\"provenance_root\":\"{}\",\"status\":\"{}\",\"publish_command\":{command},\"evidence\":[{}]{class_evidence}}}",
+                    "{{\"candidate_id\":\"{}\",\"zone_id\":\"{}\",\"track_id\":{},\"entry_segment\":{},\"frame_range\":[{first},{last}],\"event_id\":\"{}\",\"event_kind\":\"{}\",\"event_state\":\"{}\",\"proposal_digest\":\"{}\",\"provenance_root\":\"{}\",\"status\":\"{}\",\"publish_command\":{command},\"evidence\":[{}]{class_evidence}{privacy}}}",
                     c.identity,
                     c.zone_id,
                     c.track_id,
@@ -1441,7 +1476,7 @@ impl WatchReport {
                 "\"authority_sequence\":{},\"event_kind\":\"unclassified\",",
                 "\"event_state\":\"indeterminate\",\"calibrated\":false,\"corroborated\":false,",
                 "\"alert_authorized\":false,\"effects_authorized\":false,",
-                "\"absence_certifiable\":false,\"detection_quality_claim\":false{}{}{}}}"
+                "\"absence_certifiable\":false,\"detection_quality_claim\":false{}{}{}{}}}"
             ),
             self.plan.import_identity,
             self.import_root,
@@ -1465,6 +1500,13 @@ impl WatchReport {
             count(WatchStatus::AlreadyPublished),
             authority_sequence,
             decode_refusals_json(&self.decode_refusals),
+            // Without a retained policy the report is byte-identical to the pre-mask tree
+            // (pinned by `watch_report_golden`) and the binding is the explicit no-policy marker
+            // (`privacy_mask()`). With a policy the applied transform is named here.
+            self.privacy.policy().map_or_else(String::new, |_| format!(
+                ",\"privacy_mask\":{}",
+                self.privacy.to_json()
+            )),
             self.cascade.as_ref().map_or_else(String::new, |c| format!(
                 ",\"detector_cascade\":{{{},{}}}",
                 c.policy_json,
@@ -1524,6 +1566,7 @@ impl FrameSource {
                 retained,
                 next,
                 end,
+                mask,
             } => {
                 if *next >= *end {
                     return Ok(None);
@@ -1543,13 +1586,17 @@ impl FrameSource {
                     budget,
                 )
                 .map_err(RecordedDecodeError::from)?;
+                // Masked before the foreground model, tracker or zone gate sees any pixel.
+                let mut pixels = image.pixels().to_vec();
+                mask.apply_luma(&mut pixels, image.dimensions())
+                    .map_err(RecordedDecodeError::from)?;
                 *next += 1;
                 Ok(Some(DecodedFrame {
                     segment,
                     capsule,
                     capsule_digest,
                     dimensions: image.dimensions(),
-                    pixels: image.pixels().to_vec(),
+                    pixels,
                 }))
             }
             Self::H264(range) => {
@@ -1600,6 +1647,17 @@ struct WatchCoverageContext<'a> {
     cascade: Option<ContentDigest>,
     refusals: &'a [DecodeRefusal],
     restarts: &'a [usize],
+    privacy: &'a MaskBinding,
+}
+
+/// The plan identity of an analysis under `privacy`: unchanged without a policy, otherwise
+/// folded with the mask binding, so no identity is shared across mask generations.
+#[must_use]
+pub fn masked_plan_digest(plan: ContentDigest, privacy: &MaskBinding) -> ContentDigest {
+    match privacy {
+        MaskBinding::NoPolicy => plan,
+        MaskBinding::Policy(_) => lineage_digest("watch_plan", plan, privacy.digest()),
+    }
 }
 
 /// Appends a detector-cascade identity (package, generation, policy) to coverage parameters.
@@ -1618,6 +1676,11 @@ fn watch_coverage(context: &WatchCoverageContext<'_>) -> Result<CoverageRecord> 
     let plan = context.plan;
     let mut parameters = pipeline_parameters(plan.interpretation, &plan.detector, &plan.tracker);
     bind_cascade_parameters(&mut parameters, context.cascade);
+    // A mask generation is part of the pipeline generation: witnesses never cross it.
+    bind_cascade_parameters(
+        &mut parameters,
+        context.privacy.policy().map(|_| context.privacy.digest()),
+    );
     let frames: Vec<CoverageFrame> = context
         .frames
         .iter()
@@ -1657,12 +1720,25 @@ fn watch_coverage(context: &WatchCoverageContext<'_>) -> Result<CoverageRecord> 
             entries,
         });
     }
+    let masked: BTreeSet<String> = match context.privacy.policy() {
+        None => BTreeSet::new(),
+        Some(policy) => plan
+            .zones
+            .iter()
+            .filter(|zone| {
+                policy
+                    .zone_masking([zone.x, zone.y, zone.width, zone.height])
+                    .any()
+            })
+            .map(|zone| zone.zone_id.clone())
+            .collect(),
+    };
     let extras = CoverageExtras {
         visibility: Vec::new(),
         refusals: context.refusals.to_vec(),
         restarts: context.restarts.to_vec(),
     };
-    Ok(build_coverage_with(
+    let mut record = build_coverage_with(
         &CoverageInput {
             source: CoverageSource::Watch,
             import_identity: plan.import_identity,
@@ -1679,7 +1755,9 @@ fn watch_coverage(context: &WatchCoverageContext<'_>) -> Result<CoverageRecord> 
             zones,
         },
         &extras,
-    )?)
+    )?;
+    mask_coverage_zones(&mut record, &masked)?;
+    Ok(record)
 }
 
 struct PendingCandidate {
@@ -1760,6 +1838,7 @@ fn provenance(
     analysis: &[u8],
     import_root: ContentDigest,
     sensor: &str,
+    privacy: &MaskBinding,
 ) -> Result<Provenance> {
     let observations = &candidate.observations;
     let analysis_digest = ContentDigest::sha256(analysis);
@@ -1816,6 +1895,20 @@ fn provenance(
                 EvidenceEdgeRelation::DerivedFrom
             },
             capsule_digest: Some(capsule),
+            identity_digest: Some(sensor_digest),
+        });
+    }
+    if let Some(policy) = privacy.policy() {
+        // The applied privacy transform is a typed dependency of the event: the exact retained
+        // policy the pixels were masked with, never support for the event itself.
+        let digest = insert(&mut objects, policy.to_bytes());
+        evidence.push(EventEvidence {
+            digest,
+            class: EvidenceClass::Assertion,
+            failure_domain: failure_domain.clone(),
+            supports: false,
+            relation: EvidenceEdgeRelation::RequiredBy,
+            capsule_digest: None,
             identity_digest: Some(sensor_digest),
         });
     }

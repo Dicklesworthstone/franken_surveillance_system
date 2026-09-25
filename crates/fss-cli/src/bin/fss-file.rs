@@ -52,6 +52,11 @@ const HELP: &str = "fss-file <import|inspect|verify|extract|decode|read-decoded|
   Options use separate values. Paths accept native OS strings. Outputs must be new files\n\
   outside the deployment. Import requires explicit receive time; no host clock is inferred.\n\
   decode uses the canonical JPEG codec, retains source-linked luma and publishes a receipt.\n\
+  Privacy: every decode applies the sensor's current retained privacy mask (fss-event\n\
+  privacy-mask declare) before any consumer or export, and prints its binding\n\
+  (privacy_mask_binding, privacy_mask_policy, applied_redaction_transform). A policy change\n\
+  starts a new decode lineage; a decode retained under no or another policy is refused\n\
+  (ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001), as is extract of raw source for a masked sensor.\n\
   read-decoded reopens it; verify-decoded reproduces the decode without changing authority.\n\
   motion measures pixel changes across at most 128 frames, resetting on source gaps.\n\
   None certifies coverage, absence, capture precision, person identity or threat severity.\n";
@@ -403,6 +408,17 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
             Action::Extract {
                 segment, output, ..
             } => {
+                // Raw retained source cannot be masked without re-encoding: a sensor with a
+                // retained privacy mask has no unmasked export path.
+                let capsule = fss_reference::ingest::recorded_decode::retained_source_capsule(
+                    &deployment,
+                    &retained,
+                    *segment,
+                )?;
+                fss_reference::ingest::privacy_mask::refuse_unmasked_source(
+                    &deployment,
+                    &capsule.sensor_id,
+                )?;
                 let bytes = retained.read_segment(&deployment, *segment, options.limits, &cx)?;
                 write_new(output, &bytes, &options.root, &cx)?;
                 writeln!(out, "extracted_segment={segment}")?;
@@ -439,6 +455,11 @@ fn main() -> ExitCode {
                     if let Some(refusal) = error.downcast_ref::<fss_reference::ingest::recorded_decode::RecordedDecodeError>() {
                     eprintln!("refusal_id={}", refusal.stable_id());
                 }
+                    if let Some(refusal) = error
+                        .downcast_ref::<fss_reference::ingest::privacy_mask::PrivacyMaskError>(
+                    ) {
+                        eprintln!("refusal_id={}", refusal.stable_id());
+                    }
                     if let Some(refusal) = error
                         .downcast_ref::<fss_reference::ingest::FileIngestError>()
                         .and_then(|e| e.stable_id())

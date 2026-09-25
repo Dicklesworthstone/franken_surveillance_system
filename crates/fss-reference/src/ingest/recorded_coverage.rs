@@ -162,6 +162,9 @@ pub enum UncoveredReason {
     /// The ground zone is below its visibility threshold, mostly behind the camera or outside
     /// the image.
     OutsideFrustum,
+    /// The sensor's retained privacy mask covers part or all of the zone: masked pixels are
+    /// never absence evidence (`ingest::privacy_mask::coverage`).
+    PrivacyMasked,
 }
 
 impl UncoveredReason {
@@ -180,6 +183,7 @@ impl UncoveredReason {
             Self::DecodeRefused { .. } => "decode_refused",
             Self::Occluded => "occluded",
             Self::OutsideFrustum => "outside_frustum",
+            Self::PrivacyMasked => "privacy_masked",
         }
     }
 }
@@ -936,6 +940,7 @@ impl CoverageRecord {
                     },
                     "occluded" => UncoveredReason::Occluded,
                     "outside_frustum" => UncoveredReason::OutsideFrustum,
+                    "privacy_masked" => UncoveredReason::PrivacyMasked,
                     _ => return Err(ContractError::InvalidIdentifier),
                 };
                 uncovered.push(UncoveredInterval {

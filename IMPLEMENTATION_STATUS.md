@@ -65,6 +65,15 @@ synthetic scenes). None of it has been measured on real camera footage.
   error id, resumes H.264/H.265 at the next IDR/IRAP, restarts tracking (no bridging) and never
   lets a witness or a follow silence certificate span the gap. Default behaviour is unchanged.
   Not wired into `corroborate`; the detector cascade is refused over a gapped range.
+- **Privacy masks (fss-bgqkd):** `fss-event privacy-mask declare` retains an owner-declared,
+  per-sensor rectangle mask (declared stream resolution, 1..32 `transform:bounding_box_redact`
+  regions) only with its exact approval (`privacy_mask_policy` ledger family, one generation per
+  approval, stale approvals refused). Every retained decode (JPEG/MJPEG luma and RGB, H.264, H.265,
+  video RGB) fills masked pixels before any consumer; receipts bind the policy or an explicit
+  no-policy marker; lineages of different mask generations never share identities; zones with
+  any masked pixel are `privacy_masked` / `not_observable`; raw export and superseded-lineage
+  reads are refused. Retained file imports only: live capture paths, deletion closure, retention
+  and biometric controls remain open (PRIVACY.md 4.1).
 - **Models:** scalar executor over the FSS IR (Conv2d, MatMul, pooling, norms, activations) with
   Safetensors weights (`scalar_executor`, `fss-infer`). One trained detector package ships:
   YOLOX-Nano COCO-80 (`models/yolox-nano/`, `MOD-YOLOXNANO-001`, Apache-2.0), imported offline

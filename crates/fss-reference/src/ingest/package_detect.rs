@@ -7,7 +7,10 @@
 //! declared BT.601 limited-range transform ([`super::recorded_decode::video_rgb`]). Nothing is
 //! published, activated or alerted: the result is a complete, deterministic JSON report of
 //! uncalibrated proposals with exact source, inference, contract and package identities. An
-//! empty frame is not evidence of absence. [`super::package_event`] can retain a report as
+//! empty frame is not evidence of absence. The sensor's current privacy mask
+//! ([`super::privacy_mask`]) is applied to every decoded RGB frame before the model sees it, and
+//! the same mask is the per-pixel permission of the RGB privacy projection, so no detection may
+//! touch a masked pixel; the report names the binding. [`super::package_event`] can retain a report as
 //! cognition-plane evidence for the recorded-event workflow.
 
 use std::error::Error;
@@ -18,6 +21,7 @@ use fss_codec_mjpeg::color::{DecodedRgb, RgbDecodeLimits, RgbDecodeReceipt, deco
 use fss_codec_mjpeg::{ComponentInterpretation, DecodeBudget};
 use fss_core::{ContentDigest, DigestAlgorithm, SensorCapsule};
 
+use super::privacy_mask::{MaskBinding, current_mask};
 use super::recorded_decode::h264::{DecoderLimits, RecordedH264Range, RecordedH264Request};
 use super::recorded_decode::h265::{
     DecoderLimits as H265DecoderLimits, RecordedH265Range, RecordedH265Request,
@@ -175,6 +179,8 @@ pub struct PackageDetectReport {
     pub json: String,
     /// SHA-256 of the JSON bytes.
     pub digest: ContentDigest,
+    /// Privacy mask binding applied to every frame.
+    pub privacy: MaskBinding,
 }
 
 fn frame_error<E: Error + 'static>(segment: usize) -> impl FnOnce(E) -> PackageDetectError {
@@ -222,8 +228,13 @@ fn binding(
 
 /// Decoded RGB of one retained frame: native JPEG color or the declared video transform.
 pub(crate) enum FramePixels {
-    /// Native JPEG color decode.
+    /// Native JPEG color decode (no mask policy: explicitly unmasked).
     Jpeg(DecodedRgb),
+    /// Native JPEG color decode with the sensor's privacy mask applied.
+    MaskedJpeg {
+        rgb: Vec<u8>,
+        receipt: RgbDecodeReceipt,
+    },
     /// H.264/H.265 4:2:0 planes through the declared BT.601 limited-range transform.
     Video {
         rgb: Vec<u8>,
@@ -238,6 +249,7 @@ pub(crate) struct DecodedFrame {
     pub(crate) capsule_digest: ContentDigest,
     pub(crate) dimensions: [u32; 2],
     pub(crate) pixels: FramePixels,
+    pub(crate) mask: MaskBinding,
 }
 
 /// Retained video picture identities needed to convert and bind its RGB.
@@ -249,6 +261,7 @@ pub(crate) struct VideoPicture<'a> {
     pub(crate) codec_receipt: ContentDigest,
     pub(crate) i420: ContentDigest,
     pub(crate) rgb: Result<Vec<u8>, RecordedDecodeError>,
+    pub(crate) mask: MaskBinding,
 }
 
 impl DecodedFrame {
@@ -270,13 +283,41 @@ impl DecodedFrame {
             capsule_digest: picture.capsule_digest,
             dimensions: picture.dimensions,
             pixels: FramePixels::Video { rgb, receipt },
+            mask: picture.mask,
+        })
+    }
+    /// Native JPEG RGB decode with `mask` applied before any consumer sees it.
+    pub(crate) fn jpeg(
+        segment: usize,
+        capsule: SensorCapsule,
+        capsule_digest: ContentDigest,
+        image: DecodedRgb,
+        mask: MaskBinding,
+    ) -> Result<Self, PackageDetectError> {
+        let dimensions = image.dimensions();
+        let pixels = match mask
+            .mask_rgb_decode(image.pixels(), image.receipt())
+            .map_err(frame_error(segment))?
+        {
+            None => FramePixels::Jpeg(image),
+            Some((rgb, receipt)) => FramePixels::MaskedJpeg { rgb, receipt },
+        };
+        Ok(Self {
+            segment,
+            capsule,
+            capsule_digest,
+            dimensions,
+            pixels,
+            mask,
         })
     }
     /// SHA-256 of the packed RGB the model sees before privacy projection and resize.
     pub(crate) fn rgb_digest(&self) -> ContentDigest {
         let bytes = match &self.pixels {
             FramePixels::Jpeg(image) => image.receipt().rgb_sha256,
-            FramePixels::Video { receipt, .. } => receipt.rgb_sha256,
+            FramePixels::MaskedJpeg { receipt, .. } | FramePixels::Video { receipt, .. } => {
+                receipt.rgb_sha256
+            }
         };
         ContentDigest::new(DigestAlgorithm::Sha256, bytes)
     }
@@ -300,10 +341,13 @@ impl FrameRun<'_> {
         self.cx
             .checkpoint("package_detect:frame")
             .map_err(|_| PackageDetectError::Cancelled)?;
-        let count = d.dimensions[0] as usize * d.dimensions[1] as usize;
-        // No privacy mask is recorded for a retained file import: every pixel is admitted,
-        // and that choice is itself bound into the source binding as an explicit digest.
-        let allowed = vec![1_u8; count];
+        // The sensor's retained privacy mask is the per-pixel permission: masked pixels are
+        // projected out again before the model and screen every detection. Without a policy
+        // every pixel is admitted, and that choice is bound into the source binding as a digest.
+        let allowed = d
+            .mask
+            .allowed(d.dimensions)
+            .map_err(frame_error(d.segment))?;
         let source = binding(
             &d.capsule,
             d.capsule_digest,
@@ -315,6 +359,10 @@ impl FrameRun<'_> {
         let (inference, color) = match &d.pixels {
             FramePixels::Jpeg(image) => (
                 model.run_decoded(image, source, &allowed, self.run, self.scalar),
+                "jpeg_rgb",
+            ),
+            FramePixels::MaskedJpeg { rgb, receipt } => (
+                model.run_rgb_pixels(rgb, *receipt, source, &allowed, self.run, self.scalar),
                 "jpeg_rgb",
             ),
             FramePixels::Video { rgb, receipt } => (
@@ -383,6 +431,9 @@ pub fn run_package_detection(
     }
     let media_format = retained.manifest().format.clone();
     let import_root = retained.import_root();
+    let (first_capsule, _) =
+        source_capsule(deployment, &retained, first).map_err(frame_error(first))?;
+    let privacy = current_mask(deployment, &first_capsule.sensor_id).map_err(frame_error(first))?;
     let mut run = FrameRun {
         package,
         contract,
@@ -413,14 +464,16 @@ pub fn run_package_detection(
                     &mut budget,
                 )
                 .map_err(frame_error(segment))?;
-                let dimensions = image.dimensions();
-                frames.push(run.infer(DecodedFrame {
+                if capsule.sensor_id != first_capsule.sensor_id {
+                    return Err(PackageDetectError::InvalidRequest);
+                }
+                frames.push(run.infer(DecodedFrame::jpeg(
                     segment,
                     capsule,
                     capsule_digest,
-                    dimensions,
-                    pixels: FramePixels::Jpeg(image),
-                })?);
+                    image,
+                    privacy.clone(),
+                )?)?);
             }
         }
         "annexb" => {
@@ -454,6 +507,7 @@ pub fn run_package_detection(
                     codec_receipt: r.digest(),
                     i420: r.i420_sha256(),
                     rgb: frame.to_rgb(),
+                    mask: frame.mask().clone(),
                 })?)?);
             }
         }
@@ -488,12 +542,13 @@ pub fn run_package_detection(
                     codec_receipt: r.digest(),
                     i420: r.i420_sha256(),
                     rgb: frame.to_rgb(),
+                    mask: frame.mask().clone(),
                 })?)?);
             }
         }
         _ => return Err(PackageDetectError::InvalidRequest),
     }
-    let json = render(package, request, contract, &media_format, &frames)
+    let json = render(package, request, contract, &media_format, &frames, &privacy)
         .map_err(|_| PackageDetectError::InvalidRequest)?;
     cx.checkpoint("package_detect:complete")
         .map_err(|_| PackageDetectError::Cancelled)?;
@@ -508,6 +563,7 @@ pub fn run_package_detection(
         digest: ContentDigest::sha256(json.as_bytes()),
         json,
         frames,
+        privacy,
     })
 }
 
@@ -533,12 +589,13 @@ fn render(
     contract: &RgbDetectionContract,
     media_format: &str,
     frames: &[PackageDetectFrame],
+    privacy: &MaskBinding,
 ) -> Result<String, fmt::Error> {
     let spec = contract.spec();
     let mut s = String::new();
     write!(
         s,
-        "{{\"schema\":\"{PACKAGE_DETECTION_REPORT_SCHEMA}\",\"package_digest\":\"{}\",\"manifest_digest\":\"{}\",\"model_id\":{},\"generation\":{},\"model_digest\":\"{}\",\"graph_digest\":\"{}\",\"contract_digest\":\"{}\",\"source_import\":\"{}\",\"media_format\":{},\"first_segment\":{},\"segment_count\":{},\"minimum_score_ppm\":{},\"nms_iou_ppm\":{},\"box_subpixels\":{},\"labels\":[",
+        "{{\"schema\":\"{PACKAGE_DETECTION_REPORT_SCHEMA}\",\"package_digest\":\"{}\",\"manifest_digest\":\"{}\",\"model_id\":{},\"generation\":{},\"model_digest\":\"{}\",\"graph_digest\":\"{}\",\"contract_digest\":\"{}\",\"source_import\":\"{}\",\"media_format\":{},\"first_segment\":{},\"segment_count\":{},\"privacy_mask\":{},\"minimum_score_ppm\":{},\"nms_iou_ppm\":{},\"box_subpixels\":{},\"labels\":[",
         package.archive_digest(),
         package.manifest_digest(),
         json_string(package.manifest().model_id().as_str()),
@@ -550,6 +607,7 @@ fn render(
         json_string(media_format),
         request.first_segment,
         request.segment_count,
+        privacy.to_json(),
         spec.minimum_score_ppm,
         spec.nms_iou_ppm,
         super::detections::BOX_SUBPIXELS

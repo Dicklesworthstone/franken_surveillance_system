@@ -8,6 +8,13 @@
 //! Retained H.264 Annex-B imports decode through [`h264`], which binds each reconstructed
 //! picture to the same custody but, being inter-predicted, decodes contiguous IDR-led ranges.
 //! Retained H.265 (`hevc`) imports decode the same way through [`h265`], from IRAP-led ranges.
+//!
+//! Every path applies the sensor's current retained privacy mask
+//! ([`super::privacy_mask`]) to the decoded planes before anything else sees them: the retained
+//! luma, the PGM export and every consumer receive masked pixels only, and every receipt binds
+//! the mask policy digest or the explicit no-policy marker. The mask binding is part of the
+//! decode identity, so a policy change starts a new lineage; a decode retained under another
+//! binding is refused as unmasked access, never served.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -21,11 +28,15 @@ use fss_core::{
 use fss_object::{ObjectError, ObjectManifest, SpoolError};
 use fss_publication::{LocalPublicationError, SlotName};
 
+use super::privacy_mask::{
+    MaskBinding, PrivacyMaskError, binding_digest, current_mask, decode_marker, encode_marker,
+    superseded_bindings,
+};
 use super::{FileIngestError, RetainedFileImport, RetainedReadLimits};
 use crate::{ReferenceDeployment, ReferenceError, ReplayCx};
 
 /// Receipt format owned by the retained-media composition, not a second JPEG implementation.
-pub const RECORDED_DECODE_DOMAIN: &str = "fss.recorded_luma_receipt.v1";
+pub const RECORDED_DECODE_DOMAIN: &str = "fss.recorded_luma_receipt.v2";
 /// Maximum canonical receipt allocation; receipts contain identities, not pixel arrays.
 pub const MAX_RECORDED_DECODE_RECEIPT_BYTES: usize = 4_096;
 /// Boundary after decode, before any derived object is staged.
@@ -117,6 +128,9 @@ pub enum RecordedDecodeError {
     },
     /// The canonical H.265 decoder refused the stream (including unsupported profiles/tools).
     H265(fss_codec_h265::DecodeError),
+    /// The sensor's privacy mask could not be resolved or applied, or the request would serve
+    /// pixels it does not mask; nothing unmasked is returned.
+    PrivacyMask(PrivacyMaskError),
 }
 
 /// Registered stable error identities (registries/ERRORS.md) for decode refusals.
@@ -141,6 +155,7 @@ impl RecordedDecodeError {
             | Self::H264(fss_codec_h264::DecodeError::Limit)
             | Self::H265(fss_codec_h265::DecodeError::Limit) => "ERR-DECODE-BOUNDS-001",
             Self::Unavailable | Self::Source(_) => "ERR-DECODE-SOURCE-UNAVAILABLE-001",
+            Self::PrivacyMask(error) => error.stable_id(),
             _ => "ERR-DECODE-001",
         }
     }
@@ -170,6 +185,7 @@ impl fmt::Display for RecordedDecodeError {
             Self::H265SourceGap { segment } => write!(f, "recorded H.265 range crosses a source gap before segment {segment}"),
             Self::H265AccessUnit { segment } => write!(f, "recorded H.265 segment {segment} did not complete exactly one output picture"),
             Self::H265(e) => write!(f, "recorded H.265: {e}"),
+            Self::PrivacyMask(e) => write!(f, "recorded decode privacy mask: {e}"),
         }
     }
 }
@@ -192,6 +208,7 @@ conversion!(LocalPublicationError, Publication);
 conversion!(SpoolError, Spool);
 conversion!(fss_codec_h264::DecodeError, H264);
 conversion!(fss_codec_h265::DecodeError, H265);
+conversion!(PrivacyMaskError, PrivacyMask);
 
 fn checkpoint(cx: &ReplayCx, stage: &'static str) -> Result<(), RecordedDecodeError> {
     cx.checkpoint(stage)
@@ -233,13 +250,15 @@ fn key(
     import_root: ContentDigest,
     segment: u64,
     interpretation: ComponentInterpretation,
+    mask: ContentDigest,
 ) -> ContentDigest {
     let mut e = CanonicalEncoder::new();
-    e.text("fss.recorded_luma_key.v1");
+    e.text("fss.recorded_luma_key.v2");
     e.digest(import_root);
     e.u64(segment);
     e.digest(sha(decoder_identity()));
     e.u8(interpretation_tag(interpretation));
+    e.digest(mask);
     ContentDigest::sha256(&e.finish())
 }
 fn slot(identity: ContentDigest) -> Result<SlotName, RecordedDecodeError> {
@@ -268,6 +287,7 @@ pub struct RecordedDecodeReceipt {
     height: u32,
     codec: DecodeReceipt,
     work_units: u64,
+    mask_policy: Option<ContentDigest>,
 }
 
 impl RecordedDecodeReceipt {
@@ -278,7 +298,19 @@ impl RecordedDecodeReceipt {
             self.import_root,
             self.segment_index,
             self.codec.interpretation,
+            binding_digest(self.mask_policy),
         )
+    }
+    /// Retained privacy mask policy applied to the luma, or `None`: the explicit no-policy
+    /// marker (the sensor had no retained policy; pixels are unmasked).
+    #[must_use]
+    pub fn mask_policy(&self) -> Option<ContentDigest> {
+        self.mask_policy
+    }
+    /// Mask binding digest bound into [`Self::identity`].
+    #[must_use]
+    pub fn mask_binding(&self) -> ContentDigest {
+        binding_digest(self.mask_policy)
     }
     /// Original source capsule, including conservative capture interval and clock basis.
     #[must_use]
@@ -290,7 +322,8 @@ impl RecordedDecodeReceipt {
     pub fn dimensions(&self) -> [u32; 2] {
         [self.width, self.height]
     }
-    /// Accounting and identities from the canonical codec.
+    /// Accounting and identities from the canonical codec. `luma_sha256` is the digest of the
+    /// published (masked, when a policy applies) luma plane, never of pixels a mask removed.
     #[must_use]
     pub fn codec(&self) -> DecodeReceipt {
         self.codec
@@ -337,7 +370,7 @@ impl RecordedDecodeReceipt {
             return Err(RecordedDecodeError::InvalidReceipt);
         }
         let mut d = CanonicalDecoder::new(bytes);
-        if d.bytes()? != b"FSSYREC1" || d.u32()? != 1 || d.text()? != RECORDED_DECODE_DOMAIN {
+        if d.bytes()? != b"FSSYREC2" || d.u32()? != 2 || d.text()? != RECORDED_DECODE_DOMAIN {
             return Err(RecordedDecodeError::InvalidReceipt);
         }
         let import_identity = d.digest()?;
@@ -373,6 +406,7 @@ impl RecordedDecodeReceipt {
             metadata_bytes: integer()?,
         };
         let work_units = d.u64()?;
+        let mask_policy = decode_marker(&mut d)?;
         d.ensure_finished()?;
         let receipt = Self {
             import_identity,
@@ -387,6 +421,7 @@ impl RecordedDecodeReceipt {
             height,
             codec,
             work_units,
+            mask_policy,
         };
         if receipt.encoded()? != bytes {
             return Err(RecordedDecodeError::InvalidReceipt);
@@ -471,8 +506,8 @@ fn decode_sha(d: &mut CanonicalDecoder<'_>) -> Result<[u8; 32], RecordedDecodeEr
 
 impl CanonicalEncode for RecordedDecodeReceipt {
     fn encode_canonical(&self, e: &mut CanonicalEncoder) {
-        e.bytes(b"FSSYREC1");
-        e.u32(1);
+        e.bytes(b"FSSYREC2");
+        e.u32(2);
         e.text(RECORDED_DECODE_DOMAIN);
         e.digest(self.import_identity);
         e.digest(self.import_root);
@@ -498,6 +533,7 @@ impl CanonicalEncode for RecordedDecodeReceipt {
             e.u64(value as u64);
         }
         e.u64(self.work_units);
+        encode_marker(e, self.mask_policy);
     }
 }
 
@@ -554,6 +590,16 @@ pub(crate) fn source_capsule(
     Ok((capsule, delta.payload_digest))
 }
 
+/// Retained source capsule of `segment` of a completed import, verified against its custody
+/// (the sensor identity every privacy-mask lookup starts from).
+pub fn retained_source_capsule(
+    deployment: &ReferenceDeployment,
+    retained: &RetainedFileImport,
+    segment: usize,
+) -> Result<SensorCapsule, RecordedDecodeError> {
+    source_capsule(deployment, retained, segment).map(|(capsule, _)| capsule)
+}
+
 fn source(
     deployment: &ReferenceDeployment,
     request: &RecordedDecodeRequest,
@@ -607,10 +653,12 @@ impl RecordedFrame {
         cx: &ReplayCx,
     ) -> Result<Self, RecordedDecodeError> {
         let (retained, capsule, capsule_digest, encoded) = source(deployment, request, cx)?;
+        let mask = current_mask(deployment, &capsule.sensor_id)?;
         let identity = key(
             retained.import_root(),
             request.segment_index as u64,
             request.interpretation,
+            mask.digest(),
         );
         let completion = batch_id(identity)?;
         if deployment
@@ -634,6 +682,10 @@ impl RecordedFrame {
         )?;
         checkpoint(cx, STAGE_RECORDED_DECODE)?;
         let [width, height] = image.dimensions();
+        // The mask is applied before the pixels are staged, digested or returned: no unmasked
+        // luma leaves this function, and the receipt carries only the masked plane's digest.
+        let (pixels, codec) = masked_luma(&mask, image.pixels(), image.receipt(), [width, height])?;
+        drop(image);
         let receipt = RecordedDecodeReceipt {
             import_identity: retained.import_identity(),
             import_root: retained.import_root(),
@@ -645,14 +697,13 @@ impl RecordedFrame {
             capsule,
             width,
             height,
-            codec: image.receipt(),
+            codec,
             work_units: budget
                 .used()
                 .checked_sub(used_before)
                 .ok_or(RecordedDecodeError::InvalidReceipt)?,
+            mask_policy: mask.policy_digest(),
         };
-        let pixels = image.pixels().to_vec();
-        drop(image);
         let receipt_bytes = receipt.encoded()?;
         let manifest = receipt.manifest()?;
         let slot = slot(receipt.identity())?;
@@ -707,18 +758,34 @@ impl RecordedFrame {
         cx: &ReplayCx,
     ) -> Result<Self, RecordedDecodeError> {
         let (retained, capsule, capsule_digest, _encoded) = source(deployment, request, cx)?;
+        let mask = current_mask(deployment, &capsule.sensor_id)?;
+        let lineage = |binding: ContentDigest| {
+            batch_id(key(
+                retained.import_root(),
+                request.segment_index as u64,
+                request.interpretation,
+                binding,
+            ))
+        };
+        let target = lineage(mask.digest())?;
         let identity = key(
             retained.import_root(),
             request.segment_index as u64,
             request.interpretation,
+            mask.digest(),
         );
-        let target = batch_id(identity)?;
-        let batch = deployment
-            .ledger()
-            .batches()
-            .iter()
-            .find(|b| b.batch_id == target)
-            .ok_or(RecordedDecodeError::Unavailable)?;
+        let batches = deployment.ledger().batches();
+        let Some(batch) = batches.iter().find(|b| b.batch_id == target) else {
+            // A decode retained under no or a superseded mask policy exists but is never served:
+            // its pixels are not masked by the sensor's current policy.
+            for superseded in superseded_bindings(deployment, &capsule.sensor_id)? {
+                let other = lineage(superseded)?;
+                if batches.iter().any(|b| b.batch_id == other) {
+                    return Err(PrivacyMaskError::UnmaskedAccessRefused.into());
+                }
+            }
+            return Err(RecordedDecodeError::Unavailable);
+        };
         if batch.deltas.len() != 1 {
             return Err(RecordedDecodeError::InvalidReceipt);
         }
@@ -733,6 +800,7 @@ impl RecordedFrame {
             || receipt.capsule != capsule
             || receipt.capsule_digest != capsule_digest
             || receipt.codec.interpretation != request.interpretation
+            || receipt.mask_policy != mask.policy_digest()
             || receipt.source_offset
                 != retained.manifest().segment_spans[request.segment_index].offset
         {
@@ -797,6 +865,7 @@ impl RecordedFrame {
             return Err(RecordedDecodeError::InvalidReceipt);
         }
         let (_, capsule, _, bytes) = source(deployment, request, cx)?;
+        let mask = current_mask(deployment, &capsule.sensor_id)?;
         let before = budget.used();
         let image = decode_luma(
             &bytes,
@@ -805,9 +874,12 @@ impl RecordedFrame {
             request.decode_limits,
             budget,
         )?;
+        let (pixels, codec) =
+            masked_luma(&mask, image.pixels(), image.receipt(), image.dimensions())?;
         if image.dimensions() != self.receipt.dimensions()
-            || image.receipt() != self.receipt.codec
-            || image.pixels() != self.pixels
+            || mask.policy_digest() != self.receipt.mask_policy
+            || codec != self.receipt.codec
+            || pixels != self.pixels
             || budget.used() - before != self.receipt.work_units
         {
             return Err(RecordedDecodeError::InvalidReceipt);
@@ -820,7 +892,8 @@ impl RecordedFrame {
     pub fn receipt(&self) -> &RecordedDecodeReceipt {
         &self.receipt
     }
-    /// Tight row-major full-range Y, not RGB and not an oriented display rendering.
+    /// Tight row-major full-range Y, not RGB and not an oriented display rendering. Masked
+    /// samples (when the receipt names a policy) hold the fixed mask fill.
     #[must_use]
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
@@ -843,6 +916,23 @@ impl RecordedFrame {
         bytes.extend_from_slice(&self.pixels);
         bytes
     }
+}
+
+/// Applies `mask` to a decoded luma plane and returns it with the codec receipt whose
+/// `luma_sha256` names the published (masked) plane.
+fn masked_luma(
+    mask: &MaskBinding,
+    luma: &[u8],
+    codec: DecodeReceipt,
+    dimensions: [u32; 2],
+) -> Result<(Vec<u8>, DecodeReceipt), RecordedDecodeError> {
+    let mut pixels = luma.to_vec();
+    mask.apply_luma(&mut pixels, dimensions)?;
+    let codec = DecodeReceipt {
+        luma_sha256: ContentDigest::sha256(&pixels).bytes(),
+        ..codec
+    };
+    Ok((pixels, codec))
 }
 
 /// Retained H.264 Annex-B range decoding bound to the same source custody.

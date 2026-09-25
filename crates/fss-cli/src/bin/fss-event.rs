@@ -34,10 +34,12 @@ mod corroborate;
 mod coverage;
 #[path = "fss-event/detector.rs"]
 mod detector;
+#[path = "fss-event/privacy_mask.rs"]
+mod privacy_mask;
 #[path = "fss-event/watch.rs"]
 mod watch;
 
-const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|alert> [options]\n\
+const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|alert|privacy-mask> [options]\n\
   All: --root DIR --site SITE [--principal ID]\n\
   report: --import-id sha256:HEX --runs FILE --interpretation gray|ycbcr\n\
           --model-digest sha256:HEX --output-port NAME --labels ORDERED,CLASS,NAMES\n\
@@ -130,7 +132,19 @@ const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|ale
     plaintext HTTP POST to the explicitly approved relay (no DNS, redirects or retries)\n\
     within the deadline and records the observation. A 2xx proves relay acceptance only\n\
     (adapter_accepted), never human delivery; a lost ack, timeout or refusal stays\n\
-    indeterminate (exit 1, ERR-EFFECT-INDETERMINATE-001). Reruns never resend.\n";
+    indeterminate (exit 1, ERR-EFFECT-INDETERMINATE-001). Reruns never resend.\n\
+  privacy-mask declare (owner privacy mask, one sensor): --sensor ID --resolution WxH\n\
+          --rect X,Y,W,H [--rect ...] (1..32, decoded pixels at the declared stream\n\
+          resolution) [--approve sha256:APPROVAL] [--report-out FILE]\n\
+    Without --approve: prints the policy digest and the exact approval over the sensor's\n\
+    current retained policy; nothing is written. --approve retains exactly that declaration\n\
+    as the sensor's next policy generation (authority); a stale or wrong approval is\n\
+    refused before any write (ERR-PRIVACY-MASK-APPROVAL-STALE-001); reruns write nothing.\n\
+    Every later decode (fss-file decode, watch, corroborate, package-detect, the cascade)\n\
+    fills masked pixels (luma 16, chroma 128, RGB 16,16,16) before any consumer, binds the\n\
+    policy digest into every receipt and lineage, and reports zones with any masked pixel\n\
+    as not observable (privacy_masked). There is no unmasked-access override.\n\
+  privacy-mask show: --sensor ID (the sensor's current binding, or no_policy_declared)\n";
 type RunResult<T> = Result<T, Box<dyn Error>>;
 type Values = BTreeMap<String, OsString>;
 #[derive(Debug)]
@@ -164,6 +178,7 @@ enum Action {
     Watch(Box<watch::WatchAction>),
     Corroborate(Box<corroborate::CorroborateAction>),
     Alert(Box<alert::AlertAction>),
+    PrivacyMask(Box<privacy_mask::PrivacyMaskAction>),
 }
 #[derive(Debug)]
 struct Options {
@@ -256,8 +271,25 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
             action: Action::Alert(Box::new(request)),
         }));
     }
+    if action == "privacy-mask" {
+        let request = privacy_mask::parse(&args[1..])?;
+        return Ok(Some(Options {
+            root: request.root.clone(),
+            site: request.site.clone(),
+            principal: request.principal.clone(),
+            limits: AnalysisLimits::default(),
+            detection_units: 0,
+            association_units: 0,
+            event_out: None,
+            report_out: None,
+            action: Action::PrivacyMask(Box::new(request)),
+        }));
+    }
     if !matches!(action, "report" | "prepare" | "publish" | "read") {
-        return Err("expected report, prepare, publish, read, watch, corroborate or alert".into());
+        return Err(
+            "expected report, prepare, publish, read, watch, corroborate, alert or privacy-mask"
+                .into(),
+        );
     }
     let common = [
         "--root",
@@ -581,6 +613,10 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
                 alert::run(action, &mut deployment, &options.root, &authority, &cx, out)?;
                 return Ok(());
             }
+            Action::PrivacyMask(action) => {
+                privacy_mask::run(action, &mut deployment, &options.root, &cx, out)?;
+                return Ok(());
+            }
             Action::Report {
                 import,
                 interpretation,
@@ -855,6 +891,8 @@ fn main() -> ExitCode {
                 } else if let Some(refusal) = e.downcast_ref::<fss_reference::ingest::rgb_package::RgbPackageError>() {
                     eprintln!("refusal_id={}", refusal.stable_id());
                 } else if let Some(refusal) = e.downcast_ref::<fss_reference::ingest::detector_cascade::CascadeError>() {
+                    eprintln!("refusal_id={}", refusal.stable_id());
+                } else if let Some(refusal) = e.downcast_ref::<fss_reference::ingest::privacy_mask::PrivacyMaskError>() {
                     eprintln!("refusal_id={}", refusal.stable_id());
                 }
                 eprintln!(

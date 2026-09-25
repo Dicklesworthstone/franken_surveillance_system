@@ -29,9 +29,10 @@ use fss_core::{CanonicalEncoder, ContentDigest};
 
 use super::RetainedFileImport;
 use super::package_detect::{
-    DecodedFrame, FramePixels, FrameRun, PackageDetectError, PackageDetectFrame,
-    PackageDetectLimits, VideoPicture,
+    DecodedFrame, FrameRun, PackageDetectError, PackageDetectFrame, PackageDetectLimits,
+    VideoPicture,
 };
+use super::privacy_mask::current_mask;
 use super::recorded_decode::h264::{RecordedH264Range, RecordedH264Request};
 use super::recorded_decode::h265::{RecordedH265Range, RecordedH265Request};
 use super::recorded_decode::video_rgb::video_rgb_transform_identity;
@@ -761,6 +762,11 @@ impl<'a> DetectorCascade<'a> {
                     cx,
                 )?;
                 let mut budget = DecodeBudget::new(limits.jpeg_work_units);
+                let (first_capsule, _) =
+                    source_capsule(deployment, &retained, source.first_segment)?;
+                let privacy_sensor = &first_capsule.sensor_id;
+                let privacy =
+                    current_mask(deployment, privacy_sensor).map_err(RecordedDecodeError::from)?;
                 let rgb_limits = RgbDecodeLimits {
                     frame: limits.jpeg_limits,
                     maximum_output_bytes: MAX_RGB_BYTES,
@@ -784,18 +790,23 @@ impl<'a> DetectorCascade<'a> {
                             continue;
                         }
                     };
-                    let dimensions = decoded.dimensions();
-                    results.push(infer_one(
-                        &mut run,
-                        DecodedFrame {
+                    if capsule.sensor_id != *privacy_sensor {
+                        results.push((segment, FrameStatus::Refused(CASCADE_FRAME_REFUSED)));
+                        continue;
+                    }
+                    // The sensor's privacy mask is applied before the detector sees the frame.
+                    results.push(
+                        match DecodedFrame::jpeg(
                             segment,
                             capsule,
                             capsule_digest,
-                            dimensions,
-                            pixels: FramePixels::Jpeg(decoded),
+                            decoded,
+                            privacy.clone(),
+                        ) {
+                            Ok(frame) => infer_one(&mut run, frame, labels)?,
+                            Err(_) => (segment, FrameStatus::Refused(CASCADE_FRAME_REFUSED)),
                         },
-                        labels,
-                    )?);
+                    );
                 }
             }
             "annexb" => {
@@ -827,6 +838,7 @@ impl<'a> DetectorCascade<'a> {
                         codec_receipt: r.digest(),
                         i420: r.i420_sha256(),
                         rgb: frame.to_rgb(),
+                        mask: frame.mask().clone(),
                     };
                     results.push(match DecodedFrame::video(picture) {
                         Ok(decoded) => infer_one(&mut run, decoded, labels)?,
@@ -863,6 +875,7 @@ impl<'a> DetectorCascade<'a> {
                         codec_receipt: r.digest(),
                         i420: r.i420_sha256(),
                         rgb: frame.to_rgb(),
+                        mask: frame.mask().clone(),
                     };
                     results.push(match DecodedFrame::video(picture) {
                         Ok(decoded) => infer_one(&mut run, decoded, labels)?,

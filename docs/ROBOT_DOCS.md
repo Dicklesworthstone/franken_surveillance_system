@@ -699,6 +699,10 @@ All stable error identities and normative recovery guidance cataloged from `regi
 | `ERR-PACKAGE-EVENT-UNAVAILABLE-001` | the deployment retains no package detection with this report digest (only 'fss-infer package-detect --retain yes' retains one) | retain the detection first, then rerun |
 | `ERR-PRECONDITION-STALE-001` | plan anchor changed before commit | re-plan; never auto-commit changed intent |
 | `ERR-PRIVACY-MASK-001` | required redaction could not be applied | fail closed at restricted boundary |
+| `ERR-PRIVACY-MASK-APPROVAL-STALE-001` | a 'privacy-mask declare --approve' digest matches neither this declaration over the sensor's current retained policy nor the approval that retained it; nothing was written | rerun without the approval and review the current approval digest |
+| `ERR-PRIVACY-MASK-POLICY-001` | a declared privacy mask policy is outside its contract (resolution 1..4096 per dimension, 1..32 non-empty duplicate-free rectangles inside the declared resolution) | correct the declaration; do not retry unchanged |
+| `ERR-PRIVACY-MASK-RESOLUTION-001` | decoded frame dimensions differ from the sensor's retained privacy mask resolution; no pixel is served unmasked | declare a policy for the actual stream resolution; do not retry unchanged |
+| `ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001` | the request would serve pixels the sensor's current retained privacy mask does not mask (raw retained source export, or a decode retained under no or a superseded mask policy); no override capability exists | decode again under the current policy; raw source of a masked sensor has no export path |
 | `ERR-PROV-CORRUPT-FILE-001` | provenance registry or markdown documentation file is missing or corrupt | repair or restore provenance registry file |
 | `ERR-PROV-DIGEST-MISMATCH-001` | provenance registry digest does not match canonical encoding of metadata and rows | recompute canonical provenance registry digest |
 | `ERR-PROV-FREEZE-DIVERGENCE-001` | provenance registry digest diverged from pinned baseline freeze digest | restore frozen provenance registry or bump generation |

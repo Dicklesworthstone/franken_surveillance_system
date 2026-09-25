@@ -48,6 +48,38 @@ A mask change is a durable effect with prepare/preview/commit. The preview shows
 coverage; increasing privacy may legitimately create a blind spot, which the coverage certificate
 must expose. A model cannot relax a mask.
 
+### 4.1 What is enforced today (fss-bgqkd, reference, unqualified)
+
+Implemented, for retained file imports (`fss-file import`) only:
+
+- **Declaration.** `fss-event privacy-mask declare` retains an owner-declared, versioned policy
+  per sensor: the declared stream resolution and 1..32 axis-aligned rectangles
+  (`transform:bounding_box_redact` regions). Preview, then exact approval over the sensor's
+  current policy; one `privacy_mask_policy` authority generation per approval; stale approvals are
+  refused before any write. Policies can be replaced, never silently relaxed by a model; there is
+  no removal command.
+- **Enforcement at decode.** Every retained decode path (JPEG/MJPEG luma and RGB, H.264, H.265,
+  video RGB) fills masked pixels (luma 16, chroma 128, RGB 16,16,16) before the foreground model,
+  tracker, zone gate, detector package, cascade, PGM export or any other consumer sees them. The
+  receipts bind the policy digest or an explicit no-policy marker; lineages of different mask
+  generations never share an identity.
+- **Honest coverage.** A zone with any masked pixel carries no coverage witness: its frames are
+  uncovered with reason `privacy_masked`, and `fss orient` reports it `not_observable` (the
+  coverage model has no sub-zone domain, so a partly masked zone is not observable as a whole;
+  draw the visible part as its own zone). A masked area is never absence evidence.
+- **Typed transform.** Watch reports, candidates, package-detection reports and `fss-file decode`
+  name the applied transform (`transform:bounding_box_redact`) and policy digest; a published
+  watch event carries the retained policy as a `required_by` evidence edge.
+- **Unmasked access refused.** Raw source export of a masked sensor and decodes retained under no
+  or a superseded policy are refused (`ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001`). There is no
+  override capability.
+
+Not enforced yet: masks on live HTTP/RTSP capture paths and the laboratory twin (they take a
+caller-supplied permission mask or none), polygons, audio exclusion, archive-only versus
+model-only redaction, deletion closure (unmasked source and superseded decodes remain in local
+custody), retention schedules, and biometric controls beyond the absence of any biometric
+feature.
+
 ## 5. Identity without surveillance creep
 
 The system often needs to avoid alerting when a resident takes out trash. It should combine

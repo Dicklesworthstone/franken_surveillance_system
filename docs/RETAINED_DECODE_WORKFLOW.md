@@ -46,19 +46,23 @@ the same recipe resumes the final transition. An error may leave staged immutabl
 this is not a claim of atomic rollback. Existing tombstones and publication conflicts are not
 bypassed. Ordinary readers never truncate or repair journals.
 
-## Binary receipt v1 (format owner: fss-reference retained-media composition)
+## Binary receipt v2 (format owner: fss-reference retained-media composition)
 
 This is internal reference evidence, not a replacement for the universal agent response
-protocol. Its domain is `fss.recorded_luma_receipt.v1`; its current migration rule is exact-v1
-or explicit refusal, never silent conversion. The receipt is capped at 4096 bytes. It uses
-the existing checked canonical encoder in this exact field order:
+protocol. Its domain is `fss.recorded_luma_receipt.v2` (v2 added the privacy-mask marker,
+fss-bgqkd); its migration rule is exact-v2 or explicit refusal, never silent conversion: a v1
+receipt is a different decode identity and is never reopened as v2. The receipt is capped at
+4096 bytes. It uses the existing checked canonical encoder in this exact field order:
 
-1. Length-prefixed magic `FSSYREC1`, big-endian u32 version 1, domain text.
+1. Length-prefixed magic `FSSYREC2`, big-endian u32 version 2, domain text.
 2. SHA-256 import identity, import root, import-manifest digest, canonical import-completion anchor.
 3. u64 source segment index and file offset; capsule digest; complete canonical `SensorCapsule`.
 4. u32 coded width and height; SHA-256 encoded source, luma and decoder identities.
 5. u8 interpretation (0 grayscale, 1 YCbCr); u64 MCU count, entropy-block count, restart count,
    metadata-segment count, metadata-byte count and charged codec work units.
+6. Privacy-mask marker: u8 0 (explicit "no policy": the sensor had no retained mask) or u8 1
+   followed by the SHA-256 of the retained mask policy that was applied. The luma digest of
+   item 4 is always the digest of the published (masked) plane.
 
 The content-addressed parent manifest authenticates the receipt's expected checksum within
 local custody; a self-consistent checksum is not remote principal authentication. Dimensions
@@ -67,8 +71,9 @@ are bounded by the canonical codec: each axis <=4096, at most 4,194,304 pixels, 
 source binding and incompatible decoder identity are refused. Previous generation receipts
 remain immutable; future readers must implement an explicit version/decoder migration policy.
 
-The derived key binds the immutable import root, segment index, exact codec identity and
-interpretation. Admission ceilings do not alter that key: a larger work allowance cannot
+The derived key (`fss.recorded_luma_key.v2`) binds the immutable import root, segment index,
+exact codec identity, interpretation and the mask binding digest (`fss.privacy_mask_binding.v1`
+over the marker). Admission ceilings do not alter that key: a larger work allowance cannot
 change the pixels or silently replace an existing result. The canonical object graph includes
 both raw-pixel and compressed-source identities. PGM rendering is a separate export, with a
 separate byte digest, and does not change the underlying evidence.
@@ -76,6 +81,45 @@ separate byte digest, and does not change the underlying evidence.
 This implementation and its adversarial/restart/cancellation tests do not establish production
 qualification. Run the repository's pinned-nightly Rust and local qualification lanes before
 promoting a release claim.
+
+## Privacy masks at decode (fss-bgqkd)
+
+An owner declares a per-sensor mask policy with `fss-event privacy-mask declare --sensor ID
+--resolution WxH --rect X,Y,W,H [...]`: a preview prints the canonical policy digest
+(`fss.privacy_mask_policy.v1`) and an exact approval over the sensor's current retained policy;
+only `--approve <approval>` retains it, as the next generation of the sensor's
+`privacy_mask_policy` ledger object (authority plane). A stale or wrong approval is refused before
+any write (`ERR-PRIVACY-MASK-APPROVAL-STALE-001`); an exact rerun writes nothing. Rectangles are
+fss-core `RedactedRegion`s with the existing `transform:bounding_box_redact` method, at most 32,
+in decoded pixels of the declared stream resolution. Polygons are not supported.
+
+Every retained decode resolves the capsule sensor's *current* policy and applies it to the
+decoded planes before any other code sees them:
+
+- JPEG/MJPEG luma (`RecordedFrame::decode_and_publish`, `open`, `verify_by_replay`, the watch
+  reader): masked samples become luma 16 before staging, digesting, PGM export or analysis;
+- H.264 and H.265 frames (`RecordedH264Range`, `RecordedH265Range`): luma 16 and every Cb/Cr
+  sample whose 2x2 luma block touches a masked sample becomes 128, before the receipt's luma,
+  chroma and I420 digests are taken; `to_rgb` additionally writes RGB 16,16,16 over masked pixels;
+- JPEG RGB (package-detect and the detection cascade): the native RGB decode is masked to RGB
+  16,16,16 and re-receipted (decoder identity folded with the binding through
+  `fss.privacy_mask_lineage.v1`); the same mask is the per-pixel permission of the RGB privacy
+  projection, so no detection may touch a masked pixel.
+
+A frame whose dimensions differ from the policy's declared resolution is refused
+(`ERR-PRIVACY-MASK-RESOLUTION-001`), never served unmasked. Without a policy the pixels are
+unchanged and every receipt carries the explicit no-policy marker. The H.264/H.265 frame receipt
+domains moved to `fss.recorded_h264_frame_receipt.v2` / `fss.recorded_h265_frame_receipt.v2` for
+the same marker.
+
+A policy change is a new lineage: the JPEG decode key, the watch plan identity (and so every
+candidate, analysis and coverage identity) and every coverage pipeline generation bind the mask
+binding, so nothing retained under another generation is reused. `open`/`read-decoded` of a
+decode retained under no or a superseded policy is refused as unmasked access
+(`ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001`); decode again under the current policy. `fss-file
+extract` of a masked sensor's raw retained source is refused the same way: compressed source
+cannot be masked without re-encoding. There is no override capability. The retained source and
+earlier decodes are not deleted (deletion closure is not implemented).
 
 ## Retained H.264 range decode
 

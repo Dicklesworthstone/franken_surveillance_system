@@ -1572,6 +1572,26 @@
       "id": "ERR-PRIVACY-MASK-001"
     },
     {
+      "description": "a `privacy-mask declare --approve` digest matches neither this declaration over the sensor's current retained policy nor the approval that retained it; nothing was written",
+      "guidance": "rerun without the approval and review the current approval digest",
+      "id": "ERR-PRIVACY-MASK-APPROVAL-STALE-001"
+    },
+    {
+      "description": "a declared privacy mask policy is outside its contract (resolution 1..4096 per dimension, 1..32 non-empty duplicate-free rectangles inside the declared resolution)",
+      "guidance": "correct the declaration; do not retry unchanged",
+      "id": "ERR-PRIVACY-MASK-POLICY-001"
+    },
+    {
+      "description": "decoded frame dimensions differ from the sensor's retained privacy mask resolution; no pixel is served unmasked",
+      "guidance": "declare a policy for the actual stream resolution; do not retry unchanged",
+      "id": "ERR-PRIVACY-MASK-RESOLUTION-001"
+    },
+    {
+      "description": "the request would serve pixels the sensor's current retained privacy mask does not mask (raw retained source export, or a decode retained under no or a superseded mask policy); no override capability exists",
+      "guidance": "decode again under the current policy; raw source of a masked sensor has no export path",
+      "id": "ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001"
+    },
+    {
       "description": "provenance registry or markdown documentation file is missing or corrupt",
       "guidance": "repair or restore provenance registry file",
       "id": "ERR-PROV-CORRUPT-FILE-001"
