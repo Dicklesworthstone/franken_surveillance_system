@@ -846,8 +846,8 @@ class TestSchemaConstitution(unittest.TestCase):
         # 109 = 105 + four privacy-mask digest domains (fss-bgqkd).
         # 114 = 109 + four graph digest domains and the coverage single-points report (fss-w96u7).
         # 115 = 114 + the masked RGB evidence recipe (fss-g9gml).
-        # 119 = 115 + four deletion-closure digest domains (fss-x4a.9.7).
-        self.assertEqual(result["digestDomainCount"], 119)
+        # 118 = 115 + the new deletion-closure digest domains (fss-x4a.9.7).
+        self.assertEqual(result["digestDomainCount"], 118)
 
         # Continuation cursor is verified implemented
         implemented_names = {s["name"] for s in result["schemas"] if s["status"] == "implemented"}
@@ -1338,8 +1338,8 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         # 109 = 105 + four privacy-mask digest domains (fss-bgqkd).
         # 114 = 109 + four graph digest domains and the coverage single-points report (fss-w96u7).
         # 115 = 114 + the masked RGB evidence recipe (fss-g9gml).
-        # 119 = 115 + four deletion-closure digest domains (fss-x4a.9.7).
-        self.assertEqual(result["digestDomainCount"], 119)
+        # 118 = 115 + the new deletion-closure digest domains (fss-x4a.9.7).
+        self.assertEqual(result["digestDomainCount"], 118)
         # 36 = 28 + fss.sensor_tamper_status.v1 (owner SensorTamperStatus, fss-2uftm)
         # + fss.agent_operations.v1 / fss.agent_views.v1 / fss.agent_request_envelope.v1
         #   (owners AgentOperation / AgentView / AgentRequestEnvelope, fss-x4a.30.83.17-40)
