@@ -628,6 +628,7 @@ pub struct WatchReport {
     coverage_status: CoverageStatus,
     cascade: Option<WatchCascade>,
     decode_refusals: Vec<DecodeRefusal>,
+    tracking_restarts: Vec<usize>,
     privacy: MaskBinding,
 }
 
@@ -1203,6 +1204,7 @@ impl WatchReport {
             coverage_status,
             cascade,
             decode_refusals,
+            tracking_restarts: restarts,
             privacy,
         })
     }
@@ -1211,6 +1213,15 @@ impl WatchReport {
     #[must_use]
     pub fn decode_refusals(&self) -> &[DecodeRefusal] {
         &self.decode_refusals
+    }
+
+    /// First decoded segment after each tracking restart, in segment order. These are the
+    /// exact boundaries used by coverage and bound into the analysis identity; they cannot be
+    /// reconstructed from missing frames alone (a decoder may restart without losing a frame).
+    /// Always empty for strict analyses, and for tolerant analyses with no discontinuity.
+    #[must_use]
+    pub fn tracking_restarts(&self) -> &[usize] {
+        &self.tracking_restarts
     }
 
     /// Privacy mask binding applied to every decoded frame of this analysis.
@@ -1519,7 +1530,7 @@ impl WatchReport {
 
 /// `,"decode_refusals":[...]` for a tolerant analysis that refused segments; empty otherwise, so
 /// every other report keeps its exact bytes.
-fn decode_refusals_json(refusals: &[DecodeRefusal]) -> String {
+pub(crate) fn decode_refusals_json(refusals: &[DecodeRefusal]) -> String {
     if refusals.is_empty() {
         return String::new();
     }

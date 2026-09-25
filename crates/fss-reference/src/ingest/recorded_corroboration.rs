@@ -46,9 +46,21 @@
 //! `occluded` or `outside_frustum` for coverage, and without a mesh every witness says it is
 //! frustum-only (`occlusion_unknown`). The threshold, the sample grid, the pose and the mesh
 //! digest are bound into the pipeline generation ([`CorroborationReport::analyze_with_visibility`]).
+//!
+//! With [`CorroborationOptions::tolerate_decode_refusals`], each camera uses the watch pipeline's
+//! bounded recovery: refused segments and exact tracking restarts remain explicit in its ground
+//! coverage, and no track crosses a discontinuity. A source gap after segment zero also makes
+//! subsequent import frame-index capture hints unreliable: those entries remain visible in the report, but never
+//! participate in association or authorize a corroborated event. Decode refusals without missing
+//! source bytes do not invalidate otherwise retained capture hints. Strict mode is the default;
+//! a tolerant run without a refusal or restart has the same analysis and proposal identities.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+
+mod recovery;
+pub use recovery::CorroborationOptions;
+use recovery::{camera_diagnostics_json, capture_time_reliable};
 
 use fss_core::{
     CanonicalEncoder, CaptureInterval, ContentDigest, ContractError, EventHypothesis, EventId,
@@ -79,10 +91,11 @@ use super::recorded_coverage::{
 };
 use super::recorded_decode::{ComponentInterpretation, RecordedDecodeError, source_capsule};
 use super::recorded_watch::{
-    MAX_WATCH_FRAMES, WatchDetectorConfig, WatchError, WatchLimits, WatchPlan, WatchReport,
-    WatchTrackerConfig, WatchZone, bind_cascade_parameters, media_decoder_label,
+    MAX_WATCH_FRAMES, WatchDetectorConfig, WatchError, WatchLimits, WatchOptions, WatchPlan,
+    WatchReport, WatchTrackerConfig, WatchZone, bind_cascade_parameters, media_decoder_label,
     pipeline_parameters,
 };
+use super::tolerant_decode::DecodeRefusal;
 use super::{FileIngestError, RetainedFileImport};
 use crate::{
     ReferenceDeployment, ReferenceError, ReferencePolicyAction, ReferencePolicyDecision, ReplayCx,
@@ -604,6 +617,10 @@ pub struct CameraSummary {
     pub capture_span: CaptureInterval,
     /// Owner homography digest.
     pub homography_digest: ContentDigest,
+    /// Refused segment runs, with stable decoder error identities (empty in strict mode).
+    pub decode_refusals: Vec<DecodeRefusal>,
+    /// Exact first decoded segments after tracking restarts; no track crosses these boundaries.
+    pub tracking_restarts: Vec<usize>,
     sensor_digest: ContentDigest,
     coverage_frames: Vec<CoverageFrame>,
     segment_gaps: Vec<bool>,
@@ -625,6 +642,9 @@ pub enum EntryDisposition {
     Ambiguous,
     /// Point estimates passed but the worst case over both capture intervals exceeds the time gate.
     TimeGateUncertain,
+    /// A source gap precedes this entry, invalidating the import's frame-index capture hint.
+    /// Kept as an observation but excluded from association, never promoted to corroboration.
+    CaptureTimeUnreliableAfterGap,
 }
 impl EntryDisposition {
     /// Stable spelling.
@@ -636,6 +656,7 @@ impl EntryDisposition {
             Self::NoAdmissibleCounterpart => "no_admissible_counterpart",
             Self::Ambiguous => "ambiguous",
             Self::TimeGateUncertain => "time_gate_uncertain",
+            Self::CaptureTimeUnreliableAfterGap => "capture_time_unreliable_after_gap",
         }
     }
 }
@@ -782,15 +803,25 @@ fn union(a: CaptureInterval, b: CaptureInterval) -> Result<CaptureInterval> {
     )?)
 }
 
+struct CameraAnalysisContext<'a> {
+    plan: &'a CorroborationPlan,
+    plan_digest: ContentDigest,
+    options: CorroborationOptions,
+}
+
 fn analyze_camera(
     deployment: &ReferenceDeployment,
-    plan: &CorroborationPlan,
-    plan_digest: ContentDigest,
+    context: &CameraAnalysisContext<'_>,
     index: usize,
     limits: &WatchLimits,
     cascade: Option<(&mut DetectorCascade<'_>, &mut CascadeBudget)>,
     cx: &ReplayCx,
 ) -> Result<CameraRun> {
+    let CameraAnalysisContext {
+        plan,
+        plan_digest,
+        options,
+    } = *context;
     let camera = &plan.cameras[index];
     let retained =
         RetainedFileImport::open(deployment, camera.import_identity, limits.read_limits, cx)?;
@@ -811,7 +842,26 @@ fn analyze_camera(
     let failure_domain = format!("recorded-sensor:{}", hex(sensor_digest));
     let import_root = retained.import_root();
     let watch_plan = plan.watch_plan(camera, count);
-    let report = WatchReport::analyze(deployment, &watch_plan, limits, cx)?;
+    let report = WatchReport::analyze_with_options(
+        deployment,
+        &watch_plan,
+        limits,
+        None,
+        WatchOptions {
+            tolerate_decode_refusals: options.tolerate_decode_refusals,
+        },
+        cx,
+    )?;
+    // The cascade re-decodes a continuous range. Do not silently bridge a decoder restart,
+    // including one that returned every frame and therefore has no refused segment run.
+    if cascade.is_some()
+        && (!report.decode_refusals().is_empty() || !report.tracking_restarts().is_empty())
+    {
+        return Err(WatchError::InvalidPlan(
+            "a detector cascade does not run over decode-refused or gapped ranges",
+        )
+        .into());
+    }
     let frames: BTreeMap<usize, _> = report.frames().iter().map(|f| (f.segment, f)).collect();
     let mut span: Option<CaptureInterval> = None;
     for frame in report.frames() {
@@ -899,7 +949,11 @@ fn analyze_camera(
                     track_box: observation.track_box,
                     ground,
                     record_digest: ContentDigest::sha256(&record),
-                    disposition: EntryDisposition::NoCounterpartEntry,
+                    disposition: if capture_time_reliable(&segment_gaps, observation.segment) {
+                        EntryDisposition::NoCounterpartEntry
+                    } else {
+                        EntryDisposition::CaptureTimeUnreliableAfterGap
+                    },
                     class_evidence: Vec::new(),
                     record,
                 });
@@ -971,6 +1025,8 @@ fn analyze_camera(
             confirmed_tracks: confirmed.len(),
             capture_span,
             homography_digest,
+            decode_refusals: report.decode_refusals().to_vec(),
+            tracking_restarts: report.tracking_restarts().to_vec(),
             sensor_digest,
             coverage_frames,
             segment_gaps,
@@ -1033,19 +1089,48 @@ impl CorroborationReport {
         deployment: &ReferenceDeployment,
         plan: &CorroborationPlan,
         limits: &WatchLimits,
+        detector: Option<&mut DetectorCascade<'_>>,
+        visibility: &GroundVisibilityPlan<'_>,
+        cx: &ReplayCx,
+    ) -> Result<Self> {
+        Self::analyze_with_options(
+            deployment,
+            plan,
+            limits,
+            detector,
+            visibility,
+            CorroborationOptions::default(),
+            cx,
+        )
+    }
+
+    /// [`Self::analyze_with_visibility`] with explicit decode-recovery options. Default options
+    /// retain the strict behavior. A clean tolerant run has the same reports and proposals;
+    /// actual refusals and tracking restarts are bound into each camera's analysis identity.
+    /// Custody errors, cancellation, resource exhaustion and privacy refusals still abort.
+    /// A detector cascade over a refused or restarted range is not supported and is refused.
+    pub fn analyze_with_options(
+        deployment: &ReferenceDeployment,
+        plan: &CorroborationPlan,
+        limits: &WatchLimits,
         mut detector: Option<&mut DetectorCascade<'_>>,
         visibility: &GroundVisibilityPlan<'_>,
+        options: CorroborationOptions,
         cx: &ReplayCx,
     ) -> Result<Self> {
         checkpoint(cx, "recorded_corroboration:analyze")?;
         plan.validate()?;
         visibility.policy.validate()?;
         let plan_digest = plan.digest();
+        let context = CameraAnalysisContext {
+            plan,
+            plan_digest,
+            options,
+        };
         let mut allowance = detector.as_ref().map(|d| d.budget());
         let first = analyze_camera(
             deployment,
-            plan,
-            plan_digest,
+            &context,
             0,
             limits,
             detector.as_deref_mut().zip(allowance.as_mut()),
@@ -1053,8 +1138,7 @@ impl CorroborationReport {
         )?;
         let second = analyze_camera(
             deployment,
-            plan,
-            plan_digest,
+            &context,
             1,
             limits,
             detector.as_deref_mut().zip(allowance.as_mut()),
@@ -1092,7 +1176,11 @@ impl CorroborationReport {
                 entries
                     .iter()
                     .enumerate()
-                    .filter(|(_, e)| e.camera == camera && e.zone_id == zone.zone_id)
+                    .filter(|(_, e)| {
+                        e.camera == camera
+                            && e.zone_id == zone.zone_id
+                            && e.disposition != EntryDisposition::CaptureTimeUnreliableAfterGap
+                    })
                     .map(|(index, e)| {
                         Ok((
                             index,
@@ -1407,7 +1495,7 @@ impl CorroborationReport {
                         "\"capture_time_label\":\"operator_assumption\",",
                         "\"watch_plan_digest\":\"{}\",\"watch_analysis_digest\":\"{}\",",
                         "\"ground_homography_digest\":\"{}\",",
-                        "\"ground_homography\":\"owner_supplied_not_a_calibration_certificate\"}}"
+                        "\"ground_homography\":\"owner_supplied_not_a_calibration_certificate\"{}}}"
                     ),
                     json_string(&c.name),
                     c.import_identity,
@@ -1421,6 +1509,11 @@ impl CorroborationReport {
                     c.watch_plan_digest,
                     c.watch_analysis_digest,
                     c.homography_digest,
+                    camera_diagnostics_json(
+                        &c.decode_refusals,
+                        &c.tracking_restarts,
+                        &c.segment_gaps,
+                    ),
                 )
             })
             .collect();
@@ -1739,8 +1832,8 @@ fn camera_coverage(
         .ok_or(CorroborationError::Limit)?;
     let extras = CoverageExtras {
         visibility: visibilities,
-        refusals: Vec::new(),
-        restarts: Vec::new(),
+        refusals: camera.decode_refusals.clone(),
+        restarts: camera.tracking_restarts.clone(),
     };
     let mut record = build_coverage_with(
         &CoverageInput {
