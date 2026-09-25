@@ -193,6 +193,7 @@
     "crates/fss-reference/src/decode/jpeg.rs": "support",
     "crates/fss-reference/src/deletion.rs": "effect",
     "crates/fss-reference/src/deletion/commit.rs": "effect",
+    "crates/fss-reference/src/deletion/holds.rs": "effect",
     "crates/fss-reference/src/deletion/index.rs": "effect",
     "crates/fss-reference/src/deletion/plan.rs": "effect",
     "crates/fss-reference/src/deletion/tests.rs": "support",

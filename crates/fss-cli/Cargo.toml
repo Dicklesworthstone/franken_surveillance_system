@@ -39,6 +39,10 @@ path = "src/bin/fss-archive.rs"
 name = "fss-mcp"
 path = "src/bin/fss-mcp.rs"
 
+[[bin]]
+name = "fss-hold"
+path = "src/bin/fss-hold.rs"
+
 [dependencies]
 fss-core = { path = "../fss-core" }
 fss-graph-algorithms = { path = "../fss-graph-algorithms" }
