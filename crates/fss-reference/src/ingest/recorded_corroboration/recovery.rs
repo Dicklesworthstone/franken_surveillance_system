@@ -123,8 +123,7 @@ mod tests {
     ) -> TestResult<crate::ingest::recorded_coverage::CoverageRecord> {
         use super::super::{
             CameraCoverageContext, CameraSummary, CorroborationCamera, CorroborationGates,
-            CorroborationPlan, GroundHomography, GroundVisibilityPlan, GroundZone,
-            camera_coverage,
+            CorroborationPlan, GroundHomography, GroundVisibilityPlan, GroundZone, camera_coverage,
         };
         use crate::ingest::privacy_mask::MaskBinding;
         use crate::ingest::recorded_coverage::CoverageFrame;

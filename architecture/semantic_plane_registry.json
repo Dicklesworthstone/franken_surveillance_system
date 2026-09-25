@@ -264,6 +264,7 @@
     "crates/fss-reference/src/ingest/privacy_mask/live/tests.rs": "support",
     "crates/fss-reference/src/ingest/privacy_mask/tests.rs": "support",
     "crates/fss-reference/src/ingest/recorded_corroboration.rs": "support",
+    "crates/fss-reference/src/ingest/recorded_corroboration/recovery.rs": "support",
     "crates/fss-reference/src/ingest/recorded_corroboration/tests.rs": "support",
     "crates/fss-reference/src/ingest/recorded_coverage.rs": "support",
     "crates/fss-reference/src/ingest/recorded_coverage/tests.rs": "support",
