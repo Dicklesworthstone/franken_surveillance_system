@@ -8,6 +8,7 @@
 //! `(column + 0.5, row + 0.5)`. Distorted or dewarped images need a separately
 //! qualified conversion before entering this interface.
 
+mod bundle;
 mod camera;
 mod handoff;
 mod handoff_scenarios;
@@ -20,6 +21,15 @@ mod registration;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
+pub use bundle::{
+    AdjustedCamera, AdjustedLandmark, BudgetKind, BundleAdjustment, BundleAdjustmentError,
+    BundleCamera, BundleGauge, BundleInputError, BundleLandmark, BundleObservation, BundleOptions,
+    BundleParameter, BundleProblem, BundleReport, BundleValidity, CAMERA_BLOCK_PARAMETERS,
+    CameraCovariance, CameraGeneration, CameraInvalidation, Convergence, FocalRefinement,
+    IntrinsicsRefinement, InvalidationCause, MAX_BUNDLE_CAMERAS, MAX_BUNDLE_LANDMARKS,
+    MAX_BUNDLE_OBSERVATIONS, NonFiniteInput, RadialDistortion, SingularStage,
+    UnderConstrainedReason, bundle_adjust,
+};
 pub use camera::{PinholeIntrinsics, Ray, RigidPose};
 pub use handoff::{
     BodySamples, CameraAvailability, CameraHandoffForecast, CaptureSchedule, HandoffCamera,
