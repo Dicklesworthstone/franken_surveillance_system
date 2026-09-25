@@ -115,6 +115,17 @@ impl Journal {
         &self.path
     }
 
+    /// Store pin of the file this handle opened, in `role` (fss-1s6ac): taken from the open file
+    /// descriptor, so it names the file the handle reads and writes even if its path is later
+    /// reused. `None` when the platform reports no file identity.
+    #[must_use]
+    pub fn store_pin(&self, role: &str) -> Option<ContentDigest> {
+        self.file
+            .metadata()
+            .ok()
+            .and_then(|metadata| crate::store_pin::store_pin_of(role, &metadata))
+    }
+
     /// Root of the latest reconciled committed record.
     #[must_use]
     pub const fn last_root(&self) -> ContentDigest {

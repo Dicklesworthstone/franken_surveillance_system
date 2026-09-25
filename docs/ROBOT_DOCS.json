@@ -1347,6 +1347,11 @@
       "id": "ERR-LEDGER-ORACLE-SUCCESSOR-CONFLICT-001"
     },
     {
+      "description": "batch writes the sealed publication-lineage namespace (a lineage or proof-marker family or object) outside record_reference_publication, or the gated writer was handed an unsealed batch",
+      "guidance": "reject input; record publications only through record_reference_publication",
+      "id": "ERR-LEDGER-SEALED-NAMESPACE-001"
+    },
+    {
       "description": "mixed or stale model/index generation",
       "guidance": "rebuild/retry at coherent generation",
       "id": "ERR-MODEL-GENERATION-001"

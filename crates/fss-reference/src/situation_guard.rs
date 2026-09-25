@@ -208,6 +208,7 @@ pub fn compile_reference_situation_with_durable_journal(
 ) -> Result<ReferenceSituation, ReferenceError> {
     let mut situation = compile_against_durable_journal(request, durable_journal, authority)?;
     situation.set_journal_root(durable_journal.last_root());
+    situation.set_store_pins(authority.store_pin(), durable_journal.store_pin());
     situation.seal_effect_bindings()?;
     Ok(situation)
 }
