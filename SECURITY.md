@@ -233,3 +233,73 @@ Threat campaigns include prompt injection through every untrusted content channe
 side channels, stale handoff replay, alias confusion, workspace collision, recommendation-to-
 effect laundering, malicious compression/omission, work-claim squatting, cancellation races, and
 transport semantic drift.
+
+### 14.1 Authority-store forks and the sealed lineage namespace (fss-1s6ac)
+
+The authority ledger and the durable effect journal vouch for things: the ledger's publication
+lineage decides which step of a situation announces a terminal transition, and the journal decides
+whether an obligation was discharged. Two attacks targeted that.
+
+**Byte-copied forks.** A byte copy of either journal reproduces every anchor, state root, and
+journal root exactly, so no byte-level commitment distinguishes it from the original. A rival child
+recorded in a copy of the ledger used to classify as terminal against the copy; a planless result
+compiled against a copy of the effect journal (with the obligation cancelled in the copy) used to
+discharge an obligation the real journal holds `Pending`.
+
+What now holds:
+
+- Every durable store handle carries a **store pin** (`fss.durable_store_pin.v1`): a digest of its
+  role and the filesystem identity of the file it opened (device, inode, and birth time where the
+  platform reports one), taken from the open file descriptor. A copy is a new file with a new pin.
+- Every compile path records the pins of the ledger and journal it compiled against in the sealed
+  situation (a private field only a compile path sets). The pin is deliberately outside the seal
+  and the publication digest, so replicas of one history still agree on digests and handoff bytes.
+- `record_reference_publication` refuses a publication whose authority pin is not the handle's
+  (`lineage_foreign_authority`) and a handle whose path no longer names the file it opened
+  (`lineage_authority_unpinned`). The lineage-bound classifier refuses, typed, a store that holds
+  the history a sealed publication was compiled against but is not the store it recorded
+  (`meaningful_delta_authority_fork`, `meaningful_delta_journal_fork`), in both directions, and an
+  unpinned or moved store (`meaningful_delta_authority_unpinned`,
+  `meaningful_delta_journal_unpinned`). A store that never committed the publication's anchor (or
+  journal root) is foreign, as before: it vouches for nothing and the change is reported, never
+  terminal.
+- Anchor tokens and handoffs are head-pinned by content: the token binds the ledger and effect
+  roots at its position, so a token or handoff taken from a copy after it diverged is refused on
+  the original (`follow_anchor_unknown`; resume refuses the handoff).
+
+**Raw writers of the lineage (R5-B, R5-C, R7-A).** Any holder of a ledger handle could append a
+lineage record or proof marker through the public `append`: displace a lineage basis (downgrading
+an effect's first terminal proof), plant a junk first entry that blocked a subject's first genuine
+record, or append an entry together with a proof marker naming it so the genuine first proof was
+reported "already proved" and its terminal announcement suppressed. Now:
+
+- The lineage families and objects are a sealed namespace. `DurableReferenceLedger::append`
+  refuses any batch touching it (`ERR-LEDGER-SEALED-NAMESPACE-001`). `record_reference_publication`
+  is the one writer: it validates the publication, computes the proof markers from the operations
+  the publication itself proves, and appends through a gated entry point a batch that carries its
+  lineage write seal (`fss.reference_lineage_write_seal.v1`).
+- Readers credit lineage writes only inside sealed batches. A lineage or proof-marker write outside
+  one (a raw batch from before the gate, or bytes written to the journal) is not skipped silently:
+  every reader of that subject's lineage refuses, typed (`lineage_unsealed_write`). There is no
+  automated repair: the subject (event and objective) stays refused, and work continues under a new
+  objective, which is a new lineage. This is also the migration rule: lineage records written
+  before fss-1s6ac carry no seal and are refused the same way. No binary shipped so far writes
+  lineage records (only the library API does), so no existing deployment is expected to hold one.
+
+**What a filesystem-level attacker can still do.** These are boundaries, not guarantees against a
+party that can write the deployment's files:
+
+- Rewrite the original ledger or journal in place (same inode, same pin): the pin distinguishes
+  files, not histories. The external-mutation checks detect bytes changed under an open handle,
+  not a rewrite made while nothing had the file open.
+- Compute a lineage write seal: it is unkeyed, so journal bytes written directly can carry a valid
+  one. The same holds for a caller that deliberately invokes the doc-hidden gated writer.
+- Replace the deployment with a copy while the original is gone. The copy is then a different
+  store: evidence compiled against the original is refused against it, but nothing distinguishes
+  "restored from backup" from "replaced by a copy". Backup/restore, moving a deployment across
+  volumes, and repairs that rewrite a file under a new inode change the pin the same way, so
+  in-memory evidence from before must be recompiled.
+- Reuse history both sides share: a token or handoff anchored before a fork diverged is identical
+  on both sides and is accepted; it names only shared history.
+- On platforms without file identities (non-Unix) no pin exists, so every pinned operation
+  (recording lineage, lineage-bound classification) refuses rather than proceeding unpinned.

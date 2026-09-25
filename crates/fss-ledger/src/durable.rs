@@ -10,6 +10,10 @@ use fss_core::{
     EvidenceDeltaBatch, LedgerSnapshot, ReferenceLedger,
 };
 
+use crate::sealed_lineage::{
+    ERR_LEDGER_SEALED_NAMESPACE_001, first_sealed_lineage_delta, is_sealed_lineage_batch,
+};
+use crate::store_pin::{STORE_ROLE_AUTHORITY_LEDGER, pin_is_current};
 use crate::{
     AppendPhase, AppendReconciliation, BatchCodecError, ExternalMutationKind, ForeignRange,
     IncompleteTailPolicy, Journal, JournalError, RecoveryReport, RepairError, decode_batch,
@@ -75,6 +79,14 @@ pub enum DurableLedgerError {
     Repair(Box<RepairError>),
     /// Low-level journal I/O failure.
     Io(std::io::Error),
+    /// A batch writes the sealed publication-lineage namespace outside its one gated writer, or
+    /// the gated writer was handed a batch that is not a sealed lineage batch (fss-1s6ac).
+    SealedLineageNamespace {
+        /// Identity of the refused batch.
+        batch_id: BatchId,
+        /// First delta of the batch in the sealed namespace, or of the batch when none is.
+        delta_id: String,
+    },
 }
 
 impl DurableLedgerError {
@@ -84,6 +96,7 @@ impl DurableLedgerError {
         match self {
             Self::Journal(error) => error.stable_id(),
             Self::BatchIdConflict { .. } => Some(ERR_LEDGER_DURABLE_BATCH_ID_CONFLICT_001),
+            Self::SealedLineageNamespace { .. } => Some(ERR_LEDGER_SEALED_NAMESPACE_001),
             Self::Codec(_)
             | Self::Contract(_)
             | Self::UnexpectedRecordKind { .. }
@@ -137,6 +150,10 @@ impl fmt::Display for DurableLedgerError {
             }
             Self::Repair(error) => write!(formatter, "durable ledger repair error: {error}"),
             Self::Io(error) => write!(formatter, "durable ledger I/O error: {error}"),
+            Self::SealedLineageNamespace { batch_id, delta_id } => write!(
+                formatter,
+                "durable ledger batch {batch_id} writes the sealed publication-lineage namespace (delta {delta_id}) outside record_reference_publication ({ERR_LEDGER_SEALED_NAMESPACE_001})"
+            ),
         }
     }
 }
@@ -153,7 +170,8 @@ impl Error for DurableLedgerError {
             | Self::BatchIdConflict { .. }
             | Self::RecordSequenceMismatch { .. }
             | Self::InvalidLayout { .. }
-            | Self::OverBudget { .. } => None,
+            | Self::OverBudget { .. }
+            | Self::SealedLineageNamespace { .. } => None,
         }
     }
 }
@@ -283,6 +301,8 @@ pub struct DurableReferenceLedger {
     ledger: ReferenceLedger,
     identities: BatchIdentityIndex,
     pending: Option<PendingLedgerAppend>,
+    /// Store pin of the journal file this handle opened (fss-1s6ac).
+    store_pin: Option<ContentDigest>,
 }
 
 impl DurableReferenceLedger {
@@ -330,12 +350,42 @@ impl DurableReferenceLedger {
         }
 
         let (ledger, identities) = replay_report(&report, &site_lineage)?;
+        let store_pin = journal.store_pin(STORE_ROLE_AUTHORITY_LEDGER);
         Ok(Self {
             journal,
             ledger,
             identities,
             pending: None,
+            store_pin,
         })
+    }
+
+    /// Path of the authority journal this handle opened.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        self.journal.path()
+    }
+
+    /// Store pin of the authority journal file this handle opened, or `None` when the platform
+    /// reports no file identity (fss-1s6ac).
+    ///
+    /// A byte copy of the journal reproduces every anchor and root but not this pin, so a compile
+    /// path records it and a consumer refuses evidence compiled against another store. See
+    /// [`crate::store_pin_of`] for exactly what the pin does and does not distinguish.
+    #[must_use]
+    pub const fn store_pin(&self) -> Option<ContentDigest> {
+        self.store_pin
+    }
+
+    /// Returns whether this handle is pinned and its path still names the file it opened: `false`
+    /// when the platform yields no pin, or the file was renamed away or replaced (fss-1s6ac).
+    #[must_use]
+    pub fn store_pin_is_current(&self) -> bool {
+        pin_is_current(
+            STORE_ROLE_AUTHORITY_LEDGER,
+            self.journal.path(),
+            self.store_pin,
+        )
     }
 
     /// Latest complete canonical evidence snapshot.
@@ -431,7 +481,51 @@ impl DurableReferenceLedger {
     /// exact successor ledger and durable bytes are then prepared before journal I/O. If the
     /// journal returns `AppendIndeterminate`, the candidate remains private and this ledger blocks
     /// further mutation until `reconcile_pending` proves whether that exact batch committed.
+    ///
+    /// A batch with any delta in the sealed publication-lineage namespace is refused with
+    /// [`DurableLedgerError::SealedLineageNamespace`] before any other check: lineage records and
+    /// proof markers are written only by `fss_reference::record_reference_publication` (fss-1s6ac).
     pub fn append(
+        &mut self,
+        batch: EvidenceDeltaBatch,
+    ) -> Result<&LedgerSnapshot, DurableLedgerError> {
+        if let Some(delta) = first_sealed_lineage_delta(&batch) {
+            return Err(DurableLedgerError::SealedLineageNamespace {
+                delta_id: delta.delta_id.clone(),
+                batch_id: batch.batch_id,
+            });
+        }
+        self.append_checked(batch)
+    }
+
+    /// The gated writer of the sealed publication-lineage namespace (fss-1s6ac).
+    ///
+    /// Not a public entry point: only `fss_reference::record_reference_publication` calls it, after
+    /// validating the publication it records. It accepts only a sealed lineage batch
+    /// ([`crate::is_sealed_lineage_batch`]), then appends exactly like [`Self::append`]. Calling it
+    /// from anywhere else deliberately bypasses the lineage checks; like writing journal bytes
+    /// directly, that is outside the boundary `SECURITY.md` describes.
+    #[doc(hidden)]
+    pub fn __append_sealed_lineage_batch(
+        &mut self,
+        batch: EvidenceDeltaBatch,
+    ) -> Result<&LedgerSnapshot, DurableLedgerError> {
+        if !is_sealed_lineage_batch(&batch) {
+            let delta_id = batch
+                .deltas
+                .iter()
+                .find(|delta| !crate::is_sealed_lineage_delta(delta))
+                .or_else(|| batch.deltas.first())
+                .map_or_else(String::new, |delta| delta.delta_id.clone());
+            return Err(DurableLedgerError::SealedLineageNamespace {
+                batch_id: batch.batch_id,
+                delta_id,
+            });
+        }
+        self.append_checked(batch)
+    }
+
+    fn append_checked(
         &mut self,
         batch: EvidenceDeltaBatch,
     ) -> Result<&LedgerSnapshot, DurableLedgerError> {

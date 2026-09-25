@@ -3067,13 +3067,30 @@ impl FixtureLineage {
     }
 }
 
+/// `publication` as if its compile path had compiled against `store` (and `journal`): the fixture
+/// stands in for a compile path, which records the store pins it compiled against (fss-1s6ac).
+/// Pins are outside the seal and the publication digest, so the copy keeps its digest.
+fn pinned(
+    publication: &crate::ReferenceSituationPublication,
+    store: &FixtureLineage,
+    journal: Option<&crate::DurableEffectJournal>,
+) -> crate::ReferenceSituationPublication {
+    let mut copy = publication.clone();
+    copy.situation.set_store_pins(
+        store.authority.store_pin(),
+        journal.and_then(crate::DurableEffectJournal::store_pin),
+    );
+    copy
+}
+
 /// A fresh fixture authority with `chain` recorded in order.
 fn recorded(
     chain: &[&crate::ReferenceSituationPublication],
 ) -> Result<FixtureLineage, Box<dyn Error>> {
     let mut store = FixtureLineage::new()?;
     for publication in chain {
-        crate::record_reference_publication(&mut store.authority, publication)?;
+        let publication = pinned(publication, &store, None);
+        crate::record_reference_publication(&mut store.authority, &publication)?;
     }
     Ok(store)
 }
@@ -3084,7 +3101,12 @@ fn bound(
     basis: &crate::ReferenceSituationPublication,
     result: &crate::ReferenceSituationPublication,
 ) -> Result<fss_core::MeaningfulDelta, crate::ReferenceError> {
-    classify_reference_meaningful_delta_in_lineage(basis, result, &store.authority, None)
+    classify_reference_meaningful_delta_in_lineage(
+        &pinned(basis, store, None),
+        &pinned(result, store, None),
+        &store.authority,
+        None,
+    )
 }
 
 /// Records `basis` and `result` in a fresh lineage and classifies the pair bound to it.
@@ -3238,8 +3260,8 @@ fn discharge_delta(
     let result = successor_of(&basis, &result_variant)?;
     let store = recorded(&[&basis, &result])?;
     let delta = classify_reference_meaningful_delta_in_lineage(
-        &basis,
-        &result,
+        &pinned(&basis, &store, Some(journal)),
+        &pinned(&result, &store, Some(journal)),
         &store.authority,
         Some(journal),
     );

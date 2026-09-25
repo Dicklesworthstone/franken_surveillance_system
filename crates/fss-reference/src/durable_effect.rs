@@ -334,6 +334,8 @@ pub enum ObligationLedgerState {
 pub struct DurableEffectJournal {
     journal: Journal,
     memory: EffectJournal,
+    /// Store pin of the journal file this handle opened (fss-1s6ac).
+    store_pin: Option<ContentDigest>,
 }
 
 impl DurableEffectJournal {
@@ -376,7 +378,32 @@ impl DurableEffectJournal {
         }
 
         let memory = replay_report(&report)?;
-        Ok(Self { journal, memory })
+        let store_pin = journal.store_pin(fss_ledger::STORE_ROLE_EFFECT_JOURNAL);
+        Ok(Self {
+            journal,
+            memory,
+            store_pin,
+        })
+    }
+
+    /// Store pin of the effect journal file this handle opened, or `None` when the platform
+    /// reports no file identity (fss-1s6ac). A byte copy of the journal reproduces every root but
+    /// not this pin, so a compile path records it and an obligation discharge is checked only
+    /// against the journal it names.
+    #[must_use]
+    pub const fn store_pin(&self) -> Option<ContentDigest> {
+        self.store_pin
+    }
+
+    /// Returns whether this handle is pinned and its path still names the file it opened
+    /// (fss-1s6ac).
+    #[must_use]
+    pub fn store_pin_is_current(&self) -> bool {
+        fss_ledger::pin_is_current(
+            fss_ledger::STORE_ROLE_EFFECT_JOURNAL,
+            self.journal.path(),
+            self.store_pin,
+        )
     }
 
     /// Non-mutating inspection of a durable effect journal through an injected [`JournalReadIo`].

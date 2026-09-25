@@ -246,6 +246,7 @@ Asupersync (owner decision `fss-x4a.8.1` is open), and the workspace has zero th
 - Exact continuation streams with content-bound entries, page digests, monotone positions, expiry, stream identity, contract basis, anchor, view, and session checks.
 - Exposed read-only through `fss session follow` (AOP-004) over real deployments, comparing an as-of-anchor orientation (committed prefix only) with the head's under the registered `meaningfulDeltaComparison` rules, so a harmless successor commit over complete coverage yields a certified silence (`coverage_cli_contract.rs`).
 - Used by `fss session resume` (AOP-002) to list what changed and what was invalidated between a handoff anchor and the head.
+- Lineage-bound terminal classification is pinned to the stores compiled against (fss-1s6ac): a byte copy of the authority ledger or effect journal can neither record nor vouch for the original's lineage or discharge its obligations (typed fork refusals), and the publication lineage is a sealed namespace written only by `record_reference_publication` (`ERR-LEDGER-SEALED-NAMESPACE-001`; readers refuse unsealed lineage writes). Store pins are filesystem identities, so in-place rewrites by a filesystem-level writer and platforms without file identities remain outside the boundary (SECURITY.md 14.1).
 
 ### Semantic handles and H0–H4 hydration
 

@@ -184,6 +184,17 @@ pub struct ReferenceSituation {
     /// the authority it is given to have committed it, so a store that does not carry this
     /// authority's history cannot vouch for the situation's lineage (fss-mnlz1).
     authority_anchor: Option<LedgerAnchor>,
+    /// Store pin of the authority ledger a compile path compiled against (fss-1s6ac).
+    ///
+    /// Deliberately outside the seal and the publication digest: the digest is a function of the
+    /// history compiled, so replicas of one history agree on it, while the pin names the store
+    /// instance. It is private and set only by a compile path, and a lineage-bound consumer refuses
+    /// a publication whose pin is not the pin of the store it is handed, so a byte copy of the
+    /// ledger (same history, another file) can neither record nor vouch for its lineage.
+    authority_pin: Option<ContentDigest>,
+    /// Store pin of the durable effect journal a compile path compiled against, when it did
+    /// (fss-1s6ac); outside the seal for the same reason as `authority_pin`.
+    journal_pin: Option<ContentDigest>,
 }
 
 impl ReferenceSituation {
@@ -203,6 +214,8 @@ impl ReferenceSituation {
             predecessor: None,
             journal_root: None,
             authority_anchor: None,
+            authority_pin: None,
+            journal_pin: None,
         }
     }
 
@@ -311,6 +324,33 @@ impl ReferenceSituation {
     /// (fss-mnlz1).
     pub(crate) fn set_authority_anchor(&mut self, anchor: LedgerAnchor) {
         self.authority_anchor = Some(anchor);
+    }
+
+    /// Records the store pins of the authority ledger and, when there is one, the durable effect
+    /// journal a compile path compiled against (fss-1s6ac).
+    pub(crate) fn set_store_pins(
+        &mut self,
+        authority_pin: Option<ContentDigest>,
+        journal_pin: Option<ContentDigest>,
+    ) {
+        self.authority_pin = authority_pin;
+        if journal_pin.is_some() {
+            self.journal_pin = journal_pin;
+        }
+    }
+
+    /// Returns the store pin of the authority ledger a compile path compiled against, or `None`
+    /// for a hand-built situation or a platform without file identities (fss-1s6ac).
+    #[must_use]
+    pub fn authority_pin(&self) -> Option<ContentDigest> {
+        self.authority_pin
+    }
+
+    /// Returns the store pin of the durable effect journal a compile path compiled against, or
+    /// `None` when it compiled against none (fss-1s6ac).
+    #[must_use]
+    pub fn journal_pin(&self) -> Option<ContentDigest> {
+        self.journal_pin
     }
 
     /// Returns the sealed authority anchor a compile path compiled against, or `None` for a
@@ -1168,6 +1208,7 @@ pub fn compile_reference_situation(
         request.predecessor_publication,
     );
     situation.set_authority_anchor(authority.current().anchor.clone());
+    situation.set_store_pins(authority.store_pin(), None);
     situation.seal_effect_bindings()?;
     Ok(situation)
 }

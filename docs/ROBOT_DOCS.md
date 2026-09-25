@@ -654,6 +654,7 @@ All stable error identities and normative recovery guidance cataloged from `regi
 | `ERR-LEDGER-ORACLE-STALE-STAGE-001` | staged batch was validated against a head that has since moved or another history | stage again against the current head |
 | `ERR-LEDGER-ORACLE-STATE-ROOT-MISMATCH-001` | declared successor state root does not match the applied deltas | reject input; never retry unchanged |
 | `ERR-LEDGER-ORACLE-SUCCESSOR-CONFLICT-001` | another batch already committed on the same basis (first committer wins) | rebase onto the current head and prepare a new batch |
+| `ERR-LEDGER-SEALED-NAMESPACE-001` | batch writes the sealed publication-lineage namespace (a lineage or proof-marker family or object) outside record_reference_publication, or the gated writer was handed an unsealed batch | reject input; record publications only through record_reference_publication |
 | `ERR-MODEL-GENERATION-001` | mixed or stale model/index generation | rebuild/retry at coherent generation |
 | `ERR-MODEL-OUTPUT-001` | malformed/out-of-bounds model output | reject output; terminate/quarantine generation |
 | `ERR-MODEL-PACKAGE-CANCELLED-001` | model package load cancelled by its owner before a complete verified package existed | retry when the owner permits; nothing was loaded |

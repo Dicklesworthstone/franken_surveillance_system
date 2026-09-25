@@ -16,7 +16,9 @@ use crate::situation::{
 };
 use fss_ledger::{DurableLedgerError, DurableReferenceLedger};
 
-use crate::situation_sections::{LineageStep, compiled_against, first_lineage_proof, lineage_step};
+use crate::situation_sections::{
+    LineageStep, PinCheck, authority_pin_check, first_lineage_proof, lineage_step,
+};
 use crate::{DurableEffectJournal, ReferenceError, ReferenceSituationPublication};
 
 /// Returns whether a premise that a plan relied on at `prior` is invalidated by its `current`
@@ -171,6 +173,16 @@ pub fn classify_reference_meaningful_delta(
 /// `cancelled`) there as of the result's root; an obligation the journal never recorded, or one
 /// still open, is refused. Otherwise every change is reported, but not as terminal. The authority
 /// and journal commitments enter the delta's selection witness (fss-mnlz1).
+///
+/// fss-1s6ac: the stores are also checked to BE the stores the publications were compiled
+/// against, not byte copies of them. The authority must be pinned and still name the file it
+/// opened (`meaningful_delta_authority_unpinned`); a sealed publication whose recorded authority pin
+/// is not this store's, while this store holds the history it was compiled against, is evidence of
+/// a fork and is refused (`meaningful_delta_authority_fork`), in both directions: a rival recorded
+/// in a copy is refused against the original, and the original's publications against the copy.
+/// The same holds for the effect journal of a discharge (`meaningful_delta_journal_unpinned`,
+/// `meaningful_delta_journal_fork`). A lineage holding a write outside its one writer is refused
+/// (`lineage_unsealed_write`).
 pub fn classify_reference_meaningful_delta_in_lineage(
     basis: &ReferenceSituationPublication,
     result: &ReferenceSituationPublication,
@@ -207,14 +219,31 @@ fn classify(
     // lineage records the result as the basis's one successor. Without the authority (the plain
     // classifier), with another store, a stale basis, another event of the mission, or a second
     // child every change is reported but none is terminal.
+    // fss-1s6ac: both publications must also have been compiled against this very store, not a
+    // byte copy of it (or the store a copy was taken from); a fork is refused, never reported.
     let step = match binding {
-        Some(binding)
-            if compiled_against(binding.authority, &basis.situation)
-                && compiled_against(binding.authority, &result.situation) =>
-        {
-            lineage_step(binding.authority, basis, result)?
+        Some(binding) => {
+            if !binding.authority.store_pin_is_current() {
+                return Err(ReferenceError::InvalidSpec(
+                    "meaningful_delta_authority_unpinned",
+                ));
+            }
+            let checks = [
+                authority_pin_check(binding.authority, &basis.situation),
+                authority_pin_check(binding.authority, &result.situation),
+            ];
+            if checks.contains(&PinCheck::Forked) {
+                return Err(ReferenceError::InvalidSpec(
+                    "meaningful_delta_authority_fork",
+                ));
+            }
+            if checks == [PinCheck::Pinned, PinCheck::Pinned] {
+                lineage_step(binding.authority, basis, result)?
+            } else {
+                LineageStep::NotAStep
+            }
         }
-        Some(_) | None => LineageStep::NotAStep,
+        None => LineageStep::NotAStep,
     };
     let sealed_continuation = basis.situation.is_sealed()
         && result.situation.is_sealed()
@@ -979,6 +1008,12 @@ fn contradiction_changed(
 /// result's root, every dropped obligation must exist and be terminal (`verified`, `failed` or
 /// `cancelled`): an obligation the journal never recorded is refused, and so is one still open.
 /// The history is the one `journal`'s handle verified: bytes swapped under it are refused.
+///
+/// fss-1s6ac: `journal` must be pinned and still name the file it opened, and both publications
+/// must have recorded its store pin. A publication that recorded another journal's pin while this
+/// journal's history holds the root it sealed was compiled against a byte copy of this journal (or
+/// this journal is the copy): refused (`meaningful_delta_journal_fork`). One whose root this
+/// history does not hold was compiled against another journal: reported, never terminal.
 fn verify_discharge(
     basis: &ReferenceSituationPublication,
     result: &ReferenceSituationPublication,
@@ -1014,8 +1049,26 @@ fn verify_discharge(
             ReferenceError::InvalidSpec("meaningful_delta_journal_unreadable")
         }
     };
+    if !journal.store_pin_is_current() {
+        return Err(ReferenceError::InvalidSpec(
+            "meaningful_delta_journal_unpinned",
+        ));
+    }
     let history = journal.committed_roots().map_err(refusal)?;
     let position = |root: ContentDigest| history.iter().position(|committed| *committed == root);
+    let mut foreign = false;
+    for (publication, root) in [(basis, basis_root), (result, result_root)] {
+        if publication.situation.journal_pin() == journal.store_pin() {
+            continue;
+        }
+        if position(root).is_some() {
+            return Err(ReferenceError::InvalidSpec("meaningful_delta_journal_fork"));
+        }
+        foreign = true;
+    }
+    if foreign {
+        return Ok(false);
+    }
     let (Some(basis_at), Some(result_at)) = (position(basis_root), position(result_root)) else {
         return Ok(false);
     };

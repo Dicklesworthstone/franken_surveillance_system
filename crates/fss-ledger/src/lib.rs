@@ -13,6 +13,8 @@ mod journal;
 mod oracle;
 mod recovery;
 mod repair;
+mod sealed_lineage;
+mod store_pin;
 
 #[cfg(test)]
 mod durable_reconciliation_tests;
@@ -47,6 +49,15 @@ pub use repair::{
     RepairDoctorReport, RepairError, RepairPlan, RepairReceipt, SealedRepairPlan, apply, doctor,
     doctor_bounded, doctor_bounded_with_io, doctor_path, plan, plan_with_cut, quarantine_path_for,
     quarantine_temp_path_for,
+};
+pub use sealed_lineage::{
+    ERR_LEDGER_SEALED_NAMESPACE_001, LINEAGE_WRITE_SEAL_DOMAIN, SEALED_LINEAGE_FAMILIES,
+    SEALED_LINEAGE_OBJECT_PREFIX, first_sealed_lineage_delta, is_sealed_lineage_batch,
+    is_sealed_lineage_delta, lineage_write_seal,
+};
+pub use store_pin::{
+    STORE_PIN_DOMAIN, STORE_ROLE_AUTHORITY_LEDGER, STORE_ROLE_EFFECT_JOURNAL, pin_is_current,
+    store_pin_at, store_pin_of,
 };
 
 /// Maximum payload accepted by one reference-journal record.
