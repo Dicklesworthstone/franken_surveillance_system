@@ -26,6 +26,8 @@ mod clock;
 mod clock_sync;
 mod context_binding;
 pub mod decode;
+/// Graph-complete deletion closure of retained imports (FSS-037; effect plane).
+pub mod deletion;
 mod delivery;
 /// Durable agent sessions and root-last handoffs over a deployment root (AOP-001, AOP-002,
 /// AOP-012); agent-plane writes only.

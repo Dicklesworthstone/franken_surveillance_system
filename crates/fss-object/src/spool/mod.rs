@@ -308,6 +308,18 @@ pub struct DiscardReceipt {
     pub released_bytes: u64,
 }
 
+/// Outcome of [`StagingSpool::remove_for_deletion`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DeletionRemoval {
+    /// The object and any hold were unlinked and the removal fsynced.
+    Removed {
+        /// Quota bytes released.
+        released_bytes: u64,
+    },
+    /// The object was not indexed; nothing was touched.
+    AlreadyAbsent,
+}
+
 /// Whether an object carries a durable verification hold.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Hold {
@@ -876,6 +888,100 @@ impl StagingSpool {
             });
         }
         Ok(entry.charged)
+    }
+
+    /// Unlinks one object and its verification hold for a deletion whose authority the caller has
+    /// already made durable, and releases exactly the quota it was charged.
+    ///
+    /// This is the only removal of a `Verified`, held or `Corrupt` object, and it is not a
+    /// rollback: the caller (the deletion-closure owner) must hold a durable deletion record
+    /// before calling it. Local custody is all it touches: the bytes are unlinked from this
+    /// filesystem, which is not cryptographic erasure and says nothing about filesystem recovery,
+    /// snapshots or backups.
+    ///
+    /// The hold is removed (and its directory fsynced) before the object, so an interruption
+    /// between the two leaves an unheld object that a reopen admits as `Staged` and a retry
+    /// removes; it never leaves a hold without its object, which a reopen would report as a
+    /// vanished (tampered) object. An object that is not indexed returns
+    /// [`DeletionRemoval::AlreadyAbsent`] without touching the disk, so a retry is idempotent.
+    /// An unobservable removal or a failed directory fsync poisons this instance, exactly as
+    /// [`Self::discard_staged`] does.
+    pub fn remove_for_deletion(
+        &mut self,
+        digest: ContentDigest,
+    ) -> Result<DeletionRemoval, SpoolError> {
+        self.require_live()?;
+        let Some(entry) = self.index.get(&digest).copied() else {
+            return Ok(DeletionRemoval::AlreadyAbsent);
+        };
+        let next_index_bytes = self
+            .index_bytes
+            .checked_sub(entry.charged)
+            .ok_or(SpoolError::AccountingOverflow)?;
+        let hold = self.holds_dir.join(digest_hex(digest));
+        let hold_present = match self.io.symlink_metadata(&hold) {
+            Ok(_) => true,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => return Err(io_error(SpoolIoOperation::Inspect, &hold, &error)),
+        };
+        if hold_present {
+            match self.remove_confirmed(&hold, SpoolIoOperation::RemoveHold) {
+                Ok(()) => {}
+                Err(RemovalFailure::Settled(error)) => return Err(error),
+                Err(RemovalFailure::Indeterminate(error)) => {
+                    self.poisoned = true;
+                    return Err(error);
+                }
+            }
+            if let Err(error) = self.io.sync_directory(&self.holds_dir) {
+                self.poisoned = true;
+                return Err(SpoolError::DiscardIndeterminate {
+                    path: self.holds_dir.clone(),
+                    operation: SpoolIoOperation::SyncDirectory,
+                    kind: error.kind(),
+                });
+            }
+            if let Some(indexed) = self.index.get_mut(&digest) {
+                indexed.hold = Hold::None;
+            }
+        }
+        let path = self.object_path(digest);
+        match self.remove_confirmed(&path, SpoolIoOperation::RemoveObject) {
+            Ok(()) => {}
+            Err(RemovalFailure::Settled(error)) => return Err(error),
+            Err(RemovalFailure::Indeterminate(error)) => {
+                self.poisoned = true;
+                return Err(error);
+            }
+        }
+        self.index.remove(&digest);
+        self.index_bytes = next_index_bytes;
+        if let Err(error) = self.io.sync_directory(&self.objects_dir) {
+            self.poisoned = true;
+            return Err(SpoolError::DiscardNotDurable {
+                digest,
+                kind: error.kind(),
+            });
+        }
+        Ok(DeletionRemoval::Removed {
+            released_bytes: entry.charged,
+        })
+    }
+
+    /// Whether any directory entry still occupies the object or hold name of `digest`.
+    ///
+    /// A deletion proof observes the filesystem directly rather than trusting this instance's
+    /// index: `true` means a name is still present (or cannot be inspected).
+    #[must_use]
+    pub fn name_present(&self, digest: ContentDigest) -> bool {
+        let object = self.object_path(digest);
+        let hold = self.holds_dir.join(digest_hex(digest));
+        [object, hold].iter().any(|path| {
+            !matches!(
+                self.io.symlink_metadata(path),
+                Err(error) if error.kind() == io::ErrorKind::NotFound
+            )
+        })
     }
 
     /// Creates and fsyncs the durable verification hold for one object.

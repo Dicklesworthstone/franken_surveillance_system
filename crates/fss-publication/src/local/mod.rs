@@ -1185,6 +1185,98 @@ impl LocalRootPublisher {
         Ok(TombstoneOutcome::Recorded)
     }
 
+    /// Direct children (including metadata) of the root visible in `slot`, if any.
+    #[must_use]
+    pub fn root_children(&self, slot: &SlotName) -> Option<&[ContentDigest]> {
+        self.visible
+            .get(slot)
+            .map(|entry| entry.children.as_slice())
+    }
+
+    /// Retracts the root visible in `slot` for a deletion whose authority is durable.
+    ///
+    /// `witness` is the deletion record (the sealed deletion plan) and must be verified in the
+    /// spool, exactly like a tombstone's deletion authority. The root record is unlinked and the
+    /// roots directory fsynced; the manifest body and children stay in custody until the caller
+    /// removes them. This is the deletion-closure owner's effect, never a silent local unpublish:
+    /// the ledger records the retraction before this runs. A slot that holds no visible root
+    /// returns `false` without touching the disk, so a retry is idempotent. A failed fsync
+    /// poisons this instance.
+    pub fn retract_root(
+        &mut self,
+        slot: &SlotName,
+        witness: ContentDigest,
+    ) -> Result<bool, LocalPublicationError> {
+        self.require_live()?;
+        self.spool.require_verified(witness).map_err(|error| {
+            LocalPublicationError::ReferenceBlocked {
+                object: witness,
+                role: ReferenceRole::DeletionWitness,
+                reason: error.into(),
+            }
+        })?;
+        if !self.visible.contains_key(slot) {
+            return Ok(false);
+        }
+        let path = self.roots_dir.join(format!("{slot}{ROOT_RECORD_SUFFIX}"));
+        match self.io.remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(io_error(LocalIoOperation::RemoveRecord, &path, &error)),
+        }
+        self.visible.remove(slot);
+        if let Err(error) = self.io.sync_directory(&self.roots_dir) {
+            self.poisoned = true;
+            return Err(LocalPublicationError::Indeterminate {
+                path,
+                kind: error.kind(),
+            });
+        }
+        Ok(true)
+    }
+
+    /// Unlinks one object named by a durable deletion record from the owned spool.
+    ///
+    /// `witness` is the verified deletion record. An object still reachable from any visible root
+    /// is refused with [`LocalPublicationError::TombstoneBlockedByVisibleRoot`]: every root of the
+    /// closure must be retracted first. The removal is local filesystem unlinking (see
+    /// [`StagingSpool::remove_for_deletion`]), never cryptographic erasure.
+    pub fn remove_deleted_object(
+        &mut self,
+        object: ContentDigest,
+        witness: ContentDigest,
+    ) -> Result<fss_object::DeletionRemoval, LocalPublicationError> {
+        self.require_live()?;
+        if object == witness {
+            return Err(LocalPublicationError::MissingDeletionAuthority { object });
+        }
+        self.spool.require_verified(witness).map_err(|error| {
+            LocalPublicationError::ReferenceBlocked {
+                object: witness,
+                role: ReferenceRole::DeletionWitness,
+                reason: error.into(),
+            }
+        })?;
+        if let Some(entry) = self.visible.values().find(|entry| {
+            self.closure(entry.visible.root, &entry.children)
+                .contains(&object)
+        }) {
+            return Err(LocalPublicationError::TombstoneBlockedByVisibleRoot {
+                object,
+                slot: entry.visible.slot.clone(),
+            });
+        }
+        self.spool
+            .remove_for_deletion(object)
+            .map_err(|error| self.spool_error(error))
+    }
+
+    /// Whether a directory entry still occupies the spool object or hold name of `digest`.
+    #[must_use]
+    pub fn object_name_present(&self, digest: ContentDigest) -> bool {
+        self.spool.name_present(digest)
+    }
+
     /// Removes exactly the orphaned temporary records classified on open or left by a failed
     /// cleanup. Returns how many were removed. Nothing else is touched.
     pub fn discard_orphaned_temps(&mut self) -> Result<usize, LocalPublicationError> {

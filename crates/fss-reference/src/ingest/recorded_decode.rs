@@ -154,6 +154,9 @@ impl RecordedDecodeError {
             Self::Limit
             | Self::H264(fss_codec_h264::DecodeError::Limit)
             | Self::H265(fss_codec_h265::DecodeError::Limit) => "ERR-DECODE-BOUNDS-001",
+            Self::Source(source) if matches!(**source, FileIngestError::EvidenceDeleted { .. }) => {
+                "ERR-EVIDENCE-DELETED-001"
+            }
             Self::Unavailable | Self::Source(_) => "ERR-DECODE-SOURCE-UNAVAILABLE-001",
             Self::PrivacyMask(error) => error.stable_id(),
             _ => "ERR-DECODE-001",

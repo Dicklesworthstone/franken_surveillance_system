@@ -28,9 +28,9 @@ pub use ledger::{
     LedgerCutPoint, LedgerSlotConflict, LedgeredRoot, LedgeredRootPublisher,
     MAX_LEDGERED_SLOT_BYTES, PendingLedgerRoot, ROOT_LEDGER_ERROR_CODES,
     ROOT_REACHABILITY_BATCH_PREFIX, ROOT_REACHABILITY_DELTA_PREFIX, ROOT_REACHABILITY_FAMILY,
-    ROOT_REACHABILITY_OBJECT_PREFIX, RootLedgerError, RootLedgerGuidance, RootLedgerOutcome,
-    RootLedgerReceipt, RootLedgerReconciliation, RootLedgerState, UnbackedLedgerClaim,
-    inspect_linkage, root_reachability_batch_id, root_reachability_object_id,
+    ROOT_REACHABILITY_OBJECT_PREFIX, ROOT_RETRACTION_FAMILY, RootLedgerError, RootLedgerGuidance,
+    RootLedgerOutcome, RootLedgerReceipt, RootLedgerReconciliation, RootLedgerState,
+    UnbackedLedgerClaim, inspect_linkage, root_reachability_batch_id, root_reachability_object_id,
 };
 pub use local::{
     BlockReason, BrokenRoot, BrokenRootReason, CapacityResource, ClaimStatus, HostLockTableSource,
