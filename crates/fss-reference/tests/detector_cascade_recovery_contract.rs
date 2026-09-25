@@ -53,7 +53,14 @@ fn scene(mirror: bool, damage: bool) -> TestResult<Vec<u8>> {
         let mut pixels = person::person_scene(foot);
         if mirror {
             for row in pixels.chunks_exact_mut(width as usize * 3) {
-                let flipped: Vec<u8> = row.as_chunks::<3>().0.iter().rev().flatten().copied().collect();
+                let flipped: Vec<u8> = row
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
+                    .rev()
+                    .flatten()
+                    .copied()
+                    .collect();
                 row.copy_from_slice(&flipped);
             }
         }
@@ -61,7 +68,9 @@ fn scene(mirror: bool, damage: bool) -> TestResult<Vec<u8>> {
         if damage && index == GAP {
             // Generated headers have no custom payloads. The first DQT is before entropy;
             // replacing its first 8-bit value changes no marker, length, frame count or time.
-            let dqt = jpeg.windows(2).position(|pair| pair == [0xff, 0xdb])
+            let dqt = jpeg
+                .windows(2)
+                .position(|pair| pair == [0xff, 0xdb])
                 .ok_or("fixture has no quantization table")?;
             let value = jpeg.get_mut(dqt + 5).ok_or("truncated fixture quantizer")?;
             assert_ne!(*value, 0);
@@ -141,7 +150,9 @@ fn gap_is_uncovered(record: &CoverageRecord, error_id: &str) {
 fn recovered_watch_infers_after_damage_without_bridging_tracks_or_granting_effects() -> TestResult {
     let mut fixture = Fixture::new("recovered-watch")?;
     let import = fixture.ingest(
-        "sensor:recovered-watch", &scene(false, true)?, FileFormatHint::JpegStream,
+        "sensor:recovered-watch",
+        &scene(false, true)?,
+        FileFormatHint::JpegStream,
         Some(1_000_000_000),
     )?;
     let plan = watch_plan(import);
@@ -149,24 +160,43 @@ fn recovered_watch_infers_after_damage_without_bridging_tracks_or_granting_effec
     let before = fixture.deployment.current_anchor().clone();
     let scalar = ScalarExecCx::new();
     let package = package(&fixture, &scalar)?;
-    let mut cascade = DetectorCascade::new(&package, config(2), PackageDetectLimits::default(), &scalar)?;
+    let mut cascade =
+        DetectorCascade::new(&package, config(2), PackageDetectLimits::default(), &scalar)?;
 
     let strict = WatchReport::analyze_with_detector(
-        &fixture.deployment, &plan, &limits, Some(&mut cascade), &fixture.cx,
+        &fixture.deployment,
+        &plan,
+        &limits,
+        Some(&mut cascade),
+        &fixture.cx,
     );
-    let error = strict.err().ok_or("strict mode accepted a malformed quantizer")?;
+    let error = strict
+        .err()
+        .ok_or("strict mode accepted a malformed quantizer")?;
     let WatchError::Decode(ref cause) = error else {
         return Err(format!("wrong strict refusal: {error}").into());
     };
     assert!(tolerable(cause));
     assert_eq!(cascade.executed_inferences(), 0);
     let error_id = error.stable_id();
-    let options = WatchOptions { tolerate_decode_refusals: true };
+    let options = WatchOptions {
+        tolerate_decode_refusals: true,
+    };
     let plain = WatchReport::analyze_with_options(
-        &fixture.deployment, &plan, &limits, None, options, &fixture.cx,
+        &fixture.deployment,
+        &plan,
+        &limits,
+        None,
+        options,
+        &fixture.cx,
     )?;
     let mut report = WatchReport::analyze_with_options(
-        &fixture.deployment, &plan, &limits, Some(&mut cascade), options, &fixture.cx,
+        &fixture.deployment,
+        &plan,
+        &limits,
+        Some(&mut cascade),
+        options,
+        &fixture.cx,
     )?;
     assert_eq!(report.frames().len(), FRAMES - 1);
     assert_eq!(report.tracking_restarts(), &[GAP + 1]);
@@ -177,19 +207,31 @@ fn recovered_watch_infers_after_damage_without_bridging_tracks_or_granting_effec
     assert_eq!(cascade.executed_inferences(), 1);
     let outcome = report.detector_cascade().ok_or("no recovered cascade")?;
     assert_eq!(outcome.inferred_segments().len(), 1);
-    assert!(outcome.inferred_segments().iter().all(|segment| *segment > GAP));
+    assert!(
+        outcome
+            .inferred_segments()
+            .iter()
+            .all(|segment| *segment > GAP)
+    );
     assert!(!outcome.budget_skipped_segments().is_empty());
     assert!(outcome.refused_segments().is_empty());
     assert!(outcome.frames.iter().all(|frame| frame.segment != GAP));
     assert!(!outcome.cascade_skipped.contains(&GAP));
     gap_is_uncovered(report.coverage(), error_id);
     assert!(report.coverage().zones.iter().any(|zone| {
-        zone.witnesses.iter().any(|witness| witness.first_segment > GAP as u64)
+        zone.witnesses
+            .iter()
+            .any(|witness| witness.first_segment > GAP as u64)
     }));
     for candidate in report.candidates() {
         // This zone is entered only after the damaged frame and the tracking restart.
         assert!(candidate.frame_range()[0] > GAP);
-        assert!(candidate.class_evidence.iter().all(|item| item.segment > GAP));
+        assert!(
+            candidate
+                .class_evidence
+                .iter()
+                .all(|item| item.segment > GAP)
+        );
         assert_eq!(candidate.event().kind, EventKind::Unclassified);
         assert_eq!(candidate.event().state, EventState::Indeterminate);
         assert!(candidate.event().decision_path.abstained);
@@ -207,26 +249,33 @@ fn recovered_watch_infers_after_damage_without_bridging_tracks_or_granting_effec
 }
 
 #[test]
-fn recovered_corroboration_shares_one_allowance_and_keeps_sensor_policy_independent() -> TestResult {
+fn recovered_corroboration_shares_one_allowance_and_keeps_sensor_policy_independent() -> TestResult
+{
     let mut fixture = Fixture::new("recovered-corroboration")?;
     let east = fixture.ingest(
-        "sensor:recovered-east", &scene(false, true)?, FileFormatHint::JpegStream,
+        "sensor:recovered-east",
+        &scene(false, true)?,
+        FileFormatHint::JpegStream,
         Some(1_000_000_000),
     )?;
     let west = fixture.ingest(
-        "sensor:recovered-west", &scene(true, false)?, FileFormatHint::JpegStream,
+        "sensor:recovered-west",
+        &scene(true, false)?,
+        FileFormatHint::JpegStream,
         Some(1_000_000_000),
     )?;
     let plan = CorroborationPlan {
         cameras: [
             CorroborationCamera {
-                name: "east".to_owned(), import_identity: east,
+                name: "east".to_owned(),
+                import_identity: east,
                 homography: GroundHomography {
                     matrix: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
                 },
             },
             CorroborationCamera {
-                name: "west".to_owned(), import_identity: west,
+                name: "west".to_owned(),
+                import_identity: west,
                 homography: GroundHomography {
                     matrix: [-1.0, 0.0, 360.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
                 },
@@ -234,34 +283,64 @@ fn recovered_corroboration_shares_one_allowance_and_keeps_sensor_policy_independ
         ],
         interpretation: ComponentInterpretation::YCbCr,
         zones: vec![GroundZone {
-            zone_id: "door".to_owned(), x: 200.0, y: 0.0, width: 160.0, height: 640.0,
+            zone_id: "door".to_owned(),
+            x: 200.0,
+            y: 0.0,
+            width: 160.0,
+            height: 640.0,
         }],
-        gates: CorroborationGates { time_gate_ns: 250_000_000, distance_gate: 16.0 },
+        gates: CorroborationGates {
+            time_gate_ns: 250_000_000,
+            distance_gate: 16.0,
+        },
         detector: foreground(),
         tracker: WatchTrackerConfig::default(),
     };
     let limits = limits();
     let visibility = GroundVisibilityPlan::default();
-    let options = CorroborationOptions { tolerate_decode_refusals: true };
+    let options = CorroborationOptions {
+        tolerate_decode_refusals: true,
+    };
     let before = fixture.deployment.current_anchor().clone();
     let plain = CorroborationReport::analyze_with_options(
-        &fixture.deployment, &plan, &limits, None, &visibility, options, &fixture.cx,
+        &fixture.deployment,
+        &plan,
+        &limits,
+        None,
+        &visibility,
+        options,
+        &fixture.cx,
     )?;
     let scalar = ScalarExecCx::new();
     let package = package(&fixture, &scalar)?;
-    let mut cascade = DetectorCascade::new(&package, config(1), PackageDetectLimits::default(), &scalar)?;
+    let mut cascade =
+        DetectorCascade::new(&package, config(1), PackageDetectLimits::default(), &scalar)?;
     let report = CorroborationReport::analyze_with_options(
-        &fixture.deployment, &plan, &limits, Some(&mut cascade), &visibility, options, &fixture.cx,
+        &fixture.deployment,
+        &plan,
+        &limits,
+        Some(&mut cascade),
+        &visibility,
+        options,
+        &fixture.cx,
     )?;
     let [east, west] = report.detector_cascade().ok_or("no recovered cascade")? else {
         return Err("expected both camera outcomes".into());
     };
     assert_eq!(cascade.executed_inferences(), 1);
     assert_eq!(east.inferred_segments().len(), 1);
-    assert!(east.inferred_segments().iter().all(|segment| *segment > GAP));
+    assert!(
+        east.inferred_segments()
+            .iter()
+            .all(|segment| *segment > GAP)
+    );
     assert!(west.inferred_segments().is_empty());
     assert!(!west.frames.is_empty());
-    assert!(west.frames.iter().all(|frame| matches!(frame.status, FrameStatus::BudgetExhausted)));
+    assert!(
+        west.frames
+            .iter()
+            .all(|frame| matches!(frame.status, FrameStatus::BudgetExhausted))
+    );
     assert_eq!(report.cameras()[0].tracking_restarts, vec![GAP + 1]);
     assert!(report.cameras()[1].decode_refusals.is_empty());
     let [refusal] = &report.cameras()[0].decode_refusals[..] else {
@@ -283,13 +362,29 @@ fn recovered_corroboration_shares_one_allowance_and_keeps_sensor_policy_independ
         assert_eq!(candidate.event().kind, EventKind::Unclassified);
         assert_eq!(candidate.event().state, baseline.event().state);
         assert_eq!(candidate.policy_action(), baseline.policy_action());
-        assert_eq!(candidate.worst_case_separation_ns, baseline.worst_case_separation_ns);
-        let classes: BTreeSet<_> = report.entries().iter()
-            .flat_map(|entry| entry.class_evidence.iter().map(|item| item.digest)).collect();
-        assert!(candidate.event().evidence.iter().all(|edge| !classes.contains(&edge.digest)));
+        assert_eq!(
+            candidate.worst_case_separation_ns,
+            baseline.worst_case_separation_ns
+        );
+        let classes: BTreeSet<_> = report
+            .entries()
+            .iter()
+            .flat_map(|entry| entry.class_evidence.iter().map(|item| item.digest))
+            .collect();
+        assert!(
+            candidate
+                .event()
+                .evidence
+                .iter()
+                .all(|edge| !classes.contains(&edge.digest))
+        );
     }
     assert_eq!(*fixture.deployment.current_anchor(), before);
-    assert!(report.to_json(0, None, None).contains("\"effects_authorized\":false"));
+    assert!(
+        report
+            .to_json(0, None, None)
+            .contains("\"effects_authorized\":false")
+    );
     scalar.drain_and_finalize();
     Ok(())
 }
@@ -298,21 +393,34 @@ fn recovered_corroboration_shares_one_allowance_and_keeps_sensor_policy_independ
 fn clean_tolerant_cascade_keeps_exact_report_bytes_and_completed_inference_cache() -> TestResult {
     let mut fixture = Fixture::new("clean-tolerant-cascade")?;
     let import = fixture.ingest(
-        "sensor:clean-tolerant-cascade", &scene(false, false)?, FileFormatHint::JpegStream,
+        "sensor:clean-tolerant-cascade",
+        &scene(false, false)?,
+        FileFormatHint::JpegStream,
         Some(1_000_000_000),
     )?;
     let plan = watch_plan(import);
     let limits = limits();
     let scalar = ScalarExecCx::new();
     let package = package(&fixture, &scalar)?;
-    let mut cascade = DetectorCascade::new(&package, config(1), PackageDetectLimits::default(), &scalar)?;
+    let mut cascade =
+        DetectorCascade::new(&package, config(1), PackageDetectLimits::default(), &scalar)?;
     let strict = WatchReport::analyze_with_detector(
-        &fixture.deployment, &plan, &limits, Some(&mut cascade), &fixture.cx,
+        &fixture.deployment,
+        &plan,
+        &limits,
+        Some(&mut cascade),
+        &fixture.cx,
     )?;
     assert_eq!(cascade.executed_inferences(), 1);
     let tolerant = WatchReport::analyze_with_options(
-        &fixture.deployment, &plan, &limits, Some(&mut cascade),
-        WatchOptions { tolerate_decode_refusals: true }, &fixture.cx,
+        &fixture.deployment,
+        &plan,
+        &limits,
+        Some(&mut cascade),
+        WatchOptions {
+            tolerate_decode_refusals: true,
+        },
+        &fixture.cx,
     )?;
     assert!(tolerant.decode_refusals().is_empty());
     assert!(tolerant.tracking_restarts().is_empty());

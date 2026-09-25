@@ -15,7 +15,8 @@ impl Scratch {
     fn new() -> Result<Self, Box<dyn Error>> {
         for attempt in 0..100 {
             let root = std::env::temp_dir().join(format!(
-                "fss-shared-failure-cli-{}-{attempt}", std::process::id()
+                "fss-shared-failure-cli-{}-{attempt}",
+                std::process::id()
             ));
             match fs::create_dir(&root) {
                 Ok(()) => return Ok(Self(root)),
@@ -58,7 +59,11 @@ fn common_failure_reports_preserve_windows_custody_and_unknowns() -> Result<(), 
         .arg(env!("CARGO_BIN_EXE_fss-file"))
         .arg(env!("CARGO_BIN_EXE_fss-event"))
         .output()?;
-    assert!(output.status.success(), "{}{}",
-        String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
     Ok(())
 }

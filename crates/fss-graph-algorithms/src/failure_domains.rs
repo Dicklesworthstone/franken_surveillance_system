@@ -221,7 +221,9 @@ pub fn analyse_failure_domains(
     for domain in ordered.into_values() {
         let node = domain.node_id();
         let mut builder = GraphBuilder::new();
-        builder.add_node(projection.plane.clone()).add_node(node.clone());
+        builder
+            .add_node(projection.plane.clone())
+            .add_node(node.clone());
         builder.add_edge(projection.plane.clone(), node.clone());
         for sensor in &sensors {
             let sensor_node = format!("{SENSOR_PREFIX}{sensor}");
