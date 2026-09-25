@@ -49,11 +49,11 @@ mod tests;
 pub const MAX_EXEC_THREADS: usize = 64;
 
 /// Minimum work per thread, in multiply-accumulate equivalents, before a convolution is split
-/// further (under a millisecond of kernel time, so a thread's spawn and join stay a small
-/// fraction of its work). A pure scheduling heuristic: it depends only on the prepared geometry
-/// and the requested count, never on the host, and it cannot change any output bit (every
-/// partition is bit-identical).
-const MIN_MACS_PER_THREAD: u64 = 1 << 21;
+/// further: a few milliseconds of kernel time, because one scoped spawn plus join measured
+/// 0.3-1 ms on loaded shared hosts (docs/PERF_LEDGER.md PERF-002). A pure scheduling heuristic:
+/// it depends only on the prepared geometry and the requested count, never on the host, and it
+/// cannot change any output bit (every partition is bit-identical).
+const MIN_MACS_PER_THREAD: u64 = 1 << 23;
 
 /// Explicit worker-thread count for one optimized execution (1..=[`MAX_EXEC_THREADS`]).
 ///
