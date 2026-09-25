@@ -17,6 +17,8 @@ use super::{
     OpenSessionRequest, PUBLICATIONS_RELPATH, ResumeRequest, SESSION_JOURNAL_FILE,
     SESSIONS_RELPATH, capsule_anchor_token, open_session, prepare_handoff, resume_session,
 };
+use crate::agent_follow::{AnchorRefusal, AnchorToken, resolve_anchor, snapshot_anchor_token};
+use crate::agent_orient::{DeploymentHistory, OrientLimits};
 use crate::reference_deployment::{RELATIVE_PATH_EFFECTS, RELATIVE_PATH_LEDGER};
 use crate::{ADP_REPLAY_ROW_ID, ReferenceDeployment, ReplayCx, ReplayIoAuthority};
 
@@ -423,6 +425,68 @@ fn a_rolled_back_session_journal_is_refused() -> TestResult {
         open_session(&fixture.root, &open_request()?),
         Err(DeploymentSessionError::StoreInvalid(_))
     ));
+    Ok(())
+}
+
+/// fss-1s6ac: a deployment root copied byte for byte and advanced on its own is another
+/// deployment. Its anchor token after the divergence is refused on the original (the token binds
+/// the ledger and effect roots at its position, and the original committed another batch there),
+/// and so is a handoff sealed on the copy after the divergence and carried into the original.
+/// Before the divergence the copy's token is byte-identical to the original's own: it names history
+/// both share, so it is not refused (the residual `SECURITY.md` states).
+#[test]
+fn a_handoff_and_anchor_from_a_byte_copied_deployment_are_refused_on_the_original() -> TestResult {
+    let mut original = Fixture::new("fork-original", SITE)?;
+    original.commit(SITE)?;
+    let mut fork = Fixture::new("fork-copy", SITE)?;
+    fs::remove_dir_all(&fork.root)?;
+    copy_tree(&original.root, &fork.root)?;
+    fork.batches = original.batches;
+    let limits = OrientLimits::default();
+    let head_token = |root: &Path| -> TestResult<String> {
+        let history = DeploymentHistory::read(root, &limits)?;
+        Ok(snapshot_anchor_token(&history.snapshot_at(history.head())?))
+    };
+    assert_eq!(head_token(&fork.root)?, head_token(&original.root)?);
+
+    // Each advances by a different batch at the same position.
+    fork.commit(SITE)?;
+    original.batches += 10;
+    original.commit(SITE)?;
+    let fork_token = head_token(&fork.root)?;
+    let original_history = DeploymentHistory::read(&original.root, &limits)?;
+    let token = AnchorToken::parse(&fork_token).ok_or("the fork's anchor token does not parse")?;
+    assert!(
+        matches!(
+            resolve_anchor(&original_history, &token),
+            Err(AnchorRefusal::Unknown)
+        ),
+        "{fork_token}"
+    );
+
+    let opened = open_session(&fork.root, &open_request()?)?;
+    let published = prepare_handoff(
+        &fork.root,
+        &handoff_request(&opened.session.session_id, "sealed on the copy")?,
+    )?
+    .publish(&[])?;
+    let handoff_id = published.record.capsule.handoff_id.clone();
+    copy_tree(
+        &fork.root.join(PUBLICATIONS_RELPATH),
+        &original.root.join(PUBLICATIONS_RELPATH),
+    )?;
+    let resumed = resume_session(&original.root, &resume_request(&handoff_id)?);
+    assert!(
+        matches!(
+            &resumed,
+            Err(DeploymentSessionError::HandoffInvalid(reason))
+                if reason == "the handoff anchor is not in this deployment's committed history"
+        ),
+        "{:?}",
+        resumed.map(|resumed| resumed.revision.capsule().revision)
+    );
+    // On the copy it was sealed on, the same handoff resumes.
+    let _ = resume_session(&fork.root, &resume_request(&handoff_id)?)?;
     Ok(())
 }
 

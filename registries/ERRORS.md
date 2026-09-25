@@ -168,6 +168,7 @@ operation states rather than generic errors.
 | `ERR-LEDGER-ORACLE-DUPLICATE-BATCH-001` | exact batch is already committed at the reported sequence | no retry; batch is already canonical |
 | `ERR-LEDGER-ORACLE-BATCH-ID-CONFLICT-001` | committed batch identity reused with different content | reject input; stable batch IDs are never reused |
 | `ERR-LEDGER-DURABLE-BATCH-ID-CONFLICT-001` | durable ledger batch identity already committed with different content | reject input; stable batch IDs are never reused |
+| `ERR-LEDGER-SEALED-NAMESPACE-001` | batch writes the sealed publication-lineage namespace (a lineage or proof-marker family or object) outside record_reference_publication, or the gated writer was handed an unsealed batch | reject input; record publications only through record_reference_publication |
 | `ERR-LEDGER-ORACLE-CAPACITY-001` | committed-batch capacity of the oracle is exhausted | archive or rotate before appending |
 | `ERR-LEDGER-ORACLE-SEQUENCE-GAP-001` | batch basis is beyond the head; predecessor batches are missing | supply predecessors in canonical order, then retry |
 | `ERR-LEDGER-ORACLE-BASIS-FORKED-001` | batch basis anchor is not the committed anchor at its sequence | reject input; foreign lineage, epoch, or state root |

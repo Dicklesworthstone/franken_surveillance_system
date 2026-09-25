@@ -2646,15 +2646,90 @@ fn lineage_fails_closed_on_a_torn_record_and_replays_deterministically()
     Ok(())
 }
 
-/// Appends a raw lineage record of `publication`, continuing `predecessor`, to `ledger` through the
-/// public ledger API, bypassing [`crate::record_reference_publication`]: what any holder of a
-/// ledger can write.
-fn append_raw_lineage(
+/// fss-1s6ac: offers `batch`, which writes the sealed lineage namespace, to the authority's public
+/// append and requires exactly the typed gate refusal naming the batch and its first namespace
+/// delta, with the ledger unchanged.
+fn assert_gate_refuses(
+    ledger: &mut DurableReferenceLedger,
+    batch: &fss_core::EvidenceDeltaBatch,
+) -> Result<(), Box<dyn Error>> {
+    let before = ledger.current().clone();
+    let expected_delta = batch
+        .deltas
+        .iter()
+        .find(|delta| fss_ledger::is_sealed_lineage_delta(delta))
+        .map(|delta| delta.delta_id.clone())
+        .ok_or(ReferenceError::InvalidSpec("batch_outside_the_namespace"))?;
+    let Err(error) = ledger.append(batch.clone()).map(|_| ()) else {
+        return Err("the public append admitted a raw lineage batch".into());
+    };
+    assert_eq!(
+        error.stable_id(),
+        Some(fss_ledger::ERR_LEDGER_SEALED_NAMESPACE_001),
+        "{error:?}"
+    );
+    assert!(
+        matches!(
+            &error,
+            fss_ledger::DurableLedgerError::SealedLineageNamespace { batch_id, delta_id }
+                if *batch_id == batch.batch_id && *delta_id == expected_delta
+        ),
+        "{error:?}"
+    );
+    assert_eq!(ledger.current(), &before);
+    Ok(())
+}
+
+/// fss-1s6ac: writes the refused `batch` into the authority journal the way only a writer of the
+/// journal file can (a raw batch from before the gate, or bytes written directly): its deltas are
+/// re-prepared at the current head (each object's next generation), the evidence-batch record
+/// (kind 1) is appended to the file, and the handle is reopened over it.
+fn plant_bypassing_the_gate(
+    ledger: &mut DurableReferenceLedger,
+    refused: &fss_core::EvidenceDeltaBatch,
+) -> Result<(), Box<dyn Error>> {
+    let mut deltas = refused.deltas.clone();
+    for delta in &mut deltas {
+        let prior = ledger
+            .current()
+            .objects
+            .get(&delta.object_id)
+            .map(|revision| revision.generation);
+        delta.prior_generation = prior;
+        delta.new_generation = match prior {
+            Some(generation) => generation
+                .checked_add(1)
+                .ok_or(ReferenceError::ArithmeticOverflow)?,
+            None => 1,
+        };
+    }
+    let batch = &ledger.prepare_batch(
+        refused.batch_id.clone(),
+        deltas,
+        refused.children.iter().copied(),
+    )?;
+    let path = ledger.path().to_path_buf();
+    let site = ledger.current().anchor.site_lineage.clone();
+    let pin = ledger.store_pin();
+    let mut journal = fss_ledger::Journal::open(&path, IncompleteTailPolicy::Reject)?;
+    let _ = journal.append(1, &fss_ledger::encode_batch(batch)?)?;
+    drop(journal);
+    *ledger = DurableReferenceLedger::open(&path, site, IncompleteTailPolicy::Reject)?;
+    assert_eq!(ledger.current().anchor, batch.new_anchor);
+    // The same file: the reopened handle keeps its store pin.
+    assert_eq!(ledger.store_pin(), pin);
+    Ok(())
+}
+
+/// Builds a raw lineage record of `publication`, continuing `predecessor`, as any holder of a
+/// ledger could before fss-1s6ac, and requires the public append to refuse it at the gate.
+/// Returns the refused batch, so a test can plant it with [`plant_bypassing_the_gate`].
+fn raw_lineage_refused(
     ledger: &mut DurableReferenceLedger,
     publication: &crate::ReferenceSituationPublication,
     predecessor: Option<fss_core::ContentDigest>,
     generations: (Option<u64>, u64),
-) -> Result<(), Box<dyn Error>> {
+) -> Result<fss_core::EvidenceDeltaBatch, Box<dyn Error>> {
     let (event_id, objective_id) = publication
         .situation
         .subject()
@@ -2672,8 +2747,8 @@ fn append_raw_lineage(
         vec![delta],
         [digest],
     )?;
-    let _ = ledger.append(batch)?;
-    Ok(())
+    assert_gate_refuses(ledger, &batch)?;
+    Ok(batch)
 }
 
 /// fss-mnlz1 N2 (the reviewer's two-store probe): only the authority whose lineage compile reads
@@ -2733,13 +2808,17 @@ fn only_the_compiling_authority_lineage_vouches_for_a_successor() -> Result<(), 
     )?;
     assert!(terminal(&genuine), "{:?}", genuine.classes);
 
-    append_raw_lineage(&mut second, &parent, None, (None, 1))?;
-    append_raw_lineage(
+    // fss-1s6ac: the public append refuses both raw records at the gate; planted past it, they
+    // still vouch for nothing in a store that never committed either sealed anchor.
+    let first_raw = raw_lineage_refused(&mut second, &parent, None, (None, 1))?;
+    plant_bypassing_the_gate(&mut second, &first_raw)?;
+    let second_raw = raw_lineage_refused(
         &mut second,
         &rival,
         Some(parent.publication_digest),
         (Some(1), 2),
     )?;
+    plant_bypassing_the_gate(&mut second, &second_raw)?;
     let second_store =
         crate::classify_reference_meaningful_delta_in_lineage(&parent, &rival, &second, None)?;
     assert!(
@@ -2764,7 +2843,7 @@ fn only_the_compiling_authority_lineage_vouches_for_a_successor() -> Result<(), 
         )?)
         .map(|revision| revision.generation)
         .ok_or(ReferenceError::InvalidSpec("missing_lineage"))?;
-    append_raw_lineage(
+    let raw_child = raw_lineage_refused(
         &mut lifecycle.harness.authority,
         &rival,
         Some(parent.publication_digest),
@@ -2775,9 +2854,8 @@ fn only_the_compiling_authority_lineage_vouches_for_a_successor() -> Result<(), 
                 .ok_or(ReferenceError::ArithmeticOverflow)?,
         ),
     )?;
-    // The raw second child's witness is not the latest publication, so the replay skips it: it
-    // vouches for nothing, and the recorded child stays the terminal successor and the latest
-    // publication (fss-mnlz1 N2-D).
+    // The gate refused the raw second child, so it vouches for nothing, and the recorded child
+    // stays the terminal successor and the latest publication (fss-mnlz1 N2-D, fss-1s6ac).
     let forged = crate::classify_reference_meaningful_delta_in_lineage(
         &parent,
         &rival,
@@ -2801,6 +2879,20 @@ fn only_the_compiling_authority_lineage_vouches_for_a_successor() -> Result<(), 
         crate::latest_reference_publication(&lifecycle.harness.authority, event_id, objective_id)?,
         Some(child.publication_digest)
     );
+    // fss-1s6ac: planted past the gate, the raw second child is never skipped silently: every
+    // reader of the subject's lineage refuses it, typed.
+    plant_bypassing_the_gate(&mut lifecycle.harness.authority, &raw_child)?;
+    assert_unsealed_refusal(&crate::classify_reference_meaningful_delta_in_lineage(
+        &parent,
+        &child,
+        &lifecycle.harness.authority,
+        None,
+    ));
+    assert_unsealed_refusal(&crate::latest_reference_publication(
+        &lifecycle.harness.authority,
+        event_id,
+        objective_id,
+    ));
     drop(second);
     let _ = fs::remove_file(second_path);
     lifecycle.harness.cleanup();
@@ -2889,16 +2981,17 @@ fn a_result_sealed_from_another_journal_never_discharges() -> Result<(), Box<dyn
     Ok(())
 }
 
-/// Appends one raw write of the lineage object `object_id` to `ledger` through the public ledger
-/// API, bypassing [`crate::record_reference_publication`]: `payload` under `family`, witnessing
-/// `witness`, at the object's next generation.
-fn append_raw_record(
+/// Builds one raw write of the lineage object `object_id` (`payload` under `family`, witnessing
+/// `witness`, at the object's next generation) as any holder of a ledger could before fss-1s6ac,
+/// and requires the public append to refuse it at the gate. Returns the refused batch, so a test
+/// can plant it with [`plant_bypassing_the_gate`].
+fn raw_record_refused(
     ledger: &mut DurableReferenceLedger,
     object_id: &fss_core::ObjectId,
     family: &str,
     payload: fss_core::ContentDigest,
     witness: Option<fss_core::ContentDigest>,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<fss_core::EvidenceDeltaBatch, Box<dyn Error>> {
     let prior = ledger
         .current()
         .objects
@@ -2924,8 +3017,20 @@ fn append_raw_record(
         vec![delta],
         [payload],
     )?;
-    let _ = ledger.append(batch)?;
-    Ok(())
+    assert_gate_refuses(ledger, &batch)?;
+    Ok(batch)
+}
+
+/// Requires `result` to be refused with exactly the typed `lineage_unsealed_write` refusal
+/// (fss-1s6ac): a lineage holding a write outside its one writer is never read.
+fn assert_unsealed_refusal<T: std::fmt::Debug>(result: &Result<T, ReferenceError>) {
+    assert!(
+        matches!(
+            result,
+            Err(ReferenceError::InvalidSpec("lineage_unsealed_write"))
+        ),
+        "{result:?}"
+    );
 }
 
 /// The lineage object of `publication`'s subject.
@@ -2965,11 +3070,12 @@ fn is_terminal(delta: &fss_core::MeaningfulDelta) -> bool {
 }
 
 /// fss-mnlz1 N2-D (the reviewer's freeze probe): one raw lineage batch naming a digest that is no
-/// publication, witnessed by the parent at the next generation, never freezes the subject. The
-/// replay skips it (its witness is not the latest publication), so the parent's recorded child
-/// stays terminal and latest, and a successor of the child still compiles and records. A raw
-/// record that does extend the latest publication cannot be told from a recorded step and becomes
-/// the latest, but the lineage continues from it too.
+/// publication, witnessed by the parent at the next generation, never freezes the subject: the
+/// public append refuses it at the gate (fss-1s6ac), so the parent's recorded child stays terminal
+/// and latest, and a successor of the child still compiles and records. A raw record extending the
+/// latest publication, which before fss-1s6ac could not be told from a recorded step and became the
+/// latest, is refused at the gate too: nothing can continue it. Planted past the gate, it is never
+/// credited: every reader of the subject's lineage refuses it, typed.
 #[test]
 fn a_raw_lineage_batch_never_freezes_a_subject() -> Result<(), Box<dyn Error>> {
     let mut lifecycle = Lifecycle::new("n2d-freeze")?;
@@ -2979,7 +3085,7 @@ fn a_raw_lineage_batch_never_freezes_a_subject() -> Result<(), Box<dyn Error>> {
     crate::record_reference_publication(&mut lifecycle.harness.authority, &child)?;
     let object_id = lineage_object_of(&parent)?;
 
-    append_raw_record(
+    let _ = raw_record_refused(
         &mut lifecycle.harness.authority,
         &object_id,
         crate::situation_sections::LINEAGE_FAMILY,
@@ -3005,7 +3111,7 @@ fn a_raw_lineage_batch_never_freezes_a_subject() -> Result<(), Box<dyn Error>> {
     );
 
     let extension = fss_core::ContentDigest::sha256(b"zz9-raw-extension");
-    append_raw_record(
+    let raw_extension = raw_record_refused(
         &mut lifecycle.harness.authority,
         &object_id,
         crate::situation_sections::LINEAGE_FAMILY,
@@ -3014,32 +3120,73 @@ fn a_raw_lineage_batch_never_freezes_a_subject() -> Result<(), Box<dyn Error>> {
     )?;
     assert_eq!(
         latest_of(&lifecycle.harness.authority, &parent)?,
-        Some(extension)
+        Some(grandchild.publication_digest)
     );
-    let mut compile_request = request(
-        &lifecycle.decision,
-        &lifecycle.receipt,
-        &["capability:alert.commit", CAPABILITY_EFFECT_RECONCILE],
-    )?;
-    compile_request.alert_plan = Some(&lifecycle.plan);
-    compile_request.alert_outcome = Some(&lifecycle.outcome);
-    compile_request.predecessor_publication = Some(extension);
+    let continue_from =
+        |predecessor: fss_core::ContentDigest,
+         authority: &DurableReferenceLedger|
+         -> Result<Result<crate::ReferenceSituation, ReferenceError>, Box<dyn Error>> {
+            let mut compile_request = request(
+                &lifecycle.decision,
+                &lifecycle.receipt,
+                &["capability:alert.commit", CAPABILITY_EFFECT_RECONCILE],
+            )?;
+            compile_request.alert_plan = Some(&lifecycle.plan);
+            compile_request.alert_outcome = Some(&lifecycle.outcome);
+            compile_request.predecessor_publication = Some(predecessor);
+            Ok(compile_reference_situation(compile_request, authority))
+        };
+    let unrecorded = continue_from(extension, &lifecycle.harness.authority)?;
+    assert!(
+        matches!(
+            unrecorded,
+            Err(ReferenceError::InvalidSpec(
+                "situation_predecessor_not_latest"
+            ))
+        ),
+        "{:?}",
+        unrecorded.map(|situation| situation.capsule.capsule_id)
+    );
     let continued = crate::project_reference_situation(
-        compile_reference_situation(compile_request, &lifecycle.harness.authority)?,
+        continue_from(grandchild.publication_digest, &lifecycle.harness.authority)??,
         &guard_projection_spec()?,
     )?;
-    crate::record_reference_publication(&mut lifecycle.harness.authority, &continued)?;
-    assert_eq!(
-        latest_of(&lifecycle.harness.authority, &parent)?,
-        Some(continued.publication_digest)
-    );
+
+    // Planted past the gate, the extension is refused by every reader, typed: the latest
+    // publication, a compile continuing either publication, a record, and a classification.
+    plant_bypassing_the_gate(&mut lifecycle.harness.authority, &raw_extension)?;
+    let (event_id, objective_id) = parent
+        .situation
+        .subject()
+        .ok_or(ReferenceError::InvalidSpec("missing_subject"))?;
+    assert_unsealed_refusal(&crate::latest_reference_publication(
+        &lifecycle.harness.authority,
+        event_id,
+        objective_id,
+    ));
+    assert_unsealed_refusal(&continue_from(extension, &lifecycle.harness.authority)?);
+    assert_unsealed_refusal(&continue_from(
+        grandchild.publication_digest,
+        &lifecycle.harness.authority,
+    )?);
+    assert_unsealed_refusal(&crate::record_reference_publication(
+        &mut lifecycle.harness.authority,
+        &continued,
+    ));
+    assert_unsealed_refusal(&crate::classify_reference_meaningful_delta_in_lineage(
+        &parent,
+        &child,
+        &lifecycle.harness.authority,
+        None,
+    ));
     lifecycle.harness.cleanup();
     Ok(())
 }
 
-/// fss-mnlz1 Mu2: a raw record naming a publication the lineage already recorded is skipped even
-/// when it witnesses the latest publication. Otherwise the loop would make the parent latest
-/// again and let a raw second child of it through.
+/// fss-mnlz1 Mu2: a raw record naming a publication the lineage already recorded never makes the
+/// parent latest again, even when it witnesses the latest publication; otherwise the loop would
+/// let a raw second child of it through. Since fss-1s6ac the public append refuses both raw records
+/// at the gate, and the loop record planted past the gate makes every reader refuse, typed.
 #[test]
 fn a_raw_record_repeating_a_recorded_publication_is_skipped() -> Result<(), Box<dyn Error>> {
     let mut lifecycle = Lifecycle::new("mu2-loop")?;
@@ -3049,14 +3196,14 @@ fn a_raw_record_repeating_a_recorded_publication_is_skipped() -> Result<(), Box<
     let rival = lifecycle.verified_after(false, &parent)?;
     crate::record_reference_publication(&mut lifecycle.harness.authority, &child)?;
     let object_id = lineage_object_of(&parent)?;
-    append_raw_record(
+    let raw_loop = raw_record_refused(
         &mut lifecycle.harness.authority,
         &object_id,
         crate::situation_sections::LINEAGE_FAMILY,
         parent.publication_digest,
         Some(child.publication_digest),
     )?;
-    append_raw_record(
+    let _ = raw_record_refused(
         &mut lifecycle.harness.authority,
         &object_id,
         crate::situation_sections::LINEAGE_FAMILY,
@@ -3081,13 +3228,21 @@ fn a_raw_record_repeating_a_recorded_publication_is_skipped() -> Result<(), Box<
         None,
     )?;
     assert!(is_terminal(&recorded), "{:?}", recorded.classes);
+    plant_bypassing_the_gate(&mut lifecycle.harness.authority, &raw_loop)?;
+    assert_unsealed_refusal(&crate::classify_reference_meaningful_delta_in_lineage(
+        &parent,
+        &rival,
+        &lifecycle.harness.authority,
+        None,
+    ));
     lifecycle.harness.cleanup();
     Ok(())
 }
 
-/// fss-mnlz1 Mu2: a write of the lineage object under another family is skipped even when it
-/// witnesses the latest publication: it never becomes the latest publication, never vouches for
-/// a successor, and never blocks the genuine one.
+/// fss-mnlz1 Mu2: a write of the lineage object under another family never becomes the latest
+/// publication, never vouches for a successor, and never blocks the genuine one. Since fss-1s6ac
+/// the gate covers every write of a lineage object, whatever its family; planted past the gate,
+/// such a write makes every reader refuse, typed.
 #[test]
 fn a_raw_write_of_another_family_is_skipped() -> Result<(), Box<dyn Error>> {
     let mut lifecycle = Lifecycle::new("mu2-family")?;
@@ -3095,7 +3250,7 @@ fn a_raw_write_of_another_family_is_skipped() -> Result<(), Box<dyn Error>> {
     crate::record_reference_publication(&mut lifecycle.harness.authority, &parent)?;
     let child = lifecycle.verified_after(true, &parent)?;
     let rival = lifecycle.verified_after(false, &parent)?;
-    append_raw_record(
+    let raw_family = raw_record_refused(
         &mut lifecycle.harness.authority,
         &lineage_object_of(&parent)?,
         "situation_publication_lineage_forged",
@@ -3121,6 +3276,13 @@ fn a_raw_write_of_another_family_is_skipped() -> Result<(), Box<dyn Error>> {
         None,
     )?;
     assert!(is_terminal(&recorded), "{:?}", recorded.classes);
+    plant_bypassing_the_gate(&mut lifecycle.harness.authority, &raw_family)?;
+    assert_unsealed_refusal(&crate::classify_reference_meaningful_delta_in_lineage(
+        &parent,
+        &child,
+        &lifecycle.harness.authority,
+        None,
+    ));
     lifecycle.harness.cleanup();
     Ok(())
 }
@@ -3281,11 +3443,11 @@ fn journal_bytes_swapped_under_the_handle_are_refused() -> Result<(), Box<dyn Er
 /// prepared publication P is recorded; (2) after dispatch, a sibling S is compiled continuing P
 /// while P is latest (the effect still indeterminate); (3) after the outcome is published, the
 /// genuine child L continuing P is compiled and recorded, and P to L is terminal; (4) one raw
-/// lineage record names S with L as witness, so S becomes the latest publication; (5) a genuine
-/// next step G continuing S compiles and records; (6) S to G is refused as a step from a displaced
-/// basis, because S's sealed predecessor is P but the lineage recorded it after L, rather than
-/// reported as a silently downgraded delta (fss-mnlz1 R5-B). P to L stays the plain delta plus its
-/// terminal transition.
+/// lineage record names S with L as witness, which before fss-1s6ac made S the latest publication
+/// (and the next step from S a displaced basis, fss-mnlz1 R5-B). Now (4) the public append refuses
+/// it at the gate, so L stays the latest; (5) a next step G continuing S no longer compiles; (6) P
+/// to L stays the plain delta plus its terminal transition. Planted past the gate, the raw record
+/// displaces nothing: the lineage is refused, typed, rather than read with S at its head.
 #[test]
 fn a_raw_record_never_makes_a_stale_sibling_a_terminal_basis() -> Result<(), Box<dyn Error>> {
     let name = "basis-in-place";
@@ -3394,8 +3556,9 @@ fn a_raw_record_never_makes_a_stale_sibling_a_terminal_basis() -> Result<(), Box
     expected.insert(fss_core::MeaningfulDeltaClass::TerminalTransition);
     assert_eq!(genuine.classes, expected);
 
-    // (4) One raw lineage record names S with L as witness: S becomes the latest publication.
-    append_raw_record(
+    // (4) One raw lineage record names S with L as witness: refused at the gate (fss-1s6ac), so L
+    // stays the latest publication.
+    let raw_displacement = raw_record_refused(
         &mut harness.authority,
         &lineage_object_of(&prepared)?,
         crate::situation_sections::LINEAGE_FAMILY,
@@ -3404,50 +3567,36 @@ fn a_raw_record_never_makes_a_stale_sibling_a_terminal_basis() -> Result<(), Box
     )?;
     assert_eq!(
         latest_of(&harness.authority, &prepared)?,
-        Some(sibling.publication_digest)
+        Some(child.publication_digest)
     );
 
-    // (5) A genuine next step G continuing S compiles and records.
-    let next = crate::project_reference_situation(
-        guarded_situation_after(
-            &harness,
-            &decision,
-            &receipt,
-            &plan,
-            GuardedEffects {
-                operation_receipt: Some(&current(&journal)?),
-                outcome: Some(&outcome),
-                journal: &journal,
-            },
-            Some(&sibling),
-        )?,
-        &spec,
-    )?;
-    crate::record_reference_publication(&mut harness.authority, &next)?;
-
-    // (6) S to G is refused as a step from a displaced basis: never terminal again, and never a
-    // silently downgraded delta (fss-mnlz1 R5-B).
-    let replayed = crate::classify_reference_meaningful_delta_in_lineage(
-        &sibling,
-        &next,
-        &harness.authority,
-        None,
-    );
+    // (5) A next step G continuing S no longer compiles: S is not the latest publication.
+    let continue_sibling =
+        |harness: &GuardHarness| -> Result<crate::ReferenceSituation, Box<dyn Error>> {
+            guarded_situation_after(
+                harness,
+                &decision,
+                &receipt,
+                &plan,
+                GuardedEffects {
+                    operation_receipt: Some(&current(&journal)?),
+                    outcome: Some(&outcome),
+                    journal: &journal,
+                },
+                Some(&sibling),
+            )
+        };
+    let next = continue_sibling(&harness);
     assert!(
-        matches!(
-            replayed,
-            Err(ReferenceError::InvalidSpec(
-                "meaningful_delta_lineage_basis_displaced"
-            ))
+        refused_boxed(
+            &next,
+            &ReferenceError::InvalidSpec("situation_predecessor_not_latest")
         ),
         "{:?}",
-        replayed.map(|delta| delta.classes)
+        next.map(|situation| situation.capsule.capsule_id)
     );
-    // The plain classifier, which never announces a terminal transition, still reports the change.
-    let plain = crate::classify_reference_meaningful_delta(&sibling, &next)?;
-    assert!(!is_terminal(&plain), "{:?}", plain.classes);
-    plain.validate()?;
-    // The recorded step P to L stays terminal after the raw record.
+
+    // (6) The recorded step P to L stays terminal.
     let still = crate::classify_reference_meaningful_delta_in_lineage(
         &prepared,
         &child,
@@ -3455,6 +3604,34 @@ fn a_raw_record_never_makes_a_stale_sibling_a_terminal_basis() -> Result<(), Box
         None,
     )?;
     assert_eq!(still.classes, expected);
+
+    // Planted past the gate, the displacement is refused, typed, by every reader: the latest
+    // publication, a compile continuing S, and the classification of the recorded step.
+    plant_bypassing_the_gate(&mut harness.authority, &raw_displacement)?;
+    let (event_id, objective_id) = prepared
+        .situation
+        .subject()
+        .ok_or(ReferenceError::InvalidSpec("missing_subject"))?;
+    assert_unsealed_refusal(&crate::latest_reference_publication(
+        &harness.authority,
+        event_id,
+        objective_id,
+    ));
+    let next = continue_sibling(&harness);
+    assert!(
+        refused_boxed(
+            &next,
+            &ReferenceError::InvalidSpec("lineage_unsealed_write")
+        ),
+        "{:?}",
+        next.map(|situation| situation.capsule.capsule_id)
+    );
+    assert_unsealed_refusal(&crate::classify_reference_meaningful_delta_in_lineage(
+        &prepared,
+        &child,
+        &harness.authority,
+        None,
+    ));
     harness.cleanup();
     Ok(())
 }
@@ -3541,9 +3718,11 @@ fn a_planless_step_never_lets_an_operation_terminalize_again() -> Result<(), Box
 
 /// fss-mnlz1 R5-B (the reviewer's displaced-basis probe): P is recorded; a sibling S continuing P
 /// is compiled while P is latest; after dispatch L continuing P is recorded; one raw lineage record
-/// promotes S (witness L); the outcome is published and G continuing S is recorded. S to G would
-/// be the effect's first-ever proof, so the bound classifier refuses it as a step from a displaced
-/// basis rather than returning a plain delta that silently drops the terminal transition.
+/// would promote S (witness L), so that G continuing S, the effect's first-ever proof, would be a
+/// step from a displaced basis whose terminal transition is downgraded. fss-1s6ac closes it at the
+/// write: the public append refuses the raw record at the gate, G continuing S no longer compiles,
+/// and the genuine first proof continuing L is the terminal step, announced exactly once. Planted
+/// past the gate, the raw record is refused, typed, by every reader rather than displacing L.
 #[test]
 fn a_displaced_basis_is_refused_not_silently_downgraded() -> Result<(), Box<dyn Error>> {
     let name = "r5b-displaced";
@@ -3617,7 +3796,7 @@ fn a_displaced_basis_is_refused_not_silently_downgraded() -> Result<(), Box<dyn 
         &spec,
     )?;
     crate::record_reference_publication(&mut harness.authority, &child)?;
-    append_raw_record(
+    let raw_promotion = raw_record_refused(
         &mut harness.authority,
         &lineage_object_of(&prepared)?,
         crate::situation_sections::LINEAGE_FAMILY,
@@ -3626,7 +3805,7 @@ fn a_displaced_basis_is_refused_not_silently_downgraded() -> Result<(), Box<dyn 
     )?;
     assert_eq!(
         latest_of(&harness.authority, &prepared)?,
-        Some(sibling.publication_digest)
+        Some(child.publication_digest)
     );
     let provider_receipt = provider
         .lookup(&plan.intent)?
@@ -3646,9 +3825,11 @@ fn a_displaced_basis_is_refused_not_silently_downgraded() -> Result<(), Box<dyn 
         &mut harness.authority,
         &provider,
     )?;
-    let next = crate::project_reference_situation(
+    let continue_from = |harness: &GuardHarness,
+                         basis: &crate::ReferenceSituationPublication|
+     -> Result<crate::ReferenceSituation, Box<dyn Error>> {
         guarded_situation_after(
-            &harness,
+            harness,
             &decision,
             &receipt,
             &plan,
@@ -3657,27 +3838,56 @@ fn a_displaced_basis_is_refused_not_silently_downgraded() -> Result<(), Box<dyn 
                 outcome: Some(&outcome),
                 journal: &journal,
             },
-            Some(&sibling),
-        )?,
-        &spec,
-    )?;
+            Some(basis),
+        )
+    };
+    let from_sibling = continue_from(&harness, &sibling);
+    assert!(
+        refused_boxed(
+            &from_sibling,
+            &ReferenceError::InvalidSpec("situation_predecessor_not_latest")
+        ),
+        "{:?}",
+        from_sibling.map(|situation| situation.capsule.capsule_id)
+    );
+    // The genuine first proof continues L and is the terminal step: exactly the plain delta plus
+    // the terminal transition, with nothing reported as already proved.
+    let next = crate::project_reference_situation(continue_from(&harness, &child)?, &spec)?;
     crate::record_reference_publication(&mut harness.authority, &next)?;
-    let displaced = crate::classify_reference_meaningful_delta_in_lineage(
-        &sibling,
+    let first = crate::classify_reference_meaningful_delta_in_lineage(
+        &child,
         &next,
         &harness.authority,
         None,
-    );
+    )?;
+    let mut expected = crate::classify_reference_meaningful_delta(&child, &next)?.classes;
+    expected.insert(fss_core::MeaningfulDeltaClass::TerminalTransition);
+    assert_eq!(first.classes, expected);
     assert!(
-        matches!(
-            displaced,
-            Err(ReferenceError::InvalidSpec(
-                "meaningful_delta_lineage_basis_displaced"
-            ))
+        !first
+            .effect_uncertainty_changes
+            .iter()
+            .any(|change| change.starts_with("effect already proved on the lineage")),
+        "{:?}",
+        first.effect_uncertainty_changes
+    );
+
+    plant_bypassing_the_gate(&mut harness.authority, &raw_promotion)?;
+    let from_sibling = continue_from(&harness, &sibling);
+    assert!(
+        refused_boxed(
+            &from_sibling,
+            &ReferenceError::InvalidSpec("lineage_unsealed_write")
         ),
         "{:?}",
-        displaced.map(|delta| delta.classes)
+        from_sibling.map(|situation| situation.capsule.capsule_id)
     );
+    assert_unsealed_refusal(&crate::classify_reference_meaningful_delta_in_lineage(
+        &child,
+        &next,
+        &harness.authority,
+        None,
+    ));
     harness.cleanup();
     Ok(())
 }
@@ -3767,7 +3977,7 @@ fn a_raw_proof_marker_never_suppresses_a_first_proof() -> Result<(), Box<dyn Err
         objective_id,
         lifecycle.plan.intent.operation_id.as_str(),
     )?;
-    append_raw_record(
+    let raw_marker = raw_record_refused(
         &mut lifecycle.harness.authority,
         &marker,
         crate::situation_sections::LINEAGE_PROOF_FAMILY,
@@ -3783,7 +3993,447 @@ fn a_raw_proof_marker_never_suppresses_a_first_proof() -> Result<(), Box<dyn Err
         None,
     )?;
     assert!(is_terminal(&first), "X to G: {:?}", first.classes);
+    // fss-1s6ac: planted past the gate, the raw marker is refused, typed, never skipped silently.
+    plant_bypassing_the_gate(&mut lifecycle.harness.authority, &raw_marker)?;
+    assert_unsealed_refusal(&crate::classify_reference_meaningful_delta_in_lineage(
+        &planless,
+        &proved,
+        &lifecycle.harness.authority,
+        None,
+    ));
     lifecycle.harness.cleanup();
+    Ok(())
+}
+
+/// fss-1s6ac R5-C (the reviewer's junk-first-entry probe): a raw first lineage entry with no
+/// witness and a junk payload used to become the subject's lineage head, so the subject's first
+/// genuine record was refused and honest callers could continue only by naming the junk digest.
+/// The public append refuses it at the gate, the subject's lineage stays empty, and the first
+/// genuine record, its successor, and their terminal step go through unchanged. Planted past the
+/// gate (on a second subject history), the junk is never the head: recording and reading the
+/// lineage are refused, typed.
+#[test]
+fn a_junk_first_lineage_entry_never_blocks_the_first_genuine_record() -> Result<(), Box<dyn Error>>
+{
+    let junk = fss_core::ContentDigest::sha256(b"zz9-r5c-junk-first-entry");
+    let mut lifecycle = Lifecycle::new("r5c-junk-first")?;
+    let parent = lifecycle.dispatched.clone();
+    let _ = raw_record_refused(
+        &mut lifecycle.harness.authority,
+        &lineage_object_of(&parent)?,
+        crate::situation_sections::LINEAGE_FAMILY,
+        junk,
+        None,
+    )?;
+    assert_eq!(latest_of(&lifecycle.harness.authority, &parent)?, None);
+    crate::record_reference_publication(&mut lifecycle.harness.authority, &parent)?;
+    assert_eq!(
+        latest_of(&lifecycle.harness.authority, &parent)?,
+        Some(parent.publication_digest)
+    );
+    let child = lifecycle.verified_after(false, &parent)?;
+    crate::record_reference_publication(&mut lifecycle.harness.authority, &child)?;
+    let step = crate::classify_reference_meaningful_delta_in_lineage(
+        &parent,
+        &child,
+        &lifecycle.harness.authority,
+        None,
+    )?;
+    let mut expected = crate::classify_reference_meaningful_delta(&parent, &child)?.classes;
+    expected.insert(fss_core::MeaningfulDeltaClass::TerminalTransition);
+    assert_eq!(step.classes, expected);
+    lifecycle.harness.cleanup();
+
+    let mut planted = Lifecycle::new("r5c-junk-planted")?;
+    let parent = planted.dispatched.clone();
+    let raw_junk = raw_record_refused(
+        &mut planted.harness.authority,
+        &lineage_object_of(&parent)?,
+        crate::situation_sections::LINEAGE_FAMILY,
+        junk,
+        None,
+    )?;
+    plant_bypassing_the_gate(&mut planted.harness.authority, &raw_junk)?;
+    let (event_id, objective_id) = parent
+        .situation
+        .subject()
+        .ok_or(ReferenceError::InvalidSpec("missing_subject"))?;
+    assert_unsealed_refusal(&crate::latest_reference_publication(
+        &planted.harness.authority,
+        event_id,
+        objective_id,
+    ));
+    assert_unsealed_refusal(&crate::record_reference_publication(
+        &mut planted.harness.authority,
+        &parent,
+    ));
+    planted.harness.cleanup();
+    Ok(())
+}
+
+/// One raw batch holding the lineage entry `entry` (witnessing `witness`) and a proof marker of
+/// `operation` naming it, as a holder of the ledger could write before fss-1s6ac (the R7-A probe).
+fn raw_entry_with_marker(
+    ledger: &DurableReferenceLedger,
+    entry: &crate::ReferenceSituationPublication,
+    witness: fss_core::ContentDigest,
+    operation: &str,
+) -> Result<fss_core::EvidenceDeltaBatch, Box<dyn Error>> {
+    let (event_id, objective_id) = entry
+        .situation
+        .subject()
+        .ok_or(ReferenceError::InvalidSpec("missing_subject"))?;
+    let digest = entry.publication_digest;
+    let generations =
+        |object_id: &fss_core::ObjectId| -> Result<(Option<u64>, u64), ReferenceError> {
+            let prior = ledger
+                .current()
+                .objects
+                .get(object_id)
+                .map(|revision| revision.generation);
+            let next = match prior {
+                Some(generation) => generation
+                    .checked_add(1)
+                    .ok_or(ReferenceError::ArithmeticOverflow)?,
+                None => 1,
+            };
+            Ok((prior, next))
+        };
+    let lineage_object = crate::situation_sections::lineage_object_id(event_id, objective_id)?;
+    let lineage_entry = crate::situation_sections::lineage_delta(
+        lineage_object.clone(),
+        generations(&lineage_object)?,
+        digest,
+        Some(witness),
+        entry.situation.capsule.created_at,
+    )?;
+    let proof_object =
+        crate::situation_sections::lineage_proof_object_id(event_id, objective_id, operation)?;
+    let mut marker = crate::situation_sections::lineage_delta(
+        proof_object.clone(),
+        generations(&proof_object)?,
+        digest,
+        None,
+        entry.situation.capsule.created_at,
+    )?;
+    crate::situation_sections::LINEAGE_PROOF_FAMILY.clone_into(&mut marker.family);
+    marker.delta_id = format!("delta:raw-lineage-proof:{digest}");
+    Ok(ledger.prepare_batch(
+        fss_core::BatchId::parse(format!("batch:raw-lineage-r7a:{digest}"))?,
+        vec![lineage_entry, marker],
+        [digest],
+    )?)
+}
+
+/// fss-1s6ac R7-A (the reviewer's same-batch probe): one raw batch holding a lineage entry X
+/// (witness P) and a proof marker naming X satisfied the first-lineage-proof same-batch rule, so
+/// the genuine first proof X to L was reported "already proved by X" and its terminal announcement
+/// suppressed. The public append refuses that batch at the gate; X recorded through the one writer
+/// proves nothing and carries no marker, and X to L is the terminal first proof: exactly the plain
+/// delta plus the terminal transition, nothing reported as already proved. Planted past the gate,
+/// the same-batch shortcut credits nothing: the first-proof lookup and the lineage are refused,
+/// typed.
+#[test]
+fn a_raw_entry_with_its_own_proof_marker_never_preempts_the_first_proof()
+-> Result<(), Box<dyn Error>> {
+    let mut lifecycle = Lifecycle::new("r7a-same-batch")?;
+    let prepared = lifecycle.dispatched.clone();
+    crate::record_reference_publication(&mut lifecycle.harness.authority, &prepared)?;
+    let planless = planless_publication(
+        &lifecycle.harness,
+        &lifecycle.decision,
+        &lifecycle.receipt,
+        Some(&prepared),
+    )?;
+    let operation = lifecycle.plan.intent.operation_id.as_str().to_owned();
+    let raw = raw_entry_with_marker(
+        &lifecycle.harness.authority,
+        &planless,
+        prepared.publication_digest,
+        &operation,
+    )?;
+    assert_gate_refuses(&mut lifecycle.harness.authority, &raw)?;
+    crate::record_reference_publication(&mut lifecycle.harness.authority, &planless)?;
+    let proved = lifecycle.verified_after(false, &planless)?;
+    crate::record_reference_publication(&mut lifecycle.harness.authority, &proved)?;
+    let first = crate::classify_reference_meaningful_delta_in_lineage(
+        &planless,
+        &proved,
+        &lifecycle.harness.authority,
+        None,
+    )?;
+    let mut expected = crate::classify_reference_meaningful_delta(&planless, &proved)?.classes;
+    expected.insert(fss_core::MeaningfulDeltaClass::TerminalTransition);
+    assert_eq!(first.classes, expected);
+    assert!(
+        !first
+            .effect_uncertainty_changes
+            .iter()
+            .any(|change| change.starts_with("effect already proved on the lineage")),
+        "{:?}",
+        first.effect_uncertainty_changes
+    );
+    let (event_id, objective_id) = prepared
+        .situation
+        .subject()
+        .ok_or(ReferenceError::InvalidSpec("missing_subject"))?;
+    assert_eq!(
+        crate::situation_sections::first_lineage_proof(
+            &lifecycle.harness.authority,
+            event_id,
+            objective_id,
+            &operation,
+        )?,
+        Some(proved.publication_digest)
+    );
+    lifecycle.harness.cleanup();
+
+    let mut planted = Lifecycle::new("r7a-same-batch-planted")?;
+    let prepared = planted.dispatched.clone();
+    crate::record_reference_publication(&mut planted.harness.authority, &prepared)?;
+    let planless = planless_publication(
+        &planted.harness,
+        &planted.decision,
+        &planted.receipt,
+        Some(&prepared),
+    )?;
+    let operation = planted.plan.intent.operation_id.as_str().to_owned();
+    let raw = raw_entry_with_marker(
+        &planted.harness.authority,
+        &planless,
+        prepared.publication_digest,
+        &operation,
+    )?;
+    assert_gate_refuses(&mut planted.harness.authority, &raw)?;
+    plant_bypassing_the_gate(&mut planted.harness.authority, &raw)?;
+    let (event_id, objective_id) = prepared
+        .situation
+        .subject()
+        .ok_or(ReferenceError::InvalidSpec("missing_subject"))?;
+    assert_unsealed_refusal(&crate::situation_sections::first_lineage_proof(
+        &planted.harness.authority,
+        event_id,
+        objective_id,
+        &operation,
+    ));
+    assert_unsealed_refusal(&crate::record_reference_publication(
+        &mut planted.harness.authority,
+        &planless,
+    ));
+    planted.harness.cleanup();
+    Ok(())
+}
+
+/// fss-1s6ac (the r3 reviewer's ledger-fork probe): a byte copy of the authority ledger reproduces
+/// its anchor, state root, and journal root exactly, and a rival child compiled and recorded in
+/// the copy used to classify terminal there. The copy is another store: its pin differs. The rival
+/// is refused by the original's consumers (recording it, and classifying it against the original),
+/// and the copy cannot vouch for the original's publications, while the genuine child recorded in
+/// the original stays terminal.
+#[test]
+fn a_byte_copied_authority_can_neither_record_nor_vouch_for_the_original_lineage()
+-> Result<(), Box<dyn Error>> {
+    let name = "1s6ac-ledger-fork";
+    let mut lifecycle = Lifecycle::new(name)?;
+    let parent = lifecycle.dispatched.clone();
+    crate::record_reference_publication(&mut lifecycle.harness.authority, &parent)?;
+    let fork_path = std::env::temp_dir().join(format!(
+        "fss-reference-guard-ledger-fork-{}.journal",
+        std::process::id()
+    ));
+    let _ = fs::remove_file(&fork_path);
+    let _ = fs::copy(&lifecycle.harness.path, &fork_path)?;
+    let mut fork = DurableReferenceLedger::open(
+        &fork_path,
+        format!("site:situation-guard:{name}"),
+        IncompleteTailPolicy::Reject,
+    )?;
+    let original_pin = lifecycle.harness.authority.store_pin();
+    assert_eq!(fork.current(), lifecycle.harness.authority.current());
+    assert_eq!(
+        fork.current().anchor,
+        lifecycle.harness.authority.current().anchor
+    );
+    assert_eq!(
+        fork.journal_root(),
+        lifecycle.harness.authority.journal_root()
+    );
+    assert!(original_pin.is_some() && fork.store_pin().is_some());
+    assert_ne!(fork.store_pin(), original_pin);
+
+    // The rival child, compiled against the copy and recorded in it.
+    std::mem::swap(&mut lifecycle.harness.authority, &mut fork);
+    let rival = lifecycle.verified_after(false, &parent);
+    let recorded_in_copy = rival
+        .as_ref()
+        .map_err(ToString::to_string)
+        .and_then(|rival| {
+            crate::record_reference_publication(&mut lifecycle.harness.authority, rival)
+                .map_err(|error| error.to_string())
+        });
+    std::mem::swap(&mut lifecycle.harness.authority, &mut fork);
+    let rival = rival?;
+    let _ = recorded_in_copy?;
+    assert_eq!(rival.situation.authority_pin(), fork.store_pin());
+    assert_eq!(latest_of(&fork, &parent)?, Some(rival.publication_digest));
+
+    // Presented to the original: refused as a recorder and as a classifier.
+    let recorded = crate::record_reference_publication(&mut lifecycle.harness.authority, &rival);
+    assert!(
+        refused_with(
+            &recorded,
+            &ReferenceError::InvalidSpec("lineage_foreign_authority")
+        ),
+        "{recorded:?}"
+    );
+    let against_original = crate::classify_reference_meaningful_delta_in_lineage(
+        &parent,
+        &rival,
+        &lifecycle.harness.authority,
+        None,
+    );
+    assert!(
+        refused_with(
+            &against_original,
+            &ReferenceError::InvalidSpec("meaningful_delta_authority_fork")
+        ),
+        "{:?}",
+        against_original.map(|delta| delta.classes)
+    );
+    // The copy vouches for nothing the original compiled, the rival step included.
+    let against_copy =
+        crate::classify_reference_meaningful_delta_in_lineage(&parent, &rival, &fork, None);
+    assert!(
+        refused_with(
+            &against_copy,
+            &ReferenceError::InvalidSpec("meaningful_delta_authority_fork")
+        ),
+        "{:?}",
+        against_copy.map(|delta| delta.classes)
+    );
+
+    // The original's own lineage is untouched: the genuine child records and is terminal.
+    assert_eq!(
+        latest_of(&lifecycle.harness.authority, &parent)?,
+        Some(parent.publication_digest)
+    );
+    let child = lifecycle.verified_after(true, &parent)?;
+    crate::record_reference_publication(&mut lifecycle.harness.authority, &child)?;
+    let genuine = crate::classify_reference_meaningful_delta_in_lineage(
+        &parent,
+        &child,
+        &lifecycle.harness.authority,
+        None,
+    )?;
+    assert!(is_terminal(&genuine), "{:?}", genuine.classes);
+    drop(fork);
+    let _ = fs::remove_file(fork_path);
+    lifecycle.harness.cleanup();
+    Ok(())
+}
+
+/// fss-1s6ac (the r3 reviewer's journal-fork probe): a byte copy of the durable effect journal
+/// reproduces its roots exactly; cancelling the plan's operation in the copy and compiling a
+/// planless result against it used to discharge the obligation terminally while the real journal
+/// holds it Pending. Checked against the copy, the discharge is refused as a fork (the basis
+/// recorded the real journal's pin while the copy holds its root); checked against the real
+/// journal, the result's root is foreign, so the removal is reported and never terminal. The real
+/// journal still holds the obligation Pending.
+#[test]
+fn a_byte_copied_effect_journal_never_discharges_the_original_obligation()
+-> Result<(), Box<dyn Error>> {
+    let name = "1s6ac-journal-fork";
+    let mut harness = GuardHarness::new(name)?;
+    let (decision, receipt) = harness.corroborated(name)?;
+    let (mut journal, journal_path) = durable_journal(name)?;
+    let plan = durable_prepare(&mut journal, &harness, &decision, &receipt, name)?;
+    let with_plan = durable_publication(
+        &harness,
+        &journal,
+        &decision,
+        &receipt,
+        Some(&plan),
+        None,
+        None,
+    )?;
+    crate::record_reference_publication(&mut harness.authority, &with_plan)?;
+    let copy_path = std::env::temp_dir().join(format!(
+        "fss-reference-guard-journal-fork-{}.journal",
+        std::process::id()
+    ));
+    let _ = fs::remove_file(&copy_path);
+    let _ = fs::copy(&journal_path, &copy_path)?;
+    let mut copy =
+        crate::DurableEffectJournal::open(&copy_path, fss_ledger::IncompleteTailPolicy::Reject)?;
+    assert_eq!(copy.last_root(), journal.last_root());
+    assert!(journal.store_pin().is_some() && copy.store_pin().is_some());
+    assert_ne!(copy.store_pin(), journal.store_pin());
+    let _ = copy.cancel(
+        &plan.intent.operation_id,
+        TimestampNs(101),
+        unmoved_cancel_evidence(&plan),
+        None,
+    )?;
+    assert_eq!(
+        copy.obligation(&plan.obligation_id)
+            .map(|obligation| obligation.state),
+        Some(fss_core::ObligationState::Cancelled)
+    );
+    let planless = durable_publication(
+        &harness,
+        &copy,
+        &decision,
+        &receipt,
+        None,
+        None,
+        Some(&with_plan),
+    )?;
+    assert_eq!(planless.situation.journal_pin(), copy.store_pin());
+    crate::record_reference_publication(&mut harness.authority, &planless)?;
+
+    let against_copy = crate::classify_reference_meaningful_delta_in_lineage(
+        &with_plan,
+        &planless,
+        &harness.authority,
+        Some(&copy),
+    );
+    assert!(
+        refused_with(
+            &against_copy,
+            &ReferenceError::InvalidSpec("meaningful_delta_journal_fork")
+        ),
+        "{:?}",
+        against_copy.map(|delta| delta.classes)
+    );
+    let against_original = crate::classify_reference_meaningful_delta_in_lineage(
+        &with_plan,
+        &planless,
+        &harness.authority,
+        Some(&journal),
+    )?;
+    assert!(
+        !is_terminal(&against_original),
+        "{:?}",
+        against_original.classes
+    );
+    assert!(
+        against_original
+            .obligation_changes
+            .contains(&format!("obligation removed: {}", plan.obligation_id)),
+        "{against_original:?}"
+    );
+    against_original.validate()?;
+    assert_eq!(
+        journal
+            .obligation(&plan.obligation_id)
+            .map(|obligation| obligation.state),
+        Some(fss_core::ObligationState::Pending)
+    );
+    drop(copy);
+    let _ = fs::remove_file(copy_path);
+    drop(journal);
+    let _ = fs::remove_file(journal_path);
+    harness.cleanup();
     Ok(())
 }
 
