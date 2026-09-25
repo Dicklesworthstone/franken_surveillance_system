@@ -16,12 +16,15 @@
 //! * [`reference`]: the brute-force removal oracle it is certified against;
 //! * [`coverage`]: the `SensorCoverageGraph` projection (evidence plane, sensors, zones) that
 //!   answers "which single sensor loss leaves zone Z without any retained witness";
+//! * [`failure_domains`]: independent simultaneous-member-loss scenarios for owner-declared
+//!   shared network, power, clock and host dependencies;
 //! * [`registry`]: the registered identities, tie-break, policy and complexity bound.
 //!
 //! Nothing here reads a clock, the filesystem, or the network, and no output grants authority.
 
 pub mod bridges;
 pub mod coverage;
+pub mod failure_domains;
 pub mod graph;
 pub mod reference;
 pub mod registry;
