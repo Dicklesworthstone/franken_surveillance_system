@@ -73,7 +73,9 @@ fn parse(args: &[OsString]) -> Result<Request, String> {
     match args.first().and_then(|arg| arg.to_str()) {
         Some("single-points") => {}
         Some(other) => {
-            return Err(format!("unknown graph command {other:?}; expected single-points"));
+            return Err(format!(
+                "unknown graph command {other:?}; expected single-points"
+            ));
         }
         None => return Err("graph requires a command: single-points".into()),
     }
@@ -84,22 +86,35 @@ fn parse(args: &[OsString]) -> Result<Request, String> {
     let mut index = 1;
     while index < args.len() {
         let key = args[index].to_str().ok_or("option names require UTF-8")?;
-        let value = args.get(index + 1).ok_or_else(|| format!("required value for {key}"))?;
+        let value = args
+            .get(index + 1)
+            .ok_or_else(|| format!("required value for {key}"))?;
         match key {
             "--root" if root.is_none() => root = Some(PathBuf::from(value)),
             "--site" if site.is_none() => {
                 site = Some(value.to_str().ok_or("--site requires UTF-8")?.to_owned());
             }
             "--during" if window.is_none() => {
-                window = Some(capture_window(value.to_str().ok_or("--during requires UTF-8")?)?);
+                window = Some(capture_window(
+                    value.to_str().ok_or("--during requires UTF-8")?,
+                )?);
             }
             "--failure-domain" => {
                 if domains.len() == MAX_FAILURE_DOMAINS {
                     return Err("at most 16 failure domains are allowed".to_owned());
                 }
-                let domain = shared_failures::parse_domain(value.to_str().ok_or("--failure-domain requires UTF-8")?)?;
-                if domains.iter().any(|prior| prior.kind() == domain.kind() && prior.id() == domain.id()) {
-                    return Err(format!("duplicate failure domain {}:{}", domain.kind().as_str(), domain.id()));
+                let domain = shared_failures::parse_domain(
+                    value.to_str().ok_or("--failure-domain requires UTF-8")?,
+                )?;
+                if domains
+                    .iter()
+                    .any(|prior| prior.kind() == domain.kind() && prior.id() == domain.id())
+                {
+                    return Err(format!(
+                        "duplicate failure domain {}:{}",
+                        domain.kind().as_str(),
+                        domain.id()
+                    ));
                 }
                 domains.push(domain);
             }
@@ -118,15 +133,24 @@ fn parse(args: &[OsString]) -> Result<Request, String> {
 
 /// Inclusive signed nanoseconds in the recordings' declared capture-time coordinate system.
 fn capture_window(value: &str) -> Result<CaptureInterval, String> {
-    let (first, last) = value.split_once(':').ok_or("--during requires START_NS:END_NS")?;
-    let first = first.parse::<i128>().map_err(|_| "--during start must be signed integer nanoseconds")?;
-    let last = last.parse::<i128>().map_err(|_| "--during end must be signed integer nanoseconds")?;
+    let (first, last) = value
+        .split_once(':')
+        .ok_or("--during requires START_NS:END_NS")?;
+    let first = first
+        .parse::<i128>()
+        .map_err(|_| "--during start must be signed integer nanoseconds")?;
+    let last = last
+        .parse::<i128>()
+        .map_err(|_| "--during end must be signed integer nanoseconds")?;
     CaptureInterval::new(TimestampNs(first), TimestampNs(last))
         .map_err(|_| "--during requires START_NS <= END_NS".to_owned())
 }
 
 fn counts(values: &BTreeMap<String, u64>) -> String {
-    let fields: Vec<String> = values.iter().map(|(name, value)| format!("{}:{value}", string(name))).collect();
+    let fields: Vec<String> = values
+        .iter()
+        .map(|(name, value)| format!("{}:{value}", string(name)))
+        .collect();
     format!("{{{}}}", fields.join(","))
 }
 
@@ -142,14 +166,25 @@ fn witness(value: &GraphAlgorithmWitness) -> String {
         ("edgeCount", value.edge_count().to_string()),
         ("inputDigest", string(&value.input_digest().to_text())),
         ("policyId", string(value.policy_id())),
-        ("dominantOperationCounts", counts(value.dominant_operation_counts())),
+        (
+            "dominantOperationCounts",
+            counts(value.dominant_operation_counts()),
+        ),
         ("peakWorkingBytes", value.peak_working_bytes().to_string()),
         ("budgetConsumed", counts(value.budget_consumed())),
         ("exactness", string(value.exactness())),
-        ("errorBound", value.error_bound().filter(|bound| bound.is_finite())
-            .map_or_else(|| "null".to_owned(), |bound| format!("{bound}"))),
+        (
+            "errorBound",
+            value
+                .error_bound()
+                .filter(|bound| bound.is_finite())
+                .map_or_else(|| "null".to_owned(), |bound| format!("{bound}")),
+        ),
         ("stopReason", string(value.stop_reason())),
-        ("decisionPathDigest", string(&value.decision_path_digest().to_text())),
+        (
+            "decisionPathDigest",
+            string(&value.decision_path_digest().to_text()),
+        ),
         ("outputDigest", string(&value.output_digest().to_text())),
     ])
 }
@@ -164,26 +199,42 @@ fn projection(value: &CoverageGraphReport, window: Option<CaptureInterval>) -> S
         ("edge_count", analysis.edge_count.to_string()),
         ("retained_coverage_records", value.records.to_string()),
         ("root", string(&value.projection.plane)),
-        ("edge_predicate", string(match window {
-            None => "plane--sensor for every sensor with retained coverage; sensor--zone iff the \
-                     sensor holds at least one retained coverage witness for the zone scope",
-            Some(_) => "plane--sensor for every sensor with retained coverage; sensor--zone iff \
-                        at least one witness covers the entire capture window with certain bounds",
-        })),
-        ("witness_intervals_intersected", window.is_some().to_string()),
+        (
+            "edge_predicate",
+            string(match window {
+                None => {
+                    "plane--sensor for every sensor with retained coverage; sensor--zone iff the \
+                     sensor holds at least one retained coverage witness for the zone scope"
+                }
+                Some(_) => {
+                    "plane--sensor for every sensor with retained coverage; sensor--zone iff \
+                        at least one witness covers the entire capture window with certain bounds"
+                }
+            }),
+        ),
+        (
+            "witness_intervals_intersected",
+            window.is_some().to_string(),
+        ),
         ("failure_domains_modelled", strings(["sensor"])),
-        ("failure_domains_not_modelled", strings(["network", "power", "clock", "host"])),
+        (
+            "failure_domains_not_modelled",
+            strings(["network", "power", "clock", "host"]),
+        ),
     ];
     if let Some(window) = window {
-        fields.push(("capture_window", object(&[
-            // Decimal strings preserve all 128 timestamp bits in JavaScript consumers too.
-            ("start_ns", string(&window.earliest.0.to_string())),
-            ("end_ns", string(&window.latest.0.to_string())),
-            ("endpoints", string("inclusive")),
-            ("selection", string("whole-witness-v1")),
-            ("partial_witness_union", "false".to_owned()),
-            ("clock_alignment", string("operator_hints_not_calibration")),
-        ])));
+        fields.push((
+            "capture_window",
+            object(&[
+                // Decimal strings preserve all 128 timestamp bits in JavaScript consumers too.
+                ("start_ns", string(&window.earliest.0.to_string())),
+                ("end_ns", string(&window.latest.0.to_string())),
+                ("endpoints", string("inclusive")),
+                ("selection", string("whole-witness-v1")),
+                ("partial_witness_union", "false".to_owned()),
+                ("clock_alignment", string("operator_hints_not_calibration")),
+            ]),
+        ));
     }
     object(&fields)
 }
@@ -192,21 +243,47 @@ fn report(value: &CoverageGraphReport, window: Option<CaptureInterval>) -> Strin
     report_with_failures(value, window, None)
 }
 
-fn report_with_failures(value: &CoverageGraphReport, window: Option<CaptureInterval>, shared: Option<String>) -> String {
+fn report_with_failures(
+    value: &CoverageGraphReport,
+    window: Option<CaptureInterval>,
+    shared: Option<String>,
+) -> String {
     let analysis = &value.answer.analysis;
-    let zones: Vec<String> = value.answer.zones.iter().map(|zone| object(&[
-        ("scope", string(&zone.scope)),
-        ("state", string(zone.state.as_str())),
-        ("observers", strings(&zone.observers)),
-        ("single_points_of_failure", strings(&zone.single_points_of_failure)),
-        ("retained_witnesses", zone.witnesses.to_string()),
-    ])).collect();
-    let sensors: Vec<String> = value.answer.sensors.iter().map(|sensor| object(&[
-        ("sensor_id", string(&sensor.sensor_id)),
-        ("sole_observer_of", strings(&sensor.sole_observer_of)),
-        ("uplink_is_bridge", sensor.uplink_is_bridge.to_string()),
-    ])).collect();
-    let bridges: Vec<String> = analysis.output.bridges.iter().map(|(a, b)| strings([a, b])).collect();
+    let zones: Vec<String> = value
+        .answer
+        .zones
+        .iter()
+        .map(|zone| {
+            object(&[
+                ("scope", string(&zone.scope)),
+                ("state", string(zone.state.as_str())),
+                ("observers", strings(&zone.observers)),
+                (
+                    "single_points_of_failure",
+                    strings(&zone.single_points_of_failure),
+                ),
+                ("retained_witnesses", zone.witnesses.to_string()),
+            ])
+        })
+        .collect();
+    let sensors: Vec<String> = value
+        .answer
+        .sensors
+        .iter()
+        .map(|sensor| {
+            object(&[
+                ("sensor_id", string(&sensor.sensor_id)),
+                ("sole_observer_of", strings(&sensor.sole_observer_of)),
+                ("uplink_is_bridge", sensor.uplink_is_bridge.to_string()),
+            ])
+        })
+        .collect();
+    let bridges: Vec<String> = analysis
+        .output
+        .bridges
+        .iter()
+        .map(|(a, b)| strings([a, b]))
+        .collect();
     let bound = &analysis.bound;
     let mut fields = vec![
         ("format", string(FORMAT)),
@@ -215,32 +292,51 @@ fn report_with_failures(value: &CoverageGraphReport, window: Option<CaptureInter
         ("projection", projection(value, window)),
         ("zones", array(&zones)),
         ("sensors", array(&sensors)),
-        ("algorithm", object(&[
-            ("id", string(registry::ALGORITHM_ID)),
-            ("name", string(registry::ALGORITHM_NAME)),
-            ("tie_break_policy_id", string(registry::TIE_BREAK_POLICY_ID)),
-            ("complexity_bound_id", string(registry::COMPLEXITY_BOUND_ID)),
-            ("articulation_points", strings(&analysis.output.articulation_points)),
-            ("bridges", array(&bridges)),
-            ("unreachable_from_root", strings(&analysis.output.unreachable_from_root)),
-            ("complexity_bound", object(&[
-                ("dfs_node_visits", bound.dfs_node_visits.to_string()),
-                ("adjacency_scans", bound.adjacency_scans.to_string()),
-                ("low_link_updates", bound.low_link_updates.to_string()),
-                ("tree_edges", bound.tree_edges.to_string()),
-            ])),
-            ("within_bound", "true".to_owned()),
-        ])),
+        (
+            "algorithm",
+            object(&[
+                ("id", string(registry::ALGORITHM_ID)),
+                ("name", string(registry::ALGORITHM_NAME)),
+                ("tie_break_policy_id", string(registry::TIE_BREAK_POLICY_ID)),
+                ("complexity_bound_id", string(registry::COMPLEXITY_BOUND_ID)),
+                (
+                    "articulation_points",
+                    strings(&analysis.output.articulation_points),
+                ),
+                ("bridges", array(&bridges)),
+                (
+                    "unreachable_from_root",
+                    strings(&analysis.output.unreachable_from_root),
+                ),
+                (
+                    "complexity_bound",
+                    object(&[
+                        ("dfs_node_visits", bound.dfs_node_visits.to_string()),
+                        ("adjacency_scans", bound.adjacency_scans.to_string()),
+                        ("low_link_updates", bound.low_link_updates.to_string()),
+                        ("tree_edges", bound.tree_edges.to_string()),
+                    ]),
+                ),
+                ("within_bound", "true".to_owned()),
+            ]),
+        ),
         ("witness", witness(&value.witness)),
         ("witness_digest", string(&value.witness.digest().to_text())),
         ("authority", string("derived_cognition_no_effect_authority")),
-        ("claim", string(match window {
-            None => "structural single points over retained coverage witnesses at the anchor; not \
-                     current observability, not absence, not a resilience certificate",
-            Some(_) => "structural single points over retained witnesses covering the whole capture \
+        (
+            "claim",
+            string(match window {
+                None => {
+                    "structural single points over retained coverage witnesses at the anchor; not \
+                     current observability, not absence, not a resilience certificate"
+                }
+                Some(_) => {
+                    "structural single points over retained witnesses covering the whole capture \
                         window; conditional on operator capture hints, not calibrated clock alignment, \
-                        current observability, absence, or a resilience certificate",
-        })),
+                        current observability, absence, or a resilience certificate"
+                }
+            }),
+        ),
         ("qualification", string("implemented_not_qualified")),
     ];
     if let Some(shared) = shared {
@@ -282,7 +378,9 @@ pub(super) fn main(args: &[OsString]) -> ExitCode {
                 };
                 let rendered = report_with_failures(&value, request.window, Some(shared));
                 if rendered.len() > shared_failures::MAX_REPORT_BYTES {
-                    eprintln!("ERR-GRAPH-BUDGET-EXHAUSTED-001: shared failure report exceeds 8 MiB");
+                    eprintln!(
+                        "ERR-GRAPH-BUDGET-EXHAUSTED-001: shared failure report exceeds 8 MiB"
+                    );
                     return ExitCode::from(ExitIdentity::RUNTIME_FAILURE.code);
                 }
                 rendered
@@ -308,9 +406,19 @@ mod window_tests {
     use super::*;
 
     fn args(window: Option<&str>) -> Vec<OsString> {
-        let mut args: Vec<OsString> = ["single-points", "--root", "/tmp/coverage", "--site", "site:test"]
-            .into_iter().map(Into::into).collect();
-        if let Some(window) = window { args.extend(["--during".into(), window.into()]); }
+        let mut args: Vec<OsString> = [
+            "single-points",
+            "--root",
+            "/tmp/coverage",
+            "--site",
+            "site:test",
+        ]
+        .into_iter()
+        .map(Into::into)
+        .collect();
+        if let Some(window) = window {
+            args.extend(["--during".into(), window.into()]);
+        }
         args
     }
 
@@ -319,7 +427,11 @@ mod window_tests {
         assert!(help_requested(&["single-points".into(), "--help".into()]));
         assert!(help_requested(&["help".into()]));
         assert!(!help_requested(&args(Some("1:2"))));
-        assert!(!help_requested(&["single-points".into(), "--root".into(), "help".into()]));
+        assert!(!help_requested(&[
+            "single-points".into(),
+            "--root".into(),
+            "help".into()
+        ]));
     }
 
     #[test]
@@ -342,8 +454,18 @@ mod window_tests {
 
     #[test]
     fn refuses_malformed_inverted_or_out_of_range_windows() {
-        for text in ["", "1", ":2", "1:", "1:2:3", "2:1", "1.0:2", "NaN:2", "1:inf",
-            "170141183460469231731687303715884105728:170141183460469231731687303715884105728"] {
+        for text in [
+            "",
+            "1",
+            ":2",
+            "1:",
+            "1:2:3",
+            "2:1",
+            "1.0:2",
+            "NaN:2",
+            "1:inf",
+            "170141183460469231731687303715884105728:170141183460469231731687303715884105728",
+        ] {
             assert!(parse(&args(Some(text))).is_err(), "accepted {text}");
         }
     }
@@ -361,7 +483,9 @@ mod window_tests {
     fn duplicate_and_missing_windows_are_refused() {
         let mut duplicate = args(Some("1:2"));
         duplicate.extend(["--during".into(), "3:4".into()]);
-        assert!(matches!(parse(&duplicate), Err(message) if message == "duplicate option --during"));
+        assert!(
+            matches!(parse(&duplicate), Err(message) if message == "duplicate option --during")
+        );
         let mut missing = args(None);
         missing.push("--during".into());
         assert!(parse(&missing).is_err());
@@ -372,7 +496,9 @@ mod window_tests {
     #[test]
     fn window_option_can_precede_the_deployment_arguments() -> Result<(), String> {
         let mut reordered: Vec<OsString> = ["single-points", "--during", "10:20"]
-            .into_iter().map(Into::into).collect();
+            .into_iter()
+            .map(Into::into)
+            .collect();
         reordered.extend(args(None).into_iter().skip(1));
         let request = parse(&reordered)?;
         assert_eq!(request.window, Some(capture_window("10:20")?));
@@ -383,31 +509,48 @@ mod window_tests {
     fn sample() -> Result<CoverageGraphReport, Box<dyn std::error::Error>> {
         use fss_core::LedgerAnchor;
         use fss_graph_algorithms::{CoverageObservation, GraphBudget, SensorCoverageProjection};
-        let projection = SensorCoverageProjection::build("site:test", &[CoverageObservation {
-            sensor_id: "sensor:east".to_owned(), zone_scope: "ground-zone:door".to_owned(), witnesses: 1,
-        }])?;
+        let projection = SensorCoverageProjection::build(
+            "site:test",
+            &[CoverageObservation {
+                sensor_id: "sensor:east".to_owned(),
+                zone_scope: "ground-zone:door".to_owned(),
+                witnesses: 1,
+            }],
+        )?;
         let answer = projection.single_points(GraphBudget::registered(&projection.graph))?;
         let anchor = LedgerAnchor::genesis("site:test");
         let projection_id = format!("{PROJECTION_KIND}@commit:{}", anchor.commit_sequence);
         let witness = answer.analysis.witness(&projection_id, anchor.clone())?;
         Ok(CoverageGraphReport {
-            site: "site:test".to_owned(), anchor, projection_id, records: 1, projection, answer, witness,
+            site: "site:test".to_owned(),
+            anchor,
+            projection_id,
+            records: 1,
+            projection,
+            answer,
+            witness,
         })
     }
 
     #[test]
-    fn historical_json_keeps_its_explicit_unintersected_semantics() -> Result<(), Box<dyn std::error::Error>> {
+    fn historical_json_keeps_its_explicit_unintersected_semantics()
+    -> Result<(), Box<dyn std::error::Error>> {
         let value = sample()?;
         let json = report(&value, None);
         assert!(!json.contains("capture_window"));
         assert!(json.contains("\"witness_intervals_intersected\":false"));
-        assert!(json.contains("structural single points over retained coverage witnesses at the anchor"));
+        assert!(
+            json.contains(
+                "structural single points over retained coverage witnesses at the anchor"
+            )
+        );
         assert!(!json.contains("shared_failure_scenarios"));
         Ok(())
     }
 
     #[test]
-    fn window_json_retains_exact_endpoints_and_conservative_selection() -> Result<(), Box<dyn std::error::Error>> {
+    fn window_json_retains_exact_endpoints_and_conservative_selection()
+    -> Result<(), Box<dyn std::error::Error>> {
         let value = sample()?;
         let window = capture_window("9007199254740993:9007199254741003")?;
         let json = report(&value, Some(window));
@@ -423,13 +566,22 @@ mod window_tests {
     #[test]
     fn shared_domains_can_overlap_but_duplicates_and_excess_are_refused() -> Result<(), String> {
         let mut input = args(Some("1:2"));
-        input.extend(["--failure-domain".into(), "network:lan=sensor:a,sensor:b".into(),
-            "--failure-domain".into(), "power:ups=sensor:b,sensor:c".into()]);
+        input.extend([
+            "--failure-domain".into(),
+            "network:lan=sensor:a,sensor:b".into(),
+            "--failure-domain".into(),
+            "power:ups=sensor:b,sensor:c".into(),
+        ]);
         assert_eq!(parse(&input)?.domains.len(), 2);
         input.extend(["--failure-domain".into(), "network:lan=sensor:a".into()]);
         assert!(matches!(parse(&input), Err(error) if error.contains("duplicate failure domain")));
         let mut input = args(None);
-        for i in 0..=MAX_FAILURE_DOMAINS { input.extend(["--failure-domain".into(), format!("host:{i}=sensor:a").into()]); }
+        for i in 0..=MAX_FAILURE_DOMAINS {
+            input.extend([
+                "--failure-domain".into(),
+                format!("host:{i}=sensor:a").into(),
+            ]);
+        }
         assert!(parse(&input).is_err());
         Ok(())
     }

@@ -35,8 +35,8 @@ use fss_reference::ingest::ground_visibility::{
 };
 use fss_reference::ingest::package_detect::PackageDetectLimits;
 use fss_reference::ingest::recorded_corroboration::{
-    CorroborationCamera, CorroborationError, CorroborationGates, CorroborationOptions, CorroborationPlan,
-    CorroborationReport, GroundHomography, GroundVisibilityPlan, GroundZone,
+    CorroborationCamera, CorroborationError, CorroborationGates, CorroborationOptions,
+    CorroborationPlan, CorroborationReport, GroundHomography, GroundVisibilityPlan, GroundZone,
     MAX_CORROBORATION_ZONES,
 };
 use fss_reference::ingest::recorded_decode::ComponentInterpretation;
@@ -663,7 +663,10 @@ mod recovery_tests {
             args.insert(index, "--tolerate-decode-refusals".into());
             let action = parse(&args)?;
             assert!(action.recovery.tolerate_decode_refusals);
-            assert_eq!(action.rerun.matches("--tolerate-decode-refusals").count(), 1);
+            assert_eq!(
+                action.rerun.matches("--tolerate-decode-refusals").count(),
+                1
+            );
             // Opting in does not manufacture a different clean-source plan or an approval.
             assert_eq!(action.plan.digest(), strict.plan.digest());
             assert!(action.approvals.is_empty());
@@ -723,12 +726,20 @@ mod recovery_tests {
         let action = parse(&args)?;
         assert_eq!(action.approvals, BTreeSet::from([approval]));
         assert_eq!(action.retain_coverage, Some(coverage));
-        assert_eq!(action.rerun.matches("--tolerate-decode-refusals").count(), 1);
+        assert_eq!(
+            action.rerun.matches("--tolerate-decode-refusals").count(),
+            1
+        );
         assert!(!action.rerun.contains("--approve"));
         assert!(!action.rerun.contains("--retain-coverage"));
         assert!(!action.rerun.contains("--report-out"));
         // All fixture arguments are shell-safe, so the displayed command can be parsed directly.
-        let replay: Vec<OsString> = action.rerun.split_whitespace().skip(2).map(Into::into).collect();
+        let replay: Vec<OsString> = action
+            .rerun
+            .split_whitespace()
+            .skip(2)
+            .map(Into::into)
+            .collect();
         let replayed = parse(&replay)?;
         assert_eq!(replayed.recovery, action.recovery);
         assert_eq!(replayed.plan.digest(), action.plan.digest());

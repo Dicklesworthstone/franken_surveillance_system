@@ -406,9 +406,23 @@ pub fn run_package_detection(
     scalar: &ScalarExecCx,
 ) -> Result<PackageDetectReport, PackageDetectError> {
     run_selected_detection(
-        deployment, package, request, limits, cx, scalar, None,
+        deployment,
+        package,
+        request,
+        limits,
+        cx,
+        scalar,
+        None,
         |contract, import_root, media_format, frames, privacy| {
-            finish_report(package, request, contract, import_root, media_format, frames, privacy)
+            finish_report(
+                package,
+                request,
+                contract,
+                import_root,
+                media_format,
+                frames,
+                privacy,
+            )
         },
     )
 }
@@ -425,7 +439,11 @@ fn run_selected_detection<T>(
     scalar: &ScalarExecCx,
     selection: Option<&BTreeSet<usize>>,
     finish: impl FnOnce(
-        &RgbDetectionContract, ContentDigest, String, Vec<PackageDetectFrame>, MaskBinding,
+        &RgbDetectionContract,
+        ContentDigest,
+        String,
+        Vec<PackageDetectFrame>,
+        MaskBinding,
     ) -> Result<T, PackageDetectError>,
 ) -> Result<T, PackageDetectError> {
     cx.checkpoint("package_detect:begin")
@@ -441,7 +459,9 @@ fn run_selected_detection<T>(
     }
     let end = request.first_segment + request.segment_count;
     if selection.is_some_and(|segments| {
-        segments.iter().any(|segment| *segment < request.first_segment || *segment >= end)
+        segments
+            .iter()
+            .any(|segment| *segment < request.first_segment || *segment >= end)
     }) {
         return Err(PackageDetectError::InvalidRequest);
     }
@@ -638,10 +658,15 @@ struct FrameAdmission<'a> {
 }
 impl<'a> FrameAdmission<'a> {
     fn new(selection: Option<&'a BTreeSet<usize>>) -> Self {
-        Self { selection, seen: BTreeSet::new() }
+        Self {
+            selection,
+            seen: BTreeSet::new(),
+        }
     }
     fn admit(&mut self, segment: usize) -> Result<bool, PackageDetectError> {
-        let Some(selection) = self.selection else { return Ok(true) };
+        let Some(selection) = self.selection else {
+            return Ok(true);
+        };
         if !selection.contains(&segment) {
             return Ok(false);
         }
@@ -659,7 +684,9 @@ impl<'a> FrameAdmission<'a> {
         {
             return Err(PackageDetectError::Frame {
                 segment: *segment,
-                source: "selected sentinel picture was not decoded; no complete burst report exists".into(),
+                source:
+                    "selected sentinel picture was not decoded; no complete burst report exists"
+                        .into(),
             });
         }
         Ok(())

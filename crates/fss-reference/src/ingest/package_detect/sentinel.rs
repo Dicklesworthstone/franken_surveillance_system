@@ -51,14 +51,20 @@ pub struct SentinelConfig {
 }
 impl Default for SentinelConfig {
     fn default() -> Self {
-        Self { every_frames: 16, burst_frames: 3, max_inferences: 12 }
+        Self {
+            every_frames: 16,
+            burst_frames: 3,
+            max_inferences: 12,
+        }
     }
 }
 impl SentinelConfig {
     /// Validate all bounds before any source read or inference.
     pub fn validate(&self) -> Result<(), PackageDetectError> {
-        if self.every_frames == 0 || self.every_frames > MAX_PACKAGE_DETECT_FRAMES
-            || self.burst_frames == 0 || self.burst_frames > MAX_SENTINEL_BURST_FRAMES
+        if self.every_frames == 0
+            || self.every_frames > MAX_PACKAGE_DETECT_FRAMES
+            || self.burst_frames == 0
+            || self.burst_frames > MAX_SENTINEL_BURST_FRAMES
             || self.burst_frames > self.every_frames
             || self.max_inferences < self.burst_frames
             || self.max_inferences > MAX_PACKAGE_DETECT_FRAMES
@@ -100,7 +106,8 @@ impl SentinelPlan {
         config: SentinelConfig,
     ) -> Result<Self, PackageDetectError> {
         config.validate()?;
-        if segment_count < config.burst_frames || segment_count > MAX_PACKAGE_DETECT_FRAMES
+        if segment_count < config.burst_frames
+            || segment_count > MAX_PACKAGE_DETECT_FRAMES
             || first_segment.checked_add(segment_count).is_none()
             || u64::try_from(first_segment).is_err()
         {
@@ -122,26 +129,37 @@ impl SentinelPlan {
                 admitted,
             });
         }
-        Ok(Self { first: first_segment, count: segment_count, config, bursts })
+        Ok(Self {
+            first: first_segment,
+            count: segment_count,
+            config,
+            bursts,
+        })
     }
 
     /// Scheduled full bursts in source order, including every budget refusal.
     #[must_use]
-    pub fn bursts(&self) -> &[SentinelBurst] { &self.bursts }
+    pub fn bursts(&self) -> &[SentinelBurst] {
+        &self.bursts
+    }
 
     /// Exact source identities admitted for inference, never more than `max_inferences`.
     #[must_use]
     pub fn selected_segments(&self) -> BTreeSet<usize> {
-        self.bursts.iter().filter(|burst| burst.admitted).flat_map(|burst| {
-            burst.first_segment..burst.first_segment + burst.segment_count
-        }).collect()
+        self.bursts
+            .iter()
+            .filter(|burst| burst.admitted)
+            .flat_map(|burst| burst.first_segment..burst.first_segment + burst.segment_count)
+            .collect()
     }
 
     /// Every requested segment not admitted to inference, in source order.
     #[must_use]
     pub fn unsampled_segments(&self) -> Vec<usize> {
         let selected = self.selected_segments();
-        (self.first..self.first + self.count).filter(|s| !selected.contains(s)).collect()
+        (self.first..self.first + self.count)
+            .filter(|s| !selected.contains(s))
+            .collect()
     }
 
     /// Policy/range/allowance identity. The enclosing result separately binds source and model.
@@ -149,8 +167,13 @@ impl SentinelPlan {
     pub fn digest(&self) -> ContentDigest {
         let mut e = CanonicalEncoder::new();
         e.text(SENTINEL_POLICY);
-        for value in [self.first, self.count, self.config.every_frames,
-            self.config.burst_frames, self.config.max_inferences] {
+        for value in [
+            self.first,
+            self.count,
+            self.config.every_frames,
+            self.config.burst_frames,
+            self.config.max_inferences,
+        ] {
             e.u64(value as u64);
         }
         ContentDigest::sha256(&e.finish())
@@ -168,16 +191,24 @@ pub struct SentinelReport {
 impl SentinelReport {
     /// Exact sampling schedule and explicit budget-skipped bursts.
     #[must_use]
-    pub fn plan(&self) -> &SentinelPlan { &self.plan }
+    pub fn plan(&self) -> &SentinelPlan {
+        &self.plan
+    }
     /// Completed contiguous reports. Track each separately; do not concatenate their frames.
     #[must_use]
-    pub fn reports(&self) -> &[PackageDetectReport] { &self.reports }
+    pub fn reports(&self) -> &[PackageDetectReport] {
+        &self.reports
+    }
     /// Complete bounded JSON. This is a report, not an event or publication acknowledgement.
     #[must_use]
-    pub fn json(&self) -> &str { &self.json }
+    pub fn json(&self) -> &str {
+        &self.json
+    }
     /// SHA-256 of the complete JSON bytes, including schedule, omissions and child identities.
     #[must_use]
-    pub fn digest(&self) -> ContentDigest { self.digest }
+    pub fn digest(&self) -> ContentDigest {
+        self.digest
+    }
 }
 
 /// Run motion-independent sentinel detection through the same verified native package path.
@@ -197,38 +228,72 @@ pub fn run_sentinel_detection(
     cx: &ReplayCx,
     scalar: &ScalarExecCx,
 ) -> Result<SentinelReport, PackageDetectError> {
-    cx.checkpoint("sentinel_detect:begin").map_err(|_| PackageDetectError::Cancelled)?;
+    cx.checkpoint("sentinel_detect:begin")
+        .map_err(|_| PackageDetectError::Cancelled)?;
     let plan = SentinelPlan::new(request.first_segment, request.segment_count, config)?;
     let selected = plan.selected_segments();
     run_selected_detection(
-        deployment, package, request, limits, cx, scalar, Some(&selected),
+        deployment,
+        package,
+        request,
+        limits,
+        cx,
+        scalar,
+        Some(&selected),
         |contract, import_root, media_format, frames, privacy| {
-            build_report(package, request, contract, import_root, media_format, privacy, frames, plan)
+            build_report(
+                package,
+                request,
+                contract,
+                import_root,
+                media_format,
+                privacy,
+                frames,
+                plan,
+            )
         },
     )
 }
 
 fn invalid_burst(segment: usize, reason: &'static str) -> PackageDetectError {
-    PackageDetectError::Frame { segment, source: reason.into() }
+    PackageDetectError::Frame {
+        segment,
+        source: reason.into(),
+    }
 }
 
-fn validate_burst(burst: SentinelBurst, frames: &[PackageDetectFrame]) -> Result<(), PackageDetectError> {
-    let first = frames.first().ok_or_else(|| invalid_burst(burst.first_segment, "empty sentinel burst"))?;
+fn validate_burst(
+    burst: SentinelBurst,
+    frames: &[PackageDetectFrame],
+) -> Result<(), PackageDetectError> {
+    let first = frames
+        .first()
+        .ok_or_else(|| invalid_burst(burst.first_segment, "empty sentinel burst"))?;
     if frames.len() != burst.segment_count {
-        return Err(invalid_burst(burst.first_segment, "incomplete sentinel burst"));
+        return Err(invalid_burst(
+            burst.first_segment,
+            "incomplete sentinel burst",
+        ));
     }
     let mut seen = BTreeSet::new();
     for frame in frames {
-        if frame.segment < burst.first_segment || frame.segment >= burst.first_segment + burst.segment_count
+        if frame.segment < burst.first_segment
+            || frame.segment >= burst.first_segment + burst.segment_count
             || !seen.insert(frame.segment)
             || frame.capsule.sensor_id != first.capsule.sensor_id
             || frame.capsule.clock_basis != first.capsule.clock_basis
             || frame.dimensions != first.dimensions
         {
-            return Err(invalid_burst(frame.segment, "sentinel burst identities, clock or dimensions disagree"));
+            return Err(invalid_burst(
+                frame.segment,
+                "sentinel burst identities, clock or dimensions disagree",
+            ));
         }
         if frame.segment != burst.first_segment && frame.capsule.gap_before {
-            return Err(invalid_burst(frame.segment, "source gap inside a sentinel burst"));
+            return Err(invalid_burst(
+                frame.segment,
+                "source gap inside a sentinel burst",
+            ));
         }
     }
     Ok(())
@@ -245,40 +310,70 @@ fn build_report(
     frames: Vec<PackageDetectFrame>,
     plan: SentinelPlan,
 ) -> Result<SentinelReport, PackageDetectError> {
-    let mut groups: Vec<Vec<PackageDetectFrame>> = (0..plan.bursts.len()).map(|_| Vec::new()).collect();
+    let mut groups: Vec<Vec<PackageDetectFrame>> =
+        (0..plan.bursts.len()).map(|_| Vec::new()).collect();
     for frame in frames {
-        let index = plan.bursts.iter().position(|burst| {
-            burst.admitted && frame.segment >= burst.first_segment
-                && frame.segment < burst.first_segment + burst.segment_count
-        }).ok_or(PackageDetectError::InvalidRequest)?;
+        let index = plan
+            .bursts
+            .iter()
+            .position(|burst| {
+                burst.admitted
+                    && frame.segment >= burst.first_segment
+                    && frame.segment < burst.first_segment + burst.segment_count
+            })
+            .ok_or(PackageDetectError::InvalidRequest)?;
         // Preserve the native decoder's display order inside each independent burst.
         groups[index].push(frame);
     }
     let mut reports = Vec::new();
     let mut json_bytes = 0_usize;
     for (burst, frames) in plan.bursts.iter().copied().zip(groups) {
-        if !burst.admitted { continue; }
+        if !burst.admitted {
+            continue;
+        }
         validate_burst(burst, &frames)?;
         let burst_request = PackageDetectRequest {
             first_segment: burst.first_segment,
             segment_count: burst.segment_count,
             ..request.clone()
         };
-        let report = finish_report(package, &burst_request, contract, import_root,
-            media_format.clone(), frames, privacy.clone())?;
-        json_bytes = json_bytes.checked_add(report.json.len()).ok_or(PackageDetectError::InvalidRequest)?;
+        let report = finish_report(
+            package,
+            &burst_request,
+            contract,
+            import_root,
+            media_format.clone(),
+            frames,
+            privacy.clone(),
+        )?;
+        json_bytes = json_bytes
+            .checked_add(report.json.len())
+            .ok_or(PackageDetectError::InvalidRequest)?;
         if json_bytes > MAX_SENTINEL_REPORT_BYTES {
             return Err(PackageDetectError::InvalidRequest);
         }
         reports.push(report);
     }
-    let json = render_report(package, request, import_root, &media_format, &privacy, &plan, &reports)
-        .map_err(|_| PackageDetectError::InvalidRequest)?;
+    let json = render_report(
+        package,
+        request,
+        import_root,
+        &media_format,
+        &privacy,
+        &plan,
+        &reports,
+    )
+    .map_err(|_| PackageDetectError::InvalidRequest)?;
     if json.len() > MAX_SENTINEL_REPORT_BYTES {
         return Err(PackageDetectError::InvalidRequest);
     }
     let digest = ContentDigest::sha256(json.as_bytes());
-    Ok(SentinelReport { plan, reports, json, digest })
+    Ok(SentinelReport {
+        plan,
+        reports,
+        json,
+        digest,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -292,43 +387,87 @@ fn render_report(
     reports: &[PackageDetectReport],
 ) -> Result<String, std::fmt::Error> {
     let mut out = String::new();
-    write!(out, "{{\"schema\":\"{SENTINEL_REPORT_SCHEMA}\",\"source_import\":\"{}\",\"import_root\":\"{}\",\"package_digest\":\"{}\",\"model_digest\":\"{}\",\"media_format\":{},\"privacy_mask\":{},\"decode_range\":{{\"first_segment\":{},\"segment_count\":{}}},\"sampling\":{{\"policy\":{},\"schedule_digest\":\"{}\",\"every_frames\":{},\"burst_frames\":{},\"max_inferences\":{},\"admitted_inferences\":{},\"motion_independent\":true,\"phase\":\"relative_to_first_segment\"}},\"unsampled_segments\":[",
-        request.import_identity, import_root, package.archive_digest(), package.model().digest(),
-        json_string(media_format), privacy.to_json(), plan.first, plan.count,
-        json_string(SENTINEL_POLICY), plan.digest(), plan.config.every_frames, plan.config.burst_frames,
-        plan.config.max_inferences, plan.selected_segments().len())?;
+    write!(
+        out,
+        "{{\"schema\":\"{SENTINEL_REPORT_SCHEMA}\",\"source_import\":\"{}\",\"import_root\":\"{}\",\"package_digest\":\"{}\",\"model_digest\":\"{}\",\"media_format\":{},\"privacy_mask\":{},\"decode_range\":{{\"first_segment\":{},\"segment_count\":{}}},\"sampling\":{{\"policy\":{},\"schedule_digest\":\"{}\",\"every_frames\":{},\"burst_frames\":{},\"max_inferences\":{},\"admitted_inferences\":{},\"motion_independent\":true,\"phase\":\"relative_to_first_segment\"}},\"unsampled_segments\":[",
+        request.import_identity,
+        import_root,
+        package.archive_digest(),
+        package.model().digest(),
+        json_string(media_format),
+        privacy.to_json(),
+        plan.first,
+        plan.count,
+        json_string(SENTINEL_POLICY),
+        plan.digest(),
+        plan.config.every_frames,
+        plan.config.burst_frames,
+        plan.config.max_inferences,
+        plan.selected_segments().len()
+    )?;
     for (index, segment) in plan.unsampled_segments().iter().enumerate() {
-        if index != 0 { out.push(','); }
+        if index != 0 {
+            out.push(',');
+        }
         write!(out, "{segment}")?;
     }
     out.push_str("],\"bursts\":[");
     let mut reports_iter = reports.iter();
     for (index, burst) in plan.bursts.iter().enumerate() {
-        if index != 0 { out.push(','); }
-        write!(out, "{{\"first_segment\":{},\"segment_count\":{},", burst.first_segment, burst.segment_count)?;
+        if index != 0 {
+            out.push(',');
+        }
+        write!(
+            out,
+            "{{\"first_segment\":{},\"segment_count\":{},",
+            burst.first_segment, burst.segment_count
+        )?;
         if burst.admitted {
             let report = reports_iter.next().ok_or(std::fmt::Error)?;
-            write!(out, "\"status\":\"completed\",\"report_digest\":\"{}\",\"report\":{}}}", report.digest, report.json.trim_end())?;
+            write!(
+                out,
+                "\"status\":\"completed\",\"report_digest\":\"{}\",\"report\":{}}}",
+                report.digest,
+                report.json.trim_end()
+            )?;
         } else {
             out.push_str("\"status\":\"budget_exhausted\",\"report_digest\":null,\"report\":null}");
         }
     }
     let executed: usize = reports.iter().map(|r| r.frames.len()).sum();
-    let macs: u128 = reports.iter().flat_map(|r| &r.frames).map(|f| u128::from(f.inference.executed_macs())).sum();
+    let macs: u128 = reports
+        .iter()
+        .flat_map(|r| &r.frames)
+        .map(|f| u128::from(f.inference.executed_macs()))
+        .sum();
     let complete = plan.bursts.iter().all(|b| b.admitted);
-    write!(out, "],\"executed_inferences\":{executed},\"executed_macs\":\"{macs}\",\"scheduled_bursts_complete\":{complete},\"continuous_coverage\":false,\"tracking_across_bursts\":false,\"absence_certifiable\":false,\"effects_authorized\":false,\"model_outputs\":\"uncalibrated\",\"quality_claim\":\"none\",\"retention\":\"not_asserted_by_computation\"}}\n")?;
+    write!(
+        out,
+        "],\"executed_inferences\":{executed},\"executed_macs\":\"{macs}\",\"scheduled_bursts_complete\":{complete},\"continuous_coverage\":false,\"tracking_across_bursts\":false,\"absence_certifiable\":false,\"effects_authorized\":false,\"model_outputs\":\"uncalibrated\",\"quality_claim\":\"none\",\"retention\":\"not_asserted_by_computation\"}}\n"
+    )?;
     Ok(out)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::FrameAdmission;
+    use super::*;
 
     #[test]
     fn samples_quiet_intervals_without_a_motion_or_track_input() -> Result<(), PackageDetectError> {
-        let plan = SentinelPlan::new(10, 20, SentinelConfig { every_frames: 8, burst_frames: 3, max_inferences: 6 })?;
-        assert_eq!(plan.selected_segments(), BTreeSet::from([10, 11, 12, 18, 19, 20]));
+        let plan = SentinelPlan::new(
+            10,
+            20,
+            SentinelConfig {
+                every_frames: 8,
+                burst_frames: 3,
+                max_inferences: 6,
+            },
+        )?;
+        assert_eq!(
+            plan.selected_segments(),
+            BTreeSet::from([10, 11, 12, 18, 19, 20])
+        );
         assert_eq!(plan.bursts().len(), 3);
         assert!(!plan.bursts()[2].admitted);
         assert_eq!(plan.bursts()[2].first_segment, 26);
@@ -338,7 +477,15 @@ mod tests {
 
     #[test]
     fn never_partially_admits_or_shortens_a_burst() -> Result<(), PackageDetectError> {
-        let plan = SentinelPlan::new(0, 10, SentinelConfig { every_frames: 4, burst_frames: 3, max_inferences: 5 })?;
+        let plan = SentinelPlan::new(
+            0,
+            10,
+            SentinelConfig {
+                every_frames: 4,
+                burst_frames: 3,
+                max_inferences: 5,
+            },
+        )?;
         assert_eq!(plan.selected_segments(), BTreeSet::from([0, 1, 2]));
         assert_eq!(plan.bursts().len(), 2); // The two-frame tail is not a fabricated full burst.
         assert_eq!(plan.bursts()[1].segment_count, 3);
@@ -347,23 +494,36 @@ mod tests {
     }
 
     #[test]
-    fn exhaustive_schedule_matches_independent_membership_oracle() -> Result<(), PackageDetectError> {
+    fn exhaustive_schedule_matches_independent_membership_oracle() -> Result<(), PackageDetectError>
+    {
         for count in 1..=64 {
             for every in 1..=16 {
                 for burst in 1..=8.min(every).min(count) {
                     for budget in burst..=64 {
-                        let config = SentinelConfig { every_frames: every, burst_frames: burst, max_inferences: budget };
+                        let config = SentinelConfig {
+                            every_frames: every,
+                            burst_frames: burst,
+                            max_inferences: budget,
+                        };
                         let plan = SentinelPlan::new(37, count, config)?;
-                        let expected: BTreeSet<usize> = (0..count).filter(|offset| {
-                            let group = offset / every;
-                            offset % every < burst && group * every + burst <= count
-                                && (group + 1) * burst <= budget
-                        }).map(|offset| 37 + offset).collect();
+                        let expected: BTreeSet<usize> = (0..count)
+                            .filter(|offset| {
+                                let group = offset / every;
+                                offset % every < burst
+                                    && group * every + burst <= count
+                                    && (group + 1) * burst <= budget
+                            })
+                            .map(|offset| 37 + offset)
+                            .collect();
                         assert_eq!(plan.selected_segments(), expected);
                         assert!(expected.len() <= budget);
-                        let unsampled: BTreeSet<_> = plan.unsampled_segments().into_iter().collect();
+                        let unsampled: BTreeSet<_> =
+                            plan.unsampled_segments().into_iter().collect();
                         assert!(expected.is_disjoint(&unsampled));
-                        assert_eq!(expected.union(&unsampled).copied().collect::<Vec<_>>(), (37..37 + count).collect::<Vec<_>>());
+                        assert_eq!(
+                            expected.union(&unsampled).copied().collect::<Vec<_>>(),
+                            (37..37 + count).collect::<Vec<_>>()
+                        );
                     }
                 }
             }
@@ -372,11 +532,23 @@ mod tests {
     }
 
     #[test]
-    fn range_and_budget_are_bound_even_when_selected_frames_are_equal() -> Result<(), PackageDetectError> {
-        let config = SentinelConfig { every_frames: 8, burst_frames: 3, max_inferences: 3 };
+    fn range_and_budget_are_bound_even_when_selected_frames_are_equal()
+    -> Result<(), PackageDetectError> {
+        let config = SentinelConfig {
+            every_frames: 8,
+            burst_frames: 3,
+            max_inferences: 3,
+        };
         let a = SentinelPlan::new(0, 8, config)?;
         let b = SentinelPlan::new(0, 9, config)?;
-        let c = SentinelPlan::new(0, 8, SentinelConfig { max_inferences: 4, ..config })?;
+        let c = SentinelPlan::new(
+            0,
+            8,
+            SentinelConfig {
+                max_inferences: 4,
+                ..config
+            },
+        )?;
         assert_eq!(a.selected_segments(), b.selected_segments());
         assert_eq!(a.selected_segments(), c.selected_segments());
         assert_ne!(a.digest(), b.digest());
@@ -389,23 +561,51 @@ mod tests {
     fn rejects_zero_overflow_and_unbounded_configuration() {
         let base = SentinelConfig::default();
         for config in [
-            SentinelConfig { every_frames: 0, ..base },
-            SentinelConfig { every_frames: 65, ..base },
-            SentinelConfig { burst_frames: 0, ..base },
-            SentinelConfig { burst_frames: 9, ..base },
-            SentinelConfig { every_frames: 2, ..base },
-            SentinelConfig { max_inferences: 2, ..base },
-            SentinelConfig { max_inferences: 65, ..base },
+            SentinelConfig {
+                every_frames: 0,
+                ..base
+            },
+            SentinelConfig {
+                every_frames: 65,
+                ..base
+            },
+            SentinelConfig {
+                burst_frames: 0,
+                ..base
+            },
+            SentinelConfig {
+                burst_frames: 9,
+                ..base
+            },
+            SentinelConfig {
+                every_frames: 2,
+                ..base
+            },
+            SentinelConfig {
+                max_inferences: 2,
+                ..base
+            },
+            SentinelConfig {
+                max_inferences: 65,
+                ..base
+            },
         ] {
             assert!(SentinelPlan::new(0, 64, config).is_err());
         }
-        for (first, count) in [(0, 0), (0, 2), (0, 65), (usize::MAX, 3), (usize::MAX - 1, 3)] {
+        for (first, count) in [
+            (0, 0),
+            (0, 2),
+            (0, 65),
+            (usize::MAX, 3),
+            (usize::MAX - 1, 3),
+        ] {
             assert!(SentinelPlan::new(first, count, base).is_err());
         }
     }
 
     #[test]
-    fn selected_video_frames_accept_display_order_but_not_duplicates_or_missing_pictures() -> Result<(), PackageDetectError> {
+    fn selected_video_frames_accept_display_order_but_not_duplicates_or_missing_pictures()
+    -> Result<(), PackageDetectError> {
         let selection = BTreeSet::from([0, 1, 2]);
         let mut gate = FrameAdmission::new(Some(&selection));
         assert!(gate.admit(0)?);
