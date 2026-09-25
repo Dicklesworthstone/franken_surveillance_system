@@ -8,6 +8,7 @@
 //! a rerun of the same commit resumes and completes exactly once. Removal is unlinking from the
 //! local filesystem, never cryptographic erasure.
 
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::PathBuf;
@@ -15,6 +16,7 @@ use std::path::PathBuf;
 use fss_cli::escape_json_str;
 use fss_core::region::ContextAuthority;
 use fss_core::{ContentDigest, DigestAlgorithm, PrincipalId};
+use fss_reference::deletion::holds::{Coverage, HoldRegistry, RetainedHold, covering_holds};
 use fss_reference::deletion::{
     CommitReceipt, DELETION_MECHANISM, DELETION_OUT_OF_SCOPE, DeletionPlan, Finding,
     commit_deletion, plan_deletion,
@@ -162,7 +164,7 @@ fn quote_arg(argument: &str) -> String {
     }
 }
 
-fn plan_json(action: &DeleteAction, plan: &DeletionPlan) -> RunResult<String> {
+fn plan_json(action: &DeleteAction, plan: &DeletionPlan, holds: &str) -> RunResult<String> {
     let digest = plan.digest()?;
     let approval = plan.approval_digest(&action.principal)?;
     let blocked = !plan.blockers.is_empty();
@@ -242,7 +244,7 @@ fn plan_json(action: &DeleteAction, plan: &DeletionPlan) -> RunResult<String> {
         })
         .collect();
     Ok(format!(
-        "{{\"format\":\"fss.deletion_plan.v1\",\"status\":\"{}\",\"site_lineage\":{},\"import_identity\":\"{}\",\"plan_digest\":\"{digest}\",\"approval_digest\":\"{approval}\",\"approve_command\":{command},\"basis\":{{\"authority_sequence\":{},\"state_root\":\"{}\",\"effect_journal_root\":\"{}\"}},\"scanned\":{{\"objects\":{},\"bytes\":{}}},\"counts\":{{\"units\":{},\"deletable_objects\":{},\"deletable_bytes\":{},\"retained_objects\":{},\"ledger_tombstones\":{},\"root_retractions\":{},\"events_retained\":{},\"blockers\":{},\"unknown_copies\":{}}},\"units\":[{}],\"deletable\":[{}],\"retained\":[{}],\"tombstone_batch\":{{\"batch_id\":{},\"deltas\":{},\"tombstones\":[{}],\"retractions\":[{}]}},\"events\":[{}],\"blockers\":{},\"unknown_copies\":{},\"unattributed\":{{\"staging_files\":{},\"staging_bytes\":{},\"objects\":{},\"object_bytes\":{},\"deleted_by_this_plan\":false}},\"hold_registry\":\"absent\",\"mechanism\":\"{DELETION_MECHANISM}\",\"cryptographic_erasure\":false,\"out_of_scope\":{},\"writes\":\"none\"}}\n",
+        "{{\"format\":\"fss.deletion_plan.v1\",\"status\":\"{}\",\"site_lineage\":{},\"import_identity\":\"{}\",\"plan_digest\":\"{digest}\",\"approval_digest\":\"{approval}\",\"approve_command\":{command},\"basis\":{{\"authority_sequence\":{},\"state_root\":\"{}\",\"effect_journal_root\":\"{}\"}},\"scanned\":{{\"objects\":{},\"bytes\":{}}},\"counts\":{{\"units\":{},\"deletable_objects\":{},\"deletable_bytes\":{},\"retained_objects\":{},\"ledger_tombstones\":{},\"root_retractions\":{},\"events_retained\":{},\"blockers\":{},\"unknown_copies\":{}}},\"units\":[{}],\"deletable\":[{}],\"retained\":[{}],\"tombstone_batch\":{{\"batch_id\":{},\"deltas\":{},\"tombstones\":[{}],\"retractions\":[{}]}},\"events\":[{}],\"blockers\":{},\"unknown_copies\":{},\"unattributed\":{{\"staging_files\":{},\"staging_bytes\":{},\"objects\":{},\"object_bytes\":{},\"deleted_by_this_plan\":false}},\"hold_registry\":\"ledger\",\"holds\":{{{holds}}},\"mechanism\":\"{DELETION_MECHANISM}\",\"cryptographic_erasure\":false,\"out_of_scope\":{},\"writes\":\"none\"}}\n",
         if blocked { "blocked" } else { "planned" },
         quote(&plan.site_lineage),
         plan.import_identity,
@@ -276,6 +278,35 @@ fn plan_json(action: &DeleteAction, plan: &DeletionPlan) -> RunResult<String> {
         plan.unattributed.object_bytes,
         out_of_scope(),
     ))
+}
+
+/// The holds covering the planned import: each with how it covers the import and its state on
+/// the evidence clock (active holds are also plan blockers), plus unreadable hold objects.
+fn covering_json(registry: &HoldRegistry, covering: &[(RetainedHold, Coverage)]) -> String {
+    let rendered: Vec<String> = covering
+        .iter()
+        .map(|(hold, coverage)| {
+            format!(
+                "{{\"hold_id\":\"{}\",\"scope\":{},\"covers_via\":\"{}\",\"state\":\"{}\",\"expires_at_ns\":{},\"blocks\":{}}}",
+                hold.hold_id,
+                quote(&hold.record.request.scope.text()),
+                coverage.as_str(),
+                hold.state.as_str(),
+                hold.record
+                    .request
+                    .expires_at_ns
+                    .map_or_else(|| "null".to_owned(), |n| n.to_string()),
+                hold.state == fss_reference::deletion::holds::HoldState::Active
+            )
+        })
+        .collect();
+    let unreadable: Vec<String> = registry.unreadable.iter().map(|o| quote(o)).collect();
+    format!(
+        "\"evidence_clock_ns\":{},\"clock\":\"deployment_evidence_clock_not_wall_time\",\"covering\":[{}],\"unreadable\":[{}]",
+        registry.evidence_clock_ns,
+        rendered.join(","),
+        unreadable.join(",")
+    )
 }
 
 fn completion_json(receipt: &CommitReceipt) -> String {
@@ -321,7 +352,10 @@ pub(super) fn run(
     let json = match &action.operation {
         Operation::Plan { import } => {
             let plan = plan_deletion(deployment, *import, cx)?;
-            plan_json(action, &plan)?
+            let events: BTreeSet<String> =
+                plan.events.iter().map(|e| e.object_id.clone()).collect();
+            let (registry, covering) = covering_holds(deployment, plan.import_identity, &events);
+            plan_json(action, &plan, &covering_json(&registry, &covering))?
         }
         Operation::Commit { plan, approve } => {
             let receipt = commit_deletion(deployment, *plan, *approve, &action.principal, cx)?;

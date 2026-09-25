@@ -38,12 +38,14 @@ mod delete;
 mod detector;
 #[path = "fss-event/graph.rs"]
 mod graph;
+#[path = "fss-event/hold.rs"]
+mod hold;
 #[path = "fss-event/privacy_mask.rs"]
 mod privacy_mask;
 #[path = "fss-event/watch.rs"]
 mod watch;
 
-const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|alert|privacy-mask|graph|delete> [options]\n\
+const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|alert|privacy-mask|graph|delete|hold> [options]\n\
   All: --root DIR --site SITE [--principal ID]\n\
   report: --import-id sha256:HEX --runs FILE --interpretation gray|ycbcr\n\
           --model-digest sha256:HEX --output-port NAME --labels ORDERED,CLASS,NAMES\n\
@@ -166,11 +168,24 @@ const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|ale
     file, operator exports, transmitted alerts). Nothing is written.\n\
   delete commit: --plan sha256:PLAN --approve sha256:APPROVAL\n\
     Revalidates against the current head (any change: stale plan, ERR-DELETION-PLAN-STALE-001;\n\
-    blockers: ERR-DELETION-BLOCKED-001; nothing written), appends the deletion record first,\n\
+    blockers, including every active deletion hold covering the import:\n\
+    ERR-DELETION-BLOCKED-001; nothing written), appends the deletion record first,\n\
     unlinks the bytes from the local filesystem, verifies absence and appends the completion\n\
     record. Not cryptographic erasure; filesystem recovery and backups are out of scope. An\n\
     interrupted commit resumes when rerun and completes exactly once. Later reads of the\n\
-    import report ERR-EVIDENCE-DELETED-001 (availability deleted).\n";
+    import report ERR-EVIDENCE-DELETED-001 (availability deleted).\n\
+  hold place (deletion hold, authority): --scope import:sha256:HEX|sensor:ID|event:ID\n\
+          --reason TEXT (1..512 bytes) [--expires-at-ns N] [--approve sha256:APPROVAL]\n\
+    Without --approve: prints the hold record, its identity and the exact approval over the\n\
+    current authority head; nothing is written. --approve retains exactly that hold; a stale\n\
+    approval is refused before any write (ERR-DELETION-HOLD-APPROVAL-STALE-001); reruns write\n\
+    nothing. While active, a hold blocks delete plan/commit of every import it covers: the\n\
+    import itself, every import of the sensor, or every import whose closure reaches the\n\
+    event (ERR-DELETION-BLOCKED-001 naming the hold id). Expiry is measured on the\n\
+    deployment's evidence clock (latest committed evidence time), NOT wall time.\n\
+  hold release: --hold-id sha256:HOLD [--approve sha256:APPROVAL] (the release is recorded as\n\
+    a new generation; the placement is never erased)\n\
+  hold list: every hold with its state (active, expired, released) on the evidence clock\n";
 type RunResult<T> = Result<T, Box<dyn Error>>;
 type Values = BTreeMap<String, OsString>;
 #[derive(Debug)]
@@ -206,6 +221,7 @@ enum Action {
     Alert(Box<alert::AlertAction>),
     PrivacyMask(Box<privacy_mask::PrivacyMaskAction>),
     Delete(Box<delete::DeleteAction>),
+    Hold(Box<hold::HoldAction>),
 }
 #[derive(Debug)]
 struct Options {
@@ -310,6 +326,20 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
             event_out: None,
             report_out: None,
             action: Action::Delete(Box::new(request)),
+        }));
+    }
+    if action == "hold" {
+        let request = hold::parse(&args[1..])?;
+        return Ok(Some(Options {
+            root: request.root.clone(),
+            site: request.site.clone(),
+            principal: request.principal.clone(),
+            limits: AnalysisLimits::default(),
+            detection_units: 0,
+            association_units: 0,
+            event_out: None,
+            report_out: None,
+            action: Action::Hold(Box::new(request)),
         }));
     }
     if action == "privacy-mask" {
@@ -666,6 +696,10 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
             }
             Action::Delete(action) => {
                 delete::run(action, &mut deployment, &authority, &cx, out)?;
+                return Ok(());
+            }
+            Action::Hold(action) => {
+                hold::run(action, &mut deployment, &cx, out)?;
                 return Ok(());
             }
             Action::Report {

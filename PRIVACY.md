@@ -48,7 +48,7 @@ A mask change is a durable effect with prepare/preview/commit. The preview shows
 coverage; increasing privacy may legitimately create a blind spot, which the coverage certificate
 must expose. A model cannot relax a mask.
 
-### 4.1 What is enforced today (fss-bgqkd, fss-g9gml, reference, unqualified)
+### 4.1 What is enforced today (fss-bgqkd, fss-g9gml, fss-nswce, reference, unqualified)
 
 Implemented for retained file imports (`fss-file import`, fss-bgqkd) and for the live, recording
 and replay decode paths (fss-g9gml):
@@ -77,6 +77,17 @@ and replay decode paths (fss-g9gml):
 - **Unmasked access refused.** Raw source export of a masked sensor and decodes retained under no
   or a superseded policy are refused (`ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001`). There is no
   override capability.
+- **Raw export paths (fss-nswce).** Original source bytes cannot be masked without re-encoding, so
+  every command that writes them out refuses a sensor with a current retained policy, before any
+  output exists: `fss-file extract` (retained import segments) and `fss-archive export` (RTSP
+  original packets, whole windows). An archive lives outside the deployment, so export names the
+  deployment that retains the sensor's mask authority (`--privacy-root DIR --site SITE`; the sensor
+  is the archive's `--sensor`); an export naming none cannot prove the sensor is unmasked and is
+  refused the same way. For an unmasked sensor every exported file is byte-identical to the
+  pre-change export. These are the only raw export paths: archived HTTP wire reads have no export
+  command (they are read in process only by replay, recording decode and `check-http`, which mask
+  every derivation, and `check-http` emits digests, never bytes); every other command decodes
+  under the mask or emits digests.
 - **Live, recording and replay paths (fss-g9gml).** Live HTTP acquisition (the learned HOG
   composition and the RGB neural composition), archived HTTP RGB replay, HTTP recording decode,
   `fss-archive check-http`, RGB evidence replay and retained MJPEG sensor-health screening apply
@@ -103,20 +114,18 @@ and replay decode paths (fss-g9gml):
   with, and only while that binding is the sensor's current one.
 - **Custody versus derivation.** Original source custody (retained HTTP wire reads, completion
   records, RTSP live archives, the original JPEG inside an RGB evidence envelope) stays unmasked
-  custody; every pixel derivation from it is masked. RTSP live capture and archiving decode no
-  pixels at all (a source-scan test pins that capture and custody modules name no pixel decoder).
+  custody inside the deployment or archive; every pixel derivation from it is masked and no
+  command exports it for a masked sensor. RTSP live capture and archiving decode no pixels at all
+  (a source-scan test pins that capture and custody modules name no pixel decoder).
 
-Not enforced yet: raw custody export of RTSP recordings (`fss-archive export`, which emits
-original packets, not pixels) and of archived HTTP wire reads is not refused for a masked sensor
-(the analogous `fss-file extract` is); the synthetic laboratory twin; polygons, audio exclusion,
-archive-only versus model-only redaction, deletion closure (unmasked source and superseded
-decodes remain in local custody), retention schedules, and biometric controls beyond the absence
-of any biometric feature.
 Not enforced yet: masks on live HTTP/RTSP capture paths and the laboratory twin (they take a
 caller-supplied permission mask or none), polygons, audio exclusion, archive-only versus
 model-only redaction, retention schedules, and biometric controls beyond the absence of any
-biometric feature. Unmasked source and superseded decodes remain in local custody until the
-owner deletes the import (section 8.1).
+biometric feature. The in-process library read of archived HTTP wire bytes
+(`HttpWireArchive::read_range`) is not itself mask-gated; its only callers are the masked decode
+paths above. An RTSP archive export names its deployment by operator declaration: the archive
+does not record which deployment owns the sensor. Unmasked source and superseded decodes remain
+in local custody until the owner deletes the import (section 8.1).
 
 ## 5. Identity without surveillance creep
 
@@ -176,7 +185,7 @@ A delete request traverses canonical and derived reachability. Completion distin
 Indexes, thumbnails, model caches, reports, memory entries, backup generations, and remote mirrors
 are part of closure. A deleted SQL row alone is not success.
 
-### 8.1 What is enforced today (fss-x4a.9.7, FSS-037, reference, unqualified)
+### 8.1 What is enforced today (fss-x4a.9.7, fss-nswce, FSS-037, reference, unqualified)
 
 Implemented for retained file imports (`fss-file import`) of one local deployment:
 
@@ -212,8 +221,29 @@ Implemented for retained file imports (`fss-file import`) of one local deploymen
   handles resolve to `deleted`.
 - **Blockers.** An open or indeterminate alert effect whose precondition binds a closure event
   (`open_effect`), a root that failed verification, a conflicting root claim, an earlier
-  incomplete deletion, or a tombstone batch over the bound. There is no hold registry yet, so no
-  hold can be placed or block (`hold_registry: absent`).
+  incomplete deletion, a tombstone batch over the bound, an active deletion hold covering the
+  import (`active_hold`, naming the hold id) or an unreadable hold record (`hold_unreadable`,
+  fail closed).
+- **Holds (fss-nswce).** `fss-event hold place --scope import:sha256:…|sensor:ID|event:ID
+  --reason TEXT [--expires-at-ns N]` previews a canonical hold record (`fss.deletion_hold.v1`,
+  whose digest is the hold id) and its exact approval over the current authority head, and
+  writes nothing; only `--approve` with that digest retains it as authority (reserved ledger
+  family `deletion_hold`, generation 1; a stale approval is refused before any write,
+  `ERR-DELETION-HOLD-APPROVAL-STALE-001`, and a rerun writes nothing). A hold covers the import it
+  names, every import whose capsules name its sensor, or every import whose closure reaches its
+  event's revisions. `hold release --hold-id …` is approval-gated the same way and records the
+  release as generation 2 (`fss.deletion_hold_release.v1`); the placement is never erased and
+  the hold records survive the deletion of the import they name (authority history). `hold
+  list` prints every hold and its state; `delete plan` prints `hold_registry: ledger` and every
+  covering hold with its state. A hold is active until released or, with `--expires-at-ns`,
+  until the deployment's **evidence clock** reaches the expiry. The evidence clock is the latest
+  committed evidence time (the largest bounded validity end of any ledger delta; open-ended
+  standing declarations such as mask policies carry none). It is **not wall time**: it advances
+  only when evidence is committed, so an idle deployment never expires a hold, and equal
+  committed bytes give equal answers. A plan binds the authority head, so a hold placed or
+  released after planning makes the plan stale (`ERR-DELETION-PLAN-STALE-001`); `delete commit`
+  recomputes the plan and so revalidates every hold. A hold cannot stop a deletion whose record
+  is already durable (a resumed commit finishes it).
 - **Unknown copies are named, not ignored.** The original input file (the deployment never owned
   it), unrecorded operator exports (`--report-out`, `--event-out`, receipts, PGM and segment
   extracts), and every alert that may have been transmitted to a relay. They are listed as not
@@ -224,7 +254,8 @@ Implemented for retained file imports (`fss-file import`) of one local deploymen
   remanence are out of scope and stated so in every plan and completion record. The plan and
   completion records keep digests, identities and sizes of deleted objects, never content.
 
-Not enforced yet: a hold registry and retention schedules, subject- or event-scoped plans,
+Not enforced yet: retention schedules, a wall-clock or trusted-time hold expiry, holds on
+remote archives, replicas or RTSP/HTTP capture archives, subject- or event-scoped plans,
 remote archive, replica and repair-symbol deletion, cryptographic erasure, and deletion of agent
 memory that does not embed an evidence digest.
 

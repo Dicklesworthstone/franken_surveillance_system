@@ -36,18 +36,20 @@ use super::plan::{
 };
 use super::{DeletionError, STAGE_DELETION_SCAN};
 use crate::reference_deployment::{
-    FAMILY_ALERT_EFFECT_OUTCOME, FAMILY_DELETION_COMPLETION, FAMILY_DELETION_RECORD,
-    FAMILY_DELETION_TOMBSTONE, FAMILY_EVENT_REVISION, FAMILY_PRIVACY_MASK_POLICY,
-    FAMILY_SENSOR_TAMPER_STATUS,
+    FAMILY_ALERT_EFFECT_OUTCOME, FAMILY_DELETION_COMPLETION, FAMILY_DELETION_HOLD,
+    FAMILY_DELETION_RECORD, FAMILY_DELETION_TOMBSTONE, FAMILY_EVENT_REVISION,
+    FAMILY_PRIVACY_MASK_POLICY, FAMILY_SENSOR_TAMPER_STATUS,
 };
 use crate::{ReferenceDeployment, ReplayCx};
 
 /// Families whose batches are authority history: kept, never deleted, never a source of keys.
+/// A deletion hold naming the import is authority about the import, never its derivative.
 const AUTHORITY_HISTORY_FAMILIES: &[&str] = &[
     FAMILY_EVENT_REVISION,
     FAMILY_SENSOR_TAMPER_STATUS,
     FAMILY_ALERT_EFFECT_OUTCOME,
     FAMILY_PRIVACY_MASK_POLICY,
+    FAMILY_DELETION_HOLD,
 ];
 /// Families this module owns; their batches are never units.
 const DELETION_FAMILIES: &[&str] = &[
@@ -111,6 +113,7 @@ fn unit_kind(id: &str) -> &'static str {
         ("batch:event:", "event_revision"),
         ("batch:alert-outcome:", "alert_outcome"),
         ("slot:rgbe1-", "rgb_evidence"),
+        ("batch:deletion-hold", "deletion_hold"),
     ];
     KINDS
         .iter()
@@ -847,6 +850,10 @@ impl Universe {
                 });
             }
         }
+        // Deletion holds: every active hold covering the import (directly, through its sensor,
+        // or through an event this closure reaches) and every unreadable hold blocks.
+        let closure_events: BTreeSet<String> = events.keys().cloned().collect();
+        blockers.extend(super::holds::blockers(deployment, import, &closure_events));
         if tombstones.len() + retractions.len() + 1 > self.batch_entries_max {
             blockers.push(Finding {
                 kind: "tombstone_batch_bound".to_owned(),
