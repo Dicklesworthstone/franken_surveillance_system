@@ -613,6 +613,7 @@ fn construction_refuses_zero_or_different_generations_and_started_owners() -> Te
             foreground_policy: q.policy,
             decode_limits: q.limits,
             stamp: f.stamp(&input[0]),
+            redaction: None,
         },
         &mut decode(),
         &mut work(),

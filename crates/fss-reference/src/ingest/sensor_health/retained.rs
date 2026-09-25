@@ -4,6 +4,9 @@
 //! This is an admission preflight, not a new decode publication, coverage format or event
 //! policy. It deliberately refuses a requested range with missing frames or discontinuity.
 //! It never writes, exports pixels, runs a model, publishes a witness or authorizes an alert.
+//!
+//! Every decoded plane is masked by the sensor's current retained privacy mask before it is
+//! screened (MJPEG here; AVC and HEVC ranges mask themselves), like every retained decode.
 
 use std::collections::BTreeSet;
 
@@ -15,6 +18,7 @@ use super::{
     policy_digest,
 };
 use crate::ingest::RetainedFileImport;
+use crate::ingest::privacy_mask::current_mask;
 use crate::ingest::recorded_decode::h264::{RecordedH264Range, RecordedH264Request};
 use crate::ingest::recorded_decode::h265::{RecordedH265Range, RecordedH265Request};
 use crate::ingest::recorded_decode::{RecordedDecodeError, source_capsule, validate_limits};
@@ -145,6 +149,10 @@ impl ScreeningReport {
         match media {
             "mjpeg" => {
                 let mut budget = DecodeBudget::new(limits.jpeg_work_units);
+                // The sensor's current mask, resolved once; applied before screening.
+                let (first, _) = source_capsule(deployment, &retained, plan.first_segment)?;
+                let mask = current_mask(deployment, &first.sensor_id)
+                    .map_err(RecordedDecodeError::from)?;
                 for segment in plan.first_segment..end {
                     cx.checkpoint("sensor_health:decode")
                         .map_err(|_| HealthError::Cancelled)?;
@@ -153,6 +161,9 @@ impl ScreeningReport {
                         return Err(RecordedDecodeError::Limit.into());
                     }
                     let (capsule, digest) = source_capsule(deployment, &retained, segment)?;
+                    if capsule.sensor_id != first.sensor_id {
+                        return Err(RecordedDecodeError::InvalidReceipt.into());
+                    }
                     let bytes = retained
                         .read_segment(deployment, segment, limits.read_limits, cx)
                         .map_err(RecordedDecodeError::from)?;
@@ -164,6 +175,7 @@ impl ScreeningReport {
                         &mut budget,
                     )
                     .map_err(RecordedDecodeError::from)?;
+                    let image = mask.mask_luma(image).map_err(RecordedDecodeError::from)?;
                     accept(
                         segment as u64,
                         &capsule,

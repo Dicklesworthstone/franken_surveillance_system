@@ -127,6 +127,7 @@ fn execute(text: &str, root: &Path, writer: &mut impl Write) -> Result<()> {
                     received_at_ns: row.received,
                     owner_requests_analysis: false,
                 },
+                redaction: None,
             },
             &mut decode,
             &mut geometry,

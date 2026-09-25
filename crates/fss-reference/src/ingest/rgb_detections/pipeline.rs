@@ -13,8 +13,11 @@ use super::{
     RgbDetectionBudget, RgbDetectionContract, RgbDetectionError, RgbDetectionReport,
     project_rgb_detections,
 };
+use crate::ingest::privacy_mask::{MaskBinding, PrivacyMaskError};
 use crate::{ExecBudget, ScalarExecCx};
+use fss_codec_mjpeg::color::decode_rgb;
 use fss_codec_mjpeg::{ComponentInterpretation, DecodeBudget};
+use fss_core::ContentDigest;
 
 /// Borrowed owner-framed source and exact permission/capture bindings.
 #[derive(Clone, Copy)]
@@ -27,6 +30,12 @@ pub struct RgbDetectionInput<'a> {
     pub source: RgbSourceBinding,
     /// Exact source-grid mask. A bounded copy is retained before inference begins.
     pub allowed: &'a [u8],
+    /// Privacy mask binding of the sensor this frame came from, stated explicitly: its current
+    /// retained policy, or the explicit no-policy marker ([`crate::ingest::privacy_mask::live::NO_POLICY`]).
+    /// With a policy the native RGB decode is masked ([`MaskBinding::mask_rgb_decode`], the
+    /// retained-decode enforcement) and re-receipted before the permission projection,
+    /// preprocessing or the graph see it, and `allowed` must deny every masked pixel.
+    pub mask: &'a MaskBinding,
 }
 /// Outer failures happen before accepting a new inference; existing pending state survives.
 #[derive(Debug)]
@@ -41,6 +50,9 @@ pub enum RgbDetectorError {
     InputLimit,
     /// Source decode, privacy projection, resize, graph execution or cancellation failed.
     Inference(RgbInferenceError),
+    /// The sensor's privacy mask refused the frame (the permission grid admits masked pixels,
+    /// or the decoded resolution differs from the policy's); nothing reached the model.
+    Privacy(PrivacyMaskError),
 }
 impl From<RgbInferenceError> for RgbDetectorError {
     fn from(error: RgbInferenceError) -> Self {
@@ -55,6 +67,7 @@ impl std::fmt::Display for RgbDetectorError {
             Self::NoPendingFrame => "RGB detector has no pending inference",
             Self::InputLimit => "RGB detector retained-mask bound",
             Self::Inference(_) => "RGB detector source or inference failed",
+            Self::Privacy(_) => "RGB detector privacy mask refused the frame",
         })
     }
 }
@@ -66,8 +79,13 @@ pub struct PendingRgbDetection {
     inference: RgbInference,
     allowed: Vec<u8>,
     mask_copy_work: u64,
+    mask_policy: Option<ContentDigest>,
 }
 impl PendingRgbDetection {
+    /// Privacy mask policy applied to the decoded frame, or `None` (explicit no-policy marker).
+    pub fn mask_policy(&self) -> Option<ContentDigest> {
+        self.mask_policy
+    }
     /// Complete immutable neural result, even when postprocessing was refused.
     pub fn inference(&self) -> &RgbInference {
         &self.inference
@@ -107,6 +125,10 @@ impl RgbDetectionRun {
     /// Mask retention work, additional to inference's preprocessing work counter.
     pub fn mask_copy_work(&self) -> u64 {
         self.pending.mask_copy_work
+    }
+    /// Privacy mask policy applied to the decoded frame, or `None` (explicit no-policy marker).
+    pub fn mask_policy(&self) -> Option<ContentDigest> {
+        self.pending.mask_policy
     }
     /// Transfer all accepted stage evidence together, without losing a source handle.
     pub fn into_parts(self) -> (PendingRgbDetection, RgbDetectionReport) {
@@ -165,6 +187,7 @@ impl<'a> RgbDetector<'a> {
         postprocess: &mut RgbDetectionBudget,
         cx: &ScalarExecCx,
     ) -> Result<RgbDetectionStep, RgbDetectorError> {
+        let mask = input.mask;
         if self.pending.is_some() {
             return Err(RgbDetectorError::PendingFrame);
         }
@@ -196,19 +219,42 @@ impl<'a> RgbDetector<'a> {
                 .map_err(RgbInferenceError::from)?;
             allowed.extend_from_slice(chunk);
         }
-        let inference = self.model.run_jpeg(
-            input.bytes,
-            input.interpretation,
-            input.source,
-            &allowed,
-            adjusted,
-            decoder,
-            cx,
-        )?;
+        let inference = if mask.policy().is_none() {
+            self.model.run_jpeg(
+                input.bytes,
+                input.interpretation,
+                input.source,
+                &allowed,
+                adjusted,
+                decoder,
+                cx,
+            )?
+        } else {
+            cx.checkpoint("rgb-detector:masked-decode")
+                .map_err(RgbInferenceError::from)?;
+            let image = decode_rgb(
+                input.bytes,
+                input.source.encoded_sha256,
+                input.interpretation,
+                adjusted.decode,
+                decoder,
+            )
+            .map_err(RgbInferenceError::from)?;
+            mask.refuse_admitted(&allowed, image.dimensions())
+                .map_err(RgbDetectorError::Privacy)?;
+            let (rgb, receipt) = mask
+                .mask_rgb_decode(image.pixels(), image.receipt())
+                .map_err(RgbDetectorError::Privacy)?
+                .ok_or(RgbDetectorError::Privacy(PrivacyMaskError::InvalidRecord))?;
+            drop(image);
+            self.model
+                .run_rgb_pixels(&rgb, receipt, input.source, &allowed, adjusted, cx)?
+        };
         self.pending = Some(PendingRgbDetection {
             inference,
             allowed,
             mask_copy_work: count as u64,
+            mask_policy: mask.policy_digest(),
         });
         self.resume(postprocess, cx)
     }

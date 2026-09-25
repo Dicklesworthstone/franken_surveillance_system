@@ -5,12 +5,19 @@
 //! stays owned until its complete neural/temporal result is taken, including after
 //! cancellation or revocation. Capture time and availability are independent owner
 //! declarations; neither is inferred from HTTP arrival or successful inference.
+//!
+//! Every frame is decoded under the named sensor's *current* retained privacy mask
+//! ([`crate::ingest::privacy_mask::live`]): masked RGB is filled before the permission
+//! projection, the graph, detections, tracking and zones; the owner permission grid must deny
+//! every masked pixel. A policy retained mid-capture applies from the next analysed frame.
 
 use super::{
     HttpCamera, HttpCameraAuthority, HttpCameraError, HttpCameraOperation, HttpCameraRetirement,
     HttpCameraStep, HttpCameraTotals, HttpWireRead, HttpWireReceipt,
 };
 use crate::ScalarExecCx;
+use crate::ingest::privacy_mask::MaskBinding;
+use crate::ingest::privacy_mask::live::{MaskRefusal, SensorMask};
 use crate::ingest::rgb_detections::RgbDetectionBudget;
 use crate::ingest::rgb_detections::pipeline::RgbDetectionInput;
 use crate::ingest::rgb_inference::RgbRunLimits;
@@ -40,6 +47,8 @@ pub struct HttpRgbContext<'a> {
     /// Exact source/capture/calibration/mask and independent availability evidence.
     /// Its exposure must equal [`http_rgb_exposure`] for the pending mapped frame.
     pub admission: RgbFrameAdmission,
+    /// The sensor this stream belongs to; its current retained privacy mask is applied.
+    pub privacy: SensorMask<'a>,
 }
 /// Separate caller-owned budgets, none automatically refilled by a frame or retry.
 pub struct HttpRgbBudgets<'a, 'cx> {
@@ -70,6 +79,8 @@ pub enum HttpRgbError {
     Work(GeometryError),
     /// An internal owner/result combination is inconsistent; no owner is reset.
     StageInvariant,
+    /// The sensor's privacy mask could not be resolved from retained authority.
+    Privacy(MaskRefusal),
 }
 impl From<HttpCameraError> for HttpRgbError {
     fn from(error: HttpCameraError) -> Self {
@@ -100,11 +111,22 @@ pub struct HttpRgbReceipt {
     detections: [u8; 32],
     tracking: [u8; 32],
     zones: [u8; 32],
+    mask_policy: Option<ContentDigest>,
+    mask_generation: Option<u64>,
 }
 impl HttpRgbReceipt {
-    /// Hash of the exact mapped source and four completed computation roots.
+    /// Hash of the exact mapped source and four completed computation roots, and the applied
+    /// privacy mask policy when one applied (unchanged bytes without a policy).
     pub fn digest(self) -> [u8; 32] {
         self.digest
+    }
+    /// Privacy mask policy applied to this frame, or `None`: the explicit no-policy marker.
+    pub fn mask_policy(self) -> Option<ContentDigest> {
+        self.mask_policy
+    }
+    /// Ledger generation of the applied policy, if any.
+    pub fn mask_generation(self) -> Option<u64> {
+        self.mask_generation
     }
     /// Source-record identity returned by http_rgb_exposure, not biometric identity.
     pub fn exposure(self) -> [u8; 32] {
@@ -188,6 +210,7 @@ pub struct HttpRgbCapture<'model, 'temporal> {
     held: Option<RgbZoneCompletion>,
     processing: Option<Result<RgbJpegZoneProgress, RgbJpegZoneError>>,
     last_taken: Option<HttpRgbReceipt>,
+    mask: MaskBinding,
 }
 impl<'model, 'temporal> HttpRgbCapture<'model, 'temporal> {
     /// Attach without performing I/O or consuming an image. Failure returns owners.
@@ -211,7 +234,13 @@ impl<'model, 'temporal> HttpRgbCapture<'model, 'temporal> {
             held: None,
             processing: None,
             last_taken: None,
+            mask: MaskBinding::NoPolicy,
         })
+    }
+    /// Privacy mask binding of the current (or last) analysed frame; the explicit no-policy
+    /// marker before any analysis or when the sensor has no retained policy.
+    pub fn privacy_mask(&self) -> &MaskBinding {
+        &self.mask
     }
     /// Read-only source counts, failures and original custody/framing state.
     pub fn camera(&self) -> &HttpCamera {
@@ -317,14 +346,21 @@ impl<'model, 'temporal> HttpRgbCapture<'model, 'temporal> {
         if source.exposure != exposure {
             return Err(HttpRgbError::FrameMismatch);
         }
+        // The sensor's current mask, resolved for THIS frame.
+        let mask = context
+            .privacy
+            .resolve()
+            .map_err(|e| HttpRgbError::Privacy(MaskRefusal::from(e)))?;
         // No wrapper allocation/hash failure can lose accepted temporal work.
         budgets.linking.charge(256)?;
+        self.mask = mask;
         let result = self.processor.run_jpeg(
             RgbDetectionInput {
                 bytes: frame.part().bytes(),
                 interpretation: context.interpretation,
                 source,
                 allowed: context.allowed,
+                mask: &self.mask,
             },
             context.admission,
             limits,
@@ -430,7 +466,7 @@ impl<'model, 'temporal> HttpRgbCapture<'model, 'temporal> {
             self.exposure = Some(exposure);
         }
         if let Some(done) = self.processor.completed() {
-            self.complete = Some(completion(exposure, ordinal, encoded, done));
+            self.complete = Some(completion(exposure, ordinal, encoded, done, &self.mask));
         }
         self.processing = Some(result);
     }
@@ -504,6 +540,7 @@ fn completion(
     ordinal: u64,
     encoded: [u8; 32],
     done: &RgbZoneCompletion,
+    mask: &MaskBinding,
 ) -> HttpRgbReceipt {
     let inference = done.detection_run().inference().identity().bytes();
     let detections = done.detection_run().report().digest().bytes();
@@ -519,7 +556,7 @@ fn completion(
         bytes[104 + i * 32..136 + i * 32].copy_from_slice(root);
     }
     HttpRgbReceipt {
-        digest: ContentDigest::sha256(&bytes).bytes(),
+        digest: mask.fold_identity("http_rgb_completion", ContentDigest::sha256(&bytes).bytes()),
         exposure,
         ordinal,
         encoded,
@@ -527,6 +564,8 @@ fn completion(
         detections,
         tracking,
         zones,
+        mask_policy: mask.policy_digest(),
+        mask_generation: mask.generation(),
     }
 }
 

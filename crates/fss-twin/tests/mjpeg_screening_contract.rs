@@ -165,6 +165,7 @@ fn query<'a>(bytes: &'a [u8], mask: &'a [u8], seq: u64, now: u64) -> JpegScreeni
             received_at_ns: now,
             owner_requests_analysis: false,
         },
+        redaction: None,
     }
 }
 #[test]

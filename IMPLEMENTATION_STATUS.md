@@ -95,6 +95,15 @@ synthetic scenes). None of it has been measured on real camera footage.
   noninterference or incremental/full lanes; witness intervals are not intersected and no failure
   domain beyond the sensor itself (network, power, clock, host) is modelled; the other 26
   registered algorithms remain `specified`.
+  reads are refused. Composes with geometric ground zones (a sample on a masked pixel is
+  `privacy_masked`, counted once; version-3 coverage records) and with tolerant decode (decoded
+  frames masked; `decode_refused` precedes `privacy_masked`). Live, recording and replay paths
+  (fss-g9gml): live HTTP HOG and RGB acquisition, archived HTTP RGB replay, HTTP recording decode,
+  `fss-archive check-http` (`--privacy-root/--site/--sensor`), RGB evidence replay and retained
+  MJPEG health screening apply the named sensor's current policy per decoded frame; owner grids or
+  backgrounds admitting masked pixels and decodes naming no sensor are refused; no-policy bytes
+  are golden-pinned; RTSP live capture decodes no pixels. Deletion closure, raw RTSP/HTTP custody
+  export refusal, retention and biometric controls remain open (PRIVACY.md 4.1).
 - **Models:** scalar executor over the FSS IR (Conv2d, MatMul, pooling, norms, activations) with
   Safetensors weights (`scalar_executor`, `fss-infer`). One trained detector package ships:
   YOLOX-Nano COCO-80 (`models/yolox-nano/`, `MOD-YOLOXNANO-001`, Apache-2.0), imported offline

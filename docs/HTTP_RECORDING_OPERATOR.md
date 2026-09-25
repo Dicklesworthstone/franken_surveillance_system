@@ -21,7 +21,8 @@ fss-archive check-http \
   --receive-clock "$RECEIVE_CLOCK_SHA256" \
   --retention-evidence "$RETENTION_SHA256" \
   --head "$WIRE_HEAD_SHA256" --reads "$WIRE_READS" --bytes "$WIRE_BYTES" \
-  --read-originals yes --decode grayscale
+  --read-originals yes --decode grayscale \
+  --privacy-root "$DEPLOYMENT" --site "$SITE" --sensor "$SENSOR_ID"
 ```
 
 Every digest variable is a full `sha256:` identity. The clock is the original
@@ -36,6 +37,21 @@ Select `--decode ycbcr` for an independently known JPEG Y/Cb/Cr source or
 HTTP/MIME framing only and makes no decoded-image claim. There is deliberately no
 `auto` mode that silently guesses component semantics. YCbCr mode validates all
 entropy blocks and reconstructs luma; it is not an RGB/ICC colour-fidelity claim.
+
+## Privacy masks (fss-g9gml)
+
+A decoding check (`--decode grayscale|ycbcr`) digests pixels, so it must name the recorded sensor
+and the existing deployment that retains its privacy mask authority: `--privacy-root DIR --site
+SITE --sensor ID`, given together. The sensor's current retained mask is resolved once, before the
+archive is read, and applied to every decoded plane (the fss-bgqkd enforcement and fill) before
+its luma digest is taken; a masked frame's digest is the retained decode's digest of the same
+frame. A decoding check without a sensor is refused before the archive is opened
+(`ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001`, no report); a policy declared for another resolution
+stops the check with a typed `Privacy` error row. `--decode none` reads no pixels and needs no
+sensor. The report names the applied transform in `privacy_mask` (or the explicit
+`no_policy_declared` marker); without a policy every other report byte and the `frame_chain` are
+unchanged, with one the chain binds the policy. The archived originals are custody and are never
+rewritten.
 
 For a capture with an independently retained native termination record, add:
 

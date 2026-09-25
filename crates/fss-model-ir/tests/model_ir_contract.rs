@@ -453,9 +453,10 @@ fn test_schema_domain_and_pinned_counts() -> Result<(), Box<dyn Error>> {
     // 109 = 105 + SCHEMA-DOMAIN-PRIVACY-MASK-{POLICY,BINDING,APPROVAL,LINEAGE}-001 (fss-bgqkd).
     // 114 = 109 + SCHEMA-DOMAIN-GRAPH-{ALGORITHM-WITNESS,PROJECTION,BRIDGE-OUTPUT,
     // BRIDGE-DECISION-PATH}-001 and SCHEMA-DOMAIN-COVERAGE-SINGLE-POINTS-001 (fss-w96u7).
+    // 115 = 114 + the masked RGB evidence recipe (fss-g9gml).
     assert_eq!(
-        domain_count, 114,
-        "registries/DIGEST_DOMAINS.md count must remain pinned at 114"
+        domain_count, 115,
+        "registries/DIGEST_DOMAINS.md count must remain pinned at 115"
     );
 
     let schemas_path = Path::new(env!("CARGO_MANIFEST_DIR"))

@@ -3,11 +3,19 @@
 //! Raw wire and complete mapped frames stay behind the acquisition barrier until
 //! their caller handles them. Capture intervals are supplied independently, never
 //! synthesized from network arrival, part ordinals or uninterpreted MIME headers.
+//!
+//! Every frame is decoded under the named sensor's *current* retained privacy mask
+//! ([`crate::ingest::privacy_mask::live`]): masked luma is filled before screening, foreground,
+//! the learned scan, tracking, zones or any decoded-plane digest; the owner permission grid and
+//! every background reference must already exclude/mask the same pixels, or the frame is refused
+//! as unmasked access. A policy retained mid-capture applies from the next analysed frame.
 
 use super::{
     HttpCamera, HttpCameraAuthority, HttpCameraError, HttpCameraOperation, HttpCameraRetirement,
     HttpCameraStep, HttpWireRead, HttpWireReceipt,
 };
+use crate::ingest::privacy_mask::MaskBinding;
+use crate::ingest::privacy_mask::live::{MaskRefusal, SensorMask};
 use fss_codec_mjpeg::http::{BodyFraming, HttpHeadIdentity};
 use fss_codec_mjpeg::http_mjpeg::{HttpJpegFrame, HttpMjpegEnd};
 use fss_codec_mjpeg::{DecodeBudget, DecodeLimits};
@@ -42,6 +50,8 @@ pub struct HttpFrameContext<'a> {
     /// Original part ordinal MUST equal sequence; generation MUST equal the wire
     /// generation. Receive time is separate from capture time and is not fabricated.
     pub stamp: ScreeningStamp,
+    /// The sensor this stream belongs to; its current retained privacy mask is applied.
+    pub privacy: SensorMask<'a>,
 }
 /// Separate owner-controlled allowances. Share an owner cancellation flag across
 /// them. None of these budgets refills automatically when a new part arrives.
@@ -78,6 +88,10 @@ pub enum HttpHogError {
     /// Existing image/analysis owner refused before accepting a new image, or its
     /// resume call refused. Accepted state remains available through analysis().
     Processing(JpegHogError),
+    /// The sensor's privacy mask refused the frame before acceptance: the permission grid or a
+    /// background reference admits masked pixels, the mask could not be resolved, or the
+    /// decoded resolution differs from the policy's. A corrected retry is permitted.
+    Privacy(MaskRefusal),
 }
 impl From<HttpCameraError> for HttpHogError {
     fn from(e: HttpCameraError) -> Self {
@@ -99,11 +113,23 @@ pub struct HttpHogCompletion {
     ordinal: u64,
     encoded: [u8; 32],
     analysis: JpegHogCompletion,
+    mask_policy: Option<ContentDigest>,
+    mask_generation: Option<u64>,
 }
 impl HttpHogCompletion {
-    /// Binds the original HTTP/MIME/wire maps and all four completed analysis roots.
+    /// Binds the original HTTP/MIME/wire maps and all four completed analysis roots, and the
+    /// applied privacy mask policy when one applied (unchanged bytes without a policy).
     pub fn digest(self) -> [u8; 32] {
         self.digest
+    }
+    /// Privacy mask policy applied to this frame's decoded plane, or `None`: the explicit
+    /// no-policy marker (the sensor had no retained policy when this frame was decoded).
+    pub fn mask_policy(self) -> Option<ContentDigest> {
+        self.mask_policy
+    }
+    /// Ledger generation of the applied policy, if any.
+    pub fn mask_generation(self) -> Option<u64> {
+        self.mask_generation
     }
     /// Complete HTTP/MIME/source-span identity, independent of model output.
     pub fn source_digest(self) -> [u8; 32] {
@@ -170,6 +196,7 @@ pub struct HttpHogCapture {
     complete: Option<HttpHogCompletion>,
     last_acknowledged: Option<HttpHogCompletion>,
     processing_error: Option<JpegHogError>,
+    mask: MaskBinding,
 }
 impl HttpHogCapture {
     /// Take two fresh owners without connecting, reading or inferring another frame.
@@ -194,7 +221,13 @@ impl HttpHogCapture {
             complete: None,
             last_acknowledged: None,
             processing_error: None,
+            mask: MaskBinding::NoPolicy,
         })
+    }
+    /// Privacy mask binding the current accepted frame was decoded under (the explicit
+    /// no-policy marker before any frame was accepted, or when the sensor has no policy).
+    pub fn privacy_mask(&self) -> &MaskBinding {
+        &self.mask
     }
     /// Read-only source accounting and retained raw/frame evidence. No read/release bypass.
     pub fn camera(&self) -> &HttpCamera {
@@ -294,6 +327,20 @@ impl HttpHogCapture {
         {
             return Err(HttpHogError::FrameMismatch);
         }
+        // The sensor's current mask, resolved for THIS frame. The permission grid and every
+        // background reference must exclude the masked pixels; the decoded plane is filled.
+        let refusal = |e| HttpHogError::Privacy(MaskRefusal::from(e));
+        let mask = context.privacy.resolve().map_err(refusal)?;
+        mask.refuse_admitted(context.mask, plan.spec().source.dimensions())
+            .map_err(refusal)?;
+        if background.is_some_and(|model| {
+            model
+                .reference_receipts()
+                .iter()
+                .any(|r| r.redaction != mask.redaction_identity())
+        }) {
+            return Err(HttpHogError::Privacy(MaskRefusal::UnmaskedAccess));
+        }
         // Reserve all wrapper hashing before the only mutation-bearing pipeline call.
         let source = source_digest(frame, budgets.rectification).map_err(HttpHogError::Work)?;
         budgets
@@ -311,6 +358,7 @@ impl HttpHogCapture {
                 foreground_policy: context.foreground_policy,
                 decode_limits: context.decode_limits,
                 stamp: context.stamp,
+                redaction: mask.luma_redaction(),
             },
             budgets.decode,
             budgets.rectification,
@@ -319,6 +367,9 @@ impl HttpHogCapture {
             budgets.inference,
             budgets.downstream,
         );
+        if result.is_ok() {
+            self.mask = mask;
+        }
         self.record(result, source, receipt.ordinal, receipt.encoded_sha256);
         // Even a late revocation leaves the exact current completed/pending result owned.
         self.camera.admit(HttpCameraOperation::Analyze, now, auth)?;
@@ -402,7 +453,7 @@ impl HttpHogCapture {
                 self.processing_error = None;
                 self.complete = match progress {
                     JpegHogProgress::Complete(analysis) => {
-                        Some(completion(source, ordinal, encoded, analysis))
+                        Some(completion(source, ordinal, encoded, analysis, &self.mask))
                     }
                     JpegHogProgress::Pending { .. } => None,
                 };
@@ -466,6 +517,7 @@ fn completion(
     ordinal: u64,
     encoded: [u8; 32],
     analysis: JpegHogCompletion,
+    mask: &MaskBinding,
 ) -> HttpHogCompletion {
     let mut bytes = [0_u8; 232];
     let tag = b"fss/http-hog-completion/1\0";
@@ -485,11 +537,13 @@ fn completion(
         bytes[104 + i * 32..136 + i * 32].copy_from_slice(root);
     }
     HttpHogCompletion {
-        digest: ContentDigest::sha256(&bytes).bytes(),
+        digest: mask.fold_identity("http_hog_completion", ContentDigest::sha256(&bytes).bytes()),
         source,
         ordinal,
         encoded,
         analysis,
+        mask_policy: mask.policy_digest(),
+        mask_generation: mask.generation(),
     }
 }
 fn source_digest(

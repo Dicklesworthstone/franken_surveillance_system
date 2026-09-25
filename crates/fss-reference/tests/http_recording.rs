@@ -19,6 +19,10 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 type Test<T = ()> = Result<T, Box<dyn std::error::Error>>;
+mod privacy_live_support;
+mod privacy_oracle_support;
+use privacy_live_support::PrivacyDeployment;
+use privacy_oracle_support::{BLOCK, block_jpeg, declare, retained_luma};
 const JPEG: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../fss-codec-mjpeg/tests/fixtures/gray.jpg"
@@ -268,6 +272,7 @@ fn to_frame(
 }
 #[test]
 fn capture_publishes_before_parse_and_cold_recovery_verifies_all_three_framings() -> Test {
+    let privacy = PrivacyDeployment::new("http-recording")?;
     for mode in 0..3 {
         let d = Directory::new()?;
         let mut p = d.open()?;
@@ -315,7 +320,8 @@ fn capture_publishes_before_parse_and_cold_recovery_verifies_all_three_framings(
                         HttpRecordingStep::FrameReady(key)
                     );
                     assert_eq!(r.camera().totals(), before);
-                    let output = r.take_frame(key, &p, a.access(&NeverCancel))?;
+                    let output =
+                        r.take_frame(key, &p, a.access(&NeverCancel), Some(privacy.mask()))?;
                     assert_eq!(output.frame.part().bytes(), JPEG);
                     assert_eq!(
                         output.check.decoded.ok_or("decode missing")?.dimensions(),
@@ -499,13 +505,14 @@ fn storage_denial_does_not_acknowledge_or_lose_the_pending_read() -> Test {
 }
 #[test]
 fn final_frame_release_denial_retains_decoded_pixels_and_original_frame() -> Test {
+    let privacy = PrivacyDeployment::new("http-recording")?;
     let d = Directory::new()?;
     let mut p = d.open()?;
     let (mut r, a, mut s) = connect(&p, wire(0, 2, JPEG), limits())?;
     let key = to_frame(&mut r, &mut p, &a, &mut s)?;
     a.deny(HttpCameraOperation::ReleaseFrame, 1);
     assert!(matches!(
-        r.take_frame(key, &p, a.access(&NeverCancel)),
+        r.take_frame(key, &p, a.access(&NeverCancel), Some(privacy.mask())),
         Err(HttpRecordingError::Source(HttpCameraError::Denied(
             HttpCameraDenial::Revoked
         )))
@@ -529,6 +536,7 @@ fn final_frame_release_denial_retains_decoded_pixels_and_original_frame() -> Tes
 }
 #[test]
 fn decode_budget_is_not_refilled_and_failed_decode_never_implies_an_empty_scene() -> Test {
+    let privacy = PrivacyDeployment::new("http-recording")?;
     let d = Directory::new()?;
     let mut p = d.open()?;
     let mut l = limits();
@@ -536,7 +544,7 @@ fn decode_budget_is_not_refilled_and_failed_decode_never_implies_an_empty_scene(
     let (mut r, a, mut s) = connect(&p, wire(0, 2, JPEG), l)?;
     let key = to_frame(&mut r, &mut p, &a, &mut s)?;
     assert!(matches!(
-        r.take_frame(key, &p, a.access(&NeverCancel)),
+        r.take_frame(key, &p, a.access(&NeverCancel), Some(privacy.mask())),
         Err(HttpRecordingError::Decode { ordinal: 1, .. })
     ));
     assert_eq!(r.transferred_frames(), 0);
@@ -548,13 +556,14 @@ fn decode_budget_is_not_refilled_and_failed_decode_never_implies_an_empty_scene(
 }
 #[test]
 fn frame_limit_leaves_a_partial_recording_without_issuing_a_terminal_root() -> Test {
+    let privacy = PrivacyDeployment::new("http-recording")?;
     let d = Directory::new()?;
     let mut p = d.open()?;
     let mut l = limits();
     l.media.maximum_frames = 1;
     let (mut r, a, mut s) = connect(&p, wire(0, 2, JPEG), l)?;
     let first = to_frame(&mut r, &mut p, &a, &mut s)?;
-    r.take_frame(first, &p, a.access(&NeverCancel))?;
+    r.take_frame(first, &p, a.access(&NeverCancel), Some(privacy.mask()))?;
     let mut stopped = false;
     for _ in 0..50000 {
         s.poll()?;
@@ -579,6 +588,7 @@ fn frame_limit_leaves_a_partial_recording_without_issuing_a_terminal_root() -> T
 }
 #[test]
 fn stale_wire_and_frame_keys_cannot_release_later_input() -> Test {
+    let privacy = PrivacyDeployment::new("http-recording")?;
     let d = Directory::new()?;
     let mut p = d.open()?;
     let (mut r, a, mut s) = connect(&p, wire(0, 2, JPEG), limits())?;
@@ -590,16 +600,16 @@ fn stale_wire_and_frame_keys_cannot_release_later_input() -> Test {
         Err(HttpRecordingError::PlanMismatch)
     ));
     let key = to_frame(&mut r, &mut p, &a, &mut s)?;
-    r.take_frame(key, &p, a.access(&NeverCancel))?;
+    r.take_frame(key, &p, a.access(&NeverCancel), Some(privacy.mask()))?;
     let second = to_frame(&mut r, &mut p, &a, &mut s)?;
     assert_ne!(key, second);
     let counts = r.camera().totals();
     assert!(matches!(
-        r.take_frame(key, &p, a.access(&NeverCancel)),
+        r.take_frame(key, &p, a.access(&NeverCancel), Some(privacy.mask())),
         Err(HttpRecordingError::PlanMismatch)
     ));
     assert_eq!(r.camera().totals(), counts);
-    r.take_frame(second, &p, a.access(&NeverCancel))?;
+    r.take_frame(second, &p, a.access(&NeverCancel), Some(privacy.mask()))?;
     Ok(())
 }
 #[test]
@@ -638,5 +648,108 @@ fn preflight_capacity_and_authority_refusals_make_no_connection() -> Test {
         assert!(!error.attempted);
         assert!(matches!(listener.accept(),Err(e) if e.kind()==io::ErrorKind::WouldBlock));
     }
+    Ok(())
+}
+
+fn wire_images(images: &[&[u8]]) -> Vec<u8> {
+    let mut body = Vec::new();
+    for image in images {
+        body.extend_from_slice(
+            format!(
+                "--fss\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
+                image.len()
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(image);
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(b"--fss--\r\n");
+    let mut result =
+        b"HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=fss\r\n".to_vec();
+    result.extend_from_slice(format!("Content-Length: {}\r\n\r\n", body.len()).as_bytes());
+    result.extend_from_slice(&body);
+    result
+}
+#[test]
+fn a_decode_without_a_named_sensor_is_refused_and_the_original_frame_stays_held() -> Test {
+    let d = Directory::new()?;
+    let mut p = d.open()?;
+    let (mut r, a, mut s) = connect(&p, wire(0, 1, JPEG), limits())?;
+    let key = to_frame(&mut r, &mut p, &a, &mut s)?;
+    let refused = r.take_frame(key, &p, a.access(&NeverCancel), None);
+    assert!(matches!(
+        refused,
+        Err(HttpRecordingError::Privacy(refusal))
+            if refusal.stable_id() == "ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001"
+    ));
+    assert_eq!(r.transferred_frames(), 0);
+    assert!(r.camera().pending_frame().is_some());
+    // Naming the sensor then succeeds for the same frame.
+    let privacy = PrivacyDeployment::new("http-recording-refusal")?;
+    let output = r.take_frame(key, &p, a.access(&NeverCancel), Some(privacy.mask()))?;
+    let decoded = output.check.decoded.ok_or("decode missing")?;
+    assert_eq!(decoded.mask_policy(), None);
+    Ok(())
+}
+#[test]
+fn a_policy_retained_mid_recording_masks_from_the_next_decoded_frame() -> Test {
+    let (first, second, third) = (block_jpeg(0)?, block_jpeg(1)?, block_jpeg(0)?);
+    let d = Directory::new()?;
+    let mut p = d.open()?;
+    let mut l = limits();
+    l.media.maximum_frames = 3;
+    let (mut r, a, mut s) = connect(
+        &p,
+        wire_images(&[first.as_slice(), second.as_slice(), third.as_slice()]),
+        l,
+    )?;
+    let mut privacy = PrivacyDeployment::new("http-recording-policy")?;
+    let key = to_frame(&mut r, &mut p, &a, &mut s)?;
+    let before = r.take_frame(key, &p, a.access(&NeverCancel), Some(privacy.mask()))?;
+    let before = before.check.decoded.ok_or("decode missing")?;
+    assert_eq!(before.mask_policy(), None);
+    let unmasked_first = before.receipt().luma_sha256;
+
+    let policy = declare(&mut privacy, [17, 13], &[BLOCK])?;
+    let mut masked = Vec::new();
+    for _ in 0..2 {
+        let key = to_frame(&mut r, &mut p, &a, &mut s)?;
+        let output = r.take_frame(key, &p, a.access(&NeverCancel), Some(privacy.mask()))?;
+        masked.push(output.check.decoded.ok_or("decode missing")?);
+    }
+    for decoded in &masked {
+        assert_eq!(decoded.mask_policy(), Some(policy));
+        assert_eq!(decoded.mask_generation(), Some(1));
+        assert_eq!(
+            fss_core::ContentDigest::sha256(decoded.pixels()).bytes(),
+            decoded.receipt().luma_sha256
+        );
+        for y in 0..8 {
+            assert!(
+                decoded.pixels()[y * 17..y * 17 + 8]
+                    .iter()
+                    .all(|v| *v == 16)
+            );
+        }
+    }
+    // Motion inside the mask (frames 2 and 3 differ only there) yields identical evidence,
+    // equal to the retained-decode masked digest of the same frames.
+    assert_eq!(
+        masked[0].receipt().luma_sha256,
+        masked[1].receipt().luma_sha256
+    );
+    assert_eq!(
+        masked[0].receipt().luma_sha256,
+        retained_luma(&mut privacy, &second, "second")?
+    );
+    assert_eq!(
+        masked[1].receipt().luma_sha256,
+        retained_luma(&mut privacy, &third, "third")?
+    );
+    assert_ne!(masked[1].receipt().luma_sha256, unmasked_first);
+    // The first frame's decode is never rewritten by the later policy.
+    assert_eq!(before.receipt().luma_sha256, unmasked_first);
+    assert_eq!(before.mask_policy(), None);
     Ok(())
 }

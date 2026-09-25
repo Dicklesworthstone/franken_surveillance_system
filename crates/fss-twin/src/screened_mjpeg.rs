@@ -9,10 +9,11 @@ use crate::foreground::{
 };
 use crate::mjpeg::stream::{FramedQuery, StreamFrameReceipt};
 use crate::mjpeg::{
-    JpegBackground, JpegFrameBinding, JpegPipelineError, JpegReceipt, JpegRectified,
-    decode_rectified,
+    JpegBackground, JpegDecodeRequest, JpegFrameBinding, JpegPipelineError, JpegReceipt,
+    JpegRectified, decode_rectified_redacted,
 };
 use crate::rectification::{RectificationPlan, RectifiedFrame};
+use crate::redaction::LumaRedaction;
 use crate::screening::{
     ScreeningError, ScreeningHealth, ScreeningMonitor, ScreeningReport, ScreeningStamp,
 };
@@ -37,6 +38,10 @@ pub struct JpegScreeningQuery<'a> {
     pub decode_limits: DecodeLimits,
     /// Original sequence and receive-clock evidence.
     pub stamp: ScreeningStamp,
+    /// Owner redaction applied to the decoded plane before rectification, foreground, health or
+    /// any digest (the reference composition passes the sensor's privacy mask); `None` leaves
+    /// the decoder output and every fingerprint unchanged.
+    pub redaction: Option<&'a dyn LumaRedaction>,
 }
 
 /// The candidate stage can fail without erasing a valid decoded image or its health evidence.
@@ -168,12 +173,15 @@ pub fn screen_jpeg(
     health_work: &mut WorkBudget<'_>,
 ) -> Result<ScreenedJpeg, JpegScreeningError> {
     health_work.charge(0).map_err(ScreeningError::from)?;
-    let image = decode_rectified(
+    let image = decode_rectified_redacted(
         plan,
-        query.bytes,
-        query.mask,
-        query.binding,
-        query.decode_limits,
+        JpegDecodeRequest {
+            bytes: query.bytes,
+            mask: query.mask,
+            source: query.binding,
+            limits: query.decode_limits,
+            redaction: query.redaction,
+        },
         decode,
         rectification,
     )?;
@@ -223,6 +231,11 @@ pub fn screen_jpeg(
         frame.receipt().map_digest,
     ] {
         e.digest(ContentDigest::sha256(&id));
+    }
+    // Only a redacted decode adds this field, so unredacted fingerprints are unchanged.
+    if let Some(identity) = receipt.redaction {
+        e.text("redaction");
+        e.digest(ContentDigest::sha256(&identity));
     }
     e.bool(attempted_background.is_some());
     if let Some(id) = attempted_background {
@@ -332,6 +345,7 @@ pub fn screen_framed_jpeg(
             foreground_policy: query.policy,
             decode_limits: query.limits,
             stamp,
+            redaction: None,
         },
         decode,
         rectification,

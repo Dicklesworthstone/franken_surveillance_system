@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 //! Actual native socket EOF, root-last storage and cold replay; no fabricated end records.
+#[path = "privacy_live_support/mod.rs"]
+mod privacy_live_support;
 use fss_codec_mjpeg::DecodeBudget;
 use fss_codec_mjpeg::http::HttpTermination;
 use fss_codec_mjpeg::stream::StreamBasis;
@@ -616,7 +618,14 @@ fn operator_checker_consumes_actual_terminal_witness_and_decodes_every_cold_fram
             completion: Some(pin.root),
             decode: HttpCheckDecode::Grayscale,
         };
-        let report = check_http_recording(&p, request, HttpCheckLimits::default(), &NeverCancel)?;
+        let privacy = privacy_live_support::PrivacyDeployment::new("http-completion")?;
+        let report = check_http_recording(
+            &p,
+            request,
+            HttpCheckLimits::default(),
+            &NeverCancel,
+            Some(privacy.mask()),
+        )?;
         assert_eq!(report.status, HttpCheckStatus::Complete);
         assert!(report.error.is_none());
         assert_eq!(report.completion_root, Some(pin.root));
