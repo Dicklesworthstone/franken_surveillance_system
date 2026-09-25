@@ -15,6 +15,12 @@
 //! calibrated pose for a camera, and `--scene-mesh PATH --scene-mesh-digest sha256:HEX
 //! --scene-source-digest sha256:HEX` an owner scene mesh (fss-twin package) for occlusion. Without
 //! a mesh (or without a pose for a camera) occlusion is `occlusion_unknown`: frustum-only.
+//!
+//! `--tolerate-decode-refusals` explicitly enables bounded recovery for both recordings. Refused
+//! segments and tracking restarts remain in the report and coverage; source gaps additionally
+//! exclude later frame-index capture hints from association. Custody, privacy, cancellation and
+//! budget failures still abort, as does a detector cascade over a gapped range. Recovery is kept
+//! in every exact approval rerun and in the post-publication coverage reanalysis.
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -29,7 +35,7 @@ use fss_reference::ingest::ground_visibility::{
 };
 use fss_reference::ingest::package_detect::PackageDetectLimits;
 use fss_reference::ingest::recorded_corroboration::{
-    CorroborationCamera, CorroborationError, CorroborationGates, CorroborationPlan,
+    CorroborationCamera, CorroborationError, CorroborationGates, CorroborationOptions, CorroborationPlan,
     CorroborationReport, GroundHomography, GroundVisibilityPlan, GroundZone,
     MAX_CORROBORATION_ZONES,
 };
@@ -87,6 +93,7 @@ pub(super) struct CorroborateAction {
     pub(super) principal: String,
     plan: CorroborationPlan,
     limits: WatchLimits,
+    recovery: CorroborationOptions,
     approvals: BTreeSet<ContentDigest>,
     retain_coverage: Option<ContentDigest>,
     report_out: Option<PathBuf>,
@@ -224,8 +231,9 @@ fn quote(argument: &str) -> String {
     }
 }
 
-/// Parses the arguments after `corroborate`. Every option takes one separate value; `--camera`,
-/// `--ground` and `--zone` repeat. Paths must be UTF-8 because the report echoes rerun commands.
+/// Parses the arguments after `corroborate`. `--tolerate-decode-refusals` is a bare flag;
+/// every other option takes one separate value. `--camera`, `--ground` and `--zone` repeat.
+/// Paths must be UTF-8 because the report echoes rerun commands.
 pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
     let mut values: Vec<(String, String)> = Vec::new();
     let mut cameras: Vec<(String, ContentDigest)> = Vec::new();
@@ -233,9 +241,19 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
     let mut zones = Vec::new();
     let mut poses: Vec<(String, CameraPose)> = Vec::new();
     let mut rerun = vec!["fss-event".to_owned(), "corroborate".to_owned()];
+    let mut recovery = CorroborationOptions::default();
     let mut index = 0;
     while index < args.len() {
         let key = args[index].to_str().ok_or("option names require UTF-8")?;
+        if key == "--tolerate-decode-refusals" {
+            if recovery.tolerate_decode_refusals {
+                return Err(format!("duplicate {key}"));
+            }
+            recovery.tolerate_decode_refusals = true;
+            rerun.push(quote(key));
+            index += 1;
+            continue;
+        }
         let argument = args
             .get(index + 1)
             .ok_or_else(|| format!("missing value for {key}"))?
@@ -446,6 +464,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
             tracker,
         },
         limits,
+        recovery,
         approvals,
         retain_coverage: match find(&values, "--retain-coverage") {
             Some(value) => Some(digest(value, "--retain-coverage")?),
@@ -532,12 +551,13 @@ fn run_with(
         )?),
         _ => None,
     };
-    let mut report = CorroborationReport::analyze_with_visibility(
+    let mut report = CorroborationReport::analyze_with_options(
         deployment,
         &action.plan,
         &action.limits,
         cascade.as_mut(),
         &visibility,
+        action.recovery,
         cx,
     )?;
     // Both approvals are checked against the fresh analysis before anything is written.
@@ -555,12 +575,13 @@ fn run_with(
     // A coverage proposal binds the authority anchor its analysis read; after this run published
     // candidates, the proposal is recomputed against the new anchor so its approval is current.
     let reproposed = if published > 0 && action.retain_coverage.is_none() {
-        Some(CorroborationReport::analyze_with_visibility(
+        Some(CorroborationReport::analyze_with_options(
             deployment,
             &action.plan,
             &action.limits,
             cascade.as_mut(),
             &visibility,
+            action.recovery,
             cx,
         )?)
     } else {
@@ -591,4 +612,153 @@ fn run_with(
     }
     out.write_all(json.as_bytes())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+
+    fn arguments() -> Vec<OsString> {
+        [
+            "--root".to_owned(),
+            "/tmp/fss-corroboration-recovery".to_owned(),
+            "--site".to_owned(),
+            "site:recovery-cli".to_owned(),
+            "--camera".to_owned(),
+            format!("east:{}", ContentDigest::sha256(b"east recording")),
+            "--camera".to_owned(),
+            format!("west:{}", ContentDigest::sha256(b"west recording")),
+            "--ground".to_owned(),
+            "east:1,0,0,0,1,0,0,0,1".to_owned(),
+            "--ground".to_owned(),
+            "west:1,0,0,0,1,0,0,0,1".to_owned(),
+            "--zone".to_owned(),
+            "door:4,4,16,16".to_owned(),
+            "--interpretation".to_owned(),
+            "gray".to_owned(),
+            "--time-gate-ns".to_owned(),
+            "250000000".to_owned(),
+            "--distance-gate".to_owned(),
+            "16".to_owned(),
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect()
+    }
+
+    #[test]
+    fn recovery_remains_opt_in() -> Result<(), String> {
+        let action = parse(&arguments())?;
+        assert_eq!(action.recovery, CorroborationOptions::default());
+        assert!(!action.rerun.contains("--tolerate-decode-refusals"));
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_flag_is_accepted_at_every_option_boundary() -> Result<(), String> {
+        let plain = arguments();
+        let strict = parse(&plain)?;
+        for index in (0..=plain.len()).step_by(2) {
+            let mut args = plain.clone();
+            args.insert(index, "--tolerate-decode-refusals".into());
+            let action = parse(&args)?;
+            assert!(action.recovery.tolerate_decode_refusals);
+            assert_eq!(action.rerun.matches("--tolerate-decode-refusals").count(), 1);
+            // Opting in does not manufacture a different clean-source plan or an approval.
+            assert_eq!(action.plan.digest(), strict.plan.digest());
+            assert!(action.approvals.is_empty());
+            assert!(action.retain_coverage.is_none());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn duplicate_recovery_flags_are_refused() {
+        let mut args = arguments();
+        args.insert(0, "--tolerate-decode-refusals".into());
+        args.push("--tolerate-decode-refusals".into());
+        assert!(matches!(
+            parse(&args),
+            Err(message) if message == "duplicate --tolerate-decode-refusals"
+        ));
+    }
+
+    #[test]
+    fn recovery_flag_takes_no_value() {
+        for value in ["true", "false", "1", "0", "yes", ""] {
+            let mut args = arguments();
+            args.push("--tolerate-decode-refusals".into());
+            args.push(value.into());
+            assert!(parse(&args).is_err());
+        }
+        let mut args = arguments();
+        args.push("--tolerate-decode-refusals=true".into());
+        assert!(parse(&args).is_err());
+    }
+
+    #[test]
+    fn flag_cannot_supply_another_options_missing_value() {
+        let mut args = arguments();
+        args.extend(["--work-units".into(), "--tolerate-decode-refusals".into()]);
+        assert!(matches!(
+            parse(&args),
+            Err(message) if message == "missing value for --work-units"
+        ));
+    }
+
+    #[test]
+    fn approval_rerun_keeps_recovery_but_drops_prior_authority_and_export() -> Result<(), String> {
+        let mut args = arguments();
+        let approval = ContentDigest::sha256(b"exact candidate proposal");
+        let coverage = ContentDigest::sha256(b"exact coverage proposal");
+        args.extend([
+            "--approve".into(),
+            approval.to_string().into(),
+            "--tolerate-decode-refusals".into(),
+            "--retain-coverage".into(),
+            coverage.to_string().into(),
+            "--report-out".into(),
+            "/tmp/recovery-report.json".into(),
+        ]);
+        let action = parse(&args)?;
+        assert_eq!(action.approvals, BTreeSet::from([approval]));
+        assert_eq!(action.retain_coverage, Some(coverage));
+        assert_eq!(action.rerun.matches("--tolerate-decode-refusals").count(), 1);
+        assert!(!action.rerun.contains("--approve"));
+        assert!(!action.rerun.contains("--retain-coverage"));
+        assert!(!action.rerun.contains("--report-out"));
+        // All fixture arguments are shell-safe, so the displayed command can be parsed directly.
+        let replay: Vec<OsString> = action.rerun.split_whitespace().skip(2).map(Into::into).collect();
+        let replayed = parse(&replay)?;
+        assert_eq!(replayed.recovery, action.recovery);
+        assert_eq!(replayed.plan.digest(), action.plan.digest());
+        assert!(replayed.approvals.is_empty());
+        assert!(replayed.retain_coverage.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_rerun_still_quotes_owner_paths() -> Result<(), String> {
+        let mut args = arguments();
+        args[1] = "/tmp/owner's camera archive".into();
+        args.push("--tolerate-decode-refusals".into());
+        let action = parse(&args)?;
+        assert!(action.rerun.contains("'/tmp/owner'\\''s camera archive'"));
+        assert!(action.rerun.ends_with("--tolerate-decode-refusals"));
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_does_not_relax_duplicate_or_unknown_options() {
+        let mut args = arguments();
+        args.push("--tolerate-decode-refusals".into());
+        args.extend(["--site".into(), "site:other".into()]);
+        assert!(matches!(parse(&args), Err(message) if message == "duplicate --site"));
+        args.truncate(args.len() - 2);
+        args.extend(["--ignore-privacy".into(), "yes".into()]);
+        assert!(matches!(
+            parse(&args),
+            Err(message) if message == "unknown or inapplicable option"
+        ));
+    }
 }
