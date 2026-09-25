@@ -379,6 +379,28 @@ command), a refusal in the middle of a recording becomes a gap instead
 Orient then sees two witness windows around the gap: the zone is `not_observable between` them,
 and follow certifies no silence over it.
 
+### Privacy masks with geometry and tolerant decode (fss-bgqkd)
+
+A sensor's retained privacy mask (`fss-event privacy-mask declare`, see `PRIVACY.md`) composes
+with both extensions above:
+
+- **Ground zones.** A corroborate ground zone is masked when either rule holds (the stricter
+  wins): the conservative image-preimage rule (the bounding box of the zone's corner preimages
+  contains a masked pixel) or the geometric rule (an in-view visibility sample projects onto a
+  masked pixel). Each sample is counted once: outside the frustum, else `privacy_masked` (the
+  mesh is not consulted for it), else occluded, else visible. The visibility object then names
+  `privacy_masked` (its count) and the cause `privacy_masked`; such a record is version 3 of
+  `fss.recorded_watch_coverage.v1` (every visibility block carries the count). A record without
+  a masked sample keeps its version-1 or version-2 bytes. The pipeline generation binds the
+  geometry parameters and the mask binding.
+- **Tolerant decode.** Frames that do decode are masked exactly as in a default run (MJPEG in
+  the tolerant source, H.264/H.265 in their ranges); refused segments stay `decode_refused`.
+- **Reason precedence.** Per zone and segment exactly one reason is recorded: `decode_refused`
+  (or `segment_not_decoded`) first, since no pixels exist; then a `zone_entry` the builder
+  named; then `privacy_masked`; then the pre-mask order (`capture_time_unknown`, `occluded` /
+  `outside_frustum`, `zone_outside_frame`, `capture_time_unreliable_after_gap`,
+  `background_warmup`, `confirmation_latency`, `interval_too_short`).
+
 ```sh
 fss-event watch ... --zone door:64,0,32,32                                   # proposes
 fss-event watch ... --zone door:64,0,32,32 --retain-coverage sha256:APPROVAL # retains

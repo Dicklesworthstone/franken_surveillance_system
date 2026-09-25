@@ -22,7 +22,14 @@
 //! The result is a [`ZoneVisibility`]: sample counts per class, the visible fraction in parts per
 //! million, the registered threshold, the sampling policy and the occlusion model. A zone whose
 //! visible fraction is below the threshold (or with no visible sample) is not observable for
-//! coverage; the typed cause is `occluded` or `outside_frustum`. A clear mesh test concerns this
+//! coverage; the typed cause is `occluded` or `outside_frustum`.
+//!
+//! **Privacy masks (fss-bgqkd).** When the camera's sensor has a retained privacy mask, an
+//! in-view sample whose image pixel (the floor of its projection) is masked is counted once as
+//! `privacy_masked`, never also as visible or occluded, and the mesh is not consulted for it
+//! (a masked pixel is unobservable whatever lies in front of it). Any masked sample makes the
+//! zone not observable with cause `privacy_masked`, which takes precedence over `occluded` and
+//! `outside_frustum`; a zone without masked samples keeps exactly the pre-mask counts. A clear mesh test concerns this
 //! mesh only, never dynamic occluders, camera health, pixel scale or detector recall.
 
 use fss_core::{CanonicalDecoder, CanonicalEncoder, ContentDigest, ContractError};
@@ -212,6 +219,8 @@ pub enum NotVisibleCause {
     Occluded,
     /// Most non-visible samples are behind the camera or outside the image.
     OutsideFrustum,
+    /// At least one in-view sample falls on a privacy-masked pixel (precedes the other causes).
+    PrivacyMasked,
 }
 
 /// Geometric visibility of one ground zone from one camera.
@@ -231,6 +240,8 @@ pub struct ZoneVisibility {
     pub outside_frustum: u32,
     /// Samples hidden by opaque mesh geometry.
     pub occluded: u32,
+    /// In-view samples whose image pixel is privacy-masked (0 without a mask policy).
+    pub privacy_masked: u32,
     /// Occlusion model.
     pub occlusion: Occlusion,
 }
@@ -246,11 +257,13 @@ impl ZoneVisibility {
         u32::try_from(ppm).unwrap_or(1_000_000)
     }
 
-    /// Whether the zone is observable for coverage: at least one visible sample and a visible
-    /// fraction at or above the threshold.
+    /// Whether the zone is observable for coverage: no privacy-masked sample, at least one
+    /// visible sample and a visible fraction at or above the threshold.
     #[must_use]
     pub fn observable(&self) -> bool {
-        self.visible > 0 && self.visible_fraction_ppm() >= self.threshold_ppm
+        self.privacy_masked == 0
+            && self.visible > 0
+            && self.visible_fraction_ppm() >= self.threshold_ppm
     }
 
     /// Typed cause when not observable.
@@ -258,6 +271,8 @@ impl ZoneVisibility {
     pub fn cause(&self) -> Option<NotVisibleCause> {
         if self.observable() {
             None
+        } else if self.privacy_masked > 0 {
+            Some(NotVisibleCause::PrivacyMasked)
         } else if self.occluded > 0 && self.occluded >= self.outside_frustum {
             Some(NotVisibleCause::Occluded)
         } else {
@@ -320,9 +335,14 @@ impl ZoneVisibility {
             Occlusion::Unknown(reason) => format!("occlusion_unknown ({})", reason.as_str()),
             Occlusion::MeshChecked(digest) => format!("mesh_checked ({digest})"),
         };
+        let masked = if self.privacy_masked > 0 {
+            format!(", {} privacy_masked", self.privacy_masked)
+        } else {
+            String::new()
+        };
         format!(
             "{} of {} samples visible ({} ppm, threshold {} ppm), {} outside the frustum, {} \
-             occluded, {}, {}",
+             occluded{masked}, {}, {}",
             self.visible,
             self.samples,
             self.visible_fraction_ppm(),
@@ -334,8 +354,15 @@ impl ZoneVisibility {
         )
     }
 
-    /// Canonical encoding (inside a v2 coverage record).
+    /// Canonical encoding (inside a v2 coverage record). A privacy-masked sample count is not
+    /// representable here; see [`Self::encode_versioned`].
     pub fn encode(&self, e: &mut CanonicalEncoder) {
+        self.encode_versioned(e, false);
+    }
+
+    /// Canonical encoding inside a v2 (`with_masked == false`) or v3 coverage record; v3 adds
+    /// the privacy-masked sample count after the occluded count.
+    pub fn encode_versioned(&self, e: &mut CanonicalEncoder, with_masked: bool) {
         e.text(self.camera_model.as_str());
         e.u32(self.grid);
         e.u32(self.threshold_ppm);
@@ -343,6 +370,9 @@ impl ZoneVisibility {
         e.u32(self.visible);
         e.u32(self.outside_frustum);
         e.u32(self.occluded);
+        if with_masked {
+            e.u32(self.privacy_masked);
+        }
         match self.occlusion {
             Occlusion::Unknown(reason) => {
                 e.text("occlusion_unknown");
@@ -357,6 +387,14 @@ impl ZoneVisibility {
 
     /// Decodes and validates [`Self::encode`].
     pub fn decode(d: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        Self::decode_versioned(d, false)
+    }
+
+    /// Decodes and validates [`Self::encode_versioned`] (`with_masked` as encoded).
+    pub fn decode_versioned(
+        d: &mut CanonicalDecoder<'_>,
+        with_masked: bool,
+    ) -> Result<Self, ContractError> {
         let camera_model = match d.text()? {
             "owner_homography" => CameraModel::OwnerHomography,
             "calibrated_pose" => CameraModel::CalibratedPose,
@@ -368,6 +406,7 @@ impl ZoneVisibility {
         let visible = d.u32()?;
         let outside_frustum = d.u32()?;
         let occluded = d.u32()?;
+        let privacy_masked = if with_masked { d.u32()? } else { 0 };
         let occlusion = match d.text()? {
             "occlusion_unknown" => Occlusion::Unknown(match d.text()? {
                 "no_scene_mesh" => OcclusionUnknownReason::NoSceneMesh,
@@ -385,6 +424,7 @@ impl ZoneVisibility {
             visible,
             outside_frustum,
             occluded,
+            privacy_masked,
             occlusion,
         };
         visibility.validate()?;
@@ -398,8 +438,10 @@ impl ZoneVisibility {
             grid: self.grid,
             threshold_ppm: self.threshold_ppm,
         };
-        let total =
-            u64::from(self.visible) + u64::from(self.outside_frustum) + u64::from(self.occluded);
+        let total = u64::from(self.visible)
+            + u64::from(self.outside_frustum)
+            + u64::from(self.occluded)
+            + u64::from(self.privacy_masked);
         if policy.validate().is_err()
             || self.samples == 0
             || u64::from(self.samples) > u64::from(self.grid) * u64::from(self.grid)
@@ -630,6 +672,23 @@ pub fn assess_ground_zone(
     mesh: Option<SceneMesh<'_>>,
     policy: VisibilityPolicy,
 ) -> Result<ZoneVisibility, VisibilityError> {
+    assess_ground_zone_masked(camera, dimensions, polygon, mesh, policy, None)
+}
+
+/// Whether image pixel `(column, row)` is privacy-masked for the camera being assessed.
+pub type PixelMask<'a> = &'a dyn Fn(u32, u32) -> bool;
+
+/// [`assess_ground_zone`] under a privacy mask: an in-view sample whose pixel (floor of its
+/// projection) `masked` reports is counted as `privacy_masked` and never tested against the
+/// mesh. Without a mask the result equals [`assess_ground_zone`].
+pub fn assess_ground_zone_masked(
+    camera: VisibilityCamera<'_>,
+    dimensions: [u32; 2],
+    polygon: &[(f64, f64)],
+    mesh: Option<SceneMesh<'_>>,
+    policy: VisibilityPolicy,
+    masked: Option<PixelMask<'_>>,
+) -> Result<ZoneVisibility, VisibilityError> {
     let samples = ground_samples(polygon, policy)?;
     let mut budget = WorkBudget::new(MAX_VISIBILITY_WORK);
     let (camera_model, occlusion) = match (camera, mesh) {
@@ -659,22 +718,29 @@ pub fn assess_ground_zone(
         VisibilityCamera::Homography(matrix) => Some(invert(matrix)?),
         VisibilityCamera::Pose(_) => None,
     };
-    let (mut visible, mut outside, mut occluded) = (0_u32, 0_u32, 0_u32);
+    let (mut visible, mut outside, mut occluded, mut privacy_masked) = (0_u32, 0_u32, 0_u32, 0_u32);
     for &(x, y) in &samples {
         budget.charge(1)?;
-        let in_view = match (camera, inverse.as_ref()) {
+        let pixel = match (camera, inverse.as_ref()) {
             (VisibilityCamera::Homography(matrix), Some(inverse)) => {
-                homography_pixel(matrix, inverse, x, y)
-                    .is_some_and(|(u, v)| in_image(dimensions, u, v))
+                homography_pixel(matrix, inverse, x, y).filter(|&(u, v)| in_image(dimensions, u, v))
             }
             (VisibilityCamera::Pose(pose), _) => pose
                 .pose
                 .project(pose.intrinsics, [x, y, 0.0])
-                .is_ok_and(|pixel| pose.intrinsics.contains(pixel)),
-            (VisibilityCamera::Homography(_), None) => false,
+                .ok()
+                .filter(|pixel| pose.intrinsics.contains(*pixel))
+                .map(|pixel| (pixel[0], pixel[1])),
+            (VisibilityCamera::Homography(_), None) => None,
         };
-        if !in_view {
+        let Some((u, v)) = pixel else {
             outside += 1;
+            continue;
+        };
+        // In the image domain: finite, non-negative and below the image size (<= u32::MAX),
+        // so the floor is an exact pixel index.
+        if masked.is_some_and(|masked| masked(u.floor() as u32, v.floor() as u32)) {
+            privacy_masked += 1;
             continue;
         }
         let hidden = match (camera, mesh) {
@@ -710,6 +776,7 @@ pub fn assess_ground_zone(
         visible,
         outside_frustum: outside,
         occluded,
+        privacy_masked,
         occlusion,
     };
     visibility

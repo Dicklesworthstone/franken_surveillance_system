@@ -6,8 +6,10 @@
 //! would have carried becomes an uncovered interval with reason `privacy_masked`, and every other
 //! frame interval is reported `privacy_masked` too (the mask alone already makes the zone
 //! unobservable), except zone-entry frames, which remain named observations, and segments that
-//! were never decoded. Owners who want coverage of the visible part of a zone draw that part as
-//! its own zone.
+//! produced no pixels at all: never decoded (`segment_not_decoded`) or refused by a tolerant
+//! decode (`decode_refused`, which keeps its registered error id). Owners who want coverage of
+//! the visible part of a zone draw that part as its own zone. The full reason precedence is
+//! documented in [`crate::ingest::recorded_coverage`].
 
 use std::collections::BTreeSet;
 
@@ -26,7 +28,8 @@ fn hull(a: Option<CaptureInterval>, b: Option<CaptureInterval>) -> Option<Captur
 }
 
 /// Rewrites the zones of `record` named in `masked`: no witness survives, and every frame
-/// interval other than a zone entry or an undecoded segment is `privacy_masked`. Adjacent
+/// interval other than a zone entry, an undecoded segment or a decode refusal is
+/// `privacy_masked`. Adjacent
 /// masked intervals merge. The record is revalidated.
 pub fn mask_coverage_zones(
     record: &mut CoverageRecord,
@@ -49,7 +52,9 @@ pub fn mask_coverage_zones(
         for mut gap in zone.uncovered.drain(..) {
             if !matches!(
                 gap.reason,
-                UncoveredReason::ZoneEntry { .. } | UncoveredReason::SegmentNotDecoded
+                UncoveredReason::ZoneEntry { .. }
+                    | UncoveredReason::SegmentNotDecoded
+                    | UncoveredReason::DecodeRefused { .. }
             ) {
                 gap.reason = UncoveredReason::PrivacyMasked;
             }

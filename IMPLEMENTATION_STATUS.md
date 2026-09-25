@@ -73,7 +73,9 @@ synthetic scenes). None of it has been measured on real camera footage.
   no-policy marker; lineages of different mask generations never share identities; zones with
   any masked pixel are `privacy_masked` / `not_observable`; raw export and superseded-lineage
   reads are refused. Retained file imports only: live capture paths, deletion closure, retention
-  and biometric controls remain open (PRIVACY.md 4.1).
+  and biometric controls remain open (PRIVACY.md 4.1). Composes with geometric ground zones (a
+  sample on a masked pixel is `privacy_masked`, counted once; version-3 coverage records) and
+  with tolerant decode (decoded frames masked; `decode_refused` precedes `privacy_masked`).
 - **Models:** scalar executor over the FSS IR (Conv2d, MatMul, pooling, norms, activations) with
   Safetensors weights (`scalar_executor`, `fss-infer`). One trained detector package ships:
   YOLOX-Nano COCO-80 (`models/yolox-nano/`, `MOD-YOLOXNANO-001`, Apache-2.0), imported offline

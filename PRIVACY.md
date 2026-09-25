@@ -66,7 +66,10 @@ Implemented, for retained file imports (`fss-file import`) only:
 - **Honest coverage.** A zone with any masked pixel carries no coverage witness: its frames are
   uncovered with reason `privacy_masked`, and `fss orient` reports it `not_observable` (the
   coverage model has no sub-zone domain, so a partly masked zone is not observable as a whole;
-  draw the visible part as its own zone). A masked area is never absence evidence.
+  draw the visible part as its own zone). A masked area is never absence evidence. A
+  corroborate ground zone is masked when its conservative image preimage or any of its in-view
+  geometric visibility samples touches a masked pixel; a tolerant decode masks every frame it
+  does decode, and a refused segment stays `decode_refused` (docs/RECORDED_EVENT_WORKFLOW.md).
 - **Typed transform.** Watch reports, candidates, package-detection reports and `fss-file decode`
   name the applied transform (`transform:bounding_box_redact`) and policy digest; a published
   watch event carries the retained policy as a `required_by` evidence edge.

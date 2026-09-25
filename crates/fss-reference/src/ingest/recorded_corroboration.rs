@@ -67,8 +67,8 @@ use super::detector_cascade::{
     cascade_outcome_json, cascade_policy_json, class_evidence_json, select_frames,
 };
 use super::ground_visibility::{
-    CameraPose, SceneMesh, VisibilityCamera, VisibilityError, VisibilityPolicy, assess_ground_zone,
-    bind_visibility_parameters, pose_matches_homography, rectangle,
+    CameraPose, SceneMesh, VisibilityCamera, VisibilityError, VisibilityPolicy,
+    assess_ground_zone_masked, bind_visibility_parameters, pose_matches_homography, rectangle,
 };
 use super::privacy_mask::MaskBinding;
 use super::privacy_mask::coverage::{ground_zone_masked, mask_coverage_zones};
@@ -1625,8 +1625,9 @@ fn camera_coverage(
         &mut parameters,
         camera.privacy.policy().map(|_| camera.privacy.digest()),
     );
-    // Ground zones whose image preimage may contain a masked pixel carry no witness.
-    let masked: BTreeSet<String> = match camera.privacy.policy() {
+    // Ground zones whose image preimage may contain a masked pixel carry no witness
+    // (conservative bounding-box rule); zones with a masked visibility sample join below.
+    let mut masked: BTreeSet<String> = match camera.privacy.policy() {
         None => BTreeSet::new(),
         Some(policy) => plan
             .zones
@@ -1670,13 +1671,28 @@ fn camera_coverage(
             }
             None => VisibilityCamera::Homography(&homography.matrix),
         };
-        let visible = assess_ground_zone(
+        // A sample whose image pixel is masked is not visible (`privacy_masked`), counted once
+        // and never also tested against the mesh.
+        let pixel_masked = |column: u32, row: u32| {
+            camera
+                .privacy
+                .policy()
+                .is_some_and(|policy| policy.masks(column, row))
+        };
+        let visible = assess_ground_zone_masked(
             camera_model,
             camera.dimensions,
             &polygon,
             visibility_plan.mesh,
             visibility_plan.policy,
+            camera
+                .privacy
+                .policy()
+                .map(|_| &pixel_masked as &dyn Fn(u32, u32) -> bool),
         )?;
+        if visible.privacy_masked > 0 {
+            masked.insert(zone.zone_id.clone());
+        }
         let zone_entries = context
             .entries
             .iter()

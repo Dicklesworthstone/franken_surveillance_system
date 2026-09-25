@@ -8,13 +8,17 @@
 //! 2. an H.264 stream with a corrupted P slice resumes at the next IDR, and every segment from
 //!    the refusal to that IDR is refused and uncovered;
 //! 3. a tolerant run that meets no refusal is byte-identical to the default analysis;
-//! 4. records round-trip canonically and analyses are deterministic.
+//! 4. records round-trip canonically and analyses are deterministic;
+//! 5. under a privacy mask (fss-bgqkd) the frames that do decode are masked exactly as in a
+//!    default run, the refused segment stays `decode_refused` (it precedes `privacy_masked`), the
+//!    masked zone has no witness and no segment is left unaccounted for.
 
 #[path = "cascade_support/mod.rs"]
 mod support;
 
-use fss_core::{CaptureInterval, ContentDigest};
+use fss_core::{CaptureInterval, ContentDigest, SensorId};
 use fss_reference::ingest::FileFormatHint;
+use fss_reference::ingest::privacy_mask::{PrivacyMaskPolicy, declare_mask, preview_mask};
 use fss_reference::ingest::recorded_coverage::{CoverageRecord, UncoveredReason};
 use fss_reference::ingest::recorded_decode::ComponentInterpretation;
 use fss_reference::ingest::recorded_watch::{
@@ -426,5 +430,180 @@ fn a_tolerant_run_without_refusals_is_byte_identical_to_the_default() -> TestRes
         assert_eq!(tolerant.coverage().to_bytes(), strict.coverage().to_bytes());
         assert_eq!(tolerant.coverage_approval(), strict.coverage_approval());
     }
+    Ok(())
+}
+
+fn declare(fixture: &mut Fixture, sensor: &str, rectangles: &[[u32; 4]]) -> TestResult {
+    let policy = PrivacyMaskPolicy::new(SensorId::parse(sensor)?, [96, 48], rectangles)?;
+    let preview = preview_mask(&fixture.deployment, &policy)?;
+    declare_mask(
+        &mut fixture.deployment,
+        &policy,
+        preview.approval,
+        &fixture.cx,
+    )?;
+    Ok(())
+}
+
+#[test]
+fn a_masked_zone_under_tolerant_decode_keeps_the_refusal_and_is_never_silent() -> TestResult {
+    let mut fixture = Fixture::new("gap-mask")?;
+    let corrupt = fixture.ingest(
+        "sensor:gap-mask",
+        &square_scene(Some(6))?,
+        FileFormatHint::JpegStream,
+        Some(1_000_000_000),
+    )?;
+    let clean = fixture.ingest(
+        "sensor:gap-mask-clean",
+        &square_scene(None)?,
+        FileFormatHint::JpegStream,
+        Some(1_000_000_000),
+    )?;
+    // The mask covers the top right of the door; "floor" (the quiet bottom left) is unmasked.
+    let floor = WatchZone {
+        zone_id: "floor".to_owned(),
+        x: 0,
+        y: 32,
+        width: 32,
+        height: 16,
+    };
+    let rectangles = [[80, 0, 16, 16]];
+    declare(&mut fixture, "sensor:gap-mask", &rectangles)?;
+    declare(&mut fixture, "sensor:gap-mask-clean", &rectangles)?;
+    let mut masked_plan = plan(corrupt, ComponentInterpretation::Grayscale, door(), 14);
+    masked_plan.zones.push(floor.clone());
+    let mut clean_plan = plan(clean, ComponentInterpretation::Grayscale, door(), 14);
+    clean_plan.zones.push(floor);
+    let limits = WatchLimits::default();
+
+    let report = WatchReport::analyze_with_options(
+        &fixture.deployment,
+        &masked_plan,
+        &limits,
+        None,
+        TOLERANT,
+        &fixture.cx,
+    )?;
+    assert!(report.privacy_mask().policy().is_some());
+    assert_eq!(
+        report.decode_refusals(),
+        &[DecodeRefusal {
+            first_segment: 6,
+            last_segment: 6,
+            error_id: "ERR-DECODE-001".to_owned(),
+        }]
+    );
+    // Frames that decode are masked exactly as the default (non-tolerant) masked decode of the
+    // same bytes: equal luma digests segment by segment.
+    let reference = WatchReport::analyze(&fixture.deployment, &clean_plan, &limits, &fixture.cx)?;
+    let expected: Vec<(usize, ContentDigest)> = reference
+        .frames()
+        .iter()
+        .filter(|frame| frame.segment != 6)
+        .map(|frame| (frame.segment, frame.luma_digest))
+        .collect();
+    let decoded: Vec<(usize, ContentDigest)> = report
+        .frames()
+        .iter()
+        .map(|frame| (frame.segment, frame.luma_digest))
+        .collect();
+    assert_eq!(decoded, expected);
+    // And those planes really are masked: an unmasked tolerant decode of the corrupt import
+    // differs on every frame (the mask fill 16 replaces the background 40).
+    let mut unmasked_fixture = Fixture::new("gap-mask-none")?;
+    let unmasked_import = unmasked_fixture.ingest(
+        "sensor:gap-mask",
+        &square_scene(Some(6))?,
+        FileFormatHint::JpegStream,
+        Some(1_000_000_000),
+    )?;
+    let mut unmasked_plan = masked_plan.clone();
+    unmasked_plan.import_identity = unmasked_import;
+    let unmasked = WatchReport::analyze_with_options(
+        &unmasked_fixture.deployment,
+        &unmasked_plan,
+        &limits,
+        None,
+        TOLERANT,
+        &unmasked_fixture.cx,
+    )?;
+    assert!(unmasked.privacy_mask().policy().is_none());
+    assert_eq!(unmasked.frames().len(), report.frames().len());
+    for (a, b) in unmasked.frames().iter().zip(report.frames()) {
+        assert_eq!(a.segment, b.segment);
+        assert_ne!(
+            a.luma_digest, b.luma_digest,
+            "segment {} unmasked",
+            a.segment
+        );
+    }
+
+    let record = report.coverage();
+    let masked_zone = &record.zones[0];
+    assert_eq!(masked_zone.zone_id, "door");
+    // No witness anywhere over the masked zone: no silence over masked pixels or the gap.
+    assert!(masked_zone.witnesses.is_empty());
+    let gaps = uncovered(record);
+    // The refusal precedes the mask: the refused segment keeps its typed reason and error id.
+    assert_eq!(
+        gaps.iter()
+            .filter(|(reason, _, _)| reason.starts_with("decode_refused"))
+            .collect::<Vec<_>>(),
+        vec![&("decode_refused:ERR-DECODE-001".to_owned(), 6, 6)]
+    );
+    for (reason, first, last) in &gaps {
+        assert!(
+            reason == "privacy_masked"
+                || reason == "zone_entry"
+                || reason.starts_with("decode_refused"),
+            "{reason} {first}..{last}"
+        );
+    }
+    assert!(gaps.iter().any(|(reason, _, _)| reason == "privacy_masked"));
+    // Every segment is accounted for exactly once.
+    let mut segments: Vec<u64> = masked_zone
+        .uncovered
+        .iter()
+        .flat_map(|gap| gap.first_segment..=gap.last_segment)
+        .collect();
+    segments.sort_unstable();
+    assert_eq!(segments, (0..14).collect::<Vec<u64>>());
+    // The unmasked zone keeps witnesses (after the restart; the frames before the gap are
+    // warm-up and confirmation latency), never over the gap.
+    let floor_zone = &record.zones[1];
+    assert!(!floor_zone.witnesses.is_empty(), "{floor_zone:?}");
+    assert!(
+        floor_zone
+            .witnesses
+            .iter()
+            .all(|witness| witness.first_segment > 6)
+    );
+    assert!(
+        !floor_zone
+            .uncovered
+            .iter()
+            .any(|gap| gap.reason == UncoveredReason::PrivacyMasked)
+    );
+    assert_no_witness_over(record, &[(6, 6)]);
+    assert_eq!(
+        CoverageRecord::from_bytes(&record.to_bytes(), record.digest())?,
+        record.clone()
+    );
+    let json = report.to_json(0, None);
+    assert!(json.contains(",\"decode_refusals\":[{"), "{json}");
+    assert!(json.contains(",\"privacy_mask\":"), "{json}");
+
+    // Deterministic.
+    let again = WatchReport::analyze_with_options(
+        &fixture.deployment,
+        &masked_plan,
+        &limits,
+        None,
+        TOLERANT,
+        &fixture.cx,
+    )?;
+    assert_eq!(again.to_json(0, None), json);
+    assert_eq!(again.coverage().to_bytes(), record.to_bytes());
     Ok(())
 }

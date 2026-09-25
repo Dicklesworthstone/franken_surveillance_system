@@ -234,14 +234,14 @@ fn describe(
                     None => format!("zone_entry of {} (no event)", short(*candidate)),
                 },
                 UncoveredReason::DecodeRefused { error_id } => format!("decode_refused {error_id}"),
-                UncoveredReason::Occluded | UncoveredReason::OutsideFrustum => {
-                    match &zone.visibility {
-                        Some(visibility) => {
-                            format!("{}: {}", gap.reason.as_str(), visibility.summary())
-                        }
-                        None => gap.reason.as_str().to_owned(),
+                UncoveredReason::Occluded
+                | UncoveredReason::OutsideFrustum
+                | UncoveredReason::PrivacyMasked => match &zone.visibility {
+                    Some(visibility) => {
+                        format!("{}: {}", gap.reason.as_str(), visibility.summary())
                     }
-                }
+                    None => gap.reason.as_str().to_owned(),
+                },
                 other => other.as_str().to_owned(),
             };
             format!(

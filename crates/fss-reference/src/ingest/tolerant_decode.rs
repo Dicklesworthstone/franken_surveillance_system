@@ -19,12 +19,18 @@
 //! ever bridged across a gap. Resource limits, budget exhaustion, cancellation and custody
 //! failures are never tolerated; they refuse the analysis exactly as before. A range in which no
 //! frame decodes at all returns its first refusal.
+//!
+//! Every frame that does decode is served exactly as by the default sources: the sensor's
+//! current retained privacy mask ([`super::privacy_mask`], resolved once at open from the first
+//! segment's capsule) is applied to MJPEG luma here, and the H.264/H.265 ranges apply it
+//! themselves. A mask error (for example a resolution mismatch) is never tolerated.
 
 use std::collections::VecDeque;
 
 use fss_codec_mjpeg::{DecodeBudget, DecodeError as JpegError, decode_luma};
 use fss_core::{ContentDigest, SensorCapsule};
 
+use super::privacy_mask::{MaskBinding, current_mask};
 use super::recorded_decode::h264::{DecoderLimits, RecordedH264Range, RecordedH264Request};
 use super::recorded_decode::h265::{
     DecoderLimits as H265DecoderLimits, RecordedH265Range, RecordedH265Request,
@@ -140,6 +146,8 @@ pub(crate) struct TolerantSource {
     pending: VecDeque<TolerantItem>,
     first_error: Option<RecordedDecodeError>,
     returned_any: bool,
+    /// The sensor's current privacy mask, applied to every decoded MJPEG frame.
+    mask: MaskBinding,
 }
 
 impl TolerantSource {
@@ -157,6 +165,8 @@ impl TolerantSource {
             return Err(RecordedDecodeError::Unavailable);
         }
         let gaps: Vec<bool> = spans.iter().map(|span| span.gap_before).collect();
+        let (first_capsule, _) = source_capsule(deployment, &retained, request.first_segment)?;
+        let mask = current_mask(deployment, &first_capsule.sensor_id)?;
         let codec = match retained.manifest().format.as_str() {
             "mjpeg" => None,
             "annexb" => Some(Codec::H264),
@@ -174,6 +184,7 @@ impl TolerantSource {
             pending: VecDeque::new(),
             first_error: None,
             returned_any: false,
+            mask,
         };
         if let Some(codec) = codec {
             let start = request.first_segment;
@@ -473,13 +484,16 @@ impl TolerantSource {
             budget,
         ) {
             Ok(image) => {
+                // Masked before the caller (foreground model, tracker, zone gate) sees a pixel.
+                let mut pixels = image.pixels().to_vec();
+                self.mask.apply_luma(&mut pixels, image.dimensions())?;
                 self.mark_returned(segment);
                 let frame = TolerantItem::Frame(Box::new(TolerantFrame {
                     segment,
                     capsule,
                     capsule_digest,
                     dimensions: image.dimensions(),
-                    pixels: image.pixels().to_vec(),
+                    pixels,
                 }));
                 if gap_before {
                     // Lost bytes precede this frame: reset tracking before it.

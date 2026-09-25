@@ -44,6 +44,26 @@
 //!   intervals with the registered error id, and each restart of tracking after a gap ends an
 //!   analysis epoch: the confirmation latency before every restart is uncovered, so no witness
 //!   claims a gap or a frame whose entry could not have been confirmed.
+//!
+//! A sensor's retained privacy mask (fss-bgqkd, [`super::privacy_mask::coverage`]) makes every
+//! zone with a masked pixel not observable: it carries no witness and its frames are
+//! `privacy_masked`. A ground zone's geometric visibility then also counts, once per sample, the
+//! in-view samples that fall on a masked pixel; a record with such a count is version 3.
+//!
+//! **Reason precedence.** One segment of one zone carries exactly one reason. When several apply
+//! the first of this order wins, deterministically:
+//!
+//! 1. `decode_refused` (and `segment_not_decoded`): the segment produced no pixels at all, so
+//!    no other statement about it is possible; never rewritten;
+//! 2. `zone_entry`, where the builder named one: an emitted entry is an observation. The builder
+//!    names entries only on a zone that is geometrically observable with a known capture time
+//!    (unchanged from before masks); on a ground zone whose own samples are masked the entry
+//!    frame is `privacy_masked`;
+//! 3. `privacy_masked`: the owner's mask hides part of the zone;
+//! 4. the pre-mask reasons, in the order [`build_coverage_with`] tests them:
+//!    `capture_time_unknown`, then `occluded` / `outside_frustum` (the zone's geometric
+//!    visibility cause), then `zone_outside_frame`, `capture_time_unreliable_after_gap`,
+//!    `background_warmup`, `confirmation_latency` and finally `interval_too_short`.
 
 use std::fmt;
 
@@ -77,6 +97,9 @@ const RECORD_MAGIC: &[u8] = b"FSSCOV01";
 const RECORD_VERSION: u32 = 1;
 /// Version of a record in which at least one zone carries a geometric visibility block.
 const RECORD_VERSION_VISIBILITY: u32 = 2;
+/// Version of a record in which at least one zone's visibility counts privacy-masked samples:
+/// every visibility block then carries that count (fss-bgqkd over fss-2h5zq.53).
+const RECORD_VERSION_MASKED_VISIBILITY: u32 = 3;
 /// Canonical record domain.
 pub const RECORD_DOMAIN: &str = "fss.recorded_watch_coverage.v1";
 /// Pipeline-generation digest domain.
@@ -643,6 +666,7 @@ pub fn build_coverage_with(
                 Some(match cause {
                     NotVisibleCause::Occluded => UncoveredReason::Occluded,
                     NotVisibleCause::OutsideFrustum => UncoveredReason::OutsideFrustum,
+                    NotVisibleCause::PrivacyMasked => UncoveredReason::PrivacyMasked,
                 })
             } else if !zone.inside_frame {
                 Some(UncoveredReason::ZoneOutsideFrame)
@@ -757,13 +781,25 @@ impl CoverageRecord {
         ObjectId::parse(format!("object:coverage:{}", hex(self.identity())))
     }
 
+    /// Whether any zone's visibility counts privacy-masked samples (a version-3 record).
+    fn masked_samples(&self) -> bool {
+        self.zones.iter().any(|zone| {
+            zone.visibility
+                .as_ref()
+                .is_some_and(|visibility| visibility.privacy_masked > 0)
+        })
+    }
+
     /// Exact record bytes.
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut e = CanonicalEncoder::new();
         let versioned = self.zones.iter().any(|zone| zone.visibility.is_some());
+        let masked_samples = self.masked_samples();
         e.bytes(RECORD_MAGIC);
-        e.u32(if versioned {
+        e.u32(if masked_samples {
+            RECORD_VERSION_MASKED_VISIBILITY
+        } else if versioned {
             RECORD_VERSION_VISIBILITY
         } else {
             RECORD_VERSION
@@ -789,7 +825,7 @@ impl CoverageRecord {
                 match &zone.visibility {
                     Some(visibility) => {
                         e.bool(true);
-                        visibility.encode(&mut e);
+                        visibility.encode_versioned(&mut e, masked_samples);
                     }
                     None => e.bool(false),
                 }
@@ -855,9 +891,10 @@ impl CoverageRecord {
         if d.bytes()? != RECORD_MAGIC {
             return Err(ContractError::InvalidIdentifier);
         }
-        let versioned = match d.u32()? {
-            RECORD_VERSION => false,
-            RECORD_VERSION_VISIBILITY => true,
+        let (versioned, masked_samples) = match d.u32()? {
+            RECORD_VERSION => (false, false),
+            RECORD_VERSION_VISIBILITY => (true, false),
+            RECORD_VERSION_MASKED_VISIBILITY => (true, true),
             _ => return Err(ContractError::InvalidIdentifier),
         };
         if d.text()? != RECORD_DOMAIN {
@@ -887,7 +924,7 @@ impl CoverageRecord {
             let geometry = d.text()?.to_owned();
             let pipeline_generation = d.digest()?;
             let visibility = if versioned && d.bool()? {
-                Some(ZoneVisibility::decode(&mut d)?)
+                Some(ZoneVisibility::decode_versioned(&mut d, masked_samples)?)
             } else {
                 None
             };

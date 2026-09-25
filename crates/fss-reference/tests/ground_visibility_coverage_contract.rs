@@ -10,17 +10,23 @@
 //! 3. behind an opaque mesh wall the zone is `occluded` and carries no witness;
 //! 4. candidates and events never depend on the visibility inputs, the generation always does;
 //! 5. a pose that disagrees with its homography or its frame size is a typed refusal;
-//! 6. records round-trip canonically (version 2) and analyses are deterministic.
+//! 6. records round-trip canonically (version 2) and analyses are deterministic;
+//! 7. with a privacy mask (fss-bgqkd) a zone partly masked and partly behind the wall counts each
+//!    sample once (masked before occluded), is `privacy_masked` / not observable with no
+//!    witness, round-trips as a version-3 record and is deterministic; the unmasked camera keeps
+//!    its `occluded` reason.
 
 #[path = "cascade_support/mod.rs"]
 mod support;
 
 use fss_core::ContentDigest;
+use fss_core::SensorId;
 use fss_reference::ingest::FileFormatHint;
 use fss_reference::ingest::ground_visibility::{
-    CameraModel, CameraPose, Occlusion, OcclusionUnknownReason, SceneMesh, VisibilityPolicy,
-    import_scene_mesh,
+    CameraModel, CameraPose, NotVisibleCause, Occlusion, OcclusionUnknownReason, SceneMesh,
+    VisibilityPolicy, import_scene_mesh,
 };
+use fss_reference::ingest::privacy_mask::{PrivacyMaskPolicy, declare_mask, preview_mask};
 use fss_reference::ingest::recorded_corroboration::{
     CorroborationCamera, CorroborationGates, CorroborationPlan, CorroborationReport,
     GroundHomography, GroundVisibilityPlan, GroundZone,
@@ -472,5 +478,159 @@ fn a_pose_that_disagrees_with_its_homography_or_frame_is_refused() -> TestResult
     // A package whose digest does not match is refused before any visibility query.
     let package = twin_package(true);
     assert!(import_scene_mesh(&package, ContentDigest::sha256(b"other"), source_scene()?).is_err());
+    Ok(())
+}
+
+#[test]
+fn a_ground_zone_partly_masked_and_partly_behind_a_wall_is_privacy_masked_and_deterministic()
+-> TestResult {
+    let mut recordings = recordings("vis-mask")?;
+    // Ground x 40..72: samples at x = 42, 46, ..., 70 (8 columns of 8). The wall at x = 52
+    // hides x > 52 from both cameras (both hang above x = 48).
+    recordings.plan.zones = vec![GroundZone {
+        zone_id: "straddle".to_owned(),
+        x: 40.0,
+        y: 0.0,
+        width: 32.0,
+        height: 48.0,
+    }];
+    let poses = poses()?;
+    let source = source_scene()?;
+    let walled = twin_package(true);
+    let twin = import_scene_mesh(&walled, ContentDigest::sha256(&walled), source)?;
+    let plan = GroundVisibilityPlan {
+        policy: VisibilityPolicy::default(),
+        poses,
+        mesh: Some(SceneMesh {
+            mesh: twin.mesh(),
+            package_digest: ContentDigest::sha256(&walled),
+        }),
+    };
+    let east = |report: &CorroborationReport| -> TestResult<CoverageRecord> {
+        report
+            .coverage()
+            .iter()
+            .find(|record| record.sensor_id.ends_with("-east"))
+            .cloned()
+            .ok_or_else(|| "no east record".into())
+    };
+    let west = |report: &CorroborationReport| -> TestResult<CoverageRecord> {
+        report
+            .coverage()
+            .iter()
+            .find(|record| record.sensor_id.ends_with("-west"))
+            .cloned()
+            .ok_or_else(|| "no west record".into())
+    };
+    // Before any mask: 24 samples visible (x = 42, 46, 50), 40 behind the wall (x = 54..70).
+    let unmasked = analyze(&recordings, &plan)?;
+    let before = east(&unmasked)?;
+    let visibility = zone(&before, "straddle")?
+        .visibility
+        .clone()
+        .ok_or("visibility")?;
+    assert_eq!(
+        (
+            visibility.visible,
+            visibility.occluded,
+            visibility.outside_frustum,
+            visibility.privacy_masked
+        ),
+        (24, 40, 0, 0)
+    );
+    // East image column u = ground x: mask u 44..56 (samples x = 46, 50 visible and x = 54
+    // occluded before the mask).
+    let sensor = SensorId::parse("sensor:vis-mask-east")?;
+    let mask = PrivacyMaskPolicy::new(sensor, [96, 48], &[[44, 0, 12, 48]])?;
+    let preview = preview_mask(&recordings.fixture.deployment, &mask)?;
+    declare_mask(
+        &mut recordings.fixture.deployment,
+        &mask,
+        preview.approval,
+        &recordings.fixture.cx,
+    )?;
+    let masked = analyze(&recordings, &plan)?;
+    let record = east(&masked)?;
+    let straddle = zone(&record, "straddle")?;
+    let visibility = straddle.visibility.as_ref().ok_or("visibility")?;
+    // Each sample counted once: masked wins over occluded, the rest keep their class.
+    assert_eq!(
+        (
+            visibility.visible,
+            visibility.occluded,
+            visibility.outside_frustum,
+            visibility.privacy_masked
+        ),
+        (8, 32, 0, 24)
+    );
+    assert_eq!(visibility.samples, 64);
+    assert!(!visibility.observable());
+    assert_eq!(visibility.cause(), Some(NotVisibleCause::PrivacyMasked));
+    assert!(straddle.witnesses.is_empty());
+    assert!(!reasons(straddle).is_empty());
+    assert!(
+        reasons(straddle)
+            .iter()
+            .all(|reason| *reason == "privacy_masked"),
+        "{:?}",
+        reasons(straddle)
+    );
+    // Every analysed segment is accounted for exactly once.
+    let mut segments: Vec<u64> = straddle
+        .uncovered
+        .iter()
+        .flat_map(|gap| gap.first_segment..=gap.last_segment)
+        .collect();
+    segments.sort_unstable();
+    assert_eq!(
+        segments,
+        (record.first_segment..=record.last_segment).collect::<Vec<_>>()
+    );
+    // The mask generation is bound into the pipeline generation.
+    assert_ne!(
+        straddle.pipeline_generation,
+        zone(&before, "straddle")?.pipeline_generation
+    );
+    // Version 3 (a masked sample count), canonical round trip.
+    let bytes = record.to_bytes();
+    // (Length-prefixed magic `FSSCOV01`: bytes 0..16; version: bytes 16..20.)
+    assert_eq!(
+        bytes.get(16..20),
+        Some(&3_u32.to_be_bytes()[..]),
+        "record version"
+    );
+    assert_eq!(CoverageRecord::from_bytes(&bytes, record.digest())?, record);
+    assert_eq!(
+        before.to_bytes().get(16..20),
+        Some(&2_u32.to_be_bytes()[..])
+    );
+    // Version 4 is unknown; a masked count under version 2 is not decodable either.
+    for version in [4_u32, 2] {
+        let mut probe = bytes.clone();
+        probe[16..20].copy_from_slice(&version.to_be_bytes());
+        assert!(
+            CoverageRecord::from_bytes(&probe, ContentDigest::sha256(&probe)).is_err(),
+            "version {version} must be refused"
+        );
+    }
+    // The unmasked west camera keeps its geometric reason.
+    let other = west(&masked)?;
+    let far_side = zone(&other, "straddle")?;
+    let west_visibility = far_side.visibility.as_ref().ok_or("west visibility")?;
+    assert_eq!(west_visibility.privacy_masked, 0);
+    assert_eq!(west_visibility.cause(), Some(NotVisibleCause::Occluded));
+    assert!(reasons(far_side).iter().all(|reason| *reason == "occluded"));
+    // Only the authority anchor moved (the mask declaration is a ledger batch): the west
+    // analysis identity and every zone are unchanged.
+    let west_before = west(&unmasked)?;
+    assert_eq!(other.identity(), west_before.identity());
+    assert_eq!(other.zones, west_before.zones);
+    // Deterministic.
+    let again = analyze(&recordings, &plan)?;
+    assert_eq!(east(&again)?.to_bytes(), bytes);
+    assert_eq!(
+        again.to_json(0, Some("rerun"), Some("alert")),
+        masked.to_json(0, Some("rerun"), Some("alert"))
+    );
     Ok(())
 }

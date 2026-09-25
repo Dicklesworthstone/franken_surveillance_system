@@ -20,13 +20,19 @@ fn visibility(value: &ZoneVisibility) -> String {
         Occlusion::Unknown(reason) => (Some(reason.as_str()), None),
         Occlusion::MeshChecked(digest) => (None, Some(digest.to_text())),
     };
-    object(&[
+    let mut fields = vec![
         ("camera_model", string(value.camera_model.as_str())),
         ("sampling", string(&value.sampling_label())),
         ("samples", value.samples.to_string()),
         ("visible", value.visible.to_string()),
         ("outside_frustum", value.outside_frustum.to_string()),
         ("occluded", value.occluded.to_string()),
+    ];
+    // Only a masked assessment names the count, so unmasked visibility bytes are unchanged.
+    if value.privacy_masked > 0 {
+        fields.push(("privacy_masked", value.privacy_masked.to_string()));
+    }
+    fields.extend([
         (
             "visible_fraction_ppm",
             value.visible_fraction_ppm().to_string(),
@@ -45,13 +51,15 @@ fn visibility(value: &ZoneVisibility) -> String {
             optional_string(value.cause().map(|cause| match cause {
                 NotVisibleCause::Occluded => "occluded",
                 NotVisibleCause::OutsideFrustum => "outside_frustum",
+                NotVisibleCause::PrivacyMasked => "privacy_masked",
             })),
         ),
         ("occlusion", string(value.occlusion.as_str())),
         ("occlusion_unknown_reason", optional_string(reason)),
         ("scene_mesh_digest", optional_string(mesh.as_deref())),
         ("claim", string(value.claim())),
-    ])
+    ]);
+    object(&fields)
 }
 
 fn record(value: &CoverageRecord) -> String {
