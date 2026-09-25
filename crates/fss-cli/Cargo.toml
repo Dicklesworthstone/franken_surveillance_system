@@ -41,6 +41,7 @@ path = "src/bin/fss-mcp.rs"
 
 [dependencies]
 fss-core = { path = "../fss-core" }
+fss-graph-algorithms = { path = "../fss-graph-algorithms" }
 fss-object = { path = "../fss-object" }
 fss-publication = { path = "../fss-publication" }
 fss-reference = { path = "../fss-reference" }

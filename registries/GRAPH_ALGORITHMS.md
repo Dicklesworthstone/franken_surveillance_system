@@ -32,6 +32,16 @@ Machine source: `architecture/graph_algorithms.json`. Full motivation, numeric p
 | `ALG-FACTOR-001` | `factorized_free_join` | `EvidenceClaimGraph`, `SpatioTemporalTrackGraph` | `exact` | `INT-FNX-001` |
 | `ALG-ZSET-001` | `zset_incremental_maintenance` | `SensorCoverageGraph`, `SpatioTemporalTrackGraph`, `EvidenceClaimGraph`, `IncidentCausalGraph`, `DeviceFailureGraph`, `ArchiveObjectGraph`, `AuthorityGraph`, `PlanObligationGraph`, `OperationalMemoryGraph`, `DigitalTwinGraph` | `exact` | `INT-FNX-001` |
 
+## Implementation status
+
+Only `ALG-BRIDGE-001` is implemented (`status: implemented` in the machine source, with its
+implementation, tie-break, policy and complexity-bound identities and evidence paths): the
+`fss-graph-algorithms` crate over the `SensorCoverageGraph` projection, certified against a
+brute-force removal oracle and metamorphic tests, with the complexity bound checked in the runtime
+path. It is not qualified: the `INT-FNX-001` differential and the atlas's snapshot-invalidation,
+capability-noninterference and incremental/full lanes do not exist. Every other row is
+`specified`.
+
 ## Registry drifts
 
 - Algorithm: `ALG-ZSET-001`

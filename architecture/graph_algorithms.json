@@ -37,7 +37,23 @@
       "outputSizeWitness": "<= |V| cut vertices and <= |E| bridge edges",
       "exactness": "exact",
       "gate": "INT-FNX-001",
-      "status": "specified"
+      "status": "implemented",
+      "implementationId": "fss-graph-algorithms:alg-bridge-001:iterative-tarjan:v1",
+      "tieBreakPolicyId": "tie:stable-node-identity-then-stable-edge-identity:v1",
+      "policyId": "graph-policy:undirected:simple-strict:unweighted:tie:stable-node-identity-then-stable-edge-identity:v1",
+      "complexityBoundId": "bound:alg-bridge-001:dfs-linear:v1",
+      "implementedProjections": [
+        "SensorCoverageGraph"
+      ],
+      "qualification": "not_qualified: INT-FNX-001 FrankenNetworkX differential, snapshot invalidation, capability noninterference and incremental/full lanes do not exist",
+      "evidence": [
+        "crates/fss-graph-algorithms/src/bridges.rs",
+        "crates/fss-graph-algorithms/src/reference.rs",
+        "crates/fss-graph-algorithms/src/coverage.rs",
+        "crates/fss-graph-algorithms/tests/bridge_certification.rs",
+        "crates/fss-reference/src/coverage_graph.rs",
+        "crates/fss-cli/tests/graph_single_points_cli_contract.rs"
+      ]
     },
     {
       "id": "ALG-SCC-001",

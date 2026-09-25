@@ -34,6 +34,7 @@ pub mod effect;
 pub mod event;
 pub mod event_store;
 mod evidence;
+pub mod graph_witness;
 pub mod hydration;
 pub mod identity;
 mod ids;
@@ -183,6 +184,10 @@ pub use evidence::{
     ClockBasis, CoverageContinuity, CoverageStopReason, CoverageWitness, EvidenceDelta,
     EvidenceDeltaBatch, LedgerAnchor, LedgerSnapshot, ObjectRevision, ReferenceLedger,
     SensorCapsule, SensorSourceBytesSpec,
+};
+pub use graph_witness::{
+    GraphAlgorithmWitness, GraphAlgorithmWitnessParams, MAX_GRAPH_WITNESS_COUNTER_NAME_LEN,
+    MAX_GRAPH_WITNESS_COUNTERS,
 };
 pub use hydration::{
     AlternateSystem, AudioFeaturesArtifact, BoundingBox, CropArtifact, DecisionArtifactKind,

@@ -7,6 +7,7 @@ name = "fss-cli"
 version = "0.0.1"
 dependencies = [
  "fss-core",
+ "fss-graph-algorithms",
  "fss-object",
  "fss-packet",
  "fss-publication",
@@ -49,6 +50,13 @@ version = "0.0.1"
 [[package]]
 name = "fss-geometry"
 version = "0.0.1"
+
+[[package]]
+name = "fss-graph-algorithms"
+version = "0.0.1"
+dependencies = [
+ "fss-core",
+]
 
 [[package]]
 name = "fss-ledger"
@@ -98,6 +106,7 @@ dependencies = [
  "fss-container",
  "fss-core",
  "fss-geometry",
+ "fss-graph-algorithms",
  "fss-ledger",
  "fss-model-ir",
  "fss-object",

@@ -368,7 +368,7 @@
         {
           "name": "fss-graph-algorithms",
           "unsafe": "forbid",
-          "status": "planned"
+          "status": "skeleton"
         },
         {
           "name": "fss-incremental",

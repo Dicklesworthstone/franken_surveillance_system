@@ -822,7 +822,6 @@ class TestSchemaConstitution(unittest.TestCase):
             "fss.evidence_anchor.v1",
             "fss.evidence_bundle.v1",
             "fss.evidence_delta_batch.v1",
-            "fss.graph_algorithm_witness.v1",
             "fss.license_inventory.v1",
             "fss.model_execution_receipt.v1",
             "fss.model_manifest.v1",
@@ -845,7 +844,8 @@ class TestSchemaConstitution(unittest.TestCase):
         self.assertEqual(len(unreg_findings), 0)
         self.assertEqual(result["unregisteredImplementedCount"], 0)
         # 109 = 105 + four privacy-mask digest domains (fss-bgqkd).
-        self.assertEqual(result["digestDomainCount"], 109)
+        # 114 = 109 + four graph digest domains and the coverage single-points report (fss-w96u7).
+        self.assertEqual(result["digestDomainCount"], 114)
 
         # Continuation cursor is verified implemented
         implemented_names = {s["name"] for s in result["schemas"] if s["status"] == "implemented"}
@@ -1334,7 +1334,8 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         self.assertEqual(result["status"], "passed")
         self.assertEqual(result["unregisteredImplementedCount"], 0)
         # 109 = 105 + four privacy-mask digest domains (fss-bgqkd).
-        self.assertEqual(result["digestDomainCount"], 109)
+        # 114 = 109 + four graph digest domains and the coverage single-points report (fss-w96u7).
+        self.assertEqual(result["digestDomainCount"], 114)
         # 36 = 28 + fss.sensor_tamper_status.v1 (owner SensorTamperStatus, fss-2uftm)
         # + fss.agent_operations.v1 / fss.agent_views.v1 / fss.agent_request_envelope.v1
         #   (owners AgentOperation / AgentView / AgentRequestEnvelope, fss-x4a.30.83.17-40)
@@ -1356,7 +1357,8 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         #   (owners AgentCognitiveEnvelope / AgentResponseEnvelope, fss-x4a.30.83.64-65).
         # -1: the retired unregistered fss.agent_knowledge_cell.v1 digest tag left the Rust
         # corpus when the canonical encoding bumped to v2 (DRIFT-005/DIGEST_DOMAINS v2 row).
-        self.assertEqual(result["implementedCount"], 49)
+        # 50 = 49 + fss.graph_algorithm_witness.v1 (owner GraphAlgorithmWitness, fss-w96u7).
+        self.assertEqual(result["implementedCount"], 50)
 
         unreg_findings = [
             f for f in validator.findings

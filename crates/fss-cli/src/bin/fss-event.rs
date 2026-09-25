@@ -34,12 +34,14 @@ mod corroborate;
 mod coverage;
 #[path = "fss-event/detector.rs"]
 mod detector;
+#[path = "fss-event/graph.rs"]
+mod graph;
 #[path = "fss-event/privacy_mask.rs"]
 mod privacy_mask;
 #[path = "fss-event/watch.rs"]
 mod watch;
 
-const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|alert|privacy-mask> [options]\n\
+const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|alert|privacy-mask|graph> [options]\n\
   All: --root DIR --site SITE [--principal ID]\n\
   report: --import-id sha256:HEX --runs FILE --interpretation gray|ycbcr\n\
           --model-digest sha256:HEX --output-port NAME --labels ORDERED,CLASS,NAMES\n\
@@ -144,7 +146,13 @@ const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|ale
     fills masked pixels (luma 16, chroma 128, RGB 16,16,16) before any consumer, binds the\n\
     policy digest into every receipt and lineage, and reports zones with any masked pixel\n\
     as not observable (privacy_masked). There is no unmasked-access override.\n\
-  privacy-mask show: --sensor ID (the sensor's current binding, or no_policy_declared)\n";
+  privacy-mask show: --sensor ID (the sensor's current binding, or no_policy_declared)\n\
+  graph single-points (read-only): --root DIR --site SITE\n\
+    ALG-BRIDGE-001 over the SensorCoverageGraph of retained coverage at the committed head\n\
+    (plane--sensor, sensor--zone iff a retained witness): every zone's observers and the\n\
+    sensors whose single loss leaves it without any retained witness, cut vertices, bridges,\n\
+    and the fss.graph_algorithm_witness.v1 witness (counters checked against the registered\n\
+    bound). Structural over retained history: not current observability, never absence.\n";
 type RunResult<T> = Result<T, Box<dyn Error>>;
 type Values = BTreeMap<String, OsString>;
 #[derive(Debug)]
@@ -869,6 +877,9 @@ fn package_event(
 
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if args.first().is_some_and(|command| command == "graph") {
+        return graph::main(&args[1..]);
+    }
     match parse(&args) {
         Ok(None) => match io::stdout().lock().write_all(HELP.as_bytes()) {
             Ok(()) => ExitCode::from(0),

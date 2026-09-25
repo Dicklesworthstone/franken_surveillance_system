@@ -25,6 +25,8 @@ mod capture;
 mod clock;
 mod clock_sync;
 mod context_binding;
+/// Certified single points of failure of retained coverage (`ALG-BRIDGE-001`); read-only.
+pub mod coverage_graph;
 pub mod decode;
 mod delivery;
 /// Durable agent sessions and root-last handoffs over a deployment root (AOP-001, AOP-002,
