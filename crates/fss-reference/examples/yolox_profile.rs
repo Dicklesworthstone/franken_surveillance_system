@@ -13,8 +13,10 @@
 //!
 //! * `sweep` (fss-zczw0): with `--threads 1,2,4,8`, whole-graph optimized timings and the
 //!   optimized `ops` breakdown per thread count (after one scalar run per case for the
-//!   bit-identity check), plus `/proc/loadavg` before and after each count, so shared-host
-//!   contention is visible next to the numbers.
+//!   bit-identity check), plus `/proc/loadavg` before and after each count and the process CPU
+//!   time per wall time of the timed runs (`cpu_per_wall`, Linux `/proc/self/stat`), so
+//!   shared-host contention and the parallelism actually obtained are visible next to the
+//!   numbers.
 //!
 //! Run in release mode only; debug timings are meaningless. Not a runtime path.
 //! Usage: `yolox_profile [RUNS] [--threads N[,N...]]` (default 5 runs, full profile).
@@ -167,6 +169,7 @@ fn whole(
     }
     let mut digests = Vec::new();
     let mut every = Vec::new();
+    let (mut wall, mut cpu) = (Duration::ZERO, 0_u64);
     for name in cases::CASES {
         let native_jpeg = cases::source(name)?.jpeg.is_some();
         let image = model_input(name)?;
@@ -176,6 +179,7 @@ fn whole(
         let mut report = None;
         for _ in 0..runs {
             let cx = ScalarExecCx::new();
+            let cpu_before = cpu_ticks();
             let t = Instant::now();
             let out = match backend {
                 Backend::Scalar => {
@@ -193,6 +197,8 @@ fn whole(
                 }
             };
             times.push(t.elapsed());
+            wall += t.elapsed();
+            cpu += cpu_ticks().saturating_sub(cpu_before);
             let d = output_bits(&out)?;
             if digest.is_some_and(|p| p != d) {
                 return Err("nondeterministic output".into());
@@ -224,15 +230,35 @@ fn whole(
     }
     if !every.is_empty() {
         println!(
-            "whole_summary backend={} threads={} samples={} median_ms={:.1} min_ms={:.1}",
+            "whole_summary backend={} threads={} samples={} median_ms={:.1} min_ms={:.1} wall_ms={:.0} process_cpu_ms={} cpu_per_wall={:.2}",
             backend.name(),
             threads.get(),
             every.len(),
             ms(median(every.clone())),
-            ms(every.iter().copied().min().unwrap_or_default())
+            ms(every.iter().copied().min().unwrap_or_default()),
+            ms(wall),
+            cpu * 10,
+            (cpu * 10) as f64 / ms(wall).max(1e-9)
         );
     }
     Ok(digests)
+}
+
+/// Process user+system CPU time (all threads, including joined ones) in clock ticks, from
+/// `/proc/self/stat` fields 14 and 15; 0 when unavailable. Assumes the Linux default of 100
+/// ticks per second (10 ms granularity), so it is summed over many runs, not read per run.
+fn cpu_ticks() -> u64 {
+    let stat = std::fs::read_to_string("/proc/self/stat").unwrap_or_default();
+    // Fields after the parenthesized command name; utime and stime are fields 14 and 15.
+    let rest = stat.rsplit(')').next().unwrap_or_default();
+    let fields: Vec<&str> = rest.split_whitespace().collect();
+    let field = |i: usize| {
+        fields
+            .get(i)
+            .and_then(|f| f.parse::<u64>().ok())
+            .unwrap_or(0)
+    };
+    field(11) + field(12)
 }
 
 fn loadavg() -> String {
@@ -256,7 +282,37 @@ fn thread_list(args: &[String]) -> Res<Option<Vec<ExecThreads>>> {
 
 /// Thread sweep: one scalar run per case as the bit-identity oracle, then `runs` optimized runs
 /// per case for every requested thread count, all in this process on this host.
+/// Host scheduling latency of one scoped spawn: time from `spawn` until the new thread runs,
+/// and until it has been joined (median and max of 200, microseconds).
+fn spawn_latency() {
+    let mut start = Vec::with_capacity(200);
+    let mut joined = Vec::with_capacity(200);
+    for _ in 0..200 {
+        let t = Instant::now();
+        let began = std::thread::scope(|scope| scope.spawn(|| t.elapsed()).join());
+        joined.push(t.elapsed());
+        if let Ok(began) = began {
+            start.push(began);
+        }
+    }
+    let us = |v: &[Duration]| v.iter().map(|d| d.as_secs_f64() * 1e6).collect::<Vec<_>>();
+    let (start, joined) = (us(&start), us(&joined));
+    let stat = |mut v: Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        (
+            v.get(v.len() / 2).copied().unwrap_or(0.0),
+            v.last().copied().unwrap_or(0.0),
+        )
+    };
+    let ((s50, smax), (j50, jmax)) = (stat(start), stat(joined));
+    println!(
+        "spawn_latency_us start_median={s50:.0} start_max={smax:.0} join_median={j50:.0} join_max={jmax:.0} loadavg {}",
+        loadavg()
+    );
+}
+
 fn sweep(package: &RgbDetectorPackage, runs: usize, counts: &[ExecThreads]) -> Res {
+    spawn_latency();
     let scalar = whole(package, Backend::Scalar, 1, ExecThreads::SINGLE)?;
     for &threads in counts {
         println!("loadavg before threads={} {}", threads.get(), loadavg());
