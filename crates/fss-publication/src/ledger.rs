@@ -62,6 +62,10 @@
 //! External damage after a commit (a root record that no longer verifies) is surfaced as an
 //! [`UnbackedLedgerClaim`], never hidden; the ledger is append-only and is not rewritten.
 //!
+//! A deletion closure retracts a root by appending generation 2 of its reachability object with
+//! family [`ROOT_RETRACTION_FAMILY`] (the deletion record's batch) before unlinking the root
+//! record; the retracted claim is history, not a live claim, so it is not reported unbacked.
+//!
 //! Classification scans the committed batches once, `O(total deltas)`, and is bounded by the
 //! history the durable ledger already retains.
 
@@ -87,6 +91,15 @@ use crate::{AuthorityPublisher, PublicationError};
 
 /// Semantic family of a root reachability delta.
 pub const ROOT_REACHABILITY_FAMILY: &str = "local_root_reachability";
+/// Semantic family of the successor generation that retracts a slot's reachability claim.
+///
+/// Only a durable deletion record may append it (the deletion-closure owner reserves it), in the
+/// same batch that tombstones the deleted content and before the root record is unlinked. A claim
+/// whose current revision carries this family is no longer a live claim: it is neither
+/// `Ledgered` nor an unbacked claim, and the slot identity is never reused (a later publication
+/// into it would need generation 1 of an object that is already at generation 2, which the
+/// ledger refuses).
+pub const ROOT_RETRACTION_FAMILY: &str = "local_root_retraction";
 /// Prefix of the ledger object identity of a slot's root reachability.
 pub const ROOT_REACHABILITY_OBJECT_PREFIX: &str = "object:local-root:";
 /// Prefix of the deterministic batch identity of a slot's root reachability.
@@ -615,18 +628,21 @@ pub(crate) fn ledger_claims_from_views(
     last_writer
         .into_iter()
         .filter_map(|(object_id, batch)| {
-            objects.get(object_id).map(|revision| {
-                (
-                    object_id.clone(),
-                    LedgerClaim {
-                        root: revision.payload_digest,
-                        family: revision.family.clone(),
-                        plane: revision.plane,
-                        anchor: batch.new_anchor.clone(),
-                        batch_id: batch.batch_id.clone(),
-                    },
-                )
-            })
+            objects
+                .get(object_id)
+                .filter(|revision| revision.family != ROOT_RETRACTION_FAMILY)
+                .map(|revision| {
+                    (
+                        object_id.clone(),
+                        LedgerClaim {
+                            root: revision.payload_digest,
+                            family: revision.family.clone(),
+                            plane: revision.plane,
+                            anchor: batch.new_anchor.clone(),
+                            batch_id: batch.batch_id.clone(),
+                        },
+                    )
+                })
         })
         .collect()
 }

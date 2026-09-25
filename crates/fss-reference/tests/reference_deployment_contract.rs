@@ -785,7 +785,8 @@ fn exported_constants_and_tables_integrity() -> Result<(), Box<dyn Error>> {
     // 10 = 9 + FAMILY_FILE_IMPORT (fss-2h5zq.23).
     // 11 = 10 + FAMILY_COVERAGE_WITNESS (fss-fnrgr).
     // 12 = 11 + FAMILY_PRIVACY_MASK_POLICY (fss-bgqkd).
-    assert_eq!(KNOWN_LEDGER_DELTA_FAMILIES.len(), 12);
+    // 15 = 12 + FAMILY_DELETION_{RECORD,TOMBSTONE,COMPLETION} (fss-x4a.9.7).
+    assert_eq!(KNOWN_LEDGER_DELTA_FAMILIES.len(), 15);
     for family in KNOWN_LEDGER_DELTA_FAMILIES {
         assert!(!family.is_empty());
     }

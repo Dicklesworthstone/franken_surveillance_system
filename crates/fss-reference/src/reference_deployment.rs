@@ -22,7 +22,8 @@ use fss_object::{ObjectManifest, SpoolLimits};
 use fss_publication::{
     AuthorityPublisher, LedgeredRootPublisher, LocalPublicationError, LocalPublicationLimits,
     LocalRecoveryReport, LocalRootPublisher, PublishCancellation, PublishCutPoint,
-    ROOT_REACHABILITY_FAMILY, RootLedgerReceipt, RootLedgerReconciliation, SlotName,
+    ROOT_REACHABILITY_FAMILY, ROOT_RETRACTION_FAMILY, RootLedgerReceipt, RootLedgerReconciliation,
+    SlotName,
 };
 
 use crate::adapter_replay::ReplayCx;
@@ -81,6 +82,15 @@ pub const FAMILY_COVERAGE_WITNESS: &str = "coverage_witness";
 /// Registered ledger delta family: an owner-declared per-sensor privacy mask policy
 /// (`ingest::privacy_mask`), one generation per exact approval; plane authority.
 pub const FAMILY_PRIVACY_MASK_POLICY: &str = "privacy_mask_policy";
+/// Registered ledger delta family: the sealed deletion plan of one retained import
+/// ([`crate::deletion`]), appended before any byte is removed; plane authority. Reserved.
+pub const FAMILY_DELETION_RECORD: &str = "deletion_record";
+/// Registered ledger delta family: the successor generation of a ledger object whose content a
+/// durable deletion record removed; the object's history is kept, never rewritten. Reserved.
+pub const FAMILY_DELETION_TOMBSTONE: &str = "deletion_tombstone";
+/// Registered ledger delta family: the deletion-completion record naming exactly what was
+/// removed, retained and not provable; appended last. Reserved.
+pub const FAMILY_DELETION_COMPLETION: &str = "deletion_completion";
 
 /// Known ledger delta families table.
 pub const KNOWN_LEDGER_DELTA_FAMILIES: &[&str] = &[
@@ -96,6 +106,9 @@ pub const KNOWN_LEDGER_DELTA_FAMILIES: &[&str] = &[
     FAMILY_TWIN_LOCALIZATION_RECEIPT,
     FAMILY_COVERAGE_WITNESS,
     FAMILY_PRIVACY_MASK_POLICY,
+    FAMILY_DELETION_RECORD,
+    FAMILY_DELETION_TOMBSTONE,
+    FAMILY_DELETION_COMPLETION,
 ];
 
 /// Replay cancellation stage: open deployment.
@@ -156,6 +169,10 @@ fn reserved_family_entry_point(family: &str) -> Option<&'static str> {
     match family {
         FAMILY_EVENT_REVISION | FAMILY_SENSOR_TAMPER_STATUS => Some("publish_event"),
         ROOT_REACHABILITY_FAMILY => Some("publish_and_commit"),
+        FAMILY_DELETION_RECORD
+        | FAMILY_DELETION_TOMBSTONE
+        | FAMILY_DELETION_COMPLETION
+        | ROOT_RETRACTION_FAMILY => Some("deletion::commit_deletion"),
         _ => None,
     }
 }
@@ -1407,7 +1424,45 @@ impl ReferenceDeployment {
                 entry_point,
             });
         }
+        self.append_checked_batch(batch_id, deltas, children)
+    }
 
+    /// Crate-internal entry of the deletion-closure owner ([`crate::deletion`]): appends a batch
+    /// whose deltas may carry only the deletion-reserved families (deletion record, tombstone,
+    /// completion, root retraction), with every other check of [`Self::append_batch`]. Any other
+    /// reserved family is still refused.
+    pub(crate) fn append_deletion_batch(
+        &mut self,
+        batch_id: BatchId,
+        deltas: Vec<EvidenceDelta>,
+        children: Vec<ContentDigest>,
+        cx: &ReplayCx,
+    ) -> Result<LedgerAnchor, ReferenceError> {
+        if cx.is_cancelled() {
+            cx.drain_and_finalize();
+            return Err(ReferenceError::CancellationRequested {
+                stage: STAGE_APPEND_BATCH,
+            });
+        }
+        if let Some((family, entry_point)) = deltas.iter().find_map(|delta| {
+            reserved_family_entry_point(&delta.family)
+                .filter(|entry| *entry != "deletion::commit_deletion")
+                .map(|entry| (delta.family.clone(), entry))
+        }) {
+            return Err(ReferenceError::ReservedDeltaFamily {
+                family,
+                entry_point,
+            });
+        }
+        self.append_checked_batch(batch_id, deltas, children)
+    }
+
+    fn append_checked_batch(
+        &mut self,
+        batch_id: BatchId,
+        deltas: Vec<EvidenceDelta>,
+        children: Vec<ContentDigest>,
+    ) -> Result<LedgerAnchor, ReferenceError> {
         if deltas.len() > self.limits.batch_entries_max {
             return Err(ReferenceError::CapacityExceeded {
                 limit: "batch_entries_max",

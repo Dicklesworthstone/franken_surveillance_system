@@ -585,6 +585,14 @@ pub enum FileIngestError {
         /// Malformation detail.
         detail: String,
     },
+    /// A committed deletion record names this import: its evidence is `deleted`
+    /// (`ERR-EVIDENCE-DELETED-001`), and a deleted import identity is never re-imported.
+    EvidenceDeleted {
+        /// Deleted import identity.
+        import_identity: ContentDigest,
+        /// Sealed deletion plan that deleted it.
+        plan_digest: ContentDigest,
+    },
     /// Cooperative cancellation was signaled at the named stage.
     CancellationRequested {
         /// Pipeline stage where cancellation was requested.
@@ -707,6 +715,14 @@ impl std::fmt::Display for FileIngestError {
             Self::CorruptSegment { detail } => {
                 write!(f, "corrupt segment: {}", detail)
             }
+            Self::EvidenceDeleted {
+                import_identity,
+                plan_digest,
+            } => write!(
+                f,
+                "import {import_identity} was deleted under deletion plan {plan_digest}; its \
+                 evidence is deleted and the identity is never reused"
+            ),
             Self::CancellationRequested { stage } => {
                 write!(f, "cancellation requested at stage {}", stage)
             }
@@ -732,6 +748,7 @@ impl FileIngestError {
         match self {
             Self::AmbiguousAnnexBCodec { .. } => Some("ERR-INGEST-FORMAT-AMBIGUOUS-001"),
             Self::FormatConflict { .. } => Some("ERR-INGEST-FORMAT-CONFLICT-001"),
+            Self::EvidenceDeleted { .. } => Some("ERR-EVIDENCE-DELETED-001"),
             _ => None,
         }
     }
@@ -1106,6 +1123,8 @@ impl FileIngestAdapter {
             .collect();
         let import_slot = SlotName::parse(&format!("fi-{import_identity_hex}"))
             .map_err(|_| ContractError::InvalidIdentifier)?;
+        // A deleted identity is never re-imported: its ledger identities are permanent.
+        super::retained::refuse_deleted(deployment, import_identity)?;
         let manifest_batch_id =
             BatchId::parse(format!("batch:file-import:{import_identity_hex}:manifest"))?;
 

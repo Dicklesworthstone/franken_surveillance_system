@@ -283,6 +283,7 @@ impl RetainedFileImport {
         if import_identity.algorithm() != DigestAlgorithm::Sha256 {
             return Err(ContractError::UnsupportedDigestAlgorithm.into());
         }
+        refuse_deleted(deployment, import_identity)?;
         let hex: String = import_identity
             .bytes()
             .iter()
@@ -419,6 +420,29 @@ impl RetainedFileImport {
         })?;
         checkpoint(cx, STAGE_RETAINED_COMPLETE)?;
         Ok(result)
+    }
+}
+
+/// Refuses an import a committed deletion record names, with the typed `deleted` state
+/// ([`FileIngestError::EvidenceDeleted`]) rather than an ambiguous missing-authority error.
+///
+/// The record is authoritative from the moment it is durable, even while an interrupted deletion
+/// has not unlinked every byte yet: deleted content is never served.
+pub(crate) fn refuse_deleted(
+    deployment: &ReferenceDeployment,
+    import_identity: ContentDigest,
+) -> Result<(), FileIngestError> {
+    if !crate::deletion::has_records(deployment.ledger().batches()) {
+        return Ok(());
+    }
+    let index = crate::deletion::DeletionIndex::read(deployment)
+        .map_err(|error| invalid(&format!("deletion record unreadable: {error}")))?;
+    match index.import(import_identity) {
+        Some(entry) => Err(FileIngestError::EvidenceDeleted {
+            import_identity,
+            plan_digest: entry.plan_digest,
+        }),
+        None => Ok(()),
     }
 }
 

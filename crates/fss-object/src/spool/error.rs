@@ -146,6 +146,8 @@ pub enum SpoolIoOperation {
     PlaceHold,
     /// Recording holds for every object of a spool written before holds existed.
     MigrateHolds,
+    /// Removing the verification hold of an object a durable deletion record names.
+    RemoveHold,
 }
 
 impl fmt::Display for SpoolIoOperation {
@@ -166,6 +168,7 @@ impl fmt::Display for SpoolIoOperation {
             Self::RemoveObject => "remove_object",
             Self::PlaceHold => "place_hold",
             Self::MigrateHolds => "migrate_holds",
+            Self::RemoveHold => "remove_hold",
         })
     }
 }

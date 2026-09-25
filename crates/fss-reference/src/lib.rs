@@ -28,6 +28,8 @@ mod context_binding;
 /// Certified single points of failure of retained coverage (`ALG-BRIDGE-001`); read-only.
 pub mod coverage_graph;
 pub mod decode;
+/// Graph-complete deletion closure of retained imports (FSS-037; effect plane).
+pub mod deletion;
 mod delivery;
 /// Durable agent sessions and root-last handoffs over a deployment root (AOP-001, AOP-002,
 /// AOP-012); agent-plane writes only.

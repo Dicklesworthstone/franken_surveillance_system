@@ -395,6 +395,11 @@ fn append_batch_refuses_every_reserved_delta_family() -> R {
         ("event_revision", "publish_event"),
         ("sensor_tamper_status", "publish_event"),
         ("local_root_reachability", "publish_and_commit"),
+        // Only a durable deletion record may tombstone, retract or complete (fss-x4a.9.7).
+        ("deletion_record", "deletion::commit_deletion"),
+        ("deletion_tombstone", "deletion::commit_deletion"),
+        ("deletion_completion", "deletion::commit_deletion"),
+        ("local_root_retraction", "deletion::commit_deletion"),
     ] {
         let slug = family.replace('_', "-");
         let delta = EvidenceDelta {

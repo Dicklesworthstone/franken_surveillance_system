@@ -98,7 +98,14 @@ operation states rather than generic errors.
 | `ERR-PRIVACY-MASK-001` | required redaction could not be applied | fail closed at restricted boundary |
 | `ERR-HYDRATION-INVALID-PRIVACY-CLASS-001` | H2 decision artifact privacy class is not `private:property`, the only privacy class fss-core uses; raw or unredacted media included (code `invalid_privacy_class`) | supply the authorized privacy class; do not retry unchanged |
 | `ERR-HYDRATION-INVALID-REDACTION-TRANSFORM-001` | H2 redaction transform is not a recognized `transform:*` token or is incompatible with the artifact kind (code `invalid_redaction_transform`) | apply a recognized transform compatible with the artifact kind |
-| `ERR-DELETION-BLOCKED-001` | deletion closure blocked by hold/backend/offline copy | report exact blockers and obligation |
+| `ERR-DELETION-BLOCKED-001` | deletion closure blocked by hold/backend/offline copy; realized by `fss-event delete commit` (FSS-037): the sealed plan names an open or indeterminate effect that references the evidence (`open_effect`), a root that failed verification (`broken_root_unclassified`), a conflicting root claim, an earlier incomplete deletion, or a tombstone batch over the bound; nothing was written (the reference deployment has no hold registry yet) | report exact blockers and obligation; resolve them, plan again, approve the new plan |
+| `ERR-EVIDENCE-DELETED-001` | the requested import (or its derivative) was deleted under a committed deletion record; availability `deleted`, not missing; a deleted import identity is never re-imported | do not retry; the record names the deletion plan |
+| `ERR-DELETION-IMPORT-UNKNOWN-001` | `delete plan` names no completed, retained import | check the import identity; do not retry unchanged |
+| `ERR-DELETION-PLAN-STALE-001` | no deletion plan recomputed against the current head has the given digest (the deployment changed after planning, or the plan is unknown); nothing was written | plan again and approve the new plan; never commit a changed plan |
+| `ERR-DELETION-APPROVAL-001` | the approval is not the exact approval of this deletion plan for this principal; nothing was written | approve the printed approval digest of the current plan |
+| `ERR-DELETION-BOUND-001` | a deletion plan or record exceeded a hard bound | split the deployment's retained history; do not retry unchanged |
+| `ERR-DELETION-INCOMPLETE-001` | a deletion commit was interrupted after its record became durable, or a removed name is still present; completion was not claimed and every deleted digest already reads `deleted` | rerun the same `delete commit`; it resumes and completes exactly once |
+| `ERR-DELETION-STORAGE-001` | deployment custody, ledger or publication storage failed during a deletion plan or commit | repair storage (`fss doctor`), then rerun the same command |
 | `ERR-BUDGET-EXHAUSTED-001` | declared work budget exhausted | return bounded partial/abstention |
 | `ERR-REPLAY-DIVERGED-001` | semantic decision fingerprint differs from proof | block claim/release |
 | `ERR-QUIESCENCE-001` | region/process failed to drain | block shutdown/upgrade claim; force isolation path |

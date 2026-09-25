@@ -190,6 +190,12 @@ impl std::fmt::Display for DeploymentReadError {
 
 impl std::error::Error for DeploymentReadError {}
 
+impl From<crate::deletion::DeletionError> for DeploymentReadError {
+    fn from(value: crate::deletion::DeletionError) -> Self {
+        corrupt(format!("deletion record: {value}"))
+    }
+}
+
 impl DeploymentReadError {
     /// Human-readable reason.
     #[must_use]
@@ -289,8 +295,12 @@ pub struct DeploymentSnapshot {
     pub ledger_tail_uncommitted: bool,
     /// Committed evidence deltas by family.
     pub family_counts: BTreeMap<String, usize>,
-    /// Payload roots of completed file imports (`file_import_manifest` deltas).
+    /// Payload roots of completed file imports (`file_import_manifest` deltas) that no committed
+    /// deletion removed.
     pub completed_imports: Vec<ContentDigest>,
+    /// Deletion records committed at or before [`Self::position`] (a deletion is a change of the
+    /// imports claim, never folded into silence).
+    pub deletions_committed: usize,
     /// Whether the durable effect journal existed at [`Self::position`].
     pub effect_journal_present: bool,
     /// Digest of the committed effect-journal prefix at [`Self::position`] (the empty digest when
@@ -315,6 +325,9 @@ pub struct DeploymentSnapshot {
     pub coverage_evidence_unattributed: bool,
     /// Latest committed evidence time; the capsule creation time (0 when nothing is committed).
     pub latest_evidence_time: TimestampNs,
+    /// Committed deletions of the whole history (custody is a fact about now): digests they
+    /// name resolve to the `deleted` availability, never to a missing object.
+    pub deletions: crate::deletion::DeletionIndex,
     /// Files a read of this position opens (all reads are bounded; none is opened for writing):
     /// `LAYOUT`, the ledger, the effect journal when present, and every spool object read back.
     pub files_read: u64,
@@ -784,6 +797,15 @@ impl DeploymentHistory {
 
         let limits = &self.limits;
         let objects = &self.objects;
+        // Deletion records are read from the whole committed history: bytes a later deletion
+        // removed are `deleted` at every position, never read back as corrupt or missing.
+        let deletions = if crate::deletion::has_records(&self.batches) {
+            crate::deletion::DeletionIndex::from_batches(&self.batches, |digest| {
+                reader.read_object(objects, digest, limits.max_object_bytes)
+            })?
+        } else {
+            crate::deletion::DeletionIndex::default()
+        };
         let mut events = Vec::new();
         for (object_id, generations) in &event_deltas {
             if generations.len() > limits.max_revisions_per_event {
@@ -844,6 +866,9 @@ impl DeploymentHistory {
 
         let mut coverage = Vec::with_capacity(coverage_deltas.len());
         for (digest, committed_sequence) in coverage_deltas {
+            if deletions.object(digest).is_some() {
+                continue;
+            }
             let bytes = reader.read_object(objects, digest, limits.max_object_bytes)?;
             let record = CoverageRecord::from_bytes(&bytes, digest)
                 .map_err(|error| corrupt(format!("coverage record {digest}: {error}")))?;
@@ -859,7 +884,9 @@ impl DeploymentHistory {
         if let Some(earliest) = coverage.iter().map(|c| c.record.analysed.latest).min() {
             let newer: Vec<ContentDigest> = capsule_deltas
                 .iter()
-                .filter(|(_, latest)| *latest > earliest)
+                .filter(|(digest, latest)| {
+                    *latest > earliest && deletions.object(*digest).is_none()
+                })
                 .map(|(digest, _)| *digest)
                 .collect();
             if newer.len() > MAX_COVERAGE_CAPSULE_READS {
@@ -891,7 +918,6 @@ impl DeploymentHistory {
             import_ledger_root,
             ledger_tail_uncommitted: self.ledger_tail_uncommitted,
             family_counts,
-            completed_imports,
             effect_journal_present: effect_count.is_some(),
             effect_journal_digest,
             effect_journal_root,
@@ -903,6 +929,16 @@ impl DeploymentHistory {
             sensor_newest_evidence,
             coverage_evidence_unattributed,
             latest_evidence_time,
+            completed_imports: completed_imports
+                .into_iter()
+                .filter(|digest| deletions.object(*digest).is_none())
+                .collect(),
+            deletions_committed: batches
+                .iter()
+                .flat_map(|batch| &batch.deltas)
+                .filter(|delta| delta.family == crate::reference_deployment::FAMILY_DELETION_RECORD)
+                .count(),
+            deletions,
             files_read: reader.files_read,
             bytes_read: reader.bytes_read,
         })
@@ -1710,12 +1746,20 @@ fn compile_capsule(
         known_cell(
             CLAIM_IMPORTS,
             format!(
-                "{} retained at this anchor.",
+                "{} retained at this anchor.{}",
                 plural(
                     snapshot.completed_imports.len(),
                     "completed file import is",
                     "completed file imports are"
-                )
+                ),
+                if snapshot.deletions_committed == 0 {
+                    String::new()
+                } else {
+                    format!(
+                        " {} committed; deleted imports and their evidence resolve to `deleted`.",
+                        plural(snapshot.deletions_committed, "deletion is", "deletions are")
+                    )
+                }
             ),
             if snapshot.completed_imports.is_empty() {
                 vec![ledger_evidence]
@@ -1877,6 +1921,7 @@ fn compile_capsule(
             plural(rejected, "rejection is", "rejections are")
         ));
     }
+    warnings.extend(deletion_warnings(snapshot));
     let uncorroborated = planned.len() - corroborated;
     if uncorroborated > 0 {
         warnings.push(format!(
@@ -3211,9 +3256,100 @@ pub fn explain_event(
         next_actions,
         would_change,
         assumptions,
-        warnings: section.warnings,
+        warnings: {
+            let mut warnings = section.warnings;
+            warnings.extend(deleted_evidence_warnings(snapshot, retained));
+            warnings
+        },
         hydration,
     }))
+}
+
+/// Deletions listed in an orientation before a summary line takes over.
+const MAX_LISTED_DELETIONS: usize = 3;
+
+/// Orientation warnings naming every committed deletion: deleted evidence is `deleted`, never
+/// silently missing.
+fn deletion_warnings(snapshot: &DeploymentSnapshot) -> Vec<String> {
+    let entries = snapshot.deletions.entries();
+    let mut warnings: Vec<String> = entries
+        .iter()
+        .take(MAX_LISTED_DELETIONS)
+        .map(|entry| {
+            format!(
+                "Import {} was deleted under deletion plan {} ({} object(s), {} byte(s) unlinked \
+                 from local custody, not cryptographically erased; completion {}): its evidence \
+                 handles resolve to `deleted`, not missing; {} event(s) keep their revision \
+                 history over deleted evidence.",
+                entry.plan.import_identity,
+                entry.plan_digest,
+                entry.plan.deletable.len(),
+                entry.plan.deletable_bytes(),
+                if entry.is_complete() {
+                    "durable"
+                } else {
+                    "pending (rerun the same commit)"
+                },
+                entry.plan.events.len()
+            )
+        })
+        .collect();
+    if entries.len() > MAX_LISTED_DELETIONS {
+        warnings.push(format!(
+            "{} further committed deletion(s) are not listed; their evidence handles also \
+             resolve to `deleted`.",
+            entries.len() - MAX_LISTED_DELETIONS
+        ));
+    }
+    warnings
+}
+
+/// Explanation warnings for an event whose cited evidence a committed deletion removed.
+fn deleted_evidence_warnings(
+    snapshot: &DeploymentSnapshot,
+    retained: &RetainedEvent,
+) -> Vec<String> {
+    let event = &retained.event;
+    let object = format!("object:event:{}", event.event_id.as_str());
+    let mut cited: BTreeMap<ContentDigest, ContentDigest> = BTreeMap::new();
+    for digest in event
+        .evidence
+        .iter()
+        .flat_map(|edge| [Some(edge.digest), edge.capsule_digest])
+        .flatten()
+        .chain(event.model_receipts.iter().copied())
+    {
+        if let Some(entry) = snapshot.deletions.object(digest) {
+            cited.insert(digest, entry.plan_digest);
+        }
+    }
+    let mut warnings: Vec<String> = cited
+        .iter()
+        .map(|(digest, plan)| {
+            format!(
+                "Evidence {digest} of {} is deleted (deletion plan {plan}); its availability is \
+                 `deleted`, not missing, and the revision history is retained unchanged.",
+                event.event_id.as_str()
+            )
+        })
+        .collect();
+    for entry in snapshot.deletions.entries() {
+        if entry
+            .plan
+            .events
+            .iter()
+            .any(|reference| reference.object_id == object)
+        {
+            warnings.push(format!(
+                "{} cites evidence of import {}, which deletion plan {} removed; the event keeps \
+                 every committed revision and no new revision was minted.",
+                event.event_id.as_str(),
+                entry.plan.import_identity,
+                entry.plan_digest
+            ));
+        }
+    }
+    warnings
 }
 
 #[cfg(test)]

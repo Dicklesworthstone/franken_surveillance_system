@@ -32,6 +32,8 @@ mod alert;
 mod corroborate;
 #[path = "fss-event/coverage.rs"]
 mod coverage;
+#[path = "fss-event/delete.rs"]
+mod delete;
 #[path = "fss-event/detector.rs"]
 mod detector;
 #[path = "fss-event/graph.rs"]
@@ -41,7 +43,7 @@ mod privacy_mask;
 #[path = "fss-event/watch.rs"]
 mod watch;
 
-const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|alert|privacy-mask|graph> [options]\n\
+const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|alert|privacy-mask|graph|delete> [options]\n\
   All: --root DIR --site SITE [--principal ID]\n\
   report: --import-id sha256:HEX --runs FILE --interpretation gray|ycbcr\n\
           --model-digest sha256:HEX --output-port NAME --labels ORDERED,CLASS,NAMES\n\
@@ -152,7 +154,23 @@ const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|ale
     (plane--sensor, sensor--zone iff a retained witness): every zone's observers and the\n\
     sensors whose single loss leaves it without any retained witness, cut vertices, bridges,\n\
     and the fss.graph_algorithm_witness.v1 witness (counters checked against the registered\n\
-    bound). Structural over retained history: not current observability, never absence.\n";
+    bound). Structural over retained history: not current observability, never absence.\n\
+  delete plan (read-only, graph-complete deletion closure of one retained import):\n\
+          --import-id sha256:HEX\n\
+    Walks every retained reference of the deployment (segments/capsules, decoded frames and\n\
+    receipts, analyses and reports, coverage records, package-detection records, event\n\
+    provenance, attributable staging leftovers) and prints a sealed, digest-bound plan: what is\n\
+    removed (count, bytes), what is retained and why (shared with retained authority, or\n\
+    authority history: events keep every revision), the tombstone batch, blockers (an open or\n\
+    indeterminate alert effect on the evidence, a broken root) and unknown copies (the input\n\
+    file, operator exports, transmitted alerts). Nothing is written.\n\
+  delete commit: --plan sha256:PLAN --approve sha256:APPROVAL\n\
+    Revalidates against the current head (any change: stale plan, ERR-DELETION-PLAN-STALE-001;\n\
+    blockers: ERR-DELETION-BLOCKED-001; nothing written), appends the deletion record first,\n\
+    unlinks the bytes from the local filesystem, verifies absence and appends the completion\n\
+    record. Not cryptographic erasure; filesystem recovery and backups are out of scope. An\n\
+    interrupted commit resumes when rerun and completes exactly once. Later reads of the\n\
+    import report ERR-EVIDENCE-DELETED-001 (availability deleted).\n";
 type RunResult<T> = Result<T, Box<dyn Error>>;
 type Values = BTreeMap<String, OsString>;
 #[derive(Debug)]
@@ -187,6 +205,7 @@ enum Action {
     Corroborate(Box<corroborate::CorroborateAction>),
     Alert(Box<alert::AlertAction>),
     PrivacyMask(Box<privacy_mask::PrivacyMaskAction>),
+    Delete(Box<delete::DeleteAction>),
 }
 #[derive(Debug)]
 struct Options {
@@ -279,6 +298,20 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
             action: Action::Alert(Box::new(request)),
         }));
     }
+    if action == "delete" {
+        let request = delete::parse(&args[1..])?;
+        return Ok(Some(Options {
+            root: request.root.clone(),
+            site: request.site.clone(),
+            principal: request.principal.clone(),
+            limits: AnalysisLimits::default(),
+            detection_units: 0,
+            association_units: 0,
+            event_out: None,
+            report_out: None,
+            action: Action::Delete(Box::new(request)),
+        }));
+    }
     if action == "privacy-mask" {
         let request = privacy_mask::parse(&args[1..])?;
         return Ok(Some(Options {
@@ -295,7 +328,7 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
     }
     if !matches!(action, "report" | "prepare" | "publish" | "read") {
         return Err(
-            "expected report, prepare, publish, read, watch, corroborate, alert or privacy-mask"
+            "expected report, prepare, publish, read, watch, corroborate, alert, privacy-mask or delete"
                 .into(),
         );
     }
@@ -588,6 +621,12 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
             capabilities.push(alert::CAP_ALERT_COMMIT.to_owned());
         }
     }
+    if let Action::Delete(request) = &options.action {
+        capabilities.push(delete::CAP_DELETE_PREPARE.to_owned());
+        if matches!(request.operation, delete::Operation::Commit { .. }) {
+            capabilities.push(delete::CAP_DELETE_COMMIT.to_owned());
+        }
+    }
     let authority = ContextAuthority::new_root(RootAuthoritySpec {
         trace_id: "trace:event-cli".into(),
         operation_id: OperationId::parse("operation:event-cli")?,
@@ -623,6 +662,10 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
             }
             Action::PrivacyMask(action) => {
                 privacy_mask::run(action, &mut deployment, &options.root, &cx, out)?;
+                return Ok(());
+            }
+            Action::Delete(action) => {
+                delete::run(action, &mut deployment, &authority, &cx, out)?;
                 return Ok(());
             }
             Action::Report {
@@ -904,6 +947,8 @@ fn main() -> ExitCode {
                 } else if let Some(refusal) = e.downcast_ref::<fss_reference::ingest::detector_cascade::CascadeError>() {
                     eprintln!("refusal_id={}", refusal.stable_id());
                 } else if let Some(refusal) = e.downcast_ref::<fss_reference::ingest::privacy_mask::PrivacyMaskError>() {
+                    eprintln!("refusal_id={}", refusal.stable_id());
+                } else if let Some(refusal) = e.downcast_ref::<fss_reference::deletion::DeletionError>() {
                     eprintln!("refusal_id={}", refusal.stable_id());
                 }
                 eprintln!(

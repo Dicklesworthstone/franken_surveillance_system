@@ -112,6 +112,11 @@ original packets, not pixels) and of archived HTTP wire reads is not refused for
 archive-only versus model-only redaction, deletion closure (unmasked source and superseded
 decodes remain in local custody), retention schedules, and biometric controls beyond the absence
 of any biometric feature.
+Not enforced yet: masks on live HTTP/RTSP capture paths and the laboratory twin (they take a
+caller-supplied permission mask or none), polygons, audio exclusion, archive-only versus
+model-only redaction, retention schedules, and biometric controls beyond the absence of any
+biometric feature. Unmasked source and superseded decodes remain in local custody until the
+owner deletes the import (section 8.1).
 
 ## 5. Identity without surveillance creep
 
@@ -170,6 +175,58 @@ A delete request traverses canonical and derived reachability. Completion distin
 
 Indexes, thumbnails, model caches, reports, memory entries, backup generations, and remote mirrors
 are part of closure. A deleted SQL row alone is not success.
+
+### 8.1 What is enforced today (fss-x4a.9.7, FSS-037, reference, unqualified)
+
+Implemented for retained file imports (`fss-file import`) of one local deployment:
+
+- **Plan (`CAP-DELETE-PREPARE-001`, read-only).** `fss-event delete plan --import-id sha256:…`
+  scans every retained spool object once for embedded SHA-256 digests (raw or hex) and walks
+  every ledger batch and visible root. A unit joins the closure when it holds, names or embeds a
+  digest the import (or an earlier closure unit) owns: import custody (segments, chunks,
+  capsules), decoded frames and receipts, analyses and reports, coverage records,
+  package-detection records, event provenance roots and attributable staging leftovers. The
+  plan names each unit and the reference that reached it, every object removed with its bytes,
+  every closure object retained and why (`shared_with_retained_authority`: another retained unit
+  still holds it; `authority_history`: event revisions, tamper status and alert outcomes), the
+  tombstone batch, the blockers and the unknown copies. It is canonical and digest-bound
+  (`fss.deletion_plan.v1`), bounded and deterministic, and binds the authority head and the
+  effect-journal root.
+- **Commit (`CAP-DELETE-COMMIT-001`).** `delete commit --plan … --approve …` recomputes the plan
+  against the current head; any change is a stale plan and any blocker refuses; nothing is
+  written. Then the deletion record is appended first: a `deletion_record` delta whose payload is
+  the plan, a `deletion_tombstone` successor for every ledger object only closure content wrote,
+  and a `local_root_retraction` successor for every retracted root. The ledger is append-only:
+  no batch is rewritten, and batches that named deleted content stay. Only then are root records
+  and spool objects unlinked (each hold before its object) and absence verified; the completion
+  record (`fss.deletion_completion.v1`) is appended last. A rerun after an interruption at any
+  cut point resumes and completes exactly once; from the moment the record is durable every
+  deleted digest reads `deleted`, never content.
+- **Reads after deletion.** Decode, read, verify, re-import and plan of the import report
+  `ERR-EVIDENCE-DELETED-001` (hydration availability `deleted`, not a missing-object error); a
+  deleted import identity is never reused. `fss orient` names each deletion and `fss explain`
+  names each deleted evidence handle of an event.
+- **Events keep their history.** No new event revision is minted: a revision is a decision
+  under a decision path, deletion changes custody, and availability stays orthogonal to
+  knowledge state. The event's revision objects are retained authority history; its evidence
+  handles resolve to `deleted`.
+- **Blockers.** An open or indeterminate alert effect whose precondition binds a closure event
+  (`open_effect`), a root that failed verification, a conflicting root claim, an earlier
+  incomplete deletion, or a tombstone batch over the bound. There is no hold registry yet, so no
+  hold can be placed or block (`hold_registry: absent`).
+- **Unknown copies are named, not ignored.** The original input file (the deployment never owned
+  it), unrecorded operator exports (`--report-out`, `--event-out`, receipts, PGM and segment
+  extracts), and every alert that may have been transmitted to a relay. They are listed as not
+  proven deleted in the completion record; they do not block local deletion.
+- **What the proof says.** Bytes are unlinked from the local filesystem (`filesystem_unlink`) and
+  every removed name is verified absent from the spool. The spool is not encrypted, so this is
+  not cryptographic erasure; filesystem-level recovery, snapshots, backups and storage-device
+  remanence are out of scope and stated so in every plan and completion record. The plan and
+  completion records keep digests, identities and sizes of deleted objects, never content.
+
+Not enforced yet: a hold registry and retention schedules, subject- or event-scoped plans,
+remote archive, replica and repair-symbol deletion, cryptographic erasure, and deletion of agent
+memory that does not embed an evidence digest.
 
 ## 9. Model/data governance
 

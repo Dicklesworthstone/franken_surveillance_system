@@ -104,6 +104,21 @@ synthetic scenes). None of it has been measured on real camera footage.
   backgrounds admitting masked pixels and decodes naming no sensor are refused; no-policy bytes
   are golden-pinned; RTSP live capture decodes no pixels. Deletion closure, raw RTSP/HTTP custody
   export refusal, retention and biometric controls remain open (PRIVACY.md 4.1).
+- **Deletion closure (fss-x4a.9.7, FSS-037):** `fss-event delete plan --import-id` computes the
+  graph-complete closure of one retained import (every ledger batch and visible root that holds,
+  names or embeds a digest of its derivatives: custody, decoded frames and receipts, coverage and
+  package-detection records, event provenance, attributable staging leftovers) as a sealed,
+  digest-bound plan; `delete commit --plan --approve` revalidates it against the current head,
+  appends the deletion record first (`deletion_record`, one `deletion_tombstone` successor per
+  exclusively deleted ledger object, one `local_root_retraction` per root), unlinks root records
+  and spool objects, verifies absence and appends the completion record; it resumes exactly once
+  after an interruption at any cut point. Events keep their revision history (no new revision);
+  their evidence and the import read as `deleted` (`ERR-EVIDENCE-DELETED-001`), and orient/explain
+  say so. An open or indeterminate alert on the evidence blocks the commit. Local unlinking only:
+  not cryptographic erasure (the spool is not encrypted); filesystem recovery, backups, the input
+  file and operator exports are named out of scope or unknown copies. Retained file imports only:
+  no hold registry, no retention schedules, no remote archive or replica deletion, no subject- or
+  event-scoped plans, and `PUB-DELETE-001` stays `specified` (PRIVACY.md 8.1).
 - **Models:** scalar executor over the FSS IR (Conv2d, MatMul, pooling, norms, activations) with
   Safetensors weights (`scalar_executor`, `fss-infer`). One trained detector package ships:
   YOLOX-Nano COCO-80 (`models/yolox-nano/`, `MOD-YOLOXNANO-001`, Apache-2.0), imported offline
@@ -281,7 +296,7 @@ A passing developer run demonstrates the exact checked tree only. It does not by
 ### Security, privacy, retention, and deletion
 
 - End-to-end capability/privacy projection over every hydration, export, retention, and effect path.
-- Persistent retention schedules, legal holds, graph-complete deletion, derivative accounting, and deletion proof.
+- Persistent retention schedules, legal holds, graph-complete deletion beyond local retained imports (remote archive, replicas, indexes, agent memory by subject or event), and cryptographic erasure. Local deletion closure of one retained import with a completion record exists (fss-x4a.9.7).
 - Secret-bearing boundary isolation, key management, audit export, incident response, and recovery drills.
 - Complete stale/rollback/downgrade and one-version-universe enforcement across deployed binaries and stored objects.
 
