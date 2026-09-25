@@ -12,6 +12,9 @@ use fss_core::{BudgetVector, ContentDigest, OperationId, PrincipalId};
 use fss_reference::ingest::package_detect::{
     MAX_PACKAGE_DETECT_FRAMES, PackageDetectLimits, PackageDetectRequest, run_package_detection,
 };
+use fss_reference::ingest::package_detect::sentinel::{
+    SentinelConfig, SentinelPlan, run_sentinel_detection,
+};
 use fss_reference::ingest::recorded_decode::ComponentInterpretation;
 use fss_reference::ingest::rgb_package::{MAX_RGB_PACKAGE_BYTES, RgbDetectorPackage};
 use fss_reference::{
@@ -26,6 +29,7 @@ const HELP: &str = "fss-infer package-detect [options]\n\
   --package FILE --package-digest sha256:HEX --interpretation gray|ycbcr\n\
   [--minimum-score-ppm N] [--max-macs N] [--max-tensor-bytes N] [--report-out FILE] [--principal ID]\n\
   [--retain yes]\n\
+  [--sentinel-every-frames N --sentinel-max-inferences M [--sentinel-burst-frames K]]\n\
   [--kernels optimized-cpu|scalar-reference] [--threads N|auto]\n\
   Runs a digest-pinned, verified RGB detector package (for example models/yolox-nano/\n\
   yolox_nano.fmpk) over a retained MJPEG, H.264 or H.265 import. JPEG frames are decoded to\n\
@@ -38,6 +42,17 @@ const HELP: &str = "fss-infer package-detect [options]\n\
   cognition-plane evidence (root-last plus one package_detection_record delta) so `fss-event\n\
   report --package-report sha256:REPORT` can consume it; stdout stays the exact report bytes and\n\
   the retention receipt goes to stderr (package_detection_retained=, status=, root=).\n\
+  Sentinel mode samples short contiguous bursts independently of foreground or motion.\n\
+  --frames is the whole source/decode range (1..64); the first burst starts at --first-segment.\n\
+  Period N is 1..64; burst K is 1..8 (default 3, no larger than N); allowance M is explicit,\n\
+  at least K and at most 64 for the whole invocation. Only complete bursts are admitted.\n\
+  Later budget-skipped bursts and every unsampled segment remain explicit. AVC/HEVC decode\n\
+  the whole IDR/IRAP-led range once, but only admitted frames run RGB conversion and inference.\n\
+  Prints fss.sentinel_detection_report.v1 with separate ordinary reports for completed bursts.\n\
+  --retain yes retains each child report independently for the existing event workflow;\n\
+  a later failure does not undo earlier children. Retry exact inputs to resume idempotently.\n\
+  No tracking bridges the gaps. No continuous coverage, absence, recall or alert claim is made.\n\
+  Without sentinel options the existing output and retention behavior are unchanged.\n\
   The default threshold is the package's own; --minimum-score-ppm is an explicit override.\n\
   --kernels selects the executor: optimized-cpu (default; certified bit-identical to the\n\
   scalar reference) or scalar-reference (the slow oracle, seconds per 416x416 frame). The\n\
@@ -59,6 +74,7 @@ struct Options {
     limits: PackageDetectLimits,
     report: Option<PathBuf>,
     retain: bool,
+    sentinel: Option<SentinelConfig>,
 }
 
 fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
@@ -89,6 +105,9 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
         "--retain",
         "--kernels",
         "--threads",
+        "--sentinel-every-frames",
+        "--sentinel-burst-frames",
+        "--sentinel-max-inferences",
     ];
     let mut values = Values::new();
     for pair in args.chunks(2) {
@@ -138,6 +157,7 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
     {
         return Err("frames must be 1..64 within the addressable range".into());
     }
+    let sentinel = parse_sentinel(&values, first_segment, frames)?;
     let kernels = if values.contains_key("--kernels") {
         match text(&values, "--kernels")? {
             "optimized-cpu" => KernelBackend::OptimizedCpuV1,
@@ -180,6 +200,7 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
         package_digest: digest(&values, "--package-digest")?,
         kernels,
         threads,
+        sentinel,
         request: PackageDetectRequest {
             import_identity: digest(&values, "--import-id")?,
             first_segment,
@@ -195,6 +216,31 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
             Some(_) => return Err("--retain accepts only yes".into()),
         },
     }))
+}
+
+fn parse_sentinel(
+    values: &Values,
+    first_segment: usize,
+    frames: usize,
+) -> Result<Option<SentinelConfig>, String> {
+    if !values.contains_key("--sentinel-every-frames") {
+        if values.contains_key("--sentinel-burst-frames")
+            || values.contains_key("--sentinel-max-inferences")
+        {
+            return Err("sentinel burst/allowance requires --sentinel-every-frames".into());
+        }
+        return Ok(None);
+    }
+    let config = SentinelConfig {
+        every_frames: number(values, "--sentinel-every-frames", None)?,
+        burst_frames: number(values, "--sentinel-burst-frames", Some(3))?,
+        max_inferences: number(values, "--sentinel-max-inferences", None)?,
+    };
+    SentinelPlan::new(first_segment, frames, config).map_err(|_| {
+        "sentinel requires period 1..64, burst 1..8 no larger than period/range, and explicit allowance burst..64"
+            .to_owned()
+    })?;
+    Ok(Some(config))
 }
 
 fn read_package(path: &Path) -> RunResult<Vec<u8>> {
@@ -247,6 +293,35 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
         )?
         .with_execution_threads(options.threads);
         let mut deployment = ReferenceDeployment::open(&options.root, &options.site, &cx)?;
+        if let Some(config) = options.sentinel {
+            let report = run_sentinel_detection(
+                &deployment, &package, &options.request, config, &options.limits, &cx, &scalar,
+            )?;
+            if let Some(path) = &options.report {
+                export(path, report.json().as_bytes(), &options.root, &cx)?;
+            }
+            if options.retain {
+                // The child reports use the existing root-last publication and deletion closure.
+                // This is intentionally not an atomic multi-burst transaction. Each completed
+                // receipt remains truthful if a later child fails; exact reruns are idempotent.
+                for child in report.reports() {
+                    let retained = fss_reference::ingest::package_event::retain_package_detection(
+                        &mut deployment, &package, child, &cx,
+                    ).map_err(|error| {
+                        eprintln!("Earlier completed sentinel burst roots remain retained; retry exact inputs to reconcile remaining children.");
+                        error
+                    })?;
+                    eprintln!(
+                        "package_detection_retained={}\nstatus={}\nroot={}\nrecord={}\nauthority_sequence={}",
+                        child.digest, retained.status().as_str(), retained.root(),
+                        retained.record_digest(), retained.authority_anchor().commit_sequence
+                    );
+                }
+            }
+            // Never print a completed invocation after a requested child retention failed.
+            out.write_all(report.json().as_bytes())?;
+            return Ok(());
+        }
         let report = run_package_detection(
             &deployment,
             &package,
@@ -379,4 +454,59 @@ mod tests {
         assert!(parse(&a).is_err());
         assert!(matches!(parse(&["--help".into()]), Ok(None)));
     }
+
+    #[test]
+    fn sentinel_is_opt_in_and_requires_its_own_explicit_allowance() -> Result<(), String> {
+        let ordinary = parse(&args())?.ok_or("missing ordinary request")?;
+        assert!(ordinary.sentinel.is_none());
+        for flags in [
+            vec!["--sentinel-every-frames", "8"],
+            vec!["--sentinel-burst-frames", "1"],
+            vec!["--sentinel-max-inferences", "1"],
+        ] {
+            let mut a = args();
+            a.extend(flags.into_iter().map(OsString::from));
+            assert!(parse(&a).is_err());
+        }
+        let mut a = args();
+        a.extend(["--sentinel-every-frames", "8", "--sentinel-burst-frames", "1",
+            "--sentinel-max-inferences", "1"].map(OsString::from));
+        let parsed = parse(&a)?.ok_or("missing sentinel request")?;
+        assert_eq!(parsed.sentinel, Some(SentinelConfig {
+            every_frames: 8, burst_frames: 1, max_inferences: 1,
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn sentinel_rejects_partial_burst_budget_and_duplicate_sampling_options() {
+        for flags in [
+            vec!["--sentinel-every-frames", "0", "--sentinel-max-inferences", "3"],
+            vec!["--sentinel-every-frames", "8", "--sentinel-max-inferences", "65"],
+            vec!["--sentinel-every-frames", "8", "--sentinel-max-inferences", "1"],
+            vec!["--sentinel-every-frames", "8", "--sentinel-max-inferences", "3"],
+            vec!["--sentinel-every-frames", "2", "--sentinel-max-inferences", "4", "--sentinel-burst-frames", "3"],
+            vec!["--sentinel-every-frames", "8", "--sentinel-max-inferences", "1", "--sentinel-burst-frames", "1", "--sentinel-every-frames", "16"],
+        ] {
+            let mut a = args(); // A two-frame source cannot contain the default three-frame burst.
+            a.extend(flags.into_iter().map(OsString::from));
+            assert!(parse(&a).is_err());
+        }
+    }
+
+    #[test]
+    fn sentinel_default_burst_and_retention_are_explicit() -> Result<(), String> {
+        let mut a = args();
+        let frames = a.iter().position(|v| v == "--frames").ok_or("no frame count")?;
+        a[frames + 1] = "20".into();
+        a.extend(["--sentinel-every-frames", "8", "--sentinel-max-inferences", "6",
+            "--retain", "yes"].map(OsString::from));
+        let parsed = parse(&a)?.ok_or("missing sentinel request")?;
+        assert_eq!(parsed.sentinel, Some(SentinelConfig {
+            every_frames: 8, burst_frames: 3, max_inferences: 6,
+        }));
+        assert!(parsed.retain);
+        Ok(())
+    }
+
 }
