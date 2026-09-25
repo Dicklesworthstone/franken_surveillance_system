@@ -92,7 +92,9 @@ impl fmt::Display for CoverageGraphError {
                 "deployment site lineage {actual:?} is not the requested {expected:?}"
             ),
             Self::Graph(error) => write!(formatter, "graph analysis failed: {error}"),
-            Self::Contract(error) => write!(formatter, "coverage query or witness rejected: {error:?}"),
+            Self::Contract(error) => {
+                write!(formatter, "coverage query or witness rejected: {error:?}")
+            }
         }
     }
 }
@@ -339,7 +341,10 @@ mod window_tests {
         })?)
     }
 
-    fn answer(records: &[CoverageRecord], window: CaptureInterval) -> TestResult<CoverageSinglePoints> {
+    fn answer(
+        records: &[CoverageRecord],
+        window: CaptureInterval,
+    ) -> TestResult<CoverageSinglePoints> {
         let observations = observations_in_window(records.iter(), window);
         let projection = SensorCoverageProjection::build("site:window-tests", &observations)?;
         Ok(projection.single_points(GraphBudget::registered(&projection.graph))?)
@@ -347,12 +352,18 @@ mod window_tests {
 
     #[test]
     fn disjoint_sensor_history_is_not_simultaneous_redundancy() -> TestResult {
-        let records = [record("sensor:east", 0, None)?, record("sensor:west", 1000, None)?];
+        let records = [
+            record("sensor:east", 0, None)?,
+            record("sensor:west", 1000, None)?,
+        ];
         assert!(records.iter().all(|r| r.zones[0].witnesses.len() == 1));
         let result = answer(&records, interval(60, 120)?)?;
         assert_eq!(result.zones.len(), 1);
         assert_eq!(result.zones[0].observers, vec!["sensor:east"]);
-        assert_eq!(result.zones[0].single_points_of_failure, vec!["sensor:east"]);
+        assert_eq!(
+            result.zones[0].single_points_of_failure,
+            vec!["sensor:east"]
+        );
         // The other sensor and the declared zone remain in the projection, not silently dropped.
         assert_eq!(result.sensors.len(), 2);
         let later = answer(&records, interval(1060, 1120)?)?;
@@ -362,9 +373,15 @@ mod window_tests {
 
     #[test]
     fn both_sensors_must_cover_the_entire_requested_window() -> TestResult {
-        let records = [record("sensor:east", 0, None)?, record("sensor:west", 20, None)?];
+        let records = [
+            record("sensor:east", 0, None)?,
+            record("sensor:west", 20, None)?,
+        ];
         let overlap = answer(&records, interval(80, 120)?)?;
-        assert_eq!(overlap.zones[0].observers, vec!["sensor:east", "sensor:west"]);
+        assert_eq!(
+            overlap.zones[0].observers,
+            vec!["sensor:east", "sensor:west"]
+        );
         assert!(overlap.zones[0].single_points_of_failure.is_empty());
         let wider = answer(&records, interval(50, 120)?)?;
         assert_eq!(wider.zones[0].single_points_of_failure, vec!["sensor:east"]);
@@ -391,7 +408,10 @@ mod window_tests {
         let hull = observations_in_window([&record].into_iter(), witness.outer);
         assert_eq!(hull[0].witnesses, 0);
         let point = interval(witness.covered.earliest.0, witness.covered.earliest.0)?;
-        assert_eq!(observations_in_window([&record].into_iter(), point)[0].witnesses, 1);
+        assert_eq!(
+            observations_in_window([&record].into_iter(), point)[0].witnesses,
+            1
+        );
         Ok(())
     }
 
