@@ -48,9 +48,10 @@ A mask change is a durable effect with prepare/preview/commit. The preview shows
 coverage; increasing privacy may legitimately create a blind spot, which the coverage certificate
 must expose. A model cannot relax a mask.
 
-### 4.1 What is enforced today (fss-bgqkd, reference, unqualified)
+### 4.1 What is enforced today (fss-bgqkd, fss-g9gml, reference, unqualified)
 
-Implemented, for retained file imports (`fss-file import`) only:
+Implemented for retained file imports (`fss-file import`, fss-bgqkd) and for the live, recording
+and replay decode paths (fss-g9gml):
 
 - **Declaration.** `fss-event privacy-mask declare` retains an owner-declared, versioned policy
   per sensor: the declared stream resolution and 1..32 axis-aligned rectangles
@@ -76,12 +77,41 @@ Implemented, for retained file imports (`fss-file import`) only:
 - **Unmasked access refused.** Raw source export of a masked sensor and decodes retained under no
   or a superseded policy are refused (`ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001`). There is no
   override capability.
+- **Live, recording and replay paths (fss-g9gml).** Live HTTP acquisition (the learned HOG
+  composition and the RGB neural composition), archived HTTP RGB replay, HTTP recording decode,
+  `fss-archive check-http`, RGB evidence replay and retained MJPEG sensor-health screening apply
+  the named sensor's *current* retained policy with the same enforcement function and fills. The
+  owner names the sensor (`SensorMask`: the sensor plus the deployment retaining its authority;
+  `check-http --privacy-root DIR --site SITE --sensor ID`); each consumer resolves the policy when
+  it decodes a frame. HOG: the decoded luma is filled before rectification, screening, foreground,
+  the learned scan, tracking, zones and every decoded-plane digest (`fss-twin` redaction hook);
+  RGB: the native decode is masked and re-receipted before the permission projection and the
+  graph. The owner permission grid and any frozen background must already exclude the masked
+  pixels, or the frame is refused before acceptance (`ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001`); a
+  decode naming no sensor is refused the same way (framing-only checks read no pixels). A masked
+  frame's luma digest equals the retained decode's digest of the same frame.
+- **Identity rule.** Without a policy every live receipt, completion digest, check frame chain
+  and RGB evidence recipe keeps its pre-masking bytes (golden-pinned) and carries the explicit
+  no-policy marker as a typed field; with a policy the binding is folded into the identity
+  (`fss.privacy_mask_lineage.v1`) and RGB evidence uses recipe version 2
+  (`fss.rgb_source_evidence.recipe.v2`).
+- **Policy change mid-capture.** The new generation applies from the next decoded frame and is
+  recorded on it; earlier receipts are never rewritten. A frame whose owner grid or frozen
+  background still reflects the old generation is refused; a running trajectory episode is bound
+  to one permission grid, so it refuses (typed, retained) the first frame under a new grid until
+  the owner starts a new episode. RGB evidence replays only under the binding it was recorded
+  with, and only while that binding is the sensor's current one.
+- **Custody versus derivation.** Original source custody (retained HTTP wire reads, completion
+  records, RTSP live archives, the original JPEG inside an RGB evidence envelope) stays unmasked
+  custody; every pixel derivation from it is masked. RTSP live capture and archiving decode no
+  pixels at all (a source-scan test pins that capture and custody modules name no pixel decoder).
 
-Not enforced yet: masks on live HTTP/RTSP capture paths and the laboratory twin (they take a
-caller-supplied permission mask or none), polygons, audio exclusion, archive-only versus
-model-only redaction, deletion closure (unmasked source and superseded decodes remain in local
-custody), retention schedules, and biometric controls beyond the absence of any biometric
-feature.
+Not enforced yet: raw custody export of RTSP recordings (`fss-archive export`, which emits
+original packets, not pixels) and of archived HTTP wire reads is not refused for a masked sensor
+(the analogous `fss-file extract` is); the synthetic laboratory twin; polygons, audio exclusion,
+archive-only versus model-only redaction, deletion closure (unmasked source and superseded
+decodes remain in local custody), retention schedules, and biometric controls beyond the absence
+of any biometric feature.
 
 ## 5. Identity without surveillance creep
 

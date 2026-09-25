@@ -4,12 +4,15 @@ use fss_cli::{
     ERR_CLI_DUPLICATE_OPTION, ERR_CLI_INVALID_UNICODE, ERR_CLI_MALFORMED_VALUE,
     ERR_CLI_MISSING_VALUE, ERR_CLI_RUNTIME_FAILURE, ERR_CLI_UNKNOWN_OPTION, ExitIdentity,
 };
-use fss_core::{ContentDigest, DigestAlgorithm};
+use fss_core::region::{ContextAuthority, RootAuthoritySpec};
+use fss_core::{BudgetVector, ContentDigest, DigestAlgorithm, OperationId, SensorId};
 use fss_object::{MAX_MANIFEST_CHILDREN, SpoolLimits};
 use fss_publication::{
     LocalPublicationLimits, LocalRootPublisher, PublishCancellation, PublishCutPoint,
 };
 use fss_reference::ingest::http_replay::check::*;
+use fss_reference::ingest::privacy_mask::live::SensorMask;
+use fss_reference::{ReferenceDeployment, ReplayCx};
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
@@ -23,6 +26,10 @@ pub(super) const HELP: &str = "fss-archive check-http [options]\n\
             --head sha256:HEX --reads N --bytes N --read-originals yes\n\
             --decode none|grayscale|ycbcr\n\
   Optional: --completion-root sha256:HEX (exact independently retained terminal root)\n\
+  Privacy: --privacy-root EXISTING_DEPLOYMENT --site SITE --sensor ID (required with\n\
+           --decode grayscale|ycbcr): the recorded sensor's current retained privacy mask\n\
+           is applied before any luma digest; a decoding check without it is refused\n\
+           (ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001).\n\
   Bounds: --timeout-ms --max-reads --max-source-bytes --max-frames --max-steps\n\
           --read-bytes --max-object-bytes --max-roots --max-scan-roots --max-objects\n\
           --max-total-bytes --max-source-work --max-framing-work --max-decode-work\n\
@@ -60,8 +67,15 @@ fn runtime(message: &'static str) -> Error {
         usage: false,
     }
 }
+/// The deployment retaining the recorded sensor's privacy mask authority.
+struct Privacy {
+    root: PathBuf,
+    site: String,
+    sensor: SensorId,
+}
 struct Options {
     root: PathBuf,
+    privacy: Option<Privacy>,
     request: HttpCheckRequest,
     limits: HttpCheckLimits,
     storage: LocalPublicationLimits,
@@ -102,6 +116,9 @@ fn parse(args: &[OsString]) -> Result<Options> {
         "--max-dimension",
         "--max-pixels",
         "--max-report-bytes",
+        "--privacy-root",
+        "--site",
+        "--sensor",
     ];
     let mut values: BTreeMap<&str, &OsStr> = BTreeMap::new();
     for pair in args[1..].chunks(2) {
@@ -266,8 +283,28 @@ fn parse(args: &[OsString]) -> Result<Options> {
     storage
         .validate()
         .map_err(|_| malformed("inconsistent storage bounds"))?;
+    let privacy = match (
+        values.contains_key("--privacy-root"),
+        values.contains_key("--site"),
+        values.contains_key("--sensor"),
+    ) {
+        (false, false, false) => None,
+        (true, true, true) => Some(Privacy {
+            root: PathBuf::from(required("--privacy-root")?),
+            site: text("--site")?.to_owned(),
+            sensor: SensorId::parse(text("--sensor")?)
+                .map_err(|_| malformed("invalid sensor identity"))?,
+        }),
+        _ => {
+            return Err(argument(
+                ERR_CLI_MISSING_VALUE,
+                "--privacy-root, --site and --sensor are given together",
+            ));
+        }
+    };
     Ok(Options {
         root: PathBuf::from(required("--root")?),
+        privacy,
         request,
         limits,
         storage,
@@ -367,6 +404,8 @@ fn render(r: &HttpCheckReport, maximum: usize) -> Result<String> {
             Some(d) => write!(out, "\"{d}\"")?,
             None => write!(out, "null")?,
         }
+        // The applied privacy transform, or the explicit no-policy marker.
+        write!(out, ",\"privacy_mask\":{}", r.privacy.to_json())?;
         write!(out, ",\"termination\":")?;
         match r.termination_name() {
             Some(t) => write!(out, "\"{t}\"")?,
@@ -418,19 +457,78 @@ fn render(r: &HttpCheckReport, maximum: usize) -> Result<String> {
         .map_err(|_| runtime("complete report exceeds selected output bound; no report emitted"))?;
     Ok(out.text)
 }
+const ERR_PRIVACY_UNMASKED_ACCESS_REFUSED: &str = "ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001";
+
+/// Opens the existing deployment that retains the sensor's mask authority (read for the
+/// current binding only; the check publishes nothing into it).
+fn deployment(p: &Privacy) -> Result<(ReplayCx, ReferenceDeployment)> {
+    let file = |path: &Path| std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file());
+    let directory = std::fs::symlink_metadata(&p.root).is_ok_and(|m| m.is_dir());
+    if !directory || !file(&p.root.join("LAYOUT")) {
+        return Err(runtime("existing non-symlink privacy deployment required"));
+    }
+    fn failed<E>(_: E) -> Error {
+        runtime("privacy deployment open refused")
+    }
+    let authority = ContextAuthority::new_root(RootAuthoritySpec {
+        trace_id: "trace:archive-check-http".into(),
+        operation_id: OperationId::parse("operation:archive-check-http").map_err(failed)?,
+        principal: "principal:local-operator".into(),
+        capabilities: vec!["ADP-REPLAY-001".to_owned()],
+        deadline: None,
+        priority: 10,
+        budgets: BudgetVector::builder()
+            .bytes(64 * 1024 * 1024)
+            .build()
+            .map_err(failed)?,
+        privacy_scope: "privacy:local-authorized-files".into(),
+        retention_scope: "retention:existing-deployment-policy".into(),
+        anchor_universe: ContentDigest::sha256(p.site.as_bytes()),
+        generation: 1,
+    })
+    .map_err(failed)?;
+    authority.validate().map_err(failed)?;
+    let cx = ReplayCx::from_context_authority(&authority, p.root.clone()).map_err(failed)?;
+    let deployment = ReferenceDeployment::reopen(&p.root, &p.site, &cx).map_err(failed)?;
+    Ok((cx, deployment))
+}
 fn run(o: Options) -> Result<(String, bool)> {
     let clock = Clock {
         start: Instant::now(),
         timeout: o.timeout,
     };
+    // A decoding check digests pixels: it must name the recorded sensor whose current mask
+    // applies. Refused before the archive is opened; no unmasked digest is ever computed.
+    if o.privacy.is_none() && o.request.decode != HttpCheckDecode::None {
+        return Err(Error {
+            code: ERR_PRIVACY_UNMASKED_ACCESS_REFUSED,
+            message: "a decoding check must name the recorded sensor (--privacy-root, --site, --sensor); unmasked pixel digests are never emitted",
+            usage: false,
+        });
+    }
+    let privacy = o.privacy.as_ref().map(deployment).transpose()?;
     let root = existing(&o.root)?;
     if clock.cancel_requested(PublishCutPoint::AfterChildrenVerified) {
         return Err(runtime("operation deadline expired"));
     }
     let publisher = LocalRootPublisher::open(root, o.storage)
         .map_err(|_| runtime("archive open or exclusive ownership refused"))?;
-    let report = check_http_recording(&publisher, o.request, o.limits, &clock).map_err(|_| {
-        runtime("original source or completion verification refused before frame checking")
+    let sensor = o.privacy.as_ref().map(|p| &p.sensor);
+    let mask = privacy
+        .as_ref()
+        .zip(sensor)
+        .map(|((_, deployment), sensor)| SensorMask::new(deployment, sensor));
+    let checked = check_http_recording(&publisher, o.request, o.limits, &clock, mask);
+    if let Some((cx, _)) = &privacy {
+        cx.drain_and_finalize();
+    }
+    let report = checked.map_err(|e| match e {
+        HttpCheckError::Privacy(refusal) => Error {
+            code: refusal.stable_id(),
+            message: "the recorded sensor's privacy mask refused the check before any frame was checked",
+            usage: false,
+        },
+        _ => runtime("original source or completion verification refused before frame checking"),
     })?;
     let success = report.status == HttpCheckStatus::Complete;
     Ok((render(&report, o.report_bytes)?, success))

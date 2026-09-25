@@ -374,3 +374,68 @@ fn retained_decode_is_masked_bound_and_never_serves_another_lineage() -> TestRes
     )?;
     Ok(())
 }
+
+/// Retained sensor-health screening of MJPEG digests only masked luma (fss-g9gml): its
+/// per-frame `luma_digest` equals the masked retained decode's, never the codec output.
+#[test]
+fn retained_health_screening_sees_only_masked_luma() -> TestResult {
+    use crate::ingest::recorded_watch::{
+        WatchDetectorConfig, WatchLimits, WatchPlan, WatchTrackerConfig, WatchZone,
+    };
+    use crate::ingest::sensor_health::retained::ScreeningReport;
+    let (_directory, cx, mut deployment, request) = deployment("health")?;
+    let plan = WatchPlan {
+        import_identity: request.import_identity,
+        interpretation: ComponentInterpretation::Grayscale,
+        first_segment: 0,
+        segment_count: 2,
+        zones: vec![WatchZone {
+            zone_id: "all".to_owned(),
+            x: 0,
+            y: 0,
+            width: 4,
+            height: 4,
+        }],
+        detector: WatchDetectorConfig::default(),
+        tracker: WatchTrackerConfig::default(),
+    };
+    let unmasked =
+        ScreeningReport::analyze(&deployment, &plan, &WatchLimits::default(), 1_000_000, &cx)?;
+    let open = RecordedFrame::decode_and_publish(
+        &mut deployment,
+        &request,
+        &mut DecodeBudget::new(100_000_000),
+        &cx,
+    )?;
+    for observation in unmasked.observations() {
+        assert_eq!(
+            observation.luma_digest.bytes(),
+            open.receipt().codec().luma_sha256
+        );
+    }
+    let dims = open.receipt().dimensions();
+    let mask = policy(dims, &[[0, 0, 4, 4]])?;
+    let preview = preview_mask(&deployment, &mask)?;
+    declare_mask(&mut deployment, &mask, preview.approval, &cx)?;
+    let masked =
+        ScreeningReport::analyze(&deployment, &plan, &WatchLimits::default(), 1_000_000, &cx)?;
+    let retained = RecordedFrame::decode_and_publish(
+        &mut deployment,
+        &request,
+        &mut DecodeBudget::new(100_000_000),
+        &cx,
+    )?;
+    assert_eq!(retained.receipt().mask_policy(), Some(mask.digest()));
+    assert_eq!(masked.observations().len(), 2);
+    for observation in masked.observations() {
+        assert_eq!(
+            observation.luma_digest.bytes(),
+            retained.receipt().codec().luma_sha256
+        );
+        assert_ne!(
+            observation.luma_digest.bytes(),
+            open.receipt().codec().luma_sha256
+        );
+    }
+    Ok(())
+}

@@ -447,6 +447,7 @@ fn run() -> Result<()> {
                     received_at_ns: row.received,
                     owner_requests_analysis: owner.requires_analysis(),
                 },
+                redaction: None,
             },
             &mut decode,
             &mut geometry,

@@ -233,6 +233,9 @@ pub mod screening;
 /// Native JPEG/stream decoding composed with foreground, health and sentinel admission.
 pub mod screened_mjpeg;
 
+/// Owner-supplied redaction applied to decoded planes before any consumer.
+pub mod redaction;
+
 /// Anonymous, source-linked image trajectories without a metric twin or identity claim.
 pub mod image_tracking;
 

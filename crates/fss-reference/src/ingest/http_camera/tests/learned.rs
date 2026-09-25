@@ -3,6 +3,8 @@
 //! Upsampling the tiny codec fixture exercises composition, not detector quality.
 use super::*;
 use crate::ingest::http_camera::learned::*;
+use crate::ingest::privacy_mask::live::MaskRefusal;
+use crate::ingest::privacy_mask::live::fixture::MaskFixture;
 use fss_geometry::{PinholeIntrinsics, WorkBudget};
 use fss_twin::foreground::pipeline::FrameCapture;
 use fss_twin::foreground::{BackgroundPolicy, ForegroundPolicy};
@@ -11,7 +13,8 @@ use fss_twin::image_tracking::ImageTrackingPolicy;
 use fss_twin::image_zones::pipeline::ImageZonePipeline;
 use fss_twin::image_zones::{ImageZoneBasis, ImageZonePolicy, ImageZoneSpec};
 use fss_twin::mjpeg::{
-    JpegBackground, JpegFrameBinding, JpegReference, decode_rectified, decoded_image_domain,
+    JpegBackground, JpegDecodeRequest, JpegFrameBinding, JpegReference, decode_rectified_redacted,
+    decoded_image_domain,
 };
 use fss_twin::pretrained_hog::load_opencv_people_candidate;
 use fss_twin::rectification::{LensDistortion, LumaRange, RectificationPlan, RectificationSpec};
@@ -39,14 +42,20 @@ fn binding(bytes: &[u8], mask: &[u8], exposure: u8) -> JpegFrameBinding {
         interpretation: ComponentInterpretation::Grayscale,
     }
 }
+/// Owner permission grid, frozen background and decoded image domain under one binding.
+type Frozen = (Vec<u8>, JpegBackground, [u8; 32]);
 struct Fixture {
     plan: RectificationPlan,
     background: JpegBackground,
     mask: Vec<u8>,
     basis: ImageZoneBasis,
+    privacy: MaskFixture,
 }
 impl Fixture {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        Self::build(MaskFixture::new("hog")?)
+    }
+    fn build(privacy: MaskFixture) -> Result<Self, Box<dyn std::error::Error>> {
         let source = PinholeIntrinsics::new(17, 13, 20.0, 20.0, 8.5, 6.5)?;
         let target = PinholeIntrinsics::new(64, 128, 200.0, 400.0, 32.0, 64.0)?;
         let plan = RectificationPlan::compile(
@@ -61,62 +70,60 @@ impl Fixture {
             },
             &mut work(),
         )?;
-        let mask = vec![1; 17 * 13];
-        let a = decode_rectified(
-            &plan,
-            BACKGROUND,
-            &mask,
-            binding(BACKGROUND, &mask, 1),
-            DecodeLimits::default(),
-            &mut budget(),
-            &mut work(),
-        )?;
-        let b = decode_rectified(
-            &plan,
-            BACKGROUND,
-            &mask,
-            binding(BACKGROUND, &mask, 2),
-            DecodeLimits::default(),
-            &mut budget(),
-            &mut work(),
-        )?;
-        let c = decode_rectified(
-            &plan,
-            BACKGROUND,
-            &mask,
-            binding(BACKGROUND, &mask, 3),
-            DecodeLimits::default(),
-            &mut budget(),
-            &mut work(),
-        )?;
-        let refs = [
-            JpegReference {
-                image: &a,
+        let (mask, background, image_domain) = Self::freeze(&plan, &privacy)?;
+        let basis = ImageZoneBasis {
+            camera: 1,
+            clock: 2,
+            calibration: [8; 32],
+            image_domain,
+            dimensions: [64, 128],
+        };
+        Ok(Self {
+            plan,
+            background,
+            mask,
+            basis,
+            privacy,
+        })
+    }
+    /// The owner permission grid excludes exactly the sensor's currently masked pixels, and the
+    /// frozen background references are decoded under the same current mask.
+    fn freeze(
+        plan: &RectificationPlan,
+        privacy: &MaskFixture,
+    ) -> Result<Frozen, Box<dyn std::error::Error>> {
+        let current = privacy.mask().resolve()?;
+        let redaction = current.luma_redaction();
+        let mask = current.allowed([17, 13])?;
+        let mut images = Vec::new();
+        for exposure in 1..=3 {
+            images.push(decode_rectified_redacted(
+                plan,
+                JpegDecodeRequest {
+                    bytes: BACKGROUND,
+                    mask: &mask,
+                    source: binding(BACKGROUND, &mask, exposure),
+                    limits: DecodeLimits::default(),
+                    redaction,
+                },
+                &mut budget(),
+                &mut work(),
+            )?);
+        }
+        let refs: Vec<JpegReference<'_>> = images
+            .iter()
+            .zip([10, 20, 30])
+            .map(|(image, at)| JpegReference {
+                image,
                 capture: FrameCapture {
                     camera: 1,
                     clock: 2,
-                    capture: [10; 2],
+                    capture: [at; 2],
                 },
-            },
-            JpegReference {
-                image: &b,
-                capture: FrameCapture {
-                    camera: 1,
-                    clock: 2,
-                    capture: [20; 2],
-                },
-            },
-            JpegReference {
-                image: &c,
-                capture: FrameCapture {
-                    camera: 1,
-                    clock: 2,
-                    capture: [30; 2],
-                },
-            },
-        ];
+            })
+            .collect();
         let background = JpegBackground::build(
-            &plan,
+            plan,
             &refs,
             BackgroundPolicy {
                 selection_evidence: [9; 32],
@@ -125,19 +132,15 @@ impl Fixture {
             },
             &mut work(),
         )?;
-        let basis = ImageZoneBasis {
-            camera: 1,
-            clock: 2,
-            calibration: [8; 32],
-            image_domain: a.frame().identity().image_domain,
-            dimensions: [64, 128],
-        };
-        Ok(Self {
-            plan,
-            background,
-            mask,
-            basis,
-        })
+        Ok((mask, background, images[0].frame().identity().image_domain))
+    }
+    /// Refreeze the permission grid and background under the sensor's current mask (after a
+    /// policy change the old background is refused as unmasked access).
+    fn refreeze(&mut self) -> Test {
+        let (mask, background, _) = Self::freeze(&self.plan, &self.privacy)?;
+        self.mask = mask;
+        self.background = background;
+        Ok(())
     }
     fn processor(&self) -> Result<JpegHogPipeline, Box<dyn std::error::Error>> {
         let zones = ImageZonePipeline::new(
@@ -217,10 +220,11 @@ impl Fixture {
         c: &HttpHogCapture,
         n: u64,
     ) -> Result<HttpFrameContext<'a>, Box<dyn std::error::Error>> {
+        let bytes = c.frame().ok_or("source missing")?.part().bytes();
         Ok(HttpFrameContext {
             expected_head: c.frame().ok_or("source missing")?.head(),
             mask: &self.mask,
-            binding: binding(JPEG, &self.mask, (10 + n) as u8),
+            binding: binding(bytes, &self.mask, (10 + n) as u8),
             capture: FrameCapture {
                 camera: 1,
                 clock: 2,
@@ -239,7 +243,39 @@ impl Fixture {
                 received_at_ns: 80 + n * 20,
                 owner_requests_analysis: false,
             },
+            privacy: self.privacy.mask(),
         })
+    }
+    /// One analysis attempt with an explicit permission grid and background.
+    fn attempt(
+        &self,
+        c: &mut HttpHogCapture,
+        n: u64,
+        mask: &[u8],
+        background: &JpegBackground,
+        a: &dyn HttpCameraAuthority,
+    ) -> Result<HttpHogStep, HttpHogError> {
+        let mut context = self
+            .context(c, n)
+            .map_err(|_| HttpHogError::FrameMismatch)?;
+        let bytes = c.frame().ok_or(HttpHogError::FrameMismatch)?.part().bytes();
+        context.mask = mask;
+        context.binding = binding(bytes, mask, (10 + n) as u8);
+        c.analyze(
+            context,
+            Some(background),
+            &self.plan,
+            80 + n * 20,
+            a,
+            HttpHogBudgets {
+                decode: &mut budget(),
+                rectification: &mut work(),
+                foreground: &mut work(),
+                health: &mut work(),
+                inference: &mut work(),
+                downstream: &mut work(),
+            },
+        )
     }
     fn analyze(
         &self,
@@ -878,3 +914,249 @@ fn accepted_model_work_moves_between_tasks_and_resumes_the_same_source() -> Test
     );
     Ok(())
 }
+
+/// A grayscale 17x13 frame equal to the uniform background everywhere except the 8x8 block at
+/// the origin (block-aligned, quality 100: the uniform blocks decode to exactly 128 again).
+fn motion_jpeg() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    use crate::media_fixture::jpeg::{JpegConfig, Subsampling, encode_jpeg};
+    let mut pixels = vec![128_u8; 17 * 13];
+    for y in 0..8 {
+        for x in 0..8 {
+            pixels[y * 17 + x] = if (x + y) % 2 == 0 { 250 } else { 5 };
+        }
+    }
+    Ok(encode_jpeg(
+        17,
+        13,
+        &pixels,
+        &JpegConfig {
+            quality: 100,
+            subsampling: Subsampling::Grayscale,
+            ..JpegConfig::default()
+        },
+    )?)
+}
+fn motion_response(jpeg: &[u8], count: usize) -> Vec<u8> {
+    let mut body = Vec::new();
+    for _ in 0..count {
+        body.extend_from_slice(
+            format!(
+                "--fss\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
+                jpeg.len()
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(jpeg);
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(b"--fss--\r\n");
+    let mut wire =
+        b"HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=fss\r\n".to_vec();
+    wire.extend_from_slice(format!("Content-Length: {}\r\n\r\n", body.len()).as_bytes());
+    wire.extend_from_slice(&body);
+    wire
+}
+fn regions(c: &HttpHogCapture) -> Result<usize, Box<dyn std::error::Error>> {
+    match c
+        .analysis()
+        .ok_or("analysis missing")?
+        .image()
+        .ok_or("screen missing")?
+        .foreground()
+    {
+        fss_twin::screened_mjpeg::ForegroundStage::Complete(report) => Ok(report.regions().len()),
+        other => Err(format!("foreground stage not complete: {other:?}").into()),
+    }
+}
+fn decoded_luma(c: &HttpHogCapture) -> Result<[u8; 32], Box<dyn std::error::Error>> {
+    Ok(c.analysis()
+        .ok_or("analysis missing")?
+        .image()
+        .ok_or("screen missing")?
+        .source_receipt()
+        .decode
+        .luma_sha256)
+}
+const MOTION_BLOCK: [u32; 4] = [0, 0, 8, 8];
+
+#[test]
+fn motion_inside_the_sensor_mask_reaches_no_foreground_and_digests_only_masked_luma() -> Test {
+    let jpeg = motion_jpeg()?;
+    // Without a policy the block's motion is foreground; the decoded plane is the codec's.
+    let open = Fixture::new()?;
+    let mut c = HttpHogCapture::attach(
+        camera(
+            &motion_response(&jpeg, 1),
+            4096,
+            HttpCameraLimits::default(),
+        )?,
+        open.processor()?,
+    )?;
+    let a = Authority::new(c.camera().route());
+    ready(&mut c, &a, 100)?;
+    let unmasked = completed(open.analyze(&mut c, 1, &a, &mut work(), &mut work())?)?;
+    assert!(regions(&c)? > 0, "unmasked motion is foreground");
+    assert_eq!(unmasked.mask_policy(), None);
+    assert_eq!(c.privacy_mask().label(), "no_policy_declared");
+    let unmasked_luma = decoded_luma(&c)?;
+
+    // With the sensor's policy over the block, the same frame has no foreground at all.
+    let mut privacy = MaskFixture::new("hog-motion")?;
+    let policy = privacy.declare([17, 13], &[MOTION_BLOCK])?;
+    let retained = privacy.retained_luma_digest(&jpeg, ComponentInterpretation::Grayscale)?;
+    let masked_fixture = Fixture::build(privacy)?;
+    let mut c = HttpHogCapture::attach(
+        camera(
+            &motion_response(&jpeg, 1),
+            4096,
+            HttpCameraLimits::default(),
+        )?,
+        masked_fixture.processor()?,
+    )?;
+    let a = Authority::new(c.camera().route());
+    ready(&mut c, &a, 100)?;
+    let masked = completed(masked_fixture.analyze(&mut c, 1, &a, &mut work(), &mut work())?)?;
+    assert_eq!(
+        regions(&c)?,
+        0,
+        "motion inside the mask is never foreground"
+    );
+    assert_eq!(masked.mask_policy(), Some(policy));
+    assert_eq!(masked.mask_generation(), Some(1));
+    // The decoded-plane digest is the retained-decode masked digest of the same frame.
+    assert_eq!(decoded_luma(&c)?, retained);
+    assert_ne!(decoded_luma(&c)?, unmasked_luma);
+    let receipt = c
+        .analysis()
+        .ok_or("analysis missing")?
+        .image()
+        .ok_or("screen missing")?
+        .source_receipt();
+    assert_eq!(receipt.raw.storage, retained);
+    assert_eq!(receipt.redaction, Some(c.privacy_mask().digest().bytes()));
+    assert_ne!(masked.digest(), unmasked.digest());
+    Ok(())
+}
+
+#[test]
+fn a_permission_grid_or_background_admitting_masked_pixels_is_refused_before_acceptance() -> Test {
+    let open = Fixture::new()?;
+    let mut privacy = MaskFixture::new("hog-refusal")?;
+    privacy.declare([17, 13], &[MOTION_BLOCK])?;
+    let f = Fixture::build(privacy)?;
+    let mut c = f.owner(&response(false, false, 1), 4096)?;
+    let a = Authority::new(c.camera().route());
+    ready(&mut c, &a, 100)?;
+    let everything = vec![1_u8; 17 * 13];
+    for (mask, background) in [(&everything, &f.background), (&f.mask, &open.background)] {
+        let refused = f.attempt(&mut c, 1, mask, background, &a);
+        assert_eq!(
+            refused,
+            Err(HttpHogError::Privacy(MaskRefusal::UnmaskedAccess))
+        );
+        assert_eq!(
+            MaskRefusal::UnmaskedAccess.stable_id(),
+            "ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001"
+        );
+        assert!(c.analysis().is_none(), "nothing was accepted");
+        assert!(c.frame().is_some(), "the original frame stays held");
+    }
+    // The corrected grid and masked background are accepted for the same frame.
+    let result = completed(f.analyze(&mut c, 1, &a, &mut work(), &mut work())?)?;
+    assert!(result.mask_policy().is_some());
+    Ok(())
+}
+
+#[test]
+fn a_policy_retained_mid_capture_applies_from_the_next_frame_only() -> Test {
+    let mut f = Fixture::new()?;
+    let mut c = f.owner(&response(false, false, 2), 4096)?;
+    let a = Authority::new(c.camera().route());
+    ready(&mut c, &a, 100)?;
+    let first = completed(f.analyze(&mut c, 1, &a, &mut work(), &mut work())?)?;
+    assert_eq!(first.mask_policy(), None);
+    c.acknowledge_result(first, 100, &a)?;
+    ready(&mut c, &a, 120)?;
+    let policy = f.privacy.declare([17, 13], &[MOTION_BLOCK])?;
+    // The grid and background frozen under the old (no) policy admit the newly masked pixels.
+    assert_eq!(
+        f.attempt(&mut c, 2, &f.mask, &f.background, &a),
+        Err(HttpHogError::Privacy(MaskRefusal::UnmaskedAccess))
+    );
+    // A corrected grid alone is not enough: the old background holds unmasked pixels.
+    let grid = MaskFixture::grid(&f.privacy, [17, 13])?;
+    assert_eq!(
+        f.attempt(&mut c, 2, &grid, &f.background, &a),
+        Err(HttpHogError::Privacy(MaskRefusal::UnmaskedAccess))
+    );
+    f.refreeze()?;
+    // The frame is accepted under the new generation: decoded, screened and scanned masked.
+    // The running tracking episode is bound to the old permission grid, so it refuses this frame
+    // (typed, retained) instead of silently mixing grids; the owner starts a new episode.
+    let second = f.analyze(&mut c, 2, &a, &mut work(), &mut work())?;
+    assert_eq!(second, HttpHogStep::AnalysisPending(JpegHogStage::Tracking));
+    assert!(matches!(
+        c.analysis_progress(),
+        Some(
+            fss_twin::screening::tracking::hog::jpeg::JpegHogProgress::Pending {
+                error: fss_twin::screening::tracking::hog::jpeg::JpegHogRefusal::Tracking(_),
+                ..
+            }
+        )
+    ));
+    assert_eq!(c.privacy_mask().policy_digest(), Some(policy));
+    assert_eq!(c.privacy_mask().generation(), Some(1));
+    let receipt = c
+        .analysis()
+        .ok_or("accepted frame lost")?
+        .image()
+        .ok_or("screen missing")?
+        .source_receipt();
+    assert_eq!(receipt.redaction, Some(c.privacy_mask().digest().bytes()));
+    assert_eq!(receipt.decode.luma_sha256, receipt.raw.storage);
+    // A fresh episode under the new grid completes the next frame under the new generation.
+    let mut fresh = HttpHogCapture::attach(
+        camera(
+            &response(false, false, 1),
+            4096,
+            HttpCameraLimits::default(),
+        )?,
+        f.processor()?,
+    )?;
+    let fresh_authority = Authority::new(fresh.camera().route());
+    ready(&mut fresh, &fresh_authority, 100)?;
+    let next = completed(f.analyze(&mut fresh, 1, &fresh_authority, &mut work(), &mut work())?)?;
+    assert_eq!(next.mask_policy(), Some(policy));
+    assert_eq!(next.mask_generation(), Some(1));
+    assert_ne!(next.digest(), first.digest());
+    // The earlier record keeps the binding it was produced under.
+    assert_eq!(c.last_acknowledged(), Some(first));
+    assert_eq!(
+        c.last_acknowledged().ok_or("history lost")?.mask_policy(),
+        None
+    );
+    Ok(())
+}
+
+/// The no-policy completion keeps the bytes it had before live masking existed.
+#[test]
+fn no_policy_completion_digest_is_unchanged() -> Test {
+    let f = Fixture::new()?;
+    let mut c = f.owner(&response(false, false, 2), 4096)?;
+    let a = Authority::new(c.camera().route());
+    ready(&mut c, &a, 100)?;
+    let result = completed(f.analyze(&mut c, 1, &a, &mut work(), &mut work())?)?;
+    assert_eq!(result.mask_policy(), None);
+    assert_eq!(result.digest(), GOLDEN_HOG_COMPLETION);
+    assert_eq!(result.analysis().image, GOLDEN_HOG_IMAGE);
+    Ok(())
+}
+// Captured from the pre-masking composition at 40bf5a6 (same fixture, frame 1).
+const GOLDEN_HOG_COMPLETION: [u8; 32] = [
+    35, 56, 253, 208, 202, 61, 98, 237, 30, 147, 57, 36, 89, 67, 247, 57, 80, 194, 237, 229, 40,
+    121, 54, 12, 56, 145, 62, 34, 222, 121, 1, 23,
+];
+const GOLDEN_HOG_IMAGE: [u8; 32] = [
+    73, 207, 178, 16, 178, 202, 184, 68, 209, 235, 30, 212, 205, 2, 234, 137, 103, 185, 242, 250,
+    139, 231, 162, 203, 134, 13, 97, 208, 247, 61, 209, 172,
+];

@@ -138,6 +138,7 @@ fn input<'a>(bytes: &'a [u8], allowed: &'a [u8], exposure: u8) -> RgbDetectionIn
         allowed,
         interpretation: Color::YCbCr,
         source: source(bytes, allowed, exposure),
+        mask: &fss_reference::ingest::privacy_mask::live::NO_POLICY,
     }
 }
 fn run(

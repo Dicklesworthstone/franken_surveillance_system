@@ -1,6 +1,13 @@
 #![forbid(unsafe_code)]
 //! Bounded operator check over retained originals, native framing and optional full JPEG decode.
 //! No filesystem opening, network, publication, model invocation or implicit EOF occurs here.
+//!
+//! A decoding check digests only luma masked by the named sensor's current retained privacy mask
+//! ([`crate::ingest::privacy_mask::live`]); it is the retained-decode digest of the same frame.
+//! A decoding check that names no sensor is refused (`ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001`)
+//! before any source is read: an unmasked pixel digest is never emitted from custody. A
+//! framing-only check reads no pixels and needs no sensor. Without a policy the report and its
+//! frame chain are byte-identical to an unmasked check's; with one, the chain binds the policy.
 
 use super::completion::{HttpCompletionError, HttpCompletionPin, VerifiedHttpCompletion};
 use super::{
@@ -11,6 +18,8 @@ use crate::ingest::http_archive::{
     HttpArchiveError, HttpArchiveLimits, HttpWireArchive, HttpWirePin, HttpWireScope,
 };
 use crate::ingest::http_camera::rgb::http_rgb_exposure;
+use crate::ingest::privacy_mask::MaskBinding;
+use crate::ingest::privacy_mask::live::{MaskRefusal, SensorMask};
 use fss_codec_mjpeg::http::HttpTermination;
 use fss_codec_mjpeg::stream::StreamBasis;
 use fss_codec_mjpeg::{ComponentInterpretation, DecodeBudget, DecodeError, DecodeLimits};
@@ -190,6 +199,9 @@ pub enum HttpCheckError {
     },
     /// Source/linking work exhausted or cancelled.
     Work(GeometryError),
+    /// The privacy mask refused: a decoding check named no sensor, the sensor's mask could not
+    /// be resolved, or a frame's resolution differs from the policy's.
+    Privacy(MaskRefusal),
 }
 impl std::fmt::Display for HttpCheckError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -222,7 +234,8 @@ pub struct HttpCheckedFrame {
     pub source_runs: usize,
     /// Dimensions only after complete native decode; None means not requested.
     pub dimensions: Option<[u32; 2]>,
-    /// Native reconstructed luma digest, only after complete decode.
+    /// Native reconstructed luma digest after the sensor's privacy mask was applied, only after
+    /// complete decode (equal to the retained-decode digest of the same frame).
     pub luma: Option<ContentDigest>,
 }
 /// Inspection result; no publication, source completeness or physical coverage is implied.
@@ -257,6 +270,9 @@ pub struct HttpCheckReport {
     pub framing_work: u64,
     /// Native decode units charged, including unsuccessful work.
     pub decode_work: u64,
+    /// Privacy mask binding applied to every decoded frame (the explicit no-policy marker for a
+    /// sensor without a policy, and for a framing-only check that decodes nothing).
+    pub privacy: MaskBinding,
 }
 
 impl HttpCheckReport {
@@ -273,14 +289,24 @@ impl HttpCheckReport {
 /// The caller supplies the authorized store and a LIVE original-media access probe.
 /// Preparation errors occur before any frame is checked; later errors return a
 /// Refused report containing all earlier verified frames, counts and exact cause.
+/// A decoding check requires the recorded sensor (`privacy`); its current mask is resolved
+/// once, before any source is read, and applied to every decoded frame.
 pub fn check_http_recording(
     publisher: &LocalRootPublisher,
     request: HttpCheckRequest,
     limits: HttpCheckLimits,
     cancel: &dyn PublishCancellation,
+    privacy: Option<SensorMask<'_>>,
 ) -> Result<HttpCheckReport, HttpCheckError> {
     limits.validate()?;
     let pin = request.pin()?;
+    let mask = match (request.decode, privacy) {
+        (_, Some(sensor)) => sensor
+            .resolve()
+            .map_err(|e| HttpCheckError::Privacy(MaskRefusal::from(e)))?,
+        (HttpCheckDecode::None, None) => MaskBinding::NoPolicy,
+        (_, None) => return Err(HttpCheckError::Privacy(MaskRefusal::UnmaskedAccess)),
+    };
     probe(cancel)?;
     let mut work = WorkBudget::new(limits.source_work);
     let mut framing = DecodeBudget::new(limits.framing_work);
@@ -345,6 +371,11 @@ pub fn check_http_recording(
     });
     if let Some(d) = decoder {
         initial.digest(d);
+    }
+    // Only a masked decoding check adds the binding, so unmasked chains keep their bytes.
+    if decoder.is_some() && mask.policy().is_some() {
+        initial.text("privacy_mask");
+        initial.digest(mask.digest());
     }
     let mut chain = ContentDigest::sha256(
         &initial
@@ -423,6 +454,10 @@ pub fn check_http_recording(
                                 .map_err(|error| HttpCheckError::Decode {
                                     ordinal: receipt.ordinal,
                                     error,
+                                })
+                                .and_then(|image| {
+                                    mask.mask_luma(image)
+                                        .map_err(|e| HttpCheckError::Privacy(MaskRefusal::from(e)))
                                 })?,
                         ),
                     };
@@ -505,6 +540,7 @@ pub fn check_http_recording(
         source_work: work.used(),
         framing_work: framing.used(),
         decode_work: decoding.used(),
+        privacy: mask,
     })
 }
 fn valid(d: ContentDigest) -> bool {

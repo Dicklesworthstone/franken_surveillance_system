@@ -5,6 +5,10 @@
 //! resumption and result transfer. Independent capture/mask/availability context
 //! is required; replay position never supplies a camera timestamp or health claim.
 //! Accepted stages and their original frame stay held across refusal/cancellation.
+//!
+//! Every frame is decoded under the named sensor's *current* retained privacy mask, exactly as
+//! live HTTP RGB acquisition ([`crate::ingest::http_camera::rgb`]); the archived originals stay
+//! unmasked custody. A policy retained during a replay applies from the next analysed frame.
 
 use super::{
     HttpReplayAccess, HttpReplayError, HttpReplayPosition, HttpReplayRetirement, HttpReplayStep,
@@ -13,6 +17,8 @@ use super::{
 use crate::ScalarExecCx;
 use crate::ingest::http_archive::HttpWirePin;
 use crate::ingest::http_camera::rgb::{HttpRgbBudgets, HttpRgbContext, http_rgb_exposure};
+use crate::ingest::privacy_mask::MaskBinding;
+use crate::ingest::privacy_mask::live::MaskRefusal;
 use crate::ingest::rgb_detections::RgbDetectionBudget;
 use crate::ingest::rgb_detections::pipeline::RgbDetectionInput;
 use crate::ingest::rgb_inference::RgbRunLimits;
@@ -21,6 +27,7 @@ use crate::ingest::rgb_tracking::pipeline::{
     RgbZoneCompletion, RgbZonePhase,
 };
 use fss_codec_mjpeg::http_mjpeg::HttpJpegFrame;
+use fss_core::ContentDigest;
 use fss_geometry::{GeometryError, WorkBudget};
 
 /// An exact in-process transfer key, not a stored recipe, grant or durable receipt.
@@ -35,8 +42,18 @@ pub struct HttpRgbReplayReceipt {
     detections: [u8; 32],
     tracking: [u8; 32],
     zones: [u8; 32],
+    mask_policy: Option<ContentDigest>,
+    mask_generation: Option<u64>,
 }
 impl HttpRgbReplayReceipt {
+    /// Privacy mask policy applied to this frame, or `None`: the explicit no-policy marker.
+    pub fn mask_policy(self) -> Option<ContentDigest> {
+        self.mask_policy
+    }
+    /// Ledger generation of the applied policy, if any.
+    pub fn mask_generation(self) -> Option<u64> {
+        self.mask_generation
+    }
     /// Exact archived prefix supplying the frame; not implicit latest-head discovery.
     pub fn pin(self) -> HttpWirePin {
         self.pin
@@ -101,6 +118,8 @@ pub enum HttpRgbReplayError {
     Work(GeometryError),
     /// An inconsistent owner combination was found; neither owner is reset.
     State,
+    /// The sensor's privacy mask could not be resolved from retained authority.
+    Privacy(MaskRefusal),
 }
 impl From<HttpReplayError> for HttpRgbReplayError {
     fn from(error: HttpReplayError) -> Self {
@@ -145,6 +164,7 @@ pub struct HttpRgbReplay<'archive, 'model, 'temporal> {
     held: Option<RgbZoneCompletion>,
     processing: Option<Result<RgbJpegZoneProgress, RgbJpegZoneError>>,
     last_taken: Option<HttpRgbReplayReceipt>,
+    mask: MaskBinding,
 }
 impl<'archive, 'model, 'temporal> HttpRgbReplay<'archive, 'model, 'temporal> {
     /// Attach a fresh source and ready processor. The caller owns the historical
@@ -168,7 +188,13 @@ impl<'archive, 'model, 'temporal> HttpRgbReplay<'archive, 'model, 'temporal> {
             held: None,
             processing: None,
             last_taken: None,
+            mask: MaskBinding::NoPolicy,
         })
+    }
+    /// Privacy mask binding of the current (or last) analysed frame; the explicit no-policy
+    /// marker before any analysis or when the sensor has no retained policy.
+    pub fn privacy_mask(&self) -> &MaskBinding {
+        &self.mask
     }
     /// Read-only exact source progress and original held frame.
     pub fn source(&self) -> &HttpWireReplay<'archive> {
@@ -249,13 +275,19 @@ impl<'archive, 'model, 'temporal> HttpRgbReplay<'archive, 'model, 'temporal> {
         if exposure != source.exposure {
             return Err(HttpRgbReplayError::FrameMismatch);
         }
+        let mask = context
+            .privacy
+            .resolve()
+            .map_err(|e| HttpRgbReplayError::Privacy(MaskRefusal::from(e)))?;
         self.verify(&mut access)?;
+        self.mask = mask;
         let result = self.processor.run_jpeg(
             RgbDetectionInput {
                 bytes: frame.part().bytes(),
                 interpretation: context.interpretation,
                 source,
                 allowed: context.allowed,
+                mask: &self.mask,
             },
             context.admission,
             limits,
@@ -327,6 +359,8 @@ impl<'archive, 'model, 'temporal> HttpRgbReplay<'archive, 'model, 'temporal> {
                 detections: done.detection_run().report().digest().bytes(),
                 tracking: done.temporal().tracking_digest(),
                 zones: done.temporal().zone_digest(),
+                mask_policy: self.mask.policy_digest(),
+                mask_generation: self.mask.generation(),
             });
         }
         self.processing = Some(result);

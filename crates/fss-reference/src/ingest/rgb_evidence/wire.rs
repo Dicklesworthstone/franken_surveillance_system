@@ -1,11 +1,24 @@
 #![forbid(unsafe_code)]
-//! Bounded v1 recipe encoding. No path, runtime download, code, or ambient default.
+//! Bounded recipe encoding. No path, runtime download, code, or ambient default.
+//!
+//! Version 1 is the recipe of a frame decoded without a privacy mask policy; its bytes are
+//! unchanged. Version 2 is identical plus the applied privacy mask policy digest (a trailing
+//! marker), so a masked frame's evidence can never be replayed as, or confused with, an
+//! unmasked one.
 use super::*;
+use crate::ingest::privacy_mask::{decode_marker, encode_marker};
+
+const RECIPE_V1: &str = "fss.rgb-source-evidence.recipe.v1";
+const RECIPE_V2: &str = "fss.rgb_source_evidence.recipe.v2";
 use crate::ingest::rgb_detections::{HeadBoxes, HeadClasses, HeadLayout, HeadScore};
 
 pub(super) fn encode(r: &Recipe) -> Result<Vec<u8>, RgbEvidenceError> {
     let mut e = CanonicalEncoder::new();
-    e.text("fss.rgb-source-evidence.recipe.v1");
+    e.text(if r.mask_policy.is_some() {
+        RECIPE_V2
+    } else {
+        RECIPE_V1
+    });
     e.digest(r.graph);
     e.digest(r.weights);
     e.text(&r.spec.image_input);
@@ -90,6 +103,9 @@ pub(super) fn encode(r: &Recipe) -> Result<Vec<u8>, RgbEvidenceError> {
     for digest in r.expected {
         e.digest(digest);
     }
+    if r.mask_policy.is_some() {
+        encode_marker(&mut e, r.mask_policy);
+    }
     let bytes = e.finish_checked()?;
     if bytes.len() > MAX_RECIPE {
         return Err(RgbEvidenceError::Limit);
@@ -138,9 +154,11 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Recipe, RgbEvidenceError> {
         return Err(RgbEvidenceError::Limit);
     }
     let mut d = CanonicalDecoder::new(bytes);
-    if d.text()? != "fss.rgb-source-evidence.recipe.v1" {
-        return Err(RgbEvidenceError::Format);
-    }
+    let masked = match d.text()? {
+        RECIPE_V1 => false,
+        RECIPE_V2 => true,
+        _ => return Err(RgbEvidenceError::Format),
+    };
     let graph = d.digest()?;
     let weights = d.digest()?;
     let image_input = text(&mut d, 256)?;
@@ -268,6 +286,11 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Recipe, RgbEvidenceError> {
         d.digest()?,
         d.digest()?,
     ];
+    let mask_policy = if masked {
+        Some(decode_marker(&mut d)?.ok_or(RgbEvidenceError::Format)?)
+    } else {
+        None
+    };
     d.ensure_finished()?;
     RgbFrameAdmission::new(
         source,
@@ -288,6 +311,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Recipe, RgbEvidenceError> {
         availability,
         admission,
         expected,
+        mask_policy,
     };
     if encode(&result)? != bytes {
         return Err(RgbEvidenceError::Format);

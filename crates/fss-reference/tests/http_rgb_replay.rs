@@ -2,6 +2,7 @@
 //! Actual cold source replay through native JPEG/convolution/detection/zone engines.
 #[allow(dead_code)]
 mod http_rgb_support;
+mod privacy_live_support;
 mod rgb_zone_support;
 use fixture::{Test, WORK};
 use fss_codec_mjpeg::{ComponentInterpretation, DecodeBudget};
@@ -20,12 +21,14 @@ use fss_reference::ingest::http_camera::rgb::{
 };
 use fss_reference::ingest::http_replay::rgb::*;
 use fss_reference::ingest::http_replay::*;
+use fss_reference::ingest::privacy_mask::live::SensorMask;
 use fss_reference::ingest::rgb_detections::{RgbDetectionBudget, RgbDetectionContract};
 use fss_reference::ingest::rgb_inference::RgbInferenceModel;
 use fss_reference::ingest::rgb_tracking::pipeline::{RgbJpegZonePipeline, RgbZonePhase};
 use fss_reference::ingest::rgb_tracking::{RgbFrameAdmission, RgbZoneTracker};
 use fss_twin::image_tracking::TrackingAvailability;
 use http_rgb_support as live;
+use privacy_live_support::PrivacyDeployment;
 use rgb_zone_support as fixture;
 use std::cell::Cell;
 use std::path::PathBuf;
@@ -94,6 +97,7 @@ fn access<'a, 'cx>(
 fn acquire(
     p: &mut LocalRootPublisher,
     chunked: bool,
+    privacy: SensorMask<'_>,
 ) -> Test<(HttpWireScope, HttpWirePin, Vec<HttpRgbReceipt>)> {
     let model = fixture::model(1)?;
     let head = fixture::head(&model)?;
@@ -132,7 +136,8 @@ fn acquire(
                 commit.acknowledgement()?;
             }
             HttpRgbStep::AwaitingContext => {
-                let receipt = live::complete(&mut capture, &auth, original.len() as u8 + 1)?;
+                let receipt =
+                    live::complete(&mut capture, &auth, original.len() as u8 + 1, privacy)?;
                 let output = capture.take_result(receipt, live::NOW, &auth)?;
                 if original.len() == 1 {
                     assert!(!output.analysis().temporal().events().is_empty());
@@ -200,7 +205,11 @@ fn to_frame(r: &mut HttpRgbReplay<'_, '_, '_>, p: &LocalRootPublisher) -> Test {
     }
     Err("replay step bound".into())
 }
-fn context(r: &HttpRgbReplay<'_, '_, '_>, n: u8) -> Test<HttpRgbContext<'static>> {
+fn context<'a>(
+    r: &HttpRgbReplay<'_, '_, '_>,
+    n: u8,
+    privacy: SensorMask<'a>,
+) -> Test<HttpRgbContext<'a>> {
     let f = r.source().pending_frame().ok_or("missing original frame")?;
     let mut source = fixture::source(f.part().bytes(), &MASK, n);
     source.exposure = http_rgb_exposure(f, &mut work())?;
@@ -214,6 +223,7 @@ fn context(r: &HttpRgbReplay<'_, '_, '_>, n: u8) -> Test<HttpRgbContext<'static>
             TrackingAvailability::Available,
             ContentDigest::sha256(b"independent test capture and availability"),
         )?,
+        privacy,
     })
 }
 fn analyze(
@@ -240,8 +250,9 @@ fn complete(
     r: &mut HttpRgbReplay<'_, '_, '_>,
     p: &LocalRootPublisher,
     n: u8,
+    privacy: SensorMask<'_>,
 ) -> Test<HttpRgbReplayReceipt> {
-    let context = context(r, n)?;
+    let context = context(r, n, privacy)?;
     match analyze(r, context, p, &NeverCancel, &mut fixture::post())? {
         HttpRgbReplayStep::ResultReady(receipt) => Ok(*receipt),
         _ => Err("RGB replay incomplete".into()),
@@ -258,10 +269,11 @@ fn same(replayed: HttpRgbReplayReceipt, original: HttpRgbReceipt) {
 }
 #[test]
 fn cold_originals_reproduce_actual_neural_tracking_and_zone_results() -> Test {
+    let privacy = PrivacyDeployment::new("http-rgb-replay")?;
     for chunked in [false, true] {
         let d = Directory::new()?;
         let mut p = d.open()?;
-        let (scope, pin, original) = acquire(&mut p, chunked)?;
+        let (scope, pin, original) = acquire(&mut p, chunked, privacy.mask())?;
         assert_eq!(original.len(), 2);
         drop(p); // All original source, model, detector and temporal owners are gone.
         let p = d.open()?;
@@ -274,7 +286,7 @@ fn cold_originals_reproduce_actual_neural_tracking_and_zone_results() -> Test {
             for (i, native) in original.iter().enumerate() {
                 to_frame(&mut replay, &p)?;
                 let before = replay.source().position();
-                let receipt = complete(&mut replay, &p, i as u8 + 1)?;
+                let receipt = complete(&mut replay, &p, i as u8 + 1, privacy.mask())?;
                 same(receipt, *native);
                 assert_eq!(receipt.pin(), pin);
                 for _ in 0..3 {
@@ -320,16 +332,17 @@ fn cold_originals_reproduce_actual_neural_tracking_and_zone_results() -> Test {
 }
 #[test]
 fn mismatched_context_and_mask_leave_original_frame_correctable() -> Test {
+    let privacy = PrivacyDeployment::new("http-rgb-replay")?;
     let d = Directory::new()?;
     let mut p = d.open()?;
-    let (scope, pin, _) = acquire(&mut p, false)?;
+    let (scope, pin, _) = acquire(&mut p, false, privacy.mask())?;
     let a = restored(&p, scope, pin)?;
     let model = fixture::model(1)?;
     let head = fixture::head(&model)?;
     let mut owner = fixture::tracker(&head, fixture::tracking_policy())?;
     let mut r = attach(&a, &model, &head, &mut owner, 65536)?;
     to_frame(&mut r, &p)?;
-    let good = context(&r, 1)?;
+    let good = context(&r, 1, privacy.mask())?;
     let before = r.source().position();
     let bad = HttpRgbContext {
         ordinal: good.ordinal + 1,
@@ -367,16 +380,17 @@ fn mismatched_context_and_mask_leave_original_frame_correctable() -> Test {
 }
 #[test]
 fn accepted_projection_resumes_without_redecoding_or_replacing_context() -> Test {
+    let privacy = PrivacyDeployment::new("http-rgb-replay")?;
     let d = Directory::new()?;
     let mut p = d.open()?;
-    let (scope, pin, native) = acquire(&mut p, false)?;
+    let (scope, pin, native) = acquire(&mut p, false, privacy.mask())?;
     let a = restored(&p, scope, pin)?;
     let model = fixture::model(1)?;
     let head = fixture::head(&model)?;
     let mut owner = fixture::tracker(&head, fixture::tracking_policy())?;
     let mut r = attach(&a, &model, &head, &mut owner, 65536)?;
     to_frame(&mut r, &p)?;
-    let input = context(&r, 1)?;
+    let input = context(&r, 1, privacy.mask())?;
     assert!(matches!(
         analyze(
             &mut r,
@@ -418,16 +432,17 @@ impl PublishCancellation for Stop {
 }
 #[test]
 fn disclosure_denial_and_storage_budget_refuse_before_neural_acceptance() -> Test {
+    let privacy = PrivacyDeployment::new("http-rgb-replay")?;
     let d = Directory::new()?;
     let mut p = d.open()?;
-    let (scope, pin, _) = acquire(&mut p, false)?;
+    let (scope, pin, _) = acquire(&mut p, false, privacy.mask())?;
     let a = restored(&p, scope, pin)?;
     let model = fixture::model(1)?;
     let head = fixture::head(&model)?;
     let mut owner = fixture::tracker(&head, fixture::tracking_policy())?;
     let mut r = attach(&a, &model, &head, &mut owner, 65536)?;
     to_frame(&mut r, &p)?;
-    let input = context(&r, 1)?;
+    let input = context(&r, 1, privacy.mask())?;
     let before = r.source().position();
     assert_eq!(
         analyze(&mut r, input, &p, &Stop, &mut fixture::post()),
@@ -457,16 +472,17 @@ fn disclosure_denial_and_storage_budget_refuse_before_neural_acceptance() -> Tes
 }
 #[test]
 fn corrupt_originals_cannot_release_or_discard_completed_native_analysis() -> Test {
+    let privacy = PrivacyDeployment::new("http-rgb-replay")?;
     let d = Directory::new()?;
     let mut p = d.open()?;
-    let (scope, pin, _) = acquire(&mut p, false)?;
+    let (scope, pin, _) = acquire(&mut p, false, privacy.mask())?;
     let a = restored(&p, scope, pin)?;
     let model = fixture::model(1)?;
     let head = fixture::head(&model)?;
     let mut owner = fixture::tracker(&head, fixture::tracking_policy())?;
     let mut r = attach(&a, &model, &head, &mut owner, 65536)?;
     to_frame(&mut r, &p)?;
-    let receipt = complete(&mut r, &p, 1)?;
+    let receipt = complete(&mut r, &p, 1, privacy.mask())?;
     let span = r
         .source()
         .pending_frame()
@@ -512,9 +528,10 @@ impl PublishCancellation for Probe {
 }
 #[test]
 fn late_analysis_cancellation_preserves_success_without_reexecuting_it() -> Test {
+    let privacy = PrivacyDeployment::new("http-rgb-replay")?;
     let d = Directory::new()?;
     let mut p = d.open()?;
-    let (scope, pin, native) = acquire(&mut p, false)?;
+    let (scope, pin, native) = acquire(&mut p, false, privacy.mask())?;
     let a = restored(&p, scope, pin)?;
     let model = fixture::model(1)?;
     let head = fixture::head(&model)?;
@@ -526,7 +543,7 @@ fn late_analysis_cancellation_preserves_success_without_reexecuting_it() -> Test
             seen: Cell::new(0),
             stop: None,
         };
-        let input = context(&r, 1)?;
+        let input = context(&r, 1, privacy.mask())?;
         assert!(matches!(
             analyze(&mut r, input, &p, &probe, &mut fixture::post())?,
             HttpRgbReplayStep::ResultReady(_)
@@ -540,7 +557,7 @@ fn late_analysis_cancellation_preserves_success_without_reexecuting_it() -> Test
         seen: Cell::new(0),
         stop: Some(calls),
     };
-    let input = context(&r, 1)?;
+    let input = context(&r, 1, privacy.mask())?;
     assert_eq!(
         analyze(&mut r, input, &p, &probe, &mut fixture::post()),
         Err(HttpRgbReplayError::Source(HttpReplayError::Cancelled))
@@ -566,19 +583,20 @@ fn late_analysis_cancellation_preserves_success_without_reexecuting_it() -> Test
 }
 #[test]
 fn prior_result_key_cannot_release_a_later_complete_source() -> Test {
+    let privacy = PrivacyDeployment::new("http-rgb-replay")?;
     let d = Directory::new()?;
     let mut p = d.open()?;
-    let (scope, pin, _) = acquire(&mut p, false)?;
+    let (scope, pin, _) = acquire(&mut p, false, privacy.mask())?;
     let a = restored(&p, scope, pin)?;
     let model = fixture::model(1)?;
     let head = fixture::head(&model)?;
     let mut owner = fixture::tracker(&head, fixture::tracking_policy())?;
     let mut r = attach(&a, &model, &head, &mut owner, 65536)?;
     to_frame(&mut r, &p)?;
-    let old = complete(&mut r, &p, 1)?;
+    let old = complete(&mut r, &p, 1, privacy.mask())?;
     r.take_result(old, access(&p, &NeverCancel, &mut work(), &mut framing()))?;
     to_frame(&mut r, &p)?;
-    let current = complete(&mut r, &p, 2)?;
+    let current = complete(&mut r, &p, 2, privacy.mask())?;
     assert!(matches!(
         r.take_result(old, access(&p, &NeverCancel, &mut work(), &mut framing())),
         Err(HttpRgbReplayError::ReceiptMismatch)
@@ -594,9 +612,10 @@ fn prior_result_key_cannot_release_a_later_complete_source() -> Test {
 }
 #[test]
 fn rejected_attachment_returns_advanced_source_without_losing_original_bytes() -> Test {
+    let privacy = PrivacyDeployment::new("http-rgb-replay")?;
     let d = Directory::new()?;
     let mut p = d.open()?;
-    let (scope, pin, _) = acquire(&mut p, false)?;
+    let (scope, pin, _) = acquire(&mut p, false, privacy.mask())?;
     let a = restored(&p, scope, pin)?;
     let model = fixture::model(1)?;
     let head = fixture::head(&model)?;
@@ -630,16 +649,17 @@ fn rejected_attachment_returns_advanced_source_without_losing_original_bytes() -
 }
 #[test]
 fn deleted_originals_block_pending_stage_resumption_without_erasing_tensors() -> Test {
+    let privacy = PrivacyDeployment::new("http-rgb-replay")?;
     let d = Directory::new()?;
     let mut p = d.open()?;
-    let (scope, pin, _) = acquire(&mut p, false)?;
+    let (scope, pin, _) = acquire(&mut p, false, privacy.mask())?;
     let a = restored(&p, scope, pin)?;
     let model = fixture::model(1)?;
     let head = fixture::head(&model)?;
     let mut owner = fixture::tracker(&head, fixture::tracking_policy())?;
     let mut r = attach(&a, &model, &head, &mut owner, 65536)?;
     to_frame(&mut r, &p)?;
-    let input = context(&r, 1)?;
+    let input = context(&r, 1, privacy.mask())?;
     assert!(matches!(
         analyze(
             &mut r,
@@ -676,5 +696,119 @@ fn deleted_originals_block_pending_stage_resumption_without_erasing_tensors() ->
     assert!(retired.processor.inference.is_some());
     assert!(retired.source.frame.is_some());
     assert!(retired.complete.is_none());
+    Ok(())
+}
+
+/// The zone half of the 32x16 frame (x >= 14): where the bright-value boxes land.
+const ZONE_MASK: [u32; 4] = [14, 0, 18, 16];
+fn declare(p: &mut PrivacyDeployment, rectangles: &[[u32; 4]]) -> Test<ContentDigest> {
+    use fss_reference::ingest::privacy_mask::{PrivacyMaskPolicy, declare_mask, preview_mask};
+    let policy = PrivacyMaskPolicy::new(p.sensor.clone(), [32, 16], rectangles)?;
+    let preview = preview_mask(&p.deployment, &policy)?;
+    Ok(declare_mask(&mut p.deployment, &policy, preview.approval, &p.cx)?.policy_digest)
+}
+/// Native RGB decode with every masked pixel (x >= 14) set to the fill by hand.
+fn masked_rgb_digest(bytes: &[u8]) -> Test<[u8; 32]> {
+    let image = fss_codec_mjpeg::color::decode_rgb(
+        bytes,
+        ContentDigest::sha256(bytes).bytes(),
+        ComponentInterpretation::YCbCr,
+        Default::default(),
+        &mut DecodeBudget::new(WORK),
+    )?;
+    let mut rgb = image.pixels().to_vec();
+    for y in 0..16 {
+        for x in 14..32 {
+            let at = (y * 32 + x) * 3;
+            rgb[at..at + 3].copy_from_slice(&[16, 16, 16]);
+        }
+    }
+    Ok(ContentDigest::sha256(&rgb).bytes())
+}
+fn grid_context<'a>(
+    r: &HttpRgbReplay<'_, '_, '_>,
+    n: u8,
+    allowed: &'a [u8],
+    privacy: SensorMask<'a>,
+) -> Test<HttpRgbContext<'a>> {
+    let f = r.source().pending_frame().ok_or("missing original frame")?;
+    let mut source = fixture::source(f.part().bytes(), allowed, n);
+    source.exposure = http_rgb_exposure(f, &mut work())?;
+    Ok(HttpRgbContext {
+        expected_head: f.head(),
+        ordinal: f.part().receipt().ordinal,
+        interpretation: ComponentInterpretation::YCbCr,
+        allowed,
+        admission: RgbFrameAdmission::new(
+            source,
+            TrackingAvailability::Available,
+            ContentDigest::sha256(b"independent test capture and availability"),
+        )?,
+        privacy,
+    })
+}
+#[test]
+fn archived_originals_replay_under_the_sensors_current_mask_not_the_capture_time_one() -> Test {
+    let mut privacy = PrivacyDeployment::new("http-rgb-replay-masked")?;
+    let d = Directory::new()?;
+    let mut p = d.open()?;
+    let (scope, pin, native) = acquire(&mut p, false, privacy.mask())?;
+    assert!(native.iter().all(|r| r.mask_policy().is_none()));
+    let policy = declare(&mut privacy, &[ZONE_MASK])?;
+    let grid = privacy.mask().resolve()?.allowed([32, 16])?;
+    let a = restored(&p, scope, pin)?;
+    let model = fixture::model(1)?;
+    let head = fixture::head(&model)?;
+    let mut owner = fixture::tracker(&head, fixture::tracking_policy())?;
+    let mut r = attach(&a, &model, &head, &mut owner, 65536)?;
+    let images = [fixture::jpeg(16), fixture::jpeg(240)];
+    for (i, image) in images.iter().enumerate() {
+        let n = i as u8 + 1;
+        to_frame(&mut r, &p)?;
+        // A grid that still admits the masked zone is unmasked access: refused, retryable.
+        let open = grid_context(&r, n, &MASK, privacy.mask())?;
+        assert_eq!(
+            analyze(&mut r, open, &p, &NeverCancel, &mut fixture::post())?,
+            HttpRgbReplayStep::AnalysisRefused(RgbZonePhase::Ready)
+        );
+        let ctx = grid_context(&r, n, &grid, privacy.mask())?;
+        let HttpRgbReplayStep::ResultReady(receipt) =
+            analyze(&mut r, ctx, &p, &NeverCancel, &mut fixture::post())?
+        else {
+            return Err("masked replay incomplete".into());
+        };
+        assert_eq!(receipt.mask_policy(), Some(policy));
+        assert_eq!(receipt.mask_generation(), Some(1));
+        assert_ne!(receipt.inference(), native[i].inference());
+        let output = r.take_result(
+            *receipt,
+            access(&p, &NeverCancel, &mut work(), &mut framing()),
+        )?;
+        // Custody is the unmasked original; the derivation saw only masked RGB.
+        assert_eq!(output.frame().part().bytes(), image.as_slice());
+        let run = output.analysis().detection_run();
+        assert_eq!(
+            run.inference().decode_receipt().rgb_sha256,
+            masked_rgb_digest(image)?
+        );
+        if i == 1 {
+            assert!(
+                run.report().detections().is_empty(),
+                "motion inside the mask"
+            );
+            assert!(
+                output
+                    .analysis()
+                    .temporal()
+                    .events()
+                    .iter()
+                    .all(|e| !matches!(
+                        e.kind,
+                        fss_twin::image_zones::ImageZoneEventKind::EnteredBetweenObservations
+                            | fss_twin::image_zones::ImageZoneEventKind::SampledDwell
+                    ))
+            );
+        }
+    }
     Ok(())
 }

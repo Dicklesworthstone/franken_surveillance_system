@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 //! Real loopback input and real root-last storage, not a mock acknowledgement.
 mod http_rgb_support;
+mod privacy_live_support;
 mod rgb_zone_support;
 use fss_codec_mjpeg::DecodeBudget;
 use fss_geometry::{GeometryError, WorkBudget};
@@ -17,6 +18,7 @@ use fss_reference::ingest::http_camera::rgb::*;
 use fss_reference::ingest::http_camera::*;
 use fss_twin::image_zones::ImageZoneEventKind;
 use http_rgb_support::*;
+use privacy_live_support::PrivacyDeployment;
 use rgb_zone_support::{Test, WORK, head, jpeg, model, tracker, tracking_policy};
 use std::path::PathBuf;
 
@@ -118,6 +120,7 @@ impl PublishCancellation for Stop {
 
 #[test]
 fn durable_original_reads_feed_neural_events_and_survive_cold_restore() -> Test {
+    let privacy = PrivacyDeployment::new("http-rgb-custody")?;
     let d = Directory::new("native-cold")?;
     let mut publisher = d.open()?;
     let model = model(1)?;
@@ -175,7 +178,7 @@ fn durable_original_reads_feed_neural_events_and_survive_cold_restore() -> Test 
                     &NeverCancel,
                     &mut WorkBudget::new(WORK),
                 )?;
-                let receipt = complete(&mut c, &a, (outputs.len() + 1) as u8)?;
+                let receipt = complete(&mut c, &a, (outputs.len() + 1) as u8, privacy.mask())?;
                 outputs.push(c.take_result(receipt, NOW, &a)?);
             }
             HttpRgbStep::Source(HttpCameraStep::Complete) => {

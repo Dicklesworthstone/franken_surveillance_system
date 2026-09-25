@@ -169,6 +169,7 @@ impl FramedJpegHogPipeline {
                 foreground_policy: query.policy,
                 decode_limits: query.limits,
                 stamp,
+                redaction: None,
             },
             decode,
             rectification,

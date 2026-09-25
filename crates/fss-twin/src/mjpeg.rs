@@ -11,6 +11,7 @@ use crate::rectification::{
     LumaRange, RawFrameIdentity, RawGrayFrame, RectificationError, RectificationPlan,
     RectifiedFrame,
 };
+use crate::redaction::{LumaRedaction, RedactionRefused};
 use fss_codec_mjpeg::{
     ComponentInterpretation, DecodeBudget, DecodeError, DecodeLimits, DecodeReceipt, DecodedLuma,
     decode_luma, decoder_identity,
@@ -63,6 +64,9 @@ pub struct JpegReceipt {
     pub decode: DecodeReceipt,
     /// Actual verified raw luma/mask identity supplied to the rectifier.
     pub raw: RawFrameIdentity,
+    /// Identity of the owner redaction applied to the decoded plane, if any. When present,
+    /// `decode.luma_sha256` and `raw.storage` name the redacted plane, never the decoder output.
+    pub redaction: Option<[u8; 32]>,
 }
 
 /// No error returns a partially decoded, rectified or classified success.
@@ -78,6 +82,8 @@ pub enum JpegPipelineError {
     BasisMismatch,
     /// Bounded source/reference allocation failed.
     Limit,
+    /// The owner redaction refused the decoded plane; nothing unredacted is returned.
+    Redaction(RedactionRefused),
 }
 impl From<DecodeError> for JpegPipelineError {
     fn from(e: DecodeError) -> Self {
@@ -107,20 +113,55 @@ impl std::fmt::Display for JpegPipelineError {
             Self::Foreground(_) => "JPEG foreground operation failed",
             Self::BasisMismatch => "JPEG pipeline basis mismatch",
             Self::Limit => "JPEG pipeline allocation limit",
+            Self::Redaction(_) => "JPEG decoded-plane redaction refused",
         })
     }
 }
 impl std::error::Error for JpegPipelineError {}
 
+/// One complete owner-framed JPEG with its permission grid, bindings, limits and an optional
+/// owner redaction applied to the decoded plane before any consumer or digest sees it.
+#[derive(Clone, Copy)]
+pub struct JpegDecodeRequest<'a> {
+    /// Exactly one complete compressed frame.
+    pub bytes: &'a [u8],
+    /// Complete coded-grid 0/1 permission mask.
+    pub mask: &'a [u8],
+    /// Independent source, mask, calibration and decoder-interpretation bindings.
+    pub source: JpegFrameBinding,
+    /// Native decoder ceilings.
+    pub limits: DecodeLimits,
+    /// Owner redaction of the decoded luma plane; `None` leaves the decoder output unchanged.
+    pub redaction: Option<&'a dyn LumaRedaction>,
+}
+
+/// Decoded plane handed to the rectifier: the decoder output, or its owner-redacted copy.
+enum DecodedPlane {
+    Decoded(DecodedLuma),
+    Redacted(Vec<u8>),
+}
+impl DecodedPlane {
+    fn pixels(&self) -> &[u8] {
+        match self {
+            Self::Decoded(decoded) => decoded.pixels(),
+            Self::Redacted(pixels) => pixels,
+        }
+    }
+}
+
 fn decode_source(
     plan: &RectificationPlan,
-    bytes: &[u8],
-    mask: &[u8],
-    source: JpegFrameBinding,
-    limits: DecodeLimits,
+    request: JpegDecodeRequest<'_>,
     decode_budget: &mut DecodeBudget<'_>,
     geometry_budget: &mut WorkBudget<'_>,
-) -> Result<(DecodedLuma, JpegReceipt), JpegPipelineError> {
+) -> Result<(DecodedPlane, JpegReceipt), JpegPipelineError> {
+    let JpegDecodeRequest {
+        bytes,
+        mask,
+        source,
+        limits,
+        redaction,
+    } = request;
     geometry_budget.charge(0)?;
     let spec = plan.spec();
     if [
@@ -156,9 +197,33 @@ fn decode_source(
     if decoded.dimensions() != size {
         return Err(JpegPipelineError::BasisMismatch);
     }
+    // The owner redaction runs before anything else reads the plane; its digest replaces the
+    // decoder's, so no receipt names pixels the redaction removed.
+    let (plane, codec) = match redaction {
+        None => {
+            let codec = decoded.receipt();
+            (DecodedPlane::Decoded(decoded), codec)
+        }
+        Some(redaction) => {
+            geometry_budget.charge(decoded.pixels().len() as u64 * 2)?;
+            let mut pixels = Vec::new();
+            pixels
+                .try_reserve_exact(decoded.pixels().len())
+                .map_err(|_| JpegPipelineError::Limit)?;
+            pixels.extend_from_slice(decoded.pixels());
+            redaction
+                .redact(&mut pixels, size)
+                .map_err(JpegPipelineError::Redaction)?;
+            let codec = DecodeReceipt {
+                luma_sha256: ContentDigest::sha256(&pixels).bytes(),
+                ..decoded.receipt()
+            };
+            (DecodedPlane::Redacted(pixels), codec)
+        }
+    };
     let raw = RawFrameIdentity {
         exposure: source.exposure,
-        storage: decoded.receipt().luma_sha256,
+        storage: codec.luma_sha256,
         allowed_mask: source.allowed_mask,
         image_domain: spec.source_domain,
         calibration: source.calibration,
@@ -168,11 +233,12 @@ fn decode_source(
     };
     let receipt = JpegReceipt {
         source,
-        decode: decoded.receipt(),
+        decode: codec,
         raw,
+        redaction: redaction.map(LumaRedaction::identity),
     };
     geometry_budget.charge(0)?;
-    Ok((decoded, receipt))
+    Ok((plane, receipt))
 }
 
 /// Actual native decoded/rectified frame, retaining compressed source identity.
@@ -201,16 +267,31 @@ pub fn decode_rectified(
     decode_budget: &mut DecodeBudget<'_>,
     geometry_budget: &mut WorkBudget<'_>,
 ) -> Result<JpegRectified, JpegPipelineError> {
-    let (decoded, receipt) = decode_source(
+    decode_rectified_redacted(
         plan,
-        bytes,
-        mask,
-        source,
-        limits,
+        JpegDecodeRequest {
+            bytes,
+            mask,
+            source,
+            limits,
+            redaction: None,
+        },
         decode_budget,
         geometry_budget,
-    )?;
-    let raw = RawGrayFrame::new(receipt.raw, decoded.pixels(), mask, geometry_budget)?;
+    )
+}
+
+/// [`decode_rectified`] with the request's owner redaction applied to the decoded plane before
+/// the rectifier, digests or any other consumer see it (a `None` redaction is exactly
+/// [`decode_rectified`]). The receipt names the redaction identity.
+pub fn decode_rectified_redacted(
+    plan: &RectificationPlan,
+    request: JpegDecodeRequest<'_>,
+    decode_budget: &mut DecodeBudget<'_>,
+    geometry_budget: &mut WorkBudget<'_>,
+) -> Result<JpegRectified, JpegPipelineError> {
+    let (decoded, receipt) = decode_source(plan, request, decode_budget, geometry_budget)?;
+    let raw = RawGrayFrame::new(receipt.raw, decoded.pixels(), request.mask, geometry_budget)?;
     let frame = plan.apply(&raw, geometry_budget)?;
     geometry_budget.charge(0)?;
     Ok(JpegRectified { frame, receipt })
@@ -289,10 +370,13 @@ impl JpegBackground {
     ) -> Result<JpegForeground, JpegPipelineError> {
         let (decoded, receipt) = decode_source(
             plan,
-            bytes,
-            mask,
-            source,
-            limits,
+            JpegDecodeRequest {
+                bytes,
+                mask,
+                source,
+                limits,
+                redaction: None,
+            },
             decode_budget,
             geometry_budget,
         )?;

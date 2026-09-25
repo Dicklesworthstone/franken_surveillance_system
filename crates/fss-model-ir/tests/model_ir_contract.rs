@@ -451,9 +451,10 @@ fn test_schema_domain_and_pinned_counts() -> Result<(), Box<dyn Error>> {
     // SCHEMA-DOMAIN-RGB-MODEL-EXECUTION-001 (fss-bd99t).
     // 105 = 103 + the two fss-bd99t domains (fss-704tz and fss-bd99t landed together).
     // 109 = 105 + SCHEMA-DOMAIN-PRIVACY-MASK-{POLICY,BINDING,APPROVAL,LINEAGE}-001 (fss-bgqkd).
+    // 110 = 109 + SCHEMA-DOMAIN-RGB-EVIDENCE-RECIPE-MASKED-001 (fss-g9gml).
     assert_eq!(
-        domain_count, 109,
-        "registries/DIGEST_DOMAINS.md count must remain pinned at 109"
+        domain_count, 110,
+        "registries/DIGEST_DOMAINS.md count must remain pinned at 110"
     );
 
     let schemas_path = Path::new(env!("CARGO_MANIFEST_DIR"))

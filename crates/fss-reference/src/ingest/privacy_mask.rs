@@ -63,6 +63,9 @@ pub mod enforce;
 /// Coverage honesty over masked zones.
 pub mod coverage;
 
+/// The sensor's current mask on live, recording and replay decode paths.
+pub mod live;
+
 fn hex(digest: ContentDigest) -> String {
     digest.bytes().iter().map(|b| format!("{b:02x}")).collect()
 }

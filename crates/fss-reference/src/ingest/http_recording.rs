@@ -6,13 +6,17 @@
 //! its exact expected pin, explicitly commits it, and only then may parsing advance.
 //! There is no responsibility-only ACK escape, network retry, hidden worker, clock,
 //! new journal, canonical event, or inference of capture time from receipt time.
+//!
+//! Original reads are unmasked source custody. A requested decode is masked by the named
+//! sensor's *current* retained privacy mask ([`super::privacy_mask::live`]), resolved for each
+//! frame, so a policy retained mid-recording applies from the next decoded frame and earlier
+//! frames keep the binding they were decoded under. A decode without a named sensor is refused
+//! (`ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001`); no unmasked luma is ever returned.
 
 use fss_codec_mjpeg::http::{HttpHeadIdentity, HttpLimits};
 use fss_codec_mjpeg::http_mjpeg::HttpJpegFrame;
 use fss_codec_mjpeg::multipart::MultipartLimits;
-use fss_codec_mjpeg::{
-    ComponentInterpretation, DecodeBudget, DecodeError, DecodeLimits, DecodedLuma,
-};
+use fss_codec_mjpeg::{ComponentInterpretation, DecodeBudget, DecodeError, DecodeLimits};
 use fss_geometry::{GeometryError, WorkBudget};
 use fss_object::MAX_MANIFEST_CHILDREN;
 use fss_publication::{
@@ -32,6 +36,7 @@ use super::http_replay::check::{HttpCheckDecode, HttpCheckLimits, HttpCheckSourc
 use super::http_replay::completion::{
     HttpCompletionError, HttpCompletionPin, PreparedHttpCompletion,
 };
+use super::privacy_mask::live::{MaskRefusal, MaskedLuma, SensorMask};
 
 /// Whole-recording limits, including the existing checker's source/decode bounds.
 #[derive(Clone, Copy, Debug)]
@@ -137,6 +142,9 @@ pub enum HttpRecordingError {
     },
     /// Whole-recording source/linking budget or cancellation refused.
     Work(GeometryError),
+    /// The privacy mask refused a decode: no sensor was named, its mask could not be resolved,
+    /// or the frame's resolution differs from the policy's. The original frame remains held.
+    Privacy(MaskRefusal),
 }
 impl From<HttpCameraError> for HttpRecordingError {
     fn from(e: HttpCameraError) -> Self {
@@ -252,8 +260,9 @@ pub struct HttpRecordingWireCommit {
 pub struct HttpRecordingFrameCheck {
     /// Existing exact HTTP source-map identity; not proof of a distinct physical exposure.
     pub exposure: [u8; 32],
-    /// Full native luma result when requested, not merely JPEG header metadata.
-    pub decoded: Option<DecodedLuma>,
+    /// Full native luma result when requested, masked by the sensor's current privacy mask
+    /// (its receipt names the applied policy or the explicit no-policy marker).
+    pub decoded: Option<MaskedLuma>,
 }
 /// Whole original frame and its optional native decode, transferable to another owner.
 #[derive(Debug)]
@@ -532,13 +541,18 @@ impl HttpRecording {
     /// Verify original custody and optionally decode the COMPLETE JPEG. Every
     /// budget is recording-wide. A failed final release keeps accepted decode work
     /// as well as the original frame; retire() transfers both without another read.
+    /// A decode requires the recorded sensor; its current mask is applied to the plane.
     pub fn take_frame(
         &mut self,
         expected: HttpRecordingFrameKey,
         publisher: &LocalRootPublisher,
         access: HttpRecordingAccess<'_>,
+        privacy: Option<SensorMask<'_>>,
     ) -> Result<HttpRecordedFrame, HttpRecordingError> {
         probe(access)?;
+        if self.limits.decode != HttpCheckDecode::None && privacy.is_none() {
+            return Err(HttpRecordingError::Privacy(MaskRefusal::UnmaskedAccess));
+        }
         let frame = self
             .camera
             .pending_frame()
@@ -572,7 +586,11 @@ impl HttpRecording {
                 HttpCheckDecode::Grayscale => Some(ComponentInterpretation::Grayscale),
                 HttpCheckDecode::YCbCr => Some(ComponentInterpretation::YCbCr),
             };
-            let decoded = if let Some(interpretation) = interpretation {
+            let decoded = if let (Some(interpretation), Some(sensor)) = (interpretation, privacy) {
+                // The sensor's mask as of THIS frame; applied before the plane is returned.
+                let mask = sensor
+                    .resolve()
+                    .map_err(|e| HttpRecordingError::Privacy(MaskRefusal::from(e)))?;
                 let m = self.limits.media;
                 match frame.decode(
                     interpretation,
@@ -584,7 +602,10 @@ impl HttpRecording {
                     },
                     &mut self.decoder,
                 ) {
-                    Ok(image) => Some(image),
+                    Ok(image) => Some(
+                        mask.mask_luma(image)
+                            .map_err(|e| HttpRecordingError::Privacy(MaskRefusal::from(e)))?,
+                    ),
                     Err(error) => {
                         let error = HttpRecordingError::Decode {
                             ordinal: expected.ordinal,

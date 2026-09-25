@@ -8,6 +8,7 @@ use fss_model_ir::{
 };
 use fss_reference::ingest::model_import::rgb::{ImportedRgbModel, RgbModelImportRequest};
 use fss_reference::ingest::model_import::{ImportBudget, ImportLimits, WeightFloatPolicy};
+use fss_reference::ingest::privacy_mask::MaskBinding;
 use fss_reference::ingest::rgb_detections::pipeline::*;
 use fss_reference::ingest::rgb_detections::*;
 use fss_reference::ingest::rgb_evidence::*;
@@ -19,6 +20,8 @@ use fss_tensor::{DType, Shape};
 use fss_twin::image_tracking::TrackingAvailability;
 use std::collections::BTreeMap;
 use std::path::Path;
+#[path = "../privacy_live_support/mod.rs"]
+pub mod privacy_live_support;
 #[path = "../../../fss-codec-mjpeg/tests/rgb_support/mod.rs"]
 mod rgb_support;
 pub type Test<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -125,10 +128,20 @@ pub fn capture(
     availability: TrackingAvailability,
     cx: &ReplayCx,
 ) -> Test<RgbEvidence> {
+    capture_with(exposure, availability, &MaskBinding::NoPolicy, cx)
+}
+/// Captures evidence of a frame analysed under `privacy`; the owner grid excludes exactly the
+/// masked pixels (all admitted without a policy).
+pub fn capture_with(
+    exposure: u8,
+    availability: TrackingAvailability,
+    privacy: &MaskBinding,
+    cx: &ReplayCx,
+) -> Test<RgbEvidence> {
     let graph = graph()?;
     let weights = weights();
     let jpeg = jpeg(exposure);
-    let mask = vec![1; 128];
+    let mask = privacy.allowed([16, 8])?;
     let spec = RgbModelSpec {
         image_input: "image".into(),
         preprocess: PreprocessProgram::new(8, 8, ChannelTransform::Rgb, true),
@@ -193,6 +206,7 @@ pub fn capture(
             allowed: &mask,
             source,
             interpretation: ComponentInterpretation::YCbCr,
+            mask: privacy,
         },
         limits().run,
         &mut DecodeBudget::new(WORK),
@@ -213,8 +227,11 @@ pub fn capture(
         cx,
     )?)
 }
+/// Replays under a sensor without a retained privacy mask policy (the recorded no-policy marker).
 pub fn replay(e: &RgbEvidence, cx: &ReplayCx) -> Test<ReplayedRgbEvidence> {
+    let privacy = privacy_live_support::PrivacyDeployment::new("rgb-evidence")?;
     Ok(e.replay(
+        privacy.mask(),
         limits(),
         &mut RgbEvidenceBudget::new(WORK),
         &mut ImportBudget::new(WORK),

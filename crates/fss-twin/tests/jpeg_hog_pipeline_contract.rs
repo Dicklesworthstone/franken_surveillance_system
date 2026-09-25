@@ -245,6 +245,7 @@ impl Fixture {
                 received_at_ns: 30 + n * 10,
                 owner_requests_analysis: false,
             },
+            redaction: None,
         }
     }
     fn run(

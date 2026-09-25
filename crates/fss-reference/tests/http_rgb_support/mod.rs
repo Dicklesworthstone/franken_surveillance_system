@@ -10,6 +10,7 @@ use fss_geometry::WorkBudget;
 use fss_reference::ScalarExecCx;
 use fss_reference::ingest::http_camera::rgb::*;
 use fss_reference::ingest::http_camera::*;
+use fss_reference::ingest::privacy_mask::live::SensorMask;
 use fss_reference::ingest::rgb_detections::{RgbDetectionBudget, RgbDetectionContract};
 use fss_reference::ingest::rgb_inference::RgbInferenceModel;
 use fss_reference::ingest::rgb_tracking::pipeline::RgbJpegZonePipeline;
@@ -252,6 +253,7 @@ pub fn context<'a>(
     mask: &'a [u8],
     n: u8,
     availability: TrackingAvailability,
+    privacy: SensorMask<'a>,
 ) -> Test<HttpRgbContext<'a>> {
     let f = c.frame().ok_or("mapped frame missing")?;
     let mut source = fixture::source(f.part().bytes(), mask, n);
@@ -266,6 +268,7 @@ pub fn context<'a>(
             availability,
             ContentDigest::sha256(b"independent test capture and availability"),
         )?,
+        privacy,
     })
 }
 pub fn analyze<'cx>(
@@ -291,8 +294,13 @@ pub fn analyze<'cx>(
         &ScalarExecCx::new(),
     )
 }
-pub fn complete(c: &mut HttpRgbCapture<'_, '_>, a: &Authority, n: u8) -> Test<HttpRgbReceipt> {
-    let context = context(c, &[1; 512], n, TrackingAvailability::Available)?;
+pub fn complete(
+    c: &mut HttpRgbCapture<'_, '_>,
+    a: &Authority,
+    n: u8,
+    privacy: SensorMask<'_>,
+) -> Test<HttpRgbReceipt> {
+    let context = context(c, &[1; 512], n, TrackingAvailability::Available, privacy)?;
     let step = analyze(
         c,
         context,

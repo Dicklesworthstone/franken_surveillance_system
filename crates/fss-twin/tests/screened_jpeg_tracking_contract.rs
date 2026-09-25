@@ -159,6 +159,7 @@ fn query(mask: &[u8], sequence: u64) -> JpegScreeningQuery<'_> {
             received_at_ns: time,
             owner_requests_analysis: false,
         },
+        redaction: None,
     }
 }
 fn screen(

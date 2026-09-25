@@ -5,9 +5,18 @@
 //! import, execution and head projection can return a `ReplayedRgbEvidence`.
 //! Source declarations and availability remain declarations, not authentication,
 //! camera health, coverage, model admission, event authority or alert permission.
+//!
+//! The original JPEG and permission grid inside an envelope are unmasked source custody. A frame
+//! analysed under a privacy mask policy records that policy (recipe version 2); replay names the
+//! sensor ([`SensorMask`]) and re-applies its *current* policy, and refuses
+//! (`ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001`) when the recorded binding is not the sensor's
+//! current one: evidence recorded unmasked, or under a superseded generation, is never replayed
+//! into unmasked or differently masked pixels.
 
 use super::model_import::rgb::{ImportedRgbModel, RgbModelImportRequest};
 use super::model_import::{ImportBudget, ImportLimits, WeightFloatPolicy};
+use super::privacy_mask::PrivacyMaskError;
+use super::privacy_mask::live::SensorMask;
 use super::rgb_detections::pipeline::{
     RgbDetectionInput, RgbDetectionRun, RgbDetectionStep, RgbDetector,
 };
@@ -71,6 +80,18 @@ pub enum RgbEvidenceError {
     Contract(ContractError),
     /// Existing import/decode/inference/head owner refused the actual computation.
     Computation(Box<dyn std::error::Error>),
+    /// The sensor's current privacy mask refused the replay: the evidence was recorded under
+    /// another binding (unmasked or a superseded policy), or the mask could not be resolved.
+    Privacy(PrivacyMaskError),
+}
+impl RgbEvidenceError {
+    /// Registered stable identity of a privacy refusal, if this is one.
+    pub fn privacy_stable_id(&self) -> Option<&'static str> {
+        match self {
+            Self::Privacy(error) => Some(error.stable_id()),
+            _ => None,
+        }
+    }
 }
 impl From<ContractError> for RgbEvidenceError {
     fn from(error: ContractError) -> Self {
@@ -87,6 +108,7 @@ impl std::fmt::Display for RgbEvidenceError {
             Self::Cancelled => "RGB evidence owner cancelled",
             Self::Contract(_) => "RGB evidence canonical contract refused",
             Self::Computation(_) => "RGB evidence computation refused",
+            Self::Privacy(_) => "RGB evidence privacy mask refused the replay",
         })
     }
 }
@@ -95,6 +117,7 @@ impl std::error::Error for RgbEvidenceError {
         match self {
             Self::Contract(e) => Some(e),
             Self::Computation(e) => Some(e.as_ref()),
+            Self::Privacy(e) => Some(e),
             _ => None,
         }
     }
@@ -198,6 +221,7 @@ impl RgbEvidence {
                 inference.output_digest(),
                 run.report().digest(),
             ],
+            mask_policy: run.mask_policy(),
         };
         let bytes = wire::encode(&recipe)?;
         Self::from_parts(
@@ -225,6 +249,11 @@ impl RgbEvidence {
     /// Original coded-grid permissions, unchanged by restore.
     pub fn allowed(&self) -> &[u8] {
         &self.mask
+    }
+    /// Privacy mask policy the recorded frame was analysed under, or `None`: the explicit
+    /// no-policy marker (a version-1 recipe).
+    pub fn mask_policy(&self) -> Result<Option<ContentDigest>, RgbEvidenceError> {
+        Ok(wire::decode(&self.recipe)?.mask_policy)
     }
     /// Original canonical graph bytes supplied to the importer.
     pub fn graph(&self) -> &[u8] {
@@ -356,12 +385,14 @@ impl RgbEvidence {
         Ok(result)
     }
 
-    /// Re-import original weights, decode original JPEG, apply original permissions,
-    /// execute the original graph and head, then compare EVERY retained fingerprint.
-    /// No latest model, supplied tensor shortcut, hidden fallback or ledger mutation.
+    /// Re-import original weights, decode original JPEG, apply the sensor's current privacy
+    /// mask and the original permissions, execute the original graph and head, then compare
+    /// EVERY retained fingerprint. No latest model, supplied tensor shortcut, hidden fallback or
+    /// ledger mutation. The recorded mask binding must be the sensor's current binding.
     #[allow(clippy::too_many_arguments)]
     pub fn replay(
         &self,
+        privacy: SensorMask<'_>,
         limits: RgbReplayLimits,
         work: &mut RgbEvidenceBudget,
         import: &mut ImportBudget,
@@ -375,6 +406,14 @@ impl RgbEvidence {
             .checkpoint("rgb-evidence:replay")
             .map_err(computation)?;
         let r = wire::decode(&self.recipe)?;
+        // Checked before any decode: evidence recorded under another binding than the sensor's
+        // current one would serve pixels its current policy does not mask this way.
+        let mask = privacy.resolve().map_err(RgbEvidenceError::Privacy)?;
+        if mask.policy_digest() != r.mask_policy {
+            return Err(RgbEvidenceError::Privacy(
+                PrivacyMaskError::UnmaskedAccessRefused,
+            ));
+        }
         let request = RgbModelImportRequest {
             graph: &self.graph,
             graph_digest: r.graph,
@@ -402,6 +441,7 @@ impl RgbEvidence {
                         allowed: &self.mask,
                         source: r.source,
                         interpretation: r.interpretation,
+                        mask: &mask,
                     },
                     limits.run,
                     decoder,
@@ -533,5 +573,7 @@ struct Recipe {
     admission: [u8; 32],
     // Imported source/recipe, head, inference, masked input, model input, tensors, detections.
     expected: [ContentDigest; 7],
+    // Applied privacy mask policy (version 2), or none (version 1).
+    mask_policy: Option<ContentDigest>,
 }
 mod wire;

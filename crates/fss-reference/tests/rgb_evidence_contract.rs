@@ -8,6 +8,7 @@ use fss_reference::ingest::rgb_detections::RgbDetectionBudget;
 use fss_reference::ingest::rgb_evidence::*;
 use fss_twin::image_tracking::TrackingAvailability;
 mod rgb_evidence_support;
+use rgb_evidence_support::privacy_live_support::PrivacyDeployment;
 use rgb_evidence_support::*;
 
 #[test]
@@ -87,6 +88,7 @@ fn changed_original_source_cannot_hide_behind_valid_envelope_framing() -> Test {
 }
 #[test]
 fn self_consistent_envelope_does_not_certify_a_forged_result_digest() -> Test {
+    let privacy = PrivacyDeployment::new("rgb-evidence")?;
     let cx = context(&std::env::temp_dir())?;
     let e = capture(1, TrackingAvailability::Available, &cx)?;
     let mut bytes = e.encode(
@@ -106,6 +108,7 @@ fn self_consistent_envelope_does_not_certify_a_forged_result_digest() -> Test {
     )?;
     assert!(matches!(
         structural.replay(
+            privacy.mask(),
             limits(),
             &mut RgbEvidenceBudget::new(WORK),
             &mut ImportBudget::new(WORK),
@@ -182,6 +185,7 @@ fn availability_and_uncertain_capture_intervals_survive_exactly() -> Test {
 }
 #[test]
 fn independent_resource_refusals_do_not_consume_or_change_evidence() -> Test {
+    let privacy = PrivacyDeployment::new("rgb-evidence")?;
     let cx = context(&std::env::temp_dir())?;
     let e = capture(1, TrackingAvailability::Available, &cx)?;
     let id = e.identity();
@@ -192,6 +196,7 @@ fn independent_resource_refusals_do_not_consume_or_change_evidence() -> Test {
         }
         assert!(
             e.replay(
+                privacy.mask(),
                 l,
                 &mut RgbEvidenceBudget::new(WORK),
                 &mut ImportBudget::new(if stage == 0 { 0 } else { WORK }),
@@ -209,6 +214,7 @@ fn independent_resource_refusals_do_not_consume_or_change_evidence() -> Test {
     cancelled.request_cancellation();
     assert!(
         e.replay(
+            privacy.mask(),
             limits(),
             &mut RgbEvidenceBudget::new(WORK),
             &mut ImportBudget::new(WORK),
@@ -223,6 +229,7 @@ fn independent_resource_refusals_do_not_consume_or_change_evidence() -> Test {
 }
 #[test]
 fn successful_allowances_do_not_change_envelope_or_replayed_identity() -> Test {
+    let privacy = PrivacyDeployment::new("rgb-evidence")?;
     let cx = context(&std::env::temp_dir())?;
     let e = capture(1, TrackingAvailability::Available, &cx)?;
     let mut full = RgbEvidenceBudget::new(WORK);
@@ -251,6 +258,7 @@ fn successful_allowances_do_not_change_envelope_or_replayed_identity() -> Test {
     let mut l = limits();
     l.run.execution.max_macs *= 2;
     let b = e.replay(
+        privacy.mask(),
         l,
         &mut RgbEvidenceBudget::new(WORK),
         &mut ImportBudget::new(WORK),
@@ -262,3 +270,108 @@ fn successful_allowances_do_not_change_envelope_or_replayed_identity() -> Test {
     assert_eq!(a.run().report().digest(), b.run().report().digest());
     Ok(())
 }
+
+fn declare(p: &mut PrivacyDeployment, rectangles: &[[u32; 4]]) -> Test<ContentDigest> {
+    use fss_reference::ingest::privacy_mask::{PrivacyMaskPolicy, declare_mask, preview_mask};
+    let policy = PrivacyMaskPolicy::new(p.sensor.clone(), [16, 8], rectangles)?;
+    let preview = preview_mask(&p.deployment, &policy)?;
+    Ok(declare_mask(&mut p.deployment, &policy, preview.approval, &p.cx)?.policy_digest)
+}
+fn replay_under(
+    e: &RgbEvidence,
+    privacy: &PrivacyDeployment,
+    cx: &fss_reference::ReplayCx,
+) -> Result<ReplayedRgbEvidence, RgbEvidenceError> {
+    e.replay(
+        privacy.mask(),
+        limits(),
+        &mut RgbEvidenceBudget::new(WORK),
+        &mut ImportBudget::new(WORK),
+        &mut DecodeBudget::new(WORK),
+        &mut RgbDetectionBudget::new(WORK, 32 * 1024 * 1024),
+        cx,
+        &ScalarExecCx::new(),
+    )
+}
+#[test]
+fn evidence_replays_only_under_the_sensors_current_mask_binding() -> Test {
+    let cx = context(&std::env::temp_dir())?;
+    let mut privacy = PrivacyDeployment::new("rgb-evidence-masked")?;
+    // Evidence recorded without a policy keeps its version-1 recipe and replays while the sensor
+    // has none; once a policy is retained it is never replayed into unmasked pixels.
+    let unmasked = capture(1, TrackingAvailability::Available, &cx)?;
+    assert_eq!(unmasked.mask_policy()?, None);
+    replay_under(&unmasked, &privacy, &cx)?;
+    let policy = declare(&mut privacy, &[[8, 0, 8, 8]])?;
+    let refused = replay_under(&unmasked, &privacy, &cx);
+    assert!(matches!(
+        &refused,
+        Err(e) if e.privacy_stable_id() == Some("ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001")
+    ));
+    // Evidence of a masked frame records the policy (version 2) and replays exactly under it.
+    let binding = privacy.mask().resolve()?;
+    let masked = capture_with(1, TrackingAvailability::Available, &binding, &cx)?;
+    assert_eq!(masked.mask_policy()?, Some(policy));
+    assert_ne!(masked.identity(), unmasked.identity());
+    let bytes = masked.encode(
+        RgbEvidenceLimits::default(),
+        &mut RgbEvidenceBudget::new(WORK),
+        &cx,
+    )?;
+    let restored = RgbEvidence::decode(
+        &bytes,
+        masked.identity(),
+        RgbEvidenceLimits::default(),
+        &mut RgbEvidenceBudget::new(WORK),
+        &cx,
+    )?;
+    assert_eq!(restored.mask_policy()?, Some(policy));
+    let replayed = replay_under(&restored, &privacy, &cx)?;
+    assert_eq!(replayed.run().mask_policy(), Some(policy));
+    // The replayed model input is the masked frame: pixels x >= 8 hold the fill.
+    let image = fss_codec_mjpeg::color::decode_rgb(
+        restored.jpeg(),
+        ContentDigest::sha256(restored.jpeg()).bytes(),
+        fss_codec_mjpeg::ComponentInterpretation::YCbCr,
+        Default::default(),
+        &mut DecodeBudget::new(WORK),
+    )?;
+    let mut rgb = image.pixels().to_vec();
+    for y in 0..8 {
+        for x in 8..16 {
+            rgb[(y * 16 + x) * 3..(y * 16 + x) * 3 + 3].copy_from_slice(&[16, 16, 16]);
+        }
+    }
+    assert_eq!(
+        replayed.run().inference().decode_receipt().rgb_sha256,
+        ContentDigest::sha256(&rgb).bytes()
+    );
+    // The original JPEG inside the envelope is unmasked source custody.
+    assert_eq!(restored.jpeg(), jpeg(1));
+    // A later generation supersedes the recorded binding: replay is refused.
+    declare(&mut privacy, &[[0, 0, 16, 8]])?;
+    assert!(matches!(
+        &replay_under(&restored, &privacy, &cx),
+        Err(e) if e.privacy_stable_id() == Some("ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001")
+    ));
+    Ok(())
+}
+/// The version-1 recipe of a no-policy frame is pinned to its pre-masking bytes.
+#[test]
+fn no_policy_evidence_recipe_identity_is_unchanged() -> Test {
+    let cx = context(&std::env::temp_dir())?;
+    let evidence = capture(1, TrackingAvailability::Available, &cx)?;
+    assert_eq!(evidence.identity().to_text(), GOLDEN_RECIPE_IDENTITY);
+    assert_eq!(evidence.mask_policy()?, None);
+    let replayed = replay(&evidence, &cx)?;
+    assert_eq!(
+        replayed.run().inference().identity().to_text(),
+        GOLDEN_INFERENCE_IDENTITY
+    );
+    Ok(())
+}
+// Captured from the pre-masking evidence owner at 40bf5a6 (same fixture).
+const GOLDEN_RECIPE_IDENTITY: &str =
+    "sha256:c7e077c51d2a211a8e8f35e90ca6c1416539f0e26e22c24118906e4c294de24d";
+const GOLDEN_INFERENCE_IDENTITY: &str =
+    "sha256:6431cf20ff4e54d26531a7b71b34e082c7081f88f3c722e67dbd6eaa3f9cfa2c";

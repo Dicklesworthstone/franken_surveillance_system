@@ -130,6 +130,7 @@ pub fn input<'a>(bytes: &'a [u8], mask: &'a [u8], n: u8) -> RgbDetectionInput<'a
         allowed: mask,
         interpretation: Color::YCbCr,
         source: source(bytes, mask, n),
+        mask: &fss_reference::ingest::privacy_mask::live::NO_POLICY,
     }
 }
 pub fn detection(
