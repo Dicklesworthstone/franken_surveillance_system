@@ -54,6 +54,8 @@
 //! participate in association or authorize a corroborated event. Decode refusals without missing
 //! source bytes do not invalidate otherwise retained capture hints. Strict mode is the default;
 //! a tolerant run without a refusal or restart has the same analysis and proposal identities.
+//! The optional detector uses the same explicit recovery epochs and one inference allowance
+//! shared by both cameras; class evidence never bridges a restart or repairs uncertain time.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -76,7 +78,8 @@ use super::cross_camera::{
 };
 use super::detector_cascade::{
     CascadeBudget, CascadeOutcome, CascadeSource, CascadeTrack, ClassEvidence, DetectorCascade,
-    cascade_outcome_json, cascade_policy_json, class_evidence_json, select_frames,
+    RecoveredCascadeSource, cascade_outcome_json, cascade_policy_json, class_evidence_json,
+    select_frames,
 };
 use super::ground_visibility::{
     CameraPose, SceneMesh, VisibilityCamera, VisibilityError, VisibilityPolicy,
@@ -852,16 +855,6 @@ fn analyze_camera(
         },
         cx,
     )?;
-    // The cascade re-decodes a continuous range. Do not silently bridge a decoder restart,
-    // including one that returned every frame and therefore has no refused segment run.
-    if cascade.is_some()
-        && (!report.decode_refusals().is_empty() || !report.tracking_restarts().is_empty())
-    {
-        return Err(WatchError::InvalidPlan(
-            "a detector cascade does not run over decode-refused or gapped ranges",
-        )
-        .into());
-    }
     let frames: BTreeMap<usize, _> = report.frames().iter().map(|f| (f.segment, f)).collect();
     let mut span: Option<CaptureInterval> = None;
     for frame in report.frames() {
@@ -989,15 +982,19 @@ fn analyze_camera(
                 .collect();
             let decoded: Vec<usize> = report.frames().iter().map(|f| f.segment).collect();
             let outcome = detector
-                .run(
+                .run_recovered(
                     deployment,
-                    CascadeSource {
-                        import_identity: camera.import_identity,
-                        import_root,
-                        interpretation: plan.interpretation,
-                        media_format: report.media_format(),
-                        first_segment: 0,
-                        decoded_segments: &decoded,
+                    RecoveredCascadeSource {
+                        source: CascadeSource {
+                            import_identity: camera.import_identity,
+                            import_root,
+                            interpretation: plan.interpretation,
+                            media_format: report.media_format(),
+                            first_segment: 0,
+                            decoded_segments: &decoded,
+                        },
+                        decode_refusals: report.decode_refusals(),
+                        tracking_restarts: report.tracking_restarts(),
                     },
                     &tracks,
                     budget,
@@ -1108,7 +1105,8 @@ impl CorroborationReport {
     /// retain the strict behavior. A clean tolerant run has the same reports and proposals;
     /// actual refusals and tracking restarts are bound into each camera's analysis identity.
     /// Custody errors, cancellation, resource exhaustion and privacy refusals still abort.
-    /// A detector cascade over a refused or restarted range is not supported and is refused.
+    /// A detector cascade decodes selected recovery epochs independently, using the same
+    /// inference allowance across both cameras. Neither its evidence nor its budget bridges gaps.
     pub fn analyze_with_options(
         deployment: &ReferenceDeployment,
         plan: &CorroborationPlan,
