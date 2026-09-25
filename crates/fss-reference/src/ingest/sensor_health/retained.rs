@@ -10,12 +10,15 @@ use std::collections::BTreeSet;
 use fss_codec_mjpeg::{DecodeBudget, decode_luma};
 use fss_core::{CanonicalEncoder, ContentDigest, SensorCapsule};
 
-use super::{HealthError, HealthFinding, HealthFrame, HealthObservation, HealthScreen, POLICY_NAME, policy_digest};
-use crate::ingest::recorded_decode::{RecordedDecodeError, source_capsule, validate_limits};
+use super::{
+    HealthError, HealthFinding, HealthFrame, HealthObservation, HealthScreen, POLICY_NAME,
+    policy_digest,
+};
+use crate::ingest::RetainedFileImport;
 use crate::ingest::recorded_decode::h264::{RecordedH264Range, RecordedH264Request};
 use crate::ingest::recorded_decode::h265::{RecordedH265Range, RecordedH265Request};
+use crate::ingest::recorded_decode::{RecordedDecodeError, source_capsule, validate_limits};
 use crate::ingest::recorded_watch::{WatchError, WatchLimits, WatchPlan, media_decoder_label};
-use crate::ingest::RetainedFileImport;
 use crate::{ReferenceDeployment, ReplayCx};
 
 /// A failed preflight has no complete screening result and cannot admit a watch run.
@@ -40,10 +43,14 @@ impl std::fmt::Display for ScreeningError {
 }
 impl std::error::Error for ScreeningError {}
 impl From<RecordedDecodeError> for ScreeningError {
-    fn from(error: RecordedDecodeError) -> Self { Self::Decode(Box::new(error)) }
+    fn from(error: RecordedDecodeError) -> Self {
+        Self::Decode(Box::new(error))
+    }
 }
 impl From<HealthError> for ScreeningError {
-    fn from(error: HealthError) -> Self { Self::Screen(error) }
+    fn from(error: HealthError) -> Self {
+        Self::Screen(error)
+    }
 }
 
 /// Complete source-bound screening record. It is a diagnostic, not retained authority.
@@ -70,13 +77,21 @@ impl ScreeningReport {
         maximum_samples: u64,
         cx: &ReplayCx,
     ) -> Result<Self, ScreeningError> {
-        cx.checkpoint("sensor_health:source").map_err(|_| HealthError::Cancelled)?;
+        cx.checkpoint("sensor_health:source")
+            .map_err(|_| HealthError::Cancelled)?;
         plan.validate().map_err(ScreeningError::Plan)?;
         validate_limits(limits.jpeg_limits)?;
-        let retained = RetainedFileImport::open(deployment, plan.import_identity, limits.read_limits, cx)
-            .map_err(RecordedDecodeError::from)?;
-        let end = plan.first_segment.checked_add(plan.segment_count).ok_or(HealthError::Limit)?;
-        let spans = retained.manifest().segment_spans.get(plan.first_segment..end)
+        let retained =
+            RetainedFileImport::open(deployment, plan.import_identity, limits.read_limits, cx)
+                .map_err(RecordedDecodeError::from)?;
+        let end = plan
+            .first_segment
+            .checked_add(plan.segment_count)
+            .ok_or(HealthError::Limit)?;
+        let spans = retained
+            .manifest()
+            .segment_spans
+            .get(plan.first_segment..end)
             .ok_or(RecordedDecodeError::Unavailable)?;
         let import_root = retained.import_root();
         let media = retained.manifest().format.as_str();
@@ -84,8 +99,12 @@ impl ScreeningReport {
         let mut screen = HealthScreen::new(maximum_samples);
         let mut observations = Vec::with_capacity(plan.segment_count);
         let mut seen = BTreeSet::new();
-        let mut accept = |segment: u64, capsule: &SensorCapsule, capsule_digest: ContentDigest,
-                          dimensions: [u32; 2], pixels: &[u8]| -> Result<(), ScreeningError> {
+        let mut accept = |segment: u64,
+                          capsule: &SensorCapsule,
+                          capsule_digest: ContentDigest,
+                          dimensions: [u32; 2],
+                          pixels: &[u8]|
+         -> Result<(), ScreeningError> {
             let index = usize::try_from(segment).map_err(|_| HealthError::Limit)?;
             if index < plan.first_segment || index >= end || !seen.insert(index) {
                 return Err(HealthError::ReplayedSource.into());
@@ -102,10 +121,18 @@ impl ScreeningReport {
                 crate::ingest::recorded_decode::ComponentInterpretation::YCbCr => 1,
             });
             let source_generation = ContentDigest::sha256(&e.finish());
-            let observation = screen.observe(HealthFrame {
-                source_generation, segment, capsule_digest, capture: capsule.capture,
-                dimensions, gap_before: capsule.gap_before, pixels,
-            }, cx)?;
+            let observation = screen.observe(
+                HealthFrame {
+                    source_generation,
+                    segment,
+                    capsule_digest,
+                    capture: capsule.capture,
+                    dimensions,
+                    gap_before: capsule.gap_before,
+                    pixels,
+                },
+                cx,
+            )?;
             if let Some(first) = observations.first() {
                 let first: &HealthObservation = first;
                 complete &= first.source_generation == observation.source_generation
@@ -119,52 +146,96 @@ impl ScreeningReport {
             "mjpeg" => {
                 let mut budget = DecodeBudget::new(limits.jpeg_work_units);
                 for segment in plan.first_segment..end {
-                    cx.checkpoint("sensor_health:decode").map_err(|_| HealthError::Cancelled)?;
+                    cx.checkpoint("sensor_health:decode")
+                        .map_err(|_| HealthError::Cancelled)?;
                     let span = &retained.manifest().segment_spans[segment];
                     if span.len > limits.jpeg_limits.maximum_bytes as u64 {
                         return Err(RecordedDecodeError::Limit.into());
                     }
                     let (capsule, digest) = source_capsule(deployment, &retained, segment)?;
-                    let bytes = retained.read_segment(deployment, segment, limits.read_limits, cx)
+                    let bytes = retained
+                        .read_segment(deployment, segment, limits.read_limits, cx)
                         .map_err(RecordedDecodeError::from)?;
-                    let image = decode_luma(&bytes, capsule.source_digest.bytes(), plan.interpretation,
-                        limits.jpeg_limits, &mut budget).map_err(RecordedDecodeError::from)?;
-                    accept(segment as u64, &capsule, digest, image.dimensions(), image.pixels())?;
+                    let image = decode_luma(
+                        &bytes,
+                        capsule.source_digest.bytes(),
+                        plan.interpretation,
+                        limits.jpeg_limits,
+                        &mut budget,
+                    )
+                    .map_err(RecordedDecodeError::from)?;
+                    accept(
+                        segment as u64,
+                        &capsule,
+                        digest,
+                        image.dimensions(),
+                        image.pixels(),
+                    )?;
                 }
             }
             "annexb" => {
-                let mut source = RecordedH264Range::open(deployment, RecordedH264Request {
-                    import_identity: plan.import_identity, first_segment: plan.first_segment,
-                    segment_count: plan.segment_count, interpretation: plan.interpretation,
-                    read_limits: limits.read_limits, decoder_limits: limits.h264_limits,
-                }, cx)?;
+                let mut source = RecordedH264Range::open(
+                    deployment,
+                    RecordedH264Request {
+                        import_identity: plan.import_identity,
+                        first_segment: plan.first_segment,
+                        segment_count: plan.segment_count,
+                        interpretation: plan.interpretation,
+                        read_limits: limits.read_limits,
+                        decoder_limits: limits.h264_limits,
+                    },
+                    cx,
+                )?;
                 while let Some(frame) = source.next_frame(deployment, cx)? {
                     let receipt = frame.receipt();
-                    accept(receipt.segment_index(), receipt.capsule(), receipt.capsule_digest(),
-                        receipt.dimensions(), frame.pixels())?;
+                    accept(
+                        receipt.segment_index(),
+                        receipt.capsule(),
+                        receipt.capsule_digest(),
+                        receipt.dimensions(),
+                        frame.pixels(),
+                    )?;
                 }
             }
             "hevc" => {
-                let mut source = RecordedH265Range::open(deployment, RecordedH265Request {
-                    import_identity: plan.import_identity, first_segment: plan.first_segment,
-                    segment_count: plan.segment_count, interpretation: plan.interpretation,
-                    read_limits: limits.read_limits, decoder_limits: limits.h265_limits,
-                }, cx)?;
+                let mut source = RecordedH265Range::open(
+                    deployment,
+                    RecordedH265Request {
+                        import_identity: plan.import_identity,
+                        first_segment: plan.first_segment,
+                        segment_count: plan.segment_count,
+                        interpretation: plan.interpretation,
+                        read_limits: limits.read_limits,
+                        decoder_limits: limits.h265_limits,
+                    },
+                    cx,
+                )?;
                 while let Some(frame) = source.next_frame(deployment, cx)? {
                     let receipt = frame.receipt();
-                    accept(receipt.segment_index(), receipt.capsule(), receipt.capsule_digest(),
-                        receipt.dimensions(), frame.pixels())?;
+                    accept(
+                        receipt.segment_index(),
+                        receipt.capsule(),
+                        receipt.capsule_digest(),
+                        receipt.dimensions(),
+                        frame.pixels(),
+                    )?;
                 }
             }
             _ => return Err(RecordedDecodeError::UnsupportedMedia.into()),
         }
         // A skipped HEVC RASL picture is explicit incomplete screening, never an all-clear.
         complete &= seen.len() == plan.segment_count;
-        cx.checkpoint("sensor_health:complete").map_err(|_| HealthError::Cancelled)?;
+        cx.checkpoint("sensor_health:complete")
+            .map_err(|_| HealthError::Cancelled)?;
         Ok(Self {
-            import_identity: plan.import_identity, import_root, plan_digest: plan.digest(),
-            first_segment: plan.first_segment, segment_count: plan.segment_count,
-            range_complete: complete, samples_used: screen.samples_used(), observations,
+            import_identity: plan.import_identity,
+            import_root,
+            plan_digest: plan.digest(),
+            first_segment: plan.first_segment,
+            segment_count: plan.segment_count,
+            range_complete: complete,
+            samples_used: screen.samples_used(),
+            observations,
         })
     }
 
@@ -176,7 +247,9 @@ impl ScreeningReport {
 
     /// Complete source-bound measurements in decoder output order.
     #[must_use]
-    pub fn observations(&self) -> &[HealthObservation] { &self.observations }
+    pub fn observations(&self) -> &[HealthObservation] {
+        &self.observations
+    }
 
     /// Canonical identity of the entire screen, independent of later publication state.
     #[must_use]
@@ -192,44 +265,91 @@ impl ScreeningReport {
         e.bool(self.range_complete);
         e.u64(self.samples_used);
         e.u32(self.observations.len() as u32);
-        for observation in &self.observations { e.digest(observation.digest()); }
+        for observation in &self.observations {
+            e.digest(observation.digest());
+        }
         ContentDigest::sha256(&e.finish())
     }
 
     /// Require explicit preflight admission. Suspicion never becomes a successful empty result.
     pub fn require_admission(&self) -> Result<(), ScreeningRefusal> {
-        if self.admitted() { Ok(()) } else {
-            Err(ScreeningRefusal { report_digest: self.digest(), range_complete: self.range_complete })
+        if self.admitted() {
+            Ok(())
+        } else {
+            Err(ScreeningRefusal {
+                report_digest: self.digest(),
+                range_complete: self.range_complete,
+            })
         }
     }
 
     /// Bounded local-operator diagnostic JSON. No raw pixels, identities of people or credentials.
     #[must_use]
     pub fn to_json(&self) -> String {
-        let rows: Vec<String> = self.observations.iter().map(|row| {
-            let findings: Vec<String> = row.findings.iter()
-                .map(|finding| format!("\"{}\"", HealthFinding::as_str(*finding))).collect();
-            format!(concat!("{{\"segment\":{},\"capsule_digest\":\"{}\",\"luma_digest\":\"{}\",",
-                "\"observation_digest\":\"{}\",\"capture_ns\":[\"{}\",\"{}\"],",
-                "\"width\":{},\"height\":{},\"baseline_reset\":{},\"samples\":{},",
-                "\"dark_samples\":{},\"bright_samples\":{},\"contrast_span\":{},",
-                "\"repeated_frames\":{},\"findings\":[{}]}}"),
-                row.segment, row.capsule_digest, row.luma_digest, row.digest(),
-                row.capture.earliest.0, row.capture.latest.0, row.dimensions[0], row.dimensions[1],
-                row.baseline_reset, row.samples, row.dark_samples, row.bright_samples,
-                row.contrast_span, row.repeated_frames, findings.join(","))
-        }).collect();
-        format!(concat!("{{\"format\":\"fss.local_sensor_health_report.v1\",",
-            "\"policy\":\"{}\",\"policy_digest\":\"{}\",\"report_digest\":\"{}\",",
-            "\"import_identity\":\"{}\",\"import_root\":\"{}\",\"plan_digest\":\"{}\",",
-            "\"first_segment\":{},\"segment_count\":{},\"frames_screened\":{},",
-            "\"range_complete\":{},\"admitted\":{},\"status\":\"{}\",",
-            "\"samples_used\":{},\"health_certified\":false,\"tamper_proven\":false,",
-            "\"absence_certifiable\":false,\"effect_authority\":false,\"frames\":[{}]}}"),
-            POLICY_NAME, policy_digest(), self.digest(), self.import_identity, self.import_root,
-            self.plan_digest, self.first_segment, self.segment_count, rows.len(), self.range_complete,
-            self.admitted(), if self.admitted() { "no_screening_findings" } else { "refused" },
-            self.samples_used, rows.join(","))
+        let rows: Vec<String> = self
+            .observations
+            .iter()
+            .map(|row| {
+                let findings: Vec<String> = row
+                    .findings
+                    .iter()
+                    .map(|finding| format!("\"{}\"", HealthFinding::as_str(*finding)))
+                    .collect();
+                format!(
+                    concat!(
+                        "{{\"segment\":{},\"capsule_digest\":\"{}\",\"luma_digest\":\"{}\",",
+                        "\"observation_digest\":\"{}\",\"capture_ns\":[\"{}\",\"{}\"],",
+                        "\"width\":{},\"height\":{},\"baseline_reset\":{},\"samples\":{},",
+                        "\"dark_samples\":{},\"bright_samples\":{},\"contrast_span\":{},",
+                        "\"repeated_frames\":{},\"findings\":[{}]}}"
+                    ),
+                    row.segment,
+                    row.capsule_digest,
+                    row.luma_digest,
+                    row.digest(),
+                    row.capture.earliest.0,
+                    row.capture.latest.0,
+                    row.dimensions[0],
+                    row.dimensions[1],
+                    row.baseline_reset,
+                    row.samples,
+                    row.dark_samples,
+                    row.bright_samples,
+                    row.contrast_span,
+                    row.repeated_frames,
+                    findings.join(",")
+                )
+            })
+            .collect();
+        format!(
+            concat!(
+                "{{\"format\":\"fss.local_sensor_health_report.v1\",",
+                "\"policy\":\"{}\",\"policy_digest\":\"{}\",\"report_digest\":\"{}\",",
+                "\"import_identity\":\"{}\",\"import_root\":\"{}\",\"plan_digest\":\"{}\",",
+                "\"first_segment\":{},\"segment_count\":{},\"frames_screened\":{},",
+                "\"range_complete\":{},\"admitted\":{},\"status\":\"{}\",",
+                "\"samples_used\":{},\"health_certified\":false,\"tamper_proven\":false,",
+                "\"absence_certifiable\":false,\"effect_authority\":false,\"frames\":[{}]}}"
+            ),
+            POLICY_NAME,
+            policy_digest(),
+            self.digest(),
+            self.import_identity,
+            self.import_root,
+            self.plan_digest,
+            self.first_segment,
+            self.segment_count,
+            rows.len(),
+            self.range_complete,
+            self.admitted(),
+            if self.admitted() {
+                "no_screening_findings"
+            } else {
+                "refused"
+            },
+            self.samples_used,
+            rows.join(",")
+        )
     }
 }
 
@@ -243,9 +363,16 @@ pub struct ScreeningRefusal {
 }
 impl std::fmt::Display for ScreeningRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "sensor-health admission refused: {}; report {}", if self.range_complete {
-            "suspected visual degradation (not a tamper diagnosis)"
-        } else { "incomplete or discontinuous source range" }, self.report_digest)
+        write!(
+            f,
+            "sensor-health admission refused: {}; report {}",
+            if self.range_complete {
+                "suspected visual degradation (not a tamper diagnosis)"
+            } else {
+                "incomplete or discontinuous source range"
+            },
+            self.report_digest
+        )
     }
 }
 impl std::error::Error for ScreeningRefusal {}

@@ -122,7 +122,9 @@ impl HealthObservation {
         e.digest(self.capsule_digest);
         e.digest(self.luma_digest);
         e.bool(self.predecessor_digest.is_some());
-        if let Some(digest) = self.predecessor_digest { e.digest(digest); }
+        if let Some(digest) = self.predecessor_digest {
+            e.digest(digest);
+        }
         self.capture.encode_canonical(&mut e);
         for dimension in self.dimensions {
             e.u32(dimension);
@@ -225,8 +227,12 @@ impl HealthScreen {
         check()?;
         let [width, height] = frame.dimensions;
         let count = u64::from(width) * u64::from(height);
-        if width == 0 || height == 0 || width > 4096 || height > 4096
-            || count > MAX_HEALTH_PIXELS as u64 || count != frame.pixels.len() as u64
+        if width == 0
+            || height == 0
+            || width > 4096
+            || height > 4096
+            || count > MAX_HEALTH_PIXELS as u64
+            || count != frame.pixels.len() as u64
             || frame.capture.earliest > frame.capture.latest
         {
             return Err(HealthError::InvalidImage);
@@ -235,9 +241,10 @@ impl HealthScreen {
             return Err(HealthError::Limit);
         }
         let key = (frame.source_generation, frame.segment);
-        let retry = self.previous.as_ref().is_some_and(|p| {
-            (p.observation.source_generation, p.observation.segment) == key
-        });
+        let retry = self
+            .previous
+            .as_ref()
+            .is_some_and(|p| (p.observation.source_generation, p.observation.segment) == key);
         if !retry && self.seen.contains(&key) {
             return Err(HealthError::ReplayedSource);
         }
@@ -257,8 +264,10 @@ impl HealthScreen {
         if retry {
             let previous = self.previous.as_ref().ok_or(HealthError::ReplayedSource)?;
             let p = &previous.observation;
-            if p.capsule_digest != frame.capsule_digest || p.capture != frame.capture
-                || p.dimensions != frame.dimensions || p.luma_digest != luma_digest
+            if p.capsule_digest != frame.capsule_digest
+                || p.capture != frame.capture
+                || p.dimensions != frame.dimensions
+                || p.luma_digest != luma_digest
                 || previous.gap_before != frame.gap_before
             {
                 return Err(HealthError::ReplayedSource);
@@ -266,7 +275,8 @@ impl HealthScreen {
             return Ok(p.clone());
         }
         let predecessor = self.previous.as_ref().filter(|p| {
-            !frame.gap_before && p.observation.source_generation == frame.source_generation
+            !frame.gap_before
+                && p.observation.source_generation == frame.source_generation
                 && p.observation.dimensions == frame.dimensions
         });
         let dark_samples: u64 = histogram[..=20].iter().sum();
@@ -276,18 +286,37 @@ impl HealthScreen {
         let contrast_span = percentile(&histogram, (count * 95).div_ceil(100))
             - percentile(&histogram, (count * 5).div_ceil(100));
         let textured_before = predecessor.is_some_and(|p| p.textured);
-        let dark_run = if dark { predecessor.map_or(1, |p| p.dark_run + 1) } else { 0 };
-        let bright_run = if bright { predecessor.map_or(1, |p| p.bright_run + 1) } else { 0 };
+        let dark_run = if dark {
+            predecessor.map_or(1, |p| p.dark_run + 1)
+        } else {
+            0
+        };
+        let bright_run = if bright {
+            predecessor.map_or(1, |p| p.bright_run + 1)
+        } else {
+            0
+        };
         let contrast_run = if textured_before && contrast_span <= 2 {
             predecessor.map_or(1, |p| p.contrast_run + 1)
-        } else { 0 };
-        let repeated_frames = predecessor.filter(|p| p.observation.luma_digest == luma_digest)
+        } else {
+            0
+        };
+        let repeated_frames = predecessor
+            .filter(|p| p.observation.luma_digest == luma_digest)
             .map_or(1, |p| p.observation.repeated_frames + 1);
         let mut findings = Vec::new();
-        if dark_run >= 3 { findings.push(HealthFinding::PersistentDarkField); }
-        if bright_run >= 3 { findings.push(HealthFinding::PersistentBrightField); }
-        if repeated_frames >= 8 { findings.push(HealthFinding::ExactFrameRepetition); }
-        if contrast_run >= 3 { findings.push(HealthFinding::ContrastCollapse); }
+        if dark_run >= 3 {
+            findings.push(HealthFinding::PersistentDarkField);
+        }
+        if bright_run >= 3 {
+            findings.push(HealthFinding::PersistentBrightField);
+        }
+        if repeated_frames >= 8 {
+            findings.push(HealthFinding::ExactFrameRepetition);
+        }
+        if contrast_run >= 3 {
+            findings.push(HealthFinding::ContrastCollapse);
+        }
         let observation = HealthObservation {
             source_generation: frame.source_generation,
             segment: frame.segment,
@@ -308,7 +337,9 @@ impl HealthScreen {
         self.previous = Some(Previous {
             observation: observation.clone(),
             gap_before: frame.gap_before,
-            dark_run, bright_run, contrast_run,
+            dark_run,
+            bright_run,
+            contrast_run,
             textured: textured_before || contrast_span >= 32,
         });
         Ok(observation)

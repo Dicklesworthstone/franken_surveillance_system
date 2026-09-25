@@ -6,19 +6,29 @@ use fss_core::TimestampNs;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-fn frame<'a>(segment: u64, pixels: &'a [u8], dimensions: [u32; 2]) -> Result<HealthFrame<'a>, Box<dyn std::error::Error>> {
+fn frame<'a>(
+    segment: u64,
+    pixels: &'a [u8],
+    dimensions: [u32; 2],
+) -> Result<HealthFrame<'a>, Box<dyn std::error::Error>> {
     Ok(HealthFrame {
         source_generation: ContentDigest::sha256(b"source-a"),
         segment,
         capsule_digest: ContentDigest::sha256(&segment.to_le_bytes()),
-        capture: CaptureInterval::new(TimestampNs(i128::from(segment)), TimestampNs(i128::from(segment)))?,
+        capture: CaptureInterval::new(
+            TimestampNs(i128::from(segment)),
+            TimestampNs(i128::from(segment)),
+        )?,
         dimensions,
         gap_before: false,
         pixels,
     })
 }
 
-fn push(screen: &mut HealthScreen, frame: HealthFrame<'_>) -> Result<HealthObservation, HealthError> {
+fn push(
+    screen: &mut HealthScreen,
+    frame: HealthFrame<'_>,
+) -> Result<HealthObservation, HealthError> {
     screen.observe_with(frame, || Ok(()))
 }
 
@@ -68,9 +78,14 @@ fn eight_distinct_identical_frames_are_suspect_not_proven_tamper() -> TestResult
     for segment in 0..8 {
         let observed = push(&mut gate, frame(segment, &pixels, [4, 4])?)?;
         assert_eq!(observed.repeated_frames, segment as u32 + 1);
-        assert_eq!(observed.findings, if segment == 7 {
-            vec![HealthFinding::ExactFrameRepetition]
-        } else { Vec::new() });
+        assert_eq!(
+            observed.findings,
+            if segment == 7 {
+                vec![HealthFinding::ExactFrameRepetition]
+            } else {
+                Vec::new()
+            }
+        );
     }
     Ok(())
 }
@@ -103,14 +118,24 @@ fn contrast_loss_requires_a_textured_predecessor_and_persists() -> TestResult {
     textured[50..].fill(180);
     let blank = [100_u8; 100];
     let mut gate = HealthScreen::new(800);
-    assert_eq!(push(&mut gate, frame(0, &textured, [10, 10])?)?.contrast_span, 160);
+    assert_eq!(
+        push(&mut gate, frame(0, &textured, [10, 10])?)?.contrast_span,
+        160
+    );
     for segment in 1..=3 {
         let observed = push(&mut gate, frame(segment, &blank, [10, 10])?)?;
-        assert_eq!(observed.findings.contains(&HealthFinding::ContrastCollapse), segment == 3);
+        assert_eq!(
+            observed.findings.contains(&HealthFinding::ContrastCollapse),
+            segment == 3
+        );
     }
     let mut initially_blank = HealthScreen::new(400);
     for segment in 0..3 {
-        assert!(push(&mut initially_blank, frame(segment, &blank, [10, 10])?)?.findings.is_empty());
+        assert!(
+            push(&mut initially_blank, frame(segment, &blank, [10, 10])?)?
+                .findings
+                .is_empty()
+        );
     }
     Ok(())
 }
@@ -123,7 +148,11 @@ fn cancellation_charges_completed_rows_without_advancing_the_baseline() -> TestR
     let mut checkpoints = 0;
     let failed = gate.observe_with(frame(1, &pixels, [4, 4])?, || {
         checkpoints += 1;
-        if checkpoints == 4 { Err(HealthError::Cancelled) } else { Ok(()) }
+        if checkpoints == 4 {
+            Err(HealthError::Cancelled)
+        } else {
+            Ok(())
+        }
     });
     assert_eq!(failed, Err(HealthError::Cancelled));
     assert_eq!(gate.samples_used(), 24);
@@ -139,11 +168,17 @@ fn substituted_or_old_positions_fail_but_display_order_is_not_decode_order() -> 
     let changed = [81_u8; 16];
     let mut gate = HealthScreen::new(200);
     let _ = push(&mut gate, frame(0, &pixels, [4, 4])?)?;
-    assert_eq!(push(&mut gate, frame(0, &changed, [4, 4])?), Err(HealthError::ReplayedSource));
+    assert_eq!(
+        push(&mut gate, frame(0, &changed, [4, 4])?),
+        Err(HealthError::ReplayedSource)
+    );
     // B pictures may be output in an order unlike their source segment indices.
     let _ = push(&mut gate, frame(2, &pixels, [4, 4])?)?;
     let _ = push(&mut gate, frame(1, &pixels, [4, 4])?)?;
-    assert_eq!(push(&mut gate, frame(0, &pixels, [4, 4])?), Err(HealthError::ReplayedSource));
+    assert_eq!(
+        push(&mut gate, frame(0, &pixels, [4, 4])?),
+        Err(HealthError::ReplayedSource)
+    );
     Ok(())
 }
 
@@ -152,12 +187,24 @@ fn budgets_and_image_bounds_are_checked_before_allocation_or_history_updates() -
     let pixels = [80_u8; 16];
     let mut gate = HealthScreen::new(16);
     let _ = push(&mut gate, frame(0, &pixels, [4, 4])?)?;
-    assert_eq!(push(&mut gate, frame(1, &pixels, [4, 4])?), Err(HealthError::Limit));
+    assert_eq!(
+        push(&mut gate, frame(1, &pixels, [4, 4])?),
+        Err(HealthError::Limit)
+    );
     assert_eq!(gate.samples_used(), 16);
     let mut gate = HealthScreen::new(100);
-    assert_eq!(push(&mut gate, frame(0, &pixels, [0, 4])?), Err(HealthError::InvalidImage));
-    assert_eq!(push(&mut gate, frame(0, &pixels, [4097, 1])?), Err(HealthError::InvalidImage));
-    assert_eq!(push(&mut gate, frame(0, &pixels, [4, 5])?), Err(HealthError::InvalidImage));
+    assert_eq!(
+        push(&mut gate, frame(0, &pixels, [0, 4])?),
+        Err(HealthError::InvalidImage)
+    );
+    assert_eq!(
+        push(&mut gate, frame(0, &pixels, [4097, 1])?),
+        Err(HealthError::InvalidImage)
+    );
+    assert_eq!(
+        push(&mut gate, frame(0, &pixels, [4, 5])?),
+        Err(HealthError::InvalidImage)
+    );
     assert_eq!(gate.samples_used(), 0);
     Ok(())
 }
@@ -169,7 +216,10 @@ fn frame_capacity_is_exact_and_digests_bind_source_and_findings() -> TestResult 
     for segment in 0..MAX_HEALTH_FRAMES as u64 {
         let _ = push(&mut gate, frame(segment, &pixel, [1, 1])?)?;
     }
-    assert_eq!(push(&mut gate, frame(128, &pixel, [1, 1])?), Err(HealthError::Limit));
+    assert_eq!(
+        push(&mut gate, frame(128, &pixel, [1, 1])?),
+        Err(HealthError::Limit)
+    );
     let mut a = HealthScreen::new(16);
     let original = push(&mut a, frame(0, &pixel, [1, 1])?)?;
     let mut altered = original.clone();
