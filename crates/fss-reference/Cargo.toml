@@ -27,6 +27,7 @@ fss-codec-mjpeg = { path = "../fss-codec-mjpeg" }
 fss-container = { path = "../fss-container" }
 fss-core = { path = "../fss-core" }
 fss-geometry = { path = "../fss-geometry" }
+fss-graph-algorithms = { path = "../fss-graph-algorithms" }
 fss-ledger = { path = "../fss-ledger" }
 fss-model-ir = { path = "../fss-model-ir" }
 fss-object = { path = "../fss-object" }

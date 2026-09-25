@@ -76,6 +76,25 @@ synthetic scenes). None of it has been measured on real camera footage.
   and biometric controls remain open (PRIVACY.md 4.1). Composes with geometric ground zones (a
   sample on a masked pixel is `privacy_masked`, counted once; version-3 coverage records) and
   with tolerant decode (decoded frames masked; `decode_refused` precedes `privacy_masked`).
+- **Certified graph family (fss-w96u7, FSS-165):** `ALG-BRIDGE-001`
+  (articulation points and bridges) in the new `fss-graph-algorithms` crate: an iterative Tarjan
+  DFS over a canonical immutable undirected simple graph (stable identities, registered tie-break
+  `tie:stable-node-identity-then-stable-edge-identity:v1`), plus the nodes each cut vertex or
+  bridge separates from a declared root. Every run emits the fss-core `GraphAlgorithmWitness`
+  (`fss.graph_algorithm_witness.v1`, now an implemented schema) and checks its counters against
+  the registered bound (`n` visits, `2m` scans, `2m + n` low-link updates) in the runtime path; a
+  violation or exhausted budget fails closed with no answer. Certified against a brute-force
+  removal oracle on 4,000 seeded graphs (random, trees, paths, cycles, stars, cliques, barbells,
+  lollipops, grids, disjoint unions, coverage shapes) plus insertion-order, orientation and
+  relabelling metamorphic tests. `fss-event graph single-points --root DIR --site SITE` projects
+  retained coverage records into a `SensorCoverageGraph` (plane, sensors, zone scopes; a
+  sensor-zone edge per retained witness) and reports, read-only, each zone's observers and the
+  sensors whose single loss leaves it without any retained witness. Proven on synthetic
+  deployments built through `fss-file import` and `fss-event watch`. Not qualified: no
+  FrankenNetworkX differential (gate `INT-FNX-001`), snapshot-invalidation, capability
+  noninterference or incremental/full lanes; witness intervals are not intersected and no failure
+  domain beyond the sensor itself (network, power, clock, host) is modelled; the other 26
+  registered algorithms remain `specified`.
 - **Models:** scalar executor over the FSS IR (Conv2d, MatMul, pooling, norms, activations) with
   Safetensors weights (`scalar_executor`, `fss-infer`). One trained detector package ships:
   YOLOX-Nano COCO-80 (`models/yolox-nano/`, `MOD-YOLOXNANO-001`, Apache-2.0), imported offline
@@ -239,7 +258,7 @@ A passing developer run demonstrates the exact checked tree only. It does not by
 - Native camera discovery, transport, codec/media, calibration, archive, drone, notification, and vendor-boundary implementations.
 - Persistent FrankenSQLite/FrankenFS/ATP integration beyond the deterministic in-process reference stores.
 - Production pure-Rust model runtime, package verification, generation management, batching, calibration, and fallback.
-- Certified graph/search kernels and incremental graph intelligence.
+- Certified graph/search kernels and incremental graph intelligence (one family, `ALG-BRIDGE-001`, is implemented and oracle-certified; 26 registered algorithms and every graph qualification lane remain open).
 
 ### Agent operating system
 

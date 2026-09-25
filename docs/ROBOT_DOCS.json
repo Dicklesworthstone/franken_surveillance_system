@@ -1072,6 +1072,21 @@
       "id": "ERR-FROZEN-UNREGISTERED-OP-001"
     },
     {
+      "description": "a declared graph budget (operations or output entries) ran out before the exact answer was complete; no partial answer or witness was produced",
+      "guidance": "raise the budget within the registered bound or narrow the projection",
+      "id": "ERR-GRAPH-BUDGET-EXHAUSTED-001"
+    },
+    {
+      "description": "an observed graph operation counter exceeded the registered complexity or output bound for the input size, at run time or when a witness is re-checked; no answer is trusted",
+      "guidance": "treat as an implementation defect or tampered witness; do not retry unchanged",
+      "id": "ERR-GRAPH-COMPLEXITY-BOUND-001"
+    },
+    {
+      "description": "a graph projection or request is outside the strict graph policy (empty, oversized or control-character node identity, duplicate node, unknown endpoint or root, self-loop, parallel edge, or node/edge limit); nothing was analysed",
+      "guidance": "correct the projection; inputs are refused, never repaired; do not retry unchanged",
+      "id": "ERR-GRAPH-INPUT-INVALID-001"
+    },
+    {
       "description": "graph algorithm row lacks declared complexity witness operations",
       "guidance": "declare dominant operation complexity witness in graph algorithm registry",
       "id": "ERR-GRAPH-MISSING-COMPLEXITY-WITNESS-001"
@@ -1090,6 +1105,11 @@
       "description": "graph algorithm projections differ between machine source and registry markdown mirror",
       "guidance": "reconcile machine source and registry markdown projections",
       "id": "ERR-GRAPH-PROJECTION-MISMATCH-001"
+    },
+    {
+      "description": "a projection-level answer derived from a graph run disagrees with the projection's structural invariant (for example coverage single points versus the witnessed observers); nothing was reported",
+      "guidance": "treat as an implementation defect; do not retry unchanged",
+      "id": "ERR-GRAPH-RESULT-INCONSISTENT-001"
     },
     {
       "description": "graph algorithm stable identifier renumbered or superseded row not tombstoned",
