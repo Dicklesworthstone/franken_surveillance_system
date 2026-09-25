@@ -80,8 +80,17 @@ pub fn parse_query_args(tokens: &[ArgToken]) -> Result<QueryArgs, CliError> {
         "query",
         tokens,
         &[
-            "--root", "--principal", "--event-id", "--kind", "--zone", "--state", "--from-ns",
-            "--through-ns", "--max-entries", "--anchor", "--continuation",
+            "--root",
+            "--principal",
+            "--event-id",
+            "--kind",
+            "--zone",
+            "--state",
+            "--from-ns",
+            "--through-ns",
+            "--max-entries",
+            "--anchor",
+            "--continuation",
         ],
     )?;
     let event_id = take(&values, "--event-id")
@@ -113,12 +122,18 @@ pub fn parse_query_args(tokens: &[ArgToken]) -> Result<QueryArgs, CliError> {
         .transpose()?
         .unwrap_or(DEFAULT_QUERY_ENTRIES);
     if !(1..=MAX_QUERY_ENTRIES).contains(&max_entries) {
-        return Err(malformed("--max-entries", &max_entries.to_string(), "expected 1..32", 0));
+        return Err(malformed(
+            "--max-entries",
+            &max_entries.to_string(),
+            "expected 1..32",
+            0,
+        ));
     }
     let expected_anchor = take(&values, "--anchor")
         .map(|(_, value, index)| {
-            AnchorToken::parse(value)
-                .ok_or_else(|| malformed("--anchor", value, "expected an exact anchor token", *index))
+            AnchorToken::parse(value).ok_or_else(|| {
+                malformed("--anchor", value, "expected an exact anchor token", *index)
+            })
         })
         .transpose()?;
     let request = EventQueryRequest {
@@ -153,50 +168,76 @@ fn query_response(
     let text = request_digest.to_text();
     let hex = text.strip_prefix("sha256:").unwrap_or(&text);
     let capsule = orientation.capsule();
-    let next = query.page.next_cursor.as_ref().map(|cursor| cursor.token().to_owned());
+    let next = query
+        .page
+        .next_cursor
+        .as_ref()
+        .map(|cursor| cursor.token().to_owned());
     let mut epistemic = query.epistemic();
     epistemic.propositions.push(EnvelopeProposition {
         id: "claim:query:anchor".to_owned(),
-        statement: format!("Exact authority/effect-history token: {}", query.anchor_token),
+        statement: format!(
+            "Exact authority/effect-history token: {}",
+            query.anchor_token
+        ),
         state: KnowledgeState::Known,
         provenance: "derived".to_owned(),
         evidence: vec![query.selection_witness.to_text()],
     });
     // Filtering a catalogue must not remove unrelated critical deployment context. Use the
     // existing bounded orientation, including coverage, tamper, contradictions and effects.
-    epistemic.propositions.extend(capsule.frame.knowledge_cells.iter().map(|cell| {
-        EnvelopeProposition {
-            id: cell.claim_id().to_owned(),
-            statement: cell.disclosable_statement().to_owned(),
-            state: cell.knowledge_state(),
-            provenance: cell.provenance().as_str().to_owned(),
-            evidence: cell.evidence_digests().iter().map(|digest| digest.to_text()).collect(),
-        }
-    }));
-    let handles: Vec<_> = query.events.iter().map(|row| agent_json::EvidenceHandle {
-        handle_id: format!("fss://proof/{}", row.event_root),
-        object_digest: row.event_root,
-        kind: "event_manifest".to_owned(),
-        hydration: "H0",
-        allowed_hydration: vec!["H0"],
-        privacy_class: "private:property".to_owned(),
-        availability: "available",
-        estimated_cost: BudgetVector::default(),
-        required_capability: Some(CAPABILITY_QUERY.to_owned()),
-    }).collect();
+    epistemic
+        .propositions
+        .extend(capsule.frame.knowledge_cells.iter().map(|cell| {
+            EnvelopeProposition {
+                id: cell.claim_id().to_owned(),
+                statement: cell.disclosable_statement().to_owned(),
+                state: cell.knowledge_state(),
+                provenance: cell.provenance().as_str().to_owned(),
+                evidence: cell
+                    .evidence_digests()
+                    .iter()
+                    .map(|digest| digest.to_text())
+                    .collect(),
+            }
+        }));
+    let handles: Vec<_> = query
+        .events
+        .iter()
+        .map(|row| agent_json::EvidenceHandle {
+            handle_id: format!("fss://proof/{}", row.event_root),
+            object_digest: row.event_root,
+            kind: "event_manifest".to_owned(),
+            hydration: "H0",
+            allowed_hydration: vec!["H0"],
+            privacy_class: "private:property".to_owned(),
+            availability: "available",
+            estimated_cost: BudgetVector::default(),
+            required_capability: Some(CAPABILITY_QUERY.to_owned()),
+        })
+        .collect();
     let (_, affordance_context) = contexts(orientation);
     // Context-refresh actions plus explicit per-hit explanations fit the schema's 64-action
     // ceiling (32 hits + 3 context reads). Do not execute or synthesize affordances.
-    let action_ids: Vec<String> = capsule.affordances.iter().filter(|action| {
-        matches!(action.affordance_id.as_str(),
-            "affordance:orient:reorient" | "affordance:orient:doctor" | "affordance:orient:follow")
-            || query.events.iter().any(|row| {
-                action.affordance_id == format!("affordance:explain:{}", row.event.event_id.as_str())
+    let action_ids: Vec<String> = capsule
+        .affordances
+        .iter()
+        .filter(|action| {
+            matches!(
+                action.affordance_id.as_str(),
+                "affordance:orient:reorient"
+                    | "affordance:orient:doctor"
+                    | "affordance:orient:follow"
+            ) || query.events.iter().any(|row| {
+                action.affordance_id
+                    == format!("affordance:explain:{}", row.event.event_id.as_str())
             })
-    }).map(|action| action.affordance_id.clone()).collect();
-    let action_objects = agent_json::affordance_objects(
-        &action_ids, &capsule.affordances, &affordance_context,
-    ).ok_or(RenderError("query affordance objects"))?;
+        })
+        .map(|action| action.affordance_id.clone())
+        .collect();
+    let action_objects =
+        agent_json::affordance_objects(&action_ids, &capsule.affordances, &affordance_context)
+            .ok_or(RenderError("query affordance objects"))?;
     let frame_digest = capsule.frame.frame_digest()?;
     let decision = request_identity("fss.cli.query.context_decision.v1", |encoder| {
         encoder.digest(query.decision_digest);
@@ -221,13 +262,20 @@ fn query_response(
             degraded_dimensions: vec!["query-cpu-and-output-tokens-not-metered".to_owned()],
             marginal_work_declined: Vec::new(),
         },
-        handles.iter().map(|handle| handle.handle_id.clone()).collect(),
+        handles
+            .iter()
+            .map(|handle| handle.handle_id.clone())
+            .collect(),
         action_ids.clone(),
         EnvelopeContinuity {
             cursor: next.clone(),
             reanchor_triggers: vec!["Any authority or effect-journal advance.".to_owned()],
             session_capsule_digest: None,
-            unresolved_obligations: capsule.obligations.iter().map(|id| id.as_str().to_owned()).collect(),
+            unresolved_obligations: capsule
+                .obligations
+                .iter()
+                .map(|id| id.as_str().to_owned())
+                .collect(),
         },
         decision.to_text(),
     )?;
@@ -278,7 +326,12 @@ fn refusal(
         encoder.text(&args.request.filter.description());
         encoder.text(args.request.principal.as_str());
         encoder.u32(args.request.max_entries);
-        encoder.text(args.request.expected_anchor.as_ref().map_or("", AnchorToken::as_str));
+        encoder.text(
+            args.request
+                .expected_anchor
+                .as_ref()
+                .map_or("", AnchorToken::as_str),
+        );
         encoder.text(args.request.continuation.as_deref().unwrap_or(""));
         encoder.text(&snapshot_anchor_token(snapshot));
         encoder.text(reason);
@@ -312,11 +365,22 @@ pub fn execute_query(args: &QueryArgs) -> (String, ExitIdentity) {
     };
     let query = match query_deployment(&snapshot, &args.request) {
         Ok(query) => query,
-        Err(error) => return rendered(
-            refusal(args, &snapshot, &error.to_string(),
-                matches!(error, QueryError::Continuation(_) | QueryError::AnchorChanged)),
-            ExitIdentity::AGENT_REFUSED, "query", &args.root,
-        ),
+        Err(error) => {
+            return rendered(
+                refusal(
+                    args,
+                    &snapshot,
+                    &error.to_string(),
+                    matches!(
+                        error,
+                        QueryError::Continuation(_) | QueryError::AnchorChanged
+                    ),
+                ),
+                ExitIdentity::AGENT_REFUSED,
+                "query",
+                &args.root,
+            );
+        }
     };
     let orient_request = OrientRequest {
         view: AgentView::Brief,
@@ -325,16 +389,27 @@ pub fn execute_query(args: &QueryArgs) -> (String, ExitIdentity) {
     };
     let orientation = match orient_deployment(&snapshot, &orient_request, &limits) {
         Ok(orientation) => orientation,
-        Err(error) => return rendered(
-            refusal(args, &snapshot, &error.to_string(), false),
-            ExitIdentity::AGENT_REFUSED, "query", &args.root,
-        ),
+        Err(error) => {
+            return rendered(
+                refusal(args, &snapshot, &error.to_string(), false),
+                ExitIdentity::AGENT_REFUSED,
+                "query",
+                &args.root,
+            );
+        }
     };
     match query_response(args, &query, &orientation) {
         Ok(output) if output.len() <= MAX_QUERY_OUTPUT_BYTES => (output, ExitIdentity::SUCCESS),
         Ok(_) => rendered(
-            refusal(args, &snapshot, "Complete query response exceeds 256 KiB; reduce --max-entries. Nothing was truncated.", false),
-            ExitIdentity::AGENT_REFUSED, "query", &args.root,
+            refusal(
+                args,
+                &snapshot,
+                "Complete query response exceeds 256 KiB; reduce --max-entries. Nothing was truncated.",
+                false,
+            ),
+            ExitIdentity::AGENT_REFUSED,
+            "query",
+            &args.root,
         ),
         Err(_) => internal_failure("query", &args.root),
     }

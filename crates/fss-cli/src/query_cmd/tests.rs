@@ -17,18 +17,36 @@ type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
 fn parse(extra: &[&str]) -> Result<QueryArgs, CliError> {
     let args = ["query", "--json", "--root", "/owner/deployment"]
-        .into_iter().chain(extra.iter().copied()).map(OsString::from);
+        .into_iter()
+        .chain(extra.iter().copied())
+        .map(OsString::from);
     parse_query_args(&tokenize_os_args(args)?)
 }
 
 #[test]
 fn exact_predicates_are_native_and_conjunctive() -> TestResult {
     let parsed = parse(&[
-        "--event-id", "event:query:1", "--kind", "unknown_presence", "--state", "indeterminate",
-        "--zone", "door", "--from-ns", "-10", "--through-ns", "20", "--max-entries", "1",
-        "--principal", "principal:query-test",
+        "--event-id",
+        "event:query:1",
+        "--kind",
+        "unknown_presence",
+        "--state",
+        "indeterminate",
+        "--zone",
+        "door",
+        "--from-ns",
+        "-10",
+        "--through-ns",
+        "20",
+        "--max-entries",
+        "1",
+        "--principal",
+        "principal:query-test",
     ])?;
-    assert_eq!(parsed.request.filter.event_id.as_ref().map(EventId::as_str), Some("event:query:1"));
+    assert_eq!(
+        parsed.request.filter.event_id.as_ref().map(EventId::as_str),
+        Some("event:query:1")
+    );
     assert_eq!(parsed.request.filter.kind, Some(EventKind::UnknownPresence));
     assert_eq!(parsed.request.filter.state, Some(EventState::Indeterminate));
     assert_eq!(parsed.request.filter.zone.as_deref(), Some("door"));
@@ -55,12 +73,21 @@ fn time_bounds_can_be_one_sided_and_preserve_all_i128_bits() -> TestResult {
 fn malformed_ambiguous_and_mutating_inputs_are_refused() {
     for extra in [
         vec!["--from-ns", "2", "--through-ns", "1"],
-        vec!["--from-ns", "-0"], vec!["--from-ns", "+1"], vec!["--from-ns", "1e2"],
-        vec!["--max-entries", "0"], vec!["--max-entries", "33"], vec!["--max-entries", "01"],
-        vec!["--zone", "door", "--zone", "window"], vec!["--zone", "bad\nzone"],
-        vec!["--kind", "person"], vec!["--state", "safe"], vec!["--anchor", "latest"],
-        vec!["--continuation", "--root=/other"], vec!["--approve", "yes"],
-        vec!["--certify-absence"], vec!["anything suspicious?"],
+        vec!["--from-ns", "-0"],
+        vec!["--from-ns", "+1"],
+        vec!["--from-ns", "1e2"],
+        vec!["--max-entries", "0"],
+        vec!["--max-entries", "33"],
+        vec!["--max-entries", "01"],
+        vec!["--zone", "door", "--zone", "window"],
+        vec!["--zone", "bad\nzone"],
+        vec!["--kind", "person"],
+        vec!["--state", "safe"],
+        vec!["--anchor", "latest"],
+        vec!["--continuation", "--root=/other"],
+        vec!["--approve", "yes"],
+        vec!["--certify-absence"],
+        vec!["anything suspicious?"],
     ] {
         assert!(parse(&extra).is_err(), "accepted {extra:?}");
     }
@@ -71,9 +98,15 @@ impl Directory {
     fn deployment(tag: &str) -> TestResult<(Self, PathBuf)> {
         let mut owned = None;
         for attempt in 0..100 {
-            let path = std::env::temp_dir().join(format!("fss-query-projection-{tag}-{}-{attempt}", std::process::id()));
+            let path = std::env::temp_dir().join(format!(
+                "fss-query-projection-{tag}-{}-{attempt}",
+                std::process::id()
+            ));
             match fs::create_dir(&path) {
-                Ok(()) => { owned = Some(Self(path)); break; }
+                Ok(()) => {
+                    owned = Some(Self(path));
+                    break;
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(error) => return Err(error.into()),
             }
@@ -83,19 +116,32 @@ impl Directory {
             trace_id: "trace:query-projection".to_owned(),
             operation_id: OperationId::parse("operation:query-projection")?,
             principal: "operator:query-projection".to_owned(),
-            capabilities: vec![ADP_REPLAY_ROW_ID.to_owned()], deadline: None, priority: 10,
-            budgets: BudgetVector::default(), privacy_scope: "privacy:internal".to_owned(),
+            capabilities: vec![ADP_REPLAY_ROW_ID.to_owned()],
+            deadline: None,
+            priority: 10,
+            budgets: BudgetVector::default(),
+            privacy_scope: "privacy:internal".to_owned(),
             retention_scope: "retention:ephemeral".to_owned(),
-            anchor_universe: ContentDigest::sha256(b"query-projection"), generation: 1,
+            anchor_universe: ContentDigest::sha256(b"query-projection"),
+            generation: 1,
         })?;
-        let cx = ReplayCx::new(ReplayIoAuthority::from_context_authority(&authority, directory.0.join("cx"))?);
+        let cx = ReplayCx::new(ReplayIoAuthority::from_context_authority(
+            &authority,
+            directory.0.join("cx"),
+        )?);
         let root = directory.0.join("deployment");
-        drop(ReferenceDeployment::open(&root, "site:query-projection", &cx)?);
+        drop(ReferenceDeployment::open(
+            &root,
+            "site:query-projection",
+            &cx,
+        )?);
         Ok((directory, root))
     }
 }
 impl Drop for Directory {
-    fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
 }
 
 fn snapshot(root: &Path) -> TestResult<BTreeMap<PathBuf, Vec<u8>>> {
@@ -105,10 +151,14 @@ fn snapshot(root: &Path) -> TestResult<BTreeMap<PathBuf, Vec<u8>>> {
         let metadata = fs::symlink_metadata(&path)?;
         if metadata.is_dir() {
             rows.insert(path.strip_prefix(root)?.to_path_buf(), Vec::new());
-            for entry in fs::read_dir(path)? { pending.push(entry?.path()); }
+            for entry in fs::read_dir(path)? {
+                pending.push(entry?.path());
+            }
         } else if metadata.is_file() {
             rows.insert(path.strip_prefix(root)?.to_path_buf(), fs::read(path)?);
-        } else { return Err("unexpected special file in fixture".into()); }
+        } else {
+            return Err("unexpected special file in fixture".into());
+        }
     }
     Ok(rows)
 }

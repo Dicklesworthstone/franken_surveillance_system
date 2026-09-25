@@ -223,18 +223,32 @@ impl Server {
                 argv
             }
             "query" => {
-                if !only(args, &[
-                    "event_id", "kind", "state", "zone", "from_ns", "through_ns",
-                    "max_entries", "anchor", "continuation",
-                ]) {
+                if !only(
+                    args,
+                    &[
+                        "event_id",
+                        "kind",
+                        "state",
+                        "zone",
+                        "from_ns",
+                        "through_ns",
+                        "max_entries",
+                        "anchor",
+                        "continuation",
+                    ],
+                ) {
                     return Err((-32602, "Unexpected query argument or scope override"));
                 }
                 let mut argv = self.base_args("query");
                 for (key, flag, bound) in [
-                    ("event_id", "event-id", 128), ("kind", "kind", 64),
-                    ("state", "state", 64), ("zone", "zone", 64),
-                    ("from_ns", "from-ns", 40), ("through_ns", "through-ns", 40),
-                    ("anchor", "anchor", 256), ("continuation", "continuation", 256),
+                    ("event_id", "event-id", 128),
+                    ("kind", "kind", 64),
+                    ("state", "state", 64),
+                    ("zone", "zone", 64),
+                    ("from_ns", "from-ns", 40),
+                    ("through_ns", "through-ns", 40),
+                    ("anchor", "anchor", 256),
+                    ("continuation", "continuation", 256),
                 ] {
                     if let Some(value) = args.get(key) {
                         let value = bounded_text(Some(value), bound)?;
@@ -244,8 +258,10 @@ impl Server {
                     }
                 }
                 if let Some(value) = args.get("max_entries") {
-                    let count = positive_integer(value,
-                        u64::from(fss_reference::agent_query::MAX_QUERY_ENTRIES))?;
+                    let count = positive_integer(
+                        value,
+                        u64::from(fss_reference::agent_query::MAX_QUERY_ENTRIES),
+                    )?;
                     argv.push(format!("--max-entries={count}").into());
                 }
                 argv
@@ -445,17 +461,34 @@ mod tests {
         let mut calls = 0;
         let response = server.handle_with(&request, |command| {
             calls += 1;
-            let FssCommand::Query(args) = command else { unreachable!("not the native query command"); };
+            let FssCommand::Query(args) = command else {
+                unreachable!("not the native query command");
+            };
             assert_eq!(args.root, std::path::PathBuf::from("/owner/deployment"));
             assert_eq!(args.request.principal.as_str(), "principal:local-operator");
-            assert_eq!(args.request.filter.kind, Some(fss_core::EventKind::Unclassified));
+            assert_eq!(
+                args.request.filter.kind,
+                Some(fss_core::EventKind::Unclassified)
+            );
             assert_eq!(args.request.filter.zone.as_deref(), Some("door"));
             assert_eq!(args.request.filter.from_ns, Some(i128::MIN));
             assert_eq!(args.request.filter.through_ns, Some(i128::MAX));
-            assert_eq!(args.request.expected_anchor.as_ref().map(|anchor| anchor.as_str()), Some(token.as_str()));
-            assert_eq!(args.request.continuation.as_deref(), Some("continuation:page-2"));
+            assert_eq!(
+                args.request
+                    .expected_anchor
+                    .as_ref()
+                    .map(|anchor| anchor.as_str()),
+                Some(token.as_str())
+            );
+            assert_eq!(
+                args.request.continuation.as_deref(),
+                Some("continuation:page-2")
+            );
             assert_eq!(args.request.max_entries, 1);
-            ("unchanged semantic answer".to_owned(), ExitIdentity::SUCCESS)
+            (
+                "unchanged semantic answer".to_owned(),
+                ExitIdentity::SUCCESS,
+            )
         });
         assert_eq!(calls, 1);
         assert!(response.is_some_and(|text| text.contains(&quote("unchanged semantic answer"))));
@@ -466,11 +499,18 @@ mod tests {
         let mut server = ready();
         let mut calls = 0;
         for arguments in [
-            r#"{"root":"/other"}"#, r#"{"principal":"principal:other"}"#,
-            r#"{"max_entries":0}"#, r#"{"max_entries":33}"#, r#"{"max_entries":1e1}"#,
-            r#"{"from_ns":9007199254740993}"#, r#"{"from_ns":"-0"}"#,
-            r#"{"from_ns":"2","through_ns":"1"}"#, r#"{"kind":"person"}"#,
-            r#"{"anchor":"latest"}"#, r#"{"commit":true}"#, r#"{"zone":"door\nwindow"}"#,
+            r#"{"root":"/other"}"#,
+            r#"{"principal":"principal:other"}"#,
+            r#"{"max_entries":0}"#,
+            r#"{"max_entries":33}"#,
+            r#"{"max_entries":1e1}"#,
+            r#"{"from_ns":9007199254740993}"#,
+            r#"{"from_ns":"-0"}"#,
+            r#"{"from_ns":"2","through_ns":"1"}"#,
+            r#"{"kind":"person"}"#,
+            r#"{"anchor":"latest"}"#,
+            r#"{"commit":true}"#,
+            r#"{"zone":"door\nwindow"}"#,
         ] {
             let request = format!(
                 r#"{{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{{"name":"query","arguments":{arguments}}}}}"#
@@ -479,11 +519,17 @@ mod tests {
                 calls += 1;
                 ("{}".to_owned(), ExitIdentity::SUCCESS)
             });
-            assert!(response.is_some_and(|text| text.contains("-32602")), "{arguments}");
+            assert!(
+                response.is_some_and(|text| text.contains("-32602")),
+                "{arguments}"
+            );
         }
         let response = server.handle_with(
             r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"query"}}"#,
-            |_| { calls += 1; ("{}".to_owned(), ExitIdentity::SUCCESS) },
+            |_| {
+                calls += 1;
+                ("{}".to_owned(), ExitIdentity::SUCCESS)
+            },
         );
         assert_eq!(response, None);
         assert_eq!(calls, 0);
@@ -497,7 +543,9 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"query","arguments":{"continuation":"continuation:wrong-stream"}}}"#,
             |_| (expected.to_owned(), ExitIdentity::AGENT_REFUSED),
         );
-        assert!(response.is_some_and(|text| text.contains(&quote(expected)) && text.contains("\"isError\":true")));
+        assert!(response.is_some_and(
+            |text| text.contains(&quote(expected)) && text.contains("\"isError\":true")
+        ));
     }
 
     #[test]
@@ -522,7 +570,13 @@ mod tests {
                 .handle(INIT)
                 .is_some_and(|r| r.contains("Already initialized"))
         );
-        for name in ["session_orient", "session_follow", "explain", "doctor", "query"] {
+        for name in [
+            "session_orient",
+            "session_follow",
+            "explain",
+            "doctor",
+            "query",
+        ] {
             assert!(fss_cli::lookup_by_mcp_tool_name(name).is_some());
         }
         assert!(json::parse(TOOLS).is_ok());
