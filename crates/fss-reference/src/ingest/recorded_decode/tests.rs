@@ -338,7 +338,9 @@ fn receipt_binary_roundtrip_and_all_truncations_fail_closed() -> TestResult {
     suffix.push(0);
     assert!(RecordedDecodeReceipt::decode(&suffix, ContentDigest::sha256(&suffix)).is_err());
     let mut unknown_version = bytes.clone();
-    unknown_version[19] = 2;
+    // The current receipt version is 2 (privacy-mask marker, fss-bgqkd); 3 is unknown.
+    assert_eq!(unknown_version[19], 2);
+    unknown_version[19] = 3;
     assert!(
         RecordedDecodeReceipt::decode(&unknown_version, ContentDigest::sha256(&unknown_version))
             .is_err()
