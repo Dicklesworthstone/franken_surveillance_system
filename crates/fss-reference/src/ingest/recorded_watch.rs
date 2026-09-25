@@ -38,7 +38,9 @@
 //! segments become `decode_refused` coverage intervals with their error id, H.264/H.265 resume at
 //! the next IDR/IRAP ([`super::tolerant_decode`]), and the tracker restarts after every gap with
 //! fresh track identities, so no track is bridged across it. A run without any refusal or gap
-//! is byte-identical to the default analysis.
+//! is byte-identical to the default analysis. A detector cascade receives those exact refusals
+//! and restarts, decodes each selected epoch independently, and retains one inference allowance
+//! for the whole analysis. Neither class evidence nor coverage bridges a recovery boundary.
 //!
 //! The sensor's current retained privacy mask ([`super::privacy_mask`]) is applied to every
 //! decoded plane before foreground detection, tracking, the zone gate or the cascade sees it. A
@@ -64,7 +66,8 @@ use fss_publication::{LocalPublicationError, SlotName};
 
 use super::detector_cascade::{
     CascadeError, CascadeOutcome, CascadeSource, CascadeTrack, ClassEvidence, DetectorCascade,
-    cascade_outcome_json, cascade_policy_json, class_evidence_json, select_frames,
+    RecoveredCascadeSource, cascade_outcome_json, cascade_policy_json, class_evidence_json,
+    select_frames,
 };
 use super::eventgen::{
     ZoneEventConfig, ZoneEventError, ZoneEventGenerator, ZoneObservation, ZoneSpec,
@@ -1013,11 +1016,6 @@ impl WatchReport {
             });
         }
         let decode_work_units = budget.used();
-        if detector.is_some() && (!decode_refusals.is_empty() || !restarts.is_empty()) {
-            return Err(WatchError::InvalidPlan(
-                "a detector cascade does not run over decode-refused or gapped ranges",
-            ));
-        }
         let cascade = match detector {
             None => None,
             Some(detector) => {
@@ -1044,15 +1042,19 @@ impl WatchReport {
                     .collect();
                 let decoded: Vec<usize> = frames.iter().map(|f| f.segment).collect();
                 let mut allowance = detector.budget();
-                let outcome = detector.run(
+                let outcome = detector.run_recovered(
                     deployment,
-                    CascadeSource {
-                        import_identity: plan.import_identity,
-                        import_root,
-                        interpretation: plan.interpretation,
-                        media_format: &media_format,
-                        first_segment: plan.first_segment,
-                        decoded_segments: &decoded,
+                    RecoveredCascadeSource {
+                        source: CascadeSource {
+                            import_identity: plan.import_identity,
+                            import_root,
+                            interpretation: plan.interpretation,
+                            media_format: &media_format,
+                            first_segment: plan.first_segment,
+                            decoded_segments: &decoded,
+                        },
+                        decode_refusals: &decode_refusals,
+                        tracking_restarts: &restarts,
                     },
                     &tracks,
                     &mut allowance,
