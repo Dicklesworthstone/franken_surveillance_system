@@ -8,8 +8,8 @@
 
 use crate::preprocess::{ImageBytes, ResizeAspect, ResizeFilter, ResizeGeometry, ResizeOptions};
 use crate::{
-    ChannelTransform, ExecBudget, ExecError, KernelBackend, OptimizedGraph, PreprocessProgram,
-    ScalarExecCx, ScalarExecutor,
+    ChannelTransform, ExecBudget, ExecError, ExecThreads, KernelBackend, OptimizedGraph,
+    PreprocessProgram, ScalarExecCx, ScalarExecutor,
 };
 use fss_codec_mjpeg::color::{
     DecodedRgb, RgbDecodeLimits, RgbDecodeReceipt, decode_rgb, rgb_decoder_identity,
@@ -174,6 +174,8 @@ pub struct RgbInferenceModel {
     execution: RgbExecution,
     input_bytes: usize,
     output_bytes: usize,
+    /// Execution parallelism of the optimized executor: wall time only, never identity.
+    threads: ExecThreads,
 }
 impl RgbInferenceModel {
     /// Validate and freeze an explicitly authored/converted RGB graph and all F32 weights.
@@ -306,6 +308,7 @@ impl RgbInferenceModel {
             execution,
             input_bytes,
             output_bytes,
+            threads: ExecThreads::SINGLE,
         })
     }
 
@@ -322,6 +325,17 @@ impl RgbInferenceModel {
         };
         self.digest = self.execution.model_digest(self.base_digest);
         Ok(self)
+    }
+    /// Run the optimized executor with an explicit thread count (default one). Outputs are
+    /// bit-identical for every count, so the model digest, inference identities and receipts
+    /// are unchanged; the scalar reference ignores it (it is single-threaded by definition).
+    pub fn with_execution_threads(mut self, threads: ExecThreads) -> Self {
+        self.threads = threads;
+        self
+    }
+    /// Thread count used by the optimized executor (execution telemetry, not identity).
+    pub fn execution_threads(&self) -> ExecThreads {
+        self.threads
     }
     /// Kernel family executing this model.
     pub fn backend(&self) -> KernelBackend {
@@ -545,11 +559,16 @@ impl RgbInferenceModel {
                 ScalarExecutor::run(&self.graph, &inputs, limits.execution, cx)?
             }
             // Weights are bound (packed) inside the prepared graph; only the image is supplied.
-            RgbExecution::Optimized(graph) => graph.run(
-                &[(self.spec.image_input.as_str(), resized.tensor)],
-                limits.execution,
-                cx,
-            )?,
+            RgbExecution::Optimized(graph) => {
+                graph
+                    .run_threaded(
+                        &[(self.spec.image_input.as_str(), resized.tensor)],
+                        limits.execution,
+                        self.threads,
+                        cx,
+                    )?
+                    .0
+            }
         };
         let mut outputs = BTreeMap::new();
         let mut encoded = CanonicalEncoder::new();

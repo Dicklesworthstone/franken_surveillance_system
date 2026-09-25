@@ -12,8 +12,12 @@
 //! skipped exactly like the reference (never multiplied by an explicit zero), so signed zeros and
 //! non-finite values follow the same arithmetic.
 
+use std::ops::Range;
+use std::sync::Mutex;
+
 use fss_model_ir::{GraphNode, TensorPort};
 
+use super::Parallelism;
 use super::pointwise::silu_in_place;
 use crate::scalar_executor::activation_silu;
 use crate::{ExecError, ScalarExecCx};
@@ -22,6 +26,25 @@ use crate::{ExecError, ScalarExecCx};
 pub(super) const MR: usize = 4;
 /// Output columns per register tile.
 pub(super) const NR: usize = 8;
+/// Scheduling weight of one fused SiLU element in multiply-accumulate equivalents (its binary64
+/// series is 16 dependent multiply/divide steps per element). A heuristic for the work floor only.
+const SILU_WORK: u64 = 24;
+/// Queue chunks per thread when a convolution is split: enough that a thread the host schedules
+/// late leaves its share to the others, few enough that repacked input panels stay cheap.
+const CHUNKS_PER_THREAD: usize = 3;
+
+/// The output slice one thread owns: `values[i]` is global output element `base + i`.
+struct Slab<'a> {
+    values: &'a mut [f32],
+    base: usize,
+}
+
+impl Slab<'_> {
+    /// Mutable view of global elements `[start, start + len)`.
+    fn at(&mut self, start: usize, len: usize) -> &mut [f32] {
+        &mut self.values[start - self.base..start - self.base + len]
+    }
+}
 
 /// Contiguous `[lo, hi)` range of valid kernel taps for one output coordinate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -293,14 +316,59 @@ impl PreparedConv {
         self.batch * self.c_out * self.h_out * self.w_out
     }
 
-    /// Execute into `out` (length `output_len`). `x` is the NCHW input.
+    /// Independent output units, in output-memory order: `(n, group, co_block)` for dense and
+    /// grouped convolution, `(n, channel)` for depthwise convolution.
+    fn unit_count(&self) -> usize {
+        if self.depthwise {
+            self.batch * self.c_out
+        } else {
+            self.batch * self.groups * self.co_blocks
+        }
+    }
+
+    /// First output plane (`n * c_out + co`) of unit `u`; `unit_plane(unit_count())` is the
+    /// total plane count. Monotone in `u`, so any unit range owns one contiguous output slice.
+    fn unit_plane(&self, u: usize) -> usize {
+        if self.depthwise {
+            return u;
+        }
+        let per_batch = self.groups * self.co_blocks;
+        let (n, r) = (u / per_batch, u % per_batch);
+        let (g, block) = (r / self.co_blocks, r % self.co_blocks);
+        n * self.c_out + g * self.cpg_out + block * MR
+    }
+
+    /// Work of one execution in multiply-accumulate equivalents (the partition's work measure):
+    /// the reduction taps plus, when SiLU is fused, [`SILU_WORK`] per output element.
+    fn work(&self) -> u64 {
+        let taps = if self.depthwise {
+            self.k_h * self.k_w
+        } else {
+            self.taps
+        };
+        let per_output = taps as u64 + if self.silu { SILU_WORK } else { 0 };
+        (self.output_len() as u64).saturating_mul(per_output)
+    }
+
+    /// Execute into `out` (length `output_len`). `x` is the NCHW input. Returns the number of
+    /// threads used and the scratch floats the worker threads allocated (freed on join).
+    ///
+    /// With more than one thread, the unit sequence is cut into `CHUNKS_PER_THREAD * threads`
+    /// contiguous chunks; each chunk owns exactly the output slice of its units (`split_at_mut`,
+    /// so no element ever has two writers). The calling thread and `threads - 1` scoped workers
+    /// take whole chunks from one bounded, local queue until it is empty, and compute each with
+    /// the same per-element operations as the one-thread path, so which thread takes which chunk
+    /// changes timing only, never a bit (and a worker the host schedules late simply takes
+    /// fewer chunks). Every worker is joined before this returns, on success, error or
+    /// cancellation; each checks cancellation at every output row.
     pub(super) fn run(
         &self,
         x: &[f32],
         out: &mut [f32],
         scratch: &mut Vec<f32>,
+        parallelism: Parallelism,
         cx: &ScalarExecCx,
-    ) -> Result<(), ExecError> {
+    ) -> Result<(usize, usize), ExecError> {
         if x.len() != self.batch * self.c_in * self.h_in * self.w_in
             || out.len() != self.output_len()
         {
@@ -312,11 +380,99 @@ impl PreparedConv {
         }
         scratch.clear();
         scratch.resize(self.scratch_floats(), 0.0);
-        if self.depthwise {
-            self.run_depthwise(x, out, scratch, cx)
-        } else {
-            self.run_gemm(x, out, scratch, cx)
+        let units = self.unit_count();
+        let threads = parallelism.threads_for(units, self.work());
+        if threads <= 1 {
+            let mut slab = Slab {
+                values: out,
+                base: 0,
+            };
+            self.run_units(x, &mut slab, 0..units, scratch, cx)?;
+            return Ok((1, 0));
         }
+        let plane = self.h_out * self.w_out;
+        let chunks = units.min(threads * CHUNKS_PER_THREAD);
+        let mut queue = Vec::with_capacity(chunks);
+        let mut rest = out;
+        let mut offset = 0;
+        for chunk in 0..chunks {
+            let range = units * chunk / chunks..units * (chunk + 1) / chunks;
+            let end = self.unit_plane(range.end) * plane;
+            let (values, tail) = std::mem::take(&mut rest).split_at_mut(end - offset);
+            rest = tail;
+            queue.push((
+                range,
+                Slab {
+                    values,
+                    base: offset,
+                },
+            ));
+            offset = end;
+        }
+        let queue = Mutex::new(queue.into_iter());
+        let drain = |panel: &mut [f32]| -> Result<(), ExecError> {
+            loop {
+                // Held only to take the next chunk; a poisoned queue is still a valid iterator.
+                let next = match queue.lock() {
+                    Ok(mut chunks) => chunks.next(),
+                    Err(poisoned) => poisoned.into_inner().next(),
+                };
+                let Some((range, mut slab)) = next else {
+                    return Ok(());
+                };
+                self.run_units(x, &mut slab, range, panel, cx)?;
+            }
+        };
+        std::thread::scope(|scope| {
+            let workers: Vec<_> = (1..threads)
+                .map(|_| {
+                    scope.spawn(|| {
+                        let mut panel = vec![0.0_f32; self.scratch_floats()];
+                        drain(&mut panel)
+                    })
+                })
+                .collect();
+            let mut result = drain(scratch.as_mut_slice());
+            for worker in workers {
+                // A worker panic is re-raised unchanged, exactly as on the one-thread path.
+                let joined = worker
+                    .join()
+                    .unwrap_or_else(|payload| std::panic::resume_unwind(payload));
+                if result.is_ok() {
+                    result = joined;
+                }
+            }
+            result
+        })?;
+        Ok((threads, (threads - 1) * self.scratch_floats()))
+    }
+
+    /// Compute units `range` into `out`, the slab that owns exactly those units' outputs.
+    fn run_units(
+        &self,
+        x: &[f32],
+        out: &mut Slab<'_>,
+        range: Range<usize>,
+        scratch: &mut [f32],
+        cx: &ScalarExecCx,
+    ) -> Result<(), ExecError> {
+        if self.depthwise {
+            for plane in range {
+                let (n, c) = (plane / self.c_out, plane % self.c_out);
+                self.run_depthwise(x, out, (n, c), scratch, cx)?;
+            }
+            return Ok(());
+        }
+        let per_batch = self.groups * self.co_blocks;
+        let mut u = range.start;
+        while u < range.end {
+            let (n, r) = (u / per_batch, u % per_batch);
+            let (g, first) = (r / self.co_blocks, r % self.co_blocks);
+            let last = self.co_blocks.min(first + (range.end - u));
+            self.run_gemm(x, out, (n, g), first..last, scratch, cx)?;
+            u += last - first;
+        }
+        Ok(())
     }
 
     fn input_row<'a>(&self, x: &'a [f32], n: usize, cin: usize, ih: usize) -> &'a [f32] {
@@ -340,117 +496,116 @@ impl PreparedConv {
         }
     }
 
+    /// Output-channel blocks `blocks` of batch item `n`, group `g`. With every block of the group
+    /// (the one-thread partition) this is exactly the unpartitioned loop: the input panel is
+    /// packed once per tile and reused by each block, and every element's reduction is unchanged.
     fn run_gemm(
         &self,
         x: &[f32],
-        out: &mut [f32],
+        out: &mut Slab<'_>,
+        (n, g): (usize, usize),
+        blocks: Range<usize>,
         panel: &mut [f32],
         cx: &ScalarExecCx,
     ) -> Result<(), ExecError> {
         let kk = self.k_h * self.k_w;
-        for n in 0..self.batch {
-            for g in 0..self.groups {
-                let weights_g = &self.packed[g * self.co_blocks * self.taps * MR..]
-                    [..self.co_blocks * self.taps * MR];
-                for oh in 0..self.h_out {
-                    cx.checkpoint("optimized-conv:row")?;
-                    let rows = self.rows[oh];
-                    // Valid taps per input channel for this output row: contiguous in `kh`.
-                    let seg = (rows.hi - rows.lo) * self.k_w;
-                    let mut ow0 = self.interior.lo;
-                    while ow0 < self.interior.hi {
-                        let width = NR.min(self.interior.hi - ow0);
-                        // Pack [valid tap][NR] in the reference (cin_g, kh, kw) order.
-                        let mut r = 0;
-                        for c in 0..self.cpg_in {
-                            let cin = g * self.cpg_in + c;
-                            for kh in rows.lo..rows.hi {
-                                let row = self.input_row(x, n, cin, self.ih(oh, kh));
-                                for kw in 0..self.k_w {
-                                    let dst = &mut panel[r * NR..(r + 1) * NR];
-                                    let start = self.iw(ow0, kw);
-                                    if self.stride_w == 1 && width == NR {
-                                        // Constant-length copy: inlined moves, no memcpy call.
-                                        dst.copy_from_slice(&row[start..start + NR]);
-                                    } else if self.stride_w == 1 {
-                                        dst[..width].copy_from_slice(&row[start..start + width]);
-                                    } else {
-                                        for (d, s) in dst[..width]
-                                            .iter_mut()
-                                            .zip(row[start..].iter().step_by(self.stride_w))
-                                        {
-                                            *d = *s;
-                                        }
-                                    }
-                                    dst[width..].fill(0.0);
-                                    r += 1;
-                                }
-                            }
-                        }
-                        for block in 0..self.co_blocks {
-                            let w = &weights_g[block * self.taps * MR..][..self.taps * MR];
-                            let mut acc = [[0.0_f32; NR]; MR];
-                            if seg == kk {
-                                // Every tap of this row is valid: one contiguous reduction.
-                                tile(&mut acc, w, &panel[..self.taps * NR]);
+        let weights_g =
+            &self.packed[g * self.co_blocks * self.taps * MR..][..self.co_blocks * self.taps * MR];
+        for oh in 0..self.h_out {
+            cx.checkpoint("optimized-conv:row")?;
+            let rows = self.rows[oh];
+            // Valid taps per input channel for this output row: contiguous in `kh`.
+            let seg = (rows.hi - rows.lo) * self.k_w;
+            let mut ow0 = self.interior.lo;
+            while ow0 < self.interior.hi {
+                let width = NR.min(self.interior.hi - ow0);
+                // Pack [valid tap][NR] in the reference (cin_g, kh, kw) order.
+                let mut r = 0;
+                for c in 0..self.cpg_in {
+                    let cin = g * self.cpg_in + c;
+                    for kh in rows.lo..rows.hi {
+                        let row = self.input_row(x, n, cin, self.ih(oh, kh));
+                        for kw in 0..self.k_w {
+                            let dst = &mut panel[r * NR..(r + 1) * NR];
+                            let start = self.iw(ow0, kw);
+                            if self.stride_w == 1 && width == NR {
+                                // Constant-length copy: inlined moves, no memcpy call.
+                                dst.copy_from_slice(&row[start..start + NR]);
+                            } else if self.stride_w == 1 {
+                                dst[..width].copy_from_slice(&row[start..start + width]);
                             } else {
-                                for c in 0..self.cpg_in {
-                                    let k0 = c * kk + rows.lo * self.k_w;
-                                    let a = &w[k0 * MR..(k0 + seg) * MR];
-                                    let b = &panel[c * seg * NR..(c + 1) * seg * NR];
-                                    tile(&mut acc, a, b);
+                                for (d, s) in dst[..width]
+                                    .iter_mut()
+                                    .zip(row[start..].iter().step_by(self.stride_w))
+                                {
+                                    *d = *s;
                                 }
                             }
-                            for (i, lane) in acc.iter().enumerate() {
-                                let co_g = block * MR + i;
-                                if co_g >= self.cpg_out {
-                                    break;
-                                }
-                                let co = g * self.cpg_out + co_g;
-                                let bias = self.bias[co];
-                                let start =
-                                    ((n * self.c_out + co) * self.h_out + oh) * self.w_out + ow0;
-                                let dst = &mut out[start..start + width];
-                                for (d, v) in dst.iter_mut().zip(lane) {
-                                    *d = *v + bias;
-                                }
-                                self.finish(dst);
-                            }
+                            dst[width..].fill(0.0);
+                            r += 1;
                         }
-                        ow0 += width;
                     }
-                    // Border columns: some kw taps fall into padding and are skipped exactly.
-                    for ow in (0..self.interior.lo).chain(self.interior.hi..self.w_out) {
-                        let cols = self.cols[ow];
-                        for block in 0..self.co_blocks {
-                            let w = &weights_g[block * self.taps * MR..][..self.taps * MR];
-                            let mut acc = [0.0_f32; MR];
-                            for c in 0..self.cpg_in {
-                                let cin = g * self.cpg_in + c;
-                                for kh in rows.lo..rows.hi {
-                                    let row = self.input_row(x, n, cin, self.ih(oh, kh));
-                                    for kw in cols.lo..cols.hi {
-                                        let xv = row[self.iw(ow, kw)];
-                                        let k = c * kk + kh * self.k_w + kw;
-                                        let a = &w[k * MR..(k + 1) * MR];
-                                        for (s, wv) in acc.iter_mut().zip(a) {
-                                            *s += xv * *wv;
-                                        }
-                                    }
+                }
+                for block in blocks.clone() {
+                    let w = &weights_g[block * self.taps * MR..][..self.taps * MR];
+                    let mut acc = [[0.0_f32; NR]; MR];
+                    if seg == kk {
+                        // Every tap of this row is valid: one contiguous reduction.
+                        tile(&mut acc, w, &panel[..self.taps * NR]);
+                    } else {
+                        for c in 0..self.cpg_in {
+                            let k0 = c * kk + rows.lo * self.k_w;
+                            let a = &w[k0 * MR..(k0 + seg) * MR];
+                            let b = &panel[c * seg * NR..(c + 1) * seg * NR];
+                            tile(&mut acc, a, b);
+                        }
+                    }
+                    for (i, lane) in acc.iter().enumerate() {
+                        let co_g = block * MR + i;
+                        if co_g >= self.cpg_out {
+                            break;
+                        }
+                        let co = g * self.cpg_out + co_g;
+                        let bias = self.bias[co];
+                        let start = ((n * self.c_out + co) * self.h_out + oh) * self.w_out + ow0;
+                        let dst = out.at(start, width);
+                        for (d, v) in dst.iter_mut().zip(lane) {
+                            *d = *v + bias;
+                        }
+                        self.finish(dst);
+                    }
+                }
+                ow0 += width;
+            }
+            // Border columns: some kw taps fall into padding and are skipped exactly.
+            for ow in (0..self.interior.lo).chain(self.interior.hi..self.w_out) {
+                let cols = self.cols[ow];
+                for block in blocks.clone() {
+                    let w = &weights_g[block * self.taps * MR..][..self.taps * MR];
+                    let mut acc = [0.0_f32; MR];
+                    for c in 0..self.cpg_in {
+                        let cin = g * self.cpg_in + c;
+                        for kh in rows.lo..rows.hi {
+                            let row = self.input_row(x, n, cin, self.ih(oh, kh));
+                            for kw in cols.lo..cols.hi {
+                                let xv = row[self.iw(ow, kw)];
+                                let k = c * kk + kh * self.k_w + kw;
+                                let a = &w[k * MR..(k + 1) * MR];
+                                for (s, wv) in acc.iter_mut().zip(a) {
+                                    *s += xv * *wv;
                                 }
-                            }
-                            for (i, s) in acc.iter().enumerate() {
-                                let co_g = block * MR + i;
-                                if co_g >= self.cpg_out {
-                                    break;
-                                }
-                                let co = g * self.cpg_out + co_g;
-                                let index =
-                                    ((n * self.c_out + co) * self.h_out + oh) * self.w_out + ow;
-                                let v = *s + self.bias[co];
-                                out[index] = if self.silu { activation_silu(v) } else { v };
                             }
                         }
+                    }
+                    for (i, s) in acc.iter().enumerate() {
+                        let co_g = block * MR + i;
+                        if co_g >= self.cpg_out {
+                            break;
+                        }
+                        let co = g * self.cpg_out + co_g;
+                        let index = ((n * self.c_out + co) * self.h_out + oh) * self.w_out + ow;
+                        let v = *s + self.bias[co];
+                        out.at(index, 1)[0] = if self.silu { activation_silu(v) } else { v };
                     }
                 }
             }
@@ -458,66 +613,64 @@ impl PreparedConv {
         Ok(())
     }
 
+    /// One output plane (batch item `n`, channel `c`) of a depthwise convolution.
     fn run_depthwise(
         &self,
         x: &[f32],
-        out: &mut [f32],
+        out: &mut Slab<'_>,
+        (n, c): (usize, usize),
         acc: &mut [f32],
         cx: &ScalarExecCx,
     ) -> Result<(), ExecError> {
         let kk = self.k_h * self.k_w;
         let Taps { lo, hi } = self.interior;
-        for n in 0..self.batch {
-            for c in 0..self.c_out {
-                let w = &self.packed[c * kk..(c + 1) * kk];
-                let bias = self.bias[c];
-                for oh in 0..self.h_out {
-                    cx.checkpoint("optimized-conv:depthwise-row")?;
-                    let rows = self.rows[oh];
-                    let run = &mut acc[lo..hi];
-                    let width = hi - lo;
-                    run.fill(0.0);
-                    for kh in rows.lo..rows.hi {
-                        let row = self.input_row(x, n, c, self.ih(oh, kh));
-                        for kw in 0..self.k_w {
-                            let wv = w[kh * self.k_w + kw];
-                            if run.is_empty() {
-                                continue;
-                            }
-                            let start = self.iw(lo, kw);
-                            if self.stride_w == 1 {
-                                for (a, xv) in run.iter_mut().zip(&row[start..start + width]) {
-                                    *a += *xv * wv;
-                                }
-                            } else {
-                                for (a, xv) in run
-                                    .iter_mut()
-                                    .zip(row[start..].iter().step_by(self.stride_w))
-                                {
-                                    *a += *xv * wv;
-                                }
-                            }
-                        }
+        let w = &self.packed[c * kk..(c + 1) * kk];
+        let bias = self.bias[c];
+        for oh in 0..self.h_out {
+            cx.checkpoint("optimized-conv:depthwise-row")?;
+            let rows = self.rows[oh];
+            let run = &mut acc[lo..hi];
+            let width = hi - lo;
+            run.fill(0.0);
+            for kh in rows.lo..rows.hi {
+                let row = self.input_row(x, n, c, self.ih(oh, kh));
+                for kw in 0..self.k_w {
+                    let wv = w[kh * self.k_w + kw];
+                    if run.is_empty() {
+                        continue;
                     }
-                    let base = ((n * self.c_out + c) * self.h_out + oh) * self.w_out;
-                    let dst = &mut out[base + lo..base + hi];
-                    for (d, a) in dst.iter_mut().zip(run.iter()) {
-                        *d = *a + bias;
-                    }
-                    self.finish(dst);
-                    for ow in (0..lo).chain(hi..self.w_out) {
-                        let cols = self.cols[ow];
-                        let mut s = 0.0_f32;
-                        for kh in rows.lo..rows.hi {
-                            let row = self.input_row(x, n, c, self.ih(oh, kh));
-                            for kw in cols.lo..cols.hi {
-                                s += row[self.iw(ow, kw)] * w[kh * self.k_w + kw];
-                            }
+                    let start = self.iw(lo, kw);
+                    if self.stride_w == 1 {
+                        for (a, xv) in run.iter_mut().zip(&row[start..start + width]) {
+                            *a += *xv * wv;
                         }
-                        let v = s + bias;
-                        out[base + ow] = if self.silu { activation_silu(v) } else { v };
+                    } else {
+                        for (a, xv) in run
+                            .iter_mut()
+                            .zip(row[start..].iter().step_by(self.stride_w))
+                        {
+                            *a += *xv * wv;
+                        }
                     }
                 }
+            }
+            let base = ((n * self.c_out + c) * self.h_out + oh) * self.w_out;
+            let dst = out.at(base + lo, hi - lo);
+            for (d, a) in dst.iter_mut().zip(run.iter()) {
+                *d = *a + bias;
+            }
+            self.finish(dst);
+            for ow in (0..lo).chain(hi..self.w_out) {
+                let cols = self.cols[ow];
+                let mut s = 0.0_f32;
+                for kh in rows.lo..rows.hi {
+                    let row = self.input_row(x, n, c, self.ih(oh, kh));
+                    for kw in cols.lo..cols.hi {
+                        s += row[self.iw(ow, kw)] * w[kh * self.k_w + kw];
+                    }
+                }
+                let v = s + bias;
+                out.at(base + ow, 1)[0] = if self.silu { activation_silu(v) } else { v };
             }
         }
         Ok(())

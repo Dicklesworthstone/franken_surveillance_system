@@ -18,7 +18,10 @@ use fss_model_ir::{
 use fss_tensor::{DType, Shape, Tensor};
 
 use super::pointwise::silu_in_place;
-use super::{KernelBackend, OptimizedGraph, optimized_kernel_generation, scalar_kernel_generation};
+use super::{
+    ExecThreads, ExecThreadsError, Kernel, KernelBackend, MAX_EXEC_THREADS, MIN_MACS_PER_THREAD,
+    OptimizedGraph, Parallelism, optimized_kernel_generation, scalar_kernel_generation,
+};
 use crate::scalar_executor::activation_silu;
 use crate::{ExecBudget, ExecError, ScalarExecCx, ScalarExecutor};
 
@@ -202,69 +205,81 @@ fn silu_lanes_match_the_scalar_activation_bit_for_bit() {
     }
 }
 
+/// A one-node convolution graph and the values of all its inputs.
+type ConvCase = (ModelIrGraph, BTreeMap<String, Vec<f32>>);
+
+/// Random convolution `case` (geometry, attributes, input values), drawn from `rng` in a fixed
+/// order. `None` when the geometry is invalid for the operator (no input values are drawn).
+fn random_conv(rng: &mut Rng, case: usize) -> TestResult<Option<ConvCase>> {
+    let kind = case % 4;
+    let groups_choice = rng.below(3);
+    let base = rng.range(1, 4);
+    let (c_in, c_out, groups) = match groups_choice {
+        0 => (rng.range(1, 9), rng.range(1, 11), 1),
+        1 => (base * 2, base * 2, base * 2), // depthwise
+        _ => {
+            let g = rng.range(2, 3);
+            (g * rng.range(1, 3), g * rng.range(1, 4), g)
+        }
+    };
+    let (k_h, k_w) = if kind == 0 {
+        (1, 1)
+    } else {
+        (rng.range(1, 5), rng.range(1, 5))
+    };
+    let (s_h, s_w) = if kind == 0 {
+        (1, 1)
+    } else {
+        (rng.range(1, 3), rng.range(1, 3))
+    };
+    let (d_h, d_w) = if kind == 3 {
+        (rng.range(1, 3), rng.range(1, 3))
+    } else {
+        (1, 1)
+    };
+    let pads = if kind == 0 {
+        [0, 0, 0, 0]
+    } else {
+        [rng.below(3), rng.below(3), rng.below(3), rng.below(3)]
+    };
+    let batch = rng.range(1, 2);
+    let (h, w) = (rng.range(1, 14), rng.range(1, 21));
+    let bias = rng.below(3) != 0;
+    let special = case.is_multiple_of(5);
+    let mut attrs = AttributeMap::new();
+    attrs.insert("strides".into(), ints(&[s_h, s_w]));
+    attrs.insert("padding".into(), ints(&pads));
+    attrs.insert("dilations".into(), ints(&[d_h, d_w]));
+    if groups != 1 || rng.below(2) == 0 {
+        attrs.insert("groups".into(), AttrValue::Int(groups as i64));
+    }
+    let mut inputs = vec![
+        ("x", vec![batch, c_in, h, w]),
+        ("w", vec![c_out, c_in / groups, k_h, k_w]),
+    ];
+    if bias {
+        inputs.push(("b", vec![c_out]));
+    }
+    let Some(graph) = one_node(OpCode::Conv2d, &inputs, attrs)? else {
+        return Ok(None);
+    };
+    let mut values = BTreeMap::new();
+    for (name, dims) in &inputs {
+        let n = dims.iter().product();
+        values.insert((*name).to_owned(), rng.values(n, special));
+    }
+    Ok(Some((graph, values)))
+}
+
 #[test]
 fn conv2d_kernels_are_bit_identical_over_random_geometry() -> TestResult {
     let mut rng = Rng(0xC0_4E_2D);
     let mut checked = 0;
     let mut labels = BTreeMap::new();
     for case in 0..400 {
-        let kind = case % 4;
-        let groups_choice = rng.below(3);
-        let base = rng.range(1, 4);
-        let (c_in, c_out, groups) = match groups_choice {
-            0 => (rng.range(1, 9), rng.range(1, 11), 1),
-            1 => (base * 2, base * 2, base * 2), // depthwise
-            _ => {
-                let g = rng.range(2, 3);
-                (g * rng.range(1, 3), g * rng.range(1, 4), g)
-            }
-        };
-        let (k_h, k_w) = if kind == 0 {
-            (1, 1)
-        } else {
-            (rng.range(1, 5), rng.range(1, 5))
-        };
-        let (s_h, s_w) = if kind == 0 {
-            (1, 1)
-        } else {
-            (rng.range(1, 3), rng.range(1, 3))
-        };
-        let (d_h, d_w) = if kind == 3 {
-            (rng.range(1, 3), rng.range(1, 3))
-        } else {
-            (1, 1)
-        };
-        let pads = if kind == 0 {
-            [0, 0, 0, 0]
-        } else {
-            [rng.below(3), rng.below(3), rng.below(3), rng.below(3)]
-        };
-        let batch = rng.range(1, 2);
-        let (h, w) = (rng.range(1, 14), rng.range(1, 21));
-        let bias = rng.below(3) != 0;
-        let special = case % 5 == 0;
-        let mut attrs = AttributeMap::new();
-        attrs.insert("strides".into(), ints(&[s_h, s_w]));
-        attrs.insert("padding".into(), ints(&pads));
-        attrs.insert("dilations".into(), ints(&[d_h, d_w]));
-        if groups != 1 || rng.below(2) == 0 {
-            attrs.insert("groups".into(), AttrValue::Int(groups as i64));
-        }
-        let mut inputs = vec![
-            ("x", vec![batch, c_in, h, w]),
-            ("w", vec![c_out, c_in / groups, k_h, k_w]),
-        ];
-        if bias {
-            inputs.push(("b", vec![c_out]));
-        }
-        let Some(graph) = one_node(OpCode::Conv2d, &inputs, attrs)? else {
+        let Some((graph, values)) = random_conv(&mut rng, case)? else {
             continue;
         };
-        let mut values = BTreeMap::new();
-        for (name, dims) in &inputs {
-            let n = dims.iter().product();
-            values.insert((*name).to_owned(), rng.values(n, special));
-        }
         let chosen =
             differential(&graph, &values, &["w", "b"]).map_err(|e| format!("case {case}: {e}"))?;
         for label in chosen {
@@ -629,5 +644,329 @@ fn identities_bind_the_kernel_generation_and_constants() -> TestResult {
         first.get_output("y").ok_or("y")?.to_vec::<f32>()?,
         second.get_output("y").ok_or("y")?.to_vec::<f32>()?
     );
+    Ok(())
+}
+
+/// Thread counts every partition test covers.
+const THREAD_COUNTS: [usize; 6] = [1, 2, 3, 4, 7, 8];
+
+/// Run `graph` through the scalar reference and through the prepared plan with every thread
+/// count in [`THREAD_COUNTS`], splitting even tiny geometries (no work floor). Every count must
+/// reproduce the scalar bits and accounting. Returns the most threads any run actually used.
+fn differential_threads(
+    graph: &ModelIrGraph,
+    values: &BTreeMap<String, Vec<f32>>,
+    constant: &[&str],
+) -> TestResult<usize> {
+    let cx = ScalarExecCx::new();
+    let mut all = Vec::new();
+    let mut runtime = Vec::new();
+    let mut constants = BTreeMap::new();
+    for port in graph.inputs() {
+        let v = values.get(port.name()).ok_or("missing value")?;
+        let t = Tensor::from_values(port.shape().clone(), v, G)?;
+        all.push((port.name().to_owned(), t.clone()));
+        if constant.contains(&port.name()) {
+            constants.insert(port.name().to_owned(), v.clone());
+        } else {
+            runtime.push((port.name().to_owned(), t));
+        }
+    }
+    let scalar = ScalarExecutor::run(graph, &all, ExecBudget::unlimited(), &cx)?;
+    let prepared = OptimizedGraph::prepare(graph, &constants, &cx)?;
+    let mut most = 0;
+    for threads in THREAD_COUNTS {
+        let parallelism = Parallelism::unthrottled(ExecThreads::new(threads)?);
+        let (optimized, report) =
+            prepared.run_inner(&runtime, ExecBudget::unlimited(), parallelism, &cx)?;
+        assert_eq!(report.threads_requested, threads);
+        assert!(report.threads_used <= threads);
+        most = most.max(report.threads_used);
+        assert_eq!(scalar.executed_macs(), optimized.executed_macs());
+        assert_eq!(scalar.allocated_bytes(), optimized.allocated_bytes());
+        assert_eq!(scalar.nodes_executed(), optimized.nodes_executed());
+        for (name, s) in scalar.outputs() {
+            let o = optimized
+                .get_output(name)
+                .ok_or("missing optimized output")?;
+            assert_eq!(s.shape(), o.shape());
+            same_bits(&o.to_vec::<f32>()?, &s.to_vec::<f32>()?)
+                .map_err(|e| format!("{name} threads={threads}: {e}"))?;
+        }
+    }
+    Ok(most)
+}
+
+#[test]
+fn conv2d_partitions_are_bit_identical_for_every_thread_count() -> TestResult {
+    // The same seeded generator as the single-thread differential test.
+    let mut rng = Rng(0xC0_4E_2D);
+    let (mut checked, mut split) = (0, 0);
+    for case in 0..400 {
+        let Some((graph, values)) = random_conv(&mut rng, case)? else {
+            continue;
+        };
+        let most = differential_threads(&graph, &values, &["w", "b"])
+            .map_err(|e| format!("case {case}: {e}"))?;
+        checked += 1;
+        if most >= 4 {
+            split += 1;
+        }
+    }
+    assert!(checked >= 300, "only {checked} valid random convolutions");
+    assert!(split >= 100, "only {split} cases split into >= 4 threads");
+    // Fused bias + SiLU epilogues and uneven block counts (37 channels = 9 full MR blocks + 1).
+    let mut rng = Rng(0x7EAD);
+    for (consumers, bias) in [(1, true), (1, false), (2, true)] {
+        let graph = conv_silu_graph(consumers, bias)?;
+        let mut values = BTreeMap::new();
+        values.insert("x".to_owned(), rng.values(3 * 9 * 11, true));
+        values.insert("w".to_owned(), rng.values(6 * 27, false));
+        values.insert("b".to_owned(), rng.values(6, false));
+        assert!(differential_threads(&graph, &values, &["w", "b"])? >= 2);
+    }
+    let mut attrs = AttributeMap::new();
+    attrs.insert("padding".into(), ints(&[1, 1, 1, 1]));
+    attrs.insert("groups".into(), AttrValue::Int(1));
+    let inputs = [
+        ("x", vec![2, 5, 7, 19]),
+        ("w", vec![37, 5, 3, 3]),
+        ("b", vec![37]),
+    ];
+    let graph = one_node(OpCode::Conv2d, &inputs, attrs)?.ok_or("valid conv")?;
+    let values: BTreeMap<String, Vec<f32>> = inputs
+        .iter()
+        .map(|(n, d)| ((*n).to_owned(), rng.values(d.iter().product(), true)))
+        .collect();
+    assert_eq!(differential_threads(&graph, &values, &["w", "b"])?, 8);
+    Ok(())
+}
+
+/// A chain of `layers` dense 3x3 convolutions (each followed by SiLU) over `[1, c, h, w]`.
+fn conv_chain(layers: usize, c: usize, h: usize, w: usize) -> TestResult<ModelIrGraph> {
+    let port = |n: &str, d: Vec<usize>| TensorPort::new(n, DType::F32, Shape::new(d)?, G);
+    let mut inputs = vec![port("x", vec![1, c, h, w])?];
+    let mut nodes = Vec::new();
+    let mut previous = "x".to_owned();
+    for layer in 0..layers {
+        let (weights, bias) = (format!("w{layer}"), format!("b{layer}"));
+        inputs.push(port(&weights, vec![c, c, 3, 3])?);
+        inputs.push(port(&bias, vec![c])?);
+        let mut attrs = AttributeMap::new();
+        attrs.insert("padding".into(), ints(&[1, 1, 1, 1]));
+        let (conv, act) = (format!("c{layer}"), format!("s{layer}"));
+        nodes.push(GraphNode::new(
+            &conv,
+            OpCode::Conv2d,
+            &conv,
+            vec![previous.clone(), weights, bias],
+            vec![conv.clone()],
+            attrs,
+        )?);
+        nodes.push(GraphNode::new(
+            &act,
+            OpCode::Silu,
+            &act,
+            vec![conv.clone()],
+            vec![act.clone()],
+            AttributeMap::new(),
+        )?);
+        previous = act;
+    }
+    let output = TensorPort::new(&previous, DType::F32, Shape::new(vec![1, c, h, w])?, G)?;
+    Ok(ModelIrGraph::new_validated(
+        "chain",
+        ModelIrVersion::V1,
+        G,
+        inputs,
+        vec![output],
+        nodes,
+    )?)
+}
+
+fn chain_constants(graph: &ModelIrGraph, rng: &mut Rng) -> BTreeMap<String, Vec<f32>> {
+    graph
+        .inputs()
+        .iter()
+        .filter(|p| p.name() != "x")
+        .map(|p| {
+            let n = p.shape().dims().iter().product();
+            // Small weights keep activations finite through the chain.
+            let v = rng.values(n, false).iter().map(|v| v * 0.05).collect();
+            (p.name().to_owned(), v)
+        })
+        .collect()
+}
+
+#[test]
+fn public_threaded_runs_split_real_work_and_stay_bit_identical() -> TestResult {
+    let graph = conv_chain(2, 48, 40, 40)?;
+    let mut rng = Rng(0x7_4EAD);
+    let constants = chain_constants(&graph, &mut rng);
+    let cx = ScalarExecCx::new();
+    let prepared = OptimizedGraph::prepare(&graph, &constants, &cx)?;
+    let x = Tensor::from_values(
+        Shape::new(vec![1, 48, 40, 40])?,
+        &rng.values(48 * 1600, false),
+        G,
+    )?;
+    // 48 channels = 12 MR blocks; each layer is 48*1600 outputs of 432 taps plus a fused SiLU,
+    // so the work floor admits `work / MIN_MACS_PER_THREAD` threads (at least 2).
+    let by_work = usize::try_from((48 * 1600 * (432 + 24)) / MIN_MACS_PER_THREAD)?;
+    assert!(by_work >= 2);
+    let (single, single_report) =
+        prepared.run_with_report(&[("x", x.clone())], ExecBudget::unlimited(), &cx)?;
+    assert_eq!(
+        (single_report.threads_requested, single_report.threads_used),
+        (1, 1)
+    );
+    let reference = single
+        .outputs()
+        .values()
+        .next()
+        .ok_or("output")?
+        .to_vec::<f32>()?;
+    for threads in THREAD_COUNTS {
+        let (out, report) = prepared.run_threaded(
+            &[("x", x.clone())],
+            ExecBudget::unlimited(),
+            ExecThreads::new(threads)?,
+            &cx,
+        )?;
+        assert_eq!(
+            report.threads_used,
+            threads.min(12).min(by_work),
+            "threads={threads}"
+        );
+        let values = out
+            .outputs()
+            .values()
+            .next()
+            .ok_or("output")?
+            .to_vec::<f32>()?;
+        same_bits(&values, &reference).map_err(|e| format!("threads={threads}: {e}"))?;
+        assert_eq!(out.executed_macs(), single.executed_macs());
+        // The prepared identity never depends on the thread count.
+        assert_eq!(
+            prepared.digest(),
+            OptimizedGraph::prepare(&graph, &constants, &cx)?.digest()
+        );
+    }
+    // Admission is unchanged: the same typed budget refusal before any thread starts.
+    let refused = prepared.run_threaded(
+        &[("x", x)],
+        ExecBudget::new(10, usize::MAX),
+        ExecThreads::new(4)?,
+        &cx,
+    );
+    assert!(matches!(refused, Err(ExecError::BudgetExceeded { .. })));
+    Ok(())
+}
+
+#[test]
+fn thread_counts_are_explicit_and_bounded() {
+    assert_eq!(ExecThreads::new(0), Err(ExecThreadsError::Zero));
+    assert_eq!(ExecThreadsError::Zero.stable_id(), "exec-threads.zero");
+    assert_eq!(
+        ExecThreads::new(MAX_EXEC_THREADS + 1),
+        Err(ExecThreadsError::AboveMaximum {
+            requested: MAX_EXEC_THREADS + 1,
+            maximum: MAX_EXEC_THREADS
+        })
+    );
+    assert_eq!(ExecThreads::new(1), Ok(ExecThreads::SINGLE));
+    assert_eq!(ExecThreads::default(), ExecThreads::SINGLE);
+    assert_eq!(
+        ExecThreads::new(MAX_EXEC_THREADS).map(ExecThreads::get),
+        Ok(MAX_EXEC_THREADS)
+    );
+    // The work floor never splits below one thread and never exceeds the unit count.
+    let eight = Parallelism::new(ExecThreads::new(8).unwrap_or(ExecThreads::SINGLE));
+    assert_eq!(eight.threads_for(0, 0), 1);
+    assert_eq!(eight.threads_for(3, u64::MAX), 3);
+    assert_eq!(eight.threads_for(100, 1), 1);
+    assert_eq!(eight.threads_for(100, u64::MAX), 8);
+}
+
+#[test]
+fn cancellation_inside_a_split_convolution_is_typed_and_joins_every_thread() -> TestResult {
+    let graph = conv_chain(1, 24, 20, 20)?;
+    let mut rng = Rng(0xCA_7CE1);
+    let constants = chain_constants(&graph, &mut rng);
+    let prepared = OptimizedGraph::prepare(&graph, &constants, &ScalarExecCx::new())?;
+    let Some(Kernel::Conv(conv)) = prepared.steps.first().map(|s| &s.kernel) else {
+        return Err("first step is not a prepared convolution".into());
+    };
+    let x = rng.values(24 * 400, false);
+    let mut out = vec![0.0_f32; conv.output_len()];
+    let mut scratch = Vec::new();
+    // Every range (the caller's and the three scoped workers') meets the per-row checkpoint of
+    // its first unit; `run` returns only after all of them have been joined.
+    let cancelled = ScalarExecCx::new();
+    cancelled.request_cancellation();
+    let result = conv.run(
+        &x,
+        &mut out,
+        &mut scratch,
+        Parallelism::unthrottled(ExecThreads::new(4)?),
+        &cancelled,
+    );
+    assert_eq!(
+        result,
+        Err(ExecError::CancellationRequested {
+            stage: "optimized-conv:row"
+        })
+    );
+    assert!(cancelled.is_drain_completed());
+    // The same kernel then runs to completion: no poisoned state, no leaked worker.
+    assert_eq!(
+        conv.run(
+            &x,
+            &mut out,
+            &mut scratch,
+            Parallelism::unthrottled(ExecThreads::new(4)?),
+            &ScalarExecCx::new(),
+        ),
+        Ok((4, 3 * conv.scratch_floats()))
+    );
+    Ok(())
+}
+
+#[test]
+fn cancellation_during_a_threaded_run_returns_the_typed_refusal() -> TestResult {
+    // Large enough that the run is still executing when the cancel lands (hundreds of
+    // milliseconds even in an optimized build; far longer in a test build).
+    let graph = conv_chain(8, 48, 48, 48)?;
+    let mut rng = Rng(0xCA_7CE2);
+    let constants = chain_constants(&graph, &mut rng);
+    let prepared = OptimizedGraph::prepare(&graph, &constants, &ScalarExecCx::new())?;
+    let x = Tensor::from_values(
+        Shape::new(vec![1, 48, 48, 48])?,
+        &rng.values(48 * 48 * 48, false),
+        G,
+    )?;
+    let cx = ScalarExecCx::new();
+    let result = std::thread::scope(|scope| {
+        let runner = scope.spawn(|| {
+            prepared.run_threaded(
+                &[("x", x.clone())],
+                ExecBudget::unlimited(),
+                ExecThreads::new(4).unwrap_or(ExecThreads::SINGLE),
+                &cx,
+            )
+        });
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        cx.request_cancellation();
+        runner.join()
+    });
+    let Ok(result) = result else {
+        return Err("threaded run panicked".into());
+    };
+    assert!(
+        matches!(result, Err(ExecError::CancellationRequested { .. })),
+        "{:?}",
+        result.map(|(_, r)| r)
+    );
+    assert!(cx.is_drain_completed());
     Ok(())
 }

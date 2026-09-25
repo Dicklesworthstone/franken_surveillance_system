@@ -31,8 +31,8 @@ use fss_reference::ingest::rgb_package::{
 };
 use fss_reference::preprocess::{ImageBytes, ResizeAspect, ResizeFilter, ResizeOptions};
 use fss_reference::{
-    ChannelTransform, ExecBudget, KernelBackend, PreprocessProgram, ReplayCx, ScalarExecCx,
-    ScalarExecutor,
+    ChannelTransform, ExecBudget, ExecThreads, KernelBackend, PreprocessProgram, ReplayCx,
+    ScalarExecCx, ScalarExecutor,
 };
 use fss_tensor::{DType, Shape, Tensor};
 
@@ -537,6 +537,65 @@ fn scalar_reference_reproduces_the_onnxruntime_oracle() -> TestResult {
         "oracle: {oracle}\nmax |raw error| {worst_raw:.3e}; max |decoded error| {worst_decoded:.3e} px; \
         max error / max(1, |oracle|) {worst_normalized:.3e} (tolerance {TOLERANCE:e})"
     );
+    Ok(())
+}
+
+/// fss-zczw0: the multi-threaded optimized executor reproduces the one-thread run exactly on
+/// every conformance input, and the thread count reaches no identity: identical output bits,
+/// output digest, inference identity, model digest, backend descriptor and post-NMS detections
+/// for 1, 2, 3, 4, 7 and 8 threads.
+#[test]
+fn optimized_executor_is_bit_identical_for_every_thread_count() -> TestResult {
+    let (expected, _) = fixture()?;
+    let mut package = load()?;
+    assert_eq!(package.model().execution_threads(), ExecThreads::SINGLE);
+    let model_digest = package.model().digest();
+    let cx = ScalarExecCx::new();
+    for name in cases::CASES {
+        let e = expected.get(name).ok_or("case missing from fixture")?;
+        let image = cases::source(name)?;
+        let allowed = allowed_all(&image);
+        package = package.with_execution_threads(ExecThreads::SINGLE);
+        let single = infer(&package, &image, &cx)?;
+        let mut single_detections = Vec::new();
+        for &ppm in e.detections.keys() {
+            single_detections.push(detection_keys(&package, &single, ppm, &allowed, &cx)?);
+        }
+        for threads in [2, 3, 4, 7, 8] {
+            package = package.with_execution_threads(ExecThreads::new(threads)?);
+            assert_eq!(package.model().execution_threads().get(), threads);
+            assert_eq!(
+                package.model().digest(),
+                model_digest,
+                "{name} threads={threads}"
+            );
+            let run = infer(&package, &image, &cx)?;
+            assert_eq!(
+                bits(&run),
+                bits(&single),
+                "{name} threads={threads}: output bits"
+            );
+            assert_eq!(run.output_digest(), single.output_digest());
+            assert_eq!(
+                run.identity(),
+                single.identity(),
+                "{name} threads={threads}"
+            );
+            assert_eq!(run.model_digest(), single.model_digest());
+            assert_eq!(run.backend_descriptor(), single.backend_descriptor());
+            assert_eq!(
+                (run.executed_macs(), run.allocated_tensor_bytes()),
+                (single.executed_macs(), single.allocated_tensor_bytes())
+            );
+            for (index, &ppm) in e.detections.keys().enumerate() {
+                assert_eq!(
+                    detection_keys(&package, &run, ppm, &allowed, &cx)?,
+                    single_detections[index],
+                    "{name} @{ppm} threads={threads}: detections differ"
+                );
+            }
+        }
+    }
     Ok(())
 }
 

@@ -11,8 +11,13 @@
 //!   validation/copy overhead, and the optimized breakdown is unfused);
 //! * `memory`: the scalar liveness plan's peak and the optimized run's measured peak payload.
 //!
+//! * `sweep` (fss-zczw0): with `--threads 1,2,4,8`, whole-graph optimized timings and the
+//!   optimized `ops` breakdown per thread count (after one scalar run per case for the
+//!   bit-identity check), plus `/proc/loadavg` before and after each count, so shared-host
+//!   contention is visible next to the numbers.
+//!
 //! Run in release mode only; debug timings are meaningless. Not a runtime path.
-//! Usage: `yolox_profile [RUNS]` (default 5).
+//! Usage: `yolox_profile [RUNS] [--threads N[,N...]]` (default 5 runs, full profile).
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -27,8 +32,8 @@ use fss_model_ir::{
 use fss_reference::ingest::rgb_package::RgbDetectorPackage;
 use fss_reference::preprocess::{ImageBytes, ResizeAspect, ResizeFilter, ResizeOptions};
 use fss_reference::{
-    ChannelTransform, ExecBudget, ExecOutcome, KernelBackend, OptimizedGraph, PreprocessProgram,
-    ReplayCx, ScalarExecCx, ScalarExecutor,
+    ChannelTransform, ExecBudget, ExecOutcome, ExecThreads, KernelBackend, OptimizedGraph,
+    PreprocessProgram, ReplayCx, ScalarExecCx, ScalarExecutor,
 };
 use fss_tensor::Tensor;
 
@@ -141,7 +146,12 @@ fn output_bits(out: &ExecOutcome) -> Res<ContentDigest> {
     Ok(ContentDigest::sha256(&bits))
 }
 
-fn whole(package: &RgbDetectorPackage, backend: Backend, runs: usize) -> Res<Vec<ContentDigest>> {
+fn whole(
+    package: &RgbDetectorPackage,
+    backend: Backend,
+    runs: usize,
+    threads: ExecThreads,
+) -> Res<Vec<ContentDigest>> {
     let model = package.model();
     let graph = model.graph();
     let started = Instant::now();
@@ -156,6 +166,7 @@ fn whole(package: &RgbDetectorPackage, backend: Backend, runs: usize) -> Res<Vec
         );
     }
     let mut digests = Vec::new();
+    let mut every = Vec::new();
     for name in cases::CASES {
         let native_jpeg = cases::source(name)?.jpeg.is_some();
         let image = model_input(name)?;
@@ -171,9 +182,10 @@ fn whole(package: &RgbDetectorPackage, backend: Backend, runs: usize) -> Res<Vec
                     ScalarExecutor::run(graph, &inputs, ExecBudget::unlimited(), &cx)?
                 }
                 Backend::Optimized => {
-                    let (out, r) = prepared.run_with_report(
+                    let (out, r) = prepared.run_threaded(
                         &[(model.spec().image_input.as_str(), image.clone())],
                         ExecBudget::unlimited(),
+                        threads,
                         &cx,
                     )?;
                     report = Some(r);
@@ -189,28 +201,84 @@ fn whole(package: &RgbDetectorPackage, backend: Backend, runs: usize) -> Res<Vec
         }
         let all: Vec<String> = times.iter().map(|t| format!("{:.1}", ms(*t))).collect();
         let digest = digest.ok_or("no run")?;
+        every.extend(times.iter().copied());
         println!(
-            "whole backend={} case={name} native_jpeg={native_jpeg} runs={runs} median_ms={:.1} min_ms={:.1} all_ms=[{}] output_bits={digest}",
+            "whole backend={} threads={} case={name} native_jpeg={native_jpeg} runs={runs} median_ms={:.1} min_ms={:.1} all_ms=[{}] output_bits={digest}",
             backend.name(),
+            threads.get(),
             ms(median(times.clone())),
             ms(times.iter().copied().min().unwrap_or_default()),
             all.join(","),
         );
         if let Some(r) = report {
             println!(
-                "memory backend=optimized case={name} peak_live_bytes={} scratch_bytes={} resident_bytes={}",
-                r.peak_live_bytes, r.scratch_bytes, r.resident_bytes
+                "memory backend=optimized threads={} case={name} peak_live_bytes={} scratch_bytes={} resident_bytes={} threads_used={}",
+                threads.get(),
+                r.peak_live_bytes,
+                r.scratch_bytes,
+                r.resident_bytes,
+                r.threads_used
             );
         }
         digests.push(digest);
     }
+    if !every.is_empty() {
+        println!(
+            "whole_summary backend={} threads={} samples={} median_ms={:.1} min_ms={:.1}",
+            backend.name(),
+            threads.get(),
+            every.len(),
+            ms(median(every.clone())),
+            ms(every.iter().copied().min().unwrap_or_default())
+        );
+    }
     Ok(digests)
+}
+
+fn loadavg() -> String {
+    std::fs::read_to_string("/proc/loadavg")
+        .map(|s| s.trim().to_owned())
+        .unwrap_or_else(|_| "unavailable".to_owned())
+}
+
+/// Parse `--threads 1,2,4,8` (every entry admitted by `ExecThreads::new`).
+fn thread_list(args: &[String]) -> Res<Option<Vec<ExecThreads>>> {
+    let Some(at) = args.iter().position(|a| a == "--threads") else {
+        return Ok(None);
+    };
+    let list = args.get(at + 1).ok_or("--threads requires a list")?;
+    let mut out = Vec::new();
+    for entry in list.split(',') {
+        out.push(ExecThreads::new(entry.parse()?)?);
+    }
+    Ok(Some(out))
+}
+
+/// Thread sweep: one scalar run per case as the bit-identity oracle, then `runs` optimized runs
+/// per case for every requested thread count, all in this process on this host.
+fn sweep(package: &RgbDetectorPackage, runs: usize, counts: &[ExecThreads]) -> Res {
+    let scalar = whole(package, Backend::Scalar, 1, ExecThreads::SINGLE)?;
+    for &threads in counts {
+        println!("loadavg before threads={} {}", threads.get(), loadavg());
+        let optimized = whole(package, Backend::Optimized, runs, threads)?;
+        println!("loadavg after threads={} {}", threads.get(), loadavg());
+        ops(package, Backend::Optimized, threads)?;
+        let identical = scalar == optimized;
+        println!(
+            "bit_identical_outputs threads={} {identical}",
+            threads.get()
+        );
+        if !identical {
+            return Err("threaded outputs differ from the scalar reference".into());
+        }
+    }
+    Ok(())
 }
 
 /// Repetitions per node program; the minimum is reported (the least-disturbed sample).
 const NODE_REPEATS: usize = 3;
 
-fn ops(package: &RgbDetectorPackage, backend: Backend) -> Res {
+fn ops(package: &RgbDetectorPackage, backend: Backend, threads: ExecThreads) -> Res {
     let model = package.model();
     let graph = model.graph();
     let parameters = model.parameters();
@@ -301,7 +369,11 @@ fn ops(package: &RgbDetectorPackage, backend: Backend) -> Res {
                     Backend::Scalar => {
                         ScalarExecutor::run(&program, &args, ExecBudget::unlimited(), &cx)?
                     }
-                    Backend::Optimized => prepared.run(&runtime, ExecBudget::unlimited(), &cx)?,
+                    Backend::Optimized => {
+                        prepared
+                            .run_threaded(&runtime, ExecBudget::unlimited(), threads, &cx)?
+                            .0
+                    }
                 };
                 best = best.min(t.elapsed());
                 result = Some(out);
@@ -339,15 +411,17 @@ fn ops(package: &RgbDetectorPackage, backend: Backend) -> Res {
     let mut rows: Vec<_> = totals.into_iter().collect();
     rows.sort_by_key(|a| std::cmp::Reverse(a.1.1));
     println!(
-        "ops backend={} case=silhouette nodes={} sum_ms={:.1} (per-node programs, min of {NODE_REPEATS})",
+        "ops backend={} threads={} case=silhouette nodes={} sum_ms={:.1} (per-node programs, min of {NODE_REPEATS})",
         backend.name(),
+        threads.get(),
         plan.steps().len(),
         ms(sum)
     );
     for (op, (count, time, work)) in rows {
         println!(
-            "op backend={} op={op} programs={count} ms={:.1} share={:.1}% work_units={work}",
+            "op backend={} threads={} op={op} programs={count} ms={:.1} share={:.1}% work_units={work}",
             backend.name(),
+            threads.get(),
             ms(time),
             100.0 * time.as_secs_f64() / sum.as_secs_f64()
         );
@@ -355,8 +429,9 @@ fn ops(package: &RgbDetectorPackage, backend: Backend) -> Res {
     per_node.sort_by_key(|a| std::cmp::Reverse(a.0));
     for (dt, label) in per_node.iter().take(8) {
         println!(
-            "top_node backend={} ms={:.2} {label}",
+            "top_node backend={} threads={} ms={:.2} {label}",
             backend.name(),
+            threads.get(),
             ms(*dt)
         );
     }
@@ -370,6 +445,13 @@ fn main() -> ExitCode {
         .and_then(|a| a.parse().ok())
         .unwrap_or(5_usize)
         .max(1);
+    let counts = match thread_list(&args) {
+        Ok(counts) => counts,
+        Err(e) => {
+            eprintln!("yolox_profile: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     // Worker class: CPU model and logical CPU count (Linux only; informational).
     let cpu = std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
     println!(
@@ -381,17 +463,25 @@ fn main() -> ExitCode {
             .unwrap_or("unknown"),
         cpu.lines().filter(|l| l.starts_with("processor")).count()
     );
+    println!(
+        "host available_parallelism={} loadavg {}",
+        std::thread::available_parallelism().map_or(0, |n| n.get()),
+        loadavg()
+    );
     let result = load().and_then(|package| {
+        if let Some(counts) = &counts {
+            return sweep(&package, runs, counts);
+        }
         let plan = MemoryPlan::compile(package.model().graph(), MemoryPlanLimits::default())?;
         println!(
             "memory backend=scalar-plan peak_live_tensor_bytes={} cumulative_tensor_bytes={}",
             plan.peak_live_bytes(),
             plan.cumulative_bytes()
         );
-        ops(&package, Backend::Scalar)?;
-        ops(&package, Backend::Optimized)?;
-        let scalar = whole(&package, Backend::Scalar, runs)?;
-        let optimized = whole(&package, Backend::Optimized, runs)?;
+        ops(&package, Backend::Scalar, ExecThreads::SINGLE)?;
+        ops(&package, Backend::Optimized, ExecThreads::SINGLE)?;
+        let scalar = whole(&package, Backend::Scalar, runs, ExecThreads::SINGLE)?;
+        let optimized = whole(&package, Backend::Optimized, runs, ExecThreads::SINGLE)?;
         println!("bit_identical_outputs={}", scalar == optimized);
         if scalar != optimized {
             return Err("optimized outputs differ from the scalar reference".into());

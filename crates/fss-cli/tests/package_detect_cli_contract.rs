@@ -184,6 +184,30 @@ fn kernel_selection_is_explicit_and_bound_into_the_report() -> TestResult {
 }
 
 #[test]
+fn thread_count_is_explicit_and_never_changes_the_report() -> TestResult {
+    let directory = OwnedDirectory::new("threads")?;
+    let (root, id) = import(&directory)?;
+    let one = detect_with(&root, &id, &package_path(), None, &["--threads", "1"])?;
+    success(&one);
+    let four = detect_with(&root, &id, &package_path(), None, &["--threads", "4"])?;
+    success(&four);
+    let auto = detect_with(&root, &id, &package_path(), None, &["--threads", "auto"])?;
+    success(&auto);
+    let default = detect(&root, &id, &package_path(), None)?;
+    success(&default);
+    // Bit-identical execution: the report bytes (every digest and detection) do not move.
+    assert_eq!(one.stdout, four.stdout);
+    assert_eq!(one.stdout, auto.stdout);
+    assert_eq!(one.stdout, default.stdout);
+    for refused in ["0", "65", "many"] {
+        let output = detect_with(&root, &id, &package_path(), None, &["--threads", refused])?;
+        assert!(!output.status.success(), "--threads {refused}");
+        assert!(output.stdout.is_empty(), "--threads {refused}");
+    }
+    Ok(())
+}
+
+#[test]
 fn verified_package_detects_over_a_retained_import() -> TestResult {
     let directory = OwnedDirectory::new("detect")?;
     let (root, id) = import(&directory)?;
