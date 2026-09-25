@@ -87,11 +87,11 @@ c5c00751a94f91820cd70737b16df59cbed45df22e519bb938f6e08ee4656332  crates/fss-cli
 d9276646d2a189a907b55c48ce932e719eef91f8291ecadcd71448f11f60e352  crates/fss-cli/src/bin/fss-archive.rs
 124cb803382168ba3d592a866ff3c19e0986dfe1e94781d734f69a977b0d2dd1  crates/fss-cli/src/bin/fss-evaluate.rs
 dac847e29d53ffedacfcc5ed486f7be4eb70536c0ad62fb609721429a9e039b4  crates/fss-cli/src/bin/fss-event/alert.rs
-f766f2c810a21168bd68cebaa6caca7fd442cd81c1fda4065411076ca209702d  crates/fss-cli/src/bin/fss-event/corroborate.rs
+edda6df90ac9a89f32ff0471a43e49ebf77767dad16867f2999c59aaaa1e9037  crates/fss-cli/src/bin/fss-event/corroborate.rs
 13a13fc98dfa4e31d0d0141747cc9c5a49f31cec259173c5e5d9cccc46c2dc00  crates/fss-cli/src/bin/fss-event/coverage.rs
 bdcb82ea2f7065da585e94a6c0010f29aa178327adce61b95c029929de485c74  crates/fss-cli/src/bin/fss-event/delete.rs
 2d4cc54cfd40e971d13c88c2eb5c7ea540f1dbbdcca499ed1c46749e4e9b0836  crates/fss-cli/src/bin/fss-event/detector.rs
-90f21f5b101f1567664ca4e44ca0d15d14e3c170263fe3c4221d8bb3784ab499  crates/fss-cli/src/bin/fss-event/graph.rs
+2bce324d63d6bf1f44b77a8a7b38029a8e91ab29e2655c64347a5d21be26d51b  crates/fss-cli/src/bin/fss-event/graph.rs
 946adc1158dbf0ace0dce82dcc0ae11f243479a166ae0a4d284ea111323cc70d  crates/fss-cli/src/bin/fss-event/privacy_mask.rs
 42e5fe3b6be995433e8fd653d4846fc56d79cea9ac427c62a4c0c063e8242e27  crates/fss-cli/src/bin/fss-event/watch.rs
 12bf3ab166e06e4147c6b063b8e0d57853bcd97842c18894d363ff20e70308bb  crates/fss-cli/src/bin/fss-event.rs
@@ -764,7 +764,7 @@ a85dff1244096128cdb86d68a7ea0f2c04b2858888d7fa088c5db220abb85240  crates/fss-ref
 8e5827fcf7394719771fbd0fc30194bc30a484d101f7b9e57d2b95bd538376fa  crates/fss-reference/src/clock_sync.rs
 437357d33ef4ba451f793a0c34e8c0dc6c1ca63d33b2caa386b9d0bb62a930c3  crates/fss-reference/src/context_binding.rs
 612bf48ef75055c73d4de6c946ddb6b3f5ef87569acf4af1df84c14fbd20bb4b  crates/fss-reference/src/context_binding_tests.rs
-6b3459f6a5ecc5b47b2dc3256ec3700e3ea18ee672d299b7e53d17285e269183  crates/fss-reference/src/coverage_graph.rs
+6215dd2afb6961165054dbb1ce5dc466b59d245d03691bc7a1774370f1d2e76b  crates/fss-reference/src/coverage_graph.rs
 2019f7b90c5f35ebf57331845ebaef92d191a18b8b701c6f87b693f3974041f9  crates/fss-reference/src/decode/jpeg.rs
 b1237b6afddd19c99c0f18c5a131be5fac9a289a87e07d79ede559d0f17ccfbb  crates/fss-reference/src/decode.rs
 3ace584393c30e6c98b8e876df951b296f44fb5925d3a6d2dee1d666068db98c  crates/fss-reference/src/deletion/commit.rs
