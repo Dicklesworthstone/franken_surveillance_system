@@ -20,6 +20,8 @@ pub mod lab_cmd;
 pub mod negative_evidence_cmd;
 /// Read-only `orient` (AOP-003) and `explain` (AOP-011) over a deployment root.
 pub mod orient_cmd;
+/// Read-only AOP-005 projection of the verified event-record query engine.
+pub mod query_cmd;
 pub mod redact;
 /// Durable agent sessions: `session open` (AOP-001), `session handoff` (AOP-012), and
 /// `session resume` (AOP-002); agent-plane writes only.
