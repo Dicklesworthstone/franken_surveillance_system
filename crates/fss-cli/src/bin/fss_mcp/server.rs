@@ -18,6 +18,7 @@ const TOOLS: &str = r#"{"tools":[
 {"name":"session_orient","description":"Read-only AOP-003: inspect an existing deployment through its anchor-pinned SituationCapsule. Returns the existing fss/1 AgentResponseEnvelope unchanged, including coverage gaps, uncertainty, obligations and affordances. No affordance is executed.","inputSchema":{"type":"object","properties":{"view":{"type":"string","enum":["pulse","brief","epistemic_map"]},"budget_tokens":{"type":"integer","minimum":1,"maximum":4096}},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
 {"name":"explain","description":"Read-only AOP-011: explain one published event, including provenance, contradictions and evidence that would change the conclusion. Returns the existing fss/1 AgentResponseEnvelope unchanged.","inputSchema":{"type":"object","properties":{"event_id":{"type":"string","minLength":1,"maxLength":128}},"required":["event_id"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
 {"name":"session_follow","description":"Read-only AOP-004: return one exact page of meaningful changes since an orientation anchor. Protected coverage, obligation and effect-uncertainty classes and exact continuations remain in the unchanged fss/1 envelope. A bounded read, not a live subscription.","inputSchema":{"type":"object","properties":{"since":{"type":"string","minLength":1,"maxLength":256},"view":{"type":"string","enum":["pulse","brief"]},"max_entries":{"type":"integer","minimum":1,"maximum":4096},"continuation":{"type":"string","minLength":1,"maxLength":256}},"required":["since"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
+{"name":"query","description":"Read-only AOP-005: exact conjunctive query of the latest verified committed event records. Returns the unchanged CLI AgentResponseEnvelope with protected context. Empty matches never certify physical absence. Nanosecond endpoints are canonical decimal strings to preserve signed 128-bit precision. Continuations require unchanged filters, principal, page size and authority/effect-history head.","inputSchema":{"type":"object","properties":{"event_id":{"type":"string","minLength":1,"maxLength":128},"kind":{"type":"string","enum":["perimeter_breach","covert_approach","sensor_tamper","unknown_presence","benign_routine","unclassified"]},"state":{"type":"string","enum":["hypothesized","witnessed","corroborated","adjudicated","alert_delivered","resolved","indeterminate","rejected"]},"zone":{"type":"string","minLength":1,"maxLength":64},"from_ns":{"type":"string","pattern":"^(0|-?[1-9][0-9]*)$","maxLength":40},"through_ns":{"type":"string","pattern":"^(0|-?[1-9][0-9]*)$","maxLength":40},"max_entries":{"type":"integer","minimum":1,"maximum":32},"anchor":{"type":"string","minLength":1,"maxLength":256},"continuation":{"type":"string","minLength":1,"maxLength":256}},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
 {"name":"doctor","description":"Read-only AOP-014 reference diagnosis of the fixed deployment. Returns the existing fss.doctor.v1 report, not an AgentResponseEnvelope. Does not repair, create directories, acquire locks or execute affordances.","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}
 ]}"#;
 
@@ -221,6 +222,34 @@ impl Server {
                 // freshness and stream identity. The transport never manufactures an anchor.
                 argv
             }
+            "query" => {
+                if !only(args, &[
+                    "event_id", "kind", "state", "zone", "from_ns", "through_ns",
+                    "max_entries", "anchor", "continuation",
+                ]) {
+                    return Err((-32602, "Unexpected query argument or scope override"));
+                }
+                let mut argv = self.base_args("query");
+                for (key, flag, bound) in [
+                    ("event_id", "event-id", 128), ("kind", "kind", 64),
+                    ("state", "state", 64), ("zone", "zone", 64),
+                    ("from_ns", "from-ns", 40), ("through_ns", "through-ns", 40),
+                    ("anchor", "anchor", 256), ("continuation", "continuation", 256),
+                ] {
+                    if let Some(value) = args.get(key) {
+                        let value = bounded_text(Some(value), bound)?;
+                        // Inline values remain data; the native CLI parser validates every
+                        // enum, integer, interval and token without a parallel interpretation.
+                        argv.push(format!("--{flag}={value}").into());
+                    }
+                }
+                if let Some(value) = args.get("max_entries") {
+                    let count = positive_integer(value,
+                        u64::from(fss_reference::agent_query::MAX_QUERY_ENTRIES))?;
+                    argv.push(format!("--max-entries={count}").into());
+                }
+                argv
+            }
             "doctor" => {
                 if !args.is_empty() {
                     return Err((-32602, "Doctor accepts no scope overrides"));
@@ -240,6 +269,7 @@ impl Server {
             FssCommand::Orient(_)
                 | FssCommand::Explain(_)
                 | FssCommand::Follow(_)
+                | FssCommand::Query(_)
                 | FssCommand::Doctor(_)
         ) {
             return Err((-32603, "Read-only command boundary refused dispatch"));
@@ -405,6 +435,72 @@ mod tests {
     }
 
     #[test]
+    fn query_dispatch_preserves_native_filters_precision_and_scope() {
+        let mut server = ready();
+        let token = format!("anchor:{}:0:none:{}", "a".repeat(16), "b".repeat(64));
+        let request = format!(
+            r#"{{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{{"name":"query","arguments":{{"kind":"unclassified","zone":"door","from_ns":"-170141183460469231731687303715884105728","through_ns":"170141183460469231731687303715884105727","max_entries":1,"anchor":{},"continuation":"continuation:page-2"}}}}}}"#,
+            quote(&token)
+        );
+        let mut calls = 0;
+        let response = server.handle_with(&request, |command| {
+            calls += 1;
+            let FssCommand::Query(args) = command else { unreachable!("not the native query command"); };
+            assert_eq!(args.root, std::path::PathBuf::from("/owner/deployment"));
+            assert_eq!(args.request.principal.as_str(), "principal:local-operator");
+            assert_eq!(args.request.filter.kind, Some(fss_core::EventKind::Unclassified));
+            assert_eq!(args.request.filter.zone.as_deref(), Some("door"));
+            assert_eq!(args.request.filter.from_ns, Some(i128::MIN));
+            assert_eq!(args.request.filter.through_ns, Some(i128::MAX));
+            assert_eq!(args.request.expected_anchor.as_ref().map(|anchor| anchor.as_str()), Some(token.as_str()));
+            assert_eq!(args.request.continuation.as_deref(), Some("continuation:page-2"));
+            assert_eq!(args.request.max_entries, 1);
+            ("unchanged semantic answer".to_owned(), ExitIdentity::SUCCESS)
+        });
+        assert_eq!(calls, 1);
+        assert!(response.is_some_and(|text| text.contains(&quote("unchanged semantic answer"))));
+    }
+
+    #[test]
+    fn query_invalid_types_scope_overrides_and_notifications_never_execute() {
+        let mut server = ready();
+        let mut calls = 0;
+        for arguments in [
+            r#"{"root":"/other"}"#, r#"{"principal":"principal:other"}"#,
+            r#"{"max_entries":0}"#, r#"{"max_entries":33}"#, r#"{"max_entries":1e1}"#,
+            r#"{"from_ns":9007199254740993}"#, r#"{"from_ns":"-0"}"#,
+            r#"{"from_ns":"2","through_ns":"1"}"#, r#"{"kind":"person"}"#,
+            r#"{"anchor":"latest"}"#, r#"{"commit":true}"#, r#"{"zone":"door\nwindow"}"#,
+        ] {
+            let request = format!(
+                r#"{{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{{"name":"query","arguments":{arguments}}}}}"#
+            );
+            let response = server.handle_with(&request, |_| {
+                calls += 1;
+                ("{}".to_owned(), ExitIdentity::SUCCESS)
+            });
+            assert!(response.is_some_and(|text| text.contains("-32602")), "{arguments}");
+        }
+        let response = server.handle_with(
+            r#"{"jsonrpc":"2.0","method":"tools/call","params":{"name":"query"}}"#,
+            |_| { calls += 1; ("{}".to_owned(), ExitIdentity::SUCCESS) },
+        );
+        assert_eq!(response, None);
+        assert_eq!(calls, 0);
+    }
+
+    #[test]
+    fn query_native_refusal_bytes_and_error_flag_survive_transport() {
+        let mut server = ready();
+        let expected = r#"{"schema":"fss.agent_response_envelope.v1","outcome":"refused","warnings":["continuation_wrong_stream"],"payload":null}"#;
+        let response = server.handle_with(
+            r#"{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"query","arguments":{"continuation":"continuation:wrong-stream"}}}"#,
+            |_| (expected.to_owned(), ExitIdentity::AGENT_REFUSED),
+        );
+        assert!(response.is_some_and(|text| text.contains(&quote(expected)) && text.contains("\"isError\":true")));
+    }
+
+    #[test]
     fn lifecycle_and_discovery_match_the_registry() {
         let mut server = server();
         let list = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
@@ -426,7 +522,7 @@ mod tests {
                 .handle(INIT)
                 .is_some_and(|r| r.contains("Already initialized"))
         );
-        for name in ["session_orient", "session_follow", "explain", "doctor"] {
+        for name in ["session_orient", "session_follow", "explain", "doctor", "query"] {
             assert!(fss_cli::lookup_by_mcp_tool_name(name).is_some());
         }
         assert!(json::parse(TOOLS).is_ok());
