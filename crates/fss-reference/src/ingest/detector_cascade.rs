@@ -18,6 +18,11 @@
 //! evidence shares the sensor's failure domain, so it can never corroborate a single-sensor
 //! candidate, and it never changes an event's kind (candidates stay `Unclassified`), state or
 //! alert affordance. A frame without an associated detection is not evidence of absence.
+//!
+//! [`DetectorCascade::run_recovered`] accepts the watch stage's exact refused intervals and
+//! tracking restarts. Selected frames are decoded in separate native IDR/IRAP-led epochs; the
+//! inference allowance and detection-work budget do not restart with the decoder. Refused or
+//! missing frames cannot be selected, and no track's class evidence can bridge an epoch.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -452,12 +457,149 @@ impl CascadeOutcome {
     }
 }
 
+/// A recording plus the exact recovery diagnostics emitted by the cheap watch stage.
+/// The ordinary [`CascadeSource`] API remains strict. Refusals are never selected for
+/// inference, and a track's selections may not cross a tracking restart.
+#[derive(Clone, Copy, Debug)]
+pub struct RecoveredCascadeSource<'a> {
+    /// The retained recording and its complete decoded-segment set.
+    pub source: CascadeSource<'a>,
+    /// Refused retained segment intervals, in increasing, nonoverlapping order.
+    pub decode_refusals: &'a [super::tolerant_decode::DecodeRefusal],
+    /// First decoded segments of restarted tracking epochs, in increasing order.
+    pub tracking_restarts: &'a [usize],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CascadeEpoch {
+    first: usize,
+    last: usize,
+}
+
+struct CascadeReadPlan<'a> {
+    source: CascadeSource<'a>,
+    epochs: Vec<CascadeEpoch>,
+    recovered: bool,
+}
+
+impl<'a> CascadeReadPlan<'a> {
+    fn build(input: RecoveredCascadeSource<'a>, tracks: &[CascadeTrack]) -> Result<Self, CascadeError> {
+        let RecoveredCascadeSource { source, decode_refusals, tracking_restarts } = input;
+        let limit = super::recorded_watch::MAX_WATCH_FRAMES;
+        if source.decoded_segments.len() > limit || tracks.len() > limit
+            || decode_refusals.len() > limit || tracking_restarts.len() > limit
+        {
+            return Err(CascadeError::InvalidConfig("recovery input exceeds watch bounds"));
+        }
+        let decoded: BTreeSet<usize> = source.decoded_segments.iter().copied().collect();
+        if decoded.len() != source.decoded_segments.len() {
+            return Err(CascadeError::InvalidConfig("duplicate decoded segment"));
+        }
+        // Decoder display order need not be segment order (B pictures). Validate the set,
+        // but retain the original order in CascadeOutcome.cascade_skipped.
+        let within = |segment: usize| segment.checked_sub(source.first_segment).is_some_and(|n| n < limit);
+        if decoded.iter().any(|s| !within(*s))
+            || decode_refusals.iter().any(|r| r.first_segment > r.last_segment
+                || !within(r.first_segment) || !within(r.last_segment) || r.error_id.is_empty())
+            || decode_refusals.windows(2).any(|w| w[0].last_segment >= w[1].first_segment)
+            || tracking_restarts.windows(2).any(|w| w[0] >= w[1])
+            || tracking_restarts.iter().any(|s| !decoded.contains(s))
+        {
+            return Err(CascadeError::InvalidConfig("invalid recovery diagnostics"));
+        }
+        if decode_refusals.iter().any(|r| decoded.range(r.first_segment..=r.last_segment).next().is_some()) {
+            return Err(CascadeError::InvalidConfig("refused segment also marked decoded"));
+        }
+        let recovered = !decode_refusals.is_empty() || !tracking_restarts.is_empty();
+        let mut epochs = Vec::new();
+        if let Some(&first_decoded) = decoded.first() {
+            let first = if decode_refusals.iter().any(|r| r.first_segment <= source.first_segment
+                && source.first_segment <= r.last_segment)
+            {
+                // The native video reader must still verify that this is an IDR/IRAP.
+                first_decoded
+            } else {
+                source.first_segment
+            };
+            let mut starts = vec![first];
+            for &restart in tracking_restarts {
+                if restart < first {
+                    return Err(CascadeError::InvalidConfig("restart precedes recovered range"));
+                }
+                if restart != first { starts.push(restart); }
+            }
+            for (index, &start) in starts.iter().enumerate() {
+                let last = match starts.get(index + 1) {
+                    Some(next) => decoded.range(start..*next).next_back().copied(),
+                    None => decoded.range(start..).next_back().copied(),
+                }.ok_or(CascadeError::InvalidConfig("empty recovery epoch"))?;
+                if decode_refusals.iter().any(|r| r.first_segment <= last && r.last_segment >= start) {
+                    return Err(CascadeError::InvalidConfig("refusal lacks a tracking restart"));
+                }
+                epochs.push(CascadeEpoch { first: start, last });
+            }
+        }
+        for track in tracks {
+            if track.selections.len() > MAX_CASCADE_FRAMES_PER_TRACK {
+                return Err(CascadeError::InvalidConfig("selection exceeds hard frame bound"));
+            }
+            let mut selected_epoch = None;
+            for selection in &track.selections {
+                if !decoded.contains(&selection.segment) {
+                    return Err(CascadeError::InvalidConfig("selected segment was not decoded"));
+                }
+                let epoch = epochs.iter().position(|e| e.first <= selection.segment && selection.segment <= e.last)
+                    .ok_or(CascadeError::InvalidConfig("selected segment outside recovery epochs"))?;
+                if selected_epoch.is_some_and(|previous| previous != epoch) {
+                    return Err(CascadeError::InvalidConfig("track selection crosses a recovery boundary"));
+                }
+                selected_epoch = Some(epoch);
+            }
+        }
+        Ok(Self { source, epochs, recovered })
+    }
+
+    /// Decode each requested epoch only through its last selected segment. Holes and
+    /// restart boundaries are never bridged to reach another selected frame.
+    fn ranges(&self, wanted: &BTreeSet<usize>) -> Result<Vec<(usize, usize)>, CascadeError> {
+        let mut ranges = Vec::new();
+        for epoch in &self.epochs {
+            if let Some(&last) = wanted.range(epoch.first..=epoch.last).next_back() {
+                let count = last.checked_sub(epoch.first).and_then(|n| n.checked_add(1))
+                    .ok_or(CascadeError::InvalidConfig("recovery segment count overflow"))?;
+                ranges.push((epoch.first, count));
+            }
+        }
+        Ok(ranges)
+    }
+}
+
+/// One admission pass for the whole recording. A caller's allowance also spans cameras;
+/// decoder restarts never create another allowance or change track-priority ordering.
+fn admit_selected_frames(
+    tracks: &[CascadeTrack], frames_per_track: usize, budget: &mut CascadeBudget,
+) -> Result<(Vec<usize>, BTreeSet<usize>), CascadeError> {
+    let mut order = Vec::new();
+    for track in tracks {
+        if track.selections.len() > frames_per_track {
+            return Err(CascadeError::InvalidConfig("selection exceeds frames per track"));
+        }
+        for selection in &track.selections {
+            if !order.contains(&selection.segment) { order.push(selection.segment); }
+        }
+    }
+    let admitted: BTreeSet<usize> = order.iter().take(budget.remaining).copied().collect();
+    budget.remaining -= admitted.len();
+    Ok((order, admitted))
+}
+
 /// A loaded, verified detector package with its cascade policy and an inference cache.
 ///
 /// The cache holds completed per-frame outcomes of this exact package, threshold and import,
 /// so a re-analysis in the same process (for example the coverage re-proposal after
 /// publication) reuses them instead of re-running identical deterministic inference; budget
-/// accounting and every reported outcome are unchanged by the cache.
+/// accounting and every reported outcome are unchanged by the cache. Recovered runs deliberately
+/// bypass and clear this cache because their independent decoder ranges must be revalidated.
 pub struct DetectorCascade<'a> {
     package: &'a RgbDetectorPackage,
     contract: Option<RgbDetectionContract>,
@@ -577,36 +719,69 @@ impl<'a> DetectorCascade<'a> {
         limits: &WatchLimits,
         cx: &ReplayCx,
     ) -> Result<CascadeOutcome, CascadeError> {
+        self.run_recovered(
+            deployment,
+            RecoveredCascadeSource {
+                source,
+                decode_refusals: &[],
+                tracking_restarts: &[],
+            },
+            tracks,
+            budget,
+            limits,
+            cx,
+        )
+    }
+
+    /// Runs selected frames across explicitly recovered watch epochs. Admission occurs once
+    /// against the caller's allowance, and one detection-work budget spans all video epochs.
+    /// Each native video reader independently requires an IDR/IRAP and validates custody,
+    /// continuity and privacy. Recovery diagnostics never authorize a track to bridge a gap.
+    /// Clean inputs retain the ordinary run's records and cache behavior. Recovered runs do
+    /// not reuse or retain cached frames: their decoder range and privacy basis are re-read.
+    pub fn run_recovered(
+        &mut self,
+        deployment: &ReferenceDeployment,
+        source: RecoveredCascadeSource<'_>,
+        tracks: &[CascadeTrack],
+        budget: &mut CascadeBudget,
+        limits: &WatchLimits,
+        cx: &ReplayCx,
+    ) -> Result<CascadeOutcome, CascadeError> {
         cx.checkpoint("detector_cascade:select")
             .map_err(|_| CascadeError::Cancelled)?;
-        let mut order: Vec<usize> = Vec::new();
-        for track in tracks {
-            if track.selections.len() > self.config.frames_per_track {
-                return Err(CascadeError::InvalidConfig(
-                    "selection exceeds frames per track",
-                ));
-            }
-            for selection in &track.selections {
-                if !order.contains(&selection.segment) {
-                    order.push(selection.segment);
-                }
-            }
+        let plan = CascadeReadPlan::build(source, tracks)?;
+        if plan.recovered {
+            self.cache.clear();
         }
-        let mut admitted = BTreeSet::new();
-        for segment in &order {
-            if budget.remaining == 0 {
-                break;
-            }
-            budget.remaining -= 1;
-            admitted.insert(*segment);
+        let result = self.run_planned(deployment, &plan, tracks, budget, limits, cx);
+        // Also clear on cancellation/refusal, so a later run cannot inherit a partially
+        // processed recovery basis. No cached result can cross between strict and recovery.
+        if plan.recovered {
+            self.cache.clear();
         }
+        result
+    }
+
+    fn run_planned(
+        &mut self,
+        deployment: &ReferenceDeployment,
+        plan: &CascadeReadPlan<'_>,
+        tracks: &[CascadeTrack],
+        budget: &mut CascadeBudget,
+        limits: &WatchLimits,
+        cx: &ReplayCx,
+    ) -> Result<CascadeOutcome, CascadeError> {
+        let source = plan.source;
+        let (order, admitted) =
+            admit_selected_frames(tracks, self.config.frames_per_track, budget)?;
         let missing: BTreeSet<usize> = admitted
             .iter()
             .copied()
             .filter(|s| !self.cache.contains_key(&(source.import_identity, *s)))
             .collect();
         if !missing.is_empty() {
-            self.infer(deployment, source, &missing, limits, cx)?;
+            self.infer(deployment, plan, &missing, limits, cx)?;
         }
         let mut frames = Vec::with_capacity(order.len());
         for segment in &order {
@@ -729,11 +904,13 @@ impl<'a> DetectorCascade<'a> {
     fn infer(
         &mut self,
         deployment: &ReferenceDeployment,
-        source: CascadeSource<'_>,
+        plan: &CascadeReadPlan<'_>,
         wanted: &BTreeSet<usize>,
         limits: &WatchLimits,
         cx: &ReplayCx,
     ) -> Result<(), CascadeError> {
+        let source = plan.source;
+        let ranges = plan.ranges(wanted)?;
         let package = self.package;
         let contract = self.contract.as_ref().unwrap_or_else(|| package.contract());
         let mut run = FrameRun {
@@ -750,9 +927,6 @@ impl<'a> DetectorCascade<'a> {
         };
         let labels = &contract.spec().labels;
         let mut results: Vec<(usize, FrameStatus)> = Vec::with_capacity(wanted.len());
-        let Some(&last) = wanted.last() else {
-            return Ok(());
-        };
         match source.media_format {
             "mjpeg" => {
                 let retained = RetainedFileImport::open(
@@ -810,77 +984,79 @@ impl<'a> DetectorCascade<'a> {
                 }
             }
             "annexb" => {
-                let count = last + 1 - source.first_segment;
-                let mut range = RecordedH264Range::open(
-                    deployment,
-                    RecordedH264Request {
-                        import_identity: source.import_identity,
-                        first_segment: source.first_segment,
-                        segment_count: count,
-                        interpretation: source.interpretation,
-                        read_limits: limits.read_limits,
-                        decoder_limits: limits.h264_limits,
-                    },
-                    cx,
-                )?;
-                while let Some(frame) = range.next_frame(deployment, cx)? {
-                    let r = frame.receipt();
-                    let segment = usize::try_from(r.segment_index())
-                        .map_err(|_| CascadeError::InvalidConfig("segment index"))?;
-                    if !wanted.contains(&segment) {
-                        continue;
+                for &(first_segment, count) in &ranges {
+                    let mut range = RecordedH264Range::open(
+                        deployment,
+                        RecordedH264Request {
+                            import_identity: source.import_identity,
+                            first_segment,
+                            segment_count: count,
+                            interpretation: source.interpretation,
+                            read_limits: limits.read_limits,
+                            decoder_limits: limits.h264_limits,
+                        },
+                        cx,
+                    )?;
+                    while let Some(frame) = range.next_frame(deployment, cx)? {
+                        let r = frame.receipt();
+                        let segment = usize::try_from(r.segment_index())
+                            .map_err(|_| CascadeError::InvalidConfig("segment index"))?;
+                        if !wanted.contains(&segment) {
+                            continue;
+                        }
+                        let picture = VideoPicture {
+                            segment: r.segment_index(),
+                            capsule: r.capsule(),
+                            capsule_digest: r.capsule_digest(),
+                            dimensions: r.dimensions(),
+                            codec_receipt: r.digest(),
+                            i420: r.i420_sha256(),
+                            rgb: frame.to_rgb(),
+                            mask: frame.mask().clone(),
+                        };
+                        results.push(match DecodedFrame::video(picture) {
+                            Ok(decoded) => infer_one(&mut run, decoded, labels)?,
+                            Err(_) => (segment, FrameStatus::Refused(CASCADE_FRAME_REFUSED)),
+                        });
                     }
-                    let picture = VideoPicture {
-                        segment: r.segment_index(),
-                        capsule: r.capsule(),
-                        capsule_digest: r.capsule_digest(),
-                        dimensions: r.dimensions(),
-                        codec_receipt: r.digest(),
-                        i420: r.i420_sha256(),
-                        rgb: frame.to_rgb(),
-                        mask: frame.mask().clone(),
-                    };
-                    results.push(match DecodedFrame::video(picture) {
-                        Ok(decoded) => infer_one(&mut run, decoded, labels)?,
-                        Err(_) => (segment, FrameStatus::Refused(CASCADE_FRAME_REFUSED)),
-                    });
                 }
             }
             "hevc" => {
-                let count = last + 1 - source.first_segment;
-                let mut range = RecordedH265Range::open(
-                    deployment,
-                    RecordedH265Request {
-                        import_identity: source.import_identity,
-                        first_segment: source.first_segment,
-                        segment_count: count,
-                        interpretation: source.interpretation,
-                        read_limits: limits.read_limits,
-                        decoder_limits: limits.h265_limits,
-                    },
-                    cx,
-                )?;
-                while let Some(frame) = range.next_frame(deployment, cx)? {
-                    let r = frame.receipt();
-                    let segment = usize::try_from(r.segment_index())
-                        .map_err(|_| CascadeError::InvalidConfig("segment index"))?;
-                    if !wanted.contains(&segment) {
-                        continue;
+                for &(first_segment, count) in &ranges {
+                    let mut range = RecordedH265Range::open(
+                        deployment,
+                        RecordedH265Request {
+                            import_identity: source.import_identity,
+                            first_segment,
+                            segment_count: count,
+                            interpretation: source.interpretation,
+                            read_limits: limits.read_limits,
+                            decoder_limits: limits.h265_limits,
+                        },
+                        cx,
+                    )?;
+                    while let Some(frame) = range.next_frame(deployment, cx)? {
+                        let r = frame.receipt();
+                        let segment = usize::try_from(r.segment_index())
+                            .map_err(|_| CascadeError::InvalidConfig("segment index"))?;
+                        if !wanted.contains(&segment) {
+                            continue;
+                        }
+                        let picture = VideoPicture {
+                            segment: r.segment_index(),
+                            capsule: r.capsule(),
+                            capsule_digest: r.capsule_digest(),
+                            dimensions: r.dimensions(),
+                            codec_receipt: r.digest(),
+                            i420: r.i420_sha256(),
+                            rgb: frame.to_rgb(),
+                            mask: frame.mask().clone(),
+                        };
+                        results.push(match DecodedFrame::video(picture) {
+                            Ok(decoded) => infer_one(&mut run, decoded, labels)?,
+                            Err(_) => (segment, FrameStatus::Refused(CASCADE_FRAME_REFUSED)),
+                        });
                     }
-                    let picture = VideoPicture {
-                        segment: r.segment_index(),
-                        capsule: r.capsule(),
-                        capsule_digest: r.capsule_digest(),
-                        dimensions: r.dimensions(),
-                        codec_receipt: r.digest(),
-                        i420: r.i420_sha256(),
-                        rgb: frame.to_rgb(),
-                        mask: frame.mask().clone(),
-                    };
-                    results.push(match DecodedFrame::video(picture) {
-                        Ok(decoded) => infer_one(&mut run, decoded, labels)?,
-                        Err(_) => (segment, FrameStatus::Refused(CASCADE_FRAME_REFUSED)),
-                    });
                 }
             }
             _ => return Err(RecordedDecodeError::UnsupportedMedia.into()),
@@ -1301,5 +1477,207 @@ mod tests {
             associate(&inferred, &far, 300_000),
             EvidenceOutcome::NoAssociation { detections: 3 }
         );
+    }
+
+    fn recovery_source<'a>(
+        decoded: &'a [usize],
+        refusals: &'a [super::super::tolerant_decode::DecodeRefusal],
+        restarts: &'a [usize],
+    ) -> RecoveredCascadeSource<'a> {
+        RecoveredCascadeSource {
+            source: CascadeSource {
+                import_identity: ContentDigest::sha256(b"recovery-import"),
+                import_root: ContentDigest::sha256(b"recovery-root"),
+                interpretation: ComponentInterpretation::Grayscale,
+                media_format: "annexb",
+                first_segment: 0,
+                decoded_segments: decoded,
+            },
+            decode_refusals: refusals,
+            tracking_restarts: restarts,
+        }
+    }
+
+    fn refusal(first: usize, last: usize) -> super::super::tolerant_decode::DecodeRefusal {
+        super::super::tolerant_decode::DecodeRefusal {
+            first_segment: first,
+            last_segment: last,
+            error_id: "ERR-DECODE-MALFORMED-001".to_owned(),
+        }
+    }
+
+    fn selected(track_id: u64, segments: &[usize]) -> CascadeTrack {
+        CascadeTrack {
+            track_id,
+            selections: segments.iter().map(|&segment| CascadeSelection {
+                segment,
+                reason: SelectionReason::ZoneEntry,
+                track_box: [10, 10, 8, 8],
+            }).collect(),
+        }
+    }
+
+    #[test]
+    fn clean_plan_preserves_one_range_and_decoder_display_order() -> Result<(), CascadeError> {
+        let decoded = [0, 3, 1, 2, 6, 4, 5];
+        let plan = CascadeReadPlan::build(recovery_source(&decoded, &[], &[]), &[])?;
+        assert!(!plan.recovered);
+        assert_eq!(plan.source.decoded_segments, decoded);
+        assert_eq!(plan.ranges(&[2, 5].into())?, vec![(0, 6)]);
+        Ok(())
+    }
+
+    #[test]
+    fn recovered_video_reads_separate_ranges_without_refused_tails() -> Result<(), CascadeError> {
+        let decoded = [0, 1, 2, 5, 6, 7, 10, 11];
+        let refusals = [refusal(3, 4), refusal(8, 9)];
+        let tracks = [selected(1, &[2]), selected(2, &[7, 5]), selected(3, &[11])];
+        let plan = CascadeReadPlan::build(recovery_source(&decoded, &refusals, &[5, 10]), &tracks)?;
+        assert!(plan.recovered);
+        assert_eq!(plan.ranges(&[2, 5, 11].into())?, vec![(0, 3), (5, 1), (10, 2)]);
+        // No work is spent decoding an epoch with no admitted selections.
+        assert_eq!(plan.ranges(&[11].into())?, vec![(10, 2)]);
+        Ok(())
+    }
+
+    #[test]
+    fn leading_and_trailing_refusals_do_not_extend_native_ranges() -> Result<(), CascadeError> {
+        let refusals = [refusal(0, 3), refusal(7, 9)];
+        let plan = CascadeReadPlan::build(recovery_source(&[4, 5, 6], &refusals, &[]), &[])?;
+        assert_eq!(plan.ranges(&[5].into())?, vec![(4, 2)]);
+        Ok(())
+    }
+
+    #[test]
+    fn restart_without_a_missing_frame_is_still_a_decode_boundary() -> Result<(), CascadeError> {
+        let plan = CascadeReadPlan::build(recovery_source(&[0, 1, 2, 3, 4], &[], &[3]), &[])?;
+        assert_eq!(plan.ranges(&[2, 4].into())?, vec![(0, 3), (3, 2)]);
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_never_guesses_a_restart_across_a_refusal() {
+        let refusals = [refusal(2, 3)];
+        assert!(matches!(
+            CascadeReadPlan::build(recovery_source(&[0, 1, 4, 5], &refusals, &[]), &[]),
+            Err(CascadeError::InvalidConfig("refusal lacks a tracking restart"))
+        ));
+    }
+
+    #[test]
+    fn track_selections_cannot_bridge_restarts() {
+        let tracks = [selected(1, &[1, 3])];
+        assert!(matches!(
+            CascadeReadPlan::build(recovery_source(&[0, 1, 2, 3], &[], &[2]), &tracks),
+            Err(CascadeError::InvalidConfig("track selection crosses a recovery boundary"))
+        ));
+    }
+
+    #[test]
+    fn selections_must_belong_to_actual_decoded_frames() {
+        let tracks = [selected(1, &[2])];
+        let refusals = [refusal(2, 2)];
+        assert!(matches!(
+            CascadeReadPlan::build(recovery_source(&[0, 1, 3, 4], &refusals, &[3]), &tracks),
+            Err(CascadeError::InvalidConfig("selected segment was not decoded"))
+        ));
+    }
+
+    #[test]
+    fn recovery_rejects_contradictory_duplicate_and_noncanonical_diagnostics() {
+        let decoded = [0, 1, 4, 5];
+        for (refusals, restarts) in [
+            (vec![refusal(2, 3)], vec![4, 4]),
+            (vec![refusal(2, 3)], vec![5, 4]),
+            (vec![refusal(2, 3)], vec![3]),
+            (vec![refusal(3, 2)], vec![4]),
+            (vec![refusal(2, 3), refusal(3, 3)], vec![4]),
+            (vec![refusal(0, 0)], vec![4]),
+        ] {
+            assert!(matches!(
+                CascadeReadPlan::build(recovery_source(&decoded, &refusals, &restarts), &[]),
+                Err(CascadeError::InvalidConfig(_))
+            ));
+        }
+        assert!(matches!(
+            CascadeReadPlan::build(recovery_source(&[0, 1, 1], &[], &[]), &[]),
+            Err(CascadeError::InvalidConfig("duplicate decoded segment"))
+        ));
+    }
+
+    #[test]
+    fn recovery_planning_is_bounded_and_uses_checked_segment_arithmetic() -> Result<(), CascadeError> {
+        let decoded = [usize::MAX];
+        let mut source = recovery_source(&decoded, &[], &[]);
+        source.source.first_segment = usize::MAX;
+        let plan = CascadeReadPlan::build(source, &[])?;
+        assert_eq!(plan.ranges(&[usize::MAX].into())?, vec![(usize::MAX, 1)]);
+        assert!(matches!(
+            CascadeReadPlan::build(recovery_source(&[0, 128], &[], &[]), &[]),
+            Err(CascadeError::InvalidConfig("invalid recovery diagnostics"))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn inference_admission_preserves_priority_deduplication_and_cross_camera_budget() -> Result<(), CascadeError> {
+        let tracks = [selected(1, &[7, 4, 5]), selected(2, &[4, 11])];
+        let mut budget = CascadeBudget { remaining: 3 };
+        let (order, admitted) = admit_selected_frames(&tracks, 3, &mut budget)?;
+        assert_eq!(order, vec![7, 4, 5, 11]);
+        assert_eq!(admitted, [4, 5, 7].into());
+        assert_eq!(budget.remaining(), 0);
+        let (second_order, second_admitted) = admit_selected_frames(&[selected(1, &[1, 8])], 3, &mut budget)?;
+        assert_eq!(second_order, vec![1, 8]);
+        assert!(second_admitted.is_empty());
+        assert_eq!(budget.remaining(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_selection_does_not_consume_an_allowance() {
+        let mut budget = CascadeBudget { remaining: 3 };
+        let result = admit_selected_frames(&[selected(1, &[1]), selected(2, &[4, 5])], 1, &mut budget);
+        assert!(matches!(result, Err(CascadeError::InvalidConfig(_))));
+        assert_eq!(budget.remaining(), 3);
+    }
+
+    #[test]
+    fn all_small_loss_patterns_keep_every_selected_decode_inside_its_epoch() -> Result<(), CascadeError> {
+        for mask in 1u16..256 {
+            let decoded: Vec<usize> = (0..8).filter(|s| mask & (1 << s) != 0).collect();
+            let mut refusals = Vec::new();
+            let mut restarts = Vec::new();
+            let mut segment = 0;
+            while segment < 8 {
+                if decoded.contains(&segment) {
+                    if segment > 0 && !decoded.contains(&(segment - 1)) && segment != decoded[0] {
+                        restarts.push(segment);
+                    }
+                    segment += 1;
+                } else {
+                    let first = segment;
+                    while segment < 8 && !decoded.contains(&segment) { segment += 1; }
+                    refusals.push(refusal(first, segment - 1));
+                }
+            }
+            let plan = CascadeReadPlan::build(recovery_source(&decoded, &refusals, &restarts), &[])?;
+            for subset in 0u16..256 {
+                if subset & !mask != 0 { continue; }
+                let wanted: BTreeSet<usize> = (0..8).filter(|s| subset & (1 << s) != 0).collect();
+                let ranges = plan.ranges(&wanted)?;
+                let mut covered = BTreeSet::new();
+                for (first, count) in ranges {
+                    assert!(wanted.contains(&(first + count - 1)));
+                    for index in first..first + count {
+                        assert!(decoded.contains(&index), "mask={mask} subset={subset} index={index}");
+                        assert!(covered.insert(index));
+                    }
+                    assert!(!restarts.iter().any(|s| *s > first && *s < first + count));
+                }
+                assert!(wanted.is_subset(&covered));
+            }
+        }
+        Ok(())
     }
 }
