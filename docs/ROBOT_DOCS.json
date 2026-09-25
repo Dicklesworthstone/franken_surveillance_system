@@ -927,7 +927,7 @@
       "id": "ERR-DELETION-APPROVAL-001"
     },
     {
-      "description": "deletion closure blocked by hold/backend/offline copy; realized by `fss-event delete commit` (FSS-037): the sealed plan names an open or indeterminate effect that references the evidence (`open_effect`), a root that failed verification (`broken_root_unclassified`), a conflicting root claim, an earlier incomplete deletion, or a tombstone batch over the bound; nothing was written (the reference deployment has no hold registry yet)",
+      "description": "deletion closure blocked by hold/backend/offline copy; realized by `fss-event delete commit` (FSS-037): the sealed plan names an open or indeterminate effect that references the evidence (`open_effect`), a root that failed verification (`broken_root_unclassified`), a conflicting root claim, an earlier incomplete deletion, a tombstone batch over the bound, an active deletion hold covering the import directly, through its sensor or through an event its closure reaches (`active_hold`, naming the hold id; fss-nswce), or an unreadable hold record (`hold_unreadable`); nothing was written",
       "guidance": "report exact blockers and obligation; resolve them, plan again, approve the new plan",
       "id": "ERR-DELETION-BLOCKED-001"
     },
@@ -935,6 +935,16 @@
       "description": "a deletion plan or record exceeded a hard bound",
       "guidance": "split the deployment's retained history; do not retry unchanged",
       "id": "ERR-DELETION-BOUND-001"
+    },
+    {
+      "description": "a `fss-event hold place` or `hold release` request is outside its contract: an invalid scope (`import:sha256:HEX`, `sensor:ID`, `event:ID`), an event no committed record has, an empty, oversized or control-character reason, an expiry at or before the deployment's evidence clock, or an unknown hold id; nothing was written (an unknown import reports `ERR-DELETION-IMPORT-UNKNOWN-001`, a deleted one `ERR-EVIDENCE-DELETED-001`)",
+      "guidance": "correct the request; do not retry unchanged",
+      "id": "ERR-DELETION-HOLD-001"
+    },
+    {
+      "description": "a `hold place --approve` or `hold release --approve` digest is neither the exact approval of this request over the current authority head nor the approval that already retained it; nothing was written",
+      "guidance": "rerun without the approval and approve the printed digest",
+      "id": "ERR-DELETION-HOLD-APPROVAL-STALE-001"
     },
     {
       "description": "`delete plan` names no completed, retained import",
@@ -1647,7 +1657,7 @@
       "id": "ERR-PRIVACY-MASK-RESOLUTION-001"
     },
     {
-      "description": "the request would serve or analyse pixels the sensor's current retained privacy mask does not mask (raw retained source export; a decode retained under no or a superseded mask policy; a live, recording, replay or `check-http` decode naming no sensor; an owner permission grid or frozen background admitting masked pixels; RGB evidence recorded under another binding); no override capability exists",
+      "description": "the request would serve or analyse pixels the sensor's current retained privacy mask does not mask (raw retained source export: `fss-file extract` of a masked sensor, and `fss-archive export` of original RTSP packets of a masked sensor or naming no privacy deployment; a decode retained under no or a superseded mask policy; a live, recording, replay or `check-http` decode naming no sensor; an owner permission grid or frozen background admitting masked pixels; RGB evidence recorded under another binding); no override capability exists",
       "guidance": "decode again under the current policy, naming the sensor; exclude masked pixels from the permission grid and refreeze the background; raw source of a masked sensor has no export path",
       "id": "ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001"
     },

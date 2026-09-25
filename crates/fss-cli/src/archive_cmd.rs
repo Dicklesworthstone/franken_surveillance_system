@@ -41,6 +41,10 @@ pub const HELP: &str = "fss-archive <inspect|query|verify|export> [options]\n\
   query/verify/export: --expected-snapshot sha256:HEX --start N --end N\n\
                [--max-output-windows N] [--max-output-bytes N]\n\
   export: --output-dir NEW_DIR --allow-whole-windows yes [--max-export-bytes N]\n\
+          --privacy-root EXISTING_DEPLOYMENT --site SITE (the deployment retaining the\n\
+          sensor's privacy-mask authority). Original packets cannot be masked: export of a\n\
+          sensor with a current retained privacy mask, or naming no deployment, is refused\n\
+          before any output (ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001); no override exists.\n\
   Bounds: [--timeout-ms N] [--max-windows N] [--max-pages N]\n\
           [--max-scan-roots N] [--max-objects N] [--max-total-bytes N]\n\
   inspect recovers and source-verifies an existing archive; it does not create one.\n\
@@ -88,6 +92,24 @@ pub enum ArchiveCommandError {
     ExportBudget,
     /// An export directory may contain partial output; no cleanup/rollback is claimed.
     ExportIncomplete(Box<ArchiveCommandError>),
+    /// Raw original packets of a sensor with a current retained privacy mask (or of a sensor
+    /// whose mask authority was not named) are never exported; nothing was written.
+    Privacy {
+        /// Registered stable identity (registries/ERRORS.md).
+        code: &'static str,
+        /// Payload-free explanation.
+        message: &'static str,
+    },
+}
+impl ArchiveCommandError {
+    /// Stable identity printed before the refusal.
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Argument { code, .. } | Self::Privacy { code, .. } => code,
+            _ => crate::ERR_CLI_RUNTIME_FAILURE,
+        }
+    }
 }
 impl fmt::Debug for ArchiveCommandError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -104,6 +126,7 @@ impl fmt::Debug for ArchiveCommandError {
             Self::OutputExists => f.write_str("OutputExists"),
             Self::ExportBudget => f.write_str("ExportBudget"),
             Self::ExportIncomplete(e) => f.debug_tuple("ExportIncomplete").field(e).finish(),
+            Self::Privacy { code, message } => f.debug_tuple(code).field(message).finish(),
         }
     }
 }
@@ -166,6 +189,8 @@ pub struct ArchiveOptions {
     timeout: Duration,
     output: Option<PathBuf>,
     export_budget: u64,
+    /// Export only: the deployment retaining the sensor's privacy-mask authority and its site.
+    privacy: Option<(PathBuf, String)>,
 }
 impl fmt::Debug for ArchiveOptions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -248,6 +273,8 @@ pub fn parse_archive_args(args: &[OsString]) -> Result<Option<ArchiveOptions>> {
                     "--output-dir",
                     "--allow-whole-windows",
                     "--max-export-bytes",
+                    "--privacy-root",
+                    "--site",
                 ]
                 .contains(&key))
         {
@@ -369,7 +396,26 @@ pub fn parse_archive_args(args: &[OsString]) -> Result<Option<ArchiveOptions>> {
     } else {
         None
     };
+    let privacy = match (
+        values.contains_key("--privacy-root"),
+        values.contains_key("--site"),
+    ) {
+        (false, false) => None,
+        (true, true) => {
+            let site = text("--site")?.to_owned();
+            fss_reference::reference_deployment::validate_site_lineage(&site)
+                .map_err(|_| malformed("invalid site lineage"))?;
+            Some((PathBuf::from(required("--privacy-root")?), site))
+        }
+        _ => {
+            return Err(argument(
+                ERR_CLI_MISSING_VALUE,
+                "--privacy-root and --site are given together",
+            ));
+        }
+    };
     Ok(Some(ArchiveOptions {
+        privacy,
         root: PathBuf::from(required("--root")?),
         codec,
         action,
@@ -443,6 +489,10 @@ impl OperationClock for Deadline {
 /// existing owner's recovery I/O; this is not a read-only forensic interface or an agent grant.
 pub fn execute_archive(options: &ArchiveOptions) -> Result<String> {
     let clock = Deadline::new(options.timeout)?;
+    if options.action == Action::Export {
+        // Before the archive is opened or any output directory exists.
+        refuse_masked_export(options)?;
+    }
     let root = existing_archive(&options.root)?;
     clock.check()?;
     let publisher = LocalRootPublisher::open(&root, options.storage_limits)
@@ -455,6 +505,76 @@ pub fn execute_archive(options: &ArchiveOptions) -> Result<String> {
         Codec::Hevc => execute_for::<HevcArchiveCodec>(options, &publisher, &clock),
     }
 }
+const ERR_PRIVACY_UNMASKED_ACCESS_REFUSED: &str = "ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001";
+const ERR_PRIVACY_MASK: &str = "ERR-PRIVACY-MASK-001";
+
+/// Raw export emits original packets, which cannot be masked without re-encoding: the sensor's
+/// current retained privacy mask (read from the named deployment) must be absent. An export
+/// naming no deployment cannot prove that and is refused the same way. There is no override.
+fn refuse_masked_export(options: &ArchiveOptions) -> Result<()> {
+    use fss_core::region::{ContextAuthority, RootAuthoritySpec};
+    use fss_core::{BudgetVector, OperationId};
+    use fss_reference::ingest::privacy_mask::{PrivacyMaskError, refuse_unmasked_source};
+    use fss_reference::{ReferenceDeployment, ReplayCx};
+
+    let Some((root, site)) = &options.privacy else {
+        return Err(ArchiveCommandError::Privacy {
+            code: ERR_PRIVACY_UNMASKED_ACCESS_REFUSED,
+            message: "export of original packets must name the deployment retaining the sensor's privacy-mask authority (--privacy-root, --site); nothing was written",
+        });
+    };
+    let unavailable = ArchiveCommandError::Privacy {
+        code: ERR_PRIVACY_MASK,
+        message: "the privacy deployment could not be opened to resolve the sensor's mask; nothing was written",
+    };
+    let directory = fs::symlink_metadata(root).is_ok_and(|m| m.is_dir());
+    let layout = fs::symlink_metadata(root.join("LAYOUT")).is_ok_and(|m| m.is_file());
+    if !directory || !layout {
+        return Err(unavailable);
+    }
+    let failed = |_| ArchiveCommandError::Privacy {
+        code: ERR_PRIVACY_MASK,
+        message: "the privacy deployment could not be opened to resolve the sensor's mask; nothing was written",
+    };
+    let budgets = BudgetVector::builder()
+        .bytes(64 * 1024 * 1024)
+        .build()
+        .map_err(|e| failed(e.to_string()))?;
+    let authority = ContextAuthority::new_root(RootAuthoritySpec {
+        trace_id: "trace:archive-export".into(),
+        operation_id: OperationId::parse("operation:archive-export")
+            .map_err(|e| failed(e.to_string()))?,
+        principal: "principal:local-operator".into(),
+        capabilities: vec!["ADP-REPLAY-001".to_owned()],
+        deadline: None,
+        priority: 10,
+        budgets,
+        privacy_scope: "privacy:local-authorized-files".into(),
+        retention_scope: "retention:existing-deployment-policy".into(),
+        anchor_universe: ContentDigest::sha256(site.as_bytes()),
+        generation: 1,
+    })
+    .map_err(|e| failed(e.to_string()))?;
+    authority.validate().map_err(|e| failed(e.to_string()))?;
+    let cx = ReplayCx::from_context_authority(&authority, root.clone())
+        .map_err(|e| failed(e.to_string()))?;
+    let result = ReferenceDeployment::reopen(root, site, &cx)
+        .map_err(|e| failed(e.to_string()))
+        .and_then(|deployment| {
+            refuse_unmasked_source(&deployment, &options.scope.recording.sensor).map_err(|e| {
+                match e {
+                    PrivacyMaskError::UnmaskedAccessRefused => ArchiveCommandError::Privacy {
+                        code: ERR_PRIVACY_UNMASKED_ACCESS_REFUSED,
+                        message: "the sensor has a current retained privacy mask; its original packets have no unmasked export path; nothing was written",
+                    },
+                    _ => failed(e.to_string()),
+                }
+            })
+        });
+    cx.drain_and_finalize();
+    result
+}
+
 fn existing_archive(path: &Path) -> Result<PathBuf> {
     let metadata = fs::symlink_metadata(path).map_err(|_| ArchiveCommandError::NotArchive)?;
     if !metadata.is_dir() {

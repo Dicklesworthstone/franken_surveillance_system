@@ -91,6 +91,10 @@ pub const FAMILY_DELETION_TOMBSTONE: &str = "deletion_tombstone";
 /// Registered ledger delta family: the deletion-completion record naming exactly what was
 /// removed, retained and not provable; appended last. Reserved.
 pub const FAMILY_DELETION_COMPLETION: &str = "deletion_completion";
+/// Registered ledger delta family: an owner-placed deletion hold ([`crate::deletion::holds`]);
+/// generation 1 places it, generation 2 records its release (never erased); plane authority.
+/// Reserved.
+pub const FAMILY_DELETION_HOLD: &str = "deletion_hold";
 
 /// Known ledger delta families table.
 pub const KNOWN_LEDGER_DELTA_FAMILIES: &[&str] = &[
@@ -109,6 +113,7 @@ pub const KNOWN_LEDGER_DELTA_FAMILIES: &[&str] = &[
     FAMILY_DELETION_RECORD,
     FAMILY_DELETION_TOMBSTONE,
     FAMILY_DELETION_COMPLETION,
+    FAMILY_DELETION_HOLD,
 ];
 
 /// Replay cancellation stage: open deployment.
@@ -173,6 +178,7 @@ fn reserved_family_entry_point(family: &str) -> Option<&'static str> {
         | FAMILY_DELETION_TOMBSTONE
         | FAMILY_DELETION_COMPLETION
         | ROOT_RETRACTION_FAMILY => Some("deletion::commit_deletion"),
+        FAMILY_DELETION_HOLD => Some("deletion::holds"),
         _ => None,
     }
 }
@@ -1429,8 +1435,8 @@ impl ReferenceDeployment {
 
     /// Crate-internal entry of the deletion-closure owner ([`crate::deletion`]): appends a batch
     /// whose deltas may carry only the deletion-reserved families (deletion record, tombstone,
-    /// completion, root retraction), with every other check of [`Self::append_batch`]. Any other
-    /// reserved family is still refused.
+    /// completion, root retraction, deletion hold), with every other check of
+    /// [`Self::append_batch`]. Any other reserved family is still refused.
     pub(crate) fn append_deletion_batch(
         &mut self,
         batch_id: BatchId,
@@ -1446,7 +1452,7 @@ impl ReferenceDeployment {
         }
         if let Some((family, entry_point)) = deltas.iter().find_map(|delta| {
             reserved_family_entry_point(&delta.family)
-                .filter(|entry| *entry != "deletion::commit_deletion")
+                .filter(|entry| !entry.starts_with("deletion::"))
                 .map(|entry| (delta.family.clone(), entry))
         }) {
             return Err(ReferenceError::ReservedDeltaFamily {

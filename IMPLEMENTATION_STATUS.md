@@ -102,8 +102,11 @@ synthetic scenes). None of it has been measured on real camera footage.
   `fss-archive check-http` (`--privacy-root/--site/--sensor`), RGB evidence replay and retained
   MJPEG health screening apply the named sensor's current policy per decoded frame; owner grids or
   backgrounds admitting masked pixels and decodes naming no sensor are refused; no-policy bytes
-  are golden-pinned; RTSP live capture decodes no pixels. Deletion closure, raw RTSP/HTTP custody
-  export refusal, retention and biometric controls remain open (PRIVACY.md 4.1).
+  are golden-pinned; RTSP live capture decodes no pixels. Raw export (fss-nswce): `fss-file
+  extract` and `fss-archive export` (RTSP original packets; now names the mask deployment with
+  `--privacy-root/--site`, refused without it) refuse a masked sensor before any output
+  (`ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001`); unmasked exports are byte-identical. Archived HTTP
+  wire reads have no export command. Retention and biometric controls remain open (PRIVACY.md 4.1).
 - **Deletion closure (fss-x4a.9.7, FSS-037):** `fss-event delete plan --import-id` computes the
   graph-complete closure of one retained import (every ledger batch and visible root that holds,
   names or embeds a digest of its derivatives: custody, decoded frames and receipts, coverage and
@@ -116,9 +119,15 @@ synthetic scenes). None of it has been measured on real camera footage.
   their evidence and the import read as `deleted` (`ERR-EVIDENCE-DELETED-001`), and orient/explain
   say so. An open or indeterminate alert on the evidence blocks the commit. Local unlinking only:
   not cryptographic erasure (the spool is not encrypted); filesystem recovery, backups, the input
-  file and operator exports are named out of scope or unknown copies. Retained file imports only:
-  no hold registry, no retention schedules, no remote archive or replica deletion, no subject- or
-  event-scoped plans, and `PUB-DELETE-001` stays `specified` (PRIVACY.md 8.1).
+  file and operator exports are named out of scope or unknown copies. Deletion holds
+  (fss-nswce): `fss-event hold place|release|list` retains approval-gated holds on an import, a
+  sensor or an event as authority (reserved `deletion_hold` family, release recorded as a second
+  generation, never erased); every active covering hold blocks plan and commit
+  (`ERR-DELETION-BLOCKED-001` naming the hold), an unreadable one fails closed, expiry runs on
+  the deployment's evidence clock (not wall time), and a hold placed after planning makes the
+  plan stale. Retained file imports only: no retention schedules, no wall-clock hold expiry, no
+  remote archive or replica deletion, no subject- or event-scoped plans, and `PUB-DELETE-001`
+  stays `specified` (PRIVACY.md 8.1).
 - **Models:** scalar executor over the FSS IR (Conv2d, MatMul, pooling, norms, activations) with
   Safetensors weights (`scalar_executor`, `fss-infer`). One trained detector package ships:
   YOLOX-Nano COCO-80 (`models/yolox-nano/`, `MOD-YOLOXNANO-001`, Apache-2.0), imported offline

@@ -400,6 +400,8 @@ fn append_batch_refuses_every_reserved_delta_family() -> R {
         ("deletion_tombstone", "deletion::commit_deletion"),
         ("deletion_completion", "deletion::commit_deletion"),
         ("local_root_retraction", "deletion::commit_deletion"),
+        // Only the approval-gated hold entry points may place or release a hold (fss-nswce).
+        ("deletion_hold", "deletion::holds"),
     ] {
         let slug = family.replace('_', "-");
         let delta = EvidenceDelta {

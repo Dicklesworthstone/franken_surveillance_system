@@ -26,8 +26,12 @@
 //!   to `deleted`, and `fss orient` / `fss explain` say so.
 //! - Unknown copies are named, never ignored: the original input file, unrecorded operator
 //!   exports, and any alert that may have been transmitted.
+//! - Deletion holds ([`holds`]) are authority: every active hold covering the import (directly,
+//!   through its sensor, or through an event its closure reaches) and every unreadable hold is a
+//!   plan blocker. Expiry is measured on the deployment's evidence clock, not wall time.
 
 mod commit;
+pub mod holds;
 mod index;
 mod plan;
 mod walk;
@@ -93,6 +97,12 @@ pub enum DeletionError {
     ApprovalMismatch(ContentDigest),
     /// The plan has blockers; nothing was written.
     Blocked(Vec<Finding>),
+    /// A hold place or release request is outside its contract (unknown hold, invalid scope,
+    /// reason or expiry); nothing was written.
+    HoldRequest(&'static str),
+    /// The hold approval is not the exact approval of this request over the current authority
+    /// head (nor the approval that already retained it); nothing was written.
+    HoldApprovalStale(ContentDigest),
     /// A hard bound was exceeded.
     Bound {
         /// Bound name.
@@ -130,6 +140,8 @@ impl DeletionError {
             Self::StalePlan(_) => "ERR-DELETION-PLAN-STALE-001",
             Self::ApprovalMismatch(_) => "ERR-DELETION-APPROVAL-001",
             Self::Blocked(_) => "ERR-DELETION-BLOCKED-001",
+            Self::HoldRequest(_) => "ERR-DELETION-HOLD-001",
+            Self::HoldApprovalStale(_) => "ERR-DELETION-HOLD-APPROVAL-STALE-001",
             Self::Bound { .. } => "ERR-DELETION-BOUND-001",
             Self::Cancelled { .. } | Self::Incomplete { .. } => "ERR-DELETION-INCOMPLETE-001",
             Self::RecordMismatch
@@ -171,6 +183,12 @@ impl fmt::Display for DeletionError {
                 }
                 Ok(())
             }
+            Self::HoldRequest(reason) => write!(f, "deletion hold refused: {reason}"),
+            Self::HoldApprovalStale(approval) => write!(
+                f,
+                "hold approval {approval} is not the exact approval of this request over the \
+                 current authority head: preview again and approve the printed digest"
+            ),
             Self::Bound { limit } => write!(f, "deletion bound exceeded: {limit}"),
             Self::RecordMismatch => {
                 f.write_str("a retained deletion record does not match its ledger delta")
