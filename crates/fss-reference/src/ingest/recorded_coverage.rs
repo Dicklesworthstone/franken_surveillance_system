@@ -132,6 +132,9 @@ pub enum UncoveredReason {
     ZoneOutsideFrame,
     /// Too few frames (or overlapping capture bounds) to bound a certain interval.
     IntervalTooShort,
+    /// The sensor's retained privacy mask covers part or all of the zone: masked pixels are
+    /// never absence evidence (`ingest::privacy_mask::coverage`).
+    PrivacyMasked,
 }
 
 impl UncoveredReason {
@@ -147,6 +150,7 @@ impl UncoveredReason {
             Self::CaptureTimeUnreliableAfterGap => "capture_time_unreliable_after_gap",
             Self::ZoneOutsideFrame => "zone_outside_frame",
             Self::IntervalTooShort => "interval_too_short",
+            Self::PrivacyMasked => "privacy_masked",
         }
     }
 }
@@ -776,6 +780,7 @@ impl CoverageRecord {
                     }
                     "zone_outside_frame" => UncoveredReason::ZoneOutsideFrame,
                     "interval_too_short" => UncoveredReason::IntervalTooShort,
+                    "privacy_masked" => UncoveredReason::PrivacyMasked,
                     _ => return Err(ContractError::InvalidIdentifier),
                 };
                 uncovered.push(UncoveredInterval {

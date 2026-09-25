@@ -57,6 +57,8 @@ use super::detector_cascade::{
     CascadeBudget, CascadeOutcome, CascadeSource, CascadeTrack, ClassEvidence, DetectorCascade,
     cascade_outcome_json, cascade_policy_json, class_evidence_json, select_frames,
 };
+use super::privacy_mask::MaskBinding;
+use super::privacy_mask::coverage::{ground_zone_masked, mask_coverage_zones};
 use super::recorded_coverage::{
     CoverageEntry, CoverageError, CoverageFrame, CoverageInput, CoverageRecord, CoverageSource,
     CoverageStatus, CoverageZoneInput, approval_digest, build_coverage, check_approval,
@@ -540,6 +542,7 @@ pub struct CameraSummary {
     segment_gaps: Vec<bool>,
     dimensions: [u32; 2],
     media_format: String,
+    privacy: MaskBinding,
 }
 
 /// How one ground-zone entry fared in association.
@@ -906,6 +909,7 @@ fn analyze_camera(
             segment_gaps,
             dimensions: report.dimensions(),
             media_format: report.media_format().to_owned(),
+            privacy: report.privacy_mask().clone(),
         },
         entries,
     })
@@ -1570,6 +1574,27 @@ fn camera_coverage(
     let mut parameters = pipeline_parameters(plan.interpretation, &plan.detector, &plan.tracker);
     parameters.extend(homography.matrix.iter().map(|value| value.to_bits()));
     bind_cascade_parameters(&mut parameters, context.cascade);
+    // A mask generation is part of the pipeline generation: witnesses never cross it.
+    bind_cascade_parameters(
+        &mut parameters,
+        camera.privacy.policy().map(|_| camera.privacy.digest()),
+    );
+    // Ground zones whose image preimage may contain a masked pixel carry no witness.
+    let masked: BTreeSet<String> = match camera.privacy.policy() {
+        None => BTreeSet::new(),
+        Some(policy) => plan
+            .zones
+            .iter()
+            .filter(|zone| {
+                ground_zone_masked(
+                    policy,
+                    homography.matrix,
+                    [zone.x, zone.y, zone.width, zone.height],
+                )
+            })
+            .map(|zone| zone.zone_id.clone())
+            .collect(),
+    };
     let policy = ContentDigest::sha256(POLICY);
     let mut zones = Vec::with_capacity(plan.zones.len());
     for zone in &plan.zones {
@@ -1616,7 +1641,7 @@ fn camera_coverage(
         .len()
         .checked_sub(1)
         .ok_or(CorroborationError::Limit)?;
-    Ok(build_coverage(&CoverageInput {
+    let mut record = build_coverage(&CoverageInput {
         source: CoverageSource::Corroborate,
         import_identity: camera.import_identity,
         import_root: camera.import_root,
@@ -1630,7 +1655,9 @@ fn camera_coverage(
         frames: &camera.coverage_frames,
         confirmation_hits: plan.tracker.confirmation_hits,
         zones,
-    })?)
+    })?;
+    mask_coverage_zones(&mut record, &masked)?;
+    Ok(record)
 }
 
 struct CandidateContext<'a> {

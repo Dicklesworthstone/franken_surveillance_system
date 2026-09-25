@@ -297,6 +297,7 @@ fn run_frame(
         fss_core::ContentDigest::new(fss_core::DigestAlgorithm::Sha256, receipt.codec().decoder)
     )?;
     writeln!(out, "recorded_decode_work_units={}", receipt.work_units())?;
+    privacy_lines(out, receipt.mask_policy(), receipt.mask_binding())?;
     writeln!(out, "this_request_decode_work_units={}", budget.used())?;
     writeln!(
         out,
@@ -348,6 +349,7 @@ fn run_h264(
         decoder_limits,
     };
     let mut range = RecordedH264Range::open(deployment, request, cx)?;
+    privacy_lines(out, range.mask().policy_digest(), range.mask().digest())?;
     let mut pgm = Vec::new();
     writeln!(
         out,
@@ -436,6 +438,7 @@ fn run_h265(
         decoder_limits,
     };
     let mut range = RecordedH265Range::open(deployment, request, cx)?;
+    privacy_lines(out, range.mask().policy_digest(), range.mask().digest())?;
     let mut pgm = Vec::new();
     writeln!(
         out,
@@ -487,6 +490,27 @@ fn run_h265(
         range.decoded(),
         range.skipped_rasl_segments().len()
     )?;
+    Ok(())
+}
+
+/// The privacy transform applied to the served pixels, as typed `key=value` lines.
+fn privacy_lines(
+    out: &mut impl Write,
+    policy: Option<ContentDigest>,
+    binding: ContentDigest,
+) -> RunResult<()> {
+    match policy {
+        Some(policy) => writeln!(
+            out,
+            "privacy_mask_binding=sensor_policy\nprivacy_mask_policy={policy}\napplied_redaction_transform={}",
+            fss_reference::ingest::privacy_mask::mask_transform().as_str()
+        )?,
+        None => writeln!(
+            out,
+            "privacy_mask_binding=no_policy_declared\nprivacy_mask_policy=none\napplied_redaction_transform=none"
+        )?,
+    }
+    writeln!(out, "privacy_mask_binding_digest={binding}")?;
     Ok(())
 }
 

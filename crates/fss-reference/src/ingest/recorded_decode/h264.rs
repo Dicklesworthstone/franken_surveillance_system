@@ -20,9 +20,10 @@
 
 pub use fss_codec_h264::{DecodeError as H264DecodeError, DecoderLimits, UnsupportedFeature};
 use fss_codec_h264::{Decoder, Picture, annex_b_nal_units};
-use fss_core::{CanonicalEncode, CanonicalEncoder, ContentDigest, SensorCapsule};
+use fss_core::{CanonicalEncode, CanonicalEncoder, ContentDigest, SensorCapsule, SensorId};
 
 use super::{ComponentInterpretation, RecordedDecodeError, checkpoint, source_capsule};
+use crate::ingest::privacy_mask::{MaskBinding, binding_digest, current_mask, encode_marker};
 use crate::ingest::{RetainedFileImport, RetainedReadLimits};
 use crate::{ReferenceDeployment, ReplayCx};
 
@@ -32,7 +33,7 @@ pub const MAX_H264_RANGE_SEGMENTS: usize = 1024;
 pub const H264_DECODER_LABEL: &str =
     "fss-codec-h264:baseline-main-high-progressive-420:scalar-reference:output-order:v2";
 /// Canonical frame-receipt domain.
-pub const H264_FRAME_RECEIPT_DOMAIN: &str = "fss.recorded_h264_frame_receipt.v1";
+pub const H264_FRAME_RECEIPT_DOMAIN: &str = "fss.recorded_h264_frame_receipt.v2";
 /// Boundary before each retained access unit is read and decoded.
 pub const STAGE_RECORDED_H264_SEGMENT: &str = "recorded_h264:segment";
 
@@ -82,6 +83,7 @@ pub struct RecordedH264FrameReceipt {
     // binds both chroma planes, so receipt bytes stay identical to the luma-era receipts.
     cb_sha256: ContentDigest,
     cr_sha256: ContentDigest,
+    mask_policy: Option<ContentDigest>,
 }
 
 impl RecordedH264FrameReceipt {
@@ -150,6 +152,17 @@ impl RecordedH264FrameReceipt {
     pub fn cr_sha256(&self) -> ContentDigest {
         self.cr_sha256
     }
+    /// Retained privacy mask policy applied to every plane, or `None`: the explicit no-policy
+    /// marker. Luma, chroma and I420 digests always name the planes as served (masked).
+    #[must_use]
+    pub fn mask_policy(&self) -> Option<ContentDigest> {
+        self.mask_policy
+    }
+    /// Mask binding digest encoded into this receipt.
+    #[must_use]
+    pub fn mask_binding(&self) -> ContentDigest {
+        binding_digest(self.mask_policy)
+    }
     /// Canonical receipt bytes.
     #[must_use]
     pub fn encoded(&self) -> Vec<u8> {
@@ -170,6 +183,7 @@ impl RecordedH264FrameReceipt {
         encoder.digest(self.luma_sha256);
         encoder.digest(self.i420_sha256);
         encoder.digest(h264_decoder_identity());
+        encode_marker(&mut encoder, self.mask_policy);
         encoder.finish()
     }
     /// Content address of [`Self::encoded`].
@@ -186,6 +200,7 @@ pub struct RecordedH264Frame {
     luma: Vec<u8>,
     cb: Vec<u8>,
     cr: Vec<u8>,
+    mask: MaskBinding,
 }
 
 impl RecordedH264Frame {
@@ -225,15 +240,19 @@ impl RecordedH264Frame {
             self.receipt.height.div_ceil(2),
         ]
     }
+    /// Privacy mask binding applied to every plane of this frame.
+    #[must_use]
+    pub fn mask(&self) -> &MaskBinding {
+        &self.mask
+    }
     /// Packed RGB through the declared BT.601 limited-range transform
-    /// ([`super::video_rgb::VIDEO_RGB_TRANSFORM`]).
+    /// ([`super::video_rgb::VIDEO_RGB_TRANSFORM`]), over the masked planes; masked pixels are
+    /// then set to the fixed RGB fill.
     pub fn to_rgb(&self) -> Result<Vec<u8>, RecordedDecodeError> {
-        super::video_rgb::i420_to_rgb(
-            &self.luma,
-            &self.cb,
-            &self.cr,
-            [self.receipt.width, self.receipt.height],
-        )
+        let dimensions = [self.receipt.width, self.receipt.height];
+        let mut rgb = super::video_rgb::i420_to_rgb(&self.luma, &self.cb, &self.cr, dimensions)?;
+        self.mask.apply_rgb(&mut rgb, dimensions)?;
+        Ok(rgb)
     }
 }
 
@@ -250,6 +269,9 @@ pub struct RecordedH264Range {
     next: usize,
     end: usize,
     decoded: u64,
+    /// Sensor of the range's source capsules and its privacy mask, resolved once at open.
+    sensor: SensorId,
+    mask: MaskBinding,
     ready: std::collections::VecDeque<Picture>,
     seen: Vec<bool>,
     flushed: bool,
@@ -300,6 +322,9 @@ impl RecordedH264Range {
             ..request.decoder_limits
         };
         let decoder = Decoder::new(limits)?;
+        let (first_capsule, _) = source_capsule(deployment, &retained, first)?;
+        let sensor = first_capsule.sensor_id;
+        let mask = current_mask(deployment, &sensor)?;
         let seen = vec![false; request.segment_count];
         Ok(Self {
             request,
@@ -308,6 +333,8 @@ impl RecordedH264Range {
             next: first,
             end,
             decoded: 0,
+            sensor,
+            mask,
             ready: std::collections::VecDeque::new(),
             seen,
             flushed: false,
@@ -318,6 +345,12 @@ impl RecordedH264Range {
     #[must_use]
     pub fn retained(&self) -> &RetainedFileImport {
         &self.retained
+    }
+
+    /// Privacy mask binding applied to every frame of this range.
+    #[must_use]
+    pub fn mask(&self) -> &MaskBinding {
+        &self.mask
     }
 
     /// Pictures decoded so far in this range.
@@ -399,7 +432,21 @@ impl RecordedH264Range {
             return Err(RecordedDecodeError::H264RangeNotIdr { segment: index });
         }
         let (capsule, capsule_digest) = source_capsule(deployment, &self.retained, index)?;
+        if capsule.sensor_id != self.sensor {
+            return Err(RecordedDecodeError::InvalidReceipt);
+        }
         let span = &self.retained.manifest().segment_spans[index];
+        // Mask every plane before any digest is taken or any consumer sees the pixels.
+        let dimensions = [picture.width(), picture.height()];
+        let mut luma = picture.luma().to_vec();
+        let mut cb = picture.cb().to_vec();
+        let mut cr = picture.cr().to_vec();
+        self.mask.apply_luma(&mut luma, dimensions)?;
+        self.mask.apply_chroma420(&mut cb, &mut cr, dimensions)?;
+        let mut i420 = Vec::with_capacity(luma.len() + cb.len() + cr.len());
+        i420.extend_from_slice(&luma);
+        i420.extend_from_slice(&cb);
+        i420.extend_from_slice(&cr);
         let receipt = RecordedH264FrameReceipt {
             import_identity: self.retained.import_identity(),
             import_root: self.retained.import_root(),
@@ -413,18 +460,20 @@ impl RecordedH264Range {
             height: picture.height(),
             idr: picture.is_idr(),
             decode_index: picture.decode_index(),
-            luma_sha256: ContentDigest::sha256(picture.luma()),
-            i420_sha256: ContentDigest::sha256(&picture.to_i420()),
-            cb_sha256: ContentDigest::sha256(picture.cb()),
-            cr_sha256: ContentDigest::sha256(picture.cr()),
+            luma_sha256: ContentDigest::sha256(&luma),
+            i420_sha256: ContentDigest::sha256(&i420),
+            cb_sha256: ContentDigest::sha256(&cb),
+            cr_sha256: ContentDigest::sha256(&cr),
+            mask_policy: self.mask.policy_digest(),
         };
         self.decoded += 1;
         checkpoint(cx, "recorded_h264:decoded")?;
         Ok(RecordedH264Frame {
             receipt,
-            luma: picture.luma().to_vec(),
-            cb: picture.cb().to_vec(),
-            cr: picture.cr().to_vec(),
+            luma,
+            cb,
+            cr,
+            mask: self.mask.clone(),
         })
     }
 }

@@ -78,6 +78,9 @@ pub const FAMILY_TWIN_LOCALIZATION_RECEIPT: &str = "twin_localization_receipt";
 /// Registered ledger delta family: retained coverage witnesses of one analysed recording
 /// (`ingest::recorded_coverage`), committed only after exact operator approval.
 pub const FAMILY_COVERAGE_WITNESS: &str = "coverage_witness";
+/// Registered ledger delta family: an owner-declared per-sensor privacy mask policy
+/// (`ingest::privacy_mask`), one generation per exact approval; plane authority.
+pub const FAMILY_PRIVACY_MASK_POLICY: &str = "privacy_mask_policy";
 
 /// Known ledger delta families table.
 pub const KNOWN_LEDGER_DELTA_FAMILIES: &[&str] = &[
@@ -92,6 +95,7 @@ pub const KNOWN_LEDGER_DELTA_FAMILIES: &[&str] = &[
     FAMILY_EXECUTOR_MODEL_RESULT,
     FAMILY_TWIN_LOCALIZATION_RECEIPT,
     FAMILY_COVERAGE_WITNESS,
+    FAMILY_PRIVACY_MASK_POLICY,
 ];
 
 /// Replay cancellation stage: open deployment.
