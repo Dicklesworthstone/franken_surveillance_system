@@ -29,6 +29,8 @@
 
 mod commit;
 mod index;
+/// Approval-gated preservation of retained imports and their shared derivative closures.
+pub mod holds;
 mod plan;
 mod walk;
 
@@ -118,6 +120,8 @@ pub enum DeletionError {
     Publication(LocalPublicationError),
     /// Spool custody failure.
     Spool(SpoolError),
+    /// Hold state cannot be verified; no deletion may assume it is absent.
+    Hold(Box<holds::HoldError>),
 }
 
 impl DeletionError {
@@ -132,6 +136,7 @@ impl DeletionError {
             Self::Blocked(_) => "ERR-DELETION-BLOCKED-001",
             Self::Bound { .. } => "ERR-DELETION-BOUND-001",
             Self::Cancelled { .. } | Self::Incomplete { .. } => "ERR-DELETION-INCOMPLETE-001",
+            Self::Hold(error) => error.stable_id(),
             Self::RecordMismatch
             | Self::Contract(_)
             | Self::Reference(_)
@@ -187,6 +192,7 @@ impl fmt::Display for DeletionError {
             Self::Reference(error) => write!(f, "deployment error: {error}"),
             Self::Publication(error) => write!(f, "publication error: {error}"),
             Self::Spool(error) => write!(f, "spool error: {error}"),
+            Self::Hold(error) => write!(f, "evidence hold: {error}"),
         }
     }
 }
@@ -214,6 +220,10 @@ impl From<SpoolError> for DeletionError {
     }
 }
 
+impl From<holds::HoldError> for DeletionError {
+    fn from(value: holds::HoldError) -> Self { Self::Hold(Box::new(value)) }
+}
+
 /// Computes the sealed deletion plan of `import` (`CAP-DELETE-PREPARE-001`). Writes nothing.
 pub fn plan_deletion(
     deployment: &ReferenceDeployment,
@@ -227,7 +237,10 @@ pub fn plan_deletion(
             plan: entry.plan_digest,
         });
     }
-    walk::Universe::scan(deployment, &index, cx)?.plan(deployment, import)
+    let holds = holds::HoldIndex::read(deployment, cx)?;
+    let universe = walk::Universe::scan(deployment, &index, cx)?;
+    let plan = universe.plan(deployment, import)?;
+    holds.protect(&universe, deployment, plan, cx)
 }
 
 /// Executes a sealed plan under its exact approval (`CAP-DELETE-COMMIT-001`); resumes an

@@ -153,9 +153,11 @@ fn current_plan(
     plan_digest: ContentDigest,
     cx: &ReplayCx,
 ) -> Result<DeletionPlan, DeletionError> {
+    let holds = super::holds::HoldIndex::read(deployment, cx)?;
     let universe = Universe::scan(deployment, index, cx)?;
     for import in universe.imports() {
         let plan = universe.plan(deployment, *import)?;
+        let plan = holds.protect(&universe, deployment, plan, cx)?;
         if plan.digest()? == plan_digest {
             return Ok(plan);
         }
@@ -170,6 +172,8 @@ pub(super) fn commit(
     principal: &str,
     cx: &ReplayCx,
 ) -> Result<CommitReceipt, DeletionError> {
+    // A corrupt or shadowed hold is never interpreted as released, including on resume.
+    super::holds::HoldIndex::read(deployment, cx)?;
     let index = DeletionIndex::read(deployment)?;
     if let Some(entry) = index.plan(plan_digest) {
         let plan = entry.plan.clone();

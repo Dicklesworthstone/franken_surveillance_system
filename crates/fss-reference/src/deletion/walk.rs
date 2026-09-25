@@ -48,6 +48,7 @@ const AUTHORITY_HISTORY_FAMILIES: &[&str] = &[
     FAMILY_SENSOR_TAMPER_STATUS,
     FAMILY_ALERT_EFFECT_OUTCOME,
     FAMILY_PRIVACY_MASK_POLICY,
+    crate::reference_deployment::FAMILY_EVIDENCE_HOLD,
 ];
 /// Families this module owns; their batches are never units.
 const DELETION_FAMILIES: &[&str] = &[

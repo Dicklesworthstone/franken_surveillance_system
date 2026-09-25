@@ -82,6 +82,9 @@ pub const FAMILY_COVERAGE_WITNESS: &str = "coverage_witness";
 /// Registered ledger delta family: an owner-declared per-sensor privacy mask policy
 /// (`ingest::privacy_mask`), one generation per exact approval; plane authority.
 pub const FAMILY_PRIVACY_MASK_POLICY: &str = "privacy_mask_policy";
+/// Reserved retention authority: an indefinite import-closure hold and its explicit release.
+/// Only [`crate::deletion::holds::commit_hold`] may publish this family or its object namespace.
+pub const FAMILY_EVIDENCE_HOLD: &str = "evidence_hold";
 /// Registered ledger delta family: the sealed deletion plan of one retained import
 /// ([`crate::deletion`]), appended before any byte is removed; plane authority. Reserved.
 pub const FAMILY_DELETION_RECORD: &str = "deletion_record";
@@ -106,6 +109,7 @@ pub const KNOWN_LEDGER_DELTA_FAMILIES: &[&str] = &[
     FAMILY_TWIN_LOCALIZATION_RECEIPT,
     FAMILY_COVERAGE_WITNESS,
     FAMILY_PRIVACY_MASK_POLICY,
+    FAMILY_EVIDENCE_HOLD,
     FAMILY_DELETION_RECORD,
     FAMILY_DELETION_TOMBSTONE,
     FAMILY_DELETION_COMPLETION,
@@ -169,6 +173,7 @@ fn reserved_family_entry_point(family: &str) -> Option<&'static str> {
     match family {
         FAMILY_EVENT_REVISION | FAMILY_SENSOR_TAMPER_STATUS => Some("publish_event"),
         ROOT_REACHABILITY_FAMILY => Some("publish_and_commit"),
+        FAMILY_EVIDENCE_HOLD => Some("deletion::holds::commit_hold"),
         FAMILY_DELETION_RECORD
         | FAMILY_DELETION_TOMBSTONE
         | FAMILY_DELETION_COMPLETION
@@ -1395,7 +1400,8 @@ impl ReferenceDeployment {
     ///
     /// The reserved families `event_revision` and `sensor_tamper_status` (use
     /// [`Self::publish_event`]) and `local_root_reachability` (use [`Self::publish_and_commit`])
-    /// are refused with [`ReferenceError::ReservedDeltaFamily`] before any work.
+    /// are refused with [`ReferenceError::ReservedDeltaFamily`] before any work. Hold families
+    /// and their object namespace also require the guarded retention entry point.
     ///
     /// Idempotent by `batch_id`: when the ledger already holds this batch identity with identical
     /// deltas and children, returns the committed anchor without re-preparing deltas. If the batch
@@ -1414,6 +1420,15 @@ impl ReferenceDeployment {
             });
         }
 
+        // Reserve the namespace too: changing family must not shadow an effective hold.
+        if deltas.iter().any(|delta| {
+            delta.object_id.as_str().starts_with(crate::deletion::holds::HOLD_OBJECT_PREFIX)
+        }) {
+            return Err(ReferenceError::ReservedDeltaFamily {
+                family: FAMILY_EVIDENCE_HOLD.to_owned(),
+                entry_point: "deletion::holds::commit_hold",
+            });
+        }
         // Reserved families are committed only by their guarded entry points; refused before
         // any custody work, preparation, or journal I/O.
         if let Some((family, entry_point)) = deltas.iter().find_map(|delta| {
@@ -1423,6 +1438,31 @@ impl ReferenceDeployment {
                 family,
                 entry_point,
             });
+        }
+        self.append_checked_batch(batch_id, deltas, children)
+    }
+
+    /// Crate-internal writer for the exact transition validated by `deletion::holds`.
+    /// No other family, object namespace, or mixed batch is admitted through this entry point.
+    pub(crate) fn append_evidence_hold_batch(
+        &mut self,
+        batch_id: BatchId,
+        deltas: Vec<EvidenceDelta>,
+        children: Vec<ContentDigest>,
+        cx: &ReplayCx,
+    ) -> Result<LedgerAnchor, ReferenceError> {
+        if cx.is_cancelled() {
+            cx.drain_and_finalize();
+            return Err(ReferenceError::CancellationRequested {
+                stage: STAGE_APPEND_BATCH,
+            });
+        }
+        if deltas.len() != 1 || deltas.iter().any(|delta| {
+            delta.family != FAMILY_EVIDENCE_HOLD
+                || !delta.object_id.as_str().starts_with(crate::deletion::holds::HOLD_OBJECT_PREFIX)
+                || delta.plane != Plane::Authority
+        }) {
+            return Err(ReferenceError::InvalidSpec("invalid evidence hold batch"));
         }
         self.append_checked_batch(batch_id, deltas, children)
     }
