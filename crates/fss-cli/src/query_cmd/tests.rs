@@ -12,6 +12,7 @@ use fss_reference::{ADP_REPLAY_ROW_ID, ReferenceDeployment, ReplayCx, ReplayIoAu
 
 use super::*;
 use crate::token::tokenize_os_args;
+use fss_core::ContentDigest;
 
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 

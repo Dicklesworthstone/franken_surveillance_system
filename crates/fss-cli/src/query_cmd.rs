@@ -9,8 +9,8 @@ use std::path::PathBuf;
 
 use fss_core::{
     AgentCognitiveEnvelope, AgentView, BudgetVector, CognitiveAnswerClass, Completeness,
-    ContentDigest, EnvelopeBudget, EnvelopeContinuity, EnvelopeProposition, EventId, EventKind,
-    EventState, KnowledgeState, ResponseOutcome, ResponseSafeRetry,
+    EnvelopeBudget, EnvelopeContinuity, EnvelopeProposition, EventId, EventKind, EventState,
+    KnowledgeState, ResponseOutcome, ResponseSafeRetry,
 };
 use fss_reference::agent_follow::{AnchorToken, snapshot_anchor_token};
 use fss_reference::agent_orient::{
