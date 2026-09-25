@@ -5,7 +5,9 @@ use std::collections::BTreeSet;
 use fss_graph_algorithms::failure_domains::{
     FailureDomain, FailureDomainKind, MAX_FAILURE_DOMAINS, analyse_failure_domains,
 };
-use fss_graph_algorithms::{CoverageObservation, GraphBudget, GraphError, SensorCoverageProjection};
+use fss_graph_algorithms::{
+    CoverageObservation, GraphBudget, GraphError, SensorCoverageProjection,
+};
 
 fn budget() -> GraphBudget {
     GraphBudget {
@@ -14,11 +16,18 @@ fn budget() -> GraphBudget {
     }
 }
 
-fn domain(kind: FailureDomainKind, id: &str, members: &[&str]) -> Result<FailureDomain, GraphError> {
+fn domain(
+    kind: FailureDomainKind,
+    id: &str,
+    members: &[&str],
+) -> Result<FailureDomain, GraphError> {
     FailureDomain::new(
         kind,
         id,
-        &members.iter().map(|id| (*id).to_owned()).collect::<Vec<_>>(),
+        &members
+            .iter()
+            .map(|id| (*id).to_owned())
+            .collect::<Vec<_>>(),
     )
 }
 
@@ -80,10 +89,8 @@ fn every_three_sensor_three_zone_graph_matches_simultaneous_removal() -> Result<
                 .map(|(_, name)| *name)
                 .collect();
             let declared = domain(FailureDomainKind::Network, "switch", &names)?;
-            let removed: BTreeSet<String> = names
-                .iter()
-                .map(|name| format!("sensor/{name}"))
-                .collect();
+            let removed: BTreeSet<String> =
+                names.iter().map(|name| format!("sensor/{name}")).collect();
             let after = reachable(&original, &removed)?;
             let expected: Vec<String> = before.difference(&after).cloned().collect();
             let result = analyse_failure_domains(&original, &[declared], budget())?;
@@ -112,12 +119,16 @@ fn overlapping_power_and_network_groups_are_not_alternate_routes() -> Result<(),
     let result = analyse_failure_domains(&original, &[power.clone(), network.clone()], budget())?;
     assert_eq!(result.scenarios[0].lost_zones, ["zone:x"]);
     assert_eq!(result.scenarios[1].lost_zones, ["zone:y"]);
-    assert_eq!(result, analyse_failure_domains(&original, &[network, power], budget())?);
+    assert_eq!(
+        result,
+        analyse_failure_domains(&original, &[network, power], budget())?
+    );
     Ok(())
 }
 
 #[test]
-fn membership_order_is_canonical_and_zero_witness_members_are_digest_bound() -> Result<(), GraphError> {
+fn membership_order_is_canonical_and_zero_witness_members_are_digest_bound()
+-> Result<(), GraphError> {
     let original = projection(&[("a", "zone:x", 1), ("b", "zone:x", 0), ("c", "zone:x", 0)])?;
     let ab = domain(FailureDomainKind::Host, "recorder", &["a", "b"])?;
     let ba = domain(FailureDomainKind::Host, "recorder", &["b", "a"])?;
@@ -125,7 +136,10 @@ fn membership_order_is_canonical_and_zero_witness_members_are_digest_bound() -> 
     let first = analyse_failure_domains(&original, &[ab], budget())?;
     assert_eq!(first, analyse_failure_domains(&original, &[ba], budget())?);
     let changed = analyse_failure_domains(&original, &[ac], budget())?;
-    assert_eq!(first.scenarios[0].lost_zones, changed.scenarios[0].lost_zones);
+    assert_eq!(
+        first.scenarios[0].lost_zones,
+        changed.scenarios[0].lost_zones
+    );
     assert_ne!(
         first.scenarios[0].analysis.input_digest,
         changed.scenarios[0].analysis.input_digest
