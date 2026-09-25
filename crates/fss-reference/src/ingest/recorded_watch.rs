@@ -32,6 +32,13 @@
 //! `CoverageWitness` per (sensor, zone, maximal contiguous interval) the pipeline could actually
 //! see, and every other frame as an explicit uncovered interval. Like a candidate, the record
 //! becomes authority only through [`WatchReport::retain_coverage`] with its exact approval digest.
+//!
+//! With [`WatchOptions::tolerate_decode_refusals`] (opt-in; the default is unchanged) a typed
+//! decode refusal or source gap inside the range no longer refuses the analysis: the refused
+//! segments become `decode_refused` coverage intervals with their error id, H.264/H.265 resume at
+//! the next IDR/IRAP ([`super::tolerant_decode`]), and the tracker restarts after every gap with
+//! fresh track identities, so no track is bridged across it. A run without any refusal or gap
+//! is byte-identical to the default analysis.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -56,9 +63,9 @@ use super::eventgen::{
 };
 use super::foreground::{ForegroundConfig, ForegroundDetector, ForegroundError};
 use super::recorded_coverage::{
-    CoverageEntry, CoverageError, CoverageFrame, CoverageInput, CoverageRecord, CoverageSource,
-    CoverageStatus, CoverageZoneInput, approval_digest, build_coverage, check_approval,
-    coverage_status, pipeline_generation, retain_coverage,
+    CoverageEntry, CoverageError, CoverageExtras, CoverageFrame, CoverageInput, CoverageRecord,
+    CoverageSource, CoverageStatus, CoverageZoneInput, approval_digest, build_coverage_with,
+    check_approval, coverage_status, pipeline_generation, retain_coverage,
 };
 use super::recorded_decode::h264::{DecoderLimits, RecordedH264Range, RecordedH264Request};
 use super::recorded_decode::h265::{
@@ -67,9 +74,12 @@ use super::recorded_decode::h265::{
 use super::recorded_decode::{
     ComponentInterpretation, DecodeLimits, RecordedDecodeError, source_capsule, validate_limits,
 };
+use super::tolerant_decode::{
+    DecodeRefusal, TolerantFrame, TolerantItem, TolerantRequest, TolerantSource,
+};
 use super::tracker::{
-    Detection, MultiObjectTracker, TrackStatus, TrackerConfig, TrackerError, TrackerLimits,
-    TrackerStepError,
+    Detection, MultiObjectTracker, TrackStatus, TrackedTarget, TrackerConfig, TrackerError,
+    TrackerLimits, TrackerStepError,
 };
 use super::{FileIngestError, RetainedFileImport, RetainedReadLimits};
 use crate::{
@@ -435,6 +445,15 @@ impl WatchPlan {
     }
 }
 
+/// Analysis options. The default is the strict analysis every existing caller gets.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct WatchOptions {
+    /// Turn typed mid-recording decode refusals and source gaps into `decode_refused` coverage
+    /// intervals (H.264/H.265 resume at the next IDR/IRAP) and restart tracking after each gap,
+    /// instead of refusing the whole analysis. H.264/H.265 ranges must still open at an IDR/IRAP.
+    pub tolerate_decode_refusals: bool,
+}
+
 /// Resource ceilings; they refuse work but never alter a successful analysis.
 #[derive(Clone, Copy, Debug)]
 pub struct WatchLimits {
@@ -598,6 +617,7 @@ pub struct WatchReport {
     coverage: CoverageRecord,
     coverage_status: CoverageStatus,
     cascade: Option<WatchCascade>,
+    decode_refusals: Vec<DecodeRefusal>,
 }
 
 /// Detector-cascade record of one analysis.
@@ -692,6 +712,27 @@ impl WatchReport {
         detector: Option<&mut DetectorCascade<'_>>,
         cx: &ReplayCx,
     ) -> Result<Self> {
+        Self::analyze_with_options(
+            deployment,
+            plan,
+            limits,
+            detector,
+            WatchOptions::default(),
+            cx,
+        )
+    }
+
+    /// [`Self::analyze_with_detector`] under explicit [`WatchOptions`]. The default options are
+    /// byte-for-byte [`Self::analyze_with_detector`]; a tolerant run that meets no refusal or gap
+    /// is byte-identical to it too.
+    pub fn analyze_with_options(
+        deployment: &ReferenceDeployment,
+        plan: &WatchPlan,
+        limits: &WatchLimits,
+        detector: Option<&mut DetectorCascade<'_>>,
+        options: WatchOptions,
+        cx: &ReplayCx,
+    ) -> Result<Self> {
         checkpoint(cx, "recorded_watch:analyze")?;
         plan.validate()?;
         validate_limits(limits.jpeg_limits)?;
@@ -705,6 +746,7 @@ impl WatchReport {
         if let Some(span) = spans[plan.first_segment + 1..end]
             .iter()
             .find(|s| s.gap_before)
+            .filter(|_| !options.tolerate_decode_refusals)
         {
             return Err(WatchError::SourceGap {
                 segment: span.segment_index,
@@ -715,13 +757,32 @@ impl WatchReport {
         let capture_time_label = retained.manifest().capture_time_label.clone();
         let segment_gaps: Vec<bool> = spans.iter().map(|s| s.gap_before).collect();
         let basis = deployment.current_anchor().clone();
+        let mut tolerant = if options.tolerate_decode_refusals {
+            Some(Box::new(TolerantSource::open(
+                deployment,
+                TolerantRequest {
+                    import_identity: plan.import_identity,
+                    interpretation: plan.interpretation,
+                    first_segment: plan.first_segment,
+                    end,
+                    read_limits: limits.read_limits,
+                    jpeg_limits: limits.jpeg_limits,
+                    h264_limits: limits.h264_limits,
+                    h265_limits: limits.h265_limits,
+                },
+                cx,
+            )?))
+        } else {
+            None
+        };
         let mut source = match media_format.as_str() {
-            "mjpeg" => FrameSource::Jpeg {
+            _ if tolerant.is_some() => None,
+            "mjpeg" => Some(FrameSource::Jpeg {
                 retained: Box::new(retained),
                 next: plan.first_segment,
                 end,
-            },
-            "annexb" => FrameSource::H264(Box::new(RecordedH264Range::open(
+            }),
+            "annexb" => Some(FrameSource::H264(Box::new(RecordedH264Range::open(
                 deployment,
                 RecordedH264Request {
                     import_identity: plan.import_identity,
@@ -732,8 +793,8 @@ impl WatchReport {
                     decoder_limits: limits.h264_limits,
                 },
                 cx,
-            )?)),
-            "hevc" => FrameSource::H265(Box::new(RecordedH265Range::open(
+            )?))),
+            "hevc" => Some(FrameSource::H265(Box::new(RecordedH265Range::open(
                 deployment,
                 RecordedH265Request {
                     import_identity: plan.import_identity,
@@ -744,7 +805,7 @@ impl WatchReport {
                     decoder_limits: limits.h265_limits,
                 },
                 cx,
-            )?)),
+            )?))),
             _ => return Err(RecordedDecodeError::UnsupportedMedia.into()),
         };
         let plan_digest = plan.digest();
@@ -778,8 +839,65 @@ impl WatchReport {
         let mut confirmed_at: BTreeMap<u64, usize> = BTreeMap::new();
         let mut entries: Vec<(String, u64, usize)> = Vec::new();
         let mut sensor = None;
-        while let Some(frame) = source.next(deployment, plan, limits, &mut budget, cx)? {
+        // Tolerant decode only: refused runs, tracking restarts, and the offset that keeps track
+        // identities of a restarted tracker distinct from every earlier one.
+        let mut decode_refusals: Vec<DecodeRefusal> = Vec::new();
+        let mut restarts: Vec<usize> = Vec::new();
+        let mut restart_pending = false;
+        let mut track_base = 0_u64;
+        let mut last_track = 0_u64;
+        loop {
+            let frame = match (tolerant.as_mut(), source.as_mut()) {
+                (Some(tolerant), _) => match tolerant.next(deployment, &mut budget, cx)? {
+                    None => break,
+                    Some(TolerantItem::Break(refusal)) => {
+                        restart_pending = true;
+                        if let Some(refusal) = refusal {
+                            match decode_refusals.last_mut() {
+                                Some(last)
+                                    if last.last_segment + 1 == refusal.first_segment
+                                        && last.error_id == refusal.error_id =>
+                                {
+                                    last.last_segment = refusal.last_segment;
+                                }
+                                _ => decode_refusals.push(refusal),
+                            }
+                        }
+                        continue;
+                    }
+                    Some(TolerantItem::Frame(frame)) => {
+                        let TolerantFrame {
+                            segment,
+                            capsule,
+                            capsule_digest,
+                            dimensions,
+                            pixels,
+                        } = *frame;
+                        DecodedFrame {
+                            segment,
+                            capsule,
+                            capsule_digest,
+                            dimensions,
+                            pixels,
+                        }
+                    }
+                },
+                (None, Some(source)) => {
+                    match source.next(deployment, plan, limits, &mut budget, cx)? {
+                        Some(frame) => frame,
+                        None => break,
+                    }
+                }
+                (None, None) => return Err(RecordedDecodeError::UnsupportedMedia.into()),
+            };
             checkpoint(cx, "recorded_watch:frame")?;
+            if restart_pending && !frames.is_empty() {
+                // No track is bridged across a decode gap: a fresh tracker, fresh identities.
+                tracker = MultiObjectTracker::new(plan.tracker_config())?;
+                track_base = last_track;
+                restarts.push(frame.segment);
+            }
+            restart_pending = false;
             if background.is_none() {
                 dimensions = frame.dimensions;
                 background = Some(ForegroundDetector::new(plan.foreground_config(dimensions))?);
@@ -802,6 +920,16 @@ impl WatchReport {
                 })
                 .collect();
             let output = tracker.try_step(&detections, TrackerLimits::default())?;
+            let tracks: Vec<TrackedTarget> = output
+                .tracks
+                .iter()
+                .map(|target| {
+                    let mut target = target.clone();
+                    target.id += track_base;
+                    last_track = last_track.max(target.id);
+                    target
+                })
+                .collect();
             if sensor.is_none() {
                 sensor = Some(frame.capsule.sensor_id.clone());
             }
@@ -811,7 +939,7 @@ impl WatchReport {
                     frame.capsule.sensor_id.as_str().as_bytes()
                 ))
             );
-            for target in &output.tracks {
+            for target in &tracks {
                 if target.misses != 0 {
                     continue;
                 }
@@ -864,6 +992,11 @@ impl WatchReport {
             });
         }
         let decode_work_units = budget.used();
+        if detector.is_some() && (!decode_refusals.is_empty() || !restarts.is_empty()) {
+            return Err(WatchError::InvalidPlan(
+                "a detector cascade does not run over decode-refused or gapped ranges",
+            ));
+        }
         let cascade = match detector {
             None => None,
             Some(detector) => {
@@ -983,6 +1116,8 @@ impl WatchReport {
             cascade
                 .as_ref()
                 .map(|c| (c.digest, c.outcome.digest(c.digest))),
+            &decode_refusals,
+            &restarts,
         );
         let sensor = sensor.ok_or(WatchError::Limit)?;
         let coverage = watch_coverage(&WatchCoverageContext {
@@ -998,6 +1133,8 @@ impl WatchReport {
             frames: &frames,
             candidates: &candidates,
             cascade: cascade.as_ref().map(|c| c.digest),
+            refusals: &decode_refusals,
+            restarts: &restarts,
         })?;
         let coverage_status = coverage_status(deployment, &[&coverage])?;
         let mut prepared = Vec::with_capacity(candidates.len());
@@ -1044,7 +1181,14 @@ impl WatchReport {
             coverage,
             coverage_status,
             cascade,
+            decode_refusals,
         })
+    }
+
+    /// Refused segment runs of a tolerant analysis (always empty otherwise), in segment order.
+    #[must_use]
+    pub fn decode_refusals(&self) -> &[DecodeRefusal] {
+        &self.decode_refusals
     }
 
     /// Detector-cascade outcome of this analysis, if a detector was supplied.
@@ -1297,7 +1441,7 @@ impl WatchReport {
                 "\"authority_sequence\":{},\"event_kind\":\"unclassified\",",
                 "\"event_state\":\"indeterminate\",\"calibrated\":false,\"corroborated\":false,",
                 "\"alert_authorized\":false,\"effects_authorized\":false,",
-                "\"absence_certifiable\":false,\"detection_quality_claim\":false{}{}}}"
+                "\"absence_certifiable\":false,\"detection_quality_claim\":false{}{}{}}}"
             ),
             self.plan.import_identity,
             self.import_root,
@@ -1320,6 +1464,7 @@ impl WatchReport {
             count(WatchStatus::Published),
             count(WatchStatus::AlreadyPublished),
             authority_sequence,
+            decode_refusals_json(&self.decode_refusals),
             self.cascade.as_ref().map_or_else(String::new, |c| format!(
                 ",\"detector_cascade\":{{{},{}}}",
                 c.policy_json,
@@ -1328,6 +1473,26 @@ impl WatchReport {
             coverage_json.map_or_else(String::new, |json| format!(",\"coverage\":{json}")),
         )
     }
+}
+
+/// `,"decode_refusals":[...]` for a tolerant analysis that refused segments; empty otherwise, so
+/// every other report keeps its exact bytes.
+fn decode_refusals_json(refusals: &[DecodeRefusal]) -> String {
+    if refusals.is_empty() {
+        return String::new();
+    }
+    let items: Vec<String> = refusals
+        .iter()
+        .map(|refusal| {
+            format!(
+                "{{\"first_segment\":{},\"last_segment\":{},\"error_id\":{},\"coverage\":\"decode_refused\"}}",
+                refusal.first_segment,
+                refusal.last_segment,
+                json_string(&refusal.error_id)
+            )
+        })
+        .collect();
+    format!(",\"decode_refusals\":[{}]", items.join(","))
 }
 
 fn json_string(value: &str) -> String {
@@ -1433,6 +1598,8 @@ struct WatchCoverageContext<'a> {
     frames: &'a [WatchFrame],
     candidates: &'a [PendingCandidate],
     cascade: Option<ContentDigest>,
+    refusals: &'a [DecodeRefusal],
+    restarts: &'a [usize],
 }
 
 /// Appends a detector-cascade identity (package, generation, policy) to coverage parameters.
@@ -1490,21 +1657,29 @@ fn watch_coverage(context: &WatchCoverageContext<'_>) -> Result<CoverageRecord> 
             entries,
         });
     }
-    Ok(build_coverage(&CoverageInput {
-        source: CoverageSource::Watch,
-        import_identity: plan.import_identity,
-        import_root: context.import_root,
-        sensor_id: context.sensor,
-        analysis_digest: context.analysis_digest,
-        basis: context.basis.clone(),
-        capture_time_label: context.capture_time_label,
-        segment_gaps: context.segment_gaps,
-        first_segment: plan.first_segment,
-        last_segment: plan.first_segment + plan.segment_count - 1,
-        frames: &frames,
-        confirmation_hits: plan.tracker.confirmation_hits,
-        zones,
-    })?)
+    let extras = CoverageExtras {
+        visibility: Vec::new(),
+        refusals: context.refusals.to_vec(),
+        restarts: context.restarts.to_vec(),
+    };
+    Ok(build_coverage_with(
+        &CoverageInput {
+            source: CoverageSource::Watch,
+            import_identity: plan.import_identity,
+            import_root: context.import_root,
+            sensor_id: context.sensor,
+            analysis_digest: context.analysis_digest,
+            basis: context.basis.clone(),
+            capture_time_label: context.capture_time_label,
+            segment_gaps: context.segment_gaps,
+            first_segment: plan.first_segment,
+            last_segment: plan.first_segment + plan.segment_count - 1,
+            frames: &frames,
+            confirmation_hits: plan.tracker.confirmation_hits,
+            zones,
+        },
+        &extras,
+    )?)
 }
 
 struct PendingCandidate {
@@ -1522,6 +1697,8 @@ fn analysis_bytes(
     frames: &[WatchFrame],
     candidates: &[PendingCandidate],
     cascade: Option<(ContentDigest, ContentDigest)>,
+    refusals: &[DecodeRefusal],
+    restarts: &[usize],
 ) -> Vec<u8> {
     let mut e = CanonicalEncoder::new();
     e.text(ANALYSIS_DOMAIN);
@@ -1554,6 +1731,20 @@ fn analysis_bytes(
         e.text("detector_cascade");
         e.digest(cascade);
         e.digest(outcome);
+    }
+    // Tolerant analyses only: the refused runs and tracking restarts are part of the analysis.
+    if !refusals.is_empty() || !restarts.is_empty() {
+        e.text("decode_refusals");
+        e.u64(refusals.len() as u64);
+        for refusal in refusals {
+            e.u64(refusal.first_segment as u64);
+            e.u64(refusal.last_segment as u64);
+            e.text(&refusal.error_id);
+        }
+        e.u64(restarts.len() as u64);
+        for segment in restarts {
+            e.u64(*segment as u64);
+        }
     }
     e.finish()
 }

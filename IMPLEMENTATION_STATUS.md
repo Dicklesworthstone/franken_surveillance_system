@@ -44,12 +44,27 @@ synthetic scenes). None of it has been measured on real camera footage.
 - **Coverage witnesses (fss-fnrgr):** every `fss-event watch` / `fss-event corroborate` report
   proposes a coverage record: one fss-core `CoverageWitness` per (sensor, zone, maximal contiguous
   interval) decoded without gap or skipped segment, past background warm-up (4 frames) and
-  confirmation latency, zone inside the frame (ground zones: every corner's image preimage),
-  capture time an operator hint and no source gap earlier in the import, bound to the exact
-  pipeline generation; every other frame is a typed uncovered interval (zone entries name their
-  event). Only `--retain-coverage <approval>` retains it (`coverage_witness` ledger family);
-  unknown capture time never yields a witness. Proven on synthetic MJPEG scenes only; the
-  witness certifies what the uncalibrated pipeline would have emitted, not detection quality.
+  confirmation latency, image zone inside the frame, capture time an operator hint and no source
+  gap earlier in the import, bound to the exact pipeline generation; every other frame is a
+  typed uncovered interval (zone entries name their event). Only `--retain-coverage <approval>`
+  retains it (`coverage_witness` ledger family); unknown capture time never yields a witness.
+  Proven on synthetic MJPEG scenes only; the witness certifies what the uncalibrated pipeline
+  would have emitted, not detection quality.
+- **Geometric ground-zone coverage (fss-2h5zq.53):** corroborate ground zones are sampled on the
+  ground plane (8x8 grid by default), projected through the owner homography or an owner
+  calibrated pose (checked against the homography), and, with an owner fss-twin scene mesh and a
+  pose, ray-tested for occlusion; the record keeps the visible fraction, sampling and occlusion
+  model, and a zone below the registered threshold is `occluded`/`outside_frustum` with no
+  witness. Without a mesh the claim is explicitly frustum-only (`occlusion_unknown`) in the
+  witness predicate and in orient. Grid, threshold, pose and mesh digest are bound into the
+  pipeline generation. Proven on synthetic scenes and a synthetic two-object mesh through the
+  binaries; no real camera calibration, lens model or real owner mesh has been exercised, and
+  `watch` has no ground zones (its image-zone coverage is byte-identical, pinned).
+- **Decode refusals as coverage gaps (fss-fnrgr follow-up):** `watch --tolerate-decode-refusals`
+  (opt-in) records a mid-recording refusal or source gap as `decode_refused` intervals with the
+  error id, resumes H.264/H.265 at the next IDR/IRAP, restarts tracking (no bridging) and never
+  lets a witness or a follow silence certificate span the gap. Default behaviour is unchanged.
+  Not wired into `corroborate`; the detector cascade is refused over a gapped range.
 - **Models:** scalar executor over the FSS IR (Conv2d, MatMul, pooling, norms, activations) with
   Safetensors weights (`scalar_executor`, `fss-infer`). One trained detector package ships:
   YOLOX-Nano COCO-80 (`models/yolox-nano/`, `MOD-YOLOXNANO-001`, Apache-2.0), imported offline

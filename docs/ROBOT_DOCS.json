@@ -827,6 +827,11 @@
       "id": "ERR-CORROBORATE-PLAN-INVALID-001"
     },
     {
+      "description": "an owner calibrated camera pose (`--pose`) is refused for ground-zone visibility: its intrinsics describe another image size than the decoded frames, or it disagrees with the camera's ground homography over a zone; a pose is an owner assertion, never a calibration certificate",
+      "guidance": "supply a pose consistent with the decoded frames and the homography, or omit it (coverage is then homography-frustum-only); do not retry unchanged",
+      "id": "ERR-CORROBORATE-POSE-INVALID-001"
+    },
+    {
       "description": "both recordings come from one sensor (or are one import); one failure domain can never corroborate itself",
       "guidance": "name recordings from two distinct sensors",
       "id": "ERR-CORROBORATE-SAME-SENSOR-001"
@@ -840,6 +845,11 @@
       "description": "a recording has no operator capture-time hint, so its capture time is unknown and cannot be aligned by assumption",
       "guidance": "re-import with explicit capture hints or abstain",
       "id": "ERR-CORROBORATE-TIME-UNKNOWN-001"
+    },
+    {
+      "description": "geometric ground-zone visibility could not be assessed: the sampling policy is outside its registered bounds, the owner scene-mesh package was refused (digest, format, references, limits), or a visibility query was degenerate or over its geometry budget; nothing was analysed and no coverage is claimed",
+      "guidance": "correct the policy or supply the exact scene-mesh package and digests; do not retry unchanged",
+      "id": "ERR-CORROBORATE-VISIBILITY-001"
     },
     {
       "description": "a coverage record could not be built, validated, staged or committed (witness domain/predicate/generation mismatch, unknown capture time with a witness, storage refusal)",

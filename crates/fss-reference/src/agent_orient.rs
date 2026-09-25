@@ -2373,13 +2373,24 @@ fn zone_coverage_cell(
     let statement = match (zone.state, zone.window) {
         (ZoneCoverageState::Covered, Some(window)) => format!(
             "{} is covered over [{}, {}] ns by {} retained witness(es) of pipeline generation {}: \
-             no confirmed zone entry other than published candidates.",
+             no confirmed zone entry other than published candidates.{}",
             zone.label(),
             window.earliest.0,
             window.latest.0,
             zone.witnesses.len(),
             zone.pipeline_generation
-                .map_or_else(|| "unknown".to_owned(), |generation| generation.to_text())
+                .map_or_else(|| "unknown".to_owned(), |generation| generation.to_text()),
+            match zone.visibility.as_ref() {
+                Some(visibility) if visibility.frustum_only() => format!(
+                    " The claim is frustum-only: occlusion_unknown ({}).",
+                    visibility.summary()
+                ),
+                Some(visibility) => format!(
+                    " Geometric visibility: {}; mesh occlusion covers the owner mesh only.",
+                    visibility.summary()
+                ),
+                None => String::new(),
+            }
         ),
         (state, _) => format!(
             "{} is {}: {}",

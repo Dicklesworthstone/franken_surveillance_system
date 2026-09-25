@@ -19,11 +19,18 @@
 //! The declared window of a covered zone is the witnesses' certain hull; everything outside it
 //! (warm-up, confirmation latency, earlier gaps) is named, never folded in. Completeness is
 //! complete only when every assessed zone is covered.
+//!
+//! A ground zone with geometric visibility (fss-2h5zq.53) carries it into the assessment: an
+//! `occluded` or `outside_frustum` zone is not observable with that reason and its sample counts,
+//! and a covered zone whose occlusion was never tested is declared frustum-only
+//! (`occlusion_unknown`) in its domain, its cell statement and its named gaps. Tolerant-decode
+//! gaps are named `decode_refused` with their error id; a witness never spans one.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use fss_core::{CaptureInterval, ContentDigest, LedgerAnchor, TimestampNs};
 
+use crate::ingest::ground_visibility::ZoneVisibility;
 use crate::ingest::recorded_coverage::{
     CoverageRecord, UncoveredReason, ZoneCoverage, ZoneWitness,
 };
@@ -87,6 +94,8 @@ pub struct ZoneAssessment {
     pub basis: Option<LedgerAnchor>,
     /// Named gaps and exclusions.
     pub gaps: Vec<String>,
+    /// Geometric visibility of a ground zone in its most recent record, when geometry was used.
+    pub visibility: Option<ZoneVisibility>,
 }
 
 impl ZoneAssessment {
@@ -103,6 +112,14 @@ impl ZoneAssessment {
             },
         );
         format!("claim:coverage:{sensor}:{}", self.scope)
+    }
+
+    /// Whether a covered claim over this zone is frustum-only (occlusion never tested).
+    #[must_use]
+    pub fn frustum_only(&self) -> bool {
+        self.visibility
+            .as_ref()
+            .is_some_and(ZoneVisibility::frustum_only)
     }
 
     /// Human label `sensor scope`.
@@ -154,10 +171,15 @@ impl CoverageAssessment {
             .filter_map(|zone| {
                 zone.window.map(|window| {
                     format!(
-                        "{} [{}, {}] ns",
+                        "{} [{}, {}] ns{}",
                         zone.label(),
                         window.earliest.0,
-                        window.latest.0
+                        window.latest.0,
+                        if zone.frustum_only() {
+                            " (frustum-only: occlusion_unknown)"
+                        } else {
+                            ""
+                        }
                     )
                 })
             })
@@ -211,6 +233,15 @@ fn describe(
                     ),
                     None => format!("zone_entry of {} (no event)", short(*candidate)),
                 },
+                UncoveredReason::DecodeRefused { error_id } => format!("decode_refused {error_id}"),
+                UncoveredReason::Occluded | UncoveredReason::OutsideFrustum => {
+                    match &zone.visibility {
+                        Some(visibility) => {
+                            format!("{}: {}", gap.reason.as_str(), visibility.summary())
+                        }
+                        None => gap.reason.as_str().to_owned(),
+                    }
+                }
                 other => other.as_str().to_owned(),
             };
             format!(
@@ -325,6 +356,7 @@ pub(super) fn assess(
             witnesses: Vec::new(),
             basis,
             gaps,
+            visibility: latest_zone.visibility.clone(),
         };
         let Some(freshest) = fresh.last().copied() else {
             let analysed = current
@@ -409,6 +441,17 @@ pub(super) fn assess(
                 assessment.state = ZoneCoverageState::Covered;
                 assessment.window = Some(window);
                 assessment.witnesses = digests;
+                if let Some(visibility) = assessment
+                    .visibility
+                    .as_ref()
+                    .filter(|visibility| visibility.frustum_only())
+                {
+                    assessment.gaps.push(format!(
+                        "{label}: covered frustum-only: occlusion_unknown ({}); an occluder in \
+                         view could hide an entry.",
+                        visibility.summary()
+                    ));
+                }
             }
         } else {
             assessment.state = ZoneCoverageState::NotObservable;
@@ -437,6 +480,7 @@ pub(super) fn assess(
                 "event-zone:{zone_id}: not observable: a published event names this zone but no \
                  coverage record covers it."
             )],
+            visibility: None,
         });
     }
     Some(CoverageAssessment {

@@ -10,18 +10,28 @@
 //! also proposes one coverage record per camera; `--retain-coverage DIGEST` retains both exactly.
 //! The detector-cascade options of `watch` add uncalibrated class evidence to each ground entry
 //! (one inference budget for both recordings); it never changes the policy's event or alert.
+//! Ground-zone coverage is geometric: `--visibility-grid N` and `--visibility-threshold-ppm N`
+//! set the sampling policy, `--pose NAME:W,H,fx,fy,cx,cy,r11..r33,tx,ty,tz` supplies an owner
+//! calibrated pose for a camera, and `--scene-mesh PATH --scene-mesh-digest sha256:HEX
+//! --scene-source-digest sha256:HEX` an owner scene mesh (fss-twin package) for occlusion. Without
+//! a mesh (or without a pose for a camera) occlusion is `occlusion_unknown`: frustum-only.
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
-use std::io::Write;
+use std::fs;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use fss_core::{ContentDigest, DigestAlgorithm, PrincipalId};
 use fss_reference::ingest::detector_cascade::DetectorCascade;
+use fss_reference::ingest::ground_visibility::{
+    CameraPose, SceneMesh, VisibilityPolicy, import_scene_mesh,
+};
 use fss_reference::ingest::package_detect::PackageDetectLimits;
 use fss_reference::ingest::recorded_corroboration::{
-    CorroborationCamera, CorroborationGates, CorroborationPlan, CorroborationReport,
-    GroundHomography, GroundZone, MAX_CORROBORATION_ZONES,
+    CorroborationCamera, CorroborationError, CorroborationGates, CorroborationPlan,
+    CorroborationReport, GroundHomography, GroundVisibilityPlan, GroundZone,
+    MAX_CORROBORATION_ZONES,
 };
 use fss_reference::ingest::recorded_decode::ComponentInterpretation;
 use fss_reference::ingest::recorded_watch::{WatchDetectorConfig, WatchLimits, WatchTrackerConfig};
@@ -51,7 +61,23 @@ const OPTIONS: &[&str] = &[
     "--approve",
     "--retain-coverage",
     "--report-out",
+    "--visibility-grid",
+    "--visibility-threshold-ppm",
+    "--scene-mesh",
+    "--scene-mesh-digest",
+    "--scene-source-digest",
 ];
+
+/// Largest owner scene-mesh package read (the fss-twin format bound).
+const MAX_SCENE_MESH_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Owner scene mesh named on the command line; read and verified only in `run`.
+#[derive(Debug)]
+struct SceneMeshOption {
+    path: PathBuf,
+    package: ContentDigest,
+    source_scene: ContentDigest,
+}
 
 /// Fully parsed corroboration request; nothing here is authority until `run` validates it.
 #[derive(Debug)]
@@ -65,6 +91,9 @@ pub(super) struct CorroborateAction {
     retain_coverage: Option<ContentDigest>,
     report_out: Option<PathBuf>,
     cascade: Option<super::detector::DetectorOptions>,
+    policy: VisibilityPolicy,
+    poses: [Option<CameraPose>; 2],
+    mesh: Option<SceneMeshOption>,
     rerun: String,
 }
 
@@ -131,6 +160,58 @@ fn zone(value: &str) -> Result<GroundZone, String> {
     })
 }
 
+/// `NAME:W,H,fx,fy,cx,cy,r11,r12,r13,r21,r22,r23,r31,r32,r33,tx,ty,tz`: undistorted pinhole
+/// intrinsics of the decoded image mode and a proper world-to-camera rigid transform in the
+/// ground frame (Z up, ground at z = 0).
+fn pose(value: &str) -> Result<(String, CameraPose), String> {
+    let (name, numbers) = value
+        .split_once(':')
+        .ok_or("pose must be NAME:W,H,fx,fy,cx,cy,r11,...,r33,tx,ty,tz")?;
+    let parts: Vec<&str> = numbers.split(',').collect();
+    if parts.len() != 18 {
+        return Err("pose needs eighteen comma-separated values".to_owned());
+    }
+    let width: u32 = parts[0]
+        .parse()
+        .map_err(|_| "pose width must be an unsigned integer")?;
+    let height: u32 = parts[1]
+        .parse()
+        .map_err(|_| "pose height must be an unsigned integer")?;
+    let values: Vec<f64> = parts[2..]
+        .iter()
+        .map(|part| finite(part, "pose entry"))
+        .collect::<Result<_, _>>()?;
+    let [
+        fx,
+        fy,
+        cx,
+        cy,
+        r11,
+        r12,
+        r13,
+        r21,
+        r22,
+        r23,
+        r31,
+        r32,
+        r33,
+        tx,
+        ty,
+        tz,
+    ] = values[..]
+    else {
+        return Err("pose needs eighteen comma-separated values".to_owned());
+    };
+    let parsed = CameraPose::from_parameters(
+        [width, height],
+        [fx, fy, cx, cy],
+        [[r11, r12, r13], [r21, r22, r23], [r31, r32, r33]],
+        [tx, ty, tz],
+    )
+    .map_err(|error| format!("invalid pose: {error}"))?;
+    Ok((name.to_owned(), parsed))
+}
+
 fn quote(argument: &str) -> String {
     if !argument.is_empty()
         && argument
@@ -150,6 +231,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
     let mut cameras: Vec<(String, ContentDigest)> = Vec::new();
     let mut grounds: Vec<(String, GroundHomography)> = Vec::new();
     let mut zones = Vec::new();
+    let mut poses: Vec<(String, CameraPose)> = Vec::new();
     let mut rerun = vec!["fss-event".to_owned(), "corroborate".to_owned()];
     let mut index = 0;
     while index < args.len() {
@@ -194,6 +276,13 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
                 }
                 zones.push(zone(argument)?);
             }
+            "--pose" => {
+                let (name, parsed) = pose(argument)?;
+                if poses.iter().any(|(n, _)| *n == name) {
+                    return Err(format!("duplicate --pose for camera {name}"));
+                }
+                poses.push((name, parsed));
+            }
             _ if !OPTIONS.contains(&key) && !super::detector::OPTIONS.contains(&key) => {
                 return Err("unknown or inapplicable option".to_owned());
             }
@@ -236,6 +325,44 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
     if zones.is_empty() {
         return Err("at least one --zone ID:X,Y,W,H (ground units) is required".to_owned());
     }
+    let mut camera_poses: [Option<CameraPose>; 2] = [None, None];
+    for (name, parsed) in poses {
+        let slot = cameras
+            .iter()
+            .position(|camera| camera.name == name)
+            .ok_or_else(|| format!("--pose names no --camera: {name}"))?;
+        camera_poses[slot] = Some(parsed);
+    }
+    let defaults = VisibilityPolicy::default();
+    let policy = VisibilityPolicy {
+        grid: number(&values, "--visibility-grid", defaults.grid)?,
+        threshold_ppm: number(
+            &values,
+            "--visibility-threshold-ppm",
+            defaults.threshold_ppm,
+        )?,
+    };
+    policy
+        .validate()
+        .map_err(|_| "visibility grid must be 2..32 and threshold 1..1000000 ppm".to_owned())?;
+    let mesh = match (
+        find(&values, "--scene-mesh"),
+        find(&values, "--scene-mesh-digest"),
+        find(&values, "--scene-source-digest"),
+    ) {
+        (None, None, None) => None,
+        (Some(path), Some(package), Some(source)) => Some(SceneMeshOption {
+            path: PathBuf::from(path),
+            package: digest(package, "--scene-mesh-digest")?,
+            source_scene: digest(source, "--scene-source-digest")?,
+        }),
+        _ => {
+            return Err(
+                "--scene-mesh, --scene-mesh-digest and --scene-source-digest go together"
+                    .to_owned(),
+            );
+        }
+    };
     let site = required(&values, "--site")?.to_owned();
     fss_reference::reference_deployment::validate_site_lineage(&site)
         .map_err(|_| "invalid site lineage")?;
@@ -326,8 +453,26 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
         },
         report_out: find(&values, "--report-out").map(PathBuf::from),
         cascade: super::detector::parse(&values)?,
+        policy,
+        poses: camera_poses,
+        mesh,
         rerun: rerun.join(" "),
     })
+}
+
+/// Reads a bounded regular scene-mesh file (never a symlink).
+fn read_scene_mesh(path: &Path) -> RunResult<Vec<u8>> {
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_file() || metadata.len() > MAX_SCENE_MESH_BYTES {
+        return Err(
+            io::Error::other("scene mesh must be a bounded regular file, not a symlink").into(),
+        );
+    }
+    let mut bytes = Vec::new();
+    fs::File::open(path)?
+        .take(MAX_SCENE_MESH_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
 /// Analyze, optionally publish exactly the approved proposals, and print the JSON report.
@@ -356,6 +501,28 @@ fn run_with(
         Some(options) => Some(super::detector::load(options, cx, scalar)?),
         None => None,
     };
+    // The scene mesh is verified against both owner digests before any source is read.
+    let twin = match &action.mesh {
+        Some(option) => {
+            let bytes = read_scene_mesh(&option.path)?;
+            Some(
+                import_scene_mesh(&bytes, option.package, option.source_scene)
+                    .map_err(CorroborationError::Visibility)?,
+            )
+        }
+        None => None,
+    };
+    let visibility = GroundVisibilityPlan {
+        policy: action.policy,
+        poses: action.poses,
+        mesh: match (&twin, &action.mesh) {
+            (Some(twin), Some(option)) => Some(SceneMesh {
+                mesh: twin.mesh(),
+                package_digest: option.package,
+            }),
+            _ => None,
+        },
+    };
     let mut cascade = match (&action.cascade, &package) {
         (Some(options), Some(package)) => Some(DetectorCascade::new(
             package,
@@ -365,11 +532,12 @@ fn run_with(
         )?),
         _ => None,
     };
-    let mut report = CorroborationReport::analyze_with_detector(
+    let mut report = CorroborationReport::analyze_with_visibility(
         deployment,
         &action.plan,
         &action.limits,
         cascade.as_mut(),
+        &visibility,
         cx,
     )?;
     // Both approvals are checked against the fresh analysis before anything is written.
@@ -387,11 +555,12 @@ fn run_with(
     // A coverage proposal binds the authority anchor its analysis read; after this run published
     // candidates, the proposal is recomputed against the new anchor so its approval is current.
     let reproposed = if published > 0 && action.retain_coverage.is_none() {
-        Some(CorroborationReport::analyze_with_detector(
+        Some(CorroborationReport::analyze_with_visibility(
             deployment,
             &action.plan,
             &action.limits,
             cascade.as_mut(),
+            &visibility,
             cx,
         )?)
     } else {
