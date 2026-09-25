@@ -107,3 +107,6 @@ pub mod detector_cascade;
 
 /// Retained package detections tracked into unresolved recorded events (report/prepare/publish).
 pub mod package_event;
+
+/// Opt-in, source-bound visual-degradation screening before recorded watch publication.
+pub mod sensor_health;
