@@ -529,6 +529,14 @@ const LINEAGE_PROOF_OBJECT_PREFIX: &str = "object:situation-lineage-proof:";
 /// subject has a lineage. Recording the subject's latest publication again is a no-op. The record
 /// takes a batch identity no committed batch uses, so a batch squatting the identity it would have
 /// used cannot block it.
+///
+/// fss-1s6ac: this is the one writer of the sealed lineage namespace. The authority's public
+/// `append` refuses every lineage or proof-marker write (`ERR-LEDGER-SEALED-NAMESPACE-001`); this
+/// function appends, through the gated entry point, a batch that carries its lineage write seal,
+/// and readers credit nothing else. It also refuses an authority whose store pin is unavailable or
+/// no longer names the file it opened (`lineage_authority_unpinned`), a publication compiled
+/// against another store, a byte copy of this one included (`lineage_foreign_authority`), and a
+/// subject whose lineage already holds a write without the seal (`lineage_unsealed_write`).
 pub fn record_reference_publication(
     authority: &mut DurableReferenceLedger,
     publication: &ReferenceSituationPublication,
@@ -539,13 +547,16 @@ pub fn record_reference_publication(
         .subject()
         .filter(|_| situation.is_sealed())
         .ok_or(ReferenceError::InvalidSpec("lineage_unsealed_publication"))?;
-    if !compiled_against(authority, situation) {
+    if !authority.store_pin_is_current() {
+        return Err(ReferenceError::InvalidSpec("lineage_authority_unpinned"));
+    }
+    if authority_pin_check(authority, situation) != PinCheck::Pinned {
         return Err(ReferenceError::InvalidSpec("lineage_foreign_authority"));
     }
     let object_id = lineage_object_id(event_id, objective_id)?;
     let digest = publication.publication_digest;
     let predecessor = situation.predecessor_publication();
-    match (replay_lineage(authority, &object_id).latest, predecessor) {
+    match (replay_lineage(authority, &object_id)?.latest, predecessor) {
         (Some(latest), _) if latest == digest => {
             return Ok(authority.current().anchor.clone());
         }
@@ -599,11 +610,18 @@ pub fn record_reference_publication(
             .checked_add(1)
             .ok_or(ContractError::ArithmeticOverflow)?;
     };
+    // The batch carries its own lineage write seal as a child root, which is what readers credit
+    // (fss-1s6ac). Preparing orders the deltas canonically, so the seal is taken over the prepared
+    // order and the batch is prepared again with it; the deltas and their order do not change.
+    let unsealed = authority
+        .prepare_batch(batch_id.clone(), deltas, [digest])
+        .map_err(|error| ReferenceError::Publication(error.into()))?;
+    let seal = fss_ledger::lineage_write_seal(&unsealed.batch_id, &unsealed.deltas);
     let batch = authority
-        .prepare_batch(batch_id, deltas, [digest])
+        .prepare_batch(batch_id, unsealed.deltas, [digest, seal])
         .map_err(|error| ReferenceError::Publication(error.into()))?;
     let snapshot = authority
-        .append(batch)
+        .__append_sealed_lineage_batch(batch)
         .map_err(|error| ReferenceError::Publication(error.into()))?;
     Ok(snapshot.anchor.clone())
 }
@@ -637,18 +655,23 @@ pub fn latest_reference_publication(
     objective_id: &str,
 ) -> Result<Option<ContentDigest>, ReferenceError> {
     let object_id = lineage_object_id(event_id, objective_id)?;
-    Ok(replay_lineage(authority, &object_id).latest)
+    Ok(replay_lineage(authority, &object_id)?.latest)
 }
 
 /// The publication lineage of one subject as the authority ledger records it (fss-mnlz1).
 ///
-/// The authority ledger accepts any well-formed batch, so the lineage is replayed rather than read
-/// off the lineage object's latest revision. A write of the lineage object extends the lineage only
-/// if it is a lineage record whose witness is the lineage's latest publication and whose
-/// publication the lineage has not recorded yet; every other write (a raw second child, a looped or
-/// restarted chain, another family writing the object) is skipped. Recording, the latest
+/// The lineage is replayed rather than read off the lineage object's latest revision. A sealed
+/// write of the lineage object extends the lineage only if it is a lineage record whose witness is
+/// the lineage's latest publication and whose publication the lineage has not recorded yet; any
+/// other sealed write is skipped (the one writer never produces one). Recording, the latest
 /// publication, and the lineage-bound classifier all read this one replay, so a skipped write never
 /// becomes the latest publication, never blocks the genuine successor, and never vouches for one.
+///
+/// fss-1s6ac: only writes inside a sealed lineage batch are replayed at all. The authority refuses
+/// every other lineage write at append, so a write of the lineage object outside a sealed batch is
+/// a raw batch that predates the gate or bytes written to the journal directly: the replay refuses
+/// the whole lineage, typed (`lineage_unsealed_write`), rather than skipping it silently, so the
+/// agent sees that the subject's lineage was written outside its one writer.
 struct ReplayedLineage {
     /// The latest publication the lineage records.
     latest: Option<ContentDigest>,
@@ -660,16 +683,23 @@ struct ReplayedLineage {
 }
 
 /// Replays the lineage object `object_id` of `authority` (see [`ReplayedLineage`]).
-fn replay_lineage(authority: &DurableReferenceLedger, object_id: &ObjectId) -> ReplayedLineage {
+fn replay_lineage(
+    authority: &DurableReferenceLedger,
+    object_id: &ObjectId,
+) -> Result<ReplayedLineage, ReferenceError> {
     let mut latest = None;
     let mut entries = BTreeMap::new();
     let mut recorded_in = BTreeMap::new();
     for (index, batch) in authority.batches().iter().enumerate() {
+        let sealed = fss_ledger::is_sealed_lineage_batch(batch);
         for delta in batch
             .deltas
             .iter()
             .filter(|delta| delta.object_id == *object_id)
         {
+            if !sealed {
+                return Err(ReferenceError::InvalidSpec("lineage_unsealed_write"));
+            }
             let extends = delta.family == LINEAGE_FAMILY
                 && delta.witness_digest == latest
                 && !entries.contains_key(&delta.payload_digest);
@@ -681,38 +711,53 @@ fn replay_lineage(authority: &DurableReferenceLedger, object_id: &ObjectId) -> R
             latest = Some(delta.payload_digest);
         }
     }
-    ReplayedLineage {
+    Ok(ReplayedLineage {
         latest,
         entries,
         recorded_in,
-    }
+    })
 }
 
 /// Returns the first publication of the subject `event_id` and `objective_id` that the
 /// authority's lineage marks as proving `operation`, if any (fss-mnlz1).
 ///
 /// A proof marker counts only if the batch that recorded the lineage entry it names wrote it, as
-/// [`record_reference_publication`] does; a marker written anywhere else is skipped, like any raw
-/// write that does not extend the lineage.
+/// [`record_reference_publication`] does; a sealed marker in any other batch is skipped.
+///
+/// fss-1s6ac (R7-A): the same-batch rule alone let one raw batch holding an entry X and a marker
+/// naming X pre-empt the genuine first proof. A marker now counts only inside a sealed lineage
+/// batch, which only [`record_reference_publication`] writes, after checking that X continues the
+/// latest recorded publication and computing the markers from the operations X itself proves; so
+/// the entry a marker names is a vouched step with a sealed proof. A write of the proof object
+/// outside a sealed batch refuses the lookup, typed (`lineage_unsealed_write`).
 pub(crate) fn first_lineage_proof(
     authority: &DurableReferenceLedger,
     event_id: &EventId,
     objective_id: &str,
     operation: &str,
 ) -> Result<Option<ContentDigest>, ReferenceError> {
-    let lineage = replay_lineage(authority, &lineage_object_id(event_id, objective_id)?);
+    let lineage = replay_lineage(authority, &lineage_object_id(event_id, objective_id)?)?;
     let proof_object = lineage_proof_object_id(event_id, objective_id, operation)?;
+    let mut first = None;
     for (index, batch) in authority.batches().iter().enumerate() {
-        for delta in &batch.deltas {
-            if delta.object_id == proof_object
+        let sealed = fss_ledger::is_sealed_lineage_batch(batch);
+        for delta in batch
+            .deltas
+            .iter()
+            .filter(|delta| delta.object_id == proof_object)
+        {
+            if !sealed {
+                return Err(ReferenceError::InvalidSpec("lineage_unsealed_write"));
+            }
+            if first.is_none()
                 && delta.family == LINEAGE_PROOF_FAMILY
                 && lineage.recorded_in.get(&delta.payload_digest) == Some(&index)
             {
-                return Ok(Some(delta.payload_digest));
+                first = Some(delta.payload_digest);
             }
         }
     }
-    Ok(None)
+    Ok(first)
 }
 
 /// The proof marker object of `operation` in the lineage of one subject (event and objective).
@@ -757,19 +802,45 @@ pub(crate) fn lineage_delta(
 
 /// Returns whether `authority` committed the authority anchor `situation` sealed, that is whether
 /// the situation was compiled against this authority's history (fss-mnlz1).
-pub(crate) fn compiled_against(
-    authority: &DurableReferenceLedger,
-    situation: &ReferenceSituation,
-) -> bool {
-    // fss-1s6ac residual: this accepts the anchor at ANY position in the batch history, so a
-    // byte-copied ledger with a rival child appended still passes. Detection of that fork needs
-    // an externally pinned authority head (handoff or contract basis), tracked under fss-1s6ac.
+fn compiled_against(authority: &DurableReferenceLedger, situation: &ReferenceSituation) -> bool {
+    // A byte copy of the ledger holds every anchor the original committed, so this check alone
+    // cannot tell the copy from the original; every caller that lets the authority vouch also
+    // compares store pins (fss-1s6ac, see `authority_pin_check`).
     situation.authority_anchor().is_some_and(|anchor| {
         authority
             .batches()
             .iter()
             .any(|batch| batch.new_anchor == *anchor)
     })
+}
+
+/// How a store a consumer is handed relates to the store a sealed situation was compiled against
+/// (fss-1s6ac).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PinCheck {
+    /// The situation recorded exactly this store's pin, and the store holds its anchor.
+    Pinned,
+    /// The store never committed the anchor the situation was compiled against: another store,
+    /// which vouches for nothing.
+    Foreign,
+    /// The store holds the history the situation was compiled against but is not the store the
+    /// situation recorded: a byte copy of that store, or the store a byte copy was taken from.
+    Forked,
+}
+
+/// Checks the sealed `situation` against the authority store it is handed (see [`PinCheck`]). A
+/// situation that recorded no pin (hand-built, or compiled on a platform without file identities)
+/// is never [`PinCheck::Pinned`].
+pub(crate) fn authority_pin_check(
+    authority: &DurableReferenceLedger,
+    situation: &ReferenceSituation,
+) -> PinCheck {
+    let holds_history = compiled_against(authority, situation);
+    match (situation.authority_pin(), authority.store_pin()) {
+        (Some(recorded), Some(store)) if recorded == store && holds_history => PinCheck::Pinned,
+        _ if holds_history && situation.is_sealed() => PinCheck::Forked,
+        _ => PinCheck::Foreign,
+    }
 }
 
 /// How the authority's replayed lineage relates `basis` to `result` (fss-mnlz1).
@@ -781,6 +852,8 @@ pub(crate) enum LineageStep {
     /// The lineage records `result` right after `basis`, but a raw write put `basis` at the head of
     /// the lineage after an entry other than the predecessor it sealed, so a step from it could
     /// announce an outcome the lineage already announced, or hide the one it has yet to announce.
+    /// Since fss-1s6ac such a raw write is refused at append and by the replay before a step is
+    /// classified; this stays as a second guard.
     Displaced,
     /// The lineage does not record `result` right after `basis`.
     NotAStep,
@@ -798,7 +871,7 @@ pub(crate) fn lineage_step(
         return Ok(LineageStep::NotAStep);
     };
     let object_id = lineage_object_id(event_id, objective_id)?;
-    let lineage = replay_lineage(authority, &object_id);
+    let lineage = replay_lineage(authority, &object_id)?;
     if lineage.entries.get(&result.publication_digest) != Some(&Some(basis.publication_digest)) {
         return Ok(LineageStep::NotAStep);
     }
@@ -812,7 +885,8 @@ pub(crate) fn lineage_step(
 }
 
 /// Returns whether `batch` holds only publication lineage records and lineage proof markers, which
-/// change no authority object other than a lineage object.
+/// change no authority object other than a lineage object. Sealed or not (fss-1s6ac): this answers
+/// whether non-lineage authority state moved; the lineage readers refuse an unsealed write.
 pub(crate) fn is_lineage_batch(batch: &EvidenceDeltaBatch) -> bool {
     !batch.deltas.is_empty()
         && batch.deltas.iter().all(|delta| {
