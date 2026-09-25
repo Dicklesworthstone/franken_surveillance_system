@@ -13,6 +13,7 @@
 //! touch a masked pixel; the report names the binding. [`super::package_event`] can retain a report as
 //! cognition-plane evidence for the recorded-event workflow.
 
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
 use std::fmt::Write as _;
@@ -35,6 +36,9 @@ use super::rgb_inference::{RgbInference, RgbRunLimits, RgbSourceBinding};
 use super::rgb_package::RgbDetectorPackage;
 use super::{RetainedFileImport, RetainedReadLimits};
 use crate::{ExecBudget, ReferenceDeployment, ReplayCx, ScalarExecCx};
+
+/// Motion-independent, budgeted detector bursts with no tracking across sampling gaps.
+pub mod sentinel;
 
 /// Report schema identity (also its digest domain; the digest is SHA-256 of the JSON bytes).
 pub const PACKAGE_DETECTION_REPORT_SCHEMA: &str = "fss.package_detection_report.v1";
@@ -401,6 +405,29 @@ pub fn run_package_detection(
     cx: &ReplayCx,
     scalar: &ScalarExecCx,
 ) -> Result<PackageDetectReport, PackageDetectError> {
+    run_selected_detection(
+        deployment, package, request, limits, cx, scalar, None,
+        |contract, import_root, media_format, frames, privacy| {
+            finish_report(package, request, contract, import_root, media_format, frames, privacy)
+        },
+    )
+}
+
+// A sparse selection is an internal execution primitive, never a sparse report labelled
+// complete. Its caller must partition the outputs into fully observed contiguous bursts.
+#[allow(clippy::too_many_arguments)]
+fn run_selected_detection<T>(
+    deployment: &ReferenceDeployment,
+    package: &RgbDetectorPackage,
+    request: &PackageDetectRequest,
+    limits: &PackageDetectLimits,
+    cx: &ReplayCx,
+    scalar: &ScalarExecCx,
+    selection: Option<&BTreeSet<usize>>,
+    finish: impl FnOnce(
+        &RgbDetectionContract, ContentDigest, String, Vec<PackageDetectFrame>, MaskBinding,
+    ) -> Result<T, PackageDetectError>,
+) -> Result<T, PackageDetectError> {
     cx.checkpoint("package_detect:begin")
         .map_err(|_| PackageDetectError::Cancelled)?;
     if request.segment_count == 0
@@ -412,6 +439,13 @@ pub fn run_package_detection(
     {
         return Err(PackageDetectError::InvalidRequest);
     }
+    let end = request.first_segment + request.segment_count;
+    if selection.is_some_and(|segments| {
+        segments.iter().any(|segment| *segment < request.first_segment || *segment >= end)
+    }) {
+        return Err(PackageDetectError::InvalidRequest);
+    }
+    let mut admission = FrameAdmission::new(selection);
     let owned;
     let contract: &RgbDetectionContract = match request.minimum_score_ppm {
         None => package.contract(),
@@ -451,6 +485,9 @@ pub fn run_package_detection(
         "mjpeg" => {
             let mut budget = DecodeBudget::new(limits.jpeg_work_units);
             for segment in first..end {
+                if !admission.admit(segment)? {
+                    continue;
+                }
                 let (capsule, capsule_digest) =
                     source_capsule(deployment, &retained, segment).map_err(frame_error(segment))?;
                 let bytes = retained
@@ -499,6 +536,11 @@ pub fn run_package_detection(
                 .map_err(frame_error(first))?
             {
                 let r = frame.receipt();
+                let segment = usize::try_from(r.segment_index())
+                    .map_err(|_| PackageDetectError::InvalidRequest)?;
+                if !admission.admit(segment)? {
+                    continue;
+                }
                 frames.push(run.infer(DecodedFrame::video(VideoPicture {
                     segment: r.segment_index(),
                     capsule: r.capsule(),
@@ -534,6 +576,11 @@ pub fn run_package_detection(
                 .map_err(frame_error(first))?
             {
                 let r = frame.receipt();
+                let segment = usize::try_from(r.segment_index())
+                    .map_err(|_| PackageDetectError::InvalidRequest)?;
+                if !admission.admit(segment)? {
+                    continue;
+                }
                 frames.push(run.infer(DecodedFrame::video(VideoPicture {
                     segment: r.segment_index(),
                     capsule: r.capsule(),
@@ -548,10 +595,25 @@ pub fn run_package_detection(
         }
         _ => return Err(PackageDetectError::InvalidRequest),
     }
-    let json = render(package, request, contract, &media_format, &frames, &privacy)
-        .map_err(|_| PackageDetectError::InvalidRequest)?;
+    admission.finish()?;
+    let result = finish(contract, import_root, media_format, frames, privacy)?;
     cx.checkpoint("package_detect:complete")
         .map_err(|_| PackageDetectError::Cancelled)?;
+    Ok(result)
+}
+
+// Shared canonical rendering: ordinary detection and every sentinel burst use identical bytes.
+fn finish_report(
+    package: &RgbDetectorPackage,
+    request: &PackageDetectRequest,
+    contract: &RgbDetectionContract,
+    import_root: ContentDigest,
+    media_format: String,
+    frames: Vec<PackageDetectFrame>,
+    privacy: MaskBinding,
+) -> Result<PackageDetectReport, PackageDetectError> {
+    let json = render(package, request, contract, &media_format, &frames, &privacy)
+        .map_err(|_| PackageDetectError::InvalidRequest)?;
     Ok(PackageDetectReport {
         import_identity: request.import_identity,
         import_root,
@@ -565,6 +627,43 @@ pub fn run_package_detection(
         frames,
         privacy,
     })
+}
+
+// Enforce exact selected identities before RGB conversion/inference, including when a video
+// decoder emits display order rather than segment order. Duplicates cannot spend extra budget;
+// missing selected pictures (including suppressed CRA leading pictures) refuse the whole run.
+struct FrameAdmission<'a> {
+    selection: Option<&'a BTreeSet<usize>>,
+    seen: BTreeSet<usize>,
+}
+impl<'a> FrameAdmission<'a> {
+    fn new(selection: Option<&'a BTreeSet<usize>>) -> Self {
+        Self { selection, seen: BTreeSet::new() }
+    }
+    fn admit(&mut self, segment: usize) -> Result<bool, PackageDetectError> {
+        let Some(selection) = self.selection else { return Ok(true) };
+        if !selection.contains(&segment) {
+            return Ok(false);
+        }
+        if !self.seen.insert(segment) {
+            return Err(PackageDetectError::Frame {
+                segment,
+                source: "selected picture was emitted more than once".into(),
+            });
+        }
+        Ok(true)
+    }
+    fn finish(&self) -> Result<(), PackageDetectError> {
+        if let Some(selection) = self.selection
+            && let Some(segment) = selection.difference(&self.seen).next()
+        {
+            return Err(PackageDetectError::Frame {
+                segment: *segment,
+                source: "selected sentinel picture was not decoded; no complete burst report exists".into(),
+            });
+        }
+        Ok(())
+    }
 }
 
 fn json_string(value: &str) -> String {
