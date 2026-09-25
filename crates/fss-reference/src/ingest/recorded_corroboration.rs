@@ -33,10 +33,19 @@
 //! independent of any detector score. Scores are uncalibrated; the kind stays `Unclassified`.
 //!
 //! Each camera also proposes a coverage record ([`super::recorded_coverage`]) over the ground
-//! zones whose every corner's image preimage lies inside its decoded frame: one witness per
+//! zones it can geometrically see (below): one witness per
 //! contiguous observable interval of that sensor, every ground-zone entry of that sensor an
 //! explicit interval naming its corroborated event when one exists. Both records are retained
 //! together only with their exact approval digest ([`CorroborationReport::retain_coverage`]).
+//!
+//! Ground-zone coverage is geometric (fss-2h5zq.53, [`super::ground_visibility`]): each zone is
+//! sampled on the ground plane and every sample projected into the camera (through the owner
+//! homography, or an owner calibrated pose when one is supplied); with an owner scene mesh and a
+//! pose, samples hidden by opaque geometry are occluded. The record carries the visible fraction,
+//! the sampling policy and the occlusion model; a zone below the registered threshold is
+//! `occluded` or `outside_frustum` for coverage, and without a mesh every witness says it is
+//! frustum-only (`occlusion_unknown`). The threshold, the sample grid, the pose and the mesh
+//! digest are bound into the pipeline generation ([`CorroborationReport::analyze_with_visibility`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -57,10 +66,14 @@ use super::detector_cascade::{
     CascadeBudget, CascadeOutcome, CascadeSource, CascadeTrack, ClassEvidence, DetectorCascade,
     cascade_outcome_json, cascade_policy_json, class_evidence_json, select_frames,
 };
+use super::ground_visibility::{
+    CameraPose, SceneMesh, VisibilityCamera, VisibilityError, VisibilityPolicy, assess_ground_zone,
+    bind_visibility_parameters, pose_matches_homography, rectangle,
+};
 use super::recorded_coverage::{
-    CoverageEntry, CoverageError, CoverageFrame, CoverageInput, CoverageRecord, CoverageSource,
-    CoverageStatus, CoverageZoneInput, approval_digest, build_coverage, check_approval,
-    coverage_status, pipeline_generation, retain_coverage,
+    CoverageEntry, CoverageError, CoverageExtras, CoverageFrame, CoverageInput, CoverageRecord,
+    CoverageSource, CoverageStatus, CoverageZoneInput, approval_digest, build_coverage_with,
+    check_approval, coverage_status, pipeline_generation, retain_coverage,
 };
 use super::recorded_decode::{ComponentInterpretation, RecordedDecodeError, source_capsule};
 use super::recorded_watch::{
@@ -143,6 +156,17 @@ pub enum CorroborationError {
     Publication(Box<LocalPublicationError>),
     /// Coverage retention refusal (stale approval or storage).
     Coverage(CoverageError),
+    /// An owner calibrated pose is invalid for its camera: its intrinsics describe another image
+    /// size, or it disagrees with the camera's ground homography.
+    InvalidPose {
+        /// Camera name from the plan.
+        camera: String,
+        /// Why the pose is refused.
+        reason: &'static str,
+    },
+    /// Geometric visibility could not be assessed (invalid policy or zone, degenerate or
+    /// over-budget scene-mesh query).
+    Visibility(VisibilityError),
 }
 
 impl CorroborationError {
@@ -160,6 +184,8 @@ impl CorroborationError {
             Self::Watch(error) => error.stable_id(),
             Self::Decode(error) => error.stable_id(),
             Self::Coverage(error) => error.stable_id(),
+            Self::InvalidPose { .. } => "ERR-CORROBORATE-POSE-INVALID-001",
+            Self::Visibility(_) => "ERR-CORROBORATE-VISIBILITY-001",
             _ => "ERR-CORROBORATE-001",
         }
     }
@@ -197,6 +223,10 @@ impl fmt::Display for CorroborationError {
             Self::Object(e) => write!(f, "corroboration manifest: {e}"),
             Self::Publication(e) => write!(f, "corroboration publication: {e}"),
             Self::Coverage(e) => write!(f, "corroboration coverage: {e}"),
+            Self::InvalidPose { camera, reason } => {
+                write!(f, "calibrated pose of camera {camera} refused: {reason}")
+            }
+            Self::Visibility(e) => write!(f, "corroboration ground visibility: {e}"),
         }
     }
 }
@@ -235,6 +265,11 @@ impl From<ContractError> for CorroborationError {
 impl From<CoverageError> for CorroborationError {
     fn from(error: CoverageError) -> Self {
         Self::Coverage(error)
+    }
+}
+impl From<VisibilityError> for CorroborationError {
+    fn from(error: VisibilityError) -> Self {
+        Self::Visibility(error)
     }
 }
 impl From<ObjectError> for CorroborationError {
@@ -507,6 +542,38 @@ impl CorroborationPlan {
         e.u32(self.tracker.maximum_missed_frames);
         e.u32(self.tracker.minimum_iou_ppm);
         ContentDigest::sha256(&e.finish())
+    }
+}
+
+/// Geometric visibility inputs of ground-zone coverage. The default (registered policy, no pose,
+/// no mesh) is what [`CorroborationReport::analyze`] uses: homography frustum sampling with
+/// occlusion explicitly unknown.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GroundVisibilityPlan<'a> {
+    /// Sample grid and visible-fraction threshold.
+    pub policy: VisibilityPolicy,
+    /// Optional owner calibrated pose per camera, in plan order.
+    pub poses: [Option<CameraPose>; 2],
+    /// Optional owner scene mesh (fss-twin import) shared by both cameras.
+    pub mesh: Option<SceneMesh<'a>>,
+}
+
+impl GroundVisibilityPlan<'_> {
+    fn encode(&self, e: &mut CanonicalEncoder) {
+        e.text("ground-visibility");
+        let mut parameters = Vec::new();
+        for pose in &self.poses {
+            bind_visibility_parameters(
+                &mut parameters,
+                self.policy,
+                pose.as_ref(),
+                self.mesh.map(|mesh| mesh.package_digest),
+            );
+        }
+        e.u64(parameters.len() as u64);
+        for value in parameters {
+            e.u64(value);
+        }
     }
 }
 
@@ -942,11 +1009,33 @@ impl CorroborationReport {
         deployment: &ReferenceDeployment,
         plan: &CorroborationPlan,
         limits: &WatchLimits,
+        detector: Option<&mut DetectorCascade<'_>>,
+        cx: &ReplayCx,
+    ) -> Result<Self> {
+        Self::analyze_with_visibility(
+            deployment,
+            plan,
+            limits,
+            detector,
+            &GroundVisibilityPlan::default(),
+            cx,
+        )
+    }
+
+    /// [`Self::analyze_with_detector`] with explicit geometric-visibility inputs for ground-zone
+    /// coverage: sampling policy, optional owner calibrated poses and an optional owner scene
+    /// mesh. Candidates, events and the non-coverage report are independent of these inputs.
+    pub fn analyze_with_visibility(
+        deployment: &ReferenceDeployment,
+        plan: &CorroborationPlan,
+        limits: &WatchLimits,
         mut detector: Option<&mut DetectorCascade<'_>>,
+        visibility: &GroundVisibilityPlan<'_>,
         cx: &ReplayCx,
     ) -> Result<Self> {
         checkpoint(cx, "recorded_corroboration:analyze")?;
         plan.validate()?;
+        visibility.policy.validate()?;
         let plan_digest = plan.digest();
         let mut allowance = detector.as_ref().map(|d| d.budget());
         let first = analyze_camera(
@@ -1124,6 +1213,7 @@ impl CorroborationReport {
                     candidates: &candidates,
                     basis: &basis,
                     cascade: cascade.as_ref().map(|c| c.digest),
+                    visibility,
                 },
                 index,
                 camera,
@@ -1498,59 +1588,6 @@ impl CorroborationReport {
     }
 }
 
-/// Whether every corner of `zone` has an image preimage in front of the camera and inside the
-/// decoded frame, so the whole zone is visible (the preimage quad is convex and does not cross
-/// the horizon). A non-invertible or horizon-crossing homography is not visible.
-fn ground_zone_visible(
-    homography: &GroundHomography,
-    zone: &GroundZone,
-    dimensions: [u32; 2],
-) -> bool {
-    let [a, b, c, d, e, f, g, h, i] = homography.matrix;
-    let det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
-    if !det.is_finite() || det == 0.0 {
-        return false;
-    }
-    let inverse = [
-        (e * i - f * h) / det,
-        (c * h - b * i) / det,
-        (b * f - c * e) / det,
-        (f * g - d * i) / det,
-        (a * i - c * g) / det,
-        (c * d - a * f) / det,
-        (d * h - e * g) / det,
-        (b * g - a * h) / det,
-        (a * e - b * d) / det,
-    ];
-    let corners = [
-        (zone.x, zone.y),
-        (zone.x + zone.width, zone.y),
-        (zone.x, zone.y + zone.height),
-        (zone.x + zone.width, zone.y + zone.height),
-    ];
-    let [m11, m12, m13, m21, m22, m23, m31, m32, m33] = inverse;
-    corners.iter().all(|&(x, y)| {
-        let weight = m31 * x + m32 * y + m33;
-        if !weight.is_finite() || weight == 0.0 {
-            return false;
-        }
-        let column = (m11 * x + m12 * y + m13) / weight;
-        let row = (m21 * x + m22 * y + m23) / weight;
-        let inside = column.is_finite()
-            && row.is_finite()
-            && column >= 0.0
-            && row >= 0.0
-            && column <= f64::from(dimensions[0])
-            && row <= f64::from(dimensions[1]);
-        // The image point must project back, in front of the camera, onto the same ground point.
-        inside
-            && homography.project(column, row).is_some_and(|(gx, gy)| {
-                let tolerance = 1e-6 * (1.0 + x.abs().max(y.abs()));
-                (gx - x).abs() <= tolerance && (gy - y).abs() <= tolerance
-            })
-    })
-}
-
 struct CameraCoverageContext<'a> {
     plan: &'a CorroborationPlan,
     plan_digest: ContentDigest,
@@ -1558,6 +1595,7 @@ struct CameraCoverageContext<'a> {
     candidates: &'a [CorroborationCandidate],
     basis: &'a fss_core::LedgerAnchor,
     cascade: Option<ContentDigest>,
+    visibility: &'a GroundVisibilityPlan<'a>,
 }
 
 fn camera_coverage(
@@ -1567,13 +1605,53 @@ fn camera_coverage(
 ) -> Result<CoverageRecord> {
     let plan = context.plan;
     let homography = &plan.cameras[index].homography;
+    let visibility_plan = context.visibility;
+    let pose = visibility_plan.poses.get(index).copied().flatten();
     let mut parameters = pipeline_parameters(plan.interpretation, &plan.detector, &plan.tracker);
     parameters.extend(homography.matrix.iter().map(|value| value.to_bits()));
     bind_cascade_parameters(&mut parameters, context.cascade);
+    bind_visibility_parameters(
+        &mut parameters,
+        visibility_plan.policy,
+        pose.as_ref(),
+        visibility_plan.mesh.map(|mesh| mesh.package_digest),
+    );
     let policy = ContentDigest::sha256(POLICY);
     let mut zones = Vec::with_capacity(plan.zones.len());
+    let mut visibilities = Vec::with_capacity(plan.zones.len());
     for zone in &plan.zones {
         let geometry = format!("{},{},{},{}", zone.x, zone.y, zone.width, zone.height);
+        let polygon = rectangle(zone.x, zone.y, zone.width, zone.height);
+        let camera_model = match &pose {
+            Some(pose) => {
+                if pose.intrinsics.dimensions() != camera.dimensions {
+                    return Err(CorroborationError::InvalidPose {
+                        camera: camera.name.clone(),
+                        reason: "intrinsics describe another image size than the decoded frames",
+                    });
+                }
+                if !pose_matches_homography(
+                    pose,
+                    &homography.matrix,
+                    &polygon,
+                    visibility_plan.policy,
+                ) {
+                    return Err(CorroborationError::InvalidPose {
+                        camera: camera.name.clone(),
+                        reason: "pose and ground homography disagree over the zone",
+                    });
+                }
+                VisibilityCamera::Pose(pose)
+            }
+            None => VisibilityCamera::Homography(&homography.matrix),
+        };
+        let visible = assess_ground_zone(
+            camera_model,
+            camera.dimensions,
+            &polygon,
+            visibility_plan.mesh,
+            visibility_plan.policy,
+        )?;
         let zone_entries = context
             .entries
             .iter()
@@ -1600,9 +1678,10 @@ fn camera_coverage(
                 &geometry,
             ),
             geometry,
-            inside_frame: ground_zone_visible(homography, zone, camera.dimensions),
+            inside_frame: visible.observable(),
             entries: zone_entries,
         });
+        visibilities.push(Some(visible));
     }
     let mut e = CanonicalEncoder::new();
     e.text(PLAN_DOMAIN);
@@ -1610,27 +1689,36 @@ fn camera_coverage(
     e.digest(context.plan_digest);
     e.u64(index as u64);
     e.digest(camera.watch_analysis_digest);
+    visibility_plan.encode(&mut e);
     let analysis_digest = ContentDigest::sha256(&e.finish());
     let last_segment = camera
         .segment_gaps
         .len()
         .checked_sub(1)
         .ok_or(CorroborationError::Limit)?;
-    Ok(build_coverage(&CoverageInput {
-        source: CoverageSource::Corroborate,
-        import_identity: camera.import_identity,
-        import_root: camera.import_root,
-        sensor_id: &camera.sensor_id,
-        analysis_digest,
-        basis: context.basis.clone(),
-        capture_time_label: OPERATOR_TIME_LABEL,
-        segment_gaps: &camera.segment_gaps,
-        first_segment: 0,
-        last_segment,
-        frames: &camera.coverage_frames,
-        confirmation_hits: plan.tracker.confirmation_hits,
-        zones,
-    })?)
+    let extras = CoverageExtras {
+        visibility: visibilities,
+        refusals: Vec::new(),
+        restarts: Vec::new(),
+    };
+    Ok(build_coverage_with(
+        &CoverageInput {
+            source: CoverageSource::Corroborate,
+            import_identity: camera.import_identity,
+            import_root: camera.import_root,
+            sensor_id: &camera.sensor_id,
+            analysis_digest,
+            basis: context.basis.clone(),
+            capture_time_label: OPERATOR_TIME_LABEL,
+            segment_gaps: &camera.segment_gaps,
+            first_segment: 0,
+            last_segment,
+            frames: &camera.coverage_frames,
+            confirmation_hits: plan.tracker.confirmation_hits,
+            zones,
+        },
+        &extras,
+    )?)
 }
 
 struct CandidateContext<'a> {

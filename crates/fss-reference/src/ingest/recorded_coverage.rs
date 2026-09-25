@@ -6,9 +6,10 @@
 //! [`CoverageWitness`] per (sensor, zone, maximal contiguous interval) in which
 //!
 //! * the frames were decoded continuously: no source gap, missing (for example skipped RASL)
-//!   segment, or decode refusal inside the interval (a decode refusal refuses the whole run, so
-//!   nothing is retained at all);
-//! * the zone lies inside the decoded frame (for a ground zone: every corner's image preimage);
+//!   segment, or decode refusal inside the interval (by default a decode refusal refuses the whole
+//!   run, so nothing is retained at all; a tolerant run names it `decode_refused`, see below);
+//! * an image zone lies inside the decoded frame; a ground zone with geometric visibility is at
+//!   or above its visibility threshold (see below);
 //! * the background model is past its warm-up ([`BACKGROUND_WARMUP_FRAMES`]) and the tracker could
 //!   still confirm a track before the run ended (the last `confirmation_hits - 1` frames are
 //!   confirmation latency);
@@ -29,6 +30,20 @@
 //! record (spool object, then one `coverage_witness` ledger batch) only when the operator presents
 //! that digest, and a rerun of a retained analysis writes nothing. The witness never certifies
 //! anything beyond its declared predicate, domain, and pipeline generation.
+//!
+//! Two opt-in extensions ([`build_coverage_with`], fss-2h5zq.53 and the fss-fnrgr follow-up)
+//! never change a record built without them:
+//!
+//! * a ground zone may carry a geometric [`ZoneVisibility`] (see [`super::ground_visibility`]):
+//!   below its registered threshold the zone is not observable (`occluded` or
+//!   `outside_frustum`); above it every witness predicate states the visible fraction, the
+//!   sampling policy and the occlusion model, and a frustum-only claim (`occlusion_unknown`) says
+//!   so. Such a record is version 2 (the visibility block per zone); every other record keeps the
+//!   exact version-1 bytes;
+//! * a tolerant decode ([`super::tolerant_decode`]) names its refused segments as `decode_refused`
+//!   intervals with the registered error id, and each restart of tracking after a gap ends an
+//!   analysis epoch: the confirmation latency before every restart is uncovered, so no witness
+//!   claims a gap or a frame whose entry could not have been confirmed.
 
 use std::fmt;
 
@@ -38,6 +53,8 @@ use fss_core::{
     CoverageWitness, EvidenceDelta, LedgerAnchor, ObjectId, Plane, TimestampNs,
 };
 
+use super::ground_visibility::{NotVisibleCause, ZoneVisibility};
+use super::tolerant_decode::DecodeRefusal;
 use crate::reference_deployment::FAMILY_COVERAGE_WITNESS;
 use crate::{ReferenceDeployment, ReferenceError, ReplayCx};
 
@@ -58,6 +75,8 @@ pub const OPERATOR_TIME_LABEL: &str = "operator_assumption";
 
 const RECORD_MAGIC: &[u8] = b"FSSCOV01";
 const RECORD_VERSION: u32 = 1;
+/// Version of a record in which at least one zone carries a geometric visibility block.
+const RECORD_VERSION_VISIBILITY: u32 = 2;
 /// Canonical record domain.
 pub const RECORD_DOMAIN: &str = "fss.recorded_watch_coverage.v1";
 /// Pipeline-generation digest domain.
@@ -132,6 +151,17 @@ pub enum UncoveredReason {
     ZoneOutsideFrame,
     /// Too few frames (or overlapping capture bounds) to bound a certain interval.
     IntervalTooShort,
+    /// The retained segments were refused by the decoder (tolerant analysis only).
+    DecodeRefused {
+        /// Registered stable identity of the refusal.
+        error_id: String,
+    },
+    /// The ground zone is below its visibility threshold, mostly hidden by opaque scene-mesh
+    /// geometry.
+    Occluded,
+    /// The ground zone is below its visibility threshold, mostly behind the camera or outside
+    /// the image.
+    OutsideFrustum,
 }
 
 impl UncoveredReason {
@@ -147,6 +177,9 @@ impl UncoveredReason {
             Self::CaptureTimeUnreliableAfterGap => "capture_time_unreliable_after_gap",
             Self::ZoneOutsideFrame => "zone_outside_frame",
             Self::IntervalTooShort => "interval_too_short",
+            Self::DecodeRefused { .. } => "decode_refused",
+            Self::Occluded => "occluded",
+            Self::OutsideFrustum => "outside_frustum",
         }
     }
 }
@@ -196,6 +229,8 @@ pub struct ZoneCoverage {
     pub witnesses: Vec<ZoneWitness>,
     /// Uncovered intervals in segment order.
     pub uncovered: Vec<UncoveredInterval>,
+    /// Geometric visibility of a ground zone, when geometry was supplied.
+    pub visibility: Option<ZoneVisibility>,
 }
 
 /// Everything one analysed recording retains about coverage.
@@ -291,6 +326,17 @@ pub struct CoverageInput<'a> {
     pub zones: Vec<CoverageZoneInput>,
 }
 
+/// Optional inputs of [`build_coverage_with`]; the default is exactly [`build_coverage`].
+#[derive(Clone, Debug, Default)]
+pub struct CoverageExtras {
+    /// Geometric visibility per zone, in [`CoverageInput::zones`] order (empty: none).
+    pub visibility: Vec<Option<ZoneVisibility>>,
+    /// Refused segment runs of a tolerant decode, in segment order.
+    pub refusals: Vec<DecodeRefusal>,
+    /// Segments of the first decoded frame after each tracking restart, in order.
+    pub restarts: Vec<usize>,
+}
+
 /// Pipeline-generation digest for one zone: fixed policy digest, pipeline label (decoder and
 /// composition), detector and tracker parameters, warm-up, and the zone's exact geometry.
 #[must_use]
@@ -360,6 +406,23 @@ pub fn witness_predicate(
     )
 }
 
+/// [`witness_predicate`] followed by the zone's geometric visibility clause, if any.
+#[must_use]
+pub fn zone_witness_predicate(
+    source: CoverageSource,
+    sensor: &str,
+    scope: &str,
+    generation: ContentDigest,
+    covered: CaptureInterval,
+    visibility: Option<&ZoneVisibility>,
+) -> String {
+    let mut predicate = witness_predicate(source, sensor, scope, generation, covered);
+    if let Some(visibility) = visibility {
+        predicate.push_str(&visibility.predicate_clause());
+    }
+    predicate
+}
+
 fn hull(a: CaptureInterval, b: CaptureInterval) -> Result<CaptureInterval, ContractError> {
     CaptureInterval::new(a.earliest.min(b.earliest), a.latest.max(b.latest))
 }
@@ -378,6 +441,7 @@ struct ZoneBuilder<'a> {
     input: &'a CoverageInput<'a>,
     scope: String,
     generation: ContentDigest,
+    visibility: Option<ZoneVisibility>,
     witnesses: Vec<ZoneWitness>,
     uncovered: Vec<UncoveredInterval>,
     run: Vec<CoverageFrame>,
@@ -448,12 +512,13 @@ impl ZoneBuilder<'_> {
             excluded_domain: std::collections::BTreeSet::new(),
             continuity: CoverageContinuity::Continuous,
             completeness: Completeness::Complete,
-            negative_predicate: witness_predicate(
+            negative_predicate: zone_witness_predicate(
                 source,
                 sensor,
                 &self.scope,
                 self.generation,
                 covered,
+                self.visibility.as_ref(),
             ),
             stop_reason: CoverageStopReason::Complete,
             authorized_generation: COVERAGE_PRODUCER_GENERATION,
@@ -474,6 +539,42 @@ impl ZoneBuilder<'_> {
 
 /// Builds the coverage record of one analysed recording. Pure: reads and writes nothing.
 pub fn build_coverage(input: &CoverageInput<'_>) -> Result<CoverageRecord, ContractError> {
+    build_coverage_with(input, &CoverageExtras::default())
+}
+
+/// Segment `segment`'s refusal, if a refused run contains it.
+fn refused(extras: &CoverageExtras, segment: usize) -> Option<&DecodeRefusal> {
+    extras
+        .refusals
+        .iter()
+        .find(|run| run.first_segment <= segment && segment <= run.last_segment)
+}
+
+/// Index one past the last frame of the analysis epoch containing frame `position`: tracking
+/// restarts at every frame whose segment is in `restarts`.
+fn epoch_end(frames: &[CoverageFrame], restarts: &[usize], position: usize) -> usize {
+    frames
+        .iter()
+        .enumerate()
+        .skip(position + 1)
+        .find(|(_, frame)| restarts.contains(&frame.segment))
+        .map_or(frames.len(), |(index, _)| index)
+}
+
+/// [`build_coverage`] with geometric visibility and tolerant-decode gaps. With default extras
+/// the record is byte-identical to [`build_coverage`].
+pub fn build_coverage_with(
+    input: &CoverageInput<'_>,
+    extras: &CoverageExtras,
+) -> Result<CoverageRecord, ContractError> {
+    if (!extras.visibility.is_empty() && extras.visibility.len() != input.zones.len())
+        || extras
+            .refusals
+            .iter()
+            .any(|run| run.first_segment > run.last_segment || run.error_id.is_empty())
+    {
+        return Err(ContractError::InvalidIdentifier);
+    }
     if input.zones.len() > MAX_COVERAGE_ZONES
         || input.frames.is_empty()
         || input.first_segment > input.last_segment
@@ -498,12 +599,15 @@ pub fn build_coverage(input: &CoverageInput<'_>) -> Result<CoverageRecord, Contr
     let latency = (input.confirmation_hits.max(1) - 1) as usize;
     let count = input.frames.len();
     let mut zones = Vec::with_capacity(input.zones.len());
-    for zone in &input.zones {
+    for (zone_index, zone) in input.zones.iter().enumerate() {
         let scope = format!("{}{}", input.source.scope_prefix(), zone.zone_id);
+        let visibility = extras.visibility.get(zone_index).cloned().flatten();
+        let not_visible = visibility.as_ref().and_then(ZoneVisibility::cause);
         let mut builder = ZoneBuilder {
             input,
             scope: scope.clone(),
             generation: zone.pipeline_generation,
+            visibility: visibility.clone(),
             witnesses: Vec::new(),
             uncovered: Vec::new(),
             run: Vec::new(),
@@ -531,6 +635,11 @@ pub fn build_coverage(input: &CoverageInput<'_>) -> Result<CoverageRecord, Contr
             let entry = zone.entries.iter().find(|e| e.segment == frame.segment);
             let reason = if !time_known {
                 Some(UncoveredReason::CaptureTimeUnknown)
+            } else if let Some(cause) = not_visible {
+                Some(match cause {
+                    NotVisibleCause::Occluded => UncoveredReason::Occluded,
+                    NotVisibleCause::OutsideFrustum => UncoveredReason::OutsideFrustum,
+                })
             } else if !zone.inside_frame {
                 Some(UncoveredReason::ZoneOutsideFrame)
             } else if first_gap.is_some_and(|gap| frame.segment >= gap) {
@@ -543,7 +652,10 @@ pub fn build_coverage(input: &CoverageInput<'_>) -> Result<CoverageRecord, Contr
                 })
             } else if position < BACKGROUND_WARMUP_FRAMES {
                 Some(UncoveredReason::BackgroundWarmup)
-            } else if position + latency >= count {
+            } else if position + latency >= count
+                || (!extras.restarts.is_empty()
+                    && position + latency >= epoch_end(input.frames, &extras.restarts, position))
+            {
                 Some(UncoveredReason::ConfirmationLatency)
             } else {
                 None
@@ -575,12 +687,24 @@ pub fn build_coverage(input: &CoverageInput<'_>) -> Result<CoverageRecord, Contr
                     capture,
                 } => {
                     builder.close_run()?;
-                    builder.push_uncovered(
-                        first,
-                        last,
-                        capture,
-                        UncoveredReason::SegmentNotDecoded,
-                    )?;
+                    if extras.refusals.is_empty() {
+                        builder.push_uncovered(
+                            first,
+                            last,
+                            capture,
+                            UncoveredReason::SegmentNotDecoded,
+                        )?;
+                    } else {
+                        for segment in first..=last {
+                            let reason = match refused(extras, segment) {
+                                Some(run) => UncoveredReason::DecodeRefused {
+                                    error_id: run.error_id.clone(),
+                                },
+                                None => UncoveredReason::SegmentNotDecoded,
+                            };
+                            builder.push_uncovered(segment, segment, capture, reason)?;
+                        }
+                    }
                 }
             }
         }
@@ -592,6 +716,7 @@ pub fn build_coverage(input: &CoverageInput<'_>) -> Result<CoverageRecord, Contr
             pipeline_generation: zone.pipeline_generation,
             witnesses: builder.witnesses,
             uncovered: builder.uncovered,
+            visibility,
         });
     }
     let record = CoverageRecord {
@@ -632,8 +757,13 @@ impl CoverageRecord {
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut e = CanonicalEncoder::new();
+        let versioned = self.zones.iter().any(|zone| zone.visibility.is_some());
         e.bytes(RECORD_MAGIC);
-        e.u32(RECORD_VERSION);
+        e.u32(if versioned {
+            RECORD_VERSION_VISIBILITY
+        } else {
+            RECORD_VERSION
+        });
         e.text(RECORD_DOMAIN);
         e.text(self.source.as_str());
         e.digest(self.import_identity);
@@ -651,6 +781,15 @@ impl CoverageRecord {
             e.text(&zone.zone_id);
             e.text(&zone.geometry);
             e.digest(zone.pipeline_generation);
+            if versioned {
+                match &zone.visibility {
+                    Some(visibility) => {
+                        e.bool(true);
+                        visibility.encode(&mut e);
+                    }
+                    None => e.bool(false),
+                }
+            }
             e.u64(zone.witnesses.len() as u64);
             for witness in &zone.witnesses {
                 e.u64(witness.first_segment);
@@ -672,6 +811,9 @@ impl CoverageRecord {
                     None => e.bool(false),
                 }
                 e.text(interval.reason.as_str());
+                if let UncoveredReason::DecodeRefused { error_id } = &interval.reason {
+                    e.text(error_id);
+                }
                 if let UncoveredReason::ZoneEntry {
                     candidate,
                     event_id,
@@ -706,7 +848,15 @@ impl CoverageRecord {
             return Err(ContractError::DigestMismatch);
         }
         let mut d = CanonicalDecoder::new(bytes);
-        if d.bytes()? != RECORD_MAGIC || d.u32()? != RECORD_VERSION || d.text()? != RECORD_DOMAIN {
+        if d.bytes()? != RECORD_MAGIC {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        let versioned = match d.u32()? {
+            RECORD_VERSION => false,
+            RECORD_VERSION_VISIBILITY => true,
+            _ => return Err(ContractError::InvalidIdentifier),
+        };
+        if d.text()? != RECORD_DOMAIN {
             return Err(ContractError::InvalidIdentifier);
         }
         let source = CoverageSource::parse(d.text()?)?;
@@ -732,6 +882,11 @@ impl CoverageRecord {
             let zone_id = d.text()?.to_owned();
             let geometry = d.text()?.to_owned();
             let pipeline_generation = d.digest()?;
+            let visibility = if versioned && d.bool()? {
+                Some(ZoneVisibility::decode(&mut d)?)
+            } else {
+                None
+            };
             let witness_count = bounded(d.u64()?, MAX_COVERAGE_INTERVALS)?;
             let mut witnesses = Vec::with_capacity(witness_count);
             for _ in 0..witness_count {
@@ -776,6 +931,11 @@ impl CoverageRecord {
                     }
                     "zone_outside_frame" => UncoveredReason::ZoneOutsideFrame,
                     "interval_too_short" => UncoveredReason::IntervalTooShort,
+                    "decode_refused" => UncoveredReason::DecodeRefused {
+                        error_id: d.text()?.to_owned(),
+                    },
+                    "occluded" => UncoveredReason::Occluded,
+                    "outside_frustum" => UncoveredReason::OutsideFrustum,
                     _ => return Err(ContractError::InvalidIdentifier),
                 };
                 uncovered.push(UncoveredInterval {
@@ -792,6 +952,7 @@ impl CoverageRecord {
                 pipeline_generation,
                 witnesses,
                 uncovered,
+                visibility,
             });
         }
         d.ensure_finished()?;
@@ -831,6 +992,13 @@ impl CoverageRecord {
             {
                 return Err(ContractError::InvalidIdentifier);
             }
+            if let Some(visibility) = &zone.visibility {
+                visibility.validate()?;
+                // A zone below its visibility threshold never carries a witness.
+                if !visibility.observable() && !zone.witnesses.is_empty() {
+                    return Err(ContractError::CoverageUncertified);
+                }
+            }
             for witness in &zone.witnesses {
                 // Unknown capture time never yields a witness.
                 if self.capture_time_label != OPERATOR_TIME_LABEL {
@@ -838,12 +1006,13 @@ impl CoverageRecord {
                 }
                 let domain =
                     witness_domain(self.source, &self.sensor_id, &zone.scope, witness.covered);
-                let predicate = witness_predicate(
+                let predicate = zone_witness_predicate(
                     self.source,
                     &self.sensor_id,
                     &zone.scope,
                     zone.pipeline_generation,
                     witness.covered,
+                    zone.visibility.as_ref(),
                 );
                 let inner = &witness.witness;
                 inner.require_certified_absence()?;

@@ -95,6 +95,10 @@ const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|ale
     decoded without gap, past background warm-up and confirmation latency, zone inside the\n\
     frame, capture time an operator hint; every other frame is an explicit uncovered interval.\n\
     --retain-coverage APPROVAL retains exactly that proposal (authority; reruns never rewrite).\n\
+    --tolerate-decode-refusals (bare flag; default off, output unchanged without a refusal):\n\
+    a typed decode refusal or source gap inside the range becomes a decode_refused coverage\n\
+    interval with its error id instead of refusing the run; H.264/H.265 resume at the next\n\
+    IDR/IRAP and tracking restarts after the gap (no track bridging); no witness spans a gap.\n\
   corroborate (two recordings, two sensors): --camera NAME:sha256:IMPORT (exactly twice)\n\
           --ground NAME:h11,h12,h13,h21,h22,h23,h31,h32,h33 (one per camera; image pixels ->\n\
           ground units; an owner assertion like a zone, NOT a calibration certificate)\n\
@@ -110,7 +114,12 @@ const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|ale
     time and one sensor twice are typed refusals. --approve publishes exact proposals as\n\
     corroborated, unclassified events; policy may report prepare_alert, but nothing is\n\
     prepared or sent. Proves wiring, not detection quality; no event never means absence.\n\
-    Coverage: one record per camera (ground zones whose image preimage lies inside the frame);\n\
+    Coverage: one record per camera; each ground zone is sampled on the ground plane and\n\
+    projected into the camera (homography, or --pose NAME:W,H,fx,fy,cx,cy,r11..r33,tx,ty,tz);\n\
+    [--visibility-grid N (2..32, default 8) --visibility-threshold-ppm N (default 1000000)]:\n\
+    below the threshold a zone is occluded or outside_frustum. [--scene-mesh FILE\n\
+    --scene-mesh-digest sha256:HEX --scene-source-digest sha256:HEX] (fss-twin package) tests\n\
+    occlusion for cameras with a pose; otherwise occlusion_unknown and the claim is frustum-only.\n\
     --retain-coverage APPROVAL retains both exactly as proposed.\n\
   alert (one webhook for a corroborated event): --event-id ID --relay IP:PORT --path /PATH\n\
           --plaintext-approval sha256:HEX --deadline-ms N (1..60000)\n\

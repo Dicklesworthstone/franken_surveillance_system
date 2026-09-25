@@ -288,9 +288,9 @@ carries a `coverage` member (`fss.recorded_watch_coverage.v1`; library
 
 - one fss-core `CoverageWitness` (rendered as `fss.coverage_witness.v1`) per (sensor, zone,
   maximal contiguous interval) in which frames decoded continuously (no source gap, missing or
-  skipped RASL segment; a decode refusal refuses the whole run and retains nothing), the zone
-  lies inside the decoded frame (for a ground zone, every corner's image preimage through the
-  owner homography, in front of the camera), the background model is past its warm-up
+  skipped RASL segment; by default a decode refusal refuses the whole run and retains nothing,
+  see `--tolerate-decode-refusals` below), the zone lies inside the decoded frame (an image zone)
+  or is geometrically visible (a ground zone, see below), the background model is past its warm-up
   (`BACKGROUND_WARMUP_FRAMES` = 4: the first frame initializes the mean, the next three the
   variance), the tracker could still confirm a track before the run ends (the last
   `confirmation_hits - 1` frames are confirmation latency), no zone entry was emitted, capture
@@ -306,7 +306,78 @@ carries a `coverage` member (`fss.recorded_watch_coverage.v1`; library
 - every other frame is an explicit uncovered interval with its reason: `background_warmup`,
   `confirmation_latency`, `zone_entry` (naming the candidate and the event it publishes),
   `segment_not_decoded`, `capture_time_unknown`, `capture_time_unreliable_after_gap`,
-  `zone_outside_frame`, `interval_too_short`.
+  `zone_outside_frame`, `interval_too_short`, and (below) `occluded`, `outside_frustum` and
+  `decode_refused`.
+
+### Geometric ground-zone visibility (fss-2h5zq.53)
+
+Being inside the image is a 2D statement; a ground zone behind a wall, or beyond the camera's
+view of the ground, is not observable however it maps into the frame. `corroborate` therefore
+computes each ground zone's coverage geometrically
+(`fss_reference::ingest::ground_visibility`):
+
+- **Sampling.** The zone polygon is sampled on the ground plane (`z = 0` of the frame shared by
+  the homographies, poses and mesh) at the centres of a `grid x grid` lattice over its bounding
+  box (even-odd inside test). `--visibility-grid N` (2..32, default 8: 64 samples).
+- **Projection.** Each sample is projected into the camera: through the inverse of the owner
+  homography (the image point must map back, in front of the camera, onto the same ground
+  point), or through an owner calibrated pinhole pose
+  (`--pose NAME:W,H,fx,fy,cx,cy,r11..r33,tx,ty,tz`, world-to-camera). A sample behind the camera
+  or outside the half-open decoded image is `outside_frustum`. A pose whose intrinsics describe
+  another image size, or that disagrees with the camera's homography over a zone, is refused
+  (`ERR-CORROBORATE-POSE-INVALID-001`).
+- **Occlusion.** With an owner scene mesh (`--scene-mesh FILE --scene-mesh-digest sha256:PACKAGE
+  --scene-source-digest sha256:SCENE`, an fss-twin `FSSTWIN1` package verified against both
+  digests before any source is read; `ERR-CORROBORATE-VISIBILITY-001` otherwise) and a pose, the
+  segment from the optical centre to each visible sample is tested against every opaque mesh
+  triangle; a hit is `occluded`. Without a mesh (`no_scene_mesh`) or without a pose for that
+  camera (`no_camera_pose`) occlusion is `occlusion_unknown`: it is never assumed clear, and the
+  claim is labelled **frustum-only**.
+- **Threshold.** `--visibility-threshold-ppm N` (default 1000000: every sample visible). A zone
+  below it, or with no visible sample, is not observable for coverage: every frame is uncovered
+  as `occluded` (most hidden samples occluded) or `outside_frustum`, and it carries no witness.
+
+Each zone of such a record carries a `visibility` object (`camera_model`, `sampling`, `samples`,
+`visible`, `outside_frustum`, `occluded`, `visible_fraction_ppm`, `threshold_ppm`, `state`,
+`cause`, `occlusion`, `occlusion_unknown_reason`, `scene_mesh_digest`, `claim`:
+`frustum_only` or `frustum_and_mesh_occlusion`); every witness predicate appends the visible
+fraction, the sampling policy and the occlusion model ("occlusion_unknown ...: the claim is
+frustum-only" without a mesh). The grid, threshold, pose and mesh digest are bound into the
+pipeline generation and the camera's analysis identity. Such a record is version 2 of
+`fss.recorded_watch_coverage.v1`; a record without geometry keeps its exact version-1 bytes
+(pinned by `crates/fss-reference/tests/watch_coverage_golden.rs`). Orient marks a covered
+frustum-only zone in its declared domain (`(frustum-only: occlusion_unknown)`), its cell
+statement and its named gaps; an occluded or out-of-frustum zone is `not_observable` with that
+reason and its sample counts. `watch` has only image zones (no homography or pose), so its
+coverage is unchanged. Candidates and events never depend on the visibility inputs.
+
+### Decode refusals as coverage gaps: `--tolerate-decode-refusals` (fss-fnrgr)
+
+By default a typed decode refusal anywhere in the range refuses the whole `watch` run, exactly
+as before. With the bare flag `--tolerate-decode-refusals` (echoed in every rerun and retain
+command), a refusal in the middle of a recording becomes a gap instead
+(`fss_reference::ingest::tolerant_decode`):
+
+- JPEG/MJPEG: the refused frame (malformed, truncated or unsupported coding) is one
+  `decode_refused` segment; the next frame decodes normally.
+- H.264/H.265: nothing is concealed; decoding restarts at the next segment that opens as an IDR
+  (H.264) or IRAP (H.265) range, and every segment from the refused access unit to that restart
+  that returned no picture is `decode_refused`. The codecs report a truncated access unit as
+  their bound (`ERR-DECODE-BOUNDS-001`), so that id is recorded.
+- A retained source gap inside the range is handled the same way (MJPEG resumes at the next
+  frame; H.264/H.265 at the next IDR/IRAP, `ERR-DECODE-H264-RANGE-GAP-001` or `-H265-`).
+- Tracking restarts after every gap with fresh track identities: no track is ever bridged across
+  it. The last `confirmation_hits - 1` frames before each restart are `confirmation_latency`, so
+  no witness spans a gap or claims a frame whose entry could not have been confirmed.
+- The report adds `decode_refusals` (first/last segment and error id per run) and each
+  `decode_refused` interval names its `error_id`; the refused runs and restarts are part of the
+  analysis identity. Custody failures, resource bounds of the composition, budget exhaustion
+  and cancellation still refuse the run; a range in which nothing decodes returns its first
+  refusal; the detector cascade is refused over a gapped range. A tolerant run that meets no
+  refusal is byte-identical to the default run.
+
+Orient then sees two witness windows around the gap: the zone is `not_observable between` them,
+and follow certifies no silence over it.
 
 ```sh
 fss-event watch ... --zone door:64,0,32,32                                   # proposes
@@ -338,8 +409,14 @@ changed each fact's inputs rather than the head. Newer unanalysed evidence still
 as protected coverage loss. The committed tests
 (`crates/fss-cli/tests/coverage_cli_contract.rs`) cover the quiet scene, unknown capture time,
 a source gap, staleness after new evidence, a motion scene with its event, corroboration,
-approval gating, and silence across a harmless successor commit on synthetic MJPEG scenes; they
-prove the contract, not detection quality.
+approval gating, and silence across a harmless successor commit on synthetic MJPEG scenes;
+`crates/fss-cli/tests/coverage_geometry_gap_cli_contract.rs`,
+`crates/fss-reference/tests/ground_visibility_coverage_contract.rs` and
+`crates/fss-reference/tests/decode_gap_coverage_contract.rs` cover geometric visibility (in view,
+behind a mesh wall, outside the frustum, frustum-only without a mesh, pose and mesh refusals) and
+decode gaps (a corrupt MJPEG frame with and without the flag, no track bridging, an H.264
+corrupted P slice resuming at the next IDR, no silence over a gap, determinism). They prove the
+contract, not detection quality.
 
 ## Detection cascade: `--detector-package` on `watch` and `corroborate`
 

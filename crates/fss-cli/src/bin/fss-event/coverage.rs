@@ -2,13 +2,56 @@
 //! JSON rendering of proposed or retained coverage records (`fss.recorded_watch_coverage.v1`)
 //! shared by `fss-event watch` and `fss-event corroborate`. Every witness is rendered as the
 //! registered `fss.coverage_witness.v1` object; every uncovered interval keeps its typed reason.
+//! A `decode_refused` interval also names its `error_id`, and a ground zone with geometric
+//! visibility carries a `visibility` object (fraction, sampling, occlusion model and claim);
+//! records without either render exactly as before.
 
 use fss_cli::agent_json::{array, coverage_witness, object, optional_string, string};
 use fss_core::{CaptureInterval, ContentDigest};
+use fss_reference::ingest::ground_visibility::{NotVisibleCause, Occlusion, ZoneVisibility};
 use fss_reference::ingest::recorded_coverage::{CoverageRecord, CoverageStatus, UncoveredReason};
 
 fn interval(value: CaptureInterval) -> String {
     format!("[{},{}]", value.earliest.0, value.latest.0)
+}
+
+fn visibility(value: &ZoneVisibility) -> String {
+    let (reason, mesh) = match value.occlusion {
+        Occlusion::Unknown(reason) => (Some(reason.as_str()), None),
+        Occlusion::MeshChecked(digest) => (None, Some(digest.to_text())),
+    };
+    object(&[
+        ("camera_model", string(value.camera_model.as_str())),
+        ("sampling", string(&value.sampling_label())),
+        ("samples", value.samples.to_string()),
+        ("visible", value.visible.to_string()),
+        ("outside_frustum", value.outside_frustum.to_string()),
+        ("occluded", value.occluded.to_string()),
+        (
+            "visible_fraction_ppm",
+            value.visible_fraction_ppm().to_string(),
+        ),
+        ("threshold_ppm", value.threshold_ppm.to_string()),
+        (
+            "state",
+            string(if value.observable() {
+                "observable"
+            } else {
+                "not_observable"
+            }),
+        ),
+        (
+            "cause",
+            optional_string(value.cause().map(|cause| match cause {
+                NotVisibleCause::Occluded => "occluded",
+                NotVisibleCause::OutsideFrustum => "outside_frustum",
+            })),
+        ),
+        ("occlusion", string(value.occlusion.as_str())),
+        ("occlusion_unknown_reason", optional_string(reason)),
+        ("scene_mesh_digest", optional_string(mesh.as_deref())),
+        ("claim", string(value.claim())),
+    ])
 }
 
 fn record(value: &CoverageRecord) -> String {
@@ -41,7 +84,7 @@ fn record(value: &CoverageRecord) -> String {
                         } => (Some(candidate.to_text()), event_id.as_deref()),
                         _ => (None, None),
                     };
-                    object(&[
+                    let mut fields = vec![
                         ("reason", string(gap.reason.as_str())),
                         ("first_segment", gap.first_segment.to_string()),
                         ("last_segment", gap.last_segment.to_string()),
@@ -51,10 +94,14 @@ fn record(value: &CoverageRecord) -> String {
                         ),
                         ("candidate_id", optional_string(candidate.as_deref())),
                         ("event_id", optional_string(event)),
-                    ])
+                    ];
+                    if let UncoveredReason::DecodeRefused { error_id } = &gap.reason {
+                        fields.push(("error_id", string(error_id)));
+                    }
+                    object(&fields)
                 })
                 .collect();
-            object(&[
+            let mut fields = vec![
                 ("scope", string(&zone.scope)),
                 ("zone_id", string(&zone.zone_id)),
                 ("geometry", string(&zone.geometry)),
@@ -65,7 +112,11 @@ fn record(value: &CoverageRecord) -> String {
                 ("witness_count", zone.witnesses.len().to_string()),
                 ("witnesses", array(&witnesses)),
                 ("uncovered", array(&uncovered)),
-            ])
+            ];
+            if let Some(value) = &zone.visibility {
+                fields.push(("visibility", visibility(value)));
+            }
+            object(&fields)
         })
         .collect();
     object(&[

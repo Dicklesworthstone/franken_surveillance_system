@@ -13,6 +13,10 @@
 //! `--detector-package PATH --detector-digest sha256:HEX --detector-max-inferences N` adds the
 //! detection cascade: the verified package runs only on frames the cheap stage selected, and its
 //! uncalibrated class evidence is attached to each candidate without changing its kind or state.
+//! `--tolerate-decode-refusals` (a bare flag, echoed in every rerun command) turns a typed decode
+//! refusal or source gap inside the range into a `decode_refused` coverage interval with its
+//! error id instead of refusing the run: H.264/H.265 resume at the next IDR/IRAP and tracking
+//! restarts after the gap. Without the flag the refusal is exactly today's.
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
@@ -25,8 +29,8 @@ use fss_reference::ingest::detector_cascade::DetectorCascade;
 use fss_reference::ingest::package_detect::PackageDetectLimits;
 use fss_reference::ingest::recorded_decode::ComponentInterpretation;
 use fss_reference::ingest::recorded_watch::{
-    MAX_WATCH_FRAMES, MAX_WATCH_ZONES, WatchDetectorConfig, WatchError, WatchLimits, WatchPlan,
-    WatchReport, WatchTrackerConfig, WatchZone,
+    MAX_WATCH_FRAMES, MAX_WATCH_ZONES, WatchDetectorConfig, WatchError, WatchLimits, WatchOptions,
+    WatchPlan, WatchReport, WatchTrackerConfig, WatchZone,
 };
 use fss_reference::{ReferenceDeployment, ReplayCx, ScalarExecCx};
 
@@ -75,6 +79,7 @@ pub(super) struct WatchAction {
     retain_coverage: Option<ContentDigest>,
     report_out: Option<PathBuf>,
     cascade: Option<super::detector::DetectorOptions>,
+    options: WatchOptions,
     rerun: String,
 }
 
@@ -149,9 +154,19 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
     let mut values: Vec<(String, String)> = Vec::new();
     let mut zones = Vec::new();
     let mut rerun = vec!["fss-event".to_owned(), "watch".to_owned()];
+    let mut options = WatchOptions::default();
     let mut index = 0;
     while index < args.len() {
         let key = args[index].to_str().ok_or("option names require UTF-8")?;
+        if key == "--tolerate-decode-refusals" {
+            if options.tolerate_decode_refusals {
+                return Err("duplicate --tolerate-decode-refusals".to_owned());
+            }
+            options.tolerate_decode_refusals = true;
+            rerun.push(key.to_owned());
+            index += 1;
+            continue;
+        }
         let argument = args
             .get(index + 1)
             .ok_or_else(|| format!("missing value for {key}"))?
@@ -274,6 +289,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<WatchAction, String> {
             .find(|(k, _)| k == "--report-out")
             .map(|(_, v)| PathBuf::from(v)),
         cascade: super::detector::parse(&values)?,
+        options,
         rerun: rerun.join(" "),
     })
 }
@@ -347,11 +363,12 @@ fn run_with(
         detector: action.detector,
         tracker: action.tracker,
     };
-    let mut report = WatchReport::analyze_with_detector(
+    let mut report = WatchReport::analyze_with_options(
         deployment,
         &plan,
         &action.limits,
         cascade.as_mut(),
+        action.options,
         cx,
     )?;
     // Both approvals are checked against the fresh analysis before anything is written.
@@ -370,11 +387,12 @@ fn run_with(
     // candidates, the proposal is recomputed against the new anchor so its approval is current.
     let reproposed = if published > 0 && action.retain_coverage.is_none() {
         // Same cascade instance: completed inferences are reused, never re-run.
-        Some(WatchReport::analyze_with_detector(
+        Some(WatchReport::analyze_with_options(
             deployment,
             &plan,
             &action.limits,
             cascade.as_mut(),
+            action.options,
             cx,
         )?)
     } else {

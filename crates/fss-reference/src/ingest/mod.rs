@@ -17,6 +17,8 @@ pub mod eventgen;
 pub mod file_adapter;
 /// Deterministic scene-model foreground detection on decoded luma planes.
 pub mod foreground;
+/// Geometric (frustum and scene-mesh occlusion) visibility of owner ground-plane zones.
+pub mod ground_visibility;
 /// Bounded H.265/HEVC Annex-B access-unit splitting with exact source spans.
 pub mod hevc_annexb;
 /// Exact frozen-model execution on retained decoded frames and durable model outputs.
@@ -42,6 +44,8 @@ pub mod recording_pipeline;
 pub mod retained;
 /// Bounded recorded-RTP framing and source-preserving ingest.
 pub mod rtpdump;
+/// Opt-in decode refusals as typed coverage gaps with IDR/IRAP resumption.
+pub mod tolerant_decode;
 /// Constant-velocity Kalman filter tracker with IoU-based data association.
 pub mod tracker;
 /// Bounded, history-linked, single-camera association of detector proposals.
