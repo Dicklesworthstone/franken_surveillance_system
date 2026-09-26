@@ -38,7 +38,7 @@ fn scene(mirror: bool) -> TestResult<Vec<u8>> {
             }
         }
         if mirror {
-            for row in pixels.chunks_exact_mut(96) {
+            for row in pixels.as_chunks_mut::<96>().0 {
                 row.reverse();
             }
         }

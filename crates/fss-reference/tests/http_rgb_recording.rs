@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 //! Real native neural processing plus mandatory root-last original custody.
 mod http_rgb_recording_support;
+#[allow(dead_code)]
 mod http_rgb_support;
 mod privacy_live_support;
 mod rgb_zone_support;
