@@ -14,13 +14,22 @@
 //! authoritative events. Their scores, availability and capture times keep the existing
 //! explicit trust boundaries. No worker, reconnect, model download or alert is added.
 
-use super::http_archive::{HttpArchiveError, HttpArchiveLimits, HttpWireArchive, HttpWirePin, HttpWireScope};
+use super::http_archive::{
+    HttpArchiveError, HttpArchiveLimits, HttpWireArchive, HttpWirePin, HttpWireScope,
+};
+use super::http_camera::rgb::custody::{
+    HttpRgbCustody, HttpRgbCustodyError, HttpRgbWireCommit, HttpRgbWirePlan,
+};
+use super::http_camera::rgb::{
+    HttpRgbBudgets, HttpRgbCapture, HttpRgbContext, HttpRgbError, HttpRgbOutput, HttpRgbReceipt,
+    HttpRgbRetirement, HttpRgbStep,
+};
 use super::http_camera::{HttpCameraStep, HttpCameraTotals};
-use super::http_camera::rgb::{HttpRgbBudgets, HttpRgbCapture, HttpRgbContext, HttpRgbError, HttpRgbOutput, HttpRgbReceipt, HttpRgbRetirement, HttpRgbStep};
-use super::http_camera::rgb::custody::{HttpRgbCustody, HttpRgbCustodyError, HttpRgbWireCommit, HttpRgbWirePlan};
 use super::http_recording::HttpRecordingAccess;
 use super::http_replay::check::HttpCheckLimits;
-use super::http_replay::completion::{HttpCompletionError, HttpCompletionPin, PreparedHttpCompletion};
+use super::http_replay::completion::{
+    HttpCompletionError, HttpCompletionPin, PreparedHttpCompletion,
+};
 use super::rgb_detections::RgbDetectionBudget;
 use super::rgb_inference::RgbRunLimits;
 use super::rgb_tracking::pipeline::RgbZonePhase;
@@ -57,7 +66,9 @@ pub enum HttpRgbRecordingError {
 macro_rules! from_error {
     ($source:ty, $variant:ident) => {
         impl From<$source> for HttpRgbRecordingError {
-            fn from(error: $source) -> Self { Self::$variant(error) }
+            fn from(error: $source) -> Self {
+                Self::$variant(error)
+            }
         }
     };
 }
@@ -84,7 +95,8 @@ pub struct HttpRgbRecordingAttachFailure<'model, 'temporal> {
 impl std::fmt::Debug for HttpRgbRecordingAttachFailure<'_, '_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HttpRgbRecordingAttachFailure")
-            .field("reason", &self.reason).finish_non_exhaustive()
+            .field("reason", &self.reason)
+            .finish_non_exhaustive()
     }
 }
 impl std::fmt::Display for HttpRgbRecordingAttachFailure<'_, '_> {
@@ -157,7 +169,9 @@ impl<'model, 'temporal> HttpRgbRecording<'model, 'temporal> {
         access: HttpRecordingAccess<'_>,
     ) -> Result<Self, HttpRgbRecordingAttachFailure<'model, 'temporal>> {
         let prepare = || -> Result<_, HttpRgbRecordingError> {
-            limits.validate().map_err(|_| HttpRgbRecordingError::Configuration)?;
+            limits
+                .validate()
+                .map_err(|_| HttpRgbRecordingError::Configuration)?;
             if capture.camera().totals() != HttpCameraTotals::default()
                 || capture.camera().failure().is_some()
                 || capture.phase() != RgbZonePhase::Ready
@@ -166,7 +180,9 @@ impl<'model, 'temporal> HttpRgbRecording<'model, 'temporal> {
                 || limits.maximum_reads >= MAX_MANIFEST_CHILDREN
                 || publisher.limits().max_children <= limits.maximum_reads
                 || publisher.limits().spool.max_object_bytes
-                    < limits.read_bytes.max(1024 + (limits.maximum_reads + 1) * 64)
+                    < limits
+                        .read_bytes
+                        .max(1024 + (limits.maximum_reads + 1) * 64)
             {
                 return Err(HttpRgbRecordingError::Configuration);
             }
@@ -179,55 +195,100 @@ impl<'model, 'temporal> HttpRgbRecording<'model, 'temporal> {
                 maximum_spool_object_bytes: limits.maximum_spool_object_bytes,
             };
             let empty = HttpWireArchive::new(scope, bounds)?;
-            let archive = HttpWireArchive::load(publisher, scope, empty.pin(), bounds, access.storage, &mut work)?;
+            let archive = HttpWireArchive::load(
+                publisher,
+                scope,
+                empty.pin(),
+                bounds,
+                access.storage,
+                &mut work,
+            )?;
             Ok((archive, work))
         };
         match prepare() {
             Err(reason) => Err(HttpRgbRecordingAttachFailure { reason, capture }),
             Ok((archive, work)) => Ok(Self {
-                capture, archive, limits, polls: 0, work,
+                capture,
+                archive,
+                limits,
+                polls: 0,
+                work,
                 framing: DecodeBudget::new(limits.framing_work),
-                wire_plan: None, terminal: None, complete: None, transferred: 0,
+                wire_plan: None,
+                terminal: None,
+                complete: None,
+                transferred: 0,
             }),
         }
     }
 
     /// Read-only acquisition, mapped frame and accepted computation. Historical data is not
     /// a new disclosure grant. In particular, no camera acknowledgement can be invoked here.
-    pub fn capture(&self) -> &HttpRgbCapture<'model, 'temporal> { &self.capture }
+    pub fn capture(&self) -> &HttpRgbCapture<'model, 'temporal> {
+        &self.capture
+    }
     /// Last actually published original prefix, including after a late camera ACK denial.
-    pub fn pin(&self) -> HttpWirePin { self.archive.pin() }
+    pub fn pin(&self) -> HttpWirePin {
+        self.archive.pin()
+    }
     /// Immutable original-byte retention and receive-clock scope; not a live grant.
-    pub fn scope(&self) -> HttpWireScope { self.archive.scope() }
+    pub fn scope(&self) -> HttpWireScope {
+        self.archive.scope()
+    }
     /// Exact prepared original-read plan, retained across publication/acknowledgement failure.
-    pub fn pending_wire_plan(&self) -> Option<HttpRgbWirePlan> { self.wire_plan }
+    pub fn pending_wire_plan(&self) -> Option<HttpRgbWirePlan> {
+        self.wire_plan
+    }
     /// Exact native terminal key prepared before storage I/O.
-    pub fn prepared_completion(&self) -> Option<HttpCompletionPin> { self.terminal.as_ref().map(|t| t.pin()) }
+    pub fn prepared_completion(&self) -> Option<HttpCompletionPin> {
+        self.terminal.as_ref().map(|t| t.pin())
+    }
     /// Historical successful durable terminal publication, not a fresh storage verification.
-    pub fn completion(&self) -> Option<HttpCompletionPin> { self.complete }
+    pub fn completion(&self) -> Option<HttpCompletionPin> {
+        self.complete
+    }
     /// Actual cumulative source/parser work and delivered perception count.
     pub fn work(&self) -> HttpRgbRecordingWork {
-        HttpRgbRecordingWork { polls: self.polls, source: self.work.used(), framing: self.framing.used(), transferred: self.transferred }
+        HttpRgbRecordingWork {
+            polls: self.polls,
+            source: self.work.used(),
+            framing: self.framing.used(),
+            transferred: self.transferred,
+        }
     }
 
     /// Run one bounded native acquisition operation. A pending original read cannot be
     /// parsed; accepted neural work and completed output cannot be displaced by later frames.
-    pub fn poll(&mut self, access: HttpRecordingAccess<'_>) -> Result<HttpRgbRecordingStep, HttpRgbRecordingError> {
+    pub fn poll(
+        &mut self,
+        access: HttpRecordingAccess<'_>,
+    ) -> Result<HttpRgbRecordingStep, HttpRgbRecordingError> {
         probe(access)?;
-        if self.polls == self.limits.maximum_steps { return Err(HttpRgbRecordingError::Limit); }
+        if self.polls == self.limits.maximum_steps {
+            return Err(HttpRgbRecordingError::Limit);
+        }
         self.work.charge(1)?;
         self.polls += 1;
-        let step = self.capture.step(access.now_ns, access.camera, &mut self.framing)?;
+        let step = self
+            .capture
+            .step(access.now_ns, access.camera, &mut self.framing)?;
         self.check_frame_bound()?;
         match step {
             HttpRgbStep::Source(HttpCameraStep::Advanced) => Ok(HttpRgbRecordingStep::Advanced),
             HttpRgbStep::Source(HttpCameraStep::Pending) => Ok(HttpRgbRecordingStep::Pending),
             HttpRgbStep::Source(HttpCameraStep::WireReady(wire)) => {
                 if let Some(plan) = self.wire_plan {
-                    if plan.wire() != wire { return Err(HttpRgbRecordingError::PlanMismatch); }
+                    if plan.wire() != wire {
+                        return Err(HttpRgbRecordingError::PlanMismatch);
+                    }
                     return Ok(HttpRgbRecordingStep::WirePrepared(plan));
                 }
-                let plan = self.capture.prepare_wire_custody(&self.archive, access.now_ns, access.camera, &mut self.work)?;
+                let plan = self.capture.prepare_wire_custody(
+                    &self.archive,
+                    access.now_ns,
+                    access.camera,
+                    &mut self.work,
+                )?;
                 self.wire_plan = Some(plan);
                 Ok(HttpRgbRecordingStep::WirePrepared(plan))
             }
@@ -235,11 +296,20 @@ impl<'model, 'temporal> HttpRgbRecording<'model, 'temporal> {
                 if self.transferred != self.capture.camera().totals().frames {
                     return Err(HttpRgbRecordingError::NotReady);
                 }
-                if let Some(pin) = self.complete { return Ok(HttpRgbRecordingStep::Complete(pin)); }
-                if self.terminal.is_none() {
-                    self.terminal = Some(PreparedHttpCompletion::from_camera(self.capture.camera(), &self.archive, &mut self.work)?);
+                if let Some(pin) = self.complete {
+                    return Ok(HttpRgbRecordingStep::Complete(pin));
                 }
-                Ok(HttpRgbRecordingStep::CompletionPrepared(self.prepared_completion().ok_or(HttpRgbRecordingError::NotReady)?))
+                if self.terminal.is_none() {
+                    self.terminal = Some(PreparedHttpCompletion::from_camera(
+                        self.capture.camera(),
+                        &self.archive,
+                        &mut self.work,
+                    )?);
+                }
+                Ok(HttpRgbRecordingStep::CompletionPrepared(
+                    self.prepared_completion()
+                        .ok_or(HttpRgbRecordingError::NotReady)?,
+                ))
             }
             HttpRgbStep::Source(HttpCameraStep::FrameReady) => Err(HttpRgbRecordingError::NotReady),
             analysis => Ok(HttpRgbRecordingStep::Analysis(analysis)),
@@ -250,15 +320,29 @@ impl<'model, 'temporal> HttpRgbRecording<'model, 'temporal> {
     /// A successful disk write with a denied camera ACK returns BOTH outcomes. Recover a
     /// poisoned publisher explicitly and retry the SAME plan; no new request is issued here.
     pub fn commit_wire(
-        &mut self, expected: HttpRgbWirePlan, publisher: &mut LocalRootPublisher,
+        &mut self,
+        expected: HttpRgbWirePlan,
+        publisher: &mut LocalRootPublisher,
         access: HttpRecordingAccess<'_>,
     ) -> Result<HttpRgbWireCommit, HttpRgbRecordingError> {
-        if self.wire_plan != Some(expected) { return Err(HttpRgbRecordingError::PlanMismatch); }
+        if self.wire_plan != Some(expected) {
+            return Err(HttpRgbRecordingError::PlanMismatch);
+        }
         probe(access)?;
-        let result = self.capture.retain_wire(expected, access.now_ns, access.camera, HttpRgbCustody {
-            archive: &mut self.archive, publisher, cancellation: access.storage, work: &mut self.work,
-        })?;
-        if result.acknowledgement().is_ok() { self.wire_plan = None; }
+        let result = self.capture.retain_wire(
+            expected,
+            access.now_ns,
+            access.camera,
+            HttpRgbCustody {
+                archive: &mut self.archive,
+                publisher,
+                cancellation: access.storage,
+                work: &mut self.work,
+            },
+        )?;
+        if result.acknowledgement().is_ok() {
+            self.wire_plan = None;
+        }
         // No optional post-publication check can hide a successful durable write.
         Ok(result)
     }
@@ -266,14 +350,26 @@ impl<'model, 'temporal> HttpRgbRecording<'model, 'temporal> {
     fn check_frame_bound(&self) -> Result<(), HttpRgbRecordingError> {
         if self.capture.camera().totals().frames > self.limits.maximum_frames as u64 {
             Err(HttpRgbRecordingError::Limit)
-        } else { Ok(()) }
+        } else {
+            Ok(())
+        }
     }
-    fn verify_frame(&mut self, publisher: &LocalRootPublisher, access: HttpRecordingAccess<'_>) -> Result<(), HttpRgbRecordingError> {
+    fn verify_frame(
+        &mut self,
+        publisher: &LocalRootPublisher,
+        access: HttpRecordingAccess<'_>,
+    ) -> Result<(), HttpRgbRecordingError> {
         probe(access)?;
         self.check_frame_bound()?;
-        if self.wire_plan.is_some() { return Err(HttpRgbRecordingError::NotReady); }
-        let frame = self.capture.frame().ok_or(HttpRgbRecordingError::NotReady)?;
-        self.archive.verify_frame(publisher, frame, access.storage, &mut self.work)?;
+        if self.wire_plan.is_some() {
+            return Err(HttpRgbRecordingError::NotReady);
+        }
+        let frame = self
+            .capture
+            .frame()
+            .ok_or(HttpRgbRecordingError::NotReady)?;
+        self.archive
+            .verify_frame(publisher, frame, access.storage, &mut self.work)?;
         probe(access)
     }
 
@@ -282,37 +378,63 @@ impl<'model, 'temporal> HttpRgbRecording<'model, 'temporal> {
     /// sensor's current retained privacy mask before pixels reach the frozen neural model.
     #[allow(clippy::too_many_arguments)]
     pub fn analyze(
-        &mut self, context: HttpRgbContext<'_>, limits: RgbRunLimits,
-        publisher: &LocalRootPublisher, access: HttpRecordingAccess<'_>,
-        budgets: HttpRgbBudgets<'_, '_>, cx: &ScalarExecCx,
+        &mut self,
+        context: HttpRgbContext<'_>,
+        limits: RgbRunLimits,
+        publisher: &LocalRootPublisher,
+        access: HttpRecordingAccess<'_>,
+        budgets: HttpRgbBudgets<'_, '_>,
+        cx: &ScalarExecCx,
     ) -> Result<HttpRgbStep, HttpRgbRecordingError> {
         self.verify_frame(publisher, access)?;
-        Ok(self.capture.analyze(context, limits, access.now_ns, access.camera, budgets, cx)?)
+        Ok(self
+            .capture
+            .analyze(context, limits, access.now_ns, access.camera, budgets, cx)?)
     }
 
     /// Reverify originals and resume ONLY unfinished stages. No new JPEG, model, capture
     /// context or privacy policy can replace accepted input, and no budget is refilled.
     #[allow(clippy::too_many_arguments)]
     pub fn resume(
-        &mut self, publisher: &LocalRootPublisher, access: HttpRecordingAccess<'_>,
-        projection: &mut RgbDetectionBudget, temporal: &mut WorkBudget<'_>,
-        linking: &mut WorkBudget<'_>, cx: &ScalarExecCx,
+        &mut self,
+        publisher: &LocalRootPublisher,
+        access: HttpRecordingAccess<'_>,
+        projection: &mut RgbDetectionBudget,
+        temporal: &mut WorkBudget<'_>,
+        linking: &mut WorkBudget<'_>,
+        cx: &ScalarExecCx,
     ) -> Result<HttpRgbStep, HttpRgbRecordingError> {
         self.verify_frame(publisher, access)?;
-        Ok(self.capture.resume(access.now_ns, access.camera, projection, temporal, linking, cx)?)
+        Ok(self.capture.resume(
+            access.now_ns,
+            access.camera,
+            projection,
+            temporal,
+            linking,
+            cx,
+        )?)
     }
 
     /// Transfer the exact completed native result and mapped original frame together.
     /// Custody corruption between analysis and delivery is refused without discarding either
     /// owner. Success is a transfer to the caller, not a derivative/event publication.
     pub fn take_result(
-        &mut self, expected: HttpRgbReceipt, publisher: &LocalRootPublisher,
+        &mut self,
+        expected: HttpRgbReceipt,
+        publisher: &LocalRootPublisher,
         access: HttpRecordingAccess<'_>,
     ) -> Result<HttpRgbOutput, HttpRgbRecordingError> {
-        if self.capture.completion() != Some(expected) { return Err(HttpRgbRecordingError::PlanMismatch); }
-        let next = self.transferred.checked_add(1).ok_or(HttpRgbRecordingError::Limit)?;
+        if self.capture.completion() != Some(expected) {
+            return Err(HttpRgbRecordingError::PlanMismatch);
+        }
+        let next = self
+            .transferred
+            .checked_add(1)
+            .ok_or(HttpRgbRecordingError::Limit)?;
         self.verify_frame(publisher, access)?;
-        let output = self.capture.take_result(expected, access.now_ns, access.camera)?;
+        let output = self
+            .capture
+            .take_result(expected, access.now_ns, access.camera)?;
         self.transferred = next;
         // No allocation, cancellation or fallible storage operation follows the transfer.
         Ok(output)
@@ -321,16 +443,27 @@ impl<'model, 'temporal> HttpRgbRecording<'model, 'temporal> {
     /// Publish native terminal metadata only under the exact independently saved pin.
     /// Existing completion publication revalidates the entire original-read closure.
     pub fn commit_completion(
-        &mut self, expected: HttpCompletionPin, publisher: &mut LocalRootPublisher,
+        &mut self,
+        expected: HttpCompletionPin,
+        publisher: &mut LocalRootPublisher,
         access: HttpRecordingAccess<'_>,
     ) -> Result<LocalPublicationReceipt, HttpRgbRecordingError> {
-        if self.prepared_completion() != Some(expected) { return Err(HttpRgbRecordingError::PlanMismatch); }
+        if self.prepared_completion() != Some(expected) {
+            return Err(HttpRgbRecordingError::PlanMismatch);
+        }
         probe(access)?;
-        if self.capture.step(access.now_ns, access.camera, &mut self.framing)?
+        if self
+            .capture
+            .step(access.now_ns, access.camera, &mut self.framing)?
             != HttpRgbStep::Source(HttpCameraStep::Complete)
             || self.transferred != self.capture.camera().totals().frames
-        { return Err(HttpRgbRecordingError::NotReady); }
-        let receipt = self.terminal.as_ref().ok_or(HttpRgbRecordingError::NotReady)?
+        {
+            return Err(HttpRgbRecordingError::NotReady);
+        }
+        let receipt = self
+            .terminal
+            .as_ref()
+            .ok_or(HttpRgbRecordingError::NotReady)?
             .publish(&self.archive, publisher, access.storage, &mut self.work)?;
         self.complete = Some(expected);
         Ok(receipt)
@@ -341,8 +474,12 @@ impl<'model, 'temporal> HttpRgbRecording<'model, 'temporal> {
     pub fn retire(self) -> HttpRgbRecordingRetirement {
         let work = self.work();
         HttpRgbRecordingRetirement {
-            capture: self.capture.retire(), archive: self.archive, pending_wire: self.wire_plan,
-            prepared_completion: self.terminal, completion: self.complete, work,
+            capture: self.capture.retire(),
+            archive: self.archive,
+            pending_wire: self.wire_plan,
+            prepared_completion: self.terminal,
+            completion: self.complete,
+            work,
         }
     }
 }
@@ -364,7 +501,12 @@ pub struct HttpRgbRecordingRetirement {
 }
 
 fn probe(access: HttpRecordingAccess<'_>) -> Result<(), HttpRgbRecordingError> {
-    if access.storage.cancel_requested(PublishCutPoint::AfterChildrenVerified) {
+    if access
+        .storage
+        .cancel_requested(PublishCutPoint::AfterChildrenVerified)
+    {
         Err(HttpRgbRecordingError::Cancelled)
-    } else { Ok(()) }
+    } else {
+        Ok(())
+    }
 }
