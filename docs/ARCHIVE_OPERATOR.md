@@ -49,8 +49,16 @@ transport output, which must never be interpreted as a complete JSON report.
 ```sh
 fss-archive export "${COMMON[@]}" --expected-snapshot "$SNAPSHOT" \
   --start 0 --end 90000 --output-dir ./case-001 --allow-whole-windows yes \
+  --privacy-root ./deployment --site "$SITE" \
   --max-output-windows 64 --max-output-bytes 268435456 --max-export-bytes 536870912
 ```
+
+Original packets cannot be masked without re-encoding. `--privacy-root DIR --site SITE`
+names the deployment that retains the archive sensor's privacy-mask authority
+(`fss-event privacy-mask declare`); when that sensor has a current retained mask, or
+when no deployment is named, the export is refused before the archive is opened or
+any output exists (`ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001`; no override exists).
+For an unmasked sensor the exported files are unchanged.
 
 The destination must be a **new directory outside the archive**, under an existing
 operator-controlled parent. Export never overwrites, merges with, or implicitly

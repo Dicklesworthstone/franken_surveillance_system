@@ -22,7 +22,9 @@ pub(super) fn build_tracks(
 ) -> Result<Vec<PackageTrack>> {
     record.validate_shape()?;
     if class_index >= record.labels.len() as u64
-        || boundaries.windows(2).any(|pair| pair[0].before_segment >= pair[1].before_segment)
+        || boundaries
+            .windows(2)
+            .any(|pair| pair[0].before_segment >= pair[1].before_segment)
         || boundaries.iter().any(|boundary| {
             boundary.before_segment <= record.first_segment
                 || boundary.before_segment >= record.first_segment + record.segment_count
@@ -38,43 +40,75 @@ pub(super) fn build_tracks(
     let mut greatest_id = 0_u64;
     for frame in &record.frames {
         checkpoint()?;
-        let frame_epoch = boundaries.partition_point(|boundary| boundary.before_segment <= frame.segment);
+        let frame_epoch =
+            boundaries.partition_point(|boundary| boundary.before_segment <= frame.segment);
         if frame_epoch < epoch {
             // Display order may differ from source order within an epoch, but cannot return
             // across a discontinuity to revive pre-gap state. Never sort away this ambiguity.
-            return Err(PackageEventError::InvalidRequest("display order crosses a source discontinuity"));
+            return Err(PackageEventError::InvalidRequest(
+                "display order crosses a source discontinuity",
+            ));
         }
         if frame_epoch != epoch {
             tracker = MultiObjectTracker::new(config.tracker()?)?;
             id_base = greatest_id;
             epoch = frame_epoch;
         }
-        let chosen: Vec<_> = frame.detections.iter()
-            .filter(|detection| detection.class_index == class_index).collect();
-        let detections: Vec<_> = chosen.iter().map(|detection| Detection {
-            box_x: f64::from(detection.bounds[0]) / 256.0,
-            box_y: f64::from(detection.bounds[1]) / 256.0,
-            box_w: f64::from(detection.bounds[2] - detection.bounds[0]) / 256.0,
-            box_h: f64::from(detection.bounds[3] - detection.bounds[1]) / 256.0,
-        }).collect();
+        let chosen: Vec<_> = frame
+            .detections
+            .iter()
+            .filter(|detection| detection.class_index == class_index)
+            .collect();
+        let detections: Vec<_> = chosen
+            .iter()
+            .map(|detection| Detection {
+                box_x: f64::from(detection.bounds[0]) / 256.0,
+                box_y: f64::from(detection.bounds[1]) / 256.0,
+                box_w: f64::from(detection.bounds[2] - detection.bounds[0]) / 256.0,
+                box_h: f64::from(detection.bounds[3] - detection.bounds[1]) / 256.0,
+            })
+            .collect();
         let result = tracker.try_step_assigned(&detections, TrackerLimits::default())?;
-        for target in result.output.tracks.iter().filter(|target| target.misses == 0) {
-            let input_index = result.observed_detection(target.id).ok_or(PackageEventError::Mismatch)?;
+        for target in result
+            .output
+            .tracks
+            .iter()
+            .filter(|target| target.misses == 0)
+        {
+            let input_index = result
+                .observed_detection(target.id)
+                .ok_or(PackageEventError::Mismatch)?;
             let detection = chosen.get(input_index).ok_or(PackageEventError::Mismatch)?;
-            let track_id = id_base.checked_add(target.id).ok_or(PackageEventError::Limit)?;
+            let track_id = id_base
+                .checked_add(target.id)
+                .ok_or(PackageEventError::Limit)?;
             greatest_id = greatest_id.max(track_id);
-            let track_box = [rounded(target.cx), rounded(target.cy), rounded(target.box_w), rounded(target.box_h)];
+            let track_box = [
+                rounded(target.cx),
+                rounded(target.cy),
+                rounded(target.box_w),
+                rounded(target.box_h),
+            ];
             let entry = tracks.entry(track_id).or_insert_with(|| PackageTrack {
-                identity: ContentDigest::sha256(&[]), track_id, confirmed: false, observations: Vec::new(),
+                identity: ContentDigest::sha256(&[]),
+                track_id,
+                confirmed: false,
+                observations: Vec::new(),
             });
             entry.confirmed |= target.status == TrackStatus::Confirmed;
             entry.observations.push(PackageObservation {
-                segment: frame.segment, capsule_digest: frame.capsule_digest, track_box,
+                segment: frame.segment,
+                capsule_digest: frame.capsule_digest,
+                track_box,
                 // This is the actual assigned source row, even if another detection has a
                 // higher score or overlaps the filtered box more closely. The integer IoU is
                 // descriptive geometry only; it cannot substitute a different source row.
-                detection: Some((detection.row, detection.score_bits, detection.bounds,
-                    iou_ppm(detection.bounds, track_box))),
+                detection: Some((
+                    detection.row,
+                    detection.score_bits,
+                    detection.bounds,
+                    iou_ppm(detection.bounds, track_box),
+                )),
             });
         }
     }
@@ -83,37 +117,68 @@ pub(super) fn build_tracks(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::{RecordDetection, RecordFrame};
+    use super::*;
     use fss_core::{CaptureInterval, TimestampNs};
     use std::collections::BTreeSet;
 
     fn record(count: u64) -> PackageDetectionRecord {
         let d = ContentDigest::sha256(b"test");
         PackageDetectionRecord {
-            report_digest: d, package_digest: d, manifest_digest: d,
-            model_id: "MOD-TEST-001".into(), generation: "g1".into(), model_digest: d,
-            graph_digest: d, contract_digest: d, import_identity: d, import_root: d,
-            media_format: "mjpeg".into(), first_segment: 0, segment_count: count,
-            minimum_score_ppm: 0, labels: vec!["person".into()],
-            frames: (0..count).map(|segment| RecordFrame {
-                segment, capsule_digest: ContentDigest::sha256(&segment.to_be_bytes()),
-                sensor_id: "sensor:fixture".into(),
-                capture: CaptureInterval { earliest: TimestampNs(10), latest: TimestampNs(20) },
-                dimensions: [64, 48], color: "jpeg_rgb".into(), inference_identity: d,
-                output_digest: d, detection_report_digest: d,
-                detections: vec![RecordDetection {
-                    row: 7, class_index: 0, score_bits: 0.75_f32.to_bits(),
-                    bounds: [0, 0, 20 * 256, 20 * 256], clipped: false,
-                }],
-            }).collect(),
+            report_digest: d,
+            package_digest: d,
+            manifest_digest: d,
+            model_id: "MOD-TEST-001".into(),
+            generation: "g1".into(),
+            model_digest: d,
+            graph_digest: d,
+            contract_digest: d,
+            import_identity: d,
+            import_root: d,
+            media_format: "mjpeg".into(),
+            first_segment: 0,
+            segment_count: count,
+            minimum_score_ppm: 0,
+            labels: vec!["person".into()],
+            frames: (0..count)
+                .map(|segment| RecordFrame {
+                    segment,
+                    capsule_digest: ContentDigest::sha256(&segment.to_be_bytes()),
+                    sensor_id: "sensor:fixture".into(),
+                    capture: CaptureInterval {
+                        earliest: TimestampNs(10),
+                        latest: TimestampNs(20),
+                    },
+                    dimensions: [64, 48],
+                    color: "jpeg_rgb".into(),
+                    inference_identity: d,
+                    output_digest: d,
+                    detection_report_digest: d,
+                    detections: vec![RecordDetection {
+                        row: 7,
+                        class_index: 0,
+                        score_bits: 0.75_f32.to_bits(),
+                        bounds: [0, 0, 20 * 256, 20 * 256],
+                        clipped: false,
+                    }],
+                })
+                .collect(),
         }
     }
     fn config() -> PackageTrackingConfig {
-        PackageTrackingConfig { confirmation_hits: 3, maximum_missed_frames: 2, minimum_iou_ppm: 100_000 }
+        PackageTrackingConfig {
+            confirmation_hits: 3,
+            maximum_missed_frames: 2,
+            minimum_iou_ppm: 100_000,
+        }
     }
     fn gap(before_segment: u64) -> PackageTrackingBoundary {
-        PackageTrackingBoundary { before_segment, source_gap: true, sequence_gap: false, dimensions_changed: false }
+        PackageTrackingBoundary {
+            before_segment,
+            source_gap: true,
+            sequence_gap: false,
+            dimensions_changed: false,
+        }
     }
 
     #[test]
@@ -132,9 +197,12 @@ mod tests {
         assert_eq!(tracks.len(), 2);
         assert!(tracks.iter().all(|track| track.confirmed));
         for segment in 0..3 {
-            let rows: BTreeSet<_> = tracks.iter().flat_map(|track| &track.observations)
+            let rows: BTreeSet<_> = tracks
+                .iter()
+                .flat_map(|track| &track.observations)
                 .filter(|observation| observation.segment == segment)
-                .filter_map(|observation| observation.detection.map(|detection| detection.0)).collect();
+                .filter_map(|observation| observation.detection.map(|detection| detection.0))
+                .collect();
             assert_eq!(rows, BTreeSet::from([7, 9]));
         }
         Ok(())
@@ -149,8 +217,22 @@ mod tests {
         let split = build_tracks(&input, 0, config(), &[gap(2)], || Ok(()))?;
         assert_eq!(split.len(), 2);
         assert!(split.iter().all(|track| !track.confirmed));
-        assert_eq!(split[0].observations.iter().map(|o| o.segment).collect::<Vec<_>>(), vec![0, 1]);
-        assert_eq!(split[1].observations.iter().map(|o| o.segment).collect::<Vec<_>>(), vec![2, 3]);
+        assert_eq!(
+            split[0]
+                .observations
+                .iter()
+                .map(|o| o.segment)
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        assert_eq!(
+            split[1]
+                .observations
+                .iter()
+                .map(|o| o.segment)
+                .collect::<Vec<_>>(),
+            vec![2, 3]
+        );
         assert_ne!(split[0].track_id, split[1].track_id);
         Ok(())
     }
@@ -158,11 +240,21 @@ mod tests {
     #[test]
     fn post_gap_tracks_can_confirm_without_reusing_pre_gap_ids() -> Result<()> {
         let input = record(6);
-        for boundary in [gap(3), PackageTrackingBoundary {
-            before_segment: 3, source_gap: false, sequence_gap: true, dimensions_changed: false,
-        }, PackageTrackingBoundary {
-            before_segment: 3, source_gap: false, sequence_gap: false, dimensions_changed: true,
-        }] {
+        for boundary in [
+            gap(3),
+            PackageTrackingBoundary {
+                before_segment: 3,
+                source_gap: false,
+                sequence_gap: true,
+                dimensions_changed: false,
+            },
+            PackageTrackingBoundary {
+                before_segment: 3,
+                source_gap: false,
+                sequence_gap: false,
+                dimensions_changed: true,
+            },
+        ] {
             let tracks = build_tracks(&input, 0, config(), &[boundary], || Ok(()))?;
             assert_eq!(tracks.len(), 2);
             assert!(tracks.iter().all(|track| track.confirmed));
@@ -179,8 +271,19 @@ mod tests {
         let mut input = record(6);
         input.frames[1].detections.clear();
         let tracks = build_tracks(&input, 0, config(), &[gap(3)], || Ok(()))?;
-        assert_eq!(tracks.iter().map(|track| track.track_id).collect::<Vec<_>>(), vec![1, 2, 3]);
-        assert!(tracks.iter().flat_map(|track| &track.observations).all(|o| o.segment != 1));
+        assert_eq!(
+            tracks
+                .iter()
+                .map(|track| track.track_id)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        assert!(
+            tracks
+                .iter()
+                .flat_map(|track| &track.observations)
+                .all(|o| o.segment != 1)
+        );
         assert!(!tracks[0].confirmed && !tracks[1].confirmed && tracks[2].confirmed);
         Ok(())
     }
@@ -191,8 +294,22 @@ mod tests {
         input.frames.swap(0, 1);
         input.frames.swap(2, 3);
         let tracks = build_tracks(&input, 0, config(), &[gap(2)], || Ok(()))?;
-        assert_eq!(tracks[0].observations.iter().map(|o| o.segment).collect::<Vec<_>>(), vec![1, 0]);
-        assert_eq!(tracks[1].observations.iter().map(|o| o.segment).collect::<Vec<_>>(), vec![3, 2]);
+        assert_eq!(
+            tracks[0]
+                .observations
+                .iter()
+                .map(|o| o.segment)
+                .collect::<Vec<_>>(),
+            vec![1, 0]
+        );
+        assert_eq!(
+            tracks[1]
+                .observations
+                .iter()
+                .map(|o| o.segment)
+                .collect::<Vec<_>>(),
+            vec![3, 2]
+        );
         input.frames.swap(1, 2);
         assert!(build_tracks(&input, 0, config(), &[gap(2)], || Ok(())).is_err());
         Ok(())
@@ -204,13 +321,22 @@ mod tests {
         let mut calls = 0;
         let cancelled = build_tracks(&input, 0, config(), &[], || {
             calls += 1;
-            if calls == 3 { Err(PackageEventError::Cancelled) } else { Ok(()) }
+            if calls == 3 {
+                Err(PackageEventError::Cancelled)
+            } else {
+                Ok(())
+            }
         });
         assert!(matches!(cancelled, Err(PackageEventError::Cancelled)));
         assert_eq!(calls, 3);
         let mut excess = record(1);
         let seed = excess.frames[0].detections[0];
-        excess.frames[0].detections = (0..129).map(|row| RecordDetection { row, ..seed }).collect();
-        assert!(matches!(build_tracks(&excess, 0, config(), &[], || Ok(())), Err(PackageEventError::Limit)));
+        excess.frames[0].detections = (0..129)
+            .map(|row| RecordDetection { row, ..seed })
+            .collect();
+        assert!(matches!(
+            build_tracks(&excess, 0, config(), &[], || Ok(())),
+            Err(PackageEventError::Limit)
+        ));
     }
 }

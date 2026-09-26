@@ -6,8 +6,8 @@ use std::collections::BTreeSet;
 use fss_core::{DigestAlgorithm, SensorId};
 
 use super::{
-    MAX_DETECTIONS, MAX_LABELS, MAX_PACKAGE_DETECT_FRAMES, MAX_TEXT,
-    PackageDetectionRecord, PackageEventError, ReferenceDeployment, ReplayCx, Result, checkpoint,
+    MAX_DETECTIONS, MAX_LABELS, MAX_PACKAGE_DETECT_FRAMES, MAX_TEXT, PackageDetectionRecord,
+    PackageEventError, ReferenceDeployment, ReplayCx, Result, checkpoint,
 };
 use crate::ingest::recorded_decode::{RecordedDecodeError, source_capsule};
 use crate::ingest::{RetainedFileImport, RetainedReadLimits};
@@ -31,17 +31,26 @@ impl PackageDetectionRecord {
     /// Display order is allowed to differ from source order, but every requested segment must
     /// occur exactly once. This does not attest numerical inference or source custody.
     pub(super) fn validate_shape(&self) -> Result<()> {
-        if self.segment_count == 0 || self.segment_count > MAX_PACKAGE_DETECT_FRAMES as u64
+        if self.segment_count == 0
+            || self.segment_count > MAX_PACKAGE_DETECT_FRAMES as u64
             || self.frames.len() != self.segment_count as usize
-            || self.labels.is_empty() || self.labels.len() > MAX_LABELS
+            || self.labels.is_empty()
+            || self.labels.len() > MAX_LABELS
             || self.minimum_score_ppm > 1_000_000
         {
             return Err(PackageEventError::Mismatch);
         }
-        let end = self.first_segment.checked_add(self.segment_count)
+        let end = self
+            .first_segment
+            .checked_add(self.segment_count)
             .ok_or(PackageEventError::Mismatch)?;
-        if [&self.model_id, &self.generation].into_iter().any(|s| s.is_empty() || s.len() > MAX_TEXT)
-            || self.labels.iter().any(|s| s.is_empty() || s.len() > MAX_TEXT)
+        if [&self.model_id, &self.generation]
+            .into_iter()
+            .any(|s| s.is_empty() || s.len() > MAX_TEXT)
+            || self
+                .labels
+                .iter()
+                .any(|s| s.is_empty() || s.len() > MAX_TEXT)
             || self.labels.iter().collect::<BTreeSet<_>>().len() != self.labels.len()
         {
             return Err(PackageEventError::Mismatch);
@@ -51,9 +60,18 @@ impl PackageDetectionRecord {
             "annexb" | "hevc" => "ycbcr420_bt601_limited_rgb",
             _ => return Err(PackageEventError::Mismatch),
         };
-        if [self.report_digest, self.package_digest, self.manifest_digest, self.model_digest,
-            self.graph_digest, self.contract_digest, self.import_identity, self.import_root]
-            .iter().any(|d| d.algorithm() != DigestAlgorithm::Sha256)
+        if [
+            self.report_digest,
+            self.package_digest,
+            self.manifest_digest,
+            self.model_digest,
+            self.graph_digest,
+            self.contract_digest,
+            self.import_identity,
+            self.import_root,
+        ]
+        .iter()
+        .any(|d| d.algorithm() != DigestAlgorithm::Sha256)
         {
             return Err(PackageEventError::Mismatch);
         }
@@ -62,26 +80,46 @@ impl PackageDetectionRecord {
         let mut segments = BTreeSet::new();
         let mut capsules = BTreeSet::new();
         for frame in &self.frames {
-            if frame.segment < self.first_segment || frame.segment >= end
-                || !segments.insert(frame.segment) || !capsules.insert(frame.capsule_digest)
-                || frame.sensor_id != *sensor || frame.color != color
+            if frame.segment < self.first_segment
+                || frame.segment >= end
+                || !segments.insert(frame.segment)
+                || !capsules.insert(frame.capsule_digest)
+                || frame.sensor_id != *sensor
+                || frame.color != color
                 || frame.capture.earliest > frame.capture.latest
                 || frame.detections.len() > MAX_DETECTIONS
-                || [frame.capsule_digest, frame.inference_identity, frame.output_digest,
-                    frame.detection_report_digest].iter().any(|d| d.algorithm() != DigestAlgorithm::Sha256)
+                || [
+                    frame.capsule_digest,
+                    frame.inference_identity,
+                    frame.output_digest,
+                    frame.detection_report_digest,
+                ]
+                .iter()
+                .any(|d| d.algorithm() != DigestAlgorithm::Sha256)
             {
                 return Err(PackageEventError::Mismatch);
             }
             let [width, height] = frame.dimensions;
-            let right = width.checked_mul(256).filter(|v| *v > 0).ok_or(PackageEventError::Mismatch)?;
-            let bottom = height.checked_mul(256).filter(|v| *v > 0).ok_or(PackageEventError::Mismatch)?;
+            let right = width
+                .checked_mul(256)
+                .filter(|v| *v > 0)
+                .ok_or(PackageEventError::Mismatch)?;
+            let bottom = height
+                .checked_mul(256)
+                .filter(|v| *v > 0)
+                .ok_or(PackageEventError::Mismatch)?;
             let mut rows = BTreeSet::new();
             for detection in &frame.detections {
                 let score = f32::from_bits(detection.score_bits);
                 let [x0, y0, x1, y1] = detection.bounds;
-                if !rows.insert(detection.row) || detection.class_index >= self.labels.len() as u64
-                    || !score.is_finite() || !(0.0..=1.0).contains(&score)
-                    || x0 >= x1 || y0 >= y1 || x1 > right || y1 > bottom
+                if !rows.insert(detection.row)
+                    || detection.class_index >= self.labels.len() as u64
+                    || !score.is_finite()
+                    || !(0.0..=1.0).contains(&score)
+                    || x0 >= x1
+                    || y0 >= y1
+                    || x1 > right
+                    || y1 > bottom
                 {
                     return Err(PackageEventError::Mismatch);
                 }
@@ -124,7 +162,9 @@ pub(super) fn verify_sources(
     let limits = RetainedReadLimits::default();
     let retained = RetainedFileImport::open(deployment, record.import_identity, limits, cx)
         .map_err(RecordedDecodeError::from)?;
-    if retained.import_root() != record.import_root || retained.manifest().format != record.media_format {
+    if retained.import_root() != record.import_root
+        || retained.manifest().format != record.media_format
+    {
         return Err(PackageEventError::Mismatch);
     }
     let mut ordered: Vec<_> = record.frames.iter().collect();
@@ -136,17 +176,24 @@ pub(super) fn verify_sources(
         checkpoint(cx, "package_event:verify_source_frame")?;
         let segment = usize::try_from(frame.segment).map_err(|_| PackageEventError::Limit)?;
         let (capsule, digest) = source_capsule(deployment, &retained, segment)?;
-        if digest != frame.capsule_digest || capsule.sensor_id.as_str() != frame.sensor_id
+        if digest != frame.capsule_digest
+            || capsule.sensor_id.as_str() != frame.sensor_id
             || capsule.capture != frame.capture
         {
             return Err(PackageEventError::Mismatch);
         }
-        if clock.as_ref().is_some_and(|basis| basis != &capsule.clock_basis) {
-            return Err(PackageEventError::InvalidRequest("package event source clock changed"));
+        if clock
+            .as_ref()
+            .is_some_and(|basis| basis != &capsule.clock_basis)
+        {
+            return Err(PackageEventError::InvalidRequest(
+                "package event source clock changed",
+            ));
         }
         clock = Some(capsule.clock_basis.clone());
         // Drop each verified segment before reading the next; never buffer the source range.
-        let bytes = retained.read_segment(deployment, segment, limits, cx)
+        let bytes = retained
+            .read_segment(deployment, segment, limits, cx)
             .map_err(RecordedDecodeError::from)?;
         drop(bytes);
         let point = SourcePoint {
@@ -167,34 +214,57 @@ pub(super) fn verify_sources(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::{RecordDetection, RecordFrame};
+    use super::*;
     use fss_core::{CaptureInterval, ContentDigest, TimestampNs};
 
     fn record() -> PackageDetectionRecord {
         let d = ContentDigest::sha256(b"fixture");
         PackageDetectionRecord {
-            report_digest: d, package_digest: d, manifest_digest: d,
-            model_id: "MOD-TEST-001".into(), generation: "g1".into(), model_digest: d,
-            graph_digest: d, contract_digest: d, import_identity: d, import_root: d,
-            media_format: "mjpeg".into(), first_segment: 0, segment_count: 2,
-            minimum_score_ppm: 300_000, labels: vec!["person".into()],
-            frames: (0..2_u64).map(|segment| RecordFrame {
-                segment, capsule_digest: ContentDigest::sha256(&segment.to_be_bytes()),
-                sensor_id: "sensor:fixture".into(),
-                capture: CaptureInterval { earliest: TimestampNs(10), latest: TimestampNs(20) },
-                dimensions: [64, 48], color: "jpeg_rgb".into(), inference_identity: d,
-                output_digest: d, detection_report_digest: d,
-                detections: vec![RecordDetection {
-                    row: 7, class_index: 0, score_bits: 0.75_f32.to_bits(),
-                    bounds: [0, 0, 256, 512], clipped: false,
-                }],
-            }).collect(),
+            report_digest: d,
+            package_digest: d,
+            manifest_digest: d,
+            model_id: "MOD-TEST-001".into(),
+            generation: "g1".into(),
+            model_digest: d,
+            graph_digest: d,
+            contract_digest: d,
+            import_identity: d,
+            import_root: d,
+            media_format: "mjpeg".into(),
+            first_segment: 0,
+            segment_count: 2,
+            minimum_score_ppm: 300_000,
+            labels: vec!["person".into()],
+            frames: (0..2_u64)
+                .map(|segment| RecordFrame {
+                    segment,
+                    capsule_digest: ContentDigest::sha256(&segment.to_be_bytes()),
+                    sensor_id: "sensor:fixture".into(),
+                    capture: CaptureInterval {
+                        earliest: TimestampNs(10),
+                        latest: TimestampNs(20),
+                    },
+                    dimensions: [64, 48],
+                    color: "jpeg_rgb".into(),
+                    inference_identity: d,
+                    output_digest: d,
+                    detection_report_digest: d,
+                    detections: vec![RecordDetection {
+                        row: 7,
+                        class_index: 0,
+                        score_bits: 0.75_f32.to_bits(),
+                        bounds: [0, 0, 256, 512],
+                        clipped: false,
+                    }],
+                })
+                .collect(),
         }
     }
 
     #[test]
-    fn complete_display_reordering_is_allowed_but_sparse_duplicate_and_foreign_frames_are_not() -> Result<()> {
+    fn complete_display_reordering_is_allowed_but_sparse_duplicate_and_foreign_frames_are_not()
+    -> Result<()> {
         let original = record();
         original.validate_shape()?;
         let mut reordered = original.clone();
@@ -247,24 +317,43 @@ mod tests {
 
     #[test]
     fn every_source_boundary_reason_is_retained_independently() {
-        let previous = SourcePoint { segment: 7, sequence: 12, gap_before: false, dimensions: [64, 48] };
+        let previous = SourcePoint {
+            segment: 7,
+            sequence: 12,
+            gap_before: false,
+            dimensions: [64, 48],
+        };
         for flags in 0..8_u8 {
             let current = SourcePoint {
-                segment: 8, sequence: if flags & 2 == 0 { 13 } else { 19 },
+                segment: 8,
+                sequence: if flags & 2 == 0 { 13 } else { 19 },
                 gap_before: flags & 1 != 0,
                 dimensions: if flags & 4 == 0 { [64, 48] } else { [128, 96] },
             };
             let result = boundary(previous, current);
-            if flags == 0 { assert!(result.is_none()); }
-            else {
-                assert_eq!(result, Some(PackageTrackingBoundary {
-                    before_segment: 8, source_gap: flags & 1 != 0,
-                    sequence_gap: flags & 2 != 0, dimensions_changed: flags & 4 != 0,
-                }));
+            if flags == 0 {
+                assert!(result.is_none());
+            } else {
+                assert_eq!(
+                    result,
+                    Some(PackageTrackingBoundary {
+                        before_segment: 8,
+                        source_gap: flags & 1 != 0,
+                        sequence_gap: flags & 2 != 0,
+                        dimensions_changed: flags & 4 != 0,
+                    })
+                );
             }
         }
-        let exhausted = SourcePoint { sequence: u64::MAX, ..previous };
-        let wrapped = SourcePoint { sequence: 0, segment: 8, ..previous };
+        let exhausted = SourcePoint {
+            sequence: u64::MAX,
+            ..previous
+        };
+        let wrapped = SourcePoint {
+            sequence: 0,
+            segment: 8,
+            ..previous
+        };
         assert!(boundary(exhausted, wrapped).is_some_and(|value| value.sequence_gap));
     }
 }

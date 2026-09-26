@@ -28,9 +28,9 @@
 //!   exports, and any alert that may have been transmitted.
 
 mod commit;
-mod index;
 /// Approval-gated preservation of retained imports and their shared derivative closures.
 pub mod holds;
+mod index;
 mod plan;
 mod walk;
 
@@ -221,7 +221,9 @@ impl From<SpoolError> for DeletionError {
 }
 
 impl From<holds::HoldError> for DeletionError {
-    fn from(value: holds::HoldError) -> Self { Self::Hold(Box::new(value)) }
+    fn from(value: holds::HoldError) -> Self {
+        Self::Hold(Box::new(value))
+    }
 }
 
 /// Computes the sealed deletion plan of `import` (`CAP-DELETE-PREPARE-001`). Writes nothing.

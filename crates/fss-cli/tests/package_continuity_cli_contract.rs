@@ -13,7 +13,8 @@ impl OwnedDirectory {
     fn new() -> TestResult<Self> {
         for attempt in 0..100_u32 {
             let path = std::env::temp_dir().join(format!(
-                "fss-package-continuity-{}-{attempt}", std::process::id()
+                "fss-package-continuity-{}-{attempt}",
+                std::process::id()
             ));
             match fs::create_dir(&path) {
                 Ok(()) => return Ok(Self(path)),
@@ -25,7 +26,9 @@ impl OwnedDirectory {
     }
 }
 impl Drop for OwnedDirectory {
-    fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
 }
 
 #[test]
@@ -43,7 +46,11 @@ fn source_discontinuity_and_custody_loss_cannot_authorize_a_package_event() -> T
         .arg(repository.join("models/yolox-nano/yolox_nano.fmpk"))
         .arg(&directory.0)
         .output()?;
-    assert!(output.status.success(), "stdout={} stderr={}",
-        String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
     Ok(())
 }

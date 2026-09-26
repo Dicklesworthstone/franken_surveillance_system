@@ -13,9 +13,8 @@ struct OwnedDirectory(PathBuf);
 impl OwnedDirectory {
     fn new() -> TestResult<Self> {
         for attempt in 0..100_u32 {
-            let path = std::env::temp_dir().join(format!(
-                "fss-sentinel-cli-{}-{attempt}", std::process::id()
-            ));
+            let path = std::env::temp_dir()
+                .join(format!("fss-sentinel-cli-{}-{attempt}", std::process::id()));
             match fs::create_dir(&path) {
                 Ok(()) => return Ok(Self(path)),
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}

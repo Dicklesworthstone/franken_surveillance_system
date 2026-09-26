@@ -366,14 +366,21 @@ impl PackageDetectionRecord {
         e.bytes(RECORD_MAGIC);
         e.u32(1);
         e.text(PACKAGE_DETECTION_RECORD_DOMAIN);
-        for digest in [self.report_digest, self.package_digest, self.manifest_digest] {
+        for digest in [
+            self.report_digest,
+            self.package_digest,
+            self.manifest_digest,
+        ] {
             e.digest(digest);
         }
         e.text(&self.model_id);
         e.text(&self.generation);
         for digest in [
-            self.model_digest, self.graph_digest, self.contract_digest,
-            self.import_identity, self.import_root,
+            self.model_digest,
+            self.graph_digest,
+            self.contract_digest,
+            self.import_identity,
+            self.import_root,
         ] {
             e.digest(digest);
         }
@@ -459,20 +466,44 @@ impl PackageDetectionRecord {
             let mut detections = Vec::with_capacity(m);
             for _ in 0..m {
                 detections.push(RecordDetection {
-                    row: d.u64()?, class_index: d.u64()?, score_bits: d.u32()?,
-                    bounds: [d.u32()?, d.u32()?, d.u32()?], clipped: d.bool()?,
+                    row: d.u64()?,
+                    class_index: d.u64()?,
+                    score_bits: d.u32()?,
+                    bounds: [d.u32()?, d.u32()?, d.u32()?],
+                    clipped: d.bool()?,
                 });
             }
             frames.push(RecordFrame {
-                segment, capsule_digest, sensor_id, capture, dimensions, color,
-                inference_identity, output_digest, detection_report_digest, detections,
+                segment,
+                capsule_digest,
+                sensor_id,
+                capture,
+                dimensions,
+                color,
+                inference_identity,
+                output_digest,
+                detection_report_digest,
+                detections,
             });
         }
         d.ensure_finished()?;
         let record = Self {
-            report_digest, package_digest, manifest_digest, model_id, generation, model_digest,
-            graph_digest, contract_digest, import_identity, import_root, media_format,
-            first_segment, segment_count, minimum_score_ppm, labels, frames,
+            report_digest,
+            package_digest,
+            manifest_digest,
+            model_id,
+            generation,
+            model_digest,
+            graph_digest,
+            contract_digest,
+            import_identity,
+            import_root,
+            media_format,
+            first_segment,
+            segment_count,
+            minimum_score_ppm,
+            labels,
+            frames,
         };
         if record.encode()? != bytes {
             return Err(PackageEventError::Mismatch);
@@ -485,7 +516,10 @@ impl PackageDetectionRecord {
             .map_err(|_| PackageEventError::Mismatch)
     }
     fn batch_id(&self) -> Result<BatchId> {
-        Ok(BatchId::parse(format!("batch:package-detection:{}", hex(self.report_digest)))?)
+        Ok(BatchId::parse(format!(
+            "batch:package-detection:{}",
+            hex(self.report_digest)
+        ))?)
     }
     fn validity(&self) -> Result<CaptureInterval> {
         let first = self.frames.first().ok_or(PackageEventError::Limit)?.capture;
@@ -502,7 +536,11 @@ impl PackageDetectionRecord {
         let mut children = BTreeSet::from([self.report_digest, self.import_root]);
         children.extend(self.frames.iter().map(|f| f.capsule_digest));
         children.remove(&record_digest);
-        Ok(ObjectManifest::new(self.slot()?.as_str(), children, Some(record_digest))?)
+        Ok(ObjectManifest::new(
+            self.slot()?.as_str(),
+            children,
+            Some(record_digest),
+        )?)
     }
     fn delta(&self, record_digest: ContentDigest, root: ContentDigest) -> Result<EvidenceDelta> {
         let id = hex(self.report_digest);
@@ -510,8 +548,12 @@ impl PackageDetectionRecord {
             delta_id: format!("delta:package-detection:{id}"),
             family: PACKAGE_DETECTION_FAMILY.to_owned(),
             object_id: ObjectId::parse(format!("object:package-detection:{id}"))?,
-            prior_generation: None, new_generation: 1, validity: self.validity()?,
-            plane: Plane::Cognition, payload_digest: record_digest, witness_digest: Some(root),
+            prior_generation: None,
+            new_generation: 1,
+            validity: self.validity()?,
+            plane: Plane::Cognition,
+            payload_digest: record_digest,
+            witness_digest: Some(root),
             operation_id: None,
         })
     }
@@ -556,7 +598,11 @@ impl RetainedPackageDetection {
     ) -> Result<Self> {
         checkpoint(cx, "package_event:open")?;
         let target = BatchId::parse(format!("batch:package-detection:{}", hex(report_digest)))?;
-        let batch = deployment.ledger().batches().iter().find(|b| b.batch_id == target)
+        let batch = deployment
+            .ledger()
+            .batches()
+            .iter()
+            .find(|b| b.batch_id == target)
             .ok_or(PackageEventError::Unavailable)?;
         let [delta] = batch.deltas.as_slice() else {
             return Err(PackageEventError::Mismatch);
@@ -574,7 +620,10 @@ impl RetainedPackageDetection {
         children.dedup();
         if *delta != record.delta(delta.payload_digest, root)?
             || batch.children != children
-            || deployment.publisher().root(&record.slot()?).is_none_or(|r| r.root != root)
+            || deployment
+                .publisher()
+                .root(&record.slot()?)
+                .is_none_or(|r| r.root != root)
             || read_verified(deployment, root)? != manifest.canonical_bytes()
         {
             return Err(PackageEventError::Mismatch);
@@ -582,28 +631,44 @@ impl RetainedPackageDetection {
         read_verified(deployment, record.report_digest)?;
         let boundaries = source_validation::verify_sources(deployment, &record, cx)?;
         Ok(Self {
-            record, record_digest: delta.payload_digest, root, anchor: batch.new_anchor.clone(),
-            status: RetentionStatus::AlreadyRetained, boundaries,
+            record,
+            record_digest: delta.payload_digest,
+            root,
+            anchor: batch.new_anchor.clone(),
+            status: RetentionStatus::AlreadyRetained,
+            boundaries,
         })
     }
     /// Verified record.
     #[must_use]
-    pub fn record(&self) -> &PackageDetectionRecord { &self.record }
+    pub fn record(&self) -> &PackageDetectionRecord {
+        &self.record
+    }
     /// Record (ledger payload) digest.
     #[must_use]
-    pub fn record_digest(&self) -> ContentDigest { self.record_digest }
+    pub fn record_digest(&self) -> ContentDigest {
+        self.record_digest
+    }
     /// Retained root.
     #[must_use]
-    pub fn root(&self) -> ContentDigest { self.root }
+    pub fn root(&self) -> ContentDigest {
+        self.root
+    }
     /// Anchor of the retention batch.
     #[must_use]
-    pub fn authority_anchor(&self) -> &LedgerAnchor { &self.anchor }
+    pub fn authority_anchor(&self) -> &LedgerAnchor {
+        &self.anchor
+    }
     /// Whether this call retained it.
     #[must_use]
-    pub fn status(&self) -> RetentionStatus { self.status }
+    pub fn status(&self) -> RetentionStatus {
+        self.status
+    }
     /// Revalidated discontinuities in source-segment order; all reasons are retained.
     #[must_use]
-    pub fn boundaries(&self) -> &[PackageTrackingBoundary] { &self.boundaries }
+    pub fn boundaries(&self) -> &[PackageTrackingBoundary] {
+        &self.boundaries
+    }
 }
 
 /// Retains a completed package detection computed by this deployment (root-last, then one
@@ -616,13 +681,21 @@ pub fn retain_package_detection(
 ) -> Result<RetainedPackageDetection> {
     checkpoint(cx, "package_event:retain")?;
     if report.digest != ContentDigest::sha256(report.json.as_bytes())
-        || report.frames.iter().any(|f| f.detections.contract_digest() != report.contract)
+        || report
+            .frames
+            .iter()
+            .any(|f| f.detections.contract_digest() != report.contract)
     {
         return Err(PackageEventError::Mismatch);
     }
     let record = PackageDetectionRecord::from_report(package, report)?;
     let target = record.batch_id()?;
-    if deployment.ledger().batches().iter().any(|b| b.batch_id == target) {
+    if deployment
+        .ledger()
+        .batches()
+        .iter()
+        .any(|b| b.batch_id == target)
+    {
         let existing = RetainedPackageDetection::open(deployment, record.report_digest, cx)?;
         if existing.record != record {
             return Err(PackageEventError::Mismatch);
@@ -649,7 +722,9 @@ pub fn retain_package_detection(
         deployment.publisher_mut().verify_object(*digest)?;
     }
     if existing_root.is_none() {
-        deployment.publisher_mut().stage_manifest(&slot, &manifest)?;
+        deployment
+            .publisher_mut()
+            .stage_manifest(&slot, &manifest)?;
     }
     deployment.publish_and_commit(&slot, &manifest, record.validity()?, cx)?;
     checkpoint(cx, "package_event:retain_commit")?;
@@ -659,7 +734,11 @@ pub fn retain_package_detection(
     let anchor = deployment.append_batch(record.batch_id()?, vec![delta], children, cx)?;
     cx.checkpoint_post_commit("package_event:retained");
     Ok(RetainedPackageDetection {
-        root: manifest.root(), record, record_digest, anchor, status: RetentionStatus::Retained,
+        root: manifest.root(),
+        record,
+        record_digest,
+        anchor,
+        status: RetentionStatus::Retained,
         boundaries,
     })
 }
@@ -677,12 +756,16 @@ pub struct PackageTrackingConfig {
 impl PackageTrackingConfig {
     fn tracker(&self) -> Result<TrackerConfig> {
         if self.minimum_iou_ppm > 1_000_000 {
-            return Err(PackageEventError::InvalidRequest("minimum IoU must be at most 1000000 ppm"));
+            return Err(PackageEventError::InvalidRequest(
+                "minimum IoU must be at most 1000000 ppm",
+            ));
         }
         let config = TrackerConfig {
-            min_hits: self.confirmation_hits, max_misses: self.maximum_missed_frames,
+            min_hits: self.confirmation_hits,
+            max_misses: self.maximum_missed_frames,
             iou_threshold: f64::from(self.minimum_iou_ppm) / 1_000_000.0,
-            process_noise: PROCESS_NOISE, measurement_noise: MEASUREMENT_NOISE,
+            process_noise: PROCESS_NOISE,
+            measurement_noise: MEASUREMENT_NOISE,
         };
         config.validate()?;
         Ok(config)
@@ -728,7 +811,9 @@ pub struct PackageAnalysisReport {
     digest: ContentDigest,
 }
 
-fn rounded(value: f64) -> i64 { value.round() as i64 }
+fn rounded(value: f64) -> i64 {
+    value.round() as i64
+}
 
 impl PackageAnalysisReport {
     /// Identifies both retained v1 and current v2 package analyses. V1 reaches the explicit
@@ -755,9 +840,10 @@ impl PackageAnalysisReport {
         let class_index = record.labels.iter().position(|l| l == label).ok_or(
             PackageEventError::InvalidRequest("label is not in the package vocabulary"),
         )? as u64;
-        let mut tracks = tracking::build_tracks(record, class_index, config, retained.boundaries(), || {
-            checkpoint(cx, "package_event:frame")
-        })?;
+        let mut tracks =
+            tracking::build_tracks(record, class_index, config, retained.boundaries(), || {
+                checkpoint(cx, "package_event:frame")
+            })?;
         for track in &mut tracks {
             let mut e = CanonicalEncoder::new();
             e.text(TRACK_DOMAIN);
@@ -775,8 +861,13 @@ impl PackageAnalysisReport {
             return Err(PackageEventError::Limit);
         }
         Ok(Self {
-            retained, label: label.to_owned(), class_index, config, tracks,
-            digest: ContentDigest::sha256(&bytes), bytes,
+            retained,
+            label: label.to_owned(),
+            class_index,
+            config,
+            tracks,
+            digest: ContentDigest::sha256(&bytes),
+            bytes,
         })
     }
 
@@ -802,17 +893,23 @@ impl PackageAnalysisReport {
             ));
         }
         if magic != REPORT_MAGIC || d.u32()? != 2 || d.text()? != PACKAGE_ANALYSIS_REPORT_DOMAIN {
-            return Err(PackageEventError::InvalidRequest("not a supported package analysis report"));
+            return Err(PackageEventError::InvalidRequest(
+                "not a supported package analysis report",
+            ));
         }
         if d.digest()? != ContentDigest::sha256(POLICY) {
-            return Err(PackageEventError::InvalidRequest("unsupported package analysis policy; regenerate report"));
+            return Err(PackageEventError::InvalidRequest(
+                "unsupported package analysis policy; regenerate report",
+            ));
         }
         let report_digest = d.digest()?;
         let _record = d.digest()?;
         let label = text(&mut d)?;
         let _class = d.u64()?;
         let config = PackageTrackingConfig {
-            confirmation_hits: d.u32()?, maximum_missed_frames: d.u32()?, minimum_iou_ppm: d.u32()?,
+            confirmation_hits: d.u32()?,
+            maximum_missed_frames: d.u32()?,
+            minimum_iou_ppm: d.u32()?,
         };
         let report = Self::read(deployment, report_digest, &label, config, cx)?;
         if report.bytes != bytes {
@@ -823,28 +920,44 @@ impl PackageAnalysisReport {
 
     /// Canonical bytes, including every source-continuity boundary and its reasons.
     #[must_use]
-    pub fn encoded(&self) -> &[u8] { &self.bytes }
+    pub fn encoded(&self) -> &[u8] {
+        &self.bytes
+    }
     /// SHA-256 of the canonical bytes.
     #[must_use]
-    pub fn digest(&self) -> ContentDigest { self.digest }
+    pub fn digest(&self) -> ContentDigest {
+        self.digest
+    }
     /// Retained detection the report was rebuilt from.
     #[must_use]
-    pub fn retained(&self) -> &RetainedPackageDetection { &self.retained }
+    pub fn retained(&self) -> &RetainedPackageDetection {
+        &self.retained
+    }
     /// Tracked label.
     #[must_use]
-    pub fn label(&self) -> &str { &self.label }
+    pub fn label(&self) -> &str {
+        &self.label
+    }
     /// Every track of the label, confirmed or not, in analysis-local id order.
     #[must_use]
-    pub fn tracks(&self) -> &[PackageTrack] { &self.tracks }
+    pub fn tracks(&self) -> &[PackageTrack] {
+        &self.tracks
+    }
     /// Index of the tracked label in the package vocabulary.
     #[must_use]
-    pub fn class_index(&self) -> u64 { self.class_index }
+    pub fn class_index(&self) -> u64 {
+        self.class_index
+    }
     /// Tracking policy.
     #[must_use]
-    pub fn config(&self) -> PackageTrackingConfig { self.config }
+    pub fn config(&self) -> PackageTrackingConfig {
+        self.config
+    }
     /// Explicit source discontinuities retained in this analysis and bound by its digest.
     #[must_use]
-    pub fn boundaries(&self) -> &[PackageTrackingBoundary] { self.retained.boundaries() }
+    pub fn boundaries(&self) -> &[PackageTrackingBoundary] {
+        self.retained.boundaries()
+    }
 }
 
 fn encode_report(
@@ -872,7 +985,13 @@ fn encode_report(
     for frame in &record.frames {
         e.u64(frame.segment);
         e.digest(frame.capsule_digest);
-        e.u64(frame.detections.iter().filter(|d| d.class_index == class_index).count() as u64);
+        e.u64(
+            frame
+                .detections
+                .iter()
+                .filter(|d| d.class_index == class_index)
+                .count() as u64,
+        );
     }
     e.u64(retained.boundaries.len() as u64);
     for boundary in &retained.boundaries {
@@ -890,13 +1009,17 @@ fn encode_report(
         for o in &track.observations {
             e.u64(o.segment);
             e.digest(o.capsule_digest);
-            for value in o.track_box { e.i128(i128::from(value)); }
+            for value in o.track_box {
+                e.i128(i128::from(value));
+            }
             match o.detection {
                 Some((row, score, bounds, iou)) => {
                     e.u8(1);
                     e.u64(row);
                     e.u32(score);
-                    for value in bounds { e.u32(value); }
+                    for value in bounds {
+                        e.u32(value);
+                    }
                     e.u32(iou);
                 }
                 None => e.u8(0),
@@ -942,11 +1065,19 @@ fn insert(objects: &mut BTreeMap<ContentDigest, Vec<u8>>, bytes: Vec<u8>) -> Con
 }
 
 fn provenance(report: &PackageAnalysisReport, track: ContentDigest) -> Result<Provenance> {
-    let selected = report.tracks.iter().find(|t| t.identity == track && t.confirmed)
+    let selected = report
+        .tracks
+        .iter()
+        .find(|t| t.identity == track && t.confirmed)
         .ok_or(PackageEventError::TrackUnavailable)?;
     let record = report.retained.record();
-    let frames: BTreeMap<u64, &RecordFrame> = record.frames.iter().map(|f| (f.segment, f)).collect();
-    let sensor = &record.frames.first().ok_or(PackageEventError::Limit)?.sensor_id;
+    let frames: BTreeMap<u64, &RecordFrame> =
+        record.frames.iter().map(|f| (f.segment, f)).collect();
+    let sensor = &record
+        .frames
+        .first()
+        .ok_or(PackageEventError::Limit)?
+        .sensor_id;
     let mut objects = BTreeMap::new();
     insert(&mut objects, report.bytes.clone());
     let policy = insert(&mut objects, POLICY.to_vec());
@@ -957,7 +1088,9 @@ fn provenance(report: &PackageAnalysisReport, track: ContentDigest) -> Result<Pr
     let mut interval: Option<CaptureInterval> = None;
     for o in &selected.observations {
         let frame = frames.get(&o.segment).ok_or(PackageEventError::Mismatch)?;
-        if frame.sensor_id != *sensor { return Err(PackageEventError::Mismatch); }
+        if frame.sensor_id != *sensor {
+            return Err(PackageEventError::Mismatch);
+        }
         let mut e = CanonicalEncoder::new();
         e.text(OBSERVATION_DOMAIN);
         e.digest(report.digest);
@@ -969,14 +1102,18 @@ fn provenance(report: &PackageAnalysisReport, track: ContentDigest) -> Result<Pr
         e.digest(frame.inference_identity);
         e.digest(frame.output_digest);
         e.digest(frame.detection_report_digest);
-        for value in o.track_box { e.i128(i128::from(value)); }
+        for value in o.track_box {
+            e.i128(i128::from(value));
+        }
         match o.detection {
             Some((row, score, bounds, iou)) => {
                 e.u8(1);
                 e.text(&report.label);
                 e.u64(row);
                 e.u32(score);
-                for value in bounds { e.u32(value); }
+                for value in bounds {
+                    e.u32(value);
+                }
                 e.u32(iou);
             }
             None => e.u8(0),
@@ -986,15 +1123,24 @@ fn provenance(report: &PackageAnalysisReport, track: ContentDigest) -> Result<Pr
         children.insert(o.capsule_digest);
         interval = Some(match interval {
             Some(old) => CaptureInterval::new(
-                old.earliest.min(frame.capture.earliest), old.latest.max(frame.capture.latest),
+                old.earliest.min(frame.capture.earliest),
+                old.latest.max(frame.capture.latest),
             )?,
             None => frame.capture,
         });
         let supports = o.detection.is_some();
         evidence.push(EventEvidence {
-            digest, class: EvidenceClass::Derived, failure_domain: failure_domain.clone(), supports,
-            relation: if supports { EvidenceEdgeRelation::Supports } else { EvidenceEdgeRelation::DerivedFrom },
-            capsule_digest: Some(o.capsule_digest), identity_digest: Some(sensor_digest),
+            digest,
+            class: EvidenceClass::Derived,
+            failure_domain: failure_domain.clone(),
+            supports,
+            relation: if supports {
+                EvidenceEdgeRelation::Supports
+            } else {
+                EvidenceEdgeRelation::DerivedFrom
+            },
+            capsule_digest: Some(o.capsule_digest),
+            identity_digest: Some(sensor_digest),
         });
     }
     let interval = interval.ok_or(PackageEventError::TrackUnavailable)?;
@@ -1019,20 +1165,37 @@ fn provenance(report: &PackageAnalysisReport, track: ContentDigest) -> Result<Pr
     let event = EventHypothesis {
         schema: EventHypothesis::SCHEMA.to_owned(),
         event_id: EventId::parse(format!("event:package:{}", hex(track)))?,
-        revision: 1, supersedes: None, state: EventState::Indeterminate, kind: EventKind::Unclassified,
-        interval, uncertainty_reason: Some(UNCERTAINTY.to_owned()), zone_ids: Vec::new(),
-        track_ids: vec![hex(track)], probability: ProbabilityInterval::new(0.0, 1.0)?, evidence,
+        revision: 1,
+        supersedes: None,
+        state: EventState::Indeterminate,
+        kind: EventKind::Unclassified,
+        interval,
+        uncertainty_reason: Some(UNCERTAINTY.to_owned()),
+        zone_ids: Vec::new(),
+        track_ids: vec![hex(track)],
+        probability: ProbabilityInterval::new(0.0, 1.0)?,
+        evidence,
         model_receipts: Vec::new(),
         decision_path: DecisionPath {
-            policy_generation: policy, fingerprint: manifest.root(), abstained: true,
+            policy_generation: policy,
+            fingerprint: manifest.root(),
+            abstained: true,
             abstention_reason: Some(ABSTENTION.to_owned()),
         },
     };
     event.validate()?;
-    Ok(Provenance { slot, manifest, objects, event })
+    Ok(Provenance {
+        slot,
+        manifest,
+        objects,
+        event,
+    })
 }
 
-fn current_status(deployment: &ReferenceDeployment, event: &EventHypothesis) -> Result<PackageEventStatus> {
+fn current_status(
+    deployment: &ReferenceDeployment,
+    event: &EventHypothesis,
+) -> Result<PackageEventStatus> {
     let object = ObjectId::parse(format!("object:event:{}", event.event_id.as_str()))?;
     let Some(current) = deployment.ledger().current().objects.get(&object) else {
         return Ok(PackageEventStatus::Prepared);
@@ -1040,13 +1203,18 @@ fn current_status(deployment: &ReferenceDeployment, event: &EventHypothesis) -> 
     let revision = event.revision_digest();
     let exact = deployment.ledger().batches().iter().any(|batch| {
         batch.deltas.iter().any(|delta| {
-            delta.object_id == object && delta.family == "event_revision"
+            delta.object_id == object
+                && delta.family == "event_revision"
                 && delta.new_generation == current.generation
                 && delta.payload_digest == current.payload_digest
                 && delta.witness_digest == Some(revision)
         })
     });
-    if exact { Ok(PackageEventStatus::AlreadyPublished) } else { Err(PackageEventError::Conflict) }
+    if exact {
+        Ok(PackageEventStatus::AlreadyPublished)
+    } else {
+        Err(PackageEventError::Conflict)
+    }
 }
 
 /// Completed publication.
@@ -1070,8 +1238,11 @@ impl PackageEventProposal {
     /// Verifies the report from retained custody and prepares the event of one confirmed
     /// track. Writes nothing.
     pub fn prepare(
-        deployment: &ReferenceDeployment, report_bytes: &[u8], report_digest: ContentDigest,
-        track: ContentDigest, cx: &ReplayCx,
+        deployment: &ReferenceDeployment,
+        report_bytes: &[u8],
+        report_digest: ContentDigest,
+        track: ContentDigest,
+        cx: &ReplayCx,
     ) -> Result<Self> {
         checkpoint(cx, "package_event:prepare")?;
         let report = PackageAnalysisReport::verify(deployment, report_bytes, report_digest, cx)?;
@@ -1082,46 +1253,92 @@ impl PackageEventProposal {
         e.digest(proof.event.revision_digest());
         e.digest(proof.manifest.root());
         let digest = ContentDigest::sha256(&e.finish_checked()?);
-        Ok(Self { report, track, proof, digest, status })
+        Ok(Self {
+            report,
+            track,
+            proof,
+            digest,
+            status,
+        })
     }
     /// Exact approval identity (event revision digest plus provenance root).
     #[must_use]
-    pub fn digest(&self) -> ContentDigest { self.digest }
+    pub fn digest(&self) -> ContentDigest {
+        self.digest
+    }
     /// Proposed event.
     #[must_use]
-    pub fn event(&self) -> &EventHypothesis { &self.proof.event }
+    pub fn event(&self) -> &EventHypothesis {
+        &self.proof.event
+    }
     /// Provenance root.
     #[must_use]
-    pub fn provenance_root(&self) -> ContentDigest { self.proof.manifest.root() }
+    pub fn provenance_root(&self) -> ContentDigest {
+        self.proof.manifest.root()
+    }
     /// Publication state when prepared.
     #[must_use]
-    pub fn status(&self) -> PackageEventStatus { self.status }
+    pub fn status(&self) -> PackageEventStatus {
+        self.status
+    }
 
     /// Revalidates the exact approval and source custody, retains provenance root-last, then
     /// publishes through the guarded event publisher. Exact retries keep the revision and anchor.
     pub fn publish(
-        &self, deployment: &mut ReferenceDeployment, expected: ContentDigest, cx: &ReplayCx,
+        &self,
+        deployment: &mut ReferenceDeployment,
+        expected: ContentDigest,
+        cx: &ReplayCx,
     ) -> Result<PackageEventReceipt> {
         checkpoint(cx, "package_event:revalidate")?;
-        if expected != self.digest { return Err(PackageEventError::StaleProposal); }
-        let fresh = Self::prepare(deployment, self.report.encoded(), self.report.digest(), self.track, cx)?;
-        if fresh.digest != expected { return Err(PackageEventError::StaleProposal); }
+        if expected != self.digest {
+            return Err(PackageEventError::StaleProposal);
+        }
+        let fresh = Self::prepare(
+            deployment,
+            self.report.encoded(),
+            self.report.digest(),
+            self.track,
+            cx,
+        )?;
+        if fresh.digest != expected {
+            return Err(PackageEventError::StaleProposal);
+        }
         let proof = &fresh.proof;
         if fresh.status == PackageEventStatus::AlreadyPublished {
-            let object = ObjectId::parse(format!("object:event:{}", proof.event.event_id.as_str()))?;
+            let object =
+                ObjectId::parse(format!("object:event:{}", proof.event.event_id.as_str()))?;
             let revision = proof.event.revision_digest();
-            let (anchor, root) = deployment.ledger().batches().iter().rev().find_map(|batch| {
-                batch.deltas.iter().find(|d| {
-                    d.object_id == object && d.family == "event_revision" && d.witness_digest == Some(revision)
-                }).map(|d| (batch.new_anchor.clone(), d.payload_digest))
-            }).ok_or(PackageEventError::Mismatch)?;
+            let (anchor, root) = deployment
+                .ledger()
+                .batches()
+                .iter()
+                .rev()
+                .find_map(|batch| {
+                    batch
+                        .deltas
+                        .iter()
+                        .find(|d| {
+                            d.object_id == object
+                                && d.family == "event_revision"
+                                && d.witness_digest == Some(revision)
+                        })
+                        .map(|d| (batch.new_anchor.clone(), d.payload_digest))
+                })
+                .ok_or(PackageEventError::Mismatch)?;
             return Ok(PackageEventReceipt {
-                event: proof.event.clone(), event_root: root, authority_anchor: anchor,
-                provenance_root: proof.manifest.root(), report_digest: fresh.report.digest(), track: fresh.track,
+                event: proof.event.clone(),
+                event_root: root,
+                authority_anchor: anchor,
+                provenance_root: proof.manifest.root(),
+                report_digest: fresh.report.digest(),
+                track: fresh.track,
             });
         }
         let existing_root = deployment.publisher().root(&proof.slot).map(|r| r.root);
-        if existing_root.is_some_and(|root| root != proof.manifest.root()) { return Err(PackageEventError::Mismatch); }
+        if existing_root.is_some_and(|root| root != proof.manifest.root()) {
+            return Err(PackageEventError::Mismatch);
+        }
         for bytes in proof.objects.values() {
             checkpoint(cx, "package_event:stage")?;
             let digest = deployment.publisher_mut().stage_object(bytes)?;
@@ -1131,17 +1348,28 @@ impl PackageEventProposal {
             checkpoint(cx, "package_event:closure")?;
             deployment.publisher_mut().verify_object(*digest)?;
         }
-        if existing_root.is_none() { deployment.publisher_mut().stage_manifest(&proof.slot, &proof.manifest)?; }
+        if existing_root.is_none() {
+            deployment
+                .publisher_mut()
+                .stage_manifest(&proof.slot, &proof.manifest)?;
+        }
         deployment.publish_and_commit(&proof.slot, &proof.manifest, proof.event.interval, cx)?;
         checkpoint(cx, STAGE_PACKAGE_EVENT_COMMIT)?;
-        let receipt = deployment.publish_event(&ReferencePolicyDecision {
-            event: proof.event.clone(), action: ReferencePolicyAction::Hold,
-        }, cx)?;
+        let receipt = deployment.publish_event(
+            &ReferencePolicyDecision {
+                event: proof.event.clone(),
+                action: ReferencePolicyAction::Hold,
+            },
+            cx,
+        )?;
         cx.checkpoint_post_commit("package_event:published");
         Ok(PackageEventReceipt {
-            event: proof.event.clone(), event_root: receipt.event_root,
-            authority_anchor: receipt.authority_anchor, provenance_root: proof.manifest.root(),
-            report_digest: fresh.report.digest(), track: fresh.track,
+            event: proof.event.clone(),
+            event_root: receipt.event_root,
+            authority_anchor: receipt.authority_anchor,
+            provenance_root: proof.manifest.root(),
+            report_digest: fresh.report.digest(),
+            track: fresh.track,
         })
     }
 }
@@ -1153,20 +1381,40 @@ mod tests {
     fn record() -> PackageDetectionRecord {
         let digest = |tag: &[u8]| ContentDigest::sha256(tag);
         PackageDetectionRecord {
-            report_digest: digest(b"report"), package_digest: digest(b"package"),
-            manifest_digest: digest(b"manifest"), model_id: "MOD-YOLOXNANO-001".into(),
-            generation: "g1".into(), model_digest: digest(b"model"), graph_digest: digest(b"graph"),
-            contract_digest: digest(b"contract"), import_identity: digest(b"import"), import_root: digest(b"root"),
-            media_format: "mjpeg".into(), first_segment: 3, segment_count: 1, minimum_score_ppm: 300_000,
+            report_digest: digest(b"report"),
+            package_digest: digest(b"package"),
+            manifest_digest: digest(b"manifest"),
+            model_id: "MOD-YOLOXNANO-001".into(),
+            generation: "g1".into(),
+            model_digest: digest(b"model"),
+            graph_digest: digest(b"graph"),
+            contract_digest: digest(b"contract"),
+            import_identity: digest(b"import"),
+            import_root: digest(b"root"),
+            media_format: "mjpeg".into(),
+            first_segment: 3,
+            segment_count: 1,
+            minimum_score_ppm: 300_000,
             labels: vec!["person".into(), "car".into()],
             frames: vec![RecordFrame {
-                segment: 3, capsule_digest: digest(b"capsule"), sensor_id: "sensor:a".into(),
-                capture: CaptureInterval { earliest: TimestampNs(10), latest: TimestampNs(20) },
-                dimensions: [64, 48], color: "jpeg_rgb".into(), inference_identity: digest(b"inference"),
-                output_digest: digest(b"output"), detection_report_digest: digest(b"head"),
+                segment: 3,
+                capsule_digest: digest(b"capsule"),
+                sensor_id: "sensor:a".into(),
+                capture: CaptureInterval {
+                    earliest: TimestampNs(10),
+                    latest: TimestampNs(20),
+                },
+                dimensions: [64, 48],
+                color: "jpeg_rgb".into(),
+                inference_identity: digest(b"inference"),
+                output_digest: digest(b"output"),
+                detection_report_digest: digest(b"head"),
                 detections: vec![RecordDetection {
-                    row: 7, class_index: 0, score_bits: 0.75_f32.to_bits(),
-                    bounds: [0, 0, 256, 512], clipped: false,
+                    row: 7,
+                    class_index: 0,
+                    score_bits: 0.75_f32.to_bits(),
+                    bounds: [0, 0, 256, 512],
+                    clipped: false,
                 }],
             }],
         }
@@ -1177,7 +1425,9 @@ mod tests {
         let record = record();
         let bytes = record.encode()?;
         assert_eq!(PackageDetectionRecord::decode(&bytes)?, record);
-        for end in 0..bytes.len() { assert!(PackageDetectionRecord::decode(&bytes[..end]).is_err()); }
+        for end in 0..bytes.len() {
+            assert!(PackageDetectionRecord::decode(&bytes[..end]).is_err());
+        }
         let mut trailing = bytes.clone();
         trailing.push(0);
         assert!(PackageDetectionRecord::decode(&trailing).is_err());
@@ -1186,12 +1436,24 @@ mod tests {
 
     #[test]
     fn tracking_policy_bounds_and_explicit_overrides_are_checked() {
-        assert!(PackageTrackingConfig {
-            confirmation_hits: 0, maximum_missed_frames: 1, minimum_iou_ppm: 100_000,
-        }.tracker().is_err());
-        assert!(PackageTrackingConfig {
-            confirmation_hits: 1, maximum_missed_frames: 1, minimum_iou_ppm: 1_000_001,
-        }.tracker().is_err());
+        assert!(
+            PackageTrackingConfig {
+                confirmation_hits: 0,
+                maximum_missed_frames: 1,
+                minimum_iou_ppm: 100_000,
+            }
+            .tracker()
+            .is_err()
+        );
+        assert!(
+            PackageTrackingConfig {
+                confirmation_hits: 1,
+                maximum_missed_frames: 1,
+                minimum_iou_ppm: 1_000_001,
+            }
+            .tracker()
+            .is_err()
+        );
         assert!(!PackageAnalysisReport::is_package_report(b"FSSARPT1"));
     }
 
