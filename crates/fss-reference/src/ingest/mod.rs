@@ -119,3 +119,6 @@ pub mod package_event;
 
 /// Opt-in, source-bound visual-degradation screening before recorded watch publication.
 pub mod sensor_health;
+
+/// Live native results released only after source-closed detector evidence is ledgered.
+pub mod http_rgb_evidence;
