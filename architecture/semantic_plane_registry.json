@@ -198,6 +198,7 @@
     "crates/fss-reference/src/deletion/holds/state.rs": "effect",
     "crates/fss-reference/src/deletion/index.rs": "effect",
     "crates/fss-reference/src/deletion/plan.rs": "effect",
+    "crates/fss-reference/src/deletion/scope.rs": "effect",
     "crates/fss-reference/src/deletion/tests.rs": "support",
     "crates/fss-reference/src/deletion/walk.rs": "effect",
     "crates/fss-reference/src/delivery.rs": "authority",

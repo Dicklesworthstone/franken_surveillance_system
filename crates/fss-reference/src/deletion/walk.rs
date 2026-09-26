@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
-//! Read-only closure walk: every retained derivative reachable from one import.
+//! Read-only closure walk: every retained derivative reachable from one import, or from every
+//! member import of a sensor or event scope at once.
 //!
 //! The deployment is modelled as *units* that hold objects: every authority batch of the ledger
 //! (its children, delta payloads and witnesses, expanded through every manifest they contain) and
@@ -12,19 +13,27 @@
 //! walk scans every retained object once for embedded digests of the candidate universe (all spool
 //! objects, all unit identities, all import identities).
 //!
-//! Starting from the import's own units and the import identity as the only key, the walk adds
+//! Starting from the member imports' own units and their identities as the only keys (one
+//! import for an import scope), the walk adds
 //! every unit that references a key, then makes keys of every identity and object that only
 //! closure content units publish or hold, until nothing changes. Objects some unit
 //! outside the closure also holds are retained (`shared_with_retained_authority`); objects held by
 //! authority-history units (event revisions, tamper status, alert outcomes) are retained
 //! (`authority_history`). Spool objects no unit holds are attributed when they reference a key or
 //! are referenced by deletable content; the rest are counted as unattributed, never deleted.
+//!
+//! Scope membership: a sensor scope's members are the retained imports whose capsules name the
+//! sensor (an import whose capsules cannot be read is a `scope_member_unresolved` blocker, never
+//! guessed); an event scope's members are the retained imports whose own single-import closure
+//! reaches one of the event's committed revisions. Both are computed from this one scan.
 
+use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use fss_core::{
     CanonicalDecode, CaptureInterval, ContentDigest, DigestAlgorithm, EffectState, EventHypothesis,
-    EvidenceDeltaBatch, LedgerAnchor, ObjectId, OperationReceipt, Plane,
+    EventId, EvidenceDeltaBatch, LedgerAnchor, ObjectId, OperationReceipt, Plane, SensorCapsule,
+    SensorId,
 };
 use fss_object::ObjectManifest;
 use fss_publication::{ROOT_REACHABILITY_FAMILY, ROOT_RETRACTION_FAMILY, SlotName};
@@ -34,11 +43,12 @@ use super::plan::{
     ClosureUnit, DeletableObject, DeletionCompletion, DeletionPlan, EventReference, Finding,
     ObjectTombstone, RetainedObject, RootRetraction, Unattributed,
 };
+use super::scope::DeletionScope;
 use super::{DeletionError, STAGE_DELETION_SCAN};
 use crate::reference_deployment::{
     FAMILY_ALERT_EFFECT_OUTCOME, FAMILY_DELETION_COMPLETION, FAMILY_DELETION_RECORD,
     FAMILY_DELETION_TOMBSTONE, FAMILY_EVENT_REVISION, FAMILY_PRIVACY_MASK_POLICY,
-    FAMILY_SENSOR_TAMPER_STATUS,
+    FAMILY_SENSOR_CAPSULE, FAMILY_SENSOR_TAMPER_STATUS,
 };
 use crate::{ReferenceDeployment, ReplayCx};
 
@@ -59,6 +69,7 @@ const DELETION_FAMILIES: &[&str] = &[
 ];
 const IMPORT_BATCH_PREFIX: &str = "batch:file-import:";
 const IMPORT_SLOT_PREFIX: &str = "slot:fi-";
+const EVENT_OBJECT_PREFIX: &str = "object:event:";
 const HOLD_EXPANSION_LIMIT: usize = 1 << 20;
 
 fn sha(bytes: [u8; 32]) -> ContentDigest {
@@ -193,6 +204,24 @@ pub(super) struct Universe {
     batch_digests: Vec<ContentDigest>,
     operations: Vec<OperationReceipt>,
     batch_entries_max: usize,
+    /// Sensor -> retained imports whose capsules name it, plus imports whose capsules cannot be
+    /// read (computed on first use).
+    sensors: OnceCell<SensorMembers>,
+    /// Event object -> retained imports whose own closure reaches one of its revisions
+    /// (computed on first use).
+    event_reach: OnceCell<BTreeMap<String, BTreeSet<ContentDigest>>>,
+}
+
+/// Sensor -> member imports, and the imports whose capsules cannot be read.
+type SensorMembers = (
+    BTreeMap<SensorId, BTreeSet<ContentDigest>>,
+    Vec<ContentDigest>,
+);
+
+/// The closure of a set of member imports: for every unit, the reference that reached it.
+struct Closure {
+    via: Vec<Option<ContentDigest>>,
+    keys: HashSet<ContentDigest>,
 }
 
 /// Scans `bytes` for embedded SHA-256 digests of the universe (raw or lowercase hex).
@@ -492,29 +521,138 @@ impl Universe {
             batch_digests: batches.iter().map(|batch| batch.batch_digest).collect(),
             operations: deployment.effects().operations().cloned().collect(),
             batch_entries_max: deployment.limits().batch_entries_max,
+            sensors: OnceCell::new(),
+            event_reach: OnceCell::new(),
         })
     }
 
-    /// Completed import identities, ascending.
-    pub(super) fn imports(&self) -> impl Iterator<Item = &ContentDigest> {
-        self.imports.keys()
+    /// Every scope the current head admits, in commit-lookup order: each retained import
+    /// (ascending), each sensor a retained import's capsules name (ascending), each committed
+    /// event (ascending object identity).
+    pub(super) fn scopes(&self, deployment: &ReferenceDeployment) -> Vec<DeletionScope> {
+        let mut scopes: Vec<DeletionScope> = self
+            .imports
+            .keys()
+            .map(|import| DeletionScope::Import(*import))
+            .collect();
+        scopes.extend(
+            self.sensor_members(deployment)
+                .0
+                .keys()
+                .map(|sensor| DeletionScope::Sensor(sensor.clone())),
+        );
+        scopes.extend(self.current.keys().filter_map(|object| {
+            object
+                .strip_prefix(EVENT_OBJECT_PREFIX)
+                .and_then(|id| EventId::parse(id).ok())
+                .map(DeletionScope::Event)
+        }));
+        scopes
     }
 
-    /// The sealed plan of `import` against this scan. Reads event revisions from `deployment`.
-    pub(super) fn plan(
+    fn sensor_members(&self, deployment: &ReferenceDeployment) -> &SensorMembers {
+        self.sensors.get_or_init(|| {
+            let mut sensors: BTreeMap<SensorId, BTreeSet<ContentDigest>> = BTreeMap::new();
+            let mut unresolved = Vec::new();
+            for import in self.imports.keys() {
+                match import_sensors(deployment, *import) {
+                    Some(named) => {
+                        for sensor in named {
+                            sensors.entry(sensor).or_default().insert(*import);
+                        }
+                    }
+                    None => unresolved.push(*import),
+                }
+            }
+            (sensors, unresolved)
+        })
+    }
+
+    fn event_members(&self) -> &BTreeMap<String, BTreeSet<ContentDigest>> {
+        self.event_reach.get_or_init(|| {
+            let mut reach: BTreeMap<String, BTreeSet<ContentDigest>> = BTreeMap::new();
+            for import in self.imports.keys() {
+                let closure = self.closure(&[*import]);
+                for revision in &self.events {
+                    if closure.via[revision.unit].is_some() {
+                        reach
+                            .entry(revision.object_id.clone())
+                            .or_default()
+                            .insert(*import);
+                    }
+                }
+            }
+            reach
+        })
+    }
+
+    /// Member imports of `scope` (strictly ascending) and the membership blockers.
+    fn members(
         &self,
         deployment: &ReferenceDeployment,
-        import: ContentDigest,
-    ) -> Result<DeletionPlan, DeletionError> {
-        let seeds = self
-            .imports
-            .get(&import)
-            .ok_or(DeletionError::UnknownImport(import))?;
-        let mut via: Vec<Option<ContentDigest>> = vec![None; self.units.len()];
-        for seed in seeds {
-            via[*seed] = Some(import);
+        scope: &DeletionScope,
+    ) -> Result<(Vec<ContentDigest>, Vec<Finding>), DeletionError> {
+        let empty = || DeletionError::ScopeEmpty(scope.text());
+        match scope {
+            DeletionScope::Import(import) => {
+                if !self.imports.contains_key(import) {
+                    return Err(DeletionError::UnknownImport(*import));
+                }
+                Ok((vec![*import], Vec::new()))
+            }
+            DeletionScope::Sensor(sensor) => {
+                let (sensors, unresolved) = self.sensor_members(deployment);
+                let members: Vec<ContentDigest> = sensors
+                    .get(sensor)
+                    .map(|set| set.iter().copied().collect())
+                    .unwrap_or_default();
+                if members.is_empty() && unresolved.is_empty() {
+                    return Err(empty());
+                }
+                let blockers = unresolved
+                    .iter()
+                    .map(|import| Finding {
+                        kind: "scope_member_unresolved".to_owned(),
+                        subject: import.to_text(),
+                        detail: format!(
+                            "the sensor capsules of this retained import cannot be read, so \
+                             whether it belongs to {} cannot be decided; repair custody first",
+                            scope.text()
+                        ),
+                    })
+                    .collect();
+                if members.is_empty() {
+                    // Only undecidable imports: the plan is blocked, never proven empty.
+                    return Ok((unresolved.clone(), blockers));
+                }
+                Ok((members, blockers))
+            }
+            DeletionScope::Event(event) => {
+                let object = format!("{EVENT_OBJECT_PREFIX}{}", event.as_str());
+                let members: Vec<ContentDigest> = self
+                    .event_members()
+                    .get(&object)
+                    .map(|set| set.iter().copied().collect())
+                    .unwrap_or_default();
+                if members.is_empty() {
+                    return Err(empty());
+                }
+                Ok((members, Vec::new()))
+            }
         }
-        let mut keys: HashSet<ContentDigest> = HashSet::from([import]);
+    }
+
+    /// The union closure of `members`: seeded by each member's own units, keyed by every member
+    /// identity, grown until nothing changes.
+    fn closure(&self, members: &[ContentDigest]) -> Closure {
+        let mut via: Vec<Option<ContentDigest>> = vec![None; self.units.len()];
+        let mut keys: HashSet<ContentDigest> = HashSet::new();
+        for member in members {
+            keys.insert(*member);
+            for seed in self.imports.get(member).into_iter().flatten() {
+                via[*seed] = Some(*member);
+            }
+        }
         loop {
             for (index, unit) in self.units.iter().enumerate() {
                 if via[index].is_none() || unit.authority {
@@ -547,6 +685,21 @@ impl Universe {
                 break;
             }
         }
+        Closure { via, keys }
+    }
+
+    /// The sealed plan of `scope` against this scan. Reads event revisions from `deployment`.
+    pub(super) fn plan(
+        &self,
+        deployment: &ReferenceDeployment,
+        scope: &DeletionScope,
+    ) -> Result<DeletionPlan, DeletionError> {
+        let (imports, membership_blockers) = self.members(deployment, scope)?;
+        let Closure { via, keys } = self.closure(&imports);
+        let subject = match scope {
+            DeletionScope::Import(import) => import.to_text(),
+            DeletionScope::Sensor(_) | DeletionScope::Event(_) => scope.text(),
+        };
 
         let in_closure = |index: usize| via[index].is_some();
         let mut deletable: BTreeSet<ContentDigest> = BTreeSet::new();
@@ -695,12 +848,17 @@ impl Universe {
             }
         }
 
-        let import_object = format!("object:file-import:{}", hex(import));
-        let validity = self
-            .current
-            .get(&import_object)
-            .map(|(_, _, _, validity, _)| *validity)
-            .ok_or(DeletionError::UnknownImport(import))?;
+        let mut hull: Option<CaptureInterval> = None;
+        for import in &imports {
+            let import_object = format!("object:file-import:{}", hex(*import));
+            let own = self
+                .current
+                .get(&import_object)
+                .map(|(_, _, _, validity, _)| *validity)
+                .ok_or(DeletionError::UnknownImport(*import))?;
+            hull = Some(hull.map_or(own, |hull| hull.hull(own)));
+        }
+        let validity = hull.ok_or_else(|| DeletionError::ScopeEmpty(scope.text()))?;
 
         let mut blockers: Vec<Finding> = self
             .broken_slots
@@ -723,6 +881,7 @@ impl Universe {
                         .to_owned(),
             }
         }));
+        blockers.extend(membership_blockers);
         let mut retractions = Vec::new();
         for (index, unit) in self.units.iter().enumerate() {
             let (true, Some((slot, root))) = (in_closure(index), &unit.slot) else {
@@ -761,23 +920,24 @@ impl Universe {
 
         // Events whose history is retained; effects that reference them.
         let mut events: BTreeMap<String, u64> = BTreeMap::new();
-        let mut unknown_copies = vec![
-            Finding {
+        let mut unknown_copies = Vec::new();
+        for import in &imports {
+            unknown_copies.push(Finding {
                 kind: "original_input_file".to_owned(),
                 subject: import.to_text(),
                 detail: "the file this import was read from lies outside the deployment, which \
                          never owned it; it is not deleted"
                     .to_owned(),
-            },
-            Finding {
+            });
+            unknown_copies.push(Finding {
                 kind: "unrecorded_operator_exports".to_owned(),
                 subject: import.to_text(),
                 detail: "report, event, receipt, image and segment exports written by operator \
                          commands are not recorded by the deployment and cannot be enumerated \
                          or deleted"
                     .to_owned(),
-            },
-        ];
+            });
+        }
         let mut matched: BTreeSet<(String, String)> = BTreeSet::new();
         for revision in &self.events {
             if !in_closure(revision.unit) {
@@ -851,12 +1011,14 @@ impl Universe {
         if tombstones.len() + retractions.len() + 1 > self.batch_entries_max {
             blockers.push(Finding {
                 kind: "tombstone_batch_bound".to_owned(),
-                subject: import.to_text(),
+                subject,
                 detail: "the tombstone batch would exceed the deployment's batch entry bound"
                     .to_owned(),
             });
         }
+        // One hold (or one unreadable hold object) covering several members is one blocker.
         blockers.sort();
+        blockers.dedup();
         unknown_copies.sort();
 
         let deletable: Vec<DeletableObject> = deletable
@@ -879,10 +1041,13 @@ impl Universe {
             self.objects.values().fold((0_u64, 0_u64), |(n, b), info| {
                 (n.saturating_add(1), b.saturating_add(info.bytes))
             });
-        let _ = ObjectId::parse(DeletionPlan::record_object_id(import))?;
+        if let DeletionScope::Import(import) = scope {
+            let _ = ObjectId::parse(DeletionPlan::record_object_id(*import))?;
+        }
         Ok(DeletionPlan {
             site_lineage: self.site_lineage.clone(),
-            import_identity: import,
+            scope: scope.clone(),
+            imports,
             basis_anchor: self.anchor.clone(),
             effect_journal_root: self.effect_journal_root,
             validity,
@@ -924,6 +1089,36 @@ impl Universe {
                 .all(|h| via[*h].is_some() && !self.units[*h].authority)
         })
     }
+}
+
+/// Sensors named by the capsules of `import` (its `file_import` batches), or `None` when a
+/// capsule cannot be read or does not hash to its identity.
+fn import_sensors(
+    deployment: &ReferenceDeployment,
+    import: ContentDigest,
+) -> Option<BTreeSet<SensorId>> {
+    let prefix = format!("{IMPORT_BATCH_PREFIX}{}:", hex(import));
+    let spool = deployment.publisher().spool();
+    let mut sensors = BTreeSet::new();
+    for batch in deployment
+        .ledger()
+        .batches()
+        .iter()
+        .filter(|batch| batch.batch_id.as_str().starts_with(&prefix))
+    {
+        for delta in batch
+            .deltas
+            .iter()
+            .filter(|delta| delta.family == FAMILY_SENSOR_CAPSULE)
+        {
+            let bytes = spool.read(delta.payload_digest).ok()?;
+            if ContentDigest::sha256(&bytes) != delta.payload_digest {
+                return None;
+            }
+            sensors.insert(SensorCapsule::from_canonical_bytes(&bytes).ok()?.sensor_id);
+        }
+    }
+    Some(sensors)
 }
 
 /// The retained event revision behind `root` (a manifest whose metadata is the event bytes).

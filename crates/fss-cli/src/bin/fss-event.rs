@@ -155,8 +155,14 @@ const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|ale
     sensors whose single loss leaves it without any retained witness, cut vertices, bridges,\n\
     and the fss.graph_algorithm_witness.v1 witness (counters checked against the registered\n\
     bound). Structural over retained history: not current observability, never absence.\n\
-  delete plan (read-only, graph-complete deletion closure of one retained import):\n\
-          --import-id sha256:HEX\n\
+  delete plan (read-only, graph-complete deletion closure of one scope), exactly one of:\n\
+          --import-id sha256:HEX (one retained import)\n\
+          --sensor-id ID (every retained import whose capsules name the sensor)\n\
+          --event-id ID (every retained import whose closure reaches the event's revisions)\n\
+    A sensor or event plan is ONE sealed plan over the union closure of its member imports\n\
+    (sorted); the scope kind and id are inside the plan digest (fss.deletion_plan.v2), so it is\n\
+    never replayable as an import plan. Objects anything outside the scope still holds are\n\
+    retained and listed; an active evidence hold (fss-hold) on any member import blocks.\n\
     Walks every retained reference of the deployment (segments/capsules, decoded frames and\n\
     receipts, analyses and reports, coverage records, package-detection records, event\n\
     provenance, attributable staging leftovers) and prints a sealed, digest-bound plan: what is\n\
@@ -170,7 +176,9 @@ const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|ale
     unlinks the bytes from the local filesystem, verifies absence and appends the completion\n\
     record. Not cryptographic erasure; filesystem recovery and backups are out of scope. An\n\
     interrupted commit resumes when rerun and completes exactly once. Later reads of the\n\
-    import report ERR-EVIDENCE-DELETED-001 (availability deleted).\n";
+    import (or of every member import of a sensor/event plan) report\n\
+    ERR-EVIDENCE-DELETED-001 (availability deleted). A sensor or event with no retained import\n\
+    reports ERR-DELETION-SCOPE-EMPTY-001.\n";
 type RunResult<T> = Result<T, Box<dyn Error>>;
 type Values = BTreeMap<String, OsString>;
 #[derive(Debug)]

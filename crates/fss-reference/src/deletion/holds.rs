@@ -563,10 +563,12 @@ impl HoldIndex {
             checkpoint(cx, STAGE_HOLD_READ)?;
             let held_import = hold.request.import_identity;
             if let std::collections::btree_map::Entry::Vacant(entry) = closures.entry(held_import) {
-                entry.insert(universe.plan(deployment, held_import)?);
+                entry
+                    .insert(universe.plan(deployment, &super::DeletionScope::Import(held_import))?);
             }
             let held = closures.get(&held_import).ok_or(HoldError::InvalidRecord)?;
-            let overlap = held_import == plan.import_identity
+            // A sensor- or event-scope plan is blocked when any member import is held.
+            let overlap = plan.imports.contains(&held_import)
                 || held.deletable.iter().any(|o| removed.contains(&o.digest))
                 || held.retained.iter().any(|o| removed.contains(&o.digest))
                 || held
