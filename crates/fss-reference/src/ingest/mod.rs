@@ -102,6 +102,9 @@ pub mod http_replay;
 /// Explicit native recording with durable-before-parse custody and cold-replay completion.
 pub mod http_recording;
 
+/// Exclusive durable HTTP recording through native RGB inference, anonymous tracks and zones.
+pub mod http_rgb_recording;
+
 /// Digest-pinned offline RGB detector packages loaded only through verification.
 pub mod rgb_package;
 
