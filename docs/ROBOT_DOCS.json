@@ -1982,7 +1982,7 @@
       "id": "ERR-SECRET-UNAVAILABLE-001"
     },
     {
-      "description": "the owner twin or atlas package was refused before any localization: a digest differs from its owner pin, the format or references are invalid, the atlas was built against another twin, or its descriptor generation differs from the observations'; nothing was written",
+      "description": "the owner twin or atlas package was refused before any localization: a digest differs from its owner pin, the format or references are invalid, the atlas was built against another twin, or its descriptor generation differs from the observations' (frame input needs an atlas in the native extractor's generation); nothing was written",
       "guidance": "supply the exact twin and atlas packages with their pinned digests",
       "id": "ERR-SITE-CALIBRATION-BASIS-001"
     },
@@ -1997,7 +1997,7 @@
       "id": "ERR-SITE-CALIBRATION-CONTROL-POINTS-001"
     },
     {
-      "description": "a site calibration's bytes do not match its trailing fss.site_calibration.v1 identity, or the identity differs from the owner-pinned --calibration-digest (tampered or another calibration); nothing was read or analysed",
+      "description": "a site calibration's bytes do not match its trailing fss.site_calibration.v1 (or v2) identity, or the identity differs from the owner-pinned --calibration-digest (tampered or another calibration); nothing was read or analysed",
       "guidance": "pin the exact digest printed by calibrate for the exact file",
       "id": "ERR-SITE-CALIBRATION-DIGEST-001"
     },
@@ -2012,9 +2012,14 @@
       "id": "ERR-SITE-CALIBRATION-DISTORTED-001"
     },
     {
-      "description": "a site calibration file is not a canonical FSSCAL01 record (wrong magic, length, truncated, non-finite, unregistered value, trailing bytes or noncanonical encoding); it was not used",
+      "description": "a site calibration file is not a canonical FSSCAL01 or FSSCAL02 record (wrong magic, length, truncated, non-finite, unregistered value, trailing bytes, noncanonical encoding, or a FSSCAL02 record without a frame camera); it was not used",
       "guidance": "regenerate it with fss-event calibrate; never hand-edit a calibration",
       "id": "ERR-SITE-CALIBRATION-FORMAT-001"
+    },
+    {
+      "description": "a camera's JPEG frame was refused before any localization: the first-party baseline decoder rejected it (malformed, truncated, unsupported coding or component interpretation, limit or budget) or its decoded size differs from the metadata's declared image size; nothing was calibrated or written",
+      "guidance": "supply the complete baseline JPEG the metadata describes (or correct the metadata's image and interpretation lines); do not retry unchanged",
+      "id": "ERR-SITE-CALIBRATION-FRAME-DECODE-001"
     },
     {
       "description": "the calibration's world frame (its twin package) is not the supplied --scene-mesh package, so poses and mesh may not share a frame; nothing was analysed",
@@ -2022,8 +2027,8 @@
       "id": "ERR-SITE-CALIBRATION-FRAME-MISMATCH-001"
     },
     {
-      "description": "a site calibration request or camera observation file (fss.site_camera_observations.v1) is malformed or out of bounds: camera count outside 2..16, duplicate names or handles, a missing or repeated header line, a zero handle or generation, a non-finite number, a pixel outside the image, a feature or tie limit, or mixed descriptor generations; nothing was calibrated or written",
-      "guidance": "correct the observation files or options; do not retry unchanged",
+      "description": "a site calibration request, camera observation file (fss.site_camera_observations.v1) or frame metadata file (fss.site_camera_frame.v1) is malformed or out of bounds: camera count outside 2..16, duplicate names or handles, a missing or repeated header line, a line the file kind does not admit (pixels, descriptor, feature or tie lines in frame metadata), a zero handle or generation, a non-finite number, a pixel outside the image, a feature or tie limit, or mixed descriptor generations; nothing was calibrated or written",
+      "guidance": "correct the observation or metadata files or options; do not retry unchanged",
       "id": "ERR-SITE-CALIBRATION-INPUT-INVALID-001"
     },
     {

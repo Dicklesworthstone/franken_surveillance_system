@@ -462,9 +462,10 @@ fn test_schema_domain_and_pinned_counts() -> Result<(), Box<dyn Error>> {
     // 125 = 122 + SCHEMA-DOMAIN-EVIDENCE-HOLD-{001,002} and
     // SCHEMA-DOMAIN-EVIDENCE-HOLD-APPROVAL-001 (owner evidence holds, previously unregistered).
     // 126 = 125 + SCHEMA-DOMAIN-SITE-CALIBRATION-001 (fss-event calibrate, fss-x8j0v follow-up).
+    // 127 = 126 + SCHEMA-DOMAIN-SITE-CALIBRATION-002 (calibrate frame input, fss-x8j0v pixels in).
     assert_eq!(
-        domain_count, 126,
-        "registries/DIGEST_DOMAINS.md count must remain pinned at 126"
+        domain_count, 127,
+        "registries/DIGEST_DOMAINS.md count must remain pinned at 127"
     );
 
     let schemas_path = Path::new(env!("CARGO_MANIFEST_DIR"))
