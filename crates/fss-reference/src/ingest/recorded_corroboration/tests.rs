@@ -99,7 +99,10 @@ fn time_gate_uses_the_worst_case_over_both_conservative_intervals() -> TestResul
         20
     );
     assert_eq!(
-        worst_case_separation(interval(i128::MIN, i128::MIN)?, interval(i128::MAX, i128::MAX)?),
+        worst_case_separation(
+            interval(i128::MIN, i128::MIN)?,
+            interval(i128::MAX, i128::MAX)?
+        ),
         u128::MAX
     );
     Ok(())

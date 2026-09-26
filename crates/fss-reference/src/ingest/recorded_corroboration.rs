@@ -74,11 +74,11 @@ use fss_geometry::WorkBudget;
 use fss_object::{ObjectError, ObjectManifest};
 use fss_publication::{LocalPublicationError, SlotName};
 
-use super::cross_camera::{
-    AssociationDisposition, AssociationScore, CrossCameraConfig, CrossCameraError,
-};
 use super::cross_camera::intervals::{
     IntervalCameraObservation, associate_intervals, worst_case_separation,
+};
+use super::cross_camera::{
+    AssociationDisposition, AssociationScore, CrossCameraConfig, CrossCameraError,
 };
 use super::detector_cascade::{
     CascadeBudget, CascadeOutcome, CascadeSource, CascadeTrack, ClassEvidence, DetectorCascade,
@@ -1070,10 +1070,7 @@ fn associate_entries(
                         index,
                         IntervalCameraObservation {
                             camera_id: plan.cameras[camera].name.clone(),
-                            track_id: e
-                                .track_id
-                                .checked_add(1)
-                                .ok_or(CorroborationError::Limit)?,
+                            track_id: e.track_id.checked_add(1).ok_or(CorroborationError::Limit)?,
                             capture: e.capture,
                             ground_x: e.ground.0,
                             ground_y: e.ground.1,
@@ -1128,13 +1125,13 @@ fn associate_entries(
                         // A broken interval/assignment invariant must produce no report.
                         return Err(CorroborationError::Limit);
                     }
-                    let score =
-                        match report.candidates()[row * report.right().len() + column].score {
-                            AssociationScore::Admissible { confidence, .. } => confidence,
-                            AssociationScore::Excluded(_) => {
-                                return Err(CorroborationError::Limit);
-                            }
-                        };
+                    let score = match report.candidates()[row * report.right().len() + column].score
+                    {
+                        AssociationScore::Admissible { confidence, .. } => confidence,
+                        AssociationScore::Excluded(_) => {
+                            return Err(CorroborationError::Limit);
+                        }
+                    };
                     entries[left_index].disposition = EntryDisposition::Corroborated;
                     entries[right_index].disposition = EntryDisposition::Corroborated;
                     pairs.push(AssociatedEntries {
