@@ -48,6 +48,8 @@ principal, scope, generation, budget, expiry, and optional lease fence.
 | `CAP-AGENT-SESSION-READ-001` | read/resume exact workspace or handoff revisions | mission/session/workspace root | agent control | session principal |
 | `CAP-AGENT-CASE-WRITE-001` | create/revise investigations, hypotheses, probes, and findings | mission/case scope | agent cognition | explicit mission role |
 | `CAP-AGENT-FINDING-WRITE-001` | publish immutable evidence-linked finding | mission/case + evidence scope | coordination | explicit mission role |
+| `CAP-EVENT-REVIEW-PREPARE-001` | read and preview an operator lifecycle review | exact event revision + site | authority read | denied unless explicitly granted |
+| `CAP-EVENT-REVIEW-COMMIT-001` | commit exact operator review successor under the core event state machine | event revision + principal + review approval | authority write | explicit owner grant; no alert, retention, or model authority |
 
 Capabilities cannot be synthesized from prose, model outputs, vendor metadata, or inherited ambient
 process privileges.

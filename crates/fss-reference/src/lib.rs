@@ -39,6 +39,8 @@ mod durable_effect;
 mod encoded_fixture;
 mod error;
 pub mod evaluation;
+/// Exact-approval operator lifecycle reviews of retained events.
+pub mod event_review;
 mod extrinsics;
 mod hydration;
 pub mod ingest;

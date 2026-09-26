@@ -1,0 +1,103 @@
+{
+  "schema": "fss.operator_event_review_contract.v1",
+  "status": "implemented_not_qualified",
+  "requirements": [
+    "FSS-007",
+    "GOAL-007",
+    "GOAL-008",
+    "GOAL-015"
+  ],
+  "plan_sections": [
+    "17.2",
+    "17.3",
+    "17.6"
+  ],
+  "owner": "crates/fss-reference/src/event_review.rs",
+  "semantic_plane": "authority",
+  "capabilities": {
+    "prepare": "CAP-EVENT-REVIEW-PREPARE-001",
+    "commit": "CAP-EVENT-REVIEW-COMMIT-001"
+  },
+  "record_domain": "fss.operator_event_review.v1",
+  "approval_domain": "fss.operator_event_review_approval.v1",
+  "dispositions": {
+    "investigate": "indeterminate",
+    "resolve": "resolved",
+    "reject": "rejected"
+  },
+  "transition_owner": "fss_core::EventHypothesis::supersede with complete verified chain; no urgent exception created",
+  "added_evidence": {
+    "class": "assertion",
+    "supports": false,
+    "reject_relation": "contradicts",
+    "other_relation": "explains",
+    "source": "explicit_operator_statement_not_verified_ground_truth"
+  },
+  "preserved": [
+    "event_identity",
+    "complete_lineage",
+    "original_evidence",
+    "kind",
+    "probability",
+    "capture_interval",
+    "capture_uncertainty",
+    "zones",
+    "tracks",
+    "model_receipts",
+    "sensor_tamper"
+  ],
+  "approval_binding": [
+    "policy",
+    "principal",
+    "site",
+    "request_reason_and_disposition",
+    "expected_event_revision",
+    "predecessor_event_root_and_publishing_anchor",
+    "proposed_revision",
+    "review_provenance_root"
+  ],
+  "scope": "event_revision_not_global_head; unrelated ledger appends do not invalidate approval",
+  "publication": [
+    "stage_statement_and_predecessor",
+    "publish_provenance_root",
+    "publish_guarded_successor_event"
+  ],
+  "retry": "exact_current_successor_verified_without_repair_or_republication",
+  "effects": "new_review_blocked_by_any_deployment_operation_not_verified_failed_or_cancelled; no effect journal writes",
+  "limits": {
+    "ledger_batches": 65536,
+    "lineage_depth": 256,
+    "lineage_payload_bytes": 33554432,
+    "effect_operations": 4096,
+    "record_bytes": 8192,
+    "reason_bytes": 512
+  },
+  "errors": [
+    "ERR-AUTH-DENIED-001",
+    "ERR-EVENT-REVIEW-REQUEST-001",
+    "ERR-EVENT-REVIEW-REVISION-STALE-001",
+    "ERR-EVENT-REVIEW-APPROVAL-STALE-001",
+    "ERR-EVENT-REVIEW-OPEN-EFFECTS-001",
+    "ERR-EVENT-REVIEW-TRANSITION-001",
+    "ERR-EVENT-REVIEW-BOUND-001",
+    "ERR-EVENT-REVIEW-CANCELLED-001",
+    "ERR-EVENT-REVIEW-STORAGE-001"
+  ],
+  "compatibility": "existing event schema unchanged; no automatic changes to past events or effects",
+  "tests": [
+    "crates/fss-reference/src/event_review/tests.rs"
+  ],
+  "qualification": {
+    "native_tests_executed": false,
+    "reason": "Rust toolchain unavailable in authoring environment"
+  },
+  "out_of_scope": [
+    "remote_authentication",
+    "automatic_adjudication",
+    "corroboration_or_identity_claims",
+    "effect_reconciliation",
+    "retention_or_deletion_changes",
+    "terminal_state_correction",
+    "cross_surface_agent_protocol_exposure"
+  ]
+}
