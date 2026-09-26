@@ -1,10 +1,15 @@
 #![forbid(unsafe_code)]
 //! Real HTTP, native JPEG/model/head execution, ledgered publication and cold replay.
 mod http_rgb_evidence_support;
+#[allow(dead_code)]
 mod http_rgb_recording_support;
+#[allow(dead_code)]
 mod http_rgb_support;
-mod privacy_live_support;
+// rgb_evidence_support already loads privacy_live_support (used through it below) and the
+// shared mjpeg rgb_support, which rgb_zone_support loads again.
+#[allow(dead_code, clippy::duplicate_mod)]
 mod rgb_evidence_support;
+#[allow(clippy::duplicate_mod)]
 mod rgb_zone_support;
 use fss_codec_mjpeg::DecodeBudget;
 use fss_core::ContentDigest;
@@ -24,8 +29,8 @@ use fss_reference::{ReferenceDeployment, ScalarExecCx};
 use http_rgb_evidence_support::*;
 use http_rgb_recording_support::{Directory, attach, session};
 use http_rgb_support::response;
-use privacy_live_support::PrivacyDeployment;
 use rgb_evidence_support as fixture;
+use rgb_evidence_support::privacy_live_support::PrivacyDeployment;
 use rgb_zone_support::{Test, jpeg, tracker, tracking_policy};
 
 #[test]
