@@ -617,6 +617,12 @@ All stable error identities and normative recovery guidance cataloged from `regi
 | `ERR-GRAPH-RESULT-INCONSISTENT-001` | a projection-level answer derived from a graph run disagrees with the projection's structural invariant (for example coverage single points versus the witnessed observers); nothing was reported | treat as an implementation defect; do not retry unchanged |
 | `ERR-GRAPH-STABLE-ID-DRIFT-001` | graph algorithm stable identifier renumbered or superseded row not tombstoned | restore stable algorithm identity and retain superseded rows as tombstones |
 | `ERR-GRAPH-UNREGISTERED-PROJECTION-001` | graph algorithm specifies an unregistered or nonexistent graph projection ID | update algorithm projection to a registered projection ID from docs/GRAPH_ALGORITHM_ATLAS.md |
+| `ERR-HOLD-APPROVAL-STALE-001` | an 'fss-hold --approve' digest no longer names the exact prepared transition over the current authority head; nothing was written | rerun without the approval and approve the printed digest |
+| `ERR-HOLD-BOUND-001` | retained hold history or active held-closure bounds are exhausted (registries/evidence_holds.json limits); holds are never evicted | release holds or raise the reviewed bound |
+| `ERR-HOLD-CANCELLED-001` | the hold operation was cancelled cooperatively, including before a staged record was appended | retry the same request; approvals stay exact |
+| `ERR-HOLD-DELETION-IN-PROGRESS-001` | a deletion of the import is committed but not complete, so preservation can no longer be promised; retention mutations are refused | finish or reconcile the deletion first |
+| `ERR-HOLD-REQUEST-001` | an 'fss-hold' request is outside its contract: invalid bounded request, unknown hold on release, identifier already bound to another import or placement, or a released identifier reused; nothing was written | correct the request; identifiers are never reused |
+| `ERR-HOLD-STORAGE-001` | hold authority is missing, corrupt, shadowed or inconsistent, or an underlying ledger, spool, import or deletion-history read failed; never treated as no hold | repair the deployment; do not delete while unresolved |
 | `ERR-HYDRATION-INVALID-PRIVACY-CLASS-001` | H2 decision artifact privacy class is not 'private:property', the only privacy class fss-core uses; raw or unredacted media included (code 'invalid_privacy_class') | supply the authorized privacy class; do not retry unchanged |
 | `ERR-HYDRATION-INVALID-REDACTION-TRANSFORM-001` | H2 redaction transform is not a recognized 'transform:*' token or is incompatible with the artifact kind (code 'invalid_redaction_transform') | apply a recognized transform compatible with the artifact kind |
 | `ERR-IDEMPOTENCY-CONFLICT-001` | same key used with different request digest | reject permanently |
@@ -765,6 +771,7 @@ All stable error identities and normative recovery guidance cataloged from `regi
 | `ERR-PUBLICATION-PARTIAL-001` | child staging incomplete; root not visible | idempotent retry or collect children |
 | `ERR-QUIESCENCE-001` | region/process failed to drain | block shutdown/upgrade claim; force isolation path |
 | `ERR-REPLAY-DIVERGED-001` | semantic decision fingerprint differs from proof | block claim/release |
+| `ERR-RETENTION-NOT-ELAPSED-001` | 'fss-hold expire' names an earliest owner-attested time before the hold's minimum-retention deadline (or an uncertain time); the hold stays active | retry after the deadline with a new attested time |
 | `ERR-ROBOT-DOCS-CORRUPT-001` | malformed JSON syntax, duplicate keys, or encoding corruption in robot docs or registry | repair malformed input; ensure canonical encoding |
 | `ERR-ROBOT-DOCS-DRIFT-001` | cataloged operations, views, or resources drift across registries | reconcile registry definitions before generating docs |
 | `ERR-ROBOT-DOCS-MISSING-001` | generated robot documentation markdown or json artifact missing | generate robot docs with scripts/generate_robot_docs.py |

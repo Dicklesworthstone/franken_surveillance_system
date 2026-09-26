@@ -850,7 +850,8 @@ class TestSchemaConstitution(unittest.TestCase):
         # 120 = 118 + the store-pin and lineage-write-seal domains (fss-1s6ac).
         # 122 = 120 + the sensor/event-scoped deletion plan and completion v2 domains
         # (fss-x4a.30.86.20).
-        self.assertEqual(result["digestDomainCount"], 122)
+        # 125 = 122 + the owner evidence-hold record v1/v2 and approval domains.
+        self.assertEqual(result["digestDomainCount"], 125)
 
         # Continuation cursor is verified implemented
         implemented_names = {s["name"] for s in result["schemas"] if s["status"] == "implemented"}
@@ -1345,7 +1346,8 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         # 120 = 118 + the store-pin and lineage-write-seal domains (fss-1s6ac).
         # 122 = 120 + the sensor/event-scoped deletion plan and completion v2 domains
         # (fss-x4a.30.86.20).
-        self.assertEqual(result["digestDomainCount"], 122)
+        # 125 = 122 + the owner evidence-hold record v1/v2 and approval domains.
+        self.assertEqual(result["digestDomainCount"], 125)
         # 36 = 28 + fss.sensor_tamper_status.v1 (owner SensorTamperStatus, fss-2uftm)
         # + fss.agent_operations.v1 / fss.agent_views.v1 / fss.agent_request_envelope.v1
         #   (owners AgentOperation / AgentView / AgentRequestEnvelope, fss-x4a.30.83.17-40)
