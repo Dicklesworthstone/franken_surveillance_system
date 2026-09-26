@@ -114,14 +114,14 @@ pub(super) fn assign(
     left_dispositions.resize(rows, AssociationDisposition::NoCandidate);
     let mut right_dispositions = reserve(right_count)?;
     right_dispositions.resize(right_count, AssociationDisposition::NoCandidate);
-    for row in 0..rows {
-        for column in 0..right_count {
+    for (row, left_disposition) in left_dispositions.iter_mut().enumerate() {
+        for (column, right_disposition) in right_dispositions.iter_mut().enumerate() {
             charge(budget, 32)?;
             let score = score(row, column);
             costs.push(match score {
                 AssociationScore::Admissible { units, .. } => {
-                    left_dispositions[row] = AssociationDisposition::Unresolved;
-                    right_dispositions[column] = AssociationDisposition::Unresolved;
+                    *left_disposition = AssociationDisposition::Unresolved;
+                    *right_disposition = AssociationDisposition::Unresolved;
                     Some(ASSOCIATION_SCORE_SCALE - units)
                 }
                 AssociationScore::Excluded(_) => None,
