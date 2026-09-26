@@ -1750,6 +1750,7 @@ fn watch_coverage(context: &WatchCoverageContext<'_>) -> Result<CoverageRecord> 
         visibility: Vec::new(),
         refusals: context.refusals.to_vec(),
         restarts: context.restarts.to_vec(),
+        pose_provenance: None,
     };
     let mut record = build_coverage_with(
         &CoverageInput {

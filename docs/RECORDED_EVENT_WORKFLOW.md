@@ -379,6 +379,24 @@ command), a refusal in the middle of a recording becomes a gap instead
 Orient then sees two witness windows around the gap: the zone is `not_observable between` them,
 and follow certifies no silence over it.
 
+### Pose provenance and owner-asserted camera generations (fss-x8j0v follow-up)
+
+When a corroborate camera's ground visibility uses a pinhole pose, its coverage record binds
+where that pose came from (version 4 of `fss.recorded_watch_coverage.v1`): `owner_pose_argument`
+for a `--pose`, or `site_calibration` with the pinned calibration digest, the camera handle and
+its intrinsics and extrinsics generations. The provenance digest
+(`fss.coverage_pose_provenance.v1`) is bound into the camera's analysis identity. The coverage
+report, orient's zone cells and a cold reopen all show it; a posed version-2/3 record written
+before this binding is shown as `unrecorded`. Records of cameras without a pose keep their bytes.
+
+No deployment retains a camera's current intrinsics or extrinsics generation (sensor capsules do
+not carry one and nothing writes `twin_localization_receipt`), so generation currency is never
+observed. `--camera-generation NAME:INTRINSICS:EXTRINSICS` (requires `--calibration`) is the
+owner's assertion that a calibrated camera still has exactly those generations: a mismatch is
+`ERR-SITE-CALIBRATION-GENERATION-STALE-001` before any source is read and nothing is appended; a
+match is recorded `owner_asserted_not_observed`, and a calibrated camera without an assertion
+`unasserted_unknown`.
+
 ### Privacy masks with geometry and tolerant decode (fss-bgqkd)
 
 A sensor's retained privacy mask (`fss-event privacy-mask declare`, see `PRIVACY.md`) composes

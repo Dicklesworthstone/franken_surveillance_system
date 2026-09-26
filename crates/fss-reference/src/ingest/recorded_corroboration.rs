@@ -48,6 +48,10 @@
 //! `occluded` or `outside_frustum` for coverage, and without a mesh every witness says it is
 //! frustum-only (`occlusion_unknown`). The threshold, the sample grid, the pose and the mesh
 //! digest are bound into the pipeline generation ([`CorroborationReport::analyze_with_visibility`]).
+//! [`CorroborationReport::analyze_with_provenance`] additionally binds where each posed camera's
+//! pose came from ([`PoseProvenance`]: an owner `--pose`, or a site calibration digest with the
+//! camera generation and its owner-asserted or unasserted currency) into that camera's analysis
+//! identity and its retained coverage record (version 4); without it records are unchanged.
 //!
 //! With [`CorroborationOptions::tolerate_decode_refusals`], each camera uses the watch pipeline's
 //! bounded recovery: refused segments and exact tracking restarts remain explicit in its ground
@@ -93,8 +97,8 @@ use super::privacy_mask::MaskBinding;
 use super::privacy_mask::coverage::{ground_zone_masked, mask_coverage_zones};
 use super::recorded_coverage::{
     CoverageEntry, CoverageError, CoverageExtras, CoverageFrame, CoverageInput, CoverageRecord,
-    CoverageSource, CoverageStatus, CoverageZoneInput, approval_digest, build_coverage_with,
-    check_approval, coverage_status, pipeline_generation, retain_coverage,
+    CoverageSource, CoverageStatus, CoverageZoneInput, PoseProvenance, approval_digest,
+    build_coverage_with, check_approval, coverage_status, pipeline_generation, retain_coverage,
 };
 use super::recorded_decode::{ComponentInterpretation, RecordedDecodeError, source_capsule};
 use super::recorded_watch::{
@@ -1227,14 +1231,52 @@ impl CorroborationReport {
         deployment: &ReferenceDeployment,
         plan: &CorroborationPlan,
         limits: &WatchLimits,
+        detector: Option<&mut DetectorCascade<'_>>,
+        visibility: &GroundVisibilityPlan<'_>,
+        options: CorroborationOptions,
+        cx: &ReplayCx,
+    ) -> Result<Self> {
+        Self::analyze_with_provenance(
+            deployment,
+            plan,
+            limits,
+            detector,
+            visibility,
+            &[None, None],
+            options,
+            cx,
+        )
+    }
+
+    /// [`Self::analyze_with_options`] binding each posed camera's [`PoseProvenance`] (plan order)
+    /// into its analysis identity and retained coverage record. A provenance for a camera without
+    /// a pose is refused as an invalid pose; `[None, None]` is exactly
+    /// [`Self::analyze_with_options`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn analyze_with_provenance(
+        deployment: &ReferenceDeployment,
+        plan: &CorroborationPlan,
+        limits: &WatchLimits,
         mut detector: Option<&mut DetectorCascade<'_>>,
         visibility: &GroundVisibilityPlan<'_>,
+        provenance: &[Option<PoseProvenance>; 2],
         options: CorroborationOptions,
         cx: &ReplayCx,
     ) -> Result<Self> {
         checkpoint(cx, "recorded_corroboration:analyze")?;
         plan.validate()?;
         visibility.policy.validate()?;
+        for ((camera, pose), source) in plan.cameras.iter().zip(&visibility.poses).zip(provenance) {
+            if let Some(source) = source {
+                if pose.is_none() {
+                    return Err(CorroborationError::InvalidPose {
+                        camera: camera.name.clone(),
+                        reason: "a pose provenance names a camera without a pose",
+                    });
+                }
+                source.validate()?;
+            }
+        }
         let plan_digest = plan.digest();
         let context = CameraAnalysisContext {
             plan,
@@ -1305,6 +1347,7 @@ impl CorroborationReport {
                     basis: &basis,
                     cascade: cascade.as_ref().map(|c| c.digest),
                     visibility,
+                    provenance: provenance[index],
                 },
                 index,
                 camera,
@@ -1692,6 +1735,7 @@ struct CameraCoverageContext<'a> {
     basis: &'a fss_core::LedgerAnchor,
     cascade: Option<ContentDigest>,
     visibility: &'a GroundVisibilityPlan<'a>,
+    provenance: Option<PoseProvenance>,
 }
 
 fn camera_coverage(
@@ -1823,6 +1867,11 @@ fn camera_coverage(
     e.u64(index as u64);
     e.digest(camera.watch_analysis_digest);
     visibility_plan.encode(&mut e);
+    // Only a bound provenance extends the identity, so unbound analyses keep their digests.
+    if let Some(provenance) = &context.provenance {
+        e.text("pose-provenance");
+        e.digest(provenance.digest());
+    }
     let analysis_digest = ContentDigest::sha256(&e.finish());
     let last_segment = camera
         .segment_gaps
@@ -1833,6 +1882,7 @@ fn camera_coverage(
         visibility: visibilities,
         refusals: camera.decode_refusals.clone(),
         restarts: camera.tracking_restarts.clone(),
+        pose_provenance: context.provenance,
     };
     let mut record = build_coverage_with(
         &CoverageInput {

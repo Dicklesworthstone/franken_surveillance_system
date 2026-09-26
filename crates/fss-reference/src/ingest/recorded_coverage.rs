@@ -50,6 +50,16 @@
 //! `privacy_masked`. A ground zone's geometric visibility then also counts, once per sample, the
 //! in-view samples that fall on a masked pixel; a record with such a count is version 3.
 //!
+//! A corroborate camera whose ground visibility used a pinhole pose may carry its
+//! [`PoseProvenance`] (fss-x8j0v follow-up): the owner-typed `--pose` argument, or a site
+//! calibration named by its digest with the camera's `CameraGeneration` and whether the owner
+//! asserted that generation current (asserted, never observed). Such a record is version 4: the
+//! version-3 layout with an explicit masked-samples flag and the provenance block after the
+//! domain; the provenance digest (`fss.coverage_pose_provenance.v1`) is bound into the analysis
+//! identity, so records of different provenance never share a ledger object. Records without a
+//! provenance keep their exact version 1/2/3 bytes; a version 2/3 record with a calibrated pose
+//! predates provenance binding and its pose source is unrecorded.
+//!
 //! **Reason precedence.** One segment of one zone carries exactly one reason. When several apply
 //! the first of this order wins, deterministically:
 //!
@@ -73,7 +83,7 @@ use fss_core::{
     CoverageWitness, EvidenceDelta, LedgerAnchor, ObjectId, Plane, TimestampNs,
 };
 
-use super::ground_visibility::{NotVisibleCause, ZoneVisibility};
+use super::ground_visibility::{CameraModel, NotVisibleCause, ZoneVisibility};
 use super::tolerant_decode::DecodeRefusal;
 use crate::reference_deployment::FAMILY_COVERAGE_WITNESS;
 use crate::{ReferenceDeployment, ReferenceError, ReplayCx};
@@ -100,6 +110,11 @@ const RECORD_VERSION_VISIBILITY: u32 = 2;
 /// Version of a record in which at least one zone's visibility counts privacy-masked samples:
 /// every visibility block then carries that count (fss-bgqkd over fss-2h5zq.53).
 const RECORD_VERSION_MASKED_VISIBILITY: u32 = 3;
+/// Version of a corroborate record that binds its camera's [`PoseProvenance`]: the masked-samples
+/// flag is explicit and the provenance block follows the domain (fss-x8j0v follow-up).
+const RECORD_VERSION_POSE_PROVENANCE: u32 = 4;
+/// Pose-provenance digest domain (bound into the corroborate camera analysis identity).
+pub const POSE_PROVENANCE_DOMAIN: &str = "fss.coverage_pose_provenance.v1";
 /// Canonical record domain.
 pub const RECORD_DOMAIN: &str = "fss.recorded_watch_coverage.v1";
 /// Pipeline-generation digest domain.
@@ -146,6 +161,160 @@ impl CoverageSource {
             "watch" => Ok(Self::Watch),
             "corroborate" => Ok(Self::Corroborate),
             _ => Err(ContractError::InvalidIdentifier),
+        }
+    }
+}
+
+/// Whether the camera generation a calibrated pose depends on is current. No deployment retains
+/// a camera's current intrinsics or extrinsics generation, so currency is never observed: at most
+/// the owner asserts it on the command line (`--camera-generation`), and that assertion matched
+/// the calibration's generation exactly or the run was refused.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum GenerationCurrency {
+    /// Nobody asserted the generation current: it may be stale (camera moved, cropped, zoomed).
+    Unasserted,
+    /// The owner asserted exactly this generation current; an assertion, not an observation.
+    OwnerAsserted,
+}
+
+impl GenerationCurrency {
+    /// Stable spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unasserted => "unasserted_unknown",
+            Self::OwnerAsserted => "owner_asserted_not_observed",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, ContractError> {
+        match value {
+            "unasserted_unknown" => Ok(Self::Unasserted),
+            "owner_asserted_not_observed" => Ok(Self::OwnerAsserted),
+            _ => Err(ContractError::InvalidIdentifier),
+        }
+    }
+}
+
+/// Where one corroborate camera's pinhole pose came from.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PoseProvenance {
+    /// An owner-typed `--pose` argument: no calibration and no camera generation is bound.
+    OwnerPoseArgument,
+    /// The refined pose of an `fss-event calibrate` site calibration.
+    SiteCalibration {
+        /// Identity of the exact calibration (`fss.site_calibration.v1`/`v2`).
+        calibration_digest: ContentDigest,
+        /// Property-local camera handle of the calibrated camera.
+        camera_handle: u64,
+        /// Intrinsics generation the calibrated pose depends on.
+        intrinsics_generation: u64,
+        /// Extrinsics generation the calibrated pose depends on.
+        extrinsics_generation: u64,
+        /// Whether that generation was asserted current.
+        currency: GenerationCurrency,
+    },
+}
+
+impl PoseProvenance {
+    /// Stable spelling of the pose source.
+    #[must_use]
+    pub const fn source(&self) -> &'static str {
+        match self {
+            Self::OwnerPoseArgument => "owner_pose_argument",
+            Self::SiteCalibration { .. } => "site_calibration",
+        }
+    }
+
+    /// Stable claim: neither source is a calibration certificate.
+    #[must_use]
+    pub const fn claim(&self) -> &'static str {
+        match self {
+            Self::OwnerPoseArgument => "owner_asserted_pose_not_a_certificate",
+            Self::SiteCalibration { .. } => "candidate_calibration_not_a_certificate",
+        }
+    }
+
+    fn encode(&self, e: &mut CanonicalEncoder) {
+        e.text(self.source());
+        if let Self::SiteCalibration {
+            calibration_digest,
+            camera_handle,
+            intrinsics_generation,
+            extrinsics_generation,
+            currency,
+        } = self
+        {
+            e.digest(*calibration_digest);
+            e.u64(*camera_handle);
+            e.u64(*intrinsics_generation);
+            e.u64(*extrinsics_generation);
+            e.text(currency.as_str());
+        }
+    }
+
+    fn decode(d: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        match d.text()? {
+            "owner_pose_argument" => Ok(Self::OwnerPoseArgument),
+            "site_calibration" => Ok(Self::SiteCalibration {
+                calibration_digest: d.digest()?,
+                camera_handle: d.u64()?,
+                intrinsics_generation: d.u64()?,
+                extrinsics_generation: d.u64()?,
+                currency: GenerationCurrency::parse(d.text()?)?,
+            }),
+            _ => Err(ContractError::InvalidIdentifier),
+        }
+    }
+
+    /// Domain-separated digest (`fss.coverage_pose_provenance.v1`) bound into the analysis.
+    #[must_use]
+    pub fn digest(&self) -> ContentDigest {
+        let mut e = CanonicalEncoder::new();
+        e.text(POSE_PROVENANCE_DOMAIN);
+        self.encode(&mut e);
+        ContentDigest::sha256(&e.finish())
+    }
+
+    /// Camera handles and generations are nonzero (`CameraGeneration`).
+    pub fn validate(&self) -> Result<(), ContractError> {
+        match self {
+            Self::SiteCalibration {
+                camera_handle,
+                intrinsics_generation,
+                extrinsics_generation,
+                ..
+            } if *camera_handle == 0
+                || *intrinsics_generation == 0
+                || *extrinsics_generation == 0 =>
+            {
+                Err(ContractError::InvalidIdentifier)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// One-line human summary for orientation cells.
+    #[must_use]
+    pub fn summary(&self) -> String {
+        match self {
+            Self::OwnerPoseArgument => {
+                "owner --pose argument (owner-asserted pose, not a calibration certificate)"
+                    .to_owned()
+            }
+            Self::SiteCalibration {
+                calibration_digest,
+                camera_handle,
+                intrinsics_generation,
+                extrinsics_generation,
+                currency,
+            } => format!(
+                "site calibration {calibration_digest} camera {camera_handle} intrinsics \
+                 generation {intrinsics_generation} extrinsics generation \
+                 {extrinsics_generation}, generation currency {} (candidate calibration, not a \
+                 certificate)",
+                currency.as_str()
+            ),
         }
     }
 }
@@ -285,6 +454,8 @@ pub struct CoverageRecord {
     pub analysed: CaptureInterval,
     /// Per-zone coverage in plan order.
     pub zones: Vec<ZoneCoverage>,
+    /// Source of the camera's pinhole pose, when the record binds it (version 4).
+    pub pose_provenance: Option<PoseProvenance>,
 }
 
 /// One decoded frame as coverage sees it.
@@ -362,6 +533,8 @@ pub struct CoverageExtras {
     pub refusals: Vec<DecodeRefusal>,
     /// Segments of the first decoded frame after each tracking restart, in order.
     pub restarts: Vec<usize>,
+    /// Source of the camera's pinhole pose (corroborate with a pose only; none: not bound).
+    pub pose_provenance: Option<PoseProvenance>,
 }
 
 /// Pipeline-generation digest for one zone: fixed policy digest, pipeline label (decoder and
@@ -759,6 +932,7 @@ pub fn build_coverage_with(
         last_segment: input.last_segment as u64,
         analysed,
         zones,
+        pose_provenance: extras.pose_provenance,
     };
     record.validate()?;
     Ok(record)
@@ -794,10 +968,13 @@ impl CoverageRecord {
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut e = CanonicalEncoder::new();
-        let versioned = self.zones.iter().any(|zone| zone.visibility.is_some());
+        let versioned = self.pose_provenance.is_some()
+            || self.zones.iter().any(|zone| zone.visibility.is_some());
         let masked_samples = self.masked_samples();
         e.bytes(RECORD_MAGIC);
-        e.u32(if masked_samples {
+        e.u32(if self.pose_provenance.is_some() {
+            RECORD_VERSION_POSE_PROVENANCE
+        } else if masked_samples {
             RECORD_VERSION_MASKED_VISIBILITY
         } else if versioned {
             RECORD_VERSION_VISIBILITY
@@ -805,6 +982,10 @@ impl CoverageRecord {
             RECORD_VERSION
         });
         e.text(RECORD_DOMAIN);
+        if let Some(provenance) = &self.pose_provenance {
+            e.bool(masked_samples);
+            provenance.encode(&mut e);
+        }
         e.text(self.source.as_str());
         e.digest(self.import_identity);
         e.digest(self.import_root);
@@ -891,15 +1072,22 @@ impl CoverageRecord {
         if d.bytes()? != RECORD_MAGIC {
             return Err(ContractError::InvalidIdentifier);
         }
-        let (versioned, masked_samples) = match d.u32()? {
+        let version = d.u32()?;
+        let (versioned, mut masked_samples) = match version {
             RECORD_VERSION => (false, false),
-            RECORD_VERSION_VISIBILITY => (true, false),
+            RECORD_VERSION_VISIBILITY | RECORD_VERSION_POSE_PROVENANCE => (true, false),
             RECORD_VERSION_MASKED_VISIBILITY => (true, true),
             _ => return Err(ContractError::InvalidIdentifier),
         };
         if d.text()? != RECORD_DOMAIN {
             return Err(ContractError::InvalidIdentifier);
         }
+        let pose_provenance = if version == RECORD_VERSION_POSE_PROVENANCE {
+            masked_samples = d.bool()?;
+            Some(PoseProvenance::decode(&mut d)?)
+        } else {
+            None
+        };
         let source = CoverageSource::parse(d.text()?)?;
         let import_identity = d.digest()?;
         let import_root = d.digest()?;
@@ -1010,6 +1198,7 @@ impl CoverageRecord {
             last_segment,
             analysed,
             zones,
+            pose_provenance,
         };
         record.validate()?;
         if record.to_bytes() != bytes {
@@ -1027,6 +1216,20 @@ impl CoverageRecord {
             || self.zones.len() > MAX_COVERAGE_ZONES
         {
             return Err(ContractError::InvalidIdentifier);
+        }
+        // A pose provenance names the source of a corroborate camera's pinhole pose: every zone
+        // of its record was assessed through that pose.
+        if let Some(provenance) = &self.pose_provenance {
+            provenance.validate()?;
+            if self.source != CoverageSource::Corroborate
+                || self.zones.iter().any(|zone| {
+                    zone.visibility.as_ref().is_none_or(|visibility| {
+                        visibility.camera_model != CameraModel::CalibratedPose
+                    })
+                })
+            {
+                return Err(ContractError::InvalidIdentifier);
+            }
         }
         for zone in &self.zones {
             if zone.scope != format!("{}{}", self.source.scope_prefix(), zone.zone_id)
