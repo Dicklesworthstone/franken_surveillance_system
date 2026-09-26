@@ -26,7 +26,10 @@
   "errors": ["ERR-AUTH-DENIED-001", "ERR-HOLD-APPROVAL-STALE-001", "ERR-HOLD-DELETION-IN-PROGRESS-001", "ERR-HOLD-REQUEST-001", "ERR-HOLD-BOUND-001", "ERR-HOLD-CANCELLED-001", "ERR-HOLD-STORAGE-001", "ERR-RETENTION-NOT-ELAPSED-001"],
   "cost": {"hold_index": "scan committed deltas; at most 512 hold records", "deletion": "one bounded universe scan; at most 32 distinct held-closure computations per candidate import", "deadline_evaluation": "constant work per hold; comparisons without subtraction", "wall_time_slo": "unmeasured"},
   "compatibility": "No-hold plans and indefinite v1 record bytes/approvals unchanged. V1 hold readers reject v2 deadlines. All deletion writers must be hold-aware; pre-hold binaries and mixed-version downgrade remain unsupported.",
-  "tests": ["crates/fss-reference/tests/evidence_hold_contract.rs", "crates/fss-cli/tests/evidence_hold_cli_contract.rs", "crates/fss-reference/src/deletion/holds/state.rs", "crates/fss-reference/tests/fixtures/retention_deadline_model.py"],
+  "tests": ["crates/fss-reference/tests/evidence_hold_contract.rs", "crates/fss-cli/tests/evidence_hold_cli_contract.rs", "crates/fss-reference/src/deletion/holds/state.rs", "crates/fss-reference/tests/fixtures/retention_deadline_model.py", "crates/fss-reference/tests/retention_deadline_contract.rs", "crates/fss-cli/tests/retention_deadline_cli_contract.rs"],
   "qualification": {"rust_tests_executed": false, "reason": "Rust toolchain unavailable in authoring environment"},
-  "out_of_scope": ["remote_replica_holds", "backup_holds", "automatic_retention_policy_application", "automatic_expiry_or_deletion", "authenticated_clock_measurement", "event_or_subject_scopes", "os_tamper_protection", "custody_or_legal_compliance_certification", "agent_protocol_and_MCP_exposure"]
+  "out_of_scope": ["remote_replica_holds", "backup_holds", "automatic_retention_policy_application", "automatic_expiry_or_deletion", "authenticated_clock_measurement", "event_or_subject_scopes", "os_tamper_protection", "custody_or_legal_compliance_certification", "agent_protocol_and_MCP_exposure"],
+  "deadline_state_owner": "crates/fss-reference/src/deletion/holds/state.rs",
+  "deadline_state_plane": "effect",
+  "cli_operations": {"place": "preview_or_approve_indefinite_hold", "release": "preview_or_approve_indefinite_release", "retain": "preview_or_approve_minimum_deadline", "expire": "preview_or_approve_expiry_with_exact_deadline_and_owner_time_assertion", "list": "read_current_records", "due": "readiness_only_no_approval_or_mutation"}
 }

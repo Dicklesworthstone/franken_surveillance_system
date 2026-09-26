@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Local operator evidence preservation: preview, exact commit, explicit release, and listing.
+//! Local evidence preservation: indefinite holds, minimum deadlines and approved release/expiry.
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -12,21 +12,29 @@ use std::process::ExitCode;
 use fss_cli::agent_json::{array, evidence_anchor, object, string};
 use fss_cli::{ERR_CLI_MALFORMED_VALUE, ERR_CLI_RUNTIME_FAILURE, ExitIdentity};
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
-use fss_core::{BudgetVector, ContentDigest, DigestAlgorithm, OperationId, PrincipalId};
+use fss_core::{BudgetVector, CaptureInterval, ContentDigest, DigestAlgorithm, OperationId, PrincipalId, TimestampNs};
 use fss_reference::deletion::holds::{
     CAP_HOLD_COMMIT, CAP_HOLD_PREPARE, HoldError, HoldOutcome, HoldRecord, HoldRequest,
-    HoldState, commit_hold, list_holds, preview_hold,
+    HoldState, RetentionReadiness, commit_hold, list_holds, preview_hold,
 };
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
-const HELP: &str = "fss-hold <place|release|list> --root DIR --site SITE [--principal ID]\n\
+const HELP: &str = "fss-hold <place|release|retain|expire|list|due> --root DIR --site SITE [--principal ID]\n\
   place/release: --hold-id ID --import-id sha256:HEX --reason TEXT [--approve sha256:HEX]\n\
+  retain: --hold-id ID --import-id sha256:HEX --reason TEXT --until-ns NS [--approve DIGEST]\n\
+  expire: same identity, --reason TEXT --until-ns NS --attested-now-ns EARLIEST:LATEST [--approve DIGEST]\n\
+  due: --attested-now-ns EARLIEST:LATEST; read-only evaluation of every current hold.\n\
+  Deadlines and time attestations are signed Unix nanoseconds. Earliest must reach the original\n\
+  deadline before expiry can be approved; overlapping uncertainty refuses expiry. The supplied\n\
+  bounds are an OWNER ASSERTION, not an authenticated clock. No media timestamp or system-clock\n\
+  sample is silently substituted. Eligibility never releases a hold. Ordinary release cannot\n\
+  bypass a deadline; expiry has a separate approval and never deletes bytes.\n\
   Without --approve: preview the exact record and approval digest; no retention change.\n\
   Rerun with that approval to commit. Any intervening authority change requires a new preview.\n\
   Exact retries of the current request are idempotent. A release needs its own fresh approval.\n\
   Holds preserve a retained import's current and future derivative closure, including shared\n\
-  evidence reached by another import's deletion. Holds never expire automatically; released IDs\n\
-  cannot be reused. Release never deletes bytes. List includes held and released IDs.\n\
+  evidence reached by another import's deletion. Holds never expire automatically; terminal IDs\n\
+  cannot be reused. Release and expiry never delete bytes. List includes terminal records.\n\
   Requires an existing owner-authorized local deployment. The local process supplies retention\n\
   capabilities; --principal is an audit identity, not remote authentication or privilege escalation.\n\
   No new mutation is permitted during an incomplete deletion. No backup, remote-replica,\n\
@@ -42,6 +50,7 @@ struct Options {
     principal: String,
     request: Option<HoldRequest>,
     approval: Option<ContentDigest>,
+    attested_now: Option<CaptureInterval>,
 }
 
 fn text<'a>(values: &'a BTreeMap<String, OsString>, key: &str) -> Result<&'a str, String> {
@@ -57,18 +66,31 @@ fn digest(value: &str) -> Result<ContentDigest, String> {
     Ok(parsed)
 }
 
+fn timestamp(value: &str) -> Result<TimestampNs, String> {
+    value.parse::<i128>().map(TimestampNs).map_err(|_| "expected signed integer Unix nanoseconds".to_owned())
+}
+
+fn time_bounds(value: &str) -> Result<CaptureInterval, String> {
+    let (first, last) = value.split_once(':').ok_or("expected EARLIEST:LATEST time bounds")?;
+    CaptureInterval::new(timestamp(first)?, timestamp(last)?)
+        .map_err(|_| "time bounds require EARLIEST <= LATEST".to_owned())
+}
+
 fn parse(args: &[OsString]) -> Result<Options, String> {
-    if args.len() > 15 { return Err("too many arguments".to_owned()); }
-    let action = args.first().and_then(|v| v.to_str()).ok_or("expected place, release or list")?;
-    if !["place", "release", "list"].contains(&action) {
-        return Err("expected place, release or list".to_owned());
+    if args.len() > 19 { return Err("too many arguments".to_owned()); }
+    let action = args.first().and_then(|v| v.to_str()).ok_or("expected place, release, retain, expire, list or due")?;
+    if !["place", "release", "retain", "expire", "list", "due"].contains(&action) {
+        return Err("expected place, release, retain, expire, list or due".to_owned());
     }
     let mut values = BTreeMap::new();
     let mut i = 1;
     while i < args.len() {
         let key = args[i].to_str().ok_or("option names require UTF-8")?;
         let allowed = ["--root", "--site", "--principal"].contains(&key)
-            || (action != "list" && ["--hold-id", "--import-id", "--reason", "--approve"].contains(&key));
+            || (!["list", "due"].contains(&action)
+                && ["--hold-id", "--import-id", "--reason", "--approve"].contains(&key))
+            || (["retain", "expire"].contains(&action) && key == "--until-ns")
+            || (["expire", "due"].contains(&action) && key == "--attested-now-ns");
         if !allowed { return Err(format!("unknown or inapplicable option {key}")); }
         let value = args.get(i + 1).ok_or_else(|| format!("missing value for {key}"))?;
         if value.is_empty() || value.to_str().is_some_and(|v| v.starts_with("--")) {
@@ -91,13 +113,27 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
     if site.len() > 256 || principal.len() > 256 {
         return Err("site and principal are limited to 256 bytes".to_owned());
     }
+    let attested_now = if ["expire", "due"].contains(&action) {
+        Some(time_bounds(text(&values, "--attested-now-ns")?)?)
+    } else {
+        None
+    };
     let request = match action {
-        "list" => None,
+        "list" | "due" => None,
         _ => {
             let request = HoldRequest {
                 hold_id: text(&values, "--hold-id")?.to_owned(),
                 import_identity: digest(text(&values, "--import-id")?)?,
-                state: if action == "place" { HoldState::Held } else { HoldState::Released },
+                state: match action {
+                    "place" => HoldState::Held,
+                    "release" => HoldState::Released,
+                    "retain" => HoldState::Until { not_before: timestamp(text(&values, "--until-ns")?)? },
+                    "expire" => HoldState::Expired {
+                        not_before: timestamp(text(&values, "--until-ns")?)?,
+                        attested_now: attested_now.ok_or("expiry requires an explicit time attestation")?,
+                    },
+                    _ => return Err("invalid hold operation".to_owned()),
+                },
                 reason: text(&values, "--reason")?.to_owned(),
             };
             request.validate().map_err(|e| e.to_string())?;
@@ -105,12 +141,30 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
         }
     };
     let approval = values.get("--approve").map(|_| text(&values, "--approve").and_then(digest)).transpose()?;
-    Ok(Options { root, site, principal, request, approval })
+    Ok(Options { root, site, principal, request, approval, attested_now })
+}
+
+fn time_assertion(bounds: CaptureInterval) -> String {
+    object(&[
+        ("earliest_ns", string(&bounds.earliest.0.to_string())),
+        ("latest_ns", string(&bounds.latest.0.to_string())),
+        ("coordinate", string("unix_nanoseconds")),
+        ("provenance", string("operator_assertion_not_authenticated_clock")),
+    ])
+}
+
+fn deadline(state: HoldState) -> Option<String> {
+    state.not_before().map(|not_before| object(&[
+        ("not_before_ns", string(&not_before.0.to_string())),
+        ("expiry_time_assertion", state.attested_now().map_or_else(|| "null".into(), time_assertion)),
+        ("automatic_expiry", "false".into()),
+    ]))
 }
 
 fn record(value: &HoldRecord) -> String {
-    object(&[
-        ("format", string("fss.evidence_hold.v1")),
+    let state = value.request().state;
+    let mut fields = vec![
+        ("format", string(state.record_domain())),
         ("hold_id", string(&value.request().hold_id)),
         ("import_identity", string(&value.request().import_identity.to_text())),
         ("state", string(value.request().state.as_str())),
@@ -121,8 +175,42 @@ fn record(value: &HoldRecord) -> String {
         ("record_digest", string(&value.digest().to_text())),
         ("predecessor", value.predecessor().map_or_else(|| "null".into(), |d| string(&d.to_text()))),
         ("scope", string("retained_import_current_and_future_derivative_closure")),
-        ("expiration", string("none_explicit_release_required")),
-    ])
+        ("expiration", string(match state {
+            HoldState::Held | HoldState::Released => "none_explicit_release_required",
+            HoldState::Until { .. } => "deadline_requires_approved_expiry",
+            HoldState::Expired { .. } => "expired_by_approved_time_assertion",
+        })),
+    ];
+    if let Some(deadline) = deadline(state) {
+        fields.push(("retention_deadline", deadline));
+    }
+    object(&fields)
+}
+
+/// Readiness is derived from explicit inputs at one authority head. No mutation or approval
+/// digest is produced. Indefinite and terminal holds stay visible, not silently filtered out.
+fn due_report(values: &[HoldRecord], attested_now: CaptureInterval) -> Result<String, HoldError> {
+    let mut records = Vec::with_capacity(values.len());
+    let mut eligible = 0_usize;
+    for value in values {
+        let state = value.request().state;
+        let readiness = state.readiness(attested_now)?;
+        if readiness == RetentionReadiness::EligibleForExpiry { eligible += 1; }
+        records.push(object(&[
+            ("record", record(value)),
+            ("time_readiness", string(readiness.as_str())),
+            ("deletion_blocking", state.is_active().to_string()),
+        ]));
+    }
+    Ok(object(&[
+        ("status", string("retention_evaluated")),
+        ("authority_changed", "false".into()),
+        ("time_assertion", time_assertion(attested_now)),
+        ("active_holds", values.iter().filter(|r| r.request().state.is_active()).count().to_string()),
+        ("eligible_for_expiry", eligible.to_string()),
+        ("eligibility_is_not_approval", "true".into()),
+        ("records", array(&records)),
+    ]))
 }
 
 fn run(options: &Options) -> RunResult<String> {
@@ -158,9 +246,14 @@ fn run_with(options: &Options, authority: &ContextAuthority, cx: &ReplayCx) -> R
     let detail = match &options.request {
         None => {
             let values = list_holds(&deployment, authority, cx)?;
-            let active = values.iter().filter(|r| r.request().state == HoldState::Held).count();
-            let records: Vec<_> = values.iter().map(record).collect();
-            object(&[("status", string("listed")), ("active_holds", active.to_string()), ("records", array(&records))])
+            match options.attested_now {
+                Some(now) => due_report(&values, now)?,
+                None => {
+                    let active = values.iter().filter(|r| r.request().state.is_active()).count();
+                    let records: Vec<_> = values.iter().map(record).collect();
+                    object(&[("status", string("listed")), ("active_holds", active.to_string()), ("records", array(&records))])
+                }
+            }
         }
         Some(request) => {
             let receipt = match options.approval {
@@ -264,4 +357,101 @@ mod tests {
         assert_eq!(parse(&values)?.approval, Some(approval));
         Ok(())
     }
+
+    fn deadline_args(action: &str, bounds: Option<&str>) -> Vec<OsString> {
+        let mut values = args(action);
+        values.extend(["--until-ns", "10"].into_iter().map(OsString::from));
+        if let Some(bounds) = bounds {
+            values.extend(["--attested-now-ns", bounds].into_iter().map(OsString::from));
+        }
+        values
+    }
+
+    #[test]
+    fn retain_and_expire_preserve_explicit_deadlines_and_do_not_approve() -> Result<(), String> {
+        let retained = parse(&deadline_args("retain", None))?;
+        assert!(retained.approval.is_none());
+        assert_eq!(retained.request.ok_or("missing retain")?.state, HoldState::Until { not_before: TimestampNs(10) });
+        let expired = parse(&deadline_args("expire", Some("10:12")))?;
+        assert!(expired.approval.is_none());
+        assert_eq!(expired.request.ok_or("missing expiry")?.state, HoldState::Expired {
+            not_before: TimestampNs(10), attested_now: time_bounds("10:12")?,
+        });
+        assert!(parse(&args("retain")).is_err());
+        assert!(parse(&deadline_args("expire", None)).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn premature_uncertain_and_inverted_expiry_is_refused_before_open() {
+        for bounds in ["8:9", "9:10", "9:12", "12:10", "", "10", "10:", ":12", "10:12:13", "1e2:200"] {
+            assert!(parse(&deadline_args("expire", Some(bounds))).is_err(), "{bounds}");
+        }
+    }
+
+    #[test]
+    fn due_requires_time_but_never_accepts_mutation_arguments() -> Result<(), String> {
+        let mut values: Vec<_> = ["due", "--root", "/existing", "--site", "site:hold"]
+            .into_iter().map(OsString::from).collect();
+        assert!(parse(&values).is_err());
+        values.extend(["--attested-now-ns", "9:11"].into_iter().map(OsString::from));
+        let due = parse(&values)?;
+        assert!(due.request.is_none());
+        assert!(due.approval.is_none());
+        assert_eq!(due.attested_now, Some(time_bounds("9:11")?));
+        for suffix in [["--until-ns", "10"], ["--approve", "bad"], ["--hold-id", "some-id"]] {
+            let mut changed = values.clone();
+            changed.extend(suffix.into_iter().map(OsString::from));
+            assert!(parse(&changed).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn deadline_options_cannot_leak_into_legacy_actions_or_repeat() {
+        for action in ["place", "release", "list"] {
+            assert!(parse(&deadline_args(action, None)).is_err());
+            let mut values = args(action);
+            values.extend(["--attested-now-ns", "10:12"].into_iter().map(OsString::from));
+            assert!(parse(&values).is_err());
+        }
+        for suffix in [["--until-ns", "11"], ["--attested-now-ns", "11:12"]] {
+            let mut values = deadline_args("expire", Some("10:12"));
+            values.extend(suffix.into_iter().map(OsString::from));
+            assert!(parse(&values).is_err());
+        }
+    }
+
+    #[test]
+    fn signed_128_bit_times_are_parsed_and_rendered_without_json_precision_loss() -> Result<(), String> {
+        let low = i128::MIN.to_string();
+        let high = i128::MAX.to_string();
+        let bounds = time_bounds(&format!("{low}:{high}"))?;
+        let json = time_assertion(bounds);
+        assert!(json.contains(&format!("\"earliest_ns\":\"{low}\"")));
+        assert!(json.contains(&format!("\"latest_ns\":\"{high}\"")));
+        assert!(json.contains("operator_assertion_not_authenticated_clock"));
+        assert!(timestamp(&format!("{high}0")).is_err());
+        assert!(timestamp("1.5").is_err());
+        assert!(deadline(HoldState::Held).is_none());
+        let json = deadline(HoldState::Until { not_before: TimestampNs(i128::MAX) }).ok_or("missing deadline")?;
+        assert!(json.contains(&format!("\"not_before_ns\":\"{high}\"")));
+        assert!(json.contains("\"automatic_expiry\":false"));
+        Ok(())
+    }
+
+    #[test]
+    fn fully_specified_expiry_keeps_principal_approval_and_clock_assertion() -> Result<(), String> {
+        let approval = ContentDigest::sha256(b"expiry approval");
+        let mut values = deadline_args("expire", Some("10:12"));
+        values.extend([OsString::from("--principal"), OsString::from("principal:owner"),
+            OsString::from("--approve"), OsString::from(approval.to_text())]);
+        assert_eq!(values.len(), 19);
+        let parsed = parse(&values)?;
+        assert_eq!(parsed.principal, "principal:owner");
+        assert_eq!(parsed.approval, Some(approval));
+        assert_eq!(parsed.attested_now, Some(time_bounds("10:12")?));
+        Ok(())
+    }
+
 }
