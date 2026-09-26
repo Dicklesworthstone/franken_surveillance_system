@@ -83,6 +83,10 @@ pub enum RuntimeGrant {
     DroneCapture,
     /// Drone flight operation grant.
     DroneFlight,
+    /// Operator event-review commit grant (capability registry v2).
+    EventReviewCommit,
+    /// Operator event-review prepare/preview grant (capability registry v2).
+    EventReviewPrepare,
     /// Data export commit grant.
     ExportCommit,
     /// Data export prepare grant.
@@ -155,6 +159,8 @@ impl RuntimeGrant {
             Self::DeletePrepare => "CAP-DELETE-PREPARE-001",
             Self::DroneCapture => "CAP-DRONE-CAPTURE-001",
             Self::DroneFlight => "CAP-DRONE-FLIGHT-001",
+            Self::EventReviewCommit => "CAP-EVENT-REVIEW-COMMIT-001",
+            Self::EventReviewPrepare => "CAP-EVENT-REVIEW-PREPARE-001",
             Self::ExportCommit => "CAP-EXPORT-COMMIT-001",
             Self::ExportPrepare => "CAP-EXPORT-PREPARE-001",
             Self::LedgerAppend => "CAP-LEDGER-APPEND-001",
@@ -206,6 +212,8 @@ impl RuntimeGrant {
             "CAP-DELETE-PREPARE-001" => Ok(Self::DeletePrepare),
             "CAP-DRONE-CAPTURE-001" => Ok(Self::DroneCapture),
             "CAP-DRONE-FLIGHT-001" => Ok(Self::DroneFlight),
+            "CAP-EVENT-REVIEW-COMMIT-001" => Ok(Self::EventReviewCommit),
+            "CAP-EVENT-REVIEW-PREPARE-001" => Ok(Self::EventReviewPrepare),
             "CAP-EXPORT-COMMIT-001" => Ok(Self::ExportCommit),
             "CAP-EXPORT-PREPARE-001" => Ok(Self::ExportPrepare),
             "CAP-LEDGER-APPEND-001" => Ok(Self::LedgerAppend),

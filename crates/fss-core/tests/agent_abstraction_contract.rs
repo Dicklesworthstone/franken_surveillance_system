@@ -2696,6 +2696,40 @@ fn test_runtime_authority_and_custody_parse_and_resolution() -> Result<(), Box<d
     Ok(())
 }
 
+/// Every registered capability ID in `architecture/capabilities.json` resolves to exactly one
+/// typed `RuntimeGrant` whose stable ID round-trips, and grant ordering follows stable-ID
+/// ordering (canonical grant lists are validated as strictly ascending).
+#[test]
+fn test_runtime_grants_cover_capability_registry_v2() -> Result<(), Box<dyn Error>> {
+    let registry = include_str!("../../../architecture/capabilities.json");
+    assert!(registry.contains("\"generation\": \"gen:fss1:capabilities-v2\""));
+    let ids: Vec<&str> = registry
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("\"id\": \""))
+        .filter_map(|rest| rest.strip_suffix("\","))
+        .collect();
+    assert_eq!(ids.len(), 45, "capability registry v2 carries 45 rows");
+    assert!(ids.contains(&"CAP-EVENT-REVIEW-PREPARE-001"));
+    assert!(ids.contains(&"CAP-EVENT-REVIEW-COMMIT-001"));
+    let mut grants = Vec::with_capacity(ids.len());
+    for id in &ids {
+        let grant = RuntimeGrant::from_id(id)?;
+        assert_eq!(grant.as_str(), *id);
+        grants.push(grant);
+    }
+    let unique: BTreeSet<RuntimeGrant> = grants.iter().copied().collect();
+    assert_eq!(unique.len(), ids.len());
+    let mut by_id = grants.clone();
+    by_id.sort_by_key(|grant| grant.as_str());
+    let mut by_ord = grants;
+    by_ord.sort();
+    assert_eq!(
+        by_ord, by_id,
+        "RuntimeGrant ordering must follow stable-ID ordering"
+    );
+    Ok(())
+}
+
 #[test]
 fn test_outcome_and_workspace_layers_belong_to_cognition_plane() -> Result<(), Box<dyn Error>> {
     let outcome = AgentAbstractionLayer::OutcomeAndEpisode;

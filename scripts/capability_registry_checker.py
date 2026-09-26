@@ -34,10 +34,22 @@ CAPABILITIES_JSON_PATH = "architecture/capabilities.json"
 CAPABILITIES_MD_PATH = "registries/CAPABILITIES.md"
 
 # Expected canonical freeze digests pinned per registry generation
+# Superseded generations stay pinned as history (never deleted or renumbered); only
+# CURRENT_GENERATION is accepted as the live registry generation.
 EXPECTED_FREEZE_DIGESTS: dict[str, str] = {
     "gen:fss1:capabilities-v1": "sha256:5056fe20103a6c9a157fdb0e29bf5371384b976e874bf2964ff817fb202f045a",
+    # v2 (fss-31cjo): adds CAP-EVENT-REVIEW-PREPARE-001 and CAP-EVENT-REVIEW-COMMIT-001.
+    "gen:fss1:capabilities-v2": "sha256:3ccae04582a7225f5fd596ad0b52605b0cd093266ad910282c0ed4b8b4e8f9d5",
 }
-CURRENT_GENERATION = "gen:fss1:capabilities-v1"
+CURRENT_GENERATION = "gen:fss1:capabilities-v2"
+
+# Total order of capability registry generations. A baseline row's `generation` names the
+# generation that introduced it; a registry may only carry rows introduced at or before
+# its own generation, and every live row must carry the registry generation.
+CAPABILITY_GENERATION_ORDER: tuple[str, ...] = (
+    "gen:fss1:capabilities-v1",
+    "gen:fss1:capabilities-v2",
+)
 
 # Recognized semantic plane designations in FSS architecture
 RECOGNIZED_PLANES = {
@@ -72,6 +84,9 @@ REQUIRED_ROW_FIELDS = (
     "generation",
 )
 
+# Frozen baseline rows. Each row's `generation` is the generation that introduced it
+# (see CAPABILITY_GENERATION_ORDER); every other field must match the live row exactly.
+# Adding an ID requires a new generation, a pinned freeze digest, and a baseline row.
 BASELINE_CAPABILITIES: dict[str, dict[str, str]] = {
     "CAP-ADAPTER-AUTH-001": {
         "capability": "resolve one adapter secret handle",
@@ -332,6 +347,26 @@ BASELINE_CAPABILITIES: dict[str, dict[str, str]] = {
         "plane": "effect",
         "safeAlternative": "use authorized stationary sensors or manually piloted tethered capture",
         "scope": "mission/airspace",
+    },
+    "CAP-EVENT-REVIEW-COMMIT-001": {
+        "capability": "commit exact operator review successor under the core event state machine",
+        "defaultRole": "explicit owner grant; no alert, retention, or model authority",
+        "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-EVENT-REVIEW-COMMIT-001 authority on event revision + principal + review approval",
+        "generation": "gen:fss1:capabilities-v2",
+        "id": "CAP-EVENT-REVIEW-COMMIT-001",
+        "plane": "authority write",
+        "safeAlternative": "submit the prepared review preview to the owner for explicit approval and commit",
+        "scope": "event revision + principal + review approval",
+    },
+    "CAP-EVENT-REVIEW-PREPARE-001": {
+        "capability": "read and preview an operator lifecycle review",
+        "defaultRole": "denied unless explicitly granted",
+        "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-EVENT-REVIEW-PREPARE-001 authority on exact event revision + site",
+        "generation": "gen:fss1:capabilities-v2",
+        "id": "CAP-EVENT-REVIEW-PREPARE-001",
+        "plane": "authority read",
+        "safeAlternative": "request an explicit event-review grant or query event revisions under CAP-OBSERVE-EVENT-001",
+        "scope": "exact event revision + site",
     },
     "CAP-EXPORT-COMMIT-001": {
         "capability": "publish exact export",
@@ -701,7 +736,16 @@ def validate_capability_registry(repo_root: Path = ROOT) -> ValidationResult:
         )
         return result
 
+    if gen != CURRENT_GENERATION:
+        result.add_error(
+            ERR_CAPABILITY_CORRUPT_FILE,
+            CAPABILITIES_JSON_PATH,
+            "#/generation",
+            f"Superseded capability registry generation '{gen}'; current generation is '{CURRENT_GENERATION}'",
+        )
+
     expected_digest = EXPECTED_FREEZE_DIGESTS[gen]
+    gen_rank = CAPABILITY_GENERATION_ORDER.index(gen) if gen in CAPABILITY_GENERATION_ORDER else -1
 
     capabilities_list = data.get("capabilities")
     if not isinstance(capabilities_list, list):
@@ -816,7 +860,22 @@ def validate_capability_registry(repo_root: Path = ROOT) -> ValidationResult:
             )
         else:
             base_entry = BASELINE_CAPABILITIES[cid]
+            introduced = base_entry.get("generation", "")
+            if (
+                introduced not in CAPABILITY_GENERATION_ORDER
+                or CAPABILITY_GENERATION_ORDER.index(introduced) > gen_rank
+            ):
+                result.add_error(
+                    ERR_CAPABILITY_REGISTRY_DRIFT,
+                    CAPABILITIES_JSON_PATH,
+                    f"#/capabilities/{cid}",
+                    f"Capability '{cid}' introduced in '{introduced}' cannot appear in registry generation '{gen}'",
+                )
             for k in REQUIRED_ROW_FIELDS:
+                if k == "generation":
+                    # The live row generation is checked against the registry generation
+                    # above; the baseline generation records the introducing generation.
+                    continue
                 if cap.get(k) != base_entry.get(k):
                     result.add_error(
                         ERR_CAPABILITY_REGISTRY_DRIFT,
@@ -826,7 +885,14 @@ def validate_capability_registry(repo_root: Path = ROOT) -> ValidationResult:
                     )
 
     # Check for removed baseline IDs
-    for base_id in BASELINE_CAPABILITIES:
+    for base_id, base_entry in BASELINE_CAPABILITIES.items():
+        introduced = base_entry.get("generation", "")
+        if (
+            introduced in CAPABILITY_GENERATION_ORDER
+            and CAPABILITY_GENERATION_ORDER.index(introduced) > gen_rank
+        ):
+            # Not yet introduced at this registry generation.
+            continue
         if base_id not in seen_ids and base_id not in seen_tombstones:
             result.add_error(
                 ERR_CAPABILITY_REGISTRY_DRIFT,

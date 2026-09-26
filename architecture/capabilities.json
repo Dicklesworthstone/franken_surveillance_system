@@ -1,9 +1,9 @@
 {
   "schema": "fss.capability_registry.v1",
-  "asOf": "2026-08-31",
+  "asOf": "2026-09-26",
   "semanticProtocol": "fss/1",
-  "generation": "gen:fss1:capabilities-v1",
-  "registryDigest": "sha256:5056fe20103a6c9a157fdb0e29bf5371384b976e874bf2964ff817fb202f045a",
+  "generation": "gen:fss1:capabilities-v2",
+  "registryDigest": "sha256:3ccae04582a7225f5fd596ad0b52605b0cd093266ad910282c0ed4b8b4e8f9d5",
   "capabilities": [
     {
       "id": "CAP-ADAPTER-AUTH-001",
@@ -13,7 +13,7 @@
       "defaultRole": "adapter host only",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-ADAPTER-AUTH-001 authority on device/account",
       "safeAlternative": "delegate secret resolution to sealed adapter host process",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-ADAPTER-NET-001",
@@ -23,7 +23,7 @@
       "defaultRole": "adapter host only",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-ADAPTER-NET-001 authority on destination allowlist",
       "safeAlternative": "route network requests through authorized adapter host or offline fixtures",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-AGENT-CANCEL-001",
@@ -33,7 +33,7 @@
       "defaultRole": "owner or delegated supervisor",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-CANCEL-001 authority on session/task/plan/obligation",
       "safeAlternative": "request task owner or supervisor to initiate drain/cancel transition",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-AGENT-CASE-WRITE-001",
@@ -43,7 +43,7 @@
       "defaultRole": "explicit mission role",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-CASE-WRITE-001 authority on mission/case scope",
       "safeAlternative": "request mission investigation role or record local hypotheses",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-AGENT-EVIDENCE-HYDRATE-001",
@@ -53,7 +53,7 @@
       "defaultRole": "separately scoped by privacy class",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-EVIDENCE-HYDRATE-001 authority on object + hydration level",
       "safeAlternative": "request higher privacy-class grant or inspect lower-tier hydration descriptor",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-AGENT-EXPLAIN-001",
@@ -63,7 +63,7 @@
       "defaultRole": "agent read role",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-EXPLAIN-001 authority on authorized decision/evidence domain",
       "safeAlternative": "request explanation access role or query top-level outcome summary",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-AGENT-FEEDBACK-001",
@@ -73,7 +73,7 @@
       "defaultRole": "scoped agent/operator role",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-FEEDBACK-001 authority on episode/event/case",
       "safeAlternative": "request feedback role or submit offline evaluation report",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-AGENT-FINDING-WRITE-001",
@@ -83,7 +83,7 @@
       "defaultRole": "explicit mission role",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-FINDING-WRITE-001 authority on mission/case + evidence scope",
       "safeAlternative": "request mission finding publication role or attach findings to local session capsule",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-AGENT-HANDOFF-READ-001",
@@ -93,7 +93,7 @@
       "defaultRole": "named recipient/delegate",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-HANDOFF-READ-001 authority on exact handoff root + recipient",
       "safeAlternative": "request inclusion as authorized recipient or start fresh session from origin anchor",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-AGENT-HANDOFF-WRITE-001",
@@ -103,7 +103,7 @@
       "defaultRole": "explicit delegation",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-HANDOFF-WRITE-001 authority on mission/workspace + recipient scope",
       "safeAlternative": "request handoff delegation authorization or retain session locally",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-AGENT-INVESTIGATE-001",
@@ -113,7 +113,7 @@
       "defaultRole": "explicit investigation role",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-INVESTIGATE-001 authority on case + evidence domain",
       "safeAlternative": "request investigation role or inspect closed investigation cases",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-AGENT-PLAN-COMMIT-001",
@@ -123,7 +123,7 @@
       "defaultRole": "denied unless explicit; never substitutes for domain effect capabilities",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-PLAN-COMMIT-001 authority on plan digest + fences",
       "safeAlternative": "submit prepared plan to human supervisor for manual approval and domain dispatch",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-AGENT-PLAN-PREPARE-001",
@@ -133,7 +133,7 @@
       "defaultRole": "explicit planner role",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-PLAN-PREPARE-001 authority on mission + objective + target domain",
       "safeAlternative": "request planner role or inspect established affordance frontier",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-AGENT-QUERY-001",
@@ -143,7 +143,7 @@
       "defaultRole": "agent read role",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-QUERY-001 authority on authorized resources + anchor",
       "safeAlternative": "request agent query role or query standard pre-aggregated views",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-AGENT-SESSION-OPEN-001",
@@ -153,7 +153,7 @@
       "defaultRole": "denied unless negotiated",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-SESSION-OPEN-001 authority on deployment + mission + principal",
       "safeAlternative": "authenticate principal credentials and negotiate session contract basis",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-AGENT-SESSION-READ-001",
@@ -163,7 +163,7 @@
       "defaultRole": "session principal",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-SESSION-READ-001 authority on mission/session/workspace root",
       "safeAlternative": "authenticate as session principal or request delegated continuation",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-AGENT-SESSION-WRITE-001",
@@ -173,7 +173,7 @@
       "defaultRole": "explicit agent-session role",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-SESSION-WRITE-001 authority on mission + session",
       "safeAlternative": "request agent session authorization or operate in read-only session mode",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-AGENT-SITUATION-READ-001",
@@ -183,7 +183,7 @@
       "defaultRole": "agent read role",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-SITUATION-READ-001 authority on deployment/mission/zone/time",
       "safeAlternative": "request agent read role or query minimal public SituationCapsule",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-AGENT-WORK-CLAIM-001",
@@ -193,7 +193,7 @@
       "defaultRole": "agent collaborator role",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-WORK-CLAIM-001 authority on mission/case/subgraph",
       "safeAlternative": "request multi-agent collaborator role or wait for lease expiration",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-ALERT-COMMIT-001",
@@ -203,7 +203,7 @@
       "defaultRole": "explicit grant",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-ALERT-COMMIT-001 authority on plan digest",
       "safeAlternative": "request explicit operator grant or queue alert intent for review",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-ALERT-PREPARE-001",
@@ -213,7 +213,7 @@
       "defaultRole": "policy/operator",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-ALERT-PREPARE-001 authority on event + channel",
       "safeAlternative": "request alert preparation role or record advisory finding",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-CALIBRATE-001",
@@ -223,7 +223,7 @@
       "defaultRole": "operator",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-CALIBRATE-001 authority on session root + sensors",
       "safeAlternative": "request operator calibration role or use existing active calibration generation",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-DELETE-COMMIT-001",
@@ -233,7 +233,7 @@
       "defaultRole": "strong approval",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-DELETE-COMMIT-001 authority on plan digest",
       "safeAlternative": "obtain dual-custody data governance approval for sealed deletion execution",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-DELETE-PREPARE-001",
@@ -243,7 +243,7 @@
       "defaultRole": "admin/data subject path",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-DELETE-PREPARE-001 authority on subject/object/event",
       "safeAlternative": "request data governance authorization or initiate subject privacy request workflow",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-DRONE-CAPTURE-001",
@@ -253,7 +253,7 @@
       "defaultRole": "operator",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-DRONE-CAPTURE-001 authority on session/device",
       "safeAlternative": "request operator flight ingestion role or ingest stationary sensor capture",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-DRONE-FLIGHT-001",
@@ -263,7 +263,27 @@
       "defaultRole": "disabled in v1",
       "denialReason": "ERR-AUTH-DENIED-001: CAP-DRONE-FLIGHT-001 is permanently disabled in v1 under NEG-001/NEG-002",
       "safeAlternative": "use authorized stationary sensors or manually piloted tethered capture",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
+    },
+    {
+      "id": "CAP-EVENT-REVIEW-COMMIT-001",
+      "capability": "commit exact operator review successor under the core event state machine",
+      "scope": "event revision + principal + review approval",
+      "plane": "authority write",
+      "defaultRole": "explicit owner grant; no alert, retention, or model authority",
+      "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-EVENT-REVIEW-COMMIT-001 authority on event revision + principal + review approval",
+      "safeAlternative": "submit the prepared review preview to the owner for explicit approval and commit",
+      "generation": "gen:fss1:capabilities-v2"
+    },
+    {
+      "id": "CAP-EVENT-REVIEW-PREPARE-001",
+      "capability": "read and preview an operator lifecycle review",
+      "scope": "exact event revision + site",
+      "plane": "authority read",
+      "defaultRole": "denied unless explicitly granted",
+      "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-EVENT-REVIEW-PREPARE-001 authority on exact event revision + site",
+      "safeAlternative": "request an explicit event-review grant or query event revisions under CAP-OBSERVE-EVENT-001",
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-EXPORT-COMMIT-001",
@@ -273,7 +293,7 @@
       "defaultRole": "strong approval",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-EXPORT-COMMIT-001 authority on plan digest",
       "safeAlternative": "obtain designated custodian approval for export publication",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-EXPORT-PREPARE-001",
@@ -283,7 +303,7 @@
       "defaultRole": "denied",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-EXPORT-PREPARE-001 authority on event + recipient + fields",
       "safeAlternative": "request evidence export preparation privilege or view in-situ summaries",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-LEDGER-APPEND-001",
@@ -293,7 +313,7 @@
       "defaultRole": "owning service only",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-LEDGER-APPEND-001 authority on table family",
       "safeAlternative": "submit staged batch to owning ledger service for validation and append",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-MEDIA-DECODE-001",
@@ -303,7 +323,7 @@
       "defaultRole": "codec host only",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-MEDIA-DECODE-001 authority on object + transform plan",
       "safeAlternative": "delegate decoding to codec host or inspect retained keyframes",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-MODEL-INFER-001",
@@ -313,7 +333,7 @@
       "defaultRole": "model router",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-MODEL-INFER-001 authority on model + inputs + budget",
       "safeAlternative": "submit inference request to model router or use cached belief outputs",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-OBJECT-PUBLISH-001",
@@ -323,7 +343,7 @@
       "defaultRole": "publisher",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-OBJECT-PUBLISH-001 authority on reserved root",
       "safeAlternative": "stage child objects and request publication through designated publisher",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-OBJECT-STAGE-001",
@@ -333,7 +353,7 @@
       "defaultRole": "publisher",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-OBJECT-STAGE-001 authority on namespace + quota",
       "safeAlternative": "request staging allocation or purge unreferenced staging spool data",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-OBSERVE-EVENT-001",
@@ -343,7 +363,7 @@
       "defaultRole": "operator/agent read role",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-OBSERVE-EVENT-001 authority on event/zone/time",
       "safeAlternative": "request event observation role or query unprivileged event count",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-OBSERVE-STATUS-001",
@@ -353,7 +373,7 @@
       "defaultRole": "operator/agent read role",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-OBSERVE-STATUS-001 authority on property or sensor set",
       "safeAlternative": "request sensor observation role or query public status summary",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-PTZ-COMMIT-001",
@@ -363,7 +383,7 @@
       "defaultRole": "explicit grant",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-PTZ-COMMIT-001 authority on plan digest + lease",
       "safeAlternative": "request operator lease grant or wait for scheduled patrol pass",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-PTZ-PREPARE-001",
@@ -373,7 +393,7 @@
       "defaultRole": "denied",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-PTZ-PREPARE-001 authority on camera + pose bounds",
       "safeAlternative": "request PTZ planner grant or use static camera field of view",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-READ-GEOMETRY-001",
@@ -383,7 +403,7 @@
       "defaultRole": "denied to generic agent",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-READ-GEOMETRY-001 authority on property/zone",
       "safeAlternative": "request property twin access grant or use coarse bounding-box geometry",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-READ-MEDIA-001",
@@ -393,7 +413,7 @@
       "defaultRole": "denied",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-READ-MEDIA-001 authority on object/event/time",
       "safeAlternative": "request explicit media access grant or inspect redacted metadata summary",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-REPAIR-COMMIT-001",
@@ -403,7 +423,7 @@
       "defaultRole": "strong approval",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-REPAIR-COMMIT-001 authority on plan digest",
       "safeAlternative": "obtain administrator approval for repair commit or maintain current quarantine",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-REPAIR-PREPARE-001",
@@ -413,7 +433,7 @@
       "defaultRole": "operator",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-REPAIR-PREPARE-001 authority on subsystem/object scope",
       "safeAlternative": "request operator repair inspection role or run read-only diagnostics",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-RETENTION-COMMIT-001",
@@ -423,7 +443,7 @@
       "defaultRole": "strong approval",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-RETENTION-COMMIT-001 authority on plan digest",
       "safeAlternative": "obtain dual-custody administrator approval for retention modification",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     },
     {
       "id": "CAP-RETENTION-PREPARE-001",
@@ -433,7 +453,7 @@
       "defaultRole": "admin",
       "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-RETENTION-PREPARE-001 authority on policy/object scope",
       "safeAlternative": "request admin role or inspect existing retention schedule",
-      "generation": "gen:fss1:capabilities-v1"
+      "generation": "gen:fss1:capabilities-v2"
     }
   ]
 }

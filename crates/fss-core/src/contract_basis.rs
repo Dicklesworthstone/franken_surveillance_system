@@ -45,7 +45,10 @@ pub const CANONICAL_ONTOLOGY_GENERATION_ID: &str = "ontology:reference:v1";
 pub const CANONICAL_PRODUCER_RELEASE_ID: &str = "fss:release:v1";
 
 /// Generation tag for the frozen reference contract basis.
-pub const REFERENCE_CONTRACT_BASIS_GENERATION: &str = "gen:fss1:reference-v1";
+///
+/// `gen:fss1:reference-v1` bound capability registry `gen:fss1:capabilities-v1`; it is
+/// superseded (never reused) by `gen:fss1:reference-v2`, which binds `capabilities-v2`.
+pub const REFERENCE_CONTRACT_BASIS_GENERATION: &str = "gen:fss1:reference-v2";
 
 /// Pinned freeze digest of the schema catalog for the reference generation (`registries/SCHEMAS.md`).
 pub const REFERENCE_SCHEMA_CATALOG_DIGEST: &str =
@@ -59,9 +62,24 @@ pub const REFERENCE_OPERATION_REGISTRY_DIGEST: &str =
 pub const REFERENCE_VIEW_REGISTRY_DIGEST: &str =
     "sha256:a757a7698a79e1c72fb71d6aefa80df264a1896e8ac7f0ad455c411b2f3f5704";
 
-/// Pinned freeze digest of the capability registry (`gen:fss1:capabilities-v1`).
+/// Pinned freeze digest of the capability registry (`gen:fss1:capabilities-v2`).
 pub const REFERENCE_CAPABILITY_REGISTRY_DIGEST: &str =
+    "sha256:3ccae04582a7225f5fd596ad0b52605b0cd093266ad910282c0ed4b8b4e8f9d5";
+
+/// Freeze digest of the superseded capability registry generation `gen:fss1:capabilities-v1`.
+///
+/// Retained as history (never reused): a basis that still binds it references a superseded
+/// capability generation and is refused as stale (`ERR-AGENT-SESSION-STALE-001`) by
+/// [`negotiate_basis_with_superseded`] and [`check_basis_freshness`].
+pub const SUPERSEDED_CAPABILITY_REGISTRY_DIGEST_V1: &str =
     "sha256:5056fe20103a6c9a157fdb0e29bf5371384b976e874bf2964ff817fb202f045a";
+
+/// Canonical basis digest of the superseded reference basis bound to capabilities-v1.
+pub const SUPERSEDED_CONTRACT_BASIS_CANONICAL_DIGEST_CAPABILITIES_V1: &str =
+    "sha256:fa54646d17da5fc021e5bc1b39647064030d00ea76eebf7f09a315963de07d0f";
+
+/// Every superseded registry freeze digest that a current peer must refuse as stale.
+pub const SUPERSEDED_REGISTRY_DIGESTS: &[&str] = &[SUPERSEDED_CAPABILITY_REGISTRY_DIGEST_V1];
 
 /// Pinned freeze digest of the error registry (`registries/ERRORS.md`).
 pub const REFERENCE_ERROR_REGISTRY_DIGEST: &str =
@@ -73,11 +91,11 @@ pub const REFERENCE_COST_REGISTRY_DIGEST: &str =
 
 /// Pinned canonical semantic basis digest of the reference contract basis.
 pub const REFERENCE_CONTRACT_BASIS_CANONICAL_DIGEST: &str =
-    "sha256:fa54646d17da5fc021e5bc1b39647064030d00ea76eebf7f09a315963de07d0f";
+    "sha256:c740c404144769c71ff4460cd717a586abf800008fa969722c341819dc10d679";
 
 /// Pinned binary freeze digest of the serialized canonical binary reference contract basis.
 pub const REFERENCE_CONTRACT_BASIS_FREEZE_DIGEST: &str =
-    "sha256:a28c7480524a6e5763a433ebe2ebcfe1df771cd8f6e29998f37ee6d68d4516ab";
+    "sha256:c595258d1674d3345fcfca5dc0e671c40278411aa5bf8c0d2e157d2e494c1986";
 
 /// Maximum byte size of a canonical contract-basis binary payload (64 KiB).
 pub const MAX_CONTRACT_BASIS_BINARY_BYTES: usize = 64 * 1024;
@@ -963,6 +981,33 @@ pub fn negotiate_basis(
             Err(ContractBasisError::IncompatibleBasis { refusal })
         }
     }
+}
+
+/// Returns the superseded registry freeze digests ([`SUPERSEDED_REGISTRY_DIGESTS`]) that a
+/// current peer refuses as stale.
+#[must_use]
+pub fn superseded_registry_digests() -> Vec<ContentDigest> {
+    SUPERSEDED_REGISTRY_DIGESTS
+        .iter()
+        .map(|digest| parse_reference_digest(digest))
+        .collect()
+}
+
+/// Negotiates a basis after first refusing any client basis that binds a superseded
+/// registry generation.
+///
+/// A client still bound to a superseded generation (for example capability registry
+/// `gen:fss1:capabilities-v1`) is refused with the typed stale-basis error
+/// `ERR-AGENT-SESSION-STALE-001` (`StaleBasisReason::TombstonedRegistryDigest`) and the
+/// rebase/resnapshot guidance, rather than a generic digest mismatch. Any other
+/// divergence falls through to [`negotiate_basis`]. Never panics.
+pub fn negotiate_basis_with_superseded(
+    server_basis: &ContractBasis,
+    client_basis: &ContractBasis,
+    superseded_digests: &[ContentDigest],
+) -> Result<ContractBasis, ContractBasisError> {
+    check_basis_freshness(client_basis, server_basis, superseded_digests)?;
+    negotiate_basis(server_basis, client_basis)
 }
 
 /// Resolves an operation name against a negotiated basis (AOP-001..AOP-014).
