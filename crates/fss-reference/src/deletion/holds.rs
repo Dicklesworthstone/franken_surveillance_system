@@ -31,13 +31,13 @@ use std::collections::BTreeSet;
 
 use fss_core::{
     BatchId, CanonicalDecode, CanonicalDecoder, CanonicalEncoder, CaptureInterval, ContentDigest,
-    ContractError, DigestAlgorithm, EventId, EvidenceDelta, ObjectId, Plane, SensorCapsule,
+    ContractError, EvidenceDelta, ObjectId, Plane, SensorCapsule,
     SensorId, TimestampNs,
 };
 
 use super::DeletionError;
 use super::index::DeletionIndex;
-use super::plan::Finding;
+use super::plan::{DeletionPlan, Finding};
 use crate::reference_deployment::{FAMILY_DELETION_HOLD, FAMILY_SENSOR_CAPSULE};
 use crate::{ReferenceDeployment, ReplayCx};
 
@@ -70,94 +70,9 @@ fn damaged() -> DeletionError {
     DeletionError::RecordMismatch
 }
 
-/// What one hold covers.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub enum HoldScope {
-    /// One retained import.
-    Import(ContentDigest),
-    /// Every import whose capsules name this sensor.
-    Sensor(SensorId),
-    /// Every import whose deletion closure reaches this event's revisions.
-    Event(EventId),
-}
-
-impl HoldScope {
-    /// Parses `import:sha256:HEX`, `sensor:ID` or `event:ID`.
-    pub fn parse(text: &str) -> Result<Self, DeletionError> {
-        if let Some(rest) = text.strip_prefix("import:") {
-            let digest =
-                ContentDigest::parse(rest).map_err(|_| refused("invalid import digest"))?;
-            if digest.algorithm() != DigestAlgorithm::Sha256 {
-                return Err(refused("an import scope names a SHA-256 import identity"));
-            }
-            Ok(Self::Import(digest))
-        } else if let Some(rest) = text.strip_prefix("sensor:") {
-            Ok(Self::Sensor(
-                SensorId::parse(rest).map_err(|_| refused("invalid sensor identity"))?,
-            ))
-        } else if let Some(rest) = text.strip_prefix("event:") {
-            Ok(Self::Event(
-                EventId::parse(rest).map_err(|_| refused("invalid event identity"))?,
-            ))
-        } else {
-            Err(refused(
-                "a hold scope is import:sha256:HEX, sensor:ID or event:ID",
-            ))
-        }
-    }
-
-    /// Stable spelling (`import:sha256:...`, `sensor:ID`, `event:ID`).
-    #[must_use]
-    pub fn text(&self) -> String {
-        match self {
-            Self::Import(digest) => format!("import:{digest}"),
-            Self::Sensor(sensor) => format!("sensor:{}", sensor.as_str()),
-            Self::Event(event) => format!("event:{}", event.as_str()),
-        }
-    }
-
-    /// Scope kind (`import`, `sensor`, `event`).
-    #[must_use]
-    pub const fn kind(&self) -> &'static str {
-        match self {
-            Self::Import(_) => "import",
-            Self::Sensor(_) => "sensor",
-            Self::Event(_) => "event",
-        }
-    }
-
-    fn encode(&self, e: &mut CanonicalEncoder) {
-        match self {
-            Self::Import(digest) => {
-                e.u8(1);
-                e.digest(*digest);
-            }
-            Self::Sensor(sensor) => {
-                e.u8(2);
-                e.text(sensor.as_str());
-            }
-            Self::Event(event) => {
-                e.u8(3);
-                e.text(event.as_str());
-            }
-        }
-    }
-
-    fn decode(d: &mut CanonicalDecoder<'_>) -> Result<Self, DeletionError> {
-        Ok(match d.u8()? {
-            1 => {
-                let digest = d.digest()?;
-                if digest.algorithm() != DigestAlgorithm::Sha256 {
-                    return Err(damaged());
-                }
-                Self::Import(digest)
-            }
-            2 => Self::Sensor(SensorId::parse(d.text()?)?),
-            3 => Self::Event(EventId::parse(d.text()?)?),
-            _ => return Err(damaged()),
-        })
-    }
-}
+/// What one hold covers: the deletion scope ([`super::scope`]), the same notion a scoped
+/// deletion plan uses.
+pub use super::scope::DeletionScope as HoldScope;
 
 /// The owner's placement request, before it is bound to the authority head.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -485,7 +400,7 @@ pub fn hold_registry(deployment: &ReferenceDeployment) -> HoldRegistry {
 
 /// Sensors named by the capsules of `import` (its `file_import` batches), or `None` when a
 /// capsule cannot be read.
-fn import_sensors(
+pub(super) fn import_sensors(
     deployment: &ReferenceDeployment,
     import: ContentDigest,
 ) -> Option<BTreeSet<SensorId>> {
@@ -564,6 +479,28 @@ pub fn covering_holds(
         };
         if let Some(coverage) = coverage {
             covering.push((hold.clone(), coverage));
+        }
+    }
+    (registry, covering)
+}
+
+/// Every hold covering any member import of `plan` (given the events its closure reaches), once
+/// per hold with its first coverage in member order, plus the unreadable hold objects. For an
+/// import-scope plan this is exactly [`covering_holds`] of its import.
+pub fn covering_plan_holds(
+    deployment: &ReferenceDeployment,
+    plan: &DeletionPlan,
+) -> (HoldRegistry, Vec<(RetainedHold, Coverage)>) {
+    let events: BTreeSet<String> = plan.events.iter().map(|e| e.object_id.clone()).collect();
+    let mut registry = HoldRegistry::default();
+    let mut covering: Vec<(RetainedHold, Coverage)> = Vec::new();
+    for import in &plan.imports {
+        let (read, found) = covering_holds(deployment, *import, &events);
+        registry = read;
+        for (hold, coverage) in found {
+            if !covering.iter().any(|(seen, _)| seen.hold_id == hold.hold_id) {
+                covering.push((hold, coverage));
+            }
         }
     }
     (registry, covering)

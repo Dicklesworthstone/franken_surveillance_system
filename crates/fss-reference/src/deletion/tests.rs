@@ -6,7 +6,7 @@ use super::plan::{
     ClosureUnit, DeletableObject, DeletionCompletion, DeletionPlan, EventReference, Finding,
     ObjectTombstone, RetainedObject, RootRetraction, Unattributed, approval_digest,
 };
-use super::{DELETION_CUT_POINTS, DeletionError};
+use super::{DELETION_CUT_POINTS, DeletionError, DeletionScope};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -14,7 +14,8 @@ fn plan() -> Result<DeletionPlan, DeletionError> {
     let validity = CaptureInterval::new(TimestampNs(10), TimestampNs(20))?;
     Ok(DeletionPlan {
         site_lineage: "site:deletion-unit".to_owned(),
-        import_identity: ContentDigest::sha256(b"import"),
+        scope: DeletionScope::Import(ContentDigest::sha256(b"import")),
+        imports: vec![ContentDigest::sha256(b"import")],
         basis_anchor: LedgerAnchor {
             site_lineage: "site:deletion-unit".to_owned(),
             ledger_epoch: 1,

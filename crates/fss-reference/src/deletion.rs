@@ -1,8 +1,9 @@
 #![forbid(unsafe_code)]
-//! Graph-complete deletion closure of one retained import (FSS-037, `CAP-DELETE-PREPARE-001`,
-//! `CAP-DELETE-COMMIT-001`, `PUB-DELETE-001`).
+//! Graph-complete deletion closure of one retained import, or of every retained import of one
+//! sensor or one event (FSS-037, `CAP-DELETE-PREPARE-001`, `CAP-DELETE-COMMIT-001`,
+//! `PUB-DELETE-001`).
 //!
-//! [`plan_deletion`] is read-only: it walks every retained reference of the deployment
+//! [`plan_deletion`] (one import) and [`plan_scope_deletion`] (a [`DeletionScope`]) are read-only: it walks every retained reference of the deployment
 //! (the `walk` module documents the rule) and returns a sealed, canonical, digest-bound
 //! [`DeletionPlan`]: the closure units and why each was reached, the spool objects removed and
 //! their bytes, the closure objects retained (shared with retained authority, or authority
@@ -26,14 +27,19 @@
 //!   to `deleted`, and `fss orient` / `fss explain` say so.
 //! - Unknown copies are named, never ignored: the original input file, unrecorded operator
 //!   exports, and any alert that may have been transmitted.
-//! - Deletion holds ([`holds`]) are authority: every active hold covering the import (directly,
-//!   through its sensor, or through an event its closure reaches) and every unreadable hold is a
-//!   plan blocker. Expiry is measured on the deployment's evidence clock, not wall time.
+//! - Deletion holds ([`holds`]) are authority: every active hold covering a member import
+//!   (directly, through its sensor, or through an event the plan's closure reaches) and every
+//!   unreadable hold is a plan blocker. Expiry is measured on the deployment's evidence clock,
+//!   not wall time.
+//! - A sensor or event scope ([`scope`]) is one plan over the union of its member imports'
+//!   closures, one tombstone batch, one completion record: the same commit, the same approval,
+//!   stale-plan, tombstone-first and exactly-once guarantees.
 
 mod commit;
 pub mod holds;
 mod index;
 mod plan;
+pub mod scope;
 mod walk;
 
 use std::fmt;
@@ -46,10 +52,12 @@ pub use commit::{CommitOutcome, CommitReceipt};
 pub use index::{DeletionEntry, DeletionIndex, has_records};
 pub use plan::{
     ClosureUnit, DELETION_APPROVAL_DOMAIN, DELETION_COMPLETION_DOMAIN, DELETION_MECHANISM,
-    DELETION_OUT_OF_SCOPE, DELETION_PLAN_DOMAIN, DeletableObject, DeletionCompletion, DeletionPlan,
-    EventReference, Finding, MAX_DELETION_RECORD_BYTES, ObjectTombstone, RetainedObject,
-    RootRetraction, Unattributed, approval_digest,
+    DELETION_OUT_OF_SCOPE, DELETION_PLAN_DOMAIN, DELETION_SCOPE_COMPLETION_DOMAIN,
+    DELETION_SCOPE_PLAN_DOMAIN, DeletableObject, DeletionCompletion, DeletionPlan, EventReference,
+    Finding, MAX_DELETION_RECORD_BYTES, ObjectTombstone, RetainedObject, RootRetraction,
+    Unattributed, approval_digest,
 };
+pub use scope::DeletionScope;
 
 use crate::{ReferenceDeployment, ReferenceError, ReplayCx};
 
@@ -91,6 +99,9 @@ pub enum DeletionError {
     },
     /// No completed, retained import has this identity.
     UnknownImport(ContentDigest),
+    /// A sensor or event scope reaches no completed, retained import (unknown sensor or event,
+    /// or every member already deleted); nothing was written.
+    ScopeEmpty(String),
     /// No plan recomputed against the current head has this digest (stale or unknown).
     StalePlan(ContentDigest),
     /// The approval is not the exact approval of this plan for this principal.
@@ -137,6 +148,7 @@ impl DeletionError {
         match self {
             Self::EvidenceDeleted { .. } => "ERR-EVIDENCE-DELETED-001",
             Self::UnknownImport(_) => "ERR-DELETION-IMPORT-UNKNOWN-001",
+            Self::ScopeEmpty(_) => "ERR-DELETION-SCOPE-EMPTY-001",
             Self::StalePlan(_) => "ERR-DELETION-PLAN-STALE-001",
             Self::ApprovalMismatch(_) => "ERR-DELETION-APPROVAL-001",
             Self::Blocked(_) => "ERR-DELETION-BLOCKED-001",
@@ -163,6 +175,11 @@ impl fmt::Display for DeletionError {
             Self::UnknownImport(import) => {
                 write!(f, "no completed retained import has identity {import}")
             }
+            Self::ScopeEmpty(scope) => write!(
+                f,
+                "deletion scope {scope} reaches no completed retained import (unknown, or every \
+                 member import is already deleted)"
+            ),
             Self::StalePlan(plan) => write!(
                 f,
                 "no deletion plan recomputed against the current head has digest {plan}; the \
@@ -238,14 +255,26 @@ pub fn plan_deletion(
     import: ContentDigest,
     cx: &ReplayCx,
 ) -> Result<DeletionPlan, DeletionError> {
+    plan_scope_deletion(deployment, &DeletionScope::Import(import), cx)
+}
+
+/// Computes the sealed deletion plan of `scope` (`CAP-DELETE-PREPARE-001`): one import, or the
+/// union closure of every retained import of a sensor or an event. Writes nothing.
+pub fn plan_scope_deletion(
+    deployment: &ReferenceDeployment,
+    scope: &DeletionScope,
+    cx: &ReplayCx,
+) -> Result<DeletionPlan, DeletionError> {
     let index = DeletionIndex::read(deployment)?;
-    if let Some(entry) = index.import(import) {
+    if let DeletionScope::Import(import) = scope
+        && let Some(entry) = index.import(*import)
+    {
         return Err(DeletionError::EvidenceDeleted {
-            import,
+            import: *import,
             plan: entry.plan_digest,
         });
     }
-    walk::Universe::scan(deployment, &index, cx)?.plan(deployment, import)
+    walk::Universe::scan(deployment, &index, cx)?.plan(deployment, scope)
 }
 
 /// Executes a sealed plan under its exact approval (`CAP-DELETE-COMMIT-001`); resumes an
