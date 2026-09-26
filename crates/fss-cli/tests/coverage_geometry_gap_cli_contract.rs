@@ -16,7 +16,13 @@
 //! 4. an H.264 stream with a corrupted P slice resumes at the next IDR, every segment between is
 //!    refused and uncovered, and the output is deterministic;
 //! 5. a mesh whose digest does not match and a pose that disagrees with its homography are typed
-//!    refusals; every answer and witness conforms to its registered schema.
+//!    refusals; every answer and witness conforms to its registered schema;
+//! 6. pose-uncertainty propagation (fss-x8j0v): with a calibration whose pose covariance is tight
+//!    a ground zone near the frustum edge is `robust`, covered, and follow certifies silence;
+//!    with an inflated covariance the same zone is `pose_sensitive`: no witness, orient says
+//!    `not_observable` with a `pose_sensitive` gap, the capsule certifies no absence and follow
+//!    certifies no silence; a centred zone stays robust; an owner `--pose` run is recorded
+//!    `uncertainty_not_provided`. Sigma-point robustness is a local linear approximation.
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -1254,5 +1260,297 @@ fn an_h264_stream_with_a_corrupted_p_slice_resumes_at_the_next_idr() -> TestResu
     }
     let second = watch(&root, &id, scene_zone, "ycbcr", &flag)?;
     assert_eq!(second.stdout, first.stdout, "deterministic");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------
+// Pose-uncertainty propagation (fss-x8j0v covariance propagation to coverage certificates).
+// ---------------------------------------------------------------------------------------------
+
+/// A synthetic `FSSCAL01` site calibration posing east and west exactly as `EAST_POSE` and
+/// `WEST_POSE`, each with a diagonal 6-DoF pose covariance (rotation variance, translation
+/// variance). Written to `calibration.fsscal`; returns (path, pinned digest).
+fn calibration_file(
+    directory: &OwnedDirectory,
+    name: &str,
+    rotation: f64,
+    translation: f64,
+) -> TestResult<(String, String)> {
+    use fss_geometry::{BundleParameter, CameraGeneration};
+    use fss_reference::ingest::site_calibration::{
+        CalibratedCamera, CalibrationInput, SeedMode, SiteCalibration,
+    };
+    let digest = ContentDigest::sha256(b"synthetic calibration input");
+    let pose_parameters = vec![
+        BundleParameter::Rotation(0),
+        BundleParameter::Rotation(1),
+        BundleParameter::Rotation(2),
+        BundleParameter::Translation(0),
+        BundleParameter::Translation(1),
+        BundleParameter::Translation(2),
+    ];
+    let mut covariance = vec![0.0_f64; 36];
+    for index in 0..6 {
+        covariance[index * 6 + index] = if index < 3 { rotation } else { translation };
+    }
+    let camera = |camera_name: &str,
+                  handle: u64,
+                  rotation: [[f64; 3]; 3],
+                  translation: [f64; 3]| CalibratedCamera {
+        name: camera_name.to_owned(),
+        identity: CameraGeneration {
+            camera: handle,
+            intrinsics: 1,
+            extrinsics: 1,
+        },
+        observations: digest,
+        input: CalibrationInput::Correspondences,
+        dimensions: [96, 48],
+        mode: SeedMode::Fixed,
+        seed_sample: None,
+        seed_candidate: 0,
+        seed_alternatives: 1,
+        seed_inliers: 8,
+        seed_fit_rms_px: 0.1,
+        seed_intrinsics: [10.0, 10.0, 48.0, 24.0],
+        seed_rotation: rotation,
+        seed_translation: translation,
+        intrinsics: [10.0, 10.0, 48.0, 24.0],
+        distortion: [0.0, 0.0],
+        rotation,
+        translation,
+        covariance_parameters: pose_parameters.clone(),
+        covariance: covariance.clone(),
+        fixed_parameters: vec![
+            BundleParameter::Fx,
+            BundleParameter::Fy,
+            BundleParameter::Cx,
+            BundleParameter::Cy,
+        ],
+        seed_rms_px: 0.1,
+        refined_rms_px: 0.1,
+        control_observations: 8,
+        free_observations: 0,
+    };
+    let calibration = SiteCalibration {
+        twin_package: ContentDigest::sha256(b"synthetic twin"),
+        twin_source: ContentDigest::sha256(b"synthetic twin source"),
+        atlas_package: ContentDigest::sha256(b"synthetic atlas"),
+        atlas_fingerprint: [7; 32],
+        atlas_provenance: ContentDigest::sha256(b"synthetic atlas provenance"),
+        descriptor_domain: [9; 32],
+        control_error_bound: None,
+        initial_rms_px: 0.5,
+        final_rms_px: 0.1,
+        iterations: 3,
+        accepted_steps: 3,
+        convergence: "gradient".to_owned(),
+        observation_sigma_px: 0.1,
+        sigma_estimated: false,
+        control_points: vec![1, 2, 3, 4],
+        tie_points: vec![],
+        excluded_points: vec![],
+        frame_policy: None,
+        cameras: vec![
+            camera(
+                "east",
+                21,
+                [[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]],
+                [-48.0, 24.0, 10.0],
+            ),
+            camera(
+                "west",
+                22,
+                [[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]],
+                [48.0, -24.0, 10.0],
+            ),
+        ],
+    };
+    let path = directory.0.join(format!("{name}.fsscal"));
+    fs::write(&path, calibration.encode()?)?;
+    Ok((
+        path.to_str().ok_or("UTF-8 path")?.to_owned(),
+        calibration.digest()?.to_text(),
+    ))
+}
+
+/// `corroborate` over two zones: `edge` (ground x 86..95, whose outer sample column is 1.56 px
+/// inside the right image edge of east and the left edge of west) and `centre` (around the
+/// principal point).
+fn corroborate_edge(root: &Path, cameras: &[String; 2], extra: &[&str]) -> TestResult<Output> {
+    let mut args = vec![
+        "--camera",
+        &cameras[0],
+        "--camera",
+        &cameras[1],
+        "--ground",
+        EAST_GROUND,
+        "--ground",
+        WEST_GROUND,
+        "--zone",
+        "edge:86,4,9,40",
+        "--zone",
+        "centre:40,16,16,16",
+        "--interpretation",
+        "gray",
+        "--time-gate-ns",
+        "250000000",
+        "--distance-gate",
+        "16",
+    ];
+    args.extend_from_slice(extra);
+    event(root, "corroborate", &args)
+}
+
+#[test]
+fn a_pose_sensitive_edge_zone_is_never_certified_absent_and_breaks_silence() -> TestResult {
+    // Tight: translation sigma 0.01 (every sigma point moves a pixel by ~0.03): robust.
+    // Inflated: translation sigma 1 (the translation sigma points move pixels by ~3): the edge
+    // zone's samples leave the frame under two of the twelve points.
+    for (label, translation) in [("tight", 1e-4), ("inflated", 1.0)] {
+        let sensitive = label == "inflated";
+        let directory = OwnedDirectory::new(&format!("pose-{label}"))?;
+        let root = directory.root();
+        let cameras = recordings(&directory, false)?;
+        let (path, digest) = calibration_file(&directory, label, 1e-8, translation)?;
+        let args = ["--calibration", &path, "--calibration-digest", &digest];
+        let run = |extra: &[&str]| -> TestResult<Output> {
+            let mut all = args.to_vec();
+            all.extend_from_slice(extra);
+            corroborate_edge(&root, &cameras, &all)
+        };
+        let preview = report(&run(&[])?)?;
+        // Deterministic: the same inputs give byte-identical output.
+        assert_eq!(run(&[])?.stdout, run(&[])?.stdout, "{label}");
+        for record in preview.path(&["coverage", "records"])?.items()? {
+            let uncertainty = record.get("pose_uncertainty")?;
+            assert_eq!(uncertainty.get("status")?.text()?, "sigma_points");
+            assert_eq!(uncertainty.get("perturbations")?.number()?, 12);
+            assert_eq!(
+                uncertainty.get("claim")?.text()?,
+                "local_linear_approximation_not_a_guarantee"
+            );
+        }
+        for edge in zones(&preview, "edge")? {
+            // Nominally the edge zone is fully in view either way.
+            let visibility = edge.get("visibility")?;
+            assert_eq!(visibility.get("state")?.text()?, "observable");
+            assert_eq!(visibility.get("visible")?.number()?, 64);
+            let robustness = edge.get("pose_robustness")?;
+            assert_eq!(robustness.get("nominal_class")?.text()?, "observable");
+            assert_eq!(robustness.get("perturbations")?.number()?, 12);
+            if sensitive {
+                assert_eq!(robustness.get("state")?.text()?, "pose_sensitive");
+                assert_eq!(robustness.get("agreeing")?.number()?, 10);
+                assert_eq!(robustness.get("outside_frustum")?.number()?, 2);
+                assert_eq!(
+                    robustness.get("classes")?.texts()?,
+                    vec!["observable", "outside_frustum"]
+                );
+                assert_eq!(robustness.get("absence_evidence")?, &Json::Bool(false));
+                assert_eq!(edge.get("witness_count")?.number()?, 0);
+                assert_eq!(uncovered(edge)?, vec![("pose_sensitive".to_owned(), 0, 13)]);
+            } else {
+                assert_eq!(robustness.get("state")?.text()?, "robust");
+                assert_eq!(robustness.get("agreeing")?.number()?, 12);
+                assert_eq!(robustness.get("absence_evidence")?, &Json::Bool(true));
+                assert!(edge.get("witness_count")?.number()? > 0);
+            }
+        }
+        // The centred zone is robust and covered under both covariances.
+        for centre in zones(&preview, "centre")? {
+            assert_eq!(
+                centre.path(&["pose_robustness", "state"])?.text()?,
+                "robust"
+            );
+            assert!(centre.get("witness_count")?.number()? > 0);
+        }
+        for predicate in witness_predicates(preview.get("coverage")?, &directory.0, label)? {
+            assert!(
+                predicate.contains("; pose robust: 12 of 12 sigma-point perturbations"),
+                "{predicate}"
+            );
+            if sensitive {
+                assert!(!predicate.contains("ground-zone:edge"), "{predicate}");
+            }
+        }
+        retain(&preview, run)?;
+        let (oriented, token) = orient(&root, &directory.0, label)?;
+        let frame = frame_coverage(&oriented)?;
+        let edge_cells = zone_cells(&oriented, ":ground-zone:edge")?;
+        assert_eq!(edge_cells.len(), 2);
+        let centre_cells = zone_cells(&oriented, ":ground-zone:centre")?;
+        assert_eq!(centre_cells.len(), 2);
+        for cell in &centre_cells {
+            assert_eq!(cell.get("knowledgeState")?.text()?, "known");
+            assert!(cell.get("value")?.text()?.contains("Pose robust 12/12."));
+        }
+        if sensitive {
+            // Not plainly observable: the zone is not_observable with a named pose_sensitive
+            // gap, the capsule certifies no absence, and follow certifies no silence.
+            for cell in &edge_cells {
+                assert_eq!(cell.get("knowledgeState")?.text()?, "not_observable");
+                let value = cell.get("value")?.text()?;
+                assert!(value.contains("pose_sensitive"), "{value}");
+            }
+            assert_eq!(frame.get("absenceClaimsCertified")?, &Json::Bool(false));
+            let gaps = frame.get("gaps")?.texts()?;
+            assert!(
+                gaps.iter().any(|gap| gap.contains("ground-zone:edge")
+                    && gap.contains("not covered (pose_sensitive: 2 of 12 sigma-point poses")),
+                "{gaps:?}"
+            );
+            assert_no_silence(&root, &directory.0, "pose-sensitive follow")?;
+        } else {
+            for cell in &edge_cells {
+                assert_eq!(cell.get("knowledgeState")?.text()?, "known");
+            }
+            assert_eq!(frame.get("absenceClaimsCertified")?, &Json::Bool(true));
+            // Every objective zone is robustly covered: follow certifies silence.
+            let delta = follow(&root, &token, &directory.0, "robust follow")?;
+            assert_ne!(delta.path(&["payload", "silenceCertificate"])?, &Json::Null);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn an_owner_pose_is_recorded_uncertainty_not_provided() -> TestResult {
+    let directory = OwnedDirectory::new("pose-owner")?;
+    let root = directory.root();
+    let cameras = recordings(&directory, false)?;
+    let run = |extra: &[&str]| -> TestResult<Output> {
+        let mut all = vec!["--pose", EAST_POSE, "--pose", WEST_POSE];
+        all.extend_from_slice(extra);
+        corroborate_edge(&root, &cameras, &all)
+    };
+    let preview = report(&run(&[])?)?;
+    for record in preview.path(&["coverage", "records"])?.items()? {
+        assert_eq!(
+            record.path(&["pose_provenance", "source"])?.text()?,
+            "owner_pose_argument"
+        );
+        let uncertainty = record.get("pose_uncertainty")?;
+        assert_eq!(
+            uncertainty.get("status")?.text()?,
+            "uncertainty_not_provided"
+        );
+        for zone in record.get("zones")?.items()? {
+            assert!(zone.get("pose_robustness").is_err(), "never robust");
+        }
+    }
+    for predicate in witness_predicates(preview.get("coverage")?, &directory.0, "owner")? {
+        assert!(
+            predicate.contains("; pose uncertainty_not_provided"),
+            "{predicate}"
+        );
+        assert!(!predicate.contains("pose robust"), "{predicate}");
+    }
+    retain(&preview, run)?;
+    let (oriented, _) = orient(&root, &directory.0, "owner orient")?;
+    for cell in zone_cells(&oriented, ":ground-zone:edge")? {
+        let value = cell.get("value")?.text()?;
+        assert!(value.contains("Pose uncertainty_not_provided."), "{value}");
+    }
     Ok(())
 }

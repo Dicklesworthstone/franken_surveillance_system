@@ -75,7 +75,7 @@ use fss_twin::localization::{
     MatchReport,
 };
 
-use super::ground_visibility::{CameraPose, import_scene_mesh};
+use super::ground_visibility::{CameraPose, PoseCovariance, import_scene_mesh};
 
 /// Control-point selection of the joint solve (fss-twin), re-exported for callers.
 pub use fss_twin::joint_refinement::ControlSelection;
@@ -922,6 +922,51 @@ impl CalibratedCamera {
             .map_err(format)?,
             pose: RigidPose::new(self.rotation, self.translation).map_err(format)?,
         })
+    }
+
+    /// The 6-DoF pose block (rotation X, Y, Z in the adjuster's left-perturbation tangent space,
+    /// then world-to-camera translation X, Y, Z) of this camera's covariance, for pose-uncertainty
+    /// propagation into ground visibility. A pose parameter held fixed by the gauge contributes
+    /// zero variance (it is exact under the solve); one that is neither free nor fixed, or a block
+    /// that is not a valid covariance, is refused. The block is the marginal: intrinsics
+    /// uncertainty is not part of it.
+    pub fn pose_covariance(&self) -> Result<PoseCovariance, SiteCalibrationError> {
+        let k = self.covariance_parameters.len();
+        let pose_parameters: [BundleParameter; 6] = [
+            BundleParameter::Rotation(0),
+            BundleParameter::Rotation(1),
+            BundleParameter::Rotation(2),
+            BundleParameter::Translation(0),
+            BundleParameter::Translation(1),
+            BundleParameter::Translation(2),
+        ];
+        let mut slots = [None; 6];
+        for (slot, parameter) in slots.iter_mut().zip(pose_parameters) {
+            *slot = self
+                .covariance_parameters
+                .iter()
+                .position(|free| *free == parameter);
+            if slot.is_none() && !self.fixed_parameters.contains(&parameter) {
+                return Err(SiteCalibrationError::Format(
+                    "covariance does not cover the camera's pose block",
+                ));
+            }
+        }
+        if self.covariance.len() != k * k {
+            return Err(SiteCalibrationError::Format(
+                "covariance does not cover the camera's pose block",
+            ));
+        }
+        let mut matrix = [[0.0_f64; 6]; 6];
+        for (row, a) in slots.iter().enumerate() {
+            for (column, b) in slots.iter().enumerate() {
+                if let (Some(a), Some(b)) = (a, b) {
+                    matrix[row][column] = self.covariance[a * k + b];
+                }
+            }
+        }
+        PoseCovariance::new(matrix)
+            .map_err(|_| SiteCalibrationError::Format("pose covariance is not a valid covariance"))
     }
 }
 

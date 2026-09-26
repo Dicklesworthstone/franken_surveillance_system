@@ -63,6 +63,20 @@
 //! provenance keep their exact version 1/2/3 bytes; a version 2/3 record with a calibrated pose
 //! predates provenance binding and its pose source is unrecorded.
 //!
+//! A record that binds a provenance may also bind its [`PoseUncertainty`] (fss-x8j0v covariance
+//! propagation), which makes it version 5: the version-4 layout with the uncertainty block after
+//! the provenance. An owner `--pose` has no covariance and is `uncertainty_not_provided`: its
+//! witnesses stand on the nominal pose and say so in their predicate. A site-calibration pose is
+//! assessed under the registered sigma-point perturbations of its 6-DoF covariance block
+//! ([`super::ground_visibility::pose_sensitivity`]) and every zone then carries a
+//! [`PoseRobustness`] block after its visibility block: `robust` when every perturbation keeps
+//! the nominal class, `pose_sensitive` otherwise. A zone observable under the nominal pose but
+//! pose-sensitive is **not** observable for coverage: it carries no witness (so no absence is
+//! certified over it and no silence rests on it), and its frames are `pose_sensitive`. The
+//! uncertainty digest (`fss.coverage_pose_uncertainty.v1`) is bound into the analysis identity.
+//! Records without a bound uncertainty keep their exact version 1/2/3/4 bytes. Sigma-point
+//! robustness is a local linear approximation, not a guarantee.
+//!
 //! **Reason precedence.** One segment of one zone carries exactly one reason. When several apply
 //! the first of this order wins, deterministically:
 //!
@@ -75,8 +89,10 @@
 //! 3. `privacy_masked`: the owner's mask hides part of the zone;
 //! 4. the pre-mask reasons, in the order [`build_coverage_with`] tests them:
 //!    `capture_time_unknown`, then `occluded` / `outside_frustum` (the zone's geometric
-//!    visibility cause), then `zone_outside_frame`, `capture_time_unreliable_after_gap`,
-//!    `background_warmup`, `confirmation_latency` and finally `interval_too_short`.
+//!    visibility cause), then `zone_outside_frame`, `capture_time_unreliable_after_gap`, a named
+//!    `zone_entry`, `pose_sensitive` (a nominally observable zone whose class changes under a
+//!    sigma-point pose perturbation), `background_warmup`, `confirmation_latency` and finally
+//!    `interval_too_short`.
 
 use std::fmt;
 
@@ -86,7 +102,10 @@ use fss_core::{
     CoverageWitness, EvidenceDelta, LedgerAnchor, ObjectId, Plane, TimestampNs,
 };
 
-use super::ground_visibility::{CameraModel, NotVisibleCause, ZoneVisibility};
+use super::ground_visibility::{
+    CameraModel, NotVisibleCause, POSE_SENSITIVITY_POLICY, PoseCovariance, PoseRobustness,
+    PoseRobustnessClass, ZoneVisibility,
+};
 use super::tolerant_decode::DecodeRefusal;
 use crate::reference_deployment::FAMILY_COVERAGE_WITNESS;
 use crate::{ReferenceDeployment, ReferenceError, ReplayCx};
@@ -118,6 +137,13 @@ const RECORD_VERSION_MASKED_VISIBILITY: u32 = 3;
 const RECORD_VERSION_POSE_PROVENANCE: u32 = 4;
 /// Pose-provenance digest domain (bound into the corroborate camera analysis identity).
 pub const POSE_PROVENANCE_DOMAIN: &str = "fss.coverage_pose_provenance.v1";
+/// Version of a corroborate record that also binds its camera's [`PoseUncertainty`]: the
+/// version-4 layout with the uncertainty block after the provenance and, under sigma points, a
+/// [`PoseRobustness`] block after every zone's visibility block (fss-x8j0v covariance
+/// propagation).
+const RECORD_VERSION_POSE_UNCERTAINTY: u32 = 5;
+/// Pose-uncertainty digest domain (bound into the corroborate camera analysis identity).
+pub const POSE_UNCERTAINTY_DOMAIN: &str = "fss.coverage_pose_uncertainty.v1";
 /// Canonical record domain.
 pub const RECORD_DOMAIN: &str = "fss.recorded_watch_coverage.v1";
 /// Pipeline-generation digest domain.
@@ -363,6 +389,91 @@ impl PoseProvenance {
     }
 }
 
+/// Whether (and how) a posed corroborate camera's pose uncertainty was propagated into its
+/// ground-zone visibility.
+// One value per record (never stored in bulk), and `Copy` like the provenance it extends: the
+// 288-byte covariance stays inline rather than boxed.
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PoseUncertainty {
+    /// No covariance accompanies the pose (an owner `--pose` argument, or a caller that bound no
+    /// covariance): the visibility rests on the nominal pose alone. Never `robust`.
+    NotProvided,
+    /// Every zone was assessed under the registered sigma-point perturbations of this 6-DoF pose
+    /// covariance ([`POSE_SENSITIVITY_POLICY`]).
+    SigmaPoints {
+        /// The calibration's pose block the perturbations were drawn from.
+        covariance: PoseCovariance,
+    },
+}
+
+impl PoseUncertainty {
+    /// Stable spelling: `uncertainty_not_provided` or `sigma_points`.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::NotProvided => "uncertainty_not_provided",
+            Self::SigmaPoints { .. } => "sigma_points",
+        }
+    }
+
+    fn encode(&self, e: &mut CanonicalEncoder) {
+        e.text(self.as_str());
+        if let Self::SigmaPoints { covariance } = self {
+            e.text(POSE_SENSITIVITY_POLICY);
+            covariance.encode(e);
+        }
+    }
+
+    fn decode(d: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        match d.text()? {
+            "uncertainty_not_provided" => Ok(Self::NotProvided),
+            "sigma_points" => {
+                if d.text()? != POSE_SENSITIVITY_POLICY {
+                    return Err(ContractError::InvalidIdentifier);
+                }
+                Ok(Self::SigmaPoints {
+                    covariance: PoseCovariance::decode(d)?,
+                })
+            }
+            _ => Err(ContractError::InvalidIdentifier),
+        }
+    }
+
+    /// Domain-separated digest (`fss.coverage_pose_uncertainty.v1`) bound into the analysis.
+    #[must_use]
+    pub fn digest(&self) -> ContentDigest {
+        let mut e = CanonicalEncoder::new();
+        e.text(POSE_UNCERTAINTY_DOMAIN);
+        self.encode(&mut e);
+        ContentDigest::sha256(&e.finish())
+    }
+}
+
+/// Clause a posed zone's witness predicate carries about its pose uncertainty: nothing for a
+/// record that binds none, `uncertainty_not_provided`, or robustness under the sigma points.
+#[must_use]
+pub fn pose_predicate_clause(
+    uncertainty: Option<&PoseUncertainty>,
+    robustness: Option<&PoseRobustness>,
+) -> String {
+    match (uncertainty, robustness) {
+        (Some(PoseUncertainty::NotProvided), _) => {
+            "; pose uncertainty_not_provided: the visibility rests on the nominal pose alone and \
+             its robustness to pose error was not assessed"
+                .to_owned()
+        }
+        (Some(PoseUncertainty::SigmaPoints { .. }), Some(robustness)) => format!(
+            "; pose {}: {} of {} sigma-point perturbations of the calibration pose covariance \
+             keep the nominal class (local linear approximation, not a guarantee)",
+            robustness.state(),
+            robustness.agreeing(),
+            robustness.perturbations
+        ),
+        _ => String::new(),
+    }
+}
+
 /// Why an interval carries no witness.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum UncoveredReason {
@@ -401,6 +512,9 @@ pub enum UncoveredReason {
     /// The sensor's retained privacy mask covers part or all of the zone: masked pixels are
     /// never absence evidence (`ingest::privacy_mask::coverage`).
     PrivacyMasked,
+    /// The ground zone is observable under the nominal pose but not under every sigma-point
+    /// perturbation of the calibration pose covariance: its silence is not absence evidence.
+    PoseSensitive,
 }
 
 impl UncoveredReason {
@@ -420,6 +534,7 @@ impl UncoveredReason {
             Self::Occluded => "occluded",
             Self::OutsideFrustum => "outside_frustum",
             Self::PrivacyMasked => "privacy_masked",
+            Self::PoseSensitive => "pose_sensitive",
         }
     }
 }
@@ -471,6 +586,9 @@ pub struct ZoneCoverage {
     pub uncovered: Vec<UncoveredInterval>,
     /// Geometric visibility of a ground zone, when geometry was supplied.
     pub visibility: Option<ZoneVisibility>,
+    /// Behaviour of the zone's visibility class under the sigma-point pose perturbations
+    /// (version 5 records under [`PoseUncertainty::SigmaPoints`] only).
+    pub pose_robustness: Option<PoseRobustness>,
 }
 
 /// Everything one analysed recording retains about coverage.
@@ -500,6 +618,8 @@ pub struct CoverageRecord {
     pub zones: Vec<ZoneCoverage>,
     /// Source of the camera's pinhole pose, when the record binds it (version 4).
     pub pose_provenance: Option<PoseProvenance>,
+    /// Whether the pose's uncertainty was propagated, when the record binds it (version 5).
+    pub pose_uncertainty: Option<PoseUncertainty>,
 }
 
 /// One decoded frame as coverage sees it.
@@ -579,6 +699,11 @@ pub struct CoverageExtras {
     pub restarts: Vec<usize>,
     /// Source of the camera's pinhole pose (corroborate with a pose only; none: not bound).
     pub pose_provenance: Option<PoseProvenance>,
+    /// Pose-uncertainty status (requires a provenance; none: not bound, version 4 or earlier).
+    pub pose_uncertainty: Option<PoseUncertainty>,
+    /// Pose robustness per zone, in [`CoverageInput::zones`] order (empty: none); present for
+    /// every zone exactly under [`PoseUncertainty::SigmaPoints`].
+    pub pose_robustness: Vec<Option<PoseRobustness>>,
 }
 
 /// Pipeline-generation digest for one zone: fixed policy digest, pipeline label (decoder and
@@ -686,6 +811,7 @@ struct ZoneBuilder<'a> {
     scope: String,
     generation: ContentDigest,
     visibility: Option<ZoneVisibility>,
+    pose_clause: String,
     witnesses: Vec<ZoneWitness>,
     uncovered: Vec<UncoveredInterval>,
     run: Vec<CoverageFrame>,
@@ -756,13 +882,17 @@ impl ZoneBuilder<'_> {
             excluded_domain: std::collections::BTreeSet::new(),
             continuity: CoverageContinuity::Continuous,
             completeness: Completeness::Complete,
-            negative_predicate: zone_witness_predicate(
-                source,
-                sensor,
-                &self.scope,
-                self.generation,
-                covered,
-                self.visibility.as_ref(),
+            negative_predicate: format!(
+                "{}{}",
+                zone_witness_predicate(
+                    source,
+                    sensor,
+                    &self.scope,
+                    self.generation,
+                    covered,
+                    self.visibility.as_ref(),
+                ),
+                self.pose_clause
             ),
             stop_reason: CoverageStopReason::Complete,
             authorized_generation: COVERAGE_PRODUCER_GENERATION,
@@ -812,6 +942,7 @@ pub fn build_coverage_with(
     extras: &CoverageExtras,
 ) -> Result<CoverageRecord, ContractError> {
     if (!extras.visibility.is_empty() && extras.visibility.len() != input.zones.len())
+        || (!extras.pose_robustness.is_empty() && extras.pose_robustness.len() != input.zones.len())
         || extras
             .refusals
             .iter()
@@ -847,11 +978,18 @@ pub fn build_coverage_with(
         let scope = format!("{}{}", input.source.scope_prefix(), zone.zone_id);
         let visibility = extras.visibility.get(zone_index).cloned().flatten();
         let not_visible = visibility.as_ref().and_then(ZoneVisibility::cause);
+        let pose_robustness = extras.pose_robustness.get(zone_index).copied().flatten();
+        let pose_sensitive =
+            pose_robustness.is_some_and(|robustness| robustness.observable_but_sensitive());
         let mut builder = ZoneBuilder {
             input,
             scope: scope.clone(),
             generation: zone.pipeline_generation,
             visibility: visibility.clone(),
+            pose_clause: pose_predicate_clause(
+                extras.pose_uncertainty.as_ref(),
+                pose_robustness.as_ref(),
+            ),
             witnesses: Vec::new(),
             uncovered: Vec::new(),
             run: Vec::new(),
@@ -895,6 +1033,9 @@ pub fn build_coverage_with(
                     candidate: entry.candidate,
                     event_id: entry.event_id.clone(),
                 })
+            } else if pose_sensitive {
+                // Observable under the nominal pose only: never a witness frame.
+                Some(UncoveredReason::PoseSensitive)
             } else if position < BACKGROUND_WARMUP_FRAMES {
                 Some(UncoveredReason::BackgroundWarmup)
             } else if position + latency >= count
@@ -962,6 +1103,7 @@ pub fn build_coverage_with(
             witnesses: builder.witnesses,
             uncovered: builder.uncovered,
             visibility,
+            pose_robustness,
         });
     }
     let record = CoverageRecord {
@@ -977,6 +1119,7 @@ pub fn build_coverage_with(
         analysed,
         zones,
         pose_provenance: extras.pose_provenance,
+        pose_uncertainty: extras.pose_uncertainty,
     };
     record.validate()?;
     Ok(record)
@@ -1016,7 +1159,9 @@ impl CoverageRecord {
             || self.zones.iter().any(|zone| zone.visibility.is_some());
         let masked_samples = self.masked_samples();
         e.bytes(RECORD_MAGIC);
-        e.u32(if self.pose_provenance.is_some() {
+        e.u32(if self.pose_uncertainty.is_some() {
+            RECORD_VERSION_POSE_UNCERTAINTY
+        } else if self.pose_provenance.is_some() {
             RECORD_VERSION_POSE_PROVENANCE
         } else if masked_samples {
             RECORD_VERSION_MASKED_VISIBILITY
@@ -1029,6 +1174,9 @@ impl CoverageRecord {
         if let Some(provenance) = &self.pose_provenance {
             e.bool(masked_samples);
             provenance.encode(&mut e);
+            if let Some(uncertainty) = &self.pose_uncertainty {
+                uncertainty.encode(&mut e);
+            }
         }
         e.text(self.source.as_str());
         e.digest(self.import_identity);
@@ -1051,6 +1199,9 @@ impl CoverageRecord {
                     Some(visibility) => {
                         e.bool(true);
                         visibility.encode_versioned(&mut e, masked_samples);
+                        if let Some(robustness) = &zone.pose_robustness {
+                            robustness.encode(&mut e);
+                        }
                     }
                     None => e.bool(false),
                 }
@@ -1119,19 +1270,27 @@ impl CoverageRecord {
         let version = d.u32()?;
         let (versioned, mut masked_samples) = match version {
             RECORD_VERSION => (false, false),
-            RECORD_VERSION_VISIBILITY | RECORD_VERSION_POSE_PROVENANCE => (true, false),
+            RECORD_VERSION_VISIBILITY
+            | RECORD_VERSION_POSE_PROVENANCE
+            | RECORD_VERSION_POSE_UNCERTAINTY => (true, false),
             RECORD_VERSION_MASKED_VISIBILITY => (true, true),
             _ => return Err(ContractError::InvalidIdentifier),
         };
         if d.text()? != RECORD_DOMAIN {
             return Err(ContractError::InvalidIdentifier);
         }
-        let pose_provenance = if version == RECORD_VERSION_POSE_PROVENANCE {
+        let pose_provenance = if version >= RECORD_VERSION_POSE_PROVENANCE {
             masked_samples = d.bool()?;
             Some(PoseProvenance::decode(&mut d)?)
         } else {
             None
         };
+        let pose_uncertainty = if version == RECORD_VERSION_POSE_UNCERTAINTY {
+            Some(PoseUncertainty::decode(&mut d)?)
+        } else {
+            None
+        };
+        let sigma_points = matches!(pose_uncertainty, Some(PoseUncertainty::SigmaPoints { .. }));
         let source = CoverageSource::parse(d.text()?)?;
         let import_identity = d.digest()?;
         let import_root = d.digest()?;
@@ -1159,6 +1318,11 @@ impl CoverageRecord {
                 Some(ZoneVisibility::decode_versioned(&mut d, masked_samples)?)
             } else {
                 None
+            };
+            let pose_robustness = match (&visibility, sigma_points) {
+                (Some(visibility), true) => Some(PoseRobustness::decode(&mut d, visibility)?),
+                (None, true) => return Err(ContractError::InvalidIdentifier),
+                (_, false) => None,
             };
             let witness_count = bounded(d.u64()?, MAX_COVERAGE_INTERVALS)?;
             let mut witnesses = Vec::with_capacity(witness_count);
@@ -1210,6 +1374,7 @@ impl CoverageRecord {
                     "occluded" => UncoveredReason::Occluded,
                     "outside_frustum" => UncoveredReason::OutsideFrustum,
                     "privacy_masked" => UncoveredReason::PrivacyMasked,
+                    "pose_sensitive" => UncoveredReason::PoseSensitive,
                     _ => return Err(ContractError::InvalidIdentifier),
                 };
                 uncovered.push(UncoveredInterval {
@@ -1227,6 +1392,7 @@ impl CoverageRecord {
                 witnesses,
                 uncovered,
                 visibility,
+                pose_robustness,
             });
         }
         d.ensure_finished()?;
@@ -1243,6 +1409,7 @@ impl CoverageRecord {
             analysed,
             zones,
             pose_provenance,
+            pose_uncertainty,
         };
         record.validate()?;
         if record.to_bytes() != bytes {
@@ -1275,11 +1442,41 @@ impl CoverageRecord {
                 return Err(ContractError::InvalidIdentifier);
             }
         }
+        // A pose uncertainty extends a bound provenance: an owner `--pose` has no covariance, and
+        // exactly the sigma-point records carry a robustness block on every zone.
+        let sigma_points = match (&self.pose_uncertainty, &self.pose_provenance) {
+            (None, _) | (Some(PoseUncertainty::NotProvided), Some(_)) => false,
+            (
+                Some(PoseUncertainty::SigmaPoints { .. }),
+                Some(PoseProvenance::SiteCalibration { .. }),
+            ) => true,
+            (Some(_), None)
+            | (
+                Some(PoseUncertainty::SigmaPoints { .. }),
+                Some(PoseProvenance::OwnerPoseArgument),
+            ) => {
+                return Err(ContractError::InvalidIdentifier);
+            }
+        };
         for zone in &self.zones {
             if zone.scope != format!("{}{}", self.source.scope_prefix(), zone.zone_id)
                 || zone.zone_id.is_empty()
             {
                 return Err(ContractError::InvalidIdentifier);
+            }
+            match (&zone.pose_robustness, &zone.visibility) {
+                (None, _) if !sigma_points => {}
+                (Some(robustness), Some(visibility)) if sigma_points => {
+                    robustness.validate()?;
+                    if robustness.nominal != PoseRobustnessClass::of(visibility) {
+                        return Err(ContractError::InvalidIdentifier);
+                    }
+                    // Observable under the nominal pose only: never an absence witness.
+                    if robustness.observable_but_sensitive() && !zone.witnesses.is_empty() {
+                        return Err(ContractError::CoverageUncertified);
+                    }
+                }
+                _ => return Err(ContractError::InvalidIdentifier),
             }
             if let Some(visibility) = &zone.visibility {
                 visibility.validate()?;
@@ -1295,13 +1492,20 @@ impl CoverageRecord {
                 }
                 let domain =
                     witness_domain(self.source, &self.sensor_id, &zone.scope, witness.covered);
-                let predicate = zone_witness_predicate(
-                    self.source,
-                    &self.sensor_id,
-                    &zone.scope,
-                    zone.pipeline_generation,
-                    witness.covered,
-                    zone.visibility.as_ref(),
+                let predicate = format!(
+                    "{}{}",
+                    zone_witness_predicate(
+                        self.source,
+                        &self.sensor_id,
+                        &zone.scope,
+                        zone.pipeline_generation,
+                        witness.covered,
+                        zone.visibility.as_ref(),
+                    ),
+                    pose_predicate_clause(
+                        self.pose_uncertainty.as_ref(),
+                        zone.pose_robustness.as_ref()
+                    )
                 );
                 let inner = &witness.witness;
                 inner.require_certified_absence()?;

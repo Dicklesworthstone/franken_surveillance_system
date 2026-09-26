@@ -52,6 +52,12 @@
 //! pose came from ([`PoseProvenance`]: an owner `--pose`, or a site calibration digest with the
 //! camera generation and its owner-asserted or unasserted currency) into that camera's analysis
 //! identity and its retained coverage record (version 4); without it records are unchanged.
+//! [`CorroborationReport::analyze_with_pose_uncertainty`] (fss-x8j0v covariance propagation)
+//! additionally assesses every zone of a calibrated camera under the sigma-point perturbations of
+//! its calibration's 6-DoF pose covariance: a zone observable under the nominal pose but not
+//! under every perturbation is `pose_sensitive` and carries no absence witness, so it never
+//! counts toward certified absence or silence; a posed camera with a provenance but no
+//! covariance (an owner `--pose`) is recorded `uncertainty_not_provided` (version 5 records).
 //!
 //! With [`CorroborationOptions::tolerate_decode_refusals`], each camera uses the watch pipeline's
 //! bounded recovery: refused segments and exact tracking restarts remain explicit in its ground
@@ -90,15 +96,17 @@ use super::detector_cascade::{
     select_frames,
 };
 use super::ground_visibility::{
-    CameraPose, SceneMesh, VisibilityCamera, VisibilityError, VisibilityPolicy,
-    assess_ground_zone_masked, bind_visibility_parameters, pose_matches_homography, rectangle,
+    CameraPose, MAX_POSE_SENSITIVITY_WORK, PoseCovariance, SceneMesh, VisibilityCamera,
+    VisibilityError, VisibilityPolicy, assess_ground_zone_masked, assess_pose_robustness,
+    bind_visibility_parameters, pose_matches_homography, rectangle,
 };
 use super::privacy_mask::MaskBinding;
 use super::privacy_mask::coverage::{ground_zone_masked, mask_coverage_zones};
 use super::recorded_coverage::{
     CoverageEntry, CoverageError, CoverageExtras, CoverageFrame, CoverageInput, CoverageRecord,
-    CoverageSource, CoverageStatus, CoverageZoneInput, PoseProvenance, approval_digest,
-    build_coverage_with, check_approval, coverage_status, pipeline_generation, retain_coverage,
+    CoverageSource, CoverageStatus, CoverageZoneInput, PoseProvenance, PoseUncertainty,
+    approval_digest, build_coverage_with, check_approval, coverage_status, pipeline_generation,
+    retain_coverage,
 };
 use super::recorded_decode::{ComponentInterpretation, RecordedDecodeError, source_capsule};
 use super::recorded_watch::{
@@ -1251,15 +1259,50 @@ impl CorroborationReport {
     /// [`Self::analyze_with_options`] binding each posed camera's [`PoseProvenance`] (plan order)
     /// into its analysis identity and retained coverage record. A provenance for a camera without
     /// a pose is refused as an invalid pose; `[None, None]` is exactly
-    /// [`Self::analyze_with_options`].
+    /// [`Self::analyze_with_options`]. No pose covariance is bound, so every posed camera with a
+    /// provenance is recorded `uncertainty_not_provided` (see
+    /// [`Self::analyze_with_pose_uncertainty`]).
     #[allow(clippy::too_many_arguments)]
     pub fn analyze_with_provenance(
+        deployment: &ReferenceDeployment,
+        plan: &CorroborationPlan,
+        limits: &WatchLimits,
+        detector: Option<&mut DetectorCascade<'_>>,
+        visibility: &GroundVisibilityPlan<'_>,
+        provenance: &[Option<PoseProvenance>; 2],
+        options: CorroborationOptions,
+        cx: &ReplayCx,
+    ) -> Result<Self> {
+        Self::analyze_with_pose_uncertainty(
+            deployment,
+            plan,
+            limits,
+            detector,
+            visibility,
+            provenance,
+            &[None, None],
+            options,
+            cx,
+        )
+    }
+
+    /// [`Self::analyze_with_provenance`] propagating each calibrated camera's 6-DoF pose
+    /// covariance (plan order) into its ground-zone visibility (fss-x8j0v): every zone is also
+    /// assessed under the registered sigma-point perturbations
+    /// ([`super::ground_visibility::pose_sensitivity`]), and a zone observable under the nominal
+    /// pose but not under every perturbation is `pose_sensitive` and carries no absence witness.
+    /// A posed camera with a provenance but no covariance is recorded `uncertainty_not_provided`,
+    /// never robust; a covariance needs a site-calibration provenance (an owner `--pose` has
+    /// none) or is refused as an invalid pose. Candidates and events never depend on it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn analyze_with_pose_uncertainty(
         deployment: &ReferenceDeployment,
         plan: &CorroborationPlan,
         limits: &WatchLimits,
         mut detector: Option<&mut DetectorCascade<'_>>,
         visibility: &GroundVisibilityPlan<'_>,
         provenance: &[Option<PoseProvenance>; 2],
+        covariance: &[Option<PoseCovariance>; 2],
         options: CorroborationOptions,
         cx: &ReplayCx,
     ) -> Result<Self> {
@@ -1276,6 +1319,22 @@ impl CorroborationReport {
                 }
                 source.validate()?;
             }
+        }
+        let mut uncertainty = [None, None];
+        for (index, camera) in plan.cameras.iter().enumerate() {
+            uncertainty[index] = match (&provenance[index], covariance[index]) {
+                (None, None) => None,
+                (Some(_), None) => Some(PoseUncertainty::NotProvided),
+                (Some(PoseProvenance::SiteCalibration { .. }), Some(covariance)) => {
+                    Some(PoseUncertainty::SigmaPoints { covariance })
+                }
+                (_, Some(_)) => {
+                    return Err(CorroborationError::InvalidPose {
+                        camera: camera.name.clone(),
+                        reason: "a pose covariance needs a site-calibration pose provenance",
+                    });
+                }
+            };
         }
         let plan_digest = plan.digest();
         let context = CameraAnalysisContext {
@@ -1348,6 +1407,7 @@ impl CorroborationReport {
                     cascade: cascade.as_ref().map(|c| c.digest),
                     visibility,
                     provenance: provenance[index],
+                    uncertainty: uncertainty[index],
                 },
                 index,
                 camera,
@@ -1736,6 +1796,7 @@ struct CameraCoverageContext<'a> {
     cascade: Option<ContentDigest>,
     visibility: &'a GroundVisibilityPlan<'a>,
     provenance: Option<PoseProvenance>,
+    uncertainty: Option<PoseUncertainty>,
 }
 
 fn camera_coverage(
@@ -1781,6 +1842,9 @@ fn camera_coverage(
     let policy = ContentDigest::sha256(POLICY);
     let mut zones = Vec::with_capacity(plan.zones.len());
     let mut visibilities = Vec::with_capacity(plan.zones.len());
+    let mut robustness = Vec::new();
+    // One budget for the whole camera: perturbations x zones x samples (plus mesh tests).
+    let mut sensitivity_budget = WorkBudget::new(MAX_POSE_SENSITIVITY_WORK);
     for zone in &plan.zones {
         let geometry = format!("{},{},{},{}", zone.x, zone.y, zone.width, zone.height);
         let polygon = rectangle(zone.x, zone.y, zone.width, zone.height);
@@ -1826,6 +1890,24 @@ fn camera_coverage(
                 .policy()
                 .map(|_| &pixel_masked as &dyn Fn(u32, u32) -> bool),
         )?;
+        if let (Some(PoseUncertainty::SigmaPoints { covariance }), Some(pose)) =
+            (&context.uncertainty, &pose)
+        {
+            robustness.push(Some(assess_pose_robustness(
+                pose,
+                covariance,
+                camera.dimensions,
+                &polygon,
+                visibility_plan.mesh,
+                visibility_plan.policy,
+                camera
+                    .privacy
+                    .policy()
+                    .map(|_| &pixel_masked as &dyn Fn(u32, u32) -> bool),
+                &visible,
+                &mut sensitivity_budget,
+            )?));
+        }
         if visible.privacy_masked > 0 {
             masked.insert(zone.zone_id.clone());
         }
@@ -1872,6 +1954,11 @@ fn camera_coverage(
         e.text("pose-provenance");
         e.digest(provenance.digest());
     }
+    // Likewise only a bound pose uncertainty (always with a provenance) extends it further.
+    if let Some(uncertainty) = &context.uncertainty {
+        e.text("pose-uncertainty");
+        e.digest(uncertainty.digest());
+    }
     let analysis_digest = ContentDigest::sha256(&e.finish());
     let last_segment = camera
         .segment_gaps
@@ -1883,6 +1970,8 @@ fn camera_coverage(
         refusals: camera.decode_refusals.clone(),
         restarts: camera.tracking_restarts.clone(),
         pose_provenance: context.provenance,
+        pose_uncertainty: context.uncertainty,
+        pose_robustness: robustness,
     };
     let mut record = build_coverage_with(
         &CoverageInput {

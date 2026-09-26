@@ -466,9 +466,11 @@ fn test_schema_domain_and_pinned_counts() -> Result<(), Box<dyn Error>> {
     // 128 = 127 + SCHEMA-DOMAIN-COVERAGE-POSE-PROVENANCE-001 (coverage pose provenance, fss-x8j0v).
     // 130 = 128 + SCHEMA-DOMAIN-TWIN-LOCALIZATION-RECEIPT-001 + SCHEMA-DOMAIN-CALIBRATION-ADOPTION-APPROVAL-001
     //       (retained calibration adoption, fss-x8j0v).
+    // 131 = 130 + SCHEMA-DOMAIN-COVERAGE-POSE-UNCERTAINTY-001 (pose covariance propagation to
+    //       coverage, fss-x8j0v).
     assert_eq!(
-        domain_count, 130,
-        "registries/DIGEST_DOMAINS.md count must remain pinned at 130"
+        domain_count, 131,
+        "registries/DIGEST_DOMAINS.md count must remain pinned at 131"
     );
 
     let schemas_path = Path::new(env!("CARGO_MANIFEST_DIR"))

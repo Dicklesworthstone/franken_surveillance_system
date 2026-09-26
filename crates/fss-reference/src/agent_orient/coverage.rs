@@ -30,14 +30,21 @@
 //! (fss-x8j0v follow-up): the owner `--pose` argument, or the site calibration digest with the
 //! camera generation and whether its currency was owner-asserted (never observed); a posed record
 //! that predates provenance binding is named as unrecorded.
+//!
+//! A zone whose most recent record binds its pose uncertainty (fss-x8j0v covariance propagation)
+//! also names it: `uncertainty_not_provided` for an owner `--pose`, or its robustness under the
+//! sigma-point perturbations of the calibration pose covariance. A zone observable only under the
+//! nominal pose (`pose_sensitive`) carries no witness, so it is `not_observable` here with a named
+//! `pose_sensitive` gap, never covered, and no silence rests on it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use fss_core::{CaptureInterval, ContentDigest, LedgerAnchor, TimestampNs};
 
+use crate::ingest::ground_visibility::PoseRobustness;
 use crate::ingest::ground_visibility::{CameraModel, ZoneVisibility};
 use crate::ingest::recorded_coverage::{
-    CoverageRecord, PoseProvenance, UncoveredReason, ZoneCoverage, ZoneWitness,
+    CoverageRecord, PoseProvenance, PoseUncertainty, UncoveredReason, ZoneCoverage, ZoneWitness,
 };
 
 /// Sensor-capsule payloads read to attribute the newest evidence of each covered sensor; more is
@@ -103,6 +110,10 @@ pub struct ZoneAssessment {
     pub visibility: Option<ZoneVisibility>,
     /// Pose source bound by the zone's most recent record (version 4 records only).
     pub pose_provenance: Option<PoseProvenance>,
+    /// Pose-uncertainty status bound by the zone's most recent record (version 5 only).
+    pub pose_uncertainty: Option<PoseUncertainty>,
+    /// The zone's robustness under the sigma-point pose perturbations in that record.
+    pub pose_robustness: Option<PoseRobustness>,
 }
 
 impl ZoneAssessment {
@@ -134,7 +145,22 @@ impl ZoneAssessment {
     #[must_use]
     pub fn pose_clause(&self) -> Option<String> {
         match (&self.pose_provenance, &self.visibility) {
-            (Some(provenance), _) => Some(format!(" Pose source: {}.", provenance.summary())),
+            (Some(provenance), _) => Some(format!(
+                " Pose source: {}.{}",
+                provenance.summary(),
+                match (&self.pose_uncertainty, &self.pose_robustness) {
+                    (Some(PoseUncertainty::NotProvided), _) => {
+                        " Pose uncertainty_not_provided.".to_owned()
+                    }
+                    (Some(PoseUncertainty::SigmaPoints { .. }), Some(robustness)) => format!(
+                        " Pose {} {}/{}.",
+                        robustness.state(),
+                        robustness.agreeing(),
+                        robustness.perturbations
+                    ),
+                    _ => String::new(),
+                }
+            )),
             (None, Some(visibility)) if visibility.camera_model == CameraModel::CalibratedPose => {
                 Some(
                     " Pose source: unrecorded (the record predates pose-provenance binding)."
@@ -257,6 +283,10 @@ fn describe(
                     None => format!("zone_entry of {} (no event)", short(*candidate)),
                 },
                 UncoveredReason::DecodeRefused { error_id } => format!("decode_refused {error_id}"),
+                UncoveredReason::PoseSensitive => match &zone.pose_robustness {
+                    Some(robustness) => robustness.summary(),
+                    None => gap.reason.as_str().to_owned(),
+                },
                 UncoveredReason::Occluded
                 | UncoveredReason::OutsideFrustum
                 | UncoveredReason::PrivacyMasked => match &zone.visibility {
@@ -381,6 +411,8 @@ pub(super) fn assess(
             gaps,
             visibility: latest_zone.visibility.clone(),
             pose_provenance: records[latest].record.pose_provenance,
+            pose_uncertainty: records[latest].record.pose_uncertainty,
+            pose_robustness: latest_zone.pose_robustness,
         };
         let Some(freshest) = fresh.last().copied() else {
             let analysed = current
@@ -506,6 +538,8 @@ pub(super) fn assess(
             )],
             visibility: None,
             pose_provenance: None,
+            pose_uncertainty: None,
+            pose_robustness: None,
         });
     }
     Some(CoverageAssessment {

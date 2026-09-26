@@ -137,7 +137,11 @@ const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|cal
     refused; with --scene-mesh the calibration twin must be that package). The report's\n\
     pose_provenance lists each camera's pose source and the calibration digest; each posed\n\
     camera's coverage record binds the same provenance (owner --pose, or calibration digest,\n\
-    camera handle and generations). [--camera-generation NAME:INTRINSICS:EXTRINSICS] (repeat;\n\
+    camera handle and generations) and its pose uncertainty: a --pose has no covariance\n\
+    (uncertainty_not_provided); a calibrated camera's 6-DoF pose covariance is propagated by 12\n\
+    sigma points and a zone observable only at the nominal pose is pose_sensitive: no witness,\n\
+    never absence evidence (local linear approximation, not a guarantee).\n\
+    [--camera-generation NAME:INTRINSICS:EXTRINSICS] (repeat;\n\
     needs --calibration) is the OWNER'S ASSERTION that a calibrated camera still has exactly\n\
     those generations: a mismatch is refused as stale (ERR-SITE-CALIBRATION-GENERATION-STALE-001)\n\
     before any source is read; a match is recorded owner_asserted_not_observed, and a\n\

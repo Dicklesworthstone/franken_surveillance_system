@@ -177,6 +177,20 @@ impl RigidPose {
     ) -> Result<[f64; 2], GeometryError> {
         intrinsics.project(self.transform(point)?)
     }
+    /// The pose displaced in the bundle adjuster's tangent space: `R' = exp([w]x) R` (left
+    /// perturbation, `w` in radians about world-to-camera X, Y, Z) and `t' = t + dt`, exactly the
+    /// increment the adjuster applies and the space its covariance lives in. A non-finite
+    /// increment or a result that is not a proper rotation is refused.
+    pub fn left_perturbed(self, rotation: V3, translation: V3) -> Result<Self, GeometryError> {
+        checked(rotation)?;
+        checked(translation)?;
+        let turned = if rotation == [0.0; 3] {
+            self.rotation
+        } else {
+            crate::linear::multiply(crate::linear::rotation_step(rotation), self.rotation)
+        };
+        Self::new(turned, add(self.translation, translation))
+    }
     /// Build a world ray for an in-domain observation, without assigning depth.
     pub fn ray(self, intrinsics: PinholeIntrinsics, pixel: [f64; 2]) -> Result<Ray, GeometryError> {
         Ray::new(

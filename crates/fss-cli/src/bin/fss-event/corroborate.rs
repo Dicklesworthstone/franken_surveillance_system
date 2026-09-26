@@ -22,7 +22,11 @@
 //! `pose_provenance` records every camera's pose source with the calibration digest.
 //! Each posed camera's retained coverage record binds the same provenance (record version 4):
 //! `owner_pose_argument` for a `--pose`, or the calibration digest, camera handle and
-//! intrinsics/extrinsics generations. `--camera-generation NAME:INTRINSICS:EXTRINSICS` is the
+//! intrinsics/extrinsics generations. It also binds the pose uncertainty (record version 5): a
+//! `--pose` has no covariance and is `uncertainty_not_provided`; a calibrated camera's 6-DoF
+//! pose covariance is propagated by sigma points, and a zone observable only under the nominal
+//! pose is `pose_sensitive` with no absence witness (a local linear approximation, not a
+//! guarantee). `--camera-generation NAME:INTRINSICS:EXTRINSICS` is the
 //! owner's assertion that a calibrated camera still has exactly those generations. It must match
 //! the calibration (otherwise `ERR-SITE-CALIBRATION-GENERATION-STALE-001` before any source is
 //! read) and is recorded as `owner_asserted_not_observed`; a calibrated camera without one is
@@ -51,7 +55,7 @@ use fss_reference::ingest::calibration_adoption::{
 };
 use fss_reference::ingest::detector_cascade::DetectorCascade;
 use fss_reference::ingest::ground_visibility::{
-    CameraPose, SceneMesh, VisibilityPolicy, import_scene_mesh,
+    CameraPose, PoseCovariance, SceneMesh, VisibilityPolicy, import_scene_mesh,
 };
 use fss_reference::ingest::package_detect::PackageDetectLimits;
 use fss_reference::ingest::recorded_corroboration::{
@@ -592,11 +596,13 @@ fn read_scene_mesh(path: &Path) -> RunResult<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Per-camera poses, their sources, and the verified calibration identity (if any).
+/// Per-camera poses, their sources, the verified calibration identity (if any), and each
+/// calibrated camera's 6-DoF pose covariance (an owner `--pose` has none).
 type ResolvedPoses = (
     [Option<CameraPose>; 2],
     [PoseSource; 2],
     Option<ContentDigest>,
+    [Option<PoseCovariance>; 2],
 );
 
 /// The retained [`PoseProvenance`] of each plan camera (none for a camera without a pose).
@@ -641,8 +647,9 @@ fn resolve_poses(action: &CorroborateAction) -> RunResult<ResolvedPoses> {
             PoseSource::None
         }
     });
+    let mut covariances = [None, None];
     let Some(option) = &action.calibration else {
-        return Ok((poses, sources, None));
+        return Ok((poses, sources, None, covariances));
     };
     let bytes = super::calibrate::read_bounded(&option.path, MAX_CALIBRATION_BYTES, "calibration")?;
     let (calibration, identity) = SiteCalibration::decode(&bytes, Some(option.digest))?;
@@ -664,6 +671,7 @@ fn resolve_poses(action: &CorroborateAction) -> RunResult<ResolvedPoses> {
             .into());
         }
         poses[index] = Some(calibrated.pinhole_pose()?);
+        covariances[index] = Some(calibrated.pose_covariance()?);
         let asserted = action
             .generations
             .iter()
@@ -713,7 +721,7 @@ fn resolve_poses(action: &CorroborateAction) -> RunResult<ResolvedPoses> {
             .into());
         }
     }
-    Ok((poses, sources, Some(identity)))
+    Ok((poses, sources, Some(identity), covariances))
 }
 
 /// Consults the deployment's retained calibration adoptions (`fss-event calibration adopt`) for
@@ -846,7 +854,7 @@ fn run_with(
     out: &mut impl Write,
 ) -> RunResult<()> {
     // The calibration is verified against its pinned digest before any source is read.
-    let (poses, mut sources, calibration) = resolve_poses(action)?;
+    let (poses, mut sources, calibration, covariances) = resolve_poses(action)?;
     // Retained adoptions decide currency (or refuse a superseded calibration) before any frame is
     // decoded and before anything is appended.
     if let Some(calibration) = calibration {
@@ -888,13 +896,14 @@ fn run_with(
         )?),
         _ => None,
     };
-    let mut report = CorroborationReport::analyze_with_provenance(
+    let mut report = CorroborationReport::analyze_with_pose_uncertainty(
         deployment,
         &action.plan,
         &action.limits,
         cascade.as_mut(),
         &visibility,
         &provenance,
+        &covariances,
         action.recovery,
         cx,
     )?;
@@ -913,13 +922,14 @@ fn run_with(
     // A coverage proposal binds the authority anchor its analysis read; after this run published
     // candidates, the proposal is recomputed against the new anchor so its approval is current.
     let reproposed = if published > 0 && action.retain_coverage.is_none() {
-        Some(CorroborationReport::analyze_with_provenance(
+        Some(CorroborationReport::analyze_with_pose_uncertainty(
             deployment,
             &action.plan,
             &action.limits,
             cascade.as_mut(),
             &visibility,
             &provenance,
+            &covariances,
             action.recovery,
             cx,
         )?)
