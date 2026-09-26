@@ -221,6 +221,8 @@
     "crates/fss-reference/src/ingest/annexb.rs": "support",
     "crates/fss-reference/src/ingest/cross_camera.rs": "support",
     "crates/fss-reference/src/ingest/cross_camera/global.rs": "support",
+    "crates/fss-reference/src/ingest/cross_camera/intervals.rs": "support",
+    "crates/fss-reference/src/ingest/cross_camera/intervals/tests.rs": "support",
     "crates/fss-reference/src/ingest/cross_camera/tests.rs": "support",
     "crates/fss-reference/src/ingest/detections.rs": "support",
     "crates/fss-reference/src/ingest/detector_cascade.rs": "support",
