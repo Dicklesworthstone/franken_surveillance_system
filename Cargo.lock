@@ -7,11 +7,13 @@ name = "fss-cli"
 version = "0.0.1"
 dependencies = [
  "fss-core",
+ "fss-geometry",
  "fss-graph-algorithms",
  "fss-object",
  "fss-packet",
  "fss-publication",
  "fss-reference",
+ "fss-twin",
 ]
 
 [[package]]

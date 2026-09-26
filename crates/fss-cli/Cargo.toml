@@ -55,7 +55,9 @@ fss-publication = { path = "../fss-publication" }
 fss-reference = { path = "../fss-reference" }
 
 [dev-dependencies]
+fss-geometry = { path = "../fss-geometry" }
 fss-packet = { path = "../fss-packet" }
+fss-twin = { path = "../fss-twin" }
 
 [lints]
 workspace = true
