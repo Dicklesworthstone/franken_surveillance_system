@@ -11,11 +11,18 @@
 
 use super::http_archive::{HttpArchiveLimits, HttpWireArchive, HttpWirePin};
 use super::http_camera::rgb::custody::{HttpRgbWireCommit, HttpRgbWirePlan};
-use super::http_camera::rgb::{HttpRgbBudgets, HttpRgbContext, HttpRgbOutput, HttpRgbReceipt, HttpRgbStep};
+use super::http_camera::rgb::{
+    HttpRgbBudgets, HttpRgbContext, HttpRgbOutput, HttpRgbReceipt, HttpRgbStep,
+};
 use super::http_recording::HttpRecordingAccess;
 use super::http_replay::completion::HttpCompletionPin;
-use super::http_rgb_recording::{HttpRgbRecording, HttpRgbRecordingError, HttpRgbRecordingRetirement, HttpRgbRecordingStep};
-use super::rgb_archive::{PreparedRgbArchive, RgbArchiveAuthority, RgbArchiveError, RgbArchiveLimits, RgbArchiveOperation, RgbArchivePin, restore_rgb_evidence};
+use super::http_rgb_recording::{
+    HttpRgbRecording, HttpRgbRecordingError, HttpRgbRecordingRetirement, HttpRgbRecordingStep,
+};
+use super::rgb_archive::{
+    PreparedRgbArchive, RgbArchiveAuthority, RgbArchiveError, RgbArchiveLimits,
+    RgbArchiveOperation, RgbArchivePin, restore_rgb_evidence,
+};
 use super::rgb_detections::RgbDetectionBudget;
 use super::rgb_evidence::{ReplayedRgbEvidence, RgbEvidence, RgbEvidenceBudget};
 use super::rgb_inference::RgbRunLimits;
@@ -50,10 +57,19 @@ pub struct HttpRgbEvidencePin {
 impl HttpRgbEvidencePin {
     fn new(archive: RgbArchivePin, wire: HttpWirePin, result: HttpRgbReceipt) -> Self {
         Self {
-            archive, wire, exposure: result.exposure(), ordinal: result.ordinal(),
+            archive,
+            wire,
+            exposure: result.exposure(),
+            ordinal: result.ordinal(),
             encoded: result.encoded_sha256(),
-            stages: [result.inference(), result.detections(), result.tracking(), result.zones()],
-            mask_policy: result.mask_policy(), mask_generation: result.mask_generation(),
+            stages: [
+                result.inference(),
+                result.detections(),
+                result.tracking(),
+                result.zones(),
+            ],
+            mask_policy: result.mask_policy(),
+            mask_generation: result.mask_generation(),
         }
     }
 }
@@ -88,10 +104,14 @@ pub enum HttpRgbEvidenceError {
     Archive(RgbArchiveError),
 }
 impl From<HttpRgbRecordingError> for HttpRgbEvidenceError {
-    fn from(error: HttpRgbRecordingError) -> Self { Self::Recording(error) }
+    fn from(error: HttpRgbRecordingError) -> Self {
+        Self::Recording(error)
+    }
 }
 impl From<RgbArchiveError> for HttpRgbEvidenceError {
-    fn from(error: RgbArchiveError) -> Self { Self::Archive(error) }
+    fn from(error: RgbArchiveError) -> Self {
+        Self::Archive(error)
+    }
 }
 impl std::fmt::Display for HttpRgbEvidenceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -168,52 +188,92 @@ impl<'model, 'temporal> HttpRgbEvidenceRecording<'model, 'temporal> {
         {
             return Err(HttpRgbEvidenceAttachFailure { recording });
         }
-        Ok(Self { recording, limits, admission: None, pending: None, last_delivered: None })
+        Ok(Self {
+            recording,
+            limits,
+            admission: None,
+            pending: None,
+            last_delivered: None,
+        })
     }
     /// Read-only original owner and held native result; this is not a new grant.
-    pub fn recording(&self) -> &HttpRgbRecording<'model, 'temporal> { &self.recording }
+    pub fn recording(&self) -> &HttpRgbRecording<'model, 'temporal> {
+        &self.recording
+    }
     /// Exact admission that actually reached an accepted native stage, including
     /// acceptance followed by an error. Corrected pre-acceptance retries replace nothing.
-    pub fn accepted_admission(&self) -> Option<RgbFrameAdmission> { self.admission }
+    pub fn accepted_admission(&self) -> Option<RgbFrameAdmission> {
+        self.admission
+    }
     /// Exact prepared result, known before any derived storage write.
-    pub fn prepared(&self) -> Option<HttpRgbEvidencePin> { self.pending.as_ref().map(|p| p.pin) }
+    pub fn prepared(&self) -> Option<HttpRgbEvidencePin> {
+        self.pending.as_ref().map(|p| p.pin)
+    }
     /// Historical publication state only; transfer revalidates current storage.
     pub fn published(&self) -> Option<HttpRgbEvidencePin> {
         self.pending.as_ref().filter(|p| p.published).map(|p| p.pin)
     }
     /// Historical most recently transferred result's independent recovery pin.
-    pub fn last_delivered(&self) -> Option<HttpRgbEvidencePin> { self.last_delivered }
+    pub fn last_delivered(&self) -> Option<HttpRgbEvidencePin> {
+        self.last_delivered
+    }
     /// Existing source and result backpressure. ResultReady is not a durability claim.
-    pub fn poll(&mut self, access: HttpRecordingAccess<'_>) -> Result<HttpRgbRecordingStep, HttpRgbEvidenceError> {
+    pub fn poll(
+        &mut self,
+        access: HttpRecordingAccess<'_>,
+    ) -> Result<HttpRgbRecordingStep, HttpRgbEvidenceError> {
         Ok(self.recording.poll(access)?)
     }
     /// Existing durable-before-parse original-read transaction, unchanged.
-    pub fn commit_wire(&mut self, plan: HttpRgbWirePlan, publisher: &mut LocalRootPublisher, access: HttpRecordingAccess<'_>) -> Result<HttpRgbWireCommit, HttpRgbEvidenceError> {
+    pub fn commit_wire(
+        &mut self,
+        plan: HttpRgbWirePlan,
+        publisher: &mut LocalRootPublisher,
+        access: HttpRecordingAccess<'_>,
+    ) -> Result<HttpRgbWireCommit, HttpRgbEvidenceError> {
         Ok(self.recording.commit_wire(plan, publisher, access)?)
     }
     /// Save the exact admitted source/availability before returning a post-acceptance
     /// refusal. No later call can rewrite it or substitute another exposure.
     #[allow(clippy::too_many_arguments)]
     pub fn analyze(
-        &mut self, context: HttpRgbContext<'_>, limits: RgbRunLimits,
-        publisher: &LocalRootPublisher, access: HttpRecordingAccess<'_>,
-        budgets: HttpRgbBudgets<'_, '_>, cx: &ScalarExecCx,
+        &mut self,
+        context: HttpRgbContext<'_>,
+        limits: RgbRunLimits,
+        publisher: &LocalRootPublisher,
+        access: HttpRecordingAccess<'_>,
+        budgets: HttpRgbBudgets<'_, '_>,
+        cx: &ScalarExecCx,
     ) -> Result<HttpRgbStep, HttpRgbEvidenceError> {
-        if self.admission.is_some() || self.pending.is_some() { return Err(HttpRgbEvidenceError::NotReady); }
+        if self.admission.is_some() || self.pending.is_some() {
+            return Err(HttpRgbEvidenceError::NotReady);
+        }
         let admission = context.admission;
-        let result = self.recording.analyze(context, limits, publisher, access, budgets, cx);
-        if self.recording.capture().analysis().is_some() { self.admission = Some(admission); }
+        let result = self
+            .recording
+            .analyze(context, limits, publisher, access, budgets, cx);
+        if self.recording.capture().analysis().is_some() {
+            self.admission = Some(admission);
+        }
         Ok(result?)
     }
     /// Continue only accepted, unfinished native stages; never refill their budgets.
     #[allow(clippy::too_many_arguments)]
     pub fn resume(
-        &mut self, publisher: &LocalRootPublisher, access: HttpRecordingAccess<'_>,
-        projection: &mut RgbDetectionBudget, temporal: &mut WorkBudget<'_>,
-        linking: &mut WorkBudget<'_>, cx: &ScalarExecCx,
+        &mut self,
+        publisher: &LocalRootPublisher,
+        access: HttpRecordingAccess<'_>,
+        projection: &mut RgbDetectionBudget,
+        temporal: &mut WorkBudget<'_>,
+        linking: &mut WorkBudget<'_>,
+        cx: &ScalarExecCx,
     ) -> Result<HttpRgbStep, HttpRgbEvidenceError> {
-        if self.admission.is_none() { return Err(HttpRgbEvidenceError::NotReady); }
-        Ok(self.recording.resume(publisher, access, projection, temporal, linking, cx)?)
+        if self.admission.is_none() {
+            return Err(HttpRgbEvidenceError::NotReady);
+        }
+        Ok(self
+            .recording
+            .resume(publisher, access, projection, temporal, linking, cx)?)
     }
 
     /// Prepare the existing source-closed archive from an ACTUAL native replay of
@@ -223,12 +283,21 @@ impl<'model, 'temporal> HttpRgbEvidenceRecording<'model, 'temporal> {
     /// with accepted_admission(), then RgbEvidence::replay with the named sensor.
     #[allow(clippy::too_many_arguments)]
     pub fn prepare_evidence(
-        &mut self, evidence: &RgbEvidence, replay: &ReplayedRgbEvidence,
-        retention: ContentDigest, publisher: &LocalRootPublisher,
-        access: HttpRgbEvidenceAccess<'_>, copy: &mut RgbEvidenceBudget,
-        work: &mut WorkBudget<'_>, cx: &ReplayCx,
+        &mut self,
+        evidence: &RgbEvidence,
+        replay: &ReplayedRgbEvidence,
+        retention: ContentDigest,
+        publisher: &LocalRootPublisher,
+        access: HttpRgbEvidenceAccess<'_>,
+        copy: &mut RgbEvidenceBudget,
+        work: &mut WorkBudget<'_>,
+        cx: &ReplayCx,
     ) -> Result<HttpRgbEvidencePin, HttpRgbEvidenceError> {
-        let result = self.recording.capture().completion().ok_or(HttpRgbEvidenceError::NotReady)?;
+        let result = self
+            .recording
+            .capture()
+            .completion()
+            .ok_or(HttpRgbEvidenceError::NotReady)?;
         let admission = self.admission.ok_or(HttpRgbEvidenceError::NotReady)?;
         let actual = replay.admission();
         if actual.source() != admission.source()
@@ -244,18 +313,40 @@ impl<'model, 'temporal> HttpRgbEvidenceRecording<'model, 'temporal> {
             return Err(HttpRgbEvidenceError::Mismatch);
         }
         if let Some(pending) = &self.pending {
-            if pending.result != result || pending.pin.archive.evidence != evidence.identity()
+            if pending.result != result
+                || pending.pin.archive.evidence != evidence.identity()
                 || pending.pin.archive.retention != retention
-            { return Err(HttpRgbEvidenceError::Mismatch); }
+            {
+                return Err(HttpRgbEvidenceError::Mismatch);
+            }
         }
-        if !access.archive.permits(RgbArchiveOperation::RetainOriginals, retention, evidence.identity()) {
+        if !access.archive.permits(
+            RgbArchiveOperation::RetainOriginals,
+            retention,
+            evidence.identity(),
+        ) {
             return Err(RgbArchiveError::Denied.into());
         }
         self.verify_current(result, publisher, access.source, work)?;
-        if let Some(pending) = &self.pending { return Ok(pending.pin); }
-        let archive = PreparedRgbArchive::new(evidence, replay, retention, self.limits.archive, copy, work, cx)?;
+        if let Some(pending) = &self.pending {
+            return Ok(pending.pin);
+        }
+        let archive = PreparedRgbArchive::new(
+            evidence,
+            replay,
+            retention,
+            self.limits.archive,
+            copy,
+            work,
+            cx,
+        )?;
         let pin = HttpRgbEvidencePin::new(archive.pin(), self.recording.pin(), result);
-        self.pending = Some(PendingHttpRgbEvidence { pin, archive, published: false, result });
+        self.pending = Some(PendingHttpRgbEvidence {
+            pin,
+            archive,
+            published: false,
+            result,
+        });
         Ok(pin)
     }
 
@@ -265,14 +356,23 @@ impl<'model, 'temporal> HttpRgbEvidenceRecording<'model, 'temporal> {
     /// No optional post-publication probe can conceal a successful commit.
     #[allow(clippy::too_many_arguments)]
     pub fn commit_evidence(
-        &mut self, expected: HttpRgbEvidencePin, publisher: &LocalRootPublisher,
-        deployment: &mut ReferenceDeployment, access: HttpRgbEvidenceAccess<'_>,
-        work: &mut WorkBudget<'_>, cx: &ReplayCx,
+        &mut self,
+        expected: HttpRgbEvidencePin,
+        publisher: &LocalRootPublisher,
+        deployment: &mut ReferenceDeployment,
+        access: HttpRgbEvidenceAccess<'_>,
+        work: &mut WorkBudget<'_>,
+        cx: &ReplayCx,
     ) -> Result<RootLedgerReceipt, HttpRgbEvidenceError> {
         let result = self.match_pending(expected)?;
         self.verify_current(result, publisher, access.source, work)?;
-        let pending = self.pending.as_mut().ok_or(HttpRgbEvidenceError::NotReady)?;
-        let receipt = pending.archive.publish(deployment, access.archive, work, cx)?;
+        let pending = self
+            .pending
+            .as_mut()
+            .ok_or(HttpRgbEvidenceError::NotReady)?;
+        let receipt = pending
+            .archive
+            .publish(deployment, access.archive, work, cx)?;
         pending.published = true;
         Ok(receipt)
     }
@@ -283,15 +383,32 @@ impl<'model, 'temporal> HttpRgbEvidenceRecording<'model, 'temporal> {
     /// No native inference is rerun here: these are the still-owned live results.
     #[allow(clippy::too_many_arguments)]
     pub fn take_result(
-        &mut self, expected: HttpRgbEvidencePin, publisher: &LocalRootPublisher,
-        deployment: &mut ReferenceDeployment, access: HttpRgbEvidenceAccess<'_>,
-        copy: &mut RgbEvidenceBudget, work: &mut WorkBudget<'_>, cx: &ReplayCx,
+        &mut self,
+        expected: HttpRgbEvidencePin,
+        publisher: &LocalRootPublisher,
+        deployment: &mut ReferenceDeployment,
+        access: HttpRgbEvidenceAccess<'_>,
+        copy: &mut RgbEvidenceBudget,
+        work: &mut WorkBudget<'_>,
+        cx: &ReplayCx,
     ) -> Result<HttpRgbOutput, HttpRgbEvidenceError> {
         let result = self.match_pending(expected)?;
-        if !self.pending.as_ref().is_some_and(|p| p.published) { return Err(HttpRgbEvidenceError::NotReady); }
+        if !self.pending.as_ref().is_some_and(|p| p.published) {
+            return Err(HttpRgbEvidenceError::NotReady);
+        }
         self.verify_current(result, publisher, access.source, work)?;
-        restore_rgb_evidence(deployment, expected.archive, self.limits.archive, access.archive, copy, work, cx)?;
-        let output = self.recording.take_result(result, publisher, access.source)?;
+        restore_rgb_evidence(
+            deployment,
+            expected.archive,
+            self.limits.archive,
+            access.archive,
+            copy,
+            work,
+            cx,
+        )?;
+        let output = self
+            .recording
+            .take_result(result, publisher, access.source)?;
         // Every fallible operation precedes native ownership transfer.
         self.pending = None;
         self.admission = None;
@@ -300,25 +417,68 @@ impl<'model, 'temporal> HttpRgbEvidenceRecording<'model, 'temporal> {
     }
     /// Source completion remains native HTTP/MIME completion, not an aggregate
     /// detector/temporal checkpoint. Retain EACH delivered evidence pin separately.
-    pub fn commit_completion(&mut self, expected: HttpCompletionPin, publisher: &mut LocalRootPublisher, access: HttpRecordingAccess<'_>) -> Result<LocalPublicationReceipt, HttpRgbEvidenceError> {
-        if self.pending.is_some() || self.admission.is_some() { return Err(HttpRgbEvidenceError::NotReady); }
-        Ok(self.recording.commit_completion(expected, publisher, access)?)
-    }
-    fn match_pending(&self, expected: HttpRgbEvidencePin) -> Result<HttpRgbReceipt, HttpRgbEvidenceError> {
-        let pending = self.pending.as_ref().ok_or(HttpRgbEvidenceError::NotReady)?;
-        if pending.pin != expected { return Err(HttpRgbEvidenceError::Mismatch); }
-        Ok(pending.result)
-    }
-    fn verify_current(&mut self, result: HttpRgbReceipt, publisher: &LocalRootPublisher, access: HttpRecordingAccess<'_>, work: &mut WorkBudget<'_>) -> Result<(), HttpRgbEvidenceError> {
-        if self.recording.capture().completion() != Some(result) { return Err(HttpRgbEvidenceError::Mismatch); }
-        // A complete result already backpressures acquisition: this cannot read a
-        // later source. Charge the existing whole-recording poll allowance as usual.
-        if self.recording.poll(access)? != HttpRgbRecordingStep::Analysis(HttpRgbStep::ResultReady(result)) {
+    pub fn commit_completion(
+        &mut self,
+        expected: HttpCompletionPin,
+        publisher: &mut LocalRootPublisher,
+        access: HttpRecordingAccess<'_>,
+    ) -> Result<LocalPublicationReceipt, HttpRgbEvidenceError> {
+        if self.pending.is_some() || self.admission.is_some() {
             return Err(HttpRgbEvidenceError::NotReady);
         }
-        let archive = HttpWireArchive::load(publisher, self.recording.scope(), self.recording.pin(), self.limits.source, access.storage, work)
-            .map_err(HttpRgbRecordingError::from)?;
-        archive.verify_frame(publisher, self.recording.capture().frame().ok_or(HttpRgbEvidenceError::NotReady)?, access.storage, work)
+        Ok(self
+            .recording
+            .commit_completion(expected, publisher, access)?)
+    }
+    fn match_pending(
+        &self,
+        expected: HttpRgbEvidencePin,
+    ) -> Result<HttpRgbReceipt, HttpRgbEvidenceError> {
+        let pending = self
+            .pending
+            .as_ref()
+            .ok_or(HttpRgbEvidenceError::NotReady)?;
+        if pending.pin != expected {
+            return Err(HttpRgbEvidenceError::Mismatch);
+        }
+        Ok(pending.result)
+    }
+    fn verify_current(
+        &mut self,
+        result: HttpRgbReceipt,
+        publisher: &LocalRootPublisher,
+        access: HttpRecordingAccess<'_>,
+        work: &mut WorkBudget<'_>,
+    ) -> Result<(), HttpRgbEvidenceError> {
+        if self.recording.capture().completion() != Some(result) {
+            return Err(HttpRgbEvidenceError::Mismatch);
+        }
+        // A complete result already backpressures acquisition: this cannot read a
+        // later source. Charge the existing whole-recording poll allowance as usual.
+        if self.recording.poll(access)?
+            != HttpRgbRecordingStep::Analysis(HttpRgbStep::ResultReady(result))
+        {
+            return Err(HttpRgbEvidenceError::NotReady);
+        }
+        let archive = HttpWireArchive::load(
+            publisher,
+            self.recording.scope(),
+            self.recording.pin(),
+            self.limits.source,
+            access.storage,
+            work,
+        )
+        .map_err(HttpRgbRecordingError::from)?;
+        archive
+            .verify_frame(
+                publisher,
+                self.recording
+                    .capture()
+                    .frame()
+                    .ok_or(HttpRgbEvidenceError::NotReady)?,
+                access.storage,
+                work,
+            )
             .map_err(HttpRgbRecordingError::from)?;
         Ok(())
     }
@@ -326,8 +486,10 @@ impl<'model, 'temporal> HttpRgbEvidenceRecording<'model, 'temporal> {
     /// publication plans, including successful storage followed by denied delivery.
     pub fn retire(self) -> HttpRgbEvidenceRetirement {
         HttpRgbEvidenceRetirement {
-            recording: self.recording.retire(), admission: self.admission,
-            pending: self.pending, last_delivered: self.last_delivered,
+            recording: self.recording.retire(),
+            admission: self.admission,
+            pending: self.pending,
+            last_delivered: self.last_delivered,
         }
     }
 }
