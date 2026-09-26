@@ -345,7 +345,7 @@ impl HttpWireArchive {
         {
             return Err(HttpArchiveError::Source);
         }
-        archive.inventory(p, expected.reads, expected.reads, cancel, budget)?;
+        archive.inventory(p, expected.reads, expected.reads, None, cancel, budget)?;
         archive
             .entries
             .try_reserve_exact(expected.reads as usize)
@@ -456,7 +456,16 @@ impl HttpWireArchive {
         if !retry {
             self.validate_next(plan.entry.wire)?;
         }
-        self.inventory(p, self.pin().reads, plan.pin().reads, cancel, budget)?;
+        // Only this exact pending plan's own root temp may remain for reconciliation below;
+        // any other leftover under this prefix, including another ordinal's, fails closed.
+        self.inventory(
+            p,
+            self.pin().reads,
+            plan.pin().reads,
+            Some(&plan.slot),
+            cancel,
+            budget,
+        )?;
         if let Some(root) = p.root(&plan.slot)
             && root.root != plan.entry.root
         {
@@ -484,6 +493,11 @@ impl HttpWireArchive {
         }
         probe(cancel)?;
         budget.charge(0)?;
+        // A crash after the root temp write leaves this plan's record under its own temp name.
+        // The storage owner discards it only when its bytes are exactly this plan's record,
+        // then the root-last publication below is redone. Other content is kept and refused.
+        p.discard_orphaned_root_temp_for(&plan.slot, &plan.manifest)
+            .map_err(|_| HttpArchiveError::NotDurable)?;
         let local = p
             .publish_cancellable(&plan.slot, &plan.manifest, cancel)
             .map_err(|_| HttpArchiveError::Storage)?;
@@ -604,6 +618,7 @@ impl HttpWireArchive {
         p: &LocalRootPublisher,
         minimum: u64,
         maximum: u64,
+        own_temp: Option<&SlotName>,
         cancel: &dyn PublishCancellation,
         budget: &mut WorkBudget<'_>,
     ) -> Result<(), HttpArchiveError> {
@@ -642,12 +657,17 @@ impl HttpWireArchive {
                 return Err(HttpArchiveError::NotDurable);
             }
         }
-        for path in &p.recovery_report().orphaned_temps {
+        let own_temp = own_temp.map(LocalRootPublisher::root_temp_path);
+        for path in p.orphaned_temps() {
             probe(cancel)?;
             budget.charge(128)?;
             examined += 1;
             if examined > self.limits.maximum_scan_roots {
                 return Err(HttpArchiveError::Limit);
+            }
+            if own_temp.as_deref() == Some(path) {
+                // Content is proven by the storage owner before anything is discarded.
+                continue;
             }
             if path
                 .file_name()

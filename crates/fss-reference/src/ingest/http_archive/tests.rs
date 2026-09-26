@@ -381,3 +381,138 @@ fn incorrect_root_family_and_extra_children_cannot_supply_source_custody() -> Te
     }
     Ok(())
 }
+fn crash_at_temp_write(
+    d: &Directory,
+    a: &mut HttpWireArchive,
+    plan: &PreparedHttpWire<'_>,
+) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let mut p = d.open()?;
+    p.inject_crash_at(PublishCutPoint::AfterRootTempWrite);
+    assert!(a.publish(plan, &mut p, &NeverCancel, &mut work()).is_err());
+    let temp = p
+        .root_dir()
+        .join(LocalRootPublisher::root_temp_path(plan.slot()));
+    drop(p);
+    assert!(temp.is_file());
+    Ok(temp)
+}
+#[test]
+fn reopened_owner_reconciles_its_exact_pending_plan_at_every_cut() -> Test {
+    for cut in [
+        PublishCutPoint::AfterChildrenVerified,
+        PublishCutPoint::AfterManifestBody,
+        PublishCutPoint::AfterRootTempWrite,
+        PublishCutPoint::AfterRootRename,
+    ] {
+        let d = Directory::new();
+        let mut a = HttpWireArchive::new(scope(), limits())?;
+        let plan = a.prepare_bytes(raw(0, b"read", 10), b"read", &mut work())?;
+        let mut p = d.open()?;
+        p.inject_crash_at(cut);
+        assert!(a.publish(&plan, &mut p, &NeverCancel, &mut work()).is_err());
+        drop(p);
+        let mut p = d.open()?;
+        let result = a.publish(&plan, &mut p, &NeverCancel, &mut work())?;
+        assert_eq!(result.pin, plan.pin());
+        assert_eq!(p.visible_roots().count(), 1);
+        assert_eq!(p.orphaned_temps().count(), 0);
+        drop(p);
+        let p = d.open()?;
+        assert!(p.recovery_report().orphaned_temps.is_empty());
+        let loaded =
+            HttpWireArchive::load(&p, scope(), plan.pin(), limits(), &NeverCancel, &mut work())?;
+        assert_eq!(
+            loaded.read_range(&p, [0, 4], &NeverCancel, &mut work())?,
+            b"read"
+        );
+    }
+    Ok(())
+}
+#[test]
+fn broken_slot_of_another_ordinal_keeps_reconciliation_closed() -> Test {
+    let d = Directory::new();
+    let mut a = HttpWireArchive::new(scope(), limits())?;
+    let plan = a.prepare_bytes(raw(0, b"read", 10), b"read", &mut work())?;
+    let temp = crash_at_temp_write(&d, &mut a, &plan)?;
+    let own = std::fs::read(&temp)?;
+    // A root record under this prefix for ordinal 2 that fails verification on open.
+    let planted = d.0.join("roots").join(format!("{}.root", a.slot(2)?));
+    std::fs::write(&planted, b"not a root record")?;
+    let mut p = d.open()?;
+    assert!(p.is_broken_slot(&a.slot(2)?));
+    assert_eq!(
+        a.publish(&plan, &mut p, &NeverCancel, &mut work())
+            .map(|r| r.pin),
+        Err(HttpArchiveError::NotDurable)
+    );
+    // Nothing was discarded: neither the plan's own temp nor the planted evidence.
+    assert_eq!(std::fs::read(&temp)?, own);
+    assert_eq!(std::fs::read(&planted)?, b"not a root record");
+    assert_eq!(p.visible_roots().count(), 0);
+    assert_eq!(a.pin().reads, 0);
+    Ok(())
+}
+#[test]
+fn orphaned_temp_of_another_ordinal_keeps_reconciliation_closed() -> Test {
+    let d = Directory::new();
+    let mut a = HttpWireArchive::new(scope(), limits())?;
+    let plan = a.prepare_bytes(raw(0, b"read", 10), b"read", &mut work())?;
+    drop(d.open()?);
+    let planted = d.0.join(LocalRootPublisher::root_temp_path(&a.slot(2)?));
+    std::fs::write(&planted, b"another ordinal")?;
+    let mut p = d.open()?;
+    assert_eq!(
+        a.publish(&plan, &mut p, &NeverCancel, &mut work())
+            .map(|r| r.pin),
+        Err(HttpArchiveError::NotDurable)
+    );
+    assert_eq!(std::fs::read(&planted)?, b"another ordinal");
+    assert_eq!(p.visible_roots().count(), 0);
+    Ok(())
+}
+#[test]
+fn orphaned_temp_not_matching_the_plan_is_kept_and_refused() -> Test {
+    let d = Directory::new();
+    let mut crashed = HttpWireArchive::new(scope(), limits())?;
+    let plan = crashed.prepare_bytes(raw(0, b"read", 10), b"read", &mut work())?;
+    let temp = crash_at_temp_write(&d, &mut crashed, &plan)?;
+    let own = std::fs::read(&temp)?;
+    // A different read for the same slot/ordinal: its record names another root.
+    let mut other = HttpWireArchive::new(scope(), limits())?;
+    let foreign = other.prepare_bytes(raw(0, b"else", 10), b"else", &mut work())?;
+    assert_eq!(foreign.slot(), plan.slot());
+    let mut p = d.open()?;
+    assert_eq!(
+        other
+            .publish(&foreign, &mut p, &NeverCancel, &mut work())
+            .map(|r| r.pin),
+        Err(HttpArchiveError::NotDurable)
+    );
+    assert_eq!(std::fs::read(&temp)?, own);
+    assert_eq!(p.visible_roots().count(), 0);
+    assert_eq!(other.pin().reads, 0);
+    drop(p);
+    // Tampered bytes under the plan's own temp name do not match its exact record either.
+    std::fs::write(&temp, b"tampered root record")?;
+    let mut p = d.open()?;
+    assert_eq!(
+        crashed
+            .publish(&plan, &mut p, &NeverCancel, &mut work())
+            .map(|r| r.pin),
+        Err(HttpArchiveError::NotDurable)
+    );
+    assert_eq!(std::fs::read(&temp)?, b"tampered root record");
+    assert_eq!(p.visible_roots().count(), 0);
+    drop(p);
+    // Only the original owner's exact record is reconciled.
+    std::fs::write(&temp, &own)?;
+    let mut p = d.open()?;
+    assert_eq!(
+        crashed
+            .publish(&plan, &mut p, &NeverCancel, &mut work())?
+            .pin,
+        plan.pin()
+    );
+    assert!(!temp.exists());
+    Ok(())
+}
