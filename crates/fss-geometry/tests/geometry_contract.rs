@@ -287,3 +287,36 @@ fn parallel_rays_miss_and_winding_is_double_sided() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn left_perturbation_matches_the_bundle_tangent_space() -> TestResult {
+    let pose = RigidPose::new(
+        [[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]],
+        [-48.0, 24.0, 10.0],
+    )?;
+    // A zero increment is the identical pose, bit for bit.
+    assert_eq!(pose.left_perturbed([0.0; 3], [0.0; 3])?, pose);
+    // A pure translation increment adds to the world-to-camera translation only.
+    let shifted = pose.left_perturbed([0.0; 3], [0.5, -0.25, 1.0])?;
+    assert_eq!(shifted.rotation(), pose.rotation());
+    assert_eq!(shifted.translation(), [-47.5, 23.75, 11.0]);
+    // A quarter turn about camera Z pre-multiplies: R' = Rz(pi/2) R.
+    let turned = pose.left_perturbed([0.0, 0.0, std::f64::consts::FRAC_PI_2], [0.0; 3])?;
+    let expected = [[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0]];
+    for (row, want) in turned.rotation().iter().zip(expected) {
+        for (value, target) in row.iter().zip(want) {
+            close(*value, target);
+        }
+    }
+    assert_eq!(turned.translation(), pose.translation());
+    // Deterministic, and a non-finite increment is refused.
+    assert_eq!(
+        pose.left_perturbed([1e-3, -2e-3, 3e-3], [0.1, 0.2, 0.3])?,
+        pose.left_perturbed([1e-3, -2e-3, 3e-3], [0.1, 0.2, 0.3])?
+    );
+    assert!(matches!(
+        pose.left_perturbed([f64::NAN, 0.0, 0.0], [0.0; 3]),
+        Err(GeometryError::NonFinite)
+    ));
+    Ok(())
+}

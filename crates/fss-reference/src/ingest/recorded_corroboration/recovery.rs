@@ -210,6 +210,7 @@ mod tests {
                 cascade: None,
                 visibility: &GroundVisibilityPlan::default(),
                 provenance: None,
+                uncertainty: None,
             },
             0,
             &summary,

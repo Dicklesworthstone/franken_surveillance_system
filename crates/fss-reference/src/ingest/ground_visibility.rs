@@ -469,6 +469,12 @@ pub enum VisibilityError {
     Geometry(GeometryError),
     /// The owner scene-mesh package was refused (digest, format, references or limits).
     SceneMesh(TwinError),
+    /// A pose covariance is not finite, not symmetric or not positive semidefinite, or a
+    /// sigma-point pose built from it is not a valid rigid pose.
+    InvalidCovariance,
+    /// The pose-sensitivity pass (perturbations x zones x samples, plus mesh tests) would exceed
+    /// its work budget ([`MAX_POSE_SENSITIVITY_WORK`] per camera); nothing is classified.
+    PoseSensitivityBudget,
 }
 
 impl std::fmt::Display for VisibilityError {
@@ -488,6 +494,13 @@ impl std::fmt::Display for VisibilityError {
             }
             Self::Geometry(error) => write!(f, "visibility geometry: {error}"),
             Self::SceneMesh(error) => write!(f, "owner scene mesh refused: {error}"),
+            Self::InvalidCovariance => f.write_str(
+                "pose covariance is not finite, symmetric and positive semidefinite, or a \
+                 sigma-point pose is not a valid rigid pose",
+            ),
+            Self::PoseSensitivityBudget => f.write_str(
+                "pose-sensitivity work (perturbations x zones x samples) exceeds its budget",
+            ),
         }
     }
 }
@@ -691,6 +704,28 @@ pub fn assess_ground_zone_masked(
 ) -> Result<ZoneVisibility, VisibilityError> {
     let samples = ground_samples(polygon, policy)?;
     let mut budget = WorkBudget::new(MAX_VISIBILITY_WORK);
+    assess_samples(
+        camera,
+        dimensions,
+        &samples,
+        mesh,
+        policy,
+        masked,
+        &mut budget,
+    )
+}
+
+/// [`assess_ground_zone_masked`] over precomputed `samples`, charging `budget` (one unit per
+/// sample, plus the mesh's per-triangle charges).
+fn assess_samples(
+    camera: VisibilityCamera<'_>,
+    dimensions: [u32; 2],
+    samples: &[(f64, f64)],
+    mesh: Option<SceneMesh<'_>>,
+    policy: VisibilityPolicy,
+    masked: Option<PixelMask<'_>>,
+    budget: &mut WorkBudget<'_>,
+) -> Result<ZoneVisibility, VisibilityError> {
     let (camera_model, occlusion) = match (camera, mesh) {
         (VisibilityCamera::Homography(_), None) => (
             CameraModel::OwnerHomography,
@@ -719,7 +754,7 @@ pub fn assess_ground_zone_masked(
         VisibilityCamera::Pose(_) => None,
     };
     let (mut visible, mut outside, mut occluded, mut privacy_masked) = (0_u32, 0_u32, 0_u32, 0_u32);
-    for &(x, y) in &samples {
+    for &(x, y) in samples {
         budget.charge(1)?;
         let pixel = match (camera, inverse.as_ref()) {
             (VisibilityCamera::Homography(matrix), Some(inverse)) => {
@@ -756,7 +791,7 @@ pub fn assess_ground_zone_masked(
                     from,
                     to,
                     OCCLUSION_MARGIN_RATIO * length,
-                    &mut budget,
+                    budget,
                 )?
             }
             _ => false,
@@ -850,6 +885,13 @@ pub fn bind_visibility_parameters(
         None => parameters.push(0),
     }
 }
+
+pub mod pose_sensitivity;
+pub use pose_sensitivity::{
+    MAX_POSE_SENSITIVITY_WORK, POSE_SENSITIVITY_PERTURBATIONS, POSE_SENSITIVITY_POLICY,
+    POSE_SIGMA_RADIUS, PoseCovariance, PoseRobustness, PoseRobustnessClass, assess_pose_robustness,
+    pose_sigma_points,
+};
 
 #[cfg(test)]
 mod tests;

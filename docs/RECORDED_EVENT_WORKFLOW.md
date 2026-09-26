@@ -434,6 +434,36 @@ Non-claim: `adopted_current` means the deployment retains the owner's approval-g
 that calibration. It is owner authority, not a physical measurement: nothing observes that the
 camera has not moved, zoomed or been relensed since.
 
+### Pose uncertainty in ground coverage (fss-x8j0v covariance propagation)
+
+A calibrated pose is a point estimate; the calibration also carries each camera's local
+covariance. `corroborate --calibration` now propagates the 6-DoF pose block of that covariance
+into ground visibility (record version 5, uncertainty digest `fss.coverage_pose_uncertainty.v1`
+bound into the camera's analysis identity):
+
+- **Perturbations.** The pose block (rotation X/Y/Z in the bundle adjuster's left-perturbation
+  tangent space, then world-to-camera translation X/Y/Z) is factored by a lower Cholesky
+  factorization that admits semidefinite blocks. The perturbations are the scaled unscented sigma
+  points for `n = 6` with `n + lambda = 9`: the nominal pose plus `+/- 3` times each factor column,
+  12 displaced poses in a fixed order (`fss.pose_sensitivity_policy.v1`). Every zone is assessed
+  under each one with the nominal sampling, mesh and privacy mask.
+- **Classification.** A zone is `robust` when every perturbation keeps its nominal class
+  (observable, occluded, outside_frustum, privacy_masked), otherwise `pose_sensitive`, with the
+  class counts. A zone observable under the nominal pose but pose-sensitive carries no witness;
+  its frames are `pose_sensitive` (after a named `zone_entry`, before warm-up and latency). So no
+  absence is certified over it, orient reports it `not_observable` with a named gap, and follow
+  certifies no silence that rests on it. Robust witnesses state the sigma-point result in their
+  predicate.
+- **Owner `--pose`.** It has no covariance: the record says `uncertainty_not_provided`, never
+  `robust`, and every witness predicate says robustness to pose error was not assessed.
+- **Budget.** One work budget per camera (the existing visibility bound, 200M units) covers
+  perturbations x zones x samples plus mesh tests. Exceeding it is a typed
+  `ERR-CORROBORATE-VISIBILITY-001` refusal and nothing is classified.
+
+Records without a bound pose uncertainty keep their version 1-4 bytes. Non-claims: the covariance
+is a local Gauss-Newton linearization and 12 sigma points probe only 12 directions of it, so
+`robust` is not a guarantee; intrinsics uncertainty is not propagated.
+
 ### Privacy masks with geometry and tolerant decode (fss-bgqkd)
 
 A sensor's retained privacy mask (`fss-event privacy-mask declare`, see `PRIVACY.md`) composes

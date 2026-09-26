@@ -471,3 +471,204 @@ fn adopted_current_is_a_distinct_round_tripping_currency_and_earlier_bytes_are_u
     assert!(GenerationCurrency::decode(&mut CanonicalDecoder::new(&bytes)).is_err());
     Ok(())
 }
+
+// Pose uncertainty (record version 5, fss-x8j0v covariance propagation).
+
+fn pose_covariance() -> Result<PoseCovariance, Box<dyn std::error::Error>> {
+    let mut matrix = [[0.0_f64; 6]; 6];
+    for (index, row) in matrix.iter_mut().enumerate() {
+        row[index] = if index < 3 { 1e-8 } else { 1e-4 };
+    }
+    Ok(PoseCovariance::new(matrix)?)
+}
+
+fn robustness(observable: u32, outside_frustum: u32) -> PoseRobustness {
+    PoseRobustness {
+        nominal: PoseRobustnessClass::Observable,
+        perturbations: 12,
+        observable,
+        occluded: 0,
+        outside_frustum,
+        privacy_masked: 0,
+    }
+}
+
+fn uncertain_record(
+    provenance: PoseProvenance,
+    uncertainty: PoseUncertainty,
+    robustness: Option<PoseRobustness>,
+) -> Result<CoverageRecord, ContractError> {
+    let frames = frames(0..14)?;
+    let gaps = vec![false; 14];
+    let mut input = input(
+        &frames,
+        &gaps,
+        OPERATOR_TIME_LABEL,
+        vec![zone(Vec::new(), true)],
+    );
+    input.source = CoverageSource::Corroborate;
+    build_coverage_with(
+        &input,
+        &CoverageExtras {
+            visibility: vec![Some(posed_visibility())],
+            pose_provenance: Some(provenance),
+            pose_uncertainty: Some(uncertainty),
+            pose_robustness: vec![robustness],
+            ..CoverageExtras::default()
+        },
+    )
+}
+
+#[test]
+fn a_pose_sensitive_zone_carries_no_witness_and_a_robust_zone_says_so_in_its_predicate()
+-> TestResult {
+    let calibration = calibrated(GenerationCurrency::Unasserted);
+    let sigma = PoseUncertainty::SigmaPoints {
+        covariance: pose_covariance()?,
+    };
+    let robust = uncertain_record(calibration, sigma, Some(robustness(12, 0)))?;
+    let sensitive = uncertain_record(calibration, sigma, Some(robustness(10, 2)))?;
+    // Robust: the same witness window as the version-4 record, predicate extended.
+    let unbound = posed_record(posed_visibility(), Some(calibration))?;
+    let door = &robust.zones[0];
+    assert_eq!(door.witnesses.len(), unbound.zones[0].witnesses.len());
+    assert_eq!(door.uncovered, unbound.zones[0].uncovered);
+    for witness in &door.witnesses {
+        assert!(
+            witness.witness.negative_predicate.ends_with(
+                "; pose robust: 12 of 12 sigma-point perturbations of the calibration pose \
+                 covariance keep the nominal class (local linear approximation, not a guarantee)"
+            ),
+            "{}",
+            witness.witness.negative_predicate
+        );
+    }
+    // Pose-sensitive: observable under the nominal pose, yet no witness and no absence.
+    let door = &sensitive.zones[0];
+    assert!(door.witnesses.is_empty());
+    assert_eq!(sensitive.witnesses().count(), 0);
+    // pose_sensitive precedes warm-up and confirmation latency: every frame carries it.
+    assert_eq!(reasons(door), vec![("pose_sensitive", 0, 13)]);
+    // A witness smuggled onto the sensitive zone is refused.
+    let mut forged = sensitive.clone();
+    forged.zones[0].witnesses = robust.zones[0].witnesses.clone();
+    assert_eq!(forged.validate(), Err(ContractError::CoverageUncertified));
+    Ok(())
+}
+
+#[test]
+fn pose_uncertainty_is_version_five_round_trips_and_is_deterministic() -> TestResult {
+    let calibration = calibrated(GenerationCurrency::OwnerAsserted);
+    let sigma = PoseUncertainty::SigmaPoints {
+        covariance: pose_covariance()?,
+    };
+    let records = [
+        uncertain_record(
+            PoseProvenance::OwnerPoseArgument,
+            PoseUncertainty::NotProvided,
+            None,
+        )?,
+        uncertain_record(calibration, PoseUncertainty::NotProvided, None)?,
+        uncertain_record(calibration, sigma, Some(robustness(12, 0)))?,
+        uncertain_record(calibration, sigma, Some(robustness(10, 2)))?,
+    ];
+    let mut digests = std::collections::BTreeSet::new();
+    for record in &records {
+        let bytes = record.to_bytes();
+        let mut header = CanonicalDecoder::new(&bytes);
+        assert_eq!(header.bytes()?, RECORD_MAGIC);
+        assert_eq!(header.u32()?, RECORD_VERSION_POSE_UNCERTAINTY);
+        assert_eq!(
+            &CoverageRecord::from_bytes(&bytes, ContentDigest::sha256(&bytes))?,
+            record
+        );
+        // Deterministic: rebuilt from the same inputs, bit-identical bytes.
+        let again = uncertain_record(
+            record.pose_provenance.ok_or("provenance")?,
+            record.pose_uncertainty.ok_or("uncertainty")?,
+            record.zones[0].pose_robustness,
+        )?;
+        assert_eq!(again.to_bytes(), bytes);
+        assert!(digests.insert(record.digest()));
+    }
+    // `--pose` is explicitly uncertainty_not_provided, never robust, and its witnesses say so.
+    let owner = &records[0];
+    assert_eq!(
+        owner.pose_uncertainty.map(|value| value.as_str()),
+        Some("uncertainty_not_provided")
+    );
+    assert!(owner.zones[0].pose_robustness.is_none());
+    assert!(!owner.zones[0].witnesses.is_empty());
+    for witness in &owner.zones[0].witnesses {
+        assert!(
+            witness.witness.negative_predicate.contains(
+                "; pose uncertainty_not_provided: the visibility rests on the nominal pose"
+            ),
+            "{}",
+            witness.witness.negative_predicate
+        );
+    }
+    // Without a bound uncertainty the same record stays version 4.
+    let version_four = posed_record(posed_visibility(), Some(calibration))?;
+    let version_four_bytes = version_four.to_bytes();
+    let mut header = CanonicalDecoder::new(&version_four_bytes);
+    header.bytes()?;
+    assert_eq!(header.u32()?, RECORD_VERSION_POSE_PROVENANCE);
+    // The uncertainty digest is domain-separated and distinguishes the statuses.
+    assert_ne!(PoseUncertainty::NotProvided.digest(), sigma.digest());
+    let wider = PoseUncertainty::SigmaPoints {
+        covariance: pose_covariance()?.scaled(4.0).map_err(|e| e.to_string())?,
+    };
+    assert_ne!(wider.digest(), sigma.digest());
+    Ok(())
+}
+
+#[test]
+fn pose_uncertainty_is_refused_where_it_cannot_hold() -> TestResult {
+    let calibration = calibrated(GenerationCurrency::Unasserted);
+    let sigma = PoseUncertainty::SigmaPoints {
+        covariance: pose_covariance()?,
+    };
+    // An owner `--pose` has no covariance: sigma points under it are refused.
+    assert!(
+        uncertain_record(
+            PoseProvenance::OwnerPoseArgument,
+            sigma,
+            Some(robustness(12, 0))
+        )
+        .is_err()
+    );
+    // Sigma points need a robustness block on every zone; not-provided allows none.
+    assert!(uncertain_record(calibration, sigma, None).is_err());
+    assert!(
+        uncertain_record(
+            calibration,
+            PoseUncertainty::NotProvided,
+            Some(robustness(12, 0))
+        )
+        .is_err()
+    );
+    // A robustness whose nominal class is not the zone's, or whose counts do not add up.
+    let mut wrong_class = robustness(12, 0);
+    wrong_class.nominal = PoseRobustnessClass::Occluded;
+    assert!(uncertain_record(calibration, sigma, Some(wrong_class)).is_err());
+    assert!(uncertain_record(calibration, sigma, Some(robustness(11, 0))).is_err());
+    // An uncertainty without a provenance is refused.
+    let mut orphan = uncertain_record(calibration, PoseUncertainty::NotProvided, None)?;
+    orphan.pose_provenance = None;
+    assert!(orphan.validate().is_err());
+    // An edited robustness or covariance is refused under the original digest.
+    let record = uncertain_record(calibration, sigma, Some(robustness(12, 0)))?;
+    let digest = record.digest();
+    let mut edited = record.clone();
+    edited.pose_uncertainty = Some(PoseUncertainty::SigmaPoints {
+        covariance: pose_covariance()?.scaled(2.0).map_err(|e| e.to_string())?,
+    });
+    assert!(CoverageRecord::from_bytes(&edited.to_bytes(), digest).is_err());
+    // A version-5 record relabelled version 4 no longer decodes.
+    // (Length-prefixed magic `FSSCOV01`: bytes 0..16; version: bytes 16..20.)
+    let mut relabelled = record.to_bytes();
+    relabelled[16..20].copy_from_slice(&RECORD_VERSION_POSE_PROVENANCE.to_be_bytes());
+    assert!(CoverageRecord::from_bytes(&relabelled, ContentDigest::sha256(&relabelled)).is_err());
+    Ok(())
+}

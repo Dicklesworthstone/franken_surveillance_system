@@ -6,15 +6,19 @@
 //! visibility carries a `visibility` object (fraction, sampling, occlusion model and claim);
 //! records without either render exactly as before. A record that binds its camera's pose
 //! provenance (version 4) carries a `pose_provenance` object; a record whose visibility used a
-//! calibrated pose without one predates provenance binding and says `unrecorded`.
+//! calibrated pose without one predates provenance binding and says `unrecorded`. A record that
+//! binds its pose uncertainty (version 5) carries a `pose_uncertainty` object and, under sigma
+//! points, every zone a `pose_robustness` object (`robust` or `pose_sensitive`, with the class
+//! counts over the perturbations).
 
 use fss_cli::agent_json::{array, coverage_witness, object, optional_string, string};
 use fss_core::{CaptureInterval, ContentDigest};
 use fss_reference::ingest::ground_visibility::{
-    CameraModel, NotVisibleCause, Occlusion, ZoneVisibility,
+    CameraModel, NotVisibleCause, Occlusion, POSE_SENSITIVITY_PERTURBATIONS,
+    POSE_SENSITIVITY_POLICY, PoseRobustness, ZoneVisibility,
 };
 use fss_reference::ingest::recorded_coverage::{
-    CoverageRecord, CoverageStatus, PoseProvenance, UncoveredReason,
+    CoverageRecord, CoverageStatus, PoseProvenance, PoseUncertainty, UncoveredReason,
 };
 
 fn interval(value: CaptureInterval) -> String {
@@ -118,6 +122,56 @@ fn pose_provenance(value: &CoverageRecord) -> Option<String> {
     Some(object(&fields))
 }
 
+/// `pose_uncertainty` of a version-5 record: `uncertainty_not_provided`, or the sigma-point
+/// policy with its perturbation count and the pose covariance digest.
+fn pose_uncertainty(value: &PoseUncertainty) -> String {
+    match value {
+        PoseUncertainty::NotProvided => object(&[
+            ("status", string(value.as_str())),
+            ("uncertainty_digest", string(&value.digest().to_text())),
+            (
+                "claim",
+                string("nominal_pose_only_robustness_to_pose_error_not_assessed"),
+            ),
+        ]),
+        PoseUncertainty::SigmaPoints { .. } => object(&[
+            ("status", string(value.as_str())),
+            ("policy", string(POSE_SENSITIVITY_POLICY)),
+            ("perturbations", POSE_SENSITIVITY_PERTURBATIONS.to_string()),
+            ("uncertainty_digest", string(&value.digest().to_text())),
+            (
+                "claim",
+                string("local_linear_approximation_not_a_guarantee"),
+            ),
+        ]),
+    }
+}
+
+/// `pose_robustness` of one zone under sigma points.
+fn pose_robustness(value: &PoseRobustness) -> String {
+    let classes: Vec<String> = value
+        .classes()
+        .into_iter()
+        .map(|class| string(class.as_str()))
+        .collect();
+    object(&[
+        ("state", string(value.state())),
+        ("nominal_class", string(value.nominal.as_str())),
+        ("perturbations", value.perturbations.to_string()),
+        ("agreeing", value.agreeing().to_string()),
+        ("disagreeing_ppm", value.disagreeing_ppm().to_string()),
+        ("observable", value.observable.to_string()),
+        ("occluded", value.occluded.to_string()),
+        ("outside_frustum", value.outside_frustum.to_string()),
+        ("privacy_masked", value.privacy_masked.to_string()),
+        ("classes", array(&classes)),
+        (
+            "absence_evidence",
+            (!value.observable_but_sensitive()).to_string(),
+        ),
+    ])
+}
+
 fn record(value: &CoverageRecord) -> String {
     let zones: Vec<String> = value
         .zones
@@ -180,6 +234,9 @@ fn record(value: &CoverageRecord) -> String {
             if let Some(value) = &zone.visibility {
                 fields.push(("visibility", visibility(value)));
             }
+            if let Some(value) = &zone.pose_robustness {
+                fields.push(("pose_robustness", pose_robustness(value)));
+            }
             object(&fields)
         })
         .collect();
@@ -197,6 +254,9 @@ fn record(value: &CoverageRecord) -> String {
     ];
     if let Some(provenance) = pose_provenance(value) {
         fields.push(("pose_provenance", provenance));
+    }
+    if let Some(uncertainty) = &value.pose_uncertainty {
+        fields.push(("pose_uncertainty", pose_uncertainty(uncertainty)));
     }
     fields.push(("zones", array(&zones)));
     object(&fields)
