@@ -91,7 +91,7 @@ fn record_deltas(
     deltas.push(EvidenceDelta {
         delta_id: format!("delta:deletion:{}", plan_digest.to_text()),
         family: FAMILY_DELETION_RECORD.to_owned(),
-        object_id: ObjectId::parse(DeletionPlan::record_object_id(plan.import_identity))?,
+        object_id: ObjectId::parse(plan.record_object_id_of(plan_digest))?,
         prior_generation: None,
         new_generation: 1,
         validity: plan.validity,
@@ -146,7 +146,10 @@ fn record_deltas(
     Ok(deltas)
 }
 
-/// Finds the current plan whose digest is `plan_digest`, recomputed against the current head.
+/// Finds the current plan whose digest is `plan_digest`, recomputed against the current head
+/// for every scope the head admits: each retained import, each sensor its capsules name and each
+/// committed event, in that order. The scope kind and identity are inside the digest, so a plan
+/// matches only the scope it was computed for.
 fn current_plan(
     deployment: &ReferenceDeployment,
     index: &DeletionIndex,
@@ -155,8 +158,13 @@ fn current_plan(
 ) -> Result<DeletionPlan, DeletionError> {
     let holds = super::holds::HoldIndex::read(deployment, cx)?;
     let universe = Universe::scan(deployment, index, cx)?;
-    for import in universe.imports() {
-        let plan = universe.plan(deployment, *import)?;
+    for scope in universe.scopes(deployment) {
+        let plan = match universe.plan(deployment, &scope) {
+            Ok(plan) => plan,
+            // A candidate scope whose members are all gone has no current plan.
+            Err(DeletionError::ScopeEmpty(_)) => continue,
+            Err(error) => return Err(error),
+        };
         let plan = holds.protect(&universe, deployment, plan, cx)?;
         if plan.digest()? == plan_digest {
             return Ok(plan);
@@ -292,7 +300,7 @@ fn apply(
         vec![EvidenceDelta {
             delta_id: format!("delta:deletion-complete:{}", plan_digest.to_text()),
             family: FAMILY_DELETION_COMPLETION.to_owned(),
-            object_id: ObjectId::parse(DeletionPlan::record_object_id(plan.import_identity))?,
+            object_id: ObjectId::parse(plan.record_object_id_of(plan_digest))?,
             prior_generation: Some(1),
             new_generation: 2,
             validity: plan.validity,

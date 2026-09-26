@@ -952,6 +952,11 @@
       "id": "ERR-DELETION-PLAN-STALE-001"
     },
     {
+      "description": "`delete plan --sensor-id` or `--event-id` reaches no completed, retained import: no retained import's capsules name the sensor, no committed event has the identity, or every member import is already deleted (fss-x4a.30.86.20); nothing was written",
+      "guidance": "check the sensor or event identity; a deleted member reads `ERR-EVIDENCE-DELETED-001` by `--import-id`",
+      "id": "ERR-DELETION-SCOPE-EMPTY-001"
+    },
+    {
       "description": "deployment custody, ledger or publication storage failed during a deletion plan or commit",
       "guidance": "repair storage (`fss doctor`), then rerun the same command",
       "id": "ERR-DELETION-STORAGE-001"

@@ -57,13 +57,13 @@ impl DeletionIndex {
                 if delta.family == FAMILY_DELETION_RECORD {
                     let bytes = read(delta.payload_digest)?;
                     let plan = DeletionPlan::decode(&bytes, delta.payload_digest)?;
-                    if DeletionPlan::record_object_id(plan.import_identity)
-                        != delta.object_id.as_str()
-                    {
+                    if plan.record_object_id_of(delta.payload_digest) != delta.object_id.as_str() {
                         return Err(DeletionError::RecordMismatch.into());
                     }
                     let position = index.entries.len();
-                    index.imports.insert(plan.import_identity, position);
+                    for import in &plan.imports {
+                        index.imports.insert(*import, position);
+                    }
                     for object in &plan.deletable {
                         index.objects.insert(object.digest, position);
                     }
@@ -83,7 +83,7 @@ impl DeletionIndex {
             }
         }
         for entry in &mut index.entries {
-            let object = DeletionPlan::record_object_id(entry.plan.import_identity);
+            let object = entry.plan.record_object_id_of(entry.plan_digest);
             if let Some(digest) = completions.get(&object) {
                 let bytes = read(*digest)?;
                 let completion = DeletionCompletion::decode(&bytes, *digest)?;
@@ -120,7 +120,7 @@ impl DeletionIndex {
         &self.entries
     }
 
-    /// The deletion of `import`, if committed.
+    /// The deletion of `import` (by an import, sensor or event scope), if committed.
     #[must_use]
     pub fn import(&self, import: ContentDigest) -> Option<&DeletionEntry> {
         self.imports.get(&import).map(|at| &self.entries[*at])

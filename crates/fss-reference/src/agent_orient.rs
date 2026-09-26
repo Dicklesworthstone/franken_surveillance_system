@@ -3277,11 +3277,11 @@ fn deletion_warnings(snapshot: &DeploymentSnapshot) -> Vec<String> {
         .take(MAX_LISTED_DELETIONS)
         .map(|entry| {
             format!(
-                "Import {} was deleted under deletion plan {} ({} object(s), {} byte(s) unlinked \
+                "{} was deleted under deletion plan {} ({} object(s), {} byte(s) unlinked \
                  from local custody, not cryptographically erased; completion {}): its evidence \
                  handles resolve to `deleted`, not missing; {} event(s) keep their revision \
                  history over deleted evidence.",
-                entry.plan.import_identity,
+                deleted_subject(&entry.plan, "Import"),
                 entry.plan_digest,
                 entry.plan.deletable.len(),
                 entry.plan.deletable_bytes(),
@@ -3302,6 +3302,27 @@ fn deletion_warnings(snapshot: &DeploymentSnapshot) -> Vec<String> {
         ));
     }
     warnings
+}
+
+/// What a committed deletion removed: `<Import> sha256:...` for an import scope, or the sensor
+/// or event scope with its member imports.
+fn deleted_subject(plan: &crate::deletion::DeletionPlan, import_word: &str) -> String {
+    match &plan.scope {
+        crate::deletion::DeletionScope::Import(import) => format!("{import_word} {import}"),
+        scope => {
+            let members: Vec<String> = plan.imports.iter().map(|d| d.to_text()).collect();
+            format!(
+                "{} scope {} (import(s) {})",
+                if import_word == "Import" {
+                    "The"
+                } else {
+                    "the"
+                },
+                scope.text(),
+                members.join(", ")
+            )
+        }
+    }
 }
 
 /// Explanation warnings for an event whose cited evidence a committed deletion removed.
@@ -3341,10 +3362,10 @@ fn deleted_evidence_warnings(
             .any(|reference| reference.object_id == object)
         {
             warnings.push(format!(
-                "{} cites evidence of import {}, which deletion plan {} removed; the event keeps \
+                "{} cites evidence of {}, which deletion plan {} removed; the event keeps \
                  every committed revision and no new revision was minted.",
                 event.event_id.as_str(),
-                entry.plan.import_identity,
+                deleted_subject(&entry.plan, "import"),
                 entry.plan_digest
             ));
         }

@@ -182,7 +182,7 @@ A delete request traverses canonical and derived reachability. Completion distin
 Indexes, thumbnails, model caches, reports, memory entries, backup generations, and remote mirrors
 are part of closure. A deleted SQL row alone is not success.
 
-### 8.1 What is enforced today (fss-x4a.9.7, FSS-037, reference, unqualified)
+### 8.1 What is enforced today (fss-x4a.9.7, fss-x4a.30.86.20, FSS-037, reference, unqualified)
 
 Implemented for retained file imports (`fss-file import`) of one local deployment:
 
@@ -198,6 +198,21 @@ Implemented for retained file imports (`fss-file import`) of one local deploymen
   tombstone batch, the blockers and the unknown copies. It is canonical and digest-bound
   (`fss.deletion_plan.v1`), bounded and deterministic, and binds the authority head and the
   effect-journal root.
+- **Sensor and event scopes (fss-x4a.30.86.20).** `delete plan --sensor-id ID` or
+  `--event-id ID` (exactly one of the three scope options) seals ONE plan over the union
+  closure of the scope's retained member imports: for a sensor, every retained import whose
+  capsules name it (an import whose capsules cannot be read is a `scope_member_unresolved`
+  blocker, never guessed); for an event, every retained import whose own closure reaches one of
+  the event's committed revisions, i.e. the event's evidence. Members are listed sorted; an
+  object any retained unit outside the scope still holds is retained and listed exactly as for
+  one import. The scope kind and identity are inside the sealed bytes (`fss.deletion_plan.v2`,
+  completion `fss.deletion_completion.v2`), so a scoped plan is never the digest of an import
+  plan and a tampered scope identity has no current plan (`ERR-DELETION-PLAN-STALE-001`).
+  Import plans keep their exact v1 bytes and digests. `delete commit` is the same commit: same
+  approval, stale-plan refusal, tombstone-first record, one completion, exactly-once resume. A
+  sensor or event with no retained import reports `ERR-DELETION-SCOPE-EMPTY-001`. There is no
+  person or data-subject identity in the system; a sensor's retained evidence is the most
+  concrete "subject" scope, and no scope infers who was observed.
 - **Commit (`CAP-DELETE-COMMIT-001`).** `delete commit --plan … --approve …` recomputes the plan
   against the current head; any change is a stale plan and any blocker refuses; nothing is
   written. Then the deletion record is appended first: a `deletion_record` delta whose payload is
@@ -218,8 +233,10 @@ Implemented for retained file imports (`fss-file import`) of one local deploymen
   handles resolve to `deleted`.
 - **Blockers.** An open or indeterminate alert effect whose precondition binds a closure event
   (`open_effect`), a root that failed verification, a conflicting root claim, an earlier
-  incomplete deletion, or a tombstone batch over the bound. There is no hold registry yet, so no
-  hold can be placed or block (`hold_registry: absent`).
+  incomplete deletion, a tombstone batch over the bound, or an active owner evidence hold
+  (`fss-hold`, import-scoped; blocker `evidence_hold`, `hold_registry:
+  enforced_import_closure_v1`) whose held import is a plan member or whose held closure the
+  plan would touch. A hold on any one member import blocks a whole sensor or event plan.
 - **Unknown copies are named, not ignored.** The original input file (the deployment never owned
   it), unrecorded operator exports (`--report-out`, `--event-out`, receipts, PGM and segment
   extracts), and every alert that may have been transmitted to a relay. They are listed as not
@@ -230,9 +247,11 @@ Implemented for retained file imports (`fss-file import`) of one local deploymen
   remanence are out of scope and stated so in every plan and completion record. The plan and
   completion records keep digests, identities and sizes of deleted objects, never content.
 
-Not enforced yet: a hold registry and retention schedules, subject- or event-scoped plans,
+Not enforced yet: retention schedules, person/data-subject scopes (no such identity exists),
 remote archive, replica and repair-symbol deletion, cryptographic erasure, and deletion of agent
-memory that does not embed an evidence digest.
+memory that does not embed an evidence digest. A scoped deletion is still local filesystem
+unlinking of one deployment: it is not cryptographic erasure and does not reach replicas,
+backups or archives.
 
 ## 9. Model/data governance
 
