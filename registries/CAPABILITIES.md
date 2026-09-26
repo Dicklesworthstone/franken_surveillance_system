@@ -53,3 +53,24 @@ principal, scope, generation, budget, expiry, and optional lease fence.
 
 Capabilities cannot be synthesized from prose, model outputs, vendor metadata, or inherited ambient
 process privileges.
+
+## Generations and compatibility
+
+`architecture/capabilities.json` is the machine registry; this table is its mirror. Adding,
+removing, or changing a row requires a new registry generation, a new pinned freeze digest in
+`scripts/capability_registry_checker.py`, and a new `REFERENCE_CAPABILITY_REGISTRY_DIGEST` in
+`crates/fss-core/src/contract_basis.rs`. Superseded generations stay pinned as history; their
+IDs are never reused or renumbered.
+
+| Generation | Freeze digest | Change | Status |
+|---|---|---|---|
+| `gen:fss1:capabilities-v1` | `sha256:5056fe20103a6c9a157fdb0e29bf5371384b976e874bf2964ff817fb202f045a` | initial 43 rows | superseded |
+| `gen:fss1:capabilities-v2` | `sha256:3ccae04582a7225f5fd596ad0b52605b0cd093266ad910282c0ed4b8b4e8f9d5` | adds `CAP-EVENT-REVIEW-PREPARE-001`, `CAP-EVENT-REVIEW-COMMIT-001` (fss-31cjo); no v1 row changed | current |
+
+The capability digest is bound into every `ContractBasis`, so the v2 bump moves the reference
+basis to `gen:fss1:reference-v2`. A peer still bound to v1 is refused with a typed error, never
+silently accepted: `negotiate_basis` returns `ERR-AGENT-PROTOCOL-001`
+(`IncompatibleCapabilityRegistry`), and `negotiate_basis_with_superseded` with
+`superseded_registry_digests()` returns the stale-basis refusal `ERR-AGENT-SESSION-STALE-001`
+(`TombstonedRegistryDigest { registry: "capability" }`). The client must re-read the registry and
+rebase onto the current basis.

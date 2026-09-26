@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import capability_registry_checker
 from capability_registry_checker import (
     BASELINE_CAPABILITIES,
+    CAPABILITY_GENERATION_ORDER,
     CURRENT_GENERATION,
     ERR_CAPABILITY_CORRUPT_FILE,
     ERR_CAPABILITY_DIGEST_MISMATCH,
@@ -27,6 +28,8 @@ from capability_registry_checker import (
     compute_canonical_capability_digest,
     validate_capability_registry,
 )
+
+V1 = "gen:fss1:capabilities-v1"
 
 
 class CapabilityRegistryCheckerTests(unittest.TestCase):
@@ -53,10 +56,111 @@ class CapabilityRegistryCheckerTests(unittest.TestCase):
         """Live repository capability registry passes with exact pinned freeze digest."""
         res = validate_capability_registry(ROOT)
         self.assertTrue(res.passed, f"Validation failed with errors: {res.errors}")
-        self.assertEqual(res.capability_count, 43)
+        self.assertEqual(res.capability_count, 45)
+        self.assertEqual(CURRENT_GENERATION, "gen:fss1:capabilities-v2")
         expected = EXPECTED_FREEZE_DIGESTS[CURRENT_GENERATION]
         self.assertEqual(res.registry_digest, expected)
-        self.assertEqual(res.registry_digest, "sha256:5056fe20103a6c9a157fdb0e29bf5371384b976e874bf2964ff817fb202f045a")
+        self.assertEqual(res.registry_digest, "sha256:3ccae04582a7225f5fd596ad0b52605b0cd093266ad910282c0ed4b8b4e8f9d5")
+
+    def test_superseded_v1_pin_is_retained_as_history(self) -> None:
+        """The v1 freeze digest stays pinned and reconstructs exactly from the v2 registry minus v2 rows."""
+        self.assertEqual(
+            EXPECTED_FREEZE_DIGESTS[V1],
+            "sha256:5056fe20103a6c9a157fdb0e29bf5371384b976e874bf2964ff817fb202f045a",
+        )
+        self.assertEqual(CAPABILITY_GENERATION_ORDER, (V1, CURRENT_GENERATION))
+        v1 = self._v1_projection(self._read_json())
+        # Proves the v2 bump changed no v1 row except its generation stamp.
+        self.assertEqual(compute_canonical_capability_digest(v1), EXPECTED_FREEZE_DIGESTS[V1])
+
+    def test_superseded_v1_registry_is_refused(self) -> None:
+        """A registry frozen at the superseded v1 generation is refused even with its exact pin."""
+        md_path = self.fake_root / "registries/CAPABILITIES.md"
+        lines = md_path.read_text(encoding="utf-8").splitlines()
+        md_path.write_text(
+            "\n".join(l for l in lines if "CAP-EVENT-REVIEW-" not in l) + "\n", encoding="utf-8"
+        )
+        self._write_json(self._v1_projection(self._read_json()))
+
+        res = validate_capability_registry(self.fake_root)
+        self.assertFalse(res.passed)
+        messages = [e.message for e in res.errors if e.code == ERR_CAPABILITY_CORRUPT_FILE]
+        self.assertTrue(any("Superseded capability registry generation" in m for m in messages), res.errors)
+        self.assertNotIn(ERR_CAPABILITY_DIGEST_MISMATCH, [e.code for e in res.errors])
+
+    def test_planted_negative_unbumped_addition_is_refused(self) -> None:
+        """Adding a new capability ID without a generation bump fails closed (drift + pinned digest)."""
+        data = self._read_json()
+        new_id = "CAP-PLANTED-UNBUMPED-001"
+        data["capabilities"].append(
+            {
+                "id": new_id,
+                "capability": "planted capability",
+                "scope": "planted scope",
+                "plane": "authority read",
+                "defaultRole": "denied",
+                "denialReason": f"ERR-AUTH-DENIED-001: principal lacks {new_id} authority on planted scope",
+                "safeAlternative": "none",
+                "generation": CURRENT_GENERATION,
+            }
+        )
+        data["registryDigest"] = compute_canonical_capability_digest(data)
+        self._write_json(data)
+        md_path = self.fake_root / "registries/CAPABILITIES.md"
+        md_path.write_text(
+            md_path.read_text(encoding="utf-8")
+            + f"| `{new_id}` | planted capability | planted scope | authority read | denied |\n",
+            encoding="utf-8",
+        )
+
+        res = validate_capability_registry(self.fake_root)
+        self.assertFalse(res.passed)
+        drift = [e for e in res.errors if e.code == ERR_CAPABILITY_REGISTRY_DRIFT]
+        self.assertTrue(any("without generation bump" in e.message for e in drift), res.errors)
+        self.assertIn(ERR_CAPABILITY_DIGEST_MISMATCH, [e.code for e in res.errors])
+
+    def test_planted_negative_v2_rows_under_v1_generation_are_refused(self) -> None:
+        """Declaring v1 while carrying the v2-introduced rows (the fss-31cjo drift) fails closed."""
+        data = self._read_json()
+        data["generation"] = V1
+        for cap in data["capabilities"]:
+            cap["generation"] = V1
+        data["registryDigest"] = compute_canonical_capability_digest(data)
+        self._write_json(data)
+
+        res = validate_capability_registry(self.fake_root)
+        self.assertFalse(res.passed)
+        drift = [e for e in res.errors if e.code == ERR_CAPABILITY_REGISTRY_DRIFT]
+        self.assertTrue(
+            any("CAP-EVENT-REVIEW-PREPARE-001" in e.message and "cannot appear" in e.message for e in drift),
+            res.errors,
+        )
+        self.assertIn(ERR_CAPABILITY_DIGEST_MISMATCH, [e.code for e in res.errors])
+
+    def test_planted_negative_row_generation_not_bumped(self) -> None:
+        """A row left at the superseded generation inside a v2 registry fails closed."""
+        data = self._read_json()
+        data["capabilities"][0]["generation"] = V1
+        data["registryDigest"] = compute_canonical_capability_digest(data)
+        self._write_json(data)
+
+        res = validate_capability_registry(self.fake_root)
+        self.assertFalse(res.passed)
+        codes = [e.code for e in res.errors]
+        self.assertIn(ERR_CAPABILITY_CORRUPT_FILE, codes)
+        self.assertIn(ERR_CAPABILITY_DIGEST_MISMATCH, codes)
+
+    def _v1_projection(self, data: dict) -> dict:
+        v1 = copy.deepcopy(data)
+        v1["generation"] = V1
+        v1["asOf"] = "2026-08-31"
+        v1["capabilities"] = [
+            dict(c, generation=V1)
+            for c in v1["capabilities"]
+            if BASELINE_CAPABILITIES[c["id"]]["generation"] == V1
+        ]
+        v1["registryDigest"] = compute_canonical_capability_digest(v1)
+        return v1
 
     def test_planted_negative_drift_row_missing_in_json(self) -> None:
         """Removing a row from JSON fails with drift and digest mismatch."""

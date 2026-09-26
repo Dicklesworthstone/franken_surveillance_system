@@ -147,9 +147,12 @@ pub use contract_basis::{
     REFERENCE_CONTRACT_BASIS_CANONICAL_DIGEST, REFERENCE_CONTRACT_BASIS_FREEZE_DIGEST,
     REFERENCE_CONTRACT_BASIS_GENERATION, REFERENCE_COST_REGISTRY_DIGEST,
     REFERENCE_ERROR_REGISTRY_DIGEST, REFERENCE_OPERATION_REGISTRY_DIGEST, SCHEMA_CONTRACT_BASIS,
+    SUPERSEDED_CAPABILITY_REGISTRY_DIGEST_V1,
+    SUPERSEDED_CONTRACT_BASIS_CANONICAL_DIGEST_CAPABILITIES_V1, SUPERSEDED_REGISTRY_DIGESTS,
     StaleBasisReason, check_basis_freshness, check_compatibility, decode_canonical_binary,
-    encode_canonical_binary, negotiate_basis, reference_contract_basis, refuse_stale_anchor,
-    registered_operation, validate_contract_basis,
+    encode_canonical_binary, negotiate_basis, negotiate_basis_with_superseded,
+    reference_contract_basis, refuse_stale_anchor, registered_operation,
+    superseded_registry_digests, validate_contract_basis,
 };
 pub use delta::{DeltaPriority, MeaningfulDelta, MeaningfulDeltaClass, SilenceCertificate};
 pub use digest::{ContentDigest, DigestAlgorithm, Sha256Hasher, sha256};
