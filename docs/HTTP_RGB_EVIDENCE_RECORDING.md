@@ -67,6 +67,44 @@ the existing HTTP terminal root continues to describe original-source completion
 not an aggregate perception-history manifest. Original JPEG/model custody remains
 unmasked; native derivations continue to use the existing privacy-mask machinery.
 
+## Source-bound cold replay and temporal reconstruction
+
+`http_rgb_evidence_replay::restore_http_rgb_evidence` ties a saved per-result pin
+back to an actual frame emitted by the native `HttpWireReplay` parser. Supply the
+independently selected final source tip and scope, the native mapped frame, live
+original disclosure authority, and the existing derived evidence deployment.
+The per-result prefix may precede the final tip, but it must be an exact member of
+that verified original-read chain. The original HTTP/MIME ordinal, complete JPEG,
+source-span mapping and mapped exposure must match; identical JPEG bytes in a
+different part do not substitute for the selected exposure.
+
+Restoration rechecks both original and derived storage and returns
+`RestoredHttpRgbEvidence`: owned, source-bound bytes, **not executed inference**.
+Its `replay` method revalidates original/model disclosure, checks the named sensor's
+current mask policy and generation, and invokes the existing native model importer,
+JPEG decoder, preprocessing, scalar inference and complete detector head. Only a
+successful match of the actual inference and detector fingerprints returns
+`ReplayedHttpRgbEvidence`. Changing an expected fingerprint does not change the
+original graph, model output or detection result.
+
+For full temporal reconstruction, initialize the existing `RgbZoneTracker` with
+the same independently retained episode/configuration, then feed each replayed
+result's actual inference, detector report and preserved admission to `observe`
+in original order. Resume unfinished zones through that owner's existing `resume`
+contract. `verify_temporal` then checks the reconstructed tracking and zone digests
+against the saved pin. It refuses pending stages, stale history and mismatches;
+verification never re-assimilates an exposure, resets the episode, alters a pin,
+or publishes an event. All four native stage fingerprints must match before a
+`VerifiedHttpRgbTemporalReplay` is returned.
+
+Restore and numerical execution are deliberately separate so the same deployment
+may first be mutably opened for custody verification and then immutably supply a
+`SensorMask`. Restored originals are an authorized point-in-time snapshot, not a
+claim that storage and permission can never change. Both operations recheck their
+current disclosure adapters. Reconstructing history is read-only and produces no
+new ledger entry. The existing native HTTP completion contract still applies:
+ending a selected prefix does not fabricate socket EOF.
+
 ## Validation
 
 `cargo test -p fss-reference --test http_rgb_evidence_recording`
@@ -76,6 +114,13 @@ JPEG/model/head execution and durable storage. They cover multi-frame capture,
 mandatory ledger-before-transfer, exact-key retries, wrong fingerprints, cold
 replay after live owners close, write/read revocation, final camera-release denial,
 and root-durable/ledger-missing recovery without rerunning accepted live inference.
+The cold test closes the live source/model/output owners, reopens both archives,
+re-parses the original HTTP in different-sized read chunks, restores detector
+evidence, and reconstructs the original tracking and zones. It checks two identical
+JPEGs with distinct source identities, rejects cross-part/rival-prefix substitution,
+rechecks read revocation before restore and decode, rejects a changed numerical
+fingerprint, and refuses stale/pending temporal history. Repeated verification must
+not re-assimilate an exposure or append to the canonical ledger.
 
 Rust compilation, native tests, rustfmt and Clippy were not run in the implementation
 environment: no Rust toolchain is installed and network toolchain retrieval is

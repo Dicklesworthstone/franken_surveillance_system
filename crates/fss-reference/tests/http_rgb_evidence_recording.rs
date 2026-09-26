@@ -13,13 +13,18 @@ use privacy_live_support::PrivacyDeployment;
 use rgb_zone_support::{Test, jpeg, tracker, tracking_policy};
 use rgb_evidence_support as fixture;
 use fss_core::ContentDigest;
+use fss_codec_mjpeg::DecodeBudget;
 use fss_publication::{NeverCancel, RootLedgerOutcome};
 use fss_reference::{ReferenceDeployment, ScalarExecCx};
 use fss_reference::ingest::http_camera::HttpCameraOperation;
 use fss_reference::ingest::http_camera::rgb::HttpRgbStep;
 use fss_reference::ingest::http_rgb_recording::HttpRgbRecordingStep;
 use fss_reference::ingest::http_rgb_evidence::*;
-use fss_reference::ingest::rgb_archive::{RgbArchiveError, restore_rgb_evidence};
+use fss_reference::ingest::rgb_archive::RgbArchiveError;
+use fss_reference::ingest::http_archive::HttpWireArchive;
+use fss_reference::ingest::http_replay::{HttpReplayAccess, HttpReplayLimits, HttpReplayStep, HttpWireReplay};
+use fss_reference::ingest::http_replay::completion::VerifiedHttpCompletion;
+use fss_reference::ingest::http_rgb_evidence_replay::*;
 
 #[test]
 fn every_live_result_is_ledgered_before_transfer_and_replays_after_all_owners_close() -> Test {
@@ -33,7 +38,7 @@ fn every_live_result_is_ledgered_before_transfer_and_replays_after_all_owners_cl
     let head = head(model.model())?;
     let mut owner = tracker(&head, tracking_policy())?;
     let mut publisher = directory.open()?;
-    let (capture, camera, mut server) = session(model.model(), &head, &mut owner, response(&[jpeg(240), jpeg(224)], true), 257)?;
+    let (capture, camera, mut server) = session(model.model(), &head, &mut owner, response(&[jpeg(240), jpeg(240)], true), 257)?;
     let recording = attach(capture, &publisher, &camera, http_rgb_recording_support::limits())?;
     let mut r = HttpRgbEvidenceRecording::attach(recording, limits()).map_err(|_| "evidence attachment")?;
     let path = directory.0.join("derived");
@@ -77,6 +82,10 @@ fn every_live_result_is_ledgered_before_transfer_and_replays_after_all_owners_cl
     }
     let HttpRgbRecordingStep::CompletionPrepared(completion) = next(&mut r, &mut publisher, &camera, &mut server)? else { return Err("native terminal missing".into()); };
     r.commit_completion(completion, &mut publisher, camera.access(&NeverCancel))?;
+    let source_scope = r.recording().scope();
+    assert_eq!(pins[0].encoded, pins[1].encoded, "identical JPEG bytes must not alias exposures");
+    assert_ne!(pins[0].exposure, pins[1].exposure);
+    assert_ne!(pins[0].archive.evidence, pins[1].archive.evidence);
     drop(r.retire());
     assert_eq!(owner.tracker().exposure_count(), 2);
     drop(owner);
@@ -88,14 +97,102 @@ fn every_live_result_is_ledgered_before_transfer_and_replays_after_all_owners_cl
     drop(server);
     // No live output, model, graph file, original envelope or open archive remains.
     let mut deployment = ReferenceDeployment::reopen(&path, "site:http-rgb-evidence", &cx)?;
-    for pin in pins {
-        let e = restore_rgb_evidence(&mut deployment, pin.archive, limits().archive, &auth, &mut b.copy, &mut b.work, &cx)?;
-        let replay = e.replay(privacy.mask(), fixture::limits(), &mut b.copy, &mut b.import, &mut b.decoder, &mut b.head, &cx, &ScalarExecCx::new())?;
+    let publisher = directory.open()?;
+    let original = HttpWireArchive::load(&publisher, source_scope, completion.wire, limits().source, &NeverCancel, &mut b.work)?;
+    VerifiedHttpCompletion::load(&publisher, &original, completion, &NeverCancel, &mut b.work)?;
+    let mut cursor = HttpWireReplay::new(&original, completion.wire, HttpReplayLimits {
+        read_bytes: 17, // Deliberately different fragmentation from live acquisition.
+        frames: 3, // One lookahead frame permits checking termination after exactly two.
+        ..HttpReplayLimits::default()
+    })?;
+    let mut framing = DecodeBudget::new(rgb_zone_support::WORK);
+    let mut cold_owner = None;
+    let anchor = deployment.current_anchor().clone();
+    for (index, pin) in pins.iter().copied().enumerate() {
+        let mut found = false;
+        for _ in 0..50000 {
+            match cursor.step(HttpReplayAccess {
+                publisher: &publisher, cancellation: &NeverCancel,
+                work: &mut b.work, framing: &mut framing,
+            })? {
+                HttpReplayStep::FrameReady => { found = true; break; }
+                HttpReplayStep::PrefixVerified | HttpReplayStep::WireLoaded { .. } | HttpReplayStep::Advanced => {}
+                _ => return Err("cold source ended before the expected frame".into()),
+            }
+        }
+        assert!(found, "cold source step bound");
+        let source = HttpRgbEvidenceReplaySource {
+            publisher: &publisher, scope: source_scope, tip: completion.wire,
+            frame: cursor.pending_frame().ok_or("cold original missing")?,
+            cancellation: &NeverCancel,
+        };
+        let decoded_before = b.decoder.used();
+        // An identical JPEG from another HTTP part is NOT the selected exposure.
+        let rival = pins[1 - index];
+        assert!(matches!(restore_http_rgb_evidence(rival, source, &mut deployment, &auth, limits(), &mut b.copy, &mut b.work, &cx), Err(HttpRgbEvidenceReplayError::Mismatch)));
+        let mut wrong = pin;
+        wrong.wire.head = ContentDigest::sha256(b"rival source prefix");
+        assert!(matches!(restore_http_rgb_evidence(wrong, source, &mut deployment, &auth, limits(), &mut b.copy, &mut b.work, &cx), Err(HttpRgbEvidenceReplayError::Mismatch)));
+        auth.reads.set(false);
+        assert!(matches!(restore_http_rgb_evidence(pin, source, &mut deployment, &auth, limits(), &mut b.copy, &mut b.work, &cx), Err(HttpRgbEvidenceReplayError::Denied)));
+        auth.reads.set(true);
+        assert_eq!(b.decoder.used(), decoded_before, "restore/source refusals cannot execute a decoder");
+        let restored = restore_http_rgb_evidence(pin, source, &mut deployment, &auth, limits(), &mut b.copy, &mut b.work, &cx)?;
+        assert_eq!(restored.pin(), pin);
+        assert_eq!(b.decoder.used(), decoded_before, "restored bytes alone are not executed inference");
+        auth.reads.set(false);
+        assert!(matches!(restored.replay(privacy.mask(), fixture::limits(), &NeverCancel, &auth, &mut b.copy, &mut b.import, &mut b.decoder, &mut b.head, &cx, &ScalarExecCx::new()), Err(HttpRgbEvidenceReplayError::Denied)));
+        assert_eq!(b.decoder.used(), decoded_before);
+        auth.reads.set(true);
+        if index == 0 {
+            let mut wrong_result = pin;
+            wrong_result.stages[0][0] ^= 1;
+            // Restoration checks source bytes, not a stored assertion of computation.
+            // Only executing the original model can check this false numerical claim.
+            let wrong_restored = restore_http_rgb_evidence(wrong_result, source, &mut deployment, &auth, limits(), &mut b.copy, &mut b.work, &cx)?;
+            assert!(matches!(wrong_restored.replay(privacy.mask(), fixture::limits(), &NeverCancel, &auth, &mut b.copy, &mut b.import, &mut b.decoder, &mut b.head, &cx, &ScalarExecCx::new()), Err(HttpRgbEvidenceReplayError::Mismatch)));
+        }
+        let replayed = restored.replay(privacy.mask(), fixture::limits(), &NeverCancel, &auth, &mut b.copy, &mut b.import, &mut b.decoder, &mut b.head, &cx, &ScalarExecCx::new())?;
+        assert!(b.decoder.used() > decoded_before);
+        assert_eq!(replayed.pin(), pin);
+        let replay = replayed.evidence();
         assert_eq!(replay.run().inference().identity().bytes(), pin.stages[0]);
         assert_eq!(replay.run().report().digest().bytes(), pin.stages[1]);
         assert_eq!(replay.admission().source().exposure, pin.exposure);
-        assert_eq!(ContentDigest::sha256(e.jpeg()).bytes(), pin.encoded);
+        if cold_owner.is_none() {
+            cold_owner = Some(tracker(replay.head(), tracking_policy())?);
+            assert!(matches!(replayed.verify_temporal(cold_owner.as_ref().ok_or("cold tracker")?), Err(HttpRgbEvidenceReplayError::TemporalPending)));
+        } else {
+            // The previous observation's history is not silently accepted as this one.
+            assert!(matches!(replayed.verify_temporal(cold_owner.as_ref().ok_or("cold tracker")?), Err(HttpRgbEvidenceReplayError::Mismatch)));
+        }
+        let cold = cold_owner.as_mut().ok_or("cold tracker")?;
+        cold.observe(replay.run().inference(), replay.run().report(), replay.admission(), &mut b.temporal)?;
+        assert_eq!(replayed.verify_temporal(cold)?.pin(), pin);
+        let count = cold.tracker().exposure_count();
+        assert_eq!(replayed.verify_temporal(cold)?.pin(), pin);
+        assert_eq!(cold.tracker().exposure_count(), count, "verification never re-assimilates an exposure");
+        let frame = cursor.take_frame(pin.ordinal, pin.encoded, HttpReplayAccess {
+            publisher: &publisher, cancellation: &NeverCancel,
+            work: &mut b.work, framing: &mut framing,
+        })?;
+        assert_eq!(ContentDigest::sha256(frame.part().bytes()).bytes(), pin.encoded);
     }
+    let mut ended = false;
+    for _ in 0..50000 {
+        match cursor.step(HttpReplayAccess {
+            publisher: &publisher, cancellation: &NeverCancel,
+            work: &mut b.work, framing: &mut framing,
+        })? {
+            HttpReplayStep::Complete => { ended = true; break; }
+            HttpReplayStep::PrefixVerified | HttpReplayStep::WireLoaded { .. } | HttpReplayStep::Advanced => {}
+            _ => return Err("cold source did not end at its actual native boundary".into()),
+        }
+    }
+    assert!(ended);
+    assert_eq!(cursor.position().transferred_frames, 2);
+    assert_eq!(cold_owner.ok_or("cold tracker")?.tracker().exposure_count(), 2);
+    assert_eq!(deployment.current_anchor(), &anchor, "cold reconstruction is read-only");
     Ok(())
 }
 
