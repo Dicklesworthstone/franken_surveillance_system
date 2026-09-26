@@ -1,0 +1,87 @@
+{
+  "registryId": "package_event_tracking",
+  "generation": 2,
+  "owner": "crates/fss-reference/src/ingest/package_event.rs",
+  "status": "implemented_unqualified",
+  "formats": [
+    {
+      "id": "FORMAT-PACKAGE-ANALYSIS-001",
+      "domain": "fss.package_analysis_report.v1",
+      "magic": "FSSPANR1",
+      "version": 1,
+      "status": "superseded",
+      "readDisposition": "recognized_explicitly_unsupported_for_new_publication",
+      "migration": "regenerate analysis from unchanged retained package detections; review and approve the new proposal"
+    },
+    {
+      "id": "FORMAT-PACKAGE-ANALYSIS-002",
+      "domain": "fss.package_analysis_report.v2",
+      "magic": "FSSPANR2",
+      "version": 2,
+      "maximumBytes": 4194304,
+      "encoding": "fss-core CanonicalEncoder",
+      "layout": [
+        "bytes(magic)", "u32(version)", "text(domain)", "digest(policy)",
+        "digest(packageReport)", "digest(record)", "text(label)", "u64(classIndex)",
+        "u32(confirmationHits)", "u32(maximumMissedFrames)", "u32(minimumIouPpm)",
+        "digest(retainedRoot)",
+        "u64(frameCount); each: u64(segment), digest(capsule), u64(selectedDetectionCount)",
+        "u64(boundaryCount); each: u64(beforeSegment), bool(sourceGap), bool(sequenceGap), bool(dimensionsChanged)",
+        "u64(trackCount); each: digest(identity), u64(trackId), bool(confirmed), u64(observationCount)",
+        "each observation: u64(segment), digest(capsule), 4*i128(filteredBox), u8(detectionPresent)",
+        "present detection: u64(actualAssignedRow), u32(scoreBits), 4*u32(bounds), u32(descriptiveIouPpm)"
+      ]
+    }
+  ],
+  "retainedDetectionRecord": {
+    "domain": "fss.package_detection_record.v1",
+    "magic": "FSSPDET1",
+    "version": 1,
+    "compatibility": "valid encodings unchanged; incomplete, duplicate, foreign or structurally invalid records refused"
+  },
+  "assignment": {
+    "policy": "fss.track_assignment.v1:original-input-index:actual-global-assignment:new-track-included:no-prediction-observation",
+    "api": "MultiObjectTracker::try_step_assigned",
+    "oneToOne": true,
+    "includesNewTracks": true,
+    "lostTracksHaveNoObservation": true,
+    "postFilterNearestBoxReconstruction": "forbidden",
+    "extraSolverInvocations": 0
+  },
+  "continuity": {
+    "sourceGap": "reset",
+    "sequenceGap": "reset",
+    "dimensionChange": "reset",
+    "sensorChange": "refuse",
+    "clockChange": "refuse",
+    "displayReorderingWithinEpoch": "preserve",
+    "displayReturnAcrossBoundary": "refuse",
+    "trackIdsAcrossEpochs": "never_recycle",
+    "confirmationAcrossBoundary": "forbidden"
+  },
+  "sourceRevalidation": {
+    "boundaries": ["new_retention", "retained_open", "analysis", "prepare", "publish_reprepare"],
+    "checks": ["complete_unique_segment_set", "exact_import_root", "format", "capsule_digest", "sensor", "capture_interval", "one_clock", "encoded_source_custody"],
+    "maximumFrames": 64,
+    "maximumSourceBytes": 536870912,
+    "maximumSegmentBytes": 16777216,
+    "modelRerun": false,
+    "automaticRepair": false,
+    "numericalInferenceAttestation": false
+  },
+  "effectsAuthorized": false,
+  "absenceCertifiable": false,
+  "independentFailureDomains": "one_recorded_sensor",
+  "qualification": {
+    "pythonAssignmentPermutationCasesPassed": 874,
+    "pythonEpochCasesPassed": 8184,
+    "pythonDisplayBoundaryCasesPassed": 34406,
+    "pythonNativeFixtureSyntax": "passed",
+    "rustCompilation": "not_run_toolchain_unavailable",
+    "rustTests": "not_run_toolchain_unavailable",
+    "nativeCliFixture": "not_run_binaries_unavailable",
+    "rustfmt": "not_run",
+    "clippy": "not_run",
+    "productionOrQualityClaim": "none"
+  }
+}
