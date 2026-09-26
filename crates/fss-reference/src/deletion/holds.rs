@@ -1,11 +1,15 @@
 #![forbid(unsafe_code)]
-//! Explicit, indefinite evidence holds over retained import closures (FSS-037 / GOAL-009).
+//! Explicit evidence holds and minimum-retention deadlines (FSS-037 / GOAL-009).
 //!
 //! A hold is a local retention decision, not a legal conclusion or an erasure promise.
 //! Placement and release require the existing retention prepare/commit capabilities and an
 //! exact principal- and anchor-bound approval. One identifier has exactly two possible
 //! generations: held, then released. Released identifiers are never reused, and time alone
 //! never releases a hold. Records are retained authority history, not deletable derivatives.
+//! Deadline holds use v2 records and require an approved `Expired` successor with an
+//! owner-attested current-time interval whose earliest bound reached the original deadline.
+//! Clock assertions are explicit, never inferred from media or confused with calibration.
+//! Indefinite v1 records and approvals keep their exact bytes.
 //!
 //! The deployment lock serializes holds with deletion. No new hold mutation is admitted while
 //! a deletion record lacks completion: preservation cannot be promised after removal started.
@@ -34,6 +38,8 @@ pub const CAP_HOLD_PREPARE: &str = "CAP-RETENTION-PREPARE-001";
 pub const CAP_HOLD_COMMIT: &str = "CAP-RETENTION-COMMIT-001";
 /// Canonical record domain; its bytes are the payload of an `evidence_hold` ledger delta.
 pub const HOLD_DOMAIN: &str = "fss.evidence_hold.v1";
+/// Deadline placement/expiry domain. Older hold readers refuse v2 rather than assume release.
+pub const HOLD_DEADLINE_DOMAIN: &str = "fss.evidence_hold.v2";
 /// Approval binds the complete record, principal, scope, transition, and authority anchor.
 pub const HOLD_APPROVAL_DOMAIN: &str = "fss.evidence_hold_approval.v1";
 /// Reserved object namespace; generic ledger writes must not shadow a hold under another family.
@@ -53,32 +59,8 @@ pub const STAGE_HOLD_STAGED: &str = "evidence_hold:staged";
 /// Post-commit checkpoint, never converted into a failed operation.
 pub const STAGE_HOLD_COMMITTED: &str = "evidence_hold:committed";
 
-/// One-way lifecycle of a site-local hold identifier.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum HoldState {
-    /// Preserve the named import's current and later retained derivative closure.
-    Held,
-    /// Explicitly released. History remains; no content is deleted by this transition.
-    Released,
-}
-
-impl HoldState {
-    /// Stable machine spelling.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Held => "held",
-            Self::Released => "released",
-        }
-    }
-
-    fn generation(self) -> u64 {
-        match self {
-            Self::Held => 1,
-            Self::Released => 2,
-        }
-    }
-}
+mod state;
+pub use state::{HoldState, RetentionReadiness};
 
 /// Complete operator request. The principal is taken from explicit context authority.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -111,6 +93,7 @@ impl HoldRequest {
         {
             return Err(HoldError::InvalidRequest("reason must be 1..512 bytes without controls"));
         }
+        self.state.validate()?;
         Ok(())
     }
 }
@@ -147,11 +130,11 @@ impl HoldRecord {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut e = CanonicalEncoder::new();
         e.bytes(b"FSSHLD01");
-        e.u32(1);
-        e.text(HOLD_DOMAIN);
+        e.u32(self.request.state.wire_version());
+        e.text(self.request.state.record_domain());
         e.text(&self.request.hold_id);
         e.digest(self.request.import_identity);
-        e.u8(match self.request.state { HoldState::Held => 0, HoldState::Released => 1 });
+        self.request.state.encode(&mut e);
         e.text(&self.request.reason);
         e.text(&self.principal);
         e.text(&self.site);
@@ -182,16 +165,17 @@ impl HoldRecord {
             return Err(HoldError::InvalidRecord);
         }
         let mut d = CanonicalDecoder::new(bytes);
-        if d.bytes()? != b"FSSHLD01" || d.u32()? != 1 || d.text()? != HOLD_DOMAIN {
-            return Err(HoldError::InvalidRecord);
-        }
-        let hold_id = d.text()?.to_owned();
-        let import_identity = d.digest()?;
-        let state = match d.u8()? {
-            0 => HoldState::Held,
-            1 => HoldState::Released,
+        if d.bytes()? != b"FSSHLD01" { return Err(HoldError::InvalidRecord); }
+        let version = d.u32()?;
+        let domain = match version {
+            1 => HOLD_DOMAIN,
+            2 => HOLD_DEADLINE_DOMAIN,
             _ => return Err(HoldError::InvalidRecord),
         };
+        if d.text()? != domain { return Err(HoldError::InvalidRecord); }
+        let hold_id = d.text()?.to_owned();
+        let import_identity = d.digest()?;
+        let state = HoldState::decode(version, &mut d)?;
         let reason = d.text()?.to_owned();
         let principal = d.text()?.to_owned();
         let site = d.text()?.to_owned();
@@ -211,7 +195,7 @@ impl HoldRecord {
         crate::reference_deployment::validate_site_lineage(&record.site)
             .map_err(|_| HoldError::InvalidRecord)?;
         if record.site.len() > 256 || record.principal.len() > 256
-            || (state == HoldState::Held) != predecessor.is_none()
+            || state.is_active() != predecessor.is_none()
             || predecessor.is_some_and(|p| p.algorithm() != DigestAlgorithm::Sha256)
             || record.to_bytes() != bytes
         {
@@ -272,6 +256,8 @@ pub enum HoldError {
     ReleasedIdentifier,
     /// Approval no longer names the exact prepared transition.
     StaleApproval,
+    /// The earliest owner-attested time has not reached the minimum-retention deadline.
+    RetentionNotElapsed,
     /// A deletion is already committed but not complete; preservation can no longer be promised.
     DeletionInProgress,
     /// Bounds on retained history or active closures were exhausted; never evict holds.
@@ -299,6 +285,7 @@ impl HoldError {
         match self {
             Self::Unauthorized => "ERR-AUTH-DENIED-001",
             Self::StaleApproval => "ERR-HOLD-APPROVAL-STALE-001",
+            Self::RetentionNotElapsed => "ERR-RETENTION-NOT-ELAPSED-001",
             Self::DeletionInProgress => "ERR-HOLD-DELETION-IN-PROGRESS-001",
             Self::InvalidRequest(_) | Self::UnknownHold | Self::Conflict | Self::ReleasedIdentifier => "ERR-HOLD-REQUEST-001",
             Self::Limit => "ERR-HOLD-BOUND-001",
@@ -317,6 +304,7 @@ impl fmt::Display for HoldError {
             Self::Conflict => f.write_str("hold identifier already names a different request or import"),
             Self::ReleasedIdentifier => f.write_str("released hold identifiers are never reused; choose a new identifier"),
             Self::StaleApproval => f.write_str("hold approval is stale or mismatched; preview the exact transition again"),
+            Self::RetentionNotElapsed => f.write_str("minimum retention has not certainly elapsed under the owner-attested time bounds"),
             Self::DeletionInProgress => f.write_str("a deletion has started but is incomplete; hold mutation refused"),
             Self::Limit => f.write_str("evidence hold history or active-closure bound exhausted"),
             Self::InvalidRecord => f.write_str("evidence hold authority or custody is inconsistent"),
@@ -410,11 +398,11 @@ impl HoldIndex {
                 { return Err(HoldError::InvalidRecord); }
                 let prior = index.current.get(&record.request.hold_id);
                 match (prior, record.request.state) {
-                    (None, HoldState::Held) => {
+                    (None, state) if state.is_active() => {
                         if index.current.len() == MAX_HOLDS { return Err(HoldError::Limit); }
                     }
-                    (Some(prior), HoldState::Released)
-                        if prior.request.state == HoldState::Held
+                    (Some(prior), next)
+                        if prior.request.state.permits_successor(next)
                             && prior.request.import_identity == record.request.import_identity
                             && record.predecessor == Some(prior.digest()) => {}
                     _ => return Err(HoldError::InvalidRecord),
@@ -436,7 +424,7 @@ impl HoldIndex {
     }
 
     fn active_count(&self) -> usize {
-        self.current.values().filter(|r| r.request.state == HoldState::Held).count()
+        self.current.values().filter(|r| r.request.state.is_active()).count()
     }
 
     /// Add blockers for every held closure touched by the requested deletion. No hold means
@@ -449,7 +437,7 @@ impl HoldIndex {
         let removed: BTreeSet<_> = plan.deletable.iter().map(|o| o.digest).collect();
         let retracted: BTreeSet<_> = plan.retractions.iter().map(|r| r.slot.as_str()).collect();
         let tombstoned: BTreeSet<_> = plan.tombstones.iter().map(|t| t.object_id.as_str()).collect();
-        for hold in self.current.values().filter(|r| r.request.state == HoldState::Held) {
+        for hold in self.current.values().filter(|r| r.request.state.is_active()) {
             checkpoint(cx, STAGE_HOLD_READ)?;
             let held_import = hold.request.import_identity;
             if let std::collections::btree_map::Entry::Vacant(entry) = closures.entry(held_import) {
@@ -499,12 +487,12 @@ pub fn preview_hold(
             return Ok(HoldReceipt { record: record.clone(), outcome: HoldOutcome::AlreadyCurrent });
         }
     }
-    let predecessor = match (prior, request.state) {
-        (None, HoldState::Released) => return Err(HoldError::UnknownHold),
-        (Some(record), _) if record.request.state == HoldState::Released => return Err(HoldError::ReleasedIdentifier),
-        (Some(_), HoldState::Held) => return Err(HoldError::Conflict),
-        (Some(record), HoldState::Released) => Some(record.digest()),
-        (None, HoldState::Held) => {
+    let predecessor = match prior {
+        None if !request.state.is_active() => return Err(HoldError::UnknownHold),
+        Some(record) if !record.request.state.is_active() => return Err(HoldError::ReleasedIdentifier),
+        Some(record) if record.request.state.permits_successor(request.state) => Some(record.digest()),
+        Some(_) => return Err(HoldError::Conflict),
+        None => {
             if index.current.len() == MAX_HOLDS || index.active_count() == MAX_ACTIVE_HOLDS {
                 return Err(HoldError::Limit);
             }
@@ -610,4 +598,82 @@ mod tests {
         let bytes = first.to_bytes();
         assert!(HoldRecord::from_bytes(&bytes, ContentDigest::sha256(&bytes)).is_err());
     }
+
+    #[test]
+    fn timed_records_roundtrip_and_bind_deadline_and_both_time_bounds() -> Result<(), HoldError> {
+        let mut held = record();
+        held.request.state = HoldState::Until { not_before: TimestampNs(10) };
+        let mut expired = held.clone();
+        expired.request.state = HoldState::Expired {
+            not_before: TimestampNs(10),
+            attested_now: CaptureInterval::new(TimestampNs(10), TimestampNs(12))?,
+        };
+        expired.predecessor = Some(held.digest());
+        for r in [&held, &expired] {
+            assert_eq!(HoldRecord::from_bytes(&r.to_bytes(), r.digest())?, *r);
+        }
+        assert_eq!(held.object_id()?, expired.object_id()?);
+        assert_ne!(held.approval(), expired.approval());
+        let mut later = held.clone();
+        later.request.state = HoldState::Until { not_before: TimestampNs(11) };
+        assert_ne!(later.approval(), held.approval());
+        for bounds in [(11, 12), (10, 13)] {
+            let mut changed = expired.clone();
+            changed.request.state = HoldState::Expired {
+                not_before: TimestampNs(10),
+                attested_now: CaptureInterval::new(TimestampNs(bounds.0), TimestampNs(bounds.1))?,
+            };
+            assert_ne!(changed.approval(), expired.approval());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn timed_record_truncation_suffix_and_premature_expiry_are_refused() -> Result<(), HoldError> {
+        let mut r = record();
+        r.request.state = HoldState::Until { not_before: TimestampNs(10) };
+        let bytes = r.to_bytes();
+        for length in 0..bytes.len() {
+            let prefix = &bytes[..length];
+            assert!(HoldRecord::from_bytes(prefix, ContentDigest::sha256(prefix)).is_err());
+        }
+        let mut suffix = bytes.clone();
+        suffix.push(0);
+        assert!(HoldRecord::from_bytes(&suffix, ContentDigest::sha256(&suffix)).is_err());
+        r.predecessor = Some(r.digest());
+        r.request.state = HoldState::Expired {
+            not_before: TimestampNs(10),
+            attested_now: CaptureInterval::new(TimestampNs(9), TimestampNs(11))?,
+        };
+        assert!(matches!(r.request.validate(), Err(HoldError::RetentionNotElapsed)));
+        assert!(HoldRecord::from_bytes(&r.to_bytes(), r.digest()).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn indefinite_records_keep_the_exact_original_v1_encoding() {
+        for state in [HoldState::Held, HoldState::Released] {
+            let mut r = record();
+            r.request.state = state;
+            r.predecessor = (state == HoldState::Released).then(|| ContentDigest::sha256(b"prior"));
+            // Independent copy of the original v1 field order, not the new state codec.
+            let mut e = CanonicalEncoder::new();
+            e.bytes(b"FSSHLD01");
+            e.u32(1);
+            e.text("fss.evidence_hold.v1");
+            e.text(&r.request.hold_id);
+            e.digest(r.request.import_identity);
+            e.u8(if state == HoldState::Held { 0 } else { 1 });
+            e.text(&r.request.reason);
+            e.text(&r.principal);
+            e.text(&r.site);
+            r.basis.encode_canonical(&mut e);
+            match r.predecessor {
+                None => e.u8(0),
+                Some(digest) => { e.u8(1); e.digest(digest); }
+            }
+            assert_eq!(r.to_bytes(), e.finish());
+        }
+    }
+
 }
