@@ -129,3 +129,9 @@ pub mod http_rgb_evidence;
 
 /// Cold native detector/temporal replay checked against exact HTTP evidence pins.
 pub mod http_rgb_evidence_replay;
+
+/// Durable ordered HTTP/RGB history with complete temporal replay configuration.
+pub mod http_rgb_history;
+
+/// Whole-session native replay from an exact committed HTTP RGB history tip.
+pub mod http_rgb_history_replay;

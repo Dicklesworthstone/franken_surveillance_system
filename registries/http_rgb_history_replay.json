@@ -1,0 +1,23 @@
+{
+  "schema": "fss.http_rgb_history_replay_contract.v1",
+  "status": "implemented_not_qualified",
+  "owner": "crates/fss-reference/src/ingest/http_rgb_history_replay.rs",
+  "result_domain": "fss.http_rgb_history_replay.v1",
+  "selection": "exact_latest_committed_session_root_revision",
+  "pending_history": "reported_never_executed_or_reconciled",
+  "native_stages": ["HTTP_MIME_source_mapping", "source_closed_graph_JPEG_inference", "detector_head", "anonymous_tracking", "image_zones"],
+  "authority": ["history_metadata_read", "original_HTTP_disclosure", "RGB_original_model_JPEG_disclosure", "exact_session_model_execution", "current_named_sensor_privacy"],
+  "source_states": ["configuration_only", "prefix_verified", "complete_verified"],
+  "native_completion": "requires_exact_committed_completion_and_replayed_HTTP_MIME_end",
+  "original_tip": "retained_history_pin_or_explicit_independent_later_tip_for_prefix_only",
+  "frame_limit": 64,
+  "budget_policy": "caller_owned_cumulative_counters_survive_failure_and_never_refill_per_frame",
+  "numerical_accounting": "reserve_per_attempt_preprocess_and_execution_ceilings_before_work; successful_frames_also_report_actual_work",
+  "output": "complete_bounded_fingerprint_and_count_report_plus_actual_native_temporal_owner; no_partial_success",
+  "side_effects": "no_network_ledger_write_repair_publication_or_alert",
+  "compatibility": "existing_history_archive_source_model_and_temporal_encodings_unchanged",
+  "errors": ["ERR-HTTP-RGB-REPLAY-LIMIT-001", "ERR-HTTP-RGB-REPLAY-DENIED-001", "ERR-HTTP-RGB-REPLAY-STALE-001", "ERR-HTTP-RGB-REPLAY-MISMATCH-001", "ERR-HTTP-RGB-REPLAY-INCOMPLETE-001", "ERR-HTTP-RGB-REPLAY-001"],
+  "tests": ["crates/fss-reference/src/ingest/http_rgb_history_replay.rs", "crates/fss-reference/src/ingest/http_rgb_history_replay/budget.rs", "crates/fss-reference/tests/http_rgb_history_replay_contract.rs"],
+  "qualification": {"native_tests_executed": false, "reason": "Rust toolchain unavailable in authoring environment"},
+  "limitations": ["not_a_camera_daemon", "no_implicit_raw_capture_to_RGB_history_conversion", "no_detector_quality_claim", "no_authenticated_capture_clock", "no_absence_or_health_claim", "no_hard_real_time_or_peak_RSS_claim", "bounded_repeated_source_inventory_verification"]
+}
