@@ -4,12 +4,14 @@
 //! normal matrix is `[[U, W], [W^T, V]]` with block-diagonal `U` (cameras) and
 //! `V` (3x3 per landmark). Landmarks are eliminated per step:
 //! `S = U - W V^-1 W^T`, `S dc = gc - W V^-1 gp`, `dp = V^-1 (gp - W^T dc)`.
-//! All accumulation runs in canonical (landmark, camera) order.
+//! All accumulation runs in canonical (landmark, camera) order. Fixed control
+//! points contribute only to `U` and the camera gradient, after every free
+//! observation, in canonical (control point, camera) order.
 
 use super::dense::{Factor, FactorError};
 use super::{
     AdjustedCamera, AdjustedLandmark, BudgetKind, BundleAdjustment, BundleAdjustmentError,
-    BundleGauge, BundleOptions, BundleParameter, BundleReport, CAMERA_BLOCK_PARAMETERS,
+    BundleGaugeChoice, BundleOptions, BundleParameter, BundleReport, CAMERA_BLOCK_PARAMETERS,
     CameraCovariance, Canonical, Convergence, FocalRefinement, RadialDistortion, SingularStage,
 };
 use crate::linear::{multiply, rotation_step};
@@ -146,16 +148,29 @@ fn project(camera: &CameraState, world: V3) -> Option<Projected> {
     })
 }
 
+/// Observations of free landmarks plus observations of fixed control points.
+fn residual_blocks(problem: &Canonical) -> u64 {
+    (problem.observations.len() + problem.control_observations.len()) as u64
+}
+
 /// Half the sum of squared residuals, or `None` if any point leaves the model.
 fn cost(
     problem: &Canonical,
     state: &State,
     budget: &mut WorkBudget<'_>,
 ) -> Result<Option<f64>, Stop> {
-    budget.charge(24 * problem.observations.len() as u64)?;
+    budget.charge(24 * residual_blocks(problem))?;
     let mut total = 0.0;
     for &(l, c, pixel) in &problem.observations {
         let Some(projected) = project(&state.cameras[c], state.points[l]) else {
+            return Ok(None);
+        };
+        let du = pixel[0] - projected.pixel[0];
+        let dv = pixel[1] - projected.pixel[1];
+        total += 0.5 * (du * du + dv * dv);
+    }
+    for &(k, c, pixel) in &problem.control_observations {
+        let Some(projected) = project(&state.cameras[c], problem.control_points[k].position) else {
             return Ok(None);
         };
         let du = pixel[0] - projected.pixel[0];
@@ -183,7 +198,7 @@ fn linearize(
     state: &State,
     budget: &mut WorkBudget<'_>,
 ) -> Result<Linearized, Stop> {
-    budget.charge(200 * problem.observations.len() as u64)?;
+    budget.charge(200 * residual_blocks(problem))?;
     let mut lin = Linearized {
         cost: 0.0,
         u: layout
@@ -225,6 +240,26 @@ fn linearize(
             }
         }
         lin.w.push(coupling);
+    }
+    // Fixed control points: camera-only residuals (no W, V, or point gradient).
+    for &(k, c, pixel) in &problem.control_observations {
+        let projected = project(&state.cameras[c], problem.control_points[k].position)
+            .ok_or(Stop::Breakdown)?;
+        let residual = [pixel[0] - projected.pixel[0], pixel[1] - projected.pixel[1]];
+        lin.cost += 0.5 * (residual[0] * residual[0] + residual[1] * residual[1]);
+        let slots = &layout.slots[c];
+        let k = slots.len();
+        let offset = layout.offsets[c];
+        for axis in 0..2 {
+            let jc = &projected.camera[axis];
+            let r = residual[axis];
+            for (a, &sa) in slots.iter().enumerate() {
+                lin.gc[offset + a] += jc[sa] * r;
+                for (b, &sb) in slots.iter().enumerate() {
+                    lin.u[c][a * k + b] += jc[sa] * jc[sb];
+                }
+            }
+        }
     }
     if !lin.cost.is_finite() {
         return Err(Stop::Breakdown);
@@ -488,7 +523,7 @@ fn gradient_converged(layout: &Layout, lin: &Linearized, tolerance: f64) -> bool
 
 pub(super) fn run(
     basis: GeometryBasis,
-    gauge: BundleGauge,
+    gauge: BundleGaugeChoice,
     problem: Canonical,
     options: BundleOptions,
     budget: &mut WorkBudget<'_>,
@@ -496,7 +531,7 @@ pub(super) fn run(
     let start_used = budget.used();
     let layout = Layout::new(&problem.free);
     let groups = landmark_groups(&problem);
-    let residual_count = 2 * problem.observations.len();
+    let residual_count = 2 * (problem.observations.len() + problem.control_observations.len());
     let parameter_count = layout.total + 3 * problem.landmarks.len();
     let rms = |cost: f64| (2.0 * cost / residual_count as f64).sqrt();
     let mut report = BundleReport {
@@ -747,6 +782,7 @@ pub(super) fn run(
     Ok(BundleAdjustment {
         basis,
         gauge,
+        control_points: problem.control_points,
         cameras,
         landmarks,
         report,
