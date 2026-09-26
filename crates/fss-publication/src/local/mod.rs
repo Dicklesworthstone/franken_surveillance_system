@@ -941,8 +941,7 @@ impl LocalRootPublisher {
             });
         }
         let root_name = format!("{slot}{ROOT_RECORD_SUFFIX}");
-        let temp_relative =
-            Path::new(LOCAL_ROOTS_DIR).join(format!("{root_name}{ROOT_TEMP_SUFFIX}"));
+        let temp_relative = Self::root_temp_path(slot);
         if self.orphan_temps.contains(&temp_relative) {
             return Err(LocalPublicationError::OrphanedTemp {
                 path: temp_relative,
@@ -1303,6 +1302,65 @@ impl LocalRootPublisher {
                 .map_err(|error| io_error(LocalIoOperation::SyncDirectory, directory, &error))?;
         }
         Ok(removed)
+    }
+
+    /// Every orphaned temporary record this instance currently knows, in path order: those
+    /// classified on open and those a failed cleanup left since, minus those since discarded.
+    /// Unlike [`Self::recovery_report`], this is the live set, not the open-time snapshot.
+    pub fn orphaned_temps(&self) -> impl Iterator<Item = &Path> {
+        self.orphan_temps.iter().map(PathBuf::as_path)
+    }
+
+    /// Path, relative to the publication root, of the temporary root record that a
+    /// publication into `slot` writes before its root-last commit.
+    #[must_use]
+    pub fn root_temp_path(slot: &SlotName) -> PathBuf {
+        Path::new(LOCAL_ROOTS_DIR).join(format!("{slot}{ROOT_RECORD_SUFFIX}{ROOT_TEMP_SUFFIX}"))
+    }
+
+    /// Discards the orphaned temporary root record of `slot` only when it is provably a crashed
+    /// attempt of publishing exactly `manifest` into `slot`, so that publication can be redone.
+    ///
+    /// Proof is byte equality with the record this publication writes, which names the slot,
+    /// the manifest root, and its child count. Returns `Ok(false)` and touches nothing when no
+    /// orphaned temp is known for `slot`, and `Ok(true)` once the temp is gone durably. A temp
+    /// with any other content, one that is not a regular file, or one whose slot is visible or
+    /// broken is kept and refused as [`LocalPublicationError::OrphanedTemp`]. No other temp,
+    /// record, or object is touched.
+    pub fn discard_orphaned_root_temp_for(
+        &mut self,
+        slot: &SlotName,
+        manifest: &ObjectManifest,
+    ) -> Result<bool, LocalPublicationError> {
+        self.require_live()?;
+        let root = manifest.root();
+        if manifest.computed_root() != root {
+            return Err(LocalPublicationError::ManifestMismatch { root });
+        }
+        let relative = Self::root_temp_path(slot);
+        if !self.orphan_temps.contains(&relative) {
+            return Ok(false);
+        }
+        let refused = || LocalPublicationError::OrphanedTemp {
+            path: relative.clone(),
+        };
+        if self.visible.contains_key(slot) || self.broken_slots.contains(slot) {
+            return Err(refused());
+        }
+        let expected = root_record_bytes(slot, root, manifest.children().len())?;
+        let path = self.root.join(&relative);
+        match self.io.symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_file() => {}
+            Ok(_) => return Err(refused()),
+            Err(error) => return Err(io_error(LocalIoOperation::Inspect, &path, &error)),
+        }
+        match read_bounded(self.io.as_ref(), &path, MAX_ROOT_RECORD_BYTES)? {
+            Some(bytes) if bytes == expected => {}
+            _ => return Err(refused()),
+        }
+        self.remove_temp(&relative, &path)?;
+        self.orphan_temps.remove(&relative);
+        Ok(true)
     }
 
     /// Arms a one-shot crash point for the next publish call.

@@ -454,6 +454,80 @@ fn crash_after_root_temp_write_before_rename_leaves_nothing_visible() -> TestRes
 }
 
 #[test]
+fn orphaned_root_temp_is_discarded_only_for_its_exact_publication() -> TestResult {
+    let root = fresh_root("orphaned_root_temp_is_discarded_only_for_its_exact_publication")?;
+    let Fixture {
+        mut publisher,
+        first,
+        second,
+        metadata,
+        manifest,
+    } = fixture(&root, roomy())?;
+    let slot_name = slot("event-0001")?;
+    let other_slot = slot("event-0002")?;
+    let other_manifest = ObjectManifest::new("event_archive", [first], Some(metadata))?;
+    let temp_relative = PathBuf::from(LOCAL_ROOTS_DIR).join("event-0001.root.tmp");
+    assert_eq!(
+        LocalRootPublisher::root_temp_path(&slot_name),
+        temp_relative
+    );
+
+    publisher.inject_crash_at(PublishCutPoint::AfterRootTempWrite);
+    expect_err(publisher.publish(&slot_name, &manifest))?;
+    drop(publisher);
+    let original = fs::read(root_temp(&root, "event-0001"))?;
+    assert_eq!(original, root_record_bytes(&slot_name, manifest.root(), 3)?);
+
+    // A temp whose bytes are not exactly this publication's record is kept and refused.
+    let tampered = root_record_bytes(&slot_name, manifest.root(), 2)?;
+    fs::write(root_temp(&root, "event-0001"), &tampered)?;
+    let mut reopened = LocalRootPublisher::open(&root, roomy())?;
+    assert_eq!(
+        expect_err(reopened.discard_orphaned_root_temp_for(&slot_name, &manifest))?,
+        LocalPublicationError::OrphanedTemp {
+            path: temp_relative.clone()
+        }
+    );
+    assert_eq!(fs::read(root_temp(&root, "event-0001"))?, tampered);
+    assert_eq!(
+        reopened.orphaned_temps().collect::<Vec<_>>(),
+        vec![temp_relative.as_path()]
+    );
+    drop(reopened);
+
+    fs::write(root_temp(&root, "event-0001"), &original)?;
+    let mut reopened = LocalRootPublisher::open(&root, roomy())?;
+    // Another root for the same slot does not own this temp.
+    assert_eq!(
+        expect_err(reopened.discard_orphaned_root_temp_for(&slot_name, &other_manifest))?,
+        LocalPublicationError::OrphanedTemp {
+            path: temp_relative.clone()
+        }
+    );
+    // Another slot has no temp of its own; nothing is touched.
+    assert!(!reopened.discard_orphaned_root_temp_for(&other_slot, &manifest)?);
+    assert_eq!(fs::read(root_temp(&root, "event-0001"))?, original);
+
+    // The exact publication proves its own temp, discards it, and redoes root-last publication.
+    assert!(reopened.discard_orphaned_root_temp_for(&slot_name, &manifest)?);
+    assert!(!root_temp(&root, "event-0001").exists());
+    assert_eq!(reopened.orphaned_temps().count(), 0);
+    assert!(!reopened.discard_orphaned_root_temp_for(&slot_name, &manifest)?);
+    for digest in [first, second, metadata] {
+        reopened.verify_object(digest)?;
+    }
+    let receipt = reopened.publish(&slot_name, &manifest)?;
+    assert_eq!(receipt.claims.local, LocalPublicationState::Durable);
+    // A visible slot never has a temp discarded on its behalf.
+    assert!(!reopened.discard_orphaned_root_temp_for(&slot_name, &manifest)?);
+    log_scenario(
+        "orphaned_root_temp_is_discarded_only_for_its_exact_publication",
+        "cut=after_root_temp_write tampered=kept other_root=kept exact=discarded recovered=durable",
+    );
+    Ok(())
+}
+
+#[test]
 fn crash_after_rename_before_directory_fsync_is_visible_not_durable() -> TestResult {
     let root = fresh_root("crash_after_rename_before_directory_fsync_is_visible_not_durable")?;
     let Fixture {
