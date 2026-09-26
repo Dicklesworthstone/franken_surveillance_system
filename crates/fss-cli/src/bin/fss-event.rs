@@ -137,12 +137,16 @@ const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|cal
   calibrate (owner site calibration; no --root/--site, no deployment is opened):\n\
           --twin FILE --twin-digest sha256:HEX --twin-source-digest sha256:HEX\n\
           --atlas FILE --atlas-digest sha256:HEX --atlas-provenance sha256:HEX\n\
-          --camera NAME:OBSERVATIONS (2..16) [--control-max-error E] [--work-units N] --out FILE\n\
-    Takes per-camera correspondence files (fss.site_camera_observations.v1: feature pixels\n\
-    with atlas descriptors and tie pixels), NOT images. Localizes each camera against the atlas,\n\
-    refines all jointly on atlas control points and shared ties, and writes the canonical\n\
-    digest-bound fss.site_calibration.v1 create-only; any refusal (too few control points,\n\
-    disconnected cameras, failed localization) writes nothing. See fss-event calibrate --help.\n\
+          (--camera NAME:OBSERVATIONS | --frame NAME:JPEG --frame-metadata NAME:METADATA) (2..16)\n\
+          [--control-max-error E] [--work-units N] --out FILE\n\
+    Takes per camera a correspondence file (fss.site_camera_observations.v1: feature pixels\n\
+    with atlas descriptors and tie pixels) or a loose still JPEG frame with its metadata\n\
+    (fss.site_camera_frame.v1), decoded and extracted natively; frame cameras are tied by gated\n\
+    descriptor matches. Localizes each camera against the atlas, refines all jointly on atlas\n\
+    control points and shared ties, and writes the canonical digest-bound calibration\n\
+    (fss.site_calibration.v1, or v2 when a frame took part) create-only; any refusal (too few\n\
+    control points, disconnected cameras, failed localization, undecodable frame) writes\n\
+    nothing. See fss-event calibrate --help.\n\
   alert (one webhook for a corroborated event): --event-id ID --relay IP:PORT --path /PATH\n\
           --plaintext-approval sha256:HEX --deadline-ms N (1..60000)\n\
           [--approve sha256:PLAN [--dispatch sha256:DISPATCH]] [--report-out FILE]\n\

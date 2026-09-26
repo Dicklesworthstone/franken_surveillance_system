@@ -1,15 +1,21 @@
 #![forbid(unsafe_code)]
-//! `fss-event calibrate`: owner site calibration from an atlas and per-camera observation files.
+//! `fss-event calibrate`: owner site calibration from an atlas and per-camera observation files
+//! or still JPEG frames.
 //!
 //! Reads the owner twin (`FSSTWIN1`, the world frame; the same package `corroborate
 //! --scene-mesh` takes) and the surveyed atlas (`FSATLAS1`), each pinned by exact digests, plus
-//! one `fss.site_camera_observations.v1` file per camera: owner-supplied feature pixels with
-//! descriptors in the atlas generation, and tie-point pixels. It takes correspondences, NOT
-//! images: no JPEG is decoded and no feature is extracted here. Each camera is localized with the
-//! existing fss-twin single-camera path, all cameras are refined jointly, and the canonical
-//! digest-bound calibration (`fss.site_calibration.v1`) is written create-only to `--out` only
-//! after every step succeeded; any refusal writes nothing. No deployment is opened or changed:
-//! this is an owner file-to-file transform, and the result is a candidate, never an activation.
+//! per camera either one `fss.site_camera_observations.v1` file (owner-supplied feature pixels
+//! with descriptors in the atlas generation, and tie-point pixels) or one loose baseline JPEG
+//! frame with a `fss.site_camera_frame.v1` metadata file. Frames are decoded by the first-party
+//! JPEG decoder and their features extracted by the fss-twin native extractor; ties between
+//! frame cameras are derived by descriptor matching and gated at the seeded poses. Frames are
+//! loose owner files, not retained imports: reading one frame of a retained import would need a
+//! deployment and its privacy-mask decode path, which publishes derived objects, so this
+//! file-to-file command does not do it. Each camera is localized with the existing fss-twin
+//! single-camera path, all cameras are refined jointly, and the canonical digest-bound
+//! calibration (`fss.site_calibration.v1`, or `v2` when a frame took part) is written
+//! create-only to `--out` only after every step succeeded; any refusal writes nothing. No
+//! deployment is opened or changed: the result is a candidate, never an activation.
 
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
@@ -20,10 +26,13 @@ use std::process::ExitCode;
 use fss_cli::agent_json::{array, object, string, strings};
 use fss_cli::{ERR_CLI_MALFORMED_VALUE, ERR_CLI_RUNTIME_FAILURE, ExitIdentity};
 use fss_core::{ContentDigest, DigestAlgorithm};
+use fss_reference::ingest::recorded_decode::ComponentInterpretation;
 use fss_reference::ingest::site_calibration::{
-    CalibrationRequest, CameraObservations, ControlSelection, DEFAULT_CALIBRATION_WORK,
-    MAX_CALIBRATION_BYTES, MAX_OBSERVATION_BYTES, MAX_SITE_CAMERAS, SITE_CALIBRATION_DOMAIN,
-    SiteCalibration, SiteCalibrationError, calibrate_site, parameter_label, valid_camera_name,
+    CalibrationInput, CalibrationRequest, CameraFrame, CameraInput, CameraObservations,
+    ControlSelection, DEFAULT_CALIBRATION_WORK, MAX_CALIBRATION_BYTES, MAX_FRAME_BYTES,
+    MAX_OBSERVATION_BYTES, MAX_SITE_CAMERAS, SITE_CALIBRATION_DOMAIN, SITE_CALIBRATION_DOMAIN_V2,
+    SiteCalibration, SiteCalibrationError, calibrate_site_inputs, parameter_label,
+    valid_camera_name,
 };
 
 /// Largest twin or atlas package read (the fss-twin format bounds).
@@ -31,22 +40,41 @@ const MAX_PACKAGE_BYTES: usize = 64 * 1024 * 1024;
 
 const HELP: &str = "fss-event calibrate --twin FILE --twin-digest sha256:HEX --twin-source-digest sha256:HEX\n\
   --atlas FILE --atlas-digest sha256:HEX --atlas-provenance sha256:HEX\n\
-  --camera NAME:OBSERVATIONS (2..16, repeat) [--control-max-error E] [--work-units N] --out FILE\n\
+  (--camera NAME:OBSERVATIONS | --frame NAME:JPEG --frame-metadata NAME:METADATA) (2..16 cameras)\n\
+  [--control-max-error E] [--work-units N] --out FILE\n\
   Owner site calibration. The twin (FSSTWIN1) is the world frame (Z up, ground z = 0; the same\n\
   package corroborate --scene-mesh takes); the atlas (FSATLAS1) holds surveyed landmarks with\n\
   descriptors. Each observation file (fss.site_camera_observations.v1) names the camera handle\n\
   and its intrinsics/extrinsics generations, the image size and identity, the descriptor\n\
   generation, fixed intrinsics or a focal scan, then `feature ID U V HEX64` and `tie HANDLE U V`\n\
-  lines. This command takes correspondences, NOT images: no pixels are decoded or extracted.\n\
+  lines (owner correspondences, no pixels). A frame is one loose baseline JPEG; its metadata\n\
+  file (fss.site_camera_frame.v1) has the same camera, image, exposure, image-domain and\n\
+  intrinsics lines plus `interpretation gray|ycbcr`, and no pixels/descriptor/feature/tie lines:\n\
+  the frame is decoded to luma (first-party decoder), features are extracted by the native\n\
+  FAST-9/BRIEF extractor (the atlas must be in that descriptor generation), and ties between\n\
+  frame cameras are descriptor matches of features no atlas landmark claimed, kept only when\n\
+  they reproject within 2 px at the seeded poses (a lone frame camera has no tie path).\n\
   Each camera is localized alone against the atlas (most inliers, then lowest RMS, seeds it),\n\
   then all are refined jointly with the atlas landmarks as fixed control points (all of them,\n\
   or with --control-max-error only those whose declared survey error is at most E) and shared\n\
   tie points coupling the cameras. Refusals are typed and write nothing: too few or collinear\n\
-  control points, a camera without a tie-point path to the others, a failed localization.\n\
-  --out is created (never overwritten) with the canonical calibration; stdout reports its digest,\n\
-  per-camera pose, intrinsics, covariance, before/after RMS and generation invalidators. A\n\
+  control points, a camera without a tie-point path to the others, a failed localization, a JPEG\n\
+  frame the decoder refuses (ERR-SITE-CALIBRATION-FRAME-DECODE-001) or of another size than\n\
+  declared. --out is created (never overwritten) with the canonical calibration; stdout reports its digest,\n\
+  per-camera input kind, pose, intrinsics, covariance, before/after RMS and generation\n\
+  invalidators; with a frame the record is fss.site_calibration.v2 (FSSCAL02), binding the JPEG,\n\
+  metadata and luma digests and the decoder/extraction/tie policy. A\n\
   candidate, never an activation; synthetic sites do not prove accuracy on real footage.\n\
   Use it with: fss-event corroborate ... --calibration FILE --calibration-digest sha256:HEX\n";
+
+/// One camera's input files.
+#[derive(Debug)]
+enum CameraSource {
+    /// A `fss.site_camera_observations.v1` correspondence file.
+    Observations(PathBuf),
+    /// A loose JPEG frame and its `fss.site_camera_frame.v1` metadata.
+    Frame { jpeg: PathBuf, metadata: PathBuf },
+}
 
 /// Parsed calibrate request.
 #[derive(Debug)]
@@ -57,7 +85,7 @@ struct Request {
     atlas: PathBuf,
     atlas_digest: ContentDigest,
     atlas_provenance: ContentDigest,
-    cameras: Vec<(String, PathBuf)>,
+    cameras: Vec<(String, CameraSource)>,
     control: ControlSelection,
     work_units: u64,
     out: PathBuf,
@@ -84,7 +112,8 @@ fn parse(args: &[OsString]) -> Result<Request, String> {
         "--out",
     ];
     let mut values: Vec<(&str, String)> = Vec::new();
-    let mut cameras: Vec<(String, PathBuf)> = Vec::new();
+    let mut cameras: Vec<(String, CameraSource)> = Vec::new();
+    let mut metadata: Vec<(String, PathBuf)> = Vec::new();
     let mut index = 0;
     while index < args.len() {
         let key = args[index].to_str().ok_or("option names require UTF-8")?;
@@ -96,20 +125,37 @@ fn parse(args: &[OsString]) -> Result<Request, String> {
         if value.is_empty() || value.starts_with("--") {
             return Err(format!("missing value for {key}"));
         }
-        if key == "--camera" {
-            let (name, path) = value
-                .split_once(':')
-                .ok_or("camera must be NAME:OBSERVATIONS_FILE")?;
-            if !valid_camera_name(name) {
+        if matches!(key, "--camera" | "--frame" | "--frame-metadata") {
+            let (name, path) = value.split_once(':').ok_or(match key {
+                "--camera" => "camera must be NAME:OBSERVATIONS_FILE",
+                "--frame" => "frame must be NAME:JPEG_FILE",
+                _ => "frame metadata must be NAME:METADATA_FILE",
+            })?;
+            if !valid_camera_name(name) || path.is_empty() {
                 return Err("camera names are 1..64 bytes of [A-Za-z0-9_.-]".to_owned());
             }
-            if cameras.iter().any(|(seen, _)| seen == name) {
-                return Err(format!("duplicate --camera {name}"));
+            if key == "--frame-metadata" {
+                if metadata.iter().any(|(seen, _)| seen == name) {
+                    return Err(format!("duplicate --frame-metadata {name}"));
+                }
+                metadata.push((name.to_owned(), PathBuf::from(path)));
+            } else {
+                if cameras.iter().any(|(seen, _)| seen == name) {
+                    return Err(format!("duplicate camera {name} (--camera or --frame)"));
+                }
+                if cameras.len() == MAX_SITE_CAMERAS {
+                    return Err("at most sixteen cameras".to_owned());
+                }
+                let source = if key == "--camera" {
+                    CameraSource::Observations(PathBuf::from(path))
+                } else {
+                    CameraSource::Frame {
+                        jpeg: PathBuf::from(path),
+                        metadata: PathBuf::new(),
+                    }
+                };
+                cameras.push((name.to_owned(), source));
             }
-            if cameras.len() == MAX_SITE_CAMERAS {
-                return Err("at most sixteen cameras".to_owned());
-            }
-            cameras.push((name.to_owned(), PathBuf::from(path)));
         } else if let Some(known) = SINGLE.iter().find(|known| **known == key) {
             if values.iter().any(|(seen, _)| seen == known) {
                 return Err(format!("duplicate {key}"));
@@ -127,8 +173,23 @@ fn parse(args: &[OsString]) -> Result<Request, String> {
             .map(|(_, value)| value.as_str())
     };
     let required = |key: &str| get(key).ok_or_else(|| format!("required option {key}"));
+    // Every frame takes exactly its own metadata file; metadata names no other camera.
+    for (name, path) in metadata {
+        match cameras.iter_mut().find(|(seen, _)| *seen == name) {
+            Some((_, CameraSource::Frame { metadata, .. })) => *metadata = path,
+            _ => return Err(format!("--frame-metadata {name} names no --frame")),
+        }
+    }
+    if let Some((name, _)) = cameras.iter().find(|(_, source)| {
+        matches!(source, CameraSource::Frame { metadata, .. } if metadata.as_os_str().is_empty())
+    }) {
+        return Err(format!("--frame {name} requires --frame-metadata {name}:FILE"));
+    }
     if cameras.len() < 2 {
-        return Err("at least two --camera NAME:OBSERVATIONS are required".to_owned());
+        return Err(
+            "at least two cameras (--camera NAME:OBSERVATIONS or --frame NAME:JPEG) are required"
+                .to_owned(),
+        );
     }
     let control = match get("--control-max-error") {
         None => ControlSelection::AllAtlasLandmarks,
@@ -199,6 +260,28 @@ fn hex(bytes: &[u8; 32]) -> String {
     ContentDigest::new(DigestAlgorithm::Sha256, *bytes).to_text()
 }
 
+/// The input kind of one camera and, for a frame, its derivation identities and counts.
+fn input(input: CalibrationInput) -> String {
+    match input {
+        CalibrationInput::Correspondences => object(&[("kind", string(input.as_str()))]),
+        CalibrationInput::Frame(frame) => object(&[
+            ("kind", string(input.as_str())),
+            ("metadata_digest", string(&frame.metadata.to_text())),
+            ("luma_digest", string(&frame.luma.to_text())),
+            (
+                "interpretation",
+                string(match frame.interpretation {
+                    ComponentInterpretation::Grayscale => "gray",
+                    ComponentInterpretation::YCbCr => "ycbcr",
+                }),
+            ),
+            ("extracted_features", frame.extracted_features.to_string()),
+            ("atlas_matches", frame.atlas_matches.to_string()),
+            ("tie_observations", frame.tie_observations.to_string()),
+        ]),
+    }
+}
+
 /// Deterministic JSON summary of a calibration and its identity.
 fn render(calibration: &SiteCalibration, identity: ContentDigest) -> String {
     let cameras: Vec<String> = calibration
@@ -230,7 +313,9 @@ fn render(calibration: &SiteCalibration, identity: ContentDigest) -> String {
                         ),
                     ]),
                 ),
+                // The camera's input digest: the observation file, or the JPEG bytes.
                 ("observations_digest", string(&camera.observations.to_text())),
+                ("input", input(camera.input)),
                 (
                     "image_size",
                     array(&[
@@ -299,8 +384,31 @@ fn render(calibration: &SiteCalibration, identity: ContentDigest) -> String {
         })
         .collect();
     let list = |values: &[u64]| array(&values.iter().map(u64::to_string).collect::<Vec<_>>());
-    object(&[
-        ("format", string(SITE_CALIBRATION_DOMAIN)),
+    let frames = calibration.frame_policy.is_some();
+    let mut non_claims = vec![if frames {
+        "frame inputs are loose owner JPEG files, not retained custody; no privacy mask was applied"
+    } else {
+        "inputs are owner correspondences, not decoded images"
+    }];
+    if frames {
+        non_claims.push(
+            "frame tie points are gated descriptor matches between frame cameras, not owner assertions",
+        );
+    }
+    non_claims.extend([
+        "atlas control positions are treated as exact",
+        "covariance is a local Gauss-Newton approximation",
+        "synthetic sites do not establish accuracy on real site footage",
+    ]);
+    let mut fields = vec![
+        (
+            "format",
+            string(if frames {
+                SITE_CALIBRATION_DOMAIN_V2
+            } else {
+                SITE_CALIBRATION_DOMAIN
+            }),
+        ),
         ("calibration_digest", string(&identity.to_text())),
         ("status", string("candidate_calibration_not_activated")),
         (
@@ -353,16 +461,26 @@ fn render(calibration: &SiteCalibration, identity: ContentDigest) -> String {
             ]),
         ),
         ("cameras", array(&cameras)),
-        (
-            "non_claims",
-            strings([
-                "inputs are owner correspondences, not decoded images",
-                "atlas control positions are treated as exact",
-                "covariance is a local Gauss-Newton approximation",
-                "synthetic sites do not establish accuracy on real site footage",
+        ("non_claims", strings(non_claims)),
+    ];
+    if let Some(policy) = calibration.frame_policy {
+        fields.push((
+            "frame_policy",
+            object(&[
+                ("decoder_identity", string(&hex(&policy.decoder))),
+                ("fast_threshold", policy.extraction.threshold.to_string()),
+                (
+                    "maximum_features",
+                    policy.extraction.maximum_features.to_string(),
+                ),
+                ("separation_px", policy.extraction.separation.to_string()),
+                ("tie_max_hamming", policy.tie_max_distance.to_string()),
+                ("tie_ratio_percent", policy.tie_ratio_percent.to_string()),
+                ("tie_gate_px", number(policy.tie_gate_px)),
             ]),
-        ),
-    ])
+        ));
+    }
+    object(&fields)
 }
 
 fn write_new(path: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -387,12 +505,21 @@ fn run(request: &Request) -> Result<String, Box<dyn std::error::Error>> {
     }
     let twin = read_bounded(&request.twin, MAX_PACKAGE_BYTES, "twin package")?;
     let atlas = read_bounded(&request.atlas, MAX_PACKAGE_BYTES, "atlas package")?;
-    let mut observations = Vec::with_capacity(request.cameras.len());
-    for (name, path) in &request.cameras {
-        let bytes = read_bounded(path, MAX_OBSERVATION_BYTES, "observation file")?;
-        observations.push(CameraObservations::parse(name, &bytes)?);
+    let mut inputs = Vec::with_capacity(request.cameras.len());
+    for (name, source) in &request.cameras {
+        inputs.push(match source {
+            CameraSource::Observations(path) => {
+                let bytes = read_bounded(path, MAX_OBSERVATION_BYTES, "observation file")?;
+                CameraInput::Correspondences(CameraObservations::parse(name, &bytes)?)
+            }
+            CameraSource::Frame { jpeg, metadata } => {
+                let metadata = read_bounded(metadata, MAX_OBSERVATION_BYTES, "frame metadata")?;
+                let jpeg = read_bounded(jpeg, MAX_FRAME_BYTES, "JPEG frame")?;
+                CameraInput::Frame(CameraFrame::decode(name, &metadata, &jpeg)?)
+            }
+        });
     }
-    let calibration = calibrate_site(
+    let calibration = calibrate_site_inputs(
         &CalibrationRequest {
             twin_package: &twin,
             twin_digest: request.twin_digest,
@@ -403,7 +530,7 @@ fn run(request: &Request) -> Result<String, Box<dyn std::error::Error>> {
             control: request.control,
             work_units: request.work_units,
         },
-        &observations,
+        &inputs,
     )?;
     let bytes = calibration.encode()?;
     // Self-check: the written bytes decode to the same record under their own identity.
