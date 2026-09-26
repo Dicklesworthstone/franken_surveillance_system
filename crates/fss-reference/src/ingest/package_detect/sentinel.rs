@@ -441,9 +441,9 @@ fn render_report(
         .map(|f| u128::from(f.inference.executed_macs()))
         .sum();
     let complete = plan.bursts.iter().all(|b| b.admitted);
-    write!(
+    writeln!(
         out,
-        "],\"executed_inferences\":{executed},\"executed_macs\":\"{macs}\",\"scheduled_bursts_complete\":{complete},\"continuous_coverage\":false,\"tracking_across_bursts\":false,\"absence_certifiable\":false,\"effects_authorized\":false,\"model_outputs\":\"uncalibrated\",\"quality_claim\":\"none\",\"retention\":\"not_asserted_by_computation\"}}\n"
+        "],\"executed_inferences\":{executed},\"executed_macs\":\"{macs}\",\"scheduled_bursts_complete\":{complete},\"continuous_coverage\":false,\"tracking_across_bursts\":false,\"absence_certifiable\":false,\"effects_authorized\":false,\"model_outputs\":\"uncalibrated\",\"quality_claim\":\"none\",\"retention\":\"not_asserted_by_computation\"}}"
     )?;
     Ok(out)
 }
