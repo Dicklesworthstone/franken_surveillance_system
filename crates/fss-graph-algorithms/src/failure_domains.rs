@@ -338,9 +338,10 @@ pub(crate) fn analyse_member_loss(
     })
 }
 
-/// Bounded exhaustive combinations of the same owner-declared failure domains.
 pub mod combinations {
     #![forbid(unsafe_code)]
+    //! Bounded exhaustive combinations of the same owner-declared failure domains.
+    //!
     //! Exhaustive, bounded simultaneous failures of owner-declared dependencies.
     //!
     //! Enumerates every nonempty combination of up to `k` declarations, unions its failed sensors,

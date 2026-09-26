@@ -271,18 +271,17 @@ impl HttpRgbHistory {
                 }
             }
         }
-        if let Some(complete) = self.complete {
-            if !digest(complete.root)
+        if let Some(complete) = self.complete
+            && (!digest(complete.root)
                 || complete.wire.scope != scope
                 || !valid_wire(complete.wire)
                 || self.frames.last().is_some_and(|last| {
                     last.wire.reads > complete.wire.reads
                         || last.wire.bytes > complete.wire.bytes
                         || (last.wire.reads == complete.wire.reads && last.wire != complete.wire)
-                })
-            {
-                return Err(HistoryError::Mismatch);
-            }
+                }))
+        {
+            return Err(HistoryError::Mismatch);
         }
         Ok(())
     }

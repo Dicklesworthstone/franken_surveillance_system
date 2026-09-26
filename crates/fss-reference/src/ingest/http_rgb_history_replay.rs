@@ -150,12 +150,16 @@ pub enum ReplayError {
     Completion(HttpCompletionError),
     /// Source-closed native recomputation failed at this one-based part ordinal.
     Frame {
+        /// One-based source part ordinal.
         ordinal: u64,
+        /// Native recomputation refusal.
         error: HttpRgbEvidenceReplayError,
     },
     /// Native anonymous temporal reconstruction refused at this part ordinal.
     Tracking {
+        /// One-based source part ordinal.
         ordinal: u64,
+        /// Native temporal reconstruction refusal.
         error: RgbTrackingError,
     },
     /// Shared deterministic work refused before a complete result.
