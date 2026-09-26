@@ -57,16 +57,17 @@ impl Drop for Directory {
     }
 }
 pub fn limits() -> HttpCheckLimits {
-    let mut limits = HttpCheckLimits::default();
-    limits.maximum_reads = 128;
-    limits.maximum_source_bytes = 65536;
-    limits.maximum_spool_object_bytes = 65536;
-    limits.maximum_scan_roots = 1024;
-    limits.maximum_frames = 2;
-    limits.read_bytes = 257;
-    limits.source_work = 100_000_000_000;
-    limits.framing_work = WORK;
-    limits
+    HttpCheckLimits {
+        maximum_reads: 128,
+        maximum_source_bytes: 65536,
+        maximum_spool_object_bytes: 65536,
+        maximum_scan_roots: 1024,
+        maximum_frames: 2,
+        read_bytes: 257,
+        source_work: 100_000_000_000,
+        framing_work: WORK,
+        ..HttpCheckLimits::default()
+    }
 }
 pub struct Authority {
     route: HttpCameraRoute,
