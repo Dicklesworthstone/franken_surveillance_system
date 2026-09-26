@@ -103,6 +103,16 @@ fn pose_provenance(value: &CoverageRecord) -> Option<String> {
             ("extrinsics_generation", extrinsics_generation.to_string()),
             ("generation_currency", string(currency.as_str())),
         ]);
+        // Only `adopted_current` names a receipt, so earlier renderings keep their bytes.
+        if let Some(receipt) = currency.adoption_receipt() {
+            fields.extend([
+                ("adoption_receipt", string(&receipt.to_text())),
+                (
+                    "currency_claim",
+                    string("retained_owner_adoption_not_a_physical_observation"),
+                ),
+            ]);
+        }
     }
     fields.push(("claim", string(provenance.claim())));
     Some(object(&fields))

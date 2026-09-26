@@ -1514,3 +1514,466 @@ fn a_stale_camera_generation_is_refused_before_anything_is_appended() -> TestRes
     assert_eq!(after.ledger_root, before.ledger_root);
     Ok(())
 }
+
+// ---------------------------------------------------------------------------------------------
+// Retained calibration authority: `fss-event calibration adopt` and adoption currency.
+// ---------------------------------------------------------------------------------------------
+
+const EAST_BIND: &str = "east:sensor:east";
+const WEST_BIND: &str = "west:sensor:west";
+
+/// `fss-event calibration <operation> --root ROOT --site SITE ARGS...`.
+fn calibration(root: &Path, operation: &str, args: &[&str]) -> TestResult<Output> {
+    Ok(Command::new(env!("CARGO_BIN_EXE_fss-event"))
+        .args(["calibration", operation, "--root"])
+        .arg(root)
+        .args(["--site", SITE])
+        .args(args)
+        .output()?)
+}
+
+impl Calibrated {
+    /// `calibration adopt` of `path`/`digest` with the given bindings and extra arguments.
+    fn adopt(&self, path: &str, digest: &str, extra: &[&str]) -> TestResult<Output> {
+        let mut args = vec!["--calibration", path, "--calibration-digest", digest];
+        args.extend_from_slice(extra);
+        calibration(&self.directory.root(), "adopt", &args)
+    }
+
+    /// Previews then approves the adoption; returns the retained report.
+    fn adopt_approved(&self, path: &str, digest: &str, binds: &[&str]) -> TestResult<Json> {
+        let preview = report(&self.adopt(path, digest, binds)?)?;
+        assert_eq!(preview.get("status")?.text()?, "proposed");
+        let approval = preview.get("approval_digest")?.text()?.to_owned();
+        let mut approved = binds.to_vec();
+        approved.extend_from_slice(&["--approve", approval.as_str()]);
+        let retained = report(&self.adopt(path, digest, &approved)?)?;
+        assert_eq!(retained.get("status")?.text()?, "retained");
+        Ok(retained)
+    }
+
+    /// Corroborates with another pinned calibration of the same twin.
+    fn run_with(&self, path: &str, digest: &str, extra: &[&str]) -> TestResult<Output> {
+        let mesh = self.site.twin.to_str().ok_or("UTF-8 path")?;
+        let source = source_scene();
+        let mut args = vec![
+            "--calibration",
+            path,
+            "--calibration-digest",
+            digest,
+            "--scene-mesh",
+            mesh,
+            "--scene-mesh-digest",
+            self.site.twin_digest.as_str(),
+            "--scene-source-digest",
+            source.as_str(),
+        ];
+        args.extend_from_slice(extra);
+        corroborate(&self.directory.root(), &self.recorded, &args)
+    }
+
+    /// A second calibration of the same site in which east's extrinsics generation is 2.
+    fn recalibrate_east_extrinsics(&self) -> TestResult<(String, String)> {
+        let (_, east) = self
+            .site
+            .observations
+            .iter()
+            .find(|(name, _)| *name == "east")
+            .ok_or("east observations")?;
+        let text = fs::read_to_string(east)?;
+        assert!(text.contains("camera 21 1 1\n"));
+        fs::write(east, text.replace("camera 21 1 1\n", "camera 21 1 2\n"))?;
+        let out = self.directory.0.join("site-v2.fsscal");
+        let made = calibrate(&self.site, &out, &[])?;
+        success(&made);
+        let digest = Json::parse(String::from_utf8(made.stdout)?.trim_end())?
+            .get("calibration_digest")?
+            .text()?
+            .to_owned();
+        Ok((out.to_str().ok_or("UTF-8 path")?.to_owned(), digest))
+    }
+}
+
+/// `(camera_handle, receipt_digest)` of every camera of an adoption report.
+fn adopted_receipts(adoption: &Json) -> TestResult<Vec<(u64, String)>> {
+    adoption
+        .get("cameras")?
+        .items()?
+        .iter()
+        .map(|camera| {
+            let receipt = camera.get("receipt")?;
+            Ok((
+                receipt.get("camera_handle")?.number()?,
+                receipt.get("receipt_digest")?.text()?.to_owned(),
+            ))
+        })
+        .collect()
+}
+
+#[test]
+fn an_adopted_calibration_is_recorded_adopted_current_and_reopens_cold() -> TestResult {
+    use fss_reference::ingest::recorded_coverage::{GenerationCurrency, PoseProvenance};
+
+    let fixture = calibrated("adopt-current")?;
+    let root = fixture.directory.root();
+    let binds = ["--bind", EAST_BIND, "--bind", WEST_BIND];
+    let before = fixture.snapshot()?;
+    // The preview writes nothing and is deterministic.
+    let preview = report(&fixture.adopt(&fixture.path, &fixture.digest, &binds)?)?;
+    assert_eq!(
+        report(&fixture.adopt(&fixture.path, &fixture.digest, &binds)?)?,
+        preview
+    );
+    assert_eq!(fixture.snapshot()?.batch_count, before.batch_count);
+    assert_eq!(fixture.snapshot()?.ledger_root, before.ledger_root);
+    assert!(
+        preview
+            .get("approve_command")?
+            .text()?
+            .ends_with(preview.get("approval_digest")?.text()?)
+    );
+    assert_eq!(
+        preview.get("claim")?.text()?,
+        "owner_adoption_not_a_physical_observation"
+    );
+    for (camera, (handle, sensor)) in preview
+        .get("cameras")?
+        .items()?
+        .iter()
+        .zip([(21_u64, "sensor:east"), (22, "sensor:west")])
+    {
+        let receipt = camera.get("receipt")?;
+        assert_eq!(receipt.get("camera_handle")?.number()?, handle);
+        assert_eq!(receipt.get("sensor_id")?.text()?, sensor);
+        assert_eq!(receipt.get("adoption")?.number()?, 1);
+        assert_eq!(receipt.get("calibration_digest")?.text()?, fixture.digest);
+        assert_eq!(
+            receipt.get("twin_package")?.text()?,
+            fixture.site.twin_digest
+        );
+        assert_eq!(receipt.get("intrinsics_generation")?.number()?, 1);
+        assert_eq!(receipt.get("extrinsics_generation")?.number()?, 1);
+        assert_eq!(receipt.get("supersedes")?, &Json::Null);
+    }
+
+    let adoption = fixture.adopt_approved(&fixture.path, &fixture.digest, &binds)?;
+    let receipts = adopted_receipts(&adoption)?;
+    let adopted = fixture.snapshot()?;
+    assert_eq!(adopted.batch_count, before.batch_count + 1);
+    assert_eq!(
+        adopted.family_counts.get("twin_localization_receipt"),
+        Some(&2)
+    );
+    // An exact rerun of the approval writes nothing.
+    let approval = preview.get("approval_digest")?.text()?.to_owned();
+    let mut again = binds.to_vec();
+    again.extend_from_slice(&["--approve", approval.as_str()]);
+    let rerun = report(&fixture.adopt(&fixture.path, &fixture.digest, &again)?)?;
+    assert_eq!(rerun.get("status")?.text()?, "already_current");
+    assert_eq!(fixture.snapshot()?.ledger_root, adopted.ledger_root);
+
+    // Corroborate: both calibrated cameras are adopted_current, bound to their receipts. An owner
+    // assertion of the same generation does not change it: the retained adoption decides.
+    let proposal = report(&fixture.run(&[])?)?;
+    assert_eq!(report(&fixture.run(&[])?)?, proposal);
+    assert_eq!(
+        report(&fixture.run(&["--camera-generation", "east:1:1"])?)?
+            .path(&["coverage", "approval_digest"])?,
+        proposal.path(&["coverage", "approval_digest"])?
+    );
+    for (entry, (handle, receipt)) in record_provenance(&proposal)?.iter().zip(&receipts) {
+        assert_eq!(entry.get("camera_handle")?.number()?, *handle);
+        assert_eq!(entry.get("generation_currency")?.text()?, "adopted_current");
+        assert_eq!(entry.get("adoption_receipt")?.text()?, receipt);
+        assert_eq!(
+            entry.get("currency_claim")?.text()?,
+            "retained_owner_adoption_not_a_physical_observation"
+        );
+    }
+    for (entry, (_, receipt)) in proposal
+        .get("pose_provenance")?
+        .items()?
+        .iter()
+        .zip(&receipts)
+    {
+        assert_eq!(entry.get("generation_currency")?.text()?, "adopted_current");
+        assert_eq!(entry.get("adoption_receipt")?.text()?, receipt);
+    }
+
+    // Retain the coverage and reopen the deployment cold.
+    let approval = proposal
+        .path(&["coverage", "approval_digest"])?
+        .text()?
+        .to_owned();
+    let retained = report(&fixture.run(&["--retain-coverage", approval.as_str()])?)?;
+    assert_eq!(
+        retained.path(&["coverage", "coverage_status"])?.text()?,
+        "retained"
+    );
+    let snapshot = fixture.snapshot()?;
+    assert_eq!(snapshot.coverage.len(), 2);
+    let pinned = ContentDigest::parse(&fixture.digest)?;
+    for (handle, receipt) in &receipts {
+        let receipt = ContentDigest::parse(receipt)?;
+        let expected = PoseProvenance::SiteCalibration {
+            calibration_digest: pinned,
+            camera_handle: *handle,
+            intrinsics_generation: 1,
+            extrinsics_generation: 1,
+            currency: GenerationCurrency::AdoptedCurrent { receipt },
+        };
+        assert!(
+            snapshot
+                .coverage
+                .iter()
+                .any(|record| record.record.pose_provenance == Some(expected)),
+            "camera {handle}"
+        );
+    }
+
+    // Orient names the adoption in the posed zone cells; `calibration show` lists both cameras.
+    let orient = Command::new(env!("CARGO_BIN_EXE_fss"))
+        .args(["orient", "--json", "--root"])
+        .arg(&root)
+        .args(["--view", "brief"])
+        .output()?;
+    success(&orient);
+    let text = String::from_utf8(orient.stdout)?;
+    assert!(
+        text.contains(&format!(
+            "Pose source: site calibration {} camera 21 intrinsics generation 1 extrinsics \
+             generation 1, generation currency adopted_current (retained owner adoption, not \
+             observed)",
+            fixture.digest
+        )),
+        "{text}"
+    );
+    let show = report(&calibration(&root, "show", &[])?)?;
+    assert_eq!(
+        show.get("format")?.text()?,
+        "fss.calibration_adoption_state.v1"
+    );
+    let shown: Vec<String> = show
+        .get("cameras")?
+        .items()?
+        .iter()
+        .map(|camera| {
+            Ok(camera
+                .path(&["current", "receipt_digest"])?
+                .text()?
+                .to_owned())
+        })
+        .collect::<TestResult<_>>()?;
+    assert_eq!(
+        shown,
+        receipts.iter().map(|(_, r)| r.clone()).collect::<Vec<_>>()
+    );
+    Ok(())
+}
+
+#[test]
+fn a_superseded_calibration_is_refused_as_stale_before_anything_is_appended() -> TestResult {
+    let fixture = calibrated("adopt-stale")?;
+    let binds = ["--bind", EAST_BIND, "--bind", WEST_BIND];
+    let v1 = fixture.adopt_approved(&fixture.path, &fixture.digest, &binds)?;
+    let v1_receipts = adopted_receipts(&v1)?;
+    // A valid v1 coverage approval, so the refusal cannot hide behind a missing approval.
+    let proposal = report(&fixture.run(&[])?)?;
+    let approval = proposal
+        .path(&["coverage", "approval_digest"])?
+        .text()?
+        .to_owned();
+
+    // v2: the same site with east's extrinsics generation 2; adopt it for both cameras.
+    let (v2_path, v2_digest) = fixture.recalibrate_east_extrinsics()?;
+    assert_ne!(v2_digest, fixture.digest);
+    let v2 = fixture.adopt_approved(&v2_path, &v2_digest, &binds)?;
+    for (camera, (_, prior)) in v2.get("cameras")?.items()?.iter().zip(&v1_receipts) {
+        assert_eq!(camera.path(&["receipt", "adoption"])?.number()?, 2);
+        assert_eq!(camera.path(&["receipt", "supersedes"])?.text()?, prior);
+        assert_eq!(camera.get("supersedes_current")?.text()?, prior);
+    }
+    assert_eq!(
+        v2.get("cameras")?.items()?[0]
+            .path(&["receipt", "extrinsics_generation"])?
+            .number()?,
+        2
+    );
+
+    // Corroborating with v1 is refused as stale, with or without an owner assertion and even
+    // with a valid --retain-coverage approval; nothing is appended.
+    let before = fixture.snapshot()?;
+    for extra in [
+        vec!["--retain-coverage", approval.as_str()],
+        vec![
+            "--camera-generation",
+            "east:1:1",
+            "--retain-coverage",
+            approval.as_str(),
+        ],
+    ] {
+        let output = fixture.run(&extra)?;
+        assert!(!output.status.success(), "{extra:?}");
+        assert!(output.stdout.is_empty(), "{extra:?}");
+        assert_eq!(
+            refusal(&output),
+            "ERR-CALIBRATION-ADOPTION-STALE-001",
+            "{extra:?}"
+        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("camera east"));
+        let after = fixture.snapshot()?;
+        assert_eq!(after.batch_count, before.batch_count);
+        assert_eq!(after.ledger_root, before.ledger_root);
+        assert!(after.coverage.is_empty());
+    }
+    // v2 is current for both cameras.
+    let current = report(&fixture.run_with(&v2_path, &v2_digest, &[])?)?;
+    for entry in record_provenance(&current)? {
+        assert_eq!(entry.get("generation_currency")?.text()?, "adopted_current");
+        assert_eq!(entry.get("calibration_digest")?.text()?, v2_digest);
+    }
+    // Monotone: v1 cannot be adopted again; history keeps both receipts, linked.
+    let regression = fixture.adopt(&fixture.path, &fixture.digest, &binds)?;
+    assert_eq!(
+        refusal(&regression),
+        "ERR-CALIBRATION-ADOPTION-REGRESSION-001"
+    );
+    let show = report(&calibration(&fixture.directory.root(), "show", &[])?)?;
+    let east = &show.get("cameras")?.items()?[0];
+    let history = east.get("history")?.items()?;
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[0].get("receipt_digest")?.text()?, v1_receipts[0].1);
+    assert_eq!(history[1].get("supersedes")?.text()?, v1_receipts[0].1);
+    assert_eq!(fixture.snapshot()?.ledger_root, before.ledger_root);
+    Ok(())
+}
+
+#[test]
+fn stale_tampered_and_invalid_adoption_approvals_are_refused_and_write_nothing() -> TestResult {
+    let fixture = calibrated("adopt-approval")?;
+    let east = ["--bind", EAST_BIND];
+    let first = report(&fixture.adopt(&fixture.path, &fixture.digest, &east)?)?;
+    let stale = first.get("approval_digest")?.text()?.to_owned();
+    fixture.adopt_approved(&fixture.path, &fixture.digest, &east)?;
+    let (v2_path, v2_digest) = fixture.recalibrate_east_extrinsics()?;
+    let second = report(&fixture.adopt(&v2_path, &v2_digest, &east)?)?;
+    let fresh = second.get("approval_digest")?.text()?.to_owned();
+    assert_ne!(fresh, stale);
+    // Tampered: the fresh approval with its last hex digit changed.
+    let last = fresh.chars().last().ok_or("empty digest")?;
+    let tampered = format!(
+        "{}{}",
+        &fresh[..fresh.len() - 1],
+        if last == '0' { '1' } else { '0' }
+    );
+    let before = fixture.snapshot()?;
+    for approval in [stale.as_str(), tampered.as_str()] {
+        let output = fixture.adopt(
+            &v2_path,
+            &v2_digest,
+            &["--bind", EAST_BIND, "--approve", approval],
+        )?;
+        assert!(!output.status.success(), "{approval}");
+        assert!(output.stdout.is_empty(), "{approval}");
+        assert_eq!(
+            refusal(&output),
+            "ERR-CALIBRATION-ADOPTION-APPROVAL-STALE-001",
+            "{approval}"
+        );
+    }
+    // A wrong calibration pin, an unknown camera, a sensor without retained evidence, and a
+    // rebinding of east to west's sensor are typed refusals.
+    for (args, id) in [
+        (vec!["--bind", EAST_BIND], "ERR-SITE-CALIBRATION-DIGEST-001"),
+        (
+            vec!["--bind", "south:sensor:east"],
+            "ERR-CALIBRATION-ADOPTION-INPUT-001",
+        ),
+        (
+            vec!["--bind", "north:sensor:ghost"],
+            "ERR-CALIBRATION-ADOPTION-SENSOR-UNRETAINED-001",
+        ),
+        (
+            vec!["--bind", "east:sensor:west"],
+            "ERR-CALIBRATION-ADOPTION-SENSOR-CONFLICT-001",
+        ),
+    ] {
+        let pin = if id == "ERR-SITE-CALIBRATION-DIGEST-001" {
+            fixture.digest.as_str()
+        } else {
+            v2_digest.as_str()
+        };
+        let output = fixture.adopt(&v2_path, pin, &args)?;
+        assert!(!output.status.success(), "{args:?}");
+        assert_eq!(refusal(&output), id, "{args:?}");
+    }
+    // Usage refusals: no binding, a malformed binding, a non-SHA-256 approval.
+    for args in [
+        vec![],
+        vec!["--bind", "east"],
+        vec!["--bind", EAST_BIND, "--approve", "not-a-digest"],
+    ] {
+        let output = fixture.adopt(&v2_path, &v2_digest, &args)?;
+        assert!(!output.status.success(), "{args:?}");
+        assert!(output.stdout.is_empty(), "{args:?}");
+    }
+    let after = fixture.snapshot()?;
+    assert_eq!(after.batch_count, before.batch_count);
+    assert_eq!(after.ledger_root, before.ledger_root);
+    // The fresh approval still retains exactly the previewed adoption.
+    let retained = report(&fixture.adopt(
+        &v2_path,
+        &v2_digest,
+        &["--bind", EAST_BIND, "--approve", fresh.as_str()],
+    )?)?;
+    assert_eq!(retained.get("status")?.text()?, "retained");
+    assert_eq!(fixture.snapshot()?.batch_count, before.batch_count + 1);
+    Ok(())
+}
+
+#[test]
+fn an_adopted_camera_over_another_sensors_recording_is_refused() -> TestResult {
+    let fixture = calibrated("adopt-sensor")?;
+    // The owner binds each camera to the other camera's sensor.
+    fixture.adopt_approved(
+        &fixture.path,
+        &fixture.digest,
+        &["--bind", "east:sensor:west", "--bind", "west:sensor:east"],
+    )?;
+    let before = fixture.snapshot()?;
+    let output = fixture.run(&[])?;
+    assert!(!output.status.success());
+    assert_eq!(
+        refusal(&output),
+        "ERR-CALIBRATION-ADOPTION-SENSOR-MISMATCH-001"
+    );
+    assert_eq!(fixture.snapshot()?.ledger_root, before.ledger_root);
+    Ok(())
+}
+
+#[test]
+fn a_camera_without_an_adoption_keeps_its_owner_asserted_or_unasserted_currency() -> TestResult {
+    let fixture = calibrated("adopt-partial")?;
+    // Only east is adopted; west keeps the existing behaviour.
+    let adoption =
+        fixture.adopt_approved(&fixture.path, &fixture.digest, &["--bind", EAST_BIND])?;
+    let receipt = adopted_receipts(&adoption)?[0].1.clone();
+    for (extra, west) in [
+        (vec![], "unasserted_unknown"),
+        (
+            vec!["--camera-generation", "west:1:1"],
+            "owner_asserted_not_observed",
+        ),
+    ] {
+        let proposal = report(&fixture.run(&extra)?)?;
+        let entries = record_provenance(&proposal)?;
+        assert_eq!(
+            entries[0].get("generation_currency")?.text()?,
+            "adopted_current"
+        );
+        assert_eq!(entries[0].get("adoption_receipt")?.text()?, receipt);
+        assert_eq!(entries[1].get("generation_currency")?.text()?, west);
+        assert!(entries[1].get("adoption_receipt").is_err());
+    }
+    Ok(())
+}

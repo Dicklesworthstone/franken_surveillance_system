@@ -389,13 +389,50 @@ its intrinsics and extrinsics generations. The provenance digest
 report, orient's zone cells and a cold reopen all show it; a posed version-2/3 record written
 before this binding is shown as `unrecorded`. Records of cameras without a pose keep their bytes.
 
-No deployment retains a camera's current intrinsics or extrinsics generation (sensor capsules do
-not carry one and nothing writes `twin_localization_receipt`), so generation currency is never
-observed. `--camera-generation NAME:INTRINSICS:EXTRINSICS` (requires `--calibration`) is the
-owner's assertion that a calibrated camera still has exactly those generations: a mismatch is
+Sensor capsules do not carry a camera's generation. `--camera-generation
+NAME:INTRINSICS:EXTRINSICS` (requires `--calibration`) is the owner's assertion that a calibrated
+camera still has exactly those generations: a mismatch is
 `ERR-SITE-CALIBRATION-GENERATION-STALE-001` before any source is read and nothing is appended; a
 match is recorded `owner_asserted_not_observed`, and a calibrated camera without an assertion
 `unasserted_unknown`.
+
+### Retained calibration adoption (fss-x8j0v follow-up)
+
+`fss-event calibration adopt --root DIR --site SITE --calibration FILE --calibration-digest
+sha256:HEX --bind NAME:SENSOR [--bind ...] [--approve sha256:APPROVAL]` makes a calibration the
+deployment's current one for the bound cameras. The file is verified against its pin first.
+Without `--approve` it prints each proposed receipt and the exact approval digest
+(`fss.calibration_adoption_approval.v1`, over the calibration, the bindings and each camera's
+current adoption) and writes nothing. With the approval it retains one `FSSTLR01` receipt
+(`fss.twin_localization_receipt.v1`) per camera in the `twin_localization_receipt` family, on
+`object:twin-localization:camera-<handle>`, all in one authority batch. A receipt carries the
+adoption generation, camera handle and name, the bound sensor, the calibration digest and twin,
+the intrinsics and extrinsics generations, and a link to the receipt it supersedes.
+
+- **Sensor binding.** The owner names the sensor; adoption requires a readable retained capsule of
+  it. A camera's sensor is fixed after its first adoption, and a sensor belongs to one camera
+  handle (`ERR-CALIBRATION-ADOPTION-SENSOR-CONFLICT-001`). Binding the sensor rather than one
+  import keeps the adoption valid for every later recording.
+- **Monotone.** A later adoption may raise a generation or replace the calibration at the same
+  generation; it may not lower a generation or re-adopt a calibration the camera superseded
+  (`ERR-CALIBRATION-ADOPTION-REGRESSION-001`). Every receipt stays in the ledger.
+- **Approval.** A stale or tampered approval is `ERR-CALIBRATION-ADOPTION-APPROVAL-STALE-001`
+  before any write; an exact rerun writes nothing. `calibration show` lists every adopted camera's
+  current receipt and history.
+
+`corroborate --calibration` consults the retained receipts before any frame is decoded. A camera
+whose current receipt names exactly this calibration and generation, over a recording of the
+adopted sensor, is recorded `adopted_current`, followed by the receipt digest in the provenance
+(the two earlier currencies keep their bytes). A camera with adoptions and another calibration is
+refused: `ERR-CALIBRATION-ADOPTION-STALE-001` when the calibration or a generation not above the
+adopted one was superseded, `ERR-CALIBRATION-ADOPTION-UNADOPTED-001` otherwise, and
+`ERR-CALIBRATION-ADOPTION-SENSOR-MISMATCH-001` for a recording of another sensor; nothing is
+appended. An `--camera-generation` assertion does not override an adoption. A camera without
+adoptions keeps the owner-asserted or unasserted currency.
+
+Non-claim: `adopted_current` means the deployment retains the owner's approval-gated adoption of
+that calibration. It is owner authority, not a physical measurement: nothing observes that the
+camera has not moved, zoomed or been relensed since.
 
 ### Privacy masks with geometry and tolerant decode (fss-bgqkd)
 

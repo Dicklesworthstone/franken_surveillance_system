@@ -8,6 +8,8 @@ pub mod activity;
 /// Complete, restart-reproducible detector/tracker reports over retained recordings.
 pub mod analysis;
 pub mod annexb;
+/// Owner, approval-gated adoption of a site calibration per camera, retained as authority.
+pub mod calibration_adoption;
 /// Cross-camera association of tracked objects via time and geometry gates.
 pub mod cross_camera;
 /// Explicit model-output decoding and source-linked detector proposals.

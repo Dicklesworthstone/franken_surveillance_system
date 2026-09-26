@@ -30,6 +30,8 @@ use fss_reference::{ReferenceDeployment, ReplayCx};
 mod alert;
 #[path = "fss-event/calibrate.rs"]
 mod calibrate;
+#[path = "fss-event/calibration.rs"]
+mod calibration;
 #[path = "fss-event/corroborate.rs"]
 mod corroborate;
 #[path = "fss-event/coverage.rs"]
@@ -45,7 +47,7 @@ mod privacy_mask;
 #[path = "fss-event/watch.rs"]
 mod watch;
 
-const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|calibrate|alert|privacy-mask|graph|delete> [options]\n\
+const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|calibrate|calibration|alert|privacy-mask|graph|delete> [options]\n\
   All: --root DIR --site SITE [--principal ID]\n\
   report: --import-id sha256:HEX --runs FILE --interpretation gray|ycbcr\n\
           --model-digest sha256:HEX --output-port NAME --labels ORDERED,CLASS,NAMES\n\
@@ -139,7 +141,12 @@ const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|cal
     needs --calibration) is the OWNER'S ASSERTION that a calibrated camera still has exactly\n\
     those generations: a mismatch is refused as stale (ERR-SITE-CALIBRATION-GENERATION-STALE-001)\n\
     before any source is read; a match is recorded owner_asserted_not_observed, and a\n\
-    calibrated camera without one unasserted_unknown. Currency is never observed.\n\
+    calibrated camera without one unasserted_unknown. A camera the deployment has an adoption\n\
+    for (calibration adopt) is instead adopted_current when the calibration and generation are\n\
+    exactly the adopted ones over a recording of the adopted sensor (the coverage binds the\n\
+    receipt digest); any other calibration of that camera is refused as stale\n\
+    (ERR-CALIBRATION-ADOPTION-STALE-001) or unadopted before anything is appended. Currency is\n\
+    owner authority (assertion or retained adoption), never a physical observation.\n\
   calibrate (owner site calibration; no --root/--site, no deployment is opened):\n\
           --twin FILE --twin-digest sha256:HEX --twin-source-digest sha256:HEX\n\
           --atlas FILE --atlas-digest sha256:HEX --atlas-provenance sha256:HEX\n\
@@ -153,6 +160,19 @@ const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|cal
     (fss.site_calibration.v1, or v2 when a frame took part) create-only; any refusal (too few\n\
     control points, disconnected cameras, failed localization, undecodable frame) writes\n\
     nothing. See fss-event calibrate --help.\n\
+  calibration adopt (owner adoption, per camera): --calibration FILE --calibration-digest\n\
+          sha256:HEX --bind NAME:SENSOR [--bind ...] (1..16; a calibrated camera and a sensor\n\
+          with retained evidence) [--approve sha256:APPROVAL] [--report-out FILE]\n\
+    The calibration is verified against the pinned digest first. Without --approve: prints\n\
+    each proposed twin_localization_receipt (camera handle, sensor, calibration digest, twin,\n\
+    intrinsics/extrinsics generations, supersedes link) and the exact approval over each\n\
+    camera's current retained adoption; nothing is written. --approve retains exactly that\n\
+    adoption (authority, one batch); a stale or wrong approval is refused before any write\n\
+    (ERR-CALIBRATION-ADOPTION-APPROVAL-STALE-001); reruns write nothing. Monotone per camera:\n\
+    a new generation or calibration supersedes, a lower generation or a superseded calibration\n\
+    is refused, the sensor binding is fixed, and history is never erased. An adoption is\n\
+    owner authority, not a physical observation of the camera.\n\
+  calibration show: every adopted camera's current receipt and full history.\n\
   alert (one webhook for a corroborated event): --event-id ID --relay IP:PORT --path /PATH\n\
           --plaintext-approval sha256:HEX --deadline-ms N (1..60000)\n\
           [--approve sha256:PLAN [--dispatch sha256:DISPATCH]] [--report-out FILE]\n\
@@ -239,6 +259,7 @@ enum Action {
     Corroborate(Box<corroborate::CorroborateAction>),
     Alert(Box<alert::AlertAction>),
     PrivacyMask(Box<privacy_mask::PrivacyMaskAction>),
+    Calibration(Box<calibration::CalibrationAction>),
     Delete(Box<delete::DeleteAction>),
 }
 #[derive(Debug)]
@@ -360,9 +381,23 @@ fn parse(args: &[OsString]) -> Result<Option<Options>, String> {
             action: Action::PrivacyMask(Box::new(request)),
         }));
     }
+    if action == "calibration" {
+        let request = calibration::parse(&args[1..])?;
+        return Ok(Some(Options {
+            root: request.root.clone(),
+            site: request.site.clone(),
+            principal: request.principal.clone(),
+            limits: AnalysisLimits::default(),
+            detection_units: 0,
+            association_units: 0,
+            event_out: None,
+            report_out: None,
+            action: Action::Calibration(Box::new(request)),
+        }));
+    }
     if !matches!(action, "report" | "prepare" | "publish" | "read") {
         return Err(
-            "expected report, prepare, publish, read, watch, corroborate, alert, privacy-mask or delete"
+            "expected report, prepare, publish, read, watch, corroborate, alert, privacy-mask, calibration or delete"
                 .into(),
         );
     }
@@ -698,6 +733,10 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
                 privacy_mask::run(action, &mut deployment, &options.root, &cx, out)?;
                 return Ok(());
             }
+            Action::Calibration(action) => {
+                calibration::run(action, &mut deployment, &options.root, &cx, out)?;
+                return Ok(());
+            }
             Action::Delete(action) => {
                 delete::run(action, &mut deployment, &authority, &cx, out)?;
                 return Ok(());
@@ -986,6 +1025,8 @@ fn main() -> ExitCode {
                 } else if let Some(refusal) = e.downcast_ref::<fss_reference::ingest::detector_cascade::CascadeError>() {
                     eprintln!("refusal_id={}", refusal.stable_id());
                 } else if let Some(refusal) = e.downcast_ref::<fss_reference::ingest::privacy_mask::PrivacyMaskError>() {
+                    eprintln!("refusal_id={}", refusal.stable_id());
+                } else if let Some(refusal) = e.downcast_ref::<fss_reference::ingest::calibration_adoption::AdoptionError>() {
                     eprintln!("refusal_id={}", refusal.stable_id());
                 } else if let Some(refusal) = e.downcast_ref::<fss_reference::deletion::DeletionError>() {
                     eprintln!("refusal_id={}", refusal.stable_id());

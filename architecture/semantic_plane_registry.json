@@ -222,6 +222,8 @@
     "crates/fss-reference/src/ingest/activity.rs": "support",
     "crates/fss-reference/src/ingest/analysis.rs": "support",
     "crates/fss-reference/src/ingest/annexb.rs": "support",
+    "crates/fss-reference/src/ingest/calibration_adoption.rs": "authority",
+    "crates/fss-reference/src/ingest/calibration_adoption/tests.rs": "support",
     "crates/fss-reference/src/ingest/cross_camera.rs": "support",
     "crates/fss-reference/src/ingest/cross_camera/global.rs": "support",
     "crates/fss-reference/src/ingest/cross_camera/intervals.rs": "support",
