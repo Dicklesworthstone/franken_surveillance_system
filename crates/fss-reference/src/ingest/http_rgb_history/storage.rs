@@ -4,7 +4,7 @@ use super::*;
 use crate::ReferenceDeployment;
 use crate::ingest::rgb_archive::{RgbArchiveAuthority, RgbArchiveLimits, restore_rgb_evidence};
 use crate::ingest::rgb_evidence::RgbEvidenceBudget;
-use fss_core::LedgerAnchor;
+use fss_core::{CanonicalEncode, LedgerAnchor};
 use fss_publication::{PublishCancellation, PublishCutPoint, RootLedgerReceipt, RootLedgerState,
     ROOT_REACHABILITY_FAMILY, ROOT_REACHABILITY_OBJECT_PREFIX};
 use std::collections::BTreeMap;
