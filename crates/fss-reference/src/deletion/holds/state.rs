@@ -113,7 +113,11 @@ impl HoldState {
     }
 
     pub(super) fn validate(self) -> Result<(), HoldError> {
-        if let Self::Expired { not_before, attested_now } = self {
+        if let Self::Expired {
+            not_before,
+            attested_now,
+        } = self
+        {
             if (Self::Until { not_before }).readiness(attested_now)?
                 != RetentionReadiness::EligibleForExpiry
             {
@@ -135,9 +139,13 @@ impl HoldState {
         }
         match (self, next) {
             (Self::Held, Self::Released) => true,
-            (Self::Until { not_before }, Self::Expired { not_before: next_deadline, .. }) => {
-                not_before == next_deadline
-            }
+            (
+                Self::Until { not_before },
+                Self::Expired {
+                    not_before: next_deadline,
+                    ..
+                },
+            ) => not_before == next_deadline,
             _ => false,
         }
     }
@@ -166,7 +174,10 @@ impl HoldState {
                 e.u8(2);
                 e.i128(not_before.0);
             }
-            Self::Expired { not_before, attested_now } => {
+            Self::Expired {
+                not_before,
+                attested_now,
+            } => {
                 e.u8(3);
                 e.i128(not_before.0);
                 e.i128(attested_now.earliest.0);
@@ -179,7 +190,9 @@ impl HoldState {
         let state = match (version, d.u8()?) {
             (1, 0) => Self::Held,
             (1, 1) => Self::Released,
-            (2, 2) => Self::Until { not_before: TimestampNs(d.i128()?) },
+            (2, 2) => Self::Until {
+                not_before: TimestampNs(d.i128()?),
+            },
             (2, 3) => Self::Expired {
                 not_before: TimestampNs(d.i128()?),
                 attested_now: CaptureInterval::new(TimestampNs(d.i128()?), TimestampNs(d.i128()?))?,
@@ -196,12 +209,18 @@ mod tests {
     use super::*;
 
     fn time(first: i128, last: i128) -> CaptureInterval {
-        CaptureInterval { earliest: TimestampNs(first), latest: TimestampNs(last) }
+        CaptureInterval {
+            earliest: TimestampNs(first),
+            latest: TimestampNs(last),
+        }
     }
 
     #[test]
-    fn expiry_uses_the_earliest_bound_and_keeps_eligibility_distinct_from_release() -> Result<(), HoldError> {
-        let state = HoldState::Until { not_before: TimestampNs(10) };
+    fn expiry_uses_the_earliest_bound_and_keeps_eligibility_distinct_from_release()
+    -> Result<(), HoldError> {
+        let state = HoldState::Until {
+            not_before: TimestampNs(10),
+        };
         for (bounds, expected) in [
             ((8, 9), RetentionReadiness::NotDue),
             ((9, 10), RetentionReadiness::TimeUncertain),
@@ -211,8 +230,14 @@ mod tests {
         ] {
             let now = time(bounds.0, bounds.1);
             assert_eq!(state.readiness(now)?, expected);
-            let next = HoldState::Expired { not_before: TimestampNs(10), attested_now: now };
-            assert_eq!(state.permits_successor(next), expected == RetentionReadiness::EligibleForExpiry);
+            let next = HoldState::Expired {
+                not_before: TimestampNs(10),
+                attested_now: now,
+            };
+            assert_eq!(
+                state.permits_successor(next),
+                expected == RetentionReadiness::EligibleForExpiry
+            );
             assert!(state.is_active());
         }
         Ok(())
@@ -220,25 +245,52 @@ mod tests {
 
     #[test]
     fn lifecycle_never_shortens_converts_or_implicitly_releases_a_hold() {
-        let until = HoldState::Until { not_before: TimestampNs(10) };
-        let expired = HoldState::Expired { not_before: TimestampNs(10), attested_now: time(10, 12) };
+        let until = HoldState::Until {
+            not_before: TimestampNs(10),
+        };
+        let expired = HoldState::Expired {
+            not_before: TimestampNs(10),
+            attested_now: time(10, 12),
+        };
         let states = [HoldState::Held, HoldState::Released, until, expired];
         for (i, from) in states.iter().enumerate() {
             for (j, to) in states.iter().enumerate() {
-                assert_eq!(from.permits_successor(*to), (i, j) == (0, 1) || (i, j) == (2, 3));
+                assert_eq!(
+                    from.permits_successor(*to),
+                    (i, j) == (0, 1) || (i, j) == (2, 3)
+                );
             }
         }
-        assert!(!until.permits_successor(HoldState::Expired { not_before: TimestampNs(9), attested_now: time(10, 12) }));
-        assert!(!until.permits_successor(HoldState::Expired { not_before: TimestampNs(11), attested_now: time(12, 12) }));
+        assert!(!until.permits_successor(HoldState::Expired {
+            not_before: TimestampNs(9),
+            attested_now: time(10, 12)
+        }));
+        assert!(!until.permits_successor(HoldState::Expired {
+            not_before: TimestampNs(11),
+            attested_now: time(12, 12)
+        }));
     }
 
     #[test]
     fn full_width_times_and_invalid_intervals_do_not_overflow() -> Result<(), HoldError> {
-        let min = HoldState::Until { not_before: TimestampNs(i128::MIN) };
-        let max = HoldState::Until { not_before: TimestampNs(i128::MAX) };
-        assert_eq!(min.readiness(time(i128::MIN, i128::MAX))?, RetentionReadiness::EligibleForExpiry);
-        assert_eq!(max.readiness(time(i128::MIN, i128::MAX))?, RetentionReadiness::TimeUncertain);
-        assert_eq!(max.readiness(time(i128::MAX, i128::MAX))?, RetentionReadiness::EligibleForExpiry);
+        let min = HoldState::Until {
+            not_before: TimestampNs(i128::MIN),
+        };
+        let max = HoldState::Until {
+            not_before: TimestampNs(i128::MAX),
+        };
+        assert_eq!(
+            min.readiness(time(i128::MIN, i128::MAX))?,
+            RetentionReadiness::EligibleForExpiry
+        );
+        assert_eq!(
+            max.readiness(time(i128::MIN, i128::MAX))?,
+            RetentionReadiness::TimeUncertain
+        );
+        assert_eq!(
+            max.readiness(time(i128::MAX, i128::MAX))?,
+            RetentionReadiness::EligibleForExpiry
+        );
         assert!(max.readiness(time(1, 0)).is_err());
         assert!(HoldState::Held.readiness(time(1, 0)).is_err());
         Ok(())
@@ -247,9 +299,15 @@ mod tests {
     #[test]
     fn state_codec_keeps_v1_bytes_and_rejects_cross_version_tags() -> Result<(), HoldError> {
         for state in [
-            HoldState::Held, HoldState::Released,
-            HoldState::Until { not_before: TimestampNs(i128::MIN) },
-            HoldState::Expired { not_before: TimestampNs(i128::MAX), attested_now: time(i128::MAX, i128::MAX) },
+            HoldState::Held,
+            HoldState::Released,
+            HoldState::Until {
+                not_before: TimestampNs(i128::MIN),
+            },
+            HoldState::Expired {
+                not_before: TimestampNs(i128::MAX),
+                attested_now: time(i128::MAX, i128::MAX),
+            },
         ] {
             let mut e = CanonicalEncoder::new();
             state.encode(&mut e);

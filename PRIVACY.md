@@ -106,9 +106,15 @@ and replay decode paths (fss-g9gml):
   custody; every pixel derivation from it is masked. RTSP live capture and archiving decode no
   pixels at all (a source-scan test pins that capture and custody modules name no pixel decoder).
 
-Not enforced yet: raw custody export of RTSP recordings (`fss-archive export`, which emits
-original packets, not pixels) and of archived HTTP wire reads is not refused for a masked sensor
-(the analogous `fss-file extract` is); the synthetic laboratory twin; polygons, audio exclusion,
+Raw custody export is refused for a masked sensor on both export paths: `fss-file extract` and
+`fss-archive export` (original RTSP packets, which cannot be masked without re-encoding). The
+archive export must name the deployment retaining the sensor's mask authority
+(`--privacy-root DIR --site SITE`, operator-declared); a masked sensor, or an export naming no
+deployment, is refused before the archive is opened or any output exists
+(`ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001`, no override). Archived HTTP wire reads have no export
+command.
+
+Not enforced yet: the synthetic laboratory twin; polygons, audio exclusion,
 archive-only versus model-only redaction, deletion closure (unmasked source and superseded
 decodes remain in local custody), retention schedules, and biometric controls beyond the absence
 of any biometric feature.

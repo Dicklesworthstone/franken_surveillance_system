@@ -1422,7 +1422,10 @@ impl ReferenceDeployment {
 
         // Reserve the namespace too: changing family must not shadow an effective hold.
         if deltas.iter().any(|delta| {
-            delta.object_id.as_str().starts_with(crate::deletion::holds::HOLD_OBJECT_PREFIX)
+            delta
+                .object_id
+                .as_str()
+                .starts_with(crate::deletion::holds::HOLD_OBJECT_PREFIX)
         }) {
             return Err(ReferenceError::ReservedDeltaFamily {
                 family: FAMILY_EVIDENCE_HOLD.to_owned(),
@@ -1457,11 +1460,16 @@ impl ReferenceDeployment {
                 stage: STAGE_APPEND_BATCH,
             });
         }
-        if deltas.len() != 1 || deltas.iter().any(|delta| {
-            delta.family != FAMILY_EVIDENCE_HOLD
-                || !delta.object_id.as_str().starts_with(crate::deletion::holds::HOLD_OBJECT_PREFIX)
-                || delta.plane != Plane::Authority
-        }) {
+        if deltas.len() != 1
+            || deltas.iter().any(|delta| {
+                delta.family != FAMILY_EVIDENCE_HOLD
+                    || !delta
+                        .object_id
+                        .as_str()
+                        .starts_with(crate::deletion::holds::HOLD_OBJECT_PREFIX)
+                    || delta.plane != Plane::Authority
+            })
+        {
             return Err(ReferenceError::InvalidSpec("invalid evidence hold batch"));
         }
         self.append_checked_batch(batch_id, deltas, children)

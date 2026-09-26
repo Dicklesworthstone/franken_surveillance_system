@@ -1647,7 +1647,7 @@
       "id": "ERR-PRIVACY-MASK-RESOLUTION-001"
     },
     {
-      "description": "the request would serve or analyse pixels the sensor's current retained privacy mask does not mask (raw retained source export; a decode retained under no or a superseded mask policy; a live, recording, replay or `check-http` decode naming no sensor; an owner permission grid or frozen background admitting masked pixels; RGB evidence recorded under another binding); no override capability exists",
+      "description": "the request would serve or analyse pixels the sensor's current retained privacy mask does not mask (raw retained source export: `fss-file extract` of a masked sensor, and `fss-archive export` of original RTSP packets of a masked sensor or naming no privacy deployment; a decode retained under no or a superseded mask policy; a live, recording, replay or `check-http` decode naming no sensor; an owner permission grid or frozen background admitting masked pixels; RGB evidence recorded under another binding); no override capability exists",
       "guidance": "decode again under the current policy, naming the sensor; exclude masked pixels from the permission grid and refreeze the background; raw source of a masked sensor has no export path",
       "id": "ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001"
     },

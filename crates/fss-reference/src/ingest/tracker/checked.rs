@@ -80,7 +80,8 @@ impl MultiObjectTracker {
         detections: &[Detection],
         limits: TrackerLimits,
     ) -> Result<TrackerOutput, TrackerStepError> {
-        self.try_step_assigned(detections, limits).map(|result| result.output)
+        self.try_step_assigned(detections, limits)
+            .map(|result| result.output)
     }
 
     /// Atomically advances one bounded frame and returns the exact input-to-track assignments.
