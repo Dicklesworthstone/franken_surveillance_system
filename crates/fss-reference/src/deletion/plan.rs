@@ -4,6 +4,13 @@
 //! Both are exact canonical byte strings (`fss.canonical.v1` framing) whose SHA-256 is their
 //! identity. The plan is retained in custody as the payload of the deletion record; it names
 //! digests, identities and sizes of the content it deletes, never the content itself.
+//!
+//! An import-scope plan keeps the `fss.deletion_plan.v1` / `fss.deletion_completion.v1` bytes
+//! unchanged (every earlier plan and completion record still decodes to the same digest). A
+//! sensor- or event-scope plan uses `fss.deletion_plan.v2` / `fss.deletion_completion.v2`, whose
+//! bytes carry the scope kind, the scope identity and the sorted member imports in place of the
+//! single import identity, so no scoped plan is ever the digest of an import plan (and v2 refuses
+//! the import kind: each scope has exactly one canonical encoding).
 
 use std::collections::BTreeSet;
 
@@ -13,13 +20,19 @@ use fss_core::{
 };
 
 use super::DeletionError;
+use super::scope::DeletionScope;
 
-/// Canonical plan domain (`SCHEMA-DOMAIN-DELETION-PLAN-001`).
+/// Canonical plan domain of an import-scope plan (`SCHEMA-DOMAIN-DELETION-PLAN-001`).
 pub const DELETION_PLAN_DOMAIN: &str = "fss.deletion_plan.v1";
+/// Canonical plan domain of a sensor- or event-scope plan (`SCHEMA-DOMAIN-DELETION-PLAN-002`).
+pub const DELETION_SCOPE_PLAN_DOMAIN: &str = "fss.deletion_plan.v2";
 /// Exact approval domain (`SCHEMA-DOMAIN-DELETION-APPROVAL-001`).
 pub const DELETION_APPROVAL_DOMAIN: &str = "fss.deletion_approval.v1";
-/// Canonical completion domain (`SCHEMA-DOMAIN-DELETION-COMPLETION-001`).
+/// Canonical completion domain of an import-scope plan (`SCHEMA-DOMAIN-DELETION-COMPLETION-001`).
 pub const DELETION_COMPLETION_DOMAIN: &str = "fss.deletion_completion.v1";
+/// Canonical completion domain of a sensor- or event-scope plan
+/// (`SCHEMA-DOMAIN-DELETION-COMPLETION-002`).
+pub const DELETION_SCOPE_COMPLETION_DOMAIN: &str = "fss.deletion_completion.v2";
 /// Removal mechanism named by every plan and completion record: the spool file is unlinked from
 /// the local filesystem. It is not cryptographic erasure (the spool is not encrypted).
 pub const DELETION_MECHANISM: &str = "filesystem_unlink";
@@ -125,18 +138,21 @@ pub struct Unattributed {
     pub object_bytes: u64,
 }
 
-/// The sealed deletion plan of one retained import (`CAP-DELETE-PREPARE-001`).
+/// The sealed deletion plan of one scope: one retained import, or every retained import of a
+/// sensor or an event (`CAP-DELETE-PREPARE-001`).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeletionPlan {
     /// Site lineage.
     pub site_lineage: String,
-    /// Deleted import identity.
-    pub import_identity: ContentDigest,
+    /// What the plan deletes (bound into the digest).
+    pub scope: DeletionScope,
+    /// Deleted import identities, strictly ascending; exactly the import of an import scope.
+    pub imports: Vec<ContentDigest>,
     /// Authority head the plan was computed at; any later commit makes it stale.
     pub basis_anchor: LedgerAnchor,
     /// Effect-journal record root at planning time.
     pub effect_journal_root: ContentDigest,
-    /// Validity of the deletion record (the import's own validity).
+    /// Validity of the deletion record (the hull of the member imports' validities).
     pub validity: CaptureInterval,
     /// Spool objects read and scanned for retained references.
     pub scanned_objects: u64,
@@ -238,9 +254,22 @@ impl DeletionPlan {
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, DeletionError> {
         let mut e = CanonicalEncoder::new();
         e.text("fss.canonical.v1");
-        e.text(DELETION_PLAN_DOMAIN);
-        e.text(&self.site_lineage);
-        e.digest(self.import_identity);
+        match &self.scope {
+            DeletionScope::Import(import) => {
+                if self.imports.as_slice() != [*import] {
+                    return Err(invalid());
+                }
+                e.text(DELETION_PLAN_DOMAIN);
+                e.text(&self.site_lineage);
+                e.digest(*import);
+            }
+            scope => {
+                e.text(DELETION_SCOPE_PLAN_DOMAIN);
+                e.text(&self.site_lineage);
+                scope.encode(&mut e);
+                encode_list(&mut e, &self.imports, |e, import| e.digest(*import));
+            }
+        }
         self.basis_anchor.encode_canonical(&mut e);
         e.digest(self.effect_journal_root);
         self.validity.encode_canonical(&mut e);
@@ -303,12 +332,16 @@ impl DeletionPlan {
         Ok(ContentDigest::sha256(&self.canonical_bytes()?))
     }
 
-    /// Whether `bytes` begin with the canonical plan framing (used to keep deletion records out of
-    /// the reference scan).
+    /// Whether `bytes` begin with a canonical plan framing (v1 or v2; used to keep deletion
+    /// records out of the reference scan).
     #[must_use]
     pub fn is_plan_bytes(bytes: &[u8]) -> bool {
         let mut d = CanonicalDecoder::new(bytes);
-        matches!(d.text(), Ok("fss.canonical.v1")) && matches!(d.text(), Ok(DELETION_PLAN_DOMAIN))
+        matches!(d.text(), Ok("fss.canonical.v1"))
+            && matches!(
+                d.text(),
+                Ok(DELETION_PLAN_DOMAIN | DELETION_SCOPE_PLAN_DOMAIN)
+            )
     }
 
     /// Decodes exact canonical bytes after checking their digest; fails closed on anything else.
@@ -322,11 +355,16 @@ impl DeletionPlan {
             return Err(ContractError::DigestMismatch.into());
         }
         let mut d = CanonicalDecoder::new(bytes);
-        if d.text()? != "fss.canonical.v1" || d.text()? != DELETION_PLAN_DOMAIN {
+        if d.text()? != "fss.canonical.v1" {
             return Err(invalid());
         }
+        let scoped = match d.text()? {
+            DELETION_PLAN_DOMAIN => false,
+            DELETION_SCOPE_PLAN_DOMAIN => true,
+            _ => return Err(invalid()),
+        };
         let site_lineage = d.text()?.to_owned();
-        let import_identity = sha(&mut d)?;
+        let (scope, imports) = decode_scope(&mut d, scoped)?;
         let basis_anchor = LedgerAnchor::decode_canonical(&mut d)?;
         let effect_journal_root = sha(&mut d)?;
         let validity = CaptureInterval::decode_canonical(&mut d)?;
@@ -403,7 +441,8 @@ impl DeletionPlan {
         d.ensure_finished()?;
         let plan = Self {
             site_lineage,
-            import_identity,
+            scope,
+            imports,
             basis_anchor,
             effect_journal_root,
             validity,
@@ -475,6 +514,53 @@ impl DeletionPlan {
     pub fn record_object_id(import_identity: ContentDigest) -> String {
         format!("object:deletion:{}", hex(import_identity))
     }
+
+    /// Ledger object identity of this plan's deletion record: the import's for an import scope
+    /// (unchanged), the plan's own identity for a sensor or event scope (a sensor can be deleted
+    /// again after new imports, each time under a new plan).
+    #[must_use]
+    pub fn record_object_id_of(&self, plan_digest: ContentDigest) -> String {
+        match &self.scope {
+            DeletionScope::Import(import) => Self::record_object_id(*import),
+            DeletionScope::Sensor(_) | DeletionScope::Event(_) => {
+                format!("object:deletion-scope:{}", hex(plan_digest))
+            }
+        }
+    }
+
+    /// Canonical domain of this plan's bytes.
+    #[must_use]
+    pub const fn domain(&self) -> &'static str {
+        match self.scope {
+            DeletionScope::Import(_) => DELETION_PLAN_DOMAIN,
+            DeletionScope::Sensor(_) | DeletionScope::Event(_) => DELETION_SCOPE_PLAN_DOMAIN,
+        }
+    }
+}
+
+/// Scope and member imports: v1 carries one import digest; v2 a non-import scope and a
+/// non-empty, strictly ascending member list.
+fn decode_scope(
+    d: &mut CanonicalDecoder<'_>,
+    scoped: bool,
+) -> Result<(DeletionScope, Vec<ContentDigest>), DeletionError> {
+    if !scoped {
+        let import = sha(d)?;
+        return Ok((DeletionScope::Import(import), vec![import]));
+    }
+    let scope = DeletionScope::decode(d)?;
+    if matches!(scope, DeletionScope::Import(_)) {
+        return Err(invalid());
+    }
+    let n = count(d, 33)?;
+    let mut imports = Vec::with_capacity(n);
+    for _ in 0..n {
+        imports.push(sha(d)?);
+    }
+    if imports.is_empty() || !strictly_sorted(&imports) {
+        return Err(ContractError::NonCanonicalOrdering.into());
+    }
+    Ok((scope, imports))
 }
 
 /// Exact approval digest over a plan digest, the site and the approving principal.
@@ -499,8 +585,10 @@ pub fn approval_digest(
 pub struct DeletionCompletion {
     /// Sealed plan.
     pub plan_digest: ContentDigest,
-    /// Deleted import.
-    pub import_identity: ContentDigest,
+    /// Deleted scope.
+    pub scope: DeletionScope,
+    /// Deleted imports, strictly ascending.
+    pub imports: Vec<ContentDigest>,
     /// Objects unlinked, every name verified absent from the spool afterwards.
     pub objects_unlinked: u64,
     /// Their bytes.
@@ -524,7 +612,8 @@ impl DeletionCompletion {
     pub fn of(plan: &DeletionPlan) -> Result<Self, DeletionError> {
         Ok(Self {
             plan_digest: plan.digest()?,
-            import_identity: plan.import_identity,
+            scope: plan.scope.clone(),
+            imports: plan.imports.clone(),
             objects_unlinked: plan.deletable.len() as u64,
             bytes_unlinked: plan.deletable_bytes(),
             roots_retracted: plan.retractions.len() as u64,
@@ -540,9 +629,22 @@ impl DeletionCompletion {
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, DeletionError> {
         let mut e = CanonicalEncoder::new();
         e.text("fss.canonical.v1");
-        e.text(DELETION_COMPLETION_DOMAIN);
-        e.digest(self.plan_digest);
-        e.digest(self.import_identity);
+        match &self.scope {
+            DeletionScope::Import(import) => {
+                if self.imports.as_slice() != [*import] {
+                    return Err(invalid());
+                }
+                e.text(DELETION_COMPLETION_DOMAIN);
+                e.digest(self.plan_digest);
+                e.digest(*import);
+            }
+            scope => {
+                e.text(DELETION_SCOPE_COMPLETION_DOMAIN);
+                e.digest(self.plan_digest);
+                scope.encode(&mut e);
+                encode_list(&mut e, &self.imports, |e, import| e.digest(*import));
+            }
+        }
         e.u64(self.objects_unlinked);
         e.u64(self.bytes_unlinked);
         e.u64(self.roots_retracted);
@@ -570,7 +672,10 @@ impl DeletionCompletion {
     pub fn is_completion_bytes(bytes: &[u8]) -> bool {
         let mut d = CanonicalDecoder::new(bytes);
         matches!(d.text(), Ok("fss.canonical.v1"))
-            && matches!(d.text(), Ok(DELETION_COMPLETION_DOMAIN))
+            && matches!(
+                d.text(),
+                Ok(DELETION_COMPLETION_DOMAIN | DELETION_SCOPE_COMPLETION_DOMAIN)
+            )
     }
 
     /// Decodes exact canonical bytes after checking their digest.
@@ -584,12 +689,20 @@ impl DeletionCompletion {
             return Err(ContractError::DigestMismatch.into());
         }
         let mut d = CanonicalDecoder::new(bytes);
-        if d.text()? != "fss.canonical.v1" || d.text()? != DELETION_COMPLETION_DOMAIN {
+        if d.text()? != "fss.canonical.v1" {
             return Err(invalid());
         }
+        let scoped = match d.text()? {
+            DELETION_COMPLETION_DOMAIN => false,
+            DELETION_SCOPE_COMPLETION_DOMAIN => true,
+            _ => return Err(invalid()),
+        };
+        let plan_digest = sha(&mut d)?;
+        let (scope, imports) = decode_scope(&mut d, scoped)?;
         let record = Self {
-            plan_digest: sha(&mut d)?,
-            import_identity: sha(&mut d)?,
+            plan_digest,
+            scope,
+            imports,
             objects_unlinked: d.u64()?,
             bytes_unlinked: d.u64()?,
             roots_retracted: d.u64()?,

@@ -6,7 +6,7 @@ use super::plan::{
     ClosureUnit, DeletableObject, DeletionCompletion, DeletionPlan, EventReference, Finding,
     ObjectTombstone, RetainedObject, RootRetraction, Unattributed, approval_digest,
 };
-use super::{DELETION_CUT_POINTS, DeletionError};
+use super::{DELETION_CUT_POINTS, DeletionError, DeletionScope};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -14,7 +14,8 @@ fn plan() -> Result<DeletionPlan, DeletionError> {
     let validity = CaptureInterval::new(TimestampNs(10), TimestampNs(20))?;
     Ok(DeletionPlan {
         site_lineage: "site:deletion-unit".to_owned(),
-        import_identity: ContentDigest::sha256(b"import"),
+        scope: DeletionScope::Import(ContentDigest::sha256(b"import")),
+        imports: vec![ContentDigest::sha256(b"import")],
         basis_anchor: LedgerAnchor {
             site_lineage: "site:deletion-unit".to_owned(),
             ledger_epoch: 1,
@@ -207,4 +208,159 @@ fn embedded_references_are_found_raw_and_hex_and_only_in_the_universe() {
     let mut found = std::collections::BTreeSet::new();
     super::walk::embedded(&hex.as_bytes()[..63], &universe, &prefix, &mut found);
     assert!(found.is_empty());
+}
+
+fn scoped(scope: DeletionScope) -> Result<DeletionPlan, DeletionError> {
+    let mut plan = plan()?;
+    let mut imports = vec![ContentDigest::sha256(b"a"), ContentDigest::sha256(b"b")];
+    imports.sort();
+    plan.scope = scope;
+    plan.imports = imports;
+    Ok(plan)
+}
+
+/// The v1 plan layout exactly as it was before scopes existed, encoded independently.
+fn legacy_v1_bytes(plan: &DeletionPlan) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    use fss_core::{CanonicalEncode, CanonicalEncoder};
+    let mut e = CanonicalEncoder::new();
+    e.text("fss.canonical.v1");
+    e.text("fss.deletion_plan.v1");
+    e.text(&plan.site_lineage);
+    e.digest(plan.imports[0]);
+    plan.basis_anchor.encode_canonical(&mut e);
+    e.digest(plan.effect_journal_root);
+    plan.validity.encode_canonical(&mut e);
+    e.u64(plan.scanned_objects);
+    e.u64(plan.scanned_bytes);
+    e.u64(plan.units.len() as u64);
+    for u in &plan.units {
+        e.text(&u.id);
+        e.text(&u.kind);
+        e.text(&u.class);
+        e.digest(u.via);
+    }
+    e.u64(plan.deletable.len() as u64);
+    for o in &plan.deletable {
+        e.digest(o.digest);
+        e.u64(o.bytes);
+    }
+    e.u64(plan.retained.len() as u64);
+    for o in &plan.retained {
+        e.digest(o.digest);
+        e.text(&o.reason);
+    }
+    e.u64(plan.tombstones.len() as u64);
+    for t in &plan.tombstones {
+        e.text(&t.object_id);
+        e.u64(t.prior_generation);
+        e.text(t.plane.as_str());
+        t.validity.encode_canonical(&mut e);
+    }
+    e.u64(plan.retractions.len() as u64);
+    for r in &plan.retractions {
+        e.text(&r.slot);
+        e.digest(r.root);
+        match r.prior_generation {
+            Some(generation) => {
+                e.bool(true);
+                e.u64(generation);
+            }
+            None => e.bool(false),
+        }
+        r.validity.encode_canonical(&mut e);
+    }
+    e.u64(plan.events.len() as u64);
+    for ev in &plan.events {
+        e.text(&ev.object_id);
+        e.u64(ev.latest_revision);
+    }
+    for findings in [&plan.blockers, &plan.unknown_copies] {
+        e.u64(findings.len() as u64);
+        for f in findings {
+            e.text(&f.kind);
+            e.text(&f.subject);
+            e.text(&f.detail);
+        }
+    }
+    e.u64(plan.unattributed.staging_files);
+    e.u64(plan.unattributed.staging_bytes);
+    e.u64(plan.unattributed.objects);
+    e.u64(plan.unattributed.object_bytes);
+    e.text("filesystem_unlink");
+    Ok(e.finish_checked()?)
+}
+
+#[test]
+fn import_scope_plans_keep_their_exact_v1_bytes_and_digest() -> TestResult {
+    let plan = plan()?;
+    let bytes = plan.canonical_bytes()?;
+    assert_eq!(bytes, legacy_v1_bytes(&plan)?, "import plans are unchanged");
+    assert_eq!(plan.domain(), super::DELETION_PLAN_DOMAIN);
+    assert_eq!(
+        plan.record_object_id_of(plan.digest()?),
+        DeletionPlan::record_object_id(plan.imports[0])
+    );
+    // An import scope whose member list is not exactly its import has no encoding.
+    let mut wrong = plan.clone();
+    wrong.imports.push(ContentDigest::sha256(b"zzz"));
+    assert!(wrong.canonical_bytes().is_err());
+    Ok(())
+}
+
+#[test]
+fn scoped_plans_bind_scope_kind_and_id_and_round_trip() -> TestResult {
+    let sensor = scoped(DeletionScope::Sensor(fss_core::SensorId::parse(
+        "sensor:alpha",
+    )?))?;
+    let other = scoped(DeletionScope::Sensor(fss_core::SensorId::parse(
+        "sensor:gamma",
+    )?))?;
+    let event = scoped(DeletionScope::Event(fss_core::EventId::parse(
+        "sensor:alpha",
+    )?))?;
+    let bytes = sensor.canonical_bytes()?;
+    assert!(DeletionPlan::is_plan_bytes(&bytes));
+    assert_eq!(sensor.domain(), super::DELETION_SCOPE_PLAN_DOMAIN);
+    assert_eq!(DeletionPlan::decode(&bytes, sensor.digest()?)?, sensor);
+    // Same members and closure, different scope id or kind: different sealed plans.
+    let digests: std::collections::BTreeSet<ContentDigest> = [&sensor, &other, &event]
+        .iter()
+        .map(|p| p.digest())
+        .collect::<Result<_, _>>()?;
+    assert_eq!(digests.len(), 3);
+    assert_ne!(
+        sensor.record_object_id_of(sensor.digest()?),
+        other.record_object_id_of(other.digest()?)
+    );
+    // Tampering with the scope id breaks the sealed digest.
+    let at = bytes
+        .windows(12)
+        .position(|w| w == b"sensor:alpha")
+        .ok_or("scope id")?;
+    let mut tampered = bytes.clone();
+    tampered[at..at + 12].copy_from_slice(b"sensor:gamma");
+    assert!(DeletionPlan::decode(&tampered, sensor.digest()?).is_err());
+    assert_eq!(
+        DeletionPlan::decode(&tampered, ContentDigest::sha256(&tampered))?,
+        other
+    );
+    // Unsorted or empty member lists are not canonical.
+    let mut unsorted = sensor.clone();
+    unsorted.imports.reverse();
+    let b = unsorted.canonical_bytes()?;
+    assert!(DeletionPlan::decode(&b, ContentDigest::sha256(&b)).is_err());
+    let mut empty = sensor.clone();
+    empty.imports.clear();
+    let b = empty.canonical_bytes()?;
+    assert!(DeletionPlan::decode(&b, ContentDigest::sha256(&b)).is_err());
+    // The completion record carries the scope and round trips under v2.
+    let completion = DeletionCompletion::of(&sensor)?;
+    let c = completion.canonical_bytes()?;
+    assert!(DeletionCompletion::is_completion_bytes(&c));
+    assert_eq!(
+        DeletionCompletion::decode(&c, ContentDigest::sha256(&c))?,
+        completion
+    );
+    assert_eq!(completion.imports, sensor.imports);
+    Ok(())
 }
