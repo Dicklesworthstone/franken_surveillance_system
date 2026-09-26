@@ -178,7 +178,7 @@ fn budgets_are_aggregate_and_never_return_a_partial_scenario_list() -> Result<()
     let original = projection(&[("a", "zone:x", 1)])?;
     let one = domain(FailureDomainKind::Clock, "one", &["a"])?;
     let two = domain(FailureDomainKind::Clock, "two", &["a"])?;
-    let measured = analyse_failure_domains(&original, &[one.clone()], budget())?;
+    let measured = analyse_failure_domains(&original, std::slice::from_ref(&one), budget())?;
     let operations = measured.operations * 2 - 1;
     let limited = GraphBudget {
         max_operations: operations,
