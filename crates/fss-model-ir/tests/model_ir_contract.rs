@@ -459,9 +459,11 @@ fn test_schema_domain_and_pinned_counts() -> Result<(), Box<dyn Error>> {
     // SCHEMA-DOMAIN-REFERENCE-LINEAGE-WRITE-SEAL-001 (fss-1s6ac).
     // 122 = 120 + SCHEMA-DOMAIN-DELETION-PLAN-002 and SCHEMA-DOMAIN-DELETION-COMPLETION-002
     // (sensor/event-scoped deletion, fss-x4a.30.86.20).
+    // 125 = 122 + SCHEMA-DOMAIN-EVIDENCE-HOLD-{001,002} and
+    // SCHEMA-DOMAIN-EVIDENCE-HOLD-APPROVAL-001 (owner evidence holds, previously unregistered).
     assert_eq!(
-        domain_count, 122,
-        "registries/DIGEST_DOMAINS.md count must remain pinned at 122"
+        domain_count, 125,
+        "registries/DIGEST_DOMAINS.md count must remain pinned at 125"
     );
 
     let schemas_path = Path::new(env!("CARGO_MANIFEST_DIR"))

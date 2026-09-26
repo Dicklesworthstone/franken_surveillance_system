@@ -1162,6 +1162,36 @@
       "id": "ERR-GRAPH-UNREGISTERED-PROJECTION-001"
     },
     {
+      "description": "an `fss-hold --approve` digest no longer names the exact prepared transition over the current authority head; nothing was written",
+      "guidance": "rerun without the approval and approve the printed digest",
+      "id": "ERR-HOLD-APPROVAL-STALE-001"
+    },
+    {
+      "description": "retained hold history or active held-closure bounds are exhausted (registries/evidence_holds.json limits); holds are never evicted",
+      "guidance": "release holds or raise the reviewed bound",
+      "id": "ERR-HOLD-BOUND-001"
+    },
+    {
+      "description": "the hold operation was cancelled cooperatively, including before a staged record was appended",
+      "guidance": "retry the same request; approvals stay exact",
+      "id": "ERR-HOLD-CANCELLED-001"
+    },
+    {
+      "description": "a deletion of the import is committed but not complete, so preservation can no longer be promised; retention mutations are refused",
+      "guidance": "finish or reconcile the deletion first",
+      "id": "ERR-HOLD-DELETION-IN-PROGRESS-001"
+    },
+    {
+      "description": "an `fss-hold` request is outside its contract: invalid bounded request, unknown hold on release, identifier already bound to another import or placement, or a released identifier reused; nothing was written",
+      "guidance": "correct the request; identifiers are never reused",
+      "id": "ERR-HOLD-REQUEST-001"
+    },
+    {
+      "description": "hold authority is missing, corrupt, shadowed or inconsistent, or an underlying ledger, spool, import or deletion-history read failed; never treated as no hold",
+      "guidance": "repair the deployment; do not delete while unresolved",
+      "id": "ERR-HOLD-STORAGE-001"
+    },
+    {
       "description": "H2 decision artifact privacy class is not `private:property`, the only privacy class fss-core uses; raw or unredacted media included (code `invalid_privacy_class`)",
       "guidance": "supply the authorized privacy class; do not retry unchanged",
       "id": "ERR-HYDRATION-INVALID-PRIVACY-CLASS-001"
@@ -1900,6 +1930,11 @@
       "description": "semantic decision fingerprint differs from proof",
       "guidance": "block claim/release",
       "id": "ERR-REPLAY-DIVERGED-001"
+    },
+    {
+      "description": "`fss-hold expire` names an earliest owner-attested time before the hold's minimum-retention deadline (or an uncertain time); the hold stays active",
+      "guidance": "retry after the deadline with a new attested time",
+      "id": "ERR-RETENTION-NOT-ELAPSED-001"
     },
     {
       "description": "malformed JSON syntax, duplicate keys, or encoding corruption in robot docs or registry",
