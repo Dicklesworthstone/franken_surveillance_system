@@ -117,12 +117,10 @@ impl HoldState {
             not_before,
             attested_now,
         } = self
-        {
-            if (Self::Until { not_before }).readiness(attested_now)?
+            && (Self::Until { not_before }).readiness(attested_now)?
                 != RetentionReadiness::EligibleForExpiry
-            {
-                return Err(HoldError::RetentionNotElapsed);
-            }
+        {
+            return Err(HoldError::RetentionNotElapsed);
         }
         Ok(())
     }

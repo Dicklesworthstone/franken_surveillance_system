@@ -190,7 +190,7 @@ pub(super) fn verify_sources(
                 "package event source clock changed",
             ));
         }
-        clock = Some(capsule.clock_basis.clone());
+        clock = Some(capsule.clock_basis);
         // Drop each verified segment before reading the next; never buffer the source range.
         let bytes = retained
             .read_segment(deployment, segment, limits, cx)

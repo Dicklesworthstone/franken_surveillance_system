@@ -469,7 +469,7 @@ impl PackageDetectionRecord {
                     row: d.u64()?,
                     class_index: d.u64()?,
                     score_bits: d.u32()?,
-                    bounds: [d.u32()?, d.u32()?, d.u32()?],
+                    bounds: [d.u32()?, d.u32()?, d.u32()?, d.u32()?],
                     clipped: d.bool()?,
                 });
             }

@@ -313,9 +313,8 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
                 for child in report.reports() {
                     let retained = fss_reference::ingest::package_event::retain_package_detection(
                         &mut deployment, &package, child, &cx,
-                    ).map_err(|error| {
+                    ).inspect_err(|_| {
                         eprintln!("Earlier completed sentinel burst roots remain retained; retry exact inputs to reconcile remaining children.");
-                        error
                     })?;
                     eprintln!(
                         "package_detection_retained={}\nstatus={}\nroot={}\nrecord={}\nauthority_sequence={}",
