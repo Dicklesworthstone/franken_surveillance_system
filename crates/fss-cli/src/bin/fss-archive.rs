@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 //! Explicit local archive operator utility, not a second agent protocol.
+use fss_cli::ExitIdentity;
 use fss_cli::archive_cmd::{ArchiveCommandError, HELP, execute_archive, parse_archive_args};
-use fss_cli::{ERR_CLI_RUNTIME_FAILURE, ExitIdentity};
 use std::io::{self, Write};
 use std::process::ExitCode;
 
@@ -47,10 +47,7 @@ fn main() -> ExitCode {
         },
         Err(error) => {
             let usage = matches!(&error, ArchiveCommandError::Argument { .. });
-            let code = match &error {
-                ArchiveCommandError::Argument { code, .. } => *code,
-                _ => ERR_CLI_RUNTIME_FAILURE,
-            };
+            let code = error.code();
             eprintln!("{code}: {error}");
             if work::handles(&args) {
                 eprintln!(

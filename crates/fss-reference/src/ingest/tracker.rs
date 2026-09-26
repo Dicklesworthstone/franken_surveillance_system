@@ -11,7 +11,7 @@ mod checked;
 mod observation;
 
 pub use checked::{MAX_ASSIGNMENT_WORK, MAX_CHECKED_TRACKS, TrackerLimits, TrackerStepError};
-pub use observation::{AssignedTrackerOutput, TrackAssignment, TRACK_ASSIGNMENT_POLICY};
+pub use observation::{AssignedTrackerOutput, TRACK_ASSIGNMENT_POLICY, TrackAssignment};
 
 /// Versioned numerical association policy; source revisions still pin full replay semantics.
 pub const TRACKER_ALGORITHM: &str = "fss.reference.kalman_global_iou.v1";

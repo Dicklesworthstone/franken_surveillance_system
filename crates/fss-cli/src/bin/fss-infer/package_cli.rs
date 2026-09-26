@@ -9,11 +9,11 @@ use std::process::ExitCode;
 
 use fss_core::region::{ContextAuthority, RootAuthoritySpec};
 use fss_core::{BudgetVector, ContentDigest, OperationId, PrincipalId};
-use fss_reference::ingest::package_detect::{
-    MAX_PACKAGE_DETECT_FRAMES, PackageDetectLimits, PackageDetectRequest, run_package_detection,
-};
 use fss_reference::ingest::package_detect::sentinel::{
     SentinelConfig, SentinelPlan, run_sentinel_detection,
+};
+use fss_reference::ingest::package_detect::{
+    MAX_PACKAGE_DETECT_FRAMES, PackageDetectLimits, PackageDetectRequest, run_package_detection,
 };
 use fss_reference::ingest::recorded_decode::ComponentInterpretation;
 use fss_reference::ingest::rgb_package::{MAX_RGB_PACKAGE_BYTES, RgbDetectorPackage};
@@ -295,7 +295,13 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
         let mut deployment = ReferenceDeployment::open(&options.root, &options.site, &cx)?;
         if let Some(config) = options.sentinel {
             let report = run_sentinel_detection(
-                &deployment, &package, &options.request, config, &options.limits, &cx, &scalar,
+                &deployment,
+                &package,
+                &options.request,
+                config,
+                &options.limits,
+                &cx,
+                &scalar,
             )?;
             if let Some(path) = &options.report {
                 export(path, report.json().as_bytes(), &options.root, &cx)?;
@@ -313,8 +319,11 @@ fn run(options: Options, out: &mut impl Write) -> RunResult<()> {
                     })?;
                     eprintln!(
                         "package_detection_retained={}\nstatus={}\nroot={}\nrecord={}\nauthority_sequence={}",
-                        child.digest, retained.status().as_str(), retained.root(),
-                        retained.record_digest(), retained.authority_anchor().commit_sequence
+                        child.digest,
+                        retained.status().as_str(),
+                        retained.root(),
+                        retained.record_digest(),
+                        retained.authority_anchor().commit_sequence
                     );
                 }
             }
@@ -469,24 +478,74 @@ mod tests {
             assert!(parse(&a).is_err());
         }
         let mut a = args();
-        a.extend(["--sentinel-every-frames", "8", "--sentinel-burst-frames", "1",
-            "--sentinel-max-inferences", "1"].map(OsString::from));
+        a.extend(
+            [
+                "--sentinel-every-frames",
+                "8",
+                "--sentinel-burst-frames",
+                "1",
+                "--sentinel-max-inferences",
+                "1",
+            ]
+            .map(OsString::from),
+        );
         let parsed = parse(&a)?.ok_or("missing sentinel request")?;
-        assert_eq!(parsed.sentinel, Some(SentinelConfig {
-            every_frames: 8, burst_frames: 1, max_inferences: 1,
-        }));
+        assert_eq!(
+            parsed.sentinel,
+            Some(SentinelConfig {
+                every_frames: 8,
+                burst_frames: 1,
+                max_inferences: 1,
+            })
+        );
         Ok(())
     }
 
     #[test]
     fn sentinel_rejects_partial_burst_budget_and_duplicate_sampling_options() {
         for flags in [
-            vec!["--sentinel-every-frames", "0", "--sentinel-max-inferences", "3"],
-            vec!["--sentinel-every-frames", "8", "--sentinel-max-inferences", "65"],
-            vec!["--sentinel-every-frames", "8", "--sentinel-max-inferences", "1"],
-            vec!["--sentinel-every-frames", "8", "--sentinel-max-inferences", "3"],
-            vec!["--sentinel-every-frames", "2", "--sentinel-max-inferences", "4", "--sentinel-burst-frames", "3"],
-            vec!["--sentinel-every-frames", "8", "--sentinel-max-inferences", "1", "--sentinel-burst-frames", "1", "--sentinel-every-frames", "16"],
+            vec![
+                "--sentinel-every-frames",
+                "0",
+                "--sentinel-max-inferences",
+                "3",
+            ],
+            vec![
+                "--sentinel-every-frames",
+                "8",
+                "--sentinel-max-inferences",
+                "65",
+            ],
+            vec![
+                "--sentinel-every-frames",
+                "8",
+                "--sentinel-max-inferences",
+                "1",
+            ],
+            vec![
+                "--sentinel-every-frames",
+                "8",
+                "--sentinel-max-inferences",
+                "3",
+            ],
+            vec![
+                "--sentinel-every-frames",
+                "2",
+                "--sentinel-max-inferences",
+                "4",
+                "--sentinel-burst-frames",
+                "3",
+            ],
+            vec![
+                "--sentinel-every-frames",
+                "8",
+                "--sentinel-max-inferences",
+                "1",
+                "--sentinel-burst-frames",
+                "1",
+                "--sentinel-every-frames",
+                "16",
+            ],
         ] {
             let mut a = args(); // A two-frame source cannot contain the default three-frame burst.
             a.extend(flags.into_iter().map(OsString::from));
@@ -497,16 +556,32 @@ mod tests {
     #[test]
     fn sentinel_default_burst_and_retention_are_explicit() -> Result<(), String> {
         let mut a = args();
-        let frames = a.iter().position(|v| v == "--frames").ok_or("no frame count")?;
+        let frames = a
+            .iter()
+            .position(|v| v == "--frames")
+            .ok_or("no frame count")?;
         a[frames + 1] = "20".into();
-        a.extend(["--sentinel-every-frames", "8", "--sentinel-max-inferences", "6",
-            "--retain", "yes"].map(OsString::from));
+        a.extend(
+            [
+                "--sentinel-every-frames",
+                "8",
+                "--sentinel-max-inferences",
+                "6",
+                "--retain",
+                "yes",
+            ]
+            .map(OsString::from),
+        );
         let parsed = parse(&a)?.ok_or("missing sentinel request")?;
-        assert_eq!(parsed.sentinel, Some(SentinelConfig {
-            every_frames: 8, burst_frames: 3, max_inferences: 6,
-        }));
+        assert_eq!(
+            parsed.sentinel,
+            Some(SentinelConfig {
+                every_frames: 8,
+                burst_frames: 3,
+                max_inferences: 6,
+            })
+        );
         assert!(parsed.retain);
         Ok(())
     }
-
 }
