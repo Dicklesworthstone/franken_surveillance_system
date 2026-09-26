@@ -15,6 +15,30 @@ use fss_reference::ingest::{
 use fss_reference::media_fixture::jpeg::{JpegConfig, Subsampling, encode_jpeg};
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
+/// Tests in this binary run on parallel threads, and a CLI child forked by one thread holds a
+/// duplicate of any lock descriptor another thread has open until it execs (close-on-exec
+/// releases it). A command that meets that transient lock is refused before any write
+/// ("reference deployment is locked"), so it is re-run, boundedly; a lock that persists
+/// returns the refusal to the test.
+trait OutputUnlocked {
+    fn output_unlocked(&mut self) -> std::io::Result<std::process::Output>;
+}
+impl OutputUnlocked for std::process::Command {
+    fn output_unlocked(&mut self) -> std::io::Result<std::process::Output> {
+        for _ in 0..100 {
+            let output = self.output()?;
+            if output.status.success()
+                || !String::from_utf8_lossy(&output.stderr)
+                    .contains("reference deployment is locked")
+            {
+                return Ok(output);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        self.output()
+    }
+}
+
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 const HOLD: &str = env!("CARGO_BIN_EXE_fss-hold");
 const EVENT: &str = env!("CARGO_BIN_EXE_fss-event");
@@ -137,7 +161,7 @@ fn due_is_read_only_and_only_approved_expiry_unblocks_native_deletion() -> TestR
             if let Some(approval) = approval {
                 command.args(["--approve", approval]);
             }
-            Ok(command.output()?)
+            Ok(command.output_unlocked()?)
         };
     let deletion = || -> TestResult<String> {
         success(
@@ -146,7 +170,7 @@ fn due_is_read_only_and_only_approved_expiry_unblocks_native_deletion() -> TestR
                 .arg("--root")
                 .arg(&root)
                 .args(["--site", SITE, "--import-id", &import])
-                .output()?,
+                .output_unlocked()?,
         )
     };
     let preview = success(mutation("retain", None, None)?)?;
@@ -172,7 +196,7 @@ fn due_is_read_only_and_only_approved_expiry_unblocks_native_deletion() -> TestR
                 .arg("--root")
                 .arg(&root)
                 .args(["--site", SITE, "--attested-now-ns", now])
-                .output()?,
+                .output_unlocked()?,
         )?;
         assert!(
             due.contains(&format!("\"time_readiness\":\"{readiness}\"")),
@@ -230,7 +254,7 @@ fn due_is_read_only_and_only_approved_expiry_unblocks_native_deletion() -> TestR
                 "--approve",
                 &digest_field(&plan, "approval_digest")?,
             ])
-            .output()?,
+            .output_unlocked()?,
     )?;
     assert!(deleted.contains("\"outcome\":\"completed\""));
     let listed = success(
@@ -239,7 +263,7 @@ fn due_is_read_only_and_only_approved_expiry_unblocks_native_deletion() -> TestR
             .arg("--root")
             .arg(&root)
             .args(["--site", SITE])
-            .output()?,
+            .output_unlocked()?,
     )?;
     assert!(listed.contains("\"active_holds\":0"));
     assert!(listed.contains("\"state\":\"expired\""));
@@ -263,7 +287,7 @@ fn absent_clock_malformed_bounds_and_cross_command_options_never_create_a_root()
             .arg(&absent)
             .args(["--site", SITE])
             .args(suffix)
-            .output()?;
+            .output_unlocked()?;
         assert!(!result.status.success());
         assert!(!absent.exists());
     }
@@ -272,7 +296,7 @@ fn absent_clock_malformed_bounds_and_cross_command_options_never_create_a_root()
         .arg("--root")
         .arg(&absent)
         .args(["--site", SITE, "--attested-now-ns", "1:2"])
-        .output()?;
+        .output_unlocked()?;
     assert!(!result.status.success());
     assert!(!absent.exists());
     Ok(())

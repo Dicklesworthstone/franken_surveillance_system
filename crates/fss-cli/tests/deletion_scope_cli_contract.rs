@@ -37,6 +37,30 @@ use fss_reference::deletion::{
 use fss_reference::media_fixture::jpeg::{JpegConfig, Subsampling, encode_jpeg};
 use fss_reference::{ReferenceDeployment, ReplayCx};
 
+/// Tests in this binary run on parallel threads, and a CLI child forked by one thread holds a
+/// duplicate of any lock descriptor another thread has open until it execs (close-on-exec
+/// releases it). A command that meets that transient lock is refused before any write
+/// ("reference deployment is locked"), so it is re-run, boundedly; a lock that persists
+/// returns the refusal to the test.
+trait OutputUnlocked {
+    fn output_unlocked(&mut self) -> std::io::Result<std::process::Output>;
+}
+impl OutputUnlocked for std::process::Command {
+    fn output_unlocked(&mut self) -> std::io::Result<std::process::Output> {
+        for _ in 0..100 {
+            let output = self.output()?;
+            if output.status.success()
+                || !String::from_utf8_lossy(&output.stderr)
+                    .contains("reference deployment is locked")
+            {
+                return Ok(output);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        self.output()
+    }
+}
+
 type TestResult<T = ()> = Result<T, Box<dyn Error>>;
 
 const WIDTH: u32 = 96;
@@ -165,7 +189,7 @@ fn import_output(root: &Path, input: &Path, sensor: &str) -> TestResult<Output> 
             "--assumed-fps",
             "10",
         ])
-        .output()?)
+        .output_unlocked()?)
 }
 
 fn event(root: &Path, command: &str, args: &[&str]) -> TestResult<Output> {
@@ -175,7 +199,7 @@ fn event(root: &Path, command: &str, args: &[&str]) -> TestResult<Output> {
         .arg(root)
         .args(["--site", SITE])
         .args(args)
-        .output()?)
+        .output_unlocked()?)
 }
 
 fn file(root: &Path, command: &str, args: &[&str]) -> TestResult<Output> {
@@ -185,7 +209,7 @@ fn file(root: &Path, command: &str, args: &[&str]) -> TestResult<Output> {
         .arg(root)
         .args(["--site", SITE])
         .args(args)
-        .output()?)
+        .output_unlocked()?)
 }
 
 fn watch(root: &Path, import_id: &str, extra: &[&str]) -> TestResult<Output> {
@@ -580,7 +604,7 @@ fn digests(plan: &Json, key: &str) -> TestResult<BTreeSet<String>> {
 fn run_fss(args: &[OsString]) -> TestResult<(Option<i32>, String, String)> {
     let output = Command::new(env!("CARGO_BIN_EXE_fss"))
         .args(args)
-        .output()?;
+        .output_unlocked()?;
     Ok((
         output.status.code(),
         String::from_utf8(output.stdout)?,
@@ -616,7 +640,7 @@ fn delete_plan(root: &Path, scope: &[&str]) -> TestResult<Output> {
         .arg(root)
         .args(["--site", SITE])
         .args(scope)
-        .output()?)
+        .output_unlocked()?)
 }
 
 fn delete_commit(root: &Path, plan: &str, approval: &str) -> TestResult<Output> {
@@ -624,7 +648,7 @@ fn delete_commit(root: &Path, plan: &str, approval: &str) -> TestResult<Output> 
         .args(["delete", "commit", "--root"])
         .arg(root)
         .args(["--site", SITE, "--plan", plan, "--approve", approval])
-        .output()?)
+        .output_unlocked()?)
 }
 
 fn hex(digest: &str) -> TestResult<&str> {
@@ -1211,7 +1235,7 @@ fn a_hold_on_one_member_import_blocks_the_whole_scoped_commit() -> TestResult {
             if let Some(digest) = approve {
                 command.args(["--approve", digest]);
             }
-            Ok(command.output()?)
+            Ok(command.output_unlocked()?)
         };
     let approve = |action: &str, id: &str, import: &str| -> TestResult {
         let preview = report(&hold(action, id, import, None)?)?;
@@ -1532,7 +1556,7 @@ fn the_plan_scope_is_exactly_one_of_import_sensor_or_event() -> TestResult {
             "--approve",
             &ContentDigest::sha256(b"a").to_text(),
         ])
-        .output()?;
+        .output_unlocked()?;
     assert!(!commit.status.success());
     assert!(String::from_utf8_lossy(&commit.stderr).contains("unknown or inapplicable option"));
     // A sensor without retained imports is a typed empty scope.
