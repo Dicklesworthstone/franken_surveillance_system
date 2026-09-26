@@ -257,10 +257,10 @@ pub fn read_latest_history(
                     return Err(HistoryError::Conflict);
                 }
                 let history = load(d, id, candidate.root, next, auth, work, cx)?;
-                if let Some(prior) = &committed {
-                    if history.at_revision(next - 1)?.tip()? != prior.tip()? {
-                        return Err(HistoryError::Mismatch);
-                    }
+                if let Some(prior) = &committed
+                    && history.at_revision(next - 1)?.tip()? != prior.tip()?
+                {
+                    return Err(HistoryError::Mismatch);
                 }
                 Some(history)
             }
