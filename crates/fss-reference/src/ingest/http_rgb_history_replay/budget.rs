@@ -94,16 +94,28 @@ impl ReplayBudget {
     /// Explicit deterministic allowances and per-call detector scratch, capped at 64 MiB.
     /// Zero work is valid and refuses the first operation needing that resource.
     pub fn new(allowance: ReplayAllowance, detection_scratch: usize) -> Result<Self, ReplayError> {
-        if allowance.steps > 1_000_000 || allowance.inferences > 4096
+        if allowance.steps > 1_000_000
+            || allowance.inferences > 4096
             || detection_scratch > 64 * 1024 * 1024
-            || [allowance.source, allowance.copy, allowance.import, allowance.framing,
-                allowance.decode, allowance.detections, allowance.temporal, allowance.numerical]
-                .into_iter().any(|n| n > 1_000_000_000_000_000)
+            || [
+                allowance.source,
+                allowance.copy,
+                allowance.import,
+                allowance.framing,
+                allowance.decode,
+                allowance.detections,
+                allowance.temporal,
+                allowance.numerical,
+            ]
+            .into_iter()
+            .any(|n| n > 1_000_000_000_000_000)
         {
             return Err(ReplayError::Limit);
         }
         Ok(Self {
-            allowance, steps: 0, inferences: 0,
+            allowance,
+            steps: 0,
+            inferences: 0,
             source: WorkBudget::new(allowance.source),
             copy: RgbEvidenceBudget::new(allowance.copy),
             import: ImportBudget::new(allowance.import),
@@ -115,29 +127,47 @@ impl ReplayBudget {
         })
     }
     /// Complete original allowance, not inferred from remaining counters.
-    pub fn allowance(&self) -> ReplayAllowance { self.allowance }
+    pub fn allowance(&self) -> ReplayAllowance {
+        self.allowance
+    }
     /// Cumulative counters remain inspectable after every refusal.
     pub fn used(&self) -> ReplayUsage {
         ReplayUsage {
-            steps: self.steps, inferences: self.inferences,
-            source: self.source.used(), copy: self.copy.used(), import: self.import.used(),
-            framing: self.framing.used(), decode: self.decode.used(),
-            detections: self.detections.used(), temporal: self.temporal.used(),
+            steps: self.steps,
+            inferences: self.inferences,
+            source: self.source.used(),
+            copy: self.copy.used(),
+            import: self.import.used(),
+            framing: self.framing.used(),
+            decode: self.decode.used(),
+            detections: self.detections.used(),
+            temporal: self.temporal.used(),
             numerical_reserved: self.numerical.used(),
         }
     }
     pub(super) fn step(&mut self) -> Result<(), ReplayError> {
-        if self.steps == self.allowance.steps { return Err(ReplayError::Limit); }
+        if self.steps == self.allowance.steps {
+            return Err(ReplayError::Limit);
+        }
         self.steps += 1;
         Ok(())
     }
     pub(super) fn inference(&mut self, limits: ReplayLimits) -> Result<(), ReplayError> {
-        if self.inferences == self.allowance.inferences { return Err(ReplayError::Limit); }
-        let reservation = limits.execution.run.preprocess.max_macs
-            .checked_add(limits.execution.run.execution.max_macs).ok_or(ReplayError::Limit)?;
+        if self.inferences == self.allowance.inferences {
+            return Err(ReplayError::Limit);
+        }
+        let reservation = limits
+            .execution
+            .run
+            .preprocess
+            .max_macs
+            .checked_add(limits.execution.run.execution.max_macs)
+            .ok_or(ReplayError::Limit)?;
         // Charge BEFORE native work. An error cannot hide partial execution, and no refund is
         // inferred from missing native counters. Successful reports separately show actual work.
-        self.numerical.charge(reservation).map_err(ReplayError::Work)?;
+        self.numerical
+            .charge(reservation)
+            .map_err(ReplayError::Work)?;
         self.inferences += 1;
         Ok(())
     }
@@ -150,8 +180,16 @@ mod tests {
     #[test]
     fn inference_allowance_does_not_refill_between_attempts() -> Result<(), ReplayError> {
         let limits = ReplayLimits::default();
-        let cost = limits.execution.run.preprocess.max_macs + limits.execution.run.execution.max_macs;
-        let mut b = ReplayBudget::new(ReplayAllowance { inferences: 2, numerical: cost * 2, ..ReplayAllowance::default() }, 1024)?;
+        let cost =
+            limits.execution.run.preprocess.max_macs + limits.execution.run.execution.max_macs;
+        let mut b = ReplayBudget::new(
+            ReplayAllowance {
+                inferences: 2,
+                numerical: cost * 2,
+                ..ReplayAllowance::default()
+            },
+            1024,
+        )?;
         b.inference(limits)?;
         b.inference(limits)?;
         assert!(matches!(b.inference(limits), Err(ReplayError::Limit)));
@@ -162,8 +200,15 @@ mod tests {
     #[test]
     fn incomplete_reservation_runs_no_inference() -> Result<(), ReplayError> {
         let limits = ReplayLimits::default();
-        let cost = limits.execution.run.preprocess.max_macs + limits.execution.run.execution.max_macs;
-        let mut b = ReplayBudget::new(ReplayAllowance { numerical: cost - 1, ..ReplayAllowance::default() }, 1024)?;
+        let cost =
+            limits.execution.run.preprocess.max_macs + limits.execution.run.execution.max_macs;
+        let mut b = ReplayBudget::new(
+            ReplayAllowance {
+                numerical: cost - 1,
+                ..ReplayAllowance::default()
+            },
+            1024,
+        )?;
         assert!(b.inference(limits).is_err());
         assert_eq!(b.used().inferences, 0);
         assert_eq!(b.used().numerical_reserved, 0);
@@ -171,11 +216,23 @@ mod tests {
     }
     #[test]
     fn zero_and_exhausted_step_allowances_fail_closed() -> Result<(), ReplayError> {
-        let mut b = ReplayBudget::new(ReplayAllowance { steps: 1, ..ReplayAllowance::default() }, 1024)?;
+        let mut b = ReplayBudget::new(
+            ReplayAllowance {
+                steps: 1,
+                ..ReplayAllowance::default()
+            },
+            1024,
+        )?;
         b.step()?;
         assert!(matches!(b.step(), Err(ReplayError::Limit)));
         assert_eq!(b.used().steps, 1);
-        let mut zero = ReplayBudget::new(ReplayAllowance { steps: 0, ..ReplayAllowance::default() }, 1024)?;
+        let mut zero = ReplayBudget::new(
+            ReplayAllowance {
+                steps: 0,
+                ..ReplayAllowance::default()
+            },
+            1024,
+        )?;
         assert!(zero.step().is_err());
         Ok(())
     }
