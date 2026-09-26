@@ -60,7 +60,10 @@ pub struct IntervalSeparation {
 /// This helper does not validate interval ordering; association validates every input first.
 #[must_use]
 pub fn worst_case_separation(a: CaptureInterval, b: CaptureInterval) -> u128 {
-    a.latest.0.abs_diff(b.earliest.0).max(b.latest.0.abs_diff(a.earliest.0))
+    a.latest
+        .0
+        .abs_diff(b.earliest.0)
+        .max(b.latest.0.abs_diff(a.earliest.0))
 }
 
 fn separation(a: CaptureInterval, b: CaptureInterval, gate: u128) -> IntervalSeparation {
@@ -79,7 +82,11 @@ fn separation(a: CaptureInterval, b: CaptureInterval, gate: u128) -> IntervalSep
     } else {
         IntervalTimeGate::Uncertain
     };
-    IntervalSeparation { minimum_ns, maximum_ns, gate }
+    IntervalSeparation {
+        minimum_ns,
+        maximum_ns,
+        gate,
+    }
 }
 
 /// Floor midpoint. For an ordered interval half its unsigned width fits in i128,
@@ -104,22 +111,34 @@ pub struct IntervalAssociationReport {
 impl IntervalAssociationReport {
     /// Exact caller gates.
     #[must_use]
-    pub fn config(&self) -> &CrossCameraConfig { &self.config }
+    pub fn config(&self) -> &CrossCameraConfig {
+        &self.config
+    }
     /// Requested global objective margin before the rounding guard.
     #[must_use]
-    pub fn requested_margin(&self) -> u32 { self.requested_margin }
+    pub fn requested_margin(&self) -> u32 {
+        self.requested_margin
+    }
     /// Complete canonical left observations, including unmatched ones.
     #[must_use]
-    pub fn left(&self) -> &[IntervalCameraObservation] { &self.left }
+    pub fn left(&self) -> &[IntervalCameraObservation] {
+        &self.left
+    }
     /// Complete canonical right observations, including unmatched ones.
     #[must_use]
-    pub fn right(&self) -> &[IntervalCameraObservation] { &self.right }
+    pub fn right(&self) -> &[IntervalCameraObservation] {
+        &self.right
+    }
     /// Full row-major candidate graph; temporal exclusions remain explicit.
     #[must_use]
-    pub fn candidates(&self) -> &[CrossCameraCandidate] { &self.assignment.candidates }
+    pub fn candidates(&self) -> &[CrossCameraCandidate] {
+        &self.assignment.candidates
+    }
     /// Exact timing of each corresponding row-major candidate, including excluded edges.
     #[must_use]
-    pub fn separations(&self) -> &[IntervalSeparation] { &self.separations }
+    pub fn separations(&self) -> &[IntervalSeparation] {
+        &self.separations
+    }
     /// Stable matches, unresolved alternatives, or no admissible candidate for every left row.
     #[must_use]
     pub fn left_dispositions(&self) -> &[AssociationDisposition] {
@@ -143,16 +162,24 @@ impl IntervalAssociationReport {
     }
     /// Complete competing admissible assignments inside the guarded margin.
     #[must_use]
-    pub fn alternatives(&self) -> &[CrossCameraAlternative] { &self.assignment.alternatives }
+    pub fn alternatives(&self) -> &[CrossCameraAlternative] {
+        &self.assignment.alternatives
+    }
     /// Integer cost including explicit unmatched choices.
     #[must_use]
-    pub fn assignment_cost(&self) -> u64 { self.assignment.assignment_cost }
+    pub fn assignment_cost(&self) -> u64 {
+        self.assignment.assignment_cost
+    }
     /// Requested margin plus one quantization guard unit per left row.
     #[must_use]
-    pub fn effective_margin(&self) -> u64 { self.assignment.effective_margin }
+    pub fn effective_margin(&self) -> u64 {
+        self.assignment.effective_margin
+    }
     /// Whether any selected edge has a competing admissible solution inside the margin.
     #[must_use]
-    pub fn is_ambiguous(&self) -> bool { !self.assignment.alternatives.is_empty() }
+    pub fn is_ambiguous(&self) -> bool {
+        !self.assignment.alternatives.is_empty()
+    }
 }
 
 /// Associate only interval-admissible edges using the existing global assignment solver.
@@ -169,11 +196,20 @@ pub fn associate_intervals(
     right: &[IntervalCameraObservation],
     budget: &mut WorkBudget<'_>,
 ) -> Result<IntervalAssociationReport, CrossCameraError> {
-    validate_request(config, ambiguity_margin_units, left.len(), right.len(), budget)?;
+    validate_request(
+        config,
+        ambiguity_margin_units,
+        left.len(),
+        right.len(),
+        budget,
+    )?;
     let left = ordered(left, budget)?;
     let right = ordered(right, budget)?;
     // Charge interval arithmetic and diagnostic output separately from the shared solver.
-    charge(budget, (left.len() * right.len() * 8 + left.len() + right.len()) as u64)?;
+    charge(
+        budget,
+        (left.len() * right.len() * 8 + left.len() + right.len()) as u64,
+    )?;
     let mut separations = reserve(left.len() * right.len())?;
     let mut uncertain_left = reserve(left.len())?;
     uncertain_left.resize(left.len(), false);
@@ -204,8 +240,14 @@ pub fn associate_intervals(
         budget,
     )?;
     Ok(IntervalAssociationReport {
-        config: config.clone(), requested_margin: ambiguity_margin_units,
-        left, right, separations, uncertain_left, uncertain_right, assignment,
+        config: config.clone(),
+        requested_margin: ambiguity_margin_units,
+        left,
+        right,
+        separations,
+        uncertain_left,
+        uncertain_right,
+        assignment,
     })
 }
 
@@ -213,7 +255,10 @@ fn ordered(
     input: &[IntervalCameraObservation],
     budget: &mut WorkBudget<'_>,
 ) -> Result<Vec<IntervalCameraObservation>, CrossCameraError> {
-    charge(budget, (input.len() * (MAX_CAMERA_ID_BYTES + input.len() + 1)) as u64)?;
+    charge(
+        budget,
+        (input.len() * (MAX_CAMERA_ID_BYTES + input.len() + 1)) as u64,
+    )?;
     let mut result = reserve(input.len())?;
     for observation in input {
         if observation.camera_id.len() > MAX_CAMERA_ID_BYTES {
@@ -226,21 +271,36 @@ fn ordered(
             || !observation.ground_y.is_finite()
             || observation.capture.earliest > observation.capture.latest
         {
-            return Err(CrossCameraError::InvalidObservation("identity, position or capture bounds"));
+            return Err(CrossCameraError::InvalidObservation(
+                "identity, position or capture bounds",
+            ));
         }
-        if input.first().is_some_and(|first| first.camera_id != observation.camera_id) {
-            return Err(CrossCameraError::InvalidObservation("one camera is required per input slice"));
+        if input
+            .first()
+            .is_some_and(|first| first.camera_id != observation.camera_id)
+        {
+            return Err(CrossCameraError::InvalidObservation(
+                "one camera is required per input slice",
+            ));
         }
         let mut camera_id = String::new();
-        camera_id.try_reserve_exact(observation.camera_id.len()).map_err(|_| CrossCameraError::Limit)?;
+        camera_id
+            .try_reserve_exact(observation.camera_id.len())
+            .map_err(|_| CrossCameraError::Limit)?;
         camera_id.push_str(&observation.camera_id);
         result.push(IntervalCameraObservation {
-            camera_id, track_id: observation.track_id, capture: observation.capture,
-            ground_x: observation.ground_x, ground_y: observation.ground_y,
+            camera_id,
+            track_id: observation.track_id,
+            capture: observation.capture,
+            ground_x: observation.ground_x,
+            ground_y: observation.ground_y,
         });
     }
     result.sort_unstable_by_key(|observation| observation.track_id);
-    if result.windows(2).any(|pair| pair[0].track_id == pair[1].track_id) {
+    if result
+        .windows(2)
+        .any(|pair| pair[0].track_id == pair[1].track_id)
+    {
         return Err(CrossCameraError::DuplicateObservation);
     }
     Ok(result)

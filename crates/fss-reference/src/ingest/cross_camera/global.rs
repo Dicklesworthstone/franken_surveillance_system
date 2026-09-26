@@ -35,7 +35,13 @@ pub fn associate_detailed(
     right: &[CameraObservation],
     budget: &mut WorkBudget<'_>,
 ) -> Result<CrossCameraReport, CrossCameraError> {
-    validate_request(config, ambiguity_margin_units, left.len(), right.len(), budget)?;
+    validate_request(
+        config,
+        ambiguity_margin_units,
+        left.len(),
+        right.len(),
+        budget,
+    )?;
     let left = ordered(left, budget)?;
     let right = ordered(right, budget)?;
     let result = assign(
