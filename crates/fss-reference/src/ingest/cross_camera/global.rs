@@ -35,6 +35,49 @@ pub fn associate_detailed(
     right: &[CameraObservation],
     budget: &mut WorkBudget<'_>,
 ) -> Result<CrossCameraReport, CrossCameraError> {
+    validate_request(config, ambiguity_margin_units, left.len(), right.len(), budget)?;
+    let left = ordered(left, budget)?;
+    let right = ordered(right, budget)?;
+    let result = assign(
+        ambiguity_margin_units,
+        left.len(),
+        right.len(),
+        |row, column| score(config, &left[row], &right[column]),
+        budget,
+    )?;
+    Ok(CrossCameraReport {
+        config: config.clone(),
+        requested_margin: ambiguity_margin_units,
+        left,
+        right,
+        candidates: result.candidates,
+        left_dispositions: result.left_dispositions,
+        right_dispositions: result.right_dispositions,
+        alternatives: result.alternatives,
+        assignment_cost: result.assignment_cost,
+        effective_margin: result.effective_margin,
+    })
+}
+
+/// Shared result of the point and conservative-interval candidate graphs. Both use the
+/// same solver, private unmatched columns, rounding guard and complete exclusion solves.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct AssignmentResult {
+    pub(super) candidates: Vec<CrossCameraCandidate>,
+    pub(super) left_dispositions: Vec<AssociationDisposition>,
+    pub(super) right_dispositions: Vec<AssociationDisposition>,
+    pub(super) alternatives: Vec<CrossCameraAlternative>,
+    pub(super) assignment_cost: u64,
+    pub(super) effective_margin: u64,
+}
+
+pub(super) fn validate_request(
+    config: &CrossCameraConfig,
+    ambiguity_margin_units: u32,
+    left_count: usize,
+    right_count: usize,
+    budget: &mut WorkBudget<'_>,
+) -> Result<(), CrossCameraError> {
     charge(budget, 1)?;
     config.validate()?;
     if ambiguity_margin_units > MAX_CROSS_CAMERA_OBSERVATIONS as u32 * ASSOCIATION_SCORE_SCALE {
@@ -42,24 +85,33 @@ pub fn associate_detailed(
             "global ambiguity margin exceeds 64 confidence points",
         ));
     }
-    if left.len() > MAX_CROSS_CAMERA_OBSERVATIONS || right.len() > MAX_CROSS_CAMERA_OBSERVATIONS {
+    if left_count > MAX_CROSS_CAMERA_OBSERVATIONS || right_count > MAX_CROSS_CAMERA_OBSERVATIONS {
         return Err(CrossCameraError::Limit);
     }
-    let left = ordered(left, budget)?;
-    let right = ordered(right, budget)?;
-    let rows = left.len();
-    let columns = right.len() + rows;
-    charge(budget, (rows * columns + rows * right.len()) as u64)?;
+    Ok(())
+}
+
+/// The caller validates input bounds and identities before constructing this graph.
+/// Score callbacks run exactly once per Cartesian edge, before any assignment solve.
+pub(super) fn assign(
+    ambiguity_margin_units: u32,
+    rows: usize,
+    right_count: usize,
+    mut score: impl FnMut(usize, usize) -> AssociationScore,
+    budget: &mut WorkBudget<'_>,
+) -> Result<AssignmentResult, CrossCameraError> {
+    let columns = right_count + rows;
+    charge(budget, (rows * columns + rows * right_count) as u64)?;
     let mut costs = reserve(rows * columns)?;
-    let mut candidates = reserve(rows * right.len())?;
+    let mut candidates = reserve(rows * right_count)?;
     let mut left_dispositions = reserve(rows)?;
     left_dispositions.resize(rows, AssociationDisposition::NoCandidate);
-    let mut right_dispositions = reserve(right.len())?;
-    right_dispositions.resize(right.len(), AssociationDisposition::NoCandidate);
-    for (row, l) in left.iter().enumerate() {
-        for (column, r) in right.iter().enumerate() {
+    let mut right_dispositions = reserve(right_count)?;
+    right_dispositions.resize(right_count, AssociationDisposition::NoCandidate);
+    for row in 0..rows {
+        for column in 0..right_count {
             charge(budget, 32)?;
-            let score = score(config, l, r);
+            let score = score(row, column);
             costs.push(match score {
                 AssociationScore::Admissible { units, .. } => {
                     left_dispositions[row] = AssociationDisposition::Unresolved;
@@ -86,12 +138,12 @@ pub fn associate_detailed(
     let mut alternatives = reserve(rows)?;
     for (row, &column) in best.columns().iter().enumerate() {
         charge(budget, 1)?;
-        if column >= right.len() {
+        if column >= right_count {
             continue;
         }
         let alternate = solve(&costs, rows, columns, Some((row, column)), budget)?;
         let ambiguous = alternate.cost() <= best.cost() + effective_margin;
-        let candidate = &mut candidates[row * right.len() + column];
+        let candidate = &mut candidates[row * right_count + column];
         candidate.selected = true;
         candidate.ambiguous = ambiguous;
         candidate.exclusion_cost = Some(alternate.cost());
@@ -99,7 +151,7 @@ pub fn associate_detailed(
             charge(budget, rows as u64)?;
             let mut selected = reserve(rows)?;
             for &assigned in alternate.columns() {
-                selected.push((assigned < right.len()).then_some(assigned));
+                selected.push((assigned < right_count).then_some(assigned));
             }
             alternatives.push(CrossCameraAlternative {
                 excluded: (row, column),
@@ -112,11 +164,7 @@ pub fn associate_detailed(
         }
     }
     charge(budget, 0)?;
-    Ok(CrossCameraReport {
-        config: config.clone(),
-        requested_margin: ambiguity_margin_units,
-        left,
-        right,
+    Ok(AssignmentResult {
         candidates,
         left_dispositions,
         right_dispositions,
@@ -241,7 +289,7 @@ fn copy_observation(source: &CameraObservation) -> Result<CameraObservation, Cro
     })
 }
 
-fn reserve<T>(count: usize) -> Result<Vec<T>, CrossCameraError> {
+pub(super) fn reserve<T>(count: usize) -> Result<Vec<T>, CrossCameraError> {
     let mut values = Vec::new();
     values
         .try_reserve_exact(count)
@@ -249,7 +297,7 @@ fn reserve<T>(count: usize) -> Result<Vec<T>, CrossCameraError> {
     Ok(values)
 }
 
-fn charge(budget: &mut WorkBudget<'_>, units: u64) -> Result<(), CrossCameraError> {
+pub(super) fn charge(budget: &mut WorkBudget<'_>, units: u64) -> Result<(), CrossCameraError> {
     budget
         .charge(units)
         .map_err(|error| CrossCameraError::Assignment(ImageTrackingError::Geometry(error)))

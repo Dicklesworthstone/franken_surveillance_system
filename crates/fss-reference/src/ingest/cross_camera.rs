@@ -9,6 +9,8 @@
 //! person identity, source custody, observability, or authority to publish effects.
 
 mod global;
+/// Full-width uncertain capture times gated before global assignment.
+pub mod intervals;
 
 use fss_geometry::WorkBudget;
 use fss_twin::image_tracking::ImageTrackingError;
