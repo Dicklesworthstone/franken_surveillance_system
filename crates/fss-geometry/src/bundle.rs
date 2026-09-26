@@ -10,11 +10,15 @@
 //! - Landmarks are static and observations are treated as simultaneous. There is
 //!   **no per-camera time offset** parameter: with static landmarks it is not
 //!   observable, and moving-target synchronization is a separate, unbuilt solver.
-//! - The gauge (7-DoF similarity ambiguity) is fixed explicitly: one reference
-//!   camera's full pose is held at its supplied value and one caller-named
-//!   world-to-camera translation component of a second camera is held at its
-//!   supplied value (the scale anchor). The result is expressed in that gauge;
-//!   metric scale is exactly as good as the caller's anchor value.
+//! - The gauge (7-DoF similarity ambiguity) is fixed explicitly by a typed
+//!   [`BundleGaugeChoice`]. Either one reference camera's full pose is held at its
+//!   supplied value and one caller-named world-to-camera translation component of
+//!   a second camera is held at its supplied value (the scale anchor; metric scale
+//!   is exactly as good as the anchor value), or at least three non-collinear
+//!   surveyed control points ([`BundleControlPoint`]) are held fixed. Control
+//!   points contribute residuals but no parameters; every camera pose is then
+//!   free, no reference pose or scale anchor exists, and the result is expressed
+//!   in the control points' (metric) frame, exactly as good as their survey.
 //! - Covariance is the Gauss-Newton approximation `sigma^2 (J^T J)^-1` at the
 //!   solution, restricted to free parameters. Rotation covariance lives in the
 //!   left-perturbation tangent space `R' = exp([w]x) R`. It is a local
@@ -26,6 +30,7 @@
 //! a camera move, crop, or zoom must mint a new generation, which invalidates the
 //! result through [`BundleAdjustment::validity`].
 
+mod anchor;
 mod dense;
 mod solve;
 
@@ -164,6 +169,35 @@ pub struct BundleGauge {
     pub scale_axis: usize,
 }
 
+/// A surveyed landmark held at its supplied position: it contributes reprojection
+/// residuals from every observing camera but no parameters. Its handle shares the
+/// landmark handle space and must not collide with a free [`BundleLandmark`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BundleControlPoint {
+    /// Nonzero landmark handle.
+    pub landmark: u64,
+    /// Fixed (surveyed) world position; not refined and not covariance-bearing.
+    pub position: [f64; 3],
+}
+
+/// Minimum observed, non-collinear control points for the control-point gauge.
+pub const MIN_CONTROL_POINTS: usize = 3;
+/// Control points are collinear when the largest distance of any of them from the
+/// line through the first point and the point farthest from it is below this
+/// fraction of that farthest distance.
+pub const CONTROL_COLLINEARITY_RATIO: f64 = 1e-3;
+
+/// How the 7-DoF similarity gauge is fixed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BundleGaugeChoice {
+    /// A held reference pose plus a held scale-anchor translation component. No
+    /// control points are admitted with this gauge (they would over-fix it).
+    ReferencePose(BundleGauge),
+    /// Observed, non-collinear [`BundleControlPoint`]s fix rotation, translation, and
+    /// scale; every camera pose is free and nothing is fabricated as a reference.
+    ControlPoints,
+}
+
 /// Complete bundle-adjustment input.
 #[derive(Clone, Debug)]
 pub struct BundleProblem {
@@ -177,6 +211,25 @@ pub struct BundleProblem {
     pub observations: Vec<BundleObservation>,
     /// Explicit gauge fixing.
     pub gauge: BundleGauge,
+}
+
+/// Bundle-adjustment input with an explicit gauge choice and optional fixed
+/// control points. [`BundleProblem`] is the reference-pose special case with no
+/// control points; both run through the same canonicalization and solver.
+#[derive(Clone, Debug)]
+pub struct AnchoredBundleProblem {
+    /// Property and immutable twin revision the world frame belongs to.
+    pub basis: GeometryBasis,
+    /// Cameras (order is irrelevant; they are canonicalized by handle).
+    pub cameras: Vec<BundleCamera>,
+    /// Free landmarks (canonicalized by handle); each needs two or more views.
+    pub landmarks: Vec<BundleLandmark>,
+    /// Fixed control points (canonicalized by handle); may be seen by one camera.
+    pub control_points: Vec<BundleControlPoint>,
+    /// Observations of free landmarks or control points (resolved by handle).
+    pub observations: Vec<BundleObservation>,
+    /// Explicit gauge fixing.
+    pub gauge: BundleGaugeChoice,
 }
 
 /// Levenberg-Marquardt controls. Every bound is explicit and reported.
@@ -256,6 +309,11 @@ pub enum NonFiniteInput {
         /// Landmark handle.
         landmark: u64,
     },
+    /// A control point's fixed position.
+    ControlPoint {
+        /// Control-point handle.
+        landmark: u64,
+    },
     /// An observed pixel.
     Observation {
         /// Camera handle.
@@ -289,7 +347,8 @@ pub enum BundleInputError {
     UnknownCamera(u64),
     /// An observation names an unknown landmark.
     UnknownLandmark(u64),
-    /// The gauge names an unknown camera, reuses the reference, or an axis > 2.
+    /// The gauge names an unknown camera, reuses the reference, or an axis > 2, or
+    /// control points were supplied with the reference-pose gauge.
     InvalidGauge,
     /// A landmark coordinate or distortion magnitude is outside admitted range.
     OutOfRange,
@@ -347,6 +406,21 @@ pub enum UnderConstrainedReason {
     },
     /// The scale anchor component is (near) zero, so it does not fix scale.
     DegenerateScaleAnchor,
+    /// Control-point gauge: fewer than [`MIN_CONTROL_POINTS`] control points are observed.
+    TooFewControlPoints {
+        /// Distinct observed control points.
+        observed: usize,
+    },
+    /// Control-point gauge: every observed control point lies on one line, leaving
+    /// rotation about that line (and hence the gauge) free.
+    CollinearControlPoints,
+    /// Control-point gauge: this camera's component (cameras linked through shared
+    /// free landmarks) does not observe three non-collinear control points, so its
+    /// similarity gauge is free.
+    UnanchoredCamera {
+        /// Smallest camera handle of the unanchored component.
+        camera: u64,
+    },
 }
 
 /// Which solve met a numerically singular system.
@@ -583,7 +657,8 @@ pub enum BundleValidity {
 #[derive(Clone, Debug)]
 pub struct BundleAdjustment {
     pub(crate) basis: GeometryBasis,
-    pub(crate) gauge: BundleGauge,
+    pub(crate) gauge: BundleGaugeChoice,
+    pub(crate) control_points: Vec<BundleControlPoint>,
     pub(crate) cameras: Vec<AdjustedCamera>,
     pub(crate) landmarks: Vec<AdjustedLandmark>,
     pub(crate) report: BundleReport,
@@ -596,8 +671,13 @@ impl BundleAdjustment {
         self.basis
     }
     /// Gauge the result is expressed in.
-    pub fn gauge(&self) -> BundleGauge {
+    pub fn gauge(&self) -> BundleGaugeChoice {
         self.gauge
+    }
+    /// Fixed control points the result was anchored to, sorted by handle (empty for
+    /// the reference-pose gauge). They are inputs, never adjusted.
+    pub fn control_points(&self) -> &[BundleControlPoint] {
+        &self.control_points
     }
     /// Adjusted cameras sorted by handle.
     pub fn cameras(&self) -> &[AdjustedCamera] {
@@ -675,6 +755,10 @@ pub(crate) struct Canonical {
     pub landmarks: Vec<BundleLandmark>,
     /// `(landmark index, camera index, pixel)`, sorted by landmark then camera.
     pub observations: Vec<(usize, usize, [f64; 2])>,
+    /// Fixed control points sorted by handle.
+    pub control_points: Vec<BundleControlPoint>,
+    /// `(control index, camera index, pixel)`, sorted by control point then camera.
+    pub control_observations: Vec<(usize, usize, [f64; 2])>,
     /// Per camera: which of the 12 block slots are free.
     pub free: Vec<[bool; CAMERA_BLOCK_PARAMETERS]>,
 }
@@ -706,10 +790,19 @@ fn free_slots(
     free
 }
 
-fn canonicalize(problem: &BundleProblem) -> Result<Canonical, BundleAdjustmentError> {
+/// Borrowed problem shared by both public entry points.
+struct ProblemView<'a> {
+    cameras: &'a [BundleCamera],
+    landmarks: &'a [BundleLandmark],
+    control_points: &'a [BundleControlPoint],
+    observations: &'a [BundleObservation],
+    gauge: BundleGaugeChoice,
+}
+
+fn canonicalize(problem: &ProblemView<'_>) -> Result<Canonical, BundleAdjustmentError> {
     use BundleAdjustmentError::{InvalidInput, NonFiniteInput as NonFinite, UnderConstrained};
     // Non-finite inputs are reported before any other defect.
-    for camera in &problem.cameras {
+    for camera in problem.cameras {
         let d = camera.distortion;
         if !d.k1.is_finite() || !d.k2.is_finite() {
             return Err(NonFinite(NonFiniteInput::Distortion {
@@ -717,14 +810,21 @@ fn canonicalize(problem: &BundleProblem) -> Result<Canonical, BundleAdjustmentEr
             }));
         }
     }
-    for landmark in &problem.landmarks {
+    for landmark in problem.landmarks {
         if landmark.position.iter().any(|x| !x.is_finite()) {
             return Err(NonFinite(NonFiniteInput::Landmark {
                 landmark: landmark.landmark,
             }));
         }
     }
-    for o in &problem.observations {
+    for control in problem.control_points {
+        if control.position.iter().any(|x| !x.is_finite()) {
+            return Err(NonFinite(NonFiniteInput::ControlPoint {
+                landmark: control.landmark,
+            }));
+        }
+    }
+    for o in problem.observations {
         if o.pixel.iter().any(|x| !x.is_finite()) {
             return Err(NonFinite(NonFiniteInput::Observation {
                 camera: o.camera,
@@ -733,12 +833,12 @@ fn canonicalize(problem: &BundleProblem) -> Result<Canonical, BundleAdjustmentEr
         }
     }
     if problem.cameras.len() > MAX_BUNDLE_CAMERAS
-        || problem.landmarks.len() > MAX_BUNDLE_LANDMARKS
+        || problem.landmarks.len() + problem.control_points.len() > MAX_BUNDLE_LANDMARKS
         || problem.observations.len() > MAX_BUNDLE_OBSERVATIONS
     {
         return Err(InvalidInput(BundleInputError::LimitExceeded));
     }
-    let mut cameras = problem.cameras.clone();
+    let mut cameras = problem.cameras.to_vec();
     cameras.sort_by_key(|c| c.identity.camera);
     for (i, camera) in cameras.iter().enumerate() {
         let id = camera.identity;
@@ -752,7 +852,7 @@ fn canonicalize(problem: &BundleProblem) -> Result<Canonical, BundleAdjustmentEr
             return Err(InvalidInput(BundleInputError::OutOfRange));
         }
     }
-    let mut landmarks = problem.landmarks.clone();
+    let mut landmarks = problem.landmarks.to_vec();
     landmarks.sort_by_key(|l| l.landmark);
     for (i, landmark) in landmarks.iter().enumerate() {
         if landmark.landmark == 0 {
@@ -767,6 +867,25 @@ fn canonicalize(problem: &BundleProblem) -> Result<Canonical, BundleAdjustmentEr
             return Err(InvalidInput(BundleInputError::OutOfRange));
         }
     }
+    let mut control_points = problem.control_points.to_vec();
+    control_points.sort_by_key(|c| c.landmark);
+    for (i, control) in control_points.iter().enumerate() {
+        if control.landmark == 0 {
+            return Err(InvalidInput(BundleInputError::ZeroHandle));
+        }
+        if (i > 0 && control_points[i - 1].landmark == control.landmark)
+            || landmarks
+                .binary_search_by_key(&control.landmark, |l| l.landmark)
+                .is_ok()
+        {
+            return Err(InvalidInput(BundleInputError::DuplicateLandmark(
+                control.landmark,
+            )));
+        }
+        if control.position.iter().any(|x| x.abs() > 1e9) {
+            return Err(InvalidInput(BundleInputError::OutOfRange));
+        }
+    }
     let camera_index: BTreeMap<u64, usize> = cameras
         .iter()
         .enumerate()
@@ -777,21 +896,37 @@ fn canonicalize(problem: &BundleProblem) -> Result<Canonical, BundleAdjustmentEr
         .enumerate()
         .map(|(i, l)| (l.landmark, i))
         .collect();
+    let control_index: BTreeMap<u64, usize> = control_points
+        .iter()
+        .enumerate()
+        .map(|(i, l)| (l.landmark, i))
+        .collect();
     let mut observations = Vec::with_capacity(problem.observations.len());
-    for o in &problem.observations {
+    let mut control_observations = Vec::new();
+    for o in problem.observations {
         let &c = camera_index
             .get(&o.camera)
             .ok_or(InvalidInput(BundleInputError::UnknownCamera(o.camera)))?;
-        let &l = landmark_index
-            .get(&o.landmark)
-            .ok_or(InvalidInput(BundleInputError::UnknownLandmark(o.landmark)))?;
+        let target = match (
+            landmark_index.get(&o.landmark),
+            control_index.get(&o.landmark),
+        ) {
+            (Some(&l), _) => Target::Free(l),
+            (None, Some(&k)) => Target::Control(k),
+            (None, None) => {
+                return Err(InvalidInput(BundleInputError::UnknownLandmark(o.landmark)));
+            }
+        };
         if !cameras[c].intrinsics.contains(o.pixel) {
             return Err(InvalidInput(BundleInputError::ObservationOutsideImage {
                 camera: o.camera,
                 landmark: o.landmark,
             }));
         }
-        observations.push((l, c, o.pixel));
+        match target {
+            Target::Free(l) => observations.push((l, c, o.pixel)),
+            Target::Control(k) => control_observations.push((k, c, o.pixel)),
+        }
     }
     observations.sort_by_key(|&(l, c, _)| (l, c));
     for pair in observations.windows(2) {
@@ -802,26 +937,50 @@ fn canonicalize(problem: &BundleProblem) -> Result<Canonical, BundleAdjustmentEr
             }));
         }
     }
+    control_observations.sort_by_key(|&(k, c, _)| (k, c));
+    for pair in control_observations.windows(2) {
+        if pair[0].0 == pair[1].0 && pair[0].1 == pair[1].1 {
+            return Err(InvalidInput(BundleInputError::DuplicateObservation {
+                camera: cameras[pair[0].1].identity.camera,
+                landmark: control_points[pair[0].0].landmark,
+            }));
+        }
+    }
 
     // Structural observability, before any gauge validation.
-    if cameras.len() < 2 {
-        return Err(UnderConstrained(UnderConstrainedReason::TooFewCameras {
-            cameras: cameras.len(),
-        }));
-    }
-    let gauge = problem.gauge;
-    let reference = camera_index.get(&gauge.reference_camera).copied();
-    let scale = camera_index.get(&gauge.scale_camera).copied();
-    let (Some(reference), Some(scale)) = (reference, scale) else {
-        return Err(InvalidInput(BundleInputError::InvalidGauge));
+    let reference_gauge = match problem.gauge {
+        BundleGaugeChoice::ReferencePose(gauge) => {
+            if cameras.len() < 2 {
+                return Err(UnderConstrained(UnderConstrainedReason::TooFewCameras {
+                    cameras: cameras.len(),
+                }));
+            }
+            let reference = camera_index.get(&gauge.reference_camera).copied();
+            let scale = camera_index.get(&gauge.scale_camera).copied();
+            let (Some(reference), Some(scale)) = (reference, scale) else {
+                return Err(InvalidInput(BundleInputError::InvalidGauge));
+            };
+            if reference == scale || gauge.scale_axis > 2 || !control_points.is_empty() {
+                return Err(InvalidInput(BundleInputError::InvalidGauge));
+            }
+            Some((reference, scale, gauge.scale_axis))
+        }
+        BundleGaugeChoice::ControlPoints => {
+            if cameras.is_empty() {
+                return Err(UnderConstrained(UnderConstrainedReason::TooFewCameras {
+                    cameras: 0,
+                }));
+            }
+            None
+        }
     };
-    if reference == scale || gauge.scale_axis > 2 {
-        return Err(InvalidInput(BundleInputError::InvalidGauge));
-    }
     let mut landmark_views = vec![0_usize; landmarks.len()];
     let mut camera_views = vec![0_usize; cameras.len()];
     for &(l, c, _) in &observations {
         landmark_views[l] += 1;
+        camera_views[c] += 1;
+    }
+    for &(_, c, _) in &control_observations {
         camera_views[c] += 1;
     }
     for (landmark, &views) in landmarks.iter().zip(&landmark_views) {
@@ -837,12 +996,11 @@ fn canonicalize(problem: &BundleProblem) -> Result<Canonical, BundleAdjustmentEr
     let free: Vec<_> = cameras
         .iter()
         .enumerate()
-        .map(|(i, camera)| {
-            free_slots(
-                camera,
-                i == reference,
-                (i == scale).then_some(gauge.scale_axis),
-            )
+        .map(|(i, camera)| match reference_gauge {
+            Some((reference, scale, axis)) => {
+                free_slots(camera, i == reference, (i == scale).then_some(axis))
+            }
+            None => free_slots(camera, false, None),
         })
         .collect();
     let mut parameters = 3 * landmarks.len();
@@ -859,77 +1017,90 @@ fn canonicalize(problem: &BundleProblem) -> Result<Canonical, BundleAdjustmentEr
             ));
         }
     }
-    let residuals = 2 * observations.len();
+    let residuals = 2 * (observations.len() + control_observations.len());
     if residuals <= parameters {
         return Err(UnderConstrained(UnderConstrainedReason::TooFewResiduals {
             residuals,
             parameters,
         }));
     }
-    // Camera connectivity through shared landmarks (deterministic flood fill).
-    let mut connected = vec![false; cameras.len()];
-    connected[reference] = true;
-    let mut changed = true;
-    while changed {
-        changed = false;
-        let mut start = 0;
-        while start < observations.len() {
-            let mut end = start;
-            while end < observations.len() && observations[end].0 == observations[start].0 {
-                end += 1;
+    match reference_gauge {
+        Some((reference, scale, axis)) => {
+            if let Some(i) = anchor::unreached_camera(cameras.len(), &observations, reference) {
+                return Err(UnderConstrained(
+                    UnderConstrainedReason::DisconnectedCamera {
+                        camera: cameras[i].identity.camera,
+                    },
+                ));
             }
-            let group = &observations[start..end];
-            if group.iter().any(|o| connected[o.1]) {
-                for o in group {
-                    if !connected[o.1] {
-                        connected[o.1] = true;
-                        changed = true;
-                    }
-                }
+            // Scale anchor: scaling about the reference center changes t_s[axis] by
+            // (R_s (c_ref - c_s))[axis]; that component must be materially nonzero.
+            let reference_center = cameras[reference].pose.center();
+            let scale_pose = cameras[scale].pose;
+            let baseline = crate::math::sub(reference_center, scale_pose.center());
+            let lever = crate::math::mv(scale_pose.rotation(), baseline);
+            let length = crate::math::norm(baseline);
+            if length <= 1e-9 || lever[axis].abs() < 0.05 * length {
+                return Err(UnderConstrained(
+                    UnderConstrainedReason::DegenerateScaleAnchor,
+                ));
             }
-            start = end;
         }
-    }
-    if let Some(i) = connected.iter().position(|x| !x) {
-        return Err(UnderConstrained(
-            UnderConstrainedReason::DisconnectedCamera {
-                camera: cameras[i].identity.camera,
-            },
-        ));
-    }
-    // Scale anchor: scaling about the reference center changes t_s[axis] by
-    // (R_s (c_ref - c_s))[axis]; that component must be materially nonzero.
-    let reference_center = cameras[reference].pose.center();
-    let scale_pose = cameras[scale].pose;
-    let baseline = crate::math::sub(reference_center, scale_pose.center());
-    let lever = crate::math::mv(scale_pose.rotation(), baseline);
-    let length = crate::math::norm(baseline);
-    if length <= 1e-9 || lever[gauge.scale_axis].abs() < 0.05 * length {
-        return Err(UnderConstrained(
-            UnderConstrainedReason::DegenerateScaleAnchor,
-        ));
+        None => anchor::check_control_anchoring(
+            &cameras,
+            &control_points,
+            &observations,
+            &control_observations,
+        )
+        .map_err(UnderConstrained)?,
     }
     for &(l, c, _) in &observations {
-        let point = cameras[c]
-            .pose
-            .transform(landmarks[l].position)
-            .map_err(|_| InvalidInput(BundleInputError::OutOfRange))?;
-        if point[2] <= 1e-9 {
-            return Err(InvalidInput(BundleInputError::BehindCamera {
-                camera: cameras[c].identity.camera,
-                landmark: landmarks[l].landmark,
-            }));
-        }
+        behind_check(&cameras[c], landmarks[l].landmark, landmarks[l].position)?;
+    }
+    for &(k, c, _) in &control_observations {
+        behind_check(
+            &cameras[c],
+            control_points[k].landmark,
+            control_points[k].position,
+        )?;
     }
     Ok(Canonical {
         cameras,
         landmarks,
         observations,
+        control_points,
+        control_observations,
         free,
     })
 }
 
-/// Run deterministic reference bundle adjustment.
+/// Which landmark set an observation resolved into.
+enum Target {
+    Free(usize),
+    Control(usize),
+}
+
+fn behind_check(
+    camera: &BundleCamera,
+    landmark: u64,
+    position: [f64; 3],
+) -> Result<(), BundleAdjustmentError> {
+    let point = camera
+        .pose
+        .transform(position)
+        .map_err(|_| BundleAdjustmentError::InvalidInput(BundleInputError::OutOfRange))?;
+    if point[2] <= 1e-9 {
+        return Err(BundleAdjustmentError::InvalidInput(
+            BundleInputError::BehindCamera {
+                camera: camera.identity.camera,
+                landmark,
+            },
+        ));
+    }
+    Ok(())
+}
+
+/// Run deterministic reference bundle adjustment in the reference-pose gauge.
 ///
 /// Returns a result only when a convergence criterion is met and the undamped
 /// normal matrix at the solution is nonsingular; every other outcome is a typed
@@ -941,6 +1112,43 @@ pub fn bundle_adjust(
     budget: &mut WorkBudget<'_>,
 ) -> Result<BundleAdjustment, BundleAdjustmentError> {
     options.validate()?;
-    let canonical = canonicalize(problem)?;
+    let gauge = BundleGaugeChoice::ReferencePose(problem.gauge);
+    let canonical = canonicalize(&ProblemView {
+        cameras: &problem.cameras,
+        landmarks: &problem.landmarks,
+        control_points: &[],
+        observations: &problem.observations,
+        gauge,
+    })?;
+    solve::run(problem.basis, gauge, canonical, options, budget)
+}
+
+/// Run deterministic reference bundle adjustment with an explicit gauge choice.
+///
+/// With [`BundleGaugeChoice::ControlPoints`], at least [`MIN_CONTROL_POINTS`]
+/// observed non-collinear control points must anchor every camera component;
+/// otherwise the solve is refused with a typed [`UnderConstrainedReason`] rather
+/// than fabricating a reference pose or scale anchor. Same success, failure, and
+/// determinism contract as [`bundle_adjust`].
+pub fn bundle_adjust_anchored(
+    problem: &AnchoredBundleProblem,
+    options: BundleOptions,
+    budget: &mut WorkBudget<'_>,
+) -> Result<BundleAdjustment, BundleAdjustmentError> {
+    options.validate()?;
+    let canonical = canonicalize(&ProblemView {
+        cameras: &problem.cameras,
+        landmarks: &problem.landmarks,
+        control_points: &problem.control_points,
+        observations: &problem.observations,
+        gauge: problem.gauge,
+    })?;
     solve::run(problem.basis, problem.gauge, canonical, options, budget)
+}
+
+/// Whether these control-point positions span more than a line under the exact
+/// criterion the control-point gauge applies ([`CONTROL_COLLINEARITY_RATIO`]).
+/// Callers that pre-screen control sets reuse this rather than a private variant.
+pub fn control_points_span_plane(points: &[[f64; 3]]) -> bool {
+    anchor::spans_plane(points)
 }

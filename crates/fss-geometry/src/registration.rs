@@ -143,6 +143,10 @@ impl PoseSearch {
     pub fn basis(&self) -> GeometryBasis {
         self.basis
     }
+    /// The exact pinhole intrinsics every candidate pose was solved under.
+    pub fn intrinsics(&self) -> PinholeIntrinsics {
+        self.intrinsics
+    }
     /// Number of RANSAC trials actually executed, which may fall short of the configured budget on early termination.
     pub fn trials_attempted(&self) -> usize {
         self.trials_attempted

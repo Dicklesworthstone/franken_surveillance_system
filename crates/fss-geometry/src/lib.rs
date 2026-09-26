@@ -22,13 +22,15 @@ mod registration;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub use bundle::{
-    AdjustedCamera, AdjustedLandmark, BudgetKind, BundleAdjustment, BundleAdjustmentError,
-    BundleCamera, BundleGauge, BundleInputError, BundleLandmark, BundleObservation, BundleOptions,
-    BundleParameter, BundleProblem, BundleReport, BundleValidity, CAMERA_BLOCK_PARAMETERS,
-    CameraCovariance, CameraGeneration, CameraInvalidation, Convergence, FocalRefinement,
-    IntrinsicsRefinement, InvalidationCause, MAX_BUNDLE_CAMERAS, MAX_BUNDLE_LANDMARKS,
-    MAX_BUNDLE_OBSERVATIONS, NonFiniteInput, RadialDistortion, SingularStage,
-    UnderConstrainedReason, bundle_adjust,
+    AdjustedCamera, AdjustedLandmark, AnchoredBundleProblem, BudgetKind, BundleAdjustment,
+    BundleAdjustmentError, BundleCamera, BundleControlPoint, BundleGauge, BundleGaugeChoice,
+    BundleInputError, BundleLandmark, BundleObservation, BundleOptions, BundleParameter,
+    BundleProblem, BundleReport, BundleValidity, CAMERA_BLOCK_PARAMETERS,
+    CONTROL_COLLINEARITY_RATIO, CameraCovariance, CameraGeneration, CameraInvalidation,
+    Convergence, FocalRefinement, IntrinsicsRefinement, InvalidationCause, MAX_BUNDLE_CAMERAS,
+    MAX_BUNDLE_LANDMARKS, MAX_BUNDLE_OBSERVATIONS, MIN_CONTROL_POINTS, NonFiniteInput,
+    RadialDistortion, SingularStage, UnderConstrainedReason, bundle_adjust, bundle_adjust_anchored,
+    control_points_span_plane,
 };
 pub use camera::{PinholeIntrinsics, Ray, RigidPose};
 pub use handoff::{
