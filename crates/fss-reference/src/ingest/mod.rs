@@ -46,6 +46,8 @@ pub mod recording_pipeline;
 pub mod retained;
 /// Bounded recorded-RTP framing and source-preserving ingest.
 pub mod rtpdump;
+/// Owner site calibration: atlas localization, joint refinement, digest-bound record.
+pub mod site_calibration;
 /// Opt-in decode refusals as typed coverage gaps with IDR/IRAP resumption.
 pub mod tolerant_decode;
 /// Constant-velocity Kalman filter tracker with IoU-based data association.

@@ -832,6 +832,11 @@
       "id": "ERR-CORROBORATE-POSE-INVALID-001"
     },
     {
+      "description": "a corroborated camera received a pose from both --pose and --calibration; exactly one pose source per camera is allowed; nothing was analysed",
+      "guidance": "drop the --pose for that camera or use a calibration that does not name it",
+      "id": "ERR-CORROBORATE-POSE-SOURCE-CONFLICT-001"
+    },
+    {
       "description": "both recordings come from one sensor (or are one import); one failure domain can never corroborate itself",
       "guidance": "name recordings from two distinct sensors",
       "id": "ERR-CORROBORATE-SAME-SENSOR-001"
@@ -1975,6 +1980,61 @@
       "description": "secret handle cannot be resolved",
       "guidance": "repair/rotate; bounded retry if provider transient",
       "id": "ERR-SECRET-UNAVAILABLE-001"
+    },
+    {
+      "description": "the owner twin or atlas package was refused before any localization: a digest differs from its owner pin, the format or references are invalid, the atlas was built against another twin, or its descriptor generation differs from the observations'; nothing was written",
+      "guidance": "supply the exact twin and atlas packages with their pinned digests",
+      "id": "ERR-SITE-CALIBRATION-BASIS-001"
+    },
+    {
+      "description": "the supplied calibration names none of the corroborated cameras, so it would bind no pose; nothing was analysed",
+      "guidance": "use the calibration of these cameras (matching names) or omit --calibration",
+      "id": "ERR-SITE-CALIBRATION-CAMERA-UNBOUND-001"
+    },
+    {
+      "description": "fewer than three atlas control points (or only collinear ones) constrain the joint solve under the control policy, so the metric gauge is not fixed; nothing was written",
+      "guidance": "observe more surveyed landmarks or relax --control-max-error; never fabricate control points",
+      "id": "ERR-SITE-CALIBRATION-CONTROL-POINTS-001"
+    },
+    {
+      "description": "a site calibration's bytes do not match its trailing fss.site_calibration.v1 identity, or the identity differs from the owner-pinned --calibration-digest (tampered or another calibration); nothing was read or analysed",
+      "guidance": "pin the exact digest printed by calibrate for the exact file",
+      "id": "ERR-SITE-CALIBRATION-DIGEST-001"
+    },
+    {
+      "description": "a camera shares no tie-point path with the other cameras, so a joint refinement would not couple it; nothing was written",
+      "guidance": "add tie points that camera shares with a connected camera, or calibrate it separately",
+      "id": "ERR-SITE-CALIBRATION-DISCONNECTED-001"
+    },
+    {
+      "description": "a calibrated camera carries radial distortion, which a pinhole ground-visibility consumer cannot represent; nothing was analysed",
+      "guidance": "calibrate that camera with a pinhole model or supply undistorted geometry; do not retry unchanged",
+      "id": "ERR-SITE-CALIBRATION-DISTORTED-001"
+    },
+    {
+      "description": "a site calibration file is not a canonical FSSCAL01 record (wrong magic, length, truncated, non-finite, unregistered value, trailing bytes or noncanonical encoding); it was not used",
+      "guidance": "regenerate it with fss-event calibrate; never hand-edit a calibration",
+      "id": "ERR-SITE-CALIBRATION-FORMAT-001"
+    },
+    {
+      "description": "the calibration's world frame (its twin package) is not the supplied --scene-mesh package, so poses and mesh may not share a frame; nothing was analysed",
+      "guidance": "use the scene mesh the calibration was made against, or recalibrate",
+      "id": "ERR-SITE-CALIBRATION-FRAME-MISMATCH-001"
+    },
+    {
+      "description": "a site calibration request or camera observation file (fss.site_camera_observations.v1) is malformed or out of bounds: camera count outside 2..16, duplicate names or handles, a missing or repeated header line, a zero handle or generation, a non-finite number, a pixel outside the image, a feature or tie limit, or mixed descriptor generations; nothing was calibrated or written",
+      "guidance": "correct the observation files or options; do not retry unchanged",
+      "id": "ERR-SITE-CALIBRATION-INPUT-INVALID-001"
+    },
+    {
+      "description": "one camera could not be localized alone against the atlas (too few mutual descriptor matches, a geometric pose failure, no candidate in any focal sample, or exhausted work); no joint refinement ran and nothing was written",
+      "guidance": "supply more or better correspondences or intrinsics for that camera; do not retry unchanged",
+      "id": "ERR-SITE-CALIBRATION-LOCALIZATION-FAILED-001"
+    },
+    {
+      "description": "the joint bundle refinement refused (degenerate tie rays, non-finite observation, adjuster refusal, non-convergence, budget or limit); no calibration was written",
+      "guidance": "inspect the cause; correct inputs or raise --work-units within bounds",
+      "id": "ERR-SITE-CALIBRATION-REFINEMENT-001"
     },
     {
       "description": "capsule source bytes does not match custody source bytes",

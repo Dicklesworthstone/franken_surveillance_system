@@ -28,6 +28,8 @@ use fss_reference::{ReferenceDeployment, ReplayCx};
 
 #[path = "fss-event/alert.rs"]
 mod alert;
+#[path = "fss-event/calibrate.rs"]
+mod calibrate;
 #[path = "fss-event/corroborate.rs"]
 mod corroborate;
 #[path = "fss-event/coverage.rs"]
@@ -43,7 +45,7 @@ mod privacy_mask;
 #[path = "fss-event/watch.rs"]
 mod watch;
 
-const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|alert|privacy-mask|graph|delete> [options]\n\
+const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|calibrate|alert|privacy-mask|graph|delete> [options]\n\
   All: --root DIR --site SITE [--principal ID]\n\
   report: --import-id sha256:HEX --runs FILE --interpretation gray|ycbcr\n\
           --model-digest sha256:HEX --output-port NAME --labels ORDERED,CLASS,NAMES\n\
@@ -127,6 +129,20 @@ const HELP: &str = "fss-event <report|prepare|publish|read|watch|corroborate|ale
     --scene-mesh-digest sha256:HEX --scene-source-digest sha256:HEX] (fss-twin package) tests\n\
     occlusion for cameras with a pose; otherwise occlusion_unknown and the claim is frustum-only.\n\
     --retain-coverage APPROVAL retains both exactly as proposed.\n\
+    [--calibration FILE --calibration-digest sha256:HEX] (from `calibrate`; verified against the\n\
+    pinned digest before any source is read): each --camera the calibration names takes its\n\
+    refined pinhole pose (a --pose for that camera too is refused; a distorted camera is\n\
+    refused; with --scene-mesh the calibration twin must be that package). The report's\n\
+    pose_provenance lists each camera's pose source and the calibration digest.\n\
+  calibrate (owner site calibration; no --root/--site, no deployment is opened):\n\
+          --twin FILE --twin-digest sha256:HEX --twin-source-digest sha256:HEX\n\
+          --atlas FILE --atlas-digest sha256:HEX --atlas-provenance sha256:HEX\n\
+          --camera NAME:OBSERVATIONS (2..16) [--control-max-error E] [--work-units N] --out FILE\n\
+    Takes per-camera correspondence files (fss.site_camera_observations.v1: feature pixels\n\
+    with atlas descriptors and tie pixels), NOT images. Localizes each camera against the atlas,\n\
+    refines all jointly on atlas control points and shared ties, and writes the canonical\n\
+    digest-bound fss.site_calibration.v1 create-only; any refusal (too few control points,\n\
+    disconnected cameras, failed localization) writes nothing. See fss-event calibrate --help.\n\
   alert (one webhook for a corroborated event): --event-id ID --relay IP:PORT --path /PATH\n\
           --plaintext-approval sha256:HEX --deadline-ms N (1..60000)\n\
           [--approve sha256:PLAN [--dispatch sha256:DISPATCH]] [--report-out FILE]\n\
@@ -931,6 +947,9 @@ fn main() -> ExitCode {
     if args.first().is_some_and(|command| command == "graph") {
         return graph::main(&args[1..]);
     }
+    if args.first().is_some_and(|command| command == "calibrate") {
+        return calibrate::main(&args[1..]);
+    }
     match parse(&args) {
         Ok(None) => match io::stdout().lock().write_all(HELP.as_bytes()) {
             Ok(()) => ExitCode::from(0),
@@ -943,6 +962,8 @@ fn main() -> ExitCode {
                 if let Some(refusal) = e.downcast_ref::<fss_reference::ingest::recorded_watch::WatchError>() {
                     eprintln!("refusal_id={}", refusal.stable_id());
                 } else if let Some(refusal) = e.downcast_ref::<fss_reference::ingest::recorded_corroboration::CorroborationError>() {
+                    eprintln!("refusal_id={}", refusal.stable_id());
+                } else if let Some(refusal) = e.downcast_ref::<fss_reference::ingest::site_calibration::SiteCalibrationError>() {
                     eprintln!("refusal_id={}", refusal.stable_id());
                 } else if let Some(refusal) = e.downcast_ref::<fss_reference::ingest::recorded_coverage::CoverageError>() {
                     eprintln!("refusal_id={}", refusal.stable_id());

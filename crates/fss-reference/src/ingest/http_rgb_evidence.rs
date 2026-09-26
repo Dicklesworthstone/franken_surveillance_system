@@ -312,13 +312,12 @@ impl<'model, 'temporal> HttpRgbEvidenceRecording<'model, 'temporal> {
         {
             return Err(HttpRgbEvidenceError::Mismatch);
         }
-        if let Some(pending) = &self.pending {
-            if pending.result != result
+        if let Some(pending) = &self.pending
+            && (pending.result != result
                 || pending.pin.archive.evidence != evidence.identity()
-                || pending.pin.archive.retention != retention
-            {
-                return Err(HttpRgbEvidenceError::Mismatch);
-            }
+                || pending.pin.archive.retention != retention)
+        {
+            return Err(HttpRgbEvidenceError::Mismatch);
         }
         if !access.archive.permits(
             RgbArchiveOperation::RetainOriginals,

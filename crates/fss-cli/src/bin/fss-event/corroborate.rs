@@ -15,6 +15,11 @@
 //! calibrated pose for a camera, and `--scene-mesh PATH --scene-mesh-digest sha256:HEX
 //! --scene-source-digest sha256:HEX` an owner scene mesh (fss-twin package) for occlusion. Without
 //! a mesh (or without a pose for a camera) occlusion is `occlusion_unknown`: frustum-only.
+//! `--calibration FILE --calibration-digest sha256:HEX` supplies refined pinhole poses from an
+//! `fss-event calibrate` result instead: the file is verified against the pinned digest before
+//! any source is read, each named camera takes its pose (a `--pose` for the same camera, a
+//! distorted camera, or a twin other than `--scene-mesh` is a typed refusal), and the report's
+//! `pose_provenance` records every camera's pose source with the calibration digest.
 //!
 //! `--tolerate-decode-refusals` explicitly enables bounded recovery for both recordings. Refused
 //! segments and tracking restarts remain in the report and coverage; source gaps additionally
@@ -41,6 +46,9 @@ use fss_reference::ingest::recorded_corroboration::{
 };
 use fss_reference::ingest::recorded_decode::ComponentInterpretation;
 use fss_reference::ingest::recorded_watch::{WatchDetectorConfig, WatchLimits, WatchTrackerConfig};
+use fss_reference::ingest::site_calibration::{
+    MAX_CALIBRATION_BYTES, SiteCalibration, SiteCalibrationError,
+};
 use fss_reference::{ReferenceDeployment, ReplayCx, ScalarExecCx};
 
 use super::{RunResult, export};
@@ -72,6 +80,8 @@ const OPTIONS: &[&str] = &[
     "--scene-mesh",
     "--scene-mesh-digest",
     "--scene-source-digest",
+    "--calibration",
+    "--calibration-digest",
 ];
 
 /// Largest owner scene-mesh package read (the fss-twin format bound).
@@ -83,6 +93,25 @@ struct SceneMeshOption {
     path: PathBuf,
     package: ContentDigest,
     source_scene: ContentDigest,
+}
+
+/// Owner site calibration named on the command line; read and verified only in `run`.
+#[derive(Debug)]
+struct CalibrationOption {
+    path: PathBuf,
+    digest: ContentDigest,
+}
+
+/// Where one camera's ground-visibility pose came from.
+enum PoseSource {
+    None,
+    Argument,
+    Calibration {
+        handle: u64,
+        intrinsics_generation: u64,
+        extrinsics_generation: u64,
+        refined_rms_px: f64,
+    },
 }
 
 /// Fully parsed corroboration request; nothing here is authority until `run` validates it.
@@ -101,6 +130,7 @@ pub(super) struct CorroborateAction {
     policy: VisibilityPolicy,
     poses: [Option<CameraPose>; 2],
     mesh: Option<SceneMeshOption>,
+    calibration: Option<CalibrationOption>,
     rerun: String,
 }
 
@@ -381,6 +411,17 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
             );
         }
     };
+    let calibration = match (
+        find(&values, "--calibration"),
+        find(&values, "--calibration-digest"),
+    ) {
+        (None, None) => None,
+        (Some(path), Some(pinned)) => Some(CalibrationOption {
+            path: PathBuf::from(path),
+            digest: digest(pinned, "--calibration-digest")?,
+        }),
+        _ => return Err("--calibration and --calibration-digest go together".to_owned()),
+    };
     let site = required(&values, "--site")?.to_owned();
     fss_reference::reference_deployment::validate_site_lineage(&site)
         .map_err(|_| "invalid site lineage")?;
@@ -475,6 +516,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
         policy,
         poses: camera_poses,
         mesh,
+        calibration,
         rerun: rerun.join(" "),
     })
 }
@@ -492,6 +534,108 @@ fn read_scene_mesh(path: &Path) -> RunResult<Vec<u8>> {
         .take(MAX_SCENE_MESH_BYTES + 1)
         .read_to_end(&mut bytes)?;
     Ok(bytes)
+}
+
+/// Per-camera poses, their sources, and the verified calibration identity (if any).
+type ResolvedPoses = (
+    [Option<CameraPose>; 2],
+    [PoseSource; 2],
+    Option<ContentDigest>,
+);
+
+/// Verifies the pinned calibration and merges its refined pinhole poses with the `--pose` ones.
+/// Refuses a camera posed twice, a distorted camera, a calibration naming no plan camera, and a
+/// calibration whose world frame (twin package) is not the supplied scene mesh.
+fn resolve_poses(action: &CorroborateAction) -> RunResult<ResolvedPoses> {
+    let mut poses = action.poses;
+    let mut sources = poses.map(|pose| {
+        if pose.is_some() {
+            PoseSource::Argument
+        } else {
+            PoseSource::None
+        }
+    });
+    let Some(option) = &action.calibration else {
+        return Ok((poses, sources, None));
+    };
+    let bytes = super::calibrate::read_bounded(&option.path, MAX_CALIBRATION_BYTES, "calibration")?;
+    let (calibration, identity) = SiteCalibration::decode(&bytes, Some(option.digest))?;
+    if let Some(mesh) = &action.mesh
+        && mesh.package != calibration.twin_package
+    {
+        return Err(SiteCalibrationError::FrameMismatch.into());
+    }
+    let mut named = false;
+    for (index, camera) in action.plan.cameras.iter().enumerate() {
+        let Some(calibrated) = calibration.camera(&camera.name) else {
+            continue;
+        };
+        named = true;
+        if poses[index].is_some() {
+            return Err(SiteCalibrationError::PoseSourceConflict {
+                camera: camera.name.clone(),
+            }
+            .into());
+        }
+        poses[index] = Some(calibrated.pinhole_pose()?);
+        sources[index] = PoseSource::Calibration {
+            handle: calibrated.identity.camera,
+            intrinsics_generation: calibrated.identity.intrinsics,
+            extrinsics_generation: calibrated.identity.extrinsics,
+            refined_rms_px: calibrated.refined_rms_px,
+        };
+    }
+    if !named {
+        return Err(SiteCalibrationError::NoCalibratedCamera.into());
+    }
+    Ok((poses, sources, Some(identity)))
+}
+
+/// `pose_provenance`: one entry per plan camera naming its pose source.
+fn render_pose_provenance(
+    action: &CorroborateAction,
+    sources: &[PoseSource; 2],
+    calibration: Option<ContentDigest>,
+) -> String {
+    let entries: Vec<String> = action
+        .plan
+        .cameras
+        .iter()
+        .zip(sources)
+        .map(|(camera, source)| {
+            let name = fss_cli::agent_json::string(&camera.name);
+            match (source, calibration) {
+                (
+                    PoseSource::Calibration {
+                        handle,
+                        intrinsics_generation,
+                        extrinsics_generation,
+                        refined_rms_px,
+                    },
+                    Some(digest),
+                ) => format!(
+                    concat!(
+                        "{{\"camera\":{},\"source\":\"site_calibration\",",
+                        "\"calibration_digest\":\"{}\",\"camera_handle\":{},",
+                        "\"intrinsics_generation\":{},\"extrinsics_generation\":{},",
+                        "\"refined_rms_px\":{},",
+                        "\"claim\":\"candidate_calibration_not_a_certificate\"}}"
+                    ),
+                    name,
+                    digest,
+                    handle,
+                    intrinsics_generation,
+                    extrinsics_generation,
+                    refined_rms_px
+                ),
+                (PoseSource::Argument, _) => {
+                    format!("{{\"camera\":{name},\"source\":\"owner_pose_argument\"}}")
+                }
+                _ => format!("{{\"camera\":{name},\"source\":\"none\"}}"),
+            }
+        })
+        .collect();
+    format!("[{}]", entries.join(","))
 }
 
 /// Analyze, optionally publish exactly the approved proposals, and print the JSON report.
@@ -516,6 +660,8 @@ fn run_with(
     scalar: &ScalarExecCx,
     out: &mut impl Write,
 ) -> RunResult<()> {
+    // The calibration is verified against its pinned digest before any source is read.
+    let (poses, sources, calibration) = resolve_poses(action)?;
     let package = match &action.cascade {
         Some(options) => Some(super::detector::load(options, cx, scalar)?),
         None => None,
@@ -533,7 +679,7 @@ fn run_with(
     };
     let visibility = GroundVisibilityPlan {
         policy: action.policy,
-        poses: action.poses,
+        poses,
         mesh: match (&twin, &action.mesh) {
             (Some(twin), Some(option)) => Some(SceneMesh {
                 mesh: twin.mesh(),
@@ -606,6 +752,19 @@ fn run_with(
         Some(&alert_hint),
         Some(&coverage),
     );
+    // Pose provenance joins the report only when some camera has a pose, so reports without
+    // poses keep their exact bytes.
+    let json = if poses.iter().any(Option::is_some) {
+        let body = json
+            .strip_suffix('}')
+            .ok_or_else(|| io::Error::other("report is not one JSON object"))?;
+        format!(
+            "{body},\"pose_provenance\":{}}}",
+            render_pose_provenance(action, &sources, calibration)
+        )
+    } else {
+        json
+    };
     let json = format!("{json}\n");
     if let Some(path) = &action.report_out {
         export(path, json.as_bytes(), root, cx)?;
