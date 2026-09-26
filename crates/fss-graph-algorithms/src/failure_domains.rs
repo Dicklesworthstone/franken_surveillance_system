@@ -449,7 +449,9 @@ pub mod combinations {
             parent_witness_digest: ContentDigest,
         ) -> Result<String, GraphError> {
             let scenario = self.scenarios.get(scenario_index).ok_or_else(|| {
-                GraphError::Inconsistent("failure combination index is outside the report".to_owned())
+                GraphError::Inconsistent(
+                    "failure combination index is outside the report".to_owned(),
+                )
             })?;
             Ok(format!(
                 "SensorCoverageGraph@failure-combinations:{}:{}:k{}:m{:04x}",
@@ -558,7 +560,11 @@ pub mod combinations {
         let mut output_entries = 0;
         let metadata_entries = inputs.observers.len()
             + inputs.ordered.len()
-            + inputs.ordered.iter().map(|domain| domain.members().len()).sum::<usize>();
+            + inputs
+                .ordered
+                .iter()
+                .map(|domain| domain.members().len())
+                .sum::<usize>();
         charge(
             &mut output_entries,
             metadata_entries as u64,
@@ -655,7 +661,11 @@ pub mod combinations {
             ));
         }
         Ok(FailureCombinationAnalysis {
-            domains: inputs.ordered.iter().map(|domain| (**domain).clone()).collect(),
+            domains: inputs
+                .ordered
+                .iter()
+                .map(|domain| (**domain).clone())
+                .collect(),
             declarations_digest: digest,
             coverage_digest: projection.graph.digest(),
             max_failed_domains,
@@ -678,14 +688,12 @@ mod combination_tests {
 
     use std::collections::{BTreeMap, BTreeSet};
 
-    use fss_core::ContentDigest;
     use crate::failure_domains::combinations::{
         FailureCombinationAnalysis, ZoneFailureMinimum, analyse_failure_combinations,
     };
-    use crate::failure_domains::{
-        FailureDomain, FailureDomainKind, analyse_failure_domains,
-    };
+    use crate::failure_domains::{FailureDomain, FailureDomainKind, analyse_failure_domains};
     use crate::{CoverageObservation, GraphBudget, GraphError, SensorCoverageProjection};
+    use fss_core::ContentDigest;
 
     fn budget() -> GraphBudget {
         GraphBudget {
@@ -710,7 +718,10 @@ mod combination_tests {
         FailureDomain::new(
             FailureDomainKind::Power,
             id,
-            &members.iter().map(|member| (*member).to_owned()).collect::<Vec<_>>(),
+            &members
+                .iter()
+                .map(|member| (*member).to_owned())
+                .collect::<Vec<_>>(),
         )
     }
 
@@ -747,7 +758,12 @@ mod combination_tests {
         let source = two_sensor_projection()?;
         let domains = [domain("circuit-a", &["a"])?, domain("circuit-b", &["b"])?];
         let independent = analyse_failure_domains(&source, &domains, budget())?;
-        assert!(independent.scenarios.iter().all(|scenario| scenario.lost_zones.is_empty()));
+        assert!(
+            independent
+                .scenarios
+                .iter()
+                .all(|scenario| scenario.lost_zones.is_empty())
+        );
         let result = analyse_failure_combinations(&source, &domains, 2, budget())?;
         assert_eq!(result.scenarios.len(), 3);
         assert_eq!(result.scenarios[2].domain_indices, vec![0, 1]);
@@ -755,32 +771,52 @@ mod combination_tests {
         assert_eq!(result.scenarios[2].lost_zones, vec!["rear"]);
         assert_eq!(
             result.zones["rear"],
-            ZoneFailureMinimum::Cut { failed_domains: 2, scenario_index: 2 }
+            ZoneFailureMinimum::Cut {
+                failed_domains: 2,
+                scenario_index: 2
+            }
         );
         Ok(())
     }
 
     #[test]
-    fn overlapping_required_dependencies_are_unioned_not_alternative_paths() -> Result<(), GraphError> {
+    fn overlapping_required_dependencies_are_unioned_not_alternative_paths()
+    -> Result<(), GraphError> {
         let source = projection(&[
-            ("a", "rear", 1), ("b", "rear", 1), ("c", "rear", 1),
-            ("spare", "front", 1), ("a", "blind", 0),
+            ("a", "rear", 1),
+            ("b", "rear", 1),
+            ("c", "rear", 1),
+            ("spare", "front", 1),
+            ("a", "blind", 0),
         ])?;
         let domains = [
-            FailureDomain::new(FailureDomainKind::Network, "switch", &["a".into(), "b".into()])?,
+            FailureDomain::new(
+                FailureDomainKind::Network,
+                "switch",
+                &["a".into(), "b".into()],
+            )?,
             domain("circuit", &["b", "c"])?,
         ];
         let result = analyse_failure_combinations(&source, &domains, 2, budget())?;
         assert_eq!(result.scenarios[2].failed_sensors, vec!["a", "b", "c"]);
         assert_eq!(result.scenarios[2].lost_zones, vec!["rear"]);
         assert_eq!(result.zones["front"], ZoneFailureMinimum::NoCutWithinBound);
-        assert_eq!(result.zones["blind"], ZoneFailureMinimum::InitiallyUnwitnessed);
-        assert!(result.scenarios.iter().all(|scenario| !scenario.lost_zones.iter().any(|z| z == "blind")));
+        assert_eq!(
+            result.zones["blind"],
+            ZoneFailureMinimum::InitiallyUnwitnessed
+        );
+        assert!(
+            result
+                .scenarios
+                .iter()
+                .all(|scenario| !scenario.lost_zones.iter().any(|z| z == "blind"))
+        );
         Ok(())
     }
 
     #[test]
-    fn no_cut_within_bound_does_not_claim_larger_combinations_were_tested() -> Result<(), GraphError> {
+    fn no_cut_within_bound_does_not_claim_larger_combinations_were_tested() -> Result<(), GraphError>
+    {
         let source = two_sensor_projection()?;
         let domains = [domain("a", &["a"])?, domain("b", &["b"])?];
         let result = analyse_failure_combinations(&source, &domains, 1, budget())?;
@@ -788,17 +824,33 @@ mod combination_tests {
         assert_eq!(result.scenarios.len(), 2);
         assert_eq!(result.zones["rear"], ZoneFailureMinimum::NoCutWithinBound);
         let larger = analyse_failure_combinations(&source, &domains, 2, budget())?;
-        assert!(matches!(larger.zones["rear"], ZoneFailureMinimum::Cut { failed_domains: 2, .. }));
+        assert!(matches!(
+            larger.zones["rear"],
+            ZoneFailureMinimum::Cut {
+                failed_domains: 2,
+                ..
+            }
+        ));
         Ok(())
     }
 
     #[test]
     fn minimum_prefers_cardinality_then_canonical_declaration_tuple() -> Result<(), GraphError> {
         let source = two_sensor_projection()?;
-        let domains = [domain("z", &["a", "b"])?, domain("a", &["a", "b"])?, domain("m", &["a"])?];
+        let domains = [
+            domain("z", &["a", "b"])?,
+            domain("a", &["a", "b"])?,
+            domain("m", &["a"])?,
+        ];
         let result = analyse_failure_combinations(&source, &domains, 3, budget())?;
         assert_eq!(result.domains[0].id(), "a");
-        assert_eq!(result.zones["rear"], ZoneFailureMinimum::Cut { failed_domains: 1, scenario_index: 0 });
+        assert_eq!(
+            result.zones["rear"],
+            ZoneFailureMinimum::Cut {
+                failed_domains: 1,
+                scenario_index: 0
+            }
+        );
         assert_eq!(result.scenarios[0].domain_indices, vec![0]);
         Ok(())
     }
@@ -817,20 +869,36 @@ mod combination_tests {
     }
 
     #[test]
-    fn full_declarations_bind_same_union_and_parent_witness_binds_scope() -> Result<(), GraphError> {
+    fn full_declarations_bind_same_union_and_parent_witness_binds_scope() -> Result<(), GraphError>
+    {
         let source = two_sensor_projection()?;
         let first = analyse_failure_combinations(
-            &source, &[domain("a", &["a"])?, domain("b", &["b"])?], 2, budget(),
+            &source,
+            &[domain("a", &["a"])?, domain("b", &["b"])?],
+            2,
+            budget(),
         )?;
         let changed = analyse_failure_combinations(
-            &source, &[domain("a", &["a", "b"])?, domain("b", &["b"])?], 2, budget(),
+            &source,
+            &[domain("a", &["a", "b"])?, domain("b", &["b"])?],
+            2,
+            budget(),
         )?;
         // Both joint scenarios fail the same sensors and have identical transformed topology.
-        assert_eq!(first.scenarios[2].analysis.input_digest, changed.scenarios[2].analysis.input_digest);
+        assert_eq!(
+            first.scenarios[2].analysis.input_digest,
+            changed.scenarios[2].analysis.input_digest
+        );
         assert_ne!(first.declarations_digest, changed.declarations_digest);
         let parent = ContentDigest::sha256(b"parent coverage witness");
-        assert_ne!(first.projection_id(2, parent)?, changed.projection_id(2, parent)?);
-        assert_ne!(first.projection_id(2, parent)?, first.projection_id(2, ContentDigest::sha256(b"other capture window"))?);
+        assert_ne!(
+            first.projection_id(2, parent)?,
+            changed.projection_id(2, parent)?
+        );
+        assert_ne!(
+            first.projection_id(2, parent)?,
+            first.projection_id(2, ContentDigest::sha256(b"other capture window"))?
+        );
         assert!(first.projection_id(2, parent)?.len() <= 256);
         assert!(first.projection_id(3, parent).is_err());
         Ok(())
@@ -839,75 +907,171 @@ mod combination_tests {
     #[test]
     fn unknown_members_duplicates_and_projection_tampering_are_refused() -> Result<(), GraphError> {
         let source = two_sensor_projection()?;
-        assert!(matches!(analyse_failure_combinations(&source, &[domain("x", &["unknown"])?], 1, budget()), Err(GraphError::UnknownNode(_))));
+        assert!(matches!(
+            analyse_failure_combinations(&source, &[domain("x", &["unknown"])?], 1, budget()),
+            Err(GraphError::UnknownNode(_))
+        ));
         let same = domain("x", &["a"])?;
-        assert!(matches!(analyse_failure_combinations(&source, &[same.clone(), same], 1, budget()), Err(GraphError::DuplicateNode(_))));
+        assert!(matches!(
+            analyse_failure_combinations(&source, &[same.clone(), same], 1, budget()),
+            Err(GraphError::DuplicateNode(_))
+        ));
         let mut changed = source.clone();
         changed.witnesses.insert(("a".into(), "rear".into()), 0);
-        assert!(matches!(analyse_failure_combinations(&changed, &[domain("x", &["a"])?], 1, budget()), Err(GraphError::Inconsistent(_))));
+        assert!(matches!(
+            analyse_failure_combinations(&changed, &[domain("x", &["a"])?], 1, budget()),
+            Err(GraphError::Inconsistent(_))
+        ));
         Ok(())
     }
 
     #[test]
-    fn scenario_ceiling_refuses_the_whole_request_instead_of_truncating() -> Result<(), GraphError> {
+    fn scenario_ceiling_refuses_the_whole_request_instead_of_truncating() -> Result<(), GraphError>
+    {
         let source = projection(&[("a", "rear", 1)])?;
-        let domains = (0..16).map(|i| domain(&format!("d{i:02}"), &["a"])).collect::<Result<Vec<_>, _>>()?;
+        let domains = (0..16)
+            .map(|i| domain(&format!("d{i:02}"), &["a"]))
+            .collect::<Result<Vec<_>, _>>()?;
         let result = analyse_failure_combinations(&source, &domains, 2, budget())?;
         assert_eq!(result.scenarios.len(), 136);
-        assert!(matches!(analyse_failure_combinations(&source, &domains, 3, budget()), Err(GraphError::TooLarge)));
-        assert!(matches!(analyse_failure_combinations(&source, &domains, 0, budget()), Err(GraphError::TooLarge)));
-        assert!(matches!(analyse_failure_combinations(&source, &domains, 17, budget()), Err(GraphError::TooLarge)));
-        assert!(matches!(analyse_failure_combinations(&source, &[], 1, budget()), Err(GraphError::TooLarge)));
+        assert!(matches!(
+            analyse_failure_combinations(&source, &domains, 3, budget()),
+            Err(GraphError::TooLarge)
+        ));
+        assert!(matches!(
+            analyse_failure_combinations(&source, &domains, 0, budget()),
+            Err(GraphError::TooLarge)
+        ));
+        assert!(matches!(
+            analyse_failure_combinations(&source, &domains, 17, budget()),
+            Err(GraphError::TooLarge)
+        ));
+        assert!(matches!(
+            analyse_failure_combinations(&source, &[], 1, budget()),
+            Err(GraphError::TooLarge)
+        ));
         Ok(())
     }
 
     #[test]
-    fn operation_and_output_budgets_are_aggregate_and_exact_at_the_boundary() -> Result<(), GraphError> {
+    fn operation_and_output_budgets_are_aggregate_and_exact_at_the_boundary()
+    -> Result<(), GraphError> {
         let source = two_sensor_projection()?;
         let domains = [domain("a", &["a"])?, domain("b", &["b"])?];
         let result = analyse_failure_combinations(&source, &domains, 2, budget())?;
-        assert_eq!(result.operations, result.scenario_visits + result.member_visits + result.graph_operations);
-        let exact = GraphBudget { max_operations: result.operations, max_output_entries: result.output_entries };
-        assert_eq!(analyse_failure_combinations(&source, &domains, 2, exact)?, result);
-        assert!(matches!(analyse_failure_combinations(&source, &domains, 2, GraphBudget { max_operations: exact.max_operations - 1, ..exact }), Err(GraphError::BudgetExhausted { dimension: "operations", .. })));
-        assert!(matches!(analyse_failure_combinations(&source, &domains, 2, GraphBudget { max_output_entries: exact.max_output_entries - 1, ..exact }), Err(GraphError::BudgetExhausted { dimension: "output_entries", .. })));
+        assert_eq!(
+            result.operations,
+            result.scenario_visits + result.member_visits + result.graph_operations
+        );
+        let exact = GraphBudget {
+            max_operations: result.operations,
+            max_output_entries: result.output_entries,
+        };
+        assert_eq!(
+            analyse_failure_combinations(&source, &domains, 2, exact)?,
+            result
+        );
+        assert!(matches!(
+            analyse_failure_combinations(
+                &source,
+                &domains,
+                2,
+                GraphBudget {
+                    max_operations: exact.max_operations - 1,
+                    ..exact
+                }
+            ),
+            Err(GraphError::BudgetExhausted {
+                dimension: "operations",
+                ..
+            })
+        ));
+        assert!(matches!(
+            analyse_failure_combinations(
+                &source,
+                &domains,
+                2,
+                GraphBudget {
+                    max_output_entries: exact.max_output_entries - 1,
+                    ..exact
+                }
+            ),
+            Err(GraphError::BudgetExhausted {
+                dimension: "output_entries",
+                ..
+            })
+        ));
         Ok(())
     }
 
     #[test]
     fn all_zero_witness_facts_remain_initially_unwitnessed() -> Result<(), GraphError> {
         let source = projection(&[("a", "rear", 0), ("b", "front", 0)])?;
-        let result = analyse_failure_combinations(&source, &[domain("a", &["a"])?, domain("b", &["b"])?], 2, budget())?;
-        assert!(result.zones.values().all(|state| *state == ZoneFailureMinimum::InitiallyUnwitnessed));
-        assert!(result.scenarios.iter().all(|scenario| scenario.lost_zones.is_empty()));
+        let result = analyse_failure_combinations(
+            &source,
+            &[domain("a", &["a"])?, domain("b", &["b"])?],
+            2,
+            budget(),
+        )?;
+        assert!(
+            result
+                .zones
+                .values()
+                .all(|state| *state == ZoneFailureMinimum::InitiallyUnwitnessed)
+        );
+        assert!(
+            result
+                .scenarios
+                .iter()
+                .all(|scenario| scenario.lost_zones.is_empty())
+        );
         Ok(())
     }
 
     fn verify_oracle(source: &SensorCoverageProjection, result: &FailureCombinationAnalysis) {
-        let masks: Vec<_> = result.scenarios.iter().map(|scenario| scenario.domain_mask).collect();
+        let masks: Vec<_> = result
+            .scenarios
+            .iter()
+            .map(|scenario| scenario.domain_mask)
+            .collect();
         assert_eq!(masks, vec![1, 2, 4, 3, 5, 6, 7]);
         for scenario in &result.scenarios {
-            assert_eq!(scenario.lost_zones, expected_lost(source, &result.domains, &scenario.domain_indices));
+            assert_eq!(
+                scenario.lost_zones,
+                expected_lost(source, &result.domains, &scenario.domain_indices)
+            );
         }
         for (zone, state) in &result.zones {
             let first_loss = result.scenarios.iter().position(|scenario| {
                 expected_lost(source, &result.domains, &scenario.domain_indices).contains(zone)
             });
             match first_loss {
-                Some(index) => assert_eq!(*state, ZoneFailureMinimum::Cut {
-                    failed_domains: result.scenarios[index].domain_indices.len(), scenario_index: index,
-                }),
-                None if zone == "blind" => assert_eq!(*state, ZoneFailureMinimum::InitiallyUnwitnessed),
+                Some(index) => assert_eq!(
+                    *state,
+                    ZoneFailureMinimum::Cut {
+                        failed_domains: result.scenarios[index].domain_indices.len(),
+                        scenario_index: index,
+                    }
+                ),
+                None if zone == "blind" => {
+                    assert_eq!(*state, ZoneFailureMinimum::InitiallyUnwitnessed)
+                }
                 None => assert_eq!(*state, ZoneFailureMinimum::NoCutWithinBound),
             }
         }
     }
 
     #[test]
-    fn exhaustive_three_sensor_three_domain_memberships_match_set_union_oracle() -> Result<(), GraphError> {
+    fn exhaustive_three_sensor_three_domain_memberships_match_set_union_oracle()
+    -> Result<(), GraphError> {
         let source = projection(&[
-            ("a", "all", 1), ("b", "all", 1), ("c", "all", 1),
-            ("a", "pair", 1), ("b", "pair", 1), ("c", "single", 1), ("a", "blind", 0),
+            ("a", "all", 1),
+            ("b", "all", 1),
+            ("c", "all", 1),
+            ("a", "pair", 1),
+            ("b", "pair", 1),
+            ("c", "single", 1),
+            ("a", "blind", 0),
         ])?;
         let names = ["a", "b", "c"];
         for first in 1..8_u8 {
@@ -915,9 +1079,12 @@ mod combination_tests {
                 for third in 1..8_u8 {
                     let mut domains = Vec::new();
                     for (index, mask) in [first, second, third].into_iter().enumerate() {
-                        let members: Vec<_> = names.iter().enumerate()
+                        let members: Vec<_> = names
+                            .iter()
+                            .enumerate()
                             .filter(|(bit, _)| mask & (1_u8 << *bit) != 0)
-                            .map(|(_, name)| *name).collect();
+                            .map(|(_, name)| *name)
+                            .collect();
                         domains.push(domain(&format!("d{index}"), &members)?);
                     }
                     let result = analyse_failure_combinations(&source, &domains, 3, budget())?;
