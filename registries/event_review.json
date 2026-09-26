@@ -85,11 +85,16 @@
   ],
   "compatibility": "existing event schema unchanged; no automatic changes to past events or effects",
   "tests": [
-    "crates/fss-reference/src/event_review/tests.rs"
+    "crates/fss-reference/src/event_review/tests.rs",
+    "crates/fss-reference/src/event_review/inspection.rs",
+    "crates/fss-cli/src/bin/fss-review.rs",
+    "crates/fss-cli/tests/event_review_cli_contract.rs",
+    "crates/fss-reference/tests/fixtures/event_review_model.py"
   ],
   "qualification": {
     "native_tests_executed": false,
-    "reason": "Rust toolchain unavailable in authoring environment"
+    "reason": "Rust toolchain unavailable in authoring environment",
+    "independent_model": "5184 finite scenarios passed; not Rust execution"
   },
   "out_of_scope": [
     "remote_authentication",
@@ -99,5 +104,8 @@
     "retention_or_deletion_changes",
     "terminal_state_correction",
     "cross_surface_agent_protocol_exposure"
-  ]
+  ],
+  "cli": "fss-review",
+  "cli_format": "fss.operator_event_review_cli.v1",
+  "current_review_readback": "verify original statement, predecessor anchor and root, exact derived successor; missing provenance fails closed"
 }

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use fss_core::region::RootAuthoritySpec;
 use fss_core::{BudgetVector, CaptureInterval, EventKind, OperationId, ProbabilityInterval, TimestampNs};
 
-type Test<T = ()> = Result<T, Box<dyn std::error::Error>>;
+pub(super) type Test<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const SITE: &str = "site:event-review";
 const ACTOR: &str = "principal:event-review";
 
@@ -58,12 +58,12 @@ fn initial_event(tamper: bool) -> Test<EventHypothesis> {
     })
 }
 
-struct Fixture {
-    deployment: ReferenceDeployment, cx: ReplayCx, authority: ContextAuthority,
-    event: EventHypothesis, _directory: Directory,
+pub(super) struct Fixture {
+    pub(super) deployment: ReferenceDeployment, pub(super) cx: ReplayCx, pub(super) authority: ContextAuthority,
+    pub(super) event: EventHypothesis, _directory: Directory,
 }
 impl Fixture {
-    fn new(name: &str, tamper: bool) -> Test<Self> {
+    pub(super) fn new(name: &str, tamper: bool) -> Test<Self> {
         let directory = Directory::new(name)?;
         let authority = authority(&["ADP-REPLAY-001", CAP_REVIEW_PREPARE, CAP_REVIEW_COMMIT])?;
         let root = directory.0.join("deployment");
@@ -74,13 +74,13 @@ impl Fixture {
         deployment.publish_event(&ReferencePolicyDecision { event: event.clone(), action: ReferencePolicyAction::Hold }, &cx)?;
         Ok(Self { deployment, cx, authority, event, _directory: directory })
     }
-    fn request(&self, disposition: ReviewDisposition) -> ReviewRequest {
+    pub(super) fn request(&self, disposition: ReviewDisposition) -> ReviewRequest {
         ReviewRequest { event_id: self.event.event_id.clone(), expected_revision: self.event.revision_digest(), disposition, reason: "Owner reviewed the available evidence".into() }
     }
     fn fresh_cx(&self) -> Test<ReplayCx> {
         Ok(ReplayCx::from_context_authority(&self.authority, self.deployment.root().to_path_buf())?)
     }
-    fn snapshot(&self) -> Test<(LedgerAnchor, usize, Vec<u8>)> {
+    pub(super) fn snapshot(&self) -> Test<(LedgerAnchor, usize, Vec<u8>)> {
         Ok((self.deployment.current_anchor().clone(), self.deployment.publisher().spool().digests().count(), fs::read(self.deployment.root().join("effects/journal.fssj"))?))
     }
 }
@@ -268,4 +268,27 @@ fn direct_transition_table_and_effect_guard_never_invent_authority() {
     assert!(!effect_blocks_review(EffectState::Verified));
     assert!(!effect_blocks_review(EffectState::Failed));
     assert!(!effect_blocks_review(EffectState::Cancelled));
+}
+
+#[test]
+fn newly_prepared_unrelated_effect_blocks_old_review_approval_without_mutating_either_journal() -> Test {
+    use fss_core::{EffectIntent, IdempotencyKey, ObligationId};
+    let mut f = Fixture::new("open-effect", false)?;
+    let request = f.request(ReviewDisposition::Resolve);
+    let preview = preview_review(&f.deployment, &request, &f.authority, &f.cx)?;
+    let intent = EffectIntent::new(
+        OperationId::parse("operation:unrelated-review-test")?,
+        IdempotencyKey::parse("idempotency:unrelated-review-test")?,
+        "test.review-boundary", ContentDigest::sha256(b"synthetic request"),
+        ContentDigest::sha256(b"synthetic precondition"),
+    )?;
+    f.deployment.effects_mut().prepare(intent, ObligationId::parse("obligation:unrelated-review-test")?,
+        "test-only pending work; no transport", TimestampNs(100))?;
+    let before = f.snapshot()?;
+    assert!(matches!(preview_review(&f.deployment, &request, &f.authority, &f.cx), Err(ReviewError::OpenEffects)));
+    assert!(matches!(commit_review(&mut f.deployment, &request, preview.approval(), &f.authority, &f.cx), Err(ReviewError::OpenEffects)));
+    assert_eq!(f.snapshot()?, before);
+    assert_eq!(f.deployment.current_event_authority(&request.event_id)?.0, f.event);
+    assert_eq!(f.deployment.effects().operations().next().ok_or("missing prepared operation")?.state, EffectState::Prepared);
+    Ok(())
 }
