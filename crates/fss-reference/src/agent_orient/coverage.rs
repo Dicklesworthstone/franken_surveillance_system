@@ -25,14 +25,19 @@
 //! and a covered zone whose occlusion was never tested is declared frustum-only
 //! (`occlusion_unknown`) in its domain, its cell statement and its named gaps. Tolerant-decode
 //! gaps are named `decode_refused` with their error id; a witness never spans one.
+//!
+//! A zone assessed through a calibrated pose names the pose's source from its most recent record
+//! (fss-x8j0v follow-up): the owner `--pose` argument, or the site calibration digest with the
+//! camera generation and whether its currency was owner-asserted (never observed); a posed record
+//! that predates provenance binding is named as unrecorded.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use fss_core::{CaptureInterval, ContentDigest, LedgerAnchor, TimestampNs};
 
-use crate::ingest::ground_visibility::ZoneVisibility;
+use crate::ingest::ground_visibility::{CameraModel, ZoneVisibility};
 use crate::ingest::recorded_coverage::{
-    CoverageRecord, UncoveredReason, ZoneCoverage, ZoneWitness,
+    CoverageRecord, PoseProvenance, UncoveredReason, ZoneCoverage, ZoneWitness,
 };
 
 /// Sensor-capsule payloads read to attribute the newest evidence of each covered sensor; more is
@@ -96,6 +101,8 @@ pub struct ZoneAssessment {
     pub gaps: Vec<String>,
     /// Geometric visibility of a ground zone in its most recent record, when geometry was used.
     pub visibility: Option<ZoneVisibility>,
+    /// Pose source bound by the zone's most recent record (version 4 records only).
+    pub pose_provenance: Option<PoseProvenance>,
 }
 
 impl ZoneAssessment {
@@ -120,6 +127,22 @@ impl ZoneAssessment {
         self.visibility
             .as_ref()
             .is_some_and(ZoneVisibility::frustum_only)
+    }
+
+    /// Clause naming where the zone's pinhole pose came from, when a pose was used: the bound
+    /// provenance, or `unrecorded` for a posed record that predates provenance binding.
+    #[must_use]
+    pub fn pose_clause(&self) -> Option<String> {
+        match (&self.pose_provenance, &self.visibility) {
+            (Some(provenance), _) => Some(format!(" Pose source: {}.", provenance.summary())),
+            (None, Some(visibility)) if visibility.camera_model == CameraModel::CalibratedPose => {
+                Some(
+                    " Pose source: unrecorded (the record predates pose-provenance binding)."
+                        .to_owned(),
+                )
+            }
+            _ => None,
+        }
     }
 
     /// Human label `sensor scope`.
@@ -357,6 +380,7 @@ pub(super) fn assess(
             basis,
             gaps,
             visibility: latest_zone.visibility.clone(),
+            pose_provenance: records[latest].record.pose_provenance,
         };
         let Some(freshest) = fresh.last().copied() else {
             let analysed = current
@@ -481,6 +505,7 @@ pub(super) fn assess(
                  coverage record covers it."
             )],
             visibility: None,
+            pose_provenance: None,
         });
     }
     Some(CoverageAssessment {

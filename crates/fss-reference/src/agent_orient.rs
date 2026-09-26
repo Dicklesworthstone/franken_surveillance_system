@@ -2444,6 +2444,8 @@ fn zone_coverage_cell(
             zone.gaps.join(" ")
         ),
     };
+    // Only a posed zone names its pose source, so other statements keep their exact text.
+    let statement = format!("{statement}{}", zone.pose_clause().unwrap_or_default());
     cell(KnowledgeCellParams {
         claim_id: zone.claim_id(),
         statement,

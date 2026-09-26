@@ -209,6 +209,7 @@ mod tests {
                 basis: &LedgerAnchor::genesis("site:recovery"),
                 cascade: None,
                 visibility: &GroundVisibilityPlan::default(),
+                provenance: None,
             },
             0,
             &summary,

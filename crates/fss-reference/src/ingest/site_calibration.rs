@@ -192,6 +192,23 @@ pub enum SiteCalibrationError {
     NoCalibratedCamera,
     /// The calibration world frame (twin package) differs from the consumer's scene mesh.
     FrameMismatch,
+    /// The owner asserted a current camera generation (`--camera-generation`) that differs from
+    /// the generation the calibrated pose depends on: the calibration is stale for that camera
+    /// (moved, cropped, zoomed or relensed since). The assertion is the owner's, not observed.
+    GenerationStale {
+        /// Camera name.
+        camera: String,
+        /// Owner-asserted current `(intrinsics, extrinsics)` generations.
+        asserted: (u64, u64),
+        /// Generations the calibrated pose depends on.
+        calibrated: (u64, u64),
+    },
+    /// A camera generation was asserted for a camera whose pose does not come from the
+    /// calibration, so there is nothing for the assertion to bind.
+    GenerationUnbound {
+        /// Camera name.
+        camera: String,
+    },
 }
 
 impl SiteCalibrationError {
@@ -212,6 +229,8 @@ impl SiteCalibrationError {
             Self::PoseSourceConflict { .. } => "ERR-CORROBORATE-POSE-SOURCE-CONFLICT-001",
             Self::NoCalibratedCamera => "ERR-SITE-CALIBRATION-CAMERA-UNBOUND-001",
             Self::FrameMismatch => "ERR-SITE-CALIBRATION-FRAME-MISMATCH-001",
+            Self::GenerationStale { .. } => "ERR-SITE-CALIBRATION-GENERATION-STALE-001",
+            Self::GenerationUnbound { .. } => "ERR-SITE-CALIBRATION-GENERATION-UNBOUND-001",
         }
     }
 }
@@ -261,6 +280,22 @@ impl fmt::Display for SiteCalibrationError {
             }
             Self::FrameMismatch => f.write_str(
                 "the calibration world frame (twin package) differs from the scene mesh",
+            ),
+            Self::GenerationStale {
+                camera,
+                asserted,
+                calibrated,
+            } => write!(
+                f,
+                "camera {camera}: owner-asserted current generation intrinsics {} extrinsics {} \
+                 differs from the calibrated generation intrinsics {} extrinsics {}; the \
+                 calibration is stale for this camera",
+                asserted.0, asserted.1, calibrated.0, calibrated.1
+            ),
+            Self::GenerationUnbound { camera } => write!(
+                f,
+                "--camera-generation names camera {camera}, whose pose does not come from the \
+                 calibration"
             ),
         }
     }

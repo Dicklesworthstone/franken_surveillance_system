@@ -246,3 +246,135 @@ fn identity_ignores_the_anchor_but_the_approval_binds_it() -> TestResult {
     assert_ne!(approval_digest(&[&first]), approval_digest(&[&second]));
     Ok(())
 }
+
+// Pose provenance (record version 4, fss-x8j0v follow-up).
+
+fn posed_visibility() -> ZoneVisibility {
+    ZoneVisibility {
+        camera_model: CameraModel::CalibratedPose,
+        grid: 8,
+        threshold_ppm: 1_000_000,
+        samples: 64,
+        visible: 64,
+        outside_frustum: 0,
+        occluded: 0,
+        privacy_masked: 0,
+        occlusion: super::super::ground_visibility::Occlusion::MeshChecked(ContentDigest::sha256(
+            b"mesh",
+        )),
+    }
+}
+
+fn posed_record(
+    visibility: ZoneVisibility,
+    provenance: Option<PoseProvenance>,
+) -> Result<CoverageRecord, ContractError> {
+    let frames = frames(0..14)?;
+    let gaps = vec![false; 14];
+    let mut input = input(
+        &frames,
+        &gaps,
+        OPERATOR_TIME_LABEL,
+        vec![zone(Vec::new(), true)],
+    );
+    input.source = CoverageSource::Corroborate;
+    build_coverage_with(
+        &input,
+        &CoverageExtras {
+            visibility: vec![Some(visibility)],
+            pose_provenance: provenance,
+            ..CoverageExtras::default()
+        },
+    )
+}
+
+fn calibrated(currency: GenerationCurrency) -> PoseProvenance {
+    PoseProvenance::SiteCalibration {
+        calibration_digest: ContentDigest::sha256(b"calibration"),
+        camera_handle: 21,
+        intrinsics_generation: 1,
+        extrinsics_generation: 1,
+        currency,
+    }
+}
+
+#[test]
+fn pose_provenance_is_version_four_round_trips_and_leaves_unbound_records_unchanged() -> TestResult
+{
+    let unbound = posed_record(posed_visibility(), None)?;
+    let owner = posed_record(posed_visibility(), Some(PoseProvenance::OwnerPoseArgument))?;
+    let asserted = posed_record(
+        posed_visibility(),
+        Some(calibrated(GenerationCurrency::OwnerAsserted)),
+    )?;
+    let unasserted = posed_record(
+        posed_visibility(),
+        Some(calibrated(GenerationCurrency::Unasserted)),
+    )?;
+    // Without a provenance the record is exactly the version-2 record it always was.
+    let unbound_bytes = unbound.to_bytes();
+    let mut version = CanonicalDecoder::new(&unbound_bytes);
+    assert_eq!(version.bytes()?, RECORD_MAGIC);
+    assert_eq!(version.u32()?, RECORD_VERSION_VISIBILITY);
+    let mut stripped = owner.clone();
+    stripped.pose_provenance = None;
+    assert_eq!(stripped.to_bytes(), unbound.to_bytes());
+    let mut digests = std::collections::BTreeSet::new();
+    for record in [&owner, &asserted, &unasserted] {
+        let bytes = record.to_bytes();
+        let mut header = CanonicalDecoder::new(&bytes);
+        assert_eq!(header.bytes()?, RECORD_MAGIC);
+        assert_eq!(header.u32()?, RECORD_VERSION_POSE_PROVENANCE);
+        let decoded = CoverageRecord::from_bytes(&bytes, ContentDigest::sha256(&bytes))?;
+        assert_eq!(&decoded, record);
+        // Deterministic: rebuilt from the same inputs, the same bytes.
+        assert_eq!(
+            posed_record(posed_visibility(), record.pose_provenance)?.to_bytes(),
+            bytes
+        );
+        assert!(digests.insert(record.digest()));
+    }
+    assert!(digests.insert(unbound.digest()));
+    // The provenance digest is domain-separated and distinguishes every source and currency.
+    let provenance: std::collections::BTreeSet<_> = [
+        PoseProvenance::OwnerPoseArgument.digest(),
+        calibrated(GenerationCurrency::OwnerAsserted).digest(),
+        calibrated(GenerationCurrency::Unasserted).digest(),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(provenance.len(), 3);
+    Ok(())
+}
+
+#[test]
+fn pose_provenance_requires_a_calibrated_pose_on_a_corroborate_record() -> TestResult {
+    let mut homography = posed_visibility();
+    homography.camera_model = CameraModel::OwnerHomography;
+    homography.occlusion = super::super::ground_visibility::Occlusion::Unknown(
+        super::super::ground_visibility::OcclusionUnknownReason::NoCameraPose,
+    );
+    assert!(posed_record(homography.clone(), None).is_ok());
+    assert!(posed_record(homography, Some(PoseProvenance::OwnerPoseArgument)).is_err());
+    let zero = PoseProvenance::SiteCalibration {
+        calibration_digest: ContentDigest::sha256(b"calibration"),
+        camera_handle: 21,
+        intrinsics_generation: 0,
+        extrinsics_generation: 1,
+        currency: GenerationCurrency::Unasserted,
+    };
+    assert!(posed_record(posed_visibility(), Some(zero)).is_err());
+    let mut watch = posed_record(posed_visibility(), Some(PoseProvenance::OwnerPoseArgument))?;
+    watch.source = CoverageSource::Watch;
+    assert!(watch.validate().is_err());
+    // A version-4 record whose provenance was edited is refused under its original digest.
+    let record = posed_record(
+        posed_visibility(),
+        Some(calibrated(GenerationCurrency::Unasserted)),
+    )?;
+    let digest = record.digest();
+    let mut edited = record;
+    edited.pose_provenance = Some(calibrated(GenerationCurrency::OwnerAsserted));
+    assert!(CoverageRecord::from_bytes(&edited.to_bytes(), digest).is_err());
+    Ok(())
+}

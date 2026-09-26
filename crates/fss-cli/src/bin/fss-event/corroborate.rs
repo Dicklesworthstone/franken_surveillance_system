@@ -20,6 +20,14 @@
 //! any source is read, each named camera takes its pose (a `--pose` for the same camera, a
 //! distorted camera, or a twin other than `--scene-mesh` is a typed refusal), and the report's
 //! `pose_provenance` records every camera's pose source with the calibration digest.
+//! Each posed camera's retained coverage record binds the same provenance (record version 4):
+//! `owner_pose_argument` for a `--pose`, or the calibration digest, camera handle and
+//! intrinsics/extrinsics generations. No deployment retains a camera's current generation, so
+//! currency is never observed: `--camera-generation NAME:INTRINSICS:EXTRINSICS` is the owner's
+//! assertion that a calibrated camera still has exactly those generations. It must match the
+//! calibration (otherwise `ERR-SITE-CALIBRATION-GENERATION-STALE-001` before any source is read)
+//! and is recorded as `owner_asserted_not_observed`; a calibrated camera without one is recorded
+//! as `unasserted_unknown`.
 //!
 //! `--tolerate-decode-refusals` explicitly enables bounded recovery for both recordings. Refused
 //! segments and tracking restarts remain in the report and coverage; source gaps additionally
@@ -44,6 +52,7 @@ use fss_reference::ingest::recorded_corroboration::{
     CorroborationPlan, CorroborationReport, GroundHomography, GroundVisibilityPlan, GroundZone,
     MAX_CORROBORATION_ZONES,
 };
+use fss_reference::ingest::recorded_coverage::{GenerationCurrency, PoseProvenance};
 use fss_reference::ingest::recorded_decode::ComponentInterpretation;
 use fss_reference::ingest::recorded_watch::{WatchDetectorConfig, WatchLimits, WatchTrackerConfig};
 use fss_reference::ingest::site_calibration::{
@@ -111,6 +120,7 @@ enum PoseSource {
         intrinsics_generation: u64,
         extrinsics_generation: u64,
         refined_rms_px: f64,
+        currency: GenerationCurrency,
     },
 }
 
@@ -131,6 +141,8 @@ pub(super) struct CorroborateAction {
     poses: [Option<CameraPose>; 2],
     mesh: Option<SceneMeshOption>,
     calibration: Option<CalibrationOption>,
+    /// Owner-asserted current `(camera, intrinsics, extrinsics)` generations, in argument order.
+    generations: Vec<(String, u64, u64)>,
     rerun: String,
 }
 
@@ -249,6 +261,21 @@ fn pose(value: &str) -> Result<(String, CameraPose), String> {
     Ok((name.to_owned(), parsed))
 }
 
+/// `NAME:INTRINSICS:EXTRINSICS`: the owner's assertion of a camera's current (nonzero)
+/// generations. An assertion, never an observation.
+fn camera_generation(value: &str) -> Result<(String, u64, u64), String> {
+    let usage = "camera generation must be NAME:INTRINSICS:EXTRINSICS (nonzero integers)";
+    let (name, rest) = value.split_once(':').ok_or(usage)?;
+    let (intrinsics, extrinsics) = rest.split_once(':').ok_or(usage)?;
+    let parse = |text: &str| text.parse::<u64>().ok().filter(|value| *value != 0);
+    match (parse(intrinsics), parse(extrinsics)) {
+        (Some(intrinsics), Some(extrinsics)) if !name.is_empty() => {
+            Ok((name.to_owned(), intrinsics, extrinsics))
+        }
+        _ => Err(usage.to_owned()),
+    }
+}
+
 fn quote(argument: &str) -> String {
     if !argument.is_empty()
         && argument
@@ -270,6 +297,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
     let mut grounds: Vec<(String, GroundHomography)> = Vec::new();
     let mut zones = Vec::new();
     let mut poses: Vec<(String, CameraPose)> = Vec::new();
+    let mut generations: Vec<(String, u64, u64)> = Vec::new();
     let mut rerun = vec!["fss-event".to_owned(), "corroborate".to_owned()];
     let mut recovery = CorroborationOptions::default();
     let mut index = 0;
@@ -330,6 +358,16 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
                     return Err(format!("duplicate --pose for camera {name}"));
                 }
                 poses.push((name, parsed));
+            }
+            "--camera-generation" => {
+                let parsed = camera_generation(argument)?;
+                if generations.iter().any(|(n, _, _)| *n == parsed.0) {
+                    return Err(format!(
+                        "duplicate --camera-generation for camera {}",
+                        parsed.0
+                    ));
+                }
+                generations.push(parsed);
             }
             _ if !OPTIONS.contains(&key) && !super::detector::OPTIONS.contains(&key) => {
                 return Err("unknown or inapplicable option".to_owned());
@@ -422,6 +460,16 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
         }),
         _ => return Err("--calibration and --calibration-digest go together".to_owned()),
     };
+    if !generations.is_empty() && calibration.is_none() {
+        return Err(
+            "--camera-generation asserts a calibrated camera; it requires --calibration".to_owned(),
+        );
+    }
+    for (name, _, _) in &generations {
+        if !cameras.iter().any(|camera| camera.name == *name) {
+            return Err(format!("--camera-generation names no --camera: {name}"));
+        }
+    }
     let site = required(&values, "--site")?.to_owned();
     fss_reference::reference_deployment::validate_site_lineage(&site)
         .map_err(|_| "invalid site lineage")?;
@@ -517,6 +565,7 @@ pub(super) fn parse(args: &[OsString]) -> Result<CorroborateAction, String> {
         poses: camera_poses,
         mesh,
         calibration,
+        generations,
         rerun: rerun.join(" "),
     })
 }
@@ -543,9 +592,39 @@ type ResolvedPoses = (
     Option<ContentDigest>,
 );
 
+/// The retained [`PoseProvenance`] of each plan camera (none for a camera without a pose).
+fn retained_provenance(
+    sources: &[PoseSource; 2],
+    calibration: Option<ContentDigest>,
+) -> [Option<PoseProvenance>; 2] {
+    let one = |source: &PoseSource| match (source, calibration) {
+        (PoseSource::Argument, _) => Some(PoseProvenance::OwnerPoseArgument),
+        (
+            PoseSource::Calibration {
+                handle,
+                intrinsics_generation,
+                extrinsics_generation,
+                currency,
+                ..
+            },
+            Some(calibration_digest),
+        ) => Some(PoseProvenance::SiteCalibration {
+            calibration_digest,
+            camera_handle: *handle,
+            intrinsics_generation: *intrinsics_generation,
+            extrinsics_generation: *extrinsics_generation,
+            currency: *currency,
+        }),
+        _ => None,
+    };
+    [one(&sources[0]), one(&sources[1])]
+}
+
 /// Verifies the pinned calibration and merges its refined pinhole poses with the `--pose` ones.
-/// Refuses a camera posed twice, a distorted camera, a calibration naming no plan camera, and a
-/// calibration whose world frame (twin package) is not the supplied scene mesh.
+/// Refuses a camera posed twice, a distorted camera, a calibration naming no plan camera, a
+/// calibration whose world frame (twin package) is not the supplied scene mesh, an owner-asserted
+/// camera generation that differs from the calibrated one (stale), and an assertion for a camera
+/// the calibration does not pose. All of this happens before any source is read.
 fn resolve_poses(action: &CorroborateAction) -> RunResult<ResolvedPoses> {
     let mut poses = action.poses;
     let mut sources = poses.map(|pose| {
@@ -578,15 +657,54 @@ fn resolve_poses(action: &CorroborateAction) -> RunResult<ResolvedPoses> {
             .into());
         }
         poses[index] = Some(calibrated.pinhole_pose()?);
+        let asserted = action
+            .generations
+            .iter()
+            .find(|(name, _, _)| *name == camera.name);
+        let calibrated_generation = (
+            calibrated.identity.intrinsics,
+            calibrated.identity.extrinsics,
+        );
+        if let Some((_, intrinsics, extrinsics)) = asserted
+            && (*intrinsics, *extrinsics) != calibrated_generation
+        {
+            return Err(SiteCalibrationError::GenerationStale {
+                camera: camera.name.clone(),
+                asserted: (*intrinsics, *extrinsics),
+                calibrated: calibrated_generation,
+            }
+            .into());
+        }
         sources[index] = PoseSource::Calibration {
             handle: calibrated.identity.camera,
             intrinsics_generation: calibrated.identity.intrinsics,
             extrinsics_generation: calibrated.identity.extrinsics,
             refined_rms_px: calibrated.refined_rms_px,
+            currency: if asserted.is_some() {
+                GenerationCurrency::OwnerAsserted
+            } else {
+                GenerationCurrency::Unasserted
+            },
         };
     }
     if !named {
         return Err(SiteCalibrationError::NoCalibratedCamera.into());
+    }
+    for (name, _, _) in &action.generations {
+        let calibrated = action
+            .plan
+            .cameras
+            .iter()
+            .zip(&sources)
+            .any(|(camera, source)| {
+                camera.name == *name && matches!(source, PoseSource::Calibration { .. })
+            });
+        if !calibrated {
+            return Err(SiteCalibrationError::GenerationUnbound {
+                camera: name.clone(),
+            }
+            .into());
+        }
     }
     Ok((poses, sources, Some(identity)))
 }
@@ -611,6 +729,7 @@ fn render_pose_provenance(
                         intrinsics_generation,
                         extrinsics_generation,
                         refined_rms_px,
+                        currency,
                     },
                     Some(digest),
                 ) => format!(
@@ -618,6 +737,7 @@ fn render_pose_provenance(
                         "{{\"camera\":{},\"source\":\"site_calibration\",",
                         "\"calibration_digest\":\"{}\",\"camera_handle\":{},",
                         "\"intrinsics_generation\":{},\"extrinsics_generation\":{},",
+                        "\"generation_currency\":\"{}\",",
                         "\"refined_rms_px\":{},",
                         "\"claim\":\"candidate_calibration_not_a_certificate\"}}"
                     ),
@@ -626,6 +746,7 @@ fn render_pose_provenance(
                     handle,
                     intrinsics_generation,
                     extrinsics_generation,
+                    currency.as_str(),
                     refined_rms_px
                 ),
                 (PoseSource::Argument, _) => {
@@ -662,6 +783,7 @@ fn run_with(
 ) -> RunResult<()> {
     // The calibration is verified against its pinned digest before any source is read.
     let (poses, sources, calibration) = resolve_poses(action)?;
+    let provenance = retained_provenance(&sources, calibration);
     let package = match &action.cascade {
         Some(options) => Some(super::detector::load(options, cx, scalar)?),
         None => None,
@@ -697,12 +819,13 @@ fn run_with(
         )?),
         _ => None,
     };
-    let mut report = CorroborationReport::analyze_with_options(
+    let mut report = CorroborationReport::analyze_with_provenance(
         deployment,
         &action.plan,
         &action.limits,
         cascade.as_mut(),
         &visibility,
+        &provenance,
         action.recovery,
         cx,
     )?;
@@ -721,12 +844,13 @@ fn run_with(
     // A coverage proposal binds the authority anchor its analysis read; after this run published
     // candidates, the proposal is recomputed against the new anchor so its approval is current.
     let reproposed = if published > 0 && action.retain_coverage.is_none() {
-        Some(CorroborationReport::analyze_with_options(
+        Some(CorroborationReport::analyze_with_provenance(
             deployment,
             &action.plan,
             &action.limits,
             cascade.as_mut(),
             &visibility,
+            &provenance,
             action.recovery,
             cx,
         )?)

@@ -1191,3 +1191,326 @@ fn corroboration_refuses_tampered_foreign_distorted_and_doubly_posed_calibration
     );
     Ok(())
 }
+
+// ---------------------------------------------------------------------------------------------
+// Retained pose provenance and owner-asserted camera generations (fss-x8j0v follow-up).
+// ---------------------------------------------------------------------------------------------
+
+/// A calibration of the complete site with two imported recordings.
+struct Calibrated {
+    directory: OwnedDirectory,
+    site: Site,
+    path: String,
+    digest: String,
+    recorded: [String; 2],
+}
+
+fn calibrated(name: &str) -> TestResult<Calibrated> {
+    let directory = OwnedDirectory::new(name)?;
+    let site = build_site(&directory, Variant::Complete)?;
+    let out = directory.0.join("site.fsscal");
+    let made = calibrate(&site, &out, &[])?;
+    success(&made);
+    let digest = Json::parse(String::from_utf8(made.stdout.clone())?.trim_end())?
+        .get("calibration_digest")?
+        .text()?
+        .to_owned();
+    let recorded = recordings(&directory)?;
+    Ok(Calibrated {
+        path: out.to_str().ok_or("UTF-8 path")?.to_owned(),
+        directory,
+        site,
+        digest,
+        recorded,
+    })
+}
+
+impl Calibrated {
+    /// Corroborates with the pinned calibration and its twin as the scene mesh.
+    fn run(&self, extra: &[&str]) -> TestResult<Output> {
+        let mesh = self.site.twin.to_str().ok_or("UTF-8 path")?;
+        let source = source_scene();
+        let mut args = vec![
+            "--calibration",
+            self.path.as_str(),
+            "--calibration-digest",
+            self.digest.as_str(),
+            "--scene-mesh",
+            mesh,
+            "--scene-mesh-digest",
+            self.site.twin_digest.as_str(),
+            "--scene-source-digest",
+            source.as_str(),
+        ];
+        args.extend_from_slice(extra);
+        corroborate(&self.directory.root(), &self.recorded, &args)
+    }
+
+    /// A cold, read-only reopen of the deployment from disk.
+    fn snapshot(&self) -> TestResult<fss_reference::agent_orient::DeploymentSnapshot> {
+        Ok(fss_reference::agent_orient::read_deployment(
+            &self.directory.root(),
+            &fss_reference::agent_orient::OrientLimits::default(),
+        )?)
+    }
+}
+
+/// `pose_provenance` of every coverage record in the report, in plan order.
+fn record_provenance(report: &Json) -> TestResult<Vec<Json>> {
+    report
+        .path(&["coverage", "records"])?
+        .items()?
+        .iter()
+        .map(|record| Ok(record.get("pose_provenance")?.clone()))
+        .collect()
+}
+
+#[test]
+fn calibrated_coverage_retains_the_calibration_digest_and_generations_and_reopens_cold()
+-> TestResult {
+    use fss_reference::ingest::recorded_coverage::{GenerationCurrency, PoseProvenance};
+
+    let fixture = calibrated("provenance")?;
+    let pinned = ContentDigest::parse(&fixture.digest)?;
+    // East's generation is asserted current by the owner; west's is not asserted.
+    let asserted = ["--camera-generation", "east:1:1"];
+    let proposal = report(&fixture.run(&asserted)?)?;
+    // Deterministic: the same inputs give the same report.
+    assert_eq!(report(&fixture.run(&asserted)?)?, proposal);
+    let bound = record_provenance(&proposal)?;
+    assert_eq!(bound.len(), 2);
+    for (entry, (handle, currency)) in bound.iter().zip([
+        (21_u64, "owner_asserted_not_observed"),
+        (22, "unasserted_unknown"),
+    ]) {
+        assert_eq!(entry.get("source")?.text()?, "site_calibration");
+        assert_eq!(entry.get("calibration_digest")?.text()?, fixture.digest);
+        assert_eq!(entry.get("camera_handle")?.number()?, handle);
+        assert_eq!(entry.get("intrinsics_generation")?.number()?, 1);
+        assert_eq!(entry.get("extrinsics_generation")?.number()?, 1);
+        assert_eq!(entry.get("generation_currency")?.text()?, currency);
+        assert_eq!(
+            entry.get("claim")?.text()?,
+            "candidate_calibration_not_a_certificate"
+        );
+    }
+    let stdout_currency: Vec<String> = proposal
+        .get("pose_provenance")?
+        .items()?
+        .iter()
+        .map(|entry| Ok(entry.get("generation_currency")?.text()?.to_owned()))
+        .collect::<TestResult<_>>()?;
+    assert_eq!(
+        stdout_currency,
+        ["owner_asserted_not_observed", "unasserted_unknown"]
+    );
+    // The assertion is part of the analysis: without it the proposal differs.
+    let unasserted = report(&fixture.run(&[])?)?;
+    assert_ne!(
+        unasserted.path(&["coverage", "approval_digest"])?,
+        proposal.path(&["coverage", "approval_digest"])?
+    );
+
+    // Retain exactly the proposal, then reopen the deployment cold from disk.
+    let before = fixture.snapshot()?;
+    assert!(before.coverage.is_empty());
+    let approval = proposal
+        .path(&["coverage", "approval_digest"])?
+        .text()?
+        .to_owned();
+    let mut retain = asserted.to_vec();
+    retain.extend_from_slice(&["--retain-coverage", approval.as_str()]);
+    let retained = report(&fixture.run(&retain)?)?;
+    assert_eq!(
+        retained.path(&["coverage", "coverage_status"])?.text()?,
+        "retained"
+    );
+    let snapshot = fixture.snapshot()?;
+    assert_eq!(snapshot.batch_count, before.batch_count + 1);
+    assert_eq!(snapshot.coverage.len(), 2);
+    let expected = [
+        (21, GenerationCurrency::OwnerAsserted),
+        (22, GenerationCurrency::Unasserted),
+    ];
+    let proposed_digests: Vec<String> = proposal
+        .path(&["coverage", "records"])?
+        .items()?
+        .iter()
+        .map(|record| Ok(record.get("record_digest")?.text()?.to_owned()))
+        .collect::<TestResult<_>>()?;
+    // Retained records are listed in ledger order, not plan order: match by payload digest.
+    for ((handle, currency), digest) in expected.into_iter().zip(&proposed_digests) {
+        // Exactly the proposed bytes, decoded and validated from the spool.
+        let retained = snapshot
+            .coverage
+            .iter()
+            .find(|retained| retained.payload_digest.to_text() == *digest)
+            .ok_or("a proposed record was not retained")?;
+        assert_eq!(
+            retained.record.pose_provenance,
+            Some(PoseProvenance::SiteCalibration {
+                calibration_digest: pinned,
+                camera_handle: handle,
+                intrinsics_generation: 1,
+                extrinsics_generation: 1,
+                currency,
+            })
+        );
+    }
+
+    // Orient reads the same records and names the pose source in the posed zone cells.
+    let orient = Command::new(env!("CARGO_BIN_EXE_fss"))
+        .args(["orient", "--json", "--root"])
+        .arg(fixture.directory.root())
+        .args(["--view", "brief"])
+        .output()?;
+    success(&orient);
+    let text = String::from_utf8(orient.stdout)?;
+    assert!(
+        text.contains(&format!(
+            "Pose source: site calibration {} camera 21 intrinsics generation 1 extrinsics \
+             generation 1, generation currency owner_asserted_not_observed",
+            fixture.digest
+        )),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "camera 22 intrinsics generation 1 extrinsics generation 1, generation \
+                       currency unasserted_unknown"
+        ),
+        "{text}"
+    );
+    Ok(())
+}
+
+#[test]
+fn owner_pose_arguments_bind_explicit_owner_provenance() -> TestResult {
+    use fss_reference::ingest::recorded_coverage::PoseProvenance;
+
+    let fixture = calibrated("owner-pose")?;
+    let mesh = fixture.site.twin.to_str().ok_or("UTF-8 path")?;
+    let source = source_scene();
+    let args = [
+        "--pose",
+        EAST_POSE,
+        "--pose",
+        WEST_POSE,
+        "--scene-mesh",
+        mesh,
+        "--scene-mesh-digest",
+        fixture.site.twin_digest.as_str(),
+        "--scene-source-digest",
+        source.as_str(),
+    ];
+    let root = fixture.directory.root();
+    let posed = report(&corroborate(&root, &fixture.recorded, &args)?)?;
+    for entry in record_provenance(&posed)? {
+        assert_eq!(entry.get("source")?.text()?, "owner_pose_argument");
+        assert_eq!(
+            entry.get("claim")?.text()?,
+            "owner_asserted_pose_not_a_certificate"
+        );
+        assert!(entry.get("calibration_digest").is_err());
+    }
+    // The same pose values from the calibration are another provenance: other records.
+    let calibrated = report(&fixture.run(&[])?)?;
+    assert_ne!(
+        posed.path(&["coverage", "approval_digest"])?,
+        calibrated.path(&["coverage", "approval_digest"])?
+    );
+    let approval = posed
+        .path(&["coverage", "approval_digest"])?
+        .text()?
+        .to_owned();
+    let mut retain = args.to_vec();
+    retain.extend_from_slice(&["--retain-coverage", approval.as_str()]);
+    let retained = report(&corroborate(&root, &fixture.recorded, &retain)?)?;
+    assert_eq!(
+        retained.path(&["coverage", "coverage_status"])?.text()?,
+        "retained"
+    );
+    let snapshot = fixture.snapshot()?;
+    assert_eq!(snapshot.coverage.len(), 2);
+    for record in &snapshot.coverage {
+        assert_eq!(
+            record.record.pose_provenance,
+            Some(PoseProvenance::OwnerPoseArgument)
+        );
+    }
+    // Cameras without a pose bind nothing: their records carry no pose_provenance.
+    let homography_only = report(&corroborate(&root, &fixture.recorded, &[])?)?;
+    for record in homography_only.path(&["coverage", "records"])?.items()? {
+        assert!(record.get("pose_provenance").is_err());
+    }
+    Ok(())
+}
+
+#[test]
+fn a_stale_camera_generation_is_refused_before_anything_is_appended() -> TestResult {
+    let fixture = calibrated("stale-generation")?;
+    // A proposal and its exact approval, so a refusal cannot hide behind a missing approval.
+    let proposal = report(&fixture.run(&["--camera-generation", "east:1:1"])?)?;
+    let approval = proposal
+        .path(&["coverage", "approval_digest"])?
+        .text()?
+        .to_owned();
+    let before = fixture.snapshot()?;
+    for (stale, message) in [
+        ("east:1:2", "extrinsics 2"),
+        ("east:2:1", "intrinsics 2"),
+        ("west:7:9", "camera west"),
+    ] {
+        let output = fixture.run(&[
+            "--camera-generation",
+            stale,
+            "--retain-coverage",
+            approval.as_str(),
+        ])?;
+        assert!(!output.status.success(), "{stale}");
+        assert!(output.stdout.is_empty(), "{stale}");
+        assert_eq!(
+            refusal(&output),
+            "ERR-SITE-CALIBRATION-GENERATION-STALE-001",
+            "{stale}"
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(message),
+            "{stale}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let after = fixture.snapshot()?;
+        assert_eq!(after.batch_count, before.batch_count, "{stale}");
+        assert_eq!(after.ledger_root, before.ledger_root, "{stale}");
+        assert!(after.coverage.is_empty(), "{stale}");
+    }
+    // Usage refusals: no calibration, a name that is no camera, zero or malformed generations,
+    // and a duplicate assertion.
+    let root = fixture.directory.root();
+    let without = corroborate(
+        &root,
+        &fixture.recorded,
+        &["--camera-generation", "east:1:1"],
+    )?;
+    assert!(!without.status.success());
+    assert!(String::from_utf8_lossy(&without.stderr).contains("requires --calibration"));
+    for bad in [
+        vec!["--camera-generation", "north:1:1"],
+        vec!["--camera-generation", "east:0:1"],
+        vec!["--camera-generation", "east:1"],
+        vec![
+            "--camera-generation",
+            "east:1:1",
+            "--camera-generation",
+            "east:1:1",
+        ],
+    ] {
+        let output = fixture.run(&bad)?;
+        assert!(!output.status.success(), "{bad:?}");
+        assert!(output.stdout.is_empty(), "{bad:?}");
+    }
+    let after = fixture.snapshot()?;
+    assert_eq!(after.batch_count, before.batch_count);
+    assert_eq!(after.ledger_root, before.ledger_root);
+    Ok(())
+}

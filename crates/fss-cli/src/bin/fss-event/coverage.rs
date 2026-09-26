@@ -4,12 +4,18 @@
 //! registered `fss.coverage_witness.v1` object; every uncovered interval keeps its typed reason.
 //! A `decode_refused` interval also names its `error_id`, and a ground zone with geometric
 //! visibility carries a `visibility` object (fraction, sampling, occlusion model and claim);
-//! records without either render exactly as before.
+//! records without either render exactly as before. A record that binds its camera's pose
+//! provenance (version 4) carries a `pose_provenance` object; a record whose visibility used a
+//! calibrated pose without one predates provenance binding and says `unrecorded`.
 
 use fss_cli::agent_json::{array, coverage_witness, object, optional_string, string};
 use fss_core::{CaptureInterval, ContentDigest};
-use fss_reference::ingest::ground_visibility::{NotVisibleCause, Occlusion, ZoneVisibility};
-use fss_reference::ingest::recorded_coverage::{CoverageRecord, CoverageStatus, UncoveredReason};
+use fss_reference::ingest::ground_visibility::{
+    CameraModel, NotVisibleCause, Occlusion, ZoneVisibility,
+};
+use fss_reference::ingest::recorded_coverage::{
+    CoverageRecord, CoverageStatus, PoseProvenance, UncoveredReason,
+};
 
 fn interval(value: CaptureInterval) -> String {
     format!("[{},{}]", value.earliest.0, value.latest.0)
@@ -60,6 +66,46 @@ fn visibility(value: &ZoneVisibility) -> String {
         ("claim", string(value.claim())),
     ]);
     object(&fields)
+}
+
+/// `pose_provenance` of one record: the bound source, or `unrecorded` for a posed record that
+/// predates provenance binding; `None` when no zone used a pose.
+fn pose_provenance(value: &CoverageRecord) -> Option<String> {
+    let Some(provenance) = &value.pose_provenance else {
+        let posed = value.zones.iter().any(|zone| {
+            zone.visibility
+                .as_ref()
+                .is_some_and(|visibility| visibility.camera_model == CameraModel::CalibratedPose)
+        });
+        return posed.then(|| {
+            object(&[
+                ("source", string("unrecorded")),
+                ("claim", string("pose_source_not_bound_by_this_record")),
+            ])
+        });
+    };
+    let mut fields = vec![
+        ("source", string(provenance.source())),
+        ("provenance_digest", string(&provenance.digest().to_text())),
+    ];
+    if let PoseProvenance::SiteCalibration {
+        calibration_digest,
+        camera_handle,
+        intrinsics_generation,
+        extrinsics_generation,
+        currency,
+    } = provenance
+    {
+        fields.extend([
+            ("calibration_digest", string(&calibration_digest.to_text())),
+            ("camera_handle", camera_handle.to_string()),
+            ("intrinsics_generation", intrinsics_generation.to_string()),
+            ("extrinsics_generation", extrinsics_generation.to_string()),
+            ("generation_currency", string(currency.as_str())),
+        ]);
+    }
+    fields.push(("claim", string(provenance.claim())));
+    Some(object(&fields))
 }
 
 fn record(value: &CoverageRecord) -> String {
@@ -127,7 +173,7 @@ fn record(value: &CoverageRecord) -> String {
             object(&fields)
         })
         .collect();
-    object(&[
+    let mut fields = vec![
         ("source", string(value.source.as_str())),
         ("record_digest", string(&value.digest().to_text())),
         ("identity", string(&value.identity().to_text())),
@@ -138,8 +184,12 @@ fn record(value: &CoverageRecord) -> String {
         ("first_segment", value.first_segment.to_string()),
         ("last_segment", value.last_segment.to_string()),
         ("analysed_ns", interval(value.analysed)),
-        ("zones", array(&zones)),
-    ])
+    ];
+    if let Some(provenance) = pose_provenance(value) {
+        fields.push(("pose_provenance", provenance));
+    }
+    fields.push(("zones", array(&zones)));
+    object(&fields)
 }
 
 /// The report's `coverage` member: status, the exact approval and its rerun command, and every
