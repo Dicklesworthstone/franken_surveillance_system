@@ -8,8 +8,10 @@
 
 mod assignment;
 mod checked;
+mod observation;
 
 pub use checked::{MAX_ASSIGNMENT_WORK, MAX_CHECKED_TRACKS, TrackerLimits, TrackerStepError};
+pub use observation::{AssignedTrackerOutput, TrackAssignment, TRACK_ASSIGNMENT_POLICY};
 
 /// Versioned numerical association policy; source revisions still pin full replay semantics.
 pub const TRACKER_ALGORITHM: &str = "fss.reference.kalman_global_iou.v1";
@@ -263,6 +265,17 @@ impl MultiObjectTracker {
     /// Compatibility entry point: callers own input, resource and counter bounds.
     /// Prefer [`Self::try_step`] for untrusted input and atomic bounded admission.
     pub fn step(&mut self, detections: &[Detection]) -> TrackerOutput {
+        self.step_observed(detections, |_, _| {})
+    }
+
+    // Record the assignment at the exact point it changes a track, before filtered geometry
+    // can obscure which original detection supplied that observation. The observer is internal
+    // pure computation; no callback escapes this module and no second matching is performed.
+    fn step_observed(
+        &mut self,
+        detections: &[Detection],
+        mut observed: impl FnMut(u64, usize),
+    ) -> TrackerOutput {
         self.frame += 1;
         let dt = 1.0;
         let mut new_tracks = 0usize;
@@ -288,6 +301,7 @@ impl MultiObjectTracker {
                 continue;
             };
             assigned_det[di] = true;
+            observed(self.tracks[ti].id, di);
             let d = &detections[di];
             let cx = d.box_x + d.box_w / 2.0;
             let cy = d.box_y + d.box_h / 2.0;
@@ -342,6 +356,7 @@ impl MultiObjectTracker {
             let cx = d.box_x + d.box_w / 2.0;
             let cy = d.box_y + d.box_h / 2.0;
             self.kalman.push(KalmanState::new(cx, cy));
+            observed(self.next_id, di);
             self.tracks.push(TrackedTarget {
                 id: self.next_id,
                 status: if self.config.min_hits == 1 {

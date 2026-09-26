@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 //! Atomic bounded admission for the compatibility tracker's pure computation.
-use super::{Detection, MultiObjectTracker, TrackerOutput};
+use super::{AssignedTrackerOutput, Detection, MultiObjectTracker, TrackerOutput};
 
 /// Hard ceiling on admitted active tracks and per-frame detections.
 pub const MAX_CHECKED_TRACKS: usize = 128;
@@ -80,6 +80,19 @@ impl MultiObjectTracker {
         detections: &[Detection],
         limits: TrackerLimits,
     ) -> Result<TrackerOutput, TrackerStepError> {
+        self.try_step_assigned(detections, limits).map(|result| result.output)
+    }
+
+    /// Atomically advances one bounded frame and returns the exact input-to-track assignments.
+    /// The witness is recorded by the same solve/update as the motion state, not reconstructed
+    /// from the filtered boxes. It contains one entry per input detection, including newly
+    /// created tentative tracks, and none for coasting or deleted tracks. No assignments escape
+    /// a refused transaction. Witness space is O(detections); no second matching is performed.
+    pub fn try_step_assigned(
+        &mut self,
+        detections: &[Detection],
+        limits: TrackerLimits,
+    ) -> Result<AssignedTrackerOutput, TrackerStepError> {
         if limits.max_tracks == 0
             || limits.max_tracks > MAX_CHECKED_TRACKS
             || limits.max_detections == 0
@@ -112,7 +125,8 @@ impl MultiObjectTracker {
             return Err(TrackerStepError::CounterExhausted);
         }
         let mut candidate = self.clone();
-        let output = candidate.step(detections);
+        let result = candidate.step_assigned(detections);
+        let output = &result.output;
         if output.tracks.len() > limits.max_tracks {
             return Err(TrackerStepError::Limit);
         }
@@ -131,6 +145,6 @@ impl MultiObjectTracker {
             return Err(TrackerStepError::Numeric);
         }
         *self = candidate;
-        Ok(output)
+        Ok(result)
     }
 }
