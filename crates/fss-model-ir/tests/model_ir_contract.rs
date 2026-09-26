@@ -464,9 +464,11 @@ fn test_schema_domain_and_pinned_counts() -> Result<(), Box<dyn Error>> {
     // 126 = 125 + SCHEMA-DOMAIN-SITE-CALIBRATION-001 (fss-event calibrate, fss-x8j0v follow-up).
     // 127 = 126 + SCHEMA-DOMAIN-SITE-CALIBRATION-002 (calibrate frame input, fss-x8j0v pixels in).
     // 128 = 127 + SCHEMA-DOMAIN-COVERAGE-POSE-PROVENANCE-001 (coverage pose provenance, fss-x8j0v).
+    // 130 = 128 + SCHEMA-DOMAIN-TWIN-LOCALIZATION-RECEIPT-001 + SCHEMA-DOMAIN-CALIBRATION-ADOPTION-APPROVAL-001
+    //       (retained calibration adoption, fss-x8j0v).
     assert_eq!(
-        domain_count, 128,
-        "registries/DIGEST_DOMAINS.md count must remain pinned at 128"
+        domain_count, 130,
+        "registries/DIGEST_DOMAINS.md count must remain pinned at 130"
     );
 
     let schemas_path = Path::new(env!("CARGO_MANIFEST_DIR"))

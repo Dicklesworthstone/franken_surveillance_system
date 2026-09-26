@@ -22,12 +22,16 @@
 //! `pose_provenance` records every camera's pose source with the calibration digest.
 //! Each posed camera's retained coverage record binds the same provenance (record version 4):
 //! `owner_pose_argument` for a `--pose`, or the calibration digest, camera handle and
-//! intrinsics/extrinsics generations. No deployment retains a camera's current generation, so
-//! currency is never observed: `--camera-generation NAME:INTRINSICS:EXTRINSICS` is the owner's
-//! assertion that a calibrated camera still has exactly those generations. It must match the
-//! calibration (otherwise `ERR-SITE-CALIBRATION-GENERATION-STALE-001` before any source is read)
-//! and is recorded as `owner_asserted_not_observed`; a calibrated camera without one is recorded
-//! as `unasserted_unknown`.
+//! intrinsics/extrinsics generations. `--camera-generation NAME:INTRINSICS:EXTRINSICS` is the
+//! owner's assertion that a calibrated camera still has exactly those generations. It must match
+//! the calibration (otherwise `ERR-SITE-CALIBRATION-GENERATION-STALE-001` before any source is
+//! read) and is recorded as `owner_asserted_not_observed`; a calibrated camera without one is
+//! recorded as `unasserted_unknown`. When the deployment retains an owner adoption of the camera
+//! (`fss-event calibration adopt`), the adoption decides instead: exactly the adopted calibration
+//! and generation over a recording of the adopted sensor is `adopted_current` (bound with the
+//! adoption receipt digest), and any other calibration is refused as stale or unadopted before
+//! anything is appended. `adopted_current` means the deployment retains the owner's approval of
+//! that calibration; it is owner authority, not a physical observation of the camera.
 //!
 //! `--tolerate-decode-refusals` explicitly enables bounded recovery for both recordings. Refused
 //! segments and tracking restarts remain in the report and coverage; source gaps additionally
@@ -42,6 +46,9 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use fss_core::{ContentDigest, DigestAlgorithm, PrincipalId};
+use fss_reference::ingest::calibration_adoption::{
+    CameraGeneration, adopted_currency, recording_sensor, retained_adoptions,
+};
 use fss_reference::ingest::detector_cascade::DetectorCascade;
 use fss_reference::ingest::ground_visibility::{
     CameraPose, SceneMesh, VisibilityPolicy, import_scene_mesh,
@@ -709,6 +716,57 @@ fn resolve_poses(action: &CorroborateAction) -> RunResult<ResolvedPoses> {
     Ok((poses, sources, Some(identity)))
 }
 
+/// Consults the deployment's retained calibration adoptions (`fss-event calibration adopt`) for
+/// every calibrated camera. A camera whose current adoption names exactly this calibration and
+/// generation, over a recording of the adopted sensor, becomes `adopted_current` (retained owner
+/// authority, not a physical observation). A camera with adoptions that name another calibration
+/// is refused as stale or unadopted, and a recording of another sensor as a sensor mismatch. A
+/// camera without adoptions keeps its owner-asserted or unasserted currency. Only a recording's
+/// first source capsule is read, and only for an adopted camera; nothing is appended.
+fn apply_adoptions(
+    action: &CorroborateAction,
+    deployment: &ReferenceDeployment,
+    calibration: ContentDigest,
+    sources: &mut [PoseSource; 2],
+    cx: &ReplayCx,
+) -> RunResult<()> {
+    let adoptions = retained_adoptions(deployment)?;
+    if adoptions.is_empty() {
+        return Ok(());
+    }
+    for (camera, source) in action.plan.cameras.iter().zip(sources.iter_mut()) {
+        let PoseSource::Calibration {
+            handle,
+            intrinsics_generation,
+            extrinsics_generation,
+            currency,
+            ..
+        } = source
+        else {
+            continue;
+        };
+        let generation = CameraGeneration {
+            camera: *handle,
+            intrinsics: *intrinsics_generation,
+            extrinsics: *extrinsics_generation,
+        };
+        let current = adopted_currency(&adoptions, calibration, &camera.name, generation, || {
+            recording_sensor(
+                deployment,
+                camera.import_identity,
+                action.limits.read_limits,
+                cx,
+            )
+        })?;
+        if let Some(current) = current {
+            *currency = GenerationCurrency::AdoptedCurrent {
+                receipt: current.digest,
+            };
+        }
+    }
+    Ok(())
+}
+
 /// `pose_provenance`: one entry per plan camera naming its pose source.
 fn render_pose_provenance(
     action: &CorroborateAction,
@@ -737,7 +795,7 @@ fn render_pose_provenance(
                         "{{\"camera\":{},\"source\":\"site_calibration\",",
                         "\"calibration_digest\":\"{}\",\"camera_handle\":{},",
                         "\"intrinsics_generation\":{},\"extrinsics_generation\":{},",
-                        "\"generation_currency\":\"{}\",",
+                        "\"generation_currency\":\"{}\",{}",
                         "\"refined_rms_px\":{},",
                         "\"claim\":\"candidate_calibration_not_a_certificate\"}}"
                     ),
@@ -747,6 +805,12 @@ fn render_pose_provenance(
                     intrinsics_generation,
                     extrinsics_generation,
                     currency.as_str(),
+                    currency
+                        .adoption_receipt()
+                        .map_or_else(String::new, |receipt| format!(
+                            "\"adoption_receipt\":\"{receipt}\",\"currency_claim\":\
+                             \"retained_owner_adoption_not_a_physical_observation\","
+                        )),
                     refined_rms_px
                 ),
                 (PoseSource::Argument, _) => {
@@ -782,7 +846,12 @@ fn run_with(
     out: &mut impl Write,
 ) -> RunResult<()> {
     // The calibration is verified against its pinned digest before any source is read.
-    let (poses, sources, calibration) = resolve_poses(action)?;
+    let (poses, mut sources, calibration) = resolve_poses(action)?;
+    // Retained adoptions decide currency (or refuse a superseded calibration) before any frame is
+    // decoded and before anything is appended.
+    if let Some(calibration) = calibration {
+        apply_adoptions(action, deployment, calibration, &mut sources, cx)?;
+    }
     let provenance = retained_provenance(&sources, calibration);
     let package = match &action.cascade {
         Some(options) => Some(super::detector::load(options, cx, scalar)?),

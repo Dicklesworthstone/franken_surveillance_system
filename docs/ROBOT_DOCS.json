@@ -442,6 +442,51 @@
       "id": "ERR-BUDGET-EXHAUSTED-001"
     },
     {
+      "description": "a retained adoption receipt, chain or recording could not be read or validated, or the adoption could not be staged or committed (custody, ledger refusal, cancellation)",
+      "guidance": "inspect the cause; retry only after repair; damaged adoption custody is never treated as not adopted",
+      "id": "ERR-CALIBRATION-ADOPTION-001"
+    },
+    {
+      "description": "a `calibration adopt --approve` digest matches neither this adoption over the bound cameras' current retained adoptions nor the approval that retained them (stale or tampered); nothing was written",
+      "guidance": "rerun without the approval and review the current approval digest",
+      "id": "ERR-CALIBRATION-ADOPTION-APPROVAL-STALE-001"
+    },
+    {
+      "description": "a `calibration adopt` request is outside its contract (no or more than 16 bindings, a camera or sensor bound twice, a camera the calibration does not name, a zero handle or generation); nothing was written",
+      "guidance": "correct the bindings; do not retry unchanged",
+      "id": "ERR-CALIBRATION-ADOPTION-INPUT-001"
+    },
+    {
+      "description": "the adoption would lower the camera's intrinsics or extrinsics generation below its current adoption, or re-adopt a calibration the camera already superseded; adoption is monotone and history is never erased; nothing was written",
+      "guidance": "recalibrate the camera for a current generation and adopt that calibration",
+      "id": "ERR-CALIBRATION-ADOPTION-REGRESSION-001"
+    },
+    {
+      "description": "the camera's adoptions already bind another sensor, or the sensor is already bound to another camera handle; a camera's sensor binding is fixed; nothing was written",
+      "guidance": "bind the camera to its adopted sensor; a replaced physical camera takes a new handle",
+      "id": "ERR-CALIBRATION-ADOPTION-SENSOR-CONFLICT-001"
+    },
+    {
+      "description": "an adopted camera's calibration was applied to a recording of another sensor than the one its adoption binds; refused before any frame is decoded, nothing was appended",
+      "guidance": "pair each --camera with a recording of its adopted sensor",
+      "id": "ERR-CALIBRATION-ADOPTION-SENSOR-MISMATCH-001"
+    },
+    {
+      "description": "`calibration adopt --bind NAME:SENSOR` names a sensor that no readable retained sensor capsule names, so the camera cannot be bound to it; nothing was written",
+      "guidance": "import evidence of that sensor first, or correct the sensor id",
+      "id": "ERR-CALIBRATION-ADOPTION-SENSOR-UNRETAINED-001"
+    },
+    {
+      "description": "`corroborate --calibration` names a calibration a camera's retained adoption has superseded (that calibration, or one at a generation not above the adopted one, while a later adoption is current); refused before any frame is decoded, nothing was analysed or appended; currency is the retained owner adoption, not a physical observation",
+      "guidance": "corroborate with the camera's currently adopted calibration (`calibration show`)",
+      "id": "ERR-CALIBRATION-ADOPTION-STALE-001"
+    },
+    {
+      "description": "`corroborate --calibration` names a calibration never adopted for a camera whose deployment retains adoptions of other calibrations; refused before any frame is decoded, nothing was appended",
+      "guidance": "adopt the calibration first (`calibration adopt`) or use the adopted one",
+      "id": "ERR-CALIBRATION-ADOPTION-UNADOPTED-001"
+    },
+    {
       "description": "certificate expired/invalidated/residual failure",
       "guidance": "no geometry-dependent negative evidence",
       "id": "ERR-CALIBRATION-INVALID-001"

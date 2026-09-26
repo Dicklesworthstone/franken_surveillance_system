@@ -854,7 +854,8 @@ class TestSchemaConstitution(unittest.TestCase):
         # 126 = 125 + the owner site calibration record (fss-x8j0v follow-up).
         # 127 = 126 + the frame-input site calibration record v2 (fss-x8j0v pixels in).
         # 128 = 127 + the coverage pose-provenance domain (fss-x8j0v calibration binding).
-        self.assertEqual(result["digestDomainCount"], 128)
+        # 130 = 128 + the adoption receipt and adoption approval domains (fss-x8j0v adoption).
+        self.assertEqual(result["digestDomainCount"], 130)
 
         # Continuation cursor is verified implemented
         implemented_names = {s["name"] for s in result["schemas"] if s["status"] == "implemented"}
@@ -1353,7 +1354,8 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         # 126 = 125 + the owner site calibration record (fss-x8j0v follow-up).
         # 127 = 126 + the frame-input site calibration record v2 (fss-x8j0v pixels in).
         # 128 = 127 + the coverage pose-provenance domain (fss-x8j0v calibration binding).
-        self.assertEqual(result["digestDomainCount"], 128)
+        # 130 = 128 + the adoption receipt and adoption approval domains (fss-x8j0v adoption).
+        self.assertEqual(result["digestDomainCount"], 130)
         # 36 = 28 + fss.sensor_tamper_status.v1 (owner SensorTamperStatus, fss-2uftm)
         # + fss.agent_operations.v1 / fss.agent_views.v1 / fss.agent_request_envelope.v1
         #   (owners AgentOperation / AgentView / AgentRequestEnvelope, fss-x4a.30.83.17-40)

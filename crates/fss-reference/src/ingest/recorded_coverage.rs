@@ -52,8 +52,11 @@
 //!
 //! A corroborate camera whose ground visibility used a pinhole pose may carry its
 //! [`PoseProvenance`] (fss-x8j0v follow-up): the owner-typed `--pose` argument, or a site
-//! calibration named by its digest with the camera's `CameraGeneration` and whether the owner
-//! asserted that generation current (asserted, never observed). Such a record is version 4: the
+//! calibration named by its digest with the camera's `CameraGeneration` and its currency: owner
+//! asserted on the command line, unasserted, or `adopted_current` with the receipt of the
+//! deployment's retained owner adoption ([`super::calibration_adoption`]; the value is encoded as
+//! its spelling followed by the receipt digest, and the two earlier values keep their exact bytes).
+//! Every currency is owner authority, never a physical observation. Such a record is version 4: the
 //! version-3 layout with an explicit masked-samples flag and the provenance block after the
 //! domain; the provenance digest (`fss.coverage_pose_provenance.v1`) is bound into the analysis
 //! identity, so records of different provenance never share a ledger object. Records without a
@@ -165,16 +168,24 @@ impl CoverageSource {
     }
 }
 
-/// Whether the camera generation a calibrated pose depends on is current. No deployment retains
-/// a camera's current intrinsics or extrinsics generation, so currency is never observed: at most
-/// the owner asserts it on the command line (`--camera-generation`), and that assertion matched
-/// the calibration's generation exactly or the run was refused.
+/// Whether the camera generation a calibrated pose depends on is current. At most the owner
+/// asserts it on the command line (`--camera-generation`, which matched the calibration's
+/// generation exactly or the run was refused), or the deployment retains the owner's
+/// approval-gated adoption of exactly this calibration and generation for the camera
+/// (`fss-event calibration adopt`, [`super::calibration_adoption`]). Neither is a physical
+/// observation of the camera.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum GenerationCurrency {
     /// Nobody asserted the generation current: it may be stale (camera moved, cropped, zoomed).
     Unasserted,
     /// The owner asserted exactly this generation current; an assertion, not an observation.
     OwnerAsserted,
+    /// The deployment's current retained adoption of the camera names exactly this calibration
+    /// and generation. Retained owner authority, still not a physical measurement.
+    AdoptedCurrent {
+        /// Digest of the camera's current adoption receipt (`fss.twin_localization_receipt.v1`).
+        receipt: ContentDigest,
+    },
 }
 
 impl GenerationCurrency {
@@ -184,13 +195,39 @@ impl GenerationCurrency {
         match self {
             Self::Unasserted => "unasserted_unknown",
             Self::OwnerAsserted => "owner_asserted_not_observed",
+            Self::AdoptedCurrent { .. } => "adopted_current",
         }
     }
 
-    fn parse(value: &str) -> Result<Self, ContractError> {
-        match value {
+    /// The adoption receipt behind `adopted_current`, if any.
+    #[must_use]
+    pub const fn adoption_receipt(self) -> Option<ContentDigest> {
+        match self {
+            Self::AdoptedCurrent { receipt } => Some(receipt),
+            Self::Unasserted | Self::OwnerAsserted => None,
+        }
+    }
+
+    /// Canonical encoding: the spelling, then for `adopted_current` the receipt digest. The two
+    /// earlier values keep their exact version-4 bytes.
+    fn encode(self, e: &mut CanonicalEncoder) {
+        e.text(self.as_str());
+        if let Self::AdoptedCurrent { receipt } = self {
+            e.digest(receipt);
+        }
+    }
+
+    fn decode(d: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        match d.text()? {
             "unasserted_unknown" => Ok(Self::Unasserted),
             "owner_asserted_not_observed" => Ok(Self::OwnerAsserted),
+            "adopted_current" => {
+                let receipt = d.digest()?;
+                if receipt.algorithm() != fss_core::DigestAlgorithm::Sha256 {
+                    return Err(ContractError::UnsupportedDigestAlgorithm);
+                }
+                Ok(Self::AdoptedCurrent { receipt })
+            }
             _ => Err(ContractError::InvalidIdentifier),
         }
     }
@@ -249,7 +286,7 @@ impl PoseProvenance {
             e.u64(*camera_handle);
             e.u64(*intrinsics_generation);
             e.u64(*extrinsics_generation);
-            e.text(currency.as_str());
+            currency.encode(e);
         }
     }
 
@@ -261,7 +298,7 @@ impl PoseProvenance {
                 camera_handle: d.u64()?,
                 intrinsics_generation: d.u64()?,
                 extrinsics_generation: d.u64()?,
-                currency: GenerationCurrency::parse(d.text()?)?,
+                currency: GenerationCurrency::decode(d)?,
             }),
             _ => Err(ContractError::InvalidIdentifier),
         }
@@ -311,9 +348,16 @@ impl PoseProvenance {
             } => format!(
                 "site calibration {calibration_digest} camera {camera_handle} intrinsics \
                  generation {intrinsics_generation} extrinsics generation \
-                 {extrinsics_generation}, generation currency {} (candidate calibration, not a \
+                 {extrinsics_generation}, generation currency {}{} (candidate calibration, not a \
                  certificate)",
-                currency.as_str()
+                currency.as_str(),
+                // The receipt digest stays in the record and `calibration show`; the cell only
+                // names the source, keeping the brief view inside its token budget.
+                if currency.adoption_receipt().is_some() {
+                    " (retained owner adoption, not observed)"
+                } else {
+                    ""
+                }
             ),
         }
     }

@@ -378,3 +378,96 @@ fn pose_provenance_requires_a_calibrated_pose_on_a_corroborate_record() -> TestR
     assert!(CoverageRecord::from_bytes(&edited.to_bytes(), digest).is_err());
     Ok(())
 }
+
+// Adoption currency (fss-x8j0v follow-up: retained calibration authority).
+
+/// The version-4 provenance bytes as they were before `adopted_current` existed.
+fn legacy_provenance_bytes(currency: &str) -> Vec<u8> {
+    let mut e = CanonicalEncoder::new();
+    e.text(POSE_PROVENANCE_DOMAIN);
+    e.text("site_calibration");
+    e.digest(ContentDigest::sha256(b"calibration"));
+    e.u64(21);
+    e.u64(1);
+    e.u64(1);
+    e.text(currency);
+    e.finish()
+}
+
+#[test]
+fn adopted_current_is_a_distinct_round_tripping_currency_and_earlier_bytes_are_unchanged()
+-> TestResult {
+    // The two earlier currencies keep their exact provenance bytes.
+    for (currency, spelling) in [
+        (
+            GenerationCurrency::OwnerAsserted,
+            "owner_asserted_not_observed",
+        ),
+        (GenerationCurrency::Unasserted, "unasserted_unknown"),
+    ] {
+        assert_eq!(
+            calibrated(currency).digest(),
+            ContentDigest::sha256(&legacy_provenance_bytes(spelling))
+        );
+    }
+    let receipt = ContentDigest::sha256(b"adoption receipt");
+    let adopted = calibrated(GenerationCurrency::AdoptedCurrent { receipt });
+    let mut expected = legacy_provenance_bytes("adopted_current");
+    let mut tail = CanonicalEncoder::new();
+    tail.digest(receipt);
+    expected.extend_from_slice(&tail.finish());
+    assert_eq!(adopted.digest(), ContentDigest::sha256(&expected));
+    assert_eq!(
+        GenerationCurrency::AdoptedCurrent { receipt }.as_str(),
+        "adopted_current"
+    );
+    assert_eq!(
+        GenerationCurrency::AdoptedCurrent { receipt }.adoption_receipt(),
+        Some(receipt)
+    );
+    // Distinct from the other currencies and from another receipt.
+    let other = calibrated(GenerationCurrency::AdoptedCurrent {
+        receipt: ContentDigest::sha256(b"another receipt"),
+    });
+    let digests: std::collections::BTreeSet<_> = [
+        adopted.digest(),
+        other.digest(),
+        calibrated(GenerationCurrency::OwnerAsserted).digest(),
+        calibrated(GenerationCurrency::Unasserted).digest(),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(digests.len(), 4);
+    // A version-4 record carrying it round-trips deterministically, and its summary names the
+    // receipt and the non-claim.
+    let record = posed_record(posed_visibility(), Some(adopted))?;
+    let bytes = record.to_bytes();
+    assert_eq!(
+        posed_record(posed_visibility(), Some(adopted))?.to_bytes(),
+        bytes
+    );
+    let decoded = CoverageRecord::from_bytes(&bytes, ContentDigest::sha256(&bytes))?;
+    assert_eq!(decoded.pose_provenance, Some(adopted));
+    let summary = adopted.summary();
+    assert!(
+        summary.contains(
+            "generation currency adopted_current (retained owner adoption, not observed)"
+        )
+    );
+    // Editing the currency of a retained record is refused under its original digest.
+    let digest = record.digest();
+    let mut edited = record;
+    edited.pose_provenance = Some(calibrated(GenerationCurrency::OwnerAsserted));
+    assert!(CoverageRecord::from_bytes(&edited.to_bytes(), digest).is_err());
+    // An unknown or truncated currency is refused.
+    assert!(GenerationCurrency::decode(&mut CanonicalDecoder::new(&[])).is_err());
+    let mut e = CanonicalEncoder::new();
+    e.text("observed_current");
+    let bytes = e.finish();
+    assert!(GenerationCurrency::decode(&mut CanonicalDecoder::new(&bytes)).is_err());
+    let mut e = CanonicalEncoder::new();
+    e.text("adopted_current");
+    let bytes = e.finish();
+    assert!(GenerationCurrency::decode(&mut CanonicalDecoder::new(&bytes)).is_err());
+    Ok(())
+}
