@@ -23,6 +23,9 @@ use fss_reference::ingest::http_replay::check::{HttpCheckDecode, HttpCheckSource
 use fss_reference::ingest::http_replay::completion::HttpCompletionPin;
 use fss_reference::ReplayCx;
 
+#[path = "fss-capture/privacy.rs"]
+mod privacy;
+
 const HELP: &str = "fss-capture http --root ABSOLUTE_ARCHIVE_DIR --peer IP:PORT --host HOST --target /PATH\n\
   --source sha256:HEX --generation N --receive-clock sha256:HEX\n\
   --retention-evidence sha256:HEX --owner-authorized yes --plaintext yes --retain-originals yes\n\
@@ -38,8 +41,11 @@ const HELP: &str = "fss-capture http --root ABSOLUTE_ARCHIVE_DIR --peer IP:PORT 
   Preserve stdout JSONL independently: prepared pins are emitted BEFORE their storage writes.\n\
   A prepared pin is not a durable receipt. A refused run may retain a verified prefix and\n\
   staged/visible work. Inspect the exact pin with fss-archive check-http; do not reacquire it.\n\
-  This path verifies original custody and native framing, not pixels, timing, coverage or\n\
-  detection quality. Original headers and JPEGs remain private local custody, not encrypted.\n\
+  Optional: --decode none|grayscale|ycbcr (default none); native full decode requires\n\
+  --privacy-root EXISTING_DEPLOYMENT --site SITE --sensor ID. The current retained mask\n\
+  applies before luma digests; pixels are never emitted. Bounds: --max-decode-work,\n\
+  --max-frame-bytes, --max-dimension, --max-pixels. Missing mask custody refuses capture.\n\
+  No timing, coverage or detection-quality claim. Original headers and JPEGs remain private local custody, not encrypted.\n\
   --principal is an audit label, not remote authentication. Only use an owner-authorized,\n\
   credential-free plaintext endpoint and an explicit original-header/media retention scope.\n";
 const DOMAIN: &str = "fss.http_capture_cli_plan.v1";
@@ -61,6 +67,7 @@ struct Options {
     stop_after: Option<u64>,
     report_bytes: usize,
     approve: Option<ContentDigest>,
+    privacy: Option<privacy::Options>,
 }
 
 fn sha(text: &str) -> Result<ContentDigest, &'static str> {
@@ -72,14 +79,16 @@ fn sha(text: &str) -> Result<ContentDigest, &'static str> {
 }
 
 fn parse(args: &[OsString]) -> Result<Options, &'static str> {
-    if args.first().and_then(|s| s.to_str()) != Some("http") || args.len() > 49
+    if args.first().and_then(|s| s.to_str()) != Some("http") || args.len() > 65
         || args.iter().any(|s| s.as_encoded_bytes().len() > 4096)
     { return Err("invalid command or argument bound"); }
     let allowed = ["--root", "--peer", "--host", "--target", "--source", "--generation",
         "--receive-clock", "--retention-evidence", "--owner-authorized", "--plaintext",
         "--retain-originals", "--principal", "--approve", "--timeout-ms", "--connect-timeout-ms",
         "--max-frames", "--max-reads", "--max-source-bytes", "--read-bytes", "--max-steps",
-        "--max-source-work", "--max-framing-work", "--max-report-bytes", "--stop-after-frames"];
+        "--max-source-work", "--max-framing-work", "--max-report-bytes", "--stop-after-frames",
+        "--decode", "--privacy-root", "--site", "--sensor", "--max-decode-work",
+        "--max-frame-bytes", "--max-dimension", "--max-pixels"];
     let mut values = BTreeMap::new();
     for pair in args[1..].chunks(2) {
         let key = pair[0].to_str().ok_or("UTF-8 option names required")?;
@@ -117,7 +126,10 @@ fn parse(args: &[OsString]) -> Result<Options, &'static str> {
     if principal.len() > 256 { return Err("principal byte bound"); }
     let timeout_ns = number("--timeout-ms", 30_000, 1, 600_000)? * 1_000_000;
     let mut limits = HttpRecordingLimits::default();
-    limits.decode = HttpCheckDecode::None;
+    limits.decode = match values.get("--decode").copied().unwrap_or("none") {
+        "none" => HttpCheckDecode::None, "grayscale" => HttpCheckDecode::Grayscale,
+        "ycbcr" => HttpCheckDecode::YCbCr, _ => return Err("select none, grayscale or ycbcr"),
+    };
     limits.connect_timeout_ns = number("--connect-timeout-ms", 5_000, 1, 60_000)? * 1_000_000;
     limits.media.maximum_frames = number("--max-frames", 128, 1, 4096)? as usize;
     limits.media.maximum_reads = number("--max-reads", 1024, 1, 4096)? as usize;
@@ -126,11 +138,16 @@ fn parse(args: &[OsString]) -> Result<Options, &'static str> {
     limits.media.maximum_steps = number("--max-steps", 100_000, 1, 1_000_000)?;
     limits.media.source_work = number("--max-source-work", limits.media.source_work, 0, 1_000_000_000_000_000)?;
     limits.media.framing_work = number("--max-framing-work", limits.media.framing_work, 0, 1_000_000_000_000_000)?;
+    limits.media.decode_work = number("--max-decode-work", limits.media.decode_work, 0, 1_000_000_000_000_000)?;
+    limits.media.maximum_frame_bytes = number("--max-frame-bytes", 16 * 1024 * 1024, 4, 16 * 1024 * 1024)? as usize;
+    limits.media.maximum_dimension = number("--max-dimension", 4096, 1, 4096)? as u32;
+    limits.media.maximum_pixels = number("--max-pixels", 4_194_304, 1, 4_194_304)? as usize;
     limits.media.validate().map_err(|_| "invalid recording limits")?;
+    let privacy = privacy::Options::parse(&values, limits.decode, &root)?;
     let stop_after = values.contains_key("--stop-after-frames")
         .then(|| number("--stop-after-frames", 0, 1, limits.media.maximum_frames as u64)).transpose()?;
     let result = Options {
-        root, source,
+        root, source, privacy,
         peer: required("--peer")?.parse().map_err(|_| "literal IP and nonzero port required")?,
         host: required("--host")?.to_owned(), target: required("--target")?.to_owned(), principal,
         limits, timeout_ns, stop_after,
@@ -148,7 +165,7 @@ impl Options {
     // Bind all options and fixed limit/default semantics, not only the address or source.
     fn approval(&self) -> ContentDigest {
         let mut e = CanonicalEncoder::new();
-        e.text(DOMAIN);
+        e.text(if self.privacy.is_some() { "fss.http_capture_cli_plan.v2" } else { DOMAIN });
         e.text("single-connection:original-root-before-parse:framing-only:local-unencrypted:no-reconnect:v1");
         e.text(self.root.to_str().unwrap_or("invalid-non-utf8-root"));
         e.text(&self.peer.to_string()); e.text(&self.host); e.text(&self.target); e.text(&self.principal);
@@ -162,6 +179,9 @@ impl Options {
             m.maximum_pixels as u64, m.source_work, m.framing_work, m.decode_work,
             self.stop_after.unwrap_or(0), self.report_bytes as u64]
         { e.u64(n); }
+        if let Some(p) = &self.privacy {
+            e.text("optional-native-masked-decode-v1"); e.text(privacy::label(self.limits.decode)); p.encode(&mut e);
+        }
         ContentDigest::sha256(&e.finish())
     }
     fn limits_json(&self) -> String {
@@ -189,7 +209,9 @@ impl Options {
             ("maximum_source_bytes", self.limits.media.maximum_source_bytes.to_string()),
             ("limits", self.limits_json()),
             ("stop_after_frames", optional_number(self.stop_after)),
-            ("decode", string("none")), ("transport", string("owner_approved_plaintext")),
+            ("decode", string(privacy::label(self.limits.decode))),
+            ("privacy", self.privacy.as_ref().map_or_else(|| "null".into(), privacy::Options::to_json)),
+            ("transport", string("owner_approved_plaintext")),
             ("retention", string("original_headers_and_media_local_unencrypted")),
             ("writes", string("none")), ("network", string("none")),
             ("approval_scope", string("bounded_acquisition_not_approval_of_unknown_future_event_or_pixels"))])
@@ -295,6 +317,13 @@ impl From<HttpRecordingError> for Failure { fn from(e: HttpRecordingError) -> Se
 impl From<HttpCameraDenial> for Failure { fn from(e: HttpCameraDenial) -> Self { Self::Authority(e) } }
 impl From<io::Error> for Failure { fn from(_: io::Error) -> Self { Self::Output } }
 impl Failure {
+    fn code(&self) -> &'static str {
+        match self {
+            Self::Source(HttpRecordingError::Privacy(p)) => p.stable_id(),
+            Self::Source(_) => "ERR-CAPTURE-SOURCE-001", Self::Authority(_) => "ERR-CAPTURE-AUTHORITY-001",
+            Self::Output => "ERR-CAPTURE-OUTPUT-001",
+        }
+    }
     fn reason(&self) -> String {
         match self {
             Self::Source(e) => format!("{e}"),
@@ -306,7 +335,7 @@ impl Failure {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum End { NativeComplete, RequestedCount }
 
-fn drive<W: Write>(o: &Options, recording: &mut HttpRecording, publisher: &mut LocalRootPublisher, owner: &Owner<'_>, log: &mut Transcript<'_, W>) -> Result<End, Failure> {
+fn drive<W: Write>(o: &Options, recording: &mut HttpRecording, publisher: &mut LocalRootPublisher, owner: &Owner<'_>, log: &mut Transcript<'_, W>, privacy: Option<&privacy::Context>) -> Result<End, Failure> {
     loop {
         // The native owner owns the cumulative step and I/O allowances; none refill here.
         match recording.poll(owner.access()?)? {
@@ -322,12 +351,12 @@ fn drive<W: Write>(o: &Options, recording: &mut HttpRecording, publisher: &mut L
                 committed.acknowledgement.map_err(|e| Failure::Source(HttpRecordingError::Source(e)))?;
             },
             HttpRecordingStep::FrameReady(key) => {
-                let frame = recording.take_frame(key, publisher, owner.access()?, None)?;
+                let frame = recording.take_frame(key, publisher, owner.access()?, privacy.map(privacy::Context::sensor))?;
                 log.emit("frame_verified", object(&[("ordinal", key.ordinal().to_string()),
                     ("encoded_digest", string(&byte_digest(key.encoded_sha256()))),
                     ("source_map_digest", string(&byte_digest(frame.check.exposure))),
                     ("verification", string("original_bytes_and_source_mapping")),
-                    ("pixel_decode", string("not_requested")), ("coverage_certified", "false".into())]), false)?;
+                    ("pixel_decode", privacy::frame_json(frame.check.decoded.as_ref())), ("coverage_certified", "false".into())]), false)?;
                 if o.stop_after.is_some_and(|n| recording.transferred_frames() == n) {
                     return Ok(End::RequestedCount);
                 }
@@ -357,7 +386,9 @@ fn finish_json(o: &Options, r: &HttpRecording, result: &Result<End, Failure>) ->
         ("peer_eof_observed", totals.peer_eof.to_string()),
         ("work", object(&[("steps", work.steps.to_string()), ("source", work.source.to_string()), ("framing", work.framing.to_string()), ("decode", work.decode.to_string())])),
         ("refusal", result.as_ref().err().map_or_else(|| "null".into(), |e| string(&e.reason()))),
-        ("capture_time", string("unknown_receive_clock_only")), ("pixels_checked", "false".into()),
+        ("capture_time", string("unknown_receive_clock_only")), ("decode", string(privacy::label(o.limits.decode))),
+        ("decoded_frames", if o.limits.decode == HttpCheckDecode::None { "0".into() } else { r.transferred_frames().to_string() }),
+        ("error_code", result.as_ref().err().map_or_else(|| "null".into(), |e| string(e.code()))),
         ("coverage_certified", "false".into()), ("event_published", "false".into()),
         ("reconnect_attempted", "false".into()), ("qualification", string("implemented_not_qualified"))])
 }
@@ -367,6 +398,7 @@ fn capture<W: Write>(o: &Options, out: &mut W) -> Result<bool, &'static str> {
     if o.approve != Some(o.approval()) { return Err("ERR-CAPTURE-APPROVAL-STALE-001"); }
     let mut capabilities: Vec<String> = STORAGE_CAPS.iter().map(|s| (*s).into()).collect();
     capabilities.extend(["ADP-REPLAY-001".into(), "CAP-ADAPTER-NET-001".into()]);
+    if o.privacy.is_some() { capabilities.push("CAP-MEDIA-DECODE-001".into()); }
     let authority = ContextAuthority::new_root(RootAuthoritySpec {
         trace_id: "trace:http-capture-cli".into(), operation_id: OperationId::parse("operation:http-capture-cli").map_err(|_| "ERR-CAPTURE-CONFIG-001")?,
         principal: o.principal.clone(), capabilities, deadline: None, priority: 10,
@@ -375,6 +407,7 @@ fn capture<W: Write>(o: &Options, out: &mut W) -> Result<bool, &'static str> {
         anchor_universe: o.approval(), generation: 1,
     }).map_err(|_| "ERR-CAPTURE-CONFIG-001")?;
     authority.validate().map_err(|_| "ERR-CAPTURE-CONFIG-001")?;
+    let privacy = o.privacy.as_ref().map(|p| p.open(&o.principal)).transpose()?;
     match std::fs::symlink_metadata(&o.root) {
         Ok(m) if !m.file_type().is_dir() => return Err("ERR-CAPTURE-ROOT-001"),
         Err(e) if e.kind() != io::ErrorKind::NotFound => return Err("ERR-CAPTURE-ROOT-001"),
@@ -399,7 +432,7 @@ fn capture<W: Write>(o: &Options, out: &mut W) -> Result<bool, &'static str> {
                 return Ok(false);
             },
         };
-        let outcome = drive(o, &mut recording, &mut publisher, &owner, &mut log);
+        let outcome = drive(o, &mut recording, &mut publisher, &owner, &mut log, privacy.as_ref());
         let report = finish_json(o, &recording, &outcome);
         let successful = outcome.is_ok();
         // Closing the native owner sends no request. Undurable pending bytes cannot be recovered
@@ -415,7 +448,7 @@ fn capture<W: Write>(o: &Options, out: &mut W) -> Result<bool, &'static str> {
 }
 
 fn main() -> ExitCode {
-    let args: Vec<_> = std::env::args_os().skip(1).take(50).collect();
+    let args: Vec<_> = std::env::args_os().skip(1).take(66).collect();
     if args.len() == 1 && matches!(args[0].to_str(), Some("help" | "--help" | "-h")) {
         return match write_bounded(&mut io::stdout().lock(), HELP.as_bytes()) { Ok(()) => ExitCode::SUCCESS, Err(_) => ExitCode::from(ExitIdentity::RUNTIME_FAILURE.code) };
     }
@@ -501,5 +534,45 @@ mod tests {
         assert!(t.emit("large", string(&"x".repeat(RESERVE)), false).is_err());
         assert!(t.emit("finish", object(&[("stream_complete", "false".into())]), true).is_ok());
         assert!(write_bounded(&mut Interrupted, b"x").is_err());
+    }
+}
+
+#[cfg(test)]
+mod decode_tests {
+    use super::*;
+    fn base() -> Vec<OsString> {
+        let d = ContentDigest::sha256(b"capture-decode-tests").to_text();
+        ["http", "--root", "/tmp/fss-native-capture", "--peer", "127.0.0.1:8000", "--host", "camera.invalid", "--target", "/video",
+            "--source", &d, "--generation", "1", "--receive-clock", &d, "--retention-evidence", &d,
+            "--owner-authorized", "yes", "--plaintext", "yes", "--retain-originals", "yes"].into_iter().map(OsString::from).collect()
+    }
+    fn decoded() -> Vec<OsString> {
+        let mut a = base();
+        a.extend(["--decode", "grayscale", "--privacy-root", "/tmp/fss-mask-authority", "--site", "site:mask", "--sensor", "sensor:camera"].into_iter().map(OsString::from)); a
+    }
+    #[test]
+    fn decode_requires_complete_privacy_scope_before_execution() {
+        let mut a = base(); a.extend([OsString::from("--decode"), OsString::from("grayscale")]);
+        assert!(parse(&a).is_err());
+        let mut a = base(); a.extend([OsString::from("--privacy-root"), OsString::from("/tmp/privacy")]);
+        assert!(parse(&a).is_err()); assert!(parse(&decoded()).is_ok());
+    }
+    #[test]
+    fn privacy_scope_and_decode_mode_bind_approval() -> Result<(), &'static str> {
+        let a = decoded(); let expected = parse(&a)?.approval();
+        for (k, value) in [("--sensor", "sensor:other"), ("--site", "site:other"), ("--privacy-root", "/tmp/other-policy"), ("--decode", "ycbcr")] {
+            let mut b = a.clone(); let i = b.iter().position(|s| s == k).ok_or("flag")?;
+            b[i + 1] = value.into(); assert_ne!(parse(&b)?.approval(), expected);
+        }
+        let mut b = base(); b.extend([OsString::from("--decode"), OsString::from("none")]);
+        assert_eq!(parse(&b)?.approval(), parse(&base())?.approval()); Ok(())
+    }
+    #[test]
+    fn nested_mask_and_archive_namespaces_are_refused() -> Result<(), &'static str> {
+        for root in ["/tmp/fss-native-capture", "/tmp/fss-native-capture/privacy", "/tmp"] {
+            let mut a = decoded(); let i = a.iter().position(|s| s == "--privacy-root").ok_or("flag")?;
+            a[i + 1] = root.into(); assert!(parse(&a).is_err());
+        }
+        Ok(())
     }
 }
