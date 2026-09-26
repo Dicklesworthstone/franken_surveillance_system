@@ -15,7 +15,9 @@
 //! (`capture_time_label == "operator_assumption"`); an import with unknown capture time, or two
 //! imports whose capture spans do not overlap, is refused rather than aligned by assumption. The
 //! time gate is applied to the worst case over both conservative capture intervals, never to a
-//! point estimate alone.
+//! point estimate alone. Interval admission happens before global assignment and its ambiguity
+//! solves: a midpoint-ranked but time-uncertain edge cannot consume a valid counterpart. Capture
+//! coordinates remain signed 128-bit values; midpoints are ranking coordinates only.
 //!
 //! Analysis is read-only and deterministic. Publication follows the recorded-watch authority
 //! model: a candidate becomes an event only when the operator presents its exact proposal digest;
@@ -73,8 +75,10 @@ use fss_object::{ObjectError, ObjectManifest};
 use fss_publication::{LocalPublicationError, SlotName};
 
 use super::cross_camera::{
-    AssociationDisposition, AssociationScore, CameraObservation, CrossCameraConfig,
-    CrossCameraError, associate_detailed,
+    AssociationDisposition, AssociationScore, CrossCameraConfig, CrossCameraError,
+};
+use super::cross_camera::intervals::{
+    IntervalCameraObservation, associate_intervals, worst_case_separation,
 };
 use super::detector_cascade::{
     CascadeBudget, CascadeOutcome, CascadeSource, CascadeTrack, ClassEvidence, DetectorCascade,
@@ -1035,16 +1039,131 @@ fn analyze_camera(
     })
 }
 
-fn midpoint(interval: CaptureInterval) -> Result<i64> {
-    let middle = interval.earliest.0 + (interval.latest.0 - interval.earliest.0) / 2;
-    i64::try_from(middle).map_err(|_| CorroborationError::Limit)
-}
-
-/// Largest possible separation of two instants drawn from the two conservative intervals.
-fn worst_case_separation(a: CaptureInterval, b: CaptureInterval) -> u128 {
-    let first = (a.latest.0 - b.earliest.0).unsigned_abs();
-    let second = (b.latest.0 - a.earliest.0).unsigned_abs();
-    first.max(second)
+/// Shared by ordinary, detector-assisted and recovered analyses. Entry records retain
+/// their exact capture bounds; source-gap-unreliable hints never enter the candidate graph.
+fn associate_entries(
+    plan: &CorroborationPlan,
+    entries: &mut [GroundEntry],
+    cx: &ReplayCx,
+) -> Result<Vec<AssociatedEntries>> {
+    let config = CrossCameraConfig {
+        max_time_delta_ns: i64::try_from(plan.gates.time_gate_ns)
+            .map_err(|_| CorroborationError::Limit)?,
+        max_position_distance: plan.gates.distance_gate,
+        min_confidence: 0.0,
+    };
+    let mut budget = WorkBudget::new(ASSOCIATION_WORK);
+    let mut pairs = Vec::new();
+    for zone in &plan.zones {
+        checkpoint(cx, "recorded_corroboration:associate")?;
+        let side = |camera: usize| -> Result<Vec<(usize, IntervalCameraObservation)>> {
+            entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| {
+                    e.camera == camera
+                        && e.zone_id == zone.zone_id
+                        && e.disposition != EntryDisposition::CaptureTimeUnreliableAfterGap
+                })
+                .map(|(index, e)| {
+                    Ok((
+                        index,
+                        IntervalCameraObservation {
+                            camera_id: plan.cameras[camera].name.clone(),
+                            track_id: e
+                                .track_id
+                                .checked_add(1)
+                                .ok_or(CorroborationError::Limit)?,
+                            capture: e.capture,
+                            ground_x: e.ground.0,
+                            ground_y: e.ground.1,
+                        },
+                    ))
+                })
+                .collect()
+        };
+        let left = side(0)?;
+        let right = side(1)?;
+        if left.is_empty() || right.is_empty() {
+            continue;
+        }
+        let observations = |side: &[(usize, IntervalCameraObservation)]| {
+            side.iter().map(|(_, o)| o.clone()).collect::<Vec<_>>()
+        };
+        let report = associate_intervals(
+            &config,
+            0,
+            &observations(&left),
+            &observations(&right),
+            &mut budget,
+        )?;
+        // The report orders each side by track id; map back to entry indices.
+        let locate = |side: &[(usize, IntervalCameraObservation)], track: u64| {
+            side.iter()
+                .find(|(_, o)| o.track_id == track)
+                .map(|(index, _)| *index)
+                .ok_or(CorroborationError::Limit)
+        };
+        for (row, disposition) in report.left_dispositions().iter().enumerate() {
+            let left_index = locate(&left, report.left()[row].track_id)?;
+            match *disposition {
+                AssociationDisposition::NoCandidate => {
+                    entries[left_index].disposition = if report.time_uncertain_left(row) {
+                        EntryDisposition::TimeGateUncertain
+                    } else {
+                        EntryDisposition::NoAdmissibleCounterpart
+                    };
+                }
+                AssociationDisposition::Unresolved => {
+                    entries[left_index].disposition = EntryDisposition::Ambiguous;
+                }
+                AssociationDisposition::Matched(column) => {
+                    let right_index = locate(&right, report.right()[column].track_id)?;
+                    let separation = worst_case_separation(
+                        entries[left_index].capture,
+                        entries[right_index].capture,
+                    );
+                    if separation > u128::from(plan.gates.time_gate_ns) {
+                        // This is now an internal consistency check, never post-hoc filtering.
+                        // A broken interval/assignment invariant must produce no report.
+                        return Err(CorroborationError::Limit);
+                    }
+                    let score =
+                        match report.candidates()[row * report.right().len() + column].score {
+                            AssociationScore::Admissible { confidence, .. } => confidence,
+                            AssociationScore::Excluded(_) => {
+                                return Err(CorroborationError::Limit);
+                            }
+                        };
+                    entries[left_index].disposition = EntryDisposition::Corroborated;
+                    entries[right_index].disposition = EntryDisposition::Corroborated;
+                    pairs.push(AssociatedEntries {
+                        zone_id: zone.zone_id.clone(),
+                        pair: [left_index, right_index],
+                        separation,
+                        score,
+                    });
+                }
+            }
+        }
+        for (column, disposition) in report.right_dispositions().iter().enumerate() {
+            let right_index = locate(&right, report.right()[column].track_id)?;
+            match *disposition {
+                AssociationDisposition::NoCandidate => {
+                    entries[right_index].disposition = if report.time_uncertain_right(column) {
+                        EntryDisposition::TimeGateUncertain
+                    } else {
+                        EntryDisposition::NoAdmissibleCounterpart
+                    };
+                }
+                AssociationDisposition::Unresolved => {
+                    entries[right_index].disposition = EntryDisposition::Ambiguous;
+                }
+                AssociationDisposition::Matched(_) => {}
+            }
+        }
+    }
+    Ok(pairs)
 }
 
 impl CorroborationReport {
@@ -1160,117 +1279,7 @@ impl CorroborationReport {
         let cameras = vec![first.summary, second.summary];
         let mut entries: Vec<GroundEntry> = first.entries;
         entries.extend(second.entries);
-        let config = CrossCameraConfig {
-            max_time_delta_ns: i64::try_from(plan.gates.time_gate_ns)
-                .map_err(|_| CorroborationError::Limit)?,
-            max_position_distance: plan.gates.distance_gate,
-            min_confidence: 0.0,
-        };
-        let mut budget = WorkBudget::new(ASSOCIATION_WORK);
-        let mut pairs = Vec::new();
-        for zone in &plan.zones {
-            checkpoint(cx, "recorded_corroboration:associate")?;
-            let side = |camera: usize| -> Result<Vec<(usize, CameraObservation)>> {
-                entries
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, e)| {
-                        e.camera == camera
-                            && e.zone_id == zone.zone_id
-                            && e.disposition != EntryDisposition::CaptureTimeUnreliableAfterGap
-                    })
-                    .map(|(index, e)| {
-                        Ok((
-                            index,
-                            CameraObservation {
-                                camera_id: plan.cameras[camera].name.clone(),
-                                track_id: e
-                                    .track_id
-                                    .checked_add(1)
-                                    .ok_or(CorroborationError::Limit)?,
-                                timestamp_ns: midpoint(e.capture)?,
-                                ground_x: e.ground.0,
-                                ground_y: e.ground.1,
-                            },
-                        ))
-                    })
-                    .collect()
-            };
-            let left = side(0)?;
-            let right = side(1)?;
-            if left.is_empty() || right.is_empty() {
-                continue;
-            }
-            let observations = |side: &[(usize, CameraObservation)]| {
-                side.iter().map(|(_, o)| o.clone()).collect::<Vec<_>>()
-            };
-            let report = associate_detailed(
-                &config,
-                0,
-                &observations(&left),
-                &observations(&right),
-                &mut budget,
-            )?;
-            // The report orders each side by track id; map back to entry indices.
-            let locate = |side: &[(usize, CameraObservation)], track: u64| {
-                side.iter()
-                    .find(|(_, o)| o.track_id == track)
-                    .map(|(index, _)| *index)
-                    .ok_or(CorroborationError::Limit)
-            };
-            for (row, disposition) in report.left_dispositions().iter().enumerate() {
-                let left_index = locate(&left, report.left()[row].track_id)?;
-                match *disposition {
-                    AssociationDisposition::NoCandidate => {
-                        entries[left_index].disposition = EntryDisposition::NoAdmissibleCounterpart;
-                    }
-                    AssociationDisposition::Unresolved => {
-                        entries[left_index].disposition = EntryDisposition::Ambiguous;
-                    }
-                    AssociationDisposition::Matched(column) => {
-                        let right_index = locate(&right, report.right()[column].track_id)?;
-                        let separation = worst_case_separation(
-                            entries[left_index].capture,
-                            entries[right_index].capture,
-                        );
-                        if separation > u128::from(plan.gates.time_gate_ns) {
-                            entries[left_index].disposition = EntryDisposition::TimeGateUncertain;
-                            entries[right_index].disposition = EntryDisposition::TimeGateUncertain;
-                            continue;
-                        }
-                        let score =
-                            match report.candidates()[row * report.right().len() + column].score {
-                                AssociationScore::Admissible { confidence, .. } => confidence,
-                                AssociationScore::Excluded(_) => {
-                                    return Err(CorroborationError::Limit);
-                                }
-                            };
-                        entries[left_index].disposition = EntryDisposition::Corroborated;
-                        entries[right_index].disposition = EntryDisposition::Corroborated;
-                        pairs.push((
-                            zone.zone_id.clone(),
-                            left_index,
-                            right_index,
-                            separation,
-                            score,
-                        ));
-                    }
-                }
-            }
-            for (column, disposition) in report.right_dispositions().iter().enumerate() {
-                let right_index = locate(&right, report.right()[column].track_id)?;
-                match *disposition {
-                    AssociationDisposition::NoCandidate => {
-                        entries[right_index].disposition =
-                            EntryDisposition::NoAdmissibleCounterpart;
-                    }
-                    AssociationDisposition::Unresolved => {
-                        entries[right_index].disposition = EntryDisposition::Ambiguous;
-                    }
-                    AssociationDisposition::Matched(_) => {}
-                }
-            }
-        }
+        let pairs = associate_entries(plan, &mut entries, cx)?;
         if pairs.len() > MAX_CORROBORATION_CANDIDATES {
             return Err(CorroborationError::Limit);
         }
@@ -1283,14 +1292,9 @@ impl CorroborationReport {
             entries: &entries,
             cascade: cascade.as_ref().map(|c| c.digest),
         };
-        for (zone_id, left, right, separation, score) in pairs {
+        for associated in pairs {
             checkpoint(cx, "recorded_corroboration:prepare")?;
-            candidates.push(context.prepare(AssociatedEntries {
-                zone_id,
-                pair: [left, right],
-                separation,
-                score,
-            })?);
+            candidates.push(context.prepare(associated)?);
         }
         let basis = deployment.current_anchor().clone();
         let mut coverage = Vec::with_capacity(cameras.len());

@@ -1,0 +1,30 @@
+{
+  "schema": "fss.interval_association_contract.v1",
+  "status": "implemented_not_qualified",
+  "requirements": ["GOAL-002", "GOAL-006", "GOAL-007", "GOAL-014"],
+  "owner": "crates/fss-reference/src/ingest/cross_camera/intervals.rs",
+  "consumer": "crates/fss-reference/src/ingest/recorded_corroboration.rs",
+  "semantic_plane": "cognition",
+  "clock_basis": "caller_asserted_common_clock_not_certified",
+  "capture_coordinates": "inclusive_signed_i128_nanoseconds",
+  "separation_coordinates": "exact_unsigned_u128_nanoseconds",
+  "time_admission": "maximum_possible_separation_at_or_below_gate_before_global_assignment",
+  "time_diagnostics": ["Within", "Uncertain", "Outside"],
+  "ranking": "existing_midpoint_geometry_product_on_admissible_edges",
+  "solver": "shared_existing_Hungarian_with_private_unmatched_columns_and_exclusion_solves",
+  "ambiguity": "requested_global_margin_plus_one_quantization_unit_per_left_row",
+  "stability_scope": "admissible_graph_only_not_physical_identity",
+  "source_gap_unreliable_hints": "excluded_before_association",
+  "limits": {"observations_per_camera": 64, "camera_id_bytes": 256, "candidate_pairs": 4096},
+  "cost": "existing_solver_budget_plus_bounded_interval_arithmetic_and_complete_diagnostics",
+  "compatibility": "Point API and unchanged recorded association encodings preserved. Affected pairings require rerun and their own exact publication approval. No event history rewrite.",
+  "json_time": "existing_recorded_integer_fields_unchanged_exact_integer_parser_required",
+  "tests": [
+    "crates/fss-reference/src/ingest/cross_camera/intervals/tests.rs",
+    "crates/fss-reference/src/ingest/recorded_corroboration/tests/temporal.rs",
+    "crates/fss-reference/tests/interval_corroboration_contract.rs",
+    "crates/fss-reference/tests/fixtures/interval_association_model.py"
+  ],
+  "qualification": {"rust_tests_executed": false, "independent_python_cases_passed": 36864},
+  "out_of_scope": ["clock_authentication", "calibration_certification", "physical_person_identity", "absence_certification", "new_effect_authority", "automatic_event_revision", "production_qualification"]
+}

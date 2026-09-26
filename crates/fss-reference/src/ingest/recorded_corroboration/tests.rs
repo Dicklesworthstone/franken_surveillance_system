@@ -98,7 +98,10 @@ fn time_gate_uses_the_worst_case_over_both_conservative_intervals() -> TestResul
         worst_case_separation(interval(0, 20)?, interval(0, 20)?),
         20
     );
-    assert_eq!(midpoint(interval(10, 21)?)?, 15);
+    assert_eq!(
+        worst_case_separation(interval(i128::MIN, i128::MIN)?, interval(i128::MAX, i128::MAX)?),
+        u128::MAX
+    );
     Ok(())
 }
 
@@ -205,3 +208,5 @@ fn zone_entry_policy_corroborates_only_independent_sensors() -> TestResult {
     );
     Ok(())
 }
+
+mod temporal;
