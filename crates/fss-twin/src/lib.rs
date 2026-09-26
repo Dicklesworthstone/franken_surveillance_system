@@ -216,6 +216,7 @@ pub mod focal_localization;
 pub mod foreground;
 pub mod frontier_handoff;
 pub mod handoff_summary;
+pub mod joint_refinement;
 pub mod localization;
 pub mod mjpeg;
 pub mod monitored_handoff;
