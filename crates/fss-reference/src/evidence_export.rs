@@ -1,0 +1,426 @@
+#![forbid(unsafe_code)]
+//! Approval-gated redacted P5 event evidence exports.
+//!
+//! The export root contains only one redacted metadata record. Raw media, source/device identity,
+//! zone/track identifiers, model tensors, and live archive roots are never manifest children.
+//! Existing event/source custody is referenced by digest text only.
+
+use std::fmt;
+use fss_core::region::ContextAuthority;
+use fss_core::{
+    BatchId, CanonicalEncode, CanonicalEncoder, CaptureInterval, ContentDigest, ContractError,
+    DigestAlgorithm, EventId, EventKind, EventState, EvidenceClass, EvidenceDelta,
+    EvidenceEdgeRelation, LedgerAnchor, ObjectId, Plane, PrincipalId, TimestampNs,
+};
+use fss_object::{ObjectError, ObjectManifest, SpoolError};
+use fss_publication::SlotName;
+use crate::{ReferenceDeployment, ReferenceError, ReplayCx};
+
+pub const CAP_EXPORT_PREPARE: &str = "CAP-EXPORT-PREPARE-001";
+pub const CAP_EXPORT_COMMIT: &str = "CAP-EXPORT-COMMIT-001";
+pub const FAMILY_EVIDENCE_EXPORT: &str = "evidence_export";
+pub const EXPORT_OBJECT_PREFIX: &str = "object:evidence-export:";
+pub const EXPORT_DOMAIN: &str = "fss.evidence_export.v1";
+pub const EXPORT_APPROVAL_DOMAIN: &str = "fss.evidence_export_approval.v1";
+pub const EXPORT_PROFILE: &str = "event-summary-redacted-v1";
+pub const MAX_EXPORT_RECORD_BYTES: usize = 64 * 1024;
+pub const MAX_RECIPIENT_BYTES: usize = 256;
+pub const MAX_PURPOSE_BYTES: usize = 512;
+const POLICY: &[u8] = b"fss.evidence_export.policy.v1:event-summary-redacted-v1:no-raw-media:no-source-device-identities:no-zone-track-identifiers:hashed-failure-domains:exact-current-event:recipient-purpose-expiry:root-last:strong-approval";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct EvidenceSummary {
+    digest: ContentDigest,
+    class: EvidenceClass,
+    relation: EvidenceEdgeRelation,
+    supports: bool,
+    failure_domain_digest: ContentDigest,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EventExportRequest {
+    pub event_id: EventId,
+    pub expected_revision: ContentDigest,
+    pub recipient: String,
+    pub purpose: String,
+    pub expires_at: TimestampNs,
+}
+impl EventExportRequest {
+    pub fn validate(&self) -> Result<(), ExportError> {
+        if self.expected_revision.algorithm() != DigestAlgorithm::Sha256
+            || self.expected_revision.bytes() == [0; 32]
+            || self.recipient.trim().is_empty()
+            || self.recipient.len() > MAX_RECIPIENT_BYTES
+            || self.recipient.chars().any(char::is_control)
+            || self.purpose.trim().is_empty()
+            || self.purpose.len() > MAX_PURPOSE_BYTES
+            || self.purpose.chars().any(char::is_control)
+        {
+            return Err(ExportError::InvalidRequest("invalid revision, recipient, or purpose"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EventExportRecord {
+    request: EventExportRequest,
+    principal: String,
+    site: String,
+    event_root: ContentDigest,
+    event_anchor: LedgerAnchor,
+    event_revision: u64,
+    event_state: EventState,
+    event_kind: EventKind,
+    event_interval: CaptureInterval,
+    uncertainty_reason: Option<String>,
+    probability_bits: [u64; 2],
+    evidence: Vec<EvidenceSummary>,
+    model_receipts: Vec<ContentDigest>,
+    policy_generation: ContentDigest,
+    decision_fingerprint: ContentDigest,
+    decision_abstained: bool,
+    zone_count: u64,
+    track_count: u64,
+}
+impl EventExportRecord {
+    pub fn request(&self) -> &EventExportRequest { &self.request }
+    pub fn principal(&self) -> &str { &self.principal }
+    pub fn site(&self) -> &str { &self.site }
+    pub fn event_root(&self) -> ContentDigest { self.event_root }
+    pub fn event_anchor(&self) -> &LedgerAnchor { &self.event_anchor }
+    pub fn evidence_count(&self) -> usize { self.evidence.len() }
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut e = CanonicalEncoder::new();
+        e.bytes(b"FSSEXP01");
+        e.u32(1);
+        e.text(EXPORT_DOMAIN);
+        e.text(self.request.event_id.as_str());
+        e.digest(self.request.expected_revision);
+        e.text(&self.request.recipient);
+        e.text(&self.request.purpose);
+        e.i128(self.request.expires_at.0);
+        e.text(&self.principal);
+        e.text(&self.site);
+        e.digest(self.event_root);
+        self.event_anchor.encode_canonical(&mut e);
+        e.u64(self.event_revision);
+        e.u8(self.event_state.to_u8());
+        e.u8(self.event_kind.to_u8());
+        self.event_interval.encode_canonical(&mut e);
+        e.bool(self.uncertainty_reason.is_some());
+        if let Some(v) = &self.uncertainty_reason { e.text(v); }
+        e.u64(self.probability_bits[0]);
+        e.u64(self.probability_bits[1]);
+        e.u64(self.evidence.len() as u64);
+        for item in &self.evidence {
+            e.digest(item.digest);
+            e.u8(fss_core::evidence_class_to_u8(item.class));
+            e.u8(item.relation.to_u8());
+            e.bool(item.supports);
+            e.digest(item.failure_domain_digest);
+        }
+        e.u64(self.model_receipts.len() as u64);
+        for d in &self.model_receipts { e.digest(*d); }
+        e.digest(self.policy_generation);
+        e.digest(self.decision_fingerprint);
+        e.bool(self.decision_abstained);
+        e.u64(self.zone_count);
+        e.u64(self.track_count);
+        e.text(EXPORT_PROFILE);
+        e.finish()
+    }
+    pub fn digest(&self) -> ContentDigest { ContentDigest::sha256(&self.to_bytes()) }
+    pub fn manifest(&self) -> Result<ObjectManifest, ExportError> {
+        Ok(ObjectManifest::new(EXPORT_PROFILE, [self.digest()], None)?)
+    }
+    pub fn slot(&self) -> Result<SlotName, ExportError> {
+        SlotName::parse(&format!("export-{}", hex(self.digest())))
+            .map_err(|_| ExportError::InvalidRequest("export slot identity"))
+    }
+    fn object_id(&self) -> Result<ObjectId, ExportError> {
+        Ok(ObjectId::parse(format!("{EXPORT_OBJECT_PREFIX}{}", hex(self.digest())))?)
+    }
+    fn batch_id(&self) -> Result<BatchId, ExportError> {
+        Ok(BatchId::parse(format!("batch:evidence-export:{}", hex(self.digest())))?)
+    }
+    fn delta(&self) -> Result<EvidenceDelta, ExportError> {
+        Ok(EvidenceDelta {
+            delta_id: format!("delta:evidence-export:{}", hex(self.digest())),
+            family: FAMILY_EVIDENCE_EXPORT.to_owned(),
+            object_id: self.object_id()?,
+            prior_generation: None,
+            new_generation: 1,
+            validity: self.event_interval,
+            plane: Plane::Authority,
+            payload_digest: self.manifest()?.root(),
+            witness_digest: Some(self.digest()),
+            operation_id: None,
+        })
+    }
+    fn children(&self) -> Result<Vec<ContentDigest>, ExportError> {
+        let mut v = vec![self.digest(), self.manifest()?.root()];
+        v.sort_unstable();
+        v.dedup();
+        Ok(v)
+    }
+    pub fn to_redacted_json(&self) -> String {
+        let lower = f64::from_bits(self.probability_bits[0]);
+        let upper = f64::from_bits(self.probability_bits[1]);
+        let evidence = self.evidence.iter().map(|item| format!(
+            "{{\"digest\":{},\"class\":{},\"relation\":{},\"supports\":{},\"failure_domain_digest\":{}}}",
+            json(&item.digest.to_text()), json(fss_core::evidence_class_as_str(item.class)),
+            json(item.relation.as_str()), item.supports, json(&item.failure_domain_digest.to_text())
+        )).collect::<Vec<_>>().join(",");
+        let models = self.model_receipts.iter().map(|d| json(&d.to_text())).collect::<Vec<_>>().join(",");
+        format!(
+            "{{\"schema\":{},\"profile\":{},\"export_digest\":{},\"recipient\":{},\"purpose\":{},\"expires_at_ns\":{},\"site\":{},\"event_id\":{},\"event_revision\":{},\"event_revision_digest\":{},\"event_root\":{},\"event_anchor_sequence\":{},\"state\":{},\"kind\":{},\"capture_earliest_ns\":{},\"capture_latest_ns\":{},\"uncertainty_reason\":{},\"probability\":[{},{}],\"zone_count\":{},\"track_count\":{},\"evidence\":[{}],\"model_receipts\":[{}],\"policy_generation\":{},\"decision_fingerprint\":{},\"decision_abstained\":{},\"raw_media_included\":false,\"source_device_identities_included\":false,\"zone_track_identifiers_included\":false,\"live_archive_namespace_exposed\":false}}",
+            json(EXPORT_DOMAIN), json(EXPORT_PROFILE), json(&self.digest().to_text()),
+            json(&self.request.recipient), json(&self.request.purpose), self.request.expires_at.0,
+            json(&self.site), json(self.request.event_id.as_str()), self.event_revision,
+            json(&self.request.expected_revision.to_text()), json(&self.event_root.to_text()),
+            self.event_anchor.commit_sequence, json(self.event_state.as_str()), json(self.event_kind.as_str()),
+            self.event_interval.earliest.0, self.event_interval.latest.0,
+            self.uncertainty_reason.as_ref().map_or_else(|| "null".to_owned(), |v| json(v)),
+            lower, upper, self.zone_count, self.track_count, evidence, models,
+            json(&self.policy_generation.to_text()), json(&self.decision_fingerprint.to_text()),
+            self.decision_abstained
+        )
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct EventExportPreview {
+    record: EventExportRecord,
+    root: ContentDigest,
+    already_committed: bool,
+}
+impl EventExportPreview {
+    pub fn record(&self) -> &EventExportRecord { &self.record }
+    pub fn root(&self) -> ContentDigest { self.root }
+    pub fn already_committed(&self) -> bool { self.already_committed }
+    pub fn approval(&self) -> ContentDigest {
+        let mut e = CanonicalEncoder::new();
+        e.text(EXPORT_APPROVAL_DOMAIN);
+        e.digest(ContentDigest::sha256(POLICY));
+        e.digest(self.record.digest());
+        e.digest(self.root);
+        ContentDigest::sha256(&e.finish())
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct EventExportReceipt {
+    pub preview: EventExportPreview,
+    pub anchor: LedgerAnchor,
+    pub published: bool,
+}
+
+#[derive(Debug)]
+pub enum ExportError {
+    InvalidRequest(&'static str),
+    Unauthorized,
+    StaleRevision,
+    StaleApproval,
+    CustodyMismatch,
+    Limit,
+    Cancelled,
+    Contract(ContractError),
+    Reference(Box<ReferenceError>),
+    Object(ObjectError),
+    Spool(SpoolError),
+}
+impl ExportError {
+    pub const fn stable_id(&self) -> &'static str {
+        match self {
+            Self::InvalidRequest(_) => "ERR-EXPORT-REQUEST-001",
+            Self::Unauthorized => "ERR-AUTH-DENIED-001",
+            Self::StaleRevision => "ERR-EXPORT-REVISION-STALE-001",
+            Self::StaleApproval => "ERR-EXPORT-APPROVAL-STALE-001",
+            Self::CustodyMismatch => "ERR-EXPORT-CUSTODY-001",
+            Self::Limit => "ERR-EXPORT-BOUND-001",
+            Self::Cancelled => "ERR-EXPORT-CANCELLED-001",
+            _ => "ERR-EXPORT-STORAGE-001",
+        }
+    }
+}
+impl fmt::Display for ExportError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidRequest(v) => write!(f, "invalid evidence export: {v}"),
+            Self::Unauthorized => f.write_str("evidence export authority denied"),
+            Self::StaleRevision => f.write_str("event revision changed; preview the current revision"),
+            Self::StaleApproval => f.write_str("export approval does not match this exact package"),
+            Self::CustodyMismatch => f.write_str("export or event custody mismatch"),
+            Self::Limit => f.write_str("evidence export bound exceeded"),
+            Self::Cancelled => f.write_str("evidence export cancelled before commit"),
+            Self::Contract(e) => write!(f, "export contract: {e}"),
+            Self::Reference(e) => write!(f, "export authority: {e}"),
+            Self::Object(e) => write!(f, "export manifest: {e}"),
+            Self::Spool(e) => write!(f, "export custody: {e}"),
+        }
+    }
+}
+impl std::error::Error for ExportError {}
+impl From<ContractError> for ExportError { fn from(v: ContractError) -> Self { Self::Contract(v) } }
+impl From<ReferenceError> for ExportError { fn from(v: ReferenceError) -> Self { Self::Reference(Box::new(v)) } }
+impl From<ObjectError> for ExportError { fn from(v: ObjectError) -> Self { Self::Object(v) } }
+impl From<SpoolError> for ExportError { fn from(v: SpoolError) -> Self { Self::Spool(v) } }
+
+fn hex(d: ContentDigest) -> String { d.bytes().iter().map(|b| format!("{b:02x}")).collect() }
+fn json(v: &str) -> String {
+    let mut out = String::with_capacity(v.len() + 2);
+    out.push('"');
+    for c in v.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+fn probability_bits(v: f64) -> u64 { if v == 0.0 { 0.0f64.to_bits() } else { v.to_bits() } }
+fn failure_domain_digest(v: &str) -> ContentDigest {
+    let mut e = CanonicalEncoder::new();
+    e.text("fss.evidence_export.failure_domain.v1");
+    e.text(v);
+    ContentDigest::sha256(&e.finish())
+}
+fn checkpoint(cx: &ReplayCx, stage: &'static str) -> Result<(), ExportError> {
+    cx.checkpoint(stage).map_err(|_| ExportError::Cancelled)
+}
+fn authorize(d: &ReferenceDeployment, a: &ContextAuthority, cx: &ReplayCx, cap: &str) -> Result<(), ExportError> {
+    a.validate()?;
+    checkpoint(cx, "evidence_export:authority")?;
+    if !a.has_capability(cap) || a.cancellation_reason.is_some() || cx.root_dir() != d.root()
+        || a.anchor_universe != ContentDigest::sha256(d.site_lineage().as_bytes())
+        || a.principal.len() > 256 || d.site_lineage().len() > 256
+    { return Err(ExportError::Unauthorized); }
+    Ok(())
+}
+fn verify_custody(d: &ReferenceDeployment, record: &EventExportRecord) -> Result<(), ExportError> {
+    let slot = record.slot()?;
+    let manifest = record.manifest()?;
+    let visible = d.publisher().root(&slot).ok_or(ExportError::CustodyMismatch)?;
+    if visible.root != manifest.root() { return Err(ExportError::CustodyMismatch); }
+    if d.publisher().spool().read(record.digest())? != record.to_bytes() {
+        return Err(ExportError::CustodyMismatch);
+    }
+    Ok(())
+}
+
+pub fn preview_export(
+    deployment: &ReferenceDeployment,
+    request: &EventExportRequest,
+    authority: &ContextAuthority,
+    cx: &ReplayCx,
+) -> Result<EventExportPreview, ExportError> {
+    authorize(deployment, authority, cx, CAP_EXPORT_PREPARE)?;
+    request.validate()?;
+    let (event, receipt) = deployment.current_event_authority(&request.event_id)?;
+    if event.revision_digest() != request.expected_revision { return Err(ExportError::StaleRevision); }
+    if request.expires_at <= event.interval.latest {
+        return Err(ExportError::InvalidRequest("expiry must be later than the event interval"));
+    }
+    let evidence = event.evidence.iter().map(|item| EvidenceSummary {
+        digest: item.digest,
+        class: item.class,
+        relation: item.relation,
+        supports: item.supports,
+        failure_domain_digest: failure_domain_digest(&item.failure_domain),
+    }).collect();
+    let record = EventExportRecord {
+        request: request.clone(),
+        principal: authority.principal.clone(),
+        site: deployment.site_lineage().to_owned(),
+        event_root: receipt.event_root,
+        event_anchor: receipt.authority_anchor,
+        event_revision: event.revision,
+        event_state: event.state,
+        event_kind: event.kind,
+        event_interval: event.interval,
+        uncertainty_reason: event.uncertainty_reason.clone(),
+        probability_bits: [probability_bits(event.probability.lower), probability_bits(event.probability.upper)],
+        evidence,
+        model_receipts: event.model_receipts.clone(),
+        policy_generation: event.decision_path.policy_generation,
+        decision_fingerprint: event.decision_path.fingerprint,
+        decision_abstained: event.decision_path.abstained,
+        zone_count: event.zone_ids.len() as u64,
+        track_count: event.track_ids.len() as u64,
+    };
+    if record.to_bytes().len() > MAX_EXPORT_RECORD_BYTES { return Err(ExportError::Limit); }
+    let root = record.manifest()?.root();
+    let already_committed = match deployment.ledger().current().objects.get(&record.object_id()?) {
+        None => false,
+        Some(current) if current.family == FAMILY_EVIDENCE_EXPORT
+            && current.generation == 1 && current.payload_digest == root => {
+                verify_custody(deployment, &record)?;
+                true
+            }
+        Some(_) => return Err(ExportError::CustodyMismatch),
+    };
+    checkpoint(cx, "evidence_export:prepared")?;
+    Ok(EventExportPreview { record, root, already_committed })
+}
+
+pub fn commit_export(
+    deployment: &mut ReferenceDeployment,
+    request: &EventExportRequest,
+    approval: ContentDigest,
+    authority: &ContextAuthority,
+    cx: &ReplayCx,
+) -> Result<EventExportReceipt, ExportError> {
+    authorize(deployment, authority, cx, CAP_EXPORT_COMMIT)?;
+    let preview = preview_export(deployment, request, authority, cx)?;
+    if preview.approval() != approval { return Err(ExportError::StaleApproval); }
+    if preview.already_committed {
+        return Ok(EventExportReceipt { anchor: deployment.current_anchor().clone(), preview, published: false });
+    }
+    checkpoint(cx, "evidence_export:revalidated")?;
+    let bytes = preview.record.to_bytes();
+    let slot = preview.record.slot()?;
+    let manifest = preview.record.manifest()?;
+    if let Some(root) = deployment.publisher().root(&slot) {
+        if root.root != manifest.root() { return Err(ExportError::CustodyMismatch); }
+        verify_custody(deployment, &preview.record)?;
+    } else {
+        let staged = deployment.stage_and_publish(&slot, &[&bytes], cx)?;
+        if staged.root != manifest.root() || staged.manifest != manifest {
+            return Err(ExportError::CustodyMismatch);
+        }
+    }
+    deployment.publish_and_commit(&slot, &manifest, preview.record.event_interval, cx)?;
+    checkpoint(cx, "evidence_export:root_published")?;
+    let anchor = deployment.append_evidence_export_batch(
+        preview.record.batch_id()?, vec![preview.record.delta()?], preview.record.children()?, cx,
+    )?;
+    cx.checkpoint_post_commit("evidence_export:committed");
+    Ok(EventExportReceipt { preview, anchor, published: true })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn request_and_failure_domain_projection_are_bounded() {
+        let mut request = EventExportRequest {
+            event_id: EventId::parse("event:export-test").expect("event"),
+            expected_revision: ContentDigest::sha256(b"revision"),
+            recipient: "recipient:case-7".into(),
+            purpose: "Owner-authorized incident review".into(),
+            expires_at: TimestampNs(100),
+        };
+        assert!(request.validate().is_ok());
+        request.purpose = "x".repeat(MAX_PURPOSE_BYTES + 1);
+        assert!(request.validate().is_err());
+        assert_eq!(failure_domain_digest("sensor:a"), failure_domain_digest("sensor:a"));
+        assert_ne!(failure_domain_digest("sensor:a"), failure_domain_digest("sensor:b"));
+    }
+}

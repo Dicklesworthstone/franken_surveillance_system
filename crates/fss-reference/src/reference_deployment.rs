@@ -172,6 +172,7 @@ pub const DEPLOYMENT_CANCEL_STAGES: &[&str] = &[
 fn reserved_family_entry_point(family: &str) -> Option<&'static str> {
     match family {
         FAMILY_EVENT_REVISION | FAMILY_SENSOR_TAMPER_STATUS => Some("publish_event"),
+        crate::evidence_export::FAMILY_EVIDENCE_EXPORT => Some("evidence_export::commit_export"),
         ROOT_REACHABILITY_FAMILY => Some("publish_and_commit"),
         FAMILY_EVIDENCE_HOLD => Some("deletion::holds::commit_hold"),
         FAMILY_DELETION_RECORD
@@ -1441,6 +1442,36 @@ impl ReferenceDeployment {
                 family,
                 entry_point,
             });
+        }
+        self.append_checked_batch(batch_id, deltas, children)
+    }
+
+    /// Crate-internal writer for the exact transition validated by `evidence_export`.
+    /// The export family is reserved so generic authority appends cannot synthesize a P5 export.
+    pub(crate) fn append_evidence_export_batch(
+        &mut self,
+        batch_id: BatchId,
+        deltas: Vec<EvidenceDelta>,
+        children: Vec<ContentDigest>,
+        cx: &ReplayCx,
+    ) -> Result<LedgerAnchor, ReferenceError> {
+        if cx.is_cancelled() {
+            cx.drain_and_finalize();
+            return Err(ReferenceError::CancellationRequested {
+                stage: STAGE_APPEND_BATCH,
+            });
+        }
+        if deltas.len() != 1
+            || deltas.iter().any(|delta| {
+                delta.family != crate::evidence_export::FAMILY_EVIDENCE_EXPORT
+                    || !delta
+                        .object_id
+                        .as_str()
+                        .starts_with(crate::evidence_export::EXPORT_OBJECT_PREFIX)
+                    || delta.plane != Plane::Authority
+            })
+        {
+            return Err(ReferenceError::InvalidSpec("invalid evidence export batch"));
         }
         self.append_checked_batch(batch_id, deltas, children)
     }

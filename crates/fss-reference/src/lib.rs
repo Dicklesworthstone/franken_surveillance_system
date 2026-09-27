@@ -41,6 +41,8 @@ mod error;
 pub mod evaluation;
 /// Exact-approval operator lifecycle reviews of retained events.
 pub mod event_review;
+/// Approval-gated, redacted P5 event evidence export roots.
+pub mod evidence_export;
 mod extrinsics;
 mod hydration;
 pub mod ingest;

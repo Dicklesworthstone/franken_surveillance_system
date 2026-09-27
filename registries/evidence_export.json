@@ -1,0 +1,33 @@
+{
+  "schema": "fss.evidence_export_contract.v1",
+  "family": "evidence_export",
+  "status": "implemented_reference_not_qualified",
+  "capabilities": ["CAP-EXPORT-PREPARE-001", "CAP-EXPORT-COMMIT-001"],
+  "profile": "event-summary-redacted-v1",
+  "privacy": {
+    "raw_media_included": false,
+    "source_device_identities_included": false,
+    "zone_track_identifiers_included": false,
+    "failure_domains": "domain-separated-sha256-only",
+    "live_archive_namespace_exposed": false
+  },
+  "authority": {
+    "prepare": "read-only exact current event revision",
+    "commit": "strong exact approval; root-last export then reserved authority delta",
+    "external_transport": false
+  },
+  "errors": [
+    "ERR-EXPORT-REQUEST-001",
+    "ERR-EXPORT-REVISION-STALE-001",
+    "ERR-EXPORT-APPROVAL-STALE-001",
+    "ERR-EXPORT-CUSTODY-001",
+    "ERR-EXPORT-BOUND-001",
+    "ERR-EXPORT-CANCELLED-001",
+    "ERR-EXPORT-STORAGE-001"
+  ],
+  "limits": {
+    "record_bytes": 65536,
+    "recipient_bytes": 256,
+    "purpose_bytes": 512
+  }
+}
