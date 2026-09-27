@@ -31,6 +31,8 @@ pub mod resilient_cover;
 pub mod registry;
 /// Bounded unit-cost set cover with exact-small and explicitly heuristic selection.
 pub mod set_cover;
+/// Budgeted positive-weight coverage with exact integer ratio ranking and explicit omissions.
+pub mod submodular;
 
 pub use bridges::{
     BridgeAnalysis, BridgeCounters, BridgeSeparation, ComplexityBound, GraphBudget,

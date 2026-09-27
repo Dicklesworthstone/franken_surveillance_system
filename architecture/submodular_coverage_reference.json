@@ -1,0 +1,30 @@
+{
+  "schema": "fss.submodular_coverage_reference_contract.v1",
+  "algorithmId": "ALG-SUBMOD-001",
+  "requirementId": "FSS-160",
+  "status": "authored_unvalidated_reference_candidate",
+  "centralRegistryStatus": "specified",
+  "specialization": "positive-integer weighted coverage over the existing immutable SetCoverProblem support owner",
+  "implementationId": "fss-graph-algorithms:alg-submod-001:eager-weighted-coverage:v1",
+  "policyId": "submod-policy:positive-integer-utility-and-cost:ratio-then-stable-id:mandatory-excluded:v1",
+  "objective": "sum declared utility once per distinct supported target",
+  "decision": "eager positive marginal utility / integer cost; exact u128 cross products; stable action identity ties",
+  "constraints": ["mandatory actions retained and charged even without support", "excluded actions never selected", "hard total cost budget", "hard selected-action cardinality", "unsupported targets remain explicit"],
+  "inputDomain": "fss.graph.budgeted_coverage_input.v1",
+  "outputDomain": "fss.graph.budgeted_coverage_output.v1",
+  "decisionDomain": "fss.graph.budgeted_coverage_decision_summary.v1",
+  "limits": {"targets": 64, "actions": 1024, "workUnits": 50000000, "outputEntries": 8192},
+  "dominantCounterBounds": {
+    "input_entries": "2*e + 4*n + n*e",
+    "candidate_scans": "n*(e+1)",
+    "utility_terms": "e*(n*(e+1)+2)",
+    "result_checks": "n + 2*e + n*e"
+  },
+  "counterVariables": "n=all actions including excluded; e=all requested targets including unsupported",
+  "exactness": "approximate",
+  "numericalApproximationBound": null,
+  "noClaims": ["global optimality", "infeasibility from greedy stopping", "probability or physical independence", "calibrated value of information", "current coverage", "effect authority", "native Rust validation", "INT-FNX-001 qualification"],
+  "operatorIntegration": "library API in this increment",
+  "validation": {"nativeTestsAuthored": 12, "nativeExecution": "not_run", "pythonModelOnlyExhaustiveCases": 57344, "pythonModelOnlySeededCases": 10000},
+  "sources": ["crates/fss-graph-algorithms/src/submodular.rs", "crates/fss-graph-algorithms/tests/submodular_contract.rs", "scripts/submodular_coverage_model_check.py"]
+}
