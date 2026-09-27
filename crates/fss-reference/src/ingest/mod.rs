@@ -10,6 +10,8 @@ pub mod analysis;
 pub mod annexb;
 /// Owner, approval-gated adoption of a site calibration per camera, retained as authority.
 pub mod calibration_adoption;
+/// Full camera-covariance screening of nominal coverage against image and privacy boundaries.
+pub mod calibration_coverage;
 /// Cross-camera association of tracked objects via time and geometry gates.
 pub mod cross_camera;
 /// Explicit model-output decoding and source-linked detector proposals.
