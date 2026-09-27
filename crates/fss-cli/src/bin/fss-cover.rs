@@ -17,6 +17,9 @@ use fss_graph_algorithms::set_cover::{
 };
 use fss_reference::coverage_graph::{CoverageGraphReport, read_coverage_single_points_during};
 
+#[path = "fss-cover/resilient.rs"]
+mod resilient;
+
 const FORMAT: &str = "fss.coverage_set_selection.v1";
 const MAX_ARGS: usize = 513;
 const MAX_ARG_BYTES: usize = 4096;
@@ -53,6 +56,7 @@ const HELP: &str = "fss-cover select --root DIR --site SITE --during START_NS:EN
   Work units cover selection only, not the separately bounded source snapshot/projection.\n\
   Deadline checks bracket the existing source reader (filesystem reads are not preemptible)\n\
   and occur at every charged selection step. No partial report on an error.\n\
+  Shared-failure selection: fss-cover select-resilient --help.\n\
   Reference candidate: Rust tests and production qualification have not been run.\n";
 
 #[derive(Clone, Debug)]
@@ -275,7 +279,7 @@ fn render(request: &Request, source: &CoverageGraphReport, analysis: &CoverAnaly
     Ok(result + "\n")
 }
 
-fn execute(request: &Request, stopped: &impl Fn() -> bool) -> Result<String, CommandError> {
+fn read_source(request: &Request, stopped: &impl Fn() -> bool) -> Result<CoverageGraphReport, CommandError> {
     if stopped() { return Err(CommandError::Stopped); }
     // The existing reader is bounded/read-only, but individual filesystem calls cannot be
     // preempted. This does not pretend a selection-work budget prices the snapshot read.
@@ -285,6 +289,11 @@ fn execute(request: &Request, stopped: &impl Fn() -> bool) -> Result<String, Com
     if request.expected.is_some_and(|expected| expected != source.witness.digest()) {
         return Err(CommandError::StaleSource);
     }
+    Ok(source)
+}
+
+fn execute(request: &Request, stopped: &impl Fn() -> bool) -> Result<String, CommandError> {
+    let source = read_source(request, stopped)?;
     let problem = SetCoverProblem::from_coverage(&source.projection, &request.zones,
         &request.mandatory, &request.excluded, request.maximum).map_err(CommandError::Selection)?;
     let analysis = problem.solve_cancellable(request.method, request.budget, stopped)
@@ -311,13 +320,17 @@ fn emit(writer: &mut impl Write, mut bytes: &[u8]) -> io::Result<()> {
 }
 fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().skip(1).take(MAX_ARGS + 1).collect();
-    let result = match parse(&args) {
-        Ok(None) => Ok(HELP.to_owned()),
-        Ok(Some(request)) => {
-            let started = Instant::now();
-            execute(&request, &|| started.elapsed() >= request.timeout)
+    let result = if args.first().and_then(|value| value.to_str()) == Some("select-resilient") {
+        resilient::run(&args)
+    } else {
+        match parse(&args) {
+            Ok(None) => Ok(HELP.to_owned()),
+            Ok(Some(request)) => {
+                let started = Instant::now();
+                execute(&request, &|| started.elapsed() >= request.timeout)
+            }
+            Err(error) => Err(error),
         }
-        Err(error) => Err(error),
     };
     match result {
         Ok(report) => match emit(&mut io::stdout().lock(), report.as_bytes()) {

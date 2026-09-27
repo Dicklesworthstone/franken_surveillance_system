@@ -32,10 +32,13 @@
   ],
   "solverBudget": "existing CoverBudget applies to the expanded solver; reduction construction is separately structurally bounded",
   "certificate": "resolve each element through ResilientCoverProblem::obligation; the failed domain and zone are explicit",
-  "operatorIntegration": "library API only; fss-cover select remains nominal selection",
+  "operatorIntegration": "fss-cover select-resilient uses one whole-window source; fss-cover select remains nominal selection",
   "sources": [
     "crates/fss-graph-algorithms/src/resilient_cover.rs",
-    "crates/fss-graph-algorithms/tests/resilient_cover_contract.rs"
+    "crates/fss-graph-algorithms/tests/resilient_cover_contract.rs",
+    "crates/fss-cli/src/bin/fss-cover/resilient.rs",
+    "crates/fss-cli/src/bin/fss-cover/resilient_tests.rs",
+    "schemas/coverage_resilient_selection.v1.json"
   ],
   "modelCheck": "scripts/resilient_cover_model_check.py; independent finite model, not Rust execution"
 }

@@ -1,0 +1,543 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/coverage_resilient_selection.v1.json",
+  "title": "Read-only retained evidence selection across explicit failure scenarios v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "format": {
+      "const": "fss.coverage_resilient_selection.v1"
+    },
+    "site": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "anchor": {
+      "$ref": "evidence_anchor.v1.json"
+    },
+    "capture_window": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "start_ns": {
+          "type": "string",
+          "pattern": "^-?[0-9]+$"
+        },
+        "end_ns": {
+          "type": "string",
+          "pattern": "^-?[0-9]+$"
+        },
+        "endpoints": {
+          "const": "inclusive"
+        },
+        "selection": {
+          "const": "whole-witness-v1"
+        },
+        "clock_alignment": {
+          "const": "operator_hints_not_calibration"
+        }
+      },
+      "required": [
+        "start_ns",
+        "end_ns",
+        "endpoints",
+        "selection",
+        "clock_alignment"
+      ]
+    },
+    "source_coverage_witness": {
+      "allOf": [
+        {
+          "$ref": "graph_algorithm_witness.v1.json"
+        },
+        {
+          "properties": {
+            "algorithmId": {
+              "const": "ALG-BRIDGE-001"
+            }
+          }
+        }
+      ]
+    },
+    "source_coverage_witness_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "objective": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "required_zones": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "minItems": 1
+        },
+        "mandatory_sensors": {
+          "type": "array",
+          "maxItems": 1024,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "excluded_sensors": {
+          "type": "array",
+          "maxItems": 1024,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "maximum_sensors": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1024
+        },
+        "cost_model": {
+          "const": "one_unit_per_selected_sensor"
+        }
+      },
+      "required": [
+        "required_zones",
+        "mandatory_sensors",
+        "excluded_sensors",
+        "maximum_sensors",
+        "cost_model"
+      ]
+    },
+    "method": {
+      "enum": [
+        "exact_small",
+        "greedy"
+      ]
+    },
+    "status": {
+      "enum": [
+        "covered",
+        "uncoverable",
+        "infeasible_within_limit",
+        "heuristic_incomplete"
+      ]
+    },
+    "objective_covered": {
+      "type": "boolean"
+    },
+    "selected_sensors": {
+      "type": "array",
+      "maxItems": 1024,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      }
+    },
+    "selection_cost_units": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1024
+    },
+    "witness": {
+      "allOf": [
+        {
+          "$ref": "graph_algorithm_witness.v1.json"
+        },
+        {
+          "properties": {
+            "algorithmId": {
+              "const": "ALG-SETCOVER-001"
+            },
+            "errorBound": {
+              "const": null
+            }
+          }
+        }
+      ]
+    },
+    "witness_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "work_budget_scope": {
+      "const": "expanded_set_cover_solver_only; source_reader_and_reduction_separately_bounded"
+    },
+    "working_bytes_interpretation": {
+      "const": "conservative_charged_solver_workspace_bound_not_measured_allocator_peak_or_reduction_memory"
+    },
+    "authority": {
+      "const": "derived_cognition_no_effect_authority"
+    },
+    "claim": {
+      "const": "one retained-evidence selection for baseline and each declared domain loss separately; not joint-domain failure survival, domain completeness, independence, live observability, or permission to disable sensors"
+    },
+    "qualification": {
+      "const": "authored_unvalidated_reference_candidate"
+    },
+    "scenario_semantics": {
+      "const": "baseline_and_each_declared_domain_separately"
+    },
+    "failure_domains": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "id",
+          "node_id",
+          "members"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "network",
+              "power",
+              "clock",
+              "host"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "node_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "members": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 1024,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "uniqueItems": true
+          }
+        }
+      }
+    },
+    "reduction_input_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "expanded_input_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "obligations": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "obligation_id",
+          "zone_scope",
+          "failed_domain",
+          "status",
+          "sensor_id"
+        ],
+        "properties": {
+          "obligation_id": {
+            "type": "string",
+            "pattern": "^obligation:sha256:[0-9a-f]{64}:[0-9]+:[0-9]+$"
+          },
+          "zone_scope": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "failed_domain": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "enum": [
+              "supported",
+              "uncovered",
+              "uncoverable"
+            ]
+          },
+          "sensor_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "supported"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "sensor_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "sensor_id": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "required": [
+    "format",
+    "site",
+    "anchor",
+    "capture_window",
+    "source_coverage_witness",
+    "source_coverage_witness_digest",
+    "objective",
+    "method",
+    "status",
+    "objective_covered",
+    "selected_sensors",
+    "selection_cost_units",
+    "witness",
+    "witness_digest",
+    "work_budget_scope",
+    "working_bytes_interpretation",
+    "authority",
+    "claim",
+    "qualification",
+    "scenario_semantics",
+    "failure_domains",
+    "reduction_input_digest",
+    "expanded_input_digest",
+    "obligations"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "covered"
+          }
+        }
+      },
+      "then": {
+        "allOf": [
+          {
+            "properties": {
+              "objective_covered": {
+                "const": true
+              }
+            }
+          },
+          {
+            "properties": {
+              "obligations": {
+                "items": {
+                  "properties": {
+                    "status": {
+                      "const": "supported"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "else": {
+        "allOf": [
+          {
+            "properties": {
+              "objective_covered": {
+                "const": false
+              }
+            }
+          },
+          {
+            "not": {
+              "properties": {
+                "obligations": {
+                  "items": {
+                    "properties": {
+                      "status": {
+                        "const": "supported"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "uncoverable"
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "properties": {
+            "obligations": {
+              "items": {
+                "not": {
+                  "properties": {
+                    "status": {
+                      "const": "uncoverable"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "obligations": {
+            "items": {
+              "properties": {
+                "status": {
+                  "enum": [
+                    "supported",
+                    "uncovered"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "heuristic_incomplete"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "method": {
+            "const": "greedy"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "infeasible_within_limit"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "method": {
+            "const": "exact_small"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "method": {
+            "const": "exact_small"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "witness": {
+            "properties": {
+              "exactness": {
+                "const": "exact"
+              },
+              "implementationId": {
+                "const": "fss-graph-algorithms:alg-setcover-001:cardinality-enumeration:v1"
+              },
+              "policyId": {
+                "const": "setcover-policy:unit-cost:mandatory-excluded:cardinality-then-stable-set-tuple:v1"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "method": {
+            "const": "greedy"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "witness": {
+            "properties": {
+              "exactness": {
+                "const": "approximate"
+              },
+              "implementationId": {
+                "const": "fss-graph-algorithms:alg-setcover-001:marginal-gain:v1"
+              },
+              "policyId": {
+                "const": "setcover-policy:unit-cost:mandatory-excluded:marginal-gain-then-stable-set-id:v1"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}
