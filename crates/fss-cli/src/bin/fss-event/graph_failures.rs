@@ -41,15 +41,31 @@ pub(super) fn render(
     value: &CoverageGraphReport,
     domains: &[FailureDomain],
 ) -> Result<String, String> {
-    let result = analyse_failure_domains(
-        &value.projection,
+    Ok(render_with_budget(
+        value,
         domains,
         GraphBudget {
             max_operations: MAX_FAILURE_OPERATIONS,
             max_output_entries: MAX_FAILURE_OUTPUT_ENTRIES,
         },
-    )
-    .map_err(|error| format!("{}: {error}", error.stable_id()))?;
+    )?
+    .json)
+}
+
+/// Rendered scenarios and actual usage for composition under one parent request budget.
+pub(super) struct RenderedFailures {
+    pub(super) json: String,
+    pub(super) operations: u64,
+    pub(super) output_entries: u64,
+}
+
+pub(super) fn render_with_budget(
+    value: &CoverageGraphReport,
+    domains: &[FailureDomain],
+    budget: GraphBudget,
+) -> Result<RenderedFailures, String> {
+    let result = analyse_failure_domains(&value.projection, domains, budget)
+        .map_err(|error| format!("{}: {error}", error.stable_id()))?;
     let parent_digest = value.witness.digest().to_text();
     let mut rows = Vec::new();
     let mut bytes = 0_usize;
@@ -84,7 +100,7 @@ pub(super) fn render(
         }
         rows.push(row);
     }
-    Ok(object(&[
+    let json = object(&[
         ("model", string("independent-simultaneous-member-loss-v1")),
         (
             "declaration_basis",
@@ -105,7 +121,12 @@ pub(super) fn render(
                 "conditional loss of retained qualifying witnesses, not current availability, calibrated clock independence, or evidence of absence",
             ),
         ),
-    ]))
+    ]);
+    Ok(RenderedFailures {
+        json,
+        operations: result.operations,
+        output_entries: result.output_entries,
+    })
 }
 
 #[cfg(test)]
@@ -221,6 +242,36 @@ mod tests {
         assert!(
             matches!(render(&value, &[declared]), Err(error) if error.contains("ERR-GRAPH-INPUT-INVALID-001"))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_budget_preserves_legacy_bytes_and_reports_actual_usage()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let value = sample("SensorCoverageGraph@commit:0")?;
+        let domains = [parse_domain("network:lan=sensor:a,sensor:b")?];
+        let full = render_with_budget(
+            &value,
+            &domains,
+            GraphBudget {
+                max_operations: MAX_FAILURE_OPERATIONS,
+                max_output_entries: MAX_FAILURE_OUTPUT_ENTRIES,
+            },
+        )?;
+        assert_eq!(render(&value, &domains)?, full.json);
+        assert!(full.operations > 0);
+        assert!(full.output_entries > 0);
+        let exact = GraphBudget {
+            max_operations: full.operations,
+            max_output_entries: full.output_entries,
+        };
+        assert_eq!(render_with_budget(&value, &domains, exact)?.json, full.json);
+        for limited in [
+            GraphBudget { max_operations: full.operations - 1, ..exact },
+            GraphBudget { max_output_entries: full.output_entries - 1, ..exact },
+        ] {
+            assert!(render_with_budget(&value, &domains, limited).is_err());
+        }
         Ok(())
     }
 }

@@ -25,10 +25,14 @@ use fss_reference::coverage_graph::{
 #[path = "graph_failures.rs"]
 mod shared_failures;
 
+#[path = "graph_timeline.rs"]
+mod timeline;
+
 /// Report format tag (`SCHEMA-DOMAIN-COVERAGE-SINGLE-POINTS-001`).
 const FORMAT: &str = "fss.coverage_single_points.v1";
 
 const HELP: &str = "fss-event graph single-points --root DIR --site SITE [--during START_NS:END_NS]\n\
+  For changes within a window: fss-event graph timeline --help.\n\
   Reads one committed snapshot without writing or granting authority.\n\
   Without --during: structural single points over all retained witness history.\n\
   --during: signed integer capture nanoseconds, inclusive, START_NS <= END_NS.\n\
@@ -347,6 +351,9 @@ fn report_with_failures(
 
 /// Runs `fss-event graph ...` with the arguments after `graph`.
 pub(super) fn main(args: &[OsString]) -> ExitCode {
+    if args.first().and_then(|arg| arg.to_str()) == Some("timeline") {
+        return timeline::main(args);
+    }
     if help_requested(args) {
         return match io::stdout().lock().write_all(HELP.as_bytes()) {
             Ok(()) => ExitCode::from(ExitIdentity::SUCCESS.code),
