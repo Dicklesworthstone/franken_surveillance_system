@@ -18,6 +18,7 @@ mod mesh;
 mod motion;
 mod refine;
 mod registration;
+mod uncertainty;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -55,6 +56,10 @@ pub use registration::{
     PlanarSupport, PoseCandidate, PoseSearch, PoseSolverOptions, PoseValidation, PoseValidationSet,
     estimate_camera_pose, estimate_camera_pose_adaptive, estimate_nonplanar_camera_pose,
     estimate_planar_camera_pose, scan_camera_focal_length,
+};
+
+pub use uncertainty::{
+    CAMERA_UNCERTAINTY_WORK_UNITS, CameraProjectionUncertainty, ProjectionUncertaintyError,
 };
 
 /// Error returned by every fallible operation in this crate.
