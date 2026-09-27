@@ -51,6 +51,10 @@ path = "src/bin/fss-review.rs"
 name = "fss-capture"
 path = "src/bin/fss-capture.rs"
 
+[[bin]]
+name = "fss-replay"
+path = "src/bin/fss-replay.rs"
+
 [dependencies]
 fss-core = { path = "../fss-core" }
 fss-graph-algorithms = { path = "../fss-graph-algorithms" }

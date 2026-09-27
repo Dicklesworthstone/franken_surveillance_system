@@ -1,0 +1,29 @@
+{
+  "schema": "fss.local_http_rgb_replay.v1",
+  "status": "implemented_reference_unqualified",
+  "binary": "fss-replay",
+  "engine": "ingest::http_rgb_history_replay",
+  "commands": ["inspect-http-rgb", "http-rgb"],
+  "selection": "exact_latest_committed_session_root_revision",
+  "pending_history": "reported_not_executed_or_repaired",
+  "authority": {
+    "boundary": "owner_authorized_local_process",
+    "principal": "attribution_not_remote_authentication",
+    "history": "read_exact_session_only",
+    "evidence": "read_exact_retained_evidence_set_and_retention_only",
+    "execution": "independent_acknowledgement_exact_session_and_model_only",
+    "originals": "explicit_read_acknowledgement_current_deadline",
+    "retention_and_effect_writes": false
+  },
+  "execution_acknowledgements": ["--read-originals yes", "--execute-model yes"],
+  "statuses": ["configuration_only", "prefix_verified", "complete_verified"],
+  "privacy_authority": "history_deployment_current_named_sensor",
+  "original_tip": "from_committed_history_never_implicit_latest",
+  "budgets": "native_ReplayBudget_shared_across_inspection_frames_and_revalidation",
+  "numerical_reservation": "sum_of_preprocess_and_execution_ceilings_not_measured_usage",
+  "frame_capture_time_json": "decimal_strings",
+  "default_report_bytes": 1048576,
+  "maximum_report_bytes": 16777216,
+  "native_tests_executed_in_authoring_environment": false,
+  "source_truth_and_effect_authority_granted": false
+}
