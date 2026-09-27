@@ -27,6 +27,8 @@ mod clock_sync;
 mod context_binding;
 /// Certified single points of failure of retained coverage (`ALG-BRIDGE-001`); read-only.
 pub mod coverage_graph;
+/// Exact certain-witness timelines over one committed deployment; read-only.
+pub mod coverage_timeline;
 pub mod decode;
 /// Graph-complete deletion closure of retained imports (FSS-037; effect plane).
 pub mod deletion;
