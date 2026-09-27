@@ -95,3 +95,31 @@ RCH_FAIL_OPEN=0 rch exec -- cargo test -p fss-cli --bin fss-cover
 RCH_FAIL_OPEN=0 rch exec -- cargo clippy -p fss-cli --bin fss-cover -- -D warnings
 cargo fmt --all -- --check
 ```
+
+### End-to-end retained-source harness
+
+`scripts/resilient_cover_cli_e2e.py` drives already-built `fss-file`, `fss-event`,
+and `fss-cover` executables. It imports synthetic static JPEG sources, retains
+coverage using exact native approvals, and checks the resilient command against
+an independent direct observer-set oracle. Every report is also checked against
+its JSON schema and for complete, correctly decoded scenario/zone obligations.
+The harness snapshots deployment bytes and metadata around every selection call.
+
+Cases include overlapping power/network domains, exact versus greedy failure,
+mandatory and excluded sensors, unknown zones/members, a single domain containing
+all sensors, canonical reordering, nominal-command stability, changed-declaration
+input identities, stale source pins, and a later retained sensor whose disjoint
+capture window cannot rescue the original objective. It checks that this later
+sensor remains valid inventory while supplying no support, including when it is
+explicitly mandatory. Oversized matrices are rejected before an absent deployment
+root is read. No live camera, network or external model service is used.
+
+```sh
+RCH_FAIL_OPEN=0 rch exec -- cargo build -p fss-cli --bins
+python3 -B scripts/resilient_cover_cli_e2e.py --bin-dir target/debug
+```
+
+The harness itself refuses to claim success when binaries are missing or Python
+assertions are disabled. Native execution remains **not run** in the authoring
+environment. Its Python syntax and synthetic report-checker self-tests are not
+native pipeline receipts and do not qualify the Rust implementation.
