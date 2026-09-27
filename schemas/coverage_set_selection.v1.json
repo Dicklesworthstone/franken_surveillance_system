@@ -1,0 +1,319 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/coverage_set_selection.v1.json",
+  "title": "Read-only retained evidence set selection v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "format": {
+      "const": "fss.coverage_set_selection.v1"
+    },
+    "site": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "anchor": {
+      "$ref": "evidence_anchor.v1.json"
+    },
+    "capture_window": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "start_ns": {
+          "type": "string",
+          "pattern": "^-?[0-9]+$"
+        },
+        "end_ns": {
+          "type": "string",
+          "pattern": "^-?[0-9]+$"
+        },
+        "endpoints": {
+          "const": "inclusive"
+        },
+        "selection": {
+          "const": "whole-witness-v1"
+        },
+        "clock_alignment": {
+          "const": "operator_hints_not_calibration"
+        }
+      },
+      "required": [
+        "start_ns",
+        "end_ns",
+        "endpoints",
+        "selection",
+        "clock_alignment"
+      ]
+    },
+    "source_coverage_witness": {
+      "$ref": "graph_algorithm_witness.v1.json"
+    },
+    "source_coverage_witness_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "objective": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "required_zones": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "minItems": 1
+        },
+        "mandatory_sensors": {
+          "type": "array",
+          "maxItems": 1024,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "excluded_sensors": {
+          "type": "array",
+          "maxItems": 1024,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "maximum_sensors": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1024
+        },
+        "cost_model": {
+          "const": "one_unit_per_selected_sensor"
+        }
+      },
+      "required": [
+        "required_zones",
+        "mandatory_sensors",
+        "excluded_sensors",
+        "maximum_sensors",
+        "cost_model"
+      ]
+    },
+    "method": {
+      "enum": [
+        "exact_small",
+        "greedy"
+      ]
+    },
+    "status": {
+      "enum": [
+        "covered",
+        "uncoverable",
+        "infeasible_within_limit",
+        "heuristic_incomplete"
+      ]
+    },
+    "objective_covered": {
+      "type": "boolean"
+    },
+    "selected_sensors": {
+      "type": "array",
+      "maxItems": 1024,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      }
+    },
+    "selection_cost_units": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1024
+    },
+    "uncovered_zones": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      }
+    },
+    "uncoverable_zones": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      }
+    },
+    "support_certificate": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "zone_scope": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "sensor_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          }
+        },
+        "required": [
+          "zone_scope",
+          "sensor_id"
+        ]
+      }
+    },
+    "witness": {
+      "$ref": "graph_algorithm_witness.v1.json"
+    },
+    "witness_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "work_budget_scope": {
+      "const": "set_cover_solver_only; source_reader_and_projection_separately_bounded"
+    },
+    "working_bytes_interpretation": {
+      "const": "conservative_charged_workspace_bound_not_measured_allocator_peak"
+    },
+    "authority": {
+      "const": "derived_cognition_no_effect_authority"
+    },
+    "claim": {
+      "const": "selection of retained positive witnesses over one common capture window; not live observability, calibrated clocks, absence, sensor independence, or permission to disable sensors"
+    },
+    "qualification": {
+      "const": "authored_unvalidated_reference_candidate"
+    }
+  },
+  "required": [
+    "format",
+    "site",
+    "anchor",
+    "capture_window",
+    "source_coverage_witness",
+    "source_coverage_witness_digest",
+    "objective",
+    "method",
+    "status",
+    "objective_covered",
+    "selected_sensors",
+    "selection_cost_units",
+    "uncovered_zones",
+    "uncoverable_zones",
+    "support_certificate",
+    "witness",
+    "witness_digest",
+    "work_budget_scope",
+    "working_bytes_interpretation",
+    "authority",
+    "claim",
+    "qualification"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "covered"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "objective_covered": {
+            "const": true
+          },
+          "uncovered_zones": {
+            "maxItems": 0
+          },
+          "uncoverable_zones": {
+            "maxItems": 0
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "objective_covered": {
+            "const": false
+          },
+          "uncovered_zones": {
+            "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "heuristic_incomplete"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "method": {
+            "const": "greedy"
+          },
+          "uncoverable_zones": {
+            "maxItems": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "infeasible_within_limit"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "method": {
+            "const": "exact_small"
+          },
+          "uncoverable_zones": {
+            "maxItems": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "uncoverable"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "uncoverable_zones": {
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ]
+}

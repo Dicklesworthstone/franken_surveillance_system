@@ -59,6 +59,10 @@ path = "src/bin/fss-replay.rs"
 name = "fss-export"
 path = "src/bin/fss-export.rs"
 
+[[bin]]
+name = "fss-cover"
+path = "src/bin/fss-cover.rs"
+
 [dependencies]
 fss-core = { path = "../fss-core" }
 fss-graph-algorithms = { path = "../fss-graph-algorithms" }
