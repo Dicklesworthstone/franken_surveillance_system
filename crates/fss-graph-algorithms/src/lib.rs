@@ -27,6 +27,7 @@ pub mod coverage;
 pub mod failure_domains;
 pub mod graph;
 pub mod reference;
+pub mod resilient_cover;
 pub mod registry;
 /// Bounded unit-cost set cover with exact-small and explicitly heuristic selection.
 pub mod set_cover;

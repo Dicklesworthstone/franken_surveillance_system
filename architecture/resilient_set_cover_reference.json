@@ -1,0 +1,41 @@
+{
+  "schema": "fss.resilient_set_cover_reference_contract.v1",
+  "requirementId": "FSS-160",
+  "algorithmId": "ALG-SETCOVER-001",
+  "status": "authored_unvalidated_reference_candidate",
+  "inputDomain": "fss.graph.resilient_set_cover_input.v1",
+  "reduction": "one context-bound obligation per baseline-or-single-domain-loss and requested zone",
+  "selection": "one shared selection across all obligations; unit cost per selected sensor",
+  "failureSemantics": "each declared domain independently; its complete member set is removed simultaneously",
+  "notClaimed": [
+    "joint failures of different domains",
+    "domain completeness",
+    "physical independence",
+    "live observability",
+    "effect authority",
+    "native Rust validation",
+    "INT-FNX-001 qualification"
+  ],
+  "limits": {
+    "declaredDomains": 16,
+    "totalExpandedObligations": 64,
+    "sensors": 1024,
+    "exactOptionalSensors": 20
+  },
+  "inputBinding": [
+    "complete source witness-count facts",
+    "site plane",
+    "all requested zones",
+    "all mandatory and excluded sensors",
+    "maximum sensors",
+    "every domain kind, label and member"
+  ],
+  "solverBudget": "existing CoverBudget applies to the expanded solver; reduction construction is separately structurally bounded",
+  "certificate": "resolve each element through ResilientCoverProblem::obligation; the failed domain and zone are explicit",
+  "operatorIntegration": "library API only; fss-cover select remains nominal selection",
+  "sources": [
+    "crates/fss-graph-algorithms/src/resilient_cover.rs",
+    "crates/fss-graph-algorithms/tests/resilient_cover_contract.rs"
+  ],
+  "modelCheck": "scripts/resilient_cover_model_check.py; independent finite model, not Rust execution"
+}
