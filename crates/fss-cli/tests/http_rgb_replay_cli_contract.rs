@@ -19,7 +19,7 @@ use fss_reference::ingest::rgb_evidence::RgbEvidenceBudget;
 use fss_twin::image_tracking::ImageTrackingPolicy;
 use fss_twin::image_zones::{ImageZoneBasis, ImageZonePolicy, ImageZoneSpec};
 
-type Test<T = ()> = Result<T, Box<dyn Error>>;
+type Test<T = ()> = std::result::Result<T, Box<dyn Error>>;
 const REPLAY: &str = env!("CARGO_BIN_EXE_fss-replay");
 const SITE: &str = "site:history-replay-cli";
 struct Directory(PathBuf);
@@ -164,3 +164,6 @@ fn actual_cli_discovers_and_replays_configuration_without_claiming_inference_or_
     cx.drain_and_finalize();
     Ok(())
 }
+
+#[path = "http_rgb_replay_cli_contract/scoped.rs"]
+mod scoped;

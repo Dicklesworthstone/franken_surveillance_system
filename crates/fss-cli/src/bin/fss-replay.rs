@@ -19,6 +19,9 @@ use fss_reference::ingest::http_rgb_history::{HistoryAuthority, HistoryLimits, H
 use fss_reference::ingest::http_rgb_history_replay::*;
 use fss_reference::ingest::rgb_archive::{RgbArchiveAuthority, RgbArchiveOperation};
 
+#[path = "fss-replay/selection.rs"]
+mod selection;
+
 type Run<T> = Result<T, Box<dyn Error>>;
 const HELP: &str = "fss-replay inspect-http-rgb --root EXISTING_DEPLOYMENT --site SITE --session sha256:HEX\n\
 fss-replay http-rgb --root EXISTING_DEPLOYMENT --site SITE --session sha256:HEX\n\
@@ -34,6 +37,8 @@ Replay bounds: --max-frames N --max-steps N --read-bytes N --max-copy-work N\n\
   --max-import-work N --max-decode-work N --max-framing-work N --max-head-work N\n\
   --max-temporal-work N --max-attempts N --stage-macs N --stage-bytes N\n\
   --max-execution-macs N\n\
+Optional original tip: --wire-head sha256:HEX --wire-reads N --wire-bytes N (all three).\n\
+Optional current privacy authority: --privacy-root EXISTING_DIR --privacy-site SITE.\n\
 Stage ceilings apply independently to preprocessing and execution. Their sum is reserved\n\
 per attempt against the whole-session execution allowance, not reported as measured work.\n\
 Existing exclusive locks/recovery sync apply. Deadlines are checked between native stages;\n\
@@ -47,6 +52,7 @@ struct Options {
     session: ContentDigest,
     expected: Option<HttpRgbHistoryTip>,
     original: Option<PathBuf>,
+    selection: selection::Selection,
     timeout: Duration,
     report_bytes: usize,
     maximum_frames: usize,
@@ -73,7 +79,8 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
     let common = ["--root", "--site", "--session", "--principal", "--timeout-ms", "--max-work", "--max-report-bytes"];
     let replay = ["--expected-root", "--expected-revision", "--original-root", "--read-originals", "--execute-model", "--max-frames", "--max-steps", "--read-bytes",
         "--max-copy-work", "--max-import-work", "--max-decode-work", "--max-framing-work", "--max-head-work", "--max-temporal-work",
-        "--max-attempts", "--stage-macs", "--stage-bytes", "--max-execution-macs"];
+        "--max-attempts", "--stage-macs", "--stage-bytes", "--max-execution-macs",
+        "--privacy-root", "--privacy-site", "--wire-head", "--wire-reads", "--wire-bytes"];
     let mut values: BTreeMap<&str, &OsStr> = BTreeMap::new();
     for pair in args[1..].chunks(2) {
         let key = pair[0].to_str().ok_or("option requires UTF-8")?;
@@ -115,6 +122,7 @@ fn parse(args: &[OsString]) -> Result<Options, String> {
     } else { (None, None) };
     Ok(Options {
         root, site, principal, session, expected, original,
+        selection: selection::Selection::parse(&values)?,
         timeout: Duration::from_millis(number("--timeout-ms", 60_000, 1, 3_600_000)?),
         report_bytes: number("--max-report-bytes", 1024 * 1024, 1024, 16 * 1024 * 1024)? as usize,
         maximum_frames: number("--max-frames", 64, 1, 64)? as usize,
@@ -214,6 +222,7 @@ fn usage(u: ReplayUsage) -> String {
 }
 fn run_with(o: &Options, root: &Path, original: Option<&Path>, cx: &ReplayCx, clock: &Clock) -> Run<String> {
     if !clock.alive() { return Err(ReplayError::Denied.into()); }
+    let privacy = o.selection.open_privacy(root, original, &o.principal, clock)?;
     let auth = HistoryRead { session: o.session, clock };
     let mut deployment = ReferenceDeployment::reopen(root, &o.site, cx)?;
     let mut budget = ReplayBudget::new(ReplayAllowance {
@@ -229,6 +238,8 @@ fn run_with(o: &Options, root: &Path, original: Option<&Path>, cx: &ReplayCx, cl
         let evidence = EvidenceRead { retention: selected.config().spec().retention,
             evidence: selected.frames().iter().map(|p| p.archive.evidence).collect(), clock };
         let execution = Execute { session: o.session, model: selected.config().spec().model, clock };
+        let wire_tip = o.selection.wire_tip(selected.config().spec().source.digest()?);
+        let privacy = privacy.as_ref().map_or(ReplayPrivacy::HistoryDeployment, |p| ReplayPrivacy::External(&p.deployment));
         let storage = LocalPublicationLimits::new(8192, MAX_MANIFEST_CHILDREN, 8192, 65536,
             SpoolLimits::new(65536, 1024 * 1024 * 1024, 16 * 1024 * 1024, 65536));
         if !clock.alive() { return Err(ReplayError::Denied.into()); }
@@ -241,8 +252,8 @@ fn run_with(o: &Options, root: &Path, original: Option<&Path>, cx: &ReplayCx, cl
         limits.execution.run.preprocess = stage;
         limits.execution.run.execution = stage;
         let scalar = ScalarExecCx::new();
-        let replayed = replay_history(&mut deployment, ReplaySource { publisher: &publisher, tip: None },
-            expected, ReplayPrivacy::HistoryDeployment, limits,
+        let replayed = replay_history(&mut deployment, ReplaySource { publisher: &publisher, tip: wire_tip },
+            expected, privacy, limits,
             ReplayAccess { history: &auth, evidence: &evidence, originals: clock, execution: &execution },
             &mut budget, cx, &scalar);
         scalar.drain_and_finalize();

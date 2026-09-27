@@ -33,7 +33,7 @@ scope, and the compute adapter permits only this session's model. A digest is no
 The driver reconstructs every selected frame with the native HTTP/MIME, source-closed model,
 JPEG, detector, tracker and zone implementations. Every saved stage fingerprint must match.
 The sensor comes from committed configuration and its current policy is resolved in the
-history deployment. No mask override or caller-supplied capture time exists. Changed latest
+history deployment by default. No mask override or caller-supplied capture time exists. Changed latest
 history is stale, not an instruction to follow it. Pending roots are not executed or repaired.
 
 Results retain the native distinctions `configuration_only`, `prefix_verified`, and
@@ -47,9 +47,32 @@ The original archive is selected by the pin retained in history. The paths must 
 existing, non-symlink at their final components, and nonoverlapping after canonical resolution.
 No replacement empty deployment/archive is created for a missing store. Existing exclusive
 locks and recovery synchronization still apply; this is not a forensic no-sync open.
-This first CLI surface selects the history deployment's privacy authority and the history's
-original pin. External privacy authority or independently retained later original tips can
-be supplied through the underlying library, not inferred by this command.
+Defaults select the history deployment's privacy authority and the history's original pin.
+For a recording whose masks live in another deployment, explicitly add both:
+
+```sh
+--privacy-root "$POLICY_DEPLOYMENT" --privacy-site "$POLICY_SITE"
+```
+
+The current named sensor remains the one in committed configuration. The external store must
+already exist, have the expected site, and be disjoint from both other stores after canonical
+resolution. Missing, wrong-site or aliased authority fails before reconstruction; there is no
+fallback to a convenient no-policy store. Results bind the actual privacy site and anchor.
+The external context is drained on success and on every refusal.
+
+For a committed frame prefix whose original archive has advanced, supply the independently
+saved original head and counts together:
+
+```sh
+--wire-head "$ORIGINAL_HEAD" --wire-reads "$ORIGINAL_READS" --wire-bytes "$ORIGINAL_BYTES"
+```
+
+The original source scope still comes from the committed configuration, not another flag.
+The native driver requires each historical frame pin to belong to this exact selected tip;
+rival or shortened tips are refused. A complete history requires its exact completion pin,
+so these flags cannot extend a completed recording. No newer head is discovered implicitly,
+and lookahead frames in a later tip are not executed beyond the selected history. A
+configuration-only history cannot acquire invented originals through these flags.
 
 ## Resource and effect boundaries
 
@@ -82,9 +105,10 @@ cargo test -p fss-cli --test http_rgb_replay_cli_contract
 cargo test -p fss-reference --test http_rgb_history_replay_contract
 ```
 
-Eight CLI unit tests and three real-binary metadata/configuration contracts accompany this
-integration. Full numerical reconstruction is covered by the existing reference integration
-suite. Source API compatibility, exact base/blob hashes, TOML, lexical delimiters and
+Fourteen CLI unit tests and seven real-binary metadata/configuration contracts accompany this
+integration, including external policy ownership, missing/wrong/aliased stores and explicit
+source-pin refusal for an empty history. Full numerical reconstruction is covered by the
+existing reference integration suite. Source API compatibility, exact base/blob hashes, TOML, lexical delimiters and
 whitespace were checked; Rust compilation, tests, rustfmt and Clippy could not run because the
 authoring environment has no Rust toolchain. These checks are not production qualification.
 This consumes existing RGB histories; it does not fabricate detector evidence from a
