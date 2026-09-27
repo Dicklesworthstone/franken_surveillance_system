@@ -485,6 +485,18 @@ or drifted IDs are rejected by the policy lane (`scripts/check-policy.py`).
 | `DEP-AUD-047` | error | a crate recorded under an open owner decision in dependency_allowlist.toml [pending_owner_decisions] is declared in a manifest or present in Cargo.lock or resolved metadata | keep the crate out of every manifest and Cargo.lock until the owner decision (for example fss-ndxis) is recorded; it is neither admitted nor rejected meanwhile | `GATE-000`, `QL-POLICY-001` | await the owner decision before re-running qualification |
 | `DEP-AUD-048` | error | a [patch] or [replace] entry in a Cargo manifest or .cargo/config points at a path outside the repository or at a git source | remove the out-of-repo or git [patch]/[replace] entry; the frozen closed universe admits only in-repository path sources and the pinned registry | `GATE-000`, `QL-POLICY-001` | await the owner decision before re-running qualification |
 
+## Evidence export errors
+
+| ID | Meaning | Retry policy |
+|---|---|---|
+| `ERR-EXPORT-REQUEST-001` | event export request is malformed, unbounded, or has expiry not later than the event interval | correct the exact event/recipient/purpose/expiry and preview again |
+| `ERR-EXPORT-REVISION-STALE-001` | selected event revision is no longer current | read the current event and preview a new export |
+| `ERR-EXPORT-APPROVAL-STALE-001` | approval does not bind the exact current redacted export | preview and approve the exact package |
+| `ERR-EXPORT-CUSTODY-001` | retained export/event custody differs from the approved package | stop export and inspect deployment custody |
+| `ERR-EXPORT-BOUND-001` | complete redacted export exceeds a registered bound | narrow the supported export request; nothing is truncated |
+| `ERR-EXPORT-CANCELLED-001` | export was cancelled before its authoritative commit | retry the exact request after reconciling any published root |
+| `ERR-EXPORT-STORAGE-001` | local root-last export publication or authority append failed | inspect local custody/recovery before retrying |
+
 ## Process exit identity registry (EXIT)
 
 Stable process exit identities map command-line interface outcomes to deterministic exit codes and registered identities.
