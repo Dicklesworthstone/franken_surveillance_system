@@ -11,8 +11,9 @@
 //! Fixed parameters and the bundle's gauge remain conditioning assumptions.
 
 use crate::{
-    AdjustedCamera, BundleParameter, CAMERA_BLOCK_PARAMETERS, CameraGeneration, GeometryError,
-    WorkBudget,
+    AdjustedCamera, BundleAdjustment, BundleGaugeChoice, BundleParameter, BundleValidity,
+    CAMERA_BLOCK_PARAMETERS, CameraGeneration, CameraInvalidation, GeometryBasis, GeometryError,
+    MAX_BUNDLE_CAMERAS, WorkBudget,
 };
 
 const N: usize = CAMERA_BLOCK_PARAMETERS;
@@ -27,6 +28,14 @@ pub enum ProjectionUncertaintyError {
     Geometry(GeometryError),
     /// A camera / intrinsics / extrinsics handle was zero.
     InvalidGeneration,
+    /// The bounded current-dependency set contains duplicate or zero handles.
+    InvalidDependencySet,
+    /// At least one dependency of the joint solve changed or disappeared.
+    InvalidatedBundle(Vec<CameraInvalidation>),
+    /// The requested camera did not participate in the joint solve.
+    UnknownCamera(u64),
+    /// The linearized contour multiplier must be finite and in `(0, 1e6]`.
+    InvalidSigmaMultiplier,
     /// The caller's current generation is not the estimate's generation.
     GenerationMismatch {
         /// Generation used by the estimate.
@@ -58,6 +67,10 @@ impl std::fmt::Display for ProjectionUncertaintyError {
         match self {
             Self::Geometry(error) => std::fmt::Display::fmt(error, f),
             Self::InvalidGeneration => f.write_str("zero camera generation handle"),
+            Self::InvalidDependencySet => f.write_str("invalid current bundle dependency set"),
+            Self::InvalidatedBundle(changes) => write!(f, "bundle uncertainty invalidated: {changes:?}"),
+            Self::UnknownCamera(camera) => write!(f, "camera {camera} absent from bundle"),
+            Self::InvalidSigmaMultiplier => f.write_str("invalid linearized contour multiplier"),
             Self::GenerationMismatch { estimated, current } => write!(
                 f,
                 "camera uncertainty generation mismatch: {estimated:?} != {current:?}"
@@ -82,6 +95,8 @@ pub struct CameraProjectionUncertainty {
     world_point: [f64; 3],
     pixel: [f64; 2],
     covariance: [[f64; 2]; 2],
+    camera_depth: f64,
+    depth_variance: f64,
     fixed_parameters: Vec<BundleParameter>,
 }
 impl CameraProjectionUncertainty {
@@ -104,6 +119,14 @@ impl CameraProjectionUncertainty {
     /// Full symmetric `J Sigma J^T` in squared pixels, including correlation.
     pub fn covariance_px2(&self) -> [[f64; 2]; 2] {
         self.covariance
+    }
+    /// Mean optical-axis depth, in the declared world units.
+    pub fn camera_depth(&self) -> f64 {
+        self.camera_depth
+    }
+    /// Conditional variance of optical-axis depth, in squared world units.
+    pub fn depth_variance(&self) -> f64 {
+        self.depth_variance
     }
     /// Original solver declarations, not evidence of zero physical uncertainty.
     /// With aspect-held `Focal`, the fixed `Fy` slot means the aspect is held:
@@ -170,13 +193,22 @@ impl AdjustedCamera {
         let [fx, fy] = self.intrinsics.focal_lengths();
         // Compute A = J L, then A A^T. The positive factor avoids cancellation
         // producing negative output variances for valid strongly correlated inputs.
-        let mut a = [[0.0; N]; 2];
+        let camera_depth = self.pose.transform(world_point)?[2];
+        let rotation = self.pose.rotation();
+        let rotate = |row: usize| -> f64 {
+            rotation[row].iter().zip(world_point).map(|(r, w)| r * w).sum()
+        };
+        let mut depth_jacobian = [0.0; N];
+        depth_jacobian[0] = rotate(1);
+        depth_jacobian[1] = -rotate(0);
+        depth_jacobian[5] = 1.0;
+        let mut a = [[0.0; N]; 3];
         for (i, &parameter) in self.covariance.parameters.iter().enumerate() {
             let slot = parameter_slot(parameter)?;
             let column = if parameter == BundleParameter::Focal {
-                [jacobian[0][6], jacobian[1][7] * (fy / fx)]
+                [jacobian[0][6], jacobian[1][7] * (fy / fx), 0.0]
             } else {
-                [jacobian[0][slot], jacobian[1][slot]]
+                [jacobian[0][slot], jacobian[1][slot], depth_jacobian[slot]]
             };
             for (row, output) in a.iter_mut().enumerate() {
                 for (j, cell) in output.iter_mut().enumerate().take(i + 1) {
@@ -190,7 +222,8 @@ impl AdjustedCamera {
         let xx = dot(&a[0], &a[0]);
         let xy = dot(&a[0], &a[1]);
         let yy = dot(&a[1], &a[1]);
-        if [xx, xy, yy].iter().any(|v| !v.is_finite()) {
+        let depth_variance = dot(&a[2], &a[2]);
+        if [xx, xy, yy, depth_variance].iter().any(|v| !v.is_finite()) {
             return Err(GeometryError::NonFinite.into());
         }
         budget.charge(0)?;
@@ -200,6 +233,8 @@ impl AdjustedCamera {
             world_point,
             pixel,
             covariance: [[xx, xy], [xy, yy]],
+            camera_depth,
+            depth_variance,
             fixed_parameters: self.covariance.fixed.clone(),
         })
     }
@@ -338,6 +373,170 @@ fn projection_jacobian(
         return Err(GeometryError::NonFinite.into());
     }
     Ok((pixel, jacobian))
+}
+
+
+/// Fixed reference charge for validating the at-most-32-camera dependency set.
+pub const BUNDLE_UNCERTAINTY_VALIDATION_WORK_UNITS: u64 = 4_096;
+/// Fixed reference charge for a linearized image/depth contour assessment.
+pub const FRUSTUM_UNCERTAINTY_WORK_UNITS: u64 = 64;
+
+/// A projected estimate bound to the joint solve's complete generation dependencies.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BundleProjectionUncertainty {
+    basis: GeometryBasis,
+    gauge: BundleGaugeChoice,
+    dependencies: Vec<CameraGeneration>,
+    observation_sigma_px: (f64, bool),
+    projection: CameraProjectionUncertainty,
+}
+impl BundleProjectionUncertainty {
+    /// Property and immutable twin revision checked against the caller's current basis.
+    pub fn basis(&self) -> GeometryBasis {
+        self.basis
+    }
+    /// Gauge held by the solve; its reference / survey accuracy is NOT in this covariance.
+    pub fn gauge(&self) -> BundleGaugeChoice {
+        self.gauge
+    }
+    /// All joint-solve dependencies, in canonical camera order.
+    pub fn dependencies(&self) -> &[CameraGeneration] {
+        &self.dependencies
+    }
+    /// Observation sigma and whether it was estimated from residuals, not externally supplied.
+    pub fn observation_sigma_px(&self) -> (f64, bool) {
+        self.observation_sigma_px
+    }
+    /// Conditional pixel and depth estimate, retaining its fixed-parameter assumptions.
+    pub fn projection(&self) -> &CameraProjectionUncertainty {
+        &self.projection
+    }
+}
+
+impl BundleAdjustment {
+    /// Project one held-exact world point after checking the entire joint solve.
+    ///
+    /// `current` is the authority-resolved generation set for this solve's camera
+    /// dependencies, not an unbounded inventory of the deployment. Extra entries
+    /// are harmless within the hard limit; missing, duplicate or stale entries are
+    /// not. The caller must invalidate `current_basis` when survey/control geometry
+    /// changes. No cross-camera or camera/landmark covariance is invented.
+    pub fn project_camera_uncertainty(
+        &self,
+        camera: u64,
+        current_basis: GeometryBasis,
+        current: &[CameraGeneration],
+        world_point: [f64; 3],
+        budget: &mut WorkBudget<'_>,
+    ) -> Result<BundleProjectionUncertainty, ProjectionUncertaintyError> {
+        budget.charge(0)?;
+        if current.len() > MAX_BUNDLE_CAMERAS {
+            return Err(ProjectionUncertaintyError::InvalidDependencySet);
+        }
+        if current_basis != self.basis() {
+            return Err(GeometryError::BasisMismatch.into());
+        }
+        budget.charge(BUNDLE_UNCERTAINTY_VALIDATION_WORK_UNITS)?;
+        for (i, generation) in current.iter().enumerate() {
+            if generation.camera == 0 || generation.intrinsics == 0 || generation.extrinsics == 0
+                || current[..i].iter().any(|other| other.camera == generation.camera)
+            {
+                return Err(ProjectionUncertaintyError::InvalidDependencySet);
+            }
+        }
+        if let BundleValidity::Invalidated(changes) = self.validity(current) {
+            return Err(ProjectionUncertaintyError::InvalidatedBundle(changes));
+        }
+        let adjusted = self.camera(camera).ok_or(ProjectionUncertaintyError::UnknownCamera(camera))?;
+        // Equality with the caller-resolved set was established above for every dependency.
+        let projection = adjusted.project_uncertainty(adjusted.identity, world_point, budget)?;
+        budget.charge(0)?;
+        Ok(BundleProjectionUncertainty {
+            basis: self.basis(),
+            gauge: self.gauge(),
+            dependencies: self.dependencies(),
+            observation_sigma_px: self.observation_sigma_px(),
+            projection,
+        })
+    }
+}
+
+/// Relation of an axis-aligned enclosure of a LOCAL LINEARIZED contour to the image.
+/// These names describe that enclosure only, never physical observability or absence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LinearizedFrustumRelation {
+    /// The whole linearized enclosure is inside the half-open image domain.
+    Inside,
+    /// The enclosure is wholly beyond at least one image edge.
+    Outside,
+    /// The enclosure meets an image edge; the mean alone cannot decide membership.
+    Boundary,
+    /// The depth contour reaches the camera plane, where perspective linearization
+    /// cannot support an inside/outside assessment, even with zero pixel variance.
+    CrossesCameraPlane,
+}
+
+/// Axis-aligned enclosure of a sigma-scaled linearized contour, never a calibrated
+/// confidence interval. A two-dimensional contour multiplier is not a 1D tail probability.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LinearizedFrustumAssessment {
+    /// Multiplier supplied by the caller, not selected from a hidden policy.
+    pub sigma_multiplier: f64,
+    /// Inclusive per-axis minima in declared raw pixel coordinates; never clipped.
+    pub pixel_min: [f64; 2],
+    /// Inclusive per-axis maxima; the IMAGE's upper edges remain exclusive.
+    pub pixel_max: [f64; 2],
+    /// Inclusive depth bounds, in the geometry's declared world units.
+    pub depth_interval: [f64; 2],
+    /// Typed conditional relation; cannot be promoted to a `CoverageWitness`.
+    pub relation: LinearizedFrustumRelation,
+}
+
+impl CameraProjectionUncertainty {
+    /// Assess an explicit sigma-scaled local contour without substituting a mean
+    /// point for uncertain image membership. Occlusion, privacy, timing, point
+    /// uncertainty, model error and detection quality remain outside this method.
+    /// Even `Inside` does not establish physical visibility or authorize negative evidence.
+    pub fn linearized_frustum(
+        &self,
+        sigma_multiplier: f64,
+        budget: &mut WorkBudget<'_>,
+    ) -> Result<LinearizedFrustumAssessment, ProjectionUncertaintyError> {
+        budget.charge(0)?;
+        if !sigma_multiplier.is_finite() || sigma_multiplier <= 0.0 || sigma_multiplier > 1e6 {
+            return Err(ProjectionUncertaintyError::InvalidSigmaMultiplier);
+        }
+        budget.charge(FRUSTUM_UNCERTAINTY_WORK_UNITS)?;
+        let radius = [
+            sigma_multiplier * self.covariance[0][0].sqrt(),
+            sigma_multiplier * self.covariance[1][1].sqrt(),
+        ];
+        let pixel_min = [self.pixel[0] - radius[0], self.pixel[1] - radius[1]];
+        let pixel_max = [self.pixel[0] + radius[0], self.pixel[1] + radius[1]];
+        let depth_radius = sigma_multiplier * self.depth_variance.sqrt();
+        let depth_interval = [self.camera_depth - depth_radius, self.camera_depth + depth_radius];
+        if pixel_min.iter().chain(&pixel_max).chain(&depth_interval).any(|v| !v.is_finite()) {
+            return Err(GeometryError::NonFinite.into());
+        }
+        let [width, height] = self.dimensions.map(f64::from);
+        let relation = if depth_interval[0] <= 1e-9 {
+            LinearizedFrustumRelation::CrossesCameraPlane
+        } else if pixel_max[0] < 0.0 || pixel_max[1] < 0.0
+            || pixel_min[0] >= width || pixel_min[1] >= height
+        {
+            LinearizedFrustumRelation::Outside
+        } else if pixel_min[0] >= 0.0 && pixel_min[1] >= 0.0
+            && pixel_max[0] < width && pixel_max[1] < height
+        {
+            LinearizedFrustumRelation::Inside
+        } else {
+            LinearizedFrustumRelation::Boundary
+        };
+        budget.charge(0)?;
+        Ok(LinearizedFrustumAssessment {
+            sigma_multiplier, pixel_min, pixel_max, depth_interval, relation,
+        })
+    }
 }
 
 #[cfg(test)]

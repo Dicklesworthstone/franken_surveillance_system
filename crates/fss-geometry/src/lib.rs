@@ -6,7 +6,9 @@
 //! files nor certifies that supplied geometry is physically correct. Cameras use
 //! explicitly undistorted pinhole pixel-edge coordinates, with pixel centers at
 //! `(column + 0.5, row + 0.5)`. Distorted or dewarped images need a separately
-//! qualified conversion before entering this interface.
+//! qualified conversion before entering this interface. Bundle camera uncertainty
+//! projections are an explicit exception: they evaluate the bundle's declared
+//! radial model and label their output in that raw image domain.
 
 mod bundle;
 mod camera;
@@ -59,7 +61,9 @@ pub use registration::{
 };
 
 pub use uncertainty::{
-    CAMERA_UNCERTAINTY_WORK_UNITS, CameraProjectionUncertainty, ProjectionUncertaintyError,
+    BUNDLE_UNCERTAINTY_VALIDATION_WORK_UNITS, BundleProjectionUncertainty,
+    CAMERA_UNCERTAINTY_WORK_UNITS, CameraProjectionUncertainty, FRUSTUM_UNCERTAINTY_WORK_UNITS,
+    LinearizedFrustumAssessment, LinearizedFrustumRelation, ProjectionUncertaintyError,
 };
 
 /// Error returned by every fallible operation in this crate.

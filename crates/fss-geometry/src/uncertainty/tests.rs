@@ -244,3 +244,179 @@ fn invalid_geometry_does_not_become_a_zero_variance_projection() {
     invalid.distortion.k1 = f64::INFINITY;
     assert!(estimate(&invalid).is_err());
 }
+
+fn frustum_at(pixel: [f64; 2], variance: f64, multiplier: f64) -> LinearizedFrustumAssessment {
+    let mut input = camera(vec![BundleParameter::Cx, BundleParameter::Cy], vec![variance, 0.0, 0.0, variance]);
+    input.intrinsics = PinholeIntrinsics::new(640, 480, 800.0, 900.0, pixel[0], pixel[1]).unwrap();
+    let projection = input.project_uncertainty(
+        input.identity, [0.0, 0.0, 10.0], &mut WorkBudget::new(100_000),
+    ).unwrap();
+    projection.linearized_frustum(multiplier, &mut WorkBudget::new(FRUSTUM_UNCERTAINTY_WORK_UNITS)).unwrap()
+}
+
+#[test]
+fn frustum_keeps_half_open_edges_and_uncertain_membership_distinct() {
+    use LinearizedFrustumRelation::{Boundary, Inside, Outside};
+    for (pixel, variance, expected) in [
+        ([320.0, 240.0], 1.0, Inside),
+        ([0.0, 0.0], 0.0, Inside),
+        ([640.0, 240.0], 0.0, Outside),
+        ([320.0, 480.0], 0.0, Outside),
+        ([0.0, 240.0], 1.0, Boundary),
+        ([639.0, 240.0], 1.0, Boundary),
+        ([-1.0, 240.0], 1.0, Boundary),
+        ([-2.0, 240.0], 1.0, Outside),
+        ([641.0, 240.0], 1.0, Outside),
+    ] {
+        let result = frustum_at(pixel, variance, 1.0);
+        assert_eq!(result.relation, expected, "pixel {pixel:?}, variance {variance}");
+    }
+    let result = frustum_at([0.0, 240.0], 1.0, 3.0);
+    assert_eq!(result.pixel_min, [-3.0, 237.0]);
+    assert_eq!(result.pixel_max, [3.0, 243.0]);
+    assert_eq!(result.sigma_multiplier, 3.0);
+}
+
+#[test]
+fn depth_crossing_camera_plane_overrides_zero_pixel_variance() {
+    let input = camera(vec![BundleParameter::Translation(2)], vec![100.0]);
+    let output = input.project_uncertainty(
+        input.identity, [0.0, 0.0, 10.0], &mut WorkBudget::new(100_000),
+    ).unwrap();
+    assert_eq!(output.covariance_px2(), [[0.0; 2]; 2]);
+    assert_eq!(output.camera_depth(), 10.0);
+    close(output.depth_variance(), 100.0);
+    let crossing = output.linearized_frustum(1.0, &mut WorkBudget::new(100_000)).unwrap();
+    assert_eq!(crossing.depth_interval, [0.0, 20.0]);
+    assert_eq!(crossing.relation, LinearizedFrustumRelation::CrossesCameraPlane);
+    let interior = output.linearized_frustum(0.5, &mut WorkBudget::new(100_000)).unwrap();
+    assert_eq!(interior.relation, LinearizedFrustumRelation::Inside);
+}
+
+#[test]
+fn depth_covariance_keeps_rotation_translation_correlation() {
+    use BundleParameter::{Rotation, Translation};
+    // At identity R, dz/dwx = world_y = 1 and dz/dtz = 1.
+    let input = camera(vec![Rotation(0), Translation(2)], vec![1.0, -0.5, -0.5, 1.0]);
+    let output = estimate(&input).unwrap();
+    close(output.depth_variance(), 1.0); // 1 + 1 - 2 * 0.5, not diagonal-only 2.
+}
+
+#[test]
+fn frustum_scale_and_budget_are_explicit() {
+    let output = estimate(&camera(vec![], vec![])).unwrap();
+    for scale in [0.0, -1.0, f64::NAN, f64::INFINITY, 1e6 + 1.0] {
+        let mut budget = WorkBudget::new(0);
+        assert_eq!(output.linearized_frustum(scale, &mut budget), Err(ProjectionUncertaintyError::InvalidSigmaMultiplier));
+        assert_eq!(budget.used(), 0);
+    }
+    let mut short = WorkBudget::new(FRUSTUM_UNCERTAINTY_WORK_UNITS - 1);
+    assert_eq!(output.linearized_frustum(1.0, &mut short), Err(GeometryError::BudgetExhausted.into()));
+    assert_eq!(short.used(), 0);
+    let flag = AtomicBool::new(true);
+    let mut cancelled = WorkBudget::cancellable(100_000, &flag);
+    assert_eq!(output.linearized_frustum(1.0, &mut cancelled), Err(GeometryError::Cancelled.into()));
+}
+
+fn solved_bundle() -> BundleAdjustment {
+    use crate::{
+        AnchoredBundleProblem, BundleCamera, BundleControlPoint, BundleObservation,
+        BundleOptions, IntrinsicsRefinement, bundle_adjust_anchored,
+    };
+    let base = camera(vec![], vec![]);
+    let cameras: Vec<_> = (0..2).map(|i| BundleCamera {
+        identity: CameraGeneration { camera: i + 1, ..base.identity },
+        intrinsics: base.intrinsics,
+        distortion: RadialDistortion::NONE,
+        pose: RigidPose::IDENTITY.left_perturbed([0.0; 3], [-(i as f64) * 0.5, 0.0, 0.0]).unwrap(),
+        refinement: IntrinsicsRefinement::FIXED,
+    }).collect();
+    let mut control_points = Vec::new();
+    for z in [5.0, 8.0] {
+        for y in [-1.0, 1.0] {
+            for x in [-1.0, 1.0] {
+                control_points.push(BundleControlPoint {
+                    landmark: control_points.len() as u64 + 1,
+                    position: [x, y, z],
+                });
+            }
+        }
+    }
+    let mut observations = Vec::new();
+    for camera in &cameras {
+        for point in &control_points {
+            observations.push(BundleObservation {
+                camera: camera.identity.camera,
+                landmark: point.landmark,
+                pixel: camera.pose.project(camera.intrinsics, point.position).unwrap(),
+            });
+        }
+    }
+    bundle_adjust_anchored(
+        &AnchoredBundleProblem {
+            basis: GeometryBasis::new(1, 1).unwrap(),
+            cameras,
+            landmarks: vec![],
+            control_points,
+            observations,
+            gauge: BundleGaugeChoice::ControlPoints,
+        },
+        BundleOptions { observation_sigma_px: Some(1.0), ..BundleOptions::default() },
+        &mut WorkBudget::new(1_000_000_000),
+    ).unwrap()
+}
+
+#[test]
+fn solved_bundle_flows_through_generation_checked_projection_and_frustum() {
+    let bundle = solved_bundle();
+    let current = bundle.dependencies();
+    let mut budget = WorkBudget::new(
+        BUNDLE_UNCERTAINTY_VALIDATION_WORK_UNITS + CAMERA_UNCERTAINTY_WORK_UNITS + FRUSTUM_UNCERTAINTY_WORK_UNITS,
+    );
+    let result = bundle.project_camera_uncertainty(1, bundle.basis(), &current, [0.0, 0.0, 6.0], &mut budget).unwrap();
+    assert_eq!(result.basis(), bundle.basis());
+    assert_eq!(result.dependencies(), current);
+    assert_eq!(result.gauge(), BundleGaugeChoice::ControlPoints);
+    assert_eq!(result.observation_sigma_px(), (1.0, false));
+    assert_eq!(result.projection().pixel(), [320.0, 240.0]);
+    assert!(result.projection().covariance_px2()[0][0] > 0.0);
+    let frustum = result.projection().linearized_frustum(3.0, &mut budget).unwrap();
+    assert_eq!(frustum.relation, LinearizedFrustumRelation::Inside);
+    assert_eq!(budget.remaining(), 0);
+}
+
+#[test]
+fn changing_a_different_camera_invalidates_a_joint_projection() {
+    let bundle = solved_bundle();
+    let mut current = bundle.dependencies();
+    current[1].intrinsics += 1;
+    let result = bundle.project_camera_uncertainty(1, bundle.basis(), &current, [0.0, 0.0, 6.0], &mut WorkBudget::new(100_000));
+    assert!(matches!(result, Err(ProjectionUncertaintyError::InvalidatedBundle(ref changes)) if changes.len() == 1 && changes[0].camera == 2));
+    current[1].intrinsics -= 1;
+    let missing = bundle.project_camera_uncertainty(1, bundle.basis(), &current[..1], [0.0, 0.0, 6.0], &mut WorkBudget::new(100_000));
+    assert!(matches!(missing, Err(ProjectionUncertaintyError::InvalidatedBundle(_))));
+}
+
+#[test]
+fn bundle_projection_refuses_ambiguous_generations_wrong_basis_and_unknown_camera() {
+    let bundle = solved_bundle();
+    let current = bundle.dependencies();
+    let duplicate = [current[0], current[1], current[0]];
+    assert_eq!(
+        bundle.project_camera_uncertainty(1, bundle.basis(), &duplicate, [0.0, 0.0, 6.0], &mut WorkBudget::new(100_000)),
+        Err(ProjectionUncertaintyError::InvalidDependencySet),
+    );
+    assert_eq!(
+        bundle.project_camera_uncertainty(1, GeometryBasis::new(1, 2).unwrap(), &current, [0.0, 0.0, 6.0], &mut WorkBudget::new(100_000)),
+        Err(GeometryError::BasisMismatch.into()),
+    );
+    assert_eq!(
+        bundle.project_camera_uncertainty(99, bundle.basis(), &current, [0.0, 0.0, 6.0], &mut WorkBudget::new(100_000)),
+        Err(ProjectionUncertaintyError::UnknownCamera(99)),
+    );
+    let oversized = vec![current[0]; MAX_BUNDLE_CAMERAS + 1];
+    assert_eq!(
+        bundle.project_camera_uncertainty(1, bundle.basis(), &oversized, [0.0, 0.0, 6.0], &mut WorkBudget::new(0)),
+        Err(ProjectionUncertaintyError::InvalidDependencySet),
+    );
+}
