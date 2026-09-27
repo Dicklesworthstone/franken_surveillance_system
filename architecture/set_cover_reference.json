@@ -1,0 +1,53 @@
+{
+  "schema": "fss.set_cover_reference_contract.v1",
+  "algorithmId": "ALG-SETCOVER-001",
+  "requirementId": "FSS-160",
+  "status": "authored_unvalidated_reference_candidate",
+  "centralRegistryStatus": "specified",
+  "qualification": "not_claimed; Rust compilation, tests, and INT-FNX-001 qualification have not been executed for this candidate",
+  "costModel": "one unit per selected set; no monetary, confidence, risk, or utility interpretation",
+  "inputDomain": "fss.graph.set_cover_input.v1",
+  "outputDomain": "fss.graph.set_cover_output.v1",
+  "decisionSummaryDomain": "fss.graph.set_cover_decision_summary.v1",
+  "methods": {
+    "exact_small": {
+      "implementationId": "fss-graph-algorithms:alg-setcover-001:cardinality-enumeration:v1",
+      "policyId": "setcover-policy:unit-cost:mandatory-excluded:cardinality-then-stable-set-tuple:v1",
+      "exactness": "exact",
+      "tieBreak": "minimum number of selected sets, then lexicographically smallest stable set-identity tuple"
+    },
+    "greedy": {
+      "implementationId": "fss-graph-algorithms:alg-setcover-001:marginal-gain:v1",
+      "policyId": "setcover-policy:unit-cost:mandatory-excluded:marginal-gain-then-stable-set-id:v1",
+      "exactness": "approximate",
+      "tieBreak": "maximum remaining marginal gain, then stable set identity",
+      "failedSearchMeaning": "heuristic_incomplete, never proof of infeasibility"
+    }
+  },
+  "limits": {
+    "elements": 64,
+    "sets": 1024,
+    "exactOptionalSets": 20,
+    "coverageFacts": 8192,
+    "workUnits": 50000000,
+    "outputEntries": 8192
+  },
+  "dominantCounterBounds": {
+    "input_entries": "e + 3*n + n*e",
+    "branch_nodes": "exact: 2^p; greedy: 0",
+    "candidate_evaluations": "greedy: n*e; exact: 0",
+    "coverage_updates": "exact: n + p*2^p + e; greedy: n + e",
+    "result_checks": "n + e*(n+1)"
+  },
+  "counterVariables": "n=all sets; e=all requested elements; p=eligible nonmandatory sets",
+  "boundsPolicy": "checked before returning a result; work exhaustion/cancellation has no answer or witness",
+  "witnessSchema": "fss.graph_algorithm_witness.v1",
+  "coverageDisposition": ["covered", "uncoverable", "infeasible_within_limit", "heuristic_incomplete"],
+  "hardConstraints": ["mandatory sets retained", "excluded sets never selected", "selection cardinality ceiling", "every requested element retained"],
+  "physicalClaims": "none; caller must bind authorized projection and common-window witness",
+  "effectAuthority": "none",
+  "sources": [
+    "crates/fss-graph-algorithms/src/set_cover.rs",
+    "crates/fss-graph-algorithms/tests/set_cover_contract.rs"
+  ]
+}

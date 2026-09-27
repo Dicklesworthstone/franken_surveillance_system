@@ -28,6 +28,8 @@ pub mod failure_domains;
 pub mod graph;
 pub mod reference;
 pub mod registry;
+/// Bounded unit-cost set cover with exact-small and explicitly heuristic selection.
+pub mod set_cover;
 
 pub use bridges::{
     BridgeAnalysis, BridgeCounters, BridgeSeparation, ComplexityBound, GraphBudget,
