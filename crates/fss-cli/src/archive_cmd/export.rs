@@ -40,6 +40,17 @@ impl Destination {
             .as_deref()
             .ok_or(ArchiveCommandError::OutputScope)?;
         let root = new_destination(&archive, output)?;
+        // A separate privacy authority is just as much a protected input as the
+        // capture archive. Never add export files to its ledger, spool or root
+        // directories. `root` already uses the canonical output parent, so an
+        // output-parent symlink cannot evade this component-wise containment check.
+        if let Some((privacy_root, _)) = &options.privacy {
+            let authority = fs::canonicalize(privacy_root)
+                .map_err(|e| io_error("canonicalize privacy authority", e))?;
+            if root.starts_with(&authority) || authority.starts_with(&root) {
+                return Err(ArchiveCommandError::OutputScope);
+            }
+        }
         let query = options
             .query
             .as_ref()

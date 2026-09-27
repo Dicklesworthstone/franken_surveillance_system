@@ -84,7 +84,7 @@ pub enum ArchiveCommandError {
     Deadline,
     /// The fixed output allocation/size bound was exceeded.
     ReportLimit,
-    /// Export requires a new directory outside the source archive.
+    /// Export requires a new directory outside the archive and privacy authority.
     OutputScope,
     /// Existing output is never overwritten, merged or implicitly resumed.
     OutputExists,
@@ -489,29 +489,96 @@ impl OperationClock for Deadline {
 /// existing owner's recovery I/O; this is not a read-only forensic interface or an agent grant.
 pub fn execute_archive(options: &ArchiveOptions) -> Result<String> {
     let clock = Deadline::new(options.timeout)?;
-    if options.action == Action::Export {
-        // Before the archive is opened or any output directory exists.
-        refuse_masked_export(options)?;
-    }
+    execute_archive_with_clock(options, &clock)
+}
+
+// The same entry path, with request-owned time/cancellation, permits deterministic
+// tests to inspect the privacy lock throughout actual payload and completion I/O.
+fn execute_archive_with_clock(
+    options: &ArchiveOptions,
+    clock: &impl OperationClock,
+) -> Result<String> {
+    // Keep the authority owner alive until all payload writes, readbacks and the
+    // completion publication finish. A preflight-only check lets another owner
+    // commit a mask between validation and disclosure of the original packets.
+    let privacy_guard = if options.action == Action::Export {
+        Some(refuse_masked_export(options)?)
+    } else {
+        None
+    };
     let root = existing_archive(&options.root)?;
     clock.check()?;
+    if let Some(guard) = &privacy_guard {
+        let publisher = guard._deployment.publisher();
+        let owned_root = fs::canonicalize(publisher.root_dir())
+            .map_err(|e| io_error("canonicalize owned archive", e))?;
+        if owned_root == root {
+            // A co-located archive already has an exclusive owner. Reopening it
+            // would deadlock/refuse; dropping that owner would reopen the privacy
+            // race. Reuse it, but independently apply this command's narrower
+            // storage bounds through the SAME read-only recovery classifier.
+            let mut inspected = fss_publication::inspect(&root, options.storage_limits)
+                .map_err(ArchiveCommandError::Storage)?;
+            if inspected.missing_layout || inspected.spool_over_capacity
+                || inspected.holds_migration_pending || !inspected.redundant_temps.is_empty()
+            {
+                return Err(ArchiveCommandError::NotArchive);
+            }
+            // Inspection deliberately does not fsync, unlike the owner open.
+            // Normalize only that claim, not object admission or failed roots.
+            for entry in &mut inspected.report.roots {
+                entry.state = fss_publication::LocalPublicationState::Durable;
+            }
+            if inspected.report != *publisher.recovery_report() {
+                return Err(ArchiveCommandError::SnapshotMismatch);
+            }
+            clock.check()?;
+            return execute_owned(options, publisher, clock);
+        }
+    }
     let publisher = LocalRootPublisher::open(&root, options.storage_limits)
         .map_err(ArchiveCommandError::Storage)?;
     // Existing owner open has count/byte bounds but no cancellation argument.
     // Recheck immediately after it; do not claim a preemptible filesystem syscall.
     clock.check()?;
+    execute_owned(options, &publisher, clock)
+}
+
+fn execute_owned(
+    options: &ArchiveOptions,
+    publisher: &LocalRootPublisher,
+    clock: &impl OperationClock,
+) -> Result<String> {
     match options.codec {
-        Codec::Avc => execute_for::<AvcArchiveCodec>(options, &publisher, &clock),
-        Codec::Hevc => execute_for::<HevcArchiveCodec>(options, &publisher, &clock),
+        Codec::Avc => execute_for::<AvcArchiveCodec>(options, publisher, clock),
+        Codec::Hevc => execute_for::<HevcArchiveCodec>(options, publisher, clock),
     }
 }
 const ERR_PRIVACY_UNMASKED_ACCESS_REFUSED: &str = "ERR-PRIVACY-UNMASKED-ACCESS-REFUSED-001";
 const ERR_PRIVACY_MASK: &str = "ERR-PRIVACY-MASK-001";
 
+/// Finalizes the request context after the deployment (and its locks) is dropped.
+/// Also runs when opening the deployment or validating its policy fails.
+struct ExportReplayContext(fss_reference::ReplayCx);
+impl Drop for ExportReplayContext {
+    fn drop(&mut self) {
+        self.0.drain_and_finalize();
+    }
+}
+
+/// Owns the checked authority for the entire raw-byte disclosure, not just preflight.
+/// Fields drop in declaration order: release the deployment before finalizing its context.
+#[must_use = "keep the privacy authority guard alive until the export has finished"]
+struct PrivacyExportGuard {
+    _deployment: fss_reference::ReferenceDeployment,
+    _context: ExportReplayContext,
+}
+
 /// Raw export emits original packets, which cannot be masked without re-encoding: the sensor's
 /// current retained privacy mask (read from the named deployment) must be absent. An export
 /// naming no deployment cannot prove that and is refused the same way. There is no override.
-fn refuse_masked_export(options: &ArchiveOptions) -> Result<()> {
+/// The returned owner prevents a concurrent mask declaration until the export ends.
+fn refuse_masked_export(options: &ArchiveOptions) -> Result<PrivacyExportGuard> {
     use fss_core::region::{ContextAuthority, RootAuthoritySpec};
     use fss_core::{BudgetVector, OperationId};
     use fss_reference::ingest::privacy_mask::{PrivacyMaskError, refuse_unmasked_source};
@@ -556,23 +623,23 @@ fn refuse_masked_export(options: &ArchiveOptions) -> Result<()> {
     })
     .map_err(|e| failed(e.to_string()))?;
     authority.validate().map_err(|e| failed(e.to_string()))?;
-    let cx = ReplayCx::from_context_authority(&authority, root.clone())
+    let cx = ExportReplayContext(
+        ReplayCx::from_context_authority(&authority, root.clone())
+            .map_err(|e| failed(e.to_string()))?,
+    );
+    let deployment = ReferenceDeployment::reopen(root, site, &cx.0)
         .map_err(|e| failed(e.to_string()))?;
-    let result = ReferenceDeployment::reopen(root, site, &cx)
-        .map_err(|e| failed(e.to_string()))
-        .and_then(|deployment| {
-            refuse_unmasked_source(&deployment, &options.scope.recording.sensor).map_err(|e| {
-                match e {
-                    PrivacyMaskError::UnmaskedAccessRefused => ArchiveCommandError::Privacy {
-                        code: ERR_PRIVACY_UNMASKED_ACCESS_REFUSED,
-                        message: "the sensor has a current retained privacy mask; its original packets have no unmasked export path; nothing was written",
-                    },
-                    _ => failed(e.to_string()),
-                }
-            })
-        });
-    cx.drain_and_finalize();
-    result
+    refuse_unmasked_source(&deployment, &options.scope.recording.sensor).map_err(|e| match e {
+        PrivacyMaskError::UnmaskedAccessRefused => ArchiveCommandError::Privacy {
+            code: ERR_PRIVACY_UNMASKED_ACCESS_REFUSED,
+            message: "the sensor has a current retained privacy mask; its original packets have no unmasked export path; nothing was written",
+        },
+        _ => failed(e.to_string()),
+    })?;
+    Ok(PrivacyExportGuard {
+        _deployment: deployment,
+        _context: cx,
+    })
 }
 
 fn existing_archive(path: &Path) -> Result<PathBuf> {
@@ -836,3 +903,7 @@ fn execute_for<C: ArchiveCodec>(
 #[cfg(test)]
 #[path = "archive_cmd/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "archive_cmd/privacy_lifetime_tests.rs"]
+mod privacy_lifetime_tests;
